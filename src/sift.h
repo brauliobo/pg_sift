@@ -1,0 +1,117 @@
+/*
+ * sift.h - shared constants, keys, options, GUCs and catalog lookups.
+ *
+ * Every sift .c file includes "postgres.h" first, then this header.
+ * See the design notes for the data model and invariants.
+ */
+#ifndef SIFT_H
+#define SIFT_H
+
+#include "access/htup_details.h"
+#include "storage/itemptr.h"
+#include "utils/relcache.h"
+
+#define SIFT_MAGIC				0x53494654	/* "SIFT" */
+#define SIFT_FORMAT_MAJOR		1
+#define SIFT_FORMAT_MINOR		0
+
+/* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
+#define SIFT_SB_SHIFT			8
+#define SIFT_SB_PAGES			(1 << SIFT_SB_SHIFT)
+#define SIFT_BLK_SHIFT			4
+#define SIFT_BLK_PAGES			(1 << SIFT_BLK_SHIFT)
+#define SIFT_BLKS_PER_SB		(SIFT_SB_PAGES / SIFT_BLK_PAGES)
+#define SIFT_MAX_OFFSET			MaxHeapTuplesPerPage
+#define SIFT_PAGEMASK_WORDS		(SIFT_SB_PAGES / 64)
+#define SIFT_OFFMASK_WORDS		8
+#define SIFT_SIMD_ALIGN			64
+
+/* Limits */
+#define SIFT_MAX_TERM_BYTES		255
+#define SIFT_MAX_TF				255
+#define SIFT_MAX_DL				PG_UINT16_MAX
+#define SIFT_MAX_SEGMENTS		128
+#define SIFT_MAX_LEAVES			256
+#define SIFT_MAX_DEPTH			32
+#define SIFT_MAX_PHRASE			32
+#define SIFT_LANES				8
+
+StaticAssertDecl(BLCKSZ == 8192, "sift requires BLCKSZ 8192");
+StaticAssertDecl(MaxHeapTuplesPerPage <= SIFT_OFFMASK_WORDS * 64,
+				 "heap offsets must fit the 512-bit offset mask");
+
+/* Document key: heap block << 16 | offset (48 bits used); sorts in ctid order */
+typedef uint64 SiftKey;
+
+static inline SiftKey
+sift_key_from_tid(ItemPointer tid)
+{
+	return ((uint64) ItemPointerGetBlockNumberNoCheck(tid) << 16) |
+		ItemPointerGetOffsetNumberNoCheck(tid);
+}
+
+static inline void
+sift_key_to_tid(SiftKey key, ItemPointer tid)
+{
+	ItemPointerSet(tid, (BlockNumber) (key >> 16), (OffsetNumber) (key & 0xFFFF));
+}
+
+static inline BlockNumber
+sift_key_block(SiftKey key)
+{
+	return (BlockNumber) (key >> 16);
+}
+
+static inline uint32
+sift_block_sb(BlockNumber blk)
+{
+	return blk >> SIFT_SB_SHIFT;
+}
+
+/* Index reloptions (amoptions); strings are offsets from the struct start */
+typedef struct SiftOptions
+{
+	int32		vl_len_;
+	double		k1;
+	double		b;
+	int			stemmer;		/* text search dictionary name, "" = none */
+	bool		case_folding;
+	bool		accent_folding;
+	int			mutable_limit;	/* kB; seal the active mutable segment above it */
+	int			build_segments; /* 0 = one per build participant */
+} SiftOptions;
+
+#define SIFT_DEFAULT_K1				1.2
+#define SIFT_DEFAULT_B				0.75
+#define SIFT_DEFAULT_MUTABLE_LIMIT	4096
+
+/* Returns the index options with defaults filled in; never NULL */
+extern const SiftOptions *sift_index_options(Relation index);
+extern const char *sift_options_stemmer(const SiftOptions *opts);
+
+/* GUCs (defined in sift_handler.c, except sift.simd in sift_cpu.c) */
+extern PGDLLIMPORT int sift_max_expansions;
+extern PGDLLIMPORT bool sift_enable_scan;
+extern PGDLLIMPORT bool sift_enable_count;
+extern PGDLLIMPORT bool sift_async_maintenance;
+
+/*
+ * Catalog OIDs of extension objects, cached per backend and reset by syscache
+ * invalidation. Fields are InvalidOid when the extension is not installed in
+ * the current database.
+ */
+typedef struct SiftCatalog
+{
+	Oid			am;
+	Oid			match_op;		/* text @@> text */
+	Oid			match_func;		/* sift.match(text, text) */
+	Oid			match_idx_func; /* sift.match_idx(text, text, oid) */
+	Oid			score_func;		/* sift.score(tid) */
+	Oid			max_score_func; /* sift.max_score(tid) */
+} SiftCatalog;
+
+extern const SiftCatalog *sift_catalog(void);
+
+extern void _PG_init(void);
+
+#endif							/* SIFT_H */
