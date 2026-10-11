@@ -41,9 +41,9 @@ static void gen(set *s, uint32_t n, uint64_t base, uint32_t span, uint32_t maxof
 
 static void gen_shape(set *s)
 {
-	static const uint32_t offs[] = { 1, 7, 8, 9, 16, 17, 32, 33, 64, 65, 100, 255, 256, 257, 291, 512 };
+	static const uint32_t offs[] = { 1, 7, 8, 9, 16, 17, 32, 33, 64, 65, 100, 180, 255, 256, 257, 291, 400, 450, 512 };
 	static const uint64_t bases[] = { 0, 12345, 0xffffffffull - 3000, 0xfffffe00ull, 1u << 24 };
-	uint32_t maxoff = offs[rndn(16)], span = 1 + rndn(rnd() % 2 ? 600 : 100000);
+	uint32_t maxoff = offs[rndn(19)], span = 1 + rndn(rnd() % 2 ? 600 : 100000);
 	uint32_t n = rnd() % 10 == 0 ? rndn(3) : rndn(rnd() % 3 ? 3000 : 60000);
 	if (rnd() % 8 == 0) { /* full pages */
 		uint64_t b0 = bases[rndn(5)];
@@ -307,13 +307,13 @@ static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
 		for (int i = 0; i < nt; i++) {
 			sift_encode(s[i].t, s[i].tf, ub[i], s[i].n, &eo[rndn(3)], blob[i]);
 			sift_cur_blob(&c[i], blob[i], cbuf[i]);
-			qt[i] = (sift_qterm){ &c[i], w[i], conj };
+			qt[i] = (sift_qterm){ &c[i], w[i], 0 };
 		}
 		/* filter: the last set when unused as a term, else a random superset-ish set */
 		set *fs = &s[2];
 		if (filt) sift_cur_tids(&c[3], fs->t, fs->n, cbuf[3]);
 		uint32_t k = 1 + rndn(40);
-		sift_topk_q q = { qt, nt, conj, filt ? &c[3] : NULL, &nm, k };
+		sift_topk_q q = { qt, nt, conj, filt ? &c[3] : NULL, &nm, k, 0 };
 		sift_topk_stats st = { 0, 0, 0 };
 		uint32_t nh = sift_topk(&q, hits, tkbuf, &st);
 		/* reference: candidate set, float scores in term order */

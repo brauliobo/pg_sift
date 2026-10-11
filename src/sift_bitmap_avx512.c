@@ -44,8 +44,9 @@ SIFT_INLINE int andnot_wide_avx512(uint8_t *d, const uint8_t *a, const uint8_t *
 
 SIFT_INLINE uint64_t cnt_wide_avx512(const uint8_t *a, const uint8_t *b, uint32_t w)
 {
-	__mmask8 k = (__mmask8)BZ(w / 8);
-	return (uint64_t)_mm512_reduce_add_epi64(_mm512_popcnt_epi64(_mm512_and_si512(_mm512_maskz_loadu_epi64(k, a), _mm512_maskz_loadu_epi64(k, b))));
+	uint64_t c = 0;
+	for (uint32_t q = 0; q < w; q += 8) c += (uint64_t)_mm_popcnt_u64(sift_ld8(a + q) & sift_ld8(b + q));
+	return c;
 }
 
 #define SIFT_KERN_TMPL
@@ -158,6 +159,73 @@ NARROW_KERNELS(16, __mmask32, 32)
 NARROW_KERNELS(32, __mmask16, 16)
 NARROW_KERNELS(64, __mmask8, 8)
 
+/*
+ * Wide groups (w = 16..64 bytes, K = w / 8 qword lanes per page): the same
+ * expand/compress scheme with each page bit replicated over its K lanes
+ * (pdep), 8 / K pages per vector.
+ */
+SIFT_INLINE uint32_t lane_base(uint32_t k) { return k == 2 ? 0x55 : k <= 4 ? 1u | 1u << k : 1; }
+SIFT_INLINE uint32_t lane_spread(uint32_t pm, uint32_t k) { return (uint32_t)_pdep_u32(pm, lane_base(k)) * ((1u << k) - 1); }
+SIFT_INLINE uint32_t lane_pages(uint32_t lm, uint32_t k)
+{
+	uint32_t t = 0;
+	for (uint32_t i = 0; i < k; i++) t |= lm >> i;
+	return (uint32_t)_pext_u32(t, lane_base(k));
+}
+
+#define WIDE_KERNELS(K)                                                                                           \
+	static void and2_w##K(const sift_grp *a, const sift_grp *b, const uint64_t *m, sift_grp *o, uint8_t *buf)     \
+	{                                                                                                         \
+		uint64_t pages[4] = { 0 };                                                                        \
+		const uint8_t *pa = a->off, *pb = b->off;                                                         \
+		uint8_t *d = buf;                                                                                 \
+		for (int j = 0; j < 4; j++)                                                                       \
+			for (int h = 0; h < 64; h += 8 / K) {                                                     \
+				uint32_t ma = (uint32_t)(a->pages[j] >> h) & ((1u << (8 / K)) - 1);               \
+				uint32_t mb = (uint32_t)(b->pages[j] >> h) & ((1u << (8 / K)) - 1);               \
+				uint32_t mm = ma & mb & (m ? (uint32_t)(m[j] >> h) : ~0u);                        \
+				if (mm) {                                                                         \
+					uint32_t la = lane_spread(ma, K), lb = lane_spread(mb, K);                \
+					__m512i v = _mm512_and_si512(EXPAND(64, __mmask8, pa, la), EXPAND(64, __mmask8, pb, lb)); \
+					uint32_t keep = lane_pages(_mm512_mask_test_epi64_mask((__mmask8)lane_spread(mm, K), v, v), K); \
+					STORE(64, __mmask8, d, lane_spread(keep, K), v);                          \
+					d += _mm_popcnt_u32(keep) * K * 8;                                        \
+					pages[j] |= (uint64_t)keep << h;                                          \
+				}                                                                                 \
+				pa += _mm_popcnt_u32(ma) * K * 8, pb += _mm_popcnt_u32(mb) * K * 8;               \
+			}                                                                                         \
+		sift_grp_set(o, a->gid, K * 8, pages, buf);                                                       \
+	}                                                                                                         \
+	static uint64_t and_count_w##K(const sift_grp *a, const sift_grp *b)                                      \
+	{                                                                                                         \
+		__m512i acc = _mm512_setzero_si512();                                                             \
+		const uint8_t *pa = a->off, *pb = b->off;                                                         \
+		for (int j = 0; j < 4; j++)                                                                       \
+			for (int h = 0; h < 64; h += 8 / K) {                                                     \
+				uint32_t ma = (uint32_t)(a->pages[j] >> h) & ((1u << (8 / K)) - 1);               \
+				uint32_t mb = (uint32_t)(b->pages[j] >> h) & ((1u << (8 / K)) - 1);               \
+				if (ma & mb)                                                                      \
+					acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(_mm512_and_si512(          \
+						EXPAND(64, __mmask8, pa, lane_spread(ma, K)), EXPAND(64, __mmask8, pb, lane_spread(mb, K))))); \
+				pa += _mm_popcnt_u32(ma) * K * 8, pb += _mm_popcnt_u32(mb) * K * 8;               \
+			}                                                                                         \
+		return (uint64_t)_mm512_reduce_add_epi64(acc);                                                    \
+	}
+
+WIDE_KERNELS(2)
+WIDE_KERNELS(3)
+WIDE_KERNELS(4)
+WIDE_KERNELS(5)
+WIDE_KERNELS(6)
+WIDE_KERNELS(7)
+WIDE_KERNELS(8)
+
+#define WIDE_SWITCH(W, CALL)                                                                                    \
+	switch (W) {                                                                                            \
+	case 16: CALL(2); case 24: CALL(3); case 32: CALL(4); case 40: CALL(5);                                 \
+	case 48: CALL(6); case 56: CALL(7); case 64: CALL(8);                                                   \
+	}
+
 #define NARROW_SWITCH(W, CALL)                                                                                  \
 	switch (W) {                                                                                            \
 	case 1: CALL(8); case 2: CALL(16); case 4: CALL(32); case 8: CALL(64);                                  \
@@ -167,6 +235,9 @@ static void and2_v(const sift_grp *a, const sift_grp *b, const uint64_t *m, sift
 {
 #define C(L) return and2_e##L(a, b, m, o, buf)
 	if (a->w == b->w) NARROW_SWITCH(a->w, C)
+#undef C
+#define C(K) return and2_w##K(a, b, m, o, buf)
+	if (a->w == b->w) WIDE_SWITCH(a->w, C)
 #undef C
 	and2_avx512(a, b, m, o, buf);
 }
@@ -191,6 +262,9 @@ static uint64_t and_count_v(const sift_grp *a, const sift_grp *b)
 {
 #define C(L) return and_count_e##L(a, b)
 	if (a->w == b->w) NARROW_SWITCH(a->w, C)
+#undef C
+#define C(K) return and_count_w##K(a, b)
+	if (a->w == b->w) WIDE_SWITCH(a->w, C)
 #undef C
 	return and_count_avx512(a, b);
 }

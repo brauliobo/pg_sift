@@ -122,7 +122,7 @@ static uint64_t KFN(popcount)(const uint8_t *p, size_t n)
 
 SIFT_INLINE uint64_t KFN(pcw)(const uint8_t *p, uint32_t w)
 {
-	return w <= 8 ? KFN(pc)(sift_ldn(p, w)) : sift_k->popcount(p, w);
+	return w <= 8 ? KFN(pc)(sift_ldn(p, w)) : KFN(popcount)(p, w);
 }
 
 SIFT_INLINE void KFN(and2_n)(const sift_grp *a, const sift_grp *b, const uint64_t *m, sift_grp *o, uint8_t *buf, const uint32_t w)
@@ -225,7 +225,7 @@ static uint64_t KFN(count_mask)(const sift_grp *g, const uint64_t *m)
 			c += sift_k->popcount(g->off + r * w, (size_t)KFN(pc)(p) * w);
 		else
 			for (; mm; mm &= mm - 1)
-				c += sift_k->popcount(g->off + (r + KFN(pc)(p & ((mm & -mm) - 1))) * w, w);
+				c += KFN(pcw)(g->off + (r + KFN(pc)(p & ((mm & -mm) - 1))) * w, w);
 		r += KFN(pc)(p);
 	}
 	return c;
@@ -279,7 +279,10 @@ static uint32_t KFN(ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *r
 		for (uint64_t mm = sub->pages[j]; mm; mm &= mm - 1, ks++) {
 			uint32_t is = rs + KFN(pc)(p & ((mm & -mm) - 1));
 			const uint8_t *xs = src->off + is * w, *xu = sub->off + ks * ws;
-			cnt += sift_k->popcount(src->off + done * w, (size_t)(is - done) * w);
+			if (w <= 8)
+				for (uint32_t r = done; r < is; r++) cnt += KFN(pc)(sift_ldn(src->off + r * w, w));
+			else
+				cnt += KFN(popcount)(src->off + done * w, (size_t)(is - done) * w);
 			done = is;
 			uint32_t before = 0;
 			for (uint32_t q = 0; q < ws; q += 8) {
