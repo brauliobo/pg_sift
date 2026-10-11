@@ -155,13 +155,6 @@ sift_highlight(PG_FUNCTION_ARGS)
 }
 
 WEAK Datum
-sift_tokenize(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.tokenize()");
-	PG_RETURN_NULL();
-}
-
-WEAK Datum
 sift_parse_query(PG_FUNCTION_ARGS)
 {
 	NOT_IMPLEMENTED("sift.parse_query()");

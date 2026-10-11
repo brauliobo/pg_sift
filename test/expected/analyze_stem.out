@@ -1,0 +1,284 @@
+CREATE EXTENSION sift;
+-- Snowball English (Porter2), from the published algorithm's examples
+SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en')) AS stem
+  FROM unnest(ARRAY[
+    'consign', 'consigned', 'consigning', 'consignment', 'consist', 'consisted', 'consistency',
+    'consistent', 'consistently', 'consisting', 'consists', 'consolation', 'consolations',
+    'consolatory', 'console', 'consoled', 'consoles', 'consolidate', 'consolidated',
+    'consolidating', 'consoling', 'consolingly', 'consols', 'consonant', 'consort', 'consorted',
+    'consorting', 'conspicuous', 'conspicuously', 'conspiracy', 'conspirator', 'conspirators',
+    'conspire', 'conspired', 'conspiring', 'constable', 'constables', 'constance', 'constancy',
+    'constant', 'knack', 'knackeries', 'knacks', 'knag', 'knave', 'knaves', 'knavish', 'kneaded',
+    'kneading', 'knee', 'kneel', 'kneeled', 'kneeling', 'kneels', 'knees', 'knell', 'knelt',
+    'knew', 'knick', 'knif', 'knife', 'knight', 'knightly', 'knights', 'knit', 'knits',
+    'knitted', 'knitting', 'knives', 'knob', 'knobs', 'knock', 'knocked', 'knocker', 'knockers',
+    'knocking', 'knocks', 'knopp', 'knot', 'knots']) w;
+       w       |    stem     
+---------------+-------------
+ consign       | consign
+ consigned     | consign
+ consigning    | consign
+ consignment   | consign
+ consist       | consist
+ consisted     | consist
+ consistency   | consist
+ consistent    | consist
+ consistently  | consist
+ consisting    | consist
+ consists      | consist
+ consolation   | consol
+ consolations  | consol
+ consolatory   | consolatori
+ console       | consol
+ consoled      | consol
+ consoles      | consol
+ consolidate   | consolid
+ consolidated  | consolid
+ consolidating | consolid
+ consoling     | consol
+ consolingly   | consol
+ consols       | consol
+ consonant     | conson
+ consort       | consort
+ consorted     | consort
+ consorting    | consort
+ conspicuous   | conspicu
+ conspicuously | conspicu
+ conspiracy    | conspiraci
+ conspirator   | conspir
+ conspirators  | conspir
+ conspire      | conspir
+ conspired     | conspir
+ conspiring    | conspir
+ constable     | constabl
+ constables    | constabl
+ constance     | constanc
+ constancy     | constanc
+ constant      | constant
+ knack         | knack
+ knackeries    | knackeri
+ knacks        | knack
+ knag          | knag
+ knave         | knave
+ knaves        | knave
+ knavish       | knavish
+ kneaded       | knead
+ kneading      | knead
+ knee          | knee
+ kneel         | kneel
+ kneeled       | kneel
+ kneeling      | kneel
+ kneels        | kneel
+ knees         | knee
+ knell         | knell
+ knelt         | knelt
+ knew          | knew
+ knick         | knick
+ knif          | knif
+ knife         | knife
+ knight        | knight
+ knightly      | knight
+ knights       | knight
+ knit          | knit
+ knits         | knit
+ knitted       | knit
+ knitting      | knit
+ knives        | knive
+ knob          | knob
+ knobs         | knob
+ knock         | knock
+ knocked       | knock
+ knocker       | knocker
+ knockers      | knocker
+ knocking      | knock
+ knocks        | knock
+ knopp         | knopp
+ knot          | knot
+ knots         | knot
+(80 rows)
+
+-- exceptions, short words, regions and special prefixes
+SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en')) AS stem
+  FROM unnest(ARRAY[
+    'skies', 'skis', 'dying', 'lying', 'tying', 'news', 'atlas', 'andes', 'only', 'early',
+    'gently', 'idly', 'singly', 'ugly', 'howe', 'cosmos', 'bias', 'sky', 'is', 'as', 'by', 'a',
+    'proceed', 'exceed', 'succeed', 'proceeding', 'agreed', 'feed', 'inning', 'outing',
+    'canning', 'herring', 'earring', 'evening', 'generous', 'generously', 'communication',
+    'community', 'arsenal', 'university', 'universal', 'organization', 'international',
+    'emergency', 'lateral', 'pasted', 'pasting', 'caresses', 'ponies', 'ties', 'cats', 'gas',
+    'running', 'hopping', 'hoping', 'filing', 'luxuriating', 'happy', 'say', 'cry', 'yelling',
+    'sayings', 'relational', 'conditional', 'rational', 'valenci', 'hesitanci', 'digitizer',
+    'conformabli', 'radicalli', 'differentli', 'vileli', 'analogousli', 'vietnamization',
+    'predication', 'operator', 'feudalism', 'decisiveness', 'hopefulness', 'callousness',
+    'formaliti', 'sensitiviti', 'sensibiliti', 'triplicate', 'formative', 'formalize',
+    'electriciti', 'electrical', 'hopeful', 'goodness', 'revival', 'allowance', 'inference',
+    'airliner', 'gyroscopic', 'adjustable', 'defensible', 'irritant', 'replacement',
+    'adjustment', 'dependent', 'adoption', 'homologou', 'communism', 'activate', 'angulariti',
+    'homologous', 'effective', 'bowdlerize', 'probate', 'rate', 'cease', 'controll', 'roll',
+    'geology', 'biology', 'ecologist', 'fully', 'helplessly', 'abruptly', 'year1990s', '1990s']) w;
+       w        |    stem    
+----------------+------------
+ skies          | sky
+ skis           | ski
+ dying          | die
+ lying          | lie
+ tying          | tie
+ news           | news
+ atlas          | atlas
+ andes          | andes
+ only           | onli
+ early          | earli
+ gently         | gentl
+ idly           | idl
+ singly         | singl
+ ugly           | ugli
+ howe           | howe
+ cosmos         | cosmos
+ bias           | bias
+ sky            | sky
+ is             | is
+ as             | as
+ by             | by
+ a              | a
+ proceed        | proceed
+ exceed         | exceed
+ succeed        | succeed
+ proceeding     | proceed
+ agreed         | agre
+ feed           | feed
+ inning         | inning
+ outing         | outing
+ canning        | canning
+ herring        | herring
+ earring        | earring
+ evening        | evening
+ generous       | generous
+ generously     | generous
+ communication  | communic
+ community      | communiti
+ arsenal        | arsenal
+ university     | universiti
+ universal      | universal
+ organization   | organiz
+ international  | internat
+ emergency      | emergenc
+ lateral        | lateral
+ pasted         | paste
+ pasting        | paste
+ caresses       | caress
+ ponies         | poni
+ ties           | tie
+ cats           | cat
+ gas            | gas
+ running        | run
+ hopping        | hop
+ hoping         | hope
+ filing         | file
+ luxuriating    | luxuri
+ happy          | happi
+ say            | say
+ cry            | cri
+ yelling        | yell
+ sayings        | say
+ relational     | relat
+ conditional    | condit
+ rational       | ration
+ valenci        | valenc
+ hesitanci      | hesit
+ digitizer      | digit
+ conformabli    | conform
+ radicalli      | radic
+ differentli    | differ
+ vileli         | vile
+ analogousli    | analog
+ vietnamization | vietnam
+ predication    | predic
+ operator       | oper
+ feudalism      | feudal
+ decisiveness   | decis
+ hopefulness    | hope
+ callousness    | callous
+ formaliti      | formal
+ sensitiviti    | sensit
+ sensibiliti    | sensibl
+ triplicate     | triplic
+ formative      | format
+ formalize      | formal
+ electriciti    | electr
+ electrical     | electr
+ hopeful        | hope
+ goodness       | good
+ revival        | reviv
+ allowance      | allow
+ inference      | infer
+ airliner       | airlin
+ gyroscopic     | gyroscop
+ adjustable     | adjust
+ defensible     | defens
+ irritant       | irrit
+ replacement    | replac
+ adjustment     | adjust
+ dependent      | depend
+ adoption       | adopt
+ homologou      | homologou
+ communism      | communism
+ activate       | activ
+ angulariti     | angular
+ homologous     | homolog
+ effective      | effect
+ bowdlerize     | bowdler
+ probate        | probat
+ rate           | rate
+ cease          | ceas
+ controll       | control
+ roll           | roll
+ geology        | geolog
+ biology        | biolog
+ ecologist      | ecolog
+ fully          | fulli
+ helplessly     | helpless
+ abruptly       | abrupt
+ year1990s      | year1990
+ 1990s          | 1990s
+(122 rows)
+
+-- only lowercase ASCII tokens are stemmed; folding happens first
+SELECT sift.tokenize('Running RUNNING Naïve ponies', stemmer => 'en');
+    tokenize    
+----------------
+ (run,0,0,7)
+ (run,1,8,15)
+ (naiv,2,16,21)
+ (poni,3,22,28)
+(4 rows)
+
+SELECT sift.tokenize('Running ponies', stemmer => 'en', case_folding => false);
+    tokenize     
+-----------------
+ (Running,0,0,7)
+ (poni,1,8,14)
+(2 rows)
+
+SELECT sift.tokenize('café cafés', stemmer => 'english', accent_folding => false);
+    tokenize    
+----------------
+ (café,0,0,4)
+ (cafés,1,5,10)
+(2 rows)
+
+SELECT count(*) FROM sift.tokenize('running', stemmer => 'none');
+ count 
+-------
+     1
+(1 row)
+
+SELECT count(*) FROM sift.tokenize('running', stemmer => '');
+ count 
+-------
+     1
+(1 row)
+
+SELECT * FROM sift.tokenize('x', stemmer => 'klingon');
+ERROR:  unknown sift stemmer "klingon"
+HINT:  Valid stemmers are "en" and "none".
+DROP EXTENSION sift;
