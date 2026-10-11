@@ -204,7 +204,27 @@ static uint64_t count_mask_v(const sift_grp *g, const uint64_t *m)
 	return count_mask_avx512(g, m);
 }
 
-const sift_kernels sift_kern_avx512 = { popcount_v, and2_v, or2_v, andnot_v, and_count_v, count_mask_v, tids_avx512, ranks_avx512 };
+static void bm25_v(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
+{
+	__m512 vw = _mm512_set1_ps(w);
+	for (uint32_t i = 0; i < n; i += 16) {
+		__mmask16 k = (__mmask16)BZ(n - i < 16 ? n - i : 16);
+		__m512 t = _mm512_maskz_loadu_ps(k, tf + i);
+		if (pos) {
+			__m512i p = _mm512_maskz_loadu_epi32(k, pos + i);
+			__m512 kv = _mm512_mask_i32gather_ps(_mm512_set1_ps(1), k, p, kn, 4);
+			__m512 sv = _mm512_mask_i32gather_ps(_mm512_setzero_ps(), k, p, score, 4);
+			_mm512_mask_i32scatter_ps(score, k, p, _mm512_add_ps(sv, _mm512_mul_ps(vw, _mm512_div_ps(t, _mm512_add_ps(t, kv)))), 4);
+		} else {
+			__m512 kv = _mm512_mask_loadu_ps(_mm512_set1_ps(1), k, kn + i);
+			__m512 s = _mm512_mul_ps(vw, _mm512_div_ps(t, _mm512_add_ps(t, kv)));
+			_mm512_mask_storeu_ps(score + i, k, _mm512_add_ps(_mm512_maskz_loadu_ps(k, score + i), s));
+		}
+	}
+}
+
+const sift_kernels sift_kern_avx512 = { popcount_v, and2_v, or2_v, andnot_v, and_count_v, count_mask_v, tids_avx512, ranks_avx512,
+					vop_avx512, bm25_v };
 
 #if defined(__clang__)
 #pragma clang attribute pop

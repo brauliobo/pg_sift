@@ -1,4 +1,5 @@
 /* Randomized property tests of sift_bitmap against sorted-array reference implementations. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,9 +108,9 @@ static void open_set(sift_cur *c, const set *s, int mode, int slot)
 		sift_cur_tids(c, s->t, s->n, cbuf[slot]);
 		return;
 	}
-	size_t len = sift_encode(s->t, s->tf, s->n, &opts[mode], blob[slot]);
+	size_t len = sift_encode(s->t, s->tf, s->tf, s->n, &opts[mode], blob[slot]);
 	CHECK(len <= sift_encode_bound(s->n), "bound %zu > %zu", len, sift_encode_bound(s->n));
-	CHECK(len == sift_encode(s->t, s->tf, s->n, &opts[mode], NULL), "size query mismatch mode %d: %zu vs %zu n %u", mode, len, sift_encode(s->t, s->tf, s->n, &opts[mode], NULL), s->n);
+	CHECK(len == sift_encode(s->t, s->tf, s->tf, s->n, &opts[mode], NULL), "size query mismatch mode %d: %zu vs %zu n %u", mode, len, sift_encode(s->t, s->tf, s->tf, s->n, &opts[mode], NULL), s->n);
 	CHECK(sift_blob_n(blob[slot]) == s->n, "n");
 	sift_cur_blob(c, blob[slot], cbuf[slot]);
 }
@@ -165,10 +166,10 @@ static void test_ops(set *a, set *b, set *c, sift_tid *ref, sift_tid *tmp)
 		uint32_t k = sift_grp_tids(g, NULL, tmp);
 		check_tf(a, ma, 0, &ca, g, tmp);
 		check_tf(b, mb, 1, &cb, g, tmp);
-		if (ca.maxtf) {
+		if (ca.ub) {
 			uint32_t m = 0;
-			for (uint32_t i = ca.g.base; i < ca.g.base + ca.g.n; i++) m = m > sift_tf_quant(a->tf[i]) ? m : sift_tf_quant(a->tf[i]);
-			CHECK(sift_grp_maxtf(&ca) == m, "maxtf");
+			for (uint32_t i = ca.g.base; i < ca.g.base + ca.g.n; i++) m = m > a->tf[i] ? m : a->tf[i];
+			CHECK(sift_grp_ub(&ca) == m, "group ub");
 		}
 		(void)k;
 	}
@@ -232,6 +233,135 @@ static void test_ops(set *a, set *b, set *c, sift_tid *ref, sift_tid *tmp)
 	}
 }
 
+/* chunk API, keylist and canonical mask kernels on the groups of a */
+static void test_chunks(const set *a, sift_tid *tmp)
+{
+	static uint64_t om[SIFT_GROUP_PAGES * 8], om2[SIFT_GROUP_PAGES * 8], om3[SIFT_GROUP_PAGES * 8];
+	static uint8_t chunk[4 + SIFT_GRP_MAXTIDS * 4], gb[SIFT_GRP_BYTES];
+	size_t len = sift_keylist_encode(a->t, a->n, blob[3]);
+	CHECK(len > 0 && sift_keylist_decode(blob[3], tmp) == a->n && !memcmp(tmp, a->t, a->n * 8ull), "keylist");
+	for (uint32_t i = 0; i < a->n;) {
+		uint32_t j = i, gid = SIFT_GID(a->t[i]), np = 0, last = UINT32_MAX;
+		uint64_t pm[4] = { 0 };
+		memset(om, 0, sizeof om);
+		for (; j < a->n && SIFT_GID(a->t[j]) == gid; j++) {
+			uint32_t pg = SIFT_BLK(a->t[j]) & 255, o = SIFT_OFF(a->t[j]) - 1;
+			if (pg != last) np++, last = pg, pm[pg >> 6] |= 1ull << (pg & 63);
+			om[(np - 1) * 8 + o / 64] |= 1ull << (o & 63);
+		}
+		int ct = (int)rndn(3);
+		size_t cl = sift_chunk_encode(pm, om, ct, chunk);
+		CHECK(cl == sift_chunk_encode(pm, om, ct, NULL) && (ct == SIFT_CT_ARRAY || cl <= sift_chunk_bound(np)), "chunk size");
+		CHECK(sift_chunk_count(chunk) == j - i, "chunk count");
+		uint64_t pm2[4], sel[4] = { rnd(), rnd() | rnd(), ~0ull, rnd() & rnd() };
+		sift_chunk_pagemask(chunk, pm2);
+		CHECK(!memcmp(pm, pm2, 32), "chunk pagemask");
+		uint32_t ns = sift_chunk_offsets(chunk, sel, om2), k = 0, r = 0;
+		int ok = 1;
+		for (int w = 0; w < 4; w++)
+			for (uint64_t m = pm[w]; m; m &= m - 1, r++)
+				if (sel[w] & m & -m) ok &= !memcmp(om2 + k++ * 8, om + r * 8, 64);
+		CHECK(ok && ns == k, "chunk offsets");
+		sift_grp g;
+		sift_chunk_grp(chunk, gid, &g, gb);
+		uint32_t nt = sift_grp_tids(&g, NULL, tmp);
+		CHECK(same(tmp, nt, a->t + i, j - i), "chunk grp");
+		/* canonical mask kernels against plain loops */
+		for (uint32_t q = 0; q < np * 8; q++) om2[q] = rnd() & rnd();
+		uint64_t pc = 0;
+		for (uint32_t q = 0; q < np * 8; q++) pc += (uint64_t)__builtin_popcountll(om[q] & om2[q]);
+		sift_offmask_and(om3, om, om2, np);
+		CHECK(sift_offmask_popcount(om3, np) == pc, "offmask and");
+		sift_offmask_or(om3, om, om2, np);
+		sift_offmask_andnot(om3, om3, om2, np);
+		CHECK(sift_offmask_popcount(om3, np) == j - i - pc, "offmask or/andnot");
+		i = j;
+	}
+}
+
+/* top-k and facets on small block ranges against exhaustive float scoring */
+static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
+{
+	static uint32_t rowstart[3000];
+	static float knorm[3000 * 512];
+	static uint8_t tkbuf[SIFT_TOPK_BUF];
+	static sift_hit hits[64], rh[MAXN * 3];
+	static uint8_t ub[3][MAXN];
+	uint64_t base = rnd() % 2 ? 0 : 0xffffffffull - 2999;
+	for (int i = 0; i < 3; i++) gen(&s[i], 1 + rndn(rnd() % 2 ? 300 : 20000), base, 1 + rndn(2999), 1 + rndn(291));
+	for (uint32_t p = 0; p < 3000; p++) rowstart[p] = p * 512;
+	for (uint32_t i = 0; i < 3000 * 512; i++) knorm[i] = 0.3f + (float)(rnd() % 1000) / 400.0f;
+	sift_norms nm = { rowstart, knorm, (uint32_t)base };
+	float w[3] = { 1.5f, 0.7f, 2.25f };
+	/* exact bounds: ub = ceil(255 * tf / (tf + K)) */
+	for (int i = 0; i < 3; i++)
+		for (uint32_t j = 0; j < s[i].n; j++) {
+			float tf = (float)sift_tf_quant(s[i].tf[j]), kn = knorm[rowstart[SIFT_BLK(s[i].t[j]) - base] + SIFT_OFF(s[i].t[j]) - 1];
+			ub[i][j] = (uint8_t)ceilf(255.0f * (tf / (tf + kn)));
+		}
+	for (int conj = 0; conj < 2; conj++) {
+		int nt = 2 + (int)rndn(2), filt = rnd() % 3 == 0;
+		sift_cur c[4];
+		sift_qterm qt[3];
+		static const sift_enc_opts eo[] = { { 0, 0, 0, 1 }, { SIFT_GROUPED, 0, 0, 1 }, { SIFT_LIST, 0, 0, 1 } };
+		for (int i = 0; i < nt; i++) {
+			sift_encode(s[i].t, s[i].tf, ub[i], s[i].n, &eo[rndn(3)], blob[i]);
+			sift_cur_blob(&c[i], blob[i], cbuf[i]);
+			qt[i] = (sift_qterm){ &c[i], w[i], conj };
+		}
+		/* filter: the last set when unused as a term, else a random superset-ish set */
+		set *fs = &s[2];
+		if (filt) sift_cur_tids(&c[3], fs->t, fs->n, cbuf[3]);
+		uint32_t k = 1 + rndn(40);
+		sift_topk_q q = { qt, nt, conj, filt ? &c[3] : NULL, &nm, k };
+		sift_topk_stats st = { 0, 0, 0 };
+		uint32_t nh = sift_topk(&q, hits, tkbuf, &st);
+		/* reference: candidate set, float scores in term order */
+		set u = { ref, NULL, 0 };
+		memcpy(ref, s[0].t, s[0].n * 8ull), u.n = s[0].n;
+		for (int i = 1; i < nt; i++) {
+			uint32_t m = conj ? ref_and(&u, &s[i], tmp) : ref_or(&u, &s[i], tmp);
+			memcpy(ref, tmp, m * 8ull), u.n = m;
+		}
+		if (filt) u.n = ref_and(&u, fs, tmp), memcpy(ref, tmp, u.n * 8ull);
+		for (uint32_t x = 0; x < u.n; x++) {
+			float sc = 0;
+			float kn = knorm[rowstart[SIFT_BLK(ref[x]) - base] + SIFT_OFF(ref[x]) - 1];
+			for (int i = 0; i < nt; i++) {
+				sift_tid *f = bsearch(&ref[x], s[i].t, s[i].n, 8, cmp64);
+				if (f) {
+					float tf = (float)sift_tf_quant(s[i].tf[f - s[i].t]);
+					sc += w[i] * (tf / (tf + kn));
+				}
+			}
+			rh[x] = (sift_hit){ ref[x], sc };
+		}
+		/* sort reference best first: score desc, tid asc */
+		for (uint32_t x = 1; x < u.n; x++) {
+			sift_hit v = rh[x];
+			uint32_t y = x;
+			for (; y && (rh[y - 1].score < v.score || (rh[y - 1].score == v.score && rh[y - 1].tid > v.tid)); y--) rh[y] = rh[y - 1];
+			rh[y] = v;
+			if (x > 4000) break; /* bounded insertion sort; skip check below for huge sets */
+		}
+		if (u.n <= 4001) {
+			uint32_t want = u.n < k ? u.n : k;
+			int ok = nh == want;
+			for (uint32_t x = 0; ok && x < want; x++) ok = hits[x].tid == rh[x].tid && hits[x].score == rh[x].score;
+			CHECK(ok, "topk conj %d nt %d filt %d k %u: %u vs %u", conj, nt, filt, k, nh, want);
+		}
+	}
+	/* facets: counts of s[0] AND each value set */
+	sift_cur qc, vc[2], *vk[2] = { &vc[0], &vc[1] };
+	uint64_t cnt[2] = { 0, 0 };
+	sift_encode(s[0].t, NULL, NULL, s[0].n, NULL, blob[0]);
+	sift_cur_blob(&qc, blob[0], cbuf[0]);
+	sift_cur_tids(&vc[0], s[1].t, s[1].n, cbuf[1]);
+	sift_cur_tids(&vc[1], s[2].t, s[2].n, cbuf[2]);
+	sift_facets(&qc, vk, 2, cnt);
+	CHECK(cnt[0] == ref_and(&s[0], &s[1], tmp) && cnt[1] == ref_and(&s[0], &s[2], tmp), "facets");
+}
+
 int main(int argc, char **argv)
 {
 	int iters = argc > 1 ? atoi(argv[1]) : 3000;
@@ -251,6 +381,8 @@ int main(int argc, char **argv)
 			for (int i = 0; i < 3; i++) gen_shape(&s[i]);
 			if (rnd() % 3 == 0) memcpy(s[1].t, s[0].t, s[0].n * 8), s[1].n = s[0].n; /* identical sets */
 			test_ops(&s[0], &s[1], &s[2], ref, tmp);
+			test_chunks(&s[0], tmp);
+			if (it % 4 == 0) test_topk(s, ref, tmp);
 		}
 		printf("%s: %ld checks, %ld failures\n", sift_isa_name(isa), checks - c0, fails - f0);
 	}
