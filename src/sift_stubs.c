@@ -11,7 +11,6 @@
 
 #include "sift.h"
 #include "sift_am.h"
-#include "sift_kernels.h"
 #include "sift_sql.h"
 
 #define WEAK __attribute__((weak))
@@ -20,11 +19,6 @@
 	ereport(ERROR, \
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
 			 errmsg("sift: %s is not implemented yet", what)))
-
-WEAK void
-sift_kernels_init(void)
-{
-}
 
 WEAK void
 sift_planner_init(void)
