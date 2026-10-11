@@ -1,0 +1,11 @@
+*.o
+*.so
+*.bc
+*.a
+results/
+regression.diffs
+regression.out
+tmp_check/
+.deps/
+bench/data/
+bench/out/
