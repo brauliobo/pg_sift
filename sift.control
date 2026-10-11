@@ -1,0 +1,7 @@
+comment = 'sift: CTID-bitmap full-text search index with BM25 ranking'
+default_version = '1.0'
+module_pathname = '$libdir/sift'
+schema = sift
+relocatable = false
+superuser = true
+trusted = false

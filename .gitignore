@@ -9,3 +9,7 @@ tmp_check/
 .deps/
 bench/data/
 bench/out/
+packaging/src/
+packaging/pkg/
+packaging/sift/
+*.pkg.tar.*

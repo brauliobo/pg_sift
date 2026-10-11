@@ -1,0 +1,24 @@
+EXTENSION = sift
+MODULE_big = sift
+OBJS = $(patsubst %.c,%.o,$(wildcard src/*.c))
+DATA = sift--1.0.sql
+PGFILEDESC = "sift - CTID-bitmap full-text search index"
+
+REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
+REGRESS_OPTS = --inputdir=test --outputdir=test
+
+# Portable baseline: SIMD kernels opt in per function with target attributes.
+# -ffp-contract=off keeps scalar and SIMD scores bit-identical.
+PG_CPPFLAGS = -I$(srcdir)/src
+PG_CFLAGS = -march=x86-64 -mtune=generic -O2 -g -ffp-contract=off
+ifdef SANITIZE
+PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
+SHLIB_LINK += -fsanitize=address,undefined
+endif
+
+# No LLVM bitcode: avoids a clang dependency and -march=native bitcode.
+override with_llvm := no
+
+PG_CONFIG ?= pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)

@@ -1,0 +1,27 @@
+# Builds the committed HEAD of the enclosing sift checkout (uncommitted
+# changes are not packaged): cd packaging && makepkg -f
+pkgname=sift-pg
+pkgver=1.0.r0
+pkgrel=1
+pkgdesc='CTID-bitmap full-text search index with BM25 ranking for PostgreSQL'
+arch=('x86_64')
+license=('PostgreSQL')
+depends=('postgresql>=18' 'postgresql<19')
+makedepends=('git' 'make' 'gcc')
+source=("sift::git+file://${startdir%/packaging}")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd sift
+  printf '1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd sift
+  nice make -j4 USE_PGXS=1
+}
+
+package() {
+  cd sift
+  make USE_PGXS=1 DESTDIR="$pkgdir" install
+}
