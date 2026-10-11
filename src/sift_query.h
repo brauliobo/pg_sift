@@ -8,12 +8,32 @@
  * allocated in CurrentMemoryContext. Syntax errors raise
  * ERRCODE_SYNTAX_ERROR with a 1-based character position; limits raise
  * ERRCODE_PROGRAM_LIMIT_EXCEEDED.
+ *
+ * Analyzed (normalized) trees: boosts live on positive leaves only (the
+ * product of the boosts above them, 1 under NOT); AND/OR are flattened,
+ * have >= 2 children, sorted canonically (positives first, NOTs last);
+ * duplicate leaves merge by adding boosts, duplicate NOTs merge; x AND NOT x
+ * folds to SQ_NOTHING. SQ_NOT appears only under an SQ_AND that has a
+ * positive child; SQ_NOTHING appears only as the root. Leaves are numbered
+ * 0..nleaves-1 in deparse order (leafno).
+ *
+ * Leaf text after analysis: SQ_TERM holds an index term; SQ_PREFIX and
+ * SQ_FUZZY hold folded, unstemmed literals; SQ_WILDCARD holds a folded
+ * pattern where '*' is any run, '?' one character and '\c' the literal c;
+ * SQ_REGEX holds the pattern as written and re, the compiled anchored regex.
+ *
+ * Relaxed (index) semantics: a positive phrase is the AND of its terms, a
+ * phrase under NOT restricts nothing; candidates then need the recheck.
  */
 #ifndef SIFT_QUERY_H
 #define SIFT_QUERY_H
 
 #include "sift.h"
 #include "sift_analyze.h"
+
+#define SIFT_QUERY_MAX_BYTES	(256 * 1024)
+#define SIFT_MAX_BOOST			10000.0
+#define SIFT_MAX_REGEX_BYTES	1000	/* as Elasticsearch's max_regex_length */
 
 typedef enum SiftQKind
 {
@@ -42,6 +62,8 @@ typedef struct SiftQNode
 	int		   *termlens;
 	int			nchild;			/* SQ_AND / SQ_OR / SQ_NOT */
 	struct SiftQNode **child;
+	int			leafno;			/* analyzed leaves: canonical number, else -1 */
+	void	   *re;				/* analyzed SQ_REGEX: compiled regex_t */
 } SiftQNode;
 
 typedef struct SiftQuery
@@ -59,6 +81,13 @@ extern SiftQuery *sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a);
 extern char *sift_query_deparse(const SiftQuery *q);
 
 /*
+ * Does an analyzed expansion leaf (SQ_PREFIX, SQ_WILDCARD, SQ_REGEX,
+ * SQ_FUZZY) or SQ_TERM match one analyzed term? Shared by document
+ * evaluation and dictionary expansion.
+ */
+extern bool sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len);
+
+/*
  * Evaluate an analyzed query against raw document text without an index
  * (operator function, bitmap recheck, phrase verification). Expansion leaves
  * are matched against the document's own tokens.
@@ -66,7 +95,10 @@ extern char *sift_query_deparse(const SiftQuery *q);
 extern bool sift_query_match_doc(const SiftQuery *q, SiftAnalyzer *a,
 								 const char *text, int len);
 
-/* Phrase-only recheck of a candidate already known to contain all terms */
+/*
+ * Recheck of a candidate that satisfies the relaxed query: evaluates exactly
+ * only the parts the index relaxed (subtrees holding phrases).
+ */
 extern bool sift_query_recheck_doc(const SiftQuery *q, SiftAnalyzer *a,
 								   const char *text, int len);
 
