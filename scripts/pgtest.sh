@@ -9,7 +9,7 @@
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #
-# SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56119, default
+# SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56169, default
 # 56100) let several agents run clusters side by side.
 set -euo pipefail
 
@@ -24,7 +24,7 @@ SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 export PGHOST=$SOCK PGPORT=$PORT
 
-(( PORT >= 56100 && PORT <= 56119 )) || { echo "SIFT_PORT must be in 56100-56119" >&2; exit 1; }
+(( PORT >= 56100 && PORT <= 56169 )) || { echo "SIFT_PORT must be in 56100-56169" >&2; exit 1; }
 
 install() {
 	nice make -C "$REPO" -j4 USE_PGXS=1
