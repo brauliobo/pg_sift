@@ -100,20 +100,6 @@ sift_amendscan(IndexScanDesc scan)
 {
 }
 
-WEAK Datum
-sift_match(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("@@>");
-	PG_RETURN_NULL();
-}
-
-WEAK Datum
-sift_match_idx(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("@@>");
-	PG_RETURN_NULL();
-}
-
 /* No simplification and no index condition */
 WEAK Datum
 sift_match_support(PG_FUNCTION_ARGS)
@@ -145,13 +131,6 @@ WEAK Datum
 sift_highlight(PG_FUNCTION_ARGS)
 {
 	NOT_IMPLEMENTED("sift.highlight()");
-	PG_RETURN_NULL();
-}
-
-WEAK Datum
-sift_parse_query(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.parse_query()");
 	PG_RETURN_NULL();
 }
 

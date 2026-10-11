@@ -1,0 +1,154 @@
+-- Document evaluation without an index: sift.match / @@>
+CREATE EXTENSION sift;
+CREATE TABLE d (id int PRIMARY KEY, body text);
+INSERT INTO d VALUES
+	(1, 'The quick brown fox jumps over the lazy dog'),
+	(2, 'A quick brown dog outpaces a quick red fox'),
+	(3, 'Lazy afternoons: e-mail, coffee and quick naps'),
+	(4, 'Brown bears eat honey; the fox is not a bear'),
+	(5, 'жук and жучок crawl on the brown log'),
+	(6, 'Version 2 of x86_64 builds, error-free since 2024'),
+	(7, ''),
+	(8, 'fox fox fox');
+CREATE FUNCTION hits(q text) RETURNS text LANGUAGE sql
+	RETURN (SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '-') FROM d WHERE body @@> q);
+-- every construct, plus the canonical form must match the same rows
+SELECT q, hits(q), hits(q) = hits(sift.parse_query(q)) AS canon_equal FROM (VALUES
+	('fox'), ('FOX'), ('fox dog'), ('fox AND dog'), ('fox OR honey'), ('fox NOT dog'),
+	('fox NOT (dog OR bear)'), ('(fox OR bear) NOT lazy'), ('brown NOT (quick NOT lazy)'),
+	('{honey coffee naps}'), ('"quick brown"'), ('"brown quick"'), ('"quick brown fox"'),
+	('"lazy dog"'), ('"the fox"'), ('"fox fox"'), ('"fox fox fox fox"'), ('e-mail'),
+	('"e mail"'), ('email'), ('"brown" NOT "quick brown"'), ('fox NOT "brown fox"'),
+	('qu*'), ('quick*'), ('br?wn'), ('b*r'), ('b*r*'), ('*ear*'), ('?ox'), ('l?zy'),
+	('/b.*n/'), ('/(fox|dog)/'), ('/[0-9]+/'), ('/x86/'), ('/x86.*/'), ('/(?i)FOX/'),
+	('fox~'), ('fix~1'), ('fxo~1'), ('quack~1'), ('quack~2'), ('qiuck~1'), ('brwn~1'),
+	('bown~1'), ('frown~1'), ('ofx~2'), ('jumped~2'), ('dg~2'), ('do~1'), ('\(lazzy\)~1'), ('x-86~1'),
+	('жук'), ('ж?к'), ('жуч*'), ('жучек~1'), ('жучок~2'),
+	('x86'), ('x86_64'), ('"x86 64"'), ('2024'), ('error-free'),
+	('--'), ('fox --'), ('-- NOT fox'), ('fox NOT fox'), ('fox^0'), ('fox OR NOT dog AND bear'),
+	('{qu* /d.g/ hony~1}'), ('"a quick" OR "the quick"'), ('(a OR the) quick NOT red')
+) v(q);
+             q              |  hits   | canon_equal 
+----------------------------+---------+-------------
+ fox                        | 1,2,4,8 | t
+ FOX                        | 1,2,4,8 | t
+ fox dog                    | 1,2     | t
+ fox AND dog                | 1,2     | t
+ fox OR honey               | 1,2,4,8 | t
+ fox NOT dog                | 4,8     | t
+ fox NOT (dog OR bear)      | 8       | t
+ (fox OR bear) NOT lazy     | 2,4,8   | t
+ brown NOT (quick NOT lazy) | 1,4,5   | t
+ {honey coffee naps}        | 3,4     | t
+ "quick brown"              | 1,2     | t
+ "brown quick"              | -       | t
+ "quick brown fox"          | 1       | t
+ "lazy dog"                 | 1       | t
+ "the fox"                  | 4       | t
+ "fox fox"                  | 8       | t
+ "fox fox fox fox"          | -       | t
+ e-mail                     | 3       | t
+ "e mail"                   | 3       | t
+ email                      | -       | t
+ "brown" NOT "quick brown"  | 4,5     | t
+ fox NOT "brown fox"        | 2,4,8   | t
+ qu*                        | 1,2,3   | t
+ quick*                     | 1,2,3   | t
+ br?wn                      | 1,2,4,5 | t
+ b*r                        | 4       | t
+ b*r*                       | 1,2,4,5 | t
+ *ear*                      | 4       | t
+ ?ox                        | 1,2,4,8 | t
+ l?zy                       | 1,3     | t
+ /b.*n/                     | 1,2,4,5 | t
+ /(fox|dog)/                | 1,2,4,8 | t
+ /[0-9]+/                   | 6       | t
+ /x86/                      | 6       | t
+ /x86.*/                    | 6       | t
+ /(?i)FOX/                  | 1,2,4,8 | t
+ fox~                       | 1,2,4,8 | t
+ fix~1                      | 1,2,4,8 | t
+ fxo~1                      | -       | t
+ quack~1                    | 1,2,3   | t
+ quack~2                    | 1,2,3   | t
+ qiuck~1                    | -       | t
+ brwn~1                     | 1,2,4,5 | t
+ bown~1                     | 1,2,4,5 | t
+ frown~1                    | -       | t
+ ofx~2                      | 6       | t
+ jumped~2                   | 1       | t
+ dg~2                       | -       | t
+ do~1                       | -       | t
+ \(lazzy\)~1                | 1,3     | t
+ x-86~1                     | -       | t
+ жук                        | 5       | t
+ ж?к                        | 5       | t
+ жуч*                       | 5       | t
+ жучек~1                    | 5       | t
+ жучок~2                    | 5       | t
+ x86                        | 6       | t
+ x86_64                     | 6       | t
+ "x86 64"                   | 6       | t
+ 2024                       | 6       | t
+ error-free                 | 6       | t
+ --                         | -       | t
+ fox --                     | 1,2,4,8 | t
+ -- NOT fox                 | -       | t
+ fox NOT fox                | -       | t
+ fox^0                      | 1,2,4,8 | t
+ fox OR NOT dog AND bear    | 1,2,4,8 | t
+ {qu* /d.g/ hony~1}         | 1,2,3,4 | t
+ "a quick" OR "the quick"   | 1,2     | t
+ (a OR the) quick NOT red   | 1       | t
+(70 rows)
+
+-- operator and function agree; NULLs are strict
+SELECT count(*) FROM d WHERE sift.match(body, 'fox') <> (body @@> 'fox');
+ count 
+-------
+     0
+(1 row)
+
+SELECT NULL::text @@> 'fox', 'fox' @@> NULL::text;
+ ?column? | ?column? 
+----------+----------
+          | 
+(1 row)
+
+-- the query is parsed once per scan and per distinct query text
+SELECT q.s, count(*) FROM d, (VALUES ('fox'), ('quick'), ('"quick brown"')) q(s)
+	WHERE d.body @@> q.s GROUP BY q.s ORDER BY q.s;
+       s       | count 
+---------------+-------
+ "quick brown" |     2
+ fox           |     4
+ quick         |     3
+(3 rows)
+
+-- errors surface at execution
+SELECT count(*) FROM d WHERE body @@> 'fox OR';
+ERROR:  sift query: expected a term after OR, found end of query at position 7
+SELECT 'abc' @@> '/a(/';
+ERROR:  sift query: invalid regular expression: parentheses () not balanced at position 1
+-- query literals fold like the index: case, accents, compatibility forms
+SELECT 'Café Straße' @@> 'CAFE strasse', 'Café' @@> 'cafè', 'Café' @@> 'CAF?', 'Ｃａｆé' @@> 'café*',
+	   'Crème brûlée' @@> '"creme brulee"', 'Crème' @@> 'crãme~1', 'Crème' @@> 'krème~1', 'naïve' @@> '/na.ve/';
+ ?column? | ?column? | ?column? | ?column? | ?column? | ?column? | ?column? | ?column? 
+----------+----------+----------+----------+----------+----------+----------+----------
+ t        | t        | t        | t        | t        | t        | f        | t
+(1 row)
+
+-- long documents and terms
+SELECT repeat('lorem ipsum ', 100000) || 'needle' @@> '"ipsum needle"',
+	   repeat('lorem ipsum ', 100000) @@> 'needle',
+	   repeat('z', 1000) @@> repeat('z', 255),
+	   repeat('z', 1000) @@> (repeat('z', 300) || '*'),
+	   repeat('z', 1000) @@> (repeat('z', 254) || '?');
+ ?column? | ?column? | ?column? | ?column? | ?column? 
+----------+----------+----------+----------+----------
+ t        | f        | t        | t        | t
+(1 row)
+
+DROP FUNCTION hits;
+DROP TABLE d;
+DROP EXTENSION sift;
