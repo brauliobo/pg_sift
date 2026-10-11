@@ -234,13 +234,19 @@ size_t sift_encode(const sift_tid *t, const uint8_t *tf, const uint8_t *ub, uint
 	size_t ls = o->kind == SIFT_GROUPED ? 0 : list_size(t, n);
 	int kind = o->kind ? o->kind : (double)gs <= (o->bias > 0 ? o->bias : 1.0) * (double)ls ? SIFT_GROUPED : SIFT_LIST;
 	int wtf = o->tf && tf;
-	if (!out) return (kind == SIFT_LIST ? ls : gs) + (wtf ? (kind == SIFT_GROUPED ? ng : 0) + (n + 1) / 2 : 0);
+	if (!out) return (kind == SIFT_LIST ? ls : gs) + (wtf ? (kind == SIFT_GROUPED ? 9 * ng : 1) + (n + 1) / 2 : 0);
 	uint8_t *p;
 	out[0] = (uint8_t)(kind | (wtf ? SIFT_F_TF << 4 : 0));
 	if (kind == SIFT_LIST) {
 		uint32_t ob = list_ob(t, n);
 		out[1] = (uint8_t)ob;
-		p = write_list(t, n, ob, put_varint(out + 2, n));
+		p = put_varint(out + 2, n);
+		if (wtf) {
+			uint32_t m = 0;
+			for (uint32_t i = 0; i < n; i++) m = (ub ? ub[i] : 255u) > m ? (ub ? ub[i] : 255u) : m;
+			*p++ = (uint8_t)m;
+		}
+		p = write_list(t, n, ob, p);
 	} else {
 		out[1] = out[2] = out[3] = 0;
 		st32(out + 4, n);
@@ -259,14 +265,21 @@ size_t sift_encode(const sift_tid *t, const uint8_t *tf, const uint8_t *ub, uint
 		}
 		st32(poff + 4 * ng, (uint32_t)(p - payload));
 		st32(base + 4 * ng, n);
-		if (wtf)
-			for (uint32_t i = 0; i < n;) {
-				uint32_t j = i, m = 0;
-				for (; j < n && SIFT_GID(t[j]) == SIFT_GID(t[i]); j++)
-					if ((ub ? ub[j] : 255u) > m) m = ub ? ub[j] : 255u;
-				*p++ = (uint8_t)m;
+		if (wtf) {
+			uint8_t *bq = p + ng;
+			for (uint32_t i = 0; i < n; p++, bq += 8) {
+				uint32_t j = i, m = 0, bm[16] = { 0 };
+				for (; j < n && SIFT_GID(t[j]) == SIFT_GID(t[i]); j++) {
+					uint32_t u = ub ? ub[j] : 255u, b = (SIFT_BLK(t[j]) & (SIFT_GROUP_PAGES - 1)) / 16;
+					m = u > m ? u : m, bm[b] = u > bm[b] ? u : bm[b];
+				}
+				*p = (uint8_t)m;
+				for (int b = 0; b < 16; b += 2)
+					bq[b / 2] = (uint8_t)((m ? (15 * bm[b] + m - 1) / m : 0) | (m ? (15 * bm[b + 1] + m - 1) / m : 0) << 4);
 				i = j;
 			}
+			p = bq;
+		}
 	}
 	if (wtf) p = write_tf(tf, n, p);
 	return (size_t)(p - out);
@@ -341,7 +354,9 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	c->gr.i = i;
 	uint32_t key = c->gr.key[i], w = key & 0x7f, base = c->gr.base[i], n = c->gr.base[i + 1] - base;
 	const uint8_t *p = c->gr.payload + c->gr.poff[i];
-	if (i + 1 < c->gr.ng) __builtin_prefetch(c->gr.payload + c->gr.poff[i + 1]);
+	/* software prefetch 4 groups ahead: groups are small and visited in order */
+	if (i + 4 < c->gr.ng)
+		for (uint32_t q = c->gr.poff[i + 4], e = c->gr.poff[i + 5]; q < e; q += 64) __builtin_prefetch(c->gr.payload + q);
 	if (!(key & 0x80)) {
 		uint64_t pages[4];
 		memcpy(pages, p, 32);
@@ -445,7 +460,7 @@ static const sift_grp *ls_seek(sift_cur *c, uint32_t target)
 static void cur_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), uint8_t *buf)
 {
 	memset(c, 0, offsetof(sift_cur, gr));
-	c->seek = seek, c->buf = buf;
+	c->seek = seek, c->buf = buf, c->ub1 = 255;
 }
 
 void sift_cur_tids(sift_cur *c, const sift_tid *t, uint32_t n, uint8_t *buf)
@@ -465,6 +480,7 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
 		cur_init(c, ls_seek, buf);
 		uint64_t nn;
 		c->ls.t = NULL, c->ls.p = get_varint(blob + 2, &nn), c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
+		if (wtf) c->ub1 = *c->ls.p++;
 		c->ls.ob = blob[1], c->ls.w = sift_w_for(1u << blob[1]), c->ls.prev = 0;
 		if (wtf) {
 			const uint8_t *p = c->ls.p;
@@ -485,7 +501,7 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
 	c->gr.poff = c->gr.key + ng;
 	c->gr.base = c->gr.poff + ng + 1;
 	c->gr.payload = (const uint8_t *)(c->gr.base + ng + 1);
-	if (wtf) c->ub = c->gr.payload + c->gr.poff[ng], c->tf = c->ub + ng;
+	if (wtf) c->ub = c->gr.payload + c->gr.poff[ng], c->blk = c->ub + ng, c->tf = c->blk + 8 * ng;
 }
 
 /* ---- operator cursors ---- */
@@ -715,7 +731,7 @@ size_t sift_keylist_encode(const sift_tid *t, uint32_t n, uint8_t *out)
 uint32_t sift_keylist_decode(const uint8_t *blob, sift_tid *out)
 {
 	uint64_t n, prev = 0;
-	const uint8_t *p = get_varint(blob + 2, &n);
+	const uint8_t *p = get_varint(blob + 2, &n) + (blob[0] >> 4 & SIFT_F_TF);
 	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 		ef_blk b;
 		ef_hdr(p, prev, blk_cnt((uint32_t)n, i), &b);
@@ -745,16 +761,23 @@ uint32_t sift_grp_score(const sift_grp *res, const sift_qterm *t, int nt, const 
 	for (int j = 0; j < nt; j++) {
 		sift_cur *c = t[j].cur;
 		if (c->state != 1 || c->g.gid != res->gid) continue;
-		if (t[j].conj) {
+		if (t[j].rel == SIFT_REL_SUPERSET) {
 			sift_k->ranks(&c->g, res, rank);
 			for (uint32_t i = 0; i < n; i++) tf[i] = (float)sift_tf_at(c, rank[i]);
 			sift_k->bm25(score, kn, tf, NULL, n, t[j].w);
 			continue;
 		}
-		sift_grp common;
-		sift_k->and2(res, &c->g, NULL, &common, gbuf);
-		if (pages_empty(common.pages)) continue;
-		uint32_t m = sift_k->ranks(&c->g, &common, rank);
+		/* positions in res of the term's postings that res holds; their tf ranks in the term */
+		sift_grp common = c->g;
+		uint32_t m;
+		if (t[j].rel == SIFT_REL_ANY) {
+			sift_k->and2(res, &c->g, NULL, &common, gbuf);
+			if (pages_empty(common.pages)) continue;
+			m = sift_k->ranks(&c->g, &common, rank);
+		} else {
+			m = c->g.n ? c->g.n : (uint32_t)sift_grp_count(&c->g);
+			for (uint32_t i = 0; i < m; i++) rank[i] = c->g.base + i;
+		}
 		sift_k->ranks(res, &common, pos);
 		for (uint32_t i = 0; i < m; i++) tf[i] = (float)sift_tf_at(c, rank[i]), pos[i] -= res->base;
 		sift_k->bm25(score, kn, tf, pos, m, t[j].w);
@@ -801,6 +824,22 @@ static int or_align(const sift_topk_q *q, uint32_t *target)
 	}
 }
 
+/* page mask of the 16-page blocks whose summed bound can still reach theta */
+static int blk_mask(const sift_topk_q *q, uint32_t gid, float theta, uint64_t m[4])
+{
+	float ubb[16] = { 0 };
+	for (int i = 0; i < q->nt; i++) {
+		sift_cur *c = q->t[i].cur;
+		if (c->state != 1 || c->g.gid != gid) continue;
+		float w = q->t[i].w / 255.0f;
+		for (int b = 0; b < 16; b++) ubb[b] += w * sift_blk_ub(c, b);
+	}
+	memset(m, 0, 32);
+	for (int b = 0; b < 16; b++)
+		if (ubb[b] * 1.0001f >= theta) m[b / 4] |= 0xffffull << (b % 4 * 16);
+	return !pages_empty(m);
+}
+
 uint32_t sift_topk(const sift_topk_q *q, sift_hit *hits, uint8_t *buf, sift_topk_stats *st)
 {
 	float *score = (float *)buf;
@@ -808,25 +847,34 @@ uint32_t sift_topk(const sift_topk_q *q, sift_hit *hits, uint8_t *buf, sift_topk
 	uint8_t *sbuf = (uint8_t *)(tids + SIFT_GRP_MAXTIDS), *gb = sbuf + SIFT_SCORE_BUF;
 	sift_cur *cur[65];
 	uint32_t nh = 0, nc = 0;
-	for (int i = 0; i < q->nt; i++) cur[nc++] = q->t[i].cur;
+	for (int i = 0; i < q->nt; i++) {
+		cur[nc++] = q->t[i].cur;
+		q->t[i].rel = q->conj ? SIFT_REL_SUPERSET : q->filter ? SIFT_REL_ANY : SIFT_REL_SUBSET;
+	}
 	if (q->filter) cur[nc++] = q->filter;
 	for (uint32_t target = 0;; target++) {
-		uint64_t m[4];
+		uint64_t m[4], bm[4];
 		if (q->conj ? (nc > 1 ? !and_align(cur, (int)nc, &target, m) : !sift_seek(cur[0], target)) : !or_align(q, &target)) break;
-		if (q->conj && nc == 1) target = cur[0]->g.gid;
+		if (q->conj && nc == 1) target = cur[0]->g.gid, memcpy(m, cur[0]->g.pages, 32);
 		st->groups++;
-		float ub = 0;
-		for (int i = 0; i < q->nt; i++) {
-			sift_cur *c = q->t[i].cur;
-			if (c->state == 1 && c->g.gid == target) ub += q->t[i].w * ((float)sift_grp_ub(c) / 255.0f);
-		}
-		if (nh == q->k && ub * 1.0001f < hits[0].score) {
-			st->skipped++;
-			continue;
+		int full = nh == q->k && !q->exhaustive;
+		if (full) {
+			float ub = 0;
+			for (int i = 0; i < q->nt; i++) {
+				sift_cur *c = q->t[i].cur;
+				if (c->state == 1 && c->g.gid == target) ub += q->t[i].w * ((float)sift_grp_ub(c) / 255.0f);
+			}
+			if (ub * 1.0001f < hits[0].score || !blk_mask(q, target, hits[0].score, bm)) {
+				st->skipped++;
+				continue;
+			}
 		}
 		sift_grp res;
 		if (q->conj) {
+			if (full)
+				for (int j = 0; j < 4; j++) m[j] &= bm[j];
 			res = cur[0]->g;
+			if (nc == 1) sift_k->and2(&res, &res, m, &res, gb);
 			for (uint32_t i = 1; i < nc && !pages_empty(res.pages); i++) sift_k->and2(&res, &cur[i]->g, i == 1 ? m : res.pages, &res, gb);
 		} else {
 			int nb = 0, first = 1;
@@ -836,9 +884,12 @@ uint32_t sift_topk(const sift_topk_q *q, sift_hit *hits, uint8_t *buf, sift_topk
 				if (first) res = c->g, first = 0;
 				else sift_k->or2(&res, &c->g, &res, gb + (nb++ & 1) * SIFT_GRP_BYTES);
 			}
-			if (q->filter) sift_k->and2(&res, &q->filter->g, NULL, &res, gb + 2 * SIFT_GRP_BYTES);
+			if (q->filter) sift_k->and2(&res, &q->filter->g, full ? bm : NULL, &res, gb + 2 * SIFT_GRP_BYTES);
+			else if (full) sift_k->and2(&res, &res, bm, &res, gb + 2 * SIFT_GRP_BYTES);
+			for (int i = 0; i < q->nt; i++) q->t[i].rel = q->filter || full ? SIFT_REL_ANY : SIFT_REL_SUBSET;
 		}
 		if (pages_empty(res.pages)) continue;
+		res.base = 0;
 		uint32_t n = sift_grp_score(&res, q->t, q->nt, q->nm, score, tids, sbuf);
 		st->scored += n;
 		for (uint32_t i = 0; i < n; i++)

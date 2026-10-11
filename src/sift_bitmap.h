@@ -10,7 +10,7 @@
  *
  * Encoded term blob (little endian, 4-byte aligned start):
  *   u8 kind | flags << 4, then
- *   LIST:    u8 ob, varint n, Elias-Fano blocks of 256 postings over
+ *   LIST:    u8 ob, varint n, [u8 max ub if tf], Elias-Fano blocks of 256 postings over
  *            key = blk << ob | (off - 1): varint (x0 - previous block's last
  *            key), varint (u - 1), cnt * l low bits, high-bits bitmap of
  *            cnt + ((u - 1) >> l) bits; l = floor(log2(u / cnt))
@@ -19,7 +19,9 @@
  *            BITMAP payload: u64 pages[4], popcount(pages) * w bytes
  *            ARRAY payload:  u16 (page << 8 | off - 1) if w <= 32, else
  *                            u32 (page << 16 | off - 1)
- *   tf (flags & SIFT_F_TF): GROUPED adds u8 ub[ng] (max per-posting bound); both add n tf nibbles
+ *   tf (flags & SIFT_F_TF): GROUPED adds u8 ub[ng] (max per-posting bound) and
+ *            u8 blk[ng][8]: per 16-page block, nibble q = ceil(15 * block max / ub);
+ *            both add n tf nibbles
  *            (posting order, low nibble first, 1..15 saturating).
  * Singletons (df == 1) are meant to live inline in the dictionary: open them
  * with sift_cur_tids().
@@ -75,7 +77,8 @@ struct sift_cur {
 	sift_grp g;
 	int state;           /* 0 unpositioned, 1 positioned, 2 exhausted */
 	uint8_t *buf;        /* SIFT_CUR_BUF bytes, caller owned */
-	const uint8_t *tf, *ub;
+	const uint8_t *tf, *ub, *blk;  /* ub: per-group bounds, blk: 16-page block nibbles (GROUPED) */
+	uint32_t ub1;               /* term bound (LIST), 255 if unknown */
 	union {
 		struct { const uint8_t *payload; const uint32_t *key, *poff, *base; uint32_t ng, i; } gr;
 		struct {
@@ -134,7 +137,12 @@ uint64_t sift_popcount(const uint8_t *p, size_t n);
 /* term frequency: rank inside src's term of each posting of sub (a subset of src), in heap order */
 uint32_t sift_grp_ranks(const sift_grp *src, const sift_grp *sub, uint32_t *rank);
 static inline uint32_t sift_tf_at(const sift_cur *c, uint32_t rank) { return c->tf[rank >> 1] >> ((rank & 1) * 4) & 15; }
-static inline uint32_t sift_grp_ub(const sift_cur *c) { return c->ub ? c->ub[c->gr.i] : 255; }
+static inline uint32_t sift_grp_ub(const sift_cur *c) { return c->ub ? c->ub[c->gr.i] : c->ub1; }
+/* bound of 16-page block b (0..15) of the current group, in ub units (0..255) */
+static inline float sift_blk_ub(const sift_cur *c, int b)
+{
+	return c->blk ? (float)c->ub[c->gr.i] * (float)(c->blk[c->gr.i * 8 + b / 2] >> (b & 1) * 4 & 15) / 15.0f : (float)sift_grp_ub(c);
+}
 
 /*
  * Chunk API: one term x one 256-page group as a
@@ -173,8 +181,9 @@ typedef struct {
 typedef struct {
 	sift_cur *cur;       /* source cursor over a blob with tf (SIFT_F_TF) */
 	float w;
-	int conj;            /* the term contains every result posting (AND operand) */
+	int rel;             /* SIFT_REL_*: how the term relates to the result group */
 } sift_qterm;
+enum { SIFT_REL_ANY, SIFT_REL_SUPERSET /* AND operand */, SIFT_REL_SUBSET /* OR operand, no filter */ };
 
 #define SIFT_SCORE_BUF ((size_t)SIFT_GRP_MAXTIDS * 20 + SIFT_CUR_BUF)
 /* scores and tids of res in heap order; terms whose cursor is not on res->gid contribute 0 */
@@ -189,11 +198,12 @@ uint32_t sift_grp_score(const sift_grp *res, const sift_qterm *t, int nt, const 
 typedef struct { sift_tid tid; float score; } sift_hit;
 typedef struct { uint64_t groups, skipped, scored; } sift_topk_stats;
 typedef struct {
-	sift_qterm *t;
-	int nt, conj;        /* conj: AND of all terms, else OR */
+	sift_qterm *t;       /* rel is set by sift_topk */
+	int nt, conj;        /* conj: AND of all terms, else OR; sets every term's rel */
 	sift_cur *filter;
 	const sift_norms *nm;
 	uint32_t k;
+	int exhaustive;      /* disable bound skipping (reference runs) */
 } sift_topk_q;
 #define SIFT_TOPK_BUF (SIFT_SCORE_BUF + (size_t)SIFT_GRP_MAXTIDS * 12 + 2 * SIFT_CUR_BUF)
 uint32_t sift_topk(const sift_topk_q *q, sift_hit *hits, uint8_t *buf, sift_topk_stats *st);  /* hits sorted best first */

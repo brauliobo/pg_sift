@@ -17,8 +17,18 @@ $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 $(OUT)/test: test.c $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) -lm
 
-$(OUT)/bench: bench.c data.h $(OBJ) $(HDR)
-	$(CC) $(CFLAGS) -o $@ bench.c $(OBJ) -lm
+# optional CRoaring amalgamation (roaring.c, roaring.h) for comparisons
+ROARING ?= $(OUT)/croaring
+ifneq ($(wildcard $(ROARING)/roaring.c),)
+ROAR_CFLAGS = -DHAVE_ROARING -I$(ROARING)
+ROAR_OBJ    = $(OUT)/obj/roaring.o
+$(ROAR_OBJ): $(ROARING)/roaring.c
+	@mkdir -p $(OUT)/obj
+	$(CC) -O2 -g -c -o $@ $<
+endif
+
+$(OUT)/bench: bench.c data.h baselines.h $(OBJ) $(ROAR_OBJ) $(HDR)
+	$(CC) $(CFLAGS) $(ROAR_CFLAGS) -o $@ bench.c $(OBJ) $(ROAR_OBJ) -lm
 
 $(OUT)/corpus: corpus.c
 	$(CC) $(CFLAGS) -o $@ $<
