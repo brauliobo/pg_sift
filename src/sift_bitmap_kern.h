@@ -19,7 +19,11 @@ typedef struct {
 	uint64_t (*count_mask)(const sift_grp *g, const uint64_t *mask);
 	uint32_t (*tids)(const sift_grp *g, const uint64_t *mask, sift_tid *out);
 	uint32_t (*ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *rank);
+	void (*vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t nwords, int op);
+	void (*bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w);
 } sift_kernels;
+
+enum { SIFT_VOP_AND, SIFT_VOP_OR, SIFT_VOP_ANDNOT };
 
 extern const sift_kernels sift_kern_scalar, sift_kern_avx2, sift_kern_avx512;
 extern const sift_kernels *sift_k;
@@ -227,22 +231,43 @@ static uint64_t KFN(count_mask)(const sift_grp *g, const uint64_t *m)
 	return c;
 }
 
-static uint32_t KFN(tids)(const sift_grp *g, const uint64_t *m, sift_tid *out)
+SIFT_INLINE uint32_t KFN(emit)(const uint8_t *x, uint32_t w, uint64_t blk, sift_tid *out)
 {
-	uint32_t r = 0, n = 0, w = g->w;
+	uint32_t n = 0;
+	for (uint32_t q = 0; q < w; q += 8)
+		for (uint64_t v = w < 8 ? sift_ldn(x, w) : sift_ld8(x + q); v; v &= v - 1)
+			out[n++] = blk | (q * 8 + (uint32_t)__builtin_ctzll(v) + 1);
+	return n;
+}
+
+SIFT_INLINE uint32_t KFN(tids_w)(const sift_grp *g, const uint64_t *m, sift_tid *out, const uint32_t w)
+{
+	uint32_t r = 0, n = 0;
+	uint64_t gbase = (uint64_t)g->gid << (SIFT_GROUP_SHIFT + 16);
 	for (int j = 0; j < 4; j++) {
-		uint64_t p = g->pages[j];
-		for (uint64_t mm = m ? p & m[j] : p; mm; mm &= mm - 1) {
-			uint64_t below = (mm & -mm) - 1;
-			const uint8_t *x = g->off + (r + KFN(pc)(p & below)) * w;
-			uint64_t blk = ((uint64_t)g->gid << SIFT_GROUP_SHIFT | (uint32_t)(j * 64 + KFN(pc)(below))) << 16;
-			for (uint32_t q = 0; q < w; q += 8)
-				for (uint64_t v = w < 8 ? sift_ldn(x, w) : sift_ld8(x + q); v; v &= v - 1)
-					out[n++] = blk | (q * 8 + (uint32_t)__builtin_ctzll(v) + 1);
+		uint64_t p = g->pages[j], mm = m ? p & m[j] : p;
+		if (mm == p)
+			for (; mm; mm &= mm - 1, r++)
+				n += KFN(emit)(g->off + r * w, w, gbase | (uint64_t)(j * 64 + __builtin_ctzll(mm)) << 16, out + n);
+		else {
+			for (; mm; mm &= mm - 1)
+				n += KFN(emit)(g->off + (r + KFN(pc)(p & ((mm & -mm) - 1))) * w, w,
+					       gbase | (uint64_t)(j * 64 + __builtin_ctzll(mm)) << 16, out + n);
+			r += KFN(pc)(p);
 		}
-		r += KFN(pc)(p);
 	}
 	return n;
+}
+
+static uint32_t KFN(tids)(const sift_grp *g, const uint64_t *m, sift_tid *out)
+{
+	switch (g->w) {
+	case 1: return KFN(tids_w)(g, m, out, 1);
+	case 2: return KFN(tids_w)(g, m, out, 2);
+	case 4: return KFN(tids_w)(g, m, out, 4);
+	case 8: return KFN(tids_w)(g, m, out, 8);
+	default: return KFN(tids_w)(g, m, out, g->w);
+	}
 }
 
 static uint32_t KFN(ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *rank)
@@ -269,7 +294,26 @@ static uint32_t KFN(ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *r
 	return n;
 }
 
+static void KFN(vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t n, int op)
+{
+	switch (op) {
+	case SIFT_VOP_AND: for (size_t i = 0; i < n; i++) o[i] = a[i] & b[i]; break;
+	case SIFT_VOP_OR: for (size_t i = 0; i < n; i++) o[i] = a[i] | b[i]; break;
+	default: for (size_t i = 0; i < n; i++) o[i] = a[i] & ~b[i];
+	}
+}
+
+/* score[pos[i]] (or score[i]) += w * (tf[i] / (tf[i] + kn[...])): the exact BM25 op order */
+static void KFN(bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
+{
+	if (pos)
+		for (uint32_t i = 0; i < n; i++) score[pos[i]] += w * (tf[i] / (tf[i] + kn[pos[i]]));
+	else
+		for (uint32_t i = 0; i < n; i++) score[i] += w * (tf[i] / (tf[i] + kn[i]));
+}
+
 #define SIFT_KERN_TABLE                                                                                       \
-	{ KFN(popcount), KFN(and2), KFN(or2), KFN(andnot), KFN(and_count), KFN(count_mask), KFN(tids), KFN(ranks) }
+	{ KFN(popcount), KFN(and2), KFN(or2), KFN(andnot), KFN(and_count), KFN(count_mask), KFN(tids), KFN(ranks), \
+	  KFN(vop), KFN(bm25) }
 
 #endif

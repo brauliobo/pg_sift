@@ -1,7 +1,7 @@
 # Standalone codec harness.  Build: nice make -j4; tests: make test; data: make data
 CC      ?= gcc
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -Wall -Wextra -Wno-unused-function
+CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function
 SRC      = ../../src
 LIB      = $(SRC)/sift_bitmap.c $(SRC)/sift_bitmap_scalar.c $(SRC)/sift_bitmap_avx2.c $(SRC)/sift_bitmap_avx512.c
 HDR      = $(SRC)/sift_bitmap.h $(SRC)/sift_bitmap_kern.h
@@ -15,7 +15,7 @@ $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/test: test.c $(OBJ) $(HDR)
-	$(CC) $(CFLAGS) -o $@ test.c $(OBJ)
+	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) -lm
 
 $(OUT)/bench: bench.c data.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ bench.c $(OBJ) -lm

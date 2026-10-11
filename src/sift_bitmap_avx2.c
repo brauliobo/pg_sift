@@ -63,8 +63,22 @@ static uint64_t popcount_avx2_lut(const uint8_t *p, size_t n)
 
 static uint64_t popcount_avx2_dispatch(const uint8_t *p, size_t n) { return n >= 64 ? popcount_avx2_lut(p, n) : popcount_avx2(p, n); }
 
+static void bm25_v(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
+{
+	uint32_t i = 0;
+	if (!pos) {
+		__m256 vw = _mm256_set1_ps(w);
+		for (; i + 8 <= n; i += 8) {
+			__m256 t = _mm256_loadu_ps(tf + i);
+			__m256 s = _mm256_mul_ps(vw, _mm256_div_ps(t, _mm256_add_ps(t, _mm256_loadu_ps(kn + i))));
+			_mm256_storeu_ps(score + i, _mm256_add_ps(_mm256_loadu_ps(score + i), s));
+		}
+	}
+	bm25_avx2(score + (pos ? 0 : i), kn + (pos ? 0 : i), tf + i, pos ? pos + i : NULL, n - i, w);
+}
+
 const sift_kernels sift_kern_avx2 = { popcount_avx2_dispatch, and2_avx2, or2_avx2, andnot_avx2, and_count_avx2,
-				      count_mask_avx2, tids_avx2, ranks_avx2 };
+				      count_mask_avx2, tids_avx2, ranks_avx2, vop_avx2, bm25_v };
 
 #if defined(__clang__)
 #pragma clang attribute pop
