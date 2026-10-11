@@ -1,0 +1,37 @@
+CREATE EXTENSION sift;
+SELECT amname, amtype FROM pg_am WHERE amname = 'sift';
+ amname | amtype 
+--------+--------
+ sift   | i
+(1 row)
+
+SELECT oprnamespace::regnamespace, oprname, oprleft::regtype, oprright::regtype
+  FROM pg_operator WHERE oprname = '@@>';
+ oprnamespace | oprname | oprleft | oprright 
+--------------+---------+---------+----------
+ pg_catalog   | @@>     | text    | text
+(1 row)
+
+SELECT opcname, opcdefault FROM pg_opclass
+  WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift');
+ opcname  | opcdefault 
+----------+------------
+ text_ops | t
+(1 row)
+
+CREATE TABLE docs (id int, body text);
+CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (b = 2);
+ERROR:  value 2 out of bounds for option "b"
+DETAIL:  Valid values are between "0.000000" and "1.000000".
+CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (k1 = 1.5, stemmer = 'english_stem');
+ERROR:  sift: index build is not implemented yet
+SET sift.simd = scalar;
+SHOW sift.simd;
+ sift.simd 
+-----------
+ scalar
+(1 row)
+
+RESET sift.simd;
+DROP TABLE docs;
+DROP EXTENSION sift;
