@@ -46,7 +46,11 @@ CREATE FUNCTION sift.highlight(doc text, query text,
 							   index regclass DEFAULT NULL) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_highlight' LANGUAGE C STABLE PARALLEL SAFE;
 
+-- Analyzer of index (or the default one), overridden by non-NULL options;
+-- offsets are 0-based character offsets [start, end) into doc.
 CREATE FUNCTION sift.tokenize(doc text, index regclass DEFAULT NULL,
+							  stemmer text DEFAULT NULL, case_folding bool DEFAULT NULL,
+							  accent_folding bool DEFAULT NULL,
 							  OUT token text, OUT pos int4,
 							  OUT start_offset int4, OUT end_offset int4)
 	RETURNS SETOF record
