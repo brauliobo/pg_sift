@@ -1,0 +1,83 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1r s1f s2m s1rest s1check s1c s2check
+promote
+-------
+      0
+(1 row)
+
+step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_merge WHERE body @@> 'base OR second OR third' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 50) AS fetched;
+fetched
+-------
+     50
+(1 row)
+
+step s2m: SELECT sift.merge('iso_merge_idx') >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_merge', 'base OR second OR third') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2check: SELECT iso_agree('iso_merge', 'base OR second OR third') AS agree, iso_agree('iso_merge', 'third NOT second') AS agree_not, iso_verify('iso_merge_idx') AS verified;
+agree|agree_not|verified
+-----+---------+--------
+t    |t        |t       
+(1 row)
+
+
+starting permutation: s1r s1f s2d s2v s2m s2v s1rest s1check s1c s2v s2check
+promote
+-------
+      0
+(1 row)
+
+step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_merge WHERE body @@> 'base OR second OR third' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 50) AS fetched;
+fetched
+-------
+     50
+(1 row)
+
+step s2d: DELETE FROM iso_merge WHERE id % 4 = 0;
+step s2v: VACUUM iso_merge;
+step s2m: SELECT sift.merge('iso_merge_idx') >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s2v: VACUUM iso_merge;
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_merge', 'base OR second OR third') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2v: VACUUM iso_merge;
+step s2check: SELECT iso_agree('iso_merge', 'base OR second OR third') AS agree, iso_agree('iso_merge', 'third NOT second') AS agree_not, iso_verify('iso_merge_idx') AS verified;
+agree|agree_not|verified
+-----+---------+--------
+t    |t        |t       
+(1 row)
+
