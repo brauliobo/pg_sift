@@ -33,7 +33,7 @@ typedef struct SiftMutDoc
 {
 	ItemPointerData tid;
 	uint16		dl;
-	uint16		nterms;
+	uint32		nterms;			/* may exceed 64k distinct terms */
 	bool		deleted;
 	const uint32 *hash;
 	const uint8 *tf;
