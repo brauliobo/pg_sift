@@ -31,6 +31,7 @@ checks then catch in assert-enabled builds. The standalone harnesses below use
 |---|---|---|
 | `canary` | tests | ASan pipeline self-test (server must be the ASan flavor) |
 | `codec` | codec | `tools/codec` randomized property tests against sorted-array references, at every ISA level |
+| `blob` | hardening | `tools/codec/fuzz`: bit-flipped, truncated and spliced term blobs; `sift_blob_check` must never read outside the blob, and every accepted blob must decode to the same strictly increasing tids on all ISAs, through the AND/OR/ANDNOT cursors, seeks and counts. `fuzz -s SEED -i ITER` replays one iteration |
 | `kernels` | kernels | `tools/kernels` randomized and exhaustive equivalence of SIMD and scalar kernels (`make SANITIZE=1`) |
 | `analyze` | analyze | `tools/analyze/harness fuzz N SEED`: random text through the tokenizer, checking its invariants |
 | `query` | query | `tools/query/gen.py --mode fuzz` corpus through the standalone parser harness, then through the server (`tools/query/fuzz.sql`: fixpoint deparse, same matches) |

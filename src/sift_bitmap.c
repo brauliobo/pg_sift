@@ -160,6 +160,22 @@ static uint64_t popcount_n(const uint8_t *p, size_t n)
 	return c;
 }
 
+/* the cnt postings of one EF block are strictly increasing, start at 0 and end at u - 1 */
+static int ef_block_ok(const uint8_t *lows, const uint8_t *highs, size_t nhigh, uint64_t u, uint32_t cnt, uint32_t l)
+{
+	uint64_t prev = 0;
+	uint32_t k = 0;
+	for (size_t byte = 0; byte < nhigh; byte++)
+		for (unsigned bits = highs[byte]; bits; bits &= bits - 1, k++) {
+			uint64_t pos = (uint64_t)k * l, low = 0;
+			for (uint32_t b = 0; b < l; b++, pos++) low |= (uint64_t)(lows[pos >> 3] >> (pos & 7) & 1) << b;
+			uint64_t v = ((uint64_t)byte * 8 + __builtin_ctz(bits) - k) << l | low;
+			if (k ? v <= prev : v != 0) return 0;
+			prev = v;
+		}
+	return k == cnt && prev == u - 1;
+}
+
 static const char *check_list(const uint8_t *blob, size_t len)
 {
 	const uint8_t *p = blob + 2, *end = blob + len;
@@ -172,14 +188,21 @@ static const char *check_list(const uint8_t *blob, size_t len)
 		uint64_t d, u1;
 		uint32_t cnt = blk_cnt((uint32_t)n, (uint32_t)i), l;
 		if (!(p = get_varint_n(p, end, &d)) || !(p = get_varint_n(p, end, &u1))) return "LIST block header overruns the blob";
-		if (d >= lim || u1 >= lim || u1 + 1 < cnt || prev + d + u1 >= lim) return "LIST block range is out of bounds";
+		if (d >= lim || u1 >= lim || u1 + 1 < cnt || prev + d + u1 >= lim || (i && d == 0)) return "LIST block range is out of bounds";
 		l = ef_l(u1 + 1, cnt);
 		size_t lows = ef_lows(cnt, l), highs = ef_highs(u1 + 1, cnt, l);
 		if ((size_t)(end - p) < lows + highs) return "LIST block overruns the blob";
 		if (popcount_n(p + lows, highs) != cnt) return "LIST block high bits do not count its postings";
+		if (!ef_block_ok(p, p + lows, highs, u1 + 1, cnt, l)) return "LIST block postings are not strictly increasing";
 		p += lows + highs, prev += d + u1;
 	}
 	return wtf && (size_t)(end - p) < (n + 1) / 2 ? "LIST tf stream overruns the blob" : NULL;
+}
+
+/* array container entry i: u16 (page << 8 | off - 1) or u32 (page << 16 | off - 1) */
+static uint32_t ld_e(const uint8_t *p, uint32_t es, uint32_t i)
+{
+	return es == 2 ? (uint32_t)p[2 * i] | (uint32_t)p[2 * i + 1] << 8 : ld32(p + 4 * i);
 }
 
 static const char *check_grouped(const uint8_t *blob, size_t len)
@@ -206,14 +229,20 @@ static const char *check_grouped(const uint8_t *blob, size_t len)
 			uint32_t es = w <= 32 ? 2 : 4;
 			if (hi - lo != (uint64_t)cnt * es) return "GROUPED array group has the wrong size";
 			for (uint32_t i = 0; i < cnt; i++) {
-				uint32_t e = es == 2 ? (uint32_t)payload[lo + 2 * i] | (uint32_t)payload[lo + 2 * i + 1] << 8 : ld32(payload + lo + 4 * i);
-				uint32_t o = es == 2 ? e & 0xff : e & 0xffff, pg = es == 2 ? e >> 8 : e >> 16;
+				uint32_t e = ld_e(payload + lo, es, i), o = es == 2 ? e & 0xff : e & 0xffff, pg = es == 2 ? e >> 8 : e >> 16;
 				if (o >= 8 * w || pg >= SIFT_GROUP_PAGES) return "GROUPED array entry lies outside its page bitmap";
+				if (i && e <= ld_e(payload + lo, es, i - 1)) return "GROUPED array entries are not strictly increasing";
 			}
 		} else {
 			if (hi - lo < 32) return "GROUPED bitmap group is shorter than its page mask";
-			uint64_t np = popcount_n(payload + lo, 32);
-			if (hi - lo - 32 != np * w || cnt > np * 8 * w) return "GROUPED bitmap group does not match its page mask";
+			uint64_t np = popcount_n(payload + lo, 32), bits = 0;
+			if (hi - lo - 32 != np * w) return "GROUPED bitmap group does not match its page mask";
+			for (const uint8_t *q = payload + lo + 32; np--; q += w) {
+				uint64_t c = popcount_n(q, w);
+				if (c == 0) return "GROUPED bitmap group has an empty page";
+				bits += c;
+			}
+			if (bits != cnt) return "GROUPED bitmap group does not hold its posting count";
 		}
 	}
 	return NULL;
@@ -371,7 +400,7 @@ size_t sift_encode(const sift_tid *t, const uint8_t *tf, const uint8_t *ub, uint
 /* ---- source cursors ---- */
 
 /* first index >= i with key[idx] >= v (galloping) */
-static uint32_t gallop32(const uint32_t *key, uint32_t n, uint32_t i, uint32_t v)
+static uint32_t gallop32(const uint32_t *key, uint32_t n, uint32_t i, uint64_t v)
 {
 	uint32_t step = 1, lo = i, hi = i;
 	while (hi < n && key[hi] < v) lo = hi + 1, hi += step, step <<= 1;
@@ -432,7 +461,7 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 {
 	if (c->state == 2) return NULL;
 	if (c->state == 1 && c->g.gid >= target) return &c->g;
-	uint32_t i = gallop32(c->gr.key, c->gr.ng, c->state ? c->gr.i + 1 : 0, target << 8);
+	uint32_t i = gallop32(c->gr.key, c->gr.ng, c->state ? c->gr.i + 1 : 0, (uint64_t)target << 8);
 	if (i == c->gr.ng) return ended(c);
 	c->gr.i = i;
 	uint32_t key = c->gr.key[i], w = key & 0x7f, base = c->gr.base[i], n = c->gr.base[i + 1] - base;

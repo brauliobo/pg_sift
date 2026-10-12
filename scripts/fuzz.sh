@@ -3,7 +3,7 @@
 #
 #   scripts/fuzz.sh [--scale N] [--seed N] [TARGET...]
 #
-# Targets (default: all): canary codec kernels analyze query sql. Standalone
+# Targets (default: all): canary codec blob kernels analyze query sql. Standalone
 # harnesses are built sanitized into $SIFT_TMP/fuzz; "query" also replays its
 # corpus through the server, "sql" fuzzes parse_query/tokenize in the server.
 # Server-side targets run against the scripts/pgtest.sh cluster, which should
@@ -23,7 +23,7 @@ while [[ ${1:-} == --* ]]; do
 	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; *) sed -n '2,13p' "$0"; exit 1 ;; esac
 	shift 2
 done
-TARGETS=("${@:-canary codec kernels analyze query sql}")
+TARGETS=("${@:-canary codec blob kernels analyze query sql}")
 
 q() { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 asan_server() { [[ $(cat "$SIFT_ROOT/.flavor" 2>/dev/null) == asan* ]]; }
@@ -45,6 +45,10 @@ canary() {
 
 codec() {
 	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/test" && "$OUT/codec/test"
+}
+
+blob() {
+	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/fuzz" && "$OUT/codec/fuzz" -s "$SEED" -n $((2000 * SCALE))
 }
 
 kernels() {
