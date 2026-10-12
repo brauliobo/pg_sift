@@ -1993,9 +1993,9 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	unit_terms(p, rs, theta);
 	for (ListCell *lc = list_head(rs->cs.ops); lc; lc = lnext(rs->cs.ops, lc))
 		((sift_cur *) lfirst(lc))->state = 0;
-	g = sift_seek(rs->root, u->gid);
+	g = sift_seek_eq(rs->root, u->gid);
 	p->stats.sb_scanned++;
-	if (!g || g->gid != u->gid || !sift_seg_docs(seg, u->gid, &dc))
+	if (!g || !sift_seg_docs(seg, u->gid, &dc))
 	{
 		sift_sr_release(&seg->sr);
 		return;

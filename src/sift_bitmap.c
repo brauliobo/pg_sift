@@ -622,9 +622,13 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
  * leapfrog all kids to a common gid >= *target whose page bitmaps intersect into m; once the
  * intersection is empty the remaining kids are not sought for that gid
  */
+/* gids above this are not wanted (sift_seek_eq): operators stop looking for them and stay usable */
+static uint32_t seek_limit = UINT32_MAX;
+
 static int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4])
 {
 	for (;;) {
+		if (*target > seek_limit) return -1;
 		const sift_grp *g = sift_seek(kid[0], *target);
 		if (!g) return 0;
 		*target = g->gid;
@@ -647,7 +651,8 @@ static const sift_grp *and_seek(sift_cur *c, uint32_t target)
 	if (c->state == 1 && c->g.gid >= target) return &c->g;
 	sift_cur **kid = c->op.kid;
 	uint64_t m[4];
-	while (and_align(kid, c->op.k, &target, m)) {
+	int found;
+	while ((found = and_align(kid, c->op.k, &target, m)) > 0) {
 		sift_k->and2(&kid[0]->g, &kid[1]->g, m, &c->g, c->buf);
 		for (int i = 2; i < c->op.k && !pages_empty(c->g.pages); i++) sift_k->and2(&c->g, &kid[i]->g, c->g.pages, &c->g, c->buf);
 		if (!pages_empty(c->g.pages)) {
@@ -656,7 +661,7 @@ static const sift_grp *and_seek(sift_cur *c, uint32_t target)
 		}
 		target++;
 	}
-	return ended(c);
+	return found < 0 ? NULL : ended(c);
 }
 
 static const sift_grp *or_seek(sift_cur *c, uint32_t target)
@@ -668,7 +673,7 @@ static const sift_grp *or_seek(sift_cur *c, uint32_t target)
 		const sift_grp *g = sift_seek(c->op.kid[i], target);
 		if (g && g->gid < mg) mg = g->gid;
 	}
-	if (mg == UINT32_MAX) return ended(c);
+	if (mg == UINT32_MAX) return seek_limit == UINT32_MAX ? ended(c) : NULL;
 	const sift_grp *acc = NULL;
 	int nb = 0;
 	for (int i = 0; i < c->op.k; i++) {
@@ -687,6 +692,7 @@ static const sift_grp *andnot_seek(sift_cur *c, uint32_t target)
 	if (c->state == 2) return NULL;
 	if (c->state == 1 && c->g.gid >= target) return &c->g;
 	for (const sift_grp *a; (a = sift_seek(c->op.kid[0], target)); target = a->gid + 1) {
+		if (a->gid > seek_limit) return NULL;
 		const sift_grp *b = sift_seek(c->op.kid[1], a->gid);
 		if (!b || b->gid != a->gid) {
 			c->g = *a;
@@ -699,7 +705,15 @@ static const sift_grp *andnot_seek(sift_cur *c, uint32_t target)
 			return &c->g;
 		}
 	}
-	return ended(c);
+	return seek_limit == UINT32_MAX ? ended(c) : NULL;
+}
+
+const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid)
+{
+	seek_limit = gid;
+	const sift_grp *g = c->seek(c, gid);
+	seek_limit = UINT32_MAX;
+	return g && g->gid == gid ? g : NULL;
 }
 
 static void op_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), sift_cur **kid, int k, uint8_t *buf)
