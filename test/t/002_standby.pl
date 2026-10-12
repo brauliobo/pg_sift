@@ -62,6 +62,7 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 	$bg->query_safe("DECLARE c CURSOR FOR SELECT id FROM $t WHERE body @@> 'w1'");
 	$bg->query_safe('FETCH 10 FROM c');
 
+	my $log_offset = -s $standby->logfile;
 	for my $round (1 .. 3)
 	{
 		$primary->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w1 churn $round ' || g"
@@ -71,15 +72,16 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 	}
 	$primary->wait_for_catchup($standby);
 
-	my ($out, $err) = $bg->query("MOVE FORWARD ALL IN c");
-	if ($err =~ /ERROR/)
+	# a recovery conflict ends the session (SQLSTATE 40001); otherwise the scan sees its snapshot
+	my ($out, $err);
+	if (eval { ($out, $err) = $bg->query("MOVE FORWARD ALL IN c"); 1 } && $err !~ /ERROR|FATAL/)
 	{
-		like($err, qr/ERROR:\s+40001/, 'scan aborted with a retryable serialization error');
-		note("standby scan error: $err");
+		is($out, "MOVE " . ($expected - 10), 'scan returned the rows of its snapshot');
 	}
 	else
 	{
-		is($out, "MOVE " . ($expected - 10), 'scan returned the rows of its snapshot');
+		ok($standby->log_contains(qr/terminating connection due to conflict with recovery/, $log_offset),
+			'scan was cancelled by a recovery conflict');
 	}
 	eval { $bg->quit };
 	$standby->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
