@@ -1,6 +1,6 @@
 # Inserts racing the seal of the active mutable segment and its promotion,
 # with the inserting transaction committed or rolled back afterwards.
-# requires: build promote verify
+# requires: build insert scan promote verify
 
 setup
 {

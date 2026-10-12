@@ -1,6 +1,6 @@
 # sift.merge (and VACUUM recycling the merged segments) while a ranked scan
 # over those segments is suspended in a cursor.
-# requires: build promote merge verify score
+# requires: build insert scan promote merge verify score
 
 setup
 {

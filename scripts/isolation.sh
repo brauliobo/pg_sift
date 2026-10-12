@@ -40,7 +40,7 @@ has() {
 
 rm -rf "$OUT" && mkdir -p "$OUT/in/specs" "$OUT/in/expected"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
-declare -A ok=([build]=1 [promote]=1 [merge]=1 [verify]=1 [score]=1)
+declare -A ok=([build]=1 [insert]=1 [vacuum]=1 [scan]=1 [promote]=1 [merge]=1 [verify]=1 [score]=1)
 if [[ $MODE == emulate ]]; then
 	db -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/isolation/emulate.sql"
 else
@@ -48,6 +48,9 @@ else
 	db -c "CREATE TABLE iso_probe (id int, body text)" -c "INSERT INTO iso_probe VALUES (1, 'probe')"
 	has "CREATE INDEX iso_probe_idx ON iso_probe USING sift (body)" || ok=()
 	if [[ -n ${ok[build]:-} ]]; then
+		has "INSERT INTO iso_probe VALUES (2, 'probe two')" || unset 'ok[insert]'
+		has "VACUUM iso_probe" || unset 'ok[vacuum]'
+		has "SET enable_seqscan = off; SELECT count(*) FROM iso_probe WHERE body @@> 'probe'" || unset 'ok[scan]'
 		has "SELECT sift.promote('iso_probe_idx')" || unset 'ok[promote]'
 		has "SELECT sift.merge('iso_probe_idx')" || unset 'ok[merge]'
 		has "SELECT sift.verify('iso_probe_idx')" || unset 'ok[verify]'
