@@ -34,9 +34,11 @@ Arch Linux packaging is in `packaging/`.
 
 ## Limitations
 
-- sift is not yet measured; the table only shows the competitors it has to beat.
+- On the 2.6M-document full suite sift trails ParadeDB on `or`, `phrase`, `mixed`, `filter` (0.5-0.9x QPS) and
+  `count` (0.24x) and Tantivy on every class; a score above a join is not supported. It builds the index
+  1.8x faster and 2.8x smaller than ParadeDB.
 - The baseline corpus is small (300k and 2.6M documents, 227 characters each on average) compared
-  with TIN's 150M; a 15.8M-document tier is cached and will run together with sift.
+  with TIN's 150M; a 15.8M-document tier is cached and has not been run.
 - The benchmark hosts are shared machines, so absolute numbers carry noise; compare engines measured
   in the same run. The reference host has no AVX-512.
 - Tokenizers differ between engines (CJK runs, apostrophes, hyphenation), so result sets match
