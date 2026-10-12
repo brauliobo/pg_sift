@@ -1307,6 +1307,16 @@ sift_sr_release(SiftStreamReader *sr)
 
 /* ---------- reference maps, orphans, verification ---------- */
 
+static BlockNumber
+high_water(Relation index)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	BlockNumber hwm = META(BufferGetPage(metabuf))->high_water;
+
+	UnlockReleaseBuffer(metabuf);
+	return hwm;
+}
+
 static void
 mark(BlockMap *m, BlockNumber start, uint64 n, const char *what, uint64 gen)
 {
@@ -1417,6 +1427,8 @@ mark_mutable(BlockMap *m, const SiftSegEntry *s)
 		while (BlockNumberIsValid(blk))
 		{
 			/* mark() rejects a revisit, which also ends a cycle */
+			if (blk >= m->hwm)
+				m->hwm = high_water(m->index);
 			mark(m, blk, 1, "mutable page", s->gen);
 			buf = read_locked(m->index, blk, BUFFER_LOCK_SHARE);
 			sift_store_check_page(m->index, buf, SIFT_PT_MUTDATA, s->gen);
@@ -1429,12 +1441,9 @@ mark_mutable(BlockMap *m, const SiftSegEntry *s)
 Bitmapset *
 sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 {
-	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
-	BlockMap	m = {index, META(BufferGetPage(metabuf))->high_water, NULL};
+	BlockMap	m = {index, high_water(index), NULL};
+	Buffer		metabuf;
 
-	mark(&m, SIFT_METAPAGE_BLKNO, 2, "metapage and directory", 0);
-	mark_freelist(&m, META(BufferGetPage(metabuf))->freelist_head);
-	UnlockReleaseBuffer(metabuf);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -1442,6 +1451,12 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 		else
 			mark_mutable(&m, &snap->segs[i]);
 	}
+	/* Appenders take pages off the free list while a mutable chain grows, so it is read last */
+	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	m.hwm = META(BufferGetPage(metabuf))->high_water;
+	mark(&m, SIFT_METAPAGE_BLKNO, 2, "metapage and directory", 0);
+	mark_freelist(&m, META(BufferGetPage(metabuf))->freelist_head);
+	UnlockReleaseBuffer(metabuf);
 	return m.set;
 }
 
