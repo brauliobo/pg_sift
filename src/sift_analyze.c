@@ -212,6 +212,12 @@ sift_analyze_stemmer(const char *name)
 	pg_unreachable();
 }
 
+void
+sift_analyze_validate_stemmer(const char *name)
+{
+	sift_analyze_stemmer(name);
+}
+
 /* Analyzer and buffers */
 
 SiftAnalyzer *
@@ -268,6 +274,28 @@ grow(SiftAnalyzer *a, void **p, size_t *cap, size_t need, size_t sz)
 
 /* Scanner */
 
+/*
+ * Stems until the word no longer changes, so an emitted term analyzes to
+ * itself (Porter2 alone is not idempotent: agreed -> agre -> agr). This ends:
+ * stemmers never lengthen a word, and the only same-length rewrites turn a
+ * final y into i or i into e.
+ */
+static int
+stem_fixpoint(StemFn fn, char *w, int n)
+{
+	char		prev[DST_CAP];
+
+	for (;;)
+	{
+		int			m;
+
+		memcpy(prev, w, n);
+		if ((m = fn(w, n)) == n && memcmp(prev, w, n) == 0)
+			return n;
+		n = m;
+	}
+}
+
 static inline int
 stem(SiftAnalyzer *a, char *w, int n)
 {
@@ -276,12 +304,12 @@ stem(SiftAnalyzer *a, char *w, int n)
 	if (!a->stem_memo && ++a->nstems == STEM_MEMO_AFTER)
 		a->stem_memo = MemoryContextAllocZero(a->mcxt, STEM_SLOTS * sizeof(StemSlot));
 	if (n > STEM_MAXW || !a->stem_memo)
-		return a->stem(w, n);
+		return stem_fixpoint(a->stem, w, n);
 	e = &a->stem_memo[hash64(w, n) & (STEM_SLOTS - 1)];
 	if (e->inlen != n || memcmp(e->in, w, n) != 0)
 	{
 		memcpy(e->in, w, n);
-		e->outlen = a->stem(w, n);
+		e->outlen = stem_fixpoint(a->stem, w, n);
 		memcpy(e->out, w, e->outlen);
 		e->inlen = n;
 	}

@@ -26,12 +26,20 @@
  * Latin, Greek, Cyrillic, Hebrew and Arabic diacritics, and stroke letters
  * (ø, ł, đ, æ, œ, þ, ı) mapped to their base. Cyrillic breve is kept (й, ў);
  * Indic vowel signs and kana voicing marks are kept. Compatibility mappings
- * producing non-letters (½) are not applied. With both off ("preserve") text
- * is kept as written. Inputs are assumed NFC: decomposed sequences fold per
- * code point.
+ * producing non-letters (½) are not applied. A folding is only applied if it
+ * keeps the token's shape (letters fold to letters and marks, marks to marks
+ * or nothing, an ideograph to one ideograph and marks); otherwise the
+ * character is kept as written (ŉ, ゟ). With both off ("preserve") text is
+ * kept as written. Inputs are assumed NFC: decomposed sequences fold per code
+ * point.
  *
  * Folded tokens are truncated to SIFT_MAX_TERM_BYTES at a character boundary,
- * then stemmed. Tokens that fold to nothing are dropped and take no position.
+ * then stemmed to a fixpoint. Tokens that fold to nothing are dropped and take
+ * no position.
+ *
+ * Invariant, for every configuration: each emitted token t analyzes to
+ * exactly [t], so typing a document term finds it and canonical query forms
+ * are fixpoints (checked exhaustively by tools/analyze `harness invariant`).
  *
  * Index and query sides must use the same SiftAnalyzerConfig; its hash
  * (which includes SIFT_ANALYZER_VERSION) is stored in the metapage.
@@ -42,7 +50,7 @@
 #include "sift.h"
 
 /* Bump on any change to tokenization, folding, stemming or hashing output */
-#define SIFT_ANALYZER_VERSION	1
+#define SIFT_ANALYZER_VERSION	2
 
 typedef enum SiftStemmer
 {
@@ -103,6 +111,9 @@ extern void sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *
  * ERRCODE_INVALID_PARAMETER_VALUE for unknown names.
  */
 extern SiftStemmer sift_analyze_stemmer(const char *name);
+
+/* Reloption validator form of sift_analyze_stemmer */
+extern void sift_analyze_validate_stemmer(const char *name);
 
 /*
  * The analyzer owns reusable buffers allocated in mcxt. Results of the

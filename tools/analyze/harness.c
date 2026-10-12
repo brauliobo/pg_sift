@@ -173,6 +173,76 @@ gen_text(char *buf, int max)
 	return n;
 }
 
+/* Whether a token analyzes to exactly itself */
+static bool
+self_analyzes(SiftAnalyzer *a, const char *tok, int n)
+{
+	char		copy[SIFT_MAX_TERM_BYTES];
+	SiftToken  *r;
+
+	memcpy(copy, tok, n);
+	return sift_analyze_tokens(a, copy, n, &r) == 1 && r[0].len == n && memcmp(r[0].str, copy, n) == 0;
+}
+
+/*
+ * invariant [VOC]: every token of every code point in several contexts, and
+ * of every vocabulary word, analyzes to itself, in every configuration
+ */
+static int
+cmd_invariant(const char *voc)
+{
+	static const uint32 ctx[][3] = {{0}, {0, 'a'}, {'a', 0}, {0, 0}, {0, 0x3099}, {0, 0x301}};
+	long		checked = 0,
+				bad = 0;
+
+	for (int m = 0; m < 4; m++)
+		for (int st = 0; st < 2; st++)
+		{
+			SiftAnalyzer *a = analyzer(m, st),
+					   *b = analyzer(m, st);
+			FILE	   *f = voc ? fopen(voc, "r") : NULL;
+			char		in[512];
+
+			for (uint32 cp = 1; cp < 0x110000; cp++)
+			{
+				if (cp >= 0xD800 && cp <= 0xDFFF)
+					continue;
+				for (int k = 0; k < lengthof(ctx); k++)
+				{
+					int			n = 0,
+								ntok;
+					SiftToken  *t;
+
+					for (int j = 0; j < 3 && (j == 0 || ctx[k][j]); j++)
+						n += put_cp(in + n, ctx[k][j] ? ctx[k][j] : cp);
+					ntok = sift_analyze_tokens(a, in, n, &t);
+					for (int i = 0; i < ntok; i++, checked++)
+						if (!self_analyzes(b, t[i].str, t[i].len) && bad++ < 10)
+							printf("mode %d stem %d U+%04X context %d: token %.*s\n", m, st, cp, k,
+								   t[i].len, t[i].str);
+				}
+			}
+			while (f && fscanf(f, "%511s", in) == 1)
+				for (int v = 0; v < 2; v++)
+				{
+					SiftToken  *t;
+					int			ntok;
+
+					if (v)
+						in[0] = pg_toupper((unsigned char) in[0]);
+					ntok = sift_analyze_tokens(a, in, strlen(in), &t);
+					for (int i = 0; i < ntok; i++, checked++)
+						if (!self_analyzes(b, t[i].str, t[i].len) && bad++ < 10)
+							printf("mode %d stem %d word %s: token %.*s\n", m, st, in, t[i].len,
+								   t[i].str);
+				}
+			if (f)
+				fclose(f);
+		}
+	printf("invariant: %ld tokens checked, %ld not analyzing to themselves\n", checked, bad);
+	return bad != 0;
+}
+
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "check failed: %s (seed %lu iter %ld)\n", \
 	#c, seed, it); abort(); } } while (0)
 
@@ -230,6 +300,7 @@ cmd_fuzz(long iters, unsigned long seed)
 			CHECK(i == 0 || t[i].start >= t[i - 1].end);
 			if (!e)
 				CHECK(pg_encoding_verifymbstr(PG_UTF8, t[i].str, t[i].len) == t[i].len);
+			CHECK(self_analyzes(b, t[i].str, t[i].len));
 			if (!s)
 			{
 				/* tokens are already folded */
@@ -377,6 +448,8 @@ main(int argc, char **argv)
 		stub_encoding = argc > 4 && strcmp(argv[4], "sql_ascii") == 0 ? PG_SQL_ASCII : PG_UTF8;
 		return cmd_dump(atoi(argv[2]), argc > 3 ? atoi(argv[3]) : 0);
 	}
+	if (strcmp(cmd, "invariant") == 0)
+		return cmd_invariant(argc > 2 ? argv[2] : NULL);
 	if (strcmp(cmd, "fuzz") == 0 && argc == 4)
 		return cmd_fuzz(atol(argv[2]), strtoul(argv[3], NULL, 10));
 	if (strcmp(cmd, "bench") == 0 && argc >= 3)
@@ -385,6 +458,6 @@ main(int argc, char **argv)
 	if (strcmp(cmd, "hash") == 0 && argc == 3)
 		return printf("%016llx\n", (unsigned long long) sift_term_hash64(argv[2], strlen(argv[2]))), 0;
 	fprintf(stderr, "usage: harness stem VOC OUT | dump MODE [STEM [sql_ascii]] | fuzz N SEED |\n"
-			"               bench FILE [MODE [STEM [REPS]]] | hash TERM\n");
+			"               bench FILE [MODE [STEM [REPS]]] | hash TERM | invariant [VOC]\n");
 	return 2;
 }

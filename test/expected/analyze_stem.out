@@ -144,7 +144,7 @@ SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en'))
  exceed         | exceed
  succeed        | succeed
  proceeding     | proceed
- agreed         | agre
+ agreed         | agr
  feed           | feed
  inning         | inning
  outing         | outing
@@ -195,7 +195,7 @@ SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en'))
  predication    | predic
  operator       | oper
  feudalism      | feudal
- decisiveness   | decis
+ decisiveness   | deci
  hopefulness    | hope
  callousness    | callous
  formaliti      | formal
@@ -214,7 +214,7 @@ SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en'))
  airliner       | airlin
  gyroscopic     | gyroscop
  adjustable     | adjust
- defensible     | defens
+ defensible     | defen
  irritant       | irrit
  replacement    | replac
  adjustment     | adjust
@@ -229,7 +229,7 @@ SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en'))
  bowdlerize     | bowdler
  probate        | probat
  rate           | rate
- cease          | ceas
+ cease          | cea
  controll       | control
  roll           | roll
  geology        | geolog
