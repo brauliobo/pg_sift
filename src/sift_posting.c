@@ -256,12 +256,13 @@ corrupt_blob(const SiftTermInfo *info)
 					(unsigned long long) info->post_off)));
 }
 
-SiftPostingCursor *
-sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
+static SiftPostingCursor *
+post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bool verify)
 {
 	SiftPostingCursor *c = MemoryContextAllocZero(mcxt, sizeof(SiftPostingCursor));
 	uint8	   *blob;
 	const void *src;
+	const char *detail;
 
 	c->info = *info;
 	c->mcxt = mcxt;
@@ -284,6 +285,12 @@ sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcx
 		sift_blob_kind(blob) != ((info->flags & SIFT_TERM_SPARSE) ? SIFT_LIST : SIFT_GROUPED) ||
 		sift_blob_n(blob) != info->df)
 		corrupt_blob(info);
+	/* the codec follows the blob's own lengths, so verify checks them before any cursor does */
+	if (verify && (detail = sift_blob_check(blob, info->codec_len)) != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("sift: term blob at %llu is malformed", (unsigned long long) info->post_off),
+				 errdetail_internal("%s.", detail)));
 	if (info->post_len > info->codec_len)
 	{
 		const uint8 *p = blob + ALIGN4(info->codec_len);
@@ -291,6 +298,8 @@ sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcx
 		if (!(info->flags & SIFT_TERM_SPARSE))
 		{
 			c->ng = BLOB_NG(blob);
+			if ((uint64) c->ng * sizeof(SiftGroupScore) > info->post_len - ALIGN4(info->codec_len))
+				corrupt_blob(info);
 			c->gs = (const SiftGroupScore *) p;
 			c->blkrows = p + c->ng * sizeof(SiftGroupScore);
 			p = c->blkrows;
@@ -307,6 +316,18 @@ sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcx
 		corrupt_blob(info);
 	sift_post_rewind(c);
 	return c;
+}
+
+SiftPostingCursor *
+sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
+{
+	return post_open(sr, info, mcxt, false);
+}
+
+SiftPostingCursor *
+sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
+{
+	return post_open(sr, info, mcxt, true);
 }
 
 sift_cur *

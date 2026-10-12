@@ -1,0 +1,43 @@
+-- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on indexes with random bytes overwritten
+-- (mutable and immutable pages alike, with and without heapallindexed)
+CREATE EXTENSION sift_test CASCADE;
+NOTICE:  installing required extension "sift"
+CREATE TABLE vc (id serial PRIMARY KEY, body text);
+INSERT INTO vc (body) SELECT 'w' || (i % 7) || ' x' || (i % 101) || ' common doc' || i FROM generate_series(1, 3000) i;
+CREATE INDEX vc_idx ON vc USING sift (body);
+DO $$
+DECLARE
+	ok int := 0;
+	corrupt int := 0;
+	other int := 0;
+	nb int;
+BEGIN
+	PERFORM setseed(0.42);
+	FOR i IN 1 .. 200 LOOP
+		REINDEX INDEX vc_idx;
+		INSERT INTO vc (body) VALUES ('w1 late');
+		nb := pg_relation_size('vc_idx') / 8192;
+		FOR j IN 1 .. 1 + i % 3 LOOP
+			PERFORM sift._test_poke('vc_idx', (2 + floor(random() * (nb - 2)))::int, floor(random() * 8190)::int,
+									floor(random() * 256)::int, 1);
+		END LOOP;
+		BEGIN
+			PERFORM sift.verify('vc_idx', i % 2 = 0);
+			ok := ok + 1;
+		EXCEPTION WHEN OTHERS THEN
+			IF SQLSTATE = 'XX002' THEN corrupt := corrupt + 1; ELSE other := other + 1; END IF;
+		END;
+	END LOOP;
+	RAISE NOTICE 'every verdict is ok or corrupt: %', other = 0;
+END $$;
+NOTICE:  every verdict is ok or corrupt: t
+REINDEX INDEX vc_idx;
+SELECT sift.verify('vc_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE vc;
+DROP EXTENSION sift_test;
+DROP EXTENSION sift;

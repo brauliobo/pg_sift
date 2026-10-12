@@ -89,6 +89,10 @@ typedef struct SiftPostingCursor SiftPostingCursor;
 extern SiftPostingCursor *sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info,
 										 MemoryContext mcxt);
 
+/* As sift_post_open, for sift.verify: the codec blob's lengths and offsets are validated first, so corrupt postings raise instead of overrunning */
+extern SiftPostingCursor *sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info,
+												  MemoryContext mcxt);
+
 /* The codec cursor positioned by the caller with sift_seek()/sift_next() */
 extern sift_cur *sift_post_cursor(SiftPostingCursor *c);
 

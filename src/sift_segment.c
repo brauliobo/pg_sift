@@ -960,7 +960,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 			w->trank = w->trank ? repalloc_huge(w->trank, w->tcap * sizeof(uint64)) :
 				MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint64));
 	}
-	c = sift_post_open(&seg->sr, info, w->tcxt);
+	c = w->verify ? sift_post_open_verified(&seg->sr, info, w->tcxt) : sift_post_open(&seg->sr, info, w->tcxt);
 	if (w->verify)
 		sift_post_check(c);
 	b = sift_post_bounds(c, &nb);
