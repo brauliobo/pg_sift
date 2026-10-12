@@ -93,6 +93,9 @@ extern SiftPostingCursor *sift_post_open(SiftStreamReader *sr, const SiftTermInf
 extern SiftPostingCursor *sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info,
 												  MemoryContext mcxt);
 
+/* Another cursor over the same blob (shared, read-only), before the first group */
+extern SiftPostingCursor *sift_post_clone(const SiftPostingCursor *src, MemoryContext mcxt);
+
 /* The codec cursor positioned by the caller with sift_seek()/sift_next() */
 extern sift_cur *sift_post_cursor(SiftPostingCursor *c);
 

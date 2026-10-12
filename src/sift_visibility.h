@@ -19,7 +19,8 @@ typedef struct SiftVis
 	Snapshot	snapshot;
 	bool		use_vm;			/* MVCC snapshot: all-visible pages skip heap checks */
 	Buffer		vmbuf;
-	Buffer		heapbuf;
+	BlockNumber vm_nblocks;
+	BlockNumber heap_nblocks;
 	struct IndexFetchTableData *fetch;
 	int64		heap_checks;	/* EXPLAIN counters */
 	int64		heap_pages;

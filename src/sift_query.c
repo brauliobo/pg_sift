@@ -1257,7 +1257,7 @@ sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len)
 /* ---------------------------------------------------------------- document evaluation */
 
 /* A document's tokens grouped by distinct term */
-typedef struct DocTerms
+struct SiftDoc
 {
 	SiftToken  *tok;
 	int			ntok;
@@ -1267,10 +1267,10 @@ typedef struct DocTerms
 	int		   *first;			/* distinct term -> first token */
 	int		   *slots;			/* open addressing: term + 1, 0 = free */
 	uint32		mask;
-} DocTerms;
+};
 
 static uint32
-doc_slot(const DocTerms *d, const char *s, int len)
+doc_slot(const SiftDoc *d, const char *s, int len)
 {
 	for (uint32 h = hash_bytes((const unsigned char *) s, len) & d->mask;; h = (h + 1) & d->mask)
 	{
@@ -1282,14 +1282,14 @@ doc_slot(const DocTerms *d, const char *s, int len)
 }
 
 static int
-doc_find(const DocTerms *d, const char *s, int len)
+doc_find(const SiftDoc *d, const char *s, int len)
 {
 	return d->slots[doc_slot(d, s, len)] - 1;
 }
 
 /* Allocates in CurrentMemoryContext; tokens stay in analyzer memory */
 static void
-doc_init(DocTerms *d, SiftAnalyzer *a, const char *text, int len)
+doc_init(SiftDoc *d, SiftAnalyzer *a, const char *text, int len)
 {
 	Size		size = 16;
 	int		   *last;
@@ -1324,7 +1324,7 @@ doc_init(DocTerms *d, SiftAnalyzer *a, const char *text, int len)
 }
 
 static bool
-eval_phrase(const DocTerms *d, const SiftQNode *n)
+eval_phrase(const SiftDoc *d, const SiftQNode *n)
 {
 	int			ids[SIFT_MAX_PHRASE];
 
@@ -1345,7 +1345,7 @@ eval_phrase(const DocTerms *d, const SiftQNode *n)
 }
 
 static bool
-eval_node(const DocTerms *d, const SiftQNode *n)
+eval_node(const SiftDoc *d, const SiftQNode *n)
 {
 	switch (n->kind)
 	{
@@ -1378,7 +1378,7 @@ eval_node(const DocTerms *d, const SiftQNode *n)
 bool
 sift_query_match_doc(const SiftQuery *q, SiftAnalyzer *a, const char *text, int len)
 {
-	DocTerms	d;
+	SiftDoc	d;
 
 	Assert(q->analyzed);
 	if (q->root->kind == SQ_NOTHING)
@@ -1399,19 +1399,73 @@ has_phrase(const SiftQNode *n)
 }
 
 bool
-sift_query_recheck_doc(const SiftQuery *q, SiftAnalyzer *a, const char *text, int len)
+sift_doc_recheck(const SiftQuery *q, const SiftDoc *d)
 {
 	const SiftQNode *r = q->root;
-	DocTerms	d;
 
 	Assert(q->analyzed);
 	if (!q->needs_recheck)
 		return true;
-	doc_init(&d, a, text, len);
 	if (r->kind != SQ_AND)
-		return eval_node(&d, r);
+		return eval_node(d, r);
 	for (int i = 0; i < r->nchild; i++)
-		if (has_phrase(r->child[i]) && !eval_node(&d, r->child[i]))
+		if (has_phrase(r->child[i]) && !eval_node(d, r->child[i]))
 			return false;
 	return true;
+}
+
+bool
+sift_query_recheck_doc(const SiftQuery *q, SiftAnalyzer *a, const char *text, int len)
+{
+	return sift_doc_recheck(q, sift_doc_open(a, text, len));
+}
+
+SiftDoc *
+sift_doc_open(SiftAnalyzer *a, const char *text, int len)
+{
+	SiftDoc    *d = palloc(sizeof(SiftDoc));
+
+	doc_init(d, a, text, len);
+	return d;
+}
+
+int
+sift_doc_ntokens(const SiftDoc *d)
+{
+	return d->ntok;
+}
+
+int
+sift_doc_nterms(const SiftDoc *d)
+{
+	return d->nterms;
+}
+
+const char *
+sift_doc_term(const SiftDoc *d, int i, int *len)
+{
+	*len = d->tok[d->first[i]].len;
+	return d->tok[d->first[i]].str;
+}
+
+int
+sift_doc_tf(const SiftDoc *d, int i)
+{
+	int			tf = 0;
+
+	for (int t = d->first[i]; t >= 0; t = d->next[t])
+		tf++;
+	return tf;
+}
+
+int
+sift_doc_find(const SiftDoc *d, const char *term, int len)
+{
+	return doc_find(d, term, len);
+}
+
+bool
+sift_doc_match(const SiftDoc *d, const SiftQNode *n)
+{
+	return eval_node(d, n);
 }
