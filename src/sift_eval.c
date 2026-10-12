@@ -10,6 +10,7 @@
  */
 #include "postgres.h"
 
+#include "common/int.h"
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
@@ -17,6 +18,7 @@
 #include "utils/rel.h"
 
 #include "sift_eval.h"
+#include "sift_mutable.h"
 #include "sift_segment.h"
 
 typedef struct LeafTerm
@@ -30,6 +32,8 @@ typedef struct LeafTerm
 typedef struct EvalLeaf
 {
 	const SiftQNode *node;
+	SiftTermMatcher *m;			/* NULL for a plain term */
+	uint32		hash;			/* plain term: sift_term_hash */
 	int		   *nterms;			/* [nsegs] */
 	LeafTerm  **terms;			/* [nsegs] */
 } EvalLeaf;
@@ -58,6 +62,10 @@ struct SiftPlan
 	int			nsegs;
 	int		   *segno;			/* directory index of each immutable segment */
 	SiftSegment **seg;
+	int			nmut;
+	int		   *mutno;			/* directory index of each mutable segment */
+	SiftKey    *mtids;			/* live matches of the mutable segments, ascending */
+	int64		nmtids;
 	int			nleaves;
 	int			maxleaves;
 	EvalLeaf   *leaves;
@@ -321,8 +329,10 @@ static void
 resolve_leaf(SiftPlan *p, EvalLeaf *l)
 {
 	const SiftQNode *node = l->node;
-	SiftTermMatcher *m = node->kind == SQ_TERM ? NULL : sift_matcher_create(node);
+	SiftTermMatcher *m = l->m = node->kind == SQ_TERM ? NULL : sift_matcher_create(node);
 
+	if (m == NULL)
+		l->hash = sift_term_hash(node->text, node->textlen);
 	l->nterms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(int));
 	l->terms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(LeafTerm *));
 	for (int s = 0; s < p->nsegs; s++)
@@ -356,6 +366,155 @@ resolve_leaf(SiftPlan *p, EvalLeaf *l)
 		check_distinct(p, l);
 }
 
+/* ---------- mutable segments ---------- */
+
+/*
+ * Mutable segments are not indexed by term: their docs are matched one by
+ * one against the relaxed tree (pages whose bloom rules the tree out are
+ * skipped) and the live matching tids join the iterator's output.
+ */
+
+static bool
+node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
+{
+	int			npos = 0;
+
+	switch (n->kind)
+	{
+		case EN_NOTHING:
+			return false;
+		case EN_LEAF:
+			return p->leaves[n->leaf].m != NULL || sift_mut_bloom_has(bloom, p->leaves[n->leaf].hash);
+		case EN_NOT:
+			return true;
+		case EN_AND:
+			for (int i = 0; i < n->nchild; i++)
+				if (n->child[i]->kind != EN_NOT)
+				{
+					npos++;
+					if (!node_may_match(p, n->child[i], bloom))
+						return false;
+				}
+			return npos > 0;
+		case EN_OR:
+			for (int i = 0; i < n->nchild; i++)
+				if (node_may_match(p, n->child[i], bloom))
+					return true;
+			return false;
+	}
+	return false;
+}
+
+static bool
+mut_page_ok(void *arg, const uint64 *bloom)
+{
+	SiftPlan   *p = arg;
+
+	return node_may_match(p, p->root, bloom);
+}
+
+static bool
+leaf_hits(const EvalLeaf *l, const SiftMutDoc *d)
+{
+	const char *t = d->terms;
+
+	for (int i = 0; i < d->nterms; t += d->len[i++])
+		if (l->m ? sift_matcher_match(l->m, t, d->len[i]) :
+			(d->hash[i] == l->hash && d->len[i] == l->node->textlen && memcmp(t, l->node->text, d->len[i]) == 0))
+			return true;
+	return false;
+}
+
+static bool
+doc_matches(const SiftPlan *p, const EvalNode *n, const SiftMutDoc *d)
+{
+	int			npos = 0;
+
+	switch (n->kind)
+	{
+		case EN_NOTHING:
+			return false;
+		case EN_LEAF:
+			return leaf_hits(&p->leaves[n->leaf], d);
+		case EN_NOT:
+			return !doc_matches(p, n->child[0], d);
+		case EN_AND:
+			for (int i = 0; i < n->nchild; i++)
+			{
+				npos += n->child[i]->kind != EN_NOT;
+				if (!doc_matches(p, n->child[i], d))
+					return false;
+			}
+			return npos > 0;
+		case EN_OR:
+			for (int i = 0; i < n->nchild; i++)
+				if (doc_matches(p, n->child[i], d))
+					return true;
+			return false;
+	}
+	return false;
+}
+
+static int
+key_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u64(*(const SiftKey *) a, *(const SiftKey *) b);
+}
+
+/* Statistics count the mutable docs too (deleted ones like the immutable entries do) */
+static void
+bind_stats(SiftPlan *p, uint64 mut_ndocs, uint64 mut_sum_dl)
+{
+	double		sum = p->stats.avgdl + mut_sum_dl;
+
+	p->stats.ndocs += mut_ndocs;
+	p->stats.avgdl = p->stats.ndocs > 0 ? sum / p->stats.ndocs : 0;
+}
+
+static void
+bind_mutable(SiftPlan *p)
+{
+	uint64		ndocs = 0,
+				sum_dl = 0;
+	int64		cap = 0;
+
+	for (int i = 0; i < p->nmut && !p->capped; i++)
+	{
+		SiftMutReader *r = sift_mut_open(p->st->index, &p->st->dir.segs[p->mutno[i]], p->mcxt, mut_page_ok, p);
+		SiftMutDoc	doc;
+		uint64		n,
+					sum;
+
+		while (sift_mut_next(r, &doc))
+		{
+			if (doc.deleted || !doc_matches(p, p->root, &doc))
+				continue;
+			if (p->nmtids == cap)
+			{
+				cap = Max(64, 2 * cap);
+				p->mtids = p->mtids ? repalloc_huge(p->mtids, cap * sizeof(SiftKey)) :
+					MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftKey));
+			}
+			p->mtids[p->nmtids++] = sift_key_from_tid(&doc.tid);
+		}
+		sift_mut_totals(r, &n, &sum);
+		ndocs += n;
+		sum_dl += sum;
+		sift_mut_close(r);
+	}
+	if (p->nmtids > 1)
+	{
+		int64		k = 1;
+
+		qsort(p->mtids, p->nmtids, sizeof(SiftKey), key_cmp);
+		for (int64 j = 1; j < p->nmtids; j++)
+			if (p->mtids[j] != p->mtids[k - 1])
+				p->mtids[k++] = p->mtids[j];
+		p->nmtids = k;
+	}
+	bind_stats(p, ndocs, sum_dl);
+}
+
 SiftPlan *
 sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
 {
@@ -369,18 +528,19 @@ sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
 	p->st = st;
 	p->mcxt = st->mcxt;
 	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
+	p->mutno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("sift: mutable segments are not implemented yet")));
+		{
+			p->mutno[p->nmut++] = i;
+			continue;
+		}
 		p->segno[p->nsegs++] = i;
 		p->stats.ndocs += st->dir.segs[i].ndocs;
 		p->stats.avgdl += st->dir.segs[i].sum_dl;
 	}
-	p->stats.avgdl = p->stats.ndocs > 0 ? p->stats.avgdl / p->stats.ndocs : 0;
-	p->stats.nsegments = p->nsegs;
+	p->stats.nmutable = p->nmut;
 	p->capped = (flags & SIFT_BIND_CAPPED) != 0;
 	p->seg = MemoryContextAlloc(st->mcxt, Max(p->nsegs, 1) * sizeof(SiftSegment *));
 	for (int s = 0; s < p->nsegs; s++)
@@ -393,12 +553,14 @@ sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
 		if (roots[i]->kind == EN_NOTHING)
 		{
 			p->root = roots[i];
+			bind_stats(p, 0, 0);
 			return p;
 		}
 	}
 	p->root = en_make(p, EN_AND, nqueries, roots);
 	for (int i = 0; i < p->nleaves; i++)
 		resolve_leaf(p, &p->leaves[i]);
+	bind_mutable(p);
 	return p;
 }
 
@@ -415,6 +577,7 @@ struct SiftMatchIter
 	SiftPlan   *plan;
 	sift_cur  **root;			/* per segment, NULL: no matches */
 	const sift_grp **grp;		/* scratch: current group per segment */
+	int64		mpos;			/* next mutable match */
 	uint32		next_sb;
 	uint32		sb;
 	int			page;			/* next page of the loaded SB to return */
@@ -564,6 +727,27 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
 	sift_sr_release(&seg->sr);
 }
 
+/* Sets the mutable matches of SB sb in the SB buffer */
+static void
+iter_merge_mutable(SiftMatchIter *it, uint32 sb)
+{
+	const SiftPlan *p = it->plan;
+
+	for (; it->mpos < p->nmtids && sift_block_sb(sift_key_block(p->mtids[it->mpos])) == sb; it->mpos++)
+	{
+		SiftKey		key = p->mtids[it->mpos];
+		int			page = sift_key_block(key) & (SIFT_SB_PAGES - 1),
+					off = (key & 0xFFFF) - 1;
+
+		if (!(it->pages[page / 64] & (UINT64CONST(1) << (page & 63))))
+		{
+			memset(it->om[page], 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
+			it->pages[page / 64] |= UINT64CONST(1) << (page & 63);
+		}
+		it->om[page][off / 64] |= UINT64CONST(1) << (off & 63);
+	}
+}
+
 /* Loads the next SB with matches in any segment; false at the end */
 static bool
 iter_load_sb(SiftMatchIter *it)
@@ -579,6 +763,8 @@ iter_load_sb(SiftMatchIter *it)
 			if (it->grp[s] && it->grp[s]->gid < sb)
 				sb = it->grp[s]->gid;
 		}
+		if (it->mpos < it->plan->nmtids)
+			sb = Min(sb, sift_block_sb(sift_key_block(it->plan->mtids[it->mpos])));
 		if (sb == UINT32_MAX)
 			return false;
 		CHECK_FOR_INTERRUPTS();
@@ -586,6 +772,7 @@ iter_load_sb(SiftMatchIter *it)
 		for (int s = 0; s < it->plan->nsegs; s++)
 			if (it->grp[s] && it->grp[s]->gid == sb)
 				iter_merge(it, s, it->grp[s]);
+		iter_merge_mutable(it, sb);
 		it->next_sb = sb + 1;
 		it->plan->stats.sb_scanned++;
 		if (it->pages[0] | it->pages[1] | it->pages[2] | it->pages[3])

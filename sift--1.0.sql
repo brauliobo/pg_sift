@@ -62,7 +62,7 @@ CREATE FUNCTION sift.parse_query(query text, index regclass DEFAULT NULL) RETURN
 CREATE FUNCTION sift.promote(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_promote' LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION sift.merge(index regclass) RETURNS int4
+CREATE FUNCTION sift.merge(index regclass, force bool DEFAULT false) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_merge' LANGUAGE C STRICT VOLATILE;
 
 -- One row per segment; the section columns are NULL for mutable segments.

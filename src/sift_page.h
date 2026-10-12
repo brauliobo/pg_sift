@@ -20,6 +20,7 @@
 #define SIFT_METAPAGE_BLKNO		0
 #define SIFT_DIRECTORY_BLKNO	1
 #define SIFT_MAINT_LOCK_BLKNO	0	/* LockPage() target for maintenance */
+#define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
 
 typedef enum SiftPageType
 {
@@ -161,19 +162,17 @@ typedef struct SiftLiveHeaderData
 } SiftLiveHeaderData;
 
 /*
- * Mutable segment: one MUTHEADER page with SIFT_LANES lanes. An empty lane has
- * head = tail = InvalidBlockNumber; the tail page's next is InvalidBlockNumber
- * (the store walks these chains for the orphan sweep and verification).
+ * Mutable segment: one MUTHEADER page with SIFT_LANES lanes. A lane always has
+ * a head page; tail is a hint (the true tail is found by following next) kept
+ * with the page count when a page is added. The page after the last one has
+ * next = InvalidBlockNumber (the store walks these chains for the orphan
+ * sweep and verification).
  */
 typedef struct SiftLaneData
 {
 	BlockNumber head;
 	BlockNumber tail;
 	uint32		npages;
-	uint32		sealed;			/* set under the tail lock when sealing */
-	uint64		ndocs;
-	uint64		sum_dl;
-	uint64		bytes;
 } SiftLaneData;
 
 typedef struct SiftMutHeaderData
@@ -182,22 +181,33 @@ typedef struct SiftMutHeaderData
 	SiftLaneData lanes[SIFT_LANES];
 } SiftMutHeaderData;
 
-/* Mutable data page: header, then doc records packed back to back */
+/*
+ * Mutable data page: header, then doc records packed back to back. The
+ * SEALED flag is set under the page lock on the tail of every lane when the
+ * segment is sealed; appenders re-check it under that lock. SPANS marks a
+ * page whose last doc continues on the next page of the lane.
+ */
 typedef struct SiftMutPageHeaderData
 {
 	BlockNumber next;
-	uint16		ndocs;
-	uint16		reserved;
+	uint16		ndocs;			/* docs started on this page (deleted included) */
+	uint16		flags;
 	uint32		sum_dl;
 	uint64		bloom[4];		/* 256-bit bloom of term hashes, 2 probes */
 } SiftMutPageHeaderData;
 
+#define SIFT_MUTPAGE_SEALED	0x0001
+#define SIFT_MUTPAGE_SPANS	0x0002
+
 #define SIFT_MUT_DELETED	0x0001
+#define SIFT_MUT_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */
 
 /*
  * Doc record, 4-byte aligned:
  *   SiftMutDocData, uint32 hash[nterms], uint8 tf[nterms], uint8 len[nterms],
- *   term bytes (concatenated, sum(len) = termbytes)
+ *   term bytes (concatenated, sum(len) = termbytes), zero pad to 4 bytes.
+ * A doc that does not fit a page is split into pieces: the first carries
+ * dl, the others SIFT_MUT_CONT. All pieces of a doc are adjacent in one lane.
  */
 typedef struct SiftMutDocData
 {
@@ -206,6 +216,7 @@ typedef struct SiftMutDocData
 	uint16		nterms;
 	uint16		dl;
 	uint16		termbytes;
+	uint16		reserved;
 } SiftMutDocData;
 
 /*
