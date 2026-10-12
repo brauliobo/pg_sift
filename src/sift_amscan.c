@@ -82,6 +82,8 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	SiftQuery **queries = palloc(scan->numberOfKeys * sizeof(SiftQuery *));
 	int64		ntids = 0;
 
+	if (scan->instrument)
+		scan->instrument->nsearches++;
 	if (scan_queries(scan, st, queries))
 	{
 		SiftMatchIter *it = sift_iter_begin(sift_plan_bind(st, queries, scan->numberOfKeys, 0));
