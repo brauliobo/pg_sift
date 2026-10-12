@@ -1,0 +1,276 @@
+-- DDL around sift indexes: partitioned tables, ALTER INDEX options and the analyzer mismatch ("REINDEX required"),
+-- REINDEX (also CONCURRENTLY), RENAME, unsupported index shapes, partial and expression indexes, temp tables, DROP EXTENSION
+CREATE EXTENSION sift;
+CREATE FUNCTION ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM %s WHERE body @@> %L', tbl, q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION seq_ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM %s WHERE body @@> %L', tbl, q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION agree(tbl regclass, q text) RETURNS text LANGUAGE sql
+	RETURN ids(tbl, q) || CASE WHEN ids(tbl, q) = seq_ids(tbl, q) THEN '' ELSE ' MISMATCH ' || seq_ids(tbl, q) END;
+-- partitioned table: the index on the parent creates one per partition, also for partitions attached later
+CREATE TABLE p (id int, body text) PARTITION BY RANGE (id);
+CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (1000);
+CREATE TABLE p2 PARTITION OF p FOR VALUES FROM (1000) TO (2000);
+INSERT INTO p SELECT i, 'doc' || i % 10 || ' common' FROM generate_series(0, 1999) i;
+CREATE INDEX p_idx ON p USING sift (body) WITH (mutable_limit = 64);
+CREATE TABLE p3 PARTITION OF p FOR VALUES FROM (2000) TO (3000);
+INSERT INTO p3 SELECT i, 'doc3 common' FROM generate_series(2000, 2100) i;
+CREATE TABLE p4 (id int, body text);
+INSERT INTO p4 SELECT i, 'doc3 attached' FROM generate_series(3000, 3050) i;
+ALTER TABLE p ATTACH PARTITION p4 FOR VALUES FROM (3000) TO (4000);
+SELECT c.relname, c.relkind, i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+  JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift' ORDER BY 1;
+   relname   | relkind | indisvalid 
+-------------+---------+------------
+ p1_body_idx | i       | t
+ p2_body_idx | i       | t
+ p3_body_idx | i       | t
+ p4_body_idx | i       | t
+ p_idx       | I       | t
+(5 rows)
+
+SELECT agree('p', 'doc3'), agree('p', 'common'), agree('p', 'attached'), agree('p', 'doc3 NOT common');
+   agree    |    agree     |   agree   |   agree   
+------------+--------------+-----------+-----------
+ 352:560925 | 2101:2206050 | 51:154275 | 51:154275
+(1 row)
+
+SELECT tableoid::regclass AS part, count(*) FROM p WHERE body @@> 'doc3' GROUP BY 1 ORDER BY 1;
+ part | count 
+------+-------
+ p1   |   100
+ p2   |   100
+ p3   |   101
+ p4   |    51
+(4 rows)
+
+SELECT sift.verify(c.oid::regclass, true) FROM pg_class c WHERE c.relname ~ '^p[0-9]_body_idx' ORDER BY c.relname;
+ verify 
+--------
+ 
+ 
+ 
+ 
+(4 rows)
+
+ALTER TABLE p DETACH PARTITION p2;
+SELECT agree('p', 'common');
+    agree    
+-------------
+ 1101:706550
+(1 row)
+
+ALTER TABLE p ATTACH PARTITION p2 FOR VALUES FROM (1000) TO (2000);
+UPDATE p SET body = 'moved common' WHERE id IN (5, 1500, 2050);
+DELETE FROM p WHERE id % 7 = 0;
+SELECT agree('p', 'common'), agree('p', 'moved');
+    agree     | agree  
+--------------+--------
+ 1800:1890000 | 3:3555
+(1 row)
+
+REINDEX INDEX p_idx;
+REINDEX TABLE p;
+SELECT agree('p', 'common'), agree('p', 'moved');
+    agree     | agree  
+--------------+--------
+ 1800:1890000 | 3:3555
+(1 row)
+
+VACUUM p;
+SELECT agree('p', 'common'), agree('p', 'moved');
+    agree     | agree  
+--------------+--------
+ 1800:1890000 | 3:3555
+(1 row)
+
+SELECT sift.verify(c.oid::regclass, true) FROM pg_class c WHERE c.relname ~ '^p[0-9]_body_idx' ORDER BY c.relname;
+ verify 
+--------
+ 
+ 
+ 
+ 
+(4 rows)
+
+DROP TABLE p;
+-- an option change that alters the analyzer needs a REINDEX; reads, writes and verify say so
+CREATE TABLE a (id int, body text);
+INSERT INTO a SELECT i, 'running runner runs cats' FROM generate_series(1, 100) i;
+CREATE INDEX a_idx ON a USING sift (body);
+SELECT agree('a', 'runs'), agree('a', 'run');
+  agree   | agree 
+----------+-------
+ 100:5050 | 0:0
+(1 row)
+
+ALTER INDEX a_idx SET (stemmer = 'english_stem');
+SELECT ids('a', 'run');
+ERROR:  index "a_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+CONTEXT:  SQL statement "SELECT count(*) || ':' || coalesce(sum(id), 0) FROM a WHERE body @@> 'run'"
+PL/pgSQL function ids(regclass,text) line 4 at EXECUTE
+INSERT INTO a VALUES (200, 'x');
+ERROR:  index "a_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+SELECT sift.verify('a_idx');
+ERROR:  sift index "a_idx" was built with other options
+HINT:  REINDEX the index after changing k1, b or analyzer options.
+REINDEX INDEX a_idx;
+SELECT agree('a', 'runs'), agree('a', 'run');
+  agree   |  agree   
+----------+----------
+ 100:5050 | 100:5050
+(1 row)
+
+INSERT INTO a VALUES (200, 'x');
+SELECT sift.verify('a_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+-- k1 and b only change scores: matching keeps working, verify asks for a REINDEX
+ALTER INDEX a_idx SET (k1 = 2.0);
+SELECT agree('a', 'run');
+  agree   
+----------
+ 100:5050
+(1 row)
+
+SELECT sift.verify('a_idx');
+ERROR:  sift index "a_idx" was built with other options
+HINT:  REINDEX the index after changing k1, b or analyzer options.
+REINDEX INDEX a_idx;
+SELECT sift.verify('a_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+ALTER INDEX a_idx RESET (k1, stemmer);
+SELECT ids('a', 'run');
+ERROR:  index "a_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+CONTEXT:  SQL statement "SELECT count(*) || ':' || coalesce(sum(id), 0) FROM a WHERE body @@> 'run'"
+PL/pgSQL function ids(regclass,text) line 4 at EXECUTE
+REINDEX INDEX CONCURRENTLY a_idx;
+SELECT agree('a', 'runs'), agree('a', 'run');
+  agree   | agree 
+----------+-------
+ 100:5050 | 0:0
+(1 row)
+
+SELECT sift.verify('a_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+ALTER INDEX a_idx RENAME TO a_renamed;
+ALTER TABLE a ALTER COLUMN body TYPE varchar;
+SELECT agree('a', 'runs');
+  agree   
+----------
+ 100:5050
+(1 row)
+
+ALTER TABLE a ALTER COLUMN body TYPE text;
+SELECT agree('a', 'runs');
+  agree   
+----------
+ 100:5050
+(1 row)
+
+SELECT sift.verify('a_renamed', true);
+ verify 
+--------
+ 
+(1 row)
+
+-- shapes the access method does not offer
+CREATE INDEX a_bad ON a USING sift (body, id);
+ERROR:  access method "sift" does not support multicolumn indexes
+CREATE INDEX a_bad ON a USING sift (id);
+ERROR:  data type integer has no default operator class for access method "sift"
+HINT:  You must specify an operator class for the index or define a default operator class for the data type.
+CREATE INDEX a_bad ON a USING sift (body) INCLUDE (id);
+ERROR:  access method "sift" does not support included columns
+CREATE UNIQUE INDEX a_bad ON a USING sift (body);
+ERROR:  access method "sift" does not support unique indexes
+CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
+ERROR:  unknown sift stemmer "klingon"
+HINT:  Valid stemmers are "en" and "none".
+CREATE INDEX a_bad ON a USING sift (body) WITH (mutable_limit = 0);
+ERROR:  value 0 out of bounds for option "mutable_limit"
+DETAIL:  Valid values are between "64" and "1048576".
+-- partial and expression indexes
+CREATE INDEX a_part ON a USING sift (body) WHERE id < 50;
+CREATE INDEX a_expr ON a USING sift (lower(body));
+SELECT agree('a', 'runs');
+  agree   
+----------
+ 100:5050
+(1 row)
+
+SELECT count(*) FROM a WHERE body @@> 'runs' AND id < 50;
+ count 
+-------
+    49
+(1 row)
+
+SELECT count(*) FROM a WHERE lower(body) @@> 'runs';
+ count 
+-------
+   100
+(1 row)
+
+SELECT sift.verify('a_part', true), sift.verify('a_expr', true);
+ verify | verify 
+--------+--------
+        | 
+(1 row)
+
+DROP INDEX a_part, a_expr;
+-- temporary tables
+CREATE TEMP TABLE tt (id int, body text);
+INSERT INTO tt SELECT i, 'hello world ' || i FROM generate_series(1, 100) i;
+CREATE INDEX tt_idx ON tt USING sift (body);
+INSERT INTO tt VALUES (101, 'hello late');
+SELECT agree('tt', 'hello'), agree('tt', 'late');
+  agree   | agree 
+----------+-------
+ 101:5151 | 1:101
+(1 row)
+
+SELECT sift.verify('tt_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE tt;
+-- the extension owns the access method: dropping it needs CASCADE and takes the indexes along
+DROP EXTENSION sift;
+ERROR:  cannot drop extension sift because other objects depend on it
+DETAIL:  index a_renamed depends on operator class sift.text_ops for access method sift
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP EXTENSION sift CASCADE;
+NOTICE:  drop cascades to index a_renamed
+SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'a_renamed';
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE a;
+DROP FUNCTION agree(regclass, text), ids(regclass, text), seq_ids(regclass, text);

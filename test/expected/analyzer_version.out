@@ -1,0 +1,63 @@
+-- an index built by another analyzer version (or analyzer options) is refused for reads, writes and verify with a
+-- REINDEX hint, and a REINDEX makes it usable again
+CREATE EXTENSION sift_test CASCADE;
+NOTICE:  installing required extension "sift"
+CREATE TABLE av (id serial, body text);
+INSERT INTO av (body) SELECT 'alpha beta ' || i FROM generate_series(1, 500) i;
+CREATE INDEX av_idx ON av USING sift (body);
+SELECT count(*) FROM av WHERE body @@> 'alpha';
+ count 
+-------
+   500
+(1 row)
+
+-- metapage: u32 analyzer_hash at byte 40 of block 0
+SELECT sift._test_poke('av_idx', 0, 40, 1, 1);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT count(*) FROM av WHERE body @@> 'alpha';
+ERROR:  index "av_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+SELECT id FROM av WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC LIMIT 1;
+ERROR:  index "av_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+INSERT INTO av (body) VALUES ('gamma');
+ERROR:  index "av_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+SELECT sift.verify('av_idx');
+ERROR:  sift index "av_idx" was built with other options
+HINT:  REINDEX the index after changing k1, b or analyzer options.
+SELECT sift.promote('av_idx');
+ promote 
+---------
+       0
+(1 row)
+
+VACUUM av;
+DELETE FROM av WHERE id = 1;
+REINDEX INDEX av_idx;
+SELECT count(*) FROM av WHERE body @@> 'alpha';
+ count 
+-------
+   499
+(1 row)
+
+INSERT INTO av (body) VALUES ('gamma');
+SELECT sift.verify('av_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) FROM av WHERE body @@> 'gamma';
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE av;
+DROP EXTENSION sift_test;
+DROP EXTENSION sift;
