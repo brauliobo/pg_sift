@@ -312,10 +312,11 @@ Hooks used, all present in the PG18 headers (verified):
   - Recheck ≈ heap fetch (0.3 µs hot, 100 µs cold) + tokenization (1–2 ns per byte on the ASCII fast path, ≈ 5 ns per byte with Unicode folding).
   - Top-10 ranked: about k·ln(N/k) ≈ 150 verifications → ≈ 0.5–2 ms.
   - `count(*)` with a phrase: C candidates × (1–10 µs). For C = 100 k that is 0.1–1 s. This is the weak spot.
-- **Mitigation (M7): reloption `phrase_index = pairs`.** It indexes adjacent token pairs as extra terms, `a\x1Fb`, with a separate pair flag in the dictionary.
-  - 2-word phrases become exact bitmap ANDs with no recheck.
-  - n-word phrases become an AND of n−1 pairs plus a recheck that almost never fails.
-  - Cost: ≈ +60–90 % postings, still smaller than positions.
+- **Mitigation (M7): reloption `phrase_index = pairs` (default `none`, REINDEX to change).** It indexes every adjacent token pair as the extra term `\x1F a \x1F b`.
+  - Pair terms start with a byte no word can start with, so they sort before every word in the dictionary: prefix, wildcard, regex and fuzzy scans start above them and never see them, and the matcher rejects them in mutable segments.
+  - Pair leaves are non-scoring, so scores stay the sum over the word leaves and equal the plain index bit for bit.
+  - 2-word phrases become exact bitmap ANDs with no recheck; longer phrases AND their pairs and are still rechecked (rarely failing). Pairs longer than a term are not indexed and fall back to the recheck.
+  - Measured on tier S (300 k documents, AVX2 host): `count(*)` of the phrases p95 126 ms -> 1.5 ms; top-10 phrase unchanged (about 2 ms, it only rechecks candidates that enter the top-k); index 18 MB -> 77 MB, build 1.4 s -> 5.0 s. It is a reloption because it costs 4x the index size on this corpus (most pairs are unique).
 - **Positions rejected** (see (a)).
 - **Fixed-size phrase-candidate caches rejected:** no locality between queries.
 

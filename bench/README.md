@@ -52,7 +52,7 @@ consecutive plain word tokens (PG `simple` parser) from random documents, each a
 
 ## Engine adapters
 
-Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `paradedb`, `sift`) set
+Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `paradedb`, `sift`, `sift_pairs` = sift with `phrase_index = pairs`) set
 `REQUIRES` (extension), `SETUP`, `INDEX` and `RENDER`, which defines two SQL functions:
 `bench_pred(mode, terms)` (WHERE clause, NULL if unsupported) and `bench_rank(mode, terms)`
 (ORDER BY, NULL if no top-k). `sql/harness.sql` composes every statement kind from them
