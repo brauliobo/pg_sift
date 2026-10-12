@@ -31,6 +31,11 @@ for my $am (ams())
 		$node->safe_psql('postgres', $am->{verify}->($idx));
 		agree($node, $am, $t, 'rebuilt after crashed builds');
 
+		# a bulk insert through aminsert, killed mid-flight: its rows must vanish from the index with the abort
+		$hits += crash_during($node, "INSERT INTO $t SELECT g, 'w6 rare torn ' || g FROM generate_series(300001, 600000) g", 150);
+		$node->safe_psql('postgres', $am->{verify}->($idx));
+		agree($node, $am, $t, 'crash in insert');
+
 		for my $delay (0, 50)
 		{
 			$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w1 rare late ' || g"
@@ -45,10 +50,10 @@ for my $am (ams())
 			for my $batch (1 .. 3)
 			{
 				$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w6 merge batch$batch ' || g"
-					. " FROM generate_series(200000 + $batch * 10000, 205000 + $batch * 10000) g;"
+					. " FROM generate_series(1000000 + $batch * 100000, 1040000 + $batch * 100000) g;"
 					. " SELECT sift.promote('$idx')");
 			}
-			$hits += crash_during($node, "SELECT sift.merge('$idx')", 20);
+			$hits += crash_during($node, "SELECT sift.merge('$idx')", 5);
 			$node->safe_psql('postgres', $am->{verify}->($idx));
 			agree($node, $am, $t, 'crash in merge');
 		}
