@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Usage: TIER=S|M bench/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
+# Usage: [COPIES=n] TIER=S|M bench/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
 # Timed sift CREATE INDEX per parallel worker count, on a clone of the restored `bench` database
 # (bench/cluster.sh start; bench/corpus.sh restore). The table is vacuumed and prewarmed before each
 # build, which holds the perf lock. Appends tier, workers, seconds, index MB, segments, load average to
-# $OUT/build-workers.tsv.
+# $OUT/build-workers.tsv. COPIES=n builds on n copies of the corpus (a table big enough for long parallel scan chunks).
 . "$(dirname "$0")/lib.sh"
 
 load_engine sift
@@ -11,7 +11,11 @@ mkdir -p "$OUT"
 EDB=e_build_workers
 PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $EDB WITH (FORCE)" -c "CREATE DATABASE $EDB TEMPLATE bench STRATEGY FILE_COPY"
 export PGDATABASE=$EDB
-q -c "$SETUP" -c "VACUUM (ANALYZE) docs"
+COPIES=${COPIES:-1}
+q -c "$SETUP"
+(( COPIES == 1 )) || q -c "INSERT INTO docs SELECT d.id + g * (SELECT max(id) FROM docs), d.body, d.prop_id, d.score, d.country,
+                             d.created, d.a_count, d.url FROM docs d, generate_series(1, $((COPIES - 1))) g"
+q -c "VACUUM (ANALYZE) docs"
 
 prewarm() {
   q -c "SELECT sum(pg_prewarm(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -32,7 +36,7 @@ for w in ${*:-0 2 4}; do
   prewarm
   load=$(cut -d' ' -f1 /proc/loadavg)
   locked timed_build "$w"
-  printf '%s\t%s\t%.1f\t%s\t%s\t%s\n' "$TIER" "$w" "$(cat "$OUT/build-workers.ms")e-3" \
+  printf '%s\t%s\t%.1f\t%s\t%s\t%s\n' "$TIER$([[ $COPIES == 1 ]] || echo "x$COPIES")" "$w" "$(cat "$OUT/build-workers.ms")e-3" \
     "$(q -c "SELECT round(pg_relation_size('docs_fts') / 1e6)")" "$(q -c "SELECT count(*) FROM sift.segments('docs_fts')")" \
     "$load" | tee -a "$OUT/build-workers.tsv"
 done
