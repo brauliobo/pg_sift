@@ -30,6 +30,11 @@ extern const sift_kernels *sift_k;
 
 #define SIFT_INLINE static inline __attribute__((always_inline))
 
+/* an ISA file without the popcnt target defines SIFT_PC64 as sift_pc64 before including this */
+#ifndef SIFT_PC64
+#define SIFT_PC64 __builtin_popcountll
+#endif
+
 SIFT_INLINE uint64_t sift_ld8(const uint8_t *p) { uint64_t x; memcpy(&x, p, 8); return x; }
 SIFT_INLINE void sift_st8(uint8_t *p, uint64_t x) { memcpy(p, &x, 8); }
 
@@ -95,7 +100,7 @@ SIFT_INLINE int sift_andnot_wide_gen(uint8_t *d, const uint8_t *a, const uint8_t
 SIFT_INLINE uint64_t sift_cnt_wide_gen(const uint8_t *a, const uint8_t *b, uint32_t w)
 {
 	uint64_t c = 0;
-	for (uint32_t q = 0; q < w; q += 8) c += (uint64_t)__builtin_popcountll(sift_ld8(a + q) & sift_ld8(b + q));
+	for (uint32_t q = 0; q < w; q += 8) c += (uint64_t)SIFT_PC64(sift_ld8(a + q) & sift_ld8(b + q));
 	return c;
 }
 
@@ -109,7 +114,7 @@ SIFT_INLINE void sift_grp_set(sift_grp *o, uint32_t gid, uint32_t w, const uint6
 
 #ifdef SIFT_KERN_TMPL
 
-SIFT_INLINE uint32_t KFN(pc)(uint64_t x) { return (uint32_t)__builtin_popcountll(x); }
+SIFT_INLINE uint32_t KFN(pc)(uint64_t x) { return (uint32_t)SIFT_PC64(x); }
 
 static uint64_t KFN(popcount)(const uint8_t *p, size_t n)
 {

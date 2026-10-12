@@ -846,7 +846,7 @@ verify_live(Walk *w)
 
 		if (seg->hdr->ndocs - r < 8 && (v >> (seg->hdr->ndocs - r)) != 0)
 			corrupt(seg, "Liveness bits are set past the last doc.");
-		live += __builtin_popcount(v);
+		live += sift_pc64(v);
 	}
 	UnlockReleaseBuffer(buf);
 	if (live + lh.ndead != seg->hdr->ndocs || ((seg->entry.flags & SIFT_SEG_DIRTY) == 0 && (dirty || lh.ndead)))

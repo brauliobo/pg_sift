@@ -67,7 +67,7 @@ static inline uint32_t nbits(uint64_t x) { return x ? 64 - (uint32_t)__builtin_c
 static inline int pages_empty(const uint64_t *p) { return !(p[0] | p[1] | p[2] | p[3]); }
 static inline uint32_t pages_pc(const uint64_t *p)
 {
-	return (uint32_t)(__builtin_popcountll(p[0]) + __builtin_popcountll(p[1]) + __builtin_popcountll(p[2]) + __builtin_popcountll(p[3]));
+	return sift_pc64(p[0]) + sift_pc64(p[1]) + sift_pc64(p[2]) + sift_pc64(p[3]);
 }
 
 uint32_t sift_w_for(uint32_t maxoff)
@@ -156,7 +156,7 @@ static const uint8_t *get_varint_n(const uint8_t *p, const uint8_t *end, uint64_
 static uint64_t popcount_n(const uint8_t *p, size_t n)
 {
 	uint64_t c = 0;
-	while (n--) c += (uint64_t)__builtin_popcount(*p++);
+	while (n--) c += sift_pc64(*p++);
 	return c;
 }
 
@@ -758,7 +758,7 @@ size_t sift_chunk_encode(const uint64_t pm[4], const uint64_t *om, int ctype, ui
 {
 	uint32_t np = pages_pc(pm), count = 0, maxbit = 1;
 	for (uint32_t k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
-		if (om[k]) count += (uint32_t)__builtin_popcountll(om[k]), maxbit = maxbit > (k % 8) * 64 + nbits(om[k]) ? maxbit : (k % 8) * 64 + nbits(om[k]);
+		if (om[k]) count += sift_pc64(om[k]), maxbit = maxbit > (k % 8) * 64 + nbits(om[k]) ? maxbit : (k % 8) * 64 + nbits(om[k]);
 	uint32_t w = sift_w_for(maxbit), es = w <= 32 ? 2 : 4;
 	int array = ctype == SIFT_CT_ARRAY || (ctype == SIFT_CT_AUTO && (size_t)count * es < 32 + (size_t)np * w);
 	size_t size = 4 + (array ? (size_t)count * es : 32 + (size_t)np * w);

@@ -401,6 +401,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 ## (j) SIMD dispatch
 
 - **Build flags.** There are no per-file CFLAGS. The Makefile appends `-march=x86-64 -mtune=generic -O2 -g -ffp-contract=off` (overriding pg_config's `-march=native`), so the `.so` runs on any x86-64.
+- **No POPCNT outside the SIMD objects.** GCC lowers `__builtin_popcountll` at baseline to a libgcc call, and a distribution's libgcc may be built with POPCNT. Baseline code therefore uses `sift_pc64` (`sift_popcount.h`, SWAR); the AVX2/AVX-512 objects keep the builtin through `SIFT_PC64`. `scripts/isa_check.sh` (in `ci.sh`) fails if a baseline object has a `popcnt` instruction or `__popcount*` reference, or `sift.so` links libgcc's helper.
 - **Kernels** are compiled with function attributes:
   - `SIFT_TARGET_AVX2` = `target("avx2,bmi,bmi2,popcnt")`;
   - `SIFT_TARGET_AVX512` = `target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")`.
