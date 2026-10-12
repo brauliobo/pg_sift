@@ -1,0 +1,61 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s1i s2i s2p s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_seal SELECT g, 'alpha one ' || g || repeat(' filler', 20) FROM generate_series(1000, 1999) g;
+step s2i: INSERT INTO iso_seal SELECT g, 'alpha two ' || g || repeat(' filler', 20) FROM generate_series(2000, 2999) g;
+step s2p: SELECT sift.promote('iso_seal_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s1c: COMMIT;
+step s3q: SELECT iso_agree('iso_seal', 'alpha') AS agree, iso_agree('iso_seal', 'one OR seed') AS agree_or, iso_verify('iso_seal_idx') AS verified;
+agree|agree_or|verified
+-----+--------+--------
+t    |t       |t       
+(1 row)
+
+
+starting permutation: s1b s1i s2p s2i s1a s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_seal SELECT g, 'alpha one ' || g || repeat(' filler', 20) FROM generate_series(1000, 1999) g;
+step s2p: SELECT sift.promote('iso_seal_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2i: INSERT INTO iso_seal SELECT g, 'alpha two ' || g || repeat(' filler', 20) FROM generate_series(2000, 2999) g;
+step s1a: ROLLBACK;
+step s3q: SELECT iso_agree('iso_seal', 'alpha') AS agree, iso_agree('iso_seal', 'one OR seed') AS agree_or, iso_verify('iso_seal_idx') AS verified;
+agree|agree_or|verified
+-----+--------+--------
+t    |t       |t       
+(1 row)
+
+
+starting permutation: s1b s2i s1i s2p s3q s1c s3q
+step s1b: BEGIN;
+step s2i: INSERT INTO iso_seal SELECT g, 'alpha two ' || g || repeat(' filler', 20) FROM generate_series(2000, 2999) g;
+step s1i: INSERT INTO iso_seal SELECT g, 'alpha one ' || g || repeat(' filler', 20) FROM generate_series(1000, 1999) g;
+step s2p: SELECT sift.promote('iso_seal_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3q: SELECT iso_agree('iso_seal', 'alpha') AS agree, iso_agree('iso_seal', 'one OR seed') AS agree_or, iso_verify('iso_seal_idx') AS verified;
+agree|agree_or|verified
+-----+--------+--------
+t    |t       |t       
+(1 row)
+
+step s1c: COMMIT;
+step s3q: SELECT iso_agree('iso_seal', 'alpha') AS agree, iso_agree('iso_seal', 'one OR seed') AS agree_or, iso_verify('iso_seal_idx') AS verified;
+agree|agree_or|verified
+-----+--------+--------
+t    |t       |t       
+(1 row)
+

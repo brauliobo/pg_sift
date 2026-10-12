@@ -1,0 +1,92 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1bitmap s1f s2v s2i s1rest s1check s1c s2check
+step s1bitmap: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id FROM iso_vac WHERE body @@> 'common';
+step s1f: SELECT iso_fetch('c', 100) AS fetched;
+fetched
+-------
+    100
+(1 row)
+
+step s2v: VACUUM iso_vac;
+step s2i: INSERT INTO iso_vac SELECT g, 'common reused ' || g FROM generate_series(5001, 6500) g;
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_vac', 'common') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2check: SELECT iso_agree('iso_vac', 'common') AS agree, iso_agree('iso_vac', 'rare') AS agree_rare, iso_verify('iso_vac_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
+
+starting permutation: s1ranked s1f s2v s2i s1rest s1check s1c s2check
+step s1ranked: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_vac WHERE body @@> 'common' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 100) AS fetched;
+fetched
+-------
+    100
+(1 row)
+
+step s2v: VACUUM iso_vac;
+step s2i: INSERT INTO iso_vac SELECT g, 'common reused ' || g FROM generate_series(5001, 6500) g;
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_vac', 'common') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2check: SELECT iso_agree('iso_vac', 'common') AS agree, iso_agree('iso_vac', 'rare') AS agree_rare, iso_verify('iso_vac_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
+
+starting permutation: s1ranked s1f s2d s2v s1rest s1check s1c s2v s2check
+step s1ranked: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_vac WHERE body @@> 'common' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 100) AS fetched;
+fetched
+-------
+    100
+(1 row)
+
+step s2d: DELETE FROM iso_vac WHERE id % 3 = 0;
+step s2v: VACUUM iso_vac;
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_vac', 'common') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2v: VACUUM iso_vac;
+step s2check: SELECT iso_agree('iso_vac', 'common') AS agree, iso_agree('iso_vac', 'rare') AS agree_rare, iso_verify('iso_vac_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
