@@ -22,9 +22,9 @@ typedef struct SiftRun SiftRun;
 extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt);
 
 /*
- * Adds a document with nterms >= 1 distinct terms; keys must be strictly
- * ascending (the heap build sorts each page, promotion sorts its records).
- * Term bytes are copied.
+ * Adds a document (nterms = 0 and dl = 0 for text without tokens: it still
+ * counts in N); keys must be strictly ascending (the heap build sorts each
+ * page, promotion sorts its records). Term bytes are copied.
  */
 extern void sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
 						 int nterms, uint32 dl);

@@ -18,13 +18,22 @@ SELECT df_class, terms, postings, inline_terms, list_terms, grouped_terms
 FROM sift.segment_postings('t1_idx');
 SELECT sift.verify('t1_idx');
 
--- NULLs, empty and punctuation-only strings are not indexed; duplicates are
+-- NULLs are not indexed; empty and punctuation-only strings are documents
+-- without terms (they count in N), duplicates are separate documents
 CREATE TABLE t2 (id int, body text);
 INSERT INTO t2 VALUES (1, NULL), (2, ''), (3, '  ...  '), (4, 'same text'),
 	(5, 'same text'), (6, 'Same TEXT!'), (7, NULL);
 CREATE INDEX t2_idx ON t2 USING sift (body);
 SELECT ndocs, sum_dl, nterms FROM sift.segments('t2_idx');
 SELECT sift.verify('t2_idx');
+
+-- Only documents without terms: a segment with an empty dictionary
+CREATE TABLE te (body text);
+INSERT INTO te VALUES (''), ('!!!'), (NULL), ('   ');
+CREATE INDEX te_idx ON te USING sift (body);
+SELECT ndocs, sum_dl, nterms, avgdl_ref FROM sift.segments('te_idx');
+SELECT count(*) FROM sift.segment_postings('te_idx');
+SELECT sift.verify('te_idx');
 
 -- UTF-8: accents, CJK, emoji, flags, a 300-byte token (truncated to 255)
 CREATE TABLE t3 (body text);
@@ -96,5 +105,5 @@ SELECT count(*) FROM t2 WHERE body @@> 'same';
 RESET enable_seqscan;
 SELECT count(*) FROM t2 WHERE body @@> 'same';
 
-DROP TABLE t0, t1, t2, t3, t4, t5, tu;
+DROP TABLE t0, t1, t2, te, t3, t4, t5, tu;
 DROP EXTENSION sift;
