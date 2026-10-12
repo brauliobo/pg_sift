@@ -828,6 +828,7 @@ typedef struct SegCurs
 	List	   *posting;			/* SiftPostingCursor * */
 	List	   *ops;				/* sift_cur * */
 	SiftPostingCursor ***leafpc;	/* [leaf] -> the cursors of the leaf's terms in this segment */
+	sift_cur  **leafor;				/* [leaf] -> its OR, for the multi-term scoring leaves the ranker narrows per unit */
 } SegCurs;
 
 /* AND / OR of k >= 1 cursors; the single cursor itself for k = 1 */
@@ -853,17 +854,23 @@ leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, MemoryContext cx
 {
 	sift_cur  **kid = MemoryContextAlloc(cx, Max(l->nterms[s], 1) * sizeof(sift_cur *));
 	SiftPostingCursor **pc = MemoryContextAlloc(cx, Max(l->nterms[s], 1) * sizeof(SiftPostingCursor *));
+	bool		narrowed = cs && l->scoring && l->nterms[s] > 1;
+	sift_cur   *orc = NULL;
 
 	for (int i = 0; i < l->nterms[s]; i++)
 	{
 		pc[i] = sift_post_open(&p->seg[s]->sr, &l->terms[s][i].info, cx);
 		kid[i] = sift_post_cursor(pc[i]);
-		if (cs)
+		if (cs && !narrowed)
 			cs->posting = lappend(cs->posting, pc[i]);
 	}
+	if (l->nterms[s] > 0)
+		orc = op_cursor(cs, cx, EN_OR, kid, l->nterms[s]);
 	if (cs)
 		cs->leafpc[l - p->leaves] = pc;
-	return l->nterms[s] == 0 ? NULL : op_cursor(cs, cx, EN_OR, kid, l->nterms[s]);
+	if (narrowed)
+		cs->leafor[l - p->leaves] = orc;
+	return orc;
 }
 
 /* Cursor over the segment's matches of n, NULL when there are none */
@@ -1107,6 +1114,15 @@ typedef struct RkTerm
 	SiftPostingCursor *pc;			/* the tree's cursor: bounds, clone source */
 	SiftPostingCursor *sc;			/* own cursor for scoring: the tree's seeks skip groups */
 	float4		w;
+	const SiftGroupBounds *gb;		/* bounds per SB, ascending gid */
+	int			ngb;
+	float4		ubw;				/* bound weight: ub = ubw * blk_bound */
+	float4		tub;				/* the largest ub of the term in the segment */
+	const SiftGroupBounds *bb;		/* bounds in the unit's SB */
+	bool		live;				/* may lift a document over theta somewhere in the unit */
+	bool		act;				/* scores in the current block */
+	uint32		pce;				/* RankSeg.epoch the cursors are positioned in */
+	uint32		sce;
 	const sift_grp *g;				/* NULL: no postings in this SB */
 	uint8	   *tf;
 	uint32		tfcap;
@@ -1120,7 +1136,9 @@ typedef struct RankSeg
 	SegCurs		cs;
 	sift_cur   *root;
 	int64		last;				/* last SB requested from the cursors */
+	uint32		epoch;				/* bumped when the cursors go back to the start */
 	LeafUB	   *lub;				/* [leaf] */
+	float4	   *lmax;				/* [leaf] the largest ub of its terms */
 	RkTerm	   *term;
 	int			nterm;
 	int		   *first;				/* [leaf] index of its first term */
@@ -1161,6 +1179,7 @@ struct SiftRanker
 	Unit	   *unit;
 	int			nunit;
 	RankWork   *wk;
+	float4	   *leafub;				/* [leaf] scratch: its ub in the current block */
 	int64		k;
 	int64		K;					/* hits kept by the current search */
 	SiftHit    *hit;				/* keyed by the visible tuple's ctid */
@@ -1180,11 +1199,16 @@ seg_rewind(RankSeg *rs)
 
 	foreach(lc, rs->cs.posting)
 		sift_post_rewind(lfirst(lc));
-	foreach(lc, rs->cs.ops)
-		((sift_cur *) lfirst(lc))->state = 0;
-	for (int i = 0; i < rs->nterm; i++)
-		if (rs->term[i].sc)
-			sift_post_rewind(rs->term[i].sc);
+	rs->epoch++;
+}
+
+/* The cursors of the narrowed leaves rewind when used first after a rewind of the segment */
+static inline void
+term_sync(RankSeg *rs, SiftPostingCursor *pc, uint32 *epoch)
+{
+	if (*epoch != rs->epoch)
+		sift_post_rewind(pc);
+	*epoch = rs->epoch;
 }
 
 static int
@@ -1332,6 +1356,26 @@ unit_cmp(const void *a, const void *b)
 	return x->seg - y->seg;
 }
 
+/* Per-term bound weights of a scoring leaf, and the largest ub of the leaf */
+static void
+term_bounds(SiftPlan *p, RankSeg *rs, int leaf)
+{
+	double		ref = p->seg[rs->s]->hdr->avgdl_ref;
+
+	for (int j = 0; j < p->leaves[leaf].nterms[rs->s]; j++)
+	{
+		RkTerm	   *t = &rs->term[rs->first[leaf] + j];
+		uint8		top = 0;
+
+		t->gb = sift_post_bounds(t->pc, &t->ngb);
+		for (int k = 0; k < t->ngb; k++)
+			top = Max(top, t->gb[k].bound);
+		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref);
+		t->tub = t->ubw * (float4) top;
+		rs->lmax[leaf] = Max(rs->lmax[leaf], t->tub);
+	}
+}
+
 static void
 rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 {
@@ -1342,10 +1386,12 @@ rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 	rs->s = s;
 	rs->last = -1;
 	rs->cs.leafpc = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(SiftPostingCursor **));
+	rs->cs.leafor = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(sift_cur *));
 	rs->root = seg_cursor(p, s, p->root, &rs->cs, p->mcxt);
 	if (rs->root == NULL)
 		return;
 	rs->lub = MemoryContextAllocZero(cx, Max(p->nleaves, 1) * sizeof(LeafUB));
+	rs->lmax = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(float4));
 	rs->first = MemoryContextAlloc(p->mcxt, Max(p->nleaves, 1) * sizeof(int));
 	for (int i = 0; i < p->nleaves; i++)
 	{
@@ -1362,6 +1408,7 @@ rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 				rs->term[rs->first[i] + j].pc = rs->cs.leafpc[i][j];
 				rs->term[rs->first[i] + j].w = p->leaves[i].terms[s][j].w;
 			}
+			term_bounds(p, rs, i);
 			leaf_bounds(p, rs, i, cx);
 		}
 }
@@ -1380,6 +1427,7 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->k = k;
 	r->tmpcx = AllocSetContextCreate(plan->mcxt, "sift candidate", ALLOCSET_DEFAULT_SIZES);
 	r->wk = MemoryContextAllocAligned(plan->mcxt, sizeof(RankWork), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	r->leafub = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
 	r->seg = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(RankSeg));
 	for (int s = 0; s < plan->nsegs; s++)
 	{
@@ -1448,9 +1496,84 @@ term_decode(MemoryContext cx, RkTerm *t)
 }
 
 static inline bool
-term_in_block(const RkTerm *t, int b)
+term_has(const RkTerm *t, int b)
 {
 	return t->g && (t->g->pages[b / 4] >> ((b % 4) * 16) & 0xffff) != 0;
+}
+
+/* Does the term score block b: it has postings there and can still matter (block_terms) */
+static inline bool
+term_in_block(const RkTerm *t, int b)
+{
+	return t->act && term_has(t, b);
+}
+
+/* The bounds of a term's SB gid */
+static const SiftGroupBounds *
+term_bound_at(const RkTerm *t, uint32 gid)
+{
+	int			lo = 0,
+				hi = t->ngb - 1;
+
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (t->gb[mid].gid < gid)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	Assert(t->gb[lo].gid == gid);
+	return &t->gb[lo];
+}
+
+/* The score bound of the leaves in order, with leaf (when >= 0) bounded by v instead */
+static float4
+sum_ub(const SiftPlan *p, const float4 *ub, int leaf, float4 v)
+{
+	float4		s = 0;
+
+	for (int i = 0; i < p->nleaves; i++)
+		s += i == leaf ? v : ub[i];
+	return s;
+}
+
+/*
+ * Marks the terms that can lift a document over theta in block b: a term
+ * whose own bound, with the other leaves at their best, cannot exceed theta
+ * never decides a selected score (the leaf takes the max over its terms), so
+ * it is not scored. False when no term can.
+ */
+static bool
+block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub)
+{
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		RkTerm	   *t = rs->term + rs->first[i];
+
+		ub[i] = 0;
+		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[rs->s]; j++)
+		{
+			t[j].act = term_has(&t[j], b);
+			if (t[j].act)
+				ub[i] = Max(ub[i], t[j].ubw * (float4) t[j].bb->blk_bound[b]);
+		}
+	}
+	if (!(sum_ub(p, ub, -1, 0) > theta))
+		return false;
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		RkTerm	   *t = rs->term + rs->first[i];
+
+		for (int j = 0; p->leaves[i].scoring && p->leaves[i].nterms[rs->s] > 1 && j < p->leaves[i].nterms[rs->s]; j++)
+		{
+			float4		v = t[j].ubw * (float4) (t[j].act ? t[j].bb->blk_bound[b] : 0);
+
+			t[j].act = t[j].act && (v >= ub[i] || sum_ub(p, ub, i, v) > theta);
+		}
+	}
+	return true;
 }
 
 /* Builds the term's mask in wk->tm, decoding its tf on first use */
@@ -1719,6 +1842,61 @@ order_blocks(int *order, int n, const float4 *ub)
 	}
 }
 
+static sift_cur *
+term_cursor(RankSeg *rs, RkTerm *t)
+{
+	term_sync(rs, t->pc, &t->pce);
+	return sift_post_cursor(t->pc);
+}
+
+/*
+ * A term of a multi-term leaf that cannot lift a score over theta anywhere
+ * (its best ub with the other leaves at theirs) neither matches nor scores:
+ * the documents it alone matches cannot be selected. The leaf's OR holds the
+ * other terms only (never none: an empty OR is not a cursor).
+ */
+static void
+unit_terms(SiftPlan *p, RankSeg *rs, float4 theta)
+{
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		RkTerm	   *t = rs->term + rs->first[i];
+		sift_cur   *orc = rs->cs.leafor[i];
+		int			nt = p->leaves[i].nterms[rs->s],
+					nlive = 0;
+
+		for (int j = 0; p->leaves[i].scoring && j < nt; j++)
+		{
+			t[j].g = NULL;
+			t[j].decoded = false;
+			t[j].live = nt == 1 || sum_ub(p, rs->lmax, i, t[j].tub) > theta;
+			if (orc && t[j].live)
+				orc->op.kid[nlive++] = term_cursor(rs, &t[j]);
+		}
+		if (orc && nlive == 0)
+			orc->op.kid[nlive++] = term_cursor(rs, &t[0]);
+		if (orc)
+			orc->op.k = nlive;
+	}
+}
+
+/* The term's own cursor at the unit's SB; the tree's seeks skip groups of branches that do not match, which still score */
+static void
+term_seek(SiftPlan *p, RankSeg *rs, RkTerm *t, uint32 gid)
+{
+	const sift_grp *g;
+
+	if (t->sc == NULL)
+		t->sc = sift_post_clone(t->pc, p->mcxt);
+	term_sync(rs, t->sc, &t->sce);
+	g = sift_seek(sift_post_cursor(t->sc), gid);
+	if (g && g->gid == gid)
+	{
+		t->g = g;
+		t->bb = term_bound_at(t, gid);
+	}
+}
+
 static void
 rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 {
@@ -1727,12 +1905,16 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	SiftSegment *seg = p->seg[u->seg];
 	const sift_grp *g;
 	SiftDocChunk dc;
+	float4		theta = sift_kern_topk_theta(tk);
 	int			order[SIFT_BLKS_PER_SB],
 				n = 0;
 
 	if ((int64) u->gid < rs->last)
 		seg_rewind(rs);
 	rs->last = u->gid;
+	unit_terms(p, rs, theta);
+	for (ListCell *lc = list_head(rs->cs.ops); lc; lc = lnext(rs->cs.ops, lc))
+		((sift_cur *) lfirst(lc))->state = 0;
 	g = sift_seek(rs->root, u->gid);
 	p->stats.sb_scanned++;
 	if (!g || g->gid != u->gid || !sift_seg_docs(seg, u->gid, &dc))
@@ -1741,31 +1923,20 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		return;
 	}
 	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring)
-			for (int j = 0; j < p->leaves[i].nterms[u->seg]; j++)
-			{
-				RkTerm	   *t = &rs->term[rs->first[i] + j];
-				const sift_grp *tg;
-
-				/* the tree's seeks skip groups of branches that do not match, which still score */
-				if (t->sc == NULL)
-					t->sc = sift_post_clone(t->pc, p->mcxt);
-				tg = sift_seek(sift_post_cursor(t->sc), u->gid);
-
-				t->g = tg && tg->gid == u->gid ? tg : NULL;
-				t->decoded = false;
-			}
+		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[u->seg]; j++)
+			if (rs->term[rs->first[i] + j].live)
+				term_seek(p, rs, &rs->term[rs->first[i] + j], u->gid);
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
 		if (g->pages[b / 4] >> ((b % 4) * 16) & 0xffff)
 			order[n++] = b;
 	order_blocks(order, n, u->ub);
 	for (int i = 0; i < n; i++)
 	{
-		float4		theta = sift_kern_topk_theta(tk);
 		int			b = order[i],
 					nsel;
 
-		if (!(u->ub[b] > theta))
+		theta = sift_kern_topk_theta(tk);
+		if (!(u->ub[b] > theta) || !block_terms(p, rs, b, theta, r->leafub))
 		{
 			p->stats.blocks_skipped++;
 			continue;
