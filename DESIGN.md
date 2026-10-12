@@ -207,7 +207,8 @@ A header page holds the extent table and the sections table. Its data is a logic
     - **Overlapping SBs:** decode, OR (disjoint by I1), re-encode.
     - **Dirty SBs:** AND with liveness, dropping dead postings. This is the only garbage collection. A forced merge (`sift.merge`) also rewrites a lone segment that has dirty SBs, so its dead terms leave the dictionary.
   - Bounds are recomputed only for rewritten chunks.
-  - Memory is O(chunks in flight), not O(segment). Merges run only in maintenance contexts (worker, vacuum, manual), never in the foreground.
+  - Memory is O(chunks in flight), not O(segment). Merges run in maintenance contexts (worker, vacuum, manual) and, as back-pressure, in the foreground (next item).
+- **Directory back-pressure.** The directory holds 128 entries. When the async worker lags, a sealing backend that finds 112 or more entries (`ROOM_SEGMENTS`) waits for the maintenance lock and promotes and merges until the directory is below that, before it seals. An insert never fails for lack of entries and memory stays bounded (the active segment is capped by `mutable_limit`). Cost: while VACUUM holds the maintenance lock (all of `ambulkdelete`), such an inserter waits. An error remains only if 112 entries cannot be merged.
 - **Rejected:**
   - *In-place mutable term trees*: one page write per term per insert, so ≈ 100× the WAL of an append record.
   - *Shared-memory mutable buffers* (DSM registry): data would be lost on crash unless WAL-logged anyway, and they add a second search path.
