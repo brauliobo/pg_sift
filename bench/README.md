@@ -102,8 +102,9 @@ bench/remote.sh clean                        # keep dumps; `clean all` removes ~
 ```
 
 sift on the same host, in the same session as the baselines:
-`bench/remote.sh sh 'nice make USE_PGXS=1 -j4 && make USE_PGXS=1 DESTDIR=$SIFT_ROOT install'`, then
-`bench/remote.sh run 'TIER=M bench/run.sh sift'` (the cluster picks the extension up from `$SIFT_ROOT`).
+`bench/remote.sh sync && bench/remote.sh sift` (builds with the remote PG and installs into `$SIFT_ROOT`),
+then `bench/remote.sh quick sift` (the standard suite (timed sections hold `flock /tmp/sift-perf.lock`), rebuilding sift
+first) or `bench/remote.sh run 'TIER=M bench/run.sh sift'` (the cluster picks the extension up from `$SIFT_ROOT`).
 
 ## Correctness
 

@@ -4,7 +4,9 @@
 #   bench/remote.sh sync          copy the repo (without .git and ignored files), S/M dumps, pgx-bm25 source
 #   bench/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
 #                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench
-#   bench/remote.sh quick [ENGINE...]  run the standard suite there (bench/quick.sh) and pull the results
+#   bench/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/sift-root (SIFT_ROOT)
+#   bench/remote.sh quick [ENGINE...]  run the standard suite there (bench/quick.sh, timed sections hold the shared perf lock,
+#                                 sift rebuilt first when selected) and pull the results
 #   bench/remote.sh run 'CMD'     run CMD detached in the remote repo with the remote env (log: bench-root/logs)
 #   bench/remote.sh sh 'CMD'      run CMD in the foreground
 #   bench/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
@@ -55,7 +57,9 @@ case ${1:-} in
   setup) rsh "bash -s" < <(setup_script) ;;
   run)   rsh "mkdir -p \$SIFT_BENCH_ROOT/logs; setsid nohup bash -c $(printf %q "$2") >\$SIFT_BENCH_ROOT/logs/run-\$(date +%s).log 2>&1 </dev/null &" ;;
   sh)    rsh "$2" ;;
-  quick) rsh "bench/fetch.sh xbench && bench/quick.sh ${*:2}"; "$0" pull ;;
+  sift)  rsh "nice make -s USE_PGXS=1 -j4 && make -s USE_PGXS=1 DESTDIR=\$SIFT_ROOT install" ;;
+  quick) case " ${*:2} " in *" sift "*|"  ") "$0" sift ;; esac
+         rsh "bench/fetch.sh xbench && uptime && bench/quick.sh ${*:2}"; "$0" pull ;;
   pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
   clean)
     rsh "for t in S M L; do TIER=\$t bench/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
