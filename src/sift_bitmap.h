@@ -122,6 +122,8 @@ void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
 void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
 void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf);   /* kid[0] AND NOT kid[1] */
 static inline const sift_grp *sift_seek(sift_cur *c, uint32_t gid) { return c->seek(c, gid); }
+/* the group of exactly gid or NULL; operators do not look past gid, so a miss costs no leapfrogging */
+const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid);
 static inline const sift_grp *sift_next(sift_cur *c) { return c->seek(c, c->state ? c->g.gid + 1 : 0); }
 
 /* whole-stream helpers */

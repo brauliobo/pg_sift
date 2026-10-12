@@ -27,6 +27,9 @@ SELECT q, am_ids(q, true) = am_ids(q, false) AS same, am_ids(q, true) AS rows FR
 
 -- ranked top-10 of a conjunction with many matches
 SELECT count(*) AS ranked FROM (SELECT id FROM am WHERE body @@> 'common AND mid1 AND w7' ORDER BY sift.score(ctid) DESC LIMIT 10) r;
+-- ranked units seek their own group only: nested OR / AND NOT across many superblocks
+SELECT count(*) AS ranked_nested, bool_and(id % 700 = 7 OR id % 700 = 8) AS nested_ok FROM
+	(SELECT id FROM am WHERE body @@> 'common AND (x7 OR x8) AND NOT mid0 AND w7' ORDER BY sift.score(ctid) DESC LIMIT 30) r;
 SELECT sift.verify('am_idx', true);
 DROP TABLE am;
 DROP FUNCTION am_ids;
