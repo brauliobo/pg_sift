@@ -1,0 +1,223 @@
+-- Pure-SQL reference implementation of sift semantics: the correctness oracle.
+--
+-- Library use (other tests, test/diff): \set sift_ref_lib 1 then \ir reference.sql
+-- (definitions only, no output). Run alone it also executes its self-tests.
+--
+--   sift_ref.tokens(doc, idx)       analyzer: sift.tokenize when available, else the
+--                                   built-in regexp fallback (exact for ASCII)
+--   sift_ref.parse(q) / render(ast) SiftQL -> raw AST (jsonb) -> SiftQL
+--   sift_ref.analyze(ast, idx)      raw AST -> analyzed AST
+--   sift_ref.match(doc, q, idx)     per-document evaluation (seq-scan semantics)
+--   sift_ref.load(tbl, key, ...)    snapshot a corpus into session temp tables
+--   sift_ref.load_index(idx)        same, taking table, key, predicate, k1, b from an index
+--   sift_ref.search(q)              every match with its exact float4 BM25 score
+--   sift_ref.topk(q, k)             ranked: score DESC, ctid ASC
+--   sift_ref.count(q)               count(*) semantics
+--
+-- Statistics (N, avgdl, df) are those of the loaded rows, which equal sift's only
+-- when no indexed-but-unvacuumed versions exist (fresh build, REINDEX).
+--
+-- Canonical float4 evaluation (DESIGN.md (a).4, sift_kernels.h); every step is
+-- rounded to float4 exactly as C float arithmetic with -ffp-contract=off:
+--   idf   = (float4) log(1.0 + (N - df + 0.5) / (df + 0.5))          [double]
+--   avgdl = (float4) ((double) sum_dl / N)
+--   k1, b = (float4) reloption doubles
+--   w     = (boost * idf) * (k1 + 1)
+--   knorm = k1 * ((1 - b) + (b * dl) / avgdl)
+--   s     = w * (tf / (tf + knorm))       tf <= 255, dl <= 65535
+--   score = ((0 + s_1) + s_2) + ...  over scoring units in query pre-order: a
+--           term is one unit, a phrase one unit per distinct term (first
+--           occurrence order), an expansion leaf one unit = max over its
+--           expansions. A unit counts when the document matches the query and
+--           the unit's leaf matches the document; NOT subtrees never count.
+--           Group boosts multiply into leaves, root first.
+--
+-- sift_ref.mutant (GUC) injects known bugs for mutation testing of the harness.
+\set sift_ref_echo :ECHO
+\set ECHO none
+\if :{?sift_ref_lib}
+\else
+-- Self-tests (built-in analyzer, so the output does not depend on sift.tokenize)
+SET sift_ref.tokenizer = builtin;
+SELECT sift_ref.tokens('Héllo, WORLD! e-mail 🍕pizza 42abc Straße ÇA ﬁne');
+                       tokens                        
+-----------------------------------------------------
+ {hello,world,e,mail,🍕,pizza,42abc,strasse,ca,fine}
+(1 row)
+
+SELECT sift_ref.tokens(''), sift_ref.tokens('  !! ... '), sift_ref.tokens(NULL);
+ tokens | tokens | tokens 
+--------+--------+--------
+ {}     | {}     | 
+(1 row)
+
+SELECT octet_length(t[1]) AS long_token_bytes FROM sift_ref.tokens(repeat('ж', 200)) t;
+ long_token_bytes 
+------------------
+              254
+(1 row)
+
+-- parse -> render round trip and the analyzed form
+SELECT q, sift_ref.render(sift_ref.parse(q)) AS rendered, sift_ref.analyze_query(q) AS analyzed
+FROM unnest(ARRAY[
+	'foo', 'foo bar', 'foo AND bar OR baz', 'a OR b c', 'NOT x foo', 'foo -bar',
+	'"Quick Brown" fox^2', '(a OR b)^1.5 c', '{red green blue}', 'pre* wi?d*c', '/col(o|ou)r/',
+	'fuzzy~ fuzzy~2 ab~', 'e-mail', 'foo\(bar', '\AND and', '+++ foo', '"" foo', 'a NOT +++',
+	'Ünïcödé CAFÉ', 'foo^0']) q;
+          q          |           rendered           |                                                                                                             analyzed                                                                                                             
+---------------------+------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ foo                 | foo                          | {"b": 1, "op": "term", "term": "foo"}
+ foo bar             | foo AND bar                  | {"op": "and", "args": [{"b": 1, "op": "term", "term": "foo"}, {"b": 1, "op": "term", "term": "bar"}]}
+ foo AND bar OR baz  | foo AND bar OR baz           | {"op": "or", "args": [{"op": "and", "args": [{"b": 1, "op": "term", "term": "foo"}, {"b": 1, "op": "term", "term": "bar"}]}, {"b": 1, "op": "term", "term": "baz"}]}
+ a OR b c            | a OR b AND c                 | {"op": "or", "args": [{"b": 1, "op": "term", "term": "a"}, {"op": "and", "args": [{"b": 1, "op": "term", "term": "b"}, {"b": 1, "op": "term", "term": "c"}]}]}
+ NOT x foo           | NOT x AND foo                | {"op": "and", "args": [{"b": 1, "op": "term", "term": "foo"}, {"op": "not", "args": [{"b": 1, "op": "term", "term": "x"}]}]}
+ foo -bar            | foo AND -bar                 | {"op": "and", "args": [{"b": 1, "op": "term", "term": "foo"}, {"b": 1, "op": "term", "term": "bar"}]}
+ "Quick Brown" fox^2 | "Quick Brown" AND fox^2      | {"op": "and", "args": [{"b": 1, "op": "phrase", "terms": ["quick", "brown"]}, {"b": 2, "op": "term", "term": "fox"}]}
+ (a OR b)^1.5 c      | (a OR b)^1.5 AND c           | {"op": "and", "args": [{"op": "or", "args": [{"b": 1.5, "op": "term", "term": "a"}, {"b": 1.5, "op": "term", "term": "b"}]}, {"b": 1, "op": "term", "term": "c"}]}
+ {red green blue}    | {red green blue}             | {"op": "or", "args": [{"b": 1, "op": "term", "term": "red"}, {"b": 1, "op": "term", "term": "green"}, {"b": 1, "op": "term", "term": "blue"}]}
+ pre* wi?d*c         | pre* AND wi?d*c              | {"op": "and", "args": [{"b": 1, "op": "exp", "re": "^pre", "kind": "prefix"}, {"b": 1, "op": "exp", "re": "^wi.d.*c$", "kind": "wildcard"}]}
+ /col(o|ou)r/        | /col(o|ou)r/                 | {"b": 1, "op": "exp", "re": "^(?:col(o|ou)r)$", "kind": "regex"}
+ fuzzy~ fuzzy~2 ab~  | fuzzy~1 AND fuzzy~2 AND ab~1 | {"op": "and", "args": [{"b": 1, "op": "exp", "dist": 1, "kind": "fuzzy", "word": "fuzzy"}, {"b": 1, "op": "exp", "dist": 2, "kind": "fuzzy", "word": "fuzzy"}, {"b": 1, "op": "exp", "dist": 1, "kind": "fuzzy", "word": "ab"}]}
+ e-mail              | e-mail                       | {"b": 1, "op": "phrase", "terms": ["e", "mail"]}
+ foo\(bar            | foo\(bar                     | {"b": 1, "op": "phrase", "terms": ["foo", "bar"]}
+ \AND and            | \AND AND and                 | {"op": "and", "args": [{"b": 1, "op": "term", "term": "and"}, {"b": 1, "op": "term", "term": "and"}]}
+ +++ foo             | +++ AND foo                  | {"b": 1, "op": "term", "term": "foo"}
+ "" foo              | "" AND foo                   | {"b": 1, "op": "term", "term": "foo"}
+ a NOT +++           | a AND NOT +++                | {"b": 1, "op": "term", "term": "a"}
+ Ünïcödé CAFÉ        | Ünïcödé AND CAFÉ             | {"op": "and", "args": [{"b": 1, "op": "term", "term": "unicode"}, {"b": 1, "op": "term", "term": "cafe"}]}
+ foo^0               | foo^0                        | {"b": 0, "op": "term", "term": "foo"}
+(20 rows)
+
+-- syntax and limit errors carry SQLSTATE and position
+DO $$
+DECLARE
+	q text;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['', '   ', 'foo AND', 'OR foo', '(foo', 'foo)', 'NOT foo', 'a OR NOT b',
+		'{}', '"open', '/open', 'foo^', 'foo^10001', 'a;b', 'NOT (a b)', 'foo bar\', 'a (NOT b)', '{a "b"}'] LOOP
+		BEGIN
+			PERFORM sift_ref.parse(q);
+			RAISE NOTICE '% -> ok', q;
+		EXCEPTION WHEN OTHERS THEN
+			RAISE NOTICE '% -> % %', q, SQLSTATE, SQLERRM;
+		END;
+	END LOOP;
+END $$;
+NOTICE:   -> 42601 sift_ref: syntax error at position 1
+NOTICE:      -> 42601 sift_ref: syntax error at position 4
+NOTICE:  foo AND -> 42601 sift_ref: syntax error at position 8
+NOTICE:  OR foo -> 42601 sift_ref: syntax error at position 1
+NOTICE:  (foo -> 42601 sift_ref: syntax error at position 5
+NOTICE:  foo) -> 42601 sift_ref: syntax error at position 4
+NOTICE:  NOT foo -> 42601 sift_ref: NOT without a positive AND sibling at position 1
+NOTICE:  a OR NOT b -> 42601 sift_ref: NOT without a positive AND sibling at position 6
+NOTICE:  {} -> 42601 sift_ref: syntax error at position 2
+NOTICE:  "open -> 42601 sift_ref: unterminated " at position 1
+NOTICE:  /open -> 42601 sift_ref: unterminated / at position 1
+NOTICE:  foo^ -> 42601 sift_ref: syntax error at position 4
+NOTICE:  foo^10001 -> 54000 sift_ref: boost out of range [0, 10000] at position 4
+NOTICE:  a;b -> 42601 sift_ref: syntax error at position 2
+NOTICE:  NOT (a b) -> 42601 sift_ref: NOT without a positive AND sibling at position 1
+NOTICE:  foo bar\ -> 42601 sift_ref: dangling escape at position 8
+NOTICE:  a (NOT b) -> ok
+NOTICE:  {a "b"} -> 42601 sift_ref: syntax error at position 4
+-- BM25: float4 result vs the float8 formula, and pinned bit patterns
+SELECT tf, dl, df, float4send(s) AS bits, s, abs(s - f8) / f8 < 1e-6 AS close
+FROM (VALUES (1, 10, 1), (3, 100, 50), (255, 65535, 999), (300, 70000, 1000), (2, 0, 7)) v(tf, dl, df),
+	LATERAL (SELECT sift_ref.bm25(tf, dl, df, 1000, 12.5::real, 1.2::float8::real, 0.75::float8::real, 1.5::real) AS s,
+		1.5 * ln(1 + (1000 - df + 0.5) / (df + 0.5)) * 2.2 * least(tf, 255)
+			/ (least(tf, 255) + 1.2 * (0.25 + 0.75 * least(dl, 65535) / 12.5)) AS f8) x;
+ tf  |  dl   |  df  |    bits    |       s       | close 
+-----+-------+------+------------+---------------+-------
+   1 |    10 |    1 | \x4129fcaa |     10.624186 | t
+   3 |   100 |   50 | \x40343b1e |     2.8161082 | t
+ 255 | 65535 |  999 | \x3985051b |  0.0002537154 | t
+ 300 | 70000 | 1000 | \x38b14573 | 8.4529536e-05 | t
+   2 |     0 |    7 | \x4160b10e |     14.043226 | t
+(5 rows)
+
+-- corpus: ranked search, counts, ties by ctid, and per-document agreement
+CREATE TABLE ref_docs (id int, body text);
+INSERT INTO ref_docs VALUES
+	(1, 'the quick brown fox'), (2, 'Quick quick QUICK brown dogs'), (3, 'lazy dog sleeps'),
+	(4, 'brown fox, brown fox!'), (5, ''), (6, NULL), (7, 'quick brown'), (8, 'quick brown'),
+	(9, 'colour color colr'), (10, 'café CAFE cafe'), (11, repeat('spam ', 20) || 'cat cats catalog');
+SELECT sift_ref.load('ref_docs', 'body');
+ load 
+------
+   10
+(1 row)
+
+SELECT * FROM sift_ref.stats();
+ n  | sum_dl | avgdl | k1  |  b   
+----+--------+-------+-----+------
+ 10 |     49 |   4.9 | 1.2 | 0.75
+(1 row)
+
+SELECT q, sift_ref.count(q) AS n, (SELECT string_agg(format('%s:%s', id, score), ' ' ORDER BY rank)
+	FROM sift_ref.topk(q, 4) t JOIN ref_docs d ON d.ctid = t.ctid) AS top4, sift_ref.selfcheck(q) AS self
+FROM unnest(ARRAY['quick', 'quick OR fox', 'quick brown', '"brown fox"', '"fox brown"', 'brown NOT quick',
+	'qu*', 'col*r', '/colou?r/', 'colr~1', 'cafe', '{dog dogs}^2 OR lazy', 'quick^0', '+++', 'zzz OR quick']) q;
+          q           | n |                       top4                       | self 
+----------------------+---+--------------------------------------------------+------
+ quick                | 4 | 2:1.3984553 7:1.1793582 8:1.1793582 1:0.96643496 | t
+ quick OR fox         | 5 | 1:2.5684104 4:2.1481771 2:1.3984553 7:1.1793582  | t
+ quick brown          | 4 | 7:2.0939393 8:2.0939393 2:2.0858634 1:1.7158959  | t
+ "brown fox"          | 2 | 4:3.1531706 1:2.3514366                          | t
+ "fox brown"          | 1 | 4:3.1531706                                      | t
+ brown NOT quick      | 1 | 4:1.0049934                                      | t
+ qu*                  | 4 | 2:1.3984553 7:1.1793582 8:1.1793582 1:0.96643496 | t
+ col*r                | 1 | 9:2.3680704                                      | t
+ /colou?r/            | 1 | 9:2.3680704                                      | t
+ colr~1               | 1 | 9:2.3680704                                      | t
+ cafe                 | 1 | 10:3.4146898                                     | t
+ {dog dogs}^2 OR lazy | 2 | 3:7.104211 2:3.951867                            | t
+ quick^0              | 4 | 1:0 2:0 7:0 8:0                                  | t
+ +++                  | 0 |                                                  | t
+ zzz OR quick         | 4 | 2:1.3984553 7:1.1793582 8:1.1793582 1:0.96643496 | t
+(15 rows)
+
+SELECT d.id FROM ref_docs d WHERE sift_ref.match(d.body, 'brown NOT (dogs OR lazy)') ORDER BY 1;
+ id 
+----
+  1
+  4
+  7
+  8
+(4 rows)
+
+-- every mutant changes some answer on this corpus
+CREATE FUNCTION pg_temp.answers(m text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	PERFORM set_config('sift_ref.mutant', m, false);
+	SELECT string_agg(format('%s %s %s', q, sift_ref.count(q), (SELECT array_agg(t) FROM sift_ref.topk(q, 2) t)), ';')
+	INTO r FROM unnest(ARRAY['brown NOT quick', '"fox brown"', 'quick OR fox', 'quick brown', 'col* OR colr~1',
+		'{dog dogs}^2 OR lazy', 'Cafe', 'quick', 'c*', 'kolor~1', 'spam OR cat']) q;
+	PERFORM set_config('sift_ref.mutant', '', false);
+	RETURN r;
+END $$;
+SELECT m, pg_temp.answers(m) <> pg_temp.answers('') AS detected
+FROM unnest(ARRAY['not_ignored', 'phrase_as_and', 'float8_score', 'idf_df_plus1', 'tie_ctid_desc', 'boost_ignored',
+	'dismax_sum', 'topk_short', 'count_plus', 'nofold_query', 'tf_cap15', 'prefix_trunc', 'fuzzy_no_firstchar']) m;
+         m          | detected 
+--------------------+----------
+ not_ignored        | t
+ phrase_as_and      | t
+ float8_score       | t
+ idf_df_plus1       | t
+ tie_ctid_desc      | t
+ boost_ignored      | t
+ dismax_sum         | t
+ topk_short         | t
+ count_plus         | t
+ nofold_query       | t
+ tf_cap15           | t
+ prefix_trunc       | t
+ fuzzy_no_firstchar | t
+(13 rows)
+
+DROP TABLE ref_docs;
+RESET sift_ref.tokenizer;
+\endif
