@@ -368,12 +368,12 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 
 ### Build
 
-- **Parallel build:** `amcanbuildparallel = true`. Use our own `ParallelContext` with participants = `plan_create_index_workers` + leader.
-  - Each participant gets a *contiguous* heap block range, `table_index_build_range_scan`, so every segment covers about 1/n of the heap (TIN-style). Contiguous ranges mean no SB overlap and copy-only merges later.
-  - Each participant accumulates `SiftInvBuf` up to `maintenance_work_mem / participants` and writes a finished segment as encoded pages to a `SharedFileSet` file. Postings arrive in ctid order, so no posting sort is needed; only terms are sorted.
-  - The leader streams the files into the relation with a single `smgr_bulk` writer as they complete, then writes the directory and metapage last.
-  - Cost: an extra sequential write and read of the index size through temp files. On NVMe this is ≈ 10–15 % of build time **[est]**.
-  - **Rejected:** concurrent bulk writers. `smgr_bulk` assumes it alone extends the fork; parallel `smgrextend` beyond EOF is unsafe.
+- **Parallel build:** `amcanbuildparallel = true`. Own `ParallelContext` with participants = `plan_create_index_workers` + leader; `build_segments` asks for an exact layout and builds serially.
+  - Every participant runs the serial pipeline on its share of a `table_parallelscan` (chunks of ascending blocks, interleaved with the others'): heap scan, analyze, `SiftInvBuf`, a sorted run per full buffer. `synchronize_seqscans` is off for the scan, because a wrap-around would break the ascending keys each buffer needs.
+  - Worker runs are named files of a `SharedFileSet`; the leader opens them after the workers finish and merges them with its own into the segments a serial build writes (`sift_runs_write` already merges runs with interleaved key ranges). The result is the same index as a serial build: one segment, per-block bounds, no extra size.
+  - Rejected: one segment per participant. Terms under `grouped_min_df` (64K postings) are LIST-coded and only have the per-term bound, so splitting a term of 75K postings over 3 segments drops its block bounds: the ranked scan of `good` scored 1217 blocks instead of 28, and the index grew 4 to 8 % (M) or more (S). The leader would also have copied segments page by page.
+  - Rejected: concurrent bulk writers. `smgr_bulk` assumes it alone extends the fork; parallel `smgrextend` beyond EOF is unsafe, so only the leader writes the index.
+  - The leader's merge (encode, dictionary, write) stays serial: about a third of the serial build time, which bounds the speedup. Cost: one extra write and read of the runs (≈ 1.3 bytes per posting).
 - **Build throughput target** **[est]:** analysis at 3–5 ns per byte per core. 85 GB on 8 cores is ≈ 60 s of tokenizing, plus encoding and I/O. The target is to beat TIN's 8 min 10 s by ≥ 2×.
 - **CREATE INDEX CONCURRENTLY** works through the standard protocol: `ambulkdelete` reports every indexed TID, then `aminsert` fills in.
 - **REINDEX** is ambuild into a new relfilenode. `ambuildempty` writes the metapage and an empty directory for the init fork (unlogged tables).
@@ -566,7 +566,7 @@ Prefixes: every exported symbol is `sift_<module>_*` unless it is an AM or SQL e
 4. **Errors.**
    - `ereport(ERROR)` with specific errcodes: `ERRCODE_INDEX_CORRUPTED` for format violations, `ERRCODE_SYNTAX_ERROR` for SiftQL, `ERRCODE_PROGRAM_LIMIT_EXCEEDED` for limits, `ERRCODE_T_R_SERIALIZATION_FAILURE` for standby recycle.
    - Nothing returns error codes except the documented boolean "not found" results.
-   - No `PG_TRY` except in the parallel build leader, to clean up the temp fileset.
+   - No `PG_TRY`: the parallel build's shared fileset goes away with its DSM segment.
 5. **Masks.**
    - The matching path works on the codec's decoded group view `sift_grp`: a 256-bit page mask (bit i is page `sb*256 + i`) and, for each set page, an offset bitmap of `w` bytes (bit `off-1` is offset `off`).
    - Scoring kernels take fixed `uint64[SIFT_OFFMASK_WORDS = 8]` offset masks, 64-byte aligned. `eval` widens `w`-byte bitmaps to 64 bytes only for the pages it scores.
