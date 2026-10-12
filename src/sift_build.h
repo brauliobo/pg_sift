@@ -5,9 +5,10 @@
  * The buffer holds docs (key, dl) and per-term posting slices (doc ordinal
  * deltas + tf, about 1.3 bytes per posting) within a memory budget. A full
  * buffer is either written as a segment or spilled to a sorted run (a
- * temporary file); runs with ascending, disjoint key ranges merge into one
- * segment with memory bounded by the largest term (about 10 bytes per
- * posting). Parallel build participants produce runs the same way.
+ * temporary file); runs merge into one segment with memory independent of
+ * the posting counts (one buffered reader per run). Runs come from the heap
+ * build (ascending, disjoint key ranges) or from segments being merged
+ * (interleaved ranges).
  */
 #ifndef SIFT_BUILD_H
 #define SIFT_BUILD_H
@@ -42,8 +43,14 @@ extern SiftRun *sift_inv_spill(SiftInvBuf *buf);
 extern uint64 sift_run_maxdf(const SiftRun *run);
 
 /*
- * Merges runs with ascending, disjoint key ranges into one segment and
- * closes them. Allocates in CurrentMemoryContext.
+ * Spills the live part of an immutable segment (docs and postings VACUUM did
+ * not remove) as a run; NULL when it has none.
+ */
+extern SiftRun *sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext mcxt);
+
+/*
+ * Merges runs into one segment and closes them; the key ranges of the runs
+ * may interleave. Allocates in CurrentMemoryContext.
  */
 extern void sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen,
 							const SiftScoreRef *ref, SiftSegEntry *entry);

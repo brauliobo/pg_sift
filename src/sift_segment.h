@@ -96,6 +96,7 @@ extern bool sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTer
  * SB bits for deleted ones (generic WAL, <= 4 pages per record). Caller holds
  * the maintenance lock. Returns docs removed; adds to stats.
  */
+extern uint64 sift_seg_live_docs(SiftSegment *seg);
 extern int64 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
 
@@ -140,5 +141,16 @@ typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftT
  */
 extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify,
 						  SiftSegStats *st, SiftTermVisit visit, void *arg);
+
+/*
+ * Streams the live part of the segment, the input of a merge: docs first
+ * (ascending key, dl), then every term with a live posting in dictionary
+ * order (info->df is the live count). Memory: O(segment docs) plus the
+ * largest term. ref supplies k1 and b.
+ */
+typedef void (*SiftDocVisit) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
+
+extern void sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisit docs,
+						  SiftTermVisit terms, void *arg);
 
 #endif							/* SIFT_SEGMENT_H */
