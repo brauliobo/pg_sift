@@ -94,4 +94,4 @@ Other kernels, ns per 16-page call, 30 tuples per page, d = 1 (480 slots) / 291 
 
 - `tools/kernels/test`: random equivalence of every table against scalar (`make test N=5`), the exhaustive tf x dl grid, double-precision error, bound coverage, tf stream round trips at random positions and piece sizes, top-k against a sort. ASan + UBSan: `make SANITIZE=1 test`.
 - `tools/kernels/bench`: throughput per level and the rejected designs (`tools/kernels/alt.c`).
-- `test/sql/kernels_simd.sql` (needs `SIFT_TESTING`): the same digest at every `sift.simd` level, per-case equivalence of every supported level, the float4 SQL formula, bound spot checks.
+- `kernels_simd` regress test (needs `SIFT_TESTING`): the same digest at every `sift.simd` level, per-case equivalence of every supported level, the float4 SQL formula, bound spot checks. It waits in `tools/kernels/regress/` for the `sift_test` extension: then move `kernels_simd.sql` / `.out` to `test/sql` / `test/expected`, append `sift_test-kernels.sql` to `sift_test--1.0.sql` and add `kernels_%` to the testing-only regress list.
