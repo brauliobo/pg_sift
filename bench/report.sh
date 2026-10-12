@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Usage: bench/report.sh [TIER...]  -> markdown tables from bench/out/<tier>/{builds,results}.tsv
+# Usage: [RESULTS=dir] bench/report.sh [TIER...] | quick [DIR (default bench/out/S)]
+#   markdown tables from bench/out/<tier>/{builds,results,walltime}.tsv
 # The last row per (engine, workload) wins, so a rerun replaces earlier numbers.
 . "$(dirname "$0")/lib.sh"
 
 WLS="and or phrase mixed count filter join"
 
 tables() {
-  local dir=$BENCH/out/$1
+  local dir=${RESULTS:-$BENCH/out}/$1
   [[ -s $dir/results.tsv ]] || return 0
   echo "### Tier $1"
   echo
   echo "| engine | docs | setup s | index build s | index size MB | heap growth MB |"
   echo "|---|---:|---:|---:|---:|---:|"
   awk -F'\t' '{ last[$2] = $0 } END { for (e in last) { split(last[e], f, "\t");
-    printf "| %s | %d | %.1f | %.1f | %.0f | %.0f |\n", f[2], f[3], f[4], f[5], f[6] / 1e6, f[7] / 1e6 } }' "$dir/builds.tsv" | sort
+    printf "| %s | %d | %.1f | %.1f | %d | %d |\n", f[2], f[3], f[4], f[5], f[6] / 1e6, f[7] / 1e6 } }' "$dir/builds.tsv" | sort
   echo
   awk -F'\t' -v wls="$WLS" '
     { k = $2 SUBSEP $3; row[k] = $0; seen[$2] = 1 }
@@ -21,8 +22,8 @@ tables() {
       if (!((e SUBSEP w) in row)) return "-"
       split(row[e SUBSEP w], f, "\t")
       if (f[15] ~ /^unsupported/) return "n/a"
-      if (what == "lat") return sprintf("%.1f / %.0f", f[6], f[10]) (f[15] ~ /aborted/ ? " (timeouts)" : "") \
-        (match(f[15], /took_p99=[0-9.]+/) && substr(f[15], RSTART + 9, RLENGTH - 9) > 0 ? sprintf(" [%.0f]", substr(f[15], RSTART + 9, RLENGTH - 9)) : "")
+      if (what == "lat") return sprintf("%.1f / %.0f", f[6], f[10]) (f[15] ~ /aborted/ ? " (aborted)" : "") \
+        (match(f[15], /took_p99=[0-9.]+/) && +substr(f[15], RSTART + 9, RLENGTH - 9) > 0 ? sprintf(" [%.0f]", substr(f[15], RSTART + 9, RLENGTH - 9)) : "")
       return f[12] == "" ? "n/a" : sprintf("%.1f", f[12])
     }
     END {
@@ -49,7 +50,7 @@ tables() {
         match(f[15], /writes=[0-9]+/); wr = substr(f[15], RSTART + 7, RLENGTH - 7)
         match(f[15], /writer_tps=[0-9.]+/); tps = substr(f[15], RSTART + 11, RLENGTH - 11)
         match(f[15], /writer_p99=[0-9.]+/); wp = substr(f[15], RSTART + 11, RLENGTH - 11)
-        nt = f[15]; gsub(/reads=[^ ]+ |writes=[^ ]+ |writer_tps=[^ ]+ |writer_p99=[^ ]+ ?/, "", nt)
+        nt = f[15]; gsub(/(reads|writes|writer_tps|writer_p99|took_avg|took_p99)=[^ ]+ ?|errors=0/, "", nt)
         printf "| %s | %.1f | %.0f | %s | %.0f | %s | %.0f | %s |\n", e, f[6], f[10], wr, tps, wp, f[13] / 1e6, nt | "sort" }
       close("sort"); print ""
     }' "$dir/results.tsv"
@@ -78,4 +79,25 @@ tables() {
   echo
 }
 
+# Standard suite table: build, size, p50 / p95 ms per query class, QPS of the ranked mix.
+quick() {
+  local dir=$1
+  [[ -s $dir/walltime.tsv ]] || return 0
+  [[ -s $dir/host.txt ]] && { cat "$dir/host.txt"; echo; }
+  echo "| engine | build s | index MB | term | and | or | phrase | prefix | fuzzy | count(*) | mix QPS | wall s |"
+  echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+  awk -F'\t' 'FILENAME ~ /builds/ { b[$2] = sprintf("%.1f", $4 + $5); m[$2] = int($6 / 1e6); next }
+    FILENAME ~ /walltime/ { if (!($2 in w)) order[++n] = $2; w[$2] = $3; next }
+    $3 ~ /^q_/ { c = substr($3, 3); r[$2, c] = $15 ~ /unsupported/ ? "n/a" : sprintf("%.1f / %.1f", $8, $9) ($15 ~ /aborted/ ? "*" : "")
+                 if (c == "mix") q[$2] = sprintf("%.0f", $6); seen[$2] = 1 }
+    END { split("term and or phrase prefix fuzzy count", cls, " ")
+      for (i = 1; i <= n; i++) { e = order[i]
+        if (!(e in seen)) { printf "| %s | not installed (pending) | | | | | | | | | | |\n", e; continue }
+        s = "| " e " | " b[e] " | " m[e] " |"
+        for (j = 1; j <= 7; j++) s = s " " (((e, cls[j]) in r) ? r[e, cls[j]] : "n/a") " |"
+        print s " " ((e in q) ? q[e] : "n/a") " | " w[e] " |" } }' "$dir/builds.tsv" "$dir/walltime.tsv" "$dir/results.tsv"
+  echo
+}
+
+if [[ ${1:-} == quick ]]; then quick "${2:-$BENCH/out/S}"; exit; fi
 for t in ${*:-S M L}; do tables "$t"; done

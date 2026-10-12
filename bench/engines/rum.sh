@@ -5,8 +5,8 @@ ALTER TABLE docs ADD COLUMN tsv tsvector GENERATED ALWAYS AS (to_tsvector('simpl
 INDEX="CREATE INDEX docs_fts ON docs USING rum (tsv rum_tsvector_ops);"
 RENDER=$(cat <<'SQL'
 CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT format('docs.tsv @@ %L::tsquery', tsq(mode, terms)) $$;
+  $$ SELECT 'docs.tsv @@ ' || quote_literal(tsq(mode, terms)) || '::tsquery' $$;
 CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT format('docs.tsv <=> %L::tsquery', tsq(mode, terms)) $$;
+  $$ SELECT 'docs.tsv <=> ' || quote_literal(tsq(mode, terms)) || '::tsquery' $$;
 SQL
 )

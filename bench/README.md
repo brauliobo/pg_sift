@@ -1,8 +1,8 @@
 # sift benchmark and correctness harness
 
 Reproduces PlanetScale's TIN methodology (https://planetscale.com/blog/introducing-tin) on real
-documents text. Everything lives under `/tmp/sift-bench` (tmpfs); `bench/out` and `bench/data`
-are gitignored. Results are summarized in `docs/BASELINE.md`.
+documents text. Data lives under `$SIFT_BENCH_ROOT` (default `/tmp/sift-bench`); `bench/out*`
+and `bench/data` are gitignored. Results are summarized in `docs/BASELINE.md`.
 
 ## Layout
 
@@ -11,13 +11,14 @@ are gitignored. Results are summarized in `docs/BASELINE.md`.
 | `lib.sh` | shared settings: tiers, ports, `q` (psql), `locked` (perf lock), `limited` (8 CPU / 32 GB budget) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=M bench/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `export` text from `source_db` (read-only), `load` a tier and cache its dump, `restore` it |
-| `fetch.sh` | unpack third-party engines under `/tmp/sift-bench/engines` and build `xbench` |
+| `fetch.sh` | unpack third-party engines under `$SIFT_BENCH_ROOT/engines` and build `xbench` |
 | `engines/*.sh` | one adapter per engine (see below) |
 | `run.sh` | Postgres engines: timed index build + pgbench workloads |
 | `xrun.sh` | non-Postgres engines: same documents, queries, clients and budget, driven by `xbench` |
 | `oracle.sh` | exact match-set / count(*) oracle (tsvector) for and/or/phrase/not |
 | `rank_check.sh` | soft BM25 check: top-10 overlap with pgx-bm25 |
-| `report.sh` | markdown tables from `bench/out/<tier>/*.tsv` |
+| `report.sh` | markdown tables from `bench/out/<tier>/*.tsv` (`RESULTS=dir` for another results tree) |
+| `remote.sh` | sync, build, run and clean the whole harness on a remote host |
 | `sql/` | export, schema, tier load + query trace, harness (rendering), oracle |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
 
@@ -25,15 +26,16 @@ are gitignored. Results are summarized in `docs/BASELINE.md`.
 
 | tier | docs | port | dump |
 |---|---:|---:|---|
-| S | 300,000 (deterministic sample) | 56010 | `/tmp/sift-bench/cache/sift-S.dump` |
-| M | 2,639,309 (every non-empty document) | 56020 | `/tmp/sift-bench/cache/sift-M.dump` |
-| L | 15,835,854 (M + 5 resampled copies) | 56030 | `/tmp/sift-bench/cache/sift-L.dump` |
+| S | 300,000 (deterministic sample) | 56010 | `$SIFT_BENCH_ROOT/cache/sift-S.dump` |
+| M | 2,639,309 (every non-empty document) | 56020 | `$SIFT_BENCH_ROOT/cache/sift-M.dump` |
+| L | 15,835,854 (M + 5 resampled copies) | 56030 | `$SIFT_BENCH_ROOT/cache/sift-L.dump` |
 
 A document is the document title plus all guest comments (manager replies excluded). L copies are
 `head(doc a) + tail(doc b)` split at a space near the middle, with deterministic hash choices: the
 corpus-wide term distribution (Zipf) and local n-grams stay real, the vocabulary does not grow.
+L is built and cached but not part of the baseline yet (it runs together with sift).
 
-Restore a tier in minutes (no access to `source_db` needed):
+Restore a tier in seconds (no access to `source_db` needed):
 
 ```sh
 bench/fetch.sh bm25 paradedb                 # extension packages referenced by the cluster config
@@ -54,33 +56,54 @@ Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `paradedb`,
 `REQUIRES` (extension), `SETUP`, `INDEX` and `RENDER`, which defines two SQL functions:
 `bench_pred(mode, terms)` (WHERE clause, NULL if unsupported) and `bench_rank(mode, terms)`
 (ORDER BY, NULL if no top-k). `sql/harness.sql` composes every statement kind from them
-(top10, count, match, filter, join), so a new engine is one small file. `sift` targets the
-planned API (`body @@> 'a AND b'`, `sift.score(ctid)`) and is skipped until the extension exists.
+(top10, count, match, filter, join), so a new engine is one small file. `sift` follows DESIGN.md
+(`body @@> 'a AND b'`, `sift.score(ctid)`); the cluster loads it from `SIFT_ROOT` (default
+`/tmp/sift-arch/root`, the `scripts/pgtest.sh install` output) and the harness skips it while absent.
 
-External adapters (`elasticsearch`, `tantivy`, `meilisearch`, `typesense`) set `EXTERNAL`, `URL`,
-`XB_ARGS` and define `x_start`, `x_stop`, `x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write`
-that render requests from the same query trace.
+External adapters (`elasticsearch`, `tantivy`, and `meilisearch` / `typesense`, which are kept but
+not in the baseline: typo-tolerant, non-BM25 ranking) set `EXTERNAL`, `URL`, `XB_ARGS` and define
+`x_start`, `x_stop`, `x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` that render requests
+from the same query trace. Elasticsearch runs with a 4 GB heap (`ES_HEAP`) and no pre-touch.
 
 ## Running
 
 ```sh
 TIER=S bench/run.sh gin                      # build + all workloads; append to bench/out/S/*.tsv
 TIER=M DURATION=60 bench/run.sh bm25 or mixed update
-TIER=M bench/xrun.sh elasticsearch           # external engine, same workloads
-bench/report.sh S M L                        # markdown tables
+TIER=M bench/xrun.sh tantivy                 # external engine, same workloads
+bench/report.sh S M                          # markdown tables
 ```
 
 Workloads: `and`, `or`, `phrase`, `mixed` (all three, top-10), `count` (count(*) of all three),
 `filter` (top-10 + `created >= cutoff`, ~2% of rows), `join` (top-10 joined with `props`, region
 filter), `update` (writers at `UPDATE_RATE`=1000 ops/s: 70% update, 15% insert, 15% delete, while
 `mixed` readers run; WAL bytes from `pg_current_wal_lsn`). Defaults: 8 clients, 5 s warm-up,
-30 s timed, `statement_timeout` 120 s (pgbench aborts a client on timeout; reported as timeouts).
+30 s timed, `statement_timeout` 120 s (pgbench aborts a client on an error; reported as aborted).
 Latency percentiles come from pgbench per-transaction logs and include a PK lookup that fetches
 the statement text; MB/query is shared buffer hits + reads from `pg_stat_statements`.
 
 Timed sections (index builds, warm-up + measured runs) hold `flock /tmp/sift-perf.lock`. Every
 engine server runs in a `systemd-run --user --scope` with `CPUQuota=800%` and `MemoryMax=32G`
 (`CPU_QUOTA`, `MEM_MAX`); load generators run outside it.
+
+## Remote host
+
+`remote.sh` reproduces everything on another machine under `~/Projects/sift` without sudo: a
+PostgreSQL 18.6 build in `pg18/` with contrib, rum, pg_textsearch, pgvector and pgx-bm25 built by
+PGXS, the ParadeDB package, Elasticsearch, a minimal rustup and `xbench` (`-C target-cpu=znver2`).
+
+```sh
+bench/remote.sh sync                         # repo (no .git), S/M dumps, pgx-bm25 source
+bench/remote.sh setup                        # builds (nice, -j4)
+bench/remote.sh run 'TIER=M bench/run.sh gin; TIER=M bench/xrun.sh tantivy'
+bench/remote.sh pull                         # -> bench/out-<host>/
+RESULTS=bench/out-HOST bench/report.sh S M
+bench/remote.sh clean                        # keep dumps; `clean all` removes ~/Projects/sift
+```
+
+sift on the same host, in the same session as the baselines:
+`bench/remote.sh sh 'nice make USE_PGXS=1 -j4 && make USE_PGXS=1 DESTDIR=$SIFT_ROOT install'`, then
+`bench/remote.sh run 'TIER=M bench/run.sh sift'` (the cluster picks the extension up from `$SIFT_ROOT`).
 
 ## Correctness
 
@@ -102,4 +125,4 @@ its parts, `don't` is `don` + `t`. An engine with a different tokenizer shows th
 
 ## Cleanup
 
-`TIER=X bench/cluster.sh destroy` removes a cluster; the dumps in `/tmp/sift-bench/cache` stay.
+`TIER=X bench/cluster.sh destroy` removes a cluster; the dumps in `$SIFT_BENCH_ROOT/cache` stay.

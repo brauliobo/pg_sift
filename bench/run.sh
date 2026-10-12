@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Usage: TIER=S|M|L bench/run.sh ENGINE [WORKLOAD...]
 #   ENGINE: gin rum pg_textsearch bm25 sift (bench/engines/*.sh)
-#   WORKLOAD: and or phrase mixed count filter join update (default: all)
+#   WORKLOAD: and or phrase mixed count filter join update (default: all), or `quick`: the
+#   standard suite (sql/quick.sql), each class run for a fixed REPEAT transactions per client.
 # Env: DURATION (s, default 30) CLIENTS (8) THREADS (4) WARMUP (s, 5) UPDATE_RATE (1000)
-#      WRITERS (4) TIMEOUT (statement_timeout, 120s) KEEP=1 keeps the engine database.
+#      WRITERS (4) REPEAT (50) TIMEOUT (statement_timeout, 120s) KEEP=1 keeps the engine database.
 . "$(dirname "$0")/lib.sh"
 
 ENGINE=${1:?engine}; shift
 WORKLOADS=${*:-and or phrase mixed count filter join update}
 DURATION=${DURATION:-30} CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} WARMUP=${WARMUP:-5}
-UPDATE_RATE=${UPDATE_RATE:-1000} WRITERS=${WRITERS:-4}
+UPDATE_RATE=${UPDATE_RATE:-1000} WRITERS=${WRITERS:-4} REPEAT=${REPEAT:-50}
 export PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}"
 load_engine "$ENGINE"
 EDB=$(engine_db "$ENGINE")
@@ -76,19 +77,21 @@ mb_per_query() {
         AND query ~ '^SELECT' AND query ~ ' FROM docs' AND query !~ 'FROM stmts'"
 }
 
-pgb() { (cd "$RUN" && pgbench -n -c "$1" -j "$2" -T "$3" "${@:4}"); }
+pgb() { (cd "$RUN" && pgbench -n -c "$1" -j "$2" "${@:3}"); }
+# Quick-suite classes (q_*) run a fixed number of transactions with a fixed seed.
+span() { if [[ $1 == q_* ]]; then echo "-t $2 --random-seed=7"; else echo "-T $3"; fi; }
 
 # Runs inside the perf lock: warm-up, then the timed reader run (and writers for `update`).
 timed_run() {
   local wl=$1 rwl=$2
   rm -f "$RUN"/*.log.?*
-  pgb "$CLIENTS" "$THREADS" "$WARMUP" -f "$RUN/$rwl.pgb" >/dev/null 2>&1 || true
+  pgb "$CLIENTS" "$THREADS" $(span "$wl" 5 "$WARMUP") -f "$RUN/$rwl.pgb" >/dev/null 2>&1 || true
   q -c "SELECT pg_stat_statements_reset()" >/dev/null
   local lsn0; lsn0=$(q -c "SELECT pg_current_wal_lsn()")
   if [[ $wl == update ]]; then
-    pgb "$WRITERS" 2 "$DURATION" -R "$UPDATE_RATE" -l --log-prefix=writer.log -f "$RUN/writer.pgb" >"$RUN/writer.out" 2>&1 &
+    pgb "$WRITERS" 2 -T "$DURATION" -R "$UPDATE_RATE" -l --log-prefix=writer.log -f "$RUN/writer.pgb" >"$RUN/writer.out" 2>&1 &
   fi
-  pgb "$CLIENTS" "$THREADS" "$DURATION" -l --log-prefix="$wl.log" -f "$RUN/$rwl.pgb" >"$RUN/$wl.out" 2>&1 || true
+  pgb "$CLIENTS" "$THREADS" $(span "$wl" "$REPEAT" "$DURATION") -l --log-prefix="$wl.log" -f "$RUN/$rwl.pgb" >"$RUN/$wl.out" 2>&1 || true
   wait
   q -c "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '$lsn0')" >"$RUN/$wl.wal"
   mb_per_query >"$RUN/$wl.mbq"
@@ -119,6 +122,8 @@ measure() {
 engine_available || { log "$ENGINE: extension $REQUIRES not installed, skipping"; exit 0; }
 build
 log "$ENGINE workloads: $(q -c 'SELECT bench_build_stmts()' | tr '\n' ' ')"
+[[ " $WORKLOADS " == *" quick "* ]] &&
+  WORKLOADS=${WORKLOADS/quick/$(psql -X -v ON_ERROR_STOP=1 -qAt -f "$BENCH/sql/quick.sql" -c "SELECT 'q_' || quick_build_stmts()" | tr '\n' ' ')}
 prewarm
 for wl in $WORKLOADS; do measure "$wl"; done
 [[ ${KEEP:-} ]] || PGDATABASE=postgres q -c "DROP DATABASE $EDB WITH (FORCE)"

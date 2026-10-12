@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Benchmark on a remote host with a user-local PostgreSQL build, extensions, Rust toolchain and
+# engines under ~/$RDIR (no sudo, nothing system-wide, never rsync --delete).
+#   bench/remote.sh sync          copy the repo (without .git and ignored files), S/M dumps, pgx-bm25 source
+#   bench/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
+#                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench
+#   bench/remote.sh quick [ENGINE...]  run the standard suite there (bench/quick.sh) and pull the results
+#   bench/remote.sh run 'CMD'     run CMD detached in the remote repo with the remote env (log: bench-root/logs)
+#   bench/remote.sh sh 'CMD'      run CMD in the foreground
+#   bench/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
+#   bench/remote.sh clean [all]   stop clusters, drop builds and bench data (keeps the dumps); `all` removes ~/$RDIR
+# Example: bench/remote.sh quick gin tantivy; bench/remote.sh run 'bench/quick.sh --full gin'
+# Env: RHOST (bench-host), RDIR (Projects/sift), BM25_SRC (pgx-bm25 source tarball).
+set -euo pipefail
+BENCH=$(cd "$(dirname "$0")" && pwd)
+REPO=$(dirname "$BENCH")
+RHOST=${RHOST:-bench-host} RDIR=${RDIR:-Projects/sift}
+BM25_SRC=${BM25_SRC:-$HOME/pkg/pgx-bm25/pgx-bm25-1.0.0.tar.gz}
+CACHE=${SIFT_BENCH_ROOT:-/tmp/sift-bench}/cache
+
+ENV="D=\$HOME/$RDIR; export D PATH=\$D/pg18/bin:\$D/.cargo/bin:\$PATH RUSTUP_HOME=\$D/.rustup CARGO_HOME=\$D/.cargo \
+SIFT_BENCH_ROOT=\$D/bench-root SIFT_ROOT=\$D/sift-root RUSTFLAGS='-C target-cpu=znver2'; cd \$D"
+rsh() { ssh "$RHOST" "$ENV; $1"; }
+
+setup_script() {
+  cat <<'EOF'
+set -euo pipefail
+PG=18.6 RUM=1.3.15 TEXTSEARCH=1.5.1 PGVECTOR=0.8.7
+mkdir -p "$D/bench-root/build" && cd "$D/bench-root/build"
+gh() { [[ -d $2 ]] || curl -fsSL "https://github.com/$1/archive/refs/tags/$3.tar.gz" | tar xz; }
+if [[ ! -x $D/pg18/bin/postgres ]]; then
+  [[ -d postgresql-$PG ]] || curl -fsSL "https://ftp.postgresql.org/pub/source/v$PG/postgresql-$PG.tar.bz2" | tar xj
+  (cd "postgresql-$PG" && ./configure -q --prefix="$D/pg18" --with-icu --with-openssl --with-lz4 --with-zstd \
+     && nice make -s -j4 world-bin && make -s install-world-bin)
+fi
+gh postgrespro/rum "rum-$RUM" "$RUM"
+gh timescale/pg_textsearch "pg_textsearch-$TEXTSEARCH" "v$TEXTSEARCH"
+gh pgvector/pgvector "pgvector-$PGVECTOR" "v$PGVECTOR"
+[[ -d pgx-bm25-1.0.0 ]] || tar xzf pgx-bm25-1.0.0.tar.gz
+for x in "rum-$RUM" "pg_textsearch-$TEXTSEARCH" "pgvector-$PGVECTOR" pgx-bm25-1.0.0; do
+  nice make -s -C "$x" USE_PGXS=1 -j4 && make -s -C "$x" USE_PGXS=1 install
+done
+command -v rustup >/dev/null ||
+  curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain none --no-modify-path
+cd "$D" && bench/fetch.sh paradedb elasticsearch xbench
+EOF
+}
+
+case ${1:-} in
+  sync)
+    rsh "mkdir -p \$D/bench-root/cache \$D/bench-root/build"
+    rsync -a --exclude .git --exclude 'bench/out*/' --filter=':- .gitignore' "$REPO/" "$RHOST:$RDIR/"
+    rsync -a "$CACHE/sift-S.dump" "$CACHE/sift-M.dump" "$RHOST:$RDIR/bench-root/cache/"
+    rsync -a "$BM25_SRC" "$RHOST:$RDIR/bench-root/build/" ;;
+  setup) rsh "bash -s" < <(setup_script) ;;
+  run)   rsh "mkdir -p \$SIFT_BENCH_ROOT/logs; setsid nohup bash -c $(printf %q "$2") >\$SIFT_BENCH_ROOT/logs/run-\$(date +%s).log 2>&1 </dev/null &" ;;
+  sh)    rsh "$2" ;;
+  quick) rsh "bench/fetch.sh xbench && bench/quick.sh ${*:2}"; "$0" pull ;;
+  pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
+  clean)
+    rsh "for t in S M L; do TIER=\$t bench/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
+    [[ ${2:-} == all ]] && rsh "cd; rm -rf \$D" ;;
+  *) sed -n '2,12p' "$0" >&2; exit 1 ;;
+esac

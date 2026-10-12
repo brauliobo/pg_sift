@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Usage: bench/fetch.sh [bm25|paradedb|elasticsearch|meilisearch|typesense|xbench ...] (default: all)
+# Usage: bench/fetch.sh [bm25|paradedb|elasticsearch|meilisearch|typesense|xbench ...]
+# (default: bm25 paradedb elasticsearch xbench). BM25_PKG: the pgx-bm25 Arch package to unpack.
 # Unpacks third-party engines under $ROOT (no system install). Downloads land in their own dirs.
 . "$(dirname "$0")/lib.sh"
 
@@ -9,7 +10,7 @@ ENG=$ROOT/engines
 
 dl() { mkdir -p "$ENG/$1/dl"; [[ -s $ENG/$1/dl/${2##*/} ]] || curl -fsSL -o "$ENG/$1/dl/${2##*/}" "$2"; echo "$ENG/$1/dl/${2##*/}"; }
 
-fetch_bm25() { mkdir -p "$BM25_ROOT"; bsdtar -xf $HOME/pkg/pgx-bm25/pgx-bm25-1.0.0-1-x86_64.pkg.tar.zst -C "$BM25_ROOT"; }
+fetch_bm25() { mkdir -p "$BM25_ROOT"; bsdtar -xf "${BM25_PKG:-$HOME/pkg/pgx-bm25/pgx-bm25-1.0.0-1-x86_64.pkg.tar.zst}" -C "$BM25_ROOT"; }
 
 fetch_paradedb() {
   local deb; deb=$(dl paradedb "https://github.com/paradedb/paradedb/releases/download/v$PARADEDB_VERSION/postgresql-18-pg-search_$PARADEDB_VERSION-1PARADEDB-noble_amd64.deb")
@@ -36,4 +37,4 @@ fetch_xbench() {
   (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$ROOT/target nice cargo build --release -j 4 -q)
 }
 
-for t in ${*:-bm25 paradedb elasticsearch meilisearch typesense xbench}; do "fetch_$t"; log "fetched $t"; done
+for t in ${*:-bm25 paradedb elasticsearch xbench}; do "fetch_$t"; log "fetched $t"; done

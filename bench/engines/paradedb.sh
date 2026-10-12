@@ -11,9 +11,11 @@ CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANG
     WHEN 'phrase' THEN format('docs.body ### %L', array_to_string(terms, ' '))
     WHEN 'not'    THEN format('docs.id @@@ paradedb.boolean(must => ARRAY[paradedb.match(%L, %L, conjunction_mode => true)], must_not => ARRAY[paradedb.term(%L, %L)])',
                               'body', array_to_string(terms[:cardinality(terms) - 1], ' '), 'body', terms[cardinality(terms)])
+    WHEN 'prefix' THEN format('docs.id @@@ paradedb.regex(%L, %L)', 'body', terms[1] || '.*')
+    WHEN 'fuzzy'  THEN format('docs.id @@@ paradedb.match(%L, %L, distance => 1)', 'body', terms[1])
   END
 $$;
 CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT 'paradedb.score(docs.id) DESC' $$;
+  $$ SELECT CASE WHEN bench_pred(mode, terms) IS NOT NULL THEN 'paradedb.score(docs.id) DESC' END $$;
 SQL
 )
