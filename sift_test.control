@@ -1,0 +1,9 @@
+# Test-only companion of sift: installed only by SIFT_TESTING=1 builds
+comment = 'sift test functions (sift._test_*), never for production'
+default_version = '1.0'
+module_pathname = '$libdir/sift'
+requires = 'sift'
+schema = sift
+relocatable = false
+superuser = true
+trusted = false

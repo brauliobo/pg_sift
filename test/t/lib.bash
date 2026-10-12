@@ -1,0 +1,136 @@
+# Shared helpers for the TAP-emitting shell tests in test/t (run them with
+# `scripts/pgtest.sh tap`). Nodes live under $SIFT_TMP/tap/<name>, listen on
+# unix sockets only and load sift from the staging root $SIFT_ROOT. Every
+# node is stopped and its directory deleted when the script exits; logs of a
+# failed run are kept. SIFT_PRELOAD (e.g. libasan.so for `make SANITIZE=1`)
+# is preloaded into the servers only, and a sanitizer report in any server
+# log fails the script.
+set -uo pipefail
+export LC_ALL=C
+
+TAPDIR=${SIFT_TMP:?}/tap
+ROOT=${SIFT_ROOT:?run through scripts/pgtest.sh tap}
+SHAREDIR=$ROOT$(pg_config --sharedir)
+PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
+NTEST=0
+NFAIL=0
+NODES=()
+trap cleanup EXIT
+
+cleanup() {
+	local name
+	for name in "${NODES[@]}"; do
+		pg_ctl -D "$(dir "$name")/data" -m immediate stop >/dev/null 2>&1
+		if [[ $NFAIL -eq 0 ]]; then rm -rf "$(dir "$name")"; else rm -rf "$(dir "$name")/data"; fi
+	done
+}
+
+# Megabytes used by a node's directory (data, WAL, logs)
+node_mb() { du -sm "$(dir "$1")" | cut -f1; }
+
+# TAP output
+plan() { echo "1..$1"; }
+ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
+not_ok() { NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"; }
+diag() { sed 's/^/# /' <<<"$*"; }
+check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
+bail() { echo "Bail out! $*"; exit 1; }
+
+dir() { echo "$TAPDIR/$1"; }
+port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
+
+# node_init NAME OFFSET [conf lines]: fresh cluster on SIFT_PORT + OFFSET
+node_init() {
+	local name=$1 offset=$2 d
+	d=$(dir "$name")
+	node_stop "$name"
+	rm -rf "$d"
+	mkdir -p "$d/sock"
+	echo "$offset" >"$d/offset"
+	NODES+=("$name")
+	initdb -D "$d/data" -A trust -U postgres -E UTF8 --no-locale --no-instructions >"$d/initdb.log" 2>&1 ||
+		bail "initdb $name failed"
+	node_conf "$name" "port = $((SIFT_PORT + offset))
+listen_addresses = ''
+unix_socket_directories = '$d/sock'
+extension_control_path = '$SHAREDIR:\$system'
+dynamic_library_path = '$PKGLIBDIR:\$libdir'
+fsync = off
+restart_after_crash = off
+shared_buffers = 128MB
+max_connections = 60
+${3:-}"
+}
+
+node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
+node_start() {
+	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
+		>/dev/null 2>&1
+}
+node_stop() { [[ -f $(dir "$1")/data/postmaster.pid ]] && pg_ctl -D "$(dir "$1")/data" -m fast -w stop >/dev/null 2>&1; true; }
+
+# sql NAME [QUERY...]: unaligned tuples, stops at the first error (stderr
+# kept); without queries, runs the script on stdin
+sql() {
+	local name=$1
+	shift
+	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir "$name")/sock" \
+		-p "$(port "$name")" -U postgres -d postgres "${@/#/--command=}"
+}
+
+# kill -9 the postmaster and every child at once, as a power loss would
+crash() {
+	local pm kids
+	pm=$(head -1 "$(dir "$1")/data/postmaster.pid")
+	kids=$(pgrep -P "$pm" | tr '\n' ' ')
+	kill -9 "$pm" $kids 2>/dev/null
+	while kill -0 "$pm" $kids 2>/dev/null; do sleep 0.02; done
+}
+
+# Waits until standby $2 replayed everything primary $1 wrote so far
+catchup() {
+	local lsn
+	lsn=$(sql "$1" "SELECT pg_current_wal_insert_lsn()")
+	for _ in $(seq 600); do
+		[[ $(sql "$2" "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
+# churn NAME IDX MAXBYTES [name:weight:sql ...]: pgbench -f arguments for a
+# churn mix (weight 100) plus CHECKPOINT (weight 1) and extra scripts
+churn() {
+	local d f spec
+	d=$(dir "$1")
+	printf '\\set seed random(1, 9223372036854775806)\nSELECT sift._test_churn(%s, :seed, %s);\n' \
+		"'$2'" "$3" >"$d/churn.sql"
+	echo "CHECKPOINT;" >"$d/ckpt.sql"
+	echo "-f $d/churn.sql@100 -f $d/ckpt.sql@1"
+	shift 3
+	for spec in "$@"; do
+		f=$d/${spec%%:*}.sql
+		printf '%s\n' "${spec#*:*:}" >"$f"
+		spec=${spec#*:}
+		echo "-f $f@${spec%%:*}"
+	done
+}
+
+# pgbench NAME CLIENTS SECONDS ARGS...: runs in the background, pid in PGBENCH_PID
+pgbench_bg() {
+	local name=$1 clients=$2 secs=$3
+	shift 3
+	pgbench -n -h "$(dir "$name")/sock" -p "$(port "$name")" -U postgres -c "$clients" -j 4 -T "$secs" "$@" \
+		postgres >"$(dir "$name")/pgbench.log" 2>&1 &
+	PGBENCH_PID=$!
+}
+
+finish() {
+	local name
+	for name in "${NODES[@]}"; do
+		! grep -qE "AddressSanitizer|runtime error:" "$(dir "$name")/postgres.log" 2>/dev/null ||
+			{ not_ok "sanitizer report in $name's log"; diag "$(grep -A20 -m1 -E "AddressSanitizer|runtime error:" "$(dir "$name")/postgres.log")"; }
+	done
+	[[ $NFAIL -eq 0 ]] || diag "$NFAIL of $NTEST failed"
+	exit $((NFAIL > 0))
+}

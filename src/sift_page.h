@@ -2,9 +2,11 @@
  * sift_page.h - on-disk format (DESIGN.md (b), (c)). Changing anything here
  * requires a SIFT_FORMAT_MAJOR or _MINOR bump.
  *
- * Every page: standard PageHeader + SiftPageOpaqueData special space.
- * Data pages carry a raw byte stream of SIFT_PAGE_PAYLOAD bytes starting at
- * SIFT_PAGE_DATA_OFFSET; pd_lower marks the end of used bytes.
+ * Every page: standard PageHeader + SiftPageOpaqueData special space, and
+ * pd_upper == pd_special. Content lives in [SIFT_PAGE_DATA_OFFSET, pd_lower):
+ * generic WAL and full-page images treat [pd_lower, pd_upper) as a hole and
+ * replay it as zeros, so pd_lower must always cover every used byte.
+ * Data pages carry a raw byte stream of SIFT_PAGE_PAYLOAD bytes.
  */
 #ifndef SIFT_PAGE_H
 #define SIFT_PAGE_H
@@ -46,6 +48,9 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SIFT_PAGE_DATA_OFFSET	MAXALIGN(SizeOfPageHeaderData)
 #define SIFT_PAGE_PAYLOAD \
 	(BLCKSZ - SIFT_PAGE_DATA_OFFSET - MAXALIGN(sizeof(SiftPageOpaqueData)))
+#define SiftPageGetData(page)	((char *) (page) + SIFT_PAGE_DATA_OFFSET)
+#define SiftPageGetUsed(page)	((uint32) (((PageHeader) (page))->pd_lower - SIFT_PAGE_DATA_OFFSET))
+#define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
 /* Metapage (block 0) */
 typedef struct SiftMetaPageData
@@ -155,7 +160,11 @@ typedef struct SiftLiveHeaderData
 	uint32		ndead;			/* cleared liveness bits */
 } SiftLiveHeaderData;
 
-/* Mutable segment: one MUTHEADER page with SIFT_LANES lanes */
+/*
+ * Mutable segment: one MUTHEADER page with SIFT_LANES lanes. An empty lane has
+ * head = tail = InvalidBlockNumber; the tail page's next is InvalidBlockNumber
+ * (the store walks these chains for the orphan sweep and verification).
+ */
 typedef struct SiftLaneData
 {
 	BlockNumber head;
@@ -199,7 +208,12 @@ typedef struct SiftMutDocData
 	uint16		termbytes;
 } SiftMutDocData;
 
-/* Free list page: extent records reusable once safexid is past the horizon */
+/*
+ * Free list: a chain of FREELIST pages (gen 0) from meta->freelist_head.
+ * Records are reusable once safexid precedes the GlobalVis horizon; an
+ * invalid safexid means reusable now. Records never overlap each other or
+ * any referenced block, and lie in [SIFT_DIRECTORY_BLKNO + 1, high_water).
+ */
 typedef struct SiftFreeExtent
 {
 	BlockNumber start;
@@ -213,5 +227,8 @@ typedef struct SiftFreeListData
 	uint32		n;
 	SiftFreeExtent ext[FLEXIBLE_ARRAY_MEMBER];
 } SiftFreeListData;
+
+#define SIFT_FREELIST_CAP \
+	((SIFT_PAGE_PAYLOAD - offsetof(SiftFreeListData, ext)) / sizeof(SiftFreeExtent))
 
 #endif							/* SIFT_PAGE_H */

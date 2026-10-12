@@ -1,0 +1,49 @@
+\echo Use "CREATE EXTENSION sift_test" to load this file. \quit
+
+-- Store module (src/sift_store_test.c). A sift_store_test index holds one test
+-- segment per heap row: v bytes written through a BULK target at build time.
+CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler
+	AS 'MODULE_PATHNAME', 'sift_test_am_handler' LANGUAGE C STRICT;
+CREATE ACCESS METHOD sift_store_test TYPE INDEX HANDLER sift._test_am_handler;
+CREATE OPERATOR CLASS sift._test_ops DEFAULT FOR TYPE int4 USING sift_store_test AS
+	OPERATOR 1 = (int4, int4);
+
+-- seed 0: zeros, no content generation (throughput runs; read with mode 2 or 3)
+CREATE FUNCTION sift._test_seg_write(index regclass, nbytes int8, seed int8,
+									 piece int4 DEFAULT 0, align int4 DEFAULT 0) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_seg_write' LANGUAGE C STRICT;
+-- mode 0 replay + verify, 1 random verify, 2 page pointers, 3 1 MB copies
+CREATE FUNCTION sift._test_seg_read(index regclass, gen int8, mode int4 DEFAULT 0,
+									sleep_ms int4 DEFAULT 0) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_seg_read' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_seg_drop(index regclass, gen int8) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_seg_drop' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_segments(index regclass, OUT gen int8, OUT header int8,
+									OUT size int8, OUT payload int8, OUT nextents int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_segments' LANGUAGE C STRICT;
+-- release: 0 none (orphans), 1 all, 2 every second extent
+CREATE FUNCTION sift._test_alloc(index regclass, nblocks int4, count int4,
+								 release int4 DEFAULT 1) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_alloc' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_recycle(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_recycle' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_check(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_check' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_sweep(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_sweep' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_info(index regclass, OUT key text, OUT value int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_info' LANGUAGE C STRICT;
+-- pending: safexid set (not cleared by sift_recycle yet)
+CREATE FUNCTION sift._test_freelist(index regclass, OUT page int8, OUT start int8, OUT nblocks int8,
+									OUT pending bool) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_freelist' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_page(index regclass, blkno int8, OUT type int4, OUT gen int8,
+								OUT lower int4, OUT upper int4)
+	AS 'MODULE_PATHNAME', 'sift_test_page' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_poke(index regclass, blkno int8, "offset" int4, value int8,
+								width int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_poke' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;

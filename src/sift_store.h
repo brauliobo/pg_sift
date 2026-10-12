@@ -3,9 +3,51 @@
  * segment byte streams and WAL helpers (DESIGN.md (b), (d), (i)).
  *
  * Only this module reads or writes the metapage, the directory and the free
- * list. WAL rules: generic WAL for in-place changes (metapage first, <= 4
- * buffers, no ereport between start and finish); new pages are logged as full
- * images before anything references them.
+ * list. Crash-safety protocol (recovery relies on these, in WAL order):
+ *
+ * P1 Reachability. A page becomes reachable only from the directory, the free
+ *    list or the metapage. Its content is WAL-logged (full image) before the
+ *    record that makes it reachable, so replay never exposes an unlogged page.
+ * P2 Atomic switch. Segment add/drop/replace, metapage totals and the freeing
+ *    of dropped extents are one generic WAL record: metapage, directory, at
+ *    most one free-list page, at most one caller page (registered in that
+ *    order, which is also the buffer lock order on a standby). Releases that
+ *    do not fit an existing free-list page go to new free-list pages that are
+ *    logged first and linked by that same record.
+ * P3 Allocation. Taking blocks off the free list, or raising high_water, is
+ *    logged before the blocks are written. Extending the relation logs a full
+ *    image of the new last block in the same record, so after replay the
+ *    physical size is >= high_water. A crash between allocation and
+ *    publication leaves orphans (allocated, unreferenced), never two owners;
+ *    sift_store_orphans finds them for the sweep.
+ * P4 Reuse. Released extents carry safexid = the releasing transaction's
+ *    xid, assigned before the directory lock, so every snapshot that could
+ *    hold the old directory has xmin <= safexid. They are reused once safexid
+ *    precedes the index's GlobalVis horizon, i.e. as soon as the releasing
+ *    transaction and those readers are gone. (In parallel mode, which cannot
+ *    assign an xid, safexid is the next xid read after the lock: as safe,
+ *    reusable once a later xid completes.) New content enters a reused
+ *    block's buffer only inside the critical section that logs it, so
+ *    WAL-before-data orders it after the release record.
+ * P5 Standby. Generic WAL raises no recovery conflicts. Readers check page
+ *    type/gen; a mismatch for a generation the replayed directory no longer
+ *    lists raises ERRCODE_T_R_SERIALIZATION_FAILURE (retry), anything else is
+ *    ERRCODE_INDEX_CORRUPTED.
+ * P6 Generations. sift_store_new_gen logs the reservation before any page
+ *    carries the gen, so durable pages never share a gen across segments.
+ *
+ * Store records are not transactional and nothing here flushes WAL: a change
+ * is durable once WAL is flushed past it, by the commit of a transaction that
+ * has an xid and wrote WAL (a releasing sift_dir_update qualifies), the WAL
+ * writer or a checkpoint. A crash may lose recent changes (whose blocks then
+ * become orphans) but never exposes a partial one. Index content stays
+ * durable through the commits of the inserting transactions.
+ *
+ * Readers must take a registered snapshot (MyProc->xmin) before sift_dir_read
+ * and keep it for as long as they use the directory copy: that is what P4
+ * waits for. Unlogged and temporary indexes skip WAL; under wal_level=minimal
+ * a relfilenode created in the current transaction skips WAL and is synced at
+ * commit.
  */
 #ifndef SIFT_STORE_H
 #define SIFT_STORE_H
@@ -15,10 +57,14 @@
 
 #include "sift_page.h"
 
-/* Page helpers */
+/* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
-/* ERROR (ERRCODE_INDEX_CORRUPTED, or serialization failure on a standby) on mismatch */
+/*
+ * ERROR (ERRCODE_INDEX_CORRUPTED, or serialization failure on a standby) on
+ * mismatch. buf must be locked and be the only buffer lock the caller holds:
+ * on a standby the mismatch path unlocks it to consult the directory.
+ */
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
 
 /* Directory snapshot: plain copy of metapage + directory (invariant I3) */
@@ -30,21 +76,26 @@ typedef struct SiftDirSnapshot
 	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
 } SiftDirSnapshot;
 
+/* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 
 /*
  * Atomic directory update: locks metapage and directory exclusively, lets fn
- * edit working copies (fn must not ereport), records extents released by the
- * change in the free list with safexid = ReadNextFullTransactionId(), and
- * logs everything with one generic WAL record (metapage, directory, free
- * list page, at most one extra buffer already exclusively locked by the
- * caller). Bumps the directory version.
+ * edit working copies (fn must not ereport or allocate), records extents
+ * released by the change in the free list with safexid = the caller's top
+ * transaction id (assigned if needed, P4), and logs everything with one generic WAL
+ * record (metapage, directory, free list page, at most one extra buffer
+ * already exclusively locked by the caller, whose working copy fn edits; NULL
+ * when there is none). fn may reserve generations (meta->next_gen++) and edit
+ * totals; it must not touch high_water or freelist_head. Bumps the directory
+ * version. Released blocks must be allocated and not already free.
  */
-typedef void (*SiftDirMutator) (SiftMetaPageData *meta, SiftDirectoryData *dir, void *arg);
+typedef void (*SiftDirMutator) (SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra,
+								void *arg);
 
 typedef struct SiftDirChange
 {
-	SiftDirMutator fn;
+	SiftDirMutator fn;			/* NULL: only release */
 	void	   *arg;
 	const SiftExtent *release;
 	int			nrelease;
@@ -53,58 +104,102 @@ typedef struct SiftDirChange
 
 extern void sift_dir_update(Relation index, const SiftDirChange *chg);
 
-/* Initializes metapage + empty directory (ambuild, ambuildempty) via a write target */
+/* Reserves a fresh segment generation (logged, P6) */
+extern uint64 sift_store_new_gen(Relation index);
+
+/*
+ * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
+ * or INIT write target; the pages are written by sift_wt_finish with the
+ * final high-water mark. A BULK build numbers its segments from gen 1 and
+ * sets meta->next_gen when it publishes them.
+ */
 typedef struct SiftWriteTarget SiftWriteTarget;
 extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash);
 
 /*
- * Allocation. Extents are runs of contiguous blocks, multiples of 16 for
- * readahead; reused from the free list when safexid is past the horizon,
- * else by extending the relation. Returned buffers are pinned, exclusively
- * locked, zeroed and initialized with type/gen.
+ * Allocation. Extents are runs of contiguous blocks; reused from the free
+ * list when safexid is past the horizon (first fit), else by extending the
+ * relation. With bufs, the nblocks (<= SIFT_ALLOC_MAX_LOCKED) returned
+ * buffers are pinned, exclusively locked and initialized with type/gen, and
+ * that initialization is already WAL-logged: callers log their own changes
+ * as generic WAL deltas. With bufs = NULL (maintenance lock holders only) the
+ * blocks are untouched; each must be initialized and logged in one critical
+ * section before it is published.
  */
+#define SIFT_ALLOC_MAX_LOCKED	32
+
 extern Buffer sift_alloc_page(Relation index, SiftPageType type, uint64 gen);
 extern BlockNumber sift_alloc_extent(Relation index, uint32 nblocks, SiftPageType type,
 									 uint64 gen, Buffer *bufs);
 
-/* Makes free-list extents whose safexid passed the horizon reusable; returns count */
+/*
+ * Clears the safexid of free-list records past the horizon and coalesces
+ * adjacent reusable records; returns the number of records made reusable.
+ * Allocation also checks the horizon itself, so this only speeds it up.
+ */
 extern int	sift_recycle(Relation index);
 
 /*
- * Write targets: BULK (ambuild: smgr_bulk_*, single writer, WAL skipped when
- * not needed) or SHARED (promotion/merge: shared buffers + log_newpage_range
- * at finish). Pages written through a target are reachable only after the
- * caller publishes them with sift_dir_update().
+ * Write targets (allocate in CurrentMemoryContext):
+ *   BULK   ambuild into a new relfilenode: smgr_bulk_*, single writer, WAL
+ *          skipped when not needed; blocks 0-1 are written at finish.
+ *   INIT   ambuildempty: BULK on the init fork, always WAL-logged.
+ *   SHARED promotion/merge: shared buffers, each page logged as a full image
+ *          when written; unused allocated blocks go back to the free list at
+ *          finish.
+ * Pages written through a target are reachable only after the caller
+ * publishes them with sift_dir_update() after sift_wt_finish().
  */
 typedef enum SiftWriteMode
 {
 	SIFT_WRITE_BULK,
-	SIFT_WRITE_SHARED
+	SIFT_WRITE_SHARED,
+	SIFT_WRITE_INIT
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 
-/* Sequential byte stream over extents allocated from a write target */
+/*
+ * Sequential byte stream over extents allocated from a write target, as
+ * SIFT_PT_DATA pages. Extents grow from 16 to 1024 blocks.
+ */
 typedef struct SiftStreamWriter SiftStreamWriter;
 
 extern SiftStreamWriter *sift_sw_begin(SiftWriteTarget *wt, uint64 gen);
 extern uint64 sift_sw_tell(const SiftStreamWriter *sw);
 extern void sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len);
+
+/*
+ * Zero-pads (align: power of two <= SIFT_SIMD_ALIGN) so the next byte's
+ * address inside its page buffer is a multiple of align. Buffer pages are
+ * PG_IO_ALIGN_SIZE-aligned, so direct pointers from sift_sr_get to data that
+ * fits one page are then SIMD-aligned. Logical offsets are not multiples of
+ * align (pages hold SIFT_PAGE_PAYLOAD bytes from SIFT_PAGE_DATA_OFFSET).
+ */
 extern void sift_sw_align(SiftStreamWriter *sw, size_t align);
+
 /* Returns the extent list in stream order (palloc'd), *nextents set */
 extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
 
-/* Writes a single non-stream page (segment header, LIVE pages) through the target */
+/*
+ * Single non-stream pages (segment header, LIVE pages). The page must be
+ * built with sift_page_init and pd_lower must cover its content.
+ * sift_wt_reserve returns the first of nblocks contiguous blocks; each of
+ * them must then be written with sift_wt_put_page.
+ */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
+extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
 
 /*
  * Stream reader over a segment's extents. sift_sr_get returns a pointer to
  * len bytes at logical offset off: into the buffer page when the range fits
  * one page (pinned + share-locked until the next call or release), else a
  * copy in scratch (caller-provided, >= len bytes). Page type/gen are checked
- * on every page change.
+ * on every page change, and reads past a page's written bytes are corrupt.
+ * sift_sr_init allocates a small extent index in CurrentMemoryContext;
+ * the remaining fields are private.
  */
 typedef struct SiftStreamReader
 {
@@ -114,16 +209,45 @@ typedef struct SiftStreamReader
 	uint64		gen;
 	Buffer		buf;			/* current page or InvalidBuffer */
 	BlockNumber blkno;
+	bool		locked;			/* buf share-locked */
+	int			cur;			/* extent of the last lookup */
+	uint32		npages;
+	uint32	   *pagestart;		/* first logical page of each extent, [nextents + 1] */
 	struct ReadStream *stream;	/* optional prefetch stream */
+	int			pf_cur;
+	uint32		pf_issue;		/* next page the stream callback yields */
+	uint32		pf_next;		/* next page the stream returns */
+	uint32		pf_end;
 } SiftStreamReader;
 
 extern void sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents,
 						 int nextents, uint64 gen);
 extern const void *sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch);
+
+/* Reads [off, off + len) ahead through a ReadStream for the following gets */
 extern void sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len);
 extern void sift_sr_release(SiftStreamReader *sr);
 
-/* Blocks referenced by any directory entry or the free list, for the orphan sweep */
+/*
+ * Blocks referenced by any directory entry, the free list or the metapage
+ * and directory themselves (allocates in CurrentMemoryContext). ERROR if a
+ * block is referenced twice or lies past the high-water mark.
+ */
 extern struct Bitmapset *sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap);
+
+/*
+ * Orphans: blocks below the high-water mark that nothing references and no
+ * writer owns. A page whose gen is in the directory (an unlinked mutable
+ * page) or >= next_gen (a segment being written) is in flight, never an
+ * orphan. The caller holds the maintenance lock, so the only concurrent
+ * writers are mutable appenders of published segments.
+ */
+extern struct Bitmapset *sift_store_orphans(Relation index);
+
+/*
+ * Checks metapage, directory, free list (bounds, overlap, chain, reference
+ * conflicts) and that the relation covers high_water. ERRCODE_INDEX_CORRUPTED.
+ */
+extern void sift_store_verify(Relation index);
 
 #endif							/* SIFT_STORE_H */
