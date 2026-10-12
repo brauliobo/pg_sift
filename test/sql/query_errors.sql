@@ -44,8 +44,8 @@ SELECT perr(repeat('a ', 256)) LIKE 'ok: a^256' AS leaves_256;
 SELECT perr(repeat('a ', 257)) AS leaves_257;
 SELECT perr('{' || repeat('a ', 257) || '}') AS brace_leaves;
 SELECT perr('"' || repeat('w ', 32) || '"') LIKE 'ok: %' AS phrase_32;
-SELECT perr('x "' || repeat('w ', 33) || '"') AS phrase_33;
-SELECT perr('x ' || repeat('w-', 33)) AS word_phrase_33;
+SELECT perr('x "' || repeat('w ', 129) || '"') AS phrase_129;
+SELECT perr('x ' || repeat('w-', 129)) AS word_phrase_129;
 
 -- hostile input fails fast and cleanly
 SELECT perr(repeat('(', 1000000)) AS deep_parens;

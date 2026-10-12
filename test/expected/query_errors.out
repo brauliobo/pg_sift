@@ -172,16 +172,16 @@ SELECT perr('"' || repeat('w ', 32) || '"') LIKE 'ok: %' AS phrase_32;
  t
 (1 row)
 
-SELECT perr('x "' || repeat('w ', 33) || '"') AS phrase_33;
-                          phrase_33                           
---------------------------------------------------------------
- 54000: sift query: phrase longer than 32 terms at position 3
+SELECT perr('x "' || repeat('w ', 129) || '"') AS phrase_129;
+                          phrase_129                           
+---------------------------------------------------------------
+ 54000: sift query: phrase longer than 128 terms at position 3
 (1 row)
 
-SELECT perr('x ' || repeat('w-', 33)) AS word_phrase_33;
-                        word_phrase_33                        
---------------------------------------------------------------
- 54000: sift query: phrase longer than 32 terms at position 3
+SELECT perr('x ' || repeat('w-', 129)) AS word_phrase_129;
+                        word_phrase_129                        
+---------------------------------------------------------------
+ 54000: sift query: phrase longer than 128 terms at position 3
 (1 row)
 
 -- hostile input fails fast and cleanly
