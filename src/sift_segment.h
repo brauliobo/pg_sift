@@ -91,6 +91,9 @@ extern void sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int pag
 
 extern bool sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info);
 
+/* Does the dictionary term still have a posting of a live doc (always true in a clean segment) */
+extern bool sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info);
+
 /*
  * VACUUM: calls cb for every live doc; clears liveness bits and sets dirty
  * SB bits for deleted ones (generic WAL, <= 4 pages per record). Caller holds

@@ -205,7 +205,7 @@ A header page holds the extent table and the sections table. Its data is a logic
   - Per term, chunks are combined in SB order:
     - **Disjoint SBs:** byte-copy of the chunk, tf stream and bounds, with no re-encode.
     - **Overlapping SBs:** decode, OR (disjoint by I1), re-encode.
-    - **Dirty SBs:** AND with liveness, dropping dead postings. This is the only garbage collection.
+    - **Dirty SBs:** AND with liveness, dropping dead postings. This is the only garbage collection. A forced merge (`sift.merge`) also rewrites a lone segment that has dirty SBs, so its dead terms leave the dictionary.
   - Bounds are recomputed only for rewritten chunks.
   - Memory is O(chunks in flight), not O(segment). Merges run only in maintenance contexts (worker, vacuum, manual), never in the foreground.
 - **Rejected:**
@@ -346,7 +346,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - If the whole query yields nothing, it matches nothing. This is not an error.
   - Prefix and wildcard literals are folded for case and accent but not stemmed. Regex is matched against dictionary terms as written (already folded).
   - Fuzzy is Levenshtein distance ≤ 1 or 2 with the first character fixed. The requested distance is clamped by term length, as in Elasticsearch AUTO: terms under 3 characters match exactly, terms under 6 allow at most distance 1 (so `saq~2` is `saq~1`), longer terms allow the requested distance. `parse_query` shows the effective distance.
-- **Expansion.** Expanded terms are the union across segments. More than `sift.max_expansions` (default 512) raises an error, rather than silently truncating.
+- **Expansion.** Expanded terms are the union across segments. More than `sift.max_expansions` (default 512) raises an error, rather than silently truncating. Only terms with a live posting count: a term whose docs were all deleted stays in the dictionary until a merge rewrites the segment, but does not use up the limit. Liveness is checked lazily, only when the limit is reached (dirty segments are re-expanded keeping live terms), so queries under the limit pay nothing.
   - Wildcard and regex ranges are limited to the literal prefix when there is one; otherwise every dictionary block is scanned.
   - Fuzzy uses bit-parallel Myers Levenshtein (≤ 64 bytes) over the first-character range.
 - **Scoring.** Sum over matching positive leaves, multiplied by boost. NOT subtrees score 0. An expanded leaf scores the *max* over its expansions, with each expansion's own idf (dismax), so a document matching many variants does not get an inflated score. A phrase scores the sum of its distinct terms.

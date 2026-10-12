@@ -293,7 +293,9 @@ bytes_cmp(const void *a, const void *b)
 /*
  * The segments to merge: MERGE_FANIN or more of one tier, else the smallest
  * MERGE_FANIN when the index has too many, else a lone segment that is more
- * than half dead. force: all immutable segments. Returns their number in sel.
+ * than half dead. force: all immutable segments, a lone one only if some of
+ * its docs are dead (the rewrite drops them and their terms). Returns their
+ * number in sel.
  */
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
@@ -309,7 +311,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	if (force)
 	{
 		memcpy(sel, imm, n * sizeof(SiftSegEntry));
-		return n > 1 ? n : 0;
+		return n > 1 || (n == 1 && (imm[0].flags & SIFT_SEG_DIRTY)) ? n : 0;
 	}
 	for (int i = 0; i + MERGE_FANIN <= n; i++)
 		if (tier_of(&imm[i], base) == tier_of(&imm[i + MERGE_FANIN - 1], base))
