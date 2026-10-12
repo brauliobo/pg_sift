@@ -78,6 +78,16 @@ SET sift.enable_scan = off;
 SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 RESET sift.enable_scan;
 
+-- ties break on the ctid of the visible tuple, not of the index entry (HOT updates move it along the page)
+CREATE TABLE h (id int, body text, pad int) WITH (fillfactor = 50, autovacuum_enabled = off);
+INSERT INTO h VALUES (1, 'tie', 0), (2, 'tie', 0), (3, 'tie', 0);
+CREATE INDEX h_idx ON h USING sift (body);
+UPDATE h SET pad = 1 WHERE id IN (1, 2);
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 2;
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 1;
+DROP TABLE h;
+
 -- parameters and rescans
 PREPARE top(text, int) AS SELECT id, sift.score(ctid) FROM r WHERE body @@> $1 ORDER BY sift.score(ctid) DESC LIMIT $2;
 EXECUTE top('lazy', 2);

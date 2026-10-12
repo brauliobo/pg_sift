@@ -1163,12 +1163,15 @@ struct SiftRanker
 	RankWork   *wk;
 	int64		k;
 	int64		K;					/* hits kept by the current search */
-	SiftHit    *hit;
+	SiftHit    *hit;				/* keyed by the visible tuple's ctid */
+	HTAB	   *hot;				/* visible ctid -> index entry, where they differ */
 	int			nhit;
 	int64		pos;
 	bool		searched;
 	bool		complete;
 };
+
+static void hot_forget(SiftRanker *r);
 
 static void
 seg_rewind(RankSeg *rs)
@@ -1384,6 +1387,7 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 void
 sift_rank_end(SiftRanker *r)
 {
+	hot_forget(r);
 	for (int s = 0; s < r->plan->nsegs; s++)
 		sift_sr_release(&r->plan->seg[s]->sr);
 	MemoryContextDelete(r->tmpcx);
@@ -1628,17 +1632,49 @@ sift_plan_recheck_needed(const SiftPlan *plan)
 	return plan->recheck;
 }
 
-/* Verifies one candidate and keeps it when it is among the best */
+/* Index entry of a hit whose visible tuple sits elsewhere on the page (HOT chain) */
+typedef struct HotEnt
+{
+	SiftKey		vis;
+	SiftKey		root;
+} HotEnt;
+
+static void
+hot_remember(SiftRanker *r, SiftKey vis, SiftKey root)
+{
+	if (r->hot == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(SiftKey), .entrysize = sizeof(HotEnt), .hcxt = r->plan->mcxt};
+
+		r->hot = hash_create("sift hot chains", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	((HotEnt *) hash_search(r->hot, &vis, HASH_ENTER, NULL))->root = root;
+}
+
+static void
+hot_forget(SiftRanker *r)
+{
+	if (r->hot)
+		hash_destroy(r->hot);
+	r->hot = NULL;
+}
+
+/*
+ * Verifies one candidate and keeps it when it is among the best. Ties go by the ctid of the visible
+ * tuple, which shares the index entry's page but not its offset along a HOT chain: the first check
+ * therefore compares the page only.
+ */
 static void
 rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 {
 	SiftPlan   *p = r->plan;
 	ItemPointerData tid;
+	SiftKey		vis;
 	text	   *doc = NULL;
 	MemoryContext old;
 	bool		ok;
 
-	if (!sift_kern_topk_admits(tk, score, key))
+	if (!sift_kern_topk_admits(tk, score, (key & ~UINT64CONST(0xFFFF)) | 1))
 		return;
 	sift_key_to_tid(key, &tid);
 	p->stats.candidates++;
@@ -1651,8 +1687,12 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 	if (!ok)
 		return;
 	p->stats.verified++;
-	if (sift_kern_topk_admits(tk, score, key))
-		sift_kern_topk_push(tk, score, key);
+	vis = sift_key_from_tid(&tid);
+	if (!sift_kern_topk_admits(tk, score, vis))
+		return;
+	sift_kern_topk_push(tk, score, vis);
+	if (vis != key)
+		hot_remember(r, vis, key);
 }
 
 static int
@@ -1738,6 +1778,7 @@ rank_search(SiftRanker *r)
 	SiftTopK	tk;
 	int			u;
 
+	hot_forget(r);
 	if (r->hit)
 		pfree(r->hit);
 	r->hit = MemoryContextAlloc(p->mcxt, r->K * sizeof(SiftHit));
@@ -1777,10 +1818,16 @@ rank_ensure(SiftRanker *r)
 bool
 sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score)
 {
+	SiftKey		key;
+	HotEnt	   *e;
+
 	rank_ensure(r);
 	if (r->pos >= r->nhit)
 		return false;
-	sift_key_to_tid(r->hit[r->pos].key, tid);
+	key = r->hit[r->pos].key;
+	if (r->hot && (e = hash_search(r->hot, &key, HASH_FIND, NULL)) != NULL)
+		key = e->root;
+	sift_key_to_tid(key, tid);
 	*score = r->hit[r->pos++].score;
 	return true;
 }
