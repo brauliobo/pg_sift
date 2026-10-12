@@ -6,11 +6,14 @@
 #   scripts/pgtest.sh start      initdb (first time) + start
 #   scripts/pgtest.sh psql [...] psql into the test database
 #   scripts/pgtest.sh regress    make installcheck against the cluster
+#   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56169, default
-# 56100) let several jobs run clusters side by side.
+# 56100) let several jobs run clusters side by side; TAP clusters use
+# SIFT_PORT + 1 and up. SIFT_TESTING=1 (default) builds the sift._test_*
+# functions; SIFT_TESTING= builds the release library.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,6 +26,7 @@ SOCK=$TMP/sock
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 export PGHOST=$SOCK PGPORT=$PORT
+export SIFT_TESTING=${SIFT_TESTING-1}
 
 (( PORT >= 56100 && PORT <= 56169 )) || { echo "SIFT_PORT must be in 56100-56169" >&2; exit 1; }
 
@@ -54,12 +58,20 @@ stop() {
 	[[ -f $DATA/postmaster.pid ]] && pg_ctl -D "$DATA" -m fast -w stop >/dev/null || true
 }
 
+tap() {
+	local tests=(test/t/*.sh)
+	[[ -n $1 ]] && tests=(test/t/$1.sh)
+	cd "$REPO"
+	SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:-} --exec bash "${tests[@]}"
+}
+
 case ${1:-} in
 	install) install ;;
 	start) start ;;
 	stop) stop ;;
 	psql) shift; exec psql -U postgres -d "$DB" -X "$@" ;;
 	regress) make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres ;;
+	tap) tap "${2:-}" ;;
 	destroy) stop; rm -rf "$TMP" ;;
-	*) sed -n '2,13p' "$0"; exit 1 ;;
+	*) sed -n '2,18p' "$0"; exit 1 ;;
 esac

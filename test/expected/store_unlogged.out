@@ -1,0 +1,61 @@
+-- Unlogged indexes get an init fork (ambuildempty, INIT target); temp indexes use local buffers
+CREATE EXTENSION sift_test CASCADE;
+NOTICE:  installing required extension "sift"
+CREATE FUNCTION info(idx regclass) RETURNS jsonb LANGUAGE sql
+	AS $$ SELECT jsonb_object_agg(key, value) FROM sift._test_info(idx)
+		WHERE key IN ('high_water', 'nblocks', 'init_blocks', 'next_gen', 'nsegs') $$;
+CREATE UNLOGGED TABLE u (v int);
+INSERT INTO u VALUES (5000), (50000);
+CREATE INDEX u_idx ON u USING sift_store_test (v);
+SELECT info('u_idx');
+                                      info                                      
+--------------------------------------------------------------------------------
+ {"nsegs": 2, "nblocks": 12, "next_gen": 3, "high_water": 12, "init_blocks": 2}
+(1 row)
+
+SELECT pg_relation_size('u_idx', 'init') AS init_bytes;
+ init_bytes 
+------------
+      16384
+(1 row)
+
+SELECT sift._test_seg_write('u_idx', 300000, 3, 0, 64) AS g \gset
+SELECT count(*), bool_and(sift._test_seg_read('u_idx', gen) = payload) FROM sift._test_segments('u_idx');
+ count | bool_and 
+-------+----------
+     3 | t
+(1 row)
+
+SELECT sift._test_seg_drop('u_idx', :g) > 0, sift._test_check('u_idx');
+ ?column? | _test_check 
+----------+-------------
+ t        |           0
+(1 row)
+
+CREATE TEMP TABLE tmp (v int);
+INSERT INTO tmp VALUES (1), (70000);
+CREATE INDEX tmp_idx ON tmp USING sift_store_test (v);
+SELECT info('tmp_idx');
+                                      info                                       
+---------------------------------------------------------------------------------
+ {"nsegs": 2, "nblocks": 14, "next_gen": 3, "high_water": 14, "init_blocks": -1}
+(1 row)
+
+SELECT sift._test_seg_write('tmp_idx', 2000000, 4) AS g \gset
+SELECT count(*), bool_and(sift._test_seg_read('tmp_idx', gen) = payload),
+	bool_and(sift._test_seg_read('tmp_idx', gen, 3) = size) FROM sift._test_segments('tmp_idx');
+ count | bool_and | bool_and 
+-------+----------+----------
+     3 | t        | t
+(1 row)
+
+SELECT sift._test_seg_drop('tmp_idx', :g) > 0, sift._test_check('tmp_idx');
+ ?column? | _test_check 
+----------+-------------
+ t        |           0
+(1 row)
+
+DROP TABLE u, tmp;
+DROP FUNCTION info(regclass);
+DROP EXTENSION sift_test;
+DROP EXTENSION sift;
