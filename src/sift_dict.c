@@ -593,7 +593,11 @@ sift_matcher_create(const SiftQNode *leaf)
 	m->hilen = m->lolen;
 	m->hi = m->lolen ? successor(m->lo, &m->hilen) : NULL;
 	if (m->lolen == 0)
-		m->lo = NULL;
+	{
+		/* every word starts above the pair terms (phrase_index = pairs), which a scan must not walk */
+		m->lo = " ";
+		m->lolen = 1;
+	}
 	return m;
 }
 
@@ -610,5 +614,6 @@ sift_matcher_bounds(const SiftTermMatcher *m, const char **lo, int *lolen,
 bool
 sift_matcher_match(const SiftTermMatcher *m, const char *term, int len)
 {
-	return sift_query_leaf_match(m->leaf, term, len);
+	/* pair terms (phrase_index = pairs) are not words: no expansion reaches them */
+	return *term != SIFT_PAIR_SEP && sift_query_leaf_match(m->leaf, term, len);
 }

@@ -79,7 +79,13 @@ typedef struct SiftOptions
 	bool		accent_folding;
 	int			mutable_limit;	/* kB; seal the active mutable segment above it */
 	int			build_segments; /* 0 = one per build participant */
+	int			phrase_index;	/* SIFT_PHRASE_* */
 } SiftOptions;
+
+/* phrase_index: pairs also indexes every adjacent token pair as the term SEP a SEP b, sorted before every word */
+#define SIFT_PHRASE_NONE	0
+#define SIFT_PHRASE_PAIRS	1
+#define SIFT_PAIR_SEP		'\x1F'
 
 #define SIFT_DEFAULT_K1				1.2
 #define SIFT_DEFAULT_B				0.75

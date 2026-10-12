@@ -213,16 +213,55 @@ en_not(SiftPlan *p, EvalNode *child)
 	return en_make(p, EN_NOT, 1, kid);
 }
 
-/* A phrase read as the AND of its distinct terms, each scoring with the phrase's boost */
+/* Bytes of the pair term of the phrase's terms i and i + 1 (what the analyzer indexes), 0 when too long */
+static int
+pair_term(const SiftQNode *n, int i, char *out)
+{
+	int			len = 2 + n->termlens[i] + n->termlens[i + 1];
+
+	if (len > SIFT_MAX_TERM_BYTES)
+		return 0;
+	out[0] = SIFT_PAIR_SEP;
+	memcpy(out + 1, n->terms[i], n->termlens[i]);
+	out[1 + n->termlens[i]] = SIFT_PAIR_SEP;
+	memcpy(out + 2 + n->termlens[i], n->terms[i + 1], n->termlens[i + 1]);
+	return len;
+}
+
+/* Does the index decide the phrase alone: two words whose pair term it holds */
+static bool
+phrase_exact(const SiftPlan *p, const SiftQNode *n)
+{
+	char		pair[2 * SIFT_MAX_TERM_BYTES + 1];
+
+	return p->st->opts->phrase_index == SIFT_PHRASE_PAIRS && n->nterms == 2 && pair_term(n, 0, pair) > 0;
+}
+
+static EvalNode *
+term_leaf(SiftPlan *p, const SiftQNode *n, const char *text, int len, Place at, const SiftQNode *phrase)
+{
+	SiftQNode  *t = MemoryContextAllocZero(p->mcxt, sizeof(SiftQNode));
+
+	t->kind = SQ_TERM;
+	t->boost = n->boost;
+	t->text = (char *) text;
+	t->textlen = len;
+	return en_leaf(p, t, at, phrase);
+}
+
+/*
+ * A phrase read as the AND of its distinct terms, each scoring with the
+ * phrase's boost, and of its pair terms when the index has them (they decide
+ * a two-word phrase and narrow longer ones; they do not score)
+ */
 static EvalNode *
 relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 {
-	EvalNode  **kids = MemoryContextAlloc(p->mcxt, n->nterms * sizeof(EvalNode *));
+	EvalNode  **kids = MemoryContextAlloc(p->mcxt, 2 * n->nterms * sizeof(EvalNode *));
 	int			nk = 0;
 
 	for (int i = 0; i < n->nterms; i++)
 	{
-		SiftQNode  *t;
 		int			j;
 
 		for (j = 0; j < i; j++)
@@ -230,12 +269,17 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 				break;
 		if (j < i)
 			continue;
-		t = MemoryContextAllocZero(p->mcxt, sizeof(SiftQNode));
-		t->kind = SQ_TERM;
-		t->boost = n->boost;
-		t->text = n->terms[i];
-		t->textlen = n->termlens[i];
-		kids[nk++] = en_leaf(p, t, at, n);
+		kids[nk++] = term_leaf(p, n, n->terms[i], n->termlens[i], at, n);
+	}
+	for (int i = 0; p->st->opts->phrase_index == SIFT_PHRASE_PAIRS && i + 1 < n->nterms; i++)
+	{
+		char	   *pair = MemoryContextAlloc(p->mcxt, 2 * SIFT_MAX_TERM_BYTES + 1);
+		int			len = pair_term(n, i, pair);
+
+		if (len == 0)
+			continue;
+		kids[nk] = term_leaf(p, n, pair, len, at, NULL);
+		p->leaves[kids[nk++]->leaf].scoring = false;
 	}
 	return en_make(p, EN_AND, nk, kids);
 }
@@ -257,7 +301,8 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 		case SQ_NOTHING:
 			return &nothing;
 		case SQ_PHRASE:
-			return over ? relax_phrase(p, n, at) : &nothing;
+			p->recheck |= !phrase_exact(p, n);
+			return over || phrase_exact(p, n) ? relax_phrase(p, n, at) : &nothing;
 		case SQ_AND:
 		case SQ_OR:
 			kids = MemoryContextAlloc(p->mcxt, n->nchild * sizeof(EvalNode *));
@@ -771,7 +816,7 @@ sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
 	for (int i = 0; i < nqueries; i++)
 	{
 		roots[i] = relax(p, queries[i]->root, true, (Place) {true, true});
-		p->recheck |= queries[i]->needs_recheck;
+		p->recheck |= p->rescore;
 		if (roots[i]->kind == EN_NOTHING)
 		{
 			p->root = roots[i];
@@ -1278,22 +1323,22 @@ leaf_at(const LeafUB *l, uint32 gid)
 	return l->pos < l->n && l->list[l->pos].gid == gid;
 }
 
-/* Does the bounded tree have a possible match in the SB the leaves' lists point at? */
+/* Does the bounded tree have a possible match in the SB the leaves' lists point at? Leaves that do not score have no list: they may match anywhere */
 static bool
-tree_present(const EvalNode *n, const LeafUB *lub, uint32 gid)
+tree_present(const SiftPlan *p, const EvalNode *n, const LeafUB *lub, uint32 gid)
 {
 	switch (n->kind)
 	{
 		case EN_LEAF:
-			return leaf_at(&lub[n->leaf], gid);
+			return !p->leaves[n->leaf].scoring || leaf_at(&lub[n->leaf], gid);
 		case EN_AND:
 			for (int i = 0; i < n->nchild; i++)
-				if (n->child[i]->kind != EN_NOT && !tree_present(n->child[i], lub, gid))
+				if (n->child[i]->kind != EN_NOT && !tree_present(p, n->child[i], lub, gid))
 					return false;
 			return true;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
-				if (tree_present(n->child[i], lub, gid))
+				if (tree_present(p, n->child[i], lub, gid))
 					return true;
 			return false;
 		default:
@@ -1318,7 +1363,7 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 		if (gid == UINT32_MAX)
 			return;
 		u.gid = gid;
-		if (tree_present(p->root, rs->lub, gid))
+		if (tree_present(p, p->root, rs->lub, gid))
 		{
 			for (int i = 0; i < p->nleaves; i++)
 				if (leaf_at(&rs->lub[i], gid))

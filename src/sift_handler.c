@@ -83,6 +83,12 @@ define_gucs(void)
 	MarkGUCPrefixReserved("sift");
 }
 
+static relopt_enum_elt_def phrase_index_names[] = {
+	{"none", SIFT_PHRASE_NONE},
+	{"pairs", SIFT_PHRASE_PAIRS},
+	{(const char *) NULL}
+};
+
 static void
 define_reloptions(void)
 {
@@ -104,6 +110,10 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
+	add_enum_reloption(sift_relopt_kind, "phrase_index",
+					   "Phrase index: none, or pairs to index adjacent token pairs (exact two-word phrases, REINDEX to apply)",
+					   phrase_index_names, SIFT_PHRASE_NONE,
+					   "Valid values are \"none\" and \"pairs\".", AccessExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -179,6 +189,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
+		{"phrase_index", RELOPT_TYPE_ENUM, offsetof(SiftOptions, phrase_index)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,

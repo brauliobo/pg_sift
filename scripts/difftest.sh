@@ -5,6 +5,7 @@
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
 #                       [--k N] [--engine sift|mutant:NAME|mutants] [--minimize N] [--min-trials N]
 #   scripts/difftest.sh --repro FILE
+#   INDEX_OPTS="WITH (phrase_index = pairs)" scripts/difftest.sh ...   build the index with options
 #
 # Each round checks every query in every stage (parse, seqscan, bitmap, count,
 # ranked) plus verify/stats/tokenize, then mutates the corpus (deletes, updates,
@@ -83,7 +84,7 @@ run_engine() {
 	sql -c "SELECT sift_diff.build($(fseed "$SEED"), $DOCS, $VOCAB)"
 	if [[ $engine != sift ]]; then
 		idx=
-	elif ! err=$(sql -c "CREATE INDEX diff_idx ON diff_docs USING sift (body)" 2>&1); then
+	elif ! err=$(sql -c "CREATE INDEX diff_idx ON diff_docs USING sift (body) ${INDEX_OPTS:-}" 2>&1); then
 		[[ $err == *"not implemented"* ]] || sql -c "INSERT INTO diff_results VALUES ('$engine', 0, 0, NULL, 'build', 'fail', \$\$$err\$\$)"
 		log "CREATE INDEX: ${err#*ERROR:  }"
 		idx=

@@ -169,15 +169,22 @@ sift_term_hash(const char *term, int len)
 /* Configuration */
 
 void
+sift_analyzer_config_set_pairs(SiftAnalyzerConfig *cfg, bool pairs)
+{
+	uint8		key[5] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer, 1};
+
+	cfg->pairs = pairs;
+	cfg->hash = sift_term_hash((const char *) key, pairs ? 5 : 4);
+}
+
+void
 sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fold,
 						 SiftStemmer stemmer)
 {
-	uint8		key[4] = {SIFT_ANALYZER_VERSION, case_fold, accent_fold, stemmer};
-
 	cfg->case_fold = case_fold;
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
-	cfg->hash = sift_term_hash((const char *) key, sizeof(key));
+	sift_analyzer_config_set_pairs(cfg, false);
 }
 
 void
@@ -191,6 +198,8 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 {
 	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding,
 							 sift_analyze_stemmer(sift_options_stemmer(opts)));
+	if (opts->phrase_index == SIFT_PHRASE_PAIRS)
+		sift_analyzer_config_set_pairs(cfg, true);
 }
 
 void
@@ -648,6 +657,53 @@ bag_table(SiftAnalyzer *a, uint32 nslots, int nterms)
 }
 
 /*
+ * Counts the n-byte term at a->buf + *used and returns its bag index; a new
+ * term keeps its bytes (*used moves past them).
+ */
+static inline int
+bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n)
+{
+	const char *dst = a->buf + *used;
+	uint64		h = hash64(dst, n);
+	uint32		slot,
+				mask = a->nslots - 1;
+	int32		t;
+
+	for (slot = (uint32) (h >> 32) >> a->shift; (t = a->slots[slot]) >= 0; slot = (slot + 1) & mask)
+		if (a->bag[t].h == h && a->bag[t].len == n && same_bytes(a->buf + a->bag[t].off, dst, n))
+		{
+			a->bag[t].tf++;
+			return t;
+		}
+	ENSURE(a, bag, bagcap, *nterms + 1);
+	a->bag[*nterms] = (BagTerm) {.h = h, .off = *used, .tf = 1, .len = n};
+	a->slots[slot] = *nterms;
+	*used += n;
+	if ((uint32) ++*nterms * 2 > a->nslots)
+		bag_table(a, a->nslots * 2, *nterms);
+	return *nterms - 1;
+}
+
+/* Counts the pair "SEP bag[l] SEP bag[r]" of two adjacent tokens, unless it exceeds a term */
+static void
+bag_add_pair(SiftAnalyzer *a, size_t *used, int *nterms, int l, int r)
+{
+	int			ll = a->bag[l].len,
+				rl = a->bag[r].len;
+	char	   *dst;
+
+	if (2 + ll + rl > SIFT_MAX_TERM_BYTES)
+		return;
+	ENSURE(a, buf, bufcap, *used + 2 + ll + rl + DST_CAP);
+	dst = a->buf + *used;
+	dst[0] = SIFT_PAIR_SEP;
+	memcpy(dst + 1, a->buf + a->bag[l].off, ll);
+	dst[1 + ll] = SIFT_PAIR_SEP;
+	memcpy(dst + 2 + ll, a->buf + a->bag[r].off, rl);
+	bag_add(a, used, nterms, 2 + ll + rl);
+}
+
+/*
  * Terms live in a linear-probing table indexed by the top bits of their
  * 32-bit hash, so walking it yields them almost sorted; an insertion pass
  * fixes probe displacement, wrap-around and equal hashes.
@@ -662,37 +718,21 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 				off = 0,
 				start,
 				n,
-				k = 0;
+				k = 0,
+				prev = -1,
+				cur;
 
 	bag_table(a, pg_nextpower2_32(Min(Max(len / 4, 64), 1 << 16)), 0);
 	for (;;)
 	{
-		char	   *dst;
-		uint64		h;
-		uint32		slot,
-					mask = a->nslots - 1;
-		int32		t;
-
 		ENSURE(a, buf, bufcap, used + DST_CAP);
-		dst = a->buf + used;
-		if ((n = scan_token(a, s, len, &off, &start, dst)) < 0)
+		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
 		ntok++;
-		h = hash64(dst, n);
-		for (slot = (uint32) (h >> 32) >> a->shift; (t = a->slots[slot]) >= 0; slot = (slot + 1) & mask)
-			if (a->bag[t].h == h && a->bag[t].len == n && same_bytes(a->buf + a->bag[t].off, dst, n))
-				break;
-		if (t >= 0)
-		{
-			a->bag[t].tf++;
-			continue;
-		}
-		ENSURE(a, bag, bagcap, nterms + 1);
-		a->bag[nterms] = (BagTerm) {.h = h, .off = used, .tf = 1, .len = n};
-		a->slots[slot] = nterms++;
-		used += n;
-		if ((uint32) nterms * 2 > a->nslots)
-			bag_table(a, a->nslots * 2, nterms);
+		cur = bag_add(a, &used, &nterms, n);
+		if (a->cfg.pairs && ntok > 1)
+			bag_add_pair(a, &used, &nterms, prev, cur);
+		prev = cur;
 	}
 
 	/* compact the occupied slots in place, without branches */

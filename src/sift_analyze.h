@@ -64,7 +64,8 @@ typedef struct SiftAnalyzerConfig
 	bool		case_fold;
 	bool		accent_fold;
 	uint8		stemmer;		/* SiftStemmer */
-	uint32		hash;			/* of the version and the three fields above */
+	bool		pairs;			/* the bag also holds every adjacent token pair, SEP a SEP b */
+	uint32		hash;			/* of the version and the fields above (pairs only when set) */
 } SiftAnalyzerConfig;
 
 /* A token in a document token stream; str points into analyzer memory */
@@ -100,6 +101,9 @@ typedef struct SiftAnalyzer SiftAnalyzer;
 /* Sets all fields including the hash */
 extern void sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fold,
 									 SiftStemmer stemmer);
+
+/* Turns the pair terms on or off (set clears them) and refreshes the hash */
+extern void sift_analyzer_config_set_pairs(SiftAnalyzerConfig *cfg, bool pairs);
 
 /* Default config: folding on, no stemming */
 extern void sift_analyzer_config_default(SiftAnalyzerConfig *cfg);
