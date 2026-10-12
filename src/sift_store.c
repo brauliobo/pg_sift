@@ -18,6 +18,7 @@
 #include "storage/bulk_write.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
+#include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
 #include "sift_store.h"
@@ -882,8 +883,9 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 	if (wt->nspare == wt->maxspare)
 	{
 		wt->maxspare = Max(8, 2 * wt->maxspare);
+		/* lives as long as wt, whatever context the stream writer ran in */
 		wt->spare = wt->spare ? repalloc(wt->spare, wt->maxspare * sizeof(SiftExtent)) :
-			palloc(wt->maxspare * sizeof(SiftExtent));
+			MemoryContextAlloc(GetMemoryChunkContext(wt), wt->maxspare * sizeof(SiftExtent));
 	}
 	wt->spare[wt->nspare++] = (SiftExtent) {start, n};
 }
