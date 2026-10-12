@@ -107,6 +107,8 @@ size_t sift_encode_bound(uint32_t n);
  */
 size_t sift_encode(const sift_tid *tids, const uint8_t *tf, const uint8_t *ub, uint32_t n, const sift_enc_opts *o, uint8_t *out);
 uint32_t sift_blob_n(const uint8_t *blob);
+/* NULL when every length, count and offset the cursors follow lies inside blob[0, len); else what is wrong */
+const char *sift_blob_check(const uint8_t *blob, size_t len);
 int sift_blob_kind(const uint8_t *blob);
 uint32_t sift_w_for(uint32_t maxoff);
 uint32_t sift_tf_quant(uint32_t tf);

@@ -178,8 +178,8 @@ SELECT sift._test_poke('g_list', 6, 4000, -1, 8);
 (1 row)
 
 SELECT sift.verify('g_list');
-ERROR:  sift index "g_list" segment 1 is corrupted
-DETAIL:  Term "v1" decodes past its df 3342.
+ERROR:  sift: term blob at 35620 is malformed
+DETAIL:  LIST block high bits do not count its postings.
 REINDEX INDEX g_list;
 SELECT sift.verify('g_list');
  verify 

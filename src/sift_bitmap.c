@@ -142,6 +142,89 @@ static uint32_t list_ob(const sift_tid *t, uint32_t n)
 
 static inline uint32_t blk_cnt(uint32_t n, uint32_t i) { return n - i < SIFT_LIST_BLOCK ? n - i : SIFT_LIST_BLOCK; }
 
+/* varint at p, NULL when it runs past end or past 63 bits */
+static const uint8_t *get_varint_n(const uint8_t *p, const uint8_t *end, uint64_t *x)
+{
+	*x = 0;
+	for (int s = 0; p < end && s < 63; s += 7) {
+		*x |= (uint64_t)(*p & 0x7f) << s;
+		if (!(*p++ & 0x80)) return p;
+	}
+	return NULL;
+}
+
+static uint64_t popcount_n(const uint8_t *p, size_t n)
+{
+	uint64_t c = 0;
+	while (n--) c += (uint64_t)__builtin_popcount(*p++);
+	return c;
+}
+
+static const char *check_list(const uint8_t *blob, size_t len)
+{
+	const uint8_t *p = blob + 2, *end = blob + len;
+	uint64_t n, prev = 0, lim;
+	int wtf = blob[0] >> 4 & SIFT_F_TF;
+	if (blob[1] > nbits(SIFT_MAX_OFF - 1)) return "LIST offset bits out of range";
+	lim = 1ull << (32 + blob[1]);
+	if (!(p = get_varint_n(p, end, &n)) || n == 0 || n > UINT32_MAX || (wtf && p++ >= end)) return "LIST header overruns the blob";
+	for (uint64_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
+		uint64_t d, u1;
+		uint32_t cnt = blk_cnt((uint32_t)n, (uint32_t)i), l;
+		if (!(p = get_varint_n(p, end, &d)) || !(p = get_varint_n(p, end, &u1))) return "LIST block header overruns the blob";
+		if (d >= lim || u1 >= lim || u1 + 1 < cnt || prev + d + u1 >= lim) return "LIST block range is out of bounds";
+		l = ef_l(u1 + 1, cnt);
+		size_t lows = ef_lows(cnt, l), highs = ef_highs(u1 + 1, cnt, l);
+		if ((size_t)(end - p) < lows + highs) return "LIST block overruns the blob";
+		if (popcount_n(p + lows, highs) != cnt) return "LIST block high bits do not count its postings";
+		p += lows + highs, prev += d + u1;
+	}
+	return wtf && (size_t)(end - p) < (n + 1) / 2 ? "LIST tf stream overruns the blob" : NULL;
+}
+
+static const char *check_grouped(const uint8_t *blob, size_t len)
+{
+	uint64_t n, ng, tables, plen;
+	int wtf = blob[0] >> 4 & SIFT_F_TF;
+	if (len < 12) return "GROUPED header overruns the blob";
+	n = ld32(blob + 4), ng = ld32(blob + 8);
+	if (n == 0 || ng == 0 || ng > n) return "GROUPED group count is out of range";
+	tables = 12 + 4 * (3 * ng + 2);
+	if (tables > len) return "GROUPED tables overrun the blob";
+	const uint8_t *key = blob + 12, *poff = key + 4 * ng, *base = poff + 4 * (ng + 1), *payload = blob + tables;
+	plen = ld32(poff + 4 * ng);
+	if (plen > len - tables || (wtf && len - tables - plen < 9 * ng + (n + 1) / 2)) return "GROUPED payload overruns the blob";
+	if (ld32(poff) != 0 || ld32(base) != 0 || ld32(base + 4 * ng) != n) return "GROUPED offsets do not start at zero and end at the count";
+	for (uint64_t g = 0; g < ng; g++) {
+		uint32_t k = ld32(key + 4 * g), w = k & 0x7f, lo = ld32(poff + 4 * g), hi = ld32(poff + 4 * (g + 1));
+		uint32_t cnt = ld32(base + 4 * (g + 1)) - ld32(base + 4 * g);
+		if (g > 0 && k >> 8 <= ld32(key + 4 * (g - 1)) >> 8) return "GROUPED groups are out of order";
+		if (!(w == 1 || w == 2 || w == 4 || (w % 8 == 0 && w > 0 && w <= SIFT_MAX_W))) return "GROUPED group width is invalid";
+		if (lo > hi || hi > plen || cnt == 0 || cnt > n || ld32(base + 4 * (g + 1)) > n || ld32(base + 4 * (g + 1)) < ld32(base + 4 * g))
+			return "GROUPED group extents are out of order";
+		if (k & 0x80) {
+			uint32_t es = w <= 32 ? 2 : 4;
+			if (hi - lo != (uint64_t)cnt * es) return "GROUPED array group has the wrong size";
+			for (uint32_t i = 0; i < cnt; i++) {
+				uint32_t e = es == 2 ? (uint32_t)payload[lo + 2 * i] | (uint32_t)payload[lo + 2 * i + 1] << 8 : ld32(payload + lo + 4 * i);
+				uint32_t o = es == 2 ? e & 0xff : e & 0xffff, pg = es == 2 ? e >> 8 : e >> 16;
+				if (o >= 8 * w || pg >= SIFT_GROUP_PAGES) return "GROUPED array entry lies outside its page bitmap";
+			}
+		} else {
+			if (hi - lo < 32) return "GROUPED bitmap group is shorter than its page mask";
+			uint64_t np = popcount_n(payload + lo, 32);
+			if (hi - lo - 32 != np * w || cnt > np * 8 * w) return "GROUPED bitmap group does not match its page mask";
+		}
+	}
+	return NULL;
+}
+
+const char *sift_blob_check(const uint8_t *blob, size_t len)
+{
+	if (len < 4 || blob[0] >> 4 & ~SIFT_F_TF) return "blob header is invalid";
+	return sift_blob_kind(blob) == SIFT_LIST ? check_list(blob, len) : sift_blob_kind(blob) == SIFT_GROUPED ? check_grouped(blob, len) : "blob kind is unknown";
+}
+
 static size_t list_size(const sift_tid *t, uint32_t n)
 {
 	uint32_t ob = list_ob(t, n);
