@@ -6,6 +6,7 @@
 
 #include "access/generic_xlog.h"
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
 #include "sift_kernels.h"
@@ -606,6 +607,48 @@ bool
 sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info)
 {
 	return sift_dict_lookup(seg->dict, term, len, info);
+}
+
+/* Does the group hold a posting of a live doc */
+static bool
+group_has_live(SiftSegment *seg, const sift_grp *g)
+{
+	SiftDocChunk dc;
+	const uint8 *off = g->off;
+
+	if (!sift_seg_docs(seg, g->gid, &dc) || !dc.dirty)
+		return true;
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
+		{
+			uint64		mask[SIFT_OFFMASK_WORDS] = {0},
+						live[SIFT_OFFMASK_WORDS];
+
+			memcpy(mask, off, g->w);
+			sift_seg_page_live(seg, &dc, wd * 64 + pg_rightmost_one_pos64(m), live);
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				if (mask[k] & live[k])
+					return true;
+		}
+	return false;
+}
+
+bool
+sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
+{
+	MemoryContext cx;
+	SiftPostingCursor *c;
+	bool		live = false;
+
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+		return true;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift term live", ALLOCSET_SMALL_SIZES);
+	c = sift_post_open(&seg->sr, info, cx);
+	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g && !live; g = sift_next(sift_post_cursor(c)))
+		live = group_has_live(seg, g);
+	sift_sr_release(&seg->sr);
+	MemoryContextDelete(cx);
+	return live;
 }
 
 /* ---------- VACUUM ---------- */

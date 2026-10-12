@@ -328,6 +328,7 @@ typedef struct Expand
 {
 	SiftPlan   *plan;
 	const SiftTermMatcher *matcher;
+	SiftSegment *live_in;		/* when set, terms without a live posting in it are skipped */
 	LeafTerm   *terms;
 	int			n;
 	int			cap;
@@ -357,7 +358,7 @@ expand_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
 	Expand	   *e = arg;
 
-	if (!sift_matcher_match(e->matcher, term, len))
+	if (!sift_matcher_match(e->matcher, term, len) || (e->live_in && !sift_seg_term_live(e->live_in, info)))
 		return true;
 	if (e->n == sift_max_expansions)
 	{
@@ -387,9 +388,9 @@ limit_error(const SiftQNode *leaf)
 			 errhint("Narrow the pattern or raise sift.max_expansions.")));
 }
 
-/* Terms across segments are distinct only once: count them before binding */
-static void
-check_distinct(SiftPlan *p, const EvalLeaf *l)
+/* Terms across segments are distinct only once */
+static int
+distinct_terms(const SiftPlan *p, const EvalLeaf *l)
 {
 	LeafTerm  **all;
 	int			n = 0,
@@ -398,7 +399,7 @@ check_distinct(SiftPlan *p, const EvalLeaf *l)
 	for (int s = 0; s < p->nsegs; s++)
 		n += l->nterms[s];
 	if (p->nsegs == 1 || n <= sift_max_expansions)
-		return;
+		return n;
 	all = palloc(n * sizeof(LeafTerm *));
 	n = 0;
 	for (int s = 0; s < p->nsegs; s++)
@@ -407,50 +408,82 @@ check_distinct(SiftPlan *p, const EvalLeaf *l)
 	qsort(all, n, sizeof(LeafTerm *), leaf_term_cmp);
 	for (int i = 0; i < n; i++)
 		distinct += i == 0 || leaf_term_cmp(&all[i - 1], &all[i]) != 0;
-	if (distinct > sift_max_expansions)
-		limit_error(l->node);
 	pfree(all);
+	return distinct;
 }
 
+static bool
+segment_dirty(const SiftPlan *p, int s)
+{
+	return (p->seg[s]->entry.flags & SIFT_SEG_DIRTY) != 0;
+}
+
+/* The leaf's terms in segment s; true when they exceed sift.max_expansions */
+static bool
+expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
+{
+	SiftSegment *seg = p->seg[s];
+	Expand		e = {.plan = p, .matcher = l->m, .live_in = live_only ? seg : NULL};
+	SiftTermInfo info;
+
+	if (l->m == NULL)
+	{
+		if (sift_seg_lookup(seg, l->node->text, l->node->textlen, &info))
+			expand_add(&e, l->node->text, l->node->textlen, &info);
+	}
+	else
+	{
+		const char *lo,
+				   *hi;
+		int			lolen,
+					hilen;
+
+		sift_matcher_bounds(l->m, &lo, &lolen, &hi, &hilen);
+		sift_dict_scan(seg->dict, lo, lolen, hi, hilen, expand_visit, &e);
+	}
+	sift_sr_release(&seg->sr);
+	l->nterms[s] = e.n;
+	l->terms[s] = e.terms;
+	return e.over;
+}
+
+/* Expands again without the terms of vacuumed docs; false when no segment has any */
+static bool
+expand_live(SiftPlan *p, EvalLeaf *l)
+{
+	bool		any = false;
+
+	for (int s = 0; s < p->nsegs; s++)
+		if (segment_dirty(p, s))
+		{
+			expand_segment(p, l, s, true);
+			any = true;
+		}
+	return any;
+}
+
+/*
+ * A dictionary keeps the terms of vacuumed docs until its segment is
+ * rewritten. They match nothing, so the limit applies to the terms with a
+ * live posting; they are only told apart once the limit is reached, which
+ * keeps the common expansion free of posting reads.
+ */
 static void
 resolve_leaf(SiftPlan *p, EvalLeaf *l)
 {
 	const SiftQNode *node = l->node;
-	SiftTermMatcher *m = l->m = node->kind == SQ_TERM ? NULL : sift_matcher_create(node);
 
-	if (m == NULL)
+	l->m = node->kind == SQ_TERM ? NULL : sift_matcher_create(node);
+	if (l->m == NULL)
 		l->hash = sift_term_hash(node->text, node->textlen);
 	l->nterms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(int));
 	l->terms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(LeafTerm *));
 	for (int s = 0; s < p->nsegs; s++)
-	{
-		SiftSegment *seg = p->seg[s];
-		Expand		e = {.plan = p, .matcher = m};
-		SiftTermInfo info;
-
-		if (m == NULL)
-		{
-			if (sift_seg_lookup(seg, node->text, node->textlen, &info))
-				expand_add(&e, node->text, node->textlen, &info);
-		}
-		else
-		{
-			const char *lo,
-					   *hi;
-			int			lolen,
-						hilen;
-
-			sift_matcher_bounds(m, &lo, &lolen, &hi, &hilen);
-			sift_dict_scan(seg->dict, lo, lolen, hi, hilen, expand_visit, &e);
-		}
-		sift_sr_release(&seg->sr);
-		if (e.over && !p->capped)
+		if (expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true)))
 			limit_error(node);
-		l->nterms[s] = e.n;
-		l->terms[s] = e.terms;
-	}
-	if (!p->capped)
-		check_distinct(p, l);
+	if (!p->capped && distinct_terms(p, l) > sift_max_expansions &&
+		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions))
+		limit_error(node);
 }
 
 /* ---------- mutable segments ---------- */
