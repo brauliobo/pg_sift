@@ -344,7 +344,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - A word goes through the index analyzer. If it yields several tokens (`e-mail`), it becomes a phrase; if it yields none, it is dropped.
   - If the whole query yields nothing, it matches nothing. This is not an error.
   - Prefix and wildcard literals are folded for case and accent but not stemmed. Regex is matched against dictionary terms as written (already folded).
-  - Fuzzy is Levenshtein distance ≤ 1 or 2 with the first character fixed. Terms shorter than 3 (distance 1) or 6 (distance 2) characters match exactly.
+  - Fuzzy is Levenshtein distance ≤ 1 or 2 with the first character fixed. The requested distance is clamped by term length, as in Elasticsearch AUTO: terms under 3 characters match exactly, terms under 6 allow at most distance 1 (so `saq~2` is `saq~1`), longer terms allow the requested distance. `parse_query` shows the effective distance.
 - **Expansion.** Expanded terms are the union across segments. More than `sift.max_expansions` (default 512) raises an error, rather than silently truncating.
   - Wildcard and regex ranges are limited to the literal prefix when there is one; otherwise every dictionary block is scanned.
   - Fuzzy uses bit-parallel Myers Levenshtein (≤ 64 bytes) over the first-character range.
