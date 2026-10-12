@@ -19,7 +19,7 @@ endif
 # SIFT_TESTING=1 compiles the sift._test_* functions and installs the
 # test-only sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
-TESTING_REGRESS = store_%
+TESTING_REGRESS = store_% kernels_%
 ifdef SIFT_TESTING
 EXTENSION += sift_test
 DATA += sift_test--1.0.sql
