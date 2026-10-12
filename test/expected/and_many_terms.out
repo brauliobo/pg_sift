@@ -1,0 +1,51 @@
+-- A conjunction of many terms of very different frequency: the cursors are ordered rarest first and
+-- skipped once the page intersection is empty; results equal the document-level evaluation
+CREATE EXTENSION sift;
+CREATE TABLE am (id serial, body text);
+INSERT INTO am (body)
+SELECT 'common' || ' mid' || (i % 3) || ' w' || (i % 50) || ' x' || (i % 700) || ' y' || (i % 1999) || ' rare' || (i % 20011)
+FROM generate_series(1, 60000) i;
+CREATE INDEX am_idx ON am USING sift (body);
+CREATE FUNCTION am_ids(q text, via_index boolean) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('enable_seqscan', (NOT via_index)::text, true);
+	PERFORM set_config('enable_bitmapscan', via_index::text, true);
+	PERFORM set_config('sift.enable_scan', 'false', true);
+	RETURN (SELECT count(*) || ':' || coalesce(sum(id), 0) FROM am WHERE body @@> q);
+END $$;
+SELECT q, am_ids(q, true) = am_ids(q, false) AS same, am_ids(q, true) AS rows FROM (VALUES
+	('common AND mid1 AND w7 AND x7 AND y7 AND rare7'),
+	('rare7 AND common AND mid1 AND w7 AND x7 AND y7'),
+	('common AND mid2 AND w9 AND x9 AND y9 AND rare9 AND rare20020'),
+	('common AND mid0 AND w3 AND x303 AND y303'),
+	('common AND mid1 AND w7'),
+	('common AND mid0 AND w3 AND x3 AND y3 AND rare3 AND rare4'),
+	('(common AND mid1) AND (w7 AND x7) AND (y7 OR y8) AND (rare7 OR rare8)')
+) v(q);
+                                   q                                   | same |     rows     
+-----------------------------------------------------------------------+------+--------------
+ common AND mid1 AND w7 AND x7 AND y7 AND rare7                        | t    | 1:7
+ rare7 AND common AND mid1 AND w7 AND x7 AND y7                        | t    | 1:7
+ common AND mid2 AND w9 AND x9 AND y9 AND rare9 AND rare20020          | t    | 0:0
+ common AND mid0 AND w3 AND x303 AND y303                              | t    | 1:303
+ common AND mid1 AND w7                                                | t    | 400:11972800
+ common AND mid0 AND w3 AND x3 AND y3 AND rare3 AND rare4              | t    | 0:0
+ (common AND mid1) AND (w7 AND x7) AND (y7 OR y8) AND (rare7 OR rare8) | t    | 1:7
+(7 rows)
+
+-- ranked top-10 of a conjunction with many matches
+SELECT count(*) AS ranked FROM (SELECT id FROM am WHERE body @@> 'common AND mid1 AND w7' ORDER BY sift.score(ctid) DESC LIMIT 10) r;
+ ranked 
+--------
+     10
+(1 row)
+
+SELECT sift.verify('am_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE am;
+DROP FUNCTION am_ids;
+DROP EXTENSION sift;
