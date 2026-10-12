@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "sift_kernels_int.h"
+#include "sift_popcount.h"
 
 const SiftKernels *sift_kern = &sift_kernels_scalar;
 
@@ -19,10 +20,10 @@ sift_kern_expand_scalar(uint64 *out, const uint64 *base, const uint64 *rankbits,
 	for (int i = 0; i < nwords; i++)
 	{
 		uint64		m = base[i],
-					src = sift_kern_rank_bits(rankbits, pos, __builtin_popcountll(m)),
+					src = sift_kern_rank_bits(rankbits, pos, sift_pc64(m)),
 					r = 0;
 
-		pos += __builtin_popcountll(m);
+		pos += sift_pc64(m);
 		for (; m; m &= m - 1, src >>= 1)
 			r |= (src & 1) ? m & -m : 0;
 		out[i] = r;

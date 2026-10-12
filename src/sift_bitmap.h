@@ -35,6 +35,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sift_popcount.h"
+
 #define SIFT_GROUP_SHIFT 8
 #define SIFT_GROUP_PAGES 256
 #define SIFT_MAX_OFF     512

@@ -40,6 +40,7 @@ if [[ $MODE == full ]]; then
 else
 	suite build env -u SANITIZE "$S/pgtest.sh" install
 fi
+suite isa-baseline "$S/isa_check.sh"
 "$S/pgtest.sh" stop
 "$S/pgtest.sh" start
 suite installcheck "$S/pgtest.sh" regress

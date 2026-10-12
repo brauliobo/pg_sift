@@ -414,7 +414,7 @@ list_tf_pos(const SiftPostingCursor *c, uint32 r)
 
 	pos.nib = sift_popcount(c->l1, r / 8);
 	if (r % 8)
-		pos.nib += __builtin_popcount(c->l1[r / 8] & ((1u << (r % 8)) - 1));
+		pos.nib += sift_pc64(c->l1[r / 8] & ((1u << (r % 8)) - 1));
 	for (uint32 i = 0; i < pos.nib; i++)
 		pos.esc += ((c->nib[i >> 1] >> ((i & 1) * 4)) & 15) == 15;
 	return pos;
