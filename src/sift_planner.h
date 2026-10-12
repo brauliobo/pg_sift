@@ -36,6 +36,7 @@ typedef enum SiftPrivateField
 extern PGDLLIMPORT const CustomPathMethods sift_scan_path_methods;
 extern PGDLLIMPORT const CustomPathMethods sift_count_path_methods;
 extern PGDLLIMPORT const CustomScanMethods sift_scan_plan_methods;
+extern PGDLLIMPORT const CustomScanMethods sift_count_plan_methods;
 
 /* sift_cscan.c: CreateCustomScanState callback */
 extern Node *sift_create_scan_state(CustomScan *cscan);
