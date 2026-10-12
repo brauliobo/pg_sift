@@ -28,9 +28,9 @@ typedef struct SiftDocSBRef
 } SiftDocSBRef;
 
 /*
- * Writer: docs first (strictly ascending key, dl >= 1), then terms
- * (strictly ascending bytes). avgdl_ref is the segment's own avgdl, so
- * only k1 and b of ref are used.
+ * Writer: docs first (strictly ascending key; dl 0 for text without
+ * tokens), then terms (strictly ascending bytes, possibly none). avgdl_ref
+ * is the segment's own avgdl, so only k1 and b of ref are used.
  */
 typedef struct SiftSegmentWriter SiftSegmentWriter;
 

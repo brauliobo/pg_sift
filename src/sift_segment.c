@@ -155,7 +155,7 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 		uint32		off = keys[i] & 0xFFFF,
 					page = blk & (SIFT_SB_PAGES - 1);
 
-		if ((w->ndocs > 0 && keys[i] <= w->last) || off < 1 || off > MAXOFF || dl[i] == 0)
+		if ((w->ndocs > 0 && keys[i] <= w->last) || off < 1 || off > MAXOFF)
 			elog(ERROR, "sift: segment doc (%u,%u) dl %u out of order or invalid", blk, off, dl[i]);
 		if (sift_block_sb(blk) != w->sb)
 		{
@@ -261,7 +261,7 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	uint64		blocks;
 
 	if (w->pw == NULL)
-		elog(ERROR, "sift: segment without terms");
+		start_terms(w);
 	w->hdr.sections[SIFT_SEC_POSTINGS].len = sift_sw_tell(w->sw) - w->hdr.sections[SIFT_SEC_POSTINGS].off;
 	sift_dict_writer_finish(w->dw, &w->hdr);
 	ext = sift_sw_finish(w->sw, &n);
@@ -325,7 +325,7 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->sum_dl != entry->sum_dl ||
 		h->ndocs == 0 || h->sb_lo != entry->sb_lo || h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi ||
-		!(h->avgdl_ref > 0) || h->live_npages == 0)
+		!(h->avgdl_ref > 0 || (h->avgdl_ref == 0 && h->sum_dl == 0)) || h->live_npages == 0)
 		corrupt(seg, "Header (gen %llu, %llu docs, SBs %u-%u, avgdl %g) does not match its directory entry.",
 				ULL(h->gen), ULL(h->ndocs), h->sb_lo, h->sb_hi, h->avgdl_ref);
 	sift_sr_init(&seg->sr, index, h->extents, h->nextents, entry->gen);
@@ -661,8 +661,6 @@ walk_docs(Walk *w)
 						corrupt(seg, "Absent slot (%u,%d) has dl %u.", blk, o + 1, v);
 					continue;
 				}
-				if (v == 0)
-					corrupt(seg, "Doc (%u,%d) has dl 0.", blk, o + 1);
 				w->keys[w->ndocs] = ((SiftKey) blk << 16) | (o + 1);
 				w->dl[w->ndocs++] = v;
 				sum += v;

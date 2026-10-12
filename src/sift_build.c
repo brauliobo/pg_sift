@@ -294,8 +294,8 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 	SiftKey		key = sift_key_from_tid(tid);
 	uint32		ord = b->ndocs;
 
-	if ((ord > 0 && key <= DOC_KEY(b->docs[ord - 1])) || nterms < 1 || dl < 1)
-		elog(ERROR, "sift: inverted buffer docs must have terms and ascending keys");
+	if ((ord > 0 && key <= DOC_KEY(b->docs[ord - 1])) || (nterms == 0) != (dl == 0))
+		elog(ERROR, "sift: inverted buffer docs must have ascending keys and dl > 0 iff terms");
 	if (ord == b->maxdocs)
 	{
 		b->maxdocs *= 2;
@@ -852,8 +852,6 @@ flush_page(BuildState *bs)
 		uint32		dl;
 		int			n = sift_analyze_doc(bs->an, bs->text.data + bs->docs[i].off, bs->docs[i].len, &terms, &dl);
 
-		if (n == 0)
-			continue;
 		sift_inv_add(bs->inv, &bs->docs[i].tid, terms, n, dl);
 		bs->indexed++;
 		if (sift_inv_full(bs->inv))
