@@ -618,27 +618,26 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
 
 /* ---- operator cursors ---- */
 
-/* leapfrog all kids to a common gid >= *target whose page bitmaps intersect into m */
+/*
+ * leapfrog all kids to a common gid >= *target whose page bitmaps intersect into m; once the
+ * intersection is empty the remaining kids are not sought for that gid
+ */
 static int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4])
 {
 	for (;;) {
 		const sift_grp *g = sift_seek(kid[0], *target);
 		if (!g) return 0;
 		*target = g->gid;
+		memcpy(m, g->pages, 32);
 		int i = 1;
 		for (; i < k; i++) {
 			if (!(g = sift_seek(kid[i], *target))) return 0;
 			if (g->gid != *target) break;
+			for (int j = 0; j < 4; j++) m[j] &= g->pages[j];
+			if (pages_empty(m)) break;
 		}
-		if (i < k) {
-			*target = g->gid;
-			continue;
-		}
-		memcpy(m, kid[0]->g.pages, 32);
-		for (i = 1; i < k; i++)
-			for (int j = 0; j < 4; j++) m[j] &= kid[i]->g.pages[j];
-		if (!pages_empty(m)) return 1;
-		(*target)++;
+		if (i == k) return 1;
+		*target = g->gid > *target ? g->gid : *target + 1;
 	}
 }
 
@@ -709,7 +708,36 @@ static void op_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), 
 	c->op.kid = kid, c->op.k = k;
 }
 
-void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf) { op_init(c, and_seek, kid, k, buf); }
+/* postings an unpositioned cursor can yield at most, to put the rarest kid of an AND first */
+static uint64_t cur_est(const sift_cur *c)
+{
+	uint64_t n = 0;
+	if (c->seek == gr_seek) return c->gr.base[c->gr.ng];
+	if (c->seek == ls_seek) return c->ls.n;
+	if (c->seek == or_seek) {
+		for (int i = 0; i < c->op.k; i++) n += cur_est(c->op.kid[i]);
+		return n;
+	}
+	if (c->seek == andnot_seek) return cur_est(c->op.kid[0]);
+	n = UINT64_MAX;
+	for (int i = 0; i < c->op.k; i++) {
+		uint64_t e = cur_est(c->op.kid[i]);
+		if (e < n) n = e;
+	}
+	return n;
+}
+
+void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf)
+{
+	op_init(c, and_seek, kid, k, buf);
+	for (int i = 1; i < k; i++) {
+		sift_cur *x = kid[i];
+		uint64_t e = cur_est(x);
+		int j = i;
+		for (; j > 0 && cur_est(kid[j - 1]) > e; j--) kid[j] = kid[j - 1];
+		kid[j] = x;
+	}
+}
 void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf) { op_init(c, or_seek, kid, k, buf); }
 void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf) { op_init(c, andnot_seek, kid, 2, buf); }
 
