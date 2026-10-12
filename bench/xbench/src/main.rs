@@ -4,7 +4,7 @@
 //!   xbench tantivy-index DIR DOCS        docs: NDJSON {id, body, created, prop_id}
 //!   xbench tantivy DIR QUERIES [opts]    queries: `qid \t kind \t mode \t cutoff \t terms...`
 //!
-//! Options: --clients N --warmup S --duration S --log FILE --took PTR (engine-reported ms)
+//! Options: --clients N --warmup S|N --duration S | --repeat N (requests per client) --log FILE --took PTR (engine-reported ms)
 //!          --header 'K: V' --writes FILE --write-rate R (lines `METHOD \t path \t json`, or
 //!          `op \t json doc` for tantivy) --ids-out FILE --ids-ptr PTR --id-ptr PTR --count-ptr PTR
 //!          --writers N (default 4) --threads N --mem-mb N (tantivy-index)
@@ -18,7 +18,7 @@ use std::{fs, thread};
 
 use serde_json::Value;
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, RangeQuery, TermQuery};
+use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, PhraseQuery, Query, RangeQuery, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Schema, FAST, INDEXED, STORED, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, TantivyDocument, Term};
 
@@ -57,36 +57,44 @@ impl Rng {
 /// One timed sample: client latency and engine-reported time (both µs, took 0 if unknown).
 type Sample = (u64, u64);
 
-/// Runs `clients` closed-loop clients picking random queries; returns samples and error count.
-fn drive<F>(clients: usize, n: usize, warmup: f64, duration: f64, f: F) -> (Vec<Sample>, usize, f64)
+/// Closed-loop clients picking random queries (fixed per-client seeds). With `repeat`, each client
+/// runs `warm` then `len` requests; otherwise `warm` then `len` seconds. Returns samples, errors and
+/// the measured span in seconds.
+fn drive<F>(clients: usize, n: usize, warm: f64, len: f64, repeat: bool, f: F) -> (Vec<Sample>, usize, f64)
 where F: Fn(usize, usize) -> Res<u64> + Sync {
     let samples = Mutex::new(vec![]);
     let errors = Mutex::new((0usize, String::new()));
+    let span = Mutex::new((None::<Instant>, None::<Instant>));
     let start = Instant::now();
-    let (t_warm, t_end) = (Duration::from_secs_f64(warmup), Duration::from_secs_f64(warmup + duration));
+    let measuring = |i: usize, t: Instant| if repeat { i as f64 >= warm } else { (t - start).as_secs_f64() >= warm };
+    let done = |i: usize, t: Instant| if repeat { i as f64 >= warm + len } else { (t - start).as_secs_f64() >= warm + len };
     thread::scope(|s| {
         for c in 0..clients {
-            let (f, samples, errors) = (&f, &samples, &errors);
+            let (f, samples, errors, span) = (&f, &samples, &errors, &span);
             s.spawn(move || {
-                let (mut rng, mut mine) = (Rng(0x9E3779B97F4A7C15 ^ (c as u64 + 1) * 0x1000193), vec![]);
-                loop {
+                let (mut rng, mut mine, mut first) = (Rng(0x9E3779B97F4A7C15 ^ (c as u64 + 1) * 0x1000193), vec![], None);
+                for i in 0.. {
                     let t0 = Instant::now();
-                    if t0 - start >= t_end { break; }
+                    if done(i, t0) { break; }
                     let r = f(c, rng.next(n));
-                    let lat = t0.elapsed().as_micros() as u64;
-                    if t0 - start < t_warm { continue; }
+                    if !measuring(i, t0) { continue; }
+                    first.get_or_insert(t0);
                     match r {
-                        Ok(took) => mine.push((lat, took)),
+                        Ok(took) => mine.push((t0.elapsed().as_micros() as u64, took)),
                         Err(e) => { let mut g = errors.lock().unwrap(); g.0 += 1; g.1 = e.to_string(); }
                     }
                 }
+                let mut g = span.lock().unwrap();
+                if let Some(t) = first { g.0 = Some(g.0.map_or(t, |a: Instant| a.min(t))); }
+                g.1 = Some(Instant::now());
                 samples.lock().unwrap().extend(mine);
             });
         }
     });
     let (n_err, last) = errors.into_inner().unwrap();
     if n_err > 0 { eprintln!("errors={n_err} last={last}"); }
-    (samples.into_inner().unwrap(), n_err, duration)
+    let secs = match span.into_inner().unwrap() { (Some(a), Some(b)) => (b - a).as_secs_f64(), _ => len };
+    (samples.into_inner().unwrap(), n_err, secs)
 }
 
 fn pct(v: &[u64], p: f64) -> f64 {
@@ -173,7 +181,7 @@ fn http(pos: &[String], o: &Opts) -> Res<()> {
             let w: Vec<&str> = writes[i].splitn(3, '\t').collect();
             call(w[0], w[1], w.get(2).copied().unwrap_or("")).map(|_| 0)
         })));
-        let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("duration", 30.0),
+        let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("repeat", o.num("duration", 30.0)), o.get("repeat").is_some(),
             |_, i| call("POST", &queries[i][1], &queries[i][2]).map(|v| ms_ptr(&v, o.get("took"))));
         stop.store(true, Ordering::Relaxed);
         report("read", &samples, errors, secs, o.get("log"));
@@ -228,6 +236,8 @@ fn tv_query(f: &Tv, q: &[String]) -> Box<dyn Query> {
         "or" => all(Occur::Should, &terms),
         "phrase" if terms.len() > 1 => Box::new(PhraseQuery::new(terms)),
         "phrase" => tq(&terms[0]),
+        "prefix" => Box::new(RegexQuery::from_pattern(&format!("{}.*", q[4]), f.body).expect("prefix")),
+        "fuzzy" => Box::new(FuzzyTermQuery::new(terms[0].clone(), 1, true)),
         "not" => {
             let (last, head) = terms.split_last().unwrap();
             Box::new(BooleanQuery::new(head.iter().map(|t| (Occur::Must, tq(t))).chain([(Occur::MustNot, tq(last))]).collect()))
@@ -286,7 +296,7 @@ fn tantivy(pos: &[String], o: &Opts) -> Res<()> {
                 Ok(0)
             })
         }));
-        let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("duration", 30.0),
+        let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("repeat", o.num("duration", 30.0)), o.get("repeat").is_some(),
             |_, i| tv_run(&reader.searcher(), &f, &queries[i]).map(|_| 0));
         stop.store(true, Ordering::Relaxed);
         let written = writer.map(|h| h.join().unwrap());

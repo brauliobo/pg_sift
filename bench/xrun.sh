@@ -2,7 +2,8 @@
 # Usage: TIER=S|M|L bench/xrun.sh ENGINE [WORKLOAD...]
 #   ENGINE: elasticsearch tantivy meilisearch typesense (bench/engines/*.sh with EXTERNAL set)
 #   WORKLOAD: and or phrase mixed count filter join update rank (default: all; join is Postgres-only,
-#   rank = top-10 overlap with the pgx-bm25 reference from rank_check.sh, untimed)
+#   rank = top-10 overlap with the pgx-bm25 reference from rank_check.sh, untimed), or `quick`: the
+#   standard suite (sql/quick.sql), REPEAT (50) requests per client and class after 5 warm-up ones
 # Same documents, query trace, client count and CPU/RAM budget as run.sh. HTTP engines are driven by
 # bench/xbench over keep-alive connections from outside the budget; latency is client-observed and
 # includes HTTP + JSON; the engine-reported time is in the note (took).
@@ -10,7 +11,7 @@
 
 ENGINE=${1:?engine}; shift
 WORKLOADS=${*:-and or phrase mixed count filter join update rank}
-DURATION=${DURATION:-30} CLIENTS=${CLIENTS:-8} WARMUP=${WARMUP:-5} UPDATE_RATE=${UPDATE_RATE:-1000}
+DURATION=${DURATION:-30} CLIENTS=${CLIENTS:-8} WARMUP=${WARMUP:-5} UPDATE_RATE=${UPDATE_RATE:-1000} REPEAT=${REPEAT:-50}
 XBENCH=$ROOT/target/release/xbench
 load_engine "$ENGINE"
 [[ -x $REQUIRES_PATH ]] || { log "$ENGINE: $REQUIRES_PATH missing (bench/fetch.sh), skipping"; exit 0; }
@@ -33,6 +34,12 @@ export_docs() {
 # Writes `qid \t request` lines; fails when the engine cannot render one of the workload's modes.
 wl_file() {
   local cutoff sub=${2:-1000000}
+  if [[ $1 == q_* ]]; then
+    render "$(cat "$BENCH/sql/quick.sql") SELECT q.sub, pg_temp.x_req(q.kind, q.mode, q.terms, 0) FROM quick q
+            WHERE q.class = '${1#q_}' ORDER BY q.sub, q.mode" >"$RUN/$1.q"
+    ! grep -qP '^\d+\t$' "$RUN/$1.q"
+    return
+  fi
   cutoff=$(q -c "SELECT v::date - date '1970-01-01' FROM params WHERE k = 'recent_cutoff'")
   render "SELECT q.id, pg_temp.x_req('${KIND[$1]}', q.mode, q.terms, $cutoff) FROM queries q
           WHERE q.mode = ANY ('{${MODES[$1]}}') AND q.sub <= $sub ORDER BY q.id" >"$RUN/$1.q"
@@ -64,7 +71,9 @@ timed_run() {
   local wl=$1 qf=$2 extra=() pid w0
   [[ $wl == update ]] && extra=(--writes "$RUN/writes.tsv" --write-rate "$UPDATE_RATE")
   pid=$(x_pid); w0=$(wchar "$pid")
-  xb "$RUN/$qf.q" --clients "$CLIENTS" --warmup "$WARMUP" --duration "$DURATION" --log "$RUN/$wl.lat" "${extra[@]}" \
+  local span=(--warmup "$WARMUP" --duration "$DURATION")
+  [[ $wl == q_* ]] && span=(--warmup 5 --repeat "$REPEAT")
+  xb "$RUN/$qf.q" --clients "$CLIENTS" "${span[@]}" --log "$RUN/$wl.lat" "${extra[@]}" \
     >"$RUN/$wl.out" 2>"$RUN/$wl.err"
   grep -oP '^io wchar=\K[0-9]+' "$RUN/$wl.out" >"$RUN/$wl.wal" || echo $(( $(wchar "$pid") - w0 )) >"$RUN/$wl.wal"
 }
@@ -105,6 +114,7 @@ trap x_stop EXIT
 locked build_timed
 printf '%s\t%s\t%s\t0\t%.1f\t%s\t0\n' "$TIER" "$ENGINE" "$(wc -l <"$X/docs.ndjson")" "$(cat "$RUN/build.ms")e-3" "$(x_size)" >>"$OUT/builds.tsv"
 log "$ENGINE built in $(cat "$RUN/build.ms") ms, size $(x_size)"
+[[ " $WORKLOADS " == *" quick "* ]] && WORKLOADS=${WORKLOADS/quick/$(psql -X -qAt -f "$BENCH/sql/quick.sql" -c "SELECT DISTINCT 'q_' || class FROM quick ORDER BY 1" | tr '\n' ' ')}
 for wl in $WORKLOADS; do
   if [[ $wl == rank ]]; then rank; else measure "$wl"; fi
 done

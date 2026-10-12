@@ -1,7 +1,8 @@
 -- Engine-independent query rendering. Each engine adapter defines
 --   bench_pred(mode, terms) -> boolean SQL over docs (NULL = mode unsupported as a filter)
 --   bench_rank(mode, terms) -> ORDER BY expression incl. direction (NULL = no top-k)
--- Modes: and | or | phrase | not (all terms but the last, minus the last term).
+-- Modes: and | or | phrase | not (all terms but the last, minus the last term) | prefix (term*) |
+-- fuzzy (edit distance 1). Unsupported modes must render NULL in both functions.
 
 CREATE OR REPLACE FUNCTION tsq(mode text, terms text[]) RETURNS text LANGUAGE sql IMMUTABLE AS $$
   SELECT CASE mode
@@ -9,6 +10,7 @@ CREATE OR REPLACE FUNCTION tsq(mode text, terms text[]) RETURNS text LANGUAGE sq
     WHEN 'or'     THEN string_agg(quote_literal(t), ' | ')
     WHEN 'phrase' THEN string_agg(quote_literal(t), ' <-> ')
     WHEN 'not'    THEN string_agg(CASE WHEN o = cardinality(terms) THEN '!' ELSE '' END || quote_literal(t), ' & ')
+    WHEN 'prefix' THEN string_agg(quote_literal(t) || ':*', ' & ')
   END
   FROM unnest(terms) WITH ORDINALITY AS u(t, o)
 $$;
@@ -67,4 +69,18 @@ DECLARE r bigint[];
 BEGIN
   EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM (%s) s', stmt) INTO r;
   RETURN r;
+END $$;
+
+-- Quick suite (sql/quick.sql view, same session): one stmts workload `q_<class>` per class whose
+-- queries all render.
+CREATE OR REPLACE FUNCTION quick_build_stmts() RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE c text;
+BEGIN
+  DELETE FROM stmts WHERE wl LIKE 'q\_%';
+  FOR c IN SELECT DISTINCT class FROM quick ORDER BY 1 LOOP
+    CONTINUE WHEN EXISTS (SELECT FROM quick q WHERE q.class = c AND bench_stmt(q.kind, q.mode, q.terms) IS NULL);
+    INSERT INTO stmts SELECT 'q_' || c, row_number() OVER (ORDER BY q.sub, q.mode), q.sub, bench_stmt(q.kind, q.mode, q.terms)
+    FROM quick q WHERE q.class = c;
+    RETURN NEXT c;
+  END LOOP;
 END $$;
