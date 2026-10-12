@@ -2,39 +2,45 @@
  * sift_posting.h - term blobs: codec posting blob + scoring sidecar
  * A codec group (gid) is exactly one superblock (SB).
  *
- * Term blob layout (4-byte aligned):
- *   SiftPostHeader
- *   codec blob (sift_encode, tf disabled: matching data only)
- *   scoring sidecar, present for every term stored as a blob:
+ * df <= SIFT_INLINE_MAX lives in the dictionary entry. Otherwise the term
+ * blob starts 4-byte aligned in the POSTINGS section:
+ *   codec blob (sift_encode, tf disabled: matching data only), codec_len
+ *   bytes: LIST (Elias-Fano) when df < sift_grouped_min_df, else GROUPED
+ *   scoring sidecar at align4(codec_len), absent when it would be empty:
  *     GROUPED blobs: SiftGroupScore[ng] aligned with the codec group index,
- *                    then u8 blk_bound[16] rows for groups with BLKBOUND
+ *                    then u8 blk_bound[16] rows, one per group flagged
+ *                    SIFT_GS_BLKBOUND, in group order (row of group i = number
+ *                    of flagged groups before i); blocks without postings are 0
  *     tf stream (absent when SIFT_TERM_ALL_TF1): L1 bits, one per posting
  *                    in rank order (tf > 1; rank = codec group base + rank
- *                    in group), a nibble min(tf-2, 15) per L1 member, an
- *                    escape byte min(tf, 255) - 17 per nibble 15
+ *                    in group), ceil(df / 8) bytes; nnib nibbles
+ *                    min(tf-2, 15), low nibble first, ceil(nnib / 2) bytes;
+ *                    an escape byte min(tf, 255) - 17 per nibble 15
+ * LIST terms with every tf == 1 are the bare codec blob (post_len ==
+ * codec_len). Readers copy the blob with SIFT_KERN_PAD bytes of padding.
  *
  * Bounds: u8 = ceil(255 * max(tf / (tf + K_ref(dl)))) with K_ref from the
- * segment's avgdl_ref (sift_bound_u8); queries scale by
- * max(1, avgdl_now / avgdl_ref). LIST blobs use the term's max_bound.
+ * segment's k1, b and avgdl_ref (sift_kern_bound_u8, conservative: >= every
+ * posting's true value); queries scale by max(1, avgdl_now / avgdl_ref) and
+ * stop only when the next bound is strictly below the threshold. LIST and
+ * inline terms use the term's max_bound.
  */
 #ifndef SIFT_POSTING_H
 #define SIFT_POSTING_H
 
 #include "sift.h"
+#undef SIFT_PAGEMASK_WORDS		/* the codec defines it too, as 4 */
 #include "sift_bitmap.h"
 #include "sift_dict.h"
 #include "sift_store.h"
 
 #define SIFT_BLKBOUND_MIN		32	/* postings in a group to store blk_bound[] */
 
+/* df from which terms are GROUPED (bitmaps) rather than LIST */
+#define SIFT_GROUPED_MIN_DF		65536
+
 #define SIFT_GS_ALL_TF1			0x01	/* no L1 member in the group */
 #define SIFT_GS_BLKBOUND		0x02
-
-typedef struct SiftPostHeader
-{
-	uint32		codec_len;
-	uint32		sidecar_len;
-} SiftPostHeader;
 
 typedef struct SiftGroupScore
 {
@@ -42,7 +48,7 @@ typedef struct SiftGroupScore
 	uint32		esc_base;		/* escape bytes before this group */
 	uint8		bound;			/* max bound in the group */
 	uint8		flags;			/* SIFT_GS_* */
-	uint16		blk_idx;		/* index into blk_bound rows if BLKBOUND */
+	uint16		reserved;
 } SiftGroupScore;
 
 typedef struct SiftScoreRef
@@ -52,23 +58,31 @@ typedef struct SiftScoreRef
 	float4		avgdl;
 } SiftScoreRef;
 
+/* SIFT_GROUPED_MIN_DF; the sift.grouped_min_df GUC overrides it in SIFT_TESTING builds */
+extern PGDLLIMPORT int sift_grouped_min_df;
+
 extern uint8 sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl);
 
-/* Writer: postings of one term in key order, with tf and the doc's dl */
+/* Writer: postings of one term in strictly ascending key order, with tf and the doc's dl */
 typedef struct SiftPostingWriter SiftPostingWriter;
 
 extern SiftPostingWriter *sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref,
 										   MemoryContext mcxt);
 extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf,
 						   const uint16 *dl, int n);
-/* Finishes the term: encodes, writes, fills df/flags/max_bound/post_off/post_len or inline data */
+
+/*
+ * Finishes the term: encodes, writes the blob (unless inline) and fills every
+ * SiftTermInfo field. Memory: about 10 bytes per posting of the term.
+ */
 extern void sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info);
 
 /*
  * Reader for one term of one segment. Wraps a codec cursor (usable in codec
  * AND/OR/ANDNOT trees) plus the sidecar. Allocations in mcxt; the term blob
- * is copied out of shared buffers once (zero-copy for single-page blobs is a
- * later optimization inside this module).
+ * is copied out of shared buffers, so the cursor holds no buffer (the stream
+ * reader keeps its last page pinned and locked until the caller's next
+ * sift_sr_get or sift_sr_release).
  */
 typedef struct SiftPostingCursor SiftPostingCursor;
 
@@ -78,7 +92,10 @@ extern SiftPostingCursor *sift_post_open(SiftStreamReader *sr, const SiftTermInf
 /* The codec cursor positioned by the caller with sift_seek()/sift_next() */
 extern sift_cur *sift_post_cursor(SiftPostingCursor *c);
 
-/* Scoring view of the group the cursor is on (bound, blk bounds) */
+/* Repositions the codec cursor before the first group */
+extern void sift_post_rewind(SiftPostingCursor *c);
+
+/* Scoring view of a group (bound, blk bounds) */
 typedef struct SiftGroupBounds
 {
 	uint32		gid;
@@ -88,12 +105,22 @@ typedef struct SiftGroupBounds
 
 /*
  * All group bounds of the term without decoding offsets (UB pass); array
- * valid for the cursor's lifetime. LIST terms return one entry per group
- * touched, all at max_bound.
+ * valid for the cursor's lifetime. LIST and inline terms return one entry
+ * per group touched, all at max_bound.
  */
 extern const SiftGroupBounds *sift_post_bounds(SiftPostingCursor *c, int *n);
 
-/* tf of every posting of the cursor's current group, rank order; >= group n slots */
+/*
+ * tf of every posting of the cursor's current group, rank order; tf needs
+ * the group's n entries plus SIFT_KERN_PAD bytes.
+ */
 extern void sift_post_group_tf(SiftPostingCursor *c, uint8 *tf);
+
+/*
+ * Checks the sidecar against the codec blob: tf stream lengths and group
+ * checkpoints, flags (ERRCODE_INDEX_CORRUPTED). Bounds need the docs' dl and
+ * are checked by sift_seg_walk.
+ */
+extern void sift_post_check(SiftPostingCursor *c);
 
 #endif							/* SIFT_POSTING_H */
