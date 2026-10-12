@@ -9,8 +9,10 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
+# -MMD records header dependencies (src/*.d) so a header edit rebuilds its users.
 PG_CPPFLAGS = -I$(srcdir)/src
-PG_CFLAGS = -march=x86-64 -mtune=generic -O2 -g -ffp-contract=off
+PG_CFLAGS = -march=x86-64 -mtune=generic -O2 -g -ffp-contract=off -MMD
+EXTRA_CLEAN = src/*.d
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -34,6 +36,8 @@ override with_llvm := no
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+-include $(wildcard src/*.d)
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
