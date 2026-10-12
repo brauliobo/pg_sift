@@ -34,3 +34,15 @@ override with_llvm := no
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+# Suites beyond installcheck, run against the scripts/pgtest.sh cluster
+# (install and start it first). scripts/ci.sh runs all of them.
+.PHONY: isolationcheck tapcheck difftest fuzz soak ci
+isolationcheck:
+	scripts/isolation.sh
+tapcheck:
+	scripts/tap.sh
+difftest fuzz soak:
+	scripts/$@.sh
+ci:
+	scripts/ci.sh
