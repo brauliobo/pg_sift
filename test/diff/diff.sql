@@ -425,7 +425,8 @@ END $$;
 -- Per-query stages: (stage, ok | fail | skip, detail). A stage is skipped only
 -- while the engine reports "not implemented"; errors must match the
 -- reference's. Results are compared without the expansion limit: a query over
--- it may instead fail with 54000 (dictionary expansion), outside the parse stage.
+-- it may instead fail with 54000 (dictionary expansion), outside the parse stage;
+-- so may any query on an index that is not clean, whose dictionaries keep the terms of deleted documents.
 CREATE OR REPLACE FUNCTION sift_diff.check(q text, k int, clean bool, only_stage text DEFAULT NULL)
 RETURNS TABLE (stage text, status text, detail text) LANGUAGE plpgsql AS $$
 DECLARE
@@ -459,7 +460,7 @@ BEGIN
 			status := CASE WHEN detail IS NULL THEN 'ok' ELSE 'fail' END;
 		EXCEPTION WHEN OTHERS THEN
 			status := CASE WHEN SQLERRM ~ 'not implemented' THEN 'skip'
-				WHEN SQLSTATE = ref_err OR over AND SQLSTATE = '54000' AND stage <> 'parse' THEN 'ok' ELSE 'fail' END;
+				WHEN SQLSTATE = ref_err OR (over OR NOT clean) AND SQLSTATE = '54000' AND stage <> 'parse' THEN 'ok' ELSE 'fail' END;
 			detail := CASE WHEN status <> 'ok' THEN SQLSTATE || ': ' || left(SQLERRM, 300) END;
 		END;
 		RETURN NEXT;
