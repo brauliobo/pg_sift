@@ -1,7 +1,8 @@
 # Standalone analyzer harness. `make` builds an optimized binary, `make
 # SANITIZE=1` an ASan/UBSan one; `make fetch` downloads the Unicode 16.0 and
 # Snowball reference data into $(DATA); `make check` runs the stemmer
-# vocabulary, the invariant fuzzer and the differential reference test;
+# vocabulary, the exhaustive analyze(t) == [t] check, the invariant fuzzer
+# and the differential reference test;
 # `./harness bench FILE [MODE [STEM]]` measures throughput (one doc per line).
 SRC = ../../src
 PGINC = $(shell pg_config --includedir-server)
@@ -21,6 +22,7 @@ harness: harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(S
 
 check: harness
 	./harness stem $(DATA)/en_voc.txt $(DATA)/en_output.txt
+	./harness invariant $(DATA)/en_voc.txt
 	./harness fuzz 200000 1
 	python3 -I reference.py $(DATA)/ucd ./harness 3000
 

@@ -21,6 +21,7 @@
 
 #include "sift.h"
 #include "sift_am.h"
+#include "sift_analyze.h"
 #include "sift_bitmap.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
@@ -83,8 +84,8 @@ define_reloptions(void)
 	add_real_reloption(sift_relopt_kind, "b", "BM25 document length normalization",
 					   SIFT_DEFAULT_B, 0.0, 1.0, AccessExclusiveLock);
 	add_string_reloption(sift_relopt_kind, "stemmer",
-						 "Text search dictionary used for stemming, empty for none",
-						 "", NULL, AccessExclusiveLock);
+						 "Stemmer: en (Snowball English) or none",
+						 "", sift_analyze_validate_stemmer, AccessExclusiveLock);
 	add_bool_reloption(sift_relopt_kind, "case_folding", "Fold case",
 					   true, AccessExclusiveLock);
 	add_bool_reloption(sift_relopt_kind, "accent_folding", "Strip accents",

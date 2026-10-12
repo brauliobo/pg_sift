@@ -1,8 +1,10 @@
 /*
  * sift_analyze_stem.c - stemmers. English is the Snowball English (Porter2)
  * algorithm as published in snowball/algorithms/english.sbl (Snowball 3),
- * implemented directly on ASCII bytes. `make -C tools/analyze check` validates
- * it against the snowball-data English vocabulary (42649 words).
+ * implemented directly on ASCII bytes, plus the exception outputs (onli,
+ * earli, ...) as invariant forms so that re-stemming keeps them. `make -C
+ * tools/analyze check` validates it against the snowball-data English
+ * vocabulary (42649 words).
  */
 #include "postgres.h"
 
@@ -126,6 +128,9 @@ exception1(Word *w)
 		SFX("ugly", "ugli"), SFX("early", "earli"), SFX("only", "onli"), SFX("singly", "singl"),
 		SFX("sky", "sky"), SFX("news", "news"), SFX("howe", "howe"), SFX("atlas", "atlas"),
 		SFX("cosmos", "cosmos"), SFX("bias", "bias"), SFX("andes", "andes"),
+		/* not in Snowball: the special forms above stay stems when stemmed again */
+		SFX("ski", "ski"), SFX("idl", "idl"), SFX("gentl", "gentl"), SFX("ugli", "ugli"),
+		SFX("earli", "earli"), SFX("onli", "onli"), SFX("singl", "singl"),
 	};
 
 	if (w->len > 6)
