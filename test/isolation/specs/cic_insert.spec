@@ -1,6 +1,6 @@
 # CREATE INDEX CONCURRENTLY with inserts and updates before, during and after
 # its build and validation phases.
-# requires: build verify
+# requires: build insert vacuum scan verify
 
 setup
 {

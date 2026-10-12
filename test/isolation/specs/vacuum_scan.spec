@@ -1,6 +1,6 @@
 # VACUUM removing index entries (and inserts reusing the freed line pointers)
 # while a bitmap or ranked scan is suspended mid-way in a cursor.
-# requires: build verify
+# requires: build insert vacuum scan verify
 
 setup
 {
