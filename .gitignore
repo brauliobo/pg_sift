@@ -13,3 +13,4 @@ packaging/src/
 packaging/pkg/
 packaging/sift/
 *.pkg.tar.*
+.build-flavor

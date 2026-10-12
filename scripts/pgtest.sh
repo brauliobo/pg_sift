@@ -5,15 +5,21 @@
 #   scripts/pgtest.sh install    build + install into $SIFT_TMP/root
 #   scripts/pgtest.sh start      initdb (first time) + start
 #   scripts/pgtest.sh psql [...] psql into the test database
+#   scripts/pgtest.sh env        print exports for libpq clients (eval "$(...)")
 #   scripts/pgtest.sh regress    make installcheck against the cluster
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
+#   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
 #
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56169, default
 # 56100) let several jobs run clusters side by side; TAP clusters use
 # SIFT_PORT + 1 and up. SIFT_TESTING=1 (default) builds the sift._test_*
 # functions; SIFT_TESTING= builds the release library.
+#
+# SANITIZE=1 install builds with ASan+UBSan; install runs make clean whenever
+# SANITIZE or SIFT_TESTING changes. start then preloads the sanitizer runtimes
+# into the server; reports go to $SIFT_TMP/sanitizer/ (sanitizer-report).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,16 +29,30 @@ DB=${SIFT_DB:-sift}
 ROOT=$TMP/root
 DATA=$TMP/data
 SOCK=$TMP/sock
+SANDIR=$TMP/sanitizer
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing}"
 
 (( PORT >= 56100 && PORT <= 56169 )) || { echo "SIFT_PORT must be in 56100-56169" >&2; exit 1; }
 
 install() {
+	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	nice make -C "$REPO" -j4 USE_PGXS=1
+	echo "$FLAVOR" >"$REPO/.build-flavor"
 	make -C "$REPO" USE_PGXS=1 DESTDIR="$ROOT" install >/dev/null
+	echo "$FLAVOR" >"$ROOT/.flavor"
+}
+
+# The server binary is not instrumented, so the ASan runtime must be preloaded.
+sanitizer_env() {
+	[[ $(cat "$ROOT/.flavor" 2>/dev/null) == asan* ]] || return 0
+	mkdir -p "$SANDIR"
+	export LD_PRELOAD=$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)
+	export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=$SANDIR/asan
+	export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:log_path=$SANDIR/ubsan
 }
 
 start() {
@@ -50,7 +70,7 @@ start() {
 			max_worker_processes = 16
 		EOF
 	fi
-	pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null
+	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
 }
 
@@ -70,8 +90,14 @@ case ${1:-} in
 	start) start ;;
 	stop) stop ;;
 	psql) shift; exec psql -U postgres -d "$DB" -X "$@" ;;
+	env)
+		echo "export PGHOST=$SOCK PGPORT=$PORT PGUSER=postgres SIFT_ROOT=$ROOT"
+		sanitizer_env
+		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
+		;;
 	regress) make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres ;;
 	tap) tap "${2:-}" ;;
 	destroy) stop; rm -rf "$TMP" ;;
-	*) sed -n '2,18p' "$0"; exit 1 ;;
+	sanitizer-report) ! cat "$SANDIR"/* 2>/dev/null | grep -m 40 -A 20 -E 'ERROR: AddressSanitizer|runtime error:' ;;
+	*) sed -n '2,25p' "$0"; exit 1 ;;
 esac
