@@ -33,6 +33,7 @@
 #define MERGE_FANIN			8		/* segments of a tier that trigger a merge */
 #define MERGE_MAX_SEGMENTS	32		/* more segments than this trigger a merge */
 #define REQUEST_INTERVAL_MS	2000
+#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
 
 /* ---------- locking and directory helpers ---------- */
 
@@ -237,6 +238,9 @@ first_sealed(const SiftDirSnapshot *snap)
 	return NULL;
 }
 
+static bool merge_locked(Relation index, bool force);
+static bool make_room_locked(Relation index);
+
 static int
 promote_locked(Relation index, bool seal_active)
 {
@@ -245,7 +249,10 @@ promote_locked(Relation index, bool seal_active)
 	int			n = 0;
 
 	if (seal_active)
+	{
+		make_room_locked(index);
 		sift_mut_seal(index, true);
+	}
 	for (;;)
 	{
 		sift_dir_read(index, snap);
@@ -404,6 +411,44 @@ merge_locked(Relation index, bool force)
 	return n > 0;
 }
 
+/*
+ * Merges until the directory is below ROOM_SEGMENTS entries, so a seal always
+ * finds a free one; false when nothing can be merged any more.
+ */
+static bool
+make_room_locked(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		room;
+
+	for (;;)
+	{
+		int			promoted;
+
+		sift_dir_read(index, snap);
+		if (snap->nsegs < ROOM_SEGMENTS)
+			break;
+		promoted = promote_locked(index, false);
+		if (!merge_locked(index, false) && promoted == 0)
+			break;
+		CHECK_FOR_INTERRUPTS();
+	}
+	room = snap->nsegs < ROOM_SEGMENTS;
+	pfree(snap);
+	return room;
+}
+
+bool
+sift_maint_make_room(Relation index)
+{
+	bool		room;
+
+	maint_lock(index, true);
+	room = make_room_locked(index);
+	maint_unlock(index);
+	return room;
+}
+
 bool
 sift_maint_merge_step(Relation index, bool wait)
 {
@@ -557,20 +602,23 @@ sift_maint_request_async(Relation index)
 
 /*
  * Promotion is asynchronous when allowed. Back-pressure: with many sealed
- * segments waiting, the inserter promotes itself unless maintenance is busy
- * (writes never block).
+ * segments waiting, the inserter promotes itself unless maintenance is busy,
+ * and with the directory nearly full it merges itself, waiting for the
+ * maintenance lock (inserts slow down instead of failing).
  */
 void
 sift_maint_after_seal(Relation index)
 {
-	SiftDirSnapshot *snap;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int			nsealed = 0;
 
+	sift_dir_read(index, snap);
+	if (snap->nsegs >= ROOM_SEGMENTS)
+		sift_maint_make_room(index);
 	if (sift_mut_seal(index, false) == 0)
 		return;
 	if (sift_async_maintenance)
 		sift_maint_request_async(index);
-	snap = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 		nsealed += snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED;

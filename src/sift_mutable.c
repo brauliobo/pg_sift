@@ -187,24 +187,25 @@ check_room(Relation index, const SiftDirSnapshot *snap)
 				 errhint("Run sift.merge() on the index.")));
 }
 
-/* Creates the active segment unless another backend did meanwhile */
-static void
+/* Creates the active segment unless another backend did meanwhile; false when the directory is full */
+static bool
 create_active(Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		room = true;
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(index, snap);
-	if (find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE) == NULL)
+	if (find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE) == NULL && (room = snap->nsegs < SIFT_MAX_SEGMENTS))
 	{
 		SwapArg		arg = {0};
 
-		check_room(index, snap);
 		arg.fresh = new_segment(index);
 		sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
 	}
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	pfree(snap);
+	return room;
 }
 
 /* Sets the sealed flag on the true tail of every lane */
@@ -310,7 +311,11 @@ refresh_hint(Relation index, MutHint *h, uint32 analyzer_hash)
 					 errhint("Use REINDEX to apply the new options.")));
 		if ((act = find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE)) != NULL)
 			break;
-		create_active(index);
+		if (!create_active(index) && !sift_maint_make_room(index))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("sift index \"%s\" has %d segments that cannot be merged", RelationGetRelationName(index),
+							SIFT_MAX_SEGMENTS)));
 	}
 	read_header(index, act, &hdr);
 	h->gen = act->gen;
