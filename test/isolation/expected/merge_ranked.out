@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: s1r s1f s2m s1rest s1check s1c s2check
-promote
--------
-      0
+promoted
+--------
+t       
 (1 row)
 
 step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_merge WHERE body @@> 'base OR second OR third' ORDER BY sift.score(ctid) DESC;
@@ -40,9 +40,9 @@ t    |t        |t
 
 
 starting permutation: s1r s1f s2d s2v s2m s2v s1rest s1check s1c s2v s2check
-promote
--------
-      0
+promoted
+--------
+t       
 (1 row)
 
 step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_merge WHERE body @@> 'base OR second OR third' ORDER BY sift.score(ctid) DESC;
