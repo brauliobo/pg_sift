@@ -1188,9 +1188,9 @@ seg_rewind(RankSeg *rs)
 }
 
 static int
-gidub_cmp(const void *a, const void *b)
+gidkey_cmp(const void *a, const void *b)
 {
-	return pg_cmp_u32(((const GidUB *) a)->gid, ((const GidUB *) b)->gid);
+	return pg_cmp_u64(*(const uint64 *) a, *(const uint64 *) b);
 }
 
 /* The bounds of one leaf in segment s: the max over its terms per SB */
@@ -1202,6 +1202,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	int			nt = l->nterms[rs->s],
 				total = 0;
 	GidUB	   *all;
+	uint64	   *key;
 	double		ref = p->seg[rs->s]->hdr->avgdl_ref;
 
 	for (int i = 0; i < nt; i++)
@@ -1226,17 +1227,25 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 			sift_kern->ub_accum(all[total].ub, gb[j].blk_bound, w, SIFT_BLKS_PER_SB);
 		}
 	}
+	/* sorts (gid, index) keys instead of the 68-byte entries */
+	key = MemoryContextAlloc(cx, Max(total, 1) * sizeof(uint64));
+	for (int i = 0; i < total; i++)
+		key[i] = (uint64) all[i].gid << 32 | i;
 	if (nt > 1)
-		qsort(all, total, sizeof(GidUB), gidub_cmp);
+		qsort(key, total, sizeof(uint64), gidkey_cmp);
+	out->list = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
 	for (int i = 0; i < total; i++)
 	{
-		if (out->n > 0 && all[out->n - 1].gid == all[i].gid)
+		const GidUB *in = &all[(uint32) key[i]];
+
+		if (out->n > 0 && out->list[out->n - 1].gid == in->gid)
 			for (int k = 0; k < SIFT_BLKS_PER_SB; k++)
-				all[out->n - 1].ub[k] = Max(all[out->n - 1].ub[k], all[i].ub[k]);
+				out->list[out->n - 1].ub[k] = Max(out->list[out->n - 1].ub[k], in->ub[k]);
 		else
-			all[out->n++] = all[i];
+			out->list[out->n++] = *in;
 	}
-	out->list = all;
+	pfree(key);
+	pfree(all);
 }
 
 static bool
@@ -1695,14 +1704,19 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 		hot_remember(r, vis, key);
 }
 
-static int
-block_cmp_ub(const void *a, const void *b, void *arg)
+/* Blocks by descending bound, ties by block number: at most 16 entries, so an insertion sort */
+static void
+order_blocks(int *order, int n, const float4 *ub)
 {
-	const float4 *ub = arg;
-	float4		x = ub[*(const int *) a],
-				y = ub[*(const int *) b];
+	for (int i = 1; i < n; i++)
+	{
+		int			b = order[i],
+					j = i;
 
-	return x > y ? -1 : x < y ? 1 : *(const int *) a - *(const int *) b;
+		for (; j > 0 && ub[order[j - 1]] < ub[b]; j--)
+			order[j] = order[j - 1];
+		order[j] = b;
+	}
 }
 
 static void
@@ -1744,7 +1758,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
 		if (g->pages[b / 4] >> ((b % 4) * 16) & 0xffff)
 			order[n++] = b;
-	qsort_arg(order, n, sizeof(int), block_cmp_ub, (void *) u->ub);
+	order_blocks(order, n, u->ub);
 	for (int i = 0; i < n; i++)
 	{
 		float4		theta = sift_kern_topk_theta(tk);
