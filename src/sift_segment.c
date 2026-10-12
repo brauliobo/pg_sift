@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 
+#include "access/generic_xlog.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
@@ -607,6 +608,151 @@ sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info)
 	return sift_dict_lookup(seg->dict, term, len, info);
 }
 
+/* ---------- VACUUM ---------- */
+
+static void
+set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == *(uint64 *) arg)
+			dir->segs[i].flags |= SIFT_SEG_DIRTY;
+}
+
+/*
+ * Clears the liveness bits of the ranks (ascending) of one SB, sets its
+ * dirty bit and counts the dead, in one WAL record: the header page plus the
+ * (at most two, an SB has <= 74496 docs) pages holding the bits.
+ */
+static void
+clear_live(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
+{
+	uint32		nsb = seg->hdr->sb_hi - seg->hdr->sb_lo + 1;
+	uint64		start = LIVE_START(nsb);
+	uint32		pg[3];
+	Buffer		buf[3];
+	Page		page[3];
+	int			n = 1;
+	GenericXLogState *state;
+	SiftLiveHeaderData *lh;
+
+	pg[0] = 0;
+	for (int i = 0; i < nd; i++)
+	{
+		uint32		p = (start + dead[i] / 8) / SIFT_PAGE_PAYLOAD;
+
+		if (pg[n - 1] != p)
+			pg[n++] = p;
+	}
+	Assert(n <= 3);
+	for (int i = 0; i < n; i++)
+	{
+		buf[i] = ReadBuffer(seg->index, seg->hdr->live_first + pg[i]);
+		LockBuffer(buf[i], BUFFER_LOCK_EXCLUSIVE);
+		sift_store_check_page(seg->index, buf[i], SIFT_PT_LIVE, seg->entry.gen);
+	}
+	state = GenericXLogStart(seg->index);
+	for (int i = 0; i < n; i++)
+		page[i] = GenericXLogRegisterBuffer(state, buf[i], 0);
+	for (int i = 0; i < nd; i++)
+	{
+		uint64		b = start + dead[i] / 8;
+		int			k = 0;
+
+		while (pg[k] != b / SIFT_PAGE_PAYLOAD)
+			k++;
+		SiftPageGetData(page[k])[b % SIFT_PAGE_PAYLOAD] &= ~(1 << (dead[i] % 8));
+	}
+	lh = (SiftLiveHeaderData *) SiftPageGetData(page[0]);
+	lh->ndead += nd;
+	SiftPageGetData(page[0])[sizeof(SiftLiveHeaderData) + (sb - seg->hdr->sb_lo) / 8] |=
+		1 << ((sb - seg->hdr->sb_lo) % 8);
+	GenericXLogFinish(state);
+	for (int i = 0; i < n; i++)
+		UnlockReleaseBuffer(buf[i]);
+}
+
+/* Asks cb about every live doc of the SB; returns the dead ranks in dead[] */
+static int
+sb_dead(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, void *cbstate,
+		IndexBulkDeleteResult *stats, uint64 *dead)
+{
+	DocMap	   *dm = docmap(seg);
+	int			nd = 0;
+
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+	{
+		uint64		present[SIFT_OFFMASK_WORDS],
+					live[SIFT_OFFMASK_WORDS],
+					r;
+		const uint16 *dl;
+
+		if (!(dc->pagemask[p / 64] & (1ULL << (p % 64))))
+			continue;
+		sift_seg_page(seg, dc, p, present, &dl);
+		sift_seg_page_live(seg, dc, p, live);
+		r = dc->rank_base + dm->before[p];
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			for (uint64 m = present[wd]; m; m &= m - 1, r++)
+			{
+				ItemPointerData tid;
+
+				if (!(live[wd] & (m & -m)))
+					continue;
+				ItemPointerSet(&tid, dc->sb * SIFT_SB_PAGES + p, wd * 64 + __builtin_ctzll(m) + 1);
+				if (cb(&tid, cbstate))
+					dead[nd++] = r;
+				else
+					stats->num_index_tuples++;
+			}
+	}
+	return nd;
+}
+
+int64
+sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
+{
+	SiftDocChunk dc;
+	uint64	   *dead = palloc(SIFT_SB_PAGES * MAXOFF * sizeof(uint64));
+	int64		removed = 0;
+
+	for (uint32 sb = seg->hdr->sb_lo; sb <= seg->hdr->sb_hi && sift_seg_docs_next(seg, sb, &dc); sb = dc.sb + 1)
+	{
+		int			nd = sb_dead(seg, &dc, cb, cbstate, stats, dead);
+
+		if (nd == 0)
+			continue;
+		/* The flag first: bits cleared under a clean flag would be ignored by readers */
+		if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+		{
+			sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
+			seg->entry.flags |= SIFT_SEG_DIRTY;
+		}
+		clear_live(seg, dc.sb, dead, nd);
+		removed += nd;
+		CHECK_FOR_INTERRUPTS();
+	}
+	sift_sr_release(&seg->sr);
+	pfree(dead);
+	stats->tuples_removed += removed;
+	return removed;
+}
+
+uint64
+sift_seg_live_docs(SiftSegment *seg)
+{
+	SiftLiveHeaderData lh;
+	Buffer		buf = InvalidBuffer;
+
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+		return seg->hdr->ndocs;
+	for (int i = 0; i < (int) sizeof(lh); i++)
+		((uint8 *) &lh)[i] = live_byte(seg, i, &buf);
+	UnlockReleaseBuffer(buf);
+	if (lh.ndead > seg->hdr->ndocs)
+		corrupt(seg, "Liveness header counts %u dead of %llu docs.", lh.ndead, ULL(seg->hdr->ndocs));
+	return seg->hdr->ndocs - lh.ndead;
+}
+
 /* ---------- inspection ---------- */
 
 typedef struct Walk
@@ -625,12 +771,16 @@ typedef struct Walk
 	SiftKey    *tkeys;
 	uint8	   *ttf;
 	uint16	   *tdl;
+	uint64	   *trank;			/* live_only: doc rank of each posting */
 	uint32		tcap;
 	sift_tid   *tids;			/* SIFT_GRP_MAXTIDS */
 	uint8	   *gtf;
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
 	bool		stopped;
+	bool		live_only;		/* dump: drop the postings and docs vacuumed away */
+	SiftDocVisit docs;
+	Buffer		lbuf;
 } Walk;
 
 /* Every doc of the segment with its dl; checks the docmap on the way */
@@ -740,6 +890,42 @@ doc_dl(Walk *w, SiftKey key, uint64 *pos)
 	return w->dl[lo];
 }
 
+/* Liveness bit of a doc rank; the LIVE page stays locked in w->lbuf until released */
+static bool
+rank_live(Walk *w, uint64 r)
+{
+	uint64		start = LIVE_START(w->seg->hdr->sb_hi - w->seg->hdr->sb_lo + 1);
+
+	return (live_byte(w->seg, start + r / 8, &w->lbuf) >> (r % 8)) & 1;
+}
+
+static void
+release_live(Walk *w)
+{
+	if (BufferIsValid(w->lbuf))
+		UnlockReleaseBuffer(w->lbuf);
+	w->lbuf = InvalidBuffer;
+}
+
+/* Compacts the term's decoded postings to the live ones; returns their number */
+static uint32
+live_postings(Walk *w, uint32 n)
+{
+	uint32		m = 0;
+
+	if (!(w->seg->entry.flags & SIFT_SEG_DIRTY))
+		return n;
+	for (uint32 j = 0; j < n; j++)
+		if (rank_live(w, w->trank[j]))
+		{
+			w->tkeys[m] = w->tkeys[j];
+			w->ttf[m] = w->ttf[j];
+			w->tdl[m++] = w->tdl[j];
+		}
+	release_live(w);
+	return m;
+}
+
 static bool
 walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
@@ -770,6 +956,9 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		w->ttf = w->ttf ? repalloc_huge(w->ttf, w->tcap) : MemoryContextAllocHuge(seg->mcxt, w->tcap);
 		w->tdl = w->tdl ? repalloc_huge(w->tdl, w->tcap * sizeof(uint16)) :
 			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint16));
+		if (w->live_only)
+			w->trank = w->trank ? repalloc_huge(w->trank, w->tcap * sizeof(uint64)) :
+				MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint64));
 	}
 	c = sift_post_open(&seg->sr, info, w->tcxt);
 	if (w->verify)
@@ -796,9 +985,11 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 			w->tkeys[n + j] = w->tids[j];
 			w->ttf[n + j] = w->gtf[j];
 			w->tdl[n + j] = dl;
+			if (w->live_only)
+				w->trank[n + j] = pos;
 			ub = sift_bound_u8(&w->ref, w->gtf[j], dl);
-			if (w->gtf[j] == 0 || ub > info->max_bound || ub > b[bi].bound ||
-				ub > b[bi].blk_bound[(SIFT_BLK(w->tids[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT])
+			if (w->verify && (w->gtf[j] == 0 || ub > info->max_bound || ub > b[bi].bound ||
+				ub > b[bi].blk_bound[(SIFT_BLK(w->tids[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT]))
 				corrupt(seg, "Posting (%u,%u) of \"%.*s\" (tf %u, dl %u, bound %u) exceeds its bounds %u/%u/%u.",
 						SIFT_BLK(w->tids[j]), SIFT_OFF(w->tids[j]), len, term, w->gtf[j], dl, ub,
 						info->max_bound, b[bi].bound,
@@ -822,7 +1013,15 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	w->st->nterms++;
 	w->st->postings += n;
 	MemoryContextSwitchTo(old);
-	w->stopped = w->visit && !w->visit(w->arg, term, len, info, w->tkeys, w->ttf, w->tdl);
+	if (w->live_only)
+		n = live_postings(w, n);
+	if (n > 0 || !w->live_only)
+	{
+		SiftTermInfo live = *info;
+
+		live.df = n;
+		w->stopped = w->visit && !w->visit(w->arg, term, len, w->live_only ? &live : info, w->tkeys, w->ttf, w->tdl);
+	}
 	MemoryContextReset(w->tcxt);
 	return !w->stopped;
 }
@@ -853,5 +1052,48 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
+	MemoryContextDelete(w.tcxt);
+}
+
+void
+sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisit docs, SiftTermVisit terms, void *arg)
+{
+	Walk		w = {0};
+	SiftSegStats st;
+	SiftKey		bk[1024];
+	uint16		bdl[1024];
+	int			n = 0;
+
+	w.seg = seg;
+	w.ref = *ref;
+	w.ref.avgdl = seg->hdr->avgdl_ref;
+	w.st = &st;
+	w.visit = terms;
+	w.arg = arg;
+	w.prevlen = -1;
+	w.live_only = true;
+	w.lbuf = InvalidBuffer;
+	w.tcxt = AllocSetContextCreate(CurrentMemoryContext, "sift dump term", ALLOCSET_DEFAULT_SIZES);
+	w.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
+	w.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
+	memset(&st, 0, sizeof(st));
+	walk_docs(&w);
+	for (uint64 r = 0; r < w.ndocs; r++)
+	{
+		if (!rank_live(&w, r))
+			continue;
+		bk[n] = w.keys[r];
+		bdl[n++] = w.dl[r];
+		if (n == lengthof(bk))
+		{
+			release_live(&w);
+			docs(arg, bk, bdl, n);
+			n = 0;
+		}
+	}
+	release_live(&w);
+	if (n > 0)
+		docs(arg, bk, bdl, n);
+	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	MemoryContextDelete(w.tcxt);
 }

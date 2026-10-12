@@ -235,6 +235,9 @@ extern void sift_sr_release(SiftStreamReader *sr);
  */
 extern struct Bitmapset *sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap);
 
+/* Every block of an immutable segment (header, streams, liveness run) as extents; palloc'd */
+extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEntry *s, int *nextents);
+
 /*
  * Orphans: blocks below the high-water mark that nothing references and no
  * writer owns. A page whose gen is in the directory (an unlinked mutable

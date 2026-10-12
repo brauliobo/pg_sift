@@ -7,6 +7,7 @@
 #include "access/heapam.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "common/int.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
 #include "storage/buffile.h"
@@ -98,6 +99,15 @@ typedef struct RunReader
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			len;			/* 0 at end */
 	uint64		df;
+	/* docs */
+	uint64		dleft;
+	SiftKey		dkey;
+	uint16		ddl;
+	/* postings of the current term */
+	uint64		pleft;
+	SiftKey		pkey;
+	uint8		ptf;
+	uint16		pdl;
 } RunReader;
 
 /* Feeds postings of one term to the posting writer in batches */
@@ -656,6 +666,123 @@ reader_cmp(Datum a, Datum b, void *arg)
 	return c ? -c : y->idx - x->idx;
 }
 
+static int
+doc_heap_cmp(Datum a, Datum b, void *arg)
+{
+	const RunReader *x = (const RunReader *) DatumGetPointer(a),
+			   *y = (const RunReader *) DatumGetPointer(b);
+
+	return pg_cmp_u64(y->dkey, x->dkey);
+}
+
+/* Moves to the next doc of the run; false when it has none */
+static bool
+reader_next_doc(RunReader *rd)
+{
+	if (rd->dleft == 0)
+		return false;
+	rd->dkey += io_get_varint(&rd->io);
+	rd->ddl = io_get_varint(&rd->io);
+	rd->dleft--;
+	return true;
+}
+
+/* All runs' docs in key order (the runs' key ranges may interleave) */
+static void
+merge_docs(SiftSegmentWriter *sw, RunReader *rd, int nruns)
+{
+	binaryheap *heap = binaryheap_allocate(nruns, doc_heap_cmp, NULL);
+	SiftKey		keys[BATCH];
+	uint16		dl[BATCH];
+	int			n = 0;
+
+	for (int i = 0; i < nruns; i++)
+		if (reader_next_doc(&rd[i]))
+			binaryheap_add_unordered(heap, PointerGetDatum(&rd[i]));
+	binaryheap_build(heap);
+	while (!binaryheap_empty(heap))
+	{
+		RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
+
+		keys[n] = top->dkey;
+		dl[n++] = top->ddl;
+		if (reader_next_doc(top))
+			binaryheap_replace_first(heap, PointerGetDatum(top));
+		else
+			binaryheap_remove_first(heap);
+		if (n == BATCH)
+		{
+			sift_segw_add_docs(sw, keys, dl, n);
+			n = 0;
+			CHECK_FOR_INTERRUPTS();
+		}
+	}
+	if (n > 0)
+		sift_segw_add_docs(sw, keys, dl, n);
+	binaryheap_free(heap);
+}
+
+/* A run's postings of the current term */
+static bool
+post_next(RunReader *rd)
+{
+	uint64		v;
+
+	if (rd->pleft == 0)
+		return false;
+	v = io_get_varint(&rd->io);
+	rd->ptf = (v & 1) ? io_byte(&rd->io) : 1;
+	rd->pkey += v >> 1;
+	rd->pdl = io_get_varint(&rd->io);
+	rd->pleft--;
+	return true;
+}
+
+/*
+ * Postings of the n runs positioned on one term in key order, in batches;
+ * act is scratch for n runs. A run drains while its key stays below the
+ * others', so runs with disjoint ranges cost one pass each.
+ */
+static void
+merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
+{
+	int			live = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		cur[i]->pleft = cur[i]->df;
+		cur[i]->pkey = 0;
+		if (post_next(cur[i]))
+			act[live++] = cur[i];
+	}
+	while (live > 0)
+	{
+		int			m = 0;
+		SiftKey		limit = PG_UINT64_MAX;
+		RunReader  *r;
+
+		for (int i = 1; i < live; i++)
+			if (act[i]->pkey < act[m]->pkey)
+				m = i;
+		for (int i = 0; i < live; i++)
+			if (i != m)
+				limit = Min(limit, act[i]->pkey);
+		r = act[m];
+		for (;;)
+		{
+			batch_put(bt, r->pkey, r->ptf, r->pdl);
+			if (!post_next(r))
+			{
+				act[m] = act[--live];
+				break;
+			}
+			if (r->pkey >= limit)
+				break;
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 void
 sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
 				SiftSegEntry *entry)
@@ -664,33 +791,24 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt);
 	RunReader  *rd = palloc0(nruns * sizeof(RunReader));
+	RunReader **cur = palloc(nruns * sizeof(RunReader *));
+	RunReader **act = palloc(nruns * sizeof(RunReader *));
 	binaryheap *heap = binaryheap_allocate(nruns, reader_cmp, NULL);
 	Batch	   *bt = palloc(sizeof(Batch));
 	uint32		nterms = 0;
 
 	for (int i = 0; i < nruns; i++)
 	{
-		SiftKey		key = 0;
-		uint64		n;
-
 		rd[i].idx = i;
 		rd[i].io.file = runs[i]->file;
 		rd[i].io.buf = palloc(IO_BUF);
 		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
 			elog(ERROR, "sift: could not rewind a build run");
-		n = io_get_varint(&rd[i].io);
-		for (uint64 k = 0; k < n;)
-		{
-			uint64		docs[BATCH];
-			int			m = 0;
-
-			for (; m < BATCH && k < n; k++, m++)
-			{
-				key += io_get_varint(&rd[i].io);
-				docs[m] = key << 16 | io_get_varint(&rd[i].io);
-			}
-			add_docs(sw, docs, m);
-		}
+		rd[i].dleft = io_get_varint(&rd[i].io);
+	}
+	merge_docs(sw, rd, nruns);
+	for (int i = 0; i < nruns; i++)
+	{
 		reader_next_term(&rd[i]);
 		if (rd[i].len)
 			binaryheap_add_unordered(heap, PointerGetDatum(&rd[i]));
@@ -698,36 +816,31 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	binaryheap_build(heap);
 	while (!binaryheap_empty(heap))
 	{
-		RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
 		char		term[SIFT_MAX_TERM_BYTES];
-		int			len = top->len;
+		int			len = ((RunReader *) DatumGetPointer(binaryheap_first(heap)))->len,
+					k = 0;
 
-		memcpy(term, top->term, len);
+		memcpy(term, ((RunReader *) DatumGetPointer(binaryheap_first(heap)))->term, len);
 		bt->pw = sift_segw_begin_term(sw, term, len);
 		bt->n = 0;
 		while (!binaryheap_empty(heap))
 		{
-			SiftKey		key = 0;
+			RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
 
-			top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
 			if (term_cmp(top->term, top->len, term, len) != 0)
 				break;
-			for (uint64 k = 0; k < top->df; k++)
-			{
-				uint64		v = io_get_varint(&top->io);
-				uint8		tf = (v & 1) ? io_byte(&top->io) : 1;
-
-				key += v >> 1;
-				batch_put(bt, key, tf, io_get_varint(&top->io));
-			}
-			reader_next_term(top);
-			if (top->len)
-				binaryheap_replace_first(heap, PointerGetDatum(top));
-			else
-				binaryheap_remove_first(heap);
+			cur[k++] = top;
+			binaryheap_remove_first(heap);
 		}
+		merge_postings(bt, cur, k, act);
 		batch_flush(bt);
 		sift_segw_end_term(sw);
+		for (int i = 0; i < k; i++)
+		{
+			reader_next_term(cur[i]);
+			if (cur[i]->len)
+				binaryheap_add(heap, PointerGetDatum(cur[i]));
+		}
 		if (++nterms % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
@@ -736,6 +849,77 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		BufFileClose(runs[i]->file);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
+}
+
+/* ---------- runs of segments (merge input) ---------- */
+
+typedef struct DumpState
+{
+	RunIO		io;
+	SiftKey		prev;
+	uint64		ndocs;
+	uint64		maxdf;
+} DumpState;
+
+static void
+dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+{
+	DumpState  *ds = arg;
+
+	for (int i = 0; i < n; ds->prev = keys[i++])
+	{
+		io_varint(&ds->io, keys[i] - ds->prev);
+		io_varint(&ds->io, dl[i]);
+	}
+	ds->ndocs -= n;
+}
+
+static bool
+dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys,
+		  const uint8 *tf, const uint16 *dl)
+{
+	DumpState  *ds = arg;
+	SiftKey		prev = 0;
+
+	io_varint(&ds->io, len);
+	io_put(&ds->io, term, len);
+	io_varint(&ds->io, info->df);
+	for (uint32 j = 0; j < info->df; prev = keys[j++])
+	{
+		io_varint(&ds->io, (keys[j] - prev) << 1 | (tf[j] > 1));
+		if (tf[j] > 1)
+			io_put(&ds->io, &tf[j], 1);
+		io_varint(&ds->io, dl[j]);
+	}
+	ds->maxdf = Max(ds->maxdf, info->df);
+	return true;
+}
+
+SiftRun *
+sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext mcxt)
+{
+	uint64		ndocs = sift_seg_live_docs(seg);
+	SiftRun    *run;
+	DumpState	ds = {.ndocs = ndocs};
+	MemoryContext old;
+
+	if (ndocs == 0)
+		return NULL;
+	old = MemoryContextSwitchTo(mcxt);
+	run = palloc0(sizeof(SiftRun));
+	run->file = ds.io.file = BufFileCreateTemp(false);
+	ds.io.buf = palloc(IO_BUF);
+	run->ndocs = ndocs;
+	io_varint(&ds.io, ndocs);
+	sift_seg_dump(seg, ref, dump_docs, dump_term, &ds);
+	if (ds.ndocs != 0)
+		elog(ERROR, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
+	io_varint(&ds.io, 0);
+	io_flush(&ds.io);
+	pfree(ds.io.buf);
+	run->maxdf = ds.maxdf;
+	MemoryContextSwitchTo(old);
+	return run;
 }
 
 /* ---------- ambuild ---------- */

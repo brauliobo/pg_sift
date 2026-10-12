@@ -1339,36 +1339,62 @@ mark_freelist(BlockMap *m, BlockNumber blk)
 	}
 }
 
+/* The extents and the liveness run of a segment, read from its header page */
+static SiftExtent *
+read_seg_extents(Relation index, const SiftSegEntry *s, uint32 *n, BlockNumber *live_first,
+				 uint32 *live_npages)
+{
+	Buffer		buf = read_locked(index, s->header_blk, BUFFER_LOCK_SHARE);
+	Page		page;
+	SiftSegHeaderData *hdr;
+	SiftExtent *ext;
+
+	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, s->gen);
+	page = BufferGetPage(buf);
+	hdr = (SiftSegHeaderData *) SiftPageGetData(page);
+	*n = hdr->nextents;
+	if (*n > SIFT_MAX_EXTENTS || SiftPageGetUsed(page) < offsetof(SiftSegHeaderData, extents) + *n * sizeof(SiftExtent))
+		corrupt(index, "Segment header block %u lists %u extents in %u bytes.",
+				s->header_blk, *n, SiftPageGetUsed(page));
+	ext = palloc(Max(*n, 1) * sizeof(SiftExtent));
+	memcpy(ext, hdr->extents, *n * sizeof(SiftExtent));
+	*live_first = hdr->live_first;
+	*live_npages = hdr->live_npages;
+	UnlockReleaseBuffer(buf);
+	return ext;
+}
+
 static void
 mark_immutable(BlockMap *m, const SiftSegEntry *s)
 {
-	Buffer		buf;
-	Page		page;
-	SiftSegHeaderData *hdr;
 	SiftExtent *ext;
 	uint32		n;
 	BlockNumber live_first;
 	uint32		live_npages;
 
 	mark(m, s->header_blk, 1, "segment header", s->gen);
-	buf = read_locked(m->index, s->header_blk, BUFFER_LOCK_SHARE);
-	sift_store_check_page(m->index, buf, SIFT_PT_SEGHEADER, s->gen);
-	page = BufferGetPage(buf);
-	hdr = (SiftSegHeaderData *) SiftPageGetData(page);
-	n = hdr->nextents;
-	if (n > SIFT_MAX_EXTENTS || SiftPageGetUsed(page) < offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent))
-		corrupt(m->index, "Segment header block %u lists %u extents in %u bytes.",
-				s->header_blk, n, SiftPageGetUsed(page));
-	ext = palloc(Max(n, 1) * sizeof(SiftExtent));
-	memcpy(ext, hdr->extents, n * sizeof(SiftExtent));
-	live_first = hdr->live_first;
-	live_npages = hdr->live_npages;
-	UnlockReleaseBuffer(buf);
+	ext = read_seg_extents(m->index, s, &n, &live_first, &live_npages);
 	for (uint32 i = 0; i < n; i++)
 		mark(m, ext[i].start, ext[i].nblocks, "segment extent", s->gen);
 	if (live_npages > 0)
 		mark(m, live_first, live_npages, "liveness run", s->gen);
 	pfree(ext);
+}
+
+SiftExtent *
+sift_store_immutable_extents(Relation index, const SiftSegEntry *s, int *nextents)
+{
+	uint32		n;
+	BlockNumber live_first;
+	uint32		live_npages;
+	SiftExtent *ext = read_seg_extents(index, s, &n, &live_first, &live_npages);
+
+	ext = repalloc(ext, (n + 2) * sizeof(SiftExtent));
+	ext[n++] = (SiftExtent) {s->header_blk, 1};
+	if (live_npages > 0)
+		ext[n++] = (SiftExtent) {live_first, live_npages};
+	*nextents = n;
+	return ext;
 }
 
 static void
