@@ -58,3 +58,8 @@ CREATE FUNCTION sift._test_kern_bm25(tf int4, dl int4, k1 float4, b float4, avgd
 	AS 'MODULE_PATHNAME', 'sift_test_kern_bm25' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_kern_bound(tf int4, dl int4, k1 float4, b float4, avgdl float4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_kern_bound' LANGUAGE C STRICT;
+
+-- Index build (src/sift_segment_sql.c): every posting decoded from the index.
+CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
+									OUT tf int4, OUT dl int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;

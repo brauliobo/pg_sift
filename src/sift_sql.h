@@ -22,10 +22,11 @@ extern PGDLLEXPORT Datum sift_highlight(PG_FUNCTION_ARGS);		/* (text, text, text
 extern PGDLLEXPORT Datum sift_tokenize(PG_FUNCTION_ARGS);		/* SRF */
 extern PGDLLEXPORT Datum sift_parse_query(PG_FUNCTION_ARGS);	/* (text, regclass) text */
 
-/* sift_maint.c */
+/* sift_maint.c (sift_segments, sift_segment_postings, sift_verify: sift_segment_sql.c) */
 extern PGDLLEXPORT Datum sift_promote(PG_FUNCTION_ARGS);		/* (regclass) int */
 extern PGDLLEXPORT Datum sift_merge(PG_FUNCTION_ARGS);			/* (regclass) int */
 extern PGDLLEXPORT Datum sift_segments(PG_FUNCTION_ARGS);		/* SRF */
+extern PGDLLEXPORT Datum sift_segment_postings(PG_FUNCTION_ARGS);	/* SRF */
 extern PGDLLEXPORT Datum sift_verify(PG_FUNCTION_ARGS);			/* (regclass, bool) void */
 
 #endif							/* SIFT_SQL_H */

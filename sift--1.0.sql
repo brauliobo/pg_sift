@@ -65,11 +65,25 @@ CREATE FUNCTION sift.promote(index regclass) RETURNS int4
 CREATE FUNCTION sift.merge(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_merge' LANGUAGE C STRICT VOLATILE;
 
+-- One row per segment; the section columns are NULL for mutable segments.
 CREATE FUNCTION sift.segments(index regclass,
 							  OUT gen int8, OUT kind text, OUT ndocs int8, OUT sum_dl int8,
-							  OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4, OUT dirty bool)
+							  OUT avgdl float8, OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4,
+							  OUT dirty bool, OUT nterms int8, OUT avgdl_ref float8,
+							  OUT docmap_bytes int8, OUT postings_bytes int8, OUT dict_bytes int8,
+							  OUT live_bytes int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_segments' LANGUAGE C STRICT VOLATILE;
+
+-- Postings by segment and df class (decodes every term): representation
+-- counts, codec and sidecar (tf, bounds) bytes, bits per posting.
+CREATE FUNCTION sift.segment_postings(index regclass,
+									  OUT gen int8, OUT df_class text, OUT terms int8,
+									  OUT postings int8, OUT inline_terms int8, OUT list_terms int8,
+									  OUT grouped_terms int8, OUT codec_bytes int8,
+									  OUT sidecar_bytes int8, OUT bits_per_posting float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_segment_postings' LANGUAGE C STRICT VOLATILE;
 
 CREATE FUNCTION sift.verify(index regclass, heapallindexed bool DEFAULT false) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_verify' LANGUAGE C STRICT VOLATILE;

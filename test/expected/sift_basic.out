@@ -24,7 +24,6 @@ CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (b = 2);
 ERROR:  value 2 out of bounds for option "b"
 DETAIL:  Valid values are between "0.000000" and "1.000000".
 CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (k1 = 1.5, stemmer = 'english_stem');
-ERROR:  sift: index build is not implemented yet
 SET sift.simd = scalar;
 SHOW sift.simd;
  sift.simd 

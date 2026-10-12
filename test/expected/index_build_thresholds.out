@@ -1,0 +1,193 @@
+-- Representation thresholds: inline (df <= 2), LIST, GROUPED from
+-- sift.grouped_min_df (65536 in production), across superblocks, with
+-- block bounds and tf escapes; round trip against sift.tokenize.
+CREATE EXTENSION sift;
+CREATE EXTENSION sift_test;
+CREATE FUNCTION roundtrip(idx regclass, docs text)
+RETURNS TABLE (postings bigint, missing bigint, extra bigint, differ bigint)
+LANGUAGE plpgsql AS $f$
+BEGIN
+	RETURN QUERY EXECUTE format($q$
+		WITH d AS (%s),
+		tok AS (SELECT d.tid, t.token FROM d, sift.tokenize(d.body, %L) t),
+		len AS (SELECT tid, least(count(*), 65535)::int AS dl FROM tok GROUP BY tid),
+		want AS (SELECT tok.token AS term, tok.tid, least(count(*), 255)::int AS tf, len.dl
+				 FROM tok JOIN len USING (tid) GROUP BY 1, 2, 4),
+		got AS (SELECT term, tid, tf, dl FROM sift._test_postings(%L))
+		SELECT count(*), count(*) FILTER (WHERE g.term IS NULL),
+			   count(*) FILTER (WHERE w.term IS NULL),
+			   count(*) FILTER (WHERE g.tf <> w.tf OR g.dl <> w.dl)
+		FROM want w FULL JOIN got g ON g.term = w.term AND g.tid = w.tid$q$, docs, idx, idx);
+END
+$f$;
+SHOW sift.grouped_min_df;
+ sift.grouped_min_df 
+---------------------
+ 65536
+(1 row)
+
+-- Fillfactor 10: a few rows per page over more than two superblocks
+SELECT setseed(0.7);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE g (id int, body text) WITH (fillfactor = 10);
+INSERT INTO g
+SELECT i, 'all ' || CASE WHEN i <= 2 THEN 'two ' ELSE '' END || CASE WHEN i <= 3 THEN 'three ' ELSE '' END
+	|| CASE WHEN i % 2 = 0 THEN 'even ' ELSE '' END || CASE WHEN i % 500 = 0 THEN 'rare ' ELSE '' END
+	|| repeat('tf ', (i % 300) + 1)
+	|| (SELECT string_agg('v' || floor(exp(random() * ln(3000)))::int, ' ') FROM generate_series(1, 5 + i % 9))
+FROM generate_series(1, 6000) i;
+SELECT pg_relation_size('g') / 8192 > 512 AS three_superblocks;
+ three_superblocks 
+-------------------
+ t
+(1 row)
+
+-- Production thresholds: everything below 65536 is inline or LIST
+CREATE INDEX g_list ON g USING sift (body);
+SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_list');
+ df_class | terms | inline_terms | list_terms | grouped_terms 
+----------+-------+--------------+------------+---------------
+ 1        |   238 |          238 |          0 |             0
+ 2        |   353 |          353 |          0 |             0
+ 3-15     |  1902 |            0 |       1902 |             0
+ 16-127   |   382 |            0 |        382 |             0
+ 128-1K   |    48 |            0 |         48 |             0
+ 1K-8K    |     8 |            0 |          8 |             0
+(6 rows)
+
+SELECT sift.verify('g_list');
+ verify 
+--------
+ 
+(1 row)
+
+SELECT * FROM roundtrip('g_list', 'SELECT ctid AS tid, body FROM g');
+ postings | missing | extra | differ 
+----------+---------+-------+--------
+    65828 |       0 |     0 |      0
+(1 row)
+
+-- GROUPED from df 3: inline stays at df <= 2
+SET sift.grouped_min_df = 3;
+CREATE INDEX g_grouped ON g USING sift (body);
+SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_grouped');
+ df_class | terms | inline_terms | list_terms | grouped_terms 
+----------+-------+--------------+------------+---------------
+ 1        |   238 |          238 |          0 |             0
+ 2        |   353 |          353 |          0 |             0
+ 3-15     |  1902 |            0 |          0 |          1902
+ 16-127   |   382 |            0 |          0 |           382
+ 128-1K   |    48 |            0 |          0 |            48
+ 1K-8K    |     8 |            0 |          0 |             8
+(6 rows)
+
+SELECT sift.verify('g_grouped');
+ verify 
+--------
+ 
+(1 row)
+
+SELECT * FROM roundtrip('g_grouped', 'SELECT ctid AS tid, body FROM g');
+ postings | missing | extra | differ 
+----------+---------+-------+--------
+    65828 |       0 |     0 |      0
+(1 row)
+
+-- The boundary: df 3 LIST, df 4 GROUPED
+SET sift.grouped_min_df = 4;
+CREATE INDEX g_edge ON g USING sift (body);
+SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_edge');
+ df_class | terms | inline_terms | list_terms | grouped_terms 
+----------+-------+--------------+------------+---------------
+ 1        |   238 |          238 |          0 |             0
+ 2        |   353 |          353 |          0 |             0
+ 3-15     |  1902 |            0 |        384 |          1518
+ 16-127   |   382 |            0 |          0 |           382
+ 128-1K   |    48 |            0 |          0 |            48
+ 1K-8K    |     8 |            0 |          0 |             8
+(6 rows)
+
+SELECT sift.verify('g_edge');
+ verify 
+--------
+ 
+(1 row)
+
+SELECT * FROM roundtrip('g_edge', 'SELECT ctid AS tid, body FROM g');
+ postings | missing | extra | differ 
+----------+---------+-------+--------
+    65828 |       0 |     0 |      0
+(1 row)
+
+-- Several segments sharing superblocks, GROUPED
+SET sift.grouped_min_df = 100;
+CREATE INDEX g_segs ON g USING sift (body) WITH (build_segments = 5);
+SELECT gen, ndocs, nterms, sb_lo, sb_hi FROM sift.segments('g_segs');
+ gen | ndocs | nterms | sb_lo | sb_hi 
+-----+-------+--------+-------+-------
+   1 |  1316 |   2014 |     0 |     3
+   2 |  1224 |   1935 |     3 |     6
+   3 |  1172 |   1918 |     6 |     9
+   4 |  1192 |   1939 |     9 |    13
+   5 |  1096 |   1850 |    13 |    16
+(5 rows)
+
+SELECT sift.verify('g_segs');
+ verify 
+--------
+ 
+(1 row)
+
+SELECT * FROM roundtrip('g_segs', 'SELECT ctid AS tid, body FROM g');
+ postings | missing | extra | differ 
+----------+---------+-------+--------
+    65828 |       0 |     0 |      0
+(1 row)
+
+RESET sift.grouped_min_df;
+-- sift.verify catches damage: header totals, a docmap record, postings bytes
+SELECT header AS hdr FROM sift._test_segments('g_list') \gset
+SELECT sift._test_poke('g_list', :hdr, 24 + 8, 5999, 8);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift.verify('g_list');
+ERROR:  sift index "g_list" segment 1 is corrupted
+DETAIL:  Header (gen 1, 5999 docs, SBs 0-16, avgdl 161.002) does not match its directory entry.
+REINDEX INDEX g_list;
+SELECT sift._test_poke('g_list', 2, 24, 12345, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift.verify('g_list');
+ERROR:  sift index "g_list" segment 1 is corrupted
+DETAIL:  DOCMAP record of SB 0 has 12345 docs and a chunk of 292 bytes.
+REINDEX INDEX g_list;
+SELECT sift._test_poke('g_list', 6, 4000, -1, 8);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift.verify('g_list');
+ERROR:  sift index "g_list" segment 1 is corrupted
+DETAIL:  Term "v1" decodes past its df 3342.
+REINDEX INDEX g_list;
+SELECT sift.verify('g_list');
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE g;
+DROP FUNCTION roundtrip;
+DROP EXTENSION sift_test;
+DROP EXTENSION sift;

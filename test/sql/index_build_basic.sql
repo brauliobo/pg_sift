@@ -1,0 +1,100 @@
+-- CREATE INDEX: segments, statistics, options and sift.verify on small
+-- corpora; queries through the index still fail cleanly (scan lands later).
+CREATE EXTENSION sift;
+
+-- Empty table: metapage and directory only
+CREATE TABLE t0 (body text);
+CREATE INDEX t0_idx ON t0 USING sift (body);
+SELECT count(*) FROM sift.segments('t0_idx');
+SELECT sift.verify('t0_idx');
+
+-- One document
+CREATE TABLE t1 (body text);
+INSERT INTO t1 VALUES ('Hello, World! hello');
+CREATE INDEX t1_idx ON t1 USING sift (body);
+SELECT gen, kind, ndocs, sum_dl, avgdl, sb_lo, sb_hi, dirty, nterms, avgdl_ref
+FROM sift.segments('t1_idx');
+SELECT df_class, terms, postings, inline_terms, list_terms, grouped_terms
+FROM sift.segment_postings('t1_idx');
+SELECT sift.verify('t1_idx');
+
+-- NULLs, empty and punctuation-only strings are not indexed; duplicates are
+CREATE TABLE t2 (id int, body text);
+INSERT INTO t2 VALUES (1, NULL), (2, ''), (3, '  ...  '), (4, 'same text'),
+	(5, 'same text'), (6, 'Same TEXT!'), (7, NULL);
+CREATE INDEX t2_idx ON t2 USING sift (body);
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t2_idx');
+SELECT sift.verify('t2_idx');
+
+-- UTF-8: accents, CJK, emoji, flags, a 300-byte token (truncated to 255)
+CREATE TABLE t3 (body text);
+INSERT INTO t3 VALUES ('Crème brûlée à Paris'), ('東京タワー 🗼 and 🇯🇵 flags 👍🏽'),
+	('Straße STRASSE ǅemal'), (repeat('é', 150)), ('naïve café ☕☕');
+CREATE INDEX t3_idx ON t3 USING sift (body);
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t3_idx');
+SELECT sift.verify('t3_idx');
+
+-- Options are stored at build time; changing them needs REINDEX
+CREATE INDEX t3_opts ON t3 USING sift (body)
+	WITH (k1 = 2.0, b = 0.5, stemmer = 'en', accent_folding = false);
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t3_opts');
+SELECT sift.verify('t3_opts');
+ALTER INDEX t3_opts SET (k1 = 1.0);
+SELECT sift.verify('t3_opts');
+REINDEX INDEX t3_opts;
+SELECT sift.verify('t3_opts');
+
+-- Partial and expression indexes
+CREATE INDEX t2_part ON t2 USING sift (body) WHERE id > 4;
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t2_part');
+SELECT sift.verify('t2_part');
+CREATE INDEX t2_expr ON t2 USING sift ((coalesce(body, 'was null') || ' ' || id));
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t2_expr');
+SELECT sift.verify('t2_expr');
+
+-- Several segments from one build (heap ranges), I1 checked by verify
+CREATE TABLE t4 (id int, body text);
+INSERT INTO t4 SELECT i, 'doc ' || i || ' word' || (i % 7) FROM generate_series(1, 3000) i;
+CREATE INDEX t4_idx ON t4 USING sift (body) WITH (build_segments = 3);
+SELECT gen, ndocs, sum_dl, nterms, sb_lo, sb_hi FROM sift.segments('t4_idx');
+SELECT sum(ndocs) = (SELECT count(*) FROM t4) AS all_docs FROM sift.segments('t4_idx');
+SELECT sift.verify('t4_idx');
+
+-- HOT chains: the build reports root tids, out of order within a page
+CREATE TABLE t5 (id int, body text) WITH (fillfactor = 50);
+INSERT INTO t5 SELECT i, 'version one of ' || i FROM generate_series(1, 200) i;
+UPDATE t5 SET body = 'version two of ' || id WHERE id % 3 = 0;
+UPDATE t5 SET body = 'version three of ' || id WHERE id % 5 = 0;
+CREATE INDEX t5_idx ON t5 USING sift (body);
+SELECT ndocs, sum_dl, nterms FROM sift.segments('t5_idx');
+SELECT sift.verify('t5_idx');
+
+-- UNLOGGED tables use the init fork for the empty index
+CREATE UNLOGGED TABLE tu (body text);
+INSERT INTO tu VALUES ('unlogged words'), ('more unlogged words');
+CREATE INDEX tu_idx ON tu USING sift (body);
+SELECT ndocs, nterms FROM sift.segments('tu_idx');
+SELECT sift.verify('tu_idx');
+
+-- REINDEX rebuilds into a new relfilenode; CONCURRENTLY needs VACUUM support
+REINDEX TABLE t2;
+SELECT sift.verify('t2_idx');
+REINDEX INDEX CONCURRENTLY t4_idx;
+DROP INDEX IF EXISTS t4_idx_ccnew;
+CREATE INDEX CONCURRENTLY t1_cic ON t1 USING sift (body);
+DROP INDEX IF EXISTS t1_cic;
+
+-- Only heap tables, one column, sift indexes for the functions
+CREATE INDEX t2_multi ON t2 USING sift (body, body);
+SELECT sift.verify('t2'::regclass);
+CREATE INDEX t2_btree ON t2 (id);
+SELECT * FROM sift.segments('t2_btree');
+
+-- Queries through the index fail cleanly until the scan lands; seq scans work
+SET enable_seqscan = off;
+SELECT count(*) FROM t2 WHERE body @@> 'same';
+RESET enable_seqscan;
+SELECT count(*) FROM t2 WHERE body @@> 'same';
+
+DROP TABLE t0, t1, t2, t3, t4, t5, tu;
+DROP EXTENSION sift;
