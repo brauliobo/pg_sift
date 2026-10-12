@@ -303,7 +303,7 @@ SELECT sift._test_poke('t_idx', :fl, 32, 5, 4);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                        expect                                        
 -------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 8 is referenced twice (free extent).
+ XX002: sift index "t_idx" is corrupted | Block 5 is referenced twice (free extent).
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_drop('t_idx', 1) $$);

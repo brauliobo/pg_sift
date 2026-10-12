@@ -12,6 +12,7 @@
 #include "common/pg_prng.h"
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
+#include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -182,7 +183,7 @@ sift_segment_postings(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* Invariant I1 between two segments: no doc in both */
+/* Invariant I1 between two segments: no live doc in both (a vacuumed doc stays in its segment's docmap) */
 static void
 verify_disjoint(Relation index, SiftSegment *a, SiftSegment *b)
 {
@@ -199,12 +200,11 @@ verify_disjoint(Relation index, SiftSegment *a, SiftSegment *b)
 		{
 			uint64		pa[SIFT_OFFMASK_WORDS],
 						pb[SIFT_OFFMASK_WORDS];
-			const uint16 *dl;
 
 			if (!((da.pagemask[p / 64] & db.pagemask[p / 64]) >> (p % 64) & 1))
 				continue;
-			sift_seg_page(a, &da, p, pa, &dl);
-			sift_seg_page(b, &db, p, pb, &dl);
+			sift_seg_page_live(a, &da, p, pa);
+			sift_seg_page_live(b, &db, p, pb);
 			for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
 				if (pa[w] & pb[w])
 					corrupt(index, "Segments %llu and %llu both hold a doc on heap block %u.",
@@ -370,6 +370,8 @@ sift_verify(PG_FUNCTION_ARGS)
 				nelems = 0;
 
 	index = open_sift(PG_GETARG_OID(0));
+	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	sift_store_verify(index);
 	sift_dir_read(index, snap);
 	opts = sift_index_options(index);
@@ -417,6 +419,7 @@ sift_verify(PG_FUNCTION_ARGS)
 		verify_heap(index, snap, snapshot, nelems, cxt);
 		UnregisterSnapshot(snapshot);
 	}
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	MemoryContextDelete(cxt);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();

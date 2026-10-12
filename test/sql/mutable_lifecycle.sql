@@ -40,6 +40,18 @@ FROM sift.segments('ml_idx');
 SELECT * FROM ml_state();
 SELECT sift.verify('ml_idx', true);
 
-DROP TABLE ml;
+-- heap slots freed by VACUUM are reused: a dead doc and a live one share a key across segments
+CREATE TABLE ru (id int, body text);
+CREATE INDEX ru_idx ON ru USING sift (body);
+INSERT INTO ru SELECT i, 'reuse old' FROM generate_series(1, 20) i;
+SELECT sift.promote('ru_idx') IS NOT NULL AS promoted;
+DELETE FROM ru;
+VACUUM ru;
+INSERT INTO ru SELECT i, 'reuse new' FROM generate_series(1, 20) i;
+SELECT sift.promote('ru_idx') IS NOT NULL AS promoted;
+SELECT count(*) FILTER (WHERE body @@> 'old') AS old, count(*) FILTER (WHERE body @@> 'new') AS new FROM ru;
+SELECT sift.verify('ru_idx', true);
+
+DROP TABLE ml, ru;
 DROP FUNCTION ml_state();
 DROP EXTENSION sift;
