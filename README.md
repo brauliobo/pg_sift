@@ -28,20 +28,21 @@ threads, AVX2, no AVX-512), 62 GB RAM, PostgreSQL 18.6; each engine server is ca
 
 | engine | build s | index MB | term | and | or | phrase | prefix | fuzzy | count(*) | mix QPS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **sift** | 1.3 | 18 | 0.8 / 3.1 | 1.6 / 4.9 | 1.8 / 5.1 | 1.7 / 5.2 | 3.5 / 9.5 | 7.7 / 10.9 | 0.9 / 124.4 | 3393 |
-| GIN (`tsvector`) | 13.9 | 53 | 109.7 / 235.4 | 113.2 / 182.7 | 361.9 / 772.6 | 111.2 / 176.7 | 141.6 / 264.4 | n/a | 35.2 / 73.9 | 47 |
-| rum 1.3.15 | 18.4 | 94 | 44.5 / 71.8 | 54.0 / 82.3 | 126.7 / 134.8 | 56.4 / 89.7 | 144.0 / 242.3 | n/a | 45.9 / 69.7 | 128 |
-| pg_textsearch 1.5.1 | 5.4 | 50 | 1.9 / 2.5 | n/a | 3.0 / 4.4 | n/a | n/a | n/a | n/a | n/a |
-| pgx-bm25 1.0 | 5.9 | 66 | 56.5 / 91.7 | 91.3 / 127.2 | 99.0 / 149.8 | 97.6 / 175.9 | 145.7 / 561.5 | n/a | 134.7 / 204.1 | 92 |
-| ParadeDB pg_search 0.26.1 | 1.9 | 59 | 1.6 / 4.6 | 3.1 / 5.2 | 5.0 / 6.7 | 7.5 / 16.0 | 2.8 / 3.6 | 83.3 / 2054.8 | 2.3 / 12.4 | 1325 |
-| Tantivy 0.26 (in-process) | 2.8 | 40 | 0.4 / 0.9 | 1.0 / 2.2 | 0.8 / 1.7 | 2.6 / 7.2 | 1.2 / 1.3 | 2.2 / 2.7 | 0.5 / 6.4 | 4187 |
-| Elasticsearch 9.5.5 (HTTP) | 13.1 | 96 | 2.9 / 5.6 | 7.8 / 14.8 | 4.0 / 9.3 | 4.7 / 10.7 | 3.4 / 6.6 | 11.3 / 21.4 | 3.4 / 7.0 | 683 |
+| **sift** | 1.3 | 18 | 0.8 / 3.0 | 1.6 / 5.0 | 1.8 / 5.1 | 1.8 / 5.3 | 1.6 / 6.5 | 4.5 / 5.6 | 0.9 / 125.4 | 3438 |
+| sift, `phrase_index = pairs` | 5.2 | 77 | 1.1 / 3.1 | 1.8 / 5.0 | 2.0 / 5.1 | 2.0 / 4.9 | 1.5 / 6.4 | 4.5 / 5.7 | 1.0 / 1.5 | 3449 |
+| GIN (`tsvector`) | 12.4 | 53 | 110.0 / 234.0 | 112.9 / 185.7 | 371.3 / 840.2 | 111.9 / 176.4 | 145.7 / 264.0 | n/a | 34.9 / 74.5 | 47 |
+| rum 1.3.15 | 16.4 | 94 | 44.3 / 71.4 | 52.2 / 81.8 | 127.0 / 134.5 | 57.4 / 89.3 | 127.1 / 228.0 | n/a | 46.5 / 71.6 | 131 |
+| pg_textsearch 1.5.1 | 5.5 | 50 | 2.1 / 2.5 | n/a | 2.8 / 4.4 | n/a | n/a | n/a | n/a | n/a |
+| pgx-bm25 1.0 | 5.9 | 66 | 56.0 / 91.0 | 105.3 / 156.8 | 98.7 / 150.4 | 113.5 / 177.7 | 147.0 / 570.1 | n/a | 133.6 / 204.7 | 92 |
+| ParadeDB pg_search 0.26.1 | 2.1 | 65 | 1.7 / 4.8 | 3.1 / 5.9 | 5.0 / 7.3 | 8.4 / 20.4 | 2.8 / 3.8 | 44.1 / 46.2 | 2.2 / 12.9 | 970 |
+| Tantivy 0.26 (in-process) | 2.7 | 40 | 0.4 / 0.9 | 1.0 / 2.3 | 0.8 / 1.7 | 4.1 / 7.2 | 1.2 / 1.3 | 2.5 / 2.7 | 0.5 / 6.5 | 4132 |
+| Elasticsearch 9.5.5 (HTTP) | 12.8 | 95 | 3.0 / 5.0 | 7.6 / 17.7 | 3.6 / 7.4 | 4.6 / 10.3 | 3.4 / 5.7 | 11.2 / 100.6 | 3.5 / 7.0 | 1069 |
 
 n/a: the engine cannot express that query class. Postgres latencies go through pgbench, so they
 include a client round trip and a primary-key lookup; Elasticsearch's include HTTP and JSON;
 Tantivy's are in-process calls with no client/server hop. sift ran with AVX2 kernels (this host has
-no AVX-512) and is behind ParadeDB on prefix queries and on `count(*)` of phrases at p95. The host was shared, with a 1-minute
-load average of about 5 at the start (uptime 5.40 / 5.08 / 5.05). [docs/BASELINE.md](docs/BASELINE.md) has the method, the TIN-style full
+no AVX-512) and is behind ParadeDB only on prefix p95 and on `count(*)` of phrases at p95 (`phrase_index = pairs` removes the latter at 4x the index size, see DESIGN.md (g)). The host was shared, with a 1-minute
+load average of about 5 at the start (uptime 5.01 / 5.01 / 4.72). [docs/BASELINE.md](docs/BASELINE.md) has the method, the TIN-style full
 suite on 2.6M documents (boolean, phrase, count, filtered, join and 1000 writes/s update
 workloads, MB read per query, WAL), correctness checks and per-engine notes.
 
