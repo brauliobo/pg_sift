@@ -1,5 +1,5 @@
 -- CREATE INDEX: segments, statistics, options and sift.verify on small
--- corpora; queries through the index still fail cleanly (scan lands later).
+-- corpora; the index answers queries as a bitmap scan.
 CREATE EXTENSION sift;
 
 -- Empty table: metapage and directory only
@@ -99,7 +99,7 @@ SELECT sift.verify('t2'::regclass);
 CREATE INDEX t2_btree ON t2 (id);
 SELECT * FROM sift.segments('t2_btree');
 
--- Queries through the index fail cleanly until the scan lands; seq scans work
+-- The index and a seq scan agree
 SET enable_seqscan = off;
 SELECT count(*) FROM t2 WHERE body @@> 'same';
 RESET enable_seqscan;

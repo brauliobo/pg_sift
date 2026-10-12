@@ -1,5 +1,5 @@
 -- CREATE INDEX: segments, statistics, options and sift.verify on small
--- corpora; queries through the index still fail cleanly (scan lands later).
+-- corpora; the index answers queries as a bitmap scan.
 CREATE EXTENSION sift;
 -- Empty table: metapage and directory only
 CREATE TABLE t0 (body text);
@@ -230,10 +230,14 @@ ERROR:  "t2" is not an index
 CREATE INDEX t2_btree ON t2 (id);
 SELECT * FROM sift.segments('t2_btree');
 ERROR:  "t2_btree" is not a sift index
--- Queries through the index fail cleanly until the scan lands; seq scans work
+-- The index and a seq scan agree
 SET enable_seqscan = off;
 SELECT count(*) FROM t2 WHERE body @@> 'same';
-ERROR:  sift: index scan is not implemented yet
+ count 
+-------
+     3
+(1 row)
+
 RESET enable_seqscan;
 SELECT count(*) FROM t2 WHERE body @@> 'same';
  count 

@@ -40,6 +40,9 @@ extern PGDLLIMPORT const CustomScanMethods sift_scan_plan_methods;
 /* sift_cscan.c: CreateCustomScanState callback */
 extern Node *sift_create_scan_state(CustomScan *cscan);
 
+/* true if expr (a Var or an expression, RelabelTypes ignored) is the key of the sift index */
+extern bool sift_index_matches_key(IndexOptInfo *index, Node *expr);
+
 /*
  * Clause recognition shared by hooks, amcostestimate and support functions:
  * true if clause is `key @@> q` (or sift.match_idx(key, q, index)) where key
