@@ -15,6 +15,7 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 #include "sift_analyze.h"
 #include "sift_mutable.h"
@@ -310,12 +311,13 @@ heap_check_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool
 }
 
 /*
- * Every tuple the heap shows to a concurrent-build snapshot must have its
- * doc and each analyzed term (with tf) among the live postings: a Bloom
- * filter of the postings has no false negatives, so a miss is certain.
+ * Every tuple visible to snapshot must have its doc and each analyzed term
+ * (with tf) among the live postings: a Bloom filter of the postings has no
+ * false negatives, so a miss is certain. The snapshot predates the directory
+ * read, so every row it shows was inserted before the postings were read.
  */
 static void
-verify_heap(Relation index, const SiftDirSnapshot *snap, uint64 nelems, MemoryContext cxt)
+verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint64 nelems, MemoryContext cxt)
 {
 	Oid			heapid = IndexGetRelation(RelationGetRelid(index), false);
 	Relation	heap = table_open(heapid, AccessShareLock);
@@ -340,7 +342,8 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, uint64 nelems, MemoryCo
 	sift_analyzer_config_from_index(index, &cfg);
 	hc.an = sift_analyzer_create(&cfg, cxt);
 	info->ii_Concurrent = true;
-	table_index_build_scan(heap, index, info, true, false, heap_check_cb, &hc, NULL);
+	table_index_build_scan(heap, index, info, true, false, heap_check_cb, &hc,
+						   table_beginscan_strat(heap, snapshot, 0, NULL, true, false));
 	bloom_free(hc.bf);
 	table_close(heap, AccessShareLock);
 }
@@ -361,6 +364,7 @@ sift_verify(PG_FUNCTION_ARGS)
 	const SiftOptions *opts;
 	SiftAnalyzerConfig cfg;
 	SiftSegment **segs;
+	Snapshot	snapshot = PG_GETARG_BOOL(1) ? RegisterSnapshot(GetTransactionSnapshot()) : InvalidSnapshot;
 	uint64		ndocs = 0,
 				sum_dl = 0,
 				nelems = 0;
@@ -408,8 +412,11 @@ sift_verify(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (segs[i])
 			sift_seg_close(segs[i]);
-	if (PG_GETARG_BOOL(1))
-		verify_heap(index, snap, nelems, cxt);
+	if (snapshot != InvalidSnapshot)
+	{
+		verify_heap(index, snap, snapshot, nelems, cxt);
+		UnregisterSnapshot(snapshot);
+	}
 	MemoryContextDelete(cxt);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
