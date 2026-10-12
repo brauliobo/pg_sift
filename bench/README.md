@@ -15,6 +15,7 @@ and `bench/data` are gitignored. Results are summarized in `docs/BASELINE.md`.
 | `engines/*.sh` | one adapter per engine (see below) |
 | `run.sh` | Postgres engines: timed index build + pgbench workloads |
 | `build.sh` | sift CREATE INDEX per parallel worker count: `[COPIES=n] TIER=M bench/build.sh 0 2 4` (0 = serial; COPIES replicates the corpus), appends to `build-workers.tsv` |
+| `cold.sh` | cold-cache A/B of a boolean GUC (`GUC=sift.prefetch`): index and heap evicted before every query, per-query and per-class medians in `cold.tsv` |
 | `xrun.sh` | non-Postgres engines: same documents, queries, clients and budget, driven by `xbench` |
 | `oracle.sh` | exact match-set / count(*) oracle (tsvector) for and/or/phrase/not |
 | `rank_check.sh` | soft BM25 check: top-10 overlap with pgx-bm25 |
