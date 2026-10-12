@@ -2,9 +2,15 @@
  * sift_segment.h - immutable segments: writer (build, promotion, merge) and
  * reader (docmap, liveness, dictionary, term cursors). DESIGN.md (b).
  *
- * DOCMAP per SB: codec chunk of present docs, u32 rowstart[npages], u16 dl
- * rows indexed by offset (slot off-1). Liveness: one bit per doc in segment
- * rank order (SB order, then key), plus a dirty bit per SB.
+ * Stream layout: DOCMAP, POSTINGS, DICT, DICTIDX, dictionary root array.
+ * DOCMAP: one record per SB with docs, in SB order, each 4-byte aligned:
+ *   u32 ndocs, u32 chunk_len, codec chunk of the present docs
+ *   (sift_chunk_encode), zero pad to 4, then for every present page in page
+ *   order a u16 dl row indexed by offset (slot off-1) up to the page's
+ *   highest present offset (absent slots 0); then the SB directory
+ *   SiftDocSBRef[nsb] and a final u32 nsb. A doc's rank (liveness bit) is
+ *   its position in key order. Liveness: one bit per doc in rank order, plus
+ *   a dirty bit per SB (LIVE pages, see sift_page.h).
  */
 #ifndef SIFT_SEGMENT_H
 #define SIFT_SEGMENT_H
@@ -14,7 +20,18 @@
 #include "sift_dict.h"
 #include "sift_posting.h"
 
-/* Writer: docs first (ascending key), then terms (ascending bytes) */
+typedef struct SiftDocSBRef
+{
+	uint32		sb;
+	uint32		ndocs;
+	uint64		off;			/* record offset in the stream */
+} SiftDocSBRef;
+
+/*
+ * Writer: docs first (strictly ascending key, dl >= 1), then terms
+ * (strictly ascending bytes). avgdl_ref is the segment's own avgdl, so
+ * only k1 and b of ref are used.
+ */
 typedef struct SiftSegmentWriter SiftSegmentWriter;
 
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
@@ -37,10 +54,11 @@ typedef struct SiftSegment
 	SiftStreamReader sr;
 	SiftDict   *dict;
 	MemoryContext mcxt;
-	void	   *docmap;			/* private: loaded SB directory */
-	void	   *live;			/* private: dirty-SB bitmap cache */
+	void	   *docmap;			/* private: SB directory and the loaded SB */
+	void	   *live;			/* private: dirty-SB bitmap */
 } SiftSegment;
 
+/* Reads the header and the dictionary root; ERRCODE_INDEX_CORRUPTED on format errors */
 extern SiftSegment *sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
 extern void sift_seg_close(SiftSegment *seg);	/* releases buffers only */
 
@@ -48,6 +66,7 @@ extern void sift_seg_close(SiftSegment *seg);	/* releases buffers only */
 typedef struct SiftDocChunk
 {
 	uint32		sb;
+	uint32		ndocs;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
 	uint64		rank_base;		/* segment rank of the SB's first doc */
 	bool		dirty;			/* some doc in this SB was vacuumed */
@@ -55,7 +74,14 @@ typedef struct SiftDocChunk
 
 extern bool sift_seg_docs(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
-/* Present offsets of page (sb*256 + page) and their dl row; dl valid until next call */
+/* First SB >= sb with docs; false past the last one */
+extern bool sift_seg_docs_next(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
+
+/*
+ * Present offsets of page (sb*256 + page) and their dl row (dl[off-1]);
+ * present is zero and dl NULL for pages without docs. dl valid until the
+ * next docmap call on seg.
+ */
 extern void sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
 						  uint64 *present, const uint16 **dl);
 
@@ -68,9 +94,51 @@ extern bool sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTer
 /*
  * VACUUM: calls cb for every live doc; clears liveness bits and sets dirty
  * SB bits for deleted ones (generic WAL, <= 4 pages per record). Caller holds
- * the maintenance lock. Returns docs removed; adds to stats.
+ * the maintenance lock. Returns docs removed; adds to stats. (M4)
  */
 extern int64 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
+
+/* ---------- inspection (sift.segments, sift.verify, tests) ---------- */
+
+#define SIFT_DF_CLASSES 9
+
+typedef struct SiftDfClassStats
+{
+	uint64		terms;
+	uint64		postings;
+	uint64		inline_terms;
+	uint64		list_terms;
+	uint64		grouped_terms;
+	uint64		codec_bytes;	/* inline terms: 0 */
+	uint64		sidecar_bytes;	/* group scores, block bounds, tf stream, padding */
+} SiftDfClassStats;
+
+typedef struct SiftSegStats
+{
+	uint64		nterms;
+	uint64		postings;
+	uint64		dict_bytes;		/* DICT + DICTIDX + root */
+	SiftDfClassStats cls[SIFT_DF_CLASSES];
+} SiftSegStats;
+
+/* df class bounds: class i holds lo[i] <= df < lo[i + 1] */
+extern const uint32 sift_df_class_lo[SIFT_DF_CLASSES];
+extern const char *const sift_df_class_name[SIFT_DF_CLASSES];
+
+/* One decoded term: postings in key order with tf and the doc's dl */
+typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
+							   const SiftKey *keys, const uint8 *tf, const uint16 *dl);
+
+/*
+ * Walks every term of the segment (dictionary order) and decodes its
+ * postings. With verify, checks the docmap, liveness, dictionary order and
+ * counts, postings (subset of the docmap, count == df, tf stream lengths,
+ * group and block bounds >= the true maximum computed with ref's k1 and b
+ * and the segment's avgdl_ref) and raises ERRCODE_INDEX_CORRUPTED. visit
+ * may be NULL. Memory: O(segment docs) for the dl map.
+ */
+extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify,
+						  SiftSegStats *st, SiftTermVisit visit, void *arg);
 
 #endif							/* SIFT_SEGMENT_H */
