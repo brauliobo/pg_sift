@@ -1,7 +1,7 @@
 EXTENSION = sift
 MODULE_big = sift
 OBJS = $(patsubst %.c,%.o,$(wildcard src/*.c))
-DATA = sift--1.0.sql
+DATA = $(wildcard sift--*.sql)
 PGFILEDESC = "sift - CTID-bitmap full-text search index"
 
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
