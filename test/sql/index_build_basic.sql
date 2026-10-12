@@ -85,13 +85,14 @@ CREATE INDEX tu_idx ON tu USING sift (body);
 SELECT ndocs, nterms FROM sift.segments('tu_idx');
 SELECT sift.verify('tu_idx');
 
--- REINDEX rebuilds into a new relfilenode; CONCURRENTLY needs VACUUM support
+-- REINDEX rebuilds into a new relfilenode; CONCURRENTLY validates through ambulkdelete
 REINDEX TABLE t2;
 SELECT sift.verify('t2_idx');
 REINDEX INDEX CONCURRENTLY t4_idx;
-DROP INDEX IF EXISTS t4_idx_ccnew;
+SELECT sift.verify('t4_idx', true);
 CREATE INDEX CONCURRENTLY t1_cic ON t1 USING sift (body);
-DROP INDEX IF EXISTS t1_cic;
+SELECT sift.verify('t1_cic', true);
+DROP INDEX t1_cic;
 
 -- Only heap tables, one column, sift indexes for the functions
 CREATE INDEX t2_multi ON t2 USING sift (body, body);

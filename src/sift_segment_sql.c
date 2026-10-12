@@ -5,13 +5,19 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
 #include "funcapi.h"
+#include "common/pg_prng.h"
+#include "lib/bloomfilter.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "sift_analyze.h"
+#include "sift_mutable.h"
 #include "sift_segment.h"
 #include "sift_sql.h"
 
@@ -86,6 +92,18 @@ sift_segments(PG_FUNCTION_ARGS)
 		v[8] = BoolGetDatum((e->flags & SIFT_SEG_DIRTY) != 0);
 		for (int k = 9; k < 15; k++)
 			nulls[k] = true;
+		if (e->kind != SIFT_SEG_IMMUTABLE)
+		{
+			uint64		ndocs,
+						sum_dl,
+						npages;
+
+			sift_mut_summary(index, e, &ndocs, &sum_dl, &npages);
+			v[2] = Int64GetDatum(ndocs);
+			v[3] = Int64GetDatum(sum_dl);
+			v[4] = Float8GetDatum(ndocs ? (double) sum_dl / ndocs : 0);
+			v[5] = Int64GetDatum(npages * BLCKSZ);
+		}
 		if (e->kind == SIFT_SEG_IMMUTABLE)
 		{
 			SiftSegment *seg = sift_seg_open(index, e, cxt);
@@ -195,6 +213,138 @@ verify_disjoint(Relation index, SiftSegment *a, SiftSegment *b)
 	}
 }
 
+/* ---------- heapallindexed ---------- */
+
+typedef struct HeapCheck
+{
+	bloom_filter *bf;
+	SiftAnalyzer *an;
+	Relation	index;
+} HeapCheck;
+
+/* One (term, doc, tf) triple; term hash 0 stands for the doc itself */
+static void
+fp_elem(uint8 *fp, uint64 term_hash, SiftKey key, uint8 tf)
+{
+	memcpy(fp, &term_hash, 8);
+	memcpy(fp + 8, &key, 8);
+	fp[16] = tf;
+}
+
+static void
+fp_add(bloom_filter *bf, uint64 term_hash, SiftKey key, uint8 tf)
+{
+	uint8		fp[17];
+
+	fp_elem(fp, term_hash, key, tf);
+	bloom_add_element(bf, fp, sizeof(fp));
+}
+
+static void
+dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+{
+	for (int i = 0; i < n; i++)
+		fp_add(arg, 0, keys[i], 0);
+}
+
+static bool
+dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys,
+		  const uint8 *tf, const uint16 *dl)
+{
+	uint64		h = sift_term_hash64(term, len);
+
+	for (uint32 i = 0; i < info->df; i++)
+		fp_add(arg, h, keys[i], tf[i]);
+	return true;
+}
+
+static void
+add_mutable(bloom_filter *bf, Relation index, const SiftSegEntry *e)
+{
+	SiftMutReader *r = sift_mut_open(index, e, CurrentMemoryContext, NULL, NULL);
+	SiftMutDoc	d;
+
+	while (sift_mut_next(r, &d))
+	{
+		SiftKey		key = sift_key_from_tid(&d.tid);
+		const char *t = d.terms;
+
+		if (d.deleted)
+			continue;
+		fp_add(bf, 0, key, 0);
+		for (int i = 0; i < d.nterms; t += d.len[i++])
+			fp_add(bf, sift_term_hash64(t, d.len[i]), key, d.tf[i]);
+	}
+	sift_mut_close(r);
+}
+
+static void
+check_missing(HeapCheck *hc, ItemPointer tid, uint64 term_hash, uint8 tf, const char *term, int len)
+{
+	uint8		fp[17];
+
+	fp_elem(fp, term_hash, sift_key_from_tid(tid), tf);
+	if (bloom_lacks_element(hc->bf, fp, sizeof(fp)))
+		corrupt(hc->index, "Heap tuple (%u,%u) has no %s%.*s%s in the index.",
+				ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid),
+				term ? "posting for term \"" : "entry", len, term ? term : "", term ? "\"" : "");
+}
+
+static void
+heap_check_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
+{
+	HeapCheck  *hc = state;
+	text	   *t;
+	SiftTermFreq *terms;
+	uint32		dl;
+	int			n;
+
+	if (isnull[0])
+		return;
+	t = DatumGetTextPP(values[0]);
+	n = sift_analyze_doc(hc->an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
+	check_missing(hc, tid, 0, 0, NULL, 0);
+	for (int i = 0; i < n; i++)
+		check_missing(hc, tid, sift_term_hash64(terms[i].term, terms[i].len), terms[i].tf, terms[i].term, terms[i].len);
+	sift_analyzer_reset(hc->an);
+}
+
+/*
+ * Every tuple the heap shows to a concurrent-build snapshot must have its
+ * doc and each analyzed term (with tf) among the live postings: a Bloom
+ * filter of the postings has no false negatives, so a miss is certain.
+ */
+static void
+verify_heap(Relation index, const SiftDirSnapshot *snap, uint64 nelems, MemoryContext cxt)
+{
+	Oid			heapid = IndexGetRelation(RelationGetRelid(index), false);
+	Relation	heap = table_open(heapid, AccessShareLock);
+	IndexInfo  *info = BuildIndexInfo(index);
+	SiftAnalyzerConfig cfg;
+	HeapCheck	hc = {.index = index};
+	SiftScoreRef ref = meta_ref(snap);
+
+	hc.bf = bloom_create(Max(nelems, 1), maintenance_work_mem, pg_prng_uint64(&pg_global_prng_state));
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], cxt);
+
+			sift_seg_dump(seg, &ref, dump_docs, dump_term, hc.bf);
+			sift_seg_close(seg);
+		}
+		else
+			add_mutable(hc.bf, index, &snap->segs[i]);
+	}
+	sift_analyzer_config_from_index(index, &cfg);
+	hc.an = sift_analyzer_create(&cfg, cxt);
+	info->ii_Concurrent = true;
+	table_index_build_scan(heap, index, info, true, false, heap_check_cb, &hc, NULL);
+	bloom_free(hc.bf);
+	table_close(heap, AccessShareLock);
+}
+
 /*
  * sift.verify(index, heapallindexed): store invariants, metapage totals and
  * options, every immutable segment (sift_seg_walk with verify) and invariant
@@ -212,12 +362,9 @@ sift_verify(PG_FUNCTION_ARGS)
 	SiftAnalyzerConfig cfg;
 	SiftSegment **segs;
 	uint64		ndocs = 0,
-				sum_dl = 0;
+				sum_dl = 0,
+				nelems = 0;
 
-	if (PG_GETARG_BOOL(1))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: sift.verify(heapallindexed => true) is not implemented yet")));
 	index = open_sift(PG_GETARG_OID(0));
 	sift_store_verify(index);
 	sift_dir_read(index, snap);
@@ -237,12 +384,16 @@ sift_verify(PG_FUNCTION_ARGS)
 		SiftSegStats st;
 
 		if (e->kind != SIFT_SEG_IMMUTABLE)
+		{
+			nelems += sift_mut_verify(index, e);
 			continue;
+		}
 		ndocs += e->ndocs;
 		sum_dl += e->sum_dl;
 		segs[i] = sift_seg_open(index, e, cxt);
 		old = MemoryContextSwitchTo(walk);
 		sift_seg_walk(segs[i], &ref, true, &st, NULL, NULL);
+		nelems += st.postings + e->ndocs;
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(walk);
 		for (int j = 0; j < i; j++)
@@ -257,6 +408,8 @@ sift_verify(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (segs[i])
 			sift_seg_close(segs[i]);
+	if (PG_GETARG_BOOL(1))
+		verify_heap(index, snap, nelems, cxt);
 	MemoryContextDelete(cxt);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();

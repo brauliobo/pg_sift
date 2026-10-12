@@ -25,29 +25,6 @@ sift_planner_init(void)
 {
 }
 
-WEAK bool
-sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
-			  Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged,
-			  struct IndexInfo *indexInfo)
-{
-	NOT_IMPLEMENTED("index insert");
-	pg_unreachable();
-}
-
-WEAK IndexBulkDeleteResult *
-sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-				  IndexBulkDeleteCallback callback, void *callback_state)
-{
-	NOT_IMPLEMENTED("index bulk delete");
-	pg_unreachable();
-}
-
-WEAK IndexBulkDeleteResult *
-sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
-{
-	return stats;
-}
-
 /* No simplification and no index condition */
 WEAK Datum
 sift_match_support(PG_FUNCTION_ARGS)
@@ -75,19 +52,4 @@ sift_highlight(PG_FUNCTION_ARGS)
 	NOT_IMPLEMENTED("sift.highlight()");
 	PG_RETURN_NULL();
 }
-
-WEAK Datum
-sift_promote(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.promote()");
-	PG_RETURN_NULL();
-}
-
-WEAK Datum
-sift_merge(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.merge()");
-	PG_RETURN_NULL();
-}
-
 
