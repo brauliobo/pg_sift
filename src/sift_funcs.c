@@ -1,17 +1,21 @@
 /*
- * sift_query_sql.c - SQL entry points of the query module: sift.parse_query
- * and the seq-scan / recheck evaluation behind sift.match and
- * sift.match_idx (DESIGN.md (f) 5, (h)).
+ * sift_funcs.c - SQL entry points for matching: sift.parse_query, the
+ * seq-scan / recheck evaluation behind sift.match and sift.match_idx, and
+ * the @@> selectivity estimator (DESIGN.md (f) 5, 6, (h)).
  */
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "nodes/pathnodes.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/selfuncs.h"
 
 #include "sift.h"
+#include "sift_eval.h"
+#include "sift_planner.h"
 #include "sift_query.h"
 #include "sift_sql.h"
 
@@ -114,4 +118,44 @@ Datum
 sift_match_idx(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BOOL(match(fcinfo, PG_GETARG_OID(2)));
+}
+
+/* Matching documents over the heap rows, by the first full index on expr */
+static double
+clause_selectivity(RelOptInfo *rel, Node *expr, text *query)
+{
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+	{
+		SiftEstimate est;
+		Relation	index;
+
+		if (ii->indpred != NIL || !sift_index_matches_key(ii, expr))
+			continue;
+		index = index_open(ii->indexoid, AccessShareLock);
+		sift_eval_estimate(index, &query, 1, &est);
+		index_close(index, AccessShareLock);
+		return est.docs / Max(rel->tuples > 0 ? rel->tuples : est.ndocs, 1);
+	}
+	return DEFAULT_MATCH_SEL;
+}
+
+/* RESTRICT of @@>: the term statistics of the index on the left operand */
+Datum
+sift_matchsel(PG_FUNCTION_ARGS)
+{
+	PlannerInfo *root = (PlannerInfo *) PG_GETARG_POINTER(0);
+	List	   *args = (List *) PG_GETARG_POINTER(2);
+	int			varRelid = PG_GETARG_INT32(3);
+	VariableStatData vardata;
+	Node	   *other;
+	bool		varonleft;
+	double		sel = DEFAULT_MATCH_SEL;
+
+	if (get_restriction_variable(root, args, varRelid, &vardata, &other, &varonleft))
+	{
+		if (varonleft && vardata.rel && IsA(other, Const) && !((Const *) other)->constisnull)
+			sel = clause_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue));
+		ReleaseVariableStats(vardata);
+	}
+	PG_RETURN_FLOAT8(Min(Max(sel, 0.0), 1.0));
 }

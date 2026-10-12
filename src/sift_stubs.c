@@ -25,8 +25,6 @@ sift_planner_init(void)
 {
 }
 
-
-
 WEAK bool
 sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 			  Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged,
@@ -50,56 +48,11 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	return stats;
 }
 
-/* Prices the index out of every plan until the planner module lands */
-WEAK void
-sift_amcostestimate(struct PlannerInfo *root, struct IndexPath *path, double loop_count,
-					Cost *indexStartupCost, Cost *indexTotalCost,
-					Selectivity *indexSelectivity, double *indexCorrelation,
-					double *indexPages)
-{
-	*indexStartupCost = 1.0e10;
-	*indexTotalCost = 1.0e10;
-	*indexSelectivity = 1.0;
-	*indexCorrelation = 0.0;
-	*indexPages = 1.0;
-}
-
-WEAK IndexScanDesc
-sift_ambeginscan(Relation index, int nkeys, int norderbys)
-{
-	NOT_IMPLEMENTED("index scan");
-	pg_unreachable();
-}
-
-WEAK void
-sift_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
-{
-	NOT_IMPLEMENTED("index rescan");
-}
-
-WEAK int64
-sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
-{
-	NOT_IMPLEMENTED("bitmap index scan");
-	pg_unreachable();
-}
-
-WEAK void
-sift_amendscan(IndexScanDesc scan)
-{
-}
-
 /* No simplification and no index condition */
 WEAK Datum
 sift_match_support(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_POINTER(NULL);
-}
-
-WEAK Datum
-sift_matchsel(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_FLOAT8(DEFAULT_MATCH_SEL);
 }
 
 WEAK Datum
