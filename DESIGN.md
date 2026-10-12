@@ -350,7 +350,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - Fuzzy uses bit-parallel Myers Levenshtein (≤ 64 bytes) over the first-character range.
 - **Scoring.** Sum over matching positive leaves, multiplied by boost. NOT subtrees score 0. An expanded leaf scores the *max* over its expansions, with each expansion's own idf (dismax), so a document matching many variants does not get an inflated score. A phrase scores the sum of its distinct terms.
 - **Errors.** `ERRCODE_SYNTAX_ERROR` with a 1-based character position. `sift.parse_query(text)` returns the canonical deparse for tests and debugging.
-- **Limits.** 256 leaves, nesting depth 32, phrase length 32 tokens, boost in [0, 10000].
+- **Limits.** 256 leaves, nesting depth 32, phrase length 128 tokens (CJK text analyses to a token per character), boost in [0, 10000].
 
 ---
 
