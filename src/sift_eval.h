@@ -99,9 +99,11 @@ extern void sift_iter_end(SiftMatchIter *it);
  * any buffer lock held: it returns whether the tuple is visible and passes
  * the caller's residual quals, and with want_doc (the plan has a phrase) also
  * the indexed text in *doc, on which the ranker runs the phrase recheck and
- * the exact scoring. k <= 0 means unbounded. sift_rank_next returns results
- * in descending score, ties by ascending ctid, and continues past k by
- * searching again with a larger k; scores stay those of the bind.
+ * the exact scoring. *tid goes in as the index entry and comes out as the
+ * visible tuple's ctid (they differ along a HOT chain): ties break on that
+ * ctid, the one the user sees. k <= 0 means unbounded. sift_rank_next returns
+ * the index entries in descending score, ties by ascending ctid, and continues
+ * past k by searching again with a larger k; scores stay those of the bind.
  */
 typedef bool (*SiftVerifyFn) (void *arg, ItemPointer tid, bool want_doc, text **doc);
 

@@ -115,10 +115,9 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 bool
 sift_vis_fetch(SiftVis *v, ItemPointer tid, TupleTableSlot *slot)
 {
-	ItemPointerData t = *tid;
 	bool		call_again = false,
 				all_dead;
 
 	v->heap_checks++;
-	return table_index_fetch_tuple(v->fetch, &t, v->snapshot, slot, &call_again, &all_dead);
+	return table_index_fetch_tuple(v->fetch, tid, v->snapshot, slot, &call_again, &all_dead);
 }

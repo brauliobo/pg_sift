@@ -38,7 +38,7 @@ extern void sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask);
  */
 extern int	sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask);
 
-/* Fetches the visible version of tid into slot; false if none */
+/* Fetches the visible version of tid into slot (tid becomes that version's, it differs along a HOT chain); false if none */
 extern bool sift_vis_fetch(SiftVis *v, ItemPointer tid, TupleTableSlot *slot);
 
 #endif							/* SIFT_VISIBILITY_H */

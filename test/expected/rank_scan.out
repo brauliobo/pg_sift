@@ -196,6 +196,33 @@ SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;
+-- ties break on the ctid of the visible tuple, not of the index entry (HOT updates move it along the page)
+CREATE TABLE h (id int, body text, pad int) WITH (fillfactor = 50, autovacuum_enabled = off);
+INSERT INTO h VALUES (1, 'tie', 0), (2, 'tie', 0), (3, 'tie', 0);
+CREATE INDEX h_idx ON h USING sift (body);
+UPDATE h SET pad = 1 WHERE id IN (1, 2);
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 3;
+ id | ctid  
+----+-------
+  3 | (0,3)
+  1 | (0,4)
+  2 | (0,5)
+(3 rows)
+
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 2;
+ id | ctid  
+----+-------
+  3 | (0,3)
+  1 | (0,4)
+(2 rows)
+
+SELECT id, ctid FROM h WHERE body @@> 'tie' ORDER BY sift.score(ctid) DESC LIMIT 1;
+ id | ctid  
+----+-------
+  3 | (0,3)
+(1 row)
+
+DROP TABLE h;
 -- parameters and rescans
 PREPARE top(text, int) AS SELECT id, sift.score(ctid) FROM r WHERE body @@> $1 ORDER BY sift.score(ctid) DESC LIMIT $2;
 EXECUTE top('lazy', 2);
