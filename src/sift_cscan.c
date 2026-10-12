@@ -20,6 +20,7 @@
 #include "executor/executor.h"
 #include "nodes/extensible.h"
 #include "port/pg_bitutils.h"
+#include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -54,6 +55,10 @@ typedef struct SiftTotals
 	int64		heap_pages;
 } SiftTotals;
 
+/* Heap pages of an unordered scan read ahead, and the gap from the previous page that is worth a read of its own */
+#define PREFETCH_PAGES	16
+#define PREFETCH_GAP	8
+
 typedef struct SiftScanState
 {
 	CustomScanState css;
@@ -84,6 +89,11 @@ typedef struct SiftScanState
 	bool		vis_open;
 	float4		max_score;
 	SiftPageMatch pm;
+	SiftPageMatch ahead[PREFETCH_PAGES];	/* matches read from the iterator, whose heap pages are being read */
+	int			ahead_pos;
+	int			ahead_n;
+	BlockNumber ahead_blk;				/* last page read from the iterator */
+	bool		ahead_done;
 	int			wd;
 	uint64		mask;
 	uint32		vm_sb;
@@ -226,6 +236,9 @@ close_scan(SiftScanState *ss)
 	ss->vis_open = false;
 	MemoryContextReset(ss->cxt);
 	ss->started = ss->done = ss->empty = false;
+	ss->ahead_pos = ss->ahead_n = 0;
+	ss->ahead_blk = 0;
+	ss->ahead_done = false;
 	ss->wd = SIFT_OFFMASK_WORDS;
 	ss->mask = 0;
 	ss->vm_sb = UINT32_MAX;
@@ -287,11 +300,38 @@ start_scan(SiftScanState *ss)
 
 /* ---------- row sources ---------- */
 
+/* Next heap-order match, from the pages read ahead when the scan returns tuples */
+static bool
+next_match(SiftScanState *ss)
+{
+	if (!ss->need_heap || !sift_prefetch)
+		return sift_iter_next(ss->it, &ss->pm);
+	while (ss->ahead_n < PREFETCH_PAGES && !ss->ahead_done)
+	{
+		SiftPageMatch *pm = &ss->ahead[(ss->ahead_pos + ss->ahead_n) % PREFETCH_PAGES];
+
+		if (!(ss->ahead_done = !sift_iter_next(ss->it, pm)))
+		{
+			/* the kernel reads ahead by itself while the matching pages are close */
+			if (pm->blk - ss->ahead_blk > PREFETCH_GAP)
+				PrefetchBuffer(ss->heap, MAIN_FORKNUM, pm->blk);
+			ss->ahead_blk = pm->blk;
+			ss->ahead_n++;
+		}
+	}
+	if (ss->ahead_n == 0)
+		return false;
+	ss->pm = ss->ahead[ss->ahead_pos];
+	ss->ahead_pos = (ss->ahead_pos + 1) % PREFETCH_PAGES;
+	ss->ahead_n--;
+	return true;
+}
+
 /* Next heap-order page; its candidates are reduced to the visible ones when no tuple is needed */
 static bool
 load_page(SiftScanState *ss)
 {
-	if (!sift_iter_next(ss->it, &ss->pm))
+	if (!next_match(ss))
 		return false;
 	ss->wd = 0;
 	ss->mask = 0;

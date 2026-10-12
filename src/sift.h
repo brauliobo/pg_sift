@@ -100,6 +100,7 @@ extern PGDLLIMPORT int sift_max_expansions;
 extern PGDLLIMPORT bool sift_enable_scan;
 extern PGDLLIMPORT bool sift_enable_count;
 extern PGDLLIMPORT bool sift_async_maintenance;
+extern PGDLLIMPORT bool sift_prefetch;
 
 /*
  * Catalog OIDs of extension objects, cached per backend and reset by syscache

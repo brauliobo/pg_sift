@@ -49,6 +49,7 @@ PG_FUNCTION_INFO_V1(sift_verify);
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
 bool		sift_enable_count = true;
+bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 
 static relopt_kind sift_relopt_kind;
@@ -69,6 +70,10 @@ define_gucs(void)
 	DefineCustomBoolVariable("sift.enable_count",
 							 "Enables count(*) pushdown into the sift index.",
 							 NULL, &sift_enable_count, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.prefetch",
+							 "Reads ahead the heap pages an unordered scan is about to visit.",
+							 NULL, &sift_prefetch, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.async_maintenance",
 							 "Promotes and merges segments in a dynamic background worker.",
