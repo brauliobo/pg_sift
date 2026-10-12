@@ -8,7 +8,7 @@
 #
 # Each round checks every query in every stage (parse, seqscan, bitmap, count,
 # ranked) plus verify/stats/tokenize, then mutates the corpus (deletes, updates,
-# inserts) with VACUUM interleaved; the last round ends with REINDEX so ranked
+# inserts) with VACUUM, promotion and merge interleaved; the last round ends with REINDEX so ranked
 # scores are compared bit for bit. Stages whose sift code has not landed report
 # "skip". The first failure per stage and round (at most --minimize per round)
 # is minimized (query, then corpus) into $SIFT_TMP/difftest/*.sql, replayable
@@ -93,6 +93,9 @@ run_engine() {
 			log "round $round: $(sql -c "SELECT sift_diff.mutate($(fseed $((SEED * 7 + round))), 0.05)")"
 			clean=false
 			(( round % 2 == 0 )) && sql -c "VACUUM diff_docs"
+			# odd rounds are checked with the mutations in mutable segments, even ones after promotion (and merge)
+			[[ -n $idx ]] && (( round % 2 == 0 )) && sql -c "SELECT sift.promote('$idx')"
+			[[ -n $idx ]] && (( round % 4 == 0 )) && sql -c "SELECT sift.merge('$idx', true)"
 			if (( round == ROUNDS )); then
 				sql -c "VACUUM diff_docs"
 				[[ -n $idx ]] && sql -c "REINDEX INDEX diff_idx"
