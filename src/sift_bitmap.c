@@ -601,23 +601,30 @@ void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf) { op_init(c,
 void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf) { op_init(c, or_seek, kid, k, buf); }
 void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf) { op_init(c, andnot_seek, kid, 2, buf); }
 
+static uint64_t and_count2(sift_cur **kid)
+{
+	uint64_t m[4], total = 0;
+	for (uint32_t t = 0; and_align(kid, 2, &t, m); t++) total += sift_k->and_count(&kid[0]->g, &kid[1]->g);
+	return total;
+}
+
+/* exact posting count of an unpositioned cursor: O(1) for sources */
+static uint64_t cur_total(sift_cur *c)
+{
+	if (c->state == 0 && c->seek == gr_seek) return c->gr.base[c->gr.ng];
+	if (c->state == 0 && c->seek == ls_seek) return c->ls.n;
+	return UINT64_MAX;
+}
+
 uint64_t sift_count(sift_cur *c)
 {
 	uint64_t total = 0;
-	if (c->seek == and_seek && c->op.k == 2) {
-		uint64_t m[4];
-		for (uint32_t t = 0; and_align(c->op.kid, 2, &t, m); t++) total += sift_k->and_count(&c->op.kid[0]->g, &c->op.kid[1]->g);
-		return total;
-	}
-	if (c->seek == or_seek && c->op.k == 2) {
-		sift_cur *a = c->op.kid[0], *b = c->op.kid[1];
-		for (uint32_t t = 0;;) {
-			const sift_grp *ga = sift_seek(a, t), *gb = sift_seek(b, t);
-			if (!ga && !gb) return total;
-			if (ga && gb && ga->gid == gb->gid) total += sift_grp_count(ga) + sift_grp_count(gb) - sift_k->and_count(ga, gb), t = ga->gid + 1;
-			else if (ga && (!gb || ga->gid < gb->gid)) total += sift_grp_count(ga), t = ga->gid + 1;
-			else total += sift_grp_count(gb), t = gb->gid + 1;
-		}
+	if ((c->seek == and_seek || c->seek == or_seek || c->seek == andnot_seek) && c->op.k == 2) {
+		sift_cur **kid = c->op.kid;
+		uint64_t na = cur_total(kid[0]), nb = cur_total(kid[1]);
+		if (c->seek == and_seek) return and_count2(kid);
+		/* |a| + |b| - |a & b| and |a| - |a & b| from stored counts */
+		if (na != UINT64_MAX && nb != UINT64_MAX) return (c->seek == or_seek ? na + nb : na) - and_count2(kid);
 	}
 	for (const sift_grp *g; (g = sift_next(c));) total += sift_grp_count(g);
 	return total;
