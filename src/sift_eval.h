@@ -9,8 +9,7 @@
  *
  * Index semantics are relaxed (sift_query.h): a positive phrase is the AND
  * of its terms, a phrase under NOT excludes nothing, and the page match
- * says whether the candidates need the recheck. Landed in M2b: state, bind,
- * the heap-order iterator and the estimate; the ranker and the count are M3.
+ * says whether the candidates need the recheck.
  */
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
@@ -41,7 +40,7 @@ extern void sift_state_close(SiftIndexState *st);	/* releases buffers only */
 /* Parse + analyze q with the index analyzer; allocates in CurrentMemoryContext */
 extern SiftQuery *sift_state_query(SiftIndexState *st, const char *q, int len);
 
-#define SIFT_BIND_SCORE		0x01	/* load scoring data (tf, dl, bounds); M3 */
+#define SIFT_BIND_SCORE		0x01	/* weigh the leaves for the ranker (idf from all segments) */
 #define SIFT_BIND_CAPPED	0x02	/* stop expanding at the limit instead of raising (estimates) */
 
 typedef struct SiftPlan SiftPlan;
@@ -71,18 +70,21 @@ typedef struct SiftPlanStats
 
 extern const SiftPlanStats *sift_plan_stats(const SiftPlan *plan);
 
+/* Phrase recheck of a heap-order candidate's text; needed when the plan has a phrase */
+extern bool sift_plan_recheck(SiftPlan *plan, text *doc);
+extern bool sift_plan_recheck_needed(const SiftPlan *plan);
+
 /*
  * Unordered matches in heap order, one page per call: offmask holds matched
- * live offsets (bit off-1); recheck when the query has a phrase; scores
- * stay NULL (M3). Pages of different segments sharing a block are merged
- * (disjoint by invariant I1). Holds no buffer between calls.
+ * live offsets (bit off-1); recheck when the query has a phrase. Pages of
+ * different segments sharing a block are merged (disjoint by invariant I1).
+ * Holds no buffer between calls.
  */
 typedef struct SiftPageMatch
 {
 	BlockNumber blk;
 	uint64		offmask[SIFT_OFFMASK_WORDS];
 	bool		recheck;
-	float4	   *scores;
 } SiftPageMatch;
 
 typedef struct SiftMatchIter SiftMatchIter;
@@ -92,25 +94,28 @@ extern bool sift_iter_next(SiftMatchIter *it, SiftPageMatch *out);
 extern void sift_iter_end(SiftMatchIter *it);
 
 /*
- * Ranked top-k with verified threshold. verify is called for every candidate
- * that would enter the top-k, without any buffer lock held; it checks
- * visibility, residual quals and (if recheck) the phrase. k <= 0 means
- * unbounded. sift_rank_next returns results in descending score, ties by
- * ascending ctid, and may continue past k. (M3)
+ * Ranked top-k with verified threshold (plan bound with SIFT_BIND_SCORE).
+ * verify is called for every candidate that would enter the top-k, without
+ * any buffer lock held: it returns whether the tuple is visible and passes
+ * the caller's residual quals, and with want_doc (the plan has a phrase) also
+ * the indexed text in *doc, on which the ranker runs the phrase recheck and
+ * the exact scoring. k <= 0 means unbounded. sift_rank_next returns results
+ * in descending score, ties by ascending ctid, and continues past k by
+ * searching again with a larger k; scores stay those of the bind.
  */
-typedef bool (*SiftVerifyFn) (void *arg, ItemPointer tid, bool recheck);
+typedef bool (*SiftVerifyFn) (void *arg, ItemPointer tid, bool want_doc, text **doc);
 
 typedef struct SiftRanker SiftRanker;
 
 extern SiftRanker *sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg);
 extern bool sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score);
-extern float4 sift_rank_max_score(SiftRanker *r);
+extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs the search */
 extern void sift_rank_end(SiftRanker *r);
 
 /*
- * count(*) of visible matches: VM all-visible pages are counted from bitmaps
- * (chunk counts on clean SBs), others through sift_vis_filter_page; phrase
- * candidates go through verify. (M3)
+ * count(*) of visible matches: VM all-visible pages are counted from bitmaps,
+ * others through sift_vis_filter_page; with a phrase every candidate goes
+ * through verify (visibility and text) and the recheck.
  */
 extern int64 sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg);
 

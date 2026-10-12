@@ -330,6 +330,19 @@ sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info, MemoryCo
 	return post_open(sr, info, mcxt, true);
 }
 
+SiftPostingCursor *
+sift_post_clone(const SiftPostingCursor *src, MemoryContext mcxt)
+{
+	SiftPostingCursor *c = MemoryContextAlloc(mcxt, sizeof(SiftPostingCursor));
+
+	*c = *src;
+	c->mcxt = mcxt;
+	c->bounds = NULL;
+	c->curbuf = MemoryContextAllocAligned(mcxt, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
+	sift_post_rewind(c);
+	return c;
+}
+
 sift_cur *
 sift_post_cursor(SiftPostingCursor *c)
 {

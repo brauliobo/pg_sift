@@ -102,4 +102,20 @@ extern bool sift_query_match_doc(const SiftQuery *q, SiftAnalyzer *a,
 extern bool sift_query_recheck_doc(const SiftQuery *q, SiftAnalyzer *a,
 								   const char *text, int len);
 
+/*
+ * A document analyzed once for recheck and exact scoring: its tokens grouped
+ * by distinct term. Allocated in CurrentMemoryContext; the terms stay valid
+ * until the analyzer runs again.
+ */
+typedef struct SiftDoc SiftDoc;
+
+extern SiftDoc *sift_doc_open(SiftAnalyzer *a, const char *text, int len);
+extern int	sift_doc_ntokens(const SiftDoc *d);
+extern int	sift_doc_nterms(const SiftDoc *d);
+extern const char *sift_doc_term(const SiftDoc *d, int i, int *len);
+extern int	sift_doc_tf(const SiftDoc *d, int i);	/* occurrences of distinct term i */
+extern int	sift_doc_find(const SiftDoc *d, const char *term, int len);	/* -1 when absent */
+extern bool sift_doc_match(const SiftDoc *d, const SiftQNode *n);	/* exact evaluation of one node */
+extern bool sift_doc_recheck(const SiftQuery *q, const SiftDoc *d);
+
 #endif							/* SIFT_QUERY_H */
