@@ -23,9 +23,11 @@
 --   avgdl = (float4) ((double) sum_dl / N)
 --   k1, b = (float4) reloption doubles
 --   w     = (boost * idf) * (k1 + 1)
---   knorm = k1 * ((1 - b) + (b * dl) / avgdl)
+--   knorm = (k1 * (1 - b)) + ((k1 * b) / avgdl) * dl       [sift_kern_bm25_init, knorm]
 --   s     = w * (tf / (tf + knorm))       tf <= 255, dl <= 65535
---   score = ((0 + s_1) + s_2) + ...  over scoring units in query pre-order: a
+--   score = ((0 + s_1) + s_2) + ...  over scoring units in the pre-order of the
+--           normalized query (sift.parse_query: duplicate leaves merged, positives
+--           first), the order sift sums in: a
 --           term is one unit, a phrase one unit per distinct term (first
 --           occurrence order), an expansion leaf one unit = max over its
 --           expansions. A unit counts when the document matches the query and
@@ -636,7 +638,7 @@ CREATE OR REPLACE FUNCTION sift_ref.bm25(tf int, dl int, df bigint, n bigint, av
 RETURNS real LANGUAGE sql STABLE AS $$
 	SELECT CASE WHEN sift_ref.mutant('float8_score')
 		THEN (w::float8 * t::float8 / (t::float8 + k1::float8 * (1 - b::float8 + b::float8 * dl / avgdl::float8)))::real
-		ELSE w * (t / (t + k1 * ((1::real - b) + b * least(dl, 65535)::real / avgdl))) END
+		ELSE w * (t / (t + (k1 * (1::real - b) + ((k1 * b) / avgdl) * least(dl, 65535)::real))) END
 	FROM (SELECT (CASE WHEN sift_ref.mutant('boost_ignored') THEN 1::real ELSE boost END
 			* sift_ref.idf(df + sift_ref.mutant('idf_df_plus1')::int, n)) * (k1 + 1::real) AS w,
 		least(tf, CASE WHEN sift_ref.mutant('tf_cap15') THEN 15 ELSE 255 END)::real AS t) x
@@ -659,6 +661,17 @@ BEGIN
 		PERFORM sift_ref.limit_error(1, format('%s expansions exceed sift.max_expansions', cardinality(terms)));
 	END IF;
 	RETURN CASE WHEN sift_ref.mutant('prefix_trunc') THEN terms[1:4] ELSE terms END;
+END $$;
+
+-- The normalized form of q: scores are defined on it (float4 sums depend on the order)
+CREATE OR REPLACE FUNCTION sift_ref.canonical(q text, idx regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text := q;
+BEGIN
+	IF sift_ref.tokenizer() = 'sift' THEN
+		EXECUTE 'SELECT sift.parse_query($1, $2)' INTO r USING q, idx;
+	END IF;
+	RETURN r;
 END $$;
 
 -- Analyzed AST -> SQL yielding the matching tids of the loaded corpus
@@ -737,7 +750,7 @@ DECLARE
 	u text[];
 BEGIN
 	SELECT s.*, sift_ref.avgdl(s.sum_dl, nullif(s.n, 0)) AS avgdl INTO st FROM pg_temp.sift_ref_stat s;
-	a := sift_ref.analyze_query(q, st.idx);
+	a := sift_ref.analyze_query(sift_ref.canonical(q, st.idx), st.idx);
 	u := sift_ref.units(a, format('%s, %s::real, %s::real, %s::real', st.n, st.avgdl, st.k1, st.b));
 	RETURN QUERY EXECUTE format('WITH r AS MATERIALIZED (SELECT tid FROM (%s) m WHERE NOT sift_ref.dropped(tid)),
 		u AS (%s)

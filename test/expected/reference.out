@@ -23,9 +23,11 @@
 --   avgdl = (float4) ((double) sum_dl / N)
 --   k1, b = (float4) reloption doubles
 --   w     = (boost * idf) * (k1 + 1)
---   knorm = k1 * ((1 - b) + (b * dl) / avgdl)
+--   knorm = (k1 * (1 - b)) + ((k1 * b) / avgdl) * dl       [sift_kern_bm25_init, knorm]
 --   s     = w * (tf / (tf + knorm))       tf <= 255, dl <= 65535
---   score = ((0 + s_1) + s_2) + ...  over scoring units in query pre-order: a
+--   score = ((0 + s_1) + s_2) + ...  over scoring units in the pre-order of the
+--           normalized query (sift.parse_query: duplicate leaves merged, positives
+--           first), the order sift sums in: a
 --           term is one unit, a phrase one unit per distinct term (first
 --           occurrence order), an expansion leaf one unit = max over its
 --           expansions. A unit counts when the document matches the query and

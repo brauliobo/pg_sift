@@ -1,5 +1,7 @@
 -- Bitmap scans over the index equal the document-level evaluation
 CREATE EXTENSION sift;
+-- the custom scan has its own tests (rank_scan); here the index answers through bitmaps
+SET sift.enable_scan = off;
 
 CREATE TABLE d (id int PRIMARY KEY, body text);
 INSERT INTO d VALUES

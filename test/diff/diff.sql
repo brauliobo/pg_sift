@@ -327,6 +327,26 @@ $$;
 CREATE OR REPLACE FUNCTION sift_diff.hex(s real[]) RETURNS text[] LANGUAGE sql IMMUTABLE
 AS $$ SELECT array(SELECT encode(float4send(x), 'hex') FROM unnest(s) WITH ORDINALITY u(x, n) ORDER BY n) $$;
 
+-- Top-k with a filter on another column: the reference top-k restricted to the same rows (the
+-- scores stay those of the whole index)
+CREATE OR REPLACE FUNCTION sift_diff.filtered_diff(q text, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	tbl text := sift_diff.setting('tbl', 'diff_docs');
+	ref record;
+	got record;
+BEGIN
+	EXECUTE format('SELECT array_agg(r.ctid ORDER BY r.rank) AS ctids, array_agg(r.score ORDER BY r.rank) AS metrics_a
+		FROM (SELECT t.ctid, t.score, t.rank FROM sift_ref.topk(%L, 100000000) t JOIN %s d ON d.ctid = t.ctid
+			WHERE d.id %% 3 = 0 ORDER BY t.rank LIMIT %s) r', q, tbl, k) INTO ref;
+	EXECUTE format('SELECT array_agg(c ORDER BY n) AS ctids, array_agg(s ORDER BY n) AS metrics_a FROM (SELECT row_number() OVER () AS n, c, s
+		FROM (SELECT ctid AS c, sift.score(ctid) AS s FROM %s WHERE body @@> %L AND id %% 3 = 0
+			ORDER BY sift.score(ctid) DESC LIMIT %s) x) y', tbl, q, k) INTO got;
+	IF ref.ctids IS DISTINCT FROM got.ctids OR sift_diff.hex(ref.metrics_a) IS DISTINCT FROM sift_diff.hex(got.metrics_a) THEN
+		RETURN format('filtered top-%s: reference %s, engine %s', k, ref::text, got::text);
+	END IF;
+	RETURN NULL;
+END $$;
+
 -- Clean state: row-for-row, bit-equal scores. Otherwise statistics may count
 -- unvacuumed versions, so only membership, order and length are checked.
 CREATE OR REPLACE FUNCTION sift_diff.ranked_diff(q text, k int, clean bool, ref_set tid[]) RETURNS text
@@ -347,7 +367,7 @@ BEGIN
 					got.ctids[i], got.metrics_a[i], sift_diff.hex(got.metrics_a[i:i])::text);
 			END IF;
 		END LOOP;
-		RETURN NULL;
+		RETURN CASE WHEN sift_diff.setting('engine', 'sift') = 'sift' THEN sift_diff.filtered_diff(q, k) END;
 	ELSIF coalesce(cardinality(got.ctids), 0) <> least(k, cardinality(ref_set)) THEN
 		RETURN format('%s rows, expected %s', coalesce(cardinality(got.ctids), 0), least(k, cardinality(ref_set)));
 	ELSIF NOT ref_set @> coalesce(got.ctids, '{}') THEN
