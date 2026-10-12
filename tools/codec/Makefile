@@ -30,6 +30,9 @@ endif
 $(OUT)/bench: bench.c data.h baselines.h $(OBJ) $(ROAR_OBJ) $(HDR)
 	$(CC) $(CFLAGS) $(ROAR_CFLAGS) -o $@ bench.c $(OBJ) $(ROAR_OBJ) -lm
 
+$(OUT)/fuzz: fuzz.c $(OBJ) $(HDR)
+	$(CC) $(CFLAGS) -o $@ fuzz.c $(OBJ) -lm
+
 $(OUT)/corpus: corpus.c
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -39,6 +42,10 @@ $(OUT)/stats: stats.c data.h
 test: $(OUT)/test
 	$(OUT)/test
 
+# corrupted-blob fuzzer; run with CFLAGS='-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all'
+fuzz: $(OUT)/fuzz
+	$(OUT)/fuzz $(FUZZARGS)
+
 # docs.tsv: ctid + title + comments text of the source documents table (read-only COPY)
 data:
 	@mkdir -p $(OUT)
@@ -46,6 +53,6 @@ data:
 	$(OUT)/corpus $(OUT)/docs.tsv $(OUT)
 
 clean:
-	rm -rf $(OUT)/obj $(OUT)/test $(OUT)/bench $(OUT)/corpus $(OUT)/stats
+	rm -rf $(OUT)/obj $(OUT)/test $(OUT)/fuzz $(OUT)/bench $(OUT)/corpus $(OUT)/stats
 
-.PHONY: all test data clean
+.PHONY: all test fuzz data clean
