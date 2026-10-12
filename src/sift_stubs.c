@@ -25,18 +25,7 @@ sift_planner_init(void)
 {
 }
 
-WEAK IndexBuildResult *
-sift_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo)
-{
-	NOT_IMPLEMENTED("index build");
-	pg_unreachable();
-}
 
-WEAK void
-sift_ambuildempty(Relation index)
-{
-	NOT_IMPLEMENTED("empty index build");
-}
 
 WEAK bool
 sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
@@ -148,16 +137,4 @@ sift_merge(PG_FUNCTION_ARGS)
 	PG_RETURN_NULL();
 }
 
-WEAK Datum
-sift_segments(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.segments()");
-	PG_RETURN_NULL();
-}
 
-WEAK Datum
-sift_verify(PG_FUNCTION_ARGS)
-{
-	NOT_IMPLEMENTED("sift.verify()");
-	PG_RETURN_NULL();
-}

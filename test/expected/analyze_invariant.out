@@ -75,7 +75,6 @@ CREATE INDEX ON docs USING sift (body) WITH (stemmer = 'klingon');
 ERROR:  unknown sift stemmer "klingon"
 HINT:  Valid stemmers are "en" and "none".
 CREATE INDEX ON docs USING sift (body) WITH (stemmer = 'en');
-ERROR:  sift: index build is not implemented yet
 DROP TABLE docs;
 DROP FUNCTION bad_tokens;
 DROP EXTENSION sift;

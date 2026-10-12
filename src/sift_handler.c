@@ -25,6 +25,7 @@
 #include "sift_bitmap.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
+#include "sift_posting.h"
 #include "sift_sql.h"
 
 PG_MODULE_MAGIC_EXT(.name = "sift", .version = "1.0");
@@ -42,6 +43,7 @@ PG_FUNCTION_INFO_V1(sift_parse_query);
 PG_FUNCTION_INFO_V1(sift_promote);
 PG_FUNCTION_INFO_V1(sift_merge);
 PG_FUNCTION_INFO_V1(sift_segments);
+PG_FUNCTION_INFO_V1(sift_segment_postings);
 PG_FUNCTION_INFO_V1(sift_verify);
 
 int			sift_max_expansions = 512;
@@ -72,6 +74,12 @@ define_gucs(void)
 							 "Promotes and merges segments in a dynamic background worker.",
 							 NULL, &sift_async_maintenance, true,
 							 PGC_SUSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.grouped_min_df",
+							"Testing: df from which a term's postings are GROUPED rather than LIST.",
+							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+#endif
 	MarkGUCPrefixReserved("sift");
 }
 
