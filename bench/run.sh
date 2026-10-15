@@ -3,7 +3,7 @@
 #   ENGINE: gin rum pg_textsearch bm25 sift (bench/engines/*.sh)
 #   WORKLOAD: and or phrase mixed count filter join update (default: all), or `quick`: the
 #   standard suite (sql/quick.sql), each class run for a fixed REPEAT transactions per client.
-# Env: DURATION (s, default 30) CLIENTS (8) THREADS (4) WARMUP (s, 5) UPDATE_RATE (1000)
+# Env: BUILD_ONLY=1 builds and prewarms the engine database and keeps it (bench/ab.sh). DURATION (s, default 30) CLIENTS (8) THREADS (4) WARMUP (s, 5) UPDATE_RATE (1000)
 #      WRITERS (4) REPEAT (50) TIMEOUT (statement_timeout, 120s) KEEP=1 keeps the engine database.
 . "$(dirname "$0")/lib.sh"
 
@@ -125,5 +125,6 @@ log "$ENGINE workloads: $(q -c 'SELECT bench_build_stmts()' | tr '\n' ' ')"
 [[ " $WORKLOADS " == *" quick "* ]] &&
   WORKLOADS=${WORKLOADS/quick/$(psql -X -v ON_ERROR_STOP=1 -qAt -f "$BENCH/sql/quick.sql" -c "SELECT 'q_' || quick_build_stmts()" | tr '\n' ' ')}
 prewarm
+[[ ${BUILD_ONLY:-} ]] && exit 0
 for wl in $WORKLOADS; do measure "$wl"; done
 [[ ${KEEP:-} ]] || PGDATABASE=postgres q -c "DROP DATABASE $EDB WITH (FORCE)"
