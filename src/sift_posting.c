@@ -403,6 +403,27 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 	return c->bounds;
 }
 
+/* Escape nibbles (15) among the first n nibbles, 16 per step */
+static uint32
+escapes(const uint8 *nib, uint32 n)
+{
+	uint32		esc = 0,
+				i = 0;
+
+	for (; i + 16 <= n; i += 16)
+	{
+		uint64		w;
+
+		memcpy(&w, nib + i / 2, 8);
+		w &= w >> 1;
+		w &= w >> 2;
+		esc += sift_pc64(w & 0x1111111111111111ULL);
+	}
+	for (; i < n; i++)
+		esc += ((nib[i >> 1] >> ((i & 1) * 4)) & 15) == 15;
+	return esc;
+}
+
 /* Stream position of rank r, counted from the start (LIST random access) */
 static SiftTfPos
 list_tf_pos(const SiftPostingCursor *c, uint32 r)
@@ -412,8 +433,7 @@ list_tf_pos(const SiftPostingCursor *c, uint32 r)
 	pos.nib = sift_popcount(c->l1, r / 8);
 	if (r % 8)
 		pos.nib += sift_pc64(c->l1[r / 8] & ((1u << (r % 8)) - 1));
-	for (uint32 i = 0; i < pos.nib; i++)
-		pos.esc += ((c->nib[i >> 1] >> ((i & 1) * 4)) & 15) == 15;
+	pos.esc = escapes(c->nib, pos.nib);
 	return pos;
 }
 
