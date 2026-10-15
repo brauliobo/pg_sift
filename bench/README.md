@@ -46,6 +46,7 @@ psql -h /tmp/sift-bench/run -p 56020 bench   # docs, props, queries, params
 ```
 
 Rebuild from scratch: `bench/corpus.sh export && TIER=S bench/corpus.sh load` (`L_MULT`, `NSUB` tunable).
+A smaller L is `TIER=L L_MULT=150 bench/corpus.sh load` on a 6,749-document source (1,012,350 documents); the README's 1M-document numbers use it, run as `TIER=L DURATION=10 KEEP=1 bench/run.sh sift and or phrase mixed count filter` against `paradedb` in the same session.
 
 `bench` holds `docs(id, body, prop_id, score, country, created, likes, url)`, `props(id, name,
 region)` for the join workload, `params` (tier constants) and `queries`: 1000 substrings of 2-15
