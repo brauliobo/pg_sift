@@ -457,8 +457,10 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	scan_cost(root, input_rel, &c, &sc);
 	cp = make_path(rte->relid, output_rel, &c, SIFT_MODE_COUNT, 0, 0, &sift_count_path_methods);
 	cp->path.rows = 1;
+	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
 	cp->path.startup_cost = (sc.idx.known ? sc.idx.cost : 0) +
-		sc.docs * (1 - input_rel->allvisfrac) * (sc.page + cpu_tuple_cost) + sc.docs * cpu_operator_cost * POSTING_CPU_FRACTION;
+		(1 - input_rel->allvisfrac) * (Min(sc.docs, Max(input_rel->pages, 1)) * sc.page + sc.docs * cpu_tuple_cost) +
+		sc.docs * cpu_operator_cost * POSTING_CPU_FRACTION;
 	cp->path.total_cost = cp->path.startup_cost + cpu_tuple_cost;
 	add_path(output_rel, &cp->path);
 }
