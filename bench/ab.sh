@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Interleaved A/B of sift, sift with phrase_index = pairs, and ParadeDB on one corpus.
 #
-#   bench/ab.sh quick          Q tier (~200k documents), 3 s per cell, 3-6 rounds, about 3 minutes
-#   bench/ab.sh full           R tier (~1M documents), 8 s per cell, 4-6 rounds, about 12 minutes
+#   bench/ab.sh quick          Q tier (25k articles), 3 s per cell, 3-6 rounds
+#   bench/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
 #   bench/ab.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
 #
 # Every engine database is built once (BUILD_ONLY in run.sh), then each round runs every class on
@@ -10,15 +10,15 @@
 # Rounds stop once every cell's spread is under TOL (default 15%) after the minimum, or at MAXR.
 # Only compact tables are kept: $RESULTS/<mode>-<time>/{cells,builds,summary}.tsv; the scratch
 # cluster is removed on exit (KEEP=1 keeps it). The corpus dump stays in $CACHE.
-# Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold queries per class) R_MULT/Q_MULT.
-# Needs the scripts/pgtest.sh install output ($SIFT_ROOT) and pg_search for pg_config; the source
-# documents come from $DATA/documents.tsv (bench/corpus.sh csv FILE, or export).
+# Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold queries per class).
+# Needs the scripts/pgtest.sh install output ($SIFT_ROOT) and pg_search for pg_config; the
+# articles come from $DATA/articles.tsv (bench/corpus.sh fetch).
 set -euo pipefail
 mode=${1:-quick}; cold=
 [[ $mode == cold ]] && { cold=1; mode=${2:-full}; }
 case $mode in
   quick) export TIER=Q; SECS=${SECS:-3} WARM=${WARM:-1} MINR=${MINR:-3} MAXR=${MAXR:-6} ;;
-  full)  export TIER=R; SECS=${SECS:-8} WARM=${WARM:-2} MINR=${MINR:-4} MAXR=${MAXR:-6} ;;
+  full)  export TIER=F; SECS=${SECS:-8} WARM=${WARM:-2} MINR=${MINR:-4} MAXR=${MAXR:-6} ;;
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 . "$(dirname "$0")/lib.sh"
@@ -35,7 +35,7 @@ trap cleanup EXIT
 
 "$BENCH/cluster.sh" init >/dev/null
 "$BENCH/cluster.sh" start >/dev/null
-[[ -f $CACHE/sift-$TIER.dump ]] || { [[ -f $DATA/documents.tsv ]] || { echo "no $DATA/documents.tsv: bench/corpus.sh csv FILE" >&2; exit 1; }; "$BENCH/corpus.sh" load >/dev/null; }
+[[ -f $CACHE/sift-$TIER.dump ]] || "$BENCH/corpus.sh" load >/dev/null
 [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$BENCH/corpus.sh" restore >/dev/null
 for e in $ENGINES; do BUILD_ONLY=1 "$BENCH/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
 cp "$OUT/builds.tsv" "$DEST/builds.tsv"

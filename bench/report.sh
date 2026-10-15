@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: [RESULTS=dir] bench/report.sh [TIER...] | quick [DIR (default bench/out/S)]
+# Usage: [RESULTS=dir] bench/report.sh [TIER...] | quick [DIR (default bench/out/Q)]
 #   markdown tables from bench/out/<tier>/{builds,results,walltime}.tsv
 # The last row per (engine, workload) wins, so a rerun replaces earlier numbers.
 . "$(dirname "$0")/lib.sh"
@@ -100,4 +100,4 @@ quick() {
 }
 
 if [[ ${1:-} == quick ]]; then quick "${2:-$BENCH/out/S}"; exit; fi
-for t in ${*:-S M L}; do tables "$t"; done
+for t in ${*:-Q F}; do tables "$t"; done

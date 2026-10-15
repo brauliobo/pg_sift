@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=S|M|L bench/xrun.sh ENGINE [WORKLOAD...]
+# Usage: TIER=Q|F bench/xrun.sh ENGINE [WORKLOAD...]
 #   ENGINE: elasticsearch tantivy meilisearch typesense (bench/engines/*.sh with EXTERNAL set)
 #   WORKLOAD: and or phrase mixed count filter join update rank (default: all; join is Postgres-only,
 #   rank = top-10 overlap with the pgx-bm25 reference from rank_check.sh, untimed), or `quick`: the
@@ -26,7 +26,7 @@ render() { { echo "$RENDER"; echo "$1"; } | psql -X -v ON_ERROR_STOP=1 -qAtF $'\
 
 export_docs() {
   [[ -s $X/docs.ndjson ]] && return
-  q -v FETCH_COUNT=20000 -c "SELECT json_build_object('id', id::text, 'body', body, 'created', created - date '1970-01-01', 'prop_id', prop_id)
+  q -v FETCH_COUNT=20000 -c "SELECT json_build_object('id', id::text, 'body', body, 'created', created - date '1970-01-01', 'category_id', category_id)
                              FROM docs ORDER BY id" >"$X/docs.ndjson.tmp"
   mv "$X/docs.ndjson.tmp" "$X/docs.ndjson"
 }
@@ -53,7 +53,7 @@ writes_file() {
                 FROM m, generate_series(1, $(( UPDATE_RATE * (DURATION + WARMUP) * 11 / 10 ))) g)
           SELECT pg_temp.x_write(CASE WHEN r < 70 THEN 'upd' WHEN r < 85 THEN 'ins' ELSE 'del' END,
                    jsonb_build_object('id', (CASE WHEN r BETWEEN 70 AND 84 THEN n + g ELSE dst END)::text, 'body', d.body,
-                                      'created', d.created - date '1970-01-01', 'prop_id', d.prop_id))
+                                      'created', d.created - date '1970-01-01', 'category_id', d.category_id))
           FROM g JOIN docs d ON d.id = g.src ORDER BY g.g" >"$RUN/writes.tsv"
   ! grep -q '^$' "$RUN/writes.tsv"
 }

@@ -21,7 +21,7 @@ ts() { curl -fsS -H "X-TYPESENSE-API-KEY: $TS_KEY" -X "$1" "$URL$2" --data-binar
 
 x_build() {
   ts POST /collections '{"name": "docs", "fields": [{"name": "body", "type": "string"},
-    {"name": "created", "type": "int32", "optional": true}, {"name": "prop_id", "type": "int32", "optional": true}]}' >/dev/null
+    {"name": "created", "type": "int32", "optional": true}, {"name": "category_id", "type": "int32", "optional": true}]}' >/dev/null
   split -l 100000 "$1" "$TS_DIR/p."
   for p in "$TS_DIR"/p.*; do
     if ts POST '/collections/docs/documents/import?action=create&batch_size=10000' "@$p" | grep -m3 '"success":false' >&2; then return 1; fi

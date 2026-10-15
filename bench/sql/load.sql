@@ -1,37 +1,22 @@
 -- Builds one tier from the src staging table.
--- psql vars: limit (doc count or ALL), mult (L-tier multiplier, 1 = real docs only), nsub (substrings).
+-- psql vars: limit (doc count or ALL), nsub (substrings).
 \set ON_ERROR_STOP 1
 
 -- Deterministic sample, renumbered 1..N in original insertion order.
 INSERT INTO docs
-SELECT row_number() OVER (ORDER BY foreign_id), body, prop_id, score, country, created, a_count, url
+SELECT row_number() OVER (ORDER BY foreign_id), body, category_id, created, a_count, url
 FROM (SELECT * FROM src ORDER BY hashint8(foreign_id) LIMIT :limit) s
 ORDER BY foreign_id;
 DROP TABLE src;
 
--- Synthetic copies (L tier): head of doc a + tail of doc b, split at a space near the middle.
--- Keeps the corpus-wide term distribution (Zipf) and real local n-grams; vocabulary does not grow.
-INSERT INTO docs
-SELECT k * n + a.id,
-       CASE WHEN pa > 0 THEN left(a.body, length(a.body) / 2 + pa - 1) ELSE a.body END
-       || CASE WHEN pb > 0 THEN ' ' || substr(b.body, length(b.body) / 2 + pb + 1) ELSE '' END,
-       a.prop_id, b.score, a.country, b.created, a.a_count, a.url
-FROM (SELECT max(id) AS n FROM docs) m
-CROSS JOIN generate_series(1, :mult - 1) k
-JOIN docs a ON true
-JOIN docs b ON b.id = 1 + abs(hashint8(a.id * 1000 + k)) % m.n
-CROSS JOIN LATERAL (SELECT strpos(substr(a.body, length(a.body) / 2 + 1), ' ') AS pa,
-                           strpos(substr(b.body, length(b.body) / 2 + 1), ' ') AS pb) s
-ORDER BY 1;
-
 SELECT setval('docs_id_seq', max(id)) FROM docs \g /dev/null
 CREATE INDEX docs_created ON docs (created);
-CREATE INDEX docs_prop_id ON docs (prop_id);
+CREATE INDEX docs_category_id ON docs (category_id);
 
-INSERT INTO props
-SELECT DISTINCT prop_id, 'attribute ' || prop_id, abs(hashint4(prop_id)) % 10 FROM docs WHERE prop_id IS NOT NULL;
+INSERT INTO categories
+SELECT DISTINCT category_id, 'category ' || category_id, abs(hashint4(category_id)) % 10 FROM docs WHERE category_id IS NOT NULL;
 
--- Selective scalar filter for the mixed-WHERE workload: newest ~2% of documents.
+-- Selective scalar filter for the mixed-WHERE workload: newest ~2% of the articles.
 INSERT INTO params SELECT 'recent_cutoff', percentile_disc(0.98) WITHIN GROUP (ORDER BY created) FROM docs;
 
 -- Query trace: random runs of 2..15 consecutive plain word tokens from random documents.
@@ -65,5 +50,5 @@ subs AS (
 SELECT (sub - 1) * 3 + m.n, sub, m.mode, terms, doc_id
 FROM subs CROSS JOIN (VALUES (1, 'and'), (2, 'or'), (3, 'phrase')) m(n, mode);
 
-VACUUM (ANALYZE) docs, props, queries, params;
+VACUUM (ANALYZE) docs, categories, queries, params;
 CHECKPOINT;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Benchmark on a remote host with a user-local PostgreSQL build, extensions, Rust toolchain and
 # engines under ~/$RDIR (no sudo, nothing system-wide, never rsync --delete).
-#   bench/remote.sh sync          copy the repo (without .git and ignored files), S/M dumps, pgx-bm25 source
+#   bench/remote.sh sync          copy the repo (without .git and ignored files), Q/F dumps, pgx-bm25 source
 #   bench/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
 #                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench
 #   bench/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/sift-root (SIFT_ROOT)
@@ -12,16 +12,17 @@
 #   bench/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
 #   bench/remote.sh clean [all]   stop clusters, drop builds and bench data (keeps the dumps); `all` removes ~/$RDIR
 # Example: bench/remote.sh quick gin tantivy; bench/remote.sh run 'bench/quick.sh --full gin'
-# Env: RHOST (bench-host), RDIR (Projects/sift), BM25_SRC (pgx-bm25 source tarball).
+# Env: RHOST (required, an ssh host), RDIR (Projects/sift), BM25_SRC (pgx-bm25 source tarball, for sync/setup),
+#      RUST_TARGET_CPU (e.g. znver2, for the xbench build).
 set -euo pipefail
 BENCH=$(cd "$(dirname "$0")" && pwd)
 REPO=$(dirname "$BENCH")
-RHOST=${RHOST:-bench-host} RDIR=${RDIR:-Projects/sift}
-BM25_SRC=${BM25_SRC:-$HOME/pkg/pgx-bm25/pgx-bm25-1.0.0.tar.gz}
+RHOST=${RHOST:?set RHOST to the ssh host} RDIR=${RDIR:-Projects/sift}
+BM25_SRC=${BM25_SRC:-}
 CACHE=${SIFT_BENCH_ROOT:-/tmp/sift-bench}/cache
 
 ENV="D=\$HOME/$RDIR; export D PATH=\$D/pg18/bin:\$D/.cargo/bin:\$PATH RUSTUP_HOME=\$D/.rustup CARGO_HOME=\$D/.cargo \
-SIFT_BENCH_ROOT=\$D/bench-root SIFT_ROOT=\$D/sift-root RUSTFLAGS='-C target-cpu=znver2'; cd \$D"
+SIFT_BENCH_ROOT=\$D/bench-root SIFT_ROOT=\$D/sift-root RUSTFLAGS='${RUST_TARGET_CPU:+-C target-cpu=$RUST_TARGET_CPU}'; cd \$D"
 rsh() { ssh "$RHOST" "$ENV; $1"; }
 
 setup_script() {
@@ -52,8 +53,8 @@ case ${1:-} in
   sync)
     rsh "mkdir -p \$D/bench-root/cache \$D/bench-root/build"
     rsync -a --exclude .git --exclude 'bench/out*/' --filter=':- .gitignore' "$REPO/" "$RHOST:$RDIR/"
-    rsync -a "$CACHE/sift-S.dump" "$CACHE/sift-M.dump" "$RHOST:$RDIR/bench-root/cache/"
-    rsync -a "$BM25_SRC" "$RHOST:$RDIR/bench-root/build/" ;;
+    rsync -a "$CACHE/sift-Q.dump" "$CACHE/sift-F.dump" "$RHOST:$RDIR/bench-root/cache/"
+    [[ -z $BM25_SRC ]] || rsync -a "$BM25_SRC" "$RHOST:$RDIR/bench-root/build/" ;;
   setup) rsh "bash -s" < <(setup_script) ;;
   run)   rsh "mkdir -p \$SIFT_BENCH_ROOT/logs; setsid nohup bash -c $(printf %q "$2") >\$SIFT_BENCH_ROOT/logs/run-\$(date +%s).log 2>&1 </dev/null &" ;;
   sh)    rsh "$2" ;;
@@ -62,7 +63,7 @@ case ${1:-} in
          rsh "bench/fetch.sh xbench && uptime && bench/quick.sh ${*:2}"; "$0" pull ;;
   pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
   clean)
-    rsh "for t in S M L; do TIER=\$t bench/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
+    rsh "for t in Q F; do TIER=\$t bench/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
     [[ ${2:-} == all ]] && rsh "cd; rm -rf \$D" ;;
   *) sed -n '2,12p' "$0" >&2; exit 1 ;;
 esac

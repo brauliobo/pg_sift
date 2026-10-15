@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=S|M|L bench/cluster.sh init|start|stop|status|destroy
+# Usage: TIER=Q|F bench/cluster.sh init|start|stop|status|destroy
 # Settings live in $PGDATA/bench.conf, rewritten on every start.
 # sift is loaded from SIFT_ROOT (scripts/pgtest.sh install output) when present.
 . "$(dirname "$0")/lib.sh"
@@ -66,5 +66,5 @@ case ${1:-} in
   stop)    pg_ctl -D "$PGDATA" -m fast stop >/dev/null && log stopped ;;
   status)  pg_ctl -D "$PGDATA" status ;;
   destroy) pg_ctl -D "$PGDATA" -m fast stop >/dev/null 2>&1 || true; rm -rf "$PGDATA" ;;
-  *) echo "usage: TIER=S|M|L $0 init|start|stop|status|destroy" >&2; exit 1 ;;
+  *) echo "usage: TIER=Q|F $0 init|start|stop|status|destroy" >&2; exit 1 ;;
 esac

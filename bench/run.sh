@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=S|M|L bench/run.sh ENGINE [WORKLOAD...]
+# Usage: TIER=Q|F bench/run.sh ENGINE [WORKLOAD...]
 #   ENGINE: gin rum pg_textsearch bm25 sift (bench/engines/*.sh)
 #   WORKLOAD: and or phrase mixed count filter join update (default: all), or `quick`: the
 #   standard suite (sql/quick.sql), each class run for a fixed REPEAT transactions per client.
@@ -56,8 +56,8 @@ writer_script() {
 \\if :r <= 70
 UPDATE docs d SET body = s.body, a_count = d.a_count + 1 FROM docs s WHERE s.id = :src AND d.id = :dst;
 \\elif :r <= 85
-INSERT INTO docs (id, body, prop_id, score, country, created, a_count, url)
-  SELECT nextval('docs_id_seq'), body, prop_id, score, country, current_date, 0, url FROM docs WHERE id = :src;
+INSERT INTO docs (id, body, category_id, created, a_count, url)
+  SELECT nextval('docs_id_seq'), body, category_id, current_date, 0, url FROM docs WHERE id = :src;
 \\else
 DELETE FROM docs WHERE id = :dst;
 \\endif
