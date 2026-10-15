@@ -2,8 +2,7 @@
 # makes sift loadable in every node through TEMP_CONFIG).
 #
 # Every scenario runs for a GIN control index first, so the crash, replica and
-# WAL machinery is proven on this host even before the sift features land;
-# sift cases are skipped while the feature they need is "not implemented".
+# WAL machinery is proven on this host independently of sift.
 package SiftTest;
 
 use strict;
@@ -13,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node features ams load_corpus agree crash_during);
+our @EXPORT = qw(sift_node install_sift ams load_corpus agree crash_during);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -26,38 +25,21 @@ sub sift_node
 	return $node;
 }
 
-# Installs sift, amcheck and the SQL reference in database postgres, then
-# reports which sift features are implemented
-sub features
+# Installs sift, amcheck and the SQL reference in database postgres
+sub install_sift
 {
 	my ($node) = @_;
 	$node->safe_psql('postgres', 'CREATE EXTENSION sift; CREATE EXTENSION amcheck;');
 	$node->safe_psql('postgres', '',
 		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/reference.sql" ]);
-	my %probe = (
-		build => "CREATE TABLE sift_probe (body text); INSERT INTO sift_probe VALUES ('probe');"
-		  . " CREATE INDEX sift_probe_idx ON sift_probe USING sift (body)",
-		promote => "SELECT sift.promote('sift_probe_idx')",
-		merge => "SELECT sift.merge('sift_probe_idx')",
-		verify => "SELECT sift.verify('sift_probe_idx', true)");
-	my %has;
-	for my $f (qw(build promote merge verify))
-	{
-		my ($ret, $out, $err) = $node->psql('postgres', $probe{$f});
-		$has{$f} = $err !~ /not implemented/ && ($f eq 'build' || $has{build});
-	}
-	$node->safe_psql('postgres', 'DROP TABLE IF EXISTS sift_probe');
-	note('sift features: ' . join(' ', map { "$_=" . ($has{$_} ? 'yes' : 'no') } sort keys %has));
-	return \%has;
 }
 
-# Index flavours: DDL, maintenance step, verification. needs: features required.
+# Index flavours: DDL, maintenance step, verification
 sub ams
 {
 	return (
 		{
 			name => 'gin',
-			needs => [],
 			index => sub { "CREATE INDEX $_[1] ON $_[0] USING gin (to_tsvector('simple', body)) WITH (fastupdate = on)" },
 			maint => sub { "SELECT gin_clean_pending_list('$_[0]')" },
 			verify => sub { "SELECT gin_index_check('$_[0]')" },
@@ -65,7 +47,6 @@ sub ams
 		},
 		{
 			name => 'sift',
-			needs => [qw(build verify)],
 			index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (mutable_limit = 64)" },
 			maint => sub { "SELECT sift.promote('$_[0]')" },
 			verify => sub { "SELECT sift.verify('$_[0]', true)" },
