@@ -46,7 +46,7 @@ suite isa-baseline "$S/isa_check.sh"
 suite installcheck "$S/pgtest.sh" regress
 if [[ $MODE == full ]]; then
 	suite difftest "$S/difftest.sh" --docs 5000 --queries 150 --rounds 4
-	suite difftest-mutants "$S/difftest.sh" --engine mutants --docs 1500 --queries 40 --rounds 2 --minimize 1
+	suite difftest-mutants "$S/difftest.sh" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1
 	suite isolation-emulated "$S/isolation.sh" --emulate
 	suite isolation "$S/isolation.sh"
 	suite tap "$S/tap.sh"

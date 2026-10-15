@@ -109,7 +109,7 @@ BEGIN
 	IF doc IS NULL THEN
 		RETURN NULL;
 	END IF;
-	IF sift_ref.tokenizer() = 'sift' THEN
+	IF sift_ref.tokenizer() = 'sift' AND NOT (query AND sift_ref.mutant('nofold_query')) THEN
 		SELECT coalesce(array_agg(token ORDER BY pos), '{}') INTO toks FROM sift.tokenize(doc, idx);
 		RETURN toks;
 	END IF;
