@@ -1,7 +1,7 @@
 //! Load generator and Tantivy driver for the non-Postgres engines.
 //!
 //!   xbench http BASE QUERIES [opts]      queries: `qid \t path \t json`, POSTed to BASE+path
-//!   xbench tantivy-index DIR DOCS        docs: NDJSON {id, body, created, prop_id}
+//!   xbench tantivy-index DIR DOCS        docs: NDJSON {id, body, created, category_id}
 //!   xbench tantivy DIR QUERIES [opts]    queries: `qid \t kind \t mode \t cutoff \t terms...`
 //!
 //! Options: --clients N --warmup S|N --duration S | --repeat N (requests per client) --log FILE --took PTR (engine-reported ms)
@@ -190,15 +190,15 @@ fn http(pos: &[String], o: &Opts) -> Res<()> {
     })
 }
 
-struct Tv { body: Field, id: Field, created: Field, prop_id: Field }
+struct Tv { body: Field, id: Field, created: Field, category_id: Field }
 
 fn schema() -> (Schema, Tv) {
     let mut b = Schema::builder();
     let id = b.add_u64_field("id", INDEXED | STORED | FAST);
     let body = b.add_text_field("body", TEXT);
     let created = b.add_i64_field("created", INDEXED | FAST);
-    let prop_id = b.add_i64_field("prop_id", INDEXED | FAST);
-    (b.build(), Tv { body, id, created, prop_id })
+    let category_id = b.add_i64_field("category_id", INDEXED | FAST);
+    (b.build(), Tv { body, id, created, category_id })
 }
 
 fn tv_doc(f: &Tv, v: &Value) -> TantivyDocument {
@@ -206,7 +206,7 @@ fn tv_doc(f: &Tv, v: &Value) -> TantivyDocument {
     d.add_u64(f.id, v["id"].as_str().unwrap().parse().unwrap());
     d.add_text(f.body, v["body"].as_str().unwrap());
     if let Some(c) = v["created"].as_i64() { d.add_i64(f.created, c); }
-    if let Some(p) = v["prop_id"].as_i64() { d.add_i64(f.prop_id, p); }
+    if let Some(p) = v["category_id"].as_i64() { d.add_i64(f.category_id, p); }
     d
 }
 

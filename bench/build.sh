@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: [COPIES=n] TIER=S|M bench/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
+# Usage: [COPIES=n] TIER=Q|F bench/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
 # Timed sift CREATE INDEX per parallel worker count, on a clone of the restored `bench` database
 # (bench/cluster.sh start; bench/corpus.sh restore). The table is vacuumed and prewarmed before each
 # build, which holds the perf lock. Appends tier, workers, seconds, index MB, segments, load average to
@@ -13,7 +13,7 @@ PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $EDB WITH (FORCE)" -c "CREATE 
 export PGDATABASE=$EDB
 COPIES=${COPIES:-1}
 q -c "$SETUP"
-(( COPIES == 1 )) || q -c "INSERT INTO docs SELECT d.id + g * (SELECT max(id) FROM docs), d.body, d.prop_id, d.rating, d.country,
+(( COPIES == 1 )) || q -c "INSERT INTO docs SELECT d.id + g * (SELECT max(id) FROM docs), d.body, d.category_id,
                              d.created, d.likes, d.url FROM docs d, generate_series(1, $((COPIES - 1))) g"
 q -c "VACUUM (ANALYZE) docs"
 

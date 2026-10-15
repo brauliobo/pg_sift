@@ -32,7 +32,7 @@ x_build() {
   es PUT /docs '{"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1",
                               "index.translog.durability": "async"},
                  "mappings": {"dynamic": false, "_source": {"enabled": false},
-                              "properties": {"body": {"type": "text"}, "created": {"type": "integer"}, "prop_id": {"type": "integer"}}}}'
+                              "properties": {"body": {"type": "text"}, "created": {"type": "integer"}, "category_id": {"type": "integer"}}}}'
   local tmp=$ES_DIR/parts; mkdir -p "$tmp"
   split -n l/4 "$1" "$tmp/p."
   for p in "$tmp"/p.*; do bulk_part "$p" & done; wait

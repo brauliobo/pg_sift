@@ -4,10 +4,10 @@ export LC_ALL=C
 
 BENCH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=${SIFT_BENCH_ROOT:-/tmp/sift-bench}
-TIER=${TIER:-S}
-declare -A TIER_PORT=([S]=56010 [M]=56020 [L]=56030 [Q]=56040 [R]=56050)
-declare -A TIER_SHBUF=([S]=2GB [M]=8GB [L]=16GB [Q]=2GB [R]=6GB)
-declare -A TIER_MWM=([S]=1GB [M]=4GB [L]=8GB [Q]=1GB [R]=2GB)
+TIER=${TIER:-Q}
+declare -A TIER_PORT=([Q]=56040 [F]=56050)
+declare -A TIER_SHBUF=([Q]=1GB [F]=4GB)
+declare -A TIER_MWM=([Q]=512MB [F]=2GB)
 PGDATA=${PGDATA:-$ROOT/pg/$TIER}
 SOCK=$ROOT/run
 CACHE=$ROOT/cache

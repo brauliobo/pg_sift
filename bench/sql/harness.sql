@@ -22,7 +22,7 @@ DECLARE
   ranked boolean := kind IN ('top10', 'filter', 'join');
   extra text := CASE kind
     WHEN 'filter' THEN format('docs.created >= %L', (SELECT v FROM params WHERE k = 'recent_cutoff'))
-    WHEN 'join'   THEN 'props.region = 3'
+    WHEN 'join'   THEN 'categories.region = 3'
   END;
   conds text := concat_ws(' AND ', pred, extra);
 BEGIN
@@ -33,7 +33,7 @@ BEGIN
     WHEN 'count' THEN 'SELECT count(*) FROM docs WHERE ' || pred
     WHEN 'match' THEN 'SELECT docs.id FROM docs WHERE ' || pred
     ELSE 'SELECT docs.id FROM docs'
-      || CASE kind WHEN 'join' THEN ' JOIN props ON props.id = docs.prop_id' ELSE '' END
+      || CASE kind WHEN 'join' THEN ' JOIN categories ON categories.id = docs.category_id' ELSE '' END
       || CASE WHEN conds <> '' THEN ' WHERE ' || conds ELSE '' END
       || ' ORDER BY ' || rank || ' LIMIT 10'
   END;

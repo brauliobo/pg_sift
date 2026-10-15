@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=S|M|L bench/oracle.sh ENGINE [NSUB]
+# Usage: TIER=Q|F bench/oracle.sh ENGINE [NSUB]
 # Checks the first NSUB (default 200) trace substrings as and/or/phrase/not queries: the engine's
 # match set and count(*) must equal the oracle's (tsvector, case folding, stemming off).
 # Env: ORACLE_ACCENTS=fold|keep (default fold; use keep for gin/rum/bm25, which index raw 'simple')
