@@ -249,15 +249,22 @@ term_leaf(SiftPlan *p, const SiftQNode *n, const char *text, int len, Place at, 
 	return en_leaf(p, t, at, phrase);
 }
 
-/* A prefix of at most prefix_index characters is one term of the index: SEP prefix */
+/*
+ * A word of a field, or a prefix of at most prefix_index characters, is one
+ * term of the index: [field byte] [SEP] text
+ */
 static EvalNode *
-gram_leaf(SiftPlan *p, const SiftQNode *n, Place at)
+indexed_leaf(SiftPlan *p, const SiftQNode *n, Place at)
 {
-	char	   *term = MemoryContextAlloc(p->mcxt, n->textlen + 1);
+	char	   *term = MemoryContextAlloc(p->mcxt, n->textlen + 2);
+	int			len = 0;
 
-	term[0] = SIFT_PREFIX_SEP;
-	memcpy(term + 1, n->text, n->textlen);
-	return term_leaf(p, n, term, n->textlen + 1, at, NULL);
+	if (n->field)
+		term[len++] = SIFT_FIELD_BYTE(n->field);
+	if (n->kind == SQ_PREFIX)
+		term[len++] = SIFT_PREFIX_SEP;
+	memcpy(term + len, n->text, n->textlen);
+	return term_leaf(p, n, term, len + n->textlen, at, NULL);
 }
 
 /*
@@ -330,9 +337,10 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 					kids[nk++] = neg ? en_not(p, e) : e;
 			}
 			return nk == 0 ? &nothing : en_make(p, n->kind == SQ_AND ? EN_AND : EN_OR, nk, kids);
+		case SQ_TERM:
 		case SQ_PREFIX:
-			if (n->gram)
-				return gram_leaf(p, n, at);
+			if (n->kind == SQ_TERM ? n->field : n->gram)
+				return indexed_leaf(p, n, at);
 			return en_leaf(p, n, at, NULL);
 		default:
 			return en_leaf(p, n, at, NULL);

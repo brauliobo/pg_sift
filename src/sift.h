@@ -81,6 +81,7 @@ typedef struct SiftOptions
 	int			build_segments; /* 0 = one per build participant */
 	int			phrase_index;	/* SIFT_PHRASE_* */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
+	int			fields;			/* comma separated field names, "" = none */
 } SiftOptions;
 
 /* phrase_index: pairs also indexes every adjacent token pair as the term SEP a SEP b, sorted before every word (docs/DESIGN.md (g)) */
@@ -98,6 +99,21 @@ typedef struct SiftOptions
 #define SIFT_MAX_PREFIX_INDEX	15
 #define SIFT_SYNTHETIC_TERM(t)	((unsigned char) *(t) < ' ')
 
+/*
+ * fields = 'a,b' names the first sections of the indexed text, which is split at SIFT_FIELD_SEP
+ * (a text without one is a single section).
+ * Every section is searched by unqualified queries (they see the plain concatenation); the words of
+ * a named section are also terms of their own, the byte SIFT_FIELD_BASE + k - 1 then the word
+ * (k = 1.., prefix terms: that byte, SIFT_PREFIX_SEP, the prefix), which a query reaches as a:word.
+ */
+#define SIFT_FIELD_SEP		'\x1D'
+#define SIFT_FIELD_BASE		0x10
+#define SIFT_MAX_FIELDS		14
+#define SIFT_FIELD_BYTE(k)	((char) (SIFT_FIELD_BASE + (k) - 1))
+#define SIFT_FIELDS_BYTES	128
+/* is the byte c the first of a term of one of the first n fields */
+#define SIFT_FIELD_TERM(c, n)	((unsigned char) (c) >= SIFT_FIELD_BASE && (unsigned char) (c) < SIFT_FIELD_BASE + (n))
+
 #define SIFT_DEFAULT_K1				1.2
 #define SIFT_DEFAULT_B				0.75
 #define SIFT_DEFAULT_MUTABLE_LIMIT	4096
@@ -105,6 +121,7 @@ typedef struct SiftOptions
 /* Returns the index options with defaults filled in; never NULL */
 extern const SiftOptions *sift_index_options(Relation index);
 extern const char *sift_options_stemmer(const SiftOptions *opts);
+extern const char *sift_options_fields(const SiftOptions *opts);
 
 /* GUCs (defined in sift_handler.c, except sift.simd in sift_cpu.c) */
 extern PGDLLIMPORT int sift_max_expansions;

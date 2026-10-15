@@ -66,7 +66,9 @@ typedef struct SiftAnalyzerConfig
 	uint8		stemmer;		/* SiftStemmer */
 	bool		pairs;			/* the bag also holds every adjacent token pair, SEP a SEP b */
 	uint8		prefix_len;		/* the bag also holds the first 1..prefix_len characters of every word, SEP prefix */
-	uint32		hash;			/* of the version and the fields above (pairs, prefix_len only when set) */
+	uint8		nfields;		/* the bag also holds the words of the first nfields sections apart (SIFT_FIELD_BYTE) */
+	char		field_names[SIFT_FIELDS_BYTES];	/* their names, comma separated; not part of the hash */
+	uint32		hash;			/* of the version and the fields above (pairs, prefix_len, nfields only when set) */
 } SiftAnalyzerConfig;
 
 /* A token in a document token stream; str points into analyzer memory */
@@ -104,10 +106,17 @@ extern void sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bo
 									 SiftStemmer stemmer);
 
 /* Turns the pair terms and the prefix terms on or off (set clears them) and refreshes the hash */
-extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len);
+extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields);
 
 /* Longest indexed word prefix of the analyzer's index, 0 when none */
 extern int	sift_analyzer_prefix_len(const SiftAnalyzer *a);
+
+/* The field called name (len bytes, case insensitive): 1.., 0 when the index has none of that name; the number of fields */
+extern int	sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len);
+extern int	sift_analyzer_nfields(const SiftAnalyzer *a);
+
+/* Reloption validator: lowercase identifiers separated by commas, at most SIFT_MAX_FIELDS */
+extern void sift_analyze_validate_fields(const char *names);
 
 /* Default config: folding on, no stemming */
 extern void sift_analyzer_config_default(SiftAnalyzerConfig *cfg);

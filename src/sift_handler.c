@@ -119,6 +119,9 @@ define_reloptions(void)
 					   "Phrase index: none, or pairs to index adjacent token pairs (exact two-word phrases, REINDEX to apply)",
 					   phrase_index_names, SIFT_PHRASE_NONE,
 					   "Valid values are \"none\" and \"pairs\".", AccessExclusiveLock);
+	add_string_reloption(sift_relopt_kind, "fields",
+						 "Names of the first sections of the indexed text (split at chr(29)) that queries can search apart, as name:word",
+						 "", sift_analyze_validate_fields, AccessExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "prefix_index",
 					  "Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply)",
 					  0, 0, SIFT_MAX_PREFIX_INDEX, AccessExclusiveLock);
@@ -199,6 +202,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"phrase_index", RELOPT_TYPE_ENUM, offsetof(SiftOptions, phrase_index)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
+		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -223,6 +227,12 @@ const char *
 sift_options_stemmer(const SiftOptions *opts)
 {
 	return opts->stemmer ? (const char *) opts + opts->stemmer : "";
+}
+
+const char *
+sift_options_fields(const SiftOptions *opts)
+{
+	return opts->fields ? (const char *) opts + opts->fields : "";
 }
 
 static bool

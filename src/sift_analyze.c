@@ -10,6 +10,8 @@
 #include <emmintrin.h>
 #endif
 
+#include <ctype.h>
+
 #include "mb/pg_wchar.h"
 #include "port/pg_bitutils.h"
 #include "port/pg_bswap.h"
@@ -169,19 +171,63 @@ sift_term_hash(const char *term, int len)
 /* Configuration */
 
 void
-sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len)
+sift_analyze_validate_fields(const char *names)
 {
-	uint8		key[8] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
+	int			n = 0;
+
+	for (const char *s = names; *s; n++)
+	{
+		const char *e = strchr(s, ',') ? strchr(s, ',') : s + strlen(s);
+
+		if (e == s || !(islower((unsigned char) *s) || *s == '_'))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid sift field names \"%s\"", names),
+					 errhint("Use lowercase identifiers separated by commas.")));
+		for (const char *c = s; c < e; c++)
+			if (!(islower((unsigned char) *c) || isdigit((unsigned char) *c) || *c == '_'))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid sift field names \"%s\"", names),
+						 errhint("Use lowercase identifiers separated by commas.")));
+		for (const char *o = names; o < s; o = strchr(o, ',') + 1)
+			if (e - s == (strchr(o, ',') - o) && strncmp(o, s, e - s) == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("duplicate sift field \"%.*s\"", (int) (e - s), s)));
+		s = *e ? e + 1 : e;
+	}
+	if (n > SIFT_MAX_FIELDS || strlen(names) >= SIFT_FIELDS_BYTES)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("a sift index has at most %d fields of at most %d bytes of names", SIFT_MAX_FIELDS,
+						SIFT_FIELDS_BYTES - 1)));
+}
+
+void
+sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields)
+{
+	uint8		key[10] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
 	int			n = 4;
 
 	cfg->pairs = pairs;
 	cfg->prefix_len = prefix_len;
+	memset(cfg->field_names, 0, sizeof(cfg->field_names));
+	strlcpy(cfg->field_names, fields, sizeof(cfg->field_names));
+	cfg->nfields = *fields ? 1 : 0;
+	for (const char *c = fields; *c; c++)
+		cfg->nfields += *c == ',';
 	if (pairs)
 		key[n++] = 1;
 	if (prefix_len)
 	{
 		key[n++] = 2;
 		key[n++] = prefix_len;
+	}
+	if (cfg->nfields)
+	{
+		key[n++] = 3;
+		key[n++] = cfg->nfields;
 	}
 	cfg->hash = sift_term_hash((const char *) key, n);
 }
@@ -193,7 +239,7 @@ sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fo
 	cfg->case_fold = case_fold;
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
-	sift_analyzer_config_set_synthetic(cfg, false, 0);
+	sift_analyzer_config_set_synthetic(cfg, false, 0, "");
 }
 
 void
@@ -207,7 +253,8 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 {
 	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding,
 							 sift_analyze_stemmer(sift_options_stemmer(opts)));
-	sift_analyzer_config_set_synthetic(cfg, opts->phrase_index == SIFT_PHRASE_PAIRS, opts->prefix_index);
+	sift_analyzer_config_set_synthetic(cfg, opts->phrase_index == SIFT_PHRASE_PAIRS, opts->prefix_index,
+									   sift_options_fields(opts));
 }
 
 void
@@ -265,6 +312,28 @@ int
 sift_analyzer_prefix_len(const SiftAnalyzer *a)
 {
 	return a->cfg.prefix_len;
+}
+
+int
+sift_analyzer_nfields(const SiftAnalyzer *a)
+{
+	return a->cfg.nfields;
+}
+
+int
+sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len)
+{
+	int			k = 1;
+
+	for (const char *s = a->cfg.field_names; *s; k++)
+	{
+		const char *e = strchr(s, ',') ? strchr(s, ',') : s + strlen(s);
+
+		if (e - s == len && pg_strncasecmp(s, name, len) == 0)
+			return k;
+		s = *e ? e + 1 : e;
+	}
+	return 0;
 }
 
 void
@@ -730,33 +799,58 @@ prefix_bytes(const SiftAnalyzer *a, const char *w, int len, int nchars)
 }
 
 /*
- * Counts the prefix terms "SEP prefix" of the words bag[0..nwords) (their
- * lengths 1..prefix_len in characters, or the whole word if shorter), each
- * once per occurrence of the word.
+ * Counts the prefix terms "SEP prefix" (or "field SEP prefix") of the words
+ * and field words bag[0..nwords) (their lengths 1..prefix_len in characters,
+ * or the whole word if shorter), each once per occurrence of the word.
  */
 static void
 bag_add_prefixes(SiftAnalyzer *a, size_t *used, int *nterms, int nwords)
 {
 	for (int t = 0; t < nwords; t++)
 	{
-		const BagTerm *w = &a->bag[t];
-		int			tf = w->tf,
-					wlen = w->len,
+		const char *b = a->buf + a->bag[t].off;
+		int			tf = a->bag[t].tf,
+					skip = 0,
+					wlen,
 					prev = 0;
+		char		field = 0;
 
-		if (SIFT_SYNTHETIC_TERM(a->buf + w->off))
+		if (SIFT_FIELD_TERM(b[0], a->cfg.nfields))
+			field = b[0], skip = 1;
+		else if (SIFT_SYNTHETIC_TERM(b))
 			continue;
+		wlen = a->bag[t].len - skip;
 		for (int l = 1; l <= a->cfg.prefix_len && prev < wlen; l++)
 		{
-			int			n = prefix_bytes(a, a->buf + a->bag[t].off, wlen, l);
+			int			n = prefix_bytes(a, a->buf + a->bag[t].off + skip, wlen, l);
+			char	   *dst;
 
-			ENSURE(a, buf, bufcap, *used + 1 + n + DST_CAP);
-			a->buf[*used] = SIFT_PREFIX_SEP;
-			memcpy(a->buf + *used + 1, a->buf + a->bag[t].off, n);
-			bag_add(a, used, nterms, 1 + n, tf);
+			ENSURE(a, buf, bufcap, *used + 2 + n + DST_CAP);
+			dst = a->buf + *used;
+			if (field)
+				*dst++ = field;
+			*dst++ = SIFT_PREFIX_SEP;
+			memcpy(dst, a->buf + a->bag[t].off + skip, n);
+			bag_add(a, used, nterms, (dst - (a->buf + *used)) + n, tf);
 			prev = n;
 		}
 	}
+}
+
+/* Counts the field word "field-byte word" of the word the bag holds at index t, unless it exceeds a term */
+static void
+bag_add_field_word(SiftAnalyzer *a, size_t *used, int *nterms, int t, int field)
+{
+	int			n = a->bag[t].len;
+	char	   *dst;
+
+	if (1 + n > SIFT_MAX_TERM_BYTES)
+		return;
+	ENSURE(a, buf, bufcap, *used + 1 + n + DST_CAP);
+	dst = a->buf + *used;
+	dst[0] = SIFT_FIELD_BYTE(field);
+	memcpy(dst + 1, a->buf + a->bag[t].off, n);
+	bag_add(a, used, nterms, 1 + n, 1);
 }
 
 /*
@@ -776,7 +870,9 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 				n,
 				k = 0,
 				prev = -1,
-				cur;
+				cur,
+				section = 0;
+	const uint8 *sep = a->cfg.nfields ? memchr(s, SIFT_FIELD_SEP, len) : NULL;
 
 	bag_table(a, pg_nextpower2_32(Min(Max(len / 4, 64), 1 << 16)), 0);
 	for (;;)
@@ -786,6 +882,10 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 			break;
 		ntok++;
 		cur = bag_add(a, &used, &nterms, n, 1);
+		for (; sep && sep < s + start; section++)
+			sep = memchr(sep + 1, SIFT_FIELD_SEP, s + len - (sep + 1));
+		if (section < a->cfg.nfields)
+			bag_add_field_word(a, &used, &nterms, cur, section + 1);
 		if (a->cfg.pairs && ntok > 1)
 			bag_add_pair(a, &used, &nterms, prev, cur);
 		prev = cur;

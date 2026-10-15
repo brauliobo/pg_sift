@@ -4,6 +4,8 @@
  */
 #include "postgres.h"
 
+#include <ctype.h>
+
 #include "catalog/pg_collation_d.h"
 #include "common/hashfn.h"
 #include "common/shortest_dec.h"
@@ -21,19 +23,19 @@
 #define SYNTAX(loc, ...)	QERROR(ERRCODE_SYNTAX_ERROR, loc, __VA_ARGS__)
 #define LIMIT(loc, ...)		QERROR(ERRCODE_PROGRAM_LIMIT_EXCEEDED, loc, __VA_ARGS__)
 
-#define WORD_SPECIALS		"(){}\"^~/\\*?"
+#define WORD_SPECIALS		"(){}\"^~/\\*?:"
 
 /* ---------------------------------------------------------------- lexer */
 
 typedef enum QTokKind
 {
 	T_EOF, T_WORD, T_PHRASE, T_REGEX, T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE,
-	T_CARET, T_AND, T_OR, T_NOT
+	T_CARET, T_AND, T_OR, T_NOT, T_FIELD
 } QTokKind;
 
 static const char *const tok_names[] = {
 	"end of query", "word", "phrase", "regular expression", "\"(\"", "\")\"",
-	"\"{\"", "\"}\"", "\"^\"", "AND", "OR", "NOT"
+	"\"{\"", "\"}\"", "\"^\"", "AND", "OR", "NOT", "field"
 };
 
 typedef struct QTok
@@ -45,6 +47,7 @@ typedef struct QTok
 	int			fuzzy;
 	char	   *text;
 	int			textlen;
+	char	   *field;			/* name: before a word, or alone before a group (T_FIELD) */
 } QTok;
 
 typedef struct QParser
@@ -179,6 +182,24 @@ canon_pattern(StringInfo pat, bool *trailing)
 	return nmeta;
 }
 
+/*
+ * Does the ':' under the cursor end a field name (lowercase identifier) that
+ * qualifies what follows: a word character, or a group opened right after it?
+ * name:"x" and name:/x/ stay words, as before fields existed.
+ */
+static bool
+field_follows(const QParser *p, const char *name, int len)
+{
+	unsigned char next = p->pos + 1 < p->len ? (unsigned char) p->src[p->pos + 1] : '\0';
+
+	if (len == 0 || !(islower((unsigned char) name[0]) || name[0] == '_'))
+		return false;
+	for (int i = 1; i < len; i++)
+		if (!(islower((unsigned char) name[i]) || isdigit((unsigned char) name[i]) || name[i] == '_'))
+			return false;
+	return next == '(' || next == '{' || (!is_space(next) && !is_special(next) && next != '\0');
+}
+
 static void
 lex_word(QParser *p, QTok *t)
 {
@@ -192,6 +213,20 @@ lex_word(QParser *p, QTok *t)
 	initStringInfo(&pat);
 	while (!at_end(p) && !is_space(cur(p)) && !is_special(cur(p)))
 	{
+		if (cur(p) == ':' && !meta && !escaped && t->field == NULL && field_follows(p, lit.data, lit.len))
+		{
+			advance(p, NULL);
+			t->field = pstrdup(lit.data);
+			if (cur(p) == '(' || cur(p) == '{')
+			{
+				t->kind = T_FIELD;
+				return;
+			}
+			resetStringInfo(&lit);
+			resetStringInfo(&pat);
+			nlit = 0;
+			continue;
+		}
 		if (cur(p) == '*' || cur(p) == '?')
 		{
 			meta = true;
@@ -397,13 +432,14 @@ leaf_from_token(QParser *p)
 	n->text = t->text;
 	n->textlen = t->textlen;
 	n->fuzzy = t->fuzzy;
+	n->fieldname = t->field;
 	return n;
 }
 
 static bool
 starts_operand(QTokKind k)
 {
-	return k == T_WORD || k == T_PHRASE || k == T_REGEX || k == T_LPAREN || k == T_LBRACE || k == T_NOT;
+	return k == T_WORD || k == T_PHRASE || k == T_REGEX || k == T_LPAREN || k == T_LBRACE || k == T_NOT || k == T_FIELD;
 }
 
 static void
@@ -438,7 +474,14 @@ parse_primary(QParser *p, int depth)
 	QTok	   *t = &p->tok;
 	SiftQNode  *n;
 	int			open = t->loc;
+	char	   *field = NULL;
 
+	if (t->kind == T_FIELD)
+	{
+		field = t->field;
+		next_token(p);
+		open = t->loc;
+	}
 	switch (t->kind)
 	{
 		case T_LBRACE:
@@ -468,6 +511,8 @@ parse_primary(QParser *p, int depth)
 			SYNTAX(t->loc, "unexpected %s", tok_names[t->kind]);
 	}
 
+	if (field && !n->fieldname)
+		n->fieldname = field;
 	next_token(p);
 	if (t->kind == T_CARET)
 	{
@@ -610,6 +655,8 @@ node_cmp_shape(const SiftQNode *a, const SiftQNode *b)
 		return c;
 	if (a->fuzzy != b->fuzzy)
 		return a->fuzzy < b->fuzzy ? -1 : 1;
+	if (a->field != b->field)
+		return a->field < b->field ? -1 : 1;
 	if (a->nterms != b->nterms)
 		return a->nterms < b->nterms ? -1 : 1;
 	for (int i = 0; i < a->nterms; i++)
@@ -826,7 +873,7 @@ analyze_regex(const SiftQNode *raw, float4 boost)
 	return n;
 }
 
-static SiftQNode *analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg);
+static SiftQNode *analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, const char *field);
 
 /*
  * Folds c into an equal sibling prev: a positive leaf twice scores as one
@@ -854,7 +901,7 @@ merge_dup(SiftQNode *prev, const SiftQNode *c, bool neg)
  * NOT x; empty leaves are dropped. Returns NULL when nothing is left.
  */
 static SiftQNode *
-analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg)
+analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, const char *field)
 {
 	List	   *list = NIL;
 	bool		nothing = false;
@@ -866,7 +913,7 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg)
 
 	for (int i = 0; i < raw->nchild; i++)
 	{
-		SiftQNode  *c = analyze_node(raw->child[i], a, boost, neg);
+		SiftQNode  *c = analyze_node(raw->child[i], a, boost, neg, raw->fieldname ? raw->fieldname : field);
 
 		if (c && c->kind == SQ_NOTHING)
 			nothing = true;
@@ -907,11 +954,49 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg)
 }
 
 /*
+ * An index without fields reads name:word as the word "name:word"; one with
+ * fields rejects a name it does not have. Only words and patterns carry a
+ * qualifier of their own.
+ */
+static const SiftQNode *
+unqualified(const SiftQNode *raw, SiftAnalyzer *a)
+{
+	SiftQNode  *n;
+
+	if (raw->fieldname == NULL || sift_analyzer_nfields(a) > 0 || raw->kind == SQ_AND || raw->kind == SQ_OR)
+		return raw;
+	n = palloc(sizeof(SiftQNode));
+	*n = *raw;
+	n->text = psprintf("%s:%s", raw->fieldname, raw->text);
+	n->textlen = strlen(n->text);
+	n->fieldname = NULL;
+	return n;
+}
+
+/* Binds an analyzed leaf to the field it is qualified with, if any */
+static SiftQNode *
+qualify(SiftQNode *n, const SiftQNode *raw, SiftAnalyzer *a, const char *field)
+{
+	const char *name = raw->fieldname ? raw->fieldname : field;
+	int			k;
+
+	if (name == NULL || n == NULL || n->kind == SQ_NOTHING)
+		return n;
+	if ((k = sift_analyzer_field(a, name, strlen(name))) == 0)
+		SYNTAX(raw->loc, "unknown field \"%s\" (the index has %d)", name, sift_analyzer_nfields(a));
+	if (n->kind == SQ_PHRASE || n->kind == SQ_REGEX)
+		SYNTAX(raw->loc, "a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions");
+	n->field = k;
+	n->fieldname = pstrdup(name);
+	return n;
+}
+
+/*
  * boost is the product of the boosts above raw; under NOT (neg) boosts are
- * meaningless and reset to 1.
+ * meaningless and reset to 1. field is the qualifier of the group above.
  */
 static SiftQNode *
-analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg)
+analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, const char *field)
 {
 	SiftQNode  *c;
 	float4		b;
@@ -921,24 +1006,29 @@ analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg)
 	if (boost > SIFT_MAX_BOOST)
 		LIMIT(raw->loc, "combined boost exceeds %g", SIFT_MAX_BOOST);
 	b = neg ? 1.0f : (float4) boost;
+	if (raw->kind != SQ_NOT && raw->kind != SQ_AND && raw->kind != SQ_OR)
+		if (raw->fieldname && sift_analyzer_nfields(a) == 0)
+			raw = unqualified(raw, a);
 	switch (raw->kind)
 	{
 		case SQ_TERM:
 		case SQ_PHRASE:
-			return analyze_words(raw, a, b);
+			return qualify(analyze_words(raw, a, b), raw, a, field);
 		case SQ_PREFIX:
 		case SQ_WILDCARD:
-			return analyze_literal(raw, a, b);
+			return qualify(analyze_literal(raw, a, b), raw, a, field);
 		case SQ_FUZZY:
-			return analyze_fuzzy(raw, a, b);
+			return qualify(analyze_fuzzy(raw, a, b), raw, a, field);
 		case SQ_REGEX:
-			return analyze_regex(raw, b);
+			return qualify(analyze_regex(raw, b), raw, a, field);
 		case SQ_NOT:
-			c = analyze_node(raw->child[0], a, 1.0, true);
+			c = analyze_node(raw->child[0], a, 1.0, true, field);
 			return c && c->kind != SQ_NOTHING ? new_not(c, raw->loc) : NULL;
 		case SQ_AND:
 		case SQ_OR:
-			return analyze_bool(raw, a, boost, neg);
+			if (raw->fieldname && sift_analyzer_nfields(a) == 0)
+				SYNTAX(raw->loc, "unknown field \"%s\" (the index has none)", raw->fieldname);
+			return analyze_bool(raw, a, boost, neg, field);
 		case SQ_NOTHING:
 			break;
 	}
@@ -961,7 +1051,7 @@ sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a)
 	SiftQuery  *q = palloc0(sizeof(SiftQuery));
 
 	Assert(!raw->analyzed);
-	q->root = analyze_node(raw->root, a, 1.0, false);
+	q->root = analyze_node(raw->root, a, 1.0, false, NULL);
 	if (q->root == NULL)
 		q->root = new_node(SQ_NOTHING, 1);
 	q->analyzed = true;
@@ -1036,6 +1126,8 @@ deparse_node(StringInfo buf, const SiftQNode *n, SiftQKind parent)
 
 	if (group)
 		appendStringInfoChar(buf, '(');
+	if (n->field)
+		appendStringInfo(buf, "%s:", n->fieldname);
 	switch (n->kind)
 	{
 		case SQ_TERM:
@@ -1277,6 +1369,7 @@ struct SiftDoc
 	int		   *first;			/* distinct term -> first token */
 	int		   *slots;			/* open addressing: term + 1, 0 = free */
 	uint32		mask;
+	uint8	   *sec;			/* token -> 0-based section of the text (split at SIFT_FIELD_SEP), NULL when there is one */
 };
 
 static uint32
@@ -1331,6 +1424,38 @@ doc_init(SiftDoc *d, SiftAnalyzer *a, const char *text, int len)
 		d->next[t] = -1;
 		last[id] = t;
 	}
+	d->sec = NULL;
+	if (sift_analyzer_nfields(a) > 0 && memchr(text, SIFT_FIELD_SEP, len))
+	{
+		const char *sep = memchr(text, SIFT_FIELD_SEP, len);
+		int			section = 0;
+
+		d->sec = palloc(d->ntok);
+		for (int t = 0; t < d->ntok; t++)
+		{
+			for (; sep && sep < text + d->tok[t].start; section++)
+				sep = memchr(sep + 1, SIFT_FIELD_SEP, text + len - (sep + 1));
+			d->sec[t] = Min(section, UINT8_MAX);
+		}
+	}
+}
+
+/* Tokens of the text's field-th section (0: any) that satisfy the leaf, or equal/extend the prefix pre of len bytes */
+static int
+doc_count_tokens(const SiftDoc *d, int field, const SiftQNode *leaf, const char *pre, int len)
+{
+	int			n = 0;
+
+	for (int t = 0; t < d->ntok; t++)
+	{
+		const SiftToken *w = &d->tok[t];
+
+		if (field && (d->sec ? d->sec[t] : 0) + 1 != field)
+			continue;
+		if (leaf ? sift_query_leaf_match(leaf, w->str, w->len) : w->len >= len && memcmp(w->str, pre, len) == 0)
+			n++;
+	}
+	return n;
 }
 
 static bool
@@ -1357,6 +1482,8 @@ eval_phrase(const SiftDoc *d, const SiftQNode *n)
 static bool
 eval_node(const SiftDoc *d, const SiftQNode *n)
 {
+	if (n->field)
+		return doc_count_tokens(d, n->field, n, NULL, 0) > 0;
 	switch (n->kind)
 	{
 		case SQ_AND:
@@ -1477,22 +1604,22 @@ sift_doc_find(const SiftDoc *d, const char *term, int len)
 int
 sift_doc_term_tf(const SiftDoc *d, const char *term, int len)
 {
-	int			tf = 0;
+	int			field = 0;
 
-	if (*term != SIFT_PREFIX_SEP)
+	if (SIFT_FIELD_TERM(*term, SIFT_MAX_FIELDS))
+	{
+		field = (unsigned char) *term - SIFT_FIELD_BASE + 1;
+		term++, len--;
+	}
+	if (*term == SIFT_PREFIX_SEP)
+		return doc_count_tokens(d, field, NULL, term + 1, len - 1);
+	if (field == 0)
 	{
 		int			at = doc_find(d, term, len);
 
 		return at < 0 ? 0 : sift_doc_tf(d, at);
 	}
-	for (int t = 0; t < d->nterms; t++)
-	{
-		const SiftToken *w = &d->tok[d->first[t]];
-
-		if (w->len >= len - 1 && memcmp(w->str, term + 1, len - 1) == 0)
-			tf += sift_doc_tf(d, t);
-	}
-	return tf;
+	return doc_count_tokens(d, field, &(SiftQNode) {.kind = SQ_TERM, .text = (char *) term, .textlen = len}, NULL, 0);
 }
 
 bool
