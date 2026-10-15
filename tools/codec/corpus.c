@@ -74,7 +74,7 @@ static int wordc(unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= '0' &
 
 int main(int argc, char **argv)
 {
-	if (argc < 3) { fprintf(stderr, "usage: corpus docs.tsv outdir\n"); return 1; }
+	if (argc < 3) { fprintf(stderr, "usage: corpus articles.tsv outdir\n"); return 1; }
 	FILE *in = fopen(argv[1], "r");
 	if (!in) { perror(argv[1]); return 1; }
 	tab = calloc(tabcap, sizeof(slot));
