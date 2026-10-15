@@ -169,12 +169,21 @@ sift_term_hash(const char *term, int len)
 /* Configuration */
 
 void
-sift_analyzer_config_set_pairs(SiftAnalyzerConfig *cfg, bool pairs)
+sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len)
 {
-	uint8		key[5] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer, 1};
+	uint8		key[8] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
+	int			n = 4;
 
 	cfg->pairs = pairs;
-	cfg->hash = sift_term_hash((const char *) key, pairs ? 5 : 4);
+	cfg->prefix_len = prefix_len;
+	if (pairs)
+		key[n++] = 1;
+	if (prefix_len)
+	{
+		key[n++] = 2;
+		key[n++] = prefix_len;
+	}
+	cfg->hash = sift_term_hash((const char *) key, n);
 }
 
 void
@@ -184,7 +193,7 @@ sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fo
 	cfg->case_fold = case_fold;
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
-	sift_analyzer_config_set_pairs(cfg, false);
+	sift_analyzer_config_set_synthetic(cfg, false, 0);
 }
 
 void
@@ -198,8 +207,7 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 {
 	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding,
 							 sift_analyze_stemmer(sift_options_stemmer(opts)));
-	if (opts->phrase_index == SIFT_PHRASE_PAIRS)
-		sift_analyzer_config_set_pairs(cfg, true);
+	sift_analyzer_config_set_synthetic(cfg, opts->phrase_index == SIFT_PHRASE_PAIRS, opts->prefix_index);
 }
 
 void
@@ -251,6 +259,12 @@ sift_analyzer_create(const SiftAnalyzerConfig *cfg, MemoryContext mcxt)
 		if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
 			a->ascii[c] = cfg->case_fold ? pg_ascii_tolower(c) : c;
 	return a;
+}
+
+int
+sift_analyzer_prefix_len(const SiftAnalyzer *a)
+{
+	return a->cfg.prefix_len;
 }
 
 void
@@ -657,11 +671,11 @@ bag_table(SiftAnalyzer *a, uint32 nslots, int nterms)
 }
 
 /*
- * Counts the n-byte term at a->buf + *used and returns its bag index; a new
- * term keeps its bytes (*used moves past them).
+ * Counts tf occurrences of the n-byte term at a->buf + *used and returns its
+ * bag index; a new term keeps its bytes (*used moves past them).
  */
 static inline int
-bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n)
+bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n, int tf)
 {
 	const char *dst = a->buf + *used;
 	uint64		h = hash64(dst, n);
@@ -672,11 +686,11 @@ bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n)
 	for (slot = (uint32) (h >> 32) >> a->shift; (t = a->slots[slot]) >= 0; slot = (slot + 1) & mask)
 		if (a->bag[t].h == h && a->bag[t].len == n && same_bytes(a->buf + a->bag[t].off, dst, n))
 		{
-			a->bag[t].tf++;
+			a->bag[t].tf += tf;
 			return t;
 		}
 	ENSURE(a, bag, bagcap, *nterms + 1);
-	a->bag[*nterms] = (BagTerm) {.h = h, .off = *used, .tf = 1, .len = n};
+	a->bag[*nterms] = (BagTerm) {.h = h, .off = *used, .tf = tf, .len = n};
 	a->slots[slot] = *nterms;
 	*used += n;
 	if ((uint32) ++*nterms * 2 > a->nslots)
@@ -700,7 +714,49 @@ bag_add_pair(SiftAnalyzer *a, size_t *used, int *nterms, int l, int r)
 	memcpy(dst + 1, a->buf + a->bag[l].off, ll);
 	dst[1 + ll] = SIFT_PAIR_SEP;
 	memcpy(dst + 2 + ll, a->buf + a->bag[r].off, rl);
-	bag_add(a, used, nterms, 2 + ll + rl);
+	bag_add(a, used, nterms, 2 + ll + rl, 1);
+}
+
+/* Byte length of the first nchars characters of w[0..len) */
+static int
+prefix_bytes(const SiftAnalyzer *a, const char *w, int len, int nchars)
+{
+	int			i = 0;
+
+	for (; nchars > 0 && i < len; nchars--)
+		for (i++; a->utf8 && i < len && ((uint8) w[i] & 0xC0) == 0x80; i++)
+			;
+	return i;
+}
+
+/*
+ * Counts the prefix terms "SEP prefix" of the words bag[0..nwords) (their
+ * lengths 1..prefix_len in characters, or the whole word if shorter), each
+ * once per occurrence of the word.
+ */
+static void
+bag_add_prefixes(SiftAnalyzer *a, size_t *used, int *nterms, int nwords)
+{
+	for (int t = 0; t < nwords; t++)
+	{
+		const BagTerm *w = &a->bag[t];
+		int			tf = w->tf,
+					wlen = w->len,
+					prev = 0;
+
+		if (SIFT_SYNTHETIC_TERM(a->buf + w->off))
+			continue;
+		for (int l = 1; l <= a->cfg.prefix_len && prev < wlen; l++)
+		{
+			int			n = prefix_bytes(a, a->buf + a->bag[t].off, wlen, l);
+
+			ENSURE(a, buf, bufcap, *used + 1 + n + DST_CAP);
+			a->buf[*used] = SIFT_PREFIX_SEP;
+			memcpy(a->buf + *used + 1, a->buf + a->bag[t].off, n);
+			bag_add(a, used, nterms, 1 + n, tf);
+			prev = n;
+		}
+	}
 }
 
 /*
@@ -729,11 +785,13 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
 		ntok++;
-		cur = bag_add(a, &used, &nterms, n);
+		cur = bag_add(a, &used, &nterms, n, 1);
 		if (a->cfg.pairs && ntok > 1)
 			bag_add_pair(a, &used, &nterms, prev, cur);
 		prev = cur;
 	}
+	if (a->cfg.prefix_len)
+		bag_add_prefixes(a, &used, &nterms, nterms);
 
 	/* compact the occupied slots in place, without branches */
 	for (uint32 slot = 0; slot < a->nslots; slot++)

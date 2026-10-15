@@ -65,7 +65,8 @@ typedef struct SiftAnalyzerConfig
 	bool		accent_fold;
 	uint8		stemmer;		/* SiftStemmer */
 	bool		pairs;			/* the bag also holds every adjacent token pair, SEP a SEP b */
-	uint32		hash;			/* of the version and the fields above (pairs only when set) */
+	uint8		prefix_len;		/* the bag also holds the first 1..prefix_len characters of every word, SEP prefix */
+	uint32		hash;			/* of the version and the fields above (pairs, prefix_len only when set) */
 } SiftAnalyzerConfig;
 
 /* A token in a document token stream; str points into analyzer memory */
@@ -102,8 +103,11 @@ typedef struct SiftAnalyzer SiftAnalyzer;
 extern void sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fold,
 									 SiftStemmer stemmer);
 
-/* Turns the pair terms on or off (set clears them) and refreshes the hash */
-extern void sift_analyzer_config_set_pairs(SiftAnalyzerConfig *cfg, bool pairs);
+/* Turns the pair terms and the prefix terms on or off (set clears them) and refreshes the hash */
+extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len);
+
+/* Longest indexed word prefix of the analyzer's index, 0 when none */
+extern int	sift_analyzer_prefix_len(const SiftAnalyzer *a);
 
 /* Default config: folding on, no stemming */
 extern void sift_analyzer_config_default(SiftAnalyzerConfig *cfg);

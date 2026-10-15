@@ -693,6 +693,16 @@ append_folded(SiftAnalyzer *a, StringInfo buf, const char *s, int len, bool esca
 	return fl;
 }
 
+/* A prefix leaf; one the index holds as a term of its own is marked */
+static SiftQNode *
+prefix_leaf(const SiftQNode *raw, SiftAnalyzer *a, const char *text, int len, float4 boost)
+{
+	SiftQNode  *n = new_leaf(raw, SQ_PREFIX, text, len, boost);
+
+	n->gram = pg_mbstrlen_with_len(text, len) <= sift_analyzer_prefix_len(a);
+	return n;
+}
+
 /*
  * Prefix and wildcard literals: folded, not stemmed. A pattern that needs
  * more bytes than any term has matches nothing.
@@ -712,7 +722,7 @@ analyze_literal(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 	{
 		append_folded(a, &buf, raw->text, raw->textlen, false);
 		buf.len = pg_mbcliplen(buf.data, buf.len, SIFT_MAX_TERM_BYTES);
-		return buf.len ? new_leaf(raw, SQ_PREFIX, buf.data, buf.len, boost) : NULL;
+		return buf.len ? prefix_leaf(raw, a, buf.data, buf.len, boost) : NULL;
 	}
 
 	for (int i = 0; i <= raw->textlen; i++)
@@ -745,7 +755,7 @@ analyze_literal(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 		i += buf.data[i] == '\\';
 		appendStringInfoChar(&run, buf.data[i]);
 	}
-	return new_leaf(raw, SQ_PREFIX, run.data, run.len, boost);
+	return prefix_leaf(raw, a, run.data, run.len, boost);
 }
 
 /*
@@ -1462,6 +1472,27 @@ int
 sift_doc_find(const SiftDoc *d, const char *term, int len)
 {
 	return doc_find(d, term, len);
+}
+
+int
+sift_doc_term_tf(const SiftDoc *d, const char *term, int len)
+{
+	int			tf = 0;
+
+	if (*term != SIFT_PREFIX_SEP)
+	{
+		int			at = doc_find(d, term, len);
+
+		return at < 0 ? 0 : sift_doc_tf(d, at);
+	}
+	for (int t = 0; t < d->nterms; t++)
+	{
+		const SiftToken *w = &d->tok[d->first[t]];
+
+		if (w->len >= len - 1 && memcmp(w->str, term + 1, len - 1) == 0)
+			tf += sift_doc_tf(d, t);
+	}
+	return tf;
 }
 
 bool

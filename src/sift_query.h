@@ -62,6 +62,7 @@ typedef struct SiftQNode
 	int		   *termlens;
 	int			nchild;			/* SQ_AND / SQ_OR / SQ_NOT */
 	struct SiftQNode **child;
+	bool		gram;			/* analyzed SQ_PREFIX of at most the index's prefix_index characters: the term SEP text */
 	int			leafno;			/* analyzed leaves: canonical number, else -1 */
 	void	   *re;				/* analyzed SQ_REGEX: compiled regex_t */
 } SiftQNode;
@@ -115,6 +116,7 @@ extern int	sift_doc_nterms(const SiftDoc *d);
 extern const char *sift_doc_term(const SiftDoc *d, int i, int *len);
 extern int	sift_doc_tf(const SiftDoc *d, int i);	/* occurrences of distinct term i */
 extern int	sift_doc_find(const SiftDoc *d, const char *term, int len);	/* -1 when absent */
+extern int	sift_doc_term_tf(const SiftDoc *d, const char *term, int len);	/* occurrences of an index term, a prefix term (SEP prefix) included; 0 when absent */
 extern bool sift_doc_match(const SiftDoc *d, const SiftQNode *n);	/* exact evaluation of one node */
 extern bool sift_doc_recheck(const SiftQuery *q, const SiftDoc *d);
 
