@@ -82,7 +82,9 @@ tap() {
 	local tests=(test/t/*.sh)
 	[[ -n $1 ]] && tests=(test/t/$1.sh)
 	cd "$REPO"
-	SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:-} --exec bash "${tests[@]}"
+	# the sanitizer runtime goes into the servers (SIFT_PRELOAD) and not into prove, bash or psql
+	( sanitizer_env; SIFT_PRELOAD=${LD_PRELOAD:-}; unset LD_PRELOAD; export SIFT_PRELOAD
+	  SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:-} --exec bash "${tests[@]}" )
 }
 
 case ${1:-} in
