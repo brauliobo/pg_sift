@@ -1,0 +1,99 @@
+-- prefix_index = n: the first 1..n characters of every word are terms of their own, so prefix
+-- queries of up to n characters are one lookup instead of an expansion. Match sets equal the
+-- plain index and sift.match; ranked scans, mutable segments, VACUUM, merge and verify agree.
+CREATE EXTENSION sift;
+
+CREATE TABLE px (id int PRIMARY KEY, body text);
+CREATE TABLE pn (id int PRIMARY KEY, body text);
+INSERT INTO px
+SELECT i, concat_ws(' ', w[1 + i % 8], w[1 + (i / 3) % 8], w[1 + (i * 7) % 8], 'x' || i % 9, w[1 + (i / 5) % 8])
+FROM generate_series(1, 800) i,
+     LATERAL (SELECT ARRAY['alpha', 'alphabet', 'beta', 'bet', 'Über', 'über-cool', 'a', 'zèbre'] w) a;
+INSERT INTO px VALUES (801, NULL), (802, ''), (803, 'al'), (804, 'ALPHA alpha alpha alphabet');
+INSERT INTO pn SELECT * FROM px;
+CREATE INDEX px_idx ON px USING sift (body) WITH (prefix_index = 3);
+CREATE INDEX pn_idx ON pn USING sift (body);
+VACUUM ANALYZE px;
+VACUUM ANALYZE pn;
+
+SELECT reloptions FROM pg_class WHERE relname = 'px_idx';
+SELECT sift.verify('px_idx', true);
+-- more terms than the plain index: 1..3 character prefixes of every word
+SELECT (SELECT nterms FROM sift.segments('px_idx')) > (SELECT nterms FROM sift.segments('pn_idx')) AS has_prefix_terms;
+
+CREATE FUNCTION qs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
+	'a*', 'al*', 'alp*', 'alph*', 'alpha*', 'b*', 'be*', 'bet*', 'beta*', 'u*', 'ub*', 'ube*', 'ü*', 'ÜBE*', 'z*', 'zèb*', 'ze*',
+	'x*', 'x1*', 'q*', 'al* AND be*', 'a* AND NOT al*', 'a* OR b*', 'alp* x3', '(a* OR b*) AND x*', 'al*^3 OR bet*',
+	'"alpha beta"', 'a* "beta alphabet"', 'alpha~1', 'a?p*', '/al.*/']) $$;
+
+CREATE FUNCTION cnt(tbl text, q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE body @@> %L', tbl, q) INTO n;
+	RETURN n;
+END $$;
+CREATE FUNCTION oracle(tbl text, q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE sift.match(body, %L)', tbl, q) INTO n;
+	RETURN n;
+END $$;
+SELECT q, cnt('px', q) AS prefixed, cnt('pn', q) AS plain, oracle('pn', q) AS oracle FROM qs() q
+WHERE cnt('px', q) <> oracle('pn', q) OR cnt('pn', q) <> oracle('pn', q);
+SELECT count(*) AS queries, sum(cnt('px', q)) AS hits FROM qs() q;
+
+-- the same through the bitmap heap scan
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+SELECT q, cnt('px', q) AS prefixed, oracle('pn', q) AS oracle FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
+RESET sift.enable_scan;
+RESET sift.enable_count;
+
+-- a short prefix is not capped by max_expansions
+SET sift.max_expansions = 1;
+SELECT count(*) > 0 AS short_prefix_ok FROM px WHERE body @@> 'a*';
+SELECT count(*) FROM px WHERE body @@> 'alph*';
+RESET sift.max_expansions;
+
+-- ranked scans: same documents as the plain index, in score order, ties by ctid
+CREATE FUNCTION top(tbl text, q text, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY s DESC, id) FROM
+		(SELECT id, sift.score(ctid) s FROM %I WHERE body @@> %L ORDER BY sift.score(ctid) DESC, id LIMIT %s) t', tbl, q, k)
+	INTO r;
+	RETURN r;
+END $$;
+SELECT q FROM qs() q WHERE q !~ '[\^"~/?]' AND array(SELECT unnest(string_to_array(top('px', q, 1000), ','))::int ORDER BY 1)
+  IS DISTINCT FROM array(SELECT unnest(string_to_array(top('pn', q, 1000), ','))::int ORDER BY 1);
+
+-- a prefix term scores like a term: more occurrences of the prefix rank first
+SELECT id FROM px WHERE body @@> 'alp*' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+
+-- mutable segments, deletes, updates, promotion and merge keep the two indexes in step
+INSERT INTO px VALUES (900, 'alphabet soup'), (901, 'beta bet bet'), (902, 'Ünïcode');
+INSERT INTO pn SELECT * FROM px WHERE id >= 900;
+SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
+SELECT count(*) FROM px WHERE body @@> 'un*' OR body @@> 'ü*';
+DELETE FROM px WHERE id % 7 = 0;
+DELETE FROM pn WHERE id % 7 = 0;
+UPDATE px SET body = 'alphabet beta' WHERE id = 6;
+UPDATE pn SET body = 'alphabet beta' WHERE id = 6;
+SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
+SELECT sift.promote('px_idx') IS NOT NULL AS promoted;
+VACUUM px;
+SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
+SELECT sift.merge('px_idx', true) IS NOT NULL AS merged;
+SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
+SELECT sift.verify('px_idx', true);
+
+-- the option is part of the analyzer: switching it needs a REINDEX
+ALTER INDEX pn_idx SET (prefix_index = 2);
+SELECT count(*) FROM pn WHERE body @@> 'al*';
+REINDEX INDEX pn_idx;
+SELECT count(*) FROM pn WHERE body @@> 'al*';
+CREATE INDEX bad_idx ON pn USING sift (body) WITH (prefix_index = 16);
+
+DROP FUNCTION qs(), cnt(text, text), oracle(text, text), top(text, text, int);
+DROP TABLE px, pn;
+DROP EXTENSION sift;

@@ -119,6 +119,9 @@ define_reloptions(void)
 					   "Phrase index: none, or pairs to index adjacent token pairs (exact two-word phrases, REINDEX to apply)",
 					   phrase_index_names, SIFT_PHRASE_NONE,
 					   "Valid values are \"none\" and \"pairs\".", AccessExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "prefix_index",
+					  "Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply)",
+					  0, 0, SIFT_MAX_PREFIX_INDEX, AccessExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -195,6 +198,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"phrase_index", RELOPT_TYPE_ENUM, offsetof(SiftOptions, phrase_index)},
+		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
