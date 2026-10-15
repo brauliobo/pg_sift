@@ -385,21 +385,18 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 	}
 	else if (c->bounds == NULL)
 	{
-		int			cap = 16;
+		uint32	   *gid = palloc(Max(c->info.df, 1) * sizeof(uint32));
 
-		c->bounds = MemoryContextAlloc(c->mcxt, cap * sizeof(SiftGroupBounds));
 		sift_post_rewind(c);
-		for (const sift_grp *g = sift_next(&c->cur); g; g = sift_next(&c->cur))
+		c->nbounds = sift_cur_gids(&c->cur, gid);
+		c->bounds = MemoryContextAlloc(c->mcxt, Max(c->nbounds, 1) * sizeof(SiftGroupBounds));
+		for (uint32 i = 0; i < c->nbounds; i++)
 		{
-			if (c->nbounds == cap)
-			{
-				cap *= 2;
-				c->bounds = repalloc_huge(c->bounds, cap * sizeof(SiftGroupBounds));
-			}
-			c->bounds[c->nbounds].gid = g->gid;
-			c->bounds[c->nbounds].bound = c->info.max_bound;
-			memset(c->bounds[c->nbounds++].blk_bound, c->info.max_bound, SIFT_BLKS_PER_SB);
+			c->bounds[i].gid = gid[i];
+			c->bounds[i].bound = c->info.max_bound;
+			memset(c->bounds[i].blk_bound, c->info.max_bound, SIFT_BLKS_PER_SB);
 		}
+		pfree(gid);
 		sift_post_rewind(c);
 	}
 	*n = c->nbounds;

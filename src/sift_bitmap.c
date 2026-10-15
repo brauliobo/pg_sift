@@ -569,6 +569,28 @@ static const sift_grp *ls_seek(sift_cur *c, uint32_t target)
 	return found(c, gid, b.w, b.pages, c->buf, base, i - base);
 }
 
+/* the distinct gids of an unpositioned LIST cursor, ascending: blocks are decoded, no group bitmaps are built */
+uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
+{
+	uint32_t ng = 0, n = c->ls.n, last = UINT32_MAX;
+	sift_tid blk[SIFT_LIST_BLOCK];
+	const sift_tid *t = c->ls.t;
+	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
+		uint32_t cnt = blk_cnt(n, i);
+		if (!t) {
+			ef_blk b;
+			ef_hdr(c->ls.p, c->ls.prev, cnt, &b);
+			c->ls.p = b.end, c->ls.prev = b.x0 + b.u - 1;
+			ef_decode(&b, c->ls.ob, blk);
+		}
+		for (uint32_t k = 0; k < cnt; k++) {
+			uint32_t gid = SIFT_GID((t ? t + i : blk)[k]);
+			if (gid != last) out[ng++] = last = gid;
+		}
+	}
+	return ng;
+}
+
 static void cur_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), uint8_t *buf)
 {
 	memset(c, 0, offsetof(sift_cur, gr));
