@@ -6,6 +6,17 @@
 
 SIFT_ROOT=${SIFT_ROOT:-/tmp/sift-arch/root}
 
+# Libraries the engines under test need preloaded; only those installed (system, SIFT_ROOT or engine roots)
+preload() {
+  local libs=pg_stat_statements,pg_prewarm lib dir
+  for lib in pg_textsearch pg_search; do
+    for dir in "$(pg_config --pkglibdir)" "$BM25_ROOT/usr/lib/postgresql" "$PARADEDB_ROOT/usr/lib/postgresql/18/lib"; do
+      [[ -f $dir/$lib.so ]] && { libs+=,$lib; break; }
+    done
+  done
+  echo "$libs"
+}
+
 settings() {
   cat >"$PGDATA/bench.conf" <<EOF
 port = $PGPORT
@@ -25,7 +36,7 @@ max_wal_size = 2GB
 checkpoint_timeout = 30min
 jit = off
 huge_pages = off
-shared_preload_libraries = 'pg_stat_statements,pg_prewarm,pg_textsearch,pg_search'
+shared_preload_libraries = '$(preload)'
 pg_stat_statements.max = 1000
 pg_stat_statements.track = top
 pg_prewarm.autoprewarm = off
