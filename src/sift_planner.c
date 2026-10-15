@@ -21,6 +21,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
+#include "optimizer/tlist.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -496,6 +497,19 @@ scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual)
 	return tlist;
 }
 
+/*
+ * The scan also outputs the scores the query reads: PG evaluates an expression above a join in the
+ * join's own target unless a child already outputs it, and only the scan can compute sift.score
+ */
+static List *
+score_outputs(PlannerInfo *root, RelOptInfo *rel, List *tlist)
+{
+	foreach_node(Node, e, score_exprs(root, rel))
+		if (tlist_member((Expr *) e, tlist) == NULL)
+			tlist = lappend(list_copy(tlist), makeTargetEntry((Expr *) e, list_length(tlist) + 1, NULL, true));
+	return tlist;
+}
+
 static Plan *
 sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses,
 			   List *custom_plans)
@@ -512,7 +526,7 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 			residual = lappend(residual, rinfo);
 	}
 	residual = extract_actual_clauses(residual, false);
-	cs->scan.plan.targetlist = tlist;
+	cs->scan.plan.targetlist = score_outputs(root, rel, tlist);
 	cs->scan.scanrelid = rel->relid;
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = scan_tlist(root, rel, residual);

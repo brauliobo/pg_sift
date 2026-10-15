@@ -91,7 +91,7 @@ Arch Linux packaging is in `packaging/`.
 ## Limitations
 
 - On the 2.6M-document full suite sift trails ParadeDB on `or`, `phrase`, `mixed`, `filter` (0.5-0.9x QPS) and
-  `count` (0.24x) and Tantivy on every class; a score above a join is not supported. It builds the index
+  `count` (0.24x) and Tantivy on every class; a score above a join works but costs the whole candidate set when the join filter matches nothing. It builds the index
   1.8x faster and 2.8x smaller than ParadeDB (`docs/BASELINE.md`).
 - The baseline corpus is small (300k and 2.6M documents, 227 characters each on average) compared
   with TIN's 150M; a 15.8M-document tier is cached and has not been run.

@@ -284,7 +284,7 @@ Hooks used, all present in the PG18 headers (verified):
    - The score travels inside the tuple. There is **no backend-global scan registry**: nested loops, self-joins, cursors, rescans, parallel workers, and errors in portals cannot mix up scores.
    - The C bodies of `sift.score` and `sift.max_score` only raise `ERRCODE_FEATURE_NOT_SUPPORTED`: "sift.score() must be computed by a sift scan of the same relation; move it to the query level that scans the table".
    - **Rejected:** pgx-bm25-style registries keyed by ctid. Their history (ARCHITECTURE.md §score accessor: about ten ADRs on wrong-scan attribution, aborted portals, HOT roots, and security) shows the approach is inherently fragile.
-   - **Known limit:** a score referenced only above a join (`SELECT sift.score(p.ctid) FROM p JOIN u ...`) gets pushed into the base scan only if the expression is in the base rel's target. PG puts it there only when it is computed below the join. In that case the documented pattern is a subquery or CTE for top-k followed by the join.
+   - **Score above a join.** The scan outputs every score the query reads next to its Vars (`score_outputs`), so a join node that evaluates `sift.score(p.ctid)` in its own target finds it in the child's output instead of calling the function. Nested loop, hash and merge joins are tested against the per-relation result (`rank_scan`). The ranked path is still chosen on the planner's estimate of the join: a join whose real selectivity is far below the estimate makes the scan produce candidates until the limit is met, which can be all of them.
 4. **`SiftCount` upper path** (`create_upper_paths_hook`, stage `UPPERREL_GROUP_AGG`). Conditions:
    - one base rel, with no GROUP BY, grouping sets, window functions or SRFs;
    - every aggregate is `count(*)` or `count(<non-null const>)`;
@@ -521,7 +521,6 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, TIN-equiv
   - positions and proximity / slop queries;
   - `amgettuple` plain and index-only scans;
   - backward scan, mark/restore;
-  - score above joins without a subquery;
   - multi-column indexes;
   - custom rmgr;
   - statement-level insert batching;
