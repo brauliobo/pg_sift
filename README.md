@@ -113,9 +113,8 @@ Arch Linux packaging is in `packaging/`.
   `count` (0.24x) and Tantivy on every class; a score above a join works but costs the whole candidate set when the join filter matches nothing. It builds the index
   1.8x faster and 2.8x smaller than ParadeDB (`docs/BASELINE.md`).
 - The baseline corpus is small (300k and 2.6M documents, 227 characters each on average) compared
-  with TIN's 150M; a 15.8M-document tier is cached and has not been run. On a 1M-document resample of the documents
-  (one client, `and`/`or`/`phrase`/`mixed`/`count`/`filter` QPS, ParadeDB in brackets) sift is at 1009 (1954), 490 (584), 840 (1418), 703 (939), 426 (821) and 605 (715);
-  with `phrase_index = pairs` 1247, 629, 1082, 904, 1735 and 668, at an index of 175 MB against ParadeDB's 187 MB (sift default 72 MB).
+  with TIN's 150M; a 15.8M-document tier is cached and has not been run. On a 1M-document resample of the documents (8 clients, median of four interleaved runs on a host at load 14-27, `and` / `or` / `phrase` / `mixed` / `count` / `filter` QPS, ParadeDB in brackets) sift is at 1498 (1698), 660 (550), 1056 (1359), 970 (635), 516 (718) and 732 (582): ahead on `or`, `mixed` and `filter`, behind on `and`, `phrase` and `count` (the last two recheck phrases against the heap);
+  with `phrase_index = pairs` `count` is about 1440 QPS (2x ParadeDB) at an index of 175 MB against ParadeDB's 187 MB (sift default 72 MB).
   Under 1000 writes/s sift keeps 527 QPS of mixed reads against 190.
 - The benchmark hosts are shared machines, so absolute numbers carry noise; compare engines measured
   in the same run. The reference host has no AVX-512.
