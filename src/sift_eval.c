@@ -1576,16 +1576,15 @@ term_decode(MemoryContext cx, RkTerm *t)
 {
 	const sift_grp *g = t->g;
 	const uint8 *off = g->off;
-	uint32		cnt[SIFT_BLKS_PER_SB] = {0},
-				n = 0;
+	uint32		n = 0;
 
-	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
-		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
-			cnt[(wd * 64 + pg_rightmost_one_pos64(m)) / SIFT_BLK_PAGES] += sift_popcount(off, g->w);
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
 	{
+		size_t		len = (size_t) pg_popcount64((g->pages[b / 4] >> (b % 4 * SIFT_BLK_PAGES)) & 0xffff) * g->w;
+
 		t->base[b] = n;
-		n += cnt[b];
+		n += sift_popcount(off, len);
+		off += len;
 	}
 	t->base[SIFT_BLKS_PER_SB] = n;
 	if (n + SIFT_KERN_PAD > t->tfcap)
