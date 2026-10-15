@@ -1214,6 +1214,7 @@ typedef struct RkTerm
 {
 	SiftPostingCursor *pc;			/* the tree's cursor: bounds, clone source */
 	SiftPostingCursor *sc;			/* own cursor for scoring: the tree's seeks skip groups */
+	SiftPostingCursor *gc;			/* the cursor g belongs to: pc when the tree already decoded it, else sc */
 	float4		w;
 	const SiftGroupBounds *gb;		/* bounds per SB, ascending gid */
 	int			ngb;
@@ -1592,7 +1593,7 @@ term_decode(MemoryContext cx, RkTerm *t)
 		t->tfcap = Max(n + SIFT_KERN_PAD, 2 * t->tfcap);
 		t->tf = t->tf ? repalloc(t->tf, t->tfcap) : MemoryContextAlloc(cx, t->tfcap);
 	}
-	sift_post_group_tf(t->sc, t->tf);
+	sift_post_group_tf(t->gc, t->tf);
 	t->decoded = true;
 }
 
@@ -1985,12 +1986,19 @@ unit_terms(SiftPlan *p, RankSeg *rs, float4 theta)
 static void
 term_seek(SiftPlan *p, RankSeg *rs, RkTerm *t, uint32 gid)
 {
+	sift_cur   *tc = sift_post_cursor(t->pc);
 	const sift_grp *g;
 
-	if (t->sc == NULL)
-		t->sc = sift_post_clone(t->pc, p->mcxt);
-	term_sync(rs, t->sc, &t->sce);
-	g = sift_seek(sift_post_cursor(t->sc), gid);
+	if (tc->state == 1 && tc->g.gid == gid)
+		t->gc = t->pc;
+	else
+	{
+		if (t->sc == NULL)
+			t->sc = sift_post_clone(t->pc, p->mcxt);
+		term_sync(rs, t->sc, &t->sce);
+		t->gc = t->sc;
+	}
+	g = sift_seek(sift_post_cursor(t->gc), gid);
 	if (g && g->gid == gid)
 	{
 		t->g = g;
