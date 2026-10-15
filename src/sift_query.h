@@ -17,6 +17,11 @@
  * positive child; SQ_NOTHING appears only as the root. Leaves are numbered
  * 0..nleaves-1 in deparse order (leafno).
  *
+ * A word, prefix, pattern or fuzzy term may be qualified, name:word*, and so may a group,
+ * name:(a b) or name:{a b}; analysis moves the qualifier to the leaves (the innermost wins) and
+ * resolves it against the index's fields. An index without fields reads name:word as the word
+ * "name:word", as before.
+ *
  * Leaf text after analysis: SQ_TERM holds an index term; SQ_PREFIX and
  * SQ_FUZZY hold folded, unstemmed literals; SQ_WILDCARD holds a folded
  * pattern where '*' is any run, '?' one character and '\c' the literal c;
@@ -62,6 +67,8 @@ typedef struct SiftQNode
 	int		   *termlens;
 	int			nchild;			/* SQ_AND / SQ_OR / SQ_NOT */
 	struct SiftQNode **child;
+	char	   *fieldname;		/* name: qualifier of a leaf or group, else NULL */
+	uint8		field;			/* analyzed leaves: the index field it searches (1..), 0 = all text */
 	bool		gram;			/* analyzed SQ_PREFIX of at most the index's prefix_index characters: the term SEP text */
 	int			leafno;			/* analyzed leaves: canonical number, else -1 */
 	void	   *re;				/* analyzed SQ_REGEX: compiled regex_t */

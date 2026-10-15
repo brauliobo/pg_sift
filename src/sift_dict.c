@@ -503,6 +503,7 @@ struct SiftTermMatcher
 	int			lolen;
 	char	   *hi;				/* NULL: unbounded */
 	int			hilen;
+	char		field;			/* terms of a field start with this byte, else 0 */
 };
 
 /* Smallest string above every string starting with s[0..len): NULL if none */
@@ -590,6 +591,22 @@ sift_matcher_create(const SiftQNode *leaf)
 		default:
 			elog(ERROR, "sift: query node kind %d has no term matcher", leaf->kind);
 	}
+	if (leaf->field)
+	{
+		/* the field's words follow its byte; " " skips the field's prefix terms */
+		char	   *lit = palloc(m->lolen + 2);
+
+		m->field = lit[0] = SIFT_FIELD_BYTE(leaf->field);
+		if (m->lolen > 0)
+			memcpy(lit + 1, m->lo, m->lolen);
+		m->hilen = m->lolen + 1;
+		m->hi = successor(lit, &m->hilen);
+		if (m->lolen == 0)
+			lit[1] = ' ';
+		m->lo = lit;
+		m->lolen += 1 + (m->lolen == 0);
+		return m;
+	}
 	m->hilen = m->lolen;
 	m->hi = m->lolen ? successor(m->lo, &m->hilen) : NULL;
 	if (m->lolen == 0)
@@ -615,5 +632,11 @@ bool
 sift_matcher_match(const SiftTermMatcher *m, const char *term, int len)
 {
 	/* pair and prefix terms are not words: no expansion reaches them */
+	if (m->field)
+	{
+		if (len < 2 || *term != m->field)
+			return false;
+		term++, len--;
+	}
 	return !SIFT_SYNTHETIC_TERM(term) && sift_query_leaf_match(m->leaf, term, len);
 }
