@@ -2,7 +2,7 @@
 
 The `codec` module (`src/sift_bitmap.h`, `src/sift_bitmap*.c`, `src/sift_bitmap_kern.h`) encodes posting sets keyed by heap ctid and runs the set kernels. It is plain C11 plus intrinsics with no PostgreSQL dependency. It does no allocation, and its only global state is the dispatch table. The standalone harness lives in `tools/codec/`: tests, corpus tools and benchmarks.
 
-All numbers below were measured on `the source documents table` (3.04 M rows, title plus document text) on a Ryzen 9 9700X. That machine was shared and heavily loaded (load average about 38 on 16 threads), so:
+All numbers below were measured on a 3.04 M-row English text corpus (title plus body) on a Ryzen 9 9700X. That machine was shared and heavily loaded (load average about 38 on 16 threads), so:
 - every timing is the best of 5 to 9 trials, pinned to one core;
 - absolute speeds are pessimistic, and ratios measured in the same run are the reliable part.
 

@@ -46,11 +46,13 @@ test: $(OUT)/test
 fuzz: $(OUT)/fuzz
 	$(OUT)/fuzz $(FUZZARGS)
 
-# reviews.tsv: ctid + title + comments text of the source documents table (read-only COPY)
+# articles.tsv: synthetic ctids (five documents per page) and the text of the Simple English Wikipedia
+# articles (bench/datasets/fetch.sh articles); ARTICLES=path to bench's articles.tsv
+ARTICLES ?= /tmp/sift-bench/data/articles.tsv
 data:
 	@mkdir -p $(OUT)
-	psql source_db -c "\copy (select (ctid::text::point)[0]::bigint, (ctid::text::point)[1]::int, regexp_replace(coalesce(title,'') || ' ' || coalesce((select string_agg(c->>'comment',' ') from jsonb_array_elements(case when jsonb_typeof(comments)='array' then comments else '[]' end) c),''), '[[:space:]\\\\]+', ' ', 'g') from reviews) to '$(OUT)/reviews.tsv'"
-	$(OUT)/corpus $(OUT)/reviews.tsv $(OUT)
+	awk -F'\t' '{ printf "%d\t%d\t%s\n", int((NR - 1) / 5), (NR - 1) % 5 + 1, $$2 }' $(ARTICLES) >$(OUT)/articles.tsv
+	$(OUT)/corpus $(OUT)/articles.tsv $(OUT)
 
 clean:
 	rm -rf $(OUT)/obj $(OUT)/test $(OUT)/fuzz $(OUT)/bench $(OUT)/corpus $(OUT)/stats
