@@ -10,14 +10,12 @@ use Test::More;
 
 my $node = sift_node('crash');
 $node->start;
-my $has = features($node);
+install_sift($node);
 
 for my $am (ams())
 {
 	my $n = $am->{name};
 	subtest "$n: crash during build, maintenance and vacuum" => sub {
-		my @missing = grep { !$has->{$_} } @{ $am->{needs} };
-		plan skip_all => "sift not implemented yet: @missing" if @missing;
 		my ($t, $idx) = ("crash_$n", "crash_${n}_idx");
 		my $hits = 0;
 		load_corpus($node, $t, 60000);
@@ -45,7 +43,7 @@ for my $am (ams())
 			agree($node, $am, $t, "crash in maintenance after $delay ms");
 		}
 
-		if ($n eq 'sift' && $has->{promote} && $has->{merge})
+		if ($n eq 'sift')
 		{
 			for my $batch (1 .. 3)
 			{

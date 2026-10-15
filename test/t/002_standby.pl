@@ -8,11 +8,12 @@ use FindBin;
 use lib $FindBin::RealBin;
 use SiftTest;
 use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->start;
-my $has = features($primary);
+install_sift($primary);
 $primary->backup('base');
 my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
@@ -23,8 +24,6 @@ for my $am (ams())
 {
 	my $n = $am->{name};
 	subtest "$n: replay on a hot standby" => sub {
-		my @missing = grep { !$has->{$_} } @{ $am->{needs} };
-		plan skip_all => "sift not implemented yet: @missing" if @missing;
 		my ($t, $idx) = ("repl_$n", "repl_${n}_idx");
 		load_corpus($primary, $t, 20000);
 		$primary->safe_psql('postgres', $am->{index}->($t, $idx));
@@ -34,7 +33,7 @@ for my $am (ams())
 			DELETE FROM $t WHERE id % 11 = 0;
 		});
 		$primary->safe_psql('postgres', $am->{maint}->($idx));
-		$primary->safe_psql('postgres', "SELECT sift.merge('$idx')") if $n eq 'sift' && $has->{merge};
+		$primary->safe_psql('postgres', "SELECT sift.merge('$idx')") if $n eq 'sift';
 		$primary->safe_psql('postgres', "VACUUM $t");
 		$primary->wait_for_catchup($standby);
 
@@ -48,8 +47,6 @@ for my $am (ams())
 }
 
 subtest 'sift: standby scan across merge and segment recycling' => sub {
-	plan skip_all => 'sift not implemented yet: build promote merge'
-	  unless $has->{build} && $has->{promote} && $has->{merge};
 	my ($t, $idx) = ('recycle', 'recycle_idx');
 	load_corpus($primary, $t, 20000);
 	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
@@ -74,9 +71,9 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 
 	# a recovery conflict ends the session (SQLSTATE 40001); otherwise the scan sees its snapshot
 	my ($out, $err);
-	if (eval { ($out, $err) = $bg->query("MOVE FORWARD ALL IN c"); 1 } && $err !~ /ERROR|FATAL/)
+	if (eval { ($out, $err) = $bg->query("FETCH FORWARD ALL IN c"); 1 } && $err !~ /ERROR|FATAL/)
 	{
-		is($out, "MOVE " . ($expected - 10), 'scan returned the rows of its snapshot');
+		is(scalar(() = $out =~ /^\d+$/mg), $expected - 10, 'scan returned the rows of its snapshot');
 	}
 	else
 	{
@@ -86,6 +83,42 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 	eval { $bg->quit };
 	$standby->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
 	agree($standby, (ams())[1], $t, 'standby after recycling');
+};
+
+# with hot_standby_feedback the primary's horizon holds back VACUUM and recycling for the open scan: it always completes
+subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and recycling' => sub {
+	my ($t, $idx) = ('feedback', 'feedback_idx');
+	load_corpus($primary, $t, 20000);
+	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
+	$primary->backup('feedback_base');
+	my $fb = PostgreSQL::Test::Cluster->new('standby_feedback');
+	$fb->init_from_backup($primary, 'feedback_base', has_streaming => 1);
+	$fb->append_conf('postgresql.conf', "hot_standby_feedback = on\nmax_standby_streaming_delay = 2s");
+	$fb->start;
+	$primary->wait_for_catchup($fb);
+
+	my $bg = $fb->background_psql('postgres', on_error_stop => 0);
+	$bg->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+	my $expected = $bg->query_safe("SELECT count(*) FROM $t WHERE sift_ref.match(body, 'w1')");
+	$bg->query_safe("DECLARE c CURSOR FOR SELECT id FROM $t WHERE body @@> 'w1'");
+	$bg->query_safe('FETCH 10 FROM c');
+	$primary->poll_query_until('postgres', "SELECT backend_xmin IS NOT NULL FROM pg_stat_replication WHERE application_name = 'standby_feedback'", 't');
+
+	for my $round (1 .. 3)
+	{
+		$primary->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w1 churn $round ' || g"
+			. " FROM generate_series(100000 * $round, 100000 * $round + 4000) g; SELECT sift.promote('$idx')");
+		$primary->safe_psql('postgres', "DELETE FROM $t WHERE id % 5 = $round");
+		$primary->safe_psql('postgres', "VACUUM $t; SELECT sift.merge('$idx'); VACUUM $t");
+	}
+	$primary->wait_for_catchup($fb);
+
+	is(scalar(() = $bg->query_safe("FETCH FORWARD ALL IN c") =~ /^\d+$/mg), $expected - 10,
+		'the open scan returned the rows of its snapshot');
+	unlike(slurp_file($fb->logfile), qr/conflict with recovery/, 'no recovery conflict was raised');
+	$bg->quit;
+	$fb->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
+	$fb->stop;
 };
 
 $standby->stop;

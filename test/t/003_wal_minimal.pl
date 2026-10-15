@@ -13,7 +13,7 @@ use Test::More;
 my $node = sift_node('minimal');
 $node->append_conf('postgresql.conf', "wal_level = minimal\nmax_wal_senders = 0");
 $node->start;
-my $has = features($node);
+install_sift($node);
 
 sub crash_restart
 {
@@ -27,8 +27,6 @@ for my $am (ams())
 	for my $threshold ('0', '1GB')
 	{
 		subtest "$n: index built in its creating transaction, wal_skip_threshold = $threshold" => sub {
-			my @missing = grep { !$has->{$_} } @{ $am->{needs} };
-			plan skip_all => "sift not implemented yet: @missing" if @missing;
 			my $t = "min_${n}_" . ($threshold eq '0' ? 'sync' : 'wal');
 			my $idx = "${t}_idx";
 			my $set = "SET wal_skip_threshold = '$threshold';";

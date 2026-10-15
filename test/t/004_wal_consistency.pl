@@ -21,7 +21,7 @@ my $sift = (ams())[1];
 my $primary = sift_node('wc_primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', "wal_consistency_checking = 'generic'\nshared_buffers = 64MB");
 $primary->start;
-features($primary);
+install_sift($primary);
 load_corpus($primary, $t, 20000);
 $primary->safe_psql('postgres', "CREATE SEQUENCE wc_ids START 100001; CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
 
