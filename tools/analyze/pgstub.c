@@ -98,3 +98,9 @@ sift_options_stemmer(const SiftOptions *opts)
 {
 	abort();
 }
+
+const char *
+sift_options_fields(const SiftOptions *opts)
+{
+	abort();
+}

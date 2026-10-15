@@ -278,6 +278,25 @@ struct SiftAnalyzer
 	SiftToken  *tok;
 };
 
+/* the double has no prefix_index and no fields */
+int
+sift_analyzer_prefix_len(const SiftAnalyzer *a)
+{
+	return 0;
+}
+
+int
+sift_analyzer_nfields(const SiftAnalyzer *a)
+{
+	return 0;
+}
+
+int
+sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len)
+{
+	return 0;
+}
+
 int
 sift_analyze_fold(SiftAnalyzer *a, const char *s, int len, char **out)
 {
