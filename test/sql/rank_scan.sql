@@ -136,6 +136,37 @@ FROM (SELECT sift_scan_node('SELECT id FROM big WHERE body @@> ''beta'' ORDER BY
 SELECT id, sift.score(ctid) FROM big WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
 DROP TABLE big;
 
+-- a score read above a join comes out of the scan, whatever the join method
+CREATE TABLE jg AS SELECT g AS grp, 'g' || g AS label FROM generate_series(0, 3) g;
+CREATE UNIQUE INDEX jg_grp ON jg (grp);
+ANALYZE jg;
+CREATE FUNCTION join_diff(q text, q0 text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM (((%s) EXCEPT (%s)) UNION ALL ((%s) EXCEPT (%s))) d', q, q0, q0, q) INTO n;
+	RETURN n;
+END $$;
+SELECT sift_plan('SELECT r.id, jg.label, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick fox'' ORDER BY sift.score(r.ctid) DESC LIMIT 5') ~ 'SiftScan' AS scan;
+SELECT join_diff('SELECT r.id, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR lazy'' ORDER BY sift.score(r.ctid) DESC LIMIT 7',
+	'SELECT id, sift.score(ctid) FROM r WHERE grp IN (0, 1, 2, 3) AND body @@> ''quick OR lazy'' ORDER BY sift.score(ctid) DESC LIMIT 7');
+SELECT count(*) FROM (SELECT r.id, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> 'quick OR lazy' ORDER BY sift.score(r.ctid) DESC LIMIT 7) j;
+SET enable_nestloop = off;
+SET enable_mergejoin = off;
+SELECT join_diff('SELECT r.id, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR lazy'' ORDER BY sift.score(r.ctid) DESC LIMIT 7',
+	'SELECT id, sift.score(ctid) FROM r WHERE grp IN (0, 1, 2, 3) AND body @@> ''quick OR lazy'' ORDER BY sift.score(ctid) DESC LIMIT 7');
+RESET enable_nestloop;
+RESET enable_mergejoin;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SELECT join_diff('SELECT r.id, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick OR lazy'' ORDER BY sift.score(r.ctid) DESC LIMIT 7',
+	'SELECT id, sift.score(ctid) FROM r WHERE grp IN (0, 1, 2, 3) AND body @@> ''quick OR lazy'' ORDER BY sift.score(ctid) DESC LIMIT 7');
+RESET enable_hashjoin;
+RESET enable_nestloop;
+SELECT r.id, jg.label FROM r JOIN jg USING (grp) WHERE r.body @@> 'quick' ORDER BY sift.score(r.ctid) DESC LIMIT 1;
+DROP FUNCTION join_diff(text, text);
+DROP TABLE jg;
+
 DROP FUNCTION sift_plan(text), sift_scan_node(text), ids_scan(text), ids_seq(text);
 DROP TABLE r;
 DROP EXTENSION sift;
