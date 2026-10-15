@@ -1,5 +1,6 @@
 # Builds the committed HEAD of the enclosing sift checkout (uncommitted
 # changes are not packaged): cd packaging && makepkg -f
+# makepkg rewrites pkgver below from the commit count and hash; the committed value is a placeholder.
 pkgname=sift-pg
 pkgver=1.0.r0
 pkgrel=1
@@ -24,4 +25,5 @@ build() {
 package() {
   cd sift
   make USE_PGXS=1 DESTDIR="$pkgdir" install
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md DESIGN.md docs/*.md
 }
