@@ -88,6 +88,28 @@ Timed sections (index builds, warm-up + measured runs) hold `flock /tmp/sift-per
 engine server runs in a `systemd-run --user --scope` with `CPUQuota=800%` and `MemoryMax=32G`
 (`CPU_QUOTA`, `MEM_MAX`); load generators run outside it.
 
+## Attribute search (`places.sh`)
+
+sift against ParadeDB on the shape of a multi-field directory search: one table of attributes, word-prefix
+AND across fields (name, alternative names, city, regions, country, postal code, address, type,
+categories), 1-2 letter prefixes, name matches boosted x3, top-k by score, filtered and unordered
+scans, `count(*)`. The real attributes cannot be exported, so `places.py` makes a synthetic
+directory (Zipfian pseudo-words, skewed first letters) and 300 typed queries per class; ParadeDB is
+indexed as the application does (`edge_ngram(1, 15)` on a name field and an all-fields field), sift
+with `fields = 'name', prefix_index = 3` on `name || chr(29) || other fields`.
+
+```sh
+scripts/pgtest.sh install                 # sift into /tmp/sift-arch/root; pg_search comes from pg_config
+ROWS=300000 bench/places.sh init           # cluster under /tmp/sift-props (port 56060), load, build both indexes
+WLS="top boost" bench/places.sh run p1 p2  # workloads top boost filter count scan; classes p1 p2 p3 p4 w1 a2 a2s a3 x2
+bench/places.sh destroy
+```
+
+Classes are what a user has typed: `p1`-`p4` one word cut to 1-4 letters, `w1` a whole word, `a2`/`a2s`
+two words (last cut to 2 / 1 letters), `a3` three words, `x2` name word plus city. `run` prints the
+p50 / p95 ms of single-client pgbench transactions (each one primary-key lookup of the query text plus the
+statement), `SECS` seconds per cell, `SIFT_OPTS` overrides the sift index options.
+
 ## Remote host
 
 `remote.sh` reproduces everything on another machine under `~/Projects/sift` without sudo: a
