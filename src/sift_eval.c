@@ -1764,20 +1764,11 @@ static int
 score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftDocChunk *dc, int b, float4 theta, RankWork *wk)
 {
 	SiftSegment *seg = p->seg[rs->s];
-	const uint8 *off = g->off;
 	bool		any = false;
 
-	memset(wk->res, 0, sizeof(BlockMask));
 	memset(wk->uni, 0, sizeof(BlockMask));
-	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
-		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
-		{
-			int			page = wd * 64 + pg_rightmost_one_pos64(m);
-
-			if (page / SIFT_BLK_PAGES != b)
-				continue;
-			memcpy(wk->res[page % SIFT_BLK_PAGES], off, g->w);
-		}
+	if (!term_mask(g, b, wk->res))
+		memset(wk->res, 0, sizeof(BlockMask));
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
 		uint64		present[SIFT_OFFMASK_WORDS];
