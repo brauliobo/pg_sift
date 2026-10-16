@@ -174,6 +174,9 @@ _PG_init(void)
 	define_gucs();
 	define_reloptions();
 	sift_planner_init();
+#ifdef SIFT_TESTING
+	sift_leak_test_init();
+#endif
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(OPEROID, catalog_invalidate, (Datum) 0);

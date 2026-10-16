@@ -69,7 +69,7 @@ for my $name (sort keys %shape)
 		ok($pid, "$name: a parallel worker is running");
 
 		my $log_offset = -s $node->logfile;
-		kill 'KILL', $pid;
+		kill_expected($pid);
 		$node->wait_for_log(qr/database system is ready to accept connections/, $log_offset);
 		eval { $bg->quit };
 		$node->wait_for_log(qr/terminated by signal 9/, $log_offset);

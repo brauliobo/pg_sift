@@ -23,7 +23,11 @@
 #
 # SANITIZE=1 install builds with ASan+UBSan; install runs make clean whenever
 # SANITIZE or SIFT_TESTING changes. start then preloads the sanitizer runtimes
-# into the server; reports go to $SIFT_TMP/sanitizer/ (sanitizer-report).
+# into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
+# $SIFT_TMP/sanitizer/ (sanitizer-report).
+# Every cluster is under the leak gate of scripts/leakcheck.sh: start records the memory of the
+# long-lived processes, stop checks the cluster, stops it cleanly (fast, so that LeakSanitizer
+# reports) and scans the logs. Exit 1 on a finding.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,6 +40,7 @@ SOCK=$TMP/sock
 SANDIR=$TMP/sanitizer
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
+. "$(dirname "$0")/leakcheck.sh"
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
@@ -60,19 +65,14 @@ install() {
 
 # The lines that make the staged sift loadable (the server's own install on PostgreSQL 17)
 conf() {
+	leak_conf
 	(( PG_MAJOR >= 18 )) || return 0
 	echo "extension_control_path = '$SHAREDIR:\$system'"
 	echo "dynamic_library_path = '$PKGLIBDIR:\$libdir'"
 }
 
 # The server binary is not instrumented, so the ASan runtime must be preloaded.
-sanitizer_env() {
-	[[ $(cat "$ROOT/.flavor" 2>/dev/null) == asan* ]] || return 0
-	mkdir -p "$SANDIR"
-	export LD_PRELOAD=$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)
-	export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=$SANDIR/asan
-	export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:log_path=$SANDIR/ubsan
-}
+sanitizer_env() { [[ $(cat "$ROOT/.flavor" 2>/dev/null) != asan* ]] || leak_sanitizer_env "$SANDIR"; }
 
 start() {
 	mkdir -p "$SOCK"
@@ -91,10 +91,17 @@ start() {
 	fi
 	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
+	leak_baseline "$DATA"
 }
 
 stop() {
-	[[ -f $DATA/postmaster.pid ]] && pg_ctl -D "$DATA" -m fast -w stop >/dev/null || true
+	[[ -f $DATA/postmaster.pid ]] || return 0
+	local rc=0
+	leak_cluster "$DATA" || rc=1
+	pg_ctl -D "$DATA" -m fast -w stop >/dev/null
+	leak_after_stop "$DATA" || rc=1
+	leak_scan "$TMP" || rc=1
+	return $rc
 }
 
 tap() {
@@ -115,11 +122,11 @@ case ${1:-} in
 	env)
 		echo "export PGHOST=$SOCK PGPORT=$PORT PGUSER=postgres SIFT_ROOT=$ROOT"
 		sanitizer_env
-		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
+		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS LSAN_OPTIONS=$LSAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
 		;;
 	regress) make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres ;;
 	tap) tap "${2:-}" ;;
-	destroy) stop; rm -rf "$TMP" ;;
-	sanitizer-report) ! cat "$SANDIR"/* 2>/dev/null | grep -m 40 -A 20 -E 'ERROR: AddressSanitizer|runtime error:' ;;
+	destroy) stop || true; rm -rf "$TMP" ;;
+	sanitizer-report) leak_scan "$SANDIR" ;;
 	*) sed -n '2,25p' "$0"; exit 1 ;;
 esac

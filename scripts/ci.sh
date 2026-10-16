@@ -18,11 +18,15 @@
 # 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick
 # 4096, full 8192). Logs: <scratch>/logs/<suite>.log. Stages whose sift code has not landed are
 # skipped, not failed. Exit 1 if any suite fails.
+#
+# The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
+# server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
+# recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
-[[ $MODE == quick || $MODE == full ]] || { sed -n '2,20p' "$0"; exit 1; }
+[[ $MODE == quick || $MODE == full ]] || { sed -n '2,24p' "$0"; exit 1; }
 renice -n 19 $$ >/dev/null
 S=$REPO/scripts
 BASE=${SIFT_CI_TMP:-/tmp/sift-ci-$$}
@@ -74,10 +78,7 @@ lane() {
 	mkdir -p "$SIFT_TMP"
 	[[ $2 == 1 ]] && "$S/pgtest.sh" start >"$LOG/$LANE.start.log" 2>&1
 	"$3"
-	if [[ $2 == 1 ]]; then
-		[[ $MODE == full ]] && suite "sanitizer-$LANE" "$S/pgtest.sh" sanitizer-report
-		"$S/pgtest.sh" stop
-	fi
+	[[ $2 != 1 ]] || "$S/pgtest.sh" stop
 }
 
 if [[ $MODE == full ]]; then
@@ -128,6 +129,7 @@ export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
 suite build "$S/pgtest.sh" install
 grep -q PASS "$LOG/main.result" || { cat "$LOG/build.log"; failed=1; exit 1; }
+suite leakcheck-selftest "$S/leakcheck.sh" selftest
 
 pids=()
 for spec in "${LANES[@]}"; do
@@ -136,6 +138,7 @@ for spec in "${LANES[@]}"; do
 	pids+=($!)
 done
 wait "${pids[@]}"
+suite leakcheck "$S/leakcheck.sh" scan "$BASE"
 
 echo
 green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
