@@ -1,0 +1,61 @@
+name: release
+
+# A v* tag builds the PostgreSQL 18 .deb and .rpm of that tag, smoke-tests them in fresh containers (scripts/package.sh) and
+# attaches them with SHA256SUMS to the GitHub release of the tag (created if it does not exist yet).
+# workflow_dispatch rebuilds the packages of an existing tag with the packaging recipes of the selected ref.
+# Pull requests that touch the packaging build and test the packages of the merge commit, without publishing.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: [packaging/**, scripts/package.sh, .github/workflows/release.yml]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to package and attach to its release (for example v1.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REF: ${{ github.event_name == 'pull_request' && 'HEAD' || inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build and test the packages
+        run: scripts/package.sh all "$REF" dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: packages
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Attach to the release
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          gh release upload "$TAG" dist/*.deb dist/*.rpm dist/SHA256SUMS --clobber
