@@ -6,7 +6,7 @@
 - `count(*)`;
 - build time, update cost, and resource use.
 
-Status: 1.0.0. Of the extras below, 9 (parallel scan) was dropped after measurement; 10 (filter-mask pushdown) and 11 (keyword facets) are planned for 1.1.
+Status: 1.1.0. Of the extras below, 9 (parallel scan, opt-in and off by default), 10 (filter-mask pushdown) and 11 (keyword facets) are implemented in 1.1; 1.0.0 had none of them.
 
 This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), (l) for the 1.1 facets, then module contracts and milestones. Estimates are marked **[est]** and are only claims until benchmark M6 confirms them.
 
@@ -309,6 +309,8 @@ Hooks used, all present in the PG18 headers (verified):
 6. **Costs.** `sift.matchsel` and `amcostestimate` estimate selectivity from the index's term statistics: df for terms, an independence product for AND, inclusion-exclusion capped for OR. Lookups cost ≈ 1 µs per term per segment at plan time.
    - Ranked SiftScan cost: `startup = UB pass + estimated k-block work`, total ≈ startup. It is strictly cheaper than Sort over a bitmap scan when there is a LIMIT.
    - **Filter pushdown (`sift.filter_pushdown = off | on | force`, default `on`).** For a ranked scan the planner also builds the relation's bitmap path over its other indexes (btree, BRIN, GIN, BitmapAnd/Or) and adds a second SiftScan path whose child is that bitmap. The executor turns the TIDBitmap into per-superblock page masks and per-page offset masks (`src/sift_filter.c`) before the ranker starts; the ranker drops superblocks and blocks with no kept page and ANDs the masks into every block it scores, so only tuples the bitmap keeps are verified. The quals stay as residual quals, so lossy pages, BRIN and GIN rechecks, MVCC and `sift.match` results are the same as without pushdown. The mask holds at most `work_mem` bytes of 64-byte page rows; pages beyond it are kept whole (lossy). Cost: the bitmap scan, plus a charge per bitmap tuple and mask row, with the page count corrected by the btree column's correlation, against the post-filter estimate of `k / pass` verified candidates. `force` takes the pushdown whenever a bitmap path exists. EXPLAIN shows the Bitmap Index Scan child and `Filter Superblocks / Pages Exact / Pages Lossy`.
+   - **Parallel scan (`sift.parallel_scan`, default off).** With the GUC on, the planner also adds partial paths: a parallel-aware SiftScan (workers take morsels of superblocks from a shared counter; a ranked scan shares its threshold θ through DSM and the participants' top-k lists are merged by the last one to finish, so rows, scores and ties equal the serial plan) and a partial `SiftCount` under a Finalize aggregate. Workers follow the planner's index-scan rule (`parallel_workers`, `min_parallel_index_scan_size`, `max_parallel_workers_per_gather`) and never exceed the superblocks of the heap. A ranked parallel path needs a known `LIMIT` and a single relation (the score must reach the target list, which a Gather below a join would not pass on). A plain Sort over a Gather of a ranked scan is removed, because it would lose the tie order. It is off by default because a Gather costs milliseconds before any work (see item 9: it pays only for unordered scans with a heavy residual qual or on much larger corpora). With the GUC off no parallel path exists and plans are the serial ones.
+   - **Parallel scan and filter pushdown.** The mask of a pushed-down filter is built from a bitmap child that one backend executes, so a SiftScan with a bitmap child is never parallel-aware: workers would each rebuild the bitmap, and sharing the mask in DSM would add a build barrier and a copy per query that the measured gains (item 10, serial) do not need. `add_scan_paths` therefore plans the parallel (partial) path only for the scan without a filter child, next to the serial path with and without the pushdown, and the planner chooses by cost: the pushed-down serial scan or the Gather over the unfiltered parallel scan. `sift.filter_pushdown = force` takes the pushdown whenever a bitmap path exists and therefore plans no parallel path for that scan. Regression `parallel_pushdown` runs all six combinations of the two GUCs and compares ranked top-k (ctids, scores, order), matches and counts with both off.
 7. **EXPLAIN.** `ExplainCustomScan` prints the query (deparsed), mode, k, segments (immutable/mutable), SBs and blocks scored or skipped, candidates, heap checks, final θ, and pages prefetched. ANALYZE prints actual counters.
 
 ---
@@ -531,7 +533,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - custom rmgr;
   - statement-level insert batching;
   - non-x86 SIMD (scalar works everywhere; NEON later);
-  - parallel scan on by default (opt-in through `sift.parallel_scan`, item 9).
+  - parallel scan by default (opt-in since 1.1 through `sift.parallel_scan`, item 9).
 
 ---
 
@@ -553,7 +555,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - No multi-valued fields: an index has one key and the whole value is one term, so a `text[]` cannot be facetted by element. Index one row per value in a side table, or index `array_to_string` and accept the joined value as the term.
   - Memory: 64 bytes per matching heap page, plus the term bytes and a small entry per distinct value and segment, in the function's context (not `work_mem`). A 20,000-value column over 218,000 articles is a few MB.
 - **Cost model.** A call costs the matches (collected like `count(*)`) plus about 0.7 microseconds per distinct value (dictionary scan, two sorts, one posting seek and AND-count; a top-k stops early only when values have fewer documents than the k-th count). `GROUP BY` costs the matches plus a heap fetch of every match. So the function wins when the matches are many and the values few (a category, a year, a letter), and loses when the query is selective or the column has thousands of values; the planner is not asked to choose, the caller is.
-- **Measured** (`bench/facets.sh`: the first 25,000 Simple English Wikipedia articles, 1 client, median of 2 rounds of 3 s, PostgreSQL 18 with `max_parallel_workers_per_gather = 2`, a loaded shared host: load average 27 before and 23 after, so absolute numbers carry noise). 24 queries per workload; `one` = one word of every document-frequency band, `and` / `or` = two words. Queries per second; the facet result equalled the sift `GROUP BY` for every query.
+- **Measured** (`bench/steps/facets.sh`: the first 25,000 Simple English Wikipedia articles, 1 client, median of 2 rounds of 3 s, PostgreSQL 18 with `max_parallel_workers_per_gather = 2`, a loaded shared host: load average 27 before and 23 after, so absolute numbers carry noise). 24 queries per workload; `one` = one word of every document-frequency band, `and` / `or` = two words. Queries per second; the facet result equalled the sift `GROUP BY` for every query.
 
   | column | workload | `sift.facets` | sift GROUP BY | GIN GROUP BY | ES terms agg |
   |---|---|---|---|---|---|
@@ -645,4 +647,4 @@ Each milestone ends with green `make installcheck` plus its listed tests, under 
 | M4 | Mutability | mutable, maint (seal, promote, merge, recycle, sweep, worker), vacuum liveness | isolation suite; TAP crash and replica; 1,000 UPDATE/s soak with verify |
 | M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs ParadeDB; cold p99 |
 | M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
-| M7 | Extras beyond the baseline design | phrase pairs (done); parallel scan with shared θ (dropped after measurement); filter-mask pushdown and keyword facets (planned for 1.1) | Each meets its ≥ 10 % gate or is dropped |
+| M7 | Extras beyond the baseline design | phrase pairs (done); parallel scan with shared θ (1.1, opt-in); filter-mask pushdown and keyword facets (1.1) | Each meets its ≥ 10 % gate or is dropped |
