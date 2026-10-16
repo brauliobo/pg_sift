@@ -1,0 +1,125 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2lock s1b s1plan s1scan s3i s3p s3d s3v s2unlock s1check s1c s3check
+step s2lock: BEGIN; LOCK TABLE iso_gate IN ACCESS EXCLUSIVE MODE;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_par;
+snapshot
+--------
+t       
+(1 row)
+
+step s1plan: SELECT iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id)') AS parallel_scan,
+			  iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id) ORDER BY sift.score(ctid) DESC LIMIT 100000') AS parallel_rank;
+parallel_scan|parallel_rank
+-------------+-------------
+t            |t            
+(1 row)
+
+step s1scan: INSERT INTO got SELECT 'scan', array_agg(id ORDER BY id) FROM iso_par WHERE body @@> 'common' AND iso_gate(id); <waiting ...>
+step s3i: INSERT INTO iso_par SELECT g, 'common fresh ' || g || repeat(' filler', 20), repeat('x', 1500) FROM generate_series(5001, 5600) g;
+step s3p: SELECT sift.promote('iso_par_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3d: DELETE FROM iso_par WHERE id % 3 = 0;
+step s3v: VACUUM iso_par;
+step s2unlock: COMMIT;
+step s1scan: <... completed>
+step s1check: SELECT iso_par_ok() AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s3check: SELECT iso_agree('iso_par', 'common') AS agree, iso_agree('iso_par', 'rare') AS agree_rare, iso_verify('iso_par_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
+
+starting permutation: s2lock s1b s1plan s1rank s3i s3p s3d s3v s2unlock s1check s1c s3check
+step s2lock: BEGIN; LOCK TABLE iso_gate IN ACCESS EXCLUSIVE MODE;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_par;
+snapshot
+--------
+t       
+(1 row)
+
+step s1plan: SELECT iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id)') AS parallel_scan,
+			  iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id) ORDER BY sift.score(ctid) DESC LIMIT 100000') AS parallel_rank;
+parallel_scan|parallel_rank
+-------------+-------------
+t            |t            
+(1 row)
+
+step s1rank: INSERT INTO got SELECT 'rank', array_agg(id ORDER BY id) FROM
+			  (SELECT id FROM iso_par WHERE body @@> 'common' AND iso_gate(id) ORDER BY sift.score(ctid) DESC LIMIT 100000) t; <waiting ...>
+step s3i: INSERT INTO iso_par SELECT g, 'common fresh ' || g || repeat(' filler', 20), repeat('x', 1500) FROM generate_series(5001, 5600) g;
+step s3p: SELECT sift.promote('iso_par_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3d: DELETE FROM iso_par WHERE id % 3 = 0;
+step s3v: VACUUM iso_par;
+step s2unlock: COMMIT;
+step s1rank: <... completed>
+step s1check: SELECT iso_par_ok() AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s3check: SELECT iso_agree('iso_par', 'common') AS agree, iso_agree('iso_par', 'rare') AS agree_rare, iso_verify('iso_par_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
+
+starting permutation: s2lock s1b s1plan s1count s3i s3p s3d s3v s2unlock s1check s1c s3check
+step s2lock: BEGIN; LOCK TABLE iso_gate IN ACCESS EXCLUSIVE MODE;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_par;
+snapshot
+--------
+t       
+(1 row)
+
+step s1plan: SELECT iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id)') AS parallel_scan,
+			  iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id) ORDER BY sift.score(ctid) DESC LIMIT 100000') AS parallel_rank;
+parallel_scan|parallel_rank
+-------------+-------------
+t            |t            
+(1 row)
+
+step s1count: INSERT INTO got SELECT 'count', ARRAY[count(*)] FROM iso_par WHERE body @@> 'common' AND iso_gate(id); <waiting ...>
+step s3i: INSERT INTO iso_par SELECT g, 'common fresh ' || g || repeat(' filler', 20), repeat('x', 1500) FROM generate_series(5001, 5600) g;
+step s3p: SELECT sift.promote('iso_par_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3d: DELETE FROM iso_par WHERE id % 3 = 0;
+step s3v: VACUUM iso_par;
+step s2unlock: COMMIT;
+step s1count: <... completed>
+step s1check: SELECT iso_par_ok() AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s3check: SELECT iso_agree('iso_par', 'common') AS agree, iso_agree('iso_par', 'rare') AS agree_rare, iso_verify('iso_par_idx') AS verified;
+agree|agree_rare|verified
+-----+----------+--------
+t    |t         |t       
+(1 row)
+
