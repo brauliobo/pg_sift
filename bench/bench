@@ -44,7 +44,7 @@ Options (not every option applies to every command)
                       quick  25,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of 1 s cells:
                              the whole default run takes about 10 minutes after the one-time downloads
                       ab     150,000 articles, cities15000, 3-6 rounds: the intermediate tier of docs/BENCHMARKS.md
-                      full   218,058 articles (all), cities500 (236,262 places), 4-6 rounds: about 1.5 hours
+                      full   218,058 articles (all), cities500 (236,262 places), 4-6 rounds: about 1 h 15 min (2 hours with the cold-cache tables, on two cores)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated. run/cold/all: sift, sift_nopos (positions = off), sift_pairs (phrase_index = pairs),
@@ -78,7 +78,7 @@ Environment
 
 Examples
   bench/bench all                                     clean machine to tables, reduced scale, about 10 minutes
-  bench/bench all --full                              the full-size run (about 1.5 hours)
+  bench/bench all --full                              the full-size run (about 2 hours on two cores)
   bench/bench setup && bench/bench run --tier full --engines sift,pg_search
   bench/bench run --dataset places --tier ab --duration 4
   bench/bench report --docs --engines sift,sift_pairs,pg_search bench/out/latest
