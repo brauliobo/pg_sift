@@ -516,7 +516,7 @@ SELECT pd_kind('fp', 'common', 'live AND tenant = 7', 'force') AS partial_kind, 
 (1 row)
 
 DROP TABLE fp;
--- partitions: each one plans its own bitmap (a ranked scan of the partitioned parent itself is not supported yet)
+-- partitions: each one plans its own bitmap, also in a ranked scan through the partitioned parent (rank_partition)
 CREATE TABLE fq (id int, tenant int, body text) PARTITION BY RANGE (id);
 CREATE TABLE fq1 PARTITION OF fq FOR VALUES FROM (0) TO (8000);
 CREATE TABLE fq2 PARTITION OF fq FOR VALUES FROM (8000) TO (16000);

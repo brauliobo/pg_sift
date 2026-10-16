@@ -8,6 +8,8 @@
   the matches of a query per value.
 - Parallel scan: parallel-aware SiftScan and SiftCount with a shared ranked threshold, behind `sift.parallel_scan` (default off). It is
   never planned together with a pushed-down filter.
+- Partitioned tables: `ORDER BY sift.score(ctid) DESC LIMIT k` through a partitioned parent ranks each partition with a ranked scan under a
+  MergeAppend (scores use each partition's own statistics); `sift.max_score()` is not available through a parent.
 - Fix: a crash rechecking a phrase with `count(*)` or a ranked scan on an expression index (also affects 1.0.0).
 - Upgrade from 1.0: install the new files and run `ALTER EXTENSION pg_sift UPDATE`.
 
