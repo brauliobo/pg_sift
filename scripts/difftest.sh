@@ -7,8 +7,8 @@
 #   scripts/difftest.sh --repro FILE
 #   INDEX_OPTS="WITH (phrase_index = pairs)" scripts/difftest.sh ...   build the index with options
 #
-# Each round checks every query in every stage (parse, seqscan, bitmap, count,
-# ranked) plus verify/stats/tokenize, then mutates the corpus (deletes, updates,
+# Each round checks every query in every stage (parse, seqscan, bitmap, count, ranked and the parallel
+# scan_par, count_par, ranked_par) plus verify/stats/tokenize, then mutates the corpus (deletes, updates,
 # inserts) with VACUUM, promotion and merge interleaved; the last round ends with REINDEX so ranked
 # scores are compared bit for bit. Stages whose sift code has not landed report
 # "skip". The first failure per stage and round (at most --minimize per round)

@@ -79,7 +79,7 @@ BEGIN
 			ELSE sift_diff.rand_word() END AS word
 		FROM generate_series(1, nvocab) r;
 	ALTER TABLE diff_vocab ADD PRIMARY KEY (rank);
-	CREATE TABLE diff_docs (id int, body text, pad text) WITH (autovacuum_enabled = off);
+	CREATE TABLE diff_docs (id int, body text, pad text) WITH (autovacuum_enabled = off, parallel_workers = 3);
 	ALTER TABLE diff_docs ALTER COLUMN pad SET STORAGE plain;
 	CREATE INDEX diff_docs_id ON diff_docs (id);
 	CREATE INDEX diff_docs_id_brin ON diff_docs USING brin (id) WITH (pages_per_range = 1);
@@ -250,11 +250,16 @@ END $$;
 -- Engine under test. Stage selects the plan shape for the real engine.
 CREATE OR REPLACE FUNCTION sift_diff.plan_for(stage text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('enable_seqscan', (stage <> 'bitmap')::text, true),
-		set_config('enable_bitmapscan', (stage <> 'seqscan')::text, true),
-		set_config('enable_indexscan', (stage <> 'seqscan')::text, true),
+	PERFORM set_config('enable_seqscan', (stage NOT IN ('bitmap', 'scan_par'))::text, true),
+		set_config('enable_bitmapscan', (stage NOT IN ('seqscan', 'scan_par'))::text, true),
+		set_config('enable_indexscan', (stage NOT IN ('seqscan', 'scan_par'))::text, true),
 		set_config('sift.enable_scan', (stage NOT IN ('seqscan', 'bitmap'))::text, true),
-		set_config('sift.enable_count', (stage NOT IN ('seqscan', 'bitmap'))::text, true);
+		set_config('sift.enable_count', (stage NOT IN ('seqscan', 'bitmap'))::text, true),
+		-- the *_par stages run the sift plans parallel (3 workers, free to start); the others keep the defaults
+		set_config('max_parallel_workers_per_gather', CASE WHEN stage LIKE '%\_par' THEN '3' END, true),
+		set_config('parallel_setup_cost', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),
+		set_config('parallel_tuple_cost', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),
+		set_config('min_parallel_index_scan_size', CASE WHEN stage LIKE '%\_par' THEN '0' END, true);
 END $$;
 
 CREATE OR REPLACE FUNCTION sift_diff.with_mutant(m text) RETURNS void LANGUAGE sql
@@ -288,7 +293,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE OR REPLACE FUNCTION sift_diff.e_count(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION sift_diff.e_count(q text, stage text DEFAULT 'count') RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
 	eng text := sift_diff.setting('engine', 'sift');
 	n bigint;
@@ -299,11 +304,14 @@ BEGIN
 		PERFORM sift_diff.with_mutant('');
 		RETURN n;
 	END IF;
+	PERFORM sift_diff.plan_for(stage);
 	EXECUTE format('SELECT count(*) FROM %s WHERE body @@> %L', sift_diff.setting('tbl', 'diff_docs'), q) INTO n;
+	PERFORM sift_diff.plan_for('default');
 	RETURN n;
 END $$;
 
-CREATE OR REPLACE FUNCTION sift_diff.e_topk(q text, k int, OUT ctids tid[], OUT scores real[]) LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION sift_diff.e_topk(q text, k int, stage text DEFAULT 'ranked', OUT ctids tid[], OUT scores real[])
+LANGUAGE plpgsql AS $$
 DECLARE
 	eng text := sift_diff.setting('engine', 'sift');
 BEGIN
@@ -313,9 +321,11 @@ BEGIN
 		PERFORM sift_diff.with_mutant('');
 		RETURN;
 	END IF;
+	PERFORM sift_diff.plan_for(stage);
 	EXECUTE format('SELECT array_agg(c ORDER BY n), array_agg(s ORDER BY n) FROM (SELECT row_number() OVER () AS n, c, s
 		FROM (SELECT ctid AS c, sift.score(ctid) AS s FROM %s WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT %s) x) y',
 		sift_diff.setting('tbl', 'diff_docs'), q, k) INTO ctids, scores;
+	PERFORM sift_diff.plan_for('default');
 END $$;
 
 CREATE OR REPLACE FUNCTION sift_diff.set_diff(ref tid[], got tid[]) RETURNS text LANGUAGE sql IMMUTABLE AS $$
@@ -367,7 +377,7 @@ END $$;
 
 -- Clean state: row-for-row, bit-equal scores. Otherwise statistics may count
 -- unvacuumed versions, so only membership, order and length are checked.
-CREATE OR REPLACE FUNCTION sift_diff.ranked_diff(q text, k int, clean bool, ref_set tid[]) RETURNS text
+CREATE OR REPLACE FUNCTION sift_diff.ranked_diff(q text, k int, clean bool, ref_set tid[], stage text DEFAULT 'ranked') RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE
 	ref record;
@@ -376,7 +386,7 @@ DECLARE
 BEGIN
 	SELECT array_agg(t.ctid ORDER BY t.rank) AS ctids, array_agg(t.score ORDER BY t.rank) AS scores INTO ref
 	FROM sift_ref.topk(q, k) t;
-	SELECT * INTO got FROM sift_diff.e_topk(q, k);
+	SELECT * INTO got FROM sift_diff.e_topk(q, k, stage);
 	IF clean THEN
 		FOR i IN 1 .. greatest(coalesce(cardinality(ref.ctids), 0), coalesce(cardinality(got.ctids), 0)) LOOP
 			IF ref.ctids[i] IS DISTINCT FROM got.ctids[i] OR float4send(ref.scores[i]) IS DISTINCT FROM float4send(got.scores[i]) THEN
@@ -423,8 +433,8 @@ CREATE OR REPLACE FUNCTION sift_diff.e_run(stage text, q text, k int) RETURNS vo
 BEGIN
 	CASE stage
 		WHEN 'parse' THEN PERFORM sift.parse_query(q);
-		WHEN 'count' THEN PERFORM sift_diff.e_count(q);
-		WHEN 'ranked' THEN PERFORM sift_diff.e_topk(q, k);
+		WHEN 'count', 'count_par' THEN PERFORM sift_diff.e_count(q, stage);
+		WHEN 'ranked', 'ranked_par' THEN PERFORM sift_diff.e_topk(q, k, stage);
 		ELSE PERFORM sift_diff.e_set(stage, q);
 	END CASE;
 END $$;
@@ -449,7 +459,7 @@ CREATE OR REPLACE FUNCTION sift_diff.check(q text, k int, clean bool, only_stage
 RETURNS TABLE (stage text, status text, detail text) LANGUAGE plpgsql AS $$
 DECLARE
 	stages text[] := CASE WHEN sift_diff.setting('engine', 'sift') = 'sift'
-		THEN '{parse,seqscan,bitmap,count,ranked}' ELSE '{seqscan,count,ranked}' END;
+		THEN '{parse,seqscan,bitmap,count,ranked,scan_par,count_par,ranked_par}' ELSE '{seqscan,count,ranked}' END;
 	ref_err text;
 	ref_set tid[];
 	over bool := false;
@@ -468,11 +478,11 @@ BEGIN
 				PERFORM sift_diff.e_run(stage, q, k);
 				detail := 'engine succeeded, reference raised ' || ref_err;
 			ELSE
-				detail := CASE stage
+				detail := CASE replace(stage, '_par', '')
 					WHEN 'parse' THEN sift_diff.parse_diff(q)
 					WHEN 'count' THEN (SELECT CASE WHEN c <> cardinality(ref_set) THEN format('count %s, reference %s', c, cardinality(ref_set)) END
-						FROM sift_diff.e_count(q) c)
-					WHEN 'ranked' THEN sift_diff.ranked_diff(q, k, clean, ref_set)
+						FROM sift_diff.e_count(q, stage) c)
+					WHEN 'ranked' THEN sift_diff.ranked_diff(q, k, clean, ref_set, stage)
 					ELSE sift_diff.set_diff(ref_set, sift_diff.e_set(stage, q)) END;
 			END IF;
 			status := CASE WHEN detail IS NULL THEN 'ok' ELSE 'fail' END;
