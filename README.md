@@ -6,6 +6,7 @@ bitmaps, so AND, OR and NOT are bitmap operations, and MVCC visibility comes fro
 
 - Exact BM25 (`sift.score()`), ranked top-k with block-max pruning, `count(*)` straight from the index.
 - One query language: `AND`, `OR`, `NOT`, `{any of}`, phrases, prefix, wildcard, regex, fuzzy, boosts, named fields.
+- Filters pushed into the ranked scan, keyword facets (`sift.facets`) and an opt-in parallel scan (1.1).
 - Ordinary table semantics: MVCC, concurrent writes, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes,
   parallel `CREATE INDEX`.
 - Crash safe and replica safe through generic WAL, with no `shared_preload_libraries`.
@@ -27,7 +28,7 @@ schema `sift`):
 CREATE EXTENSION pg_sift;
 ```
 
-No `shared_preload_libraries` entry or restart is needed. Physical replication works because every change goes through generic WAL; a
+No `shared_preload_libraries` entry or restart is needed. After installing a newer version, run `ALTER EXTENSION pg_sift UPDATE` (1.0 to 1.1 adds `sift.facets`). Physical replication works because every change goes through generic WAL; a
 standby needs pg_sift installed to run queries.
 
 ## Quick start
@@ -98,15 +99,32 @@ one.
 ## Filters and joins
 
 Other predicates and joins apply to the rows the sift scan produces; without ranking the planner can also combine the index with btree
-indexes in a bitmap scan. Filters are not pushed into the ranked scan (1.1, see [Limits](#limits-and-roadmap)): a very selective filter on
-top of a very common term makes the scan rank many candidates to find `LIMIT` survivors.
+indexes in a bitmap scan.
 
 ```sql
 CREATE INDEX docs_published ON docs (published);
 SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01' AND category = 1
 ORDER BY sift.score(ctid) DESC LIMIT 10;
 SELECT d.id, c.name FROM docs d JOIN (VALUES (1, 'travel'), (2, 'jobs')) c(id, name) ON c.id = d.category
-WHERE d.body @@> 'friendly' ORDER BY sift.score(d.ctid) DESC LIMIT 10;
+WHERE d.body @@> 'friendly' ORDER BY sift.score(ctid) DESC LIMIT 10;
+```
+
+### Filter pushdown
+
+A selective filter on top of a very common term used to make a ranked scan score many candidates to find `LIMIT` survivors. With
+`sift.filter_pushdown` (`on` by default) the planner also builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and gives
+it to the ranked scan as a child. The scan reads the bitmap first and then scores and verifies only the matches it keeps, so the work follows
+the filter, not the common term. The quals still apply as residual conditions, so results (rows, scores, order) equal those of the
+post-filter plan. `off` never pushes a filter down, `force` always does when a bitmap path exists; with `on` the planner costs both plans.
+Pushdown pays for selective filters (a 0.1% filter on 218,058 articles, ranked `or`: mean 23.6 ms to 0.22 ms with the filter clustered in
+the heap, 15.0 ms to 0.86 ms scattered); a broad scattered filter (10%) can be slower, and the planner then keeps the post-filter plan. The
+bitmap mask is limited to `work_mem`; pages beyond it are kept whole.
+
+```sql
+SET sift.filter_pushdown = force;
+EXPLAIN (analyze, costs off, timing off, summary off, buffers off)
+SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01'
+ORDER BY sift.score(ctid) DESC LIMIT 10;      -- Bitmap Index Scan child; Filter Superblocks / Pages Exact / Pages Lossy
 ```
 
 ## Analyzers: stemming, folding, languages, stopwords
@@ -212,13 +230,16 @@ SELECT sift.verify('docs_body', true);                            -- structure c
 - **Reading EXPLAIN** (the last query of the ranking section): `Custom Scan (SiftScan)` is a sift scan (`Order: score DESC` ranked, `Limit Hint` the k it got); `SiftCount` is the
   `count(*)` pushdown (one table, only `count(*)`, every condition a sift match; otherwise `Aggregate` over `SiftScan`). With `ANALYZE`:
   `Superblocks` (256-page ranges read), `Blocks Scored` / `Blocks Skipped` (16-page blocks scored or pruned), `Candidates` produced, `Heap
-  Checks` (visibility checks in the heap, 0 for `count(*)` on a vacuumed table). `Bitmap Index Scan` appears when the planner combines the
-  index with others; `sift.enable_scan = off` forces it.
+  Checks` (visibility checks in the heap, 0 for `count(*)` on a vacuumed table). `Filter Superblocks`, `Filter Pages Exact` and `Filter Pages Lossy` appear
+  with a pushed-down filter, whose `Bitmap Index Scan` is a child of the scan. A top-level `Bitmap Index Scan` on the sift index appears when the
+  planner combines it with others; `sift.enable_scan = off` forces it.
 
 | GUC | default | meaning |
 |---|---|---|
 | `sift.max_expansions` | 512 | terms a prefix, wildcard, regex or fuzzy leaf may expand to (error above) |
 | `sift.enable_scan`, `sift.enable_count` | on | use SiftScan, use the `count(*)` pushdown |
+| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals (see Filter pushdown) |
+| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 | `sift.prefetch` | on | read ahead the heap pages of an unordered scan |
 | `sift.async_maintenance` | on | superuser; promote and merge in a background worker |
 | `sift.simd` | auto | cap the SIMD level: `avx512`, `avx2`, `scalar` |
@@ -226,43 +247,60 @@ SELECT sift.verify('docs_body', true);                            -- structure c
 | reloption | default | meaning |
 |---|---|---|
 | `k1`, `b` | 1.2, 0.75 | BM25 saturation (0-1000) and length normalization (0-1); REINDEX |
+| `analyzer` | `text` | `keyword`: each whole value is one term, for `sift.facets`; REINDEX |
 | `stemmer` | `none` | `en` or `none`; REINDEX |
 | `case_folding`, `accent_folding` | true | fold case, fold accents; REINDEX |
 | `phrase_index`, `prefix_index`, `fields` | `none`, 0, none | `pairs`; prefix length 0-15; section names; REINDEX |
 | `mutable_limit` | 4096 | kB of a mutable segment before it is sealed (64-1048576); no REINDEX |
 | `build_segments` | 0 | force N segments in `CREATE INDEX` (disables the parallel build) |
 
-## Limits and roadmap
+## Limits
 
 - PostgreSQL 18 only; heap tables only; BLCKSZ 8192 only; database encoding UTF8 or SQL_ASCII.
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.
 - Phrases are rechecked in the heap unless the index uses `phrase_index = pairs`.
 - `sift.score()` is not available through a partitioned parent table; rank each partition.
-- Only the 1.0 install script exists; there is no `ALTER EXTENSION UPDATE` path yet.
-- Parallel scan was measured and dropped. **Roadmap (1.1):** filter-mask pushdown (exact filtered top-k) and keyword facets.
 
-## Facets
+## Keyword facets
 
-`analyzer = keyword` indexes each whole value as one term (folded like a word unless `case_folding` /
-`accent_folding` are off). `sift.facets(index, facet_index, query, lim, nulls)` counts the visible matches of a
-query on `index` per value of `facet_index`, from the bitmaps, without reading the heap beyond what `count(*)` reads:
+`analyzer = keyword` indexes each whole value as one term (folded like a word unless `case_folding` / `accent_folding` are off), so every
+distinct value of a column is a dictionary entry whose posting is the bitmap of its rows. `sift.facets(index, facet_index, query, lim, nulls)`
+counts the visible matches of a query on `index` per value of `facet_index`, from the bitmaps, without reading the heap beyond what
+`count(*)` reads. The key must be text, so facet an integer through an expression:
 
 ```sql
-CREATE INDEX docs_category ON docs USING sift (category) WITH (analyzer = keyword);
-
-SELECT * FROM sift.facets('docs_body', 'docs_category', 'pool OR spa', 10);
--- the rows of: SELECT category, count(*) FROM docs WHERE body @@> 'pool OR spa'
---              GROUP BY category ORDER BY 2 DESC, category COLLATE "C" LIMIT 10
+CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);
+SELECT * FROM sift.facets('docs_body', 'docs_category', 'friendly OR pool', 10);      -- value, count: 1 | 3
+-- the rows of: SELECT category::text AS value, count(*) FROM docs WHERE body @@> 'friendly OR pool'
+--              GROUP BY 1 ORDER BY 2 DESC, category::text COLLATE "C" LIMIT 10
 ```
 
-`lim` NULL returns every value; `nulls => true` adds a row with a NULL value for the matches without one (empty
-and NULL values have no term). The counts equal the `GROUP BY` of the same snapshot, after DELETE, UPDATE and
-VACUUM. Values are at most 255 bytes (longer ones are an error), one column per keyword index, no `text[]`
-elements, and tables with row-level security are refused. The cost is linear in the number of distinct values plus
-the matches, and the heap is not read: it beats `GROUP BY` for broad queries over columns with tens of values
-(4.5x on 25,000 articles, a single common word) and loses for selective queries or thousands of values
-.
+`lim` NULL returns every value; `nulls => true` adds a row with a NULL value for the matches without one (empty and NULL values have no
+term). The counts equal the `GROUP BY` of the same snapshot, after DELETE, UPDATE and VACUUM. Limits:
+
+- Values are at most 255 bytes (longer ones are an error); one column per keyword index; no `text[]` (index `array_to_string` or a side
+  table with one row per element).
+- Tables with row-level security are refused, and the caller needs `SELECT` on the table.
+- The cost is linear in the number of distinct values plus the matches, and does not touch the heap. It is best for broad queries on
+  low-cardinality columns (a category, a year, a letter): 1.9-4.5x faster than the sift `GROUP BY` on 25,000 articles with 26 values. For
+  selective queries or thousands of values `GROUP BY` wins (0.5-0.9x with 2,500 values). The planner is not asked to choose: you call the
+  function where it pays.
+
+## Parallel scan
+
+`sift.parallel_scan` (`off` by default) lets the planner add parallel plans: a Gather over a parallel SiftScan or SiftCount whose workers
+take ranges of superblocks and, for a ranked scan, share the top-k threshold; rows, scores and ties equal the serial plan. A ranked parallel
+scan needs a `LIMIT` and a single table, and it is never planned with a pushed-down filter (the bitmap is built by one backend), so the
+planner picks by cost between the parallel scan and the serial pushdown. It is off because a Gather costs milliseconds before any work:
+on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x), `count(*)` was 0.06-0.29x and top-1000 / top-10000
+0.5-1.2x. Try it on much larger tables or expensive quals, and compare with `EXPLAIN (analyze)`; the usual `max_parallel_workers_per_gather`,
+`parallel_setup_cost` and `min_parallel_index_scan_size` apply.
+
+```sql
+SET sift.parallel_scan = on;
+EXPLAIN (costs off) SELECT count(*) FROM docs WHERE body @@> 'friendly';      -- Gather over a parallel SiftCount when it pays
+```
 
 ## Correctness and testing
 
