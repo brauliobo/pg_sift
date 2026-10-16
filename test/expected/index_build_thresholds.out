@@ -1,5 +1,5 @@
 -- Representation thresholds: inline (df <= 2), LIST, GROUPED from
--- sift.grouped_min_df (65536 in release), across superblocks, with
+-- sift.grouped_min_df (8192 by default), across superblocks, with
 -- block bounds and tf escapes; round trip against sift.tokenize.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -23,7 +23,7 @@ $f$;
 SHOW sift.grouped_min_df;
  sift.grouped_min_df 
 ---------------------
- 65536
+ 8192
 (1 row)
 
 -- Fillfactor 10: a few rows per page over more than two superblocks
@@ -46,7 +46,7 @@ SELECT pg_relation_size('g') / 8192 > 512 AS three_superblocks;
  t
 (1 row)
 
--- Default thresholds: everything below 65536 is inline or LIST
+-- Default thresholds: everything below 8192 is inline or LIST
 CREATE INDEX g_list ON g USING sift (body) WITH (positions = off);
 SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_list');
  df_class | terms | inline_terms | list_terms | grouped_terms 

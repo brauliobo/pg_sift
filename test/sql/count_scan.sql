@@ -6,7 +6,7 @@ CREATE TABLE c (id int PRIMARY KEY, body text, grp int);
 INSERT INTO c SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'the quick fox', 'brown dog', 'fox'])[1 + i % 5]
 	|| ' w' || i % 7, i % 3 FROM generate_series(1, 2000) i;
 INSERT INTO c VALUES (2001, NULL, 0), (2002, '', 0);
-CREATE INDEX c_idx ON c USING sift (body);
+CREATE INDEX c_idx ON c USING sift (body) WITH (positions = on);
 VACUUM ANALYZE c;
 
 -- the count through the index and by evaluating every document
@@ -70,6 +70,28 @@ SELECT count(*), count(id) FROM c WHERE body @@> 'fox';
 SET sift.enable_count = off;
 SELECT sift_plan('SELECT count(*) FROM c WHERE body @@> ''fox''') !~ 'SiftCount' AS other_plan;
 RESET sift.enable_count;
+
+-- vacuum clears the deleted documents' bits (dirty superblocks, pages back in the visibility map), and
+-- inserted or updated rows put pages out of it again next to them
+VACUUM c;
+SELECT * FROM all_same();
+INSERT INTO c SELECT 3000 + i, 'lazy fox w' || i, 1 FROM generate_series(1, 30) i;
+UPDATE c SET grp = grp + 1 WHERE id % 97 = 0;
+SELECT * FROM all_same();
+VACUUM c;
+SELECT * FROM all_same();
+
+-- without positions the heap decides the phrases: the same counts, through dead rows and new ones
+DROP INDEX c_idx;
+CREATE INDEX c_idx ON c USING sift (body) WITH (positions = off);
+VACUUM ANALYZE c;
+SELECT * FROM all_same();
+DELETE FROM c WHERE id % 13 = 0;
+SELECT * FROM all_same();
+INSERT INTO c SELECT 4000 + i, 'brown fox w' || i, 2 FROM generate_series(1, 30) i;
+SELECT * FROM all_same();
+VACUUM c;
+SELECT * FROM all_same();
 
 DROP TABLE c CASCADE;
 DROP FUNCTION via_scan(text), sift_plan(text), all_same();

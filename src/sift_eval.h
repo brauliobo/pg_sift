@@ -8,8 +8,9 @@
  * Every object lives in the context passed to sift_state_open().
  *
  * Index semantics are relaxed (sift_query.h): a positive phrase is the AND
- * of its terms, a phrase under NOT excludes nothing, and the page match
- * says whether the candidates need the recheck.
+ * of its terms (narrowed by the stored positions where the segment has them),
+ * a phrase under NOT excludes nothing, and the page match says whether the
+ * candidates need the recheck.
  */
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
@@ -101,16 +102,24 @@ extern bool sift_plan_recheck_needed(const SiftPlan *plan);
 
 /*
  * Unordered matches in heap order, one page per call: offmask holds matched
- * live offsets (bit off-1); recheck when the query has a phrase. Pages of
- * different segments sharing a block are merged (disjoint by invariant I1).
- * Holds no buffer between calls.
+ * live offsets (bit off-1); recheck when some of them need the text (a phrase
+ * the stored positions do not decide: segments without them, mutable matches,
+ * a negated phrase), all but those in sure, which the index decides alone. Pages of different segments sharing a block are
+ * merged (disjoint by invariant I1). Holds no buffer between calls.
  */
 typedef struct SiftPageMatch
 {
 	BlockNumber blk;
 	uint64		offmask[SIFT_OFFMASK_WORDS];
+	uint64		sure[SIFT_OFFMASK_WORDS];	/* subset of offmask, only with recheck */
 	bool		recheck;
 } SiftPageMatch;
+
+static inline bool
+sift_page_sure(const SiftPageMatch *pm, int off)
+{
+	return pm->sure[(off - 1) / 64] >> ((off - 1) % 64) & 1;
+}
 
 typedef struct SiftMatchIter SiftMatchIter;
 
