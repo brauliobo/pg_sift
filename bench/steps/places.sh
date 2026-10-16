@@ -11,8 +11,9 @@
 #   pg_textsearch      top, boost, filter: bm25 indexes on stored columns of the edge n-grams (1-15 letters) of the words, the
 #                      analysis of pg_search's edge_ngram(1, 15); a typed prefix becomes a whole term; boost is the sum of
 #                      the all-fields score and 3 x the name-field score of the same n-grams
-# The sift variants, rum and pg_textsearch live in their own databases (rum's columns do not enlarge the others' table, and the
-# `bm25` access method of pg_textsearch has the name of pg_search's). Engines whose extension is missing are skipped.
+# Every engine lives in a database of its own, a copy of `places` (rum's columns do not enlarge the others' table, the `bm25`
+# access method of pg_textsearch has the name of pg_search's, and no engine pays for another's hooks). Engines whose extension
+# is missing are skipped.
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
 #   bench/steps/places.sh quick|full check [oracle|rank] [N]   correctness against the SQL oracle of sql/places_oracle.sql
@@ -56,7 +57,7 @@ declare -A INDEX=(
   [pg_textsearch]="CREATE INDEX places_pg_textsearch ON places USING bm25 (($TEXT)) WITH (text_config = 'simple')")
 declare -A SETUP=(
   [pg_search]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
-  [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
+  [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift SET sift.max_expansions = 100000"
   [sift_nopos]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift_nopos SET sift.max_expansions = 100000"
   [sift_pairs]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift_pairs SET sift.max_expansions = 100000"
   [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED"
@@ -71,8 +72,9 @@ declare -A INDEX2=(
   [pg_textsearch]="CREATE INDEX places_pg_textsearch_ng ON places USING bm25 (ng_text) WITH (text_config = 'simple'); CREATE INDEX places_pg_textsearch_ngname ON places USING bm25 (ng_name) WITH (text_config = 'simple')")
 declare -A INDEXES2=([rum]="places_rum_boost" [pg_textsearch]="places_pg_textsearch_ng places_pg_textsearch_ngname")
 ENGINES=${ENGINES:-$ALL_ENGINES}
-# every engine but sift and pg_search lives in a copy of the table of its own
-edb() { case $1 in sift|pg_search) echo places ;; *) echo "places_$1" ;; esac; }
+# every engine lives in a copy of the places database of its own (a table with another engine's index would cost the engine
+# the hooks of that extension: sift measured 0.1 ms slower per query next to pg_search's index)
+edb() { echo "places_$1"; }
 
 # :q is what the user typed, :sq the same words as sift prefixes ("grand ho" -> "grand* ho*"), :sqb the boosted sift query,
 # :tq the tsquery of rum and pg_textsearch ('grand':* & 'ho':*), :ng the distinct n-grams of the typed words (pg_textsearch emulation)
@@ -116,9 +118,9 @@ FORMS="SELECT q, sq, format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq) AS sqb
                     (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', q))) AS tq FROM pq"
 
 "$STEPS/cluster.sh" init >/dev/null; "$STEPS/cluster.sh" start >/dev/null
-# sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
+# sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places (SETUP sets it)
 for e in $ENGINES; do drop_db "$(edb "$e")"; done; drop_db places
-PGDATABASE=postgres q -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
+PGDATABASE=postgres q -c "CREATE DATABASE places"
 ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
 [[ $ENGINES == *sift* ]] || { echo "sift is not installed: bench/steps/fetch.sh sift" >&2; exit 1; }
 "$STEPS/machine.sh" >"$DEST/machine.txt"
@@ -128,7 +130,7 @@ if [[ $what == check ]]; then   # the oracle tables are built once and copied in
   q -f "$BENCH/sql/places_oracle.sql" >/dev/null
   q -c "SELECT place_oracle_fill($NQ)" >/dev/null
 fi
-for e in $ENGINES; do [[ $(edb "$e") == places ]] || PGDATABASE=postgres q -c "CREATE DATABASE $(edb "$e") TEMPLATE places"; done
+for e in $ENGINES; do PGDATABASE=postgres q -c "CREATE DATABASE $(edb "$e") TEMPLATE places"; done
 : >"$DEST/builds.tsv"
 timed_build() { # ENGINE VARIANT SETUP INDEX INDEXES: engine, index build s, index bytes, table growth bytes (stored columns), setup s, variant
   local e=$1 db size=0 i heap0 t0 t1 t2
