@@ -291,7 +291,7 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(CacheKey),.entrysize = sizeof(CacheEnt)};
 
-		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift prefix cache", ALLOCSET_DEFAULT_SIZES);
+		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache prefix", ALLOCSET_DEFAULT_SIZES);
 		ctl.hcxt = cache_cx;
 		cache = hash_create("sift prefix cache", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
