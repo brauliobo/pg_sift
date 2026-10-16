@@ -1,6 +1,7 @@
 -- A dictionary keeps the terms of deleted docs until its segment is rewritten. They match
--- nothing, so only terms with a live posting count toward sift.max_expansions, and a forced
--- merge drops them even from a lone segment.
+-- nothing, so only terms with a live posting count toward sift.max_expansions (shown with a
+-- wildcard, the leaf that still errors above it), and a forced merge drops them even from a lone
+-- segment. A prefix above the limit matches the live documents only.
 CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
@@ -13,15 +14,17 @@ VACUUM dt;
 SELECT dirty, nterms FROM sift.segments('dt_idx');
 
 SET sift.max_expansions = 600;
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
+SELECT id FROM dt WHERE body @@> 'ri?*' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SET sift.max_expansions = 500;
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
 SELECT count(*) FROM dt WHERE body @@> 'ri*';
 SELECT id FROM dt WHERE body @@> 'ri*' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
-SET sift.max_expansions = 500;
-SELECT count(*) FROM dt WHERE body @@> 'ri*';
 
 SET sift.max_expansions = 600;
 SELECT sift.merge('dt_idx', true);
 SELECT dirty, nterms FROM sift.segments('dt_idx');
-SELECT count(*) FROM dt WHERE body @@> 'ri*';
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
 SELECT sift.merge('dt_idx', true);
 SELECT sift.verify('dt_idx', true);
 
@@ -35,8 +38,9 @@ INSERT INTO dt2 SELECT i, 'ri' || i FROM generate_series(401, 800) i;
 SELECT sift.promote('dt2_idx') > 0 AS promoted;
 SELECT count(*) AS segments, count(*) FILTER (WHERE dirty) AS dirty FROM sift.segments('dt2_idx') WHERE kind = 'immutable';
 SET sift.max_expansions = 700;
-SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
+SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
 SET sift.max_expansions = 500;
+SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
 SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
 SELECT sift.verify('dt2_idx', true);
 

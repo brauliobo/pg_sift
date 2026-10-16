@@ -49,7 +49,7 @@ SELECT q, cnt('px', q) AS prefixed, oracle('pn', q) AS oracle FROM qs() q WHERE 
 RESET sift.enable_scan;
 RESET sift.enable_count;
 
--- a short prefix is not capped by max_expansions
+-- a short prefix is not an expansion; a longer one over the limit reads as the one term it would be (no error)
 SET sift.max_expansions = 1;
 SELECT count(*) > 0 AS short_prefix_ok FROM px WHERE body @@> 'a*';
 SELECT count(*) FROM px WHERE body @@> 'alph*';
