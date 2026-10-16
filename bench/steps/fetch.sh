@@ -41,7 +41,7 @@ fetch_sift() {
   echo "$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)$(sift_dirty)" >"$SIFT_ROOT/.build-info"
 }
 
-fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz"; }
+fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz" "$RUM_SHA256"; }
 
 fetch_pg_textsearch() { pgxs_release pg_textsearch "https://github.com/timescale/pg_textsearch/archive/refs/tags/v$PG_TEXTSEARCH_VERSION.tar.gz" "$PG_TEXTSEARCH_SHA256"; }
 
