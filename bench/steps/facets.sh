@@ -54,8 +54,6 @@ build() {
 
 load() {
 	q -c "CREATE EXTENSION pg_sift"
-	# until upgrade/facets.sql is merged into the extension script
-	[[ $(q -c "SELECT to_regproc('sift.facets') IS NULL") == f ]] || sed 's|MODULE_PATHNAME|$libdir/pg_sift|' "$REPO/upgrade/facets.sql" | q -f -
 	q <<-SQL
 		CREATE UNLOGGED TABLE src (foreign_id bigint, body text, category_id int, created date, a_count int, url text);
 		\\copy src FROM PROGRAM 'head -n $DOCS $ARTICLES'

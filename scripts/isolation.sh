@@ -45,9 +45,6 @@ if [[ $MODE == emulate ]]; then
 	db -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/isolation/emulate.sql"
 else
 	db -c "CREATE EXTENSION pg_sift" -c "ALTER DATABASE $DB SET iso.mode = 'sift'" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
-	# 1.1 objects not merged into the extension script yet (upgrade/*.sql fragments)
-	[[ $(db -c "SELECT to_regproc('sift.facets') IS NULL") == t ]] &&
-		sed 's|MODULE_PATHNAME|$libdir/pg_sift|' "$REPO/upgrade/facets.sql" | db -f -
 	ok[facets]=1
 	db -c "CREATE TABLE iso_probe (id int, body text)" -c "INSERT INTO iso_probe VALUES (1, 'probe')"
 	has "CREATE INDEX iso_probe_idx ON iso_probe USING sift (body)" || ok=()

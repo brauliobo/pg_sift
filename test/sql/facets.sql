@@ -1,13 +1,6 @@
 -- Keyword facets: sift.facets() counts per value of a keyword index equal GROUP BY count(*) over the
 -- rows the query matches, through updates, deletes, VACUUM, segment maintenance and mutable rows
 CREATE EXTENSION pg_sift;
--- sift.facets belongs to the 1.1 objects, kept in upgrade/facets.sql until they are merged
-SELECT to_regproc('sift.facets') IS NULL AS missing \gset
-\if :missing
-\set facets `sed 's|MODULE_PATHNAME|$libdir/pg_sift|' upgrade/facets.sql`
-:facets
-;
-\endif
 
 -- testing builds also exercise bitmap (GROUPED) postings for the larger values; the pad spreads the rows over several superblocks
 SELECT current_setting('sift.grouped_min_df', true) IS NOT NULL AS testing \gset
@@ -194,7 +187,4 @@ DROP ROLE fac_user;
 DROP TABLE d;
 DROP FUNCTION fac_summary(text), fac_all(regclass, text), fac_actual(regclass, text, int, bool),
 	fac_expected(text, regclass, text, int, bool);
-\if :missing
-DROP FUNCTION sift.facets(regclass, regclass, text, int, bool);
-\endif
 DROP EXTENSION pg_sift;

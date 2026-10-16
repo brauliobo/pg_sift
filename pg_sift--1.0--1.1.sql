@@ -1,4 +1,6 @@
--- Keyword facets (the design notes item 11): the number of matches of a query per value of a keyword index.
+\echo Use "ALTER EXTENSION pg_sift UPDATE TO '1.1'" to load this file. \quit
+
+-- Keyword facets (DESIGN.md item 11): the number of matches of a query per value of a keyword index.
 -- A keyword index is CREATE INDEX ... USING sift (col) WITH (analyzer = keyword).
 
 -- Counts per value of facet_index among the visible rows that index matches query for, count
