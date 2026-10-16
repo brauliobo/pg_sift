@@ -1806,7 +1806,7 @@ score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftDocChunk *dc,
 
 /* The exact score of a document from its text, for plans whose phrases are optional */
 static float4
-doc_score(SiftPlan *p, const SiftDoc *d)
+doc_score(SiftPlan *p, SiftDoc *d)
 {
 	float4		kn = sift_kern_knorm1(&p->bm, Min(sift_doc_ntokens(d), SIFT_MAX_DL)),
 				score = 0;
