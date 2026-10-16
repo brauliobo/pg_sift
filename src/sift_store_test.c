@@ -574,6 +574,16 @@ test_ambeginscan(Relation index, int nkeys, int norderbys)
 	pg_unreachable();
 }
 
+static void
+test_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
+{
+}
+
+static void
+test_amendscan(IndexScanDesc scan)
+{
+}
+
 Datum
 sift_test_am_handler(PG_FUNCTION_ARGS)
 {
@@ -590,6 +600,8 @@ sift_test_am_handler(PG_FUNCTION_ARGS)
 	am->amoptions = test_amoptions;
 	am->amvalidate = test_amvalidate;
 	am->ambeginscan = test_ambeginscan;
+	am->amrescan = test_amrescan;
+	am->amendscan = test_amendscan;
 	PG_RETURN_POINTER(am);
 }
 
@@ -763,7 +775,7 @@ sift_test_info(PG_FUNCTION_ARGS)
 			extents++;
 			blocks += fl->ext[i].nblocks;
 			if (FullTransactionIdIsValid(fl->ext[i].safexid) &&
-				!GlobalVisCheckRemovableFullXid(index, fl->ext[i].safexid))
+				!sift_store_removable(index, fl->ext[i].safexid))
 				pending += fl->ext[i].nblocks;
 		}
 		blk = fl->next;
