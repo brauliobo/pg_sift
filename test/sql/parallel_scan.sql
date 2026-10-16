@@ -1,0 +1,180 @@
+-- Parallel SiftScan and SiftCount: workers take morsels of superblocks, a ranked scan shares its
+-- threshold, and every shape returns what the serial plan returns (rows, scores, ties by ctid),
+-- under mutable segments, dead rows, HOT chains, uncommitted deletes and a rescanned Gather
+--
+CREATE EXTENSION pg_sift;
+
+-- about a thousand rows per superblock: a few superblocks to hand out
+CREATE TABLE ps (id int PRIMARY KEY, body text, pad text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 3);
+ALTER TABLE ps ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION ps_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT (ARRAY['quick brown fox', 'lazy dog', 'the quick fox jumps', 'brown dog runs fast', 'fox'])[1 + i % 5]
+		|| ' w' || i % 7 || ' x' || i % 101 || repeat(' filler', i % 4) || CASE WHEN i % 11 = 0 THEN ' rare' ELSE '' END
+$$;
+INSERT INTO ps SELECT i, ps_doc(i), repeat('x', 1500) FROM generate_series(1, 6000) i;
+CREATE INDEX ps_idx ON ps USING sift (body) WITH (mutable_limit = 64);
+INSERT INTO ps SELECT i, ps_doc(i), repeat('x', 1500) FROM generate_series(6001, 9000) i;
+SELECT sift.promote('ps_idx') IS NOT NULL AS promoted;
+INSERT INTO ps SELECT i, ps_doc(i), repeat('x', 1500) FROM generate_series(9001, 10000) i;
+DELETE FROM ps WHERE id % 10 = 3;
+VACUUM ps;
+DELETE FROM ps WHERE id % 10 = 6;
+UPDATE ps SET pad = repeat('y', 1500) WHERE id % 17 = 0;
+UPDATE ps SET body = body || ' moved' WHERE id % 19 = 0;
+ANALYZE ps;
+SELECT pg_relation_size('ps') / current_setting('block_size')::int / 256 >= 8 AS superblocks;
+
+-- what a run returns, by sequential evaluation, the serial plans and the parallel ones
+CREATE FUNCTION ps_ids(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode LIKE 'par%' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
+	PERFORM set_config('sift.enable_count', (mode <> 'seq')::text, true);
+	PERFORM set_config('enable_bitmapscan', (mode = 'seq')::text, true);
+	PERFORM set_config('enable_indexscan', (mode = 'seq')::text, true);
+	PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+	RETURN md5((SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '') FROM ps WHERE body @@> q));
+END $$;
+CREATE FUNCTION ps_count(q text, mode text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	n bigint;
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode LIKE 'par%' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
+	PERFORM set_config('sift.enable_count', (mode <> 'seq')::text, true);
+	PERFORM set_config('enable_bitmapscan', (mode = 'seq')::text, true);
+	PERFORM set_config('enable_indexscan', (mode = 'seq')::text, true);
+	PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+	SELECT count(*) INTO n FROM ps WHERE body @@> q;
+	RETURN n;
+END $$;
+-- the top k in the order the plan delivers it, scores included
+CREATE FUNCTION ps_top(q text, k int, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode LIKE 'par%' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	PERFORM set_config('parallel_leader_participation', (mode <> 'par_workers')::text, true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(id || '':'' || s || '':'' || (ctid::text), '',''), '''')) FROM
+		(SELECT id, sift.score(ctid)::text AS s, ctid FROM ps WHERE body @@> $1 ORDER BY sift.score(ctid) DESC LIMIT %s) t', k)
+		INTO r USING q;
+	RETURN r;
+END $$;
+CREATE FUNCTION ps_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l || E'\n';
+	END LOOP;
+	RETURN rtrim(r, E'\n');
+END $$;
+
+CREATE FUNCTION ps_same(q text) RETURNS TABLE (query text, n bigint, count_ok text, rows_ok text, top_ok text) LANGUAGE sql AS $$
+	SELECT q, ps_count(q, 'par'),
+		CASE WHEN ps_count(q, 'par') = ps_count(q, 'seq') AND ps_count(q, 'par') = ps_count(q, 'ser') THEN 'ok' ELSE 'MISMATCH' END,
+		CASE WHEN ps_ids(q, 'par') = ps_ids(q, 'seq') AND ps_ids(q, 'par') = ps_ids(q, 'ser') THEN 'ok' ELSE 'MISMATCH' END,
+		CASE WHEN (SELECT bool_and(ps_top(q, k, 'par') = ps_top(q, k, 'ser') AND ps_top(q, k, 'par_workers') = ps_top(q, k, 'ser'))
+			FROM unnest(ARRAY[1, 7, 100, 3000, 20000]) k) THEN 'ok' ELSE 'MISMATCH' END
+$$;
+
+-- plan shapes: parallel when the cost model says so, serial where it cannot work
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+SELECT ps_plan('SELECT id FROM ps WHERE body @@> ''fox'' AND id % 3 = 0');
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 10');
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 10 OFFSET 5');
+-- the number of rows the scan is asked for must be known: no LIMIT, no shared threshold
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC');
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick''');
+-- only the scan can compute the score: no Gather between it and a join
+CREATE TABLE pj AS SELECT i AS id FROM generate_series(1, 10000) i;
+ALTER TABLE pj ADD PRIMARY KEY (id);
+SELECT ps_plan('SELECT p.id, sift.score(p.ctid) FROM ps p JOIN pj ON pj.id = p.id WHERE p.body @@> ''fox quick'' ORDER BY sift.score(p.ctid) DESC LIMIT 10');
+SET max_parallel_workers_per_gather = 1;
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+SET max_parallel_workers_per_gather = 0;
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+SET max_parallel_workers_per_gather = 2;
+SET min_parallel_index_scan_size = '1GB';
+ALTER TABLE ps RESET (parallel_workers);
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+ALTER TABLE ps SET (parallel_workers = 3);
+ALTER TABLE ps SET (parallel_workers = 0);
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+ALTER TABLE ps SET (parallel_workers = 3);
+RESET min_parallel_index_scan_size;
+-- the setup cost is paid only when the work is worth it
+SET parallel_setup_cost = 1000;
+SET parallel_tuple_cost = 0.1;
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 10');
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET max_parallel_workers_per_gather;
+
+-- results: counts, row sets and ranked prefixes of every query shape
+SELECT (ps_same(q)).* FROM (VALUES ('fox'), ('quick fox'), ('fox NOT quick'), ('dog OR fox'), ('"quick fox"'),
+	('"brown dog" OR lazy'), ('fo*'), ('/d.g/'), ('lazzy~1'), ('w3 AND x7'), ('rare'), ('rare OR w1'), ('moved'),
+	('nothing'), ('fox^2 OR dog'), ('filler filler'), ('w0')) v(q);
+
+-- the same under a changing snapshot: uncommitted deletes and updates of this transaction
+BEGIN;
+DELETE FROM ps WHERE body @@> 'dog';
+UPDATE ps SET body = body || ' dog' WHERE id % 29 = 0;
+SELECT (ps_same(q)).* FROM (VALUES ('fox'), ('dog OR fox'), ('dog'), ('rare')) v(q);
+ROLLBACK;
+SELECT (ps_same(q)).* FROM (VALUES ('fox'), ('dog')) v(q);
+
+-- single worker, workers only, and a forced Gather around the serial plans
+SET debug_parallel_query = on;
+SELECT ps_count('fox', 'ser') AS ser_count, ps_top('fox quick', 7, 'ser') = ps_top('fox quick', 7, 'par') AS same_top;
+RESET debug_parallel_query;
+
+-- a rescanned Gather: the scan is the inner side of a nested loop
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SET enable_material = off;
+SELECT ps_plan('SELECT * FROM (SELECT count(*) AS n FROM ps WHERE body @@> ''fox'') s RIGHT JOIN (VALUES (1), (2), (3)) v(x) ON true');
+SELECT * FROM (SELECT count(*) AS n FROM ps WHERE body @@> 'fox') s RIGHT JOIN (VALUES (1), (2), (3)) v(x) ON true;
+SELECT ps_plan('SELECT * FROM (SELECT id FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 2) s RIGHT JOIN (VALUES (1), (2)) v(x) ON true');
+SELECT * FROM (SELECT id FROM ps WHERE body @@> 'fox quick' ORDER BY sift.score(ctid) DESC LIMIT 2) s RIGHT JOIN (VALUES (1), (2)) v(x) ON true;
+RESET enable_material;
+
+-- asking for more rows than the limit hint: the emitting worker searches on, as a serial scan does
+SELECT ps_plan('SELECT id FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC FETCH FIRST 10 ROWS WITH TIES');
+CREATE FUNCTION ps_ties(mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode = 'par' THEN '3' ELSE '0' END, true);
+	SELECT count(*) || ':' || md5(string_agg(id::text, ',')) INTO r
+	FROM (SELECT id FROM ps WHERE body @@> 'fox quick' ORDER BY sift.score(ctid) DESC FETCH FIRST 10 ROWS WITH TIES) t;
+	RETURN r;
+END $$;
+SELECT ps_ties('par') = ps_ties('ser') AS same, split_part(ps_ties('par'), ':', 1)::int > 10 AS past_the_hint;
+DROP FUNCTION ps_ties(text);
+
+-- NULL queries
+SELECT count(*) FROM ps WHERE body @@> NULL::text;
+SELECT count(*) FROM (SELECT id FROM ps WHERE body @@> NULL::text ORDER BY sift.score(ctid) DESC LIMIT 5) t;
+
+SELECT sift.verify('ps_idx', true);
+DROP TABLE ps, pj;
+DROP FUNCTION ps_doc(int), ps_ids(text, text), ps_count(text, text), ps_top(text, int, text), ps_plan(text), ps_same(text);
+DROP EXTENSION pg_sift;
