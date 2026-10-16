@@ -52,7 +52,8 @@ jobs:
       - name: Resolve the PostgreSQL 19 commit
         if: ${{ matrix.experimental }}
         id: pg19
-        run: echo "sha=$(git ls-remote https://git.postgresql.org/git/postgresql.git "$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+        # the full ref: a bare name also matches the mirror's refs/remotes/github/ branch, two lines for GITHUB_OUTPUT
+        run: echo "sha=$(git ls-remote --exit-code https://git.postgresql.org/git/postgresql.git "refs/heads/$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Cache PostgreSQL 19
         if: ${{ matrix.experimental }}
@@ -113,5 +114,6 @@ jobs:
           name: pg_sift-test-logs-pg${{ matrix.pg }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/lane*/tap/**/*.log
             test/regression.diffs
           if-no-files-found: ignore
