@@ -3,7 +3,7 @@
 # (test/sql/reference.sql) and seq-scan sift.match; harness in test/diff/diff.sql.
 #
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
-#                       [--k N] [--engine sift|mutant:NAME|mutants] [--minimize N] [--min-trials N]
+#                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--minimize N] [--min-trials N]
 #   scripts/difftest.sh --repro FILE
 #   INDEX_OPTS="WITH (phrase_index = pairs)" scripts/difftest.sh ...   build the index with options
 #
@@ -14,7 +14,8 @@
 # "skip". The first failure per stage and round (at most --minimize per round)
 # is minimized (query, then corpus) into $SIFT_TMP/difftest/*.sql, replayable
 # with --repro. --engine mutants runs the harness
-# against the reference with injected bugs and fails if any bug survives.
+# against the reference with injected bugs (all of MUTANTS, or the --mutants
+# subset) and fails if any bug survives.
 # Needs the scripts/pgtest.sh cluster installed and started. Exit 1 on failure.
 set -euo pipefail
 
@@ -29,8 +30,8 @@ while (( $# )); do
 	case $1 in
 		--seed) SEED=$2 ;; --docs) DOCS=$2 ;; --vocab) VOCAB=$2 ;; --queries) QUERIES=$2 ;;
 		--rounds) ROUNDS=$2 ;; --k) K=$2 ;; --engine) ENGINE=$2 ;; --repro) REPRO=$2 ;;
-		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;;
-		*) sed -n '2,19p' "$0"; exit 1 ;;
+		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;;
+		*) sed -n '2,21p' "$0"; exit 1 ;;
 	esac
 	shift 2
 done
