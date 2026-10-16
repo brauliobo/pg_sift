@@ -1,0 +1,2 @@
+# the repo-wide results/ rule (test output) must not hide the committed benchmark tables
+!results/
