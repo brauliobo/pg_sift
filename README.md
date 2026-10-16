@@ -43,8 +43,14 @@ SIMD kernels are selected at run time (AVX-512, AVX2 or scalar).
 make USE_PGXS=1 -j4
 make USE_PGXS=1 install
 make USE_PGXS=1 installcheck                # regression tests
+make check                                  # quick tier: every suite, small corpora, about 2.5 minutes
+make check-full                             # full tier: ASan, long soak and fuzz, all mutants (about 22 minutes)
 scripts/pgtest.sh install && scripts/pgtest.sh start   # throwaway cluster, no system install
 ```
+
+`make check` and `make check-full` run `scripts/ci.sh quick|full`: the suites in four parallel lanes, each with its own
+cluster, in one scratch directory that is removed on success and capped at `CI_MAX_MB` (`SANITIZE=1 make check` runs the
+quick tier on the ASan build).
 
 Arch Linux packaging is in `packaging/`.
 

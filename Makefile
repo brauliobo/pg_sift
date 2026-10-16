@@ -35,18 +35,27 @@ override with_llvm := no
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
+
+# make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
+# claim "check" is unsupported, so it is not included for these goals.
+ifneq ($(filter check check-full,$(MAKECMDGOALS)),)
+.PHONY: check check-full
+check:
+	scripts/ci.sh quick
+check-full:
+	scripts/ci.sh full
+else
 include $(PGXS)
+endif
 
 -include $(wildcard src/*.d)
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak ci
+.PHONY: isolationcheck tapcheck difftest fuzz soak
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
 	scripts/tap.sh
 difftest fuzz soak:
 	scripts/$@.sh
-ci:
-	scripts/ci.sh
