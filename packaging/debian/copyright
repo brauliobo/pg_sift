@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: pg_sift
+Source: https://github.com/brauliobo/pg_sift
+
+Files: *
+Copyright: Braulio Oliveira
+License: PostgreSQL
+ See /usr/share/doc/postgresql-18-pg-sift/LICENSE and NOTICE.

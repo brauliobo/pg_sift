@@ -29,3 +29,4 @@ packaging/src/
 packaging/pkg/
 packaging/pg_sift/
 *.pkg.tar.*
+dist/

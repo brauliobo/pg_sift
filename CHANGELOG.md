@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Packages: a `.deb` (`postgresql-18-pg-sift`, PGDG on Debian 13 and Ubuntu 24.04) and an `.rpm` (`pg_sift_18`, PGDG on RHEL, Rocky and
+  Alma 9 and 10), x86-64, are attached to each release with `SHA256SUMS`. `scripts/package.sh` builds them from a tag and smoke-tests
+  them in containers (install, create, upgrade from 1.0, remove); the `release` workflow runs it on every `v*` tag.
+
 ## 1.1.0
 
 - Filter pushdown: a ranked scan can take a bitmap of the other quals (btree, BRIN, GIN) as a child and score only the matches it keeps;

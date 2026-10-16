@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+PG_CONFIG = /usr/lib/postgresql/18/bin/pg_config
+PGXS_MAKE = $(MAKE) USE_PGXS=1 PG_CONFIG=$(PG_CONFIG)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(PGXS_MAKE)
+
+override_dh_auto_install:
+	$(PGXS_MAKE) DESTDIR=$(CURDIR)/debian/postgresql-18-pg-sift install
+
+override_dh_auto_test:
+
+override_dh_auto_clean:
+
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
