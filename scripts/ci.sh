@@ -91,6 +91,7 @@ if [[ $MODE == full ]]; then
 	mutants() { suite difftest-mutants "$S/difftest.sh" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1; }
 	diff_gin() {
 		suite difftest "$S/difftest.sh" --docs 5000 --queries 150 --rounds 4
+		INDEX_OPTS="WITH (positions = off)" suite difftest-nopos "$S/difftest.sh" --docs 3000 --queries 60 --rounds 2
 		suite soak-gin "$S/soak.sh" --am gin --duration 120 --rows 20000 --clients 2 --check-every 20
 	}
 	soak_shell() {
@@ -115,6 +116,7 @@ else
 	}
 	diff_shell() {
 		suite difftest "$S/difftest.sh" --docs 2500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
+		INDEX_OPTS="WITH (positions = off)" suite difftest-nopos "$S/difftest.sh" --docs 1500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
 		suite tap-shell "$S/pgtest.sh" tap
 	}
 	tap_perl() { suite tap "$S/tap.sh"; }
