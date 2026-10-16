@@ -11,18 +11,19 @@
 # multiplies the iteration counts of every target (default 10: about 3.5
 # minutes without the server sanitizer). --budget runs scale-1 passes
 # (about 25 s) until SEC seconds have passed, seeded targets with a new seed
-# each pass. Exit 1 on any finding.
+# each pass. The standalone harnesses run with LeakSanitizer (their palloc stubs free at exit, tools/pgarena.h),
+# the server with the leak gate of scripts/leakcheck.sh. Exit 1 on any finding.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 eval "$("$REPO/scripts/pgtest.sh" env)"
-export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=0
+export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=1
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$TMP/fuzz
 SCALE=10 SEED=1 BUDGET=0
 SAN='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all'
 while [[ ${1:-} == --* ]]; do
-	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,15p' "$0"; exit 1 ;; esac
+	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,16p' "$0"; exit 1 ;; esac
 	shift 2
 done
 TARGETS=("${@:-canary codec blob kernels analyze query sql}")
@@ -38,6 +39,7 @@ canary() {
 		"$REPO/test/fuzz/asan_canary.c" || return 1
 	local before
 	before=$(cat "$TMP"/sanitizer/asan.* 2>/dev/null | grep -c 'heap-buffer-overflow' || true)
+	"$REPO/scripts/leakcheck.sh" expect 1 'terminated by signal 6'	# the aborted backend is logged by the postmaster
 	q -c "CREATE OR REPLACE FUNCTION sift_asan_canary(int) RETURNS void AS '$OUT/asan_canary.so' LANGUAGE C STRICT" \
 		-c "SELECT sift_asan_canary(64)" >/dev/null 2>&1 && { echo "canary call survived"; return 1; }
 	until q -c "SELECT 1" >/dev/null 2>&1; do sleep 0.5; done

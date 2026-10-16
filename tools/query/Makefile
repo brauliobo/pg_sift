@@ -7,7 +7,7 @@ PG_LIB := -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
 CFLAGS = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -I$(SRC) -I$(PG_INC) -D_GNU_SOURCE
 
-harness: harness.c $(SRC)/sift_query.c $(SRC)/sift_query.h
+harness: harness.c $(SRC)/sift_query.c $(SRC)/sift_query.h ../pgarena.h
 	$(CC) $(CFLAGS) -o $@ harness.c $(SRC)/sift_query.c $(PG_LIB) -lpgcommon -lpgport -lm
 
 clean:

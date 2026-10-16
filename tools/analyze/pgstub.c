@@ -1,7 +1,8 @@
 /*
  * pgstub.c - the few backend symbols the analyzer needs, for running it
- * outside PostgreSQL (harness, fuzzing, sanitizers). Allocations go to
- * malloc; ereport(ERROR) aborts.
+ * outside PostgreSQL (harness, fuzzing, sanitizers). Allocations go to the
+ * chunk arena of tools/pgarena.h, freed at exit so that LeakSanitizer reports
+ * only what the analyzer leaks for real; ereport(ERROR) aborts.
  */
 #include "postgres.h"
 
@@ -11,31 +12,34 @@
 #include "utils/memutils.h"
 
 #include "sift.h"
+#include "../pgarena.h"
 
 int			stub_encoding = PG_UTF8;
 
 void *
 MemoryContextAllocZero(MemoryContext context, Size size)
 {
-	return calloc(1, size);
+	arena_atexit();
+	return memset(arena_alloc(size), 0, size);
 }
 
 void *
 MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 {
-	return malloc(size);
+	arena_atexit();
+	return (flags & MCXT_ALLOC_ZERO) ? memset(arena_alloc(size), 0, size) : arena_alloc(size);
 }
 
 void *
 repalloc_huge(void *pointer, Size size)
 {
-	return realloc(pointer, size);
+	return arena_realloc(pointer, size);
 }
 
 void
 pfree(void *pointer)
 {
-	free(pointer);
+	arena_free(pointer);
 }
 
 int
