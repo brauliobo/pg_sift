@@ -197,6 +197,8 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 		p = put_varint(p, info->post_len - info->codec_len);
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
 			p = put_varint(p, info->nnib);
+		if (info->flags & SIFT_TERM_POS)
+			p = put_varint(p, info->pos_len);
 		w->post_end = info->post_off + info->post_len;
 	}
 	appendBinaryStringInfo(&w->blk, e, p - e);
@@ -347,8 +349,8 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	info->max_bound = *it->p++;
 	if (info->flags & SIFT_TERM_INLINE)
 	{
-		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
-			corrupt("Inline term with df %u.", info->df);
+		if (info->df < 1 || info->df > SIFT_INLINE_MAX || (info->flags & SIFT_TERM_POS))
+			corrupt("Inline term with df %u and flags %u.", info->df, info->flags);
 		it->p = get_varint(it->p, it->end, &v);
 		info->inline_keys[0] = v;
 		if (info->df > 1)
@@ -377,6 +379,13 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	{
 		it->p = get_varint(it->p, it->end, &v);
 		info->nnib = v;
+	}
+	if (info->flags & SIFT_TERM_POS)
+	{
+		it->p = get_varint(it->p, it->end, &v);
+		if (v == 0 || v > info->post_len - info->codec_len)
+			corrupt("Position stream of %llu bytes in a term blob of %u.", (unsigned long long) v, info->post_len);
+		info->pos_len = v;
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;

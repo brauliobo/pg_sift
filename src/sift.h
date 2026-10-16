@@ -85,6 +85,7 @@ typedef struct SiftOptions
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
 	int			analyzer;		/* SIFT_ANALYZER_* */
+	bool		positions;		/* CREATE INDEX stores word positions, so phrases are verified from the index (DESIGN.md (g)) */
 } SiftOptions;
 
 /* analyzer: keyword indexes the whole value as one term (DESIGN.md (l)) */

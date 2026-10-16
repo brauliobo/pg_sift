@@ -7,7 +7,7 @@
  *   varint df, u8 flags, u8 max_bound, and either the inline postings
  *   (varint key0 [, varint key1 - key0], tf bytes unless SIFT_TERM_ALL_TF1)
  *   or varint post_len, varint post_len - codec_len, [varint nnib unless
- *   SIFT_TERM_ALL_TF1]. Term blobs follow each other in term order, each at
+ *   SIFT_TERM_ALL_TF1] [varint pos_len if SIFT_TERM_POS]. Term blobs follow each other in term order, each at
  *   the next 4-byte aligned offset, so post_off is implied.
  * DICTIDX: SiftDictIdx per block; every 256th prefix forms the root array
  * (u64[dictroot_n]) kept in memory with the opened dictionary. A lookup
@@ -27,6 +27,7 @@
 #define SIFT_TERM_SPARSE		0x01	/* LIST codec blob (no group scores) */
 #define SIFT_TERM_INLINE		0x02	/* postings in inline_keys/inline_tf */
 #define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
+#define SIFT_TERM_POS			0x08	/* the term blob ends with the position stream (sift_posting.h); never inline */
 
 typedef struct SiftTermInfo
 {
@@ -38,6 +39,7 @@ typedef struct SiftTermInfo
 	uint32		post_len;
 	uint32		codec_len;		/* codec blob at the start of the term blob */
 	uint32		nnib;			/* L1 members (tf > 1) */
+	uint32		pos_len;		/* SIFT_TERM_POS: bytes at the end of the term blob */
 	SiftKey		inline_keys[SIFT_INLINE_MAX];
 	uint8		inline_tf[SIFT_INLINE_MAX];
 } SiftTermInfo;

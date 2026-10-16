@@ -47,7 +47,7 @@ SELECT pg_relation_size('g') / 8192 > 512 AS three_superblocks;
 (1 row)
 
 -- Production thresholds: everything below 65536 is inline or LIST
-CREATE INDEX g_list ON g USING sift (body);
+CREATE INDEX g_list ON g USING sift (body) WITH (positions = off);
 SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_list');
  df_class | terms | inline_terms | list_terms | grouped_terms 
 ----------+-------+--------------+------------+---------------

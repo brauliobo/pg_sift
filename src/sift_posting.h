@@ -16,8 +16,17 @@
  *                    in group), ceil(df / 8) bytes; nnib nibbles
  *                    min(tf-2, 15), low nibble first, ceil(nnib / 2) bytes;
  *                    an escape byte min(tf, 255) - 17 per nibble 15
- * LIST terms with every tf == 1 are the bare codec blob (post_len ==
- * codec_len). Readers copy the blob with SIFT_KERN_PAD bytes of padding.
+ *   position stream (SIFT_TERM_POS), the last pos_len bytes of the blob, unaligned:
+ *                    u32 ckpt[ceil(df / SIFT_POS_EVERY)], the byte offset in the
+ *                    records of every SIFT_POS_EVERY-th posting (rank order),
+ *                    then one record per posting: the token ordinals of the
+ *                    term in the doc, first << 1 | (n > 1), then n - 2 if
+ *                    n > 1, then the n - 1 gaps minus one, all LEB128 varints
+ *                    (sift_analyze.h). n is the true count, which tf
+ *                    saturates at 255. Only word terms with df > SIFT_INLINE_MAX
+ *                    of a segment written with positions have one.
+ * LIST terms with every tf == 1 are the bare codec blob, followed by the position stream if any
+ * (post_len == codec_len without). Readers copy the blob with SIFT_KERN_PAD bytes of padding.
  *
  * Bounds: u8 = ceil(255 * max(tf / (tf + K_ref(dl)))) with K_ref from the
  * segment's k1, b and avgdl_ref (sift_kern_bound_u8, conservative: >= every
@@ -37,6 +46,9 @@
 
 /* df from which terms are GROUPED (bitmaps) rather than LIST (docs/CODEC.md 4) */
 #define SIFT_GROUPED_MIN_DF		65536
+
+#define SIFT_POS_EVERY			32	/* postings per position checkpoint */
+#define SIFT_POS_SHIFT			5
 
 #define SIFT_GS_ALL_TF1			0x01	/* no L1 member in the group */
 #define SIFT_GS_BLKBOUND		0x02
@@ -62,13 +74,18 @@ extern PGDLLIMPORT int sift_grouped_min_df;
 
 extern uint8 sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl);
 
-/* Writer: postings of one term in strictly ascending key order, with tf and the doc's dl */
+/*
+ * Writer: postings of one term in strictly ascending key order, with tf and the doc's dl. pos
+ * holds the position records of the n postings back to back, poslen their lengths; both NULL for
+ * a term without positions (all postings of a term alike). The positions are dropped for the
+ * terms that stay inline.
+ */
 typedef struct SiftPostingWriter SiftPostingWriter;
 
 extern SiftPostingWriter *sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref,
 										   MemoryContext mcxt);
 extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf,
-						   const uint16 *dl, int n);
+						   const uint16 *dl, int n, const uint8 *pos, const uint32 *poslen);
 
 /*
  * Finishes the term: encodes, writes the blob (unless inline) and fills every
@@ -121,6 +138,30 @@ extern const SiftGroupBounds *sift_post_bounds(SiftPostingCursor *c, int *n);
  * the group's n entries plus SIFT_KERN_PAD bytes.
  */
 extern void sift_post_group_tf(SiftPostingCursor *c, uint8 *tf);
+
+/* Does the term carry positions */
+extern bool sift_post_has_positions(const SiftPostingCursor *c);
+
+/* Occurrences of one posting, ascending; v grows as needed, allocated in mcxt */
+typedef struct SiftPosBuf
+{
+	uint32	   *v;
+	uint32		n;
+	uint32		cap;
+	MemoryContext mcxt;
+} SiftPosBuf;
+
+/* Positions of the posting of the given rank in the term (the group's base plus the rank in the group) */
+extern void sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out);
+
+/* The checkpoints and the records of a term with positions, and the records' length */
+extern void sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **rec, uint32 *len);
+
+/*
+ * The record at p: its end, the occurrences it holds and the last one; raises
+ * ERRCODE_INDEX_CORRUPTED when it runs past end
+ */
+extern const uint8 *sift_pos_skip(const uint8 *p, const uint8 *end, uint32 *n, uint32 *last);
 
 /*
  * Checks the sidecar against the codec blob: tf stream lengths and group

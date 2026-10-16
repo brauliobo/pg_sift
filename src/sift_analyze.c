@@ -94,6 +94,16 @@ struct SiftAnalyzer
 	SiftTermFreq *terms;
 	size_t		termcap;
 
+	bool		positions;		/* the bag also carries the occurrences of the word terms */
+	int32	   *tokidx;			/* token -> bag index */
+	size_t		tokidxcap;
+	uint32	   *pstart;			/* bag index -> first slot of its positions in plist, then past the last */
+	size_t		pstartcap;
+	uint32	   *plist;			/* positions grouped by bag index */
+	size_t		plistcap;
+	uint8	   *pbuf;			/* encoded position records */
+	size_t		pbufcap;
+
 	char		scratch[DST_CAP];
 };
 
@@ -373,6 +383,10 @@ sift_analyzer_reset(SiftAnalyzer *a)
 	DROP_BIG(a->bag, a->bagcap, sizeof(BagTerm));
 	DROP_BIG(a->terms, a->termcap, sizeof(SiftTermFreq));
 	DROP_BIG(a->slots, a->slotcap, sizeof(int32));
+	DROP_BIG(a->tokidx, a->tokidxcap, sizeof(int32));
+	DROP_BIG(a->pstart, a->pstartcap, sizeof(uint32));
+	DROP_BIG(a->plist, a->plistcap, sizeof(uint32));
+	DROP_BIG(a->pbuf, a->pbufcap, 1);
 #undef DROP_BIG
 }
 
@@ -908,6 +922,57 @@ bag_add_field_word(SiftAnalyzer *a, size_t *used, int *nterms, int t, int field)
 	bag_add(a, used, nterms, 1 + n, 1);
 }
 
+void
+sift_analyzer_set_positions(SiftAnalyzer *a, bool on)
+{
+	a->positions = on;
+}
+
+/* Groups the positions of the ntok tokens by bag index (counting sort); the bag holds nbag terms */
+static void
+group_positions(SiftAnalyzer *a, int ntok, int nbag)
+{
+	ENSURE(a, pstart, pstartcap, (size_t) nbag + 1);
+	ENSURE(a, plist, plistcap, ntok);
+	memset(a->pstart, 0, ((size_t) nbag + 1) * sizeof(uint32));
+	for (int t = 0; t < ntok; t++)
+		a->pstart[a->tokidx[t] + 1]++;
+	for (int b = 0; b < nbag; b++)
+		a->pstart[b + 1] += a->pstart[b];
+	/* fills each group from its start; the starts end up one group later, where the groups end */
+	for (int t = 0; t < ntok; t++)
+		a->plist[a->pstart[a->tokidx[t]]++] = t;
+}
+
+static inline uint8 *
+put_varint(uint8 *p, uint32 x)
+{
+	for (; x >= 0x80; x >>= 7)
+		*p++ = (uint8) (x | 0x80);
+	*p++ = (uint8) x;
+	return p;
+}
+
+/* Appends the record of bag term b (occurrences in plist) to pbuf at *used; returns its length */
+static uint32
+put_positions(SiftAnalyzer *a, int b, size_t *used)
+{
+	uint32		n = a->pstart[b] - (b > 0 ? a->pstart[b - 1] : 0),
+				*v = a->plist + a->pstart[b] - n;
+	uint8	   *p;
+
+	ENSURE(a, pbuf, pbufcap, *used + 5 * (size_t) n + 10);
+	p = a->pbuf + *used;
+	p = put_varint(p, v[0] << 1 | (n > 1));
+	if (n > 1)
+		p = put_varint(p, n - 2);
+	for (uint32 i = 1; i < n; i++)
+		p = put_varint(p, v[i] - v[i - 1] - 1);
+	n = p - (a->pbuf + *used);
+	*used += n;
+	return n;
+}
+
 /*
  * Terms live in a linear-probing table indexed by the top bits of their
  * 32-bit hash, so walking it yields them almost sorted; an insertion pass
@@ -920,6 +985,7 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 	size_t		used = 0;
 	uint64		ntok = 0;
 	int			nterms = 0,
+				nbag = 0,
 				off = 0,
 				start,
 				n,
@@ -935,8 +1001,13 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 		ENSURE(a, buf, bufcap, used + DST_CAP);
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
-		ntok++;
 		cur = bag_add(a, &used, &nterms, n, 1);
+		if (a->positions)
+		{
+			ENSURE(a, tokidx, tokidxcap, ntok + 1);
+			a->tokidx[ntok] = cur;
+		}
+		ntok++;
 		for (; sep && sep < s + start; section++)
 			sep = memchr(sep + 1, SIFT_FIELD_SEP, s + len - (sep + 1));
 		if (section < a->cfg.nfields)
@@ -945,6 +1016,8 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 			bag_add_pair(a, &used, &nterms, prev, cur);
 		prev = cur;
 	}
+	if (a->positions && ntok > 0)
+		group_positions(a, ntok, nbag = nterms);
 	if (a->cfg.prefix_len)
 		bag_add_prefixes(a, &used, &nterms, nterms);
 
@@ -955,15 +1028,24 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 		k += a->slots[slot] >= 0;
 	}
 	ENSURE(a, terms, termcap, nterms);
+	used = 0;
 	for (k = 0; k < nterms; k++)
 	{
 		BagTerm    *b = &a->bag[a->slots[k]];
+		int			t = a->slots[k];
+		bool		word = t < nbag && a->pstart[t] > (t > 0 ? a->pstart[t - 1] : 0);
 
 		a->terms[k] = (SiftTermFreq)
 		{
 			.term = a->buf + b->off, .len = b->len, .tf = Min(b->tf, SIFT_MAX_TF),
 				.hash = (uint32) (b->h >> 32)
 		};
+		if (word)
+		{
+			/* an offset (+ 1) until the buffer stops growing */
+			a->terms[k].pos = (const uint8 *) (uintptr_t) (used + 1);
+			a->terms[k].poslen = put_positions(a, t, &used);
+		}
 		for (int j = k; j > 0 && term_cmp(&a->terms[j - 1], &a->terms[j]) > 0; j--)
 		{
 			SiftTermFreq tmp = a->terms[j];
@@ -972,6 +1054,9 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 			a->terms[j - 1] = tmp;
 		}
 	}
+	for (k = 0; k < nterms; k++)
+		if (a->terms[k].poslen)
+			a->terms[k].pos = a->pbuf + ((uintptr_t) a->terms[k].pos - 1);
 	*dl = Min(ntok, SIFT_MAX_DL);
 	*out = a->terms;
 	return nterms;
