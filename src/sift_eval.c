@@ -100,6 +100,7 @@ struct SiftPlan
 	int			maxleaves;
 	EvalLeaf   *leaves;
 	EvalNode   *root;
+	EvalNode   *sure;			/* unranked plans with a phrase: the matches the bitmaps decide alone, NULL when none */
 	SiftQuery **queries;
 	int			nqueries;
 	bool		recheck;
@@ -359,6 +360,27 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 		default:
 			return en_leaf(p, n, at, NULL);
 	}
+}
+
+/*
+ * The matches the bitmaps decide without the text: the same relaxation read from below, where a phrase the
+ * index cannot decide matches nothing and a NOT excludes the superset of what it names. They are a subset
+ * of the matches, so a page's other candidates are the only ones to recheck. NULL when no query has any.
+ */
+static EvalNode *
+sure_tree(SiftPlan *p)
+{
+	EvalNode  **roots = MemoryContextAlloc(p->mcxt, p->nqueries * sizeof(EvalNode *));
+	bool		rescore = p->rescore,
+				any = true;
+
+	for (int i = 0; i < p->nqueries; i++)
+	{
+		roots[i] = relax(p, p->queries[i]->root, false, (Place) {true, true});
+		any &= roots[i]->kind != EN_NOTHING;
+	}
+	p->rescore = rescore;
+	return any ? en_make(p, EN_AND, p->nqueries, roots) : NULL;
 }
 
 typedef struct Expand
@@ -1001,6 +1023,8 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 		}
 	}
 	p->root = en_make(p, EN_AND, nqueries, roots);
+	if (p->recheck && !p->scoring)
+		p->sure = sure_tree(p);
 	for (int i = 0; i < p->nleaves; i++)
 		resolve_leaf(p, &p->leaves[i]);
 	if (shared)
@@ -1046,6 +1070,7 @@ struct SiftMatchIter
 {
 	SiftPlan   *plan;
 	sift_cur  **root;			/* per segment, NULL: no matches */
+	sift_cur  **sure;			/* per segment: the matches that need no recheck, NULL: none (plan->sure) */
 	const sift_grp **grp;		/* scratch: current group per segment */
 	int64		mpos;			/* next mutable match */
 	uint32		next_sb;
@@ -1056,6 +1081,8 @@ struct SiftMatchIter
 	int			page;			/* next page of the loaded SB to return */
 	uint64		pages[SIFT_PAGEMASK_WORDS];
 	uint64	  (*om)[SIFT_OFFMASK_WORDS];	/* merged offset masks by page of the SB */
+	uint64		spages[SIFT_PAGEMASK_WORDS];	/* the same for the matches that need no recheck */
+	uint64	  (*som)[SIFT_OFFMASK_WORDS];
 };
 
 static uint8 *
@@ -1182,9 +1209,17 @@ sift_iter_begin(SiftPlan *plan)
 									   SIFT_SIMD_ALIGN, 0);
 	it->page = SIFT_SB_PAGES;
 	it->sb_end = UINT32_MAX;
+	if (plan->sure)
+	{
+		it->sure = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(sift_cur *));
+		it->som = MemoryContextAllocAligned(plan->mcxt, SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64),
+											SIFT_SIMD_ALIGN, 0);
+	}
 	for (int s = 0; s < plan->nsegs; s++)
 	{
 		it->root[s] = seg_cursor(plan, s, plan->root, NULL, plan->mcxt);
+		if (plan->sure)
+			it->sure[s] = seg_cursor(plan, s, plan->sure, NULL, plan->mcxt);
 		sift_sr_release(&plan->seg[s]->sr);
 	}
 	return it;
@@ -1205,9 +1240,9 @@ sift_iter_end(SiftMatchIter *it)
 		sift_sr_release(&it->plan->seg[s]->sr);
 }
 
-/* ORs the live part of one segment's group into the SB buffer */
+/* ORs the live part of one segment's group into the SB buffer (pages, om) */
 static void
-iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
+iter_merge(SiftMatchIter *it, int s, const sift_grp *g, uint64 *pages, uint64 (*om)[SIFT_OFFMASK_WORDS])
 {
 	SiftSegment *seg = it->plan->seg[s];
 	const uint8 *off = g->off;
@@ -1219,7 +1254,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
 		{
 			int			page = wd * 64 + pg_rightmost_one_pos64(m);
 			uint64		mask[SIFT_OFFMASK_WORDS] = {0};
-			uint64	   *dst = it->om[page];
+			uint64	   *dst = om[page];
 			bool		any = false;
 
 			memcpy(mask, off, g->w);
@@ -1235,10 +1270,10 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
 				any |= mask[k] != 0;
 			if (!any)
 				continue;
-			if (!(it->pages[wd] & (UINT64CONST(1) << (page & 63))))
+			if (!(pages[wd] & (UINT64CONST(1) << (page & 63))))
 			{
 				memset(dst, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
-				it->pages[wd] |= UINT64CONST(1) << (page & 63);
+				pages[wd] |= UINT64CONST(1) << (page & 63);
 			}
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 				dst[k] |= mask[k];
@@ -1305,9 +1340,16 @@ iter_load_sb(SiftMatchIter *it)
 		}
 		CHECK_FOR_INTERRUPTS();
 		memset(it->pages, 0, sizeof(it->pages));
+		memset(it->spages, 0, sizeof(it->spages));
 		for (int s = 0; s < it->plan->nsegs; s++)
 			if (it->grp[s] && it->grp[s]->gid == sb)
-				iter_merge(it, s, it->grp[s]);
+			{
+				const sift_grp *sg = it->sure && it->sure[s] ? sift_seek_eq(it->sure[s], sb) : NULL;
+
+				iter_merge(it, s, it->grp[s], it->pages, it->om);
+				if (sg)
+					iter_merge(it, s, sg, it->spages, it->som);
+			}
 		iter_merge_mutable(it, sb);
 		it->next_sb = sb + 1;
 		it->plan->stats.sb_scanned++;
@@ -1346,7 +1388,17 @@ sift_iter_next(SiftMatchIter *it, SiftPageMatch *out)
 	}
 	out->blk = (BlockNumber) it->sb << SIFT_SB_SHIFT | page;
 	memcpy(out->offmask, it->om[page], sizeof(out->offmask));
+	memset(out->sure, 0, sizeof(out->sure));
 	out->recheck = it->plan->recheck;
+	if (out->recheck && it->plan->sure && (it->spages[page / 64] >> (page % 64) & 1))
+	{
+		uint64		undecided = 0;
+
+		memcpy(out->sure, it->som[page], sizeof(out->sure));
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+			undecided |= out->offmask[k] & ~out->sure[k];
+		out->recheck = undecided != 0;
+	}
 	it->page = page + 1;
 	return true;
 }
@@ -2470,16 +2522,41 @@ typedef struct CountCtx
 	SiftVerifyFn verify;
 	void	   *arg;
 	MemoryContext tmpcx;
+	uint32		sb;				/* the superblock allvis belongs to */
+	uint64		allvis[SIFT_PAGEMASK_WORDS];
 } CountCtx;
 
-/* Matches of a page with a phrase: every candidate is read and rechecked; the offsets that pass stay in the mask */
+/* Keeps the visible offsets of a page of candidates: the VM bit decides an all-visible page, else the heap */
+static int
+visible_offsets(CountCtx *cc, BlockNumber blk, uint64 *offmask)
+{
+	uint32		page = blk & (SIFT_SB_PAGES - 1);
+
+	if (sift_block_sb(blk) != cc->sb)
+	{
+		cc->sb = sift_block_sb(blk);
+		sift_vis_sb_mask(cc->vis, cc->sb, cc->allvis);
+	}
+	return cc->allvis[page / 64] >> (page % 64) & 1 ? sift_offmask_popcount(offmask, 1) :
+		sift_vis_filter_page(cc->vis, blk, offmask);
+}
+
+/*
+ * Matches of a page with a phrase: the candidates the index does not decide are read and rechecked, the
+ * others only checked for visibility; the offsets that pass stay in the mask
+ */
 static int
 recheck_page(CountCtx *cc, SiftPageMatch *pm)
 {
+	uint64		sure[SIFT_OFFMASK_WORDS],
+				any = 0;
 	int			n = 0;
 
+	memcpy(sure, pm->sure, sizeof(sure));
 	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
-		for (uint64 m = pm->offmask[wd]; m; m &= m - 1)
+	{
+		any |= sure[wd];
+		for (uint64 m = pm->offmask[wd] & ~sure[wd]; m; m &= m - 1)
 		{
 			ItemPointerData tid;
 			text	   *doc = NULL;
@@ -2494,42 +2571,38 @@ recheck_page(CountCtx *cc, SiftPageMatch *pm)
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(cc->tmpcx);
 		}
+	}
+	if (any)
+	{
+		uint64		seen[SIFT_OFFMASK_WORDS];
+
+		memcpy(seen, sure, sizeof(seen));
+		n += visible_offsets(cc, pm->blk, sure);
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			pm->offmask[wd] &= ~(seen[wd] & ~sure[wd]);
+	}
 	return n;
 }
 
 /* The visible matches of the superblock ranges next hands out (next may be NULL: all), page by page */
 static int64
 eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg,
-	   SiftNextRangeFn next, void *next_arg)
+		   SiftNextRangeFn next, void *next_arg)
 {
-	CountCtx	cc = {plan, vis, verify, arg, AllocSetContextCreate(CurrentMemoryContext, "sift count", ALLOCSET_DEFAULT_SIZES)};
+	CountCtx	cc = {plan, vis, verify, arg, AllocSetContextCreate(CurrentMemoryContext, "sift count", ALLOCSET_DEFAULT_SIZES), UINT32_MAX};
 	SiftMatchIter *it = sift_iter_begin(plan);
 	SiftPageMatch pm;
-	uint64		allvis[SIFT_PAGEMASK_WORDS] = {0};
 	int64		n = 0;
-	uint32		sb = UINT32_MAX;
 
 	if (next)
 		sift_iter_ranges(it, next, next_arg);
 
 	while (sift_iter_next(it, &pm))
 	{
-		uint32		page = pm.blk & (SIFT_SB_PAGES - 1);
 		int			left;
 
 		CHECK_FOR_INTERRUPTS();
-		if (pm.recheck)
-			left = recheck_page(&cc, &pm);
-		else
-		{
-			if (sift_block_sb(pm.blk) != sb)
-			{
-				sb = sift_block_sb(pm.blk);
-				sift_vis_sb_mask(vis, sb, allvis);
-			}
-			left = allvis[page / 64] >> (page % 64) & 1 ? sift_offmask_popcount(pm.offmask, 1) :
-				sift_vis_filter_page(vis, pm.blk, pm.offmask);
-		}
+		left = pm.recheck ? recheck_page(&cc, &pm) : visible_offsets(&cc, pm.blk, pm.offmask);
 		if (left == 0)
 			continue;
 		n += left;
