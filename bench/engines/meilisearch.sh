@@ -1,4 +1,4 @@
-# Meilisearch (bench/fetch.sh meilisearch), typo tolerance off. Not BM25: ranking rules
+# Meilisearch (bench/bench setup --engines meilisearch), typo tolerance off. Not BM25: ranking rules
 # (words, proximity, exactness...). `or` uses matchingStrategy=last (drops trailing words until
 # something matches), which is not a true disjunction. Latency comparison only; no exact counts.
 EXTERNAL=http

@@ -37,7 +37,7 @@ list instead of a dictionary expansion; `fields` names the sections of the index
 
 ## Benchmarks
 
-`bench/ab.sh` and `bench/places.sh` compare sift, sift with `phrase_index = pairs` and ParadeDB pg_search on two
+`bench/bench` compares sift, sift with `phrase_index = pairs` and ParadeDB pg_search on two
 public datasets, Simple English Wikipedia articles (full text) and GeoNames places (multi-field autocomplete),
 with the same data, queries, clients and cache state, interleaved round by round. Tables, host load and
 build/size figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); datasets, licenses and checksums in
@@ -61,14 +61,13 @@ Places (236,192 places, single client, `sift.max_expansions = 100000`): sift is 
 against 140 MiB.
 
 ```sh
-scripts/pgtest.sh install                 # sift into /tmp/sift-arch/root; pg_search comes from pg_config
-bench/datasets/fetch.sh all               # download, verify and convert both datasets
-bench/ab.sh quick                         # articles, 150k documents
-bench/places.sh quick                     # places, 34k rows
+bench/bench setup                             # download the datasets, build sift and the other engines under /tmp/sift-bench
+bench/bench run --dataset articles --tier ab  # articles, 150k documents
+bench/bench run --dataset places              # places, 34k rows
 ```
 
-`bench/oracle.sh ENGINE` checks an engine's match sets and `count(*)` against a tsvector oracle, and
-`bench/rank_check.sh ENGINE` compares its top-10 with pgx-bm25's BM25.
+`bench/bench check oracle ENGINE` checks an engine's match sets and `count(*)` against a tsvector oracle, and
+`bench/bench check rank ENGINE` compares its top-10 with pgx-bm25's BM25.
 
 ## Build and install
 
