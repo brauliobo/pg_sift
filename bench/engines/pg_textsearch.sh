@@ -11,7 +11,10 @@
 # combine the tsquery filter with the ranking, which the extension does not evaluate as one index scan: as the plain
 # `WHERE body @@ q ORDER BY body <@> ...` the planner chooses a sequential scan that tokenizes every document (3 s per
 # query at 25,000 articles), so they are written as the extension's documented plan, the filter through the index
-# and the standalone scores of its few matches sorted (a derived table the planner cannot flatten).
+# and the standalone scores of its few matches sorted (a derived table the planner cannot flatten). The score is
+# `(body <@> query) * 1` there: a bare `ORDER BY body <@> query` over the `@@` scan takes the index scan's current score,
+# which that scan does not compute (the matches then come in index order, not by BM25: 53 of the first 200 AND queries have
+# more than 10 matches and returned an unranked top-10); the expression makes the planner score the matches standalone.
 REQUIRES=pg_textsearch
 ORACLE_ACCENTS=${ORACLE_ACCENTS:-keep} ORACLE_TOKENS=${ORACLE_TOKENS:-pg}   # the PG parser tokens, like gin (steps/oracle.sh)
 SETUP=$(cat <<'SQL'
@@ -25,5 +28,5 @@ SQL
 INDEX="CREATE INDEX docs_fts ON docs USING bm25 (body) WITH (text_config = 'simple');"
 PRED="'docs.body @@ ' || quote_literal(tsq(mode, terms)) || '::tsquery'"
 SOURCE="CASE WHEN mode = 'or' THEN 'docs' ELSE '(SELECT * FROM docs WHERE ' || bench_pred(mode, terms) || ' OFFSET 0) docs' END"
-RANK="CASE WHEN mode IN ('and', 'or', 'phrase', 'not') THEN format('docs.body <@> to_bm25query(%L, %L)',
+RANK="CASE WHEN mode IN ('and', 'or', 'phrase', 'not') THEN format(CASE mode WHEN 'or' THEN 'docs.body <@> to_bm25query(%L, %L)' ELSE '(docs.body <@> to_bm25query(%L, %L)) * 1' END,
     array_to_string(CASE mode WHEN 'not' THEN terms[:cardinality(terms) - 1] ELSE terms END, ' '), 'docs_fts') END"
