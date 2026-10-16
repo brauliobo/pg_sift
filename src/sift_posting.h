@@ -35,8 +35,12 @@
 
 #define SIFT_BLKBOUND_MIN		32	/* postings in a group to store blk_bound[] */
 
-/* df from which terms are GROUPED (bitmaps) rather than LIST (docs/CODEC.md 4) */
-#define SIFT_GROUPED_MIN_DF		65536
+/*
+ * df from which terms are GROUPED (bitmaps) rather than LIST (docs/CODEC.md 4). Terms of 8K to 64K postings
+ * decode their Elias-Fano blocks in every query and have no block bounds as LIST; 8192 makes ranked AND 22%
+ * and count(*) of ORs 27% faster for 10% more index (Wikipedia, 218K articles)
+ */
+#define SIFT_GROUPED_MIN_DF		8192
 
 #define SIFT_GS_ALL_TF1			0x01	/* no L1 member in the group */
 #define SIFT_GS_BLKBOUND		0x02
