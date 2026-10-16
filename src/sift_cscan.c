@@ -172,6 +172,7 @@ index_text(SiftScanState *ss)
 	bool		isnull;
 
 	ResetPerTupleExprContext(estate);
+	GetPerTupleExprContext(estate)->ecxt_scantuple = ss->heapslot;
 	FormIndexDatum(ss->iinfo, ss->heapslot, estate, &value, &isnull);
 	return isnull ? NULL : DatumGetTextPP(value);
 }
