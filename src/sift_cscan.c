@@ -453,7 +453,8 @@ unordered_next(SiftScanState *ss)
 	{
 		if (!ss->need_heap)
 			return ExecStoreVirtualTuple(ExecClearTuple(ss->css.ss.ss_ScanTupleSlot));
-		if (!sift_vis_fetch(&ss->vis, &tid, ss->heapslot) || (ss->pm.recheck && !recheck_tuple(ss)))
+		if (!sift_vis_fetch(&ss->vis, &tid, ss->heapslot) ||
+			(ss->pm.recheck && !sift_page_sure(&ss->pm, ItemPointerGetOffsetNumber(&tid)) && !recheck_tuple(ss)))
 			continue;
 		econtext->ecxt_scantuple = fill_scan_slot(ss, 0);
 		if (ss->quals && !ExecQual(ss->quals, econtext))

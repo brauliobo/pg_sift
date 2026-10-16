@@ -1,5 +1,5 @@
 -- Representation thresholds: inline (df <= 2), LIST, GROUPED from
--- sift.grouped_min_df (65536 in production), across superblocks, with
+-- sift.grouped_min_df (8192 in production), across superblocks, with
 -- block bounds and tf escapes; round trip against sift.tokenize.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -35,7 +35,7 @@ SELECT i, 'all ' || CASE WHEN i <= 2 THEN 'two ' ELSE '' END || CASE WHEN i <= 3
 FROM generate_series(1, 6000) i;
 SELECT pg_relation_size('g') / 8192 > 512 AS three_superblocks;
 
--- Production thresholds: everything below 65536 is inline or LIST
+-- Production thresholds: everything below 8192 is inline or LIST
 CREATE INDEX g_list ON g USING sift (body) WITH (positions = off);
 SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_list');
 SELECT sift.verify('g_list');

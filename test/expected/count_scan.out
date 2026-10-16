@@ -5,7 +5,7 @@ CREATE TABLE c (id int PRIMARY KEY, body text, grp int);
 INSERT INTO c SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'the quick fox', 'brown dog', 'fox'])[1 + i % 5]
 	|| ' w' || i % 7, i % 3 FROM generate_series(1, 2000) i;
 INSERT INTO c VALUES (2001, NULL, 0), (2002, '', 0);
-CREATE INDEX c_idx ON c USING sift (body);
+CREATE INDEX c_idx ON c USING sift (body) WITH (positions = on);
 VACUUM ANALYZE c;
 -- the count through the index and by evaluating every document
 CREATE FUNCTION via_scan(q text) RETURNS bigint LANGUAGE plpgsql AS $$
@@ -193,6 +193,138 @@ SELECT sift_plan('SELECT count(*) FROM c WHERE body @@> ''fox''') !~ 'SiftCount'
 (1 row)
 
 RESET sift.enable_count;
+-- vacuum clears the deleted documents' bits (dirty superblocks, pages back in the visibility map), and
+-- inserted or updated rows put pages out of it again next to them
+VACUUM c;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 850 ok
+ quick fox          | 510 ok
+ fox NOT quick      | 340 ok
+ dog OR fox         | 1530 ok
+ "quick fox"        | 340 ok
+ "brown fox" OR dog | 850 ok
+ fo*                | 850 ok
+ /d.g/              | 680 ok
+ lazzy~1            | 340 ok
+ w3                 | 218 ok
+ nothing            | 0 ok
+ fox^2              | 850 ok
+(12 rows)
+
+INSERT INTO c SELECT 3000 + i, 'lazy fox w' || i, 1 FROM generate_series(1, 30) i;
+UPDATE c SET grp = grp + 1 WHERE id % 97 = 0;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 880 ok
+ quick fox          | 510 ok
+ fox NOT quick      | 370 ok
+ dog OR fox         | 1560 ok
+ "quick fox"        | 340 ok
+ "brown fox" OR dog | 850 ok
+ fo*                | 880 ok
+ /d.g/              | 680 ok
+ lazzy~1            | 370 ok
+ w3                 | 219 ok
+ nothing            | 0 ok
+ fox^2              | 880 ok
+(12 rows)
+
+VACUUM c;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 880 ok
+ quick fox          | 510 ok
+ fox NOT quick      | 370 ok
+ dog OR fox         | 1560 ok
+ "quick fox"        | 340 ok
+ "brown fox" OR dog | 850 ok
+ fo*                | 880 ok
+ /d.g/              | 680 ok
+ lazzy~1            | 370 ok
+ w3                 | 219 ok
+ nothing            | 0 ok
+ fox^2              | 880 ok
+(12 rows)
+
+-- without positions the heap decides the phrases: the same counts, through dead rows and new ones
+DROP INDEX c_idx;
+CREATE INDEX c_idx ON c USING sift (body) WITH (positions = off);
+VACUUM ANALYZE c;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 880 ok
+ quick fox          | 510 ok
+ fox NOT quick      | 370 ok
+ dog OR fox         | 1560 ok
+ "quick fox"        | 340 ok
+ "brown fox" OR dog | 850 ok
+ fo*                | 880 ok
+ /d.g/              | 680 ok
+ lazzy~1            | 370 ok
+ w3                 | 219 ok
+ nothing            | 0 ok
+ fox^2              | 880 ok
+(12 rows)
+
+DELETE FROM c WHERE id % 13 = 0;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 812 ok
+ quick fox          | 471 ok
+ fox NOT quick      | 341 ok
+ dog OR fox         | 1440 ok
+ "quick fox"        | 314 ok
+ "brown fox" OR dog | 785 ok
+ fo*                | 812 ok
+ /d.g/              | 628 ok
+ lazzy~1            | 341 ok
+ w3                 | 201 ok
+ nothing            | 0 ok
+ fox^2              | 812 ok
+(12 rows)
+
+INSERT INTO c SELECT 4000 + i, 'brown fox w' || i, 2 FROM generate_series(1, 30) i;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 842 ok
+ quick fox          | 471 ok
+ fox NOT quick      | 371 ok
+ dog OR fox         | 1470 ok
+ "quick fox"        | 314 ok
+ "brown fox" OR dog | 815 ok
+ fo*                | 842 ok
+ /d.g/              | 628 ok
+ lazzy~1            | 341 ok
+ w3                 | 202 ok
+ nothing            | 0 ok
+ fox^2              | 842 ok
+(12 rows)
+
+VACUUM c;
+SELECT * FROM all_same();
+         q          | result  
+--------------------+---------
+ fox                | 842 ok
+ quick fox          | 471 ok
+ fox NOT quick      | 371 ok
+ dog OR fox         | 1470 ok
+ "quick fox"        | 314 ok
+ "brown fox" OR dog | 815 ok
+ fo*                | 842 ok
+ /d.g/              | 628 ok
+ lazzy~1            | 341 ok
+ w3                 | 202 ok
+ nothing            | 0 ok
+ fox^2              | 842 ok
+(12 rows)
+
 DROP TABLE c CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to function via_seq(text)

@@ -9,7 +9,7 @@ All numbers below were measured on a 3.04 M-row English text corpus (title plus 
 ## 1. Recommendation (summary for the architect)
 
 1. **Two representations per term, switched by df. Not "bitmaps everywhere".**
-   - **LIST** is Elias-Fano blocks over the ctid key, for `df < 65536` (tunable, §4).
+   - **LIST** is Elias-Fano blocks over the ctid key, for `df < 8192` (`SIFT_GROUPED_MIN_DF`, was 65536; §4).
    - **GROUPED** uses 256-page groups with a bitmap or array container per group, for frequent terms.
    - Singletons (df = 1) stay inline in the dictionary. Keep df ≤ 2 inline too, as DESIGN.md says: a LIST blob for df = 2 costs about 13 B, the same as two raw keys.
    - On our data, EF lists are smaller than two-level bitmaps in **every** df class: 10.0 against 57 bits per posting overall (§5.1).
@@ -104,7 +104,7 @@ GROUPED  u8 0[3], u32 n, u32 ng
 
 - **Container choice:** ARRAY when `entries * (2 or 4) < 32 + npages * w`, else BITMAP.
 - **Term kind choice:**
-  - `sift_encode` picks the smaller of LIST and GROUPED, with a `bias` factor, by default. Recommended production policy: `kind = df >= 65536 ? GROUPED : LIST`, see §4.
+  - `sift_encode` picks the smaller of LIST and GROUPED, with a `bias` factor, by default. Shipped policy: `kind = df >= 8192 ? GROUPED : LIST` (65536 in the first analysis), see §4.
   - The encoder reports exact sizes when `out == NULL`, so pages can be planned.
 
 ### 3.2 Chunk (DESIGN.md contract 6)
@@ -132,7 +132,7 @@ One term × one 256-page group, standalone: `u32 (count << 8 | ctype)` followed 
 | Decision | Rule | Evidence |
 |---|---|---|
 | inline | df ≤ 2 in the dictionary entry (raw keys) | LIST blob for df 2–3 ≈ 53 bits/posting incl. header |
-| LIST vs GROUPED | GROUPED iff df ≥ 64K (8K if speed matters more than +21 % size) | §5.1 policies; §5.3 speed |
+| LIST vs GROUPED | GROUPED iff df ≥ 8K (64K in the analysis below; measured on 218K Wikipedia articles: +10 % index, ranked AND 22 % and count of ORs 27 % faster) | §5.1 policies; §5.3 speed |
 | container | ARRAY iff `2·n < 32 + npages·w` (u16 entries) | auto: 7,598 array / 3,478 bitmap groups on real |
 | bitmap width | `w = sift_w_for(max off in group)` | real: w1 58 %, w2 40 %, w4 2 % |
 | bounds | u8 per chunk + a nibble per block, only for chunks with ≥ 32 postings; block = `clamp(256/tpp,1,16)` pages (the codec implements fixed 16-page blocks) | §5.7 |
