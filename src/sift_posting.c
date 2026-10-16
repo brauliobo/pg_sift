@@ -24,6 +24,7 @@ struct SiftPostingWriter
 	uint8	   *bound;
 	uint32		n;
 	uint32		cap;
+	uint32		grouped_min;	/* df from which the term is GROUPED */
 	uint8	   *out;
 	Size		outcap;
 	uint8		bound1[SIFT_MAX_DL + 1];	/* bound for tf 1 by dl; 0 = not computed */
@@ -67,6 +68,7 @@ sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref, MemoryContext mc
 	w->ref.k1 = ref->k1;
 	w->ref.b = ref->b;
 	w->ref.avgdl = ref->avgdl;
+	w->grouped_min = (uint32) sift_grouped_min_df;
 	return w;
 }
 
@@ -164,8 +166,12 @@ fill_groups(SiftPostingWriter *w, SiftGroupScore *gs, uint8 *rows)
 	}
 }
 
-void
-sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
+/*
+ * Encodes the term's postings into w->out, filling info but for post_off;
+ * returns the term blob, NULL for an inline term (which has none).
+ */
+static const uint8 *
+postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 {
 	uint32		n = w->n,
 				nesc = 0,
@@ -194,10 +200,9 @@ sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 		info->flags |= SIFT_TERM_INLINE;
 		memcpy(info->inline_keys, w->keys, n * sizeof(SiftKey));
 		memcpy(info->inline_tf, w->tf, n);
-		w->n = 0;
-		return;
+		return NULL;
 	}
-	opts.kind = n >= (uint32) sift_grouped_min_df ? SIFT_GROUPED : SIFT_LIST;
+	opts.kind = n >= w->grouped_min ? SIFT_GROUPED : SIFT_LIST;
 	if (opts.kind == SIFT_LIST)
 		info->flags |= SIFT_TERM_SPARSE;
 	else
@@ -237,12 +242,39 @@ sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 			sift_kern_tf_encode(p, nib, nib + (info->nnib + 1) / 2, &pos, w->tf, n);
 		}
 	}
-	sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
-	info->post_off = sift_sw_tell(w->sw);
 	info->post_len = total;
 	info->codec_len = clen;
-	sift_sw_write(w->sw, out, total);
+	return out;
+}
+
+void
+sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
+{
+	const uint8 *out = postw_encode(w, info);
+
+	if (out)
+	{
+		sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
+		info->post_off = sift_sw_tell(w->sw);
+		sift_sw_write(w->sw, out, info->post_len);
+	}
 	w->n = 0;
+}
+
+const uint8 *
+sift_postw_end_term_mem(SiftPostingWriter *w, SiftTermInfo *info, MemoryContext mcxt)
+{
+	const uint8 *out = postw_encode(w, info);
+	uint8	   *blob = NULL;
+
+	if (out)
+	{
+		blob = MemoryContextAllocAligned(mcxt, (Size) info->post_len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+		memcpy(blob, out, info->post_len);
+		memset(blob + info->post_len, 0, SIFT_KERN_PAD);
+	}
+	w->n = 0;
+	return blob;
 }
 
 /* ---------- reader ---------- */
@@ -256,30 +288,23 @@ corrupt_blob(const SiftTermInfo *info)
 					(unsigned long long) info->post_off)));
 }
 
+/* The cursor over a term blob with SIFT_KERN_PAD zero bytes behind it (NULL for an inline term) */
 static SiftPostingCursor *
-post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bool verify)
+post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, bool verify)
 {
 	SiftPostingCursor *c = MemoryContextAllocZero(mcxt, sizeof(SiftPostingCursor));
-	uint8	   *blob;
-	const void *src;
 	const char *detail;
 
 	c->info = *info;
 	c->mcxt = mcxt;
 	c->curbuf = MemoryContextAllocAligned(mcxt, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
-	if (info->flags & SIFT_TERM_INLINE)
+	if (blob == NULL)
 	{
-		if (info->df == 0 || info->df > SIFT_INLINE_MAX)
+		if (!(info->flags & SIFT_TERM_INLINE) || info->df == 0 || info->df > SIFT_INLINE_MAX)
 			corrupt_blob(info);
 		sift_post_rewind(c);
 		return c;
 	}
-	blob = MemoryContextAllocAligned(mcxt, (Size) info->post_len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN,
-									 MCXT_ALLOC_HUGE);
-	src = sift_sr_get(sr, info->post_off, info->post_len, blob);
-	if (src != blob)
-		memcpy(blob, src, info->post_len);
-	memset(blob + info->post_len, 0, SIFT_KERN_PAD);
 	c->blob = blob;
 	if (info->codec_len > info->post_len || info->codec_len < 4 ||
 		sift_blob_kind(blob) != ((info->flags & SIFT_TERM_SPARSE) ? SIFT_LIST : SIFT_GROUPED) ||
@@ -318,10 +343,35 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 	return c;
 }
 
+static SiftPostingCursor *
+post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bool verify)
+{
+	uint8	   *blob = NULL;
+
+	if (!(info->flags & SIFT_TERM_INLINE))
+	{
+		const void *src;
+
+		blob = MemoryContextAllocAligned(mcxt, (Size) info->post_len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN,
+										 MCXT_ALLOC_HUGE);
+		src = sift_sr_get(sr, info->post_off, info->post_len, blob);
+		if (src != blob)
+			memcpy(blob, src, info->post_len);
+		memset(blob + info->post_len, 0, SIFT_KERN_PAD);
+	}
+	return post_attach(info, mcxt, blob, verify);
+}
+
 SiftPostingCursor *
 sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
 {
 	return post_open(sr, info, mcxt, false);
+}
+
+SiftPostingCursor *
+sift_post_open_blob(const SiftTermInfo *info, const uint8 *blob, MemoryContext mcxt)
+{
+	return post_attach(info, mcxt, blob, false);
 }
 
 SiftPostingCursor *

@@ -105,11 +105,23 @@ SELECT same('tok12*'), same('tok1*'), same('*k12'), same('/tok1[0-9]/'), same('t
 (1 row)
 
 SELECT hits('tok*');
+ hits 
+------
+ 3000
+(1 row)
+
+SELECT hits('t*');
+ hits 
+------
+ 3000
+(1 row)
+
+SELECT hits('tok?*');
 ERROR:  sift: the leaf at position 1 expands to more than 512 terms
 HINT:  Narrow the pattern or raise sift.max_expansions.
 CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
-SELECT hits('t*');
+SELECT hits('t?*');
 ERROR:  sift: the leaf at position 1 expands to more than 512 terms
 HINT:  Narrow the pattern or raise sift.max_expansions.
 CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
