@@ -26,8 +26,8 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 
 # What the tables do not say: the scale of each dataset, the rounds and the host class of the session.
 DATASETS = {
-    'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'engines': ['sift', 'sift_pairs', 'pg_search', 'rum'], 'rounds': 6},
-    'places': {'name': 'GeoNames cities500, 236,262 places', 'engines': ['sift', 'pg_search', 'rum'], 'rounds': 6},
+    'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'engines': ['sift', 'sift_pairs', 'pg_search', 'pg_textsearch', 'rum'], 'rounds': 4},
+    'places': {'name': 'GeoNames cities500, 236,262 places', 'engines': ['sift', 'pg_search', 'pg_textsearch', 'rum'], 'rounds': 4},
 }
 HOST = '8-core desktop, shared host'
 DATE = 'Oct 2026'
@@ -36,12 +36,14 @@ ENGINES = {  # label, Okabe-Ito colors (distinguishable with color vision defici
     'sift': ('sift', '#0072B2'),
     'sift_pairs': ('sift pairs', '#009E73'),
     'pg_search': ('pg_search', '#D55E00'),
+    'pg_textsearch': ('pg_textsearch', '#CC79A7'),
     'rum': ('rum', '#7f7f7f'),
 }
 ARTICLE_CLASSES = [('and', 'and'), ('or', 'or'), ('phrase', 'phrase'), ('mixed', 'mixed'), ('count', 'count(*)'),
                    ('filter', 'filter'), ('join', 'join')]
 PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']
 PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes'
+PLACE_NOTES = ['pg_textsearch is not drawn: it cannot rank prefixes (count and scan only, see docs/BENCHMARKS.md).']
 
 WIDTH = 860
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
@@ -71,10 +73,10 @@ class Svg:
         d = ' stroke-dasharray="4 3"' if dash else ''
         self.parts.append(f'<line x1="{num(x1)}" y1="{num(y1)}" x2="{num(x2)}" y2="{num(y2)}" stroke="{stroke}" stroke-width="{width}"{d}/>')
 
-    def caption(self, y, s, note=None):
-        assert max(len(s), len(note or '')) * 11 * 0.56 < WIDTH - 40, f'caption too long: {s}'
-        if note:
-            self.text(20, y - 18, note, 11, fill=MUTED)
+    def caption(self, y, s, notes=()):
+        assert max(len(x) for x in (s, *notes)) * 11 * 0.56 < WIDTH - 40, f'caption too long: {s}'
+        for i, note in enumerate(reversed(notes)):
+            self.text(20, y - 18 * (i + 1), note, 11, fill=MUTED)
         self.text(20, y, s, 11, fill=MUTED)
 
     def render(self, height):
@@ -183,7 +185,7 @@ def hbars(rows, tier, metric, title, direction, unit_fmt, axis_unit, caption):
     return svg.render(y + 10)
 
 
-def grouped(title, direction, groups, series, fmt, ylabel, caption, pending, baseline=None, note=None):
+def grouped(title, direction, groups, series, fmt, ylabel, caption, pending, baseline=None, notes=()):
     """Vertical grouped bars. groups: [(label, sublabel)]; series: [(engine, [value or None per group])]."""
     svg = Svg(title, '; '.join(f'{g[0]}: ' + ', '.join(f'{ENGINES[e][0]} {fmt(v[i])}' for e, v in series if v[i] is not None)
                                for i, g in enumerate(groups)))
@@ -218,8 +220,8 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, pending, bas
         by = top + ph - baseline * scale
         svg.line(left, by, left + pw, by, INK, 1.5, dash=True)
     svg.line(left, top + ph, left + pw, top + ph, MUTED)
-    bottom = top + ph + (74 if note else 56)
-    svg.caption(bottom - 8, caption, note)
+    bottom = top + ph + 56 + 18 * len(notes)
+    svg.caption(bottom - 8, caption, notes)
     return svg.render(bottom + 8)
 
 
@@ -251,7 +253,7 @@ def make(rows, tier):
     engines = [e for e in p['engines'] if any(v is not None for v in lat[e])]
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
     out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        [(e, lat[e]) for e in engines], lambda v: f'{v:.2f}', 'p50 latency (ms)', cap, 'rum' not in engines, note=PLACE_KEY)
+                                        [(e, lat[e]) for e in engines], lambda v: f'{v:.2f}', 'p50 latency (ms)', cap, 'rum' not in engines, notes=[PLACE_KEY] + PLACE_NOTES)
     return out
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Usage: bench/steps/fetch.sh [sift|rum|pg_search|bm25|elasticsearch|tantivy ...]
-# (default: sift rum pg_search). Versions are pinned in bench/versions.env.
+# Usage: bench/steps/fetch.sh [sift|rum|pg_search|pg_textsearch|bm25|elasticsearch|tantivy ...]
+# (default: sift rum pg_search pg_textsearch). Versions are pinned in bench/versions.env.
 # Builds or unpacks the engines under $ROOT/engines/<name>, never system-wide: the PGXS extensions (sift from this
 # checkout, rum, pg_textsearch) are installed with DESTDIR into <name>/root, the ParadeDB pg_search package is
 # unpacked there; the cluster finds every */root (bench/steps/lib.sh). Downloads land in <name>/dl.
@@ -43,6 +43,8 @@ fetch_sift() {
 
 fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz"; }
 
+fetch_pg_textsearch() { pgxs_release pg_textsearch "https://github.com/timescale/pg_textsearch/archive/refs/tags/v$PG_TEXTSEARCH_VERSION.tar.gz" "$PG_TEXTSEARCH_SHA256"; }
+
 fetch_bm25() { mkdir -p "$ENG/bm25/root"; bsdtar -xf "${BM25_PKG:-$HOME/pkg/pgx-bm25/pgx-bm25-1.0.0-1-x86_64.pkg.tar.zst}" -C "$ENG/bm25/root"; }
 
 fetch_pg_search() {
@@ -65,4 +67,4 @@ fetch_elasticsearch() {
 fetch_tantivy() { (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$ROOT/target nice -n 19 cargo build --release -j "$JOBS" -q); }
 
 mkdir -p "$BUILD"
-for t in ${*:-sift rum pg_search}; do "fetch_$t"; log "fetched $t"; done
+for t in ${*:-sift rum pg_search pg_textsearch}; do "fetch_$t"; log "fetched $t"; done

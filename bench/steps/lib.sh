@@ -44,14 +44,16 @@ drop_db() { PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)"; 
 
 # An adapter (bench/engines/<name>.sh) sets REQUIRES (extension), SETUP and INDEX (SQL), and either PRED and RANK
 # (SQL expressions over `mode` and `terms` that render the WHERE condition and the ORDER BY of a query, NULL when
-# the engine cannot answer it; HELPERS: SQL they use) or, for engines outside Postgres, RENDER and the x_* functions.
+# the engine cannot answer it; SOURCE: the FROM item of ranked statements when it is not `docs WHERE PRED`; HELPERS: SQL
+# they use) or, for engines outside Postgres, RENDER and the x_* functions.
 render_sql() {
   echo "${HELPERS:-}"
   printf 'CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS $b$ SELECT %s $b$;\n' "$PRED"
   printf 'CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS $b$ SELECT %s $b$;\n' "$RANK"
+  printf 'CREATE OR REPLACE FUNCTION bench_source(mode text, terms text[]) RETURNS text LANGUAGE sql AS $b$ SELECT %s $b$;\n' "${SOURCE:-NULL::text}"
 }
 load_engine() {
-  ENGINE=$1; REQUIRES=''; SETUP=''; INDEX=''; PRED=''; RANK=''; HELPERS=''; RENDER=''
+  ENGINE=$1; REQUIRES=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''
   . "$BENCH/engines/$1.sh"
   [[ -n $RENDER ]] || RENDER=$(render_sql)
 }

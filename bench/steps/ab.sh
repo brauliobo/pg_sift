@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Interleaved A/B of sift, sift with phrase_index = pairs, ParadeDB pg_search and rum on one corpus.
+# Interleaved A/B of sift, sift with phrase_index = pairs, ParadeDB pg_search, pg_textsearch and rum on one corpus.
 #
 #   bench/steps/ab.sh quick          Q tier (150k articles), 3 s per cell, 3-6 rounds
 #   bench/steps/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
@@ -23,7 +23,7 @@ case $mode in
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 . "$(dirname "$0")/lib.sh"
-ENGINES=${ENGINES:-sift sift_pairs pg_search rum}
+ENGINES=${ENGINES:-sift sift_pairs pg_search pg_textsearch rum}
 CLASSES=${CLASSES:-and or phrase mixed count filter join}
 CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} TOL=${TOL:-0.15} NQ=${NQ:-12}
 RESULTS=${RESULTS:-$BENCH/out/ab}
