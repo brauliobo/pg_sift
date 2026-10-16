@@ -45,6 +45,7 @@ PG_FUNCTION_INFO_V1(sift_merge);
 PG_FUNCTION_INFO_V1(sift_segments);
 PG_FUNCTION_INFO_V1(sift_segment_postings);
 PG_FUNCTION_INFO_V1(sift_verify);
+PG_FUNCTION_INFO_V1(sift_facet_counts);
 
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;

@@ -122,6 +122,16 @@ extern void sift_rank_end(SiftRanker *r);
 extern int64 sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg);
 
 /*
+ * The visible matches page by page in heap order, what sift_eval_count counts: fn gets the offsets
+ * (bit off-1) that survive visibility and the phrase recheck of every page with any. Returns the
+ * total.
+ */
+typedef void (*SiftPageFn) (void *arg, BlockNumber blk, const uint64 *offmask);
+
+extern int64 sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg,
+							 SiftPageFn fn, void *fnarg);
+
+/*
  * Planner estimate from term statistics only: matching documents under
  * independence (AND product, OR union, NOT complement), the postings the
  * query reads and its dictionary terms. Never raises the expansion limit
