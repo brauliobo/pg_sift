@@ -35,7 +35,7 @@ checks all of this before it downloads anything.
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory |
 
-The other commands: `cold` (cache-evicted latency), `check oracle|rank ENGINE` (correctness against a tsvector
+The other commands: `charts`, `cold` (cache-evicted latency), `check oracle|rank ENGINE` (correctness against a tsvector
 oracle / pgx-bm25), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
@@ -135,6 +135,7 @@ stays in the cache. Per-tier cluster, port and dump:
 | `ab.sh`, `places.sh` | the interleaved A/B runs of articles and places (`run`, `cold`) |
 | `lib.sh` | shared settings: tiers, ports, `q` (psql), `locked` (perf lock), `limited` (8 CPU / 32 GB budget, a cgroup scope when a systemd user session exists) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
+| `charts.py` |  |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\ | start\ | stop\ | destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS, `DESTDIR` roots), unpack pg_search and the other third-party engines under `$SIFT_BENCH_ROOT`, build `xbench` |
