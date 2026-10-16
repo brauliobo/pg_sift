@@ -104,6 +104,51 @@ bm25_accum_avx2(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 		bm25_accum_tmpl(scores, mask, npages, tf, knorm, w, true);
 }
 
+/* The lanes of the byte at slot s that cand keeps */
+K2 uint32
+byte_cand(const uint64 *cand, int s, uint32 k)
+{
+	return k & (cand[s >> 6] >> (s & 63));
+}
+
+static SIFT_TARGET_AVX2 int
+bm25_sel_avx2(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
+			  const float4 *knorm, float4 w)
+{
+	const __m256 vw = _mm256_set1_ps(w),
+				one = _mm256_set1_ps(1.0f);
+	int			r = 0;
+
+	FOREACH_BYTE(mask, npages, s, k,
+				 uint32 kc = byte_cand(cand, s, k);
+				 if (kc)
+				 {
+					 __m256 lm = lanes(k);
+					 __m256 lc = lanes(kc);
+					 __m256 t =tf ? _mm256_or_ps(_mm256_andnot_ps(lm, one), byte_tf(tf + r, k)) : one;
+					 __m256 x = _mm256_div_ps(t, _mm256_add_ps(t, _mm256_and_ps(lc, _mm256_load_ps(knorm + s))));
+					 __m256 sc = _mm256_load_ps(scores + s);
+
+					 _mm256_store_ps(scores + s, _mm256_blendv_ps(sc, _mm256_add_ps(sc, _mm256_mul_ps(vw, x)), lc));
+				 }
+				 r += __builtin_popcount(k));
+	return r;
+}
+
+static SIFT_TARGET_AVX2 int
+prune_gt_avx2(uint64 *cand, const float4 *scores, int npages, float4 thr)
+{
+	const __m256 th = _mm256_set1_ps(thr);
+	int			n = 0;
+
+	FOREACH_BYTE(cand, npages, s, k,
+				 uint32 g = _mm256_movemask_ps(_mm256_cmp_ps(_mm256_load_ps(scores + s), th, _CMP_GT_OQ)) & k;
+
+				 cand[s >> 6] ^= (uint64) (k ^ g) << (s & 63);
+				 n += __builtin_popcount(g));
+	return n;
+}
+
 /* PSHUFB control moving u16 lanes down by row index: lane i takes lane i + sh, zero past 7 */
 #define SH(sh, j)	(((j) / 2 + (sh) < 8) ? (j) + 2 * (sh) : 0x80)
 #define SHROW(sh)	{SH(sh, 0), SH(sh, 1), SH(sh, 2), SH(sh, 3), SH(sh, 4), SH(sh, 5), SH(sh, 6), SH(sh, 7), \
@@ -286,6 +331,8 @@ sift_kern_vm_pext(uint64 *pagemask, const uint8 *vmbytes)
 	.tf_decode = tf_decode_avx2, \
 	.knorm = knorm_avx2, \
 	.bm25_accum = bm25_accum_avx2, \
+	.bm25_sel = bm25_sel_avx2, \
+	.prune_gt = prune_gt_avx2, \
 	.max_merge = max_merge_avx2, \
 	.ub_accum = ub_accum_avx2, \
 	.select_gt = select_gt_avx2, \
