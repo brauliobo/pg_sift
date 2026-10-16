@@ -30,6 +30,7 @@
 #include "sift_am.h"
 #include "sift_eval.h"
 #include "sift_planner.h"
+#include "sift_pushdown.h"
 
 static set_rel_pathlist_hook_type prev_pathlist_hook;
 static create_upper_paths_hook_type prev_upper_hook;
@@ -320,24 +321,50 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 	return cp;
 }
 
+/*
+ * Candidates a ranked scan verifies before it holds k that pass the quals, when the fraction pass of
+ * the cands pass: the k-th best passing score is about k / pass candidates down, and the bound order
+ * overshoots it by a logarithmic factor. Without a limit it verifies every one.
+ */
+static double
+rank_verified(double cands, double pass, int64 k)
+{
+	return k > 0 ? Min(cands, k / pass * (1 + log(Max(cands * pass / k, 1)))) : cands;
+}
+
+/*
+ * With a filter the ranker only meets the matches its bitmap keeps (the fraction fe.sel of them, at least
+ * those that pass the quals), at the price of building the bitmap first.
+ */
 static CustomPath *
-scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys)
+scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+		  BitmapHeapPath *filter)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
 	ScanCost	sc;
-	Cost		startup;
-	double		verified;
+	SiftFilterEst fe = {0, 1};
+	Cost		startup,
+				verify;
+	double		pass;
 
 	scan_cost(root, rel, c, &sc);
 	cp->path.pathkeys = pathkeys;
 	cp->path.rows = rel->rows;
 	startup = sc.idx.known ? sc.idx.cost : 0;
-	if (mode == SIFT_MODE_RANKED && k > 0)
+	if (mode == SIFT_MODE_RANKED)
 	{
-		verified = Min(sc.docs, k * (1 + log(Max(sc.docs / k, 1))));
-		cp->path.startup_cost = startup + verified * sc.tuple;
-		cp->path.total_cost = cp->path.startup_cost + rel->rows * cpu_tuple_cost;
+		pass = Min(rel->rows / sc.docs, 1.0);
+		if (filter)
+		{
+			sift_filter_estimate(root, rel, filter, &fe);
+			fe.sel = Max(fe.sel, pass);
+			cp->custom_paths = list_make1(filter);
+			startup += fe.cost;
+		}
+		verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
+		cp->path.startup_cost = k > 0 ? startup + verify : startup;
+		cp->path.total_cost = k > 0 ? cp->path.startup_cost + rel->rows * cpu_tuple_cost : startup + verify;
 	}
 	else
 	{
@@ -357,7 +384,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	ScanCand	c;
 	PathKey    *pk = NULL;
 	List	   *scores;
-	bool		ranked;
+	bool		ranked,
+				filter_looked = false;
+	BitmapHeapPath *filter = NULL;
 	CustomPath *best = NULL;
 
 	if (prev_pathlist_hook)
@@ -379,18 +408,32 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	}
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 	{
-		CustomPath *cp;
+		CustomPath *cps[2];
+		int			ncps = 0;
 		int64		k = root->limit_tuples > 0 ? (int64) ceil(root->limit_tuples) : 0;
 
 		if (!split_quals(rel, ii, &c))
 			continue;
 		if (ranked || scores != NIL)
-			cp = scan_path(root, rel, &c, SIFT_MODE_RANKED, ranked ? k : 0, ranked ? list_make1(pk) : NIL);
+		{
+			List	   *pathkeys = ranked ? list_make1(pk) : NIL;
+
+			if (!filter_looked)
+				filter = sift_filter_bitmap_path(root, rel);
+			filter_looked = true;
+			if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
+				cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_RANKED, ranked ? k : 0, pathkeys, NULL);
+			if (filter)
+				cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_RANKED, ranked ? k : 0, pathkeys, filter);
+		}
 		else
-			cp = scan_path(root, rel, &c, SIFT_MODE_UNORDERED, 0, NIL);
-		if (best == NULL || compare_path_costs(&cp->path, &best->path, TOTAL_COST) < 0)
-			best = cp;
-		add_path(rel, &cp->path);
+			cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_UNORDERED, 0, NIL, NULL);
+		for (int i = 0; i < ncps; i++)
+		{
+			if (best == NULL || compare_path_costs(&cps[i]->path, &best->path, TOTAL_COST) < 0)
+				best = cps[i];
+			add_path(rel, &cps[i]->path);
+		}
 	}
 	if (best && (ranked || scores != NIL))
 	{
@@ -534,6 +577,12 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->custom_exprs = list_make2(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual);
 	cs->methods = &sift_scan_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, ii->indexoid);
+	if (custom_plans != NIL)
+	{
+		/* the bitmap heap scan was planned for its bitmap: the child is the bitmap plan under it */
+		cs->custom_plans = list_make1(outerPlan(linitial(custom_plans)));
+		sift_filter_plan_deps(root, linitial(cs->custom_plans));
+	}
 	return &cs->scan.plan;
 }
 
@@ -565,6 +614,7 @@ sift_planner_init(void)
 {
 	RegisterCustomScanMethods(&sift_scan_plan_methods);
 	RegisterCustomScanMethods(&sift_count_plan_methods);
+	sift_pushdown_init();
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = sift_set_rel_pathlist;
 	prev_upper_hook = create_upper_paths_hook;

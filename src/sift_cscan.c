@@ -18,7 +18,9 @@
 #include "commands/explain.h"
 #include "commands/explain_format.h"
 #include "executor/executor.h"
+#include "miscadmin.h"
 #include "nodes/extensible.h"
+#include "nodes/tidbitmap.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
@@ -53,6 +55,9 @@ typedef struct SiftTotals
 	int64		verified;
 	int64		heap_checks;
 	int64		heap_pages;
+	int64		filter_sbs;			/* pushdown: what the bitmaps kept, summed over the scans */
+	int64		filter_exact;
+	int64		filter_lossy;
 } SiftTotals;
 
 /* Heap pages of an unordered scan read ahead, and the gap from the previous page that is worth a read of its own */
@@ -83,6 +88,8 @@ typedef struct SiftScanState
 	bool		need_heap;
 	SiftIndexState *st;
 	SiftPlan   *plan;
+	PlanState  *bitmap;				/* ranked pushdown: bitmap of the tuples the other quals keep */
+	SiftFilter *filter;
 	SiftMatchIter *it;
 	SiftRanker *rank;
 	SiftVis		vis;
@@ -203,6 +210,12 @@ add_stats(SiftScanState *ss)
 {
 	const SiftPlanStats *s;
 
+	if (ss->filter)
+	{
+		ss->tot.filter_sbs += ss->filter->nsb;
+		ss->tot.filter_exact += ss->filter->exact_pages;
+		ss->tot.filter_lossy += ss->filter->lossy_pages;
+	}
 	if (ss->plan == NULL)
 		return;
 	s = sift_plan_stats(ss->plan);
@@ -234,6 +247,7 @@ close_scan(SiftScanState *ss)
 	ss->it = NULL;
 	ss->st = NULL;
 	ss->plan = NULL;
+	ss->filter = NULL;
 	ss->vis_open = false;
 	MemoryContextReset(ss->cxt);
 	ss->started = ss->done = ss->empty = false;
@@ -272,15 +286,36 @@ bind_scan(SiftScanState *ss)
 	ss->plan = sift_plan_bind(ss->st, queries, n, ss->mode == SIFT_MODE_RANKED ? SIFT_BIND_SCORE : 0);
 }
 
+/*
+ * The bitmap of the tuples the other quals keep becomes the masks the ranker restricts itself to. Its
+ * node runs in the executor's context like any child; no tuple in it, no rows.
+ */
+static void
+build_filter(SiftScanState *ss)
+{
+	EState	   *estate = ss->css.ss.ps.state;
+	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+	TIDBitmap  *tbm = (TIDBitmap *) MultiExecProcNode(ss->bitmap);
+
+	MemoryContextSwitchTo(old);
+	ss->filter = sift_filter_build(tbm, (Size) work_mem * 1024, ss->cxt);
+	tbm_free(tbm);
+	ss->empty = sift_filter_empty(ss->filter);
+}
+
 static void
 start_scan(SiftScanState *ss)
 {
 	EState	   *estate = ss->css.ss.ps.state;
-	MemoryContext old = MemoryContextSwitchTo(ss->cxt);
+	MemoryContext old;
 
 	ss->started = true;
 	ss->nsearches++;
-	bind_scan(ss);
+	if (ss->bitmap)
+		build_filter(ss);
+	old = MemoryContextSwitchTo(ss->cxt);
+	if (!ss->empty)
+		bind_scan(ss);
 	if (!ss->empty)
 	{
 		sift_vis_begin(&ss->vis, ss->heap, estate->es_snapshot);
@@ -288,6 +323,8 @@ start_scan(SiftScanState *ss)
 		ss->need_heap = ss->ncols > 0 || ss->quals != NULL || sift_plan_recheck_needed(ss->plan);
 		if (ss->mode == SIFT_MODE_RANKED)
 		{
+			if (ss->filter)
+				sift_plan_set_filter(ss->plan, ss->filter);
 			ss->rank = sift_rank_begin(ss->plan, ss->k, scan_verify, ss);
 			for (int i = 0; i < ss->ncols; i++)
 				if (ss->col[i].kind == COL_MAX_SCORE)
@@ -484,6 +521,10 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->wd = SIFT_OFFMASK_WORDS;
 	ss->vm_sb = UINT32_MAX;
 	init_cols(ss, cs);
+	foreach_node(Plan, child, cs->custom_plans)
+		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
+	if (node->custom_ps)
+		ss->bitmap = linitial(node->custom_ps);
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		PredicateLockRelation(ss->heap, estate->es_snapshot);
 }
@@ -500,6 +541,8 @@ sift_end(CustomScanState *node)
 	SiftScanState *ss = (SiftScanState *) node;
 
 	close_scan(ss);
+	foreach_ptr(PlanState, child, node->custom_ps)
+		ExecEndNode(child);
 	index_close(ss->index, NoLock);
 	if (ss->heap_opened)
 		table_close(ss->heap, NoLock);
@@ -509,7 +552,16 @@ sift_end(CustomScanState *node)
 static void
 sift_rescan(CustomScanState *node)
 {
-	close_scan((SiftScanState *) node);
+	SiftScanState *ss = (SiftScanState *) node;
+
+	close_scan(ss);
+	if (ss->bitmap)
+	{
+		if (node->ss.ps.chgParam != NULL)
+			UpdateChangedParamSet(ss->bitmap, node->ss.ps.chgParam);
+		if (ss->bitmap->chgParam == NULL)
+			ExecReScan(ss->bitmap);
+	}
 	ExecScanReScan(&node->ss);
 }
 
@@ -548,6 +600,15 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		t.heap_pages += ss->vis_open ? ss->vis.heap_pages : 0;
 	}
 	ExplainPropertyInteger("Index Searches", NULL, ss->nsearches, es);
+	if (ss->bitmap)
+	{
+		t.filter_sbs += ss->filter ? ss->filter->nsb : 0;
+		t.filter_exact += ss->filter ? ss->filter->exact_pages : 0;
+		t.filter_lossy += ss->filter ? ss->filter->lossy_pages : 0;
+		ExplainPropertyInteger("Filter Superblocks", NULL, t.filter_sbs, es);
+		ExplainPropertyInteger("Filter Pages Exact", NULL, t.filter_exact, es);
+		ExplainPropertyInteger("Filter Pages Lossy", NULL, t.filter_lossy, es);
+	}
 	ExplainPropertyInteger("Superblocks", NULL, t.sb_scanned, es);
 	if (ss->mode == SIFT_MODE_RANKED)
 	{
