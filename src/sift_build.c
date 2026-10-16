@@ -1413,7 +1413,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	bs = build_begin(index, shared->budget);
 	bs->fileset = &shared->fileset;
 	bs->worker = ParallelWorkerNumber;
-	reltuples = build_scan(bs, heap, info, table_beginscan_parallel(heap, SCAN_OF(shared)), false);
+	reltuples = build_scan(bs, heap, info, sift_table_beginscan_parallel(heap, SCAN_OF(shared)), false);
 	hand_over_runs(bs, part);
 	add_counts(shared, reltuples, bs->indexed);
 	InstrEndParallelQuery(&((BufferUsage *) shm_toc_lookup(toc, KEY_BUFFER_USAGE, false))[ParallelWorkerNumber],
@@ -1443,7 +1443,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (ldr == NULL)
 		init_bounds(bs, heap, opts->build_segments);
 	bs->wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-	res->heap_tuples = build_scan(bs, heap, info, ldr ? table_beginscan_parallel(heap, SCAN_OF(ldr->shared)) : NULL, true);
+	res->heap_tuples = build_scan(bs, heap, info, ldr ? sift_table_beginscan_parallel(heap, SCAN_OF(ldr->shared)) : NULL, true);
 	res->index_tuples = bs->indexed;
 	if (ldr)
 	{

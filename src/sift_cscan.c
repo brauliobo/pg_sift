@@ -16,7 +16,6 @@
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "commands/explain.h"
-#include "commands/explain_format.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
@@ -546,7 +545,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->wd = SIFT_OFFMASK_WORDS;
 	ss->vm_sb = UINT32_MAX;
 	init_cols(ss, cs);
-	foreach_node(Plan, child, cs->custom_plans)
+	foreach_ptr(Plan, child, cs->custom_plans)
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
 	if (node->custom_ps)
 		ss->bitmap = linitial(node->custom_ps);
@@ -600,7 +599,7 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	SiftTotals	t = ss->tot;
 
 	initStringInfo(&qs);
-	foreach_node(Node, q, linitial_node(List, cs->custom_exprs))
+	foreach_ptr(Node, q, linitial_node(List, cs->custom_exprs))
 		appendStringInfo(&qs, "%s%s", qs.len ? " AND " : "", deparse_expression(q, dctx, false, false));
 	ExplainPropertyText("Index", RelationGetRelationName(ss->index), es);
 	ExplainPropertyText("Query", qs.data, es);

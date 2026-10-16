@@ -114,7 +114,7 @@ const_queries(List *queries, text ***texts, int *ntexts)
 {
 	*texts = palloc(list_length(queries) * sizeof(text *));
 	*ntexts = 0;
-	foreach_node(Node, arg, queries)
+	foreach_ptr(Node, arg, queries)
 	{
 		if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
 			return false;
@@ -276,7 +276,7 @@ score_exprs(PlannerInfo *root, RelOptInfo *rel)
 	List	   *own = NIL;
 
 	score_walker((Node *) root->processed_tlist, &refs);
-	foreach_node(Node, e, refs.found)
+	foreach_ptr(Node, e, refs.found)
 		own = lappend(own, is_partition(rel) ? adjust_appendrel_attrs_multilevel(root, e, rel, rel->top_parent) : e);
 	refs = (ScoreRefs) {rel->relid, own};
 	if (root->query_pathkeys != NIL)
@@ -293,7 +293,7 @@ sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk)
 	if (root->query_pathkeys == NIL)
 		return false;
 	*pk = linitial_node(PathKey, root->query_pathkeys);
-	if ((*pk)->pk_cmptype != COMPARE_GT)
+	if (!sift_pathkey_descending(*pk))
 		return false;
 	foreach_ptr(Expr, e, pathkey_exprs(*pk, rel))
 		if (sift_is_score_expr((Node *) e, rel->relid, &is_max) && !is_max)
@@ -524,7 +524,7 @@ check_partition_scores(RelOptInfo *rel, List *scores)
 {
 	bool		is_max;
 
-	foreach_node(Node, e, scores)
+	foreach_ptr(Node, e, scores)
 		if (sift_is_score_expr(e, rel->relid, &is_max) && is_max)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -732,7 +732,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	rte = root->simple_rte_array[input_rel->relid];
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample || rte->inh)
 		return;
-	foreach_node(Node, e, output_rel->reltarget->exprs)
+	foreach_ptr(Node, e, output_rel->reltarget->exprs)
 		if (!plain_count(e))
 			return;
 	if (!count_cand(input_rel, &c))
@@ -768,7 +768,7 @@ scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual)
 		if (v->varno == rel->relid)
 			exprs = list_append_unique(exprs, v);
 	exprs = list_concat(exprs, score_exprs(root, rel));
-	foreach_node(Node, e, exprs)
+	foreach_ptr(Node, e, exprs)
 		tlist = lappend(tlist, makeTargetEntry((Expr *) e, resno++, NULL, false));
 	return tlist;
 }
@@ -780,7 +780,7 @@ scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual)
 static List *
 score_outputs(PlannerInfo *root, RelOptInfo *rel, List *tlist)
 {
-	foreach_node(Node, e, score_exprs(root, rel))
+	foreach_ptr(Node, e, score_exprs(root, rel))
 		if (tlist_member((Expr *) e, tlist) == NULL)
 			tlist = lappend(list_copy(tlist), makeTargetEntry((Expr *) e, list_length(tlist) + 1, NULL, true));
 	return tlist;

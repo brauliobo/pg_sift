@@ -51,24 +51,25 @@ SiftFilter *
 sift_filter_build(TIDBitmap *tbm, Size maxbytes, MemoryContext mcxt)
 {
 	SiftFilter *f = MemoryContextAllocZero(mcxt, sizeof(SiftFilter));
-	TBMPrivateIterator *it = tbm_begin_private_iterate(tbm);
-	TBMIterateResult res;
+	SiftTbmIter *it = sift_tbm_begin(tbm);
+	BlockNumber blockno;
+	bool		lossy;
+	int			n;
 	OffsetNumber offs[MaxHeapTuplesPerPage];
 	int64		maxrows = Min(maxbytes / sizeof(f->row[0]), PG_UINT32_MAX);
 
 	f->mcxt = mcxt;
-	while (tbm_private_iterate(it, &res))
+	while (sift_tbm_next(it, &blockno, &lossy, offs, &n))
 	{
-		int			page = res.blockno & (SIFT_SB_PAGES - 1),
-					n = 0;
+		int			page = blockno & (SIFT_SB_PAGES - 1);
 		uint64		bit = UINT64CONST(1) << (page & 63);
-		bool		lossy = res.lossy || f->nrow >= maxrows;
 		SiftFilterSB *fs;
 		uint64	   *row;
 
-		if (!lossy && (n = tbm_extract_page_tuple(&res, offs, MaxHeapTuplesPerPage)) == 0)
+		lossy |= f->nrow >= maxrows;
+		if (!lossy && n == 0)
 			continue;
-		fs = open_sb(f, sift_block_sb(res.blockno));
+		fs = open_sb(f, sift_block_sb(blockno));
 		fs->pages[page / 64] |= bit;
 		if (lossy)
 		{
@@ -82,7 +83,7 @@ sift_filter_build(TIDBitmap *tbm, Size maxbytes, MemoryContext mcxt)
 		f->exact_pages++;
 		f->tuples += n;
 	}
-	tbm_end_private_iterate(it);
+	sift_tbm_end(it);
 	return f;
 }
 

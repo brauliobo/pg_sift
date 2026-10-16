@@ -26,7 +26,7 @@ sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot)
 	v->snapshot = snapshot;
 	v->use_vm = IsMVCCSnapshot(snapshot);
 	v->vmbuf = InvalidBuffer;
-	v->fetch = table_index_fetch_begin(heap);
+	v->fetch = sift_table_index_fetch_begin(heap);
 	v->heap_nblocks = RelationGetNumberOfBlocks(heap);
 	v->vm_nblocks = smgrexists(RelationGetSmgr(heap), VISIBILITYMAP_FORKNUM) ?
 		smgrnblocks(RelationGetSmgr(heap), VISIBILITYMAP_FORKNUM) : 0;

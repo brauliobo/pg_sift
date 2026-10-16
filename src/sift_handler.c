@@ -270,9 +270,6 @@ sift_handler(PG_FUNCTION_ARGS)
 	am->amoptsprocnum = 0;
 	am->amcanorder = false;
 	am->amcanorderbyop = false;
-	am->amcanhash = false;
-	am->amconsistentequality = false;
-	am->amconsistentordering = false;
 	am->amcanbackward = false;
 	am->amcanunique = false;
 	am->amcanmulticol = false;
@@ -298,7 +295,6 @@ sift_handler(PG_FUNCTION_ARGS)
 	am->amvacuumcleanup = sift_amvacuumcleanup;
 	am->amcanreturn = NULL;
 	am->amcostestimate = sift_amcostestimate;
-	am->amgettreeheight = NULL;
 	am->amoptions = sift_amoptions;
 	am->amproperty = NULL;
 	am->ambuildphasename = NULL;
@@ -314,8 +310,7 @@ sift_handler(PG_FUNCTION_ARGS)
 	am->amestimateparallelscan = NULL;
 	am->aminitparallelscan = NULL;
 	am->amparallelrescan = NULL;
-	am->amtranslatestrategy = NULL;
-	am->amtranslatecmptype = NULL;
+	SIFT_AM_NEW_FIELDS(am);
 
 	PG_RETURN_POINTER(am);
 }
