@@ -10,7 +10,12 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/amapi.h"
+#include "access/htup_details.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_statistic.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
@@ -19,10 +24,16 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
+#include "parser/parsetree.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 #include "sift.h"
 #include "sift_pushdown.h"
+
+/* Per bitmap tuple and per heap page of the mask: the tbm entry, then its mask row and AND in every block (measured) */
+#define FILTER_ENTRY_COST	(5 * cpu_tuple_cost)
 
 int			sift_filter_pushdown = SIFT_PUSHDOWN_ON;
 
@@ -93,21 +104,52 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 	return best;
 }
 
+/* The physical order correlation of a btree's leading column with the heap, as the index cost estimate reads it */
+static double
+btree_correlation(PlannerInfo *root, RelOptInfo *rel, Path *bitmapqual)
+{
+	IndexOptInfo *ii;
+	HeapTuple	tup;
+	AttStatsSlot slot;
+	double		correlation = 0;
+
+	if (!IsA(bitmapqual, IndexPath) || (ii = ((IndexPath *) bitmapqual)->indexinfo)->relam != BTREE_AM_OID ||
+		ii->indexkeys[0] == 0)
+		return 0;
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(rel->relid, root)->relid),
+						  Int16GetDatum(ii->indexkeys[0]), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tup))
+		return 0;
+	if (get_attstatsslot(&slot, tup, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		correlation = slot.numbers[0];
+		free_attstatsslot(&slot);
+	}
+	ReleaseSysCache(tup);
+	return correlation;
+}
+
 void
 sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, SiftFilterEst *est)
 {
 	double		tuples,
 				pages,
+				minpages,
+				correlation,
 				maxentries,
 				lossy;
 	Cost		index_cost;
 
 	pages = compute_bitmap_pages(root, rel, bp->bitmapqual, 1.0, &index_cost, &tuples);
+	/* compute_bitmap_pages assumes the tuples are scattered; a correlated column packs them into fewer pages */
+	minpages = Min(ceil(tuples / Max(rel->tuples, 1) * rel->pages), pages);
+	correlation = btree_correlation(root, rel, bp->bitmapqual);
+	pages = minpages + (1 - correlation * correlation) * (pages - minpages);
 	maxentries = tbm_calculate_entries((Size) work_mem * 1024);
 	lossy = pages > maxentries ? 1.0 - maxentries / pages : 0.0;
 	est->sel = Min(tuples / Max(rel->tuples, 1), 1.0);
 	est->sel += (Min(pages / Max(rel->pages, 1), 1.0) - est->sel) * lossy;
-	est->cost = index_cost + tuples * cpu_operator_cost;
+	est->cost = index_cost + (tuples + Min(pages, maxentries)) * FILTER_ENTRY_COST;
 }
 
 void
