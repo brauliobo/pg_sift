@@ -79,7 +79,7 @@ my $start_lsn = $primary->lsn('insert');
 my $w = workload($primary, $secs);
 $w->{handle}->finish;
 $primary->safe_psql('postgres', 'CREATE EXTENSION pg_walinspect');
-cmp_ok($primary->safe_psql('postgres', "SELECT coalesce(sum(count), 0) FROM pg_get_wal_stats('$start_lsn', pg_current_wal_lsn())"
+cmp_ok($primary->safe_psql('postgres', "SELECT coalesce(sum(count), 0) FROM pg_get_wal_stats(greatest('$start_lsn'::pg_lsn, pg_current_wal_lsn() - 33554432), pg_current_wal_lsn())"
 	. q{ WHERE "resource_manager/record_type" LIKE 'Generic%'}), '>', 100, 'the workload wrote Generic WAL records');
 note("pgbench: " . (${ $w->{out} } =~ s/\n/ /gr) . " " . ${ $w->{err} });
 $primary->wait_for_catchup($standby);
