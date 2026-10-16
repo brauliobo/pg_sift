@@ -208,12 +208,12 @@ check_meta(Relation index, Buffer buf)
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
 	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < sizeof(SiftMetaPageData))
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
-	if (meta->format_major != SIFT_FORMAT_MAJOR)
+	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build reads format %u",
+				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build reads formats %u.0 to %u.%u",
 						RelationGetRelationName(index), meta->format_major, meta->format_minor,
-						SIFT_FORMAT_MAJOR),
+						SIFT_FORMAT_MAJOR, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
 				 errhint("REINDEX the index.")));
 	if (meta->high_water < FIRST_DATA_BLKNO)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
