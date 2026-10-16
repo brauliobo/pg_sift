@@ -1,4 +1,4 @@
-# ParadeDB pg_search (Tantivy inside Postgres), prebuilt PG18 package from bench/fetch.sh paradedb.
+# ParadeDB pg_search (Tantivy inside Postgres), prebuilt PG18 package from bench/bench setup.
 # Default tokenizer: lowercase, no stemming. created/category_id are indexed so filters push down.
 REQUIRES=pg_search
 SETUP="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE;"

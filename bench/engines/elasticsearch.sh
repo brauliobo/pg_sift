@@ -1,4 +1,4 @@
-# Elasticsearch single node (bench/fetch.sh elasticsearch), 1 shard, 0 replicas, standard analyzer
+# Elasticsearch single node (bench/bench setup --engines elasticsearch), 1 shard, 0 replicas, standard analyzer
 # (lowercase, no stemming, no stopwords). _source is disabled so the store size is index-only, like
 # a Postgres index size. Shard request cache is off so repeated count queries are not cached.
 EXTERNAL=http

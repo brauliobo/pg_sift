@@ -1,4 +1,4 @@
-# Typesense (bench/fetch.sh typesense), in-memory index, typos and prefix matching off. Not BM25
+# Typesense (bench/bench setup --engines typesense), in-memory index, typos and prefix matching off. Not BM25
 # (text-match score + proximity). `or` relies on drop_tokens_threshold, which drops query words
 # until enough hits exist: not a true disjunction. Latency comparison only; no exact counts.
 EXTERNAL=http
