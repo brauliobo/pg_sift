@@ -26,6 +26,7 @@ PG_FUNCTION_INFO_V1(sift_test_kern_bound);
 typedef struct Case
 {
 	uint64		mask[NPAGES * SIFT_OFFMASK_WORDS];
+	uint64		cand[NPAGES * SIFT_OFFMASK_WORDS];
 	float4		kn[NSLOTS];
 	float4		sc[NSLOTS];
 	float4		other[NSLOTS];
@@ -51,16 +52,20 @@ typedef struct Out
 	float4		kn[NSLOTS];
 	float4		sc[NSLOTS];
 	float4		sc1[NSLOTS];
+	float4		sel[NSLOTS];
 	float4		mx[NSLOTS];
 	float4		vals[NSLOTS];
 	uint16		slot[NSLOTS];
 	uint8		tf[NTF + SIFT_KERN_PAD];
 	uint64		ex[8];
 	uint64		pm[4];
+	uint64		pc[NPAGES * SIFT_OFFMASK_WORDS];
 	float4		ub[64];
 	SiftTfPos	pos;
 	int32		r;
 	int32		r1;
+	int32		rs;
+	int32		npr;
 	int32		nsel;
 	int32		nex;
 } Out;
@@ -76,6 +81,8 @@ gen_case(pg_prng_state *rs, Case *c)
 	{
 		if (pg_prng_double(rs) < d && s % SIFT_KERN_SLOTS < 300)
 			c->mask[s / 64] |= UINT64CONST(1) << (s % 64);
+		if (pg_prng_double(rs) < 0.5)
+			c->cand[s / 64] |= UINT64CONST(1) << (s % 64);
 		c->kn[s] = (float4) pg_prng_double(rs);
 		c->sc[s] = (float4) (pg_prng_double(rs) * 100);
 		c->other[s] = (float4) (pg_prng_double(rs) * 100);
@@ -124,6 +131,10 @@ run_case(const SiftKernels *k, const Case *c, Out *o)
 	memcpy(o->sc1, c->sc, sizeof(o->sc1));
 	o->r = k->bm25_accum(o->sc, c->mask, NPAGES, c->tf, o->kn, c->w);
 	o->r1 = k->bm25_accum(o->sc1, c->mask, NPAGES, NULL, o->kn, c->w);
+	memcpy(o->sel, c->sc, sizeof(o->sel));
+	o->rs = k->bm25_sel(o->sel, c->mask, c->cand, NPAGES, c->tf, o->kn, c->w);
+	memcpy(o->pc, c->cand, sizeof(o->pc));
+	o->npr = k->prune_gt(o->pc, c->sc, NPAGES, c->theta);
 	memcpy(o->mx, o->sc, sizeof(o->mx));
 	k->max_merge(o->mx, c->other, c->mask, NPAGES);
 	o->nsel = k->select_gt(o->slot, o->vals, o->sc, c->mask, NPAGES, c->theta);

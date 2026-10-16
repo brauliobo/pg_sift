@@ -83,6 +83,20 @@ typedef struct SiftKernels
 	int			(*bm25_accum) (float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 							   const float4 *knorm, float4 w);
 
+	/*
+	 * bm25_accum restricted to the slots of cand: tf is still taken in rank
+	 * order over mask, only the slots in mask & cand are updated. Returns
+	 * popcount(mask).
+	 */
+	int			(*bm25_sel) (float4 *scores, const uint64 *mask, const uint64 *cand, int npages,
+							 const uint8 *tf, const float4 *knorm, float4 w);
+
+	/*
+	 * cand &= (scores[o] > thr) for the slots in cand; returns the number of
+	 * slots left in cand.
+	 */
+	int			(*prune_gt) (uint64 *cand, const float4 *scores, int npages, float4 thr);
+
 	/* scores[o] = scores[o] > other[o] ? scores[o] : other[o] for slots in mask (dismax) */
 	void		(*max_merge) (float4 *scores, const float4 *other, const uint64 *mask, int npages);
 

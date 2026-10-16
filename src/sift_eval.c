@@ -12,6 +12,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "common/hashfn.h"
 #include "common/int.h"
 #include "lib/stringinfo.h"
@@ -1941,10 +1943,11 @@ typedef struct RankWork
 	float4		leafbuf[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	float4		tmp[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	float4		vals[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	float4		part[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint16		slot[BLK_SLOTS];
 	BlockMask	res pg_attribute_aligned(SIFT_SIMD_ALIGN);
-	BlockMask	uni pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	tm pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	BlockMask	tmc pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	lu pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	flt pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint16		zero[SIFT_KERN_SLOTS];
@@ -1962,6 +1965,8 @@ struct SiftRanker
 	int			nunit;
 	RankWork   *wk;
 	float4	   *leafub;				/* [leaf] scratch: its ub in the current block */
+	int		   *ord;				/* [leaf] scratch: the leaves present in the block, best bound first */
+	float4	   *rest;				/* [leaf] scratch: the bounds of the leaves after ord[i] */
 	int64		k;
 	int64		K;					/* hits kept by the current search */
 	SiftHit    *hit;				/* keyed by the visible tuple's ctid */
@@ -2219,6 +2224,8 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->tmpcx = AllocSetContextCreate(plan->mcxt, "sift candidate", ALLOCSET_DEFAULT_SIZES);
 	r->wk = MemoryContextAllocAligned(plan->mcxt, sizeof(RankWork), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
 	r->leafub = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
+	r->ord = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(int));
+	r->rest = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
 	r->seg = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(RankSeg));
 	if (plan->nphr > 0)
 		r->phrpos = posctx_create(plan);
@@ -2397,11 +2404,11 @@ term_prepare(SiftPlan *p, RkTerm *t, int b, RankWork *wk)
 }
 
 static void
-zero_rows(float4 *buf, BlockMask mask)
+zero_rows(float4 *buf, const uint64 *mask)
 {
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-			if (mask[pg][k])
+			if (mask[pg * SIFT_OFFMASK_WORDS + k])
 			{
 				memset(buf + pg * SIFT_KERN_SLOTS, 0, SIFT_KERN_SLOTS * sizeof(float4));
 				break;
@@ -2409,11 +2416,11 @@ zero_rows(float4 *buf, BlockMask mask)
 }
 
 static void
-add_rows(float4 *dst, const float4 *src, BlockMask mask)
+add_rows(float4 *dst, const float4 *src, const uint64 *mask)
 {
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-			for (uint64 m = mask[pg][k]; m; m &= m - 1)
+			for (uint64 m = mask[pg * SIFT_OFFMASK_WORDS + k]; m; m &= m - 1)
 			{
 				int			i = pg * SIFT_KERN_SLOTS + k * 64 + pg_rightmost_one_pos64(m);
 
@@ -2421,9 +2428,9 @@ add_rows(float4 *dst, const float4 *src, BlockMask mask)
 			}
 }
 
-/* scores += this leaf's contribution in block b */
+/* dst += this leaf's contribution in block b to the documents of cand */
 static void
-leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, RankWork *wk)
+leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, const uint64 *cand, float4 *dst, RankWork *wk)
 {
 	RkTerm	   *t = rs->term + rs->first[leaf];
 	int			nt = p->leaves[leaf].nterms[rs->s],
@@ -2441,29 +2448,31 @@ leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, RankWork *wk)
 			if (term_in_block(&t[i], b))
 			{
 				term_mask(t[i].g, b, wk->tm);
-				sift_offmask_or(wk->lu[0], wk->lu[0], wk->tm[0], SIFT_BLK_PAGES);
+				sift_offmask_and(wk->tmc[0], wk->tm[0], cand, SIFT_BLK_PAGES);
+				sift_offmask_or(wk->lu[0], wk->lu[0], wk->tmc[0], SIFT_BLK_PAGES);
 			}
-		zero_rows(wk->leafbuf, wk->lu);
+		zero_rows(wk->leafbuf, wk->lu[0]);
 	}
 	for (int i = 0; i < nt; i++)
 	{
-		float4	   *dst = np == 1 ? wk->scores : wk->leafbuf;
+		float4	   *out = np == 1 ? dst : wk->leafbuf;
 
 		if (!term_in_block(&t[i], b))
 			continue;
 		term_prepare(p, &t[i], b, wk);
 		if (!first)
 		{
-			zero_rows(wk->tmp, wk->tm);
-			dst = wk->tmp;
+			sift_offmask_and(wk->tmc[0], wk->tm[0], cand, SIFT_BLK_PAGES);
+			zero_rows(wk->tmp, wk->tmc[0]);
+			out = wk->tmp;
 		}
-		sift_kern->bm25_accum(dst, wk->tm[0], SIFT_BLK_PAGES, t[i].tf + t[i].base[b], wk->knorm, t[i].w);
+		sift_kern->bm25_sel(out, wk->tm[0], cand, SIFT_BLK_PAGES, t[i].tf + t[i].base[b], wk->knorm, t[i].w);
 		if (!first)
-			sift_kern->max_merge(wk->leafbuf, wk->tmp, wk->tm[0], SIFT_BLK_PAGES);
+			sift_kern->max_merge(wk->leafbuf, wk->tmp, wk->tmc[0], SIFT_BLK_PAGES);
 		first = false;
 	}
 	if (np > 1)
-		add_rows(wk->scores, wk->leafbuf, wk->lu);
+		add_rows(dst, wk->leafbuf, wk->lu[0]);
 }
 
 /* The result documents of block b are those the filter keeps; false when none is left */
@@ -2480,17 +2489,70 @@ filter_result(const SiftPlan *p, const SiftFilterSB *fs, int b, RankWork *wk)
 }
 
 /*
- * Scores block b of the unit's SB for the group's result documents; returns
- * the candidates above theta in wk->slot / wk->vals.
+ * The leaves present in the block (ub > 0) by descending bound, ties by leaf,
+ * and rest[i], the sum of the bounds after ord[i]; returns their number.
  */
 static int
-score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
-			float4 theta, RankWork *wk)
+leaf_order(const SiftPlan *p, const float4 *ub, int *ord, float4 *rest)
 {
+	int			n = 0;
+	float4		sum = 0;
+
+	for (int i = 0; i < p->nleaves; i++)
+		if (ub[i] > 0)
+		{
+			int			j = n++;
+
+			for (; j > 0 && ub[ord[j - 1]] < ub[i]; j--)
+				ord[j] = ord[j - 1];
+			ord[j] = i;
+		}
+	for (int k = n - 1; k >= 0; k--)
+	{
+		rest[k] = sum;
+		sum += ub[ord[k]];
+	}
+	return n;
+}
+
+/*
+ * Term-at-a-time over the leaves with the best bounds first: after each leaf
+ * the documents that cannot reach theta even with every remaining leaf at its
+ * bound leave the candidates (wk->res). The partial sums here add in bound
+ * order and only decide that; the scores of the survivors are summed in leaf
+ * order afterwards. The margin covers the rounding of the two orders (the
+ * bounds carry their own slack). False when no candidate is left.
+ */
+static bool
+prune_leaves(SiftPlan *p, RankSeg *rs, int b, float4 theta, RankWork *wk, const int *ord, const float4 *rest, int n)
+{
+	float4		margin = fabsf(theta) * (1.0f / 65536);
+
+	zero_rows(wk->part, wk->res[0]);
+	for (int k = 0; k < n - 1; k++)
+	{
+		leaf_accum(p, rs, ord[k], b, wk->res[0], wk->part, wk);
+		if (!sift_kern->prune_gt(wk->res[0], wk->part, SIFT_BLK_PAGES, theta - rest[k] - margin))
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Scores block b of the unit's SB for the group's result documents; returns
+ * the candidates above theta in wk->slot / wk->vals. ub is the bound of each
+ * leaf in the block.
+ */
+static int
+score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
+			float4 theta, const float4 *ub)
+{
+	SiftPlan   *p = r->plan;
+	RankWork   *wk = r->wk;
 	SiftSegment *seg = p->seg[rs->s];
 	bool		any = false;
+	int			n;
 
-	memset(wk->uni, 0, sizeof(BlockMask));
 	if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
 	if (fs && !filter_result(p, fs, b, wk))
@@ -2514,19 +2576,14 @@ score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs,
 	}
 	if (!any)
 		return 0;
+	sift_kern->knorm(wk->knorm, wk->dl, wk->res[0], SIFT_BLK_PAGES, &p->bm);
+	n = leaf_order(p, ub, r->ord, r->rest);
+	if (n > 1 && theta > -INFINITY && !prune_leaves(p, rs, b, theta, wk, r->ord, r->rest, n))
+		return 0;
+	zero_rows(wk->scores, wk->res[0]);
 	for (int i = 0; i < p->nleaves; i++)
 		if (p->leaves[i].scoring)
-			for (int j = 0; j < p->leaves[i].nterms[rs->s]; j++)
-				if (term_in_block(&rs->term[rs->first[i] + j], b))
-				{
-					term_mask(rs->term[rs->first[i] + j].g, b, wk->tm);
-					sift_offmask_or(wk->uni[0], wk->uni[0], wk->tm[0], SIFT_BLK_PAGES);
-				}
-	sift_kern->knorm(wk->knorm, wk->dl, wk->uni[0], SIFT_BLK_PAGES, &p->bm);
-	memset(wk->scores, 0, sizeof(wk->scores));
-	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring)
-			leaf_accum(p, rs, i, b, wk);
+			leaf_accum(p, rs, i, b, wk->res[0], wk->scores, wk);
 	return sift_kern->select_gt(wk->slot, wk->vals, wk->scores, wk->res[0], SIFT_BLK_PAGES, theta);
 }
 
@@ -2811,7 +2868,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			continue;
 		}
 		p->stats.blocks_scored++;
-		nsel = score_block(p, rs, g, fs, &dc, b, theta, r->wk);
+		nsel = score_block(r, rs, g, fs, &dc, b, theta, r->leafub);
 		sift_sr_release(&seg->sr);
 		for (int j = 0; j < nsel; j++)
 		{

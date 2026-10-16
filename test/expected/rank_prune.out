@@ -1,0 +1,87 @@
+-- Ranked top-k pruning: the best-first search with a threshold (blocks and leaves skipped once they cannot reach the
+-- k-th best score) must return what the unpruned search (no limit, so no threshold) ranks first, scores and ties
+-- included, for every query shape and every k; the reference BM25 comparison is the reference and differential tests'
+CREATE EXTENSION pg_sift;
+-- a skewed vocabulary: word i is drawn with a frequency falling with i, so queries mix common and rare terms; the
+-- repetitions give varied tf and the lengths vary the document length norms
+CREATE TABLE rp (id int PRIMARY KEY, body text, grp int);
+INSERT INTO rp
+SELECT i,
+	(SELECT string_agg('w' || (1 + floor(300 * power(abs(hashint4(i * 977 + j)::float8) / 2147483648, 3)))::int ||
+		repeat(' w' || (1 + floor(300 * power(abs(hashint4(i * 977 + j + 7919)::float8) / 2147483648, 3)))::int, j % 3), ' ')
+	 FROM generate_series(1, 5 + (hashint4(i) & 31)) j),
+	i % 4
+FROM generate_series(1, 6000) i;
+CREATE INDEX rp_idx ON rp USING sift (body);
+ANALYZE rp;
+-- the ranked rows of a query as text: the first k rows of a limited search, or of the whole ranking (no limit)
+CREATE FUNCTION rp_rows(q text, k int, filt text DEFAULT 'true', full_ranking bool DEFAULT false) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	EXECUTE format('SELECT string_agg(tid || '' '' || score, '','' ORDER BY score DESC, tid) FROM (
+		SELECT * FROM (SELECT ctid AS tid, sift.score(ctid) AS score FROM rp WHERE body @@> %L AND (%s)
+			ORDER BY sift.score(ctid) DESC %s) a %s) t',
+		q, filt, CASE WHEN full_ranking THEN 'OFFSET 0' ELSE 'LIMIT ' || k END,
+		CASE WHEN full_ranking THEN 'LIMIT ' || k ELSE '' END) INTO r;
+	RETURN r;
+END $$;
+CREATE TEMP TABLE rp_q (q text);
+INSERT INTO rp_q VALUES
+	('w1 OR w2 OR w3'), ('w1 w2'), ('w5 OR w40 OR w120 OR w250'), ('w1 OR w2 OR w3 OR w4 OR w5 OR w6 OR w7 OR w8 OR w9 OR w10 OR w11 OR w12'),
+	('w2 w3 w4'), ('w10 OR w20 OR w30 OR w200 OR w290'), ('w1 OR w299'), ('w2 OR w2 OR w2'), ('w3^5 OR w4'), ('w7 OR w8^0.5 OR w9^3 OR w250^2'),
+	('w1* OR w29*'), ('w1 OR w2* OR w30'), ('w1* w2*'), ('w10* OR w11* OR w12* OR w9'), ('w1 NOT w2'), ('(w3 OR w4) NOT w5'),
+	('w1 OR w2 OR w3 NOT w4'), ('(w1 w2) OR (w3 w4) OR w5'), ('w100 OR w101 OR w102 OR w103 OR w104 OR w105'),
+	('"w1 w2" OR w3'), ('w1 OR /w2.*/ OR w300~1'), ('w6 w7 w8 w9'), ('(w1 OR w2) w3'), ('w299 OR w298 OR w297 OR w296');
+SELECT count(*) AS queries FROM rp_q;
+ queries 
+---------
+      24
+(1 row)
+
+-- queries whose limited search differs from the full ranking, per k and filter (0 expected everywhere)
+SELECT k, filt, count(*) FILTER (WHERE rp_rows(q, k, filt) IS DISTINCT FROM rp_rows(q, k, filt, true)) AS mismatching_queries
+FROM unnest(ARRAY[1, 2, 5, 10, 25, 100, 500]) k, unnest(ARRAY['true', 'grp = 1', 'id % 3 = 0']) filt, rp_q
+GROUP BY k, filt ORDER BY k, filt;
+  k  |    filt    | mismatching_queries 
+-----+------------+---------------------
+   1 | grp = 1    |                   0
+   1 | id % 3 = 0 |                   0
+   1 | true       |                   0
+   2 | grp = 1    |                   0
+   2 | id % 3 = 0 |                   0
+   2 | true       |                   0
+   5 | grp = 1    |                   0
+   5 | id % 3 = 0 |                   0
+   5 | true       |                   0
+  10 | grp = 1    |                   0
+  10 | id % 3 = 0 |                   0
+  10 | true       |                   0
+  25 | grp = 1    |                   0
+  25 | id % 3 = 0 |                   0
+  25 | true       |                   0
+ 100 | grp = 1    |                   0
+ 100 | id % 3 = 0 |                   0
+ 100 | true       |                   0
+ 500 | grp = 1    |                   0
+ 500 | id % 3 = 0 |                   0
+ 500 | true       |                   0
+(21 rows)
+
+-- deletes and updates leave dead index entries that the threshold must not trust
+DELETE FROM rp WHERE id % 7 = 0;
+UPDATE rp SET body = body || ' w1 w1 w1' WHERE id % 11 = 0;
+SELECT k, count(*) FILTER (WHERE rp_rows(q, k) IS DISTINCT FROM rp_rows(q, k, 'true', true)) AS mismatching_queries
+FROM unnest(ARRAY[1, 10, 100]) k, rp_q
+GROUP BY k ORDER BY k;
+  k  | mismatching_queries 
+-----+---------------------
+   1 |                   0
+  10 |                   0
+ 100 |                   0
+(3 rows)
+
+DROP FUNCTION rp_rows(text, int, text, bool);
+DROP TABLE rp;
+DROP EXTENSION pg_sift;
