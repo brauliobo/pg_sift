@@ -87,6 +87,16 @@ errhint(const char *fmt,...)
 	return 0;
 }
 
+/* Assert() in the headers of a cassert server */
+#ifdef USE_ASSERT_CHECKING
+void
+ExceptionalCondition(const char *conditionName, const char *fileName, int lineNumber)
+{
+	fprintf(stderr, "TRAP: failed Assert(\"%s\"), File: \"%s\", Line: %d\n", conditionName, fileName, lineNumber);
+	abort();
+}
+#endif
+
 const SiftOptions *
 sift_index_options(Relation index)
 {

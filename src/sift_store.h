@@ -107,6 +107,9 @@ extern void sift_dir_update(Relation index, const SiftDirChange *chg);
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
 
+/* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
+extern bool sift_store_removable(Relation index, FullTransactionId xid);
+
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
  * or INIT write target; the pages are written by sift_wt_finish with the

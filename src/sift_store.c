@@ -308,10 +308,21 @@ read_freelist(Relation index, BlockNumber blk, BlockNumber hwm, uint32 hops, int
 	return buf;
 }
 
+/* The GlobalVis horizon is the heap's: it asserts a table, not the index */
+bool
+sift_store_removable(Relation index, FullTransactionId xid)
+{
+	Relation	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	bool		removable = GlobalVisCheckRemovableFullXid(heap, xid);
+
+	RelationClose(heap);
+	return removable;
+}
+
 static bool
 reusable(Relation index, FullTransactionId safexid)
 {
-	return !FullTransactionIdIsValid(safexid) || GlobalVisCheckRemovableFullXid(index, safexid);
+	return !FullTransactionIdIsValid(safexid) || sift_store_removable(index, safexid);
 }
 
 static BlockNumber
@@ -738,7 +749,7 @@ sift_recycle(Relation index)
 		{
 			ext[n] = fl->ext[i];
 			if (FullTransactionIdIsValid(ext[n].safexid) &&
-				GlobalVisCheckRemovableFullXid(index, ext[n].safexid))
+				sift_store_removable(index, ext[n].safexid))
 			{
 				ext[n].safexid = InvalidFullTransactionId;
 				cleared++;
@@ -1463,9 +1474,12 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 static bool
 in_flight(Page page, const SiftDirSnapshot *snap)
 {
-	SiftPageOpaque op = SiftPageGetOpaque(page);
+	SiftPageOpaque op;
 
-	if (!layout_ok(page) || op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_MUTDATA)
+	if (!layout_ok(page))
+		return false;
+	op = SiftPageGetOpaque(page);
+	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_MUTDATA)
 		return false;
 	if (op->gen >= snap->meta.next_gen)
 		return true;
