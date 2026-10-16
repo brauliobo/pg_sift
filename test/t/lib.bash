@@ -69,6 +69,7 @@ ${3:-}"
 }
 
 # node_clone PRIMARY NAME OFFSET [conf lines]: hot standby streaming from a base backup of PRIMARY
+# (with a slot, so a churn outrunning a slow standby on a loaded CI runner cannot recycle the WAL it still needs)
 node_clone() {
 	local d
 	d=$(dir "$2")
@@ -77,7 +78,7 @@ node_clone() {
 	mkdir -p "$d/sock"
 	echo "$3" >"$d/offset"
 	NODES+=("$2")
-	pg_basebackup -h "$(dir "$1")/sock" -p "$(port "$1")" -U postgres -D "$d/data" -R -X stream -c fast \
+	pg_basebackup -h "$(dir "$1")/sock" -p "$(port "$1")" -U postgres -D "$d/data" -R -C -S "$2" -X stream -c fast \
 		>"$d/basebackup.log" 2>&1 || bail "pg_basebackup $2 failed"
 	node_conf "$2" "port = $(port "$2")
 unix_socket_directories = '$d/sock'
