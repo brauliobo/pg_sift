@@ -19,8 +19,9 @@
  *
  * A word, prefix, pattern or fuzzy term may be qualified, name:word*, and so may a group,
  * name:(a b) or name:{a b}; analysis moves the qualifier to the leaves (the innermost wins) and
- * resolves it against the index's fields. An index without fields reads name:word as the word
- * "name:word", as before.
+ * resolves it against the index's fields; a name the index lacks is an error (ERRCODE_SYNTAX_ERROR
+ * listing the fields). Without fields a colon is text, as before fields existed: name:word is the
+ * word "name:word", and name:(a b) the words "name:a" and "name:b".
  *
  * Leaf text after analysis: SQ_TERM holds an index term; SQ_PREFIX and
  * SQ_FUZZY hold folded, unstemmed literals; SQ_WILDCARD holds a folded

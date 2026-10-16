@@ -356,6 +356,19 @@ sift_analyzer_nfields(const SiftAnalyzer *a)
 	return a->cfg.nfields;
 }
 
+const char *
+sift_analyzer_field_names(const SiftAnalyzer *a)
+{
+	return a->cfg.field_names;
+}
+
+bool
+sift_analyzer_config_agrees(const SiftAnalyzerConfig *a, const SiftAnalyzerConfig *b)
+{
+	return a->case_fold == b->case_fold && a->accent_fold == b->accent_fold && a->stemmer == b->stemmer &&
+		a->keyword == b->keyword && strcmp(a->field_names, b->field_names) == 0;
+}
+
 int
 sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len)
 {

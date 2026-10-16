@@ -128,6 +128,12 @@ SELECT id FROM places WHERE (name || chr(29) || admin1 || ' ' || country) @@> '(
 ORDER BY sift.score(ctid) DESC LIMIT 20;                          -- every word a prefix, name matches boosted x3
 ```
 
+`name:word`, `name:(a b)` and `name:{a b}` need the field in the index: a name it lacks is an error (`42601`, listing the fields) and
+a query on one key means the same on every plan. Without `fields` (also with no sift index at all) a colon is text, so `name:word` is
+the word `name:word` and `name:(a b)` the words `name:a` and `name:b`. With several sift indexes on one key, `@@>` means the default
+analyzer when one of them has it, else that of the lowest OID; an index that answers differently (one with `fields` next to a plain
+one) does not serve it, and `sift.match_idx(key, query, index)` names the analyzer. Partitions bind `@@>` to their own indexes.
+
 ## Partitioned tables
 
 Works with declarative partitioning (also multi-level) and inheritance parents. `CREATE INDEX ... USING sift` on the parent builds one

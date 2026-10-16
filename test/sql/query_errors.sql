@@ -67,5 +67,23 @@ SELECT length(perr('/' || repeat('(a|', 249) || 'bcde' || repeat(')', 249) || '/
 SELECT perr('/' || repeat('(a|', 249) || 'bcdef' || repeat(')', 249) || '/') AS regex_1001;
 SELECT perr('/' || repeat('((a{1,100}){1,100}){1,100}', 3) || '/') AS regex_too_complex;
 
+-- fields: a name the index lacks lists the fields it has; without fields a colon is text
+CREATE TABLE qe (t text);
+CREATE INDEX qe_idx ON qe USING sift (t) WITH (fields = 'name,city');
+CREATE FUNCTION ferr(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN 'ok: ' || sift.parse_query(q, 'qe_idx'::regclass);
+EXCEPTION WHEN syntax_error OR program_limit_exceeded THEN
+	RETURN sqlstate || ': ' || sqlerrm;
+END $$;
+SELECT q, ferr(q) FROM (VALUES
+	('name:a'), ('nope:a'), ('nope:(a b)'), ('name:(a nope:b)'), ('x NOT nope:a'), ('name:{a nope:b}'), ('name:(a "b c")'), ('name:{/a/}'),
+	('name:(a (b OR nope:c))^2'), ('Name:a')
+) v(q);
+SELECT q, perr(q) FROM (VALUES
+	('name:a'), ('name:(a b)'), ('name:{a b}'), ('NOT name:(a b)'), ('x name:(a OR b)^2'), ('name:("a b" c)'), ('name:(a /b/)')
+) v(q);
+DROP TABLE qe;
+DROP FUNCTION ferr;
 DROP FUNCTION perr;
 DROP EXTENSION pg_sift;

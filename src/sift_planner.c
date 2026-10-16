@@ -73,7 +73,7 @@ sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
 	else if (IsA(clause, FuncExpr) && ((FuncExpr *) clause)->funcid == cat->match_idx_func)
 	{
 		args = ((FuncExpr *) clause)->args;
-		if (!IsA(lthird(args), Const) || DatumGetObjectId(((Const *) lthird(args))->constvalue) != index->indexoid)
+		if (!IsA(lthird(args), Const) || !sift_index_serves(index->indexoid, DatumGetObjectId(((Const *) lthird(args))->constvalue)))
 			return false;
 	}
 	else

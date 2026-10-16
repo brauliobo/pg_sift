@@ -51,6 +51,9 @@ extern bool sift_index_matches_key(IndexOptInfo *index, Node *expr);
  */
 extern bool sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query);
 
+/* Does the index answer queries as the analyzer of index `analyzer` (InvalidOid: the default one) does? */
+extern bool sift_index_serves(Oid indexoid, Oid analyzer);
+
 /* true if expr is sift.score(ctid) / sift.max_score(ctid) of rel relid */
 extern bool sift_is_score_expr(Node *expr, Index relid, bool *is_max);
 

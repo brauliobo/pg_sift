@@ -128,18 +128,30 @@ sift_match_idx(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(match(fcinfo, PG_GETARG_OID(2)));
 }
 
-/* Matching documents over the heap rows, by the first full index on expr */
+static Oid	bind_analyzer(List *indexes, bool *contested);
+
+/* Matching documents over the heap rows, by the first full index on expr that answers as `@@>` does there */
 static double
-match_selectivity(RelOptInfo *rel, Node *expr, text *query)
+match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query)
 {
+	List	   *keyed = NIL;
+	Oid			analyzer;
+
+	if (rel->rtekind != RTE_RELATION)
+		return DEFAULT_MATCH_SEL;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
+		if (ii->indpred == NIL && !ii->hypothetical && sift_index_matches_key(ii, expr))
+			keyed = lappend_oid(keyed, ii->indexoid);
+	list_sort(keyed, list_oid_cmp);
+	analyzer = bind_analyzer(keyed, NULL);
+	foreach_oid(indexoid, keyed)
 	{
 		SiftEstimate est;
 		Relation	index;
 
-		if (ii->indpred != NIL || !sift_index_matches_key(ii, expr))
+		if (!sift_index_serves(indexoid, analyzer))
 			continue;
-		index = index_open(ii->indexoid, AccessShareLock);
+		index = index_open(indexoid, AccessShareLock);
 		sift_eval_estimate(index, &query, 1, &est);
 		index_close(index, AccessShareLock);
 		return est.docs / Max(rel->tuples > 0 ? rel->tuples : est.ndocs, 1);
@@ -162,7 +174,7 @@ sift_matchsel(PG_FUNCTION_ARGS)
 	if (get_restriction_variable(root, args, varRelid, &vardata, &other, &varonleft))
 	{
 		if (varonleft && vardata.rel && IsA(other, Const) && !((Const *) other)->constisnull)
-			sel = match_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue));
+			sel = match_selectivity(root, vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue));
 		ReleaseVariableStats(vardata);
 	}
 	PG_RETURN_FLOAT8(Min(Max(sel, 0.0), 1.0));
@@ -193,65 +205,91 @@ index_key_is(Relation index, Index relid, Node *expr)
 	return equal(strip_relabel(key), expr);
 }
 
-static bool
-default_analyzer(Relation index)
+/*
+ * Does the index answer queries as the analyzer of index `analyzer` does (InvalidOid: the default
+ * analyzer)? Indexes on one key with analyzers that answer differently, such as one with fields and
+ * one without, must not serve each other's clauses: the result would depend on the plan.
+ */
+bool
+sift_index_serves(Oid indexoid, Oid analyzer)
 {
-	SiftAnalyzerConfig cfg,
-				def;
+	SiftAnalyzerConfig have,
+				want;
 
-	sift_analyzer_config_from_index(index, &cfg);
-	sift_analyzer_config_default(&def);
-	return cfg.hash == def.hash;
+	if (indexoid == analyzer)
+		return true;
+	analyzer_config(indexoid, &have);
+	analyzer_config(analyzer, &want);
+	return sift_analyzer_config_agrees(&have, &want);
 }
 
 /*
- * The valid, full sift index on expr when the column has no index with the
- * default analyzer (which is what the operator means), else InvalidOid.
+ * What `key @@> q` means on a key with these sift indexes: the default analyzer unless none of them
+ * agrees with it, else the first one's (the lowest OID). *contested is set when an index answers
+ * differently from that analyzer: it must not serve the plain operator.
  */
 static Oid
-analyzer_index(PlannerInfo *root, Node *expr)
+bind_analyzer(List *indexes, bool *contested)
+{
+	Oid			analyzer = InvalidOid;
+	bool		dflt = false;
+
+	foreach_oid(indexoid, indexes)
+		dflt |= sift_index_serves(indexoid, InvalidOid);
+	if (!dflt && indexes != NIL)
+		analyzer = linitial_oid(indexes);
+	if (contested)
+		foreach_oid(indexoid, indexes)
+			*contested |= !sift_index_serves(indexoid, analyzer);
+	return analyzer;
+}
+
+/* The valid, full, single column sift indexes on expr, a column or expression of range table entry relid */
+static List *
+keyed_indexes(PlannerInfo *root, Node *expr)
 {
 	int			relid;
 	Relation	heap;
-	Oid			found = InvalidOid;
+	List	   *found = NIL;
 
 	if (!bms_get_singleton_member(pull_varnos(root, expr), &relid) || rt_fetch(relid, root->parse->rtable)->rtekind != RTE_RELATION)
-		return InvalidOid;
+		return NIL;
 	heap = relation_open(rt_fetch(relid, root->parse->rtable)->relid, AccessShareLock);
 	foreach_oid(indexoid, RelationGetIndexList(heap))
 	{
 		Relation	index = index_open(indexoid, AccessShareLock);
-		bool		usable = index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid &&
-			index->rd_index->indnatts == 1 && heap_attisnull(index->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			index_key_is(index, relid, expr);
-		bool		dflt = usable && default_analyzer(index);
 
+		if (index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid && index->rd_index->indnatts == 1 &&
+			heap_attisnull(index->rd_indextuple, Anum_pg_index_indpred, NULL) && index_key_is(index, relid, expr))
+			found = lappend_oid(found, indexoid);
 		index_close(index, AccessShareLock);
-		if (dflt)
-		{
-			found = InvalidOid;
-			break;
-		}
-		if (usable && !OidIsValid(found))
-			found = indexoid;
 	}
 	relation_close(heap, AccessShareLock);
 	return found;
 }
 
-/* match(doc, q) on a column indexed only with another analyzer means that analyzer's match_idx */
+/*
+ * match(doc, q) on a key whose indexes do not all have the default analyzer is bound to the
+ * analyzer `@@>` means there (match_idx; InvalidOid for the default one), which decides the
+ * seq-scan and recheck evaluation and which indexes may serve the clause.
+ */
 static Node *
 simplify_match(SupportRequestSimplify *req)
 {
 	const SiftCatalog *cat = sift_catalog();
-	Oid			indexoid;
+	List	   *indexes;
+	bool		contested = false;
+	Oid			analyzer;
 
 	if (req->root == NULL || req->fcall->funcid != cat->match_func ||
-		!OidIsValid(indexoid = analyzer_index(req->root, linitial(req->fcall->args))))
+		(indexes = keyed_indexes(req->root, linitial(req->fcall->args))) == NIL)
+		return NULL;
+	analyzer = bind_analyzer(indexes, &contested);
+	if (!OidIsValid(analyzer) && !contested)
 		return NULL;
 	return (Node *) makeFuncExpr(cat->match_idx_func, BOOLOID,
 								 lappend(list_copy(req->fcall->args),
-										 makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(indexoid), false, true)),
+										 makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(analyzer), false, true)),
 								 InvalidOid, req->fcall->inputcollid, COERCE_EXPLICIT_CALL);
 }
 
@@ -261,19 +299,12 @@ index_serves(SupportRequestIndexCondition *req)
 {
 	const SiftCatalog *cat = sift_catalog();
 	List	   *args = ((FuncExpr *) req->node)->args;
-	Relation	index;
-	bool		ok;
 
 	if (req->index->relam != cat->am || req->index->ncolumns != 1 || req->indexarg != 0)
 		return false;
 	if (req->funcid == cat->match_idx_func)
-		return IsA(lthird(args), Const) && DatumGetObjectId(((Const *) lthird(args))->constvalue) == req->index->indexoid;
-	if (req->funcid != cat->match_func)
-		return false;
-	index = index_open(req->index->indexoid, AccessShareLock);
-	ok = default_analyzer(index);
-	index_close(index, AccessShareLock);
-	return ok;
+		return IsA(lthird(args), Const) && sift_index_serves(req->index->indexoid, DatumGetObjectId(((Const *) lthird(args))->constvalue));
+	return req->funcid == cat->match_func && sift_index_serves(req->index->indexoid, InvalidOid);
 }
 
 static Node *
