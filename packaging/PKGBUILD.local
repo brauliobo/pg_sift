@@ -1,0 +1,39 @@
+# Builds the committed HEAD of the enclosing sift checkout (uncommitted changes are not packaged):
+#   cd packaging && makepkg -p PKGBUILD.local -f
+# makepkg rewrites pkgver below from the commit count and hash; the committed value is a placeholder.
+pkgname=sift-pg
+pkgver=1.0.r0
+pkgrel=1
+pkgdesc='CTID-bitmap full-text search index with BM25 ranking for PostgreSQL'
+arch=('x86_64')
+license=('PostgreSQL')
+depends=('postgresql>=18' 'postgresql<19')
+makedepends=('git' 'make' 'gcc')
+checkdepends=('perl-ipc-run' 'python')
+source=("sift::git+file://${startdir%/packaging}")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd sift
+  printf '1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd sift
+  nice make -j4
+}
+
+# The quick tier builds a test flavor of the library in its own tree; run it on a copy so package() installs the
+# production build.
+check() {
+  cp -a sift sift-check
+  cd sift-check
+  SIFT_CI_TMP="$srcdir/ci" make check
+}
+
+package() {
+  cd sift
+  make DESTDIR="$pkgdir" install
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE NOTICE
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md DESIGN.md docs/*.md
+}
