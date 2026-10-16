@@ -20,6 +20,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planner.h"
+#include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "utils/fmgroids.h"
@@ -137,6 +138,7 @@ qual_query_exprs(IndexPath *path)
 typedef struct IndexWork
 {
 	Cost		cost;
+	Cost		dict_cost;			/* the part of cost that every parallel participant pays: the dictionary lookups */
 	double		pages;
 	SiftEstimate est;
 	bool		known;
@@ -153,6 +155,7 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	Relation	index;
 
 	w->known = const_queries(queries, &texts, &ntexts);
+	w->cost = w->dict_cost = 0;
 	if (!w->known)
 		return;
 	index = index_open(indexoid, AccessShareLock);
@@ -161,7 +164,8 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	get_tablespace_page_costs(tablespace, &random_cost, &seq_cost);
 	dict_pages = w->est.terms * DICT_PAGES_PER_TERM;
 	w->pages = dict_pages + ceil(w->est.postings * BYTES_PER_POSTING / BLCKSZ);
-	w->cost = dict_pages * random_cost + (w->pages - dict_pages) * seq_cost +
+	w->dict_cost = dict_pages * random_cost;
+	w->cost = w->dict_cost + (w->pages - dict_pages) * seq_cost +
 		w->est.postings * cpu_operator_cost * POSTING_CPU_FRACTION;
 }
 
@@ -333,25 +337,66 @@ rank_verified(double cands, double pass, int64 k)
 }
 
 /*
- * With a filter the ranker only meets the matches its bitmap keeps (the fraction fe.sel of them, at least
- * those that pass the quals), at the price of building the bitmap first.
+ * Workers a parallel scan of the rel can use: the planner's rule for an index scan (reloption
+ * parallel_workers, min_parallel_index_scan_size, max_parallel_workers_per_gather), and no more
+ * participants than there are superblocks to hand out. 0: no parallel path.
+ */
+static int
+scan_workers(RelOptInfo *rel, ScanCand *c)
+{
+	int			nworkers,
+				sbs = ((int64) rel->pages + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
+
+	if (!rel->consider_parallel || rel->reloptkind != RELOPT_BASEREL || max_parallel_workers_per_gather <= 0)
+		return 0;
+	nworkers = compute_parallel_worker(rel, -1, c->index->pages, max_parallel_workers_per_gather);
+	if (rel->rel_parallel_workers == -1)
+		nworkers = Min(nworkers, sbs - 1);
+	return Max(nworkers, 0);
+}
+
+/* How many times faster the participants of nworkers workers do the shared work (cost_seqscan's divisor) */
+static double
+parallel_divisor(int nworkers)
+{
+	double		divisor = Max(nworkers, 1);
+
+	if (nworkers > 0 && parallel_leader_participation)
+		divisor = nworkers + Max(1.0 - 0.3 * nworkers, 0.0);
+	return divisor;
+}
+
+/*
+ * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
+ * the verification are shared out. With a filter the ranker only meets the matches its bitmap keeps
+ * (the fraction fe.sel of them, at least those that pass the quals), at the price of building the
+ * bitmap first; the bitmap is built by one backend, so a filtered scan is never parallel (nworkers 0).
  */
 static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-		  BitmapHeapPath *filter)
+		  BitmapHeapPath *filter, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
 	ScanCost	sc;
 	SiftFilterEst fe = {0, 1};
-	Cost		startup,
+	double		divisor = parallel_divisor(nworkers),
+				pass,
 				verify;
-	double		pass;
+	Cost		dict,
+				postings,
+				startup;
 
+	Assert(filter == NULL || nworkers == 0);
 	scan_cost(root, rel, c, &sc);
+	dict = sc.idx.known ? sc.idx.dict_cost : 0;
+	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
-	cp->path.rows = rel->rows;
-	startup = sc.idx.known ? sc.idx.cost : 0;
+	cp->path.rows = rel->rows / divisor;
+	cp->path.parallel_safe = rel->consider_parallel;
+	cp->path.parallel_aware = nworkers > 0;
+	cp->path.parallel_workers = nworkers;
+	verify = sc.docs * sc.tuple;
 	if (mode == SIFT_MODE_RANKED)
 	{
 		pass = Min(rel->rows / sc.docs, 1.0);
@@ -360,18 +405,44 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 			sift_filter_estimate(root, rel, filter, &fe);
 			fe.sel = Max(fe.sel, pass);
 			cp->custom_paths = list_make1(filter);
-			startup += fe.cost;
+			dict += fe.cost;
 		}
 		verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
-		cp->path.startup_cost = k > 0 ? startup + verify : startup;
-		cp->path.total_cost = k > 0 ? cp->path.startup_cost + rel->rows * cpu_tuple_cost : startup + verify;
 	}
-	else
-	{
-		cp->path.startup_cost = startup;
-		cp->path.total_cost = startup + sc.docs * sc.tuple;
-	}
+	startup = dict + (postings + (mode == SIFT_MODE_RANKED && k > 0 ? verify : 0)) / divisor;
+	cp->path.startup_cost = startup;
+	cp->path.total_cost = mode == SIFT_MODE_RANKED && k > 0 ? startup + cp->path.rows * cpu_tuple_cost : startup + verify / divisor;
 	return cp;
+}
+
+static bool
+cheaper(CustomPath *a, CustomPath *b)
+{
+	return b == NULL || compare_path_costs(&a->path, &b->path, TOTAL_COST) < 0;
+}
+
+/*
+ * Adds the serial path, and a parallel one next to it unless a filter is pushed down: the bitmap of a
+ * filter is built by one backend, so a filtered scan stays serial and competes with the parallel one
+ * on cost.
+ */
+static void
+add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+			   BitmapHeapPath *filter, bool parallel, CustomPath **best, CustomPath **best_partial)
+{
+	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, 0);
+	int			nworkers = filter == NULL && parallel ? scan_workers(rel, c) : 0;
+
+	add_path(rel, &cp->path);
+	if (cheaper(cp, *best))
+		*best = cp;
+	if (nworkers > 0)
+	{
+		cp = scan_path(root, rel, c, mode, k, pathkeys, NULL, nworkers);
+		add_partial_path(rel, &cp->path);
+		if (cheaper(cp, *best_partial))
+			*best_partial = cp;
+	}
 }
 
 /*
@@ -387,7 +458,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	bool		ranked,
 				filter_looked = false;
 	BitmapHeapPath *filter = NULL;
-	CustomPath *best = NULL;
+	CustomPath *best = NULL,
+			   *best_partial = NULL;
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
@@ -408,37 +480,33 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	}
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 	{
-		CustomPath *cps[2];
-		int			ncps = 0;
 		int64		k = root->limit_tuples > 0 ? (int64) ceil(root->limit_tuples) : 0;
+		SiftScanMode mode = ranked || scores != NIL ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
+		List	   *pathkeys = ranked ? list_make1(pk) : NIL;
+		/*
+		 * A ranked scan shares its threshold, which needs the number of rows it is asked for, and
+		 * only the scan can compute the score, so nothing may sit between it and the query's
+		 * target list: not a Gather below a join, which would not pass the score on
+		 */
+		bool		parallel = mode == SIFT_MODE_UNORDERED ||
+			(ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON);
 
 		if (!split_quals(rel, ii, &c))
 			continue;
-		if (ranked || scores != NIL)
+		if (mode == SIFT_MODE_RANKED && !filter_looked)
 		{
-			List	   *pathkeys = ranked ? list_make1(pk) : NIL;
-
-			if (!filter_looked)
-				filter = sift_filter_bitmap_path(root, rel);
+			filter = sift_filter_bitmap_path(root, rel);
 			filter_looked = true;
-			if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-				cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_RANKED, ranked ? k : 0, pathkeys, NULL);
-			if (filter)
-				cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_RANKED, ranked ? k : 0, pathkeys, filter);
 		}
-		else
-			cps[ncps++] = scan_path(root, rel, &c, SIFT_MODE_UNORDERED, 0, NIL, NULL);
-		for (int i = 0; i < ncps; i++)
-		{
-			if (best == NULL || compare_path_costs(&cps[i]->path, &best->path, TOTAL_COST) < 0)
-				best = cps[i];
-			add_path(rel, &cps[i]->path);
-		}
+		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, NULL, parallel, &best, &best_partial);
+		if (filter)
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, &best, &best_partial);
 	}
 	if (best && (ranked || scores != NIL))
 	{
 		rel->pathlist = list_make1(best);
-		rel->partial_pathlist = NIL;
+		rel->partial_pathlist = best_partial ? list_make1(best_partial) : NIL;
 	}
 }
 
@@ -472,13 +540,69 @@ count_cand(RelOptInfo *rel, ScanCand *c)
 	return false;
 }
 
+/* The count of the participants of nworkers workers (0: one process) */
+static CustomPath *
+count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, ScanCand *c, Oid heapoid, int nworkers)
+{
+	CustomPath *cp = make_path(heapoid, output_rel, c, SIFT_MODE_COUNT, 0, 0, &sift_count_path_methods);
+	ScanCost	sc;
+	double		divisor = parallel_divisor(nworkers);
+	Cost		dict,
+				shared;
+
+	scan_cost(root, input_rel, c, &sc);
+	dict = sc.idx.known ? sc.idx.dict_cost : 0;
+	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
+	shared = (sc.idx.known ? sc.idx.cost - dict : 0) +
+		(1 - input_rel->allvisfrac) * (Min(sc.docs, Max(input_rel->pages, 1)) * sc.page + sc.docs * cpu_tuple_cost) +
+		sc.docs * cpu_operator_cost * POSTING_CPU_FRACTION;
+	cp->path.rows = 1;
+	cp->path.parallel_safe = output_rel->consider_parallel;
+	cp->path.parallel_aware = nworkers > 0;
+	cp->path.parallel_workers = nworkers;
+	cp->path.startup_cost = dict + shared / divisor;
+	cp->path.total_cost = cp->path.startup_cost + cpu_tuple_cost;
+	return cp;
+}
+
+/*
+ * Finalize Aggregate over Gather over the participants' partial counts, each a row of the count's
+ * partial aggregate state (an int8 that the final aggregate adds up).
+ */
+static void
+add_parallel_count(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, ScanCand *c, Oid heapoid)
+{
+	int			nworkers = scan_workers(input_rel, c);
+	PathTarget *partial_target = create_empty_pathtarget();
+	CustomPath *cp;
+	GatherPath *gather;
+	AggClauseCosts final_costs;
+	double		rows = nworkers + 1;
+
+	if (nworkers == 0)
+		return;
+	foreach_node(Aggref, agg, output_rel->reltarget->exprs)
+	{
+		Aggref	   *partial = copyObject(agg);
+
+		mark_partial_aggref(partial, AGGSPLIT_INITIAL_SERIAL);
+		add_column_to_pathtarget(partial_target, (Expr *) partial, 0);
+	}
+	set_pathtarget_cost_width(root, partial_target);
+	cp = count_path(root, input_rel, output_rel, c, heapoid, nworkers);
+	cp->path.pathtarget = partial_target;
+	gather = create_gather_path(root, output_rel, &cp->path, partial_target, NULL, &rows);
+	get_agg_clause_costs(root, AGGSPLIT_FINAL_DESERIAL, &final_costs);
+	add_path(output_rel, (Path *) create_agg_path(root, output_rel, &gather->path, output_rel->reltarget, AGG_PLAIN,
+												  AGGSPLIT_FINAL_DESERIAL, NIL, NIL, &final_costs, 1));
+}
+
 static void
 sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
 				 void *extra)
 {
 	Query	   *parse = root->parse;
 	ScanCand	c;
-	ScanCost	sc;
 	CustomPath *cp;
 	RangeTblEntry *rte;
 
@@ -498,15 +622,9 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 			return;
 	if (!count_cand(input_rel, &c))
 		return;
-	scan_cost(root, input_rel, &c, &sc);
-	cp = make_path(rte->relid, output_rel, &c, SIFT_MODE_COUNT, 0, 0, &sift_count_path_methods);
-	cp->path.rows = 1;
-	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
-	cp->path.startup_cost = (sc.idx.known ? sc.idx.cost : 0) +
-		(1 - input_rel->allvisfrac) * (Min(sc.docs, Max(input_rel->pages, 1)) * sc.page + sc.docs * cpu_tuple_cost) +
-		sc.docs * cpu_operator_cost * POSTING_CPU_FRACTION;
-	cp->path.total_cost = cp->path.startup_cost + cpu_tuple_cost;
+	cp = count_path(root, input_rel, output_rel, &c, rte->relid, 0);
 	add_path(output_rel, &cp->path);
+	add_parallel_count(root, input_rel, output_rel, &c, rte->relid);
 }
 
 /* ---------- plans ---------- */

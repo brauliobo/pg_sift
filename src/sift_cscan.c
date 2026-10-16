@@ -107,6 +107,7 @@ typedef struct SiftScanState
 	uint64		allvis[SIFT_PAGEMASK_WORDS];
 	int64		nsearches;
 	SiftTotals	tot;
+	SiftPar		par;				/* parallel-aware plan run with workers: par.sh is the shared state */
 } SiftScanState;
 
 /* ---------- scan tuple ---------- */
@@ -259,16 +260,16 @@ close_scan(SiftScanState *ss)
 	ss->vm_sb = UINT32_MAX;
 }
 
-/* Analyzes the queries (NULL operand: no rows) and binds the plan */
-static void
-bind_scan(SiftScanState *ss)
+/* The plan binds from the leader's export (shared), or reads the index itself; NULL: a query is NULL, no rows */
+static SiftPlan *
+bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared)
 {
 	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
 	int			n = list_length(ss->queries),
-				i = 0;
+				i = 0,
+				flags = ss->mode == SIFT_MODE_RANKED ? SIFT_BIND_SCORE : 0;
 	SiftQuery **queries = palloc(n * sizeof(SiftQuery *));
 
-	ss->st = sift_state_open(ss->index, ss->cxt);
 	foreach_ptr(ExprState, es, ss->queries)
 	{
 		bool		isnull;
@@ -276,14 +277,31 @@ bind_scan(SiftScanState *ss)
 		text	   *q;
 
 		if (isnull)
-		{
-			ss->empty = true;
-			return;
-		}
+			return NULL;
 		q = DatumGetTextPP(d);
-		queries[i++] = sift_state_query(ss->st, VARDATA_ANY(q), VARSIZE_ANY_EXHDR(q));
+		queries[i++] = sift_state_query(st, VARDATA_ANY(q), VARSIZE_ANY_EXHDR(q));
 	}
-	ss->plan = sift_plan_bind(ss->st, queries, n, ss->mode == SIFT_MODE_RANKED ? SIFT_BIND_SCORE : 0);
+	return shared ? sift_plan_bind_shared(st, queries, n, flags, shared) : sift_plan_bind(st, queries, n, flags);
+}
+
+/* Parallel ranked scans score from the one bind the leader made, whoever runs them */
+static const void *
+shared_bind(SiftScanState *ss)
+{
+	Size		len;
+
+	return ss->par.sh && ss->mode == SIFT_MODE_RANKED ? sift_par_get_bind(&ss->par, &len) : NULL;
+}
+
+static void
+bind_scan(SiftScanState *ss)
+{
+	const void *shared = shared_bind(ss);
+
+	ss->st = shared ? sift_state_open_dir(ss->index, ss->cxt, sift_shared_dir(shared)) :
+		sift_state_open(ss->index, ss->cxt);
+	ss->plan = bind_queries(ss, ss->st, shared);
+	ss->empty = ss->plan == NULL;
 }
 
 /*
@@ -326,12 +344,18 @@ start_scan(SiftScanState *ss)
 			if (ss->filter)
 				sift_plan_set_filter(ss->plan, ss->filter);
 			ss->rank = sift_rank_begin(ss->plan, ss->k, scan_verify, ss);
+			if (ss->par.sh)
+				sift_rank_parallel(ss->rank, &ss->par);
 			for (int i = 0; i < ss->ncols; i++)
 				if (ss->col[i].kind == COL_MAX_SCORE)
 					ss->max_score = sift_rank_max_score(ss->rank);
 		}
 		else if (ss->mode == SIFT_MODE_UNORDERED)
+		{
 			ss->it = sift_iter_begin(ss->plan);
+			if (ss->par.sh)
+				sift_iter_ranges(ss->it, sift_par_next_range, &ss->par);
+		}
 	}
 	MemoryContextSwitchTo(old);
 }
@@ -459,7 +483,8 @@ static TupleTableSlot *
 count_next(SiftScanState *ss)
 {
 	TupleTableSlot *slot = ss->css.ss.ss_ScanTupleSlot;
-	int64		n = ss->empty ? 0 : sift_eval_count(ss->plan, &ss->vis, scan_verify, ss);
+	int64		n = ss->empty ? 0 :
+		sift_eval_count_ranges(ss->plan, &ss->vis, scan_verify, ss, ss->par.sh ? sift_par_next_range : NULL, &ss->par);
 
 	ss->done = true;
 	ExecClearTuple(slot);
@@ -621,6 +646,83 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyInteger("Heap Pages", NULL, t.heap_pages, es);
 }
 
+/* ---------- parallel ---------- */
+
+/* Superblocks of the heap as of now: what a snapshot taken before sees lies in them */
+static uint32
+heap_superblocks(SiftScanState *ss)
+{
+	return ((uint64) RelationGetNumberOfBlocks(ss->heap) + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
+}
+
+/*
+ * Ranked: binds once for everyone. The participants score from this bind
+ * (the leader too, when it runs the plan), so a writer cannot give them
+ * different statistics or directories.
+ */
+static void
+export_bind(SiftScanState *ss)
+{
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift parallel bind", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SiftIndexState *st = sift_state_open(ss->index, tmp);
+	SiftPlan   *plan = bind_queries(ss, st, NULL);
+
+	if (plan)
+	{
+		Size		len;
+		void	   *data = sift_plan_export(plan, &len);
+
+		sift_par_set_bind(ss->par.sh, ss->par.area, data, len);
+	}
+	sift_state_close(st);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+}
+
+static void
+prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
+{
+	if (rescan)
+		sift_par_reinit(ss->par.sh, ss->par.area, nworkers, heap_superblocks(ss));
+	else
+		sift_par_init(ss->par.sh, nworkers, heap_superblocks(ss));
+	if (ss->mode == SIFT_MODE_RANKED)
+		export_bind(ss);
+}
+
+static Size
+sift_estimate_dsm(CustomScanState *node, ParallelContext *pcxt)
+{
+	return sift_par_estimate(pcxt->nworkers);
+}
+
+static void
+sift_initialize_dsm(CustomScanState *node, ParallelContext *pcxt, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par = (SiftPar) {.sh = coordinate, .area = node->ss.ps.state->es_query_dsa};
+	prepare_shared(ss, pcxt->nworkers, false);
+}
+
+static void
+sift_reinitialize_dsm(CustomScanState *node, ParallelContext *pcxt, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par.area = node->ss.ps.state->es_query_dsa;
+	prepare_shared(ss, pcxt->nworkers, true);
+}
+
+static void
+sift_initialize_worker(CustomScanState *node, shm_toc *toc, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par = (SiftPar) {.sh = coordinate, .area = node->ss.ps.state->es_query_dsa};
+}
+
 static const CustomExecMethods sift_exec_methods = {
 	.CustomName = "SiftScan",
 	.BeginCustomScan = sift_begin,
@@ -628,6 +730,10 @@ static const CustomExecMethods sift_exec_methods = {
 	.EndCustomScan = sift_end,
 	.ReScanCustomScan = sift_rescan,
 	.ExplainCustomScan = sift_explain,
+	.EstimateDSMCustomScan = sift_estimate_dsm,
+	.InitializeDSMCustomScan = sift_initialize_dsm,
+	.ReInitializeDSMCustomScan = sift_reinitialize_dsm,
+	.InitializeWorkerCustomScan = sift_initialize_worker,
 };
 
 Node *

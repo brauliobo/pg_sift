@@ -15,6 +15,7 @@
 #define SIFT_EVAL_H
 
 #include "sift_filter.h"
+#include "sift_parallel.h"
 #include "sift_query.h"
 #include "sift_store.h"
 #include "sift_visibility.h"
@@ -37,6 +38,9 @@ typedef struct SiftIndexState
  */
 extern SiftIndexState *sift_state_open(Relation index, MemoryContext mcxt);
 extern void sift_state_close(SiftIndexState *st);	/* releases buffers only */
+
+/* The same on a directory snapshot read elsewhere: the participants of a parallel scan share one */
+extern SiftIndexState *sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir);
 
 /* Parse + analyze q with the index analyzer; allocates in CurrentMemoryContext */
 extern SiftQuery *sift_state_query(SiftIndexState *st, const char *q, int len);
@@ -61,6 +65,18 @@ extern SiftPlan *sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqu
  * ignore it.
  */
 extern void sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter);
+
+/*
+ * Parallel scoring. Scores depend on the directory and on the mutable
+ * segments, which move under concurrent writers, so one participant binds,
+ * exports what the others cannot recompute (the directory snapshot, the
+ * mutable segments' statistics and matches) and everyone, the exporter
+ * included, binds from that. The export is palloc'd in the current context.
+ */
+extern void *sift_plan_export(const SiftPlan *plan, Size *len);
+extern const SiftDirSnapshot *sift_shared_dir(const void *shared);
+extern SiftPlan *sift_plan_bind_shared(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags,
+									   const void *shared);
 
 /* Statistics after bind and iteration, for EXPLAIN */
 typedef struct SiftPlanStats
@@ -98,7 +114,14 @@ typedef struct SiftPageMatch
 
 typedef struct SiftMatchIter SiftMatchIter;
 
+/*
+ * A parallel scan visits the superblock ranges [lo, hi) that next hands out,
+ * ascending, instead of all of them (next returns false when none is left).
+ */
+typedef bool (*SiftNextRangeFn) (void *arg, uint32 *lo, uint32 *hi);
+
 extern SiftMatchIter *sift_iter_begin(SiftPlan *plan);
+extern void sift_iter_ranges(SiftMatchIter *it, SiftNextRangeFn next, void *arg);
 extern bool sift_iter_next(SiftMatchIter *it, SiftPageMatch *out);
 extern void sift_iter_end(SiftMatchIter *it);
 
@@ -124,11 +147,25 @@ extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs t
 extern void sift_rank_end(SiftRanker *r);
 
 /*
+ * Makes the ranker one of the participants of a parallel search (call before
+ * the first sift_rank_next; k must be known). Its first search scores the
+ * units it claims with the shared threshold; the participant that finishes
+ * last returns the merged result, identical to the serial one, and the others
+ * return nothing. Asking for more than k rows makes the emitter search serially
+ * again, as a serial ranker does.
+ */
+extern void sift_rank_parallel(SiftRanker *r, SiftPar *par);
+
+/*
  * count(*) of visible matches: VM all-visible pages are counted from bitmaps,
  * others through sift_vis_filter_page; with a phrase every candidate goes
  * through verify (visibility and text) and the recheck.
  */
 extern int64 sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg);
+
+/* The same over the superblock ranges next hands out (next may be NULL: all) */
+extern int64 sift_eval_count_ranges(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg,
+									SiftNextRangeFn next, void *next_arg);
 
 /*
  * The visible matches page by page in heap order, what sift_eval_count counts: fn gets the offsets
