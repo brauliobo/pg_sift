@@ -43,10 +43,27 @@ with the same data, queries, clients and cache state, interleaved round by round
 build/size figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); datasets, licenses and checksums in
 [bench/README.md](bench/README.md).
 
+Articles (218,058 articles, 8 clients, throughput relative to pg_search 0.26.1, medians of 6 interleaved rounds at host
+load 20-42; index 48 MB, `pairs` 267 MB, pg_search 164 MB):
+
+| class | sift | sift `phrase_index = pairs` |
+|---|---:|---:|
+| and | 2.47x | 2.35x |
+| or | 2.39x | 2.34x |
+| phrase | 0.50x | 3.09x |
+| mixed | 1.74x | 3.29x |
+| count(*) | 0.52x | 3.29x |
+| filter | 0.93x | 1.17x |
+| join | 3.95x | 7.09x |
+
+Places (236,192 places, single client, `sift.max_expansions = 100000`): sift is ahead of pg_search `edge_ngram(1, 15)` in all
+45 class/workload cells, from 1.4x (one-letter prefixes) to 75x (filtered whole-word queries) in median latency; index 43 MB
+against 140 MB.
+
 ```sh
 scripts/pgtest.sh install                 # sift into /tmp/sift-arch/root; pg_search comes from pg_config
 bench/datasets/fetch.sh all               # download, verify and convert both datasets
-bench/ab.sh quick                         # articles, 25k documents
+bench/ab.sh quick                         # articles, 75k documents
 bench/places.sh quick                     # places, 34k rows
 ```
 
@@ -76,7 +93,8 @@ Arch Linux packaging is in `packaging/`.
 ## Limitations
 
 - Phrases are rechecked against the heap unless the index is built with `phrase_index = pairs` (a larger
-  index); `count(*)` and ranked scans of common-word phrases pay for it.
+  index); `count(*)` and ranked scans of common-word phrases pay for it, and lose to pg_search by half on the
+  articles benchmark with the default index.
 - The benchmark corpora are small compared with TIN's 150M documents, and the hosts are shared machines, so
   absolute numbers carry noise; compare engines measured in the same run.
 - Tokenizers differ between engines (CJK runs, apostrophes, hyphenation), so result sets match exactly only
