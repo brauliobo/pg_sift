@@ -78,7 +78,7 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 	bool		eclass_joins = rel->has_eclass_joins,
 				parallel = rel->consider_parallel;
 	BitmapHeapPath *best = NULL;
-	int			nest;
+	uint64		saved;
 
 	if (sift_filter_pushdown == SIFT_PUSHDOWN_OFF || !enable_bitmapscan || rel->lateral_relids != NULL ||
 		(indexes = bitmap_indexes(rel)) == NIL)
@@ -86,12 +86,10 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 	rel->pathlist = rel->partial_pathlist = rel->joininfo = NIL;
 	rel->indexlist = indexes;
 	rel->has_eclass_joins = rel->consider_parallel = false;
-	nest = NewGUCNestLevel();
-	set_config_option("enable_indexscan", "off", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
-	set_config_option("enable_indexonlyscan", "off", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
+	saved = sift_plain_index_scans_off(rel);
 	create_index_paths(root, rel);
-	AtEOXact_GUC(true, nest);
-	foreach_node(Path, p, rel->pathlist)
+	sift_plain_index_scans_restore(rel, saved);
+	foreach_ptr(Path, p, rel->pathlist)
 		if (IsA(p, BitmapHeapPath) && p->param_info == NULL &&
 			(best == NULL || p->total_cost < best->path.total_cost))
 			best = (BitmapHeapPath *) p;

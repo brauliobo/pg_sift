@@ -11,6 +11,8 @@
 #include "storage/itemptr.h"
 #include "utils/relcache.h"
 
+#include "sift_compat.h"
+
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
 #define SIFT_FORMAT_MINOR		0

@@ -40,10 +40,11 @@ PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs 2>/dev/null)
 PG_MAJOR := $(shell $(PG_CONFIG) --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 ifeq ($(PG_MAJOR),)
-$(error cannot run '$(PG_CONFIG)': install the PostgreSQL 18 server development files or set PG_CONFIG=/path/to/pg_config)
+$(error cannot run '$(PG_CONFIG)': install the PostgreSQL server development files or set PG_CONFIG=/path/to/pg_config)
 endif
-ifeq ($(shell test $(PG_MAJOR) -ge 18 && echo ok),)
-$(error pg_sift needs PostgreSQL 18 or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
+PG_MIN_MAJOR = 17
+ifeq ($(shell test $(PG_MAJOR) -ge $(PG_MIN_MAJOR) && echo ok),)
+$(error pg_sift needs PostgreSQL $(PG_MIN_MAJOR) or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
 endif
 
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
