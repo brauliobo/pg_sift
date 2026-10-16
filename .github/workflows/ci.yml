@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # PostgreSQL 19 is built from this branch of the git tree until the PGDG packages carry it
+  # PostgreSQL 19 is built from this branch of the git tree until the PGDG packages carry it (from the GitHub mirror: git.postgresql.org dropped a clone with an early EOF)
   PG19_REF: REL_19_STABLE
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
           - pg: 19
             experimental: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.experimental }}
@@ -52,13 +52,13 @@ jobs:
       - name: Resolve the PostgreSQL 19 commit
         if: ${{ matrix.experimental }}
         id: pg19
-        # the full ref: a bare name also matches the mirror's refs/remotes/github/ branch, two lines for GITHUB_OUTPUT
-        run: echo "sha=$(git ls-remote --exit-code https://git.postgresql.org/git/postgresql.git "refs/heads/$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+        # the full ref: a bare name can match several refs, and two lines would break GITHUB_OUTPUT
+        run: echo "sha=$(git ls-remote --exit-code https://github.com/postgres/postgres.git "refs/heads/$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Cache PostgreSQL 19
         if: ${{ matrix.experimental }}
         id: pg19-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/pg19
           key: pg19-${{ runner.os }}-${{ steps.pg19.outputs.sha }}
@@ -68,7 +68,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl
-          git clone --depth 1 --branch "$PG19_REF" https://git.postgresql.org/git/postgresql.git "$RUNNER_TEMP/postgresql"
+          git clone --depth 1 --branch "$PG19_REF" https://github.com/postgres/postgres.git "$RUNNER_TEMP/postgresql"
           cd "$RUNNER_TEMP/postgresql"
           ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --enable-tap-tests --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
           make -j4 -s
@@ -109,7 +109,7 @@ jobs:
 
       - name: Keep the logs of a failed run
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pg_sift-test-logs-pg${{ matrix.pg }}
           path: |
@@ -128,5 +128,5 @@ jobs:
       matrix:
         image: [postgres:17, postgres:18]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: PG_IMAGE=${{ matrix.image }} scripts/replication.sh --container
