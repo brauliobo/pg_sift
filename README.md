@@ -1,6 +1,12 @@
 # pg_sift
 
-pg_sift is a full-text search index for PostgreSQL 18, an index access method used as `USING sift`. It answers boolean, phrase, prefix,
+[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml)
+[![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml)
+[![release](https://img.shields.io/github/v/release/brauliobo/pg_sift)](https://github.com/brauliobo/pg_sift/releases/latest)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018-336791)](#install)
+[![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
+
+pg_sift is a full-text search index for PostgreSQL 17 and 18 (19 is experimental), an index access method used as `USING sift`. It answers boolean, phrase, prefix,
 wildcard, regex and fuzzy queries, ranks with exact BM25 and counts matches from the index. Postings are keyed by heap ctid and stored as
 bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from the visibility map. Design: [DESIGN.md](DESIGN.md).
 
