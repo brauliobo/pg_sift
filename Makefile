@@ -11,8 +11,11 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
 # -MMD records header dependencies (src/*.d) so a header edit rebuilds its users.
 PG_CPPFLAGS = -I$(srcdir)/src
-PG_CFLAGS = -march=x86-64 -mtune=generic -O2 -g -ffp-contract=off -MMD
-EXTRA_CLEAN = src/*.d
+PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement
+ifeq ($(shell uname -m),x86_64)
+PG_CFLAGS += -march=x86-64 -mtune=generic
+endif
+EXTRA_CLEAN = src/*.d test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -34,7 +37,14 @@ endif
 override with_llvm := no
 
 PG_CONFIG ?= pg_config
-PGXS := $(shell $(PG_CONFIG) --pgxs)
+PGXS := $(shell $(PG_CONFIG) --pgxs 2>/dev/null)
+PG_MAJOR := $(shell $(PG_CONFIG) --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+ifeq ($(PG_MAJOR),)
+$(error cannot run '$(PG_CONFIG)': install the PostgreSQL 18 server development files or set PG_CONFIG=/path/to/pg_config)
+endif
+ifeq ($(shell test $(PG_MAJOR) -ge 18 && echo ok),)
+$(error sift needs PostgreSQL 18 or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
+endif
 
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
 # claim "check" is unsupported, so it is not included for these goals.

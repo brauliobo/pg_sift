@@ -312,7 +312,7 @@ static void KFN(vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t n
 }
 
 /* score[pos[i]] (or score[i]) += w * (tf[i] / (tf[i] + kn[...])): the exact BM25 op order */
-static void KFN(bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
+static __attribute__((unused)) void KFN(bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
 {
 	if (pos)
 		for (uint32_t i = 0; i < n; i++) score[pos[i]] += w * (tf[i] / (tf[i] + kn[pos[i]]));

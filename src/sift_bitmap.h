@@ -157,7 +157,9 @@ static inline float sift_blk_ub(const sift_cur *c, int b)
  * standalone container: u32 (count << 8 | ctype), then the GROUPED payload.
  * Canonical masks: u64[4] page mask, u64[8] offset mask per page.
  */
+#ifndef SIFT_PAGEMASK_WORDS		/* sift.h defines it too, as SIFT_SB_PAGES / 64 */
 #define SIFT_PAGEMASK_WORDS 4
+#endif
 #define SIFT_OFFMASK_WORDS  8
 size_t sift_chunk_bound(uint32_t npages);   /* for SIFT_CT_AUTO / SIFT_CT_BITMAP */
 size_t sift_chunk_encode(const uint64_t pagemask[4], const uint64_t *offmasks, int ctype, uint8_t *out);
