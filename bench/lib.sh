@@ -6,11 +6,13 @@ BENCH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=${SIFT_BENCH_ROOT:-/tmp/sift-bench}
 TIER=${TIER:-Q}
 declare -A TIER_PORT=([Q]=56040 [F]=56050)
+declare -A TIER_DOCS=([Q]=${Q_DOCS:-75000} [F]=ALL)   # articles per tier; the cached dump carries the count
 declare -A TIER_SHBUF=([Q]=1GB [F]=4GB)
 declare -A TIER_MWM=([Q]=512MB [F]=2GB)
 PGDATA=${PGDATA:-$ROOT/pg/$TIER}
 SOCK=$ROOT/run
 CACHE=$ROOT/cache
+DUMP=$CACHE/sift-$TIER-${TIER_DOCS[$TIER]}.dump
 DATA=$ROOT/data
 BM25_ROOT=$ROOT/bm25root
 PARADEDB_ROOT=$ROOT/engines/paradedb/root

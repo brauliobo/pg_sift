@@ -3,12 +3,10 @@
 #   bench/corpus.sh fetch               # download and convert the public datasets (bench/datasets/fetch.sh articles)
 #   TIER=Q|F bench/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv and cache a dump
 #   TIER=Q|F bench/corpus.sh restore    # recreate `bench` from the cached dump
-# Tiers: Q (quick) 25,000 articles, F (full) all 218k Simple English Wikipedia articles.
+# Tiers: Q (quick) 75,000 articles (Q_DOCS), F (full) all 218k Simple English Wikipedia articles.
 . "$(dirname "$0")/lib.sh"
 
-declare -A LIMIT=([Q]=25000 [F]=ALL)
 SRC=$DATA/articles.tsv
-DUMP=$CACHE/sift-$TIER.dump
 
 fresh_db() {
   "$BENCH/cluster.sh" init
@@ -21,7 +19,7 @@ load() {
   fresh_db
   q -f "$BENCH/sql/schema.sql"
   q -c "\\copy src FROM '$SRC'"
-  nice psql -X -q -v limit="${LIMIT[$TIER]}" -v nsub="${NSUB:-1000}" -f "$BENCH/sql/load.sql"
+  nice psql -X -q -v limit="${TIER_DOCS[$TIER]}" -v nsub="${NSUB:-1000}" -f "$BENCH/sql/load.sql"
   mkdir -p "$CACHE"
   pg_dump -Fc -Z zstd:3 -f "$DUMP" bench
   log "bench: $(q -c "SELECT count(*) || ' docs, ' || pg_size_pretty(pg_database_size('bench')) FROM docs") -> $DUMP"
