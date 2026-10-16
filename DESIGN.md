@@ -492,6 +492,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - kill -9 during build, promotion, merge and vacuum, then restart and `sift.verify` plus result equivalence;
   - streaming replica replay plus queries on the standby, including the recycled-segment retry error;
   - `wal_level=minimal` build.
+  - replication (`replication.sh`, also `scripts/replication.sh --container` with one container per node): hot standby equal to the primary after every kind of write, promotion, and a logical subscriber with its own index after the initial sync and under apply.
 - **`sift.verify(index regclass, heapallindexed bool default false)`** works like amcheck:
   - checks the metapage and directory, page gens, extent overlap, dictionary order, chunk SB order, popcount = df, tf stream lengths, and that bounds really are ≥ the true max;
   - checks that docmap, liveness and postings are subsets;

@@ -12,11 +12,11 @@ export LC_ALL=C
 knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
 
 TAPDIR=${SIFT_TMP:?}/tap
-ROOT=${SIFT_ROOT:?run through scripts/pgtest.sh tap}
-SHAREDIR=$ROOT$(pg_config --sharedir)
-PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
-PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
-PATHS_CONF=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf)
+ROOT=${SIFT_ROOT:-}
+[[ -n $ROOT || ${SIFT_NODES:-} == docker ]] || { echo "run through scripts/pgtest.sh tap" >&2; exit 1; }
+SHAREDIR=$ROOT$(pg_config --sharedir 2>/dev/null)
+PKGLIBDIR=$ROOT$(pg_config --pkglibdir 2>/dev/null)
+PG_MAJOR=$(pg_config --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 NTEST=0
 NFAIL=0
 NODES=()
@@ -59,7 +59,7 @@ node_init() {
 	node_conf "$name" "port = $((SIFT_PORT + offset))
 listen_addresses = ''
 unix_socket_directories = '$d/sock'
-$PATHS_CONF
+$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf)
 fsync = off
 max_wal_size = 256MB
 restart_after_crash = off
@@ -67,6 +67,28 @@ shared_buffers = 128MB
 max_connections = 60
 ${3:-}"
 }
+
+# node_clone PRIMARY NAME OFFSET [conf lines]: hot standby streaming from a base backup of PRIMARY
+node_clone() {
+	local d
+	d=$(dir "$2")
+	node_stop "$2"
+	rm -rf "$d"
+	mkdir -p "$d/sock"
+	echo "$3" >"$d/offset"
+	NODES+=("$2")
+	pg_basebackup -h "$(dir "$1")/sock" -p "$(port "$1")" -U postgres -D "$d/data" -R -X stream -c fast \
+		>"$d/basebackup.log" 2>&1 || bail "pg_basebackup $2 failed"
+	node_conf "$2" "port = $(port "$2")
+unix_socket_directories = '$d/sock'
+hot_standby = on
+${4:-}"
+}
+
+node_promote() { pg_ctl -D "$(dir "$1")/data" -w promote >/dev/null; }
+
+# libpq connection string of a node, for CREATE SUBSCRIPTION
+conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=postgres"; }
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 node_start() {
@@ -143,3 +165,6 @@ finish() {
 	[[ $NFAIL -eq 0 ]] || diag "$NFAIL of $NTEST failed"
 	exit $((NFAIL > 0))
 }
+
+# SIFT_NODES=docker: nodes are containers (scripts/replication.sh --container)
+[[ ${SIFT_NODES:-} != docker ]] || . "$(dirname "${BASH_SOURCE[0]}")/lib_docker.bash"
