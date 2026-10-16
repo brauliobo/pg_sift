@@ -71,6 +71,16 @@ SET sift.enable_count = off;
 SELECT sift_plan('SELECT count(*) FROM c WHERE body @@> ''fox''') !~ 'SiftCount' AS other_plan;
 RESET sift.enable_count;
 
+-- vacuum clears the deleted documents' bits (dirty superblocks, pages back in the visibility map), and
+-- inserted or updated rows put pages out of it again next to them
+VACUUM c;
+SELECT * FROM all_same();
+INSERT INTO c SELECT 3000 + i, 'lazy fox w' || i, 1 FROM generate_series(1, 30) i;
+UPDATE c SET grp = grp + 1 WHERE id % 97 = 0;
+SELECT * FROM all_same();
+VACUUM c;
+SELECT * FROM all_same();
+
 DROP TABLE c CASCADE;
 DROP FUNCTION via_scan(text), sift_plan(text), all_same();
 DROP EXTENSION pg_sift;

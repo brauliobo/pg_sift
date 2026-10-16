@@ -1302,14 +1302,17 @@ iter_merge_mutable(SiftMatchIter *it, uint32 sb)
 	}
 }
 
-/* Loads the next SB with matches in any segment; false at the end */
+/*
+ * Seeks the segments' cursors to the next SB with matches in any of them or in the mutable segments
+ * (it->grp[s] are their groups there); false at the end
+ */
 static bool
-iter_load_sb(SiftMatchIter *it)
+iter_find_sb(SiftMatchIter *it, uint32 *sbp)
 {
-	uint32		sb;
-
 	for (;;)
 	{
+		uint32		sb = UINT32_MAX;
+
 		if (it->next_range && it->next_sb >= it->sb_end)
 		{
 			uint32		lo,
@@ -1322,7 +1325,6 @@ iter_load_sb(SiftMatchIter *it)
 			while (it->mpos < it->plan->nmhit && sift_block_sb(sift_key_block(it->plan->mhit[it->mpos].key)) < lo)
 				it->mpos++;
 		}
-		sb = UINT32_MAX;
 		for (int s = 0; s < it->plan->nsegs; s++)
 		{
 			it->grp[s] = it->root[s] ? sift_seek(it->root[s], it->next_sb) : NULL;
@@ -1339,6 +1341,19 @@ iter_load_sb(SiftMatchIter *it)
 			continue;
 		}
 		CHECK_FOR_INTERRUPTS();
+		*sbp = sb;
+		return true;
+	}
+}
+
+/* Loads the next SB with matches in any segment; false at the end */
+static bool
+iter_load_sb(SiftMatchIter *it)
+{
+	uint32		sb;
+
+	while (iter_find_sb(it, &sb))
+	{
 		memset(it->pages, 0, sizeof(it->pages));
 		memset(it->spages, 0, sizeof(it->spages));
 		for (int s = 0; s < it->plan->nsegs; s++)
@@ -1354,11 +1369,13 @@ iter_load_sb(SiftMatchIter *it)
 		it->next_sb = sb + 1;
 		it->plan->stats.sb_scanned++;
 		if (it->pages[0] | it->pages[1] | it->pages[2] | it->pages[3])
-			break;
+		{
+			it->sb = sb;
+			it->page = 0;
+			return true;
+		}
 	}
-	it->sb = sb;
-	it->page = 0;
-	return true;
+	return false;
 }
 
 /* Next set page at or after it->page; SIFT_SB_PAGES when none */
@@ -2526,18 +2543,25 @@ typedef struct CountCtx
 	uint64		allvis[SIFT_PAGEMASK_WORDS];
 } CountCtx;
 
+/* The all-visible pages of superblock sb, read once per superblock */
+static const uint64 *
+allvisible(CountCtx *cc, uint32 sb)
+{
+	if (sb != cc->sb)
+	{
+		cc->sb = sb;
+		sift_vis_sb_mask(cc->vis, sb, cc->allvis);
+	}
+	return cc->allvis;
+}
+
 /* Keeps the visible offsets of a page of candidates: the VM bit decides an all-visible page, else the heap */
 static int
 visible_offsets(CountCtx *cc, BlockNumber blk, uint64 *offmask)
 {
 	uint32		page = blk & (SIFT_SB_PAGES - 1);
 
-	if (sift_block_sb(blk) != cc->sb)
-	{
-		cc->sb = sift_block_sb(blk);
-		sift_vis_sb_mask(cc->vis, cc->sb, cc->allvis);
-	}
-	return cc->allvis[page / 64] >> (page % 64) & 1 ? sift_offmask_popcount(offmask, 1) :
+	return allvisible(cc, sift_block_sb(blk))[page / 64] >> (page % 64) & 1 ? sift_offmask_popcount(offmask, 1) :
 		sift_vis_filter_page(cc->vis, blk, offmask);
 }
 
@@ -2625,10 +2649,76 @@ count_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
 }
 
+/*
+ * The visible matches of one segment's group of a superblock, counted where they lie in the group: the
+ * all-visible pages of a clean group in one pass, the others page by page
+ */
+static int64
+count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g)
+{
+	SiftDocChunk dc;
+	const uint8 *off = g->off;
+	const uint64 *allvis = allvisible(cc, g->gid);
+	uint64		bulk[SIFT_PAGEMASK_WORDS];
+	int64		n;
+	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_docs(seg, g->gid, &dc) && dc.dirty;
+
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		bulk[wd] = dirty ? 0 : g->pages[wd] & allvis[wd];
+	n = sift_grp_count_mask(g, bulk);
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
+		{
+			int			page = wd * 64 + pg_rightmost_one_pos64(m);
+			uint64		mask[SIFT_OFFMASK_WORDS] = {0};
+
+			if (bulk[wd] >> (page & 63) & 1)
+				continue;
+			memcpy(mask, off, g->w);
+			if (dirty)
+			{
+				uint64		live[SIFT_OFFMASK_WORDS];
+
+				sift_seg_page_live(seg, &dc, page, live);
+				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+					mask[k] &= live[k];
+			}
+			n += visible_offsets(cc, (BlockNumber) g->gid << SIFT_SB_SHIFT | page, mask);
+		}
+	sift_sr_release(&seg->sr);
+	return n;
+}
+
+/* count(*) of a plan the bitmaps decide alone, without the mutable segments' matches: no page is copied */
+static int64
+count_visible(SiftPlan *plan, SiftVis *vis, SiftNextRangeFn next, void *next_arg)
+{
+	CountCtx	cc = {.plan = plan,.vis = vis,.sb = UINT32_MAX};
+	SiftMatchIter *it = sift_iter_begin(plan);
+	int64		n = 0;
+	uint32		sb;
+
+	if (next)
+		sift_iter_ranges(it, next, next_arg);
+	while (iter_find_sb(it, &sb))
+	{
+		for (int s = 0; s < plan->nsegs; s++)
+			if (it->grp[s] && it->grp[s]->gid == sb)
+				n += count_group(&cc, plan->seg[s], it->grp[s]);
+		it->next_sb = sb + 1;
+		plan->stats.sb_scanned++;
+	}
+	sift_iter_end(it);
+	plan->stats.verified = n;
+	return n;
+}
+
 int64
 sift_eval_count_ranges(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg,
 					   SiftNextRangeFn next, void *next_arg)
 {
+	if (!plan->recheck && plan->nmhit == 0)
+		return count_visible(plan, vis, next, next_arg);
 	return eval_pages(plan, vis, verify, arg, count_page, NULL, next, next_arg);
 }
 
