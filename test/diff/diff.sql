@@ -82,6 +82,7 @@ BEGIN
 	CREATE TABLE diff_docs (id int, body text, pad text) WITH (autovacuum_enabled = off);
 	ALTER TABLE diff_docs ALTER COLUMN pad SET STORAGE plain;
 	CREATE INDEX diff_docs_id ON diff_docs (id);
+	CREATE INDEX diff_docs_id_brin ON diff_docs USING brin (id) WITH (pages_per_range = 1);
 	FOR g IN 1 .. ndocs LOOP
 		IF g % 256 = 1 THEN
 			p := CASE WHEN g % 1024 = 1 THEN 0 ELSE sift_diff.rand_int(0, 5) END;
@@ -328,8 +329,9 @@ CREATE OR REPLACE FUNCTION sift_diff.hex(s real[]) RETURNS text[] LANGUAGE sql I
 AS $$ SELECT array(SELECT encode(float4send(x), 'hex') FROM unnest(s) WITH ORDINALITY u(x, n) ORDER BY n) $$;
 
 -- Top-k with a filter on another column: the reference top-k restricted to the same rows (the
--- scores stay those of the whole index)
-CREATE OR REPLACE FUNCTION sift_diff.filtered_diff(q text, k int) RETURNS text LANGUAGE plpgsql AS $$
+-- scores stay those of the whole index). Filters an index serves run with the bitmap pushed down into the
+-- ranker, whatever the planner would choose.
+CREATE OR REPLACE FUNCTION sift_diff.filtered_diff(q text, k int, flt text, pushdown bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	tbl text := sift_diff.setting('tbl', 'diff_docs');
 	ref record;
@@ -337,14 +339,30 @@ DECLARE
 BEGIN
 	EXECUTE format('SELECT array_agg(r.ctid ORDER BY r.rank) AS ctids, array_agg(r.score ORDER BY r.rank) AS metrics_a
 		FROM (SELECT t.ctid, t.score, t.rank FROM sift_ref.topk(%L, 100000000) t JOIN %s d ON d.ctid = t.ctid
-			WHERE d.id %% 3 = 0 ORDER BY t.rank LIMIT %s) r', q, tbl, k) INTO ref;
+			WHERE %s ORDER BY t.rank LIMIT %s) r', q, tbl, flt, k) INTO ref;
+	PERFORM set_config('sift.filter_pushdown', CASE WHEN pushdown THEN 'force' ELSE 'on' END, true);
 	EXECUTE format('SELECT array_agg(c ORDER BY n) AS ctids, array_agg(s ORDER BY n) AS metrics_a FROM (SELECT row_number() OVER () AS n, c, s
-		FROM (SELECT ctid AS c, sift.score(ctid) AS s FROM %s WHERE body @@> %L AND id %% 3 = 0
-			ORDER BY sift.score(ctid) DESC LIMIT %s) x) y', tbl, q, k) INTO got;
+		FROM (SELECT ctid AS c, sift.score(ctid) AS s FROM %s WHERE body @@> %L AND %s
+			ORDER BY sift.score(ctid) DESC LIMIT %s) x) y', tbl, q, flt, k) INTO got;
+	PERFORM set_config('sift.filter_pushdown', 'on', true);
 	IF ref.ctids IS DISTINCT FROM got.ctids OR sift_diff.hex(ref.metrics_a) IS DISTINCT FROM sift_diff.hex(got.metrics_a) THEN
-		RETURN format('filtered top-%s: reference %s, engine %s', k, ref::text, got::text);
+		RETURN format('top-%s under %s%s: reference %s, engine %s', k, flt, CASE WHEN pushdown THEN ' (pushdown)' END, ref::text, got::text);
 	END IF;
 	RETURN NULL;
+END $$;
+
+-- An unindexed filter, then ranges of the id (btree and BRIN): about a third, a few percent, a few rows
+CREATE OR REPLACE FUNCTION sift_diff.filtered_diffs(q text, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	top int;
+	lo int;
+BEGIN
+	SELECT max(id) INTO top FROM diff_docs;
+	lo := sift_diff.rand_int(1, greatest(top, 1));
+	RETURN coalesce(sift_diff.filtered_diff(q, k, 'id % 3 = 0', false),
+		sift_diff.filtered_diff(q, k, format('id < %s', sift_diff.rand_int(1, greatest(top / 3, 1))), true),
+		sift_diff.filtered_diff(q, k, format('id BETWEEN %s AND %s', lo, lo + greatest(top / 50, 3)), true),
+		sift_diff.filtered_diff(q, k, format('id >= %s AND id %% 5 <> 0', lo), true));
 END $$;
 
 -- Clean state: row-for-row, bit-equal scores. Otherwise statistics may count
@@ -367,7 +385,7 @@ BEGIN
 					got.ctids[i], got.metrics_a[i], sift_diff.hex(got.metrics_a[i:i])::text);
 			END IF;
 		END LOOP;
-		RETURN CASE WHEN sift_diff.setting('engine', 'sift') = 'sift' THEN sift_diff.filtered_diff(q, k) END;
+		RETURN CASE WHEN sift_diff.setting('engine', 'sift') = 'sift' THEN sift_diff.filtered_diffs(q, k) END;
 	ELSIF coalesce(cardinality(got.ctids), 0) <> least(k, cardinality(ref_set)) THEN
 		RETURN format('%s rows, expected %s', coalesce(cardinality(got.ctids), 0), least(k, cardinality(ref_set)));
 	ELSIF NOT ref_set @> coalesce(got.ctids, '{}') THEN
