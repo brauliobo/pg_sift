@@ -1,6 +1,7 @@
 -- A dictionary keeps the terms of deleted docs until its segment is rewritten. They match
--- nothing, so only terms with a live posting count toward sift.max_expansions, and a forced
--- merge drops them even from a lone segment.
+-- nothing, so only terms with a live posting count toward sift.max_expansions (shown with a
+-- wildcard, the leaf that still errors above it), and a forced merge drops them even from a lone
+-- segment. A prefix above the limit matches the live documents only.
 CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
@@ -16,6 +17,24 @@ SELECT dirty, nterms FROM sift.segments('dt_idx');
 (1 row)
 
 SET sift.max_expansions = 600;
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
+ count 
+-------
+   560
+(1 row)
+
+SELECT id FROM dt WHERE body @@> 'ri?*' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id  
+-----
+ 441
+ 442
+ 443
+(3 rows)
+
+SET sift.max_expansions = 500;
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
+ERROR:  sift: the leaf at position 1 expands to more than 500 terms
+HINT:  Narrow the pattern or raise sift.max_expansions.
 SELECT count(*) FROM dt WHERE body @@> 'ri*';
  count 
 -------
@@ -30,10 +49,6 @@ SELECT id FROM dt WHERE body @@> 'ri*' ORDER BY sift.score(ctid) DESC, id LIMIT 
  443
 (3 rows)
 
-SET sift.max_expansions = 500;
-SELECT count(*) FROM dt WHERE body @@> 'ri*';
-ERROR:  sift: the leaf at position 1 expands to more than 500 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
 SET sift.max_expansions = 600;
 SELECT sift.merge('dt_idx', true);
  merge 
@@ -47,7 +62,7 @@ SELECT dirty, nterms FROM sift.segments('dt_idx');
  f     |    561
 (1 row)
 
-SELECT count(*) FROM dt WHERE body @@> 'ri*';
+SELECT count(*) FROM dt WHERE body @@> 'ri?*';
  count 
 -------
    560
@@ -85,16 +100,22 @@ SELECT count(*) AS segments, count(*) FILTER (WHERE dirty) AS dirty FROM sift.se
 (1 row)
 
 SET sift.max_expansions = 700;
-SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
+SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
  count 
 -------
    650
 (1 row)
 
 SET sift.max_expansions = 500;
-SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
+SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
 ERROR:  sift: the leaf at position 1 expands to more than 500 terms
 HINT:  Narrow the pattern or raise sift.max_expansions.
+SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
+ count 
+-------
+   650
+(1 row)
+
 SELECT sift.verify('dt2_idx', true);
  verify 
 --------

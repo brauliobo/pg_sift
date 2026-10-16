@@ -44,6 +44,8 @@ SELECT hits('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 1
 SELECT same('tok12*'), same('tok1*'), same('*k12'), same('/tok1[0-9]/'), same('tok12~1');
 SELECT hits('tok*');
 SELECT hits('t*');
+SELECT hits('tok?*');
+SELECT hits('t?*');
 SELECT hits('*');
 SELECT hits(repeat('a', 300) || '*');
 SELECT hits('t' || repeat('o', 500) || '~2');

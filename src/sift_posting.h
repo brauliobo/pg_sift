@@ -77,6 +77,13 @@ extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint
 extern void sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info);
 
 /*
+ * The same without a stream (sift_postw_begin with a NULL sw): the term blob in mcxt, padded as the
+ * readers need it and shared by every cursor of sift_post_open_blob; NULL for an inline term, which
+ * has none. info->post_off stays 0.
+ */
+extern const uint8 *sift_postw_end_term_mem(SiftPostingWriter *w, SiftTermInfo *info, MemoryContext mcxt);
+
+/*
  * Reader for one term of one segment. Wraps a codec cursor (usable in codec
  * AND/OR/ANDNOT trees) plus the sidecar. Allocations in mcxt; the term blob
  * is copied out of shared buffers, so the cursor holds no buffer (the stream
@@ -87,6 +94,9 @@ typedef struct SiftPostingCursor SiftPostingCursor;
 
 extern SiftPostingCursor *sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info,
 										 MemoryContext mcxt);
+
+/* A cursor over a blob of sift_postw_end_term_mem (not copied: it must outlive the cursor) */
+extern SiftPostingCursor *sift_post_open_blob(const SiftTermInfo *info, const uint8 *blob, MemoryContext mcxt);
 
 /* As sift_post_open, for sift.verify: the codec blob's lengths and offsets are validated first, so corrupt postings raise instead of overrunning */
 extern SiftPostingCursor *sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info,

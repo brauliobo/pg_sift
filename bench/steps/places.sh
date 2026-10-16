@@ -82,7 +82,7 @@ FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s
                     (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', q))) AS tq FROM pq"
 
 "$STEPS/cluster.sh" init >/dev/null; "$STEPS/cluster.sh" start >/dev/null
-# sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
+# a prefix over sift.max_expansions (512) terms scores as one term, not the max over its terms; a typed prefix of a common word expands further on 236k places
 for e in $ENGINES; do drop_db "$(edb "$e")"; done; drop_db places
 PGDATABASE=postgres q -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
 ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')

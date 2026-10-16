@@ -59,8 +59,9 @@ SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3
 ## Queries
 
 `AND`, `OR`, `NOT` are keywords in upper case only; juxtaposition is `AND`; precedence is `NOT` > `AND` > `OR`; a `NOT` needs a positive
-term in its AND group. A prefix, wildcard, regex or fuzzy leaf expands to dictionary terms; more than `sift.max_expansions` (512) is an
-error, not a truncation.
+term in its AND group. A wildcard, regex or fuzzy leaf expands to dictionary terms; more than `sift.max_expansions` (512) is an
+error, not a truncation. A prefix never is: it matches every word that starts with it, however many (`h*` on a million
+names), and above that many terms it scores as the one term `prefix_index` would hold for it.
 
 ```sql
 SELECT id FROM docs WHERE body @@> 'breakfast NOT noisy';             -- exclusion: 2
@@ -116,7 +117,9 @@ CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || 
 ```
 
 For autocomplete, separate sections with `chr(29)`, name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of
-up to n letters are one term lookup:
+up to n letters are one term lookup. The option is a speed and size trade-off, not a requirement: without it a broad prefix such as `h*` is read
+from the postings of all its words, once per backend and then from a cache (`sift.prefix_cache_size`): 10-15 ms for a one-letter prefix of a million
+names, under a millisecond with the option, which costs index size (a million names: 17 MB, 34 MB at 3, 73 MB at 15):
 
 ```sql
 CREATE TABLE places (id int PRIMARY KEY, name text, admin1 text, country text);
@@ -177,7 +180,8 @@ and merges; VACUUM promotes, merges and clears dead postings.
 
 | GUC | default | meaning |
 |---|---|---|
-| `sift.max_expansions` | 512 | terms a prefix, wildcard, regex or fuzzy leaf may expand to (error above) |
+| `sift.max_expansions` | 512 | terms a wildcard, regex or fuzzy leaf may expand to (error above); a prefix above it scores as one term |
+| `sift.prefix_cache_size` | 8MB | memory per backend for the postings of broad prefixes, `0` keeps none |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 
