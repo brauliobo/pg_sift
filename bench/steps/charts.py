@@ -47,7 +47,7 @@ ARTICLE_CLASSES = [('and', 'and'), ('or', 'or'), ('phrase', 'phrase'), ('mixed',
                    ('filter', 'filter'), ('join', 'join')]
 PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']
 PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes'
-PLACE_NOTES = ['pg_textsearch: NA, it cannot rank prefixes (count and scan only).']
+PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
 NA_NOTE = 'NA: no bar, the engine cannot run the workload or was not run on the dataset.'
 
 WIDTH = 860

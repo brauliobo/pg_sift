@@ -11,7 +11,7 @@
 # Only compact tables are kept: $DEST (default $RESULTS/<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt; the scratch cluster is removed on exit (KEEP=1 keeps it). The corpus dump stays in $CACHE.
 # Engines whose extension is not installed are skipped with a message; a class an engine cannot render
-# is reported as NA. Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold
+# is reported as NA. Env: ENGINES CLASSES COLD (cold classes, default all) CLIENTS SECS WARM MINR MAXR TOL NQ (cold
 # queries per class) RESULTS DEST.
 # Needs bench/bench setup (the engines, the articles dataset).
 set -euo pipefail
@@ -47,7 +47,7 @@ log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' 
 if [[ $cold ]]; then
   printf 'class\tengine\tp50_ms\tmax_ms\n' >"$DEST/summary.tsv"
   for e in $ENGINES; do PGDATABASE=$(engine_db "$e") q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null; done
-  for c in ${COLD:-phrase count and}; do for e in $ENGINES; do
+  for c in ${COLD:-$CLASSES}; do for e in $ENGINES; do
     PGDATABASE=$(engine_db "$e"); export PGDATABASE
     t=$(for i in $(seq "$NQ"); do
       stmt=$(q -c "SELECT stmt FROM stmts WHERE wl = '$c' AND n = $i")
