@@ -8,7 +8,7 @@
 
 Status: 1.0.0. Of the extras below, 9 (parallel scan) was dropped after measurement; 10 (filter-mask pushdown) and 11 (keyword facets) are planned for 1.1.
 
-This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), then module contracts and milestones. Estimates are marked **[est]** and are only claims until benchmark M6 confirms them.
+This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), (l) for the 1.1 facets, then module contracts and milestones. Estimates are marked **[est]** and are only claims until benchmark M6 confirms them.
 
 User-facing names: extension `pg_sift`, AM `sift`, schema `sift`, operator `text @@> text`, and the functions `sift.score(tid)`, `sift.max_score(tid)`, `sift.highlight(...)`, `sift.tokenize(...)`, `sift.verify(regclass)`, `sift.segments(regclass)`, `sift.promote(regclass)`, `sift.merge(regclass)`, `sift.parse_query(text)`.
 
@@ -452,7 +452,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 | 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | M4 | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
 | 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | dropped after measurement (not in 1.0) | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
 | 10 | Filter-mask pushdown: SiftScan accepts child BitmapIndex paths (btree, BRIN) as `custom_paths` and converts the TIDBitmap into SB page/offset masks before scoring | planned for 1.1 | Exact filtered top-k without post-filter over-fetch; 5–100× on selective filters | `WHERE body @@> q AND tenant = $1 ORDER BY score LIMIT 10` |
-| 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `SiftCount` on GROUP BY over the keyword index = popcount(query ∧ value) per value | planned for 1.1 | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
+| 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `sift.facets(index, facet_index, query, lim)` = popcount(query ∧ value) per value, a function and not a GROUP BY rewrite ((l)) | implemented in 1.1: on 25,000 Wikipedia articles with 26 values, 1.9-4.5x sift GROUP BY and 1.9-15.9x GIN GROUP BY on broad queries (1.5-2.6x Elasticsearch terms), 0.6x on a selective AND; with 2,500 values 0.5-0.9x sift GROUP BY (cost is linear in the values), see (l) | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
 | 12 | Phrase pair index (g) | M7 | Phrase `count(*)` 10–100× | Phrase count QPS |
 | 13 | Adaptive representation (codec picks LIST vs GROUPED per term and BITMAP vs ARRAY container per group; inline df ≤ 2) | core | Rare terms at ≈ Elias-Fano cost (~25 bits), frequent at ≈ 1 bit per posting | Bits per posting histogram (`sift.segments`) |
 | 14 | Dirty-SB liveness skip: AND liveness only where VACUUM cleared bits | core | No liveness cost on clean data | — |
@@ -531,6 +531,39 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - statement-level insert batching;
   - non-x86 SIMD (scalar works everywhere; NEON later);
   - parallel scan (dropped after measurement).
+
+---
+
+## (l) Keyword facets
+
+`SELECT category, count(*) FROM docs WHERE body @@> q GROUP BY category ORDER BY 2 DESC LIMIT 10` as bitmap arithmetic.
+
+- **Keyword index (`analyzer = keyword`, REINDEX to change).** The whole value is one term, so each distinct value is one dictionary entry whose posting is the bitmap of its rows. Folding follows `case_folding` / `accent_folding` (both off: bytes as stored). An empty value, or one that analyses to nothing, and NULL have no term. A value over 255 bytes raises `ERRCODE_PROGRAM_LIMIT_EXCEEDED` instead of being truncated, because two long values sharing a prefix would be merged. It cannot be combined with `stemmer`, `phrase_index`, `prefix_index` or `fields`. A query word on a keyword index is one value (`"gamma delta"` for one containing a space), so `@@>` on it is an exact-value filter; the analyzer is part of the config hash, and non-keyword hashes are unchanged.
+- **API: `sift.facets(index, facet_index, query, lim = 10, nulls = false)` returns `(value, count)`**, count descending then value bytewise; `lim` NULL returns every value; `nulls` adds a row with a NULL value for the matches without one. `index` is the search index the query runs on and `facet_index` the keyword index of the facet column, both on the same table. A multi-column facet is one keyword index per column.
+- **Function, not an upper path.** A custom scan that replaces `Agg` over the scan would have to prove, in `create_upper_paths_hook`, that the grouping key is exactly the column of a keyword index, that the only qual is one `@@>` on another index, that the aggregate is a plain `count(*)` (no FILTER, DISTINCT, HAVING, joins, partial aggregation under parallel plans), and then absorb the Sort and Limit above it to get the early exit. Any shape it misses falls back to the ordinary plan silently, and any shape it wrongly accepts returns a wrong count. The function states the contract (two indexes, one query), is the same code path whatever the planner would pick, and costs one call. The price is that `GROUP BY` queries are not accelerated automatically.
+- **Algorithm (`sift_facet.c`).**
+  - The query's matches are collected once with the `count(*)` rules (visibility map masks for all-visible pages, heap checks for the others, phrase recheck) into superblock groups with a 64-byte offset row per page; the heap is read only where `count(*)` reads it.
+  - Every value of the keyword index is a term; its count is the popcount of the AND of its posting groups with the matches (`sift_grp_and_count` over the codec cursors, `min` of the group widths). Dirty superblocks of a segment (VACUUM cleared bits) are ANDed with the liveness of the segment, as in a query; the other segments' postings are used as stored. Inline postings (df <= 2) are probed against the matches; the others leapfrog their groups against the matches.
+  - Every dictionary is scanned once to list the values (the cost is linear in the number of distinct values, not in the matches); mutable segments are read once and counted per value; a value present in several segments is the sum of its counts.
+  - **Top-k.** Values are tried in descending order of an upper bound (their df, plus the matches in the mutable segments); once the k-th count is at least the next bound the rest cannot enter and the scan stops. A value whose bound only ties the k-th count is still counted when it sorts before the k-th value. `nulls` needs every value counted (the NULL row is the matches minus the counted ones), so it disables the early exit.
+- **Exactness.** The counts are those of the `GROUP BY` in the same snapshot (`GetActiveSnapshot`): uncommitted, deleted-and-vacuumed, updated and ctid-reused rows included (regression `facets`, isolation `facets_writes`: each stage compares every query with the SQL `GROUP BY`). Values are not limited by `sift.max_expansions`, which applies to the query only. SSI: both relations get a relation predicate lock.
+- **Checks and limits.**
+  - The two indexes must be on one table, valid, the facet index a non-partial keyword index. The caller needs `SELECT` on the table. Row-level security is refused (the bitmaps cannot apply policies).
+  - No multi-valued fields: an index has one key and the whole value is one term, so a `text[]` cannot be facetted by element. Index one row per value in a side table, or index `array_to_string` and accept the joined value as the term.
+  - Memory: 64 bytes per matching heap page, plus the term bytes and a small entry per distinct value and segment, in the function's context (not `work_mem`). A 20,000-value column over 218,000 articles is a few MB.
+- **Cost model.** A call costs the matches (collected like `count(*)`) plus about 0.7 microseconds per distinct value (dictionary scan, two sorts, one posting seek and AND-count; a top-k stops early only when values have fewer documents than the k-th count). `GROUP BY` costs the matches plus a heap fetch of every match. So the function wins when the matches are many and the values few (a category, a year, a letter), and loses when the query is selective or the column has thousands of values; the planner is not asked to choose, the caller is.
+- **Measured** (`bench/facets.sh`: the first 25,000 Simple English Wikipedia articles, 1 client, median of 2 rounds of 3 s, PostgreSQL 18 with `max_parallel_workers_per_gather = 2`, a loaded shared host: load average 27 before and 23 after, so absolute numbers carry noise). 24 queries per workload; `one` = one word of every document-frequency band, `and` / `or` = two words. Queries per second; the facet result equalled the sift `GROUP BY` for every query.
+
+  | column | workload | `sift.facets` | sift GROUP BY | GIN GROUP BY | ES terms agg |
+  |---|---|---|---|---|---|
+  | first letter (26 values) | and | 844 | 1421 | 453 | 323 |
+  | | one | 1224 | 271 | 105 | 834 |
+  | | or | 1468 | 755 | 92 | 984 |
+  | hashed category (2,500 values) | and | 462 | 852 | 793 | 529 |
+  | | one | 405 | 531 | 86 | 982 |
+  | | or | 328 | 356 | 72 | 1074 |
+
+  Each cell includes about 1 ms of client round trips and statement lookup shared by all methods (a timed call inside the server: 0.16-0.19 ms for 26 values and 1.6-1.7 ms for 2,500, against 0.15-0.21 ms for the GROUP BY on these small match sets). At 218,000 articles and 20,000 hashed values (one earlier run, load average 21-27, 5 s cells) the 26-value column gave 511 against 87 (GROUP BY, `one`) and 550 against 392 (`or`), 530 against 1497 (`and`), and the 20,000-value column 47-54 against 93-2080: the function is linear in the number of values.
 
 ---
 
