@@ -37,11 +37,13 @@ checks then catch in assert-enabled builds. The standalone harnesses below use
 | `query` | query | `tools/query/gen.py --mode fuzz` corpus through the standalone parser harness, then through the server (`tools/query/fuzz.sql`: fixpoint deparse, same matches) |
 | `sql` | tests | `test/fuzz/fuzz.sql` in the server: hostile SiftQL to `sift.parse_query` (failures other than 42601/54000/2201B; disagreements with the SQL reference parser are reported, not fatal) and hostile text to `sift.tokenize` (invariants) |
 
-`--scale` multiplies the smoke-sized counts of `analyze`, `query` and `sql`.
-The default is 10; `scripts/ci.sh smoke` uses 1. `codec` and `kernels` have
-fixed sizes. Run `scripts/fuzz.sh` with no arguments, at nice 19, for long
-sessions. Every input of the `sql` target is logged as `sift_fuzz input` before
-use, so after a backend crash the script prints the input that killed it.
+`--scale` multiplies the iteration counts of every target (default 10, about
+3.5 minutes; `codec` runs 300 iterations and `kernels` 0.2 million per unit).
+`--budget SEC` runs scale-1 passes (about 25 s each) until SEC seconds have
+passed, the seeded targets with a new seed each pass; `scripts/ci.sh quick`
+uses a 20 s budget. Run `scripts/fuzz.sh` with no arguments, at nice 19, for
+long sessions. Every input of the `sql` target is logged as `sift_fuzz input`
+before use, so after a backend crash the script prints the input that killed it.
 
 Adding a fuzzer: give it a standalone harness under `tools/<module>/` whose
 Makefile accepts `SANITIZE=1` (or always sanitizes), add a function named after

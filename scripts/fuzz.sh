@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Fuzzers and randomized property harnesses under ASan/UBSan (test/fuzz/README.md).
 #
-#   scripts/fuzz.sh [--scale N] [--seed N] [TARGET...]
+#   scripts/fuzz.sh [--scale N] [--seed N] [--budget SEC] [TARGET...]
 #
 # Targets (default: all): canary codec blob kernels analyze query sql. Standalone
 # harnesses are built sanitized into $SIFT_TMP/fuzz; "query" also replays its
 # corpus through the server, "sql" fuzzes parse_query/tokenize in the server.
 # Server-side targets run against the scripts/pgtest.sh cluster, which should
 # be the ASan flavor (SANITIZE=1 scripts/pgtest.sh install; start). --scale
-# multiplies the smoke-sized iteration counts of analyze, query and sql
-# (default 10; codec and kernels have fixed sizes). Exit 1 on any finding.
+# multiplies the iteration counts of every target (default 10: about 3.5
+# minutes without the server sanitizer). --budget runs scale-1 passes
+# (about 25 s) until SEC seconds have passed, seeded targets with a new seed
+# each pass. Exit 1 on any finding.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,13 +19,14 @@ eval "$("$REPO/scripts/pgtest.sh" env)"
 export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=0
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$TMP/fuzz
-SCALE=10 SEED=1
+SCALE=10 SEED=1 BUDGET=0
 SAN='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all'
 while [[ ${1:-} == --* ]]; do
-	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; *) sed -n '2,13p' "$0"; exit 1 ;; esac
+	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,15p' "$0"; exit 1 ;; esac
 	shift 2
 done
 TARGETS=("${@:-canary codec blob kernels analyze query sql}")
+(( BUDGET == 0 )) || SCALE=1
 
 q() { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 asan_server() { [[ $(cat "$SIFT_ROOT/.flavor" 2>/dev/null) == asan* ]]; }
@@ -44,7 +47,7 @@ canary() {
 }
 
 codec() {
-	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/test" && "$OUT/codec/test"
+	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/test" && "$OUT/codec/test" $((300 * SCALE))
 }
 
 blob() {
@@ -52,7 +55,8 @@ blob() {
 }
 
 kernels() {
-	build -C "$REPO/tools/kernels" SANITIZE=1 OUT="$OUT/kernels" "$OUT/kernels/test" && "$OUT/kernels/test"
+	build -C "$REPO/tools/kernels" SANITIZE=1 OUT="$OUT/kernels" "$OUT/kernels/test" &&
+		"$OUT/kernels/test" "$(awk -v s="$SCALE" 'BEGIN { print s / 5 }')"
 }
 
 analyze() {
@@ -84,14 +88,24 @@ mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_fuzz WITH (FORCE)" -c "CREATE DATABASE sift_fuzz"
 q -c "CREATE EXTENSION sift"
 status=0
-for t in ${TARGETS[*]}; do
-	echo "== fuzz $t"
-	if "$t" 2>&1 | tail -25; then
-		echo "PASS fuzz $t"
-	else
-		echo "FAIL fuzz $t"
-		status=1
-	fi
+run() {
+	local t
+	for t in "$@"; do
+		echo "== fuzz $t (seed $SEED)"
+		if "$t" 2>&1 | tail -25; then
+			echo "PASS fuzz $t"
+		else
+			echo "FAIL fuzz $t"
+			status=1
+		fi
+	done
+}
+deadline=$((SECONDS + BUDGET))
+run ${TARGETS[*]}
+seeded=$(printf '%s\n' ${TARGETS[*]} | grep -x -E 'blob|analyze|query|sql' || true)
+while [[ -n $seeded ]] && (( SECONDS < deadline && status == 0 )); do
+	SEED=$((SEED + 1))
+	run $seeded
 done
 if asan_server; then
 	"$REPO/scripts/pgtest.sh" sanitizer-report || { echo "FAIL server sanitizer reports"; status=1; }
