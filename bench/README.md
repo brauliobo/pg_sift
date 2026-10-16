@@ -78,13 +78,13 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and sha1, GeoNames date and sha256 (GeoNames
 regenerates its files daily and keeps no archive, so a mismatch only warns; the places, and the numbers, then differ
 slightly), pg_search 0.26.1, pg_textsearch 1.5.1 (tag v1.5.1 of timescale/pg_textsearch, commit and tarball sha256),
-rum 1.3.15 (tag of postgrespro/rum), PostgreSQL major. sift is built from the checkout
+rum 1.3.15 (tag of postgrespro/rum, tarball sha256), PostgreSQL major. sift is built from the checkout
 (`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
-Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add its id to `ALL_ENGINES` in `bench`, a
-`fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`), and its name
-to `NAME` and `ORDER` in `steps/tables.py`. For places add the setup, index and statements to the `SETUP`, `INDEX` and
+Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add a line (id, labels, chart color) to
+`engines.tsv`, which sets the engine list of `bench`, `steps/ab.sh`, `steps/tables.py` and `steps/charts.py` and the order of every
+table and chart, and a `fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`). For places add the setup, index and statements to the `SETUP`, `INDEX` and
 `stmt` tables of `steps/places.sh`.
 
 ## Datasets
@@ -125,6 +125,7 @@ stays in the cache. Per-tier cluster, port and dump:
 |---|---|
 | `bench` | the entry point: `bench/bench --help` |
 | `versions.env` | every pinned version, date and checksum |
+| `engines.tsv` | the A/B engines in table order: id, chart and Markdown labels, chart color |
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
