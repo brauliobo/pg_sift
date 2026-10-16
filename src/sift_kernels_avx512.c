@@ -75,6 +75,49 @@ bm25_accum_avx512(float4 *scores, const uint64 *mask, int npages, const uint8 *t
 		bm25_accum_tmpl(scores, mask, npages, tf, knorm, w, true);
 }
 
+/* The lanes of the chunk at slot s that cand keeps */
+K512 uint32
+chunk_cand(const uint64 *cand, int s, uint32 k)
+{
+	return k & (uint16) (cand[s >> 6] >> (s & 63));
+}
+
+static SIFT_TARGET_AVX512 int
+bm25_sel_avx512(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
+				const float4 *knorm, float4 w)
+{
+	const __m512 vw = _mm512_set1_ps(w),
+				one = _mm512_set1_ps(1.0f);
+	int			r = 0;
+
+	FOREACH_CHUNK(mask, npages, s, k,
+				  uint32 kc = chunk_cand(cand, s, k);
+				  if (kc)
+				  {
+					  __m512 t = tf ? chunk_tf(tf + r, k) : one;
+					  __m512 x = _mm512_maskz_div_ps(kc, t, _mm512_maskz_add_ps(kc, t, _mm512_load_ps(knorm + s)));
+					  __m512 sc = _mm512_maskz_add_ps(kc, _mm512_load_ps(scores + s), _mm512_mul_ps(vw, x));
+
+					  _mm512_mask_store_ps(scores + s, kc, sc);
+				  }
+				  r += __builtin_popcount(k));
+	return r;
+}
+
+static SIFT_TARGET_AVX512 int
+prune_gt_avx512(uint64 *cand, const float4 *scores, int npages, float4 thr)
+{
+	const __m512 th = _mm512_set1_ps(thr);
+	int			n = 0;
+
+	FOREACH_CHUNK(cand, npages, s, k,
+				  uint32 g = _mm512_mask_cmp_ps_mask(k, _mm512_load_ps(scores + s), th, _CMP_GT_OQ);
+
+				  cand[s >> 6] ^= (uint64) (k ^ g) << (s & 63);
+				  n += __builtin_popcount(g));
+	return n;
+}
+
 static SIFT_TARGET_AVX512 void
 knorm_avx512(float4 *knorm, const uint16 *const *dl, const uint64 *mask, int npages,
 			 const SiftBm25 *bm)
@@ -183,6 +226,8 @@ const SiftKernels sift_kernels_avx512 = {
 	.tf_decode = tf_decode_avx512,
 	.knorm = knorm_avx512,
 	.bm25_accum = bm25_accum_avx512,
+	.bm25_sel = bm25_sel_avx512,
+	.prune_gt = prune_gt_avx512,
 	.max_merge = max_merge_avx512,
 	.ub_accum = ub_accum_avx512,
 	.select_gt = select_gt_avx512,

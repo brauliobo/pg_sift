@@ -43,6 +43,7 @@
 #include "sift_store.h"
 
 #define SIFT_BLKBOUND_MIN		32	/* postings in a group to store blk_bound[] */
+#define SIFT_SPAN_MIN_DF		1024	/* LIST postings from which sift_post_bounds may skip decoding */
 
 /*
  * df from which terms are GROUPED (bitmaps) rather than LIST (docs/CODEC.md 4). Terms of 8K to 64K postings
@@ -133,7 +134,9 @@ typedef struct SiftGroupBounds
 /*
  * All group bounds of the term without decoding offsets (UB pass); array
  * valid for the cursor's lifetime. LIST and inline terms return one entry
- * per group touched, all at max_bound.
+ * per group touched, all at max_bound; a LIST term with more than
+ * SIFT_SPAN_MIN_DF postings and a posting per group on average returns
+ * every group from its first to its last without reading the postings.
  */
 extern const SiftGroupBounds *sift_post_bounds(SiftPostingCursor *c, int *n);
 

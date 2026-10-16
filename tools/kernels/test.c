@@ -188,6 +188,39 @@ check_mask_kernels(Rng *r)
 			FAIL("bm25_accum mismatch on %s\n", tabs[t].name);
 	}
 
+	/* bm25_sel and prune_gt on a random subset of the slots (cand may reach past mask) */
+	{
+		uint64		cand[MAXPAGES * 8],
+					cref[MAXPAGES * 8],
+					cout[MAXPAGES * 8];
+		int			nref;
+		float4		thr = (float4[]) {-INFINITY, INFINITY, 0, 5e4f, sc0[rng_below(r, nslots)]}[rng_below(r, 5)];
+
+		for (int i = 0; i < npages * 8; i++)
+			cand[i] = rng_below(r, 4) ? (rng_next(r) & (mask[i] | rng_next(r))) : mask[i];
+		memcpy(ref, sc0, nslots * 4);
+		if (sift_kernels_scalar.bm25_sel(ref, mask, cand, npages, tf1 ? NULL : tf, kn, w) != pop)
+			FAIL("bm25_sel scalar count\n");
+		for (int s = 0; s < nslots; s++)
+			if (!(mask[s / 64] >> (s % 64) & 1 && cand[s / 64] >> (s % 64) & 1) && memcmp(&ref[s], &sc0[s], 4))
+				FAIL("bm25_sel scalar touched slot %d\n", s);
+		memcpy(cref, cand, sizeof(cref));
+		nref = sift_kernels_scalar.prune_gt(cref, sc0, npages, thr);
+		for (int s = 0; s < nslots; s++)
+			if ((cref[s / 64] >> (s % 64) & 1) != ((cand[s / 64] >> (s % 64) & 1) && sc0[s] > thr))
+				FAIL("prune_gt scalar slot %d\n", s);
+		for (int t = 1; t < ntabs; t++)
+		{
+			memcpy(out, sc0, nslots * 4);
+			if (tabs[t].k->bm25_sel(out, mask, cand, npages, tf1 ? NULL : tf, kn, w) != pop ||
+				memcmp(out, ref, nslots * 4))
+				FAIL("bm25_sel mismatch on %s\n", tabs[t].name);
+			memcpy(cout, cand, sizeof(cout));
+			if (tabs[t].k->prune_gt(cout, sc0, npages, thr) != nref || memcmp(cout, cref, npages * 8 * 8))
+				FAIL("prune_gt mismatch on %s\n", tabs[t].name);
+		}
+	}
+
 	/* max_merge */
 	memcpy(ref, sc0, nslots * 4);
 	sift_kernels_scalar.max_merge(ref, other, mask, npages);
