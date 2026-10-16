@@ -317,7 +317,7 @@ Canonical masks (contract 6) are provided by `sift_chunk_offsets` and `sift_offm
 - Bitmap blobs of frequent terms average about 1.4 B per posting.
 - Memory-resident scans reach about 15 % of one core's streaming bandwidth. They are bound by per-group latency (directory seek, page-mask alignment, about 100 to 300 B of payload per group), not by DRAM bandwidth.
 - Software prefetch of the following groups' payload helped by up to +55 % in one A/B, but the gain was not reproducible on the loaded machine.
-- Parallel scans over SB morsels (DESIGN.md item 9) should scale nearly linearly until bandwidth is reached.
+- Parallel scans over SB morsels (DESIGN.md item 9, `sift.parallel_scan`) were expected to scale nearly linearly until bandwidth is reached; at 218,058 articles the Gather start-up dominates and only unordered scans with a heavy residual qual gained, which is why they are off by default.
 
 ### 5.6 tf side stream
 
