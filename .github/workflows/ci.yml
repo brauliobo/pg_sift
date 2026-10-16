@@ -115,3 +115,16 @@ jobs:
             ${{ runner.temp }}/sift-ci/logs
             test/regression.diffs
           if-no-files-found: ignore
+
+  # one container per node (primary, standby, subscriber): separate filesystems and installs of the extension
+  replication:
+    name: Replication in containers (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [postgres:17, postgres:18]
+    steps:
+      - uses: actions/checkout@v4
+      - run: PG_IMAGE=${{ matrix.image }} scripts/replication.sh --container

@@ -15,20 +15,10 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" "IN
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
 	"CREATE TABLE r (v int)" "CREATE INDEX r_idx ON r USING sift_store_test (v)" >/dev/null || bail "setup failed"
 
-S=$(dir standby)
-node_stop standby
-rm -rf "$S"
-mkdir -p "$S/sock"
-echo 3 >"$S/offset"
-NODES+=(standby)
-pg_basebackup -h "$(dir primary)/sock" -p "$(port primary)" -U postgres -D "$S/data" -R -X stream -c fast ||
-	bail "pg_basebackup failed"
-node_conf standby "port = $(port standby)
-unix_socket_directories = '$S/sock'
-hot_standby = on
-hot_standby_feedback = off
+node_clone primary standby 3 "hot_standby_feedback = off
 wal_receiver_status_interval = 1s
 max_standby_streaming_delay = -1"
+S=$(dir standby)
 node_start standby || bail "standby start failed"
 ok "standby streaming from a base backup"
 

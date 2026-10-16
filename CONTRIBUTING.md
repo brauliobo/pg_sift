@@ -11,6 +11,8 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56169, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
+`scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
+`scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
 `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
 
