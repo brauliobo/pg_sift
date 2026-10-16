@@ -8,6 +8,9 @@
 set -uo pipefail
 export LC_ALL=C
 
+# knob VAR FULL QUICK: $VAR when set, else FULL, or QUICK under SIFT_QUICK=1 (scripts/ci.sh quick)
+knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
+
 TAPDIR=${SIFT_TMP:?}/tap
 ROOT=${SIFT_ROOT:?run through scripts/pgtest.sh tap}
 SHAREDIR=$ROOT$(pg_config --sharedir)
@@ -56,6 +59,7 @@ unix_socket_directories = '$d/sock'
 extension_control_path = '$SHAREDIR:\$system'
 dynamic_library_path = '$PKGLIBDIR:\$libdir'
 fsync = off
+max_wal_size = 256MB
 restart_after_crash = off
 shared_buffers = 128MB
 max_connections = 60

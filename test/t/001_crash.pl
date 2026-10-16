@@ -8,6 +8,8 @@ use lib $FindBin::RealBin;
 use SiftTest;
 use Test::More;
 
+my $rows = knob('SIFT_ROWS', 60000, 20000);
+my $torn = knob('SIFT_TORN_ROWS', 300000, 100000);
 my $node = sift_node('crash');
 $node->start;
 install_sift($node);
@@ -18,7 +20,7 @@ for my $am (ams())
 	subtest "$n: crash during build, maintenance and vacuum" => sub {
 		my ($t, $idx) = ("crash_$n", "crash_${n}_idx");
 		my $hits = 0;
-		load_corpus($node, $t, 60000);
+		load_corpus($node, $t, $rows);
 
 		for my $delay (0, 100)
 		{
@@ -30,7 +32,7 @@ for my $am (ams())
 		agree($node, $am, $t, 'rebuilt after crashed builds');
 
 		# a bulk insert through aminsert, killed mid-flight: its rows must vanish from the index with the abort
-		$hits += crash_during($node, "INSERT INTO $t SELECT g, 'w6 rare torn ' || g FROM generate_series(300001, 600000) g", 150);
+		$hits += crash_during($node, "INSERT INTO $t SELECT g, 'w6 rare torn ' || g FROM generate_series(300001, 300000 + $torn) g", 150);
 		$node->safe_psql('postgres', $am->{verify}->($idx));
 		agree($node, $am, $t, 'crash in insert');
 

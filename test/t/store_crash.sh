@@ -5,11 +5,11 @@
 # segment reads back byte-exact, the unlogged index is reset from its init
 # fork, and the sweep reclaims every orphan; freed space is reused, so the
 # node stays below SIFT_CRASH_MAX_MB (default 4096). SIFT_CRASH_ITERS
-# (default 100).
+# (default 100, 10 quick).
 . "$(dirname "$0")/lib.bash"
 
-ITERS=${SIFT_CRASH_ITERS:-100}
-MAX_MB=${SIFT_CRASH_MAX_MB:-4096}
+ITERS=$(knob SIFT_CRASH_ITERS 100 10)
+MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
 plan $((ITERS + 1))
 node_init crash 1 "checkpoint_timeout = 30s
 max_wal_size = 256MB"

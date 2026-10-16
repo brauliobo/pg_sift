@@ -14,9 +14,9 @@ use IPC::Run;
 use PostgreSQL::Test::Cluster;
 use Test::More;
 
-my $secs = $ENV{SIFT_TAP_SECONDS} // 12;
+my $secs = knob('SIFT_TAP_SECONDS', 12, 5);
 my ($t, $idx) = ('wc', 'wc_idx');
-my $sift = (ams())[1];
+my $sift = sift_am();
 
 my $primary = sift_node('wc_primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', "wal_consistency_checking = 'generic'\nshared_buffers = 64MB");
@@ -75,10 +75,11 @@ my $standby = PostgreSQL::Test::Cluster->new('wc_standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
 $standby->start;
 
+my $start_lsn = $primary->lsn('insert');
 my $w = workload($primary, $secs);
 $w->{handle}->finish;
 $primary->safe_psql('postgres', 'CREATE EXTENSION pg_walinspect');
-cmp_ok($primary->safe_psql('postgres', "SELECT coalesce(sum(count), 0) FROM pg_get_wal_stats(pg_current_wal_lsn() - 33554432, pg_current_wal_lsn())"
+cmp_ok($primary->safe_psql('postgres', "SELECT coalesce(sum(count), 0) FROM pg_get_wal_stats('$start_lsn', pg_current_wal_lsn())"
 	. q{ WHERE "resource_manager/record_type" LIKE 'Generic%'}), '>', 100, 'the workload wrote Generic WAL records');
 note("pgbench: " . (${ $w->{out} } =~ s/\n/ /gr) . " " . ${ $w->{err} });
 $primary->wait_for_catchup($standby);

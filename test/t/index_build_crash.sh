@@ -3,10 +3,11 @@
 # after a committed build (before any checkpoint), then crash recovery:
 # an interrupted build leaves no index, a committed one replays from WAL and
 # passes sift.verify with the same postings, the UNLOGGED index is reset to
-# an empty one. SIFT_CRASH_ITERS (default 5).
+# an empty one. SIFT_CRASH_ITERS (default 5, 3 quick), SIFT_ROWS (200000, 80000 quick).
 . "$(dirname "$0")/lib.bash"
 
-ITERS=${SIFT_CRASH_ITERS:-5}
+ITERS=$(knob SIFT_CRASH_ITERS 5 3)
+ROWS=$(knob SIFT_ROWS 200000 80000)
 plan $((2 * ITERS + 1))
 node_init build 1 "checkpoint_timeout = 1h
 max_wal_size = 4GB
@@ -15,7 +16,7 @@ node_start build || bail "start failed"
 sql build "CREATE EXTENSION sift_test CASCADE" \
 	"SELECT setseed(0.5)" \
 	"CREATE TABLE z AS SELECT i AS id, 'all ' || (SELECT string_agg('w' || floor(exp(random() * ln(30000)))::int, ' ')
-		FROM generate_series(1, 1 + (random() * 50)::int + i % 2)) AS body FROM generate_series(1, 200000) i" \
+		FROM generate_series(1, 1 + (random() * 50)::int + i % 2)) AS body FROM generate_series(1, $ROWS) i" \
 	"CREATE UNLOGGED TABLE u AS SELECT * FROM z WHERE id % 10 = 0" \
 	"CHECKPOINT" >/dev/null || bail "setup failed"
 ok "setup"
