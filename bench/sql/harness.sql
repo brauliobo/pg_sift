@@ -1,6 +1,8 @@
 -- Engine-independent query rendering. Each engine adapter defines
 --   bench_pred(mode, terms) -> boolean SQL over docs (NULL = mode unsupported as a filter)
 --   bench_rank(mode, terms) -> ORDER BY expression incl. direction (NULL = no top-k)
+--   bench_source(mode, terms) -> FROM item of ranked statements, aliased docs, when the engine needs another shape
+--                                than `docs WHERE bench_pred` (NULL = that one)
 -- Modes: and | or | phrase | not (all terms but the last, minus the last term) | prefix (term*) |
 -- fuzzy (edit distance 1). Unsupported modes must render NULL in both functions.
 
@@ -24,7 +26,8 @@ DECLARE
     WHEN 'filter' THEN format('docs.created >= %L', (SELECT v FROM params WHERE k = 'recent_cutoff'))
     WHEN 'join'   THEN 'categories.region = 3'
   END;
-  conds text := concat_ws(' AND ', pred, extra);
+  src text := CASE WHEN ranked THEN bench_source(mode, terms) END;
+  conds text := concat_ws(' AND ', CASE WHEN src IS NULL THEN pred END, extra);
 BEGIN
   IF (ranked AND rank IS NULL) OR (NOT ranked AND pred IS NULL) THEN
     RETURN NULL;
@@ -32,7 +35,7 @@ BEGIN
   RETURN CASE kind
     WHEN 'count' THEN 'SELECT count(*) FROM docs WHERE ' || pred
     WHEN 'match' THEN 'SELECT docs.id FROM docs WHERE ' || pred
-    ELSE 'SELECT docs.id FROM docs'
+    ELSE 'SELECT docs.id FROM ' || coalesce(src, 'docs')
       || CASE kind WHEN 'join' THEN ' JOIN categories ON categories.id = docs.category_id' ELSE '' END
       || CASE WHEN conds <> '' THEN ' WHERE ' || conds ELSE '' END
       || ' ORDER BY ' || rank || ' LIMIT 10'

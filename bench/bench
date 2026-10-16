@@ -11,7 +11,7 @@ usage() {
   cat <<'EOF'
 Usage: bench/bench COMMAND [options]
 
-Benchmarks sift against ParadeDB pg_search (and rum) on two public datasets, the engines interleaved cell by
+Benchmarks sift against ParadeDB pg_search, pg_textsearch (and rum) on two public datasets, the engines interleaved cell by
 cell on one throwaway PostgreSQL 18 cluster so host load drifts hit all of them alike.
 
 Commands
@@ -22,8 +22,7 @@ Commands
   charts     draw the SVG charts of docs/img from the committed bench/results/*.tsv (stdlib python, deterministic)
   all        setup, run and report in one go (the clean-checkout reproduction)
   cold       like run, but every query starts with the index and heap evicted from the caches
-  check      correctness (check, suite, workload and workers start the tier's cluster, load the corpus if needed and
-             leave it running; `clean` stops it): `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
+  check      correctness: `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
              `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25
   suite      standard multi-engine suite on articles (gin rum pg_textsearch bm25 pg_search sift tantivy
              elasticsearch): `suite [ENGINE...]`, one tier, small tables via steps/report.sh
@@ -34,6 +33,9 @@ Commands
   machine    print the machine and engine description (CPU, RAM, kernel, PostgreSQL, versions, load)
   clean      destroy the clusters and remove scratch; `clean --all` also removes datasets, dumps and engines
 
+check, suite, workload and workers start the tier's cluster, load the corpus if needed and leave it running; `clean`
+stops it.
+
 Options (not every option applies to every command)
   --tier T          quick | ab | full (default quick, the reduced scale)
                       quick  25,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of 1 s cells:
@@ -42,8 +44,8 @@ Options (not every option applies to every command)
                       full   218,058 articles (all), cities500 (236,262 places), 4-6 rounds: about 1.5 hours
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
-  --engines LIST    comma separated. run/cold/all: sift sift_pairs (phrase_index = pairs) pg_search rum
-                    (default: all four; places has no sift_pairs). setup: which engines to build.
+  --engines LIST    comma separated. run/cold/all: sift sift_pairs (phrase_index = pairs) pg_search pg_textsearch rum
+                    (default: all five; places has no sift_pairs). setup: which engines to build.
                     An engine whose extension is missing is skipped with a message.
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
   --duration S      seconds per measured cell (defaults: quick 1, ab 3, full 8 for articles; places 1/2/4)
@@ -65,6 +67,7 @@ Environment
   SIFT_BENCH_ROOT   scratch, datasets, dumps and engine builds (default /tmp/sift-bench; 8-15 GB free; a fast
                     disk or tmpfs; clusters, builds and the throwaway databases are removed after each run)
   SIFT_SRC          head | worktree: sift is built from the last commit or the tracked files (default worktree)
+  JOBS              parallel jobs of the engine builds (default 4)
   CPU_QUOTA, MEM_MAX  engine server budget as a cgroup scope when a systemd user session exists (800%, 32G)
   TOL, MINR, MAXR, SECS, WARM, CLIENTS, TIMEOUT, KEEP=1 (keep the cluster), Q_DOCS  see steps/ab.sh, steps/places.sh
   Pinned versions, dump dates and checksums: bench/versions.env
@@ -125,7 +128,7 @@ tier_env() {
   [[ -z $clients ]] || export CLIENTS=$clients
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
-ALL_ENGINES="sift sift_pairs pg_search rum"
+ALL_ENGINES="sift sift_pairs pg_search pg_textsearch rum"
 selected() { # EXCLUDE...: the engines of --engines (default: all) minus the ones the dataset cannot run
   local e
   for e in ${engines:-$ALL_ENGINES}; do

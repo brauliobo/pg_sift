@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Multi-field autocomplete benchmark: sift against ParadeDB pg_search and rum on GeoNames places (name,
+# Multi-field autocomplete benchmark: sift against ParadeDB pg_search, pg_textsearch and rum on GeoNames places (name,
 # alternate names, region, country, feature): 1-4 letter prefixes, whole words, 2-3 word ANDs, name
 # matches boosted x3, top-k by score, filtered and unordered scans, count(*). rum (a tsvector column,
 # `tsv @@ prefix query`, `<=>` ranking, in its own database so the column does not enlarge the others'
-# table) has no per-field boost: its `boost` cells are NA. Engines whose extension is missing are skipped.
+# table) has no per-field boost: its `boost` cells are NA. pg_textsearch (a `bm25` index on the all-fields text, in its
+# own database as its access method has the name of pg_search's) filters by the same prefix tsquery but scores whole
+# terms only, with no prefix scoring and no field boost: its ranked workloads (top, boost, filter) are NA and
+# it runs count and scan. Engines whose extension is missing are skipped.
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
 #
@@ -13,7 +16,7 @@
 # latencies). Rounds stop once every cell's p50 spread is under TOL after MINR.
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt. KEEP=1 keeps the cluster.
-# Env: ENGINES (pg_search sift rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class, not rum)
+# Env: ENGINES (pg_search sift rum pg_textsearch) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class, not rum)
 # TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}
@@ -39,16 +42,19 @@ PGS_TEXT="($TEXT)::pdb.alias('ptext')"; PGS_NAME="($NAME)::pdb.alias('pname')"
 declare -A INDEX=(
   [pg_search]="CREATE INDEX places_pg_search ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
   [sift]="CREATE INDEX places_sift ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3)"
-  [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)")
+  [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)"
+  [pg_textsearch]="CREATE INDEX places_pg_textsearch ON places USING bm25 (($TEXT)) WITH (text_config = 'simple')")
 declare -A SETUP=(
   [pg_search]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
   [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
-  [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED")
-ENGINES=${ENGINES:-pg_search sift rum}
-edb() { [[ $1 == rum ]] && echo places_rum || echo places; }   # rum's stored column lives in a copy of the table
+  [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED"
+  [pg_textsearch]="CREATE EXTENSION IF NOT EXISTS pg_textsearch; ALTER DATABASE places_pg_textsearch SET default_text_search_config = 'pg_catalog.simple'; ALTER DATABASE places_pg_textsearch SET enable_seqscan = off")
+ENGINES=${ENGINES:-pg_search sift rum pg_textsearch}
+# rum's stored column and pg_textsearch's `bm25` access method live in copies of the table
+edb() { case $1 in rum|pg_textsearch) echo "places_$1" ;; *) echo places ;; esac; }
 
 # :q is what the user typed, :sq the same words as sift prefixes ("grand ho" -> "grand* ho*"), :sqb the boosted sift query,
-# :tq the tsquery of rum ('grand':* & 'ho':*)
+# :tq the tsquery of rum and pg_textsearch ('grand':* & 'ho':*)
 stmt() {
   case $1/$2 in
     top/pg_search)    echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q ORDER BY pdb.score(id) DESC LIMIT 20" ;;
@@ -65,6 +71,8 @@ stmt() {
     filter/rum) echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery AND country_code = 'US' ORDER BY ptsv <=> :tq::tsquery LIMIT 20" ;;
     count/rum)  echo "SELECT count(*) FROM places WHERE ptsv @@ :tq::tsquery" ;;
     scan/rum)   echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery AND population >= 100000" ;;
+    count/pg_textsearch) echo "SELECT count(*) FROM places WHERE $TEXT @@ :tq::tsquery" ;;
+    scan/pg_textsearch)  echo "SELECT id FROM places WHERE $TEXT @@ :tq::tsquery AND population >= 100000" ;;
   esac
 }
 # the three query forms of the pq row number :i of a class
@@ -75,14 +83,14 @@ FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s
 
 "$STEPS/cluster.sh" init >/dev/null; "$STEPS/cluster.sh" start >/dev/null
 # sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
-drop_db places; drop_db places_rum
+for e in $ENGINES; do drop_db "$(edb "$e")"; done; drop_db places
 PGDATABASE=postgres q -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
 ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
 [[ $ENGINES == *sift* ]] || { echo "sift is not installed: bench/steps/fetch.sh sift" >&2; exit 1; }
 "$STEPS/machine.sh" >"$DEST/machine.txt"
 q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
 q -c "ANALYZE places"
-[[ $ENGINES != *rum* ]] || PGDATABASE=postgres q -c "CREATE DATABASE places_rum TEMPLATE places"
+for e in $ENGINES; do [[ $(edb "$e") == places ]] || PGDATABASE=postgres q -c "CREATE DATABASE $(edb "$e") TEMPLATE places"; done
 : >"$DEST/builds.tsv"
 for e in $ENGINES; do
   db=$(edb "$e")
@@ -100,7 +108,7 @@ log "built: $(awk '{printf "%s %.1fs %.0fMB; ", $1, $2, $3 / 1048576}' "$DEST/bu
 base() { q -c "SELECT min(id) - 1 FROM pq WHERE class = '$1'"; }
 
 if [[ $what == cold ]]; then
-  ENGINES=${ENGINES/rum/}
+  ENGINES=$(for e in $ENGINES; do [[ $(edb "$e") != places ]] || echo "$e"; done)   # the engines of the shared database
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\n' | tee "$DEST/cold.tsv"
   for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do
     b=$(base "$c")

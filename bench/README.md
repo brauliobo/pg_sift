@@ -1,6 +1,6 @@
 # sift benchmark and correctness harness
 
-Two public datasets, measured on sift, sift with `phrase_index = pairs`, ParadeDB pg_search and rum with the same
+Two public datasets, measured on sift, sift with `phrase_index = pairs`, ParadeDB pg_search, pg_textsearch and rum with the same
 all of them alike. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
 
 | use-case | data | what it exercises |
@@ -31,7 +31,7 @@ checks all of this before it downloads anything.
 
 | command | what it does |
 |---|---|
-| `bench/bench setup` | checks the prerequisites; downloads, verifies and converts the datasets; builds this checkout's sift and the pinned rum (PGXS) and unpacks the pinned pg_search package into `$SIFT_BENCH_ROOT` |
+| `bench/bench setup` | checks the prerequisites; downloads, verifies and converts the datasets; builds this checkout's sift, the pinned rum and pg_textsearch (PGXS) and unpacks the pinned pg_search package into `$SIFT_BENCH_ROOT` |
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory |
 
@@ -39,7 +39,7 @@ The other commands: `charts`, `cold` (cache-evicted latency), `check oracle|rank
 oracle / pgx-bm25), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
-`--dataset articles|places|all`, `--engines sift,sift_pairs,pg_search,rum`, `--clients N`, `--duration S`,
+`--dataset articles|places|all`, `--engines sift,sift_pairs,pg_search,pg_textsearch,rum`, `--clients N`, `--duration S`,
 `--rounds MIN-MAX`, `--out DIR`, `--no-build`, `--no-datasets`.
 
 | tier | articles | places | rounds | expected run time of `all` |
@@ -68,7 +68,7 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 |---|---|
 | `dataset` | `articles`, `places` |
 | `tier` | `quick`, `ab`, `full` |
-| `engine` | `sift`, `sift_pairs` (`phrase_index = pairs`), `pg_search`, `rum`; `-` for host rows |
+| `engine` | `sift`, `sift_pairs` (`phrase_index = pairs`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
 | `variant` | places workload `top boost filter count scan`; `-` otherwise |
 | `metric` | `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
@@ -77,7 +77,8 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 
 Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and sha1, GeoNames date and sha256 (GeoNames
 regenerates its files daily and keeps no archive, so a mismatch only warns; the places, and the numbers, then differ
-slightly), pg_search 0.26.1, rum 1.3.15 (tag of postgrespro/rum), PostgreSQL major. sift is built from the checkout
+slightly), pg_search 0.26.1, pg_textsearch 1.5.1 (tag v1.5.1 of timescale/pg_textsearch, commit and tarball sha256),
+rum 1.3.15 (tag of postgrespro/rum), PostgreSQL major. sift is built from the checkout
 (`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
@@ -163,7 +164,12 @@ one small file.
 `$SIFT_BENCH_ROOT/engines/sift/root`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
 (`simple` configuration) with a `rum_tsvector_ops` index, queried with `@@` and ranked with `<=>`; on places it
 lives in its own database so the column does not enlarge the other engines' table, and it has no per-field boost
-(the `boost` cells are NA). ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
+(the `boost` cells are NA). pg_textsearch is a `bm25` index with `text_config = 'simple'` (the analysis of gin and rum); see its adapter for the
+queries: `@@ tsquery` filters through the index, `ORDER BY body <@> to_bm25query(...)` ranks, a ranked disjunction needs
+no filter, AND and phrase top-k filter through the index in a derived table (the plain form is planned as a sequential
+scan), and the database runs with `enable_seqscan = off` as the extension's README suggests. On places it filters by the
+same prefix tsquery as rum but scores whole terms only, so only the `count` and `scan` workloads run and the ranked ones
+are NA; as its access method is also called `bm25` it lives in its own database next to pg_search. ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
 with the default tokenizer, and `edge_ngram(1, 15)` on the places name and all-fields text.
 
 External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
@@ -201,10 +207,13 @@ bench/bench remote clean                     # keep dumps; `clean all` removes ~
 
 ```sh
 bench/bench check --tier ab oracle sift 200                        # accent + case folding, no stemming (default)
-ORACLE_ACCENTS=keep ORACLE_TOKENS=pg bench/bench check --tier ab oracle gin 200   # engines using the PG parser
+bench/bench check --tier ab oracle pg_textsearch 200               # gin, rum and pg_textsearch: raw PG parser tokens (their adapters set it)
 MODES="phrase not" REBUILD=1 bench/bench check --tier ab oracle sift 50
 bench/bench check --tier ab rank sift 200                          # top-10 overlap with pgx-bm25 per mode
 ```
+
+The rank check is soft: pgx-bm25 is the reference, it tokenizes alphanumeric runs while pg_textsearch (and rum, gin) use the PG
+parser, and pg_textsearch scores a query as a bag of terms; expect overlaps below 1 for pg_textsearch.
 
 `oracle` builds the engine index in `o_<engine>` (reused unless `REBUILD=1`) and an oracle `oracle_tsv`
 table (`to_tsvector` with a `simple`-based configuration, `unaccent` when `ORACLE_ACCENTS=fold`,
@@ -212,7 +221,7 @@ table (`to_tsvector` with a `simple`-based configuration, `unaccent` when `ORACL
 with the oracle and prints a summary plus every mismatch. Exit status is 1 on any mismatch; the report is
 saved as `bench/out/<tier letter>/oracle-<engine>.txt`. By default the oracle text is split into alphanumeric
 runs first (`ORACLE_TOKENS=split`), the tokenization of sift, because the PG parser keeps `Force.In`, `a@b.c` or
-`1.5` as one token; `ORACLE_TOKENS=pg` uses the PG parser as is (gin, rum). tsvector positions saturate at 16383, so
+`1.5` as one token; `ORACLE_TOKENS=pg` uses the PG parser as is (gin, rum, pg_textsearch, whose adapters select it). tsvector positions saturate at 16383, so
 phrases are not compared in the few documents longer than that.
 
 ## Cleanup

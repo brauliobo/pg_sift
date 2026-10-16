@@ -34,6 +34,7 @@ echo "os: $(os)"
 echo "bench root: $(stat -f -c %T "$ROOT") (free: $(df -h --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -d ' '))"
 echo "postgres: $(pg_config --version)"
 echo "engine budget: $([[ $BUDGET_ENFORCED == yes ]] && echo "cgroup scope CPUQuota=${CPU_QUOTA:-800%} MemoryMax=${MEM_MAX:-32G}" || echo "not enforced (no systemd user session)")"
-echo "engines: sift $(ext_version pg_sift) ($(sift_commit)), pg_search $(ext_version pg_search) ($(ext_origin pg_search); pinned $PARADEDB_VERSION), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)"
+echo "engines: sift $(ext_version pg_sift) ($(sift_commit)), pg_search $(ext_version pg_search) ($(ext_origin pg_search); pinned $PARADEDB_VERSION)," \
+  "pg_textsearch $(ext_version pg_textsearch) ($(ext_origin pg_textsearch); pinned tag v$PG_TEXTSEARCH_VERSION, commit ${PG_TEXTSEARCH_COMMIT:0:12}), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)"
 echo "sift commit: $(sift_commit)"
 echo "load average at start: $(cut -d' ' -f1-3 /proc/loadavg)"

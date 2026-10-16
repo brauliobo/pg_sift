@@ -18,13 +18,14 @@ directory), TIER quick, ab or full. --engines keeps only those engine ids. Write
   builds.tsv    dataset tier engine setup_s build_s index_bytes heap_growth_bytes (unrounded)
   tables.md     the same as Markdown tables, index size and build time next to the throughput / latency
 
---per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (bench/results/).
-Engine ids: sift, sift_pairs (phrase_index = pairs), pg_search, rum.
+--per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (bench/results/); the rows of the
+dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay.
+Engine ids: sift, sift_pairs (phrase_index = pairs), pg_search, pg_textsearch, rum.
 """
 import collections, os, statistics as st, sys
 
-NAME = {'sift': 'sift', 'sift_pairs': 'sift `pairs`', 'pg_search': 'pg_search', 'rum': 'rum'}
-ORDER = ['sift', 'sift_pairs', 'pg_search', 'rum']
+NAME = {'sift': 'sift', 'sift_pairs': 'sift `pairs`', 'pg_search': 'pg_search', 'pg_textsearch': 'pg_textsearch', 'rum': 'rum'}
+ORDER = list(NAME)
 MIB = 1048576
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit (tab separated; NA = the engine cannot run the class, error = the statement failed; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit'
@@ -182,7 +183,9 @@ def main(argv):
     if per:
         os.makedirs(per, exist_ok=True)
         for d in dict.fromkeys(r[0] for r in rows):
-            write('%s/%s.tsv' % (per, d), [r for r in rows if r[0] == d])
+            path = '%s/%s.tsv' % (per, d)
+            kept = [tuple(r) for r in rows_of(path, skip_header=False)[2:] if (r[0], r[1]) not in tiers] if os.path.exists(path) else []
+            write(path, [r for r in rows if r[0] == d] + [r for r in kept if r[0] == d])
     with open(outdir + '/builds.tsv', 'w') as f:
         f.write('dataset\ttier\tengine\tsetup_s\tbuild_s\tindex_bytes\theap_growth_bytes\n')
         for b in builds:
