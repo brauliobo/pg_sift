@@ -383,6 +383,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	double		divisor = parallel_divisor(nworkers),
 				pass,
 				verify;
+	bool		limited;
 	Cost		dict,
 				postings,
 				startup;
@@ -409,9 +410,16 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 		}
 		verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
 	}
-	startup = dict + (postings + (mode == SIFT_MODE_RANKED && k > 0 ? verify : 0)) / divisor;
+	limited = mode == SIFT_MODE_RANKED && k > 0;
+	startup = dict + (postings + (limited ? verify : 0)) / divisor;
 	cp->path.startup_cost = startup;
-	cp->path.total_cost = mode == SIFT_MODE_RANKED && k > 0 ? startup + cp->path.rows * cpu_tuple_cost : startup + verify / divisor;
+	cp->path.total_cost = limited ? startup + cp->path.rows * cpu_tuple_cost : startup + verify / divisor;
+	/*
+	 * Drained past its k rows (a Sort over a plain Gather, which also loses the scan's tie order)
+	 * a parallel ranked scan ranks every match: that is its total cost
+	 */
+	if (limited && nworkers > 0)
+		cp->path.total_cost = dict + (postings + sc.docs * sc.tuple) / divisor;
 	return cp;
 }
 
@@ -597,6 +605,21 @@ add_parallel_count(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 												  AGGSPLIT_FINAL_DESERIAL, NIL, NIL, &final_costs, 1));
 }
 
+/* A Sort over a plain Gather of a parallel ranked scan: it drains the scan and breaks its tie order */
+static bool
+sorted_gather_of_ranked(Path *path)
+{
+	Path	   *sub;
+
+	if (!IsA(path, SortPath) || !IsA(((SortPath *) path)->subpath, GatherPath))
+		return false;
+	sub = ((GatherPath *) ((SortPath *) path)->subpath)->subpath;
+	while (IsA(sub, ProjectionPath))
+		sub = ((ProjectionPath *) sub)->subpath;
+	return IsA(sub, CustomPath) && ((CustomPath *) sub)->methods == &sift_scan_path_methods && sub->parallel_aware &&
+		DatumGetInt32(lsecond_node(Const, ((CustomPath *) sub)->custom_private)->constvalue) == SIFT_MODE_RANKED;
+}
+
 static void
 sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
 				 void *extra)
@@ -608,6 +631,10 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
+	if (stage == UPPERREL_ORDERED)
+		foreach_ptr(Path, p, list_copy(output_rel->pathlist))
+			if (sorted_gather_of_ranked(p))
+				output_rel->pathlist = list_delete_ptr(output_rel->pathlist, p);
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_count || sift_catalog()->am == InvalidOid ||
 		!parse->hasAggs || parse->groupClause != NIL || parse->groupingSets != NIL || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->havingQual != NULL || parse->commandType != CMD_SELECT ||
