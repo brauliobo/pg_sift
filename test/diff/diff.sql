@@ -477,6 +477,8 @@ DECLARE
 	bad bigint;
 	other bigint;
 BEGIN
+	-- the reference checks itself without the expansion limit, as check() compares results
+	PERFORM set_config('sift_ref.max_expansions', '1000000000', true);
 	FOREACH stage IN ARRAY ARRAY['verify', 'stats', 'tokenize', 'refself'] LOOP
 		CONTINUE WHEN NOT real_engine AND stage <> 'refself';
 		BEGIN
