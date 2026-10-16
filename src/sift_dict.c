@@ -190,6 +190,13 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
 			for (uint32 i = 0; i < info->df; i++)
 				*p++ = info->inline_tf[i];
+		if (info->flags & SIFT_TERM_POS)
+		{
+			p = put_varint(p, info->pos_len);
+			appendBinaryStringInfo(&w->blk, (const char *) e, p - e);
+			p = e;
+			appendBinaryStringInfo(&w->blk, (const char *) info->inline_pos, info->pos_len);
+		}
 	}
 	else
 	{
@@ -197,6 +204,8 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 		p = put_varint(p, info->post_len - info->codec_len);
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
 			p = put_varint(p, info->nnib);
+		if (info->flags & SIFT_TERM_POS)
+			p = put_varint(p, info->pos_len);
 		w->post_end = info->post_off + info->post_len;
 	}
 	appendBinaryStringInfo(&w->blk, e, p - e);
@@ -348,7 +357,7 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
-			corrupt("Inline term with df %u.", info->df);
+			corrupt("Inline term with df %u and flags %u.", info->df, info->flags);
 		it->p = get_varint(it->p, it->end, &v);
 		info->inline_keys[0] = v;
 		if (info->df > 1)
@@ -365,6 +374,15 @@ block_next(BlockIter *it, SiftTermInfo *info)
 			memcpy(info->inline_tf, it->p, info->df);
 			it->p += info->df;
 		}
+		if (info->flags & SIFT_TERM_POS)
+		{
+			it->p = get_varint(it->p, it->end, &v);
+			if (v == 0 || (uint64) (it->end - it->p) < v)
+				corrupt("Truncated inline positions.");
+			info->pos_len = v;
+			info->inline_pos = it->p;
+			it->p += v;
+		}
 		return true;
 	}
 	it->p = get_varint(it->p, it->end, &v);
@@ -377,6 +395,13 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	{
 		it->p = get_varint(it->p, it->end, &v);
 		info->nnib = v;
+	}
+	if (info->flags & SIFT_TERM_POS)
+	{
+		it->p = get_varint(it->p, it->end, &v);
+		if (v == 0 || v > info->post_len - info->codec_len)
+			corrupt("Position stream of %llu bytes in a term blob of %u.", (unsigned long long) v, info->post_len);
+		info->pos_len = v;
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;

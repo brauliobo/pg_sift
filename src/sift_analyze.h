@@ -89,6 +89,8 @@ typedef struct SiftTermFreq
 	uint16		len;
 	uint8		tf;				/* saturated at SIFT_MAX_TF */
 	uint32		hash;			/* sift_term_hash(term, len) */
+	const uint8 *pos;			/* word terms with positions enabled: the occurrences, see sift_analyze_doc; else NULL */
+	uint32		poslen;			/* bytes at pos */
 } SiftTermFreq;
 
 /* Cursor of sift_analyze_next(); fields are private */
@@ -161,6 +163,14 @@ extern int	sift_analyze_tokens(SiftAnalyzer *a, const char *text, int len, SiftT
  */
 extern void sift_analyze_begin(SiftTokenStream *ts, const char *text, int len);
 extern bool sift_analyze_next(SiftAnalyzer *a, SiftTokenStream *ts, SiftToken *tok);
+
+/*
+ * Positions in sift_analyze_doc's bag (off by default): every word term, not the synthetic ones,
+ * also carries its occurrences as a record of varints, the unit of the on-disk position streams
+ * (sift_posting.h): first << 1 | (n > 1), then n - 2 when n > 1, then the n - 1 gaps minus one;
+ * a position is the token's ordinal, as in sift_analyze_tokens.
+ */
+extern void sift_analyzer_set_positions(SiftAnalyzer *a, bool on);
 
 /*
  * Bag of distinct terms for indexing: *out sorted by (hash, bytes), *dl =

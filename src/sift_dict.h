@@ -5,10 +5,11 @@
  *   u16 block bytes, u8 nterms, varint post_base (offset of the block's first
  *   term blob), then per term: u8 shared prefix, u8 suffix length, suffix,
  *   varint df, u8 flags, u8 max_bound, and either the inline postings
- *   (varint key0 [, varint key1 - key0], tf bytes unless SIFT_TERM_ALL_TF1)
+ *   (varint key0 [, varint key1 - key0], tf bytes unless SIFT_TERM_ALL_TF1,
+ *   then if SIFT_TERM_POS varint pos_len and the position records of the postings)
  *   or varint post_len, varint post_len - codec_len, [varint nnib unless
- *   SIFT_TERM_ALL_TF1]. Term blobs follow each other in term order, each at
- *   the next 4-byte aligned offset, so post_off is implied.
+ *   SIFT_TERM_ALL_TF1] [varint pos_len if SIFT_TERM_POS]. Term blobs follow each other in term
+ *   order, each at the next 4-byte aligned offset, so post_off is implied.
  * DICTIDX: SiftDictIdx per block; every 256th prefix forms the root array
  * (u64[dictroot_n]) kept in memory with the opened dictionary. A lookup
  * touches the root array, <= 1 DICTIDX page (binary search) and one block.
@@ -23,10 +24,12 @@
 #define SIFT_DICT_BLOCK			32
 #define SIFT_DICT_ROOT_FANOUT	256
 #define SIFT_INLINE_MAX			2	/* df <= this: postings inline in the entry */
+#define SIFT_INLINE_POS_MAX		256	/* longer position records are dropped: a dictionary block stays under 64 KB */
 
 #define SIFT_TERM_SPARSE		0x01	/* LIST codec blob (no group scores) */
 #define SIFT_TERM_INLINE		0x02	/* postings in inline_keys/inline_tf */
 #define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
+#define SIFT_TERM_POS			0x08	/* the postings have position records (sift_posting.h): at the end of the term blob, or inline */
 
 typedef struct SiftTermInfo
 {
@@ -38,6 +41,8 @@ typedef struct SiftTermInfo
 	uint32		post_len;
 	uint32		codec_len;		/* codec blob at the start of the term blob */
 	uint32		nnib;			/* L1 members (tf > 1) */
+	uint32		pos_len;		/* SIFT_TERM_POS: bytes at the end of the term blob, or of inline_pos */
+	const uint8 *inline_pos;	/* inline term: its records back to back, in the dictionary block or the writer */
 	SiftKey		inline_keys[SIFT_INLINE_MAX];
 	uint8		inline_tf[SIFT_INLINE_MAX];
 } SiftTermInfo;

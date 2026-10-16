@@ -15,7 +15,8 @@
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
-#define SIFT_FORMAT_MINOR		0
+/* 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before */
+#define SIFT_FORMAT_MINOR		1
 
 /* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
 #define SIFT_SB_SHIFT			8
@@ -85,6 +86,7 @@ typedef struct SiftOptions
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
 	int			analyzer;		/* SIFT_ANALYZER_* */
+	bool		positions;		/* CREATE INDEX stores word positions, so phrases are verified from the index */
 } SiftOptions;
 
 /* analyzer: keyword indexes the whole value as one term */

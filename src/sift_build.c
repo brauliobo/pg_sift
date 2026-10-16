@@ -36,7 +36,7 @@
 
 static const uint16 slice_size[NLEVELS] = {8, 16, 32, 64, 128, 256, 512, 1024, 2048};
 
-/* A term's postings: varint(delta << 1 | tf > 1) [tf] over doc ordinals, in pool slices */
+/* A term's postings: varint(delta << 1 | tf > 1) [tf] [position record] over doc ordinals, in pool slices */
 typedef struct InvTerm
 {
 	uint32		hash;
@@ -48,6 +48,7 @@ typedef struct InvTerm
 	uint32		end;			/* link field of the current slice */
 	uint16		len;
 	uint8		level;
+	bool		haspos;			/* a position record follows each posting's tf */
 } InvTerm;
 
 struct SiftInvBuf
@@ -73,6 +74,7 @@ struct SiftInvBuf
 	uint32		maxdf;
 	uint32	   *doc_terms;		/* term indexes of the doc being added */
 	int			maxdoc_terms;
+	bool		positions;		/* docs carry position records */
 };
 
 struct SiftRun
@@ -106,6 +108,8 @@ typedef struct RunReader
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			len;			/* 0 at end */
 	uint64		df;
+	bool		haspos;			/* the run holds position records */
+	bool		thaspos;		/* ... for the current term */
 	/* docs */
 	uint64		dleft;
 	SiftKey		dkey;
@@ -115,6 +119,9 @@ typedef struct RunReader
 	SiftKey		pkey;
 	uint8		ptf;
 	uint16		pdl;
+	uint8	   *prec;			/* position record of the current posting */
+	uint32		prlen;
+	Size		prcap;
 } RunReader;
 
 /* Feeds postings of one term to the posting writer in batches */
@@ -125,7 +132,21 @@ typedef struct Batch
 	SiftKey		keys[BATCH];
 	uint8		tf[BATCH];
 	uint16		dl[BATCH];
+	bool		haspos;			/* the term's postings carry position records */
+	uint8	   *pos;			/* of the n postings, back to back */
+	Size		poslen;
+	Size		poscap;
+	uint32		plen[BATCH];
 } Batch;
+
+/* Position records of a chunk of postings of one term, back to back */
+typedef struct PosChunk
+{
+	uint8	   *buf;
+	Size		len;
+	Size		cap;
+	uint32		plen[64];		/* CHUNK */
+} PosChunk;
 
 /* ---------- inverted buffer ---------- */
 
@@ -156,10 +177,11 @@ inv_init(SiftInvBuf *b)
 }
 
 SiftInvBuf *
-sift_inv_create(Size budget, MemoryContext mcxt)
+sift_inv_create(Size budget, MemoryContext mcxt, bool positions)
 {
 	SiftInvBuf *b = MemoryContextAllocZero(mcxt, sizeof(SiftInvBuf));
 
+	b->positions = positions;
 	b->parent = mcxt;
 	b->budget = Max(budget, 1024 * 1024);
 	b->mcxt = AllocSetContextCreate(mcxt, "sift inverted buffer", ALLOCSET_DEFAULT_SIZES);
@@ -242,6 +264,51 @@ slice_get(const SiftInvBuf *b, SliceReader *r)
 	v = *POOL(b, r->cur);
 	r->cur++;
 	return v;
+}
+
+static inline void
+chunk_put(PosChunk *pc, uint8 c)
+{
+	if (pc->len == pc->cap)
+	{
+		pc->cap = Max(4096, pc->cap * 2);
+		pc->buf = pc->buf ? repalloc_huge(pc->buf, pc->cap) : MemoryContextAllocHuge(CurrentMemoryContext, pc->cap);
+	}
+	pc->buf[pc->len++] = c;
+}
+
+/* Copies one varint of a slice stream to the chunk and returns its value */
+static inline uint32
+slice_varint(const SiftInvBuf *b, SliceReader *r, PosChunk *pc)
+{
+	uint32		x = 0;
+
+	for (int s = 0;; s += 7)
+	{
+		uint8		c = slice_get(b, r);
+
+		chunk_put(pc, c);
+		x |= (uint32) (c & 0x7f) << s;
+		if (!(c & 0x80))
+			return x;
+	}
+}
+
+/* Copies the position record at the reader to the chunk (see sift_analyze.h); returns its length */
+static uint32
+slice_record(const SiftInvBuf *b, SliceReader *r, PosChunk *pc)
+{
+	Size		start = pc->len;
+	uint32		v = slice_varint(b, r, pc);
+
+	if (v & 1)
+	{
+		uint32		n = slice_varint(b, r, pc);
+
+		for (uint32 i = 0; i <= n; i++)
+			slice_varint(b, r, pc);
+	}
+	return pc->len - start;
 }
 
 static void
@@ -348,6 +415,13 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 		slice_put(b, t, (uint8) v);
 		if (terms[i].tf > 1)
 			slice_put(b, t, terms[i].tf);
+		if (t->df == 0)
+			t->haspos = b->positions && terms[i].pos != NULL;
+		else if (t->haspos != (b->positions && terms[i].pos != NULL))
+			elog(ERROR, "sift: the postings of a term must all have positions or none");
+		if (t->haspos)
+			for (uint32 k = 0; k < terms[i].poslen; k++)
+				slice_put(b, t, terms[i].pos[k]);
 		t->last = ord;
 		t->df++;
 		b->maxdf = Max(b->maxdf, t->df);
@@ -378,6 +452,7 @@ typedef struct TermIter
 	SliceReader r;
 	uint32		ord;
 	uint32		left;
+	bool		haspos;
 } TermIter;
 
 #define CHUNK	64
@@ -388,16 +463,20 @@ term_iter(const SiftInvBuf *b, const InvTerm *t, TermIter *it)
 	it->r = (SliceReader) {t->head, t->head + slice_size[0] - sizeof(uint32), 0};
 	it->ord = 0;
 	it->left = t->df;
+	it->haspos = t->haspos;
 }
 
 static int
-term_chunk(const SiftInvBuf *b, TermIter *it, uint32 *ords, uint8 *tf)
+term_chunk(const SiftInvBuf *b, TermIter *it, uint32 *ords, uint8 *tf, PosChunk *pc)
 {
 	int			n = Min(it->left, CHUNK);
 
+	pc->len = 0;
 	for (int i = 0; i < n; i++)
 	{
 		term_next(b, &it->r, &it->ord, &tf[i]);
+		if (it->haspos)
+			pc->plen[i] = slice_record(b, &it->r, pc);
 		ords[i] = it->ord;
 		__builtin_prefetch(&b->docs[it->ord]);
 	}
@@ -453,24 +532,34 @@ sorted_terms(SiftInvBuf *b)
 }
 
 static void
-batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl)
+batch_flush(Batch *bt)
+{
+	if (bt->n)
+		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n, bt->haspos ? bt->pos : NULL, bt->plen);
+	bt->n = 0;
+	bt->poslen = 0;
+}
+
+/* rec / len: the posting's position record, ignored unless the term has positions */
+static void
+batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 len)
 {
 	bt->keys[bt->n] = key;
 	bt->tf[bt->n] = tf;
 	bt->dl[bt->n] = dl;
-	if (++bt->n == BATCH)
+	if (bt->haspos)
 	{
-		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n);
-		bt->n = 0;
+		if (bt->poslen + len > bt->poscap)
+		{
+			bt->poscap = Max(bt->poslen + len, Max(8192, bt->poscap * 2));
+			bt->pos = bt->pos ? repalloc_huge(bt->pos, bt->poscap) : MemoryContextAllocHuge(CurrentMemoryContext, bt->poscap);
+		}
+		memcpy(bt->pos + bt->poslen, rec, len);
+		bt->plen[bt->n] = len;
+		bt->poslen += len;
 	}
-}
-
-static void
-batch_flush(Batch *bt)
-{
-	if (bt->n)
-		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n);
-	bt->n = 0;
+	if (++bt->n == BATCH)
+		batch_flush(bt);
 }
 
 /* Adds packed docs (key << 16 | dl) to a segment in batches */
@@ -498,9 +587,10 @@ sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRe
 {
 	MemoryContext cxt = AllocSetContextCreate(b->parent, "sift segment write", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
-	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt);
+	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt, b->positions);
 	SortTerm   *order = sorted_terms(b);
-	Batch	   *bt = palloc(sizeof(Batch));
+	Batch	   *bt = palloc0(sizeof(Batch));
+	PosChunk   *pc = palloc0(sizeof(PosChunk));
 
 	add_docs(sw, b->docs, b->ndocs);
 	for (uint32 i = 0; i < b->nterms; i++)
@@ -512,10 +602,15 @@ sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRe
 
 		bt->pw = sift_segw_begin_term(sw, b->tbytes + t->term_off, t->len);
 		bt->n = 0;
+		bt->haspos = t->haspos;
 		term_iter(b, t, &it);
-		for (int n; (n = term_chunk(b, &it, ords, tf)) > 0;)
-			for (int k = 0; k < n; k++)
-				batch_put(bt, DOC_KEY(b->docs[ords[k]]), tf[k], DOC_DL(b->docs[ords[k]]));
+		for (int n; (n = term_chunk(b, &it, ords, tf, pc)) > 0;)
+		{
+			Size		off = 0;
+
+			for (int k = 0; k < n; off += t->haspos ? pc->plen[k] : 0, k++)
+				batch_put(bt, DOC_KEY(b->docs[ords[k]]), tf[k], DOC_DL(b->docs[ords[k]]), pc->buf + off, pc->plen[k]);
+		}
 		batch_flush(bt);
 		sift_segw_end_term(sw);
 		if (i % 1024 == 0)
@@ -541,6 +636,11 @@ io_put(RunIO *io, const void *p, int n)
 {
 	if (io->len + n > IO_BUF)
 		io_flush(io);
+	if (n > IO_BUF)
+	{
+		BufFileWrite(io->file, p, n);
+		return;
+	}
 	memcpy(io->buf + io->len, p, n);
 	io->len += n;
 }
@@ -586,9 +686,10 @@ io_get_varint(RunIO *io)
 }
 
 /*
- * Run file: varint ndocs, (varint key delta, varint dl) per doc; per term
- * in byte order: varint len, bytes, varint df, then per posting
- * varint(key delta << 1 | tf > 1) [tf] varint dl; varint 0 ends the run.
+ * Run file: varint ndocs, byte positions, (varint key delta, varint dl) per
+ * doc; per term in byte order: varint len, bytes, varint df, byte (term has
+ * position records), then per posting varint(key delta << 1 | tf > 1) [tf]
+ * varint dl [position record]; varint 0 ends the run.
  */
 static SiftRun *
 spill_to(SiftInvBuf *b, BufFile *file)
@@ -598,11 +699,13 @@ spill_to(SiftInvBuf *b, BufFile *file)
 	RunIO		io = {.buf = palloc(IO_BUF),.file = file};
 	SortTerm   *order = sorted_terms(b);
 	SiftKey		prev = 0;
+	PosChunk   *pc = palloc0(sizeof(PosChunk));
 
 	run->file = file;
 	run->ndocs = b->ndocs;
 	run->maxdf = b->maxdf;
 	io_varint(&io, b->ndocs);
+	io_varint(&io, b->positions);
 	for (uint32 i = 0; i < b->ndocs; prev = DOC_KEY(b->docs[i++]))
 	{
 		io_varint(&io, DOC_KEY(b->docs[i]) - prev);
@@ -618,9 +721,13 @@ spill_to(SiftInvBuf *b, BufFile *file)
 		io_varint(&io, t->len);
 		io_put(&io, b->tbytes + t->term_off, t->len);
 		io_varint(&io, t->df);
+		io_varint(&io, t->haspos);
 		prev = 0;
 		term_iter(b, t, &it);
-		for (int n; (n = term_chunk(b, &it, ords, tf)) > 0;)
+		for (int n; (n = term_chunk(b, &it, ords, tf, pc)) > 0;)
+		{
+			Size		off = 0;
+
 			for (int k = 0; k < n; k++)
 			{
 				uint64		d = b->docs[ords[k]];
@@ -629,8 +736,14 @@ spill_to(SiftInvBuf *b, BufFile *file)
 				if (tf[k] > 1)
 					io_put(&io, &tf[k], 1);
 				io_varint(&io, DOC_DL(d));
+				if (t->haspos)
+				{
+					io_put(&io, pc->buf + off, pc->plen[k]);
+					off += pc->plen[k];
+				}
 				prev = DOC_KEY(d);
 			}
+		}
 		if (i % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
@@ -679,6 +792,9 @@ reader_next_term(RunReader *rd)
 	for (int i = 0; i < rd->len; i++)
 		rd->term[i] = io_byte(&rd->io);
 	rd->df = io_get_varint(&rd->io);
+	rd->thaspos = io_get_varint(&rd->io);
+	if (rd->thaspos && !rd->haspos)
+		elog(ERROR, "sift: corrupt build run (positions in a run without)");
 }
 
 static int
@@ -748,6 +864,46 @@ merge_docs(SiftSegmentWriter *sw, RunReader *rd, int nruns)
 	binaryheap_free(heap);
 }
 
+static inline void
+record_put(RunReader *rd, uint8 c)
+{
+	if (rd->prlen == rd->prcap)
+	{
+		rd->prcap = Max(256, rd->prcap * 2);
+		rd->prec = rd->prec ? repalloc_huge(rd->prec, rd->prcap) : MemoryContextAllocHuge(CurrentMemoryContext, rd->prcap);
+	}
+	rd->prec[rd->prlen++] = c;
+}
+
+static inline uint32
+record_varint(RunReader *rd)
+{
+	uint32		x = 0;
+
+	for (int s = 0;; s += 7)
+	{
+		uint8		c = io_byte(&rd->io);
+
+		record_put(rd, c);
+		x |= (uint32) (c & 0x7f) << s;
+		if (!(c & 0x80))
+			return x;
+	}
+}
+
+/* The position record of the current posting (see sift_analyze.h) into rd->prec */
+static void
+read_record(RunReader *rd)
+{
+	if (record_varint(rd) & 1)
+	{
+		uint32		n = record_varint(rd);
+
+		for (uint32 i = 0; i <= n; i++)
+			record_varint(rd);
+	}
+}
+
 /* A run's postings of the current term */
 static bool
 post_next(RunReader *rd)
@@ -760,6 +916,9 @@ post_next(RunReader *rd)
 	rd->ptf = (v & 1) ? io_byte(&rd->io) : 1;
 	rd->pkey += v >> 1;
 	rd->pdl = io_get_varint(&rd->io);
+	rd->prlen = 0;
+	if (rd->thaspos)
+		read_record(rd);
 	rd->pleft--;
 	return true;
 }
@@ -796,7 +955,7 @@ merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 		r = act[m];
 		for (;;)
 		{
-			batch_put(bt, r->pkey, r->ptf, r->pdl);
+			batch_put(bt, r->pkey, r->ptf, r->pdl, r->prec, r->prlen);
 			if (!post_next(r))
 			{
 				act[m] = act[--live];
@@ -815,13 +974,14 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
-	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt);
 	RunReader  *rd = palloc0(nruns * sizeof(RunReader));
 	RunReader **cur = palloc(nruns * sizeof(RunReader *));
 	RunReader **act = palloc(nruns * sizeof(RunReader *));
 	binaryheap *heap = binaryheap_allocate(nruns, reader_cmp, NULL);
-	Batch	   *bt = palloc(sizeof(Batch));
+	Batch	   *bt = palloc0(sizeof(Batch));
 	uint32		nterms = 0;
+	bool		positions = true;
+	SiftSegmentWriter *sw;
 
 	for (int i = 0; i < nruns; i++)
 	{
@@ -831,7 +991,11 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
 			elog(ERROR, "sift: could not rewind a build run");
 		rd[i].dleft = io_get_varint(&rd[i].io);
+		rd[i].haspos = io_get_varint(&rd[i].io);
+		positions &= rd[i].haspos;
 	}
+	/* the segment has positions when every run does */
+	sw = sift_segw_begin(wt, gen, ref, cxt, positions);
 	merge_docs(sw, rd, nruns);
 	for (int i = 0; i < nruns; i++)
 	{
@@ -858,6 +1022,10 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 			cur[k++] = top;
 			binaryheap_remove_first(heap);
 		}
+		/* a term whose postings lack the records in some run (inline there) keeps none */
+		bt->haspos = positions;
+		for (int i = 0; i < k; i++)
+			bt->haspos &= cur[i]->thaspos;
 		merge_postings(bt, cur, k, act);
 		batch_flush(bt);
 		sift_segw_end_term(sw);
@@ -902,7 +1070,7 @@ dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
 
 static bool
 dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys,
-		  const uint8 *tf, const uint16 *dl)
+		  const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen)
 {
 	DumpState  *ds = arg;
 	SiftKey		prev = 0;
@@ -910,12 +1078,18 @@ dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const 
 	io_varint(&ds->io, len);
 	io_put(&ds->io, term, len);
 	io_varint(&ds->io, info->df);
+	io_varint(&ds->io, pos != NULL);
 	for (uint32 j = 0; j < info->df; prev = keys[j++])
 	{
 		io_varint(&ds->io, (keys[j] - prev) << 1 | (tf[j] > 1));
 		if (tf[j] > 1)
 			io_put(&ds->io, &tf[j], 1);
 		io_varint(&ds->io, dl[j]);
+		if (pos)
+		{
+			io_put(&ds->io, pos, poslen[j]);
+			pos += poslen[j];
+		}
 	}
 	ds->maxdf = Max(ds->maxdf, info->df);
 	return true;
@@ -937,6 +1111,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	ds.io.buf = palloc(IO_BUF);
 	run->ndocs = ndocs;
 	io_varint(&ds.io, ndocs);
+	io_varint(&ds.io, (seg->entry.flags & SIFT_SEG_POSITIONS) != 0);
 	sift_seg_dump(seg, ref, dump_docs, dump_term, &ds);
 	if (ds.ndocs != 0)
 		elog(ERROR, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
@@ -985,6 +1160,7 @@ typedef struct BuildState
 	int			nsegs;
 	double		indexed;
 	uint32		analyzer_hash;
+	bool		positions;
 	/* parallel worker: runs go to this fileset, named after the worker and the run */
 	SharedFileSet *fileset;
 	int			worker;
@@ -1174,8 +1350,10 @@ build_begin(Relation index, Size budget)
 	old = MemoryContextSwitchTo(bs->cxt);
 	bs->tmpcxt = AllocSetContextCreate(bs->cxt, "sift build tuple", ALLOCSET_DEFAULT_SIZES);
 	bs->an = sift_analyzer_create(&cfg, bs->cxt);
+	bs->positions = opts->positions && !cfg.keyword;
+	sift_analyzer_set_positions(bs->an, bs->positions);
 	bs->budget = budget;
-	bs->inv = sift_inv_create(bs->budget, bs->cxt);
+	bs->inv = sift_inv_create(bs->budget, bs->cxt, bs->positions);
 	bs->ref = (SiftScoreRef) {(float4) opts->k1, (float4) opts->b, 0};
 	bs->page = InvalidBlockNumber;
 	bs->maxdocs = 64;
