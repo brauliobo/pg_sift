@@ -158,6 +158,12 @@ errdetail(const char *fmt,...)
 	return 0;
 }
 
+int
+errhint(const char *fmt,...)
+{
+	return 0;
+}
+
 void
 errfinish(const char *filename, int lineno, const char *funcname)
 {
@@ -305,6 +311,12 @@ int
 sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len)
 {
 	return 0;
+}
+
+const char *
+sift_analyzer_field_names(const SiftAnalyzer *a)
+{
+	return "";
 }
 
 int
