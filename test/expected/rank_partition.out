@@ -285,19 +285,25 @@ SELECT t.id, t.s, p.tenant FROM (SELECT id, sift.score(ctid) AS s FROM rp WHERE 
  1694 | 2.881349 |     14
 (3 rows)
 
--- an aggregate, or a join that is not a nested loop, evaluates the score above the Append, which does not carry it: it raises
--- the usual error, and a subquery that the planner keeps (OFFSET 0, LIMIT) is the way to read the score there
-SELECT sum(sift.score(ctid)) FROM rp WHERE body @@> 'rare';
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+-- an aggregate or a join over the parent reads the scores the Append carries from its partitions' scans (more shapes in rank_join)
+SELECT round(sum(sift.score(ctid))::numeric, 3) = (SELECT round(sum(s)::numeric, 3) FROM (SELECT sift.score(ctid) AS s FROM rp
+	WHERE body @@> 'rare' OFFSET 0) t) AS same_sum FROM rp WHERE body @@> 'rare';
+ same_sum 
+----------
+ t
+(1 row)
+
 CREATE TABLE rj (id int PRIMARY KEY, tag text);
 INSERT INTO rj SELECT i, 't' || i % 3 FROM generate_series(0, 3999) i;
 ANALYZE rj;
 SET enable_nestloop = off;
 SET enable_mergejoin = off;
 SELECT count(*), round(sum(sift.score(rp.ctid))::numeric, 3) FROM rp JOIN rj ON rj.id = rp.id WHERE rp.body @@> 'rare' AND rj.tag = 't1';
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+ count |  round  
+-------+---------
+   121 | 276.060
+(1 row)
+
 SELECT count(*), round(sum(t.s)::numeric, 3) FROM (SELECT id, sift.score(ctid) AS s FROM rp WHERE body @@> 'rare' OFFSET 0) t
 	JOIN rj ON rj.id = t.id WHERE rj.tag = 't1';
  count |  round  
