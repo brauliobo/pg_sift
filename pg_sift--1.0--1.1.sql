@@ -1,3 +1,5 @@
+\echo Use "ALTER EXTENSION pg_sift UPDATE TO '1.1'" to load this file. \quit
+
 -- Keyword facets (DESIGN.md item 11): the number of matches of a query per value of a keyword index.
 -- A keyword index is CREATE INDEX ... USING sift (col) WITH (analyzer = keyword).
 
