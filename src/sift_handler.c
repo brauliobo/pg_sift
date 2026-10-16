@@ -94,6 +94,12 @@ static relopt_enum_elt_def phrase_index_names[] = {
 	{(const char *) NULL}
 };
 
+static relopt_enum_elt_def analyzer_names[] = {
+	{"text", SIFT_ANALYZER_TEXT},
+	{"keyword", SIFT_ANALYZER_KEYWORD},
+	{(const char *) NULL}
+};
+
 static void
 define_reloptions(void)
 {
@@ -125,6 +131,10 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "prefix_index",
 					  "Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply)",
 					  0, 0, SIFT_MAX_PREFIX_INDEX, AccessExclusiveLock);
+	add_enum_reloption(sift_relopt_kind, "analyzer",
+					   "Analyzer: text, or keyword to index each whole value as one term (facets, REINDEX to apply)",
+					   analyzer_names, SIFT_ANALYZER_TEXT,
+					   "Valid values are \"text\" and \"keyword\".", AccessExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -203,6 +213,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"phrase_index", RELOPT_TYPE_ENUM, offsetof(SiftOptions, phrase_index)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
+		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,

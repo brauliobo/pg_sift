@@ -46,16 +46,19 @@ sift_tokenize(PG_FUNCTION_ARGS)
 	int			ntok,
 				byte = 0,
 				chr = 0;
+	bool		keyword;
 
 	InitMaterializedSRF(fcinfo, 0);
 	if (PG_ARGISNULL(0))
 		return (Datum) 0;
 	config_for(fcinfo, &cfg);
+	keyword = cfg.keyword;
 	sift_analyzer_config_set(&cfg,
 							 PG_ARGISNULL(3) ? cfg.case_fold : PG_GETARG_BOOL(3),
 							 PG_ARGISNULL(4) ? cfg.accent_fold : PG_GETARG_BOOL(4),
 							 PG_ARGISNULL(2) ? cfg.stemmer :
 							 sift_analyze_stemmer(text_to_cstring(PG_GETARG_TEXT_PP(2))));
+	sift_analyzer_config_set_keyword(&cfg, keyword);
 	doc = PG_GETARG_TEXT_PP(0);
 	s = VARDATA_ANY(doc);
 	a = sift_analyzer_create(&cfg, CurrentMemoryContext);

@@ -80,6 +80,8 @@ struct SiftAnalyzer
 
 	char	   *buf;			/* folded token bytes */
 	size_t		bufcap;
+	char	   *kw;				/* keyword analyzer: the folded text */
+	size_t		kwcap;
 	SiftToken  *toks;
 	size_t		tokcap;
 
@@ -204,12 +206,32 @@ sift_analyze_validate_fields(const char *names)
 						SIFT_FIELDS_BYTES - 1)));
 }
 
+static void
+config_hash(SiftAnalyzerConfig *cfg)
+{
+	uint8		key[12] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
+	int			n = 4;
+
+	if (cfg->pairs)
+		key[n++] = 1;
+	if (cfg->prefix_len)
+	{
+		key[n++] = 2;
+		key[n++] = cfg->prefix_len;
+	}
+	if (cfg->nfields)
+	{
+		key[n++] = 3;
+		key[n++] = cfg->nfields;
+	}
+	if (cfg->keyword)
+		key[n++] = 4;
+	cfg->hash = sift_term_hash((const char *) key, n);
+}
+
 void
 sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields)
 {
-	uint8		key[10] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
-	int			n = 4;
-
 	cfg->pairs = pairs;
 	cfg->prefix_len = prefix_len;
 	memset(cfg->field_names, 0, sizeof(cfg->field_names));
@@ -217,19 +239,14 @@ sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int pref
 	cfg->nfields = *fields ? 1 : 0;
 	for (const char *c = fields; *c; c++)
 		cfg->nfields += *c == ',';
-	if (pairs)
-		key[n++] = 1;
-	if (prefix_len)
-	{
-		key[n++] = 2;
-		key[n++] = prefix_len;
-	}
-	if (cfg->nfields)
-	{
-		key[n++] = 3;
-		key[n++] = cfg->nfields;
-	}
-	cfg->hash = sift_term_hash((const char *) key, n);
+	config_hash(cfg);
+}
+
+void
+sift_analyzer_config_set_keyword(SiftAnalyzerConfig *cfg, bool keyword)
+{
+	cfg->keyword = keyword;
+	config_hash(cfg);
 }
 
 void
@@ -239,6 +256,7 @@ sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fo
 	cfg->case_fold = case_fold;
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
+	cfg->keyword = false;
 	sift_analyzer_config_set_synthetic(cfg, false, 0, "");
 }
 
@@ -255,6 +273,14 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 							 sift_analyze_stemmer(sift_options_stemmer(opts)));
 	sift_analyzer_config_set_synthetic(cfg, opts->phrase_index == SIFT_PHRASE_PAIRS, opts->prefix_index,
 									   sift_options_fields(opts));
+	if (opts->analyzer == SIFT_ANALYZER_KEYWORD)
+	{
+		if (cfg->stemmer != SIFT_STEM_NONE || cfg->pairs || cfg->prefix_len || cfg->nfields)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields")));
+		sift_analyzer_config_set_keyword(cfg, true);
+	}
 }
 
 void
@@ -342,6 +368,7 @@ sift_analyzer_reset(SiftAnalyzer *a)
 #define DROP_BIG(p, cap, sz) \
 	if ((cap) * (sz) > KEEP_BYTES) { pfree(p); (p) = NULL; (cap) = 0; }
 	DROP_BIG(a->buf, a->bufcap, 1);
+	DROP_BIG(a->kw, a->kwcap, 1);
 	DROP_BIG(a->toks, a->tokcap, sizeof(SiftToken));
 	DROP_BIG(a->bag, a->bagcap, sizeof(BagTerm));
 	DROP_BIG(a->terms, a->termcap, sizeof(SiftTermFreq));
@@ -536,6 +563,32 @@ scan_ascii(const SiftAnalyzer *a, const uint8 *s, int len, int *i, int *start, c
 }
 #endif
 
+static int	fold_chars(const SiftAnalyzer *a, const uint8 *s, int len, char *dst);
+
+/* Keyword analyzer: the whole text is one token, none if it is empty or folds to nothing */
+static int
+scan_keyword(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char *dst)
+{
+	int			n = len;
+
+	if (*off >= len)
+		return -1;
+	*start = *off;
+	*off = len;
+	if (a->cfg.case_fold || a->cfg.accent_fold)
+	{
+		ENSURE(a, kw, kwcap, (size_t) len * SIFT_FOLD_MAX_EXPAND + 1);
+		n = fold_chars(a, s, len, a->kw);
+		s = (const uint8 *) a->kw;
+	}
+	if (n > TERM_CAP)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: a keyword value is longer than %d bytes", TERM_CAP)));
+	memcpy(dst, s, n);
+	return n > 0 ? n : -1;
+}
+
 /*
  * Scans the next token of s[*off..len) into dst (capacity DST_CAP) and
  * returns its length, or -1 at the end. Sets *start and advances *off past
@@ -546,6 +599,8 @@ scan_token(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char 
 {
 	int			i = *off;
 
+	if (unlikely(a->cfg.keyword))
+		return scan_keyword(a, s, len, off, start, dst);
 	for (;;)
 	{
 		int			n = 0,
@@ -924,34 +979,43 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 
 /* Literal folding */
 
-int
-sift_analyze_fold(SiftAnalyzer *a, const char *str, int len, char **out)
+/* Folds s[0..len) into dst (room for len * SIFT_FOLD_MAX_EXPAND bytes); returns the length */
+static int
+fold_chars(const SiftAnalyzer *a, const uint8 *s, int len, char *dst)
 {
-	const uint8 *s = (const uint8 *) str;
 	int			n = 0,
 				cap = PG_INT32_MAX,
 				clen;
 	uint32		cp;
 
-	ENSURE(a, buf, bufcap, (size_t) len * SIFT_FOLD_MAX_EXPAND + 1);
 	for (int i = 0; i < len; i += clen)
 	{
 		uint16		info;
 
 		clen = 1;
 		if (s[i] < 0x80)
-			a->buf[n++] = a->ascii[s[i]] ? a->ascii[s[i]] : s[i];
+			dst[n++] = a->ascii[s[i]] ? a->ascii[s[i]] : s[i];
 		else if (!a->utf8 || !(clen = utf8_decode(s + i, len - i, &cp)))
-			a->buf[n++] = s[i], clen = 1;
+			dst[n++] = s[i], clen = 1;
 		else if ((info = cp_info(cp)) >> 13 == C_WORD || info >> 13 == C_MARK ||
 				 info >> 13 == C_IDEO)
-			append_fold(a, info, s + i, clen, a->buf, &n, &cap);
+			append_fold(a, info, s + i, clen, dst, &n, &cap);
 		else if (info >> 13 != C_IGN)
 		{
-			memcpy(a->buf + n, s + i, clen);
+			memcpy(dst + n, s + i, clen);
 			n += clen;
 		}
 	}
+	return n;
+}
+
+int
+sift_analyze_fold(SiftAnalyzer *a, const char *str, int len, char **out)
+{
+	int			n;
+
+	ENSURE(a, buf, bufcap, (size_t) len * SIFT_FOLD_MAX_EXPAND + 1);
+	n = fold_chars(a, (const uint8 *) str, len, a->buf);
 	a->buf[n] = '\0';
 	*out = a->buf;
 	return n;
