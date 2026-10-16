@@ -40,6 +40,11 @@
 - Fix: with several sift indexes on one key, an index with another analyzer (one with `fields` next to a plain one) could serve `@@>`, so
   a query answered differently depending on the cheapest plan, or failed while the planner costed the index. `@@>` now means one analyzer
   (the default one when an index has it) and only indexes that answer the same serve it.
+- Fix: a ranked scan with a broad match and a selective filter on a column that follows the heap order (an id range or id list at the
+  end of the table) was planned as filter-after-ranker, which verifies every match before the filter's first row (tens to hundreds of
+  ms against under 1 ms pushed down). The post-filter estimate now counts the matches before and after the rows the filter's btree
+  quals can keep, from the column's histogram and correlation, and the bitmap's tuple count no longer includes the planner's lossy-page
+  inflation.
 - Fix: assertion failures on a server built with `--enable-cassert` (a stray `foreach_node(Node/Path/Plan)` cast, the GlobalVis horizon
   taken from the index instead of its heap, and a page special area read before the page layout check in `sift.verify`).
 - Packages: a `.deb` (`postgresql-18-pg-sift`, PGDG on Debian 13 and Ubuntu 24.04) and an `.rpm` (`pg_sift_18`, PGDG on RHEL, Rocky and
