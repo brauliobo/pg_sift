@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
-# Settings live in $PGDATA/bench.conf, rewritten on every start.
+# Settings live in $PGDATA/bench.conf, rewritten on every start. WORKERS caps the parallel workers (default 8, 3 for index builds).
 # Extensions come from the engine roots built by bench/steps/fetch.sh (engines/*/root) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
@@ -24,9 +24,9 @@ shared_buffers = ${SHBUF:-${TIER_SHBUF[$TIER]}}
 maintenance_work_mem = ${TIER_MWM[$TIER]}
 work_mem = 64MB
 max_worker_processes = 16
-max_parallel_workers = 8
+max_parallel_workers = ${WORKERS:-8}
 max_parallel_workers_per_gather = 2
-max_parallel_maintenance_workers = 3
+max_parallel_maintenance_workers = ${WORKERS:-3}
 # In-memory throwaway cluster: durability is irrelevant, WAL volume is still measured.
 fsync = off
 synchronous_commit = off

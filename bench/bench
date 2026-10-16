@@ -20,10 +20,13 @@ Commands
              autocomplete on GeoNames); writes raw tables per dataset and tier into the result directory
   report     turn result directories into results.tsv (chart input), builds.tsv and tables.md
   charts     draw the SVG charts of docs/img from the committed docs/results/*.tsv (stdlib python, deterministic)
-  all        setup, run and report in one go (the clean-checkout reproduction)
-  cold       like run, but every query starts with the index and heap evicted from the caches
+  all        setup, run and report in one go (the clean-checkout reproduction). For the ab and full tiers it also runs
+             the cold-cache tables and writes docs/results and docs/img (report --docs)
+  cold       like run, but every query starts with the index and heap evicted from the caches (all classes)
   check      correctness: `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
-             `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25
+             `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25;
+             `check --dataset places [oracle|rank] [N]` runs every engine of --engines on N (default 30) places queries
+             per class against the SQL oracle of sql/places_oracle.sql (match sets; BM25 top-20 of top, boost, filter)
   suite      standard multi-engine suite on articles (gin rum pg_textsearch bm25 pg_search sift tantivy
              elasticsearch): `suite [ENGINE...]`, one tier, small tables via steps/report.sh
   workload   one engine, timed pgbench workloads: `workload ENGINE [WORKLOAD...]` (and or phrase mixed count
@@ -45,9 +48,10 @@ Options (not every option applies to every command)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated. run/cold/all: sift sift_pairs (phrase_index = pairs) pg_search pg_textsearch rum
-                    (default: all five; places has no sift_pairs). setup: which engines to build.
+                    (default: all five). setup: which engines to build.
                     An engine whose extension is missing is skipped with a message.
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
+  --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default 4 / 8, 3 for builds)
   --duration S      seconds per measured cell (defaults: quick 1, ab 3, full 8 for articles; places 1/2/4)
   --rounds MIN-MAX  interleaved rounds: stop once every cell's spread is under 15% after MIN, at most MAX
   --out DIR         result directory (default bench/out/run-<UTC time>, gitignored; `bench/out/latest` links
@@ -87,7 +91,7 @@ EOF
 die() { echo "bench: $*" >&2; exit 1; }
 
 # --- options
-tier=quick dataset=all engines='' clients='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean=''
+tier=quick dataset=all engines='' clients='' workers='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean=''
 rest=()
 parse() {
   while (( $# )); do
@@ -96,6 +100,7 @@ parse() {
       --dataset|--datasets) dataset=$2; shift ;;
       --engines) engines=${2//,/ }; shift ;;
       --clients) clients=$2; shift ;;
+      --workers) workers=$2; shift ;;
       --duration) duration=$2; shift ;;
       --rounds) rounds=$2; shift ;;
       --out) out=$2; shift ;;
@@ -126,13 +131,14 @@ tier_env() {
   [[ -z $rounds ]] || { export MINR=${rounds%-*} MAXR=${rounds#*-}; }
   [[ -z $duration ]] || export SECS=$duration
   [[ -z $clients ]] || export CLIENTS=$clients
+  [[ -z $workers ]] || export WORKERS=$workers THREADS=$workers
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
-selected() { # EXCLUDE...: the engines of --engines (default: all) minus the ones the dataset cannot run
+selected() { # the engines of --engines (default: all)
   local e
   for e in ${engines:-$ALL_ENGINES}; do
     [[ " $ALL_ENGINES " == *" $e "* ]] || die "engine $e is not part of the A/B (use suite or workload)"
-    [[ " $* " == *" $e "* ]] || printf '%s ' "$e"
+    printf '%s ' "$e"
   done
 }
 
@@ -192,12 +198,12 @@ new_out() {
 
 measure() { # [cold]: every selected dataset at the tier into $OUT, after the machine description
   local d t0=$SECONDS suffix=${1:+-cold}
-  "$STEPS/machine.sh" >"$OUT/machine.txt"
+  [[ -n ${1:-} && -s $OUT/machine.txt ]] || "$STEPS/machine.sh" >"$OUT/machine.txt"
   for d in $datasets; do
     echo; echo "=== $d, tier $tier${1:+, cold cache} ($(( SECONDS - t0 )) s)"
     case $d in
       articles) ENGINES=$(selected) DEST=$OUT/articles-$tier$suffix "$STEPS/ab.sh" ${1:+cold} "$step_mode" ;;
-      places)   ENGINES=$(selected sift_pairs) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
+      places)   ENGINES=$(selected) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
   echo "wall time of the measurements $(( SECONDS - t0 )) s, load average at end $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/machine.txt"
@@ -220,7 +226,7 @@ cmd_report() {
     dir=$(cd "$arg" && pwd)
     [[ -n $out ]] || out=$dir
     for d in "$dir"/articles-* "$dir"/places-*; do
-      [[ -f $d/cells.tsv && $d != *-cold ]] || continue
+      [[ -f $d/cells.tsv || -f $d/cold.tsv || ( $d == *-cold && -f $d/summary.tsv ) ]] || continue
       specs+=("$(basename "$d" | sed -E 's/^([a-z]+)-(.*)$/\1:\2/'):$d")
     done
   done
@@ -245,6 +251,7 @@ cmd_all() {
   echo "=== setup"; cmd_setup
   ready; tier_env
   measure
+  if [[ $tier != quick ]]; then measure cold; docs=1; fi   # the published tiers: cold-cache tables, docs/results and the charts too
   echo "=== report"; rest=("$OUT"); cmd_report
   echo "bench all --tier $tier: wall time $(( SECONDS - t0 )) s" | tee -a "$OUT/machine.txt"
 }
@@ -256,6 +263,12 @@ cluster_up() { # the tier's cluster with the `bench` corpus, left running (bench
 
 cmd_check() {
   local what=${rest[0]:-} engine=${rest[1]:-} n=${rest[2]:-}
+  if [[ $dataset == places ]]; then
+    case $what in oracle|rank|'') ;; *) die "usage: check --dataset places [oracle|rank] [N]" ;; esac
+    datasets=places; preflight; ready; tier_env
+    ENGINES=$(selected) DEST=$HERE/out/places-check-$tier "$STEPS/places.sh" "$step_mode" check "${what:-all}" "$engine"
+    return
+  fi
   [[ -n $engine ]] || die "usage: check oracle|rank ENGINE [N]"
   datasets=articles; cluster_up
   case $what in
