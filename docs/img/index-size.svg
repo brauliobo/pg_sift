@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="474" viewBox="0 0 860 474" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="452" viewBox="0 0 860 452" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Index size</title>
-<desc id="d">Simple English Wikipedia, 218,058 articles: sift 47.9 MiB, sift pairs 267.2 MiB, pg_search 183.3 MiB, pg_textsearch 147.3 MiB; GeoNames cities500, 236,262 places: sift 42.6 MiB, pg_search 142.9 MiB, pg_textsearch 68.3 MiB</desc>
-<rect x="0.5" y="0.5" width="859" height="473" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+<desc id="d">articles: sift 47.9, sift pairs 267.2, pg_search 164.3, pg_textsearch 147.3, rum 309.9; places: sift 42.6, pg_search 129.5, pg_textsearch 68.3, rum 94.9</desc>
+<rect x="0.5" y="0.5" width="859" height="451" rx="6" fill="#ffffff" stroke="#d0d7de"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Index size</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">lower is better</text>
 <rect x="20" y="62" width="12" height="12" fill="#0072B2"/>
@@ -12,60 +12,43 @@
 <text x="205" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search</text>
 <rect x="286" y="62" width="12" height="12" fill="#CC79A7"/>
 <text x="303" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_textsearch</text>
-<rect x="412" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="429" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
-<text x="20" y="104" font-size="13" text-anchor="start" fill="#24292f" font-weight="bold">Simple English Wikipedia, 218,058 articles</text>
-<line x1="150" y1="114" x2="150" y2="258" stroke="#d8dee4" stroke-width="1"/>
-<text x="150" y="271" font-size="10" text-anchor="middle" fill="#57606a">0</text>
-<line x1="295" y1="114" x2="295" y2="258" stroke="#d8dee4" stroke-width="1"/>
-<text x="295" y="271" font-size="10" text-anchor="middle" fill="#57606a">100</text>
-<line x1="440" y1="114" x2="440" y2="258" stroke="#d8dee4" stroke-width="1"/>
-<text x="440" y="271" font-size="10" text-anchor="middle" fill="#57606a">200</text>
-<line x1="585" y1="114" x2="585" y2="258" stroke="#d8dee4" stroke-width="1"/>
-<text x="585" y="271" font-size="10" text-anchor="middle" fill="#57606a">300</text>
-<line x1="730" y1="114" x2="730" y2="258" stroke="#d8dee4" stroke-width="1"/>
-<text x="730" y="271" font-size="10" text-anchor="middle" fill="#57606a">400</text>
-<text x="750" y="271" font-size="10" text-anchor="start" fill="#57606a">MiB</text>
-<text x="140" y="132" font-size="12" text-anchor="end" fill="#24292f">sift</text>
-<rect x="150" y="118" width="69.5" height="20" fill="#0072B2"/>
-<text x="225.5" y="132" font-size="11" text-anchor="start" fill="#24292f">47.9 MiB</text>
-<text x="140" y="160" font-size="12" text-anchor="end" fill="#24292f">sift pairs</text>
-<rect x="150" y="146" width="387.4" height="20" fill="#009E73"/>
-<text x="543.4" y="160" font-size="11" text-anchor="start" fill="#24292f">267.2 MiB</text>
-<text x="140" y="188" font-size="12" text-anchor="end" fill="#24292f">pg_search</text>
-<rect x="150" y="174" width="265.8" height="20" fill="#D55E00"/>
-<text x="421.8" y="188" font-size="11" text-anchor="start" fill="#24292f">183.3 MiB</text>
-<text x="140" y="216" font-size="12" text-anchor="end" fill="#24292f">pg_textsearch</text>
-<rect x="150" y="202" width="213.6" height="20" fill="#CC79A7"/>
-<text x="369.6" y="216" font-size="11" text-anchor="start" fill="#24292f">147.3 MiB</text>
-<text x="140" y="244" font-size="12" text-anchor="end" fill="#24292f">rum</text>
-<rect x="150" y="230" width="150" height="20" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="158" y="244" font-size="11" text-anchor="start" fill="#57606a">pending: no data yet</text>
-<line x1="150" y1="114" x2="150" y2="258" stroke="#57606a" stroke-width="1"/>
-<text x="20" y="300" font-size="13" text-anchor="start" fill="#24292f" font-weight="bold">GeoNames cities500, 236,262 places</text>
-<line x1="150" y1="310" x2="150" y2="426" stroke="#d8dee4" stroke-width="1"/>
-<text x="150" y="439" font-size="10" text-anchor="middle" fill="#57606a">0</text>
-<line x1="295" y1="310" x2="295" y2="426" stroke="#d8dee4" stroke-width="1"/>
-<text x="295" y="439" font-size="10" text-anchor="middle" fill="#57606a">50</text>
-<line x1="440" y1="310" x2="440" y2="426" stroke="#d8dee4" stroke-width="1"/>
-<text x="440" y="439" font-size="10" text-anchor="middle" fill="#57606a">100</text>
-<line x1="585" y1="310" x2="585" y2="426" stroke="#d8dee4" stroke-width="1"/>
-<text x="585" y="439" font-size="10" text-anchor="middle" fill="#57606a">150</text>
-<line x1="730" y1="310" x2="730" y2="426" stroke="#d8dee4" stroke-width="1"/>
-<text x="730" y="439" font-size="10" text-anchor="middle" fill="#57606a">200</text>
-<text x="750" y="439" font-size="10" text-anchor="start" fill="#57606a">MiB</text>
-<text x="140" y="328" font-size="12" text-anchor="end" fill="#24292f">sift</text>
-<rect x="150" y="314" width="123.5" height="20" fill="#0072B2"/>
-<text x="279.5" y="328" font-size="11" text-anchor="start" fill="#24292f">42.6 MiB</text>
-<text x="140" y="356" font-size="12" text-anchor="end" fill="#24292f">pg_search</text>
-<rect x="150" y="342" width="414.4" height="20" fill="#D55E00"/>
-<text x="570.4" y="356" font-size="11" text-anchor="start" fill="#24292f">142.9 MiB</text>
-<text x="140" y="384" font-size="12" text-anchor="end" fill="#24292f">pg_textsearch</text>
-<rect x="150" y="370" width="198.1" height="20" fill="#CC79A7"/>
-<text x="354.1" y="384" font-size="11" text-anchor="start" fill="#24292f">68.3 MiB</text>
-<text x="140" y="412" font-size="12" text-anchor="end" fill="#24292f">rum</text>
-<rect x="150" y="398" width="150" height="20" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="158" y="412" font-size="11" text-anchor="start" fill="#57606a">pending: no data yet</text>
-<line x1="150" y1="310" x2="150" y2="426" stroke="#57606a" stroke-width="1"/>
-<text x="20" y="458" font-size="11" text-anchor="start" fill="#57606a">Full-size runs, one build per engine; 8-core desktop, shared host (load avg 5-25); Oct 2026.</text>
+<rect x="412" y="62" width="12" height="12" fill="#7f7f7f"/>
+<text x="429" y="72" font-size="12" text-anchor="start" fill="#24292f">rum</text>
+<line x1="74" y1="370" x2="836" y2="370" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="374" font-size="10" text-anchor="end" fill="#57606a">0</text>
+<line x1="74" y1="302.5" x2="836" y2="302.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="306.5" font-size="10" text-anchor="end" fill="#57606a">100</text>
+<line x1="74" y1="235" x2="836" y2="235" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="239" font-size="10" text-anchor="end" fill="#57606a">200</text>
+<line x1="74" y1="167.5" x2="836" y2="167.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="171.5" font-size="10" text-anchor="end" fill="#57606a">300</text>
+<line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">400</text>
+<text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">MiB</text>
+<rect x="190.5" y="337.7" width="28" height="32.3" fill="#0072B2"/>
+<text x="204.5" y="332.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">47.9</text>
+<rect x="220.5" y="189.6" width="28" height="180.4" fill="#009E73"/>
+<text x="234.5" y="184.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">267.2</text>
+<rect x="250.5" y="259.1" width="28" height="110.9" fill="#D55E00"/>
+<text x="264.5" y="254.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">164.3</text>
+<rect x="280.5" y="270.6" width="28" height="99.4" fill="#CC79A7"/>
+<text x="294.5" y="265.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">147.3</text>
+<rect x="310.5" y="160.8" width="28" height="209.2" fill="#7f7f7f"/>
+<text x="324.5" y="155.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">309.9</text>
+<text x="264.5" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">articles</text>
+<text x="264.5" y="402" font-size="10" text-anchor="middle" fill="#57606a">Simple English Wikipedia, 218,058 articles</text>
+<rect x="571.5" y="341.2" width="28" height="28.8" fill="#0072B2"/>
+<text x="585.5" y="336.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">42.6</text>
+<text x="615.5" y="365" font-size="9" text-anchor="middle" fill="#57606a">NA</text>
+<rect x="631.5" y="282.6" width="28" height="87.4" fill="#D55E00"/>
+<text x="645.5" y="277.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">129.5</text>
+<rect x="661.5" y="323.9" width="28" height="46.1" fill="#CC79A7"/>
+<text x="675.5" y="318.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">68.3</text>
+<rect x="691.5" y="305.9" width="28" height="64.1" fill="#7f7f7f"/>
+<text x="705.5" y="300.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">94.9</text>
+<text x="645.5" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">places</text>
+<text x="645.5" y="402" font-size="10" text-anchor="middle" fill="#57606a">GeoNames cities500, 236,262 places</text>
+<line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
+<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">NA: no bar, the engine cannot run the workload or was not run on the dataset.</text>
+<text x="20" y="436" font-size="11" text-anchor="start" fill="#57606a">Full-size runs, one build per engine; 8-core desktop, shared host (load avg 4-31); Oct 2026.</text>
 </svg>
