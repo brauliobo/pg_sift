@@ -282,5 +282,48 @@ SELECT perr('/' || repeat('((a{1,100}){1,100}){1,100}', 3) || '/') AS regex_too_
  42601: sift query: invalid regular expression: regular expression is too complex at position 1
 (1 row)
 
+-- fields: a name the index lacks lists the fields it has; without fields a colon is text
+CREATE TABLE qe (t text);
+CREATE INDEX qe_idx ON qe USING sift (t) WITH (fields = 'name,city');
+CREATE FUNCTION ferr(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN 'ok: ' || sift.parse_query(q, 'qe_idx'::regclass);
+EXCEPTION WHEN syntax_error OR program_limit_exceeded THEN
+	RETURN sqlstate || ': ' || sqlerrm;
+END $$;
+SELECT q, ferr(q) FROM (VALUES
+	('name:a'), ('nope:a'), ('nope:(a b)'), ('name:(a nope:b)'), ('x NOT nope:a'), ('name:{a nope:b}'), ('name:(a "b c")'), ('name:{/a/}'),
+	('name:(a (b OR nope:c))^2'), ('Name:a')
+) v(q);
+            q             |                                                                 ferr                                                                 
+--------------------------+--------------------------------------------------------------------------------------------------------------------------------------
+ name:a                   | ok: name:a
+ nope:a                   | 42601: sift query: unknown field "nope" (available fields: name, city) at position 1
+ nope:(a b)               | 42601: sift query: unknown field "nope" (available fields: name, city) at position 7
+ name:(a nope:b)          | 42601: sift query: unknown field "nope" (available fields: name, city) at position 9
+ x NOT nope:a             | 42601: sift query: unknown field "nope" (available fields: name, city) at position 7
+ name:{a nope:b}          | 42601: sift query: unknown field "nope" (available fields: name, city) at position 9
+ name:(a "b c")           | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 9
+ name:{/a/}               | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
+ name:(a (b OR nope:c))^2 | 42601: sift query: unknown field "nope" (available fields: name, city) at position 15
+ Name:a                   | ok: "name a"
+(10 rows)
+
+SELECT q, perr(q) FROM (VALUES
+	('name:a'), ('name:(a b)'), ('name:{a b}'), ('NOT name:(a b)'), ('x name:(a OR b)^2'), ('name:("a b" c)'), ('name:(a /b/)')
+) v(q);
+         q         |                                                                 perr                                                                 
+-------------------+--------------------------------------------------------------------------------------------------------------------------------------
+ name:a            | ok: "name a"
+ name:(a b)        | ok: "name a" AND "name b"
+ name:{a b}        | ok: "name a" OR "name b"
+ NOT name:(a b)    | 42601: sift query: NOT needs a positive term in the same AND group at position 1
+ x name:(a OR b)^2 | ok: x AND ("name a"^2 OR "name b"^2)
+ name:("a b" c)    | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
+ name:(a /b/)      | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 9
+(7 rows)
+
+DROP TABLE qe;
+DROP FUNCTION ferr;
 DROP FUNCTION perr;
 DROP EXTENSION pg_sift;

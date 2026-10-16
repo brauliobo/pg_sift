@@ -6,6 +6,12 @@
   `src/sift_compat.h`. PostgreSQL 17 has no `extension_control_path`, so `scripts/pgtest.sh install` copies sift into the server's own
   directories there (`SIFT_SUDO=sudo` when they are not writable) and the update-path checks of the lifecycle test are skipped. CI
   runs 17 and 18, and 19 built from git without failing the workflow.
+- Fix: `name:(a b)` and `name:{a b}` lost their qualifier when the group was unboosted and the same operator as its parent (the leaves
+  searched the whole text, on the index and on a seq scan alike), and `name:(NOT a)` dropped it too. Without `fields` a colon is text
+  in groups as well (no more "unknown field (the index has none)"); a name an index with fields lacks lists its fields.
+- Fix: with several sift indexes on one key, an index with another analyzer (one with `fields` next to a plain one) could serve `@@>`, so
+  a query answered differently depending on the cheapest plan, or failed while the planner costed the index. `@@>` now means one analyzer
+  (the default one when an index has it) and only indexes that answer the same serve it.
 - Fix: assertion failures on a server built with `--enable-cassert` (a stray `foreach_node(Node/Path/Plan)` cast, the GlobalVis horizon
   taken from the index instead of its heap, and a page special area read before the page layout check in `sift.verify`).
 - Packages: a `.deb` (`postgresql-18-pg-sift`, PGDG on Debian 13 and Ubuntu 24.04) and an `.rpm` (`pg_sift_18`, PGDG on RHEL, Rocky and

@@ -123,6 +123,10 @@ extern int	sift_analyzer_prefix_len(const SiftAnalyzer *a);
 /* The field called name (len bytes, case insensitive): 1.., 0 when the index has none of that name; the number of fields */
 extern int	sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len);
 extern int	sift_analyzer_nfields(const SiftAnalyzer *a);
+extern const char *sift_analyzer_field_names(const SiftAnalyzer *a);
+
+/* Do the analyzers answer every query alike? The pair and prefix terms only speed phrases and short prefixes up */
+extern bool sift_analyzer_config_agrees(const SiftAnalyzerConfig *a, const SiftAnalyzerConfig *b);
 
 /* Reloption validator: lowercase identifiers separated by commas, at most SIFT_MAX_FIELDS */
 extern void sift_analyze_validate_fields(const char *names);
