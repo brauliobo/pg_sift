@@ -3,7 +3,7 @@
  * and promotion (DESIGN.md (i) Build, (c) Promotion).
  *
  * The buffer holds docs (key, dl) and per-term posting slices (doc ordinal
- * deltas + tf, about 1.3 bytes per posting) within a memory budget. A full
+ * deltas + tf [+ positions], about 1.3 bytes per posting without) within a memory budget. A full
  * buffer is either written as a segment or spilled to a sorted run (a
  * temporary file); runs merge into one segment with memory independent of
  * the posting counts (one buffered reader per run). Runs come from the heap
@@ -21,8 +21,12 @@
 typedef struct SiftInvBuf SiftInvBuf;
 typedef struct SiftRun SiftRun;
 
-/* budget: bytes of maintenance memory the buffer may use before it is full */
-extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt);
+/*
+ * budget: bytes of maintenance memory the buffer may use before it is full.
+ * positions: the docs' terms carry position records (SiftTermFreq.pos), which
+ * the segments written from the buffer keep.
+ */
+extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt, bool positions);
 
 /*
  * Adds a document (nterms = 0 and dl = 0 for text without tokens: it still

@@ -167,7 +167,7 @@ write_docs(Relation index, SiftWriteTarget *wt, const PromoDoc *docs, int64 ndoc
 {
 	SiftScoreRef ref = score_ref(index);
 	Size		budget = (Size) maintenance_work_mem * 1024;
-	SiftInvBuf *inv = sift_inv_create(budget, CurrentMemoryContext);
+	SiftInvBuf *inv = sift_inv_create(budget, CurrentMemoryContext, false);
 	SiftRun   **runs = palloc(sizeof(SiftRun *));
 	int			nruns = 0,
 				maxruns = 1;

@@ -30,12 +30,13 @@ typedef struct SiftDocSBRef
 /*
  * Writer: docs first (strictly ascending key; dl 0 for text without
  * tokens), then terms (strictly ascending bytes, possibly none). avgdl_ref
- * is the segment's own avgdl, so only k1 and b of ref are used.
+ * is the segment's own avgdl, so only k1 and b of ref are used. positions:
+ * the terms' postings carry position records (SIFT_SEG_POSITIONS).
  */
 typedef struct SiftSegmentWriter SiftSegmentWriter;
 
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
-										  const SiftScoreRef *ref, MemoryContext mcxt);
+										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
 
 /* Returns the posting writer for this term; finish it with sift_segw_end_term */
@@ -130,9 +131,13 @@ typedef struct SiftSegStats
 extern const uint32 sift_df_class_lo[SIFT_DF_CLASSES];
 extern const char *const sift_df_class_name[SIFT_DF_CLASSES];
 
-/* One decoded term: postings in key order with tf and the doc's dl */
+/*
+ * One decoded term: postings in key order with tf and the doc's dl; pos / poslen (NULL without
+ * positions, SIFT_TERM_POS) are the postings' position records back to back and their lengths
+ */
 typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
-							   const SiftKey *keys, const uint8 *tf, const uint16 *dl);
+							   const SiftKey *keys, const uint8 *tf, const uint16 *dl,
+							   const uint8 *pos, const uint32 *poslen);
 
 /*
  * Walks every term of the segment (dictionary order) and decodes its

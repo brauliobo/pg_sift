@@ -27,6 +27,8 @@
 #include "sift_mutable.h"
 #include "sift_segment.h"
 
+#include "port/pg_bitutils.h"
+
 typedef struct LeafTerm
 {
 	char	   *term;
@@ -81,7 +83,22 @@ typedef struct EvalNode
 	int			leaf;
 	int			nchild;
 	struct EvalNode **child;
+	int			phrase;			/* the phrase (PhraseCheck) this subtree is the relaxation of, -1: none */
 } EvalNode;
+
+/*
+ * A phrase the index decides from the positions of its terms where its segments have them: leaf[i] is
+ * the leaf of the i-th term, order the terms by ascending df (the rarest term narrows the candidates
+ * first). A required phrase (on a path of ANDs from the root) refines the final matches; an optional
+ * one (under an OR) is a cursor of its own that yields the docs which hold it.
+ */
+typedef struct PhraseCheck
+{
+	int			nterms;
+	int		   *leaf;
+	int		   *order;
+	bool		required;
+} PhraseCheck;
 
 struct SiftPlan
 {
@@ -102,7 +119,15 @@ struct SiftPlan
 	EvalNode   *root;
 	SiftQuery **queries;
 	int			nqueries;
-	bool		recheck;
+	bool		recheck;		/* ranked scans: a phrase that is not required, every candidate is rechecked in the heap */
+	bool		hardrecheck;	/* unranked scans: a negated phrase, every candidate is rechecked in the heap */
+	PhraseCheck *phr;			/* phrases decided by positions where the segment has them; the heap decides the other candidates */
+	int			nphr;
+	int		   *pleaf;			/* the distinct leaves of the required phrases */
+	int			npleaf;
+	bool	   *phok;			/* [nsegs * nphr] the segment holds the positions of all terms of the phrase */
+	bool	   *segheap;		/* [nsegs] some phrase is not decided by the segment's positions */
+	bool		heap;			/* some candidates need the heap recheck */
 	bool		rescore;		/* a phrase the score depends on: the exact score comes from the text */
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;
@@ -111,7 +136,7 @@ struct SiftPlan
 	SiftPlanStats stats;
 };
 
-static EvalNode nothing = {EN_NOTHING};
+static EvalNode nothing = {EN_NOTHING, .phrase = -1};
 
 /* ---------- state ---------- */
 
@@ -190,6 +215,7 @@ en_make(SiftPlan *p, EvalKind kind, int nchild, EvalNode **child)
 	n->leaf = -1;
 	n->nchild = nchild;
 	n->child = child;
+	n->phrase = -1;
 	return n;
 }
 
@@ -291,6 +317,9 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 {
 	EvalNode  **kids = MemoryContextAlloc(p->mcxt, 2 * n->nterms * sizeof(EvalNode *));
 	int			nk = 0;
+	bool		positional = at.positive && !phrase_exact(p, n);
+	int		   *leaf = MemoryContextAlloc(p->mcxt, n->nterms * sizeof(int));
+	EvalNode   *and;
 
 	for (int i = 0; i < n->nterms; i++)
 	{
@@ -300,8 +329,18 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 			if (n->termlens[j] == n->termlens[i] && memcmp(n->terms[j], n->terms[i], n->termlens[i]) == 0)
 				break;
 		if (j < i)
+		{
+			leaf[i] = leaf[j];
 			continue;
+		}
 		kids[nk++] = term_leaf(p, n, n->terms[i], n->termlens[i], at, n);
+		leaf[i] = kids[nk - 1]->leaf;
+	}
+	if (positional)
+	{
+		p->phr = p->phr ? repalloc(p->phr, (p->nphr + 1) * sizeof(PhraseCheck)) :
+			MemoryContextAlloc(p->mcxt, sizeof(PhraseCheck));
+		p->phr[p->nphr++] = (PhraseCheck) {n->nterms, leaf, NULL, at.required};
 	}
 	for (int i = 0; p->st->opts->phrase_index == SIFT_PHRASE_PAIRS && i + 1 < n->nterms; i++)
 	{
@@ -313,7 +352,10 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 		kids[nk] = term_leaf(p, n, pair, len, at, NULL);
 		p->leaves[kids[nk++]->leaf].scoring = false;
 	}
-	return en_make(p, EN_AND, nk, kids);
+	and = en_make(p, EN_AND, nk, kids);
+	if (positional && !at.required)
+		and->phrase = p->nphr - 1;
+	return and;
 }
 
 /*
@@ -333,7 +375,8 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 		case SQ_NOTHING:
 			return &nothing;
 		case SQ_PHRASE:
-			p->recheck |= !phrase_exact(p, n);
+			p->recheck |= !phrase_exact(p, n) && !(at.required && at.positive);
+			p->hardrecheck |= !phrase_exact(p, n) && !at.positive;
 			return over || phrase_exact(p, n) ? relax_phrase(p, n, at) : &nothing;
 		case SQ_AND:
 		case SQ_OR:
@@ -388,6 +431,8 @@ expand_add(Expand *e, const char *term, int len, const SiftTermInfo *info)
 	memcpy(t->term, term, len);
 	t->len = len;
 	t->info = *info;
+	if (info->flags & SIFT_TERM_INLINE && info->pos_len > 0)
+		t->info.inline_pos = memcpy(MemoryContextAlloc(e->plan->mcxt, info->pos_len), info->inline_pos, info->pos_len);
 }
 
 static bool
@@ -959,6 +1004,215 @@ score_mutable(SiftPlan *p)
 	}
 }
 
+/* ---------- phrase positions ---------- */
+
+/*
+ * Decides the required phrases of a doc from the positions of their terms. The caller points the
+ * context at the terms' groups of the doc's SB (posctx_group) and names the doc (phrases_hold).
+ */
+typedef struct PosCtx
+{
+	const SiftPlan *plan;
+	MemoryContext mcxt;
+	SiftPostingCursor **pc;		/* [leaf] the term's cursor and its group in the SB */
+	const sift_grp **g;
+	int		   *wpage;			/* [leaf] the walk over the group's pages: the term has widx pages below wpage, */
+	uint32	   *widx;
+	uint32	   *wrank;			/* ... holding wrank postings */
+	SiftPosBuf *pb;				/* [leaf] positions in the current doc */
+	uint64	   *stamp;			/* [leaf] the doc pb belongs to */
+	uint64		doc;
+	int			page;			/* the current doc: page of the SB and offset - 1 */
+	int			off;
+	uint32	   *start;			/* scratch: the phrase starts that fit the terms so far */
+	uint32		startcap;
+} PosCtx;
+
+static PosCtx *
+posctx_create(SiftPlan *p)
+{
+	PosCtx	   *c = MemoryContextAllocZero(p->mcxt, sizeof(PosCtx));
+	int			n = Max(p->nleaves, 1);
+
+	c->plan = p;
+	c->mcxt = p->mcxt;
+	c->pc = MemoryContextAllocZero(p->mcxt, n * sizeof(SiftPostingCursor *));
+	c->g = MemoryContextAllocZero(p->mcxt, n * sizeof(sift_grp *));
+	c->wpage = MemoryContextAllocZero(p->mcxt, n * sizeof(int));
+	c->widx = MemoryContextAllocZero(p->mcxt, n * sizeof(uint32));
+	c->wrank = MemoryContextAllocZero(p->mcxt, n * sizeof(uint32));
+	c->pb = MemoryContextAllocZero(p->mcxt, n * sizeof(SiftPosBuf));
+	c->stamp = MemoryContextAllocZero(p->mcxt, n * sizeof(uint64));
+	for (int i = 0; i < n; i++)
+		c->pb[i].mcxt = p->mcxt;
+	return c;
+}
+
+static void
+posctx_group(PosCtx *c, int leaf, SiftPostingCursor *pc, const sift_grp *g)
+{
+	c->pc[leaf] = pc;
+	c->g[leaf] = g;
+	c->wpage[leaf] = 0;
+	c->widx[leaf] = 0;
+	c->wrank[leaf] = 0;
+}
+
+static inline uint32
+pages_below(const uint64 *pages, int page)
+{
+	uint32		n = 0;
+
+	for (int wd = 0; wd < page / 64; wd++)
+		n += pg_popcount64(pages[wd]);
+	return n + pg_popcount64(pages[page / 64] & ((UINT64CONST(1) << (page & 63)) - 1));
+}
+
+/* Rank in the term of the current doc, which the term's group holds; the walk keeps the pages behind it */
+static uint32
+posctx_rank(PosCtx *c, int leaf)
+{
+	const sift_grp *g = c->g[leaf];
+	uint32		idx;
+	const uint8 *m;
+
+	Assert(g->pages[c->page / 64] >> (c->page & 63) & 1);
+	if (c->page < c->wpage[leaf])
+		c->wpage[leaf] = c->widx[leaf] = c->wrank[leaf] = 0;
+	idx = pages_below(g->pages, c->page);
+	c->wrank[leaf] += sift_popcount(g->off + (size_t) c->widx[leaf] * g->w, (size_t) (idx - c->widx[leaf]) * g->w);
+	c->widx[leaf] = idx;
+	c->wpage[leaf] = c->page;
+	m = g->off + (size_t) idx * g->w;
+	return g->base + c->wrank[leaf] + sift_popcount(m, c->off >> 3) + pg_popcount32(m[c->off >> 3] & ((1 << (c->off & 7)) - 1));
+}
+
+static const SiftPosBuf *
+posctx_positions(PosCtx *c, int leaf)
+{
+	if (c->stamp[leaf] != c->doc)
+	{
+		sift_post_positions(c->pc[leaf], posctx_rank(c, leaf), &c->pb[leaf]);
+		c->stamp[leaf] = c->doc;
+	}
+	return &c->pb[leaf];
+}
+
+/* Does the current doc hold the phrase: the starts that fit the terms read so far, narrowed term by term, rarest first */
+static bool
+phrase_match(PosCtx *c, const PhraseCheck *ph)
+{
+	uint32		n = 0;
+
+	for (int k = 0; k < ph->nterms; k++)
+	{
+		uint32		i = ph->order[k],
+					j = 0,
+					m = 0;
+		const SiftPosBuf *pb = posctx_positions(c, ph->leaf[i]);
+
+		if (k == 0)
+		{
+			if (pb->n > c->startcap)
+			{
+				c->startcap = Max(pb->n, 2 * c->startcap);
+				c->start = c->start ? repalloc_huge(c->start, (Size) c->startcap * sizeof(uint32)) :
+					MemoryContextAllocHuge(c->mcxt, (Size) c->startcap * sizeof(uint32));
+			}
+			for (; j < pb->n; j++)
+				if (pb->v[j] >= i)
+					c->start[m++] = pb->v[j] - i;
+		}
+		else
+			for (uint32 x = 0; x < n; x++)
+			{
+				uint32		want = c->start[x] + i;
+
+				while (j < pb->n && pb->v[j] < want)
+					j++;
+				if (j == pb->n)
+					break;
+				if (pb->v[j] == want)
+					c->start[m++] = c->start[x];
+			}
+		if ((n = m) == 0)
+			return false;
+	}
+	return true;
+}
+
+/* Is no required phrase the positions of segment s decide missing from the doc at (page of the SB, offset - 1) */
+static bool
+phrases_hold(PosCtx *c, int s, int page, int off)
+{
+	const SiftPlan *p = c->plan;
+
+	c->doc++;
+	c->page = page;
+	c->off = off;
+	for (int i = 0; i < p->nphr; i++)
+		if (p->phr[i].required && p->phok[s * p->nphr + i] && !phrase_match(c, &p->phr[i]))
+			return false;
+	return true;
+}
+
+/* Orders the terms of every phrase by df over the segments and finds where the positions decide */
+static void
+phrase_prepare(SiftPlan *p)
+{
+	uint64	   *df = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(uint64));
+
+	p->heap = p->scoring ? p->recheck : p->hardrecheck;
+	if (p->nphr == 0)
+		return;
+	p->pleaf = MemoryContextAlloc(p->mcxt, p->nleaves * sizeof(int));
+	for (int i = 0; i < p->nphr; i++)
+		for (int j = 0; j < p->phr[i].nterms; j++)
+		{
+			int			leaf = p->phr[i].leaf[j],
+						k;
+
+			for (int s = 0; df[leaf] == 0 && s < p->nsegs; s++)
+				df[leaf] += p->leaves[leaf].nterms[s] ? p->leaves[leaf].terms[s][0].info.df : 0;
+			for (k = 0; k < p->npleaf && p->pleaf[k] != leaf; k++)
+				;
+			if (k == p->npleaf && p->phr[i].required)
+				p->pleaf[p->npleaf++] = leaf;
+		}
+	p->phok = MemoryContextAlloc(p->mcxt, Max(p->nsegs * p->nphr, 1) * sizeof(bool));
+	p->segheap = MemoryContextAllocZero(p->mcxt, Max(p->nsegs, 1) * sizeof(bool));
+	for (int i = 0; i < p->nphr; i++)
+	{
+		PhraseCheck *ph = &p->phr[i];
+
+		ph->order = MemoryContextAlloc(p->mcxt, ph->nterms * sizeof(int));
+		for (int j = 0; j < ph->nterms; j++)
+		{
+			int			k = j;
+
+			for (; k > 0 && df[ph->leaf[ph->order[k - 1]]] > df[ph->leaf[j]]; k--)
+				ph->order[k] = ph->order[k - 1];
+			ph->order[k] = j;
+		}
+		for (int s = 0; s < p->nsegs; s++)
+		{
+			bool		ok = true;
+
+			for (int j = 0; j < ph->nterms; j++)
+			{
+				const EvalLeaf *l = &p->leaves[ph->leaf[j]];
+
+				ok &= l->nterms[s] == 0 || (l->terms[s][0].info.flags & SIFT_TERM_POS) != 0;
+			}
+			p->phok[s * p->nphr + i] = ok;
+			p->segheap[s] |= !ok;
+		}
+	}
+	p->heap |= p->nmhit > 0;
+	for (int s = 0; s < p->nsegs; s++)
+		p->heap |= p->segheap[s];
+}
+
 static SiftPlan *
 plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, const void *shared)
 {
@@ -1007,6 +1261,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 		import_mutable(p, shared);
 	else
 		bind_mutable(p);
+	phrase_prepare(p);
 	if (p->scoring)
 	{
 		bind_scoring(p);
@@ -1042,6 +1297,16 @@ sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
 
 /* ---------- iterator ---------- */
 
+/*
+ * What the iterator keeps of a segment's tree: the leaves' cursors, from which the phrase walkers
+ * read the groups of the matches, and the context that decides phrases
+ */
+typedef struct IterCurs
+{
+	SiftPostingCursor ***leafpc;	/* [leaf] -> the cursors of the leaf's terms in this segment */
+	PosCtx	   *pos;
+} IterCurs;
+
 struct SiftMatchIter
 {
 	SiftPlan   *plan;
@@ -1056,6 +1321,9 @@ struct SiftMatchIter
 	int			page;			/* next page of the loaded SB to return */
 	uint64		pages[SIFT_PAGEMASK_WORDS];
 	uint64	  (*om)[SIFT_OFFMASK_WORDS];	/* merged offset masks by page of the SB */
+	PosCtx	   *pos;
+	IterCurs   *curs;				/* [segment] */
+	uint64		heap[SIFT_PAGEMASK_WORDS];	/* pages of the SB whose candidates the heap must recheck */
 };
 
 static uint8 *
@@ -1077,6 +1345,105 @@ typedef struct SegCurs
 	sift_cur  **leafor;				/* [leaf] -> its OR, for the multi-term scoring leaves the ranker narrows per unit */
 } SegCurs;
 
+/* An optional phrase: the docs of its relaxation (the AND of its terms) that hold the phrase */
+typedef struct PhraseCur
+{
+	sift_cur	c;				/* first: cursors are used through it */
+	sift_cur   *kidp[1];
+	const IterCurs *ic;
+	int			ph;
+} PhraseCur;
+
+/* Copies the docs of g that hold the phrase into the cursor's group; false when there are none */
+static bool
+phrase_group(PhraseCur *pc, const sift_grp *g)
+{
+	PosCtx	   *ctx = pc->ic->pos;
+	const PhraseCheck *ph = &ctx->plan->phr[pc->ph];
+	const uint8 *src = g->off;
+	uint8	   *dst = pc->c.buf;
+	uint64		pages[SIFT_PAGEMASK_WORDS] = {0};
+
+	for (int i = 0; i < ph->nterms; i++)
+	{
+		SiftPostingCursor *tc = pc->ic->leafpc[ph->leaf[i]][0];
+		const sift_cur *cur = sift_post_cursor(tc);
+
+		if (cur->state != 1 || cur->g.gid != g->gid)
+			elog(ERROR, "sift: a phrase term is not positioned at superblock %u", g->gid);
+		posctx_group(ctx, ph->leaf[i], tc, &cur->g);
+	}
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		for (uint64 m = g->pages[wd]; m; m &= m - 1, src += g->w)
+		{
+			int			page = wd * 64 + pg_rightmost_one_pos64(m);
+			uint64		mask[SIFT_OFFMASK_WORDS] = {0};
+			uint64		any = 0;
+
+			memcpy(mask, src, g->w);
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				for (uint64 b = mask[k]; b; b &= b - 1)
+				{
+					ctx->doc++;
+					ctx->page = page;
+					ctx->off = k * 64 + pg_rightmost_one_pos64(b);
+					if (!phrase_match(ctx, ph))
+						mask[k] &= ~(b & -b);
+				}
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				any |= mask[k];
+			if (!any)
+				continue;
+			pages[wd] |= UINT64CONST(1) << (page & 63);
+			memcpy(dst, mask, g->w);
+			dst += g->w;
+		}
+	if ((pages[0] | pages[1] | pages[2] | pages[3]) == 0)
+		return false;
+	pc->c.g = (sift_grp) {.gid = g->gid,.w = g->w,.base = 0,.n = 0,.off = pc->c.buf};
+	memcpy(pc->c.g.pages, pages, sizeof(pages));
+	return true;
+}
+
+static const sift_grp *
+phrase_seek(sift_cur *c, uint32_t target)
+{
+	PhraseCur  *pc = (PhraseCur *) c;
+
+	if (c->state == 2)
+		return NULL;
+	if (c->state == 1 && c->g.gid >= target)
+		return &c->g;
+	for (const sift_grp *g; (g = sift_seek(pc->kidp[0], target)); target = g->gid + 1)
+		if (phrase_group(pc, g))
+		{
+			c->state = 1;
+			return &c->g;
+		}
+	c->state = 2;
+	return NULL;
+}
+
+/* kid filtered by phrase ph when the segment's positions decide it; kid itself otherwise */
+static sift_cur *
+phrase_cursor(SiftPlan *p, int s, int ph, sift_cur *kid, const IterCurs *ic, MemoryContext cx)
+{
+	PhraseCur  *pc;
+
+	if (kid == NULL || ic == NULL || !p->phok[s * p->nphr + ph])
+		return kid;
+	pc = MemoryContextAllocZero(cx, sizeof(PhraseCur));
+	pc->c.seek = phrase_seek;
+	pc->c.buf = cursor_buf(cx);
+	pc->c.ub1 = 255;
+	pc->kidp[0] = kid;
+	pc->c.op.kid = pc->kidp;
+	pc->c.op.k = 1;
+	pc->ic = ic;
+	pc->ph = ph;
+	return &pc->c;
+}
+
 /* AND / OR of k >= 1 cursors; the single cursor itself for k = 1 */
 static sift_cur *
 op_cursor(SegCurs *cs, MemoryContext cx, EvalKind kind, sift_cur **kid, int k)
@@ -1096,7 +1463,7 @@ op_cursor(SegCurs *cs, MemoryContext cx, EvalKind kind, sift_cur **kid, int k)
 }
 
 static sift_cur *
-leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, MemoryContext cx)
+leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, const IterCurs *ic, MemoryContext cx)
 {
 	sift_cur  **kid = MemoryContextAlloc(cx, Max(l->nterms[s], 1) * sizeof(sift_cur *));
 	SiftPostingCursor **pc = MemoryContextAlloc(cx, Max(l->nterms[s], 1) * sizeof(SiftPostingCursor *));
@@ -1114,14 +1481,16 @@ leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, MemoryContext cx
 		orc = op_cursor(cs, cx, EN_OR, kid, l->nterms[s]);
 	if (cs)
 		cs->leafpc[l - p->leaves] = pc;
+	else if (ic)
+		ic->leafpc[l - p->leaves] = pc;
 	if (narrowed)
 		cs->leafor[l - p->leaves] = orc;
 	return orc;
 }
 
-/* Cursor over the segment's matches of n, NULL when there are none */
+/* Cursor over the segment's matches of n, NULL when there are none; without cs, ic keeps every leaf's cursors */
 static sift_cur *
-seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, MemoryContext cx)
+seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *ic, MemoryContext cx)
 {
 	sift_cur  **pos,
 			  **neg,
@@ -1133,7 +1502,8 @@ seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, MemoryContext cx)
 	if (n->kind == EN_NOTHING)
 		return NULL;
 	if (n->kind == EN_LEAF)
-		return leaf_cursor(p, s, &p->leaves[n->leaf], cs, cx);
+		return n->phrase < 0 ? leaf_cursor(p, s, &p->leaves[n->leaf], cs, ic, cx) :
+			phrase_cursor(p, s, n->phrase, leaf_cursor(p, s, &p->leaves[n->leaf], cs, ic, cx), ic, cx);
 	pos = MemoryContextAlloc(cx, n->nchild * sizeof(sift_cur *));
 	neg = MemoryContextAlloc(cx, n->nchild * sizeof(sift_cur *));
 	for (int i = 0; i < n->nchild; i++)
@@ -1141,7 +1511,7 @@ seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, MemoryContext cx)
 		const EvalNode *k = n->child[i];
 		bool		isnot = k->kind == EN_NOT;
 
-		c = seg_cursor(p, s, isnot ? k->child[0] : k, cs, cx);
+		c = seg_cursor(p, s, isnot ? k->child[0] : k, cs, ic, cx);
 		if (c == NULL && n->kind == EN_AND && !isnot)
 		{
 			/* the ranker needs every leaf's cursors, even those of a branch that cannot match */
@@ -1155,6 +1525,8 @@ seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, MemoryContext cx)
 	if (npos == 0 || dead)
 		return NULL;
 	c = op_cursor(cs, cx, n->kind, pos, npos);
+	if (n->phrase >= 0)
+		c = phrase_cursor(p, s, n->phrase, c, ic, cx);
 	if (nneg > 0)
 	{
 		sift_cur  **kid = MemoryContextAlloc(cx, 2 * sizeof(sift_cur *));
@@ -1182,9 +1554,19 @@ sift_iter_begin(SiftPlan *plan)
 									   SIFT_SIMD_ALIGN, 0);
 	it->page = SIFT_SB_PAGES;
 	it->sb_end = UINT32_MAX;
+	if (plan->nphr > 0)
+	{
+		it->pos = posctx_create(plan);
+		it->curs = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(IterCurs));
+	}
 	for (int s = 0; s < plan->nsegs; s++)
 	{
-		it->root[s] = seg_cursor(plan, s, plan->root, NULL, plan->mcxt);
+		if (it->curs)
+		{
+			it->curs[s].leafpc = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(SiftPostingCursor **));
+			it->curs[s].pos = it->pos;
+		}
+		it->root[s] = seg_cursor(plan, s, plan->root, NULL, it->curs ? &it->curs[s] : NULL, plan->mcxt);
 		sift_sr_release(&plan->seg[s]->sr);
 	}
 	return it;
@@ -1205,14 +1587,46 @@ sift_iter_end(SiftMatchIter *it)
 		sift_sr_release(&it->plan->seg[s]->sr);
 }
 
-/* ORs the live part of one segment's group into the SB buffer */
+/* Points the phrase walkers at the groups the tree's cursors hold in SB gid: every term of a match is there */
+static void
+iter_phrase_groups(SiftMatchIter *it, int s, uint32 gid)
+{
+	const SiftPlan *p = it->plan;
+
+	for (int k = 0; k < p->npleaf; k++)
+	{
+		SiftPostingCursor *pc = it->curs[s].leafpc[p->pleaf[k]][0];
+		const sift_cur *c = sift_post_cursor(pc);
+
+		if (c->state != 1 || c->g.gid != gid)
+			elog(ERROR, "sift: a phrase term is not positioned at superblock %u", gid);
+		posctx_group(it->pos, p->pleaf[k], pc, &c->g);
+	}
+}
+
+/* Clears the docs of mask that lack a phrase the positions decide */
+static void
+phrases_filter(PosCtx *c, int s, int page, uint64 *mask)
+{
+	for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		for (uint64 m = mask[k]; m; m &= m - 1)
+			if (!phrases_hold(c, s, page, k * 64 + pg_rightmost_one_pos64(m)))
+				mask[k] &= ~(m & -m);
+}
+
+/* ORs the live part of one segment's group into the SB buffer, minus the docs the positions refute */
 static void
 iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
 {
-	SiftSegment *seg = it->plan->seg[s];
+	const SiftPlan *p = it->plan;
+	SiftSegment *seg = p->seg[s];
 	const uint8 *off = g->off;
 	SiftDocChunk dc;
 	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_docs(seg, g->gid, &dc) && dc.dirty;
+	bool		pos = p->npleaf > 0;
+
+	if (pos)
+		iter_phrase_groups(it, s, g->gid);
 
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
 		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
@@ -1231,10 +1645,14 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g)
 				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 					mask[k] &= live[k];
 			}
+			if (pos)
+				phrases_filter(it->pos, s, page, mask);
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 				any |= mask[k] != 0;
 			if (!any)
 				continue;
+			if (p->nphr > 0 && p->segheap[s])
+				it->heap[wd] |= UINT64CONST(1) << (page & 63);
 			if (!(it->pages[wd] & (UINT64CONST(1) << (page & 63))))
 			{
 				memset(dst, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
@@ -1264,6 +1682,8 @@ iter_merge_mutable(SiftMatchIter *it, uint32 sb)
 			it->pages[page / 64] |= UINT64CONST(1) << (page & 63);
 		}
 		it->om[page][off / 64] |= UINT64CONST(1) << (off & 63);
+		if (p->nphr > 0)
+			it->heap[page / 64] |= UINT64CONST(1) << (page & 63);
 	}
 }
 
@@ -1305,6 +1725,7 @@ iter_load_sb(SiftMatchIter *it)
 		}
 		CHECK_FOR_INTERRUPTS();
 		memset(it->pages, 0, sizeof(it->pages));
+		memset(it->heap, 0, sizeof(it->heap));
 		for (int s = 0; s < it->plan->nsegs; s++)
 			if (it->grp[s] && it->grp[s]->gid == sb)
 				iter_merge(it, s, it->grp[s]);
@@ -1346,7 +1767,7 @@ sift_iter_next(SiftMatchIter *it, SiftPageMatch *out)
 	}
 	out->blk = (BlockNumber) it->sb << SIFT_SB_SHIFT | page;
 	memcpy(out->offmask, it->om[page], sizeof(out->offmask));
-	out->recheck = it->plan->recheck;
+	out->recheck = it->plan->hardrecheck || (it->heap[page / 64] >> (page & 63) & 1);
 	it->page = page + 1;
 	return true;
 }
@@ -1464,6 +1885,8 @@ struct SiftRanker
 	bool		complete;
 	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
 	bool		par_active;			/* ... and is running now */
+	PosCtx	   *phrpos;
+	bool		posok;				/* the phrase walkers sit on the current unit's groups */
 };
 
 static void hot_forget(SiftRanker *r);
@@ -1668,7 +2091,7 @@ rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 	rs->last = -1;
 	rs->cs.leafpc = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(SiftPostingCursor **));
 	rs->cs.leafor = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(sift_cur *));
-	rs->root = seg_cursor(p, s, p->root, &rs->cs, p->mcxt);
+	rs->root = seg_cursor(p, s, p->root, &rs->cs, NULL, p->mcxt);
 	if (rs->root == NULL)
 		return;
 	rs->lub = MemoryContextAllocZero(cx, Max(p->nleaves, 1) * sizeof(LeafUB));
@@ -1710,6 +2133,8 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->wk = MemoryContextAllocAligned(plan->mcxt, sizeof(RankWork), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
 	r->leafub = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
 	r->seg = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(RankSeg));
+	if (plan->nphr > 0)
+		r->phrpos = posctx_create(plan);
 	for (int s = 0; s < plan->nsegs; s++)
 	{
 		rank_open_seg(r, s, cx);
@@ -2067,7 +2492,7 @@ sift_plan_recheck(SiftPlan *plan, text *doc)
 bool
 sift_plan_recheck_needed(const SiftPlan *plan)
 {
-	return plan->recheck;
+	return plan->heap;
 }
 
 /* Index entry of a hit whose visible tuple sits elsewhere on the page (HOT chain) */
@@ -2103,22 +2528,29 @@ hot_forget(SiftRanker *r)
  * therefore compares the page only.
  */
 static void
-rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
+rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 {
 	SiftPlan   *p = r->plan;
 	ItemPointerData tid;
 	SiftKey		vis;
 	text	   *doc = NULL;
 	MemoryContext old;
-	bool		ok;
+	bool		ok,
+				heap = p->recheck || p->nphr > 0;
 
 	if (!sift_kern_topk_admits(tk, score, (key & ~UINT64CONST(0xFFFF)) | 1))
 		return;
+	if (seg >= 0 && r->posok)
+	{
+		if (!phrases_hold(r->phrpos, seg, sift_key_block(key) & (SIFT_SB_PAGES - 1), (key & 0xFFFF) - 1))
+			return;
+		heap = p->recheck || p->segheap[seg];
+	}
 	sift_key_to_tid(key, &tid);
 	p->stats.candidates++;
 	old = MemoryContextSwitchTo(r->tmpcx);
-	ok = r->verify(r->arg, &tid, p->recheck, &doc);
-	if (ok && p->recheck)
+	ok = r->verify(r->arg, &tid, heap, &doc);
+	if (ok && heap)
 		ok = doc_pass(p, doc, &score);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(r->tmpcx);
@@ -2184,6 +2616,21 @@ unit_terms(SiftPlan *p, RankSeg *rs, float4 theta)
 		if (orc)
 			orc->op.k = nlive;
 	}
+}
+
+/* Points the phrase walkers at the unit's groups; false when a term has none there */
+static bool
+rank_phrase_groups(SiftRanker *r, const RankSeg *rs)
+{
+	for (int k = 0; k < r->plan->npleaf; k++)
+	{
+		const RkTerm *t = rs->term + rs->first[r->plan->pleaf[k]];
+
+		if (t->g == NULL)
+			return false;
+		posctx_group(r->phrpos, r->plan->pleaf[k], t->gc, t->g);
+	}
+	return true;
 }
 
 /* The term's own cursor at the unit's SB; the tree's seeks skip groups of branches that do not match, which still score */
@@ -2263,6 +2710,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[u->seg]; j++)
 			if (rs->term[rs->first[i] + j].live)
 				term_seek(p, rs, &rs->term[rs->first[i] + j], u->gid);
+	r->posok = p->nphr > 0 && rank_phrase_groups(r, rs);
 	order_blocks(order, n, u->ub);
 	for (int i = 0; i < n; i++)
 	{
@@ -2283,7 +2731,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			int			slot = r->wk->slot[j];
 			BlockNumber blk = u->gid << SIFT_SB_SHIFT | (b * SIFT_BLK_PAGES + slot / SIFT_KERN_SLOTS);
 
-			rank_candidate(r, tk, (SiftKey) blk << 16 | (slot % SIFT_KERN_SLOTS + 1), r->wk->vals[j]);
+			rank_candidate(r, tk, (SiftKey) blk << 16 | (slot % SIFT_KERN_SLOTS + 1), r->wk->vals[j], u->seg);
 		}
 		if (r->par_active)
 			sift_par_raise_theta(r->par, sift_kern_topk_theta(tk));
@@ -2305,7 +2753,7 @@ rank_mutable(SiftRanker *r, SiftTopK *tk)
 
 	for (int64 i = 0; i < p->nmhit; i++)
 		if (p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key))
-			rank_candidate(r, tk, p->mhit[i].key, p->mhit[i].score);
+			rank_candidate(r, tk, p->mhit[i].key, p->mhit[i].score, -1);
 }
 
 static void

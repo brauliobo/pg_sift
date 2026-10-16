@@ -133,6 +133,9 @@ define_reloptions(void)
 					   "Phrase index: none, or pairs to index adjacent token pairs (exact two-word phrases, REINDEX to apply)",
 					   phrase_index_names, SIFT_PHRASE_NONE,
 					   "Valid values are \"none\" and \"pairs\".", AccessExclusiveLock);
+	add_bool_reloption(sift_relopt_kind, "positions",
+					   "Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply)",
+					   true, AccessExclusiveLock);
 	add_string_reloption(sift_relopt_kind, "fields",
 						 "Names of the first sections of the indexed text (split at chr(29)) that queries can search apart, as name:word",
 						 "", sift_analyze_validate_fields, AccessExclusiveLock);
@@ -222,6 +225,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
 		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
+		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -237,6 +241,7 @@ sift_index_options(Relation index)
 		.case_folding = true,
 		.accent_folding = true,
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
+		.positions = true,
 	};
 
 	return index->rd_options ? (const SiftOptions *) index->rd_options : &defaults;
