@@ -2,7 +2,7 @@
 # Multi-field autocomplete benchmark: sift, sift with phrase_index = pairs, ParadeDB pg_search, pg_textsearch and rum on
 # GeoNames places (name, alternate names, region, country, feature): 1-4 letter prefixes, whole words, 2-3 word ANDs, name
 # matches boosted x3, top-k by score, filtered and unordered scans, count(*).
-# sift, sift pairs and pg_search answer every workload natively. rum (a tsvector column, `tsv @@ prefix query`, `<=>`
+# sift, its variants (pairs, positions off) and pg_search answer every workload natively. rum (a tsvector column, `tsv @@ prefix query`, `<=>`
 # ranking) and pg_textsearch (a `bm25` index on the all-fields text) filter by the same prefix tsquery for count and scan, but
 # have no field boost (rum) or no prefix scoring and no field boost (pg_textsearch), so those cells are emulations, built
 # next to the native index and reported as the `emulation` build of the engine (docs/BENCHMARKS.md):
@@ -11,7 +11,7 @@
 #   pg_textsearch      top, boost, filter: bm25 indexes on stored columns of the edge n-grams (1-15 letters) of the words, the
 #                      analysis of pg_search's edge_ngram(1, 15); a typed prefix becomes a whole term; boost is the sum of
 #                      the all-fields score and 3 x the name-field score of the same n-grams
-# sift pairs, rum and pg_textsearch live in their own databases (rum's columns do not enlarge the others' table, and the
+# The sift variants, rum and pg_textsearch live in their own databases (rum's columns do not enlarge the others' table, and the
 # `bm25` access method of pg_textsearch has the name of pg_search's). Engines whose extension is missing are skipped.
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
@@ -23,7 +23,7 @@
 # latencies). Rounds stop once every cell's p50 spread is under TOL after MINR.
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt. KEEP=1 keeps the cluster.
-# Env: ENGINES (sift sift_pairs pg_search pg_textsearch rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class; check: queries
+# Env: ENGINES (sift sift_nopos sift_pairs pg_search pg_textsearch rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class; check: queries
 # per class) TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
@@ -50,12 +50,14 @@ PGS_TEXT="($TEXT)::pdb.alias('ptext')"; PGS_NAME="($NAME)::pdb.alias('pname')"
 declare -A INDEX=(
   [pg_search]="CREATE INDEX places_pg_search ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
   [sift]="CREATE INDEX places_sift ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3)"
+  [sift_nopos]="CREATE INDEX places_sift_nopos ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3, positions = off)"
   [sift_pairs]="CREATE INDEX places_sift_pairs ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3, phrase_index = pairs)"
   [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)"
   [pg_textsearch]="CREATE INDEX places_pg_textsearch ON places USING bm25 (($TEXT)) WITH (text_config = 'simple')")
 declare -A SETUP=(
   [pg_search]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
   [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
+  [sift_nopos]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift_nopos SET sift.max_expansions = 100000"
   [sift_pairs]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift_pairs SET sift.max_expansions = 100000"
   [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED"
   [pg_textsearch]="CREATE EXTENSION IF NOT EXISTS pg_textsearch; ALTER DATABASE places_pg_textsearch SET default_text_search_config = 'pg_catalog.simple'; ALTER DATABASE places_pg_textsearch SET enable_seqscan = off")
@@ -81,7 +83,7 @@ NGSCAN="SELECT * FROM places WHERE ng_text @@ plainto_tsquery('simple', :q)"
 NGTEXT="(ng_text <@> to_bm25query(:ng, 'places_pg_textsearch_ng'))" NGNAME="(ng_name <@> to_bm25query(:ng, 'places_pg_textsearch_ngname'))"
 stmt() {
   case $1/$2 in
-    */sift_pairs) stmt "$1" sift ;;
+    */sift_nopos|*/sift_pairs) stmt "$1" sift ;;
     match/sift) echo "SELECT id FROM places WHERE ($SECT) @@> :sq" ;;
     match/pg_search) echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q" ;;
     match/rum) echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery" ;;

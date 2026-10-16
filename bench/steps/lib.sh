@@ -46,7 +46,7 @@ drop_db() { PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)"; 
 # An adapter (bench/engines/<name>.sh) sets REQUIRES (extension), SETUP and INDEX (SQL), and either PRED and RANK
 # (SQL expressions over `mode` and `terms` that render the WHERE condition and the ORDER BY of a query, NULL when
 # the engine cannot answer it; SOURCE: the FROM item of ranked statements when it is not `docs WHERE PRED`; HELPERS: SQL
-# they use) or, for engines outside Postgres, RENDER and the x_* functions.
+# they use; PROBE: see engine_available) or, for engines outside Postgres, RENDER and the x_* functions.
 render_sql() {
   echo "${HELPERS:-}"
   printf 'CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS $b$ SELECT %s $b$;\n' "$PRED"
@@ -54,20 +54,23 @@ render_sql() {
   printf 'CREATE OR REPLACE FUNCTION bench_source(mode text, terms text[]) RETURNS text LANGUAGE sql AS $b$ SELECT %s $b$;\n' "${SOURCE:-NULL::text}"
 }
 load_engine() {
-  ENGINE=$1; REQUIRES=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''
+  ENGINE=$1; REQUIRES=''; PROBE=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''
   . "$BENCH/engines/$1.sh"
   [[ -n $RENDER ]] || RENDER=$(render_sql)
 }
 # the step that times an engine's workloads: Postgres adapters through pgbench, external ones through xbench
 runner() { if grep -q '^EXTERNAL=' "$BENCH/engines/$1.sh"; then echo xrun.sh; else echo run.sh; fi; }
+# PROBE (adapters): a statement over a temp table `probe (t text)` that only works when the installed extension has what the
+# engine needs (a reloption of a newer build); it runs in a rolled back transaction
 engine_available() {
-  [[ -z $REQUIRES ]] || [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '$REQUIRES'") == 1 ]]
+  [[ -z $REQUIRES ]] || [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '$REQUIRES'") == 1 ]] || return 1
+  [[ -z $PROBE ]] || PGDATABASE=postgres q -c "BEGIN; CREATE EXTENSION IF NOT EXISTS $REQUIRES; CREATE TEMP TABLE probe (t text); $PROBE; ROLLBACK" >/dev/null 2>&1
 }
 # Prints the engines of $1 whose extension is installed; says why the others are left out (stderr).
 available_engines() {
   local e
   for e in $1; do
-    ( load_engine "$e"; engine_available ) && echo "$e" || log "skipping $e: its extension is not installed (bench/bench setup)" >&2
+    ( load_engine "$e"; engine_available ) && echo "$e" || log "skipping $e: its extension is not installed or lacks what it needs (bench/bench setup)" >&2
   done
 }
 clone_db() {

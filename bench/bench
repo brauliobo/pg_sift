@@ -47,8 +47,8 @@ Options (not every option applies to every command)
                       full   218,058 articles (all), cities500 (236,262 places), 4-6 rounds: about 1.5 hours
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
-  --engines LIST    comma separated. run/cold/all: sift sift_pairs (phrase_index = pairs) pg_search pg_textsearch rum
-                    (default: all five). setup: which engines to build.
+  --engines LIST    comma separated. run/cold/all: sift, sift_nopos (positions = off), sift_pairs (phrase_index = pairs),
+                    pg_search, pg_textsearch, rum (default: all that the installed sift supports). setup: which engines to build.
                     An engine whose extension is missing is skipped with a message.
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
   --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default 4 / 8, 3 for builds)
@@ -172,7 +172,7 @@ cmd_setup() {
   # Without network or a toolchain the system's copy of an engine is used when installed (machine.txt says which).
   local e
   for e in ${engines:-$ALL_ENGINES}; do
-    case $e in sift|sift_pairs) continue ;; esac
+    case $e in sift|sift_nopos|sift_pairs) continue ;; esac
     "$STEPS/fetch.sh" "$e" || { echo "warning: $e could not be built or fetched; using the system's if installed" >&2; rm -rf "$ENG/$e/root"; }
   done
 }
@@ -262,13 +262,14 @@ cluster_up() { # the tier's cluster with the `bench` corpus, left running (bench
 }
 
 cmd_check() {
-  local what=${rest[0]:-} engine=${rest[1]:-} n=${rest[2]:-}
   if [[ $dataset == places ]]; then
-    case $what in oracle|rank|'') ;; *) die "usage: check --dataset places [oracle|rank] [N]" ;; esac
+    [[ ${rest[0]:-} != [0-9]* ]] || rest=('' "${rest[@]}")   # check --dataset places N: both checks
+    case ${rest[0]:-} in oracle|rank|'') ;; *) die "usage: check --dataset places [oracle|rank] [N]" ;; esac
     datasets=places; preflight; ready; tier_env
-    ENGINES=$(selected) DEST=$HERE/out/places-check-$tier "$STEPS/places.sh" "$step_mode" check "${what:-all}" "$engine"
+    ENGINES=$(selected) DEST=$HERE/out/places-check-$tier "$STEPS/places.sh" "$step_mode" check "${rest[0]:-all}" "${rest[1]:-}"
     return
   fi
+  local what=${rest[0]:-} engine=${rest[1]:-} n=${rest[2]:-}
   [[ -n $engine ]] || die "usage: check oracle|rank ENGINE [N]"
   datasets=articles; cluster_up
   case $what in
