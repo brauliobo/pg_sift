@@ -14,6 +14,7 @@
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -246,16 +247,40 @@ score_walker(Node *node, ScoreRefs *refs)
 	return expression_tree_walker(node, score_walker, refs);
 }
 
+/* The expressions of the sort key's class that are about rel: its own, and for a partition the ones derived from its parent's */
+static List *
+pathkey_exprs(PathKey *pk, RelOptInfo *rel)
+{
+	EquivalenceMemberIterator it;
+	EquivalenceMember *em;
+	List	   *exprs = NIL;
+
+	setup_eclass_member_iterator(&it, pk->pk_eclass, rel->relids);
+	while ((em = eclass_member_iterator_next(&it)) != NULL)
+		exprs = lappend(exprs, em->em_expr);
+	return exprs;
+}
+
+/* A partition or inheritance child: the query is written for the top parent, so its score expressions are the parent's translated to the child */
+static bool
+is_partition(RelOptInfo *rel)
+{
+	return rel->reloptkind == RELOPT_OTHER_MEMBER_REL;
+}
+
 /* sift.score / max_score of rel in the final target list and in the query's first sort key */
 static List *
 score_exprs(PlannerInfo *root, RelOptInfo *rel)
 {
-	ScoreRefs	refs = {rel->relid, NIL};
+	ScoreRefs	refs = {is_partition(rel) ? bms_singleton_member(rel->top_parent_relids) : rel->relid, NIL};
+	List	   *own = NIL;
 
 	score_walker((Node *) root->processed_tlist, &refs);
+	foreach_node(Node, e, refs.found)
+		own = lappend(own, is_partition(rel) ? adjust_appendrel_attrs_multilevel(root, e, rel, rel->top_parent) : e);
+	refs = (ScoreRefs) {rel->relid, own};
 	if (root->query_pathkeys != NIL)
-		foreach_node(EquivalenceMember, em, linitial_node(PathKey, root->query_pathkeys)->pk_eclass->ec_members)
-			score_walker((Node *) em->em_expr, &refs);
+		score_walker((Node *) pathkey_exprs(linitial_node(PathKey, root->query_pathkeys), rel), &refs);
 	return refs.found;
 }
 
@@ -270,8 +295,8 @@ sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk)
 	*pk = linitial_node(PathKey, root->query_pathkeys);
 	if ((*pk)->pk_cmptype != COMPARE_GT)
 		return false;
-	foreach_node(EquivalenceMember, em, (*pk)->pk_eclass->ec_members)
-		if (sift_is_score_expr((Node *) em->em_expr, rel->relid, &is_max) && !is_max)
+	foreach_ptr(Expr, e, pathkey_exprs(*pk, rel))
+		if (sift_is_score_expr((Node *) e, rel->relid, &is_max) && !is_max)
 			return true;
 	return false;
 }
@@ -408,7 +433,8 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
 	cp->path.rows = rel->rows / divisor;
-	cp->path.parallel_safe = parallel_ok(rel);
+	/* a ranked partition under a Parallel Append would reach a Sort that loses the scan's tie order: MergeAppend keeps it */
+	cp->path.parallel_safe = parallel_ok(rel) && !(mode == SIFT_MODE_RANKED && is_partition(rel));
 	cp->path.parallel_aware = nworkers > 0;
 	cp->path.parallel_workers = nworkers;
 	verify = sc.docs * sc.tuple;
@@ -446,25 +472,64 @@ cheaper(CustomPath *a, CustomPath *b)
 /*
  * Adds the serial path, and a parallel one next to it unless a filter is pushed down: the bitmap of a
  * filter is built by one backend, so a filtered scan stays serial and competes with the parallel one
- * on cost.
+ * on cost. With only_best the paths are not added: the caller replaces the rel's paths with the best
+ * ones, and add_path would free a path it rejects or dominates (a seq scan of an empty table) that
+ * best still points to.
  */
 static void
 add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-			   BitmapHeapPath *filter, bool parallel, CustomPath **best, CustomPath **best_partial)
+			   BitmapHeapPath *filter, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
 	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, 0);
 	int			nworkers = filter == NULL && parallel ? scan_workers(rel, c) : 0;
 
-	add_path(rel, &cp->path);
 	if (cheaper(cp, *best))
 		*best = cp;
+	if (!only_best)
+		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
 		cp = scan_path(root, rel, c, mode, k, pathkeys, NULL, nworkers);
-		add_partial_path(rel, &cp->path);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
+		if (!only_best)
+			add_partial_path(rel, &cp->path);
 	}
+}
+
+/* Does the rel have a restriction that is a sift match, of whichever index? */
+static bool
+has_match_clause(RelOptInfo *rel)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+	{
+		Node	   *clause = (Node *) rinfo->clause;
+
+		if ((IsA(clause, OpExpr) && ((OpExpr *) clause)->opno == cat->match_op) ||
+			(IsA(clause, FuncExpr) && (((FuncExpr *) clause)->funcid == cat->match_func ||
+									   ((FuncExpr *) clause)->funcid == cat->match_idx_func)))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The max_score of a query is one value for all its rows, but each partition's scan only knows its own
+ * (and ranks with its own index statistics), so it is not available through a partitioned parent.
+ */
+static void
+check_partition_scores(RelOptInfo *rel, List *scores)
+{
+	bool		is_max;
+
+	foreach_node(Node, e, scores)
+		if (sift_is_score_expr(e, rel->relid, &is_max) && is_max)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("sift.max_score() is not available through a partitioned table"),
+					 errhint("Call it on one partition, or use sift.score().")));
 }
 
 /*
@@ -478,6 +543,7 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	PathKey    *pk = NULL;
 	List	   *scores;
 	bool		ranked,
+				only_best,
 				filter_looked = false;
 	BitmapHeapPath *filter = NULL;
 	CustomPath *best = NULL,
@@ -491,7 +557,10 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		sift_catalog()->am == InvalidOid)
 		return;
 	scores = score_exprs(root, rel);
+	if (is_partition(rel))
+		check_partition_scores(rel, scores);
 	ranked = sorted_by_score(root, rel, &pk);
+	only_best = ranked || scores != NIL;
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 	{
 		ScoreRefs	refs = {rti, NIL};
@@ -503,7 +572,7 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 	{
 		int64		k = root->limit_tuples > 0 ? (int64) ceil(root->limit_tuples) : 0;
-		SiftScanMode mode = ranked || scores != NIL ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
+		SiftScanMode mode = only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
 		List	   *pathkeys = ranked ? list_make1(pk) : NIL;
 		/*
 		 * A ranked scan shares its threshold, which needs the number of rows it is asked for, and
@@ -521,15 +590,20 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter_looked = true;
 		}
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, NULL, parallel, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, NULL, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, only_best, &best, &best_partial);
 	}
-	if (best && (ranked || scores != NIL))
+	if (best && only_best)
 	{
 		rel->pathlist = list_make1(best);
 		rel->partial_pathlist = best_partial ? list_make1(best_partial) : NIL;
 	}
+	else if (only_best && is_partition(rel) && has_match_clause(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.score() needs a sift index on every partition the query reads"),
+				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid))));
 }
 
 /* count(*) and count(<constant>) without DISTINCT, FILTER or ORDER BY */
