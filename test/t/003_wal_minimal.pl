@@ -10,6 +10,7 @@ use lib $FindBin::RealBin;
 use SiftTest;
 use Test::More;
 
+my $rows = knob('SIFT_ROWS', 20000, 8000);
 my $node = sift_node('minimal');
 $node->append_conf('postgresql.conf', "wal_level = minimal\nmax_wal_senders = 0");
 $node->start;
@@ -34,7 +35,7 @@ for my $am (ams())
 			$node->safe_psql('postgres', "$set BEGIN;"
 				. " CREATE TABLE $t (id int, body text);"
 				. " INSERT INTO $t SELECT g, concat_ws(' ', 'w' || g % 7, 'w' || g % 13, 'w' || g % 101,"
-				. " CASE WHEN g % 5 = 0 THEN 'rare' END) FROM generate_series(1, 20000) g;"
+				. " CASE WHEN g % 5 = 0 THEN 'rare' END) FROM generate_series(1, $rows) g;"
 				. " @{[ $am->{index}->($t, $idx) ]}; COMMIT;");
 			crash_restart();
 			$node->safe_psql('postgres', $am->{verify}->($idx));

@@ -82,7 +82,7 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 	}
 	eval { $bg->quit };
 	$standby->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
-	agree($standby, (ams())[1], $t, 'standby after recycling');
+	agree($standby, sift_am(), $t, 'standby after recycling');
 };
 
 # with hot_standby_feedback the primary's horizon holds back VACUUM and recycling for the open scan: it always completes

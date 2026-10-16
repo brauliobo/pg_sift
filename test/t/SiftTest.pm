@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams load_corpus agree crash_during);
+our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree crash_during);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -34,25 +34,33 @@ sub install_sift
 		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/reference.sql" ]);
 }
 
-# Index flavours: DDL, maintenance step, verification
-sub ams
+# $ENV{$var}, else $full, or $quick under SIFT_QUICK=1 (scripts/ci.sh quick)
+sub knob
 {
-	return (
-		{
-			name => 'gin',
-			index => sub { "CREATE INDEX $_[1] ON $_[0] USING gin (to_tsvector('simple', body)) WITH (fastupdate = on)" },
-			maint => sub { "SELECT gin_clean_pending_list('$_[0]')" },
-			verify => sub { "SELECT gin_index_check('$_[0]')" },
-			match => sub { "to_tsvector('simple', body) @@ to_tsquery('simple', '$_[0]')" },
-		},
-		{
-			name => 'sift',
-			index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (mutable_limit = 64)" },
-			maint => sub { "SELECT sift.promote('$_[0]')" },
-			verify => sub { "SELECT sift.verify('$_[0]', true)" },
-			match => sub { "body @@> '$_[0]'" },
-		});
+	my ($var, $full, $quick) = @_;
+	return $ENV{$var} // ($ENV{SIFT_QUICK} ? $quick : $full);
 }
+
+# Index flavours: DDL, maintenance step, verification
+my @AMS = (
+	{
+		name => 'gin',
+		index => sub { "CREATE INDEX $_[1] ON $_[0] USING gin (to_tsvector('simple', body)) WITH (fastupdate = on)" },
+		maint => sub { "SELECT gin_clean_pending_list('$_[0]')" },
+		verify => sub { "SELECT gin_index_check('$_[0]')" },
+		match => sub { "to_tsvector('simple', body) @@ to_tsquery('simple', '$_[0]')" },
+	},
+	{
+		name => 'sift',
+		index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (mutable_limit = 64)" },
+		maint => sub { "SELECT sift.promote('$_[0]')" },
+		verify => sub { "SELECT sift.verify('$_[0]', true)" },
+		match => sub { "body @@> '$_[0]'" },
+	});
+
+# the GIN control proves the host and the harness; the quick tier runs sift alone
+sub ams { return $ENV{SIFT_QUICK} ? $AMS[1] : @AMS }
+sub sift_am { return $AMS[1] }
 
 # Table $tbl(id, body) with $n rows over a small vocabulary
 sub load_corpus

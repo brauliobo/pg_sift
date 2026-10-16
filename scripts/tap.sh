@@ -32,6 +32,7 @@ rm -rf "$TAP" && mkdir -p "$TAP"
 cat >"$TAP/sift.conf" <<CONF
 extension_control_path = '$SIFT_ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$SIFT_ROOT$(pg_config --pkglibdir):\$libdir'
+max_wal_size = 256MB
 CONF
 [[ -z ${SIFT_SANITIZER:-} ]] || export $SIFT_SANITIZER
 

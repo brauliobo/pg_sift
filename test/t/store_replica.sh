@@ -5,11 +5,11 @@
 # with hot_standby_feedback off, and succeeds with it on.
 . "$(dirname "$0")/lib.bash"
 
-SECS=${SIFT_CHURN_SECS:-15}
+SECS=$(knob SIFT_CHURN_SECS 15 5)
 plan 8
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
-wal_keep_size = 1GB"
+wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION sift_test CASCADE" "CREATE TABLE t (v int)" "INSERT INTO t VALUES (0), (5000), (300000)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
