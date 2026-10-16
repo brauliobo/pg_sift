@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Interleaved A/B of sift, sift with phrase_index = pairs, and ParadeDB on one corpus.
 #
-#   bench/ab.sh quick          Q tier (75k articles), 3 s per cell, 3-6 rounds
+#   bench/ab.sh quick          Q tier (150k articles), 3 s per cell, 3-6 rounds
 #   bench/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
 #   bench/ab.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
 #
@@ -26,7 +26,7 @@ ENGINES=${ENGINES:-sift sift_pairs paradedb}
 CLASSES=${CLASSES:-and or phrase mixed count filter join}
 CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} TOL=${TOL:-0.15} NQ=${NQ:-12}
 RESULTS=${RESULTS:-$BENCH/out/ab}
-OUT=$ROOT/ab/$TIER; mkdir -p "$OUT" "$RESULTS"   # builds.tsv from run.sh lands in the scratch directory
+OUT=$ROOT/ab/$TIER; rm -rf "$OUT"; mkdir -p "$OUT" "$RESULTS"   # builds.tsv from run.sh lands in the scratch directory
 DEST=$RESULTS/${cold:+cold-}$mode-$(date +%m%d-%H%M); mkdir -p "$DEST"
 export OUT
 

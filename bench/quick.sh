@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/quick.sh [--full] [ENGINE...]
-# Standard suite in one command: Q tier (75k articles), 36 fixed queries in 8 classes (term, and,
+# Standard suite in one command: Q tier (150k articles), 36 fixed queries in 8 classes (term, and,
 # or, phrase, prefix, fuzzy, count(*), ranked mix), 8 clients x REPEAT (50) requests per class after
 # 5 warm-up requests each, fixed seeds. Under 1 min per engine on S including the index build. Prints the
 # table (bench/report.sh quick) and keeps raw rows in bench/out/<tier>.
