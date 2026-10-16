@@ -63,3 +63,10 @@ CREATE FUNCTION sift._test_kern_bound(tf int4, dl int4, k1 float4, b float4, avg
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
+
+-- Filter masks (src/sift_filter_test.c): a TIDBitmap of tids and lossy blocks converted under a byte budget,
+-- probed with sift_filter_has and, as a block mask, sift_filter_block (block_mismatches counts disagreements).
+CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8, probes tid[],
+								  OUT superblocks int8, OUT exact_pages int8, OUT lossy_pages int8, OUT tuples int8,
+								  OUT has bool[], OUT block_mismatches int8)
+	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;

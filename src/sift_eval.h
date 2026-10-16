@@ -14,6 +14,7 @@
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
 
+#include "sift_filter.h"
 #include "sift_query.h"
 #include "sift_store.h"
 #include "sift_visibility.h"
@@ -52,6 +53,14 @@ typedef struct SiftPlan SiftPlan;
  * ERRCODE_PROGRAM_LIMIT_EXCEEDED above sift.max_expansions.
  */
 extern SiftPlan *sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags);
+
+/*
+ * Restricts the ranked search to the tuples the filter keeps, a superset of those that pass the
+ * caller's own quals: superblocks, blocks and documents it drops are never bounded, scored or
+ * verified. Call before sift_rank_begin; the filter must outlive the ranker. Iteration and counts
+ * ignore it.
+ */
+extern void sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter);
 
 /* Statistics after bind and iteration, for EXPLAIN */
 typedef struct SiftPlanStats

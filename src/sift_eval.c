@@ -102,6 +102,7 @@ struct SiftPlan
 	bool		rescore;		/* a phrase the score depends on: the exact score comes from the text */
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;
+	const SiftFilter *filter;	/* ranked search: the tuples worth scoring */
 	SiftBm25	bm;
 	SiftPlanStats stats;
 };
@@ -898,6 +899,12 @@ sift_plan_stats(const SiftPlan *plan)
 	return &plan->stats;
 }
 
+void
+sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
+{
+	plan->filter = filter;
+}
+
 /* ---------- iterator ---------- */
 
 struct SiftMatchIter
@@ -1267,6 +1274,7 @@ typedef struct RankWork
 	BlockMask	uni pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	tm pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	lu pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	BlockMask	flt pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint16		zero[SIFT_KERN_SLOTS];
 	const uint16 *dl[SIFT_BLK_PAGES];
 } RankWork;
@@ -1413,6 +1421,7 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 	{
 		uint32		gid = UINT32_MAX;
 		Unit		u = {.seg = rs->s};
+		const SiftFilterSB *fs;
 
 		for (int i = 0; i < p->nleaves; i++)
 			if (rs->lub[i].pos < rs->lub[i].n)
@@ -1420,7 +1429,8 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 		if (gid == UINT32_MAX)
 			return;
 		u.gid = gid;
-		if (tree_present(p, p->root, rs->lub, gid))
+		fs = p->filter ? sift_filter_sb(p->filter, gid) : NULL;
+		if ((fs != NULL || p->filter == NULL) && tree_present(p, p->root, rs->lub, gid))
 		{
 			for (int i = 0; i < p->nleaves; i++)
 				if (leaf_at(&rs->lub[i], gid))
@@ -1428,6 +1438,9 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 						u.ub[k] += rs->lub[i].list[rs->lub[i].pos].ub[k];
 			for (int k = 0; k < SIFT_BLKS_PER_SB; k++)
 			{
+				/* a block without a page the filter keeps scores nothing */
+				if (fs && !sift_filter_has_block(fs, k))
+					u.ub[k] = 0;
 				u.maxub = Max(u.maxub, u.ub[k]);
 				u.nblk += u.ub[k] > 0;
 			}
@@ -1756,12 +1769,26 @@ leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, RankWork *wk)
 		add_rows(wk->scores, wk->leafbuf, wk->lu);
 }
 
+/* The result documents of block b are those the filter keeps; false when none is left */
+static bool
+filter_result(const SiftPlan *p, const SiftFilterSB *fs, int b, RankWork *wk)
+{
+	uint64		any = 0;
+
+	sift_filter_block(p->filter, fs, b, wk->flt);
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+			any |= wk->res[pg][k] &= wk->flt[pg][k];
+	return any != 0;
+}
+
 /*
  * Scores block b of the unit's SB for the group's result documents; returns
  * the candidates above theta in wk->slot / wk->vals.
  */
 static int
-score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftDocChunk *dc, int b, float4 theta, RankWork *wk)
+score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
+			float4 theta, RankWork *wk)
 {
 	SiftSegment *seg = p->seg[rs->s];
 	bool		any = false;
@@ -1769,6 +1796,8 @@ score_block(SiftPlan *p, RankSeg *rs, const sift_grp *g, const SiftDocChunk *dc,
 	memset(wk->uni, 0, sizeof(BlockMask));
 	if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
+	if (fs && !filter_result(p, fs, b, wk))
+		return 0;
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
 		uint64		present[SIFT_OFFMASK_WORDS];
@@ -2003,6 +2032,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	RankSeg    *rs = &r->seg[u->seg];
 	SiftSegment *seg = p->seg[u->seg];
 	const sift_grp *g;
+	const SiftFilterSB *fs;
 	SiftDocChunk dc;
 	float4		theta = sift_kern_topk_theta(tk);
 	int			order[SIFT_BLKS_PER_SB],
@@ -2021,13 +2051,20 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		sift_sr_release(&seg->sr);
 		return;
 	}
+	fs = p->filter ? sift_filter_sb(p->filter, u->gid) : NULL;
+	Assert(fs || !p->filter);
+	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
+		if (g->pages[b / 4] >> ((b % 4) * 16) & 0xffff && (fs == NULL || sift_filter_has_block(fs, b)))
+			order[n++] = b;
+	if (n == 0)
+	{
+		sift_sr_release(&seg->sr);
+		return;
+	}
 	for (int i = 0; i < p->nleaves; i++)
 		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[u->seg]; j++)
 			if (rs->term[rs->first[i] + j].live)
 				term_seek(p, rs, &rs->term[rs->first[i] + j], u->gid);
-	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
-		if (g->pages[b / 4] >> ((b % 4) * 16) & 0xffff)
-			order[n++] = b;
 	order_blocks(order, n, u->ub);
 	for (int i = 0; i < n; i++)
 	{
@@ -2041,7 +2078,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			continue;
 		}
 		p->stats.blocks_scored++;
-		nsel = score_block(p, rs, g, &dc, b, theta, r->wk);
+		nsel = score_block(p, rs, g, fs, &dc, b, theta, r->wk);
 		sift_sr_release(&seg->sr);
 		for (int j = 0; j < nsel; j++)
 		{
@@ -2069,7 +2106,8 @@ rank_search(SiftRanker *r)
 	sift_kern_topk_init(&tk, r->hit, r->K);
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
 	for (int64 i = 0; i < p->nmhit; i++)
-		rank_candidate(r, &tk, p->mhit[i].key, p->mhit[i].score);
+		if (p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key))
+			rank_candidate(r, &tk, p->mhit[i].key, p->mhit[i].score);
 	for (u = 0; u < r->nunit; u++)
 	{
 		if (!(r->unit[u].maxub > sift_kern_topk_theta(&tk)))
