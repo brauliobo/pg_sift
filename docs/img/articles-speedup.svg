@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="434" viewBox="0 0 860 434" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Throughput relative to pg_search</title>
-<desc id="d">and: sift 2.49x, sift pairs 2.76x, pg_textsearch 0.46x, rum 0.41x; or: sift 2.33x, sift pairs 2.44x, pg_textsearch 4.01x, rum 0.01x; phrase: sift 0.65x, sift pairs 2.83x, pg_textsearch 0.01x, rum 0.01x; mixed: sift 1.78x, sift pairs 2.69x, pg_textsearch 0.02x, rum 0.02x; count(*): sift 0.70x, sift pairs 3.23x, pg_textsearch 0.03x, rum 0.03x; filter: sift 0.93x, sift pairs 1.20x, pg_textsearch 0.01x, rum 0.01x; join: sift 4.31x, sift pairs 7.49x, pg_textsearch 0.27x, rum 0.05x</desc>
+<desc id="d">and: sift 1.67x, sift pairs 1.70x, pg_textsearch 0.00x, rum 0.27x; or: sift 0.95x, sift pairs 0.77x, pg_textsearch 1.34x, rum 0.01x; phrase: sift 0.47x, sift pairs 2.00x, pg_textsearch 0.00x, rum 0.01x; mixed: sift 0.89x, sift pairs 1.18x, pg_textsearch 0.01x, rum 0.01x; count(*): sift 0.40x, sift pairs 2.08x, pg_textsearch 0.02x, rum 0.02x; filter: sift 0.67x, sift pairs 0.97x, pg_textsearch 0.02x, rum 0.01x; join: sift 2.77x, sift pairs 5.58x, pg_textsearch 0.19x, rum 0.07x</desc>
 <rect x="0.5" y="0.5" width="859" height="433" rx="6" fill="#ffffff" stroke="#d0d7de"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Throughput relative to pg_search</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">queries per second divided by pg_search, higher is better</text>
@@ -16,81 +16,79 @@
 <text x="393" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search = 1.0x</text>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#d8dee4" stroke-width="1"/>
 <text x="66" y="374" font-size="10" text-anchor="end" fill="#57606a">0</text>
-<line x1="74" y1="316" x2="836" y2="316" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="320" font-size="10" text-anchor="end" fill="#57606a">2</text>
-<line x1="74" y1="262" x2="836" y2="262" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="266" font-size="10" text-anchor="end" fill="#57606a">4</text>
-<line x1="74" y1="208" x2="836" y2="208" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="212" font-size="10" text-anchor="end" fill="#57606a">6</text>
-<line x1="74" y1="154" x2="836" y2="154" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="158" font-size="10" text-anchor="end" fill="#57606a">8</text>
+<line x1="74" y1="302.5" x2="836" y2="302.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="306.5" font-size="10" text-anchor="end" fill="#57606a">2</text>
+<line x1="74" y1="235" x2="836" y2="235" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="239" font-size="10" text-anchor="end" fill="#57606a">4</text>
+<line x1="74" y1="167.5" x2="836" y2="167.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="171.5" font-size="10" text-anchor="end" fill="#57606a">6</text>
 <line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">10</text>
+<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">8</text>
 <text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">speedup over pg_search</text>
-<rect x="83.7" y="302.8" width="20.9" height="67.2" fill="#0072B2"/>
-<text transform="translate(97.6 297.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.49x</text>
-<rect x="106.6" y="295.6" width="20.9" height="74.4" fill="#009E73"/>
-<text transform="translate(120.5 290.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.76x</text>
-<rect x="129.4" y="357.6" width="20.9" height="12.4" fill="#CC79A7"/>
-<text transform="translate(143.4 352.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.46x</text>
-<rect x="152.3" y="358.9" width="20.9" height="11.1" fill="#7f7f7f"/>
-<text transform="translate(166.2 353.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.41x</text>
+<rect x="83.7" y="313.5" width="20.9" height="56.5" fill="#0072B2"/>
+<text transform="translate(97.6 308.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.67x</text>
+<rect x="106.6" y="312.7" width="20.9" height="57.3" fill="#009E73"/>
+<text transform="translate(120.5 307.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.70x</text>
+<rect x="129.4" y="369.9" width="20.9" height="0.1" fill="#CC79A7"/>
+<text transform="translate(143.4 364.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.00x</text>
+<rect x="152.3" y="360.9" width="20.9" height="9.1" fill="#7f7f7f"/>
+<text transform="translate(166.2 355.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.27x</text>
 <text x="128.4" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">and</text>
-<rect x="192.6" y="307.2" width="20.9" height="62.8" fill="#0072B2"/>
-<text transform="translate(206.5 302.2) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.33x</text>
-<rect x="215.4" y="304.2" width="20.9" height="65.8" fill="#009E73"/>
-<text transform="translate(229.4 299.2) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.44x</text>
-<rect x="238.3" y="261.6" width="20.9" height="108.4" fill="#CC79A7"/>
-<text transform="translate(252.2 256.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.01x</text>
-<rect x="261.1" y="369.7" width="20.9" height="0.3" fill="#7f7f7f"/>
-<text transform="translate(275.1 364.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
+<rect x="192.6" y="338.1" width="20.9" height="31.9" fill="#0072B2"/>
+<text transform="translate(206.5 333.1) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.95x</text>
+<rect x="215.4" y="344.1" width="20.9" height="25.9" fill="#009E73"/>
+<text transform="translate(229.4 339.1) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.77x</text>
+<rect x="238.3" y="324.9" width="20.9" height="45.1" fill="#CC79A7"/>
+<text transform="translate(252.2 319.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.34x</text>
+<rect x="261.1" y="369.8" width="20.9" height="0.2" fill="#7f7f7f"/>
+<text transform="translate(275.1 364.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
 <text x="237.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">or</text>
-<rect x="301.4" y="352.5" width="20.9" height="17.5" fill="#0072B2"/>
-<text transform="translate(315.4 347.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.65x</text>
-<rect x="324.3" y="293.5" width="20.9" height="76.5" fill="#009E73"/>
-<text transform="translate(338.2 288.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.83x</text>
+<rect x="301.4" y="354.1" width="20.9" height="15.9" fill="#0072B2"/>
+<text transform="translate(315.4 349.1) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.47x</text>
+<rect x="324.3" y="302.6" width="20.9" height="67.4" fill="#009E73"/>
+<text transform="translate(338.2 297.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.00x</text>
 <rect x="347.1" y="369.9" width="20.9" height="0.1" fill="#CC79A7"/>
-<text transform="translate(361.1 364.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
-<rect x="370" y="369.6" width="20.9" height="0.4" fill="#7f7f7f"/>
-<text transform="translate(383.9 364.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
+<text transform="translate(361.1 364.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.00x</text>
+<rect x="370" y="369.7" width="20.9" height="0.3" fill="#7f7f7f"/>
+<text transform="translate(383.9 364.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
 <text x="346.1" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">phrase</text>
-<rect x="410.3" y="321.9" width="20.9" height="48.1" fill="#0072B2"/>
-<text transform="translate(424.2 316.9) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.78x</text>
-<rect x="433.1" y="297.4" width="20.9" height="72.6" fill="#009E73"/>
-<text transform="translate(447.1 292.4) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.69x</text>
-<rect x="456" y="369.5" width="20.9" height="0.5" fill="#CC79A7"/>
-<text transform="translate(469.9 364.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
-<rect x="478.9" y="369.6" width="20.9" height="0.4" fill="#7f7f7f"/>
-<text transform="translate(492.8 364.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
+<rect x="410.3" y="340" width="20.9" height="30" fill="#0072B2"/>
+<text transform="translate(424.2 335) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.89x</text>
+<rect x="433.1" y="330.3" width="20.9" height="39.7" fill="#009E73"/>
+<text transform="translate(447.1 325.3) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.18x</text>
+<rect x="456" y="369.6" width="20.9" height="0.4" fill="#CC79A7"/>
+<text transform="translate(469.9 364.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
+<rect x="478.9" y="369.7" width="20.9" height="0.3" fill="#7f7f7f"/>
+<text transform="translate(492.8 364.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
 <text x="455" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">mixed</text>
-<rect x="519.1" y="351" width="20.9" height="19" fill="#0072B2"/>
-<text transform="translate(533.1 346) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.70x</text>
-<rect x="542" y="282.7" width="20.9" height="87.3" fill="#009E73"/>
-<text transform="translate(555.9 277.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.23x</text>
-<rect x="564.9" y="369.1" width="20.9" height="0.9" fill="#CC79A7"/>
-<text transform="translate(578.8 364.1) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.03x</text>
-<rect x="587.7" y="369.2" width="20.9" height="0.8" fill="#7f7f7f"/>
-<text transform="translate(601.6 364.2) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.03x</text>
+<rect x="519.1" y="356.6" width="20.9" height="13.4" fill="#0072B2"/>
+<text transform="translate(533.1 351.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.40x</text>
+<rect x="542" y="299.8" width="20.9" height="70.2" fill="#009E73"/>
+<text transform="translate(555.9 294.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.08x</text>
+<rect x="564.9" y="369.3" width="20.9" height="0.7" fill="#CC79A7"/>
+<text transform="translate(578.8 364.3) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
+<rect x="587.7" y="369.4" width="20.9" height="0.6" fill="#7f7f7f"/>
+<text transform="translate(601.6 364.4) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
 <text x="563.9" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">count(*)</text>
-<rect x="628" y="345" width="20.9" height="25" fill="#0072B2"/>
-<text transform="translate(641.9 340) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.93x</text>
-<rect x="650.9" y="337.7" width="20.9" height="32.3" fill="#009E73"/>
-<text transform="translate(664.8 332.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.20x</text>
-<rect x="673.7" y="369.7" width="20.9" height="0.3" fill="#CC79A7"/>
-<text transform="translate(687.6 364.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
-<rect x="696.6" y="369.8" width="20.9" height="0.2" fill="#7f7f7f"/>
-<text transform="translate(710.5 364.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
+<rect x="628" y="347.5" width="20.9" height="22.5" fill="#0072B2"/>
+<text transform="translate(641.9 342.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.67x</text>
+<rect x="650.9" y="337.4" width="20.9" height="32.6" fill="#009E73"/>
+<text transform="translate(664.8 332.4) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.97x</text>
+<rect x="673.7" y="369.5" width="20.9" height="0.5" fill="#CC79A7"/>
+<text transform="translate(687.6 364.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
+<rect x="696.6" y="369.7" width="20.9" height="0.3" fill="#7f7f7f"/>
+<text transform="translate(710.5 364.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
 <text x="672.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">filter</text>
-<rect x="736.9" y="253.6" width="20.9" height="116.4" fill="#0072B2"/>
-<text transform="translate(750.8 248.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.31x</text>
-<rect x="759.7" y="167.6" width="20.9" height="202.4" fill="#009E73"/>
-<text transform="translate(773.6 162.6) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">7.49x</text>
-<rect x="782.6" y="362.8" width="20.9" height="7.2" fill="#CC79A7"/>
-<text transform="translate(796.5 357.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.27x</text>
-<rect x="805.4" y="368.5" width="20.9" height="1.5" fill="#7f7f7f"/>
-<text transform="translate(819.4 363.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.05x</text>
+<rect x="736.9" y="276.5" width="20.9" height="93.5" fill="#0072B2"/>
+<text transform="translate(750.8 271.5) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.77x</text>
+<rect x="759.7" y="181.8" width="20.9" height="188.2" fill="#009E73"/>
+<text transform="translate(773.6 176.8) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">5.58x</text>
+<rect x="782.6" y="363.7" width="20.9" height="6.3" fill="#CC79A7"/>
+<text transform="translate(796.5 358.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.19x</text>
+<rect x="805.4" y="367.7" width="20.9" height="2.3" fill="#7f7f7f"/>
+<text transform="translate(819.4 362.7) rotate(-90)" font-size="10" text-anchor="start" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.07x</text>
 <text x="781.6" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">join</text>
-<line x1="74" y1="343" x2="836" y2="343" stroke="#24292f" stroke-width="1.5" stroke-dasharray="4 3"/>
+<line x1="74" y1="336.2" x2="836" y2="336.2" stroke="#24292f" stroke-width="1.5" stroke-dasharray="4 3"/>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
-<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 4 rounds; 8-core desktop, shared host (load avg 4-31); Oct 2026.</text>
+<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 4 rounds; 2 pinned cores, shared host (load avg 15-43); Oct 2026.</text>
 </svg>
