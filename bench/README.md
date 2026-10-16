@@ -209,7 +209,7 @@ bench/bench remote clean                     # keep dumps; `clean all` removes ~
 
 ```sh
 bench/bench check --tier ab oracle sift 200                        # accent + case folding, no stemming (default)
-ORACLE_ACCENTS=keep bench/bench check --tier ab oracle gin 200     # engines indexing raw 'simple' lexemes
+ORACLE_ACCENTS=keep ORACLE_TOKENS=pg bench/bench check --tier ab oracle gin 200   # engines using the PG parser
 MODES="phrase not" REBUILD=1 bench/bench check --tier ab oracle sift 50
 bench/bench check --tier ab rank sift 200                          # top-10 overlap with pgx-bm25 per mode
 ```
@@ -218,8 +218,10 @@ bench/bench check --tier ab rank sift 200                          # top-10 over
 table (`to_tsvector` with a `simple`-based configuration, `unaccent` when `ORACLE_ACCENTS=fold`,
 `<lang>_stem` when `ORACLE_STEM=<lang>`). For each query it compares the engine's match set and `count(*)`
 with the oracle and prints a summary plus every mismatch. Exit status is 1 on any mismatch; the report is
-saved as `bench/out/<tier letter>/oracle-<engine>.txt`. Tokenization is the PG parser's: CJK runs are one token,
-hyphenated words index the compound and its parts, `don't` is `don` + `t`.
+saved as `bench/out/<tier letter>/oracle-<engine>.txt`. By default the oracle text is split into alphanumeric
+runs first (`ORACLE_TOKENS=split`), the tokenization of sift, because the PG parser keeps `Force.In`, `a@b.c` or
+`1.5` as one token; `ORACLE_TOKENS=pg` uses the PG parser as is (gin, rum). tsvector positions saturate at 16383, so
+phrases are not compared in the few documents longer than that.
 
 ## Cleanup
 
