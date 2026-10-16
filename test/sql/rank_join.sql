@@ -1,0 +1,173 @@
+-- sift.score() through joins: the score the ranked scan produces reaches the joins, aggregates and sorts above
+-- a join tree of any depth (semi, anti, outer, lateral, self joins) whatever the join methods, on tables,
+-- partitioned and inheritance parents, with and without parallel scans and filter pushdown
+CREATE EXTENSION pg_sift;
+
+CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l || E'\n';
+	END LOOP;
+	RETURN rtrim(r, E'\n');
+END $$;
+
+-- the document tables hold the same rows; the ids the joined tables hold overlap in multiples of 105
+CREATE TABLE jd (id int PRIMARY KEY, tenant int, body text);
+CREATE TABLE jp (id int, tenant int, body text) PARTITION BY RANGE (id);
+CREATE TABLE jp1 PARTITION OF jp FOR VALUES FROM (1) TO (1001);
+CREATE TABLE jp2 PARTITION OF jp FOR VALUES FROM (1001) TO (2001);
+CREATE TABLE jp3 PARTITION OF jp FOR VALUES FROM (2001) TO (3001);
+CREATE TABLE ji (id int, tenant int, body text);
+CREATE TABLE ji1 (CHECK (id <= 1500)) INHERITS (ji);
+CREATE TABLE ji2 (CHECK (id > 1500)) INHERITS (ji);
+INSERT INTO jd SELECT i, i % 50, repeat('venue ', 1 + i % 7) || repeat('word ', i % 3) || 'n' || i FROM generate_series(1, 3000) i;
+INSERT INTO jp SELECT * FROM jd;
+INSERT INTO ji1 SELECT * FROM jd WHERE id <= 1500;
+INSERT INTO ji2 SELECT * FROM jd WHERE id > 1500;
+CREATE INDEX jd_body ON jd USING sift (body);
+CREATE INDEX jd_tenant ON jd (tenant);
+CREATE INDEX jp_body ON jp USING sift (body);
+CREATE INDEX jp_tenant ON jp (tenant);
+CREATE INDEX ji_body ON ji USING sift (body);
+CREATE INDEX ji1_body ON ji1 USING sift (body);
+CREATE INDEX ji2_body ON ji2 USING sift (body);
+CREATE INDEX ji1_tenant ON ji1 (tenant);
+CREATE INDEX ji2_tenant ON ji2 (tenant);
+CREATE TABLE jo (id int PRIMARY KEY, v int);
+CREATE TABLE js (id int);
+CREATE TABLE jt (id int, w int);
+INSERT INTO jo SELECT i, i FROM generate_series(1, 3000) i WHERE i % 3 = 0;
+INSERT INTO js SELECT i FROM generate_series(1, 3000) i WHERE i % 5 = 0;
+INSERT INTO jt SELECT i, i % 7 FROM generate_series(1, 3000) i WHERE i % 7 = 0;
+VACUUM ANALYZE jd;
+VACUUM ANALYZE jp;
+VACUUM ANALYZE ji;
+VACUUM ANALYZE ji1;
+VACUUM ANALYZE ji2;
+ANALYZE jo;
+ANALYZE js;
+ANALYZE jt;
+
+-- the repro of the report: a join and a semi join under a ranked scan
+SELECT sift_plan('SELECT d.id, o.v FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> ''venue''
+	ORDER BY sift.score(d.ctid) DESC LIMIT 10') ~ 'SiftScan' AS scan;
+SELECT d.id, o.v, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> 'venue'
+	ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 5;
+
+-- every shape answers what the score of a join-free scan, read in a subquery and joined above it, answers
+CREATE FUNCTION join_shapes(r text) RETURNS TABLE (shape text, n int, same boolean, scanned boolean) LANGUAGE plpgsql AS $$
+DECLARE
+	one text := format($q$(SELECT id, tenant, sift.score(ctid) AS s FROM %s WHERE body @@> 'venue' ORDER BY sift.score(ctid) DESC OFFSET 0)$q$, r);
+	two text := format($q$(SELECT id, tenant, sift.score(ctid) AS s FROM %s WHERE body @@> 'word' ORDER BY sift.score(ctid) DESC OFFSET 0)$q$, r);
+	q text;
+	q0 text;
+	a text[];
+	b text[];
+BEGIN
+	FOR shape, q, q0 IN SELECT v.shape, format(v.q, r), format(v.q0, one, two) FROM (VALUES
+		('semi join', $q$SELECT d.id, o.v, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js)
+			AND d.body @@> 'venue' AND d.tenant < 25 ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+		 $q$SELECT d.id, o.v, d.s FROM %1$s d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.tenant < 25
+			ORDER BY d.s DESC, d.id LIMIT 10$q$),
+		('three joins', $q$SELECT d.id, o.v, t.w, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id
+			WHERE d.body @@> 'venue' ORDER BY 4 DESC, 1 LIMIT 10$q$,
+		 $q$SELECT d.id, o.v, t.w, d.s FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id ORDER BY 4 DESC, 1 LIMIT 10$q$),
+		('left joins', $q$SELECT d.id, o.v, t.w FROM %1$s d LEFT JOIN jo o ON o.id = d.id LEFT JOIN jt t ON t.id = d.id
+			WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+		 $q$SELECT d.id, o.v, t.w FROM %1$s d LEFT JOIN jo o ON o.id = d.id LEFT JOIN jt t ON t.id = d.id ORDER BY d.s DESC, d.id LIMIT 10$q$),
+		('semi and anti join', $q$SELECT d.id, o.v, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id
+			WHERE EXISTS (SELECT 1 FROM js WHERE js.id = d.id) AND NOT EXISTS (SELECT 1 FROM jt WHERE jt.id = d.id) AND d.body @@> 'venue'
+			ORDER BY sift.score(d.ctid) DESC, d.id$q$,
+		 $q$SELECT d.id, o.v, d.s FROM %1$s d JOIN jo o ON o.id = d.id
+			WHERE EXISTS (SELECT 1 FROM js WHERE js.id = d.id) AND NOT EXISTS (SELECT 1 FROM jt WHERE jt.id = d.id) ORDER BY d.s DESC, d.id$q$),
+		('lateral', $q$SELECT d.id, x.n, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id,
+			LATERAL (SELECT count(*) AS n FROM jt WHERE jt.id <= d.id) x WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+		 $q$SELECT d.id, x.n, d.s FROM %1$s d JOIN jo o ON o.id = d.id,
+			LATERAL (SELECT count(*) AS n FROM jt WHERE jt.id <= d.id) x ORDER BY d.s DESC, d.id LIMIT 10$q$),
+		('left lateral', $q$SELECT d.id, x.v, sift.score(d.ctid) FROM %1$s d JOIN js ON js.id = d.id
+			LEFT JOIN LATERAL (SELECT o.v FROM jo o WHERE o.id = d.id LIMIT 1) x ON true WHERE d.body @@> 'venue'
+			ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+		 $q$SELECT d.id, x.v, d.s FROM %1$s d JOIN js ON js.id = d.id
+			LEFT JOIN LATERAL (SELECT o.v FROM jo o WHERE o.id = d.id LIMIT 1) x ON true ORDER BY d.s DESC, d.id LIMIT 10$q$),
+		('other order', $q$SELECT d.id, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id
+			WHERE d.body @@> 'venue' ORDER BY d.id LIMIT 10$q$,
+		 $q$SELECT d.id, d.s FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id ORDER BY d.id LIMIT 10$q$),
+		('aggregate', $q$SELECT count(*), max(sift.score(d.ctid)), min(sift.score(d.ctid)) FROM %1$s d JOIN jo o ON o.id = d.id
+			JOIN jt t ON t.id = d.id WHERE d.body @@> 'venue'$q$,
+		 $q$SELECT count(*), max(d.s), min(d.s) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id$q$),
+		('group by', $q$SELECT mod(o.v, 4) AS g, count(*), max(sift.score(d.ctid)) FROM %1$s d JOIN jo o ON o.id = d.id
+			JOIN js ON js.id = d.id WHERE d.body @@> 'venue' GROUP BY 1 ORDER BY 1$q$,
+		 $q$SELECT mod(o.v, 4) AS g, count(*), max(d.s) FROM %1$s d JOIN jo o ON o.id = d.id JOIN js ON js.id = d.id GROUP BY 1 ORDER BY 1$q$),
+		('self join', $q$SELECT a.id, b.id, sift.score(a.ctid), sift.score(b.ctid) FROM %1$s a JOIN %1$s b ON b.id = a.id + 1
+			JOIN jo o ON o.id = a.id WHERE a.body @@> 'venue' AND b.body @@> 'word'
+			ORDER BY sift.score(a.ctid) DESC, sift.score(b.ctid) DESC, a.id LIMIT 10$q$,
+		 $q$SELECT a.id, b.id, a.s, b.s FROM %1$s a JOIN %2$s b ON b.id = a.id + 1 JOIN jo o ON o.id = a.id
+			ORDER BY a.s DESC, b.s DESC, a.id LIMIT 10$q$),
+		('nullable side', $q$SELECT o.id, sift.score(d.ctid) FROM jo o LEFT JOIN %1$s d ON d.id = o.id AND d.body @@> 'word'
+			JOIN js ON js.id = o.id ORDER BY o.id$q$,
+		 $q$SELECT o.id, d.s FROM jo o LEFT JOIN %2$s d ON d.id = o.id JOIN js ON js.id = o.id ORDER BY o.id$q$)
+	) v(shape, q, q0) LOOP
+		EXECUTE format('SELECT array_agg(t::text) FROM (%s) t', q) INTO a;
+		EXECUTE format('SELECT array_agg(t::text) FROM (%s) t', q0) INTO b;
+		n := coalesce(cardinality(a), 0);
+		same := a IS NOT DISTINCT FROM b;
+		scanned := sift_plan(q) ~ 'SiftScan';
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+SELECT * FROM join_shapes('jd');
+
+-- the same on partitioned and inheritance parents, under every join method, and with the scan GUCs
+CREATE FUNCTION join_check(r text) RETURNS text LANGUAGE sql AS
+$$ SELECT r || ': ' || count(*) || ' shapes, ' || count(*) FILTER (WHERE NOT same) || ' differ, ' || count(*) FILTER (WHERE NOT scanned)
+	|| ' without a scan, ' || count(*) FILTER (WHERE n = 0) || ' empty' FROM join_shapes(r) $$;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+
+SET enable_nestloop = off;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+SET enable_mergejoin = off;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+RESET enable_nestloop;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+RESET enable_mergejoin;
+SET enable_hashjoin = off;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+RESET enable_hashjoin;
+
+SET sift.parallel_scan = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+RESET sift.parallel_scan;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+RESET max_parallel_workers_per_gather;
+
+SET sift.filter_pushdown = off;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+SET sift.filter_pushdown = force;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+SET sift.filter_pushdown = on;
+SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
+RESET sift.filter_pushdown;
+
+-- a score that no sift scan produces keeps the error
+SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id < 100;
+SELECT d.id FROM jd d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id WHERE d.id < 100 ORDER BY sift.score(d.ctid) DESC;
+SELECT o.id, sift.score(o.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'venue';
+SET sift.enable_scan = off;
+SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC LIMIT 3;
+RESET sift.enable_scan;
+
+DROP FUNCTION join_check(text), join_shapes(text), sift_plan(text);
+DROP TABLE jd, jp, ji, ji1, ji2, jo, js, jt;
+DROP EXTENSION pg_sift;
