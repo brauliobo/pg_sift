@@ -12,7 +12,7 @@ bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from
 
 ## Install
 
-Requires PostgreSQL 18 (server headers, `pg_config` on `PATH`) and a C compiler. Tested on x86-64.
+Requires PostgreSQL 17 or 18 (server headers, `pg_config` on `PATH`; 19 is experimental) and a C compiler. Tested on x86-64.
 
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
@@ -182,7 +182,7 @@ Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b`
 
 ## Limits
 
-- PostgreSQL 18 only; x86-64 tested (other architectures untested); heap tables only; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap tables only; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.

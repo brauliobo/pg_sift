@@ -1,6 +1,6 @@
 # Contributing
 
-pg_sift needs PostgreSQL 18 with the server headers (`pg_config` on `PATH`) and gcc or clang.
+pg_sift needs PostgreSQL 17 or 18 (19 is experimental) with the server headers (`pg_config` on `PATH`) and gcc or clang.
 
 ```sh
 make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_config picks another installation
