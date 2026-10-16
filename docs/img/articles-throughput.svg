@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="434" viewBox="0 0 860 434" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Throughput by workload</title>
-<desc id="d">and: sift 7,637, sift pairs 7,039, pg_search 3,245; or: sift 1,697, sift pairs 1,778, pg_search 920; phrase: sift 1,869, sift pairs 9,058, pg_search 2,531; mixed: sift 2,528, sift pairs 3,652, pg_search 1,419; count(*): sift 1,078, sift pairs 4,936, pg_search 1,537; filter: sift 2,462, sift pairs 2,864, pg_search 2,477; join: sift 692, sift pairs 1,391, pg_search 186</desc>
+<desc id="d">and: sift 9,084, sift pairs 9,304, pg_search 3,713, pg_textsearch 1,624; or: sift 1,947, sift pairs 2,036, pg_search 1,029, pg_textsearch 3,387; phrase: sift 2,117, sift pairs 10,826, pg_search 2,880, pg_textsearch 13; mixed: sift 2,885, sift pairs 4,393, pg_search 1,610, pg_textsearch 42; count(*): sift 1,186, sift pairs 4,729, pg_search 1,891, pg_textsearch 30; filter: sift 2,783, sift pairs 3,562, pg_search 2,919, pg_textsearch 37; join: sift 819, sift pairs 1,711, pg_search 202, pg_textsearch 35</desc>
 <rect x="0.5" y="0.5" width="859" height="433" rx="6" fill="#ffffff" stroke="#d0d7de"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Throughput by workload</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">queries per second, higher is better</text>
@@ -10,72 +10,86 @@
 <text x="100" y="72" font-size="12" text-anchor="start" fill="#24292f">sift pairs</text>
 <rect x="188" y="62" width="12" height="12" fill="#D55E00"/>
 <text x="205" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search</text>
-<rect x="286" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="303" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
+<rect x="286" y="62" width="12" height="12" fill="#CC79A7"/>
+<text x="303" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_textsearch</text>
+<rect x="412" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="429" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#d8dee4" stroke-width="1"/>
 <text x="66" y="374" font-size="10" text-anchor="end" fill="#57606a">0</text>
-<line x1="74" y1="325" x2="836" y2="325" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="329" font-size="10" text-anchor="end" fill="#57606a">2,000</text>
-<line x1="74" y1="280" x2="836" y2="280" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="284" font-size="10" text-anchor="end" fill="#57606a">4,000</text>
-<line x1="74" y1="235" x2="836" y2="235" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="239" font-size="10" text-anchor="end" fill="#57606a">6,000</text>
-<line x1="74" y1="190" x2="836" y2="190" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="194" font-size="10" text-anchor="end" fill="#57606a">8,000</text>
-<line x1="74" y1="145" x2="836" y2="145" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="149" font-size="10" text-anchor="end" fill="#57606a">10,000</text>
+<line x1="74" y1="316" x2="836" y2="316" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="320" font-size="10" text-anchor="end" fill="#57606a">2,500</text>
+<line x1="74" y1="262" x2="836" y2="262" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="266" font-size="10" text-anchor="end" fill="#57606a">5,000</text>
+<line x1="74" y1="208" x2="836" y2="208" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="212" font-size="10" text-anchor="end" fill="#57606a">7,500</text>
+<line x1="74" y1="154" x2="836" y2="154" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="158" font-size="10" text-anchor="end" fill="#57606a">10,000</text>
 <line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
-<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">12,000</text>
+<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">12,500</text>
 <text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">queries per second</text>
-<rect x="84.4" y="198.2" width="28" height="171.8" fill="#0072B2"/>
-<text x="98.4" y="193.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">7,637</text>
-<rect x="114.4" y="211.6" width="28" height="158.4" fill="#009E73"/>
-<text x="128.4" y="206.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">7,039</text>
-<rect x="144.4" y="297" width="28" height="73" fill="#D55E00"/>
-<text x="158.4" y="292" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3,245</text>
+<rect x="83.7" y="173.8" width="20.9" height="196.2" fill="#0072B2"/>
+<text x="94.1" y="168.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">9,084</text>
+<rect x="106.6" y="169" width="20.9" height="201" fill="#009E73"/>
+<text x="117" y="164" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">9,304</text>
+<rect x="129.4" y="289.8" width="20.9" height="80.2" fill="#D55E00"/>
+<text x="139.9" y="284.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3,713</text>
+<rect x="152.3" y="334.9" width="20.9" height="35.1" fill="#CC79A7"/>
+<text x="162.7" y="329.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,624</text>
 <text x="128.4" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">and</text>
-<rect x="193.3" y="331.8" width="28" height="38.2" fill="#0072B2"/>
-<text x="207.3" y="326.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,697</text>
-<rect x="223.3" y="330" width="28" height="40" fill="#009E73"/>
-<text x="237.3" y="325" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,778</text>
-<rect x="253.3" y="349.3" width="28" height="20.7" fill="#D55E00"/>
-<text x="267.3" y="344.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">920</text>
+<rect x="192.6" y="327.9" width="20.9" height="42.1" fill="#0072B2"/>
+<text x="203" y="322.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,947</text>
+<rect x="215.4" y="326" width="20.9" height="44" fill="#009E73"/>
+<text x="225.9" y="321" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,036</text>
+<rect x="238.3" y="347.8" width="20.9" height="22.2" fill="#D55E00"/>
+<text x="248.7" y="342.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,029</text>
+<rect x="261.1" y="296.8" width="20.9" height="73.2" fill="#CC79A7"/>
+<text x="271.6" y="291.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3,387</text>
 <text x="237.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">or</text>
-<rect x="302.1" y="327.9" width="28" height="42.1" fill="#0072B2"/>
-<text x="316.1" y="322.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,869</text>
-<rect x="332.1" y="166.2" width="28" height="203.8" fill="#009E73"/>
-<text x="346.1" y="161.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">9,058</text>
-<rect x="362.1" y="313.1" width="28" height="56.9" fill="#D55E00"/>
-<text x="376.1" y="308.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,531</text>
+<rect x="301.4" y="324.3" width="20.9" height="45.7" fill="#0072B2"/>
+<text x="311.9" y="319.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,117</text>
+<rect x="324.3" y="136.2" width="20.9" height="233.8" fill="#009E73"/>
+<text x="334.7" y="131.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">10,826</text>
+<rect x="347.1" y="307.8" width="20.9" height="62.2" fill="#D55E00"/>
+<text x="357.6" y="302.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,880</text>
+<rect x="370" y="369.7" width="20.9" height="0.3" fill="#CC79A7"/>
+<text x="380.4" y="364.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">13</text>
 <text x="346.1" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">phrase</text>
-<rect x="411" y="313.1" width="28" height="56.9" fill="#0072B2"/>
-<text x="425" y="308.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,528</text>
-<rect x="441" y="287.8" width="28" height="82.2" fill="#009E73"/>
-<text x="455" y="282.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3,652</text>
-<rect x="471" y="338.1" width="28" height="31.9" fill="#D55E00"/>
-<text x="485" y="333.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,419</text>
+<rect x="410.3" y="307.7" width="20.9" height="62.3" fill="#0072B2"/>
+<text x="420.7" y="302.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,885</text>
+<rect x="433.1" y="275.1" width="20.9" height="94.9" fill="#009E73"/>
+<text x="443.6" y="270.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4,393</text>
+<rect x="456" y="335.2" width="20.9" height="34.8" fill="#D55E00"/>
+<text x="466.4" y="330.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,610</text>
+<rect x="478.9" y="369.1" width="20.9" height="0.9" fill="#CC79A7"/>
+<text x="489.3" y="364.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">42</text>
 <text x="455" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">mixed</text>
-<rect x="519.9" y="345.7" width="28" height="24.3" fill="#0072B2"/>
-<text x="533.9" y="340.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,078</text>
-<rect x="549.9" y="258.9" width="28" height="111.1" fill="#009E73"/>
-<text x="563.9" y="253.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4,936</text>
-<rect x="579.9" y="335.4" width="28" height="34.6" fill="#D55E00"/>
-<text x="593.9" y="330.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,537</text>
+<rect x="519.1" y="344.4" width="20.9" height="25.6" fill="#0072B2"/>
+<text x="529.6" y="339.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,186</text>
+<rect x="542" y="267.9" width="20.9" height="102.1" fill="#009E73"/>
+<text x="552.4" y="262.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4,729</text>
+<rect x="564.9" y="329.2" width="20.9" height="40.8" fill="#D55E00"/>
+<text x="575.3" y="324.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,891</text>
+<rect x="587.7" y="369.4" width="20.9" height="0.6" fill="#CC79A7"/>
+<text x="598.1" y="364.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">30</text>
 <text x="563.9" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">count(*)</text>
-<rect x="628.7" y="314.6" width="28" height="55.4" fill="#0072B2"/>
-<text x="642.7" y="309.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,462</text>
-<rect x="658.7" y="305.6" width="28" height="64.4" fill="#009E73"/>
-<text x="672.7" y="300.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,864</text>
-<rect x="688.7" y="314.3" width="28" height="55.7" fill="#D55E00"/>
-<text x="702.7" y="309.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,477</text>
+<rect x="628" y="309.9" width="20.9" height="60.1" fill="#0072B2"/>
+<text x="638.4" y="304.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,783</text>
+<rect x="650.9" y="293.1" width="20.9" height="76.9" fill="#009E73"/>
+<text x="661.3" y="288.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3,562</text>
+<rect x="673.7" y="307" width="20.9" height="63" fill="#D55E00"/>
+<text x="684.1" y="302" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2,919</text>
+<rect x="696.6" y="369.2" width="20.9" height="0.8" fill="#CC79A7"/>
+<text x="707" y="364.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">37</text>
 <text x="672.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">filter</text>
-<rect x="737.6" y="354.4" width="28" height="15.6" fill="#0072B2"/>
-<text x="751.6" y="349.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">692</text>
-<rect x="767.6" y="338.7" width="28" height="31.3" fill="#009E73"/>
-<text x="781.6" y="333.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,391</text>
-<rect x="797.6" y="365.8" width="28" height="4.2" fill="#D55E00"/>
-<text x="811.6" y="360.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">186</text>
+<rect x="736.9" y="352.3" width="20.9" height="17.7" fill="#0072B2"/>
+<text x="747.3" y="347.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">819</text>
+<rect x="759.7" y="333" width="20.9" height="37" fill="#009E73"/>
+<text x="770.1" y="328" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1,711</text>
+<rect x="782.6" y="365.6" width="20.9" height="4.4" fill="#D55E00"/>
+<text x="793" y="360.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">202</text>
+<rect x="805.4" y="369.2" width="20.9" height="0.8" fill="#CC79A7"/>
+<text x="815.9" y="364.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">35</text>
 <text x="781.6" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">join</text>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
-<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 6 rounds; 8-core desktop, shared host (load avg 16-46); Oct 2026.</text>
+<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 4 rounds; 8-core desktop, shared host (load avg 9-25); Oct 2026.</text>
 </svg>

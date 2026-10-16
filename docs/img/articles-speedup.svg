@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="434" viewBox="0 0 860 434" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Throughput relative to pg_search</title>
-<desc id="d">and: sift 2.35x, sift pairs 2.17x; or: sift 1.84x, sift pairs 1.93x; phrase: sift 0.74x, sift pairs 3.58x; mixed: sift 1.78x, sift pairs 2.57x; count(*): sift 0.70x, sift pairs 3.21x; filter: sift 0.99x, sift pairs 1.16x; join: sift 3.72x, sift pairs 7.48x</desc>
+<desc id="d">and: sift 2.45x, sift pairs 2.51x, pg_textsearch 0.44x; or: sift 1.89x, sift pairs 1.98x, pg_textsearch 3.29x; phrase: sift 0.74x, sift pairs 3.76x, pg_textsearch 0.00x; mixed: sift 1.79x, sift pairs 2.73x, pg_textsearch 0.03x; count(*): sift 0.63x, sift pairs 2.50x, pg_textsearch 0.02x; filter: sift 0.95x, sift pairs 1.22x, pg_textsearch 0.01x; join: sift 4.06x, sift pairs 8.48x, pg_textsearch 0.18x</desc>
 <rect x="0.5" y="0.5" width="859" height="433" rx="6" fill="#ffffff" stroke="#d0d7de"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Throughput relative to pg_search</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">queries per second divided by pg_search, higher is better</text>
@@ -8,10 +8,12 @@
 <text x="37" y="72" font-size="12" text-anchor="start" fill="#24292f">sift</text>
 <rect x="83" y="62" width="12" height="12" fill="#009E73"/>
 <text x="100" y="72" font-size="12" text-anchor="start" fill="#24292f">sift pairs</text>
-<rect x="188" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="205" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
-<line x1="405" y1="68" x2="423" y2="68" stroke="#24292f" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="428" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search = 1.0x</text>
+<rect x="188" y="62" width="12" height="12" fill="#CC79A7"/>
+<text x="205" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_textsearch</text>
+<rect x="314" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="331" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
+<line x1="531" y1="68" x2="549" y2="68" stroke="#24292f" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="554" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search = 1.0x</text>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#d8dee4" stroke-width="1"/>
 <text x="66" y="374" font-size="10" text-anchor="end" fill="#57606a">0</text>
 <line x1="74" y1="316" x2="836" y2="316" stroke="#d8dee4" stroke-width="1"/>
@@ -25,42 +27,56 @@
 <line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
 <text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">10</text>
 <text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">speedup over pg_search</text>
-<rect x="99.4" y="306.4" width="28" height="63.6" fill="#0072B2"/>
-<text x="113.4" y="301.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.35x</text>
-<rect x="129.4" y="311.4" width="28" height="58.6" fill="#009E73"/>
-<text x="143.4" y="306.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.17x</text>
+<rect x="84.4" y="303.9" width="28" height="66.1" fill="#0072B2"/>
+<text x="98.4" y="298.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.45x</text>
+<rect x="114.4" y="302.3" width="28" height="67.7" fill="#009E73"/>
+<text x="128.4" y="297.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.51x</text>
+<rect x="144.4" y="358.2" width="28" height="11.8" fill="#CC79A7"/>
+<text x="158.4" y="353.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.44x</text>
 <text x="128.4" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">and</text>
-<rect x="208.3" y="320.2" width="28" height="49.8" fill="#0072B2"/>
-<text x="222.3" y="315.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.84x</text>
-<rect x="238.3" y="317.8" width="28" height="52.2" fill="#009E73"/>
-<text x="252.3" y="312.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.93x</text>
+<rect x="193.3" y="318.9" width="28" height="51.1" fill="#0072B2"/>
+<text x="207.3" y="313.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.89x</text>
+<rect x="223.3" y="316.6" width="28" height="53.4" fill="#009E73"/>
+<text x="237.3" y="311.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.98x</text>
+<rect x="253.3" y="281.1" width="28" height="88.9" fill="#CC79A7"/>
+<text x="267.3" y="276.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.29x</text>
 <text x="237.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">or</text>
-<rect x="317.1" y="350.1" width="28" height="19.9" fill="#0072B2"/>
-<text x="331.1" y="345.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.74x</text>
-<rect x="347.1" y="273.4" width="28" height="96.6" fill="#009E73"/>
-<text x="361.1" y="268.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.58x</text>
+<rect x="302.1" y="350.2" width="28" height="19.8" fill="#0072B2"/>
+<text x="316.1" y="345.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.74x</text>
+<rect x="332.1" y="268.5" width="28" height="101.5" fill="#009E73"/>
+<text x="346.1" y="263.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.76x</text>
+<rect x="362.1" y="369.9" width="28" height="0.1" fill="#CC79A7"/>
+<text x="376.1" y="364.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.00x</text>
 <text x="346.1" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">phrase</text>
-<rect x="426" y="321.9" width="28" height="48.1" fill="#0072B2"/>
-<text x="440" y="316.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.78x</text>
-<rect x="456" y="300.5" width="28" height="69.5" fill="#009E73"/>
-<text x="470" y="295.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.57x</text>
+<rect x="411" y="321.6" width="28" height="48.4" fill="#0072B2"/>
+<text x="425" y="316.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.79x</text>
+<rect x="441" y="296.3" width="28" height="73.7" fill="#009E73"/>
+<text x="455" y="291.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.73x</text>
+<rect x="471" y="369.3" width="28" height="0.7" fill="#CC79A7"/>
+<text x="485" y="364.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.03x</text>
 <text x="455" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">mixed</text>
-<rect x="534.9" y="351.1" width="28" height="18.9" fill="#0072B2"/>
-<text x="548.9" y="346.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.70x</text>
-<rect x="564.9" y="283.3" width="28" height="86.7" fill="#009E73"/>
-<text x="578.9" y="278.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.21x</text>
+<rect x="519.9" y="353.1" width="28" height="16.9" fill="#0072B2"/>
+<text x="533.9" y="348.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.63x</text>
+<rect x="549.9" y="302.5" width="28" height="67.5" fill="#009E73"/>
+<text x="563.9" y="297.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.50x</text>
+<rect x="579.9" y="369.6" width="28" height="0.4" fill="#CC79A7"/>
+<text x="593.9" y="364.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.02x</text>
 <text x="563.9" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">count(*)</text>
-<rect x="643.7" y="343.2" width="28" height="26.8" fill="#0072B2"/>
-<text x="657.7" y="338.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.99x</text>
-<rect x="673.7" y="338.8" width="28" height="31.2" fill="#009E73"/>
-<text x="687.7" y="333.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.16x</text>
+<rect x="628.7" y="344.3" width="28" height="25.7" fill="#0072B2"/>
+<text x="642.7" y="339.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.95x</text>
+<rect x="658.7" y="337" width="28" height="33" fill="#009E73"/>
+<text x="672.7" y="332" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.22x</text>
+<rect x="688.7" y="369.7" width="28" height="0.3" fill="#CC79A7"/>
+<text x="702.7" y="364.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.01x</text>
 <text x="672.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">filter</text>
-<rect x="752.6" y="269.5" width="28" height="100.5" fill="#0072B2"/>
-<text x="766.6" y="264.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.72x</text>
-<rect x="782.6" y="168" width="28" height="202" fill="#009E73"/>
-<text x="796.6" y="163" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">7.48x</text>
+<rect x="737.6" y="260.5" width="28" height="109.5" fill="#0072B2"/>
+<text x="751.6" y="255.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.06x</text>
+<rect x="767.6" y="141.1" width="28" height="228.9" fill="#009E73"/>
+<text x="781.6" y="136.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">8.48x</text>
+<rect x="797.6" y="365.3" width="28" height="4.7" fill="#CC79A7"/>
+<text x="811.6" y="360.3" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.18x</text>
 <text x="781.6" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">join</text>
 <line x1="74" y1="343" x2="836" y2="343" stroke="#24292f" stroke-width="1.5" stroke-dasharray="4 3"/>
 <line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
-<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 6 rounds; 8-core desktop, shared host (load avg 16-46); Oct 2026.</text>
+<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">Simple English Wikipedia, 218,058 articles, 8 clients, median of 4 rounds; 8-core desktop, shared host (load avg 9-25); Oct 2026.</text>
 </svg>
