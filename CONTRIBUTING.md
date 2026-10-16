@@ -16,6 +16,14 @@ installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgt
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
 `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
 
+Every suite runs under one leak gate, `scripts/leakcheck.sh`, without any test referring to it: the server logs of every
+cluster and node are scanned for what PostgreSQL logs when a transaction or backend leaks (buffer, relcache, TupleDesc,
+snapshot, lock and file references, `you don't own a lock`), for assertion failures, crashes and sanitizer reports; a
+`SANITIZE=1` server also reports malloc leaks as each process exits (LeakSanitizer, `scripts/lsan.supp`); every cluster is
+checked when it stops (no session left in a transaction or holding locks, no prepared transaction, no temporary file left,
+no long-lived process grown); the soak fails on a backend whose memory keeps growing. `make check` ends with the scan of
+everything it ran. A test that crashes or leaks on purpose declares it with `scripts/leakcheck.sh expect COUNT REGEX`.
+
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
