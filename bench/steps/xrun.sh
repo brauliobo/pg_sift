@@ -20,6 +20,7 @@ mkdir -p "$RUN" "$X"
 "$STEPS/cluster.sh" start
 
 declare -A KIND=([and]=top10 [or]=top10 [phrase]=top10 [mixed]=top10 [count]=count [filter]=filter [rank]=top10)
+# shellcheck disable=SC2054  # comma separated lists are the values
 declare -A MODES=([and]=and [or]=or [phrase]=phrase [mixed]=and,or,phrase [count]=and,or,phrase [filter]=and,or,phrase [rank]=and,or,phrase)
 
 render() { { echo "$RENDER"; echo "$1"; } | psql -X -v ON_ERROR_STOP=1 -qAtF $'\t'; }
@@ -92,7 +93,7 @@ measure() {
   note="took_avg=$(field read took_avg "$wl") took_p99=$(field read took_p99 "$wl") errors=$(field read errors "$wl")"
   [[ $wl == update ]] && note="reads=mixed writes=$(field write n "$wl") writer_tps=$(field write qps "$wl") writer_p99=$(field write p99 "$wl") $note"
   row "$wl" "$CLIENTS" "$DURATION" "$(field read qps "$wl")" "$(field read avg "$wl")" "$(field read p50 "$wl")" "$(field read p95 "$wl")" \
-    "$(field read p99 "$wl")" "$(field read n "$wl")" "" "$(cat "$RUN/$wl.wal")" "$(cut -d' ' -f1 /proc/loadavg)" "$note"
+    "$(field read p99 "$wl")" "$(field read n "$wl")" "" "$(cat "$RUN/$wl.wal")" "$(loadavg)" "$note"
   log "$ENGINE $wl: $(grep "^read" "$RUN/$wl.out")"
 }
 

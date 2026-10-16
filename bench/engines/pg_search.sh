@@ -1,11 +1,9 @@
-# ParadeDB pg_search (Tantivy inside Postgres), prebuilt PG18 package from bench/bench setup.
+# ParadeDB pg_search (Tantivy inside Postgres), the prebuilt PG18 package unpacked by bench/bench setup.
 # Default tokenizer: lowercase, no stemming. created/category_id are indexed so filters push down.
 REQUIRES=pg_search
 SETUP="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE;"
 INDEX="CREATE INDEX docs_fts ON docs USING bm25 (id, body, created, category_id);"
-RENDER=$(cat <<'SQL'
-CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS $$
-  SELECT CASE mode
+PRED="CASE mode
     WHEN 'and'    THEN format('docs.body &&& %L', array_to_string(terms, ' '))
     WHEN 'or'     THEN format('docs.body ||| %L', array_to_string(terms, ' '))
     WHEN 'phrase' THEN format('docs.body ### %L', array_to_string(terms, ' '))
@@ -13,9 +11,5 @@ CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANG
                               'body', array_to_string(terms[:cardinality(terms) - 1], ' '), 'body', terms[cardinality(terms)])
     WHEN 'prefix' THEN format('docs.id @@@ paradedb.regex(%L, %L)', 'body', terms[1] || '.*')
     WHEN 'fuzzy'  THEN format('docs.id @@@ paradedb.match(%L, %L, distance => 1)', 'body', terms[1])
-  END
-$$;
-CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT CASE WHEN bench_pred(mode, terms) IS NOT NULL THEN 'paradedb.score(docs.id) DESC' END $$;
-SQL
-)
+  END"
+RANK="CASE WHEN bench_pred(mode, terms) IS NOT NULL THEN 'paradedb.score(docs.id) DESC' END"

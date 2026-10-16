@@ -23,7 +23,6 @@ Engine ids: sift, sift_pairs (phrase_index = pairs), pg_search, rum.
 """
 import collections, os, statistics as st, sys
 
-ID = {'paradedb': 'pg_search', 'pgs': 'pg_search'}
 NAME = {'sift': 'sift', 'sift_pairs': 'sift `pairs`', 'pg_search': 'pg_search', 'rum': 'rum'}
 ORDER = ['sift', 'sift_pairs', 'pg_search', 'rum']
 MIB = 1048576
@@ -65,9 +64,9 @@ def articles(tier, path):
     for e in engines:
         for c in classes:
             v = [num(x[4]) or float('nan') for x in cells if x[2] == c and x[3] == e and x[4] != 'NA']   # 0: a client failed
-            out.append(('articles', tier, ID.get(e, e), c, '-', 'qps', *(stats(v) if v else ('NA',) * 3), 'queries/s'))
+            out.append(('articles', tier, e, c, '-', 'qps', *(stats(v) if v else ('NA',) * 3), 'queries/s'))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth
-        builds.append(('articles', tier, ID.get(b[1], b[1]), b[3], b[4], b[5], b[6]))
+        builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6]))
     return out, builds, [float(c[1]) for c in cells]
 
 
@@ -77,9 +76,9 @@ def places(tier, path):
     for wl, c, e in dict.fromkeys((c[2], c[3], c[4]) for c in cells):
         sel = [x for x in cells if (x[2], x[3], x[4]) == (wl, c, e)]
         for metric, col in (('p50_ms', 5), ('p95_ms', 6)):
-            out.append(('places', tier, ID.get(e, e), c, wl, metric, *stats([None if x[col] == 'NA' else num(x[col]) for x in sel]), 'ms'))
+            out.append(('places', tier, e, c, wl, metric, *stats([None if x[col] == 'NA' else num(x[col]) for x in sel]), 'ms'))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # engine build_s index_bytes heap_growth setup_s
-        builds.append(('places', tier, ID.get(b[0], b[0]), b[4] if len(b) > 4 else '0', b[1], b[2], b[3]))
+        builds.append(('places', tier, b[0], b[4] if len(b) > 4 else '0', b[1], b[2], b[3]))
     return out, builds, [float(c[1]) for c in cells]
 
 
@@ -158,7 +157,7 @@ def main(argv):
         if a == '--per-dataset':
             per = next(args)
         elif a == '--engines':
-            keep = [ID.get(e, e) for e in next(args).split(',')]
+            keep = [e for e in next(args).split(',')]
         else:
             specs.append(a)
     rows, builds, loads, tiers = [], [], collections.defaultdict(list), []

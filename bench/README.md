@@ -85,10 +85,10 @@ slightly), pg_search 0.26.1, rum 1.3.15 (tag of postgrespro/rum), PostgreSQL maj
 (`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
-Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add its id to `ALL_ENGINES` and the
-`ab_engines` / `places_engines` cases of `bench`, a `fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its
-pinned version to `versions.env`), and its name to `ID`, `NAME` and `ORDER` in `steps/tables.py`. For places add the
-extension, setup, index and statements to the `EXT`, `SETUP`, `INDEX` and `stmt` tables of `steps/places.sh`.
+Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add its id to `ALL_ENGINES` in `bench`, a
+`fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`), and its name
+to `NAME` and `ORDER` in `steps/tables.py`. For places add the setup, index and statements to the `SETUP`, `INDEX` and
+`stmt` tables of `steps/places.sh`.
 
 ## Datasets
 
@@ -142,17 +142,16 @@ stays in the cache. Per-tier cluster, port and dump:
 | `steps/` | role |
 |---|---|
 | `ab.sh`, `places.sh` | the interleaved A/B runs of articles and places (`run`, `cold`) |
-| `lib.sh` | shared settings: tiers, ports, `q` (psql), `locked` (perf lock), `limited` (8 CPU / 32 GB budget, a cgroup scope when a systemd user session exists) |
+| `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `spread_ok` (the interleaved rounds), `evict_table` (cold cache), `locked` (perf lock), `limited` (8 CPU / 32 GB budget, a cgroup scope when a systemd user session exists) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
 | `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img` (`charts`; stdlib only, same tables give the same bytes) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
-| `fetch.sh` | build sift and rum (PGXS, `DESTDIR` roots), unpack pg_search and the other third-party engines under `$SIFT_BENCH_ROOT`, build `xbench` |
+| `fetch.sh` | build sift and rum (PGXS), unpack pg_search, fetch Elasticsearch, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
 | `run.sh`, `xrun.sh` | one engine: timed index build + pgbench workloads (`BUILD_ONLY=1`: build and keep); non-Postgres engines driven by `xbench` (`workload`) |
 | `quick.sh`, `report.sh` | the multi-engine standard suite and its tables (`suite`) |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
-| `cold.sh` | cold-cache A/B of a boolean GUC (`GUC=sift.prefetch`) |
-| `facets.sh`, `facets_es.py` | facet counts: `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l)), own scratch cluster under `$FACET_TMP`; run `steps/facets.sh` directly |
+| `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 
@@ -163,21 +162,21 @@ queries). The oracle adds a `not` form (all terms, last one negated).
 
 ## Engine adapters
 
-Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `paradedb`, `sift`, `sift_pairs` = sift
-with `phrase_index = pairs`) set `REQUIRES` (extension), `SETUP`, `INDEX` and `RENDER`, which defines two SQL
-functions: `bench_pred(mode, terms)` (WHERE clause, NULL if unsupported) and `bench_rank(mode, terms)`
-(ORDER BY, NULL if no top-k). `sql/harness.sql` composes every statement kind from them (top10, count,
-match, filter, join), so a new engine is one small file. `sift` follows DESIGN.md (`body @@> 'a AND b'`,
-`sift.score(ctid)`); the cluster loads it from `SIFT_ROOT` (default `$SIFT_BENCH_ROOT/sift-root`, built by
-`setup`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
+Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `pg_search`, `sift`, `sift_pairs` = sift
+with `phrase_index = pairs`) set `REQUIRES` (extension), `SETUP`, `INDEX`, and `PRED` and `RANK`: SQL expressions over
+`mode` and `terms` rendering the WHERE condition and the ORDER BY of a query, NULL if the engine cannot answer it
+(`HELPERS`: SQL they use). `steps/lib.sh` turns them into `bench_pred(mode, terms)` and `bench_rank(mode, terms)` and
+`sql/harness.sql` composes every statement kind from them (top10, count, match, filter, join), so a new engine is
+one small file. `sift` follows DESIGN.md (`body @@> 'a AND b'`,
+`sift.score(ctid)`); the cluster loads it from the engine roots (`setup` builds sift into
+`$SIFT_BENCH_ROOT/engines/sift/root`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
 (`simple` configuration) with a `rum_tsvector_ops` index, queried with `@@` and ranked with `<=>`; on places it
 lives in its own database so the column does not enlarge the other engines' table, and it has no per-field boost
 (the `boost` cells are NA). ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
 with the default tokenizer, and `edge_ngram(1, 15)` on the places name and all-fields text.
 
-External adapters (`elasticsearch`, `tantivy`, and `meilisearch` / `typesense`, which are kept but not
-compared: typo-tolerant, non-BM25 ranking) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
-`x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` that render requests from the same query trace.
+External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
+`x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` (in `RENDER`) that render requests from the same query trace.
 
 ## Workloads (`run`, `workload`)
 
