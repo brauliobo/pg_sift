@@ -16,7 +16,7 @@
 # in a scratch directory $SIFT_CI_TMP (default /tmp/sift-ci-<pid>) that is removed when everything
 # passed (KEEP=1 keeps it; a failure keeps it for the logs). The ports are SIFT_PORT (default
 # 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick
-# 3072, full 8192). Logs: <scratch>/logs/<suite>.log. Stages whose sift code has not landed are
+# 4096, full 8192). Logs: <scratch>/logs/<suite>.log. Stages whose sift code has not landed are
 # skipped, not failed. Exit 1 if any suite fails.
 set -uo pipefail
 
@@ -31,7 +31,7 @@ BASE_PORT=${SIFT_PORT:-56130}
 if [[ $MODE == full ]]; then
 	export SANITIZE=1; MAX_MB=${CI_MAX_MB:-8192}; unset SIFT_QUICK
 else
-	export SIFT_QUICK=1; MAX_MB=${CI_MAX_MB:-3072}
+	export SIFT_QUICK=1; MAX_MB=${CI_MAX_MB:-4096}
 fi
 export SIFT_ROOT=$BASE/root
 rm -rf "$BASE" && mkdir -p "$LOG"

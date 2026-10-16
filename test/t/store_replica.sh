@@ -8,8 +8,7 @@
 SECS=$(knob SIFT_CHURN_SECS 15 5)
 plan 8
 node_init primary 2 "wal_level = replica
-max_wal_senders = 4
-wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)"
+max_wal_senders = 4"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" "INSERT INTO t VALUES (0), (5000), (300000)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
@@ -21,7 +20,8 @@ rm -rf "$S"
 mkdir -p "$S/sock"
 echo 3 >"$S/offset"
 NODES+=(standby)
-pg_basebackup -h "$(dir primary)/sock" -p "$(port primary)" -U postgres -D "$S/data" -R -X stream -c fast ||
+# a slot keeps the WAL the churn outruns a slow standby with (a loaded CI runner), instead of a wal_keep_size guess
+pg_basebackup -h "$(dir primary)/sock" -p "$(port primary)" -U postgres -D "$S/data" -R -C -S standby -X stream -c fast ||
 	bail "pg_basebackup failed"
 node_conf standby "port = $(port standby)
 unix_socket_directories = '$S/sock'
