@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Interleaved A/B of sift, sift with phrase_index = pairs, and ParadeDB on one corpus.
+# Interleaved A/B of sift, sift with phrase_index = pairs, ParadeDB pg_search and rum on one corpus.
 #
 #   bench/ab.sh quick          Q tier (150k articles), 3 s per cell, 3-6 rounds
 #   bench/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
@@ -8,11 +8,12 @@
 # Every engine database is built once (BUILD_ONLY in run.sh), then each round runs every class on
 # every engine, one cell at a time with the engine order rotated, so load drifts hit all engines alike.
 # Rounds stop once every cell's spread is under TOL (default 15%) after the minimum, or at MAXR.
-# Only compact tables are kept: $RESULTS/<mode>-<time>/{cells,builds,summary}.tsv; the scratch
-# cluster is removed on exit (KEEP=1 keeps it). The corpus dump stays in $CACHE.
-# Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold queries per class).
-# Needs the scripts/pgtest.sh install output ($SIFT_ROOT) and pg_search for pg_config; the
-# articles come from $DATA/articles.tsv (bench/corpus.sh fetch).
+# Only compact tables are kept: $DEST (default $RESULTS/<mode>-<time>)/{cells,builds,summary}.tsv and
+# machine.txt; the scratch cluster is removed on exit (KEEP=1 keeps it). The corpus dump stays in $CACHE.
+# Engines whose extension is not installed are skipped with a message; a class an engine cannot render
+# is reported as NA. Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold
+# queries per class) RESULTS DEST.
+# Needs bench/fetch.sh (sift, rum, paradedb) and bench/datasets/fetch.sh articles.
 set -euo pipefail
 mode=${1:-quick}; cold=
 [[ $mode == cold ]] && { cold=1; mode=${2:-full}; }
@@ -22,12 +23,12 @@ case $mode in
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 . "$(dirname "$0")/lib.sh"
-ENGINES=${ENGINES:-sift sift_pairs paradedb}
+ENGINES=${ENGINES:-sift sift_pairs paradedb rum}
 CLASSES=${CLASSES:-and or phrase mixed count filter join}
 CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} TOL=${TOL:-0.15} NQ=${NQ:-12}
 RESULTS=${RESULTS:-$BENCH/out/ab}
 OUT=$ROOT/ab/$TIER; rm -rf "$OUT"; mkdir -p "$OUT" "$RESULTS"   # builds.tsv from run.sh lands in the scratch directory
-DEST=$RESULTS/${cold:+cold-}$mode-$(date +%m%d-%H%M); mkdir -p "$DEST"
+DEST=${DEST:-$RESULTS/${cold:+cold-}$mode-$(date +%m%d-%H%M)}; mkdir -p "$DEST"
 export OUT
 
 cleanup() { [[ ${KEEP:-} ]] || { "$BENCH/cluster.sh" destroy >/dev/null 2>&1 || true; rm -rf "$ROOT/ab"; }; }
@@ -35,6 +36,8 @@ trap cleanup EXIT
 
 "$BENCH/cluster.sh" init >/dev/null
 "$BENCH/cluster.sh" start >/dev/null
+ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
+"$BENCH/machine.sh" >"$DEST/machine.txt"
 [[ -f $DUMP ]] || "$BENCH/corpus.sh" load >/dev/null
 [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$BENCH/corpus.sh" restore >/dev/null
 for e in $ENGINES; do BUILD_ONLY=1 "$BENCH/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
@@ -73,14 +76,16 @@ fi
 # one pgbench script per class and engine database (the statements were rendered per engine)
 for e in $ENGINES; do for c in $CLASSES; do
   n=$(PGDATABASE=$(engine_db "$e") q -c "SELECT count(*) FROM stmts WHERE wl = '$c'")
+  (( n > 0 )) || { rm -f "$OUT/$e-$c.pgb"; continue; }   # the engine cannot render this class
   printf '\\set i random(1, %d)\nSELECT stmt FROM stmts WHERE wl = '"'"'%s'"'"' AND n = :i \\gset\n:stmt\n' "$n" "$c" >"$OUT/$e-$c.pgb"
 done; done
-cell() { # engine class secs -> qps
+cell() { # engine class secs -> qps (NA: the engine cannot run the class)
+  [[ -f $OUT/$1-$2.pgb ]] || { echo NA; return; }
   PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" pgbench -n -c "$CLIENTS" -j "$THREADS" -T "$3" -f "$OUT/$1-$2.pgb" "$(engine_db "$1")" 2>&1 |
     grep -oP 'tps = \K[0-9.]+(?= \(without)' || echo 0
 }
 stable() { # spread of every (class, engine) over the rounds is under TOL
-  awk -F'\t' -v tol="$TOL" 'NR > 1 { k = $3 SUBSEP $4; n[k]++; v[k, n[k]] = $5 }
+  awk -F'\t' -v tol="$TOL" 'NR > 1 && $5 != "NA" { k = $3 SUBSEP $4; n[k]++; v[k, n[k]] = $5 }
     END { for (k in n) { lo = hi = v[k, 1]; for (i = 2; i <= n[k]; i++) { if (v[k, i] < lo) lo = v[k, i]; if (v[k, i] > hi) hi = v[k, i] }
           if (hi == 0 || (hi - lo) / hi > tol) exit 1 } }' "$DEST/cells.tsv"
 }
@@ -106,13 +111,18 @@ dest, engines, classes = sys.argv[1], sys.argv[2].split(), sys.argv[3].split()
 cells = [l.rstrip('\n').split('\t') for l in open(dest + '/cells.tsv')][1:]
 rounds = sorted({int(c[0]) for c in cells})
 load = {r: [float(c[1]) for c in cells if int(c[0]) == r] for r in rounds}
-med = {(c, e): st.median(float(x[4]) for x in cells if x[2] == c and x[3] == e) for c in classes for e in engines}
+def median(c, e):
+    v = [float(x[4]) for x in cells if x[2] == c and x[3] == e and x[4] != 'NA']
+    return st.median(v) if v else None
+med = {(c, e): median(c, e) for c in classes for e in engines}
+num = lambda v: 'NA' if v is None else '%.0f' % v
+ratio = lambda a, b: 'NA' if a is None or not b else '%.2f' % (a / b)
 ref = 'paradedb' if 'paradedb' in engines else engines[-1]
 with open(dest + '/summary.tsv', 'w') as f:
     f.write('class\t' + '\t'.join(engines) + '\t' + '\t'.join(e + '/' + ref for e in engines if e != ref) + '\n')
     for c in classes:
-        f.write(c + '\t' + '\t'.join('%.0f' % med[c, e] for e in engines) + '\t' +
-                '\t'.join('%.2f' % (med[c, e] / med[c, ref] if med[c, ref] else 0) for e in engines if e != ref) + '\n')
+        f.write(c + '\t' + '\t'.join(num(med[c, e]) for e in engines) + '\t' +
+                '\t'.join(ratio(med[c, e], med[c, ref]) for e in engines if e != ref) + '\n')
     f.write('load\t' + ' '.join('r%d %.1f-%.1f' % (r, min(load[r]), max(load[r])) for r in rounds) + '\n')
 print(open(dest + '/summary.tsv').read())
 PY
