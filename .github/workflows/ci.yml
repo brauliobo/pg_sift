@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgresql-18:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 18
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          # the tests start their own clusters: no default cluster, no service on 5432
+          sudo apt-get install -y postgresql-common
+          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 libipc-run-perl
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          pg_config --version
+          make -j4
+
+      - name: Regression tests (installcheck, release build)
+        run: |
+          export SIFT_TMP="$RUNNER_TEMP/sift-installcheck" SIFT_TESTING=
+          scripts/pgtest.sh install
+          scripts/pgtest.sh start
+          scripts/pgtest.sh regress
+          scripts/pgtest.sh destroy
+
+      - name: Quick test tier (make check)
+        run: make check
+        env:
+          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sift-test-logs
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            test/regression.diffs
+          if-no-files-found: ignore
