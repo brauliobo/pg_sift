@@ -8,6 +8,7 @@
 #define SIFT_PUSHDOWN_H
 
 #include "nodes/pathnodes.h"
+#include "nodes/plannodes.h"
 
 typedef enum SiftPushdown
 {

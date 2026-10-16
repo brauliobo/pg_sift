@@ -59,7 +59,7 @@ teardown
 }
 
 session s1
-setup		{ CREATE TEMP TABLE IF NOT EXISTS fetched (n serial, id int, score real); TRUNCATE fetched RESTART IDENTITY; SET enable_seqscan = off; SELECT sift.match('a', 'a'); SET sift.filter_pushdown = force; }
+setup		{ CREATE TEMP TABLE IF NOT EXISTS fetched (n serial, id int, score real); TRUNCATE fetched RESTART IDENTITY; SET enable_seqscan = off; SET sift.filter_pushdown = force; }
 step s1plan	{ SELECT iso_flt_plan('common', 'tenant < 3') AS pushed_down; }
 step s1ranked	{ BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_flt WHERE body @@> 'common' AND tenant < 3 ORDER BY sift.score(ctid) DESC; }
 step s1f	{ SELECT iso_fetch('c', 50) AS fetched; }
@@ -69,7 +69,7 @@ step s1c	{ COMMIT; }
 step s1now	{ SELECT iso_flt_now('common OR rare', 'tenant < 3') AS agree, iso_flt_now('rare', 'tenant IN (1, 2, 11)') AS agree_rare; }
 
 session s2
-setup		{ SELECT sift.match('a', 'a'); SET sift.filter_pushdown = force; }
+setup		{ SET sift.filter_pushdown = force; }
 step s2b	{ BEGIN; }
 step s2c	{ COMMIT; }
 step s2i	{ INSERT INTO iso_flt SELECT g, g % 4, 'common reused rare ' || g FROM generate_series(5001, 6500) g; }
