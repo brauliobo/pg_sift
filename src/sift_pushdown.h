@@ -24,6 +24,8 @@ typedef struct SiftFilterEst
 {
 	Cost		cost;			/* the bitmap scan and the masks */
 	double		sel;			/* fraction of the heap's tuples the masks keep (lossy pages keep all of theirs) */
+	double		start;			/* fraction of the heap before the first tuple the bitmap can keep, in scan order */
+	double		span;			/* fraction of the heap from that tuple to the last one the bitmap can keep */
 } SiftFilterEst;
 
 /*

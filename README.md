@@ -89,7 +89,9 @@ WHERE d.body @@> 'friendly' ORDER BY sift.score(d.ctid) DESC LIMIT 10;          
 With `sift.filter_pushdown` (`on` by default) the planner builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and
 gives it to the ranked scan, which then scores only the matches that pass, so the work follows the filter and not a very common term;
 results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 23.6 ms to 0.22 ms (clustered) and 15.0 ms to 0.86 ms
-(scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans.
+(scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans. The post-filter plan is priced
+from the filter column's statistics: the ranker visits the heap in order and verifies every match until it holds `k` rows that pass,
+so a filter whose rows lie at the end of a correlated column (recent ids) costs it the whole heap before them. Both plans are also charged for the blocks the ranker scores, and an id list (`= ANY(array)`) is priced by the btree leaf pages it touches, so a long list of scattered ids is pushed down.
 
 ```sql
 CREATE INDEX docs_published ON docs (published);

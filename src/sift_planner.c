@@ -45,6 +45,10 @@ static create_upper_paths_hook_type prev_upper_hook;
 #define BYTES_PER_POSTING		1.0
 /* Decoding and combining postings, per posting in operator costs */
 #define POSTING_CPU_FRACTION	(1.0 / 16)
+/* Opening and scoring a block of heap pages in the ranker: its terms' cursors, bounds and kernels (measured, ~3 us) */
+#define SCORE_BLOCK_COST		(170 * cpu_operator_cost)
+/* The share of the blocks of the superblocks it visits that a ranker with a threshold still opens when their bounds do not tie (measured 0.3 to 0.55) */
+#define SCORED_BLOCK_SHARE		0.4
 
 bool
 sift_index_matches_key(IndexOptInfo *index, Node *expr)
@@ -377,6 +381,60 @@ rank_verified(double cands, double pass, int64 k)
 	return k > 0 ? Min(cands, k / pass * (1 + log(Max(cands * pass / k, 1)))) : cands;
 }
 
+/* Matches per superblock at which the bounds of the superblocks tie with probability 1 - 1/e (measured: 185 and 800 do not, 2300 do) */
+#define TIED_BOUND_MATCHES		3000
+
+/* The probability that the superblocks' bounds tie: some match of each is at the top of the bound */
+static double
+bounds_tie(RelOptInfo *rel, double docs)
+{
+	double		per_sb = docs * SIFT_SB_PAGES / Max(rel->pages, 1) / TIED_BOUND_MATCHES;
+
+	return 1 - exp(-per_sb * per_sb);
+}
+
+/*
+ * The same when the quals are checked after scoring and a bitmap of them says where in the heap their
+ * rows lie. The ranker takes the superblocks by descending bound, and where the bounds tie, which they
+ * do when every superblock holds a match at the top of the bound (the more matches per superblock, the
+ * likelier), in heap order. Then it has no threshold until it holds k passing rows: it verifies every
+ * match before the first row the quals can keep (fe->start), ranks as above within the span of those
+ * rows, where they are denser (pass / fe->span), and past the span still verifies the matches that beat
+ * the k-th best of all the rows that pass (a fraction k / (cands * pass)). Otherwise the rows that pass
+ * are met in no order of the heap: the plain estimate.
+ */
+static double
+rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe, double ties)
+{
+	double		in_heap_order;
+
+	if (k <= 0)
+		return cands;
+	in_heap_order = cands * fe->start + rank_verified(cands * fe->span, Min(pass / fe->span, 1.0), k) +
+		cands * Max(1 - fe->start - fe->span, 0) * Min(k / Max(cands * pass, 1), 1.0);
+	/* a span that covers much of the heap holds the first superblocks of any order with its rows */
+	ties *= 1 - fe->span;
+	return ties * in_heap_order + (1 - ties) * rank_verified(cands, pass, k);
+}
+
+/* The blocks of SIFT_BLK_PAGES heap pages that hold a match, when matches are spread over the fraction span of the heap */
+static double
+blocks_with_match(RelOptInfo *rel, double matches, double span)
+{
+	double		blocks = Max(ceil(rel->pages / (double) SIFT_BLK_PAGES), 1) * Max(span, 1e-9);
+
+	return blocks * (1 - exp(-matches / blocks));
+}
+
+/* The blocks the ranker scores for matches in blocks: all of them while the bounds tie, the share with a threshold otherwise */
+static double
+blocks_scored(RelOptInfo *rel, double blocks, double matches)
+{
+	double		ties = bounds_tie(rel, matches);
+
+	return blocks * (ties + (1 - ties) * SCORED_BLOCK_SHARE);
+}
+
 /*
  * Workers a parallel scan of the rel can use: the planner's rule for an index scan (reloption
  * parallel_workers, min_parallel_index_scan_size, max_parallel_workers_per_gather), and no more
@@ -409,18 +467,19 @@ parallel_divisor(int nworkers)
 
 /*
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
- * the verification are shared out. With a filter the ranker only meets the matches its bitmap keeps
- * (the fraction fe.sel of them, at least those that pass the quals), at the price of building the
- * bitmap first; the bitmap is built by one backend, so a filtered scan is never parallel (nworkers 0).
+ * the verification are shared out. With a pushed down filter the ranker only meets the matches its
+ * bitmap keeps (the fraction fe.sel of them, at least those that pass the quals), at the price of
+ * building the bitmap first; the bitmap is built by one backend, so a pushed down scan is never
+ * parallel (nworkers 0). Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-		  BitmapHeapPath *filter, int nworkers)
+		  BitmapHeapPath *filter, bool push, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
 	ScanCost	sc;
-	SiftFilterEst fe = {0, 1};
+	SiftFilterEst fe = {0, 1, 0, 1};
 	double		divisor = parallel_divisor(nworkers),
 				pass,
 				verify;
@@ -429,7 +488,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 				postings,
 				startup;
 
-	Assert(filter == NULL || nworkers == 0);
+	Assert(!push || nworkers == 0);
 	scan_cost(root, rel, c, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
@@ -448,13 +507,20 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	{
 		pass = Min(rel->rows / sc.docs, 1.0);
 		if (filter)
-		{
 			sift_filter_estimate(root, rel, filter, &fe);
+		if (push)
+		{
 			fe.sel = Max(fe.sel, pass);
 			cp->custom_paths = list_make1(filter);
 			dict += fe.cost;
+			verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
+			postings += blocks_scored(rel, blocks_with_match(rel, sc.docs * fe.sel, fe.span), sc.docs * fe.sel) * SCORE_BLOCK_COST;
 		}
-		verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
+		else
+		{
+			verify = rank_verified_after(sc.docs, pass, k, &fe, bounds_tie(rel, sc.docs)) * sc.tuple;
+			postings += blocks_scored(rel, blocks_with_match(rel, sc.docs, 1), sc.docs) * SCORE_BLOCK_COST;
+		}
 	}
 	limited = mode == SIFT_MODE_RANKED && k > 0;
 	startup = dict + (postings + (limited ? verify : 0)) / divisor;
@@ -476,18 +542,19 @@ cheaper(CustomPath *a, CustomPath *b)
 }
 
 /*
- * Adds the serial path, and a parallel one next to it unless a filter is pushed down: the bitmap of a
- * filter is built by one backend, so a filtered scan stays serial and competes with the parallel one
- * on cost. With only_best the paths are not added: the caller replaces the rel's paths with the best
- * ones, and add_path would free a path it rejects or dominates (a seq scan of an empty table) that
- * best still points to.
+ * Adds the serial path, and a parallel one next to it unless the filter is pushed down: the bitmap of a
+ * filter is built by one backend, so a pushed down scan stays serial and competes with the parallel one
+ * on cost. The filter bitmap, when there is one, also prices the scan that does not push it down. With
+ * only_best the paths are not added: the caller replaces the rel's paths with the best ones, and
+ * add_path would free a path it rejects or dominates (a seq scan of an empty table) that best still
+ * points to.
  */
 static void
 add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-			   BitmapHeapPath *filter, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
+			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
-	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, 0);
-	int			nworkers = filter == NULL && parallel ? scan_workers(rel, c) : 0;
+	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, push, 0);
+	int			nworkers = !push && parallel ? scan_workers(rel, c) : 0;
 
 	if (cheaper(cp, *best))
 		*best = cp;
@@ -495,7 +562,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mod
 		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
-		cp = scan_path(root, rel, c, mode, k, pathkeys, NULL, nworkers);
+		cp = scan_path(root, rel, c, mode, k, pathkeys, filter, false, nworkers);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
 		if (!only_best)
@@ -725,9 +792,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter_looked = true;
 		}
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, NULL, parallel, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
 	}
 	if (best && only_best)
 	{
