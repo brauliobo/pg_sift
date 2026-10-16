@@ -2134,11 +2134,11 @@ typedef struct CountCtx
 	MemoryContext tmpcx;
 } CountCtx;
 
-/* Matches of a page with a phrase: every candidate is read and rechecked */
-static int64
-count_page_rechecked(CountCtx *cc, const SiftPageMatch *pm)
+/* Matches of a page with a phrase: every candidate is read and rechecked; the offsets that pass stay in the mask */
+static int
+recheck_page(CountCtx *cc, SiftPageMatch *pm)
 {
-	int64		n = 0;
+	int			n = 0;
 
 	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 		for (uint64 m = pm->offmask[wd]; m; m &= m - 1)
@@ -2151,6 +2151,8 @@ count_page_rechecked(CountCtx *cc, const SiftPageMatch *pm)
 			cc->plan->stats.candidates++;
 			if (cc->verify(cc->arg, &tid, true, &doc) && doc_pass(cc->plan, doc, NULL))
 				n++;
+			else
+				pm->offmask[wd] &= ~(m & -m);
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(cc->tmpcx);
 		}
@@ -2158,7 +2160,7 @@ count_page_rechecked(CountCtx *cc, const SiftPageMatch *pm)
 }
 
 int64
-sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg)
+sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg)
 {
 	CountCtx	cc = {plan, vis, verify, arg, AllocSetContextCreate(CurrentMemoryContext, "sift count", ALLOCSET_DEFAULT_SIZES)};
 	SiftMatchIter *it = sift_iter_begin(plan);
@@ -2170,27 +2172,41 @@ sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg)
 	while (sift_iter_next(it, &pm))
 	{
 		uint32		page = pm.blk & (SIFT_SB_PAGES - 1);
+		int			left;
 
 		CHECK_FOR_INTERRUPTS();
 		if (pm.recheck)
-		{
-			n += count_page_rechecked(&cc, &pm);
-			continue;
-		}
-		if (sift_block_sb(pm.blk) != sb)
-		{
-			sb = sift_block_sb(pm.blk);
-			sift_vis_sb_mask(vis, sb, allvis);
-		}
-		if (allvis[page / 64] >> (page % 64) & 1)
-			n += sift_offmask_popcount(pm.offmask, 1);
+			left = recheck_page(&cc, &pm);
 		else
-			n += sift_vis_filter_page(vis, pm.blk, pm.offmask);
+		{
+			if (sift_block_sb(pm.blk) != sb)
+			{
+				sb = sift_block_sb(pm.blk);
+				sift_vis_sb_mask(vis, sb, allvis);
+			}
+			left = allvis[page / 64] >> (page % 64) & 1 ? sift_offmask_popcount(pm.offmask, 1) :
+				sift_vis_filter_page(vis, pm.blk, pm.offmask);
+		}
+		if (left == 0)
+			continue;
+		n += left;
+		fn(fnarg, pm.blk, pm.offmask);
 	}
 	sift_iter_end(it);
 	MemoryContextDelete(cc.tmpcx);
 	plan->stats.verified = n;
 	return n;
+}
+
+static void
+count_page(void *arg, BlockNumber blk, const uint64 *offmask)
+{
+}
+
+int64
+sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg)
+{
+	return sift_eval_pages(plan, vis, verify, arg, count_page, NULL);
 }
 
 /* ---------- estimate ---------- */

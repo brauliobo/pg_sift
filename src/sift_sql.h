@@ -29,4 +29,7 @@ extern PGDLLEXPORT Datum sift_segments(PG_FUNCTION_ARGS);		/* SRF */
 extern PGDLLEXPORT Datum sift_segment_postings(PG_FUNCTION_ARGS);	/* SRF */
 extern PGDLLEXPORT Datum sift_verify(PG_FUNCTION_ARGS);			/* (regclass, bool) void */
 
+/* sift_facet.c */
+extern PGDLLEXPORT Datum sift_facet_counts(PG_FUNCTION_ARGS);	/* SRF */
+
 #endif							/* SIFT_SQL_H */
