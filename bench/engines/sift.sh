@@ -5,7 +5,9 @@
 REQUIRES=pg_sift
 SETUP="CREATE EXTENSION IF NOT EXISTS pg_sift;"
 INDEX="CREATE INDEX docs_fts ON docs USING sift (body);"
-RENDER=$(cat <<'SQL'
+PRED="'docs.body @@> ' || quote_literal(sift_q(mode, terms))"
+RANK="CASE WHEN sift_q(mode, terms) IS NOT NULL THEN 'sift.score(docs.ctid) DESC' END"
+HELPERS=$(cat <<'SQL'
 CREATE OR REPLACE FUNCTION sift_q(mode text, terms text[]) RETURNS text LANGUAGE sql AS $$
   SELECT CASE mode
     WHEN 'and'    THEN array_to_string(terms, ' AND ')
@@ -16,9 +18,5 @@ CREATE OR REPLACE FUNCTION sift_q(mode text, terms text[]) RETURNS text LANGUAGE
     WHEN 'fuzzy'  THEN terms[1] || '~1'
   END
 $$;
-CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT 'docs.body @@> ' || quote_literal(sift_q(mode, terms)) $$;
-CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT CASE WHEN sift_q(mode, terms) IS NOT NULL THEN 'sift.score(docs.ctid) DESC' END $$;
 SQL
 )

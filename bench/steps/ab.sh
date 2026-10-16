@@ -13,7 +13,7 @@
 # Engines whose extension is not installed are skipped with a message; a class an engine cannot render
 # is reported as NA. Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold
 # queries per class) RESULTS DEST.
-# Needs bench/steps/fetch.sh (sift, rum, paradedb) and bench/datasets/fetch.sh articles.
+# Needs bench/bench setup (the engines, the articles dataset).
 set -euo pipefail
 mode=${1:-quick}; cold=
 [[ $mode == cold ]] && { cold=1; mode=${2:-full}; }
@@ -23,7 +23,7 @@ case $mode in
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 . "$(dirname "$0")/lib.sh"
-ENGINES=${ENGINES:-sift sift_pairs paradedb rum}
+ENGINES=${ENGINES:-sift sift_pairs pg_search rum}
 CLASSES=${CLASSES:-and or phrase mixed count filter join}
 CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} TOL=${TOL:-0.15} NQ=${NQ:-12}
 RESULTS=${RESULTS:-$BENCH/out/ab}
@@ -39,36 +39,22 @@ trap cleanup EXIT
 ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
 "$STEPS/machine.sh" >"$DEST/machine.txt"
 [[ -f $DUMP ]] || "$STEPS/corpus.sh" load >/dev/null
-[[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$STEPS/corpus.sh" restore >/dev/null
+db_exists bench || "$STEPS/corpus.sh" restore >/dev/null
 for e in $ENGINES; do BUILD_ONLY=1 "$STEPS/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
 cp "$OUT/builds.tsv" "$DEST/builds.tsv"
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$OUT/builds.tsv")"
 
 if [[ $cold ]]; then
-  # evict the heap, toast and every index of docs from shared buffers and the OS cache, then time the statement
-  evict() {
-    local files
-    q -c "SELECT pg_buffercache_evict_relation(c) FROM (SELECT oid AS c FROM pg_class WHERE oid IN ('docs'::regclass, (SELECT reltoastrelid FROM pg_class WHERE oid = 'docs'::regclass))
-          UNION SELECT indexrelid FROM pg_index WHERE indrelid = 'docs'::regclass) x" >/dev/null
-    files=$(q -c "SELECT string_agg(pg_relation_filepath(c), ' ') FROM (SELECT oid AS c FROM pg_class WHERE oid = 'docs'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = 'docs'::regclass)
-          UNION SELECT indexrelid FROM pg_index WHERE indrelid = 'docs'::regclass) x")
-    python3 -I - "$PGDATA" $files <<'PY'
-import glob, os, sys
-for rel in sys.argv[2:]:
-    for f in glob.glob(os.path.join(sys.argv[1], rel) + '*'):
-        fd = os.open(f, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)
-PY
-  }
   printf 'class\tengine\tp50_ms\tmax_ms\n' >"$DEST/summary.tsv"
   for e in $ENGINES; do PGDATABASE=$(engine_db "$e") q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null; done
   for c in ${COLD:-phrase count and}; do for e in $ENGINES; do
-    export PGDATABASE=$(engine_db "$e"); ts=
-    for i in $(seq "$NQ"); do
+    PGDATABASE=$(engine_db "$e"); export PGDATABASE
+    t=$(for i in $(seq "$NQ"); do
       stmt=$(q -c "SELECT stmt FROM stmts WHERE wl = '$c' AND n = $i")
-      evict
-      ts+="$(echo "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $stmt" | psql -X -qAt | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p') "
-    done
-    printf '%s\t%s\t%s\n' "$c" "$e" "$(printf '%s\n' $ts | sort -n | awk '{v[NR] = $1} END {printf "%.2f\t%.2f", v[int((NR + 1) / 2)], v[NR]}')" | tee -a "$DEST/summary.tsv"
+      evict_table docs
+      explain_ms "$stmt"
+    done | median_max)
+    printf '%s\t%s\t%s\n' "$c" "$e" "$t" | tee -a "$DEST/summary.tsv"
   done; done
   exit 0
 fi
@@ -85,26 +71,17 @@ cell() { # engine class secs -> qps (NA: the engine cannot run the class; 0: a c
   o=$(PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" pgbench -n -c "$CLIENTS" -j "$THREADS" -T "$3" -f "$OUT/$1-$2.pgb" "$(engine_db "$1")" 2>&1) || { echo 0; return; }
   grep -oP 'tps = \K[0-9.]+(?= \(without)' <<<"$o" || echo 0
 }
-stable() { # spread of every (class, engine) over the rounds is under TOL
-  awk -F'\t' -v tol="$TOL" 'NR > 1 && $5 != "NA" { k = $3 SUBSEP $4; n[k]++; v[k, n[k]] = $5 }
-    END { for (k in n) { lo = hi = v[k, 1]; for (i = 2; i <= n[k]; i++) { if (v[k, i] < lo) lo = v[k, i]; if (v[k, i] > hi) hi = v[k, i] }
-          if (hi == 0 || (hi - lo) / hi > tol) exit 1 } }' "$DEST/cells.tsv"
-}
+stable() { spread_ok "$DEST/cells.tsv" 3,4 5 -1; }   # class, engine; qps; a failed cell (0) is never stable
 
 printf 'round\tload\tclass\tengine\tqps\n' >"$DEST/cells.tsv"
-read -ra eng <<<"$ENGINES"
-for r in $(seq "$MAXR"); do
-  for c in $CLASSES; do
-    for k in "${!eng[@]}"; do
-      e=${eng[$(( (k + r) % ${#eng[@]} ))]}
-      export PGDATABASE=$(engine_db "$e")
-      cell "$e" "$c" "$WARM" >/dev/null
-      printf '%s\t%s\t%s\t%s\t%s\n' "$r" "$(cut -d' ' -f1 /proc/loadavg)" "$c" "$e" "$(cell "$e" "$c" "$SECS")" >>"$DEST/cells.tsv"
-    done
-  done
-  log "round $r done, load $(cut -d' ' -f1 /proc/loadavg)"
-  (( r >= MINR )) && stable && break
-done
+round() {
+  local c e
+  for c in $CLASSES; do for e in $(rotated "$1" $ENGINES); do
+    cell "$e" "$c" "$WARM" >/dev/null
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$c" "$e" "$(cell "$e" "$c" "$SECS")" >>"$DEST/cells.tsv"
+  done; done
+}
+rounds round
 
 python3 -I - "$DEST" "$ENGINES" "$CLASSES" <<'PY'
 import statistics as st, sys
@@ -118,7 +95,7 @@ def median(c, e):
 med = {(c, e): median(c, e) for c in classes for e in engines}
 num = lambda v: 'NA' if v is None else '%.0f' % v
 ratio = lambda a, b: 'NA' if a is None or not b else '%.2f' % (a / b)
-ref = 'paradedb' if 'paradedb' in engines else engines[-1]
+ref = 'pg_search' if 'pg_search' in engines else engines[-1]
 with open(dest + '/summary.tsv', 'w') as f:
     f.write('class\t' + '\t'.join(engines) + '\t' + '\t'.join(e + '/' + ref for e in engines if e != ref) + '\n')
     for c in classes:

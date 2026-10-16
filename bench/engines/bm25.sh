@@ -14,7 +14,9 @@ SQL
 )
 INDEX="CREATE INDEX docs_fts ON docs USING bm25_native (body) INCLUDE (id)
   WITH (key_field = 'id', language = 'simple', stopwords = 'none');"
-RENDER=$(cat <<'SQL'
+PRED="'docs.body @@@ ' || quote_literal(bm25_q(mode, terms)) || '::jsonb'"
+RANK="'docs.body &@@ ' || quote_literal(bm25_q(mode, terms)) || '::jsonb'"
+HELPERS=$(cat <<'SQL'
 CREATE OR REPLACE FUNCTION bm25_q(mode text, terms text[]) RETURNS jsonb LANGUAGE sql AS $$
   SELECT CASE mode
     WHEN 'and'    THEN bm25_boolean(must => (SELECT array_agg(bm25_term('body', t)) FROM unnest(terms) t))
@@ -25,9 +27,5 @@ CREATE OR REPLACE FUNCTION bm25_q(mode text, terms text[]) RETURNS jsonb LANGUAG
     WHEN 'prefix' THEN bm25_wildcard('body', terms[1] || '*')
   END
 $$;
-CREATE OR REPLACE FUNCTION bench_pred(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT 'docs.body @@@ ' || quote_literal(bm25_q(mode, terms)) || '::jsonb' $$;
-CREATE OR REPLACE FUNCTION bench_rank(mode text, terms text[]) RETURNS text LANGUAGE sql AS
-  $$ SELECT 'docs.body &@@ ' || quote_literal(bm25_q(mode, terms)) || '::jsonb' $$;
 SQL
 )

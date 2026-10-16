@@ -12,7 +12,8 @@ SRC=$DATA/articles.tsv
 fresh_db() {
   "$STEPS/cluster.sh" init
   "$STEPS/cluster.sh" start
-  PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS bench WITH (FORCE)" -c "CREATE DATABASE bench"
+  drop_db bench
+  PGDATABASE=postgres q -c "CREATE DATABASE bench"
 }
 
 load() {
@@ -36,9 +37,7 @@ restore() {
 ensure() {
   "$STEPS/cluster.sh" init
   "$STEPS/cluster.sh" start
-  [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] && return
-  [[ -f $DUMP ]] || load
-  restore
+  db_exists bench || { [[ -f $DUMP ]] || load; restore; }
 }
 
 case ${1:-} in

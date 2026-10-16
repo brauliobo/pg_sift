@@ -7,13 +7,13 @@
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
 #
-# Needs bench/datasets/fetch.sh places and bench/steps/fetch.sh (sift, rum, paradedb). The tier cluster
+# Needs bench/bench setup (the engines, the places dataset). The tier cluster
 # (bench/steps/cluster.sh) holds database `places`; every index is built once, then every round times every
 # cell on every engine, the engine order rotating (single client, p50/p95 from the transaction
 # latencies). Rounds stop once every cell's p50 spread is under TOL after MINR.
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt. KEEP=1 keeps the cluster.
-# Env: ENGINES (pgs sift rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class, pgs and sift only)
+# Env: ENGINES (pg_search sift rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class, not rum)
 # TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}
@@ -37,31 +37,29 @@ NAME="place_search_name(name, alternate_names)"
 SECT="place_search_sections(name, alternate_names, admin1, country, country_code, feature)"
 PGS_TEXT="($TEXT)::pdb.alias('ptext')"; PGS_NAME="($NAME)::pdb.alias('pname')"
 declare -A INDEX=(
-  [pgs]="CREATE INDEX places_pgs ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
+  [pg_search]="CREATE INDEX places_pg_search ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
   [sift]="CREATE INDEX places_sift ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3)"
   [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)")
-declare -A EXT=([pgs]=pg_search [sift]=pg_sift [rum]=rum)
 declare -A SETUP=(
-  [pgs]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
+  [pg_search]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
   [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
   [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED")
-ENGINES=${ENGINES:-pgs sift rum}
-ref=sift
+ENGINES=${ENGINES:-pg_search sift rum}
 edb() { [[ $1 == rum ]] && echo places_rum || echo places; }   # rum's stored column lives in a copy of the table
 
 # :q is what the user typed, :sq the same words as sift prefixes ("grand ho" -> "grand* ho*"), :sqb the boosted sift query,
 # :tq the tsquery of rum ('grand':* & 'ho':*)
 stmt() {
   case $1/$2 in
-    top/pgs)    echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q ORDER BY pdb.score(id) DESC LIMIT 20" ;;
+    top/pg_search)    echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q ORDER BY pdb.score(id) DESC LIMIT 20" ;;
     top/sift)   echo "SELECT id FROM places WHERE ($SECT) @@> :sq ORDER BY sift.score(ctid) DESC LIMIT 20" ;;
-    boost/pgs)  echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND (($PGS_NAME ||| :q::pdb.boost(3)) OR ($PGS_TEXT &&& :q)) ORDER BY pdb.score(id) DESC LIMIT 20" ;;
+    boost/pg_search)  echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND (($PGS_NAME ||| :q::pdb.boost(3)) OR ($PGS_TEXT &&& :q)) ORDER BY pdb.score(id) DESC LIMIT 20" ;;
     boost/sift) echo "SELECT id FROM places WHERE ($SECT) @@> :sqb ORDER BY sift.score(ctid) DESC LIMIT 20" ;;
-    filter/pgs) echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND country_code = 'US' ORDER BY pdb.score(id) DESC LIMIT 20" ;;
+    filter/pg_search) echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND country_code = 'US' ORDER BY pdb.score(id) DESC LIMIT 20" ;;
     filter/sift) echo "SELECT id FROM places WHERE ($SECT) @@> :sq AND country_code = 'US' ORDER BY sift.score(ctid) DESC LIMIT 20" ;;
-    count/pgs)  echo "SELECT count(*) FROM places WHERE $PGS_TEXT &&& :q" ;;
+    count/pg_search)  echo "SELECT count(*) FROM places WHERE $PGS_TEXT &&& :q" ;;
     count/sift) echo "SELECT count(*) FROM places WHERE ($SECT) @@> :sq" ;;
-    scan/pgs)   echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND population >= 100000" ;;
+    scan/pg_search)   echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND population >= 100000" ;;
     scan/sift)  echo "SELECT id FROM places WHERE ($SECT) @@> :sq AND population >= 100000" ;;
     top/rum)    echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery ORDER BY ptsv <=> :tq::tsquery LIMIT 20" ;;
     filter/rum) echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery AND country_code = 'US' ORDER BY ptsv <=> :tq::tsquery LIMIT 20" ;;
@@ -77,12 +75,9 @@ FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s
 
 "$STEPS/cluster.sh" init >/dev/null; "$STEPS/cluster.sh" start >/dev/null
 # sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
-PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS places WITH (FORCE)" -c "DROP DATABASE IF EXISTS places_rum WITH (FORCE)" \
-  -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
-ENGINES=$(for e in $ENGINES; do
-  [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '${EXT[$e]}'") == 1 ]] && echo "$e" ||
-    log "skipping $e: extension ${EXT[$e]} is not installed (bench/steps/fetch.sh)" >&2
-done | tr '\n' ' ')
+drop_db places; drop_db places_rum
+PGDATABASE=postgres q -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
+ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
 [[ $ENGINES == *sift* ]] || { echo "sift is not installed: bench/steps/fetch.sh sift" >&2; exit 1; }
 "$STEPS/machine.sh" >"$DEST/machine.txt"
 q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
@@ -95,9 +90,9 @@ for e in $ENGINES; do
   t0=$(now_ms); PGDATABASE=$db q -c "${SETUP[$e]}"; t1=$(now_ms); PGDATABASE=$db q -c "${INDEX[$e]}"; t2=$(now_ms)
   PGDATABASE=$db q -c "VACUUM (ANALYZE) places" -c CHECKPOINT
   # engine, index build s, index bytes, table growth bytes (rum's column), setup s
-  printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$(awk -v a="$t1" -v b="$t2" 'BEGIN {printf "%.1f", (b - a) / 1000}')" \
+  printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" \
     "$(PGDATABASE=$db q -c "SELECT pg_relation_size('places_$e'::regclass)")" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
-    "$(awk -v a="$t0" -v b="$t1" 'BEGIN {printf "%.1f", (b - a) / 1000}')" >>"$DEST/builds.tsv"
+    "$(elapsed_s "$t0" "$t1")" >>"$DEST/builds.tsv"
 done
 q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
 log "built: $(awk '{printf "%s %.1fs %.0fMB; ", $1, $2, $3 / 1048576}' "$DEST/builds.tsv")"
@@ -106,25 +101,16 @@ base() { q -c "SELECT min(id) - 1 FROM pq WHERE class = '$1'"; }
 
 if [[ $what == cold ]]; then
   ENGINES=${ENGINES/rum/}
-  evict() {
-    q -c "SELECT pg_buffercache_evict_relation(c) FROM unnest(ARRAY['places', 'places_pkey', 'places_pgs', 'places_sift']::regclass[]) c" >/dev/null
-    python3 -I - "$PGDATA" $(q -c "SELECT string_agg(pg_relation_filepath(c), ' ') FROM unnest(ARRAY['places', 'places_pkey', 'places_pgs', 'places_sift']::regclass[]) c") <<'PY'
-import glob, os, sys
-for rel in sys.argv[2:]:
-    for f in glob.glob(os.path.join(sys.argv[1], rel) + '*'):
-        fd = os.open(f, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)
-PY
-  }
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\n' | tee "$DEST/cold.tsv"
   for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do
-    ts=; b=$(base "$c")
-    for i in $(seq "$NQ"); do
+    b=$(base "$c")
+    t=$(for i in $(seq "$NQ"); do
       s=$(stmt "$wl" "$e" | sed "s/:sqb/:'sqb'/; s/:sq\b/:'sq'/; s/:q\b/:'q'/g")
       IFS=$'\t' read -r tq tsq tsqb < <(q -F $'\t' -c "SELECT q, sq, format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq) FROM (SELECT q, regexp_replace(q, '(\S+)', '\1*', 'g') AS sq FROM pq WHERE id = $b + $i) x")
-      evict
-      ts+="$(echo "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $s" | psql -X -qAt -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p') "
-    done
-    printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$(printf '%s\n' $ts | sort -n | awk '{v[NR] = $1} END {printf "%.2f\t%.2f", v[int((NR + 1) / 2)], v[NR]}')" | tee -a "$DEST/cold.tsv"
+      evict_table places
+      explain_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb"
+    done | median_max)
+    printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t" | tee -a "$DEST/cold.tsv"
   done; done; done
   exit 0
 fi
@@ -139,20 +125,14 @@ cell() { # workload class engine -> "p50 p95" ms of single-client transactions: 
   rm -f "$log"*
 }
 printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\n' >"$DEST/cells.tsv"
-read -ra eng <<<"$ENGINES"
-stable() {
-  awk -F'\t' -v tol="$TOL" 'NR > 1 && $6 ~ /^[0-9.]+$/ { k = $3 SUBSEP $4 SUBSEP $5; n[k]++; v[k, n[k]] = $6 }
-    END { for (k in n) { lo = hi = v[k, 1]; for (i = 2; i <= n[k]; i++) { if (v[k, i] < lo) lo = v[k, i]; if (v[k, i] > hi) hi = v[k, i] }
-          if (hi > 0.05 && (hi - lo) / hi > tol) exit 1 } }' "$DEST/cells.tsv"
-}
-for r in $(seq "$MAXR"); do
-  for wl in $WLS; do for c in $CLASSES; do for k in "${!eng[@]}"; do
-    e=${eng[$(( (k + r) % ${#eng[@]} ))]}
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$(cut -d' ' -f1 /proc/loadavg)" "$wl" "$c" "$e" "$(cell "$wl" "$c" "$e" | tr ' ' '\t')" >>"$DEST/cells.tsv"
+stable() { spread_ok "$DEST/cells.tsv" 3,4,5 6 0.05; }   # workload, class, engine; p50 (cells under 0.05 ms are noise)
+round() {
+  local wl c e
+  for wl in $WLS; do for c in $CLASSES; do for e in $(rotated "$1" $ENGINES); do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$(cell "$wl" "$c" "$e" | tr ' ' '\t')" >>"$DEST/cells.tsv"
   done; done; done
-  log "round $r done, load $(cut -d' ' -f1 /proc/loadavg)"
-  (( r >= MINR )) && stable && break
-done
+}
+rounds round
 python3 -I - "$DEST" "$ENGINES" <<'PY'
 import statistics as st, sys, collections
 dest, engines = sys.argv[1], sys.argv[2].split()

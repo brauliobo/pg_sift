@@ -25,7 +25,7 @@ Commands
   check      correctness (check, suite, workload and workers start the tier's cluster, load the corpus if needed and
              leave it running; `clean` stops it): `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
              `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25
-  suite      standard multi-engine suite on articles (gin rum pg_textsearch bm25 paradedb sift tantivy
+  suite      standard multi-engine suite on articles (gin rum pg_textsearch bm25 pg_search sift tantivy
              elasticsearch): `suite [ENGINE...]`, one tier, small tables via steps/report.sh
   workload   one engine, timed pgbench workloads: `workload ENGINE [WORKLOAD...]` (and or phrase mixed count
              filter join update; external engines through xbench)
@@ -58,20 +58,8 @@ Options (not every option applies to every command)
 report takes result directories as arguments: a run directory (default: bench/out/latest) or
 DATASET:TIER:DIR for a raw tables directory of steps/ab.sh (articles) or steps/places.sh (places).
 
-Output of run/all (the result directory)
-  machine.txt          CPU, cores, SIMD, RAM, kernel, OS, PostgreSQL, engine versions and label_c, sift commit,
-                       engine budget, load average at start, wall time of the command
-  articles-<tier>/, places-<tier>/
-                       cells.tsv (every cell of every round with the load average at that moment), builds.tsv,
-                       summary.tsv, machine.txt
-  results.tsv, builds.tsv, tables.md   (after report) chart input and Markdown tables
-results.tsv is tab separated, first line a `#` comment with the columns:
-  dataset (articles|places), tier (quick|ab|full), engine (sift|sift_pairs|pg_search|rum|-),
-  class (articles: and or phrase mixed count filter join; places: p1 p2 p3 p4 w1 a2 a2s a3 x2; - for builds),
-  variant (places workload top boost filter count scan; - otherwise),
-  metric (qps | p50_ms | p95_ms | index_mib | build_s | setup_s | heap_growth_mib | load_1m),
-  value min max (median over the rounds and its range; NA = the engine cannot run it, error = it failed),
-  unit.
+Output of run/all: a result directory with machine.txt, articles-<tier>/ and places-<tier>/ (raw cell tables), and
+after report results.tsv, builds.tsv and tables.md; the formats are in bench/README.md.
 
 Environment
   SIFT_BENCH_ROOT   scratch, datasets, dumps and engine builds (default /tmp/sift-bench; 8-15 GB free; a fast
@@ -96,7 +84,7 @@ EOF
 die() { echo "bench: $*" >&2; exit 1; }
 
 # --- options
-tier=quick dataset=all engines= clients= duration= rounds= out= docs= build=1 fetch_data=1 all_clean=
+tier=quick dataset=all engines='' clients='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean=''
 rest=()
 parse() {
   while (( $# )); do
@@ -138,10 +126,13 @@ tier_env() {
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
 ALL_ENGINES="sift sift_pairs pg_search rum"
-ab_engines() { local e r=; for e in ${engines:-$ALL_ENGINES}; do
-  case $e in sift|sift_pairs|rum) r+=" $e" ;; pg_search|paradedb) r+=" paradedb" ;; *) die "engine $e is not part of the A/B (use suite or workload)" ;; esac; done; echo "$r"; }
-places_engines() { local e r=; for e in ${engines:-$ALL_ENGINES}; do
-  case $e in sift|rum) r+=" $e" ;; pg_search|paradedb) r+=" pgs" ;; sift_pairs) ;; *) die "engine $e is not part of the A/B" ;; esac; done; echo "$r"; }
+selected() { # EXCLUDE...: the engines of --engines (default: all) minus the ones the dataset cannot run
+  local e
+  for e in ${engines:-$ALL_ENGINES}; do
+    [[ " $ALL_ENGINES " == *" $e "* ]] || die "engine $e is not part of the A/B (use suite or workload)"
+    [[ " $* " == *" $e "* ]] || printf '%s ' "$e"
+  done
+}
 
 # --- prerequisites, checked before anything is downloaded or built
 preflight() {
@@ -164,22 +155,18 @@ preflight() {
   (( free >= need )) || echo "warning: only $free GiB free under $ROOT (SIFT_BENCH_ROOT), $need GiB recommended" >&2
 }
 
-has() { case " ${engines:-$ALL_ENGINES} " in *" $1 "*) return 0 ;; esac; return 1; }
-
-# --- commands
 cmd_setup() {
   preflight
   if [[ $fetch_data ]]; then "$HERE/datasets/fetch.sh" "$dataset"; fi
   [[ $build ]] || return 0
   echo "building sift ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'no git'))"
   "$STEPS/fetch.sh" sift
-  # Without network or a toolchain the system's rum / pg_search is used when installed (machine.txt says which).
-  if has rum; then
-    "$STEPS/fetch.sh" rum || { echo "warning: rum $RUM_VERSION could not be built; using the system's rum if installed" >&2; rm -rf "$RUM_ROOT"; }
-  fi
-  if has pg_search || has paradedb; then
-    "$STEPS/fetch.sh" paradedb || { echo "warning: pg_search $PARADEDB_VERSION could not be fetched; using the system's if installed" >&2; rm -rf "$ROOT/engines/paradedb/root"; }
-  fi
+  # Without network or a toolchain the system's copy of an engine is used when installed (machine.txt says which).
+  local e
+  for e in ${engines:-$ALL_ENGINES}; do
+    case $e in sift|sift_pairs) continue ;; esac
+    "$STEPS/fetch.sh" "$e" || { echo "warning: $e could not be built or fetched; using the system's if installed" >&2; rm -rf "$ENG/$e/root"; }
+  done
 }
 
 ready() { # sift built and datasets present
@@ -207,8 +194,8 @@ measure() { # [cold]: every selected dataset at the tier into $OUT, after the ma
   for d in $datasets; do
     echo; echo "=== $d, tier $tier${1:+, cold cache} ($(( SECONDS - t0 )) s)"
     case $d in
-      articles) ENGINES=$(ab_engines) DEST=$OUT/articles-$tier$suffix "$STEPS/ab.sh" ${1:+cold} "$step_mode" ;;
-      places)   ENGINES=$(places_engines) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
+      articles) ENGINES=$(selected) DEST=$OUT/articles-$tier$suffix "$STEPS/ab.sh" ${1:+cold} "$step_mode" ;;
+      places)   ENGINES=$(selected sift_pairs) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
   echo "wall time of the measurements $(( SECONDS - t0 )) s, load average at end $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/machine.txt"
@@ -287,7 +274,7 @@ cmd_workload() {
   [[ -n $e ]] || die "usage: workload ENGINE [WORKLOAD...]"
   datasets=articles; cluster_up
   [[ -z $duration ]] || export DURATION=$duration
-  if grep -q '^EXTERNAL=' "$HERE/engines/$e.sh"; then "$STEPS/xrun.sh" "${rest[@]}"; else "$STEPS/run.sh" "${rest[@]}"; fi
+  "$STEPS/$(runner "$e")" "${rest[@]}"
 }
 
 cmd_workers() { datasets=articles; cluster_up; "$STEPS/build.sh" "${rest[@]}"; }
@@ -297,7 +284,7 @@ cmd_clean() {
   local t
   for t in Q F; do TIER=$t "$STEPS/cluster.sh" destroy 2>/dev/null || true; done
   rm -rf "$ROOT/pg" "$ROOT/ab" "$ROOT/places" "$ROOT/run" "$ROOT/build"
-  [[ -z $all_clean ]] || rm -rf "$ROOT/data" "$ROOT/cache" "$ROOT/download" "$ROOT/engines" "$SIFT_ROOT" "$RUM_ROOT" "$ROOT/target"
+  [[ -z $all_clean ]] || rm -rf "$ROOT/data" "$ROOT/cache" "$ROOT/download" "$ENG" "$ROOT/target"
   echo "removed scratch under $ROOT${all_clean:+ including datasets, dumps and engine builds}"
 }
 

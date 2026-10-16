@@ -34,7 +34,8 @@ articles() {
 }
 
 places() {
-  local dir=$DOWNLOADS/geonames-$(date +%Y%m%d) f
+  local f dir
+  dir=$DOWNLOADS/geonames-$(date +%Y%m%d)
   [[ -d $dir ]] || for d in "$DOWNLOADS"/geonames-*; do [[ -f $d/cities500.zip ]] && dir=$d; done
   for f in cities500.zip cities15000.zip admin1CodesASCII.txt countryInfo.txt featureCodes_en.txt; do get "$GEO/$f" "$dir"; done
   (cd "$dir" && sha256sum cities500.zip cities15000.zip admin1CodesASCII.txt countryInfo.txt featureCodes_en.txt >SHA256SUMS &&

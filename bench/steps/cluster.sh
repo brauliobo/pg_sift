@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
 # Settings live in $PGDATA/bench.conf, rewritten on every start.
-# Extensions come from the engine roots built by bench/steps/fetch.sh (SIFT_ROOT, RUM_ROOT, ...) before the system ones.
+# Extensions come from the engine roots built by bench/steps/fetch.sh (engines/*/root) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
-# Libraries the engines under test need preloaded; only those installed (system, SIFT_ROOT or engine roots)
+# Libraries the engines under test need preloaded; only those installed (an engine root or the system)
 preload() {
   local libs=pg_stat_statements,pg_prewarm lib dir
   for lib in pg_textsearch pg_search; do
-    for dir in "$PKGLIBDIR" "$BM25_ROOT/usr/lib/postgresql" "$PARADEDB_ROOT/usr/lib/postgresql/$PG_MAJOR/lib"; do
+    for dir in ${EXT_LIB//:/ } "$PKGLIBDIR"; do
       [[ -f $dir/$lib.so ]] && { libs+=,$lib; break; }
     done
   done
@@ -38,8 +38,8 @@ shared_preload_libraries = '$(preload)'
 pg_stat_statements.max = 1000
 pg_stat_statements.track = top
 pg_prewarm.autoprewarm = off
-extension_control_path = '$EXT_SHARE:\$system'
-dynamic_library_path = '$EXT_LIB:\$libdir'
+extension_control_path = '${EXT_SHARE:+$EXT_SHARE:}\$system'
+dynamic_library_path = '${EXT_LIB:+$EXT_LIB:}\$libdir'
 EOF
 }
 

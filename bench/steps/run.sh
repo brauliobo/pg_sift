@@ -85,12 +85,14 @@ span() { if [[ $1 == q_* ]]; then echo "-t $2 --random-seed=7"; else echo "-T $3
 timed_run() {
   local wl=$1 rwl=$2
   rm -f "$RUN"/*.log.?*
+  # shellcheck disable=SC2046  # span prints separate arguments
   pgb "$CLIENTS" "$THREADS" $(span "$wl" 5 "$WARMUP") -f "$RUN/$rwl.pgb" >/dev/null 2>&1 || true
   q -c "SELECT pg_stat_statements_reset()" >/dev/null
   local lsn0; lsn0=$(q -c "SELECT pg_current_wal_lsn()")
   if [[ $wl == update ]]; then
     pgb "$WRITERS" 2 -T "$DURATION" -R "$UPDATE_RATE" -l --log-prefix=writer.log -f "$RUN/writer.pgb" >"$RUN/writer.out" 2>&1 &
   fi
+  # shellcheck disable=SC2046
   pgb "$CLIENTS" "$THREADS" $(span "$wl" "$REPEAT" "$DURATION") -l --log-prefix="$wl.log" -f "$RUN/$rwl.pgb" >"$RUN/$wl.out" 2>&1 || true
   wait
   q -c "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '$lsn0')" >"$RUN/$wl.wal"
@@ -115,7 +117,7 @@ measure() {
   note=$([[ $aborted -gt 0 ]] && echo "$aborted/$CLIENTS clients aborted: $(grep -m1 -oP 'ERROR:\s+\K.*' "$RUN/$wl.out")" || true)
   [[ $wl == update ]] && note="reads=$rwl writes=$(latency "$RUN"/writer.log* | cut -f5) writer_tps=$(grep -oP 'tps = \K[0-9.]+(?= \(without)' "$RUN/writer.out") writer_p99=$(latency "$RUN"/writer.log* | cut -f4) $note"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$TIER" "$ENGINE" "$wl" "$CLIENTS" "$DURATION" "$qps" \
-    "$(latency "$RUN/$wl".log*)" "$(cat "$RUN/$wl.mbq")" "$(cat "$RUN/$wl.wal")" "$(cut -d' ' -f1 /proc/loadavg)" "$note" >>"$OUT/results.tsv"
+    "$(latency "$RUN/$wl".log*)" "$(cat "$RUN/$wl.mbq")" "$(cat "$RUN/$wl.wal")" "$(loadavg)" "$note" >>"$OUT/results.tsv"
   log "$ENGINE $wl: qps=$qps $note"
 }
 
