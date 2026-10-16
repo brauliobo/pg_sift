@@ -12,14 +12,30 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # PostgreSQL 19 is built from this branch of the git tree until the PGDG packages carry it
+  PG19_REF: REL_19_STABLE
+
 jobs:
-  postgresql-18:
+  postgresql:
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.experimental && ' (git, experimental)' || '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
+    # an experimental server shows API drift without failing the workflow
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg: 17
+          - pg: 18
+          - pg: 19
+            experimental: true
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 18
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        if: ${{ !matrix.experimental }}
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -30,8 +46,43 @@ jobs:
           # the tests start their own clusters: no default cluster, no service on 5432
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 libipc-run-perl
-          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl
+          echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
+
+      - name: Resolve the PostgreSQL 19 commit
+        if: ${{ matrix.experimental }}
+        id: pg19
+        run: echo "sha=$(git ls-remote https://git.postgresql.org/git/postgresql.git "$PG19_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache PostgreSQL 19
+        if: ${{ matrix.experimental }}
+        id: pg19-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/pg19
+          key: pg19-${{ runner.os }}-${{ steps.pg19.outputs.sha }}
+
+      - name: Build PostgreSQL 19
+        if: ${{ matrix.experimental && steps.pg19-cache.outputs.cache-hit != 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison flex
+          git clone --depth 1 --branch "$PG19_REF" https://git.postgresql.org/git/postgresql.git "$RUNNER_TEMP/postgresql"
+          cd "$RUNNER_TEMP/postgresql"
+          ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
+          make -j4 -s
+          make -s install
+
+      - name: Use PostgreSQL 19
+        if: ${{ matrix.experimental }}
+        run: |
+          sudo apt-get install -y --no-install-recommends libipc-run-perl
+          echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
+
+      # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories
+      - name: Install into the server (PostgreSQL 17)
+        if: ${{ matrix.pg == 17 }}
+        run: echo "SIFT_SUDO=sudo env PATH=$PATH" >> "$GITHUB_ENV"
 
       - name: Build
         run: |
@@ -55,7 +106,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pg_sift-test-logs
+          name: pg_sift-test-logs-pg${{ matrix.pg }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             test/regression.diffs
