@@ -30,9 +30,10 @@ put any `articles.tsv` (COPY text of `id, title + body, category_id, created, li
 ## Results
 
 With the default index sift is ahead of pg_search on and / or / mixed / join and on every places cell, level on the filter
-class and behind on phrase and `count(*)` (0.50x and 0.52x at 218k articles); `phrase_index = pairs` is ahead everywhere.
+class and slightly behind on phrase and `count(*)` (0.81x and 0.82x at 218k articles, level at 150k); `phrase_index = pairs` is
+ahead everywhere.
 
-3 min 40 s after 23 s of index builds), `ab.sh quick` 9 min 14 s, `places.sh full` 36 min 31 s, `places.sh quick` 8 min 12 s. The
+3 min 40 s after 30 s of index builds), `ab.sh quick` 9 min 22 s, `places.sh full` 36 min 31 s, `places.sh quick` 8 min 12 s. The
 earlier per-engine harness took about 5 min 11 s per round for 3 engines and 6 classes, plus about 35 s for the join and 20 s
 to load the corpus.
 
@@ -40,7 +41,7 @@ to load the corpus.
 
 | tier | articles | places | port | dump |
 |---|---:|---:|---:|---|
-| Q (quick) | 75,000 (`Q_DOCS`) | 34,163 (cities15000) | 56040 | `$SIFT_BENCH_ROOT/cache/sift-Q-75000.dump` |
+| Q (quick) | 150,000 (`Q_DOCS`) | 34,163 (cities15000) | 56040 | `$SIFT_BENCH_ROOT/cache/sift-Q-150000.dump` |
 | F (full) | 218,058 | 236,192 (cities500) | 56050 | `$SIFT_BENCH_ROOT/cache/sift-F-ALL.dump` |
 
 ## Entry points
