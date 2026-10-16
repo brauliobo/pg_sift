@@ -1,4 +1,4 @@
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 -- Snowball English (Porter2), from the published algorithm's examples
 SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en')) AS stem
@@ -44,4 +44,4 @@ SELECT count(*) FROM sift.tokenize('running', stemmer => '');
 
 SELECT * FROM sift.tokenize('x', stemmer => 'klingon');
 
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

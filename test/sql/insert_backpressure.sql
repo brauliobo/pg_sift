@@ -1,6 +1,6 @@
 -- Inserts never fail for lack of directory entries: with the asynchronous worker off (as when it
 -- lags behind), the inserter that finds the directory nearly full merges segments itself.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
@@ -23,4 +23,4 @@ SELECT sift.promote('bp_idx') >= 0 AS promoted;
 SELECT sift.verify('bp_idx', true);
 
 DROP TABLE bp;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

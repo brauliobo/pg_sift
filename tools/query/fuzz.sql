@@ -3,7 +3,7 @@
 -- For each query: parse_query either succeeds or fails with 42601/54000;
 -- the canonical form is a fixpoint and matches the same documents.
 \set ON_ERROR_STOP 1
-CREATE EXTENSION IF NOT EXISTS sift;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
 DROP TABLE IF EXISTS fuzz_q, fuzz_docs, fuzz_bad;
 CREATE UNLOGGED TABLE fuzz_q (q text);
 CREATE UNLOGGED TABLE fuzz_bad (q text, d1 text, err text);

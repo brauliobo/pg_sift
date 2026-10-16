@@ -30,7 +30,7 @@ extern int64 sift_maint_orphan_sweep(Relation index);
 /* Launches the dynamic background worker for this index (no preload needed) */
 extern bool sift_maint_request_async(Relation index);
 
-/* Worker entry point, resolved by name from sift.so; main_arg = index OID */
+/* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);
 
 #endif							/* SIFT_MAINT_H */

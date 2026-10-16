@@ -47,7 +47,7 @@ esac
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_soak WITH (FORCE)" -c "CREATE DATABASE sift_soak"
-q -c "CREATE EXTENSION sift" -c "CREATE EXTENSION amcheck" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
+q -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION amcheck" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
 q <<-SQL
 	CREATE TABLE soak (id int PRIMARY KEY, body text) WITH (autovacuum_vacuum_scale_factor = 0.02);
 	CREATE SEQUENCE soak_ids START $((ROWS + 1));

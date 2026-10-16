@@ -1,5 +1,5 @@
 -- Format violations raise ERRCODE_INDEX_CORRUPTED (XX002) with a precise detail
-CREATE EXTENSION sift_test CASCADE;
+CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	d text;
@@ -94,5 +94,5 @@ SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 
 DROP TABLE t;
 DROP FUNCTION expect(text), fresh();
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

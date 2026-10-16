@@ -1,4 +1,4 @@
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 SELECT amname, amtype FROM pg_am WHERE amname = 'sift';
 SELECT oprnamespace::regnamespace, oprname, oprleft::regtype, oprright::regtype
   FROM pg_operator WHERE oprname = '@@>';
@@ -11,4 +11,4 @@ SET sift.simd = scalar;
 SHOW sift.simd;
 RESET sift.simd;
 DROP TABLE docs;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

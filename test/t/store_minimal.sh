@@ -9,7 +9,7 @@ node_init min 5 "wal_level = minimal
 max_wal_senders = 0
 wal_skip_threshold = '1MB'"
 node_start min || bail "start failed"
-sql min "CREATE EXTENSION sift_test CASCADE" >/dev/null || bail "setup failed"
+sql min "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "setup failed"
 
 lsn=$(sql min "SELECT pg_current_wal_insert_lsn()")
 sql min >/dev/null <<'SQL' || bail "minimal transaction failed"

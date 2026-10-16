@@ -1,6 +1,6 @@
 -- DDL around sift indexes: partitioned tables, ALTER INDEX options and the analyzer mismatch ("REINDEX required"),
 -- REINDEX (also CONCURRENTLY), RENAME, unsupported index shapes, partial and expression indexes, temp tables, DROP EXTENSION
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE FUNCTION ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
 DECLARE r text;
@@ -106,8 +106,8 @@ SELECT sift.verify('tt_idx', true);
 DROP TABLE tt;
 
 -- the extension owns the access method: dropping it needs CASCADE and takes the indexes along
-DROP EXTENSION sift;
-DROP EXTENSION sift CASCADE;
+DROP EXTENSION pg_sift;
+DROP EXTENSION pg_sift CASCADE;
 SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'a_renamed';
 DROP TABLE a;
 DROP FUNCTION agree(regclass, text), ids(regclass, text), seq_ids(regclass, text);

@@ -1,6 +1,6 @@
 -- Every emitted token analyzes to exactly itself, in every configuration
 -- (tools/analyze `harness invariant` checks every code point exhaustively).
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE FUNCTION bad_tokens(doc text, stemmer text, c bool, a bool) RETURNS bigint LANGUAGE sql
   AS $$ SELECT count(*) FROM sift.tokenize(doc, NULL, stemmer, c, a) t
         WHERE ARRAY(SELECT token FROM sift.tokenize(t.token, NULL, stemmer, c, a)) <> ARRAY[t.token] $$;
@@ -39,4 +39,4 @@ CREATE INDEX ON docs USING sift (body) WITH (stemmer = 'en');
 DROP TABLE docs;
 
 DROP FUNCTION bad_tokens;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

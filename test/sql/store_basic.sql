@@ -1,5 +1,5 @@
 -- Store round trips through the test access method and sift._test_* functions
-CREATE EXTENSION sift_test CASCADE;
+CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION info(idx regclass) RETURNS jsonb LANGUAGE sql
 	AS $$ SELECT jsonb_object_agg(key, value) FROM sift._test_info(idx) $$;
 
@@ -88,5 +88,5 @@ SELECT pg_wal_lsn_diff(:'l1', :'l0') > 1048576 AS logged, pg_wal_lsn_diff(:'l2',
 
 DROP TABLE empty, b, s, w, f;
 DROP FUNCTION info(regclass);
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

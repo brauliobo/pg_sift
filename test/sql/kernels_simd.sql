@@ -1,8 +1,8 @@
 -- Scoring kernels (src/sift_kernels*.c): every SIMD level is bit-identical to
 -- the scalar specification. Levels above what the CPU supports fall back to
 -- the best supported one, so the output does not depend on the host.
-CREATE EXTENSION sift;
-CREATE EXTENSION sift_test;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 
 -- Digest of every kernel output over 300 random cases, per sift.simd level;
 -- the fixed value pins the specification itself.
@@ -41,5 +41,5 @@ SELECT sift._test_kern_bound(7, 50, 0, 0.75, 100) AS k1_zero;
 
 DROP VIEW ref;
 DROP TABLE params;
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -1,6 +1,6 @@
 -- count(*) over the index (SiftCount): visibility map pages from bitmaps, other pages through
 -- the heap, equal to a sequential count under dead, deleted and aborted rows (DESIGN.md (e))
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE TABLE c (id int PRIMARY KEY, body text, grp int);
 INSERT INTO c SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'the quick fox', 'brown dog', 'fox'])[1 + i % 5]
@@ -73,4 +73,4 @@ RESET sift.enable_count;
 
 DROP TABLE c CASCADE;
 DROP FUNCTION via_scan(text), sift_plan(text), all_same();
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

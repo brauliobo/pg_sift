@@ -1,4 +1,4 @@
-\echo Use "CREATE EXTENSION sift_test" to load this file. \quit
+\echo Use "CREATE EXTENSION pg_sift_test" to load this file. \quit
 
 -- Store module (src/sift_store_test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.

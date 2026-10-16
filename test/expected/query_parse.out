@@ -1,5 +1,5 @@
 -- SiftQL parsing, analysis and canonical deparse (DESIGN.md (h))
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE FUNCTION pq(q text) RETURNS text LANGUAGE sql
 	RETURN sift.parse_query(q);
 -- terms, juxtaposition, keywords (uppercase only), precedence NOT > AND > OR
@@ -268,4 +268,4 @@ ERROR:  "pg_class" is not an index
 SELECT sift.parse_query('a', 'pg_class_oid_index'::regclass);
 ERROR:  "pg_class_oid_index" is not a sift index
 DROP FUNCTION pq;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

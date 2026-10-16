@@ -1,6 +1,6 @@
 -- Parallel CREATE INDEX: every participant scans its share of the heap into sorted runs, the leader
 -- merges them into the segments a serial build writes.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 SET maintenance_work_mem = '128MB';
 SET max_parallel_maintenance_workers = 2;
 SET enable_seqscan = off;
@@ -72,4 +72,4 @@ SELECT sift.verify('pw_idx', true);
 SELECT count(*) FROM pw WHERE body @@> 'w7';
 
 DROP TABLE pb, pw, ranked_ser, segs_ser;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

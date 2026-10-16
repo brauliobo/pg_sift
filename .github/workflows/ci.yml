@@ -55,7 +55,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: sift-test-logs
+          name: pg_sift-test-logs
           path: |
             ${{ runner.temp }}/sift-ci/logs
             test/regression.diffs

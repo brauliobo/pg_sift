@@ -1,8 +1,8 @@
 -- Postings round trip: every (term, tid, tf, dl) decoded from the index
 -- equals an independent computation from the heap through sift.tokenize,
 -- for one or several segments, in memory or through sorted runs.
-CREATE EXTENSION sift;
-CREATE EXTENSION sift_test;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 -- docs: a query returning (tid, body) of the indexed rows
 CREATE FUNCTION roundtrip(idx regclass, docs text)
 RETURNS TABLE (postings bigint, missing bigint, extra bigint, differ bigint)
@@ -159,5 +159,5 @@ SELECT * FROM roundtrip('u_idx', 'SELECT ctid AS tid, body FROM u');
 
 DROP TABLE z, u;
 DROP FUNCTION roundtrip;
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

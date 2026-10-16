@@ -1,6 +1,6 @@
-# sift: design
+# pg_sift: design
 
-`sift` is a PostgreSQL 18 index access method (AM) for full-text search. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
+`pg_sift` is a PostgreSQL 18 extension whose index access method (AM) `sift` does full-text search. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
 - top-k BM25;
 - boolean and phrase queries;
 - `count(*)`;
@@ -8,7 +8,7 @@
 
 This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), then module contracts and milestones. Estimates are marked **[est]** and are only claims until benchmark M6 confirms them.
 
-User-facing names: extension `sift`, AM `sift`, schema `sift`, operator `text @@> text`, and the functions `sift.score(tid)`, `sift.max_score(tid)`, `sift.highlight(...)`, `sift.tokenize(...)`, `sift.verify(regclass)`, `sift.segments(regclass)`, `sift.promote(regclass)`, `sift.merge(regclass)`, `sift.parse_query(text)`.
+User-facing names: extension `pg_sift`, AM `sift`, schema `sift`, operator `text @@> text`, and the functions `sift.score(tid)`, `sift.max_score(tid)`, `sift.highlight(...)`, `sift.tokenize(...)`, `sift.verify(regclass)`, `sift.segments(regclass)`, `sift.promote(regclass)`, `sift.merge(regclass)`, `sift.parse_query(text)`.
 
 ---
 
@@ -193,7 +193,7 @@ A header page holds the extent table and the sections table. Its data is a logic
 
   Records flagged deleted are dropped. A crash before the switch leaves orphan pages, which the sweep reclaims (§i).
 - **Who promotes, in this order:**
-  1. **Async dynamic background worker.** `RegisterDynamicBackgroundWorker` works without `shared_preload_libraries`. The worker's entry point is resolved from `sift.so` by name.
+  1. **Async dynamic background worker.** `RegisterDynamicBackgroundWorker` works without `shared_preload_libraries`. The worker's entry point is resolved from `pg_sift.so` by name.
      - It is launched by the sealing backend if `sift.async_maintenance = on` (default) and a slot is free.
      - At most one worker per index. Duplicate launches are prevented by `ConditionalLockPage(index, 0, ExclusiveLock)` inside the worker, plus a `maint_requested_at` stamp on the metapage.
   2. **`amvacuumcleanup` / `ambulkdelete`.** Autovacuum's insert threshold triggers these on insert-only tables, the same way GIN's pending list is cleaned.
@@ -268,7 +268,7 @@ Hooks used, all present in the PG18 headers (verified):
 - `find_ec_member_matching_expr` (`optimizer/paths.h`);
 - `SupportRequestSimplify` and `SupportRequestIndexCondition` (`nodes/supportnodes.h`).
 
-**Hook installation does not need preload.** The planner opens every index's relcache entry in `get_relation_info`, which calls the AM handler and so loads `sift.so`. `_PG_init` installs the hooks, chaining any previous ones. This happens before `set_rel_pathlist` runs for that query. The `@@>` support and selectivity functions also live in `sift.so` and load it even earlier. This follows from reading the code, not from a test; M3 adds a regression test that runs a first query in a fresh backend.
+**Hook installation does not need preload.** The planner opens every index's relcache entry in `get_relation_info`, which calls the AM handler and so loads `pg_sift.so`. `_PG_init` installs the hooks, chaining any previous ones. This happens before `set_rel_pathlist` runs for that query. The `@@>` support and selectivity functions also live in `pg_sift.so` and load it even earlier. This follows from reading the code, not from a test; M3 adds a regression test that runs a first query in a fresh backend.
 
 1. **Plain AM paths.** `amgetbitmap` supports Bitmap Heap Scan and BitmapAnd/BitmapOr with other indexes. `amgettuple` is NULL; there are no plain index scans or index-only scans. `amcostestimate` uses real term statistics.
 2. **`SiftScan` custom path** (added in `set_rel_pathlist_hook`). Conditions:
@@ -402,7 +402,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 ### Versioning
 
 - **Metapage version.** A different major version raises an ERROR asking for REINDEX on open. A newer minor version is readable; older minors are upgraded lazily by merge, and each segment entry carries `format`.
-- **SQL upgrades** use `sift--1.0--1.1.sql` scripts.
+- **SQL upgrades** use `pg_sift--1.0--1.1.sql` scripts.
 - **pg_upgrade** copies the relfilenode files unchanged, so the on-disk format must stay stable across PostgreSQL minor releases. Any PostgreSQL-dependent layout, such as the VM constants, is tested.
 
 ---
@@ -410,7 +410,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 ## (j) SIMD dispatch
 
 - **Build flags.** There are no per-file CFLAGS. The Makefile appends `-march=x86-64 -mtune=generic -O2 -g -ffp-contract=off` (overriding pg_config's `-march=native`), so the `.so` runs on any x86-64.
-- **No POPCNT outside the SIMD objects.** GCC lowers `__builtin_popcountll` at baseline to a libgcc call, and a distribution's libgcc may be built with POPCNT. Baseline code therefore uses `sift_pc64` (`sift_popcount.h`, SWAR); the AVX2/AVX-512 objects keep the builtin through `SIFT_PC64`. `scripts/isa_check.sh` (in `ci.sh`) fails if a baseline object has a `popcnt` instruction or `__popcount*` reference, or `sift.so` links libgcc's helper.
+- **No POPCNT outside the SIMD objects.** GCC lowers `__builtin_popcountll` at baseline to a libgcc call, and a distribution's libgcc may be built with POPCNT. Baseline code therefore uses `sift_pc64` (`sift_popcount.h`, SWAR); the AVX2/AVX-512 objects keep the builtin through `SIFT_PC64`. `scripts/isa_check.sh` (in `ci.sh`) fails if a baseline object has a `popcnt` instruction or `__popcount*` reference, or `pg_sift.so` links libgcc's helper.
 - **Kernels** are compiled with function attributes:
   - `SIFT_TARGET_AVX2` = `target("avx2,bmi,bmi2,popcnt")`;
   - `SIFT_TARGET_AVX512` = `target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")`.
@@ -506,8 +506,8 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 - **Docs.** `README.md` (user guide: DDL, SiftQL, functions, GUCs, limits), `DESIGN.md` (this file), `docs/CODEC.md` (codec agent).
 - **Test tiers.** `make check` (`scripts/ci.sh quick`) runs every suite in four parallel lanes on a non-ASan build with small corpora; `make check-full` (`scripts/ci.sh full`) is the ASan run at full sizes. `SIFT_QUICK=1` selects the quick sizes in `test/t`. The quick differential test runs 8 of the 16 harness mutants (the ones the full run kills with the most queries).
 - **Dev loop.** `scripts/pgtest.sh install|start|psql|regress|stop|destroy` runs a throwaway cluster under `$SIFT_TMP` (default `/tmp/sift-arch`, port `$SIFT_PORT` in 56100–56119). It loads sift from a `DESTDIR` staging root through PG18's `extension_control_path` and `dynamic_library_path`; nothing is installed system-wide.
-- **Packaging.** `packaging/PKGBUILD` (`sift-pg`) builds the committed HEAD with `nice make -j4` and installs through the standard PGXS `DESTDIR` path.
-- **M0 behaviour.** `CREATE EXTENSION sift` works. Any entry point whose module has not landed fails with `ERRCODE_FEATURE_NOT_SUPPORTED` "sift: … is not implemented yet"; for example, `CREATE INDEX … USING sift` fails that way. `amcostestimate` prices the index out of plans, and `@@>` selectivity uses `DEFAULT_MATCH_SEL`.
+- **Packaging.** `packaging/PKGBUILD` (`pg_sift`) builds the committed HEAD with `nice make -j4` and installs through the standard PGXS `DESTDIR` path.
+- **M0 behaviour.** `CREATE EXTENSION pg_sift` works. Any entry point whose module has not landed fails with `ERRCODE_FEATURE_NOT_SUPPORTED` "sift: … is not implemented yet"; for example, `CREATE INDEX … USING sift` fails that way. `amcostestimate` prices the index out of plans, and `@@>` selectivity uses `DEFAULT_MATCH_SEL`.
 
 ---
 

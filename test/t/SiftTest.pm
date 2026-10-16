@@ -29,7 +29,7 @@ sub sift_node
 sub install_sift
 {
 	my ($node) = @_;
-	$node->safe_psql('postgres', 'CREATE EXTENSION sift; CREATE EXTENSION amcheck;');
+	$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift; CREATE EXTENSION amcheck;');
 	$node->safe_psql('postgres', '',
 		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/reference.sql" ]);
 }

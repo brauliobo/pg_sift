@@ -1,6 +1,6 @@
 /*
  * sift_kernels_test.c - test-only SQL functions sift._test_kern_*, compiled
- * only with SIFT_TESTING and registered by the sift_test extension. The
+ * only with SIFT_TESTING and registered by the pg_sift_test extension. The
  * standalone harness (tools/kernels) is the exhaustive check; these run the
  * kernels inside the backend, through the sift.simd dispatch.
  */

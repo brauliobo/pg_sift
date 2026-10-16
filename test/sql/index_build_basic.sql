@@ -1,6 +1,6 @@
 -- CREATE INDEX: segments, statistics, options and sift.verify on small
 -- corpora; the index answers queries as a bitmap scan.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 -- Empty table: metapage and directory only
 CREATE TABLE t0 (body text);
@@ -107,4 +107,4 @@ RESET enable_seqscan;
 SELECT count(*) FROM t2 WHERE body @@> 'same';
 
 DROP TABLE t0, t1, t2, te, t3, t4, t5, tu;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

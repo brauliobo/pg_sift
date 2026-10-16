@@ -1,4 +1,4 @@
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 SELECT amname, amtype FROM pg_am WHERE amname = 'sift';
  amname | amtype 
 --------+--------
@@ -33,4 +33,4 @@ SHOW sift.simd;
 
 RESET sift.simd;
 DROP TABLE docs;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

@@ -86,7 +86,7 @@ sql() {
 
 mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_fuzz WITH (FORCE)" -c "CREATE DATABASE sift_fuzz"
-q -c "CREATE EXTENSION sift"
+q -c "CREATE EXTENSION pg_sift"
 status=0
 run() {
 	local t

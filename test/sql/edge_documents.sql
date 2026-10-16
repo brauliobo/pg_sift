@@ -1,7 +1,7 @@
 -- NULL, empty and token-less documents, documents larger than a page and with more than 64k tokens
 -- and 64k distinct terms (built, inserted, promoted and merged), unusual characters:
 -- the index agrees with a sequential scan and sift.verify accepts it
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE FUNCTION ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
 DECLARE r text;
@@ -78,4 +78,4 @@ SELECT agree('u', 'tail'), agree('u', 'ok'), agree('u', chr(128512)), agree('u',
 
 DROP TABLE n, z, h, u;
 DROP FUNCTION agree(regclass, text), ids(regclass, text), seq_ids(regclass, text);
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

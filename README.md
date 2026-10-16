@@ -1,6 +1,6 @@
-# sift
+# pg_sift
 
-sift is a full-text search index access method for PostgreSQL 18. Postings are keyed directly by
+pg_sift is a full-text search index access method for PostgreSQL 18. Postings are keyed directly by
 heap ctid and stored as two-level bitmaps (heap page, then line offset), so boolean queries and
 `count(*)` are bitmap operations, ranking is exact BM25 with block-max pruning, and MVCC is
 handled through the visibility map instead of a doc-id mapping. The design is documented in
@@ -10,7 +10,7 @@ Status: index build, storage, the SIMD codec, query execution (boolean, phrase, 
 `count(*)`), crash and physical-replica safety (generic WAL, no preload) and the benchmark harness are in.
 
 ```sql
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE INDEX docs_body ON docs USING sift (body);
 
 SELECT id FROM docs WHERE body @@> 'breakfast AND "friendly staff"'

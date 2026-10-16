@@ -1,4 +1,4 @@
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 -- Snowball English (Porter2), from the published algorithm's examples
 SELECT w, (SELECT string_agg(token, ' ') FROM sift.tokenize(w, stemmer => 'en')) AS stem
   FROM unnest(ARRAY[
@@ -281,4 +281,4 @@ SELECT count(*) FROM sift.tokenize('running', stemmer => '');
 SELECT * FROM sift.tokenize('x', stemmer => 'klingon');
 ERROR:  unknown sift stemmer "klingon"
 HINT:  Valid stemmers are "en" and "none".
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

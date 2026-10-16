@@ -1,5 +1,5 @@
 -- Bitmap scans over the index equal the document-level evaluation (DESIGN.md (f), (h))
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 -- the custom scan has its own tests (rank_scan); here the index answers through bitmaps
 SET sift.enable_scan = off;
 
@@ -95,4 +95,4 @@ SELECT sift.verify('d_idx');
 
 DROP FUNCTION via_index, via_seq, g_index, g_seq;
 DROP TABLE g, d;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

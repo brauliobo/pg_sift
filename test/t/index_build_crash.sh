@@ -13,7 +13,7 @@ node_init build 1 "checkpoint_timeout = 1h
 max_wal_size = 4GB
 maintenance_work_mem = 8MB"
 node_start build || bail "start failed"
-sql build "CREATE EXTENSION sift_test CASCADE" \
+sql build "CREATE EXTENSION pg_sift_test CASCADE" \
 	"SELECT setseed(0.5)" \
 	"CREATE TABLE z AS SELECT i AS id, 'all ' || (SELECT string_agg('w' || floor(exp(random() * ln(30000)))::int, ' ')
 		FROM generate_series(1, 1 + (random() * 50)::int + i % 2)) AS body FROM generate_series(1, $ROWS) i" \

@@ -1,4 +1,4 @@
-# sift codec
+# pg_sift codec
 
 The `codec` module (`src/sift_bitmap.h`, `src/sift_bitmap*.c`, `src/sift_bitmap_kern.h`) encodes posting sets keyed by heap ctid and runs the set kernels. It is plain C11 plus intrinsics with no PostgreSQL dependency. It does no allocation, and its only global state is the dispatch table. The standalone harness lives in `tools/codec/`: tests, corpus tools and benchmarks.
 

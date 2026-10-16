@@ -1,4 +1,4 @@
-\echo Use "CREATE EXTENSION sift" to load this file. \quit
+\echo Use "CREATE EXTENSION pg_sift" to load this file. \quit
 
 CREATE FUNCTION sift.sift_handler(internal) RETURNS index_am_handler
 	AS 'MODULE_PATHNAME', 'sift_handler' LANGUAGE C STRICT;

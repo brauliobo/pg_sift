@@ -4,7 +4,7 @@
 -- Reports parse+analyze+deparse cost per query and sift.match cost per
 -- document, net of the same scan without the sift call.
 \set ON_ERROR_STOP 1
-CREATE EXTENSION IF NOT EXISTS sift;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
 DROP TABLE IF EXISTS bench_raw, bench_q, bench_docs;
 CREATE UNLOGGED TABLE bench_raw (q text);
 COPY bench_raw FROM :'file';

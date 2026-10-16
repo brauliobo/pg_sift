@@ -28,7 +28,7 @@
 #include "sift_posting.h"
 #include "sift_sql.h"
 
-PG_MODULE_MAGIC_EXT(.name = "sift", .version = "1.0");
+PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = "1.0");
 
 PG_FUNCTION_INFO_V1(sift_handler);
 PG_FUNCTION_INFO_V1(sift_match);

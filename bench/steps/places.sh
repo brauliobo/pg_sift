@@ -40,10 +40,10 @@ declare -A INDEX=(
   [pgs]="CREATE INDEX places_pgs ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
   [sift]="CREATE INDEX places_sift ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3)"
   [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)")
-declare -A EXT=([pgs]=pg_search [sift]=sift [rum]=rum)
+declare -A EXT=([pgs]=pg_search [sift]=pg_sift [rum]=rum)
 declare -A SETUP=(
   [pgs]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
-  [sift]="CREATE EXTENSION IF NOT EXISTS sift"
+  [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
   [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED")
 ENGINES=${ENGINES:-pgs sift rum}
 ref=sift

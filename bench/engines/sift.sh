@@ -2,8 +2,8 @@
 #   body @@> 'a AND b' | 'a OR b' | '"a b"' | 'a AND NOT b' | 'a*' | 'a~1';  ORDER BY sift.score(ctid) DESC
 # Trace terms are lowercase plain words, so they never collide with the uppercase keywords or the
 # SiftQL metacharacters. Skipped by the harness until the extension is installed.
-REQUIRES=sift
-SETUP="CREATE EXTENSION IF NOT EXISTS sift;"
+REQUIRES=pg_sift
+SETUP="CREATE EXTENSION IF NOT EXISTS pg_sift;"
 INDEX="CREATE INDEX docs_fts ON docs USING sift (body);"
 RENDER=$(cat <<'SQL'
 CREATE OR REPLACE FUNCTION sift_q(mode text, terms text[]) RETURNS text LANGUAGE sql AS $$

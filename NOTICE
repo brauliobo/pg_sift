@@ -1,4 +1,4 @@
-sift is distributed under the PostgreSQL License (see LICENSE). It contains
+pg_sift is distributed under the PostgreSQL License (see LICENSE). It contains
 data and an algorithm derived from the following third-party works.
 
 Unicode character data
@@ -84,7 +84,7 @@ Porter; the Snowball distribution is licensed under the BSD 3-clause license:
   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
   POSSIBILITY OF SUCH DAMAGE.
 
-Not distributed with sift
+Not distributed with pg_sift
 -------------------------
 The checks under tools/ and bench/ download reference data at run time (the
 Unicode Character Database, the snowball-data English vocabulary, Simple

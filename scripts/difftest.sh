@@ -42,7 +42,7 @@ log() { printf '[difftest %s] %s\n' "$(date +%T)" "$*" >&2; }
 
 fresh_db() {
 	DB=postgres sql -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
-	sql -c "CREATE EXTENSION sift"
+	sql -c "CREATE EXTENSION pg_sift"
 	sql -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/diff/diff.sql"
 	sql -c "CREATE TABLE diff_results (engine text, round int, qno int, q text, stage text, status text, detail text)"
 }

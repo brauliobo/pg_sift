@@ -1,6 +1,6 @@
 -- count(*) over the index (SiftCount): visibility map pages from bitmaps, other pages through
 -- the heap, equal to a sequential count under dead, deleted and aborted rows (DESIGN.md (e))
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE TABLE c (id int PRIMARY KEY, body text, grp int);
 INSERT INTO c SELECT i, (ARRAY['quick brown fox', 'lazy dog', 'the quick fox', 'brown dog', 'fox'])[1 + i % 5]
 	|| ' w' || i % 7, i % 3 FROM generate_series(1, 2000) i;
@@ -198,4 +198,4 @@ NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to function via_seq(text)
 drop cascades to function same(text)
 DROP FUNCTION via_scan(text), sift_plan(text), all_same();
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

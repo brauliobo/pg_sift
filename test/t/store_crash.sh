@@ -14,7 +14,7 @@ plan $((ITERS + 1))
 node_init crash 1 "checkpoint_timeout = 30s
 max_wal_size = 256MB"
 node_start crash || bail "start failed"
-sql crash "CREATE EXTENSION sift_test CASCADE" \
+sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE t (v int)" "CREATE INDEX t_idx ON t USING sift_store_test (v)" \
 	"CREATE TABLE b (v int)" "INSERT INTO b VALUES (0), (9000), (400000), (2500000)" \
 	"CREATE INDEX b_idx ON b USING sift_store_test (v)" \
