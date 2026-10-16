@@ -44,7 +44,10 @@
   end of the table) was planned as filter-after-ranker, which verifies every match before the filter's first row (tens to hundreds of
   ms against under 1 ms pushed down). The post-filter estimate now counts the matches before and after the rows the filter's btree
   quals can keep, from the column's histogram and correlation, and the bitmap's tuple count no longer includes the planner's lossy-page
-  inflation.
+  inflation. The estimate also prices the blocks the ranker scores (a broad term ties its superblock bounds, so the scan runs in heap
+  order) and the descents of a `= ANY(const array)` bitmap by the leaf pages they touch rather than one random page per element, so
+  1000 to 10000 scattered ids with a broad term are pushed down (418 ms against 5 ms in the report) and ids at the head of the heap
+  stay on the plain scan only when it is faster.
 - Fix: assertion failures on a server built with `--enable-cassert` (a stray `foreach_node(Node/Path/Plan)` cast, the GlobalVis horizon
   taken from the index instead of its heap, and a page special area read before the page layout check in `sift.verify`).
 - Packages: a `.deb` (`postgresql-18-pg-sift`, PGDG on Debian 13 and Ubuntu 24.04) and an `.rpm` (`pg_sift_18`, PGDG on RHEL, Rocky and
