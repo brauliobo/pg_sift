@@ -7,7 +7,8 @@
 # `scripts/pgtest.sh install` first) through TEMP_CONFIG, under ASan when that
 # build is sanitized. IPC::Run, required by PostgreSQL::Test::Utils and missing
 # on this host, is fetched once from CPAN (sha256 pinned) into
-# ${XDG_CACHE_HOME:-~/.cache}/sift/perl5. Logs: $SIFT_TMP/tap/log. Exit 1 on failure.
+# ${XDG_CACHE_HOME:-~/.cache}/sift/perl5. Logs: $SIFT_TMP/tap/log. Every node is under the leak gate of
+# scripts/leakcheck.sh (test/t/SiftTest.pm); the node logs are scanned when prove is done. Exit 1 on failure.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,10 +34,14 @@ cat >"$TAP/sift.conf" <<CONF
 $("$REPO/scripts/pgtest.sh" conf)
 max_wal_size = 256MB
 CONF
-[[ -z ${SIFT_SANITIZER:-} ]] || export $SIFT_SANITIZER
+# the sanitizer runtime goes into the servers only (SiftTest.pm preloads SIFT_PRELOAD), not into perl, psql or initdb
+[[ -z ${SIFT_SANITIZER:-} ]] || export ${SIFT_SANITIZER/LD_PRELOAD=/SIFT_PRELOAD=}
 
 cd "$REPO/test"
 (( $# )) || set -- t/*.pl
-TESTDATADIR=$TAP/data TESTLOGDIR=$TAP/log PG_TEST_PORT_DIR=$TAP TEMP_CONFIG=$TAP/sift.conf SIFT_REPO=$REPO \
+rc=0
+SIFT_TMP=$TAP TESTDATADIR=$TAP/data TESTLOGDIR=$TAP/log PG_TEST_PORT_DIR=$TAP TEMP_CONFIG=$TAP/sift.conf SIFT_REPO=$REPO \
 	PG_REGRESS=$PGXS_SRC/test/regress/pg_regress \
-	prove ${PROVE_FLAGS:-} -I "$PGXS_SRC/test/perl" -I "$PERL5" "$@"
+	prove ${PROVE_FLAGS:-} -I "$PGXS_SRC/test/perl" -I "$PERL5" "$@" || rc=$?
+"$REPO/scripts/leakcheck.sh" scan "$TAP" || rc=1
+exit $rc

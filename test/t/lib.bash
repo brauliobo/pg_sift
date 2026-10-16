@@ -3,10 +3,13 @@
 # unix sockets only and load sift from the staging root $SIFT_ROOT. Every
 # node is stopped and its directory deleted when the script exits; logs of a
 # failed run are kept. SIFT_PRELOAD (e.g. libasan.so for `make SANITIZE=1`)
-# is preloaded into the servers only, and a sanitizer report in any server
-# log fails the script.
+# is preloaded into the servers only. finish runs the leak gate of
+# scripts/leakcheck.sh on every node (cluster invariants, clean shutdown, log
+# scan: leak warnings, crashes, sanitizer and LeakSanitizer reports) and fails
+# the script on a finding.
 set -uo pipefail
 export LC_ALL=C
+. "$(dirname "${BASH_SOURCE[0]}")/../../scripts/leakcheck.sh"
 
 # knob VAR FULL QUICK: $VAR when set, else FULL, or QUICK under SIFT_QUICK=1 (scripts/ci.sh quick)
 knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
@@ -94,7 +97,8 @@ conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 node_start() {
 	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
-		>/dev/null 2>&1
+		>/dev/null 2>&1 || return
+	leak_baseline "$(dir "$1")/data"
 }
 node_stop() { [[ -f $(dir "$1")/data/postmaster.pid ]] && pg_ctl -D "$(dir "$1")/data" -m fast -w stop >/dev/null 2>&1; true; }
 
@@ -157,11 +161,24 @@ pgbench_bg() {
 	PGBENCH_PID=$!
 }
 
+# node_leakcheck NAME: the cluster invariants while it runs, a clean shutdown (LeakSanitizer reports as the processes exit)
+# and the scan of its log
+node_leakcheck() {
+	local d rc=0
+	d=$(dir "$1")
+	if [[ -f $d/data/postmaster.pid ]]; then
+		PGHOST=$d/sock PGPORT=$(port "$1") leak_cluster "$d/data" || rc=1
+		pg_ctl -D "$d/data" -m fast -w -t 120 stop >/dev/null 2>&1 || pg_ctl -D "$d/data" -m immediate stop >/dev/null 2>&1
+		leak_after_stop "$d/data" || rc=1
+	fi
+	leak_scan "$d" || rc=1
+	return $rc
+}
+
 finish() {
-	local name
+	local name out
 	for name in "${NODES[@]}"; do
-		! grep -qE "AddressSanitizer|runtime error:" "$(dir "$name")/postgres.log" 2>/dev/null ||
-			{ not_ok "sanitizer report in $name's log"; diag "$(grep -A20 -m1 -E "AddressSanitizer|runtime error:" "$(dir "$name")/postgres.log")"; }
+		out=$(node_leakcheck "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done
 	[[ $NFAIL -eq 0 ]] || diag "$NFAIL of $NTEST failed"
 	exit $((NFAIL > 0))

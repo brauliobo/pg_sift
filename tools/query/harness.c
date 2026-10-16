@@ -3,7 +3,7 @@
  *
  * Links src/sift_query.c with frontend libpgcommon and small shims for the
  * backend services it uses: palloc is plain malloc per chunk (so ASan sees
- * every overflow), ereport longjmps back here, the analyzer is an ASCII test
+ * every overflow, tools/pgarena.h), ereport longjmps back here, the analyzer is an ASCII test
  * double, and regexes compile to "never matches" (regex paths are covered by
  * the SQL tests). Reads COPY-escaped queries (tools/query/gen.py) and checks
  * for each one:
@@ -22,30 +22,15 @@
 #include "regex/regex.h"
 
 #include "sift_query.h"
+#include "../pgarena.h"
 
-/* ------------------------------------------------ memory: one malloc per chunk */
-
-typedef struct Chunk
-{
-	struct Chunk *prev,
-			   *next;
-	size_t		size;
-	size_t		pad;
-} Chunk;
-
-static Chunk arena = {&arena, &arena, 0, 0};
+/* ------------------------------------------------ memory: one malloc per chunk (tools/pgarena.h) */
 
 void *
 palloc(Size size)
 {
-	Chunk	   *c = malloc(sizeof(Chunk) + size);
-
-	c->size = size;
-	c->next = arena.next;
-	c->prev = &arena;
-	arena.next->prev = c;
-	arena.next = c;
-	return c + 1;
+	arena_atexit();
+	return arena_alloc(size);
 }
 
 void *
@@ -63,21 +48,13 @@ palloc_extended(Size size, int flags)
 void
 pfree(void *p)
 {
-	Chunk	   *c = (Chunk *) p - 1;
-
-	c->prev->next = c->next;
-	c->next->prev = c->prev;
-	free(c);
+	arena_free(p);
 }
 
 void *
 repalloc(void *p, Size size)
 {
-	void	   *n = palloc(size);
-
-	memcpy(n, p, Min(size, ((Chunk *) p - 1)->size));
-	pfree(p);
-	return n;
+	return arena_realloc(p, size);
 }
 
 char *
@@ -96,13 +73,6 @@ pnstrdup(const char *s, Size len)
 	memcpy(d, s, len);
 	d[len] = '\0';
 	return d;
-}
-
-static void
-arena_reset(void)
-{
-	while (arena.next != &arena)
-		pfree(arena.next + 1);
 }
 
 /* ------------------------------------------------ errors: longjmp to the driver */

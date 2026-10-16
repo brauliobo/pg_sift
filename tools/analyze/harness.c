@@ -363,6 +363,8 @@ cmd_fuzz(long iters, unsigned long seed)
 			sift_analyzer_reset(a);
 	}
 	printf("fuzz: %ld iterations ok\n", iters);
+	free(buf);
+	free(copy);
 	return 0;
 }
 

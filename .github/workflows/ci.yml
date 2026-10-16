@@ -100,9 +100,12 @@ jobs:
           scripts/pgtest.sh install
           scripts/pgtest.sh start
           scripts/pgtest.sh regress
+          scripts/pgtest.sh stop      # the leak gate of the cluster (scripts/leakcheck.sh)
           scripts/pgtest.sh destroy
 
-      - name: Quick test tier (make check)
+      # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
+      # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
+      - name: Quick test tier (make check, with the leak gate)
         run: make check
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
@@ -115,6 +118,9 @@ jobs:
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/tap/**/*.log
+            ${{ runner.temp }}/sift-ci/lane*/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/sanitizer
+            ${{ runner.temp }}/sift-ci/lane*/leakcheck.*
             test/regression.diffs
           if-no-files-found: ignore
 

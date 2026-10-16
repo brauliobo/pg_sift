@@ -515,7 +515,8 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - per 64 blocks in the ranked loop;
   - per page in build, merge and bulkdelete;
   - never while holding buffer locks.
-- **Sanitizers.** `make SANITIZE=1` adds `-fsanitize=address,undefined -fno-omit-frame-pointer`. A scratch cluster runs under `LD_PRELOAD=$(gcc -print-file-name=libasan.so)` with `ASAN_OPTIONS=detect_leaks=0`.
+- **Sanitizers.** `make SANITIZE=1` adds `-fsanitize=address,undefined -fno-omit-frame-pointer`. A scratch cluster runs under `LD_PRELOAD=$(gcc -print-file-name=libasan.so)` with LeakSanitizer on (`scripts/leakcheck.sh env`).
+- **Leak gate.** `scripts/leakcheck.sh` is the one place that decides whether a run leaked, shared by every suite through `pgtest.sh` (config, sanitizer environment, start and stop), `test/t/lib.bash` and `SiftTest.pm` (nodes), `tap.sh`, `soak.sh` and the last stage of `ci.sh`. It fails on the leak diagnostics PostgreSQL logs at transaction and backend end, on assertion failures, crashes and sanitizer reports, on the sift memory contexts that outlive a backend (`SIFT_TESTING`, `src/sift_leak_test.c`), on the state a cluster leaves when it stops, and on sustained memory growth of the soak backends. `leakcheck.sh selftest` and `test/t/leakcheck_gate.sh` (with `sift._test_leak`) show that it fails on each kind of leak and passes a clean log.
 - **Fuzzing.**
   - The query parser via the SQL wrapper `sift.parse_query`, driven by a grammar-aware generator script, under ASan.
   - The codec standalone with libFuzzer, owned by the codec agent; the codec has no backend dependencies.

@@ -1,0 +1,14 @@
+# LeakSanitizer suppressions for a PostgreSQL server run under scripts/leakcheck.sh (LSAN_OPTIONS=suppressions=).
+# Only allocations that PostgreSQL itself keeps for the whole life of the postmaster and never frees; every process forked
+# from it reports them again at exit. Anything else, sift's included, is a finding. A suppression matches any frame of the
+# allocation stack, so add a function only when all of its allocations are meant to stay.
+leak:save_ps_display_args
+leak:PostmasterMain
+
+# PostgreSQL's own client programs (pg_dump, pg_upgrade, pg_resetwal, psql, vacuumdb), which scripts start under the preload
+# together with the servers (pg_upgrade runs them all) and which exit without freeing; so does libpq, the walreceiver's
+# included. Matched by module path.
+leak:/bin/pg_
+leak:/bin/psql
+leak:/bin/vacuumdb
+leak:libpq.so

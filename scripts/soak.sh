@@ -11,10 +11,13 @@
 # results with the SQL reference, and the index is verified (sift.verify with
 # heapallindexed, or amcheck for GIN). --am gin runs the same harness on a GIN
 # control index; sift is skipped until its insert path lands. Exit 1 on any
-# mismatch, verification error or failed transaction.
+# mismatch, verification error or failed transaction. Every 2 s the private memory of each connected
+# backend is sampled (scripts/leakcheck.sh): a backend that keeps growing along a straight line after
+# the warmup (LEAK_GROWTH_MB, LEAK_GROWTH_R2) fails the run.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+. "$REPO/scripts/leakcheck.sh"
 eval "$("$REPO/scripts/pgtest.sh" env)"
 export PGDATABASE=sift_soak PGOPTIONS='-c client_min_messages=warning'
 OUT=${SIFT_TMP:-/tmp/sift-arch}/soak
@@ -84,7 +87,9 @@ pgbench -n -T "$DURATION" -R "$RATE" -c "$CLIENTS" -j "$CLIENTS" -D rows="$ROWS"
 writers=$!
 pgbench -n -T "$DURATION" -c 1 -f "$OUT/read.sql" >"$OUT/readers.txt" 2>&1 &
 readers=$!
-trap 'kill $writers $readers 2>/dev/null || true' EXIT
+soak_backends() { q -c "SELECT pid FROM pg_stat_activity WHERE backend_type = 'client backend' AND datname = 'sift_soak' AND pid <> pg_backend_pid()"; }
+leak_watch_start "$OUT/memory.tsv" soak_backends
+trap 'kill $writers $readers $LEAK_WATCH 2>/dev/null || true' EXIT
 
 checks=0 bad=0
 end=$((SECONDS + DURATION))
@@ -111,6 +116,8 @@ while (( SECONDS < end )); do
 done
 wait $writers $readers || bad=$((bad + 1))
 trap - EXIT
+leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { bad=$((bad + 1)); log "MEMORY GROWTH"; }
+log "backend memory: $(grep -c . "$OUT/memory.txt") backends sampled, $(grep -c GROWING "$OUT/memory.txt" || true) growing (see memory.txt)"
 
 failed=$(awk '/^number of failed transactions/ { s += $5; n++ } END { print n ? s : "?" }' "$OUT/writers.txt" "$OUT/readers.txt")
 log "writers: $(grep -E '^tps' "$OUT/writers.txt" | head -1); readers: $(grep -E '^tps' "$OUT/readers.txt" | head -1)"
