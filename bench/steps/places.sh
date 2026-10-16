@@ -25,7 +25,7 @@
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt. KEEP=1 keeps the cluster.
 # Env: ENGINES (sift sift_nopos sift_pairs pg_search pg_textsearch rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class; check: queries
-# per class) TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
+# per class) TIMEOUT (statement_timeout of a cell, default 120s: slower cells are reported as error) RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
@@ -184,7 +184,7 @@ cell() { # workload class engine -> "p50 p95" ms of single-client transactions: 
   { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$3");"; } >"$f.sql"
   rm -f "$log"*
   [[ -n $(stmt "$1" "$3") ]] || { echo "NA NA"; return; }   # the engine has no such query
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-30s}" pgbench -n -f "$f.sql" -c 1 -T "$SECS" -l --log-prefix="$log" "$(edb "$3")" >/dev/null 2>&1 || { echo "nan nan"; return; }
+  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" pgbench -n -f "$f.sql" -c 1 -T "$SECS" -l --log-prefix="$log" "$(edb "$3")" >/dev/null 2>&1 || { echo "nan nan"; return; }
   sort -n -k3,3 "$log"* | awk '{v[NR] = $3} END {printf "%.3f %.3f", v[int((NR + 1) / 2)] / 1000, v[int(NR * 0.95) < 1 ? 1 : int(NR * 0.95)] / 1000}'
   rm -f "$log"*
 }
