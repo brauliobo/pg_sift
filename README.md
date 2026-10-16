@@ -57,7 +57,8 @@ Arch Linux packaging is in `packaging/`.
 ## Limitations
 
 - Phrases are rechecked against the heap unless the index is built with `phrase_index = pairs` (a larger
-  index); `count(*)` and ranked scans of common-word phrases pay for it.
+  index); `count(*)` and ranked scans of common-word phrases pay for it, and lose to pg_search by half on the
+  articles benchmark with the default index.
 - The benchmark corpora are small compared with TIN's 150M documents, and the hosts are shared machines, so
   absolute numbers carry noise; compare engines measured in the same run.
 - Tokenizers differ between engines (CJK runs, apostrophes, hyphenation), so result sets match exactly only
