@@ -26,6 +26,7 @@
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_posting.h"
+#include "sift_pushdown.h"
 #include "sift_sql.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = "1.0");
@@ -86,6 +87,7 @@ define_gucs(void)
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
+	sift_pushdown_init();
 	MarkGUCPrefixReserved("sift");
 }
 

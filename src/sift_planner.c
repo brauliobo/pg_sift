@@ -614,7 +614,6 @@ sift_planner_init(void)
 {
 	RegisterCustomScanMethods(&sift_scan_plan_methods);
 	RegisterCustomScanMethods(&sift_count_plan_methods);
-	sift_pushdown_init();
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = sift_set_rel_pathlist;
 	prev_upper_hook = create_upper_paths_hook;
