@@ -378,6 +378,22 @@ rank_verified(double cands, double pass, int64 k)
 }
 
 /*
+ * The same when the quals are checked after scoring and a bitmap of them says where in the heap their
+ * rows lie. The ranker visits the heap in order and has no threshold until it holds k passing rows:
+ * it verifies every match before the first row the quals can keep (fe->start), ranks as above within
+ * the span of those rows, where they are denser (pass / fe->span), and past the span still verifies
+ * the matches that beat the k-th best of all the rows that pass (a fraction k / (cands * pass)).
+ */
+static double
+rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe)
+{
+	if (k <= 0)
+		return cands;
+	return cands * fe->start + rank_verified(cands * fe->span, Min(pass / fe->span, 1.0), k) +
+		cands * Max(1 - fe->start - fe->span, 0) * Min(k / Max(cands * pass, 1), 1.0);
+}
+
+/*
  * Workers a parallel scan of the rel can use: the planner's rule for an index scan (reloption
  * parallel_workers, min_parallel_index_scan_size, max_parallel_workers_per_gather), and no more
  * participants than there are superblocks to hand out. 0: no parallel path.
@@ -409,18 +425,19 @@ parallel_divisor(int nworkers)
 
 /*
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
- * the verification are shared out. With a filter the ranker only meets the matches its bitmap keeps
- * (the fraction fe.sel of them, at least those that pass the quals), at the price of building the
- * bitmap first; the bitmap is built by one backend, so a filtered scan is never parallel (nworkers 0).
+ * the verification are shared out. With a pushed down filter the ranker only meets the matches its
+ * bitmap keeps (the fraction fe.sel of them, at least those that pass the quals), at the price of
+ * building the bitmap first; the bitmap is built by one backend, so a pushed down scan is never
+ * parallel (nworkers 0). Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-		  BitmapHeapPath *filter, int nworkers)
+		  BitmapHeapPath *filter, bool push, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
 	ScanCost	sc;
-	SiftFilterEst fe = {0, 1};
+	SiftFilterEst fe = {0, 1, 0, 1};
 	double		divisor = parallel_divisor(nworkers),
 				pass,
 				verify;
@@ -429,7 +446,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 				postings,
 				startup;
 
-	Assert(filter == NULL || nworkers == 0);
+	Assert(!push || nworkers == 0);
 	scan_cost(root, rel, c, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
@@ -448,13 +465,16 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	{
 		pass = Min(rel->rows / sc.docs, 1.0);
 		if (filter)
-		{
 			sift_filter_estimate(root, rel, filter, &fe);
+		if (push)
+		{
 			fe.sel = Max(fe.sel, pass);
 			cp->custom_paths = list_make1(filter);
 			dict += fe.cost;
+			verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
 		}
-		verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
+		else
+			verify = rank_verified_after(sc.docs, pass, k, &fe) * sc.tuple;
 	}
 	limited = mode == SIFT_MODE_RANKED && k > 0;
 	startup = dict + (postings + (limited ? verify : 0)) / divisor;
@@ -476,18 +496,19 @@ cheaper(CustomPath *a, CustomPath *b)
 }
 
 /*
- * Adds the serial path, and a parallel one next to it unless a filter is pushed down: the bitmap of a
- * filter is built by one backend, so a filtered scan stays serial and competes with the parallel one
- * on cost. With only_best the paths are not added: the caller replaces the rel's paths with the best
- * ones, and add_path would free a path it rejects or dominates (a seq scan of an empty table) that
- * best still points to.
+ * Adds the serial path, and a parallel one next to it unless the filter is pushed down: the bitmap of a
+ * filter is built by one backend, so a pushed down scan stays serial and competes with the parallel one
+ * on cost. The filter bitmap, when there is one, also prices the scan that does not push it down. With
+ * only_best the paths are not added: the caller replaces the rel's paths with the best ones, and
+ * add_path would free a path it rejects or dominates (a seq scan of an empty table) that best still
+ * points to.
  */
 static void
 add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
-			   BitmapHeapPath *filter, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
+			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
-	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, 0);
-	int			nworkers = filter == NULL && parallel ? scan_workers(rel, c) : 0;
+	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, push, 0);
+	int			nworkers = !push && parallel ? scan_workers(rel, c) : 0;
 
 	if (cheaper(cp, *best))
 		*best = cp;
@@ -495,7 +516,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mod
 		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
-		cp = scan_path(root, rel, c, mode, k, pathkeys, NULL, nworkers);
+		cp = scan_path(root, rel, c, mode, k, pathkeys, filter, false, nworkers);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
 		if (!only_best)
@@ -725,9 +746,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter_looked = true;
 		}
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, NULL, parallel, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
 	}
 	if (best && only_best)
 	{
