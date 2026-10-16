@@ -16,7 +16,7 @@ plan $((ROUNDS + 1))
 node_init rk 5
 node_start rk || bail "start failed"
 SETUP=$(cat <<'SQL'
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE TABLE rk (id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO rk SELECT g, concat_ws(' ', 'w' || g % 7, 'w' || g % 13, 'w' || g % 101, CASE WHEN g % 5 = 0 THEN 'rare' END, 'doc' || g)
 	FROM generate_series(1, @ROWS@) g;

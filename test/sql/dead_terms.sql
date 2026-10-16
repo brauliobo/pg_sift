@@ -1,7 +1,7 @@
 -- A dictionary keeps the terms of deleted docs until its segment is rewritten. They match
 -- nothing, so only terms with a live posting count toward sift.max_expansions, and a forced
 -- merge drops them even from a lone segment.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 
@@ -41,4 +41,4 @@ SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
 SELECT sift.verify('dt2_idx', true);
 
 DROP TABLE dt, dt2;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

@@ -1,6 +1,6 @@
 -- Property test: for generated queries the canonical form is a fixpoint
 -- (parse(deparse(q)) == q) and matches exactly the documents q matches.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE TABLE rt_docs (body text);
 INSERT INTO rt_docs VALUES
@@ -83,4 +83,4 @@ END $$;
 
 DROP FUNCTION rt_gen, rt_leaf, rt_pick, rt_hits;
 DROP TABLE rt_docs;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

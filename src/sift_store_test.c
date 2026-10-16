@@ -1,7 +1,7 @@
 /*
  * sift_store_test.c - test-only SQL functions sift._test_* for the store
  * module, compiled only with SIFT_TESTING (make SIFT_TESTING=1) and
- * registered by the separate sift_test extension (sift_test--1.0.sql), so a
+ * registered by the separate pg_sift_test extension (pg_sift_test--1.0.sql), so a
  * release build exports none of them.
  *
  * A test index uses the sift_store_test access method: ambuild writes one

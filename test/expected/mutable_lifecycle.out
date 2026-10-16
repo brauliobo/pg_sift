@@ -1,7 +1,7 @@
 -- Inserts land in mutable segments, promotion and merge turn them into immutable ones,
 -- VACUUM clears liveness bits; verify checks every stage. The maintenance worker may promote
 -- on its own, so segment counts are only checked after merge.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE TABLE ml (id serial PRIMARY KEY, body text);
 CREATE INDEX ml_idx ON ml USING sift (body) WITH (mutable_limit = 64);
 CREATE FUNCTION ml_state() RETURNS TABLE (alpha bigint, late bigint, huge bigint, extra bigint) LANGUAGE sql AS $$
@@ -137,4 +137,4 @@ SELECT sift.verify('ru_idx', true);
 
 DROP TABLE ml, ru;
 DROP FUNCTION ml_state();
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

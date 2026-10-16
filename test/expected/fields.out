@@ -1,7 +1,7 @@
 -- fields = 'name,city': the indexed text holds sections split at chr(29); unqualified queries see
 -- the plain concatenation, name:word and name:(group) only the words of that section. The index,
 -- the document-level evaluation (seq scan) and the same query on the column alone must agree.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE FUNCTION sections(name text, city text, rest text) RETURNS text LANGUAGE sql IMMUTABLE AS
 	$$ SELECT coalesce(name, '') || chr(29) || coalesce(city, '') || chr(29) || coalesce(rest, '') $$;
 CREATE TABLE ft (id int PRIMARY KEY, name text, city text, rest text);
@@ -290,4 +290,4 @@ SELECT count(*) > 0 AS name_matches FROM fn WHERE sections(name, city, rest) @@>
 
 DROP TABLE ft, fg, fn;
 DROP FUNCTION fqs(), cnt(text, text), seqcnt(text, text), colcnt(text, text), bad(text), sections(text, text, text);
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

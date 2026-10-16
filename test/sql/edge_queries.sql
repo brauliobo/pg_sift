@@ -1,5 +1,5 @@
 -- hostile and oversized queries: limits are errors, never crashes or unbounded work
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE TABLE q (id int, body text);
 INSERT INTO q SELECT i, 'tok' || i % 700 || ' common word' || i % 50 FROM generate_series(1, 3000) i;
 CREATE INDEX q_idx ON q USING sift (body);
@@ -69,4 +69,4 @@ SELECT hits('"" tok5');
 
 DROP TABLE q;
 DROP FUNCTION same(text), hits(text), hits_seq(text);
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

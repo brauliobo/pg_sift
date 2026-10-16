@@ -1,6 +1,6 @@
 -- phrase_index = pairs: adjacent token pairs are indexed, two-word phrases need no heap recheck,
 -- longer ones are narrowed by their pairs. Results and scores equal the plain index and sift.match
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE TABLE pp (id int PRIMARY KEY, body text);
 CREATE TABLE pn (id int PRIMARY KEY, body text);
@@ -99,4 +99,4 @@ SELECT count(*) FROM pn WHERE body @@> '"red green"';
 
 DROP FUNCTION qs(), cnt(text, text), oracle(text, text), top(text, text, int), heap_checks(text, text);
 DROP TABLE pp, pn;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

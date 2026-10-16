@@ -591,7 +591,7 @@ sift_maint_request_async(Relation index)
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bw.bgw_restart_time = BGW_NEVER_RESTART;
-	snprintf(bw.bgw_library_name, BGW_MAXLEN, "sift");
+	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
 	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_maint_worker_main");
 	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", RelationGetRelid(index));
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");

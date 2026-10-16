@@ -1,8 +1,8 @@
 -- Representation thresholds: inline (df <= 2), LIST, GROUPED from
 -- sift.grouped_min_df (65536 in release), across superblocks, with
 -- block bounds and tf escapes; round trip against sift.tokenize.
-CREATE EXTENSION sift;
-CREATE EXTENSION sift_test;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 
 CREATE FUNCTION roundtrip(idx regclass, docs text)
 RETURNS TABLE (postings bigint, missing bigint, extra bigint, differ bigint)
@@ -78,5 +78,5 @@ SELECT sift.verify('g_list');
 
 DROP TABLE g;
 DROP FUNCTION roundtrip;
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

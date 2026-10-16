@@ -1,5 +1,5 @@
 -- The unordered custom scan reads the heap pages of sparse matches ahead; the rows are the same either way
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE TABLE pf (id serial, a_count int, body text);
 -- one row per heap page, every 40th page and a run of adjacent pages match
 INSERT INTO pf (a_count, body) SELECT i, CASE WHEN i % 40 = 0 OR i BETWEEN 500 AND 530 THEN 'rare ' ELSE 'common ' END || repeat('x', 6000)
@@ -44,4 +44,4 @@ SELECT (SELECT count(*) FROM (SELECT id FROM pf WHERE body @@> 'rare' LIMIT 3) l
 (1 row)
 
 DROP TABLE pf, pf_on, pf_off;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

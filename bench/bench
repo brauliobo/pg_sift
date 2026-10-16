@@ -181,7 +181,7 @@ cmd_setup() {
 }
 
 ready() { # sift built and datasets present
-  [[ -f $SIFT_ROOT$PKGLIBDIR/sift.so ]] || die "sift is not built under $SIFT_ROOT: run bench/bench setup"
+  [[ -f $SIFT_ROOT$PKGLIBDIR/pg_sift.so ]] || die "sift is not built under $SIFT_ROOT: run bench/bench setup"
   local d
   for d in $datasets; do
     case $d in

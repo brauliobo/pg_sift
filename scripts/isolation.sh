@@ -44,7 +44,7 @@ declare -A ok=([build]=1 [insert]=1 [vacuum]=1 [scan]=1 [promote]=1 [merge]=1 [v
 if [[ $MODE == emulate ]]; then
 	db -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/isolation/emulate.sql"
 else
-	db -c "CREATE EXTENSION sift" -c "ALTER DATABASE $DB SET iso.mode = 'sift'" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
+	db -c "CREATE EXTENSION pg_sift" -c "ALTER DATABASE $DB SET iso.mode = 'sift'" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
 	db -c "CREATE TABLE iso_probe (id int, body text)" -c "INSERT INTO iso_probe VALUES (1, 'probe')"
 	has "CREATE INDEX iso_probe_idx ON iso_probe USING sift (body)" || ok=()
 	if [[ -n ${ok[build]:-} ]]; then

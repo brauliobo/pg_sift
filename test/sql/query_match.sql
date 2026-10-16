@@ -1,5 +1,5 @@
 -- Document evaluation without an index: sift.match / @@>
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE TABLE d (id int PRIMARY KEY, body text);
 INSERT INTO d VALUES
@@ -57,4 +57,4 @@ SELECT repeat('lorem ipsum ', 100000) || 'needle' @@> '"ipsum needle"',
 
 DROP FUNCTION hits;
 DROP TABLE d;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

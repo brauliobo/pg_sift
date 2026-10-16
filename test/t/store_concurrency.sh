@@ -9,7 +9,7 @@ SECS=$(knob SIFT_CHURN_SECS 30 8)
 plan 7
 node_init conc 4
 node_start conc || bail "start failed"
-sql conc "CREATE EXTENSION sift_test CASCADE" "CREATE TABLE t (v int)" \
+sql conc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
 	"CREATE TABLE r (v int)" "CREATE INDEX r_idx ON r USING sift_store_test (v)" >/dev/null || bail "setup failed"
 

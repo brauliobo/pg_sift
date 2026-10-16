@@ -1,7 +1,7 @@
 -- prefix_index = n: the first 1..n characters of every word are terms of their own, so prefix
 -- queries of up to n characters are one lookup instead of an expansion. Match sets equal the
 -- plain index and sift.match; ranked scans, mutable segments, VACUUM, merge and verify agree.
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE TABLE px (id int PRIMARY KEY, body text);
 CREATE TABLE pn (id int PRIMARY KEY, body text);
@@ -96,4 +96,4 @@ CREATE INDEX bad_idx ON pn USING sift (body) WITH (prefix_index = 16);
 
 DROP FUNCTION qs(), cnt(text, text), oracle(text, text), top(text, text, int);
 DROP TABLE px, pn;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

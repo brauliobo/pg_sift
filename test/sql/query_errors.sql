@@ -1,5 +1,5 @@
 -- SiftQL errors: precise 1-based character positions, syntax vs limit codes
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 
 SELECT sift.parse_query('a OR (b');
@@ -68,4 +68,4 @@ SELECT perr('/' || repeat('(a|', 249) || 'bcdef' || repeat(')', 249) || '/') AS 
 SELECT perr('/' || repeat('((a{1,100}){1,100}){1,100}', 3) || '/') AS regex_too_complex;
 
 DROP FUNCTION perr;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

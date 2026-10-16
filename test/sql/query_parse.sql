@@ -1,5 +1,5 @@
 -- SiftQL parsing, analysis and canonical deparse
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 
 CREATE FUNCTION pq(q text) RETURNS text LANGUAGE sql
 	RETURN sift.parse_query(q);
@@ -85,4 +85,4 @@ SELECT sift.parse_query('a', 'pg_class'::regclass);
 SELECT sift.parse_query('a', 'pg_class_oid_index'::regclass);
 
 DROP FUNCTION pq;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

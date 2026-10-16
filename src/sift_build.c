@@ -1284,7 +1284,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	ldr->snapshot = info->ii_Concurrent ? RegisterSnapshot(GetTransactionSnapshot()) : SnapshotAny;
 	shared_size = add_size(BUFFERALIGN(sizeof(SiftBuildShared)), table_parallelscan_estimate(heap, ldr->snapshot));
 	EnterParallelMode();
-	ldr->pcxt = pcxt = CreateParallelContext("sift", "sift_build_worker", nworkers);
+	ldr->pcxt = pcxt = CreateParallelContext("pg_sift", "sift_build_worker", nworkers);
 	shm_toc_estimate_chunk(&pcxt->estimator, shared_size);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(sizeof(SiftBuildPart), nworkers));
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(sizeof(WalUsage), nworkers));

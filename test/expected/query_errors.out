@@ -1,5 +1,5 @@
 -- SiftQL errors: precise 1-based character positions, syntax vs limit codes
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 SELECT sift.parse_query('a OR (b');
 ERROR:  sift query: unclosed "(" at position 6
@@ -283,4 +283,4 @@ SELECT perr('/' || repeat('((a{1,100}){1,100}){1,100}', 3) || '/') AS regex_too_
 (1 row)
 
 DROP FUNCTION perr;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

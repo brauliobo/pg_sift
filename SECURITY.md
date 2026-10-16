@@ -1,6 +1,6 @@
 # Security policy
 
-sift is C code that runs inside the PostgreSQL server and parses user-supplied documents and queries. A crash,
+pg_sift is C code that runs inside the PostgreSQL server and parses user-supplied documents and queries. A crash,
 memory error, wrong-result or index-corruption bug reachable from SQL is in scope, in particular anything that a
 crafted query string, a crafted document, concurrent DML, or recovery after a crash can trigger.
 

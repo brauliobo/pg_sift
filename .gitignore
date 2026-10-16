@@ -25,5 +25,5 @@ bench/data/
 bench/out/
 packaging/src/
 packaging/pkg/
-packaging/sift/
+packaging/pg_sift/
 *.pkg.tar.*

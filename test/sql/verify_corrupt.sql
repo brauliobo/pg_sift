@@ -1,6 +1,6 @@
 -- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on indexes with random bytes overwritten
 -- (mutable and immutable pages alike, with and without heapallindexed)
-CREATE EXTENSION sift_test CASCADE;
+CREATE EXTENSION pg_sift_test CASCADE;
 CREATE TABLE vc (id serial PRIMARY KEY, body text);
 INSERT INTO vc (body) SELECT 'w' || (i % 7) || ' x' || (i % 101) || ' common doc' || i FROM generate_series(1, 3000) i;
 CREATE INDEX vc_idx ON vc USING sift (body);
@@ -34,5 +34,5 @@ END $$;
 REINDEX INDEX vc_idx;
 SELECT sift.verify('vc_idx', true);
 DROP TABLE vc;
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

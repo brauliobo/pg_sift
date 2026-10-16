@@ -1,4 +1,4 @@
-CREATE EXTENSION sift;
+CREATE EXTENSION pg_sift;
 CREATE FUNCTION toks(doc text, stemmer text DEFAULT NULL, c bool DEFAULT NULL, a bool DEFAULT NULL)
   RETURNS text LANGUAGE sql
   AS $$ SELECT string_agg(token, ' ' ORDER BY pos) FROM sift.tokenize(doc, NULL, stemmer, c, a) $$;
@@ -95,4 +95,4 @@ SELECT * FROM sift.tokenize('x', 'plain');
 DROP TABLE plain;
 
 DROP FUNCTION toks;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift;

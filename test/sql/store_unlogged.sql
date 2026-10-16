@@ -1,5 +1,5 @@
 -- Unlogged indexes get an init fork (ambuildempty, INIT target); temp indexes use local buffers
-CREATE EXTENSION sift_test CASCADE;
+CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION info(idx regclass) RETURNS jsonb LANGUAGE sql
 	AS $$ SELECT jsonb_object_agg(key, value) FROM sift._test_info(idx)
 		WHERE key IN ('high_water', 'nblocks', 'init_blocks', 'next_gen', 'nsegs') $$;
@@ -24,5 +24,5 @@ SELECT sift._test_seg_drop('tmp_idx', :g) > 0, sift._test_check('tmp_idx');
 
 DROP TABLE u, tmp;
 DROP FUNCTION info(regclass);
-DROP EXTENSION sift_test;
-DROP EXTENSION sift;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
