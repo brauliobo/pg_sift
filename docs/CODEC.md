@@ -102,6 +102,12 @@ GROUPED  u8 0[3], u32 n, u32 ng
          [tf] u8 ub[ng]; u8 blk[ng][8] (16 nibbles q = ceil(15 * blockmax / ub)); n tf nibbles
 ```
 
+- **Position stream** (flag `SIFT_TERM_POS`, format 1.1, segments written with `positions = on`; DESIGN.md (g)): the last `pos_len` bytes of the term blob, after the tf nibbles, unaligned, for word terms with df > 2. Terms with df <= 2 keep their records (up to 256 bytes) in the dictionary entry instead.
+  ```
+  u32 ckpt[ceil(df / 32)]     byte offset in the records of every 32nd posting (rank order)
+  record per posting          LEB128 varints: first << 1 | (n > 1) [, n - 2, then n - 1 gaps minus one]
+  ```
+  `first` and the gaps are token ordinals of the term in the document, `n` is the true occurrence count (tf saturates at 255). A posting of rank r is found through `ckpt[r / 32]` and a skip over at most 31 records; the groups of a GROUPED term and the blocks of a LIST term are not touched, so queries without a phrase read no position bytes.
 - **Container choice:** ARRAY when `entries * (2 or 4) < 32 + npages * w`, else BITMAP.
 - **Term kind choice:**
   - `sift_encode` picks the smaller of LIST and GROUPED, with a `bias` factor, by default. Shipped policy: `kind = df >= 8192 ? GROUPED : LIST` (65536 in the first analysis), see §4.

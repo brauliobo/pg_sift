@@ -102,8 +102,10 @@ RESET sift.filter_pushdown;
 ## Analyzers, phrases, several columns
 
 Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no
-stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. Phrases are rechecked in
-the heap; `phrase_index = pairs` also indexes adjacent word pairs, so phrases become bitmap ANDs, for 5.6x the index size. An index has one
+stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. The index
+stores word positions (`positions = on`, the default), so phrases are decided from the index; `positions = off` gives a much smaller
+index that rechecks phrases in the heap, and `phrase_index = pairs` also indexes adjacent word pairs, so two-word phrases become bitmap
+ANDs. An index has one
 key, a `text` column or an immutable expression, so concatenate columns (`coalesce` nullable ones, `NULL` keys are not indexed).
 
 ```sql
@@ -182,7 +184,7 @@ and merges; VACUUM promotes, merges and clears dead postings.
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 
 Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
-(`none` or `en`), `case_folding` and `accent_folding` (true), `phrase_index` (`none` or `pairs`), `prefix_index` (0-15), `fields`,
+(`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `phrase_index` (`none` or `pairs`), `prefix_index` (0-15), `fields`,
 `mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
 
 ## Replication
@@ -215,7 +217,9 @@ its own docker container.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.
 - Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
-- Phrases are rechecked in the heap unless the index uses `phrase_index = pairs`.
+- `positions = on` is the default and makes the index about 2.6x larger (`positions = off` restores the small index). Phrases are
+  rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
+  inserted since the build, and phrases under `NOT`.
 - `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it.
 - Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
   still work).

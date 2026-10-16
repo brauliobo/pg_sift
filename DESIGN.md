@@ -109,7 +109,7 @@ I1 holds because heap line pointers are reused only after `ambulkdelete` has cle
 
 | Option | Why not |
 |---|---|
-| Store positions | +60–100 % index size: one entry per token occurrence instead of per distinct term, ≈ 8–12 bits each. It also slows the build 1.5–2× and breaks the pure-bitmap design. Phrases are handled with recheck plus an optional pair index (§g). |
+| Store positions | Rejected as the only design, adopted as the default option later (§g): +60–100 % index size at first estimate (one entry per token occurrence instead of per distinct term, ≈ 8–12 bits each; 2.6× on the 218k articles, 48 MB to 126 MB) and a build about 30 % slower, in exchange for phrases decided in the index. `positions = off` keeps the pure-bitmap layout and the heap recheck, with an optional pair index (§g). |
 | No tf (binary model) | Ranking quality loss. Lucene and Tantivy both use tf. |
 | Fixed 4-bit tf per posting (the codec's `SIFT_F_TF` option) | 4 bits per posting against ≈ 2.0, and inexact above 15. |
 | Nested unary log-bucket tf planes in ctid space or rank space | ≈ 1.5 bits per posting, but measured bucket error is 2.5 % at `K = k1` and 6–9 % for documents of 4–8× avgdl. It also loses exactness. Exact nibbles cost only 0.5 bits more per posting. |
@@ -246,7 +246,7 @@ A header page holds the extent table and the sections table. Its data is a logic
 
 ## (e) Visibility, MVCC, `count(*)`
 
-- **Recheck model.** Index results are exact for term and boolean queries, so `recheck=false` in `amgetbitmap`. They are a superset for phrases, so phrases use recheck (§g). Every returned heap tuple passes heap visibility (bitmap heap scan, or `table_index_fetch_tuple` inside our custom scan).
+- **Recheck model.** Index results are exact for term and boolean queries, so `recheck=false` in `amgetbitmap`. They are a superset for phrases the positions do not decide, so those use recheck (§g). Every returned heap tuple passes heap visibility (bitmap heap scan, or `table_index_fetch_tuple` inside our custom scan).
   - An index entry may point to a dead tuple until VACUUM (standard).
   - The custom scan takes `PredicateLockRelation(heap)` under SERIALIZABLE, because `ampredlocks = false`.
 - **Index-only `count(*)`.** Only for MVCC snapshots. For each SB:
@@ -323,7 +323,7 @@ Hooks used, all present in the PG18 headers (verified):
 
 ## (g) Phrase queries
 
-- **Decision.** A phrase is the AND of its terms at the bitmap level, then a recheck that re-tokenizes the candidate's heap text with the index analyzer and checks adjacent positions.
+- **Decision.** A phrase is the AND of its terms at the bitmap level, then a check of adjacent positions: from the positions stored in the index where the segment has them (below), else by a recheck that re-tokenizes the candidate's heap text with the index analyzer. The rest of this section describes the heap recheck, which `positions = off`, old indexes, mutable segments and negated phrases still use.
   - Inside SiftScan the recheck is part of `verify`, so ranked phrase queries only recheck candidates that would enter the top-k.
   - In the AM bitmap path it uses `recheck = true`, and the operator function evaluates it.
 - **Cost model** **[est]:**
@@ -335,7 +335,12 @@ Hooks used, all present in the PG18 headers (verified):
   - Pair leaves are non-scoring, so scores stay the sum over the word leaves and equal the plain index bit for bit.
   - 2-word phrases become exact bitmap ANDs with no recheck; longer phrases AND their pairs and are still rechecked (rarely failing). Pairs longer than a term are not indexed and fall back to the recheck.
   - Measured on 300k English documents (AVX2 host): `count(*)` of the phrases p95 126 ms -> 1.5 ms; top-10 phrase unchanged (about 2 ms, it only rechecks candidates that enter the top-k); index 18 MB -> 77 MB, build 1.4 s -> 5.0 s. It is a reloption because it costs 4x the index size on this corpus (most pairs are unique).
-- **Positions rejected** (see (a)).
+- **Positions (reloption `positions`, default on, REINDEX to change; on-disk format 1.1).**
+  - `CREATE INDEX` stores a position stream after each term's postings (layout in docs/CODEC.md 3.1): the ordinals of the term in each document, delta coded, with a checkpoint every 32 postings, so the positions of one posting are read without decoding the others. Terms with at most two postings keep their records in the dictionary entry. Queries without a phrase never read the stream.
+  - A phrase on a path of ANDs from the root (not under OR or NOT) is *required*: the relaxed AND of its terms still finds the candidates, and every candidate is checked against the positions (rarest term first, narrowing the possible start positions term by term) before the heap is touched. Counts, bitmaps, unordered and ranked scans do this; a candidate refuted by the positions costs no heap page and no tokenizing. A phrase under OR is *optional*: a cursor of its own yields the documents of the AND that hold it, so the OR sees only real matches.
+  - What the positions do not decide stays on the heap recheck: documents of mutable segments and of the segments promoted and merged from them (no positions are written for them), segments of indexes built by earlier versions or with `positions = off`, and phrases under NOT (the index only knows a superset). A page match carries `recheck` only when it holds such candidates, and a `sure` mask with the candidates that need none (below), so `count(*)` over a fully positioned index fetches no heap tuple.
+  - **Sure tree.** For unranked scans with a phrase that is not required (an OR branch, a NOT) the plan also binds the relaxation read from below: a phrase the bitmaps cannot decide matches nothing, a NOT excludes the superset of what it names. Its matches are a subset of the real matches, so a page is rechecked only for the candidates outside it (for example `dog OR "quick fox"` rechecks only the documents without `dog`). The matches of a segment whose positions decide every phrase are sure as well, unless a negated phrase is left to the heap. Direct group counting (`count(*)` summing popcounts of the all-visible pages of a group) applies whenever no candidate needs the heap and no required phrase needs its positions.
+  - Format 1.1: the metapage minor version goes 0 to 1. This build reads 1.0 (segments without positions) and 1.1; a newer minor or another major is refused with a REINDEX hint. Earlier releases ignore the minor version, so a 1.1 index must be reindexed before an older release opens it.
 - **Fixed-size phrase-candidate caches rejected:** no locality between queries.
 
 ---
