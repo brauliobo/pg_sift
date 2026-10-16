@@ -55,7 +55,7 @@ static void sizes(void)
 		bytes[k][R_P1K] += n >= 1024 ? sz[R_GROUPED] : sz[R_LIST];
 		bytes[k][R_P8K] += n >= 8192 ? sz[R_GROUPED] : sz[R_LIST];
 		bytes[k][R_P64K] += n >= 65536 ? sz[R_GROUPED] : sz[R_LIST];
-		/* TIN-style fixed 512-bit offset masks: 32 B page mask per chunk + 64 B per page */
+		/* Fixed 512-bit offset masks: 32 B page mask per chunk + 64 B per page */
 		uint32_t pages = 0, groups = 0, tf1 = 0, esc = 0, l1 = 0;
 		for (uint32_t i = 0; i < n; i++) {
 			pages += !i || SIFT_BLK(T[i]) != SIFT_BLK(T[i - 1]);

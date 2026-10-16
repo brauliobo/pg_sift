@@ -16,7 +16,7 @@ All numbers below were measured on a 3.04 M-row English text corpus (title plus 
    - Bitmaps pay for themselves only through speed, and only on frequent terms: 5 to 65× faster AND/count than lists (§5.3).
    - The `df ≥ 64K → GROUPED` policy costs +20 % size over all-LIST: 201 MB against 167 MB. It covers 326 terms that hold 51 % of all postings.
 2. **Offset bitmaps must be variable width.** Use `w ∈ {1, 2, 4, 8, 16, 24, …, 64}` bytes per group, from the largest offset in that group.
-   - TIN's literal 512-bit per page costs 412 bits per posting on our data, against 57 at tight width. We have 8.8 tuples per page, so w is 1 B for 58 % of groups and 2 B for 40 %.
+   - A literal fixed 512-bit mask per page costs 412 bits per posting on our data, against 57 at tight width. We have 8.8 tuples per page, so w is 1 B for 58 % of groups and 2 B for 40 %.
    - The decoded *working* form should stay packed (w bytes per page), not canonical 512-bit masks. AND-count on canonical masks is 21.6× slower at w = 2 and 8× slower at w = 16 (§5.4).
 3. **AVX-512 is worth a dedicated path, but not for the 256-bit page-mask AND.** The cost is aligning per-page offset bitmaps between two terms.
    - The AVX-512 kernels expand packed bitmaps into page lanes with `VPEXPAND`, using the page mask as the lane mask. They combine the lanes, then compact back with `VPCOMPRESS`: 8 to 64 pages per instruction.
@@ -194,12 +194,12 @@ For the dense scenarios, the frequent classes are where bitmaps compete:
 
 Under dense100 ctid EF is only 5 % above doc-id EF (8.62 against 8.17). In dense32 the LIST blob (8.20) even beats the global doc-id EF estimate (8.82): ob = 5 bits exactly covers 32 tuples, and per-block universes adapt to local density.
 
-**TIN's 1 / 7 / 25 bits per posting do not hold on this corpus.**
+**Published figures of 1 / 7 / 25 bits per posting do not hold on this corpus.**
 - *Frequent* terms: two-level bitmaps give 7.2 (real), 4.6 (dense100) and 3.6 (dense32).
   - About 1 bit per posting needs most tuples of each touched page to contain the term. Our densest class averages 2.94 of 8.8, and the entropy bound for a term at 17 % of rows is about 3.9 bits per posting.
 - *Medium* (8K–64K): bitmaps cost 27 to 61 bits, while EF costs 8.9 to 10.4.
-- *Rare* (16–127): EF costs 19.5 to 20.4 bits, the same order as TIN's ~25.
-- TIN's numbers are plausible for long documents (Stack Exchange, many terms per row) on dense tables. They are not a property of the format.
+- *Rare* (16–127): EF costs 19.5 to 20.4 bits, the same order as the published ~25.
+- Those figures are plausible for long documents (Stack Exchange, many terms per row) on dense tables. They are not a property of the format.
 
 ### 5.2 Representation of the frequent terms (pol64K)
 
@@ -213,7 +213,7 @@ Input Mpostings/s: the sum of the operands' df divided by time, over 64 queries 
 - rare: 16–1K
 
 Each cell is the best of 9 trials, maxed over two runs. Column notes:
-- **EF list** and **grouped**: best ISA. **grouped** uses auto containers; **bitmap** forces BITMAP containers (TIN-like, tight widths).
+- **EF list** and **grouped**: best ISA. **grouped** uses auto containers; **bitmap** forces BITMAP containers (fixed-mask style, tight widths).
 - **roaring doc-id**: CRoaring 5.2.3 on doc ordinals, including the doc→ctid map for materializing ops. **roaring ctid**: keys `blk*512+off-1`.
 - **FOR doc-id**: Lucene-style FOR-128 with skip entries, led by the shortest list.
 - **u64 array**: uncompressed sorted keys, galloping.

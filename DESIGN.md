@@ -1,6 +1,6 @@
 # sift: design
 
-`sift` is a PostgreSQL 18 index access method (AM) for full-text search. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat TIN, ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
+`sift` is a PostgreSQL 18 index access method (AM) for full-text search. Postings are keyed by heap ctid and stored as two-level bitmaps. It ranks with exact BM25, counts from bitmaps, and checks visibility through the visibility map. The goal is to beat ParadeDB/Tantivy, pg_textsearch, Lucene/Elasticsearch, Meilisearch, Typesense, GIN and rum on:
 - top-k BM25;
 - boolean and phrase queries;
 - `count(*)`;
@@ -67,7 +67,7 @@ I1 holds because heap line pointers are reused only after `ambulkdelete` has cle
 
    At query time a bound is scaled by `c = max(1, avgdl_now / avgdl_ref)`. This stays valid: `K` decreases as avgdl grows, and `w(avgdl') ≤ (avgdl'/avgdl)·w(avgdl)` whenever `avgdl' ≥ avgdl`. So bounds never need rewriting.
 
-   Changing k1 or b requires REINDEX, as in TIN; they are reloptions.
+   Changing k1 or b requires REINDEX; they are reloptions.
 6. **Ranked evaluation: block-ordered best-first over (segment, block) units, with a verified threshold θ.** This is BMP-style, from Mallia et al., SIGIR 2024, adapted to heap blocks. Details below.
 
 ### Ranked algorithm (`eval` module)
@@ -108,7 +108,7 @@ I1 holds because heap line pointers are reused only after `ambulkdelete` has cle
 | Option | Why not |
 |---|---|
 | Store positions | +60–100 % index size: one entry per token occurrence instead of per distinct term, ≈ 8–12 bits each. It also slows the build 1.5–2× and breaks the pure-bitmap design. Phrases are handled with recheck plus an optional pair index (§g). |
-| No tf (binary model) | Ranking quality loss. TIN, Lucene and Tantivy all use tf. |
+| No tf (binary model) | Ranking quality loss. Lucene and Tantivy both use tf. |
 | Fixed 4-bit tf per posting (the codec's `SIFT_F_TF` option) | 4 bits per posting against ≈ 2.0, and inexact above 15. |
 | Nested unary log-bucket tf planes in ctid space or rank space | ≈ 1.5 bits per posting, but measured bucket error is 2.5 % at `K = k1` and 6–9 % for documents of 4–8× avgdl. It also loses exactness. Exact nibbles cost only 0.5 bits more per posting. |
 | u8 quantized impact per posting (impact-ordered indexes) | 8 bits per posting, and it freezes k1, b and avgdl. |
@@ -152,10 +152,10 @@ A header page holds the extent table and the sections table. Its data is a logic
 - **Dictionary lookup:** SIMD search of u64 prefixes in the root array (cached with the opened segment), then one DICTIDX page, then one DICT block of at most 32 terms. That is ≤ 3 buffer touches, ≈ 0.3 µs when hot **[est]**.
 - **Expansion** (prefix, wildcard, regex, fuzzy) runs a range scan over DICT blocks bounded by the pattern's literal prefix (§h).
 - **FST rejected:** complex, slow to build, and its main benefit is RAM-resident term indexes, which shared buffers already give us.
-- **Liveness group = SB.** A query ANDs liveness only in SBs whose dirty bit is set. A clean SB is a fast path with no liveness decode (TIN-style).
+- **Liveness group = SB.** A query ANDs liveness only in SBs whose dirty bit is set. A clean SB is a fast path with no liveness decode.
 - **Exact per-term counts:**
   - The dictionary entry holds `df`, and the codec group directory gives each chunk's posting count (`base` deltas).
-  - In a clean SB where every page is all-visible, `count(*)` adds chunk counts with no offset decode. For OR, this works once page masks are disjoint within the SB (TIN-style disjoint-OR shortcut, generalized per SB). Otherwise sift uses the codec count kernels (`sift_grp_count_mask`, `sift_grp_and_count`).
+  - In a clean SB where every page is all-visible, `count(*)` adds chunk counts with no offset decode. For OR, this works once page masks are disjoint within the SB (a disjoint-OR shortcut, applied per SB). Otherwise sift uses the codec count kernels (`sift_grp_count_mask`, `sift_grp_and_count`).
 - **Statistics.** `ndocs`, `sum_dl` and `avgdl_ref` per segment live in the header and the directory entry. The metapage holds totals for immutable segments; mutable totals are summed during the mutable scan.
 
 **Size model** **[est]**, Stack Exchange-like corpus of 150 M documents with about 100 distinct terms each:
@@ -166,7 +166,7 @@ A header page holds the extent table and the sections table. Its data is a logic
 - liveness: 1 bit per document;
 - dictionary: about 12 B per distinct term.
 
-**Target:** at or below TIN's index size for the same corpus, 50.7 GB for 85 GB of text.
+**Target:** an index no larger than 60 % of the indexed text.
 
 ---
 
@@ -382,7 +382,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - Rejected: one segment per participant. Terms under `grouped_min_df` (64K postings) are LIST-coded and only have the per-term bound, so splitting a term of 75K postings over 3 segments drops its block bounds: the ranked scan of `good` scored 1217 blocks instead of 28, and the index grew 4 to 8 % (M) or more (S). The leader would also have copied segments page by page.
   - Rejected: concurrent bulk writers. `smgr_bulk` assumes it alone extends the fork; parallel `smgrextend` beyond EOF is unsafe, so only the leader writes the index.
   - The leader's merge (encode, dictionary, write) stays serial: about a third of the serial build time, which bounds the speedup. Cost: one extra write and read of the runs (≈ 1.3 bytes per posting).
-- **Build throughput target** **[est]:** analysis at 3–5 ns per byte per core. 85 GB on 8 cores is ≈ 60 s of tokenizing, plus encoding and I/O. The target is to beat TIN's 8 min 10 s by ≥ 2×.
+- **Build throughput target** **[est]:** analysis at 3–5 ns per byte per core. 85 GB on 8 cores is ≈ 60 s of tokenizing, plus encoding and I/O. The target is a full build of 85 GB in under 4 minutes on 8 cores.
 - **CREATE INDEX CONCURRENTLY** works through the standard protocol: `ambulkdelete` reports every indexed TID, then `aminsert` fills in.
 - **REINDEX** is ambuild into a new relfilenode. `ambuildempty` writes the metapage and an empty directory for the init fork (unlogged tables).
 
@@ -434,9 +434,9 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 
 ---
 
-## Beyond TIN: innovations, expected gains, measurement
+## Extras beyond the baseline design: innovations, expected gains, measurement
 
-Every item is measured by the M6 harness (`bench/`). It compares sift, TIN-equivalent baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
+Every item is measured by the M6 harness (`bench/`). It compares sift, in-database baselines (pg_textsearch, ParadeDB, GIN, rum), and external engines (Elasticsearch/OpenSearch, Tantivy CLI, Meilisearch, Typesense) on the same corpus and hardware. Metrics: QPS, p50/p99, buffers touched per query, build time, index size, and WAL bytes per update. An item that does not deliver ≥ 10 % on its target metric is dropped.
 
 | # | Idea | Status | Expected gain **[est]** | Measure |
 |---|---|---|---|---|
@@ -445,7 +445,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, TIN-equiv
 | 3 | Fused SIMD pipeline: page-mask program → offset decode → liveness → tf → BM25 → compress, per block in L1 | core | Removes the intermediate result sets of tbm-based plans | ns per (doc, term) |
 | 4 | Score-in-tuple via custom scan tlist (no global registry) | core | Removes a whole bug class; also allows MergeAppend top-k over partitions | Isolation and parallel tests |
 | 5 | PG18 ReadStream/AIO prefetch of heap blocks *and* index chunks (order known in advance) | core (M5) | Cold-cache p99 cut 3–10× on NVMe | p99 with `pg_prewarm` off and `io_method=io_uring` |
-| 6 | VM pext → 256-bit all-visible mask per SB; chunk-count shortcut on clean SBs | core | `count(*)` at memory bandwidth; single-term count O(chunks) | count QPS against TIN's 10,260 QPS (Wikipedia) |
+| 6 | VM pext → 256-bit all-visible mask per SB; chunk-count shortcut on clean SBs | core | `count(*)` at memory bandwidth; single-term count O(chunks) | count QPS against pg_textsearch and ParadeDB (Wikipedia) |
 | 7 | Mutable lanes + bloom-gated mutable scan + async dynamic worker without preload | core (M4) | No insert hot spot; bounded query overhead under 1,000 updates/s | QPS under the 1,000 UPDATE/s mix, WAL per update |
 | 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | M4 | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
 | 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | M7 | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
@@ -607,6 +607,6 @@ Each milestone ends with green `make installcheck` plus its listed tests, under 
 | M2 | Immutable index | posting, dict, segment, build (serial), eval (iterator + count), amscan, sql (`match`, `matchsel`) | Bitmap Heap Scan results = seq scan for 200 random queries; `sift.verify` |
 | M3 | Planner | planner (SiftScan unordered and ranked, SiftCount, EXPLAIN), eval (ranker), visibility, sql (support functions, `highlight`) | top-k = reference BM25 (bit-equal scores, ctid ties); count pushdown plan shapes |
 | M4 | Mutability | mutable, maint (seal, promote, merge, recycle, sweep, worker), vacuum liveness | isolation suite; TAP crash and replica; 1,000 UPDATE/s soak with verify |
-| M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs TIN/ParadeDB; cold p99 |
+| M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs ParadeDB; cold p99 |
 | M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
-| M7 | Beyond-TIN extras | parallel scan with shared θ, filter-mask pushdown, keyword facets, phrase pairs | Each meets its ≥ 10 % gate or is dropped |
+| M7 | Extras beyond the baseline design | parallel scan with shared θ, filter-mask pushdown, keyword facets, phrase pairs | Each meets its ≥ 10 % gate or is dropped |
