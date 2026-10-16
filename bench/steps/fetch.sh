@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/fetch.sh [sift|rum|paradedb|bm25|elasticsearch|meilisearch|typesense|xbench ...]
+# Usage: bench/steps/fetch.sh [sift|rum|paradedb|bm25|elasticsearch|meilisearch|typesense|xbench ...]
 # (default: sift rum paradedb). Versions are pinned in bench/versions.env.
 # Builds or unpacks the engines under $ROOT, never system-wide: sift (this checkout) into SIFT_ROOT, rum (PGXS)
 # into RUM_ROOT, the ParadeDB pg_search package under $ROOT/engines. Downloads land in their own dirs.

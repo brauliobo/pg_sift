@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Interleaved A/B of sift, sift with phrase_index = pairs, ParadeDB pg_search and rum on one corpus.
 #
-#   bench/ab.sh quick          Q tier (150k articles), 3 s per cell, 3-6 rounds
-#   bench/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
-#   bench/ab.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
+#   bench/steps/ab.sh quick          Q tier (150k articles), 3 s per cell, 3-6 rounds
+#   bench/steps/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
+#   bench/steps/ab.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
 #
 # Every engine database is built once (BUILD_ONLY in run.sh), then each round runs every class on
 # every engine, one cell at a time with the engine order rotated, so load drifts hit all engines alike.
@@ -13,7 +13,7 @@
 # Engines whose extension is not installed are skipped with a message; a class an engine cannot render
 # is reported as NA. Env: ENGINES CLASSES COLD (cold classes) CLIENTS SECS WARM MINR MAXR TOL NQ (cold
 # queries per class) RESULTS DEST.
-# Needs bench/fetch.sh (sift, rum, paradedb) and bench/datasets/fetch.sh articles.
+# Needs bench/steps/fetch.sh (sift, rum, paradedb) and bench/datasets/fetch.sh articles.
 set -euo pipefail
 mode=${1:-quick}; cold=
 [[ $mode == cold ]] && { cold=1; mode=${2:-full}; }
@@ -31,16 +31,16 @@ OUT=$ROOT/ab/$TIER; rm -rf "$OUT"; mkdir -p "$OUT" "$RESULTS"   # builds.tsv fro
 DEST=${DEST:-$RESULTS/${cold:+cold-}$mode-$(date +%m%d-%H%M)}; mkdir -p "$DEST"
 export OUT
 
-cleanup() { [[ ${KEEP:-} ]] || { "$BENCH/cluster.sh" destroy >/dev/null 2>&1 || true; rm -rf "$ROOT/ab"; }; }
+cleanup() { [[ ${KEEP:-} ]] || { "$STEPS/cluster.sh" destroy >/dev/null 2>&1 || true; rm -rf "$ROOT/ab"; }; }
 trap cleanup EXIT
 
-"$BENCH/cluster.sh" init >/dev/null
-"$BENCH/cluster.sh" start >/dev/null
+"$STEPS/cluster.sh" init >/dev/null
+"$STEPS/cluster.sh" start >/dev/null
 ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
-"$BENCH/machine.sh" >"$DEST/machine.txt"
-[[ -f $DUMP ]] || "$BENCH/corpus.sh" load >/dev/null
-[[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$BENCH/corpus.sh" restore >/dev/null
-for e in $ENGINES; do BUILD_ONLY=1 "$BENCH/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
+"$STEPS/machine.sh" >"$DEST/machine.txt"
+[[ -f $DUMP ]] || "$STEPS/corpus.sh" load >/dev/null
+[[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$STEPS/corpus.sh" restore >/dev/null
+for e in $ENGINES; do BUILD_ONLY=1 "$STEPS/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
 cp "$OUT/builds.tsv" "$DEST/builds.tsv"
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$OUT/builds.tsv")"
 
@@ -79,10 +79,11 @@ for e in $ENGINES; do for c in $CLASSES; do
   (( n > 0 )) || { rm -f "$OUT/$e-$c.pgb"; continue; }   # the engine cannot render this class
   printf '\\set i random(1, %d)\nSELECT stmt FROM stmts WHERE wl = '"'"'%s'"'"' AND n = :i \\gset\n:stmt\n' "$n" "$c" >"$OUT/$e-$c.pgb"
 done; done
-cell() { # engine class secs -> qps (NA: the engine cannot run the class)
+cell() { # engine class secs -> qps (NA: the engine cannot run the class; 0: a client failed, e.g. the statement timeout)
   [[ -f $OUT/$1-$2.pgb ]] || { echo NA; return; }
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" pgbench -n -c "$CLIENTS" -j "$THREADS" -T "$3" -f "$OUT/$1-$2.pgb" "$(engine_db "$1")" 2>&1 |
-    grep -oP 'tps = \K[0-9.]+(?= \(without)' || echo 0
+  local o
+  o=$(PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" pgbench -n -c "$CLIENTS" -j "$THREADS" -T "$3" -f "$OUT/$1-$2.pgb" "$(engine_db "$1")" 2>&1) || { echo 0; return; }
+  grep -oP 'tps = \K[0-9.]+(?= \(without)' <<<"$o" || echo 0
 }
 stable() { # spread of every (class, engine) over the rounds is under TOL
   awk -F'\t' -v tol="$TOL" 'NR > 1 && $5 != "NA" { k = $3 SUBSEP $4; n[k]++; v[k, n[k]] = $5 }

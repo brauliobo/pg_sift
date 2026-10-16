@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Usage: TIER=Q|F bench/cluster.sh init|start|stop|status|destroy
+# Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
 # Settings live in $PGDATA/bench.conf, rewritten on every start.
-# Extensions come from the engine roots built by bench/fetch.sh (SIFT_ROOT, RUM_ROOT, ...) before the system ones.
+# Extensions come from the engine roots built by bench/steps/fetch.sh (SIFT_ROOT, RUM_ROOT, ...) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
 # Libraries the engines under test need preloaded; only those installed (system, SIFT_ROOT or engine roots)

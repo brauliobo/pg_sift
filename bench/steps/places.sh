@@ -5,10 +5,10 @@
 # `tsv @@ prefix query`, `<=>` ranking, in its own database so the column does not enlarge the others'
 # table) has no per-field boost: its `boost` cells are NA. Engines whose extension is missing are skipped.
 #
-#   bench/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
+#   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
 #
-# Needs bench/datasets/fetch.sh places and bench/fetch.sh (sift, rum, paradedb). The tier cluster
-# (bench/cluster.sh) holds database `places`; every index is built once, then every round times every
+# Needs bench/datasets/fetch.sh places and bench/steps/fetch.sh (sift, rum, paradedb). The tier cluster
+# (bench/steps/cluster.sh) holds database `places`; every index is built once, then every round times every
 # cell on every engine, the engine order rotating (single client, p50/p95 from the transaction
 # latencies). Rounds stop once every cell's p50 spread is under TOL after MINR.
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
@@ -29,7 +29,7 @@ RESULTS=${RESULTS:-$BENCH/out/ab}
 DEST=${DEST:-$RESULTS/places-$mode-$(date +%m%d-%H%M)}; mkdir -p "$DEST" "$ROOT/places"
 export PGDATABASE=places
 [[ -f $DATADIR/places.tsv ]] || { echo "no $DATADIR: bench/datasets/fetch.sh places" >&2; exit 1; }
-cleanup() { [[ ${KEEP:-} ]] || { "$BENCH/cluster.sh" destroy >/dev/null 2>&1 || true; rm -rf "$ROOT/places"; }; }
+cleanup() { [[ ${KEEP:-} ]] || { "$STEPS/cluster.sh" destroy >/dev/null 2>&1 || true; rm -rf "$ROOT/places"; }; }
 trap cleanup EXIT
 
 TEXT="place_search_text(name, alternate_names, admin1, country, country_code, feature)"
@@ -75,16 +75,16 @@ FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s
        FROM (SELECT q, regexp_replace(q, '(\S+)', '\1*', 'g') AS sq,
                     (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', q))) AS tq FROM pq"
 
-"$BENCH/cluster.sh" init >/dev/null; "$BENCH/cluster.sh" start >/dev/null
+"$STEPS/cluster.sh" init >/dev/null; "$STEPS/cluster.sh" start >/dev/null
 # sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
 PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS places WITH (FORCE)" -c "DROP DATABASE IF EXISTS places_rum WITH (FORCE)" \
   -c "CREATE DATABASE places" -c "ALTER DATABASE places SET sift.max_expansions = 100000"
 ENGINES=$(for e in $ENGINES; do
   [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '${EXT[$e]}'") == 1 ]] && echo "$e" ||
-    log "skipping $e: extension ${EXT[$e]} is not installed (bench/fetch.sh)" >&2
+    log "skipping $e: extension ${EXT[$e]} is not installed (bench/steps/fetch.sh)" >&2
 done | tr '\n' ' ')
-[[ $ENGINES == *sift* ]] || { echo "sift is not installed: bench/fetch.sh sift" >&2; exit 1; }
-"$BENCH/machine.sh" >"$DEST/machine.txt"
+[[ $ENGINES == *sift* ]] || { echo "sift is not installed: bench/steps/fetch.sh sift" >&2; exit 1; }
+"$STEPS/machine.sh" >"$DEST/machine.txt"
 q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
 q -c "ANALYZE places"
 [[ $ENGINES != *rum* ]] || PGDATABASE=postgres q -c "CREATE DATABASE places_rum TEMPLATE places"

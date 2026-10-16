@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Usage: TIER=Q|F bench/run.sh ENGINE [WORKLOAD...]
+# Usage: TIER=Q|F bench/steps/run.sh ENGINE [WORKLOAD...]
 #   ENGINE: gin rum pg_textsearch bm25 sift (bench/engines/*.sh)
 #   WORKLOAD: and or phrase mixed count filter join update (default: all), or `quick`: the
 #   standard suite (sql/quick.sql), each class run for a fixed REPEAT transactions per client.
-# Env: BUILD_ONLY=1 builds and prewarms the engine database and keeps it (bench/ab.sh). DURATION (s, default 30) CLIENTS (8) THREADS (4) WARMUP (s, 5) UPDATE_RATE (1000)
+# Env: BUILD_ONLY=1 builds and prewarms the engine database and keeps it (bench/steps/ab.sh). DURATION (s, default 30) CLIENTS (8) THREADS (4) WARMUP (s, 5) UPDATE_RATE (1000)
 #      WRITERS (4) REPEAT (50) TIMEOUT (statement_timeout, 120s) KEEP=1 keeps the engine database.
 . "$(dirname "$0")/lib.sh"
 

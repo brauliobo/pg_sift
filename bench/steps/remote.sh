@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Benchmark on a remote host with a user-local PostgreSQL build, extensions, Rust toolchain and
 # engines under ~/$RDIR (no sudo, nothing system-wide, never rsync --delete).
-#   bench/remote.sh sync          copy the repo (without .git and ignored files), Q/F dumps, pgx-bm25 source
-#   bench/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
+#   bench/steps/remote.sh sync          copy the repo (without .git and ignored files), Q/F dumps, pgx-bm25 source
+#   bench/steps/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
 #                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench
-#   bench/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/sift-root (SIFT_ROOT)
-#   bench/remote.sh quick [ENGINE...]  run the standard suite there (bench/quick.sh, timed sections hold the shared perf lock,
+#   bench/steps/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/sift-root (SIFT_ROOT)
+#   bench/steps/remote.sh quick [ENGINE...]  run the standard suite there (bench/steps/quick.sh, timed sections hold the shared perf lock,
 #                                 sift rebuilt first when selected) and pull the results
-#   bench/remote.sh run 'CMD'     run CMD detached in the remote repo with the remote env (log: bench-root/logs)
-#   bench/remote.sh sh 'CMD'      run CMD in the foreground
-#   bench/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
-#   bench/remote.sh clean [all]   stop clusters, drop builds and bench data (keeps the dumps); `all` removes ~/$RDIR
-# Example: bench/remote.sh quick gin tantivy; bench/remote.sh run 'bench/quick.sh --full gin'
+#   bench/steps/remote.sh run 'CMD'     run CMD detached in the remote repo with the remote env (log: bench-root/logs)
+#   bench/steps/remote.sh sh 'CMD'      run CMD in the foreground
+#   bench/steps/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
+#   bench/steps/remote.sh clean [all]   stop clusters, drop builds and bench data (keeps the dumps); `all` removes ~/$RDIR
+# Example: bench/steps/remote.sh quick gin tantivy; bench/steps/remote.sh run 'bench/steps/quick.sh --full gin'
 # Env: RHOST (required, an ssh host), RDIR (Projects/sift), BM25_SRC (pgx-bm25 source tarball, for sync/setup),
 #      RUST_TARGET_CPU (e.g. znver2, for the xbench build).
 set -euo pipefail
-BENCH=$(cd "$(dirname "$0")" && pwd)
+BENCH=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(dirname "$BENCH")
 RHOST=${RHOST:?set RHOST to the ssh host} RDIR=${RDIR:-Projects/sift}
 BM25_SRC=${BM25_SRC:-}
@@ -46,7 +46,7 @@ for x in "rum-$RUM" "pg_textsearch-$TEXTSEARCH" "pgvector-$PGVECTOR" pgx-bm25-1.
 done
 command -v rustup >/dev/null ||
   curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain none --no-modify-path
-cd "$D" && bench/fetch.sh paradedb elasticsearch xbench
+cd "$D" && bench/steps/fetch.sh paradedb elasticsearch xbench
 EOF
 }
 
@@ -61,10 +61,10 @@ case ${1:-} in
   sh)    rsh "$2" ;;
   sift)  rsh "nice make -s USE_PGXS=1 -j4 && make -s USE_PGXS=1 DESTDIR=\$SIFT_ROOT install" ;;
   quick) case " ${*:2} " in *" sift "*|"  ") "$0" sift ;; esac
-         rsh "bench/fetch.sh xbench && uptime && bench/quick.sh ${*:2}"; "$0" pull ;;
+         rsh "bench/steps/fetch.sh xbench && uptime && bench/steps/quick.sh ${*:2}"; "$0" pull ;;
   pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
   clean)
-    rsh "for t in Q F; do TIER=\$t bench/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
+    rsh "for t in Q F; do TIER=\$t bench/steps/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
     [[ ${2:-} == all ]] && rsh "cd; rm -rf \$D" ;;
   *) sed -n '2,12p' "$0" >&2; exit 1 ;;
 esac

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=Q|F bench/xrun.sh ENGINE [WORKLOAD...]
+# Usage: TIER=Q|F bench/steps/xrun.sh ENGINE [WORKLOAD...]
 #   ENGINE: elasticsearch tantivy meilisearch typesense (bench/engines/*.sh with EXTERNAL set)
 #   WORKLOAD: and or phrase mixed count filter join update rank (default: all; join is Postgres-only,
 #   rank = top-10 overlap with the pgx-bm25 reference from rank_check.sh, untimed), or `quick`: the
@@ -14,10 +14,10 @@ WORKLOADS=${*:-and or phrase mixed count filter join update rank}
 DURATION=${DURATION:-30} CLIENTS=${CLIENTS:-8} WARMUP=${WARMUP:-5} UPDATE_RATE=${UPDATE_RATE:-1000} REPEAT=${REPEAT:-50}
 XBENCH=$ROOT/target/release/xbench
 load_engine "$ENGINE"
-[[ -x $REQUIRES_PATH ]] || { log "$ENGINE: $REQUIRES_PATH missing (bench/fetch.sh), skipping"; exit 0; }
+[[ -x $REQUIRES_PATH ]] || { log "$ENGINE: $REQUIRES_PATH missing (bench/steps/fetch.sh), skipping"; exit 0; }
 RUN=$OUT/$ENGINE X=$DATA/$TIER
 mkdir -p "$RUN" "$X"
-"$BENCH/cluster.sh" start
+"$STEPS/cluster.sh" start
 
 declare -A KIND=([and]=top10 [or]=top10 [phrase]=top10 [mixed]=top10 [count]=count [filter]=filter [rank]=top10)
 declare -A MODES=([and]=and [or]=or [phrase]=phrase [mixed]=and,or,phrase [count]=and,or,phrase [filter]=and,or,phrase [rank]=and,or,phrase)
@@ -98,7 +98,7 @@ measure() {
 
 rank() {
   local ref=$DATA/rankref-$TIER-200.tsv
-  [[ -s $ref ]] || { log "rank: run bench/rank_check.sh first to create $ref"; return; }
+  [[ -s $ref ]] || { log "rank: run bench/steps/rank_check.sh first to create $ref"; return; }
   wl_file rank 200 || return
   xb "$RUN/rank.q" --ids-out "$RUN/rank.ids"
   q -c "CREATE TEMP TABLE got (id int, ids bigint[]); CREATE TEMP TABLE ref (id int, ids bigint[])" \
