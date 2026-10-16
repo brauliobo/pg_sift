@@ -152,6 +152,7 @@ stays in the cache. Per-tier cluster, port and dump:
 | `quick.sh`, `report.sh` | the multi-engine standard suite and its tables (`suite`) |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `cold.sh` | cold-cache A/B of a boolean GUC (`GUC=sift.prefetch`) |
+| `facets.sh`, `facets_es.py` | facet counts: `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l)), own scratch cluster under `$FACET_TMP`; run `steps/facets.sh` directly |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
 
