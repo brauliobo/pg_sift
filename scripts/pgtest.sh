@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Throwaway PostgreSQL 18 cluster that loads sift from the repo build output,
-# without a system-wide install (extension_control_path, dynamic_library_path).
+# Throwaway PostgreSQL cluster that loads sift from the repo build output, without a
+# system-wide install (extension_control_path, dynamic_library_path). PostgreSQL 17 has no
+# extension_control_path: install then copies sift into the server's own directories, as
+# SIFT_SUDO (e.g. sudo) when those are not writable.
 #
 #   scripts/pgtest.sh install    build + install into $SIFT_TMP/root
 #   scripts/pgtest.sh start      initdb (first time) + start
 #   scripts/pgtest.sh psql [...] psql into the test database
 #   scripts/pgtest.sh env        print exports for libpq clients (eval "$(...)")
+#   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
 #   scripts/pgtest.sh regress    make installcheck against the cluster
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh stop       stop the cluster
@@ -33,6 +36,7 @@ SOCK=$TMP/sock
 SANDIR=$TMP/sanitizer
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
+PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
 FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing}"
@@ -43,8 +47,20 @@ install() {
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	nice make -C "$REPO" -j4 USE_PGXS=1
 	echo "$FLAVOR" >"$REPO/.build-flavor"
-	make -C "$REPO" USE_PGXS=1 DESTDIR="$ROOT" install >/dev/null
+	if (( PG_MAJOR >= 18 )); then
+		make -C "$REPO" USE_PGXS=1 DESTDIR="$ROOT" install >/dev/null
+	else
+		${SIFT_SUDO:-} make -C "$REPO" USE_PGXS=1 install >/dev/null
+		mkdir -p "$ROOT"
+	fi
 	echo "$FLAVOR" >"$ROOT/.flavor"
+}
+
+# The lines that make the staged sift loadable (the server's own install on PostgreSQL 17)
+conf() {
+	(( PG_MAJOR >= 18 )) || return 0
+	echo "extension_control_path = '$SHAREDIR:\$system'"
+	echo "dynamic_library_path = '$PKGLIBDIR:\$libdir'"
 }
 
 # The server binary is not instrumented, so the ASan runtime must be preloaded.
@@ -64,8 +80,7 @@ start() {
 			port = $PORT
 			listen_addresses = ''
 			unix_socket_directories = '$SOCK'
-			extension_control_path = '$SHAREDIR:\$system'
-			dynamic_library_path = '$PKGLIBDIR:\$libdir'
+			$(conf)
 			fsync = off
 			max_wal_size = 256MB
 			shared_buffers = 256MB
@@ -93,6 +108,7 @@ case ${1:-} in
 	install) install ;;
 	start) start ;;
 	stop) stop ;;
+	conf) conf ;;
 	psql) shift; exec psql -U postgres -d "$DB" -X "$@" ;;
 	env)
 		echo "export PGHOST=$SOCK PGPORT=$PORT PGUSER=postgres SIFT_ROOT=$ROOT"
