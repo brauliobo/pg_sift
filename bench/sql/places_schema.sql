@@ -1,8 +1,5 @@
 -- Places directory benchmark (GeoNames): the table, the typed query set and the search
 -- functions a multi-field autocomplete indexes (the name apart from the concatenation of every field).
-CREATE EXTENSION IF NOT EXISTS pg_search CASCADE;
-CREATE EXTENSION IF NOT EXISTS sift;
-
 CREATE TABLE places (
   id int PRIMARY KEY, name text, alternate_names text, admin1 text, country text, country_code text,
   feature text, population int
