@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Speedup of the parallel SiftScan / SiftCount over the serial plans, by number of workers.
 #
-#   PGHOST=... PGPORT=... PGUSER=... PGDATABASE=bench bench/parallel.sh [-w "1 2 4 8"] [-r REPS]
+#   PGHOST=... PGPORT=... PGUSER=... PGDATABASE=bench bench/parallel.sh [-w "1 2 4 8"] [-r REPS] [-c REGEX]
+#   (-c: only the cells whose "kind|label|query" line matches REGEX)
 #
 # Needs a database with the articles (bench/corpus.sh restore) in a cluster that loads sift. It builds
 # the index when missing, sets the table's parallel_workers to the largest worker count (the planner's
@@ -11,10 +12,11 @@
 # (md5 of the rows, in the order the plan returns them). Output: TSV with the median of REPS timed
 # runs per cell (one warm-up run first) and the load average, also kept in bench/out/parallel-<time>/.
 set -euo pipefail
+export LC_ALL=C
 
-WORKERS="1 2 4 8" REPS=7
-while getopts w:r: opt; do
-	case $opt in w) WORKERS=$OPTARG ;; r) REPS=$OPTARG ;; *) sed -n '2,13p' "$0"; exit 1 ;; esac
+WORKERS="1 2 4 8" REPS=7 ONLY=
+while getopts w:r:c: opt; do
+	case $opt in w) WORKERS=$OPTARG ;; r) REPS=$OPTARG ;; c) ONLY=$OPTARG ;; *) sed -n '2,13p' "$0"; exit 1 ;; esac
 done
 DB=${PGDATABASE:-bench}
 OUT=$(dirname "$0")/out/parallel-$(date +%Y%m%d-%H%M%S)
@@ -58,6 +60,7 @@ parallel_plan() { q -c "$1" -c "EXPLAIN (COSTS OFF) $2" | grep -c 'Parallel Cust
 printf 'kind\tquery\tworkers\tms\tspeedup\tidentical\tparallel_plan\tauto_parallel\tload\n' | tee "$OUT/summary.tsv"
 { echo "# host: $(uptime)"; echo "# $(nproc) CPUs, $(psql -X -qAt -d "$DB" -c 'SELECT version()')"; } | tee -a "$OUT/summary.tsv" >&2
 for cell in "${CELLS[@]}"; do
+	[[ -z $ONLY || $cell =~ $ONLY ]] || continue
 	IFS='|' read -r kind label sql <<<"$cell"
 	base=$(median_ms "$(settings 0 0)" "$sql")
 	ref=$(digest "$(settings 0 0)" "$sql" "$kind")
