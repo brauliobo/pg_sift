@@ -68,7 +68,8 @@ typedef struct SiftAnalyzerConfig
 	uint8		prefix_len;		/* the bag also holds the first 1..prefix_len characters of every word, SEP prefix */
 	uint8		nfields;		/* the bag also holds the words of the first nfields sections apart (SIFT_FIELD_BYTE) */
 	char		field_names[SIFT_FIELDS_BYTES];	/* their names, comma separated; not part of the hash */
-	uint32		hash;			/* of the version and the fields above (pairs, prefix_len, nfields only when set) */
+	bool		keyword;		/* the whole text, folded, is the only token (none when it folds to nothing) */
+	uint32		hash;			/* of the version and the fields above (pairs, prefix_len, nfields, keyword only when set) */
 } SiftAnalyzerConfig;
 
 /* A token in a document token stream; str points into analyzer memory */
@@ -107,6 +108,14 @@ extern void sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bo
 
 /* Turns the pair terms and the prefix terms on or off (set clears them) and refreshes the hash */
 extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields);
+
+/*
+ * Keyword analyzer (facets): a text is one token, folded like a word (case_fold / accent_fold; with
+ * both off it is kept byte for byte) and never stemmed. Empty text, or text that folds to nothing,
+ * has no token; one longer than SIFT_MAX_TERM_BYTES raises ERRCODE_PROGRAM_LIMIT_EXCEEDED, because
+ * truncating would merge distinct values. Refreshes the hash.
+ */
+extern void sift_analyzer_config_set_keyword(SiftAnalyzerConfig *cfg, bool keyword);
 
 /* Longest indexed word prefix of the analyzer's index, 0 when none */
 extern int	sift_analyzer_prefix_len(const SiftAnalyzer *a);

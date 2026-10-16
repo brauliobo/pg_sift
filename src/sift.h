@@ -82,7 +82,12 @@ typedef struct SiftOptions
 	int			phrase_index;	/* SIFT_PHRASE_* */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
+	int			analyzer;		/* SIFT_ANALYZER_* */
 } SiftOptions;
+
+/* analyzer: keyword indexes the whole value as one term */
+#define SIFT_ANALYZER_TEXT		0
+#define SIFT_ANALYZER_KEYWORD	1
 
 /* phrase_index: pairs also indexes every adjacent token pair as the term SEP a SEP b, sorted before every word */
 #define SIFT_PHRASE_NONE	0
