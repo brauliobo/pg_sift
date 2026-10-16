@@ -24,6 +24,14 @@ cleanup() {
 	done
 }
 
+# no process to inspect from outside: stop the container's server cleanly and scan its log
+node_leakcheck() {
+	node_stop "$1"
+	mkdir -p "$(dir "$1")"
+	docker cp "$(cname "$1"):$PGD/postgres.log" "$(dir "$1")/postgres.log" >/dev/null 2>&1
+	leak_scan "$(dir "$1")"
+}
+
 node_conf() { printf '%s\n' "$2" | dx "$1" tee -a "$PGD/postgresql.conf" >/dev/null; }
 
 # node_init NAME OFFSET [conf lines]: the offset only numbers ports in the unix socket mode

@@ -13,11 +13,10 @@ CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-f
 endif
 LIBS = $(PGLIB) -lpgcommon -lpgport -lm
 DATA ?= data
-# Memory belongs to memory contexts in the backend; the harness never frees it
-export ASAN_OPTIONS = detect_leaks=0
+# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgarena.h), so what it reports is a real malloc leak
 
 harness: harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(SRC)/sift_analyze.h \
-		$(SRC)/sift_analyze_tables.h
+		$(SRC)/sift_analyze_tables.h ../pgarena.h
 	$(CC) $(CFLAGS) -o $@ harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(LIBS)
 
 check: harness

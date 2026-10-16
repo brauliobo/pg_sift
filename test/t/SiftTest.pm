@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree crash_during);
+our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree crash_during kill_expected);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -23,6 +23,49 @@ sub sift_node
 	$node->init(%params);
 	$node->append_conf('postgresql.conf', 'restart_after_crash = on');
 	return $node;
+}
+
+# The leak gate (scripts/leakcheck.sh) on every node any test starts, whoever creates it: the sanitizer runtime is
+# preloaded into the servers only (SIFT_PRELOAD), the memory of the long-lived processes is recorded at the start, and
+# when the test ends, before the nodes are torn down immediately, each one is checked, stopped cleanly (LeakSanitizer
+# reports as its processes exit) and checked again. The findings go to $SIFT_TMP/leakcheck.findings, which
+# scripts/tap.sh scans with the server logs once prove is done.
+my $leakcheck = "$repo/scripts/leakcheck.sh";
+my %started;
+for my $method (qw(start restart))
+{
+	no strict 'refs';
+	no warnings 'redefine';
+	my $orig = \&{"PostgreSQL::Test::Cluster::$method"};
+	*{"PostgreSQL::Test::Cluster::$method"} = sub {
+		my ($node) = @_;
+		my $ret;
+		{
+			local $ENV{LD_PRELOAD} = $ENV{SIFT_PRELOAD} if $ENV{SIFT_PRELOAD};
+			$ret = $orig->(@_);
+		}
+		if ($ret)
+		{
+			$started{ $node->name } = $node;
+			system($leakcheck, 'baseline', $node->data_dir);
+		}
+		return $ret;
+	};
+}
+
+END
+{
+	my $exit_code = $?;
+	for my $node (values %started)
+	{
+		next unless -f $node->data_dir . '/postmaster.pid';
+		local $ENV{PGHOST} = $node->host;
+		local $ENV{PGPORT} = $node->port;
+		system($leakcheck, 'cluster', $node->data_dir);
+		$node->stop('fast', fail_ok => 1);
+		system($leakcheck, 'stopped', $node->data_dir);
+	}
+	$? = $exit_code;
 }
 
 # Installs sift, amcheck and the SQL reference in database postgres
@@ -91,6 +134,14 @@ sub agree
 	}
 }
 
+# SIGKILLs a server process on purpose: the postmaster logs its death, which the leak gate expects this once
+sub kill_expected
+{
+	my ($pid) = @_;
+	system($leakcheck, 'expect', 1, 'terminated by signal 9');
+	kill 'KILL', $pid;
+}
+
 # Runs $sql in a background session, SIGKILLs its backend once it is running
 # (after $delay_ms), and waits for crash recovery
 sub crash_during
@@ -103,7 +154,7 @@ sub crash_during
 	my $active = $node->safe_psql('postgres', "SELECT state FROM pg_stat_activity WHERE pid = $pid");
 	note("killing backend $pid (state: " . ($active || 'gone') . ") during: $sql");
 	my $log_offset = -s $node->logfile;
-	kill 'KILL', $pid;
+	kill_expected($pid);
 	$node->wait_for_log(qr/database system is ready to accept connections/, $log_offset);
 	eval { $bg->quit };
 	return $active eq 'active';

@@ -70,3 +70,8 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 								  OUT superblocks int8, OUT exact_pages int8, OUT lossy_pages int8, OUT tuples int8,
 								  OUT has bool[], OUT block_mismatches int8)
 	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;
+
+-- Leak detection (src/sift_leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
+-- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
+CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;

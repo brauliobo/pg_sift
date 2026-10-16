@@ -386,5 +386,7 @@ int main(int argc, char **argv)
 		}
 		printf("%s: %ld checks, %ld failures\n", sift_isa_name(isa), checks - c0, fails - f0);
 	}
+	for (int i = 0; i < 3; i++) free(s[i].t), free(s[i].tf);
+	free(ref), free(tmp);
 	return fails != 0;
 }
