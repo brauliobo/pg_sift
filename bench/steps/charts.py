@@ -31,7 +31,7 @@ DATASETS = {
     'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'rounds': 4},
     'places': {'name': 'GeoNames cities500, 236,262 places', 'rounds': 4},
 }
-HOST = '8-core desktop, shared host'
+HOST = '2 pinned cores, shared host'
 DATE = 'Oct 2026'
 
 
@@ -145,9 +145,10 @@ def legend(svg, y, engines, baseline):
         svg.text(x + 23, y, 'pg_search = 1.0x', 12)
 
 
-def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=None, notes=()):
+def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=None, notes=(), log=False):
     """The one chart: vertical grouped bars. groups: [(label, sublabel)]; series: [(engine, [value or None per group])].
-    A None value leaves a gap marked NA; the value labels turn vertical when the bars are narrow."""
+    A None value leaves a gap marked NA; the value labels turn vertical when the bars are narrow. log: a logarithmic axis
+    (one gridline per decade) for values that span orders of magnitude."""
     svg = Svg(title, '; '.join(f'{g[0]}: ' + ', '.join(f'{ENGINES[e][0]} {fmt(v[i])}' for e, v in series if v[i] is not None)
                                for i, g in enumerate(groups)))
     svg.text(20, 30, title, 16, weight='bold')
@@ -158,13 +159,18 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
     gw = pw / len(groups)
     bw = min(30, gw * 0.84 / len(series))
     narrow = bw < 26
-    vmax = max(v for _, vs in series for v in vs if v is not None)
-    step, cnt = nice_axis(max(vmax, baseline or 0) * (1.2 if narrow else 1.15))
-    scale = ph / (step * cnt)
-    for i in range(cnt + 1):
-        gy = top + ph - i * step * scale
+    values = [v for _, vs in series for v in vs if v is not None]
+    vmax = max(values)
+    if log:
+        lo, hi = 10 ** math.floor(math.log10(min(values) * 0.9)), 10 ** math.ceil(math.log10(vmax * (1.2 if narrow else 1.15)))
+        ticks, height = [lo * 10 ** i for i in range(round(math.log10(hi / lo)) + 1)], lambda v: math.log10(v / lo) / math.log10(hi / lo) * ph
+    else:
+        step, cnt = nice_axis(max(vmax, baseline or 0) * (1.2 if narrow else 1.15))
+        ticks, height = [i * step for i in range(cnt + 1)], lambda v: v * ph / (step * cnt)
+    for t in ticks:
+        gy = top + ph - height(t)
         svg.line(left, gy, left + pw, gy)
-        svg.text(left - 8, gy + 4, tick(i * step), 10, 'end', MUTED)
+        svg.text(left - 8, gy + 4, tick(t), 10, 'end', MUTED)
     svg.parts.append(f'<text transform="translate(18 {num(top + ph / 2)}) rotate(-90)" font-size="11" text-anchor="middle" fill="{MUTED}">{escape(ylabel)}</text>')
     for gi, (label, sub) in enumerate(groups):
         gx = left + gi * gw + (gw - bw * len(series)) / 2
@@ -173,17 +179,17 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
             if v is None:
                 svg.text(cx, top + ph - 5, 'NA', 9, 'middle', MUTED)
                 continue
-            svg.rect(gx + si * bw + 1, top + ph - v * scale, bw - 2, v * scale, ENGINES[e][1])
+            svg.rect(gx + si * bw + 1, top + ph - height(v), bw - 2, height(v), ENGINES[e][1])
             if narrow:
-                svg.text(cx + 3.5, top + ph - v * scale - 5, fmt(v), 10, halo=True, rotate=True)
+                svg.text(cx + 3.5, top + ph - height(v) - 5, fmt(v), 10, halo=True, rotate=True)
             else:
-                svg.text(cx, top + ph - v * scale - 5, fmt(v), 10, 'middle', halo=True)
+                svg.text(cx, top + ph - height(v) - 5, fmt(v), 10, 'middle', halo=True)
         cx = left + gi * gw + gw / 2
         svg.text(cx, top + ph + 18, label, 12, 'middle', weight='bold')
         if sub:
             svg.text(cx, top + ph + 32, sub, 10, 'middle', MUTED)
     if baseline is not None:
-        by = top + ph - baseline * scale
+        by = top + ph - height(baseline)
         svg.line(left, by, left + pw, by, INK, 1.5, dash=True)
     svg.line(left, top + ph, left + pw, top + ph, MUTED)
     if any(v is None for _, vs in series for v in vs):
@@ -223,8 +229,8 @@ def make(rows, tier):
     p = DATASETS['places']
     lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines_of(rows, tier, ['places'])}
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
-    out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        list(lat.items()), lambda v: f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES)
+    out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, logarithmic axis, lower is better', [(c, '') for c in PLACE_CLASSES],
+                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES, log=True)
     return out
 
 
