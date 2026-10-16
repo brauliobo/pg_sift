@@ -2,18 +2,28 @@
 
 ## Unreleased
 
-- Phrase queries from word positions: `CREATE INDEX` now stores the positions of the words of every document (reloption `positions`,
-  default on; `positions = off` keeps the previous layout), and a phrase that every match must contain (not under `OR` or `NOT`) is
-  verified in the index instead of re-tokenizing the heap text of each candidate, and a phrase under `OR` (a CJK word becomes one)
-  filters its candidates the same way; counts and ranked scans of such phrases read no heap tuple. On the 218k-article benchmark
-  phrase queries run about 4.4x faster than before and 2.2x faster than pg_search, counts 7x faster, at the price of a default index
-  2.6x larger (48 MB to 126 MB, pg_search: 160 MB) and a build about 30% slower. Terms with at most two postings keep their
-  positions in the dictionary entry (up to 256 bytes). Documents inserted after the build (mutable segments, and the segments
-  promoted and merged from them) and indexes built by earlier versions have no positions and keep the heap recheck until the
-  index is rebuilt with `REINDEX`.
+- Word positions are stored by default (reloption `positions`, default on): phrase queries are decided from the index instead of
+  re-tokenizing the heap text of each candidate. A phrase that every match must contain (not under `OR` or `NOT`) is verified in the
+  index, and a phrase under `OR` (a CJK word becomes one) filters its candidates the same way; counts and ranked scans of such phrases
+  read no heap tuple. On the 218k-article benchmark phrase queries run about 4.4x faster than before and 2.2x faster than pg_search,
+  counts 7x faster. The price is a default index about 2.6x larger (48 MB to 126 MB on the 218k articles, pg_search: 160 MB) and a
+  build about 30% slower: `positions = off` restores the small index and the heap recheck of phrases. Indexes built by earlier
+  versions keep working but have no positions: `REINDEX` them to get phrases decided by the index. Terms with at most two postings
+  keep their positions in the dictionary entry (up to 256 bytes). Documents inserted after the build (mutable segments, and the
+  segments promoted and merged from them) and phrases under `NOT` keep the heap recheck.
 - On-disk format 1.1 (metapage minor version): indexes created or reindexed by this version are 1.1 and must not be opened by earlier
   releases, which write 1.0 and do not check the minor version (`REINDEX` the index there to go back). Format 1.0 indexes stay readable and work without positions until
   `REINDEX`. A build that meets a newer minor version than it knows refuses the index with "REINDEX the index".
+- Counts and filters: a query with a phrase rechecks in the heap only the candidates the bitmaps and positions do not decide (an
+  `OR` branch without the phrase, a `NOT` of a superset and every segment with positions are not rechecked); `count(*)` counts the
+  all-visible pages of a group straight from its bitmaps; the planner no longer overcharges a pushed-down filter, so a ranked scan
+  takes it when it is cheaper (a ranked `OR` with a 2% filter 6.0 -> 4.8 ms, plan choice wrong for 2 of 100 queries instead of 70);
+  terms from 8K postings (was 64K) are bitmap groups with block bounds: ranked `AND` and `OR` about 20% faster and `count(*)` of
+  `OR`s about 27% faster for about 10% more index (applies to new builds and `REINDEX`).
+- Top-k: ranked blocks accumulate leaves by descending upper bound and score only the documents that can still reach the threshold
+  (new `bm25_sel` and `prune_gt` kernels in AVX-512, AVX2 and scalar), and the bounds of dense LIST terms are read without decoding
+  their postings. Scores and ties are bit-identical. Ranked `AND` and `OR` use about 27% fewer cycles, prefix top-k and boosted
+  place queries 8-34% fewer.
 - PostgreSQL 17 support, with 19 (release candidate) experimental: `make` accepts 17 and newer, and the version differences live in
   `src/sift_compat.h`. PostgreSQL 17 has no `extension_control_path`, so `scripts/pgtest.sh install` copies sift into the server's own
   directories there (`SIFT_SUDO=sudo` when they are not writable) and the update-path checks of the lifecycle test are skipped. CI
