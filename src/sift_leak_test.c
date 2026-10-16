@@ -3,7 +3,8 @@
  *
  * sift_leak_test_init, called from _PG_init, makes every backend that loads sift report the sift memory contexts
  * that outlive it: all sift contexts hang off a query, scan or function context, so one still allocated at
- * backend exit was leaked into a long-lived parent. The line "sift leak: memory context" in the server log is
+ * backend exit was leaked into a long-lived parent (the backend caches, named "sift cache ...", live that long on
+ * purpose). The line "sift leak: memory context" in the server log is
  * matched by scripts/leakcheck.sh, which every suite runs through.
  *
  * sift._test_leak(kind, rel) (pg_sift_test) leaves a resource behind on purpose, to prove that scripts/leakcheck.sh
@@ -36,7 +37,7 @@ report_contexts(MemoryContext parent)
 {
 	for (MemoryContext cx = parent->firstchild; cx != NULL; cx = cx->nextchild)
 	{
-		if (strncmp(cx->name, "sift", 4) == 0)
+		if (strncmp(cx->name, "sift", 4) == 0 && strncmp(cx->name, "sift cache", 10) != 0)
 			elog(LOG, "sift leak: memory context \"%s\" (%zu bytes) still allocated in \"%s\" at backend exit",
 				 cx->name, MemoryContextMemAllocated(cx, true), parent->name);
 		report_contexts(cx);
