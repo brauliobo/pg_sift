@@ -48,6 +48,7 @@ ARTICLE_CLASSES = [('and', 'and'), ('or', 'or'), ('phrase', 'phrase'), ('mixed',
 PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']
 PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes'
 PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
+BUILD_NOTES = ['places: pg_textsearch and rum show the native index; their emulated workloads add indexes.']
 NA_NOTE = 'NA: no bar, the engine cannot run the workload or was not run on the dataset.'
 
 WIDTH = 860
@@ -208,7 +209,7 @@ def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
     engines = engines_of(rows, tier, DATASETS)
     series = [(e, [value(rows, tier, d, e, '-', '-', metric) for d in DATASETS]) for e in engines]
     groups = [(d, spec['name']) for d, spec in DATASETS.items()]
-    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'))
+    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=BUILD_NOTES)
 
 
 def make(rows, tier):
