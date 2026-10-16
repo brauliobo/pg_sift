@@ -66,12 +66,16 @@ jobs:
         if: ${{ matrix.experimental && steps.pg19-cache.outputs.cache-hit != 'true' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bison flex
+          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl
           git clone --depth 1 --branch "$PG19_REF" https://git.postgresql.org/git/postgresql.git "$RUNNER_TEMP/postgresql"
           cd "$RUNNER_TEMP/postgresql"
-          ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
+          ./configure --prefix="$HOME/pg19" --enable-cassert --enable-debug --enable-tap-tests --without-icu --without-readline --without-zlib CFLAGS="-O1 -g"
           make -j4 -s
           make -s install
+          # what the suites use besides the server: the TAP modules and two contrib modules
+          make -s -C src/test/perl install
+          make -s -C contrib/amcheck install
+          make -s -C contrib/pg_walinspect install
 
       - name: Use PostgreSQL 19
         if: ${{ matrix.experimental }}
