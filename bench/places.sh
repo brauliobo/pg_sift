@@ -57,7 +57,9 @@ FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s
        FROM (SELECT q, regexp_replace(q, '(\S+)', '\1*', 'g') AS sq FROM pq"
 
 "$BENCH/cluster.sh" init >/dev/null; "$BENCH/cluster.sh" start >/dev/null
-PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS places WITH (FORCE)" -c "CREATE DATABASE places"
+# sift errors beyond sift.max_expansions (512) terms; a typed prefix of a common word expands further on 236k places
+PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS places WITH (FORCE)" -c "CREATE DATABASE places" \
+  -c "ALTER DATABASE places SET sift.max_expansions = 100000"
 q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
 q -c "ANALYZE places"
 : >"$DEST/builds.tsv"
@@ -99,7 +101,7 @@ cell() { # workload class engine -> "p50 p95" ms of single-client transactions: 
   local f=$ROOT/places/cell log=$ROOT/places/cell.log
   { printf '\\set i random(1, 300)\nSELECT %s WHERE id = %d + :i) x \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$3");"; } >"$f.sql"
   rm -f "$log"*
-  pgbench -n -f "$f.sql" -c 1 -T "$SECS" -l --log-prefix="$log" >/dev/null 2>&1 || { echo "0 0"; return; }
+  pgbench -n -f "$f.sql" -c 1 -T "$SECS" -l --log-prefix="$log" >/dev/null 2>&1 || { echo "nan nan"; return; }
   sort -n -k3,3 "$log"* | awk '{v[NR] = $3} END {printf "%.3f %.3f", v[int((NR + 1) / 2)] / 1000, v[int(NR * 0.95) < 1 ? 1 : int(NR * 0.95)] / 1000}'
   rm -f "$log"*
 }
@@ -130,6 +132,9 @@ loads = sorted({float(r[1]) for r in rows})
 out = ['workload\tclass\tpgs_p50\tpgs_p95\tsift_p50\tsift_p95\tpgs/sift_p50']
 for wl, c in keys:
     a, b = by[wl, c, 'pgs'], by[wl, c, 'sift']
+    if any(x != x for x in a[0] + b[0]):         # a statement failed: no latencies, not a fast cell
+        out.append('%s\t%s\terror\terror\terror\terror\tn/a' % (wl, c))
+        continue
     pa, pb = st.median(a[0]), st.median(b[0])
     out.append('%s\t%s\t%.2f\t%.2f\t%.2f\t%.2f\t%.1fx' % (wl, c, pa, st.median(a[1]), pb, st.median(b[1]), pa / pb if pb else 0))
 out.append('rounds %d, load %.1f-%.1f' % (len({r[0] for r in rows}), loads[0], loads[-1]))
