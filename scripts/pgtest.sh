@@ -13,7 +13,8 @@
 #   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
 #
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56169, default
-# 56100) let several agents run clusters side by side; TAP clusters use
+# 56100) let several agents run clusters side by side; SIFT_ROOT (default
+# $SIFT_TMP/root) lets clusters in other SIFT_TMP directories share one install; TAP clusters use
 # SIFT_PORT + 1 and up. SIFT_TESTING=1 (default) builds the sift._test_*
 # functions; SIFT_TESTING= builds the production library.
 #
@@ -26,7 +27,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 PORT=${SIFT_PORT:-56100}
 DB=${SIFT_DB:-sift}
-ROOT=$TMP/root
+ROOT=${SIFT_ROOT:-$TMP/root}
 DATA=$TMP/data
 SOCK=$TMP/sock
 SANDIR=$TMP/sanitizer
@@ -66,6 +67,7 @@ start() {
 			extension_control_path = '$SHAREDIR:\$system'
 			dynamic_library_path = '$PKGLIBDIR:\$libdir'
 			fsync = off
+			max_wal_size = 256MB
 			shared_buffers = 256MB
 			max_worker_processes = 16
 		EOF
