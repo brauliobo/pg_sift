@@ -2,34 +2,28 @@
 
 pg_sift is a full-text search index for PostgreSQL 18, an index access method used as `USING sift`. It answers boolean, phrase, prefix,
 wildcard, regex and fuzzy queries, ranks with exact BM25 and counts matches from the index. Postings are keyed by heap ctid and stored as
-bitmaps, so AND, OR and NOT are bitmap operations, and MVCC visibility comes from the visibility map instead of a document-id mapping. The
+bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from the visibility map.
 
 - Exact BM25 (`sift.score()`), ranked top-k with block-max pruning, `count(*)` straight from the index.
-- One query language: `AND`, `OR`, `NOT`, `{any of}`, phrases, prefix, wildcard, regex, fuzzy, boosts, named fields.
-- Filters pushed into the ranked scan, keyword facets (`sift.facets`) and an opt-in parallel scan (1.1).
-- Ordinary table semantics: MVCC, concurrent writes, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes,
-  parallel `CREATE INDEX`.
-- Crash safe and replica safe through generic WAL, with no `shared_preload_libraries`.
+- Ordinary table semantics: MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes. Crash and replica
+  safe through generic WAL, no `shared_preload_libraries`.
+- 1.1: filter pushdown, keyword facets, opt-in parallel scan.
 - Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.8x smaller than pg_search (see Benchmarks).
 
 ## Install
 
-Requires PostgreSQL 18 (server headers, `pg_config` on `PATH`) and a C compiler. Developed and tested on x86-64, where AVX-512, AVX2 and
-scalar kernels are chosen at run time; other architectures are untested.
+Requires PostgreSQL 18 (server headers, `pg_config` on `PATH`) and a C compiler. Tested on x86-64.
 
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
 ```
 
-Arch Linux: AUR: `pg_sift` (the recipe is in [packaging/](packaging/)). Then, as a superuser (the extension is not trusted; it creates the
-schema `sift`):
+Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)). Then, as a superuser (the extension creates the schema `sift`); after
+installing a newer version run `ALTER EXTENSION pg_sift UPDATE`:
 
 ```sql
 CREATE EXTENSION pg_sift;
 ```
-
-No `shared_preload_libraries` entry or restart is needed. After installing a newer version, run `ALTER EXTENSION pg_sift UPDATE` (1.0 to 1.1 adds `sift.facets`). Physical replication works because every change goes through generic WAL; a
-standby needs pg_sift installed to run queries.
 
 ## Quick start
 
@@ -49,132 +43,72 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;                                    -- B
 SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3, from the index
 ```
 
-`text @@> text` matches a document against a query (the operator lives in `pg_catalog`, no `search_path` change). Without an index it is
-evaluated per row with the same results, only slower.
+`text @@> text` matches a document against a query; without an index it is evaluated per row with the same results, only slower.
 
 ## Queries
 
-Terms are analyzed like the indexed text. `AND`, `OR`, `NOT` are keywords in upper case only, juxtaposition is `AND`, and precedence is
-`NOT` > `AND` > `OR`. A `NOT` needs a positive term in the same AND group. A word that splits into several tokens (`e-mail`) is a phrase.
-Prefix and wildcard literals are folded but not stemmed; a regex is matched against whole indexed terms. Fuzzy has edit distance 1 or 2 with
-the first letter fixed, and short terms allow less (`saq~2` is `saq~1`).
+`AND`, `OR`, `NOT` are keywords in upper case only; juxtaposition is `AND`; precedence is `NOT` > `AND` > `OR`; a `NOT` needs a positive
+term in its AND group. A prefix, wildcard, regex or fuzzy leaf expands to dictionary terms; more than `sift.max_expansions` (512) is an
+error, not a truncation.
 
 ```sql
-SELECT id FROM docs WHERE body @@> 'breakfast staff';             -- all terms
-SELECT id FROM docs WHERE body @@> 'pool OR spa';                 -- any term
-SELECT id FROM docs WHERE body @@> '{pool spa noisy}';            -- any of a set of words or patterns
-SELECT id FROM docs WHERE body @@> 'breakfast NOT noisy';         -- exclusion: 2
-SELECT id FROM docs WHERE body @@> '"friendly staff"';            -- phrase: 2, 5
-SELECT id FROM docs WHERE body @@> 'brea*';                       -- prefix
-SELECT id FROM docs WHERE body @@> 'n?isy';                       -- wildcard
-SELECT id FROM docs WHERE body @@> '/no.*y/';                     -- PostgreSQL regular expression
-SELECT id FROM docs WHERE body @@> 'frendly~1';                   -- fuzzy
+SELECT id FROM docs WHERE body @@> 'breakfast NOT noisy';             -- exclusion: 2
+SELECT id FROM docs WHERE body @@> '{pool spa noisy}';                -- any of a set of words or patterns
+SELECT id FROM docs WHERE body @@> '"friendly staff"';                -- phrase: 2, 5
+SELECT id FROM docs WHERE body @@> 'brea* OR n?isy OR /no.*y/ OR frendly~1';  -- prefix, wildcard, regex, fuzzy
 SELECT id FROM docs WHERE body @@> '(pool OR spa) AND friendly^3';    -- grouping and boost
-SELECT sift.parse_query('Frendly~2 "staff friendly"^2 NOT x*');   -- canonical form; syntax errors carry a position
 ```
 
-A prefix, wildcard, regex or fuzzy leaf expands to dictionary terms; more than `sift.max_expansions` (512) is an error, not a truncation.
-Limits: 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
+## Ranking, filters and joins
 
-## Ranking, top-k and pagination
-
-`ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid. `OFFSET`
-works, but the scan then needs `LIMIT + OFFSET` rows, so deep pages cost more. `sift.score()` and `sift.max_score()` (the best score of the
-query, the same on every row) are computed by the scan: use them in the select list or `ORDER BY` of the query level that scans the table,
-not in `WHERE` (filter on a score from a subquery).
+`ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid.
+`sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table, not in `WHERE`
+(filter on a score from a subquery).
 
 ```sql
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly OR breakfast^3 OR noisy'
-ORDER BY sift.score(ctid) DESC LIMIT 2 OFFSET 1;                  -- second and third best
 SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'friendly OR pool'
                    ORDER BY s DESC LIMIT 100) top WHERE s > 0.5;  -- filter on the score
-SELECT sift.highlight(body, 'friendly staff', '<mark>', '</mark>') FROM docs WHERE id = 2;
-EXPLAIN (analyze, costs off, timing off, summary off, buffers off)       -- see "Reading EXPLAIN" below
-SELECT id FROM docs WHERE body @@> 'friendly OR breakfast' ORDER BY sift.score(ctid) DESC LIMIT 2;
-```
-
-A tie-breaker (`ORDER BY sift.score(ctid) DESC, id`) makes pages fully deterministic, at the cost of reading every row tied with the last
-one.
-
-## Filters and joins
-
-Other predicates and joins apply to the rows the sift scan produces; without ranking the planner can also combine the index with btree
-indexes in a bitmap scan.
-
-```sql
-CREATE INDEX docs_published ON docs (published);
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01' AND category = 1
-ORDER BY sift.score(ctid) DESC LIMIT 10;
-SELECT d.id, c.name FROM docs d JOIN (VALUES (1, 'travel'), (2, 'jobs')) c(id, name) ON c.id = d.category
-WHERE d.body @@> 'friendly' ORDER BY sift.score(ctid) DESC LIMIT 10;
+SELECT d.id, c.name FROM docs d JOIN (VALUES (1, 'travel')) c(id, name) ON c.id = d.category
+WHERE d.body @@> 'friendly' ORDER BY sift.score(d.ctid) DESC LIMIT 10;              -- joins work too
 ```
 
 ### Filter pushdown
 
-A selective filter on top of a very common term used to make a ranked scan score many candidates to find `LIMIT` survivors. With
-`sift.filter_pushdown` (`on` by default) the planner also builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and gives
-it to the ranked scan as a child. The scan reads the bitmap first and then scores and verifies only the matches it keeps, so the work follows
-the filter, not the common term. The quals still apply as residual conditions, so results (rows, scores, order) equal those of the
-post-filter plan. `off` never pushes a filter down, `force` always does when a bitmap path exists; with `on` the planner costs both plans.
-Pushdown pays for selective filters (a 0.1% filter on 218,058 articles, ranked `or`: mean 23.6 ms to 0.22 ms with the filter clustered in
-the heap, 15.0 ms to 0.86 ms scattered); a broad scattered filter (10%) can be slower, and the planner then keeps the post-filter plan. The
-bitmap mask is limited to `work_mem`; pages beyond it are kept whole.
+With `sift.filter_pushdown` (`on` by default) the planner builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and
+gives it to the ranked scan, which then scores only the matches that pass, so the work follows the filter and not a very common term;
+results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 23.6 ms to 0.22 ms (clustered) and 15.0 ms to 0.86 ms
+(scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans.
 
 ```sql
+CREATE INDEX docs_published ON docs (published);
 SET sift.filter_pushdown = force;
 EXPLAIN (analyze, costs off, timing off, summary off, buffers off)
 SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01'
 ORDER BY sift.score(ctid) DESC LIMIT 10;      -- Bitmap Index Scan child; Filter Superblocks / Pages Exact / Pages Lossy
+RESET sift.filter_pushdown;
 ```
 
-## Analyzers: stemming, folding, languages, stopwords
+## Analyzers, phrases, several columns
 
-Text is split into words (letters, digits and combining marks; punctuation and apostrophes separate, so `don't` is `don`, `t`), case folded
-(`Straße` is `strasse`), accent folded (`résumé` is `resume`) and optionally stemmed. Han ideographs and hiragana are one token per
-character. There is no stopword list: every word is indexed and common words score low. The only stemmer is Snowball English (`stemmer =
-'en'`); other languages use `none` and match exact forms (prefixes help). `case_folding` and `accent_folding` (default true) can be switched
-off in `WITH (...)`. The analyzer is fixed per index: `ALTER INDEX ... SET` of an analyzer option makes the index unusable (reads and writes
-fail) until `REINDEX`, so build the replacement next to the old index and swap:
+Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no
+stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. Phrases are rechecked in
+the heap; `phrase_index = pairs` also indexes adjacent word pairs, so phrases become bitmap ANDs, for 5.6x the index size. An index has one
+key, a `text` column or an immutable expression, so concatenate columns (`coalesce` nullable ones, `NULL` keys are not indexed).
 
 ```sql
 SELECT token, pos FROM sift.tokenize('Running Cafés, RÉSUMÉ', stemmer => 'en');             -- run, cafe, resum
-SELECT token FROM sift.tokenize('Cafés', accent_folding => false, case_folding => false);   -- Cafés
-CREATE INDEX CONCURRENTLY docs_body_en ON docs USING sift (body) WITH (stemmer = 'en');
+CREATE INDEX CONCURRENTLY docs_body_en ON docs USING sift (body) WITH (stemmer = 'en', phrase_index = pairs);
 DROP INDEX docs_body;
 ALTER INDEX docs_body_en RENAME TO docs_body;
 SELECT id FROM docs WHERE body @@> 'run';                         -- 4: runners, running, runs
+CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || coalesce(body, '')));   -- query with the same expression
 ```
 
-## Phrases: `phrase_index = pairs`
-
-A phrase is the AND of its words, then a recheck of the candidates in the heap, which is slow for `count(*)` or ranking of common-word
-phrases. `phrase_index = pairs` also indexes adjacent word pairs: two-word phrases become exact bitmap ANDs, longer ones are narrowed by
-their pairs, scores do not change. The price is index size (5.6x on Wikipedia) and build time.
-
-```sql
-CREATE INDEX CONCURRENTLY docs_body_pairs ON docs USING sift (body) WITH (stemmer = 'en', phrase_index = pairs);
-DROP INDEX docs_body;
-ALTER INDEX docs_body_pairs RENAME TO docs_body;
-SELECT count(*) FROM docs WHERE body @@> '"friendly staff"';      -- 2
-```
-
-## Several columns, expressions, fields
-
-An index has one key: a `text` or `varchar` column, or an expression of immutable functions returning text. To index several columns
-concatenate them and use the same parenthesized expression in the query. `NULL` keys are not indexed, so wrap nullable columns in `coalesce`
-(`concat_ws` is not immutable and is rejected).
-
-```sql
-CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || coalesce(body, '')));
-SELECT id FROM docs WHERE (coalesce(title, '') || ' ' || coalesce(body, '')) @@> 'venue note';
-```
-
-For autocomplete, separate sections with `chr(29)`, name the leading ones with `fields` (up to 14) and set `prefix_index = n` (up to 15) so
-prefixes of up to n letters are one term lookup instead of a dictionary expansion:
+For autocomplete, separate sections with `chr(29)`, name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of
+up to n letters are one term lookup:
 
 ```sql
 CREATE TABLE places (id int PRIMARY KEY, name text, admin1 text, country text);
-INSERT INTO places VALUES (1, 'Grand Venue', 'Texas', 'US'), (2, 'Granada', 'Andalusia', 'ES'), (3, 'Green Hollow', 'Ohio', 'US');
 CREATE INDEX places_sift ON places USING sift ((name || chr(29) || admin1 || ' ' || country))
   WITH (fields = 'name', prefix_index = 3);
 SELECT id FROM places WHERE (name || chr(29) || admin1 || ' ' || country) @@> '(gr* ho*) AND (name:{gr* ho*}^3 OR (gr* ho*))'
@@ -183,9 +117,9 @@ ORDER BY sift.score(ctid) DESC LIMIT 20;                          -- every word 
 
 ## Partitioned tables
 
-`CREATE INDEX` on the parent builds one sift index per partition, also for partitions attached later. Matching and `count(*)` span
-partitions; `sift.score()` does not work through the partitioned parent (it raises an error), so rank one partition at a time. BM25
-statistics are per partition index.
+Works with declarative partitioning (also multi-level) and inheritance parents. `CREATE INDEX ... USING sift` on the parent builds one
+sift index per leaf partition, also for partitions attached later. Matching and `count(*)` span partitions, and ranking works through the
+parent: each partition runs its own ranked scan and a MergeAppend returns the global top-k.
 
 ```sql
 CREATE TABLE logs (id int, region text, msg text) PARTITION BY LIST (region);
@@ -194,129 +128,75 @@ CREATE TABLE logs_us PARTITION OF logs FOR VALUES IN ('us');
 INSERT INTO logs SELECT i, CASE WHEN i % 2 = 0 THEN 'eu' ELSE 'us' END, 'disk full on node ' || i % 10 FROM generate_series(1, 1000) i;
 CREATE INDEX logs_msg ON logs USING sift (msg);
 SELECT region, count(*) FROM logs WHERE msg @@> 'disk "node 7"' GROUP BY region;
-SELECT id, sift.score(ctid) FROM logs_us WHERE msg @@> 'disk "node 7"' ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id, region, sift.score(ctid) FROM logs WHERE msg @@> 'disk "node 7"' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ```
-
-## Updates, deletes, VACUUM
-
-New and updated rows go to small mutable segments inside the index (appended through generic WAL, no hot spot). At `mutable_limit` (4 MB) a
-segment is sealed, and a background worker (`sift.async_maintenance`) turns it into an immutable segment and merges small ones; VACUUM
-promotes and merges too, and a writer promotes by itself when the backlog grows. A deleted or updated row stays in the index until VACUUM
-and scans hide it through heap visibility; VACUUM clears the dead postings (`dirty` in `sift.segments`) and a merge rewrites them. HOT
-updates add no entry.
-
-```sql
-INSERT INTO docs VALUES (6, 'Late', 'Late checkout, friendly desk', '2026-06-01', 1);
-UPDATE docs SET body = body || ' Parking is free.' WHERE id = 2;
-DELETE FROM docs WHERE id = 4;
-VACUUM docs;
-SELECT kind, ndocs, dirty FROM sift.segments('docs_body');
-SELECT sift.promote('docs_body'), sift.merge('docs_body', true);  -- manual maintenance, e.g. from pg_cron
-SELECT sift.verify('docs_body', true);                            -- structure check, and the heap re-tokenized and compared
-```
-
-## Operations
-
-- **Rebuild:** `REINDEX [CONCURRENTLY]` and `CREATE INDEX CONCURRENTLY` work as usual. `CREATE INDEX` runs in parallel on large tables
-  (`max_parallel_maintenance_workers`, memory from `maintenance_work_mem`) and builds the same index as a serial build; `build_segments = N`
-  forces N segments and disables the parallel build. Changing `k1`, `b` or an analyzer option needs a REINDEX (`sift.verify` says so).
-- **Replicas:** physical standbys replay the index through generic WAL and answer queries (a build under `wal_level = minimal` is tested
-  too). Set `hot_standby_feedback = on`, otherwise a long standby query can fail with a retryable serialization error ("segment recycled
-  during scan"). Logical replication does not carry indexes; build one on the subscriber.
-- **pg_dump** writes `CREATE INDEX ... USING sift`; a restore rebuilds the index and needs pg_sift installed. **pg_upgrade** within one
-  major version carries the index files over (tested); across major versions it is unverified.
-- **Inspect:** `sift.segments(index)` (kind, `ndocs`, `avgdl`, `bytes`, `dirty`, `nterms`), `sift.segment_postings(index)` (postings and
-  bits per posting by document-frequency class), `sift.verify(index [, heapallindexed])`, `pg_relation_size`.
-- **Reading EXPLAIN** (the last query of the ranking section): `Custom Scan (SiftScan)` is a sift scan (`Order: score DESC` ranked, `Limit Hint` the k it got); `SiftCount` is the
-  `count(*)` pushdown (one table, only `count(*)`, every condition a sift match; otherwise `Aggregate` over `SiftScan`). With `ANALYZE`:
-  `Superblocks` (256-page ranges read), `Blocks Scored` / `Blocks Skipped` (16-page blocks scored or pruned), `Candidates` produced, `Heap
-  Checks` (visibility checks in the heap, 0 for `count(*)` on a vacuumed table). `Filter Superblocks`, `Filter Pages Exact` and `Filter Pages Lossy` appear
-  with a pushed-down filter, whose `Bitmap Index Scan` is a child of the scan. A top-level `Bitmap Index Scan` on the sift index appears when the
-  planner combines it with others; `sift.enable_scan = off` forces it.
-
-| GUC | default | meaning |
-|---|---|---|
-| `sift.max_expansions` | 512 | terms a prefix, wildcard, regex or fuzzy leaf may expand to (error above) |
-| `sift.enable_scan`, `sift.enable_count` | on | use SiftScan, use the `count(*)` pushdown |
-| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals (see Filter pushdown) |
-| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
-| `sift.prefetch` | on | read ahead the heap pages of an unordered scan |
-| `sift.async_maintenance` | on | superuser; promote and merge in a background worker |
-| `sift.simd` | auto | cap the SIMD level: `avx512`, `avx2`, `scalar` |
-
-| reloption | default | meaning |
-|---|---|---|
-| `k1`, `b` | 1.2, 0.75 | BM25 saturation (0-1000) and length normalization (0-1); REINDEX |
-| `analyzer` | `text` | `keyword`: each whole value is one term, for `sift.facets`; REINDEX |
-| `stemmer` | `none` | `en` or `none`; REINDEX |
-| `case_folding`, `accent_folding` | true | fold case, fold accents; REINDEX |
-| `phrase_index`, `prefix_index`, `fields` | `none`, 0, none | `pairs`; prefix length 0-15; section names; REINDEX |
-| `mutable_limit` | 4096 | kB of a mutable segment before it is sealed (64-1048576); no REINDEX |
-| `build_segments` | 0 | force N segments in `CREATE INDEX` (disables the parallel build) |
-
-## Limits
-
-- PostgreSQL 18 only; heap tables only; BLCKSZ 8192 only; database encoding UTF8 or SQL_ASCII.
-- One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
-- Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.
-- Phrases are rechecked in the heap unless the index uses `phrase_index = pairs`.
-- `sift.score()` is not available through a partitioned parent table; rank each partition.
 
 ## Keyword facets
 
-`analyzer = keyword` indexes each whole value as one term (folded like a word unless `case_folding` / `accent_folding` are off), so every
-distinct value of a column is a dictionary entry whose posting is the bitmap of its rows. `sift.facets(index, facet_index, query, lim, nulls)`
-counts the visible matches of a query on `index` per value of `facet_index`, from the bitmaps, without reading the heap beyond what
-`count(*)` reads. The key must be text, so facet an integer through an expression:
+`analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts the matches of a
+query per value of another column from the bitmaps, equal to the `GROUP BY` of the same snapshot. It pays for broad queries on
+low-cardinality columns (1.9-4.5x on 26 values); for selective queries or thousands of values `GROUP BY` wins.
 
 ```sql
-CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);
+CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);   -- text keys: cast integers
 SELECT * FROM sift.facets('docs_body', 'docs_category', 'friendly OR pool', 10);      -- value, count: 1 | 3
--- the rows of: SELECT category::text AS value, count(*) FROM docs WHERE body @@> 'friendly OR pool'
---              GROUP BY 1 ORDER BY 2 DESC, category::text COLLATE "C" LIMIT 10
 ```
-
-`lim` NULL returns every value; `nulls => true` adds a row with a NULL value for the matches without one (empty and NULL values have no
-term). The counts equal the `GROUP BY` of the same snapshot, after DELETE, UPDATE and VACUUM. Limits:
-
-- Values are at most 255 bytes (longer ones are an error); one column per keyword index; no `text[]` (index `array_to_string` or a side
-  table with one row per element).
-- Tables with row-level security are refused, and the caller needs `SELECT` on the table.
-- The cost is linear in the number of distinct values plus the matches, and does not touch the heap. It is best for broad queries on
-  low-cardinality columns (a category, a year, a letter): 1.9-4.5x faster than the sift `GROUP BY` on 25,000 articles with 26 values. For
-  selective queries or thousands of values `GROUP BY` wins (0.5-0.9x with 2,500 values). The planner is not asked to choose: you call the
-  function where it pays.
 
 ## Parallel scan
 
-`sift.parallel_scan` (`off` by default) lets the planner add parallel plans: a Gather over a parallel SiftScan or SiftCount whose workers
-take ranges of superblocks and, for a ranked scan, share the top-k threshold; rows, scores and ties equal the serial plan. A ranked parallel
-scan needs a `LIMIT` and a single table, and it is never planned with a pushed-down filter (the bitmap is built by one backend), so the
-planner picks by cost between the parallel scan and the serial pushdown. It is off because a Gather costs milliseconds before any work:
-on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x), `count(*)` was 0.06-0.29x and top-1000 / top-10000
-0.5-1.2x. Try it on much larger tables or expensive quals, and compare with `EXPLAIN (analyze)`; the usual `max_parallel_workers_per_gather`,
-`parallel_setup_cost` and `min_parallel_index_scan_size` apply.
+`sift.parallel_scan` (`off` by default) lets the planner add a Gather over a parallel SiftScan or SiftCount; a ranked one needs a `LIMIT`
+and a single table, and rows, scores and ties equal the serial plan. It is off because a Gather costs milliseconds before any work: on
+218,058 articles only an unordered scan with a heavy residual qual gained (1.8x). Try it on much larger tables or expensive quals.
 
 ```sql
 SET sift.parallel_scan = on;
 EXPLAIN (costs off) SELECT count(*) FROM docs WHERE body @@> 'friendly';      -- Gather over a parallel SiftCount when it pays
+RESET sift.parallel_scan;
 ```
 
-## Correctness and testing
+## Maintenance and operations
 
-`make check` runs every suite in a throwaway cluster in about 2.5 minutes; `make check-full` adds the ASan/UBSan build, long soak and fuzz
-runs and all mutants (about 22 minutes); `make installcheck` runs the regression tests against a server.
+Writes go to small mutable segments through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
+and merges; VACUUM promotes, merges and clears dead postings.
+`sift.segments(index)` and `sift.verify(index, true)` inspect and check an index.
 
-- pg_regress tests compare every query shape with a sequential scan and a SQL reference BM25 (scores bit-equal); a randomized differential
-  test mutates the corpus (inserts, updates, deletes, VACUUM, merge, REINDEX) and compares the index with the reference, and 16 injected
-  bugs (mutants) must all be caught.
-- Isolation specs (insert during seal, VACUUM and merge during scans, CIC) and TAP tests: `kill -9` during build, promotion, merge and
-  VACUUM, a streaming standby, `wal_level = minimal`, extension lifecycle and `pg_upgrade`.
-- Fuzzers for the query parser, analyzer and codec under ASan/UBSan; a soak test at 1,000 updates per second with `sift.verify` checks;
-  `bench/bench check oracle ENGINE` compares match sets with a tsvector oracle.
+- `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
+- Physical standbys answer queries through generic WAL (pg_sift installed there); set `hot_standby_feedback = on` to avoid retryable
+  "segment recycled during scan" errors. Logical replication does not carry indexes. pg_dump restores rebuild the index.
+- `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
 
-## Security, contributing, license
+| GUC | default | meaning |
+|---|---|---|
+| `sift.max_expansions` | 512 | terms a prefix, wildcard, regex or fuzzy leaf may expand to (error above) |
+| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
+| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 
-Report crashes, wrong results and index corruption privately as described in [SECURITY.md](SECURITY.md). To build, test and send changes see
-[CONTRIBUTING.md](CONTRIBUTING.md). pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in
-[NOTICE](NOTICE).
+Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+(`none` or `en`), `case_folding` and `accent_folding` (true), `phrase_index` (`none` or `pairs`), `prefix_index` (0-15), `fields`,
+`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
+
+## Limits
+
+- PostgreSQL 18 only; x86-64 tested (other architectures untested); heap tables only; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
+- Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
+- Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.
+- Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
+- Phrases are rechecked in the heap unless the index uses `phrase_index = pairs`.
+- `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it.
+- Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
+  still work).
+- Partitions: BM25 statistics are per partition, so scores can differ across partitions.
+- Partitions: `sift.max_score()` is not available through a parent (call it on a partition).
+- Partitions: the score cannot be used inside an aggregate or a non-nested-loop join; compute it in a subquery with `OFFSET 0` or `LIMIT`.
+- Ranked partition scans are never parallel, and neither are scans with a pushed-down filter.
+- Facets: text keys only (use an expression index for integers), cost linear in the distinct values, tables with row-level security are
+  refused.
+- pg_upgrade is tested within one major version only. `pg_sift_test` (built with `SIFT_TESTING=1`) is for the test suite only.
+
+## Security and license
+
+`make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants), and
+`make installcheck` runs the regression tests against a server. Report crashes, wrong results and index corruption privately as described
+in [SECURITY.md](SECURITY.md); to contribute see [CONTRIBUTING.md](CONTRIBUTING.md). pg_sift is released under the
+[PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
