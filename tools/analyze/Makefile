@@ -6,12 +6,12 @@
 # `./harness bench FILE [MODE [STEM]]` measures throughput (one doc per line).
 SRC = ../../src
 PGINC = $(shell pg_config --includedir-server)
-PGLIB = $(shell pg_config --libdir)
+PGLIB = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
 CFLAGS = -O2 -g -march=x86-64 -mtune=generic -Wall -Wno-unused-function -I$(SRC) -I$(PGINC)
 ifdef SANITIZE
 CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 endif
-LIBS = $(PGLIB)/libpgcommon.a $(PGLIB)/libpgport.a -lm
+LIBS = $(PGLIB) -lpgcommon -lpgport -lm
 DATA ?= data
 # Memory belongs to memory contexts in the backend; the harness never frees it
 export ASAN_OPTIONS = detect_leaks=0
