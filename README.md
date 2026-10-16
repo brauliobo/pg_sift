@@ -18,8 +18,13 @@ Requires PostgreSQL 18 (server headers, `pg_config` on `PATH`) and a C compiler.
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
 ```
 
-Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)). Then, as a superuser (the extension creates the schema `sift`); after
-installing a newer version run `ALTER EXTENSION pg_sift UPDATE`:
+- Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)).
+- Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [release](https://github.com/brauliobo/pg_sift/releases) and
+  `sudo apt install ./postgresql-18-pg-sift_1.1.0-1_amd64.deb`.
+- RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v1.1.0/pg_sift_18-1.1.0-1.el9.x86_64.rpm`.
+
+Then, as a superuser (the extension creates the schema `sift`); after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`:
 
 ```sql
 CREATE EXTENSION pg_sift;
