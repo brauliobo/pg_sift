@@ -19,6 +19,7 @@ Commands
   run        measure: articles (full-text search on Simple English Wikipedia) and/or places (multi-field
              autocomplete on GeoNames); writes raw tables per dataset and tier into the result directory
   report     turn result directories into results.tsv (chart input), builds.tsv and tables.md
+  charts     draw the SVG charts of docs/img from the committed docs/results/*.tsv (stdlib python, deterministic)
   all        setup, run and report in one go (the clean-checkout reproduction)
   cold       like run, but every query starts with the index and heap evicted from the caches
   check      correctness (check, suite, workload and workers start the tier's cluster, load the corpus if needed and
@@ -49,7 +50,7 @@ Options (not every option applies to every command)
   --rounds MIN-MAX  interleaved rounds: stop once every cell's spread is under 15% after MIN, at most MAX
   --out DIR         result directory (default bench/out/run-<UTC time>, gitignored; `bench/out/latest` links
                     to the last one). report: where results.tsv / builds.tsv / tables.md are written
-  --docs            report: also write docs/results/<dataset>.tsv (the committed chart input)
+  --docs            report: also write docs/results/<dataset>.tsv (the committed chart input) and redraw docs/img
   --no-build        setup/all: use the engines already built under $SIFT_BENCH_ROOT
   --no-datasets     setup/all: do not download the datasets
   -h, --help        this text
@@ -86,6 +87,7 @@ Examples
   bench/bench setup && bench/bench run --tier full --engines sift,pg_search
   bench/bench run --dataset places --tier ab --duration 4
   bench/bench report --docs --engines sift,sift_pairs,pg_search bench/out/latest
+  bench/bench charts                                  redraw docs/img from docs/results
   bench/bench check oracle sift 200
   bench/bench clean --all
 EOF
@@ -240,6 +242,12 @@ cmd_report() {
   [[ -z $docs ]] || args+=(--per-dataset "$REPO/docs/results")
   python3 -I "$STEPS/tables.py" "${args[@]}" "${specs[@]}"
   echo; echo "written: $out/{results.tsv,builds.tsv,tables.md}${docs:+ and $REPO/docs/results/}"
+  [[ -z $docs ]] || cmd_charts
+}
+
+cmd_charts() {
+  command -v python3 >/dev/null || die "python3 is required"
+  python3 -I "$STEPS/charts.py" --results "$REPO/docs/results" --out "$REPO/docs/img"
 }
 
 cmd_all() {
@@ -303,6 +311,7 @@ case $cmd in
   run) cmd_run ;;
   cold) cmd_run cold ;;
   report) cmd_report ;;
+  charts) cmd_charts ;;
   all) cmd_all ;;
   check) cmd_check ;;
   suite) cmd_suite ;;

@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="452" viewBox="0 0 860 452" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Autocomplete latency by query class</title>
+<desc id="d">p1: sift 0.71, pg_search 0.92; p2: sift 0.56, pg_search 1.09; p3: sift 0.37, pg_search 1.22; p4: sift 0.34, pg_search 1.26; w1: sift 0.21, pg_search 1.34; a2: sift 0.27, pg_search 1.81; a2s: sift 0.34, pg_search 1.56; a3: sift 0.31, pg_search 3.00; x2: sift 0.29, pg_search 2.14</desc>
+<rect x="0.5" y="0.5" width="859" height="451" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+<text x="20" y="30" font-size="16" text-anchor="start" fill="#24292f" font-weight="bold">Autocomplete latency by query class</text>
+<text x="20" y="48" font-size="12" text-anchor="start" fill="#57606a">p50 milliseconds, lower is better</text>
+<rect x="20" y="62" width="12" height="12" fill="#0072B2"/>
+<text x="37" y="72" font-size="12" text-anchor="start" fill="#24292f">sift</text>
+<rect x="83" y="62" width="12" height="12" fill="#D55E00"/>
+<text x="100" y="72" font-size="12" text-anchor="start" fill="#24292f">pg_search</text>
+<rect x="181" y="62" width="12" height="12" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="198" y="72" font-size="12" text-anchor="start" fill="#57606a">rum: pending (no data yet)</text>
+<line x1="74" y1="370" x2="836" y2="370" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="374" font-size="10" text-anchor="end" fill="#57606a">0</text>
+<line x1="74" y1="302.5" x2="836" y2="302.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="306.5" font-size="10" text-anchor="end" fill="#57606a">1</text>
+<line x1="74" y1="235" x2="836" y2="235" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="239" font-size="10" text-anchor="end" fill="#57606a">2</text>
+<line x1="74" y1="167.5" x2="836" y2="167.5" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="171.5" font-size="10" text-anchor="end" fill="#57606a">3</text>
+<line x1="74" y1="100" x2="836" y2="100" stroke="#d8dee4" stroke-width="1"/>
+<text x="66" y="104" font-size="10" text-anchor="end" fill="#57606a">4</text>
+<text transform="translate(18 235) rotate(-90)" font-size="11" text-anchor="middle" fill="#57606a">p50 latency (ms)</text>
+<rect x="87.3" y="322.1" width="28" height="47.9" fill="#0072B2"/>
+<text x="101.3" y="317.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.71</text>
+<rect x="117.3" y="307.9" width="28" height="62.1" fill="#D55E00"/>
+<text x="131.3" y="302.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.92</text>
+<text x="116.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">p1</text>
+<rect x="172" y="332.2" width="28" height="37.8" fill="#0072B2"/>
+<text x="186" y="327.2" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.56</text>
+<rect x="202" y="296.4" width="28" height="73.6" fill="#D55E00"/>
+<text x="216" y="291.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.09</text>
+<text x="201" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">p2</text>
+<rect x="256.7" y="345" width="28" height="25" fill="#0072B2"/>
+<text x="270.7" y="340" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.37</text>
+<rect x="286.7" y="287.6" width="28" height="82.3" fill="#D55E00"/>
+<text x="300.7" y="282.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.22</text>
+<text x="285.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">p3</text>
+<rect x="341.3" y="347.1" width="28" height="23" fill="#0072B2"/>
+<text x="355.3" y="342.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.34</text>
+<rect x="371.3" y="284.9" width="28" height="85" fill="#D55E00"/>
+<text x="385.3" y="279.9" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.26</text>
+<text x="370.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">p4</text>
+<rect x="426" y="355.8" width="28" height="14.2" fill="#0072B2"/>
+<text x="440" y="350.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.21</text>
+<rect x="456" y="279.6" width="28" height="90.5" fill="#D55E00"/>
+<text x="470" y="274.6" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.34</text>
+<text x="455" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">w1</text>
+<rect x="510.7" y="351.8" width="28" height="18.2" fill="#0072B2"/>
+<text x="524.7" y="346.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.27</text>
+<rect x="540.7" y="247.8" width="28" height="122.2" fill="#D55E00"/>
+<text x="554.7" y="242.8" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.81</text>
+<text x="539.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">a2</text>
+<rect x="595.3" y="347.1" width="28" height="23" fill="#0072B2"/>
+<text x="609.3" y="342.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.34</text>
+<rect x="625.3" y="264.7" width="28" height="105.3" fill="#D55E00"/>
+<text x="639.3" y="259.7" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">1.56</text>
+<text x="624.3" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">a2s</text>
+<rect x="680" y="349.1" width="28" height="20.9" fill="#0072B2"/>
+<text x="694" y="344.1" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.31</text>
+<rect x="710" y="167.5" width="28" height="202.5" fill="#D55E00"/>
+<text x="724" y="162.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.00</text>
+<text x="709" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">a3</text>
+<rect x="764.7" y="350.4" width="28" height="19.6" fill="#0072B2"/>
+<text x="778.7" y="345.4" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.29</text>
+<rect x="794.7" y="225.5" width="28" height="144.5" fill="#D55E00"/>
+<text x="808.7" y="220.5" font-size="10" text-anchor="middle" fill="#24292f" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.14</text>
+<text x="793.7" y="388" font-size="12" text-anchor="middle" fill="#24292f" font-weight="bold">x2</text>
+<line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
+<text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes</text>
+<text x="20" y="436" font-size="11" text-anchor="start" fill="#57606a">GeoNames cities500, 236,262 places, top-20, 1 client, median of 6 rounds; 8-core desktop, shared host (load avg 4-29); Oct 2026.</text>
+</svg>
