@@ -15,7 +15,8 @@
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
-#define SIFT_FORMAT_MINOR		0
+/* 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before */
+#define SIFT_FORMAT_MINOR		1
 
 /* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
 #define SIFT_SB_SHIFT			8

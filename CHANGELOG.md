@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Phrase queries from word positions: `CREATE INDEX` now stores the positions of the words of every document (reloption `positions`,
+  default on; `positions = off` keeps the previous layout), and a phrase that every match must contain (not under `OR` or `NOT`) is
+  verified in the index instead of re-tokenizing the heap text of each candidate; counts and ranked scans of such phrases read no
+  heap tuple. On the 218k-article benchmark phrase queries run about 4.9x faster than before and 2.4x faster than pg_search, at the
+  price of a default index 2.6x larger (48 MB to 124 MB, pg_search: 160 MB) and a build about 30% slower. Documents inserted after
+  the build (mutable segments, and the segments promoted and merged from them), indexes built by earlier versions and terms with at
+  most two postings have no positions and keep the heap recheck until the index is rebuilt with `REINDEX`.
+- On-disk format 1.1 (metapage minor version): indexes created or reindexed by this version are 1.1 and must not be opened by earlier
+  releases, which write 1.0 and do not check the minor version (`REINDEX` the index there to go back). Format 1.0 indexes stay readable and work without positions until
+  `REINDEX`. A build that meets a newer minor version than it knows refuses the index with "REINDEX the index".
 - PostgreSQL 17 support, with 19 (release candidate) experimental: `make` accepts 17 and newer, and the version differences live in
   `src/sift_compat.h`. PostgreSQL 17 has no `extension_control_path`, so `scripts/pgtest.sh install` copies sift into the server's own
   directories there (`SIFT_SUDO=sudo` when they are not writable) and the update-path checks of the lifecycle test are skipped. CI
