@@ -26,6 +26,7 @@
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_posting.h"
+#include "sift_prefix.h"
 #include "sift_pushdown.h"
 #include "sift_sql.h"
 
@@ -63,9 +64,14 @@ static void
 define_gucs(void)
 {
 	DefineCustomIntVariable("sift.max_expansions",
-							"Maximum terms a wildcard, regex or fuzzy leaf may expand to.",
-							NULL, &sift_max_expansions, 512, 1, 1000000,
+							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
+							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",
+							&sift_max_expansions, 512, 1, 1000000,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.prefix_cache_size",
+							"Memory a backend keeps the postings of broad prefixes in (kB), 0 to keep none.",
+							NULL, &sift_prefix_cache_size, 8192, 0, 1048576,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_scan",
 							 "Enables the sift custom scan (ranked and unordered).",
 							 NULL, &sift_enable_scan, true,

@@ -154,8 +154,8 @@ and 1.54x. Judge the default index's phrase and `count(*)` on the full tier. The
 
 Multi-field autocomplete as an application would run it: sift indexes the name section and the all-fields text with
 `fields = 'name', prefix_index = 3`, pg_search indexes `edge_ngram(1, 15)` fields for both; every typed word is a
-prefix. `sift.max_expansions` is set to 100000 for the database: at the default 512, prefixes of four or more letters
-of common words (`pari*`, `san*`) raise the expansion error on this corpus. Single client, 4 interleaved rounds of 2 s
+prefix. `sift.max_expansions` is set to 100000 for the database so that every typed prefix keeps scoring as the max over its terms: at the default
+512, prefixes of four or more letters of common words (`pari*`, `san*`) read as one term instead (before that was an error). Single client, 4 interleaved rounds of 2 s
 per cell (`bench/bench run --full --dataset places --engines sift,pg_search,pg_textsearch,rum --rounds 4-4 --duration 2`,
 load 8.7-29). Index size, build time and p50 latency in ms of the top-20 workload per query class:
 

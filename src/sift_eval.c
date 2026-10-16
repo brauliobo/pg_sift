@@ -27,6 +27,7 @@
 #include "sift_eval.h"
 #include "sift_kernels.h"
 #include "sift_mutable.h"
+#include "sift_prefix.h"
 #include "sift_segment.h"
 
 #include "port/pg_bitutils.h"
@@ -36,6 +37,7 @@ typedef struct LeafTerm
 	char	   *term;
 	int			len;
 	SiftTermInfo info;
+	const uint8 *blob;			/* a wide prefix's term: its blob in memory (NULL: inline); else read from the segment */
 	float4		w;				/* scoring leaves: (boost * idf) * (k1 + 1), idf of the df over all segments */
 } LeafTerm;
 
@@ -48,6 +50,11 @@ typedef struct EvalLeaf
 	bool		scoring;		/* a positive leaf: counts in the score */
 	const SiftQNode *phrase;	/* the phrase this leaf is a term of, or NULL */
 	bool		optional;		/* phrase leaf that a match need not satisfy */
+	char	   *wide;			/* prefix with more terms than sift.max_expansions: the term it reads as (indexed_leaf's) */
+	int			widelen;
+	double		tail_none;		/* estimate: P(no document has any term of the prefix past the limit) over all segments */
+	double		tail_postings;
+	double		tail_terms;
 	int		   *nterms;			/* [nsegs] */
 	LeafTerm  **terms;			/* [nsegs] */
 	int			nuniq;			/* distinct terms over all segments, ascending, with their weights */
@@ -432,11 +439,15 @@ typedef struct Expand
 {
 	SiftPlan   *plan;
 	const SiftTermMatcher *matcher;
+	SiftQKind	kind;			/* of the leaf */
 	SiftSegment *live_in;		/* when set, terms without a live posting in it are skipped */
 	LeafTerm   *terms;
 	int			n;
 	int			cap;
 	bool		over;
+	double		tail_none;		/* a capped prefix: what the terms past the limit add to the estimate */
+	double		tail_postings;
+	double		tail_terms;
 } Expand;
 
 static void
@@ -469,7 +480,13 @@ expand_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (e->n == sift_max_expansions)
 	{
 		e->over = true;
-		return false;
+		/* an estimate of a prefix reads on, from the dictionary only: the terms it keeps are the first ones, not the typical ones */
+		if (!e->plan->capped || e->kind != SQ_PREFIX)
+			return false;
+		e->tail_none *= 1.0 - Min(1.0, info->df / Max((double) e->plan->stats.ndocs, 1.0));
+		e->tail_postings += info->df;
+		e->tail_terms++;
+		return true;
 	}
 	expand_add(e, term, len, info);
 	return true;
@@ -529,7 +546,7 @@ static bool
 expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
 {
 	SiftSegment *seg = p->seg[s];
-	Expand		e = {.plan = p, .matcher = l->m, .live_in = live_only ? seg : NULL};
+	Expand		e = {.plan = p, .matcher = l->m, .kind = l->node->kind, .live_in = live_only ? seg : NULL, .tail_none = 1.0};
 	SiftTermInfo info;
 
 	if (l->m == NULL)
@@ -550,6 +567,9 @@ expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
 	sift_sr_release(&seg->sr);
 	l->nterms[s] = e.n;
 	l->terms[s] = e.terms;
+	l->tail_none *= e.tail_none;
+	l->tail_postings += e.tail_postings;
+	l->tail_terms += e.tail_terms;
 	return e.over;
 }
 
@@ -568,28 +588,77 @@ expand_live(SiftPlan *p, EvalLeaf *l)
 	return any;
 }
 
+/* The term that indexed_leaf makes of a prefix of the leaf's field */
+static int
+prefix_term(const SiftQNode *n, char *term)
+{
+	int			len = 0;
+
+	if (n->field)
+		term[len++] = SIFT_FIELD_BYTE(n->field);
+	term[len++] = SIFT_PREFIX_SEP;
+	memcpy(term + len, n->text, n->textlen);
+	return len + n->textlen;
+}
+
+/*
+ * A prefix with more terms than the limit is not an OR of its terms, one weight each: it reads as the
+ * one term prefix_index would have indexed for it (sift_prefix.c), in every segment, so that the
+ * leaf is weighed alike everywhere.
+ */
+static void
+widen_leaf(SiftPlan *p, EvalLeaf *l)
+{
+	const SiftQNode *node = l->node;
+	SiftScoreRef ref = {(float4) p->st->dir.meta.k1, (float4) p->st->dir.meta.b, 0};
+
+	l->wide = MemoryContextAlloc(p->mcxt, node->textlen + 2);
+	l->widelen = prefix_term(node, l->wide);
+	for (int s = 0; s < p->nsegs; s++)
+	{
+		LeafTerm   *t = MemoryContextAllocZero(p->mcxt, sizeof(LeafTerm));
+
+		for (int i = 0; i < l->nterms[s]; i++)
+			pfree(l->terms[s][i].term);
+		if (l->terms[s])
+			pfree(l->terms[s]);
+		ref.avgdl = p->seg[s]->hdr->avgdl_ref;
+		t->blob = sift_prefix_union(p->seg[s], l->m, l->wide, l->widelen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
+		t->term = l->wide;
+		t->len = l->widelen;
+		l->nterms[s] = t->info.df > 0;
+		l->terms[s] = t;
+	}
+}
+
 /*
  * A dictionary keeps the terms of vacuumed docs until its segment is
  * rewritten. They match nothing, so the limit applies to the terms with a
  * live posting; they are only told apart once the limit is reached, which
- * keeps the common expansion free of posting reads.
+ * keeps the common expansion free of posting reads. A prefix over the limit
+ * is wide, any other leaf is an error.
  */
 static void
 resolve_leaf(SiftPlan *p, EvalLeaf *l)
 {
 	const SiftQNode *node = l->node;
+	bool		over = false;
 
 	l->m = node->kind == SQ_TERM ? NULL : sift_matcher_create(node);
 	if (l->m == NULL)
 		l->hash = sift_term_hash(node->text, node->textlen);
 	l->nterms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(int));
 	l->terms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(LeafTerm *));
-	for (int s = 0; s < p->nsegs; s++)
-		if (expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true)))
-			limit_error(node);
-	if (!p->capped && distinct_terms(p, l) > sift_max_expansions &&
-		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions))
+	l->tail_none = 1.0;
+	for (int s = 0; s < p->nsegs && !over; s++)
+		over = expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true));
+	over |= !p->capped && distinct_terms(p, l) > sift_max_expansions &&
+		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions);
+	if (!over)
+		return;
+	if (node->kind != SQ_PREFIX)
 		limit_error(node);
+	widen_leaf(p, l);
 }
 
 /* ---------- mutable segments ---------- */
@@ -733,7 +802,10 @@ leaf_mut_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 	leaf_mut_term(p, l, key)->df++;
 }
 
-/* One more document for every term of a scoring leaf that the doc has (deleted docs count like in the statistics) */
+/*
+ * One more document for every term of a scoring leaf that the doc has, for the wide term of a wide
+ * leaf if it has any word of it (deleted docs count like in the statistics)
+ */
 static void
 doc_count_terms(SiftPlan *p, const SiftMutDoc *d)
 {
@@ -743,8 +815,16 @@ doc_count_terms(SiftPlan *p, const SiftMutDoc *d)
 		const char *t = d->terms;
 
 		for (int j = 0; l->scoring && j < d->nterms; t += d->len[j++])
-			if (leaf_term_hit(l, t, d->len[j], d->hash[j]))
-				leaf_mut_count(p, l, t, d->len[j]);
+		{
+			if (!leaf_term_hit(l, t, d->len[j], d->hash[j]))
+				continue;
+			if (l->wide)
+			{
+				leaf_mut_count(p, l, l->wide, l->widelen);
+				break;
+			}
+			leaf_mut_count(p, l, t, d->len[j]);
+		}
 	}
 }
 
@@ -989,23 +1069,33 @@ bind_scoring(SiftPlan *p)
 			weigh_leaf(p, &p->leaves[i]);
 }
 
-/* Best term of the leaf in a mutable doc, weighed like the others */
+/* The weighed term of the leaf with these bytes */
+static const LeafTerm *
+leaf_weighed(const EvalLeaf *l, const char *term, int len)
+{
+	LeafTerm	key = {.term = (char *) term,.len = len},
+			   *k = &key;
+
+	return *(LeafTerm **) bsearch(&k, l->uniq, l->nuniq, sizeof(LeafTerm *), leaf_term_cmp);
+}
+
+/* Best term of the leaf in a mutable doc, weighed like the others; a wide leaf has one term, with the tf of all its words */
 static float4
 mut_leaf_score(const EvalLeaf *l, const SiftMutDoc *d, float4 knorm)
 {
 	const char *t = d->terms;
 	float4		best = 0;
+	int			wtf = 0;
 
 	for (int j = 0; j < d->nterms; t += d->len[j++])
 		if (leaf_term_hit(l, t, d->len[j], d->hash[j]))
 		{
-			LeafTerm	key = {.term = (char *) t, .len = d->len[j]},
-					   *k = &key;
-			LeafTerm  **at = bsearch(&k, l->uniq, l->nuniq, sizeof(LeafTerm *), leaf_term_cmp);
-
-			best = Max(best, sift_kern_bm25((*at)->w, d->tf[j], knorm));
+			if (l->wide)
+				wtf += d->tf[j];
+			else
+				best = Max(best, sift_kern_bm25(leaf_weighed(l, t, d->len[j])->w, d->tf[j], knorm));
 		}
-	return best;
+	return wtf > 0 ? sift_kern_bm25(leaf_weighed(l, l->wide, l->widelen)->w, Min(wtf, SIFT_MAX_TF), knorm) : best;
 }
 
 /*
@@ -1501,7 +1591,9 @@ leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, const IterCurs *
 
 	for (int i = 0; i < l->nterms[s]; i++)
 	{
-		pc[i] = sift_post_open(&p->seg[s]->sr, &l->terms[s][i].info, cx);
+		const LeafTerm *t = &l->terms[s][i];
+
+		pc[i] = l->wide ? sift_post_open_blob(&t->info, t->blob, cx) : sift_post_open(&p->seg[s]->sr, &t->info, cx);
 		kid[i] = sift_post_cursor(pc[i]);
 		if (cs && !narrowed)
 			cs->posting = lappend(cs->posting, pc[i]);
@@ -3272,7 +3364,9 @@ leaf_prob(const SiftPlan *p, const EvalLeaf *l, Estimate *est)
 			est->postings += l->terms[s][i].info.df;
 			est->terms++;
 		}
-	return 1.0 - none;
+	est->postings += l->tail_postings;
+	est->terms += l->tail_terms;
+	return 1.0 - none * l->tail_none;
 }
 
 static double

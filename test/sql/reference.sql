@@ -702,7 +702,7 @@ RETURNS real LANGUAGE sql STABLE AS $$
 $$;
 
 -- Dictionary terms of an expansion leaf (cached per load), capped by
--- sift_ref.max_expansions, else sift.max_expansions
+-- sift_ref.max_expansions, else sift.max_expansions; a prefix is not capped (see is_wide)
 CREATE OR REPLACE FUNCTION sift_ref.expand(a jsonb) RETURNS text[] LANGUAGE plpgsql AS $$
 DECLARE
 	k jsonb := a - 'b' || jsonb_build_object('mutant', current_setting('sift_ref.mutant', true));
@@ -714,11 +714,19 @@ BEGIN
 		terms := array(SELECT term FROM pg_temp.sift_ref_df WHERE sift_ref.exp_match(a, term) ORDER BY term);
 		INSERT INTO pg_temp.sift_ref_exp VALUES (k, terms);
 	END IF;
-	IF cardinality(terms) > cap THEN
+	IF cardinality(terms) > cap AND a ->> 'kind' <> 'prefix' THEN
 		PERFORM sift_ref.limit_error(1, format('%s expansions exceed sift.max_expansions', cardinality(terms)));
 	END IF;
 	RETURN CASE WHEN sift_ref.mutant('prefix_trunc') THEN terms[1:4] ELSE terms END;
 END $$;
+
+-- A prefix with more terms than sift.max_expansions (the engine's, whatever the reference's own cap) is not scored as
+-- the max over its terms but as the one term prefix_index would index: tf the occurrences of its words, df the
+-- documents that have one
+CREATE OR REPLACE FUNCTION sift_ref.is_wide(a jsonb) RETURNS bool LANGUAGE sql STABLE AS $$
+	SELECT a ->> 'kind' = 'prefix'
+		AND cardinality(sift_ref.expand(a)) > coalesce(nullif(current_setting('sift.max_expansions', true), '')::int, 512)
+$$;
 
 -- The normalized form of q: scores are defined on it (float4 sums depend on the order)
 CREATE OR REPLACE FUNCTION sift_ref.canonical(q text, idx regclass) RETURNS text LANGUAGE plpgsql AS $$
@@ -781,6 +789,13 @@ BEGIN
 				FROM (SELECT t, min(n) AS n FROM jsonb_array_elements_text(a -> 'terms') WITH ORDINALITY u(t, n) GROUP BY t) p
 				ORDER BY n);
 		WHEN 'exp' THEN
+			IF sift_ref.is_wide(a) THEN
+				RETURN ARRAY[format('SELECT r.tid, sift_ref.bm25(least(f.tf, 255)::int, d.dl, u.df, %s, %s::real) AS s FROM r
+					JOIN (SELECT tid, sum(tf) AS tf FROM pg_temp.sift_ref_tf WHERE term = ANY (%L::text[]) GROUP BY tid) f ON f.tid = r.tid
+					JOIN pg_temp.sift_ref_doc d ON d.tid = r.tid
+					CROSS JOIN (SELECT count(DISTINCT tid) AS df FROM pg_temp.sift_ref_tf WHERE term = ANY (%L::text[])) u',
+					consts, a ->> 'b', sift_ref.expand(a), sift_ref.expand(a))];
+			END IF;
 			RETURN ARRAY[format(one, CASE WHEN sift_ref.mutant('dismax_sum') THEN 'sum(' || s || ' ORDER BY f.term)'
 					ELSE 'max(' || s || ')' END,
 				format('= ANY (%L::text[])', sift_ref.expand(a)), 'GROUP BY r.tid')];
