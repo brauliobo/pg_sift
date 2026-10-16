@@ -32,8 +32,8 @@
 #include "sift.h"
 #include "sift_pushdown.h"
 
-/* Per bitmap tuple and per heap page of the mask: the tbm entry, then its mask row and AND in every block (measured) */
-#define FILTER_ENTRY_COST	(5 * cpu_tuple_cost)
+/* Per bitmap tuple and per heap page of the mask: the tbm entry, then its mask row and AND in every block (measured: ~0.1 us) */
+#define FILTER_ENTRY_COST	(2 * cpu_tuple_cost)
 
 int			sift_filter_pushdown = SIFT_PUSHDOWN_ON;
 
