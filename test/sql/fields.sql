@@ -135,12 +135,161 @@ SELECT * FROM bad('ft');
 SELECT * FROM bad('fg');
 SELECT sift.verify('ft_idx', true), sift.verify('fg_idx', true);
 
+-- a qualified group keeps its qualifier next to groups of the same operator, in front of a NOT and in nested groups
+CREATE FUNCTION nrows(pred text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE 'SELECT count(*) FROM ft WHERE ' || pred INTO n;
+	RETURN n;
+END $$;
+SELECT q, cnt('ft', q) = nrows(p) AS idx, seqcnt('ft', q) = nrows(p) AS seq, nrows(p) > 0 AS nonempty FROM (VALUES
+	('name:(alpha beta)', $$sift.match(name, 'alpha beta')$$),
+	('city:(alpha OR beta)', $$sift.match(city, 'alpha OR beta')$$),
+	('name:{alpha beta}', $$sift.match(name, 'alpha OR beta')$$),
+	('bet name:(alpha beta)', $$sift.match(name, 'alpha beta') AND sift.match(sections(name, city, rest), 'bet')$$),
+	('alpha OR city:(beta OR bet)', $$sift.match(sections(name, city, rest), 'alpha') OR sift.match(city, 'beta OR bet')$$),
+	('name:(alpha NOT beta)', $$sift.match(name, 'alpha NOT beta')$$),
+	('bet name:(NOT beta)', $$sift.match(sections(name, city, rest), 'bet') AND NOT sift.match(name, 'beta')$$),
+	('name:(city:alpha beta)', $$sift.match(city, 'alpha') AND sift.match(name, 'beta')$$),
+	('name:(alpha (beta OR bet))', $$sift.match(name, 'alpha (beta OR bet)')$$)) v(q, p);
+SELECT sift.parse_query('x name:(alpha beta) city:{bet z*}', 'ft_idx'::regclass);
+
+-- without fields a colon is text, in groups as well: name:(a b) are the words name:a and name:b
+SELECT sift.parse_query('x name:(alpha OR beta)^2 y:(z)', 'fn_idx'::regclass);
+SELECT sift.parse_query('name:(alpha beta) NOT name:{gamma}');
+SELECT sift.match('name alpha, name beta', 'name:(alpha beta)'), sift.match('alpha beta', 'name:(alpha beta)');
+SELECT sift.parse_query('name:("alpha beta" gamma)', 'fn_idx'::regclass);
+
+-- one answer for a query on every plan, and the error of an unknown field with its fields
+CREATE FUNCTION fcnt(tbl text, qual text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	PERFORM set_config('enable_indexscan', CASE WHEN mode = 'seq' THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('enable_bitmapscan', CASE WHEN mode IN ('seq', 'scan') THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('sift.enable_scan', CASE WHEN mode IN ('seq', 'bitmap') THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('sift.enable_count', CASE WHEN mode IN ('seq', 'bitmap') THEN 'off' ELSE 'on' END, true);
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, qual) INTO n;
+	RETURN n::text;
+EXCEPTION WHEN OTHERS THEN
+	RETURN sqlstate || ' ' || sqlerrm;
+END $$;
+-- the plan's index lines, to see which index serves
+CREATE FUNCTION plan_index(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+	r text[] := '{}';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (costs off) ' || q LOOP
+		IF l ~ 'Index' THEN r := r || trim(l); END IF;
+	END LOOP;
+	RETURN array_to_string(r, ' / ');
+END $$;
+-- fcnt over the seq scan, bitmap and sift scan plans: the same text means one answer
+CREATE FUNCTION plans(tbl text, qual text) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE WHEN count(DISTINCT r) = 1 THEN min(r) ELSE string_agg(m || '=' || r, ' ') END
+	FROM (SELECT m, fcnt(tbl, qual, m) r FROM unnest(ARRAY['seq', 'bitmap', 'scan']) m) t $$;
+
+SELECT q, plans('ft', 'sections(name, city, rest) @@> ' || quote_literal(q)) FROM unnest(ARRAY[
+	'name:alpha', 'nope:alpha', 'nope:(alpha beta)', 'name:(alpha nope:beta)', 'alpha NOT nope:beta', 'name:{alpha nope:beta}^2']) q;
+SELECT q, plans('fn', 'sections(name, city, rest) @@> ' || quote_literal(q)) FROM unnest(ARRAY[
+	'name:alpha', 'nope:alpha', 'nope:(alpha beta)', 'name:(alpha OR beta) gamma']) q;
+SELECT q, plans('ft', 'name @@> ' || quote_literal(q)) AS no_sift_index_on_the_column FROM unnest(ARRAY['name:alpha', 'name:(alpha beta)']) q;
+
 -- the field count is part of the analyzer
 ALTER INDEX fn_idx SET (fields = 'name');
 SELECT count(*) FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
 REINDEX INDEX fn_idx;
 SELECT count(*) > 0 AS name_matches FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
 
-DROP TABLE ft, fg, fn;
-DROP FUNCTION fqs(), cnt(text, text), seqcnt(text, text), colcnt(text, text), bad(text), sections(text, text, text);
+-- two indexes on one key: `@@>` means the default analyzer, so the index with fields (the lowest OID
+-- here) does not serve it; match_idx names the analyzer
+CREATE TABLE fm (id int PRIMARY KEY, name text);
+INSERT INTO fm SELECT id, name FROM ft WHERE id < 100;
+INSERT INTO fm VALUES (9001, 'name alpha'), (9002, 'alpha'), (9003, 'beta name');
+CREATE INDEX fm_fields ON fm USING sift (name) WITH (fields = 'name');
+CREATE INDEX fm_plain ON fm USING sift (name);
+ANALYZE fm;
+SELECT q, plans('fm', 'name @@> ' || quote_literal(q)) FROM unnest(ARRAY['name:alpha', 'nope:alpha', 'name:(alpha OR beta)', 'name alpha']) q;
+SELECT q, plans('fm', 'sift.match_idx(name, ' || quote_literal(q) || ', ''fm_fields''::regclass)') FROM unnest(ARRAY['name:alpha', 'name:(alpha OR beta)', 'name alpha']) q;
+SELECT plans('fm', 'sift.match_idx(name, ''nope:alpha'', ''fm_fields''::regclass)');
+SET enable_seqscan = off;
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+SELECT plan_index('SELECT count(*) FROM fm WHERE name @@> ''name:alpha''');
+SELECT plan_index('SELECT count(*) FROM fm WHERE sift.match_idx(name, ''name:alpha'', ''fm_fields''::regclass)');
+RESET sift.enable_scan;
+RESET sift.enable_count;
+SET enable_bitmapscan = off;
+SELECT plan_index('SELECT count(*) FROM fm WHERE name @@> ''name:alpha''');
+SELECT plan_index('SELECT count(*) FROM fm WHERE sift.match_idx(name, ''name:alpha'', ''fm_fields''::regclass)');
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- with the default analyzer's index gone, the index with fields is what `@@>` means
+DROP INDEX fm_plain;
+SELECT q, plans('fm', 'name @@> ' || quote_literal(q)) FROM unnest(ARRAY['name:alpha', 'nope:alpha', 'name:(alpha OR beta)', 'name alpha']) q;
+DROP TABLE fm;
+
+-- partitions bind `@@>` to their own indexes, and an unknown field fails only the partitions that are read
+CREATE TABLE fp (id int, name text) PARTITION BY RANGE (id);
+CREATE TABLE fp1 PARTITION OF fp FOR VALUES FROM (0) TO (1000);
+CREATE TABLE fp2 PARTITION OF fp FOR VALUES FROM (1000) TO (2000);
+CREATE TABLE fp3 PARTITION OF fp FOR VALUES FROM (2000) TO (3000);
+INSERT INTO fp SELECT i + k * 1000, n FROM generate_series(0, 2) k, (VALUES (1, 'name alpha'), (2, 'alpha'), (3, 'beta')) v(i, n);
+CREATE INDEX fp1_idx ON fp1 USING sift (name) WITH (fields = 'name');
+CREATE INDEX fp2_idx ON fp2 USING sift (name);
+ANALYZE fp;
+SELECT 'fp1' AS rel, plans('fp1', $$name @@> 'name:alpha'$$) UNION ALL SELECT 'fp2', plans('fp2', $$name @@> 'name:alpha'$$)
+UNION ALL SELECT 'fp3', plans('fp3', $$name @@> 'name:alpha'$$) UNION ALL SELECT 'fp', plans('fp', $$name @@> 'name:alpha'$$)
+UNION ALL SELECT 'fp nope', plans('fp', $$name @@> 'nope:alpha'$$) UNION ALL SELECT 'fp2 nope', plans('fp2', $$name @@> 'nope:alpha'$$)
+UNION ALL SELECT 'fp3 nope', plans('fp3', $$name @@> 'nope:alpha'$$)
+UNION ALL SELECT 'fp nope pruned', plans('fp', $$id >= 1000 AND name @@> 'nope:alpha'$$);
+DROP TABLE fp;
+
+-- an index on the parent gives every partition its fields
+CREATE TABLE fq (id int, name text) PARTITION BY RANGE (id);
+CREATE TABLE fq1 PARTITION OF fq FOR VALUES FROM (0) TO (1000);
+CREATE TABLE fq2 PARTITION OF fq FOR VALUES FROM (1000) TO (2000);
+INSERT INTO fq SELECT i + k * 1000, n FROM generate_series(0, 1) k, (VALUES (1, 'name alpha'), (2, 'alpha'), (3, 'beta')) v(i, n);
+CREATE INDEX fq_idx ON fq USING sift (name) WITH (fields = 'name');
+ANALYZE fq;
+SELECT q, plans('fq', 'name @@> ' || quote_literal(q)) FROM unnest(ARRAY['name:alpha', 'nope:alpha', 'name alpha']) q;
+SET enable_seqscan = off;
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+SELECT plan_index('SELECT count(*) FROM fq WHERE name @@> ''name:alpha''');
+RESET sift.enable_scan;
+RESET sift.enable_count;
+SET enable_bitmapscan = off;
+SELECT plan_index('SELECT count(*) FROM fq WHERE name @@> ''name:alpha''');
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE fq;
+
+-- prepared statements and generic plans: the analyzer is bound when planning, the query is read when executing
+SET plan_cache_mode = force_generic_plan;
+PREPARE gf(text) AS SELECT count(*) FROM ft WHERE sections(name, city, rest) @@> $1;
+EXECUTE gf('name:alpha');
+EXECUTE gf('city:alpha');
+EXECUTE gf('nope:alpha');
+EXECUTE gf('name:alpha');
+CREATE TABLE fz AS SELECT * FROM ft;
+CREATE INDEX fz_idx ON fz USING sift (sections(name, city, rest));
+ANALYZE fz;
+PREPARE gz(text) AS SELECT count(*) FROM fz WHERE sections(name, city, rest) @@> $1;
+EXECUTE gz('name:alpha');
+EXECUTE gz('nope:(alpha beta)');
+EXECUTE gz('alpha');
+DEALLOCATE ALL;
+RESET plan_cache_mode;
+
+-- sift.match without an index reads the colon as text; match_idx reads it as the index does
+SELECT sift.match('name alpha', 'name:alpha') AS text_colon, sift.match('alpha', 'name:alpha') AS no_field;
+SELECT sift.match_idx('alpha' || chr(29) || 'beta', 'name:alpha', 'ft_idx'::regclass) AS in_name,
+       sift.match_idx('alpha' || chr(29) || 'beta', 'city:alpha', 'ft_idx'::regclass) AS in_city,
+       sift.match_idx('alpha' || chr(29) || 'beta', 'alpha', 'ft_idx'::regclass) AS anywhere;
+SELECT sift.match_idx('alpha', 'nope:alpha', 'ft_idx'::regclass);
+SELECT sift.match_idx('alpha', 'nope:(alpha beta)', 'ft_idx'::regclass);
+
+DROP TABLE ft, fg, fn, fz;
+DROP FUNCTION fqs(), cnt(text, text), seqcnt(text, text), colcnt(text, text), bad(text), nrows(text), fcnt(text, text, text),
+	plan_index(text), plans(text, text), sections(text, text, text);
 DROP EXTENSION pg_sift;

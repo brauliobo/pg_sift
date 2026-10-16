@@ -409,14 +409,18 @@ list_node(SiftQKind kind, List *kids)
 	return n;
 }
 
-/* Splices unboosted groups of the same operator: (a b) c == a b c */
+/* Splices unboosted groups of the same operator: (a b) c == a b c; a name:(a b) hands its qualifier to the members first */
 static List *
 add_child(List *kids, SiftQNode *c, SiftQKind kind)
 {
 	if (c->kind != kind || c->boost != 1.0f)
 		return lappend(kids, c);
 	for (int i = 0; i < c->nchild; i++)
+	{
+		if (!c->child[i]->fieldname)
+			c->child[i]->fieldname = c->fieldname;
 		kids = lappend(kids, c->child[i]);
+	}
 	return kids;
 }
 
@@ -953,24 +957,41 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 	return n;
 }
 
+#define NOT_QUALIFIABLE \
+	"a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions"
+
 /*
- * An index without fields reads name:word as the word "name:word"; one with
- * fields rejects a name it does not have. Only words and patterns carry a
- * qualifier of their own.
+ * Without fields a colon is plain text, as before fields existed: name:word is the word "name:word",
+ * and so is every word of name:(a b). An index with fields rejects a name it does not have.
  */
 static const SiftQNode *
-unqualified(const SiftQNode *raw, SiftAnalyzer *a)
+unqualified(const SiftQNode *raw, const char *name)
 {
 	SiftQNode  *n;
 
-	if (raw->fieldname == NULL || sift_analyzer_nfields(a) > 0 || raw->kind == SQ_AND || raw->kind == SQ_OR)
-		return raw;
+	if (raw->kind == SQ_PHRASE || raw->kind == SQ_REGEX)
+		SYNTAX(raw->loc, NOT_QUALIFIABLE);
 	n = palloc(sizeof(SiftQNode));
 	*n = *raw;
-	n->text = psprintf("%s:%s", raw->fieldname, raw->text);
+	n->text = psprintf("%s:%s", name, raw->text);
 	n->textlen = strlen(n->text);
 	n->fieldname = NULL;
 	return n;
+}
+
+/* The fields of a, "name, city" */
+static char *
+field_list(const SiftAnalyzer *a)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	for (const char *s = sift_analyzer_field_names(a); *s; s++)
+		if (*s == ',')
+			appendStringInfoString(&buf, ", ");
+		else
+			appendStringInfoChar(&buf, *s);
+	return buf.data;
 }
 
 /* Binds an analyzed leaf to the field it is qualified with, if any */
@@ -983,9 +1004,12 @@ qualify(SiftQNode *n, const SiftQNode *raw, SiftAnalyzer *a, const char *field)
 	if (name == NULL || n == NULL || n->kind == SQ_NOTHING)
 		return n;
 	if ((k = sift_analyzer_field(a, name, strlen(name))) == 0)
-		SYNTAX(raw->loc, "unknown field \"%s\" (the index has %d)", name, sift_analyzer_nfields(a));
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("sift query: unknown field \"%s\" (available fields: %s) at position %d", name, field_list(a), raw->loc),
+				 errhint("Fields come from the fields option of the sift index; a literal colon is written \\:.")));
 	if (n->kind == SQ_PHRASE || n->kind == SQ_REGEX)
-		SYNTAX(raw->loc, "a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions");
+		SYNTAX(raw->loc, NOT_QUALIFIABLE);
 	n->field = k;
 	n->fieldname = pstrdup(name);
 	return n;
@@ -1006,9 +1030,12 @@ analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 	if (boost > SIFT_MAX_BOOST)
 		LIMIT(raw->loc, "combined boost exceeds %g", SIFT_MAX_BOOST);
 	b = neg ? 1.0f : (float4) boost;
-	if (raw->kind != SQ_NOT && raw->kind != SQ_AND && raw->kind != SQ_OR)
-		if (raw->fieldname && sift_analyzer_nfields(a) == 0)
-			raw = unqualified(raw, a);
+	if (raw->kind != SQ_NOT && raw->kind != SQ_AND && raw->kind != SQ_OR &&
+		(raw->fieldname || field) && sift_analyzer_nfields(a) == 0)
+	{
+		raw = unqualified(raw, raw->fieldname ? raw->fieldname : field);
+		field = NULL;
+	}
 	switch (raw->kind)
 	{
 		case SQ_TERM:
@@ -1022,12 +1049,10 @@ analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 		case SQ_REGEX:
 			return qualify(analyze_regex(raw, b), raw, a, field);
 		case SQ_NOT:
-			c = analyze_node(raw->child[0], a, 1.0, true, field);
+			c = analyze_node(raw->child[0], a, 1.0, true, raw->fieldname ? raw->fieldname : field);
 			return c && c->kind != SQ_NOTHING ? new_not(c, raw->loc) : NULL;
 		case SQ_AND:
 		case SQ_OR:
-			if (raw->fieldname && sift_analyzer_nfields(a) == 0)
-				SYNTAX(raw->loc, "unknown field \"%s\" (the index has none)", raw->fieldname);
 			return analyze_bool(raw, a, boost, neg, field);
 		case SQ_NOTHING:
 			break;
