@@ -7,71 +7,82 @@ queries from the same cache state; cells are run one at a time with the engine o
 the tables report medians over the rounds.
 
 Host: 16 hardware threads, 188 GB RAM, PostgreSQL 18.6, shared with other jobs. The 1-minute load average during
-the measurements was 20-42 (articles) and 19-49 (places), so absolute numbers carry noise and no round ever reached
+the measurements was 38-58 (articles) and 19-49 (places), so absolute numbers carry noise and no round ever reached
 the 15% spread that ends a run early; compare engines within a table, not across tables or hosts.
 
 ## Articles: Simple English Wikipedia, 218,058 articles (full tier)
 
 8 clients, 6 interleaved rounds of 8 s per cell (2 s warm-up), queries are 2-15 consecutive words of random
-articles (1000 each as AND, OR and phrase); `bench/ab.sh full`. Throughput in queries per second, median
-(minimum-maximum over the rounds):
+articles (1000 each as AND, OR and phrase); `bench/ab.sh full`, load average 38-58. Throughput in queries per second,
+median (minimum-maximum over the rounds):
 
 | class | sift | sift `pairs` | pg_search | sift / pg_search | pairs / pg_search |
 |---|---:|---:|---:|---:|---:|
-| and (top-10) | 4201 (3767-5146) | 3986 (3744-5087) | 1699 (1437-1986) | 2.47 | 2.35 |
-| or (top-10) | 1053 (867-1064) | 1031 (986-1095) | 440 (395-482) | 2.39 | 2.34 |
-| phrase (top-10) | 743 (672-850) | 4569 (4090-4998) | 1478 (1082-1576) | **0.50** | 3.09 |
-| mixed (and, or, phrase) | 1137 (1038-1225) | 2153 (1850-2287) | 654 (536-751) | 1.74 | 3.29 |
-| count(*) | 391 (250-441) | 2460 (1635-2826) | 747 (450-900) | **0.52** | 3.29 |
-| filter (top-10, 2% date range) | 1253 (1124-1394) | 1583 (1226-1723) | 1353 (872-1444) | **0.93** | 1.17 |
-| join (top-10 with `categories`, region filter) | 398 (342-427) | 715 (637-849) | 101 (86-109) | 3.95 | 7.09 |
+| and (top-10) | 3692 (2440-4072) | 3715 (2890-4007) | 1605 (1463-1945) | 2.30 | 2.32 |
+| or (top-10) | 912 (732-977) | 886 (740-991) | 362 (286-394) | 2.52 | 2.45 |
+| phrase (top-10) | 974 (768-1168) | 4014 (2735-4505) | 1209 (754-1326) | **0.81** | 3.32 |
+| mixed (and, or, phrase) | 1236 (953-1334) | 1682 (1340-2061) | 507 (375-612) | 2.44 | 3.32 |
+| count(*) | 619 (419-696) | 2518 (1491-2890) | 753 (574-778) | **0.82** | 3.34 |
+| filter (top-10, newest 2%) | 1294 (952-1575) | 1356 (1238-1695) | 1223 (956-1348) | 1.06 | 1.11 |
+| join (top-10 with `categories`, region filter) | 419 (335-475) | 739 (498-818) | 110 (76-125) | 3.82 | 6.74 |
 
-Index size and build time (one build per engine, parallel workers, same host load):
+Index size and build time (one build per engine, parallel workers; three builds on the same host at different loads):
 
 | index | build | size |
 |---|---:|---:|
-| sift | 2.3 s | 48 MB |
-| sift `phrase_index = pairs` | 13.0 s | 267 MB |
-| pg_search bm25 | 5.8 s | 164 MB |
+| sift | 2.3-4.2 s | 48 MiB |
+| sift `phrase_index = pairs` | 13.0-20.4 s | 267 MiB |
+| pg_search bm25 | 5.8-9.4 s | 164-185 MiB |
 
-A second build for the cold run took 3.7 s, 20.4 s and 9.3 s at a higher load; build times move with load, sizes do not.
+Build times move with load; sizes do not (pg_search's depends on how its parallel workers split the segments).
 
 Cold cache (index, heap and TOAST evicted from shared buffers and the OS cache before every query; `EXPLAIN ANALYZE`
 execution time of 12 queries per class, `bench/ab.sh cold full`), p50 / maximum in ms:
 
 | class | sift | sift `pairs` | pg_search |
 |---|---:|---:|---:|
-| phrase | 4.57 / 351.26 | 2.16 / 18.74 | 4.78 / 14.06 |
-| count(*) | 1.36 / 1344.67 | 1.45 / 9.92 | 2.86 / 29.90 |
-| and | 2.16 / 5.30 | 1.64 / 6.25 | 3.84 / 7.18 |
+| phrase | 5.18 / 109.11 | 2.24 / 5.58 | 6.60 / 22.35 |
+| count(*) | 1.33 / 691.19 | 0.77 / 17.96 | 3.80 / 25.37 |
+| and | 1.74 / 10.88 | 3.19 / 6.10 | 4.49 / 14.80 |
 
 Reading the numbers:
 
-- AND, OR, mixed and the join are faster than pg_search with the default index, and the index is three times smaller.
-- Without `pairs`, a phrase is checked against the heap after the term intersection, and the check (tokenizing the
-  candidate) dominates when the words are common: phrase and `count(*)` lose by half to pg_search, and the cold
-  maximum of the default index shows the same cost (351 and 1345 ms against 14 and 30 ms). `phrase_index = pairs`
-  removes it and wins every class, for 5.5 times the default index size (1.6 times pg_search's).
-- The filter class is at parity (0.93) with the default index and ahead with `pairs` (1.17).
+- AND, OR, mixed and the join are about 2.3-3.8 times faster than pg_search with the default index, which is also
+  three times smaller.
+- Without `pairs`, a phrase is checked against the heap after the term intersection, and the check (decompressing and
+  tokenizing the candidates) dominates when the words are common: phrase and `count(*)` stay at 0.81x and 0.82x of
+  pg_search, and the cold maximum of the default index shows the same cost. `phrase_index = pairs` removes it and
+  wins every class, for 5.5 times the default index size (1.4-1.6 times pg_search's).
+- The recheck used to be slower. Profiling the phrase class (perf, one client) put 38% of the CPU in the per-document
+  term table that the recheck built before looking for the phrase; the recheck now scans the document's tokens and builds
+  the table only for the other leaf kinds. The same measurement with fixed instruction counts: phrase 48.9M to 36.6M
+  instructions per query (7.0 to 4.7 ms CPU), `count(*)` 46.0M to 33.9M (6.4 to 3.8 ms), mixed 39.4M to 34.2M, and 8.2M
+  (unchanged) for AND. The interleaved run before the change measured phrase 743 against pg_search 1478 (0.50x) and
+  `count(*)` 391 against 747 (0.52x). What is left of the phrase cost is tokenizing (30% of the CPU) and decompressing
+  the TOASTed text (21%).
+- The filter class is level with pg_search (1.06x with the default index, 1.11x with `pairs`; 0.93x and 1.17x in the
+  earlier run).
 
-### Quick tier (75,000 articles)
+### Quick tier (150,000 articles)
 
-`bench/ab.sh quick`: 3 s per cell, 6 rounds (load 29-53). Same classes, queries per second and ratio to pg_search:
+`bench/ab.sh quick`: 3 s per cell, 6 rounds (load 41-56). Same classes, queries per second and ratio to pg_search:
 
 | class | sift | sift `pairs` | pg_search | sift / pg_search | pairs / pg_search |
 |---|---:|---:|---:|---:|---:|
-| and | 4201 | 4246 | 1629 | 2.58 | 2.61 |
-| or | 1561 | 1554 | 602 | 2.59 | 2.58 |
-| phrase | 1044 | 4246 | 1347 | 0.78 | 3.15 |
-| mixed | 1770 | 2865 | 969 | 1.83 | 2.96 |
-| count(*) | 935 | 3255 | 1252 | 0.75 | 2.60 |
-| filter | 1806 | 1899 | 1273 | 1.42 | 1.49 |
-| join | 704 | 1212 | 193 | 3.65 | 6.28 |
+| and | 4116 | 4841 | 1617 | 2.54 | 2.99 |
+| or | 1151 | 1235 | 452 | 2.54 | 2.73 |
+| phrase | 1334 | 4483 | 1388 | 0.96 | 3.23 |
+| mixed | 1846 | 2347 | 588 | 3.14 | 3.99 |
+| count(*) | 986 | 5193 | 863 | 1.14 | 6.02 |
+| filter | 1473 | 1821 | 1314 | 1.12 | 1.39 |
+| join | 664 | 1026 | 145 | 4.58 | 7.08 |
 
-The quick tier reproduces the full tier's ordering for every class except the filter of the default index, which is a
-win at 75k (1.42) and parity at 218k (0.93). It needs this size: at 25,000 articles the same run showed the default
-index ahead on phrase (1.11) and `count(*)` (1.54), because the heap recheck grows with the corpus. Index sizes at
-75k: 18.6 MB (sift), 106.6 MB (`pairs`), 63.3 MB (pg_search).
+The quick tier has the full tier's ordering for every class and for `pairs` everywhere; the exceptions are the default
+index's phrase and `count(*)`, which are behind pg_search at 218k articles (0.81x, 0.82x) and level or ahead at 150k
+(0.96x, 1.14x). The heap recheck grows with the corpus, so the crossover depends on the size: with the same build and a
+75,000 article quick tier the ratios were 1.22x and 1.35x, and with the 25,000 article tier of the first harness version
+1.11x and 1.54x. Judge the default index's phrase and `count(*)` on the full tier. Index sizes at 150k: 33.5 MiB (sift),
+192.2 MiB (`pairs`), 129.8 MiB (pg_search).
 
 ## Places: GeoNames cities500, 236,192 places (full tier)
 
@@ -93,7 +104,8 @@ of common words (`pari*`, `san*`) raise the expansion error on this corpus. Sing
 | a3 (name, region, country) | 5.10 / 0.45 (11.4x) | 10.89 / 0.72 (15.2x) | 31.11 / 0.43 (72.7x) | 7.89 / 0.37 (21.5x) | 6.69 / 0.31 (21.5x) |
 | x2 (name, country) | 3.74 / 0.38 (9.8x) | 8.24 / 0.60 (13.7x) | 27.08 / 0.42 (64.5x) | 5.89 / 0.34 (17.5x) | 4.90 / 0.31 (15.8x) |
 
-Build: pg_search 5.0 s, 140 MB; sift 2.4 s, 43 MB.
+Build: pg_search 5.0 s, 140 MiB; sift 2.4 s, 43 MiB. These runs used the build before the phrase recheck change below;
+places queries are prefixes and ANDs and never reach the phrase recheck.
 
 Cold cache (`bench/places.sh full cold`, 12 queries per cell), p50 / maximum in ms:
 
@@ -128,8 +140,8 @@ mostly smaller ratios (pg_search's latency grows with the corpus faster than sif
 |---|---|---|
 | per interleaved round, 3 engines | about 5 min 11 s for 6 classes at 10 s per cell, plus about 35 s for the join | 3 min 40 s for 7 classes including the join (8 s per cell and 2 s warm-up) |
 | corpus and indexes | about 20 s corpus load per run | restore of the cached dump 8 s, each index built once (23 s for the three at 218k articles) |
-| full articles run | not repeatable in one command | 22 min 43 s for 6 rounds (load 20-42), early stop when every cell is within 15% |
-| quick articles run (75k) | | 9 min 14 s for 6 rounds (load 41-53) |
+| full articles run | not repeatable in one command | 22 min 51 s for 6 rounds (load 38-58), early stop when every cell is within 15% |
+| quick articles run (150k) | | 9 min 22 s for 6 rounds (load 41-56) |
 | places | | quick 8 min 12 s (5 rounds), full 36 min 31 s (6 rounds) |
 
 Under this host's load no run reached the early-stop spread; on a quiet host the minimum of four rounds is about 15 min
