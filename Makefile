@@ -15,7 +15,7 @@ PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement
 ifeq ($(shell uname -m),x86_64)
 PG_CFLAGS += -march=x86-64 -mtune=generic
 endif
-EXTRA_CLEAN = src/*.d test/results test/regression.diffs test/regression.out
+EXTRA_CLEAN = src/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
