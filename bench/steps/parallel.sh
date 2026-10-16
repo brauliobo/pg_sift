@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Speedup of the parallel SiftScan / SiftCount over the serial plans, by number of workers.
 #
-#   PGHOST=... PGPORT=... PGUSER=... PGDATABASE=bench bench/parallel.sh [-w "1 2 4 8"] [-r REPS] [-c REGEX]
+#   PGHOST=... PGPORT=... PGUSER=... PGDATABASE=bench bench/steps/parallel.sh [-w "1 2 4 8"] [-r REPS] [-c REGEX]
 #   (-c: only the cells whose "kind|label|query" line matches REGEX)
 #
-# Needs a database with the articles (bench/corpus.sh restore) in a cluster that loads sift. It builds
+# Needs a database with the articles (bench/steps/corpus.sh restore) in a cluster that loads sift. The
+# parallel runs set sift.parallel_scan = on (the serial baseline leaves it off). It builds
 # the index when missing, sets the table's parallel_workers to the largest worker count (the planner's
 # size rule would cap the workers of a small table) and frees the parallel costs (setup, tuple) so the
 # plan shape does not depend on the cost model; the last column says whether the default costs would
@@ -19,12 +20,12 @@ while getopts w:r:c: opt; do
 	case $opt in w) WORKERS=$OPTARG ;; r) REPS=$OPTARG ;; c) ONLY=$OPTARG ;; *) sed -n '2,13p' "$0"; exit 1 ;; esac
 done
 DB=${PGDATABASE:-bench}
-OUT=$(dirname "$0")/out/parallel-$(date +%Y%m%d-%H%M%S)
+OUT=$(dirname "$0")/../out/parallel-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
 q() { psql -X -v ON_ERROR_STOP=1 -qAt -d "$DB" "$@"; }
 maxw=${WORKERS##* }
 
-q -c "CREATE EXTENSION IF NOT EXISTS sift" >/dev/null
+q -c "CREATE EXTENSION IF NOT EXISTS pg_sift" >/dev/null
 [[ $(q -c "SELECT count(*) FROM pg_indexes WHERE tablename = 'docs' AND indexdef LIKE '%USING sift%'") -gt 0 ]] ||
 	q -c "CREATE INDEX docs_fts ON docs USING sift (body)"
 q -c "ALTER TABLE docs SET (parallel_workers = $maxw)" -c "VACUUM (ANALYZE) docs" >/dev/null
@@ -43,6 +44,7 @@ CELLS=(
 
 settings() { # $1: workers, $2: free (0|1)
 	local s="SET max_parallel_workers_per_gather = $1; SET min_parallel_index_scan_size = 0;"
+	[[ $1 -gt 0 ]] && s+=" SET sift.parallel_scan = on;"
 	[[ $2 == 1 ]] && s+=" SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0;"
 	echo "$s"
 }

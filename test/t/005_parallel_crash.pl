@@ -23,7 +23,7 @@ $node->safe_psql('postgres', qq{
 	CREATE FUNCTION slow(i int) RETURNS bool LANGUAGE sql STABLE PARALLEL SAFE AS 'SELECT pg_sleep(0.003) IS NOT NULL';
 });
 
-my $force = 'SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; '
+my $force = 'SET sift.parallel_scan = on; SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; '
 	. 'SET min_parallel_index_scan_size = 0;';
 my %shape = (
 	aggregate => "SELECT count(*) FROM par WHERE body @@> 'w1' AND slow(id)",

@@ -40,7 +40,7 @@ teardown
 }
 
 session s1
-setup		{ CREATE TEMP TABLE IF NOT EXISTS got (kind text, ids int[]); TRUNCATE got; SET max_parallel_workers_per_gather = 2;
+setup		{ CREATE TEMP TABLE IF NOT EXISTS got (kind text, ids int[]); TRUNCATE got; SET max_parallel_workers_per_gather = 2; SET sift.parallel_scan = on;
 			  SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_index_scan_size = 0; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_par; }
 step s1plan	{ SELECT iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common'' AND iso_gate(id)') AS parallel_scan,

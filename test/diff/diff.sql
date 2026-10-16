@@ -259,7 +259,8 @@ BEGIN
 		set_config('max_parallel_workers_per_gather', CASE WHEN stage LIKE '%\_par' THEN '3' END, true),
 		set_config('parallel_setup_cost', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),
 		set_config('parallel_tuple_cost', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),
-		set_config('min_parallel_index_scan_size', CASE WHEN stage LIKE '%\_par' THEN '0' END, true);
+		set_config('min_parallel_index_scan_size', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),
+		set_config('sift.parallel_scan', CASE WHEN stage LIKE '%\_par' THEN 'on' END, true);
 END $$;
 
 CREATE OR REPLACE FUNCTION sift_diff.with_mutant(m text) RETURNS void LANGUAGE sql
