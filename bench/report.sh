@@ -83,7 +83,7 @@ tables() {
 quick() {
   local dir=$1
   [[ -s $dir/walltime.tsv ]] || return 0
-  [[ -s $dir/host.txt ]] && { cat "$dir/host.txt"; echo; }
+  [[ -s $dir/machine.txt ]] && { cat "$dir/machine.txt"; echo; }
   echo "| engine | build s | index MB | term | and | or | phrase | prefix | fuzzy | count(*) | mix QPS | wall s |"
   echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
   awk -F'\t' 'FILENAME ~ /builds/ { b[$2] = sprintf("%.1f", $4 + $5); m[$2] = int($6 / 1e6); next }

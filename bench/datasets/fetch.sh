@@ -9,13 +9,13 @@
 #           -> $DATA/places-full/ and $DATA/places-quick/ (places.tsv + queries.tsv)
 # Every download goes into its own new directory under $DOWNLOADS (default $SIFT_BENCH_ROOT/download),
 # next to a SHA256SUMS file; it is untrusted input and is only read by the python3 -I converters.
-# WIKI_DATE pins the dump (default 20261001, an https://dumps.wikimedia.org/simplewiki/ directory).
+# Dump date, GeoNames date and checksums are pinned in bench/versions.env.
 set -euo pipefail
 ROOT=${SIFT_BENCH_ROOT:-/tmp/sift-bench}
 DATA=$ROOT/data DOWNLOADS=${DOWNLOADS:-$ROOT/download}
 HERE=$(cd "$(dirname "$0")" && pwd)
-WIKI_DATE=${WIKI_DATE:-20261001}
-GEO=https://download.geonames.org/export/dump
+. "$HERE/../versions.env"
+GEO=$GEONAMES_BASE
 mkdir -p "$DATA" "$DOWNLOADS"
 
 get() { # url dir: into a new directory, skipped when the file is already there
@@ -29,6 +29,7 @@ articles() {
   get "$base/$f" "$dir"
   get "$base/simplewiki-$WIKI_DATE-sha1sums.txt" "$dir"
   (cd "$dir" && grep " $f\$" "simplewiki-$WIKI_DATE-sha1sums.txt" | sha1sum -c - && sha256sum "$f" >SHA256SUMS)
+  [[ -z $WIKI_SHA1 || $(sha1sum "$dir/$f" | cut -d' ' -f1) == "$WIKI_SHA1" ]] || { echo "$f differs from the pinned sha1 $WIKI_SHA1" >&2; exit 1; }
   (cd "$DATA" && python3 -I "$HERE/wiki.py" "$dir/$f" "$DATA/articles.tsv")
 }
 
@@ -41,6 +42,11 @@ places() {
   for t in full:cities500 quick:cities15000; do
     mkdir -p "$DATA/places-${t%%:*}"
     (cd "$DATA" && python3 -I "$HERE/places.py" "$dir" "$dir/${t##*:}.txt" "$DATA/places-${t%%:*}")
+  done
+  for f in cities500 cities15000; do
+    local want=GEONAMES_SHA256_$f
+    [[ -z ${!want} || $(sha256sum "$dir/$f.zip" | cut -d' ' -f1) == "${!want}" ]] ||
+      echo "warning: $f.zip is not the file of the published results (GeoNames changes daily); expect slightly different numbers" >&2
   done
   echo "GeoNames files in $dir:"; cat "$dir/SHA256SUMS"
 }

@@ -28,7 +28,8 @@ rsh() { ssh "$RHOST" "$ENV; $1"; }
 setup_script() {
   cat <<'EOF'
 set -euo pipefail
-PG=18.6 RUM=1.3.15 TEXTSEARCH=1.5.1 PGVECTOR=0.8.7
+. "$D/bench/versions.env"
+PG=18.6 RUM=$RUM_VERSION TEXTSEARCH=$PG_TEXTSEARCH_VERSION PGVECTOR=0.8.7
 mkdir -p "$D/bench-root/build" && cd "$D/bench-root/build"
 gh() { [[ -d $2 ]] || curl -fsSL "https://github.com/$1/archive/refs/tags/$3.tar.gz" | tar xz; }
 if [[ ! -x $D/pg18/bin/postgres ]]; then
