@@ -82,13 +82,13 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and sha1, GeoNames date and sha256 (GeoNames
 regenerates its files daily and keeps no archive, so a mismatch only warns; the places, and the numbers, then differ
 slightly), pg_search 0.26.1, pg_textsearch 1.5.1 (tag v1.5.1 of timescale/pg_textsearch, commit and tarball sha256),
-rum 1.3.15 (tag of postgrespro/rum), PostgreSQL major. sift is built from the checkout
+rum 1.3.15 (tag of postgrespro/rum, tarball sha256), PostgreSQL major. sift is built from the checkout
 (`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
-Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add its id to `ALL_ENGINES` in `bench`, a
-`fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`), and its name
-to `NAME` and `ORDER` in `steps/tables.py`. For places add the setup, index and statements to the `SETUP`, `INDEX` and
+Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add a line (id, labels, chart color) to
+`engines.tsv`, which sets the engine list of `bench`, `steps/ab.sh`, `steps/tables.py` and `steps/charts.py` and the order of every
+table and chart, and a `fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`). For places add the setup, index and statements to the `SETUP`, `INDEX` and
 `stmt` tables of `steps/places.sh`.
 
 ## Datasets
@@ -134,6 +134,7 @@ stays in the cache. Per-tier cluster, port and dump:
 |---|---|
 | `bench` | the entry point: `bench/bench --help` |
 | `versions.env` | every pinned version, date and checksum |
+| `engines.tsv` | the A/B engines in table order: id, chart and Markdown labels, chart color |
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
@@ -145,7 +146,7 @@ stays in the cache. Per-tier cluster, port and dump:
 | `ab.sh`, `places.sh` | the interleaved A/B runs of articles and places (`run`, `cold`) |
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `spread_ok` (the interleaved rounds), `evict_table` (cold cache), `locked` (perf lock), `limited` (8 CPU / 32 GB budget, a cgroup scope when a systemd user session exists) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
-| `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img` (`charts`; stdlib only, same tables give the same bytes) |
+| `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, fetch Elasticsearch, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |

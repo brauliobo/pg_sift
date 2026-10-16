@@ -4,6 +4,7 @@ export LC_ALL=C
 
 STEPS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # the internal steps that bench/bench runs
 BENCH=$(dirname "$STEPS")
+ALL_ENGINES=$(awk -F'\t' '!/^#/ {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # the A/B engines, in table order
 REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH

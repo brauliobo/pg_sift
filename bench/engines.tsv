@@ -1,0 +1,7 @@
+# The engines of the A/B in the order of every table, chart and engine list (bench/bench, steps/ab.sh, tables.py, charts.py).
+# id	label (charts)	label (Markdown)	color (Okabe-Ito, distinguishable with color vision deficiencies)
+sift	sift	sift	#0072B2
+sift_pairs	sift pairs	sift `pairs`	#009E73
+pg_search	pg_search	pg_search	#D55E00
+pg_textsearch	pg_textsearch	pg_textsearch	#CC79A7
+rum	rum	rum	#7f7f7f

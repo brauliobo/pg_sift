@@ -20,11 +20,12 @@ directory), TIER quick, ab or full. --engines keeps only those engine ids. Write
 
 --per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (docs/results/); the rows of the
 dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay.
-Engine ids: sift, sift_pairs (phrase_index = pairs), pg_search, pg_textsearch, rum.
+Engine ids, order and labels: bench/engines.tsv.
 """
 import collections, os, statistics as st, sys
 
-NAME = {'sift': 'sift', 'sift_pairs': 'sift `pairs`', 'pg_search': 'pg_search', 'pg_textsearch': 'pg_textsearch', 'rum': 'rum'}
+with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
+    NAME = {r[0]: r[2] for r in (l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#'))}
 ORDER = list(NAME)
 MIB = 1048576
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit (tab separated; NA = the engine cannot run the class, error = the statement failed; bench/steps/tables.py)'

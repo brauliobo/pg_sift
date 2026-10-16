@@ -115,7 +115,7 @@ parse() {
   [[ $dataset == all ]] && datasets="articles places" || datasets=$dataset
 }
 
-# --- tiers and engines
+# --- tiers and engines (ALL_ENGINES comes from engines.tsv through steps/lib.sh)
 tier_env() {
   step_mode=quick
   case $tier in
@@ -128,7 +128,6 @@ tier_env() {
   [[ -z $clients ]] || export CLIENTS=$clients
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
-ALL_ENGINES="sift sift_pairs pg_search pg_textsearch rum"
 selected() { # EXCLUDE...: the engines of --engines (default: all) minus the ones the dataset cannot run
   local e
   for e in ${engines:-$ALL_ENGINES}; do

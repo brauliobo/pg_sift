@@ -23,7 +23,7 @@ case $mode in
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 . "$(dirname "$0")/lib.sh"
-ENGINES=${ENGINES:-sift sift_pairs pg_search pg_textsearch rum}
+ENGINES=${ENGINES:-$ALL_ENGINES}
 CLASSES=${CLASSES:-and or phrase mixed count filter join}
 CLIENTS=${CLIENTS:-8} THREADS=${THREADS:-4} TOL=${TOL:-0.15} NQ=${NQ:-12}
 RESULTS=${RESULTS:-$BENCH/out/ab}
