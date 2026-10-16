@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Interleaved A/B of sift, sift with phrase_index = pairs, and ParadeDB on one corpus.
 #
-#   bench/ab.sh quick          Q tier (25k articles), 3 s per cell, 3-6 rounds
+#   bench/ab.sh quick          Q tier (75k articles), 3 s per cell, 3-6 rounds
 #   bench/ab.sh full           F tier (218k articles), 8 s per cell, 4-6 rounds
 #   bench/ab.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
 #
@@ -35,7 +35,7 @@ trap cleanup EXIT
 
 "$BENCH/cluster.sh" init >/dev/null
 "$BENCH/cluster.sh" start >/dev/null
-[[ -f $CACHE/sift-$TIER.dump ]] || "$BENCH/corpus.sh" load >/dev/null
+[[ -f $DUMP ]] || "$BENCH/corpus.sh" load >/dev/null
 [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] || "$BENCH/corpus.sh" restore >/dev/null
 for e in $ENGINES; do BUILD_ONLY=1 "$BENCH/run.sh" "$e" >/dev/null 2>&1 || { echo "build of $e failed" >&2; exit 1; }; done
 cp "$OUT/builds.tsv" "$DEST/builds.tsv"

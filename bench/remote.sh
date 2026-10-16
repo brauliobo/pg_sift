@@ -53,7 +53,7 @@ case ${1:-} in
   sync)
     rsh "mkdir -p \$D/bench-root/cache \$D/bench-root/build"
     rsync -a --exclude .git --exclude 'bench/out*/' --filter=':- .gitignore' "$REPO/" "$RHOST:$RDIR/"
-    rsync -a "$CACHE/sift-Q.dump" "$CACHE/sift-F.dump" "$RHOST:$RDIR/bench-root/cache/"
+    rsync -a "$CACHE"/sift-Q-*.dump "$CACHE"/sift-F-*.dump "$RHOST:$RDIR/bench-root/cache/"
     [[ -z $BM25_SRC ]] || rsync -a "$BM25_SRC" "$RHOST:$RDIR/bench-root/build/" ;;
   setup) rsh "bash -s" < <(setup_script) ;;
   run)   rsh "mkdir -p \$SIFT_BENCH_ROOT/logs; setsid nohup bash -c $(printf %q "$2") >\$SIFT_BENCH_ROOT/logs/run-\$(date +%s).log 2>&1 </dev/null &" ;;
