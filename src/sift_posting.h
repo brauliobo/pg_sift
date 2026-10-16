@@ -29,7 +29,6 @@
 #define SIFT_POSTING_H
 
 #include "sift.h"
-#undef SIFT_PAGEMASK_WORDS		/* the codec defines it too, as 4 */
 #include "sift_bitmap.h"
 #include "sift_dict.h"
 #include "sift_store.h"
