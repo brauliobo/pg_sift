@@ -1,0 +1,201 @@
+"""Turns the result directories of steps/ab.sh and steps/places.sh into chart input and Markdown tables.
+
+    python3 -I steps/tables.py OUTDIR [--engines a,b] [--per-dataset DIR] DATASET:TIER:RESULT_DIR ...
+
+DATASET is articles (a steps/ab.sh directory: cells.tsv, builds.tsv) or places (a steps/places.sh
+directory), TIER quick, ab or full. --engines keeps only those engine ids. Writes to OUTDIR:
+
+  results.tsv   one row per measurement, tab separated, first line a `#` comment naming the columns:
+                dataset  tier  engine  class  variant  metric  value  min  max  unit
+                articles: class = and|or|phrase|mixed|count|filter|join, variant = -, metric = qps (median
+                over the interleaved rounds, min and max over the rounds).
+                places: class = p1..p4|w1|a2|a2s|a3|x2, variant = top|boost|filter|count|scan, metric = p50_ms
+                or p95_ms (single client, median over the rounds).
+                both: class = variant = - and metric = index_mib | build_s | setup_s | heap_growth_mib (one
+                build per engine; build_s is CREATE INDEX, setup_s the work before it, heap_growth_mib the
+                table growth of that setup) and load_1m (host load average of the cells; engine -).
+                A value of NA means the engine cannot run the class, error that its statement failed.
+  builds.tsv    dataset tier engine setup_s build_s index_bytes heap_growth_bytes (unrounded)
+  tables.md     the same as Markdown tables, index size and build time next to the throughput / latency
+
+--per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (bench/results/).
+Engine ids: sift, sift_pairs (phrase_index = pairs), pg_search, rum.
+"""
+import collections, os, statistics as st, sys
+
+ID = {'paradedb': 'pg_search', 'pgs': 'pg_search'}
+NAME = {'sift': 'sift', 'sift_pairs': 'sift `pairs`', 'pg_search': 'pg_search', 'rum': 'rum'}
+ORDER = ['sift', 'sift_pairs', 'pg_search', 'rum']
+MIB = 1048576
+COLUMNS = '# columns: dataset tier engine class variant metric value min max unit (tab separated; NA = the engine cannot run the class, error = the statement failed; bench/steps/tables.py)'
+HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit'
+
+
+def rows_of(path, skip_header=True):
+    with open(path) as f:
+        lines = [l.rstrip('\n').split('\t') for l in f if l.strip()]
+    return lines[1:] if skip_header else lines
+
+
+def num(x):
+    try:
+        return float(x)
+    except ValueError:
+        return None
+
+
+def fmt(v, digits=0):
+    return v if isinstance(v, str) else ('%%.%df' % digits) % v
+
+
+def stats(values):
+    """(median, min, max) of the numbers in values; NA when it holds None, error when it holds NaN"""
+    if any(v is None for v in values):
+        return 'NA', 'NA', 'NA'
+    if any(v != v for v in values):
+        return 'error', 'error', 'error'
+    return st.median(values), min(values), max(values)
+
+
+def articles(tier, path):
+    out, builds = [], []
+    cells = rows_of(path + '/cells.tsv')
+    engines = list(dict.fromkeys(c[3] for c in cells))
+    classes = list(dict.fromkeys(c[2] for c in cells))
+    for e in engines:
+        for c in classes:
+            v = [num(x[4]) or float('nan') for x in cells if x[2] == c and x[3] == e and x[4] != 'NA']   # 0: a client failed
+            out.append(('articles', tier, ID.get(e, e), c, '-', 'qps', *(stats(v) if v else ('NA',) * 3), 'queries/s'))
+    for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth
+        builds.append(('articles', tier, ID.get(b[1], b[1]), b[3], b[4], b[5], b[6]))
+    return out, builds, [float(c[1]) for c in cells]
+
+
+def places(tier, path):
+    out, builds = [], []
+    cells = rows_of(path + '/cells.tsv')
+    for wl, c, e in dict.fromkeys((c[2], c[3], c[4]) for c in cells):
+        sel = [x for x in cells if (x[2], x[3], x[4]) == (wl, c, e)]
+        for metric, col in (('p50_ms', 5), ('p95_ms', 6)):
+            out.append(('places', tier, ID.get(e, e), c, wl, metric, *stats([None if x[col] == 'NA' else num(x[col]) for x in sel]), 'ms'))
+    for b in rows_of(path + '/builds.tsv', skip_header=False):   # engine build_s index_bytes heap_growth setup_s
+        builds.append(('places', tier, ID.get(b[0], b[0]), b[4] if len(b) > 4 else '0', b[1], b[2], b[3]))
+    return out, builds, [float(c[1]) for c in cells]
+
+
+def build_rows(builds):
+    out = []
+    for d, t, e, setup, build, size, heap in builds:
+        mib = lambda x: '%.1f' % (max(float(x), 0) / MIB)   # VACUUM can shrink the table below its size before the setup
+        out += [(d, t, e, '-', '-', 'index_mib', mib(size), mib(size), mib(size), 'MiB'), (d, t, e, '-', '-', 'build_s', build, build, build, 's'),
+                (d, t, e, '-', '-', 'setup_s', setup, setup, setup, 's'), (d, t, e, '-', '-', 'heap_growth_mib', mib(heap), mib(heap), mib(heap), 'MiB')]
+    return out
+
+
+def get(rows, dataset, tier, engine, cls='-', variant='-', metric=None):
+    return next((r for r in rows if r[:6] == (dataset, tier, engine, cls, variant, metric)), None)
+
+
+def value(rows, *key, **kw):
+    r = get(rows, *key, **kw)
+    return r[6] if r else 'NA'
+
+
+def ratio(a, b):
+    try:
+        return '%.2fx' % (float(a) / float(b))
+    except (ValueError, ZeroDivisionError):
+        return 'n/a'
+
+
+def md_table(head, body, left=1):
+    return ['| ' + ' | '.join(head) + ' |', '|' + '---|' * left + '---:|' * (len(head) - left)] + ['| ' + ' | '.join(r) + ' |' for r in body]
+
+
+def build_cols(rows, dataset, tier, e):
+    return [value(rows, dataset, tier, e, metric=m) for m in ('index_mib', 'build_s')]
+
+
+def md_articles(rows, tier):
+    engines = [e for e in ORDER if get(rows, 'articles', tier, e, 'and', '-', 'qps')]
+    classes = list(dict.fromkeys(r[3] for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps'))
+    ref = 'pg_search' if 'pg_search' in engines else engines[-1]
+    growth = any(float(value(rows, 'articles', tier, e, metric='heap_growth_mib') or 0) > 0.5 for e in engines)
+    qps = lambda e, c: get(rows, 'articles', tier, e, c, '-', 'qps')
+    shown = lambda r: fmt(float(r[6])) + ' (%s-%s)' % (fmt(float(r[7])), fmt(float(r[8]))) if r and r[6] not in ('NA', 'error') else (r[6] if r else 'NA')
+    head = ['engine', 'index (MiB)', 'build (s)'] + (['table growth (MiB)'] if growth else []) + classes
+    body = [[NAME[e]] + build_cols(rows, 'articles', tier, e) + ([value(rows, 'articles', tier, e, metric='heap_growth_mib')] if growth else [])
+            + [shown(qps(e, c)) for c in classes] for e in engines]
+    out = ['Queries per second, median (minimum-maximum over the rounds); index size and CREATE INDEX time of the one build per engine:', ''] + md_table(head, body)
+    rel = [[NAME[e] + ' / ' + NAME[ref]] + [ratio(value(rows, 'articles', tier, e, c, '-', 'qps'), value(rows, 'articles', tier, ref, c, '-', 'qps')) for c in classes]
+           for e in engines if e != ref]
+    return out + ['', 'Ratio of queries per second to %s:' % NAME[ref], ''] + md_table(['engine'] + classes, rel)
+
+
+def md_places(rows, tier):
+    engines = [e for e in ORDER if any(r[:3] == ('places', tier, e) and r[5] == 'p50_ms' for r in rows)]
+    sel = [r for r in rows if r[:2] == ('places', tier) and r[5] == 'p50_ms']
+    classes = list(dict.fromkeys(r[3] for r in sel))
+    first = sel[0][4]
+    p50 = lambda e, c, wl: next((r[6] for r in sel if (r[2], r[3], r[4]) == (e, c, wl)), 'NA')
+    show = lambda v, d=2: fmt(float(v), d) if v not in ('NA', 'error') else v
+    head = ['engine', 'index (MiB)', 'build (s)'] + ['%s' % c for c in classes]
+    body = [[NAME[e]] + build_cols(rows, 'places', tier, e) + [show(p50(e, c, first)) for c in classes] for e in engines]
+    out = ['Index size, CREATE INDEX time and p50 latency in ms of the `%s` workload per query class (single client):' % first, ''] + md_table(head, body)
+    for wl in dict.fromkeys(r[4] for r in sel):
+        body = []
+        for c in classes:
+            v = {e: p50(e, c, wl) for e in engines}
+            body.append([c] + [show(v[e]) + ('' if e == 'sift' or v[e] in ('NA', 'error') else ' (%s)' % ratio(v[e], v['sift'])) for e in engines])
+        out += ['', 'Workload `%s`, p50 latency in ms (ratio to sift):' % wl, ''] + md_table(['class'] + [NAME[e] for e in engines], body)
+    return out
+
+
+def main(argv):
+    outdir, per, keep, specs = argv[0], None, None, []
+    args = iter(argv[1:])
+    for a in args:
+        if a == '--per-dataset':
+            per = next(args)
+        elif a == '--engines':
+            keep = [ID.get(e, e) for e in next(args).split(',')]
+        else:
+            specs.append(a)
+    rows, builds, loads, tiers = [], [], collections.defaultdict(list), []
+    for spec in specs:
+        dataset, tier, path = spec.split(':', 2)
+        r, b, load = (articles if dataset == 'articles' else places)(tier, path)
+        rows += [x for x in r if keep is None or x[2] in keep]
+        builds += [x for x in b if keep is None or x[2] in keep]
+        loads[dataset, tier] += load
+        tiers.append((dataset, tier))
+    rows += build_rows(builds)
+    for (dataset, tier), v in loads.items():
+        rows.append((dataset, tier, '-', '-', '-', 'load_1m', '%.1f' % st.median(v), '%.1f' % min(v), '%.1f' % max(v), 'load average'))
+    os.makedirs(outdir, exist_ok=True)
+
+    def write(path, selected):
+        with open(path, 'w') as f:
+            f.write(COLUMNS + '\n' + HEADER + '\n')
+            for r in selected:
+                f.write('\t'.join(('%.2f' % x).rstrip('0').rstrip('.') if isinstance(x, float) else str(x) for x in r) + '\n')
+    write(outdir + '/results.tsv', rows)
+    if per:
+        os.makedirs(per, exist_ok=True)
+        for d in dict.fromkeys(r[0] for r in rows):
+            write('%s/%s.tsv' % (per, d), [r for r in rows if r[0] == d])
+    with open(outdir + '/builds.tsv', 'w') as f:
+        f.write('dataset\ttier\tengine\tsetup_s\tbuild_s\tindex_bytes\theap_growth_bytes\n')
+        for b in builds:
+            f.write('\t'.join(b) + '\n')
+    md = []
+    for dataset, tier in tiers:
+        load = get(rows, dataset, tier, '-', '-', '-', 'load_1m')
+        md += ['### %s, %s tier' % (dataset, tier), '', 'Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6]), '']
+        md += (md_articles if dataset == 'articles' else md_places)(rows, tier) + ['']
+    open(outdir + '/tables.md', 'w').write('\n'.join(md))
+    print('\n'.join(md))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
