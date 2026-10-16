@@ -45,12 +45,14 @@ FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing}"
 
 install() {
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
-	nice make -C "$REPO" -j4 USE_PGXS=1
+	# on the make command line: sudo resets the environment, which would install another flavor
+	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}")
+	nice make -C "$REPO" -j4 "${flavor[@]}"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )); then
-		make -C "$REPO" USE_PGXS=1 DESTDIR="$ROOT" install >/dev/null
+		make -C "$REPO" "${flavor[@]}" DESTDIR="$ROOT" install >/dev/null
 	else
-		${SIFT_SUDO:-} make -C "$REPO" USE_PGXS=1 install >/dev/null
+		${SIFT_SUDO:-} make -C "$REPO" "${flavor[@]}" install >/dev/null
 		mkdir -p "$ROOT"
 	fi
 	echo "$FLAVOR" >"$ROOT/.flavor"
