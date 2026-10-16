@@ -386,9 +386,21 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 	else if (c->bounds == NULL)
 	{
 		uint32	   *gid = palloc(Max(c->info.df, 1) * sizeof(uint32));
+		uint32		lo = 0,
+					hi = 0;
 
 		sift_post_rewind(c);
-		c->nbounds = sift_cur_gids(&c->cur, gid);
+		if (c->blob && c->info.df > SIFT_SPAN_MIN_DF)
+			sift_cur_gid_span(&c->cur, &lo, &hi);
+		if (c->info.df > hi - lo && c->info.df > SIFT_SPAN_MIN_DF)
+		{
+			/* at least a posting per SB on average: every SB between the first and the last, decoding nothing */
+			c->nbounds = hi - lo + 1;
+			for (uint32 i = 0; i < c->nbounds; i++)
+				gid[i] = lo + i;
+		}
+		else
+			c->nbounds = sift_cur_gids(&c->cur, gid);
 		c->bounds = MemoryContextAlloc(c->mcxt, Max(c->nbounds, 1) * sizeof(SiftGroupBounds));
 		for (uint32 i = 0; i < c->nbounds; i++)
 		{

@@ -591,6 +591,25 @@ uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
 	return ng;
 }
 
+/* the first and last gid of an unpositioned, non-empty LIST cursor: only the block headers are read */
+void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi)
+{
+	uint32_t n = c->ls.n;
+	if (c->ls.t) {
+		*lo = SIFT_GID(c->ls.t[0]), *hi = SIFT_GID(c->ls.t[n - 1]);
+		return;
+	}
+	const uint8_t *p = c->ls.p;
+	uint64_t prev = c->ls.prev, first = 0;
+	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
+		ef_blk b;
+		ef_hdr(p, prev, blk_cnt(n, i), &b);
+		if (i == 0) first = b.x0;
+		p = b.end, prev = b.x0 + b.u - 1;
+	}
+	*lo = (uint32_t)(first >> c->ls.ob >> SIFT_GROUP_SHIFT), *hi = (uint32_t)(prev >> c->ls.ob >> SIFT_GROUP_SHIFT);
+}
+
 static void cur_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), uint8_t *buf)
 {
 	memset(c, 0, offsetof(sift_cur, gr));
