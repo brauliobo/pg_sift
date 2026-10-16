@@ -3,7 +3,7 @@
 sift is a full-text search index access method for PostgreSQL 18. Postings are keyed directly by
 heap ctid and stored as two-level bitmaps (heap page, then line offset), so boolean queries and
 `count(*)` are bitmap operations, ranking is exact BM25 with block-max pruning, and MVCC is
-handled through the visibility map instead of a doc-id mapping. The design follows PlanetScale's
+handled through the visibility map instead of a doc-id mapping. The design is documented in
 
 Status: index build, storage, the SIMD codec, query execution (boolean, phrase, prefix, fuzzy, ranked top-k,
 `count(*)`), crash and physical-replica safety (generic WAL, no preload) and the benchmark harness are in.
@@ -59,7 +59,7 @@ Arch Linux packaging is in `packaging/`.
 - Phrases are rechecked against the heap unless the index is built with `phrase_index = pairs` (a larger
   index); `count(*)` and ranked scans of common-word phrases pay for it, and stay at 0.8x of pg_search on the
   articles benchmark with the default index.
-- The benchmark corpora are small compared with TIN's 150M documents, and the hosts are shared machines, so
+- The benchmark corpora are small (up to a few hundred thousand documents), and the hosts are shared machines, so
   absolute numbers carry noise; compare engines measured in the same run.
 - Tokenizers differ between engines (CJK runs, apostrophes, hyphenation), so result sets match exactly only
   for engines using PostgreSQL's parser; BM25 top-10 overlap between BM25 engines is 91-96%.
