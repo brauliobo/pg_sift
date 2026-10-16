@@ -37,7 +37,7 @@ ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
 not_ok() { NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"; }
 diag() { sed 's/^/# /' <<<"$*"; }
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
-bail() { echo "Bail out! $*"; exit 1; }
+bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
 
 dir() { echo "$TAPDIR/$1"; }
 port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
@@ -82,10 +82,13 @@ sql() {
 		-p "$(port "$name")" -U postgres -d postgres "${@/#/--command=}"
 }
 
-# kill -9 the postmaster and every child at once, as a power loss would
+# kill -9 the postmaster and every child at once, as a power loss would; the postmaster is stopped
+# first so that it cannot fork a parallel worker that would outlive the list of children
 crash() {
 	local pm kids
 	pm=$(head -1 "$(dir "$1")/data/postmaster.pid")
+	kill -STOP "$pm" 2>/dev/null
+	while [[ $(cut -d' ' -f3 "/proc/$pm/stat" 2>/dev/null) =~ ^[RSD]$ ]]; do :; done
 	kids=$(pgrep -P "$pm" | tr '\n' ' ')
 	kill -9 "$pm" $kids 2>/dev/null
 	while kill -0 "$pm" $kids 2>/dev/null; do sleep 0.02; done
