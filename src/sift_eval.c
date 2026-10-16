@@ -12,7 +12,9 @@
  */
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "common/int.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
@@ -92,6 +94,8 @@ struct SiftPlan
 	int		   *mutno;			/* directory index of each mutable segment */
 	MutHit	   *mhit;			/* live matches of the mutable segments, ascending */
 	int64		nmhit;
+	uint64		mut_ndocs;		/* documents and tokens of the mutable segments, deleted ones included */
+	uint64		mut_sum_dl;
 	int			nleaves;
 	int			maxleaves;
 	EvalLeaf   *leaves;
@@ -112,7 +116,7 @@ static EvalNode nothing = {EN_NOTHING};
 /* ---------- state ---------- */
 
 SiftIndexState *
-sift_state_open(Relation index, MemoryContext mcxt)
+sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftIndexState *st = palloc0(sizeof(SiftIndexState));
@@ -120,7 +124,10 @@ sift_state_open(Relation index, MemoryContext mcxt)
 
 	st->index = index;
 	st->mcxt = mcxt;
-	sift_dir_read(index, &st->dir);
+	if (dir)
+		st->dir = *dir;
+	else
+		sift_dir_read(index, &st->dir);
 	sift_analyzer_config_from_index(index, &cfg);
 	if (cfg.hash != st->dir.meta.analyzer_hash)
 		ereport(ERROR,
@@ -132,6 +139,12 @@ sift_state_open(Relation index, MemoryContext mcxt)
 	st->priv = palloc0(Max(st->dir.nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);
 	return st;
+}
+
+SiftIndexState *
+sift_state_open(Relation index, MemoryContext mcxt)
+{
+	return sift_state_open_dir(index, mcxt, NULL);
 }
 
 void
@@ -623,22 +636,32 @@ hit_cmp(const void *a, const void *b)
 	return pg_cmp_u64(((const MutHit *) a)->key, ((const MutHit *) b)->key);
 }
 
+/* The leaf's mutable term of the zero padded key, created with df 0 */
+static MutTermEnt *
+leaf_mut_term(SiftPlan *p, EvalLeaf *l, const char *key)
+{
+	bool		found;
+	MutTermEnt *e;
+
+	if (l->mtab == NULL)
+	{
+		HASHCTL		ctl = {.keysize = SIFT_MAX_TERM_BYTES + 1, .entrysize = sizeof(MutTermEnt), .hcxt = p->mcxt};
+
+		l->mtab = hash_create("sift mutable terms", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(l->mtab, key, HASH_ENTER, &found);
+	if (!found)
+		e->df = 0;
+	return e;
+}
+
 static void
 leaf_mut_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 {
 	char		key[SIFT_MAX_TERM_BYTES + 1] = {0};
-	MutTermEnt *e;
-	bool		found;
 
-	if (l->mtab == NULL)
-	{
-		HASHCTL		ctl = {.keysize = sizeof(key), .entrysize = sizeof(MutTermEnt), .hcxt = p->mcxt};
-
-		l->mtab = hash_create("sift mutable terms", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
 	memcpy(key, t, len);
-	e = hash_search(l->mtab, key, HASH_ENTER, &found);
-	e->df = found ? e->df + 1 : 1;
+	leaf_mut_term(p, l, key)->df++;
 }
 
 /* One more document for every term of a scoring leaf that the doc has (deleted docs count like in the statistics) */
@@ -733,7 +756,103 @@ bind_mutable(SiftPlan *p)
 				p->mhit[k++] = p->mhit[j];
 		p->nmhit = k;
 	}
+	p->mut_ndocs = ndocs;
+	p->mut_sum_dl = sum_dl;
 	bind_stats(p, ndocs, sum_dl);
+}
+
+/* ---------- parallel bind ---------- */
+
+typedef struct SharedHit
+{
+	SiftKey		key;
+	float4		score;
+} SharedHit;
+
+/* What follows the header: nmhit SharedHit, then for every leaf a count and that many MutTermEnt */
+typedef struct SharedBind
+{
+	SiftDirSnapshot dir;
+	uint64		mut_ndocs;
+	uint64		mut_sum_dl;
+	int64		nmhit;
+	int			nleaves;
+} SharedBind;
+
+void *
+sift_plan_export(const SiftPlan *p, Size *len)
+{
+	StringInfoData buf;
+	SharedBind	h = {.dir = p->st->dir, .mut_ndocs = p->mut_ndocs, .mut_sum_dl = p->mut_sum_dl,
+					 .nmhit = p->nmhit, .nleaves = p->nleaves};
+
+	initStringInfo(&buf);
+	appendBinaryStringInfo(&buf, &h, sizeof(h));
+	for (int64 i = 0; i < p->nmhit; i++)
+	{
+		SharedHit	sh = {p->mhit[i].key, p->mhit[i].score};
+
+		appendBinaryStringInfo(&buf, &sh, sizeof(sh));
+	}
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		const EvalLeaf *l = &p->leaves[i];
+		int32		n = l->mtab ? hash_get_num_entries(l->mtab) : 0;
+		HASH_SEQ_STATUS seq;
+		MutTermEnt *e;
+
+		appendBinaryStringInfo(&buf, &n, sizeof(n));
+		if (n > 0)
+		{
+			hash_seq_init(&seq, l->mtab);
+			while ((e = hash_seq_search(&seq)) != NULL)
+				appendBinaryStringInfo(&buf, e, sizeof(MutTermEnt));
+		}
+	}
+	*len = buf.len;
+	return buf.data;
+}
+
+const SiftDirSnapshot *
+sift_shared_dir(const void *shared)
+{
+	return &((const SharedBind *) shared)->dir;
+}
+
+/* The mutable half of the bind as the exporting participant had it */
+static void
+import_mutable(SiftPlan *p, const SharedBind *h)
+{
+	const char *at = (const char *) (h + 1);
+
+	if (h->nleaves != p->nleaves)
+		elog(ERROR, "sift: parallel participants bound different queries");
+	p->mut_ndocs = h->mut_ndocs;
+	p->mut_sum_dl = h->mut_sum_dl;
+	p->nmhit = h->nmhit;
+	p->mhit = MemoryContextAllocHuge(p->mcxt, Max(h->nmhit, 1) * sizeof(MutHit));
+	for (int64 i = 0; i < h->nmhit; i++, at += sizeof(SharedHit))
+	{
+		SharedHit	sh;
+
+		memcpy(&sh, at, sizeof(sh));
+		p->mhit[i] = (MutHit) {sh.key, sh.score, NULL};
+	}
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		int32		n;
+
+		memcpy(&n, at, sizeof(n));
+		at += sizeof(n);
+		for (int32 j = 0; j < n; j++, at += sizeof(MutTermEnt))
+		{
+			MutTermEnt	e;
+
+			memcpy(&e, at, sizeof(e));
+			leaf_mut_term(p, &p->leaves[i], e.term)->df = e.df;
+		}
+	}
+	bind_stats(p, h->mut_ndocs, h->mut_sum_dl);
 }
 
 /* The terms of a scoring leaf that only mutable docs have weigh like the others: by df over the whole index */
@@ -840,8 +959,8 @@ score_mutable(SiftPlan *p)
 	}
 }
 
-SiftPlan *
-sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
+static SiftPlan *
+plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, const void *shared)
 {
 	SiftPlan   *p = MemoryContextAllocZero(st->mcxt, sizeof(SiftPlan));
 	EvalNode  **roots = MemoryContextAlloc(st->mcxt, nqueries * sizeof(EvalNode *));
@@ -884,13 +1003,29 @@ sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
 	p->root = en_make(p, EN_AND, nqueries, roots);
 	for (int i = 0; i < p->nleaves; i++)
 		resolve_leaf(p, &p->leaves[i]);
-	bind_mutable(p);
+	if (shared)
+		import_mutable(p, shared);
+	else
+		bind_mutable(p);
 	if (p->scoring)
 	{
 		bind_scoring(p);
-		score_mutable(p);
+		if (!shared)
+			score_mutable(p);
 	}
 	return p;
+}
+
+SiftPlan *
+sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags)
+{
+	return plan_bind(st, queries, nqueries, flags, NULL);
+}
+
+SiftPlan *
+sift_plan_bind_shared(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, const void *shared)
+{
+	return plan_bind(st, queries, nqueries, flags, shared);
 }
 
 const SiftPlanStats *
@@ -914,6 +1049,9 @@ struct SiftMatchIter
 	const sift_grp **grp;		/* scratch: current group per segment */
 	int64		mpos;			/* next mutable match */
 	uint32		next_sb;
+	uint32		sb_end;			/* the visited range ends before this superblock */
+	SiftNextRangeFn next_range;	/* parallel: where the next range comes from */
+	void	   *range_arg;
 	uint32		sb;
 	int			page;			/* next page of the loaded SB to return */
 	uint64		pages[SIFT_PAGEMASK_WORDS];
@@ -1043,12 +1181,21 @@ sift_iter_begin(SiftPlan *plan)
 	it->om = MemoryContextAllocAligned(plan->mcxt, SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64),
 									   SIFT_SIMD_ALIGN, 0);
 	it->page = SIFT_SB_PAGES;
+	it->sb_end = UINT32_MAX;
 	for (int s = 0; s < plan->nsegs; s++)
 	{
 		it->root[s] = seg_cursor(plan, s, plan->root, NULL, plan->mcxt);
 		sift_sr_release(&plan->seg[s]->sr);
 	}
 	return it;
+}
+
+void
+sift_iter_ranges(SiftMatchIter *it, SiftNextRangeFn next, void *arg)
+{
+	it->next_range = next;
+	it->range_arg = arg;
+	it->sb_end = it->next_sb;
 }
 
 void
@@ -1128,6 +1275,18 @@ iter_load_sb(SiftMatchIter *it)
 
 	for (;;)
 	{
+		if (it->next_range && it->next_sb >= it->sb_end)
+		{
+			uint32		lo,
+						hi;
+
+			if (!it->next_range(it->range_arg, &lo, &hi))
+				return false;
+			it->next_sb = lo;
+			it->sb_end = hi;
+			while (it->mpos < it->plan->nmhit && sift_block_sb(sift_key_block(it->plan->mhit[it->mpos].key)) < lo)
+				it->mpos++;
+		}
 		sb = UINT32_MAX;
 		for (int s = 0; s < it->plan->nsegs; s++)
 		{
@@ -1137,8 +1296,13 @@ iter_load_sb(SiftMatchIter *it)
 		}
 		if (it->mpos < it->plan->nmhit)
 			sb = Min(sb, sift_block_sb(sift_key_block(it->plan->mhit[it->mpos].key)));
-		if (sb == UINT32_MAX)
-			return false;
+		if (sb >= it->sb_end)
+		{
+			if (!it->next_range)
+				return false;
+			it->next_sb = it->sb_end;
+			continue;
+		}
 		CHECK_FOR_INTERRUPTS();
 		memset(it->pages, 0, sizeof(it->pages));
 		for (int s = 0; s < it->plan->nsegs; s++)
@@ -1298,6 +1462,8 @@ struct SiftRanker
 	int64		pos;
 	bool		searched;
 	bool		complete;
+	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
+	bool		par_active;			/* ... and is running now */
 };
 
 static void hot_forget(SiftRanker *r);
@@ -1563,6 +1729,25 @@ sift_rank_end(SiftRanker *r)
 	for (int s = 0; s < r->plan->nsegs; s++)
 		sift_sr_release(&r->plan->seg[s]->sr);
 	MemoryContextDelete(r->tmpcx);
+}
+
+void
+sift_rank_parallel(SiftRanker *r, SiftPar *par)
+{
+	uint64		sig = 0;
+
+	Assert(r->k > 0);
+	for (int i = 0; i < r->nunit; i++)
+	{
+		uint32		ub;
+
+		memcpy(&ub, &r->unit[i].maxub, sizeof(ub));
+		sig = hash_combine64(sig, (uint64) r->unit[i].seg << 32 | r->unit[i].gid);
+		sig = hash_combine64(sig, ub);
+	}
+	r->par = par;
+	sift_par_attach(par);
+	sift_par_check_units(par, r->nunit, sig);
 }
 
 /* Fills the dense offset masks of the term's pages in block b; false when it has none */
@@ -2025,6 +2210,19 @@ term_seek(SiftPlan *p, RankSeg *rs, RkTerm *t, uint32 gid)
 	}
 }
 
+/*
+ * What a candidate must beat: the worst kept score, and in a parallel search
+ * the best of the participants' (the k-th best of any subset is at most the
+ * k-th best of all, so nothing at or below it is among the k best)
+ */
+static inline float4
+rank_theta(const SiftRanker *r, const SiftTopK *tk)
+{
+	float4		theta = sift_kern_topk_theta(tk);
+
+	return r->par_active ? Max(theta, sift_par_theta(r->par)) : theta;
+}
+
 static void
 rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 {
@@ -2034,7 +2232,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	const sift_grp *g;
 	const SiftFilterSB *fs;
 	SiftDocChunk dc;
-	float4		theta = sift_kern_topk_theta(tk);
+	float4		theta = rank_theta(r, tk);
 	int			order[SIFT_BLKS_PER_SB],
 				n = 0;
 
@@ -2071,7 +2269,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		int			b = order[i],
 					nsel;
 
-		theta = sift_kern_topk_theta(tk);
+		theta = rank_theta(r, tk);
 		if (!(u->ub[b] > theta) || !block_terms(p, rs, b, theta, r->leafub))
 		{
 			p->stats.blocks_skipped++;
@@ -2087,8 +2285,116 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 
 			rank_candidate(r, tk, (SiftKey) blk << 16 | (slot % SIFT_KERN_SLOTS + 1), r->wk->vals[j]);
 		}
+		if (r->par_active)
+			sift_par_raise_theta(r->par, sift_kern_topk_theta(tk));
 	}
 	sift_sr_release(&seg->sr);
+}
+
+static void
+rank_skip_units(SiftRanker *r, int64 from, int64 to)
+{
+	for (; from < to; from++)
+		r->plan->stats.blocks_skipped += r->unit[from].nblk;
+}
+
+static void
+rank_mutable(SiftRanker *r, SiftTopK *tk)
+{
+	const SiftPlan *p = r->plan;
+
+	for (int64 i = 0; i < p->nmhit; i++)
+		if (p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key))
+			rank_candidate(r, tk, p->mhit[i].key, p->mhit[i].score);
+}
+
+static void
+rank_units(SiftRanker *r, SiftTopK *tk)
+{
+	int			u;
+
+	rank_mutable(r, tk);
+	for (u = 0; u < r->nunit; u++)
+	{
+		if (!(r->unit[u].maxub > sift_kern_topk_theta(tk)))
+			break;
+		CHECK_FOR_INTERRUPTS();
+		rank_unit(r, &r->unit[u], tk);
+	}
+	rank_skip_units(r, u, r->nunit);
+}
+
+/*
+ * The units are handed out in descending bound, so once one is out of reach
+ * of the shared threshold the rest of the list is too; this participant is
+ * done, and whoever claims on finds the same.
+ */
+static void
+rank_units_shared(SiftRanker *r, SiftTopK *tk)
+{
+	int64		lo,
+				hi;
+	bool		reachable = true;
+
+	r->par_active = true;
+	if (sift_par_claim_mutable(r->par))
+		rank_mutable(r, tk);
+	while (reachable && sift_par_next_units(r->par, r->nunit, &lo, &hi))
+		for (int64 u = lo; u < hi && reachable; u++)
+		{
+			CHECK_FOR_INTERRUPTS();
+			if ((reachable = r->unit[u].maxub > rank_theta(r, tk)))
+				rank_unit(r, &r->unit[u], tk);
+			else
+				rank_skip_units(r, u, hi);
+		}
+	r->par_active = false;
+}
+
+static int
+par_hit_cmp(const void *a, const void *b)
+{
+	const SiftParHit *x = a,
+			   *y = b;
+
+	if (x->score != y->score)
+		return x->score > y->score ? -1 : 1;
+	return pg_cmp_u64(x->key, y->key);
+}
+
+/* Publishes the participant's sorted hits; the last participant takes everyone's hits as the result */
+static void
+rank_merge_shared(SiftRanker *r)
+{
+	SiftParHit *mine = palloc(Max(r->nhit, 1) * sizeof(SiftParHit)),
+			   *all;
+	int64		n;
+
+	for (int i = 0; i < r->nhit; i++)
+	{
+		HotEnt	   *e = r->hot ? hash_search(r->hot, &r->hit[i].key, HASH_FIND, NULL) : NULL;
+
+		mine[i] = (SiftParHit) {r->hit[i].key, e ? e->root : r->hit[i].key, r->hit[i].score};
+	}
+	sift_par_publish(r->par, mine, r->nhit);
+	pfree(mine);
+	r->nhit = 0;
+	r->complete = true;
+	if (!sift_par_finish(r->par))
+		return;
+	all = sift_par_collect(r->par, &n);
+	qsort(all, n, sizeof(SiftParHit), par_hit_cmp);
+	hot_forget(r);
+	r->nhit = Min(n, r->K);
+	r->complete = n < r->K;
+	for (int i = 0; i < r->nhit; i++)
+	{
+		r->hit[i] = (SiftHit) {all[i].key, all[i].score};
+		if (all[i].root != all[i].key)
+			hot_remember(r, all[i].key, all[i].root);
+	}
+	rank_skip_units(r, sift_par_units_claimed(r->par, r->nunit), r->nunit);
+	pfree(all);
 }
 
 /* Searches the K best verified hits from scratch */
@@ -2097,7 +2403,7 @@ rank_search(SiftRanker *r)
 {
 	SiftPlan   *p = r->plan;
 	SiftTopK	tk;
-	int			u;
+	bool		shared = r->par && !r->searched;
 
 	hot_forget(r);
 	if (r->hit)
@@ -2105,22 +2411,16 @@ rank_search(SiftRanker *r)
 	r->hit = MemoryContextAlloc(p->mcxt, r->K * sizeof(SiftHit));
 	sift_kern_topk_init(&tk, r->hit, r->K);
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
-	for (int64 i = 0; i < p->nmhit; i++)
-		if (p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key))
-			rank_candidate(r, &tk, p->mhit[i].key, p->mhit[i].score);
-	for (u = 0; u < r->nunit; u++)
-	{
-		if (!(r->unit[u].maxub > sift_kern_topk_theta(&tk)))
-			break;
-		CHECK_FOR_INTERRUPTS();
-		rank_unit(r, &r->unit[u], &tk);
-	}
-	for (; u < r->nunit; u++)
-		p->stats.blocks_skipped += r->unit[u].nblk;
+	if (shared)
+		rank_units_shared(r, &tk);
+	else
+		rank_units(r, &tk);
 	p->stats.theta = sift_kern_topk_theta(&tk);
 	r->complete = tk.n < r->K;
 	r->nhit = sift_kern_topk_sort(&tk);
 	r->searched = true;
+	if (shared)
+		rank_merge_shared(r);
 }
 
 #define RANK_INITIAL_K	1024
@@ -2197,8 +2497,10 @@ recheck_page(CountCtx *cc, SiftPageMatch *pm)
 	return n;
 }
 
-int64
-sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg)
+/* The visible matches of the superblock ranges next hands out (next may be NULL: all), page by page */
+static int64
+eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg,
+	   SiftNextRangeFn next, void *next_arg)
 {
 	CountCtx	cc = {plan, vis, verify, arg, AllocSetContextCreate(CurrentMemoryContext, "sift count", ALLOCSET_DEFAULT_SIZES)};
 	SiftMatchIter *it = sift_iter_begin(plan);
@@ -2206,6 +2508,9 @@ sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, Si
 	uint64		allvis[SIFT_PAGEMASK_WORDS] = {0};
 	int64		n = 0;
 	uint32		sb = UINT32_MAX;
+
+	if (next)
+		sift_iter_ranges(it, next, next_arg);
 
 	while (sift_iter_next(it, &pm))
 	{
@@ -2236,15 +2541,28 @@ sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, Si
 	return n;
 }
 
+int64
+sift_eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg)
+{
+	return eval_pages(plan, vis, verify, arg, fn, fnarg, NULL, NULL);
+}
+
 static void
 count_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
 }
 
 int64
+sift_eval_count_ranges(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg,
+					   SiftNextRangeFn next, void *next_arg)
+{
+	return eval_pages(plan, vis, verify, arg, count_page, NULL, next, next_arg);
+}
+
+int64
 sift_eval_count(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg)
 {
-	return sift_eval_pages(plan, vis, verify, arg, count_page, NULL);
+	return sift_eval_count_ranges(plan, vis, verify, arg, NULL, NULL);
 }
 
 /* ---------- estimate ---------- */
