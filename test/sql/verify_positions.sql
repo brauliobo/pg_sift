@@ -1,0 +1,31 @@
+-- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on a damaged position stream:
+-- 0xFF bytes are written over every block of a positioned index in turn
+CREATE EXTENSION pg_sift_test CASCADE;
+CREATE TABLE vp (id serial PRIMARY KEY, body text);
+INSERT INTO vp (body) SELECT 'w' || (i % 7) || ' x' || (i % 101) || ' common doc' || i % 50 || ' common' FROM generate_series(1, 3000) i;
+CREATE INDEX vp_idx ON vp USING sift (body);
+CREATE TABLE vp_verdict (blk int, state text, msg text);
+
+DO $$
+DECLARE
+	nb int := pg_relation_size('vp_idx') / 8192;
+BEGIN
+	FOR b IN 2 .. nb - 1 LOOP
+		PERFORM sift._test_poke('vp_idx', b, 3000, -1, 8);
+		BEGIN
+			PERFORM sift.verify('vp_idx');
+			INSERT INTO vp_verdict VALUES (b, 'ok', NULL);
+		EXCEPTION WHEN OTHERS THEN
+			INSERT INTO vp_verdict VALUES (b, SQLSTATE, SQLERRM);
+		END;
+		REINDEX INDEX vp_idx;
+	END LOOP;
+END $$;
+
+SELECT count(*) > 0 AS blocks_poked, bool_and(state IN ('ok', 'XX002')) AS ok_or_corrupt,
+	count(*) FILTER (WHERE msg ~ 'position record') > 0 AS position_damage_found FROM vp_verdict;
+SELECT sift.verify('vp_idx', true);
+
+DROP TABLE vp, vp_verdict;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -1,5 +1,6 @@
 -- phrase_index = pairs: adjacent token pairs are indexed, two-word phrases need no heap recheck,
--- longer ones are narrowed by their pairs. Results and scores equal the plain index and sift.match
+-- longer ones are narrowed by their pairs (positions = off: no positions decide them). Results and
+-- scores equal the plain index and sift.match
 CREATE EXTENSION pg_sift;
 
 CREATE TABLE pp (id int PRIMARY KEY, body text);
@@ -9,8 +10,8 @@ SELECT i, concat_ws(' ', w[1 + i % 5], w[1 + (i / 5) % 5], w[1 + (i / 3) % 5], w
 FROM generate_series(1, 600) i, LATERAL (SELECT ARRAY['red', 'green', 'blue', 'quick', 'fox'] w) a;
 INSERT INTO pp VALUES (601, NULL), (602, ''), (603, 'red'), (604, 'red green red green red');
 INSERT INTO pn SELECT * FROM pp;
-CREATE INDEX pp_idx ON pp USING sift (body) WITH (phrase_index = pairs);
-CREATE INDEX pn_idx ON pn USING sift (body);
+CREATE INDEX pp_idx ON pp USING sift (body) WITH (phrase_index = pairs, positions = off);
+CREATE INDEX pn_idx ON pn USING sift (body) WITH (positions = off);
 VACUUM ANALYZE pp;
 VACUUM ANALYZE pn;
 
