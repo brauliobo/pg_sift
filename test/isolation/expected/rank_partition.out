@@ -1,0 +1,87 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1r s1f s2i s2m s1rest s1check s1c s2check
+promoted
+--------
+t       
+(1 row)
+
+step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_part WHERE body @@> 'part OR second OR more' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 50) AS fetched;
+fetched
+-------
+     50
+(1 row)
+
+step s2i: INSERT INTO iso_part SELECT g, 'part base second more more ' || g FROM generate_series(1001, 1100) g;
+step s2m: SELECT sift.promote('iso_part1_idx') >= 0 AND sift.merge('iso_part3_idx') >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_part', 'part OR second OR more') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2check: SELECT iso_agree('iso_part', 'part OR second OR more') AS agree, iso_verify('iso_part1_idx') AS verified1,
+	iso_verify('iso_part2_idx') AS verified2, iso_verify('iso_part3_idx') AS verified3;
+agree|verified1|verified2|verified3
+-----+---------+---------+---------
+t    |t        |t        |t        
+(1 row)
+
+
+starting permutation: s1r s1f s2d s2v s2i s2m s2v s1rest s1check s1c s2v s2check
+promoted
+--------
+t       
+(1 row)
+
+step s1r: BEGIN ISOLATION LEVEL REPEATABLE READ; DECLARE c CURSOR FOR SELECT id, sift.score(ctid) AS score FROM iso_part WHERE body @@> 'part OR second OR more' ORDER BY sift.score(ctid) DESC;
+step s1f: SELECT iso_fetch('c', 50) AS fetched;
+fetched
+-------
+     50
+(1 row)
+
+step s2d: DELETE FROM iso_part WHERE id % 4 = 0;
+step s2v: VACUUM iso_part;
+step s2i: INSERT INTO iso_part SELECT g, 'part base second more more ' || g FROM generate_series(1001, 1100) g;
+step s2m: SELECT sift.promote('iso_part1_idx') >= 0 AND sift.merge('iso_part3_idx') >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s2v: VACUUM iso_part;
+step s1rest: SELECT iso_fetch('c', 100000) > 0 AS more;
+more
+----
+t   
+(1 row)
+
+step s1check: SELECT iso_cursor_ok('iso_part', 'part OR second OR more') AS ok;
+ok
+--
+t 
+(1 row)
+
+step s1c: COMMIT;
+step s2v: VACUUM iso_part;
+step s2check: SELECT iso_agree('iso_part', 'part OR second OR more') AS agree, iso_verify('iso_part1_idx') AS verified1,
+	iso_verify('iso_part2_idx') AS verified2, iso_verify('iso_part3_idx') AS verified3;
+agree|verified1|verified2|verified3
+-----+---------+---------+---------
+t    |t        |t        |t        
+(1 row)
+
