@@ -235,6 +235,12 @@ sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 		info->flags |= SIFT_TERM_INLINE;
 		memcpy(info->inline_keys, w->keys, n * sizeof(SiftKey));
 		memcpy(info->inline_tf, w->tf, n);
+		if (w->haspos && w->poslen <= SIFT_INLINE_POS_MAX)
+		{
+			info->flags |= SIFT_TERM_POS;
+			info->pos_len = w->poslen;
+			info->inline_pos = w->pos;
+		}
 		w->n = 0;
 		w->poslen = 0;
 		return;
@@ -328,6 +334,11 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 	{
 		if (info->df == 0 || info->df > SIFT_INLINE_MAX)
 			corrupt_blob(info);
+		if (info->flags & SIFT_TERM_POS)
+		{
+			c->poslen = info->pos_len;
+			c->info.inline_pos = memcpy(MemoryContextAlloc(mcxt, info->pos_len), info->inline_pos, info->pos_len);
+		}
 		sift_post_rewind(c);
 		return c;
 	}
@@ -746,6 +757,19 @@ sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
 	uint32		want = 512;
 
 	Assert(c->poslen > 0 && rank < c->info.df);
+	if (c->info.flags & SIFT_TERM_INLINE)
+	{
+		const uint8 *p = c->info.inline_pos,
+				   *end = p + c->poslen;
+		uint32		n,
+					last;
+
+		for (uint32 k = 0; k < rank; k++)
+			p = sift_pos_skip(p, end, &n, &last);
+		end = sift_pos_skip(p, end, &n, &last);
+		pos_decode(p, end, n, out);
+		return;
+	}
 	pos_ckpt(c);
 	off = c->ckpt[rank >> SIFT_POS_SHIFT];
 	for (;; want *= 2)
@@ -787,8 +811,16 @@ sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
 void
 sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **rec, uint32 *len)
 {
-	uint8	   *buf = MemoryContextAllocHuge(c->mcxt, c->poslen);
+	uint8	   *buf;
 
+	if (c->info.flags & SIFT_TERM_INLINE)
+	{
+		*ckpt = NULL;
+		*rec = c->info.inline_pos;
+		*len = c->poslen;
+		return;
+	}
+	buf = MemoryContextAllocHuge(c->mcxt, c->poslen);
 	pos_read(c, 0, c->poslen, buf);
 	*ckpt = (const uint32 *) buf;
 	*rec = buf + (Size) c->nck * sizeof(uint32);

@@ -190,6 +190,13 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
 			for (uint32 i = 0; i < info->df; i++)
 				*p++ = info->inline_tf[i];
+		if (info->flags & SIFT_TERM_POS)
+		{
+			p = put_varint(p, info->pos_len);
+			appendBinaryStringInfo(&w->blk, (const char *) e, p - e);
+			p = e;
+			appendBinaryStringInfo(&w->blk, (const char *) info->inline_pos, info->pos_len);
+		}
 	}
 	else
 	{
@@ -349,7 +356,7 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	info->max_bound = *it->p++;
 	if (info->flags & SIFT_TERM_INLINE)
 	{
-		if (info->df < 1 || info->df > SIFT_INLINE_MAX || (info->flags & SIFT_TERM_POS))
+		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
 			corrupt("Inline term with df %u and flags %u.", info->df, info->flags);
 		it->p = get_varint(it->p, it->end, &v);
 		info->inline_keys[0] = v;
@@ -366,6 +373,15 @@ block_next(BlockIter *it, SiftTermInfo *info)
 				corrupt("Truncated inline postings.");
 			memcpy(info->inline_tf, it->p, info->df);
 			it->p += info->df;
+		}
+		if (info->flags & SIFT_TERM_POS)
+		{
+			it->p = get_varint(it->p, it->end, &v);
+			if (v == 0 || (uint64) (it->end - it->p) < v)
+				corrupt("Truncated inline positions.");
+			info->pos_len = v;
+			info->inline_pos = it->p;
+			it->p += v;
 		}
 		return true;
 	}
