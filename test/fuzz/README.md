@@ -13,8 +13,12 @@ them. It prints `PASS`/`FAIL` per target and exits 1 on any finding.
 
 The PostgreSQL server binary is not instrumented, so `pgtest.sh start`
 preloads `libasan`/`libubsan` (`LD_PRELOAD`). It sets
-`ASAN_OPTIONS=detect_leaks=0:abort_on_error=1` because backend memory lives in
-memory contexts and is never freed. Reports are written to
+`ASAN_OPTIONS=detect_leaks=1:exitcode=0:abort_on_error=1`: LeakSanitizer
+reports the malloc leaks of every server process as it exits, minus PostgreSQL's
+own startup allocations (`scripts/lsan.supp`); palloc memory belongs to memory
+contexts and is not a malloc leak. The standalone harnesses (`tools/analyze`,
+`tools/query`, `tools/codec`) run with leak detection too; their palloc stubs
+free the arena at exit (`tools/pgarena.h`). Reports are written to
 `$SIFT_TMP/sanitizer/`. The `canary` target loads a deliberately overflowing
 module (`asan_canary.c`) and checks that a report appears, which shows the
 pipeline works. Plain `scripts/pgtest.sh install` switches back to the normal
