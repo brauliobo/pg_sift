@@ -325,6 +325,20 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 	return cp;
 }
 
+/* Parallel paths exist only with sift.parallel_scan; without it the planner sees the serial paths alone */
+static bool
+parallel_ok(RelOptInfo *rel)
+{
+	return sift_parallel_scan && rel->consider_parallel;
+}
+
+/* The part of the index work every participant of a parallel scan pays (none for the serial paths) */
+static Cost
+parallel_dict_cost(IndexWork *w, int nworkers)
+{
+	return nworkers > 0 && w->known ? w->dict_cost : 0;
+}
+
 /*
  * Candidates a ranked scan verifies before it holds k that pass the quals, when the fraction pass of
  * the cands pass: the k-th best passing score is about k / pass candidates down, and the bound order
@@ -347,7 +361,7 @@ scan_workers(RelOptInfo *rel, ScanCand *c)
 	int			nworkers,
 				sbs = ((int64) rel->pages + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 
-	if (!rel->consider_parallel || rel->reloptkind != RELOPT_BASEREL || max_parallel_workers_per_gather <= 0)
+	if (!parallel_ok(rel) || rel->reloptkind != RELOPT_BASEREL || max_parallel_workers_per_gather <= 0)
 		return 0;
 	nworkers = compute_parallel_worker(rel, -1, c->index->pages, max_parallel_workers_per_gather);
 	if (rel->rel_parallel_workers == -1)
@@ -390,11 +404,11 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 
 	Assert(filter == NULL || nworkers == 0);
 	scan_cost(root, rel, c, &sc);
-	dict = sc.idx.known ? sc.idx.dict_cost : 0;
+	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
 	cp->path.rows = rel->rows / divisor;
-	cp->path.parallel_safe = rel->consider_parallel;
+	cp->path.parallel_safe = parallel_ok(rel);
 	cp->path.parallel_aware = nworkers > 0;
 	cp->path.parallel_workers = nworkers;
 	verify = sc.docs * sc.tuple;
@@ -559,13 +573,13 @@ count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Sca
 				shared;
 
 	scan_cost(root, input_rel, c, &sc);
-	dict = sc.idx.known ? sc.idx.dict_cost : 0;
+	dict = parallel_dict_cost(&sc.idx, nworkers);
 	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
 	shared = (sc.idx.known ? sc.idx.cost - dict : 0) +
 		(1 - input_rel->allvisfrac) * (Min(sc.docs, Max(input_rel->pages, 1)) * sc.page + sc.docs * cpu_tuple_cost) +
 		sc.docs * cpu_operator_cost * POSTING_CPU_FRACTION;
 	cp->path.rows = 1;
-	cp->path.parallel_safe = output_rel->consider_parallel;
+	cp->path.parallel_safe = parallel_ok(output_rel);
 	cp->path.parallel_aware = nworkers > 0;
 	cp->path.parallel_workers = nworkers;
 	cp->path.startup_cost = dict + shared / divisor;

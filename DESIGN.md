@@ -451,7 +451,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 | 6 | VM pext → 256-bit all-visible mask per SB; chunk-count shortcut on clean SBs | core | `count(*)` at memory bandwidth; single-term count O(chunks) | count QPS against pg_textsearch and ParadeDB (Wikipedia) |
 | 7 | Mutable lanes + bloom-gated mutable scan + async dynamic worker without preload | core (M4) | No insert hot spot; bounded query overhead under 1,000 updates/s | QPS under the 1,000 UPDATE/s mix, WAL per update |
 | 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | M4 | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
-| 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | dropped after measurement (not in 1.0) | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
+| 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | implemented in 1.1, opt-in: `sift.parallel_scan = on` (default off). Results equal the serial plans (ties included). Measured (`bench/steps/parallel.sh`, 218,058 articles, 1/2/4/8 workers, host load 21–25): wins only for an unordered scan with a heavy residual qual (1.8×); `count(*)` 0.06–0.29× and top-1000/10000 0.5–1.2×, because a Gather costs 2.4 ms (1 worker) to 6–7 ms (8) before any work and the serial plans take 0.35–0.67 ms and 4–20 ms. Likely to pay only on much larger corpora | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
 | 10 | Filter-mask pushdown: SiftScan accepts child BitmapIndex paths (btree, BRIN) as `custom_paths` and converts the TIDBitmap into SB page/offset masks before scoring | implemented in 1.1 (kept; gate met): 0.1% filter, ranked `or`, mean latency 23.6 -> 0.22 ms (clustered) and 15.0 -> 0.86 ms (scattered) on 218k articles, `and` 4.9 -> 0.22 / 4.3 -> 0.64 ms; 25k articles: `or` 2.2 -> 0.21 ms, `and` 0.7 -> 0.19 ms. At 10% scattered the pushdown is slower than filtering after the ranker, so the planner costs both | Exact filtered top-k without post-filter over-fetch; 5–100× on selective filters | `WHERE body @@> q AND tenant = $1 ORDER BY score LIMIT 10` |
 | 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `sift.facets(index, facet_index, query, lim)` = popcount(query ∧ value) per value, a function and not a GROUP BY rewrite ((l)) | implemented in 1.1: on 25,000 Wikipedia articles with 26 values, 1.9-4.5x sift GROUP BY and 1.9-15.9x GIN GROUP BY on broad queries (1.5-2.6x Elasticsearch terms), 0.6x on a selective AND; with 2,500 values 0.5-0.9x sift GROUP BY (cost is linear in the values), see (l) | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
 | 12 | Phrase pair index (g) | M7 | Phrase `count(*)` 10–100× | Phrase count QPS |
@@ -531,7 +531,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - custom rmgr;
   - statement-level insert batching;
   - non-x86 SIMD (scalar works everywhere; NEON later);
-  - parallel scan (dropped after measurement).
+  - parallel scan on by default (opt-in through `sift.parallel_scan`, item 9).
 
 ---
 

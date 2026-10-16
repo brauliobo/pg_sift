@@ -88,11 +88,21 @@ CREATE FUNCTION ps_same(q text) RETURNS TABLE (query text, n bigint, count_ok te
 			FROM unnest(ARRAY[1, 7, 100, 3000, 20000]) k) THEN 'ok' ELSE 'MISMATCH' END
 $$;
 
--- plan shapes: parallel when the cost model says so, serial where it cannot work
+-- off by default: whatever the parallel costs, the planner considers no parallel sift path
+SHOW sift.parallel_scan;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
+SELECT ps_plan('SELECT id FROM ps WHERE body @@> ''fox'' AND id % 3 = 0');
+SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 10');
+SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''') || ps_plan('SELECT id FROM ps WHERE body @@> ''fox''')
+	|| ps_plan('SELECT id FROM ps WHERE body @@> ''fox'' ORDER BY sift.score(ctid) DESC LIMIT 10') NOT LIKE '%Gather%' AS no_gather;
+SELECT ps_count('fox', 'par') AS count_with_guc_off;
+
+-- plan shapes: parallel when the cost model says so, serial where it cannot work
+SET sift.parallel_scan = on;
 SELECT ps_plan('SELECT count(*) FROM ps WHERE body @@> ''fox''');
 SELECT ps_plan('SELECT id FROM ps WHERE body @@> ''fox'' AND id % 3 = 0');
 SELECT ps_plan('SELECT id, sift.score(ctid) FROM ps WHERE body @@> ''fox quick'' ORDER BY sift.score(ctid) DESC LIMIT 10');

@@ -51,6 +51,7 @@ PG_FUNCTION_INFO_V1(sift_facet_counts);
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
 bool		sift_enable_count = true;
+bool		sift_parallel_scan = false;
 bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 
@@ -72,6 +73,10 @@ define_gucs(void)
 	DefineCustomBoolVariable("sift.enable_count",
 							 "Enables count(*) pushdown into the sift index.",
 							 NULL, &sift_enable_count, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.parallel_scan",
+							 "Lets the planner use parallel sift scans and counts (they pay off on large, heap-bound scans only).",
+							 NULL, &sift_parallel_scan, false,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.prefetch",
 							 "Reads ahead the heap pages an unordered scan is about to visit.",

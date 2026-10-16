@@ -132,6 +132,7 @@ extern const char *sift_options_fields(const SiftOptions *opts);
 extern PGDLLIMPORT int sift_max_expansions;
 extern PGDLLIMPORT bool sift_enable_scan;
 extern PGDLLIMPORT bool sift_enable_count;
+extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_async_maintenance;
 extern PGDLLIMPORT bool sift_prefetch;
 
