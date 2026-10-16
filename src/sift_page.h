@@ -80,6 +80,7 @@ typedef enum SiftSegKind
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
+#define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 
 typedef struct SiftSegEntry
 {

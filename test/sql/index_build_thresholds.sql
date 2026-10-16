@@ -36,7 +36,7 @@ FROM generate_series(1, 6000) i;
 SELECT pg_relation_size('g') / 8192 > 512 AS three_superblocks;
 
 -- Default thresholds: everything below 65536 is inline or LIST
-CREATE INDEX g_list ON g USING sift (body);
+CREATE INDEX g_list ON g USING sift (body) WITH (positions = off);
 SELECT df_class, terms, inline_terms, list_terms, grouped_terms FROM sift.segment_postings('g_list');
 SELECT sift.verify('g_list');
 SELECT * FROM roundtrip('g_list', 'SELECT ctid AS tid, body FROM g');

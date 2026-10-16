@@ -250,7 +250,7 @@ dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
 
 static bool
 dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys,
-		  const uint8 *tf, const uint16 *dl)
+		  const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen)
 {
 	uint64		h = sift_term_hash64(term, len);
 
@@ -437,7 +437,7 @@ typedef struct PostingsOut
 
 static bool
 emit_term(void *arg, const char *term, int len, const SiftTermInfo *info,
-		  const SiftKey *keys, const uint8 *tf, const uint16 *dl)
+		  const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen)
 {
 	PostingsOut *o = arg;
 	Datum		v[5];

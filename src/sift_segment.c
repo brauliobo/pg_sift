@@ -40,6 +40,7 @@ struct SiftSegmentWriter
 	uint64		ndocs;
 	uint64		sum_dl;
 	SiftKey		last;
+	bool		positions;
 	/* SB being accumulated */
 	uint32		sb;
 	uint32		sb_ndocs;
@@ -84,7 +85,7 @@ sw_pad4(SiftStreamWriter *sw)
 /* ---------- writer ---------- */
 
 SiftSegmentWriter *
-sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt)
+sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftSegmentWriter *w = palloc0(sizeof(SiftSegmentWriter));
@@ -93,6 +94,7 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->gen = gen;
 	w->mcxt = mcxt;
 	w->ref = *ref;
+	w->positions = positions;
 	w->sw = sift_sw_begin(wt, gen);
 	w->offmask = palloc0(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
 	w->dl = palloc0(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
@@ -284,6 +286,7 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = SIFT_FORMAT_MINOR;
+	entry->flags = w->positions ? SIFT_SEG_POSITIONS : 0;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->hdr.sb_lo;
 	entry->sb_hi = w->hdr.sb_hi;
@@ -814,6 +817,11 @@ typedef struct Walk
 	SiftKey    *tkeys;
 	uint8	   *ttf;
 	uint16	   *tdl;
+	uint32	   *tpoff;			/* positions: offset and length of each posting's record in the stream */
+	uint32	   *tplen;
+	const uint8 *tprec;			/* the term's records, back to back */
+	uint8	   *tpbuf;			/* live_only: the live postings' records */
+	Size		tpcap;
 	uint64	   *trank;			/* live_only: doc rank of each posting */
 	uint32		tcap;
 	sift_tid   *tids;			/* SIFT_GRP_MAXTIDS */
@@ -963,10 +971,76 @@ live_postings(Walk *w, uint32 n)
 		{
 			w->tkeys[m] = w->tkeys[j];
 			w->ttf[m] = w->ttf[j];
+			w->tpoff[m] = w->tpoff[j];
+			w->tplen[m] = w->tplen[j];
 			w->tdl[m++] = w->tdl[j];
 		}
 	release_live(w);
 	return m;
+}
+
+/*
+ * The position records of the term in rank order: offsets and lengths of each, and with verify the
+ * counts against tf, the occurrences against dl and the checkpoints
+ */
+static void
+term_positions(Walk *w, SiftPostingCursor *c, const char *term, int len, const SiftTermInfo *info)
+{
+	SiftSegment *seg = w->seg;
+	const uint32 *ck;
+	const uint8 *rec,
+			   *p,
+			   *end;
+	uint32		reclen;
+
+	sift_post_pos_stream(c, &ck, &rec, &reclen);
+	p = rec;
+	end = rec + reclen;
+	for (uint32 j = 0; j < info->df; j++)
+	{
+		uint32		cnt,
+					last;
+		const uint8 *q = sift_pos_skip(p, end, &cnt, &last);
+
+		if (w->verify)
+		{
+			uint16		dl = w->tdl[j];
+
+			if ((j % SIFT_POS_EVERY == 0 && ck[j / SIFT_POS_EVERY] != (uint32) (p - rec)) ||
+				(w->ttf[j] < SIFT_MAX_TF ? cnt != w->ttf[j] : cnt < SIFT_MAX_TF) || (dl < SIFT_MAX_DL && last >= dl))
+				corrupt(seg, "Posting (%u,%u) of \"%.*s\" has %u positions ending at %u for tf %u, dl %u.",
+						sift_key_block(w->tkeys[j]), (uint32) (w->tkeys[j] & 0xFFFF), len, term, cnt, last, w->ttf[j], dl);
+		}
+		w->tpoff[j] = p - rec;
+		w->tplen[j] = q - p;
+		p = q;
+	}
+	if (p != end)
+		corrupt(seg, "Term \"%.*s\" has %u bytes of positions after its %u postings.", len, term, (uint32) (end - p), info->df);
+	w->tprec = rec;
+}
+
+/* The records of the live postings (the first n of tpoff / tplen), back to back; tplen is the new lengths */
+static const uint8 *
+live_records(Walk *w, uint32 n)
+{
+	Size		total = 0;
+	uint8	   *out;
+
+	for (uint32 j = 0; j < n; j++)
+		total += w->tplen[j];
+	if (total > w->tpcap)
+	{
+		w->tpcap = Max(total, 2 * w->tpcap);
+		w->tpbuf = w->tpbuf ? repalloc_huge(w->tpbuf, w->tpcap) : MemoryContextAllocHuge(w->seg->mcxt, w->tpcap);
+	}
+	out = w->tpbuf;
+	for (uint32 j = 0; j < n; j++)
+	{
+		memcpy(out, w->tprec + w->tpoff[j], w->tplen[j]);
+		out += w->tplen[j];
+	}
+	return w->tpbuf;
 }
 
 static bool
@@ -1002,6 +1076,10 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		if (w->live_only)
 			w->trank = w->trank ? repalloc_huge(w->trank, w->tcap * sizeof(uint64)) :
 				MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint64));
+		w->tpoff = w->tpoff ? repalloc_huge(w->tpoff, w->tcap * sizeof(uint32)) :
+			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint32));
+		w->tplen = w->tplen ? repalloc_huge(w->tplen, w->tcap * sizeof(uint32)) :
+			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint32));
 	}
 	c = w->verify ? sift_post_open_verified(&seg->sr, info, w->tcxt) : sift_post_open(&seg->sr, info, w->tcxt);
 	if (w->verify)
@@ -1042,6 +1120,9 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	}
 	if (n != info->df)
 		corrupt(seg, "Term \"%.*s\" has %u postings, df %u.", len, term, n, info->df);
+	w->tprec = NULL;
+	if ((info->flags & SIFT_TERM_POS) && (w->verify || w->visit))
+		term_positions(w, c, term, len, info);
 	cls->terms++;
 	cls->postings += n;
 	if (info->flags & SIFT_TERM_INLINE)
@@ -1051,7 +1132,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		cls->list_terms += (info->flags & SIFT_TERM_SPARSE) != 0;
 		cls->grouped_terms += (info->flags & SIFT_TERM_SPARSE) == 0;
 		cls->codec_bytes += info->codec_len;
-		cls->sidecar_bytes += info->post_len - info->codec_len;
+		cls->sidecar_bytes += info->post_len - info->codec_len - ((info->flags & SIFT_TERM_POS) ? info->pos_len : 0);
 	}
 	w->st->nterms++;
 	w->st->postings += n;
@@ -1061,9 +1142,13 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (n > 0 || !w->live_only)
 	{
 		SiftTermInfo live = *info;
+		const uint8 *pos = w->tprec;
 
 		live.df = n;
-		w->stopped = w->visit && !w->visit(w->arg, term, len, w->live_only ? &live : info, w->tkeys, w->ttf, w->tdl);
+		if (pos && n < info->df)
+			pos = live_records(w, n);
+		w->stopped = w->visit && !w->visit(w->arg, term, len, w->live_only ? &live : info, w->tkeys, w->ttf, w->tdl,
+										   pos, w->tplen);
 	}
 	MemoryContextReset(w->tcxt);
 	return !w->stopped;
