@@ -24,6 +24,7 @@
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
+#include "parser/parsetree.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -35,6 +36,7 @@
 #include "sift_pushdown.h"
 
 static set_rel_pathlist_hook_type prev_pathlist_hook;
+static set_join_pathlist_hook_type prev_join_hook;
 static create_upper_paths_hook_type prev_upper_hook;
 
 /* Dictionary pages a term lookup reads: root array hit, DICTIDX, DICT block */
@@ -433,8 +435,12 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
 	cp->path.rows = rel->rows / divisor;
-	/* a ranked partition under a Parallel Append would reach a Sort that loses the scan's tie order: MergeAppend keeps it */
-	cp->path.parallel_safe = parallel_ok(rel) && !(mode == SIFT_MODE_RANKED && is_partition(rel));
+	/*
+	 * a ranked partition under a Parallel Append would reach a Sort that loses the scan's tie order:
+	 * MergeAppend keeps it; and a ranked scan in a join under a Gather would not pass its score on
+	 */
+	cp->path.parallel_safe = parallel_ok(rel) &&
+		!(mode == SIFT_MODE_RANKED && (is_partition(rel) || bms_membership(root->all_baserels) != BMS_SINGLETON));
 	cp->path.parallel_aware = nworkers > 0;
 	cp->path.parallel_workers = nworkers;
 	verify = sc.docs * sc.tuple;
@@ -532,6 +538,127 @@ check_partition_scores(RelOptInfo *rel, List *scores)
 					 errhint("Call it on one partition, or use sift.score().")));
 }
 
+/* Is the path a SiftScan, or an Append of them, projected or not? */
+static bool
+scans_only(Path *path)
+{
+	List	   *subpaths;
+
+	while (IsA(path, ProjectionPath))
+		path = ((ProjectionPath *) path)->subpath;
+	if (IsA(path, CustomPath))
+		return ((CustomPath *) path)->methods == &sift_scan_path_methods;
+	if (IsA(path, AppendPath))
+		subpaths = ((AppendPath *) path)->subpaths;
+	else if (IsA(path, MergeAppendPath))
+		subpaths = ((MergeAppendPath *) path)->subpaths;
+	else
+		return false;
+	foreach_ptr(Path, sub, subpaths)
+		if (!scans_only(sub))
+			return false;
+	return true;
+}
+
+static bool
+is_append(Path *path)
+{
+	return IsA(path, AppendPath) || IsA(path, MergeAppendPath);
+}
+
+static bool
+has_scan_path(RelOptInfo *rel)
+{
+	foreach_ptr(Path, p, rel->pathlist)
+		if (scans_only(p))
+			return true;
+	return false;
+}
+
+/* The scores the query reads of the rels under a join that a SiftScan produces */
+static List *
+join_scores(PlannerInfo *root, RelOptInfo *joinrel)
+{
+	List	   *scores = NIL;
+	int			relid = -1;
+
+	while ((relid = bms_next_member(joinrel->relids, relid)) >= 0)
+	{
+		RelOptInfo *rel = root->simple_rel_array[relid];
+
+		if (rel != NULL && rel->reloptkind == RELOPT_BASEREL && has_scan_path(rel))
+			scores = list_concat_unique(scores, score_exprs(root, rel));
+	}
+	return scores;
+}
+
+/*
+ * The path's own target also outputs the scores: the rel's target holds only Vars, so a join above would
+ * call sift.score itself. A path of the rel that holds every base rel gets its target from the query's
+ * scan/join target instead (and its sort and group references), which has the scores it needs.
+ */
+static void
+carry_scores(Path *path, List *scores)
+{
+	foreach_ptr(Node, e, scores)
+	{
+		if (list_member(path->pathtarget->exprs, e))
+			continue;
+		if (path->pathtarget == path->parent->reltarget)
+			path->pathtarget = copy_pathtarget(path->pathtarget);
+		add_column_to_pathtarget(path->pathtarget, (Expr *) e, 0);
+	}
+}
+
+static bool
+holds_all_rels(PlannerInfo *root, RelOptInfo *rel)
+{
+	return bms_is_subset(root->all_baserels, rel->relids);
+}
+
+/*
+ * The Append of a partitioned parent outputs the scores of its partitions' scans, which come last in
+ * their target lists (score_outputs), so that the joins and aggregates above it find them. An Append
+ * takes its columns by position: only one of scans is extended.
+ */
+static void
+carry_parent_scores(PlannerInfo *root, RelOptInfo *rel)
+{
+	List	   *scores = score_exprs(root, rel);
+
+	foreach_ptr(Path, p, rel->pathlist)
+		if (is_append(p) && scans_only(p))
+			carry_scores(p, scores);
+}
+
+/* The Append of a partitionwise join takes the columns of the joins under it, which do not carry the scores */
+static void
+carry_join_scores(PlannerInfo *root, RelOptInfo *joinrel)
+{
+	List	   *scores = join_scores(root, joinrel);
+
+	foreach_ptr(Path, p, joinrel->pathlist)
+		if (!is_append(p))
+			carry_scores(p, scores);
+	foreach_ptr(Path, p, joinrel->partial_pathlist)
+		if (!is_append(p))
+			carry_scores(p, scores);
+}
+
+/*
+ * A join passes on the columns the joins above it need, and those are Vars: the score a join higher up
+ * reads is not one, and would be evaluated there from the ctid. The join paths pass the scan's score on.
+ */
+static void
+sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel, RelOptInfo *innerrel,
+					   JoinType jointype, JoinPathExtraData *extra)
+{
+	if (prev_join_hook)
+		prev_join_hook(root, joinrel, outerrel, innerrel, jointype, extra);
+	if (!holds_all_rels(root, joinrel))
+		carry_join_scores(root, joinrel);
+}
+
 /*
  * A score the query reads can only come from a ranked scan, so that path
  * replaces the others; without one the unordered scan competes with them.
@@ -551,10 +678,18 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->inh ||
-		rte->tablesample || root->parse->commandType != CMD_SELECT || root->rowMarks != NIL ||
+	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->tablesample ||
+		root->parse->commandType != CMD_SELECT || root->rowMarks != NIL ||
 		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
 		sift_catalog()->am == InvalidOid)
+		return;
+	if (rte->inh)
+	{
+		if (!holds_all_rels(root, rel))
+			carry_parent_scores(root, rel);
+		return;
+	}
+	if (rte->relkind != RELKIND_RELATION)
 		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
@@ -719,6 +854,12 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
+	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
+	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
+		carry_join_scores(root, input_rel);
+	else if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_BASEREL &&
+			 planner_rt_fetch(input_rel->relid, root)->inh)
+		carry_parent_scores(root, input_rel);
 	if (stage == UPPERREL_ORDERED)
 		foreach_ptr(Path, p, list_copy(output_rel->pathlist))
 			if (sorted_gather_of_ranked(p))
@@ -849,6 +990,8 @@ sift_planner_init(void)
 	RegisterCustomScanMethods(&sift_count_plan_methods);
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = sift_set_rel_pathlist;
+	prev_join_hook = set_join_pathlist_hook;
+	set_join_pathlist_hook = sift_set_join_pathlist;
 	prev_upper_hook = create_upper_paths_hook;
 	create_upper_paths_hook = sift_upper_paths;
 }

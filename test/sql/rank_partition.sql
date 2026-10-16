@@ -119,9 +119,9 @@ SELECT id, sift.score(ctid), sift.highlight(body, 'rare OR beta', '<b>', '</b>')
 SELECT count(*), round(sum(s)::numeric, 3) FROM (SELECT sift.score(ctid) AS s FROM rp WHERE body @@> 'rare' OFFSET 0) t;
 SELECT t.id, t.s, p.tenant FROM (SELECT id, sift.score(ctid) AS s FROM rp WHERE body @@> 'rare' ORDER BY s DESC, id LIMIT 3) t
 	JOIN rp p ON p.id = t.id ORDER BY t.s DESC, t.id;
--- an aggregate, or a join that is not a nested loop, evaluates the score above the Append, which does not carry it: it raises
--- the usual error, and a subquery that the planner keeps (OFFSET 0, LIMIT) is the way to read the score there
-SELECT sum(sift.score(ctid)) FROM rp WHERE body @@> 'rare';
+-- an aggregate or a join over the parent reads the scores the Append carries from its partitions' scans (more shapes in rank_join)
+SELECT round(sum(sift.score(ctid))::numeric, 3) = (SELECT round(sum(s)::numeric, 3) FROM (SELECT sift.score(ctid) AS s FROM rp
+	WHERE body @@> 'rare' OFFSET 0) t) AS same_sum FROM rp WHERE body @@> 'rare';
 CREATE TABLE rj (id int PRIMARY KEY, tag text);
 INSERT INTO rj SELECT i, 't' || i % 3 FROM generate_series(0, 3999) i;
 ANALYZE rj;
