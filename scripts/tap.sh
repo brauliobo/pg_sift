@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TAP suite (test/t) on PostgreSQL::Test::Cluster from the PG18 pgxs tree.
+# TAP suite (test/t) on PostgreSQL::Test::Cluster from the server's pgxs tree.
 #
 #   scripts/tap.sh [t/NNN_name.pl...]     (shell TAP tests: scripts/pgtest.sh tap)
 #
@@ -30,8 +30,7 @@ fi
 
 rm -rf "$TAP" && mkdir -p "$TAP"
 cat >"$TAP/sift.conf" <<CONF
-extension_control_path = '$SIFT_ROOT$(pg_config --sharedir):\$system'
-dynamic_library_path = '$SIFT_ROOT$(pg_config --pkglibdir):\$libdir'
+$("$REPO/scripts/pgtest.sh" conf)
 max_wal_size = 256MB
 CONF
 [[ -z ${SIFT_SANITIZER:-} ]] || export $SIFT_SANITIZER

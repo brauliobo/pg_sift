@@ -15,6 +15,8 @@ TAPDIR=${SIFT_TMP:?}/tap
 ROOT=${SIFT_ROOT:?run through scripts/pgtest.sh tap}
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
+PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+PATHS_CONF=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf)
 NTEST=0
 NFAIL=0
 NODES=()
@@ -37,6 +39,7 @@ ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
 not_ok() { NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"; }
 diag() { sed 's/^/# /' <<<"$*"; }
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
+skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
 bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
 
 dir() { echo "$TAPDIR/$1"; }
@@ -56,8 +59,7 @@ node_init() {
 	node_conf "$name" "port = $((SIFT_PORT + offset))
 listen_addresses = ''
 unix_socket_directories = '$d/sock'
-extension_control_path = '$SHAREDIR:\$system'
-dynamic_library_path = '$PKGLIBDIR:\$libdir'
+$PATHS_CONF
 fsync = off
 max_wal_size = 256MB
 restart_after_crash = off

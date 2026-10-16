@@ -53,7 +53,10 @@ SQL
 vq() { q "$1" "$2" "SELECT sift.verify('docs_idx', true)" "$3" | tail -n 1; }
 healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 
-plan 25
+# the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
+DBS="src plain custom"
+(( PG_MAJOR < 18 )) || DBS+=" upg"
+plan $((21 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -80,56 +83,61 @@ q life schemaonly "INSERT INTO docs VALUES (1, 'alpha3 hello')" >/dev/null
 check "the empty restored index accepts new documents" test "$(vq life schemaonly "SELECT fp() = seq()")" == t
 check "pg_dump keeps the extension as one object" test "$(pgc life pg_dump src | grep -c 'CREATE EXTENSION IF NOT EXISTS pg_sift')" == 1
 
-# extension_control_path and dynamic_library_path are the only install: nothing else makes sift available
-check "sift is available through extension_control_path" test "$(q life postgres \
-	"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 1.1
-check "the library loads through dynamic_library_path" test "$(vq life src \
-	"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'")" == 1
-check "without the path the extension is not found" test "$(q life postgres "SET extension_control_path = '/nonexistent'" \
-	"SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift'")" == 0
+# extension_control_path (new in PostgreSQL 18) and dynamic_library_path are the only install, and the update path runs in a private directory
+if (( PG_MAJOR >= 18 )); then
+	# extension_control_path and dynamic_library_path are the only install: nothing else makes sift available
+	check "sift is available through extension_control_path" test "$(q life postgres \
+		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 1.1
+	check "the library loads through dynamic_library_path" test "$(vq life src \
+		"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'")" == 1
+	check "without the path the extension is not found" test "$(q life postgres "SET extension_control_path = '/nonexistent'" \
+		"SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift'")" == 0
 
-# upgrade path: 1.0 and 1.1 are the real scripts, 1.2 only adds a marker function
-UPD=$(dir life)/upd
-mkdir -p "$UPD/extension"
-cp "$SHAREDIR"/extension/pg_sift--1.0.sql "$SHAREDIR"/extension/pg_sift--1.1.sql "$SHAREDIR"/extension/pg_sift--1.0--1.1.sql "$UPD/extension/"
-sed "s/^default_version.*/default_version = '1.2'/" "$SHAREDIR/extension/pg_sift.control" >"$UPD/extension/pg_sift.control"
-echo "CREATE FUNCTION sift.lifecycle_marker() RETURNS text LANGUAGE sql RETURN 'v1.2';" >"$UPD/extension/pg_sift--1.1--1.2.sql"
-PATHSET="SET extension_control_path = '$UPD:\$system'"
-q life postgres "CREATE DATABASE upg" >/dev/null
-q life upg "$PATHSET" "CREATE EXTENSION pg_sift VERSION '1.0'" >/dev/null
-q life upg "${SETUP#*CREATE EXTENSION pg_sift;}" >/dev/null || bail "upgrade setup failed"
-before=$(q life upg "SELECT fp() || ranked()")
-check "the update path chains the two steps" test "$(q life upg "$PATHSET" \
-	"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '1.2'")" == "1.0--1.1--1.2"
-# the objects of the extension by description, with the definition of the functions
-MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE classid WHEN 'pg_proc'::regclass THEN pg_get_functiondef(objid) END, '')
-	FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
-	AND refobjid = (SELECT oid FROM pg_extension WHERE extname = 'pg_sift') ORDER BY 1"
-q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE TO '1.1'" >/dev/null
-q life postgres "CREATE DATABASE fresh" >/dev/null
-q life fresh "CREATE EXTENSION pg_sift VERSION '1.1'" >/dev/null
-check "1.0 updated to 1.1 has the objects of a fresh 1.1 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh "$MEMBERS")"
-FACETS="SELECT (SELECT string_agg(value || ':' || count, ',' ORDER BY value) FROM sift.facets('docs_idx', 'docs_kw', 'gamma', NULL))
-	= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 5)::text k, count(*) c FROM docs WHERE body @@> 'gamma' GROUP BY 1) g)"
-q life upg "CREATE INDEX docs_kw ON docs USING sift (((id % 5)::text)) WITH (analyzer = keyword)" >/dev/null
-check "sift.facets works on the updated 1.1 extension" test "$(q life upg "$FACETS")" == t
-q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
-check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion || ' ' || sift.lifecycle_marker() FROM pg_extension WHERE extname = 'pg_sift'")" == "1.2 v1.2"
-check "the index built before the update still verifies and answers the same" \
-	test "$(vq life upg "SELECT fp() = seq() AND fp() || ranked() = '$(sed "s/'/''/g" <<<"$before")'")" == t
-q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
-crash life
-node_start life || bail "restart failed"
-check "inserts after the update survive a crash" test "$(vq life upg \
-	"SELECT fp() = seq() AND (SELECT count(*) FROM docs WHERE body @@> 'afterupdate') = 1")" == t
+	# upgrade path: 1.0 and 1.1 are the real scripts, 1.2 only adds a marker function
+	UPD=$(dir life)/upd
+	mkdir -p "$UPD/extension"
+	cp "$SHAREDIR"/extension/pg_sift--1.0.sql "$SHAREDIR"/extension/pg_sift--1.1.sql "$SHAREDIR"/extension/pg_sift--1.0--1.1.sql "$UPD/extension/"
+	sed "s/^default_version.*/default_version = '1.2'/" "$SHAREDIR/extension/pg_sift.control" >"$UPD/extension/pg_sift.control"
+	echo "CREATE FUNCTION sift.lifecycle_marker() RETURNS text LANGUAGE sql RETURN 'v1.2';" >"$UPD/extension/pg_sift--1.1--1.2.sql"
+	PATHSET="SET extension_control_path = '$UPD:\$system'"
+	q life postgres "CREATE DATABASE upg" >/dev/null
+	q life upg "$PATHSET" "CREATE EXTENSION pg_sift VERSION '1.0'" >/dev/null
+	q life upg "${SETUP#*CREATE EXTENSION pg_sift;}" >/dev/null || bail "upgrade setup failed"
+	before=$(q life upg "SELECT fp() || ranked()")
+	check "the update path chains the two steps" test "$(q life upg "$PATHSET" \
+		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '1.2'")" == "1.0--1.1--1.2"
+	# the objects of the extension by description, with the definition of the functions
+	MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE classid WHEN 'pg_proc'::regclass THEN pg_get_functiondef(objid) END, '')
+		FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
+		AND refobjid = (SELECT oid FROM pg_extension WHERE extname = 'pg_sift') ORDER BY 1"
+	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE TO '1.1'" >/dev/null
+	q life postgres "CREATE DATABASE fresh" >/dev/null
+	q life fresh "CREATE EXTENSION pg_sift VERSION '1.1'" >/dev/null
+	check "1.0 updated to 1.1 has the objects of a fresh 1.1 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh "$MEMBERS")"
+	FACETS="SELECT (SELECT string_agg(value || ':' || count, ',' ORDER BY value) FROM sift.facets('docs_idx', 'docs_kw', 'gamma', NULL))
+		= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 5)::text k, count(*) c FROM docs WHERE body @@> 'gamma' GROUP BY 1) g)"
+	q life upg "CREATE INDEX docs_kw ON docs USING sift (((id % 5)::text)) WITH (analyzer = keyword)" >/dev/null
+	check "sift.facets works on the updated 1.1 extension" test "$(q life upg "$FACETS")" == t
+	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
+	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion || ' ' || sift.lifecycle_marker() FROM pg_extension WHERE extname = 'pg_sift'")" == "1.2 v1.2"
+	check "the index built before the update still verifies and answers the same" \
+		test "$(vq life upg "SELECT fp() = seq() AND fp() || ranked() = '$(sed "s/'/''/g" <<<"$before")'")" == t
+	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
+	crash life
+	node_start life || bail "restart failed"
+	check "inserts after the update survive a crash" test "$(vq life upg \
+		"SELECT fp() = seq() AND (SELECT count(*) FROM docs WHERE body @@> 'afterupdate') = 1")" == t
+else
+	skip 9 "extension_control_path needs PostgreSQL 18"
+fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
 # LOAD '$libdir/pg_sift', which ignores dynamic_library_path, so it needs sift installed in the server's pkglibdir.
 if [[ ! -f $(pg_config --pkglibdir)/pg_sift.so ]]; then
-	for _ in $(seq 7); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip pg_upgrade needs sift installed in $(pg_config --pkglibdir)"; done
+	skip $((3 + $(wc -w <<<"$DBS"))) "pg_upgrade needs sift installed in $(pg_config --pkglibdir)"
 	finish
 fi
-for db in src plain custom upg; do eval "FP_$db=\$(q life $db 'SELECT fp() || ranked()')"; done
+for db in $DBS; do eval "FP_$db=\$(q life $db 'SELECT fp() || ranked()')"; done
 node_stop life
 node_init up 8
 BIN=$(pg_config --bindir)
@@ -139,11 +147,11 @@ upgraded=$?
 check "pg_upgrade of the databases with sift indexes succeeds" test $upgraded -eq 0
 [[ $upgraded -eq 0 ]] || diag "$(cat "$(dir up)"/data/pg_upgrade_output.d/*/loadable_libraries.txt; tail -n 5 "$(dir up)"/data/pg_upgrade_output.d/*/log/pg_upgrade_server.log)"
 node_start up || bail "upgraded cluster did not start"
-for db in src plain custom upg; do
+for db in $DBS; do
 	check "upgraded $db verifies and keeps its results" test "$(vq up $db "SELECT fp() = seq()")" == t
 done
 mismatch=0
-for db in src plain custom upg; do
+for db in $DBS; do
 	var=FP_$db
 	[[ $(q up $db "SELECT fp() || ranked()") == "${!var}" ]] || mismatch=$((mismatch + 1))
 done

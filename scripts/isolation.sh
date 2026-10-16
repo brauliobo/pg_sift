@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isolation suite (test/isolation) driven by PG18's pg_isolation_regress.
+# Isolation suite (test/isolation) driven by the server's pg_isolation_regress.
 #
 #   scripts/isolation.sh [--emulate] [SPEC...]
 #

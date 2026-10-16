@@ -8,6 +8,8 @@ DECLARE
 	r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		-- PostgreSQL 19 names the scan a pruned Result replaces
+		CONTINUE WHEN l ~ '^ *Replaces:';
 		r := r || l || E'\n';
 	END LOOP;
 	RETURN rtrim(r, E'\n');
