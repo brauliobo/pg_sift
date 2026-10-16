@@ -6,6 +6,8 @@
 - `count(*)`;
 - build time, update cost, and resource use.
 
+Status: 1.0.0. Of the extras below, 9 (parallel scan) was dropped after measurement; 10 (filter-mask pushdown) and 11 (keyword facets) are planned for 1.1.
+
 This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), then module contracts and milestones. Estimates are marked **[est]** and are only claims until benchmark M6 confirms them.
 
 User-facing names: extension `pg_sift`, AM `sift`, schema `sift`, operator `text @@> text`, and the functions `sift.score(tid)`, `sift.max_score(tid)`, `sift.highlight(...)`, `sift.tokenize(...)`, `sift.verify(regclass)`, `sift.segments(regclass)`, `sift.promote(regclass)`, `sift.merge(regclass)`, `sift.parse_query(text)`.
@@ -448,9 +450,9 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
 | 6 | VM pext → 256-bit all-visible mask per SB; chunk-count shortcut on clean SBs | core | `count(*)` at memory bandwidth; single-term count O(chunks) | count QPS against pg_textsearch and ParadeDB (Wikipedia) |
 | 7 | Mutable lanes + bloom-gated mutable scan + async dynamic worker without preload | core (M4) | No insert hot spot; bounded query overhead under 1,000 updates/s | QPS under the 1,000 UPDATE/s mix, WAL per update |
 | 8 | Copy-only merges for disjoint SBs (ownership transfer of encoded chunks) | M4 | Merge write amplification ≈ 1× for disjoint ranges | Merge MB/s, WAL bytes |
-| 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | M7 | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
-| 10 | Filter-mask pushdown: SiftScan accepts child BitmapIndex paths (btree, BRIN) as `custom_paths` and converts the TIDBitmap into SB page/offset masks before scoring | M7 | Exact filtered top-k without post-filter over-fetch; 5–100× on selective filters | `WHERE body @@> q AND tenant = $1 ORDER BY score LIMIT 10` |
-| 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `SiftCount` on GROUP BY over the keyword index = popcount(query ∧ value) per value | M7 | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
+| 9 | Parallel-aware SiftScan: DSM morsels of 16 SBs, **shared atomic θ** across workers for ranked; partial counts + Finalize for count | dropped after measurement (not in 1.0) | Near-linear scaling for count and large top-k; shared θ avoids per-worker over-scoring | Speedup at 1/2/4/8 workers |
+| 10 | Filter-mask pushdown: SiftScan accepts child BitmapIndex paths (btree, BRIN) as `custom_paths` and converts the TIDBitmap into SB page/offset masks before scoring | planned for 1.1 | Exact filtered top-k without post-filter over-fetch; 5–100× on selective filters | `WHERE body @@> q AND tenant = $1 ORDER BY score LIMIT 10` |
+| 11 | Facet counts: reloption `analyzer = keyword` makes a sift index of exact values; `SiftCount` on GROUP BY over the keyword index = popcount(query ∧ value) per value | planned for 1.1 | ES terms-aggregation-class facets inside PG | GROUP BY facet QPS vs ES |
 | 12 | Phrase pair index (g) | M7 | Phrase `count(*)` 10–100× | Phrase count QPS |
 | 13 | Adaptive representation (codec picks LIST vs GROUPED per term and BITMAP vs ARRAY container per group; inline df ≤ 2) | core | Rare terms at ≈ Elias-Fano cost (~25 bits), frequent at ≈ 1 bit per posting | Bits per posting histogram (`sift.segments`) |
 | 14 | Dirty-SB liveness skip: AND liveness only where VACUUM cleared bits | core | No liveness cost on clean data | — |
@@ -528,7 +530,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - custom rmgr;
   - statement-level insert batching;
   - non-x86 SIMD (scalar works everywhere; NEON later);
-  - parallel scan (M7).
+  - parallel scan (dropped after measurement).
 
 ---
 
@@ -609,4 +611,4 @@ Each milestone ends with green `make installcheck` plus its listed tests, under 
 | M4 | Mutability | mutable, maint (seal, promote, merge, recycle, sweep, worker), vacuum liveness | isolation suite; TAP crash and replica; 1,000 UPDATE/s soak with verify |
 | M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs ParadeDB; cold p99 |
 | M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
-| M7 | Extras beyond the baseline design | parallel scan with shared θ, filter-mask pushdown, keyword facets, phrase pairs | Each meets its ≥ 10 % gate or is dropped |
+| M7 | Extras beyond the baseline design | phrase pairs (done); parallel scan with shared θ (dropped after measurement); filter-mask pushdown and keyword facets (planned for 1.1) | Each meets its ≥ 10 % gate or is dropped |
