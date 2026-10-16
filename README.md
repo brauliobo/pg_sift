@@ -8,7 +8,7 @@ bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from
 - Ordinary table semantics: MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes. Crash and replica
   safe through generic WAL, no `shared_preload_libraries`.
 - 1.1: filter pushdown, keyword facets, opt-in parallel scan.
-- Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.8x smaller than pg_search (see [Benchmarks](#benchmarks)).
+- Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.4x smaller than pg_search (see [Benchmarks](#benchmarks)).
 
 ## Install
 
@@ -201,25 +201,26 @@ Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b`
 
 ## Benchmarks
 
-Against ParadeDB pg_search 0.26.1 and Timescale pg_textsearch 1.5.1 on Simple English Wikipedia (218,058 articles, 8 clients, median of 4
-interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries and cache state. Cells are queries per
-second over pg_search. The host was loaded (load average 5-25), so absolute numbers are noisy; compare engines within a table. rum is in
-the harness but pending.
+Against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on Simple English Wikipedia (218,058 articles, 8 clients,
+median of 4 interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries and cache state, all five
+engines in one session. Cells are queries per second over pg_search. The host was loaded (load average 4-31), so absolute numbers are
+noisy; compare engines within a table.
 
 | articles | index | build | and | or | phrase | mixed | `count(*)` | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| sift | 47.9 MiB | 1.9 s | 2.45x | 1.89x | 0.74x | 1.79x | 0.63x | 0.95x | 4.06x |
-| sift `phrase_index = pairs` | 267.2 MiB | 9.4 s | 2.51x | 1.98x | 3.76x | 2.73x | 2.50x | 1.22x | 8.48x |
-| pg_search | 183.3 MiB | 3.3 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
-| pg_textsearch | 147.3 MiB | 10.4 s | 0.44x | 3.29x | 0.004x | 0.03x | 0.02x | 0.01x | 0.18x |
-| rum | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| sift | 47.9 MiB | 1.5 s | 2.49x | 2.33x | 0.65x | 1.78x | 0.70x | 0.93x | 4.31x |
+| sift `phrase_index = pairs` | 267.2 MiB | 7.8 s | 2.76x | 2.44x | 2.83x | 2.69x | 3.23x | 1.20x | 7.49x |
+| pg_search | 164.3 MiB | 2.9 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
+| pg_textsearch | 147.3 MiB | 9.7 s | 0.46x | 4.01x | 0.005x | 0.02x | 0.03x | 0.01x | 0.27x |
+| rum | 309.9 MiB | 13.5 s | 0.41x | 0.01x | 0.01x | 0.02x | 0.03x | 0.01x | 0.05x |
 
 The default index is the smallest and quickest to build and wins AND, OR, mixed and join, but is **behind pg_search on phrase and
-`count(*)`** (heap recheck); `phrase_index = pairs` fixes that at 5.6x the size. pg_textsearch wins only the bare ranked OR.
+`count(*)`** (heap recheck); `phrase_index = pairs` fixes that at 5.6x the size. pg_textsearch wins only the bare ranked OR. rum wins
+nothing: it is the largest index and needs a stored `tsvector` column (19.1 s to fill, 437.7 MiB more).
 
-Places (top-20 p50): index 42.6 MiB / 1.3 s for sift, 142.9 MiB / 2.8 s for pg_search, 68.3 MiB / 2.3 s for pg_textsearch. sift is ahead
-of pg_search in all 45 warm cells (1.1x to 27x), e.g. 0.14 vs 1.16 ms for a whole word. pg_textsearch has no prefix scoring or boost, so
-its ranked places workloads are NA.
+Places (top-20 p50): index 42.6 MiB / 1.3 s for sift, 129.5 MiB / 3.0 s for pg_search, 68.3 MiB / 2.4 s for pg_textsearch, 94.9 MiB /
+2.9 s for rum. sift is ahead of pg_search in all 45 warm cells (1.3x to 38x), e.g. 0.26 vs 1.71 ms for a whole word. pg_textsearch has
+no prefix scoring or boost (ranked workloads NA); rum has no boost (NA) and its prefix top-20 takes 0.5-124 ms.
 
 ![Index size](docs/img/index-size.svg)
 ![Build time](docs/img/build-time.svg)
