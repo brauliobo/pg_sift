@@ -3,7 +3,7 @@
 #   bench/corpus.sh fetch               # download and convert the public datasets (bench/datasets/fetch.sh articles)
 #   TIER=Q|F bench/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv and cache a dump
 #   TIER=Q|F bench/corpus.sh restore    # recreate `bench` from the cached dump
-# Tiers: Q (quick) 75,000 articles (Q_DOCS), F (full) all 218k Simple English Wikipedia articles.
+# Tiers: Q (quick) 150,000 articles (Q_DOCS), F (full) all 218k Simple English Wikipedia articles.
 . "$(dirname "$0")/lib.sh"
 
 SRC=$DATA/articles.tsv
