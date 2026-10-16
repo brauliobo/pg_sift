@@ -1,0 +1,15 @@
+Source: pg-sift
+Section: database
+Priority: optional
+Maintainer: Braulio Oliveira <brauliobo@gmail.com>
+Build-Depends: debhelper-compat (= 13), postgresql-server-dev-18
+Standards-Version: 4.7.0
+Homepage: https://github.com/brauliobo/pg_sift
+
+Package: postgresql-18-pg-sift
+Architecture: amd64
+Depends: postgresql-18, ${misc:Depends}, ${shlibs:Depends}
+Description: CTID-bitmap full-text search index with BM25 ranking for PostgreSQL
+ pg_sift adds the sift index access method (CREATE INDEX ... USING sift)
+ with boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25
+ ranking, count(*) from the index and parallel index builds.
