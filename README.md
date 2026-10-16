@@ -242,6 +242,28 @@ SELECT sift.verify('docs_body', true);                            -- structure c
 - Only the 1.0 install script exists; there is no `ALTER EXTENSION UPDATE` path yet.
 - Parallel scan was measured and dropped. **Roadmap (1.1):** filter-mask pushdown (exact filtered top-k) and keyword facets.
 
+## Facets
+
+`analyzer = keyword` indexes each whole value as one term (folded like a word unless `case_folding` /
+`accent_folding` are off). `sift.facets(index, facet_index, query, lim, nulls)` counts the visible matches of a
+query on `index` per value of `facet_index`, from the bitmaps, without reading the heap beyond what `count(*)` reads:
+
+```sql
+CREATE INDEX docs_category ON docs USING sift (category) WITH (analyzer = keyword);
+
+SELECT * FROM sift.facets('docs_body', 'docs_category', 'pool OR spa', 10);
+-- the rows of: SELECT category, count(*) FROM docs WHERE body @@> 'pool OR spa'
+--              GROUP BY category ORDER BY 2 DESC, category COLLATE "C" LIMIT 10
+```
+
+`lim` NULL returns every value; `nulls => true` adds a row with a NULL value for the matches without one (empty
+and NULL values have no term). The counts equal the `GROUP BY` of the same snapshot, after DELETE, UPDATE and
+VACUUM. Values are at most 255 bytes (longer ones are an error), one column per keyword index, no `text[]`
+elements, and tables with row-level security are refused. The cost is linear in the number of distinct values plus
+the matches, and the heap is not read: it beats `GROUP BY` for broad queries over columns with tens of values
+(4.5x on 25,000 articles, a single common word) and loses for selective queries or thousands of values
+.
+
 ## Correctness and testing
 
 `make check` runs every suite in a throwaway cluster in about 2.5 minutes; `make check-full` adds the ASan/UBSan build, long soak and fuzz
