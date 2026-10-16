@@ -45,6 +45,10 @@ static create_upper_paths_hook_type prev_upper_hook;
 #define BYTES_PER_POSTING		1.0
 /* Decoding and combining postings, per posting in operator costs */
 #define POSTING_CPU_FRACTION	(1.0 / 16)
+/* Opening and scoring a block of heap pages in the ranker: its terms' cursors, bounds and kernels (measured, ~3 us) */
+#define SCORE_BLOCK_COST		(170 * cpu_operator_cost)
+/* The share of the blocks of the superblocks it visits that a ranker with a threshold still opens when their bounds do not tie (measured 0.3 to 0.55) */
+#define SCORED_BLOCK_SHARE		0.4
 
 bool
 sift_index_matches_key(IndexOptInfo *index, Node *expr)
@@ -377,20 +381,58 @@ rank_verified(double cands, double pass, int64 k)
 	return k > 0 ? Min(cands, k / pass * (1 + log(Max(cands * pass / k, 1)))) : cands;
 }
 
+/* Matches per superblock at which the bounds of the superblocks tie with probability 1 - 1/e (measured: 185 and 800 do not, 2300 do) */
+#define TIED_BOUND_MATCHES		3000
+
+/* The probability that the superblocks' bounds tie: some match of each is at the top of the bound */
+static double
+bounds_tie(RelOptInfo *rel, double docs)
+{
+	double		per_sb = docs * SIFT_SB_PAGES / Max(rel->pages, 1) / TIED_BOUND_MATCHES;
+
+	return 1 - exp(-per_sb * per_sb);
+}
+
 /*
  * The same when the quals are checked after scoring and a bitmap of them says where in the heap their
- * rows lie. The ranker visits the heap in order and has no threshold until it holds k passing rows:
- * it verifies every match before the first row the quals can keep (fe->start), ranks as above within
- * the span of those rows, where they are denser (pass / fe->span), and past the span still verifies
- * the matches that beat the k-th best of all the rows that pass (a fraction k / (cands * pass)).
+ * rows lie. The ranker takes the superblocks by descending bound, and where the bounds tie, which they
+ * do when every superblock holds a match at the top of the bound (the more matches per superblock, the
+ * likelier), in heap order. Then it has no threshold until it holds k passing rows: it verifies every
+ * match before the first row the quals can keep (fe->start), ranks as above within the span of those
+ * rows, where they are denser (pass / fe->span), and past the span still verifies the matches that beat
+ * the k-th best of all the rows that pass (a fraction k / (cands * pass)). Otherwise the rows that pass
+ * are met in no order of the heap: the plain estimate.
  */
 static double
-rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe)
+rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe, double ties)
 {
+	double		in_heap_order;
+
 	if (k <= 0)
 		return cands;
-	return cands * fe->start + rank_verified(cands * fe->span, Min(pass / fe->span, 1.0), k) +
+	in_heap_order = cands * fe->start + rank_verified(cands * fe->span, Min(pass / fe->span, 1.0), k) +
 		cands * Max(1 - fe->start - fe->span, 0) * Min(k / Max(cands * pass, 1), 1.0);
+	/* a span that covers much of the heap holds the first superblocks of any order with its rows */
+	ties *= 1 - fe->span;
+	return ties * in_heap_order + (1 - ties) * rank_verified(cands, pass, k);
+}
+
+/* The blocks of SIFT_BLK_PAGES heap pages that hold a match, when matches are spread over the fraction span of the heap */
+static double
+blocks_with_match(RelOptInfo *rel, double matches, double span)
+{
+	double		blocks = Max(ceil(rel->pages / (double) SIFT_BLK_PAGES), 1) * Max(span, 1e-9);
+
+	return blocks * (1 - exp(-matches / blocks));
+}
+
+/* The blocks the ranker scores for matches in blocks: all of them while the bounds tie, the share with a threshold otherwise */
+static double
+blocks_scored(RelOptInfo *rel, double blocks, double matches)
+{
+	double		ties = bounds_tie(rel, matches);
+
+	return blocks * (ties + (1 - ties) * SCORED_BLOCK_SHARE);
 }
 
 /*
@@ -472,9 +514,13 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 			cp->custom_paths = list_make1(filter);
 			dict += fe.cost;
 			verify = rank_verified(sc.docs * fe.sel, pass / fe.sel, k) * sc.tuple;
+			postings += blocks_scored(rel, blocks_with_match(rel, sc.docs * fe.sel, fe.span), sc.docs * fe.sel) * SCORE_BLOCK_COST;
 		}
 		else
-			verify = rank_verified_after(sc.docs, pass, k, &fe) * sc.tuple;
+		{
+			verify = rank_verified_after(sc.docs, pass, k, &fe, bounds_tie(rel, sc.docs)) * sc.tuple;
+			postings += blocks_scored(rel, blocks_with_match(rel, sc.docs, 1), sc.docs) * SCORE_BLOCK_COST;
+		}
 	}
 	limited = mode == SIFT_MODE_RANKED && k > 0;
 	startup = dict + (postings + (limited ? verify : 0)) / divisor;

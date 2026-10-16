@@ -50,6 +50,10 @@ INSERT INTO fc_filters VALUES
 	('scat BETWEEN 1 AND 7200', '30% spread over the heap'),
 	('grp = 7', '2.5% in every page'),
 	('id BETWEEN 20401 AND 21600 AND grp < 20', 'a clustered range and a spread filter');
+-- id lists: array elements on one leaf page share a descent, the elements of a list over the heap do not
+INSERT INTO fc_filters SELECT format('scat = ANY(ARRAY[%s])', string_agg((i * 79)::text, ',')), 'a list of 300 ids spread over the heap' FROM generate_series(1, 300) i;
+INSERT INTO fc_filters SELECT format('id = ANY(ARRAY[%s])', string_agg((i * 3)::text, ',')), 'a list of 300 ids at the start of the heap' FROM generate_series(1, 300) i;
+INSERT INTO fc_filters SELECT format('id = ANY(ARRAY[%s])', string_agg((24000 - i * 3)::text, ',')), 'a list of 300 ids at the end of the heap' FROM generate_series(1, 300) i;
 
 -- the plan each filter gets with the planner's costs, and the answers of the three modes
 SELECT f.what, fc_kind(f.flt, 'on') AS plan,

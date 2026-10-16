@@ -32,6 +32,7 @@
 #include "utils/array.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 
 #include "sift.h"
@@ -300,6 +301,86 @@ path_span(PlannerInfo *root, RelOptInfo *rel, Path *path)
 	return span;
 }
 
+/* The comparisons of one btree descent, as the planner counts them for the first one (btcostestimate) */
+static Cost
+btree_descent_cost(IndexOptInfo *ii)
+{
+	return (ceil(log(Max(ii->tuples, 2)) / log(2.0)) + (Max(ii->tree_height, 0) + 1) * 50.0) * cpu_operator_cost;
+}
+
+/*
+ * Leaf pages a btree scan with = ANY(array) quals descends to: the elements are visited in key order and
+ * those on one leaf page share its descent, so a list inside a narrow range of the column touches few of
+ * them, and a list spread over the column up to one per element.
+ */
+static double
+saop_descents(PlannerInfo *root, RelOptInfo *rel, IndexPath *ip, double scans)
+{
+	IndexOptInfo *ii = ip->indexinfo;
+	double		leaves = Max(ii->pages, 1),
+				range = 1;
+
+	foreach_node(IndexClause, ic, ip->indexclauses)
+		foreach_node(RestrictInfo, rinfo, ic->indexquals)
+			if (ic->indexcol == 0 && IsA(rinfo->clause, ScalarArrayOpExpr) && ii->indexkeys[0] != 0)
+			{
+				HeapSpan	values = qual_span(root, rel, ii, rinfo->clause);
+
+				range = Min(range, Max(values.hi - values.lo, 0));
+			}
+	leaves *= range;
+	return Max(leaves * (1 - exp(-scans / Max(leaves, 1))), 1);
+}
+
+/*
+ * What an index path with = ANY(array) quals costs less than the planner charges: a random leaf page
+ * for each element, a cold index, and one descent in all. The leaves are read in key order, at the
+ * sequential page cost, and each of them is reached by a descent.
+ */
+static Cost
+saop_saving(PlannerInfo *root, RelOptInfo *rel, Path *path)
+{
+	IndexPath  *ip;
+	Cost		startup,
+				total,
+				saved = random_page_cost;
+	Selectivity sel;
+	double		scans = 1,
+				correlation,
+				pages,
+				descents;
+
+	if (IsA(path, BitmapAndPath) || IsA(path, BitmapOrPath))
+	{
+		Cost		sum = 0;
+
+		foreach_ptr(Path, p, IsA(path, BitmapAndPath) ? ((BitmapAndPath *) path)->bitmapquals : ((BitmapOrPath *) path)->bitmapquals)
+			sum += saop_saving(root, rel, p);
+		return sum;
+	}
+	if (!IsA(path, IndexPath) || (ip = (IndexPath *) path)->indexinfo->relam != BTREE_AM_OID)
+		return 0;
+	foreach_node(IndexClause, ic, ip->indexclauses)
+		foreach_node(RestrictInfo, rinfo, ic->indexquals)
+			if (IsA(rinfo->clause, ScalarArrayOpExpr))
+				scans *= estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) rinfo->clause)->args));
+	if (scans <= 1)
+		return 0;
+	random_page_cost = seq_page_cost;
+	PG_TRY();
+	{
+		ip->indexinfo->amcostestimate(root, ip, 1.0, &startup, &total, &sel, &correlation, &pages);
+	}
+	PG_FINALLY();
+	{
+		random_page_cost = saved;
+	}
+	PG_END_TRY();
+	descents = saop_descents(root, rel, ip, scans);
+	total += (descents - 1) * btree_descent_cost(ip->indexinfo) - Max(pages - descents, 0) * seq_page_cost;
+	return Max(ip->indextotalcost - total, 0);
+}
+
 void
 sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, SiftFilterEst *est)
 {
@@ -317,6 +398,7 @@ sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, Sif
 	/* compute_bitmap_pages counts the tuples of the lossy pages it takes as scattered; the bitmap keeps its selectivity */
 	cost_bitmap_tree_node(bp->bitmapqual, &index_cost, &bitmap_sel);
 	tuples = clamp_row_est(bitmap_sel * rel->tuples);
+	index_cost -= saop_saving(root, rel, bp->bitmapqual);
 	/* compute_bitmap_pages assumes the tuples are scattered; a correlated column packs them into fewer pages */
 	minpages = Min(ceil(tuples / Max(rel->tuples, 1) * rel->pages), pages);
 	correlation = btree_correlation(root, rel, bp->bitmapqual);
