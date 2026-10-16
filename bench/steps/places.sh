@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Multi-field autocomplete benchmark: sift against ParadeDB pg_search, pg_textsearch and rum on GeoNames places (name,
-# alternate names, region, country, feature): 1-4 letter prefixes, whole words, 2-3 word ANDs, name
-# matches boosted x3, top-k by score, filtered and unordered scans, count(*). rum (a tsvector column,
-# `tsv @@ prefix query`, `<=>` ranking, in its own database so the column does not enlarge the others'
-# table) has no per-field boost: its `boost` cells are NA. pg_textsearch (a `bm25` index on the all-fields text, in its
-# own database as its access method has the name of pg_search's) filters by the same prefix tsquery but scores whole
-# terms only, with no prefix scoring and no field boost: its ranked workloads (top, boost, filter) are NA and
-# it runs count and scan. Engines whose extension is missing are skipped.
+# Multi-field autocomplete benchmark: sift, sift with phrase_index = pairs, ParadeDB pg_search, pg_textsearch and rum on
+# GeoNames places (name, alternate names, region, country, feature): 1-4 letter prefixes, whole words, 2-3 word ANDs, name
+# matches boosted x3, top-k by score, filtered and unordered scans, count(*).
+# sift, sift pairs and pg_search answer every workload natively. rum (a tsvector column, `tsv @@ prefix query`, `<=>`
+# ranking) and pg_textsearch (a `bm25` index on the all-fields text) filter by the same prefix tsquery for count and scan, but
+# have no field boost (rum) or no prefix scoring and no field boost (pg_textsearch), so those cells are emulations, built
+# next to the native index and reported as the `emulation` build of the engine:
+#   rum boost          a second tsvector with the name words at weight A and the others at B (rum weights 1.0 and 0.4), indexed and
+#                      ranked with `<=>`
+#   pg_textsearch      top, boost, filter: bm25 indexes on stored columns of the edge n-grams (1-15 letters) of the words, the
+#                      analysis of pg_search's edge_ngram(1, 15); a typed prefix becomes a whole term; boost is the sum of
+#                      the all-fields score and 3 x the name-field score of the same n-grams
+# sift pairs, rum and pg_textsearch live in their own databases (rum's columns do not enlarge the others' table, and the
+# `bm25` access method of pg_textsearch has the name of pg_search's). Engines whose extension is missing are skipped.
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
+#   bench/steps/places.sh quick|full check [oracle|rank] [N]   correctness against the SQL oracle of sql/places_oracle.sql
 #
 # Needs bench/bench setup (the engines, the places dataset). The tier cluster
 # (bench/steps/cluster.sh) holds database `places`; every index is built once, then every round times every
@@ -16,10 +23,10 @@
 # latencies). Rounds stop once every cell's p50 spread is under TOL after MINR.
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds,summary}.tsv and
 # machine.txt. KEEP=1 keeps the cluster.
-# Env: ENGINES (pg_search sift rum pg_textsearch) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class, not rum)
-# TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
+# Env: ENGINES (sift sift_pairs pg_search pg_textsearch rum) CLASSES WLS SECS MINR MAXR TOL NQ (cold queries per class; check: queries
+# per class) TIMEOUT (statement_timeout of a cell, default 30s: slower cells are reported as error) RESULTS DEST.
 set -euo pipefail
-mode=${1:-quick}; what=${2:-run}
+mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
   quick) export TIER=Q; SECS=${SECS:-2} MINR=${MINR:-3} MAXR=${MAXR:-5}; CLASSES=${CLASSES:-p1 p3 w1 a2 a3 x2}; WLS=${WLS:-top boost filter count} ;;
   full)  export TIER=F; SECS=${SECS:-4} MINR=${MINR:-4} MAXR=${MAXR:-6}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
@@ -27,6 +34,7 @@ case $mode in
 esac
 . "$(dirname "$0")/lib.sh"
 TOL=${TOL:-0.2} NQ=${NQ:-12}
+[[ $what != check ]] || NQ=${4:-30}
 DATADIR=$DATA/places-$([[ $TIER == Q ]] && echo quick || echo full)
 RESULTS=${RESULTS:-$BENCH/out/ab}
 DEST=${DEST:-$RESULTS/places-$mode-$(date +%m%d-%H%M)}; mkdir -p "$DEST" "$ROOT/places"
@@ -42,21 +50,46 @@ PGS_TEXT="($TEXT)::pdb.alias('ptext')"; PGS_NAME="($NAME)::pdb.alias('pname')"
 declare -A INDEX=(
   [pg_search]="CREATE INDEX places_pg_search ON places USING bm25 (id, ($NAME::pdb.edge_ngram(1, 15, 'alias=pname')), ($TEXT::pdb.edge_ngram(1, 15, 'alias=ptext')))"
   [sift]="CREATE INDEX places_sift ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3)"
+  [sift_pairs]="CREATE INDEX places_sift_pairs ON places USING sift (($SECT)) WITH (fields = 'name', prefix_index = 3, phrase_index = pairs)"
   [rum]="CREATE INDEX places_rum ON places USING rum (ptsv rum_tsvector_ops)"
   [pg_textsearch]="CREATE INDEX places_pg_textsearch ON places USING bm25 (($TEXT)) WITH (text_config = 'simple')")
 declare -A SETUP=(
   [pg_search]="CREATE EXTENSION IF NOT EXISTS pg_search CASCADE"
   [sift]="CREATE EXTENSION IF NOT EXISTS pg_sift"
+  [sift_pairs]="CREATE EXTENSION IF NOT EXISTS pg_sift; ALTER DATABASE places_sift_pairs SET sift.max_expansions = 100000"
   [rum]="CREATE EXTENSION IF NOT EXISTS rum; ALTER TABLE places ADD COLUMN ptsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', $TEXT)) STORED"
   [pg_textsearch]="CREATE EXTENSION IF NOT EXISTS pg_textsearch; ALTER DATABASE places_pg_textsearch SET default_text_search_config = 'pg_catalog.simple'; ALTER DATABASE places_pg_textsearch SET enable_seqscan = off")
-ENGINES=${ENGINES:-pg_search sift rum pg_textsearch}
-# rum's stored column and pg_textsearch's `bm25` access method live in copies of the table
-edb() { case $1 in rum|pg_textsearch) echo "places_$1" ;; *) echo places ;; esac; }
+# The emulations (see the header), built after the native index: SETUP2 the stored columns, INDEX2 the indexes (a list: their
+# sizes add up), reported as the `emulation` build of the engine.
+declare -A SETUP2=(
+  [rum]="ALTER TABLE places ADD COLUMN pwsv tsvector GENERATED ALWAYS AS (setweight(to_tsvector('simple', $NAME), 'A') || setweight(to_tsvector('simple', place_search_rest(admin1, country, country_code, feature)), 'B')) STORED"
+  [pg_textsearch]="ALTER TABLE places ADD COLUMN ng_text text GENERATED ALWAYS AS (place_ngrams($TEXT)) STORED, ADD COLUMN ng_name text GENERATED ALWAYS AS (place_ngrams($NAME)) STORED")
+declare -A INDEX2=(
+  [rum]="CREATE INDEX places_rum_boost ON places USING rum (pwsv rum_tsvector_ops)"
+  [pg_textsearch]="CREATE INDEX places_pg_textsearch_ng ON places USING bm25 (ng_text) WITH (text_config = 'simple'); CREATE INDEX places_pg_textsearch_ngname ON places USING bm25 (ng_name) WITH (text_config = 'simple')")
+declare -A INDEXES2=([rum]="places_rum_boost" [pg_textsearch]="places_pg_textsearch_ng places_pg_textsearch_ngname")
+ENGINES=${ENGINES:-$ALL_ENGINES}
+# every engine but sift and pg_search lives in a copy of the table of its own
+edb() { case $1 in sift|pg_search) echo places ;; *) echo "places_$1" ;; esac; }
 
 # :q is what the user typed, :sq the same words as sift prefixes ("grand ho" -> "grand* ho*"), :sqb the boosted sift query,
-# :tq the tsquery of rum and pg_textsearch ('grand':* & 'ho':*)
+# :tq the tsquery of rum and pg_textsearch ('grand':* & 'ho':*), :ng the distinct n-grams of the typed words (pg_textsearch emulation)
+# match is the unordered match set, used by the correctness check only.
+# pg_textsearch: the matches come from the index as a derived table; the score is `* 1` so that the planner scores them standalone
+# (a bare `ORDER BY ng_text <@> query` over a `@@` scan takes the index scan's score, which is not the one of this query)
+NGSCAN="SELECT * FROM places WHERE ng_text @@ plainto_tsquery('simple', :q)"
+NGTEXT="(ng_text <@> to_bm25query(:ng, 'places_pg_textsearch_ng'))" NGNAME="(ng_name <@> to_bm25query(:ng, 'places_pg_textsearch_ngname'))"
 stmt() {
   case $1/$2 in
+    */sift_pairs) stmt "$1" sift ;;
+    match/sift) echo "SELECT id FROM places WHERE ($SECT) @@> :sq" ;;
+    match/pg_search) echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q" ;;
+    match/rum) echo "SELECT id FROM places WHERE ptsv @@ :tq::tsquery" ;;
+    match/pg_textsearch) echo "SELECT id FROM places WHERE $TEXT @@ :tq::tsquery" ;;
+    boost/rum)  echo "SELECT id FROM places WHERE pwsv @@ :tq::tsquery ORDER BY pwsv <=> :tq::tsquery LIMIT 20" ;;
+    top/pg_textsearch)    echo "SELECT id FROM ($NGSCAN OFFSET 0) p ORDER BY $NGTEXT * 1 LIMIT 20" ;;
+    filter/pg_textsearch) echo "SELECT id FROM ($NGSCAN AND country_code = 'US' OFFSET 0) p ORDER BY $NGTEXT * 1 LIMIT 20" ;;
+    boost/pg_textsearch)  echo "SELECT id FROM ($NGSCAN OFFSET 0) p ORDER BY $NGTEXT + 3 * $NGNAME LIMIT 20" ;;
     top/pg_search)    echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q ORDER BY pdb.score(id) DESC LIMIT 20" ;;
     top/sift)   echo "SELECT id FROM places WHERE ($SECT) @@> :sq ORDER BY sift.score(ctid) DESC LIMIT 20" ;;
     boost/pg_search)  echo "SELECT id FROM places WHERE $PGS_TEXT &&& :q AND (($PGS_NAME ||| :q::pdb.boost(3)) OR ($PGS_TEXT &&& :q)) ORDER BY pdb.score(id) DESC LIMIT 20" ;;
@@ -75,9 +108,8 @@ stmt() {
     scan/pg_textsearch)  echo "SELECT id FROM places WHERE $TEXT @@ :tq::tsquery AND population >= 100000" ;;
   esac
 }
-# the three query forms of the pq row number :i of a class
-FORMS="quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq)) AS sqb,
-       quote_literal(tq) AS tq
+# the query forms (columns q sq sqb tq ng) of the pq rows
+FORMS="SELECT q, sq, format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq) AS sqb, tq, place_ngram_terms(q) AS ng
        FROM (SELECT q, regexp_replace(q, '(\S+)', '\1*', 'g') AS sq,
                     (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', q))) AS tq FROM pq"
 
@@ -90,42 +122,62 @@ ENGINES=$(available_engines "$ENGINES" | tr '\n' ' ')
 "$STEPS/machine.sh" >"$DEST/machine.txt"
 q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
 q -c "ANALYZE places"
+if [[ $what == check ]]; then   # the oracle tables are built once and copied into every engine database
+  q -f "$BENCH/sql/places_oracle.sql" >/dev/null
+  q -c "SELECT place_oracle_fill($NQ)" >/dev/null
+fi
 for e in $ENGINES; do [[ $(edb "$e") == places ]] || PGDATABASE=postgres q -c "CREATE DATABASE $(edb "$e") TEMPLATE places"; done
 : >"$DEST/builds.tsv"
-for e in $ENGINES; do
+timed_build() { # ENGINE VARIANT SETUP INDEX INDEXES: engine, index build s, index bytes, table growth bytes (stored columns), setup s, variant
+  local e=$1 db size=0 i heap0 t0 t1 t2
   db=$(edb "$e")
   heap0=$(PGDATABASE=$db q -c "SELECT pg_table_size('places')")
-  t0=$(now_ms); PGDATABASE=$db q -c "${SETUP[$e]}"; t1=$(now_ms); PGDATABASE=$db q -c "${INDEX[$e]}"; t2=$(now_ms)
+  t0=$(now_ms); PGDATABASE=$db q -c "$3"; t1=$(now_ms); PGDATABASE=$db q -c "$4"; t2=$(now_ms)
   PGDATABASE=$db q -c "VACUUM (ANALYZE) places" -c CHECKPOINT
-  # engine, index build s, index bytes, table growth bytes (rum's column), setup s
-  printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" \
-    "$(PGDATABASE=$db q -c "SELECT pg_relation_size('places_$e'::regclass)")" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
-    "$(elapsed_s "$t0" "$t1")" >>"$DEST/builds.tsv"
+  for i in $5; do size=$(( size + $(PGDATABASE=$db q -c "SELECT pg_relation_size('$i'::regclass)") )); done
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" "$size" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
+    "$(elapsed_s "$t0" "$t1")" "$2" >>"$DEST/builds.tsv"
+}
+for e in $ENGINES; do
+  timed_build "$e" - "${SETUP[$e]}" "${INDEX[$e]}" "places_$e"
+  [[ -z ${INDEX2[$e]:-} ]] || timed_build "$e" emulation "${SETUP2[$e]}" "${INDEX2[$e]}" "${INDEXES2[$e]}"
 done
-q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
-log "built: $(awk '{printf "%s %.1fs %.0fMB; ", $1, $2, $3 / 1048576}' "$DEST/builds.tsv")"
+for e in $ENGINES; do PGDATABASE=$(edb "$e") q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null; done
+log "built: $(awk '{printf "%s%s %.1fs %.0fMB; ", $1, $6 == "-" ? "" : "+" $6, $2, $3 / 1048576}' "$DEST/builds.tsv")"
 
 base() { q -c "SELECT min(id) - 1 FROM pq WHERE class = '$1'"; }
 
 if [[ $what == cold ]]; then
-  ENGINES=$(for e in $ENGINES; do [[ $(edb "$e") != places ]] || echo "$e"; done)   # the engines of the shared database
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\n' | tee "$DEST/cold.tsv"
   for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do
     b=$(base "$c")
     t=$(for i in $(seq "$NQ"); do
-      s=$(stmt "$wl" "$e" | sed "s/:sqb/:'sqb'/; s/:sq\b/:'sq'/; s/:q\b/:'q'/g")
-      IFS=$'\t' read -r tq tsq tsqb < <(q -F $'\t' -c "SELECT q, sq, format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq) FROM (SELECT q, regexp_replace(q, '(\S+)', '\1*', 'g') AS sq FROM pq WHERE id = $b + $i) x")
-      evict_table places
-      explain_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb"
+      s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
+      IFS=$'\t' read -r tq tsq tsqb ttq tng < <(q -F $'\t' -c "$FORMS WHERE id = $b + $i) x")
+      PGDATABASE=$(edb "$e") evict_table places
+      PGDATABASE=$(edb "$e") explain_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
     done | median_max)
     printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t" | tee -a "$DEST/cold.tsv"
   done; done; done
   exit 0
 fi
 
+if [[ $what == check ]]; then   # per engine and workload: the oracle's agreement per class (sql/places_oracle.sql), then a total
+  case $check in oracle) wls=match ;; rank) wls="top boost filter" ;; *) wls="match top boost filter" ;; esac
+  # what a word is for the engine's index (sql/places_oracle.sql): the n-gram emulation of pg_textsearch splits like pg_search
+  flavor() { case $1/$2 in pg_textsearch/match|rum/*) echo pg ;; sift*) echo fold ;; *) echo split ;; esac; }
+  printf 'engine\tworkload\tqueries\texact\tagree\tworst\twrong\tshort\tagree per class\n' | tee "$DEST/check.txt"
+  for e in $ENGINES; do for wl in $wls; do
+    [[ -n $(stmt "$wl" "$e") ]] || continue
+    PGOPTIONS="-c paradedb.planner_warnings=off" PGDATABASE=$(edb "$e") q -F $'\t' -c "SELECT '$e', '$wl', sum(queries), sum(exact), round(sum(agree * queries) / sum(queries), 3), min(worst), sum(wrong), sum(short),
+        string_agg(class || '=' || agree, ' ' ORDER BY class) FROM place_check('$wl', \$chk\$$(stmt "$wl" "$e")\$chk\$, '$(flavor "$e" "$wl")')" | tee -a "$DEST/check.txt"
+  done; done
+  exit 0
+fi
+
 cell() { # workload class engine -> "p50 p95" ms of single-client transactions: one primary-key lookup of the query text plus the statement
   local f=$ROOT/places/cell log=$ROOT/places/cell.log
-  { printf '\\set i random(1, 300)\nSELECT %s WHERE id = %d + :i) x \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$3");"; } >"$f.sql"
+  { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$3");"; } >"$f.sql"
   rm -f "$log"*
   [[ -n $(stmt "$1" "$3") ]] || { echo "NA NA"; return; }   # the engine has no such query
   PGOPTIONS="-c statement_timeout=${TIMEOUT:-30s}" pgbench -n -f "$f.sql" -c 1 -T "$SECS" -l --log-prefix="$log" "$(edb "$3")" >/dev/null 2>&1 || { echo "nan nan"; return; }
