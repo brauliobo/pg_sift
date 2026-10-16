@@ -67,7 +67,7 @@ SELECT q, cnt('po', q) AS positions, oracle('pf', q) AS oracle FROM qs() q WHERE
 RESET sift.enable_scan;
 RESET sift.enable_count;
 
--- a required phrase reads no heap page; positions = off, an optional phrase and a phrase under NOT recheck
+-- a required or an optional phrase reads no heap page; positions = off and a phrase under NOT recheck
 CREATE FUNCTION heap_checks(tbl text, q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
@@ -77,7 +77,21 @@ BEGIN
 END $$;
 SELECT heap_checks('po', '"red running"') AS required, heap_checks('pf', '"red running"') > 0 AS off_required,
 	heap_checks('po', '"red running red"') AS three, heap_checks('po', '"red running" AND fox') AS conj,
-	heap_checks('po', '"red running" OR fox') > 0 AS optional, heap_checks('po', 'fox NOT "red running"') > 0 AS negated;
+	heap_checks('po', '"red running" OR fox') AS optional, heap_checks('po', 'fox NOT "red running"') > 0 AS negated;
+
+-- rare words (one or two documents) keep their positions in the dictionary: phrases of them read no heap either
+CREATE TABLE pr (id int PRIMARY KEY, body text);
+INSERT INTO pr VALUES (1, 'zork blat quux'), (2, 'blat zork'), (3, 'quux zork blat zork blat'), (4, 'common words only'),
+	(5, 'common ' || repeat('longw ', 300) || 'blat'), (6, 'zork common blat');
+INSERT INTO pr SELECT 10 + i, 'common filler ' || i FROM generate_series(1, 200) i;
+CREATE INDEX pr_idx ON pr USING sift (body);
+SELECT sift.verify('pr_idx', true);
+SELECT q, cnt('pr', q) AS hits, oracle('pr', q) AS oracle FROM unnest(ARRAY['"zork blat"', '"blat zork"', '"quux zork blat"',
+	'"zork blat" OR "common words"', '"longw longw"', '"longw blat"', '"zork blat" NOT quux', '"blat zork blat"']) q;
+-- the records over 256 bytes (longw) are not kept inline: that term is decided by the heap
+SELECT heap_checks('pr', '"quux zork"') AS rare, heap_checks('pr', '"quux zork blat"') AS rare3,
+	heap_checks('pr', '"quux zork" OR "common words"') AS optional, heap_checks('pr', '"longw blat"') > 0 AS long_record;
+DROP TABLE pr;
 
 -- documents in mutable segments have no positions: the heap decides them, the rest stays in the index
 INSERT INTO po SELECT 1000 + i, 'fox red running ' || 'x' || i % 4 FROM generate_series(1, 40) i;
