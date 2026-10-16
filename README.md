@@ -12,7 +12,7 @@ bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from
 
 - Exact BM25 (`sift.score()`), ranked top-k with block-max pruning, `count(*)` straight from the index.
 - Ordinary table semantics: MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes. Crash and replica
-  safe through generic WAL, no `shared_preload_libraries`.
+  safe through generic WAL ([replication](#replication)), no `shared_preload_libraries`.
 - 1.1: filter pushdown, keyword facets, opt-in parallel scan.
 - Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.4x smaller than pg_search (see Benchmarks).
 
@@ -172,8 +172,7 @@ and merges; VACUUM promotes, merges and clears dead postings.
 `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index.
 
 - `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
-- Physical standbys answer queries through generic WAL (pg_sift installed there); set `hot_standby_feedback = on` to avoid retryable
-  "segment recycled during scan" errors. Logical replication does not carry indexes. pg_dump restores rebuild the index.
+- pg_dump restores rebuild the index. Replication: see [Replication](#replication).
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
 
 | GUC | default | meaning |
@@ -185,6 +184,29 @@ and merges; VACUUM promotes, merges and clears dead postings.
 Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `phrase_index` (`none` or `pairs`), `prefix_index` (0-15), `fields`,
 `mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
+
+## Replication
+
+**Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,
+`CREATE INDEX CONCURRENTLY` and `REINDEX`, and serves `@@>`, ranked `sift.score()`, `count(*)` and pushed-down filters read-only with the
+primary's rows and scores; a promoted standby takes writes at once. No `shared_preload_libraries`, but install the same pg_sift version on
+every node that queries. `sift.*` settings are per node; `hot_standby_feedback = on` avoids retryable "segment recycled during scan" errors.
+
+**Logical:** only table rows replicate, never indexes or `CREATE EXTENSION`. On the subscriber install pg_sift, create the table and its own
+sift index (before or after the initial sync) and the apply worker maintains it, with a primary key or `REPLICA IDENTITY FULL` (a sift index
+is never a replica identity). Matches and counts equal the publisher's, and so do scores while both indexes saw the same changes: BM25 counts
+postings that are not yet vacuumed, so an index rebuilt on one side only (`REINDEX`) scores slightly differently.
+
+```sql
+CREATE PUBLICATION docs_pub FOR TABLE docs;                                                -- publisher
+CREATE EXTENSION pg_sift;                                                                  -- subscriber
+CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
+CREATE INDEX docs_body ON docs USING sift (body);
+CREATE SUBSCRIPTION docs_sub CONNECTION 'host=primary dbname=app' PUBLICATION docs_pub;
+```
+
+`scripts/replication.sh` checks all of it on a primary, a standby and a subscriber in temporary clusters; `--container` puts every node in
+its own docker container.
 
 ## Limits
 
