@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=F [REPS=3] [GUC=sift.prefetch] bench/cold.sh
+# Usage: TIER=F [REPS=3] [GUC=sift.prefetch] bench/steps/cold.sh
 # Cold-cache latency of the quick suite's queries (ranked top 10 per class; unordered sum() over all matches)
 # with a boolean GUC off and on, on a clone of the restored `bench` database. Before every run the index and
 # the heap are evicted from shared_buffers (pg_buffercache_evict_relation) and from the OS page cache

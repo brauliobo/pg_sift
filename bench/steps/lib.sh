@@ -2,7 +2,8 @@
 set -euo pipefail
 export LC_ALL=C
 
-BENCH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+STEPS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # the internal steps that bench/bench runs
+BENCH=$(dirname "$STEPS")
 REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
@@ -17,7 +18,7 @@ SOCK=$ROOT/run
 CACHE=$ROOT/cache
 DUMP=$CACHE/sift-$TIER-${TIER_DOCS[$TIER]}.dump
 DATA=$ROOT/data
-SIFT_ROOT=${SIFT_ROOT:-$ROOT/sift-root}      # DESTDIR installs of the engines built by bench/fetch.sh
+SIFT_ROOT=${SIFT_ROOT:-$ROOT/sift-root}      # DESTDIR installs of the engines built by bench/steps/fetch.sh
 RUM_ROOT=${RUM_ROOT:-$ROOT/rum-root}
 BM25_ROOT=$ROOT/bm25root
 PARADEDB_ROOT=$ROOT/engines/paradedb/root
@@ -25,7 +26,7 @@ OUT=${OUT:-$BENCH/out/$TIER}
 LOCK=/tmp/sift-perf.lock
 export PGHOST=$SOCK PGPORT=${PORT:-${TIER_PORT[$TIER]}} PGDATABASE=${DB:-bench} PGUSER=${PGUSER:-$USER}
 
-# Where the cluster looks for extensions (bench/cluster.sh): engine roots first, then the system.
+# Where the cluster looks for extensions (bench/steps/cluster.sh): engine roots first, then the system.
 SHAREDIR=$(pg_config --sharedir) PKGLIBDIR=$(pg_config --pkglibdir)
 EXT_SHARE="$SIFT_ROOT$SHAREDIR:$RUM_ROOT$SHAREDIR:$BM25_ROOT/usr/share/postgresql:$PARADEDB_ROOT/usr/share/postgresql/$PG_MAJOR"
 EXT_LIB="$SIFT_ROOT$PKGLIBDIR:$RUM_ROOT$PKGLIBDIR:$BM25_ROOT/usr/lib/postgresql:$PARADEDB_ROOT/usr/lib/postgresql/$PG_MAJOR/lib"
@@ -45,7 +46,7 @@ engine_available() {
 available_engines() {
   local e
   for e in $1; do
-    ( load_engine "$e"; engine_available ) && echo "$e" || log "skipping $e: its extension is not installed (bench/fetch.sh)" >&2
+    ( load_engine "$e"; engine_available ) && echo "$e" || log "skipping $e: its extension is not installed (bench/steps/fetch.sh)" >&2
   done
 }
 clone_db() {
@@ -65,7 +66,7 @@ check_db() {
   q -c "$RENDER"
 }
 # Every engine server runs with the same budget (8 vCPUs, 32 GB, as a cgroup scope); load generators run
-# outside it. Without a systemd user session the budget is not enforced (bench/machine.sh says which).
+# outside it. Without a systemd user session the budget is not enforced (bench/steps/machine.sh says which).
 if [[ -z ${BUDGET_ENFORCED:-} ]]; then
   systemd-run --user --scope --quiet true 2>/dev/null && BUDGET_ENFORCED=yes || BUDGET_ENFORCED=no
   export BUDGET_ENFORCED

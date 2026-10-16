@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: TIER=Q|F bench/rank_check.sh ENGINE [NSUB]
+# Usage: TIER=Q|F bench/steps/rank_check.sh ENGINE [NSUB]
 # Soft BM25 sanity check: overlap of the engine's top-10 with pgx-bm25's top-10 for the first
 # NSUB (default 200) substrings, per mode. Ties at rank 10 keep even exact BM25 below 1.0.
 # The pgx-bm25 reference is computed once per tier into $DATA/rankref-$TIER.tsv.

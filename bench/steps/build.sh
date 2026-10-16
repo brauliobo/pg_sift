@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Usage: [COPIES=n] TIER=Q|F bench/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
+# Usage: [COPIES=n] TIER=Q|F bench/steps/build.sh [WORKERS...]    (default: 0 2 4; 0 = serial build)
 # Timed sift CREATE INDEX per parallel worker count, on a clone of the restored `bench` database
-# (bench/cluster.sh start; bench/corpus.sh restore). The table is vacuumed and prewarmed before each
+# (bench/steps/cluster.sh start; bench/steps/corpus.sh restore). The table is vacuumed and prewarmed before each
 # build, which holds the perf lock. Appends tier, workers, seconds, index MB, segments, load average to
 # $OUT/build-workers.tsv. COPIES=n builds on n copies of the corpus (a table big enough for long parallel scan chunks).
 . "$(dirname "$0")/lib.sh"

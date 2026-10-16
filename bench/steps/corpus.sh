@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Usage:
-#   bench/corpus.sh fetch               # download and convert the public datasets (bench/datasets/fetch.sh articles)
-#   TIER=Q|F bench/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv and cache a dump
-#   TIER=Q|F bench/corpus.sh restore    # recreate `bench` from the cached dump
+#   bench/steps/corpus.sh fetch               # download and convert the public datasets (bench/datasets/fetch.sh articles)
+#   TIER=Q|F bench/steps/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv and cache a dump
+#   TIER=Q|F bench/steps/corpus.sh restore    # recreate `bench` from the cached dump
+#   TIER=Q|F bench/steps/corpus.sh ensure     # start the cluster and make sure `bench` exists (load, then restore)
 # Tiers: Q (quick) 150,000 articles (Q_DOCS), F (full) all 218k Simple English Wikipedia articles.
 . "$(dirname "$0")/lib.sh"
 
 SRC=$DATA/articles.tsv
 
 fresh_db() {
-  "$BENCH/cluster.sh" init
-  "$BENCH/cluster.sh" start
+  "$STEPS/cluster.sh" init
+  "$STEPS/cluster.sh" start
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS bench WITH (FORCE)" -c "CREATE DATABASE bench"
 }
 
 load() {
-  [[ -f $SRC ]] || { echo "no $SRC: run bench/corpus.sh fetch" >&2; exit 1; }
+  [[ -f $SRC ]] || { echo "no $SRC: run bench/steps/corpus.sh fetch" >&2; exit 1; }
   fresh_db
   q -f "$BENCH/sql/schema.sql"
   q -c "\\copy src FROM '$SRC'"
@@ -32,9 +33,18 @@ restore() {
   log "restored $DUMP"
 }
 
+ensure() {
+  "$STEPS/cluster.sh" init
+  "$STEPS/cluster.sh" start
+  [[ $(PGDATABASE=postgres q -c "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] && return
+  [[ -f $DUMP ]] || load
+  restore
+}
+
 case ${1:-} in
   fetch)   "$BENCH/datasets/fetch.sh" articles ;;
   load)    load ;;
   restore) restore ;;
+  ensure)  ensure ;;
   *) sed -n '2,6p' "$0" >&2; exit 1 ;;
 esac
