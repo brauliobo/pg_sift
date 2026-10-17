@@ -5,7 +5,7 @@
  * into slot lanes with PSHUFB from the AVX2 expand table. Register-form compress/expand only
  * (the memory forms are microcoded on Zen 4).
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include "sift_kernels_int.h"
 

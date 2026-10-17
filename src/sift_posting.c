@@ -1,9 +1,7 @@
 /*
  * sift_posting.c - term blob writer and reader (layout in sift_posting.h).
  */
-#include "postgres.h"
-
-#include "utils/memutils.h"
+#include "sift_host.h"
 
 #include "sift_kernels.h"
 #include "sift_posting.h"

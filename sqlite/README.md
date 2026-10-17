@@ -6,7 +6,7 @@ highlights, snippets and facets. It is the search engine of [pg_sift](https://gi
 extension, a separate component with its own documentation) running on SQLite's storage; the two share their codec,
 analyzers and query evaluator, and nothing else. The extension is called `sift` in SQLite and its release artifact is `sift-sqlite`.
 
-- **Fast:** 18x to 287x the throughput of FTS5 on ranked top-10 queries over 218,000 Wikipedia articles ([numbers](#numbers-against-fts5)).
+- **Fast:** 10x to 242x the throughput of FTS5 on ranked top-10 queries over 218,000 Wikipedia articles ([numbers](#numbers-against-fts5)).
 - **Bounded memory:** a page cache of your choosing (`cache_size`), streaming merges, no copy of the index in RAM.
 - **Plain SQLite:** transactions, rollback, savepoints and WAL readers behave as for any table; one database file; no server.
 - **Your table or its own:** keep the text in the virtual table, or index a table you already have (`content='tbl'`), or keep only the index.
@@ -190,13 +190,13 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 |---|---|---|---|---|
 | index, with positions | 130.8 MB | 130.8 MB | 125.1 MB | 1.05x larger |
 | index, no positions | 46.9 MB |  | 35.0 MB (`detail=none`) | 1.34x larger |
-| build (218k docs) | 7.5 to 8.3 s (10 to 15 s under contention) | same | 7.5 to 8.3 s + 0.9 to 1.1 optimize | equal |
-| AND top 10 | **5779 qps**, 0.154 ms | 2129 qps, 0.307 ms | 97.7 qps, 8.85 ms | 59x |
-| OR top 10 | **1437 qps**, 0.663 ms | 458 qps, 2.14 ms | 5.0 qps, 193 ms | 287x |
-| phrase top 10 | **4040 qps**, 0.154 ms | 1551 qps, 0.320 ms | 220.7 qps, 2.24 ms | 18x |
-| count AND | 16.6k qps | 15.4k qps | 500 qps | 33x |
-| count OR | 10.7k qps | 5.2k qps | 61.5 qps | 175x |
-| count phrase | 2.1k qps | 1.8k qps | 523 qps | 4x |
+| build (218k docs, one segment) | 12.0 s + 0.07 merge | same | 11.2 s + 1.2 optimize | equal |
+| AND top 10 | **5746 qps**, 0.142 ms | 2086 qps | 64.6 qps, 13.2 ms | 89x |
+| OR top 10 | **1209 qps**, 0.836 ms | 451 qps | 5.0 qps, 193 ms | 242x |
+| phrase top 10 | **4019 qps**, 0.160 ms | 1563 qps | 400 qps, 1.13 ms | 10x |
+| count AND | 15.3k qps | 16.2k qps | 795 qps | 19x |
+| count OR | 10.2k qps | 5.3k qps | 53.9 qps | 189x |
+| count phrase | 2.6k qps | 3.0k qps | 769 qps | 3.4x |
 
 ## Limits
 

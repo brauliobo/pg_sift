@@ -2,7 +2,7 @@
 # Builds the extension and runs every test. Needs a C compiler, make and python3 whose sqlite3 module can load
 # extensions and has FTS5; no root, nothing is installed.
 #
-#   ./test.sh                   smoke test, baseline instruction check, unit tests + FTS5 differential on a synthetic corpus, the same with the scalar kernels forced
+#   ./test.sh                   portable-core include check (scripts/check-portable.sh), smoke test, baseline instruction check, unit tests + FTS5 differential on a synthetic corpus, the same with the scalar kernels forced
 #                               (runtime switch) and with the vector-free build (make SIMD=none) (about 40 s)
 #   SIFT_SANITIZE=1 ./test.sh   also the unit tests under ASan+UBSan and the thread stress test under TSan and ASan (about 3 min)
 #   SIFT_ARTICLES=articles.db ./test.sh
@@ -11,6 +11,7 @@
 #                               also the comparison with pg_sift's evaluator (bench/compare_pg.py documents the file)
 set -e
 cd "$(dirname "$0")"
+../scripts/check-portable.sh
 nice make -j4
 nice make -j4 isa-check
 python3 -I tests/smoke.py build/sift "$(cat VERSION)"

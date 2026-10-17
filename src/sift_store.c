@@ -66,9 +66,7 @@ struct SiftStreamWriter
 	BlockNumber run_next;		/* unused part of the current run */
 	BlockNumber run_end;
 	uint32		grow;
-	SiftExtent *ext;
-	int			next;
-	int			maxext;
+	SiftExtentList ext;
 };
 
 /* Records to add to the free list, and where they go */
@@ -88,14 +86,6 @@ typedef struct BlockMap
 } BlockMap;
 
 /* ---------- pages ---------- */
-
-void
-sift_page_init(Page page, SiftPageType type, uint64 gen)
-{
-	PageInit(page, BLCKSZ, sizeof(SiftPageOpaqueData));
-	SiftPageGetOpaque(page)->type = type;
-	SiftPageGetOpaque(page)->gen = gen;
-}
 
 static bool
 layout_ok(Page page)
@@ -1027,8 +1017,7 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	sw->wt = wt;
 	sw->gen = gen;
 	sw->grow = RUN_MIN;
-	sw->maxext = 8;
-	sw->ext = palloc(sw->maxext * sizeof(SiftExtent));
+	sift_extlist_init(&sw->ext);
 	if (wt->bulk == NULL)
 		sw->local = palloc_aligned(sizeof(PGIOAlignedBlock), PG_IO_ALIGN_SIZE, 0);
 	return sw;
@@ -1054,8 +1043,6 @@ sw_flush(SiftStreamWriter *sw)
 static void
 sw_start_page(SiftStreamWriter *sw)
 {
-	SiftExtent *last = sw->next > 0 ? &sw->ext[sw->next - 1] : NULL;
-
 	if (sw->run_next == sw->run_end)
 	{
 		uint32		got;
@@ -1065,21 +1052,7 @@ sw_start_page(SiftStreamWriter *sw)
 		sw->grow = Min(sw->grow * 2, RUN_MAX);
 	}
 	sw->blk = sw->run_next++;
-	if (last && last->start + last->nblocks == sw->blk)
-		last->nblocks++;
-	else
-	{
-		if (sw->next == SIFT_MAX_EXTENTS)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift segment stream needs more than %d extents", (int) SIFT_MAX_EXTENTS)));
-		if (sw->next == sw->maxext)
-		{
-			sw->maxext *= 2;
-			sw->ext = repalloc(sw->ext, sw->maxext * sizeof(SiftExtent));
-		}
-		sw->ext[sw->next++] = (SiftExtent) {sw->blk, 1};
-	}
+	sift_extlist_add(&sw->ext, sw->blk);
 	sw->page = wt_page(sw->wt, sw->local);
 	sift_page_init(sw->page, SIFT_PT_DATA, sw->gen);
 	sw->used = 0;
@@ -1108,36 +1081,14 @@ sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len)
 	}
 }
 
-void
-sift_sw_align(SiftStreamWriter *sw, size_t align)
-{
-	static const char zeros[SIFT_SIMD_ALIGN];
-
-	if (align == 0 || (align & (align - 1)) != 0 || align > SIFT_SIMD_ALIGN)
-		elog(ERROR, "sift: invalid stream alignment %zu", align);
-	for (;;)
-	{
-		size_t		room = sw->page ? SIFT_PAGE_PAYLOAD - sw->used : 0;
-		size_t		pad = (size_t) -(SIFT_PAGE_DATA_OFFSET + (room ? sw->used : 0)) & (align - 1);
-
-		/* pad == room would push the next byte to the unaligned start of a page */
-		if (room == 0 || pad < room)
-		{
-			sift_sw_write(sw, zeros, pad);
-			return;
-		}
-		sift_sw_write(sw, zeros, room);
-	}
-}
-
 SiftExtent *
 sift_sw_finish(SiftStreamWriter *sw, int *nextents)
 {
 	sw_flush(sw);
 	wt_spare(sw->wt, sw->run_next, sw->run_end - sw->run_next);
 	sw->run_next = sw->run_end;
-	*nextents = sw->next;
-	return sw->ext;
+	*nextents = sw->ext.n;
+	return sw->ext.ext;
 }
 
 /* ---------- stream reader ---------- */
@@ -1146,7 +1097,7 @@ void
 sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, int nextents,
 			 uint64 gen)
 {
-	uint64		total = 0;
+	uint64		total;
 
 	memset(sr, 0, sizeof(SiftStreamReader));
 	sr->index = index;
@@ -1162,36 +1113,17 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 			(uint64) extents[i].start + extents[i].nblocks > MaxBlockNumber)
 			corrupt(index, "Segment %llu has an invalid extent %u+%u.",
 					ULL(gen), extents[i].start, extents[i].nblocks);
-		sr->pagestart[i] = total;
-		total += extents[i].nblocks;
 	}
+	total = sift_extents_pagestart(extents, nextents, sr->pagestart);
 	if (total > PG_UINT32_MAX)
 		corrupt(index, "Segment %llu spans %llu pages.", ULL(gen), ULL(total));
-	sr->pagestart[nextents] = sr->npages = total;
+	sr->npages = total;
 }
 
 static BlockNumber
 page_block(const SiftStreamReader *sr, uint32 lpage, int *hint)
 {
-	int			lo = *hint;
-
-	if (lpage < sr->pagestart[lo] || lpage >= sr->pagestart[lo + 1])
-	{
-		int			hi = sr->nextents - 1;
-
-		lo = 0;
-		while (lo < hi)
-		{
-			int			mid = (lo + hi + 1) / 2;
-
-			if (sr->pagestart[mid] <= lpage)
-				lo = mid;
-			else
-				hi = mid - 1;
-		}
-		*hint = lo;
-	}
-	return sr->extents[lo].start + (lpage - sr->pagestart[lo]);
+	return sift_extents_block(sr->extents, sr->pagestart, sr->nextents, lpage, hint);
 }
 
 static BlockNumber

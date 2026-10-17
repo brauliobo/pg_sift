@@ -8,8 +8,7 @@
 #ifndef SIFT_VISIBILITY_H
 #define SIFT_VISIBILITY_H
 
-#include "executor/tuptable.h"
-#include "utils/snapshot.h"
+#include "sift_host.h"
 
 #include "sift.h"
 

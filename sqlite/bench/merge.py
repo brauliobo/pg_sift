@@ -1,6 +1,6 @@
 """Merge cost on a database that holds many segments: time, peak memory, and the answers before and after.
 
-    python3 -I merge.py --db FILE --trace trace.tsv [--cache-kib N] [--steps N] [--n 300] [--cpu N] [--ext build/sift]
+    python3 -I merge.py --db FILE --trace trace.tsv [--cache-kib N] [--steps N] [--n 300] [--ext build/sift]
 
 Build the many-segment database with build.py --no-merge --opts 'stemmer=english,pending_postings=2000000,automerge=0'.
 Runs in a fresh process, so the peak RSS is that of the merge alone. --steps merges that many steps ('merge', N), 0 = all
@@ -29,11 +29,8 @@ def main():
     ap.add_argument('--cache-kib', type=int)
     ap.add_argument('--steps', type=int, default=0)
     ap.add_argument('--n', type=int, default=300)
-    ap.add_argument('--cpu', type=int)
     ap.add_argument('--ext', default=os.path.join(os.path.dirname(__file__), '..', 'build', 'sift'))
     a = ap.parse_args()
-    if a.cpu is not None:
-        os.sched_setaffinity(0, {a.cpu})
     db = sqlite3.connect(a.db, isolation_level=None)
     db.enable_load_extension(True)
     db.load_extension(a.ext)
