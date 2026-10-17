@@ -35,6 +35,8 @@ CREATE FUNCTION sift._test_sweep(index regclass) RETURNS int8
 CREATE FUNCTION sift._test_info(index regclass, OUT key text, OUT value int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_info' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_maint_failures' LANGUAGE C STRICT;
 -- pending: safexid set (not cleared by sift_recycle yet)
 CREATE FUNCTION sift._test_freelist(index regclass, OUT page int8, OUT start int8, OUT nblocks int8,
 									OUT pending bool) RETURNS SETOF record
