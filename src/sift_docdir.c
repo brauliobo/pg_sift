@@ -33,6 +33,7 @@ typedef struct DirKey
 	RelFileLocator rel;
 	uint64		gen;
 	BlockNumber header_blk;
+	uint32		nsb;			/* read from the segment: a damaged one must not share the entry of an intact size */
 } DirKey;
 
 typedef struct DirEnt
@@ -100,11 +101,16 @@ bool
 sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
 {
 	Size		size = (Size) nsb * (sizeof(SiftDocSBRef) + sizeof(uint64)) + sizeof(uint64);
-	DirKey		k = {.rel = seg->index->rd_locator,.gen = seg->entry.gen,.header_blk = seg->entry.header_blk};
+	DirKey		k;
 	DirEnt	   *e;
 	bool		found;
 	Unpin	   *u;
 
+	memset(&k, 0, sizeof(k));
+	k.rel = seg->index->rd_locator;
+	k.gen = seg->entry.gen;
+	k.header_blk = seg->entry.header_blk;
+	k.nsb = nsb;
 	*handle = NULL;
 	if (nsb < sift_docdir_min_sb || size > DOCDIR_CACHE_BYTES / 4)
 	{
