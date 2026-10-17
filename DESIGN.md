@@ -673,7 +673,7 @@ document (the index access method, WAL, MVCC, planner integration, VACUUM) belon
 host's own design is in [sqlite/DESIGN.md](sqlite/DESIGN.md).
 
 **What is shared.** Besides the codec and the evaluator: the segment format and its writer/reader (`sift_segment.c`), the tiered merge policy
-(`sift_merge.c`: which segments merge, from the directory and the sizes), the deletion of one document (`sift_seg_delete_key`, which VACUUM's `sift_seg_bulkdelete`
+(`sift_merge.c`: which segments merge, from the directory and the sizes), the sorted runs and their merge into a segment (`sift_runs.c`: the inverted buffer `SiftInvBuf`, `sift_run_from_segment`, `sift_runs_write`; promotion and merge of PostgreSQL, merge of SQLite), the deletion of one document (`sift_seg_delete_key`, which VACUUM's `sift_seg_bulkdelete`
 shares with the SQLite DELETE: the dirty flag, then the liveness bits), the byte stream's extent bookkeeping and padding (`sift_store.h`, `sift_stream.c`), the
 analyzer-options validation and hash (`sift_analyze.c`), the layout constants and error texts. **What a host owns**: where bytes live (page store), transactions and
 crash safety, memory and error plumbing, the way a query reaches the evaluator (planner and custom scan, xBestIndex), the write path that feeds the writer
@@ -695,5 +695,6 @@ host's front end: option parsing, the write path (feed `sift_segw_*` in key orde
 (`sift_merge_pick` chooses, the host rewrites). (4) Run the equivalence tests: scores must be bit-equal to PostgreSQL's evaluator on the same corpus
 (`sqlite/bench/compare_pg.py`). The MariaDB proof of concept can adopt the same pieces without any change to the core.
 
-**Still two copies.** The write path (`SiftInvBuf` and sorted runs in `src/sift_build.c` against `SqInv` and the lockstep merge in `sqlite/sqbuild.c`/`sqmerge.c`) and
-the highlight/snippet/facet code are not unified; the plan is in [sqlite/DESIGN.md](sqlite/DESIGN.md#what-is-not-shared-yet).
+**Still two copies.** The SQLite in-memory write buffer (`SqInv` in `sqlite/sqbuild.c`, any key order, deletes) against `SiftInvBuf` (ascending keys) and the
+highlight/snippet/facet code are not unified; why, and what it would take, is in [sqlite/DESIGN.md](sqlite/DESIGN.md#what-is-not-shared-yet). The heap build, parallel workers
+and the leader (`src/sift_build.c`) stay with the PostgreSQL host.
