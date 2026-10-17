@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Usage:
 #   bench/steps/corpus.sh fetch               # download and convert the public datasets (bench/datasets/fetch.sh articles)
-#   TIER=Q|F bench/steps/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv and cache a dump
+#   TIER=Q|F bench/steps/corpus.sh load       # build the tier's `bench` database from $DATA/articles.tsv.gz and cache a dump
 #   TIER=Q|F bench/steps/corpus.sh restore    # recreate `bench` from the cached dump
 #   TIER=Q|F bench/steps/corpus.sh ensure     # start the cluster and make sure `bench` exists (load, then restore)
 # Tiers: Q (quick) 150,000 articles (Q_DOCS), F (full) all 218k Simple English Wikipedia articles.
 . "$(dirname "$0")/lib.sh"
 
-SRC=$DATA/articles.tsv
+SRC=$DATA/articles.tsv.gz   # COPY text, gzip (bench/datasets/fetch.sh); a plain articles.tsv in $DATA works too
+[[ -f $SRC ]] || SRC=$DATA/articles.tsv
 
 fresh_db() {
   "$STEPS/cluster.sh" init
@@ -20,7 +21,7 @@ load() {
   [[ -f $SRC ]] || { echo "no $SRC: run bench/steps/corpus.sh fetch" >&2; exit 1; }
   fresh_db
   q -f "$BENCH/sql/schema.sql"
-  q -c "\\copy src FROM '$SRC'"
+  case $SRC in *.gz) q -c "\\copy src FROM PROGRAM 'gzip -dc $SRC'" ;; *) q -c "\\copy src FROM '$SRC'" ;; esac
   nice psql -X -q -v limit="${TIER_DOCS[$TIER]}" -v nsub="${NSUB:-1000}" -f "$BENCH/sql/load.sql"
   mkdir -p "$CACHE"
   pg_dump -Fc -Z zstd:3 -f "$DUMP" bench
