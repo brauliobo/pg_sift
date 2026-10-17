@@ -4,7 +4,7 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
-## Unreleased
+## 1.3.0
 
 - First release. `sift` is a SQLite virtual table over the search engine of pg_sift: boolean, phrase, prefix, wildcard, regex and fuzzy queries
   (SiftQL), exact BM25 ranking with block-max pruning pushed into `ORDER BY rank LIMIT k [OFFSET n]`, `sift_count`, highlights, snippets and
