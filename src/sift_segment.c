@@ -2,12 +2,7 @@
  * sift_segment.c - immutable segment writer and reader (layout in
  * sift_segment.h and sift_page.h).
  */
-#include "postgres.h"
-
-#include "access/generic_xlog.h"
-#include "miscadmin.h"
-#include "port/pg_bitutils.h"
-#include "utils/memutils.h"
+#include "sift_host.h"
 
 #include "sift_kernels.h"
 #include "sift_segment.h"

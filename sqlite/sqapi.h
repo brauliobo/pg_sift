@@ -5,7 +5,7 @@
 #ifndef SQAPI_H
 #define SQAPI_H
 
-#include "postgres.h"
+#include "sift_host.h"
 
 #include <sqlite3ext.h>
 

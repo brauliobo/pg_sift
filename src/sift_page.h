@@ -11,9 +11,7 @@
 #ifndef SIFT_PAGE_H
 #define SIFT_PAGE_H
 
-#include "access/transam.h"
-#include "datatype/timestamp.h"
-#include "storage/bufpage.h"
+#include "sift_host.h"
 
 #include "sift.h"
 

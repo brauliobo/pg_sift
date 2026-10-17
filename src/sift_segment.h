@@ -15,7 +15,7 @@
 #ifndef SIFT_SEGMENT_H
 #define SIFT_SEGMENT_H
 
-#include "access/genam.h"
+#include "sift_host.h"
 
 #include "sift_dict.h"
 #include "sift_posting.h"

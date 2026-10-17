@@ -11,11 +11,7 @@
  * the cache: a segment never changes (its liveness is applied by the readers), so its generation names
  * the blob for good.
  */
-#include "postgres.h"
-
-#include "utils/hsearch.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
+#include "sift_host.h"
 
 #include "sift_kernels.h"
 #include "sift_prefix.h"

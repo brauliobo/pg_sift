@@ -5,8 +5,8 @@
 #   make SIMD=none B=build-scalar   no vector code at all (the vector levels dispatch to the scalar tables): the compile-time scalar build
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
-# The sources of ../src listed in PORTABLE are compiled unmodified, against the PostgreSQL API shim in shim/, except two
-# mechanical changes: sift_bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
+# The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
+# only src/sift_host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: sift_bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
 # $(B)/gen, src/ is untouched) and sift_prefix.c's one entry point is renamed so that sqinit.c can serialize it.
 SRC := ../src
 B ?= build
@@ -25,20 +25,19 @@ else
 SIMD := none
 CPUPROBE := '-D__builtin_cpu_init()=' '-D__builtin_cpu_supports(x)=0'
 endif
-ifneq ($(SIMD),none)
 SIMD_SRC := sift_bitmap_avx2 sift_bitmap_avx512 sift_kernels_avx2 sift_kernels_avx512
-else
+ifeq ($(SIMD),none)
 EXTRA += -DSQ_SIMD_NONE
 ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar -Dsift_kernels_avx2=sift_kernels_scalar \
 	-Dsift_kernels_avx2_nopdep=sift_kernels_scalar -Dsift_kernels_avx512=sift_kernels_scalar $(CPUPROBE)
 endif
 CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -Wno-misleading-indentation \
-	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(EXTRA) -Ishim -I$(SRC) -I.
+	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(EXTRA) -DSIFT_HOST_SQLITE -Ihost -I$(SRC) -I.
 LDLIBS := -lm -lpthread
 
-PORTABLE := sift_bitmap sift_bitmap_scalar sift_kernels sift_analyze sift_analyze_stem sift_query sift_posting sift_dict \
-	sift_segment sift_prefix sift_filter sift_eval sift_parallel sift_cpu $(SIMD_SRC)
-OWN := shim shim_regex sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
+# the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
+PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^\#' $(SRC)/portable.list))))
+OWN := host host_regex sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
 all: $(B)/sift.so
@@ -72,6 +71,9 @@ $(B)/sqinit.o: $(B)/gen/version
 FORCE:
 
 $(B)/%.o: %.c | $(B)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(B)/%.o: host/%.c | $(B)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(B) $(B)/gen:

@@ -52,8 +52,7 @@
 #ifndef SIFT_STORE_H
 #define SIFT_STORE_H
 
-#include "storage/bufmgr.h"
-#include "utils/rel.h"
+#include "sift_host.h"
 
 #include "sift_page.h"
 
