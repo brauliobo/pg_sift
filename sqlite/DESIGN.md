@@ -32,7 +32,7 @@ The shared core and the host interface are described in [../DESIGN.md](../DESIGN
   postings and positions) is spilled to a run, a temporary file, and the runs are merged by a k-way merge into the output segment, in several
   passes when they do not fit the memory budget (`maintenance_work_mem`, 64 MiB here); memory is the reader buffers plus one term, never the inverted
   index. Before this unification the SQLite host merged the inputs in lockstep without a temporary file (same result, byte for byte; on the 12-segment 218k
-  corpus `bench/merge.py` took 4.6 s against 5.3 s now, at a load average of 17, with a peak RSS of 65 MiB against 62). Tiers are `bytes / 1 MiB`;
+  corpus `bench/merge.py` took 3.65 s against 3.55 s now, mean of six alternating runs, 0.98 +- 0.05 of the time, with a peak RSS of 68 MiB against 62). Tiers are `bytes / 1 MiB`;
   after a flush, `automerge` segments of a tier (at most 32 inputs) are merged. The new segment is published and the
   inputs retired in one SQLite transaction: a rollback, an error or a killed process leaves the old segments valid
   (tests inject a fault and `_exit` in the middle of the write). Merging purges deleted documents from df/N/avgdl, so
