@@ -972,6 +972,15 @@ BufFileCreateFileSet(FileSet *fileset, const char *name)
 	return NULL;
 }
 
+void
+BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok)
+{
+	elog(ERROR, "sift: shared file sets are not available");
+}
+
+/* The memory a merge or a build may use before it spills sorted runs to temporary files, in kB */
+int			maintenance_work_mem = 65536;
+
 /* ------------------------------------------------ buffer manager: block numbers map to the mapped index files */
 
 char	   *BufferBlocks;

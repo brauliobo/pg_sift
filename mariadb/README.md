@@ -8,7 +8,7 @@ those of pg_sift; for the same text and the same options the counts, the top-10 
 
 It adds no storage engine and patches nothing: a trigger-fed queue table keeps the index in step with an InnoDB table, the
 index lives in plain files next to the data directory, and a query is a function call. Use it when `MATCH ... AGAINST`
-is too slow or too limited (InnoDB FULLTEXT takes 0.15 to 1.1 s for a ranked top-10 on 218,058 articles, sift 0.3 to 1.5 ms), you
+is too slow or too limited (InnoDB FULLTEXT takes 0.06 to 1.2 s for a ranked top-10 on 218,058 articles, sift 0.2 to 1.3 ms), you
 want BM25 and phrases that behave the same on every engine of the product, or you want filters and facets inside the ranked
 scan. Do not use it if you need `MATCH ... AGAINST` syntax (it cannot be added to a UDF, see "MATCH ... AGAINST") or a
 MySQL server (MariaDB only).
@@ -388,24 +388,28 @@ phrase of the terms of an article substring), second pass, in microseconds. Inno
 (`+a +b` for AND, natural language and boolean for OR, `"a b"` for phrase; `COUNT(*)` in boolean mode for counts), statements
 longer than 10 s are aborted by the server and counted as timeouts. sift: the query shape above, joined with `docs`; "UDF
 only" is `SELECT sift_topk(...)`; "plain" is the same query on an index with `fresh=false, recheck=false`. One run of
-`mariadb/test.sh` (the same run that passes every correctness check above); load average of the host 13.8 to 21.3 during it, with
-`SELECT 1` at 6.9 us.
+`mariadb/test.sh`, the last run of the final code (every correctness check above passed in it); load average of the host 20.1 at the
+start of the benchmark and 11.4 at the end, `SELECT 1` at 5.9 us.
 
 | class | sift, joined | sift, UDF only | sift, plain index | InnoDB FULLTEXT | InnoDB / sift |
 | --- | --- | --- | --- | --- | --- |
-| AND top-10 | 351 | 150 | 279 | 149,095 | 425x |
-| OR top-10 | 1,495 | 1,320 | 1,277 | 1,142,348 natural, 1,139,157 boolean | 764x |
-| phrase top-10 | 544 | 318 | 331 | 168,665 | 310x |
-| count AND | 160 | | 106 | 154,253 | 966x |
-| count OR | 217 | | 180 | 806,999 | 3,721x |
-| count phrase | 193 | | 154 | 241,356 (3 of 200 timed out) | at least 1,308x |
+| AND top-10 | 304 | 270 | 281 | 62,305 | 205x |
+| OR top-10 | 1,253 | 1,157 | 1,130 | 1,232,091 natural, 908,285 boolean | 984x / 725x |
+| phrase top-10 | 242 | 156 | 186 | 175,430 | 726x |
+| count AND | 103 | | 69 | 65,318 | 632x |
+| count OR | 269 | | 255 | 916,283 | 3,411x |
+| count phrase | 201 | | 127 | 167,613 | 832x |
 
-Build and size: sift 3.6 s to drain 218,058 documents into one segment plus 0.2 s to attach (create the queue, the triggers,
-queue the rows); InnoDB `ADD FULLTEXT` 21.2 s (5.9x). Index size: sift 135.9 MB (a 130.6 MB segment with positions, a 5.2 MB event
+Build and size: sift 7.0 s to drain 218,058 documents into one segment plus 0.4 s to attach (create the queue, the triggers, queue
+the rows); InnoDB `ADD FULLTEXT` 44.9 s (6.4x). An earlier run of the same code, before main was merged and with the host a little
+quieter at that moment, gave 3.6 s and 21.2 s (5.9x). Index size: sift 135.9 MB (a 130.6 MB segment with positions, a 5.2 MB event
 log), InnoDB 232.0 MB (`FTS_*.ibd`): 1.7x smaller.
 
-Cost of a UDF call, 1,000 statements, median of the third pass: `SELECT 1` 6.9 us; `SELECT sift_ping(10)` 13.1 us; with
-`JSON_TABLE` 29.0 us; with the join with `docs` and `ORDER BY` (the application shape) 50.6 us.
+Cost of a UDF call, 1,000 statements, median of the third pass: `SELECT 1` 5.9 us; `SELECT sift_ping(10)` 7.9 us; with
+`JSON_TABLE` 16.8 us; with the join with `docs` and `ORDER BY` (the application shape) 30.4 us.
+
+The same run before the merge of main (load average 14 to 21, `SELECT 1` at 6.9 us) read AND 351, OR 1,495, phrase 544 us joined and
+count AND 160 us: the spread between two runs of identical code is as large as the differences between the columns above.
 
 **Against the first proof of concept, and what freshness costs.** The first version of this library (same engine, no queue
 read: results as of the last drain) measured AND 192, OR 730, phrase 173 us, count AND 52 us, build 4.3 s, 135.9 MB in a
@@ -426,18 +430,18 @@ three rounds' medians:
 | count phrase | 140 | 131 | 159 |
 
 The plain index is the first version's speed, within the noise of the host (the rounds of one cell differ by up to 50%); the
-engine did not regress. The default costs 100 to 170 us per top-10 and 30 to 60 us per count: the queue read and the existence
+engine did not regress. The default costs 20 to 170 us per top-10 and 15 to 75 us per count (the interleaved rounds and the plain column of the table, whose noise is of the same size): the queue read and the existence
 check are statements on a local connection of the server (about 50 us each under this load), and they are what makes a
 write visible to the next query and a page never short. The price is paid per call and does not grow with the index; it does grow
 with the rows waiting for a drain, because the live segment is built from them: measured on the same corpus, 1,000 pending rows
 cost about 0.3 ms per query, 10,000 about 3.8 ms, 100,000 about 32 ms. Keep `sift_sync` on an `EVENT` (every second by
 default in `sift_schedule`) and the queue stays in the hundreds. Use `fresh=false, recheck=false` for a read-mostly table you drain
-on a schedule and want the lowest latency; build time and size did not change (3.6 s against 4.3 s, 135.9 MB against 135.9 MB).
+on a schedule and want the lowest latency; build time and size did not change (3.6 to 7.0 s against 4.3 s, 135.9 MB against 135.9 MB).
 
-Honest losses. sift's OR is its slowest class (1.3 to 1.5 ms: OR queries over common terms match most of the corpus);
-the joined shape adds 50 us over the bare function and `JSON_TABLE` evaluates the function once only through the derived table;
+Honest losses. sift's OR is its slowest class (1.1 to 1.5 ms: OR queries over common terms match most of the corpus);
+the joined shape adds 15 to 50 us over the bare function and `JSON_TABLE` evaluates the function once only through the derived table;
 anything under a few thousand rows does not need an external index at all (not measured; InnoDB FULLTEXT is fast enough there);
-the absolute numbers move by about 50% from session to session on this shared host, the ratios (300x to 3,700x) do not; InnoDB
+the absolute numbers move by about 50% from session to session on this shared host, the ratios (200x to 3,700x) do not; InnoDB
 timeouts are counted at the limit, which understates the ratio.
 
 
