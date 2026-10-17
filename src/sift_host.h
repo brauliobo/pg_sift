@@ -22,13 +22,14 @@
  *
  * PostgreSQL: the real headers, so the macros are PostgreSQL's own and the core compiles to exactly the calls it made
  * before this header existed. SQLite: sqlite/host/host.h implements the vocabulary over malloc, setjmp and SQLite rows.
+ * MariaDB: mariadb/host/host.h, the same C library vocabulary (it includes sqlite/host/host.h) over mapped segment files.
  * To add a host, provide a header with this vocabulary, define SIFT_HOST_<NAME> and add the branch below; sqlite/DESIGN.md
  * walks through what the SQLite one does. New code in a portable file uses this vocabulary only (CONTRIBUTING.md).
  */
 #ifndef SIFT_HOST_H
 #define SIFT_HOST_H
 
-#ifdef SIFT_HOST_SQLITE
+#if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 
 #include "host.h"
 

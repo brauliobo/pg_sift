@@ -5,6 +5,7 @@
 #include "host.h"
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 
@@ -889,12 +890,24 @@ struct BufFile
 	FILE	   *f;
 };
 
+const char *sq_tmpdir;
+
+/* An unnamed file in sq_tmpdir (the C library's tmpfile() is /tmp, which may be a RAM disk) */
+static FILE *
+spool_file(void)
+{
+	int			fd = sq_tmpdir ? open(sq_tmpdir, O_TMPFILE | O_RDWR, 0600) : -1;
+	FILE	   *f = fd >= 0 ? fdopen(fd, "w+") : NULL;
+
+	return f ? f : tmpfile();
+}
+
 BufFile *
 BufFileCreateTemp(bool interXact)
 {
 	BufFile    *b = palloc(sizeof(BufFile));
 
-	b->f = tmpfile();
+	b->f = spool_file();
 	if (b->f == NULL)
 		elog(ERROR, "could not create a temporary file");
 	return b;

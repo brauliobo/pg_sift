@@ -398,6 +398,7 @@ extern int pg_regprefix(regex_t *re, pg_wchar **string, size_t *slength);
 /* ---------- BufFile (temporary spool files) ---------- */
 
 typedef struct BufFile BufFile;
+extern const char *sq_tmpdir;		/* where the spool files live; NULL: the C library's tmpfile() */
 extern BufFile *BufFileCreateTemp(bool interXact);
 extern void BufFileWrite(BufFile *file, const void *ptr, size_t size);
 extern void BufFileReadExact(BufFile *file, void *ptr, size_t size);
