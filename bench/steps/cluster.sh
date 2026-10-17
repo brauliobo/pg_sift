@@ -19,8 +19,8 @@ preload() {
 }
 
 settings() {
-  local n=$(nproc) cores build
-  cores=$(lscpu -p=core,socket | grep -v '^#' | sort -u | wc -l) build=$(( cores > 1 ? cores - 1 : 0 ))
+  local n cores build
+  n=$(nproc) cores=$(lscpu -p=core,socket | grep -v '^#' | sort -u | wc -l) build=$(( cores > 1 ? cores - 1 : 0 ))
   cat >"$PGDATA/bench.conf" <<EOF
 port = $PGPORT
 listen_addresses = ''

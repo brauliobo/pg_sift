@@ -62,7 +62,7 @@ Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads)
 parallel worker count), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
 `--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25,elasticsearch`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
-the server's parallel workers; default 4 pgbench threads, one parallel worker per hardware thread), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
+the server's parallel workers; default 4 pgbench threads, one parallel worker per hardware thread and, for an index build, one fewer than the physical cores), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
 (the fewest transactions), `--rse X` (the relative standard error a cell is measured to, and below which it is not measured again, default 0.05), `--rounds MIN-MAX` (default 2-3, regress 3-3;
 more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`. `--keep` keeps the cache of built lanes after the session (Footprint, below).
 
@@ -172,8 +172,8 @@ and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, 
 
 ### Host and CPUs
 
-The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer;
-`--workers` caps them), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
+The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
+`--workers` caps both), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
 recorded with every cell. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
 session with each other, not with another session or machine.
 
