@@ -2,7 +2,7 @@
 #   nice make -j4                builds build/sift.so (load with .load build/sift)
 #   make test                    ./test.sh
 #   make SIMD=none B=build-scalar   no vector code at all (the vector levels dispatch to the scalar tables): the compile-time scalar build
-#   make asan | tsan             sanitizer builds (build-asan/, build-tsan/) and the C stress test on them
+#   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in PORTABLE are compiled unmodified, against the PostgreSQL API shim in shim/, except two
 # mechanical changes: sift_bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
@@ -34,7 +34,7 @@ CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -
 LDLIBS := -lm -lpthread
 
 PORTABLE := sift_bitmap sift_bitmap_scalar sift_kernels sift_analyze sift_analyze_stem sift_query sift_posting sift_dict \
-	sift_segment sift_prefix sift_filter sift_eval sift_cpu $(SIMD_SRC)
+	sift_segment sift_prefix sift_filter sift_eval sift_parallel sift_cpu $(SIMD_SRC)
 OWN := shim shim_regex sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
@@ -82,6 +82,11 @@ asan:
 tsan:
 	$(MAKE) B=build-tsan EXTRA="-fsanitize=thread -fno-omit-frame-pointer" OPT=-O1 build-tsan/stress
 
+# the stress test on the TSan build: separate connections, one shared connection, with and without parallel scans
+tsan-run: tsan
+	for a in "-m multi -r 4" "-m serialized -r 4" "-c -r 4" "-m multi -r 3 -p 3" "-c -r 3 -p 3"; do \
+		TSAN_OPTIONS="suppressions=$(CURDIR)/tests/tsan.supp exitcode=66" build-tsan/stress -s 10 $$a || exit 1; done
+
 # Without an aarch64 sysroot the build machine's x86-64 glibc headers stand in: bits/floatn.h is skipped and bits/wordsize.h and bits/pthreadtypes-arch.h are
 # replaced by LP64 ones (generated), so only the types and the code are checked, nothing is linked or run.
 cross-aarch64:
@@ -97,4 +102,4 @@ clean:
 
 -include $(wildcard $(B)/*.d)
 
-.PHONY: all check test clean asan tsan cross-aarch64 cross-objs
+.PHONY: all check test clean asan tsan tsan-run cross-aarch64 cross-objs

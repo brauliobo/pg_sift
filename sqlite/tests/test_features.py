@@ -246,6 +246,41 @@ class Merge(TmpDb):
         self.assertEqual(s['pinned'], 0)
 
 
+class Parallel(TmpDb):
+    def test_parallel_scans_equal_serial_ones(self):
+        db = connect(self.path)
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, cache_size=262144, automerge=0)')
+        fill(db, 3000, per_txn=600, vocab=500)
+        qs = QUERIES + ['w%d OR w%d OR w%d' % (i, i + 1, i + 2) for i in range(0, 90, 9)] + ['w4*', 'w1 AND NOT w2']
+        want = [(top(db, q, 25), db.execute("SELECT rowid, rank FROM t WHERE t MATCH ? ORDER BY rank LIMIT 25", (q,)).fetchall(),
+                 db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in qs]
+        self.assertEqual(stat(db)['parallel_scans'], 0)
+        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 4)")
+        got = [(top(db, q, 25), db.execute("SELECT rowid, rank FROM t WHERE t MATCH ? ORDER BY rank LIMIT 25", (q,)).fetchall(),
+                db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in qs]
+        self.assertEqual(got, want)
+        s = stat(db)
+        self.assertGreater(s['parallel_scans'], len(qs))
+        self.assertEqual(s['pin_leaks'], 0)
+        self.assertEqual(s['pinned'], 0)
+
+    def test_phrases_and_small_caches_stay_serial(self):
+        db = connect(self.path)
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, parallel=4, cache_size=1)')
+        fill(db, 20000, vocab=4000)
+        ids(db, 'w1 OR w2')
+        top(db, 'w3 OR w4')
+        self.assertEqual(stat(db)['parallel_scans'], 0)
+        db.execute("INSERT INTO t(t, rank) VALUES ('cache-size', 262144)")
+        top(db, 'w3 OR w4')
+        self.assertEqual(stat(db)['parallel_scans'], 1)
+        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 0)")
+        phrases = ['w1 OR "w2 w3"', 'w1 AND "w2 w3"', '"w5 w6"']
+        want = [(top(db, q), ids(db, q)) for q in phrases]
+        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 4)")
+        self.assertEqual([(top(db, q), ids(db, q)) for q in phrases], want)
+
+
 class Content(TmpDb):
     def test_external_content(self):
         db = connect(self.path)

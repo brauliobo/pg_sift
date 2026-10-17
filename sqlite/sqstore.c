@@ -310,7 +310,7 @@ cache_get(SqStore *st, uint32 unit)
 	f = cache_find(c, unit);
 	if (f >= 0)
 	{
-		c->hits++;
+		__atomic_fetch_add(&c->hits, 1, __ATOMIC_RELAXED);
 		if (!st->shared)
 			c->slot[f].ref = 1;
 		return f;

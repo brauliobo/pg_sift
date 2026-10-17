@@ -431,6 +431,41 @@ extern SiftTbmIter *sift_tbm_begin(TIDBitmap *tbm);
 extern bool sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *offs, int *n);
 extern void sift_tbm_end(SiftTbmIter *it);
 
+/* ---------- atomics, spin locks and "shared memory" of sift_parallel.c: the participants are threads of one process ---------- */
+
+#include <pthread.h>
+#include <stdatomic.h>
+
+typedef struct { _Atomic uint32 v; } pg_atomic_uint32;
+typedef struct { _Atomic uint64 v; } pg_atomic_uint64;
+
+static inline void pg_atomic_init_u32(pg_atomic_uint32 *p, uint32 x) { atomic_init(&p->v, x); }
+static inline void pg_atomic_init_u64(pg_atomic_uint64 *p, uint64 x) { atomic_init(&p->v, x); }
+static inline uint32 pg_atomic_read_u32(const pg_atomic_uint32 *p) { return atomic_load_explicit((_Atomic uint32 *) &p->v, memory_order_acquire); }
+static inline uint64 pg_atomic_read_u64(const pg_atomic_uint64 *p) { return atomic_load_explicit((_Atomic uint64 *) &p->v, memory_order_acquire); }
+static inline uint64 pg_atomic_fetch_add_u64(pg_atomic_uint64 *p, int64 n) { return atomic_fetch_add(&p->v, n); }
+static inline bool pg_atomic_compare_exchange_u32(pg_atomic_uint32 *p, uint32 *expected, uint32 x)
+{
+	return atomic_compare_exchange_strong(&p->v, expected, x);
+}
+
+typedef pthread_mutex_t slock_t;
+#define SpinLockInit(l)		pthread_mutex_init((l), NULL)
+#define SpinLockAcquire(l)	pthread_mutex_lock(l)
+#define SpinLockRelease(l)	pthread_mutex_unlock(l)
+
+typedef struct dsa_area dsa_area;
+typedef uint64 dsa_pointer;
+#define InvalidDsaPointer		((dsa_pointer) 0)
+#define DsaPointerIsValid(p)	((p) != InvalidDsaPointer)
+#define DSA_ALLOC_HUGE			0x01
+static inline dsa_pointer dsa_allocate_extended(dsa_area *a, Size n, int flags) { return (dsa_pointer) (uintptr_t) malloc(Max(n, 1)); }
+static inline void *dsa_get_address(dsa_area *a, dsa_pointer p) { return (void *) (uintptr_t) p; }
+static inline void dsa_free(dsa_area *a, dsa_pointer p) { free((void *) (uintptr_t) p); }
+
+static inline Size add_size(Size a, Size b) { return a + b; }
+static inline Size mul_size(Size a, Size b) { return a * b; }
+
 /* ---------- pages, buffers and relations over SQLite rows: sqstore.h ---------- */
 
 #include "sqstore.h"

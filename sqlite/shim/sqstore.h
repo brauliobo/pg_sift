@@ -79,15 +79,10 @@ typedef struct IndexBulkDeleteResult
 
 typedef bool (*IndexBulkDeleteCallback) (ItemPointer itemptr, void *state);
 
-/* snapshots, executor slots, the parallel scan area and the bitmap heap filter: types only */
+/* snapshots, executor slots and the bitmap heap filter: types only */
 typedef struct SnapshotData *Snapshot;
 typedef struct TupleTableSlot TupleTableSlot;
 typedef struct TIDBitmap TIDBitmap;
-typedef struct dsa_area dsa_area;
-typedef uint64 dsa_pointer;
-typedef struct { volatile uint64 value; } pg_atomic_uint64;
-typedef struct { volatile uint32 value; } pg_atomic_uint32;
-typedef volatile int slock_t;
 struct IndexFetchTableData;
 
 /* GUC enum table of src/sift_cpu.c */

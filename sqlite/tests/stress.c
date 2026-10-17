@@ -159,13 +159,6 @@ reader(void *arg)
 	unsigned	s = (unsigned) (size_t) arg * 7919u + 1;
 	sqlite3    *db = shared ? shared : open_db();
 
-	if (!shared && parallel)
-	{
-		char		sql[100];
-
-		snprintf(sql, sizeof(sql), "INSERT INTO t(t, rank) VALUES ('parallel', %d)", parallel);
-		exec(db, sql);
-	}
 	while (!atomic_load(&stop))
 		check_query(db, &s, !shared);
 	if (!shared)
@@ -220,7 +213,9 @@ setup(void)
 				sql[1400];
 
 	exec(db, "PRAGMA journal_mode = WAL");
-	exec(db, "CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, automerge=6, cache_size=2048)");
+	snprintf(sql, sizeof(sql), "CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, automerge=6, cache_size=65536, parallel=%d)",
+			 parallel);
+	exec(db, sql);
 	exec(db, "CREATE VIRTUAL TABLE cat USING sift(c, analyzer='keyword', stemmer=none, positions=0)");
 	exec(db, "BEGIN");
 	for (int i = 1; i <= DOCS; i++)
