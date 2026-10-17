@@ -2,7 +2,7 @@
  * cli.c - sift_cli: the engine of engine.c without a server, for development, the correctness harness and the
  * microbenchmarks.
  *
- *   sift_cli BASE create NAME [DPP]
+ *   sift_cli BASE create NAME [CFG]      CFG: lines of key=value (dpp=32 by default), see engine.h
  *   sift_cli BASE load NAME FILE         FILE: id TAB text (COPY escapes); every row is an insert with seq = pk = id
  *   sift_cli BASE feed NAME FILE         FILE: seq TAB op TAB pk TAB text (a drain with updates and deletes)
  *   sift_cli BASE topk NAME K QUERY | count NAME QUERY | matches NAME QUERY | stats NAME | merge NAME | tokens NAME TEXT
@@ -92,7 +92,7 @@ load(const char *name, const char *file, bool events)
 		perror(file);
 		exit(1);
 	}
-	f = sx_feed_begin(ix, INT64_MAX, err, sizeof(err));
+	f = sx_feed_begin(ix, -1, err, sizeof(err));
 	if (!f)
 		die("feed_begin");
 	while (getline(&line, &cap, in) > 0)
@@ -163,14 +163,14 @@ run(const char *name, const char *file, int k, bool timing)
 					t1,
 					t2;
 
-		if (sx_topk(ix, p, len, k, hits, &n, err, sizeof(err)) != 0)
+		if (sx_topk(ix, NULL, p, len, k, NULL, hits, &n, err, sizeof(err)) != 0)
 		{
 			if (!timing)
 				printf("%s\terror\t%s\n", id, err);
 			continue;
 		}
 		t1 = now_us();
-		if (sx_count(ix, p, len, &count, err, sizeof(err)) != 0)
+		if (sx_count(ix, NULL, p, len, NULL, &count, err, sizeof(err)) != 0)
 			die("count");
 		t2 = now_us();
 		if (timing)
@@ -214,7 +214,7 @@ main(int argc, char **argv)
 	cmd = argv[2];
 	if (!strcmp(cmd, "create"))
 	{
-		if (sx_create(argv[3], argc > 4 ? atoi(argv[4]) : 32, err, sizeof(err)) != 0)
+		if (sx_create(argv[3], argc > 4 ? argv[4] : "dpp=32", err, sizeof(err)) != 0)
 			die("create");
 	}
 	else if (!strcmp(cmd, "load") || !strcmp(cmd, "feed"))
@@ -225,7 +225,7 @@ main(int argc, char **argv)
 					n;
 		SxHit	   *hits = malloc(sizeof(SxHit) * k);
 
-		if (sx_topk(open_or_die(argv[3]), argv[5], strlen(argv[5]), k, hits, &n, err, sizeof(err)) != 0)
+		if (sx_topk(open_or_die(argv[3]), NULL, argv[5], strlen(argv[5]), k, NULL, hits, &n, err, sizeof(err)) != 0)
 			die("topk");
 		for (int i = 0; i < n; i++)
 			printf("%lld\t%.6f\n", (long long) hits[i].pk, hits[i].score);
@@ -234,7 +234,7 @@ main(int argc, char **argv)
 	{
 		int64_t		c;
 
-		if (sx_count(open_or_die(argv[3]), argv[4], strlen(argv[4]), &c, err, sizeof(err)) != 0)
+		if (sx_count(open_or_die(argv[3]), NULL, argv[4], strlen(argv[4]), NULL, &c, err, sizeof(err)) != 0)
 			die("count");
 		printf("%lld\n", (long long) c);
 	}
@@ -243,7 +243,7 @@ main(int argc, char **argv)
 		int64_t    *pks,
 					n;
 
-		if (sx_matches(open_or_die(argv[3]), argv[4], strlen(argv[4]), &pks, &n, err, sizeof(err)) != 0)
+		if (sx_matches(open_or_die(argv[3]), NULL, argv[4], strlen(argv[4]), NULL, &pks, &n, err, sizeof(err)) != 0)
 			die("matches");
 		for (int64_t i = 0; i < n; i++)
 			printf("%lld\n", (long long) pks[i]);
@@ -260,7 +260,7 @@ main(int argc, char **argv)
 	}
 	else if (!strcmp(cmd, "merge"))
 	{
-		if (sx_merge(open_or_die(argv[3]), err, sizeof(err)) != 0)
+		if (sx_merge(open_or_die(argv[3]), argc > 4, err, sizeof(err)) != 0)
 			die("merge");
 	}
 	else if (!strcmp(cmd, "tokens"))
