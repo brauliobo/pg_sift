@@ -1,9 +1,10 @@
 # pg_sift for SQLite: design, correctness and measurements
 
 Internals of the SQLite extension (`sift` for SQLite, release artifact `sift-sqlite`). Usage, installation and the headline numbers are in
-[README.md](README.md). The extension compiles 18 files of `../src` (codec, dictionary, BM25 scoring with block-max pruning, SiftQL, evaluator)
-unmodified, against a small PostgreSQL API shim (`shim/`, `shim.c`, `shim_regex.c`); the storage, write path, merging, virtual table,
-snippets, facets and parallel scans are new (`sq*.c`).
+[README.md](README.md). The extension compiles the portable core of `../src` (the files of `src/portable.list`: codec, dictionary, segment writer and reader, BM25 scoring
+with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the host implementation in `host/` (`host.h`, `host.c`, `host_regex.c`) that
+`src/sift_host.h` selects with `-DSIFT_HOST_SQLITE`; the storage, write path, merge driver, virtual table, snippets, facets and parallel scans are new (`sq*.c`).
+The shared core and the host interface are described in [../DESIGN.md](../DESIGN.md#shared-core-and-hosts).
 
 ## Design
 
@@ -54,9 +55,14 @@ snippets, facets and parallel scans are new (`sq*.c`).
   `sift_facets(t, facet_table, q [, limit [, nulls]])` evaluates the query on `t`, then for every term of a keyword-analyzer
   table (one value per rowid, the same rowids) counts the matches: ordered by count then value; `nulls=1` adds a NULL row
   for matches without a value.
-- **PostgreSQL shim.** Memory contexts over malloc, `ereport` as `siglongjmp` (`SQ_TRY`), StringInfo, List, dynahash, UTF-8
-  helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows, atomics/spin locks/dsa for `sift_parallel.c`
-  as threads of one process.
+- **Host implementation** (`host/`). The vocabulary of `src/sift_host.h` over the C library: memory contexts over malloc, `ereport` as `siglongjmp`
+  (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
+  atomics/spin locks/dsa for `sift_parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
+  `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/sift_store.h` (extent index, padding and
+  extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` the collaborators SQLite has no use for (mutable segments, visibility).
+- **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `mutable_limit` there), the deletion
+  of one document (`sift_seg_delete_key`, the code of VACUUM's `sift_seg_bulkdelete`), the live-term dump of facets (`sift_seg_dump`, the code of the
+  PostgreSQL merge's input), option validation of the analyzer (`sift_analyze_validate_*`).
 
 ## Correctness and tests
 
@@ -158,4 +164,20 @@ It pays on heavy ranked OR queries (1.2 to 2x) and on counting phrases (1.4 to 3
 microseconds, less than handing the work over; those classes show no systematic change (the host's run-to-run noise on them is +-25 percent:
 serial reruns of AND gave 4534 and 5782 qps). Hence it stays **off by default** and, when on, the scan is serial unless the estimated postings are at least
 100,000 (counts only for phrases). More than 2 threads buys little on this host (shared, memory-bound decoding).
+
+## What is not shared yet
+
+Two pieces of the SQLite write path re-implement what the PostgreSQL host has; the comparison below is measured, not guessed (8-token shingles
+of the code: 3.8 percent of `sqbuild.c` appears in `sift_build.c`, 5 percent of `sqmerge.c` in `sift_maint.c`; the likeness is in the idea, not in the text).
+
+| SQLite | PostgreSQL | what differs | plan |
+|---|---|---|---|
+| `sqbuild.c` `SqInv` (malloc buffer, key-hash `dmap`, per-term posting arrays, `sq_inv_write`) | `sift_build.c` `SiftInvBuf` (delta-packed slices within a budget, spill to a sorted run) | SqInv deletes a buffered document and has no budget/spill; SiftInvBuf spills | move `SiftInvBuf` and `SiftRun` (add, spill, write, `sift_run_from_segment`, `sift_runs_write`) from `sift_build.c` to a portable `sift_runs.c`; key type `SiftKey` instead of `ItemPointer` in the core API; add `sift_inv_remove`; SQLite writes through it with `pending_postings` as budget; delete `SqInv` (about 480 lines) |
+| `sqmerge.c` `Src`, `decode_term`, `merge_term`, `write_docs` (lockstep merge of N segments, no temp file) | `sift_maint.c` `merge_segments`: `sift_run_from_segment` per input, `sift_runs_write` | SQLite merges in memory O(live docs + one term); PostgreSQL goes through run files (and, after the fix of the parallel build, in several passes) | `sq_merge` = the same two calls; delete the lockstep merge (about 350 lines). Decide on measured merge time and RSS (`bench/merge.py`): the run files cost a `tmpfile()` and an extra pass |
+| `sqaux.c` highlight/snippet | `sift_funcs.c` `sift.highlight` | different results by design: SQLite marks a phrase occurrence as one span and snippets windows; PostgreSQL wraps every matching token | none: a shared helper would change one of the two outputs |
+| `sqaux.c` facets | `sift_facet.c` | PostgreSQL counts on bitmaps with the visibility map and the mutable segments; SQLite on the matches of the evaluator | none |
+
+The first two need `src/sift_build.c` to be split (heap scan, parallel workers and the leader stay PostgreSQL's), which waits for the rewrite of its run merge on
+`fix/parallel-build-runs`; the first step after it lands is the split, with SQLite still on its own copies, so that both products stay green; the next two steps switch
+the SQLite buffer and then its merge, each gated by `tests/test_sift.py`, `tests/test_features.py`, `bench/compare_pg.py` (scores bit-equal) and the merge benchmark.
 

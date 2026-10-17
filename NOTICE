@@ -89,7 +89,7 @@ SQLite
 The SQLite extension (sqlite/, released as the sift-sqlite archive) is compiled against the loadable-extension headers
 (sqlite3.h, sqlite3ext.h) of the SQLite development package of the build machine and loads into the SQLite library of the
 application that uses it. It contains no SQLite source code and links no SQLite library. SQLite is in the public domain
-(https://sqlite.org/copyright.html). The headers in sqlite/shim/ are not PostgreSQL's: they are a small re-implementation, written
+(https://sqlite.org/copyright.html). The host implementation in sqlite/host/ is not PostgreSQL's: it is a small re-implementation, written
 for this repository under the PostgreSQL License, of the slice of the PostgreSQL backend API that the engine sources in src/ use.
 The sift-sqlite archive includes this file because it carries the same Unicode tables and Snowball stemmer as pg_sift.
 

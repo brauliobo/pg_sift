@@ -664,8 +664,35 @@ Each milestone ends with green `make installcheck` plus its listed tests, under 
 | M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
 | M7 | Extras beyond the baseline design | phrase pairs (done, removed in 1.3.0); parallel scan with shared θ (1.1, opt-in); filter-mask pushdown and keyword facets (1.1) | Each meets its ≥ 10 % gate or is dropped |
 
-## SQLite port
+## Shared core and hosts
 
-The codec, dictionary, scoring, SiftQL parser and evaluator described above are PostgreSQL-independent C: 18 files of `src/` also compile, unmodified,
-into the SQLite extension (`sqlite/`), against a small shim of the backend API. Everything else in this document (the index access method, WAL, MVCC,
-planner integration, VACUUM) is specific to PostgreSQL and does not apply to it; its own design is in [sqlite/DESIGN.md](sqlite/DESIGN.md).
+The codec, dictionary, segment writer and reader, scoring, SiftQL parser, analyzer and evaluator described above are host-independent C. The files named in
+`src/portable.list` (the **portable core**) are compiled by every host: the PostgreSQL extension and the SQLite extension (`sqlite/`). Everything else in this
+document (the index access method, WAL, MVCC, planner integration, VACUUM) belongs to the PostgreSQL host and does not apply to the others; the SQLite
+host's own design is in [sqlite/DESIGN.md](sqlite/DESIGN.md).
+
+**What is shared.** Besides the codec and the evaluator: the segment format and its writer/reader (`sift_segment.c`), the tiered merge policy
+(`sift_merge.c`: which segments merge, from the directory and the sizes), the deletion of one document (`sift_seg_delete_key`, which VACUUM's `sift_seg_bulkdelete`
+shares with the SQLite DELETE: the dirty flag, then the liveness bits), the byte stream's extent bookkeeping and padding (`sift_store.h`, `sift_stream.c`), the
+analyzer-options validation and hash (`sift_analyze.c`), the layout constants and error texts. **What a host owns**: where bytes live (page store), transactions and
+crash safety, memory and error plumbing, the way a query reaches the evaluator (planner and custom scan, xBestIndex), the write path that feeds the writer
+(heap build and mutable segments, the in-memory buffer), background work, and option syntax (reloptions, `CREATE VIRTUAL TABLE` arguments).
+
+**The host interface.** A portable file includes the C library, compiler intrinsics, the other files of the list and `src/sift_host.h`, nothing else
+(`scripts/check-portable.sh`, a stage of `scripts/ci.sh` and the first step of `sqlite/test.sh`). `sift_host.h` is a contract, not an abstraction layer on the hot
+path: its vocabulary is that of PostgreSQL's backend API (`palloc`, `MemoryContext`, `ereport` that does not return, `StringInfo`, `List`, `HTAB`, `pg_mb*`,
+`pg_reg*`, atomics and spin locks for `sift_parallel.c`, `BufFile` for the builder's runs), plus `sift_host_enum_option` for the one process setting (`sift.simd`).
+The page/extent store is the link-time interface declared in `sift_store.h` (`ReadBuffer`/`ReleaseBuffer`, `sift_wt_*`, `sift_sw_*`, `sift_sr_*`, `sift_dir_*`):
+`sift_store.c` implements it over shared buffers and generic WAL, `sqlite/sqstore.c` over rows of a shadow table and a bounded cache. The PostgreSQL build includes the
+real headers (identical calls, identical speed); the SQLite one provides the vocabulary in `sqlite/host/host.h` over `malloc`, `setjmp` and SQLite rows. Optional
+collaborators the core calls but a host may not have (mutable segments, visibility, TID bitmap filters) are declared in portable headers and implemented by the
+host; `sqlite/sqstubs.c` is the SQLite side of them.
+
+**Adding a host.** (1) Provide a header with the vocabulary above and add its branch to `sift_host.h` (a `SIFT_HOST_<NAME>` define). (2) Implement `sift_store.h`
+over the host's storage, and the optional collaborators it does not need as stubs that fail. (3) Build the files of `portable.list` (the Makefile reads it) and write the
+host's front end: option parsing, the write path (feed `sift_segw_*` in key order: `sqlite/sqbuild.c` is the smallest example), and the merge driver
+(`sift_merge_pick` chooses, the host rewrites). (4) Run the equivalence tests: scores must be bit-equal to PostgreSQL's evaluator on the same corpus
+(`sqlite/bench/compare_pg.py`). The MariaDB proof of concept can adopt the same pieces without any change to the core.
+
+**Still two copies.** The write path (`SiftInvBuf` and sorted runs in `src/sift_build.c` against `SqInv` and the lockstep merge in `sqlite/sqbuild.c`/`sqmerge.c`) and
+the highlight/snippet/facet code are not unified; the plan is in [sqlite/DESIGN.md](sqlite/DESIGN.md#what-is-not-shared-yet).

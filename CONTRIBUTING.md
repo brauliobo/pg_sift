@@ -27,9 +27,15 @@ everything it ran. A test that crashes or leaks on purpose declares it with `scr
 The SQLite extension in `sqlite/` is tested on its own and needs no PostgreSQL: `sqlite/test.sh` (about 40 s; `SIFT_SANITIZE=1 sqlite/test.sh` adds
 ASan/UBSan and the TSan stress test) needs `cc`, `make`, the SQLite development files (3.38 or newer) and python3 with loadable `sqlite3`
 extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use no POPCNT or vector instruction, and `scripts/package-sqlite.sh`
-builds and tests the release tarball in containers. It compiles the portable files of `src/` (the list `PORTABLE` in `sqlite/Makefile`)
-unmodified against the shim in `sqlite/shim/`: a change to those files that uses another PostgreSQL API, or a global mutable variable, needs the
-shim or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch them. `make check` and `scripts/ci.sh` never
+builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`)
+unmodified against the host implementation in `sqlite/host/`.
+
+**Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
+`src/sift_host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `sift_host.h` (documented at the top of that file) and, when
+it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
+a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
+that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch
+them. Code shared by two hosts goes into the portable core (see "Shared core and hosts" in DESIGN.md), not into both. `make check` and `scripts/ci.sh` never
 build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
 release tag.
 
