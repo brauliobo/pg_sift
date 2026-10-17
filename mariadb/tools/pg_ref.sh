@@ -4,7 +4,7 @@
 # Prints, per query, "id TAB count TAB pk:score,..." (top 10 by BM25, ties by ctid): the lines mariadb/tools/compare.py reads.
 # The table is docs(id, body) with a sift index on body (bench/sql/schema.sql).
 set -euo pipefail
-queries=$1 db=${2:-bench}
+queries=$1 db=${2:-bench} tie=${TIE:+, id}   # TIE=1: ties by id instead of by ctid (the order a MariaDB table has)
 {
   cat <<'SQL'
 \set ON_ERROR_STOP 1
@@ -29,4 +29,4 @@ BEGIN
 END $$;
 SELECT id || E'\t' || pg_temp.ref(q) FROM q ORDER BY id;
 SQL
-} | psql -X -A -t -d "$db"
+} | sed "s/ORDER BY sift.score(ctid) DESC LIMIT 10/ORDER BY sift.score(ctid) DESC${tie} LIMIT 10/" | psql -X -A -t -d "$db"
