@@ -141,11 +141,18 @@ run_close(SiftRun *run)
 		BufFileDeleteFileSet(&run->fileset->fs, run_file(run->worker, run->id), false);
 }
 
-/* Runs one merge reads at a time: a buffered reader each, within half the budget (at least 8) */
+/* Runs one merge reads at a time: a reader each (the smallest has two blocks), within half the budget */
 static int
 merge_fanin(Size budget)
 {
-	return Max(2, TEST_KNOB(sift_test_fanin, Min(MAX_MERGE_FANIN, Max(8, budget / 2 / (IO_BUF + BLCKSZ)))));
+	return Max(2, TEST_KNOB(sift_test_fanin, Min(MAX_MERGE_FANIN, Max(8, budget / 2 / (2 * BLCKSZ)))));
+}
+
+/* Read buffer of each of nruns readers: what half the budget leaves after their file buffers, at most IO_BUF */
+static int
+reader_buf(Size budget, int nruns)
+{
+	return Min(IO_BUF, Max(BLCKSZ, (int) Min(budget / 2 / nruns, INT_MAX) - BLCKSZ));
 }
 
 typedef struct SliceReader
@@ -160,6 +167,7 @@ typedef struct RunIO
 {
 	BufFile    *file;
 	uint8	   *buf;
+	int			cap;			/* of buf when reading */
 	int			pos;
 	int			len;
 } RunIO;
@@ -732,7 +740,7 @@ io_byte(RunIO *io)
 {
 	if (io->pos == io->len)
 	{
-		io->len = BufFileRead(io->file, io->buf, IO_BUF);
+		io->len = BufFileRead(io->file, io->buf, io->cap);
 		io->pos = 0;
 		if (io->len == 0)
 			elog(ERROR, "sift: unexpected end of a build run");
@@ -1090,7 +1098,7 @@ merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 
 /* Opens the runs for reading; the docs and the positions of every run are known by then */
 static RunReader *
-open_readers(SiftRun **runs, int nruns, bool *positions, uint64 *ndocs)
+open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint64 *ndocs)
 {
 	RunReader  *rd = palloc0(nruns * sizeof(RunReader));
 
@@ -1100,7 +1108,8 @@ open_readers(SiftRun **runs, int nruns, bool *positions, uint64 *ndocs)
 	{
 		rd[i].idx = i;
 		rd[i].io.file = runs[i]->file;
-		rd[i].io.buf = palloc(IO_BUF);
+		rd[i].io.cap = reader_buf(budget, nruns);
+		rd[i].io.buf = palloc(rd[i].io.cap);
 		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
 			elog(ERROR, "sift: could not rewind a build run");
 		rd[i].dleft = io_get_varint(&rd[i].io);
@@ -1172,14 +1181,14 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 
 /* Merges the runs into a new one of the home's files and closes them */
 static SiftRun *
-merge_to_run(SiftRun **runs, int nruns, RunHome *home)
+merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 {
 	SiftRun    *out = run_new(CurrentMemoryContext, home->fileset, home->worker, home->nfiles++);
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {.io = {.file = out->file,.buf = palloc(IO_BUF)}};
 	bool		positions;
-	RunReader  *rd = open_readers(runs, nruns, &positions, &out->ndocs);
+	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &out->ndocs);
 
 	io_varint(&mo.io, out->ndocs);
 	io_varint(&mo.io, positions);
@@ -1203,16 +1212,18 @@ run_size_cmp(const void *a, const void *b)
 	return pg_cmp_u64((*(SiftRun *const *) b)->ndocs, (*(SiftRun *const *) a)->ndocs);
 }
 
-/* Merges the smallest runs, as few as it takes, until at most target are left; returns their number */
+/* Merges the smallest runs, as few as it takes, until a merge can read all that are left; returns their number */
 static int
-shrink_runs(SiftRun **runs, int nruns, int target, RunHome *home)
+shrink_runs(SiftRun **runs, int nruns, Size budget, RunHome *home)
 {
-	while (nruns > target)
+	int			fanin = merge_fanin(budget);
+
+	while (nruns > fanin)
 	{
-		int			k = Min(target, nruns - target + 1);
+		int			k = Min(fanin, nruns - fanin + 1);
 
 		qsort(runs, nruns, sizeof(SiftRun *), run_size_cmp);
-		runs[nruns - k] = merge_to_run(runs + nruns - k, k, home);
+		runs[nruns - k] = merge_to_run(runs + nruns - k, k, budget, home);
 		nruns -= k - 1;
 	}
 	return nruns;
@@ -1223,6 +1234,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 				SiftSegEntry *entry)
 {
 	RunHome		tmp = {0};
+	Size		budget = (Size) maintenance_work_mem * 1024;
 	MemoryContext cxt;
 	MemoryContext old;
 	MergeOut	mo = {0};
@@ -1231,10 +1243,10 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	RunReader  *rd;
 
 	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
-	nruns = shrink_runs(runs, nruns, merge_fanin((Size) maintenance_work_mem * 1024), &tmp);
+	nruns = shrink_runs(runs, nruns, budget, &tmp);
 	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(cxt);
-	rd = open_readers(runs, nruns, &positions, &ndocs);
+	rd = open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */
 	mo.sw = sift_segw_begin(wt, gen, ref, cxt, positions);
 	merge_readers(rd, nruns, positions, &mo);
@@ -1412,7 +1424,7 @@ spill(BuildState *bs)
 		int			level = bs->runs[bs->nruns - 1]->level + 1;
 		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
 
-		run = merge_to_run(bs->runs + bs->nruns - fanin, fanin, &bs->home);
+		run = merge_to_run(bs->runs + bs->nruns - fanin, fanin, bs->budget, &bs->home);
 		MemoryContextSwitchTo(old);
 		run->level = level;
 		bs->nruns -= fanin - 1;
@@ -1796,7 +1808,7 @@ hand_over_runs(BuildState *bs, SiftBuildPart *part)
 
 	if (!sift_inv_empty(bs->inv))
 		spill(bs);
-	bs->nruns = shrink_runs(bs->runs, bs->nruns, merge_fanin(bs->budget), &bs->home);
+	bs->nruns = shrink_runs(bs->runs, bs->nruns, bs->budget, &bs->home);
 	MemoryContextSwitchTo(old);
 	part->nruns = bs->nruns;
 	for (int i = 0; i < bs->nruns; i++)
