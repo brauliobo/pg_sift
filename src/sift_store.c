@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
+#include "access/nbtxlog.h"
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -37,6 +38,8 @@
 #define DIR_USED(n)	(offsetof(SiftDirectoryData, segs) + (n) * sizeof(SiftSegEntry))
 #define FL_USED(n)	(offsetof(SiftFreeListData, ext) + (n) * sizeof(SiftFreeExtent))
 #define ULL(x)		((unsigned long long) (x))
+
+bool		sift_standby_conflicts = false;
 
 #ifdef SIFT_TESTING
 int			sift_test_fail_pages = 0;
@@ -344,6 +347,32 @@ sift_store_horizon(Relation index)
 	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
 }
 
+/*
+ * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
+ * hot_standby_feedback. With sift.standby_conflicts, before blocks released with safexid are
+ * reused (or their record is cleared for reuse) this logs a btree page-reuse record for the index:
+ * a standby replays it as the usual recovery conflict with the snapshots older than safexid (wait for
+ * them up to max_standby_streaming_delay, then cancel them), touching no page. Once per backend and
+ * horizon: an older one is covered by a newer.
+ */
+static void
+log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
+{
+	static RelFileNumber last_rel = InvalidRelFileNumber;
+	static FullTransactionId last = {0};
+	xl_btree_reuse_page xlrec;
+
+	if (!sift_standby_conflicts || !XLogStandbyInfoActive() || !RelationNeedsWAL(index) ||
+		(last_rel == index->rd_locator.relNumber && !FullTransactionIdPrecedes(last, safexid)))
+		return;
+	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = safexid};
+	XLogBeginInsert();
+	XLogRegisterData(&xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
+	last_rel = index->rd_locator.relNumber;
+	last = safexid;
+}
+
 /* horizon: computed by the first record that needs it, InvalidFullTransactionId until then */
 static bool
 reusable(Relation index, FullTransactionId safexid, FullTransactionId *horizon)
@@ -413,6 +442,7 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 	BlockNumber pick_blk = InvalidBlockNumber;
 	int			pick = -1;
 	uint32		pick_n = 0;
+	FullTransactionId pick_safexid = InvalidFullTransactionId;
 	FullTransactionId horizon = InvalidFullTransactionId;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk) && pick_n < want; hops++)
@@ -429,12 +459,15 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 				pick_blk = blk;
 				pick = i;
 				pick_n = e->nblocks;
+				pick_safexid = e->safexid;
 			}
 		}
 		blk = fl->next;
 		UnlockReleaseBuffer(buf);
 	}
 	*got = pick >= 0 ? Min(want, pick_n) : want;
+	if (pick >= 0 && FullTransactionIdIsValid(pick_safexid))
+		log_reuse(index, pick_blk, pick_safexid);
 	return pick >= 0 ? take_free(index, pick_blk, pick, *got) : extend(index, metabuf, want);
 }
 
@@ -767,6 +800,7 @@ sift_recycle(Relation index)
 	int			cleared = 0;
 	int			k;
 	FullTransactionId horizon = InvalidFullTransactionId;
+	FullTransactionId newest = InvalidFullTransactionId;
 	GenericXLogState *state;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
@@ -782,6 +816,8 @@ sift_recycle(Relation index)
 			ext[n] = fl->ext[i];
 			if (FullTransactionIdIsValid(ext[n].safexid) && reusable(index, ext[n].safexid, &horizon))
 			{
+				if (!FullTransactionIdIsValid(newest) || FullTransactionIdPrecedes(newest, ext[n].safexid))
+					newest = ext[n].safexid;
 				ext[n].safexid = InvalidFullTransactionId;
 				cleared++;
 			}
@@ -798,6 +834,8 @@ sift_recycle(Relation index)
 	}
 	k = n;
 	n = coalesce(ext, n);
+	if (cleared > 0)
+		log_reuse(index, blk, newest);
 	if (cleared == 0 && n == k && npages == 1)
 	{
 		UnlockReleaseBuffer(metabuf);

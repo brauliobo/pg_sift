@@ -241,6 +241,7 @@ A header page holds the extent table and the sections table. Its data is a logic
   - Every page read checks the page's `gen` against the expected segment gen.
   - On a mismatch on a standby, the scan raises `ERRCODE_T_R_SERIALIZATION_FAILURE` ("sift segment recycled during scan, retry").
   - `hot_standby_feedback = on` makes this impossible and is recommended.
+  - Opt-in `sift.standby_conflicts` (superuser) makes the primary log a btree page-reuse record for the index before it reuses released blocks (`log_reuse`, once per backend and horizon: a newer `safexid` covers an older one). The standby replays it as the usual recovery conflict with the snapshots older than `safexid`: it waits for them up to `max_standby_streaming_delay`, then cancels them. It touches no page. It is off by default because it also delays or cancels unrelated standby queries whose snapshot is older, and adds one WAL record per reuse horizon.
   - On the primary, the `safexid` horizon guarantees no scan can see a recycled page, so the check is an assertion there.
 
 ---
