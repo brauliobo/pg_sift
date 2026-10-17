@@ -84,6 +84,15 @@ Porter; the Snowball distribution is licensed under the BSD 3-clause license:
   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
   POSSIBILITY OF SUCH DAMAGE.
 
+SQLite
+------
+The SQLite extension (sqlite/, released as the sift-sqlite archive) is compiled against the loadable-extension headers
+(sqlite3.h, sqlite3ext.h) of the SQLite development package of the build machine and loads into the SQLite library of the
+application that uses it. It contains no SQLite source code and links no SQLite library. SQLite is in the public domain
+(https://sqlite.org/copyright.html). The headers in sqlite/shim/ are not PostgreSQL's: they are a small re-implementation, written
+for this repository under the PostgreSQL License, of the slice of the PostgreSQL backend API that the engine sources in src/ use.
+The sift-sqlite archive includes this file because it carries the same Unicode tables and Snowball stemmer as pg_sift.
+
 Not distributed with pg_sift
 -------------------------
 The checks under tools/ and bench/ download reference data at run time (the
