@@ -1,8 +1,17 @@
-# The engines of the A/B in the order of every table, chart and engine list (bench/bench, steps/ab.sh, tables.py, charts.py).
-# id	label (charts)	label (Markdown)	color (Okabe-Ito, distinguishable with color vision deficiencies)
-sift	sift	sift	#0072B2
-sift_nopos	sift (positions off)	sift `positions = off`	#56B4E9
-sift_pairs	sift pairs	sift `pairs`	#009E73
-pg_search	pg_search	pg_search	#D55E00
-pg_textsearch	pg_textsearch	pg_textsearch	#CC79A7
-rum	rum	rum	#7f7f7f
+# The engine registry: one line per engine, in the order of every table and chart (bench/bench, steps/lib.sh, tables.py,
+# charts.py, regress.py). An engine is this line plus its adapter bench/engines/<id>.sh; nothing else lists engines.
+# id	label (charts)	label (Markdown)	color (Okabe-Ito, distinguishable with color vision deficiencies)	chart	default	reference
+# chart: drawn in docs/img when the dataset has rows for it. default: part of `bench run` without --engines. reference: the
+# engine `bench regress` compares it with (a build of an older sift); - for none.
+sift	sift	sift	#0072B2	yes	yes	sift_ref
+sift_nopos	sift (positions off)	sift `positions = off`	#56B4E9	yes	yes	sift_ref
+sift_pairs	sift pairs	sift `pairs`	#009E73	yes	yes	sift_pairs_ref
+pg_search	pg_search	pg_search	#D55E00	yes	yes	-
+pg_textsearch	pg_textsearch	pg_textsearch	#CC79A7	yes	yes	-
+rum	rum	rum	#7f7f7f	yes	yes	-
+bm25	pgx-bm25	pgx-bm25	#E69F00	yes	yes	-
+gin	gin	gin	#000000	no	no	-
+tantivy	Tantivy	Tantivy	#F0E442	no	no	-
+elasticsearch	Elasticsearch	Elasticsearch	#A6761D	no	no	-
+sift_ref	sift (reference)	sift reference	#9ecae1	no	no	-
+sift_pairs_ref	sift pairs (reference)	sift `pairs` reference	#a1d99b	no	no	-
