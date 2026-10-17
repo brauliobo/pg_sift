@@ -87,6 +87,9 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 - filter pushdown, partitioned tables, keyword facets, parallel scans;
 - maintenance, settings and index options, replication, limits.
 
+A proof of concept of the same engine for MariaDB (UDFs over a queue
+table, no server patches): [mariadb/README.md](mariadb/README.md).
+
 ## Security and license
 
 `make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants).
