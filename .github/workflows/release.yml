@@ -1,31 +1,74 @@
 name: release
 
-# A v* tag builds the PostgreSQL 18 .deb and .rpm of that tag, smoke-tests them in fresh containers (scripts/package.sh) and
-# attaches them with SHA256SUMS to the GitHub release of the tag (created if it does not exist yet), whose text is
-# docs/releases/<tag>.md: write it before tagging (highlights, compatibility, packages).
-# workflow_dispatch rebuilds the packages of an existing tag with the packaging recipes of the selected ref.
-# Pull requests that touch the packaging build and test the packages of the merge commit, without publishing.
+# A v* tag builds the release assets of that tag and attaches them with one SHA256SUMS to the GitHub release of the tag (created if it
+# does not exist yet):
+#   - the PostgreSQL 18 .deb and .rpm of pg_sift, smoke-tested in fresh containers (scripts/package.sh);
+#   - the SQLite extension tarball sift-sqlite-<version>-linux-x86_64.tar.gz (sift.so, LICENSE, NOTICE, README), built on Debian 12 and
+#     loaded into the system SQLite of Debian 12, Ubuntu 24.04 and AlmaLinux 10 (scripts/package-sqlite.sh). The version is the tag
+#     and must equal sqlite/VERSION: set it before tagging. A tag without sqlite/VERSION (before 1.3.0) has no SQLite asset.
+# The text of the release is docs/releases/<tag>.md: write it before tagging, from docs/releases/TEMPLATE.md (a PostgreSQL part and, when the
+# SQLite tarball is attached, a "## SQLite extension" part; the publish job refuses a missing file or section).
+# workflow_dispatch rebuilds and republishes the assets of an existing tag with the recipes of the selected ref.
+# Dry run: a pull request builds and tests the merge commit's assets and publishes nothing; it builds only the assets whose recipes
+# it touches (packaging/, scripts/package*.sh, sqlite/, this file).
 
 on:
   push:
     tags: ['v*']
   pull_request:
-    paths: [packaging/**, scripts/package.sh, .github/workflows/release.yml]
+    paths:
+      - packaging/**
+      - scripts/package.sh
+      - scripts/package-sqlite.sh
+      - sqlite/**
+      - .github/workflows/release.yml
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to package and attach to its release (for example v1.1.0)
+        description: Existing tag to package and attach to its release (for example v1.3.0)
         required: true
 
 permissions:
   contents: read
 
+env:
+  REF: ${{ github.event_name == 'pull_request' && 'HEAD' || inputs.tag || github.ref_name }}
+
 jobs:
+  # which assets this run builds: everything for a tag or a dispatch (the SQLite one only if the tag has the extension), and for a
+  # pull request what its files touch (the merge commit against its first parent, the base)
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      packages: ${{ steps.what.outputs.packages }}
+      sqlite: ${{ steps.what.outputs.sqlite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: what
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            packages=false sqlite=false
+            grep -Eq '^(packaging/[^/]+|packaging/debian/.*|scripts/package\.sh|\.github/workflows/release\.yml)$' <<<"$files" && packages=true
+            grep -Eq '^(sqlite/.*|packaging/sqlite/.*|scripts/package-sqlite\.sh|\.github/workflows/release\.yml)$' <<<"$files" && sqlite=true
+          else
+            packages=true sqlite=false
+            git cat-file -e "$REF:sqlite/VERSION" 2>/dev/null && sqlite=true
+          fi
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "sqlite=$sqlite" >> "$GITHUB_OUTPUT"
+          echo "packages=$packages sqlite=$sqlite"
+        shell: bash {0}
+
   packages:
+    needs: changes
+    if: needs.changes.outputs.packages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      REF: ${{ github.event_name == 'pull_request' && 'HEAD' || inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,9 +83,33 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  sqlite:
+    needs: changes
+    if: needs.changes.outputs.sqlite == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # build in a Debian 12 container, load the tarball into the SQLite of Debian 12, Ubuntu 24.04 and AlmaLinux 10
+      - name: Build and test the SQLite extension tarball
+        run: scripts/package-sqlite.sh all "$REF" dist-sqlite
+
+      - name: Load it into this runner's SQLite
+        run: scripts/package-sqlite.sh test dist-sqlite/sift-sqlite-*.tar.gz host
+
+      # only the tarball: the publish job writes the one SHA256SUMS of all the assets
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sift-sqlite
+          path: dist-sqlite/sift-sqlite-*.tar.gz
+          if-no-files-found: error
+
   publish:
-    if: github.event_name != 'pull_request'
-    needs: packages
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.packages.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.sqlite.result) }}
+    needs: [changes, packages, sqlite]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -58,10 +125,24 @@ jobs:
           name: packages
           path: dist
 
-      - name: Publish the release notes and packages
+      - uses: actions/download-artifact@v7
+        if: needs.sqlite.result == 'success'
+        with:
+          name: sift-sqlite
+          path: dist
+
+      - name: Publish the release notes and assets
         run: |
+          shopt -s nullglob
           notes=docs/releases/$TAG.md
+          [ -f "$notes" ] || { echo "write $notes first (see docs/releases/TEMPLATE.md)" >&2; exit 1; }
+          sqlite=(dist/sift-sqlite-*.tar.gz)
+          if [ ${#sqlite[@]} -gt 0 ] && ! grep -q '^## SQLite extension' "$notes"; then
+            echo "$notes has no '## SQLite extension' section (see docs/releases/TEMPLATE.md)" >&2; exit 1
+          fi
+          # one checksum file for every asset (the build jobs' own are not uploaded or are rewritten here)
+          (cd dist && rm -f SHA256SUMS && sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS && cat SHA256SUMS)
           title="pg_sift ${TAG#v}"
           if gh release view "$TAG" >/dev/null 2>&1; then gh release edit "$TAG" --title "$title" --notes-file "$notes"
           else gh release create "$TAG" --verify-tag --title "$title" --notes-file "$notes"; fi
-          gh release upload "$TAG" dist/*.deb dist/*.rpm dist/SHA256SUMS --clobber
+          gh release upload "$TAG" dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS --clobber
