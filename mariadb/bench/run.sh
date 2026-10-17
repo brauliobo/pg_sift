@@ -14,8 +14,9 @@
 #                                     CELLS (regex on the cell labels, e.g. '^topk or' or 'count': run only those; a table row
 #                                       needs both of its cells)
 # TRACE: the benchmark trace (id TAB and|or|phrase TAB terms), 1000 queries per class. Database "bench", table docs (id, body)
-# with a FULLTEXT index on body, sift index "wiki". No CPU pinning: the load average of the host is printed at the start and
-# at the end. Cell labels: "<topk|count> <and|or|phrase> <sift|sift-udf|inno|inno-natural|inno-boolean>".
+# with a FULLTEXT index on body, sift indexes "wiki" (the defaults: reads the queue, checks that rows exist) and "wiki_plain"
+# (fresh = false, recheck = false: the result of the last drain). No CPU pinning: the load average of the host is printed at the start and
+# at the end. Cell labels: "<topk|count> <and|or|phrase> <sift|sift-udf|sift-plain|inno-natural|inno-boolean|inno>".
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=${SIFT_MDB_ROOT:-/tmp/sift-mariadb}
@@ -35,7 +36,7 @@ stats() { tail -1 | awk '{ for (i = 1; i < NF; i += 2) v[$i] = $(i + 1); print v
 cell() {
   RES=
   [[ -z ${CELLS:-} || $3 =~ $CELLS ]] || return 0
-  python3 -I "$HERE/mkstmts.py" "$1" "$TRACE" "$2" --limit="${QUERIES:-200}" >"$W/s.sql"
+  python3 -I "$HERE/mkstmts.py" "$1" "$TRACE" "$2" --limit="${QUERIES:-200}" ${INDEX:+--index=$INDEX} >"$W/s.sql"
   RES=$("$MDBQ" "$ROOT/mysql.sock" bench time "$W/s.sql" "$4" | stats)
   read -r n ok to med lb qps <<<"$RES"
   printf '%-24s completed %s/%s timeout %s median %s us (lower bound %s) qps %s\n' "$3" "$ok" "$n" "$to" "$med" "$lb" "$qps"
@@ -63,6 +64,7 @@ echo "# load average at start: $(load), timeout ${QUERY_TIMEOUT} s, ${QUERIES:-2
 for c in and or phrase; do
   sift_cell sift-topk-dt "$c" "topk $c sift"
   cell sift-raw "$c" "topk $c sift-udf" "$REPS"
+  INDEX=wiki_plain cell sift-topk-dt "$c" "topk $c sift-plain" "$REPS"
   if [[ $c == or ]]; then
     inno_cell inno-topk "$c" "topk $c inno-natural"
     inno_cell inno-topk-bool "$c" "topk $c inno-boolean"
@@ -70,6 +72,7 @@ for c in and or phrase; do
     inno_cell inno-topk "$c" "topk $c inno-boolean"
   fi
   sift_cell sift-count "$c" "count $c sift"
+  INDEX=wiki_plain cell sift-count "$c" "count $c sift-plain" "$REPS"
   inno_cell inno-count "$c" "count $c inno"
 done
 
