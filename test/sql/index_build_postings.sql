@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 
--- docs: a query returning (tid, body) of the indexed rows. The comparison runs in 8 batches of heap blocks, summed: the whole
+-- docs: a query returning (tid, body) of the indexed rows. The comparison runs in 4 batches of heap blocks, summed: the whole
 -- corpus is compared, but the joins and sorts of a batch fit a small temp file instead of half a gigabyte.
 CREATE FUNCTION roundtrip(idx regclass, docs text)
 RETURNS TABLE (postings bigint, missing bigint, extra bigint, differ bigint)
@@ -14,14 +14,14 @@ DECLARE
 	r record;
 BEGIN
 	postings := 0; missing := 0; extra := 0; differ := 0;
-	FOR b IN 0..7 LOOP
+	FOR b IN 0..3 LOOP
 		EXECUTE format($q$
-			WITH d AS (SELECT * FROM (%s) q WHERE (q.tid::text::point)[0]::int %% 8 = %s),
+			WITH d AS (SELECT * FROM (%s) q WHERE (q.tid::text::point)[0]::int %% 4 = %s),
 			tok AS (SELECT d.tid, t.token FROM d, sift.tokenize(d.body, %L) t),
 			len AS (SELECT tid, least(count(*), 65535)::int AS dl FROM tok GROUP BY tid),
 			want AS (SELECT tok.token AS term, tok.tid, least(count(*), 255)::int AS tf, len.dl
 					 FROM tok JOIN len USING (tid) GROUP BY 1, 2, 4),
-			got AS (SELECT term, tid, tf, dl FROM sift._test_postings(%L) WHERE (tid::text::point)[0]::int %% 8 = %s)
+			got AS (SELECT term, tid, tf, dl FROM sift._test_postings(%L) WHERE (tid::text::point)[0]::int %% 4 = %s)
 			SELECT count(*) AS n, count(*) FILTER (WHERE g.term IS NULL) AS m,
 				   count(*) FILTER (WHERE w.term IS NULL) AS x,
 				   count(*) FILTER (WHERE g.tf <> w.tf OR g.dl <> w.dl) AS dd
