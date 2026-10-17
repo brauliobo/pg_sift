@@ -712,6 +712,53 @@ clear_live(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
 		UnlockReleaseBuffer(buf[i]);
 }
 
+/* Deletes the docs of ranks dead[] (ascending) of one SB. The flag first: bits cleared under a clean flag would be ignored by readers */
+static void
+delete_ranks(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
+{
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+	{
+		sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
+		seg->entry.flags |= SIFT_SEG_DIRTY;
+	}
+	clear_live(seg, sb, dead, nd);
+}
+
+int64
+sift_seg_live_rank(SiftSegment *seg, SiftKey key)
+{
+	BlockNumber blk = sift_key_block(key);
+	int			page = blk & (SIFT_SB_PAGES - 1),
+				off = (key & 0xFFFF) - 1;
+	SiftDocChunk dc;
+	uint64		present[SIFT_OFFMASK_WORDS],
+				live[SIFT_OFFMASK_WORDS],
+				rank;
+	const uint16 *dl;
+
+	if (!sift_seg_docs(seg, sift_block_sb(blk), &dc) || !(dc.pagemask[page / 64] >> (page % 64) & 1))
+		return -1;
+	sift_seg_page(seg, &dc, page, present, &dl);
+	sift_seg_page_live(seg, &dc, page, live);
+	if (!(live[off / 64] >> (off % 64) & 1))
+		return -1;
+	rank = dc.rank_base + docmap(seg)->before[page];
+	for (int w = 0; w < off / 64; w++)
+		rank += pg_popcount64(present[w]);
+	return rank + pg_popcount64(present[off / 64] & ((UINT64CONST(1) << (off % 64)) - 1));
+}
+
+bool
+sift_seg_delete_key(SiftSegment *seg, SiftKey key)
+{
+	int64		rank = sift_seg_live_rank(seg, key);
+
+	if (rank < 0)
+		return false;
+	delete_ranks(seg, sift_block_sb(sift_key_block(key)), (uint64 *) &rank, 1);
+	return true;
+}
+
 /* Asks cb about every live doc of the SB; returns the dead ranks in dead[] */
 static int
 sb_dead(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, void *cbstate,
@@ -762,13 +809,7 @@ sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 
 		if (nd == 0)
 			continue;
-		/* The flag first: bits cleared under a clean flag would be ignored by readers */
-		if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-		{
-			sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
-			seg->entry.flags |= SIFT_SEG_DIRTY;
-		}
-		clear_live(seg, dc.sb, dead, nd);
+		delete_ranks(seg, dc.sb, dead, nd);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}

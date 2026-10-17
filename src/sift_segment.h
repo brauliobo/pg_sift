@@ -101,6 +101,14 @@ extern bool sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info);
  * the maintenance lock. Returns docs removed; adds to stats. (M4)
  */
 extern uint64 sift_seg_live_docs(SiftSegment *seg);
+
+/*
+ * The rank of the live doc key (its position among the segment's docs, which indexes the liveness bits), -1 when the
+ * segment holds no live doc with it; and the deletion of that one doc, the same way VACUUM deletes (the dirty flag, then the
+ * bits): true when it was live. The caller holds the maintenance lock (a host without one has a single writer).
+ */
+extern int64 sift_seg_live_rank(SiftSegment *seg, SiftKey key);
+extern bool sift_seg_delete_key(SiftSegment *seg, SiftKey key);
 extern int64 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
 
