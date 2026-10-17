@@ -254,9 +254,10 @@ sift_kern_tf_encode(uint8 *l1, uint8 *nib, uint8 *esc, SiftTfPos *pos,
 }
 
 void
-sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int k)
+sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int64 cap, int64 k)
 {
 	t->hit = buf;
+	t->cap = cap;
 	t->k = k;
 	t->n = 0;
 }
@@ -269,11 +270,11 @@ sift_kern_topk_theta(const SiftTopK *t)
 
 /* Restores the min-heap (worst at the root) below slot i of h[0..n) */
 static void
-sift_down(SiftHit *h, int n, int i)
+sift_down(SiftHit *h, int64 n, int64 i)
 {
 	SiftHit		x = h[i];
 
-	for (int c; (c = 2 * i + 1) < n; i = c)
+	for (int64 c; (c = 2 * i + 1) < n; i = c)
 	{
 		if (c + 1 < n && sift_hit_better(h[c].score, h[c].key, &h[c + 1]))
 			c++;
@@ -288,7 +289,7 @@ void
 sift_kern_topk_push(SiftTopK *t, float4 s, SiftKey key)
 {
 	SiftHit    *h = t->hit;
-	int			i;
+	int64		i;
 
 	if (t->n == t->k)
 	{
@@ -302,10 +303,10 @@ sift_kern_topk_push(SiftTopK *t, float4 s, SiftKey key)
 	h[i] = (SiftHit) {.key = key,.score = s};
 }
 
-int
+int64
 sift_kern_topk_sort(SiftTopK *t)
 {
-	for (int i = t->n - 1; i > 0; i--)
+	for (int64 i = t->n - 1; i > 0; i--)
 	{
 		SiftHit		worst = t->hit[0];
 

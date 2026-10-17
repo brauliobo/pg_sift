@@ -436,7 +436,7 @@ check_topk(Rng *r)
 			   *buf = malloc(k * sizeof(SiftHit));
 	SiftTopK	t;
 
-	sift_kern_topk_init(&t, buf, k);
+	sift_kern_topk_init(&t, buf, k, k);
 	for (int i = 0; i < n; i++)
 	{
 		all[i].score = (float4) rng_below(r, 20);
