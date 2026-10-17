@@ -46,6 +46,7 @@ typedef struct { uint64 value; } FullTransactionId;
 #define InvalidOffsetNumber		((OffsetNumber) 0)
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
+#define PG_UINT64_MAX			UINT64_MAX
 #define PG_INT32_MAX			(0x7FFFFFFF)
 #define PG_INT32_MIN			(-0x7FFFFFFF - 1)
 #define PGDLLIMPORT
@@ -56,6 +57,7 @@ typedef struct { uint64 value; } FullTransactionId;
 #define BITS_PER_BYTE			8
 #define HIGHBIT					0x80
 
+#define qsort_arg				qsort_r	/* the same (base, n, size, cmp(a, b, arg), arg) */
 #define Max(x, y)				((x) > (y) ? (x) : (y))
 #define Min(x, y)				((x) < (y) ? (x) : (y))
 #define Abs(x)					((x) >= 0 ? (x) : -(x))
@@ -399,8 +401,33 @@ typedef struct BufFile BufFile;
 extern BufFile *BufFileCreateTemp(bool interXact);
 extern void BufFileWrite(BufFile *file, const void *ptr, size_t size);
 extern void BufFileReadExact(BufFile *file, void *ptr, size_t size);
+extern size_t BufFileRead(BufFile *file, void *ptr, size_t size);
 extern int BufFileSeek(BufFile *file, int fileno, long offset, int whence);
 extern void BufFileClose(BufFile *file);
+
+/* named files shared between processes: there is one process, the runs of a fileset are never asked for */
+typedef struct FileSet { int unused; } FileSet;
+typedef struct SharedFileSet { FileSet fs; } SharedFileSet;
+extern BufFile *BufFileCreateFileSet(FileSet *fileset, const char *name);
+extern void BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok);
+
+/* the memory (kB) a rebuild of segments may use: the budget of the run merge (lib/binaryheap.h follows) */
+extern int maintenance_work_mem;
+
+#define PointerGetDatum(X)		((Datum) (X))
+#define DatumGetPointer(X)		((void *) (X))
+
+typedef struct binaryheap binaryheap;
+typedef int (*binaryheap_comparator) (Datum a, Datum b, void *arg);
+extern binaryheap *binaryheap_allocate(int capacity, binaryheap_comparator compare, void *arg);
+extern void binaryheap_free(binaryheap *heap);
+extern void binaryheap_add_unordered(binaryheap *heap, Datum d);
+extern void binaryheap_build(binaryheap *heap);
+extern void binaryheap_add(binaryheap *heap, Datum d);
+extern Datum binaryheap_first(binaryheap *heap);
+extern Datum binaryheap_remove_first(binaryheap *heap);
+extern void binaryheap_replace_first(binaryheap *heap, Datum d);
+extern bool binaryheap_empty(binaryheap *heap);
 
 /* ---------- small odds and ends ---------- */
 
