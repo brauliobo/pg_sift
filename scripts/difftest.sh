@@ -4,6 +4,7 @@
 #
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
 #                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--minimize N] [--min-trials N]
+#                       [--jobs N]
 #   scripts/difftest.sh --repro FILE
 #   INDEX_OPTS="WITH (positions = off)" scripts/difftest.sh ...   build the index with options
 #
@@ -15,14 +16,16 @@
 # is minimized (query, then corpus) into $SIFT_TMP/difftest/*.sql, replayable
 # with --repro. --engine mutants runs the harness
 # against the reference with injected bugs (all of MUTANTS, or the --mutants
-# subset) and fails if any bug survives.
+# subset) and fails if any bug survives. --jobs N (DIFFTEST_JOBS, default 1) checks the queries of a round in N sessions
+# (query i in session i mod N), and the mutants N at a time; each query seeds its own random() (filters of the ranked
+# checks), so a run does not depend on N. The parallel stages ask for 3 workers each: keep 3 * N within max_parallel_workers.
 # Needs the scripts/pgtest.sh cluster installed and started. Exit 1 on failure.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/difftest
-SEED=1 DOCS=5000 VOCAB=3000 QUERIES=100 ROUNDS=3 K=10 ENGINE=sift REPRO= MIN_TRIALS=40 MAXMIN=3
+SEED=1 DOCS=5000 VOCAB=3000 QUERIES=100 ROUNDS=3 K=10 ENGINE=sift REPRO= MIN_TRIALS=40 MAXMIN=3 JOBS=${DIFFTEST_JOBS:-1}
 MUTANTS="not_ignored phrase_as_and float8_score idf_df_plus1 tie_ctid_desc boost_ignored dismax_sum topk_short
 	count_plus nofold_query tf_cap15 prefix_trunc fuzzy_no_firstchar drop_high_offset drop_sb_boundary avgdl_int"
 
@@ -30,7 +33,7 @@ while (( $# )); do
 	case $1 in
 		--seed) SEED=$2 ;; --docs) DOCS=$2 ;; --vocab) VOCAB=$2 ;; --queries) QUERIES=$2 ;;
 		--rounds) ROUNDS=$2 ;; --k) K=$2 ;; --engine) ENGINE=$2 ;; --repro) REPRO=$2 ;;
-		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;;
+		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;; --jobs) JOBS=$2 ;;
 		*) sed -n '2,21p' "$0"; exit 1 ;;
 	esac
 	shift 2
@@ -47,23 +50,47 @@ fresh_db() {
 	sql -c "CREATE TABLE diff_results (engine text, round int, qno int, q text, stage text, status text, detail text)"
 }
 
-# Runs one round's checks, then minimizes its first failure per stage
-check_round() {
-	local round=$1 clean=$2 idx=$3 engine=$4
-	sql -v round="$round" -v clean="$clean" -v idx="$idx" -v engine="$engine" -v k="$K" \
-		-v seed="$(fseed $((SEED * 1000 + round)))" -v nq="$QUERIES" <<-'SQL'
+# Worker $5 of $6: the queries of a round with qno mod $6 = $5, and (worker 0) the checks of the round itself. Every query
+# seeds random() with its own number (the generated queries come from the round's seed, the filters of the ranked checks
+# from the query's), so the run does not depend on the number of workers.
+check_worker() {
+	sql -v round="$1" -v clean="$2" -v idx="$3" -v engine="$4" -v worker="$5" -v workers="$6" -v k="$K" \
+		-v seed="$(fseed $((SEED * 1000 + $1)))" -v nq="$QUERIES" -v rseed="$((SEED * 1000 + $1))" <<-'SQL'
 		SELECT set_config('sift_diff.idx', :'idx', false), set_config('sift_diff.engine', :'engine', false) \gset
+		SELECT :worker = 0 AS first \gset
 		SET statement_timeout = '300s';
 		SELECT sift_ref.load('diff_docs', 'body') \gset
 		CREATE TEMP TABLE q AS SELECT row_number() OVER () AS qno, q FROM sift_diff.gen_queries(:seed, :nq) q;
 		\set ON_ERROR_STOP 0
-		SELECT format('INSERT INTO diff_results SELECT %L, %s, %s, %L, c.* FROM sift_diff.check(%L, %s, %L) c',
-			:'engine', :round, qno, q, q, :k, :clean) FROM q ORDER BY qno \gexec
-		INSERT INTO diff_results SELECT :'engine', :round, 0, NULL, c.*
-		FROM sift_diff.check_round(:clean, array(SELECT q FROM q ORDER BY qno)) c;
+		SELECT format('SELECT setseed(hashint8(%s::bigint * 1000003 + %s)::float8 / 2147483648.0);
+			INSERT INTO diff_results SELECT %L, %s, %s, %L, c.* FROM sift_diff.check(%L, %s, %L) c',
+			:rseed, qno, :'engine', :round, qno, q, q, :k, :clean) FROM q WHERE qno % :workers = :worker ORDER BY qno \gexec
+		\if :first
+			INSERT INTO diff_results SELECT :'engine', :round, 0, NULL, c.*
+			FROM sift_diff.check_round(:clean, array(SELECT q FROM q ORDER BY qno)) c;
+		\endif
 		INSERT INTO diff_results SELECT :'engine', :round, qno, q, 'harness', 'fail', 'no result: crash, timeout or harness error'
-		FROM q WHERE qno NOT IN (SELECT qno FROM diff_results WHERE engine = :'engine' AND round = :round);
+		FROM q WHERE qno % :workers = :worker AND qno NOT IN (SELECT qno FROM diff_results WHERE engine = :'engine' AND round = :round);
 	SQL
+}
+
+# spawn CMD...: in the background, at most JOBS at a time; drain waits for all and fails if one failed
+bad=0
+spawn() {
+	while (( $(jobs -rp | wc -l) >= JOBS )); do wait -n || bad=1; done
+	"$@" &
+}
+drain() {
+	local p
+	for p in $(jobs -p); do wait "$p" || bad=1; done
+	(( ! bad )) || { log "a worker failed"; exit 1; }
+}
+
+# Runs one round's checks ($5 workers, default JOBS), then minimizes its first failure per stage
+check_round() {
+	local round=$1 clean=$2 idx=$3 engine=$4 w workers=${5:-$JOBS}
+	for (( w = 0; w < workers; w++ )); do spawn check_worker "$round" "$clean" "$idx" "$engine" "$w" "$workers"; done
+	drain
 	local n=0
 	while IFS=$'\t' read -r qno stage q; do
 		(( n++ < MAXMIN )) || break
@@ -130,8 +157,9 @@ if [[ $ENGINE == mutants ]]; then
 	run_engine "mutant:"
 	for m in $MUTANTS; do
 		log "mutant $m"
-		check_round "$ROUNDS" true "" "mutant:$m"
+		spawn check_round "$ROUNDS" true "" "mutant:$m" 1
 	done
+	drain
 	summary
 	sql -P footer=off -P format=aligned -v mutants="$MUTANTS" <<-'SQL' | tee "$OUT/mutants.txt"
 		SELECT m AS mutant, count(DISTINCT (round, qno)) FILTER (WHERE status = 'fail') AS failing_queries,
