@@ -115,6 +115,8 @@ extern uint64 sift_store_new_gen(Relation index);
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
 
+/* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
+extern FullTransactionId sift_store_horizon(Relation index);
 
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
@@ -168,6 +170,13 @@ typedef enum SiftWriteMode
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
+
+/*
+ * SHARED targets: the bytes the streams written through wt will take about (upper bound of a merge,
+ * a promotion's mutable pages). Streams then reuse free space in runs as short as a 256th of it
+ * rather than extending the file for long ones.
+ */
+extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
 
 /*
  * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target

@@ -11,6 +11,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "storage/procarray.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
 #include "miscadmin.h"
@@ -27,6 +28,7 @@
 #define FIRST_DATA_BLKNO	(SIFT_DIRECTORY_BLKNO + 1)
 #define RUN_MIN				16
 #define RUN_MAX				1024
+#define EXTENT_TARGET		256
 
 #define META(page)	((SiftMetaPageData *) SiftPageGetData(page))
 #define DIR(page)	((SiftDirectoryData *) SiftPageGetData(page))
@@ -62,6 +64,7 @@ struct SiftWriteTarget
 	SiftExtent *taken;			/* SHARED: every block taken from the store and not given back yet */
 	int			ntaken;
 	int			maxtaken;
+	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
 #ifdef SIFT_TESTING
 	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
 #endif
@@ -79,6 +82,7 @@ struct SiftStreamWriter
 	BlockNumber run_next;		/* unused part of the current run */
 	BlockNumber run_end;
 	uint32		grow;
+	uint64		blocks;			/* blocks taken for this stream */
 	SiftExtentList ext;
 };
 
@@ -322,10 +326,30 @@ sift_store_removable(Relation index, FullTransactionId xid)
 	return removable;
 }
 
-static bool
-reusable(Relation index, FullTransactionId safexid)
+/*
+ * The horizon computed anew: the one GlobalVis caches only moves when this backend takes a
+ * snapshot, so a backend without one (the maintenance worker, or a merge that takes long) would not
+ * see the extents it freed become reusable. Records before it are reusable.
+ */
+FullTransactionId
+sift_store_horizon(Relation index)
 {
-	return !FullTransactionIdIsValid(safexid) || sift_store_removable(index, safexid);
+	Relation	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	TransactionId oldest = GetOldestNonRemovableTransactionId(heap);
+
+	RelationClose(heap);
+	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
+}
+
+/* horizon: computed by the first record that needs it, InvalidFullTransactionId until then */
+static bool
+reusable(Relation index, FullTransactionId safexid, FullTransactionId *horizon)
+{
+	if (!FullTransactionIdIsValid(safexid))
+		return true;
+	if (!FullTransactionIdIsValid(*horizon))
+		*horizon = sift_store_horizon(index);
+	return FullTransactionIdPrecedes(safexid, *horizon);
 }
 
 static BlockNumber
@@ -386,6 +410,7 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 	BlockNumber pick_blk = InvalidBlockNumber;
 	int			pick = -1;
 	uint32		pick_n = 0;
+	FullTransactionId horizon = InvalidFullTransactionId;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk) && pick_n < want; hops++)
 	{
@@ -396,7 +421,7 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 		{
 			SiftFreeExtent *e = &fl->ext[i];
 
-			if (e->nblocks >= min && e->nblocks > pick_n && reusable(index, e->safexid))
+			if (e->nblocks >= min && e->nblocks > pick_n && reusable(index, e->safexid, &horizon))
 			{
 				pick_blk = blk;
 				pick = i;
@@ -738,6 +763,7 @@ sift_recycle(Relation index)
 	int			npages = 0;
 	int			cleared = 0;
 	int			k;
+	FullTransactionId horizon = InvalidFullTransactionId;
 	GenericXLogState *state;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
@@ -751,8 +777,7 @@ sift_recycle(Relation index)
 		for (uint32 i = 0; i < fl->n; i++)
 		{
 			ext[n] = fl->ext[i];
-			if (FullTransactionIdIsValid(ext[n].safexid) &&
-				sift_store_removable(index, ext[n].safexid))
+			if (FullTransactionIdIsValid(ext[n].safexid) && reusable(index, ext[n].safexid, &horizon))
 			{
 				ext[n].safexid = InvalidFullTransactionId;
 				cleared++;
@@ -1071,6 +1096,12 @@ sift_wt_finish(SiftWriteTarget *wt)
 	wt->bulk = NULL;
 }
 
+void
+sift_wt_expect(SiftWriteTarget *wt, uint64 bytes)
+{
+	wt->expect = bytes / BLCKSZ;
+}
+
 /* The step that wrote through a SHARED target failed (its transaction is rolled back): the blocks go back */
 void
 sift_wt_abort(SiftWriteTarget *wt)
@@ -1114,15 +1145,41 @@ sw_flush(SiftStreamWriter *sw)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/*
+ * The shortest run worth taking off the free list. With the size of the stream known, anything that
+ * keeps its extents within EXTENT_TARGET, so fragmented space left by merged segments is reused
+ * instead of extending the file; unknown, a quarter of the run wanted.
+ */
+static uint32
+run_min(const SiftStreamWriter *sw)
+{
+	if (sw->wt->expect == 0)
+		return Max(RUN_MIN, sw->grow / 4);
+	return Max(RUN_MIN, Min(sw->grow, sw->wt->expect / EXTENT_TARGET));
+}
+
+/* The run wanted: the growing one, but not far past what the stream is expected to still need */
+static uint32
+run_want(const SiftStreamWriter *sw, uint32 min)
+{
+	uint64		expect = sw->wt->expect + sw->wt->expect / 16 + RUN_MIN;
+
+	if (sw->wt->expect == 0)
+		return sw->grow;
+	return Max(min, Min(sw->grow, expect > sw->blocks ? expect - sw->blocks : 0));
+}
+
 static void
 sw_start_page(SiftStreamWriter *sw)
 {
 	if (sw->run_next == sw->run_end)
 	{
 		uint32		got;
+		uint32		min = run_min(sw);
 
-		sw->run_next = wt_take(sw->wt, sw->grow, Max(RUN_MIN, sw->grow / 4), &got);
+		sw->run_next = wt_take(sw->wt, run_want(sw, min), min, &got);
 		sw->run_end = sw->run_next + got;
+		sw->blocks += got;
 		sw->grow = Min(sw->grow * 2, RUN_MAX);
 	}
 	sw->blk = sw->run_next++;
