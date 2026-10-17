@@ -107,6 +107,12 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_segment_postings",
 							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
 							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_blob_max",
+							"Testing: bytes the postings of one term may take (0 = 4 GB).",
+							NULL, &sift_test_blob_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dict_max",
+							"Testing: bytes a segment's dictionary may take before its last block (0 = 4 GB).",
+							NULL, &sift_test_dict_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
