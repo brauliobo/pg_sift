@@ -16,6 +16,6 @@ SELECT CASE WHEN i % 10 < 9 THEN 'hot ' ELSE '' END ||
 FROM generate_series(1, :rows * 10) i;
 CREATE TABLE uniq (id serial, body text) WITH (parallel_workers = 2);
 INSERT INTO uniq (body)
-SELECT 'k' || (i % 50) || ' g' || (i % 3000) || ' c' || i || 'x' || (i * 7919 % 1000003) || ' w' || (i % 997)
+SELECT 'k' || (i % 50) || ' g' || (i % 3000) || ' c' || i || 'x' || (i::bigint * 7919 % 1000003) || ' w' || (i % 997)
 FROM generate_series(1, :rows * 10) i;
 VACUUM ANALYZE art, hotc, uniq;
