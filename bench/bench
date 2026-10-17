@@ -74,7 +74,7 @@ Options (not every option applies to every command)
   --sample N        statements per class of the articles trace every engine gets (default 0 = the whole trace; a fixed
                     pseudo-random order, the same for every engine)
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
-  --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default: one per hardware thread, 4 pgbench threads)
+  --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default: 4 pgbench threads, one parallel worker per hardware thread, an index build one fewer than the physical cores)
   --max-time S      the longest a cell is measured in a round, seconds (alias --duration; defaults: slim 1, ab 2, full 2 for articles;
                     places 1 / 1 / 1). A cell stops earlier as soon as its relative standard error is at most --rse; the slow ones
                     (tens of ms and more per query) run the whole time
