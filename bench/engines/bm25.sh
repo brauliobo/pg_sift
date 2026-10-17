@@ -39,8 +39,11 @@ SQL
 # stored columns (sname, srest) hold the 1-2 letter edge n-grams of the words of the two sections and the word is matched as a whole
 # term there (the same match set as a prefix of that length, scored by BM25 over the n-grams). `@@@` selects the rows and `&@@` orders
 # them, both anchored on the first indexed column with the same query tree; the tree is built per query by bm25_pq (docs/BENCHMARKS.md).
+# A wildcard that expands to more than bm25_native.wildcard_max_expansions (default 1000) terms is an error: at 236,262 places `san*` is one,
+# so the database raises the limit (sift's max_expansions is raised the same way).
 PLACES_FLAVOR="split"
 PLACES_SETUP="$BM25_SETUP
+ALTER DATABASE places_$ENGINE SET bm25_native.wildcard_max_expansions = 100000;
 CREATE FUNCTION bm25_short(t text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS \$\$
   SELECT string_agg(left(w, n), ' ') FROM regexp_split_to_table(lower(t), '[^[:alnum:]]+') w, generate_series(1, least(length(w), 2)) n WHERE w <> ''
 \$\$;
