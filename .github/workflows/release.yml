@@ -1,7 +1,8 @@
 name: release
 
 # A v* tag builds the PostgreSQL 18 .deb and .rpm of that tag, smoke-tests them in fresh containers (scripts/package.sh) and
-# attaches them with SHA256SUMS to the GitHub release of the tag (created if it does not exist yet).
+# attaches them with SHA256SUMS to the GitHub release of the tag (created if it does not exist yet), whose text is
+# docs/releases/<tag>.md: write it before tagging (highlights, compatibility, packages).
 # workflow_dispatch rebuilds the packages of an existing tag with the packaging recipes of the selected ref.
 # Pull requests that touch the packaging build and test the packages of the merge commit, without publishing.
 
@@ -50,12 +51,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v7
         with:
           name: packages
           path: dist
 
-      - name: Attach to the release
+      - name: Publish the release notes and packages
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          notes=docs/releases/$TAG.md
+          title="pg_sift ${TAG#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then gh release edit "$TAG" --title "$title" --notes-file "$notes"
+          else gh release create "$TAG" --verify-tag --title "$title" --notes-file "$notes"; fi
           gh release upload "$TAG" dist/*.deb dist/*.rpm dist/SHA256SUMS --clobber
