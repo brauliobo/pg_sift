@@ -16,8 +16,11 @@
 #include "access/genam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "common/int.h"
 #include "miscadmin.h"
+#include "port/pg_bswap.h"
 #include "postmaster/bgworker.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -25,6 +28,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
 #include "sift_am.h"
@@ -268,77 +272,155 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 
 /* ---------- promotion ---------- */
 
-typedef struct PromoDoc
-{
-	SiftKey		key;
-	uint16		dl;
-	int			nterms;
-	SiftTermFreq *terms;
-} PromoDoc;
+/*
+ * The live docs of a mutable segment go through a tuplesort, so that promoting a segment of any size stays within
+ * maintenance_work_mem (the excess spills to temporary files). A doc is packed as a bytea: its key and arrival number
+ * first, big-endian, so that byte order is key order and the first record of a repeated tid comes first, then its
+ * length, its terms' lengths, frequencies and hashes, then the bytes of the terms.
+ */
+#define PACK_HEAD	(VARHDRSZ + sizeof(uint64) + sizeof(uint32) + sizeof(uint16) + sizeof(uint32))
+#define PACK_TERM	(2 + sizeof(uint32))
 
-static int
-promo_cmp(const void *a, const void *b)
+typedef struct DocPacker
 {
-	return pg_cmp_u64(((const PromoDoc *) a)->key, ((const PromoDoc *) b)->key);
+	char	   *buf;
+	Size		cap;
+} DocPacker;
+
+static bytea *
+pack_doc(DocPacker *pk, SiftMutDoc *d, uint32 seq)
+{
+	Size		bytes = 0,
+				size;
+	uint64		key = pg_hton64(sift_key_from_tid(&d->tid));
+	char	   *p;
+
+	for (uint32 i = 0; i < d->nterms; i++)
+		bytes += d->len[i];
+	size = PACK_HEAD + d->nterms * PACK_TERM + bytes;
+	if (size > pk->cap)
+		pk->buf = repalloc(pk->buf, pk->cap = size * 2);
+	seq = pg_hton32(seq);
+	p = pk->buf + VARHDRSZ;
+	memcpy(p, &key, sizeof(key));
+	memcpy(p += sizeof(key), &seq, sizeof(seq));
+	memcpy(p += sizeof(seq), &d->dl, sizeof(d->dl));
+	memcpy(p += sizeof(d->dl), &d->nterms, sizeof(d->nterms));
+	p += sizeof(d->nterms);
+	for (uint32 i = 0; i < d->nterms; i++)
+	{
+		*p++ = d->len[i];
+		*p++ = d->tf[i];
+		memcpy(p, &d->hash[i], sizeof(uint32));
+		p += sizeof(uint32);
+	}
+	memcpy(p, d->terms, bytes);
+	SET_VARSIZE(pk->buf, size);
+	return (bytea *) pk->buf;
 }
 
-/* Copies the live docs of a mutable segment, sorted by key; a repeated tid keeps its first record */
-static PromoDoc *
-read_docs(Relation index, const SiftSegEntry *seg, int64 *ndocs)
+/* Sorts the live docs of a mutable segment by key */
+static Tuplesortstate *
+sort_docs(Relation index, const SiftSegEntry *seg)
 {
 	SiftMutReader *r = sift_mut_open(index, seg, CurrentMemoryContext, NULL, NULL);
+	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem,
+												 NULL, TUPLESORT_NONE);
+	DocPacker	pk = {palloc(1024), 1024};
 	SiftMutDoc	d;
-	int64		cap = 256,
-				n = 0,
-				m = 0;
-	PromoDoc   *docs = palloc(cap * sizeof(PromoDoc));
+	uint32		seq = 0;
 
 	while (sift_mut_next(r, &d))
-	{
-		const char *t = d.terms;
-		SiftTermFreq *terms;
-
-		if (d.deleted)
-			continue;
-		if (n == cap)
-			docs = repalloc_huge(docs, (cap *= 2) * sizeof(PromoDoc));
-		terms = palloc(Max(d.nterms, 1) * sizeof(SiftTermFreq));
-		for (int i = 0; i < d.nterms; t += d.len[i++])
-		{
-			char	   *copy = palloc(Max(d.len[i], 1));
-
-			memcpy(copy, t, d.len[i]);
-			terms[i] = (SiftTermFreq) {copy, d.len[i], d.tf[i], d.hash[i]};
-		}
-		docs[n++] = (PromoDoc) {sift_key_from_tid(&d.tid), d.dl, d.nterms, terms};
-	}
+		if (!d.deleted)
+			tuplesort_putdatum(sort, PointerGetDatum(pack_doc(&pk, &d, seq++)), false);
 	sift_mut_close(r);
-	qsort(docs, n, sizeof(PromoDoc), promo_cmp);
-	for (int64 i = 0; i < n; i++)
-		if (m == 0 || docs[i].key != docs[m - 1].key)
-			docs[m++] = docs[i];
-	*ndocs = m;
-	return docs;
+	pfree(pk.buf);
+	tuplesort_performsort(sort);
+	return sort;
 }
 
-/* Writes the docs (ascending keys) as one immutable segment; false when there are none */
+typedef struct DocCursor
+{
+	Tuplesortstate *sort;
+	SiftKey		key;			/* of the doc last returned */
+	uint16		dl;
+	uint32		nterms;
+	SiftTermFreq *terms;		/* point into the sorted doc, valid until the next call */
+	uint32		maxterms;
+	bool		any;
+} DocCursor;
+
+/* The next doc by key; a repeated tid keeps its first record */
 static bool
-write_docs(Relation index, SiftWriteTarget *wt, const PromoDoc *docs, int64 ndocs, uint64 gen,
-		   SiftSegEntry *entry)
+next_doc(DocCursor *c)
+{
+	Datum		val;
+	bool		isnull;
+
+	for (;;)
+	{
+		const char *p;
+		const char *text;
+		uint64		key;
+
+		if (!tuplesort_getdatum(c->sort, true, false, &val, &isnull, NULL))
+			return false;
+		p = VARDATA_ANY(DatumGetPointer(val));
+		memcpy(&key, p, sizeof(key));
+		key = pg_ntoh64(key);
+		if (c->any && key == c->key)
+			continue;
+		c->any = true;
+		c->key = key;
+		p += sizeof(key) + sizeof(uint32);
+		memcpy(&c->dl, p, sizeof(c->dl));
+		memcpy(&c->nterms, p += sizeof(c->dl), sizeof(c->nterms));
+		p += sizeof(c->nterms);
+		if (c->nterms > c->maxterms)
+			c->terms = repalloc(c->terms, (c->maxterms = c->nterms) * sizeof(SiftTermFreq));
+		text = p + c->nterms * PACK_TERM;
+		for (uint32 i = 0; i < c->nterms; i++, p += PACK_TERM)
+		{
+			uint32		hash;
+
+			memcpy(&hash, p + 2, sizeof(hash));
+			c->terms[i] = (SiftTermFreq) {text, (uint8) p[0], (uint8) p[1], hash};
+			text += (uint8) p[0];
+		}
+		return true;
+	}
+}
+
+/* The memory the inverted buffer may take: what the sort left of maintenance_work_mem when it kept its docs in memory */
+static Size
+inv_budget(Tuplesortstate *sort)
+{
+	TuplesortInstrumentation st;
+	Size		budget = (Size) maintenance_work_mem * 1024;
+
+	tuplesort_get_stats(sort, &st);
+	if (st.sortMethod == SORT_TYPE_QUICKSORT)
+		budget -= Min(budget - budget / 4, (Size) st.spaceUsed * 1024);
+	return budget;
+}
+
+/* Writes the sorted docs as one immutable segment; false when there are none */
+static bool
+write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
 {
 	SiftScoreRef ref = score_ref(index);
-	Size		budget = (Size) maintenance_work_mem * 1024;
-	SiftInvBuf *inv = sift_inv_create(budget, CurrentMemoryContext, false);
+	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, false);
 	SiftRun   **runs = palloc(sizeof(SiftRun *));
+	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
 	int			nruns = 0,
 				maxruns = 1;
 
-	for (int64 i = 0; i < ndocs; i++)
+	while (next_doc(&c))
 	{
 		ItemPointerData tid;
 
-		sift_key_to_tid(docs[i].key, &tid);
-		sift_inv_add(inv, &tid, docs[i].terms, docs[i].nterms, docs[i].dl);
+		sift_key_to_tid(c.key, &tid);
+		sift_inv_add(inv, &tid, c.terms, c.nterms, c.dl);
 		if (sift_inv_full(inv))
 		{
 			if (nruns == maxruns)
@@ -379,8 +461,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	const SiftSegEntry *sealed = arg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift promote", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	int64		ndocs;
-	PromoDoc   *docs;
+	Tuplesortstate *sort;
 	SiftSegEntry neu;
 	bool		any;
 	SiftExtent *pages;
@@ -390,8 +471,9 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	sift_mut_flag_sealed(index, sealed);
 	pages = sift_mut_pages(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
-	docs = read_docs(index, sealed, &ndocs);
-	any = write_docs(index, wt, docs, ndocs, sift_store_new_gen(index), &neu);
+	sort = sort_docs(index, sealed);
+	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
+	tuplesort_end(sort);
 	sift_wt_finish(wt);
 	sw.neu = any ? &neu : NULL;
 	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = pages,
