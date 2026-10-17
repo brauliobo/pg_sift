@@ -107,13 +107,22 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
   [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
 }
 pids=()
-for e in $ENGINES; do
-  if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 & pids+=($!)
-  else lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$ROOT/places/$e.prepare.log")" >&2; exit 1; }; fi
-done
-for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$ROOT"/places/*.prepare.log)" >&2; exit 1; }; done
-: >"$DEST/builds.tsv"
-for e in $ENGINES; do cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"; done
+first=${ENGINES%% *}
+serial_cache=''; [[ -n $CONCURRENT || $what == check ]] || serial_cache=$(serial_key "$DATADIR/places.tsv" "$DATADIR/queries.tsv")   # one cluster: it is cached as a whole
+if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
+  lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
+  for e in $ENGINES; do mkdir -p "$ROOT/places/$e"; done
+  log "built databases from the cache ($serial_cache)"
+else
+  for e in $ENGINES; do
+    if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 & pids+=($!)
+    else lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$ROOT/places/$e.prepare.log")" >&2; exit 1; }; fi
+  done
+  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$ROOT"/places/*.prepare.log)" >&2; exit 1; }; done
+  : >"$DEST/builds.tsv"
+  for e in $ENGINES; do cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"; done
+  [[ -z $serial_cache ]] || lane_save "$first" "$serial_cache" "$DEST/builds.tsv"
+fi
 log "built: $(awk '{printf "%s%s %.1fs %.0fMB; ", $1, $6 == "-" ? "" : "+" $6, $2, $3 / 1048576}' "$DEST/builds.tsv")"
 phase 'restore and build'
 
