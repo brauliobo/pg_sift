@@ -48,24 +48,37 @@ bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps t
 dir() { echo "$TAPDIR/$1"; }
 port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
 
-# node_init NAME OFFSET [conf lines]: fresh cluster on SIFT_PORT + OFFSET
+# The settings of the tests whose point is WAL, crash recovery or replication: the checkpoint cadence, the buffer pool and the
+# 16 MB WAL segments decide how much WAL a crash replays and which pages are lost with it. Every other node is small (1 MB
+# segments, max_wal_size and shared_buffers below). The conf of the former starts with $WAL_CONF ("$WAL_CONF
+# more lines").
+WAL_CONF='max_wal_size = 256MB
+min_wal_size = 80MB
+wal_recycle = on
+shared_buffers = 128MB'
+
+# node_init NAME OFFSET [conf lines]: fresh cluster on SIFT_PORT + OFFSET; no recycled WAL files (the file names of old
+# segments are not what a test looks at, and a recycled one is disk and memory kept for nothing)
 node_init() {
-	local name=$1 offset=$2 d
+	local name=$1 offset=$2 d kind=
+	[[ ${3:-} != "$WAL_CONF"* ]] || kind=wal
 	d=$(dir "$name")
 	node_stop "$name"
 	rm -rf "$d"
 	mkdir -p "$d/sock"
 	echo "$offset" >"$d/offset"
 	NODES+=("$name")
-	"$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" new-data "$d/data" >"$d/initdb.log" 2>&1 || bail "initdb $name failed"
+	"$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" new-data "$d/data" $kind >"$d/initdb.log" 2>&1 || bail "initdb $name failed"
 	node_conf "$name" "port = $((SIFT_PORT + offset))
 listen_addresses = ''
 unix_socket_directories = '$d/sock'
 $("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf)
 fsync = off
-max_wal_size = 256MB
+max_wal_size = 48MB
+min_wal_size = 32MB
+wal_recycle = off
 restart_after_crash = off
-shared_buffers = 128MB
+shared_buffers = 32MB
 max_connections = 60
 ${3:-}"
 }
