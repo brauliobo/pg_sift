@@ -663,3 +663,9 @@ Each milestone ends with green `make installcheck` plus its listed tests, under 
 | M5 | Scale | parallel build, ReadStream/AIO, cost model, VM pext fast path | build time and size vs ParadeDB; cold p99 |
 | M6 | Hardening and benchmarks | `verify` (`heapallindexed`), ASan/UBSan, fuzzing, bench harness vs all engines | No sanitizer findings in 24 h of fuzzing; bench report |
 | M7 | Extras beyond the baseline design | phrase pairs (done, removed in 1.3.0); parallel scan with shared θ (1.1, opt-in); filter-mask pushdown and keyword facets (1.1) | Each meets its ≥ 10 % gate or is dropped |
+
+## SQLite port
+
+The codec, dictionary, scoring, SiftQL parser and evaluator described above are PostgreSQL-independent C: 18 files of `src/` also compile, unmodified,
+into the SQLite extension (`sqlite/`), against a small shim of the backend API. Everything else in this document (the index access method, WAL, MVCC,
+planner integration, VACUUM) is specific to PostgreSQL and does not apply to it; its own design is in [sqlite/DESIGN.md](sqlite/DESIGN.md).

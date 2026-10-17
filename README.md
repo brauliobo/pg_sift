@@ -128,6 +128,11 @@ Simple English Wikipedia (50,000 articles, 8 clients) and GeoNames cities15000 (
 Reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); about 9 minutes of builds and measurements for the slim tier, about 13 minutes with the cold-cache tables of `--docs`); `bench/bench all --docs` rewrites this section from a new session. `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour); its last numbers are kept in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as history. `bench/bench regress --run` compares this checkout with an earlier release and exits non-zero on a regression.
 <!-- bench:readme:end -->
 
+## pg_sift for SQLite
+
+The same search engine is also a SQLite loadable extension, `sift` for SQLite (release asset `sift-sqlite-<version>-linux-x86_64.tar.gz`): a
+separate component with its own install, documentation and changelog, see [sqlite/README.md](sqlite/README.md).
+
 ## Testing, security, license
 
 `make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants).

@@ -1,5 +1,7 @@
 # Benchmarks
 
+Benchmarks of the PostgreSQL extension. The SQLite extension has its own, against FTS5: [sqlite/README.md](../sqlite/README.md#numbers-against-fts5).
+
 The suite has two tiers of the same engines, query classes and workloads (`bench/README.md`): **slim**, the default of `bench/bench all`, a smaller
 corpus (a few minutes), whose tables are the first section here, are generated from [results/](results/) by `bench/bench all --docs` and are the source of
 every number in the README; and **full** (`--full`, every article of the dump and GeoNames cities500, about an hour), whose last session is kept below
