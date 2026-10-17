@@ -29,6 +29,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Changed: a regular expression leaf cannot have back-references (`/(a+)\1/`): they make a match exponential in the length of the term.
   The query fails at parse time like any invalid expression.
 
+- Fix: a cursor over a sparse term (fewer than 8192 postings, or inline in the dictionary) allocated the 32 kB buffer a group of a frequent
+  term needs; it now allocates one the size of its rows (at most one per posting, 64 bytes each). A 200-term `OR` over six segments
+  allocated 39 MB for its cursors, now 1.1 MB. Frequent terms are unchanged. The copy of a frequent term's whole blob (a term in every
+  row of a billion-row index is hundreds of MB per segment and query) is not windowed yet.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
