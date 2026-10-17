@@ -405,7 +405,7 @@ merge_steps(SqVtab *vt, int64_t max)
 
 		if (n == 0)
 			break;
-		sq_merge(vt->st, sel, n, vt->opts.base.positions);
+		sq_merge(vt->st, sel, n);
 		steps++;
 	}
 	return steps;
@@ -424,7 +424,7 @@ optimize(SqVtab *vt)
 
 		if (n == 0)
 			break;
-		sq_merge(vt->st, sel, Min(n, at_once), vt->opts.base.positions);
+		sq_merge(vt->st, sel, Min(n, at_once));
 		if (n <= at_once)
 			break;
 	}

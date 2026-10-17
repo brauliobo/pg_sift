@@ -150,10 +150,10 @@ extern bool sq_delete_key(SqStore *st, SiftKey key);
 
 /* ---------- sqmerge.c ---------- */
 
-/* Streams the live part of the segments of gens[] into one new segment (bounded memory: the live documents and one
- * term at a time), publishes it and retires them in the caller's transaction. false when nothing live is left (they are
+/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/sift_runs.c),
+ * publishes it and retires them in the caller's transaction. Nothing is published when nothing live is left (they are
  * retired all the same) */
-extern void sq_merge(SqStore *st, const uint64 *gens, int n, bool positions);
+extern void sq_merge(SqStore *st, const uint64 *gens, int n);
 
 /* The segments the policy would merge now (tiers of similar size, else the smallest ones when there are too many, else
  * a segment that is mostly dead): their number, in sel. force: all segments. fanin: segments of a tier that trigger it */
