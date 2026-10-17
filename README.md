@@ -209,8 +209,9 @@ Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b`
 
 Against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on Simple English Wikipedia (218,058 articles, 8 clients,
 median of 4 interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries and cache state, all five
-engines in one session. Cells are queries per second over pg_search. The sessions were pinned to two cores of a loaded host, so absolute
-numbers are noisy and ratios depend on the CPU the engines get; compare engines within a table.
+engines in one session. Cells are queries per second over pg_search. The CPU budget is a parameter of the harness (`--cpus`, `--load-cpus`; every table
+and chart caption states it): these sessions ran on two pinned CPUs of a loaded host, so absolute numbers are noisy and ratios depend on the CPU the engines get;
+compare engines within a table. The tables of a run carry a standard error per cell.
 
 | articles | index | build | and | or | phrase | mixed | `count(*)` | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -238,7 +239,8 @@ match, which costs 8.8 s for a one-letter prefix.
 ![Autocomplete latency](docs/img/places-latency.svg)
 
 Cold-cache tables, method and smaller tiers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md); raw tables: [docs/results/](docs/results/);
-reproduce with `bench/bench all` (see [bench/README.md](bench/README.md)). Changes per release: [CHANGELOG.md](CHANGELOG.md).
+reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); the reduced tier takes about 2 minutes). `bench/bench regress --run` measures this checkout against an earlier
+release (default v1.1.0) and exits non-zero on a regression. Changes per release: [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing, security, license
 

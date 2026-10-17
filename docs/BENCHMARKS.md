@@ -1,19 +1,21 @@
 # Benchmarks
 
 sift (and sift with `phrase_index = pairs`) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on two public
-datasets, measured with `bench/bench run` (articles through `bench/steps/ab.sh`, places through `bench/steps/places.sh`; method,
+datasets, measured with `bench/bench run` (articles through `bench/steps/articles.sh`, places through `bench/steps/places.sh`; method,
 datasets, licenses and checksums: `bench/README.md`). Every engine indexes the same rows with the same analysis (lowercase, no
 stemming, no stopwords; pg_textsearch and rum through the PostgreSQL `simple` text search configuration) and answers the same
-queries from the same cache state; cells are run one at a time with the engine order rotated every round, and the tables report
-medians over the rounds. The engines, in the order of every table and chart, are listed in `bench/engines.tsv` (it also has
+queries from the same cache state; the published tables were measured with `--serial` (one cluster, cells run one at a time with the engine
+order rotated every round; `bench/bench run` now measures all engines at the same time by default, see "Method of the harness" at the end), and the tables report
+medians over the rounds with their standard errors. The engines, in the order of every table and chart, are listed in `bench/engines.tsv` (it also has
 `sift_nopos`, sift built with `positions = off`, which is skipped until the installed sift has that reloption; it is not in any table
 below). The numbers of every table below are also in
 [results/articles.tsv](results/articles.tsv) and [results/places.tsv](results/places.tsv), one row per measurement (columns:
 `bench/README.md`), for charts.
 
 Host: AMD Ryzen 7 9700X (8 cores, 16 hardware threads), 188 GB RAM, Linux 7.2, PostgreSQL 18.6, scratch data on tmpfs, shared with
-other jobs. **Every table in this document was measured with the engine servers and the load generators pinned to two cores**
-(`taskset -c 6,7`, `nice`; the server cgroup scope at `CPUQuota=200%`, `--workers 2`: pgbench `-j 2` and at most 2 parallel
+other jobs. **The CPU budget is a parameter of a run** (`--cpus`, `--load-cpus`, `--serial`; `bench/README.md`), printed in the machine description and in the header of every table
+and recorded as the `cpu_budget` rows of [results/](results/); the charts caption it. **Every table in this document was measured with the same budget: the engine servers and the load
+generators together on two pinned CPUs** (`--serial --cpus 6,7 --load-cpus 6,7 --workers 2`, `nice`; the server cgroup scope at `CPUQuota=200%`, pgbench `-j 2` and at most 2 parallel
 workers, the 8 clients of the articles cells unchanged), because the host was in use. sift was built from commit `cd2fb81d18d6`,
 pg_search from the ParadeDB 0.26.1 package, pg_textsearch 1.5.1 from the v1.5.1 tag (commit `fa142d049d08`, tarball sha256 pinned in
 `bench/versions.env`) with PGXS, rum 1.3.15 (tag 1.3.15, tarball sha256 pinned) with PGXS. One session per tier measured all five
@@ -27,7 +29,7 @@ the tables are wide; no articles round reached the 15% spread that ends a run ea
 tables, tiers or hosts: **ratios depend on the CPU the engines get**. The earlier full-tier session (sift `dd3692043b5b`, the
 server budget of 8 vCPUs with `CPUQuota=800%`, four pgbench threads, load 4-31; git history of this file) measured sift at 2.49 (and),
 2.33 (or), 0.65 (phrase), 1.78 (mixed), 0.70 (count), 0.93 (filter) and 4.31 (join) times pg_search, and `pairs` at 2.76, 2.44, 2.83, 2.69, 3.23,
-1.20 and 7.49; on two cores every sift ratio is lower (below) while `pairs` keeps its order of classes. Index sizes and build times of every table are for one build per engine.
+1.20 and 7.49; with the 2-CPU budget every sift ratio is lower (below) while `pairs` keeps its order of classes. Index sizes and build times of every table are for one build per engine.
 
 ## What is native, what is emulated, what is NA
 
@@ -100,7 +102,7 @@ Ratio of queries per second to pg_search (the baseline of every ratio in this do
 | rum / pg_search | 0.27 | 0.01 | 0.01 | 0.01 | 0.02 | 0.01 | 0.07 |
 
 Index size and build time move with the build: pg_search's size depends on how its parallel workers split the segments (161-185 MiB
-over the builds of the sessions), build times move with load and with the two cores; sift's sizes do not.
+over the builds of the sessions), build times move with load and with the CPU budget; sift's sizes do not.
 
 How pg_textsearch is configured: a `bm25` index with `text_config = 'simple'` on the body (the analysis of the other engines), the
 database `default_text_search_config` set to `simple` (its `@@` filter parses the column with it) and `enable_seqscan = off` in its
@@ -183,7 +185,7 @@ Reading the numbers:
   runs at 328 queries per second (0.27x of pg_search, 0.16x of sift). Every other class is two orders of magnitude lower: phrase 11,
   `count(*)` 12, mixed 6, filter 8, and OR and join at 3 and 5 queries per second. I did not profile it; its `<=>` ordering and the `@@`
   recheck of the stored `tsvector` (positions are checked in the heap for phrases) both visit every match of these common-word queries.
-- In short, on two cores: sift's default index is the smallest and the quickest to build and wins AND (1.7x) and join (2.8x), is level on OR and
+- In short, with the 2-CPU budget: sift's default index is the smallest and the quickest to build and wins AND (1.7x) and join (2.8x), is level on OR and
   mixed and behind on phrase, `count(*)` and the filtered top-10; `pairs` adds phrase (2.0 times), `count(*)` (2.1 times) and join
   (5.6 times) for 5.6 times the index; pg_textsearch wins only the bare ranked OR; rum wins nothing at this size and is the
   largest index.
@@ -458,7 +460,81 @@ and rum equal the tsvector oracle in all four modes (and, or, phrase, not: 0 mis
 
 pg_textsearch's AND overlap was 0.88 before its score was written `(... <@> ...) * 1` (the unranked top-10 described above).
 
-## Harness run time
+## Method of the harness and its run time
+
+`bench/bench run` is one pipeline for every engine and both datasets. The tables of this document (a `--serial` run on a 2-CPU budget) and a default run differ in how the cells are scheduled, not in
+what is measured:
+
+- **Lanes.** By default every engine has a cluster of its own (a lane), pinned to an equal share of the server CPUs with its load generators on an equal share of the load CPUs
+  (default budget: the 8 least busy hardware threads for the servers and 4 for the load generators, disjoint, whole cores; `--cpus`, `--load-cpus`). All engines are measured at the same time, one class at a
+  time, so a drift of the host hits them alike, and in round r the engine k takes the CPUs of the lane (k + r) mod n, so a core that the host loads does not stay with one engine (without
+  the rotation a comparison of sift with a build of nearly the same code showed differences of up to 14% in single cells that their standard errors did not explain). `--serial` is the earlier method:
+  one cluster, the engines one after the other, the order rotated every round.
+- **Cache.** The built lanes (the database with its index, in a stopped data directory) are cached by a hash of the adapter, the extension binary, the corpus, the harness, PostgreSQL and the CPU count of the lane.
+- **Rounds and stopping.** Short cells (1 s quick, 2-3 s above) in 2-3 rounds: after the second round only the cells with a relative standard error above 5% are measured again. The standard error of
+  a cell is the sample standard deviation of its rounds over `sqrt(n)`; with n = 2-3 it is itself estimated from two or three numbers, so it is a rough indication, and it leaves out whatever the rounds share
+  (the statement trace, the host). Tables show `median ± stderr (min-max)`, charts one standard error as an error bar, and `!` flags a relative standard error above 10%.
+- **Cold cache.** Per engine and class 12 queries, each after the heap, TOAST and index files of the table were evicted (per relation, `pg_buffercache_evict_relation` and `posix_fadvise`), the lanes in parallel.
+- **pgx-bm25** (`bm25`) runs in every table of a run (it is not in the published tables below, which predate it and were not repeated). Articles: `and`, `or`, `phrase`, `mixed`, `count`, `filter` are native (jsonb queries through
+  `@@@` / `&@@`); `join` is an error cell (the jsonb `@@@` filter above a join is refused by the extension); `fuzzy` is unsupported (NA). Places: `top`, `filter`, `count`, `scan` and the name boost (`bm25_boost`) are native for words of 3 letters or more
+  (`bm25_wildcard`; the extension refuses a wildcard under 3 letters); 1-2 letter words are emulated in the same index with stored edge n-gram columns, reported as part of its index.
+
+### Run time
+
+Wall time of the quick tier on the same host, in the same state (load average 3-12 from other jobs), measured by the old pipeline (one cluster under a quota of 8 CPUs, five engines, cells one engine after the other, 1 s cells) and by the new one
+(default budget of 8 server and 4 load generator CPUs, concurrent lanes; six engines, pgx-bm25 added):
+
+| phase, quick tier | before (5 engines) | now (6 engines) |
+|---|---|---|
+| articles: corpus restore and index builds | 10 s | 4 s with some lanes cached, 6 s from scratch (5 engines) |
+| articles: 7 classes, 2 rounds | 170 s | 44 s |
+| places: setup and index builds | 14 s | 11 s (1 s cached) |
+| places: 24 cells per round, 2 rounds | 246 s | 56 s |
+| both datasets | 440 s | 117 s |
+| cold-cache tables, both datasets | not measured at the quick tier | 53 s |
+| `regress --run` (sift against sift_ref, both datasets, 3-5 rounds) | not available | 60-70 s of measurements |
+| ab tier, articles build phase (150k articles, six engines, one CPU each) | one after the other: the sum of the builds, about 86 s of CREATE INDEX and column fill, plus the restores | 33 s (restores and builds at the same time; the slowest engine, rum with its column, takes 28 s; 1 s once cached) |
+
+What was measured to get there, and what was not taken:
+
+| idea | result |
+|---|---|
+| engines concurrently, one lane each, with `--serial` as the fallback | **taken.** Same cells, 3 engines (sift, pg_search, pg_textsearch), 1 server CPU each: 21-27 s concurrent against 45-51 s serial, and the builds 3 times faster. Cost: the absolute numbers differ (below). |
+| cache of built lanes | **taken.** The ab articles builds took 33 s and 1 s the second time; the lane directories are large (12 GB for the experiments of this change), `bench clean --all` removes them. |
+| shorter cells and 2-3 rounds with stopping at a relative standard error of 5% | **taken** (it is the default of the tiers; quick has 2 rounds of 1 s). |
+| prewarm after the build | **taken** (the first cell of a group no longer pays the reads; the warm-up cell stays). |
+| per-relation cold eviction in all lanes at once | **taken.** 53 s for both datasets and six engines; the number of cold queries per cell stays 12 (cutting it would widen the maximum and p50 of the cell for no gain in time: the cost is the heavy engines' query, not the count). |
+| fixed-seed sample of the trace per class (`--sample N`) | **rejected as the default, kept as an option.** The cells are limited by time, not by the number of statements, so a sample saves no time. It also changes the numbers: with 300 of the 1000 statements of a class, sift `count` ran at 1657 qps against 1020 on the whole trace and pg_textsearch `phrase` at 52 against 14 (heavy statements decide those means), well outside the standard errors. |
+| articles and places sessions at once (`--parallel`) | **rejected.** They would split the CPU budget between two sessions; with the lanes of one session already using it, there is nothing to gain and every cell would move. |
+| cold-cache session at the same time as the warm ones | **rejected.** The evictions would perturb the warm cells; it runs after them. |
+
+Validation of the concurrent method (3 engines, classes `and`, `phrase`, `count`, quick tier, one server CPU and one load CPU per lane, medians of 2 rounds, queries per second; the whole trace in both):
+
+| engine | class | concurrent lanes | `--serial` one cluster | ratio |
+|---|---|---:|---:|---:|
+| sift | and | 2626 ± 268 | 3192 ± 1.5 | 0.82 |
+| sift | phrase | 930 ± 3.7 | 965 ± 12 | 0.96 |
+| sift | count | 1020 ± 29 | 1018 ± 34 | 1.00 |
+| pg_search | and | 873 ± 94 | 1102 ± 34 | 0.79 |
+| pg_search | phrase | 886 ± 17 | 1036 ± 4.7 | 0.86 |
+| pg_search | count | 843 ± 30 | 1075 ± 21 | 0.78 |
+| pg_textsearch | and / phrase / count | 25 / 14 / 123 | 26 / 14 / 132 | 0.96 / 1.0 / 0.93 |
+
+Running the engines at the same time lowers the absolute numbers of the fast engines by up to 20% (probably the memory bandwidth, the caches and the clock of the package that the lanes share; I did not isolate it), pg_search more than sift, so a ratio can move by as
+much as 25% (sift `count` over pg_search: 1.21 concurrent, 0.95 serial; `and`: 3.0 and 2.9; `phrase`: 1.05 and 0.93). For that reason **the published tables above were not re-measured with it**; compare engines within one run and
+use `--serial` (with `--cpus` set to the share of one lane to compare like with like) for numbers that are quoted.
+
+The regression check (`bench/bench regress`) puts sift and sift_ref in the same budget and rotates the CPUs, which is what makes it usable at 3-5 rounds: the control run of the same commit as reference (`--ref` of the commit
+itself) gave 0 regressions in 18 cells, the run with `sift.simd = 'scalar'` applied to the new sift only (a deliberate slowdown) reported five regressions (0.68x-0.94x of the reference) and exit status 1 (the deliberate slowdown was applied through a temporary hook in the adapter that is not committed).
+Against the tag v1.1.0, whose code differs from this checkout (PostgreSQL 17 and 19 support, store changes), four quick runs flagged 1, 0, 1 and 2 cells, not the same ones (the last: articles `count` 0.92x at 2.03 combined
+standard errors, places `w1` p50 1.16x); at this noise level a flagged cell of a quick run is a reason to repeat with `--rounds 5-5`, not a verdict.
+
+Projection for the larger tiers (derived from the measured phases, **not measured**; the full tier was not run for this change): cells cost the time of the cell plus about one second of connection and drain overhead per
+cell group, independent of the engine count, since the engines run at the same time. Articles full: 7 classes, 1 warm-up round and 3 rounds of 3 s, about 2 min; builds of the six engines in parallel, about 1 minute (150k articles: 33 s);
+places full: 24 cell groups per round at 2 s, 3 rounds, about 4 min plus about 1.5 minutes of builds (236k places, 7 times the 34k tier's 11 s); cold-cache tables about 3-4 minutes. In all about 12-15 minutes, 15-20 with margin for a loaded
+host, against 1 h 15 min (2 h with the cold-cache tables) measured for the published run. The ab tier: about 4 minutes (6 with the cold-cache tables), against 50 minutes. A first run still downloads and converts the data once.
+
+### Earlier measurements of the harness (published session, `--serial`, two CPUs)
 
 | | before (review-text corpus) | now |
 |---|---|---|
@@ -470,6 +546,6 @@ pg_textsearch's AND overlap was 0.88 before its score was written `(... <@> ...)
 | places | | 34k tier 22 min (5 rounds, five engines), full 39 min (4 rounds of 2 s, five engines, 45 cells per engine; load 9-36) |
 | cold cache | | articles 4 min 15 s (7 classes, five engines), places 13 min (16 cells per engine, five engines) |
 
-`bench/bench all --full` runs the full tier, the cold-cache tables, writes `docs/results/*.tsv` and redraws `docs/img` in one command (about 2 hours on two pinned cores of this
-host); the prose of this file is not generated. Under this host's load no run reached the early-stop spread. Results are kept as small tables per run (`cells.tsv`, `builds.tsv`,
+`bench/bench all --full` runs the full tier, the cold-cache tables, writes `docs/results/*.tsv` and redraws `docs/img` in one command (the published run took about 2 hours with `--serial` on the 2-CPU budget;
+projected 15-20 minutes with the default budget); the prose of this file is not generated. Under this host's load no run reached the early-stop spread. Results are kept as small tables per run (`cells.tsv`, `builds.tsv`,
 `summary.tsv`, `machine.txt` with the CPU, engine versions and load) in the result directory, and the scratch cluster is removed when the run ends.
