@@ -135,7 +135,8 @@ separate component with its own install, documentation and changelog, see [sqlit
 
 ## Testing, security, license
 
-`make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants).
+`make check` runs every suite in throwaway clusters, in parallel lanes (about 1.5 minutes on 8 cores, 2.5 minutes on the 4 cores of a CI runner;
+`make check-full` adds sanitizers, soak, fuzz and mutants).
 Report crashes, wrong results and index corruption privately as described in [SECURITY.md](SECURITY.md); to contribute see
 [CONTRIBUTING.md](CONTRIBUTING.md). Changes per release: [CHANGELOG.md](CHANGELOG.md). pg_sift is released under the
 [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
