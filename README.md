@@ -14,7 +14,7 @@ bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from
 - Ordinary table semantics: MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes. Crash and replica
   safe through generic WAL ([replication](#replication)), no `shared_preload_libraries`.
 - 1.1: filter pushdown, keyword facets, opt-in parallel scan.
-- Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.4x smaller than pg_search (see [Benchmarks](#benchmarks)).
+- Small indexes: 131 MiB for 218,058 Wikipedia articles with word positions (the default), 1.4x smaller than pg_search's 184 MiB; 52 MiB with `positions = off`, 3.5x smaller (see [Benchmarks](#benchmarks)).
 
 ## Install
 
@@ -245,30 +245,34 @@ its own docker container.
 
 ## Benchmarks
 
-Against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on Simple English Wikipedia (218,058 articles, 8 clients,
-median of 4 interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries and cache state, all five
-engines in one session. Cells are queries per second over pg_search. The CPU budget is a parameter of the harness (`--cpus`, `--load-cpus`; every table
-and chart caption states it): these sessions ran on two pinned CPUs of a loaded host, so absolute numbers are noisy and ratios depend on the CPU the engines get;
-compare engines within a table. The tables of a run carry a standard error per cell.
+Against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1, rum 1.3.15 and pgx-bm25 1.0 on Simple English Wikipedia (218,058 articles, 8 clients,
+median of 2-3 interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries, CPU budget and cache state, all engines in one
+`--serial` session on 8 server and 4 load generator threads of a shared host. Cells are queries per second over pg_search. The CPU budget is a parameter of the
+harness (`--cpus`, `--load-cpus`; every table and chart caption states it); the host was loaded by other jobs, so absolute numbers are noisy and a ratio of 3.8x is not
+distinguishable from 3.0x or 4.5x: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has `value ± standard error` and the range of the rounds for every cell.
 
 | articles | index | build | and | or | phrase | mixed | `count(*)` | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| sift | 47.9 MiB | 3.1 s | 1.67x | 0.95x | 0.47x | 0.89x | 0.40x | 0.67x | 2.77x |
-| sift `phrase_index = pairs` | 267.2 MiB | 15.0 s | 1.70x | 0.77x | 2.00x | 1.18x | 2.08x | 0.97x | 5.58x |
-| pg_search | 161.0 MiB | 9.9 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
-| pg_textsearch | 147.3 MiB | 19.5 s | 0.003x | 1.34x | 0.003x | 0.01x | 0.02x | 0.02x | 0.19x |
-| rum | 309.9 MiB | 32.3 s | 0.27x | 0.005x | 0.01x | 0.009x | 0.02x | 0.008x | 0.07x |
+| sift (`positions = on`, the default) | 130.9 MiB | 2.2 s | 3.84x | 2.89x | 3.27x | 3.55x | 4.65x | 1.79x | 8.91x |
+| sift `positions = off` | 52.5 MiB | 1.7 s | 4.01x | 3.07x | 0.79x | 2.27x | 0.64x | 1.61x | 4.46x |
+| sift `phrase_index = pairs` | 351.5 MiB | 8.9 s | 3.88x | 3.00x | 3.47x | 3.80x | 7.53x | 1.60x | 8.85x |
+| pg_search | 183.6 MiB | 3.1 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
+| pg_textsearch | 147.3 MiB | 10.0 s | 0.002x | 2.69x | 0.011x | 0.005x | 0.010x | 0.006x | 0.076x |
+| rum | 309.9 MiB | 14.9 s | 0.36x | 0.009x | 0.014x | 0.012x | 0.026x | 0.007x | 0.071x |
+| pgx-bm25 | 204.4 MiB | 11.7 s | 0.011x | 0.025x | 0.007x | 0.014x | 0.012x | 0.009x | 0.098x |
 
-The default index is the smallest and quickest to build and wins AND and join, is level on OR and mixed, but is **behind pg_search on
-phrase, `count(*)` and the filtered top-10** (heap recheck); `phrase_index = pairs` fixes that at 5.6x the size. pg_textsearch wins only
-the bare ranked OR (its other queries score every match one by one). rum wins nothing: it is the largest index and needs a stored `tsvector`
-column (28.2 s to fill, 437.7 MiB more). `sift` with `positions = off` (`sift_nopos` in the engine list) is not measured yet.
+With word positions (the default) sift is ahead of pg_search in every class and the index is 1.4x smaller, built in 2.2 s against 3.1 s; its ranked OR is level with
+pg_textsearch's native query (2,567 ± 268 against 2,392 ± 245 queries per second), the only class another engine comes close in. `positions = off` makes the index 3.5x smaller
+than pg_search's but decides phrases in the heap and **loses to pg_search on phrase (0.79x) and `count(*)` (0.64x)**; positions cost 2.5x the index and a 30% slower build. `phrase_index = pairs` adds
+only `count(*)` (1.6x over the default, within the noise elsewhere) for 2.7x the index. pg_textsearch wins only the bare ranked OR (its other queries score every match one by one); rum and pgx-bm25
+are at 0.4x and below in every class (rum's AND is its best) and rum needs a stored `tsvector` column (19.0 s to fill, 437.7 MiB more). The 112 cells of `bench/bench regress` against v1.1.0 flag only index sizes: 2.73x with positions, and
+1.10x for `positions = off` (bitmap groups from 8K postings, for ranked AND 1.6x faster and OR 1.9x) (docs/BENCHMARKS.md).
 
-Places (top-20 p50): index 42.6 MiB / 8.0 s for sift, 125.8 MiB / 39.3 s for pg_search, 68.3 MiB / 16.0 s for pg_textsearch, 94.9 MiB /
-17.9 s for rum. sift is ahead of pg_search in all 45 warm cells (1.03x to 230x), e.g. 0.25 vs 5.22 ms for a whole word. Every cell has a
-number: pg_textsearch has no prefix scoring or field boost and rum no boost, so those workloads run as documented emulations
-(edge n-gram columns, a weighted tsvector) checked against an exact SQL oracle (docs/BENCHMARKS.md). The pg_textsearch emulation ranks every
-match, which costs 8.8 s for a one-letter prefix.
+Places (top-20 p50, ms): sift 0.16-0.27 in every class (index 50.2 MiB, built in 1.4 s), pg_search 0.85-2.68 (142.0 MiB, 2.9 s), pg_textsearch 2.6 ms to 1.0 s (68.3 MiB, 364.5 MiB more for the emulation), rum 0.31 to 108
+(94.9 MiB), pgx-bm25 4.8 to 72 (103.3 MiB). sift is ahead of every engine in all 45 warm cells: 1.4x to 30x over pg_search (median 10.9x; the closest is the unordered scan of a one-letter prefix, 11.2 against 16.1 ms), e.g. 0.17 vs 1.30 ms for a whole word.
+Every cell has a number: pg_textsearch has no prefix scoring or field boost and rum no boost, so those workloads run as documented emulations (edge n-gram columns, a weighted tsvector), and
+pgx-bm25 emulates 1-2 letter words inside its index (docs/BENCHMARKS.md). The pg_textsearch emulation ranks every match, which costs 1.0 s for a one-letter prefix. **sift's ranking of a short prefix agrees less with a BM25-over-n-grams oracle than pg_search's does**
+(top-20 agreement over all classes at 34,165 places: 0.83 against 0.98, and 0.46 for a one-letter prefix): it scores a prefix as the best of the words it expands to, not by n-grams.
 
 ![Index size](docs/img/index-size.svg)
 ![Build time](docs/img/build-time.svg)
@@ -277,7 +281,7 @@ match, which costs 8.8 s for a one-letter prefix.
 ![Autocomplete latency](docs/img/places-latency.svg)
 
 Cold-cache tables, method and smaller tiers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md); raw tables: [docs/results/](docs/results/);
-reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); the reduced tier takes about 2 minutes). `bench/bench regress --run` measures this checkout against an earlier
+reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); the reduced tier takes about 2 minutes, the published numbers `bench/bench all --full --serial`, about 50 minutes). `bench/bench regress --run` measures this checkout against an earlier
 release (default v1.1.0) and exits non-zero on a regression. Changes per release: [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing, security, license
