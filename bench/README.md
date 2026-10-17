@@ -36,7 +36,7 @@ rewritten (`check` produces the correctness numbers).
 Prerequisites: PostgreSQL 18 with its development packages and contrib (`pg_config`, PGXS, `pgbench`, `psql`, the
 server tools, `pg_stat_statements`, `pg_prewarm`, `pg_buffercache`), `gcc` and `make`, `python3`, `curl`, `bzip2`,
 `unzip`, `ar`, `flock`, `zstd`, network access, free space under `$BENCH_WORK` (default
-`/tmp/sift-bench`; a fast disk or tmpfs): about 2 GB for the slim tier, FOOT_FULL_NOW for `--full`, at the peak of a run (Footprint, below). Nothing is installed system-wide and no sudo is needed. `setup`
+`/tmp/sift-bench`; a fast disk or tmpfs): about 2 GB for the slim tier, about 5.5 GB for `--full`, at the peak of a run (Footprint, below). Nothing is installed system-wide and no sudo is needed. `setup`
 checks all of this before it downloads anything.
 
 Elasticsearch is the system package (`pacman -S elasticsearch`: `/usr/share/elasticsearch`, `ES_HOME` overrides it) and `setup` fails with that hint when it is missing; nothing is
@@ -346,7 +346,7 @@ Measured on this host (slim tier, seven engines; the peak is the sampler's maxim
 | setup (five engines) | 163 s | 74 s |
 | peak of the first session | 4.4 GiB (quick, 25,000 articles, five engines) | 2.0 GiB (slim, 50,000 articles, seven engines, `--docs` with the cold-cache tables; 1.8 GiB for `all` alone) |
 | left after the session | 3.3 GiB, plus 2.1 GiB of orphaned lanes per further session (6.5 GiB after the second, 19.6 GiB after a full-tier probe) | 0.47 GiB: the datasets, the engines and the dump of the tier |
-| full tier, one class, one round | FOOT_FULL_NOW_BEFORE | FOOT_FULL_NOW_AFTER |
+| full tier, one class, one round | 18.7 GiB peak, 15.3 GiB left (five engines) | 5.2 GiB peak, 2.6 GiB left with `--keep` (the lanes cached; 136 s against 143 s) |
 
 What made it large, and what changed: the cache of lanes was never pruned and its key changed with every rebuild of the extension (orphans); a lane held the `bench`
 template next to the engine's database (`adopt_db` renames it now); the write-ahead log the build recycled was cached (`lane_trim`); cached lanes were uncompressed (zstd now, written
