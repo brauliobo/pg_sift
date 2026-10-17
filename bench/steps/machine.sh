@@ -38,6 +38,14 @@ echo "engine budget: $([[ $BUDGET_ENFORCED == yes ]] && echo "taskset to the CPU
 echo "engines: sift $(ext_version pg_sift) ($(sift_commit)), pg_search $(ext_version pg_search) ($(ext_origin pg_search); pinned $PARADEDB_VERSION)," \
   "pg_textsearch $(ext_version pg_textsearch) ($(ext_origin pg_textsearch); pinned tag v$PG_TEXTSEARCH_VERSION, commit ${PG_TEXTSEARCH_COMMIT:0:12}), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)," \
   "pgx-bm25 $(ext_version bm25_native) ($(ext_origin bm25_native))"
+es_description() { # the Elasticsearch of the run, when it is installed: the system package's version, its JVM, heap, shards
+  local es=${ES_HOME:-/usr/share/elasticsearch} ver jvm
+  [[ -x $es/bin/elasticsearch ]] || return 0
+  ver=$(pacman -Q elasticsearch 2>/dev/null | cut -d' ' -f2)
+  jvm=$("$es/jdk/bin/java" -version 2>&1 | sed -n '2p' | sed 's/^OpenJDK Runtime Environment //')
+  echo "elasticsearch: ${ver:-unknown} (system package at $es, bundled JDK link $jvm, heap ${ES_HEAP:-${TIER_SHBUF[$TIER]%B}}, 1 shard, no replica, security off)"
+}
+es_description
 echo "sift commit: $(sift_commit)"
 [[ -f $ENG/sift_ref/root/.build-info ]] && echo "sift reference build: $(cat "$ENG/sift_ref/root/.build-info")"
 echo "load average at start: $(cut -d' ' -f1-3 /proc/loadavg)"

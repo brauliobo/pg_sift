@@ -62,6 +62,11 @@ lanes_rotate() {
       pid=$(head -1 "${LANE_DATA[$e]}/postmaster.pid")
       for p in "$pid" $(pgrep -P "$pid"); do taskset -a -pc "${LANE_CPUS[$e]}" "$p" >/dev/null; done
     fi
+    # an engine outside Postgres (xlib.sh): its server process, every thread
+    if declare -F is_external >/dev/null && is_external "$e"; then
+      pid=$(xe "$e" x_pid 2>/dev/null) || pid=''
+      [[ -z $pid ]] || taskset -a -pc "${LANE_CPUS[$e]}" "$pid" >/dev/null
+    fi
     k=$(( k + 1 ))
   done
 }
@@ -98,9 +103,9 @@ lane_key() { # ENGINE INPUTS...: INPUTS are files (and strings) the build of the
       echo "$TIER $(pg_config --version) $(cpu_count "${LANE_CPUS[$e]}") ${BUILD_WORKERS:-}"
     } | sha256sum | cut -c1-20 )
 }
-serial_key() { # INPUTS...: the key of the one cluster of a serial session, the databases of every engine of $ENGINES in it
+serial_key() { # INPUTS...: the key of the one cluster of a serial session, the databases of every engine of $KEY_ENGINES (default $ENGINES) in it
   local e
-  for e in $ENGINES; do lane_key "$e" "$@"; done | sha256sum | cut -c1-20
+  for e in ${KEY_ENGINES-$ENGINES}; do lane_key "$e" "$@"; done | sha256sum | cut -c1-20
 }
 lane_cached() { [[ -z ${NO_CACHE:-} && -d $LANE_CACHE/$2 ]]; }   # ENGINE KEY
 lane_restore() { # ENGINE KEY: the data directory of the lane from the cache (the build rows go to $RUN)
