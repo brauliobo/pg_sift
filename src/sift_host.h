@@ -14,7 +14,7 @@
  *   regex        pg_regcomp/pg_regexec/pg_regfree over pg_wchar
  *   bits, atomics, spin locks, dsa_*: the primitives of sift_parallel.c, which a host without shared memory implements
  *                with threads and malloc
- *   temp files   BufFile (sorted runs of the builder)
+ *   temp files   BufFile (the sorted runs of sift_runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
  *   storage      the page/extent store of sift_store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
  *                stream reader/writer. This is a link-time interface (sift_store.c in PostgreSQL, sqlite/sqstore.c in
  *                SQLite): the hot path (sift_sr_get) is a plain call, never a table of function pointers.
@@ -47,6 +47,7 @@
 #include "common/shortest_dec.h"
 #include "datatype/timestamp.h"
 #include "executor/tuptable.h"
+#include "lib/binaryheap.h"
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
@@ -61,6 +62,7 @@
 #include "storage/bufpage.h"
 #include "storage/itemptr.h"
 #include "storage/s_lock.h"
+#include "storage/sharedfileset.h"
 #include "utils/builtins.h"
 #include "utils/dsa.h"
 #include "utils/guc.h"
