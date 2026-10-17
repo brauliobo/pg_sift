@@ -14,17 +14,20 @@
 #
 # Needs bench/bench setup (the engines, the places dataset). Every round times every cell (a workload on a query class) on every
 # engine, all engines at the same time in their lanes (SERIAL=1: one cluster, the engines one after the other with the order
-# rotating): a single client, p50 and p95 from the transaction latencies, pgbench seeded alike. After MINR rounds only the cells whose
-# p50 has a relative standard error above RSE (default 5%) are measured again, up to MAXR rounds.
+# rotating): a single client, p50 and p95 from the transaction latencies, pgbench seeded alike, measured by steps/cell.py until the
+# relative standard error of the p50 is at most RSE (default 5%, order statistics) with at least MIN_TIME seconds and MIN_N
+# transactions, and at most SECS seconds. After MINR rounds only the cells whose p50 has a relative standard error above RSE are
+# measured again, up to MAXR rounds, unless the error of one round alone is so large that more rounds cannot reach RSE (steps/lib.sh).
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds}.tsv (cold.tsv for cold), machine.txt and phases.txt.
 # KEEP=1 keeps the lanes.
-# Env: ENGINES CLASSES WLS SECS MINR MAXR RSE NQ (cold queries per class; check: queries per class) TIMEOUT (statement_timeout of a
-# cell, default 120s: slower cells are reported as error) SERIAL NO_CACHE CPUS LOAD_CPUS RESULTS DEST.
+# Env: ENGINES CLASSES WLS SECS (the longest a cell is measured) MIN_TIME MIN_N MINR MAXR RSE NQ (cold queries per class; check: queries
+# per class) TIMEOUT (statement_timeout of a cell, default 120s: slower cells are reported as error) SERIAL NO_CACHE CPUS LOAD_CPUS
+# RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
   quick) export TIER=Q; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p3 w1 a2 a3 x2}; WLS=${WLS:-top boost filter count} ;;
-  full)  export TIER=F; SECS=${SECS:-2} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
+  full)  export TIER=F; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
   *) sed -n '2,5p' "$0"; exit 1 ;;
 esac
 [[ $what != check ]] || export SERIAL=1 NO_CACHE=1   # the oracle tables live in one `places` database that every engine's database is a copy of
@@ -32,7 +35,7 @@ esac
 MAIN_PORT_OFFSET=1 MAIN_DATA=$ROOT/pg/${TIER}places   # the main cluster of the session (serial mode, check): not the articles'
 LANE_PORT_BASE=$(( ${TIER_PORT[$TIER]} + 50 ))
 . "$STEPS/lanes.sh"
-NQ=${NQ:-12}
+NQ=${NQ:-12} RSE=${RSE:-0.05} MIN_TIME=${MIN_TIME:-0.25} MIN_N=${MIN_N:-3}
 [[ $what != check ]] || NQ=${4:-30}
 DATADIR=$DATA/places-$([[ $TIER == Q ]] && echo quick || echo full)
 RESULTS=${RESULTS:-$BENCH/out/ab}
@@ -169,14 +172,12 @@ if [[ $what == check ]]; then   # per engine and workload: the oracle's agreemen
   exit 0
 fi
 
-cell() { # WORKLOAD CLASS ENGINE -> "p50 p95" ms of single-client transactions: one primary-key lookup of the query text plus the statement
-  local e=$3 f=$ROOT/places/$3.sql log=$ROOT/places/$3.log
-  [[ -n $(stmt "$1" "$e") ]] || { echo "NA NA"; return; }   # the engine has no such query
+cell() { # WORKLOAD CLASS ENGINE -> "p50 p95 stderr-of-p50 transactions seconds" (ms, tab separated) of single-client transactions: one primary-key lookup of the query text plus the statement
+  local e=$3 f=$ROOT/places/$3.sql
+  [[ -n $(stmt "$1" "$e") ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }   # the engine has no such query
   { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$e");"; } >"$f"
-  rm -f "$log"*
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" loadgen pgbench -n -f "$f" -c 1 -T "$SECS" -l --log-prefix="$log" --random-seed=7 "$(edb "$e")" >/dev/null 2>&1 || { echo "nan nan"; return; }
-  sort -n -k3,3 "$log"* | awk '{v[NR] = $3} END {printf "%.3f %.3f", v[int((NR + 1) / 2)] / 1000, v[int(NR * 0.95) < 1 ? 1 : int(NR * 0.95)] / 1000}'
-  rm -f "$log"*
+  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" loadgen python3 -I "$STEPS/cell.py" latency --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
+    --min-n "$MIN_N" --hint "$ROOT/places/$e.$1.$2.hint" --tmp "$ROOT/places" -- -n -f "$f" -c 1 "$(edb "$e")"
 }
 group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, all at once in their lanes (concurrent) or one after the other
   local wl=$1 c=$2 e; shift 2
@@ -185,12 +186,12 @@ group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, all at once in 
   done
   wait
 }
-printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\n' >"$DEST/cells.tsv"
-stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6) ]]; }   # no cell needs another round
+printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
+stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
 cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR rounds, then those whose p50 is above the error target
   # shellcheck disable=SC2086  # one argument per engine
   if (( $1 <= MINR )); then rotated "$1" $ENGINES
-  else rse_cells "$DEST/cells.tsv" 3,4,5 6 | awk -F'\t' -v w="$2" -v c="$3" '$1 == w && $2 == c {print $3}'; fi
+  else rse_cells "$DEST/cells.tsv" 3,4,5 6 8 | awk -F'\t' -v w="$2" -v c="$3" '$1 == w && $2 == c {print $3}'; fi
 }
 round() {
   local wl c e engs
@@ -201,7 +202,7 @@ round() {
     [[ -n $engs ]] || continue
     # shellcheck disable=SC2086  # one argument per engine
     group "$wl" "$c" $engs
-    for e in $engs; do printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$(tr ' ' '\t' <"$ROOT/places/$e.val")" >>"$DEST/cells.tsv"; done
+    for e in $engs; do printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$(cat "$ROOT/places/$e.val")" >>"$DEST/cells.tsv"; done
   done; done
 }
 rounds round
