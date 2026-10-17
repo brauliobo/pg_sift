@@ -9,6 +9,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
   smaller segments instead (about 20 for 400,000 such rows at 20,000 postings a term; at the default budget the layout is the same).
 
+- Fix: `CREATE INDEX` no longer fails with `segment dictionary exceeds 4 GB` or `postings of one term exceed 4 GB` (the lengths and offsets
+  of the format are 32 bits): the runs of a build merge, and make a segment, only while their largest term and their dictionary stay
+  under those limits (estimated high, so a segment holds up to a third of them), and the build writes more segments instead.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
