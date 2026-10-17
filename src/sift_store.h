@@ -57,8 +57,13 @@
 #include "sift_page.h"
 
 #ifdef SIFT_TESTING
-/* Testing knob (sift.test_fail_pages, 0 = off): pages a SHARED write target writes before it fails */
+/*
+ * Testing knobs (sift.test_*, 0 = off): pages a SHARED write target writes before it fails, extents a
+ * segment stream may use, a block allocated by another backend after every run a SHARED stream takes
+ */
 extern PGDLLIMPORT int sift_test_fail_pages;
+extern PGDLLIMPORT int sift_test_max_extents;
+extern PGDLLIMPORT bool sift_test_run_gap;
 extern void sift_store_test_init(void);
 #endif
 
@@ -193,6 +198,7 @@ typedef struct SiftExtentList
 	SiftExtent *ext;
 	int			n;
 	int			cap;
+	int			max;			/* extents a stream may use: what a header page lists, less for tests */
 } SiftExtentList;
 
 static inline void
@@ -200,6 +206,7 @@ sift_extlist_init(SiftExtentList *l)
 {
 	l->n = 0;
 	l->cap = 8;
+	l->max = SIFT_MAX_EXTENTS;
 	l->ext = palloc(l->cap * sizeof(SiftExtent));
 }
 
@@ -214,10 +221,10 @@ sift_extlist_add(SiftExtentList *l, BlockNumber blk)
 		last->nblocks++;
 		return;
 	}
-	if (l->n == SIFT_MAX_EXTENTS)
+	if (l->n == l->max)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift segment stream needs more than %d extents", (int) SIFT_MAX_EXTENTS)));
+				 errmsg("sift segment stream needs more than %d extents", l->max)));
 	if (l->n == l->cap)
 	{
 		l->cap *= 2;

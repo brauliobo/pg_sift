@@ -28,6 +28,7 @@
 #define FIRST_DATA_BLKNO	(SIFT_DIRECTORY_BLKNO + 1)
 #define RUN_MIN				16
 #define RUN_MAX				1024
+#define RUN_BIG				8192
 #define EXTENT_TARGET		256
 
 #define META(page)	((SiftMetaPageData *) SiftPageGetData(page))
@@ -39,6 +40,8 @@
 
 #ifdef SIFT_TESTING
 int			sift_test_fail_pages = 0;
+int			sift_test_max_extents = 0;
+bool		sift_test_run_gap = false;
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
 #else
 #define TEST_KNOB(knob, normal)	(normal)
@@ -960,6 +963,11 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 		last->nblocks += *got;
 	else
 		wt->taken[wt->ntaken++] = (SiftExtent) {start, *got};
+#ifdef SIFT_TESTING
+	/* another backend allocating in between: the next run is not adjacent to this one */
+	if (sift_test_run_gap)
+		UnlockReleaseBuffer(sift_alloc_page(wt->index, SIFT_PT_FREE, 0));
+#endif
 	return start;
 }
 
@@ -1123,6 +1131,7 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	sw->gen = gen;
 	sw->grow = RUN_MIN;
 	sift_extlist_init(&sw->ext);
+	sw->ext.max = TEST_KNOB(sift_test_max_extents, (int) SIFT_MAX_EXTENTS);
 	if (wt->bulk == NULL)
 		sw->local = palloc_aligned(sizeof(PGIOAlignedBlock), PG_IO_ALIGN_SIZE, 0);
 	return sw;
@@ -1143,6 +1152,17 @@ sw_flush(SiftStreamWriter *sw)
 	wt_put(sw->wt, sw->blk, sw->page);
 	sw->page = NULL;
 	CHECK_FOR_INTERRUPTS();
+}
+
+/*
+ * Runs grow with the stream, so a segment of any size fits the extents its header page lists: by
+ * RUN_MAX blocks as before, then a 16th of what is written, up to RUN_BIG (a metapage-locked
+ * extension of 64 MB at most).
+ */
+static uint32
+run_cap(const SiftStreamWriter *sw)
+{
+	return Max(RUN_MAX, Min(RUN_BIG, sw->pos / SIFT_PAGE_PAYLOAD / 16));
 }
 
 /*
@@ -1180,7 +1200,7 @@ sw_start_page(SiftStreamWriter *sw)
 		sw->run_next = wt_take(sw->wt, run_want(sw, min), min, &got);
 		sw->run_end = sw->run_next + got;
 		sw->blocks += got;
-		sw->grow = Min(sw->grow * 2, RUN_MAX);
+		sw->grow = Min(sw->grow * 2, run_cap(sw));
 	}
 	sw->blk = sw->run_next++;
 	sift_extlist_add(&sw->ext, sw->blk);

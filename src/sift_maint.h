@@ -9,6 +9,11 @@
 
 #include "utils/rel.h"
 
+#ifdef SIFT_TESTING
+/* Testing knob (sift.test_merge_max_kb, 0 = off): bytes of the segments one merge may read, in kB */
+extern PGDLLIMPORT int sift_test_merge_max_kb;
+#endif
+
 /* Called by aminsert after an append crossed mutable_limit */
 extern void sift_maint_after_seal(Relation index);
 
