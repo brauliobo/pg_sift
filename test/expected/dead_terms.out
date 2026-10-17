@@ -33,8 +33,11 @@ SELECT id FROM dt WHERE body @@> 'ri?*' ORDER BY sift.score(ctid) DESC, id LIMIT
 
 SET sift.max_expansions = 500;
 SELECT count(*) FROM dt WHERE body @@> 'ri?*';
-ERROR:  sift: the leaf at position 1 expands to more than 500 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+   560
+(1 row)
+
 SELECT count(*) FROM dt WHERE body @@> 'ri*';
  count 
 -------
@@ -108,8 +111,11 @@ SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
 
 SET sift.max_expansions = 500;
 SELECT count(*) FROM dt2 WHERE body @@> 'ri?*';
-ERROR:  sift: the leaf at position 1 expands to more than 500 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+   650
+(1 row)
+
 SELECT count(*) FROM dt2 WHERE body @@> 'ri*';
  count 
 -------

@@ -454,15 +454,6 @@ leaf_term_cmp(const void *a, const void *b)
 	return c ? c : x->len - y->len;
 }
 
-static void
-limit_error(const SiftQNode *leaf)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-			 errmsg("sift: the leaf at position %d expands to more than %d terms", leaf->loc, sift_max_expansions),
-			 errhint("Narrow the pattern or raise sift.max_expansions.")));
-}
-
 /* Terms across segments are distinct only once */
 static int
 distinct_terms(const SiftPlan *p, const EvalLeaf *l)
@@ -540,32 +531,53 @@ expand_live(SiftPlan *p, EvalLeaf *l)
 	return any;
 }
 
-/* The term that indexed_leaf makes of a prefix of the leaf's field */
-static int
-prefix_term(const SiftQNode *n, char *term)
+/*
+ * The term that indexed_leaf makes of a prefix of the leaf's field; the name of any other wide leaf is one
+ * byte no word starts with, and its cache key (NULL when too long to be one) tells it from the others
+ */
+static void
+wide_names(SiftPlan *p, EvalLeaf *l, char **ckey, int *cklen)
 {
+	const SiftQNode *n = l->node;
 	int			len = 0;
 
-	if (n->field)
-		term[len++] = SIFT_FIELD_BYTE(n->field);
-	term[len++] = SIFT_PREFIX_SEP;
-	memcpy(term + len, n->text, n->textlen);
-	return len + n->textlen;
+	*ckey = MemoryContextAlloc(p->mcxt, n->textlen + 4);
+	if (n->kind == SQ_PREFIX)
+	{
+		if (n->field)
+			(*ckey)[len++] = SIFT_FIELD_BYTE(n->field);
+		(*ckey)[len++] = SIFT_PREFIX_SEP;
+		memcpy(*ckey + len, n->text, n->textlen);
+		l->wide = *ckey;
+		l->widelen = *cklen = len + n->textlen;
+		return;
+	}
+	l->wide = pstrdup("\xFF");
+	l->widelen = 1;
+	(*ckey)[len++] = 0xFF;
+	(*ckey)[len++] = n->kind;
+	(*ckey)[len++] = n->fuzzy;
+	(*ckey)[len++] = n->field;
+	memcpy(*ckey + len, n->text, n->textlen);
+	*cklen = len + n->textlen;
+	if (*cklen > SIFT_MAX_TERM_BYTES + 2)
+		*ckey = NULL;
 }
 
 /*
- * A prefix with more terms than the limit is not an OR of its terms, one weight each: it reads as the
- * one term prefix_index would have indexed for it (sift_prefix.c), in every segment, so that the
+ * A leaf with more terms than the limit is not an OR of its terms, one weight each: it reads as the one
+ * term that holds the documents with a word the leaf matches, tf the number of those words (for a prefix
+ * the one term prefix_index would have indexed for it, sift_prefix.c), in every segment, so that the
  * leaf is weighed alike everywhere.
  */
 static void
 widen_leaf(SiftPlan *p, EvalLeaf *l)
 {
-	const SiftQNode *node = l->node;
 	SiftScoreRef ref = {(float4) p->st->dir.meta.k1, (float4) p->st->dir.meta.b, 0};
+	char	   *ckey;
+	int			cklen;
 
-	l->wide = MemoryContextAlloc(p->mcxt, node->textlen + 2);
-	l->widelen = prefix_term(node, l->wide);
+	wide_names(p, l, &ckey, &cklen);
 	for (int s = 0; s < p->nsegs; s++)
 	{
 		LeafTerm   *t = MemoryContextAllocZero(p->mcxt, sizeof(LeafTerm));
@@ -575,7 +587,7 @@ widen_leaf(SiftPlan *p, EvalLeaf *l)
 		if (l->terms[s])
 			pfree(l->terms[s]);
 		ref.avgdl = p->seg[s]->hdr->avgdl_ref;
-		t->blob = sift_prefix_union(p->seg[s], l->m, l->wide, l->widelen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
+		t->blob = sift_prefix_union(p->seg[s], l->m, ckey, cklen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
 		t->term = l->wide;
 		t->len = l->widelen;
 		l->nterms[s] = t->info.df > 0;
@@ -587,8 +599,8 @@ widen_leaf(SiftPlan *p, EvalLeaf *l)
  * A dictionary keeps the terms of vacuumed docs until its segment is
  * rewritten. They match nothing, so the limit applies to the terms with a
  * live posting; they are only told apart once the limit is reached, which
- * keeps the common expansion free of posting reads. A prefix over the limit
- * is wide, any other leaf is an error.
+ * keeps the common expansion free of posting reads. A leaf over the limit is
+ * wide.
  */
 static void
 resolve_leaf(SiftPlan *p, EvalLeaf *l)
@@ -606,11 +618,8 @@ resolve_leaf(SiftPlan *p, EvalLeaf *l)
 		over = expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true));
 	over |= !p->capped && distinct_terms(p, l) > sift_max_expansions &&
 		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions);
-	if (!over)
-		return;
-	if (node->kind != SQ_PREFIX)
-		limit_error(node);
-	widen_leaf(p, l);
+	if (over)
+		widen_leaf(p, l);
 }
 
 /* ---------- mutable segments ---------- */
@@ -826,10 +835,13 @@ bind_mutable(SiftPlan *p)
 										 p->scoring ? mut_leaf_ok : mut_page_ok, p);
 		SiftMutDoc	doc;
 		uint64		n,
-					sum;
+					sum,
+					seen = 0;
 
 		while (sift_mut_next(r, &doc))
 		{
+			if ((++seen & 1023) == 0)
+				CHECK_FOR_INTERRUPTS();
 			if (p->scoring)
 				doc_count_terms(p, &doc);
 			if (doc.deleted || !doc_matches(p, p->root, &doc))
