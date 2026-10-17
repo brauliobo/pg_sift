@@ -371,7 +371,7 @@ cmd_fuzz(long iters, unsigned long seed)
 /* Benchmark: one document per line (text after the first tab, if any) */
 
 static double
-now(void)
+wall_seconds(void)
 {
 	struct timespec ts;
 
@@ -404,7 +404,7 @@ cmd_bench(const char *path, int mode, SiftStemmer stem, int reps)
 	}
 	for (int r = 0; r < reps; r++)
 	{
-		double		t0 = now(),
+		double		t0 = wall_seconds(),
 					t1,
 					t2;
 		long		sink = 0;
@@ -417,16 +417,16 @@ cmd_bench(const char *path, int mode, SiftStemmer stem, int reps)
 		ntok = 0;
 		for (long d = 0; d < ndocs; d++)
 			ntok += sift_analyze_tokens(a, text + starts[d], lens[d], &t);
-		t1 = now();
+		t1 = wall_seconds();
 		for (long d = 0; d < ndocs; d++)
 			sink += sift_analyze_doc(a, text + starts[d], lens[d], &tf, &dl);
-		t2 = now();
+		t2 = wall_seconds();
 		for (long d = 0; d < ndocs; d++)
 			for (sift_analyze_begin(&ts, text + starts[d], lens[d]); sift_analyze_next(a, &ts, &tok);)
 				sink += tok.len;
 		best[0] = Min(best[0], t1 - t0);
 		best[1] = Min(best[1], t2 - t1);
-		best[2] = Min(best[2], now() - t2);
+		best[2] = Min(best[2], wall_seconds() - t2);
 		if (sink == 42)
 			printf(" ");
 	}
