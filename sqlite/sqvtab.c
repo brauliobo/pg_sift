@@ -117,7 +117,6 @@ options_default(SqOptions *o)
 	o->base.case_folding = true;
 	o->base.accent_folding = true;
 	o->base.positions = true;
-	o->base.phrase_index = SIFT_PHRASE_NONE;
 	o->base.analyzer = SIFT_ANALYZER_TEXT;
 	strcpy(o->stemmer, "english");
 }
