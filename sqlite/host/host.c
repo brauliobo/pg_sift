@@ -2,7 +2,7 @@
  * shim.c - the PostgreSQL backend services the portable sift sources call, over the C library: memory contexts,
  * ereport, StringInfo, List, dynahash, UTF-8 multibyte helpers and spool files. Only what src/ uses.
  */
-#include "postgres.h"
+#include "host.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -912,6 +912,146 @@ BufFileReadExact(BufFile *file, void *ptr, size_t size)
 {
 	if (fread(ptr, 1, size, file->f) != size)
 		elog(ERROR, "could not read from a temporary file");
+}
+
+size_t
+BufFileRead(BufFile *file, void *ptr, size_t size)
+{
+	return fread(ptr, 1, size, file->f);
+}
+
+BufFile *
+BufFileCreateFileSet(FileSet *fileset, const char *name)
+{
+	elog(ERROR, "sift: no shared file sets in this host");
+	return NULL;
+}
+
+void
+BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok)
+{
+	elog(ERROR, "sift: no shared file sets in this host");
+}
+
+int			maintenance_work_mem = 64 * 1024;
+
+/* ---------- binary heap: the comparator puts the node that is to come out first on top ---------- */
+
+struct binaryheap
+{
+	int			size,
+				space;
+	binaryheap_comparator cmp;
+	void	   *arg;
+	Datum	   *nodes;
+};
+
+binaryheap *
+binaryheap_allocate(int capacity, binaryheap_comparator compare, void *arg)
+{
+	binaryheap *h = palloc(sizeof(binaryheap));
+
+	h->size = 0;
+	h->space = Max(capacity, 1);
+	h->cmp = compare;
+	h->arg = arg;
+	h->nodes = palloc(h->space * sizeof(Datum));
+	return h;
+}
+
+void
+binaryheap_free(binaryheap *heap)
+{
+	pfree(heap->nodes);
+	pfree(heap);
+}
+
+static void
+heap_sift_down(binaryheap *h, int i)
+{
+	Datum		node = h->nodes[i];
+
+	for (;;)
+	{
+		int			l = 2 * i + 1,
+					c = l;
+
+		if (l >= h->size)
+			break;
+		if (l + 1 < h->size && h->cmp(h->nodes[l + 1], h->nodes[l], h->arg) > 0)
+			c = l + 1;
+		if (h->cmp(h->nodes[c], node, h->arg) <= 0)
+			break;
+		h->nodes[i] = h->nodes[c];
+		i = c;
+	}
+	h->nodes[i] = node;
+}
+
+static void
+heap_sift_up(binaryheap *h, int i)
+{
+	Datum		node = h->nodes[i];
+
+	while (i > 0 && h->cmp(node, h->nodes[(i - 1) / 2], h->arg) > 0)
+	{
+		h->nodes[i] = h->nodes[(i - 1) / 2];
+		i = (i - 1) / 2;
+	}
+	h->nodes[i] = node;
+}
+
+void
+binaryheap_add_unordered(binaryheap *heap, Datum d)
+{
+	if (heap->size >= heap->space)
+		elog(ERROR, "out of binary heap slots");
+	heap->nodes[heap->size++] = d;
+}
+
+void
+binaryheap_build(binaryheap *heap)
+{
+	for (int i = heap->size / 2 - 1; i >= 0; i--)
+		heap_sift_down(heap, i);
+}
+
+void
+binaryheap_add(binaryheap *heap, Datum d)
+{
+	binaryheap_add_unordered(heap, d);
+	heap_sift_up(heap, heap->size - 1);
+}
+
+Datum
+binaryheap_first(binaryheap *heap)
+{
+	return heap->nodes[0];
+}
+
+Datum
+binaryheap_remove_first(binaryheap *heap)
+{
+	Datum		first = heap->nodes[0];
+
+	heap->nodes[0] = heap->nodes[--heap->size];
+	if (heap->size > 0)
+		heap_sift_down(heap, 0);
+	return first;
+}
+
+void
+binaryheap_replace_first(binaryheap *heap, Datum d)
+{
+	heap->nodes[0] = d;
+	if (heap->size > 1)
+		heap_sift_down(heap, 0);
+}
+
+bool
+binaryheap_empty(binaryheap *heap)
+{
+	return heap->size == 0;
 }
 
 int

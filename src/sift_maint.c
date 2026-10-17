@@ -27,11 +27,10 @@
 #include "sift_am.h"
 #include "sift_build.h"
 #include "sift_maint.h"
+#include "sift_merge.h"
 #include "sift_mutable.h"
 #include "sift_sql.h"
 
-#define MERGE_FANIN			8		/* segments of a tier that trigger a merge */
-#define MERGE_MAX_SEGMENTS	32		/* more segments than this trigger a merge */
 #define REQUEST_INTERVAL_MS	2000
 #define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
 
@@ -280,77 +279,13 @@ sift_maint_promote(Relation index, bool wait)
 
 /* ---------- merge ---------- */
 
-static int
-tier_of(const SiftSegEntry *s, uint64 base)
-{
-	uint64		r = s->bytes / Max(base, 1);
-	int			t = 0;
-
-	for (; r >= MERGE_FANIN; r /= MERGE_FANIN)
-		t++;
-	return t;
-}
-
-static int
-bytes_cmp(const void *a, const void *b)
-{
-	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
-}
-
-/*
- * The segments to merge: MERGE_FANIN or more of one tier, else the smallest
- * MERGE_FANIN when the index has too many, else a lone segment that is more
- * than half dead. force: all immutable segments, a lone one only if some of
- * its docs are dead (the rewrite drops them and their terms). Returns their
- * number in sel.
- */
+/* The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit */
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
-	uint64		base = (uint64) sift_index_options(index)->mutable_limit * 1024;
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
-	int			n = 0;
+	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN};
 
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			imm[n++] = snap->segs[i];
-	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
-	if (force)
-	{
-		memcpy(sel, imm, n * sizeof(SiftSegEntry));
-		return n > 1 || (n == 1 && (imm[0].flags & SIFT_SEG_DIRTY)) ? n : 0;
-	}
-	for (int i = 0; i + MERGE_FANIN <= n; i++)
-		if (tier_of(&imm[i], base) == tier_of(&imm[i + MERGE_FANIN - 1], base))
-		{
-			int			k = 0;
-
-			for (int j = i; j < n && tier_of(&imm[j], base) == tier_of(&imm[i], base) && k < 2 * MERGE_FANIN; j++)
-				sel[k++] = imm[j];
-			return k;
-		}
-	if (snap->nsegs > MERGE_MAX_SEGMENTS && n >= 2)
-	{
-		memcpy(sel, imm, Min(n, MERGE_FANIN) * sizeof(SiftSegEntry));
-		return Min(n, MERGE_FANIN);
-	}
-	for (int i = 0; i < n; i++)
-	{
-		SiftSegment *seg;
-		bool		mostly_dead;
-
-		if (!(imm[i].flags & SIFT_SEG_DIRTY))
-			continue;
-		seg = sift_seg_open(index, &imm[i], CurrentMemoryContext);
-		mostly_dead = sift_seg_live_docs(seg) * 2 < imm[i].ndocs;
-		sift_seg_close(seg);
-		if (mostly_dead)
-		{
-			sel[0] = imm[i];
-			return 1;
-		}
-	}
-	return 0;
+	return sift_merge_pick(index, &pol, snap, force, sel);
 }
 
 static void

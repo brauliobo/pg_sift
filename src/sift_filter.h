@@ -10,7 +10,7 @@
 #ifndef SIFT_FILTER_H
 #define SIFT_FILTER_H
 
-#include "nodes/tidbitmap.h"
+#include "sift_host.h"
 
 #include "sift.h"
 

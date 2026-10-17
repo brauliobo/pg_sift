@@ -1,13 +1,12 @@
 /*
  * sqbuild.c - segment construction for the SQLite table: an in-memory inverted buffer (the role of SiftInvBuf in
  * src/sift_build.c, whose heap build, spill files and parallel workers do not apply), written as an
- * immutable segment through the unmodified segment writer, and deletion of one document by clearing its liveness bit.
+ * immutable segment through the unmodified segment writer, and deletion of one document (sift_seg_delete_key).
  * The merge of segments is in sqmerge.c.
  */
 #include "sqapi.h"
 
 #define BATCH			1024
-#define LIVE_START(nsb)	TYPEALIGN(8, sizeof(SiftLiveHeaderData) + ((nsb) + 7) / 8)
 
 /* ---------- inverted buffer ---------- */
 
@@ -493,64 +492,6 @@ sq_inv_write(SqInv *inv, SqStore *st)
 
 /* ---------- delete ---------- */
 
-static void
-clear_bit(SqStore *st, SiftSegment *seg, uint32 sb, uint64 rank)
-{
-	Relation	rel = sq_store_rel(st);
-	uint32		nsb = seg->hdr->sb_hi - seg->hdr->sb_lo + 1;
-	uint64		b = LIVE_START(nsb) + rank / 8;
-	Buffer		buf = ReadBuffer(rel, seg->hdr->live_first + b / SIFT_PAGE_PAYLOAD),
-				buf0 = ReadBuffer(rel, seg->hdr->live_first);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		page = GenericXLogRegisterBuffer(state, buf, 0),
-				page0 = buf == buf0 ? page : GenericXLogRegisterBuffer(state, buf0, 0);
-	SiftLiveHeaderData *lh = (SiftLiveHeaderData *) SiftPageGetData(page0);
-
-	SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD] &= ~(1 << (rank % 8));
-	lh->ndead++;
-	SiftPageGetData(page0)[sizeof(SiftLiveHeaderData) + (sb - seg->hdr->sb_lo) / 8] |= 1 << ((sb - seg->hdr->sb_lo) % 8);
-	GenericXLogFinish(state);
-	ReleaseBuffer(buf);
-	if (buf0 != buf)
-		ReleaseBuffer(buf0);
-}
-
-/* The rank of key in the segment (its position among the segment's documents), or -1 when the segment has no live document with it */
-static int64
-live_rank(SiftSegment *seg, SiftKey key)
-{
-	BlockNumber blk = sift_key_block(key);
-	int			page = blk & (SIFT_SB_PAGES - 1),
-				off = (key & 0xFFFF) - 1;
-	SiftDocChunk dc;
-	uint64		present[SIFT_OFFMASK_WORDS],
-				live[SIFT_OFFMASK_WORDS],
-				rank;
-	const uint16 *dl;
-
-	if (!sift_seg_docs(seg, sift_block_sb(blk), &dc) || !(dc.pagemask[page / 64] >> (page % 64) & 1))
-		return -1;
-	sift_seg_page(seg, &dc, page, present, &dl);
-	if (!(present[off / 64] >> (off % 64) & 1))
-		return -1;
-	sift_seg_page_live(seg, &dc, page, live);
-	if (!(live[off / 64] >> (off % 64) & 1))
-		return -1;
-	rank = dc.rank_base;
-	for (int p = 0; p < page; p++)
-		if (dc.pagemask[p / 64] >> (p % 64) & 1)
-		{
-			uint64		pm[SIFT_OFFMASK_WORDS];
-
-			sift_seg_page(seg, &dc, p, pm, &dl);
-			rank += sift_offmask_popcount(pm, 1);
-		}
-	for (int w = 0; w < off / 64; w++)
-		rank += pg_popcount64(present[w]);
-	rank += pg_popcount64(present[off / 64] & ((UINT64CONST(1) << (off % 64)) - 1));
-	return rank;
-}
-
 bool
 sq_delete_key(SqStore *st, SiftKey key)
 {
@@ -559,22 +500,17 @@ sq_delete_key(SqStore *st, SiftKey key)
 
 	for (int i = 0; i < dir->nsegs; i++)
 	{
-		SiftSegment *seg;
-		int64		rank;
 		SiftSegEntry e = dir->segs[i];
+		SiftSegment *seg;
+		bool		deleted;
 
 		if (sb < e.sb_lo || sb > e.sb_hi)
 			continue;
 		seg = sift_seg_open(sq_store_rel(st), &e, CurrentMemoryContext);
-		rank = live_rank(seg, key);
-		if (rank >= 0)
-			clear_bit(st, seg, sb, rank);
+		deleted = sift_seg_delete_key(seg, key);
 		sift_seg_close(seg);
-		if (rank < 0)
-			continue;
-		if (!(e.flags & SIFT_SEG_DIRTY))
-			sq_store_set_flags(st, e.gen, e.flags | SIFT_SEG_DIRTY);
-		return true;
+		if (deleted)
+			return true;
 	}
 	return false;
 }

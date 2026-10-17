@@ -1,6 +1,6 @@
 """First-touch cost, warm cost and memory of the top-10 AND/OR/phrase queries, in a fresh process.
 
-    python3 -I cold.py --engine sift|fts5 --db FILE --trace trace.tsv [--cache-kib N] [--drop-os] [--cpu N] [--n 1000]
+    python3 -I cold.py --engine sift|fts5 --db FILE --trace trace.tsv [--cache-kib N] [--drop-os] [--n 1000]
                        [--ext build/sift] [--simd LEVEL] [--parallel N]
 
 Pass 1 starts with an empty sift page cache (--drop-os also drops the database file from the OS page cache first, so
@@ -37,14 +37,11 @@ def main():
     ap.add_argument('--trace', required=True)
     ap.add_argument('--cache-kib', type=int)
     ap.add_argument('--drop-os', action='store_true')
-    ap.add_argument('--cpu', type=int)
     ap.add_argument('--n', type=int, default=1000)
     ap.add_argument('--ext', default=os.path.join(os.path.dirname(__file__), '..', 'build', 'sift'))
     ap.add_argument('--simd')
     ap.add_argument('--parallel', type=int)
     a = ap.parse_args()
-    if a.cpu is not None:
-        os.sched_setaffinity(0, {a.cpu})
     if a.drop_os:
         drop_os_cache(a.db)
     db = sqlite3.connect(a.db)

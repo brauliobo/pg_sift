@@ -117,10 +117,11 @@ jobs:
           name: pg_sift-test-logs-pg${{ matrix.pg }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
-            ${{ runner.temp }}/sift-ci/lane*/tap/**/*.log
-            ${{ runner.temp }}/sift-ci/lane*/postgres.log
-            ${{ runner.temp }}/sift-ci/lane*/sanitizer
-            ${{ runner.temp }}/sift-ci/lane*/leakcheck.*
+            ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
+            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/**/sanitizer
+            ${{ runner.temp }}/sift-ci/lane*/**/leakcheck.*
+            ${{ runner.temp }}/sift-ci/lane*/regress/*/regression.diffs
             test/regression.diffs
           if-no-files-found: ignore
 
@@ -151,7 +152,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential libsqlite3-dev sqlite3 python3
           sqlite3 --version
 
-      # build, smoke test, baseline instruction check, 59 unit tests, FTS5 differential on a synthetic corpus, all again with the scalar
+      # the portable-core check (the files of src/portable.list include only src/sift_host.h), then: build, smoke test, baseline instruction check, 59 unit tests,
+      # FTS5 differential on a synthetic corpus, all again with the scalar
       # kernels forced and for the vector-free build; then ASan+UBSan on both test files and the stress test, and TSan on the thread stress
       # test. The tests that need the 218k-article database or a pg_sift run are skipped, with a message, when their variables are unset.
       # vm.mmap_rnd_bits: the runner's address randomization is too wide for TSan's shadow memory.

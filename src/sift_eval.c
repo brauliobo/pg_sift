@@ -10,27 +10,15 @@
  * ranker walks the same trees in score-bound order and the count reuses the
  * iterator.
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include <math.h>
-
-#include "common/hashfn.h"
-#include "common/int.h"
-#include "lib/stringinfo.h"
-#include "miscadmin.h"
-#include "port/pg_bitutils.h"
-#include "utils/builtins.h"
-#include "utils/hsearch.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
 
 #include "sift_eval.h"
 #include "sift_kernels.h"
 #include "sift_mutable.h"
 #include "sift_prefix.h"
 #include "sift_segment.h"
-
-#include "port/pg_bitutils.h"
 
 typedef struct LeafTerm
 {

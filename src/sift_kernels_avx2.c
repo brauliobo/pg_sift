@@ -5,7 +5,7 @@
  * selected lanes are packed with VPERMPS from a compress table. Slots
  * outside the mask are blended back unchanged.
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include "sift_kernels_int.h"
 
