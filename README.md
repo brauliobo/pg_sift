@@ -85,6 +85,11 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 - filter pushdown, partitioned tables, keyword facets, parallel scans;
 - maintenance, settings and index options, replication, limits.
 
+## pg_sift for SQLite
+
+The same search engine is also a SQLite loadable extension, `sift` for SQLite (release asset `sift-sqlite-<version>-linux-x86_64.tar.gz`): a
+separate component with its own install, documentation and changelog, see [sqlite/README.md](sqlite/README.md).
+
 ## Security and license
 
 `make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants).

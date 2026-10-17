@@ -1,5 +1,7 @@
 # sift benchmark and correctness harness
 
+This harness measures the **PostgreSQL** extension against other PostgreSQL engines (and Elasticsearch). The SQLite extension is measured against FTS5 by the scripts in [../sqlite/bench/](../sqlite/bench/) (results in [../sqlite/README.md](../sqlite/README.md#numbers-against-fts5)); its numbers are not comparable with these.
+
 Two public datasets, measured on sift, its variant (`positions = off`, once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum,
 pgx-bm25 and Elasticsearch with the same rows, queries, clients and cache state. Every engine has a cluster of its own (a lane), built one after the
 other, and the engines are measured **one at a time**, each with every CPU of the host to itself, interleaved in rounds (below), so host
