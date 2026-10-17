@@ -43,6 +43,15 @@ DELETE FROM em WHERE body @@> 'beta';
 REINDEX INDEX em_body;
 SELECT plan_rows('SELECT id FROM em WHERE body @@> ''beta''') < 100 AS after_reindex;
 
+-- deleted documents count until VACUUM rewrites their segment: the estimate follows the directory, not the heap
+INSERT INTO em SELECT i, 'delta' FROM generate_series(5000, 7000) i;
+SELECT sift.promote('em_body');
+SELECT plan_rows('SELECT id FROM em WHERE body @@> ''delta''') > 1500 AS before_delete;
+DELETE FROM em WHERE body @@> 'delta' AND id > 5100;
+SELECT plan_rows('SELECT id FROM em WHERE body @@> ''delta''') > 1500 AS after_delete;
+VACUUM em;
+SELECT plan_rows('SELECT id FROM em WHERE body @@> ''delta''') < 300 AS after_vacuum;
+
 DROP FUNCTION promote_between(), plan_rows(text);
 DROP TABLE em;
 DROP EXTENSION pg_sift;

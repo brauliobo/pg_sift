@@ -3389,6 +3389,8 @@ estimate_compute(Relation index, text **queries, int nqueries, SiftEstimate *est
  * decide it with the query: the last few answers are kept.
  */
 #define ESTIMATE_MEMO	8
+/* A query longer than this is not kept: the answers live in TopMemoryContext for the session */
+#define ESTIMATE_MEMO_MAX_KEY	8192
 
 typedef struct EstimateKey
 {
@@ -3445,6 +3447,11 @@ sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *e
 			return;
 		}
 	estimate_compute(index, queries, nqueries, est);
+	if (len > ESTIMATE_MEMO_MAX_KEY)
+	{
+		pfree(key);
+		return;
+	}
 	m = &estimate_memo[estimate_memo_next++ % ESTIMATE_MEMO];
 	if (m->key)
 		pfree(m->key);

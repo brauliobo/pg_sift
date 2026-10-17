@@ -4,6 +4,14 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Planner: the estimate of a query is computed once per statement instead of three or four times (the selectivity of the clause, the cost of each
+  path, the index path). The last 8 estimates of a backend are kept under the index file, the version of its directory, the expansion cap and the
+  query; a promotion, a merge, VACUUM or REINDEX changes the key. Slim tier, one backend, user cycles per statement: count 1.18M to 1.03M
+  (-12%), filter -9%, mixed -8%, or and join unchanged; count at 8 clients 25.9k to 29.3k qps.
+- Ranker: a join (or any consumer) that keeps a small share of the rows and pulls past the limit hint makes the scan search again for 16 times
+  as many hits (4 times beyond 4096) instead of 4 times, so a join that keeps a tenth of the rows searches twice instead of three times. Rows,
+  scores and ties are those of the full ranking. Slim tier join class, one backend, user cycles per query: 5.16M to 4.39M (-15%); at 8 clients
+  4.78k to 6.03k qps (+26%).
 - Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query.
   The ranked scan priced such a query by the operator's default of 0.5% of the rows, which made a filter after the ranker look free; it now
   assumes a tenth of the rows, so a selective filter is pushed down and a loose one stays after the ranker. Rows, scores and ties are
