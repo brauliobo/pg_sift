@@ -1,63 +1,52 @@
 # Benchmarks
 
-sift (and sift with `phrase_index = pairs`) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on two public
-datasets, measured with `bench/bench run` (articles through `bench/steps/articles.sh`, places through `bench/steps/places.sh`; method,
-datasets, licenses and checksums: `bench/README.md`). Every engine indexes the same rows with the same analysis (lowercase, no
-stemming, no stopwords; pg_textsearch and rum through the PostgreSQL `simple` text search configuration) and answers the same
-queries from the same cache state; the published tables were measured with `--serial` (one cluster, cells run one at a time with the engine
-order rotated every round; `bench/bench run` now measures all engines at the same time by default, see "Method of the harness" at the end), and the tables report
-medians over the rounds with their standard errors. The engines, in the order of every table and chart, are listed in `bench/engines.tsv` (it also has
-`sift_nopos`, sift built with `positions = off`, which is skipped until the installed sift has that reloption; it is not in any table
-below). The numbers of every table below are also in
-[results/articles.tsv](results/articles.tsv) and [results/places.tsv](results/places.tsv), one row per measurement (columns:
-`bench/README.md`), for charts.
+sift and its two variants (`positions = off`, `phrase_index = pairs`) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1,
+rum 1.3.15 and pgx-bm25 1.0 on two public datasets, measured with `bench/bench all --full --serial` (articles through
+`bench/steps/articles.sh`, places through `bench/steps/places.sh`; method, datasets, licenses and checksums: `bench/README.md`). Every engine
+indexes the same rows with the same analysis (lowercase, no stemming, no stopwords; pg_textsearch and rum through the PostgreSQL `simple`
+text search configuration, pgx-bm25 through a `simple_stem` dictionary that does not stem) and answers the same queries from the same cache
+state. The tables report medians over 2-3 interleaved rounds with their standard errors. The engines, in the order of every table and
+chart, are listed in `bench/engines.tsv`. The numbers of every table below are also in [results/articles.tsv](results/articles.tsv) and
+[results/places.tsv](results/places.tsv), one row per measurement (columns: `bench/README.md`), for charts.
 
-Host: AMD Ryzen 7 9700X (8 cores, 16 hardware threads), 188 GB RAM, Linux 7.2, PostgreSQL 18.6, scratch data on tmpfs, shared with
-other jobs. **The CPU budget is a parameter of a run** (`--cpus`, `--load-cpus`, `--serial`; `bench/README.md`), printed in the machine description and in the header of every table
-and recorded as the `cpu_budget` rows of [results/](results/); the charts caption it. **Every table in this document was measured with the same budget: the engine servers and the load
-generators together on two pinned CPUs** (`--serial --cpus 6,7 --load-cpus 6,7 --workers 2`, `nice`; the server cgroup scope at `CPUQuota=200%`, pgbench `-j 2` and at most 2 parallel
-workers, the 8 clients of the articles cells unchanged), because the host was in use. sift was built from commit `cd2fb81d18d6`,
-pg_search from the ParadeDB 0.26.1 package, pg_textsearch 1.5.1 from the v1.5.1 tag (commit `fa142d049d08`, tarball sha256 pinned in
-`bench/versions.env`) with PGXS, rum 1.3.15 (tag 1.3.15, tarball sha256 pinned) with PGXS. One session per tier measured all five
-engines together, the sessions one after another: places full (39 min, load average 9-36), articles full (36 min including the
-builds, load 15-43), the 150k and 34k tiers (26 and 22 min, load 13-30 and 19-45), the cold-cache runs (4 min for articles, 13 for
-places) and the quick tier (8 min; its places part was run again in 7 min). The places sessions were run twice: after the first set
-the harness put sift in a database of its own (it had shared the database of pg_search's index, which cost it 0.1 ms per query), and the
-full tier a second time because one pg_textsearch cell, the one-letter name boost, took longer than the 30 s statement timeout in a
-round (the harness allows 120 s now). Only the second set is published. The load averages are those of the whole host (16 hardware threads), so absolute numbers carry noise and the per-round ranges in
-the tables are wide; no articles round reached the 15% spread that ends a run early. Compare engines within a table, not across
-tables, tiers or hosts: **ratios depend on the CPU the engines get**. The earlier full-tier session (sift `dd3692043b5b`, the
-server budget of 8 vCPUs with `CPUQuota=800%`, four pgbench threads, load 4-31; git history of this file) measured sift at 2.49 (and),
-2.33 (or), 0.65 (phrase), 1.78 (mixed), 0.70 (count), 0.93 (filter) and 4.31 (join) times pg_search, and `pairs` at 2.76, 2.44, 2.83, 2.69, 3.23,
-1.20 and 7.49; with the 2-CPU budget every sift ratio is lower (below) while `pairs` keeps its order of classes. Index sizes and build times of every table are for one build per engine.
+Host: AMD Ryzen 7 9700X (8 cores, 16 hardware threads), 188 GB RAM, Linux 7.2, PostgreSQL 18.6, scratch data on tmpfs. sift is built from
+`cc30fc2b299d` (main when the session ran), pg_search from the ParadeDB 0.26.1 package, pg_textsearch 1.5.1 from the v1.5.1 tag (commit
+`fa142d049d08`), rum 1.3.15 and pgx-bm25 1.0 with PGXS (tarball and commit checksums: `bench/versions.env`).
+
+**The CPU budget is a parameter of a run** (`--cpus`, `--load-cpus`, `--serial`; `bench/README.md`), printed in the machine description and in
+the header of every table and recorded as the `cpu_budget` rows of [results/](results/); the charts caption it. **Every table in this document
+was measured with the same default budget: one cluster (`--serial`, the engines interleaved cell by cell with the order rotated every round)
+on 8 server threads (the 8 least busy at the start: 4 whole cores) and 4 load generator threads, disjoint, 8 clients in the articles
+cells, one client in the places cells.** Index sizes and build times are for one build per engine. Cells have 2 rounds and a third only when the
+relative standard error after two is above 5%; a table flags a relative standard error above 10% with `!`, and with n = 2-3 the standard error
+is itself estimated from two or three numbers: read it together with the minimum-maximum range, and do not read differences between cells
+that overlap.
+
+The host was shared. Two GPU inference services kept about two hardware threads busy throughout, a browser and other tools ran, and a second benchmark of
+this repository (another session's, with its own scratch root) was running at times during the later part of the work, including the places session published here: it terminated one pgbench of that session by a stray `pkill`
+(one cell, pg_search one-letter filtered top-20, lost a round; it was measured again alone, three rounds, and replaces the damaged cell) and sent a SIGINT to the newest pgbench once. Every raw result file of the sessions was audited afterwards for failed cells (`nan`, `error`, zero throughput),
+and for cells whose rounds differ by more than 2.5 times: none is left. The articles session ran before that and, as far as I could see, with no other run of this project on the host, but I cannot exclude one. The load average of the whole host was 7-23 (median 17) during the articles cells (8 pgbench clients are part of it), 4.8-17 (median 11.5) during the places cells and 4-35 during the first places session. Round-to-round variation of the fast
+engines is therefore large (the articles cells of sift have a relative standard error of 7.5% in the median and 15 of the 49 cells are above 10%) and the ratios below carry that noise. Compare engines within a table, not across
+tables, tiers or hosts: **ratios depend on the CPU the engines get and on what else the host runs**.
+
 
 ## What is native, what is emulated, what is NA
 
-Every cell of every table and chart has a number: **no NA cell is left**, because every workload can be expressed on every engine,
-natively or by an emulation that is documented here. Two engines have no native query for some places workloads (a typed prefix
-ranked by BM25; a field boost), and the emulation of each is checked against an exact SQL oracle (Correctness, below). Coverage before
-and after:
+Every cell of every table and chart has a number except where a table says `error`: every workload can be expressed on every engine, natively or by an
+emulation that is documented here, and the emulations are checked against an exact SQL oracle (Correctness, below). Two engines have no native query
+for some places workloads (a typed prefix ranked by BM25; a field boost), and pgx-bm25 refuses wildcards shorter than three letters.
 
-| table | before | now |
-|---|---|---|
-| articles, full tier | 5 engines x 7 classes | same cells, new session; the pg_textsearch AND, phrase, mixed, filter and join top-10 are now ranked (below) |
-| articles, 150k tier | sift, sift pairs, pg_search | all five engines (14 new cells) |
-| articles, 25k tier (quick) | not published | all five engines (35 cells) |
-| articles, cold cache | 3 engines x 3 classes | 5 engines x 7 classes (26 new cells) |
-| places, full tier | pg_textsearch NA in 27 ranked cells, rum NA in 9 boost cells, sift pairs not run (45 cells) | all 225 cells: 27 pg_textsearch and 9 rum cells by emulation, 45 sift pairs cells new |
-| places, 34k tier | sift, pg_search (6 classes x 4 workloads) | all five engines (72 new cells: 18 pg_textsearch and 6 rum emulated) |
-| places, 34k tier (quick) | not published | all five engines (120 cells) |
-| places, cold cache | sift, pg_search | all five engines (48 new cells) |
-| places correctness | none | match sets and top-20 of every engine against an SQL oracle |
-| charts | 11 NA marks (index size, build time: sift pairs on places; places latency: pg_textsearch) | none |
+| engine | articles | places workload | how it runs |
+|---|---|---|---|
+| sift, sift `positions = off`, sift `pairs` | all | all | native (`fields = 'name', prefix_index = 3`; the variants differ only in the reloption) |
+| pg_search | all | all | native (`edge_ngram(1, 15)` fields, a typed prefix is a term) |
+| pg_textsearch | all (ranked AND, phrase, mixed, filter, join through the tsquery filter and standalone scores) | count, unordered scan | native: the prefix tsquery `'gra':* & 'ho':*` through its `bm25` index (a tsquery `@@` filter) |
+| pg_textsearch | | top-20, boost, filtered top-20 | **emulation**: `bm25` indexes on stored columns of the edge n-grams of the words |
+| rum | all | top-20, filtered, count, unordered scan | native: prefix tsquery, `<=>` ranking |
+| rum | | boost | **emulation**: a second tsvector with weights |
+| pgx-bm25 | all (`join` works at this size; it is an `error` cell at the 25k quick tier) | all words of 3 letters or more | native: `bm25_wildcard` per word, `bm25_boost` for the name field; the wildcard expansion limit is raised to 100000 (the default 1000 made `san*` an error at 236,262 places) |
+| pgx-bm25 | | words of 1-2 letters | **emulation inside the same index**: two stored columns hold the 1-2 letter n-grams of the words of the two sections and the word is a whole term there; the extension refuses a wildcard under three letters |
 
-| engine | places workload | how it runs |
-|---|---|---|
-| sift, sift `pairs`, pg_search | all | native (pg_search: `edge_ngram(1, 15)` fields, a typed prefix is a term) |
-| pg_textsearch | count, unordered scan | native: the prefix tsquery `'gra':* & 'ho':*` through its `bm25` index (a tsquery `@@` filter) |
-| pg_textsearch | top-20, boost, filtered top-20 | **emulation**: `bm25` indexes on stored columns of the edge n-grams of the words |
-| rum | top-20, filtered, count, unordered scan | native: prefix tsquery, `<=>` ranking |
-| rum | boost | **emulation**: a second tsvector with weights |
 
 The pg_textsearch emulation exists because it has no prefix scoring (a text search configuration has no edge n-grams) and no per-field
 boost. The harness stores, next to the native index and in the same database, `ng_text` and `ng_name`, generated columns holding the
@@ -79,30 +68,48 @@ oracle about as much as its plain ranking does (Correctness).
 
 ## Articles: Simple English Wikipedia, 218,058 articles (full tier)
 
-8 clients, 4 interleaved rounds of 6 s per cell (2 s warm-up), queries are 2-15 consecutive words of random articles (1000 each as
-AND, OR and phrase); `bench/bench run --full --dataset articles --rounds 4-4 --duration 6 --workers 2`. Throughput in queries per
-second, median (minimum-maximum over the rounds), with the size of the index and the time of its `CREATE INDEX` (rum also needs a stored
-`tsvector` column: 28.2 s to fill it, 437.7 MiB of table growth, neither counted in the index column):
+8 clients, 2-3 interleaved rounds of 3 s per cell (a warm-up cell in the first round; cells whose relative standard error after two rounds is
+above 5% get the third), queries are 2-15 consecutive words of random articles (1000 each as AND, OR and phrase); `bench/bench all --full --serial`.
+Throughput in queries per second, median ± standard error (minimum-maximum over the rounds; `!` marks a relative standard error above 10%),
+with the size of the index and the time of its `CREATE INDEX` (rum also needs a stored `tsvector` column: 19.0 s to fill it, 437.7 MiB of
+table growth, neither counted in the index column):
 
-| engine | index (MiB) | build (s) | and | or | phrase | mixed | count | filter | join |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| sift | 47.9 | 3.1 | 2,046 (1,814-2,415) | 550 (362-642) | 493 (399-563) | 598 (510-621) | 277 (254-355) | 650 (546-709) | 192 (176-281) |
-| sift `pairs` | 267.2 | 15.0 | 2,076 (1,921-2,532) | 446 (388-559) | 2,085 (1,488-3,270) | 791 (747-1,262) | 1,451 (842-1,756) | 941 (727-1,013) | 387 (330-443) |
-| pg_search | 161.0 | 9.9 | 1,222 (1,129-1,359) | 581 (477-645) | 1,044 (649-1,334) | 673 (487-706) | 697 (540-742) | 974 (791-1,056) | 69 (58-78) |
-| pg_textsearch | 147.3 | 19.5 | 4 (2-7) | 777 (619-932) | 3 (2-4) | 8 (4-24) | 14 (12-18) | 16 (11-29) | 13 (9-38) |
-| rum | 309.9 | 32.3 | 328 (288-439) | 3 (3-5) | 11 (10-11) | 6 (5-7) | 12 (10-14) | 8 (5-8) | 5 (4-8) |
+| engine | index (MiB) | build (s) | table growth (MiB) | and | or | phrase | mixed | count | filter | join |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sift | 130.9 | 2.2 | 0.0 | 10279 ± 2081 ! (8641-15541) | 2567 ± 268 ! (2529-3351) | 8239 ± 1300 ! (8144-12092) | 4863 ± 766 ! (4143-6716) | 6976 ± 1387 ! (6817-11054) | 4067 ± 315 (3790-4843) | 1657 ± 26 (1631-1683) |
+| sift `positions = off` | 52.5 | 1.7 | 0.0 | 10732 ± 1781 ! (9545-15382) | 2724 ± 248 (2493-3325) | 1999 ± 114 (1980-2331) | 3113 ± 300 (3024-3966) | 956 ± 136 ! (761-1229) | 3678 ± 362 (3385-4587) | 830 ± 62 (793-997) |
+| sift `pairs` | 351.5 | 8.9 | 0.0 | 10387 ± 1418 ! (10361-14629) | 2665 ± 225 (2497-3241) | 8746 ± 1357 ! (8656-12773) | 5213 ± 549 ! (4876-6664) | 11308 ± 2214 ! (7974-15623) | 3638 ± 438 ! (3484-4868) | 1646 ± 59 (1586-1705) |
+| pg_search | 183.6 | 3.1 | 0.0 | 2679 ± 334 ! (2533-3599) | 888 ± 64 (813-1030) | 2520 ± 213 (2341-3051) | 1370 ± 90 (1313-1606) | 1501 ± 173 ! (1258-1855) | 2278 ± 204 (2021-2719) | 186 ± 6.3 (180-192) |
+| pg_textsearch | 147.3 | 10.0 | 0.0 | 6 ± 0.4 (6-7) | 2392 ± 245 ! (2156-2980) | 27 ± 1.4 (25-30) | 7 ± 0.4 (7-8) | 14 ± 0.9 (14-17) | 14 ± 0.9 (14-17) | 14 ± 0.1 (14-14) |
+| rum | 309.9 | 14.9 | 437.7 | 959 ± 72 (913-1149) | 8 ± 0.0 (8-8) | 34 ± 1.3 (33-36) | 16 ± 0.0 (16-16) | 39 ± 1.6 (38-43) | 16 ± 0.3 (16-16) | 13 ± 0.3 (13-13) |
+| pgx-bm25 | 204.4 | 11.7 | 0.0 | 28 ± 2.2 (25-33) | 22 ± 1.3 (19-23) | 18 ± 0.3 (18-19) | 19 ± 0.7 (18-21) | 18 ± 0.5 (17-18) | 20 ± 0.3 (20-21) | 18 ± 0.8 (17-19) |
 
 Ratio of queries per second to pg_search (the baseline of every ratio in this document):
 
 | engine | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| sift / pg_search | 1.67 | 0.95 | 0.47 | 0.89 | 0.40 | 0.67 | 2.77 |
-| sift `pairs` / pg_search | 1.70 | 0.77 | 2.00 | 1.18 | 2.08 | 0.97 | 5.58 |
-| pg_textsearch / pg_search | 0.00 | 1.34 | 0.00 | 0.01 | 0.02 | 0.02 | 0.19 |
-| rum / pg_search | 0.27 | 0.01 | 0.01 | 0.01 | 0.02 | 0.01 | 0.07 |
+| sift / pg_search | 3.84x | 2.89x | 3.27x | 3.55x | 4.65x | 1.79x | 8.91x |
+| sift `positions = off` / pg_search | 4.01x | 3.07x | 0.79x | 2.27x | 0.64x | 1.61x | 4.46x |
+| sift `pairs` / pg_search | 3.88x | 3.00x | 3.47x | 3.80x | 7.53x | 1.60x | 8.85x |
+| pg_textsearch / pg_search | 0.00x | 2.69x | 0.01x | 0.00x | 0.01x | 0.01x | 0.08x |
+| rum / pg_search | 0.36x | 0.01x | 0.01x | 0.01x | 0.03x | 0.01x | 0.07x |
+| pgx-bm25 / pg_search | 0.01x | 0.02x | 0.01x | 0.01x | 0.01x | 0.01x | 0.10x |
 
-Index size and build time move with the build: pg_search's size depends on how its parallel workers split the segments (161-185 MiB
-over the builds of the sessions), build times move with load and with the CPU budget; sift's sizes do not.
+Index size and build time move with the build: pg_search's size depends on how its parallel workers split the segments (161-185 MiB over the
+builds of the sessions that went into this document; 183.6 MiB in this one), build times move with the host load; sift's sizes do not.
+
+**The positions trade-off, sift against sift `positions = off`** (same session, queries per second, medians; see the table for the ranges):
+
+| | index (MiB) | build (s) | and | or | phrase | mixed | count | filter | join |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sift (positions on, the default) | 130.9 | 2.2 | 10,279 | 2,567 | 8,239 | 4,863 | 6,976 | 4,067 | 1,657 |
+| sift `positions = off` | 52.5 | 1.7 | 10,732 | 2,724 | 1,999 | 3,113 | 956 | 3,678 | 830 |
+| positions on / off | 2.49x | 1.29x | 0.96x | 0.94x | 4.12x | 1.56x | 7.30x | 1.11x | 2.00x |
+
+Word positions make the index 2.5 times larger and the build 30% slower and decide phrases from the index: phrase, mixed, `count(*)` and the join
+are 1.6-7.3 times faster; AND, OR and the filtered top-10 do not change beyond the noise of the cells (their ranges overlap). Without them a phrase
+is checked against the heap after the term intersection, which makes phrase (0.79x) and `count(*)` (0.64x) **slower than pg_search**; with them sift is ahead of
+pg_search in every class.
 
 How pg_textsearch is configured: a `bm25` index with `text_config = 'simple'` on the body (the analysis of the other engines), the
 database `default_text_search_config` set to `simple` (its `@@` filter parses the column with it) and `enable_seqscan = off` in its
@@ -112,85 +119,219 @@ phrase or NOT inside that scan: those are the tsquery `@@` filter through the sa
 filter and ranking in one scan. Written as `WHERE body @@ q ORDER BY body <@> ... LIMIT 10` the planner chooses a sequential
 scan that tokenizes every document (3 s per query at 25,000 articles), so the harness writes the AND, phrase, filter and join
 queries as the extension's plan: `FROM (SELECT * FROM docs WHERE body @@ q OFFSET 0) docs ORDER BY (body <@> ...) * 1`, the filter
-through the index and the standalone scores of its matches sorted. **The `* 1` is new in this session.** Without it the planner
-replaces the score by the current score of the `@@` scan, which that scan does not compute: the earlier sessions' AND, phrase,
-mixed, filter and join top-10 of pg_textsearch (for example 1472 queries per second for AND at the full tier) came back in index
-order, not ranked (at the 150k tier, 53 of the first 200 AND queries have more than 10 matches and returned an arbitrary top-10). Scoring the matches
-ranks them and costs roughly 50-100 microseconds per match, which is why AND is now 4 queries per second at the full tier. Without
-`enable_seqscan = off` the planner counts a disjunction of common words with a sequential scan too: 0.25 queries per second for
-`count(*)` against 37.9 with it off (a separate full-tier measurement of the earlier session, 8 clients, 8 s).
+through the index and the standalone scores of its matches sorted. The `* 1` matters: without it the planner replaces the score by the
+current score of the `@@` scan, which that scan does not compute, and the top-10 comes back in index order, not ranked (at the 150k tier, 53
+of the first 200 AND queries have more than 10 matches and returned an arbitrary top-10). Scoring the matches ranks them and costs roughly
+50-100 microseconds per match, which is why AND is 6 queries per second at the full tier. Without `enable_seqscan = off` the planner counts a
+disjunction of common words with a sequential scan too: 0.25 queries per second for `count(*)` against 37.9 with it off (a separate full-tier
+measurement of an earlier session, 8 clients, 8 s).
 Correctness: its match sets and `count(*)` equal the tsvector oracle for 200 substrings in the and, or, phrase and not modes
-(`bench/bench check oracle pg_textsearch 200`, PG parser tokens like gin and rum, 25,000 articles); its top-10 overlap with pgx-bm25's BM25
+(`bench/bench check oracle pg_textsearch 200`, PG parser tokens like gin and rum, 25,000 articles, earlier session); its top-10 overlap with pgx-bm25's BM25
 is below (`check rank`, 200 substrings; a soft check: it scores the PG parser's tokens and a bag of terms).
 
 How rum is configured: a stored `tsvector` column (`to_tsvector('simple', body)`, a generated column, so the heap grows by
-437.7 MiB and filling it takes 28.2 s on top of the 32.3 s `CREATE INDEX`) with a `rum_tsvector_ops` index, the same column gin
+437.7 MiB and filling it takes 19.0 s on top of the 14.9 s `CREATE INDEX`) with a `rum_tsvector_ops` index, the same column gin
 would index; adapter: `bench/engines/rum.sh`. A query is `WHERE tsv @@ tsquery ORDER BY tsv <=> tsquery LIMIT 10`, rum's own
 ranking operator (`<=>` is rum's ts_rank-style distance from the positions it stores, not BM25).
 Correctness: its match sets and `count(*)` equal the tsvector oracle for 200 substrings in the and, or, phrase and not modes
-(`bench/bench check oracle rum 200`, 25,000 articles, the PG parser's tokens like gin and pg_textsearch).
+(`bench/bench check oracle rum 200`, 25,000 articles, the PG parser's tokens like gin and pg_textsearch, earlier session).
 
-Cold cache (index, heap and TOAST evicted from shared buffers before every query; `EXPLAIN ANALYZE` execution time
-of 12 queries per class, `bench/bench cold --full --dataset articles --workers 2`), p50 / maximum in ms. The scratch data is on
-tmpfs, so there is no disk behind the evicted pages: this is the cost of rebuilding the buffers from memory-backed files,
-not of disk reads. All five engines and all seven classes, one session:
+How pgx-bm25 is configured: a `bm25_native` index on the body (`key_field = 'id'`, `language = 'simple'`, `stopwords = 'none'`; its analyzer resolves
+`<language>_stem` in `pg_catalog`, so a `simple_stem` dictionary built on the `simple` template gives it the no-stemming analysis of the others), jsonb
+queries through `@@@` (filter) and `&@@` (ranking), and `bm25_native.max_match_memory` raised to 2 GB (the extension materializes the whole match set of the queries that
+WAND does not answer; the default 256 MB fails most queries of this trace); adapter: `bench/engines/bm25.sh`. It runs every class at 18-28 queries per second (0.01-0.10x
+pg_search), with a flat profile that suggests a per-match cost like pg_textsearch's; I did not profile it.
 
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| and | 1.03 / 2.52 | 0.96 / 3.17 | 1.53 / 1.95 | 1.78 / 9,508 | 1.02 / 68.07 |
-| or | 4.24 / 8.08 | 4.91 / 9.78 | 13.64 / 32.45 | 4.71 / 18.24 | 952 / 2,604 |
-| phrase | 2.25 / 125 | 1.83 / 11.97 | 4.48 / 49.72 | 2.17 / 9,665 | 136 / 341 |
-| mixed | 1.40 / 78.79 | 1.04 / 4.53 | 1.62 / 7.33 | 2.91 / 8,683 | 35.66 / 1,356 |
-| count | 0.85 / 476 | 0.51 / 1.76 | 1.32 / 9.29 | 4.05 / 8,564 | 22.25 / 408 |
-| filter | 1.41 / 45.83 | 1.19 / 5.23 | 1.95 / 5.50 | 5.23 / 8,925 | 31.09 / 1,175 |
-| join | 1.76 / 638 | 1.50 / 10.17 | 6.52 / 84.94 | 3.76 / 8,758 | 87.77 / 3,274 |
+Cold cache (index, heap and TOAST evicted from shared buffers before every query; `EXPLAIN ANALYZE` execution time of 12 queries per class,
+`bench/bench cold --full --serial`), p50 / maximum in ms. The scratch data is on tmpfs, so there is no disk behind the evicted pages: this is the
+cost of rebuilding the buffers from memory-backed files, not of disk reads:
 
-The p50 of sift is 0.85-4.2 ms, pg_search's 1.3-13.6 ms, pg_textsearch's 1.8-5.2 ms and rum's 1.0 ms for AND and 22-950 ms for every
-other class (its ranked and count queries read every match). pg_textsearch's maximum is 8.5-9.7 s in every class but OR, rum's up to 3.3 s; sift's default index has the slow maxima of its
-heap recheck (phrase 125 ms, `count(*)` 476 ms, join 638 ms) that `pairs` removes (12, 1.8 and 10 ms).
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| and | 0.88 / 3.57 | 0.96 / 2.23 | 0.80 / 3.23 | 2.89 / 7.43 | 2.23 / 79.31 | 1.05 / 4.97 | 267.95 / 462.90 |
+| or | 1.94 / 4.22 | 1.90 / 6.91 | 1.74 / 7.33 | 5.34 / 10.12 | 1.64 / 6.90 | 283.51 / 978.39 | 232.01 / 403.52 |
+| phrase | 1.12 / 2.22 | 0.82 / 23.59 | 1.03 / 1.43 | 2.37 / 7.86 | 1.44 / 474.42 | 130.67 / 373.05 | 374.42 / 769.00 |
+| mixed | 2.07 / 3.36 | 1.36 / 23.93 | 1.07 / 2.89 | 3.11 / 17.42 | 2.88 / 419.64 | 239.69 / 784.24 | 267.39 / 540.20 |
+| count | 0.83 / 1.54 | 0.83 / 27.03 | 0.81 / 2.14 | 2.93 / 12.18 | 2.80 / 434.46 | 173.39 / 241.18 | 371.27 / 526.68 |
+| filter | 1.95 / 3.47 | 1.26 / 6.72 | 1.02 / 3.50 | 3.11 / 11.01 | 2.06 / 432.50 | 227.67 / 711.38 | 254.35 / 558.38 |
+| join | 1.24 / 9.67 | 2.59 / 24.27 | 1.07 / 14.43 | 5.55 / 83.81 | 3.08 / 418.81 | 242.70 / 726.72 | 272.36 / 563.62 |
+
+The p50 of sift is 0.8-2.6 ms in every class and variant, pg_search's 2.4-5.5 ms, pg_textsearch's 1.4-3.1 ms, rum's 1.0 ms for AND and 130-284 ms for every
+other class, pgx-bm25's 230-375 ms. pg_textsearch's maximum is 418-475 ms in every class but AND and OR (79 and 7 ms), rum's up to 978 ms, pgx-bm25's up to 769 ms. sift's cold maxima are 1.5-9.7 ms with positions on (up to 14.4 ms with `pairs`); `positions = off` has the slow maxima of its heap recheck (phrase 23.6 ms, mixed 23.9, `count(*)` 27.0, join 24.3 ms) that positions remove.
 
 Reading the numbers:
 
-- sift's default index is the smallest and the quickest to build: 47.9 MiB against pg_search's 161.0 (3.4 times) and 3.1 against 9.9 s
-  (3.2 times).
-- AND is 1.67 times pg_search and the join 2.77 times; OR (0.95x) and mixed (0.89x) are level with it, and phrase (0.47x),
-  `count(*)` (0.40x) and the filtered top-10 (0.67x) are behind it. The margins are wider on smaller corpora (150k articles: and
-  2.68, or 1.22, phrase 0.67, mixed 1.15, count 0.61, filter 1.00, join 3.29; 25k: 3.53, 1.60, 1.55, 1.70, 1.51, 2.66, 1.81):
-  the heap recheck grows with the corpus.
-- Without `pairs`, a phrase is checked against the heap after the term intersection, and the check (decompressing and
-  tokenizing the candidates) dominates when the words are common: phrase and `count(*)` are at 0.47x and 0.40x of
-  pg_search at this size (0.65x and 0.70x in the earlier 8 vCPU session, 0.74x and 0.63x and 0.74x and 0.70x before: read it as
-  0.4-0.8x), and the cold maximum of the default index shows the same cost. `phrase_index = pairs` removes it: phrase 2.00x,
-  `count(*)` 2.08x, join 5.58x, AND 1.70x, mixed 1.18x, filter 0.97x and OR 0.77x, but its index is 5.6 times the default one and
-  1.66 times pg_search's (267.2 against 161.0 MiB; 1.4-1.7 times over the builds of the sessions), and it takes 15.0 s to build against 9.9 s for
-  pg_search: sift with `pairs` is the larger index.
-- The recheck used to be slower. Profiling the phrase class (perf, one client) put 38% of the CPU in the per-document
-  term table that the recheck built before looking for the phrase; the recheck now scans the document's tokens and builds
-  the table only for the other leaf kinds. The same measurement with fixed instruction counts: phrase 48.9M to 36.6M
-  instructions per query (7.0 to 4.7 ms CPU), `count(*)` 46.0M to 33.9M (6.4 to 3.8 ms), mixed 39.4M to 34.2M, and 8.2M
-  (unchanged) for AND. What is left of the phrase cost is tokenizing (30% of the CPU) and decompressing
-  the TOASTed text (21%).
-- pg_textsearch wins one class and loses the others. A bare ranked disjunction is its native query, answered by block-max
-  WAND: 777 queries per second, 1.34 times pg_search, 1.41 times sift and 1.74 times sift `pairs`, the fastest of the five at this size
-  (3943 against 1774 for sift at 25k articles). Its index is 147.3 MiB (0.9 times pg_search, 3.1 times sift's default index) and takes
-  19.5 s to build (2.0 times pg_search, 6.3 times sift; `pairs` takes 15.0 s). Everything that is not a bare disjunction goes through the
-  tsquery filter and then scores the matches one by one (see the configuration above): AND runs at 4 queries per second and phrase (3),
-  mixed (8), `count(*)` (14), filter (16) and join (13) at 0.00-0.19x of pg_search. The cost follows the number of matching
-  articles, which the 2-15 word queries of the trace make large; I did not profile it further. The extension's README says that
-  combining the filter with the ranking is not yet one index scan.
-- rum is behind pg_search in every class but AND at the smaller tiers (1878 queries per second at 25k articles, 1.56x pg_search and 0.44x
-  sift; 591 at 150k, 0.47x) and is the largest index: 309.9 MiB (1.9 times pg_search, 6.5 times sift's default index, 1.16 times sift
-  `pairs`), 32.3 s for `CREATE INDEX` (3.3 times pg_search, 10 times sift) after 28.2 s to fill its stored `tsvector` column, which adds
-  437.7 MiB to the table (748 MiB in all, 15.6 times sift's index). AND, a two-to-fifteen word intersection answered from the index,
-  runs at 328 queries per second (0.27x of pg_search, 0.16x of sift). Every other class is two orders of magnitude lower: phrase 11,
-  `count(*)` 12, mixed 6, filter 8, and OR and join at 3 and 5 queries per second. I did not profile it; its `<=>` ordering and the `@@`
-  recheck of the stored `tsvector` (positions are checked in the heap for phrases) both visit every match of these common-word queries.
-- In short, with the 2-CPU budget: sift's default index is the smallest and the quickest to build and wins AND (1.7x) and join (2.8x), is level on OR and
-  mixed and behind on phrase, `count(*)` and the filtered top-10; `pairs` adds phrase (2.0 times), `count(*)` (2.1 times) and join
-  (5.6 times) for 5.6 times the index; pg_textsearch wins only the bare ranked OR; rum wins nothing at this size and is the
-  largest index.
+- **Sizes and builds.** sift's default index is 130.9 MiB, 1.40 times smaller than pg_search's 183.6 MiB and 0.89 times pg_textsearch's 147.3; with `positions = off` it is
+  52.5 MiB, 3.5 times smaller than pg_search. The old claim of 47.9 MiB and 3.8x smaller was the index without positions (and before the 8K bitmap groups added 9.6%).
+  `pairs` is 351.5 MiB, 1.9 times pg_search's and 2.7 times the default's. sift builds in 2.2 s (1.7 s without positions), pg_search in 3.1 s, `pairs` in 8.9 s,
+  pg_textsearch in 10.0 s, pgx-bm25 in 11.7 s and rum in 14.9 s after 19.0 s to fill its stored column (a table that is 437.7 MiB larger, 748 MiB with the index).
+  pg_search is within 1.4 times of sift on the build; the other three engines take 4.5-7 times as long (15 times with rum's column).
+- **Throughput.** With positions on, sift is ahead of pg_search in every class: AND 3.84x, OR 2.89x, phrase 3.27x, mixed 3.55x, `count(*)` 4.65x, filtered top-10 1.79x, join 8.91x.
+  These ratios carry the noise of a loaded host (sift's relative standard errors are up to 20%); the order of the engines does not change within the ranges of the rounds,
+  but a ratio of 3.8 is not distinguishable from 3.0 or 4.5 in this session. `pairs` buys nothing beyond the noise over the default except `count(*)` (11,308 against 6,976 queries per second), for
+  2.7 times the index and 4 times the build.
+- **Where sift is not ahead.** The ranked OR is level with pg_textsearch, whose native query it is (block-max WAND): 2,567 ± 268 against 2,392 ± 245 queries per second, ranges 2,529-3,351 and 2,156-2,980,
+  and 2.89 times pg_search. Without positions, phrase and `count(*)` are behind pg_search (0.79x and 0.64x), Larger cold maxima belong to the other engines (pg_textsearch up to 475 ms, rum up to 978 ms, pgx-bm25 up to 769 ms, against sift's 1.5-9.7 ms).
+- **pg_textsearch** wins only the bare ranked OR (above). Everything that is not a bare disjunction goes through the tsquery filter and then scores the matches one by one (see the configuration above): AND runs at 6 queries
+  per second and phrase (27), mixed (7), `count(*)` (14), filter (14) and join (14) at 0.00-0.08x of pg_search. The cost follows the number of matching articles, which the 2-15 word queries of the trace make large; I did
+  not profile it further. The extension's README says that combining the filter with the ranking is not yet one index scan.
+- **rum** is behind pg_search in every class: its best class is AND at 959 queries per second (0.36x of pg_search, 0.09x of sift), and every other class is two orders of magnitude lower: OR 8, phrase 34, `count(*)` 39,
+  mixed 16, filter 16 and join 13. It is the largest index after `pairs` (309.9 MiB, 748 MiB with its column) and the slowest build. I did not profile it; its `<=>` ordering and the `@@` recheck of the stored `tsvector`
+  (positions are checked in the heap for phrases) both visit every match of these common-word queries.
+- **pgx-bm25** is 0.01-0.10x of pg_search in every class and builds in 11.7 s into a 204.4 MiB index (1.1 times pg_search's), the only engine of the field whose cold p50 is 230-370 ms in every class including AND.
 
-### 150,000 articles (`ab` tier)
+
+## Places: GeoNames cities500, 236,262 places (full tier)
+
+Multi-field autocomplete as an application would run it: sift (and its variants) index the name section and the all-fields text with
+`fields = 'name', prefix_index = 3`, pg_search indexes `edge_ngram(1, 15)` fields for both, pgx-bm25 a four-column `bm25_native` index (below); every typed word is a
+prefix. `sift.max_expansions` is set to 100000 for the database so that every typed prefix keeps scoring as the max over its terms: at the
+default 512, prefixes of four or more letters of common words (`pari*`, `san*`) read as one term instead. Single client, 2-3 interleaved rounds of 2 s
+per cell (`bench/bench run --dataset places --tier full --serial`, host load 5-17). Every engine lives in a database of its own, a copy of the loaded table
+(the extra columns of rum, pg_textsearch and pgx-bm25 do not enlarge the others' table; no engine pays for another's hooks), and every copy starts from a vacuumed table so that
+the visibility map is complete (a harness bug fixed for this session: with only an `ANALYZE` of the template the first engine's `count(*)` read the heap of the pages that were not all-visible and
+measured 2-3 times slower than the same index in the next database). Index size, build time and p50 latency in ms of the top-20 workload per
+query class (pg_textsearch is the emulation described above, pgx-bm25 is native for words of 3 letters or more and emulated inside its index for 1-2 letters). Single-client cells under 0.3 ms
+are near the resolution of the measurement; the standard errors say how much a cell moved between the rounds, and the differences between the sift variants (0.81x-1.30x, median 1.0x) are that noise, not an effect:
+
+| engine | index (MiB) | build (s) | p1 | p2 | p3 | p4 | w1 | a2 | a2s | a3 | x2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sift | 50.2 | 1.4 | 0.26 ± 0.012 | 0.23 ± 0.001 | 0.24 ± 0.004 | 0.27 ± 0.004 | 0.17 ± 0.006 | 0.16 ± 0.001 | 0.17 ± 0.004 | 0.20 ± 0.002 | 0.20 ± 0.014 |
+| sift `positions = off` | 44.4 | 1.4 | 0.24 ± 0.007 | 0.23 ± 0.002 | 0.26 ± 0.018 | 0.26 ± 0.004 | 0.16 ± 0.015 | 0.18 ± 0.020 ! | 0.16 ± 0.002 | 0.20 ± 0.010 | 0.21 ± 0.006 |
+| sift `pairs` | 83.3 | 2.3 | 0.24 ± 0.003 | 0.21 ± 0.011 | 0.26 ± 0.002 | 0.27 ± 0.015 | 0.15 ± 0.011 | 0.18 ± 0.004 | 0.17 ± 0.013 | 0.19 ± 0.002 | 0.21 ± 0.009 |
+| pg_search | 142.0 | 2.9 | 0.85 ± 0.022 | 1.04 ± 0.025 | 1.17 ± 0.026 | 1.22 ± 0.029 | 1.30 ± 0.011 | 1.69 ± 0.025 | 1.47 ± 0.004 | 2.68 ± 0.061 | 2.06 ± 0.059 |
+| pg_textsearch | 68.3 | 2.4 | 1002.33 ± 4.91 | 404.19 ± 4.60 | 14.83 ± 0.56 | 4.45 ± 0.038 | 2.80 ± 0.11 | 2.72 ± 0.10 | 2.63 ± 0.008 | 2.83 ± 0.026 | 2.85 ± 0.13 |
+| rum | 94.9 | 2.7 | 107.99 ± 4.44 | 14.25 ± 0.11 | 4.42 ± 0.23 | 1.22 ± 0.008 | 0.31 ± 0.004 | 9.85 ± 0.17 | 49.60 ± 2.03 | 10.29 ± 0.075 | 5.73 ± 0.19 |
+| pgx-bm25 | 103.3 | 3.2 | 33.71 ± 1.84 | 6.67 ± 0.31 | 72.26 ± 0.69 | 43.01 ± 2.29 | 4.75 ± 0.43 | 9.70 ± 0.37 | 26.25 ± 0.86 | 24.34 ± 0.86 | 15.42 ± 0.55 |
+
+Extra columns and indexes of the emulated workloads, built after the native index in the same database (not in the table above):
+
+| engine | index (MiB) | build (s) | column fill (s) | table growth (MiB) |
+|---|---:|---:|---:|---:|
+| pg_textsearch | 364.5 | 11.8 | 9.5 | 179.3 |
+| rum | 95.0 | 2.8 | 5.0 | 61.9 |
+
+pg_textsearch needs 433 MiB in all for its ranked prefix workloads (68.3 native, 364.5 for the n-gram indexes; plus 179.3 MiB of stored columns), 3.1 times pg_search's 142.0 MiB.
+pgx-bm25's four stored columns grow the table by 54.3 MiB (4.2 s to fill) and are not in its 103.3 MiB; rum's native `tsvector` column grows it by 60.4 MiB (1.6 s).
+
+p50 latency in ms of every workload, with the ratio to sift (workloads: top-20, name boost x3, filtered `country_code = 'US'`, `count(*)`, unordered
+`population >= 100000`; places queries are prefixes and ANDs and never reach the phrase recheck):
+
+**top-20**
+
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p1 | 0.26 ± 0.012 | 0.24 ± 0.007 (0.92x) | 0.24 ± 0.003 (0.91x) | 0.85 ± 0.022 (3.28x) | 1002.33 ± 4.91 (3855.11x) | 107.99 ± 4.44 (415.36x) | 33.71 ± 1.84 (129.66x) |
+| p2 | 0.23 ± 0.001 | 0.23 ± 0.002 (0.97x) | 0.21 ± 0.011 (0.90x) | 1.04 ± 0.025 (4.44x) | 404.19 ± 4.60 (1730.99x) | 14.25 ± 0.11 (61.01x) | 6.67 ± 0.31 (28.55x) |
+| p3 | 0.24 ± 0.004 | 0.26 ± 0.018 (1.08x) | 0.26 ± 0.002 (1.06x) | 1.17 ± 0.026 (4.81x) | 14.83 ± 0.56 (60.76x) | 4.42 ± 0.23 (18.09x) | 72.26 ± 0.69 (296.13x) |
+| p4 | 0.27 ± 0.004 | 0.26 ± 0.004 (0.96x) | 0.27 ± 0.015 (1.01x) | 1.22 ± 0.029 (4.56x) | 4.45 ± 0.038 (16.64x) | 1.22 ± 0.008 (4.57x) | 43.01 ± 2.29 (160.77x) |
+| w1 | 0.17 ± 0.006 | 0.16 ± 0.015 (0.94x) | 0.15 ± 0.011 (0.88x) | 1.30 ± 0.011 (7.62x) | 2.80 ± 0.11 (16.49x) | 0.31 ± 0.004 (1.83x) | 4.75 ± 0.43 (27.94x) |
+| a2 | 0.16 ± 0.001 | 0.18 ± 0.020 ! (1.11x) | 0.18 ± 0.004 (1.13x) | 1.69 ± 0.025 (10.35x) | 2.72 ± 0.10 (16.62x) | 9.85 ± 0.17 (60.25x) | 9.70 ± 0.37 (59.35x) |
+| a2s | 0.17 ± 0.004 | 0.16 ± 0.002 (0.97x) | 0.17 ± 0.013 (1.06x) | 1.47 ± 0.004 (8.85x) | 2.63 ± 0.008 (15.89x) | 49.60 ± 2.03 (299.70x) | 26.25 ± 0.86 (158.61x) |
+| a3 | 0.20 ± 0.002 | 0.20 ± 0.010 (0.98x) | 0.19 ± 0.002 (0.96x) | 2.68 ± 0.061 (13.43x) | 2.83 ± 0.026 (14.19x) | 10.29 ± 0.075 (51.57x) | 24.34 ± 0.86 (121.99x) |
+| x2 | 0.20 ± 0.014 | 0.21 ± 0.006 (1.01x) | 0.21 ± 0.009 (1.05x) | 2.06 ± 0.059 (10.13x) | 2.85 ± 0.13 (14.02x) | 5.73 ± 0.19 (28.22x) | 15.42 ± 0.55 (75.95x) |
+
+**name boost x3**
+
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p1 | 0.32 ± 0.039 ! | 0.35 ± 0.026 (1.08x) | 0.33 ± 0.022 (1.04x) | 3.00 ± 0.021 (9.34x) | 3107.60 ± 28.75 (9681.00x) | 113.84 ± 5.29 (354.64x) | 35.17 ± 0.32 (109.58x) |
+| p2 | 0.46 ± 0.002 | 0.45 ± 0.047 ! (0.98x) | 0.46 ± 0.011 (1.00x) | 2.98 ± 0.034 (6.46x) | 257.32 ± 1.21 (558.17x) | 13.60 ± 0.025 (29.51x) | 6.69 ± 0.14 (14.50x) |
+| p3 | 0.33 ± 0.014 | 0.34 ± 0.012 (1.03x) | 0.36 ± 0.011 (1.11x) | 2.59 ± 0.024 (7.92x) | 21.03 ± 0.066 (64.30x) | 4.35 ± 0.21 (13.30x) | 72.62 ± 1.56 (222.07x) |
+| p4 | 0.41 ± 0.019 | 0.37 ± 0.027 (0.90x) | 0.39 ± 0.020 (0.95x) | 2.36 ± 0.11 (5.79x) | 5.71 ± 0.045 (13.99x) | 1.06 ± 0.051 (2.60x) | 41.48 ± 0.077 (101.68x) |
+| w1 | 0.17 ± 0.001 | 0.17 ± 0.003 (1.00x) | 0.17 ± 0.005 (1.00x) | 2.43 ± 0.015 (14.23x) | 2.84 ± 0.025 (16.66x) | 0.27 ± 0.010 (1.60x) | 4.83 ± 0.47 (28.31x) |
+| a2 | 0.23 ± 0.010 | 0.22 ± 0.008 (0.98x) | 0.22 ± 0.006 (0.95x) | 3.28 ± 0.066 (14.37x) | 2.84 ± 0.039 (12.44x) | 9.80 ± 0.11 (42.98x) | 9.34 ± 0.33 (40.96x) |
+| a2s | 0.22 ± 0.004 | 0.21 ± 0.002 (0.96x) | 0.22 ± 0.006 (0.98x) | 2.89 ± 0.024 (13.15x) | 2.85 ± 0.077 (12.94x) | 44.34 ± 0.94 (201.53x) | 26.98 ± 1.84 (122.61x) |
+| a3 | 0.25 ± 0.007 | 0.25 ± 0.002 (0.99x) | 0.26 ± 0.003 (1.04x) | 5.61 ± 0.20 (22.07x) | 2.87 ± 0.059 (11.31x) | 9.91 ± 0.38 (39.02x) | 23.43 ± 0.012 (92.24x) |
+| x2 | 0.24 ± 0.009 | 0.24 ± 0.004 (0.99x) | 0.23 ± 0.008 (0.96x) | 4.00 ± 0.069 (16.75x) | 2.90 ± 0.062 (12.12x) | 5.42 ± 0.24 (22.69x) | 14.98 ± 1.29 (62.66x) |
+
+**filtered top-20**
+
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p1 | 5.85 ± 0.69 ! | 6.94 ± 0.49 (1.19x) | 6.85 ± 0.13 (1.17x) | 12.82 ± 0.63 (2.19x) | 238.21 ± 3.44 (40.69x) | 101.32 ± 0.47 (17.31x) | 32.80 ± 1.90 (5.60x) |
+| p2 | 1.61 ± 0.12 | 1.96 ± 0.084 (1.22x) | 1.65 ± 0.016 (1.03x) | 5.53 ± 0.11 (3.43x) | 73.19 ± 3.43 (45.46x) | 13.69 ± 0.17 (8.50x) | 7.51 ± 0.19 (4.67x) |
+| p3 | 0.51 ± 0.057 ! | 0.47 ± 0.017 (0.91x) | 0.51 ± 0.012 (1.00x) | 5.54 ± 0.008 (10.85x) | 7.12 ± 0.075 (13.95x) | 3.49 ± 0.077 (6.84x) | 73.25 ± 2.57 (143.62x) |
+| p4 | 0.31 ± 0.009 | 0.28 ± 0.009 (0.93x) | 0.29 ± 0.009 (0.96x) | 4.54 ± 0.34 (14.82x) | 2.91 ± 0.080 (9.50x) | 0.65 ± 0.032 (2.12x) | 41.31 ± 0.092 (135.00x) |
+| w1 | 0.16 ± 0.002 | 0.17 ± 0.002 (1.04x) | 0.15 ± 0.002 (0.95x) | 4.95 ± 0.14 (30.47x) | 2.41 ± 0.029 (14.86x) | 0.24 ± 0.009 (1.46x) | 4.77 ± 0.035 (29.34x) |
+| a2 | 0.21 ± 0.030 ! | 0.19 ± 0.017 (0.89x) | 0.20 ± 0.003 (0.94x) | 5.28 ± 0.35 (25.38x) | 2.46 ± 0.029 (11.83x) | 9.57 ± 0.018 (45.99x) | 9.83 ± 0.025 (47.26x) |
+| a2s | 0.18 ± 0.001 | 0.19 ± 0.004 (1.01x) | 0.20 ± 0.026 ! (1.06x) | 5.55 ± 0.76 ! (30.24x) | 2.53 ± 0.018 (13.78x) | 42.81 ± 1.57 (233.29x) | 29.80 ± 2.02 (162.37x) |
+| a3 | 0.21 ± 0.007 | 0.20 ± 0.002 (0.96x) | 0.20 ± 0.001 (0.94x) | 6.11 ± 0.36 (29.01x) | 2.42 ± 0.006 (11.52x) | 10.10 ± 0.033 (47.99x) | 23.80 ± 0.18 (113.09x) |
+| x2 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.04x) | 0.20 ± 0.022 ! (1.06x) | 5.76 ± 0.24 (30.32x) | 2.40 ± 0.011 (12.65x) | 5.47 ± 0.23 (28.79x) | 15.15 ± 0.43 (79.73x) |
+
+**count(*)**
+
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p1 | 0.13 ± 0.001 | 0.12 ± 0.001 (0.97x) | 0.12 ± 0.002 (0.96x) | 0.68 ± 0.006 (5.39x) | 454.90 ± 14.27 (3624.68x) | 35.78 ± 0.19 (285.12x) | 51.05 ± 1.64 (406.78x) |
+| p2 | 0.14 ± 0.056 ! | 0.14 ± 0.001 (0.99x) | 0.14 ± 0.002 (0.99x) | 1.01 ± 0.008 (7.37x) | 97.85 ± 0.57 (714.24x) | 9.88 ± 0.53 (72.14x) | 10.41 ± 2.84 ! (76.01x) |
+| p3 | 0.12 ± 0.002 | 0.15 ± 0.040 ! (1.30x) | 0.12 ± 0.044 ! (1.00x) | 1.12 ± 0.41 ! (9.74x) | 6.28 ± 1.06 ! (54.60x) | 1.82 ± 0.12 (15.84x) | 73.49 ± 2.16 (639.01x) |
+| p4 | 0.14 ± 0.009 | 0.13 ± 0.005 (0.96x) | 0.14 ± 0.022 ! (1.01x) | 1.25 ± 0.021 (9.09x) | 1.38 ± 0.043 (10.02x) | 0.50 ± 0.028 (3.63x) | 42.73 ± 0.15 (309.64x) |
+| w1 | 0.11 ± 0.007 | 0.12 ± 0.003 (1.07x) | 0.13 ± 0.001 (1.12x) | 1.78 ± 0.029 (15.86x) | 0.79 ± 0.005 (7.03x) | 0.20 ± 0.012 (1.81x) | 4.97 ± 0.035 (44.34x) |
+| a2 | 0.13 ± 0.005 | 0.14 ± 0.006 (1.07x) | 0.15 ± 0.002 (1.16x) | 1.97 ± 0.082 (15.41x) | 2.09 ± 0.043 (16.32x) | 4.67 ± 0.22 (36.45x) | 9.47 ± 0.51 (73.98x) |
+| a2s | 0.14 ± 0.003 | 0.13 ± 0.010 (0.96x) | 0.13 ± 0.004 (0.95x) | 1.79 ± 0.048 (13.09x) | 9.71 ± 0.25 (70.89x) | 38.70 ± 1.73 (282.50x) | 26.70 ± 0.98 (194.92x) |
+| a3 | 0.16 ± 0.013 | 0.15 ± 0.004 (0.93x) | 0.15 ± 0.009 (0.93x) | 3.81 ± 0.081 (23.26x) | 0.82 ± 0.024 (4.99x) | 4.79 ± 0.35 (29.21x) | 24.21 ± 1.01 (147.62x) |
+| x2 | 0.15 ± 0.006 | 0.14 ± 0.009 (0.93x) | 0.16 ± 0.005 (1.05x) | 2.72 ± 0.065 (17.82x) | 0.76 ± 0.031 (5.01x) | 2.72 ± 0.098 (17.84x) | 15.17 ± 0.84 (99.48x) |
+
+**unordered scan**
+
+| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p1 | 11.15 ± 0.37 | 11.72 ± 1.43 ! (1.05x) | 12.56 ± 0.28 (1.13x) | 16.10 ± 0.30 (1.44x) | 451.23 ± 4.43 (40.48x) | 37.58 ± 0.11 (3.37x) | 61.85 ± 7.19 ! (5.55x) |
+| p2 | 2.60 ± 0.22 | 2.84 ± 0.038 (1.10x) | 2.10 ± 0.29 ! (0.81x) | 4.12 ± 0.48 ! (1.59x) | 94.97 ± 0.60 (36.58x) | 10.02 ± 0.42 (3.86x) | 12.20 ± 0.27 (4.70x) |
+| p3 | 0.42 ± 0.024 | 0.44 ± 0.037 (1.06x) | 0.45 ± 0.024 (1.06x) | 1.78 ± 0.081 (4.25x) | 6.51 ± 0.18 (15.57x) | 1.77 ± 0.17 (4.22x) | 72.24 ± 2.81 (172.82x) |
+| p4 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.02x) | 0.20 ± 0.004 (1.02x) | 1.19 ± 0.035 (6.19x) | 1.35 ± 0.066 (7.02x) | 0.51 ± 0.023 (2.66x) | 41.85 ± 0.26 (216.82x) |
+| w1 | 0.12 ± 0.006 | 0.12 ± 0.002 (0.98x) | 0.12 ± 0.002 (1.00x) | 1.58 ± 0.006 (12.68x) | 0.80 ± 0.043 (6.38x) | 0.20 ± 0.010 (1.58x) | 4.97 ± 0.16 (39.79x) |
+| a2 | 0.14 ± 0.000 | 0.14 ± 0.005 (1.04x) | 0.14 ± 0.006 (1.03x) | 1.82 ± 0.050 (13.20x) | 1.94 ± 0.054 (14.07x) | 5.02 ± 0.13 (36.37x) | 9.34 ± 0.43 (67.65x) |
+| a2s | 0.14 ± 0.004 | 0.15 ± 0.005 (1.06x) | 0.15 ± 0.006 (1.06x) | 1.70 ± 0.038 (12.04x) | 9.74 ± 0.10 (69.10x) | 41.44 ± 1.37 (293.89x) | 28.29 ± 1.96 (200.62x) |
+| a3 | 0.16 ± 0.004 | 0.16 ± 0.006 (1.00x) | 0.15 ± 0.015 (0.97x) | 3.47 ± 0.17 (22.24x) | 0.81 ± 0.050 (5.21x) | 4.72 ± 0.056 (30.23x) | 23.16 ± 0.52 (148.48x) |
+| x2 | 0.15 ± 0.001 | 0.15 ± 0.002 (1.00x) | 0.15 ± 0.002 (1.02x) | 2.51 ± 0.012 (16.49x) | 0.96 ± 0.032 (6.33x) | 2.73 ± 0.14 (17.93x) | 14.79 ± 0.37 (97.29x) |
+
+Reading the numbers:
+
+- sift is ahead of every other engine in every one of the 45 cells of this session. Against pg_search the ratio is 1.4x to 30x (median 10.9x; the closest cells are the unordered scans of the one- and two-letter prefixes, 1.4x and 1.6x,
+  where the result is a large share of the corpus and both engines spend their time fetching rows); against rum 1.5x to 415x (median 28x; the closest are the whole-word cells, 1.5-1.8x: 0.31 against 0.17 ms); against pgx-bm25 4.7x to 639x (median 100x)
+  and against the pg_textsearch emulation 5.0x to 9,700x (median 15x; it is faster than pg_search in 16 of the 45 cells, mostly filtered, multi-word and whole-word queries). The index is 2.8 times smaller than pg_search's (50.2 against 142.0 MiB) and builds 2.1 times faster (1.4 against 2.9 s); the default index is the
+  smallest of the native indexes but `positions = off` (44.4 MiB) is smaller still.
+- sift `positions = off` and `pairs` are not needed by prefix queries (none of these reaches a phrase): their latencies are 0.81x-1.30x of sift's cell by cell (median 1.0x), which is the noise of the session, and they cost 0.9x
+  (`positions = off`) and 1.7x (`pairs`) of the index.
+- pg_textsearch (emulation) is behind pg_search on the top-20 in every class and by orders of magnitude on the short prefixes: top-20 1.0 s at one letter, 404 ms at two, 14.8 ms at three and 2.6-4.5 ms from four letters on (sift 0.16-0.27 ms). The exact BM25
+  ranking scores every match, and a one-letter prefix matches a large share of the places. Its native `count(*)` and scan are the prefix tsquery: 455 ms for `count(*)` of a one-letter prefix, 0.8-9.7 ms for words and the multi-word classes.
+- rum (native top-20, filtered, count, scan; emulated boost) is within 2-5 times of sift on whole-word and four-letter queries (whole-word top-20 0.31 against 0.17 ms, four letters 1.22 against 0.27 ms) and tens to hundreds of times slower on the multi-word and short-prefix classes:
+  108 ms for a one-letter prefix (415 times sift's 0.26 ms), 50 ms for a word and a one-letter prefix. It is faster than pg_search in 12 of the 45 cells (whole words, four-letter prefixes, some filtered queries) but never faster than sift.
+  Its index is 94.9 MiB (1.9 times sift's, 0.67 times pg_search's).
+- pgx-bm25 is 4.7x-639x behind sift: 34 ms for a one-letter prefix, 72 ms for a three-letter prefix, 43 ms for four letters, 5 ms for a whole word (with the wildcard limit raised, see above); it is faster than pg_search in 1 of the 45 cells.
+- The name boost costs pg_search 1.9-3.5 times its plain top-20 (3.00 against 0.85 ms at one letter); sift's boost costs 1.0-2.0 times its top-20 (the one-letter prefix 0.32 against 0.26 ms, the two-letter prefix 0.46 against 0.23 ms).
+
+Cold cache (`bench/bench cold --full --dataset places --serial`, 12 queries per cell, scratch data on tmpfs as above), p50 / maximum in ms; all seven engines in one session:
+
+| workload | class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| top | p1 | 0.51 / 0.61 | 0.56 / 0.77 | 0.60 / 0.86 | 1.94 / 2.28 | 2023.78 / 5502.79 | 95.91 / 339.00 | 38.37 / 116.50 |
+| top | p2 | 0.52 / 0.84 | 0.49 / 0.96 | 0.52 / 2.04 | 2.04 / 3.07 | 400.74 / 793.73 | 17.73 / 38.70 | 10.01 / 16.60 |
+| top | a2 | 0.19 / 2.12 | 0.18 / 2.32 | 0.19 / 2.38 | 1.98 / 2.59 | 0.73 / 10.53 | 9.21 / 46.07 | 14.55 / 486.47 |
+| top | a3 | 0.25 / 0.45 | 0.23 / 0.38 | 0.24 / 0.60 | 2.90 / 3.83 | 0.99 / 1.24 | 12.43 / 17.41 | 32.65 / 3005.16 |
+| boost | p1 | 0.72 / 1.11 | 0.70 / 2.35 | 0.74 / 1.13 | 3.65 / 7.20 | 3258.03 / 8008.28 | 97.41 / 256.46 | 45.10 / 151.56 |
+| boost | p2 | 0.88 / 1.16 | 0.81 / 1.18 | 1.02 / 1.33 | 4.14 / 5.75 | 638.98 / 1337.88 | 17.63 / 29.74 | 10.29 / 16.21 |
+| boost | a2 | 0.27 / 6.38 | 0.39 / 9.24 | 0.34 / 7.59 | 3.38 / 5.18 | 1.27 / 16.04 | 9.60 / 49.45 | 18.23 / 509.45 |
+| boost | a3 | 0.31 / 0.81 | 0.46 / 1.19 | 0.35 / 0.87 | 5.19 / 6.04 | 1.51 / 1.86 | 11.63 / 15.26 | 43.03 / 3477.00 |
+| filter | p1 | 11.51 / 15.42 | 14.26 / 19.22 | 11.74 / 18.97 | 16.69 / 21.89 | 362.20 / 1041.79 | 101.56 / 256.87 | 60.56 / 167.06 |
+| filter | p2 | 6.14 / 11.30 | 6.94 / 19.16 | 7.03 / 12.12 | 9.98 / 14.25 | 66.86 / 106.12 | 17.48 / 36.69 | 13.01 / 20.65 |
+| filter | a2 | 0.28 / 2.48 | 0.24 / 2.72 | 0.20 / 2.80 | 6.86 / 7.46 | 0.45 / 1.83 | 9.29 / 31.86 | 19.91 / 1799.08 |
+| filter | a3 | 0.24 / 0.47 | 0.26 / 0.40 | 0.25 / 0.54 | 8.17 / 8.84 | 0.56 / 1.46 | 11.70 / 17.02 | 29.83 / 4586.19 |
+| count | p1 | 0.16 / 0.38 | 0.15 / 0.19 | 0.15 / 0.20 | 0.93 / 1.40 | 497.87 / 1275.88 | 55.84 / 70.23 | 92.54 / 235.72 |
+| count | p2 | 0.09 / 0.13 | 0.09 / 0.13 | 0.10 / 0.14 | 1.47 / 2.27 | 114.47 / 233.62 | 12.87 / 22.57 | 24.82 / 39.38 |
+| count | a2 | 0.11 / 0.94 | 0.08 / 0.83 | 0.12 / 1.07 | 2.38 / 3.15 | 1.54 / 9.32 | 4.93 / 19.91 | 18.25 / 570.97 |
+| count | a3 | 0.10 / 0.17 | 0.13 / 0.21 | 0.12 / 0.19 | 4.37 / 8.56 | 0.58 / 2.23 | 6.44 / 10.00 | 26.64 / 3244.99 |
+
+These are execution times (`EXPLAIN ANALYZE`), without the planning and the query lookup that the warm p50 includes, so they are not comparable with the tables above. sift is ahead of pg_search in all 16 cold cells
+of the table (the closest, the one-letter filtered top-20, 11.5 against 16.7 ms). pgx-bm25's cold maxima reach 3.0-4.6 s in the cells of the 3-letter-plus classes (a3).
+
+### Earlier session: the smaller tiers (not repeated)
+
+These tiers (150,000 and 25,000 articles, 34,165 places) were measured in an earlier session with sift `cd2fb81d18d6` (before word positions were the default, so its columns are what is `positions = off` today), five engines (without pgx-bm25 and the variants), `--serial` on two pinned CPUs of a loaded host, 4-6 rounds. **They were not repeated for this session** and carry the limits of that one; they are kept, with their rows in [results/](results/) (tiers `ab` and `quick`), because they show the ordering at smaller sizes. At 218,058 articles the default index (positions on) is ahead of pg_search in every class (above); at 150,000 articles the index of that build was behind on `count(*)` and phrase and ahead at 25,000, so the margins depend on the size of the corpus.
+
+#### 150,000 articles (`ab` tier)
 
 `bench/bench run --dataset articles --tier ab --workers 2`: 3 s per cell, 6 rounds (load 13-30), all five engines in one session.
 Queries per second (minimum-maximum over the rounds); rum's column fills in 14.9 s and adds 300.2 MiB to the table:
@@ -216,7 +357,7 @@ the size (with an earlier build and a 75,000 article tier the phrase and `count(
 default index's phrase and `count(*)` on the full tier. The size ordering is the same as at 218k: `pairs` is 192.2 MiB against 112.0 MiB
 for pg_search (1.7 times) and 33.5 MiB for the default index.
 
-### 25,000 articles (`quick` tier)
+#### 25,000 articles (`quick` tier)
 
 `bench/bench run --tier quick --workers 2` (the default of `bench/bench run`): 1 s per cell, 2 rounds (load 17-35), so the ranges are
 wide; it shows the ordering, not the ratios.
@@ -239,158 +380,7 @@ wide; it shows the ordering, not the ratios.
 At this size rum's AND (a stored `tsvector` intersection) is 1.56 times pg_search, and every engine's ranking of the other classes is
 as at the larger tiers.
 
-## Places: GeoNames cities500, 236,262 places (full tier)
-
-Multi-field autocomplete as an application would run it: sift indexes the name section and the all-fields text with
-`fields = 'name', prefix_index = 3`, pg_search indexes `edge_ngram(1, 15)` fields for both; every typed word is a
-prefix. `sift.max_expansions` is set to 100000 for the database so that every typed prefix keeps scoring as the max over its terms: at the
-default 512, prefixes of four or more letters of common words (`pari*`, `san*`) read as one term instead (before that was an error). Single client, 4 interleaved rounds of 2 s
-per cell (`bench/bench run --full --dataset places --rounds 4-4 --duration 2 --workers 2`, load 9-36). Every engine lives in a database of its
-own, a copy of the loaded table (the extra columns of rum and pg_textsearch do not enlarge the others' table; pg_textsearch's access method
-has the name of pg_search's; no engine pays for another's hooks). Index size, build time and p50 latency in ms of the top-20 workload per
-query class (pg_textsearch is the emulation described above). **The host was loaded in this session and the cells are single-client
-milliseconds: between rounds the same cell moves by 2-10 times below 3 ms (minimum and maximum per cell: `results/places.tsv`), the
-medians of 4 rounds carry that, and build times are 2-4 times those of an earlier session on the same host while index sizes did not move.
-Read orders of magnitude, not 2x differences between sub-3 ms cells; `sift` and `sift pairs` index prefix queries identically, so their
-difference is noise:**
-
-| engine | index (MiB) | build (s) | p1 | p2 | p3 | p4 | w1 | a2 | a2s | a3 | x2 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| sift | 42.6 | 8.0 | 2.91 | 1.96 | 1.39 | 1.75 | 0.25 | 2.10 | 2.30 | 0.46 | 1.35 |
-| sift `pairs` | 75.7 | 12.3 | 3.19 | 2.67 | 2.43 | 2.42 | 0.35 | 0.54 | 1.49 | 0.41 | 1.39 |
-| pg_search | 125.8 | 39.3 | 2.99 | 7.69 | 6.62 | 4.42 | 5.22 | 6.74 | 8.92 | 10.39 | 5.89 |
-| pg_textsearch | 68.3 | 16.0 | 8,795 | 1,356 | 186 | 37.91 | 16.02 | 15.39 | 21.46 | 11.50 | 10.80 |
-| rum | 94.9 | 17.9 | 741 | 65.94 | 22.98 | 7.83 | 2.65 | 58.01 | 234 | 33.28 | 27.64 |
-
-Extra columns and indexes of the emulated workloads, built after the native index in the same database (not in the table above):
-
-| engine | what | index (MiB) | build (s) | column fill (s) | table growth (MiB) |
-|---|---|---:|---:|---:|---:|
-| pg_textsearch | `ng_text`, `ng_name`, two `bm25` indexes | 364.5 | 85.2 | 62.2 | 179.2 |
-| rum | weighted tsvector, `rum_tsvector_ops` index | 95.0 | 17.3 | 26.3 | 61.9 |
-
-pg_textsearch needs 433 MiB in all for its ranked prefix workloads (68.3 native, 364.5 for the n-gram indexes; plus 179.2 MiB of
-stored columns), 3.4 times pg_search's 125.8 MiB.
-
-p50 latency in ms of every workload, with the ratio to sift (workloads: top-20, name boost x3, filtered `country_code = 'US'`, `count(*)`, unordered
-`population >= 100000`; places queries are prefixes and ANDs and never reach the phrase recheck):
-
-**top-20**
-
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| p1 | 2.91 | 3.19 (1.1x) | 2.99 (1.0x) | 8,795 (3022.5x) | 741 (254.8x) |
-| p2 | 1.96 | 2.67 (1.4x) | 7.69 (3.9x) | 1,356 (692.1x) | 65.94 (33.6x) |
-| p3 | 1.39 | 2.43 (1.7x) | 6.62 (4.8x) | 186 (133.5x) | 22.98 (16.5x) |
-| p4 | 1.75 | 2.42 (1.4x) | 4.42 (2.5x) | 37.91 (21.7x) | 7.83 (4.5x) |
-| w1 | 0.25 | 0.35 (1.4x) | 5.22 (20.9x) | 16.02 (64.1x) | 2.65 (10.6x) |
-| a2 | 2.10 | 0.54 (0.3x) | 6.74 (3.2x) | 15.39 (7.3x) | 58.01 (27.6x) |
-| a2s | 2.30 | 1.49 (0.6x) | 8.92 (3.9x) | 21.46 (9.3x) | 234 (101.6x) |
-| a3 | 0.46 | 0.41 (0.9x) | 10.39 (22.6x) | 11.50 (25.0x) | 33.28 (72.3x) |
-| x2 | 1.35 | 1.39 (1.0x) | 5.89 (4.4x) | 10.80 (8.0x) | 27.64 (20.5x) |
-
-**name boost x3**
-
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| p1 | 4.07 | 6.34 (1.6x) | 9.80 (2.4x) | 11,258 (2766.1x) | 355 (87.1x) |
-| p2 | 3.94 | 4.40 (1.1x) | 11.27 (2.9x) | 2,013 (511.0x) | 72.88 (18.5x) |
-| p3 | 2.66 | 2.39 (0.9x) | 16.25 (6.1x) | 137 (51.4x) | 22.19 (8.3x) |
-| p4 | 2.62 | 3.18 (1.2x) | 15.04 (5.7x) | 43.25 (16.5x) | 4.97 (1.9x) |
-| w1 | 2.67 | 1.58 (0.6x) | 19.53 (7.3x) | 18.73 (7.0x) | 3.66 (1.4x) |
-| a2 | 2.21 | 1.81 (0.8x) | 22.42 (10.1x) | 18.68 (8.5x) | 83.05 (37.6x) |
-| a2s | 2.11 | 2.99 (1.4x) | 16.29 (7.7x) | 14.80 (7.0x) | 241 (114.4x) |
-| a3 | 2.53 | 2.28 (0.9x) | 30.65 (12.1x) | 21.93 (8.7x) | 50.81 (20.1x) |
-| x2 | 1.08 | 1.37 (1.3x) | 19.58 (18.1x) | 26.10 (24.2x) | 24.18 (22.4x) |
-
-**filtered top-20**
-
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| p1 | 28.42 | 30.06 (1.1x) | 85.68 (3.0x) | 934 (32.9x) | 312 (11.0x) |
-| p2 | 13.37 | 11.16 (0.8x) | 58.14 (4.3x) | 218 (16.3x) | 38.40 (2.9x) |
-| p3 | 2.70 | 2.95 (1.1x) | 69.01 (25.6x) | 24.22 (9.0x) | 9.81 (3.6x) |
-| p4 | 1.55 | 1.51 (1.0x) | 57.64 (37.2x) | 8.52 (5.5x) | 2.94 (1.9x) |
-| w1 | 0.48 | 1.23 (2.6x) | 56.47 (117.6x) | 9.37 (19.5x) | 1.39 (2.9x) |
-| a2 | 0.35 | 0.36 (1.0x) | 80.34 (229.5x) | 8.02 (22.9x) | 40.89 (116.8x) |
-| a2s | 1.77 | 1.38 (0.8x) | 55.71 (31.5x) | 13.02 (7.4x) | 210 (118.5x) |
-| a3 | 0.45 | 0.51 (1.1x) | 47.99 (106.6x) | 9.31 (20.7x) | 29.89 (66.4x) |
-| x2 | 1.35 | 0.40 (0.3x) | 44.80 (33.2x) | 10.30 (7.6x) | 27.13 (20.1x) |
-
-**count(*)**
-
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| p1 | 0.44 | 0.42 (1.0x) | 0.95 (2.2x) | 2,091 (4753.0x) | 160 (363.7x) |
-| p2 | 0.33 | 0.34 (1.0x) | 2.92 (8.8x) | 287 (871.2x) | 34.79 (105.4x) |
-| p3 | 0.19 | 0.18 (0.9x) | 2.98 (15.7x) | 17.18 (90.4x) | 6.93 (36.5x) |
-| p4 | 0.22 | 0.23 (1.0x) | 3.21 (14.6x) | 5.99 (27.2x) | 2.33 (10.6x) |
-| w1 | 0.22 | 0.18 (0.8x) | 5.56 (25.3x) | 3.33 (15.1x) | 1.46 (6.6x) |
-| a2 | 0.32 | 0.26 (0.8x) | 5.28 (16.5x) | 6.14 (19.2x) | 24.88 (77.8x) |
-| a2s | 0.29 | 0.32 (1.1x) | 4.11 (14.2x) | 28.90 (99.7x) | 121 (415.8x) |
-| a3 | 0.26 | 0.23 (0.9x) | 16.62 (63.9x) | 2.91 (11.2x) | 19.53 (75.1x) |
-| x2 | 0.34 | 1.23 (3.6x) | 6.27 (18.4x) | 3.92 (11.5x) | 16.54 (48.6x) |
-
-**unordered scan**
-
-| class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---:|---:|---:|---:|---:|
-| p1 | 50.70 | 59.53 (1.2x) | 53.09 (1.0x) | 1,998 (39.4x) | 242 (4.8x) |
-| p2 | 12.26 | 16.02 (1.3x) | 18.87 (1.5x) | 363 (29.6x) | 38.70 (3.2x) |
-| p3 | 1.52 | 0.88 (0.6x) | 6.66 (4.4x) | 53.00 (34.9x) | 7.56 (5.0x) |
-| p4 | 0.36 | 0.40 (1.1x) | 1.68 (4.7x) | 4.42 (12.3x) | 1.37 (3.8x) |
-| w1 | 0.20 | 0.17 (0.8x) | 4.10 (20.5x) | 2.37 (11.8x) | 0.30 (1.5x) |
-| a2 | 0.34 | 0.21 (0.6x) | 3.37 (9.9x) | 5.91 (17.4x) | 12.81 (37.7x) |
-| a2s | 0.22 | 0.24 (1.1x) | 3.52 (16.0x) | 24.74 (112.5x) | 112 (510.9x) |
-| a3 | 0.25 | 0.29 (1.2x) | 6.16 (24.6x) | 2.00 (8.0x) | 13.12 (52.5x) |
-| x2 | 0.52 | 0.27 (0.5x) | 3.69 (7.1x) | 2.31 (4.4x) | 15.32 (29.5x) |
-
-Reading the numbers:
-
-- sift is ahead of pg_search in every cell of this session (45 of 45; 1.03x to 230x, the closest the one-letter prefixes p1 of the top-20
-  and the scan, where the result is a large share of the corpus and both engines spend their time on ranking and fetching rows). The index is 3.0 times smaller (42.6 against
-  125.8 MiB) and builds 4.9 times faster (8.0 against 39.3 s, a loaded session).
-- sift `pairs` is not needed by prefix queries (none of these reaches a phrase) and costs 1.8 times the index (75.7 MiB) and 1.5 times the
-  build; its latencies are 0.26x-3.6x of sift's (median 1.03x) cell by cell, which is the noise of the session, not a difference.
-- pg_textsearch (emulation) is behind pg_search on the top-20 in every class and by orders of magnitude on the short prefixes: top-20 8.8 s at one
-  letter, 1.4 s at two, 186 ms at three and 11-38 ms from four letters on (sift 0.25-2.9 ms). The exact BM25 ranking scores every match, and
-  a one-letter prefix matches a large share of the places. On the filtered top-20 it is 2.8-10 times faster than pg_search from three letters on (8-24 ms
-  against 45-80 ms: 17 of the 45 cells are below pg_search's latency, mostly filtered, multi-word and whole-word `count(*)` and scan). Its native count and scan are the
-  prefix tsquery: 2.1 s for `count(*)` of a one-letter prefix, 2-53 ms from three letters on.
-- rum (native top-20, filtered, count, scan; emulated boost) is within 3 times of sift on whole-word filtered queries (1.39 against 0.48 ms) and 11 times on whole-word top-20
-  (2.65 against 0.25 ms), within 5 times on four-letter prefixes (7.83 against 1.75 ms top-20, 2.94 against 1.55 ms filtered), and tens to hundreds of times slower on the
-  multi-word and short-prefix classes: 741 ms for a one-letter prefix (254 times sift's 2.91 ms), 234 ms for a word and a one-letter prefix. It is faster than pg_search in 14
-  of 45 cells (whole words, four-letter prefixes, some filtered). Its index is 94.9 MiB (2.2 times sift's, 0.75 times pg_search's).
-- The name boost costs pg_search 1.5-3.7 times its plain top-20 in every class (9.80 against 2.99 ms at one letter); sift's boost is
-  0.8-2.0 times its top-20 except for two sub-3 ms cells within the noise of the session, so this table does not resolve it.
-
-Cold cache (`bench/bench cold --full --dataset places --workers 2`, 12 queries per cell, scratch data on tmpfs as above), p50 / maximum in ms; all five
-engines in one session:
-
-| workload | class | sift | sift `pairs` | pg_search | pg_textsearch | rum |
-|---|---|---:|---:|---:|---:|---:|
-| top | p1 | 3.07 / 7.45 | 3.19 / 7.47 | 3.03 / 8.15 | 5,354 / 15,624 | 350 / 752 |
-| top | p2 | 1.00 / 7.82 | 2.96 / 5.12 | 3.45 / 7.96 | 1,410 / 3,341 | 69.00 / 114 |
-| top | a2 | 0.21 / 11.60 | 0.20 / 15.55 | 3.21 / 6.61 | 0.88 / 24.44 | 28.37 / 149 |
-| top | a3 | 0.27 / 2.47 | 0.27 / 0.54 | 5.86 / 16.07 | 5.13 / 12.85 | 35.46 / 69.93 |
-| boost | p1 | 10.00 / 16.01 | 6.47 / 25.39 | 10.50 / 29.25 | 12,312 / 30,641 | 292 / 931 |
-| boost | p2 | 1.37 / 8.38 | 3.19 / 5.44 | 10.01 / 39.55 | 1,893 / 4,064 | 55.71 / 131 |
-| boost | a2 | 0.31 / 18.63 | 0.30 / 18.11 | 5.07 / 10.05 | 4.67 / 68.01 | 25.63 / 144 |
-| boost | a3 | 0.38 / 8.88 | 0.39 / 5.05 | 7.45 / 16.11 | 4.08 / 7.27 | 24.14 / 56.74 |
-| filter | p1 | 23.36 / 34.40 | 27.05 / 44.13 | 69.17 / 167 | 765 / 2,006 | 266 / 478 |
-| filter | p2 | 10.71 / 23.50 | 14.14 / 32.20 | 48.00 / 108 | 126 / 222 | 37.28 / 78.69 |
-| filter | a2 | 0.20 / 9.00 | 0.21 / 4.97 | 25.34 / 61.12 | 0.43 / 4.84 | 21.44 / 77.69 |
-| filter | a3 | 0.27 / 2.29 | 0.27 / 2.51 | 23.56 / 82.65 | 0.53 / 2.61 | 23.35 / 39.95 |
-| count | p1 | 0.33 / 0.41 | 0.33 / 0.39 | 1.91 / 4.58 | 995 / 2,215 | 170 / 237 |
-| count | p2 | 0.15 / 0.22 | 0.15 / 2.20 | 0.78 / 3.07 | 304 / 771 | 134 / 551 |
-| count | a2 | 0.09 / 5.04 | 0.09 / 6.01 | 6.84 / 23.52 | 2.84 / 38.02 | 51.24 / 272 |
-| count | a3 | 0.15 / 0.32 | 0.20 / 2.20 | 18.68 / 29.31 | 8.15 / 20.10 | 48.31 / 95.82 |
-
-These are execution times (`EXPLAIN ANALYZE`), without the planning and the query lookup that the warm p50 includes, so they are not
-comparable with the tables above. sift is ahead of pg_search in 15 of the 16 cold cells; the exception is the one-letter top-20
-(3.07 against 3.03 ms).
-
-### 34,165 places (`ab` tier, cities15000)
+#### 34,165 places (`ab` tier, cities15000)
 
 `bench/bench run --dataset places --tier ab --workers 2`: 5 rounds of 2 s per cell (load 19-45), all five engines in one session, p50 latency in ms of the
 top-20 workload (the six classes of the quick mode; pg_textsearch is the emulation):
@@ -415,13 +405,45 @@ there too, 1.1x-21x) has the same ordering:
 | pg_textsearch | 21.5 | 5.0 | 4,594 | 94.49 | 24.53 | 20.96 | 18.12 | 11.34 |
 | rum | 30.1 | 8.1 | 94.50 | 27.40 | 2.30 | 29.78 | 37.88 | 10.77 |
 
-All cells of the three tiers are in `results/places.tsv`.
+All cells of these tiers are in `results/places.tsv`.
+
+
+## Regression check against v1.1.0
+
+`bench/bench regress --run --tier full --ref v1.1.0 --engines sift,sift_nopos,sift_ref` with the matrix widened to every class and workload (articles: `and or phrase mixed count filter join`; places: all
+nine classes with `top boost filter count scan`), full scale, sift, sift `positions = off` and the reference `sift_ref` (tag v1.1.0, commit `0a7a59c51c6b`, built under the extension name `pg_sift_ref`) in three lanes at the same time
+(2 server CPUs and 1 load generator CPU each, the CPUs rotated every round), 3-5 rounds. It compares 112 cells (56 per engine: 7 articles throughputs, 45 places p50 latencies, `CREATE INDEX` time, index size); a cell is a
+REGRESSION when the new value is worse by more than 5% and by more than 2 combined standard errors (single measurements such as builds and cold-cache cells: 15% relative error assumed).
+The cold-cache p50 of the 46 cells of both variants was compared in a second run (`bench/bench cold --tier full --engines sift,sift_nopos,sift_ref`).
+
+Three cells are flagged, the same three in every run (the first, a repeat capped at 3 rounds, and a repeat with 5 rounds that was started before the limit of 3 was set): all three are index sizes, which are deterministic.
+
+| dataset | engine | metric | new | v1.1.0 | new / ref | verdict |
+|---|---|---|---:|---:|---:|---|
+| articles | sift (positions on) | index MiB | 130.9 | 47.9 | 2.73x | expected: word positions are stored by default |
+| places | sift (positions on) | index MiB | 50.2 | 42.6 | 1.18x | expected: word positions are stored by default |
+| articles | sift `positions = off` | index MiB | 52.5 | 47.9 | 1.10x | **real**, deliberate: bitmap groups from 8K postings |
+
+The third is the only one that is not the documented positions trade-off. Cause, found by building the reference at the commit before and at the commit that changed the threshold (`--ref b642eb3~1` gives 47.9 MiB,
+`--ref b642eb3` gives 52.5 MiB, equal to the index of today's `positions = off` to the digit): commit `b642eb3` "index: bitmap postings from 8K documents instead of 64K" makes terms of 8,192 to 65,535 postings bitmap groups with block bounds
+instead of Elias-Fano lists, which the commit message prices at +9.6% index (50.2 to 55.1 MB at 218k articles) for ranked AND 0.85 to 0.66 ms and ranked OR 3.78 to 3.07 ms. The measurement agrees: against v1.1.0 `positions = off` is
+**1.6x faster on AND, 1.9x on OR, 1.5x on mixed, 1.8x on the filtered top-10**, and level on `count(*)` (0.99x) and phrase (1.13x). It is therefore not a defect of the build but a size/speed trade-off that has no option: the 8K threshold is
+compiled in (16K would be 52.2 MB for 0.79 ms in the commit message's own numbers). If a 10% smaller `positions = off` index matters more than 1.6x on ranked AND, the proposed fix is to make the threshold a reloption; no change was made on this branch.
+
+Nothing else is flagged: no throughput, latency, cold-cache p50 or build-time cell of either variant is worse than v1.1.0 beyond its noise (52 cells improved, 57 within the thresholds in the repeat; in the cold run 9 improved and 37 are within the thresholds).
+The improvements are the ones the changelog lists: against v1.1.0, with positions on, `count(*)` 10.6x, phrase 5.6x, join 2.9x, mixed 2.6x, OR 1.9x, filter 1.9x, AND 1.6x; places one- and two-letter prefix top-20 and boost 1.7-3.5x lower latency
+(cold p1 `top` 1.17 to 0.47 ms, `boost` 1.89 to 0.65 ms).
+
+Cells that are above the reference by more than 5% but inside the noise at 3 rounds, so **undecided** (not repeated, by the cap of 3 rounds): `CREATE INDEX` of sift on the articles (4.3 against 3.3 s, 1.30x, single measurement; expected with positions on) and on the places (2.5 against 2.3 s),
+and seven places latencies at 0.17-0.49 ms, whose combined error is 7-16% of a value that is itself below the resolution of a single-client p50 on this host: sift p4 `boost` 1.07x, w1 `filter` 1.08x; `positions = off` a2 `top` 1.07x, p2 `scan` 1.08x, p4 `filter` 1.07x, w1 `count` 1.08x, w1 `top`
+1.19x (0.179 against 0.150 ms). None of them is consistent across the runs (the first run measured `positions = off` w1 `top` at 1.06x).
+
 
 ## Correctness
 
 `bench/bench check oracle|rank ENGINE` checks the articles engines against a tsvector oracle (match sets, `count(*)`) and pgx-bm25's BM25
 (soft top-10 overlap); `bench/bench check --dataset places [oracle|rank] [N]` checks the places engines against an exact oracle in SQL
-(`bench/sql/places_oracle.sql`), N queries per class (30: 270 queries, 34,165 places):
+(`bench/sql/places_oracle.sql`), N queries per class (30: 270 queries):
 
 - match set: the places returned for a typed query must be those with every typed word as a prefix of a word of the all-fields text, with
   the engine's own idea of a word (pg_search's tokenizer, sift's accent folding, the PostgreSQL parser for rum and pg_textsearch's native
@@ -430,27 +452,13 @@ All cells of the three tiers are in `results/places.tsv`.
   score + 3 x name score, ties at rank 20 accepted): the share of the returned places that the oracle accepts as a top-20, averaged over the queries
   (`agree`; `exact` counts the queries at 1.0), and the returned places that are not matches (`wrong`).
 
-Places, `bench/bench check --dataset places 30` (270 queries, 34,165 places, `agree` = Jaccard index of the match sets for `match`, share of
-accepted places for the ranked workloads; `exact` of 270 queries at 1.0):
+### Articles (25,000-article quick tier, 200 substrings, this session)
 
-| engine | match exact / agree | top-20 exact / agree | boost exact / agree | filtered top-20 exact / agree |
-|---|---|---|---|---|
-| pg_search | 268 / 1.000 | 202 / 0.982 | 192 / 0.972 | 231 / 0.992 |
-| pg_textsearch (emulation) | 270 / 1.000 | 201 / 0.982 | 213 / 0.984 | 232 / 0.992 |
-| rum | 270 / 1.000 | 154 / 0.759 | 154 / 0.720 | 193 / 0.876 |
-| sift, sift `pairs` (identical) | 228 / 0.985 | 154 / 0.826 | 152 / 0.807 | 194 / 0.929 |
-
-- The oracle is sound: pg_search, which ranks BM25 over the same n-grams, agrees at 0.97-0.99, and the pg_textsearch emulation, which is the same computation in an extension, agrees at 0.98 with all match sets
-  exact. pg_search's 2 inexact match sets are a tokenizer difference (its edge-ngram tokenizer splits `i` out of some names).
-- sift does not rank by n-grams: a typed prefix is expanded to the indexed words and scored as them, so its top-20 is another
-  ranking than the oracle's, most visibly on the 1-2 letter prefixes (p1 0.46, p2 0.63) whose matches are a large share of the corpus;
-  from four letters on it agrees at 0.85-0.95. Its match sets agree at 0.985; the `a3` class (a word, then a 2-3 letter prefix) is the
-  inexact one (0.867, 310 places that the oracle does not return); I did not investigate it. rum's `<=>` is a proximity ranking, not BM25:
-  0.23 at one letter, 0.93 on whole words; its match sets are exact.
-
-Articles, 25,000-article tier, 200 substrings (`bench/bench check oracle|rank ENGINE 200`): match sets and `count(*)` of pg_textsearch
-and rum equal the tsvector oracle in all four modes (and, or, phrase, not: 0 mismatches). Top-10 overlap with pgx-bm25's BM25
-(a soft check):
+- `bench/bench check oracle sift 200`, the same for `sift_nopos` and `sift_pairs` (and, or, phrase, not modes): **the same two mismatches for the three, no others**, which are the known baseline:
+  query 167 (`or`: `h pugmire wilum`, the oracle has 481 matches, sift 480, document 21851 missing) and query 255 (`phrase`: `within the`, 367 against 371, four extra documents 1498, 2627, 2793, 17583).
+  I did not investigate these two again.
+- `bench/bench check rank sift 200` (top-10 overlap with pgx-bm25's BM25, a soft check): and 0.997, or 0.979, phrase 0.999 (the phrase top-10 differs in size for one query), identical to the baseline.
+  Earlier session, other engines (match sets and `count(*)` of pg_textsearch and rum equal the tsvector oracle in all four modes, 0 mismatches):
 
 | engine | and | or | phrase |
 |---|---:|---:|---:|
@@ -460,9 +468,38 @@ and rum equal the tsvector oracle in all four modes (and, or, phrase, not: 0 mis
 
 pg_textsearch's AND overlap was 0.88 before its score was written `(... <@> ...) * 1` (the unranked top-10 described above).
 
+### Places, `bench/bench check --dataset places 30` (`agree` = Jaccard index of the match sets for `match`, share of accepted places for the ranked workloads; `exact` of 270 queries at 1.0)
+
+| engine | match exact / agree | top-20 exact / agree | boost exact / agree | filtered top-20 exact / agree |
+|---|---|---|---|---|
+| sift, 34,165 places (this session) | 228 / 0.985 | 154 / 0.826 | 152 / 0.807 | 194 / 0.929 |
+| sift, 236,262 places (this session) | 211 / 0.992 | 141 / 0.750 | 141 / 0.699 | 173 / 0.861 |
+| pg_search, 34,165 places (earlier session) | 268 / 1.000 | 202 / 0.982 | 192 / 0.972 | 231 / 0.992 |
+| pg_textsearch emulation (earlier session) | 270 / 1.000 | 201 / 0.982 | 213 / 0.984 | 232 / 0.992 |
+| rum (earlier session) | 270 / 1.000 | 154 / 0.759 | 154 / 0.720 | 193 / 0.876 |
+
+The sift row at 34,165 places is identical to the earlier session's (the wide-prefix fix changed nothing here, as the diagnosis below shows: the differences never came from prefix expansion). Per class at 34,165 places the match agreement is 1.000 everywhere except `a3`
+0.867 (310 returned places in all that the oracle does not return), `p2` 0.999 and `p3` 0.998; at 236,262 places `a3` 0.933 (380), `p2` 0.999, the rest 1.000.
+
+**The remaining match differences are not bugs; they are differences between sift's analyzer and the oracle** (diagnosed on the 34,165-place run, all 270 queries, by comparing sift's match set with the oracle's for every query):
+
+1. **`a3` (0.867, 310 places): the oracle does not fold the typed words.** Four of the 30 `a3` queries have an accented typed word (`haessleholm skåne sweden`, `san méxico mexico`, ...). sift folds both the documents and the query (`skåne` finds `skane`, as `résumé` finds `resume`); the oracle folds
+   the documents with `unaccent` and compares the typed word as typed, so it returns 0 places where sift returns 1 and 163. With the typed words unaccented the oracle agrees with sift on all 30 `a3` queries and on every other `a2`, `a2s`, `w1`, `x2` and `p4` query (agree 1.000).
+2. **After folding the typed words, 38 of the 270 queries (the 1-3 letter prefixes `p1`-`p3`) still differ by 116 (query, place) pairs**: 114 places the oracle returns and sift does not, 2 the other way. All of them are word-segmentation or folding differences:
+   - 87 pairs: the place has a modifier letter inside a word (U+02BB and U+02BC, the okina and apostrophe letters of transliterations such as `Tʻakanrok`). sift keeps it as a letter of the word (`tʻakanrok`), the oracle splits at it (`t`, `akanrok`) and finds a word starting with `a`.
+   - 21 pairs: a zero-width non-joiner or joiner (U+200C, U+200D) inside a word (`jank‌pwr` in Persian and Indic names). sift joins the parts into one token (`jankpwr`), as the Unicode word-break rules do; the oracle splits there and finds the word `pwr`.
+   - 6 pairs: IPA letters in transcriptions (`[ɕrudˈmjɛɕtɕɛ]`, `[auˈɡustuf]`) that PostgreSQL's `unaccent` maps to Latin letters (`ɕ` to `c`, `ɡ` to `g`) and sift's accent folding does not.
+   - 2 pairs (the places sift returns and the oracle does not): `老橋鎮CDP`, a CJK run followed by Latin letters, which sift breaks into a word `cdp` and the oracle keeps as one alphanumeric run.
+   Each of these is a choice of the analyzer (sift follows the Unicode word boundaries and folds with its own table); none is a wrong result of the prefix expansion, and none is in a class with more than the three shortest prefixes. I did not repeat the diagnosis at 236,262 places.
+
+The ranked workloads differ for another reason: sift does not rank by n-grams. A typed prefix is expanded to the indexed words and scored as them (the max over the terms), so its top-20 is another ranking than the n-gram BM25 oracle's, most visibly on the 1-2 letter prefixes whose matches are a large share of the corpus
+(34,165 places: `p1` 0.458, `p2` 0.628 for the top-20; at 236,262 places 0.392 and 0.432, boost 0.198 and 0.275); from four letters on it agrees at 0.72-0.89. **This is the one place where pg_search and the pg_textsearch emulation, which rank BM25 over the same n-grams as the oracle (0.97-0.99), agree better than sift.**
+rum's `<=>` is a proximity ranking, not BM25: 0.23 at one letter, 0.93 on whole words (earlier session); its match sets are exact. The oracle itself is sound: pg_search agrees at 0.97-0.99 and the pg_textsearch emulation, which is the same computation in an extension, at 0.98 with all match sets exact.
+
+
 ## Method of the harness and its run time
 
-`bench/bench run` is one pipeline for every engine and both datasets. The tables of this document (a `--serial` run on a 2-CPU budget) and a default run differ in how the cells are scheduled, not in
+`bench/bench run` is one pipeline for every engine and both datasets. The tables of this document (a `--serial` run on the default budget of 8 server and 4 load generator CPUs) and a default run differ in how the cells are scheduled, not in
 what is measured:
 
 - **Lanes.** By default every engine has a cluster of its own (a lane), pinned to an equal share of the server CPUs with its load generators on an equal share of the load CPUs
@@ -475,9 +512,13 @@ what is measured:
   a cell is the sample standard deviation of its rounds over `sqrt(n)`; with n = 2-3 it is itself estimated from two or three numbers, so it is a rough indication, and it leaves out whatever the rounds share
   (the statement trace, the host). Tables show `median ± stderr (min-max)`, charts one standard error as an error bar, and `!` flags a relative standard error above 10%.
 - **Cold cache.** Per engine and class 12 queries, each after the heap, TOAST and index files of the table were evicted (per relation, `pg_buffercache_evict_relation` and `posix_fadvise`), the lanes in parallel.
-- **pgx-bm25** (`bm25`) runs in every table of a run (it is not in the published tables below, which predate it and were not repeated). Articles: `and`, `or`, `phrase`, `mixed`, `count`, `filter` are native (jsonb queries through
-  `@@@` / `&@@`); `join` is an error cell (the jsonb `@@@` filter above a join is refused by the extension); `fuzzy` is unsupported (NA). Places: `top`, `filter`, `count`, `scan` and the name boost (`bm25_boost`) are native for words of 3 letters or more
-  (`bm25_wildcard`; the extension refuses a wildcard under 3 letters); 1-2 letter words are emulated in the same index with stored edge n-gram columns, reported as part of its index.
+- **pgx-bm25** (`bm25`) runs in every table of a run. Articles: `and`, `or`, `phrase`, `mixed`, `count`, `filter` are native (jsonb queries through `@@@` / `&@@`); `join` works at the full tier (18 queries per second) and is an `error` cell at the 25k quick tier, where
+  the extension refuses the plan of the jsonb `@@@` filter above a join (I did not investigate why the planner chooses differently); `fuzzy` is unsupported (NA). Places: `top`, `filter`, `count`, `scan` and the name boost (`bm25_boost`) are native for words of 3 letters or more
+  (`bm25_wildcard`; the extension refuses a wildcard under 3 letters, and refuses one that expands to more than `bm25_native.wildcard_max_expansions` = 1000 terms, which `san*` does at 236,262 places: the adapter raises it to 100000, a fix made for this session); 1-2 letter words are emulated in the same
+  index with stored edge n-gram columns, reported as part of its index.
+- **Visibility map.** Every places database is a copy of a vacuumed template (`VACUUM (FREEZE, ANALYZE)` once, before the copies). Before this session only the per-engine `VACUUM` ran, and in a freshly loaded cluster its first run left 13-56% of the pages
+  not all-visible, so `count(*)` of the first engine read the heap (sift measured 0.22-0.52 ms for a one-letter prefix next to 0.12 ms for the same index in the next database, cold 10 ms against 0.13 ms). The articles database is copied from a vacuumed template and was not affected (21,456 of 21,456 pages all-visible in every engine's database).
+
 
 ### Run time
 
@@ -521,31 +562,19 @@ Validation of the concurrent method (3 engines, classes `and`, `phrase`, `count`
 | pg_textsearch | and / phrase / count | 25 / 14 / 123 | 26 / 14 / 132 | 0.96 / 1.0 / 0.93 |
 
 Running the engines at the same time lowers the absolute numbers of the fast engines by up to 20% (probably the memory bandwidth, the caches and the clock of the package that the lanes share; I did not isolate it), pg_search more than sift, so a ratio can move by as
-much as 25% (sift `count` over pg_search: 1.21 concurrent, 0.95 serial; `and`: 3.0 and 2.9; `phrase`: 1.05 and 0.93). For that reason **the published tables above were not re-measured with it**; compare engines within one run and
-use `--serial` (with `--cpus` set to the share of one lane to compare like with like) for numbers that are quoted.
+much as 25% (sift `count` over pg_search: 1.21 concurrent, 0.95 serial; `and`: 3.0 and 2.9; `phrase`: 1.05 and 0.93). For that reason **the tables of this document were measured with `--serial`**; compare engines within one run and
+use `--serial` (with `--cpus` set to the share of one lane to compare like with like) for numbers that are quoted. The regression check below is the one use of the concurrent mode at full scale.
 
 The regression check (`bench/bench regress`) puts sift and sift_ref in the same budget and rotates the CPUs, which is what makes it usable at 3-5 rounds: the control run of the same commit as reference (`--ref` of the commit
 itself) gave 0 regressions in 18 cells, the run with `sift.simd = 'scalar'` applied to the new sift only (a deliberate slowdown) reported five regressions (0.68x-0.94x of the reference) and exit status 1 (the deliberate slowdown was applied through a temporary hook in the adapter that is not committed).
-Against the tag v1.1.0, whose code differs from this checkout (PostgreSQL 17 and 19 support, store changes), four quick runs flagged 1, 0, 1 and 2 cells, not the same ones (the last: articles `count` 0.92x at 2.03 combined
-standard errors, places `w1` p50 1.16x); at this noise level a flagged cell of a quick run is a reason to repeat with `--rounds 5-5`, not a verdict.
+The full-scale check against v1.1.0 is its own section above; before it, four quick runs flagged 1, 0, 1 and 2 cells, not the same ones, which is the noise level of a quick run: a flagged cell of a quick run is a reason to repeat, not a verdict.
 
-Projection for the larger tiers (derived from the measured phases, **not measured**; the full tier was not run for this change): cells cost the time of the cell plus about one second of connection and drain overhead per
-cell group, independent of the engine count, since the engines run at the same time. Articles full: 7 classes, 1 warm-up round and 3 rounds of 3 s, about 2 min; builds of the six engines in parallel, about 1 minute (150k articles: 33 s);
-places full: 24 cell groups per round at 2 s, 3 rounds, about 4 min plus about 1.5 minutes of builds (236k places, 7 times the 34k tier's 11 s); cold-cache tables about 3-4 minutes. In all about 12-15 minutes, 15-20 with margin for a loaded
-host, against 1 h 15 min (2 h with the cold-cache tables) measured for the published run. The ab tier: about 4 minutes (6 with the cold-cache tables), against 50 minutes. A first run still downloads and converts the data once.
+### Measured run time of the published session
 
-### Earlier measurements of the harness (published session, `--serial`, two CPUs)
+`bench/bench all --full --serial` (host load as above), 3069 s in all: articles (the `articles-full` phases: 1 s dump, 79 s corpus restore and the seven index builds one after the other, 842 s of cells, 923 s together), cold-cache tables
+437 s (articles 183 s, places 254 s), places 2630 s of cells in that first session (it contained the 24 failing pgx-bm25 cells). The places tiers published here are from a second session after the two harness fixes:
+1639 s of cells (27 min; restore and the builds of the seven engines and two emulations 55 s) and 260 s of cold-cache cells, plus three rounds of the one cell that a stray `pkill` of another job damaged. The published tiers together took
+about 51 minutes of wall time (articles 923 s and cold 183 s, places 1,695 s and cold 260 s), against about 2 hours for the earlier published session on the 2-CPU budget. The concurrent default (`bench/bench all --full` without `--serial`) was not run at full scale (it was run at the quick tier, 124 s, and the regression check at the full tier, 355 s of cells for the 112 cells of the check).
 
-| | before (review-text corpus) | now |
-|---|---|---|
-| per interleaved round, 3 engines | about 5 min 11 s for 6 classes at 10 s per cell, plus about 35 s for the join | about 9 min per round of 7 articles classes with five engines at 6 s per cell (8 s with the warm-up) |
-| corpus and indexes | about 20 s corpus load per run | restore of the cached dump 8 s, each index built once (about 110 s for the five at 218k articles on two cores, with rum's column) |
-| full articles run | not repeatable in one command | 4 rounds of 6 s with five engines (sift, sift `pairs`, pg_search, pg_textsearch, rum): 36 min with the builds (load 15-43, two cores); early stop when every cell is within 15% |
-| 150k articles run | | 26 min for 6 rounds, five engines (load 13-30) |
-| quick tier | | articles 2 rounds of 1 s and places 2-5 rounds: 8 min with five engines |
-| places | | 34k tier 22 min (5 rounds, five engines), full 39 min (4 rounds of 2 s, five engines, 45 cells per engine; load 9-36) |
-| cold cache | | articles 4 min 15 s (7 classes, five engines), places 13 min (16 cells per engine, five engines) |
-
-`bench/bench all --full` runs the full tier, the cold-cache tables, writes `docs/results/*.tsv` and redraws `docs/img` in one command (the published run took about 2 hours with `--serial` on the 2-CPU budget;
-projected 15-20 minutes with the default budget); the prose of this file is not generated. Under this host's load no run reached the early-stop spread. Results are kept as small tables per run (`cells.tsv`, `builds.tsv`,
-`summary.tsv`, `machine.txt` with the CPU, engine versions and load) in the result directory, and the scratch cluster is removed when the run ends.
+`bench/bench all --full --serial` writes `docs/results/*.tsv` and redraws `docs/img` in one command; the prose of this file is not generated. Results are kept as small tables per run (`cells.tsv`, `builds.tsv`, `summary.tsv`,
+`machine.txt` with the CPU, engine versions and load) in the result directory, and the scratch cluster is removed when the run ends.

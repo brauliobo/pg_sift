@@ -25,8 +25,7 @@ Scale: the default run uses a reduced dataset (25,000 articles, 34,165 places) a
 enough to see the ordering of the engines but not their exact ratios; `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds. `--tier ab` is the 150,000 article / 34,165 place tier
 in between (2-3 rounds). The first run also downloads and converts the datasets (about 3 minutes,
-once). Ratios depend on the size of the corpus (the default index's phrase and `count(*)` cross pg_search somewhere
-between 150,000 and 218,058 articles, see docs/BENCHMARKS.md), so quote the full-size numbers.
+once). Ratios depend on the size of the corpus and on the CPUs the engines get (docs/BENCHMARKS.md), so quote the full-size numbers.
 
 Prerequisites: PostgreSQL 18 with its development packages and contrib (`pg_config`, PGXS, `pgbench`, `psql`, the
 server tools, `pg_stat_statements`, `pg_prewarm`, `pg_buffercache`), `gcc` and `make`, `python3`, `curl`, `bzip2`,
@@ -57,7 +56,7 @@ the server's parallel workers), `--duration S`, `--rounds MIN-MAX` (default 2-3)
 |---|---|---|---|---|
 | `quick` (default) | 25,000 | 34,165 (cities15000) | 2 | measured: 2 min for both datasets with the six default engines (builds included), about 1 min more for the cold-cache tables, on the default 8 + 4 CPU budget |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
-| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | projected: about 15-20 min including the builds and the cold-cache tables (the full tier was not run for this change; `docs/BENCHMARKS.md` has the derivation) |
+| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | measured: 51 min for `all --full --serial` with the seven default engines, builds and cold-cache tables included (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
 
 The times are those of the default budget (8 server and 4 load generator CPUs, below); a smaller budget runs the cells for as long but builds
 and answers more slowly. `--serial` (one cluster, engines one after the other) took about twice as long with three engines in the measured comparison, and more with more engines.
