@@ -107,6 +107,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_segment_postings",
 							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
 							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_build_peak",
+							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
+							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 #endif
 	sift_pushdown_init();
 	MarkGUCPrefixReserved("sift");
