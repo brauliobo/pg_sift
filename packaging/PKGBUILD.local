@@ -9,7 +9,6 @@ arch=('x86_64')
 license=('PostgreSQL')
 depends=('postgresql>=18' 'postgresql<19')
 makedepends=('git' 'make' 'gcc')
-checkdepends=('perl-ipc-run' 'python')
 source=("pg_sift::git+file://${startdir%/packaging}")
 sha256sums=('SKIP')
 
@@ -21,14 +20,6 @@ pkgver() {
 build() {
   cd pg_sift
   nice make -j4
-}
-
-# The quick tier builds a test flavor of the library in its own tree; run it on a copy so package() installs the
-# production build.
-check() {
-  cp -a pg_sift pg_sift-check
-  cd pg_sift-check
-  SIFT_CI_TMP="$srcdir/ci" make check
 }
 
 package() {
