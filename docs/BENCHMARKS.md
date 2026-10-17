@@ -1,6 +1,6 @@
 # Benchmarks
 
-sift and its two variants (`positions = off`, `phrase_index = pairs`) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1,
+sift and its two variants (`positions = off`, `phrase_index = pairs`; the second was removed in 1.3.0, its numbers were measured on 1.2.0) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1,
 rum 1.3.15 and pgx-bm25 1.0 on two public datasets, measured with `bench/bench all --full --serial` (articles through
 `bench/steps/articles.sh`, places through `bench/steps/places.sh`; method, datasets, licenses and checksums: `bench/README.md`). Every engine
 indexes the same rows with the same analysis (lowercase, no stemming, no stopwords; pg_textsearch and rum through the PostgreSQL `simple`
