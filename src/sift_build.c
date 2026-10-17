@@ -8,6 +8,7 @@
 #include "access/parallel.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "commands/progress.h"
 #include "common/int.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
@@ -15,7 +16,9 @@
 #include "storage/buffile.h"
 #include "storage/sharedfileset.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_progress.h"
 #include "utils/backend_status.h"
+#include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -45,6 +48,7 @@ int			sift_test_pool_blocks = 0;
 int			sift_test_page_text = 0;
 int			sift_test_fail_merge = 0;
 int			sift_test_fail_who = 0;
+int			sift_test_phase_gate = 0;
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
 
 /* The most memory (kB) the contexts of the build allocated, sampled where a build is at its largest */
@@ -86,10 +90,25 @@ test_fail_merge(uint32 nterms)
 		ereport(ERROR, (errcode(ERRCODE_QUERY_CANCELED), errmsg("canceling statement due to sift.test_fail_merge")));
 }
 #define TEST_FAIL_MERGE(nterms)	test_fail_merge(nterms)
+
+/* With sift_test_phase_gate set, entering a phase of the build waits for the advisory lock gate + phase (held by the test) */
+static void
+test_phase_gate(int phase)
+{
+	if (sift_test_phase_gate > 0)
+	{
+		Datum		key = Int64GetDatum(sift_test_phase_gate + phase);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
+}
+#define TEST_PHASE_GATE(phase)	test_phase_gate(phase)
 #else
 #define TEST_KNOB(knob, normal)	(normal)
 #define MEM_SAMPLE()	((void) 0)
 #define TEST_FAIL_MERGE(nterms)	((void) 0)
+#define TEST_PHASE_GATE(phase)	((void) 0)
 #endif
 
 /* A term's postings: varint(delta << 1 | tf > 1) [tf] [position record] over doc ordinals, in pool slices */
@@ -1483,7 +1502,62 @@ typedef struct BuildState
 	bool		positions;
 	/* a parallel worker's runs go to files of the leader's fileset */
 	RunHome		home;
+	/* progress (pg_stat_progress_create_index): the phase, docs reported, scan done, docs of the segments written */
+	int			phase;
+	double		reported;
+	bool		scanned;
+	uint64		written;
 } BuildState;
+
+/* Subphases of the build, named by sift_ambuildphasename */
+#define PHASE_SCAN		2
+#define PHASE_SPILL		3
+#define PHASE_MERGE		4
+#define PHASE_WRITE		5
+#define PROGRESS_DOCS	1024		/* docs analyzed between two reports of the scan */
+
+char *
+sift_ambuildphasename(int64 phase)
+{
+	switch (phase)
+	{
+		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
+			return "initializing";
+		case PHASE_SCAN:
+			return "scanning table";
+		case PHASE_SPILL:
+			return "spilling runs";
+		case PHASE_MERGE:
+			return "merging runs";
+		case PHASE_WRITE:
+			return "writing segments";
+		default:
+			return NULL;
+	}
+}
+
+/* Only the leader (or a serial build) has a progress to report; a worker's docs go to it with progress_docs */
+static void
+progress_phase(BuildState *bs, int phase)
+{
+	if (bs->phase == phase)
+		return;
+	bs->phase = phase;
+	if (IsParallelWorker())
+		return;
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, phase);
+	TEST_PHASE_GATE(phase);
+}
+
+/* The docs analyzed since the last report, at least PROGRESS_DOCS of them unless all is set */
+static void
+progress_docs(BuildState *bs, bool all)
+{
+	if (bs->indexed - bs->reported < (all ? 1 : PROGRESS_DOCS))
+		return;
+	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (bs->indexed - bs->reported));
+	bs->reported = bs->indexed;
+}
 
 /* Reserves the next directory entry; its generation is the entry's 1-based position */
 static SiftSegEntry *
@@ -1568,8 +1642,10 @@ spill(BuildState *bs)
 	SegLimits	lim = seg_limits(bs->budget);
 	SiftRun    *run;
 	int			k;
+	int			phase = bs->phase;
 
 	MEM_SAMPLE();
+	progress_phase(bs, PHASE_SPILL);
 	if (bs->nruns + 1 >= bs->maxruns)
 	{
 		bs->maxruns *= 2;
@@ -1591,6 +1667,7 @@ spill(BuildState *bs)
 		bs->nruns -= k - 1;
 		bs->runs[bs->nruns - 1] = run;
 	}
+	progress_phase(bs, phase);
 }
 
 /* End of the runs from first on that go to one segment: their largest terms fit the limits together */
@@ -1615,6 +1692,15 @@ count_groups(SiftRun **runs, int nruns, const SegLimits *lim)
 	return n;
 }
 
+/* After the scan the progress counts the docs of the segments written, of all that were analyzed */
+static void
+progress_written(BuildState *bs, const SiftSegEntry *entry)
+{
+	bs->written += entry->ndocs;
+	if (bs->scanned)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, bs->written);
+}
+
 /* Writes the docs gathered since the last boundary as one or more segments */
 static void
 end_segment(BuildState *bs)
@@ -1626,13 +1712,19 @@ end_segment(BuildState *bs)
 	/* the entries the segments still to come (one per forced boundary, and the last) leave */
 	int			room = SIFT_MAX_SEGMENTS - bs->nsegs - (bs->nbounds - bs->nextbound);
 
+	int			phase = bs->phase;
+
+	progress_phase(bs, PHASE_MERGE);
 	if (bs->nruns == 0)
 	{
 		if (!sift_inv_empty(bs->inv))
 		{
 			entry = next_entry(bs, &gen);
+			progress_phase(bs, PHASE_WRITE);
 			sift_inv_write(bs->inv, bs->wt, gen, &bs->ref, entry);
+			progress_written(bs, entry);
 		}
+		progress_phase(bs, bs->scanned ? PHASE_WRITE : phase);
 		return;
 	}
 	if (!sift_inv_empty(bs->inv))
@@ -1654,12 +1746,19 @@ end_segment(BuildState *bs)
 	while (first < bs->nruns)
 	{
 		int			last = group_end(bs->runs, first, bs->nruns, &lim);
+		RunHome		tmp = {0};
+		int			n;
 
+		progress_phase(bs, PHASE_MERGE);
+		n = shrink_runs(bs->runs + first, last - first, merge_fanin(bs->budget), bs->budget, &tmp);
 		entry = next_entry(bs, &gen);
-		sift_runs_write(bs->runs + first, last - first, bs->wt, gen, &bs->ref, entry);
+		progress_phase(bs, PHASE_WRITE);
+		sift_runs_write(bs->runs + first, n, bs->wt, gen, &bs->ref, entry);
+		progress_written(bs, entry);
 		first = last;
 	}
 	bs->nruns = 0;
+	progress_phase(bs, bs->scanned ? PHASE_WRITE : phase);
 }
 
 static int
@@ -1694,6 +1793,7 @@ flush_page(BuildState *bs)
 	bs->ndocs = 0;
 	resetStringInfo(&bs->text);
 	sift_analyzer_reset(bs->an);
+	progress_docs(bs, false);
 	CHECK_FOR_INTERRUPTS();
 }
 
@@ -1822,6 +1922,7 @@ build_scan(BuildState *bs, Relation heap, IndexInfo *info, TableScanDesc scan, b
 	double		reltuples = table_index_build_scan(heap, bs->index, info, scan != NULL, progress, build_cb, bs, scan);
 
 	flush_page(bs);
+	progress_docs(bs, true);
 	return reltuples;
 }
 
@@ -1960,12 +2061,17 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	LaunchParallelWorkers(pcxt);
 	if (pcxt->nworkers_launched == 0)
 	{
+		ereport(DEBUG1, errmsg("building sift index \"%s\" without parallel workers: none could be launched",
+							   RelationGetRelationName(index)));
 		end_parallel(ldr);
 		return NULL;
 	}
 	WaitForParallelWorkersToAttach(pcxt);
 	ereport(DEBUG1, errmsg("building sift index \"%s\" with %d parallel workers",
 						   RelationGetRelationName(index), pcxt->nworkers_launched));
+	if (pcxt->nworkers_launched < nworkers)
+		ereport(DEBUG1, errmsg("sift index \"%s\": %d of the %d parallel workers requested could not be launched",
+							   RelationGetRelationName(index), nworkers - pcxt->nworkers_launched, nworkers));
 	return ldr;
 }
 
@@ -2094,6 +2200,9 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (ldr == NULL)
 		init_bounds(bs, heap, opts->build_segments);
 	bs->wt = sift_wt_begin(index, SIFT_WRITE_BULK);
+	if (heap->rd_rel->reltuples > 0)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
+	progress_phase(bs, PHASE_SCAN);
 	res->heap_tuples = build_scan(bs, heap, info, ldr ? sift_table_beginscan_parallel(heap, SCAN_OF(ldr->shared)) : NULL, true);
 	res->index_tuples = bs->indexed;
 	if (ldr)
@@ -2102,6 +2211,9 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		adopt_runs(ldr, bs, res);
 		bs->budget = (Size) maintenance_work_mem * 1024;
 	}
+	bs->scanned = true;
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) res->index_tuples);
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, 0);
 	end_segment(bs);
 	if (ldr)
 		end_parallel(ldr);

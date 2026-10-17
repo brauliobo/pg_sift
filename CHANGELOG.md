@@ -22,6 +22,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   than 255 bytes`. It is now indexed as its first 236 bytes and a hash of all of it (the same term from a build, an insert and a query),
   so two long values that share their start stay two values and `@@>` finds exactly the rows with that value.
 
+- `CREATE INDEX` reports its progress in `pg_stat_progress_create_index`: the phases `scanning table`, `spilling runs`, `merging runs` and
+  `writing segments`, and the documents analyzed and then written (`tuples_done` of `tuples_total`), parallel workers included. A parallel
+  build that gets fewer workers than requested logs it at `DEBUG1`.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
