@@ -20,6 +20,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `VACUUM`'s cleanup and the inserts that merge for room, when other writers allocated between the runs of its stream. The runs of a
   stream now grow with it (up to 64 MB), 16 GB take about 300 extents, and a merge reads at most 16 GB of segments, so a segment past
   that size is left alone (the policy takes the smaller ones of its run, `sift.merge(index, true)` too). Nothing changes below 1 GB.
+- `VACUUM` merges until the policy asks for no more, instead of one step: an index that a build with a small `maintenance_work_mem` left in
+  60 to 128 segments (queries 2.2x slower at 11 segments than merged) needed one VACUUM per 8 segments less; now one reaches 32 or fewer.
 
 ## 1.3.1
 

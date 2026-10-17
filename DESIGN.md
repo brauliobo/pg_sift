@@ -413,7 +413,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - Generic WAL batches up to 4 changed pages per record.
 - **`amvacuumcleanup`:**
   1. promote sealed segments;
-  2. one merge step if the policy asks;
+  2. merge steps until the policy asks for none (a build with a small `maintenance_work_mem` leaves up to 128 segments, 8 fewer per step);
   3. recycle free extents whose `safexid` is past the horizon;
   4. orphan sweep;
   5. report `num_pages` and `num_index_tuples`.

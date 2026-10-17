@@ -482,6 +482,14 @@ merge_next(Relation index, bool force, bool propagate)
 	return r;
 }
 
+/* Merge steps until the policy asks for none, as a build that left many segments needs; stops at a failed step */
+static void
+merge_to_fixed_point(Relation index)
+{
+	while (merge_next(index, false, false) == STEP_DONE)
+		CHECK_FOR_INTERRUPTS();
+}
+
 /*
  * Promotes and merges until the directory is below ROOM_SEGMENTS entries, so a seal always finds a
  * free one; false when it cannot (nothing to merge, or a step failed).
@@ -629,7 +637,7 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	maint_lock(index, true);
 	promote_locked(index, false, false);
-	merge_next(index, false, false);
+	merge_to_fixed_point(index);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	maint_unlock(index);
