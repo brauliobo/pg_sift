@@ -3,7 +3,7 @@
 # engines under ~/$RDIR (no sudo, nothing system-wide, never rsync --delete).
 #   bench/steps/remote.sh sync          copy the repo (without .git and ignored files), Q/F dumps, pgx-bm25 source
 #   bench/steps/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
-#                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench (tantivy)
+#                                 ~/$RDIR/pg18; ParadeDB package; rustup + xbench (tantivy); Elasticsearch is the host's system package
 #   bench/steps/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/bench-root/engines/sift/root
 #   bench/steps/remote.sh quick [ENGINE...]  run the standard suite there (bench/bench suite, timed sections hold the shared perf lock,
 #                                 sift rebuilt first when selected) and pull the results
@@ -19,7 +19,7 @@ BENCH=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(dirname "$BENCH")
 RHOST=${RHOST:?set RHOST to the ssh host} RDIR=${RDIR:-Projects/sift}
 BM25_SRC=${BM25_SRC:-}
-CACHE=${SIFT_BENCH_ROOT:-/tmp/sift-bench}/cache
+CACHE=${BENCH_STORE:-${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}}/cache
 
 ENV="D=\$HOME/$RDIR; export D PATH=\$D/pg18/bin:\$D/.cargo/bin:\$PATH RUSTUP_HOME=\$D/.rustup CARGO_HOME=\$D/.cargo \
 SIFT_BENCH_ROOT=\$D/bench-root RUSTFLAGS='${RUST_TARGET_CPU:+-C target-cpu=$RUST_TARGET_CPU}'; cd \$D"
@@ -47,7 +47,7 @@ for x in "rum-$RUM" "pg_textsearch-$TEXTSEARCH" "pgvector-$PGVECTOR" pgx-bm25-1.
 done
 command -v rustup >/dev/null ||
   curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain none --no-modify-path
-cd "$D" && bench/steps/fetch.sh pg_search elasticsearch tantivy
+cd "$D" && bench/steps/fetch.sh pg_search tantivy
 EOF
 }
 

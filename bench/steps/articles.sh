@@ -5,10 +5,9 @@
 #   bench/steps/articles.sh full           F tier (218k articles), cells of 0.25-2 s, 2-3 rounds
 #   bench/steps/articles.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
 #
-# Every engine has a cluster of its own (a lane, steps/lanes.sh) pinned to an equal share of the server CPUs, restored from the
-# corpus dump and indexed at the same time as the others (or taken from the cache of built lanes). Then each round runs every class
-# on every engine, all engines at the same time in their lanes (SERIAL=1: one cluster, the engines one after the other with the
-# order rotated every round). A round is one cell per class and engine: 8 clients on the trace of the class (SAMPLE=N: only its
+# Every engine has a cluster of its own (a lane, steps/lanes.sh), restored from the corpus dump and indexed one engine after the
+# other (or taken from the cache of built lanes); the lanes then idle. Each round runs every class on every engine, one engine at a
+# time with every CPU of the host to itself, the order of the engines rotating every round. A round is one cell per class and engine: 8 clients on the trace of the class (SAMPLE=N: only its
 # first N statements in a fixed hash order, which biases heavy-tailed classes, see docs/BENCHMARKS.md), pgbench seeded alike for
 # every engine, measured by steps/cell.py until the relative standard error of its queries per second is at most RSE (default 5%,
 # batch means) with at least MIN_TIME seconds and MIN_N queries, and at most SECS seconds (the first query of every client of a
@@ -19,13 +18,15 @@
 # Classes (CLASSES): and or phrase mixed count filter join (the sampled substrings of the trace, top-10 unless count / filter /
 # join), term prefix fuzzy (36 derived queries, sql/harness.sql), update (writers at UPDATE_RATE ops/s: 70% update, 15% insert,
 # 15% delete, while the `mixed` readers run; the cell is the readers' queries per second, the writers' rate and the WAL written
-# are `write_ops` and `wal_mib` rows). A class an engine cannot render is NA. Engines outside Postgres (Elasticsearch, Tantivy)
-# are driven by bench/xbench (steps/xlib.sh) for a fixed SECS seconds, like the update class; the cold-cache tables are Postgres only.
+# are `write_ops` and `wal_mib` rows). A class an engine cannot render is NA. Elasticsearch is driven by bench/xbench (steps/xlib.sh)
+# through the same cells as the Postgres engines (steps/cell.py --xbench), after a warm-up of every class (XWARM seconds, default 3);
+# Tantivy and the update class run for a fixed SECS seconds. Cold cache: Elasticsearch closes and opens its index before every
+# request (xlib.sh); Tantivy has no cold cell.
 # Only compact tables are kept: $DEST (default $RESULTS/<mode>-<time>)/{cells,builds}.tsv (cold.tsv for cold), machine.txt and
 # phases.txt (wall time of the phases); the lanes are removed on exit (KEEP=1 keeps them), the corpus dump stays in $CACHE.
 # Env: ENGINES CLASSES COLD (cold classes, default all but update) CLIENTS SECS (the longest a cell is measured) MIN_TIME MIN_N RSE
 # WARM (seconds of the warm-up of external engines) MINR MAXR SAMPLE (0: the whole trace)
-# NQ (cold queries per class) UPDATE_RATE WRITERS TIMEOUT (statement_timeout of a cell) SERIAL NO_CACHE CPUS LOAD_CPUS RESULTS DEST.
+# NQ (cold queries per class) UPDATE_RATE WRITERS TIMEOUT (statement_timeout of a cell) THREADS (pgbench -j, default 4) NO_CACHE RESULTS DEST.
 # Needs bench/bench setup (the engines, the dataset).
 set -euo pipefail
 mode=${1:-quick}; cold=
@@ -55,7 +56,7 @@ cleanup() {
   local e
   for e in $EXTERNALS; do lane_run "$e" xe "$e" x_stop 2>/dev/null || true; done
   # shellcheck disable=SC2086  # one argument per engine
-  [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $(lane_clusters $ENGINES); do lane_destroy "$e"; done; rm -rf "$ROOT/articles"; }
+  [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $ENGINES; do lane_destroy "$e"; done; rm -rf "$ROOT/articles"; }
 }
 trap cleanup EXIT
 
@@ -101,7 +102,7 @@ build_pg() ( # ENGINE, in its lane
   load_engine "$1"
   local db heap0 t1 t2 size
   db=$(engine_db "$1")
-  clone_db "$db"
+  adopt_db "$db"   # a lane with one engine keeps no second copy of the corpus
   heap0=$(q -c "SELECT pg_table_size('docs')")
   locked build_timed
   read -r t1 t2 <"$RUN/build.ms"
@@ -112,35 +113,40 @@ build_pg() ( # ENGINE, in its lane
   log "$1 built: setup ${t1}ms index ${t2}ms size $size, classes $(q -c 'SELECT bench_build_stmts()' | tr '\n' ' ')"
 )
 prepare() { # ENGINE, in its lane: the database restored from the corpus and built, or taken from the cache
-  local e=$1 key=''
-  # shellcheck disable=SC2031  # CPUS is the lane's, set by lane_run
-  RESTORE_JOBS=$(cpu_count "$CPUS"); export RESTORE_JOBS RUN=$OUT/$e
+  local e=$1 key
+  RESTORE_JOBS=$(nproc); export RESTORE_JOBS RUN=$OUT/$e
   mkdir -p "$RUN"
   if is_external "$e"; then
     lane_start "$e"; db_exists bench || "$STEPS/corpus.sh" restore >/dev/null
     xe "$e" x_prepare; return
   fi
-  [[ -z $CONCURRENT ]] || key=$(lane_key "$e" "$DUMP")
-  if [[ -n $CONCURRENT ]] && lane_cached "$e" "$key"; then
+  key=$(lane_key "$e" "$DUMP")
+  if lane_cached "$e" "$key"; then
     lane_restore "$e" "$key"; lane_start "$e"; cp "$LANE_CACHE/$key/builds.row" "$RUN/builds.row"
     log "$e: built database from the cache ($key)"
   else
     lane_start "$e"; db_exists bench || "$STEPS/corpus.sh" restore >/dev/null
     PGDATABASE=bench build_pg "$e"
-    [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
+    lane_save "$e" "$key" "$RUN/builds.row"
   fi
 }
-finish() { # ENGINE, in its lane, once its database is built: the statements of the classes, the relations in shared buffers
-  is_external "$1" || { RUN=$OUT/$1; PGDATABASE=$(engine_db "$1") class_scripts; PGDATABASE=$(engine_db "$1") prewarm; }
+warm_http() { # ENGINE, in its lane: every class for a few seconds, the JVM and the caches of the server warm, what prewarm is for the relations
+  local c f=()
+  for c in $CLASSES; do [[ $c == update || ! -f $OUT/$1/$c.q ]] || f+=("$OUT/$1/$c.q"); done
+  RUN=$OUT/$1 xe "$1" x_warm "${XWARM:-3}" "$CLIENTS" "${f[@]}"
 }
-prepare_lane() { prepare "$1"; finish "$1"; }   # concurrent lanes: one job per engine
+finish() { # ENGINE, in its lane, once its database is built: the statements of the classes, the relations in shared buffers
+  if ! is_external "$1"; then RUN=$OUT/$1; PGDATABASE=$(engine_db "$1") class_scripts; PGDATABASE=$(engine_db "$1") prewarm
+  elif is_http "$1"; then warm_http "$1"; fi
+}
+prepare_lane() { prepare "$1"; finish "$1"; }
 
 # --- one cell: queries per second of the clients (NA: the engine cannot run the class; 0: a client failed, e.g. the statement timeout)
 pg_update_cell() { # ENGINE SECONDS: readers and writers together; leaves $RUN/update.wps and update.wal
   local db lsn0 o
   db=$(engine_db "$1"); lsn0=$(PGDATABASE=$db lane_run "$1" q -c "SELECT pg_current_wal_lsn()")
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" loadgen pgbench -n -c "$WRITERS" -j 1 -T "$2" -R "$UPDATE_RATE" --random-seed=7 -f "$RUN/writer.pgb" "$db" >"$RUN/writer.out" 2>&1 &
-  o=$(PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" loadgen pgbench -n -c "$CLIENTS" -j "$(lane_threads "$1")" -T "$2" --random-seed=7 -f "$RUN/update.pgb" "$db" 2>&1) || o=''
+  PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" pgbench -n -c "$WRITERS" -j 1 -T "$2" -R "$UPDATE_RATE" --random-seed=7 -f "$RUN/writer.pgb" "$db" >"$RUN/writer.out" 2>&1 &
+  o=$(PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" pgbench -n -c "$CLIENTS" -j "${THREADS:-4}" -T "$2" --random-seed=7 -f "$RUN/update.pgb" "$db" 2>&1) || o=''
   wait || true
   grep -oP 'tps = \K[0-9.]+(?= \(without)' "$RUN/writer.out" >"$RUN/update.wps" || echo 0 >"$RUN/update.wps"
   PGDATABASE=$db lane_run "$1" q -c "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '$lsn0')" >"$RUN/update.wal"
@@ -149,8 +155,8 @@ pg_update_cell() { # ENGINE SECONDS: readers and writers together; leaves $RUN/u
 pg_cell() { # ENGINE CLASS SECONDS: queries per second of the clients, with its standard error, the queries and the seconds (tab separated)
   local e=$1
   [[ $2 == update ]] && { pg_update_cell "$e" "$3"; return; }
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$e" loadgen python3 -I "$STEPS/cell.py" qps --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
-    --min-n "$MIN_N" --hint "$RUN/$2.hint" --tmp "$RUN" -- -n -c "$CLIENTS" -j "$(lane_threads "$e")" -f "$RUN/$2.pgb" "$(engine_db "$e")"
+  PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$e" python3 -I "$STEPS/cell.py" qps --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
+    --min-n "$MIN_N" --hint "$RUN/$2.hint" --tmp "$RUN" -- -n -c "$CLIENTS" -j "${THREADS:-4}" -f "$RUN/$2.pgb" "$(engine_db "$e")"
 }
 declare -A EXT   # the external engines
 cell() { # ENGINE CLASS SECONDS [warm]: only the external engines are warmed up, a Postgres cell drops the first query of its clients
@@ -158,13 +164,10 @@ cell() { # ENGINE CLASS SECONDS [warm]: only the external engines are warmed up,
   [[ -f $RUN/$2.pgb || -f $RUN/$2.q ]] || { echo NA; return; }
   if [[ -n ${EXT[$1]:-} ]]; then lane_run "$1" xe "$1" x_cell "$2" "$3" "${4:-}"; elif [[ -z ${4:-} ]]; then pg_cell "$@"; fi
 }
-group() { # CLASS SECONDS WARM ENGINES...: the cell of every engine, all at once in their lanes (concurrent) or one after the other
+group() { # CLASS SECONDS WARM ENGINES...: the cell of every engine, one after the other
   local c=$1 secs=$2 warm=$3 e; shift 3
   rm -f "$OUT"/*/update.wps "$OUT"/*/update.wal
-  for e in "$@"; do
-    if [[ -n $CONCURRENT ]]; then cell "$e" "$c" "$secs" "$warm" >"$OUT/$e/val" & else cell "$e" "$c" "$secs" "$warm" >"$OUT/$e/val"; fi
-  done
-  wait
+  for e in "$@"; do cell "$e" "$c" "$secs" "$warm" >"$OUT/$e/val"; done
 }
 
 # --- run
@@ -174,28 +177,16 @@ ENGINES=$(lanes_available articles "$ENGINES" | tr '\n' ' ')
 [[ -n $ENGINES ]] || { echo "no engine to run: bench/bench setup" >&2; exit 1; }
 # shellcheck disable=SC2086  # one argument per engine
 lanes_init articles $ENGINES
-BUDGET=$(lanes_describe) "$STEPS/machine.sh" >"$DEST/machine.txt"
+"$STEPS/machine.sh" >"$DEST/machine.txt"
 [[ -f $DUMP ]] || { "$STEPS/corpus.sh" load >/dev/null; "$STEPS/cluster.sh" destroy >/dev/null; }   # the lanes restore from the dump
 for e in $ENGINES; do mkdir -p "$OUT/$e"; is_external "$e" && { EXT[$e]=1; EXTERNALS+=" $e"; }; done
 phase 'dump'
-pids=()
-first=${ENGINES%% *}
-serial_cache=''; [[ -n $CONCURRENT || -n $EXTERNALS ]] || serial_cache=$(serial_key "$DUMP")   # one cluster: it is cached as a whole
-if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
-  lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
-  log "built databases from the cache ($serial_cache)"
-else
-  for e in $ENGINES; do
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare_lane "$e" >"$OUT/$e/prepare.log" 2>&1 & pids+=($!)
-    else lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$OUT/$e/prepare.log")" >&2; exit 1; }; fi
-  done
-  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$OUT"/*/prepare.log)" >&2; exit 1; }; done
-  : >"$DEST/builds.tsv"
-  for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
-  [[ -z $serial_cache ]] || lane_save "$first" "$serial_cache" "$DEST/builds.tsv"
-fi
-if [[ -z $CONCURRENT ]]; then for e in $ENGINES; do lane_run "$e" finish "$e"; done; fi
+build_failed() { echo "build of $1 failed: $(tail -3 "$OUT/$1/prepare.log")" >&2; exit 1; }
+for e in $ENGINES; do lane_run "$e" prepare_lane "$e" >"$OUT/$e/prepare.log" 2>&1 || build_failed "$e"; done   # one after the other: a build is timed alone
+: >"$DEST/builds.tsv"
+for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$DEST/builds.tsv")"
+awk -F'\t' 'NR == 1 {print $3}' "$DEST/builds.tsv" >"$DEST/corpus.txt"   # the articles of the tier, for the report
 phase 'restore and build'
 
 if [[ $cold ]]; then
@@ -212,12 +203,18 @@ if [[ $cold ]]; then
       printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
     done >"$RUN/cold.part"
   }
-  pids=()
+  # shellcheck disable=SC2329  # run by lane_run
+  cold_http() { # ENGINE, in its lane: the cold-cache times of an HTTP engine (the index closed and opened before every request, xlib.sh); the other external engines have no cold cell
+    local e=$1 c t; RUN=$OUT/$e
+    for c in ${COLD:-${CLASSES/update/}}; do
+      if is_http "$e" && [[ -f $RUN/$c.q ]]; then t=$(xe "$e" x_cold_class "$RUN/$c.q" docs); else t=$'NA\tNA\t0'; fi
+      printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
+    done >"$RUN/cold.part"
+  }
   for e in $ENGINES; do
-    [[ -z ${EXT[$e]:-} ]] || { log "cold: $e is not a Postgres engine, its caches cannot be evicted"; continue; }
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" cold_lane "$e" & pids+=($!); else lane_run "$e" cold_lane "$e"; fi
+    fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
+    lane_run "$e" $fn "$e"
   done
-  for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for c in ${COLD:-${CLASSES/update/}}; do for e in $ENGINES; do grep -P "^-\t$c\t$e\t" "$OUT/$e/cold.part" 2>/dev/null || true; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
@@ -235,8 +232,6 @@ cell_engines() { # ROUND CLASS: the engines to measure: all up to MINR rounds, t
 }
 round() {
   local c e engs v se n t
-  # shellcheck disable=SC2086  # one argument per engine
-  lanes_rotate "$1" $ENGINES
   for c in $CLASSES; do
     engs=$(cell_engines "$1" "$c" | tr '\n' ' ')
     [[ -n $engs ]] || continue

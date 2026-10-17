@@ -1,6 +1,6 @@
 # Tantivy 0.26 in-process via bench/xbench (default tokenizer: split on non-alphanumerics,
 # lowercase, no stemming), merged to one segment, mmap directory. Queries are term/phrase
-# queries built from the trace terms; the whole driver process runs inside the CPU/RAM budget.
+# queries built from the trace terms.
 EXTERNAL=tantivy
 TV_DIR=$ROOT/engines/tantivy/$TIER
 URL=$TV_DIR/index
@@ -10,7 +10,7 @@ REQUIRES_PATH=$ROOT/target/release/xbench
 x_start() { :; }
 x_stop() { rm -rf "$TV_DIR"; }
 x_pid() { :; }
-x_build() { rm -rf "$TV_DIR"; limited "$XBENCH" tantivy-index "$URL" "$1" --threads 4 --mem-mb 4000 >/dev/null; }
+x_build() { rm -rf "$TV_DIR"; "$XBENCH" tantivy-index "$URL" "$1" --threads 4 --mem-mb 4000 >/dev/null; }
 x_size() { du -sb "$URL" | cut -f1; }
 
 RENDER=$(cat <<'SQL'

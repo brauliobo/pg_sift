@@ -36,6 +36,15 @@
 
 static const uint16 slice_size[NLEVELS] = {8, 16, 32, 64, 128, 256, 512, 1024, 2048};
 
+#ifdef SIFT_TESTING
+int			sift_test_run_docs = 0;
+int			sift_test_fanin = 0;
+int			sift_test_segment_postings = 0;
+#define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
+#else
+#define TEST_KNOB(knob, normal)	(normal)
+#endif
+
 /* A term's postings: varint(delta << 1 | tf > 1) [tf] [position record] over doc ordinals, in pool slices */
 typedef struct InvTerm
 {
@@ -82,7 +91,69 @@ struct SiftRun
 	BufFile    *file;
 	uint64		ndocs;
 	uint64		maxdf;
+	int			level;			/* merge passes the run has been through (spill cascade) */
+	SharedFileSet *fileset;		/* NULL for a temporary file, else the file run_file(worker, id) of the set */
+	int			worker;
+	int			id;
 };
+
+/* Where the runs a build participant writes go: temporary files, or a fileset the leader reads */
+typedef struct RunHome
+{
+	SharedFileSet *fileset;
+	int			worker;
+	int			nfiles;			/* ids taken */
+} RunHome;
+
+/* The most runs one merge reads: its buffers must fit the budget, the leader reads this many of each worker */
+#define MAX_MERGE_FANIN	256
+
+static const char *
+run_file(int worker, int run)
+{
+	static char name[32];
+
+	snprintf(name, sizeof(name), "sift-run-%d-%d", worker, run);
+	return name;
+}
+
+/* An empty run with its file open for writing (a file of the fileset when there is one) */
+static SiftRun *
+run_new(MemoryContext mcxt, SharedFileSet *fileset, int worker, int id)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftRun    *run = palloc0(sizeof(SiftRun));
+
+	run->fileset = fileset;
+	run->worker = worker;
+	run->id = id;
+	run->file = fileset ? BufFileCreateFileSet(&fileset->fs, run_file(worker, id)) : BufFileCreateTemp(false);
+	MemoryContextSwitchTo(old);
+	return run;
+}
+
+/* Closes a merged run; a fileset's file goes too, as the leader or the worker has no more use for it */
+static void
+run_close(SiftRun *run)
+{
+	BufFileClose(run->file);
+	if (run->fileset)
+		BufFileDeleteFileSet(&run->fileset->fs, run_file(run->worker, run->id), false);
+}
+
+/* Runs one merge reads at a time: a reader each (the smallest has two blocks), within half the budget */
+static int
+merge_fanin(Size budget)
+{
+	return Max(2, TEST_KNOB(sift_test_fanin, Min(MAX_MERGE_FANIN, Max(8, budget / 2 / (2 * BLCKSZ)))));
+}
+
+/* Read buffer of each of nruns readers: what half the budget leaves after their file buffers, at most IO_BUF */
+static int
+reader_buf(Size budget, int nruns)
+{
+	return Min(IO_BUF, Max(BLCKSZ, (int) Min(budget / 2 / nruns, INT_MAX) - BLCKSZ));
+}
 
 typedef struct SliceReader
 {
@@ -96,6 +167,7 @@ typedef struct RunIO
 {
 	BufFile    *file;
 	uint8	   *buf;
+	int			cap;			/* of buf when reading */
 	int			pos;
 	int			len;
 } RunIO;
@@ -128,6 +200,8 @@ typedef struct RunReader
 typedef struct Batch
 {
 	SiftPostingWriter *pw;
+	RunIO	   *run;			/* a run (see spill_to) to write the postings to, instead of pw */
+	SiftKey		prev;			/* ... the key of its last posting */
 	int			n;
 	SiftKey		keys[BATCH];
 	uint8		tf[BATCH];
@@ -206,7 +280,7 @@ inv_mem(const SiftInvBuf *b)
 bool
 sift_inv_full(const SiftInvBuf *b)
 {
-	return inv_mem(b) >= b->budget || b->nblocks >= POOL_MAX_BLOCKS - 1 || b->ndocs >= PG_INT32_MAX / 2 ||
+	return inv_mem(b) >= b->budget || b->nblocks >= POOL_MAX_BLOCKS - 1 || b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
 		b->tlen >= PG_INT32_MAX;
 }
 
@@ -531,10 +605,14 @@ sorted_terms(SiftInvBuf *b)
 	return s;
 }
 
+static void batch_to_run(Batch *bt);
+
 static void
 batch_flush(Batch *bt)
 {
-	if (bt->n)
+	if (bt->n && bt->run)
+		batch_to_run(bt);
+	else if (bt->n)
 		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n, bt->haspos ? bt->pos : NULL, bt->plen);
 	bt->n = 0;
 	bt->poslen = 0;
@@ -662,7 +740,7 @@ io_byte(RunIO *io)
 {
 	if (io->pos == io->len)
 	{
-		io->len = BufFileRead(io->file, io->buf, IO_BUF);
+		io->len = BufFileRead(io->file, io->buf, io->cap);
 		io->pos = 0;
 		if (io->len == 0)
 			elog(ERROR, "sift: unexpected end of a build run");
@@ -692,16 +770,14 @@ io_get_varint(RunIO *io)
  * varint dl [position record]; varint 0 ends the run.
  */
 static SiftRun *
-spill_to(SiftInvBuf *b, BufFile *file)
+spill_to(SiftInvBuf *b, SiftRun *run)
 {
-	SiftRun    *run = MemoryContextAllocZero(b->parent, sizeof(SiftRun));
 	MemoryContext old = MemoryContextSwitchTo(b->mcxt);
-	RunIO		io = {.buf = palloc(IO_BUF),.file = file};
+	RunIO		io = {.buf = palloc(IO_BUF),.file = run->file};
 	SortTerm   *order = sorted_terms(b);
 	SiftKey		prev = 0;
 	PosChunk   *pc = palloc0(sizeof(PosChunk));
 
-	run->file = file;
 	run->ndocs = b->ndocs;
 	run->maxdf = b->maxdf;
 	io_varint(&io, b->ndocs);
@@ -757,22 +833,14 @@ spill_to(SiftInvBuf *b, BufFile *file)
 SiftRun *
 sift_inv_spill(SiftInvBuf *b)
 {
-	MemoryContext old = MemoryContextSwitchTo(b->parent);
-	BufFile    *file = BufFileCreateTemp(false);
-
-	MemoryContextSwitchTo(old);
-	return spill_to(b, file);
+	return spill_to(b, run_new(b->parent, NULL, 0, 0));
 }
 
-/* A run another process merges: a named file of the fileset, which the caller exports when done */
+/* A run another process merges: the file sift-run-<worker>-<id> of the fileset, which the caller exports when done */
 SiftRun *
-sift_inv_spill_shared(SiftInvBuf *b, SharedFileSet *fileset, const char *name)
+sift_inv_spill_shared(SiftInvBuf *b, SharedFileSet *fileset, int worker, int id)
 {
-	MemoryContext old = MemoryContextSwitchTo(b->parent);
-	BufFile    *file = BufFileCreateFileSet(&fileset->fs, name);
-
-	MemoryContextSwitchTo(old);
-	return spill_to(b, file);
+	return spill_to(b, run_new(b->parent, fileset, worker, id));
 }
 
 uint64
@@ -829,9 +897,69 @@ reader_next_doc(RunReader *rd)
 	return true;
 }
 
+/* The postings of the batch in the run format (see spill_to) */
+static void
+batch_to_run(Batch *bt)
+{
+	Size		off = 0;
+
+	for (int k = 0; k < bt->n; bt->prev = bt->keys[k++])
+	{
+		io_varint(bt->run, (bt->keys[k] - bt->prev) << 1 | (bt->tf[k] > 1));
+		if (bt->tf[k] > 1)
+			io_put(bt->run, &bt->tf[k], 1);
+		io_varint(bt->run, bt->dl[k]);
+		if (bt->haspos)
+		{
+			io_put(bt->run, bt->pos + off, bt->plen[k]);
+			off += bt->plen[k];
+		}
+	}
+}
+
+/* Where a merge writes: a segment, or a run (the format of spill_to) that a later merge reads */
+typedef struct MergeOut
+{
+	SiftSegmentWriter *sw;
+	RunIO		io;
+	SiftKey		prev;
+	uint64		maxdf;
+} MergeOut;
+
+static void
+out_docs(MergeOut *mo, const SiftKey *keys, const uint16 *dl, int n)
+{
+	if (mo->sw)
+		sift_segw_add_docs(mo->sw, keys, dl, n);
+	else
+		for (int i = 0; i < n; mo->prev = keys[i++])
+		{
+			io_varint(&mo->io, keys[i] - mo->prev);
+			io_varint(&mo->io, dl[i]);
+		}
+}
+
+/* The term's postings follow in bt: df of them, with position records when bt->haspos */
+static void
+out_begin_term(MergeOut *mo, Batch *bt, const char *term, int len, uint64 df)
+{
+	bt->n = 0;
+	if (mo->sw)
+	{
+		bt->pw = sift_segw_begin_term(mo->sw, term, len);
+		return;
+	}
+	io_varint(&mo->io, len);
+	io_put(&mo->io, term, len);
+	io_varint(&mo->io, df);
+	io_varint(&mo->io, bt->haspos);
+	bt->prev = 0;
+	mo->maxdf = Max(mo->maxdf, df);
+}
+
 /* All runs' docs in key order (the runs' key ranges may interleave) */
 static void
-merge_docs(SiftSegmentWriter *sw, RunReader *rd, int nruns)
+merge_docs(MergeOut *mo, RunReader *rd, int nruns)
 {
 	binaryheap *heap = binaryheap_allocate(nruns, doc_heap_cmp, NULL);
 	SiftKey		keys[BATCH];
@@ -854,13 +982,13 @@ merge_docs(SiftSegmentWriter *sw, RunReader *rd, int nruns)
 			binaryheap_remove_first(heap);
 		if (n == BATCH)
 		{
-			sift_segw_add_docs(sw, keys, dl, n);
+			out_docs(mo, keys, dl, n);
 			n = 0;
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
 	if (n > 0)
-		sift_segw_add_docs(sw, keys, dl, n);
+		out_docs(mo, keys, dl, n);
 	binaryheap_free(heap);
 }
 
@@ -968,35 +1096,42 @@ merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 	}
 }
 
-void
-sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
-				SiftSegEntry *entry)
+/* Opens the runs for reading; the docs and the positions of every run are known by then */
+static RunReader *
+open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint64 *ndocs)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(cxt);
 	RunReader  *rd = palloc0(nruns * sizeof(RunReader));
+
+	*positions = true;
+	*ndocs = 0;
+	for (int i = 0; i < nruns; i++)
+	{
+		rd[i].idx = i;
+		rd[i].io.file = runs[i]->file;
+		rd[i].io.cap = reader_buf(budget, nruns);
+		rd[i].io.buf = palloc(rd[i].io.cap);
+		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
+			elog(ERROR, "sift: could not rewind a build run");
+		rd[i].dleft = io_get_varint(&rd[i].io);
+		rd[i].haspos = io_get_varint(&rd[i].io);
+		*ndocs += rd[i].dleft;
+		*positions &= rd[i].haspos;
+	}
+	return rd;
+}
+
+/* Merges the docs and the terms of the opened runs into mo */
+static void
+merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
+{
 	RunReader **cur = palloc(nruns * sizeof(RunReader *));
 	RunReader **act = palloc(nruns * sizeof(RunReader *));
 	binaryheap *heap = binaryheap_allocate(nruns, reader_cmp, NULL);
 	Batch	   *bt = palloc0(sizeof(Batch));
 	uint32		nterms = 0;
-	bool		positions = true;
-	SiftSegmentWriter *sw;
 
-	for (int i = 0; i < nruns; i++)
-	{
-		rd[i].idx = i;
-		rd[i].io.file = runs[i]->file;
-		rd[i].io.buf = palloc(IO_BUF);
-		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
-			elog(ERROR, "sift: could not rewind a build run");
-		rd[i].dleft = io_get_varint(&rd[i].io);
-		rd[i].haspos = io_get_varint(&rd[i].io);
-		positions &= rd[i].haspos;
-	}
-	/* the segment has positions when every run does */
-	sw = sift_segw_begin(wt, gen, ref, cxt, positions);
-	merge_docs(sw, rd, nruns);
+	bt->run = mo->sw ? NULL : &mo->io;
+	merge_docs(mo, rd, nruns);
 	for (int i = 0; i < nruns; i++)
 	{
 		reader_next_term(&rd[i]);
@@ -1009,10 +1144,9 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		char		term[SIFT_MAX_TERM_BYTES];
 		int			len = ((RunReader *) DatumGetPointer(binaryheap_first(heap)))->len,
 					k = 0;
+		uint64		df = 0;
 
 		memcpy(term, ((RunReader *) DatumGetPointer(binaryheap_first(heap)))->term, len);
-		bt->pw = sift_segw_begin_term(sw, term, len);
-		bt->n = 0;
 		while (!binaryheap_empty(heap))
 		{
 			RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
@@ -1025,10 +1159,15 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		/* a term whose postings lack the records in some run (inline there) keeps none */
 		bt->haspos = positions;
 		for (int i = 0; i < k; i++)
+		{
 			bt->haspos &= cur[i]->thaspos;
+			df += cur[i]->df;
+		}
+		out_begin_term(mo, bt, term, len, df);
 		merge_postings(bt, cur, k, act);
 		batch_flush(bt);
-		sift_segw_end_term(sw);
+		if (mo->sw)
+			sift_segw_end_term(mo->sw);
 		for (int i = 0; i < k; i++)
 		{
 			reader_next_term(cur[i]);
@@ -1038,9 +1177,82 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		if (++nterms % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
-	sift_segw_finish(sw, entry);
+}
+
+/* Merges the runs into a new one of the home's files and closes them */
+static SiftRun *
+merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
+{
+	SiftRun    *out = run_new(CurrentMemoryContext, home->fileset, home->worker, home->nfiles++);
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	MergeOut	mo = {.io = {.file = out->file,.buf = palloc(IO_BUF)}};
+	bool		positions;
+	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &out->ndocs);
+
+	io_varint(&mo.io, out->ndocs);
+	io_varint(&mo.io, positions);
+	merge_readers(rd, nruns, positions, &mo);
+	io_varint(&mo.io, 0);
+	io_flush(&mo.io);
+	out->maxdf = mo.maxdf;
 	for (int i = 0; i < nruns; i++)
-		BufFileClose(runs[i]->file);
+	{
+		run_close(runs[i]);
+		pfree(runs[i]);
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+	return out;
+}
+
+static int
+run_size_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u64((*(SiftRun *const *) b)->ndocs, (*(SiftRun *const *) a)->ndocs);
+}
+
+/* Merges the smallest runs, as few as it takes, until a merge can read all that are left; returns their number */
+static int
+shrink_runs(SiftRun **runs, int nruns, Size budget, RunHome *home)
+{
+	int			fanin = merge_fanin(budget);
+
+	while (nruns > fanin)
+	{
+		int			k = Min(fanin, nruns - fanin + 1);
+
+		qsort(runs, nruns, sizeof(SiftRun *), run_size_cmp);
+		runs[nruns - k] = merge_to_run(runs + nruns - k, k, budget, home);
+		nruns -= k - 1;
+	}
+	return nruns;
+}
+
+void
+sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
+				SiftSegEntry *entry)
+{
+	RunHome		tmp = {0};
+	Size		budget = (Size) maintenance_work_mem * 1024;
+	MemoryContext cxt;
+	MemoryContext old;
+	MergeOut	mo = {0};
+	bool		positions;
+	uint64		ndocs;
+	RunReader  *rd;
+
+	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
+	nruns = shrink_runs(runs, nruns, budget, &tmp);
+	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cxt);
+	rd = open_readers(runs, nruns, budget, &positions, &ndocs);
+	/* the segment has positions when every run does */
+	mo.sw = sift_segw_begin(wt, gen, ref, cxt, positions);
+	merge_readers(rd, nruns, positions, &mo);
+	sift_segw_finish(mo.sw, entry);
+	for (int i = 0; i < nruns; i++)
+		run_close(runs[i]);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
 }
@@ -1161,55 +1373,85 @@ typedef struct BuildState
 	double		indexed;
 	uint32		analyzer_hash;
 	bool		positions;
-	/* parallel worker: runs go to this fileset, named after the worker and the run */
-	SharedFileSet *fileset;
-	int			worker;
+	/* a parallel worker's runs go to files of the leader's fileset */
+	RunHome		home;
 } BuildState;
-
-/* Runs a worker may hand over: a run holds at least its budget's share of postings */
-#define MAX_WORKER_RUNS	256
-
-static const char *
-run_file(int worker, int run)
-{
-	static char name[32];
-
-	snprintf(name, sizeof(name), "sift-run-%d-%d", worker, run);
-	return name;
-}
 
 /* Reserves the next directory entry; its generation is the entry's 1-based position */
 static SiftSegEntry *
 next_entry(BuildState *bs, uint64 *gen)
 {
 	if (bs->nsegs == SIFT_MAX_SEGMENTS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index \"%s\" would need more than %d segments",
-						RelationGetRelationName(bs->index), SIFT_MAX_SEGMENTS),
-				 errhint("Increase maintenance_work_mem or lower build_segments.")));
+		elog(ERROR, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
 	*gen = bs->nsegs + 1;
 	return &bs->segs[bs->nsegs++];
 }
 
+static bool
+tail_is_one_level(SiftRun **runs, int nruns, int k)
+{
+	if (nruns < k)
+		return false;
+	for (int i = nruns - k; i < nruns; i++)
+		if (runs[i]->level != runs[nruns - 1]->level)
+			return false;
+	return true;
+}
+
+/*
+ * Spills the buffer to a run. The last fan-in runs of one level merge into a run of the next, so the
+ * runs a participant keeps stay few (their files and buffers fit the budget) and every posting is
+ * merged a number of times logarithmic in the runs, however many the memory budget makes.
+ */
 static void
 spill(BuildState *bs)
 {
+	int			fanin = merge_fanin(bs->budget);
+	SiftRun    *run;
+
 	if (bs->nruns + 1 >= bs->maxruns)
 	{
 		bs->maxruns *= 2;
 		bs->runs = repalloc(bs->runs, bs->maxruns * sizeof(SiftRun *));
 	}
-	if (bs->fileset == NULL)
-		bs->runs[bs->nruns] = sift_inv_spill(bs->inv);
-	else if (bs->nruns == MAX_WORKER_RUNS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift parallel build worker needs more than %d runs", MAX_WORKER_RUNS),
-				 errhint("Increase maintenance_work_mem or build without parallel workers.")));
+	if (bs->home.fileset == NULL)
+		run = sift_inv_spill(bs->inv);
 	else
-		bs->runs[bs->nruns] = sift_inv_spill_shared(bs->inv, bs->fileset, run_file(bs->worker, bs->nruns));
-	bs->nruns++;
+		run = sift_inv_spill_shared(bs->inv, bs->home.fileset, bs->home.worker, bs->home.nfiles++);
+	bs->runs[bs->nruns++] = run;
+	while (tail_is_one_level(bs->runs, bs->nruns, fanin))
+	{
+		int			level = bs->runs[bs->nruns - 1]->level + 1;
+		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
+
+		run = merge_to_run(bs->runs + bs->nruns - fanin, fanin, bs->budget, &bs->home);
+		MemoryContextSwitchTo(old);
+		run->level = level;
+		bs->nruns -= fanin - 1;
+		bs->runs[bs->nruns - 1] = run;
+	}
+}
+
+/* End of the runs from first on that go to one segment: their largest terms fit the limit together */
+static int
+group_end(SiftRun **runs, int first, int nruns, uint64 limit)
+{
+	int			last = first + 1;
+	uint64		postings = sift_run_maxdf(runs[first]);
+
+	while (last < nruns && postings + sift_run_maxdf(runs[last]) <= limit)
+		postings += sift_run_maxdf(runs[last++]);
+	return last;
+}
+
+static int
+count_groups(SiftRun **runs, int nruns, uint64 limit)
+{
+	int			n = 0;
+
+	for (int first = 0; first < nruns; first = group_end(runs, first, nruns, limit))
+		n++;
+	return n;
 }
 
 /* Writes the docs gathered since the last boundary as one or more segments */
@@ -1219,6 +1461,10 @@ end_segment(BuildState *bs)
 	int			first = 0;
 	uint64		gen;
 	SiftSegEntry *entry;
+	/* a posting of the largest term costs about 10 bytes of the merge's memory */
+	uint64		limit = TEST_KNOB(sift_test_segment_postings, bs->budget / 10);
+	/* the entries the segments still to come (one per forced boundary, and the last) leave */
+	int			room = SIFT_MAX_SEGMENTS - bs->nsegs - (bs->nbounds - bs->nextbound);
 
 	if (bs->nruns == 0)
 	{
@@ -1231,14 +1477,18 @@ end_segment(BuildState *bs)
 	}
 	if (!sift_inv_empty(bs->inv))
 		spill(bs);
-	/* each segment merges runs whose largest terms fit the budget together */
+	ereport(DEBUG2, errmsg("sift index \"%s\": merging %d runs into segments", RelationGetRelationName(bs->index), bs->nruns));
+	/*
+	 * Each segment merges runs whose largest terms fit the budget together. The directory holds a
+	 * number of segments, though: a term is encoded whole, so when the budget would need more, fewer
+	 * and larger segments are written, which take more memory than the budget in their largest terms.
+	 */
+	while (count_groups(bs->runs, bs->nruns, limit) > room)
+		limit *= 2;
 	while (first < bs->nruns)
 	{
-		int			last = first + 1;
-		uint64		postings = sift_run_maxdf(bs->runs[first]);
+		int			last = group_end(bs->runs, first, bs->nruns, limit);
 
-		while (last < bs->nruns && (postings + sift_run_maxdf(bs->runs[last])) * 10 <= bs->budget)
-			postings += sift_run_maxdf(bs->runs[last++]);
 		entry = next_entry(bs, &gen);
 		sift_runs_write(bs->runs + first, last - first, bs->wt, gen, &bs->ref, entry);
 		first = last;
@@ -1404,15 +1654,16 @@ typedef struct SiftBuildShared
 	/* the parallel table scan descriptor follows */
 } SiftBuildShared;
 
-/* A worker's runs, in the files run_file(worker number, i) */
+/* A worker's runs, in the files run_file(worker number, id) */
 typedef struct SiftBuildPart
 {
 	int			nruns;
 	struct
 	{
+		int			id;
 		uint64		ndocs;
 		uint64		maxdf;
-	}			run[MAX_WORKER_RUNS];
+	}			run[MAX_MERGE_FANIN];
 } SiftBuildPart;
 
 typedef struct SiftBuildLeader
@@ -1530,8 +1781,9 @@ adopt_runs(SiftBuildLeader *ldr, BuildState *bs, IndexBuildResult *res)
 				bs->maxruns *= 2;
 				bs->runs = repalloc(bs->runs, bs->maxruns * sizeof(SiftRun *));
 			}
-			*run = (SiftRun) {BufFileOpenFileSet(&shared->fileset.fs, run_file(w, i), O_RDONLY, false),
-				ldr->parts[w].run[i].ndocs, ldr->parts[w].run[i].maxdf};
+			*run = (SiftRun) {.file = BufFileOpenFileSet(&shared->fileset.fs, run_file(w, ldr->parts[w].run[i].id), O_RDONLY, false),
+				.ndocs = ldr->parts[w].run[i].ndocs,.maxdf = ldr->parts[w].run[i].maxdf,
+			.fileset = &shared->fileset,.worker = w,.id = ldr->parts[w].run[i].id};
 			bs->runs[bs->nruns++] = run;
 		}
 		InstrAccumParallelQuery(&ldr->bufferusage[w], &ldr->walusage[w]);
@@ -1549,15 +1801,20 @@ add_counts(SiftBuildShared *shared, double reltuples, double indexed)
 	SpinLockRelease(&shared->mutex);
 }
 
-/* Spills what is left and makes the runs readable by the leader */
+/* Spills what is left, merges the runs down to what a part holds and makes them readable by the leader */
 static void
 hand_over_runs(BuildState *bs, SiftBuildPart *part)
 {
+	MemoryContext old = MemoryContextSwitchTo(bs->cxt);
+
 	if (!sift_inv_empty(bs->inv))
 		spill(bs);
+	bs->nruns = shrink_runs(bs->runs, bs->nruns, bs->budget, &bs->home);
+	MemoryContextSwitchTo(old);
 	part->nruns = bs->nruns;
 	for (int i = 0; i < bs->nruns; i++)
 	{
+		part->run[i].id = bs->runs[i]->id;
 		part->run[i].ndocs = bs->runs[i]->ndocs;
 		part->run[i].maxdf = bs->runs[i]->maxdf;
 		BufFileExportFileSet(bs->runs[i]->file);
@@ -1589,8 +1846,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SharedFileSetAttach(&shared->fileset, seg);
 	InstrStartParallelQuery();
 	bs = build_begin(index, shared->budget);
-	bs->fileset = &shared->fileset;
-	bs->worker = ParallelWorkerNumber;
+	bs->home = (RunHome) {.fileset = &shared->fileset,.worker = ParallelWorkerNumber};
 	reltuples = build_scan(bs, heap, info, sift_table_beginscan_parallel(heap, SCAN_OF(shared)), false);
 	hand_over_runs(bs, part);
 	add_counts(shared, reltuples, bs->indexed);
