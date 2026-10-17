@@ -90,8 +90,10 @@ typedef struct { uint64 value; } FullTransactionId;
 
 /* ---------- bit utilities (port/pg_bitutils.h, common/int.h) ---------- */
 
-static inline int pg_popcount32(uint32 x) { return __builtin_popcount(x); }
-static inline int pg_popcount64(uint64 x) { return __builtin_popcountll(x); }
+/* sift_pc64: baseline x86-64 code must not call libgcc's __popcountdi2, which a distribution may build with POPCNT */
+#include "sift_popcount.h"
+static inline int pg_popcount32(uint32 x) { return sift_pc64(x); }
+static inline int pg_popcount64(uint64 x) { return sift_pc64(x); }
 static inline int pg_rightmost_one_pos32(uint32 x) { return __builtin_ctz(x); }
 static inline int pg_rightmost_one_pos64(uint64 x) { return __builtin_ctzll(x); }
 static inline int pg_leftmost_one_pos32(uint32 x) { return 31 - __builtin_clz(x); }
