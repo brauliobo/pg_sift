@@ -15,8 +15,8 @@
 - Removed: reloption `phrase_index = pairs`; phrases use word positions. `CREATE INDEX ... WITH (phrase_index = ...)` fails like any unknown
   parameter, and an index built with it is refused ("built with other analyzer options") until `ALTER INDEX ... RESET (phrase_index)` and
   `REINDEX`.
-- Benchmarks: `bench/bench all` runs a slim tier by default (50,000 articles, 34,165 places, about 4 minutes, under 2 GB of disk at the peak) and
-  `--full` the full-size one; `bench/bench du` and `clean [--cache|--build|--all]` show and free the disk; `all --docs` regenerates `docs/results`, the
+- Benchmarks: the engines are measured one at a time, each with every CPU of the host, interleaved in rounds (the CPUs are no longer shared out, the `--cpus` and `--serial` options are gone);
+  `bench/bench all` runs a slim tier by default (50,000 articles, 34,165 places, about 2 GB of disk at the peak) and `--full` the full-size one; `bench/bench du` and `clean [--cache|--build|--all]` show and free the disk; `all --docs` regenerates `docs/results`, the
   charts, `docs/BENCHMARKS.md` and the benchmark blocks of `README.md` from the slim tier.
 
 ## 1.2.0
