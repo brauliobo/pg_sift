@@ -201,8 +201,9 @@ def build_cols(rows, dataset, tier, e):
 
 
 def md_articles(rows, tier):
-    engines = [e for e in ORDER if get(rows, 'articles', tier, e, 'and', '-', 'qps')]
-    classes = list(dict.fromkeys(r[3] for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps'))
+    measured = [r for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps']
+    engines = [e for e in ORDER if any(r[2] == e for r in measured)]
+    classes = list(dict.fromkeys(r[3] for r in measured))
     ref = 'pg_search' if 'pg_search' in engines else engines[-1]
     growth = any(float(value(rows, 'articles', tier, e, metric='heap_growth_mib') or 0) > 0.5 for e in engines)
     qps = lambda e, c: get(rows, 'articles', tier, e, c, '-', 'qps')
