@@ -38,6 +38,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   numbers, hashes with a common prefix) read every block of the run of terms with that prefix, linearly: 625 blocks per lookup in 40,000
   ids. It finds the block by bisection (10 blocks); other dictionaries read the same blocks as before.
 
+- Fix: every query that reads the documents of a segment (ranked scans, filters) read and summed the whole SB directory of its docmap,
+  24 bytes per superblock: more than 300 kB per segment and query on a billion-row index. A backend now keeps the directories of
+  segments of 128 superblocks or more (16 MB, least recently used out; a segment never changes, so its generation names the directory
+  for good) and a repeated query reads none of it. Smaller segments are read each time, as before.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build

@@ -75,6 +75,26 @@ typedef struct SiftDocChunk
 
 extern bool sift_seg_docs(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
+/*
+ * The SB directory of the segment's docmap (nsb entries) and the doc rank where each SB starts (nsb + 1),
+ * for the caller to fill: false when it must read them, true when they are those of an earlier query
+ * (sift_docdir.c). Call sift_docdir_ready(handle) once filled and checked. Both live as long as seg's memory context.
+ */
+extern bool sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle);
+extern void sift_docdir_ready(void *handle);
+extern PGDLLIMPORT int sift_docdir_min_sb;
+
+#ifdef SIFT_TESTING
+/* Directories read from the segment and found in the backend's cache (sift._test_read_stats) */
+typedef struct SiftDocDirStats
+{
+	uint64		loads;
+	uint64		hits;
+	uint64		bytes_read;		/* of directories, cached or not */
+} SiftDocDirStats;
+extern SiftDocDirStats sift_docdir_stats;
+#endif
+
 /* First SB >= sb with docs; false past the last one */
 extern bool sift_seg_docs_next(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 

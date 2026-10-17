@@ -12,6 +12,7 @@
 
 #include "sift_dict.h"
 #include "sift_posting.h"
+#include "sift_segment.h"
 #include "sift_prefix.h"
 
 PG_FUNCTION_INFO_V1(sift_test_read_stats);
@@ -27,6 +28,9 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		uint64		value;
 	}			stats[] = {
 		{"dict_block_probes", sift_dict_probes},
+		{"docdir_loads", sift_docdir_stats.loads},
+		{"docdir_hits", sift_docdir_stats.hits},
+		{"docdir_bytes_read", sift_docdir_stats.bytes_read},
 		{"cursors", sift_post_stats.cursors},
 		{"cursor_buffer_bytes", sift_post_stats.curbuf_bytes},
 		{"blobs", sift_post_stats.blobs},
@@ -50,6 +54,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		memset(&sift_prefix_stats, 0, sizeof(sift_prefix_stats));
 		memset(&sift_post_stats, 0, sizeof(sift_post_stats));
 		sift_dict_probes = 0;
+		memset(&sift_docdir_stats, 0, sizeof(sift_docdir_stats));
 	}
 	return (Datum) 0;
 }

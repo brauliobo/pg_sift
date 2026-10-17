@@ -28,6 +28,7 @@
 #include "sift_kernels.h"
 #include "sift_posting.h"
 #include "sift_prefix.h"
+#include "sift_segment.h"
 #include "sift_pushdown.h"
 #include "sift_sql.h"
 
@@ -101,6 +102,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_prefix_gather",
 							"Testing: kB of postings one pass of a wide prefix gathers (the rest is built in windows).",
 							NULL, &sift_prefix_gather_kb, 131072, 1, INT_MAX, PGC_USERSET, GUC_UNIT_KB | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_docdir_min_sb",
+							"Testing: superblocks from which a segment's docmap directory is kept for the next query.",
+							NULL, &sift_docdir_min_sb, 128, 1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_run_docs",
 							"Testing: documents a CREATE INDEX run holds before it is spilled (0 = by memory).",
 							NULL, &sift_test_run_docs, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
