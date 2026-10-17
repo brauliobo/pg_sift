@@ -962,6 +962,8 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 	int			nmatch = idx >> IDX_NSHIFT,
 				a = nmatch;
 
+	SqQuery    *texts = palloc(nmatch * sizeof(SqQuery));
+
 	c->state = sift_state_open(sq_store_rel(vt->st), c->cx);
 	c->qs = palloc(nmatch * sizeof(SiftQuery *));
 	c->nqs = nmatch;
@@ -969,7 +971,8 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 	{
 		const char *q = (const char *) sqlite3_value_text(argv[i]);
 
-		c->qs[i] = sift_state_query(c->state, q ? q : "", sqlite3_value_bytes(argv[i]));
+		texts[i] = (SqQuery) {q ? q : "", sqlite3_value_bytes(argv[i])};
+		c->qs[i] = sift_state_query(c->state, texts[i].text, texts[i].len);
 	}
 	c->plan = sift_plan_bind(c->state, c->qs, nmatch, (idx & IDX_RANK) ? SIFT_BIND_SCORE : 0);
 	if (idx & IDX_RANK)
@@ -978,7 +981,7 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 
 		c->mode = SC_RANK;
 		if (k > 0 && sq_par_available(vt, c->plan))
-			c->hits = sq_par_rank(vt, c->state, c->qs, nmatch, k, SIFT_BIND_SCORE, &c->nhits);
+			c->hits = sq_par_rank(vt, texts, nmatch, k, &c->nhits);
 		if (c->hits == NULL)
 			c->ranker = sift_rank_begin(c->plan, k, sq_vt_verify, vt);
 		ranked_next(c);

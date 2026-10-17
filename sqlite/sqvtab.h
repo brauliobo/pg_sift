@@ -44,7 +44,8 @@ struct SqVtab
 	int			cache_kib;
 	int			automerge;				/* segments of a tier that trigger a merge after a flush, 0 = never */
 	int64_t		pending_postings;		/* the buffer is written as a segment above this */
-	int			parallel;				/* worker threads of a scan, below 2 = serial */
+	int			parallel;				/* threads of a scan, below 2 = serial */
+	int64_t		par_scans;				/* scans that ran in parallel */
 	MemoryContext acx;					/* analyzer */
 	SiftAnalyzer *analyzer;
 	SqInv	   *pend;					/* documents not yet in a segment */
@@ -105,8 +106,14 @@ extern int	sq_aux_find_function(sqlite3_vtab *pVtab, int nArg, const char *zName
 								 void (**pxFunc) (sqlite3_context *, int, sqlite3_value **), void **ppArg);
 
 /* sqpar.c */
+typedef struct SqQuery
+{
+	const char *text;
+	int			len;
+} SqQuery;
+
 extern int	sq_par_available(SqVtab *vt, SiftPlan *plan);
-extern SqHit *sq_par_rank(SqVtab *vt, SiftIndexState *state, SiftQuery **qs, int nqs, int64_t k, int flags, int64_t *nhits);
-extern int64_t sq_par_count(SqVtab *vt, SiftIndexState *state, SiftQuery **qs, int nqs);
+extern SqHit *sq_par_rank(SqVtab *vt, const SqQuery *q, int nq, int64_t k, int64_t *nhits);
+extern int64_t sq_par_count(SqVtab *vt, const SqQuery *q, int nq);
 
 #endif							/* SQVTAB_H */

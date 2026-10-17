@@ -131,7 +131,7 @@ fn_count(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 		qs[0] = sift_state_query(state, q ? q : "", sqlite3_value_bytes(argv[1]));
 		plan = sift_plan_bind(state, qs, 1, 0);
 		if (sq_par_available(vt, plan))
-			n = sq_par_count(vt, state, qs, 1);
+			n = sq_par_count(vt, &(SqQuery) {q ? q : "", sqlite3_value_bytes(argv[1])}, 1);
 		else
 		{
 			memset(&vis, 0, sizeof(vis));
@@ -165,12 +165,12 @@ fn_stat(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 	d = sq_store_dir(vt->st);
 	sq_store_stats(vt->st, &s);
 	msg = sqlite3_mprintf("segments=%d docs=%llu chunks=%llu bytes=%llu chunk=%d cache_slots=%u cached_bytes=%llu "
-						  "cache_hits=%llu cache_misses=%llu evictions=%llu pinned=%u pin_leaks=%llu pending_postings=%llu",
+						  "cache_hits=%llu cache_misses=%llu evictions=%llu pinned=%u pin_leaks=%llu pending_postings=%llu parallel_scans=%llu",
 						  d->nsegs, (unsigned long long) d->meta.ndocs, (unsigned long long) s.chunks_total,
 						  (unsigned long long) s.bytes_total, sq_store_chunk_bytes(vt->st), s.slots,
 						  (unsigned long long) s.cached_bytes, (unsigned long long) s.hits, (unsigned long long) s.misses,
 						  (unsigned long long) s.evictions, s.pinned, (unsigned long long) s.pin_leaks,
-						  (unsigned long long) sq_inv_postings(vt->pend));
+						  (unsigned long long) sq_inv_postings(vt->pend), (unsigned long long) vt->par_scans);
 	sqlite3_result_text(ctx, msg, -1, sqlite3_free);
 }
 
