@@ -15,7 +15,7 @@
 #                                       needs both of its cells)
 # TRACE: the benchmark trace (id TAB and|or|phrase TAB terms), 1000 queries per class. Database "bench", table docs (id, body)
 # with a FULLTEXT index on body, sift indexes "wiki" (the defaults: reads the queue, checks that rows exist) and "wiki_plain"
-# (fresh = false, recheck = false: the result of the last drain). No CPU pinning: the load average of the host is printed at the start and
+# (fresh = false, recheck = false: the result of the last drain). The host is measured as it is: the load average is printed at the start and
 # at the end. Cell labels: "<topk|count> <and|or|phrase> <sift|sift-udf|sift-plain|inno-natural|inno-boolean|inno>".
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

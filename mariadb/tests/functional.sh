@@ -136,6 +136,17 @@ check "event drains the queue in the background" 0 "$(stat pending g)"
 check "event: the row is indexed" 1 "$(cnt 'event AND driven' g)"
 sql "DROP EVENT sift_ev_g; SET GLOBAL event_scheduler = OFF"
 
+# --- the other ways to write a row: upsert and replace go through the same triggers
+sql "INSERT INTO g (id, body) VALUES (9001, 'upsert alpha')"
+sql "INSERT INTO g (id, body) VALUES (9001, 'upsert beta') ON DUPLICATE KEY UPDATE body = VALUES(body)"
+check "on duplicate key update: the new text only" "0 1" "$(cnt alpha g) $(cnt beta g)"
+sql "REPLACE INTO g (id, body) VALUES (9001, 'upsert gamma')"
+check "replace: the new text only" "0 1" "$(cnt beta g) $(cnt gamma g)"
+sync g
+check "replace: the same after the drain" "0 1" "$(cnt beta g) $(cnt gamma g)"
+sql "INSERT INTO g (id, body) SELECT 9100 + seq, 'bulk delta' FROM seq_1_to_5"
+check "insert select: five rows at once" 5 "$(cnt delta g)"
+
 # --- several indexes in one server process share the mapping of the segments
 check "two indexes: the first one still answers" "7,10" "$(idx apple)"
 check "two indexes: the second one answers" "601" "$(cnt 'stress OR event' g)"
