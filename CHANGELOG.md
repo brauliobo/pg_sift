@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Planner: `@@>` on a key whose index has `fields` (or any analyzer other than the default) is estimated from the index like any other. It is
+  the call `sift.match_idx`, which had no estimate, so the planner expected a third of the rows for every query (a term of 44 of 1M names as
+  a third of them) and costed the scan and the joins above it as for a broad term. A rare term of such an index, searched among the
+  attributes of a tenant with 10% of the names (`id IN (SELECT ...)` through a left join that repeats them): hash join 2.6 s, now a
+  nested loop semi join under the ranked scan, 18 ms.
 - Removed: reloption `phrase_index = pairs`; phrases use word positions. `CREATE INDEX ... WITH (phrase_index = ...)` fails like any unknown
   parameter, and an index built with it is refused ("built with other analyzer options") until `ALTER INDEX ... RESET (phrase_index)` and
   `REINDEX`.

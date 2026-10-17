@@ -130,9 +130,12 @@ sift_match_idx(PG_FUNCTION_ARGS)
 
 static Oid	bind_analyzer(List *indexes, bool *contested);
 
-/* Matching documents over the heap rows, by the first full index on expr that answers as `@@>` does there */
+/*
+ * Matching documents over the heap rows, by the first full index on expr that answers as the analyzer
+ * does: the one `@@>` means on that key, or the one sift.match_idx names (named)
+ */
 static double
-match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query)
+match_selectivity(RelOptInfo *rel, Node *expr, text *query, const Const *named)
 {
 	List	   *keyed = NIL;
 	Oid			analyzer;
@@ -143,7 +146,7 @@ match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query)
 		if (ii->indpred == NIL && !ii->hypothetical && sift_index_matches_key(ii, expr))
 			keyed = lappend_oid(keyed, ii->indexoid);
 	list_sort(keyed, list_oid_cmp);
-	analyzer = bind_analyzer(keyed, NULL);
+	analyzer = named ? DatumGetObjectId(named->constvalue) : bind_analyzer(keyed, NULL);
 	foreach_oid(indexoid, keyed)
 	{
 		SiftEstimate est;
@@ -174,10 +177,32 @@ sift_matchsel(PG_FUNCTION_ARGS)
 	if (get_restriction_variable(root, args, varRelid, &vardata, &other, &varonleft))
 	{
 		if (varonleft && vardata.rel && IsA(other, Const) && !((Const *) other)->constisnull)
-			sel = match_selectivity(root, vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue));
+			sel = match_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue), NULL);
 		ReleaseVariableStats(vardata);
 	}
 	PG_RETURN_FLOAT8(Min(Max(sel, 0.0), 1.0));
+}
+
+/*
+ * The same for the call sift.match_idx(key, query, index) that `@@>` becomes on a key whose indexes
+ * do not all have the default analyzer: a function call has no RESTRICT, so without this it would
+ * keep the planner's default for any boolean function (a third of the rows) whatever the query
+ */
+static Node *
+call_selectivity(SupportRequestSelectivity *req)
+{
+	VariableStatData vardata;
+	Node	   *query = lsecond(req->args);
+
+	if (req->is_join || req->funcid != sift_catalog()->match_idx_func || !IsA(query, Const) ||
+		((Const *) query)->constisnull || !IsA(lthird(req->args), Const))
+		return NULL;
+	examine_variable(req->root, linitial(req->args), req->varRelid, &vardata);
+	if (vardata.rel)
+		req->selectivity = Min(Max(match_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) query)->constvalue),
+													 lthird_node(Const, req->args)), 0.0), 1.0);
+	ReleaseVariableStats(vardata);
+	return vardata.rel ? (Node *) req : NULL;
 }
 
 /* ---------- planner support: sift.match / sift.match_idx ---------- */
@@ -329,6 +354,8 @@ sift_match_support(PG_FUNCTION_ARGS)
 		ret = simplify_match((SupportRequestSimplify *) req);
 	else if (IsA(req, SupportRequestIndexCondition))
 		ret = index_condition((SupportRequestIndexCondition *) req);
+	else if (IsA(req, SupportRequestSelectivity))
+		ret = call_selectivity((SupportRequestSelectivity *) req);
 	PG_RETURN_POINTER(ret);
 }
 
