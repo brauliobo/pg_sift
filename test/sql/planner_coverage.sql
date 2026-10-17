@@ -58,7 +58,7 @@ SELECT count(*) FROM pc WHERE body @@> 'beta 17';
 SELECT count(*) FROM pcm WHERE body @@> 'zzz';
 COMMIT;
 
--- row-level security: a role sees its own rows through the scan
+-- row-level security: a role sees its own rows
 DROP ROLE IF EXISTS sift_t_even, sift_t_odd;
 CREATE ROLE sift_t_even;
 CREATE ROLE sift_t_odd;
@@ -68,7 +68,10 @@ ALTER TABLE pc ENABLE ROW LEVEL SECURITY;
 CREATE POLICY pc_own ON pc USING (owner = current_user);
 SET ROLE sift_t_even;
 SELECT count(*), min(id), max(id) FROM pc WHERE body @@> 'beta';
+SELECT id FROM pc WHERE body @@> 'beta' ORDER BY id LIMIT 3;
+-- the scan would count the hidden rows in the score and the estimates: no scan, no score
 SELECT id FROM pc WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM pc WHERE body @@> 'beta';
 RESET ROLE;
 SET ROLE sift_t_odd;
 SELECT count(*), min(id), max(id) FROM pc WHERE body @@> 'beta';
