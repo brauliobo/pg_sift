@@ -38,6 +38,9 @@ results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 
 (scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans. The post-filter plan is priced
 from the filter column's statistics: the ranker visits the heap in order and verifies every match until it holds `k` rows that pass,
 so a filter whose rows lie at the end of a correlated column (recent ids) costs it the whole heap before them. Both plans are also charged for the blocks the ranker scores, and an id list (`= ANY(array)`) is priced by the btree leaf pages it touches, so a long list of scattered ids is pushed down.
+A prepared statement (or any generic plan: `plan_cache_mode`, a driver that prepares) is planned without its query, which the planner
+prices as one matching a tenth of the rows, so a selective filter is pushed down there too, as in the plan of the literal query
+(a prepared 2.6% filter query went from 4.36M to 2.30M cycles, the cycles of the literal one).
 
 ```sql
 CREATE INDEX docs_published ON docs (published);

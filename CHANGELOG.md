@@ -2,6 +2,14 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query.
+  The ranked scan priced such a query by the operator's default of 0.5% of the rows, which made a filter after the ranker look free; it now
+  assumes a tenth of the rows, so a selective filter is pushed down and a loose one stays after the ranker. Rows, scores and ties are
+  unchanged. Slim tier, one backend, user cycles per query: prepared filter class 4.36M to 2.30M (the literal query takes 2.33M), prepared
+  join class 6.67M to 5.28M, prepared or and mixed classes unchanged.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
