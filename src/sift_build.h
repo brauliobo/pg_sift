@@ -29,6 +29,9 @@ extern PGDLLIMPORT int sift_test_build_peak;
 /* blocks of 64 kB the buffer's pool has (0 = 60000), bytes of the text of a heap page it holds (0 = by memory) */
 extern PGDLLIMPORT int sift_test_pool_blocks;
 extern PGDLLIMPORT int sift_test_page_text;
+/* the nth merge of a CREATE INDEX (0 = none) is cancelled after a few terms: in the leader or a serial build (1), the workers (2), any (0) */
+extern PGDLLIMPORT int sift_test_fail_merge;
+extern PGDLLIMPORT int sift_test_fail_who;
 #endif
 
 typedef struct SiftInvBuf SiftInvBuf;

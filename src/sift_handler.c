@@ -119,6 +119,12 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_page_text",
 							"Testing: bytes of the text of a heap page CREATE INDEX buffers (0 = by memory).",
 							NULL, &sift_test_page_text, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_fail_merge",
+							"Testing: the nth merge of a CREATE INDEX is cancelled after a few terms (0 = never).",
+							NULL, &sift_test_fail_merge, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_fail_who",
+							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
+							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);

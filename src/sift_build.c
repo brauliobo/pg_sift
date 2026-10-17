@@ -43,11 +43,14 @@ int			sift_test_segment_postings = 0;
 int			sift_test_build_peak = 0;
 int			sift_test_pool_blocks = 0;
 int			sift_test_page_text = 0;
+int			sift_test_fail_merge = 0;
+int			sift_test_fail_who = 0;
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
 
 /* The most memory (kB) the contexts of the build allocated, sampled where a build is at its largest */
 static MemoryContext mem_root;
 static MemoryContextCallback mem_root_cb;
+static int	test_merges;		/* merges so far of the build of this process */
 
 static void
 mem_root_gone(void *arg)
@@ -59,6 +62,7 @@ static void
 mem_watch(MemoryContext cxt)
 {
 	mem_root = cxt;
+	test_merges = 0;
 	mem_root_cb.func = mem_root_gone;
 	MemoryContextRegisterResetCallback(cxt, &mem_root_cb);
 }
@@ -70,9 +74,22 @@ mem_sample(void)
 		sift_test_build_peak = Max(sift_test_build_peak, (int) Min(MemoryContextMemAllocated(mem_root, true) / 1024, INT_MAX));
 }
 #define MEM_SAMPLE()	mem_sample()
+
+/* The sift_test_fail_merge'th merge of the build participants selected by sift_test_fail_who is cancelled after a few terms */
+static void
+test_fail_merge(uint32 nterms)
+{
+	if (nterms != 3 || mem_root == NULL || sift_test_fail_merge == 0 ||
+		(sift_test_fail_who != 0 && (sift_test_fail_who == 1) != (ParallelWorkerNumber < 0)))
+		return;
+	if (++test_merges == sift_test_fail_merge)
+		ereport(ERROR, (errcode(ERRCODE_QUERY_CANCELED), errmsg("canceling statement due to sift.test_fail_merge")));
+}
+#define TEST_FAIL_MERGE(nterms)	test_fail_merge(nterms)
 #else
 #define TEST_KNOB(knob, normal)	(normal)
 #define MEM_SAMPLE()	((void) 0)
+#define TEST_FAIL_MERGE(nterms)	((void) 0)
 #endif
 
 /* A term's postings: varint(delta << 1 | tf > 1) [tf] [position record] over doc ordinals, in pool slices */
@@ -1265,7 +1282,8 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 			if (cur[i]->len)
 				binaryheap_add(heap, PointerGetDatum(cur[i]));
 		}
-		if (++nterms % 1024 == 0)
+		TEST_FAIL_MERGE(++nterms);
+		if (nterms % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
 }
@@ -1833,6 +1851,7 @@ typedef struct SiftBuildShared
 	slock_t		mutex;
 	double		reltuples;
 	double		indexed;
+	int			peak_kb;			/* the most memory a participant allocated (SIFT_TESTING) */
 	/* the parallel table scan descriptor follows */
 } SiftBuildShared;
 
@@ -1977,6 +1996,9 @@ adopt_runs(SiftBuildLeader *ldr, BuildState *bs, IndexBuildResult *res)
 	}
 	res->heap_tuples = shared->reltuples;
 	res->index_tuples = shared->indexed;
+#ifdef SIFT_TESTING
+	sift_test_build_peak = Max(sift_test_build_peak, shared->peak_kb);
+#endif
 }
 
 static void
@@ -2039,6 +2061,12 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	reltuples = build_scan(bs, heap, info, sift_table_beginscan_parallel(heap, SCAN_OF(shared)), false);
 	hand_over_runs(bs, part);
 	add_counts(shared, reltuples, bs->indexed);
+#ifdef SIFT_TESTING
+	MEM_SAMPLE();
+	SpinLockAcquire(&shared->mutex);
+	shared->peak_kb = Max(shared->peak_kb, sift_test_build_peak);
+	SpinLockRelease(&shared->mutex);
+#endif
 	InstrEndParallelQuery(&((BufferUsage *) shm_toc_lookup(toc, KEY_BUFFER_USAGE, false))[ParallelWorkerNumber],
 						  &((WalUsage *) shm_toc_lookup(toc, KEY_WAL_USAGE, false))[ParallelWorkerNumber]);
 	MemoryContextDelete(bs->cxt);
