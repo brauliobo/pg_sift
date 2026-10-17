@@ -14,7 +14,7 @@ bitmaps, so AND, OR and NOT are bitmap operations and MVCC visibility comes from
 - Ordinary table semantics: MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes. Crash and replica
   safe through generic WAL ([replication](#replication)), no `shared_preload_libraries`.
 - 1.1: filter pushdown, keyword facets, opt-in parallel scan.
-- Small indexes: 48 MiB for 218,058 Wikipedia articles, 3.4x smaller than pg_search (see Benchmarks).
+- Small indexes: 131 MiB for 218,058 Wikipedia articles with word positions (the default), 1.4x smaller than pg_search's 184 MiB; 52 MiB with `positions = off`, 3.5x smaller (see Benchmarks).
 
 ## Install
 
