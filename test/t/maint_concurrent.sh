@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 20 6)
-plan 5
+plan 4
 node_init conc2 10 "autovacuum = off
 max_worker_processes = 16"
 node_start conc2 || bail "start failed"
