@@ -1,12 +1,13 @@
 # sift benchmark and correctness harness
 
-Two public datasets, measured on sift, its variant (`positions = off`, once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum
-and pgx-bm25 with the same rows, queries, clients, CPU budget and cache state. By default every engine has a cluster of its own on an equal
+Two public datasets, measured on sift, its variant (`positions = off`, once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum,
+pgx-bm25 and Elasticsearch with the same rows, queries, clients, CPU budget and cache state. By default every engine has a cluster of its own on an equal
 share of the CPU budget and all engines are measured at the same time (`--serial`: one cluster, engines interleaved cell by cell), so host
 load drifts hit all of them alike. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
 One suite serves every engine: `engines.tsv` (the registry) plus `engines/<id>.sh` (the adapter), one runner (`steps/articles.sh`, `steps/places.sh`),
 one result format (`docs/results/*.tsv`, below) and one report path (`steps/tables.py`, `steps/charts.py`); gin, Tantivy and Elasticsearch
-run through the same pipeline (Tantivy and Elasticsearch through `xbench`) and are charted only when the registry says so.
+run through the same pipeline (Tantivy and Elasticsearch, which are servers or libraries outside Postgres, through `xbench`); gin and Tantivy are charted
+only when the registry says so, Elasticsearch is in the default run.
 
 | use-case | data | what it exercises |
 |---|---|---|
@@ -33,6 +34,12 @@ server tools, `pg_stat_statements`, `pg_prewarm`, `pg_buffercache`), `gcc` and `
 (default `/tmp/sift-bench`; a fast disk or tmpfs). Nothing is installed system-wide and no sudo is needed. `setup`
 checks all of this before it downloads anything.
 
+Elasticsearch is the system package (`pacman -S elasticsearch`: `/usr/share/elasticsearch`, `ES_HOME` overrides it) and `setup` fails with that hint when it is missing; nothing is
+downloaded for it. A run starts it as an ordinary process of the user, not as the package's service: no sudo, nothing written to `/etc` or `/usr`, with a configuration directory of its own
+(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$SIFT_BENCH_ROOT/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard, no replica
+and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), under the same CPU list and cgroup scope as the Postgres servers. The
+packaged version is recorded in the machine description of the results. The run stops the node and removes its data directory when it ends. `--engines elasticsearch` runs it alone.
+
 `all` is three commands that can be run on their own (for the `ab` and `full` tiers it also runs `cold` and writes `docs/results` and
 `docs/img`, so one command regenerates the committed results, tables and charts):
 
@@ -46,7 +53,7 @@ The other commands: `charts` (redraw the SVGs of `docs/img` from the committed `
 oracle / pgx-bm25; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
-`--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
+`--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25,elasticsearch`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--cpus LIST` and `--load-cpus LIST` (the CPU budget, below), `--serial` (one cluster, engines interleaved cell by cell, as the published tables were
 measured), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
 the server's parallel workers), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
@@ -84,10 +91,10 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 |---|---|
 | `dataset` | `articles`, `places` |
 | `tier` | `quick`, `ab`, `full`, `quick-cold`, `ab-cold`, `full-cold` |
-| `engine` | `sift`, `sift_nopos` (`positions = off`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
+| `engine` | `sift`, `sift_nopos` (`positions = off`), `pg_search`, `pg_textsearch`, `rum`, `bm25` (pgx-bm25), `elasticsearch`; `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
-| `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `-` otherwise |
-| `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
+| `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `forcemerge` on the Elasticsearch build rows of its force-merge (`build_s` the merge time, `index_mib` the size before it; the unmarked row is the bulk load and refresh and the size after the merge); `-` otherwise |
+| `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX; Elasticsearch: bulk load and refresh), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
 | `value`, `min`, `max` | median over the interleaved rounds and its range (`NA` / `error` as above); one build per engine for the build metrics |
 | `stderr`, `n`, `values` | the standard error of the cell, the larger of `sd / sqrt(n)` over its `n` rounds and `sqrt(sum se^2) / n` of the rounds' own errors (below, Standard error; `NA` for single measurements: builds, cold-cache cells, host rows), and the per-round values, comma separated |
 | `unit` | `queries/s`, `ms`, `MiB`, `s`, `load average` |
@@ -214,7 +221,7 @@ Per-tier cluster, port and dump:
 | `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
-| `fetch.sh` | build sift and rum (PGXS), unpack pg_search, fetch Elasticsearch, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
+| `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
@@ -258,7 +265,14 @@ in `results.tsv`) and described in docs/BENCHMARKS.md:
 Each pg_textsearch and rum database keeps the tables of both: `count` and `scan` run on the native index and are not changed by the emulation.
 
 External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
-`x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` (in `RENDER`) that render requests from the same query trace.
+`x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` (in `RENDER`) that render requests from the same query trace (and, for places, `PLACES_FLAVOR` and `PLACES_RENDER`);
+`JOINS=yes` says that the engine answers the articles `join` class (Elasticsearch does it with a denormalized `region` field of the document, `steps/xlib.sh` exports it from `categories`).
+`steps/xlib.sh` is the glue: it exports the tier's documents once as NDJSON (`$SIFT_BENCH_ROOT/data/<tier letter>`), renders the request files of every class from the
+same trace as the pgbench scripts (`x_req`), measures the cells with `steps/cell.py --xbench` (the same stopping rule and standard errors as pgbench) and runs the cold-cache cells. Elasticsearch is an HTTP engine
+(`EXTERNAL=http`): `xbench` keeps its connections open, takes the latency from the client and the ids and counts from the response (`--ids-ptr`, `--count-ptr`). Its adapter documents its configuration and the
+emulations in its header: one shard, BM25 with k1 = 1.2 and b = 0.75 set explicitly, a tokenizer on runs of letters and digits with lowercase and ASCII folding,
+edge n-grams (1-15) for places, caches of results off, a force-merge to one segment after the bulk load, the client's time for the cold cells (the index is closed and opened again). It runs under the same
+CPU list and cgroup scope as a Postgres server (`limited`), with a heap of the size of the `shared_buffers`.
 
 ## Workloads (`run`, `workload`)
 
@@ -278,7 +292,7 @@ plus country word; workloads `top` (top-20), `boost` (name matches x3), `filter`
 
 `bench/bench remote` reproduces everything on another machine under `~/Projects/sift` without sudo: a PostgreSQL
 18.6 build in `pg18/` with contrib, rum, pg_textsearch, pgvector and pgx-bm25 built by PGXS, the ParadeDB
-package, Elasticsearch, a minimal rustup and `xbench`. `RHOST` names the ssh host.
+package, a minimal rustup and `xbench`; the host needs the Elasticsearch system package. `RHOST` names the ssh host.
 
 ```sh
 RHOST=bench-host bench/bench remote sync     # repo (no .git), Q/F dumps, pgx-bm25 source (BM25_SRC)
@@ -295,6 +309,9 @@ bench/bench check --tier ab oracle sift 200                        # accent + ca
 bench/bench check --tier ab oracle pg_textsearch 200               # gin, rum and pg_textsearch: raw PG parser tokens (their adapters set it)
 MODES="phrase not" REBUILD=1 bench/bench check --tier ab oracle sift 50
 bench/bench check --tier ab rank sift 200                          # top-10 overlap with pgx-bm25 per mode
+bench/bench check --tier ab oracle elasticsearch 200               # an engine outside Postgres: built in its own server, asked over HTTP
+bench/bench check --tier ab rank elasticsearch 200
+bench/bench check --dataset places --tier ab --engines elasticsearch 30
 ```
 
 The rank check is soft: pgx-bm25 is the reference, it tokenizes alphanumeric runs while pg_textsearch (and rum, gin) use the PG
@@ -306,8 +323,9 @@ table (`to_tsvector` with a `simple`-based configuration, `unaccent` when `ORACL
 with the oracle and prints a summary plus every mismatch. Exit status is 1 on any mismatch; the report is
 saved as `bench/out/<tier letter>/oracle-<engine>.txt`. By default the oracle text is split into alphanumeric
 runs first (`ORACLE_TOKENS=split`), the tokenization of sift, because the PG parser keeps `Force.In`, `a@b.c` or
-`1.5` as one token; `ORACLE_TOKENS=pg` uses the PG parser as is (gin, rum, pg_textsearch, whose adapters select it). tsvector positions saturate at 16383, so
-phrases are not compared in the few documents longer than that.
+`1.5` as one token; `ORACLE_TOKENS=pg` uses the PG parser as is (gin, rum, pg_textsearch, whose adapters select it). A tsvector keeps at most 256 positions of a lexeme (and positions saturate at 16383), so
+a phrase of a very frequent word (`within the`) is missed by the oracle in the few documents where the word occurs more often than that: the oracle then has fewer matches than an engine that is right 
+An engine outside Postgres has no database of its own for the check: the harness builds it in its own server from the documents of the clone (`o_<engine>`), asks it the match requests and the count requests and compares the answers in SQL (`oracle_diff` in `sql/oracle.sql`).
 
 ## Cleanup
 
