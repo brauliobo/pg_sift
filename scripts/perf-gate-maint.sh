@@ -10,6 +10,7 @@
 #   bulk_rows_s / copy_rows_s       INSERT .. SELECT and COPY FROM of --rows rows
 #   merge_insert_tps / _p99_ms      the same inserts while the worker merges a backlog of 60 segments
 #   merge_count_ms / merge_rank_ms  mean latency of a count and of a ranked query (4 clients) during VACUUM and merges
+#   promote_s                       20 promotions of a mutable segment of 3000 documents of 40 words (about 4 MB)
 #   vacuum_s / merge_s / merge_temp_kb / merge_peak_mb  VACUUM and sift.merge() of that backlog; temporary bytes of the
 #                                   merge; most anonymous memory the cluster's processes took above what they took before
 #   churn_index_mb                  size of the index after the backlog is merged
@@ -54,7 +55,8 @@ trap cleanup EXIT
 
 now() { date +%s.%N; }
 elapsed() { bc <<<"$(now) - $1"; }
-words() { echo "(SELECT string_agg('w' || floor(power(random(), 3) * 50000)::int, ' ') FROM generate_series(1, $1))"; }
+# N random words (a skewed vocabulary); with a column of the outer query it is evaluated for every row, without once
+words() { echo "(SELECT string_agg('w' || floor(power(random(), 3) * 50000)::int, ' ') FROM generate_series(1, $1) w${2:+ WHERE $2 IS NOT NULL})"; }
 ROW="$(words 40)"
 echo "INSERT INTO t (body) SELECT $ROW;" >"$BASE/insert.sql"
 echo "SELECT count(*) FROM t WHERE body @@> 'w1 OR w2 OR w3';" >"$BASE/count.sql"
@@ -68,7 +70,7 @@ settle() { # LABEL: waits for the maintenance worker to finish
 }
 backlog() { # LABEL: 60 promoted segments, the worker off
 	q "$1" "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..60 LOOP
-		INSERT INTO t (body) SELECT $(words 6) FROM generate_series(1, 1500); PERFORM sift.promote('t_idx'); COMMIT; END LOOP; END \$\$" >/dev/null
+		INSERT INTO t (body) SELECT $(words 6 i) FROM generate_series(1, 1500) i; PERFORM sift.promote('t_idx'); COMMIT; END LOOP; END \$\$" >/dev/null
 }
 bench() { # LABEL PREFIX clients script secs: pgbench; prints PREFIX_tps and PREFIX_p99_ms (latency of the script PREFIX_lat_ms)
 	local l=$1 p=$2 log=$BASE/$1.log out
@@ -102,7 +104,7 @@ cell() { # LABEL: all the measurements of one build, "name value" lines
 	settle "$l"
 
 	fresh "$l"
-	t0=$(now); q "$l" "INSERT INTO t (body) SELECT $ROW FROM generate_series(1, $ROWS)" >/dev/null
+	t0=$(now); q "$l" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, $ROWS) i" >/dev/null
 	echo "bulk_rows_s $(bc <<<"$ROWS / $(elapsed "$t0")")"
 	settle "$l"
 	q "$l" "COPY t (body) TO '$BASE/copy.csv' CSV" >/dev/null; fresh "$l"
@@ -114,11 +116,19 @@ cell() { # LABEL: all the measurements of one build, "name value" lines
 	bench "$l" merge_insert 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
 	settle "$l"
 
-	fresh "$l"; backlog "$l"; q "$l" "INSERT INTO t (body) SELECT $ROW FROM generate_series(1, 20000)" >/dev/null; settle "$l"
+	fresh "$l"; backlog "$l"; q "$l" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 20000) i" >/dev/null; settle "$l"
 	( for _ in $(seq 3); do q "$l" "DELETE FROM t WHERE id % 7 = 0" "VACUUM t" >/dev/null 2>&1 || true; done ) &
 	bench "$l" merge_count 4 "$BASE/count.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
 	bench "$l" merge_rank 4 "$BASE/rank.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
 	wait
+
+	fresh "$l"
+	q "$l" "SET sift.async_maintenance = off" "DROP TABLE IF EXISTS acc" "CREATE TABLE acc (s float8)" \
+		"DO \$\$ DECLARE t0 timestamptz; tot interval := 0; BEGIN FOR n IN 1..20 LOOP
+			INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 3000) i;
+			t0 := clock_timestamp(); PERFORM sift.promote('t_idx'); tot := tot + (clock_timestamp() - t0); COMMIT; END LOOP;
+			INSERT INTO acc VALUES (extract(epoch FROM tot)); END \$\$" >/dev/null
+	echo "promote_s $(q "$l" "SELECT s FROM acc")"
 
 	fresh "$l"; backlog "$l"
 	kb0=$(temp_kb "$l")
@@ -136,7 +146,7 @@ cell() { # LABEL: all the measurements of one build, "name value" lines
 	settle "$l"
 	echo "churn_index_mb $(q "$l" "SELECT pg_relation_size('t_idx') / 1048576.0")"
 
-	fresh "$l"; q "$l" "DROP INDEX t_idx; INSERT INTO t (body) SELECT $(words 150) FROM generate_series(1, $ROWS)" >/dev/null
+	fresh "$l"; q "$l" "DROP INDEX t_idx; INSERT INTO t (body) SELECT $(words 150 i) FROM generate_series(1, $ROWS) i" >/dev/null
 	t0=$(now); q "$l" "CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create_s $(elapsed "$t0")"
 	q "$l" "DROP INDEX t_idx" >/dev/null
