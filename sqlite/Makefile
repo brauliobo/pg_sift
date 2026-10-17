@@ -36,7 +36,7 @@ CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -
 LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
-PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^\#' $(SRC)/portable.list))))
+PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable.list))))
 OWN := host host_regex sqstore sqstubs sqbuild sqmerge sqvtab sqaux sqpar sqinit
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
