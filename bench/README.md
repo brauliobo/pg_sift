@@ -17,54 +17,65 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report at the reduced default scale: about 2 minutes of measurements
-bench/bench all --full             # the full-size run (the scale of the published numbers) with the cold-cache tables, docs/results and the charts
+bench/bench all                    # setup + run + report on the slim tier (the default): about 5 minutes of builds and measurements once set up
+bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
+bench/bench all --docs             # the slim tier plus the cold-cache tables, then docs/results, docs/img and the generated blocks of README.md and docs/BENCHMARKS.md
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
+bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
-Scale: the default run uses a reduced dataset (25,000 articles, 34,165 places) and two rounds of cells of at most 1 s, which is
-enough to see the ordering of the engines but not their exact ratios; `--full` (or `--tier full`) uses all 218,058
-articles and the 236,262 places of cities500 with 2-3 rounds. `--tier ab` is the 150,000 article / 34,165 place tier
-in between (2-3 rounds). The first run also downloads and converts the datasets (about 3 minutes,
-once). Ratios depend on the size of the corpus and on the CPUs the engines get (docs/BENCHMARKS.md), so quote the full-size numbers.
+Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two rounds of cells of at most 1 s). It keeps the ordering of the engines and
+most of the ratios of the full tier (the table in docs/BENCHMARKS.md, generated, says which ones move and by how much) at a fraction of the time and disk. `--full` (or `--tier full`) uses all 218,058
+articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
+3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus and on the CPUs the engines get (docs/BENCHMARKS.md).
+
+**One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
+`docs/results/*.tsv`, `docs/img/*.svg`, the slim section of `docs/BENCHMARKS.md` and the blocks of `README.md` (between the `<!-- bench:NAME:begin -->` / `<!-- bench:NAME:end -->` lines; `bench/bench readme` rewrites
+only those two files from the committed rows, without measuring). Nothing in them is typed by hand: `steps/readme.py` takes every figure from the rows, the engine list from the registry, and the
+wall time of the session and the size of the corpus from the `wall_s` and `corpus` rows. The full-size tables of docs/BENCHMARKS.md and its Correctness section are kept as dated history and are not
+rewritten (`check` produces the correctness numbers).
 
 Prerequisites: PostgreSQL 18 with its development packages and contrib (`pg_config`, PGXS, `pgbench`, `psql`, the
 server tools, `pg_stat_statements`, `pg_prewarm`, `pg_buffercache`), `gcc` and `make`, `python3`, `curl`, `bzip2`,
-`unzip`, `ar`, `flock`, network access, 8 GB (quick, ab) to 15 GB (full) of free space under `$SIFT_BENCH_ROOT`
-(default `/tmp/sift-bench`; a fast disk or tmpfs). Nothing is installed system-wide and no sudo is needed. `setup`
+`unzip`, `ar`, `flock`, `zstd`, network access, free space under `$BENCH_WORK` (default
+`/tmp/sift-bench`; a fast disk or tmpfs): about 2 GB for the slim tier, about 5.5 GB for `--full`, at the peak of a run (Footprint, below). Nothing is installed system-wide and no sudo is needed. `setup`
 checks all of this before it downloads anything.
 
 Elasticsearch is the system package (`pacman -S elasticsearch`: `/usr/share/elasticsearch`, `ES_HOME` overrides it) and `setup` fails with that hint when it is missing; nothing is
 downloaded for it. A run starts it as an ordinary process of the user, not as the package's service: no sudo, nothing written to `/etc` or `/usr`, with a configuration directory of its own
-(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$SIFT_BENCH_ROOT/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard, no replica
+(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$BENCH_WORK/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard, no replica
 and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), under the same CPU list and cgroup scope as the Postgres servers. The
 packaged version is recorded in the machine description of the results. The run stops the node and removes its data directory when it ends. `--engines elasticsearch` runs it alone.
 
-`all` is three commands that can be run on their own (for the `ab` and `full` tiers it also runs `cold` and writes `docs/results` and
-`docs/img`, so one command regenerates the committed results, tables and charts):
+`all` is three commands that can be run on their own (with `--docs`, and for the `ab` and `full` tiers, it also runs `cold`; with `--docs` it writes `docs/results`, `docs/img` and the generated
+blocks of the docs):
 
 | command | what it does |
 |---|---|
 | `bench/bench setup` | checks the prerequisites; downloads, verifies and converts the datasets; builds this checkout's sift, the pinned rum and pg_textsearch (PGXS) and unpacks the pinned pg_search package into `$SIFT_BENCH_ROOT` |
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
-| `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory (`--docs` also writes `docs/results/<dataset>.tsv` and redraws `docs/img`) |
+| `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory (`--docs` also writes `docs/results/<dataset>.tsv`, redraws `docs/img` and, for the slim tier, rewrites the blocks of README.md and docs/BENCHMARKS.md) |
 
-The other commands: `charts` (redraw the SVGs of `docs/img` from the committed `docs/results`), `cold` (cache-evicted latency of every class on every engine), `check oracle|rank ENGINE` (correctness against a tsvector
+The other commands: `charts` (redraw the SVGs of `docs/img` from the committed `docs/results`), `readme` (rewrite the generated blocks of README.md and docs/BENCHMARKS.md from them), `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank ENGINE` (correctness against a tsvector
 oracle / pgx-bm25; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
-parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
+parallel worker count), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
 `--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25,elasticsearch`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--cpus LIST` and `--load-cpus LIST` (the CPU budget, below), `--serial` (one cluster, engines interleaved cell by cell, as the published tables were
 measured), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
 the server's parallel workers), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
 (the fewest transactions), `--rse X` (the relative standard error a cell is measured to, and below which it is not measured again, default 0.05), `--rounds MIN-MAX` (default 2-3, regress 3-3;
-more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`.
+more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`. `--keep` keeps the cache of built lanes after the session (Footprint, below).
 
-| tier | articles | places | rounds | expected run time of `all` |
+| tier | articles | places | rounds | run time of `all` |
 |---|---|---|---|---|
-| `quick` (default) | 25,000 | 34,165 (cities15000) | 2 | measured: 2 min for both datasets with the six default engines (builds included), about 1 min more for the cold-cache tables, on the default 8 + 4 CPU budget |
+| `slim` (default) | 50,000 | 34,165 (cities15000) | 2 | measured with the seven default engines (builds included) on the default 8 + 4 CPU budget: 281 s for both datasets, 459 s with `--docs` (the cold-cache tables included), on a host with a load average of 10-18 |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | `all --full --serial` with the six default engines, builds and cold-cache tables: 51 min measured with the previous fixed-length cells (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the current cells stop on their standard error: the cells took 18 min on 2 + 2 CPUs under load (was 41), cold-cache tables about 2 min projected (was 4.5). The concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
+
+Why 50,000 articles: at 25,000 documents the ratios of the full tier were not kept for the engines whose cost grows with the corpus (pg_textsearch, rum); 50,000 was the smallest size whose
+ratios were within noise of the full tier on the classes where sift leads, and 100,000 cost twice the time for no closer match. The generated fidelity table of docs/BENCHMARKS.md compares the
+slim ratios with the full ones, class by class, from the committed rows.
 
 The times are those of the default budget (8 server and 4 load generator CPUs, below); a smaller budget runs the cells for as long but builds
 and answers more slowly. `--serial` (one cluster, engines one after the other) took about twice as long with three engines in the measured comparison, and more with more engines.
@@ -90,11 +101,11 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 | column | values |
 |---|---|
 | `dataset` | `articles`, `places` |
-| `tier` | `quick`, `ab`, `full`, `quick-cold`, `ab-cold`, `full-cold` |
+| `tier` | `slim`, `ab`, `full`, `slim-cold`, `ab-cold`, `full-cold` (rows of the earlier sessions say `quick`) |
 | `engine` | `sift`, `sift_nopos` (`positions = off`), `pg_search`, `pg_textsearch`, `rum`, `bm25` (pgx-bm25), `elasticsearch`; `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
 | `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `forcemerge` on the Elasticsearch build rows of its force-merge (`build_s` the merge time, `index_mib` the size before it; the unmarked row is the bulk load and refresh and the size after the merge); `-` otherwise |
-| `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX; Elasticsearch: bulk load and refresh), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
+| `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX; Elasticsearch: bulk load and refresh), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m`; host rows (`engine` `-`): `corpus` (documents of the tier), `wall_s` (seconds of a phase of the session: `variant` dump, build, cells, ...), `session` (the whole session) |
 | `value`, `min`, `max` | median over the interleaved rounds and its range (`NA` / `error` as above); one build per engine for the build metrics |
 | `stderr`, `n`, `values` | the standard error of the cell, the larger of `sd / sqrt(n)` over its `n` rounds and `sqrt(sum se^2) / n` of the rounds' own errors (below, Standard error; `NA` for single measurements: builds, cold-cache cells, host rows), and the per-round values, comma separated |
 | `unit` | `queries/s`, `ms`, `MiB`, `s`, `load average` |
@@ -114,8 +125,10 @@ in `engines.tsv` (id, chart and Markdown labels, color, charted yes/no, in the d
 ## Datasets
 
 `bench/datasets/fetch.sh articles|places|all` (run by `setup`) downloads each dataset into its own new directory under
-`$SIFT_BENCH_ROOT/download`, verifies it, writes `SHA256SUMS` next to it and converts it with the
-`python3 -I` scripts in `bench/datasets/` (the downloads are only read, never executed).
+`$BENCH_STORE/download`, verifies it, writes `SHA256SUMS` next to it and converts it with the
+`python3 -I` scripts in `bench/datasets/` (the downloads are only read, never executed). The converted files are gzip-compressed (`articles.tsv.gz`, parsed in parallel by `wiki.py`; the text is byte-identical to the
+uncompressed conversion), a stamp next to each (`articles.stamp`, `places.stamp`: the pinned inputs and the converter) makes the next setup skip them when nothing changed, and the raw downloads are
+removed after the conversion (`KEEP_DOWNLOADS=1` keeps them, `REFRESH_DATASETS=1` converts again).
 
 | dataset | source | license | checksum |
 |---|---|---|---|
@@ -126,8 +139,8 @@ An article is its title plus the cleaned wikitext of one main-namespace, non-red
 200 characters (218,058 articles, 1.4 KB on average). A place is name, alternate names, region,
 country, country code, feature name and population; the typed queries (300 per class) are sampled from
 the places themselves with a fixed seed. Without network access, nothing else in the harness changes:
-put any `articles.tsv` (COPY text of `id, title + body, category_id, created, likes, url`) in
-`$SIFT_BENCH_ROOT/data`.
+put any `articles.tsv` or `articles.tsv.gz` (COPY text of `id, title + body, category_id, created, likes, url`) in
+`$BENCH_STORE/data`.
 
 ## Results
 
@@ -142,15 +155,17 @@ wall times each result directory keeps in `phases.txt`:
 1. **Lanes.** Every engine gets a lane (`steps/lanes.sh`): a cluster with its own data directory and port, pinned to an equal share of the server CPUs, its load
    generators pinned to an equal share of the load CPUs. All lanes are restored from the corpus dump and indexed at the same time, so the build phase takes as long as the slowest
    engine, not the sum. `--serial` uses one cluster with all the server CPUs instead.
-2. **Cache of built lanes.** A built, stopped lane is copied to `$SIFT_BENCH_ROOT/cache/lanes/<key>`, the key being a hash of the adapter, the extension binary, the corpus,
+2. **Cache of built lanes.** A built, stopped lane is saved as a zstd-compressed tar of its data directory (`$BENCH_STORE/cache/lanes/<key>/data.tar.zst`, with the `bench` template database dropped and the WAL cut to the checkpoint segment) when the session writes the cache
+   (`all` with cold-cache tables, or `--keep`), the key being a hash of the adapter, the extension binary, the corpus,
    the harness, PostgreSQL and the CPU count of the lane; a rerun, a `regress` run, the cold-cache session of `all`, a report change rebuilds nothing that did not change (`--rebuild` builds again; `bench clean --all`
-   removes the cache, which is as large as the clusters it holds). With `--serial` the one cluster with the databases of every engine is cached as a whole (the key hashes those of its engines).
+   removes the cache). After a successful session the cache is removed, since the next build changes the extension and so every key, unless `--keep` is given: then the least recently used lanes
+   beyond `BENCH_CACHE_MAX` MiB (default 4096) go. With `--serial` the one cluster with the databases of every engine is cached as a whole (the key hashes those of its engines).
 3. **Rounds.** Round r runs every class on every engine at the same time, one cell group per class. In round r the engine k takes the CPUs of the lane (k + r) mod n (the servers are pinned
    again, the load generators follow), so no engine keeps a core that the host happens to load; with the interleaved rounds this also averages out the CPU an engine had. Every statement
    trace is the same for every engine (pgbench `--random-seed=7`). The relations are prewarmed after the build; a cell has no warm-up of its own.
 4. **A cell** (a class on an engine in a round) is measured by `steps/cell.py` until it is precise enough, not for a fixed time: pgbench runs in chunks that log every transaction (`-l`), and the cell stops
    when it has `--min-time` seconds (0.25) and `--min-samples` transactions (articles: 1 per client, places: 3) and the relative standard error of its value is at most `--rse` (5%), or when
-   `--max-time` seconds are measured (quick 1 s; full: articles 2 s, places 1 s), whichever comes first. A fast cell (microseconds per query) is done in the minimum time; a slow one, where fewer than
+   `--max-time` seconds are measured (slim 1 s; full: articles 2 s, places 1 s), whichever comes first. A fast cell (microseconds per query) is done in the minimum time; a slow one, where fewer than
    `1 / rse^2` = 400 queries fit in `--max-time`, is measured for `--max-time` in one go and ends with the statements still running at that moment (which dominates the cost of a cell of seconds per query), and
    its standard error says how precise it is. External engines (Tantivy, Elasticsearch) and the articles `update` class keep a fixed `--max-time` (whole seconds).
 5. **Stopping the rounds.** After `MINR` rounds (default 2) only the cells whose relative standard error is above `--rse` are measured again, up to `MAXR` (default 3, the most there is by default), except the cells whose
@@ -193,8 +208,8 @@ Per-tier cluster, port and dump:
 
 | tier letter | articles | port | dump |
 |---|---:|---:|---|
-| Q (`quick` 25,000, `ab` 150,000: `Q_DOCS`) | 25,000 / 150,000 | 56040 | `$SIFT_BENCH_ROOT/cache/sift-Q-<docs>.dump` |
-| F (`full`) | 218,058 | 56050 | `$SIFT_BENCH_ROOT/cache/sift-F-ALL.dump` |
+| Q (`slim` 50,000, `ab` 150,000: `Q_DOCS`) | 50,000 / 150,000 | 56040 | `$BENCH_STORE/cache/sift-Q-<docs>.dump` |
+| F (`full`) | 218,058 | 56050 | `$BENCH_STORE/cache/sift-F-ALL.dump` |
 
 ## Layout
 
@@ -212,7 +227,9 @@ Per-tier cluster, port and dump:
 | `steps/` | role |
 |---|---|
 | `articles.sh`, `places.sh` | the runs of articles and places (`run`, `cold`, `suite`, `workload`) |
-| `lanes.sh`, `cpus.sh` | the lanes (a cluster per engine, the cache of built lanes, the rotation of the CPUs); the default CPU budget picked from the load of the host |
+| `lanes.sh`, `cpus.sh` | the lanes (a cluster per engine, the compressed cache of built lanes, the rotation of the CPUs); the default CPU budget picked from the load of the host |
+| `footprint.sh` | `du`, `clean`, the peak footprint of a session and the pruning of the cache of lanes |
+| `readme.py` | the generated blocks of README.md and docs/BENCHMARKS.md (`readme`) |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock), `limited` (a server pinned to its CPUs, a cgroup scope with a CPU quota when a systemd user session exists) |
@@ -221,7 +238,7 @@ Per-tier cluster, port and dump:
 | `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
-| `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
+| `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench` (in a scratch target; only the stripped binary stays): one `$BENCH_WORK/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
@@ -240,7 +257,7 @@ Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `pg_search`
 `sql/harness.sql` composes every statement kind from them (top10, count, match, filter, join), so a new engine is
 one small file. `sift` follows DESIGN.md (`body @@> 'a AND b'`,
 `sift.score(ctid)`); the cluster loads it from the engine roots (`setup` builds sift into
-`$SIFT_BENCH_ROOT/engines/sift/root`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
+`$BENCH_WORK/engines/sift/root`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
 (`simple` configuration) with a `rum_tsvector_ops` index, queried with `@@` and ranked with `<=>`; on places it
 lives in its own database so the column does not enlarge the other engines' table, and it has no per-field boost
 (its `boost` cells are an emulation, below). pg_textsearch is a `bm25` index with `text_config = 'simple'` (the analysis of gin and rum); see its adapter for the
@@ -267,7 +284,7 @@ Each pg_textsearch and rum database keeps the tables of both: `count` and `scan`
 External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
 `x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` (in `RENDER`) that render requests from the same query trace (and, for places, `PLACES_FLAVOR` and `PLACES_RENDER`);
 `JOINS=yes` says that the engine answers the articles `join` class (Elasticsearch does it with a denormalized `region` field of the document, `steps/xlib.sh` exports it from `categories`).
-`steps/xlib.sh` is the glue: it exports the tier's documents once as NDJSON (`$SIFT_BENCH_ROOT/data/<tier letter>`), renders the request files of every class from the
+`steps/xlib.sh` is the glue: it exports the tier's documents once as NDJSON (`$BENCH_STORE/data/<tier letter>`), renders the request files of every class from the
 same trace as the pgbench scripts (`x_req`), measures the cells with `steps/cell.py --xbench` (the same stopping rule and standard errors as pgbench) and runs the cold-cache cells. Elasticsearch is an HTTP engine
 (`EXTERNAL=http`): `xbench` keeps its connections open, takes the latency from the client and the ids and counts from the response (`--ids-ptr`, `--count-ptr`). Its adapter documents its configuration and the
 emulations in its header: one shard, BM25 with k1 = 1.2 and b = 0.75 set explicitly, a tokenizer on runs of letters and digits with lowercase and ASCII folding,
@@ -327,7 +344,27 @@ runs first (`ORACLE_TOKENS=split`), the tokenization of sift, because the PG par
 a phrase of a very frequent word (`within the`) is missed by the oracle in the few documents where the word occurs more often than that: the oracle then has fewer matches than an engine that is right 
 An engine outside Postgres has no database of its own for the check: the harness builds it in its own server from the documents of the clone (`o_<engine>`), asks it the match requests and the count requests and compares the answers in SQL (`oracle_diff` in `sql/oracle.sql`).
 
-## Cleanup
+## Footprint
 
-`bench/bench clean` destroys the clusters and removes the scratch under `$SIFT_BENCH_ROOT`; `run` does it for its own
-cluster on exit. The datasets, dumps and engine builds stay (`clean --all`, or `rm -rf $SIFT_BENCH_ROOT`, removes everything).
+`bench/bench du` lists what `$BENCH_WORK` (live clusters, scratch, engine builds; default `/tmp/sift-bench`) and `$BENCH_STORE` (datasets, downloads, corpus dumps, cache of lanes; default the same
+directory) hold, by component, and `run`, `all` and `cold` end with the peak footprint of the session (a sampler that sizes both every 3 s). Put `BENCH_STORE` on a disk to keep the inputs and the
+caches out of a tmpfs; the live clusters stay in `BENCH_WORK`, which should be fast.
+
+Measured on this host (slim tier, seven engines; the peak is the sampler's maximum):
+
+| | before this change | now |
+|---|---|---|
+| setup (five engines) | 163 s | 74 s |
+| peak of the first session | 4.4 GiB (quick, 25,000 articles, five engines) | 2.0 GiB (slim, 50,000 articles, seven engines, `--docs` with the cold-cache tables; 1.8 GiB for `all` alone) |
+| left after the session | 3.3 GiB, plus 2.1 GiB of orphaned lanes per further session (6.5 GiB after the second, 19.6 GiB after a full-tier probe) | 0.47 GiB: the datasets, the engines and the dump of the tier |
+| full tier, one class, one round | 18.7 GiB peak, 15.3 GiB left (five engines) | 5.2 GiB peak, 2.6 GiB left with `--keep` (the lanes cached; 136 s against 143 s) |
+
+What made it large, and what changed: the cache of lanes was never pruned and its key changed with every rebuild of the extension (orphans); a lane held the `bench`
+template next to the engine's database (`adopt_db` renames it now); the write-ahead log the build recycled was cached (`lane_trim`); cached lanes were uncompressed (zstd now, written
+only with `--keep` or for the tiers whose builds take minutes); the raw downloads and the engine tarballs were kept (removed after setup); the Rust target directories (0.8 GB) stayed
+(only the stripped `xbench` does); `articles.tsv` was plain text (gzip, parsed in parallel); the Elasticsearch corpus export was never removed. The wall time is the same within noise:
+interleaved runs of the old and the new harness on the same engines, dump and CPU budget gave medians of the cells within 5% of each other in both directions (the old harness against
+itself differs as much) and identical index sizes.
+
+`bench/bench clean` destroys the clusters and removes the scratch under `$BENCH_WORK`; `run` does it for its own cluster on exit. `--cache` also removes the corpus dumps, the cache of lanes and the
+corpus exported for the external engines, `--build` the engine builds, `--all` everything including the datasets and downloads (the same as `rm -rf $BENCH_WORK $BENCH_STORE`).

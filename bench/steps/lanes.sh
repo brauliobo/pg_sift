@@ -7,9 +7,12 @@
 # server CPU, the engines interleaved cell by cell with the order rotated every round, as before; give --cpus the share of a lane
 # to measure with the same CPUs as a concurrent run (docs/BENCHMARKS.md compares the two).
 #
-# A built lane is cached: its stopped data directory is copied to $CACHE/lanes/<key>, the key being a hash of everything the
-# database depends on (the engine's adapter, its extension binary, the corpus, the harness, PostgreSQL, the CPUs of the lane), so a
-# rerun, a regress run, a report change rebuilds nothing that did not change (NO_CACHE=1 or `bench --rebuild` builds again).
+# A built lane can be cached: its stopped data directory (without the recycled files of the write-ahead log) goes compressed to
+# $CACHE/lanes/<key>/data.tar.zst, the key being a hash of everything the database depends on (the engine's adapter, its extension
+# binary, the corpus, the harness, PostgreSQL, the CPUs of the lane), so a rerun, a regress run, the cold-cache session of `all` rebuilds
+# nothing that did not change (NO_CACHE=1 or `bench --rebuild` builds again). The cache is written when LANE_CACHE_WRITE is set (`bench
+# all` of a tier whose builds take minutes, before its cold-cache session, and `--keep`) and pruned after the session (steps/footprint.sh). A lane that has one engine has no `bench`
+# database after its build (adopt_db renames it): a cached lane holds what a resume needs, the engine's database.
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 declare -A LANE_PORT LANE_DATA LANE_CPUS LANE_LOAD LANE_CPUS0 LANE_LOAD0
@@ -107,18 +110,32 @@ serial_key() { # INPUTS...: the key of the one cluster of a serial session, the 
   local e
   for e in ${KEY_ENGINES-$ENGINES}; do lane_key "$e" "$@"; done | sha256sum | cut -c1-20
 }
-lane_cached() { [[ -z ${NO_CACHE:-} && -d $LANE_CACHE/$2 ]]; }   # ENGINE KEY
+lane_cached() { [[ -z ${NO_CACHE:-} && -s $LANE_CACHE/$2/data.tar.zst ]]; }   # ENGINE KEY
 lane_restore() { # ENGINE KEY: the data directory of the lane from the cache (the build rows go to $RUN)
-  rm -rf "${LANE_DATA[$1]:?}"; mkdir -p "$(dirname "${LANE_DATA[$1]}")"
-  cp -a --reflink=auto "$LANE_CACHE/$2" "${LANE_DATA[$1]}"
+  rm -rf "${LANE_DATA[$1]:?}"; mkdir -p "${LANE_DATA[$1]}"
+  zstd -dc "$LANE_CACHE/$2/data.tar.zst" | tar -x -C "${LANE_DATA[$1]}"
+  touch "$LANE_CACHE/$2"   # the entries are pruned least recently used first (footprint.sh)
 }
-lane_save() { # ENGINE KEY [FILE...]: stop the lane, copy its data directory into the cache with the FILEs (the build rows), start it again
-  [[ -z ${NO_CACHE:-} ]] || return 0
-  local e=$1 key=$2 f
-  lane_run "$e" pg_ctl -D "${LANE_DATA[$e]}" -m fast stop >/dev/null
-  rm -rf "$LANE_CACHE/$key.tmp"; mkdir -p "$LANE_CACHE"
-  cp -a --reflink=auto "${LANE_DATA[$e]}" "$LANE_CACHE/$key.tmp"
-  for f in "${@:3}"; do cp "$f" "$LANE_CACHE/$key.tmp/"; done
-  rm -rf "${LANE_CACHE:?}/$key"; mv "$LANE_CACHE/$key.tmp" "$LANE_CACHE/$key"
+# lane_trim DATADIR: the write-ahead log of a stopped lane keeps the segment of the shutdown checkpoint and the next one; the others are
+# files of the log that the build recycled (up to max_wal_size of them, a few hundred MB), which a start does not read and recreates
+lane_trim() {
+  local seg
+  seg=$(pg_controldata -D "$1" | sed -n "s/^Latest checkpoint's REDO WAL file: *//p")
+  [[ -n $seg ]] || { echo "lane_trim: no checkpoint in $1" >&2; return 1; }
+  find "$1/pg_wal" -maxdepth 1 -type f -regex '.*/[0-9A-F]\{24\}' -printf '%f\n' | sort | awk -v s="$seg" '$0 < s || ($0 > s && ++n > 1)' | sed "s,^,$1/pg_wal/," | xargs -r rm -f
+}
+lane_save() { # ENGINE KEY [FILE...]: stop the lane, trim its log, cache its data directory (compressed, with the FILEs: the build rows) when
+  # the cache is written (LANE_CACHE_WRITE: `all` of the ab and full tiers before their cold-cache session, --keep), start it again
+  local e=$1 key=$2 f d tmp
+  d=${LANE_DATA[$e]} tmp=$LANE_CACHE/$key.tmp
+  lane_run "$e" pg_ctl -D "$d" -m fast stop >/dev/null
+  lane_trim "$d"
+  if [[ -n ${LANE_CACHE_WRITE:-} && -z ${NO_CACHE:-} ]]; then
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    tar -c -C "$d" --exclude=server.log . | zstd -q -T"${ZSTD_JOBS:-2}" -"${LANE_CACHE_LEVEL:-3}" -o "$tmp/data.tar.zst"
+    for f in "${@:3}"; do cp "$f" "$tmp/"; done
+    echo "$e $TIER ${LOG_TAG:-} $(date -u +%FT%TZ)" >"$tmp/meta"
+    rm -rf "${LANE_CACHE:?}/$key"; mv "$tmp" "$LANE_CACHE/$key"
+  fi
   lane_run "$e" "$STEPS/cluster.sh" start >/dev/null
 }
