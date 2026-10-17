@@ -42,8 +42,7 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd:)
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
 loadavg() { cut -d' ' -f1 /proc/loadavg; }
-# Timed sections must not overlap with other jobs' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD) because its
-# sessions overlap on purpose, on disjoint CPUs.
+# Timed sections must not overlap with other jobs' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD).
 locked() { if [[ -n ${PERF_LOCK_HELD:-} ]]; then "$@"; else ( flock 9; "$@" ) 9>>"$LOCK"; fi; }
 now_ms() { date +%s%3N; }
 elapsed_s() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.1f", (b - a) / 1000}'; }   # ms timestamps -> seconds
@@ -184,33 +183,3 @@ cold_cell() {
   done | median_max
 }
 median_max() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.2f\t%.2f\t%d", v[int((NR + 1) / 2)], v[NR], NR; else printf "error\terror\t0"}'; }   # p50, maximum and count of the numbers on stdin (error: none)
-
-# --- the CPU budget, identical for every engine. CPUS: the server CPUs of the cluster at hand (an engine's lane, see lanes.sh, or
-# all of them), LOAD_CPUS: the CPUs of its load generators (pgbench, xbench), disjoint from the servers'; both are cpu lists
-# (0-3,8-11) picked by bench/steps/cpus.sh unless given (`bench --cpus LIST --load-cpus LIST`). Servers run pinned to CPUS with a
-# CPU quota of 100% per CPU and MEM_MAX of memory (a cgroup scope when a systemd user session exists), the number of parallel
-# workers and of load generator threads follow from the lists. Without CPUS the budget is the whole machine.
-cpu_count() { # a cpu list -> how many
-  local x n=0
-  for x in ${1//,/ }; do if [[ $x == *-* ]]; then n=$(( n + ${x#*-} - ${x%-*} + 1 )); else n=$(( n + 1 )); fi; done
-  echo "$n"
-}
-cpu_list() { # a cpu list -> one cpu per line
-  local x
-  for x in ${1//,/ }; do if [[ $x == *-* ]]; then seq "${x%-*}" "${x#*-}"; else echo "$x"; fi; done
-}
-CPUS=${CPUS:-} LOAD_CPUS=${LOAD_CPUS:-}
-if [[ -z ${BUDGET_ENFORCED:-} ]]; then
-  systemd-run --user --scope --quiet true 2>/dev/null && BUDGET_ENFORCED=yes || BUDGET_ENFORCED=no
-  export BUDGET_ENFORCED
-fi
-limited() {
-  local argv=(nice "$@") quota=${CPU_QUOTA:-$([[ -n $CPUS ]] && echo "$(( $(cpu_count "$CPUS") * 100 ))%" || echo 800%)}
-  [[ -z $CPUS ]] || argv=(taskset -c "$CPUS" "${argv[@]}")
-  if [[ $BUDGET_ENFORCED == yes ]]; then
-    systemd-run --user --scope --quiet -p CPUQuota="$quota" -p MemoryMax="${MEM_MAX:-32G}" "${argv[@]}"
-  else
-    "${argv[@]}"
-  fi
-}
-loadgen() { if [[ -n $LOAD_CPUS ]]; then taskset -c "$LOAD_CPUS" "$@"; else "$@"; fi; }   # a load generator, on the load CPUs

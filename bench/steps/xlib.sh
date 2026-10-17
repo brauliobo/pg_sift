@@ -1,7 +1,7 @@
 # Sourced by bench/steps/articles.sh, places.sh and rank_check.sh: the glue of the engines outside Postgres (adapters with EXTERNAL set:
 # Elasticsearch over HTTP, Tantivy in process), driven by the Rust load generator bench/xbench over the same documents, query
-# trace, client count and CPU/RAM budget as the Postgres engines. HTTP engines are driven over keep-alive connections from the load
-# CPUs, outside the engine's budget, so their latency includes HTTP and JSON; Tantivy runs inside the budget. The requests are rendered by
+# trace and client count as the Postgres engines. HTTP engines are driven over keep-alive connections, so their latency includes HTTP
+# and JSON; Tantivy runs in the load generator's process. The requests are rendered by
 # the adapter's RENDER SQL (articles) and PLACES_RENDER (places) from the Postgres tables, the same trace the Postgres engines run.
 # The cells of an HTTP engine are measured by steps/cell.py like the pgbench ones (it stops at the same relative standard error);
 # Tantivy keeps a fixed time per cell. The adapters define the same function names (x_start, x_stop, x_build, x_size, x_pid), so every
@@ -63,8 +63,8 @@ x_writes_file() {
 }
 
 x_xb() {
-  if [[ $EXTERNAL == tantivy ]]; then limited "$XBENCH" tantivy "$URL" "$@"
-  else loadgen "$XBENCH" http "$URL" "$@" "${XB_ARGS[@]}"; fi
+  if [[ $EXTERNAL == tantivy ]]; then "$XBENCH" tantivy "$URL" "$@"
+  else "$XBENCH" http "$URL" "$@" "${XB_ARGS[@]}"; fi
 }
 
 x_wchar() { [[ -n $1 ]] && grep -oP '^wchar: \K[0-9]+' "/proc/$1/io" || echo 0; }
@@ -81,7 +81,7 @@ x_builds() { # INDEX ELAPSED_MS: `variant TAB seconds TAB bytes` lines of the bu
 }
 x_prepare() {
   local t0 c f v s b
-  if [[ -n ${CONCURRENT:-} ]]; then adopt_db "$(engine_db "$ENGINE")" >/dev/null; else clone_db "$(engine_db "$ENGINE")" >/dev/null; fi || return 1   # the engine's database holds the documents and the params
+  adopt_db "$(engine_db "$ENGINE")" >/dev/null || return 1   # the engine's database holds the documents and the params
   f=$(x_export_docs) || return 1
   x_start || return 1
   rm -f "$RUN/build.ms"
@@ -123,7 +123,7 @@ xp_ids() { # WORKLOAD N: the engine's answers to the first N queries of every cl
 # --- cells. $1 is the request file; the cell is measured by steps/cell.py (mode qps: 8 clients; latency: 1 client) like a pgbench one
 x_cell_se() { # MODE FILE [HINT]: the output of cell.py, queries per second (qps, stderr, n, seconds) or p50, p95, stderr, n, seconds (latency)
   # shellcheck disable=SC2153  # RSE, MIN_TIME, SECS, MIN_N are set by articles.sh / places.sh
-  loadgen python3 -I "$STEPS/cell.py" "$1" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --hint "${3:-$2.hint}" --tmp "$RUN" --xbench -- \
+  python3 -I "$STEPS/cell.py" "$1" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --hint "${3:-$2.hint}" --tmp "$RUN" --xbench -- \
     "$XBENCH" http "$URL" "$2" --clients "$([[ $1 == qps ]] && echo "${CLIENTS:-8}" || echo 1)" "${XB_ARGS[@]}"
 }
 x_warm() { # SECONDS CLIENTS FILE...: every file for that long, the answers dropped (the JVM and the caches, what pg_prewarm is for Postgres)
