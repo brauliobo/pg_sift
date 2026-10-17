@@ -10,7 +10,8 @@
 #   bulk_rows_s / copy_rows_s       INSERT .. SELECT and COPY FROM of --rows rows
 #   merge_insert_tps / _p99_ms      the same inserts while the worker merges a backlog of 60 segments
 #   merge_count_ms / merge_rank_ms  mean latency of a count and of a ranked query (4 clients) during VACUUM and merges
-#   vacuum_s / merge_s / merge_temp_kb  VACUUM and sift.merge() of that backlog; temporary bytes of the merge
+#   vacuum_s / merge_s / merge_temp_kb / merge_peak_mb  VACUUM and sift.merge() of that backlog; temporary bytes of the
+#                                   merge; most anonymous memory the cluster's processes took above what they took before
 #   churn_index_mb                  size of the index after the backlog is merged
 #   create_s / create64_s           CREATE INDEX at the server defaults / at 64MB without workers
 # The table ends with new/old per cell and marks, with "<<", a cell more than 2% worse (the *_tps and *_rows_s
@@ -77,10 +78,24 @@ bench() { # LABEL PREFIX clients script secs: pgbench; prints PREFIX_tps and PRE
 	echo "${p}_lat_ms $(sed -n 's/^latency average = \([0-9.]*\) ms.*/\1/p' <<<"$out")"
 	cat "$log".* | awk '{print $3}' | sort -n | awk '{a[NR] = $1} END {printf "%s_p99_ms %.2f\n", "'"$p"'", a[int(NR * 0.99) + 1] / 1000}'
 }
+anon_kb() { # anonymous memory of the processes of a cluster (children of its postmaster)
+	local pm p
+	pm=$(head -1 "${TMP[$1]}/data/postmaster.pid")
+	for p in $(pgrep -P "$pm"); do awk '/^RssAnon/ {print $2}' "/proc/$p/status" 2>/dev/null; done | awk '{s += $1} END {print s + 0}'
+}
+peak_kb() { # LABEL: polls until the file $BASE/stop exists, prints the highest sample
+	local best=0 kb
+	while [[ ! -e $BASE/stop ]]; do
+		kb=$(anon_kb "$1")
+		(( kb > best )) && best=$kb
+		sleep 0.05
+	done
+	echo "$best"
+}
 temp_kb() { q "$1" "SELECT pg_stat_force_next_flush(); SELECT temp_bytes / 1024 FROM pg_stat_database WHERE datname = 'sift'" | tail -1; }
 
 cell() { # LABEL: all the measurements of one build, "name value" lines
-	local l=$1 t0 kb0
+	local l=$1 t0 kb0 base poller
 
 	fresh "$l"
 	bench "$l" insert16 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
@@ -111,8 +126,12 @@ cell() { # LABEL: all the measurements of one build, "name value" lines
 	echo "vacuum_s $(elapsed "$t0")"
 	fresh "$l"; backlog "$l"
 	kb0=$(temp_kb "$l")
+	rm -f "$BASE/stop"; base=$(anon_kb "$l"); peak_kb "$l" >"$BASE/peak" &
+	poller=$!
 	t0=$(now); q "$l" "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" >/dev/null
 	echo "merge_s $(elapsed "$t0")"
+	touch "$BASE/stop"; wait "$poller"
+	echo "merge_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
 	echo "merge_temp_kb $(( $(temp_kb "$l") - kb0 ))"
 	settle "$l"
 	echo "churn_index_mb $(q "$l" "SELECT pg_relation_size('t_idx') / 1048576.0")"
