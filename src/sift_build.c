@@ -41,6 +41,8 @@ int			sift_test_run_docs = 0;
 int			sift_test_fanin = 0;
 int			sift_test_segment_postings = 0;
 int			sift_test_build_peak = 0;
+int			sift_test_pool_blocks = 0;
+int			sift_test_page_text = 0;
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
 
 /* The most memory (kB) the contexts of the build allocated, sampled where a build is at its largest */
@@ -135,6 +137,12 @@ typedef struct RunHome
 	int			worker;
 	int			nfiles;			/* ids taken */
 } RunHome;
+
+static uint32
+pool_max(void)
+{
+	return TEST_KNOB(sift_test_pool_blocks, POOL_MAX_BLOCKS);
+}
 
 /* A leaf run holds a term up to a quarter of a segment's limit, but at least this many postings (small test limits) */
 #define MIN_RUN_POSTINGS	64
@@ -349,9 +357,21 @@ inv_mem(const SiftInvBuf *b)
 bool
 sift_inv_full(const SiftInvBuf *b)
 {
-	return inv_mem(b) >= b->budget || b->nblocks >= POOL_MAX_BLOCKS - 1 || b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
+	return inv_mem(b) >= b->budget || b->nblocks >= pool_max() - 1 || b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
 		b->tlen >= PG_INT32_MAX ||
 		b->maxdf >= b->maxdf_full || b->tlen + (Size) b->nterms * DICT_ENTRY_BYTES >= SIFT_DICT_MAX / 4;
+}
+
+/*
+ * Can the buffer take this doc? Its key must be above the last one's, and its terms must not exhaust the
+ * pool, which the doc is not stopped by once added: a term takes a slice of 8 bytes, or one of up to 2 kB
+ * when its slice is full, and each position at most 5 bytes of a record (a token takes 2 bytes of text).
+ */
+bool
+sift_inv_fits(const SiftInvBuf *b, ItemPointer tid, int nterms, Size textlen)
+{
+	return (b->ndocs == 0 || sift_key_from_tid(tid) > DOC_KEY(b->docs[b->ndocs - 1])) &&
+		(Size) b->nblocks * POOL_BLOCK + (Size) nterms * 2048 + 3 * textlen + 2 * POOL_BLOCK <= (Size) pool_max() * POOL_BLOCK;
 }
 
 bool
@@ -367,7 +387,7 @@ pool_alloc(SiftInvBuf *b, uint32 size)
 
 	if ((b->pool_next >> POOL_SHIFT) >= b->nblocks || (b->pool_next & (POOL_BLOCK - 1)) + size > POOL_BLOCK)
 	{
-		if (b->nblocks == POOL_MAX_BLOCKS)
+		if (b->nblocks == pool_max())
 			elog(ERROR, "sift: inverted buffer pool exhausted");
 		b->blocks[b->nblocks++] = MemoryContextAlloc(b->mcxt, POOL_BLOCK);
 		b->pool_next = (b->nblocks - 1) << POOL_SHIFT;
@@ -1630,26 +1650,45 @@ pagedoc_cmp(const void *a, const void *b)
 	return ItemPointerCompare(&((PageDoc *) a)->tid, &((PageDoc *) b)->tid);
 }
 
+/* Analyzes a doc into the buffer, which is spilled first when the doc does not fit it */
+static void
+analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len)
+{
+	SiftTermFreq *terms;
+	uint32		dl;
+	int			n = sift_analyze_doc(bs->an, text, len, &terms, &dl);
+
+	if (!sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, tid, n, len))
+		spill(bs);
+	sift_inv_add(bs->inv, tid, terms, n, dl);
+	bs->indexed++;
+	if (sift_inv_full(bs->inv))
+		spill(bs);
+}
+
 /* Analyzes the buffered docs of one heap page in tid order */
 static void
 flush_page(BuildState *bs)
 {
 	qsort(bs->docs, bs->ndocs, sizeof(PageDoc), pagedoc_cmp);
 	for (int i = 0; i < bs->ndocs; i++)
-	{
-		SiftTermFreq *terms;
-		uint32		dl;
-		int			n = sift_analyze_doc(bs->an, bs->text.data + bs->docs[i].off, bs->docs[i].len, &terms, &dl);
-
-		sift_inv_add(bs->inv, &bs->docs[i].tid, terms, n, dl);
-		bs->indexed++;
-		if (sift_inv_full(bs->inv))
-			spill(bs);
-	}
+		analyze_doc(bs, &bs->docs[i].tid, bs->text.data + bs->docs[i].off, bs->docs[i].len);
 	bs->ndocs = 0;
 	resetStringInfo(&bs->text);
 	sift_analyzer_reset(bs->an);
 	CHECK_FOR_INTERRUPTS();
+}
+
+/*
+ * The text of the docs of a heap page is copied until the page is done, to analyze them in tid order (a
+ * HOT chain reports its root's tid). A page of large docs does not hold them all: past this many bytes
+ * what is buffered is analyzed, and a doc over it is analyzed at once. A later doc of the page with a
+ * lower tid then starts a new run (sift_inv_fits).
+ */
+static Size
+page_text_max(const BuildState *bs)
+{
+	return TEST_KNOB(sift_test_page_text, Min(Max(bs->budget / 4, 1024 * 1024), 256 * 1024 * 1024));
 }
 
 static void
@@ -1658,6 +1697,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	BuildState *bs = state;
 	MemoryContext old;
 	text	   *t;
+	int			len;
 	BlockNumber blk = ItemPointerGetBlockNumber(tid);
 
 	if (isnull[0])
@@ -1671,13 +1711,24 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	}
 	old = MemoryContextSwitchTo(bs->tmpcxt);
 	t = DatumGetTextPP(values[0]);
-	if (bs->ndocs == bs->maxdocs)
+	len = VARSIZE_ANY_EXHDR(t);
+	if (bs->text.len > 0 && bs->text.len + len > page_text_max(bs))
+		flush_page(bs);
+	if (len > page_text_max(bs))
 	{
-		bs->maxdocs *= 2;
-		bs->docs = repalloc(bs->docs, bs->maxdocs * sizeof(PageDoc));
+		analyze_doc(bs, tid, VARDATA_ANY(t), len);
+		sift_analyzer_reset(bs->an);
 	}
-	bs->docs[bs->ndocs++] = (PageDoc) {*tid, bs->text.len, VARSIZE_ANY_EXHDR(t)};
-	appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+	else
+	{
+		if (bs->ndocs == bs->maxdocs)
+		{
+			bs->maxdocs *= 2;
+			bs->docs = repalloc(bs->docs, bs->maxdocs * sizeof(PageDoc));
+		}
+		bs->docs[bs->ndocs++] = (PageDoc) {*tid, bs->text.len, len};
+		appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), len);
+	}
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(bs->tmpcxt);
 }

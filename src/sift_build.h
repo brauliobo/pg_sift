@@ -26,6 +26,9 @@ extern PGDLLIMPORT int sift_test_fanin;
 extern PGDLLIMPORT int sift_test_segment_postings;
 /* kB: the most memory a CREATE INDEX of this backend allocated since the variable was last set (to 0) */
 extern PGDLLIMPORT int sift_test_build_peak;
+/* blocks of 64 kB the buffer's pool has (0 = 60000), bytes of the text of a heap page it holds (0 = by memory) */
+extern PGDLLIMPORT int sift_test_pool_blocks;
+extern PGDLLIMPORT int sift_test_page_text;
 #endif
 
 typedef struct SiftInvBuf SiftInvBuf;
@@ -46,6 +49,9 @@ extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt, bool positio
 extern void sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
 						 int nterms, uint32 dl);
 extern bool sift_inv_full(const SiftInvBuf *buf);
+
+/* Can a doc of nterms terms (from textlen bytes of text) at tid be added? Spill first if not, whatever the buffer holds */
+extern bool sift_inv_fits(const SiftInvBuf *buf, ItemPointer tid, int nterms, Size textlen);
 extern bool sift_inv_empty(const SiftInvBuf *buf);
 
 /* Writes one immutable segment through wt and fills its directory entry; then resets */

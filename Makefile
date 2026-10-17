@@ -24,7 +24,7 @@ endif
 # SIFT_TESTING=1 compiles the sift._test_* functions and installs the
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
-TESTING_REGRESS = store_% kernels_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs build_memory build_limits
+TESTING_REGRESS = store_% kernels_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs build_memory build_limits build_pool build_page_text
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += pg_sift_test--1.0.sql
