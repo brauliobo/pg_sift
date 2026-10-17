@@ -94,17 +94,9 @@ jobs:
           pg_config --version
           make -j4
 
-      - name: Regression tests (installcheck, release build)
-        run: |
-          export SIFT_TMP="$RUNNER_TEMP/sift-installcheck" SIFT_TESTING=
-          scripts/pgtest.sh install
-          scripts/pgtest.sh start
-          scripts/pgtest.sh regress
-          scripts/pgtest.sh stop      # the leak gate of the cluster (scripts/leakcheck.sh)
-          scripts/pgtest.sh destroy
-
       # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
+      # includes the regression tests against the release library (SIFT_TESTING off, stage release-library-regress), with its own leak gate
       - name: Quick test tier (make check, with the leak gate)
         run: make check
         env:
