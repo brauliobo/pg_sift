@@ -168,6 +168,37 @@ class Merge(TmpDb):
         self.assertEqual(answers(db), want)
         db.execute("INSERT INTO t(t, rank) VALUES ('integrity-check', 1)")
 
+    def test_rolled_back_deletes_in_segments_come_back(self):
+        db = connect(self.path)
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none)')
+        fill(db, 600, per_txn=100)
+        want = answers(db)
+        db.execute('BEGIN')
+        db.execute('DELETE FROM t WHERE rowid % 3 = 0')
+        self.assertNotEqual(answers(db), want)
+        db.execute('ROLLBACK')
+        self.assertEqual(answers(db), want)
+        db.execute("INSERT INTO t(t, rank) VALUES ('integrity-check', 1)")
+        db.execute('BEGIN')
+        db.execute('DELETE FROM t WHERE rowid % 3 = 0')
+        db.execute('SAVEPOINT a')
+        db.execute('DELETE FROM t WHERE rowid % 3 = 1')
+        db.execute('ROLLBACK TO a')
+        db.execute('RELEASE a')
+        db.execute('COMMIT')
+        self.assertEqual(db.execute('SELECT count(*) FROM t').fetchone()[0], 400)
+        db.execute("INSERT INTO t(t, rank) VALUES ('integrity-check', 1)")
+
+    def test_insert_or_replace(self):
+        db = connect(self.path)
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none)')
+        db.execute("INSERT INTO t(rowid, body) VALUES (1, 'old text'), (2, 'other')")
+        db.execute("INSERT OR REPLACE INTO t(rowid, body) VALUES (1, 'new text')")
+        self.assertEqual(ids(db, 'old'), [])
+        self.assertEqual(ids(db, 'text'), [1])
+        with self.assertRaises(sqlite3.Error):
+            db.execute("INSERT INTO t(rowid, body) VALUES (2, 'dup')")
+
     def test_failed_merge_leaves_old_segments(self):
         db = connect(self.path)
         db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=4096)')

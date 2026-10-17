@@ -988,6 +988,7 @@ GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buf, int flags)
 	SqSlot	   *sl = &st->cache->slot[s];
 
 	sl->dirty |= 1 << ((buf - slot_data(st, s)) / SQ_PAGE);
+	st->changed = true;				/* a rollback must drop the edit */
 	if (!sl->queued)
 	{
 		sl->queued = 1;
