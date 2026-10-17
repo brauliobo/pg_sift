@@ -216,9 +216,20 @@ fn_version(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 	sqlite3_result_text(ctx, msg, -1, sqlite3_free);
 }
 
+/* The connections that loaded the extension (a second load on one is a no-op); probing with SQL would leave an error in the connection */
+static pthread_mutex_t loaded_lock = PTHREAD_MUTEX_INITIALIZER;
+static SqConn *loaded;
+
 static void
 conn_free(void *p)
 {
+	SqConn	  **pp;
+
+	pthread_mutex_lock(&loaded_lock);
+	for (pp = &loaded; *pp != p; pp = &(*pp)->next_loaded)
+		;
+	*pp = ((SqConn *) p)->next_loaded;
+	pthread_mutex_unlock(&loaded_lock);
 	sqlite3_free(p);
 }
 
@@ -243,10 +254,16 @@ create_functions(sqlite3 *db, SqConn *conn)
 
 /* ---------- entry points ---------- */
 
-static int
+static bool
 already_loaded(sqlite3 *db)
 {
-	return sqlite3_exec(db, "SELECT sift_version()", NULL, NULL, NULL) == SQLITE_OK;
+	SqConn	   *c;
+
+	pthread_mutex_lock(&loaded_lock);
+	for (c = loaded; c && c->db != db; c = c->next_loaded)
+		;
+	pthread_mutex_unlock(&loaded_lock);
+	return c != NULL;
 }
 
 #ifdef _WIN32
@@ -272,6 +289,10 @@ sqlite3_sift_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi
 		return SQLITE_NOMEM;
 	memset(conn, 0, sizeof(*conn));
 	conn->db = db;
+	pthread_mutex_lock(&loaded_lock);
+	conn->next_loaded = loaded;
+	loaded = conn;
+	pthread_mutex_unlock(&loaded_lock);
 	rc = sqlite3_create_module_v2(db, "sift", &sq_sift_module, conn, conn_free);
 	if (rc == SQLITE_OK)
 		rc = create_functions(db, conn);

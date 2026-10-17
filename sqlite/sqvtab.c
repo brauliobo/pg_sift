@@ -1461,6 +1461,17 @@ insert_doc(SqVtab *vt, sqlite3_int64 oldid, sqlite3_value *newid, sqlite3_value 
 		sq_vt_flush(vt, false);
 }
 
+/* INSERT OR REPLACE with a rowid that exists: the old document goes first */
+static void
+replace_existing(SqVtab *vt, sqlite3_value *newid)
+{
+	if (sqlite3_vtab_on_conflict(vt->db) != SQLITE_REPLACE || sqlite3_value_type(newid) == SQLITE_NULL)
+		return;
+	index_remove(vt, sqlite3_value_int64(newid));
+	if (vt->content == SQ_CONTENT_INTERNAL)
+		content_delete(vt, sqlite3_value_int64(newid));
+}
+
 static int
 sqUpdate(sqlite3_vtab *pVtab, int argc, sqlite3_value **argv, sqlite3_int64 *pRowid)
 {
@@ -1483,6 +1494,8 @@ sqUpdate(sqlite3_vtab *pVtab, int argc, sqlite3_value **argv, sqlite3_int64 *pRo
 
 			if (oldid >= 0)
 				index_remove(vt, oldid);
+			else
+				replace_existing(vt, argv[1]);
 			if (sqlite3_value_type(argv[1]) != SQLITE_NULL)
 				check_rowid(sqlite3_value_int64(argv[1]));
 			insert_doc(vt, oldid, argv[1], argv + 2, pRowid);

@@ -23,6 +23,7 @@ typedef struct SqConn
 {
 	sqlite3    *db;
 	SqVtab	   *tables;
+	struct SqConn *next_loaded;
 } SqConn;
 
 struct SqVtab
