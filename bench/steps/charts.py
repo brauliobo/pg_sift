@@ -52,6 +52,9 @@ PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 le
 PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
 BUILD_NOTES = ['places: pg_textsearch and rum show the native index; their emulated workloads add indexes.']
 BM25_BUILD_NOTES = ['places: pgx-bm25 also tenants two generated columns, the table grows.']
+ES_BUILD_NOTES = ['Elasticsearch: bulk load and refresh; its force-merge to one segment is not in the build time.']
+ES_ARTICLE_NOTES = ['Elasticsearch: a JVM server over HTTP; its join is a term filter on a denormalized region field.']
+ES_PLACE_NOTES = ['Elasticsearch: a JVM server over HTTP, edge n-grams of the typed words expanded by the client.']
 NA_NOTE = 'NA: no bar, the engine cannot run the workload or was not run on the dataset.'
 
 WIDTH = 860
@@ -151,7 +154,7 @@ def legend(svg, y, engines, baseline):
         label, color = ENGINES[e]
         svg.rect(x, y - 10, 12, 12, color)
         svg.text(x + 17, y, label, 12)
-        x += 17 + len(label) * 7 + 18
+        x += 17 + len(label) * 6.3 + 14
     if baseline:
         svg.line(x, y - 4, x + 18, y - 4, INK, 1.5, dash=True)
         svg.text(x + 23, y, 'pg_search = 1.0x', 12)
@@ -256,7 +259,7 @@ def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
     engines = engines_of(rows, tier, DATASETS)
     series = [(e, [value(rows, tier, d, e, '-', '-', metric) for d in DATASETS]) for e in engines]
     groups = [(d, spec['name']) for d, spec in DATASETS.items()]
-    notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else [])
+    notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else []) + (ES_BUILD_NOTES if 'elasticsearch' in engines else [])
     return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=notes)
 
 
@@ -272,14 +275,15 @@ def make(rows, tier):
     qps = {e: [value(rows, tier, 'articles', e, c, '-', 'qps') for c, _ in ARTICLE_CLASSES] for e in engines}
     se = errors_of(rows, tier, 'articles', engines, keys, 'qps')
     cap = caption(rows, tier, ['articles'], f"{a['name']}, 8 clients, median of {a['rounds']} rounds")
+    notes = ES_ARTICLE_NOTES if 'elasticsearch' in engines else []
     out['articles-throughput.svg'] = grouped('Throughput by workload', 'queries per second, higher is better', groups, list(qps.items()),
-                                             lambda v: f'{v:,.0f}', 'queries per second', cap, errors=se)
+                                             lambda v: f'{v:,.0f}', 'queries per second', cap, notes=notes, errors=se)
     ratio = {e: [None if q is None else q / b for q, b in zip(vs, qps['pg_search'])] for e, vs in qps.items() if e != 'pg_search'}
     # the standard error of a quotient: the relative errors add in quadrature
     ratio_se = {e: [None if None in (s, t, q, b) else (q / b) * math.hypot(s / q, t / b)
                     for q, b, s, t in zip(qps[e], qps['pg_search'], se[e], se['pg_search'])] for e in ratio}
     out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
-                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, errors=ratio_se)
+                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, notes=notes, errors=ratio_se)
 
     p = DATASETS['places']
     keys = [(c, 'top') for c in PLACE_CLASSES]
@@ -287,7 +291,7 @@ def make(rows, tier):
     lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines}
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
     out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, logarithmic axis, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES,
+                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES + (ES_PLACE_NOTES if 'elasticsearch' in engines else []),
                                         log=True, errors=errors_of(rows, tier, 'places', engines, keys, 'p50_ms'))
     return out
 

@@ -109,8 +109,8 @@ def articles(tier, path):
             v = [num(x[5]) if m != 'qps' or num(x[5]) else float('nan') for x in sel]   # a qps of 0: a client failed
             t = stats(v, [num(x[6]) if len(x) > 6 else None for x in sel]) if v else ('NA',) * 4 + ('0', 'NA')
             out.append(('articles', tier, e, c, '-', m, *t[:3], UNIT[m], *t[3:]))
-    for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth
-        builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], '-'))
+    for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth [variant]
+        builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], b[7] if len(b) > 7 else '-'))
     return out, builds, [float(c[1]) for c in cells]
 
 
@@ -205,6 +205,16 @@ def build_cols(rows, dataset, tier, e):
     return [value(rows, dataset, tier, e, metric=m) for m in ('index_mib', 'build_s')]
 
 
+def md_merge(rows, dataset, tier, engines):
+    """the force-merge of an engine that merges after loading (Elasticsearch): its own row, `build` of the main row is the bulk load and refresh"""
+    merge = [e for e in engines if get(rows, dataset, tier, e, '-', 'forcemerge', 'build_s')]
+    if not merge:
+        return []
+    return ['', 'Force-merge to one segment after the bulk load and refresh (the build column is the bulk load and refresh, the index column the size after the merge):', ''] + md_table(
+        ['engine', 'force-merge (s)', 'index before the merge (MiB)'],
+        [[NAME[e], value(rows, dataset, tier, e, '-', 'forcemerge', 'build_s'), value(rows, dataset, tier, e, '-', 'forcemerge', 'index_mib')] for e in merge])
+
+
 def md_articles(rows, tier):
     measured = [r for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps']
     engines = [e for e in ORDER if any(r[2] == e for r in measured)]
@@ -217,6 +227,7 @@ def md_articles(rows, tier):
     body = [[NAME[e]] + build_cols(rows, 'articles', tier, e) + ([value(rows, 'articles', tier, e, metric='heap_growth_mib')] if growth else [])
             + [shown(qps(e, c)) for c in classes] for e in engines]
     out = ['Queries per second, median ± standard error (minimum-maximum over the rounds); index size and CREATE INDEX time of the one build per engine:', ''] + md_table(head, body)
+    out += md_merge(rows, 'articles', tier, engines)
     out += ['', LEGEND]
     rel = [[NAME[e] + ' / ' + NAME[ref]] + [ratio(value(rows, 'articles', tier, e, c, '-', 'qps'), value(rows, 'articles', tier, ref, c, '-', 'qps')) for c in classes]
            for e in engines if e != ref]
@@ -246,6 +257,7 @@ def md_places(rows, tier):
         out += ['', 'Extra columns and indexes of the emulated workloads (rum boost; pg_textsearch top-20, boost, filtered):', '']
         out += md_table(['engine', 'index (MiB)', 'build (s)', 'column fill (s)', 'table growth (MiB)'],
                         [[NAME[e]] + [value(rows, 'places', tier, e, '-', 'emulation', m) for m in metrics] for e in emu])
+    out += md_merge(rows, 'places', tier, engines)
     for wl in dict.fromkeys(r[4] for r in sel):
         body = []
         for c in classes:
