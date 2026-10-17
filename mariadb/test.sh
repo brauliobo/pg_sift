@@ -83,6 +83,8 @@ load() {
   echo "drain (build): $(secs "$t0")"
   sql -e "SELECT sift_stats('wiki')"
   echo "sift size: $(du -sb "$SIFT_MDB_ROOT/data/.sift/wiki" | cut -f1) bytes"
+  echo "a second index without the freshness features, to measure what they cost:"
+  sql -e "CALL sift_attach_opts('wiki_plain', 'docs', 'id', 't.body', '{\"dpp\":32,\"fresh\":false,\"recheck\":false}'); CALL sift_sync('wiki_plain')" >/dev/null
 }
 
 # trace and PostgreSQL reference
