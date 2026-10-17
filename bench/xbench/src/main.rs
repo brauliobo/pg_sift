@@ -5,9 +5,13 @@
 //!   xbench tantivy DIR QUERIES [opts]    queries: `qid \t kind \t mode \t cutoff \t terms...`
 //!
 //! Options: --clients N --warmup S|N --duration S | --repeat N (requests per client) --log FILE --took PTR (engine-reported ms)
+//!          --txlog FILE (one line `client seq latency_us end_us` per measured request, for steps/cell.py) --seed N (the clients'
+//!          choice of queries; cell.py changes it per chunk)
 //!          --header 'K: V' --writes FILE --write-rate R (lines `METHOD \t path \t json`, or
-//!          `op \t json doc` for tantivy) --ids-out FILE --ids-ptr PTR --id-ptr PTR --count-ptr PTR
+//!          `op \t json doc` for tantivy) --ids-out FILE --ids-ptr PTR --id-ptr PTR --count-ptr PTR (a response that has it
+//!          is a count, one that has not is a list of ids)
 //!          --writers N (default 4) --threads N --mem-mb N (tantivy-index)
+//! The exit status is 1 when a request failed (the report is still printed).
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::ops::Bound;
@@ -54,13 +58,14 @@ impl Rng {
     }
 }
 
-/// One timed sample: client latency and engine-reported time (both µs, took 0 if unknown).
-type Sample = (u64, u64);
+/// One timed sample: client latency and engine-reported time (both µs, took 0 if unknown), the client and the end of the
+/// request (µs since the start of the run).
+type Sample = (u64, u64, usize, u64);
 
-/// Closed-loop clients picking random queries (fixed per-client seeds). With `repeat`, each client
+/// Closed-loop clients picking random queries (per-client seeds derived from `seed`). With `repeat`, each client
 /// runs `warm` then `len` requests; otherwise `warm` then `len` seconds. Returns samples, errors and
 /// the measured span in seconds.
-fn drive<F>(clients: usize, n: usize, warm: f64, len: f64, repeat: bool, f: F) -> (Vec<Sample>, usize, f64)
+fn drive<F>(clients: usize, n: usize, warm: f64, len: f64, repeat: bool, seed: u64, f: F) -> (Vec<Sample>, usize, f64)
 where F: Fn(usize, usize) -> Res<u64> + Sync {
     let samples = Mutex::new(vec![]);
     let errors = Mutex::new((0usize, String::new()));
@@ -72,7 +77,7 @@ where F: Fn(usize, usize) -> Res<u64> + Sync {
         for c in 0..clients {
             let (f, samples, errors, span) = (&f, &samples, &errors, &span);
             s.spawn(move || {
-                let (mut rng, mut mine, mut first) = (Rng(0x9E3779B97F4A7C15 ^ (c as u64 + 1) * 0x1000193), vec![], None);
+                let (mut rng, mut mine, mut first) = (Rng(0x9E3779B97F4A7C15 ^ (c as u64 + 1) * 0x1000193 ^ seed.wrapping_mul(0xBF58476D1CE4E5B9)), vec![], None);
                 for i in 0.. {
                     let t0 = Instant::now();
                     if done(i, t0) { break; }
@@ -80,7 +85,7 @@ where F: Fn(usize, usize) -> Res<u64> + Sync {
                     if !measuring(i, t0) { continue; }
                     first.get_or_insert(t0);
                     match r {
-                        Ok(took) => mine.push((t0.elapsed().as_micros() as u64, took)),
+                        Ok(took) => mine.push((t0.elapsed().as_micros() as u64, took, c, start.elapsed().as_micros() as u64)),
                         Err(e) => { let mut g = errors.lock().unwrap(); g.0 += 1; g.1 = e.to_string(); }
                     }
                 }
@@ -102,12 +107,20 @@ fn pct(v: &[u64], p: f64) -> f64 {
     v[((v.len() as f64 * p).ceil() as usize).clamp(1, v.len()) - 1] as f64 / 1000.0
 }
 
-fn report(name: &str, samples: &[Sample], errors: usize, secs: f64, log: Option<&str>) {
+fn report(name: &str, samples: &[Sample], errors: usize, secs: f64, o: &Opts) {
     let mut lat: Vec<u64> = samples.iter().map(|s| s.0).collect();
     let mut took: Vec<u64> = samples.iter().map(|s| s.1).collect();
-    if let Some(path) = log {
+    if let Some(path) = o.get("log") {
         let mut w = BufWriter::new(fs::File::create(path).unwrap());
         samples.iter().for_each(|s| writeln!(w, "{}\t{}", s.0, s.1).unwrap());
+    }
+    if let Some(path) = o.get("txlog") {
+        let (mut w, mut seq) = (BufWriter::new(fs::File::create(path).unwrap()), HashMap::<usize, usize>::new());
+        for s in samples {
+            let n = seq.entry(s.2).or_insert(0);
+            writeln!(w, "{}\t{}\t{}\t{}", s.2, n, s.0, s.3).unwrap();
+            *n += 1;
+        }
     }
     lat.sort_unstable(); took.sort_unstable();
     let avg = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len().max(1) as f64 / 1000.0;
@@ -124,7 +137,7 @@ where F: Fn(usize) -> Res<u64> {
         let due = start + Duration::from_secs_f64(k as f64 / rate);
         if let Some(d) = due.checked_duration_since(Instant::now()) { thread::sleep(d); }
         let t0 = Instant::now();
-        match f(k % n) { Ok(_) => out.push((t0.elapsed().as_micros() as u64, 0)), Err(_) => errors += 1 }
+        match f(k % n) { Ok(_) => out.push((t0.elapsed().as_micros() as u64, 0, 0, 0)), Err(_) => errors += 1 }
     }
     if errors > 0 { eprintln!("write errors={errors}"); }
     out
@@ -159,8 +172,8 @@ fn http(pos: &[String], o: &Opts) -> Res<()> {
         let mut w = BufWriter::new(fs::File::create(out)?);
         for q in &queries {
             let v = call("POST", &q[1], &q[2])?;
-            match o.get("count-ptr") {
-                Some(p) => writeln!(w, "{}\t{}", q[0], v.pointer(p).ok_or("count missing")?)?,
+            match o.get("count-ptr").and_then(|p| v.pointer(p)) {
+                Some(count) => writeln!(w, "{}\t{}", q[0], count)?,
                 None => {
                     let hits = v.pointer(o.get("ids-ptr").unwrap()).and_then(Value::as_array).ok_or("hits missing")?;
                     let mut ids: Vec<i64> = hits.iter().map(|h| {
@@ -182,10 +195,11 @@ fn http(pos: &[String], o: &Opts) -> Res<()> {
             call(w[0], w[1], w.get(2).copied().unwrap_or("")).map(|_| 0)
         })));
         let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("repeat", o.num("duration", 30.0)), o.get("repeat").is_some(),
-            |_, i| call("POST", &queries[i][1], &queries[i][2]).map(|v| ms_ptr(&v, o.get("took"))));
+            o.num("seed", 0.0) as u64, |_, i| call("POST", &queries[i][1], &queries[i][2]).map(|v| ms_ptr(&v, o.get("took"))));
         stop.store(true, Ordering::Relaxed);
-        report("read", &samples, errors, secs, o.get("log"));
-        if let Some(h) = writer { report("write", &h.join().unwrap(), 0, secs + o.num("warmup", 5.0), None); }
+        report("read", &samples, errors, secs, o);
+        if let Some(h) = writer { report("write", &h.join().unwrap(), 0, secs + o.num("warmup", 5.0), &Opts(HashMap::new())); }
+        if errors > 0 { return Err(format!("{errors} requests failed").into()); }
         Ok(())
     })
 }
@@ -297,14 +311,14 @@ fn tantivy(pos: &[String], o: &Opts) -> Res<()> {
             })
         }));
         let (samples, errors, secs) = drive(o.num("clients", 8.0) as usize, queries.len(), o.num("warmup", 5.0), o.num("repeat", o.num("duration", 30.0)), o.get("repeat").is_some(),
-            |_, i| tv_run(&reader.searcher(), &f, &queries[i]).map(|_| 0));
+            o.num("seed", 0.0) as u64, |_, i| tv_run(&reader.searcher(), &f, &queries[i]).map(|_| 0));
         stop.store(true, Ordering::Relaxed);
         let written = writer.map(|h| h.join().unwrap());
         // Bytes written by this process (index segments, deletes); index reads go through mmap.
         let io = fs::read_to_string("/proc/self/io")?;
         println!("io wchar={}", io.lines().find_map(|l| l.strip_prefix("wchar: ")).unwrap_or("0"));
-        report("read", &samples, errors, secs, o.get("log"));
-        if let Some(w) = written { report("write", &w, 0, secs + o.num("warmup", 5.0), None); }
+        report("read", &samples, errors, secs, o);
+        if let Some(w) = written { report("write", &w, 0, secs + o.num("warmup", 5.0), &Opts(HashMap::new())); }
         Ok(())
     })
 }
