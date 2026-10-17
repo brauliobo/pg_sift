@@ -124,6 +124,18 @@ extern SiftPostingCursor *sift_post_open_blob(const SiftTermInfo *info, const ui
 extern SiftPostingCursor *sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info,
 												  MemoryContext mcxt);
 
+#ifdef SIFT_TESTING
+/* What this backend's cursors allocated (sift._test_read_stats) */
+typedef struct SiftPostStats
+{
+	uint64		cursors;		/* cursors opened */
+	uint64		curbuf_bytes;	/* ... and the buffers they decode groups into */
+	uint64		blobs;			/* term blobs copied out of the index */
+	uint64		blob_bytes;
+} SiftPostStats;
+extern SiftPostStats sift_post_stats;
+#endif
+
 /* Another cursor over the same blob (shared, read-only), before the first group */
 extern SiftPostingCursor *sift_post_clone(const SiftPostingCursor *src, MemoryContext mcxt);
 

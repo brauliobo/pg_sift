@@ -25,6 +25,10 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		const char *key;
 		uint64		value;
 	}			stats[] = {
+		{"cursors", sift_post_stats.cursors},
+		{"cursor_buffer_bytes", sift_post_stats.curbuf_bytes},
+		{"blobs", sift_post_stats.blobs},
+		{"blob_bytes", sift_post_stats.blob_bytes},
 		{"prefix_passes", sift_prefix_stats.passes},
 		{"prefix_windows", sift_prefix_stats.windows},
 		{"prefix_direct", sift_prefix_stats.direct},
@@ -42,6 +46,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 	if (PG_GETARG_BOOL(0))
 	{
 		memset(&sift_prefix_stats, 0, sizeof(sift_prefix_stats));
+		memset(&sift_post_stats, 0, sizeof(sift_post_stats));
 	}
 	return (Datum) 0;
 }

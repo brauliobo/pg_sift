@@ -360,6 +360,29 @@ blob_len(const SiftTermInfo *info)
 	return info->post_len - poslen;
 }
 
+#ifdef SIFT_TESTING
+SiftPostStats sift_post_stats;
+#define POST_STAT(f, v)		(sift_post_stats.f += (v))
+#else
+#define POST_STAT(f, v)		((void) 0)
+#endif
+
+/*
+ * The buffer a cursor decodes its groups into. A sparse term (a LIST blob or inline keys) has a row per
+ * page of a group, at most as many as it has postings; SIFT_CUR_BUF is for a group of a GROUPED term
+ */
+static uint8 *
+cursor_buf(MemoryContext mcxt, const SiftTermInfo *info)
+{
+	Size		size = SIFT_CUR_BUF;
+
+	if (info->flags & (SIFT_TERM_INLINE | SIFT_TERM_SPARSE))
+		size = Min(size, (Size) Min(info->df, SIFT_GROUP_PAGES) * SIFT_MAX_W + SIFT_KERN_PAD);
+	POST_STAT(cursors, 1);
+	POST_STAT(curbuf_bytes, size);
+	return MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, 0);
+}
+
 /* The cursor over a term blob with SIFT_KERN_PAD zero bytes behind it (NULL for an inline term); sr reads the positions */
 static SiftPostingCursor *
 post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, SiftStreamReader *sr, bool verify)
@@ -369,7 +392,7 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 
 	c->info = *info;
 	c->mcxt = mcxt;
-	c->curbuf = MemoryContextAllocAligned(mcxt, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
+	c->curbuf = cursor_buf(mcxt, info);
 	if (blob == NULL)
 	{
 		if (!(info->flags & SIFT_TERM_INLINE) || info->df == 0 || info->df > SIFT_INLINE_MAX)
@@ -440,6 +463,8 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 		Size		len = blob_len(info);
 		const void *src;
 
+		POST_STAT(blobs, 1);
+		POST_STAT(blob_bytes, len + SIFT_KERN_PAD);
 		blob = MemoryContextAllocAligned(mcxt, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 		src = sift_sr_get(sr, info->post_off, len, blob);
 		if (src != blob)
@@ -478,7 +503,7 @@ sift_post_clone(const SiftPostingCursor *src, MemoryContext mcxt)
 	c->ckpt = NULL;
 	c->win = NULL;
 	c->win_len = 0;
-	c->curbuf = MemoryContextAllocAligned(mcxt, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
+	c->curbuf = cursor_buf(mcxt, &src->info);
 	sift_post_rewind(c);
 	return c;
 }
