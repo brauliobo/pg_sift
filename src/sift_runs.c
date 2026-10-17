@@ -62,8 +62,10 @@ struct SiftInvBuf
 	uint8	  **blocks;
 	uint32		nblocks;
 	uint32		pool_next;
-	uint32		maxdf;
+	bool		term_full;		/* a term has maxdf_full postings */
 	uint32		maxdf_full;		/* the buffer is full when a term has this many postings */
+	uint32		pool_room;		/* blocks of the pool the buffer leaves free for the doc it is about to take */
+	Size		small_doc;		/* a doc of fewer bytes of text always fits those blocks */
 	uint32	   *doc_terms;		/* term indexes of the doc being added */
 	int			maxdoc_terms;
 	bool		positions;		/* docs carry position records */
@@ -75,8 +77,11 @@ pool_max(void)
 	return TEST_KNOB(sift_test_pool_blocks, POOL_MAX_BLOCKS);
 }
 
-/* A leaf run holds a term up to a quarter of a segment's limit, but at least this many postings (small test limits) */
+/* A leaf run holds a term up to half of a segment's limit, but at least this many postings (small test limits) */
 #define MIN_RUN_POSTINGS	64
+
+/* Bytes of the pool a doc takes for each byte of its text, at most (3 for a position, 1024 for a term of every 2 bytes) */
+#define SMALL_DOC_BYTES	1100
 
 /*
  * What a term takes of a segment, at most: a posting 8 bytes of its blob besides its position record, a
@@ -247,7 +252,7 @@ inv_init(SiftInvBuf *b)
 	b->blocks = palloc(POOL_MAX_BLOCKS * sizeof(uint8 *));
 	b->nblocks = 0;
 	b->pool_next = 0;
-	b->maxdf = 0;
+	b->term_full = false;
 	b->doc_terms = NULL;
 	b->maxdoc_terms = 0;
 	MemoryContextSwitchTo(old);
@@ -261,8 +266,10 @@ sift_inv_create(Size budget, MemoryContext mcxt, bool positions)
 	b->positions = positions;
 	b->parent = mcxt;
 	b->budget = Max(budget, 1024 * 1024);
-	b->maxdf_full = Max(Min(Min(Max(sift_seg_postings(b->budget) / 4, MIN_RUN_POSTINGS), SIFT_BLOB_MAX / (4 * BLOB_POSTING_BYTES)),
+	b->maxdf_full = Max(Min(Min(Max(sift_seg_postings(b->budget) / 2, MIN_RUN_POSTINGS), SIFT_BLOB_MAX / (4 * BLOB_POSTING_BYTES)),
 							PG_INT32_MAX), 1);
+	b->pool_room = Max(pool_max() / 32, 3);
+	b->small_doc = (Size) (b->pool_room - 2) * POOL_BLOCK / SMALL_DOC_BYTES;
 	b->mcxt = AllocSetContextCreate(mcxt, "sift inverted buffer", ALLOCSET_DEFAULT_SIZES);
 	inv_init(b);
 	return b;
@@ -282,24 +289,43 @@ inv_mem(const SiftInvBuf *b)
 		(Size) (b->mask + 1) * sizeof(uint64) + b->tcap + (Size) b->nblocks * POOL_BLOCK;
 }
 
+static inline bool
+inv_full(const SiftInvBuf *b)
+{
+	return inv_mem(b) >= b->budget || b->nblocks + b->pool_room >= pool_max() ||
+		b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
+		b->term_full || b->tlen + (Size) b->nterms * DICT_ENTRY_BYTES >= SIFT_DICT_MAX / 4;
+}
+
 bool
 sift_inv_full(const SiftInvBuf *b)
 {
-	return inv_mem(b) >= b->budget || b->nblocks >= pool_max() - 1 || b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
-		b->tlen >= PG_INT32_MAX ||
-		b->maxdf >= b->maxdf_full || b->tlen + (Size) b->nterms * DICT_ENTRY_BYTES >= SIFT_DICT_MAX / 4;
+	return inv_full(b);
 }
 
 /*
- * Can the buffer take this doc? Its key must be above the last one's, and its terms must not exhaust the
- * pool, which the doc is not stopped by once added: a term takes a slice of 8 bytes, or one of up to 2 kB
- * when its slice is full, and each position at most 5 bytes of a record (a token takes 2 bytes of text).
+ * Can the buffer take a doc of nterms terms and textlen bytes of text? Its terms must not exhaust the pool, which the doc
+ * is not stopped by once added: a term takes a slice of 8 bytes, or one of up to 2 kB when its slice is full, and each
+ * position at most 5 bytes of a record. A buffer that is not full always has room for a doc of fewer than small_doc bytes
+ * (a token takes 2 bytes of text at least), so only larger ones need the check.
  */
 bool
-sift_inv_fits(const SiftInvBuf *b, ItemPointer tid, int nterms, Size textlen)
+sift_inv_fits(const SiftInvBuf *b, int nterms, Size textlen)
 {
-	return (b->ndocs == 0 || sift_key_from_tid(tid) > DOC_KEY(b->docs[b->ndocs - 1])) &&
-		(Size) b->nblocks * POOL_BLOCK + (Size) nterms * 2048 + 3 * textlen + 2 * POOL_BLOCK <= (Size) pool_max() * POOL_BLOCK;
+	return (Size) b->nblocks * POOL_BLOCK + (Size) nterms * 2048 + 3 * textlen + 2 * POOL_BLOCK <= (Size) pool_max() * POOL_BLOCK;
+}
+
+Size
+sift_inv_small_doc(const SiftInvBuf *b)
+{
+	return b->small_doc;
+}
+
+/* Is tid's key above that of the last doc? Docs must be added in ascending order */
+bool
+sift_inv_after(const SiftInvBuf *b, ItemPointer tid)
+{
+	return b->ndocs == 0 || sift_key_from_tid(tid) > DOC_KEY(b->docs[b->ndocs - 1]);
 }
 
 bool
@@ -464,7 +490,7 @@ term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 	return &b->terms[b->nterms - 1];
 }
 
-void
+bool
 sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
 {
 	SiftKey		key = sift_key_from_tid(tid);
@@ -516,8 +542,10 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 				slice_put(b, t, terms[i].pos[k]);
 		t->last = ord;
 		t->df++;
-		b->maxdf = Max(b->maxdf, t->df);
+		if (t->df >= b->maxdf_full)
+			b->term_full = true;
 	}
+	return inv_full(b);
 }
 
 /* Next posting of a term: doc ordinal and tf (see term_chunk) */
@@ -633,6 +661,7 @@ batch_flush(Batch *bt)
 	else if (bt->n)
 		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n, bt->haspos ? bt->pos : NULL, bt->plen);
 	bt->n = 0;
+	bt->termpos += bt->poslen;
 	bt->poslen = 0;
 }
 
@@ -653,7 +682,6 @@ batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 
 		memcpy(bt->pos + bt->poslen, rec, len);
 		bt->plen[bt->n] = len;
 		bt->poslen += len;
-		bt->termpos += len;
 	}
 	if (++bt->n == BATCH)
 		batch_flush(bt);
@@ -796,6 +824,8 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 	SortTerm   *order = sorted_terms(b);
 	SiftKey		prev = 0;
 	PosChunk   *pc = palloc0(sizeof(PosChunk));
+	uint64		maxblob = 0,
+				maxdf = 0;
 
 	run->ndocs = b->ndocs;
 	io_varint(&io, b->ndocs);
@@ -840,12 +870,16 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 			}
 			posbytes += off;
 		}
-		run_note_term(run, t->len, t->df, posbytes);
+		maxdf = Max(maxdf, t->df);
+		maxblob = Max(maxblob, t->df * BLOB_POSTING_BYTES + posbytes);
 		if (i % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
 	io_varint(&io, 0);
 	io_flush(&io);
+	run->maxdf = maxdf;
+	run->maxblob = maxblob;
+	run->dict = b->tlen + (uint64) b->nterms * DICT_ENTRY_BYTES;
 	MemoryContextSwitchTo(old);
 	inv_reset(b);
 	return run;
