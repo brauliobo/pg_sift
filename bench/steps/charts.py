@@ -252,21 +252,13 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
 
 
 def host(rows, tier, datasets):
-    """the CPU budget of the runs behind a chart (the cpu_budget rows of tables.py), once when the datasets agree"""
-    texts = []
-    for (d, t, e, _c, var, metric), (cpus, load_cpus, engines, _se, _n) in rows.items():
-        if (t, e, metric) != (tier, '-', 'cpu_budget') or d not in datasets:
-            continue
-        kv = dict(w.split('=', 1) for w in var.split(';'))
-        if kv['servers'] == kv['load']:
-            text = ('CPUs ' if kv['servers'][0].isdigit() else '') + kv['servers']
-        elif kv['mode'] == 'serial':
-            text = f'serial, {int(cpus)} + {load_cpus} CPUs'
-        else:
-            text = f'{engines} lanes of {int(cpus)} + {load_cpus} CPUs'
-        if text not in texts:
-            texts.append(text)
-    return 'CPUs: ' + ' / '.join(texts) if texts else 'CPUs not recorded'
+    """the machine behind a chart (the session row of tables.py): CPU model and threads"""
+    for (d, t, e, _c, var, metric) in rows:
+        if (t, e, metric) == (tier, '-', 'session') and d in datasets:
+            kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
+            if kv.get('cpu'):
+                return f"{kv['cpu']}, {kv.get('threads', '?')} threads"
+    return 'host not recorded'
 
 
 def caption(rows, tier, datasets, what):

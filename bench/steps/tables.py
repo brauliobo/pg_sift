@@ -13,9 +13,6 @@ engine ids. Writes to OUTDIR:
                 (writer operations per second) and wal_mib (WAL written during the cell).
                 places: class = p1..p4|w1|a2|a2s|a3|x2, variant = top|boost|filter|count|scan, metric = p50_ms
                 or p95_ms (single client, median over the rounds).
-                the CPU budget of a session (host row, engine -): metric = cpu_budget, value = server CPUs of an engine, min = its load
-                generator CPUs, max = engines measured, variant = `servers=<list>;load=<list>;mode=concurrent|serial;lane_servers=<list>;
-                lane_load=<list>;engines=<n>` (the machine description of the run has it as `cpu budget:`).
                 both: class = variant = - and metric = index_mib | build_s | setup_s | heap_growth_mib (one
                 build per engine; build_s is CREATE INDEX, setup_s the work before it, heap_growth_mib the
                 table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
@@ -50,6 +47,7 @@ UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
+METHOD = 'Method: one engine at a time on every CPU of the host (the servers of the other engines idle), the engines interleaved in rounds, the same clients for all.'
 FLAG = 0.10   # a relative standard error above this is flagged in the tables and the charts
 
 
@@ -171,31 +169,6 @@ def host_rows(dataset, tier, path):
     return out
 
 
-def budget_of(path):
-    """the cpu budget line of the machine description of a result directory as a row, None when it has none"""
-    try:
-        line = next(l for l in open(os.path.join(path, 'machine.txt')) if l.startswith('cpu budget: '))
-    except (OSError, StopIteration):
-        return None
-    kv = dict(w.split('=', 1) for w in line[len('cpu budget: '):].split() if '=' in w)
-    if not {'lane_servers', 'lane_load', 'engines'} <= kv.keys():
-        return None
-    count = lambda cpus: 0 if cpus == 'all' else sum(int(b) - int(a) + 1 for a, b in (x.split('-') if '-' in x else (x, x) for x in cpus.split(',')))
-    variant = ';'.join('%s=%s' % (k, kv[k]) for k in ('servers', 'load', 'mode', 'lane_servers', 'lane_load', 'engines') if k in kv)
-    return count(kv['lane_servers']), count(kv['lane_load']), int(kv['engines']), variant
-
-
-def budget_text(row):
-    """the CPU budget of a cpu_budget row in words"""
-    kv = dict(w.split('=', 1) for w in row[4].split(';'))
-    if kv['servers'] == kv['load']:
-        return 'servers and load generators share %s%s' % ('CPUs ' if kv['servers'][0].isdigit() else '', kv['servers'])
-    if kv['mode'] == 'serial':
-        return 'one server cluster on CPUs %s, load generators on CPUs %s' % (kv['servers'], kv['load'])
-    return '%s engines at once, each with %s server CPU(s) and %s load generator CPU(s), rotated every round (servers %s, load generators %s)' % (
-        row[8], row[6], row[7], kv['servers'], kv['load'])
-
-
 def get(rows, dataset, tier, engine, cls='-', variant='-', metric=None):
     return next((r for r in rows if r[:6] == (dataset, tier, engine, cls, variant, metric)), None)
 
@@ -307,8 +280,7 @@ def md_cold(rows, dataset, tier):
     cell = lambda e, k: sel[(e,) + k + ('cold_p50_ms',)] + ' / ' + sel[(e,) + k + ('cold_max_ms',)] if (e,) + k + ('cold_p50_ms',) in sel else 'NA'
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
-    budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); ' + METHOD, '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 
@@ -327,9 +299,6 @@ def main(argv):
         dataset, tier, path = spec.split(':', 2)
         r, b, load = (articles if dataset == 'articles' else places)(tier, path)
         rows += [x for x in r if keep is None or x[2] in keep]
-        if budget_of(path):
-            cpus, load_cpus, engines, variant = budget_of(path)
-            rows.append((dataset, tier, '-', '-', variant, 'cpu_budget', cpus, load_cpus, engines, 'cpus', *single(cpus)))
         builds += [x for x in b if keep is None or x[2] in keep]
         rows += host_rows(dataset, tier, path)
         loads[dataset, tier] += load
@@ -363,8 +332,7 @@ def main(argv):
             md += md_cold(rows, dataset, tier) + ['']
             continue
         load = get(rows, dataset, tier, '-', '-', '-', 'load_1m')
-        budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-        md += ['CPU budget: %s.' % budget_text(budget) if budget else 'CPU budget: not recorded.',
+        md += [METHOD,
                'Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6]), '']
         md += (md_articles if dataset == 'articles' else md_places)(rows, tier) + ['']
     open(outdir + '/tables.md', 'w').write('\n'.join(md))
