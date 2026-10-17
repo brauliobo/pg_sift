@@ -314,10 +314,21 @@ typedef struct ScanCost
 	double		docs;			/* tuples the scan fetches from the heap */
 	Cost		tuple;			/* heap access and residual quals per fetched tuple */
 	Cost		page;			/* per page of a fetch in heap order */
+	double		pass;			/* fraction of the fetched tuples that pass the scan's own quals */
 } ScanCost;
 
+/*
+ * Matches of a ranked query the planner cannot read (a parameter of a generic plan), as a fraction of
+ * the rows. The operator's default (0.5%) is made for a predicate that drops most rows; the queries a
+ * ranker is asked for hold common words (26% to 78% of the articles in the benchmark's ranked classes). Assuming too
+ * few makes a filter after the ranker look free, and the plan loses the pushdown that the literal
+ * query gets (measured: a prepared filter query 1.8 times the cycles); assuming too many costs the
+ * bitmap, which forcing the pushdown on every query of the class measured at 12%.
+ */
+#define UNKNOWN_QUERY_SEL		0.1
+
 static void
-scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, ScanCost *sc)
+scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost *sc)
 {
 	QualCost	qual;
 	double		random_cost,
@@ -326,7 +337,10 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, ScanCost *sc)
 				fetched;
 
 	index_work(c->index->indexoid, c->index->reltablespace, c->queries, &sc->idx);
-	sc->docs = sc->idx.known ? sc->idx.est.docs : rel->rows;
+	if (sc->idx.known)
+		sc->docs = sc->idx.est.docs;
+	else
+		sc->docs = ranked ? rel->tuples * UNKNOWN_QUERY_SEL : rel->rows;
 	sc->docs = Min(Max(sc->docs, rel->rows), Max(rel->tuples, 1));
 	cost_qual_eval(&qual, c->residual, root);
 	sc->tuple = cpu_tuple_cost + qual.per_tuple;
@@ -335,6 +349,8 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, ScanCost *sc)
 	sc->page = random_cost - (random_cost - seq_cost) * sqrt(fetched / pages);
 	sc->docs = Max(sc->docs, 1);
 	sc->tuple += fetched / sc->docs * sc->page;
+	/* rows holds the default match fraction when the query is unknown: the quals' own selectivity is what passes */
+	sc->pass = sc->idx.known || !ranked ? Min(rel->rows / sc->docs, 1.0) : clauselist_selectivity(root, c->residual, rel->relid, JOIN_INNER, NULL);
 }
 
 static CustomPath *
@@ -489,7 +505,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 				startup;
 
 	Assert(!push || nworkers == 0);
-	scan_cost(root, rel, c, &sc);
+	scan_cost(root, rel, c, mode == SIFT_MODE_RANKED, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
@@ -505,7 +521,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	verify = sc.docs * sc.tuple;
 	if (mode == SIFT_MODE_RANKED)
 	{
-		pass = Min(rel->rows / sc.docs, 1.0);
+		pass = sc.pass;
 		if (filter)
 			sift_filter_estimate(root, rel, filter, &fe);
 		if (push)
@@ -862,7 +878,7 @@ count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Sca
 	Cost		dict,
 				shared;
 
-	scan_cost(root, input_rel, c, &sc);
+	scan_cost(root, input_rel, c, false, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
 	shared = (sc.idx.known ? sc.idx.cost - dict : 0) +

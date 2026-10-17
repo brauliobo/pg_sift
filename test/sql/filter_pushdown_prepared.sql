@@ -1,0 +1,75 @@
+-- A prepared statement's generic plan is made without its query, so the planner cannot count the matches that its filter
+-- has to cut down. It prices the plans for a query that holds a tenth of the rows, so that the filter-mask pushdown is
+-- chosen as for a literal common query when the filter is selective, and a loose filter stays after the ranker; the rows,
+-- scores and ties are those of the plan with the literal query in every mode (DESIGN.md, extras item 10).
+CREATE EXTENSION pg_sift;
+
+-- the plan of a prepared query with a filter, as a generic plan (the query unknown) or a custom one (the query bound)
+CREATE FUNCTION fp_kind(flt text, generic boolean, mode text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	p text := '';
+BEGIN
+	PERFORM set_config('sift.filter_pushdown', mode, true);
+	PERFORM set_config('plan_cache_mode', CASE WHEN generic THEN 'force_generic_plan' ELSE 'force_custom_plan' END, true);
+	EXECUTE format('PREPARE fp_q(text) AS SELECT id FROM fp WHERE body @@> $1 AND (%s) ORDER BY sift.score(ctid) DESC LIMIT 10', flt);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) EXECUTE fp_q(''common'')' LOOP
+		p := p || l;
+	END LOOP;
+	DEALLOCATE fp_q;
+	RETURN CASE WHEN p !~ 'SiftScan' THEN 'other' WHEN p ~ 'Bitmap Index Scan' THEN 'pushdown' ELSE 'post-filter' END;
+END $$;
+
+-- the top rows of a prepared query as generic plan under a mode: ctid and score of each, in order
+CREATE FUNCTION fp_top(flt text, generic boolean, mode text, k int DEFAULT 10) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r record;
+	t text := '';
+BEGIN
+	PERFORM set_config('sift.filter_pushdown', mode, true);
+	PERFORM set_config('plan_cache_mode', CASE WHEN generic THEN 'force_generic_plan' ELSE 'force_custom_plan' END, true);
+	EXECUTE format('PREPARE fp_t(text) AS SELECT ctid AS c, sift.score(ctid) AS s FROM fp WHERE body @@> $1 AND (%s)
+		ORDER BY sift.score(ctid) DESC LIMIT %s', flt, k);
+	FOR r IN EXECUTE 'EXECUTE fp_t(''common OR filler3'')' LOOP
+		t := t || r.c || ':' || r.s || ',';
+	END LOOP;
+	DEALLOCATE fp_t;
+	RETURN t;
+END $$;
+
+-- 24000 rows: id is the heap order, scat a permutation of it (no correlation with the heap), grp 40 groups; 'common' is in
+-- 3 of 5 rows, with a length and a count of the word that vary so that the scores do too
+CREATE TABLE fp (id int PRIMARY KEY, scat int, grp int, body text, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO fp
+SELECT i, (i * 7919) % 24001, i % 40,
+	CASE WHEN i % 5 < 3 THEN repeat('common ', 1 + i % 3) ELSE '' END || 'w' || i % 97 || repeat(' filler' || i % 11, 1 + i % 13), repeat('p', 100)
+FROM generate_series(1, 24000) i;
+CREATE INDEX fp_body ON fp USING sift (body);
+CREATE UNIQUE INDEX fp_scat ON fp (scat);
+CREATE INDEX fp_grp ON fp (grp);
+ANALYZE fp;
+
+CREATE TABLE fp_filters (flt text PRIMARY KEY, what text);
+INSERT INTO fp_filters VALUES
+	('id BETWEEN 20401 AND 21600', '5% at the end of the heap'),
+	('id BETWEEN 1 AND 1200', '5% at the start of the heap'),
+	('scat BETWEEN 1 AND 1200', '5% spread over the heap'),
+	('grp = 7', '2.5% in every page'),
+	('id >= 7201', 'the last 70%'),
+	('scat BETWEEN 1 AND 18000', '75% spread over the heap'),
+	('grp < 30', '75% in every page');
+
+-- the plan of the generic statement and of the one with the query bound, for each filter
+SELECT f.what, fp_kind(f.flt, true) AS generic, fp_kind(f.flt, false) AS custom FROM fp_filters f ORDER BY f.flt;
+
+-- the answers do not depend on the plan: generic or custom, with the pushdown off, on or forced
+SELECT f.what, count(DISTINCT fp_top(f.flt, g, m)) = 1 AS same_top10
+FROM fp_filters f, (VALUES (true), (false)) gen(g), (VALUES ('off'), ('on'), ('force')) mode(m)
+GROUP BY f.flt, f.what ORDER BY f.flt;
+
+-- off and force say so in a generic plan too
+SELECT fp_kind('scat BETWEEN 1 AND 1200', true, 'off') AS off, fp_kind('scat BETWEEN 18001 AND 24000', true, 'force') AS forced;
+
+DROP TABLE fp, fp_filters;
+DROP FUNCTION fp_kind(text, boolean, text), fp_top(text, boolean, text, int);
+DROP EXTENSION pg_sift;
