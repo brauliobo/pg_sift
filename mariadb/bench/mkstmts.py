@@ -4,7 +4,8 @@
 
 FILE of the sift-ref and sift-qmatches kinds: lines "id TAB siftql query" (genq.py). FILE of the others: the benchmark
 trace, lines "id TAB mode TAB term term ..." (mode and/or/phrase, the plain lowercase words of a substring of an
-article); CLASS keeps only that mode, --limit keeps the first N lines of it. Kinds:
+article); CLASS keeps only that mode, --limit keeps N evenly spaced lines of it (line floor(i * size / N), i < N: the same
+queries for every kind, so that the engines run the same sample; all of them if there are at most N). Kinds:
   sift-topk      top-k joined with the table, the way an application would use it (JSON_TABLE + join, ordered by rank)
   sift-topk-dt   the same with the UDF in a derived table, so that it is evaluated once
   sift-raw       the UDF alone: SELECT sift_topk(...)
@@ -71,23 +72,23 @@ def inno_stmt(kind, qid, mode, terms, k, table):
     raise SystemExit('unknown kind ' + kind)
 
 
+def sample(lines, limit):
+    n = len(lines)
+    return lines if n <= limit else [lines[i * n // limit] for i in range(limit)]
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     opt = {a.split('=')[0]: a.split('=')[1] for a in sys.argv[1:] if a.startswith('--') and '=' in a}
     kind, path = args[0], args[1]
     only = args[2] if len(args) > 2 else None
     index, k, limit = opt.get('--index', 'wiki'), int(opt.get('--k', 10)), int(opt.get('--limit', 1 << 30))
-    n = 0
-    for line in open(path, encoding='utf-8'):
-        f = line.rstrip('\n').split('\t')
-        if kind == 'sift-ref':
+    rows = [line.rstrip('\n').split('\t') for line in open(path, encoding='utf-8')]
+    if kind == 'sift-ref':
+        for f in rows:
             print(sift_stmt(kind, f[0], lit(f[1]), index, k))
-            continue
-        if only and f[1] != only:
-            continue
-        n += 1
-        if n > limit:
-            break
+        return
+    for f in sample([f for f in rows if not only or f[1] == only], limit):
         terms = f[2].split()
         if kind.startswith('sift-'):
             print(sift_stmt(kind, f[0], lit(siftql(f[1], terms)), index, k))
