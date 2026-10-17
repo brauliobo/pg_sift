@@ -247,38 +247,51 @@ class Merge(TmpDb):
 
 
 class Parallel(TmpDb):
+    """Scans over enough postings to be shared (every document has c1..c4), against the same scans run serially."""
+    QS = ['c1 OR c2 OR c3 OR c4 OR c5 OR c6', 'c1 OR c2 OR c3 OR c4 OR c5 OR c6 OR w7', 'c1 AND c2 AND c3 AND c4 AND c5 AND c6',
+          'w4 OR w5', '"c1 c2 c3 c4"', '"c1 c2 c3 c4" OR w9', 'c1 OR w1*', 'c1 OR c2 NOT w2']
+
+    def fill(self, db, n=30000, vocab=500):
+        rnd = random.Random(2)
+        db.execute('BEGIN')
+        for i in range(1, n + 1):
+            db.execute('INSERT INTO t(rowid, body) VALUES (?, ?)',
+                       (i, 'c1 c2 c3 c4 c5 c6 c7 c8 ' + ' '.join('w%d' % rnd.randrange(vocab) for _ in range(8))))
+            if i % 10000 == 0:
+                db.execute('COMMIT')
+                db.execute('BEGIN')
+        db.execute('COMMIT')
+
+    def answers_of(self, db):
+        return [(db.execute('SELECT rowid, rank FROM t WHERE t MATCH ? ORDER BY rank LIMIT 25', (q,)).fetchall(),
+                 db.execute('SELECT sift_count(?, ?)', ('t', q)).fetchone()[0], ids(db, q)) for q in self.QS]
+
     def test_parallel_scans_equal_serial_ones(self):
         db = connect(self.path)
         db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, cache_size=262144, automerge=0)')
-        fill(db, 3000, per_txn=600, vocab=500)
-        qs = QUERIES + ['w%d OR w%d OR w%d' % (i, i + 1, i + 2) for i in range(0, 90, 9)] + ['w4*', 'w1 AND NOT w2']
-        want = [(top(db, q, 25), db.execute("SELECT rowid, rank FROM t WHERE t MATCH ? ORDER BY rank LIMIT 25", (q,)).fetchall(),
-                 db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in qs]
+        self.fill(db)
+        want = self.answers_of(db)
         self.assertEqual(stat(db)['parallel_scans'], 0)
-        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 4)")
-        got = [(top(db, q, 25), db.execute("SELECT rowid, rank FROM t WHERE t MATCH ? ORDER BY rank LIMIT 25", (q,)).fetchall(),
-                db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in qs]
-        self.assertEqual(got, want)
+        for n in (2, 4, 8):
+            db.execute("INSERT INTO t(t, rank) VALUES ('parallel', ?)", (n,))
+            self.assertEqual(self.answers_of(db), want, n)
         s = stat(db)
-        self.assertGreater(s['parallel_scans'], len(qs))
+        self.assertGreater(s['parallel_scans'], 15)
         self.assertEqual(s['pin_leaks'], 0)
         self.assertEqual(s['pinned'], 0)
 
-    def test_phrases_and_small_caches_stay_serial(self):
+    def test_small_scans_and_small_caches_stay_serial(self):
         db = connect(self.path)
         db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, chunk=8192, parallel=4, cache_size=1)')
-        fill(db, 20000, vocab=4000)
-        ids(db, 'w1 OR w2')
-        top(db, 'w3 OR w4')
+        self.fill(db, 30000, vocab=4000)
+        top(db, 'c1 OR c2 OR c3 OR c4 OR c5 OR c6')
+        self.assertGreater(stat(db)['bytes'], 64 * 8192)
         self.assertEqual(stat(db)['parallel_scans'], 0)
-        db.execute("INSERT INTO t(t, rank) VALUES ('cache-size', 262144)")
-        top(db, 'w3 OR w4')
-        self.assertEqual(stat(db)['parallel_scans'], 1)
-        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 0)")
-        phrases = ['w1 OR "w2 w3"', 'w1 AND "w2 w3"', '"w5 w6"']
-        want = [(top(db, q), ids(db, q)) for q in phrases]
-        db.execute("INSERT INTO t(t, rank) VALUES ('parallel', 4)")
-        self.assertEqual([(top(db, q), ids(db, q)) for q in phrases], want)
+        small = connect(':memory:')
+        small.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none, parallel=4, cache_size=262144)')
+        fill(small, 500, vocab=50)
+        top(small, 'w1 OR w2')
+        self.assertEqual(stat(small)['parallel_scans'], 0)
 
 
 class Content(TmpDb):

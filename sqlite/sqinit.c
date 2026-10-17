@@ -130,7 +130,7 @@ fn_count(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 		state = sift_state_open(sq_store_rel(vt->st), CurrentMemoryContext);
 		qs[0] = sift_state_query(state, q ? q : "", sqlite3_value_bytes(argv[1]));
 		plan = sift_plan_bind(state, qs, 1, 0);
-		if (sq_par_available(vt, plan))
+		if (sq_par_count_pays(qs[0]) && sq_par_available(vt, plan, &(SqQuery) {q ? q : "", sqlite3_value_bytes(argv[1])}, 1))
 			n = sq_par_count(vt, &(SqQuery) {q ? q : "", sqlite3_value_bytes(argv[1])}, 1);
 		else
 		{

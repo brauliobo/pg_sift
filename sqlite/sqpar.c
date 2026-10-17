@@ -16,6 +16,7 @@
 #include "sift_parallel.h"
 
 #define PAR_MAX		16
+#define PAR_MIN_POSTINGS	100000
 
 /* ---------- a pool of threads that run the participants of a scan ---------- */
 
@@ -288,10 +289,40 @@ scan_free(Scan *s)
 
 /* ---------- entry points ---------- */
 
-int
-sq_par_available(SqVtab *vt, SiftPlan *plan)
+/* Counting is bitmap arithmetic, microseconds: only a phrase, which decodes positions, takes long enough to share */
+static bool
+has_phrase(const SiftQNode *n)
 {
-	return vt->parallel >= 2 && plan != NULL && !sift_plan_recheck_needed(plan) && sq_store_preload(vt->st);
+	for (int i = 0; n->kind != SQ_PHRASE && i < n->nchild; i++)
+		if (has_phrase(n->child[i]))
+			return true;
+	return n->kind == SQ_PHRASE;
+}
+
+bool
+sq_par_count_pays(const SiftQuery *q)
+{
+	return has_phrase(q->root);
+}
+
+/* Postings a query reads below which handing the work to threads costs more than it saves */
+static bool
+big_enough(SqVtab *vt, const SqQuery *q, int nq)
+{
+	text	  **t = palloc(nq * sizeof(text *));
+	SiftEstimate est;
+
+	for (int i = 0; i < nq; i++)
+		t[i] = cstring_to_text_with_len(q[i].text, q[i].len);
+	sift_eval_estimate(sq_store_rel(vt->st), t, nq, &est);
+	return est.postings >= PAR_MIN_POSTINGS;
+}
+
+int
+sq_par_available(SqVtab *vt, SiftPlan *plan, const SqQuery *q, int nq)
+{
+	return vt->parallel >= 2 && plan != NULL && !sift_plan_recheck_needed(plan) && sq_store_preload(vt->st) &&
+		big_enough(vt, q, nq);
 }
 
 SqHit *

@@ -112,8 +112,9 @@ typedef struct SqQuery
 	int			len;
 } SqQuery;
 
-extern int	sq_par_available(SqVtab *vt, SiftPlan *plan);
+extern int	sq_par_available(SqVtab *vt, SiftPlan *plan, const SqQuery *q, int nq);
 extern SqHit *sq_par_rank(SqVtab *vt, const SqQuery *q, int nq, int64_t k, int64_t *nhits);
+extern bool sq_par_count_pays(const SiftQuery *q);
 extern int64_t sq_par_count(SqVtab *vt, const SqQuery *q, int nq);
 
 #endif							/* SQVTAB_H */

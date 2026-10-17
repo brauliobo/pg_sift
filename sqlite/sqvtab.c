@@ -980,7 +980,7 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 		int64_t		k = ranked_limit(idx, &a, argv);
 
 		c->mode = SC_RANK;
-		if (k > 0 && sq_par_available(vt, c->plan))
+		if (k > 0 && sq_par_available(vt, c->plan, texts, nmatch))
 			c->hits = sq_par_rank(vt, texts, nmatch, k, &c->nhits);
 		if (c->hits == NULL)
 			c->ranker = sift_rank_begin(c->plan, k, sq_vt_verify, vt);
