@@ -21,13 +21,15 @@ engine ids. Writes to OUTDIR:
                 table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
                 columns and indexes of an emulated workload (places: rum boost, pg_textsearch ranked prefixes)
                 are the same metrics with variant = emulation.
-                cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of 12 queries per class
+                cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of up to 12 queries per class
                 (articles: class = and|or|..., variant = -; places: class = p1.., variant = the workload).
                 A value of NA means the engine cannot run the class, error that its statement failed.
                 The uncertainty of a cell: n is the number of interleaved rounds, values their results (comma separated, round
-                order), stderr the standard error of the cell, the sample standard deviation of the rounds divided by sqrt(n),
-                NA for n < 2 (one build per engine, cold-cache cells, rows written before these columns existed). With n = 2-3
-                it is a rough indication, not a confidence interval: the range (min, max) is the other half of the picture.
+                order), stderr the standard error of the cell: the larger of the sample standard deviation of the rounds divided
+                by sqrt(n) and the error the rounds' own standard errors leave, sqrt(sum se^2) / n (cells.tsv has the se of each
+                round: batch means of the queries per second, order statistics of the p50, steps/cell.py; directories written before
+                that have the first only). NA for n < 2 without a round error (one build per engine, cold-cache cells). With n = 2-3
+                the first is a rough indication, not a confidence interval: the range (min, max) is the other half of the picture.
   builds.tsv    dataset tier engine setup_s build_s index_bytes heap_growth_bytes (unrounded)
   tables.md     the same as Markdown tables, index size and build time next to the throughput / latency
 
@@ -42,7 +44,7 @@ with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 ORDER = list(NAME)
 MIB = 1048576
 UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
-COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = sd / sqrt(n) over the n interleaved rounds, NA below 2; values = the rounds; bench/steps/tables.py)'
+COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
 FLAG = 0.10   # a relative standard error above this is flagged in the tables and the charts
@@ -69,16 +71,19 @@ def short(v):
     return 'error' if v != v else ('%.3f' % v).rstrip('0').rstrip('.')
 
 
-def stats(values):
+def stats(values, errors=()):
     """(median, min, max, stderr, n, values) of the per-round numbers: NA when it holds None, error when it holds NaN;
-    stderr = sample standard deviation / sqrt(n), NA for a single round"""
+    stderr = the larger of the sample standard deviation / sqrt(n) (a single round has none) and sqrt(sum se^2) / n over the
+    standard errors of the rounds (errors, in the unit of the values; none when a round has none), NA without either"""
     n, rounds = str(len(values)), ','.join('NA' if v is None else short(v) for v in values)
     if any(v is None for v in values):
         return 'NA', 'NA', 'NA', 'NA', n, rounds
     if any(v != v for v in values):
         return 'error', 'error', 'error', 'NA', n, rounds
-    se = '%.4g' % (st.stdev(values) / math.sqrt(len(values))) if len(values) > 1 else 'NA'
-    return st.median(values), min(values), max(values), se, n, rounds
+    spread = st.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else None
+    own = math.sqrt(sum(e * e for e in errors)) / len(values) if len(errors) == len(values) and all(e is not None for e in errors) else None
+    known = [e for e in (spread, own) if e is not None]
+    return st.median(values), min(values), max(values), '%.4g' % max(known) if known else 'NA', n, rounds
 
 
 def single(value):
@@ -93,16 +98,16 @@ def cold_rows(dataset, tier, cells):
 
 def articles(tier, path):
     if tier.endswith('-cold'):   # workload class engine p50_ms max_ms
-        return cold_rows('articles', tier, [tuple(r) for r in rows_of(path + '/cold.tsv')]), [], []
+        return cold_rows('articles', tier, [tuple(r[:5]) for r in rows_of(path + '/cold.tsv')]), [], []
     out, builds = [], []
-    cells = rows_of(path + '/cells.tsv')   # round load class engine metric value
+    cells = rows_of(path + '/cells.tsv')   # round load class engine metric value [se n secs]
     engines = list(dict.fromkeys(c[3] for c in cells))
     keys = list(dict.fromkeys((c[2], c[4]) for c in cells))
     for e in engines:
         for c, m in keys:
             sel = [x for x in cells if (x[2], x[3], x[4]) == (c, e, m) and x[5] != 'NA']
             v = [num(x[5]) if m != 'qps' or num(x[5]) else float('nan') for x in sel]   # a qps of 0: a client failed
-            t = stats(v) if v else ('NA',) * 4 + ('0', 'NA')
+            t = stats(v, [num(x[6]) if len(x) > 6 else None for x in sel]) if v else ('NA',) * 4 + ('0', 'NA')
             out.append(('articles', tier, e, c, '-', m, *t[:3], UNIT[m], *t[3:]))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth
         builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], '-'))
@@ -117,7 +122,7 @@ def places(tier, path):
     for wl, c, e in dict.fromkeys((c[2], c[3], c[4]) for c in cells):
         sel = [x for x in cells if (x[2], x[3], x[4]) == (wl, c, e)]
         for metric, col in (('p50_ms', 5), ('p95_ms', 6)):
-            t = stats([None if x[col] == 'NA' else num(x[col]) for x in sel])
+            t = stats([None if x[col] == 'NA' else num(x[col]) for x in sel], [num(x[7]) if metric == 'p50_ms' and len(x) > 7 else None for x in sel])
             out.append(('places', tier, e, c, wl, metric, *t[:3], 'ms', *t[3:]))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # engine build_s index_bytes heap_growth setup_s variant
         builds.append(('places', tier, b[0], b[4], b[1], b[2], b[3], b[5]))
@@ -260,7 +265,7 @@ def md_cold(rows, dataset, tier):
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
     budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of 12 queries per cell; CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 

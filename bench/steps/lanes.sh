@@ -98,6 +98,10 @@ lane_key() { # ENGINE INPUTS...: INPUTS are files (and strings) the build of the
       echo "$TIER $(pg_config --version) $(cpu_count "${LANE_CPUS[$e]}") ${BUILD_WORKERS:-}"
     } | sha256sum | cut -c1-20 )
 }
+serial_key() { # INPUTS...: the key of the one cluster of a serial session, the databases of every engine of $ENGINES in it
+  local e
+  for e in $ENGINES; do lane_key "$e" "$@"; done | sha256sum | cut -c1-20
+}
 lane_cached() { [[ -z ${NO_CACHE:-} && -d $LANE_CACHE/$2 ]]; }   # ENGINE KEY
 lane_restore() { # ENGINE KEY: the data directory of the lane from the cache (the build rows go to $RUN)
   rm -rf "${LANE_DATA[$1]:?}"; mkdir -p "$(dirname "${LANE_DATA[$1]}")"

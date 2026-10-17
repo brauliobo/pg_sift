@@ -112,6 +112,7 @@ check_db() {
 # rounds FN: runs FN ROUND for MAXR rounds, stopping after MINR once the caller's `stable` holds.
 rounds() {
   local r
+  (( MAXR <= 3 )) || log "warning: MAXR=$MAXR: more than 3 rounds (the most that a run takes by default), the run takes that much longer"
   for r in $(seq "$MAXR"); do
     "$1" "$r"
     log "round $r done, load $(loadavg)"
@@ -120,40 +121,61 @@ rounds() {
   return 0
 }
 rotated() { local r=$1 n=$(( $# - 1 )) k; shift; local e=("$@"); for ((k = 0; k < n; k++)); do echo "${e[$(( (k + r) % n ))]}"; done; }   # engines in the order of round r
-# rse_cells FILE KEYCOLS VALCOL: the cells (their KEYCOLS joined by a tab, e.g. 3,4 = class and engine, one per line) of the tab
-# separated FILE (header first) that need another round: the relative standard error of the numbers of VALCOL over the rounds
-# so far (sd / sqrt(n) / mean) is above RSE (default 5%). NA cells are ignored, and so are cells with a failed run (0, nan): the
-# failure is the result, another round would only wait for the timeout again.
+# rse_cells FILE KEYCOLS VALCOL [SECOL]: the cells (their KEYCOLS joined by a tab, e.g. 3,4 = class and engine, one per line) of the
+# tab separated FILE (header first) that need another round: the relative standard error of the numbers of VALCOL over the rounds
+# so far is above RSE (default 5%). The error is the larger of sd / sqrt(n) / mean over the rounds and, with SECOL (the standard
+# error of each round's value, cell.py), the error that the rounds' own errors leave: sqrt(sum se^2) / n / mean. A cell whose
+# rounds are so uncertain on their own that MAXR rounds cannot bring it to RSE (a slow cell limited by time) is not repeated:
+# another round would cost as much as the first and move the error by a factor of sqrt(n / (n + 1)). NA cells are ignored, and so
+# are cells with a failed run (0, nan): the failure is the result, another round would only wait for the timeout again.
 rse_cells() {
-  awk -F'\t' -v rse="${RSE:-0.05}" -v kc="$2" -v vc="$3" 'BEGIN { nk = split(kc, K, ",") }
+  awk -F'\t' -v rse="${RSE:-0.05}" -v maxr="${MAXR:-3}" -v kc="$2" -v vc="$3" -v sc="${4:-0}" 'BEGIN { nk = split(kc, K, ",") }
     NR > 1 && $vc != "NA" { k = $(K[1]); for (i = 2; i <= nk; i++) k = k "\t" $(K[i])
       if (!(k in n)) order[++m] = k
-      n[k]++; if ($vc !~ /^[0-9.]+$/ || $vc == 0) bad[k] = 1; else { s[k] += $vc; q[k] += $vc * $vc } }
+      n[k]++; if ($vc !~ /^[0-9.]+$/ || $vc == 0) bad[k] = 1; else { s[k] += $vc; q[k] += $vc * $vc
+        if (sc && $sc ~ /^[0-9.]+$/) { se2[k] += $sc * $sc; rel2[k] += ($sc / $vc) ^ 2; known[k]++ } } }
     END { for (j = 1; j <= m; j++) { k = order[j]; if (bad[k]) continue
           mean = s[k] / n[k]; var = n[k] > 1 ? (q[k] - n[k] * mean * mean) / (n[k] - 1) : 0; if (var < 0) var = 0
-          if (n[k] < 2 || (mean > 0 && sqrt(var / n[k]) / mean > rse)) print k } }' "$1"
+          if (known[k] < n[k]) { if (n[k] < 2 || (mean > 0 && sqrt(var / n[k]) / mean > rse)) print k; continue }
+          between = sqrt(var / n[k]) / mean; within = sqrt(se2[k]) / n[k] / mean
+          if ((between > rse || within > rse) && sqrt(rel2[k] / n[k] / maxr) <= rse) print k } }' "$1"
 }
 
-# --- cold cache: empty the relations from shared buffers and the OS page cache, then time one statement
-# evict SQL: SQL returns the relations (regclass or oid, one per row)
-evict() {
-  q -c "SELECT pg_buffercache_evict_relation(c) FROM ($1) x(c)" >/dev/null
-  # shellcheck disable=SC2046  # one argument per relation file
-  python3 -I - "$PGDATA" $(q -c "SELECT pg_relation_filepath(c) FROM ($1) x(c)") <<'PY'
+# --- cold cache: empty the relations of a table from shared buffers and the OS page cache, then time one statement
+# cold_table TABLE: the table the cold statements read; its heap, TOAST table and indexes are evicted before each one. A data
+# directory in memory (tmpfs) has no page cache apart from the shared buffers (a file there is the page cache): nothing else to evict.
+cold_table() {
+  COLD_RELS="SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
+             UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
+  COLD_FILES=''
+  [[ $(stat -f -c %T "$PGDATA") == tmpfs ]] || COLD_FILES=$(q -c "SELECT pg_relation_filepath(c) FROM ($COLD_RELS) x(c)")
+}
+cold_ms() { # STATEMENT [psql args]: execution time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
+  local explain="EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" evict="SELECT pg_buffercache_evict_relation(c) FROM ($COLD_RELS) x(c)"
+  if [[ -z $COLD_FILES ]]; then
+    printf '%s;\n%s;\n' "$evict" "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'   # on stdin: psql variables are not interpolated in -c
+    return
+  fi
+  q -c "$evict" >/dev/null
+  # shellcheck disable=SC2086  # one argument per relation file
+  python3 -I - "$PGDATA" $COLD_FILES <<'PY'
 import glob, os, sys
 for rel in sys.argv[2:]:
     for f in glob.glob(os.path.join(sys.argv[1], rel) + '*'):
         fd = os.open(f, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)
 PY
+  echo "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'
 }
-evict_table() { # the heap, TOAST table and every index of table $1
-  evict "SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
-         UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
+# cold_cell FN: p50, maximum and the number of the times (ms, tab separated) of `FN i`, i = 1..NQ: at least COLD_MIN of them (default 5),
+# then only while the cell has used less than COLD_TIME seconds (default 3): a statement of seconds is not run twelve times
+cold_cell() {
+  local i t0; t0=$(now_ms)
+  for (( i = 1; i <= NQ; i++ )); do
+    "$1" "$i"
+    (( i < ${COLD_MIN:-5} || $(now_ms) - t0 < ${COLD_TIME:-3} * 1000 )) || break
+  done | median_max
 }
-explain_ms() { # STATEMENT [psql args]: execution time in ms
-  echo "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'
-}
-median_max() { sort -n | awk '{v[NR] = $1} END {printf "%.2f\t%.2f", v[int((NR + 1) / 2)], v[NR]}'; }   # of numbers on stdin
+median_max() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.2f\t%.2f\t%d", v[int((NR + 1) / 2)], v[NR], NR; else printf "error\terror\t0"}'; }   # p50, maximum and count of the numbers on stdin (error: none)
 
 # --- the CPU budget, identical for every engine. CPUS: the server CPUs of the cluster at hand (an engine's lane, see lanes.sh, or
 # all of them), LOAD_CPUS: the CPUs of its load generators (pgbench, xbench), disjoint from the servers'; both are cpu lists
