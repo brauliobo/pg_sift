@@ -147,7 +147,7 @@ typedef void (*StepFn) (Relation index, SiftWriteTarget *wt, const void *arg);
  * the blocks fn took in wt unreferenced, which are then returned to the free list. propagate: the
  * ERROR goes on to the caller (an explicit sift.promote() or sift.merge()); otherwise it is logged
  * as a WARNING, counted for the backoff and the step reports STEP_FAILED. Cancellation and shutdown
- * always go on.
+ * always go on. Frees recycled extents first, so the step finds contiguous space.
  */
 static StepResult
 run_step(Relation index, bool propagate, StepFn fn, const void *arg)
@@ -157,6 +157,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 	SiftWriteTarget *wt;
 	ErrorData  *err = NULL;
 
+	sift_recycle(index);
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
@@ -286,6 +287,16 @@ write_docs(Relation index, SiftWriteTarget *wt, const PromoDoc *docs, int64 ndoc
 	return true;
 }
 
+static uint64
+extents_bytes(const SiftExtent *ext, int n)
+{
+	uint64		blocks = 0;
+
+	for (int i = 0; i < n; i++)
+		blocks += ext[i].nblocks;
+	return blocks * BLCKSZ;
+}
+
 static void
 promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 {
@@ -302,6 +313,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_mut_flag_sealed(index, sealed);
 	pages = sift_mut_pages(index, sealed, &npages);
+	sift_wt_expect(wt, extents_bytes(pages, npages));
 	docs = read_docs(index, sealed, &ndocs);
 	any = write_docs(index, wt, docs, ndocs, sift_store_new_gen(index), &neu);
 	sift_wt_finish(wt);
@@ -400,6 +412,11 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 				nruns = 0;
 	SiftSegEntry neu;
 	Switch		sw = {.old = gens,.nold = in->n};
+	uint64		bytes = 0;
+
+	for (int i = 0; i < in->n; i++)
+		bytes += in->seg[i].bytes;
+	sift_wt_expect(wt, bytes);
 	for (int i = 0; i < in->n; i++)
 	{
 		SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
@@ -674,31 +691,46 @@ sift_maint_after_seal(Relation index)
 	pfree(snap);
 }
 
+/*
+ * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees
+ * are reusable by the next step, because neither its xid nor its xmin hold the horizon back once
+ * it committed.
+ */
+static bool
+worker_step(Oid indexoid)
+{
+	Relation	index;
+	StepResult	r = STEP_IDLE;
+
+	StartTransactionCommand();
+	index = try_index_open(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
+		if (index->rd_rel->relam == sift_catalog()->am && maint_lock(index, false))
+		{
+			if ((r = promote_next(index, false)) == STEP_IDLE)
+				r = merge_next(index, false, false);
+			maint_unlock(index);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	CommitTransactionCommand();
+	return r == STEP_DONE;
+}
+
 void
 sift_maint_worker_main(Datum main_arg)
 {
 	Oid			indexoid = DatumGetObjectId(main_arg);
 	Oid			dboid;
-	Relation	index;
 
 	memcpy(&dboid, MyBgworkerEntry->bgw_extra, sizeof(Oid));
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
-	StartTransactionCommand();
-	PushActiveSnapshot(GetTransactionSnapshot());
-	index = try_index_open(indexoid, RowExclusiveLock);
-	if (index != NULL && index->rd_rel->relam == sift_catalog()->am)
-	{
-		/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
-		while (sift_maint_promote(index, false) > 0 || sift_maint_merge_step(index, false))
-			CHECK_FOR_INTERRUPTS();
-		index_close(index, RowExclusiveLock);
-	}
-	else if (index != NULL)
-		index_close(index, RowExclusiveLock);
-	PopActiveSnapshot();
-	CommitTransactionCommand();
+	while (worker_step(indexoid))
+		CHECK_FOR_INTERRUPTS();
 }
 
 /* ---------- SQL ---------- */

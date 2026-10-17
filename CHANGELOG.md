@@ -10,6 +10,12 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   merge for room no longer fail with the step: the error is logged as a `WARNING` and counted for the delay. An explicit `sift.promote()` or
   `sift.merge()` still raises it. A background worker that cannot be registered is logged. The wrapper and the delay add nothing to the
   insert path or to a step that succeeds.
+- Fix: the file of an index grew to 2.6 times its live segments while the background worker merged a backlog of segments, and kept that size.
+  The worker's one transaction held back the horizon the free extents are judged by, and the free space the merges released was too
+  fragmented for the long runs a merged segment asked for. The worker now runs every promotion or merge in a transaction of its own, a
+  step reuses what the previous one freed (the horizon is computed anew at each allocation), and the streams of a step take shorter runs of
+  free space, down to a 256th of the size they are expected to need. 60 small segments merged by the worker: file 2.6 times the live
+  segments, now 1.6. An old snapshot elsewhere (an idle transaction) still keeps what is released after it from being reused.
 
 ## 1.3.1
 
