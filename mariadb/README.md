@@ -328,8 +328,9 @@ the binlog (`binlog_format=ROW`); the triggers fire on the source only, and the 
   server after a drain, `tests/live.sh` kills it at three points of a merge: the answers after the restart are those of the last
   published state.
 * Merge. The background merge keeps the number of segments within `merge_fanin`; `sift_merge('news', 'full')` merges all of
-  them and drops deleted documents. The postings are streamed through temporary runs; what stays in memory is the document
-  map (about 70 bytes per document at the peak: 36 MB for 540,000 documents).
+  them and drops deleted documents. The postings are streamed through temporary runs whose sort buffers are bounded by
+  `maintenance_work_mem` (64 MB, set in `shim.c`); what else stays in memory is the document map (about 70 bytes per document at
+  the peak: 36 MB for 540,000 documents).
 * Concurrency. Each index has a reader / writer lock; queries of different connections run in parallel, a drain or a merge
   publishes under a short write lock. `tests/stress.sh` runs 8 reader threads, 4 writers, a draining and a merging thread
   at once and then checks the index against the table.
