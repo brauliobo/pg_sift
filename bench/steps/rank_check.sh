@@ -25,10 +25,10 @@ if [[ -n $EXTERNAL ]]; then
   RUN=$OUT/$ENGINE; mkdir -p "$RUN"
   CLASSES=''; SECS=0 WARM=0 UPDATE_RATE=0 CLIENTS=1
   clone_db "$(engine_db "$ENGINE")" >/dev/null
-  x_export_docs
+  f=$(x_export_docs)
   trap 'xe "$ENGINE" x_stop 2>/dev/null || true' EXIT
   x_start
-  locked x_build "$X/docs.ndjson"
+  locked x_build "$f"
   got() { x_top10 "$NSUB"; }
 else
   check_db
