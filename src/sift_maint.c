@@ -33,6 +33,15 @@
 
 #define REQUEST_INTERVAL_MS	2000
 #define BACKOFF_MAX_MS		3600000
+/* inputs of one merge: its output (runs grow with a stream, sift_store.c) stays well within the extents a header page lists */
+#define MERGE_MAX_BYTES		(UINT64CONST(16) << 30)
+
+#ifdef SIFT_TESTING
+int			sift_test_merge_max_kb = 0;
+#define merge_max_bytes()	(sift_test_merge_max_kb > 0 ? (uint64) sift_test_merge_max_kb * 1024 : MERGE_MAX_BYTES)
+#else
+#define merge_max_bytes()	MERGE_MAX_BYTES
+#endif
 #define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
 
 typedef enum StepResult
@@ -385,11 +394,24 @@ sift_maint_promote(Relation index, bool wait)
 
 /* The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit */
 static int
-pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
 	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN};
 
 	return sift_merge_pick(index, &pol, snap, force, sel);
+}
+
+/* The policy's choice (smallest first) cut to the smallest segments whose bytes fit one merge; a merge of fewer than two is none */
+static int
+pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+{
+	int			n = pick_policy(index, snap, force, sel);
+	uint64		total = 0;
+	int			k = 0;
+
+	while (k < n && total + sel[k].bytes <= merge_max_bytes())
+		total += sel[k++].bytes;
+	return k < Min(n, 2) ? 0 : k;
 }
 
 typedef struct MergeSel

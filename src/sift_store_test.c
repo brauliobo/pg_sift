@@ -35,6 +35,7 @@
 #include "utils/guc.h"
 #include "utils/snapmgr.h"
 
+#include "sift_maint.h"
 #include "sift_store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_am_handler);
@@ -59,6 +60,15 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_fail_pages",
 							"Testing: pages a promotion or merge writes before it fails (0 = never).",
 							NULL, &sift_test_fail_pages, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_merge_max_kb",
+							"Testing: kB of segments one merge may read (0 = 16 GB).",
+							NULL, &sift_test_merge_max_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_run_gap",
+							 "Testing: every run a segment stream takes is followed by a page taken by another writer.",
+							 NULL, &sift_test_run_gap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_max_extents",
+							"Testing: extents a segment may use (0 = what its header page holds).",
+							NULL, &sift_test_max_extents, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 }
 
 #define PAYLOAD			SIFT_PAGE_PAYLOAD
