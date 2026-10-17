@@ -103,7 +103,7 @@ build_pg() ( # ENGINE, in its lane
   load_engine "$1"
   local db heap0 t1 t2 size
   db=$(engine_db "$1")
-  clone_db "$db"
+  if [[ -n $CONCURRENT ]]; then adopt_db "$db"; else clone_db "$db"; fi   # a lane with one engine keeps no second copy of the corpus
   heap0=$(q -c "SELECT pg_table_size('docs')")
   locked build_timed
   read -r t1 t2 <"$RUN/build.ms"
@@ -207,6 +207,7 @@ else
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$OUT"/*/prepare.log)" >&2; exit 1; }; done
   : >"$DEST/builds.tsv"
   for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
+  [[ -n $CONCURRENT ]] || lane_run "$first" drop_db bench   # the engines' databases are copies of it
   if [[ -n $serial_cache ]]; then
     mkdir -p "$OUT/pg"; for e in $PG_ENGINES; do cat "$OUT/$e/builds.row"; done >"$OUT/pg/builds.tsv"
     lane_save "$first" "$serial_cache" "$OUT/pg/builds.tsv"
@@ -214,6 +215,7 @@ else
 fi
 if [[ -z $CONCURRENT ]]; then for e in $ENGINES; do lane_run "$e" finish "$e"; done; fi
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$DEST/builds.tsv")"
+awk -F'\t' 'NR == 1 {print $3}' "$DEST/builds.tsv" >"$DEST/corpus.txt"   # the articles of the tier, for the report
 phase 'restore and build'
 
 if [[ $cold ]]; then
