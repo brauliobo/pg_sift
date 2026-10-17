@@ -24,6 +24,8 @@
 extern PGDLLIMPORT int sift_test_run_docs;
 extern PGDLLIMPORT int sift_test_fanin;
 extern PGDLLIMPORT int sift_test_segment_postings;
+/* kB: the most memory a CREATE INDEX of this backend allocated since the variable was last set (to 0) */
+extern PGDLLIMPORT int sift_test_build_peak;
 #endif
 
 typedef struct SiftInvBuf SiftInvBuf;
@@ -55,9 +57,6 @@ extern SiftRun *sift_inv_spill(SiftInvBuf *buf);
 
 /* Spills to a file of a fileset (parallel build workers hand their runs to the leader) */
 extern SiftRun *sift_inv_spill_shared(SiftInvBuf *buf, SharedFileSet *fileset, int worker, int id);
-
-/* Postings of the run's most frequent term (merge memory planning) */
-extern uint64 sift_run_maxdf(const SiftRun *run);
 
 /*
  * Spills the live part of an immutable segment (docs and postings VACUUM did
