@@ -1,7 +1,7 @@
 """Builds an index over the `articles(id, body)` table of BASE_DB and reports build time and index size.
 
     python3 -I build.py --engine sift|fts5 --base BASE_DB --out OUT_DB [--opts 'stemmer=none,positions=0'] [--detail full|none]
-                        [--no-merge] [--cpu N] [--ext build/sift] [--page-size N] [--sqlite-cache-mb N]
+                        [--no-merge] [--ext build/sift] [--page-size N] [--sqlite-cache-mb N]
 
 OUT_DB starts as a copy of BASE_DB (the articles table stays; both engines index it from there); with --page-size it
 starts empty (sift only) with that SQLite page size and the articles are read through ATTACH.
@@ -28,11 +28,8 @@ def main():
     ap.add_argument('--no-merge', action='store_true')
     ap.add_argument('--page-size', type=int)
     ap.add_argument('--sqlite-cache-mb', type=int, default=1024, help="SQLite's own page cache while building (counts in the peak RSS)")
-    ap.add_argument('--cpu', type=int)
     ap.add_argument('--ext', default=os.path.join(os.path.dirname(__file__), '..', 'build', 'sift'))
     a = ap.parse_args()
-    if a.cpu is not None:
-        os.sched_setaffinity(0, {a.cpu})
     if os.path.exists(a.out):
         os.remove(a.out)
     if a.page_size:
