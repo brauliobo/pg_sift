@@ -29,7 +29,7 @@ load() {
 
 restore() {
   fresh_db
-  pg_restore -j 4 -d bench "$DUMP"
+  pg_restore -j "${RESTORE_JOBS:-${WORKERS:-4}}" -d bench "$DUMP"
   q -c "VACUUM (ANALYZE) docs" -c CHECKPOINT
   log "restored $DUMP"
 }

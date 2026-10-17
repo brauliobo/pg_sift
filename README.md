@@ -247,24 +247,28 @@ its own docker container.
 
 Against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1 and rum 1.3.15 on Simple English Wikipedia (218,058 articles, 8 clients,
 median of 4 interleaved rounds) and GeoNames cities500 (236,262 places, 1 client, p50), same data, queries and cache state, all five
-engines in one session. Cells are queries per second over pg_search. The host was loaded (load average 4-31), so absolute numbers are
-noisy; compare engines within a table.
+engines in one session. Cells are queries per second over pg_search. The CPU budget is a parameter of the harness (`--cpus`, `--load-cpus`; every table
+and chart caption states it): these sessions ran on two pinned CPUs of a loaded host, so absolute numbers are noisy and ratios depend on the CPU the engines get;
+compare engines within a table. The tables of a run carry a standard error per cell.
 
 | articles | index | build | and | or | phrase | mixed | `count(*)` | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| sift | 47.9 MiB | 1.5 s | 2.49x | 2.33x | 0.65x | 1.78x | 0.70x | 0.93x | 4.31x |
-| sift `phrase_index = pairs` | 267.2 MiB | 7.8 s | 2.76x | 2.44x | 2.83x | 2.69x | 3.23x | 1.20x | 7.49x |
-| pg_search | 164.3 MiB | 2.9 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
-| pg_textsearch | 147.3 MiB | 9.7 s | 0.46x | 4.01x | 0.005x | 0.02x | 0.03x | 0.01x | 0.27x |
-| rum | 309.9 MiB | 13.5 s | 0.41x | 0.01x | 0.01x | 0.02x | 0.03x | 0.01x | 0.05x |
+| sift | 47.9 MiB | 3.1 s | 1.67x | 0.95x | 0.47x | 0.89x | 0.40x | 0.67x | 2.77x |
+| sift `phrase_index = pairs` | 267.2 MiB | 15.0 s | 1.70x | 0.77x | 2.00x | 1.18x | 2.08x | 0.97x | 5.58x |
+| pg_search | 161.0 MiB | 9.9 s | 1x | 1x | 1x | 1x | 1x | 1x | 1x |
+| pg_textsearch | 147.3 MiB | 19.5 s | 0.003x | 1.34x | 0.003x | 0.01x | 0.02x | 0.02x | 0.19x |
+| rum | 309.9 MiB | 32.3 s | 0.27x | 0.005x | 0.01x | 0.009x | 0.02x | 0.008x | 0.07x |
 
-The default index is the smallest and quickest to build and wins AND, OR, mixed and join, but is **behind pg_search on phrase and
-`count(*)`** (heap recheck); `phrase_index = pairs` fixes that at 5.6x the size. pg_textsearch wins only the bare ranked OR. rum wins
-nothing: it is the largest index and needs a stored `tsvector` column (19.1 s to fill, 437.7 MiB more).
+The default index is the smallest and quickest to build and wins AND and join, is level on OR and mixed, but is **behind pg_search on
+phrase, `count(*)` and the filtered top-10** (heap recheck); `phrase_index = pairs` fixes that at 5.6x the size. pg_textsearch wins only
+the bare ranked OR (its other queries score every match one by one). rum wins nothing: it is the largest index and needs a stored `tsvector`
+column (28.2 s to fill, 437.7 MiB more). `sift` with `positions = off` (`sift_nopos` in the engine list) is not measured yet.
 
-Places (top-20 p50): index 42.6 MiB / 1.3 s for sift, 129.5 MiB / 3.0 s for pg_search, 68.3 MiB / 2.4 s for pg_textsearch, 94.9 MiB /
-2.9 s for rum. sift is ahead of pg_search in all 45 warm cells (1.3x to 38x), e.g. 0.26 vs 1.71 ms for a whole word. pg_textsearch has
-no prefix scoring or boost (ranked workloads NA); rum has no boost (NA) and its prefix top-20 takes 0.5-124 ms.
+Places (top-20 p50): index 42.6 MiB / 8.0 s for sift, 125.8 MiB / 39.3 s for pg_search, 68.3 MiB / 16.0 s for pg_textsearch, 94.9 MiB /
+17.9 s for rum. sift is ahead of pg_search in all 45 warm cells (1.03x to 230x), e.g. 0.25 vs 5.22 ms for a whole word. Every cell has a
+number: pg_textsearch has no prefix scoring or field boost and rum no boost, so those workloads run as documented emulations
+(edge n-gram columns, a weighted tsvector) checked against an exact SQL oracle (docs/BENCHMARKS.md). The pg_textsearch emulation ranks every
+match, which costs 8.8 s for a one-letter prefix.
 
 ![Index size](docs/img/index-size.svg)
 ![Build time](docs/img/build-time.svg)
@@ -273,7 +277,8 @@ no prefix scoring or boost (ranked workloads NA); rum has no boost (NA) and its 
 ![Autocomplete latency](docs/img/places-latency.svg)
 
 Cold-cache tables, method and smaller tiers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md); raw tables: [docs/results/](docs/results/);
-reproduce with `bench/bench all` (see [bench/README.md](bench/README.md)). Changes per release: [CHANGELOG.md](CHANGELOG.md).
+reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); the reduced tier takes about 2 minutes). `bench/bench regress --run` measures this checkout against an earlier
+release (default v1.1.0) and exits non-zero on a regression. Changes per release: [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing, security, license
 

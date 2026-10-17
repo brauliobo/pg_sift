@@ -11,3 +11,5 @@ ureq = "3"
 
 [profile.release]
 debug = false
+
+[workspace]

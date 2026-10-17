@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
-# Settings live in $PGDATA/bench.conf, rewritten on every start.
+# Settings live in $PGDATA/bench.conf, rewritten on every start. The server runs pinned to CPUS (lib.sh): its parallel workers are
+# as many as it has CPUs (WORKERS caps them), an index build gets BUILD_WORKERS of them (default one less than the CPUs, 3 at most
+# for a server without a CPU list). PORT and PGDATA select another cluster than the tier's (bench/steps/lanes.sh).
 # Extensions come from the engine roots built by bench/steps/fetch.sh (engines/*/root) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
@@ -16,6 +18,8 @@ preload() {
 }
 
 settings() {
+  local n=8 build=3
+  [[ -z $CPUS ]] || { n=$(cpu_count "$CPUS"); build=$(( n > 1 ? n - 1 : 0 )); }
   cat >"$PGDATA/bench.conf" <<EOF
 port = $PGPORT
 listen_addresses = ''
@@ -23,10 +27,10 @@ unix_socket_directories = '$SOCK'
 shared_buffers = ${SHBUF:-${TIER_SHBUF[$TIER]}}
 maintenance_work_mem = ${TIER_MWM[$TIER]}
 work_mem = 64MB
-max_worker_processes = 16
-max_parallel_workers = 8
+max_worker_processes = $(( n > 8 ? 2 * n : 16 ))
+max_parallel_workers = ${WORKERS:-$n}
 max_parallel_workers_per_gather = 2
-max_parallel_maintenance_workers = 3
+max_parallel_maintenance_workers = ${BUILD_WORKERS:-${WORKERS:-$build}}
 # In-memory throwaway cluster: durability is irrelevant, WAL volume is still measured.
 fsync = off
 synchronous_commit = off
@@ -54,7 +58,7 @@ init() {
 start() {
   pg_ctl -D "$PGDATA" status >/dev/null 2>&1 && return
   settings
-  limited pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null
+  limited pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null 8>&-   # the server must not keep the perf lock of bench
   log "started on port $PGPORT"
 }
 
