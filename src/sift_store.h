@@ -78,9 +78,6 @@ typedef struct SiftDirSnapshot
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 
-/* The directory's version alone: bumped by every directory update */
-extern uint32 sift_dir_version(Relation index);
-
 /*
  * Atomic directory update: locks metapage and directory exclusively, lets fn
  * edit working copies (fn must not ereport or allocate), records extents
