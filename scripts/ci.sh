@@ -130,6 +130,7 @@ mkdir -p "$SIFT_TMP"
 suite build "$S/pgtest.sh" install
 grep -q PASS "$LOG/main.result" || { cat "$LOG/build.log"; failed=1; exit 1; }
 suite leakcheck-selftest "$S/leakcheck.sh" selftest
+suite portable-core "$S/check-portable.sh"
 
 pids=()
 for spec in "${LANES[@]}"; do
