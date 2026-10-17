@@ -105,6 +105,8 @@ SELECT id, region, sift.score(ctid) FROM logs WHERE msg @@> 'disk "node 7"' ORDE
 `analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts the matches of a
 query per value of another column from the bitmaps, equal to the `GROUP BY` of the same snapshot. It pays for broad queries on
 low-cardinality columns (1.9-4.5x on 26 values); for selective queries or thousands of values `GROUP BY` wins.
+A value of more than 255 bytes is indexed as its first bytes and a hash of all of it, so `@@>` still finds exactly the rows with that value
+(`sift.facets` shows it as that start and the hash); it was an error before.
 
 ```sql
 CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);   -- text keys: cast integers
@@ -130,6 +132,9 @@ and merges; VACUUM promotes, merges and clears dead postings.
 `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index.
 
 - `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
+- `pg_stat_progress_create_index` shows a build's phase (`scanning table`, `spilling runs`, `merging runs`, `writing segments`) and the documents done.
+- A build writes its postings to temporary files (`temp_tablespaces`) before the segments: about 2.3 times the index size at the default
+  `maintenance_work_mem`, about 4.3 times at `1MB` (a second merge pass), measured on 100,000 articles (64 MB index). Memory stays within the budget at any table size.
 - pg_dump restores rebuild the index. Replication: see [Replication](#replication).
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
 

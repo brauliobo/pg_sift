@@ -940,6 +940,13 @@ BufFileCreateFileSet(FileSet *fileset, const char *name)
 	return NULL;
 }
 
+BufFile *
+BufFileOpenFileSet(FileSet *fileset, const char *name, int mode, bool missing_ok)
+{
+	elog(ERROR, "sift: no shared file sets in this host");
+	return NULL;
+}
+
 void
 BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok)
 {
