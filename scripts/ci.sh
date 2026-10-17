@@ -15,7 +15,7 @@
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
-# JOB_MB) plus its own fits CI_BUDGET_MB (quick 900, full 2000; the first job always runs), so the run stays at about 1 GB
+# JOB_MB) plus its own fits CI_BUDGET_MB (quick 1200, full 2000; the first job always runs), so the run stays at about 1 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset), removed
 # when everything passed (KEEP=1 keeps it; a failure keeps it for the logs); a job that passed leaves it at once. The ports are
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (twice the budget; full
@@ -43,7 +43,7 @@ LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 if [[ $MODE == full ]]; then
 	export SANITIZE=1; BUDGET_MB=${CI_BUDGET_MB:-2000}; MAX_MB=${CI_MAX_MB:-$(( 8192 + 512 * (LANES > 4 ? LANES - 4 : 0) ))}; unset SIFT_QUICK
 else
-	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-900}; MAX_MB=${CI_MAX_MB:-$(( 2 * BUDGET_MB ))}
+	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-$(( 2 * BUDGET_MB ))}
 fi
 
 # not /dev/shm by choice: the run needs about a gigabyte and fsync is off, so RAM buys nothing
@@ -116,7 +116,7 @@ rest() {
 declare -A EST_MB=([tap-004_wal_consistency]=690 [tap-shell-store_replica]=400 [tap-002_standby]=380 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180 [tap-shell-extension_lifecycle]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140)
-JOB_MB=80
+JOB_MB=70
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
@@ -156,6 +156,7 @@ else
 		done
 	}
 	if (( PG_MAJOR >= 18 )); then job production-regress production-regress 0 "$S/production-check.sh" $(production_tests); else production_last=1; fi
+	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \

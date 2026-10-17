@@ -13,7 +13,7 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
 `make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
 runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
-The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1 GB, 1.5 GB with `SANITIZE=1`: a lane starts a job when
+The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1 GB (`CI_BUDGET_MB=900` keeps it under, at the price of running the two big WAL tests one after the other): a lane starts a job when
 the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci.sh`), and a job's data goes when it passes.
 `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
 you add a heavy test and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
