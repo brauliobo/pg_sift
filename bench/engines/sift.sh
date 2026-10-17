@@ -2,7 +2,7 @@
 #   body @@> 'a AND b' | 'a OR b' | '"a b"' | 'a AND NOT b' | 'a*' | 'a~1';  ORDER BY sift.score(ctid) DESC
 # Trace terms are lowercase plain words, so they never collide with the uppercase keywords or the
 # SiftQL metacharacters. Skipped by the harness until the extension is installed.
-# The variants (sift_pairs, sift_nopos, sift_ref: a build of an older ref under the extension name pg_sift_ref, see
+# The variants (sift_nopos, sift_ref: a build of an older ref under the extension name pg_sift_ref, see
 # bench/steps/fetch.sh) set V_EXT (extension) and V_OPTS (index reloptions) and source this file.
 SIFT_EXT=${V_EXT:-pg_sift} SIFT_OPTS=${V_OPTS:-}
 REQUIRES=$SIFT_EXT

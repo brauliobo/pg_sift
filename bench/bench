@@ -25,11 +25,11 @@ Commands
   all        setup, run and report in one go (the clean-checkout reproduction). For the ab and full tiers it also runs
              the cold-cache tables and writes bench/results and docs/img (report --docs)
   cold       like run, but every query starts with the index and heap evicted from the caches (Postgres engines)
-  regress    the regression check: sift against a build of an older git ref (sift_ref, `--ref`, default v1.1.0), sift pairs
-             against its reference build and sift `positions = off` against sift_ref, per class: new and reference values,
+  regress    the regression check: sift against a build of an older git ref (sift_ref, `--ref`, default v1.1.0) and sift
+             `positions = off` against sift_ref, per class: new and reference values,
              ratio, and a REGRESSION when the new value is worse by more than 5% and 2 combined standard errors (index size,
              build time too); exit status 1 on a regression. `regress --run` builds both and measures sift and sift_ref on the
-             articles and places (a reduced matrix of classes, see --engines to add sift_pairs, sift_nopos and --classes to widen
+             articles and places (a reduced matrix of classes, see --engines to add sift_nopos and --classes to widen
              it) and compares; `regress [DIR|results.tsv ...]` compares results that exist (default bench/out/latest)
   check      correctness: `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
              `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25 (any engine, external ones included);
@@ -56,7 +56,7 @@ Options (not every option applies to every command)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
-                    (positions = off), sift_pairs (phrase_index = pairs), pg_search, pg_textsearch, rum, bm25). setup: which engines to
+                    (positions = off), pg_search, pg_textsearch, rum, bm25). setup: which engines to
                     build. An engine whose extension is missing, or that has no workload for the dataset, is skipped with a message.
   --classes LIST    comma separated classes. articles: and or phrase mixed count filter join term prefix fuzzy update; places:
                     p1 p2 p3 p4 w1 a2 a2s a3 x2 (default: the classes of the tier; a dataset with none of the names is not run)
@@ -114,7 +114,7 @@ Examples
   bench/bench setup && bench/bench run --tier full --engines sift,pg_search,bm25
   bench/bench run --dataset places --tier ab --duration 4
   bench/bench run --dataset articles --engines gin,tantivy --classes and,or,update
-  bench/bench report --docs --engines sift,sift_pairs,pg_search bench/out/latest
+  bench/bench report --docs --engines sift,sift_nopos,pg_search bench/out/latest
   bench/bench charts                                  redraw docs/img from bench/results
   bench/bench regress --run --ref v1.1.0              sift against the tag v1.1.0, exit 1 on a regression
   bench/bench check oracle sift 200
@@ -250,8 +250,8 @@ fetch_targets() { # the steps/fetch.sh targets of the engines: the variants of s
   local e
   for e in "$@"; do
     case $e in
-      sift|sift_nopos|sift_pairs) echo sift ;;
-      sift_ref|sift_pairs_ref) echo sift_ref ;;
+      sift|sift_nopos) echo sift ;;
+      sift_ref) echo sift_ref ;;
       gin) ;;
       *) echo "$e" ;;
     esac
@@ -357,7 +357,7 @@ cmd_regress() { # [--run] [DIR|results.tsv ...]
   local files=() arg rc=0
   if [[ $run ]]; then
     # the reduced matrix: sift against its reference on both datasets, the classes and workloads a change to the index or the scan
-    # touches (--engines adds sift_pairs and sift_pairs_ref, sift_nopos; --classes and --workloads widen it)
+    # touches (--engines adds sift_nopos; --classes and --workloads widen it)
     [[ -n $engines ]] || engines="sift sift_ref"
     [[ -n $classes ]] || classes="and or phrase count filter join p1 p3 w1 a3"
     [[ -n $workloads ]] || workloads="top boost"
@@ -365,7 +365,7 @@ cmd_regress() { # [--run] [DIR|results.tsv ...]
     check_classes; preflight; ready; tier_env
     "$STEPS/fetch.sh" sift
     local sel; sel=" $(selected)"
-    [[ $sel != *" sift_ref "* && $sel != *" sift_pairs_ref "* ]] || [[ $(cut -d' ' -f1 "$ENG/sift_ref/root/.build-info" 2>/dev/null) == "$SIFT_REF" ]] || "$STEPS/fetch.sh" sift_ref
+    [[ $sel != *" sift_ref "* ]] || [[ $(cut -d' ' -f1 "$ENG/sift_ref/root/.build-info" 2>/dev/null) == "$SIFT_REF" ]] || "$STEPS/fetch.sh" sift_ref
     new_out
     measure
     rest=("$OUT"); cmd_report >/dev/null
