@@ -9,12 +9,11 @@
 #   SIFT_BENCH_DATA  corpus and cache of bench/ (default /tmp/sift-bench): data/articles.tsv, cache/sift-F-ALL.dump
 #   WORK             scratch root, deleted at the end unless KEEP=1 (default /tmp/sift-mdb-test)
 #   PG_PORT          port of the private PostgreSQL, 56100-56169 (default 56166)
-#   SERVER_CPU, CLIENT_CPU  taskset lists of the benchmark (default: the two most idle logical CPUs of different cores)
 #   INNO_SUBSTRINGS  trace substrings (3 queries each) in the InnoDB set comparison (default 100; 1000 = the whole trace)
 #   BENCH_QUERIES    queries per class in the benchmark (default 200; 1000 = the whole trace, about 1.5 hours: InnoDB takes
 #                    0.1-0.8 s per ranked query)
 #   BUFFER_POOL      innodb_buffer_pool_size (default 3G)
-# Needs: PostgreSQL 17+/18 with server headers, MariaDB server + headers, libmariadb, python3, taskset. No sudo.
+# Needs: PostgreSQL 17+/18 with server headers, MariaDB server + headers, libmariadb, python3. No sudo.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -41,16 +40,6 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$T"
 
-# the two most idle logical CPUs that are not hyper-threads of each other
-pick_cpus() {
-  local ranked; ranked=$(python3 -I "$HERE/bench/idle_cores.py")
-  local a=${ranked%% *} b core_a; core_a=$(lscpu -p=CPU,CORE | awk -F, -v c="$a" '$1 == c { print $2 }')
-  for b in ${ranked#* }; do
-    [[ $(lscpu -p=CPU,CORE | awk -F, -v c="$b" '$1 == c { print $2 }') != "$core_a" ]] && break
-  done
-  SERVER_CPU=${SERVER_CPU:-$a} CLIENT_CPU=${CLIENT_CPU:-$b}
-}
-
 build() {
   say "build"
   nice make -C "$HERE" -j4 OUT="$SIFT_BUILD" >"$WORK/build.log" 2>&1 || { tail -20 "$WORK/build.log"; exit 1; }
@@ -68,7 +57,7 @@ start_pg() {
 
 load() {
   say "load: MariaDB server, table docs"
-  SIFT_MDB_CPUS=$SERVER_CPU "$SRV" start
+  "$SRV" start
   "$SRV" sql -e "CREATE DATABASE bench DEFAULT CHARACTER SET utf8mb4"
   "$SRV" sql bench <"$HERE/sql/functions.sql"
   "$SRV" sql bench <"$HERE/sql/sift.sql"
@@ -143,16 +132,14 @@ bench() {
   [[ -f $T/trace.tsv ]] || psql -X -A -t -d bench -c "COPY (SELECT id, mode, array_to_string(terms,' ') FROM queries ORDER BY id) TO STDOUT" >"$T/trace.tsv"
   "$SRV" restart
   sql -e "SELECT COUNT(*) FROM docs" >/dev/null
-  QUERIES=${BENCH_QUERIES:-200} CLIENT_CPU=$CLIENT_CPU MDBQ=$MDBQ "$HERE/bench/run.sh" "$T/trace.tsv"
+  QUERIES=${BENCH_QUERIES:-200} MDBQ=$MDBQ "$HERE/bench/run.sh" "$T/trace.tsv"
 }
 
-pick_cpus
-echo "server cpu $SERVER_CPU, client cpu $CLIENT_CPU, load average $(cut -d' ' -f1-3 /proc/loadavg)"
-export SERVER_CPU
+echo "load average $(cut -d' ' -f1-3 /proc/loadavg)"
 step build && build
 step load && load
 step pgref && pgref
 step inno && inno
 step functional && functional
-step bench && SIFT_MDB_CPUS=$SERVER_CPU bench
+step bench && bench
 echo; echo "done"

@@ -9,8 +9,7 @@
 #   mariadb/server.sh destroy   stops the server and deletes $SIFT_MDB_ROOT
 #   mariadb/server.sh env       prints the socket path
 # Variables: SIFT_MDB_ROOT, SIFT_MDB_PORT (first port to try, default 33307), SIFT_BUILD (build output, default
-# /tmp/sift-mariadb-build), BUFFER_POOL (default 3G), SERVER_ARGS (extra mariadbd options), SIFT_MDB_CPUS (taskset list
-# the server is pinned to).
+# /tmp/sift-mariadb-build), BUFFER_POOL (default 3G), SERVER_ARGS (extra mariadbd options).
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +58,7 @@ start() {
   fi
   conf "$(free_port)"
   # shellcheck disable=SC2086  # SERVER_ARGS is a list of options
-  nohup ${SIFT_MDB_CPUS:+taskset -c "$SIFT_MDB_CPUS"} mariadbd --defaults-file="$ROOT/my.cnf" ${SERVER_ARGS:-} >"$ROOT/stdout.log" 2>&1 &
+  nohup mariadbd --defaults-file="$ROOT/my.cnf" ${SERVER_ARGS:-} >"$ROOT/stdout.log" 2>&1 &
   echo $! >"$ROOT/started.pid"
   for _ in $(seq 1 120); do
     mariadb --no-defaults -uroot -S "$SOCK" -e 'select 1' >/dev/null 2>&1 && return 0
