@@ -11,7 +11,7 @@ SECS=$(knob SIFT_CHURN_SECS 15 5)
 plan 10
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
-wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)"
+wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 64MB)"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" "INSERT INTO t VALUES (0), (5000), (300000)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \

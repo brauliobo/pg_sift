@@ -11,7 +11,8 @@
 ITERS=$(knob SIFT_CRASH_ITERS 100 10)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
 plan $((ITERS + 1))
-node_init crash 1 "checkpoint_timeout = 30s
+node_init crash 1 "$WAL_CONF
+checkpoint_timeout = 30s
 max_wal_size = 256MB"
 node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
