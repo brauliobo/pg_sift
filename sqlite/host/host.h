@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <setjmp.h>
 
@@ -410,6 +411,7 @@ extern void BufFileClose(BufFile *file);
 typedef struct FileSet { int unused; } FileSet;
 typedef struct SharedFileSet { FileSet fs; } SharedFileSet;
 extern BufFile *BufFileCreateFileSet(FileSet *fileset, const char *name);
+extern BufFile *BufFileOpenFileSet(FileSet *fileset, const char *name, int mode, bool missing_ok);
 extern void BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok);
 
 /* the memory (kB) a rebuild of segments may use: the budget of the run merge (lib/binaryheap.h follows) */

@@ -2,6 +2,30 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
+  merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
+  from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
+  smaller segments instead (about 20 for 400,000 such rows at 20,000 postings a term; at the default budget the layout is the same).
+
+- Fix: `CREATE INDEX` no longer fails with `segment dictionary exceeds 4 GB` or `postings of one term exceed 4 GB` (the lengths and offsets
+  of the format are 32 bits): the runs of a build merge, and make a segment, only while their largest term and their dictionary stay
+  under those limits (estimated high, so a segment holds up to a third of them), and the build writes more segments instead.
+
+- Fix: `CREATE INDEX` on documents of a heap page that together passed 1 GB (a few large, out-of-line values: three of 360 MB) failed with
+  `string buffer exceeds maximum allowed length`: a page's documents are no longer all copied before they are analyzed, a large one is
+  analyzed at once. A `maintenance_work_mem` of 4 GB or more (or a document with very many distinct terms) could fail with `inverted buffer
+  pool exhausted`: the buffer is now spilled before a document that could exhaust its pool.
+
+- Fix: a keyword value of more than 255 bytes failed an `INSERT`, a `COPY` or the end of a long `CREATE INDEX` with `a keyword value is longer
+  than 255 bytes`. It is now indexed as its first 236 bytes and a hash of all of it (the same term from a build, an insert and a query),
+  so two long values that share their start stay two values and `@@>` finds exactly the rows with that value.
+
+- `CREATE INDEX` reports its progress in `pg_stat_progress_create_index`: the phases `scanning table`, `spilling runs`, `merging runs` and
+  `writing segments`, and the documents analyzed and then written (`tuples_done` of `tuples_total`), parallel workers included. A parallel
+  build that gets fewer workers than requested logs it at `DEBUG1`.
+
 ## 1.4.0
 
 - No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.

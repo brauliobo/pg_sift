@@ -583,6 +583,32 @@ scan_ascii(const SiftAnalyzer *a, const uint8 *s, int len, int *i, int *start, c
 
 static int	fold_chars(const SiftAnalyzer *a, const uint8 *s, int len, char *dst);
 
+/*
+ * A keyword value over TERM_CAP bytes (folded) is a term of its first bytes, cut at a character boundary, then
+ * U+FFFF and the 16 hex digits of the 64-bit FNV-1a hash of all of it: values that share their start stay apart
+ * (an error would stop an INSERT or the end of a long CREATE INDEX, a cut would merge them), whatever the path
+ * that builds the term, an index build, an insert or a query. Writes the term to dst; returns its length.
+ */
+#define KEYWORD_TAIL	(3 + 16)
+
+static int
+keyword_long(const uint8 *s, int len, char *dst)
+{
+	static const char hex[] = "0123456789abcdef";
+	uint64		h = UINT64CONST(0xcbf29ce484222325);
+	int			cut = TERM_CAP - KEYWORD_TAIL;
+
+	for (int i = 0; i < len; i++)
+		h = (h ^ s[i]) * UINT64CONST(0x100000001b3);
+	while (cut > 0 && (s[cut] & 0xC0) == 0x80)
+		cut--;
+	memcpy(dst, s, cut);
+	memcpy(dst + cut, "\xEF\xBF\xBF", 3);
+	for (int i = 0; i < 16; i++)
+		dst[cut + 3 + i] = hex[(h >> (60 - 4 * i)) & 15];
+	return cut + KEYWORD_TAIL;
+}
+
 /* Keyword analyzer: the whole text is one token, none if it is empty or folds to nothing */
 static int
 scan_keyword(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char *dst)
@@ -600,10 +626,9 @@ scan_keyword(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, cha
 		s = (const uint8 *) a->kw;
 	}
 	if (n > TERM_CAP)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: a keyword value is longer than %d bytes", TERM_CAP)));
-	memcpy(dst, s, n);
+		n = keyword_long(s, n, dst);
+	else
+		memcpy(dst, s, n);
 	return n > 0 ? n : -1;
 }
 
