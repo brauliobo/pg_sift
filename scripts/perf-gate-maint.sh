@@ -2,7 +2,7 @@
 # Performance gate of the maintenance path: the same workloads on two builds of sift (production flavor), in
 # throwaway clusters of scripts/pgtest.sh, builds interleaved, --runs times per cell.
 #
-#   scripts/perf-gate-maint.sh [--rows N] [--runs N] [--secs N] [--build LABEL=DIR]...
+#   scripts/perf-gate-maint.sh [--rows N] [--runs N] [--secs N] [--cells REGEX] [--build LABEL=DIR]...
 #
 # Every --build is a checkout, e.g. --build old=/tmp/1.3.1 --build new=. (the first is the baseline, default
 # new=this checkout). Cells, each on a fresh table:
@@ -11,25 +11,30 @@
 #   merge_insert_tps / _p99_ms      the same inserts while the worker merges a backlog of 60 segments
 #   merge_count_ms / merge_rank_ms  mean latency of a count and of a ranked query (4 clients) during VACUUM and merges
 #   promote_s                       20 promotions of a mutable segment of 3000 documents of 40 words (about 4 MB)
-#   vacuum_s / merge_s / merge_temp_kb / merge_peak_mb  VACUUM and sift.merge() of that backlog; temporary bytes of the
+#   vacuum_s / vacuum_segs          VACUUM of that backlog (it merges to a fixed point) and the segments it leaves;
+#   after_vacuum_count_ms / _rank_ms  the two queries on the index after that VACUUM and 20000 more rows
+#   merge_s / merge_temp_kb / merge_peak_mb  sift.merge() of that backlog; temporary bytes of the
 #                                   merge; most anonymous memory the cluster's processes took above what they took before
 #   churn_index_mb                  size of the index after the backlog is merged
 #   create_s / create64_s           CREATE INDEX at the server defaults / at 64MB without workers
+# --cells selects groups by name (insert, bulk, merge_insert, queries, promote, vacuum, merge, create), e.g. --cells "^(merge_insert|queries)$".
 # The table ends with new/old per cell and marks, with "<<", a cell more than 2% worse (the *_tps and *_rows_s
 # cells are better higher, the others lower); re-measure those with more --runs.
 # Ports SIFT_PORT (default 56150) and up. The clusters and their directories are removed at the end.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "perf-gate: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 export LC_ALL=C
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-ROWS=100000 RUNS=3 SECS=20 BUILDS=()
+ROWS=100000 RUNS=3 SECS=20 CELLS=. BUILDS=()
 while (( $# )); do
 	case $1 in
 		--rows) ROWS=$2; shift ;;
 		--runs) RUNS=$2; shift ;;
 		--secs) SECS=$2; shift ;;
+		--cells) CELLS=$2; shift ;;
 		--build) BUILDS+=("$2"); shift ;;
-		*) sed -n '2,19p' "$0"; exit 1 ;;
+		*) sed -n '2,25p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -96,62 +101,84 @@ peak_kb() { # LABEL: polls until the file $BASE/stop exists, prints the highest 
 }
 temp_kb() { q "$1" "SELECT pg_stat_force_next_flush(); SELECT temp_bytes / 1024 FROM pg_stat_database WHERE datname = 'sift'" | tail -1; }
 
-cell() { # LABEL: all the measurements of one build, "name value" lines
-	local l=$1 t0 kb0 base poller
-
-	fresh "$l"
-	bench "$l" insert16 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
-	settle "$l"
-
-	fresh "$l"
-	t0=$(now); q "$l" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, $ROWS) i" >/dev/null
+# The cells, in groups that --cells selects by name: each is a function "LABEL: name value lines"
+g_insert() {
+	fresh "$1"
+	bench "$1" insert16 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
+	settle "$1"
+}
+g_bulk() {
+	local t0
+	fresh "$1"
+	t0=$(now); q "$1" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, $ROWS) i" >/dev/null
 	echo "bulk_rows_s $(bc <<<"$ROWS / $(elapsed "$t0")")"
-	settle "$l"
-	q "$l" "COPY t (body) TO '$BASE/copy.csv' CSV" >/dev/null; fresh "$l"
-	t0=$(now); q "$l" "COPY t (body) FROM '$BASE/copy.csv' CSV" >/dev/null
+	settle "$1"
+	q "$1" "COPY t (body) TO '$BASE/copy.csv' CSV" >/dev/null; fresh "$1"
+	t0=$(now); q "$1" "COPY t (body) FROM '$BASE/copy.csv' CSV" >/dev/null
 	echo "copy_rows_s $(bc <<<"$ROWS / $(elapsed "$t0")")"
-	settle "$l"
-
-	fresh "$l"; backlog "$l"
-	bench "$l" merge_insert 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
-	settle "$l"
-
-	fresh "$l"; backlog "$l"; q "$l" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 20000) i" >/dev/null; settle "$l"
-	( for _ in $(seq 3); do q "$l" "DELETE FROM t WHERE id % 7 = 0" "VACUUM t" >/dev/null 2>&1 || true; done ) &
-	bench "$l" merge_count 4 "$BASE/count.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
-	bench "$l" merge_rank 4 "$BASE/rank.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	settle "$1"
+}
+g_merge_insert() {
+	fresh "$1"; backlog "$1"
+	bench "$1" merge_insert 16 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
+	settle "$1"
+}
+g_queries() {
+	fresh "$1"; backlog "$1"; q "$1" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 20000) i" >/dev/null; settle "$1"
+	( for _ in $(seq 3); do q "$1" "DELETE FROM t WHERE id % 7 = 0" "VACUUM t" >/dev/null 2>&1 || true; done ) &
+	bench "$1" merge_count 4 "$BASE/count.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$1" merge_rank 4 "$BASE/rank.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
 	wait
-
-	fresh "$l"
-	q "$l" "SET sift.async_maintenance = off" "DROP TABLE IF EXISTS acc" "CREATE TABLE acc (s float8)" \
+}
+g_promote() {
+	fresh "$1"
+	q "$1" "SET sift.async_maintenance = off" "DROP TABLE IF EXISTS acc" "CREATE TABLE acc (s float8)" \
 		"DO \$\$ DECLARE t0 timestamptz; tot interval := 0; BEGIN FOR n IN 1..20 LOOP
 			INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 3000) i;
 			t0 := clock_timestamp(); PERFORM sift.promote('t_idx'); tot := tot + (clock_timestamp() - t0); COMMIT; END LOOP;
 			INSERT INTO acc VALUES (extract(epoch FROM tot)); END \$\$" >/dev/null
-	echo "promote_s $(q "$l" "SELECT s FROM acc")"
-
-	fresh "$l"; backlog "$l"
-	kb0=$(temp_kb "$l")
-	t0=$(now); q "$l" "VACUUM t" >/dev/null
+	echo "promote_s $(q "$1" "SELECT s FROM acc")"
+}
+g_vacuum() {
+	local t0
+	fresh "$1"; backlog "$1"
+	t0=$(now); q "$1" "VACUUM t" >/dev/null
 	echo "vacuum_s $(elapsed "$t0")"
-	fresh "$l"; backlog "$l"
-	kb0=$(temp_kb "$l")
-	rm -f "$BASE/stop"; base=$(anon_kb "$l"); peak_kb "$l" >"$BASE/peak" &
+	echo "vacuum_segs $(q "$1" "SELECT count(*) FROM sift.segments('t_idx')")"
+	settle "$1"
+	q "$1" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 20000) i" "VACUUM t" >/dev/null; settle "$1"
+	bench "$1" after_vacuum_count 4 "$BASE/count.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$1" after_vacuum_rank 4 "$BASE/rank.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+}
+g_merge() {
+	local t0 kb0 base poller
+	fresh "$1"; backlog "$1"
+	kb0=$(temp_kb "$1")
+	rm -f "$BASE/stop"; base=$(anon_kb "$1"); peak_kb "$1" >"$BASE/peak" &
 	poller=$!
-	t0=$(now); q "$l" "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" >/dev/null
+	t0=$(now); q "$1" "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" >/dev/null
 	echo "merge_s $(elapsed "$t0")"
 	touch "$BASE/stop"; wait "$poller"
 	echo "merge_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
-	echo "merge_temp_kb $(( $(temp_kb "$l") - kb0 ))"
-	settle "$l"
-	echo "churn_index_mb $(q "$l" "SELECT pg_relation_size('t_idx') / 1048576.0")"
-
-	fresh "$l"; q "$l" "DROP INDEX t_idx; INSERT INTO t (body) SELECT $(words 150 i) FROM generate_series(1, $ROWS) i" >/dev/null
-	t0=$(now); q "$l" "CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
+	echo "merge_temp_kb $(( $(temp_kb "$1") - kb0 ))"
+	settle "$1"
+	echo "churn_index_mb $(q "$1" "SELECT pg_relation_size('t_idx') / 1048576.0")"
+}
+g_create() {
+	local t0
+	fresh "$1"; q "$1" "DROP INDEX t_idx; INSERT INTO t (body) SELECT $(words 150 i) FROM generate_series(1, $ROWS) i" >/dev/null
+	t0=$(now); q "$1" "CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create_s $(elapsed "$t0")"
-	q "$l" "DROP INDEX t_idx" >/dev/null
-	t0=$(now); q "$l" "SET maintenance_work_mem = '64MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
+	q "$1" "DROP INDEX t_idx" >/dev/null
+	t0=$(now); q "$1" "SET maintenance_work_mem = '64MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create64_s $(elapsed "$t0")"
+}
+GROUPS_ALL=(insert bulk merge_insert queries promote vacuum merge create)
+cell() { # LABEL: the selected groups
+	for g in "${GROUPS_ALL[@]}"; do
+		[[ $g =~ $CELLS ]] && "g_$g" "$1"
+	done
+	return 0
 }
 
 i=0
