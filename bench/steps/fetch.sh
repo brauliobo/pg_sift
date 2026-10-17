@@ -8,6 +8,9 @@
 # sift_ref: sift built from SIFT_REF (a git ref of this repository, default the tag in versions.env) under the extension name
 # pg_sift_ref, the reference of `bench/bench regress`. bm25 (pgx-bm25): BM25_PKG, the Arch package to unpack, or BM25_SRC, its source
 # tarball to build with PGXS. Builds run with nice and JOBS (4) jobs.
+# An engine is built once: $ENG/<name>/.key records what it was made from (the pinned version, the sources of this checkout, the
+# PostgreSQL version), and a run with the same key builds nothing (REBUILD_ENGINES=1 does). The build tree and the downloads are removed
+# after a build (KEEP_DOWNLOADS=1 keeps the downloads); the work directory keeps the installed engines only.
 . "$(dirname "$0")/lib.sh"
 
 # shellcheck disable=SC2153  # ROOT comes from lib.sh
@@ -93,9 +96,52 @@ fetch_elasticsearch() { # nothing to download: the system package is the engine 
   fetch_xbench
 }
 
-# the load generator of the engines outside Postgres (and Tantivy's driver)
-fetch_xbench() { (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$ROOT/target nice -n 19 cargo build --release -j "$JOBS" -q); }
+# the load generator of the engines outside Postgres (and Tantivy's driver): built in the build tree without incremental artifacts, only the
+# stripped binary stays in $ROOT/target/release
+fetch_xbench() {
+  local tgt=$BUILD/xbench-target
+  (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$tgt CARGO_INCREMENTAL=0 nice -n 19 cargo build --release -j "$JOBS" -q)
+  mkdir -p "$(dirname "$XBENCH")"
+  install -s -m 755 "$tgt/release/xbench" "$XBENCH"
+}
 fetch_tantivy() { fetch_xbench; }
 
+# --- what an engine was built from (fetch_key), and whether it is still there (fetch_present); no key: built every time
+pg_key() { pg_config --version; }
+xbench_key() { cat "$BENCH"/xbench/{Cargo.toml,Cargo.lock,rust-toolchain.toml,src/*.rs} | sha256sum | cut -c1-16; }
+sift_key() { # the files the extension is built from: the tracked ones without the documentation, the tests, the CI and the harness itself
+  local skip=(':!bench' ':!docs' ':!packaging' ':!test' ':!scripts' ':!.github' ':!*.md')
+  if [[ ${SIFT_SRC:-worktree} == head ]]; then git -C "$REPO" archive HEAD -- . "${skip[@]}" | sha256sum | cut -c1-32
+  else (cd "$REPO" && git ls-files -z -- . "${skip[@]}" | xargs -0 sha256sum | sha256sum | cut -c1-32); fi
+}
+fetch_key() {
+  case $1 in
+    sift) echo "$(sift_key) ${SIFT_SRC:-worktree} $(pg_key)" ;;
+    sift_ref) echo "$SIFT_REF $(git -C "$REPO" rev-parse --verify "$SIFT_REF^{commit}") $(pg_key)" ;;
+    rum) echo "$RUM_VERSION $RUM_SHA256 $(pg_key)" ;;
+    pg_textsearch) echo "$PG_TEXTSEARCH_VERSION $PG_TEXTSEARCH_SHA256 $(pg_key)" ;;
+    pg_search) echo "$PARADEDB_VERSION" ;;
+    elasticsearch|tantivy) echo "$(xbench_key) $(cargo --version)" ;;
+    *) return 1 ;;
+  esac
+}
+fetch_present() {
+  case $1 in
+    elasticsearch) [[ -x ${ES_HOME:-/usr/share/elasticsearch}/bin/elasticsearch && -x $XBENCH ]] ;;
+    tantivy) [[ -x $XBENCH ]] ;;
+    *) [[ -d $ENG/$1/root ]] ;;
+  esac
+}
+
 mkdir -p "$BUILD"
-for t in ${*:-sift rum pg_search pg_textsearch}; do "fetch_$t"; log "fetched $t"; done
+for t in ${*:-sift rum pg_search pg_textsearch}; do
+  key=$(fetch_key "$t" 2>/dev/null) || key=''
+  if [[ -n $key && -z ${REBUILD_ENGINES:-} && $(cat "$ENG/$t/.key" 2>/dev/null) == "$key" ]] && fetch_present "$t"; then log "$t is up to date"; continue; fi
+  rm -f "$ENG/$t/.key"
+  "fetch_$t"
+  mkdir -p "$ENG/$t"
+  [[ -z $key ]] || echo "$key" >"$ENG/$t/.key"
+  [[ -n ${KEEP_DOWNLOADS:-} ]] || rm -rf "$ENG/$t/dl"
+  log "fetched $t"
+done
+rm -rf "$BUILD"

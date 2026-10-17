@@ -19,7 +19,7 @@ BENCH=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(dirname "$BENCH")
 RHOST=${RHOST:?set RHOST to the ssh host} RDIR=${RDIR:-Projects/sift}
 BM25_SRC=${BM25_SRC:-}
-CACHE=${SIFT_BENCH_ROOT:-/tmp/sift-bench}/cache
+CACHE=${BENCH_STORE:-${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}}/cache
 
 ENV="D=\$HOME/$RDIR; export D PATH=\$D/pg18/bin:\$D/.cargo/bin:\$PATH RUSTUP_HOME=\$D/.rustup CARGO_HOME=\$D/.cargo \
 SIFT_BENCH_ROOT=\$D/bench-root RUSTFLAGS='${RUST_TARGET_CPU:+-C target-cpu=$RUST_TARGET_CPU}'; cd \$D"

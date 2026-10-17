@@ -10,8 +10,6 @@ Fast full-text search with BM25 ranking inside PostgreSQL. pg_sift is an index t
 wildcard, regex and fuzzy queries, ranks results with exact BM25 and counts matches straight from the index. It needs no external search
 server and no `shared_preload_libraries`.
 
-- **Fast:** ahead of ParadeDB pg_search on every query class we measured, 2.9x to 8.9x on 218,058 Wikipedia articles (benchmarks).
-- **Small:** 131 MiB for those articles with phrase support, 1.4x smaller than pg_search; 52 MiB without word positions.
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes, crash and replica safe (generic WAL).
 - **Built for search pages:** top-k ranking, filters pushed into the ranked scan, facet counts, autocomplete with field boosts.
 

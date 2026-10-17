@@ -5,7 +5,7 @@
 #
 #   bench/steps/facets.sh
 #
-# Needs $ARTICLES (default /tmp/sift-bench/data/articles.tsv, bench/datasets/fetch.sh articles). Builds the
+# Needs $ARTICLES (default /tmp/sift-bench/data/articles.tsv.gz, bench/datasets/fetch.sh articles). Builds the
 # release library into a scratch cluster under $FACET_TMP (default /tmp/sift-facets-bench, removed on
 # exit unless KEEP=1). Three workloads of NQ queries each: `one` (a word of every document frequency
 # band), `and` and `or` (two words). Every query is first checked: sift.facets must equal the sift GROUP
@@ -19,7 +19,7 @@ export LC_ALL=C
 STEPS=$(cd "$(dirname "$0")" && pwd)
 BENCH=$(dirname "$STEPS")
 REPO=$(dirname "$BENCH")
-ARTICLES=${ARTICLES:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}/data/articles.tsv}
+ARTICLES=${ARTICLES:-${BENCH_STORE:-${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}}/data/articles.tsv.gz}
 TMP=${FACET_TMP:-/tmp/sift-facets-bench}
 DOCS=${DOCS:-25000} SECS=${SECS:-3} ROUNDS=${ROUNDS:-2} CLIENTS=${CLIENTS:-1} NQ=${NQ:-24} NCAT=${NCAT:-2500}
 PARALLEL=${PARALLEL:-2} ES=${ES:-auto} ES_HEAP=${ES_HEAP:-4g} ES_PORT=${ES_PORT:-56170}
@@ -56,7 +56,7 @@ load() {
 	q -c "CREATE EXTENSION pg_sift"
 	q <<-SQL
 		CREATE UNLOGGED TABLE src (foreign_id bigint, body text, category_id int, created date, a_count int, url text);
-		\\copy src FROM PROGRAM 'head -n $DOCS $ARTICLES'
+		\\copy src FROM PROGRAM 'gzip -dcf $ARTICLES | head -n $DOCS'
 		CREATE TABLE docs AS SELECT foreign_id AS id, body,
 			coalesce(nullif(left(lower(regexp_replace(body, '^[^[:alpha:]]+', '')), 1), ''), '_') AS lo,
 			'c' || abs(hashint8(foreign_id)) % $NCAT AS hi, to_tsvector('simple', body) AS tsv FROM src;
