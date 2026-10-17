@@ -162,7 +162,6 @@ open_index(UDF_ARGS *args, char *error)
 
 typedef struct Sql
 {
-	MYSQL	   *m;
 	char	   *sql;
 	size_t		len,
 				cap;
@@ -188,9 +187,18 @@ sql_put(Sql *s, const char *fmt,...)
 static void
 sql_free(Sql *s)
 {
-	if (s->m)
-		SQL(close) (s->m);
 	free(s->sql);
+}
+
+/* The local connection of the UDF call in progress: opened by its first statement, shared by the next ones, closed at the end */
+static __thread MYSQL *call_conn;
+
+static void
+local_close(void)
+{
+	if (call_conn)
+		SQL(close) (call_conn);
+	call_conn = NULL;
 }
 
 /* Runs the statement in s as the server itself (no user, no database: names are qualified) and returns its rows */
@@ -199,16 +207,20 @@ sql_run(Sql *s, char *err, size_t errlen)
 {
 	MYSQL_RES  *r;
 
-	s->m = SQL(init) (NULL);
-	if (s->m == NULL || SQL(real_connect_local) (s->m) == NULL)
+	if (call_conn == NULL)
 	{
-		snprintf(err, errlen, "sift: could not open a local connection to the server");
-		return NULL;
+		call_conn = SQL(init) (NULL);
+		if (call_conn == NULL || SQL(real_connect_local) (call_conn) == NULL)
+		{
+			local_close();
+			snprintf(err, errlen, "sift: could not open a local connection to the server");
+			return NULL;
+		}
+		SQL(set_character_set) (call_conn, "utf8mb4");
 	}
-	SQL(set_character_set) (s->m, "utf8mb4");
-	if (SQL(real_query) (s->m, s->sql, s->len) != 0 || (r = SQL(store_result) (s->m)) == NULL)
+	if (SQL(real_query) (call_conn, s->sql, s->len) != 0 || (r = SQL(store_result) (call_conn)) == NULL)
 	{
-		snprintf(err, errlen, "sift: reading the table failed: %s", SQL(error) (s->m));
+		snprintf(err, errlen, "sift: reading the table failed: %s", SQL(error) (call_conn));
 		return NULL;
 	}
 	return r;
@@ -629,7 +641,8 @@ sift_topk(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length,
 {
 	SiftIdx    *ix;
 	int			k = (int) *(long long *) args->args[2],
-				n = 0;
+				n = 0,
+				rc;
 	SxHit	   *hits;
 	char		err[512],
 			   *out;
@@ -645,7 +658,9 @@ sift_topk(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length,
 	if (parse_filter(args, 3, &flt, &ids, error))
 		return NULL;
 	hits = malloc(sizeof(SxHit) * k);
-	if (sx_topk(ix, &host, args->args[1], args->lengths[1], k, ids ? &flt : NULL, hits, &n, err, sizeof(err)) != 0)
+	rc = sx_topk(ix, &host, args->args[1], args->lengths[1], k, ids ? &flt : NULL, hits, &n, err, sizeof(err));
+	local_close();
+	if (rc != 0)
 	{
 		free(hits);
 		free(ids);
@@ -696,6 +711,7 @@ sift_count(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 	if (parse_filter(args, 2, &flt, &ids, error))
 		return 0;
 	rc = sx_count(ix, &host, args->args[1], args->lengths[1], ids ? &flt : NULL, &count, err, sizeof(err));
+	local_close();
 	free(ids);
 	if (rc != 0)
 	{
@@ -742,6 +758,7 @@ sift_matches(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *leng
 	if (parse_filter(args, 2, &flt, &ids, error))
 		return NULL;
 	rc = sx_matches(ix, &host, args->args[1], args->lengths[1], ids ? &flt : NULL, &pks, &n, err, sizeof(err));
+	local_close();
 	free(ids);
 	if (rc != 0)
 	{
@@ -943,6 +960,7 @@ stats_json(UDF_INIT *initid, SiftIdx *ix, unsigned long *length, char *error)
 	}
 	if (sx_cfg(ix, "queue") && host_queue(NULL, ix, st.drained, &ev, &pending, err, sizeof(err)) == 0)
 		free(ev);
+	local_close();
 	*length = sprintf(out, "{\"segments\":%d,\"docs\":%lld,\"dead\":%lld,\"live\":%lld,\"drained\":%lld,\"pending\":%zu,"
 					  "\"bytes\":%lld,\"dpp\":%lld,\"docbase\":%lld,\"merges\":%lld,\"format\":%u}",
 					  st.nsegs, (long long) st.ndocs, (long long) st.ndead, (long long) st.nlive,
