@@ -13,7 +13,8 @@ SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs,
 REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
-ROOT=${SIFT_BENCH_ROOT:-/tmp/sift-bench}
+ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
+STORE=${BENCH_STORE:-$ROOT}                  # datasets, downloads, dumps and the cache of lanes: inputs and caches only, they can live on a disk while ROOT is tmpfs
 TIER=${TIER:-Q}
 declare -A TIER_PORT=([Q]=56040 [F]=56050)
 declare -A TIER_DOCS=([Q]=${Q_DOCS:-150000} [F]=ALL)   # articles per tier; the cached dump carries the count
@@ -21,9 +22,10 @@ declare -A TIER_SHBUF=([Q]=1GB [F]=4GB)
 declare -A TIER_MWM=([Q]=512MB [F]=2GB)
 PGDATA=${PGDATA:-$ROOT/pg/$TIER}
 SOCK=$ROOT/run
-CACHE=$ROOT/cache
+CACHE=$STORE/cache                           # corpus dumps and the cache of lanes (lanes.sh)
 DUMP=$CACHE/sift-$TIER-${TIER_DOCS[$TIER]}.dump
-DATA=$ROOT/data
+DATA=$STORE/data                             # articles.tsv.gz, places-*/ (setup); Q/ and F/: exports of the corpus for the engines outside Postgres, derived
+DOWNLOADS=${DOWNLOADS:-$STORE/download}      # the raw downloads, removed once the datasets are derived (KEEP_DOWNLOADS=1)
 ENG=$ROOT/engines                            # engines/<name>/{dl,root}: downloads, and the installed (DESTDIR) or unpacked extension
 SIFT_ROOT=${SIFT_ROOT:-$ENG/sift/root}
 JOBS=${JOBS:-4}                              # parallel jobs of the builds in bench/steps/fetch.sh
@@ -40,8 +42,7 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd:)
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
 loadavg() { cut -d' ' -f1 /proc/loadavg; }
-# Timed sections must not overlap with other jobs' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD) because its
-# sessions overlap on purpose, on disjoint CPUs.
+# Timed sections must not overlap with other jobs' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD).
 locked() { if [[ -n ${PERF_LOCK_HELD:-} ]]; then "$@"; else ( flock 9; "$@" ) 9>>"$LOCK"; fi; }
 now_ms() { date +%s%3N; }
 elapsed_s() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.1f", (b - a) / 1000}'; }   # ms timestamps -> seconds
@@ -53,10 +54,11 @@ drop_db() { PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)"; 
 # (extension), SETUP and INDEX (SQL), and either PRED and RANK (SQL expressions over `mode` and `terms` that render the
 # WHERE condition and the ORDER BY of a query, NULL when the engine cannot answer it; SOURCE: the FROM item of ranked
 # statements when it is not `docs WHERE PRED`; HELPERS: SQL they use; PROBE: see engine_available) or, for engines
-# outside Postgres, EXTERNAL, RENDER and the x_* functions (bench/steps/xlib.sh). Places (the `places` table, steps/places.sh):
-# PLACES_SETUP, PLACES_INDEX (+ PLACES_INDEXES: the relations whose sizes add up), the optional emulation of workloads
-# the engine has no native query for (PLACES_SETUP2, PLACES_INDEX2, PLACES_INDEXES2) and the statements P_match, P_top,
-# P_boost, P_filter, P_count, P_scan (empty: no such query). A variant adapter sets V_EXT / V_OPTS, then sources its base.
+# outside Postgres, EXTERNAL, RENDER (+ JOINS when the engine answers the join class) and the x_* functions (bench/steps/xlib.sh). Places (the
+# `places` table, steps/places.sh): PLACES_SETUP, PLACES_INDEX (+ PLACES_INDEXES: the relations whose sizes add up), the optional emulation
+# of workloads the engine has no native query for (PLACES_SETUP2, PLACES_INDEX2, PLACES_INDEXES2) and the statements P_match, P_top,
+# P_boost, P_filter, P_count, P_scan (empty: no such query); an external engine has PLACES_RENDER and x_build_places instead. A variant
+# adapter sets V_EXT / V_OPTS, then sources its base.
 # shellcheck disable=SC2016  # $b$ is the SQL quote of the function body
 render_sql() {
   echo "${HELPERS:-}"
@@ -66,15 +68,15 @@ render_sql() {
 }
 XBENCH=$ROOT/target/release/xbench          # the Rust load generator of the external engines (bench/steps/fetch.sh tantivy)
 load_engine() {
-  ENGINE=$1; REQUIRES=''; PROBE=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''; EXTERNAL=''; REQUIRES_PATH=''
-  PLACES_SETUP=''; PLACES_INDEX=''; PLACES_INDEXES=''; PLACES_SETUP2=''; PLACES_INDEX2=''; PLACES_INDEXES2=''; PLACES_FLAVOR=''; PLACES_FLAVOR_MATCH=''
+  ENGINE=$1; REQUIRES=''; PROBE=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''; EXTERNAL=''; REQUIRES_PATH=''; JOINS=''
+  PLACES_SETUP=''; PLACES_INDEX=''; PLACES_INDEXES=''; PLACES_SETUP2=''; PLACES_INDEX2=''; PLACES_INDEXES2=''; PLACES_FLAVOR=''; PLACES_FLAVOR_MATCH=''; PLACES_RENDER=''
   P_match=''; P_top=''; P_boost=''; P_filter=''; P_count=''; P_scan=''; V_EXT=''; V_OPTS=''
   . "$BENCH/engines/_places.sh"
   . "$BENCH/engines/$1.sh"
   [[ -n $RENDER || -n $EXTERNAL ]] || RENDER=$(render_sql)
 }
 # does the loaded engine run the dataset (articles, places)?
-supports() { case $1 in articles) [[ -n $INDEX || -n $EXTERNAL ]] ;; places) [[ -n $PLACES_INDEX ]] ;; esac; }
+supports() { case $1 in articles) [[ -n $INDEX || -n $EXTERNAL ]] ;; places) [[ -n $PLACES_INDEX || -n $PLACES_RENDER ]] ;; esac; }
 # PROBE (adapters): a statement over a temp table `probe (t text)` that only works when the installed extension has what the
 # engine needs (a reloption of a newer build); it runs in a rolled back transaction. External engines need their binary.
 engine_available() {
@@ -93,6 +95,11 @@ available_engines() {
 }
 clone_db() {
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)" -c "CREATE DATABASE $1 TEMPLATE bench STRATEGY FILE_COPY"
+  export DB=$1 PGDATABASE=$1
+  q -f "$BENCH/sql/harness.sql"
+}
+adopt_db() { # NAME: in a cluster of one engine the corpus database `bench` becomes the engine's database (no second copy), with the harness
+  PGDATABASE=postgres q -c "ALTER DATABASE bench RENAME TO $1"
   export DB=$1 PGDATABASE=$1
   q -f "$BENCH/sql/harness.sql"
 }
@@ -176,33 +183,3 @@ cold_cell() {
   done | median_max
 }
 median_max() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.2f\t%.2f\t%d", v[int((NR + 1) / 2)], v[NR], NR; else printf "error\terror\t0"}'; }   # p50, maximum and count of the numbers on stdin (error: none)
-
-# --- the CPU budget, identical for every engine. CPUS: the server CPUs of the cluster at hand (an engine's lane, see lanes.sh, or
-# all of them), LOAD_CPUS: the CPUs of its load generators (pgbench, xbench), disjoint from the servers'; both are cpu lists
-# (0-3,8-11) picked by bench/steps/cpus.sh unless given (`bench --cpus LIST --load-cpus LIST`). Servers run pinned to CPUS with a
-# CPU quota of 100% per CPU and MEM_MAX of memory (a cgroup scope when a systemd user session exists), the number of parallel
-# workers and of load generator threads follow from the lists. Without CPUS the budget is the whole machine.
-cpu_count() { # a cpu list -> how many
-  local x n=0
-  for x in ${1//,/ }; do if [[ $x == *-* ]]; then n=$(( n + ${x#*-} - ${x%-*} + 1 )); else n=$(( n + 1 )); fi; done
-  echo "$n"
-}
-cpu_list() { # a cpu list -> one cpu per line
-  local x
-  for x in ${1//,/ }; do if [[ $x == *-* ]]; then seq "${x%-*}" "${x#*-}"; else echo "$x"; fi; done
-}
-CPUS=${CPUS:-} LOAD_CPUS=${LOAD_CPUS:-}
-if [[ -z ${BUDGET_ENFORCED:-} ]]; then
-  systemd-run --user --scope --quiet true 2>/dev/null && BUDGET_ENFORCED=yes || BUDGET_ENFORCED=no
-  export BUDGET_ENFORCED
-fi
-limited() {
-  local argv=(nice "$@") quota=${CPU_QUOTA:-$([[ -n $CPUS ]] && echo "$(( $(cpu_count "$CPUS") * 100 ))%" || echo 800%)}
-  [[ -z $CPUS ]] || argv=(taskset -c "$CPUS" "${argv[@]}")
-  if [[ $BUDGET_ENFORCED == yes ]]; then
-    systemd-run --user --scope --quiet -p CPUQuota="$quota" -p MemoryMax="${MEM_MAX:-32G}" "${argv[@]}"
-  else
-    "${argv[@]}"
-  fi
-}
-loadgen() { if [[ -n $LOAD_CPUS ]]; then taskset -c "$LOAD_CPUS" "$@"; else "$@"; fi; }   # a load generator, on the load CPUs

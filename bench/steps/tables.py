@@ -3,7 +3,7 @@
     python3 -I steps/tables.py OUTDIR [--engines a,b] [--per-dataset DIR] DATASET:TIER:RESULT_DIR ...
 
 DATASET is articles (a steps/articles.sh directory: cells.tsv, builds.tsv) or places (a steps/places.sh
-directory), TIER quick, ab or full, or <tier>-cold for the directory of a cold-cache run (cold.tsv). --engines keeps only those
+directory), TIER slim, ab or full (quick is the old name of slim), or <tier>-cold for the directory of a cold-cache run (cold.tsv). --engines keeps only those
 engine ids. Writes to OUTDIR:
 
   results.tsv   one row per measurement, tab separated, first line a `#` comment naming the columns:
@@ -13,14 +13,14 @@ engine ids. Writes to OUTDIR:
                 (writer operations per second) and wal_mib (WAL written during the cell).
                 places: class = p1..p4|w1|a2|a2s|a3|x2, variant = top|boost|filter|count|scan, metric = p50_ms
                 or p95_ms (single client, median over the rounds).
-                the CPU budget of a session (host row, engine -): metric = cpu_budget, value = server CPUs of an engine, min = its load
-                generator CPUs, max = engines measured, variant = `servers=<list>;load=<list>;mode=concurrent|serial;lane_servers=<list>;
-                lane_load=<list>;engines=<n>` (the machine description of the run has it as `cpu budget:`).
                 both: class = variant = - and metric = index_mib | build_s | setup_s | heap_growth_mib (one
                 build per engine; build_s is CREATE INDEX, setup_s the work before it, heap_growth_mib the
                 table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
                 columns and indexes of an emulated workload (places: rum boost, pg_textsearch ranked prefixes)
                 are the same metrics with variant = emulation.
+                host rows (engine -): corpus = documents of the dataset (corpus.txt of the directory), wall_s = seconds of a phase of the
+                session (phases.txt, variant = the phase), session = the host and versions (machine.txt; variant = key=value words
+                joined by `;`: date, cpu, threads, pg, sift, elasticsearch).
                 cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of up to 12 queries per class
                 (articles: class = and|or|..., variant = -; places: class = p1.., variant = the workload).
                 A value of NA means the engine cannot run the class, error that its statement failed.
@@ -37,7 +37,7 @@ engine ids. Writes to OUTDIR:
 dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay.
 Engine ids, order and labels: bench/engines.tsv.
 """
-import collections, math, os, statistics as st, sys
+import collections, math, os, re, statistics as st, sys
 
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
     NAME = {r[0]: r[2] for r in (l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#'))}
@@ -47,6 +47,7 @@ UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
+METHOD = 'Method: one engine at a time on every CPU of the host (the servers of the other engines idle), the engines interleaved in rounds, the same clients for all.'
 FLAG = 0.10   # a relative standard error above this is flagged in the tables and the charts
 
 
@@ -109,8 +110,8 @@ def articles(tier, path):
             v = [num(x[5]) if m != 'qps' or num(x[5]) else float('nan') for x in sel]   # a qps of 0: a client failed
             t = stats(v, [num(x[6]) if len(x) > 6 else None for x in sel]) if v else ('NA',) * 4 + ('0', 'NA')
             out.append(('articles', tier, e, c, '-', m, *t[:3], UNIT[m], *t[3:]))
-    for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth
-        builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], '-'))
+    for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth [variant]
+        builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], b[7] if len(b) > 7 else '-'))
     return out, builds, [float(c[1]) for c in cells]
 
 
@@ -140,29 +141,32 @@ def build_rows(builds):
     return out
 
 
-def budget_of(path):
-    """the cpu budget line of the machine description of a result directory as a row, None when it has none"""
+def host_rows(dataset, tier, path):
+    """what a result directory says about its session, as rows of the engine `-`: the size of the corpus (corpus.txt, documents), the
+    seconds of each phase (phases.txt, metric wall_s, variant = the phase) and the host and versions (machine.txt, metric session, variant =
+    `key=value` words separated by `;`)"""
+    out = []
     try:
-        line = next(l for l in open(os.path.join(path, 'machine.txt')) if l.startswith('cpu budget: '))
-    except (OSError, StopIteration):
-        return None
-    kv = dict(w.split('=', 1) for w in line[len('cpu budget: '):].split() if '=' in w)
-    if not {'lane_servers', 'lane_load', 'engines'} <= kv.keys():
-        return None
-    count = lambda cpus: 0 if cpus == 'all' else sum(int(b) - int(a) + 1 for a, b in (x.split('-') if '-' in x else (x, x) for x in cpus.split(',')))
-    variant = ';'.join('%s=%s' % (k, kv[k]) for k in ('servers', 'load', 'mode', 'lane_servers', 'lane_load', 'engines') if k in kv)
-    return count(kv['lane_servers']), count(kv['lane_load']), int(kv['engines']), variant
-
-
-def budget_text(row):
-    """the CPU budget of a cpu_budget row in words"""
-    kv = dict(w.split('=', 1) for w in row[4].split(';'))
-    if kv['servers'] == kv['load']:
-        return 'servers and load generators share %s%s' % ('CPUs ' if kv['servers'][0].isdigit() else '', kv['servers'])
-    if kv['mode'] == 'serial':
-        return 'one server cluster on CPUs %s, load generators on CPUs %s' % (kv['servers'], kv['load'])
-    return '%s engines at once, each with %s server CPU(s) and %s load generator CPU(s), rotated every round (servers %s, load generators %s)' % (
-        row[8], row[6], row[7], kv['servers'], kv['load'])
+        n = int(open(os.path.join(path, 'corpus.txt')).read())
+        out.append((dataset, tier, '-', '-', '-', 'corpus', n, n, n, 'documents', *single(n)))
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in open(os.path.join(path, 'phases.txt')):
+            name, secs = line.rstrip('\n').split('\t')
+            out.append((dataset, tier, '-', '-', name, 'wall_s', secs, secs, secs, 's', *single(secs)))
+    except OSError:
+        pass
+    try:
+        text = open(os.path.join(path, 'machine.txt')).read()
+    except OSError:
+        return out
+    grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
+    cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
+    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('pg', grab('postgres')), ('sift', grab('sift commit')),
+             ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
+    out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))
+    return out
 
 
 def get(rows, dataset, tier, engine, cls='-', variant='-', metric=None):
@@ -205,6 +209,16 @@ def build_cols(rows, dataset, tier, e):
     return [value(rows, dataset, tier, e, metric=m) for m in ('index_mib', 'build_s')]
 
 
+def md_merge(rows, dataset, tier, engines):
+    """the force-merge of an engine that merges after loading (Elasticsearch): its own row, `build` of the main row is the bulk load and refresh"""
+    merge = [e for e in engines if get(rows, dataset, tier, e, '-', 'forcemerge', 'build_s')]
+    if not merge:
+        return []
+    return ['', 'Force-merge to one segment after the bulk load and refresh (the build column is the bulk load and refresh, the index column the size after the merge):', ''] + md_table(
+        ['engine', 'force-merge (s)', 'index before the merge (MiB)'],
+        [[NAME[e], value(rows, dataset, tier, e, '-', 'forcemerge', 'build_s'), value(rows, dataset, tier, e, '-', 'forcemerge', 'index_mib')] for e in merge])
+
+
 def md_articles(rows, tier):
     measured = [r for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps']
     engines = [e for e in ORDER if any(r[2] == e for r in measured)]
@@ -217,6 +231,7 @@ def md_articles(rows, tier):
     body = [[NAME[e]] + build_cols(rows, 'articles', tier, e) + ([value(rows, 'articles', tier, e, metric='heap_growth_mib')] if growth else [])
             + [shown(qps(e, c)) for c in classes] for e in engines]
     out = ['Queries per second, median ± standard error (minimum-maximum over the rounds); index size and CREATE INDEX time of the one build per engine:', ''] + md_table(head, body)
+    out += md_merge(rows, 'articles', tier, engines)
     out += ['', LEGEND]
     rel = [[NAME[e] + ' / ' + NAME[ref]] + [ratio(value(rows, 'articles', tier, e, c, '-', 'qps'), value(rows, 'articles', tier, ref, c, '-', 'qps')) for c in classes]
            for e in engines if e != ref]
@@ -246,6 +261,7 @@ def md_places(rows, tier):
         out += ['', 'Extra columns and indexes of the emulated workloads (rum boost; pg_textsearch top-20, boost, filtered):', '']
         out += md_table(['engine', 'index (MiB)', 'build (s)', 'column fill (s)', 'table growth (MiB)'],
                         [[NAME[e]] + [value(rows, 'places', tier, e, '-', 'emulation', m) for m in metrics] for e in emu])
+    out += md_merge(rows, 'places', tier, engines)
     for wl in dict.fromkeys(r[4] for r in sel):
         body = []
         for c in classes:
@@ -264,8 +280,7 @@ def md_cold(rows, dataset, tier):
     cell = lambda e, k: sel[(e,) + k + ('cold_p50_ms',)] + ' / ' + sel[(e,) + k + ('cold_max_ms',)] if (e,) + k + ('cold_p50_ms',) in sel else 'NA'
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
-    budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); ' + METHOD, '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 
@@ -284,10 +299,8 @@ def main(argv):
         dataset, tier, path = spec.split(':', 2)
         r, b, load = (articles if dataset == 'articles' else places)(tier, path)
         rows += [x for x in r if keep is None or x[2] in keep]
-        if budget_of(path):
-            cpus, load_cpus, engines, variant = budget_of(path)
-            rows.append((dataset, tier, '-', '-', variant, 'cpu_budget', cpus, load_cpus, engines, 'cpus', *single(cpus)))
         builds += [x for x in b if keep is None or x[2] in keep]
+        rows += host_rows(dataset, tier, path)
         loads[dataset, tier] += load
         tiers.append((dataset, tier))
     rows += build_rows(builds)
@@ -319,8 +332,7 @@ def main(argv):
             md += md_cold(rows, dataset, tier) + ['']
             continue
         load = get(rows, dataset, tier, '-', '-', '-', 'load_1m')
-        budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-        md += ['CPU budget: %s.' % budget_text(budget) if budget else 'CPU budget: not recorded.',
+        md += [METHOD,
                'Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6]), '']
         md += (md_articles if dataset == 'articles' else md_places)(rows, tier) + ['']
     open(outdir + '/tables.md', 'w').write('\n'.join(md))

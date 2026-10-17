@@ -525,20 +525,34 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	limited = mode == SIFT_MODE_RANKED && k > 0;
 	startup = dict + (postings + (limited ? verify : 0)) / divisor;
 	cp->path.startup_cost = startup;
-	cp->path.total_cost = limited ? startup + cp->path.rows * cpu_tuple_cost : startup + verify / divisor;
 	/*
-	 * Drained past its k rows (a Sort over a plain Gather, which also loses the scan's tie order)
-	 * a parallel ranked scan ranks every match: that is its total cost
+	 * A ranked scan with a limit hint costs what its k rows take up to its startup cost. Drained past
+	 * them (under a join that keeps few of its rows, a hash join, a sort) it ranks again for four
+	 * times as many, to the last match (sift_rank_next): that is its total cost, the one a consumer
+	 * that stops after a fraction of the rows interpolates from
 	 */
-	if (limited && nworkers > 0)
-		cp->path.total_cost = dict + (postings + sc.docs * sc.tuple) / divisor;
+	cp->path.total_cost = limited ? Max(dict + (postings + sc.docs * (push ? fe.sel : 1) * sc.tuple) / divisor, startup) :
+		startup + verify / divisor;
 	return cp;
 }
 
+/* What the scan costs to hand out the rows its limit hint asks for (its total cost is the one of draining it) */
+static Cost
+pick_cost(CustomPath *cp)
+{
+	bool		hinted = DatumGetInt64(list_nth_node(Const, cp->custom_private, SIFT_PRIV_K)->constvalue) > 0;
+
+	return hinted && cp->path.parallel_workers == 0 ? cp->path.startup_cost + cp->path.rows * cpu_tuple_cost : cp->path.total_cost;
+}
+
+/*
+ * The scan is the only path of its rel, so the pick between a pushed down filter and none, and between
+ * indexes, is by what the limit asks of it: what a join above drains cannot tell them apart
+ */
 static bool
 cheaper(CustomPath *a, CustomPath *b)
 {
-	return b == NULL || compare_path_costs(&a->path, &b->path, TOTAL_COST) < 0;
+	return b == NULL || pick_cost(a) < pick_cost(b);
 }
 
 /*

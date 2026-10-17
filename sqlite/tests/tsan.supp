@@ -1,0 +1,4 @@
+# sift_parallel.c (unmodified engine file) lets the emitting participant read the number of attached participants
+# without the lock. A participant that attaches after the work is gone only publishes an empty slot, which the
+# emitter reads as 0 whether it sees the attach or not.
+race:sift_par_collect

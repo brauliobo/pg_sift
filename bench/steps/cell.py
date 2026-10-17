@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """One measured cell of steps/articles.sh and steps/places.sh: pgbench runs in chunks until the cell is precise enough.
 
-    python3 -I cell.py qps|latency [--rse X] [--min-time S] [--max-time S] [--min-n N] [--seed N] [--hint FILE] [--tmp DIR] -- PGBENCH_ARGS...
+    python3 -I cell.py qps|latency [--rse X] [--min-time S] [--max-time S] [--min-n N] [--seed N] [--hint FILE] [--tmp DIR] [--xbench] -- PGBENCH_ARGS...
 
-PGBENCH_ARGS are the arguments of pgbench without -t, -T, -l, --log-prefix and --random-seed (the clients are its -c). Every
+PGBENCH_ARGS are the arguments of pgbench without -t, -T, -l, --log-prefix and --random-seed (the clients are its -c); with --xbench
+they are a whole command line of the load generator of the engines outside Postgres (`xbench http URL QUERIES --clients N ...`, steps/xlib.sh),
+to which the chunk adds --repeat / --duration, --warmup 0, --seed and --txlog (bench/xbench), so Elasticsearch cells are measured and
+stopped exactly like the pgbench ones. Every
 transaction is logged (-l). A chunk is one pgbench run: a number of transactions per client (-t) when it is short and its clients
 run many of them, whole seconds (-T, which keeps every client busy to the end) when it is long or slow. A chunk with many
 transactions per client drops the first of each: a backend that has just started pays for its caches in its first query. The cell
@@ -30,19 +33,37 @@ MAX_CHUNKS = 12
 BATCH = 5         # transactions of a client in a batch, at least
 
 
-def run_chunk(argv, tmp, flag, amount, seed):
-    """pgbench -t or -T: {client: [(end time s, latency s)]} in transaction order"""
+def pgbench_rows(log):
+    """(client, transaction number, end time s, latency s) of the logs of pgbench -l --log-prefix=LOG/l"""
+    for name in os.listdir(log):
+        with open(os.path.join(log, name)) as f:
+            for line in f:
+                c, i, lat, _, sec, us = line.split()[:6]
+                yield int(c), int(i), int(sec) + int(us) / 1e6, int(lat) / 1e6
+
+
+def xbench_rows(log):
+    """the same from the --txlog of xbench: `client seq latency_us end_us`"""
+    with open(os.path.join(log, 'tx')) as f:
+        for line in f:
+            c, i, lat, end = line.split()
+            yield int(c), int(i), int(end) / 1e6, int(lat) / 1e6
+
+
+def run_chunk(argv, tmp, flag, amount, seed, xbench=False):
+    """pgbench -t or -T (xbench --repeat or --duration): {client: [(end time s, latency s)]} in transaction order"""
     log = tempfile.mkdtemp(dir=tmp)
     try:
-        run = subprocess.run(['pgbench', *argv, flag, str(amount), '-l', f'--log-prefix={log}/l', f'--random-seed={seed}'], capture_output=True, text=True)
+        if xbench:
+            cmd = [*argv, '--repeat' if flag == '-t' else '--duration', str(amount), '--warmup', '0', '--seed', str(seed), '--txlog', os.path.join(log, 'tx')]
+        else:
+            cmd = ['pgbench', *argv, flag, str(amount), '-l', f'--log-prefix={log}/l', f'--random-seed={seed}']
+        run = subprocess.run(cmd, capture_output=True, text=True)
         if run.returncode:
-            raise RuntimeError(next((l for l in run.stderr.splitlines() if 'error:' in l), f'pgbench exited with {run.returncode}'))
+            raise RuntimeError(next((l for l in run.stderr.splitlines() if 'error' in l), f'{cmd[0]} exited with {run.returncode}'))
         clients = {}
-        for name in os.listdir(log):
-            with open(os.path.join(log, name)) as f:
-                for line in f:
-                    c, i, lat, _, sec, us = line.split()[:6]
-                    clients.setdefault(int(c), []).append((int(i), int(sec) + int(us) / 1e6, int(lat) / 1e6))
+        for c, i, end, lat in (xbench_rows if xbench else pgbench_rows)(log):
+            clients.setdefault(c, []).append((i, end, lat))
         return {c: [(t, lat) for _, t, lat in sorted(rows)] for c, rows in clients.items()}
     finally:
         shutil.rmtree(log, ignore_errors=True)
@@ -162,14 +183,15 @@ def main():
     p.add_argument('--seed', type=int, default=7)
     p.add_argument('--hint')
     p.add_argument('--tmp', default=tempfile.gettempdir())
+    p.add_argument('--xbench', action='store_true')
     split = sys.argv.index('--')
     a, argv = p.parse_args(sys.argv[1:split]), sys.argv[split + 1:]
-    cell, start, chunk = Cell(a.mode, int(argv[argv.index('-c') + 1])), time.monotonic(), 0
+    cell, start, chunk = Cell(a.mode, int(argv[argv.index('--clients' if a.xbench else '-c') + 1])), time.monotonic(), 0
     try:
         if a.hint and os.path.exists(a.hint):
             cell.est = float(open(a.hint).read())
         else:   # one transaction per client: how fast the cell is (a lower bound: a backend's first query is its slowest), kept when it is slow
-            first = run_chunk(argv, a.tmp, '-t', 1, a.seed)
+            first = run_chunk(argv, a.tmp, '-t', 1, a.seed, a.xbench)
             lat = [lat for rows in first.values() for _, lat in rows]
             cell.est = cell.clients / mean(lat)
             if a.min_time / mean(lat) < FEW:
@@ -177,7 +199,7 @@ def main():
         while (step := next_chunk(cell, a)) and chunk < MAX_CHUNKS:
             flag, amount, warm = step
             chunk, t0 = chunk + 1, time.monotonic()
-            cell.add(run_chunk(argv, a.tmp, flag, amount, a.seed + chunk), warm)
+            cell.add(run_chunk(argv, a.tmp, flag, amount, a.seed + chunk, a.xbench), warm)
             if os.environ.get('CELL_DEBUG'):
                 print(f'chunk {chunk}: {flag} {amount} warm {warm}: {time.monotonic() - t0:.2f} s, now n {cell.n} {cell.seconds:.2f} s rse {cell.rel_se():.3f}', file=sys.stderr)
     except RuntimeError as e:

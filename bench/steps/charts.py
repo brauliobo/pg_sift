@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SVG charts of the committed benchmark tables (bench/results/*.tsv), standard library only.
 
-Usage: python3 -I bench/steps/charts.py [--results DIR] [--out DIR] [--tier full]
+Usage: python3 -I bench/steps/charts.py [--results DIR] [--out DIR] [--tier slim]
        (bench/bench charts; bench/bench report --docs runs it after writing the tables)
 
 Writes into the output directory (default docs/img), all of them grouped bars drawn by one helper (`grouped`):
@@ -29,12 +29,33 @@ from xml.sax.saxutils import escape
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
-# What the tables do not say: the scale of each dataset, the rounds and the host class of the session.
-DATASETS = {
-    'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'rounds': 4},
-    'places': {'name': 'GeoNames cities500, 236,262 places', 'rounds': 4},
-}
-DATE = 'Oct 2026'
+DATASETS = ('articles', 'places')
+FULL_SIZES = {'articles': 218058, 'places': 236262}   # the tier whose rows predate the corpus rows
+TIER_NAMES = {'slim': 'Slim tier', 'ab': 'Intermediate tier', 'full': 'Full-size runs'}
+
+
+def describe(rows, tier):
+    """{dataset: {'name', 'rounds'}}: what the tables do not say, from the rows of the tier (the corpus rows of steps/tables.py: documents; the
+    n of the cells: rounds)"""
+    out = {}
+    for d, what in (('articles', 'Simple English Wikipedia, %s articles'), ('places', 'GeoNames %s, %s places')):
+        corpus = rows.get((d, tier, '-', '-', '-', 'corpus'))
+        n = int(corpus[0]) if corpus and corpus[0] else FULL_SIZES[d] if tier == 'full' else 0
+        rounds = sorted({int(v[4]) for k, v in rows.items() if k[:2] == (d, tier) and k[5] in ('qps', 'p50_ms') and v[4].isdigit() and int(v[4]) > 0})
+        name = what % ((f'{n:,}',) if d == 'articles' else ('cities500' if tier == 'full' else 'cities15000', f'{n:,}'))
+        out[d] = {'name': name, 'rounds': '%d-%d' % (rounds[0], rounds[-1]) if rounds and rounds[0] != rounds[-1] else str(rounds[0]) if rounds else '?'}
+    return out
+
+
+def session_date(rows, tier):
+    """Oct 2026: the month of the session row of the tier"""
+    import datetime
+    for (d, t, e, _c, var, metric) in rows:
+        if (t, e, metric) == (tier, '-', 'session'):
+            kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
+            if kv.get('date'):
+                return datetime.date.fromisoformat(kv['date']).strftime('%b %Y')
+    return 'Oct 2026'
 
 
 def engine_table():
@@ -52,6 +73,9 @@ PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 le
 PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
 BUILD_NOTES = ['places: pg_textsearch and rum show the native index; their emulated workloads add indexes.']
 BM25_BUILD_NOTES = ['places: pgx-bm25 also tenants two generated columns, the table grows.']
+ES_BUILD_NOTES = ['Elasticsearch: bulk load and refresh; its force-merge to one segment is not in the build time.']
+ES_ARTICLE_NOTES = ['Elasticsearch: a JVM server over HTTP; its join is a term filter on a denormalized region field.']
+ES_PLACE_NOTES = ['Elasticsearch: a JVM server over HTTP, edge n-grams of the typed words expanded by the client.']
 NA_NOTE = 'NA: no bar, the engine cannot run the workload or was not run on the dataset.'
 
 WIDTH = 860
@@ -105,7 +129,10 @@ def load(path):
             if line.startswith('#') or line.startswith('dataset\t') or not line.strip():
                 continue
             d, tier, eng, cls, var, metric, val, lo, hi, _unit, se, _n, _values = line.rstrip('\n').split('\t')
-            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi, None if se == 'NA' or val in ('NA', 'error') else float(se))
+            if metric in ('session', 'wall_s', 'corpus'):   # host rows: strings and counts, not measurements
+                rows[(d, tier, eng, cls, var, metric)] = (val, lo, hi, None, _n)
+                continue
+            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi, None if se == 'NA' or val in ('NA', 'error') else float(se), _n)
     return rows
 
 
@@ -151,7 +178,7 @@ def legend(svg, y, engines, baseline):
         label, color = ENGINES[e]
         svg.rect(x, y - 10, 12, 12, color)
         svg.text(x + 17, y, label, 12)
-        x += 17 + len(label) * 7 + 18
+        x += 17 + len(label) * 6.3 + 14
     if baseline:
         svg.line(x, y - 4, x + 18, y - 4, INK, 1.5, dash=True)
         svg.text(x + 23, y, 'pg_search = 1.0x', 12)
@@ -225,25 +252,17 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
 
 
 def host(rows, tier, datasets):
-    """the CPU budget of the runs behind a chart (the cpu_budget rows of tables.py), once when the datasets agree"""
-    texts = []
-    for (d, t, e, _c, var, metric), (cpus, load_cpus, engines, _se) in rows.items():
-        if (t, e, metric) != (tier, '-', 'cpu_budget') or d not in datasets:
-            continue
-        kv = dict(w.split('=', 1) for w in var.split(';'))
-        if kv['servers'] == kv['load']:
-            text = ('CPUs ' if kv['servers'][0].isdigit() else '') + kv['servers']
-        elif kv['mode'] == 'serial':
-            text = f'serial, {int(cpus)} + {load_cpus} CPUs'
-        else:
-            text = f'{engines} lanes of {int(cpus)} + {load_cpus} CPUs'
-        if text not in texts:
-            texts.append(text)
-    return 'CPUs: ' + ' / '.join(texts) if texts else 'CPUs not recorded'
+    """the machine behind a chart (the session row of tables.py): CPU model and threads"""
+    for (d, t, e, _c, var, metric) in rows:
+        if (t, e, metric) == (tier, '-', 'session') and d in datasets:
+            kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
+            if kv.get('cpu'):
+                return f"{kv['cpu']}, {kv.get('threads', '?')} threads"
+    return 'host not recorded'
 
 
 def caption(rows, tier, datasets, what):
-    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {DATE}.'
+    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {session_date(rows, tier)}.'
 
 
 def errors_of(rows, tier, dataset, engines, keys, metric):
@@ -255,9 +274,9 @@ def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
     """index size and build time: one group per dataset"""
     engines = engines_of(rows, tier, DATASETS)
     series = [(e, [value(rows, tier, d, e, '-', '-', metric) for d in DATASETS]) for e in engines]
-    groups = [(d, spec['name']) for d, spec in DATASETS.items()]
-    notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else [])
-    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=notes)
+    groups = [(d, spec['name']) for d, spec in describe(rows, tier).items()]
+    notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else []) + (ES_BUILD_NOTES if 'elasticsearch' in engines else [])
+    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, f'{TIER_NAMES.get(tier, tier)}, one build per engine'), notes=notes)
 
 
 def make(rows, tier):
@@ -265,29 +284,30 @@ def make(rows, tier):
     out['index-size.svg'] = build_chart(rows, tier, 'Index size', 'lower is better', 'index_mib', lambda v: f'{v:.1f}', 'MiB')
     out['build-time.svg'] = build_chart(rows, tier, 'Index build time (CREATE INDEX)', 'lower is better', 'build_s', lambda v: f'{v:.1f}', 'seconds')
 
-    a = DATASETS['articles']
+    a = describe(rows, tier)['articles']
     keys = [(c, '-') for c, _ in ARTICLE_CLASSES]
     groups = [(label, '') for _, label in ARTICLE_CLASSES]
     engines = engines_of(rows, tier, ['articles'])
     qps = {e: [value(rows, tier, 'articles', e, c, '-', 'qps') for c, _ in ARTICLE_CLASSES] for e in engines}
     se = errors_of(rows, tier, 'articles', engines, keys, 'qps')
     cap = caption(rows, tier, ['articles'], f"{a['name']}, 8 clients, median of {a['rounds']} rounds")
+    notes = ES_ARTICLE_NOTES if 'elasticsearch' in engines else []
     out['articles-throughput.svg'] = grouped('Throughput by workload', 'queries per second, higher is better', groups, list(qps.items()),
-                                             lambda v: f'{v:,.0f}', 'queries per second', cap, errors=se)
+                                             lambda v: f'{v:,.0f}', 'queries per second', cap, notes=notes, errors=se)
     ratio = {e: [None if q is None else q / b for q, b in zip(vs, qps['pg_search'])] for e, vs in qps.items() if e != 'pg_search'}
     # the standard error of a quotient: the relative errors add in quadrature
     ratio_se = {e: [None if None in (s, t, q, b) else (q / b) * math.hypot(s / q, t / b)
                     for q, b, s, t in zip(qps[e], qps['pg_search'], se[e], se['pg_search'])] for e in ratio}
     out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
-                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, errors=ratio_se)
+                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, notes=notes, errors=ratio_se)
 
-    p = DATASETS['places']
+    p = describe(rows, tier)['places']
     keys = [(c, 'top') for c in PLACE_CLASSES]
     engines = engines_of(rows, tier, ['places'])
     lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines}
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
     out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, logarithmic axis, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES,
+                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES + (ES_PLACE_NOTES if 'elasticsearch' in engines else []),
                                         log=True, errors=errors_of(rows, tier, 'places', engines, keys, 'p50_ms'))
     return out
 
@@ -296,7 +316,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
     ap.add_argument('--out', default=os.path.join(REPO, 'docs', 'img'))
-    ap.add_argument('--tier', default='full')
+    ap.add_argument('--tier', default='slim')
     args = ap.parse_args()
     rows = {}
     for d in DATASETS:

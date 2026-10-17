@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
-# Settings live in $PGDATA/bench.conf, rewritten on every start. The server runs pinned to CPUS (lib.sh): its parallel workers are
-# as many as it has CPUs (WORKERS caps them), an index build gets BUILD_WORKERS of them (default one less than the CPUs, 3 at most
-# for a server without a CPU list). PORT and PGDATA select another cluster than the tier's (bench/steps/lanes.sh).
+# Settings live in $PGDATA/bench.conf, rewritten on every start. The server is free to use every CPU of the host: its parallel workers are
+# as many as the host has hardware threads (WORKERS caps them), an index build gets BUILD_WORKERS of them (default one fewer than the
+# physical cores: more would only cut a small table into more segments for the engines whose parallel build makes one per worker).
+# PORT and PGDATA select another cluster than the tier's (bench/steps/lanes.sh).
 # Extensions come from the engine roots built by bench/steps/fetch.sh (engines/*/root) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
@@ -18,8 +19,8 @@ preload() {
 }
 
 settings() {
-  local n=8 build=3
-  [[ -z $CPUS ]] || { n=$(cpu_count "$CPUS"); build=$(( n > 1 ? n - 1 : 0 )); }
+  local n cores build
+  n=$(nproc) cores=$(lscpu -p=core,socket | grep -v '^#' | sort -u | wc -l) build=$(( cores > 1 ? cores - 1 : 0 ))
   cat >"$PGDATA/bench.conf" <<EOF
 port = $PGPORT
 listen_addresses = ''
@@ -58,7 +59,7 @@ init() {
 start() {
   pg_ctl -D "$PGDATA" status >/dev/null 2>&1 && return
   settings
-  limited pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null 8>&-   # the server must not keep the perf lock of bench
+  pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null 8>&-   # the server must not keep the perf lock of bench
   log "started on port $PGPORT"
 }
 

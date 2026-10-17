@@ -10,8 +10,6 @@ Fast full-text search with BM25 ranking inside PostgreSQL. pg_sift is an index t
 wildcard, regex and fuzzy queries, ranks results with exact BM25 and counts matches straight from the index. It needs no external search
 server and no `shared_preload_libraries`.
 
-- **Fast:** ahead of ParadeDB pg_search on every query class we measured, 2.9x to 8.9x on 218,058 Wikipedia articles (benchmarks).
-- **Small:** 131 MiB for those articles with phrase support, 1.4x smaller than pg_search; 52 MiB without word positions.
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes, crash and replica safe (generic WAL).
 - **Built for search pages:** top-k ranking, filters pushed into the ranked scan, facet counts, autocomplete with field boosts.
 
@@ -25,9 +23,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_1.2.0-1_amd64.deb`.
+  and `sudo apt install ./postgresql-18-pg-sift_1.3.1-1_amd64.deb`.
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v1.2.0/pg_sift_18-1.2.0-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v1.3.1/pg_sift_18-1.3.1-1.el9.x86_64.rpm`.
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`):
 
@@ -89,6 +87,11 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 
 A proof of concept of the same engine for MariaDB (UDFs over a queue
 table, no server patches): [mariadb/README.md](mariadb/README.md).
+
+## pg_sift for SQLite
+
+The same search engine is also a SQLite loadable extension, `sift` for SQLite (release asset `sift-sqlite-<version>-linux-x86_64.tar.gz`): a
+separate component with its own install, documentation and changelog, see [sqlite/README.md](sqlite/README.md).
 
 ## Security and license
 
