@@ -142,7 +142,7 @@ BEGIN
 	SET v_textchg = CONCAT('NOT ((', v_new, ') <=> (', v_old, '))');
 	SET v_ins = CONCAT('INSERT INTO ', v_q, ' (op, pk) VALUES ');
 
-	SELECT sift_create(p_name, v_cfg);
+	SELECT sift_create(p_name, v_cfg) INTO @sift_unused;
 	INSERT INTO sift_indexes (name, db, tbl, pkcols, keymode, qname, keyexpr, source, drain_from, present, textexpr, cfg)
 		VALUES (p_name, v_db, p_tbl, v_pk, IF(v_int, 'int', 'map'), v_q, v_keyexpr, v_source, v_from, v_present, v_text, v_cfg);
 	CALL sift_run(CONCAT('CREATE TABLE ', v_q, ' (seq BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, op CHAR(1) NOT NULL, ',
@@ -185,7 +185,7 @@ BEGIN
 	CALL sift_run(CONCAT('DROP TABLE IF EXISTS `sift_k_', p_name, '`'));
 	DELETE FROM sift_indexes WHERE name = p_name;
 	IF sift_exists(p_name) THEN
-		SELECT sift_drop(p_name);
+		SELECT sift_drop(p_name) INTO @sift_unused;
 	END IF;
 END//
 
