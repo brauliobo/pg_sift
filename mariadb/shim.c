@@ -5,7 +5,7 @@
  * longjmps to sift_err_jmp, hash tables, StringInfo, List, UTF-8 and BufFile are the few things sift uses, and the
  * "buffer manager" maps a block number to a page of the index files (store.c). No PostgreSQL code is linked except
  * libpgcommon and libpgport (hash_bytes, qsort, UTF-8 tables, binaryheap).
- * The engine is not thread safe (CurrentMemoryContext and the error state are globals): engine.c serializes calls.
+ * The engine runs on any number of threads at once: the memory contexts and the error state are thread local.
  */
 #include "postgres.h"
 
@@ -25,6 +25,29 @@
 #include "utils/memutils.h"
 
 #include "shim.h"
+
+/*
+ * The current and the top memory context are per thread: the Makefile turns every use of the two names in the engine
+ * into a call of these accessors, so the engine code of src/ needs no change to run on several threads.
+ */
+#undef CurrentMemoryContext
+#undef TopMemoryContext
+static __thread MemoryContext cur_cx,
+			top_cx;
+#define CurrentMemoryContext	cur_cx
+#define TopMemoryContext		top_cx
+
+MemoryContext *
+sift_cur_cx(void)
+{
+	return &cur_cx;
+}
+
+MemoryContext *
+sift_top_cx(void)
+{
+	return &top_cx;
+}
 
 /* ------------------------------------------------ memory contexts */
 
@@ -68,9 +91,6 @@ typedef struct Ctx
 	Free	   *free[NCLASS];
 	Large		large;			/* sentinel of a ring */
 } Ctx;
-
-MemoryContext CurrentMemoryContext,
-			TopMemoryContext;
 
 static inline Chunk *
 chunk_of(void *p)
@@ -376,9 +396,9 @@ psprintf(const char *fmt,...)
 
 /* ------------------------------------------------ errors */
 
-sigjmp_buf *sift_err_jmp;
-int			sift_err_code;
-char		sift_err_msg[1024];
+__thread sigjmp_buf *sift_err_jmp;
+__thread int sift_err_code;
+__thread char sift_err_msg[1024];
 volatile sig_atomic_t InterruptPending;
 
 void
@@ -800,38 +820,6 @@ int
 pg_wchar2mb_with_len(const pg_wchar *from, char *to, int len)
 {
 	return pg_wchar_table[PG_UTF8].wchar2mb_with_len(from, (unsigned char *) to, len);
-}
-
-/* ------------------------------------------------ regular expressions: not supported in this build */
-
-int
-pg_regcomp(regex_t *re, const pg_wchar *string, size_t len, int flags, Oid collation)
-{
-	return REG_BADPAT;
-}
-
-int
-pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start, rm_detail_t *details,
-		   size_t nmatch, regmatch_t pmatch[], int flags)
-{
-	return REG_NOMATCH;
-}
-
-int
-pg_regprefix(regex_t *re, pg_wchar **string, size_t *slength)
-{
-	return REG_NOMATCH;
-}
-
-void
-pg_regfree(regex_t *re)
-{
-}
-
-size_t
-pg_regerror(int errcode, const regex_t *preg, char *errbuf, size_t errbuf_size)
-{
-	return snprintf(errbuf, errbuf_size, "regular expressions are not supported by sift for MariaDB");
 }
 
 /* libpgcommon's binaryheap logs through the frontend logger */

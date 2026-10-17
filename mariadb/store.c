@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -99,7 +100,7 @@ sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out)
 	sift_shim_init();
 	rel->rd_rel = calloc(1, sizeof(FormData_pg_class));
 	snprintf(NameStr(rel->rd_rel->relname), NAMEDATALEN, "%s", name);
-	rel->rd_locator.relNumber = next_relnumber++;
+	rel->rd_locator.relNumber = __atomic_fetch_add(&next_relnumber, 1, __ATOMIC_RELAXED);
 	rel->rd_amcache = sr;
 	snprintf(sr->name, sizeof(sr->name), "%s", name);
 	snprintf(sr->dir, sizeof(sr->dir), "%s", dir);
@@ -119,7 +120,30 @@ sift_rel_destroy(Relation rel)
 	for (int i = 0; i < SIFT_NSLOTS; i++)
 		if (sr->slot_blocks[i])
 			sift_slot_unmap(sr, i);
-	free(sr);
+	sift_rel_view_free(rel);
+}
+
+Relation
+sift_rel_view(const SiftRel *base, SiftRel **out)
+{
+	Relation	rel = calloc(1, sizeof(RelationData));
+	SiftRel    *sr = malloc(sizeof(SiftRel));
+
+	memcpy(sr, base, sizeof(SiftRel));
+	rel->rd_rel = calloc(1, sizeof(FormData_pg_class));
+	snprintf(NameStr(rel->rd_rel->relname), NAMEDATALEN, "%s", base->name);
+	rel->rd_locator.relNumber = __atomic_fetch_add(&next_relnumber, 1, __ATOMIC_RELAXED);
+	rel->rd_amcache = sr;
+	sr->is_dead = NULL;
+	sr->any_dead = false;
+	*out = sr;
+	return rel;
+}
+
+void
+sift_rel_view_free(Relation rel)
+{
+	free(rel->rd_amcache);
 	free(rel->rd_rel);
 	free(rel);
 }
@@ -130,9 +154,11 @@ sift_rel_destroy(Relation rel)
  */
 static struct
 {
-	SiftRel    *sr;
+	bool		used;
 	int			local;
 }			gowner[SIFT_NGSLOTS];
+
+static pthread_mutex_t gmu = PTHREAD_MUTEX_INITIALIZER;
 
 Buffer
 sift_buf_of(Relation rel, BlockNumber blk)
@@ -151,49 +177,100 @@ sift_buf_block(Buffer buf)
 }
 
 static int
-gslot_take(SiftRel *sr, int local)
+gslot_take(int local)
 {
 	int			g = 0;
 
-	while (g < SIFT_NGSLOTS && gowner[g].sr)
+	pthread_mutex_lock(&gmu);
+	while (g < SIFT_NGSLOTS && gowner[g].used)
 		g++;
+	if (g < SIFT_NGSLOTS)
+	{
+		gowner[g].used = true;
+		gowner[g].local = local;
+	}
+	pthread_mutex_unlock(&gmu);
 	if (g == SIFT_NGSLOTS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: too many mapped segments in this server")));
-	gowner[g].sr = sr;
-	gowner[g].local = local;
 	return g;
+}
+
+int
+sift_map_fd(int fd, int local, uint32 *blocks)
+{
+	off_t		size = lseek(fd, 0, SEEK_END);
+	int			g = gslot_take(local);
+	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
+
+	if (size < BLCKSZ || size > (off_t) (SLOT_BLOCKS * BLCKSZ) ||
+		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_POPULATE, fd, 0) == MAP_FAILED)
+	{
+		pthread_mutex_lock(&gmu);
+		gowner[g].used = false;
+		pthread_mutex_unlock(&gmu);
+		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("sift: could not map a segment file")));
+	}
+	*blocks = size / BLCKSZ;
+	return g;
+}
+
+int
+sift_map_path(const char *path, int local, uint32 *blocks)
+{
+	int			fd = open(path, O_RDONLY);
+	int			g;
+
+	if (fd < 0)
+		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("sift: could not open segment file \"%s\": %m", path)));
+	g = sift_map_fd(fd, local, blocks);
+	close(fd);
+	return g;
+}
+
+void
+sift_unmap(int g, uint32 blocks)
+{
+	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
+
+	mmap(at, (size_t) blocks * BLCKSZ, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+	pthread_mutex_lock(&gmu);
+	gowner[g].used = false;
+	pthread_mutex_unlock(&gmu);
+}
+
+void
+sift_slot_attach(SiftRel *sr, int slot, int g, uint32 blocks)
+{
+	sr->gslot[slot] = g;
+	sr->slot_used[slot] = true;
+	sr->slot_blocks[slot] = blocks;
+}
+
+void
+sift_slot_detach(SiftRel *sr, int slot)
+{
+	sr->slot_used[slot] = false;
+	sr->slot_blocks[slot] = 0;
+	sr->gslot[slot] = -1;
 }
 
 void
 sift_slot_map(SiftRel *sr, int slot, const char *path)
 {
-	int			fd = open(path, O_RDONLY);
-	off_t		size = fd < 0 ? 0 : lseek(fd, 0, SEEK_END);
-	int			g = gslot_take(sr, slot);
-	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
+	uint32		blocks;
+	int			g = sift_map_path(path, slot, &blocks);
 
-	if (fd < 0 || size < BLCKSZ || size > (off_t) (SLOT_BLOCKS * BLCKSZ) ||
-		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_POPULATE, fd, 0) == MAP_FAILED)
-	{
-		gowner[g].sr = NULL;
-		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not map segment file \"%s\"", path)));
-	}
-	close(fd);
-	sr->gslot[slot] = g;
-	sr->slot_used[slot] = true;
-	sr->slot_blocks[slot] = size / BLCKSZ;
+	sift_slot_attach(sr, slot, g, blocks);
 }
 
 void
 sift_slot_unmap(SiftRel *sr, int slot)
 {
 	int			g = sr->gslot[slot];
-	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
+	uint32		blocks = sr->slot_blocks[slot];
 
-	mmap(at, (size_t) sr->slot_blocks[slot] * BLCKSZ, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
-	gowner[g].sr = NULL;
-	sr->slot_used[slot] = false;
-	sr->slot_blocks[slot] = 0;
+	sift_slot_detach(sr, slot);
+	sift_unmap(g, blocks);
 }
 
 /* ------------------------------------------------ options, analyzer config, directory */
@@ -237,30 +314,23 @@ sift_dir_update(Relation index, const SiftDirChange *chg)
 
 struct SiftWriteTarget
 {
-	SiftRel    *sr;
 	int			slot;
 	int			fd;
+	bool		mem;			/* an anonymous memory file, which the caller maps and closes */
 	uint32		next;			/* next free block of the file */
 	char		path[600];
 };
 
 SiftWriteTarget *
-sift_wt_begin(Relation index, SiftWriteMode mode)
+sift_wt_begin_at(const SiftRel *sr, int slot, bool mem)
 {
-	SiftRel    *sr = index->rd_amcache;
 	SiftWriteTarget *wt = palloc0(sizeof(SiftWriteTarget));
-	int			slot = 0;
 
-	while (slot < SIFT_NSLOTS && sr->slot_used[slot])
-		slot++;
-	if (slot == SIFT_NSLOTS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift index \"%s\" has too many segments", sr->name)));
-	sr->slot_used[slot] = true;
-	wt->sr = sr;
 	wt->slot = slot;
+	wt->mem = mem;
 	wt->next = FIRST_BLK;
 	snprintf(wt->path, sizeof(wt->path), "%s/new-%d.tmp", sr->dir, slot);
-	wt->fd = open(wt->path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+	wt->fd = mem ? memfd_create("sift-live", 0) : open(wt->path, O_CREAT | O_TRUNC | O_RDWR, 0644);
 	if (wt->fd < 0)
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not create \"%s\": %m", wt->path)));
 	return wt;
@@ -282,8 +352,10 @@ wt_base(const SiftWriteTarget *wt)
 void
 sift_wt_finish(SiftWriteTarget *wt)
 {
-	if (ftruncate(wt->fd, (off_t) wt->next * BLCKSZ) != 0 || fsync(wt->fd) != 0)
+	if (ftruncate(wt->fd, (off_t) wt->next * BLCKSZ) != 0 || (!wt->mem && fsync(wt->fd) != 0))
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not sync \"%s\": %m", wt->path)));
+	if (wt->mem)
+		return;
 	close(wt->fd);
 	wt->fd = -1;
 }
@@ -300,13 +372,19 @@ sift_wt_path(const SiftWriteTarget *wt)
 	return wt->path;
 }
 
+int
+sift_wt_fd(const SiftWriteTarget *wt)
+{
+	return wt->fd;
+}
+
 void
 sift_wt_abort(SiftWriteTarget *wt)
 {
 	if (wt->fd >= 0)
 		close(wt->fd);
-	unlink(wt->path);
-	wt->sr->slot_used[wt->slot] = false;
+	if (!wt->mem)
+		unlink(wt->path);
 }
 
 BlockNumber
@@ -586,7 +664,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ------------------------------------------------ mutable segments, parallel scans, filters: none here */
+/* ------------------------------------------------ mutable segments, parallel scans: none here */
 
 #define NOT_HERE(what)	elog(ERROR, "sift: " what " is not available in the MariaDB build")
 
@@ -676,21 +754,133 @@ sift_par_attach(SiftPar *par)
 {
 }
 
+/* ------------------------------------------------ filter masks of a list of documents */
+
+static SiftFilterSB *
+open_sb(SiftFilter *f, uint32 sb)
+{
+	SiftFilterSB *fs;
+
+	if (f->nsb > 0 && f->sb[f->nsb - 1].sb == sb)
+		return &f->sb[f->nsb - 1];
+	if (f->nsb == f->capsb)
+	{
+		f->capsb = Max(64, 2 * f->capsb);
+		f->sb = f->sb ? repalloc_huge(f->sb, f->capsb * sizeof(SiftFilterSB)) :
+			MemoryContextAllocHuge(f->mcxt, f->capsb * sizeof(SiftFilterSB));
+	}
+	fs = &f->sb[f->nsb++];
+	memset(fs, 0, sizeof(SiftFilterSB));
+	fs->sb = sb;
+	fs->row = f->nrow;
+	return fs;
+}
+
+static uint64 *
+new_row(SiftFilter *f)
+{
+	if (f->nrow == f->caprow)
+	{
+		f->caprow = Max(64, 2 * f->caprow);
+		f->row = f->row ? repalloc_huge(f->row, f->caprow * sizeof(f->row[0])) :
+			MemoryContextAllocHuge(f->mcxt, f->caprow * sizeof(f->row[0]));
+	}
+	memset(f->row[f->nrow], 0, sizeof(f->row[0]));
+	return f->row[f->nrow++];
+}
+
+/* docids ascending: the pages of a superblock appear in order, each page appends one row of offset masks */
+SiftFilter *
+sift_filter_from_docids(const SiftRel *sr, const int64 *docids, size_t n, MemoryContext mcxt)
+{
+	SiftFilter *f = MemoryContextAllocZero(mcxt, sizeof(SiftFilter));
+	uint64	   *row = NULL;
+	BlockNumber last = 0;
+
+	f->mcxt = mcxt;
+	for (size_t i = 0; i < n; i++)
+	{
+		SiftKey		key = sift_docid_key(sr, docids[i]);
+		BlockNumber blk = sift_key_block(key);
+		int			off = (key & 0xFFFF) - 1;
+
+		if (row == NULL || blk != last)
+		{
+			int			page = blk & (SIFT_SB_PAGES - 1);
+
+			open_sb(f, sift_block_sb(blk))->pages[page / 64] |= UINT64CONST(1) << (page & 63);
+			row = new_row(f);
+			f->exact_pages++;
+			last = blk;
+		}
+		row[off / 64] |= UINT64CONST(1) << (off & 63);
+		f->tuples++;
+	}
+	return f;
+}
+
 const SiftFilterSB *
 sift_filter_sb(const SiftFilter *f, uint32 sb)
 {
+	int64		lo = 0,
+				hi = f->nsb - 1;
+
+	while (lo <= hi)
+	{
+		int64		mid = lo + (hi - lo) / 2;
+
+		if (f->sb[mid].sb == sb)
+			return &f->sb[mid];
+		if (f->sb[mid].sb < sb)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
 	return NULL;
+}
+
+/* Exact pages of the superblock before page */
+static int
+exact_before(const SiftFilterSB *fs, int page)
+{
+	int			n = 0;
+
+	for (int wd = 0; wd < page / 64; wd++)
+		n += __builtin_popcountll(fs->pages[wd] & ~fs->lossy[wd]);
+	return n + __builtin_popcountll(fs->pages[page / 64] & ~fs->lossy[page / 64] & ((UINT64CONST(1) << (page & 63)) - 1));
 }
 
 bool
 sift_filter_has(const SiftFilter *f, SiftKey key)
 {
-	return true;
+	const SiftFilterSB *fs = sift_filter_sb(f, sift_block_sb(sift_key_block(key)));
+	int			page = sift_key_block(key) & (SIFT_SB_PAGES - 1),
+				off = (key & 0xFFFF) - 1;
+
+	if (fs == NULL || !(fs->pages[page / 64] >> (page & 63) & 1))
+		return false;
+	if (fs->lossy[page / 64] >> (page & 63) & 1)
+		return true;
+	return f->row[fs->row + exact_before(fs, page)][off / 64] >> (off & 63) & 1;
 }
 
 void
 sift_filter_block(const SiftFilter *f, const SiftFilterSB *fs, int b, uint64 (*out)[SIFT_OFFMASK_WORDS])
 {
+	uint64		pm = fs->pages[b / 4] >> ((b % 4) * SIFT_BLK_PAGES) & 0xffff,
+				lm = fs->lossy[b / 4] >> ((b % 4) * SIFT_BLK_PAGES) & 0xffff;
+	int64		idx = fs->row + exact_before(fs, b * SIFT_BLK_PAGES);
+
+	memset(out, 0, SIFT_BLK_PAGES * sizeof(out[0]));
+	for (; pm; pm &= pm - 1)
+	{
+		int			pg = __builtin_ctzll(pm);
+
+		if (lm >> pg & 1)
+			memset(out[pg], 0xff, sizeof(out[0]));
+		else
+			memcpy(out[pg], f->row[idx++], sizeof(out[0]));
+	}
 }
 
 /* ------------------------------------------------ CPU dispatch (the detection of src/sift_cpu.c without the GUC) */
