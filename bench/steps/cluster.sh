@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: TIER=Q|F bench/steps/cluster.sh init|start|stop|status|destroy
 # Settings live in $PGDATA/bench.conf, rewritten on every start. The server is free to use every CPU of the host: its parallel workers are
-# as many as the host has hardware threads (WORKERS caps them), an index build gets BUILD_WORKERS of them (default one less than the
-# threads). PORT and PGDATA select another cluster than the tier's (bench/steps/lanes.sh).
+# as many as the host has hardware threads (WORKERS caps them), an index build gets BUILD_WORKERS of them (default one fewer than the
+# physical cores: more would only cut a small table into more segments for the engines whose parallel build makes one per worker).
+# PORT and PGDATA select another cluster than the tier's (bench/steps/lanes.sh).
 # Extensions come from the engine roots built by bench/steps/fetch.sh (engines/*/root) before the system ones.
 . "$(dirname "$0")/lib.sh"
 
@@ -18,8 +19,8 @@ preload() {
 }
 
 settings() {
-  local n build
-  n=$(nproc) build=$(( n > 1 ? n - 1 : 0 ))
+  local n=$(nproc) cores build
+  cores=$(lscpu -p=core,socket | grep -v '^#' | sort -u | wc -l) build=$(( cores > 1 ? cores - 1 : 0 ))
   cat >"$PGDATA/bench.conf" <<EOF
 port = $PGPORT
 listen_addresses = ''
