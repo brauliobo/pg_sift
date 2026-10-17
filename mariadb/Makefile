@@ -1,5 +1,6 @@
 # sift for MariaDB: the pg_sift search engine (src/, compiled unmodified) behind a backend shim, as one UDF library.
-#   nice make -j4          builds $(OUT)/libsift_udf.so (the MariaDB plugin) and $(OUT)/sift_cli (the engine without a server)
+#   nice make -j4          builds $(OUT)/libsift_udf.so (the MariaDB plugin), $(OUT)/sift_cli (the engine without a server)
+#                          and $(OUT)/mdbq (the statement runner of the tests)
 # Needs the PostgreSQL server headers and its libpgcommon/libpgport archives (types, macros, UTF-8 tables, qsort and hash
 # functions; no backend code is linked) and the MariaDB server headers.
 ROOT    := $(abspath ..)
@@ -24,7 +25,7 @@ PGSRC   = sift_bitmap sift_bitmap_scalar sift_bitmap_avx2 sift_bitmap_avx512 sif
 SHIM    = shim store engine
 OBJS    = $(addprefix $(OUT)/,$(addsuffix .o,$(PGSRC) sift_build_core $(SHIM)))
 
-all: $(OUT)/sift_cli $(OUT)/libsift_udf.so
+all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -50,5 +51,9 @@ $(OUT)/udf.o: $(HERE)/udf.c $(HERE)/engine.h | $(OUT)
 
 $(OUT)/libsift_udf.so: $(OUT)/udf.o $(OBJS)
 	$(CC) -shared -o $@ $^ $(LIBS) -Wl,--exclude-libs,ALL -Wl,-Bsymbolic
+
+# the statement runner of the tests and the benchmark (libmariadb client)
+$(OUT)/mdbq: $(HERE)/bench/mdbq.c | $(OUT)
+	$(CC) -O2 -Wall -I/usr/include/mysql -o $@ $< -lmariadb
 
 -include $(wildcard $(OUT)/*.d)
