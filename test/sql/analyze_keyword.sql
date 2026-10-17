@@ -38,7 +38,6 @@ SELECT sift.verify('k_fold', true), sift.verify('k_exact', true), sift.verify('k
 
 -- options
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, stemmer = en);
-CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, phrase_index = pairs);
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, prefix_index = 2);
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, fields = 'a');
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = nope);

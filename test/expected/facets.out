@@ -296,7 +296,7 @@ SELECT sift.verify('d_cat', true), sift.verify('d_raw', true), sift.verify('d_hc
 -- phrase recheck, and a query on a column that is an expression
 CREATE TABLE e (id int, a text, b text);
 INSERT INTO e SELECT i, 'one two ' || i % 3 || ' three', (ARRAY['x', 'y', NULL])[1 + i % 3] FROM generate_series(1, 300) i;
-CREATE INDEX e_a ON e USING sift ((a || ' ' || coalesce(b, ''))) WITH (phrase_index = none);
+CREATE INDEX e_a ON e USING sift ((a || ' ' || coalesce(b, '')));
 CREATE INDEX e_b ON e USING sift (upper(b)) WITH (analyzer = keyword);
 SELECT count(*) FROM e WHERE (a || ' ' || coalesce(b, '')) @@> '"two 1 three"';
  count 
@@ -331,9 +331,9 @@ SELECT upper(b), count(*) FROM e WHERE (a || ' ' || coalesce(b, '')) @@> '"one t
 DROP TABLE e;
 -- options and errors
 CREATE INDEX bad1 ON d USING sift (cat) WITH (analyzer = keyword, stemmer = en);
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
+ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
 CREATE INDEX bad2 ON d USING sift (cat) WITH (analyzer = keyword, fields = 'a');
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
+ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
 CREATE INDEX bad3 ON d USING sift (cat) WITH (analyzer = nope);
 ERROR:  invalid value for enum option "analyzer": nope
 DETAIL:  Valid values are "text" and "keyword".

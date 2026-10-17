@@ -130,7 +130,7 @@ SELECT sift.verify('d_cat', true), sift.verify('d_raw', true), sift.verify('d_hc
 -- phrase recheck, and a query on a column that is an expression
 CREATE TABLE e (id int, a text, b text);
 INSERT INTO e SELECT i, 'one two ' || i % 3 || ' three', (ARRAY['x', 'y', NULL])[1 + i % 3] FROM generate_series(1, 300) i;
-CREATE INDEX e_a ON e USING sift ((a || ' ' || coalesce(b, ''))) WITH (phrase_index = none);
+CREATE INDEX e_a ON e USING sift ((a || ' ' || coalesce(b, '')));
 CREATE INDEX e_b ON e USING sift (upper(b)) WITH (analyzer = keyword);
 SELECT count(*) FROM e WHERE (a || ' ' || coalesce(b, '')) @@> '"two 1 three"';
 SELECT * FROM sift.facets('e_a', 'e_b', '"two 1 three"', 10, true);

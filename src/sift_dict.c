@@ -636,7 +636,7 @@ sift_matcher_create(const SiftQNode *leaf)
 	m->hi = m->lolen ? successor(m->lo, &m->hilen) : NULL;
 	if (m->lolen == 0)
 	{
-		/* every word starts above the pair and prefix terms, which a scan must not walk */
+		/* every word starts above the prefix terms, which a scan must not walk */
 		m->lo = " ";
 		m->lolen = 1;
 	}
@@ -656,7 +656,7 @@ sift_matcher_bounds(const SiftTermMatcher *m, const char **lo, int *lolen,
 bool
 sift_matcher_match(const SiftTermMatcher *m, const char *term, int len)
 {
-	/* pair and prefix terms are not words: no expansion reaches them */
+	/* prefix terms are not words: no expansion reaches them */
 	if (m->field)
 	{
 		if (len < 2 || *term != m->field)
