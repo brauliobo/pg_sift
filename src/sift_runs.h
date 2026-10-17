@@ -62,14 +62,18 @@ extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt, bool positio
 /*
  * Adds a document (nterms = 0 and dl = 0 for text without tokens: it still
  * counts in N); keys must be strictly ascending (the heap build sorts each
- * page, promotion sorts its records). Term bytes are copied.
+ * page, promotion sorts its records). Term bytes are copied. Returns whether the buffer is full now.
  */
-extern void sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
+extern bool sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
 						 int nterms, uint32 dl);
 extern bool sift_inv_full(const SiftInvBuf *buf);
 
-/* Can a doc of nterms terms (from textlen bytes of text) at tid be added? Spill first if not, whatever the buffer holds */
-extern bool sift_inv_fits(const SiftInvBuf *buf, ItemPointer tid, int nterms, Size textlen);
+/* Can a doc of nterms terms (from textlen bytes of text) be added? Spill first if not; only docs of sift_inv_small_doc bytes or more need to ask */
+extern bool sift_inv_fits(const SiftInvBuf *buf, int nterms, Size textlen);
+extern Size sift_inv_small_doc(const SiftInvBuf *buf);
+
+/* Is the key of tid above that of the last doc added (or is the buffer empty)? Spill first if not */
+extern bool sift_inv_after(const SiftInvBuf *buf, ItemPointer tid);
 extern bool sift_inv_empty(const SiftInvBuf *buf);
 
 /* Writes one immutable segment through wt and fills its directory entry; then resets */

@@ -113,6 +113,8 @@ typedef struct BuildState
 	SiftAnalyzer *an;
 	SiftInvBuf *inv;
 	Size		budget;
+	Size		page_text;		/* bytes of text of a heap page held before they are analyzed (see page_text_max) */
+	Size		small_doc;		/* docs of fewer bytes of text always fit the buffer that is not full */
 	SiftWriteTarget *wt;
 	SiftScoreRef ref;
 	/* docs of the current heap page, sorted by offset before analysis */
@@ -244,34 +246,62 @@ sum_fits(RunSum sum, const SegLimits *lim)
 }
 
 /*
- * How many runs merge now into one, 0 for none, and whether the newest run stays out of it (*skip is 1: it
- * follows the merged one). Only runs of one level merge (so a posting is merged a number of times logarithmic
- * in the runs), as many as fit a segment's limits, at most fan-in. The newest run completes the fan-in, or
- * is one that does not fit with the ones before it, which then are as large as they get; otherwise the runs
- * wait: if no more come they are read by the merge that writes the segment, with no pass of their own.
+ * The newest runs of one level are a block, which waits until it has fan-in runs: if no more come they are read by
+ * the merge that writes the segment, with no pass of their own. Then its runs merge in groups of as many in a row as
+ * fit a segment's limits (at most fan-in), each group into a run of the next level; a run that is alone in its
+ * group, as large as it gets, is sealed: it stays as it is. Only runs of one level merge, so a posting is
+ * merged a number of times logarithmic in the runs.
  */
+#define SEALED_LEVEL	INT_MAX
+
 static int
-tail_merge(SiftRun **runs, int nruns, int fanin, const SegLimits *lim, int *skip)
+block_runs(SiftRun **runs, int nruns)
+{
+	int			m = 1;
+
+	if (runs[nruns - 1]->level == SEALED_LEVEL)
+		return 0;
+	while (m < nruns && runs[nruns - 1 - m]->level == runs[nruns - 1]->level)
+		m++;
+	return m;
+}
+
+static int
+group_runs(SiftRun **runs, int first, int nruns, int fanin, const SegLimits *lim)
 {
 	RunSum		sum = {0};
-	int			k = 0;
+	int			last = first;
 
-	for (int i = nruns - 2; i >= 0 && k < fanin && runs[i]->level == runs[nruns - 1]->level; i--)
+	for (; last < nruns && last - first < fanin && sum_fits(sum_with(sum, runs[last]), lim); last++)
+		sum = sum_with(sum, runs[last]);
+	return Max(last, first + 1);
+}
+
+/* Merges the block of the m newest runs in groups, as above; returns the number of runs left */
+static int
+merge_block(BuildState *bs, int m, int fanin, const SegLimits *lim)
+{
+	int			first = bs->nruns - m;
+	int			level = bs->runs[first]->level + 1;
+	int			w = first;
+
+	for (int i = first, last; i < bs->nruns; i = last)
 	{
-		if (!sum_fits(sum_with(sum, runs[i]), lim))
-			break;
-		sum = sum_with(sum, runs[i]);
-		k++;
+		SiftRun    *run = bs->runs[i];
+		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
+
+		last = group_runs(bs->runs, i, bs->nruns, fanin, lim);
+		if (last - i > 1)
+			run = sift_merge_to_run(bs->runs + i, last - i, bs->budget, &bs->home);
+		MemoryContextSwitchTo(old);
+		run->level = last - i > 1 ? level : SEALED_LEVEL;
+		bs->runs[w++] = run;
 	}
-	*skip = 0;
-	if (sum_fits(sum_with(sum, runs[nruns - 1]), lim))
-		return k + 1 == fanin ? fanin : 0;
-	*skip = 1;
-	return k >= 2 ? k : 0;
+	return w;
 }
 
 /*
- * Spills the buffer to a run, then merges the tail of the runs while tail_merge says so. A participant keeps
+ * Spills the buffer to a run, then merges its block of runs while it is a fan-in long (merge_block). A participant keeps
  * few runs (their files and buffers fit the budget) and none a hot term would make larger than a segment
  * takes: with the table size the runs that stay are the segments, not levels of merges the term holds whole.
  */
@@ -281,8 +311,7 @@ spill(BuildState *bs)
 	int			fanin = sift_merge_fanin(bs->budget);
 	SegLimits	lim = seg_limits(bs->budget);
 	SiftRun    *run;
-	int			k,
-				skip;
+	int			m;
 	int			phase = bs->phase;
 
 	MEM_SAMPLE();
@@ -297,20 +326,8 @@ spill(BuildState *bs)
 	else
 		run = sift_inv_spill_shared(bs->inv, bs->home.fileset, bs->home.worker, bs->home.nfiles++);
 	bs->runs[bs->nruns++] = run;
-	while ((k = tail_merge(bs->runs, bs->nruns, fanin, &lim, &skip)) > 0)
-	{
-		int			first = bs->nruns - skip - k;
-		int			level = bs->runs[first]->level + 1;
-		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
-
-		run = sift_merge_to_run(bs->runs + first, k, bs->budget, &bs->home);
-		MemoryContextSwitchTo(old);
-		run->level = level;
-		bs->runs[first] = run;
-		if (skip)
-			bs->runs[first + 1] = bs->runs[bs->nruns - 1];
-		bs->nruns = first + 1 + skip;
-	}
+	while ((m = block_runs(bs->runs, bs->nruns)) >= fanin)
+		bs->nruns = merge_block(bs, m, fanin, &lim);
 	progress_phase(bs, phase);
 }
 
@@ -411,19 +428,38 @@ pagedoc_cmp(const void *a, const void *b)
 	return ItemPointerCompare(&((PageDoc *) a)->tid, &((PageDoc *) b)->tid);
 }
 
-/* Analyzes a doc into the buffer, which is spilled first when the doc does not fit it */
+/* The docs of a page come in tid order but for HOT chains, which report their root's tid: sort only when they do not */
 static void
+sort_page(PageDoc *docs, int ndocs)
+{
+	for (int i = 1; i < ndocs; i++)
+		if (ItemPointerGetOffsetNumber(&docs[i - 1].tid) > ItemPointerGetOffsetNumber(&docs[i].tid))
+		{
+			qsort(docs, ndocs, sizeof(PageDoc), pagedoc_cmp);
+			return;
+		}
+}
+
+/* Docs are added in ascending key order: the buffer is spilled when the next doc is not above the last one (a page cut short by the text limit goes on with lower tids) */
+static void
+check_order(BuildState *bs, ItemPointer tid)
+{
+	if (!sift_inv_after(bs->inv, tid))
+		spill(bs);
+}
+
+/* Analyzes a doc into the buffer, which is spilled first when a large doc does not fit it */
+static inline void
 analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len)
 {
 	SiftTermFreq *terms;
 	uint32		dl;
 	int			n = sift_analyze_doc(bs->an, text, len, &terms, &dl);
 
-	if (!sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, tid, n, len))
+	if (len >= bs->small_doc && !sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, n, len))
 		spill(bs);
-	sift_inv_add(bs->inv, tid, terms, n, dl);
 	bs->indexed++;
-	if (sift_inv_full(bs->inv))
+	if (sift_inv_add(bs->inv, tid, terms, n, dl))
 		spill(bs);
 }
 
@@ -431,7 +467,9 @@ analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len)
 static void
 flush_page(BuildState *bs)
 {
-	qsort(bs->docs, bs->ndocs, sizeof(PageDoc), pagedoc_cmp);
+	sort_page(bs->docs, bs->ndocs);
+	if (bs->ndocs > 0)
+		check_order(bs, &bs->docs[0].tid);
 	for (int i = 0; i < bs->ndocs; i++)
 		analyze_doc(bs, &bs->docs[i].tid, bs->text.data + bs->docs[i].off, bs->docs[i].len);
 	bs->ndocs = 0;
@@ -445,7 +483,7 @@ flush_page(BuildState *bs)
  * The text of the docs of a heap page is copied until the page is done, to analyze them in tid order (a
  * HOT chain reports its root's tid). A page of large docs does not hold them all: past this many bytes
  * what is buffered is analyzed, and a doc over it is analyzed at once. A later doc of the page with a
- * lower tid then starts a new run (sift_inv_fits).
+ * lower tid then starts a new run (check_order).
  */
 static Size
 page_text_max(const BuildState *bs)
@@ -459,6 +497,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	BuildState *bs = state;
 	MemoryContext old;
 	text	   *t;
+	bool		detoasted;
 	int			len;
 	BlockNumber blk = ItemPointerGetBlockNumber(tid);
 
@@ -473,11 +512,13 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	}
 	old = MemoryContextSwitchTo(bs->tmpcxt);
 	t = DatumGetTextPP(values[0]);
+	detoasted = (Pointer) t != DatumGetPointer(values[0]);
 	len = VARSIZE_ANY_EXHDR(t);
-	if (bs->text.len > 0 && bs->text.len + len > page_text_max(bs))
+	if (bs->text.len > 0 && bs->text.len + len > bs->page_text)
 		flush_page(bs);
-	if (len > page_text_max(bs))
+	if (len > bs->page_text)
 	{
+		check_order(bs, tid);
 		analyze_doc(bs, tid, VARDATA_ANY(t), len);
 		sift_analyzer_reset(bs->an);
 	}
@@ -489,10 +530,17 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 			bs->docs = repalloc(bs->docs, bs->maxdocs * sizeof(PageDoc));
 		}
 		bs->docs[bs->ndocs++] = (PageDoc) {*tid, bs->text.len, len};
-		appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), len);
+		if (bs->text.len + len < bs->text.maxlen)
+		{
+			memcpy(bs->text.data + bs->text.len, VARDATA_ANY(t), len);
+			bs->text.len += len;
+		}
+		else
+			appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), len);
 	}
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(bs->tmpcxt);
+	if (detoasted || len > bs->page_text)
+		MemoryContextReset(bs->tmpcxt);
 }
 
 static void
@@ -545,6 +593,8 @@ build_begin(Relation index, Size budget)
 	sift_analyzer_set_positions(bs->an, bs->positions);
 	bs->budget = budget;
 	bs->inv = sift_inv_create(bs->budget, bs->cxt, bs->positions);
+	bs->small_doc = sift_inv_small_doc(bs->inv);
+	bs->page_text = page_text_max(bs);
 	bs->ref = (SiftScoreRef) {(float4) opts->k1, (float4) opts->b, 0};
 	bs->page = InvalidBlockNumber;
 	bs->maxdocs = 64;
