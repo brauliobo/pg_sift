@@ -28,7 +28,8 @@ extern const char *sift_tmpdir;
 
 /* A segment file is mapped at (slot << SLOT_SHIFT) blocks of the reserved range: 4 GiB per segment */
 #define SIFT_SLOT_SHIFT		19
-#define SIFT_NSLOTS			256
+#define SIFT_NSLOTS			256		/* segment slots of one index (the block numbers in its manifest) */
+#define SIFT_NGSLOTS		1024	/* slots of the reserved range, shared by every index of the process */
 
 typedef struct SiftRel
 {
@@ -38,6 +39,7 @@ typedef struct SiftRel
 	SiftDirSnapshot snap;		/* what sift_dir_read returns */
 	uint32		dpp;			/* documents per page: docid d is key (d / dpp) << 16 | (d % dpp + 1) */
 	bool		slot_used[SIFT_NSLOTS];
+	int			gslot[SIFT_NSLOTS];	/* where each mapped slot sits in the reserved range */
 	uint32		slot_blocks[SIFT_NSLOTS];
 	/* visibility: documents whose row was updated or deleted (sift_vis_filter_page) */
 	bool		(*is_dead) (void *ctx, int64 docid);
@@ -60,6 +62,10 @@ sift_key_docid(const SiftRel *sr, SiftKey key)
 /* Creates the relation handle the engine functions take (its rd_amcache is the SiftRel) */
 extern Relation sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out);
 extern void sift_rel_destroy(Relation rel);
+
+/* The buffer of a block of the index (a pointer into the reserved range) and the block of a buffer */
+extern Buffer sift_buf_of(Relation rel, BlockNumber blk);
+extern BlockNumber sift_buf_block(Buffer buf);
 
 /* Maps a finished segment file at slot; unmaps it */
 extern void sift_slot_map(SiftRel *sr, int slot, const char *path);
