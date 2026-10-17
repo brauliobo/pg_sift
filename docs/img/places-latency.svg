@@ -131,5 +131,5 @@
 <line x1="74" y1="370" x2="836" y2="370" stroke="#57606a" stroke-width="1"/>
 <text x="20" y="436" font-size="11" text-anchor="start" fill="#57606a">pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.</text>
 <text x="20" y="418" font-size="11" text-anchor="start" fill="#57606a">p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes</text>
-<text x="20" y="454" font-size="11" text-anchor="start" fill="#57606a">GeoNames cities500, 236,262 places, top-20, 1 client, median of 4 rounds; 2 pinned cores, shared host (load avg 9-36); Oct 2026.</text>
+<text x="20" y="454" font-size="11" text-anchor="start" fill="#57606a">GeoNames cities500, 236,262 places, top-20, 1 client, median of 4 rounds; CPUs: two pinned cores (load avg 9-36); Oct 2026.</text>
 </svg>
