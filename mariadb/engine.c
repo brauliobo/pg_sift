@@ -13,21 +13,20 @@
  * watermark covers. The manifest carries the format versions of the engine and of the pages, and the configuration of
  * the index: an index of another build is refused at open.
  */
-#include "postgres.h"
+#include "ix.h"
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "utils/memutils.h"
-
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_prefix.h"
-#include "ix.h"
+
+__thread char sift_err_msg[1024];
 
 static pthread_rwlock_t reg_lock = PTHREAD_RWLOCK_INITIALIZER;
 static SiftIdx *reg[256];
@@ -37,7 +36,7 @@ static char tmp_dir[400] = "/tmp";
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 #define SIFT_FORMAT_ID		((uint32) SIFT_FORMAT_MAJOR << 16 | SIFT_FORMAT_MINOR)
-#define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8 | PG_PAGE_LAYOUT_VERSION)
+#define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
 /* ------------------------------------------------ small helpers */
 
@@ -53,12 +52,14 @@ rethrow(void)
 void
 fail(const char *fmt,...)
 {
+	char		msg[sizeof(sift_err_msg)];
 	va_list		ap;
 
 	va_start(ap, fmt);
-	vsnprintf(sift_err_msg, sizeof(sift_err_msg), fmt, ap);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
-	siglongjmp(*sift_err_jmp, 1);
+	sq_error_set(ERRCODE_INTERNAL_ERROR, "%s", msg);
+	pg_unreachable();
 }
 
 static void
@@ -73,9 +74,9 @@ codec_rebind(const SiftCpu *cpu)
 static void
 engine_init(void)
 {
-	sift_shim_init();
-	pfree(palloc(1));			/* creates the memory context of this thread */
-	sift_tmpdir = tmp_dir;
+	sq_mem_init();
+	sift_store_init();
+	sq_tmpdir = tmp_dir;
 	sift_cpu_init();
 	sift_init();
 	sift_cpu_register(codec_rebind);
@@ -87,8 +88,7 @@ void
 thread_init(void)
 {
 	pthread_once(&init_once, engine_init);
-	if (TopMemoryContext == NULL)
-		pfree(palloc(1));
+	sq_mem_init();
 }
 
 int
@@ -108,8 +108,7 @@ op_begin(void)
 void
 op_end(MemoryContext cx)
 {
-	MemoryContextSwitchTo(TopMemoryContext);
-	MemoryContextDelete(cx);
+	MemoryContextDelete(cx);	/* leaves the current context alone unless it is cx: operations nest (the delta of a query) */
 }
 
 void
@@ -142,15 +141,15 @@ sx_version(void)
 {
 	static char v[160];
 
-	snprintf(v, sizeof(v), "sift-mariadb format %d, pages %d.%d layout %u, built for MariaDB %s", MDB_FORMAT,
-			 SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR, (unsigned) PAGE_LAYOUT_ID, SIFT_MDB_SERVER_VERSION);
+	snprintf(v, sizeof(v), "sift-mariadb %s (format %d, pages %d.%d layout %u, built for MariaDB %s)", SIFT_MDB_RELEASE,
+			 MDB_FORMAT, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR, (unsigned) PAGE_LAYOUT_ID, SIFT_MDB_SERVER_VERSION);
 	return v;
 }
 
 /* ------------------------------------------------ documents: latest, dead, ids/pks */
 
-static bool
-in_sorted(const int64 *a, size_t n, int64 v)
+size_t
+lower_bound(const int64 *a, size_t n, int64 v)
 {
 	size_t		lo = 0,
 				hi = n;
@@ -164,7 +163,15 @@ in_sorted(const int64 *a, size_t n, int64 v)
 		else
 			hi = mid;
 	}
-	return lo < n && a[lo] == v;
+	return lo;
+}
+
+bool
+in_sorted(const int64 *a, size_t n, int64 v)
+{
+	size_t		i = lower_bound(a, n, v);
+
+	return i < n && a[i] == v;
 }
 
 bool
@@ -737,6 +744,8 @@ do_create(const char *name, const char *dir, const char *cfg)
 
 	if (dpp < 1 || dpp > 256)
 		fail("sift: documents per page must be between 1 and 256");
+	if (cfg_num(cfg, "merge_fanin", 6) < 2)
+		fail("sift: merge_fanin must be at least 2");
 	snprintf(ix.name, sizeof(ix.name), "%s", name);
 	snprintf(ix.dir, sizeof(ix.dir), "%s", dir);
 	rel = sift_rel_create(name, dir, dpp, &sr);

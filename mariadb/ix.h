@@ -11,14 +11,24 @@
 #ifndef SIFT_MDB_IX_H
 #define SIFT_MDB_IX_H
 
-#include "postgres.h"
+#include "sift_host.h"
 
+#include <errno.h>
 #include <pthread.h>
 
 #include "sift_page.h"
 #include "sift_segment.h"
 #include "engine.h"
-#include "shim.h"
+#include "store.h"
+
+/* The last error of the engine on this thread: ereport(ERROR) unwinds to the SIFT_TRY of the call and leaves the message here */
+extern __thread char sift_err_msg[1024];
+
+/* Run body; returns 0, or -1 with sift_err_msg set when the engine raised an error */
+#define SIFT_TRY(body) \
+	({ int rc_ = 0; \
+	   SQ_TRY(); body; SQ_CATCH(); snprintf(sift_err_msg, sizeof(sift_err_msg), "%s", sq_errmsg()); rc_ = -1; SQ_END(); \
+	   rc_; })
 
 #define MAN_MAGIC		"SIFTMDB2"
 #define MDB_FORMAT		2
@@ -126,13 +136,15 @@ struct SiftIdx
 
 /* engine.c */
 extern void thread_init(void);
-extern pg_noreturn void fail(const char *fmt,...) pg_attribute_printf(1, 2);
+extern void fail(const char *fmt,...) pg_attribute_printf(1, 2) pg_attribute_noreturn();
 extern int	finish_call(int rc, char *err, size_t errlen);
 extern MemoryContext op_begin(void);
 extern void op_end(MemoryContext cx);
 extern void path_of(const SiftIdx *ix, char *out, size_t n, const char *file);
 extern void sync_dir(const char *dir);
 extern void write_all(int fd, const void *p, size_t n, const char *what);
+extern size_t lower_bound(const int64 *a, size_t n, int64 v);
+extern bool in_sorted(const int64 *a, size_t n, int64 v);
 extern bool is_dead(const SiftIdx *ix, int64 docid);
 extern int64 latest_get(const SiftIdx *ix, int64 pk);
 extern int64 pk_of(const SiftIdx *ix, int64 docid);
@@ -151,7 +163,7 @@ extern void delta_drop(SiftIdx *ix);
 extern void delta_release(Delta *d);
 extern SiftIdx *registered(const char *name);
 extern void registry_each(void (*fn) (SiftIdx *ix, void *arg), void *arg);
-extern pg_noreturn void rethrow(void);
+extern void rethrow(void) pg_attribute_noreturn();
 
 /* merge.c */
 extern void merge_kick(SiftIdx *ix);

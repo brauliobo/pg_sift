@@ -1,15 +1,12 @@
 /*
- * regex_test.c - drives mariadb/regex.c the way src/sift_query.c does (see regex_check.sh).
+ * regex_test.c - drives mariadb/host/host_regex.c the way src/sift_query.c does (see regex_check.sh).
  *
  *   regex_test match nosub|sub     stdin: PATTERN<TAB>WORD per line; prints 1, 0 or error per line
  *   regex_test prefix WORDS        stdin: PATTERN per line; prints none, P:prefix or E:prefix per line and fails when
  *                                  a word the pattern matches does not start with its prefix (or is not equal to it)
  * A byte 0x01 in a pattern or word stands for a newline. Memory is plain malloc, the matcher needs nothing else.
  */
-#include "postgres.h"
-
-#include "catalog/pg_collation_d.h"
-#include "regex/regex.h"
+#include "host.h"
 
 void *
 palloc(Size size)

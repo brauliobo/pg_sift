@@ -13,16 +13,15 @@
  * A query holds the index read-locked from the moment it takes its view: writers swap in what they prepared under the
  * write lock, so the segments and tables a query reads never change under it.
  */
-#include "postgres.h"
+#include "ix.h"
 
-#include "utils/memutils.h"
+#include <unistd.h>
 
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
-#include "sift_build.h"
 #include "sift_eval.h"
 #include "sift_kernels.h"
-#include "ix.h"
+#include "sift_runs.h"
 
 #define DELTA_BUDGET	((Size) 256 << 20)
 #define DELTA_MAX_DOCS	500000
@@ -311,12 +310,6 @@ delta_acquire(Qry *q)
 
 /* ------------------------------------------------ the view of a query */
 
-static bool
-in_sorted(const int64 *a, size_t n, int64 v)
-{
-	return n && bsearch(&v, a, n, sizeof(int64), cmp_i64) != NULL;
-}
-
 /* A document that does not count: superseded or deleted, retired by a queue row, or outside the filter */
 static bool
 excluded(void *ctx, int64 docid)
@@ -453,7 +446,7 @@ load_doc(Qry *q, int64 docid, text **doc)
 	}
 	*doc = palloc(VARHDRSZ + len);
 	SET_VARSIZE(*doc, VARHDRSZ + len);
-	memcpy(VARDATA(*doc), t, len);
+	memcpy(VARDATA_ANY(*doc), t, len);
 	free(row.text);
 	return true;
 }
