@@ -57,8 +57,7 @@ node_init() {
 	mkdir -p "$d/sock"
 	echo "$offset" >"$d/offset"
 	NODES+=("$name")
-	initdb -D "$d/data" -A trust -U postgres -E UTF8 --no-locale --no-instructions >"$d/initdb.log" 2>&1 ||
-		bail "initdb $name failed"
+	"$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" new-data "$d/data" >"$d/initdb.log" 2>&1 || bail "initdb $name failed"
 	node_conf "$name" "port = $((SIFT_PORT + offset))
 listen_addresses = ''
 unix_socket_directories = '$d/sock'

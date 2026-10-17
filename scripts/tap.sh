@@ -9,6 +9,8 @@
 # on this host, is fetched once from CPAN (sha256 pinned) into
 # ${XDG_CACHE_HOME:-~/.cache}/sift/perl5. Logs: $SIFT_TMP/tap/log. Every node is under the leak gate of
 # scripts/leakcheck.sh (test/t/SiftTest.pm); the node logs are scanned when prove is done. Exit 1 on failure.
+# PG_TEST_PORT_DIR (default $SIFT_TMP/tap) and INITDB_TEMPLATE (a data directory the nodes are copied from) pass through to the nodes,
+# so that runs side by side share their port locks and one initdb (scripts/ci.sh).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,7 +42,7 @@ CONF
 cd "$REPO/test"
 (( $# )) || set -- t/*.pl
 rc=0
-SIFT_TMP=$TAP TESTDATADIR=$TAP/data TESTLOGDIR=$TAP/log PG_TEST_PORT_DIR=$TAP TEMP_CONFIG=$TAP/sift.conf SIFT_REPO=$REPO \
+SIFT_TMP=$TAP TESTDATADIR=$TAP/data TESTLOGDIR=$TAP/log PG_TEST_PORT_DIR=${PG_TEST_PORT_DIR:-$TAP} TEMP_CONFIG=$TAP/sift.conf SIFT_REPO=$REPO \
 	PG_REGRESS=$PGXS_SRC/test/regress/pg_regress \
 	prove ${PROVE_FLAGS:-} -I "$PGXS_SRC/test/perl" -I "$PERL5" "$@" || rc=$?
 "$REPO/scripts/leakcheck.sh" scan "$TAP" || rc=1
