@@ -33,6 +33,10 @@ sql mem "SET maintenance_work_mem = '4MB'" "SELECT sift.promote('t_idx')" >/dev/
 touch "$D/stop"
 wait "$POLL"
 diag "promotion peak: $(<"$D/peak") MB of anonymous memory in one process"
-check "the promotion stays under 130 MB at a 4 MB budget" test "$(<"$D/peak")" -lt 130
+if [[ -z ${SIFT_PRELOAD:-} ]]; then
+	check "the promotion stays under 130 MB at a 4 MB budget" test "$(<"$D/peak")" -lt 130
+else
+	skip 1 "the sanitizer's shadow memory and quarantine inflate the process (SANITIZE=1)"
+fi
 check "intact, every row indexed" test "$(sql mem "SELECT sift.verify('t_idx', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
 finish
