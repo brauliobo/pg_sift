@@ -1610,24 +1610,30 @@ sum_fits(RunSum sum, const SegLimits *lim)
 }
 
 /*
- * How many of the last runs merge now into one, 0 for none. Only runs of one level merge (so a posting is
- * merged a number of times logarithmic in the runs), as many as fit a segment's limits, at most fan-in: when
- * the fan-in is there, or when the run to come would not fit with them, they are as large as they get.
+ * How many runs merge now into one, 0 for none, and whether the newest run stays out of it (*skip is 1: it
+ * follows the merged one). Only runs of one level merge (so a posting is merged a number of times logarithmic
+ * in the runs), as many as fit a segment's limits, at most fan-in. The newest run completes the fan-in, or
+ * is one that does not fit with the ones before it, which then are as large as they get; otherwise the runs
+ * wait: if no more come they are read by the merge that writes the segment, with no pass of their own.
  */
 static int
-tail_merge(SiftRun **runs, int nruns, int fanin, const SegLimits *lim)
+tail_merge(SiftRun **runs, int nruns, int fanin, const SegLimits *lim, int *skip)
 {
 	RunSum		sum = {0};
 	int			k = 0;
 
-	for (int i = nruns - 1; i >= 0 && k < fanin && runs[i]->level == runs[nruns - 1]->level; i--)
+	for (int i = nruns - 2; i >= 0 && k < fanin && runs[i]->level == runs[nruns - 1]->level; i--)
 	{
 		if (!sum_fits(sum_with(sum, runs[i]), lim))
 			break;
 		sum = sum_with(sum, runs[i]);
 		k++;
 	}
-	return k >= 2 && (k == fanin || !sum_fits(sum_with(sum, runs[nruns - 1]), lim)) ? k : 0;
+	*skip = 0;
+	if (sum_fits(sum_with(sum, runs[nruns - 1]), lim))
+		return k + 1 == fanin ? fanin : 0;
+	*skip = 1;
+	return k >= 2 ? k : 0;
 }
 
 /*
@@ -1641,7 +1647,8 @@ spill(BuildState *bs)
 	int			fanin = merge_fanin(bs->budget);
 	SegLimits	lim = seg_limits(bs->budget);
 	SiftRun    *run;
-	int			k;
+	int			k,
+				skip;
 	int			phase = bs->phase;
 
 	MEM_SAMPLE();
@@ -1656,16 +1663,19 @@ spill(BuildState *bs)
 	else
 		run = sift_inv_spill_shared(bs->inv, bs->home.fileset, bs->home.worker, bs->home.nfiles++);
 	bs->runs[bs->nruns++] = run;
-	while ((k = tail_merge(bs->runs, bs->nruns, fanin, &lim)) > 0)
+	while ((k = tail_merge(bs->runs, bs->nruns, fanin, &lim, &skip)) > 0)
 	{
-		int			level = bs->runs[bs->nruns - 1]->level + 1;
+		int			first = bs->nruns - skip - k;
+		int			level = bs->runs[first]->level + 1;
 		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
 
-		run = merge_to_run(bs->runs + bs->nruns - k, k, bs->budget, &bs->home);
+		run = merge_to_run(bs->runs + first, k, bs->budget, &bs->home);
 		MemoryContextSwitchTo(old);
 		run->level = level;
-		bs->nruns -= k - 1;
-		bs->runs[bs->nruns - 1] = run;
+		bs->runs[first] = run;
+		if (skip)
+			bs->runs[first + 1] = bs->runs[bs->nruns - 1];
+		bs->nruns = first + 1 + skip;
 	}
 	progress_phase(bs, phase);
 }
