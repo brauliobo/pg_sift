@@ -2,7 +2,7 @@
  * shim.c - the PostgreSQL backend services the portable sift sources call, over the C library: memory contexts,
  * ereport, StringInfo, List, dynahash, UTF-8 multibyte helpers and spool files. Only what src/ uses.
  */
-#include "postgres.h"
+#include "host.h"
 
 #include <ctype.h>
 #include <math.h>

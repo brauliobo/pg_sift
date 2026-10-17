@@ -1,10 +1,10 @@
 /*
- * sqstore.h - what the PostgreSQL storage layer looks like to the portable sift sources: a Relation is the
+ * host_store.h - what the PostgreSQL storage layer looks like to the portable sift sources: a Relation is the
  * page file of one virtual table (8 KiB blocks, grouped in chunk rows of the shadow table, cached in a bounded
  * cache), a Buffer is a pointer to a page of a cached chunk. Pins keep a chunk in the cache; locks are no-ops.
  */
-#ifndef SQSTORE_H
-#define SQSTORE_H
+#ifndef SQ_HOST_STORE_H
+#define SQ_HOST_STORE_H
 
 typedef char *Page;
 typedef Page Buffer;
@@ -85,16 +85,14 @@ typedef struct TupleTableSlot TupleTableSlot;
 typedef struct TIDBitmap TIDBitmap;
 struct IndexFetchTableData;
 
-/* GUC enum table of src/sift_cpu.c */
-struct config_enum_entry
+/* a process setting with a fixed set of values (src/sift_cpu.c): there is no settings system, the value is the default and sift_simd() sets it */
+typedef struct SiftEnumEntry
 {
 	const char *name;
 	int			val;
 	bool		hidden;
-};
+} SiftEnumEntry;
 
-#define PGC_USERSET			0
-#define DefineCustomEnumVariable(name, short_desc, long_desc, valueAddr, bootValue, options, context, flags, check, assign, show) \
-	(*(valueAddr) = (bootValue))
+#define sift_host_enum_option(name, short_desc, long_desc, var, boot, options, assign) (*(var) = (boot))
 
-#endif							/* SQSTORE_H */
+#endif							/* SQ_HOST_STORE_H */

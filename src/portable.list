@@ -1,0 +1,46 @@
+# The portable core: the files of src/ that every host compiles (PostgreSQL, SQLite, ...). They include the C library,
+# compiler intrinsics, sift_*.h headers of this list and sift_host.h, and nothing else: scripts/check-portable.sh enforces it
+# (CI, both jobs), sqlite/Makefile builds the .c files of this list into the SQLite extension. Add a file here when it
+# needs no host API beyond src/sift_host.h; a file that needs more belongs to a host (src/ for PostgreSQL, sqlite/).
+#
+# sources
+sift_bitmap.c
+sift_bitmap_scalar.c
+sift_bitmap_avx2.c
+sift_bitmap_avx512.c
+sift_kernels.c
+sift_kernels_avx2.c
+sift_kernels_avx512.c
+sift_analyze.c
+sift_analyze_stem.c
+sift_query.c
+sift_posting.c
+sift_dict.c
+sift_segment.c
+sift_prefix.c
+sift_filter.c
+sift_eval.c
+sift_parallel.c
+sift_cpu.c
+# headers (the data tables and kernels included by the sources above come with them)
+sift.h
+sift_analyze.h
+sift_analyze_tables.h
+sift_bitmap.h
+sift_bitmap_kern.h
+sift_cpu.h
+sift_dict.h
+sift_eval.h
+sift_filter.h
+sift_kernels.h
+sift_kernels_int.h
+sift_mutable.h
+sift_page.h
+sift_parallel.h
+sift_popcount.h
+sift_posting.h
+sift_prefix.h
+sift_query.h
+sift_segment.h
+sift_store.h
+sift_visibility.h

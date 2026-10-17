@@ -13,10 +13,7 @@
 #ifndef SIFT_PARALLEL_H
 #define SIFT_PARALLEL_H
 
-#include "access/parallel.h"
-#include "port/atomics.h"
-#include "storage/s_lock.h"
-#include "utils/dsa.h"
+#include "sift_host.h"
 
 #include "sift.h"
 

@@ -4,18 +4,13 @@
  * token stream, the streaming cursor and the document bag, so index and query
  * analysis cannot diverge.
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
 #endif
 
 #include <ctype.h>
-
-#include "mb/pg_wchar.h"
-#include "port/pg_bitutils.h"
-#include "port/pg_bswap.h"
-#include "utils/memutils.h"
 
 #include "sift_analyze.h"
 #include "sift_analyze_tables.h"

@@ -7,10 +7,7 @@
  * one offset-mask row each. Lossy pages, and the exact pages that would take
  * more than the byte budget, only set their bit in the lossy page mask.
  */
-#include "postgres.h"
-
-#include "port/pg_bitutils.h"
-#include "utils/memutils.h"
+#include "sift_host.h"
 
 #include "sift_filter.h"
 

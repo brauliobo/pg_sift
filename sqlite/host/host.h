@@ -1,13 +1,14 @@
 /*
- * postgres.h - the slice of the PostgreSQL backend API that the portable sift sources use, for building them
- * outside PostgreSQL (the SQLite extension). The sources in src/ compile unmodified against this directory:
- * every header they include from PostgreSQL either lives here or is a forwarding stub (see the other files).
+ * host.h - the SQLite implementation of the host interface of the portable core (src/sift_host.h): the vocabulary
+ * the core uses (memory contexts, ereport, StringInfo, List, hash tables, UTF-8 and regex helpers, atomics and
+ * locks, spool files), over the C library. The sources of src/portable.list compile unmodified against it; they
+ * reach it only through src/sift_host.h (SIFT_HOST_SQLITE, -I sqlite/host).
  *
- * Memory is a context tree over malloc (shim.c); ereport(ERROR) longjmps to the handler a caller pushed with
- * SQ_TRY (shim.c), so no backend state needs unwinding. Pages, buffers and relations are in sqstore.h.
+ * Memory is a context tree over malloc (host.c); ereport(ERROR) longjmps to the handler a caller pushed with
+ * SQ_TRY (host.c), so no engine state needs unwinding. Pages, buffers and relations are in host_store.h.
  */
-#ifndef SQ_POSTGRES_H
-#define SQ_POSTGRES_H
+#ifndef SQ_HOST_H
+#define SQ_HOST_H
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -18,10 +19,6 @@
 #include <string.h>
 #include <limits.h>
 #include <setjmp.h>
-
-/* src/sift_compat.h only adapts to PostgreSQL versions: nothing of it applies here */
-#define SIFT_COMPAT_H
-#define PG_VERSION_NUM 180000
 
 /* ---------- base types and macros ---------- */
 
@@ -470,6 +467,6 @@ static inline Size mul_size(Size a, Size b) { return a * b; }
 
 /* ---------- pages, buffers and relations over SQLite rows: sqstore.h ---------- */
 
-#include "sqstore.h"
+#include "host_store.h"
 
-#endif							/* SQ_POSTGRES_H */
+#endif							/* SQ_HOST_H */
