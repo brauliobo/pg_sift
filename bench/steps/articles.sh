@@ -185,17 +185,13 @@ phase 'restore and build'
 if [[ $cold ]]; then
   # shellcheck disable=SC2329  # run by lane_run
   cold_lane() { # ENGINE, in its lane: the cold-cache times of every class
-    local e=$1 c i t stmt
+    local e=$1 c t
+    # shellcheck disable=SC2317  # run by cold_cell
+    cold_stmt() { cold_ms "$(q -c "SELECT stmt FROM stmts WHERE wl = '$c' AND n = $1")"; }   # the first statements of the class, in the order of the trace
     export PGDATABASE; PGDATABASE=$(engine_db "$e"); RUN=$OUT/$e
     q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
     for c in ${COLD:-${CLASSES/update/}}; do
-      if [[ -f $RUN/$c.pgb ]]; then
-        t=$(for i in $(seq "$NQ"); do
-          stmt=$(q -c "SELECT stmt FROM stmts WHERE wl = '$c' AND n = $i")
-          evict_table docs
-          explain_ms "$stmt"
-        done | median_max)
-      else t=$'NA\tNA'; fi
+      if [[ -f $RUN/$c.pgb ]]; then t=$(cold_cell cold_stmt); else t=$'NA\tNA\t0'; fi
       printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
     done >"$RUN/cold.part"
   }
@@ -204,8 +200,9 @@ if [[ $cold ]]; then
     [[ -z ${EXT[$e]:-} ]] || { log "cold: $e is not a Postgres engine, its caches cannot be evicted"; continue; }
     if [[ -n $CONCURRENT ]]; then lane_run "$e" cold_lane "$e" & pids+=($!); else lane_run "$e" cold_lane "$e"; fi
   done
+    cold_table docs
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
-  printf 'workload\tclass\tengine\tp50_ms\tmax_ms\n' >"$DEST/cold.tsv"
+  printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for c in ${COLD:-${CLASSES/update/}}; do for e in $ENGINES; do grep -P "^-\t$c\t$e\t" "$OUT/$e/cold.part" 2>/dev/null || true; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
   exit 0

@@ -120,17 +120,19 @@ phase 'restore and build'
 if [[ $what == cold ]]; then
   # shellcheck disable=SC2329  # run by lane_run
   cold_lane() { # ENGINE, in its lane: the cold-cache times of every workload and class
-    local e=$1 wl c b i s t tq tsq tsqb ttq tng
+    local e=$1 wl c b s t tq tsq tsqb ttq tng
+    # shellcheck disable=SC2317  # run by cold_cell
+    cold_query() { # i: the i-th query of the class
+      IFS=$'\t' read -r tq tsq tsqb ttq tng < <(PGDATABASE=places q -F $'\t' -c "$FORMS WHERE id = $b + $1) x")
+      PGDATABASE=$(edb "$e") cold_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
+    }
+    PGDATABASE=$(edb "$e") cold_table places
     for wl in top boost filter count; do for c in p1 p2 a2 a3; do
       b=$(base "$c")
       if [[ -n $(stmt "$wl" "$e") ]]; then
-        t=$(for i in $(seq "$NQ"); do
-          s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
-          IFS=$'\t' read -r tq tsq tsqb ttq tng < <(PGDATABASE=places q -F $'\t' -c "$FORMS WHERE id = $b + $i) x")
-          PGDATABASE=$(edb "$e") evict_table places
-          PGDATABASE=$(edb "$e") explain_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
-        done | median_max)
-      else t=$'NA\tNA'; fi
+        s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
+        t=$(cold_cell cold_query)
+      else t=$'NA\tNA\t0'; fi
       printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t"
     done; done >"$ROOT/places/$e/cold.part"
   }
@@ -139,7 +141,7 @@ if [[ $what == cold ]]; then
     if [[ -n $CONCURRENT ]]; then lane_run "$e" cold_lane "$e" & pids+=($!); else lane_run "$e" cold_lane "$e"; fi
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
-  printf 'workload\tclass\tengine\tp50_ms\tmax_ms\n' >"$DEST/cold.tsv"
+  printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do grep -P "^$wl\t$c\t$e\t" "$ROOT/places/$e/cold.part" || true; done; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
   exit 0

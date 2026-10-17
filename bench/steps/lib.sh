@@ -134,26 +134,41 @@ rse_cells() {
           if (n[k] < 2 || (mean > 0 && sqrt(var / n[k]) / mean > rse)) print k } }' "$1"
 }
 
-# --- cold cache: empty the relations from shared buffers and the OS page cache, then time one statement
-# evict SQL: SQL returns the relations (regclass or oid, one per row)
-evict() {
-  q -c "SELECT pg_buffercache_evict_relation(c) FROM ($1) x(c)" >/dev/null
-  # shellcheck disable=SC2046  # one argument per relation file
-  python3 -I - "$PGDATA" $(q -c "SELECT pg_relation_filepath(c) FROM ($1) x(c)") <<'PY'
+# --- cold cache: empty the relations of a table from shared buffers and the OS page cache, then time one statement
+# cold_table TABLE: the table the cold statements read; its heap, TOAST table and indexes are evicted before each one. A data
+# directory in memory (tmpfs) has no page cache apart from the shared buffers (a file there is the page cache): nothing else to evict.
+cold_table() {
+  COLD_RELS="SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
+             UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
+  COLD_FILES=''
+  [[ $(stat -f -c %T "$PGDATA") == tmpfs ]] || COLD_FILES=$(q -c "SELECT pg_relation_filepath(c) FROM ($COLD_RELS) x(c)")
+}
+cold_ms() { # STATEMENT [psql args]: execution time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
+  local explain="EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" evict="SELECT pg_buffercache_evict_relation(c) FROM ($COLD_RELS) x(c)"
+  if [[ -z $COLD_FILES ]]; then
+    printf '%s;\n%s;\n' "$evict" "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'   # on stdin: psql variables are not interpolated in -c
+    return
+  fi
+  q -c "$evict" >/dev/null
+  # shellcheck disable=SC2086  # one argument per relation file
+  python3 -I - "$PGDATA" $COLD_FILES <<'PY'
 import glob, os, sys
 for rel in sys.argv[2:]:
     for f in glob.glob(os.path.join(sys.argv[1], rel) + '*'):
         fd = os.open(f, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)
 PY
 }
-evict_table() { # the heap, TOAST table and every index of table $1
-  evict "SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
-         UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
+# cold_cell FN: p50, maximum and the number of the times (ms, tab separated) of `FN i`, i = 1..NQ: at least COLD_MIN of them (default 5),
+# then only while the cell has used less than COLD_TIME seconds (default 3): a statement of seconds is not run twelve times
+cold_cell() {
+  local i t0; t0=$(now_ms)
+  for (( i = 1; i <= NQ; i++ )); do
+    "$1" "$i"
+    (( i < ${COLD_MIN:-5} || $(now_ms) - t0 < ${COLD_TIME:-3} * 1000 )) || break
+  done | median_max
+  echo "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'
 }
-explain_ms() { # STATEMENT [psql args]: execution time in ms
-  echo "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'
-}
-median_max() { sort -n | awk '{v[NR] = $1} END {printf "%.2f\t%.2f", v[int((NR + 1) / 2)], v[NR]}'; }   # of numbers on stdin
+median_max() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.2f\t%.2f\t%d", v[int((NR + 1) / 2)], v[NR], NR; else printf "error\terror\t0"}'; }   # p50, maximum and count of the numbers on stdin (error: none)
 
 # --- the CPU budget, identical for every engine. CPUS: the server CPUs of the cluster at hand (an engine's lane, see lanes.sh, or
 # all of them), LOAD_CPUS: the CPUs of its load generators (pgbench, xbench), disjoint from the servers'; both are cpu lists
