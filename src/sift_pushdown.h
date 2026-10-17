@@ -35,7 +35,12 @@ typedef struct SiftFilterEst
  */
 extern BitmapHeapPath *sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel);
 
-extern void sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, SiftFilterEst *est);
+/*
+ * entries: how many of the bitmap's tuples, in heap order, a scan that checks the filter after the
+ * ranker has to meet before it holds as many rows that pass as its limit (0: not known). The heap
+ * position of those entries is read from the btree when the filter is an equality on its one column.
+ */
+extern void sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, double entries, SiftFilterEst *est);
 
 /* Records the indexes of the bitmap plan as dependencies of the plan */
 extern void sift_filter_plan_deps(PlannerInfo *root, Plan *bitmap);
