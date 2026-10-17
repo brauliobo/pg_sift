@@ -52,7 +52,7 @@ Options (not every option applies to every command)
                       quick  25,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of 1 s cells:
                              the whole default run takes about 2 minutes after the one-time downloads
                       ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of docs/BENCHMARKS.md (about 4 minutes)
-                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds (projected 15-20 minutes with the cold-cache tables)
+                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds (measured: about 51 minutes with `--serial` and the cold-cache tables)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
