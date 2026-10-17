@@ -112,6 +112,7 @@ check_db() {
 # rounds FN: runs FN ROUND for MAXR rounds, stopping after MINR once the caller's `stable` holds.
 rounds() {
   local r
+  (( MAXR <= 3 )) || log "warning: MAXR=$MAXR: more than 3 rounds (the most that a run takes by default), the run takes that much longer"
   for r in $(seq "$MAXR"); do
     "$1" "$r"
     log "round $r done, load $(loadavg)"
