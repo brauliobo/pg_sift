@@ -6,24 +6,29 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 - Planner: the estimate of a query is computed once per statement instead of three or four times (the selectivity of the clause, the cost of each
   path, the index path). The last 8 estimates of a backend are kept under the index file, the version of its directory, the expansion cap and the
-  query; a promotion, a merge, VACUUM or REINDEX changes the key. Slim tier, one backend, user cycles per statement: count 1.18M to 1.03M
-  (-12%), filter -9%, mixed -8%, or and join unchanged; count at 8 clients 25.9k to 29.3k qps.
+  query; a promotion, a merge, VACUUM or REINDEX changes the key. Slim tier, one backend, the same 1500 statements, user cycles per statement
+  (mean +- standard error of 5 interleaved runs): count 867k +- 31k to 761k +- 15k (-12%), filter 1.86M to 1.77M (-5%), mixed 1.52M to 1.45M
+  (-4%), and 846k to 811k (-4%).
 - Ranker: a join (or any consumer) that keeps a small share of the rows and pulls past the limit hint makes the scan search again for 16 times
   as many hits (4 times beyond 4096) instead of 4 times, so a join that keeps a tenth of the rows searches twice instead of three times. Rows,
-  scores and ties are those of the full ranking. Slim tier join class, one backend, user cycles per query: 5.16M to 4.39M (-15%); at 8 clients
-  4.78k to 6.03k qps (+26%).
+  scores and ties are those of the full ranking. Slim tier join class, one backend, the same 1500 statements, user cycles per query: 4.74M +- 0.02M
+  to 3.90M +- 0.05M (-18%).
 - Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query.
   The ranked scan priced such a query by the operator's default of 0.5% of the rows, which made a filter after the ranker look free; it now
   assumes a tenth of the rows, so a selective filter is pushed down and a loose one stays after the ranker. Rows, scores and ties are
-  unchanged. Slim tier, one backend, user cycles per query: prepared filter class 4.36M to 2.30M (the literal query takes 2.33M), prepared
-  join class 6.67M to 5.28M, prepared or and mixed classes unchanged.
+  unchanged. Slim tier, one backend, the same 1500 statements, user cycles per query: prepared filter class 2.81M +- 0.02M to 1.69M +- 0.01M
+  (-40%), prepared join class 4.63M to 3.84M (-17%), prepared count unchanged. A prepared rare AND query with a selective filter
+  (bench/sql/ab_and_filter_prep.pgb) takes about 5% more cycles and 12% more instructions: main's generic plan priced it as free and was
+  reused, the new one costs more than the custom plans of rare queries and is planned again.
 - Planner: the filter pushdown is chosen for a filter on a value stored in one late stretch of the heap. The planner placed the rows of
   an equality filter on a btree column from the column's statistics, which say nothing about rows loaded by group (correlation near
   zero), and priced the scan that checks the filter after the ranker as if they were spread over the heap; it now reads where the
   entries of the key lie from the btree (a few entries, at planning time) and verifies every match before them. A filter at the start
   of the heap keeps the post-filter scan, so no plan that was fast changes. Slim places, one backend, user cycles per query: filtered
-  one-letter prefix (p1) 8.74M to 1.26M, two-letter prefix (p2) 1.55M to 0.94M; the other places and article shapes are unchanged
-  within noise. Rows, scores and ties are unchanged.
+  one-letter prefix (p1) 3.52M +- 0.10M to 0.67M +- 0.01M, two-letter prefix (p2) 1.05M +- 0.03M to 0.68M +- 0.02M; the top and count workloads
+  of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
+- Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
+  thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
 
 ## 1.3.1
 
