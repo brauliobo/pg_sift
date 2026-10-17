@@ -1,0 +1,11 @@
+-- Registers the sift functions (libsift_udf.so in the plugin directory).
+CREATE OR REPLACE FUNCTION sift_create RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_drop RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_topk RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_count RETURNS INTEGER SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_matches RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE AGGREGATE FUNCTION sift_drain RETURNS INTEGER SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_merge RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_stats RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_tokens RETURNS STRING SONAME 'libsift_udf.so';
+CREATE OR REPLACE FUNCTION sift_ping RETURNS STRING SONAME 'libsift_udf.so';
