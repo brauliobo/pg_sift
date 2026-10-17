@@ -13,6 +13,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   of the format are 32 bits): the runs of a build merge, and make a segment, only while their largest term and their dictionary stay
   under those limits (estimated high, so a segment holds up to a third of them), and the build writes more segments instead.
 
+- Fix: `CREATE INDEX` on documents of a heap page that together passed 1 GB (a few large, out-of-line values: three of 360 MB) failed with
+  `string buffer exceeds maximum allowed length`: a page's documents are no longer all copied before they are analyzed, a large one is
+  analyzed at once. A `maintenance_work_mem` of 4 GB or more (or a document with very many distinct terms) could fail with `inverted buffer
+  pool exhausted`: the buffer is now spilled before a document that could exhaust its pool.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
