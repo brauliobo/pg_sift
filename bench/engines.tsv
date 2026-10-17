@@ -9,7 +9,7 @@ pg_search	pg_search	pg_search	#D55E00	yes	yes	-
 pg_textsearch	pg_textsearch	pg_textsearch	#CC79A7	yes	yes	-
 rum	rum	rum	#7f7f7f	yes	yes	-
 bm25	pgx-bm25	pgx-bm25	#E69F00	yes	yes	-
+elasticsearch	Elasticsearch	Elasticsearch	#6A3D9A	yes	yes	-
 gin	gin	gin	#000000	no	no	-
 tantivy	Tantivy	Tantivy	#F0E442	no	no	-
-elasticsearch	Elasticsearch	Elasticsearch	#A6761D	no	no	-
 sift_ref	sift (reference)	sift reference	#9ecae1	no	no	-

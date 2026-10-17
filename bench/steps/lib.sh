@@ -53,10 +53,11 @@ drop_db() { PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)"; 
 # (extension), SETUP and INDEX (SQL), and either PRED and RANK (SQL expressions over `mode` and `terms` that render the
 # WHERE condition and the ORDER BY of a query, NULL when the engine cannot answer it; SOURCE: the FROM item of ranked
 # statements when it is not `docs WHERE PRED`; HELPERS: SQL they use; PROBE: see engine_available) or, for engines
-# outside Postgres, EXTERNAL, RENDER and the x_* functions (bench/steps/xlib.sh). Places (the `places` table, steps/places.sh):
-# PLACES_SETUP, PLACES_INDEX (+ PLACES_INDEXES: the relations whose sizes add up), the optional emulation of workloads
-# the engine has no native query for (PLACES_SETUP2, PLACES_INDEX2, PLACES_INDEXES2) and the statements P_match, P_top,
-# P_boost, P_filter, P_count, P_scan (empty: no such query). A variant adapter sets V_EXT / V_OPTS, then sources its base.
+# outside Postgres, EXTERNAL, RENDER (+ JOINS when the engine answers the join class) and the x_* functions (bench/steps/xlib.sh). Places (the
+# `places` table, steps/places.sh): PLACES_SETUP, PLACES_INDEX (+ PLACES_INDEXES: the relations whose sizes add up), the optional emulation
+# of workloads the engine has no native query for (PLACES_SETUP2, PLACES_INDEX2, PLACES_INDEXES2) and the statements P_match, P_top,
+# P_boost, P_filter, P_count, P_scan (empty: no such query); an external engine has PLACES_RENDER and x_build_places instead. A variant
+# adapter sets V_EXT / V_OPTS, then sources its base.
 # shellcheck disable=SC2016  # $b$ is the SQL quote of the function body
 render_sql() {
   echo "${HELPERS:-}"
@@ -66,15 +67,15 @@ render_sql() {
 }
 XBENCH=$ROOT/target/release/xbench          # the Rust load generator of the external engines (bench/steps/fetch.sh tantivy)
 load_engine() {
-  ENGINE=$1; REQUIRES=''; PROBE=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''; EXTERNAL=''; REQUIRES_PATH=''
-  PLACES_SETUP=''; PLACES_INDEX=''; PLACES_INDEXES=''; PLACES_SETUP2=''; PLACES_INDEX2=''; PLACES_INDEXES2=''; PLACES_FLAVOR=''; PLACES_FLAVOR_MATCH=''
+  ENGINE=$1; REQUIRES=''; PROBE=''; SETUP=''; INDEX=''; PRED=''; RANK=''; SOURCE=''; HELPERS=''; RENDER=''; EXTERNAL=''; REQUIRES_PATH=''; JOINS=''
+  PLACES_SETUP=''; PLACES_INDEX=''; PLACES_INDEXES=''; PLACES_SETUP2=''; PLACES_INDEX2=''; PLACES_INDEXES2=''; PLACES_FLAVOR=''; PLACES_FLAVOR_MATCH=''; PLACES_RENDER=''
   P_match=''; P_top=''; P_boost=''; P_filter=''; P_count=''; P_scan=''; V_EXT=''; V_OPTS=''
   . "$BENCH/engines/_places.sh"
   . "$BENCH/engines/$1.sh"
   [[ -n $RENDER || -n $EXTERNAL ]] || RENDER=$(render_sql)
 }
 # does the loaded engine run the dataset (articles, places)?
-supports() { case $1 in articles) [[ -n $INDEX || -n $EXTERNAL ]] ;; places) [[ -n $PLACES_INDEX ]] ;; esac; }
+supports() { case $1 in articles) [[ -n $INDEX || -n $EXTERNAL ]] ;; places) [[ -n $PLACES_INDEX || -n $PLACES_RENDER ]] ;; esac; }
 # PROBE (adapters): a statement over a temp table `probe (t text)` that only works when the installed extension has what the
 # engine needs (a reloption of a newer build); it runs in a rolled back transaction. External engines need their binary.
 engine_available() {

@@ -25,17 +25,15 @@ ANALYZE oracle_tsv;
 COMMENT ON TABLE oracle_tsv IS :'cfg_key';
 \endif
 
--- Compares the engine's match set and count(*) with the oracle for one logical query.
-CREATE OR REPLACE FUNCTION oracle_check(mode text, terms text[],
+-- Compares an engine's answer to one logical query, its match set (eng) and count(*) (cnt), with the oracle's.
+CREATE OR REPLACE FUNCTION oracle_diff(mode text, terms text[], eng bigint[], cnt bigint,
   OUT n_oracle bigint, OUT n_engine bigint, OUT n_count bigint, OUT missing bigint, OUT extra bigint,
   OUT missing_ids bigint[], OUT extra_ids bigint[]) LANGUAGE plpgsql AS $$
-DECLARE m text := bench_stmt('match', mode, terms);
 BEGIN
-  IF m IS NULL THEN RETURN; END IF;
   DROP TABLE IF EXISTS pg_temp.e, pg_temp.o;
-  EXECUTE 'CREATE TEMP TABLE e AS ' || m;
+  CREATE TEMP TABLE e AS SELECT unnest(eng) AS id;
   CREATE TEMP TABLE o AS SELECT id FROM oracle_tsv WHERE tsv @@ to_tsquery('oracle_cfg', tsq(mode, terms));
-  EXECUTE bench_stmt('count', mode, terms) INTO n_count;
+  n_count := cnt;
   -- tsvector positions saturate at 16383, so the oracle cannot answer phrases in documents of more tokens
   -- than that (sift keeps no positions and re-tokenizes the heap): leave those documents out of both sides.
   IF mode = 'phrase' THEN
@@ -48,6 +46,18 @@ BEGIN
   SELECT count(*), (array_agg(id ORDER BY id))[:5] INTO missing, missing_ids FROM (SELECT id FROM o EXCEPT ALL SELECT id FROM e) d;
   -- EXCEPT ALL also reports rows the engine returned twice.
   SELECT count(*), (array_agg(id ORDER BY id))[:5] INTO extra, extra_ids FROM (SELECT id FROM e EXCEPT ALL SELECT id FROM o) d;
+END $$;
+
+-- The same for an engine in Postgres: it runs the match and count statements of the harness.
+CREATE OR REPLACE FUNCTION oracle_check(mode text, terms text[],
+  OUT n_oracle bigint, OUT n_engine bigint, OUT n_count bigint, OUT missing bigint, OUT extra bigint,
+  OUT missing_ids bigint[], OUT extra_ids bigint[]) LANGUAGE plpgsql AS $$
+DECLARE m text := bench_stmt('match', mode, terms); eng bigint[]; cnt bigint;
+BEGIN
+  IF m IS NULL THEN RETURN; END IF;
+  EXECUTE 'SELECT coalesce(array_agg(id), ''{}'') FROM (' || m || ') s' INTO eng;
+  EXECUTE bench_stmt('count', mode, terms) INTO cnt;
+  SELECT * INTO n_oracle, n_engine, n_count, missing, extra, missing_ids, extra_ids FROM oracle_diff(mode, terms, eng, cnt);
 END $$;
 
 -- Checked queries: the trace's and/or/phrase queries plus a NOT variant of each conjunction.

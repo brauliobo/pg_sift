@@ -12,8 +12,8 @@ usage() {
 Usage: bench/bench COMMAND [options]
 
 One suite for every engine and every dataset: sift (and its variants), ParadeDB pg_search, pg_textsearch, rum, pgx-bm25, gin,
-Tantivy, Elasticsearch on two public datasets, every engine on a throwaway PostgreSQL 18 cluster of its own (a lane) with an equal share
-of the CPU budget, all engines measured at the same time so host load drifts hit all of them alike (--serial: one cluster, interleaved). The engines are the lines of bench/engines.tsv, each with an adapter bench/engines/<id>.sh.
+Tantivy, Elasticsearch on two public datasets, every engine on a throwaway PostgreSQL 18 cluster of its own (a lane; Elasticsearch and Tantivy
+run as a server / library next to it, driven over HTTP by xbench) with an equal share of the CPU budget, all engines measured at the same time so host load drifts hit all of them alike (--serial: one cluster, interleaved). The engines are the lines of bench/engines.tsv, each with an adapter bench/engines/<id>.sh.
 
 Commands
   setup      check the prerequisites, download and convert the datasets, build or unpack the engines
@@ -56,7 +56,7 @@ Options (not every option applies to every command)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
-                    (positions = off), pg_search, pg_textsearch, rum, bm25). setup: which engines to
+                    (positions = off), pg_search, pg_textsearch, rum, bm25, elasticsearch). setup: which engines to
                     build. An engine whose extension is missing, or that has no workload for the dataset, is skipped with a message.
   --classes LIST    comma separated classes. articles: and or phrase mixed count filter join term prefix fuzzy update; places:
                     p1 p2 p3 p4 w1 a2 a2s a3 x2 (default: the classes of the tier; a dataset with none of the names is not run)

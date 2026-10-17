@@ -70,10 +70,25 @@ BEGIN
   END LOOP;
 END $$;
 
+-- The comparison of one engine's answer with the oracle's, for workload wl: a (agree) is, for match, the Jaccard index of the engine's match
+-- set and the oracle's (hits), for top | boost | filter the share of the returned places the oracle accepts as top-20 (ok; ties at rank 20
+-- included); wrong: returned places that are no match (match: extra and missing); short: fewer places than min(20, matches).
+CREATE FUNCTION place_score(wl text, got int[], hits int[], ok int[], OUT a numeric, OUT wrong int, OUT short int) LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN wl = 'match' THEN CASE WHEN cardinality(got) + cardinality(hits) = 0 THEN 1 ELSE
+                cardinality(ARRAY(SELECT unnest(got) INTERSECT SELECT unnest(hits)))::numeric / cardinality(ARRAY(SELECT unnest(got) UNION SELECT unnest(hits))) END
+              WHEN cardinality(got) = 0 THEN (cardinality(hits) = 0)::int
+              ELSE cardinality(ARRAY(SELECT unnest(got) INTERSECT SELECT unnest(ok)))::numeric / cardinality(got) END,
+         cardinality(ARRAY(SELECT unnest(got) EXCEPT SELECT unnest(hits))) + CASE WHEN wl = 'match' THEN cardinality(ARRAY(SELECT unnest(hits) EXCEPT SELECT unnest(got))) ELSE 0 END,
+         CASE wl WHEN 'match' THEN 0 ELSE (cardinality(got) < least(20, cardinality(hits)))::int END
+$$;
+
+-- Per class: queries, exact (agree = 1), agree (mean), worst, wrong, short of the rows of the temp table chk.
+CREATE FUNCTION place_report() RETURNS TABLE (class text, queries int, exact int, agree numeric, worst numeric, wrong int, short int) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT chk.class, count(*)::int, count(*) FILTER (WHERE chk.a = 1)::int, round(avg(chk.a), 3), round(min(chk.a), 3), sum(chk.wrong)::int, sum(chk.short)::int FROM chk GROUP BY chk.class ORDER BY chk.class;
+END $$;
+
 -- Runs the statement template of workload wl (:q :sq :sqb :tq :ng as in steps/places.sh) for the oracle's queries and compares.
--- agree: match -> the Jaccard index of the engine's match set and the oracle's; top | boost | filter -> the share of the returned places
--- the oracle accepts as top-20 (ties at rank 20 included). exact: queries with agree = 1. wrong: returned places that are no match
--- (match: extra and missing). short: fewer places than min(20, matches).
 CREATE FUNCTION place_check(wl text, tmpl text, fl text) RETURNS TABLE (class text, queries int, exact int, agree numeric, worst numeric, wrong int, short int)
 LANGUAGE plpgsql AS $$
 DECLARE r record; got int[]; sq text; sqb text; tq text;
@@ -86,13 +101,20 @@ BEGIN
     tq := (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', r.q)));
     EXECUTE 'SELECT coalesce(array_agg(id), ''{}'') FROM (' || replace(replace(replace(replace(replace(tmpl, ':sqb', quote_literal(sqb)), ':sq', quote_literal(sq)),
             ':tq', quote_literal(tq)), ':ng', quote_literal(place_ngram_terms(r.q))), ':q', quote_literal(r.q)) || ') s' INTO got;
-    INSERT INTO chk SELECT r.class,
-      CASE WHEN wl = 'match' THEN CASE WHEN cardinality(got) + cardinality(r.hits) = 0 THEN 1 ELSE
-             cardinality(ARRAY(SELECT unnest(got) INTERSECT SELECT unnest(r.hits)))::numeric / cardinality(ARRAY(SELECT unnest(got) UNION SELECT unnest(r.hits))) END
-           WHEN cardinality(got) = 0 THEN (cardinality(r.hits) = 0)::int
-           ELSE cardinality(ARRAY(SELECT unnest(got) INTERSECT SELECT unnest(r.ok)))::numeric / cardinality(got) END,
-      cardinality(ARRAY(SELECT unnest(got) EXCEPT SELECT unnest(r.hits))) + CASE WHEN wl = 'match' THEN cardinality(ARRAY(SELECT unnest(r.hits) EXCEPT SELECT unnest(got))) ELSE 0 END,
-      CASE wl WHEN 'match' THEN 0 ELSE (cardinality(got) < least(20, cardinality(r.hits)))::int END;
+    INSERT INTO chk SELECT r.class, s.a, s.wrong, s.short FROM place_score(wl, got, r.hits, r.ok) s;
   END LOOP;
-  RETURN QUERY SELECT chk.class, count(*)::int, count(*) FILTER (WHERE chk.a = 1)::int, round(avg(chk.a), 3), round(min(chk.a), 3), sum(chk.wrong)::int, sum(chk.short)::int FROM chk GROUP BY chk.class ORDER BY chk.class;
+  RETURN QUERY SELECT * FROM place_report();
+END $$;
+
+-- The same for an engine outside Postgres: its answers are the rows of the temp table place_got (qid, ids), the ids it returned for the
+-- query qid of pq (steps/xlib.sh xp_check).
+CREATE FUNCTION place_check_ids(wl text, fl text) RETURNS TABLE (class text, queries int, exact int, agree numeric, worst numeric, wrong int, short int)
+LANGUAGE plpgsql AS $$
+BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS chk (class text, a numeric, wrong int, short int);
+  TRUNCATE chk;
+  INSERT INTO chk SELECT p.class, s.a, s.wrong, s.short
+  FROM place_got g JOIN pq p ON p.id = g.qid JOIN place_expect e ON e.qid = p.id AND e.wl = place_check_ids.wl AND e.fl = place_check_ids.fl,
+       LATERAL place_score(place_check_ids.wl, g.ids, e.hits, e.ok) s;
+  RETURN QUERY SELECT * FROM place_report();
 END $$;
