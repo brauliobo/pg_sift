@@ -69,7 +69,7 @@ settle() { # LABEL: waits for the maintenance worker to finish
 	until [[ $(q "$1" "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]]; do sleep 0.2; done
 }
 backlog() { # LABEL: 60 promoted segments, the worker off
-	q "$1" "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..60 LOOP
+	q "$1" "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR k IN 1..60 LOOP
 		INSERT INTO t (body) SELECT $(words 6 i) FROM generate_series(1, 1500) i; PERFORM sift.promote('t_idx'); COMMIT; END LOOP; END \$\$" >/dev/null
 }
 bench() { # LABEL PREFIX clients script secs: pgbench; prints PREFIX_tps and PREFIX_p99_ms (latency of the script PREFIX_lat_ms)
