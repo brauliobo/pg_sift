@@ -167,6 +167,7 @@ end_segment(BuildState *bs)
 	}
 	if (!sift_inv_empty(bs->inv))
 		spill(bs);
+	ereport(DEBUG2, errmsg("sift index \"%s\": merging %d runs into segments", RelationGetRelationName(bs->index), bs->nruns));
 	/*
 	 * Each segment merges runs whose largest terms fit the budget together. The directory holds a
 	 * number of segments, though: a term is encoded whole, so when the budget would need more, fewer
