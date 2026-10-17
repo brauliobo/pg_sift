@@ -6,7 +6,8 @@
  * deltas + tf [+ positions], about 1.3 bytes per posting without) within a memory budget. A full
  * buffer is either written as a segment or spilled to a sorted run (a
  * temporary file); runs merge into one segment with memory independent of
- * the posting counts (one buffered reader per run). Runs come from the heap
+ * the posting counts (one buffered reader per run, a bounded number at a
+ * time: more runs are merged in passes first). Runs come from the heap
  * build (ascending, disjoint key ranges) or from segments being merged
  * (interleaved ranges).
  */
@@ -17,6 +18,13 @@
 
 #include "sift_analyze.h"
 #include "sift_segment.h"
+
+#ifdef SIFT_TESTING
+/* Testing knobs (sift.test_*, 0 = off): docs per run, merge fan-in, postings of a segment's largest term */
+extern PGDLLIMPORT int sift_test_run_docs;
+extern PGDLLIMPORT int sift_test_fanin;
+extern PGDLLIMPORT int sift_test_segment_postings;
+#endif
 
 typedef struct SiftInvBuf SiftInvBuf;
 typedef struct SiftRun SiftRun;
@@ -45,8 +53,8 @@ extern void sift_inv_write(SiftInvBuf *buf, SiftWriteTarget *wt, uint64 gen,
 /* Spills the buffer to a sorted run (temporary file, freed by sift_runs_write); then resets */
 extern SiftRun *sift_inv_spill(SiftInvBuf *buf);
 
-/* Spills to the named file of a fileset (parallel build workers hand their runs to the leader) */
-extern SiftRun *sift_inv_spill_shared(SiftInvBuf *buf, SharedFileSet *fileset, const char *name);
+/* Spills to a file of a fileset (parallel build workers hand their runs to the leader) */
+extern SiftRun *sift_inv_spill_shared(SiftInvBuf *buf, SharedFileSet *fileset, int worker, int id);
 
 /* Postings of the run's most frequent term (merge memory planning) */
 extern uint64 sift_run_maxdf(const SiftRun *run);
