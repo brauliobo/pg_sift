@@ -89,6 +89,11 @@ define_gucs(void)
 							 "Reads ahead the heap pages an unordered scan is about to visit.",
 							 NULL, &sift_prefetch, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.standby_conflicts",
+							 "Logs the reuse of released blocks as a recovery conflict, so a standby without hot_standby_feedback waits for or cancels the queries that may still read them.",
+							 "Off, such a query fails with \"segment recycled during scan, retry\" when the blocks it reads are reused.",
+							 &sift_standby_conflicts, false,
+							 PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.async_maintenance",
 							 "Promotes and merges segments in a dynamic background worker.",
 							 NULL, &sift_async_maintenance, true,

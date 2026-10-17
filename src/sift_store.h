@@ -67,6 +67,9 @@ extern PGDLLIMPORT bool sift_test_run_gap;
 extern void sift_store_test_init(void);
 #endif
 
+/* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in sift_store.c) */
+extern PGDLLIMPORT bool sift_standby_conflicts;
+
 /* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 

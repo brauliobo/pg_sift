@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- New: `sift.standby_conflicts` (superuser, default off). On a hot standby without `hot_standby_feedback`, the primary logs a recovery conflict before it reuses blocks released by a merge, so a standby scan is waited for (up to `max_standby_streaming_delay`) or cancelled by the usual conflict instead of failing with "segment recycled during scan". Default behavior is unchanged.
 - Fix: a promotion or merge that fails (out of disk, a corrupt segment, an error of the host) now returns the blocks it had taken to the
   free list, where it used to leave them allocated until the next orphan sweep, and the background retry doubled its delay after each
   failure (2 s up to an hour) instead of failing again every 2 s and growing the index file each time. `VACUUM` and the inserts that
