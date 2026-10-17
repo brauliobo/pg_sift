@@ -58,6 +58,39 @@ SELECT count(*) FROM av WHERE body @@> 'gamma';
      1
 (1 row)
 
+-- the analyzer hashes 1.2.0 stored for this analyzer: without phrase_index = pairs it is the one of this build, with it
+-- (reloption removed in 1.3.0) none of this build, so such an index is refused until a REINDEX
+SELECT sift._test_poke('av_idx', 0, 40, 2028147818, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT count(*) FROM av WHERE body @@> 'gamma';
+ count 
+-------
+     1
+(1 row)
+
+SELECT sift._test_poke('av_idx', 0, 40, 1302474567, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT count(*) FROM av WHERE body @@> 'gamma';
+ERROR:  index "av_idx" was built with other analyzer options
+HINT:  Use REINDEX to apply the new options.
+SELECT sift.verify('av_idx');
+ERROR:  sift index "av_idx" was built with other options
+HINT:  REINDEX the index after changing k1, b or analyzer options.
+REINDEX INDEX av_idx;
+SELECT count(*) FROM av WHERE body @@> 'gamma';
+ count 
+-------
+     1
+(1 row)
+
 DROP TABLE av;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

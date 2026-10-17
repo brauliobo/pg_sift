@@ -122,19 +122,23 @@ INSERT INTO po SELECT 3000 + i, 'running red fox ' || 'x' || i % 3 FROM generate
 INSERT INTO pf SELECT * FROM po WHERE id > 3000;
 SELECT * FROM diffs();
 
--- an index of an existing table, every combination of options: pairs with and without positions
-CREATE INDEX po_pairs ON po USING sift (body) WITH (phrase_index = pairs);
-CREATE INDEX po_pairs_off ON po USING sift (body) WITH (phrase_index = pairs, positions = off);
-SELECT reloptions FROM pg_class WHERE relname IN ('po_pairs', 'po_pairs_off') ORDER BY relname;
-SELECT sift.verify('po_pairs', true), sift.verify('po_pairs_off', true);
+-- an index of an existing table, with and without positions
+CREATE INDEX po_built ON po USING sift (body);
+CREATE INDEX po_built_off ON po USING sift (body) WITH (positions = off);
+SELECT reloptions FROM pg_class WHERE relname IN ('po_built', 'po_built_off') ORDER BY relname;
+SELECT sift.verify('po_built', true), sift.verify('po_built_off', true);
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 DROP INDEX po_idx;
-DROP INDEX po_pairs_off;
+DROP INDEX po_built_off;
 SELECT * FROM diffs();
-SELECT heap_checks('po', '"red running"') AS pairs_two, heap_checks('po', '"red running red"') AS pairs_three;
+SELECT heap_checks('po', '"red running"') AS built_two, heap_checks('po', '"red running red"') AS built_three;
 RESET enable_seqscan;
 RESET enable_indexscan;
+
+-- the phrase_index option was removed
+CREATE INDEX bad ON po USING sift (body) WITH (phrase_index = pairs);
+ALTER INDEX po_built SET (phrase_index = none);
 
 -- a partitioned table
 CREATE TABLE pt (id int, body text) PARTITION BY RANGE (id);

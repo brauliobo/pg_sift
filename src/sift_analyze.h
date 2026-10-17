@@ -64,12 +64,11 @@ typedef struct SiftAnalyzerConfig
 	bool		case_fold;
 	bool		accent_fold;
 	uint8		stemmer;		/* SiftStemmer */
-	bool		pairs;			/* the bag also holds every adjacent token pair, SEP a SEP b */
 	uint8		prefix_len;		/* the bag also holds the first 1..prefix_len characters of every word, SEP prefix */
 	uint8		nfields;		/* the bag also holds the words of the first nfields sections apart (SIFT_FIELD_BYTE) */
 	char		field_names[SIFT_FIELDS_BYTES];	/* their names, comma separated; not part of the hash */
 	bool		keyword;		/* the whole text, folded, is the only token (none when it folds to nothing) */
-	uint32		hash;			/* of the version and the fields above (pairs, prefix_len, nfields, keyword only when set) */
+	uint32		hash;			/* of the version and the fields above (prefix_len, nfields, keyword only when set) */
 } SiftAnalyzerConfig;
 
 /* A token in a document token stream; str points into analyzer memory */
@@ -108,8 +107,8 @@ typedef struct SiftAnalyzer SiftAnalyzer;
 extern void sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fold,
 									 SiftStemmer stemmer);
 
-/* Turns the pair terms and the prefix terms on or off (set clears them) and refreshes the hash */
-extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields);
+/* Sets the prefix terms and the fields (set clears them) and refreshes the hash */
+extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, int prefix_len, const char *fields);
 
 /*
  * Keyword analyzer (facets): a text is one token, folded like a word (case_fold / accent_fold; with
@@ -127,7 +126,7 @@ extern int	sift_analyzer_field(const SiftAnalyzer *a, const char *name, int len)
 extern int	sift_analyzer_nfields(const SiftAnalyzer *a);
 extern const char *sift_analyzer_field_names(const SiftAnalyzer *a);
 
-/* Do the analyzers answer every query alike? The pair and prefix terms only speed phrases and short prefixes up */
+/* Do the analyzers answer every query alike? The prefix terms only speed short prefixes up */
 extern bool sift_analyzer_config_agrees(const SiftAnalyzerConfig *a, const SiftAnalyzerConfig *b);
 
 /* Reloption validator: lowercase identifiers separated by commas, at most SIFT_MAX_FIELDS */
