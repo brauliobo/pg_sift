@@ -63,6 +63,9 @@ typedef struct SiftTotals
 #define PREFETCH_PAGES	16
 #define PREFETCH_GAP	8
 
+/* A hint larger than this makes the ranker keep more hits than it is likely to hand out: it grows its search past it */
+#define LIMIT_HINT_MAX	(1 << 20)
+
 typedef struct SiftScanState
 {
 	CustomScanState css;
@@ -520,6 +523,24 @@ scan_recheck(ScanState *node, TupleTableSlot *slot)
 
 /* ---------- executor methods ---------- */
 
+/* The most rows a LIMIT $n [OFFSET $m] asks of a generic plan, evaluated now that the parameters are known */
+static int64
+limit_hint(SiftScanState *ss, List *limit)
+{
+	int64		k = 0;
+
+	foreach_ptr(ExprState, e, limit)
+	{
+		bool		isnull;
+		int64		n = DatumGetInt64(ExecEvalExprSwitchContext(e, ss->css.ss.ps.ps_ExprContext, &isnull));
+
+		if (isnull || n < 0)
+			return 0;
+		k = Min(k + n, LIMIT_HINT_MAX);
+	}
+	return k;
+}
+
 static void
 sift_begin(CustomScanState *node, EState *estate, int eflags)
 {
@@ -532,6 +553,8 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->heapoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_HEAP_OID))->constvalue);
 	ss->queries = ExecInitExprList(linitial_node(List, cs->custom_exprs), &node->ss.ps);
 	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
+	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
 	ss->heap = node->ss.ss_currentRelation;
 	if (ss->heap == NULL)
 	{
