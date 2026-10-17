@@ -136,14 +136,14 @@ if [[ $MODE == full ]]; then
 else
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
 	installcheck facets index_build_postings
+	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
 		--docs 1500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 1 --minimize 0 \
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
-	installcheck filter_pushdown
-	tap_perl 001_crash
 	tap_shell leakcheck_gate
-	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
+	tap_perl 001_crash
+	installcheck filter_pushdown
 	job soak soak 1 "$S/soak.sh" --duration 30 --rows 20000 --rate 400 --clients 2 --check-every 10
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
