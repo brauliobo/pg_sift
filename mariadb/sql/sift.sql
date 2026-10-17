@@ -281,6 +281,7 @@ DROP PROCEDURE IF EXISTS sift_rebuild//
 CREATE PROCEDURE sift_rebuild(IN p_name VARCHAR(64))
 BEGIN
 	DECLARE v_q, v_source, v_text, v_key, v_cfg TEXT;
+	DECLARE v_refused INT DEFAULT 0;
 	DECLARE v_lock VARCHAR(80) DEFAULT CONCAT('sift_sync_', p_name);
 	DECLARE EXIT HANDLER FOR SQLEXCEPTION
 	BEGIN
@@ -293,8 +294,17 @@ BEGIN
 	IF v_q IS NULL THEN
 		CALL sift_fail('sift: no such index');
 	END IF;
+	BEGIN
+		DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_refused = 1;
+		IF sift_exists(p_name) THEN
+			SELECT sift_stats(p_name) INTO @sift_unused;
+		END IF;
+	END;
+	IF v_refused THEN
+		SELECT sift_drop(p_name) INTO @sift_unused;
+	END IF;
 	IF NOT sift_exists(p_name) THEN
-		SELECT sift_create(p_name, v_cfg);
+		SELECT sift_create(p_name, v_cfg) INTO @sift_unused;
 	END IF;
 	IF GET_LOCK(v_lock, 60) THEN
 		IF @@read_only = 'OFF' THEN

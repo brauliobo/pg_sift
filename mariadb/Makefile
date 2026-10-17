@@ -13,7 +13,7 @@ PG_INC  := $(shell pg_config --includedir-server)
 PG_LIB  := $(shell pg_config --libdir)
 MDB_INC ?= $(shell for c in mariadb_config mysql_config; do d=$$($$c --variable=pkgincludedir 2>/dev/null) && [ -f "$$d/server/mysql_version.h" ] && echo "$$d/server" && exit; done; echo /usr/include/mysql/server)
 MDB_CLI ?= $(patsubst %/server,%,$(MDB_INC))
-MDB_VER := $(shell sed -n 's/^\#define MYSQL_SERVER_VERSION *"\(.*\)"/\1/p' $(MDB_INC)/mysql_version.h)
+MDB_VER := $(shell sed -n 's/^\#define MYSQL_SERVER_VERSION[[:space:]]*"\(.*\)"/\1/p' $(MDB_INC)/mysql_version.h)
 CC      ?= gcc
 
 # the current and top memory context of the engine are per thread: every use becomes a call of the accessors in shim.c
@@ -71,5 +71,8 @@ $(OUT)/mdbq: $(HERE)/bench/mdbq.c | $(OUT)
 # the client threads of tests/stress.sh
 $(OUT)/stress: $(HERE)/tests/stress.c | $(OUT)
 	$(CC) -O2 -Wall -pthread -I$(MDB_CLI) -o $@ $< -lmariadb
+
+mdb-inc:
+	@echo $(MDB_INC)
 
 -include $(wildcard $(OUT)/*.d)
