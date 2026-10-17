@@ -56,6 +56,12 @@
 
 #include "sift_page.h"
 
+#ifdef SIFT_TESTING
+/* Testing knob (sift.test_fail_pages, 0 = off): pages a SHARED write target writes before it fails */
+extern PGDLLIMPORT int sift_test_fail_pages;
+extern void sift_store_test_init(void);
+#endif
+
 /* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
@@ -109,6 +115,7 @@ extern uint64 sift_store_new_gen(Relation index);
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
 
+
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
  * or INIT write target; the pages are written by sift_wt_finish with the
@@ -161,6 +168,12 @@ typedef enum SiftWriteMode
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
+
+/*
+ * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
+ * took (written or not, published or not: the caller found nothing published) back to the free list.
+ */
+extern void sift_wt_abort(SiftWriteTarget *wt);
 
 /*
  * Extents of a stream, the same bookkeeping in every store: the writer collects the blocks of its pages into extents

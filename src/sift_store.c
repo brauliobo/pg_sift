@@ -35,6 +35,13 @@
 #define FL_USED(n)	(offsetof(SiftFreeListData, ext) + (n) * sizeof(SiftFreeExtent))
 #define ULL(x)		((unsigned long long) (x))
 
+#ifdef SIFT_TESTING
+int			sift_test_fail_pages = 0;
+#define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
+#else
+#define TEST_KNOB(knob, normal)	(normal)
+#endif
+
 #define corrupt(index, ...) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_INDEX_CORRUPTED), \
@@ -52,6 +59,12 @@ struct SiftWriteTarget
 	SiftExtent *spare;			/* allocated, never written */
 	int			nspare;
 	int			maxspare;
+	SiftExtent *taken;			/* SHARED: every block taken from the store and not given back yet */
+	int			ntaken;
+	int			maxtaken;
+#ifdef SIFT_TESTING
+	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
+#endif
 };
 
 struct SiftStreamWriter
@@ -829,12 +842,54 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 	wt->have_meta = true;
 }
 
+/* Room for one more extent in a list that lives as long as wt, whatever context the stream writer ran in */
+static SiftExtent *
+wt_list_room(SiftWriteTarget *wt, SiftExtent *list, int n, int *max)
+{
+	if (n < *max)
+		return list;
+	*max = Max(8, 2 * *max);
+	return list ? repalloc(list, *max * sizeof(SiftExtent)) :
+		MemoryContextAlloc(GetMemoryChunkContext(wt), *max * sizeof(SiftExtent));
+}
+
+/* a minus b (disjoint extents each) in a list of wt's lifetime */
+static SiftExtent *
+extents_subtract(SiftWriteTarget *wt, SiftExtent *a, int *na, SiftExtent *b, int nb)
+{
+	SiftExtent *out = MemoryContextAlloc(GetMemoryChunkContext(wt), Max(1, *na + nb) * sizeof(SiftExtent));
+	int			m = 0;
+
+	qsort(a, *na, sizeof(SiftExtent), cmp_extent);
+	qsort(b, nb, sizeof(SiftExtent), cmp_extent);
+	for (int i = 0, j = 0; i < *na; i++)
+	{
+		uint64		s = a[i].start,
+					e = (uint64) a[i].start + a[i].nblocks;
+
+		while (j < nb && (uint64) b[j].start + b[j].nblocks <= s)
+			j++;
+		for (int k = j; k < nb && b[k].start < e; k++)
+		{
+			if (b[k].start > s)
+				out[m++] = (SiftExtent) {s, b[k].start - s};
+			s = Max(s, (uint64) b[k].start + b[k].nblocks);
+		}
+		if (s < e)
+			out[m++] = (SiftExtent) {s, e - s};
+	}
+	pfree(a);
+	*na = m;
+	return out;
+}
+
 /* Takes want blocks (at least min): spare runs first, then fresh ones */
 static BlockNumber
 wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 {
 	Buffer		metabuf;
 	BlockNumber start;
+	SiftExtent *last;
 
 	for (int i = 0; i < wt->nspare; i++)
 	{
@@ -870,9 +925,16 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 		wt->next += want;
 		return wt->next - want;
 	}
+	/* the note cannot fail once the blocks are taken */
+	wt->taken = wt_list_room(wt, wt->taken, wt->ntaken, &wt->maxtaken);
 	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
 	start = alloc_blocks(wt->index, metabuf, want, min, got);
 	UnlockReleaseBuffer(metabuf);
+	last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
+	if (last && last->start + last->nblocks == start)
+		last->nblocks += *got;
+	else
+		wt->taken[wt->ntaken++] = (SiftExtent) {start, *got};
 	return start;
 }
 
@@ -881,13 +943,7 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 {
 	if (n == 0)
 		return;
-	if (wt->nspare == wt->maxspare)
-	{
-		wt->maxspare = Max(8, 2 * wt->maxspare);
-		/* lives as long as wt, whatever context the stream writer ran in */
-		wt->spare = wt->spare ? repalloc(wt->spare, wt->maxspare * sizeof(SiftExtent)) :
-			MemoryContextAlloc(GetMemoryChunkContext(wt), wt->maxspare * sizeof(SiftExtent));
-	}
+	wt->spare = wt_list_room(wt, wt->spare, wt->nspare, &wt->maxspare);
 	wt->spare[wt->nspare++] = (SiftExtent) {start, n};
 }
 
@@ -902,6 +958,10 @@ wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 		smgr_bulk_write(wt->bulk, blkno, (BulkWriteBuffer) page, true);
 		return;
 	}
+#ifdef SIFT_TESTING
+	if (sift_test_fail_pages > 0 && ++wt->npages > sift_test_fail_pages)
+		elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);
+#endif
 	buf = new_locked(wt->index, blkno);
 	log_pages(wt->index, &buf, &page, 1);
 	UnlockReleaseBuffer(buf);
@@ -993,8 +1053,12 @@ sift_wt_finish(SiftWriteTarget *wt)
 	if (wt->bulk == NULL)
 	{
 		if (wt->nspare > 0)
+		{
 			store_update(wt->index, &(SiftDirChange) {.release = wt->spare, .nrelease = wt->nspare,
 					.extra = InvalidBuffer}, false);
+			wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, wt->spare, wt->nspare);
+			wt->maxtaken = wt->ntaken;
+		}
 		wt->nspare = 0;
 		return;
 	}
@@ -1005,6 +1069,16 @@ sift_wt_finish(SiftWriteTarget *wt)
 	bulk_put_meta(wt);
 	smgr_bulk_finish(wt->bulk);
 	wt->bulk = NULL;
+}
+
+/* The step that wrote through a SHARED target failed (its transaction is rolled back): the blocks go back */
+void
+sift_wt_abort(SiftWriteTarget *wt)
+{
+	if (wt->ntaken > 0)
+		store_update(wt->index, &(SiftDirChange) {.release = wt->taken, .nrelease = wt->ntaken,
+				.extra = InvalidBuffer}, false);
+	wt->ntaken = wt->nspare = 0;
 }
 
 /* ---------- stream writer ---------- */

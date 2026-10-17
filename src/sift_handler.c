@@ -182,6 +182,7 @@ _PG_init(void)
 	sift_planner_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
+	sift_store_test_init();
 #endif
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);

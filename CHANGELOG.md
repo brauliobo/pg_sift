@@ -2,6 +2,15 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fix: a promotion or merge that fails (out of disk, a corrupt segment, an error of the host) now returns the blocks it had taken to the
+  free list, where it used to leave them allocated until the next orphan sweep, and the background retry doubled its delay after each
+  failure (2 s up to an hour) instead of failing again every 2 s and growing the index file each time. `VACUUM` and the inserts that
+  merge for room no longer fail with the step: the error is logged as a `WARNING` and counted for the delay. An explicit `sift.promote()` or
+  `sift.merge()` still raises it. A background worker that cannot be registered is logged. The wrapper and the delay add nothing to the
+  insert path or to a step that succeeds.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build

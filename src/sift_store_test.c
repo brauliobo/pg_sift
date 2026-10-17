@@ -32,6 +32,7 @@
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/snapmgr.h"
 
 #include "sift_store.h"
@@ -46,10 +47,19 @@ PG_FUNCTION_INFO_V1(sift_test_recycle);
 PG_FUNCTION_INFO_V1(sift_test_check);
 PG_FUNCTION_INFO_V1(sift_test_sweep);
 PG_FUNCTION_INFO_V1(sift_test_info);
+PG_FUNCTION_INFO_V1(sift_test_maint_failures);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_churn);
+
+void
+sift_store_test_init(void)
+{
+	DefineCustomIntVariable("sift.test_fail_pages",
+							"Testing: pages a promotion or merge writes before it fails (0 = never).",
+							NULL, &sift_test_fail_pages, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+}
 
 #define PAYLOAD			SIFT_PAGE_PAYLOAD
 #define MAX_RANDOM_PIECE (3 * PAYLOAD)
@@ -731,6 +741,18 @@ sift_test_sweep(PG_FUNCTION_ARGS)
 
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(n);
+}
+
+/* Failed maintenance steps in a row (the background retries wait longer after each) */
+Datum
+sift_test_maint_failures(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot snap;
+
+	sift_dir_read(index, &snap);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT32(snap.meta.flags & SIFT_META_FAILURES_MASK);
 }
 
 static void
