@@ -97,7 +97,7 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
   if ! db_exists places; then   # once per cluster
     PGDATABASE=postgres q -c "CREATE DATABASE places"
     PGDATABASE=places q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
-    PGDATABASE=places q -c "ANALYZE places"
+    PGDATABASE=places q -c "VACUUM (FREEZE, ANALYZE) places"   # every copy starts with a complete visibility map: count(*) of sift reads the heap of the pages that are not all-visible
     if [[ $what == check ]]; then PGDATABASE=places q -f "$BENCH/sql/places_oracle.sql" >/dev/null; PGDATABASE=places q -c "SELECT place_oracle_fill($NQ)" >/dev/null; fi
   fi
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $(edb "$e") WITH (FORCE)" -c "CREATE DATABASE $(edb "$e") TEMPLATE places"
