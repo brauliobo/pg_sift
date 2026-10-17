@@ -22,7 +22,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE UNLOGGED TABLE u (v int)" "INSERT INTO u VALUES (70000)" \
 	"CREATE INDEX u_idx ON u USING sift_store_test (v)" >/dev/null || bail "setup failed"
 ok "setup"
-read -ra FILES <<<"$(churn crash t_idx 2000000 \
+read -ra FILES <<<"$(churn crash t_idx "$CHURN_BYTES" \
 	"reindex:2:REINDEX INDEX b_idx;" \
 	"unlogged:3:SELECT sift._test_seg_write('u_idx', 50000, 7);")"
 

@@ -11,7 +11,7 @@ SECS=$(knob SIFT_CHURN_SECS 15 5)
 plan 10
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
-wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 64MB)"
+wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 16MB)"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" "INSERT INTO t VALUES (0), (5000), (300000)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
@@ -24,7 +24,7 @@ S=$(dir standby)
 node_start standby || bail "standby start failed"
 ok "standby streaming from a base backup"
 
-read -ra FILES <<<"$(churn primary t_idx 2000000)"
+read -ra FILES <<<"$(churn primary t_idx "$CHURN_BYTES")"
 pgbench_bg primary 8 "$SECS" "${FILES[@]}"
 wait "$PGBENCH_PID"
 check "churn on the primary had no failed transaction" grep -q "number of failed transactions: 0 " "$(dir primary)/pgbench.log"

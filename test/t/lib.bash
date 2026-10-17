@@ -13,6 +13,9 @@ export LC_ALL=C
 
 # knob VAR FULL QUICK: $VAR when set, else FULL, or QUICK under SIFT_QUICK=1 (scripts/ci.sh quick)
 knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
+# the largest segment the store churn writes: 2 MB (full), 500 KB quick (8 times less live data and file growth per node; still
+# several times SIFT_ALLOC_MAX_LOCKED blocks, so the segments span extents; the 20 MB writes of the tests stay)
+CHURN_BYTES=$(knob SIFT_CHURN_BYTES 2000000 500000)
 
 TAPDIR=${SIFT_TMP:?}/tap
 ROOT=${SIFT_ROOT:-}
