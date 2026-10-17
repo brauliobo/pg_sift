@@ -20,6 +20,9 @@ pgdg_repo() {
 	else
 		local major=${VERSION_ID%%.*}
 		dnf -y -q install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$major-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+		# only the repo of the version built: a broken signature of another major's metadata must not fail the build
+		awk -v keep="[pgdg$PG]" '/^\[/ {off = $0 != keep && $0 ~ /^\[pgdg[0-9]+\]$/} off && /^enabled *=/ {$0 = "enabled=0"} 1' \
+			/etc/yum.repos.d/pgdg-redhat-all.repo > /tmp/pgdg.repo && mv /tmp/pgdg.repo /etc/yum.repos.d/pgdg-redhat-all.repo
 		(( major >= 10 )) || dnf -y -q module disable postgresql # the AppStream module would shadow PGDG before EL 10
 	fi
 }
