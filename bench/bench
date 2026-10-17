@@ -55,7 +55,7 @@ check, workers and the engines' databases of a run start the tier's cluster, loa
 
 Options (not every option applies to every command)
   --tier T          slim | ab | full (default slim; quick is the old name of slim)
-                      slim   50,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of cells of at most 1 s that stop at a
+                      slim   50,000 articles, GeoNames cities15000 (34,165 places), 2-3 rounds of cells of at most 1 s that stop at a
                              relative standard error of 5%: the default, the source of the numbers of README.md; minutes of
                              measurements after the one-time setup (bench/README.md has the measured time)
                       ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of docs/BENCHMARKS.md (about 4 minutes)
@@ -205,7 +205,7 @@ check_classes() {
 tier_env() {
   step_mode=quick
   case $tier in
-    slim) export Q_DOCS=${Q_DOCS:-$SLIM_DOCS} MINR=${MINR:-2} MAXR=${MAXR:-2} SECS=${SECS:-1} WARM=${WARM:-1} ;;
+    slim) export Q_DOCS=${Q_DOCS:-$SLIM_DOCS} MINR=${MINR:-2} MAXR=${MAXR:-3} SECS=${SECS:-1} WARM=${WARM:-1} ;;
     ab) ;;
     full) step_mode=full ;;
   esac

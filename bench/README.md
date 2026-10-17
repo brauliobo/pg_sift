@@ -24,7 +24,7 @@ bench/bench regress --run          # sift against a build of an older release (s
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
-Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two rounds of cells of at most 1 s). It keeps the ordering of the engines and
+Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It keeps the ordering of the engines and
 most of the ratios of the full tier (the table in docs/BENCHMARKS.md, generated, says which ones move and by how much) at a fraction of the time and disk. `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus (docs/BENCHMARKS.md).
@@ -71,7 +71,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 
 | tier | articles | places | rounds | run time of `all` |
 |---|---|---|---|---|
-| `slim` (default) | 50,000 | 34,165 (cities15000) | 2 | measured by the last `bench/bench all --docs`: the Run time section of docs/BENCHMARKS.md |
+| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 | measured by the last `bench/bench all --docs`: the Run time section of docs/BENCHMARKS.md |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | about an hour, projected: the engines are measured one at a time, so the cells take the sum of the engines' times (the earlier method, all engines at once on shares of the CPUs, took 51 min for six engines with fixed-length cells, 18 min of cells that stop on their standard error) |
 
