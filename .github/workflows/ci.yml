@@ -161,3 +161,23 @@ jobs:
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           SIFT_SANITIZE=1 sqlite/test.sh
+
+  # the MariaDB extension (mariadb/): the portable-core check, then the release recipe for two series: build the library in the stock
+  # mariadb:<series> image against the headers of its server, and load it into a server of that image (scripts/package-mariadb.sh,
+  # mariadb/tests/smoke.sh). The full suite, mariadb/test.sh (218k-article corpus, pg_sift reference, InnoDB FULLTEXT, about 30 minutes
+  # on a quiet machine), needs a PostgreSQL and the corpus and is run by hand before a release.
+  mariadb:
+    name: MariaDB extension (${{ matrix.series }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ['11.8', '13.0']
+    steps:
+      - uses: actions/checkout@v6
+
+      - run: scripts/check-portable.sh
+
+      - name: Build and smoke-test the library of the series
+        run: SERIES=${{ matrix.series }} scripts/package-mariadb.sh all HEAD dist-mariadb
