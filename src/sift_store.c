@@ -21,6 +21,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "sift_estimate.h"
 #include "sift_store.h"
 
 #define SPECIAL_SIZE		MAXALIGN(sizeof(SiftPageOpaqueData))

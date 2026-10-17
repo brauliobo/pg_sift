@@ -31,6 +31,7 @@
 #include "utils/spccache.h"
 
 #include "sift_am.h"
+#include "sift_estimate.h"
 #include "sift_eval.h"
 #include "sift_planner.h"
 #include "sift_pushdown.h"
@@ -166,7 +167,7 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	if (!w->known)
 		return;
 	index = index_open(indexoid, AccessShareLock);
-	sift_eval_estimate(index, texts, ntexts, &w->est);
+	sift_estimate_cached(index, texts, ntexts, &w->est);
 	index_close(index, AccessShareLock);
 	get_tablespace_page_costs(tablespace, &random_cost, &seq_cost);
 	dict_pages = w->est.terms * DICT_PAGES_PER_TERM;
