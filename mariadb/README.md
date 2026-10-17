@@ -8,7 +8,7 @@ those of pg_sift; for the same text and the same options the counts, the top-10 
 
 It adds no storage engine and patches nothing: a trigger-fed queue table keeps the index in step with an InnoDB table, the
 index lives in plain files next to the data directory, and a query is a function call. Use it when `MATCH ... AGAINST`
-is too slow or too limited (InnoDB FULLTEXT takes 0.15 to 1.1 s for a ranked top-10 on 218,058 articles, sift 0.3 to 1.5 ms), you
+is too slow or too limited (InnoDB FULLTEXT takes 0.06 to 1.2 s for a ranked top-10 on 218,058 articles, sift 0.2 to 1.3 ms), you
 want BM25 and phrases that behave the same on every engine of the product, or you want filters and facets inside the ranked
 scan. Do not use it if you need `MATCH ... AGAINST` syntax (it cannot be added to a UDF, see "MATCH ... AGAINST") or a
 MySQL server (MariaDB only).
@@ -385,12 +385,12 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 
 | class | sift, joined | sift, UDF only | sift, plain index | InnoDB FULLTEXT | InnoDB / sift |
 | --- | --- | --- | --- | --- | --- |
-| AND top-10 | 351 | 150 | 279 | 149,095 | 425x |
-| OR top-10 | 1,495 | 1,320 | 1,277 | 1,142,348 natural, 1,139,157 boolean | 764x |
-| phrase top-10 | 544 | 318 | 331 | 168,665 | 310x |
-| count AND | 160 |  | 106 | 154,253 | 966x |
-| count OR | 217 |  | 180 | 806,999 | 3,721x |
-| count phrase | 193 |  | 154 | 241,356 (3 of 200 timed out) | at least 1,308x |
+| AND top-10 | 304 | 270 | 281 | 62,305 | 205x |
+| OR top-10 | 1,253 | 1,157 | 1,130 | 1,232,091 natural, 908,285 boolean | 984x / 725x |
+| phrase top-10 | 242 | 156 | 186 | 175,430 | 726x |
+| count AND | 103 |  | 69 | 65,318 | 632x |
+| count OR | 269 |  | 255 | 916,283 | 3,411x |
+| count phrase | 201 |  | 127 | 167,613 | 832x |
 | statement (us) | first version | now, default (`fresh`, `recheck`) | now, plain index |
 | --- | --- | --- | --- |
 | AND top-10, joined | 267 | 441 | 307 |
@@ -400,7 +400,7 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 | count AND | 77 | 118 | 88 |
 | count OR | 234 | 288 | 225 |
 | count phrase | 140 | 131 | 159 |
-Honest losses. sift's OR is its slowest class (1.3 to 1.5 ms: OR queries over common terms match most of the corpus);
+Honest losses. sift's OR is its slowest class (1.1 to 1.5 ms: OR queries over common terms match most of the corpus);
 
 ## Tests
 
