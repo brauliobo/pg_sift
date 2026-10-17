@@ -21,7 +21,7 @@ bench/bench all --full             # the full-size run (the scale of the publish
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
 ```
 
-Scale: the default run uses a reduced dataset (25,000 articles, 34,165 places) and two rounds of 1 s per cell, which is
+Scale: the default run uses a reduced dataset (25,000 articles, 34,165 places) and two rounds of cells of at most 1 s, which is
 enough to see the ordering of the engines but not their exact ratios; `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds. `--tier ab` is the 150,000 article / 34,165 place tier
 in between (2-3 rounds). The first run also downloads and converts the datasets (about 3 minutes,
@@ -49,14 +49,15 @@ parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [-
 `--dataset articles|places|all`, `--engines sift,sift_nopos,sift_pairs,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--cpus LIST` and `--load-cpus LIST` (the CPU budget, below), `--serial` (one cluster, engines interleaved cell by cell, as the published tables were
 measured), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
-the server's parallel workers), `--duration S`, `--rounds MIN-MAX` (default 2-3), `--rse X` (the relative standard error that ends the rounds of a cell, default 0.05),
-`--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`.
+the server's parallel workers), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
+(the fewest transactions), `--rse X` (the relative standard error a cell is measured to, and below which it is not measured again, default 0.05), `--rounds MIN-MAX` (default 2-3, regress 3-3;
+more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`.
 
 | tier | articles | places | rounds | expected run time of `all` |
 |---|---|---|---|---|
 | `quick` (default) | 25,000 | 34,165 (cities15000) | 2 | measured: 2 min for both datasets with the six default engines (builds included), about 1 min more for the cold-cache tables, on the default 8 + 4 CPU budget |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
-| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | measured: 51 min for `all --full --serial` with the seven default engines, builds and cold-cache tables included (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
+| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | `all --full --serial` with the seven default engines, builds and cold-cache tables: 51 min measured with the previous fixed-length cells (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the current cells stop on their standard error: the cells took 18 min on 2 + 2 CPUs under load (was 41), cold-cache tables about 2 min projected (was 4.5). The concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
 
 The times are those of the default budget (8 server and 4 load generator CPUs, below); a smaller budget runs the cells for as long but builds
 and answers more slowly. `--serial` (one cluster, engines one after the other) took about twice as long with three engines in the measured comparison, and more with more engines.
@@ -88,7 +89,7 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 | `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `-` otherwise |
 | `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
 | `value`, `min`, `max` | median over the interleaved rounds and its range (`NA` / `error` as above); one build per engine for the build metrics |
-| `stderr`, `n`, `values` | the standard error of the cell, `sd / sqrt(n)` over its `n` rounds (sample standard deviation; `NA` below two rounds and for single measurements: builds, cold-cache cells, host rows), and the per-round values, comma separated |
+| `stderr`, `n`, `values` | the standard error of the cell, the larger of `sd / sqrt(n)` over its `n` rounds and `sqrt(sum se^2) / n` of the rounds' own errors (below, Standard error; `NA` for single measurements: builds, cold-cache cells, host rows), and the per-round values, comma separated |
 | `unit` | `queries/s`, `ms`, `MiB`, `s`, `load average` |
 
 Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and sha1, GeoNames date and sha256 (GeoNames
@@ -135,14 +136,20 @@ wall times each result directory keeps in `phases.txt`:
    generators pinned to an equal share of the load CPUs. All lanes are restored from the corpus dump and indexed at the same time, so the build phase takes as long as the slowest
    engine, not the sum. `--serial` uses one cluster with all the server CPUs instead.
 2. **Cache of built lanes.** A built, stopped lane is copied to `$SIFT_BENCH_ROOT/cache/lanes/<key>`, the key being a hash of the adapter, the extension binary, the corpus,
-   the harness, PostgreSQL and the CPU count of the lane; a rerun, a `regress` run, a report change rebuilds nothing that did not change (`--rebuild` builds again; `bench clean --all` removes the cache,
-   which is as large as the clusters it holds).
+   the harness, PostgreSQL and the CPU count of the lane; a rerun, a `regress` run, the cold-cache session of `all`, a report change rebuilds nothing that did not change (`--rebuild` builds again; `bench clean --all`
+   removes the cache, which is as large as the clusters it holds). With `--serial` the one cluster with the databases of every engine is cached as a whole (the key hashes those of its engines).
 3. **Rounds.** Round r runs every class on every engine at the same time, one cell group per class. In round r the engine k takes the CPUs of the lane (k + r) mod n (the servers are pinned
    again, the load generators follow), so no engine keeps a core that the host happens to load; with the interleaved rounds this also averages out the CPU an engine had. Every statement
-   trace is the same for every engine (pgbench `--random-seed=7`). The first round has a warm-up cell per group, and the relations are prewarmed after the build.
-4. **Stopping.** After `MINR` rounds (default 2) only the cells whose relative standard error is above `--rse` (default 5%) are measured again, up to `MAXR` (default 3); a cell that failed is not repeated.
-5. **Cold cache** (`cold`): per engine and class, `NQ` (12) queries, each after the heap, TOAST and index files of the table were evicted from shared buffers and the page cache (per relation, not the whole cache),
-   in all lanes at once.
+   trace is the same for every engine (pgbench `--random-seed=7`). The relations are prewarmed after the build; a cell has no warm-up of its own.
+4. **A cell** (a class on an engine in a round) is measured by `steps/cell.py` until it is precise enough, not for a fixed time: pgbench runs in chunks that log every transaction (`-l`), and the cell stops
+   when it has `--min-time` seconds (0.25) and `--min-samples` transactions (articles: 1 per client, places: 3) and the relative standard error of its value is at most `--rse` (5%), or when
+   `--max-time` seconds are measured (quick 1 s; full: articles 2 s, places 1 s), whichever comes first. A fast cell (microseconds per query) is done in the minimum time; a slow one, where fewer than
+   `1 / rse^2` = 400 queries fit in `--max-time`, is measured for `--max-time` in one go and ends with the statements still running at that moment (which dominates the cost of a cell of seconds per query), and
+   its standard error says how precise it is. External engines (Tantivy, Elasticsearch) and the articles `update` class keep a fixed `--max-time` (whole seconds).
+5. **Stopping the rounds.** After `MINR` rounds (default 2) only the cells whose relative standard error is above `--rse` are measured again, up to `MAXR` (default 3, the most there is by default), except the cells whose
+   own error per round is so large that three rounds cannot bring it to `--rse` (a cell limited by time): another round would cost as much and change little. A cell that failed is not repeated.
+6. **Cold cache** (`cold`): per engine and class, up to `NQ` (12) queries, each after the heap, TOAST and index files of the table were evicted from shared buffers and the page cache (per relation, not the whole cache; a data
+   directory on tmpfs has no other page cache to evict). At least 5 queries are run, then only while the cell has used less than 3 s (`COLD_MIN`, `COLD_TIME`): a query of seconds is not run twelve times.
 
 It keeps only compact tables (`cells.tsv` with the load average of every cell, `builds.tsv`, `machine.txt`, `phases.txt`) and removes its scratch clusters on exit (`KEEP=1` keeps them); the corpus dump
 and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, so two benchmarks never time at once (the lanes of one run overlap on purpose, on disjoint CPUs).
@@ -158,15 +165,20 @@ the one cluster all of `--cpus`; to measure with the CPUs of a concurrent lane, 
 
 ### Standard error
 
-Every cell of `results.tsv`, `tables.md` and the charts is the median over its `n` rounds with a standard error, the sample standard deviation divided by `sqrt(n)`. The tables show `value ± stderr` (and the range of
-the rounds where there is room), the charts draw one standard error as an error bar, and a relative standard error above 10% is flagged (`!` in the tables). With n = 2-3 the standard error is a rough
-indication: it is itself estimated from two or three numbers, and it only covers the variation between the rounds, not the choice of the trace or the host. Read it with the per-round values (`values`).
+Every cell of `results.tsv`, `tables.md` and the charts is the median over its `n` rounds with a standard error. Each round has an error of its own (`se` in `cells.tsv`): for the queries per second of the
+articles, batch means (the transactions of each client are cut into consecutive batches of at least 5, the rate of a batch is the clients' transactions over their pooled seconds, and the error is the standard
+deviation of the batch rates over the square root of their number, with at least 4 batches; with fewer, the standard error of the mean latency, sd / (mean sqrt(n)), whichever is larger); for the p50 of the places,
+distribution free: half the distance between the order statistics at n/2 - sqrt(n)/2 and n/2 + sqrt(n)/2. The standard error of the cell is the larger of the sample standard deviation of the rounds over `sqrt(n)` and
+the error that the rounds' own errors leave, `sqrt(sum se^2) / n`. Because the within-round error also sees which statements of the trace a cell happened to run (the rounds replay the same seeded statements, so the spread
+of the rounds alone does not), the errors of a cell with heavy-tailed statements are larger than the spread of its rounds says. The tables show `value ± stderr` (and the range of the rounds where there is room), the charts
+draw one standard error as an error bar, and a relative standard error above 10% is flagged (`!` in the tables). With n = 2-3 the spread of the rounds is itself estimated from two or three numbers and does not cover the
+host: read it with the per-round values (`values`).
 
 ### Regression check
 
 `bench/bench regress --run` builds sift from this checkout and the reference `sift_ref` from the git ref `--ref` (default the tag `SIFT_REF` of `versions.env`, v1.1.0, under the extension name `pg_sift_ref`),
 measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `p1 p3 w1 a3` with the workloads `top boost`; `--engines sift,sift_ref,sift_pairs,sift_pairs_ref,sift_nopos`
-and `--classes`, `--workloads` widen it) with 3-5 rounds, and compares each cell with its reference: queries per second, p50 latency, cold-cache p50, index size and CREATE INDEX time. A cell is a
+and `--classes`, `--workloads` widen it) with 3 rounds, and compares each cell with its reference: queries per second, p50 latency, cold-cache p50, index size and CREATE INDEX time. A cell is a
 REGRESSION when the new value is worse by more than 5% **and** by more than 2 combined standard errors (`sqrt(se_new^2 + se_ref^2)`); a cell that fails on the new engine only is one too, a cell that fails on both is an
 ERROR. Builds and cold-cache cells are single measurements: 15% relative error is assumed for them (`--noise`). The exit status is 1 on a regression, 2 on an ERROR or when nothing could be compared. `regress`
 without `--run` compares result directories or `results.tsv` / `docs/results/*.tsv` files that exist. The tail latency p95 is not compared: it is too noisy at 1 s cells for a 5% rule.
@@ -195,7 +207,8 @@ Per-tier cluster, port and dump:
 | `articles.sh`, `places.sh` | the runs of articles and places (`run`, `cold`, `suite`, `workload`) |
 | `lanes.sh`, `cpus.sh` | the lanes (a cluster per engine, the cache of built lanes, the rotation of the CPUs); the default CPU budget picked from the load of the host |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
-| `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `evict_table` (cold cache), `locked` (perf lock), `limited` (a server pinned to its CPUs, a cgroup scope with a CPU quota when a systemd user session exists) |
+| `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
+| `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock), `limited` (a server pinned to its CPUs, a cgroup scope with a CPU quota when a systemd user session exists) |
 | `machine.sh`, `tables.py` | the machine, CPU budget and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
 | `regress.py` | the regression check of `results.tsv` files (`regress`) |
 | `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes) |
