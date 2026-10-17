@@ -930,7 +930,7 @@ add_parallel_count(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	PathTarget *partial_target = create_empty_pathtarget();
 	CustomPath *cp;
 	GatherPath *gather;
-	AggClauseCosts final_costs;
+	AggClauseCosts final_costs = {0};
 	double		rows = nworkers + 1;
 
 	if (nworkers == 0)
