@@ -5,13 +5,13 @@
 #   bench/steps/remote.sh setup         build PG 18.6 + contrib, rum, pg_textsearch, pgvector, pgx-bm25 into
 #                                 ~/$RDIR/pg18; ParadeDB package, Elasticsearch tarball; rustup + xbench (tantivy)
 #   bench/steps/remote.sh sift          build sift from the synced tree and install it into ~/$RDIR/bench-root/engines/sift/root
-#   bench/steps/remote.sh quick [ENGINE...]  run the standard suite there (bench/steps/quick.sh, timed sections hold the shared perf lock,
+#   bench/steps/remote.sh quick [ENGINE...]  run the standard suite there (bench/bench suite, timed sections hold the shared perf lock,
 #                                 sift rebuilt first when selected) and pull the results
 #   bench/steps/remote.sh run 'CMD'     run CMD detached in the remote repo with the remote env (log: bench-root/logs)
 #   bench/steps/remote.sh sh 'CMD'      run CMD in the foreground
 #   bench/steps/remote.sh pull          copy the remote bench/out to bench/out-$RHOST
 #   bench/steps/remote.sh clean [all]   stop clusters, drop builds and bench data (keeps the dumps); `all` removes ~/$RDIR
-# Example: bench/steps/remote.sh quick gin tantivy; bench/steps/remote.sh run 'bench/steps/quick.sh --full gin'
+# Example: bench/steps/remote.sh quick gin tantivy; bench/steps/remote.sh run 'bench/bench suite --full gin'
 # Env: RHOST (required, an ssh host), RDIR (Projects/sift), BM25_SRC (pgx-bm25 source tarball, for sync/setup),
 #      RUST_TARGET_CPU (e.g. znver2, for the xbench build).
 set -euo pipefail
@@ -23,6 +23,7 @@ CACHE=${SIFT_BENCH_ROOT:-/tmp/sift-bench}/cache
 
 ENV="D=\$HOME/$RDIR; export D PATH=\$D/pg18/bin:\$D/.cargo/bin:\$PATH RUSTUP_HOME=\$D/.rustup CARGO_HOME=\$D/.cargo \
 SIFT_BENCH_ROOT=\$D/bench-root RUSTFLAGS='${RUST_TARGET_CPU:+-C target-cpu=$RUST_TARGET_CPU}'; cd \$D"
+# shellcheck disable=SC2029  # the command is expanded here on purpose
 rsh() { ssh "$RHOST" "$ENV; $1"; }
 
 setup_script() {
@@ -61,7 +62,7 @@ case ${1:-} in
   sh)    rsh "$2" ;;
   sift)  rsh "nice make -s USE_PGXS=1 -j4 && make -s USE_PGXS=1 DESTDIR=\$SIFT_BENCH_ROOT/engines/sift/root install" ;;
   quick) case " ${*:2} " in *" sift "*|"  ") "$0" sift ;; esac
-         rsh "bench/steps/fetch.sh tantivy && uptime && bench/steps/quick.sh ${*:2}"; "$0" pull ;;
+         rsh "bench/steps/fetch.sh tantivy && uptime && bench/bench suite ${*:2}"; "$0" pull ;;
   pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
   clean)
     rsh "for t in Q F; do TIER=\$t bench/steps/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
