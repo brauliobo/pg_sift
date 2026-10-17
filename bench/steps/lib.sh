@@ -13,7 +13,8 @@ SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs,
 REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
-ROOT=${SIFT_BENCH_ROOT:-/tmp/sift-bench}
+ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
+STORE=${BENCH_STORE:-$ROOT}                  # datasets, downloads, dumps and the cache of lanes: inputs and caches only, they can live on a disk while ROOT is tmpfs
 TIER=${TIER:-Q}
 declare -A TIER_PORT=([Q]=56040 [F]=56050)
 declare -A TIER_DOCS=([Q]=${Q_DOCS:-150000} [F]=ALL)   # articles per tier; the cached dump carries the count
@@ -21,9 +22,10 @@ declare -A TIER_SHBUF=([Q]=1GB [F]=4GB)
 declare -A TIER_MWM=([Q]=512MB [F]=2GB)
 PGDATA=${PGDATA:-$ROOT/pg/$TIER}
 SOCK=$ROOT/run
-CACHE=$ROOT/cache
+CACHE=$STORE/cache                           # corpus dumps and the cache of lanes (lanes.sh)
 DUMP=$CACHE/sift-$TIER-${TIER_DOCS[$TIER]}.dump
-DATA=$ROOT/data
+DATA=$STORE/data                             # articles.tsv.gz, places-*/ (setup); Q/ and F/: exports of the corpus for the engines outside Postgres, derived
+DOWNLOADS=${DOWNLOADS:-$STORE/download}      # the raw downloads, removed once the datasets are derived (KEEP_DOWNLOADS=1)
 ENG=$ROOT/engines                            # engines/<name>/{dl,root}: downloads, and the installed (DESTDIR) or unpacked extension
 SIFT_ROOT=${SIFT_ROOT:-$ENG/sift/root}
 JOBS=${JOBS:-4}                              # parallel jobs of the builds in bench/steps/fetch.sh
@@ -94,6 +96,11 @@ available_engines() {
 }
 clone_db() {
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)" -c "CREATE DATABASE $1 TEMPLATE bench STRATEGY FILE_COPY"
+  export DB=$1 PGDATABASE=$1
+  q -f "$BENCH/sql/harness.sql"
+}
+adopt_db() { # NAME: in a cluster of one engine the corpus database `bench` becomes the engine's database (no second copy), with the harness
+  PGDATABASE=postgres q -c "ALTER DATABASE bench RENAME TO $1"
   export DB=$1 PGDATABASE=$1
   q -f "$BENCH/sql/harness.sql"
 }

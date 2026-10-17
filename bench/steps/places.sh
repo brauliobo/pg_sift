@@ -80,6 +80,7 @@ stmt() { echo "${STMT[$1/$2]}"; }   # workload engine -> the statement (empty: t
 # shellcheck disable=SC2086  # one argument per engine
 lanes_init places $ENGINES
 BUDGET=$(lanes_describe) "$STEPS/machine.sh" >"$DEST/machine.txt"
+wc -l <"$DATADIR/places.tsv" >"$DEST/corpus.txt"   # the places of the tier, for the report
 phase 'setup'
 
 # --- the places and one engine's index, timed
