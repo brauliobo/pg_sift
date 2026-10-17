@@ -123,8 +123,6 @@ prepare() { # ENGINE, in its lane: the database restored from the corpus and bui
     PGDATABASE=bench build_pg "$e"
     [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
   fi
-  PGDATABASE=$(engine_db "$e") class_scripts
-  PGDATABASE=$(engine_db "$e") prewarm
 }
 
 # --- one cell: queries per second of the clients (NA: the engine cannot run the class; 0: a client failed, e.g. the statement timeout)
@@ -132,6 +130,10 @@ pg_update_cell() { # ENGINE SECONDS: readers and writers together; leaves $RUN/u
   local db lsn0 o
   db=$(engine_db "$1"); lsn0=$(PGDATABASE=$db lane_run "$1" q -c "SELECT pg_current_wal_lsn()")
   PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" loadgen pgbench -n -c "$WRITERS" -j 1 -T "$2" -R "$UPDATE_RATE" --random-seed=7 -f "$RUN/writer.pgb" "$db" >"$RUN/writer.out" 2>&1 &
+finish() { # ENGINE, in its lane, once its database is built: the statements of the classes, the relations in shared buffers
+  is_external "$1" || { RUN=$OUT/$1; PGDATABASE=$(engine_db "$1") class_scripts; PGDATABASE=$(engine_db "$1") prewarm; }
+}
+prepare_lane() { prepare "$1"; finish "$1"; }   # concurrent lanes: one job per engine
   o=$(PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$1" loadgen pgbench -n -c "$CLIENTS" -j "$(lane_threads "$1")" -T "$2" --random-seed=7 -f "$RUN/update.pgb" "$db" 2>&1) || o=''
   wait || true
   grep -oP 'tps = \K[0-9.]+(?= \(without)' "$RUN/writer.out" >"$RUN/update.wps" || echo 0 >"$RUN/update.wps"
@@ -172,13 +174,22 @@ BUDGET=$(lanes_describe) "$STEPS/machine.sh" >"$DEST/machine.txt"
 for e in $ENGINES; do mkdir -p "$OUT/$e"; is_external "$e" && { EXT[$e]=1; EXTERNALS+=" $e"; }; done
 phase 'dump'
 pids=()
-for e in $ENGINES; do
-  if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 & pids+=($!)
-  else lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$OUT/$e/prepare.log")" >&2; exit 1; }; fi
-done
-for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$OUT"/*/prepare.log)" >&2; exit 1; }; done
-: >"$DEST/builds.tsv"
-for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
+first=${ENGINES%% *}
+serial_cache=''; [[ -n $CONCURRENT || -n $EXTERNALS ]] || serial_cache=$(serial_key "$DUMP")   # one cluster: it is cached as a whole
+if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
+  lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
+  log "built databases from the cache ($serial_cache)"
+else
+  for e in $ENGINES; do
+    if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare_lane "$e" >"$OUT/$e/prepare.log" 2>&1 & pids+=($!)
+    else lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$OUT/$e/prepare.log")" >&2; exit 1; }; fi
+  done
+  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$OUT"/*/prepare.log)" >&2; exit 1; }; done
+  : >"$DEST/builds.tsv"
+  for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
+  [[ -z $serial_cache ]] || lane_save "$first" "$serial_cache" "$DEST/builds.tsv"
+fi
+if [[ -z $CONCURRENT ]]; then for e in $ENGINES; do lane_run "$e" finish "$e"; done; fi
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$DEST/builds.tsv")"
 phase 'restore and build'
 
