@@ -7,13 +7,6 @@ articles	full	sift_nopos	mixed	-	qps	3113.25	3024.12	3966.23	queries/s	300.3	3	3
 articles	full	sift_nopos	count	-	qps	956.16	760.96	1229.18	queries/s	135.8	3	1229.179,956.157,760.956
 articles	full	sift_nopos	filter	-	qps	3678.04	3385.18	4586.69	queries/s	361.7	3	4586.691,3678.04,3385.18
 articles	full	sift_nopos	join	-	qps	830.47	793.45	996.53	queries/s	62.44	3	996.526,793.446,830.468
-articles	full	sift_pairs	and	-	qps	10387.17	10360.54	14628.61	queries/s	1418	3	14628.611,10387.174,10360.542
-articles	full	sift_pairs	or	-	qps	2665.11	2496.57	3240.52	queries/s	225.2	3	3240.522,2665.106,2496.574
-articles	full	sift_pairs	phrase	-	qps	8746.31	8656.25	12772.98	queries/s	1357	3	12772.975,8656.25,8746.315
-articles	full	sift_pairs	mixed	-	qps	5212.74	4876.47	6664.48	queries/s	548.6	3	6664.482,5212.739,4876.465
-articles	full	sift_pairs	count	-	qps	11307.75	7973.9	15623.22	queries/s	2214	3	15623.223,11307.749,7973.903
-articles	full	sift_pairs	filter	-	qps	3638.37	3483.51	4868.08	queries/s	438	3	4868.076,3638.366,3483.511
-articles	full	sift_pairs	join	-	qps	1645.84	1586.41	1705.27	queries/s	59.43	2	1586.415,1705.267
 articles	full	pg_search	and	-	qps	2678.79	2532.53	3598.7	queries/s	333.7	3	3598.696,2678.792,2532.53
 articles	full	pg_search	or	-	qps	887.9	813.45	1030.34	queries/s	63.63	3	1030.337,813.453,887.901
 articles	full	pg_search	phrase	-	qps	2520.37	2340.58	3050.87	queries/s	213.2	3	3050.873,2520.374,2340.584
@@ -54,8 +47,6 @@ articles	full-cold	sift	and	-	cold_p50_ms	0.88	0.88	0.88	ms	NA	1	0.88
 articles	full-cold	sift	and	-	cold_max_ms	3.57	3.57	3.57	ms	NA	1	3.57
 articles	full-cold	sift_nopos	and	-	cold_p50_ms	0.96	0.96	0.96	ms	NA	1	0.96
 articles	full-cold	sift_nopos	and	-	cold_max_ms	2.23	2.23	2.23	ms	NA	1	2.23
-articles	full-cold	sift_pairs	and	-	cold_p50_ms	0.80	0.80	0.80	ms	NA	1	0.80
-articles	full-cold	sift_pairs	and	-	cold_max_ms	3.23	3.23	3.23	ms	NA	1	3.23
 articles	full-cold	pg_search	and	-	cold_p50_ms	2.89	2.89	2.89	ms	NA	1	2.89
 articles	full-cold	pg_search	and	-	cold_max_ms	7.43	7.43	7.43	ms	NA	1	7.43
 articles	full-cold	pg_textsearch	and	-	cold_p50_ms	2.23	2.23	2.23	ms	NA	1	2.23
@@ -68,8 +59,6 @@ articles	full-cold	sift	or	-	cold_p50_ms	1.94	1.94	1.94	ms	NA	1	1.94
 articles	full-cold	sift	or	-	cold_max_ms	4.22	4.22	4.22	ms	NA	1	4.22
 articles	full-cold	sift_nopos	or	-	cold_p50_ms	1.90	1.90	1.90	ms	NA	1	1.90
 articles	full-cold	sift_nopos	or	-	cold_max_ms	6.91	6.91	6.91	ms	NA	1	6.91
-articles	full-cold	sift_pairs	or	-	cold_p50_ms	1.74	1.74	1.74	ms	NA	1	1.74
-articles	full-cold	sift_pairs	or	-	cold_max_ms	7.33	7.33	7.33	ms	NA	1	7.33
 articles	full-cold	pg_search	or	-	cold_p50_ms	5.34	5.34	5.34	ms	NA	1	5.34
 articles	full-cold	pg_search	or	-	cold_max_ms	10.12	10.12	10.12	ms	NA	1	10.12
 articles	full-cold	pg_textsearch	or	-	cold_p50_ms	1.64	1.64	1.64	ms	NA	1	1.64
@@ -82,8 +71,6 @@ articles	full-cold	sift	phrase	-	cold_p50_ms	1.12	1.12	1.12	ms	NA	1	1.12
 articles	full-cold	sift	phrase	-	cold_max_ms	2.22	2.22	2.22	ms	NA	1	2.22
 articles	full-cold	sift_nopos	phrase	-	cold_p50_ms	0.82	0.82	0.82	ms	NA	1	0.82
 articles	full-cold	sift_nopos	phrase	-	cold_max_ms	23.59	23.59	23.59	ms	NA	1	23.59
-articles	full-cold	sift_pairs	phrase	-	cold_p50_ms	1.03	1.03	1.03	ms	NA	1	1.03
-articles	full-cold	sift_pairs	phrase	-	cold_max_ms	1.43	1.43	1.43	ms	NA	1	1.43
 articles	full-cold	pg_search	phrase	-	cold_p50_ms	2.37	2.37	2.37	ms	NA	1	2.37
 articles	full-cold	pg_search	phrase	-	cold_max_ms	7.86	7.86	7.86	ms	NA	1	7.86
 articles	full-cold	pg_textsearch	phrase	-	cold_p50_ms	1.44	1.44	1.44	ms	NA	1	1.44
@@ -96,8 +83,6 @@ articles	full-cold	sift	mixed	-	cold_p50_ms	2.07	2.07	2.07	ms	NA	1	2.07
 articles	full-cold	sift	mixed	-	cold_max_ms	3.36	3.36	3.36	ms	NA	1	3.36
 articles	full-cold	sift_nopos	mixed	-	cold_p50_ms	1.36	1.36	1.36	ms	NA	1	1.36
 articles	full-cold	sift_nopos	mixed	-	cold_max_ms	23.93	23.93	23.93	ms	NA	1	23.93
-articles	full-cold	sift_pairs	mixed	-	cold_p50_ms	1.07	1.07	1.07	ms	NA	1	1.07
-articles	full-cold	sift_pairs	mixed	-	cold_max_ms	2.89	2.89	2.89	ms	NA	1	2.89
 articles	full-cold	pg_search	mixed	-	cold_p50_ms	3.11	3.11	3.11	ms	NA	1	3.11
 articles	full-cold	pg_search	mixed	-	cold_max_ms	17.42	17.42	17.42	ms	NA	1	17.42
 articles	full-cold	pg_textsearch	mixed	-	cold_p50_ms	2.88	2.88	2.88	ms	NA	1	2.88
@@ -110,8 +95,6 @@ articles	full-cold	sift	count	-	cold_p50_ms	0.83	0.83	0.83	ms	NA	1	0.83
 articles	full-cold	sift	count	-	cold_max_ms	1.54	1.54	1.54	ms	NA	1	1.54
 articles	full-cold	sift_nopos	count	-	cold_p50_ms	0.83	0.83	0.83	ms	NA	1	0.83
 articles	full-cold	sift_nopos	count	-	cold_max_ms	27.03	27.03	27.03	ms	NA	1	27.03
-articles	full-cold	sift_pairs	count	-	cold_p50_ms	0.81	0.81	0.81	ms	NA	1	0.81
-articles	full-cold	sift_pairs	count	-	cold_max_ms	2.14	2.14	2.14	ms	NA	1	2.14
 articles	full-cold	pg_search	count	-	cold_p50_ms	2.93	2.93	2.93	ms	NA	1	2.93
 articles	full-cold	pg_search	count	-	cold_max_ms	12.18	12.18	12.18	ms	NA	1	12.18
 articles	full-cold	pg_textsearch	count	-	cold_p50_ms	2.80	2.80	2.80	ms	NA	1	2.80
@@ -124,8 +107,6 @@ articles	full-cold	sift	filter	-	cold_p50_ms	1.95	1.95	1.95	ms	NA	1	1.95
 articles	full-cold	sift	filter	-	cold_max_ms	3.47	3.47	3.47	ms	NA	1	3.47
 articles	full-cold	sift_nopos	filter	-	cold_p50_ms	1.26	1.26	1.26	ms	NA	1	1.26
 articles	full-cold	sift_nopos	filter	-	cold_max_ms	6.72	6.72	6.72	ms	NA	1	6.72
-articles	full-cold	sift_pairs	filter	-	cold_p50_ms	1.02	1.02	1.02	ms	NA	1	1.02
-articles	full-cold	sift_pairs	filter	-	cold_max_ms	3.50	3.50	3.50	ms	NA	1	3.50
 articles	full-cold	pg_search	filter	-	cold_p50_ms	3.11	3.11	3.11	ms	NA	1	3.11
 articles	full-cold	pg_search	filter	-	cold_max_ms	11.01	11.01	11.01	ms	NA	1	11.01
 articles	full-cold	pg_textsearch	filter	-	cold_p50_ms	2.06	2.06	2.06	ms	NA	1	2.06
@@ -138,8 +119,6 @@ articles	full-cold	sift	join	-	cold_p50_ms	1.24	1.24	1.24	ms	NA	1	1.24
 articles	full-cold	sift	join	-	cold_max_ms	9.67	9.67	9.67	ms	NA	1	9.67
 articles	full-cold	sift_nopos	join	-	cold_p50_ms	2.59	2.59	2.59	ms	NA	1	2.59
 articles	full-cold	sift_nopos	join	-	cold_max_ms	24.27	24.27	24.27	ms	NA	1	24.27
-articles	full-cold	sift_pairs	join	-	cold_p50_ms	1.07	1.07	1.07	ms	NA	1	1.07
-articles	full-cold	sift_pairs	join	-	cold_max_ms	14.43	14.43	14.43	ms	NA	1	14.43
 articles	full-cold	pg_search	join	-	cold_p50_ms	5.55	5.55	5.55	ms	NA	1	5.55
 articles	full-cold	pg_search	join	-	cold_max_ms	83.81	83.81	83.81	ms	NA	1	83.81
 articles	full-cold	pg_textsearch	join	-	cold_p50_ms	3.08	3.08	3.08	ms	NA	1	3.08
@@ -157,10 +136,6 @@ articles	full	sift_nopos	-	-	index_mib	52.5	52.5	52.5	MiB	NA	1	52.5
 articles	full	sift_nopos	-	-	build_s	1.7	1.7	1.7	s	NA	1	1.7
 articles	full	sift_nopos	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
 articles	full	sift_nopos	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	1	0.0
-articles	full	sift_pairs	-	-	index_mib	351.5	351.5	351.5	MiB	NA	1	351.5
-articles	full	sift_pairs	-	-	build_s	8.9	8.9	8.9	s	NA	1	8.9
-articles	full	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
-articles	full	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	1	0.0
 articles	full	pg_search	-	-	index_mib	183.6	183.6	183.6	MiB	NA	1	183.6
 articles	full	pg_search	-	-	build_s	3.1	3.1	3.1	s	NA	1	3.1
 articles	full	pg_search	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
@@ -178,13 +153,6 @@ articles	full	bm25	-	-	build_s	11.7	11.7	11.7	s	NA	1	11.7
 articles	full	bm25	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
 articles	full	bm25	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	1	0.0
 articles	full	-	-	-	load_1m	17.4	7.3	23.0	load average	NA	1	17.4
-articles	ab	sift_pairs	and	-	qps	3165.47	2822.63	3579	queries/s	NA	NA	NA
-articles	ab	sift_pairs	or	-	qps	775.24	653.48	876.72	queries/s	NA	NA	NA
-articles	ab	sift_pairs	phrase	-	qps	2882.14	2480.63	3796.23	queries/s	NA	NA	NA
-articles	ab	sift_pairs	mixed	-	qps	1641.81	1228.75	1898.57	queries/s	NA	NA	NA
-articles	ab	sift_pairs	count	-	qps	2977.74	2424.41	3750.18	queries/s	NA	NA	NA
-articles	ab	sift_pairs	filter	-	qps	1306.12	1004.95	1577.19	queries/s	NA	NA	NA
-articles	ab	sift_pairs	join	-	qps	483.31	396.3	685.09	queries/s	NA	NA	NA
 articles	ab	pg_search	and	-	qps	1263.41	1107.87	1546.96	queries/s	NA	NA	NA
 articles	ab	pg_search	or	-	qps	648.03	476	849.96	queries/s	NA	NA	NA
 articles	ab	pg_search	phrase	-	qps	1134.8	856.93	1269.21	queries/s	NA	NA	NA
@@ -213,13 +181,6 @@ articles	ab	sift	mixed	-	qps	971.26	834.14	1368.68	queries/s	NA	NA	NA
 articles	ab	sift	count	-	qps	581.3	463.16	818.12	queries/s	NA	NA	NA
 articles	ab	sift	filter	-	qps	1098.56	819.41	1350.04	queries/s	NA	NA	NA
 articles	ab	sift	join	-	qps	268.04	222.31	354.43	queries/s	NA	NA	NA
-articles	quick	sift_pairs	and	-	qps	3812.58	2673.66	4951.49	queries/s	NA	NA	NA
-articles	quick	sift_pairs	or	-	qps	1817.91	1478.34	2157.49	queries/s	NA	NA	NA
-articles	quick	sift_pairs	phrase	-	qps	3937.67	3028.02	4847.33	queries/s	NA	NA	NA
-articles	quick	sift_pairs	mixed	-	qps	3044.14	2982.11	3106.17	queries/s	NA	NA	NA
-articles	quick	sift_pairs	count	-	qps	4611.28	3603.97	5618.59	queries/s	NA	NA	NA
-articles	quick	sift_pairs	filter	-	qps	2638.56	1965.55	3311.57	queries/s	NA	NA	NA
-articles	quick	sift_pairs	join	-	qps	350.16	328.04	372.28	queries/s	NA	NA	NA
 articles	quick	pg_search	and	-	qps	1206.37	967.58	1445.16	queries/s	NA	NA	NA
 articles	quick	pg_search	or	-	qps	1107.39	824.55	1390.23	queries/s	NA	NA	NA
 articles	quick	pg_search	phrase	-	qps	1114.29	841.95	1386.63	queries/s	NA	NA	NA
@@ -252,10 +213,6 @@ articles	ab	sift	-	-	index_mib	33.5	33.5	33.5	MiB	NA	NA	NA
 articles	ab	sift	-	-	build_s	2.0	2.0	2.0	s	NA	NA	NA
 articles	ab	sift	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
 articles	ab	sift	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
-articles	ab	sift_pairs	-	-	index_mib	192.2	192.2	192.2	MiB	NA	NA	NA
-articles	ab	sift_pairs	-	-	build_s	9.1	9.1	9.1	s	NA	NA	NA
-articles	ab	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
-articles	ab	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
 articles	ab	pg_search	-	-	index_mib	112.0	112.0	112.0	MiB	NA	NA	NA
 articles	ab	pg_search	-	-	build_s	5.4	5.4	5.4	s	NA	NA	NA
 articles	ab	pg_search	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
@@ -272,10 +229,6 @@ articles	quick	sift	-	-	index_mib	6.8	6.8	6.8	MiB	NA	NA	NA
 articles	quick	sift	-	-	build_s	0.5	0.5	0.5	s	NA	NA	NA
 articles	quick	sift	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
 articles	quick	sift	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
-articles	quick	sift_pairs	-	-	index_mib	40.3	40.3	40.3	MiB	NA	NA	NA
-articles	quick	sift_pairs	-	-	build_s	2.8	2.8	2.8	s	NA	NA	NA
-articles	quick	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
-articles	quick	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
 articles	quick	pg_search	-	-	index_mib	23.6	23.6	23.6	MiB	NA	NA	NA
 articles	quick	pg_search	-	-	build_s	1.4	1.4	1.4	s	NA	NA	NA
 articles	quick	pg_search	-	-	setup_s	0.1	0.1	0.1	s	NA	NA	NA

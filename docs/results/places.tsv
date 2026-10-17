@@ -2,8 +2,6 @@
 dataset	tier	engine	class	variant	metric	value	min	max	unit	stderr	n	values
 places	full	sift_nopos	p1	top	p50_ms	0.238	0.231	0.245	ms	0.007	2	0.245,0.231
 places	full	sift_nopos	p1	top	p95_ms	0.338	0.308	0.368	ms	0.03	2	0.368,0.308
-places	full	sift_pairs	p1	top	p50_ms	0.2355	0.233	0.238	ms	0.0025	2	0.238,0.233
-places	full	sift_pairs	p1	top	p95_ms	0.3215	0.318	0.325	ms	0.0035	2	0.325,0.318
 places	full	pg_search	p1	top	p50_ms	0.854	0.832	0.876	ms	0.022	2	0.876,0.832
 places	full	pg_search	p1	top	p95_ms	1.02	0.944	1.09	ms	0.075	2	1.094,0.944
 places	full	pg_textsearch	p1	top	p50_ms	1002.33	997.42	1007.23	ms	4.906	2	997.422,1007.234
@@ -16,8 +14,6 @@ places	full	sift	p1	top	p50_ms	0.26	0.248	0.272	ms	0.012	2	0.248,0.272
 places	full	sift	p1	top	p95_ms	0.4085	0.398	0.419	ms	0.0105	2	0.398,0.419
 places	full	sift_nopos	p2	top	p50_ms	0.2265	0.225	0.228	ms	0.0015	2	0.225,0.228
 places	full	sift_nopos	p2	top	p95_ms	0.409	0.408	0.41	ms	0.001	2	0.408,0.41
-places	full	sift_pairs	p2	top	p50_ms	0.211	0.202	0.238	ms	0.01082	3	0.238,0.211,0.202
-places	full	sift_pairs	p2	top	p95_ms	0.385	0.37	0.44	ms	0.02128	3	0.44,0.385,0.37
 places	full	pg_search	p2	top	p50_ms	1.04	1.01	1.06	ms	0.025	2	1.061,1.011
 places	full	pg_search	p2	top	p95_ms	1.19	1.16	1.22	ms	0.0275	2	1.215,1.16
 places	full	pg_textsearch	p2	top	p50_ms	404.19	399.58	408.79	ms	4.603	2	399.582,408.789
@@ -30,8 +26,6 @@ places	full	sift	p2	top	p50_ms	0.2335	0.233	0.234	ms	0.0005	2	0.234,0.233
 places	full	sift	p2	top	p95_ms	0.423	0.414	0.432	ms	0.009	2	0.432,0.414
 places	full	sift_nopos	p3	top	p50_ms	0.263	0.256	0.314	ms	0.01828	3	0.314,0.263,0.256
 places	full	sift_nopos	p3	top	p95_ms	0.419	0.397	0.484	ms	0.02612	3	0.484,0.419,0.397
-places	full	sift_pairs	p3	top	p50_ms	0.2575	0.256	0.259	ms	0.0015	2	0.259,0.256
-places	full	sift_pairs	p3	top	p95_ms	0.4085	0.394	0.423	ms	0.0145	2	0.394,0.423
 places	full	pg_search	p3	top	p50_ms	1.17	1.15	1.2	ms	0.026	2	1.2,1.148
 places	full	pg_search	p3	top	p95_ms	1.42	1.35	1.48	ms	0.0645	2	1.481,1.352
 places	full	pg_textsearch	p3	top	p50_ms	14.83	13.86	15.79	ms	0.5583	3	15.793,13.859,14.826
@@ -44,8 +38,6 @@ places	full	sift	p3	top	p50_ms	0.244	0.24	0.248	ms	0.004	2	0.248,0.24
 places	full	sift	p3	top	p95_ms	0.367	0.348	0.386	ms	0.019	2	0.386,0.348
 places	full	sift_nopos	p4	top	p50_ms	0.257	0.253	0.261	ms	0.004	2	0.253,0.261
 places	full	sift_nopos	p4	top	p95_ms	1.05	1.03	1.07	ms	0.022	2	1.073,1.029
-places	full	sift_pairs	p4	top	p50_ms	0.269	0.246	0.299	ms	0.01534	3	0.246,0.299,0.269
-places	full	sift_pairs	p4	top	p95_ms	1.11	0.97	1.25	ms	0.08141	3	0.97,1.252,1.109
 places	full	pg_search	p4	top	p50_ms	1.22	1.19	1.25	ms	0.029	2	1.192,1.25
 places	full	pg_search	p4	top	p95_ms	1.57	1.51	1.62	ms	0.058	2	1.509,1.625
 places	full	pg_textsearch	p4	top	p50_ms	4.45	4.41	4.49	ms	0.0385	2	4.413,4.49
@@ -58,8 +50,6 @@ places	full	sift	p4	top	p50_ms	0.2675	0.263	0.272	ms	0.0045	2	0.263,0.272
 places	full	sift	p4	top	p95_ms	1.1	1.07	1.14	ms	0.0315	2	1.136,1.073
 places	full	sift_nopos	w1	top	p50_ms	0.159	0.141	0.193	ms	0.01525	3	0.193,0.159,0.141
 places	full	sift_nopos	w1	top	p95_ms	0.37	0.333	0.439	ms	0.03106	3	0.439,0.37,0.333
-places	full	sift_pairs	w1	top	p50_ms	0.15	0.142	0.179	ms	0.01124	3	0.179,0.15,0.142
-places	full	sift_pairs	w1	top	p95_ms	0.38	0.325	0.432	ms	0.03089	3	0.432,0.38,0.325
 places	full	pg_search	w1	top	p50_ms	1.3	1.28	1.31	ms	0.011	2	1.307,1.285
 places	full	pg_search	w1	top	p95_ms	1.64	1.6	1.67	ms	0.035	2	1.603,1.673
 places	full	pg_textsearch	w1	top	p50_ms	2.8	2.7	2.91	ms	0.106	2	2.909,2.697
@@ -72,8 +62,6 @@ places	full	sift	w1	top	p50_ms	0.17	0.164	0.176	ms	0.006	2	0.164,0.176
 places	full	sift	w1	top	p95_ms	0.4095	0.401	0.418	ms	0.0085	2	0.401,0.418
 places	full	sift_nopos	a2	top	p50_ms	0.181	0.168	0.232	ms	0.01953	3	0.232,0.181,0.168
 places	full	sift_nopos	a2	top	p95_ms	0.446	0.444	0.628	ms	0.061	3	0.628,0.446,0.444
-places	full	sift_pairs	a2	top	p50_ms	0.1845	0.181	0.188	ms	0.0035	2	0.188,0.181
-places	full	sift_pairs	a2	top	p95_ms	0.4825	0.459	0.506	ms	0.0235	2	0.506,0.459
 places	full	pg_search	a2	top	p50_ms	1.69	1.67	1.72	ms	0.0245	2	1.716,1.667
 places	full	pg_search	a2	top	p95_ms	2.1	2.1	2.1	ms	0.003	2	2.096,2.102
 places	full	pg_textsearch	a2	top	p50_ms	2.72	2.62	2.82	ms	0.1	2	2.817,2.617
@@ -86,8 +74,6 @@ places	full	sift	a2	top	p50_ms	0.1635	0.163	0.164	ms	0.0005	2	0.163,0.164
 places	full	sift	a2	top	p95_ms	0.4535	0.432	0.475	ms	0.0215	2	0.475,0.432
 places	full	sift_nopos	a2s	top	p50_ms	0.161	0.159	0.163	ms	0.002	2	0.159,0.163
 places	full	sift_nopos	a2s	top	p95_ms	0.4755	0.471	0.48	ms	0.0045	2	0.471,0.48
-places	full	sift_pairs	a2s	top	p50_ms	0.175	0.173	0.212	ms	0.01268	3	0.173,0.212,0.175
-places	full	sift_pairs	a2s	top	p95_ms	0.523	0.508	0.562	ms	0.01609	3	0.523,0.562,0.508
 places	full	pg_search	a2s	top	p50_ms	1.47	1.46	1.47	ms	0.0035	2	1.462,1.469
 places	full	pg_search	a2s	top	p95_ms	1.79	1.72	1.87	ms	0.077	2	1.869,1.715
 places	full	pg_textsearch	a2s	top	p50_ms	2.63	2.62	2.64	ms	0.008	2	2.637,2.621
@@ -100,8 +86,6 @@ places	full	sift	a2s	top	p50_ms	0.1655	0.161	0.17	ms	0.0045	2	0.17,0.161
 places	full	sift	a2s	top	p95_ms	0.4825	0.462	0.503	ms	0.0205	2	0.503,0.462
 places	full	sift_nopos	a3	top	p50_ms	0.195	0.183	0.218	ms	0.01027	3	0.195,0.218,0.183
 places	full	sift_nopos	a3	top	p95_ms	0.35	0.34	0.411	ms	0.02219	3	0.35,0.411,0.34
-places	full	sift_pairs	a3	top	p50_ms	0.1915	0.19	0.193	ms	0.0015	2	0.193,0.19
-places	full	sift_pairs	a3	top	p95_ms	0.357	0.355	0.359	ms	0.002	2	0.359,0.355
 places	full	pg_search	a3	top	p50_ms	2.68	2.62	2.74	ms	0.0615	2	2.741,2.618
 places	full	pg_search	a3	top	p95_ms	3.13	2.98	3.29	ms	0.151	2	3.286,2.984
 places	full	pg_textsearch	a3	top	p50_ms	2.83	2.8	2.86	ms	0.0265	2	2.857,2.804
@@ -114,8 +98,6 @@ places	full	sift	a3	top	p50_ms	0.1995	0.198	0.201	ms	0.0015	2	0.201,0.198
 places	full	sift	a3	top	p95_ms	0.3875	0.382	0.393	ms	0.0055	2	0.382,0.393
 places	full	sift_nopos	x2	top	p50_ms	0.205	0.199	0.211	ms	0.006	2	0.211,0.199
 places	full	sift_nopos	x2	top	p95_ms	0.4595	0.437	0.482	ms	0.0225	2	0.482,0.437
-places	full	sift_pairs	x2	top	p50_ms	0.2125	0.204	0.221	ms	0.0085	2	0.204,0.221
-places	full	sift_pairs	x2	top	p95_ms	0.477	0.468	0.486	ms	0.009	2	0.468,0.486
 places	full	pg_search	x2	top	p50_ms	2.06	2	2.12	ms	0.059	2	2.116,1.998
 places	full	pg_search	x2	top	p95_ms	2.54	2.29	2.79	ms	0.2475	2	2.788,2.293
 places	full	pg_textsearch	x2	top	p50_ms	2.85	2.71	2.98	ms	0.131	2	2.977,2.715
@@ -128,8 +110,6 @@ places	full	sift	x2	top	p50_ms	0.203	0.187	0.234	ms	0.0138	3	0.203,0.234,0.187
 places	full	sift	x2	top	p95_ms	0.466	0.449	0.528	ms	0.02401	3	0.466,0.528,0.449
 places	full	sift_nopos	p1	boost	p50_ms	0.348	0.312	0.401	ms	0.02585	3	0.348,0.401,0.312
 places	full	sift_nopos	p1	boost	p95_ms	0.481	0.406	0.563	ms	0.04534	3	0.481,0.563,0.406
-places	full	sift_pairs	p1	boost	p50_ms	0.334	0.308	0.382	ms	0.02167	3	0.382,0.334,0.308
-places	full	sift_pairs	p1	boost	p95_ms	0.514	0.409	0.548	ms	0.04183	3	0.548,0.514,0.409
 places	full	pg_search	p1	boost	p50_ms	3	2.98	3.02	ms	0.021	2	2.976,3.018
 places	full	pg_search	p1	boost	p95_ms	5.34	5.33	5.34	ms	0.004	2	5.343,5.335
 places	full	pg_textsearch	p1	boost	p50_ms	3107.6	3078.85	3136.35	ms	28.75	2	3136.35,3078.85
@@ -142,8 +122,6 @@ places	full	sift	p1	boost	p50_ms	0.321	0.31	0.431	ms	0.03863	3	0.431,0.321,0.31
 places	full	sift	p1	boost	p95_ms	0.434	0.399	0.767	ms	0.1173	3	0.767,0.434,0.399
 places	full	sift_nopos	p2	boost	p50_ms	0.452	0.442	0.588	ms	0.04709	3	0.588,0.452,0.442
 places	full	sift_nopos	p2	boost	p95_ms	0.622	0.618	1.02	ms	0.1343	3	1.023,0.622,0.618
-places	full	sift_pairs	p2	boost	p50_ms	0.463	0.452	0.474	ms	0.011	2	0.474,0.452
-places	full	sift_pairs	p2	boost	p95_ms	0.667	0.609	0.725	ms	0.058	2	0.725,0.609
 places	full	pg_search	p2	boost	p50_ms	2.98	2.94	3.01	ms	0.034	2	3.01,2.942
 places	full	pg_search	p2	boost	p95_ms	4.53	4.45	4.61	ms	0.0805	2	4.609,4.448
 places	full	pg_textsearch	p2	boost	p50_ms	257.32	256.11	258.53	ms	1.21	2	258.527,256.106
@@ -156,8 +134,6 @@ places	full	sift	p2	boost	p50_ms	0.461	0.459	0.463	ms	0.002	2	0.463,0.459
 places	full	sift	p2	boost	p95_ms	0.6785	0.645	0.712	ms	0.0335	2	0.712,0.645
 places	full	sift_nopos	p3	boost	p50_ms	0.336	0.324	0.348	ms	0.012	2	0.348,0.324
 places	full	sift_nopos	p3	boost	p95_ms	0.476	0.459	0.493	ms	0.017	2	0.493,0.459
-places	full	sift_pairs	p3	boost	p50_ms	0.3625	0.352	0.373	ms	0.0105	2	0.352,0.373
-places	full	sift_pairs	p3	boost	p95_ms	0.552	0.511	0.593	ms	0.041	2	0.511,0.593
 places	full	pg_search	p3	boost	p50_ms	2.59	2.57	2.61	ms	0.024	2	2.566,2.614
 places	full	pg_search	p3	boost	p95_ms	4.49	4.46	4.51	ms	0.021	2	4.506,4.464
 places	full	pg_textsearch	p3	boost	p50_ms	21.03	20.96	21.09	ms	0.0655	2	20.962,21.093
@@ -170,8 +146,6 @@ places	full	sift	p3	boost	p50_ms	0.327	0.326	0.369	ms	0.01417	3	0.369,0.327,0.32
 places	full	sift	p3	boost	p95_ms	0.477	0.475	0.54	ms	0.02134	3	0.54,0.477,0.475
 places	full	sift_nopos	p4	boost	p50_ms	0.367	0.333	0.424	ms	0.02655	3	0.424,0.367,0.333
 places	full	sift_nopos	p4	boost	p95_ms	2.92	2.85	3.57	ms	0.2279	3	3.567,2.921,2.851
-places	full	sift_pairs	p4	boost	p50_ms	0.386	0.379	0.441	ms	0.0196	3	0.441,0.379,0.386
-places	full	sift_pairs	p4	boost	p95_ms	3.26	3.22	3.79	ms	0.1819	3	3.785,3.256,3.224
 places	full	pg_search	p4	boost	p50_ms	2.36	2.25	2.47	ms	0.11	2	2.471,2.251
 places	full	pg_search	p4	boost	p95_ms	3.7	3.22	4.17	ms	0.478	2	4.175,3.219
 places	full	pg_textsearch	p4	boost	p50_ms	5.71	5.66	5.75	ms	0.0455	2	5.754,5.663
@@ -184,8 +158,6 @@ places	full	sift	p4	boost	p50_ms	0.408	0.358	0.421	ms	0.0192	3	0.408,0.358,0.421
 places	full	sift	p4	boost	p95_ms	3.39	2.89	3.51	ms	0.1915	3	3.514,2.888,3.391
 places	full	sift_nopos	w1	boost	p50_ms	0.17	0.167	0.173	ms	0.003	2	0.173,0.167
 places	full	sift_nopos	w1	boost	p95_ms	0.4595	0.445	0.474	ms	0.0145	2	0.474,0.445
-places	full	sift_pairs	w1	boost	p50_ms	0.17	0.165	0.175	ms	0.005	2	0.175,0.165
-places	full	sift_pairs	w1	boost	p95_ms	0.457	0.446	0.468	ms	0.011	2	0.468,0.446
 places	full	pg_search	w1	boost	p50_ms	2.43	2.41	2.44	ms	0.0145	2	2.44,2.411
 places	full	pg_search	w1	boost	p95_ms	3.29	3.23	3.34	ms	0.0565	2	3.343,3.23
 places	full	pg_textsearch	w1	boost	p50_ms	2.84	2.82	2.87	ms	0.025	2	2.866,2.816
@@ -198,8 +170,6 @@ places	full	sift	w1	boost	p50_ms	0.1705	0.17	0.171	ms	0.0005	2	0.171,0.17
 places	full	sift	w1	boost	p95_ms	0.4675	0.465	0.47	ms	0.0025	2	0.47,0.465
 places	full	sift_nopos	a2	boost	p50_ms	0.223	0.215	0.231	ms	0.008	2	0.231,0.215
 places	full	sift_nopos	a2	boost	p95_ms	0.844	0.811	0.877	ms	0.033	2	0.877,0.811
-places	full	sift_pairs	a2	boost	p50_ms	0.217	0.211	0.223	ms	0.006	2	0.223,0.211
-places	full	sift_pairs	a2	boost	p95_ms	0.7545	0.708	0.801	ms	0.0465	2	0.801,0.708
 places	full	pg_search	a2	boost	p50_ms	3.28	3.21	3.34	ms	0.066	2	3.342,3.21
 places	full	pg_search	a2	boost	p95_ms	4.12	3.83	4.4	ms	0.288	2	4.404,3.828
 places	full	pg_textsearch	a2	boost	p50_ms	2.84	2.8	2.88	ms	0.039	2	2.875,2.797
@@ -212,8 +182,6 @@ places	full	sift	a2	boost	p50_ms	0.228	0.218	0.238	ms	0.01	2	0.238,0.218
 places	full	sift	a2	boost	p95_ms	0.8155	0.754	0.877	ms	0.0615	2	0.877,0.754
 places	full	sift_nopos	a2s	boost	p50_ms	0.2115	0.21	0.213	ms	0.0015	2	0.213,0.21
 places	full	sift_nopos	a2s	boost	p95_ms	0.7895	0.77	0.809	ms	0.0195	2	0.809,0.77
-places	full	sift_pairs	a2s	boost	p50_ms	0.216	0.21	0.222	ms	0.006	2	0.222,0.21
-places	full	sift_pairs	a2s	boost	p95_ms	0.7985	0.778	0.819	ms	0.0205	2	0.819,0.778
 places	full	pg_search	a2s	boost	p50_ms	2.89	2.87	2.92	ms	0.024	2	2.916,2.868
 places	full	pg_search	a2s	boost	p95_ms	3.78	3.64	3.92	ms	0.138	2	3.915,3.639
 places	full	pg_textsearch	a2s	boost	p50_ms	2.85	2.77	2.92	ms	0.077	2	2.923,2.769
@@ -226,8 +194,6 @@ places	full	sift	a2s	boost	p50_ms	0.22	0.216	0.224	ms	0.004	2	0.224,0.216
 places	full	sift	a2s	boost	p95_ms	0.804	0.791	0.817	ms	0.013	2	0.817,0.791
 places	full	sift_nopos	a3	boost	p50_ms	0.2525	0.251	0.254	ms	0.0015	2	0.251,0.254
 places	full	sift_nopos	a3	boost	p95_ms	0.8735	0.846	0.901	ms	0.0275	2	0.901,0.846
-places	full	sift_pairs	a3	boost	p50_ms	0.2645	0.262	0.267	ms	0.0025	2	0.262,0.267
-places	full	sift_pairs	a3	boost	p95_ms	0.913	0.882	0.944	ms	0.031	2	0.944,0.882
 places	full	pg_search	a3	boost	p50_ms	5.61	5.4	5.81	ms	0.205	2	5.401,5.811
 places	full	pg_search	a3	boost	p95_ms	7.25	6.77	7.72	ms	0.4775	2	6.768,7.723
 places	full	pg_textsearch	a3	boost	p50_ms	2.87	2.81	2.93	ms	0.0595	2	2.814,2.933
@@ -240,8 +206,6 @@ places	full	sift	a3	boost	p50_ms	0.254	0.247	0.261	ms	0.007	2	0.247,0.261
 places	full	sift	a3	boost	p95_ms	0.858	0.855	0.861	ms	0.003	2	0.861,0.855
 places	full	sift_nopos	x2	boost	p50_ms	0.2355	0.232	0.239	ms	0.0035	2	0.232,0.239
 places	full	sift_nopos	x2	boost	p95_ms	0.7805	0.765	0.796	ms	0.0155	2	0.796,0.765
-places	full	sift_pairs	x2	boost	p50_ms	0.229	0.226	0.251	ms	0.007881	3	0.251,0.226,0.229
-places	full	sift_pairs	x2	boost	p95_ms	0.738	0.715	0.852	ms	0.04236	3	0.852,0.715,0.738
 places	full	pg_search	x2	boost	p50_ms	4	3.93	4.07	ms	0.0685	2	4.071,3.934
 places	full	pg_search	x2	boost	p95_ms	4.97	4.57	5.37	ms	0.4005	2	5.374,4.573
 places	full	pg_textsearch	x2	boost	p50_ms	2.9	2.83	2.96	ms	0.0625	2	2.958,2.833
@@ -254,8 +218,6 @@ places	full	sift	x2	boost	p50_ms	0.239	0.23	0.248	ms	0.009	2	0.248,0.23
 places	full	sift	x2	boost	p95_ms	0.781	0.712	0.85	ms	0.069	2	0.85,0.712
 places	full	sift_nopos	p1	filter	p50_ms	6.94	6.53	8.15	ms	0.488	3	8.153,6.526,6.942
 places	full	sift_nopos	p1	filter	p95_ms	11.68	11.55	14.58	ms	0.9891	3	14.58,11.676,11.553
-places	full	sift_pairs	p1	filter	p50_ms	6.85	6.72	6.98	ms	0.133	2	6.717,6.983
-places	full	sift_pairs	p1	filter	p95_ms	11.62	11.35	11.88	ms	0.266	2	11.884,11.352
 places	full	pg_textsearch	p1	filter	p50_ms	238.21	234.77	241.65	ms	3.439	2	234.774,241.651
 places	full	pg_textsearch	p1	filter	p95_ms	314.7	311.43	317.98	ms	3.274	2	311.428,317.975
 places	full	rum	p1	filter	p50_ms	101.32	100.85	101.78	ms	0.4665	2	100.851,101.784
@@ -266,8 +228,6 @@ places	full	sift	p1	filter	p50_ms	5.85	5.32	7.6	ms	0.6879	3	7.596,5.854,5.317
 places	full	sift	p1	filter	p95_ms	10.38	10.09	12.7	ms	0.8277	3	12.701,10.086,10.375
 places	full	sift_nopos	p2	filter	p50_ms	1.96	1.88	2.05	ms	0.084	2	1.88,2.048
 places	full	sift_nopos	p2	filter	p95_ms	4.35	4.22	4.47	ms	0.1285	2	4.218,4.475
-places	full	sift_pairs	p2	filter	p50_ms	1.65	1.64	1.67	ms	0.016	2	1.668,1.636
-places	full	sift_pairs	p2	filter	p95_ms	4.24	3.84	4.65	ms	0.4055	2	4.648,3.837
 places	full	pg_search	p2	filter	p50_ms	5.53	5.41	5.64	ms	0.112	2	5.637,5.413
 places	full	pg_search	p2	filter	p95_ms	8.73	8.46	8.99	ms	0.263	2	8.99,8.464
 places	full	pg_textsearch	p2	filter	p50_ms	73.19	70.11	81.59	ms	3.43	3	81.592,73.188,70.114
@@ -280,8 +240,6 @@ places	full	sift	p2	filter	p50_ms	1.61	1.45	1.86	ms	0.1194	3	1.857,1.61,1.446
 places	full	sift	p2	filter	p95_ms	3.77	3.58	4.34	ms	0.2276	3	4.342,3.775,3.584
 places	full	sift_nopos	p3	filter	p50_ms	0.4665	0.45	0.483	ms	0.0165	2	0.45,0.483
 places	full	sift_nopos	p3	filter	p95_ms	2.4	2.06	2.73	ms	0.3335	2	2.064,2.731
-places	full	sift_pairs	p3	filter	p50_ms	0.508	0.496	0.52	ms	0.012	2	0.496,0.52
-places	full	sift_pairs	p3	filter	p95_ms	2.74	2.47	3.01	ms	0.272	2	2.469,3.013
 places	full	pg_search	p3	filter	p50_ms	5.54	5.53	5.54	ms	0.008	2	5.543,5.527
 places	full	pg_search	p3	filter	p95_ms	9.56	9.27	9.85	ms	0.2875	2	9.27,9.845
 places	full	pg_textsearch	p3	filter	p50_ms	7.12	7.04	7.19	ms	0.0755	2	7.041,7.192
@@ -294,8 +252,6 @@ places	full	sift	p3	filter	p50_ms	0.51	0.382	0.575	ms	0.0567	3	0.575,0.51,0.382
 places	full	sift	p3	filter	p95_ms	2.9	1.48	3.21	ms	0.5326	3	3.207,2.9,1.478
 places	full	sift_nopos	p4	filter	p50_ms	0.2845	0.275	0.294	ms	0.0095	2	0.294,0.275
 places	full	sift_nopos	p4	filter	p95_ms	2.84	2.8	2.88	ms	0.0415	2	2.883,2.8
-places	full	sift_pairs	p4	filter	p50_ms	0.293	0.284	0.302	ms	0.009	2	0.284,0.302
-places	full	sift_pairs	p4	filter	p95_ms	2.91	2.87	2.95	ms	0.0405	2	2.868,2.949
 places	full	pg_search	p4	filter	p50_ms	4.54	4.01	5.17	ms	0.3377	3	4.535,5.174,4.006
 places	full	pg_search	p4	filter	p95_ms	6.13	5.36	6.57	ms	0.3529	3	6.135,6.57,5.363
 places	full	pg_textsearch	p4	filter	p50_ms	2.91	2.83	2.98	ms	0.0795	2	2.985,2.826
@@ -308,8 +264,6 @@ places	full	sift	p4	filter	p50_ms	0.306	0.297	0.315	ms	0.009	2	0.315,0.297
 places	full	sift	p4	filter	p95_ms	2.88	2.85	2.9	ms	0.029	2	2.905,2.847
 places	full	sift_nopos	w1	filter	p50_ms	0.169	0.167	0.171	ms	0.002	2	0.167,0.171
 places	full	sift_nopos	w1	filter	p95_ms	1.31	1.31	1.31	ms	0.0015	2	1.311,1.314
-places	full	sift_pairs	w1	filter	p50_ms	0.154	0.152	0.156	ms	0.002	2	0.156,0.152
-places	full	sift_pairs	w1	filter	p95_ms	1.27	1.25	1.3	ms	0.025	2	1.248,1.298
 places	full	pg_search	w1	filter	p50_ms	4.95	4.81	5.09	ms	0.142	2	5.094,4.81
 places	full	pg_search	w1	filter	p95_ms	6.87	6.08	7.66	ms	0.7865	2	7.655,6.082
 places	full	pg_textsearch	w1	filter	p50_ms	2.41	2.39	2.44	ms	0.0285	2	2.443,2.386
@@ -322,8 +276,6 @@ places	full	sift	w1	filter	p50_ms	0.1625	0.161	0.164	ms	0.0015	2	0.161,0.164
 places	full	sift	w1	filter	p95_ms	1.33	1.29	1.36	ms	0.0395	2	1.365,1.286
 places	full	sift_nopos	a2	filter	p50_ms	0.186	0.166	0.224	ms	0.01701	3	0.224,0.186,0.166
 places	full	sift_nopos	a2	filter	p95_ms	0.713	0.641	0.81	ms	0.04896	3	0.81,0.713,0.641
-places	full	sift_pairs	a2	filter	p50_ms	0.1955	0.193	0.198	ms	0.0025	2	0.193,0.198
-places	full	sift_pairs	a2	filter	p95_ms	0.7235	0.718	0.729	ms	0.0055	2	0.718,0.729
 places	full	pg_search	a2	filter	p50_ms	5.28	4.72	5.92	ms	0.3473	3	5.921,5.279,4.719
 places	full	pg_search	a2	filter	p95_ms	7.03	5.55	7.17	ms	0.5184	3	7.171,7.032,5.551
 places	full	pg_textsearch	a2	filter	p50_ms	2.46	2.43	2.49	ms	0.0285	2	2.432,2.489
@@ -336,8 +288,6 @@ places	full	sift	a2	filter	p50_ms	0.208	0.17	0.274	ms	0.03038	3	0.274,0.208,0.17
 places	full	sift	a2	filter	p95_ms	0.761	0.648	0.887	ms	0.06903	3	0.887,0.761,0.648
 places	full	sift_nopos	a2s	filter	p50_ms	0.1855	0.182	0.189	ms	0.0035	2	0.182,0.189
 places	full	sift_nopos	a2s	filter	p95_ms	1.03	1.02	1.04	ms	0.011	2	1.04,1.018
-places	full	sift_pairs	a2s	filter	p50_ms	0.195	0.166	0.253	ms	0.02558	3	0.253,0.195,0.166
-places	full	sift_pairs	a2s	filter	p95_ms	1.04	0.926	1.28	ms	0.1041	3	1.28,1.043,0.926
 places	full	pg_search	a2s	filter	p50_ms	5.55	4.96	7.48	ms	0.7591	3	7.476,4.963,5.549
 places	full	pg_search	a2s	filter	p95_ms	7.06	6.58	8.68	ms	0.6359	3	8.68,6.576,7.063
 places	full	pg_textsearch	a2s	filter	p50_ms	2.53	2.51	2.55	ms	0.0185	2	2.548,2.511
@@ -350,8 +300,6 @@ places	full	sift	a2s	filter	p50_ms	0.1835	0.183	0.184	ms	0.0005	2	0.183,0.184
 places	full	sift	a2s	filter	p95_ms	1.07	1.05	1.09	ms	0.018	2	1.088,1.052
 places	full	sift_nopos	a3	filter	p50_ms	0.2015	0.2	0.203	ms	0.0015	2	0.2,0.203
 places	full	sift_nopos	a3	filter	p95_ms	0.377	0.375	0.379	ms	0.002	2	0.379,0.375
-places	full	sift_pairs	a3	filter	p50_ms	0.1985	0.198	0.199	ms	0.0005	2	0.199,0.198
-places	full	sift_pairs	a3	filter	p95_ms	0.383	0.369	0.397	ms	0.014	2	0.397,0.369
 places	full	pg_search	a3	filter	p50_ms	6.11	6.08	7.16	ms	0.3566	3	7.16,6.106,6.075
 places	full	pg_search	a3	filter	p95_ms	7.71	7.52	10.11	ms	0.8336	3	10.11,7.521,7.708
 places	full	pg_textsearch	a3	filter	p50_ms	2.42	2.42	2.43	ms	0.006	2	2.43,2.418
@@ -364,8 +312,6 @@ places	full	sift	a3	filter	p50_ms	0.2105	0.203	0.218	ms	0.0075	2	0.218,0.203
 places	full	sift	a3	filter	p95_ms	0.421	0.386	0.456	ms	0.035	2	0.456,0.386
 places	full	sift_nopos	x2	filter	p50_ms	0.1975	0.189	0.206	ms	0.0085	2	0.206,0.189
 places	full	sift_nopos	x2	filter	p95_ms	0.612	0.567	0.657	ms	0.045	2	0.657,0.567
-places	full	sift_pairs	x2	filter	p50_ms	0.202	0.19	0.262	ms	0.02227	3	0.262,0.202,0.19
-places	full	sift_pairs	x2	filter	p95_ms	0.609	0.571	0.805	ms	0.0725	3	0.805,0.609,0.571
 places	full	pg_search	x2	filter	p50_ms	5.76	5.52	6	ms	0.242	2	6.003,5.519
 places	full	pg_search	x2	filter	p95_ms	7.25	6.54	7.95	ms	0.705	2	7.952,6.542
 places	full	pg_textsearch	x2	filter	p50_ms	2.4	2.39	2.41	ms	0.0105	2	2.393,2.414
@@ -378,8 +324,6 @@ places	full	sift	x2	filter	p50_ms	0.19	0.189	0.191	ms	0.001	2	0.191,0.189
 places	full	sift	x2	filter	p95_ms	0.5875	0.571	0.604	ms	0.0165	2	0.604,0.571
 places	full	sift_nopos	p1	count	p50_ms	0.1215	0.121	0.122	ms	0.0005	2	0.121,0.122
 places	full	sift_nopos	p1	count	p95_ms	0.172	0.168	0.176	ms	0.004	2	0.176,0.168
-places	full	sift_pairs	p1	count	p50_ms	0.121	0.119	0.123	ms	0.002	2	0.119,0.123
-places	full	sift_pairs	p1	count	p95_ms	0.1865	0.166	0.207	ms	0.0205	2	0.166,0.207
 places	full	pg_search	p1	count	p50_ms	0.6765	0.67	0.683	ms	0.0065	2	0.683,0.67
 places	full	pg_search	p1	count	p95_ms	0.7775	0.776	0.779	ms	0.0015	2	0.779,0.776
 places	full	pg_textsearch	p1	count	p50_ms	454.9	440.63	469.17	ms	14.27	2	469.168,440.627
@@ -392,8 +336,6 @@ places	full	sift	p1	count	p50_ms	0.1255	0.125	0.126	ms	0.0005	2	0.125,0.126
 places	full	sift	p1	count	p95_ms	0.2045	0.202	0.207	ms	0.0025	2	0.207,0.202
 places	full	sift_nopos	p2	count	p50_ms	0.1355	0.135	0.136	ms	0.0005	2	0.135,0.136
 places	full	sift_nopos	p2	count	p95_ms	0.2095	0.203	0.216	ms	0.0065	2	0.203,0.216
-places	full	sift_pairs	p2	count	p50_ms	0.135	0.133	0.137	ms	0.002	2	0.137,0.133
-places	full	sift_pairs	p2	count	p95_ms	0.197	0.179	0.215	ms	0.018	2	0.215,0.179
 places	full	pg_search	p2	count	p50_ms	1.01	1	1.02	ms	0.008	2	1.018,1.002
 places	full	pg_search	p2	count	p95_ms	1.25	1.22	1.28	ms	0.0305	2	1.279,1.218
 places	full	pg_textsearch	p2	count	p50_ms	97.85	97.28	98.43	ms	0.5745	2	98.426,97.277
@@ -406,8 +348,6 @@ places	full	sift	p2	count	p50_ms	0.137	0.136	0.303	ms	0.0555	3	0.303,0.136,0.137
 places	full	sift	p2	count	p95_ms	0.219	0.191	0.767	ms	0.1875	3	0.767,0.191,0.219
 places	full	sift_nopos	p3	count	p50_ms	0.149	0.112	0.245	ms	0.03963	3	0.245,0.149,0.112
 places	full	sift_nopos	p3	count	p95_ms	0.276	0.168	0.598	ms	0.1292	3	0.598,0.276,0.168
-places	full	sift_pairs	p3	count	p50_ms	0.115	0.113	0.247	ms	0.04434	3	0.247,0.113,0.115
-places	full	sift_pairs	p3	count	p95_ms	0.193	0.16	0.62	ms	0.1481	3	0.62,0.16,0.193
 places	full	pg_search	p3	count	p50_ms	1.12	1.09	2.34	ms	0.4118	3	2.338,1.12,1.086
 places	full	pg_search	p3	count	p95_ms	1.28	1.25	4.1	ms	0.9447	3	4.101,1.28,1.254
 places	full	pg_textsearch	p3	count	p50_ms	6.28	6.23	9.44	ms	1.063	3	9.444,6.231,6.279
@@ -420,8 +360,6 @@ places	full	sift	p3	count	p50_ms	0.115	0.113	0.117	ms	0.002	2	0.113,0.117
 places	full	sift	p3	count	p95_ms	0.176	0.173	0.179	ms	0.003	2	0.173,0.179
 places	full	sift_nopos	p4	count	p50_ms	0.132	0.132	0.147	ms	0.005	3	0.147,0.132,0.132
 places	full	sift_nopos	p4	count	p95_ms	0.497	0.478	0.57	ms	0.02804	3	0.57,0.497,0.478
-places	full	sift_pairs	p4	count	p50_ms	0.139	0.137	0.204	ms	0.02201	3	0.139,0.204,0.137
-places	full	sift_pairs	p4	count	p95_ms	0.54	0.502	0.691	ms	0.05772	3	0.54,0.691,0.502
 places	full	pg_search	p4	count	p50_ms	1.25	1.23	1.27	ms	0.021	2	1.233,1.275
 places	full	pg_search	p4	count	p95_ms	1.48	1.47	1.48	ms	0.009	2	1.484,1.466
 places	full	pg_textsearch	p4	count	p50_ms	1.38	1.3	1.45	ms	0.04285	3	1.299,1.447,1.383
@@ -434,8 +372,6 @@ places	full	sift	p4	count	p50_ms	0.138	0.133	0.161	ms	0.008622	3	0.161,0.138,0.1
 places	full	sift	p4	count	p95_ms	0.513	0.509	0.787	ms	0.09201	3	0.787,0.513,0.509
 places	full	sift_nopos	w1	count	p50_ms	0.1195	0.117	0.122	ms	0.0025	2	0.122,0.117
 places	full	sift_nopos	w1	count	p95_ms	0.2885	0.251	0.326	ms	0.0375	2	0.326,0.251
-places	full	sift_pairs	w1	count	p50_ms	0.126	0.125	0.127	ms	0.001	2	0.125,0.127
-places	full	sift_pairs	w1	count	p95_ms	0.2965	0.276	0.317	ms	0.0205	2	0.317,0.276
 places	full	pg_search	w1	count	p50_ms	1.78	1.75	1.8	ms	0.029	2	1.805,1.747
 places	full	pg_search	w1	count	p95_ms	3.29	2.49	4.08	ms	0.795	2	4.08,2.49
 places	full	pg_textsearch	w1	count	p50_ms	0.7875	0.782	0.793	ms	0.0055	2	0.782,0.793
@@ -448,8 +384,6 @@ places	full	sift	w1	count	p50_ms	0.112	0.108	0.131	ms	0.007095	3	0.112,0.131,0.1
 places	full	sift	w1	count	p95_ms	0.224	0.192	0.28	ms	0.02572	3	0.224,0.28,0.192
 places	full	sift_nopos	a2	count	p50_ms	0.137	0.131	0.143	ms	0.006	2	0.143,0.131
 places	full	sift_nopos	a2	count	p95_ms	0.2835	0.259	0.308	ms	0.0245	2	0.308,0.259
-places	full	sift_pairs	a2	count	p50_ms	0.1485	0.147	0.15	ms	0.0015	2	0.15,0.147
-places	full	sift_pairs	a2	count	p95_ms	0.3075	0.302	0.313	ms	0.0055	2	0.302,0.313
 places	full	pg_search	a2	count	p50_ms	1.97	1.96	2.21	ms	0.08213	3	2.21,1.972,1.956
 places	full	pg_search	a2	count	p95_ms	2.65	2.62	3.02	ms	0.1271	3	3.018,2.651,2.624
 places	full	pg_textsearch	a2	count	p50_ms	2.09	2.05	2.13	ms	0.043	2	2.046,2.132
@@ -462,8 +396,6 @@ places	full	sift	a2	count	p50_ms	0.128	0.123	0.133	ms	0.005	2	0.133,0.123
 places	full	sift	a2	count	p95_ms	0.2455	0.231	0.26	ms	0.0145	2	0.26,0.231
 places	full	sift_nopos	a2s	count	p50_ms	0.132	0.125	0.159	ms	0.01037	3	0.132,0.159,0.125
 places	full	sift_nopos	a2s	count	p95_ms	0.252	0.223	0.321	ms	0.02907	3	0.252,0.321,0.223
-places	full	sift_pairs	a2s	count	p50_ms	0.1305	0.127	0.134	ms	0.0035	2	0.134,0.127
-places	full	sift_pairs	a2s	count	p95_ms	0.252	0.235	0.269	ms	0.017	2	0.269,0.235
 places	full	pg_search	a2s	count	p50_ms	1.79	1.75	1.84	ms	0.048	2	1.841,1.745
 places	full	pg_search	a2s	count	p95_ms	2.4	2.33	2.47	ms	0.0675	2	2.469,2.334
 places	full	pg_textsearch	a2s	count	p50_ms	9.71	9.46	9.96	ms	0.2525	2	9.965,9.46
@@ -476,8 +408,6 @@ places	full	sift	a2s	count	p50_ms	0.137	0.134	0.14	ms	0.003	2	0.14,0.134
 places	full	sift	a2s	count	p95_ms	0.2755	0.27	0.281	ms	0.0055	2	0.281,0.27
 places	full	sift_nopos	a3	count	p50_ms	0.153	0.149	0.157	ms	0.004	2	0.157,0.149
 places	full	sift_nopos	a3	count	p95_ms	0.2765	0.259	0.294	ms	0.0175	2	0.294,0.259
-places	full	sift_pairs	a3	count	p50_ms	0.152	0.15	0.177	ms	0.008686	3	0.177,0.152,0.15
-places	full	sift_pairs	a3	count	p95_ms	0.25	0.247	0.343	ms	0.03151	3	0.343,0.247,0.25
 places	full	pg_search	a3	count	p50_ms	3.81	3.73	3.9	ms	0.081	2	3.895,3.733
 places	full	pg_search	a3	count	p95_ms	4.95	4.93	4.96	ms	0.014	2	4.963,4.935
 places	full	pg_textsearch	a3	count	p50_ms	0.819	0.795	0.843	ms	0.024	2	0.843,0.795
@@ -490,8 +420,6 @@ places	full	sift	a3	count	p50_ms	0.164	0.149	0.192	ms	0.0126	3	0.164,0.192,0.149
 places	full	sift	a3	count	p95_ms	0.279	0.254	0.333	ms	0.02331	3	0.279,0.333,0.254
 places	full	sift_nopos	x2	count	p50_ms	0.142	0.136	0.166	ms	0.009165	3	0.166,0.142,0.136
 places	full	sift_nopos	x2	count	p95_ms	0.265	0.238	0.301	ms	0.01825	3	0.301,0.265,0.238
-places	full	sift_pairs	x2	count	p50_ms	0.1595	0.154	0.165	ms	0.0055	2	0.154,0.165
-places	full	sift_pairs	x2	count	p95_ms	0.315	0.281	0.349	ms	0.034	2	0.281,0.349
 places	full	pg_search	x2	count	p50_ms	2.72	2.65	2.78	ms	0.0645	2	2.782,2.653
 places	full	pg_search	x2	count	p95_ms	3.51	3.51	3.51	ms	0.0025	2	3.513,3.508
 places	full	pg_textsearch	x2	count	p50_ms	0.764	0.735	0.838	ms	0.03066	3	0.838,0.735,0.764
@@ -504,8 +432,6 @@ places	full	sift	x2	count	p50_ms	0.1525	0.146	0.159	ms	0.0065	2	0.159,0.146
 places	full	sift	x2	count	p95_ms	0.2855	0.27	0.301	ms	0.0155	2	0.301,0.27
 places	full	sift_nopos	p1	scan	p50_ms	11.72	8.37	13.19	ms	1.425	3	13.188,8.373,11.722
 places	full	sift_nopos	p1	scan	p95_ms	19.96	16.23	20.67	ms	1.378	3	20.67,16.227,19.962
-places	full	sift_pairs	p1	scan	p50_ms	12.56	12.28	12.84	ms	0.2805	2	12.279,12.84
-places	full	sift_pairs	p1	scan	p95_ms	20.29	20.08	20.49	ms	0.207	2	20.493,20.079
 places	full	pg_search	p1	scan	p50_ms	16.1	15.8	16.4	ms	0.304	2	16.404,15.796
 places	full	pg_search	p1	scan	p95_ms	26.24	25.41	27.07	ms	0.8295	2	27.072,25.413
 places	full	pg_textsearch	p1	scan	p50_ms	451.23	446.81	455.66	ms	4.428	2	455.662,446.805
@@ -518,8 +444,6 @@ places	full	sift	p1	scan	p50_ms	11.15	10.93	12.13	ms	0.3685	3	12.129,10.931,11.1
 places	full	sift	p1	scan	p95_ms	19.16	17.7	19.17	ms	0.4884	3	19.158,17.701,19.174
 places	full	sift_nopos	p2	scan	p50_ms	2.84	2.81	2.88	ms	0.038	2	2.883,2.807
 places	full	sift_nopos	p2	scan	p95_ms	6.99	6.68	7.31	ms	0.3155	2	7.309,6.678
-places	full	sift_pairs	p2	scan	p50_ms	2.1	2	2.93	ms	0.2943	3	2.932,2.002,2.105
-places	full	sift_pairs	p2	scan	p95_ms	6.27	5.74	7.5	ms	0.521	3	7.503,5.744,6.274
 places	full	pg_search	p2	scan	p50_ms	4.12	3.66	5.28	ms	0.4817	3	5.282,3.662,4.125
 places	full	pg_search	p2	scan	p95_ms	8.72	7.95	10.4	ms	0.7248	3	10.403,7.948,8.72
 places	full	pg_textsearch	p2	scan	p50_ms	94.97	94.37	95.58	ms	0.6015	2	95.576,94.373
@@ -532,8 +456,6 @@ places	full	sift	p2	scan	p50_ms	2.6	2.21	2.98	ms	0.2211	3	2.977,2.596,2.211
 places	full	sift	p2	scan	p95_ms	6.64	6.05	7.41	ms	0.3922	3	7.408,6.643,6.053
 places	full	sift_nopos	p3	scan	p50_ms	0.442	0.392	0.519	ms	0.03694	3	0.519,0.442,0.392
 places	full	sift_nopos	p3	scan	p95_ms	2.51	2.02	3.16	ms	0.3277	3	3.156,2.506,2.025
-places	full	sift_pairs	p3	scan	p50_ms	0.445	0.411	0.493	ms	0.02379	3	0.493,0.445,0.411
-places	full	sift_pairs	p3	scan	p95_ms	2.65	2.45	2.84	ms	0.114	3	2.844,2.648,2.449
 places	full	pg_search	p3	scan	p50_ms	1.78	1.7	1.86	ms	0.0805	2	1.859,1.698
 places	full	pg_search	p3	scan	p95_ms	5.36	5.2	5.53	ms	0.1615	2	5.525,5.202
 places	full	pg_textsearch	p3	scan	p50_ms	6.51	6.33	6.68	ms	0.1765	2	6.685,6.332
@@ -546,8 +468,6 @@ places	full	sift	p3	scan	p50_ms	0.418	0.356	0.435	ms	0.02401	3	0.435,0.356,0.418
 places	full	sift	p3	scan	p95_ms	2.23	1.89	2.52	ms	0.1817	3	2.523,1.894,2.226
 places	full	sift_nopos	p4	scan	p50_ms	0.196	0.187	0.205	ms	0.009	2	0.205,0.187
 places	full	sift_nopos	p4	scan	p95_ms	1.65	1.53	1.78	ms	0.1235	2	1.776,1.529
-places	full	sift_pairs	p4	scan	p50_ms	0.1965	0.193	0.2	ms	0.0035	2	0.193,0.2
-places	full	sift_pairs	p4	scan	p95_ms	1.71	1.67	1.74	ms	0.0325	2	1.673,1.738
 places	full	pg_search	p4	scan	p50_ms	1.19	1.16	1.23	ms	0.035	2	1.229,1.159
 places	full	pg_search	p4	scan	p95_ms	3.29	3.18	3.39	ms	0.1055	2	3.394,3.183
 places	full	pg_textsearch	p4	scan	p50_ms	1.35	1.29	1.42	ms	0.066	2	1.421,1.289
@@ -560,8 +480,6 @@ places	full	sift	p4	scan	p50_ms	0.193	0.192	0.194	ms	0.001	2	0.192,0.194
 places	full	sift	p4	scan	p95_ms	1.6	1.59	1.62	ms	0.016	2	1.618,1.586
 places	full	sift_nopos	w1	scan	p50_ms	0.122	0.12	0.124	ms	0.002	2	0.124,0.12
 places	full	sift_nopos	w1	scan	p95_ms	1.19	1.15	1.24	ms	0.0445	2	1.239,1.15
-places	full	sift_pairs	w1	scan	p50_ms	0.1245	0.123	0.126	ms	0.0015	2	0.126,0.123
-places	full	sift_pairs	w1	scan	p95_ms	1.29	1.16	1.42	ms	0.127	2	1.161,1.415
 places	full	pg_search	w1	scan	p50_ms	1.58	1.58	1.59	ms	0.0065	2	1.578,1.591
 places	full	pg_search	w1	scan	p95_ms	3.37	3.19	3.56	ms	0.1855	2	3.187,3.558
 places	full	pg_textsearch	w1	scan	p50_ms	0.798	0.757	0.9	ms	0.04251	3	0.9,0.798,0.757
@@ -574,8 +492,6 @@ places	full	sift	w1	scan	p50_ms	0.125	0.119	0.131	ms	0.006	2	0.131,0.119
 places	full	sift	w1	scan	p95_ms	1.25	1.11	1.39	ms	0.1405	2	1.387,1.106
 places	full	sift_nopos	a2	scan	p50_ms	0.144	0.13	0.145	ms	0.004842	3	0.145,0.13,0.144
 places	full	sift_nopos	a2	scan	p95_ms	0.611	0.576	0.624	ms	0.01433	3	0.611,0.576,0.624
-places	full	sift_pairs	a2	scan	p50_ms	0.1415	0.135	0.148	ms	0.0065	2	0.148,0.135
-places	full	sift_pairs	a2	scan	p95_ms	0.598	0.546	0.65	ms	0.052	2	0.65,0.546
 places	full	pg_search	a2	scan	p50_ms	1.82	1.77	1.87	ms	0.05	2	1.871,1.771
 places	full	pg_search	a2	scan	p95_ms	2.46	2.37	2.55	ms	0.092	2	2.552,2.368
 places	full	pg_textsearch	a2	scan	p50_ms	1.94	1.89	2	ms	0.054	2	1.996,1.888
@@ -588,8 +504,6 @@ places	full	sift	a2	scan	p50_ms	0.138	0.138	0.138	ms	0	2	0.138,0.138
 places	full	sift	a2	scan	p95_ms	0.5985	0.584	0.613	ms	0.0145	2	0.584,0.613
 places	full	sift_nopos	a2s	scan	p50_ms	0.149	0.144	0.16	ms	0.004726	3	0.16,0.144,0.149
 places	full	sift_nopos	a2s	scan	p95_ms	0.831	0.81	0.859	ms	0.01419	3	0.859,0.831,0.81
-places	full	sift_pairs	a2s	scan	p50_ms	0.149	0.133	0.151	ms	0.005696	3	0.151,0.133,0.149
-places	full	sift_pairs	a2s	scan	p95_ms	0.781	0.644	0.847	ms	0.05978	3	0.847,0.644,0.781
 places	full	pg_search	a2s	scan	p50_ms	1.7	1.66	1.74	ms	0.038	2	1.736,1.66
 places	full	pg_search	a2s	scan	p95_ms	2.6	2.46	2.74	ms	0.139	2	2.741,2.463
 places	full	pg_textsearch	a2s	scan	p50_ms	9.74	9.64	9.84	ms	0.1005	2	9.843,9.642
@@ -602,8 +516,6 @@ places	full	sift	a2s	scan	p50_ms	0.141	0.137	0.152	ms	0.004485	3	0.152,0.137,0.1
 places	full	sift	a2s	scan	p95_ms	0.766	0.746	0.805	ms	0.01732	3	0.805,0.766,0.746
 places	full	sift_nopos	a3	scan	p50_ms	0.156	0.15	0.162	ms	0.006	2	0.162,0.15
 places	full	sift_nopos	a3	scan	p95_ms	0.295	0.278	0.312	ms	0.017	2	0.312,0.278
-places	full	sift_pairs	a3	scan	p50_ms	0.151	0.15	0.194	ms	0.0145	3	0.194,0.15,0.151
-places	full	sift_pairs	a3	scan	p95_ms	0.275	0.266	0.363	ms	0.03094	3	0.363,0.275,0.266
 places	full	pg_search	a3	scan	p50_ms	3.47	3.31	3.63	ms	0.165	2	3.635,3.305
 places	full	pg_search	a3	scan	p95_ms	4.55	4.24	4.86	ms	0.311	2	4.86,4.238
 places	full	pg_textsearch	a3	scan	p50_ms	0.812	0.79	0.949	ms	0.04974	3	0.949,0.79,0.812
@@ -616,8 +528,6 @@ places	full	sift	a3	scan	p50_ms	0.156	0.152	0.16	ms	0.004	2	0.16,0.152
 places	full	sift	a3	scan	p95_ms	0.2915	0.29	0.293	ms	0.0015	2	0.293,0.29
 places	full	sift_nopos	x2	scan	p50_ms	0.1525	0.151	0.154	ms	0.0015	2	0.154,0.151
 places	full	sift_nopos	x2	scan	p95_ms	0.4675	0.435	0.5	ms	0.0325	2	0.5,0.435
-places	full	sift_pairs	x2	scan	p50_ms	0.1545	0.153	0.156	ms	0.0015	2	0.156,0.153
-places	full	sift_pairs	x2	scan	p95_ms	0.521	0.514	0.528	ms	0.007	2	0.514,0.528
 places	full	pg_search	x2	scan	p50_ms	2.51	2.49	2.52	ms	0.012	2	2.494,2.518
 places	full	pg_search	x2	scan	p95_ms	3.18	3.14	3.21	ms	0.035	2	3.144,3.214
 places	full	pg_textsearch	x2	scan	p50_ms	0.9615	0.93	0.993	ms	0.0315	2	0.993,0.93
@@ -635,8 +545,6 @@ places	full-cold	sift	p1	top	cold_p50_ms	0.51	0.51	0.51	ms	NA	1	0.51
 places	full-cold	sift	p1	top	cold_max_ms	0.61	0.61	0.61	ms	NA	1	0.61
 places	full-cold	sift_nopos	p1	top	cold_p50_ms	0.56	0.56	0.56	ms	NA	1	0.56
 places	full-cold	sift_nopos	p1	top	cold_max_ms	0.77	0.77	0.77	ms	NA	1	0.77
-places	full-cold	sift_pairs	p1	top	cold_p50_ms	0.60	0.60	0.60	ms	NA	1	0.60
-places	full-cold	sift_pairs	p1	top	cold_max_ms	0.86	0.86	0.86	ms	NA	1	0.86
 places	full-cold	pg_search	p1	top	cold_p50_ms	1.94	1.94	1.94	ms	NA	1	1.94
 places	full-cold	pg_search	p1	top	cold_max_ms	2.28	2.28	2.28	ms	NA	1	2.28
 places	full-cold	pg_textsearch	p1	top	cold_p50_ms	2023.78	2023.78	2023.78	ms	NA	1	2023.78
@@ -649,8 +557,6 @@ places	full-cold	sift	p2	top	cold_p50_ms	0.52	0.52	0.52	ms	NA	1	0.52
 places	full-cold	sift	p2	top	cold_max_ms	0.84	0.84	0.84	ms	NA	1	0.84
 places	full-cold	sift_nopos	p2	top	cold_p50_ms	0.49	0.49	0.49	ms	NA	1	0.49
 places	full-cold	sift_nopos	p2	top	cold_max_ms	0.96	0.96	0.96	ms	NA	1	0.96
-places	full-cold	sift_pairs	p2	top	cold_p50_ms	0.52	0.52	0.52	ms	NA	1	0.52
-places	full-cold	sift_pairs	p2	top	cold_max_ms	2.04	2.04	2.04	ms	NA	1	2.04
 places	full-cold	pg_search	p2	top	cold_p50_ms	2.04	2.04	2.04	ms	NA	1	2.04
 places	full-cold	pg_search	p2	top	cold_max_ms	3.07	3.07	3.07	ms	NA	1	3.07
 places	full-cold	pg_textsearch	p2	top	cold_p50_ms	400.74	400.74	400.74	ms	NA	1	400.74
@@ -663,8 +569,6 @@ places	full-cold	sift	a2	top	cold_p50_ms	0.19	0.19	0.19	ms	NA	1	0.19
 places	full-cold	sift	a2	top	cold_max_ms	2.12	2.12	2.12	ms	NA	1	2.12
 places	full-cold	sift_nopos	a2	top	cold_p50_ms	0.18	0.18	0.18	ms	NA	1	0.18
 places	full-cold	sift_nopos	a2	top	cold_max_ms	2.32	2.32	2.32	ms	NA	1	2.32
-places	full-cold	sift_pairs	a2	top	cold_p50_ms	0.19	0.19	0.19	ms	NA	1	0.19
-places	full-cold	sift_pairs	a2	top	cold_max_ms	2.38	2.38	2.38	ms	NA	1	2.38
 places	full-cold	pg_search	a2	top	cold_p50_ms	1.98	1.98	1.98	ms	NA	1	1.98
 places	full-cold	pg_search	a2	top	cold_max_ms	2.59	2.59	2.59	ms	NA	1	2.59
 places	full-cold	pg_textsearch	a2	top	cold_p50_ms	0.73	0.73	0.73	ms	NA	1	0.73
@@ -677,8 +581,6 @@ places	full-cold	sift	a3	top	cold_p50_ms	0.25	0.25	0.25	ms	NA	1	0.25
 places	full-cold	sift	a3	top	cold_max_ms	0.45	0.45	0.45	ms	NA	1	0.45
 places	full-cold	sift_nopos	a3	top	cold_p50_ms	0.23	0.23	0.23	ms	NA	1	0.23
 places	full-cold	sift_nopos	a3	top	cold_max_ms	0.38	0.38	0.38	ms	NA	1	0.38
-places	full-cold	sift_pairs	a3	top	cold_p50_ms	0.24	0.24	0.24	ms	NA	1	0.24
-places	full-cold	sift_pairs	a3	top	cold_max_ms	0.60	0.60	0.60	ms	NA	1	0.60
 places	full-cold	pg_search	a3	top	cold_p50_ms	2.90	2.90	2.90	ms	NA	1	2.90
 places	full-cold	pg_search	a3	top	cold_max_ms	3.83	3.83	3.83	ms	NA	1	3.83
 places	full-cold	pg_textsearch	a3	top	cold_p50_ms	0.99	0.99	0.99	ms	NA	1	0.99
@@ -691,8 +593,6 @@ places	full-cold	sift	p1	boost	cold_p50_ms	0.72	0.72	0.72	ms	NA	1	0.72
 places	full-cold	sift	p1	boost	cold_max_ms	1.11	1.11	1.11	ms	NA	1	1.11
 places	full-cold	sift_nopos	p1	boost	cold_p50_ms	0.70	0.70	0.70	ms	NA	1	0.70
 places	full-cold	sift_nopos	p1	boost	cold_max_ms	2.35	2.35	2.35	ms	NA	1	2.35
-places	full-cold	sift_pairs	p1	boost	cold_p50_ms	0.74	0.74	0.74	ms	NA	1	0.74
-places	full-cold	sift_pairs	p1	boost	cold_max_ms	1.13	1.13	1.13	ms	NA	1	1.13
 places	full-cold	pg_search	p1	boost	cold_p50_ms	3.65	3.65	3.65	ms	NA	1	3.65
 places	full-cold	pg_search	p1	boost	cold_max_ms	7.20	7.20	7.20	ms	NA	1	7.20
 places	full-cold	pg_textsearch	p1	boost	cold_p50_ms	3258.03	3258.03	3258.03	ms	NA	1	3258.03
@@ -705,8 +605,6 @@ places	full-cold	sift	p2	boost	cold_p50_ms	0.88	0.88	0.88	ms	NA	1	0.88
 places	full-cold	sift	p2	boost	cold_max_ms	1.16	1.16	1.16	ms	NA	1	1.16
 places	full-cold	sift_nopos	p2	boost	cold_p50_ms	0.81	0.81	0.81	ms	NA	1	0.81
 places	full-cold	sift_nopos	p2	boost	cold_max_ms	1.18	1.18	1.18	ms	NA	1	1.18
-places	full-cold	sift_pairs	p2	boost	cold_p50_ms	1.02	1.02	1.02	ms	NA	1	1.02
-places	full-cold	sift_pairs	p2	boost	cold_max_ms	1.33	1.33	1.33	ms	NA	1	1.33
 places	full-cold	pg_search	p2	boost	cold_p50_ms	4.14	4.14	4.14	ms	NA	1	4.14
 places	full-cold	pg_search	p2	boost	cold_max_ms	5.75	5.75	5.75	ms	NA	1	5.75
 places	full-cold	pg_textsearch	p2	boost	cold_p50_ms	638.98	638.98	638.98	ms	NA	1	638.98
@@ -719,8 +617,6 @@ places	full-cold	sift	a2	boost	cold_p50_ms	0.27	0.27	0.27	ms	NA	1	0.27
 places	full-cold	sift	a2	boost	cold_max_ms	6.38	6.38	6.38	ms	NA	1	6.38
 places	full-cold	sift_nopos	a2	boost	cold_p50_ms	0.39	0.39	0.39	ms	NA	1	0.39
 places	full-cold	sift_nopos	a2	boost	cold_max_ms	9.24	9.24	9.24	ms	NA	1	9.24
-places	full-cold	sift_pairs	a2	boost	cold_p50_ms	0.34	0.34	0.34	ms	NA	1	0.34
-places	full-cold	sift_pairs	a2	boost	cold_max_ms	7.59	7.59	7.59	ms	NA	1	7.59
 places	full-cold	pg_search	a2	boost	cold_p50_ms	3.38	3.38	3.38	ms	NA	1	3.38
 places	full-cold	pg_search	a2	boost	cold_max_ms	5.18	5.18	5.18	ms	NA	1	5.18
 places	full-cold	pg_textsearch	a2	boost	cold_p50_ms	1.27	1.27	1.27	ms	NA	1	1.27
@@ -733,8 +629,6 @@ places	full-cold	sift	a3	boost	cold_p50_ms	0.31	0.31	0.31	ms	NA	1	0.31
 places	full-cold	sift	a3	boost	cold_max_ms	0.81	0.81	0.81	ms	NA	1	0.81
 places	full-cold	sift_nopos	a3	boost	cold_p50_ms	0.46	0.46	0.46	ms	NA	1	0.46
 places	full-cold	sift_nopos	a3	boost	cold_max_ms	1.19	1.19	1.19	ms	NA	1	1.19
-places	full-cold	sift_pairs	a3	boost	cold_p50_ms	0.35	0.35	0.35	ms	NA	1	0.35
-places	full-cold	sift_pairs	a3	boost	cold_max_ms	0.87	0.87	0.87	ms	NA	1	0.87
 places	full-cold	pg_search	a3	boost	cold_p50_ms	5.19	5.19	5.19	ms	NA	1	5.19
 places	full-cold	pg_search	a3	boost	cold_max_ms	6.04	6.04	6.04	ms	NA	1	6.04
 places	full-cold	pg_textsearch	a3	boost	cold_p50_ms	1.51	1.51	1.51	ms	NA	1	1.51
@@ -747,8 +641,6 @@ places	full-cold	sift	p1	filter	cold_p50_ms	11.51	11.51	11.51	ms	NA	1	11.51
 places	full-cold	sift	p1	filter	cold_max_ms	15.42	15.42	15.42	ms	NA	1	15.42
 places	full-cold	sift_nopos	p1	filter	cold_p50_ms	14.26	14.26	14.26	ms	NA	1	14.26
 places	full-cold	sift_nopos	p1	filter	cold_max_ms	19.22	19.22	19.22	ms	NA	1	19.22
-places	full-cold	sift_pairs	p1	filter	cold_p50_ms	11.74	11.74	11.74	ms	NA	1	11.74
-places	full-cold	sift_pairs	p1	filter	cold_max_ms	18.97	18.97	18.97	ms	NA	1	18.97
 places	full-cold	pg_search	p1	filter	cold_p50_ms	16.69	16.69	16.69	ms	NA	1	16.69
 places	full-cold	pg_search	p1	filter	cold_max_ms	21.89	21.89	21.89	ms	NA	1	21.89
 places	full-cold	pg_textsearch	p1	filter	cold_p50_ms	362.20	362.20	362.20	ms	NA	1	362.20
@@ -761,8 +653,6 @@ places	full-cold	sift	p2	filter	cold_p50_ms	6.14	6.14	6.14	ms	NA	1	6.14
 places	full-cold	sift	p2	filter	cold_max_ms	11.30	11.30	11.30	ms	NA	1	11.30
 places	full-cold	sift_nopos	p2	filter	cold_p50_ms	6.94	6.94	6.94	ms	NA	1	6.94
 places	full-cold	sift_nopos	p2	filter	cold_max_ms	19.16	19.16	19.16	ms	NA	1	19.16
-places	full-cold	sift_pairs	p2	filter	cold_p50_ms	7.03	7.03	7.03	ms	NA	1	7.03
-places	full-cold	sift_pairs	p2	filter	cold_max_ms	12.12	12.12	12.12	ms	NA	1	12.12
 places	full-cold	pg_search	p2	filter	cold_p50_ms	9.98	9.98	9.98	ms	NA	1	9.98
 places	full-cold	pg_search	p2	filter	cold_max_ms	14.25	14.25	14.25	ms	NA	1	14.25
 places	full-cold	pg_textsearch	p2	filter	cold_p50_ms	66.86	66.86	66.86	ms	NA	1	66.86
@@ -775,8 +665,6 @@ places	full-cold	sift	a2	filter	cold_p50_ms	0.28	0.28	0.28	ms	NA	1	0.28
 places	full-cold	sift	a2	filter	cold_max_ms	2.48	2.48	2.48	ms	NA	1	2.48
 places	full-cold	sift_nopos	a2	filter	cold_p50_ms	0.24	0.24	0.24	ms	NA	1	0.24
 places	full-cold	sift_nopos	a2	filter	cold_max_ms	2.72	2.72	2.72	ms	NA	1	2.72
-places	full-cold	sift_pairs	a2	filter	cold_p50_ms	0.20	0.20	0.20	ms	NA	1	0.20
-places	full-cold	sift_pairs	a2	filter	cold_max_ms	2.80	2.80	2.80	ms	NA	1	2.80
 places	full-cold	pg_search	a2	filter	cold_p50_ms	6.86	6.86	6.86	ms	NA	1	6.86
 places	full-cold	pg_search	a2	filter	cold_max_ms	7.46	7.46	7.46	ms	NA	1	7.46
 places	full-cold	pg_textsearch	a2	filter	cold_p50_ms	0.45	0.45	0.45	ms	NA	1	0.45
@@ -789,8 +677,6 @@ places	full-cold	sift	a3	filter	cold_p50_ms	0.24	0.24	0.24	ms	NA	1	0.24
 places	full-cold	sift	a3	filter	cold_max_ms	0.47	0.47	0.47	ms	NA	1	0.47
 places	full-cold	sift_nopos	a3	filter	cold_p50_ms	0.26	0.26	0.26	ms	NA	1	0.26
 places	full-cold	sift_nopos	a3	filter	cold_max_ms	0.40	0.40	0.40	ms	NA	1	0.40
-places	full-cold	sift_pairs	a3	filter	cold_p50_ms	0.25	0.25	0.25	ms	NA	1	0.25
-places	full-cold	sift_pairs	a3	filter	cold_max_ms	0.54	0.54	0.54	ms	NA	1	0.54
 places	full-cold	pg_search	a3	filter	cold_p50_ms	8.17	8.17	8.17	ms	NA	1	8.17
 places	full-cold	pg_search	a3	filter	cold_max_ms	8.84	8.84	8.84	ms	NA	1	8.84
 places	full-cold	pg_textsearch	a3	filter	cold_p50_ms	0.56	0.56	0.56	ms	NA	1	0.56
@@ -803,8 +689,6 @@ places	full-cold	sift	p1	count	cold_p50_ms	0.16	0.16	0.16	ms	NA	1	0.16
 places	full-cold	sift	p1	count	cold_max_ms	0.38	0.38	0.38	ms	NA	1	0.38
 places	full-cold	sift_nopos	p1	count	cold_p50_ms	0.15	0.15	0.15	ms	NA	1	0.15
 places	full-cold	sift_nopos	p1	count	cold_max_ms	0.19	0.19	0.19	ms	NA	1	0.19
-places	full-cold	sift_pairs	p1	count	cold_p50_ms	0.15	0.15	0.15	ms	NA	1	0.15
-places	full-cold	sift_pairs	p1	count	cold_max_ms	0.20	0.20	0.20	ms	NA	1	0.20
 places	full-cold	pg_search	p1	count	cold_p50_ms	0.93	0.93	0.93	ms	NA	1	0.93
 places	full-cold	pg_search	p1	count	cold_max_ms	1.40	1.40	1.40	ms	NA	1	1.40
 places	full-cold	pg_textsearch	p1	count	cold_p50_ms	497.87	497.87	497.87	ms	NA	1	497.87
@@ -817,8 +701,6 @@ places	full-cold	sift	p2	count	cold_p50_ms	0.09	0.09	0.09	ms	NA	1	0.09
 places	full-cold	sift	p2	count	cold_max_ms	0.13	0.13	0.13	ms	NA	1	0.13
 places	full-cold	sift_nopos	p2	count	cold_p50_ms	0.09	0.09	0.09	ms	NA	1	0.09
 places	full-cold	sift_nopos	p2	count	cold_max_ms	0.13	0.13	0.13	ms	NA	1	0.13
-places	full-cold	sift_pairs	p2	count	cold_p50_ms	0.10	0.10	0.10	ms	NA	1	0.10
-places	full-cold	sift_pairs	p2	count	cold_max_ms	0.14	0.14	0.14	ms	NA	1	0.14
 places	full-cold	pg_search	p2	count	cold_p50_ms	1.47	1.47	1.47	ms	NA	1	1.47
 places	full-cold	pg_search	p2	count	cold_max_ms	2.27	2.27	2.27	ms	NA	1	2.27
 places	full-cold	pg_textsearch	p2	count	cold_p50_ms	114.47	114.47	114.47	ms	NA	1	114.47
@@ -831,8 +713,6 @@ places	full-cold	sift	a2	count	cold_p50_ms	0.11	0.11	0.11	ms	NA	1	0.11
 places	full-cold	sift	a2	count	cold_max_ms	0.94	0.94	0.94	ms	NA	1	0.94
 places	full-cold	sift_nopos	a2	count	cold_p50_ms	0.08	0.08	0.08	ms	NA	1	0.08
 places	full-cold	sift_nopos	a2	count	cold_max_ms	0.83	0.83	0.83	ms	NA	1	0.83
-places	full-cold	sift_pairs	a2	count	cold_p50_ms	0.12	0.12	0.12	ms	NA	1	0.12
-places	full-cold	sift_pairs	a2	count	cold_max_ms	1.07	1.07	1.07	ms	NA	1	1.07
 places	full-cold	pg_search	a2	count	cold_p50_ms	2.38	2.38	2.38	ms	NA	1	2.38
 places	full-cold	pg_search	a2	count	cold_max_ms	3.15	3.15	3.15	ms	NA	1	3.15
 places	full-cold	pg_textsearch	a2	count	cold_p50_ms	1.54	1.54	1.54	ms	NA	1	1.54
@@ -845,8 +725,6 @@ places	full-cold	sift	a3	count	cold_p50_ms	0.10	0.10	0.10	ms	NA	1	0.10
 places	full-cold	sift	a3	count	cold_max_ms	0.17	0.17	0.17	ms	NA	1	0.17
 places	full-cold	sift_nopos	a3	count	cold_p50_ms	0.13	0.13	0.13	ms	NA	1	0.13
 places	full-cold	sift_nopos	a3	count	cold_max_ms	0.21	0.21	0.21	ms	NA	1	0.21
-places	full-cold	sift_pairs	a3	count	cold_p50_ms	0.12	0.12	0.12	ms	NA	1	0.12
-places	full-cold	sift_pairs	a3	count	cold_max_ms	0.19	0.19	0.19	ms	NA	1	0.19
 places	full-cold	pg_search	a3	count	cold_p50_ms	4.37	4.37	4.37	ms	NA	1	4.37
 places	full-cold	pg_search	a3	count	cold_max_ms	8.56	8.56	8.56	ms	NA	1	8.56
 places	full-cold	pg_textsearch	a3	count	cold_p50_ms	0.58	0.58	0.58	ms	NA	1	0.58
@@ -864,10 +742,6 @@ places	full	sift_nopos	-	-	index_mib	44.4	44.4	44.4	MiB	NA	1	44.4
 places	full	sift_nopos	-	-	build_s	1.4	1.4	1.4	s	NA	1	1.4
 places	full	sift_nopos	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
 places	full	sift_nopos	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	1	0.0
-places	full	sift_pairs	-	-	index_mib	83.3	83.3	83.3	MiB	NA	1	83.3
-places	full	sift_pairs	-	-	build_s	2.3	2.3	2.3	s	NA	1	2.3
-places	full	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
-places	full	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	1	0.0
 places	full	pg_search	-	-	index_mib	142.0	142.0	142.0	MiB	NA	1	142.0
 places	full	pg_search	-	-	build_s	2.9	2.9	2.9	s	NA	1	2.9
 places	full	pg_search	-	-	setup_s	0.0	0.0	0.0	s	NA	1	0.0
@@ -893,8 +767,6 @@ places	full	bm25	-	-	build_s	3.2	3.2	3.2	s	NA	1	3.2
 places	full	bm25	-	-	setup_s	4.2	4.2	4.2	s	NA	1	4.2
 places	full	bm25	-	-	heap_growth_mib	54.3	54.3	54.3	MiB	NA	1	54.3
 places	full	-	-	-	load_1m	11.5	4.8	16.8	load average	NA	1	11.5
-places	quick	sift_pairs	p1	top	p50_ms	2.23	2.09	2.38	ms	NA	NA	NA
-places	quick	sift_pairs	p1	top	p95_ms	7.56	6.61	8.51	ms	NA	NA	NA
 places	quick	pg_search	p1	top	p50_ms	2.7	2.68	2.72	ms	NA	NA	NA
 places	quick	pg_search	p1	top	p95_ms	10.99	10.92	11.06	ms	NA	NA	NA
 places	quick	pg_textsearch	p1	top	p50_ms	4594.09	2363.61	6824.57	ms	NA	NA	NA
@@ -903,8 +775,6 @@ places	quick	rum	p1	top	p50_ms	94.5	87.11	101.9	ms	NA	NA	NA
 places	quick	rum	p1	top	p95_ms	159.03	151.16	166.9	ms	NA	NA	NA
 places	quick	sift	p1	top	p50_ms	2.41	2.37	2.46	ms	NA	NA	NA
 places	quick	sift	p1	top	p95_ms	7.61	6.54	8.69	ms	NA	NA	NA
-places	quick	sift_pairs	p3	top	p50_ms	1.58	0.92	2.23	ms	NA	NA	NA
-places	quick	sift_pairs	p3	top	p95_ms	7.32	6.4	8.24	ms	NA	NA	NA
 places	quick	pg_search	p3	top	p50_ms	3.8	2.82	4.78	ms	NA	NA	NA
 places	quick	pg_search	p3	top	p95_ms	13.41	11.61	15.22	ms	NA	NA	NA
 places	quick	pg_textsearch	p3	top	p50_ms	94.49	71.42	117.55	ms	NA	NA	NA
@@ -913,8 +783,6 @@ places	quick	rum	p3	top	p50_ms	27.4	16.44	38.36	ms	NA	NA	NA
 places	quick	rum	p3	top	p95_ms	49.72	46.78	52.67	ms	NA	NA	NA
 places	quick	sift	p3	top	p50_ms	1.36	1.03	1.7	ms	NA	NA	NA
 places	quick	sift	p3	top	p95_ms	5.6	5.38	5.83	ms	NA	NA	NA
-places	quick	sift_pairs	w1	top	p50_ms	0.34	0.25	0.42	ms	NA	NA	NA
-places	quick	sift_pairs	w1	top	p95_ms	5.05	4.26	5.83	ms	NA	NA	NA
 places	quick	pg_search	w1	top	p50_ms	4.26	3.62	4.9	ms	NA	NA	NA
 places	quick	pg_search	w1	top	p95_ms	14.49	14.39	14.59	ms	NA	NA	NA
 places	quick	pg_textsearch	w1	top	p50_ms	24.53	23.65	25.42	ms	NA	NA	NA
@@ -923,8 +791,6 @@ places	quick	rum	w1	top	p50_ms	2.3	2.23	2.37	ms	NA	NA	NA
 places	quick	rum	w1	top	p95_ms	22.16	16.83	27.49	ms	NA	NA	NA
 places	quick	sift	w1	top	p50_ms	0.34	0.2	0.47	ms	NA	NA	NA
 places	quick	sift	w1	top	p95_ms	3.89	2.75	5.03	ms	NA	NA	NA
-places	quick	sift_pairs	a2	top	p50_ms	1.15	0.28	2.02	ms	NA	NA	NA
-places	quick	sift_pairs	a2	top	p95_ms	5.37	4.34	6.39	ms	NA	NA	NA
 places	quick	pg_search	a2	top	p50_ms	5.41	3.89	6.93	ms	NA	NA	NA
 places	quick	pg_search	a2	top	p95_ms	14.26	13.28	15.24	ms	NA	NA	NA
 places	quick	pg_textsearch	a2	top	p50_ms	20.96	17.1	24.82	ms	NA	NA	NA
@@ -933,8 +799,6 @@ places	quick	rum	a2	top	p50_ms	29.78	29.07	30.5	ms	NA	NA	NA
 places	quick	rum	a2	top	p95_ms	59.94	52.8	67.07	ms	NA	NA	NA
 places	quick	sift	a2	top	p50_ms	0.78	0.28	1.27	ms	NA	NA	NA
 places	quick	sift	a2	top	p95_ms	4.46	3.72	5.2	ms	NA	NA	NA
-places	quick	sift_pairs	a3	top	p50_ms	1.46	0.78	2.15	ms	NA	NA	NA
-places	quick	sift_pairs	a3	top	p95_ms	6.7	6.43	6.96	ms	NA	NA	NA
 places	quick	pg_search	a3	top	p50_ms	12.94	12.11	13.77	ms	NA	NA	NA
 places	quick	pg_search	a3	top	p95_ms	20.65	19.61	21.7	ms	NA	NA	NA
 places	quick	pg_textsearch	a3	top	p50_ms	18.12	14.9	21.33	ms	NA	NA	NA
@@ -943,8 +807,6 @@ places	quick	rum	a3	top	p50_ms	37.88	33.64	42.12	ms	NA	NA	NA
 places	quick	rum	a3	top	p95_ms	79.99	77.22	82.75	ms	NA	NA	NA
 places	quick	sift	a3	top	p50_ms	1.02	0.53	1.5	ms	NA	NA	NA
 places	quick	sift	a3	top	p95_ms	5.74	4.42	7.06	ms	NA	NA	NA
-places	quick	sift_pairs	x2	top	p50_ms	0.23	0.22	0.24	ms	NA	NA	NA
-places	quick	sift_pairs	x2	top	p95_ms	2.37	2.32	2.42	ms	NA	NA	NA
 places	quick	pg_search	x2	top	p50_ms	7.75	3.84	11.66	ms	NA	NA	NA
 places	quick	pg_search	x2	top	p95_ms	15.01	12.05	17.98	ms	NA	NA	NA
 places	quick	pg_textsearch	x2	top	p50_ms	11.34	8.14	14.55	ms	NA	NA	NA
@@ -953,8 +815,6 @@ places	quick	rum	x2	top	p50_ms	10.77	9.22	12.32	ms	NA	NA	NA
 places	quick	rum	x2	top	p95_ms	44.29	44.28	44.3	ms	NA	NA	NA
 places	quick	sift	x2	top	p50_ms	1.23	0.24	2.22	ms	NA	NA	NA
 places	quick	sift	x2	top	p95_ms	4.49	2.59	6.38	ms	NA	NA	NA
-places	quick	sift_pairs	p1	boost	p50_ms	2.58	2.56	2.6	ms	NA	NA	NA
-places	quick	sift_pairs	p1	boost	p95_ms	10.65	9.88	11.43	ms	NA	NA	NA
 places	quick	pg_search	p1	boost	p50_ms	10.05	7.66	12.44	ms	NA	NA	NA
 places	quick	pg_search	p1	boost	p95_ms	17.14	16.25	18.03	ms	NA	NA	NA
 places	quick	pg_textsearch	p1	boost	p50_ms	10422.45	8767.19	12077.72	ms	NA	NA	NA
@@ -963,8 +823,6 @@ places	quick	rum	p1	boost	p50_ms	174.63	159.33	189.93	ms	NA	NA	NA
 places	quick	rum	p1	boost	p95_ms	205.19	190.98	219.4	ms	NA	NA	NA
 places	quick	sift	p1	boost	p50_ms	2.59	2.51	2.67	ms	NA	NA	NA
 places	quick	sift	p1	boost	p95_ms	11.19	10.79	11.58	ms	NA	NA	NA
-places	quick	sift_pairs	p3	boost	p50_ms	1.3	0.31	2.29	ms	NA	NA	NA
-places	quick	sift_pairs	p3	boost	p95_ms	4.68	2.74	6.62	ms	NA	NA	NA
 places	quick	pg_search	p3	boost	p50_ms	5.55	5.53	5.58	ms	NA	NA	NA
 places	quick	pg_search	p3	boost	p95_ms	15.14	12.16	18.12	ms	NA	NA	NA
 places	quick	pg_textsearch	p3	boost	p50_ms	86.9	76.79	97.02	ms	NA	NA	NA
@@ -973,8 +831,6 @@ places	quick	rum	p3	boost	p50_ms	18.62	14.99	22.25	ms	NA	NA	NA
 places	quick	rum	p3	boost	p95_ms	40.22	39.61	40.83	ms	NA	NA	NA
 places	quick	sift	p3	boost	p50_ms	0.6	0.36	0.84	ms	NA	NA	NA
 places	quick	sift	p3	boost	p95_ms	4.61	4.42	4.8	ms	NA	NA	NA
-places	quick	sift_pairs	w1	boost	p50_ms	0.36	0.33	0.4	ms	NA	NA	NA
-places	quick	sift_pairs	w1	boost	p95_ms	6.57	6.4	6.74	ms	NA	NA	NA
 places	quick	pg_search	w1	boost	p50_ms	10.5	10.21	10.8	ms	NA	NA	NA
 places	quick	pg_search	w1	boost	p95_ms	18.36	18.34	18.39	ms	NA	NA	NA
 places	quick	pg_textsearch	w1	boost	p50_ms	20.4	15.41	25.39	ms	NA	NA	NA
@@ -983,8 +839,6 @@ places	quick	rum	w1	boost	p50_ms	2.53	2.35	2.7	ms	NA	NA	NA
 places	quick	rum	w1	boost	p95_ms	29.97	23.2	36.74	ms	NA	NA	NA
 places	quick	sift	w1	boost	p50_ms	1.32	0.34	2.29	ms	NA	NA	NA
 places	quick	sift	w1	boost	p95_ms	7.83	4.7	10.95	ms	NA	NA	NA
-places	quick	sift_pairs	a2	boost	p50_ms	1.31	0.26	2.37	ms	NA	NA	NA
-places	quick	sift_pairs	a2	boost	p95_ms	5.82	2.56	9.08	ms	NA	NA	NA
 places	quick	pg_search	a2	boost	p50_ms	11.04	8.49	13.59	ms	NA	NA	NA
 places	quick	pg_search	a2	boost	p95_ms	22.37	16.63	28.11	ms	NA	NA	NA
 places	quick	pg_textsearch	a2	boost	p50_ms	8.48	4.91	12.05	ms	NA	NA	NA
@@ -993,8 +847,6 @@ places	quick	rum	a2	boost	p50_ms	20.74	13.76	27.72	ms	NA	NA	NA
 places	quick	rum	a2	boost	p95_ms	52.27	46.22	58.33	ms	NA	NA	NA
 places	quick	sift	a2	boost	p50_ms	1.24	0.38	2.11	ms	NA	NA	NA
 places	quick	sift	a2	boost	p95_ms	6.1	4.85	7.36	ms	NA	NA	NA
-places	quick	sift_pairs	a3	boost	p50_ms	1.29	0.72	1.86	ms	NA	NA	NA
-places	quick	sift_pairs	a3	boost	p95_ms	6.25	6.04	6.47	ms	NA	NA	NA
 places	quick	pg_search	a3	boost	p50_ms	27.89	24.06	31.72	ms	NA	NA	NA
 places	quick	pg_search	a3	boost	p95_ms	42.86	34.78	50.94	ms	NA	NA	NA
 places	quick	pg_textsearch	a3	boost	p50_ms	18.47	16.84	20.1	ms	NA	NA	NA
@@ -1003,8 +855,6 @@ places	quick	rum	a3	boost	p50_ms	35.53	27.25	43.81	ms	NA	NA	NA
 places	quick	rum	a3	boost	p95_ms	74.13	70.8	77.47	ms	NA	NA	NA
 places	quick	sift	a3	boost	p50_ms	2.35	2.33	2.37	ms	NA	NA	NA
 places	quick	sift	a3	boost	p95_ms	9.72	8.79	10.65	ms	NA	NA	NA
-places	quick	sift_pairs	x2	boost	p50_ms	2.28	2.25	2.31	ms	NA	NA	NA
-places	quick	sift_pairs	x2	boost	p95_ms	7.34	7.26	7.42	ms	NA	NA	NA
 places	quick	pg_search	x2	boost	p50_ms	12.57	4.12	21.02	ms	NA	NA	NA
 places	quick	pg_search	x2	boost	p95_ms	26.02	18.25	33.78	ms	NA	NA	NA
 places	quick	pg_textsearch	x2	boost	p50_ms	19.03	16.99	21.08	ms	NA	NA	NA
@@ -1013,8 +863,6 @@ places	quick	rum	x2	boost	p50_ms	30.15	27.59	32.71	ms	NA	NA	NA
 places	quick	rum	x2	boost	p95_ms	48.11	47.1	49.12	ms	NA	NA	NA
 places	quick	sift	x2	boost	p50_ms	1.5	0.73	2.26	ms	NA	NA	NA
 places	quick	sift	x2	boost	p95_ms	6.58	5.87	7.29	ms	NA	NA	NA
-places	quick	sift_pairs	p1	filter	p50_ms	13.36	13.27	13.46	ms	NA	NA	NA
-places	quick	sift_pairs	p1	filter	p95_ms	26.97	26.8	27.14	ms	NA	NA	NA
 places	quick	pg_search	p1	filter	p50_ms	27	21.35	32.65	ms	NA	NA	NA
 places	quick	pg_search	p1	filter	p95_ms	49.76	48.45	51.07	ms	NA	NA	NA
 places	quick	pg_textsearch	p1	filter	p50_ms	374.76	327.21	422.31	ms	NA	NA	NA
@@ -1023,8 +871,6 @@ places	quick	rum	p1	filter	p50_ms	112.36	98.92	125.79	ms	NA	NA	NA
 places	quick	rum	p1	filter	p95_ms	244.84	149.3	340.38	ms	NA	NA	NA
 places	quick	sift	p1	filter	p50_ms	8.06	2.9	13.21	ms	NA	NA	NA
 places	quick	sift	p1	filter	p95_ms	27.73	25.93	29.52	ms	NA	NA	NA
-places	quick	sift_pairs	p3	filter	p50_ms	0.4	0.3	0.5	ms	NA	NA	NA
-places	quick	sift_pairs	p3	filter	p95_ms	4.61	4.43	4.79	ms	NA	NA	NA
 places	quick	pg_search	p3	filter	p50_ms	6.36	4.75	7.97	ms	NA	NA	NA
 places	quick	pg_search	p3	filter	p95_ms	15.81	13.81	17.81	ms	NA	NA	NA
 places	quick	pg_textsearch	p3	filter	p50_ms	27.41	24.8	30.01	ms	NA	NA	NA
@@ -1033,8 +879,6 @@ places	quick	rum	p3	filter	p50_ms	11.31	8.95	13.67	ms	NA	NA	NA
 places	quick	rum	p3	filter	p95_ms	50.37	47.27	53.48	ms	NA	NA	NA
 places	quick	sift	p3	filter	p50_ms	1.67	0.99	2.35	ms	NA	NA	NA
 places	quick	sift	p3	filter	p95_ms	8.26	7.66	8.86	ms	NA	NA	NA
-places	quick	sift_pairs	w1	filter	p50_ms	0.22	0.21	0.23	ms	NA	NA	NA
-places	quick	sift_pairs	w1	filter	p95_ms	4.35	4.32	4.37	ms	NA	NA	NA
 places	quick	pg_search	w1	filter	p50_ms	2.95	0.93	4.96	ms	NA	NA	NA
 places	quick	pg_search	w1	filter	p95_ms	12.05	6.99	17.1	ms	NA	NA	NA
 places	quick	pg_textsearch	w1	filter	p50_ms	11.38	10.84	11.92	ms	NA	NA	NA
@@ -1043,8 +887,6 @@ places	quick	rum	w1	filter	p50_ms	0.26	0.26	0.26	ms	NA	NA	NA
 places	quick	rum	w1	filter	p95_ms	6.94	6.37	7.5	ms	NA	NA	NA
 places	quick	sift	w1	filter	p50_ms	0.23	0.22	0.24	ms	NA	NA	NA
 places	quick	sift	w1	filter	p95_ms	3.75	3.24	4.26	ms	NA	NA	NA
-places	quick	sift_pairs	a2	filter	p50_ms	0.48	0.38	0.59	ms	NA	NA	NA
-places	quick	sift_pairs	a2	filter	p95_ms	5.89	5.42	6.36	ms	NA	NA	NA
 places	quick	pg_search	a2	filter	p50_ms	3.92	2.92	4.92	ms	NA	NA	NA
 places	quick	pg_search	a2	filter	p95_ms	11.26	9.49	13.03	ms	NA	NA	NA
 places	quick	pg_textsearch	a2	filter	p50_ms	15.86	14.84	16.88	ms	NA	NA	NA
@@ -1053,8 +895,6 @@ places	quick	rum	a2	filter	p50_ms	35.78	29.26	42.29	ms	NA	NA	NA
 places	quick	rum	a2	filter	p95_ms	77.22	50.71	103.72	ms	NA	NA	NA
 places	quick	sift	a2	filter	p50_ms	1.46	1.35	1.58	ms	NA	NA	NA
 places	quick	sift	a2	filter	p95_ms	6.67	6.42	6.91	ms	NA	NA	NA
-places	quick	sift_pairs	a3	filter	p50_ms	0.34	0.26	0.43	ms	NA	NA	NA
-places	quick	sift_pairs	a3	filter	p95_ms	3.5	2.55	4.46	ms	NA	NA	NA
 places	quick	pg_search	a3	filter	p50_ms	10.01	6.93	13.09	ms	NA	NA	NA
 places	quick	pg_search	a3	filter	p95_ms	17.11	14.85	19.38	ms	NA	NA	NA
 places	quick	pg_textsearch	a3	filter	p50_ms	15.88	11.47	20.29	ms	NA	NA	NA
@@ -1063,8 +903,6 @@ places	quick	rum	a3	filter	p50_ms	43.26	42.55	43.98	ms	NA	NA	NA
 places	quick	rum	a3	filter	p95_ms	89.55	71.17	107.92	ms	NA	NA	NA
 places	quick	sift	a3	filter	p50_ms	1.28	0.26	2.31	ms	NA	NA	NA
 places	quick	sift	a3	filter	p95_ms	5.89	3.25	8.53	ms	NA	NA	NA
-places	quick	sift_pairs	x2	filter	p50_ms	1.33	0.35	2.3	ms	NA	NA	NA
-places	quick	sift_pairs	x2	filter	p95_ms	5.33	4.23	6.44	ms	NA	NA	NA
 places	quick	pg_search	x2	filter	p50_ms	4.17	3.25	5.09	ms	NA	NA	NA
 places	quick	pg_search	x2	filter	p95_ms	11.48	9.1	13.86	ms	NA	NA	NA
 places	quick	pg_textsearch	x2	filter	p50_ms	16.68	14.26	19.1	ms	NA	NA	NA
@@ -1073,8 +911,6 @@ places	quick	rum	x2	filter	p50_ms	24.19	13.56	34.82	ms	NA	NA	NA
 places	quick	rum	x2	filter	p95_ms	44.82	41.21	48.43	ms	NA	NA	NA
 places	quick	sift	x2	filter	p50_ms	0.98	0.3	1.67	ms	NA	NA	NA
 places	quick	sift	x2	filter	p95_ms	4.61	2.59	6.63	ms	NA	NA	NA
-places	quick	sift_pairs	p1	count	p50_ms	0.27	0.24	0.29	ms	NA	NA	NA
-places	quick	sift_pairs	p1	count	p95_ms	4.55	4.29	4.82	ms	NA	NA	NA
 places	quick	pg_search	p1	count	p50_ms	1.89	0.67	3.1	ms	NA	NA	NA
 places	quick	pg_search	p1	count	p95_ms	10.95	9.05	12.85	ms	NA	NA	NA
 places	quick	pg_textsearch	p1	count	p50_ms	868.03	437.1	1298.96	ms	NA	NA	NA
@@ -1083,8 +919,6 @@ places	quick	rum	p1	count	p50_ms	84.5	58.2	110.79	ms	NA	NA	NA
 places	quick	rum	p1	count	p95_ms	120.94	100.98	140.89	ms	NA	NA	NA
 places	quick	sift	p1	count	p50_ms	1.15	0.21	2.09	ms	NA	NA	NA
 places	quick	sift	p1	count	p95_ms	5.36	2.35	8.36	ms	NA	NA	NA
-places	quick	sift_pairs	p3	count	p50_ms	0.23	0.18	0.27	ms	NA	NA	NA
-places	quick	sift_pairs	p3	count	p95_ms	4.62	2.99	6.25	ms	NA	NA	NA
 places	quick	pg_search	p3	count	p50_ms	3.85	2.86	4.83	ms	NA	NA	NA
 places	quick	pg_search	p3	count	p95_ms	13.94	13.12	14.77	ms	NA	NA	NA
 places	quick	pg_textsearch	p3	count	p50_ms	23.05	15.2	30.91	ms	NA	NA	NA
@@ -1093,8 +927,6 @@ places	quick	rum	p3	count	p50_ms	8.86	7.57	10.14	ms	NA	NA	NA
 places	quick	rum	p3	count	p95_ms	23.74	23.52	23.95	ms	NA	NA	NA
 places	quick	sift	p3	count	p50_ms	0.18	0.17	0.18	ms	NA	NA	NA
 places	quick	sift	p3	count	p95_ms	2.43	2.38	2.48	ms	NA	NA	NA
-places	quick	sift_pairs	w1	count	p50_ms	0.97	0.16	1.78	ms	NA	NA	NA
-places	quick	sift_pairs	w1	count	p95_ms	4.7	2.3	7.1	ms	NA	NA	NA
 places	quick	pg_search	w1	count	p50_ms	6.15	3.16	9.15	ms	NA	NA	NA
 places	quick	pg_search	w1	count	p95_ms	16.73	11.62	21.85	ms	NA	NA	NA
 places	quick	pg_textsearch	w1	count	p50_ms	5.18	5.1	5.27	ms	NA	NA	NA
@@ -1103,8 +935,6 @@ places	quick	rum	w1	count	p50_ms	1.4	0.33	2.47	ms	NA	NA	NA
 places	quick	rum	w1	count	p95_ms	13.76	11.81	15.71	ms	NA	NA	NA
 places	quick	sift	w1	count	p50_ms	1.23	0.21	2.24	ms	NA	NA	NA
 places	quick	sift	w1	count	p95_ms	5.59	4.26	6.92	ms	NA	NA	NA
-places	quick	sift_pairs	a2	count	p50_ms	1.45	0.64	2.27	ms	NA	NA	NA
-places	quick	sift_pairs	a2	count	p95_ms	7.25	7.07	7.43	ms	NA	NA	NA
 places	quick	pg_search	a2	count	p50_ms	10.54	5.05	16.04	ms	NA	NA	NA
 places	quick	pg_search	a2	count	p95_ms	23.23	15.53	30.94	ms	NA	NA	NA
 places	quick	pg_textsearch	a2	count	p50_ms	12.75	11	14.5	ms	NA	NA	NA
@@ -1113,8 +943,6 @@ places	quick	rum	a2	count	p50_ms	17.8	12.87	22.74	ms	NA	NA	NA
 places	quick	rum	a2	count	p95_ms	38.87	24.93	52.8	ms	NA	NA	NA
 places	quick	sift	a2	count	p50_ms	1.26	0.26	2.26	ms	NA	NA	NA
 places	quick	sift	a2	count	p95_ms	6.46	4.29	8.63	ms	NA	NA	NA
-places	quick	sift_pairs	a3	count	p50_ms	0.78	0.27	1.29	ms	NA	NA	NA
-places	quick	sift_pairs	a3	count	p95_ms	5.43	4.41	6.45	ms	NA	NA	NA
 places	quick	pg_search	a3	count	p50_ms	13.83	10.07	17.59	ms	NA	NA	NA
 places	quick	pg_search	a3	count	p95_ms	34.03	32.01	36.06	ms	NA	NA	NA
 places	quick	pg_textsearch	a3	count	p50_ms	10.56	9.29	11.84	ms	NA	NA	NA
@@ -1123,8 +951,6 @@ places	quick	rum	a3	count	p50_ms	18.11	13.99	22.22	ms	NA	NA	NA
 places	quick	rum	a3	count	p95_ms	39.62	28.24	51	ms	NA	NA	NA
 places	quick	sift	a3	count	p50_ms	1.96	1.33	2.6	ms	NA	NA	NA
 places	quick	sift	a3	count	p95_ms	7.56	6.34	8.78	ms	NA	NA	NA
-places	quick	sift_pairs	x2	count	p50_ms	1.33	0.29	2.37	ms	NA	NA	NA
-places	quick	sift_pairs	x2	count	p95_ms	6.33	4.68	7.99	ms	NA	NA	NA
 places	quick	pg_search	x2	count	p50_ms	9.49	5.31	13.68	ms	NA	NA	NA
 places	quick	pg_search	x2	count	p95_ms	21.27	14.7	27.83	ms	NA	NA	NA
 places	quick	pg_textsearch	x2	count	p50_ms	10	8.68	11.31	ms	NA	NA	NA
@@ -1133,8 +959,6 @@ places	quick	rum	x2	count	p50_ms	17.55	13.19	21.9	ms	NA	NA	NA
 places	quick	rum	x2	count	p95_ms	31.88	25.12	38.64	ms	NA	NA	NA
 places	quick	sift	x2	count	p50_ms	1.72	1.11	2.33	ms	NA	NA	NA
 places	quick	sift	x2	count	p95_ms	7.24	6.42	8.05	ms	NA	NA	NA
-places	ab	sift_pairs	p1	top	p50_ms	0.54	0.35	0.58	ms	NA	NA	NA
-places	ab	sift_pairs	p1	top	p95_ms	2.72	2.46	2.94	ms	NA	NA	NA
 places	ab	pg_search	p1	top	p50_ms	0.97	0.62	2.63	ms	NA	NA	NA
 places	ab	pg_search	p1	top	p95_ms	3	2.8	4.91	ms	NA	NA	NA
 places	ab	pg_textsearch	p1	top	p50_ms	1134.93	521.62	3440.83	ms	NA	NA	NA
@@ -1143,8 +967,6 @@ places	ab	rum	p1	top	p50_ms	63.52	36.98	71.7	ms	NA	NA	NA
 places	ab	rum	p1	top	p95_ms	134.63	92.63	175.37	ms	NA	NA	NA
 places	ab	sift	p1	top	p50_ms	0.46	0.3	0.52	ms	NA	NA	NA
 places	ab	sift	p1	top	p95_ms	2.56	2.34	3.33	ms	NA	NA	NA
-places	ab	sift_pairs	p3	top	p50_ms	0.31	0.25	2.68	ms	NA	NA	NA
-places	ab	sift_pairs	p3	top	p95_ms	2.45	2.37	8.76	ms	NA	NA	NA
 places	ab	pg_search	p3	top	p50_ms	1.72	0.76	2.69	ms	NA	NA	NA
 places	ab	pg_search	p3	top	p95_ms	3.09	2.84	7.99	ms	NA	NA	NA
 places	ab	pg_textsearch	p3	top	p50_ms	26.84	14.77	33.78	ms	NA	NA	NA
@@ -1153,8 +975,6 @@ places	ab	rum	p3	top	p50_ms	6.12	5.19	14.32	ms	NA	NA	NA
 places	ab	rum	p3	top	p95_ms	19.19	15.87	56.21	ms	NA	NA	NA
 places	ab	sift	p3	top	p50_ms	0.29	0.21	2.07	ms	NA	NA	NA
 places	ab	sift	p3	top	p95_ms	2.45	2.24	6.6	ms	NA	NA	NA
-places	ab	sift_pairs	w1	top	p50_ms	0.24	0.17	0.26	ms	NA	NA	NA
-places	ab	sift_pairs	w1	top	p95_ms	2.32	2.21	2.48	ms	NA	NA	NA
 places	ab	pg_search	w1	top	p50_ms	1.79	0.89	4.07	ms	NA	NA	NA
 places	ab	pg_search	w1	top	p95_ms	3.27	3.16	12.86	ms	NA	NA	NA
 places	ab	pg_textsearch	w1	top	p50_ms	9.26	5.38	13.3	ms	NA	NA	NA
@@ -1163,8 +983,6 @@ places	ab	rum	w1	top	p50_ms	0.4	0.29	0.6	ms	NA	NA	NA
 places	ab	rum	w1	top	p95_ms	10.94	7.73	13.75	ms	NA	NA	NA
 places	ab	sift	w1	top	p50_ms	0.24	0.16	0.28	ms	NA	NA	NA
 places	ab	sift	w1	top	p95_ms	2.3	0.53	2.71	ms	NA	NA	NA
-places	ab	sift_pairs	a2	top	p50_ms	0.26	0.21	0.39	ms	NA	NA	NA
-places	ab	sift_pairs	a2	top	p95_ms	2.31	1.81	2.71	ms	NA	NA	NA
 places	ab	pg_search	a2	top	p50_ms	1.8	1.08	2.93	ms	NA	NA	NA
 places	ab	pg_search	a2	top	p95_ms	4.33	3.58	8.19	ms	NA	NA	NA
 places	ab	pg_textsearch	a2	top	p50_ms	6.94	5.32	9.81	ms	NA	NA	NA
@@ -1173,8 +991,6 @@ places	ab	rum	a2	top	p50_ms	14.21	9.9	28.68	ms	NA	NA	NA
 places	ab	rum	a2	top	p95_ms	31.5	24.59	68.15	ms	NA	NA	NA
 places	ab	sift	a2	top	p50_ms	0.27	0.2	0.3	ms	NA	NA	NA
 places	ab	sift	a2	top	p95_ms	2.31	2.25	2.65	ms	NA	NA	NA
-places	ab	sift_pairs	a3	top	p50_ms	0.3	0.24	0.35	ms	NA	NA	NA
-places	ab	sift_pairs	a3	top	p95_ms	2.4	2.34	2.48	ms	NA	NA	NA
 places	ab	pg_search	a3	top	p50_ms	3.45	2.85	3.89	ms	NA	NA	NA
 places	ab	pg_search	a3	top	p95_ms	6.2	5.9	14.81	ms	NA	NA	NA
 places	ab	pg_textsearch	a3	top	p50_ms	7.19	5.38	9.31	ms	NA	NA	NA
@@ -1183,8 +999,6 @@ places	ab	rum	a3	top	p50_ms	10.59	9.33	14.38	ms	NA	NA	NA
 places	ab	rum	a3	top	p95_ms	24.01	18.99	27.43	ms	NA	NA	NA
 places	ab	sift	a3	top	p50_ms	0.33	0.23	0.36	ms	NA	NA	NA
 places	ab	sift	a3	top	p95_ms	2.36	2.31	2.56	ms	NA	NA	NA
-places	ab	sift_pairs	x2	top	p50_ms	0.29	0.21	0.32	ms	NA	NA	NA
-places	ab	sift_pairs	x2	top	p95_ms	2.37	2.29	2.47	ms	NA	NA	NA
 places	ab	pg_search	x2	top	p50_ms	2.04	1.62	3.25	ms	NA	NA	NA
 places	ab	pg_search	x2	top	p95_ms	4.76	3.61	7.99	ms	NA	NA	NA
 places	ab	pg_textsearch	x2	top	p50_ms	7.51	5.46	9.53	ms	NA	NA	NA
@@ -1193,8 +1007,6 @@ places	ab	rum	x2	top	p50_ms	9.62	6.65	22.82	ms	NA	NA	NA
 places	ab	rum	x2	top	p95_ms	15.93	12.62	47.02	ms	NA	NA	NA
 places	ab	sift	x2	top	p50_ms	0.34	0.21	0.39	ms	NA	NA	NA
 places	ab	sift	x2	top	p95_ms	2.5	1.02	2.85	ms	NA	NA	NA
-places	ab	sift_pairs	p1	boost	p50_ms	1.01	0.83	2.65	ms	NA	NA	NA
-places	ab	sift_pairs	p1	boost	p95_ms	4.36	3.05	5.24	ms	NA	NA	NA
 places	ab	pg_search	p1	boost	p50_ms	3.19	1.61	5.5	ms	NA	NA	NA
 places	ab	pg_search	p1	boost	p95_ms	10.6	4.35	14.57	ms	NA	NA	NA
 places	ab	pg_textsearch	p1	boost	p50_ms	3064.48	1514.47	3417.18	ms	NA	NA	NA
@@ -1203,8 +1015,6 @@ places	ab	rum	p1	boost	p50_ms	63.52	53.15	90.55	ms	NA	NA	NA
 places	ab	rum	p1	boost	p95_ms	132.15	113.89	208.27	ms	NA	NA	NA
 places	ab	sift	p1	boost	p50_ms	1.11	0.68	2.81	ms	NA	NA	NA
 places	ab	sift	p1	boost	p95_ms	3.64	2.91	5.34	ms	NA	NA	NA
-places	ab	sift_pairs	p3	boost	p50_ms	0.33	0.28	0.44	ms	NA	NA	NA
-places	ab	sift_pairs	p3	boost	p95_ms	2.55	2.37	2.75	ms	NA	NA	NA
 places	ab	pg_search	p3	boost	p50_ms	4.46	3.29	7.95	ms	NA	NA	NA
 places	ab	pg_search	p3	boost	p95_ms	9.51	6.44	16.73	ms	NA	NA	NA
 places	ab	pg_textsearch	p3	boost	p50_ms	50.93	22.98	93.02	ms	NA	NA	NA
@@ -1213,8 +1023,6 @@ places	ab	rum	p3	boost	p50_ms	6.43	5.82	8.9	ms	NA	NA	NA
 places	ab	rum	p3	boost	p95_ms	24.17	17.7	26.1	ms	NA	NA	NA
 places	ab	sift	p3	boost	p50_ms	0.33	0.29	0.52	ms	NA	NA	NA
 places	ab	sift	p3	boost	p95_ms	2.53	2.38	2.67	ms	NA	NA	NA
-places	ab	sift_pairs	w1	boost	p50_ms	0.24	0.19	1	ms	NA	NA	NA
-places	ab	sift_pairs	w1	boost	p95_ms	2.36	2.27	5.83	ms	NA	NA	NA
 places	ab	pg_search	w1	boost	p50_ms	4.55	3.46	5.84	ms	NA	NA	NA
 places	ab	pg_search	w1	boost	p95_ms	11.89	5.77	12.86	ms	NA	NA	NA
 places	ab	pg_textsearch	w1	boost	p50_ms	10.71	7.41	12.72	ms	NA	NA	NA
@@ -1223,8 +1031,6 @@ places	ab	rum	w1	boost	p50_ms	0.47	0.31	0.81	ms	NA	NA	NA
 places	ab	rum	w1	boost	p95_ms	13.38	11.69	17.95	ms	NA	NA	NA
 places	ab	sift	w1	boost	p50_ms	0.26	0.19	1.14	ms	NA	NA	NA
 places	ab	sift	w1	boost	p95_ms	2.43	2.28	7.27	ms	NA	NA	NA
-places	ab	sift_pairs	a2	boost	p50_ms	0.28	0.24	0.43	ms	NA	NA	NA
-places	ab	sift_pairs	a2	boost	p95_ms	2.6	2.35	3.17	ms	NA	NA	NA
 places	ab	pg_search	a2	boost	p50_ms	5.24	3.96	10.75	ms	NA	NA	NA
 places	ab	pg_search	a2	boost	p95_ms	10.17	7.66	22	ms	NA	NA	NA
 places	ab	pg_textsearch	a2	boost	p50_ms	9.8	8.31	11.97	ms	NA	NA	NA
@@ -1233,8 +1039,6 @@ places	ab	rum	a2	boost	p50_ms	16.05	12.06	21.13	ms	NA	NA	NA
 places	ab	rum	a2	boost	p95_ms	36.51	34.35	51.29	ms	NA	NA	NA
 places	ab	sift	a2	boost	p50_ms	0.3	0.25	0.5	ms	NA	NA	NA
 places	ab	sift	a2	boost	p95_ms	2.54	2.37	3.96	ms	NA	NA	NA
-places	ab	sift_pairs	a3	boost	p50_ms	0.34	0.28	0.46	ms	NA	NA	NA
-places	ab	sift_pairs	a3	boost	p95_ms	2.55	2.31	2.9	ms	NA	NA	NA
 places	ab	pg_search	a3	boost	p50_ms	8.31	5.48	9.9	ms	NA	NA	NA
 places	ab	pg_search	a3	boost	p95_ms	14.6	11.45	16.81	ms	NA	NA	NA
 places	ab	pg_textsearch	a3	boost	p50_ms	10.52	9.3	19.89	ms	NA	NA	NA
@@ -1243,8 +1047,6 @@ places	ab	rum	a3	boost	p50_ms	13.87	11.98	19.34	ms	NA	NA	NA
 places	ab	rum	a3	boost	p95_ms	36.09	25.1	63.29	ms	NA	NA	NA
 places	ab	sift	a3	boost	p50_ms	0.4	0.32	0.47	ms	NA	NA	NA
 places	ab	sift	a3	boost	p95_ms	2.63	2.47	2.98	ms	NA	NA	NA
-places	ab	sift_pairs	x2	boost	p50_ms	0.29	0.24	0.32	ms	NA	NA	NA
-places	ab	sift_pairs	x2	boost	p95_ms	2.47	2.24	2.49	ms	NA	NA	NA
 places	ab	pg_search	x2	boost	p50_ms	6.25	4.38	6.58	ms	NA	NA	NA
 places	ab	pg_search	x2	boost	p95_ms	10.55	9.1	11.22	ms	NA	NA	NA
 places	ab	pg_textsearch	x2	boost	p50_ms	9.3	5.22	11.31	ms	NA	NA	NA
@@ -1253,8 +1055,6 @@ places	ab	rum	x2	boost	p50_ms	8.33	4.81	11.88	ms	NA	NA	NA
 places	ab	rum	x2	boost	p95_ms	20.55	10	31.92	ms	NA	NA	NA
 places	ab	sift	x2	boost	p50_ms	0.28	0.25	0.34	ms	NA	NA	NA
 places	ab	sift	x2	boost	p95_ms	2.43	1.75	2.45	ms	NA	NA	NA
-places	ab	sift_pairs	p1	filter	p50_ms	5.15	2.82	6.43	ms	NA	NA	NA
-places	ab	sift_pairs	p1	filter	p95_ms	9.65	6.64	14.13	ms	NA	NA	NA
 places	ab	pg_search	p1	filter	p50_ms	9.52	5.3	11.77	ms	NA	NA	NA
 places	ab	pg_search	p1	filter	p95_ms	17.27	10.27	26	ms	NA	NA	NA
 places	ab	pg_textsearch	p1	filter	p50_ms	165.19	110.47	187.38	ms	NA	NA	NA
@@ -1263,8 +1063,6 @@ places	ab	rum	p1	filter	p50_ms	64.55	35.8	97.06	ms	NA	NA	NA
 places	ab	rum	p1	filter	p95_ms	128.19	75.94	197.54	ms	NA	NA	NA
 places	ab	sift	p1	filter	p50_ms	5.06	1.62	7.41	ms	NA	NA	NA
 places	ab	sift	p1	filter	p95_ms	10.71	4.85	14.83	ms	NA	NA	NA
-places	ab	sift_pairs	p3	filter	p50_ms	0.43	0.34	0.51	ms	NA	NA	NA
-places	ab	sift_pairs	p3	filter	p95_ms	2.61	2.52	4.61	ms	NA	NA	NA
 places	ab	pg_search	p3	filter	p50_ms	2.74	1.13	2.76	ms	NA	NA	NA
 places	ab	pg_search	p3	filter	p95_ms	4	3.58	9.33	ms	NA	NA	NA
 places	ab	pg_textsearch	p3	filter	p50_ms	11.02	6.05	17.05	ms	NA	NA	NA
@@ -1273,8 +1071,6 @@ places	ab	rum	p3	filter	p50_ms	3.02	2.09	4.59	ms	NA	NA	NA
 places	ab	rum	p3	filter	p95_ms	15.02	12.4	19.56	ms	NA	NA	NA
 places	ab	sift	p3	filter	p50_ms	0.32	0.3	0.38	ms	NA	NA	NA
 places	ab	sift	p3	filter	p95_ms	2.49	2.48	2.67	ms	NA	NA	NA
-places	ab	sift_pairs	w1	filter	p50_ms	0.2	0.18	0.21	ms	NA	NA	NA
-places	ab	sift_pairs	w1	filter	p95_ms	2.33	2.28	2.36	ms	NA	NA	NA
 places	ab	pg_search	w1	filter	p50_ms	2.77	0.98	2.86	ms	NA	NA	NA
 places	ab	pg_search	w1	filter	p95_ms	4.99	3.28	10.31	ms	NA	NA	NA
 places	ab	pg_textsearch	w1	filter	p50_ms	9.06	6.19	11.31	ms	NA	NA	NA
@@ -1283,8 +1079,6 @@ places	ab	rum	w1	filter	p50_ms	0.28	0.27	0.52	ms	NA	NA	NA
 places	ab	rum	w1	filter	p95_ms	10.82	6.17	16	ms	NA	NA	NA
 places	ab	sift	w1	filter	p50_ms	0.18	0.18	0.2	ms	NA	NA	NA
 places	ab	sift	w1	filter	p95_ms	2.29	1.25	2.34	ms	NA	NA	NA
-places	ab	sift_pairs	a2	filter	p50_ms	0.23	0.21	0.3	ms	NA	NA	NA
-places	ab	sift_pairs	a2	filter	p95_ms	2.36	2.26	5.08	ms	NA	NA	NA
 places	ab	pg_search	a2	filter	p50_ms	2.84	1	2.87	ms	NA	NA	NA
 places	ab	pg_search	a2	filter	p95_ms	4.54	3.79	5.03	ms	NA	NA	NA
 places	ab	pg_textsearch	a2	filter	p50_ms	8.07	6.15	11.15	ms	NA	NA	NA
@@ -1293,8 +1087,6 @@ places	ab	rum	a2	filter	p50_ms	14.94	9.56	19	ms	NA	NA	NA
 places	ab	rum	a2	filter	p95_ms	30.83	17.11	43.75	ms	NA	NA	NA
 places	ab	sift	a2	filter	p50_ms	0.23	0.2	0.33	ms	NA	NA	NA
 places	ab	sift	a2	filter	p95_ms	2.37	2.03	2.57	ms	NA	NA	NA
-places	ab	sift_pairs	a3	filter	p50_ms	0.24	0.23	0.37	ms	NA	NA	NA
-places	ab	sift_pairs	a3	filter	p95_ms	2.33	1.73	2.63	ms	NA	NA	NA
 places	ab	pg_search	a3	filter	p50_ms	3.15	1.27	4.39	ms	NA	NA	NA
 places	ab	pg_search	a3	filter	p95_ms	5.64	3.48	10.86	ms	NA	NA	NA
 places	ab	pg_textsearch	a3	filter	p50_ms	7.23	5.13	9.16	ms	NA	NA	NA
@@ -1303,8 +1095,6 @@ places	ab	rum	a3	filter	p50_ms	13.28	9.16	16.75	ms	NA	NA	NA
 places	ab	rum	a3	filter	p95_ms	22.22	18.86	36.56	ms	NA	NA	NA
 places	ab	sift	a3	filter	p50_ms	0.26	0.23	0.35	ms	NA	NA	NA
 places	ab	sift	a3	filter	p95_ms	2.35	2.32	2.63	ms	NA	NA	NA
-places	ab	sift_pairs	x2	filter	p50_ms	0.26	0.24	0.35	ms	NA	NA	NA
-places	ab	sift_pairs	x2	filter	p95_ms	2.36	2.35	2.55	ms	NA	NA	NA
 places	ab	pg_search	x2	filter	p50_ms	2.91	1.09	3.64	ms	NA	NA	NA
 places	ab	pg_search	x2	filter	p95_ms	4.72	3.44	7.38	ms	NA	NA	NA
 places	ab	pg_textsearch	x2	filter	p50_ms	7.11	5.34	8.67	ms	NA	NA	NA
@@ -1313,8 +1103,6 @@ places	ab	rum	x2	filter	p50_ms	9.21	5.89	10.93	ms	NA	NA	NA
 places	ab	rum	x2	filter	p95_ms	14.59	9.6	21.2	ms	NA	NA	NA
 places	ab	sift	x2	filter	p50_ms	0.24	0.23	0.32	ms	NA	NA	NA
 places	ab	sift	x2	filter	p95_ms	2.34	0.93	2.51	ms	NA	NA	NA
-places	ab	sift_pairs	p1	count	p50_ms	0.2	0.17	0.23	ms	NA	NA	NA
-places	ab	sift_pairs	p1	count	p95_ms	2.2	0.55	2.44	ms	NA	NA	NA
 places	ab	pg_search	p1	count	p50_ms	0.55	0.53	0.84	ms	NA	NA	NA
 places	ab	pg_search	p1	count	p95_ms	2.71	2.61	3.48	ms	NA	NA	NA
 places	ab	pg_textsearch	p1	count	p50_ms	252.09	197.97	397.55	ms	NA	NA	NA
@@ -1323,8 +1111,6 @@ places	ab	rum	p1	count	p50_ms	25.06	21.57	28.93	ms	NA	NA	NA
 places	ab	rum	p1	count	p95_ms	39.76	32.61	50.73	ms	NA	NA	NA
 places	ab	sift	p1	count	p50_ms	0.2	0.18	0.25	ms	NA	NA	NA
 places	ab	sift	p1	count	p95_ms	2.27	1.01	2.29	ms	NA	NA	NA
-places	ab	sift_pairs	p3	count	p50_ms	0.14	0.12	0.17	ms	NA	NA	NA
-places	ab	sift_pairs	p3	count	p95_ms	1.51	0.32	2.19	ms	NA	NA	NA
 places	ab	pg_search	p3	count	p50_ms	0.74	0.67	2.28	ms	NA	NA	NA
 places	ab	pg_search	p3	count	p95_ms	2.86	2.78	3.17	ms	NA	NA	NA
 places	ab	pg_textsearch	p3	count	p50_ms	6.48	4.15	7.47	ms	NA	NA	NA
@@ -1333,8 +1119,6 @@ places	ab	rum	p3	count	p50_ms	2.52	1.44	3.83	ms	NA	NA	NA
 places	ab	rum	p3	count	p95_ms	6.81	4.58	10.53	ms	NA	NA	NA
 places	ab	sift	p3	count	p50_ms	0.13	0.13	0.17	ms	NA	NA	NA
 places	ab	sift	p3	count	p95_ms	2.18	0.25	2.2	ms	NA	NA	NA
-places	ab	sift_pairs	w1	count	p50_ms	0.16	0.15	0.19	ms	NA	NA	NA
-places	ab	sift_pairs	w1	count	p95_ms	2.22	0.38	2.28	ms	NA	NA	NA
 places	ab	pg_search	w1	count	p50_ms	1.3	0.93	2.93	ms	NA	NA	NA
 places	ab	pg_search	w1	count	p95_ms	3.93	3.08	5.08	ms	NA	NA	NA
 places	ab	pg_textsearch	w1	count	p50_ms	1.97	1.8	3.19	ms	NA	NA	NA
@@ -1343,8 +1127,6 @@ places	ab	rum	w1	count	p50_ms	0.3	0.23	0.39	ms	NA	NA	NA
 places	ab	rum	w1	count	p95_ms	4.88	3.5	5.39	ms	NA	NA	NA
 places	ab	sift	w1	count	p50_ms	0.17	0.15	0.18	ms	NA	NA	NA
 places	ab	sift	w1	count	p95_ms	2.22	0.33	2.29	ms	NA	NA	NA
-places	ab	sift_pairs	a2	count	p50_ms	0.19	0.19	0.26	ms	NA	NA	NA
-places	ab	sift_pairs	a2	count	p95_ms	2.31	0.73	2.44	ms	NA	NA	NA
 places	ab	pg_search	a2	count	p50_ms	2.21	1.36	3	ms	NA	NA	NA
 places	ab	pg_search	a2	count	p95_ms	5.16	3.67	6.97	ms	NA	NA	NA
 places	ab	pg_textsearch	a2	count	p50_ms	3.91	2.71	5.41	ms	NA	NA	NA
@@ -1353,8 +1135,6 @@ places	ab	rum	a2	count	p50_ms	5.8	4.97	6.33	ms	NA	NA	NA
 places	ab	rum	a2	count	p95_ms	14.31	11.85	15.74	ms	NA	NA	NA
 places	ab	sift	a2	count	p50_ms	0.21	0.17	0.26	ms	NA	NA	NA
 places	ab	sift	a2	count	p95_ms	2.28	0.63	2.38	ms	NA	NA	NA
-places	ab	sift_pairs	a3	count	p50_ms	0.21	0.2	0.34	ms	NA	NA	NA
-places	ab	sift_pairs	a3	count	p95_ms	2.29	2.06	2.47	ms	NA	NA	NA
 places	ab	pg_search	a3	count	p50_ms	3.48	1.73	6.06	ms	NA	NA	NA
 places	ab	pg_search	a3	count	p95_ms	6.71	4.09	15.88	ms	NA	NA	NA
 places	ab	pg_textsearch	a3	count	p50_ms	3.12	1.93	3.25	ms	NA	NA	NA
@@ -1363,8 +1143,6 @@ places	ab	rum	a3	count	p50_ms	6.77	5.08	7.41	ms	NA	NA	NA
 places	ab	rum	a3	count	p95_ms	13.23	8.99	17.76	ms	NA	NA	NA
 places	ab	sift	a3	count	p50_ms	0.3	0.2	0.34	ms	NA	NA	NA
 places	ab	sift	a3	count	p95_ms	2.34	1.15	2.81	ms	NA	NA	NA
-places	ab	sift_pairs	x2	count	p50_ms	0.26	0.2	0.3	ms	NA	NA	NA
-places	ab	sift_pairs	x2	count	p95_ms	2.33	2.24	2.55	ms	NA	NA	NA
 places	ab	pg_search	x2	count	p50_ms	3.18	2.18	3.45	ms	NA	NA	NA
 places	ab	pg_search	x2	count	p95_ms	5.56	5.32	6.76	ms	NA	NA	NA
 places	ab	pg_textsearch	x2	count	p50_ms	3.31	1.41	3.76	ms	NA	NA	NA
@@ -1377,10 +1155,6 @@ places	quick	sift	-	-	index_mib	13.7	13.7	13.7	MiB	NA	NA	NA
 places	quick	sift	-	-	build_s	3.3	3.3	3.3	s	NA	NA	NA
 places	quick	sift	-	-	setup_s	0.1	0.1	0.1	s	NA	NA	NA
 places	quick	sift	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
-places	quick	sift_pairs	-	-	index_mib	24.0	24.0	24.0	MiB	NA	NA	NA
-places	quick	sift_pairs	-	-	build_s	6.8	6.8	6.8	s	NA	NA	NA
-places	quick	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
-places	quick	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
 places	quick	pg_search	-	-	index_mib	27.8	27.8	27.8	MiB	NA	NA	NA
 places	quick	pg_search	-	-	build_s	17.8	17.8	17.8	s	NA	NA	NA
 places	quick	pg_search	-	-	setup_s	0.4	0.4	0.4	s	NA	NA	NA
@@ -1405,10 +1179,6 @@ places	ab	sift	-	-	index_mib	13.7	13.7	13.7	MiB	NA	NA	NA
 places	ab	sift	-	-	build_s	2.1	2.1	2.1	s	NA	NA	NA
 places	ab	sift	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
 places	ab	sift	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
-places	ab	sift_pairs	-	-	index_mib	24.0	24.0	24.0	MiB	NA	NA	NA
-places	ab	sift_pairs	-	-	build_s	2.9	2.9	2.9	s	NA	NA	NA
-places	ab	sift_pairs	-	-	setup_s	0.0	0.0	0.0	s	NA	NA	NA
-places	ab	sift_pairs	-	-	heap_growth_mib	0.0	0.0	0.0	MiB	NA	NA	NA
 places	ab	pg_search	-	-	index_mib	27.8	27.8	27.8	MiB	NA	NA	NA
 places	ab	pg_search	-	-	build_s	11.5	11.5	11.5	s	NA	NA	NA
 places	ab	pg_search	-	-	setup_s	0.1	0.1	0.1	s	NA	NA	NA
