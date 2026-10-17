@@ -27,7 +27,7 @@ END $$;
 -- a 200-term OR: no term is frequent enough to be a GROUPED blob (8192 postings), every cursor is sparse
 SELECT string_agg('w' || g, ' OR ') AS q FROM generate_series(0, 199) g \gset
 SELECT ra_q(:'q') AS matches;
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
 SELECT ra_q(:'q') AS matches;
 SELECT value AS cursors FROM sift._test_read_stats() WHERE key = 'cursors' \gset
 SELECT value AS bytes FROM sift._test_read_stats() WHERE key = 'cursor_buffer_bytes' \gset

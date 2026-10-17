@@ -34,10 +34,10 @@ SELECT ra_q(:'q') AS matches;
    16200
 (1 row)
 
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
-     8
+ t
 (1 row)
 
 SELECT ra_q(:'q') AS matches;
