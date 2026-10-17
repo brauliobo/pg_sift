@@ -82,6 +82,10 @@ struct SqStore
 	sqlite3_blob *blob,
 			   *wblob;
 	int			cursors;				/* open cursors: their statements need the blob handles */
+	/* what sq_store_preload last saw resident: the same cache epoch, directory and eviction count means still so */
+	uint64		resident_epoch,
+				resident_evictions;
+	uint32		resident_version;
 	/* fault injection */
 	int			fault_mode;
 	int64_t		fault_after;
@@ -391,6 +395,9 @@ sq_store_preload(SqStore *st)
 
 	if (st->cache == NULL)
 		st->cache = cache_new(st);
+	if (st->resident_epoch == st->epoch + 1 && st->resident_version == d->version &&
+		st->resident_evictions == st->cache->evictions)
+		return true;
 	for (int i = 0; i < d->nsegs; i++)
 		for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
 			missing += cache_find(st->cache, u) < 0;
@@ -399,6 +406,9 @@ sq_store_preload(SqStore *st)
 	for (int i = 0; i < d->nsegs; i++)
 		for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
 			cache_get(st, u);
+	st->resident_epoch = st->epoch + 1;
+	st->resident_version = d->version;
+	st->resident_evictions = st->cache->evictions;
 	return true;
 }
 

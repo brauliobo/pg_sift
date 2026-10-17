@@ -20,12 +20,13 @@
 extern int	sqlite3_sift_init(sqlite3 *db, char **err, const sqlite3_api_routines *api);
 
 #define VOCAB	2000
-#define DOCS	6000
+#define DOCS	20000
 
 static atomic_int stop;
 static atomic_long reads,
 			writes,
-			failures;
+			failures,
+			par_scans;
 static const char *path;
 static int	parallel;
 static sqlite3 *shared;
@@ -47,7 +48,7 @@ next(unsigned *s)
 static void
 doc(char *buf, unsigned *s)
 {
-	char	   *p = buf;
+	char	   *p = buf + sprintf(buf, "c1 c2 c3 c4 c5 c6 ");		/* enough postings for a scan to be shared */
 
 	for (int i = 0; i < 30; i++)
 		p += sprintf(p, "w%u ", next(s) % VOCAB);
@@ -104,10 +105,16 @@ check_query(sqlite3 *db, unsigned *s, int snapshot)
 				c,
 				rows = 0;
 
-	switch (next(s) % 4)
+	switch (next(s) % 6)
 	{
 		case 0:
 			snprintf(q, sizeof(q), "w%u*", next(s) % 100);
+			break;
+		case 4:
+			snprintf(q, sizeof(q), "c1 OR c2 OR c3 OR c4 OR c5 OR c6 OR w%u", next(s) % VOCAB);
+			break;
+		case 5:
+			snprintf(q, sizeof(q), "\"c1 c2 c3 c4\" OR w%u", next(s) % VOCAB);
 			break;
 		case 1:
 			snprintf(q, sizeof(q), "\"w%u w%u\" OR w%u", next(s) % VOCAB, next(s) % VOCAB, next(s) % VOCAB);
@@ -153,6 +160,22 @@ check_query(sqlite3 *db, unsigned *s, int snapshot)
 	atomic_fetch_add(&reads, 1);
 }
 
+/* parallel_scans of the connection's table, to see that the test shared scans at all */
+static void
+count_par_scans(sqlite3 *db)
+{
+	sqlite3_stmt *st;
+
+	if (sqlite3_prepare_v2(db, "SELECT sift_stat('t')", -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+	{
+		const char *p = strstr((const char *) sqlite3_column_text(st, 0), "parallel_scans=");
+
+		if (p)
+			atomic_fetch_add(&par_scans, atoll(p + 15));
+	}
+	sqlite3_finalize(st);
+}
+
 static void *
 reader(void *arg)
 {
@@ -161,6 +184,8 @@ reader(void *arg)
 
 	while (!atomic_load(&stop))
 		check_query(db, &s, !shared);
+	if (!shared)
+		count_par_scans(db);
 	if (!shared)
 		sqlite3_close(db);
 	return NULL;
@@ -291,6 +316,8 @@ main(int argc, char **argv)
 	{
 		sqlite3    *db = shared ? shared : open_db();
 
+		if (shared)
+			count_par_scans(shared);
 		exec(db, "INSERT INTO t(t, rank) VALUES ('integrity-check', 1)");
 		exec(db, "INSERT INTO cat(cat, rank) VALUES ('integrity-check', 1)");
 		if (shared)
@@ -298,8 +325,9 @@ main(int argc, char **argv)
 		else
 			sqlite3_close(db);
 	}
-	printf("%s readers=%d%s: %ld reads, %ld write rounds, %ld failures\n", mode == SQLITE_CONFIG_SERIALIZED ? "serialized" : "multi-thread",
-		   nreaders, share ? " (one shared connection)" : "", atomic_load(&reads), atomic_load(&writes), atomic_load(&failures));
+	printf("%s readers=%d%s: %ld reads, %ld write rounds, %ld parallel scans, %ld failures\n",
+		   mode == SQLITE_CONFIG_SERIALIZED ? "serialized" : "multi-thread", nreaders, share ? " (one shared connection)" : "",
+		   atomic_load(&reads), atomic_load(&writes), atomic_load(&par_scans), atomic_load(&failures));
 	if (path == tmp)
 	{
 		char		cmd[100];
