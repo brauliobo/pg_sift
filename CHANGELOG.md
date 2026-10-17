@@ -2,9 +2,22 @@
 
 ## Unreleased
 
+- Planner: `@@>` on a key whose index has `fields` (or any analyzer other than the default) is estimated from the index like any other. It is
+  the call `sift.match_idx`, which had no estimate, so the planner expected a third of the rows for every query (a term of 44 of 1M names as
+  a third of them) and costed the scan and the joins above it as for a broad term. A rare term of such an index, searched among the
+  properties of a tenant with 10% of the names (`id IN (SELECT ...)` through a left join that repeats them): hash join 2.6 s, now a
+  nested loop semi join under the ranked scan, 18 ms.
+- Planner: a ranked scan with a `LIMIT` is costed for what it does when drained. Past its limit hint it ranks again for four times as many
+  rows, to the last match, as a hash join or a sort above it makes it; its total cost was its startup plus a hundredth per row, so hash
+  plans over the whole scan looked far cheaper than they are and won against the nested loop semi join that stops at the limit. 1M names,
+  152k matches of `hotel`, a tenant with 0.3% of the names: 190 ms, now 68 ms (`h*`: 247 to 69 ms; a rare term 9.1 to 1.6 ms); tenants
+  with 2% to 50% keep their nested loop (17 and 3 ms), and one with 0.05% its hash join (about 110 ms).
 - Removed: reloption `phrase_index = pairs`; phrases use word positions. `CREATE INDEX ... WITH (phrase_index = ...)` fails like any unknown
   parameter, and an index built with it is refused ("built with other analyzer options") until `ALTER INDEX ... RESET (phrase_index)` and
   `REINDEX`.
+- Benchmarks: `bench/bench all` runs a slim tier by default (50,000 articles, 34,165 places, about 4 minutes, under 2 GB of disk at the peak) and
+  `--full` the full-size one; `bench/bench du` and `clean [--cache|--build|--all]` show and free the disk; `all --docs` regenerates `docs/results`, the
+  charts, `docs/BENCHMARKS.md` and the benchmark blocks of `README.md` from the slim tier.
 
 ## 1.2.0
 
