@@ -1,0 +1,48 @@
+-- A wide prefix (more terms than sift.max_expansions) is built from the postings of its terms in windows of
+-- superblocks that fit sift.test_prefix_gather, and a superblock that alone does not fit sums its postings
+-- on the spot: the memory of a pass is bounded by the budget, the matches and the scores are those of the
+-- unbounded build.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+-- 40k documents on about 200 pages per 256: several superblocks; every document has 3 words of the prefix
+CREATE TABLE rb (id int PRIMARY KEY, body text);
+INSERT INTO rb SELECT i, 'tk' || lpad((i % 700)::text, 3, '0') || ' tk' || lpad((i % 311)::text, 3, '0') || ' tkz' || (i % 3) ||
+	' w' || i % 7 || repeat(' pad filler words', i % 5) FROM generate_series(1, 40000) i;
+CREATE INDEX rb_idx ON rb USING sift (body);
+ANALYZE rb;
+SELECT count(*) > 1 AS several_superblocks FROM sift.segments('rb_idx'::regclass) WHERE docs > 0;
+
+CREATE FUNCTION rb_answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT (SELECT count(*) FROM rb WHERE body @@> %1$L) || '' '' ||
+		(SELECT string_agg(id || '':'' || s, '','' ORDER BY n) FROM (SELECT row_number() OVER () AS n, id, s
+			FROM (SELECT id, sift.score(ctid) s FROM rb WHERE body @@> %1$L ORDER BY sift.score(ctid) DESC, id LIMIT 30) x) y)', q) INTO r;
+	RETURN r;
+END $$;
+CREATE TEMP TABLE rb_q (q text);
+INSERT INTO rb_q VALUES ('tk*'), ('tk0*'), ('tk00*'), ('tkz*'), ('tk* w1'), ('tk* AND NOT w3'), ('tk0* OR w2^3'), ('t*');
+
+SET sift.max_expansions = 1;
+CREATE TEMP TABLE rb_ref AS SELECT q, rb_answer(q) AS a FROM rb_q;
+SELECT count(*) AS queries, count(DISTINCT a) AS distinct_answers FROM rb_ref;
+SELECT key, value > 0 AS nonzero FROM sift._test_read_stats() WHERE key IN ('prefix_passes', 'prefix_windows', 'prefix_direct') ORDER BY key;
+-- the unbounded build gathers every posting of the expansion at once: more than the budget used below
+SELECT value * 4 > 64 * 1024 AS unbounded_gathers_more FROM sift._test_read_stats(true) WHERE key = 'prefix_peak_postings';
+
+-- 1 kB = 256 postings: every pass of the segment is over budget, the windows are one superblock each
+SET sift.test_prefix_gather = 1;
+SET sift.prefix_cache_size = 0;
+SELECT q FROM rb_ref WHERE rb_answer(q) IS DISTINCT FROM a;
+SELECT key, value > 0 AS nonzero FROM sift._test_read_stats(true) WHERE key IN ('prefix_windows', 'prefix_direct') ORDER BY key;
+
+-- a budget of several superblocks: windows that gather, none that sums on the spot
+SET sift.test_prefix_gather = 64;
+SELECT q FROM rb_ref WHERE rb_answer(q) IS DISTINCT FROM a;
+SELECT key, value > 0 AS nonzero, value * 4 <= 64 * 1024 AS within_budget FROM sift._test_read_stats(true) WHERE key IN ('prefix_windows', 'prefix_peak_postings') ORDER BY key;
+
+DROP FUNCTION rb_answer(text);
+DROP TABLE rb;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

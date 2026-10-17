@@ -502,12 +502,14 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 
 		block_begin(d, off, buf, &it);
 		off += it.end - buf;
+		sift_sr_unlock(d->sr);
 		while (more && block_next(&it, &info))
 		{
 			if (lo && term_cmp(it.term, it.len, lo, lolen) < 0)
 				continue;
 			more = (!hi || term_cmp(it.term, it.len, hi, hilen) < 0) && fn(arg, it.term, it.len, &info);
 		}
+		sift_sr_unlock(d->sr);	/* a buffer lock holds off interrupts */
 		CHECK_FOR_INTERRUPTS();
 	}
 	pfree(buf);

@@ -75,3 +75,7 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 -- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
+
+-- Read side (src/sift_read_test.c): what this backend's reads allocated and did; reset clears the counters.
+CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_read_stats' LANGUAGE C STRICT;

@@ -378,7 +378,10 @@ typedef struct regex_t
 {
 	void	   *posix;				/* regex_t of <regex.h> */
 	int			magic;
+	long		re_info;
 } regex_t;
+
+#define REG_UBACKREF	0x0001			/* the pattern has a back-reference */
 
 #define REG_ADVANCED	0x0001
 #define REG_NOSUB		0x0002

@@ -13,6 +13,7 @@ typedef struct pgre
 {
 	regex_t	   *posix;
 	int			magic;
+	long		re_info;
 } pgre;
 
 typedef uint32_t pg_wchar;
@@ -72,6 +73,12 @@ pg_regcomp(void *re, const pg_wchar *pattern, size_t len, int cflags, unsigned i
 	int			rc;
 
 	strip_noncapturing(s);
+	r->re_info = 0;
+	for (const char *p = s; *p; p++)
+		if (*p == '\\' && p[1] >= '1' && p[1] <= '9')
+			r->re_info = 1;
+		else if (*p == '\\' && p[1])
+			p++;
 	r->posix = malloc(sizeof(regex_t));
 	rc = regcomp(r->posix, s, REG_EXTENDED | REG_NOSUB);
 	free(s);

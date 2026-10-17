@@ -1,0 +1,49 @@
+/*
+ * sift_read_test.c - test-only SQL function sift._test_read_stats, compiled only with SIFT_TESTING and
+ * registered by the pg_sift_test extension: what the read side of this backend allocated and did since
+ * the last reset (term blob and cursor memory, passes of wide prefixes).
+ */
+#include "postgres.h"
+
+#ifdef SIFT_TESTING
+
+#include "funcapi.h"
+#include "utils/builtins.h"
+
+#include "sift_posting.h"
+#include "sift_prefix.h"
+
+PG_FUNCTION_INFO_V1(sift_test_read_stats);
+
+/* (reset bool) returns setof (key text, value int8) */
+Datum
+sift_test_read_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	const struct
+	{
+		const char *key;
+		uint64		value;
+	}			stats[] = {
+		{"prefix_passes", sift_prefix_stats.passes},
+		{"prefix_windows", sift_prefix_stats.windows},
+		{"prefix_direct", sift_prefix_stats.direct},
+		{"prefix_peak_postings", sift_prefix_stats.peak},
+	};
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < lengthof(stats); i++)
+	{
+		Datum		values[2] = {CStringGetTextDatum(stats[i].key), Int64GetDatum(stats[i].value)};
+		bool		nulls[2] = {false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	}
+	if (PG_GETARG_BOOL(0))
+	{
+		memset(&sift_prefix_stats, 0, sizeof(sift_prefix_stats));
+	}
+	return (Datum) 0;
+}
+
+#endif							/* SIFT_TESTING */

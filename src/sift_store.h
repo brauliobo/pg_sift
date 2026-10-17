@@ -312,6 +312,9 @@ extern const void *sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, voi
 extern void sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len);
 extern void sift_sr_release(SiftStreamReader *sr);
 
+/* Drops the share lock the last read left on its page (a pointer it returned is invalid): the caller may then serve interrupts */
+extern void sift_sr_unlock(SiftStreamReader *sr);
+
 /*
  * Blocks referenced by any directory entry, the free list or the metapage
  * and directory themselves (allocates in CurrentMemoryContext). ERROR if a

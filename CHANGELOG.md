@@ -13,6 +13,17 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   it: same bounds, same pruning), so a document matching thousands of terms can no longer score above its block's bound and be pruned.
   No wrong result was found at 300 terms (`rank_leaves` compares the top k with an exact reference).
 
+- Changed: `sift.max_expansions` and `sift.prefix_cache_size` are superuser settings (`PGC_SUSET`) instead of settable by any role: with
+  up to 1,000,000 expansions and 1 GB of cache per backend they let any role exhaust the server's memory. Set them in `postgresql.conf`,
+  `ALTER SYSTEM`, `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`; a role that sets them in a session gets `permission denied to set parameter`.
+- Fix: a wide prefix gathered four bytes of memory per posting of every term it expands to, without bound (`t*` on a billion postings is
+  4 GB). A pass now gathers at most 128 MB, then counts the postings of every superblock and builds the superblocks in windows that fit
+  it (a superblock that alone does not fit sums the term frequencies as they come, 128 kB); the result is the same blob, bit for bit. A
+  prefix that fits the budget (every one before) takes the same single pass as before. The scan of the dictionary and of the postings
+  of the expansion serves cancel and `statement_timeout` at every block and group (a buffer lock held during the scan held them off).
+- Changed: a regular expression leaf cannot have back-references (`/(a+)\1/`): they make a match exponential in the length of the term.
+  The query fails at parse time like any invalid expression.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
