@@ -32,6 +32,8 @@ extern PGDLLIMPORT int sift_test_page_text;
 /* the nth merge of a CREATE INDEX (0 = none) is cancelled after a few terms: in the leader or a serial build (1), the workers (2), any (0) */
 extern PGDLLIMPORT int sift_test_fail_merge;
 extern PGDLLIMPORT int sift_test_fail_who;
+/* a CREATE INDEX waits to enter each progress phase (2 scan, 3 spill, 4 merge, 5 write) for the advisory lock this + the phase (0 = no gate) */
+extern PGDLLIMPORT int sift_test_phase_gate;
 #endif
 
 typedef struct SiftInvBuf SiftInvBuf;

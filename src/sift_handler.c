@@ -125,6 +125,9 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_fail_who",
 							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
 							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_phase_gate",
+							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
+							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
@@ -331,7 +334,7 @@ sift_handler(PG_FUNCTION_ARGS)
 	am->amcostestimate = sift_amcostestimate;
 	am->amoptions = sift_amoptions;
 	am->amproperty = NULL;
-	am->ambuildphasename = NULL;
+	am->ambuildphasename = sift_ambuildphasename;
 	am->amvalidate = sift_amvalidate;
 	am->amadjustmembers = NULL;
 	am->ambeginscan = sift_ambeginscan;

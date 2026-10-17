@@ -132,6 +132,7 @@ and merges; VACUUM promotes, merges and clears dead postings.
 `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index.
 
 - `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
+- `pg_stat_progress_create_index` shows a build's phase (`scanning table`, `spilling runs`, `merging runs`, `writing segments`) and the documents done.
 - pg_dump restores rebuild the index. Replication: see [Replication](#replication).
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
 
