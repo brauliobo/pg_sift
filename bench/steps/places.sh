@@ -35,6 +35,7 @@ esac
 MAIN_PORT_OFFSET=1 MAIN_DATA=$ROOT/pg/${TIER}places   # the main cluster of the session (serial mode, check): not the articles'
 LANE_PORT_BASE=$(( ${TIER_PORT[$TIER]} + 50 ))
 . "$STEPS/lanes.sh"
+. "$STEPS/xlib.sh"
 NQ=${NQ:-12} RSE=${RSE:-0.05} MIN_TIME=${MIN_TIME:-0.25} MIN_N=${MIN_N:-3}
 [[ $what != check ]] || NQ=${4:-30}
 DATADIR=$DATA/places-$([[ $TIER == Q ]] && echo quick || echo full)
@@ -45,8 +46,13 @@ export LOG_TAG=places
 
 ENGINES=${ENGINES:-$DEFAULT_ENGINES}
 edb() { echo "places_$1"; }
+declare -A EXT   # the engines outside Postgres (steps/xlib.sh)
 # shellcheck disable=SC2086  # one argument per engine
-cleanup() { [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $(lane_clusters $ENGINES); do lane_destroy "$e"; done; rm -rf "$ROOT/places"; }; }
+cleanup() {
+  local e
+  for e in "${!EXT[@]}"; do lane_run "$e" xe "$e" x_stop 2>/dev/null || true; done
+  [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $(lane_clusters $ENGINES); do lane_destroy "$e"; done; rm -rf "$ROOT/places"; }
+}
 trap cleanup EXIT
 
 # the query forms (columns q sq sqb tq ng) of the pq rows, see engines/_places.sh; add a column here when an engine needs another
@@ -64,6 +70,7 @@ ENGINES=$(lanes_available places "$ENGINES" | tr '\n' ' ')
 declare -A STMT PSETUP PINDEX PINDEXES PSETUP2 PINDEX2 PINDEXES2 FLAVOR FLAVOR_MATCH
 for e in $ENGINES; do
   load_engine "$e"
+  [[ -z $EXTERNAL ]] || EXT[$e]=1
   PSETUP[$e]=$PLACES_SETUP PINDEX[$e]=$PLACES_INDEX PINDEXES[$e]=$PLACES_INDEXES
   PSETUP2[$e]=$PLACES_SETUP2 PINDEX2[$e]=$PLACES_INDEX2 PINDEXES2[$e]=$PLACES_INDEXES2
   FLAVOR[$e]=$PLACES_FLAVOR FLAVOR_MATCH[$e]=${PLACES_FLAVOR_MATCH:-$PLACES_FLAVOR}
@@ -87,22 +94,32 @@ timed_build() { # ENGINE VARIANT SETUP INDEX INDEXES: build row: engine, index b
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" "$size" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
     "$(elapsed_s "$t0" "$t1")" "$2" >>"$RUN/builds.row"
 }
+ensure_places() { # once per cluster: the places table (a vacuumed template of every engine's database), the oracle tables for a check
+  db_exists places && return 0
+  PGDATABASE=postgres q -c "CREATE DATABASE places"
+  PGDATABASE=places q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
+  PGDATABASE=places q -c "VACUUM (FREEZE, ANALYZE) places"   # every copy starts with a complete visibility map: count(*) of sift reads the heap of the pages that are not all-visible
+  if [[ $what == check ]]; then PGDATABASE=places q -f "$BENCH/sql/places_oracle.sql" >/dev/null; PGDATABASE=places q -c "SELECT place_oracle_fill($NQ)" >/dev/null; fi
+}
+# what an engine outside Postgres needs rendered: the workloads and classes of the cells, those of the cold-cache cells
+x_requests() { if [[ $what == cold ]]; then echo "top boost filter count|p1 p2 a2 a3"; else echo "$WLS|$CLASSES"; fi; }
 prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (or the lane taken from the cache)
-  local e=$1 key=''
+  local e=$1 key='' req
   export RUN=$ROOT/places/$e
   mkdir -p "$RUN"; : >"$RUN/builds.row"
+  if [[ -n ${EXT[$e]:-} ]]; then   # a server of its own, built every time
+    lane_start "$e"; ensure_places
+    req=$(x_requests)
+    xe "$e" xp_prepare "${req%|*}" "${req#*|}"
+    xe "$e" x_warm "${XWARM:-1}" 1 "$RUN"/*.q   # the JVM and the caches warm: what the first execution of a statement is for Postgres
+    return
+  fi
   [[ -z $CONCURRENT ]] || key=$(lane_key "$e" "$DATADIR/places.tsv" "$DATADIR/queries.tsv")
   if [[ -n $CONCURRENT ]] && lane_cached "$e" "$key"; then
     lane_restore "$e" "$key"; lane_start "$e"; cp "$LANE_CACHE/$key/builds.row" "$RUN/builds.row"
     log "$e: built database from the cache ($key)"; return
   fi
-  lane_start "$e"
-  if ! db_exists places; then   # once per cluster
-    PGDATABASE=postgres q -c "CREATE DATABASE places"
-    PGDATABASE=places q -v dir="$DATADIR" -f "$BENCH/sql/places_schema.sql"
-    PGDATABASE=places q -c "VACUUM (FREEZE, ANALYZE) places"   # every copy starts with a complete visibility map: count(*) of sift reads the heap of the pages that are not all-visible
-    if [[ $what == check ]]; then PGDATABASE=places q -f "$BENCH/sql/places_oracle.sql" >/dev/null; PGDATABASE=places q -c "SELECT place_oracle_fill($NQ)" >/dev/null; fi
-  fi
+  lane_start "$e"; ensure_places
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $(edb "$e") WITH (FORCE)" -c "CREATE DATABASE $(edb "$e") TEMPLATE places"
   timed_build "$e" - "${PSETUP[$e]}" "${PINDEX[$e]}" "${PINDEXES[$e]}"
   [[ -z ${PINDEX2[$e]} ]] || timed_build "$e" emulation "${PSETUP2[$e]}" "${PINDEX2[$e]}" "${PINDEXES2[$e]}"
@@ -110,21 +127,31 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
   [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
 }
 pids=()
-first=${ENGINES%% *}
-serial_cache=''; [[ -n $CONCURRENT || $what == check ]] || serial_cache=$(serial_key "$DATADIR/places.tsv" "$DATADIR/queries.tsv")   # one cluster: it is cached as a whole
+PG_ENGINES=$(for e in $ENGINES; do [[ -n ${EXT[$e]:-} ]] || echo "$e"; done | tr '\n' ' ')
+first=${PG_ENGINES%% *}
+# one cluster: the Postgres engines are cached as a whole (an engine outside Postgres has its own server and is built every time)
+serial_cache=''; [[ -n $CONCURRENT || $what == check || -z $PG_ENGINES ]] || serial_cache=$(KEY_ENGINES=$PG_ENGINES serial_key "$DATADIR/places.tsv" "$DATADIR/queries.tsv")
+build_failed() { echo "build of $1 failed: $(tail -3 "$ROOT/places/$1.prepare.log")" >&2; exit 1; }
 if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
   lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
   for e in $ENGINES; do mkdir -p "$ROOT/places/$e"; done
+  for e in "${!EXT[@]}"; do
+    lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || build_failed "$e"
+    cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"
+  done
   log "built databases from the cache ($serial_cache)"
 else
   for e in $ENGINES; do
     if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 & pids+=($!)
-    else lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$ROOT/places/$e.prepare.log")" >&2; exit 1; }; fi
+    else lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || build_failed "$e"; fi
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$ROOT"/places/*.prepare.log)" >&2; exit 1; }; done
   : >"$DEST/builds.tsv"
   for e in $ENGINES; do cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"; done
-  [[ -z $serial_cache ]] || lane_save "$first" "$serial_cache" "$DEST/builds.tsv"
+  if [[ -n $serial_cache ]]; then
+    mkdir -p "$ROOT/places/pg"; for e in $PG_ENGINES; do cat "$ROOT/places/$e/builds.row"; done >"$ROOT/places/pg/builds.tsv"
+    lane_save "$first" "$serial_cache" "$ROOT/places/pg/builds.tsv"
+  fi
 fi
 log "built: $(awk '{printf "%s%s %.1fs %.0fMB; ", $1, $6 == "-" ? "" : "+" $6, $2, $3 / 1048576}' "$DEST/builds.tsv")"
 phase 'restore and build'
@@ -148,9 +175,17 @@ if [[ $what == cold ]]; then
       printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t"
     done; done >"$ROOT/places/$e/cold.part"
   }
+  # shellcheck disable=SC2329  # run by lane_run
+  cold_http() { # ENGINE, in its lane: an engine outside Postgres closes and opens its index before every request (steps/xlib.sh)
+    local e=$1 wl c
+    for wl in top boost filter count; do for c in p1 p2 a2 a3; do
+      printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$(xe "$e" x_cold_class "$ROOT/places/$e/$wl.$c.q" places)"
+    done; done >"$ROOT/places/$e/cold.part"
+  }
   pids=()
   for e in $ENGINES; do
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" cold_lane "$e" & pids+=($!); else lane_run "$e" cold_lane "$e"; fi
+    fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
+    if [[ -n $CONCURRENT ]]; then lane_run "$e" $fn "$e" & pids+=($!); else lane_run "$e" $fn "$e"; fi
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
@@ -164,16 +199,30 @@ if [[ $what == check ]]; then   # per engine and workload: the oracle's agreemen
   # what a word is for the engine's index (sql/places_oracle.sql): fold (accents and case), split (alphanumeric runs) or pg (the PG parser)
   flavor() { [[ $1 == match ]] && echo "${FLAVOR_MATCH[$2]}" || echo "${FLAVOR[$2]}"; }
   printf 'engine\tworkload\tqueries\texact\tagree\tworst\twrong\tshort\tagree per class\n' | tee "$DEST/check.txt"
+  check_sql() { # ENGINE WORKLOAD FROM-ITEM: the row of the summary
+    echo "SELECT '$1', '$2', sum(queries), sum(exact), round(sum(agree * queries) / sum(queries), 3), min(worst), sum(wrong), sum(short), string_agg(class || '=' || agree, ' ' ORDER BY class) FROM $3"
+  }
   for e in $ENGINES; do for wl in $wls; do
+    if [[ -n ${EXT[$e]:-} ]]; then   # the answers of the server, compared in the places database that holds the oracle
+      ids=$(RUN=$ROOT/places/$e lane_run "$e" xe "$e" xp_ids "$wl" "$NQ")
+      PGDATABASE=places lane_run "$e" q -F $'\t' -c "CREATE TEMP TABLE place_got (qid int, ids int[])" -c "\\copy place_got FROM '$ids'" \
+        -c "$(check_sql "$e" "$wl" "place_check_ids('$wl', '$(flavor "$wl" "$e")')")" | tail -1 | tee -a "$DEST/check.txt"
+      continue
+    fi
     [[ -n $(stmt "$wl" "$e") ]] || continue
-    PGOPTIONS="-c paradedb.planner_warnings=off" PGDATABASE=$(edb "$e") lane_run "$e" q -F $'\t' -c "SELECT '$e', '$wl', sum(queries), sum(exact), round(sum(agree * queries) / sum(queries), 3), min(worst), sum(wrong), sum(short),
-        string_agg(class || '=' || agree, ' ' ORDER BY class) FROM place_check('$wl', \$chk\$$(stmt "$wl" "$e")\$chk\$, '$(flavor "$wl" "$e")')" | tee -a "$DEST/check.txt"
+    PGOPTIONS="-c paradedb.planner_warnings=off" PGDATABASE=$(edb "$e") lane_run "$e" q -F $'\t' \
+      -c "$(check_sql "$e" "$wl" "place_check('$wl', \$chk\$$(stmt "$wl" "$e")\$chk\$, '$(flavor "$wl" "$e")')")" | tee -a "$DEST/check.txt"
   done; done
   exit 0
 fi
 
 cell() { # WORKLOAD CLASS ENGINE -> "p50 p95 stderr-of-p50 transactions seconds" (ms, tab separated) of single-client transactions: one primary-key lookup of the query text plus the statement
   local e=$3 f=$ROOT/places/$3.sql
+  if [[ -n ${EXT[$e]:-} ]]; then   # an engine outside Postgres: the request file of the workload and class, one client over HTTP
+    [[ -f $ROOT/places/$e/$1.$2.q ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }
+    RUN=$ROOT/places/$e lane_run "$e" xe "$e" x_cell_se latency "$ROOT/places/$e/$1.$2.q"
+    return
+  fi
   [[ -n $(stmt "$1" "$e") ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }   # the engine has no such query
   { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$e");"; } >"$f"
   PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" loadgen python3 -I "$STEPS/cell.py" latency --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \

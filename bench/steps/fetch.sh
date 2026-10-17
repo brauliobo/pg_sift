@@ -87,12 +87,15 @@ fetch_pg_search() {
   esac
 }
 
-fetch_elasticsearch() {
-  local tgz; tgz=$(dl elasticsearch "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-$ES_VERSION-linux-x86_64.tar.gz")
-  [[ -d $ENG/elasticsearch/es ]] || { mkdir -p "$ENG/elasticsearch/es"; tar -xzf "$tgz" -C "$ENG/elasticsearch/es" --strip-components=1; }
+fetch_elasticsearch() { # nothing to download: the system package is the engine (adapter: engines/elasticsearch.sh), and xbench drives it
+  local home=${ES_HOME:-/usr/share/elasticsearch}
+  [[ -x $home/bin/elasticsearch ]] || { echo "elasticsearch: $home/bin/elasticsearch is missing: install the system package (pacman -S elasticsearch)" >&2; return 1; }
+  fetch_xbench
 }
 
-fetch_tantivy() { (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$ROOT/target nice -n 19 cargo build --release -j "$JOBS" -q); }
+# the load generator of the engines outside Postgres (and Tantivy's driver)
+fetch_xbench() { (cd "$BENCH/xbench" && CARGO_TARGET_DIR=$ROOT/target nice -n 19 cargo build --release -j "$JOBS" -q); }
+fetch_tantivy() { fetch_xbench; }
 
 mkdir -p "$BUILD"
 for t in ${*:-sift rum pg_search pg_textsearch}; do "fetch_$t"; log "fetched $t"; done

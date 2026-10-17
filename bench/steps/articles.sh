@@ -19,8 +19,10 @@
 # Classes (CLASSES): and or phrase mixed count filter join (the sampled substrings of the trace, top-10 unless count / filter /
 # join), term prefix fuzzy (36 derived queries, sql/harness.sql), update (writers at UPDATE_RATE ops/s: 70% update, 15% insert,
 # 15% delete, while the `mixed` readers run; the cell is the readers' queries per second, the writers' rate and the WAL written
-# are `write_ops` and `wal_mib` rows). A class an engine cannot render is NA. Engines outside Postgres (Elasticsearch, Tantivy)
-# are driven by bench/xbench (steps/xlib.sh) for a fixed SECS seconds, like the update class; the cold-cache tables are Postgres only.
+# are `write_ops` and `wal_mib` rows). A class an engine cannot render is NA. Elasticsearch is driven by bench/xbench (steps/xlib.sh)
+# through the same cells as the Postgres engines (steps/cell.py --xbench), after a warm-up of every class (XWARM seconds, default 3);
+# Tantivy and the update class run for a fixed SECS seconds. Cold cache: Elasticsearch closes and opens its index before every
+# request (xlib.sh); Tantivy has no cold cell.
 # Only compact tables are kept: $DEST (default $RESULTS/<mode>-<time>)/{cells,builds}.tsv (cold.tsv for cold), machine.txt and
 # phases.txt (wall time of the phases); the lanes are removed on exit (KEEP=1 keeps them), the corpus dump stays in $CACHE.
 # Env: ENGINES CLASSES COLD (cold classes, default all but update) CLIENTS SECS (the longest a cell is measured) MIN_TIME MIN_N RSE
@@ -130,8 +132,14 @@ prepare() { # ENGINE, in its lane: the database restored from the corpus and bui
     [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
   fi
 }
+warm_http() { # ENGINE, in its lane: every class for a few seconds, the JVM and the caches of the server warm, what prewarm is for the relations
+  local c f=()
+  for c in $CLASSES; do [[ $c == update || ! -f $OUT/$1/$c.q ]] || f+=("$OUT/$1/$c.q"); done
+  RUN=$OUT/$1 xe "$1" x_warm "${XWARM:-3}" "$CLIENTS" "${f[@]}"
+}
 finish() { # ENGINE, in its lane, once its database is built: the statements of the classes, the relations in shared buffers
-  is_external "$1" || { RUN=$OUT/$1; PGDATABASE=$(engine_db "$1") class_scripts; PGDATABASE=$(engine_db "$1") prewarm; }
+  if ! is_external "$1"; then RUN=$OUT/$1; PGDATABASE=$(engine_db "$1") class_scripts; PGDATABASE=$(engine_db "$1") prewarm
+  elif is_http "$1"; then warm_http "$1"; fi
 }
 prepare_lane() { prepare "$1"; finish "$1"; }   # concurrent lanes: one job per engine
 
@@ -179,20 +187,30 @@ BUDGET=$(lanes_describe) "$STEPS/machine.sh" >"$DEST/machine.txt"
 for e in $ENGINES; do mkdir -p "$OUT/$e"; is_external "$e" && { EXT[$e]=1; EXTERNALS+=" $e"; }; done
 phase 'dump'
 pids=()
-first=${ENGINES%% *}
-serial_cache=''; [[ -n $CONCURRENT || -n $EXTERNALS ]] || serial_cache=$(serial_key "$DUMP")   # one cluster: it is cached as a whole
+PG_ENGINES=$(for e in $ENGINES; do [[ -n ${EXT[$e]:-} ]] || echo "$e"; done | tr '\n' ' ')
+first=${PG_ENGINES%% *}
+# one cluster: the Postgres engines are cached as a whole (an engine outside Postgres has its own server and is built every time)
+serial_cache=''; [[ -n $CONCURRENT || -z $PG_ENGINES ]] || serial_cache=$(KEY_ENGINES=$PG_ENGINES serial_key "$DUMP")
+build_failed() { echo "build of $1 failed: $(tail -3 "$OUT/$1/prepare.log")" >&2; exit 1; }
 if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
   lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
+  for e in $EXTERNALS; do
+    lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || build_failed "$e"
+    cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"
+  done
   log "built databases from the cache ($serial_cache)"
 else
   for e in $ENGINES; do
     if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare_lane "$e" >"$OUT/$e/prepare.log" 2>&1 & pids+=($!)
-    else lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || { echo "build of $e failed: $(tail -3 "$OUT/$e/prepare.log")" >&2; exit 1; }; fi
+    else lane_run "$e" prepare "$e" >"$OUT/$e/prepare.log" 2>&1 || build_failed "$e"; fi
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$OUT"/*/prepare.log)" >&2; exit 1; }; done
   : >"$DEST/builds.tsv"
   for e in $ENGINES; do cat "$OUT/$e/builds.row" >>"$DEST/builds.tsv"; done
-  [[ -z $serial_cache ]] || lane_save "$first" "$serial_cache" "$DEST/builds.tsv"
+  if [[ -n $serial_cache ]]; then
+    mkdir -p "$OUT/pg"; for e in $PG_ENGINES; do cat "$OUT/$e/builds.row"; done >"$OUT/pg/builds.tsv"
+    lane_save "$first" "$serial_cache" "$OUT/pg/builds.tsv"
+  fi
 fi
 if [[ -z $CONCURRENT ]]; then for e in $ENGINES; do lane_run "$e" finish "$e"; done; fi
 log "built $ENGINES: $(awk '{printf "%s %.1fs %.0fMB; ", $2, $5, $6 / 1048576}' "$DEST/builds.tsv")"
@@ -212,10 +230,18 @@ if [[ $cold ]]; then
       printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
     done >"$RUN/cold.part"
   }
+  # shellcheck disable=SC2329  # run by lane_run
+  cold_http() { # ENGINE, in its lane: the cold-cache times of an HTTP engine (the index closed and opened before every request, xlib.sh); the other external engines have no cold cell
+    local e=$1 c t; RUN=$OUT/$e
+    for c in ${COLD:-${CLASSES/update/}}; do
+      if is_http "$e" && [[ -f $RUN/$c.q ]]; then t=$(xe "$e" x_cold_class "$RUN/$c.q" docs); else t=$'NA\tNA\t0'; fi
+      printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
+    done >"$RUN/cold.part"
+  }
   pids=()
   for e in $ENGINES; do
-    [[ -z ${EXT[$e]:-} ]] || { log "cold: $e is not a Postgres engine, its caches cannot be evicted"; continue; }
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" cold_lane "$e" & pids+=($!); else lane_run "$e" cold_lane "$e"; fi
+    fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
+    if [[ -n $CONCURRENT ]]; then lane_run "$e" $fn "$e" & pids+=($!); else lane_run "$e" $fn "$e"; fi
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
