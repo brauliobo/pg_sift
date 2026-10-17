@@ -13,7 +13,7 @@ Usage: bench/bench COMMAND [options]
 
 One suite for every engine and every dataset: sift (and its variants), ParadeDB pg_search, pg_textsearch, rum, pgx-bm25, gin,
 Tantivy, Elasticsearch on two public datasets, every engine on a throwaway PostgreSQL 18 cluster of its own (a lane; Elasticsearch and Tantivy
-run as a server / library next to it, driven over HTTP by xbench) with an equal share of the CPU budget, all engines measured at the same time so host load drifts hit all of them alike (--serial: one cluster, interleaved). The engines are the lines of bench/engines.tsv, each with an adapter bench/engines/<id>.sh.
+run as a server / library next to it, driven over HTTP by xbench). The engines are built one after the other and then measured one at a time, each with every CPU of the host to itself, interleaved in rounds so that drifts of the host load hit all of them alike. The engines are the lines of bench/engines.tsv, each with an adapter bench/engines/<id>.sh.
 
 Commands
   setup      check the prerequisites, download and convert the datasets, build or unpack the engines (what is up to date is skipped)
@@ -34,8 +34,9 @@ Commands
              build time too); exit status 1 on a regression. `regress --run` builds both and measures sift and sift_ref on the
              articles and places (a reduced matrix of classes, see --engines to add sift_nopos and --classes to widen
              it) and compares; `regress [DIR|results.tsv ...]` compares results that exist (default bench/out/latest)
-  check      correctness: `check oracle ENGINE [N]` compares match sets and count(*) with a tsvector oracle,
-             `check rank ENGINE [N]` compares the top-10 with pgx-bm25's BM25 (any engine, external ones included);
+  check      correctness: `check oracle [ENGINE] [N]` compares match sets and count(*) with a tsvector oracle,
+             `check rank [ENGINE] [N]` compares the top-10 with pgx-bm25's BM25 (any engine, external ones included); without
+             ENGINE every engine of --engines (default: all) is checked, exit status 1 if one fails;
              `check --dataset places [oracle|rank] [N]` runs every engine of --engines on N (default 30) places queries
              per class against the SQL oracle of sql/places_oracle.sql (match sets; BM25 top-20 of top, boost, filter)
   suite      the standard multi-engine suite: `suite [ENGINE...]` is `run --dataset articles` over every engine (default) with
@@ -55,10 +56,10 @@ check, workers and the engines' databases of a run start the tier's cluster, loa
 Options (not every option applies to every command)
   --tier T          slim | ab | full (default slim; quick is the old name of slim)
                       slim   50,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of cells of at most 1 s that stop at a
-                             relative standard error of 5%: the default, the source of the numbers of README.md; about 2 minutes
-                             of measurements after the one-time setup
+                             relative standard error of 5%: the default, the source of the numbers of README.md; minutes of
+                             measurements after the one-time setup (bench/README.md has the measured time)
                       ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of docs/BENCHMARKS.md (about 4 minutes)
-                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds (--serial: 51 minutes measured with the previous fixed-length cells, 18 minutes of cells with cells that stop on their standard error; docs/BENCHMARKS.md)
+                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds
   --full            same as --tier full: the full-size run (the numbers kept in docs/BENCHMARKS.md as history)
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
@@ -67,18 +68,13 @@ Options (not every option applies to every command)
   --classes LIST    comma separated classes. articles: and or phrase mixed count filter join term prefix fuzzy update; places:
                     p1 p2 p3 p4 w1 a2 a2s a3 x2 (default: the classes of the tier; a dataset with none of the names is not run)
   --workloads LIST  places workloads: top boost filter count scan (default: those of the tier)
-  --cpus LIST       the server CPUs of the CPU budget (default: the 8 least busy hardware threads, whole cores, picked by
-                    steps/cpus.sh); with --load-cpus the budget is printed in the machine description and the tables
-  --load-cpus LIST  the CPUs of the load generators (pgbench, xbench), disjoint from the servers' (default: 4 threads)
-  --serial          one cluster with all server CPUs and the engines interleaved cell by cell (the earlier method) instead of one
-                    cluster per engine, each on an equal share of the CPUs, all engines measured at the same time
   --rebuild         build every engine database again instead of taking it from the cache of built clusters ($BENCH_STORE/cache/lanes)
   --keep            keep the cache of built clusters after the session (written by every run, bounded by BENCH_CACHE_MAX); without it the
                     cache is written only when a second session needs it (`all` with the cold-cache tables) and removed after the session
   --sample N        statements per class of the articles trace every engine gets (default 0 = the whole trace; a fixed
                     pseudo-random order, the same for every engine)
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
-  --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default: from the CPU lists)
+  --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default: one per hardware thread, 4 pgbench threads)
   --max-time S      the longest a cell is measured in a round, seconds (alias --duration; defaults: slim 1, ab 2, full 2 for articles;
                     places 1 / 1 / 1). A cell stops earlier as soon as its relative standard error is at most --rse; the slow ones
                     (tens of ms and more per query) run the whole time
@@ -95,7 +91,7 @@ Options (not every option applies to every command)
                     to the last one). report: where results.tsv / builds.tsv / tables.md are written
   --docs            report: also write docs/results/<dataset>.tsv (the committed chart input), redraw docs/img and rewrite the generated
                     blocks of README.md and docs/BENCHMARKS.md; all: also measure the cold-cache tables, then report --docs
-  --no-build        setup/all: use the engines already built under $SIFT_BENCH_ROOT
+  --no-build        setup/all: use the engines already built under $BENCH_WORK
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   -h, --help        this text
@@ -117,12 +113,10 @@ Environment
                     converts / builds again what it finds up to date
   SIFT_SRC          head | worktree: sift is built from the last commit or the tracked files (default worktree)
   SIFT_REF          the git ref of sift_ref (default v1.1.0)
-  BM25_PKG, BM25_SRC  pgx-bm25: the Arch package to unpack, or the source tarball to build (setup --engines bm25)
+  BM25_PKG, BM25_SRC  pgx-bm25 when it is not installed (it is a system package: pacman -S pgx-bm25): the Arch package to unpack, or the source tarball to build
   JOBS              parallel jobs of the engine builds (default 4)
-  CPU_QUOTA, MEM_MAX  the quota of an engine server (default 100% per CPU of its share) and its memory cap (32G), as a cgroup scope
-                    when a systemd user session exists
   MINR, MAXR, RSE, SECS, WARM, CLIENTS, TIMEOUT, UPDATE_RATE, KEEP=1 (keep the cluster), Q_DOCS  see steps/articles.sh, steps/places.sh
-  Pinned versions, dump dates and checksums: bench/versions.env
+  Versions, dump dates and checksums: bench/versions.env
 
 Examples
   bench/bench all                                     clean machine to tables, slim tier, about 2 minutes of measurements
@@ -147,7 +141,7 @@ trap '[[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true' EXIT   # t
 
 # --- options
 SLIM_DOCS=50000   # articles of the slim tier (the places are cities15000): bench/README.md says why this size
-tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean='' ref='' run='' cpus='' load_cpus='' keep='' clean_cache='' clean_build=''
+tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean='' ref='' run='' keep='' clean_cache='' clean_build=''
 rest=()
 parse() {
   while (( $# )); do
@@ -165,9 +159,6 @@ parse() {
       --rounds) rounds=$2; shift ;;
       --ref) ref=$2; shift ;;
       --run) run=1 ;;
-      --cpus) cpus=$2; shift ;;
-      --load-cpus) load_cpus=$2; shift ;;
-      --serial) export SERIAL=1 ;;
       --rebuild) export NO_CACHE=1 ;;
       --keep) export KEEP_CACHE=1 LANE_CACHE_WRITE=1 ;;
       --cache) clean_cache=1 ;;
@@ -223,21 +214,10 @@ tier_env() {
   [[ -z $clients ]] || export CLIENTS=$clients
   [[ -z $workers ]] || export WORKERS=$workers THREADS=$workers
   [[ -z $workloads ]] || export WLS=$workloads
-  budget
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
 engine_default=DEFAULT_ENGINES   # the lib.sh list `selected` falls back to: DEFAULT_ENGINES, SUITE_ENGINES (suite), PAIR_ENGINES (regress)
-budget() { # the CPU budget: CPUS and LOAD_CPUS from the options, the environment or the machine as it is now
-  [[ -z $cpus ]] || CPUS=$cpus
-  [[ -z $load_cpus ]] || LOAD_CPUS=$load_cpus
-  if [[ -z ${CPUS:-} || -z ${LOAD_CPUS:-} ]]; then
-    local picked; picked=$("$STEPS/cpus.sh")
-    CPUS=${CPUS:-${picked% *}} LOAD_CPUS=${LOAD_CPUS:-${picked#* }}
-  fi
-  export CPUS LOAD_CPUS
-  echo "cpu budget: servers on CPUs $CPUS, load generators on CPUs $LOAD_CPUS${SERIAL:+ (serial: one cluster)}"
-}
-perf_lock() { # one run at a time on the machine: the sessions of a run time their cells on purpose together, so the run holds the lock
+perf_lock() { # one run at a time on the machine: the run holds the lock
   [[ -z ${PERF_LOCK_HELD:-} ]] || return 0
   exec 8>>/tmp/sift-perf.lock
   flock -n 8 || { echo "waiting for the perf lock (another benchmark is timing)"; flock 8; }
@@ -296,7 +276,10 @@ cmd_setup() {
     # shellcheck disable=SC2046  # one argument per engine
     for t in $(fetch_targets $(selected)); do
       [[ $t != sift ]] || echo "sift ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'no git'))"
-      "$STEPS/fetch.sh" "$t" || { echo "warning: $t could not be built or fetched; using the system's if installed" >&2; [[ $t == sift ]] || rm -rf "${ENG:?}/$t/root"; }
+      "$STEPS/fetch.sh" "$t" || case $t in
+        elasticsearch|bm25) die "$t is a system package of this suite and is not installed (the message above says how)" ;;
+        *) echo "warning: $t could not be built or fetched; using the system's if installed" >&2; [[ $t == sift ]] || rm -rf "${ENG:?}/$t/root" ;;
+      esac
     done
   fi
   [[ -z $dpid ]] || { wait "$dpid" || { cat "$dlog" >&2; rm -f "$dlog"; die "the datasets could not be downloaded or converted"; }; cat "$dlog"; rm -f "$dlog"; }
@@ -442,14 +425,18 @@ cmd_check() {
     ENGINES=$(selected) DEST=$HERE/out/places-check-$tier "$STEPS/places.sh" "$step_mode" check "${rest[0]:-all}" "${rest[1]:-}"
     return
   fi
-  local what=${rest[0]:-} engine=${rest[1]:-} n=${rest[2]:-}
-  [[ -n $engine ]] || die "usage: check oracle|rank ENGINE [N]"
+  local what=${rest[0]:-} engine=${rest[1]:-} n=${rest[2]:-} rc=0 e
+  [[ $what == oracle || $what == rank ]] || die "check oracle|rank [ENGINE] [N]"
+  [[ $engine != [0-9]* ]] || { n=$engine; engine=''; }
+  [[ -z $engine ]] || engines=$engine
   datasets=articles; cluster_up
-  case $what in
-    oracle) "$STEPS/oracle.sh" "$engine" "$n" ;;
-    rank) "$STEPS/rank_check.sh" "$engine" "$n" ;;
-    *) die "check oracle|rank ENGINE [N]" ;;
-  esac
+  for e in $(selected); do   # without ENGINE every engine of --engines (default: all of them, pgx-bm25 included)
+    case $what in
+      oracle) "$STEPS/oracle.sh" "$e" "$n" || rc=1 ;;
+      rank) "$STEPS/rank_check.sh" "$e" "$n" || rc=1 ;;
+    esac
+  done
+  return $rc
 }
 
 cmd_suite() { # the standard suite: run on articles over the named engines (default every engine but the references)

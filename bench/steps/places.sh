@@ -5,24 +5,22 @@
 # An engine without a native query for a workload (rum has no field boost, pg_textsearch no prefix scoring and no field boost,
 # pgx-bm25 no wildcard shorter than 3 letters) builds an emulation next to its native index, in the same database, reported as
 # the `emulation` build of the engine where it is separate (docs/BENCHMARKS.md); the adapter documents it. Every engine has a
-# cluster of its own (a lane, steps/lanes.sh) pinned to an equal share of the server CPUs, with the places loaded and its index
-# built at the same time as the others (or taken from the cache of built lanes), so nothing of another engine's columns, hooks or
+# cluster of its own (a lane, steps/lanes.sh), with the places loaded and its index built one engine after the other (or taken from
+# the cache of built lanes), so nothing of another engine's columns, hooks or
 # access method (two extensions are called `bm25`) is in its database. Engines whose extension is missing are skipped.
 #
 #   bench/steps/places.sh quick|full [run|cold]    cities15000 (34k places) or cities500 (236k places)
 #   bench/steps/places.sh quick|full check [oracle|rank] [N]   correctness against the SQL oracle of sql/places_oracle.sql
 #
 # Needs bench/bench setup (the engines, the places dataset). Every round times every cell (a workload on a query class) on every
-# engine, all engines at the same time in their lanes (SERIAL=1: one cluster, the engines one after the other with the order
-# rotating): a single client, p50 and p95 from the transaction latencies, pgbench seeded alike, measured by steps/cell.py until the
+# engine, one engine at a time with every CPU of the host to itself, the order of the engines rotating every round: a single client, p50 and p95 from the transaction latencies, pgbench seeded alike, measured by steps/cell.py until the
 # relative standard error of the p50 is at most RSE (default 5%, order statistics) with at least MIN_TIME seconds and MIN_N
 # transactions, and at most SECS seconds. After MINR rounds only the cells whose p50 has a relative standard error above RSE are
 # measured again, up to MAXR rounds, unless the error of one round alone is so large that more rounds cannot reach RSE (steps/lib.sh).
 # Compact tables only: $DEST (default $RESULTS/places-<mode>-<time>)/{cells,builds}.tsv (cold.tsv for cold), machine.txt and phases.txt.
 # KEEP=1 keeps the lanes.
 # Env: ENGINES CLASSES WLS SECS (the longest a cell is measured) MIN_TIME MIN_N MINR MAXR RSE NQ (cold queries per class; check: queries
-# per class) TIMEOUT (statement_timeout of a cell, default 120s: slower cells are reported as error) SERIAL NO_CACHE CPUS LOAD_CPUS
-# RESULTS DEST.
+# per class) TIMEOUT (statement_timeout of a cell, default 120s: slower cells are reported as error) NO_CACHE RESULTS DEST.
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
@@ -30,9 +28,8 @@ case $mode in
   full)  export TIER=F; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
   *) sed -n '2,5p' "$0"; exit 1 ;;
 esac
-[[ $what != check ]] || export SERIAL=1 NO_CACHE=1   # the oracle tables live in one `places` database that every engine's database is a copy of
+[[ $what != check ]] || export NO_CACHE=1   # the oracle tables live in the `places` database of every lane
 . "$(dirname "$0")/lib.sh"
-MAIN_PORT_OFFSET=1 MAIN_DATA=$ROOT/pg/${TIER}places   # the main cluster of the session (serial mode, check): not the articles'
 LANE_PORT_BASE=$(( ${TIER_PORT[$TIER]} + 50 ))
 . "$STEPS/lanes.sh"
 . "$STEPS/xlib.sh"
@@ -51,7 +48,8 @@ declare -A EXT   # the engines outside Postgres (steps/xlib.sh)
 cleanup() {
   local e
   for e in "${!EXT[@]}"; do lane_run "$e" xe "$e" x_stop 2>/dev/null || true; done
-  [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $(lane_clusters $ENGINES); do lane_destroy "$e"; done; rm -rf "$ROOT/places"; }
+  # shellcheck disable=SC2086  # one argument per engine
+  [[ -n ${KEEP:-} ]] || { [[ -z ${LANE_PORT[*]+x} ]] || for e in $ENGINES; do lane_destroy "$e"; done; rm -rf "$ROOT/places"; }
 }
 trap cleanup EXIT
 
@@ -79,7 +77,7 @@ done
 stmt() { echo "${STMT[$1/$2]}"; }   # workload engine -> the statement (empty: the engine has no such query)
 # shellcheck disable=SC2086  # one argument per engine
 lanes_init places $ENGINES
-BUDGET=$(lanes_describe) "$STEPS/machine.sh" >"$DEST/machine.txt"
+"$STEPS/machine.sh" >"$DEST/machine.txt"
 wc -l <"$DATADIR/places.tsv" >"$DEST/corpus.txt"   # the places of the tier, for the report
 phase 'setup'
 
@@ -105,7 +103,7 @@ ensure_places() { # once per cluster: the places table (a vacuumed template of e
 # what an engine outside Postgres needs rendered: the workloads and classes of the cells, those of the cold-cache cells
 x_requests() { if [[ $what == cold ]]; then echo "top boost filter count|p1 p2 a2 a3"; else echo "$WLS|$CLASSES"; fi; }
 prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (or the lane taken from the cache)
-  local e=$1 key='' req
+  local e=$1 key req
   export RUN=$ROOT/places/$e
   mkdir -p "$RUN"; : >"$RUN/builds.row"
   if [[ -n ${EXT[$e]:-} ]]; then   # a server of its own, built every time
@@ -115,8 +113,8 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
     xe "$e" x_warm "${XWARM:-1}" 1 "$RUN"/*.q   # the JVM and the caches warm: what the first execution of a statement is for Postgres
     return
   fi
-  [[ -z $CONCURRENT ]] || key=$(lane_key "$e" "$DATADIR/places.tsv" "$DATADIR/queries.tsv")
-  if [[ -n $CONCURRENT ]] && lane_cached "$e" "$key"; then
+  key=$(lane_key "$e" "$DATADIR/places.tsv" "$DATADIR/queries.tsv")
+  if lane_cached "$e" "$key"; then
     lane_restore "$e" "$key"; lane_start "$e"; cp "$LANE_CACHE/$key/builds.row" "$RUN/builds.row"
     log "$e: built database from the cache ($key)"; return
   fi
@@ -125,35 +123,12 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
   timed_build "$e" - "${PSETUP[$e]}" "${PINDEX[$e]}" "${PINDEXES[$e]}"
   [[ -z ${PINDEX2[$e]} ]] || timed_build "$e" emulation "${PSETUP2[$e]}" "${PINDEX2[$e]}" "${PINDEXES2[$e]}"
   PGDATABASE=$(edb "$e") q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
-  [[ -z $CONCURRENT ]] || lane_save "$e" "$key" "$RUN/builds.row"
+  lane_save "$e" "$key" "$RUN/builds.row"
 }
-pids=()
-PG_ENGINES=$(for e in $ENGINES; do [[ -n ${EXT[$e]:-} ]] || echo "$e"; done | tr '\n' ' ')
-first=${PG_ENGINES%% *}
-# one cluster: the Postgres engines are cached as a whole (an engine outside Postgres has its own server and is built every time)
-serial_cache=''; [[ -n $CONCURRENT || $what == check || -z $PG_ENGINES ]] || serial_cache=$(KEY_ENGINES=$PG_ENGINES serial_key "$DATADIR/places.tsv" "$DATADIR/queries.tsv")
 build_failed() { echo "build of $1 failed: $(tail -3 "$ROOT/places/$1.prepare.log")" >&2; exit 1; }
-if [[ -n $serial_cache ]] && lane_cached "$first" "$serial_cache"; then
-  lane_destroy "$first"; lane_restore "$first" "$serial_cache"; lane_start "$first"; cp "$LANE_CACHE/$serial_cache/builds.tsv" "$DEST/builds.tsv"
-  for e in $ENGINES; do mkdir -p "$ROOT/places/$e"; done
-  for e in "${!EXT[@]}"; do
-    lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || build_failed "$e"
-    cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"
-  done
-  log "built databases from the cache ($serial_cache)"
-else
-  for e in $ENGINES; do
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 & pids+=($!)
-    else lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || build_failed "$e"; fi
-  done
-  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || { echo "a build failed: $(tail -qn 2 "$ROOT"/places/*.prepare.log)" >&2; exit 1; }; done
-  : >"$DEST/builds.tsv"
-  for e in $ENGINES; do cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"; done
-  if [[ -n $serial_cache ]]; then
-    mkdir -p "$ROOT/places/pg"; for e in $PG_ENGINES; do cat "$ROOT/places/$e/builds.row"; done >"$ROOT/places/pg/builds.tsv"
-    lane_save "$first" "$serial_cache" "$ROOT/places/pg/builds.tsv"
-  fi
-fi
+for e in $ENGINES; do lane_run "$e" prepare "$e" >"$ROOT/places/$e.prepare.log" 2>&1 || build_failed "$e"; done   # one after the other: a build is timed alone
+: >"$DEST/builds.tsv"
+for e in $ENGINES; do cat "$ROOT/places/$e/builds.row" >>"$DEST/builds.tsv"; done
 log "built: $(awk '{printf "%s%s %.1fs %.0fMB; ", $1, $6 == "-" ? "" : "+" $6, $2, $3 / 1048576}' "$DEST/builds.tsv")"
 phase 'restore and build'
 
@@ -183,12 +158,10 @@ if [[ $what == cold ]]; then
       printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$(xe "$e" x_cold_class "$ROOT/places/$e/$wl.$c.q" places)"
     done; done >"$ROOT/places/$e/cold.part"
   }
-  pids=()
   for e in $ENGINES; do
     fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
-    if [[ -n $CONCURRENT ]]; then lane_run "$e" $fn "$e" & pids+=($!); else lane_run "$e" $fn "$e"; fi
+    lane_run "$e" $fn "$e"
   done
-  for p in ${pids[@]+"${pids[@]}"}; do wait "$p"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do grep -P "^$wl\t$c\t$e\t" "$ROOT/places/$e/cold.part" || true; done; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
@@ -226,15 +199,12 @@ cell() { # WORKLOAD CLASS ENGINE -> "p50 p95 stderr-of-p50 transactions seconds"
   fi
   [[ -n $(stmt "$1" "$e") ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }   # the engine has no such query
   { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$e");"; } >"$f"
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" loadgen python3 -I "$STEPS/cell.py" latency --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
+  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" python3 -I "$STEPS/cell.py" latency --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
     --min-n "$MIN_N" --hint "$ROOT/places/$e.$1.$2.hint" --tmp "$ROOT/places" -- -n -f "$f" -c 1 "$(edb "$e")"
 }
-group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, all at once in their lanes (concurrent) or one after the other
+group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, one after the other
   local wl=$1 c=$2 e; shift 2
-  for e in "$@"; do
-    if [[ -n $CONCURRENT ]]; then cell "$wl" "$c" "$e" >"$ROOT/places/$e.val" & else cell "$wl" "$c" "$e" >"$ROOT/places/$e.val"; fi
-  done
-  wait
+  for e in "$@"; do cell "$wl" "$c" "$e" >"$ROOT/places/$e.val"; done
 }
 printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
 stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
@@ -245,8 +215,6 @@ cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR 
 }
 round() {
   local wl c e engs
-  # shellcheck disable=SC2086  # one argument per engine
-  lanes_rotate "$1" $ENGINES
   for wl in $WLS; do for c in $CLASSES; do
     engs=$(cell_engines "$1" "$wl" "$c" | tr '\n' ' ')
     [[ -n $engs ]] || continue

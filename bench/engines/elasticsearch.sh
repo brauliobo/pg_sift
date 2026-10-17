@@ -2,7 +2,7 @@
 # its bundled JDK link), started as an ordinary process of the user, not as the package's service, with a configuration directory of its own
 # under the scratch root (the one in /etc is not touched, nor readable): nothing is installed or written outside $SIFT_BENCH_ROOT.
 # One shard, no replica, security and ML off, a heap as large as the shared_buffers of the Postgres engines (the index itself lives in the
-# page cache, outside the heap), the same CPU list and cgroup scope as a Postgres server (`limited`, node.processors = its CPUs). Both
+# page cache, outside the heap), free to use every CPU of the host while its cells run, like the Postgres servers. Both
 # datasets are loaded through the bulk API, 4 requests at a time, with the documents and ids of the Postgres tables (xlib.sh), then
 # refreshed and force-merged to one segment (the build time is the bulk load plus the refresh, the force-merge is its own row and is not
 # counted in it; the index size is the size after the merge). The shard request cache and the query (filter) cache are off, so no engine
@@ -58,7 +58,6 @@ http.port: $ES_PORT
 transport.port: $(( ES_PORT + 1 ))
 network.host: 127.0.0.1
 discovery.type: single-node
-node.processors: $(cpu_count "${CPUS:-0-$(( $(nproc) - 1 ))}")
 xpack.security.enabled: false
 xpack.ml.enabled: false
 ingest.geoip.downloader.enabled: false
@@ -87,7 +86,7 @@ x_start() {
   local i
   x_conf
   ES_PATH_CONF=$ES_DIR/conf ES_JAVA_OPTS="-Xms${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -Xmx${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -XX:-AlwaysPreTouch" \
-    limited "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
+    "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
   for (( i = 0; i < 180; i++ )); do
     curl -fs "$URL/_cluster/health?wait_for_status=yellow" >/dev/null 2>&1 && return 0
     sleep 1
@@ -113,12 +112,12 @@ es_bulk() {
   grep -q '"errors":false' "$out"; local rc=$?
   rm -f "$out"; return $rc
 }
-# INDEX FILE: the file in 4 parts, each in requests of 5000 documents, the 4 parts at the same time (the load generators, on the load CPUs)
+# INDEX FILE: the file in 4 parts, each in requests of 5000 documents, the 4 parts at the same time
 es_load() {
   export -f es_bulk; export URL ES_DIR
   local tmp=$ES_DIR/parts p; mkdir -p "$tmp"
   split -n l/4 "$2" "$tmp/p."
-  for p in "$tmp"/p.*; do loadgen env SHELL=/bin/bash split -l 5000 --filter="es_bulk $1" "$p" & done
+  for p in "$tmp"/p.*; do env SHELL=/bin/bash split -l 5000 --filter="es_bulk $1" "$p" & done
   wait
   rm -rf "$tmp"
 }

@@ -52,18 +52,15 @@ cmd_clean() {
   echo "removed the scratch under $ROOT${clean_cache:+, the dumps and the cache of lanes}${clean_build:+, the engine builds}${all_clean:+, the dumps, the cache of lanes, the engine builds, the datasets and the downloads}"
 }
 
-# --- the peak of a run: a sampler of the sizes of ROOT and STORE, on a CPU outside the budget when there is one
+# --- the peak of a run: a sampler of the sizes of ROOT and STORE (a `du` of a few thousand files every 5 s)
 peak_start() {
   PEAK_FILE=$(mktemp "${TMPDIR:-/tmp}/bench-peak.XXXXXX")
   echo 0 >"$PEAK_FILE"
-  ( while :; do
+  ( renice -n 19 -p "$BASHPID" >/dev/null; while :; do
       now=$(du_roots); [[ $now -le $(<"$PEAK_FILE") ]] || echo "$now" >"$PEAK_FILE"
-      sleep 3
+      sleep 5
     done ) >/dev/null 2>&1 &
   PEAK_PID=$!
-  local free
-  free=$(comm -23 <(seq 0 $(( $(nproc --all) - 1 )) | sort) <(cpu_list "$CPUS,$LOAD_CPUS" | sort) | sort -n | head -1)
-  [[ -z $free || -z $CPUS ]] || taskset -p -c "$free" "$PEAK_PID" >/dev/null 2>&1 || true
 }
 peak_report() { # the peak and what is left
   [[ -n ${PEAK_PID:-} ]] || return 0
