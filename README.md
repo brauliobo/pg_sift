@@ -89,7 +89,7 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 - analyzers (stemming, accent folding), phrases and the `positions` option, several columns;
 - autocomplete: prefix indexes, `fields` and field boosts;
 - filter pushdown, partitioned tables, keyword facets, parallel scans;
-- maintenance, settings and index options, replication, limits.
+- maintenance, settings and index options, replication, limits; sizing a large index: [docs/SIZING.md](docs/SIZING.md).
 
 Design and on-disk format: [DESIGN.md](DESIGN.md). A proof of concept of the same engine for MariaDB (UDFs over a queue
 table, no server patches): [mariadb/README.md](mariadb/README.md).

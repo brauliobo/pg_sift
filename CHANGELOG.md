@@ -26,6 +26,27 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `writing segments`, and the documents analyzed and then written (`tuples_done` of `tuples_total`), parallel workers included. A parallel
   build that gets fewer workers than requested logs it at `DEBUG1`.
 
+- Security: `sift.promote`, `sift.merge`, `sift.verify`, `sift.segments` and `sift.segment_postings` were executable by every role with `USAGE`
+  on schema `sift`, which could force rewrites of any index or hold its maintenance lock. They now need the owner of the index's table or
+  the `MAINTAIN` privilege on it (as `VACUUM` and `REINDEX` do); `ALTER EXTENSION pg_sift UPDATE` to 1.2 is not needed for this.
+- Fix: a query with `col @@> ANY (array)` failed in `EXPLAIN` and at run time with `invalid byte sequence for encoding "UTF8": 0x00`. It now
+  plans as a bitmap scan over one index scan per element (an OR), prepared or not; `ALL` and `NOT ANY` use a sequential scan as before.
+- Planner: materialized views get the ranked `SiftScan` and the `SiftCount` pushdown like tables. A prepared `LIMIT $1 [OFFSET $2]` gives the
+  ranked scan of a generic plan its limit hint (a broad term with `LIMIT 10` took 1.38x less time per query on 50,000 articles; custom plans
+  and other shapes are unchanged). `sift.score()` in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE` now fails when it is planned, saying so.
+- Extension 1.2 (`ALTER EXTENSION pg_sift UPDATE`): `sift.segments` gains `extents` and `dead_docs`; new `sift.index_info(index)` (relation
+  size, high-water mark, free and reusable blocks, directory entries, maintenance lock held) and `sift.version()` (the library reported 1.0
+  for a 1.1 extension).
+- Operations: promotions, merges and maintenance worker runs of at least `sift.log_min_duration` (default 1 s, `-1` off) are logged, with
+  the inserts that wait for room in the directory and a maintenance worker that could not be registered; errors of the worker name the index.
+  `ALTER INDEX ... SET/RESET` of an option that changes the analyzer warns that the table's queries and inserts fail until `REINDEX`.
+  `sift.highlight` no longer parses its query for every row.
+- Docs: [docs/SIZING.md](docs/SIZING.md) (disk, memory and time of large indexes, dead documents in BM25 statistics, `SERIALIZABLE`, row-level
+  security, updates). `bench/ab-query.sh` times one statement on two builds, `bench/sql/dead_docs.sql` measures the effect of rolled-back
+  loads on scores.
+- Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the production library
+  (`SIFT_TESTING` off).
+
 ## 1.4.0
 
 - No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.

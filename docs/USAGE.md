@@ -15,13 +15,16 @@ SELECT id FROM docs WHERE body @@> '{pool spa noisy}';                -- any of 
 SELECT id FROM docs WHERE body @@> '"friendly staff"';                -- phrase: 2, 5
 SELECT id FROM docs WHERE body @@> 'brea* OR n?isy OR /no.*y/ OR frendly~1';  -- prefix, wildcard, regex, fuzzy
 SELECT id FROM docs WHERE body @@> '(pool OR spa) AND friendly^3';    -- grouping and boost
+SELECT id FROM docs WHERE body @@> ANY (ARRAY['pool', 'spa']);        -- OR of several queries, a bitmap scan (no sift.score)
 ```
 
 ## Ranking, filters and joins
 
 `ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid.
 `sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table, not in `WHERE`
-(filter on a score from a subquery).
+(filter on a score from a subquery). A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant one, also in a generic plan.
+It works on materialized views too. It is not available in `UPDATE`, `DELETE`, `MERGE` or `FOR UPDATE` (error when planned): rank in a
+`SELECT` and change or lock the rows by key.
 
 ```sql
 SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'friendly OR pool'
@@ -129,7 +132,10 @@ RESET sift.parallel_scan;
 
 Writes go to small mutable segments through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
 and merges; VACUUM promotes, merges and clears dead postings.
-`sift.segments(index)` and `sift.verify(index, true)` inspect and check an index.
+`sift.segments(index)` and `sift.verify(index, true)` inspect and check an index. `sift.index_info(index)` shows its size, high-water mark,
+free and reusable blocks, directory entries and whether a maintenance run holds the lock; `sift.version()` is the version of the loaded
+library (compare with `pg_extension.extversion`). `sift.promote`, `merge`, `verify`, `segments`, `segment_postings` and `index_info`
+need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk, memory and time of a large index: [SIZING.md](SIZING.md).
 
 - `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
 - `pg_stat_progress_create_index` shows a build's phase (`scanning table`, `spilling runs`, `merging runs`, `writing segments`) and the documents done.
@@ -144,6 +150,7 @@ and merges; VACUUM promotes, merges and clears dead postings.
 | `sift.prefix_cache_size` | 8MB | memory per backend for the postings of broad prefixes, `0` keeps none |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
+| `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
 
 Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
@@ -182,7 +189,11 @@ its own docker container.
 - `positions = on` is the default and makes the index about 2.6x larger (`positions = off` restores the small index). Phrases are
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
   inserted since the build, and phrases under `NOT`.
-- `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it.
+- `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it. It is not available with `@@> ANY (array)` (write
+  the OR in the query text), nor in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
+- Under `SERIALIZABLE` a sift scan locks the whole relation (the index access method has no finer predicate locks), so concurrent writers
+  can make a serializable transaction fail with `40001`: retry. Ranked scans and statistics see rows that row-level security hides from the
+  role ([SIZING.md](SIZING.md#features-and-their-costs)).
 - Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
   still work).
 - Partitions: BM25 statistics are per partition, so scores can differ across partitions.
