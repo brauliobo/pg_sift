@@ -24,6 +24,15 @@ checked when it stops (no session left in a transaction or holding locks, no pre
 no long-lived process grown); the soak fails on a backend whose memory keeps growing. `make check` ends with the scan of
 everything it ran. A test that crashes or leaks on purpose declares it with `scripts/leakcheck.sh expect COUNT REGEX`.
 
+The SQLite extension in `sqlite/` is tested on its own and needs no PostgreSQL: `sqlite/test.sh` (about 40 s; `SIFT_SANITIZE=1 sqlite/test.sh` adds
+ASan/UBSan and the TSan stress test) needs `cc`, `make`, the SQLite development files (3.38 or newer) and python3 with loadable `sqlite3`
+extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use no POPCNT or vector instruction, and `scripts/package-sqlite.sh`
+builds and tests the release tarball in containers. It compiles the portable files of `src/` (the list `PORTABLE` in `sqlite/Makefile`)
+unmodified against the shim in `sqlite/shim/`: a change to those files that uses another PostgreSQL API, or a global mutable variable, needs the
+shim or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch them. `make check` and `scripts/ci.sh` never
+build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
+release tag.
+
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
