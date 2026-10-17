@@ -12,8 +12,11 @@ Writes into the output directory (default docs/img), all of them grouped bars dr
   places-latency.svg      p50 latency per query class on the places dataset (lower is better)
 
 The engines, their order, labels and colors are bench/engines.tsv, shared with bench/bench and steps/tables.py; an
-engine appears in a chart when the dataset has rows for it. A workload the engine cannot run (NA) or a dataset it
-was not run on leaves a gap marked NA, never a zero-height bar. The charts carry their own white background and
+engine with `chart = no` there is never drawn, any other appears in a chart when the dataset has rows for it (an engine without committed
+rows is not drawn: there is no fake data). A workload the engine cannot run (NA) or a dataset it was not run on leaves a gap marked NA,
+never a zero-height bar. A cell with a standard error (stderr column of the tables, one sd / sqrt(n) over the interleaved rounds) carries an
+error bar of one standard error; a bar whose relative error is above 10% is drawn in red. Cells without one (one build, rows written before
+the column existed) have no error bar. The charts carry their own white background and
 border so they read the same on GitHub's light and dark themes. The output is deterministic: the same tables
 give the same bytes.
 """
@@ -31,15 +34,14 @@ DATASETS = {
     'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'rounds': 4},
     'places': {'name': 'GeoNames cities500, 236,262 places', 'rounds': 4},
 }
-HOST = '2 pinned cores, shared host'
 DATE = 'Oct 2026'
 
 
 def engine_table():
-    """id -> (chart label, color) in the order of bench/engines.tsv"""
+    """id -> (chart label, color) of the engines with chart = yes, in the order of bench/engines.tsv"""
     with open(os.path.join(os.path.dirname(HERE), 'engines.tsv')) as f:
         rows = [l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#')]
-    return {r[0]: (r[1], r[3]) for r in rows}
+    return {r[0]: (r[1], r[3]) for r in rows if r[4] == 'yes'}
 
 
 ENGINES = engine_table()
@@ -49,11 +51,15 @@ PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']
 PLACE_KEY = 'p1-p4: 1-4 letter prefix; w1: whole word; a2, a2s: word + 2 or 1 letter prefix; a3, x2: 3 or 2 prefixes'
 PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
 BUILD_NOTES = ['places: pg_textsearch and rum show the native index; their emulated workloads add indexes.']
+BM25_BUILD_NOTES = ['places: pgx-bm25 also tenants two generated columns, the table grows.']
 NA_NOTE = 'NA: no bar, the engine cannot run the workload or was not run on the dataset.'
 
 WIDTH = 860
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
 INK, MUTED, GRID, BG, BORDER = '#24292f', '#57606a', '#d8dee4', '#ffffff', '#d0d7de'
+WARN = '#b42318'   # an error bar above FLAG of its value
+FLAG = 0.10
+ERR_NOTE = 'Error bars: one standard error over the interleaved rounds (rough for 2-3); red: relative error above 10%.'
 
 
 def num(x):
@@ -92,20 +98,25 @@ class Svg:
 
 
 def load(path):
-    """(dataset, tier, engine, class, variant, metric) -> (value, min, max); value None for NA / error."""
+    """(dataset, tier, engine, class, variant, metric) -> (value, min, max, stderr); value and stderr None for NA / error / absent."""
     rows = {}
     with open(path) as f:
         for line in f:
             if line.startswith('#') or line.startswith('dataset\t') or not line.strip():
                 continue
-            d, tier, eng, cls, var, metric, val, lo, hi, _unit = line.rstrip('\n').split('\t')
-            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi)
+            d, tier, eng, cls, var, metric, val, lo, hi, _unit, se, _n, _values = line.rstrip('\n').split('\t')
+            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi, None if se == 'NA' or val in ('NA', 'error') else float(se))
     return rows
 
 
 def value(rows, tier, dataset, engine, cls, variant, metric):
     r = rows.get((dataset, tier, engine, cls, variant, metric))
     return None if r is None else r[0]
+
+
+def stderr(rows, tier, dataset, engine, cls, variant, metric):
+    r = rows.get((dataset, tier, engine, cls, variant, metric))
+    return None if r is None else r[3]
 
 
 def engines_of(rows, tier, datasets):
@@ -146,10 +157,13 @@ def legend(svg, y, engines, baseline):
         svg.text(x + 23, y, 'pg_search = 1.0x', 12)
 
 
-def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=None, notes=(), log=False):
+def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=None, notes=(), log=False, errors=None):
     """The one chart: vertical grouped bars. groups: [(label, sublabel)]; series: [(engine, [value or None per group])].
     A None value leaves a gap marked NA; the value labels turn vertical when the bars are narrow. log: a logarithmic axis
-    (one gridline per decade) for values that span orders of magnitude."""
+    (one gridline per decade) for values that span orders of magnitude. errors: {engine: [standard error or None per group]}, drawn
+    as an error bar of one standard error on the bar (red above FLAG of the value)."""
+    errors = errors or {}
+    err = lambda e, gi: (errors.get(e) or [None] * len(groups))[gi]
     svg = Svg(title, '; '.join(f'{g[0]}: ' + ', '.join(f'{ENGINES[e][0]} {fmt(v[i])}' for e, v in series if v[i] is not None)
                                for i, g in enumerate(groups)))
     svg.text(20, 30, title, 16, weight='bold')
@@ -161,7 +175,7 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
     bw = min(30, gw * 0.84 / len(series))
     narrow = bw < 26
     values = [v for _, vs in series for v in vs if v is not None]
-    vmax = max(values)
+    vmax = max(v + (err(e, gi) or 0) for e, vs in series for gi, v in enumerate(vs) if v is not None)
     if log:
         lo, hi = 10 ** math.floor(math.log10(min(values) * 0.9)), 10 ** math.ceil(math.log10(vmax * (1.2 if narrow else 1.15)))
         ticks, height = [lo * 10 ** i for i in range(round(math.log10(hi / lo)) + 1)], lambda v: math.log10(v / lo) / math.log10(hi / lo) * ph
@@ -181,10 +195,18 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
                 svg.text(cx, top + ph - 5, 'NA', 9, 'middle', MUTED)
                 continue
             svg.rect(gx + si * bw + 1, top + ph - height(v), bw - 2, height(v), ENGINES[e][1])
+            se, label_y = err(e, gi), top + ph - height(v) - 5
+            if se:
+                lo_v = max(v - se, lo if log else 0)
+                y1, y2, color = top + ph - height(v + se), top + ph - height(lo_v), WARN if se / v > FLAG else INK
+                svg.line(cx, y1, cx, y2, color, 1.5)
+                svg.line(cx - 3, y1, cx + 3, y1, color, 1.5)
+                svg.line(cx - 3, y2, cx + 3, y2, color, 1.5)
+                label_y = y1 - 5
             if narrow:
-                svg.text(cx + 3.5, top + ph - height(v) - 5, fmt(v), 10, halo=True, rotate=True)
+                svg.text(cx + 3.5, label_y, fmt(v), 10, halo=True, rotate=True)
             else:
-                svg.text(cx, top + ph - height(v) - 5, fmt(v), 10, 'middle', halo=True)
+                svg.text(cx, label_y, fmt(v), 10, 'middle', halo=True)
         cx = left + gi * gw + gw / 2
         svg.text(cx, top + ph + 18, label, 12, 'middle', weight='bold')
         if sub:
@@ -195,13 +217,38 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
     svg.line(left, top + ph, left + pw, top + ph, MUTED)
     if any(v is None for _, vs in series for v in vs):
         notes = [*notes, NA_NOTE]
+    if any(se for ses in errors.values() for se in ses):
+        notes = [*notes, ERR_NOTE]
     bottom = top + ph + 56 + 18 * len(notes)
     svg.caption(bottom - 8, caption, notes)
     return svg.render(bottom + 8)
 
 
+def host(rows, tier, datasets):
+    """the CPU budget of the runs behind a chart (the cpu_budget rows of tables.py), once when the datasets agree"""
+    texts = []
+    for (d, t, e, _c, var, metric), (cpus, load_cpus, engines, _se) in rows.items():
+        if (t, e, metric) != (tier, '-', 'cpu_budget') or d not in datasets:
+            continue
+        kv = dict(w.split('=', 1) for w in var.split(';'))
+        if kv['servers'] == kv['load']:
+            text = ('CPUs ' if kv['servers'][0].isdigit() else '') + kv['servers']
+        elif kv['mode'] == 'serial':
+            text = f'serial, {int(cpus)} + {load_cpus} CPUs'
+        else:
+            text = f'{engines} lanes of {int(cpus)} + {load_cpus} CPUs'
+        if text not in texts:
+            texts.append(text)
+    return 'CPUs: ' + ' / '.join(texts) if texts else 'CPUs not recorded'
+
+
 def caption(rows, tier, datasets, what):
-    return f'{what}; {HOST} (load avg {load_range(rows, tier, datasets)}); {DATE}.'
+    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {DATE}.'
+
+
+def errors_of(rows, tier, dataset, engines, keys, metric):
+    """{engine: [standard error per key]} for keys (class, variant)"""
+    return {e: [stderr(rows, tier, dataset, e, c, v, metric) for c, v in keys] for e in engines}
 
 
 def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
@@ -209,7 +256,8 @@ def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
     engines = engines_of(rows, tier, DATASETS)
     series = [(e, [value(rows, tier, d, e, '-', '-', metric) for d in DATASETS]) for e in engines]
     groups = [(d, spec['name']) for d, spec in DATASETS.items()]
-    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=BUILD_NOTES)
+    notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else [])
+    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=notes)
 
 
 def make(rows, tier):
@@ -218,20 +266,29 @@ def make(rows, tier):
     out['build-time.svg'] = build_chart(rows, tier, 'Index build time (CREATE INDEX)', 'lower is better', 'build_s', lambda v: f'{v:.1f}', 'seconds')
 
     a = DATASETS['articles']
+    keys = [(c, '-') for c, _ in ARTICLE_CLASSES]
     groups = [(label, '') for _, label in ARTICLE_CLASSES]
-    qps = {e: [value(rows, tier, 'articles', e, c, '-', 'qps') for c, _ in ARTICLE_CLASSES] for e in engines_of(rows, tier, ['articles'])}
+    engines = engines_of(rows, tier, ['articles'])
+    qps = {e: [value(rows, tier, 'articles', e, c, '-', 'qps') for c, _ in ARTICLE_CLASSES] for e in engines}
+    se = errors_of(rows, tier, 'articles', engines, keys, 'qps')
     cap = caption(rows, tier, ['articles'], f"{a['name']}, 8 clients, median of {a['rounds']} rounds")
     out['articles-throughput.svg'] = grouped('Throughput by workload', 'queries per second, higher is better', groups, list(qps.items()),
-                                             lambda v: f'{v:,.0f}', 'queries per second', cap)
+                                             lambda v: f'{v:,.0f}', 'queries per second', cap, errors=se)
     ratio = {e: [None if q is None else q / b for q, b in zip(vs, qps['pg_search'])] for e, vs in qps.items() if e != 'pg_search'}
+    # the standard error of a quotient: the relative errors add in quadrature
+    ratio_se = {e: [None if None in (s, t, q, b) else (q / b) * math.hypot(s / q, t / b)
+                    for q, b, s, t in zip(qps[e], qps['pg_search'], se[e], se['pg_search'])] for e in ratio}
     out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
-                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0)
+                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, errors=ratio_se)
 
     p = DATASETS['places']
-    lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines_of(rows, tier, ['places'])}
+    keys = [(c, 'top') for c in PLACE_CLASSES]
+    engines = engines_of(rows, tier, ['places'])
+    lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines}
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
     out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, logarithmic axis, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES, log=True)
+                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES,
+                                        log=True, errors=errors_of(rows, tier, 'places', engines, keys, 'p50_ms'))
     return out
 
 
