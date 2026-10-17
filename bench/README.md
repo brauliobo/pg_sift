@@ -1,6 +1,6 @@
 # sift benchmark and correctness harness
 
-Two public datasets, measured on sift, its variants (`phrase_index = pairs`, and `positions = off` once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum
+Two public datasets, measured on sift, its variant (`positions = off`, once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum
 and pgx-bm25 with the same rows, queries, clients, CPU budget and cache state. By default every engine has a cluster of its own on an equal
 share of the CPU budget and all engines are measured at the same time (`--serial`: one cluster, engines interleaved cell by cell), so host
 load drifts hit all of them alike. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
@@ -46,7 +46,7 @@ The other commands: `charts` (redraw the SVGs of `docs/img` from the committed `
 oracle / pgx-bm25; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
-`--dataset articles|places|all`, `--engines sift,sift_nopos,sift_pairs,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
+`--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--cpus LIST` and `--load-cpus LIST` (the CPU budget, below), `--serial` (one cluster, engines interleaved cell by cell, as the published tables were
 measured), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
 the server's parallel workers), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
@@ -57,7 +57,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 |---|---|---|---|---|
 | `quick` (default) | 25,000 | 34,165 (cities15000) | 2 | measured: 2 min for both datasets with the six default engines (builds included), about 1 min more for the cold-cache tables, on the default 8 + 4 CPU budget |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
-| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | `all --full --serial` with the seven default engines, builds and cold-cache tables: 51 min measured with the previous fixed-length cells (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the current cells stop on their standard error: the cells took 18 min on 2 + 2 CPUs under load (was 41), cold-cache tables about 2 min projected (was 4.5). The concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
+| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | `all --full --serial` with the six default engines, builds and cold-cache tables: 51 min measured with the previous fixed-length cells (articles 15 min, cold articles 3 min, places 27 min of cells, cold places 4 min); the current cells stop on their standard error: the cells took 18 min on 2 + 2 CPUs under load (was 41), cold-cache tables about 2 min projected (was 4.5). The concurrent default was not run at this scale, only `regress --run` (6 min of cells for 112 cells) |
 
 The times are those of the default budget (8 server and 4 load generator CPUs, below); a smaller budget runs the cells for as long but builds
 and answers more slowly. `--serial` (one cluster, engines one after the other) took about twice as long with three engines in the measured comparison, and more with more engines.
@@ -84,7 +84,7 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 |---|---|
 | `dataset` | `articles`, `places` |
 | `tier` | `quick`, `ab`, `full`, `quick-cold`, `ab-cold`, `full-cold` |
-| `engine` | `sift`, `sift_nopos` (`positions = off`), `sift_pairs` (`phrase_index = pairs`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
+| `engine` | `sift`, `sift_nopos` (`positions = off`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
 | `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `-` otherwise |
 | `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
@@ -177,7 +177,7 @@ host: read it with the per-round values (`values`).
 ### Regression check
 
 `bench/bench regress --run` builds sift from this checkout and the reference `sift_ref` from the git ref `--ref` (default the tag `SIFT_REF` of `versions.env`, v1.1.0, under the extension name `pg_sift_ref`),
-measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `p1 p3 w1 a3` with the workloads `top boost`; `--engines sift,sift_ref,sift_pairs,sift_pairs_ref,sift_nopos`
+measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `p1 p3 w1 a3` with the workloads `top boost`; `--engines sift,sift_ref,sift_nopos`
 and `--classes`, `--workloads` widen it) with 3 rounds, and compares each cell with its reference: queries per second, p50 latency, cold-cache p50, index size and CREATE INDEX time. A cell is a
 REGRESSION when the new value is worse by more than 5% **and** by more than 2 combined standard errors (`sqrt(se_new^2 + se_ref^2)`); a cell that fails on the new engine only is one too, a cell that fails on both is an
 ERROR. Builds and cold-cache cells are single measurements: 15% relative error is assumed for them (`--noise`). The exit status is 1 on a regression, 2 on an ERROR or when nothing could be compared. `regress`
@@ -227,8 +227,7 @@ queries). The oracle adds a `not` form (all terms, last one negated).
 
 ## Engine adapters
 
-Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `pg_search`, `sift`, `sift_pairs` = sift
-with `phrase_index = pairs`, `sift_nopos` = sift with `positions = off`) set `REQUIRES` (extension), `PROBE` (optional: a statement over a temp table `probe (t text)` that must work for the engine to run, e.g. a reloption of a newer sift build; the engine is skipped with a message otherwise), `SETUP`, `INDEX`, and `PRED` and `RANK`: SQL expressions over
+Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `pg_search`, `sift`, `sift_nopos` = sift with `positions = off`) set `REQUIRES` (extension), `PROBE` (optional: a statement over a temp table `probe (t text)` that must work for the engine to run, e.g. a reloption of a newer sift build; the engine is skipped with a message otherwise), `SETUP`, `INDEX`, and `PRED` and `RANK`: SQL expressions over
 `mode` and `terms` rendering the WHERE condition and the ORDER BY of a query, NULL if the engine cannot answer it
 (`HELPERS`: SQL they use). `steps/lib.sh` turns them into `bench_pred(mode, terms)` and `bench_rank(mode, terms)` and
 `sql/harness.sql` composes every statement kind from them (top10, count, match, filter, join), so a new engine is
@@ -244,7 +243,7 @@ sequential scan, and a bare `ORDER BY body <@> ...` over the `@@` scan does not 
 the extension's README suggests. ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
 with the default tokenizer, and `edge_ngram(1, 15)` on the places name and all-fields text.
 
-Places adapters are part of the engine's file (`PLACES_SETUP`, `PLACES_INDEX`, the statements `P_match`, `P_top`, `P_boost`, `P_filter`, `P_count`, `P_scan`; `engines/_places.sh` has the shared fragments). sift, its variants (`pairs`, `positions = off`) and pg_search answer every workload natively. rum and pg_textsearch
+Places adapters are part of the engine's file (`PLACES_SETUP`, `PLACES_INDEX`, the statements `P_match`, `P_top`, `P_boost`, `P_filter`, `P_count`, `P_scan`; `engines/_places.sh` has the shared fragments). sift, its variant (`positions = off`) and pg_search answer every workload natively. rum and pg_textsearch
 filter by the prefix tsquery (`'gra':* & 'ho':*`, their native prefix match) for `count` and `scan`; they have no native equivalent of the ranked workloads, which are
 emulations built next to the native index, in the same database, reported as the `emulation` build of the engine (variant `emulation`
 in `results.tsv`) and described in docs/BENCHMARKS.md:
@@ -254,7 +253,7 @@ in `results.tsv`) and described in docs/BENCHMARKS.md:
 | pg_textsearch | top, filter | `bm25` indexes on stored columns holding the edge n-grams (1-15 letters) of every word, pg_search's analysis, so a typed prefix is a whole term; the matches `ng_text @@ plainto_tsquery(typed)` (a derived table) are scored standalone with the distinct n-grams of the typed words |
 | pg_textsearch | boost | the same matches ordered by the all-fields score plus 3 x the score of a second index on the name field (a weighted sum of two bm25 scores) |
 | rum | boost | a second stored tsvector with the name words at weight A (1.0) and the other fields at B (0.4), indexed with `rum_tsvector_ops` and ranked with `<=>`; the weights are rum's, so the name counts 2.5 times, not 3 |
-| sift pairs, sift positions off | all | the variants of the index are not needed by prefixes (never a phrase); they run to show their cost on a places workload |
+| sift positions off | all | the variant of the index is not needed by prefixes (never a phrase); it runs to show its cost on a places workload |
 
 Each pg_textsearch and rum database keeps the tables of both: `count` and `scan` run on the native index and are not changed by the emulation.
 

@@ -82,7 +82,6 @@ typedef struct SiftOptions
 	bool		accent_folding;
 	int			mutable_limit;	/* kB; seal the active mutable segment above it */
 	int			build_segments; /* 0 = one per build participant */
-	int			phrase_index;	/* SIFT_PHRASE_* */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
 	int			analyzer;		/* SIFT_ANALYZER_* */
@@ -93,16 +92,11 @@ typedef struct SiftOptions
 #define SIFT_ANALYZER_TEXT		0
 #define SIFT_ANALYZER_KEYWORD	1
 
-/* phrase_index: pairs also indexes every adjacent token pair as the term SEP a SEP b, sorted before every word (docs/DESIGN.md (g)) */
-#define SIFT_PHRASE_NONE	0
-#define SIFT_PHRASE_PAIRS	1
-#define SIFT_PAIR_SEP		'\x1F'
-
 /*
  * prefix_index = n also indexes the first 1..n characters of every word as the term SEP prefix, so
  * a prefix query of up to n characters is one term lookup instead of an expansion (DESIGN.md (h)).
- * Synthetic terms (pairs, prefixes) start with a control byte, which no word does: they sort before
- * every word and no expansion reaches them.
+ * Synthetic terms (prefixes, field words) start with a control byte, which no word does: they sort
+ * before every word and no expansion reaches them.
  */
 #define SIFT_PREFIX_SEP		'\x1E'
 #define SIFT_MAX_PREFIX_INDEX	15

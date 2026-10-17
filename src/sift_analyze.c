@@ -222,8 +222,6 @@ config_hash(SiftAnalyzerConfig *cfg)
 	uint8		key[12] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
 	int			n = 4;
 
-	if (cfg->pairs)
-		key[n++] = 1;
 	if (cfg->prefix_len)
 	{
 		key[n++] = 2;
@@ -240,9 +238,8 @@ config_hash(SiftAnalyzerConfig *cfg)
 }
 
 void
-sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, bool pairs, int prefix_len, const char *fields)
+sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, int prefix_len, const char *fields)
 {
-	cfg->pairs = pairs;
 	cfg->prefix_len = prefix_len;
 	memset(cfg->field_names, 0, sizeof(cfg->field_names));
 	strlcpy(cfg->field_names, fields, sizeof(cfg->field_names));
@@ -267,7 +264,7 @@ sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fo
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
 	cfg->keyword = false;
-	sift_analyzer_config_set_synthetic(cfg, false, 0, "");
+	sift_analyzer_config_set_synthetic(cfg, 0, "");
 }
 
 void
@@ -281,14 +278,13 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 {
 	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding,
 							 sift_analyze_stemmer(sift_options_stemmer(opts)));
-	sift_analyzer_config_set_synthetic(cfg, opts->phrase_index == SIFT_PHRASE_PAIRS, opts->prefix_index,
-									   sift_options_fields(opts));
+	sift_analyzer_config_set_synthetic(cfg, opts->prefix_index, sift_options_fields(opts));
 	if (opts->analyzer == SIFT_ANALYZER_KEYWORD)
 	{
-		if (cfg->stemmer != SIFT_STEM_NONE || cfg->pairs || cfg->prefix_len || cfg->nfields)
+		if (cfg->stemmer != SIFT_STEM_NONE || cfg->prefix_len || cfg->nfields)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields")));
+					 errmsg("analyzer = keyword cannot be combined with stemmer, prefix_index or fields")));
 		sift_analyzer_config_set_keyword(cfg, true);
 	}
 }
@@ -849,25 +845,6 @@ bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n, int tf)
 	return *nterms - 1;
 }
 
-/* Counts the pair "SEP bag[l] SEP bag[r]" of two adjacent tokens, unless it exceeds a term */
-static void
-bag_add_pair(SiftAnalyzer *a, size_t *used, int *nterms, int l, int r)
-{
-	int			ll = a->bag[l].len,
-				rl = a->bag[r].len;
-	char	   *dst;
-
-	if (2 + ll + rl > SIFT_MAX_TERM_BYTES)
-		return;
-	ENSURE(a, buf, bufcap, *used + 2 + ll + rl + DST_CAP);
-	dst = a->buf + *used;
-	dst[0] = SIFT_PAIR_SEP;
-	memcpy(dst + 1, a->buf + a->bag[l].off, ll);
-	dst[1 + ll] = SIFT_PAIR_SEP;
-	memcpy(dst + 2 + ll, a->buf + a->bag[r].off, rl);
-	bag_add(a, used, nterms, 2 + ll + rl, 1);
-}
-
 /* Byte length of the first nchars characters of w[0..len) */
 static int
 prefix_bytes(const SiftAnalyzer *a, const char *w, int len, int nchars)
@@ -1003,7 +980,6 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 				start,
 				n,
 				k = 0,
-				prev = -1,
 				cur,
 				section = 0;
 	const uint8 *sep = a->cfg.nfields ? memchr(s, SIFT_FIELD_SEP, len) : NULL;
@@ -1025,9 +1001,6 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 			sep = memchr(sep + 1, SIFT_FIELD_SEP, s + len - (sep + 1));
 		if (section < a->cfg.nfields)
 			bag_add_field_word(a, &used, &nterms, cur, section + 1);
-		if (a->cfg.pairs && ntok > 1)
-			bag_add_pair(a, &used, &nterms, prev, cur);
-		prev = cur;
 	}
 	if (a->positions && ntok > 0)
 		group_positions(a, ntok, nbag = nterms);

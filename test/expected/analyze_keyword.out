@@ -108,13 +108,11 @@ SELECT sift.verify('k_fold', true), sift.verify('k_exact', true), sift.verify('k
 
 -- options
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, stemmer = en);
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
-CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, phrase_index = pairs);
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
+ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, prefix_index = 2);
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
+ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, fields = 'a');
-ERROR:  analyzer = keyword cannot be combined with stemmer, phrase_index, prefix_index or fields
+ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = nope);
 ERROR:  invalid value for enum option "analyzer": nope
 DETAIL:  Valid values are "text" and "keyword".
