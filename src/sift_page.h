@@ -19,6 +19,7 @@
 #define SIFT_DIRECTORY_BLKNO	1
 #define SIFT_MAINT_LOCK_BLKNO	0	/* LockPage() target for maintenance */
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
+#define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
 
 typedef enum SiftPageType
 {

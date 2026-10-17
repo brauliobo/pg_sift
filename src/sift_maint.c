@@ -3,9 +3,12 @@
  * callbacks, the orphan sweep and the asynchronous maintenance worker
  *
  *
- * All of it runs under the maintenance lock (LockPage SIFT_MAINT_LOCK_BLKNO),
- * so there is one promoter/merger/vacuumer per index and the segments it
- * reads can only be changed by it. Readers are safe through the store's
+ * Promotion and merge steps hold the maintenance lock (LockPage SIFT_MAINT_LOCK_BLKNO) in
+ * RowExclusiveLock, which steps share, and claim the segments they replace, one heavyweight lock per
+ * generation, so the steps of the worker and of inserters on other segments run side by side and a
+ * long merge stalls nobody. sift.verify() holds it in ShareLock, which keeps the steps out; VACUUM,
+ * the orphan sweep and the SQL functions hold it exclusive: nothing else is then at work on the index.
+ * A claimed segment can only be changed by its holder. Readers are safe through the store's
  * safexid protocol (sift_store.h P4).
  */
 #include "postgres.h"
@@ -38,11 +41,22 @@
 
 #ifdef SIFT_TESTING
 int			sift_test_merge_max_kb = 0;
+int			sift_test_merge_sleep_ms = 0;
+int			sift_test_room_segments = 0;
 #define merge_max_bytes()	(sift_test_merge_max_kb > 0 ? (uint64) sift_test_merge_max_kb * 1024 : MERGE_MAX_BYTES)
+#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : ROOM_SEGMENTS)
+/* longest wait of an inserter for the maintenance of others (sift._test_maint_wait_us) */
+int64		sift_maint_wait_max_us = 0;
+#define wait_started()		GetCurrentTimestamp()
+#define wait_done(start)	(sift_maint_wait_max_us = Max(sift_maint_wait_max_us, GetCurrentTimestamp() - (start)))
 #else
 #define merge_max_bytes()	MERGE_MAX_BYTES
+#define room_segments()		ROOM_SEGMENTS
+#define wait_started()		((TimestampTz) 0)
+#define wait_done(start)	((void) (start))
 #endif
 #define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
+#define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
 
 typedef enum StepResult
 {
@@ -54,20 +68,73 @@ typedef enum StepResult
 /* ---------- locking and directory helpers ---------- */
 
 static bool
-maint_lock(Relation index, bool wait)
+maint_lock_step(Relation index, bool wait)
 {
 	if (wait)
 	{
-		LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+		LockPage(index, SIFT_MAINT_LOCK_BLKNO, RowExclusiveLock);
 		return true;
 	}
-	return ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	return ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, RowExclusiveLock);
+}
+
+static void
+maint_unlock_step(Relation index)
+{
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, RowExclusiveLock);
+}
+
+static void
+maint_lock(Relation index)
+{
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 }
 
 static void
 maint_unlock(Relation index)
 {
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+}
+
+/* ---------- claims: the segments a step replaces ---------- */
+
+static bool
+claim(Relation index, uint64 gen, bool wait)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_OBJECT(tag, MyDatabaseId, RelationGetRelid(index), (uint32) gen, (uint16) (gen >> 32));
+	return LockAcquire(&tag, ExclusiveLock, false, !wait) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+static void
+unclaim(Relation index, uint64 gen)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_OBJECT(tag, MyDatabaseId, RelationGetRelid(index), (uint32) gen, (uint16) (gen >> 32));
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
+/* Waits until the holder of the claim is done, which is how an inserter waits for a full directory to shrink */
+static void
+wait_claim(Relation index, uint64 gen)
+{
+	TimestampTz start = wait_started();
+
+	claim(index, gen, true);
+	unclaim(index, gen);
+	wait_done(start);
+}
+
+/* Whether the directory still has the segment, as a segment of this kind */
+static bool
+has_segment(const SiftDirSnapshot *snap, uint64 gen, SiftSegKind kind)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == gen)
+			return snap->segs[i].kind == kind;
+	return false;
 }
 
 static SiftScoreRef
@@ -333,28 +400,45 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	MemoryContextDelete(cx);
 }
 
-static const SiftSegEntry *
-first_sealed(const SiftDirSnapshot *snap)
-{
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED)
-			return &snap->segs[i];
-	return NULL;
-}
-
-static StepResult merge_next(Relation index, bool force, bool propagate);
+static StepResult merge_next(Relation index, bool force, bool propagate, uint64 *busy);
 static bool make_room_locked(Relation index);
 
-static StepResult
-promote_next(Relation index, bool propagate)
+/* Re-reads the directory, as the segments claimed from an older snapshot may have been replaced meanwhile */
+static bool
+still_there(Relation index, uint64 gen, SiftSegKind kind)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	const SiftSegEntry *s;
+	bool		found;
+
+	sift_dir_read(index, snap);
+	found = has_segment(snap, gen, kind);
+	pfree(snap);
+	return found;
+}
+
+/* Promotes the oldest sealed segment nobody else is at; busy: the generation of one that is */
+static StepResult
+promote_next(Relation index, bool propagate, uint64 *busy)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	StepResult	r = STEP_IDLE;
 
 	sift_dir_read(index, snap);
-	if ((s = first_sealed(snap)) != NULL)
-		r = run_step(index, propagate, promote_one, s);
+	for (int i = 0; i < snap->nsegs && r == STEP_IDLE; i++)
+	{
+		SiftSegEntry s = snap->segs[i];
+
+		if (s.kind != SIFT_SEG_MUTABLE_SEALED)
+			continue;
+		if (!claim(index, s.gen, false))
+			*busy = s.gen;
+		else
+		{
+			if (still_there(index, s.gen, SIFT_SEG_MUTABLE_SEALED))
+				r = run_step(index, propagate, promote_one, &s);
+			unclaim(index, s.gen);
+		}
+	}
 	pfree(snap);
 	return r;
 }
@@ -363,6 +447,7 @@ promote_next(Relation index, bool propagate)
 static int
 promote_locked(Relation index, bool seal_active, bool propagate)
 {
+	uint64		busy = 0;
 	int			n = 0;
 
 	if (seal_active)
@@ -370,7 +455,7 @@ promote_locked(Relation index, bool seal_active, bool propagate)
 		make_room_locked(index);
 		sift_mut_seal(index, true);
 	}
-	while (promote_next(index, propagate) == STEP_DONE)
+	while (promote_next(index, propagate, &busy) == STEP_DONE)
 	{
 		n++;
 		CHECK_FOR_INTERRUPTS();
@@ -383,42 +468,67 @@ sift_maint_promote(Relation index, bool wait)
 {
 	int			n;
 
-	if (!maint_lock(index, wait))
+	if (!maint_lock_step(index, wait))
 		return 0;
 	n = promote_locked(index, false, false);
-	maint_unlock(index);
+	maint_unlock_step(index);
 	return n;
 }
 
 /* ---------- merge ---------- */
 
+typedef struct MergeSel
+{
+	int			n;
+	SiftSegEntry seg[SIFT_MAX_SEGMENTS];
+	int			nbusy;			/* generations others claimed: the policy leaves them out */
+	uint64		busy[SIFT_MAX_SEGMENTS];
+} MergeSel;
+
+static bool
+is_busy(const MergeSel *sel, uint64 gen)
+{
+	for (int i = 0; i < sel->nbusy; i++)
+		if (sel->busy[i] == gen)
+			return true;
+	return false;
+}
+
 /* The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit */
 static int
-pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *msel)
 {
 	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN};
+	SiftDirSnapshot *view = NULL;
+	int			n;
 
-	return sift_merge_pick(index, &pol, snap, force, sel);
+	if (msel->nbusy > 0)
+	{
+		/* a segment another step claimed is still an entry of the directory but is not offered */
+		view = palloc(sizeof(SiftDirSnapshot));
+		*view = *snap;
+		for (int i = 0; i < view->nsegs; i++)
+			if (is_busy(msel, view->segs[i].gen))
+				view->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
+	}
+	n = sift_merge_pick(index, &pol, view ? view : snap, force, msel->seg);
+	if (view)
+		pfree(view);
+	return n;
 }
 
 /* The policy's choice (smallest first) cut to the smallest segments whose bytes fit one merge; a merge of fewer than two is none */
 static int
-pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *sel)
 {
 	int			n = pick_policy(index, snap, force, sel);
 	uint64		total = 0;
 	int			k = 0;
 
-	while (k < n && total + sel[k].bytes <= merge_max_bytes())
-		total += sel[k++].bytes;
+	while (k < n && total + sel->seg[k].bytes <= merge_max_bytes())
+		total += sel->seg[k++].bytes;
 	return k < Min(n, 2) ? 0 : k;
 }
-
-typedef struct MergeSel
-{
-	int			n;
-	SiftSegEntry seg[SIFT_MAX_SEGMENTS];
-} MergeSel;
 
 static void
 merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
@@ -439,6 +549,14 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	for (int i = 0; i < in->n; i++)
 		bytes += in->seg[i].bytes;
 	sift_wt_expect(wt, bytes);
+#ifdef SIFT_TESTING
+	/* a long merge of the worker, the segments claimed */
+	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)
+	{
+		pg_usleep(50000);
+		CHECK_FOR_INTERRUPTS();
+	}
+#endif
 	for (int i = 0; i < in->n; i++)
 	{
 		SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
@@ -466,17 +584,58 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	MemoryContextDelete(cx);
 }
 
-static StepResult
-merge_next(Relation index, bool force, bool propagate)
+/* Claims the selected segments; false when another step has some, which the next pick then leaves out */
+static bool
+claim_all(Relation index, MergeSel *sel)
+{
+	int			nbusy = sel->nbusy;
+
+	for (int i = 0; i < sel->n; i++)
+		if (!claim(index, sel->seg[i].gen, false))
+			sel->busy[sel->nbusy++] = sel->seg[i].gen;
+	if (sel->nbusy == nbusy)
+		return true;
+	for (int i = 0; i < sel->n; i++)
+		if (!is_busy(sel, sel->seg[i].gen))
+			unclaim(index, sel->seg[i].gen);
+	return false;
+}
+
+static bool
+all_there(Relation index, const MergeSel *sel)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	MergeSel   *sel = palloc(sizeof(MergeSel));
-	StepResult	r = STEP_IDLE;
+	bool		all = true;
 
 	sift_dir_read(index, snap);
-	sel->n = pick_merge(index, snap, force, sel->seg);
-	if (sel->n > 0)
-		r = run_step(index, propagate, merge_segments, sel);
+	for (int i = 0; i < sel->n; i++)
+		all &= has_segment(snap, sel->seg[i].gen, SIFT_SEG_IMMUTABLE);
+	pfree(snap);
+	return all;
+}
+
+/* One merge of segments nobody else is at; busy: the generation of one that is, when that left nothing to merge */
+static StepResult
+merge_next(Relation index, bool force, bool propagate, uint64 *busy)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MergeSel   *sel = palloc0(sizeof(MergeSel));
+	StepResult	r = STEP_IDLE;
+
+	for (int tries = 0; tries < CLAIM_TRIES && r == STEP_IDLE; tries++)
+	{
+		sift_dir_read(index, snap);
+		if ((sel->n = pick_merge(index, snap, force, sel)) == 0)
+			break;
+		if (!claim_all(index, sel))
+			continue;
+		if (all_there(index, sel))
+			r = run_step(index, propagate, merge_segments, sel);
+		for (int i = 0; i < sel->n; i++)
+			unclaim(index, sel->seg[i].gen);
+	}
+	if (r == STEP_IDLE && sel->nbusy > 0)
+		*busy = sel->busy[0];
 	pfree(sel);
 	pfree(snap);
 	return r;
@@ -486,7 +645,9 @@ merge_next(Relation index, bool force, bool propagate)
 static void
 merge_to_fixed_point(Relation index)
 {
-	while (merge_next(index, false, false) == STEP_DONE)
+	uint64		busy = 0;
+
+	while (merge_next(index, false, false, &busy) == STEP_DONE)
 		CHECK_FOR_INTERRUPTS();
 }
 
@@ -503,17 +664,24 @@ make_room_locked(Relation index)
 	for (;;)
 	{
 		StepResult	r;
+		uint64		busy = 0;
 
 		sift_dir_read(index, snap);
-		if (snap->nsegs < ROOM_SEGMENTS)
+		if (snap->nsegs < room_segments())
 			break;
-		if ((r = promote_next(index, false)) == STEP_IDLE)
-			r = merge_next(index, false, false);
+		if ((r = promote_next(index, false, &busy)) == STEP_IDLE)
+			r = merge_next(index, false, false, &busy);
+		if (r == STEP_IDLE && busy != 0)
+		{
+			/* what is left to merge is claimed by others: their step frees the entries */
+			wait_claim(index, busy);
+			continue;
+		}
 		if (r != STEP_DONE)
 			break;
 		CHECK_FOR_INTERRUPTS();
 	}
-	room = snap->nsegs < ROOM_SEGMENTS;
+	room = snap->nsegs < room_segments();
 	pfree(snap);
 	return room;
 }
@@ -527,9 +695,12 @@ sift_maint_make_room(Relation index)
 	sift_dir_read(index, snap);
 	if (!in_backoff(&snap->meta))
 	{
-		maint_lock(index, true);
+		TimestampTz start = wait_started();
+
+		maint_lock_step(index, true);
+		wait_done(start);
 		room = make_room_locked(index);
-		maint_unlock(index);
+		maint_unlock_step(index);
 	}
 	pfree(snap);
 	return room;
@@ -539,11 +710,12 @@ bool
 sift_maint_merge_step(Relation index, bool wait)
 {
 	StepResult	r;
+	uint64		busy = 0;
 
-	if (!maint_lock(index, wait))
+	if (!maint_lock_step(index, wait))
 		return false;
-	r = merge_next(index, false, false);
-	maint_unlock(index);
+	r = merge_next(index, false, false, &busy);
+	maint_unlock_step(index);
 	return r == STEP_DONE;
 }
 
@@ -606,7 +778,7 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	maint_lock(index, true);
+	maint_lock(index);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -635,7 +807,7 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		return stats;
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	maint_lock(index, true);
+	maint_lock(index);
 	promote_locked(index, false, false);
 	merge_to_fixed_point(index);
 	sift_recycle(index);
@@ -704,7 +876,7 @@ sift_maint_after_seal(Relation index)
 	int			nsealed = 0;
 
 	sift_dir_read(index, snap);
-	if (snap->nsegs >= ROOM_SEGMENTS)
+	if (snap->nsegs >= room_segments())
 		sift_maint_make_room(index);
 	if (sift_mut_seal(index, false) == 0)
 	{
@@ -722,9 +894,9 @@ sift_maint_after_seal(Relation index)
 }
 
 /*
- * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees
- * are reusable by the next step, because neither its xid nor its xmin hold the horizon back once
- * it committed.
+ * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees are
+ * reusable by the next step, because neither its xid nor its xmin hold the horizon back once it
+ * committed. The worker lock makes it the only worker of the index at work; the others leave.
  */
 static bool
 worker_step(Oid indexoid)
@@ -736,12 +908,15 @@ worker_step(Oid indexoid)
 	index = try_index_open(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
-		/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
-		if (index->rd_rel->relam == sift_catalog()->am && maint_lock(index, false))
+		/* the lock is busy when a VACUUM is at it, which then does the work */
+		if (index->rd_rel->relam == sift_catalog()->am && ConditionalLockPage(index, SIFT_WORKER_LOCK_BLKNO, ExclusiveLock) &&
+			maint_lock_step(index, false))
 		{
-			if ((r = promote_next(index, false)) == STEP_IDLE)
-				r = merge_next(index, false, false);
-			maint_unlock(index);
+			uint64		busy = 0;
+
+			if ((r = promote_next(index, false, &busy)) == STEP_IDLE)
+				r = merge_next(index, false, false, &busy);
+			maint_unlock_step(index);
 		}
 		index_close(index, RowExclusiveLock);
 	}
@@ -784,7 +959,7 @@ sift_promote(PG_FUNCTION_ARGS)
 	Relation	index = open_sift_index(PG_GETARG_OID(0));
 	int			n;
 
-	maint_lock(index, true);
+	maint_lock(index);
 	n = promote_locked(index, true, true);
 	maint_unlock(index);
 	index_close(index, RowExclusiveLock);
@@ -797,11 +972,12 @@ sift_merge(PG_FUNCTION_ARGS)
 {
 	Relation	index = open_sift_index(PG_GETARG_OID(0));
 	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
+	uint64		busy = 0;
 	int			n = 0;
 
-	maint_lock(index, true);
+	maint_lock(index);
 	promote_locked(index, false, true);
-	while (merge_next(index, force && n == 0, true) == STEP_DONE)
+	while (merge_next(index, force && n == 0, true, &busy) == STEP_DONE)
 	{
 		n++;
 		CHECK_FOR_INTERRUPTS();

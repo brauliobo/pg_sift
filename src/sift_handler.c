@@ -112,6 +112,7 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_segment_postings",
 							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
 							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	sift_store_test_init();
 #endif
 	sift_pushdown_init();
 	MarkGUCPrefixReserved("sift");
@@ -187,7 +188,6 @@ _PG_init(void)
 	sift_planner_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
-	sift_store_test_init();
 #endif
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);
