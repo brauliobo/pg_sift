@@ -81,6 +81,7 @@ struct SqStore
 			   *ver;
 	sqlite3_blob *blob,
 			   *wblob;
+	int			cursors;				/* open cursors: their statements need the blob handles */
 	/* fault injection */
 	int			fault_mode;
 	int64_t		fault_after;
@@ -726,6 +727,7 @@ void
 sq_store_commit(SqStore *st)
 {
 	st->changed = false;
+	close_blobs(st);
 }
 
 static void
@@ -898,6 +900,8 @@ sq_store_enter(SqStore *st)
 	return old;
 }
 
+static void release_locks(SqStore *st);
+
 void
 sq_store_leave(SqStore *old)
 {
@@ -909,6 +913,23 @@ sq_store_leave(SqStore *old)
 		st->pin_leaks++;
 		sq_store_recover(st);
 	}
+	if (old == NULL)
+		release_locks(st);
+}
+
+/* An open blob handle keeps SQLite's read lock after its statement ends; hold it only while a statement or transaction needs it */
+static void
+release_locks(SqStore *st)
+{
+	if (st->cursors == 0 && !st->shared && sqlite3_get_autocommit(st->db))
+		close_blobs(st);
+}
+
+void
+sq_store_hold(SqStore *st, int delta)
+{
+	st->cursors += delta;
+	release_locks(st);
 }
 
 static inline uint32

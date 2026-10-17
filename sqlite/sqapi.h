@@ -92,6 +92,7 @@ extern void sq_store_invalidate(SqStore *st);
 /* After an ERROR inside the engine: forgets the pins its readers held, closes the blob handles */
 extern void sq_store_recover(SqStore *st);
 extern void sq_store_commit(SqStore *st);
+extern void sq_store_hold(SqStore *st, int delta);
 
 /* Brackets every call into the engine: names the store whose pins ReleaseBuffer drops, and checks none is left held */
 extern SqStore *sq_store_enter(SqStore *st);
