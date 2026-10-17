@@ -154,50 +154,29 @@ current(Src *s)
 	return s->pos < s->nrec ? &s->rec[s->pos] : NULL;
 }
 
-/* ---------- the live postings of every term, for readers other than the merge ---------- */
+/* ---------- the live postings of every term, for readers other than the merge: the engine's own dump ---------- */
 
-typedef struct Walk
+typedef struct TermWalk
 {
-	Src			src;
 	void		(*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n);
 	void	   *arg;
 	MemoryContext caller;				/* fn allocates in the caller's context, the walk's goes away */
-} Walk;
+} TermWalk;
 
-static bool find_live(const Src *s, SiftKey key, uint64 *at);
+static void
+no_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+{
+}
 
 static bool
-walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
+walk_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys, const uint8 *tf,
+		  const uint16 *dl, const uint8 *pos, const uint32 *poslen)
 {
-	Walk	   *w = arg;
-	SiftPostingCursor *c;
-	sift_tid   *tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
-	SiftKey    *keys = palloc(info->df * sizeof(SiftKey));
-	uint32		n = 0,
-				m = 0;
-	uint64		at = 0;
+	TermWalk   *w = arg;
+	MemoryContext old = MemoryContextSwitchTo(w->caller);
 
-	c = sift_post_open(&w->src.seg->sr, info, CurrentMemoryContext);
-	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
-	{
-		uint32		k = sift_grp_tids(g, NULL, tids);
-
-		for (uint32 j = 0; j < k; j++)
-			keys[n + j] = tids[j];
-		n += k;
-	}
-	for (uint32 j = 0; j < n; j++)
-		if (find_live(&w->src, keys[j], &at))
-			keys[m++] = keys[j];
-	if (m > 0)
-	{
-		MemoryContext old = MemoryContextSwitchTo(w->caller);
-
-		w->fn(w->arg, term, len, keys, m);
-		MemoryContextSwitchTo(old);
-	}
-	pfree(keys);
-	pfree(tids);
+	w->fn(w->arg, term, len, keys, info->df);
+	MemoryContextSwitchTo(old);
 	return true;
 }
 
@@ -205,14 +184,15 @@ void
 sq_seg_walk_terms(SqStore *st, const SiftSegEntry *e,
 				  void (*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n), void *arg)
 {
+	const SqOptions *opt = sq_store_options(st);
+	SiftScoreRef ref = {(float4) opt->base.k1, (float4) opt->base.b, 0};
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Walk		w = {.fn = fn, .arg = arg, .caller = old};
+	TermWalk	w = {.fn = fn,.arg = arg,.caller = old};
+	SiftSegment *seg = sift_seg_open(sq_store_rel(st), e, cx);
 
-	w.src.seg = sift_seg_open(sq_store_rel(st), e, cx);
-	walk_live_docs(w.src.seg, add_doc, &w.src);
-	sift_dict_scan(w.src.seg->dict, NULL, 0, NULL, 0, walk_term, &w);
-	sift_seg_close(w.src.seg);
+	sift_seg_dump(seg, &ref, no_docs, walk_term, &w);
+	sift_seg_close(seg);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -531,73 +511,16 @@ sq_merge(SqStore *st, const uint64 *gens, int n, bool positions)
 	MemoryContextDelete(cx);
 }
 
-/* ---------- policy ---------- */
-
-static int
-tier_of(const SiftSegEntry *s, int fanin)
-{
-	uint64		r = s->bytes / TIER_BASE;
-	int			t = 0;
-
-	for (; r >= (uint64) fanin; r /= fanin)
-		t++;
-	return t;
-}
-
-static int
-bytes_cmp(const void *a, const void *b)
-{
-	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
-}
-
-static bool
-mostly_dead(SqStore *st, const SiftSegEntry *e)
-{
-	SiftSegment *seg;
-	bool		dead;
-
-	if (!(e->flags & SIFT_SEG_DIRTY))
-		return false;
-	seg = sift_seg_open(sq_store_rel(st), e, CurrentMemoryContext);
-	dead = sift_seg_live_docs(seg) * 2 < e->ndocs;
-	sift_seg_close(seg);
-	return dead;
-}
+/* ---------- policy: sift_merge.c, with the tiers starting at 1 MiB ---------- */
 
 int
 sq_merge_pick(SqStore *st, bool force, int fanin, uint64 *sel)
 {
-	const SiftDirSnapshot *dir = sq_store_dir(st);
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
-	int			n = dir->nsegs,
-				k = 0;
+	SiftMergePolicy pol = {TIER_BASE, fanin};
+	SiftSegEntry in[SIFT_MAX_SEGMENTS];
+	int			n = sift_merge_pick(sq_store_rel(st), &pol, sq_store_dir(st), force, in);
 
-	memcpy(imm, dir->segs, n * sizeof(SiftSegEntry));
-	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
-	if (force)
-	{
-		for (int i = 0; i < n; i++)
-			sel[i] = imm[i].gen;
-		return n > 1 || (n == 1 && (imm[0].flags & SIFT_SEG_DIRTY)) ? n : 0;
-	}
-	for (int i = 0; i + fanin <= n; i++)
-		if (tier_of(&imm[i], fanin) == tier_of(&imm[i + fanin - 1], fanin))
-		{
-			for (int j = i; j < n && tier_of(&imm[j], fanin) == tier_of(&imm[i], fanin) && k < 2 * fanin; j++)
-				sel[k++] = imm[j].gen;
-			return k;
-		}
-	if (n > SQ_MERGE_MAX_SEGMENTS && n >= 2)
-	{
-		for (; k < Min(n, fanin); k++)
-			sel[k] = imm[k].gen;
-		return k;
-	}
 	for (int i = 0; i < n; i++)
-		if (mostly_dead(st, &imm[i]))
-		{
-			sel[0] = imm[i].gen;
-			return 1;
-		}
-	return 0;
+		sel[i] = in[i].gen;
+	return n;
 }
