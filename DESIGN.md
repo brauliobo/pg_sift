@@ -527,7 +527,7 @@ Every item is measured by the M6 harness (`bench/`). It compares sift, in-databa
   - The query parser via the SQL wrapper `sift.parse_query`, driven by a grammar-aware generator script, under ASan.
   - The codec standalone with libFuzzer, owned by the codec agent; the codec has no backend dependencies.
 - **Determinism.** Fixed float evaluation order, ties broken by ctid, and `sift.simd` levels compared bit for bit.
-- **Docs.** `README.md` (user guide: DDL, SiftQL, functions, GUCs, limits), `DESIGN.md` (this file), `docs/CODEC.md` (codec agent).
+- **Docs.** `README.md` (overview, install, quick start, benchmark summary), `docs/USAGE.md` (user guide: DDL, SiftQL, functions, GUCs, limits), `DESIGN.md` (this file), `docs/CODEC.md` (codec agent).
 - **Test tiers.** `make check` (`scripts/ci.sh quick`) runs every suite in four parallel lanes on a non-ASan build with small corpora; `make check-full` (`scripts/ci.sh full`) is the ASan run at full sizes. `SIFT_QUICK=1` selects the quick sizes in `test/t`. The quick differential test runs 8 of the 16 harness mutants (the ones the full run kills with the most queries).
 - **Dev loop.** `scripts/pgtest.sh install|start|psql|regress|stop|destroy` runs a throwaway cluster under `$SIFT_TMP` (default `/tmp/sift-arch`, port `$SIFT_PORT` in 56100–56119). It loads sift from a `DESTDIR` staging root through PG18's `extension_control_path` and `dynamic_library_path`; nothing is installed system-wide.
 - **Packaging.** `packaging/PKGBUILD` (`pg_sift`) builds the committed HEAD with `nice make -j4` and installs through the standard PGXS `DESTDIR` path.
