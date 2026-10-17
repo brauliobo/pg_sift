@@ -3061,13 +3061,26 @@ rank_search(SiftRanker *r)
 
 #define RANK_INITIAL_K	1024
 
+/*
+ * A consumer that pulls past K rows is lossy (a join or a filter above the scan): every search scores
+ * the blocks again, so the next K grows fast while the hit array is small (an unfiltered join passes
+ * about a tenth of the rows, a search of 160 serves it where 40 did not) and slowly beyond it.
+ */
+#define RANK_FAST_GROWTH_K	4096
+
+static int64
+rank_next_k(int64 k)
+{
+	return Min(k * (k < RANK_FAST_GROWTH_K ? 16 : 4), INT_MAX / 2);
+}
+
 static void
 rank_ensure(SiftRanker *r)
 {
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : RANK_INITIAL_K;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K = Min(r->K * 4, INT_MAX / 2);
+		r->K = rank_next_k(r->K);
 	else
 		return;
 	rank_search(r);
