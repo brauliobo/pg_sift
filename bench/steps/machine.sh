@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Usage: bench/steps/machine.sh > machine.txt
 # Describes the machine and the engines of a run as `key: value` lines so results from different
-# hosts and sessions can be compared. No host name or user path is printed. ab.sh, places.sh and
-# reproduce.sh store it next to their results.
+# hosts and sessions can be compared. No host name or user path is printed. articles.sh and places.sh
+# store it next to their results.
 . "$(dirname "$0")/lib.sh"
 
 cpu() { grep -m1 -oP 'model name\s+: \K.*' /proc/cpuinfo; }
 simd() { local f; for f in avx2 avx512f avx512bw avx512vl; do grep -qw "$f" /proc/cpuinfo && printf '%s ' "$f"; done; }
-os() { . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -o; }
+os() { if . /etc/os-release 2>/dev/null; then echo "$PRETTY_NAME"; else uname -o; fi; }
 # default_version of an extension, looked up in the order the bench cluster searches (bench/steps/cluster.sh)
 ext_version() {
   local d IFS=:
@@ -33,8 +33,11 @@ echo "kernel: $(uname -sr)"
 echo "os: $(os)"
 echo "bench root: $(stat -f -c %T "$ROOT") (free: $(df -h --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -d ' '))"
 echo "postgres: $(pg_config --version)"
-echo "engine budget: $([[ $BUDGET_ENFORCED == yes ]] && echo "cgroup scope CPUQuota=${CPU_QUOTA:-800%} MemoryMax=${MEM_MAX:-32G}" || echo "not enforced (no systemd user session)")"
+echo "cpu budget: ${BUDGET:-servers=${CPUS:-all} load=${LOAD_CPUS:-all}}"
+echo "engine budget: $([[ $BUDGET_ENFORCED == yes ]] && echo "taskset to the CPUs of the engine, cgroup scope CPUQuota=100% per CPU, MemoryMax=${MEM_MAX:-32G}" || echo "taskset to the CPUs of the engine (no systemd user session: no quota, no memory cap)")"
 echo "engines: sift $(ext_version pg_sift) ($(sift_commit)), pg_search $(ext_version pg_search) ($(ext_origin pg_search); pinned $PARADEDB_VERSION)," \
-  "pg_textsearch $(ext_version pg_textsearch) ($(ext_origin pg_textsearch); pinned tag v$PG_TEXTSEARCH_VERSION, commit ${PG_TEXTSEARCH_COMMIT:0:12}), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)"
+  "pg_textsearch $(ext_version pg_textsearch) ($(ext_origin pg_textsearch); pinned tag v$PG_TEXTSEARCH_VERSION, commit ${PG_TEXTSEARCH_COMMIT:0:12}), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)," \
+  "pgx-bm25 $(ext_version bm25_native) ($(ext_origin bm25_native))"
 echo "sift commit: $(sift_commit)"
+[[ -f $ENG/sift_ref/root/.build-info ]] && echo "sift reference build: $(cat "$ENG/sift_ref/root/.build-info")"
 echo "load average at start: $(cut -d' ' -f1-3 /proc/loadavg)"

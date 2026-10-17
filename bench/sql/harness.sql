@@ -42,13 +42,38 @@ BEGIN
   END;
 END $$;
 
--- Workload -> statement kind and query modes. A workload runs only if every mode renders.
-CREATE TABLE IF NOT EXISTS workloads (wl text PRIMARY KEY, kind text, modes text[]);
+-- The classes (workloads) of the articles dataset: the statement kind and the query modes. `trace` classes take the sampled
+-- substrings of `queries` (each as and / or / phrase); `extra` classes (term, prefix, fuzzy) are derived from the first
+-- substrings, see extra_queries. A class runs only if every mode renders.
+CREATE TABLE IF NOT EXISTS workloads (wl text PRIMARY KEY, kind text, modes text[], src text);
 INSERT INTO workloads VALUES
-  ('and', 'top10', '{and}'), ('or', 'top10', '{or}'), ('phrase', 'top10', '{phrase}'),
-  ('mixed', 'top10', '{and,or,phrase}'), ('count', 'count', '{and,or,phrase}'),
-  ('filter', 'filter', '{and,or,phrase}'), ('join', 'join', '{and,or,phrase}')
+  ('and', 'top10', '{and}', 'trace'), ('or', 'top10', '{or}', 'trace'), ('phrase', 'top10', '{phrase}', 'trace'),
+  ('mixed', 'top10', '{and,or,phrase}', 'trace'), ('count', 'count', '{and,or,phrase}', 'trace'),
+  ('filter', 'filter', '{and,or,phrase}', 'trace'), ('join', 'join', '{and,or,phrase}', 'trace'),
+  ('term', 'top10', '{or}', 'extra'), ('prefix', 'top10', '{prefix}', 'extra'), ('fuzzy', 'top10', '{fuzzy}', 'extra')
 ON CONFLICT DO NOTHING;
+
+-- 36 derived queries from the first six 2-4 term substrings: term = their longest word as a one-term OR, prefix = the first
+-- length-3 chars (min 3) of the longest word + *, fuzzy = it minus its second-to-last char (edit distance 1); prefix and fuzzy take
+-- the first six substrings whose longest word is lowercase ASCII (a CJK run is tokenized differently by every engine and matches nothing).
+CREATE OR REPLACE VIEW extra_queries AS
+WITH subs AS (
+  SELECT sub, terms FROM queries WHERE mode = 'and' AND cardinality(terms) BETWEEN 2 AND 4 ORDER BY sub LIMIT 6
+), longest AS (
+  SELECT sub, terms, (SELECT t FROM unnest(terms) t ORDER BY length(t) DESC, t LIMIT 1) AS w
+  FROM queries WHERE mode = 'and' AND cardinality(terms) BETWEEN 2 AND 4
+), words AS (
+  SELECT sub, w FROM longest WHERE sub IN (SELECT sub FROM subs)
+), pwords AS (
+  SELECT sub, w FROM longest WHERE w ~ '^[a-z]+$' ORDER BY sub LIMIT 6
+)
+SELECT 'term' AS wl, sub AS qid, 'or' AS mode, ARRAY[w] AS terms FROM words
+UNION ALL SELECT 'prefix', sub, 'prefix', ARRAY[left(w, greatest(3, length(w) - 3))] FROM pwords
+UNION ALL SELECT 'fuzzy', sub, 'fuzzy', ARRAY[overlay(w PLACING '' FROM length(w) - 1 FOR 1)] FROM pwords;
+
+CREATE OR REPLACE VIEW class_queries AS
+SELECT w.wl, q.id AS qid, q.mode, q.terms FROM workloads w JOIN queries q ON q.mode = ANY (w.modes) WHERE w.src = 'trace'
+UNION ALL SELECT e.wl, e.qid, e.mode, e.terms FROM extra_queries e;
 
 CREATE TABLE IF NOT EXISTS stmts (wl text, n int, qid int, stmt text, PRIMARY KEY (wl, n));
 
@@ -60,8 +85,8 @@ BEGIN
     CONTINUE WHEN EXISTS (
       SELECT FROM unnest(w.modes) m WHERE bench_stmt(w.kind, m, '{x,y}') IS NULL);
     INSERT INTO stmts
-    SELECT w.wl, row_number() OVER (ORDER BY q.id), q.id, bench_stmt(w.kind, q.mode, q.terms)
-    FROM queries q WHERE q.mode = ANY (w.modes);
+    SELECT w.wl, row_number() OVER (ORDER BY hashtext(c.qid::text || c.mode), c.qid, c.mode), c.qid, bench_stmt(w.kind, c.mode, c.terms)
+    FROM class_queries c WHERE c.wl = w.wl;
     RETURN NEXT w.wl;
   END LOOP;
 END $$;
@@ -72,18 +97,4 @@ DECLARE r bigint[];
 BEGIN
   EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM (%s) s', stmt) INTO r;
   RETURN r;
-END $$;
-
--- Quick suite (sql/quick.sql view, same session): one stmts workload `q_<class>` per class whose
--- queries all render.
-CREATE OR REPLACE FUNCTION quick_build_stmts() RETURNS SETOF text LANGUAGE plpgsql AS $$
-DECLARE c text;
-BEGIN
-  DELETE FROM stmts WHERE wl LIKE 'q\_%';
-  FOR c IN SELECT DISTINCT class FROM quick ORDER BY 1 LOOP
-    CONTINUE WHEN EXISTS (SELECT FROM quick q WHERE q.class = c AND bench_stmt(q.kind, q.mode, q.terms) IS NULL);
-    INSERT INTO stmts SELECT 'q_' || c, row_number() OVER (ORDER BY q.sub, q.mode), q.sub, bench_stmt(q.kind, q.mode, q.terms)
-    FROM quick q WHERE q.class = c;
-    RETURN NEXT c;
-  END LOOP;
 END $$;

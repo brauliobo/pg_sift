@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Usage: bench/steps/fetch.sh [sift|rum|pg_search|pg_textsearch|bm25|elasticsearch|tantivy ...]
+# Usage: bench/steps/fetch.sh [sift|sift_ref|rum|pg_search|pg_textsearch|bm25|elasticsearch|tantivy ...]
 # (default: sift rum pg_search pg_textsearch). Versions are pinned in bench/versions.env.
 # Builds or unpacks the engines under $ROOT/engines/<name>, never system-wide: the PGXS extensions (sift from this
 # checkout, rum, pg_textsearch) are installed with DESTDIR into <name>/root, the ParadeDB pg_search package is
 # unpacked there; the cluster finds every */root (bench/steps/lib.sh). Downloads land in <name>/dl.
 # SIFT_SRC=worktree (default) builds the tracked files of this checkout, SIFT_SRC=head the last commit.
-# BM25_PKG: the pgx-bm25 Arch package to unpack. Builds run with nice and JOBS (4) jobs.
+# sift_ref: sift built from SIFT_REF (a git ref of this repository, default the tag in versions.env) under the extension name
+# pg_sift_ref, the reference of `bench/bench regress`. bm25 (pgx-bm25): BM25_PKG, the Arch package to unpack, or BM25_SRC, its source
+# tarball to build with PGXS. Builds run with nice and JOBS (4) jobs.
 . "$(dirname "$0")/lib.sh"
 
+# shellcheck disable=SC2153  # ROOT comes from lib.sh
 BUILD=$ROOT/build
 
 dl() { # engine url [sha256]: downloads once into engines/<engine>/dl, prints the path
@@ -45,7 +48,32 @@ fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/
 
 fetch_pg_textsearch() { pgxs_release pg_textsearch "https://github.com/timescale/pg_textsearch/archive/refs/tags/v$PG_TEXTSEARCH_VERSION.tar.gz" "$PG_TEXTSEARCH_SHA256"; }
 
-fetch_bm25() { mkdir -p "$ENG/bm25/root"; bsdtar -xf "${BM25_PKG:-$HOME/pkg/pgx-bm25/pgx-bm25-1.0.0-1-x86_64.pkg.tar.zst}" -C "$ENG/bm25/root"; }
+# A second sift in the same cluster: the extension is renamed (control file, scripts, library, and the library names the C code hands
+# to the server for its parallel build and maintenance workers), the SQL it exposes is not.
+fetch_sift_ref() {
+  local src=$BUILD/sift_ref root=$ENG/sift_ref/root commit f
+  commit=$(git -C "$REPO" rev-parse --verify --short=12 "$SIFT_REF^{commit}") || { echo "sift_ref: no git ref $SIFT_REF in $REPO" >&2; return 1; }
+  rm -rf "$src" "$root"; mkdir -p "$src"
+  git -C "$REPO" archive "$SIFT_REF" | tar -x -C "$src"
+  for f in "$src"/pg_sift.control "$src"/pg_sift--*.sql; do mv "$f" "${f/pg_sift/pg_sift_ref}"; done
+  sed -i -e 's/^EXTENSION = pg_sift$/EXTENSION = pg_sift_ref/' -e 's/^MODULE_big = pg_sift$/MODULE_big = pg_sift_ref/' \
+    -e 's/wildcard pg_sift--/wildcard pg_sift_ref--/' "$src/Makefile"
+  sed -i "s,/pg_sift',/pg_sift_ref'," "$src/pg_sift_ref.control"
+  sed -i 's/"pg_sift"/"pg_sift_ref"/' "$src"/src/*.c
+  pgxs_install sift_ref "$src" >/dev/null
+  echo "$SIFT_REF ($commit)" >"$root/.build-info"
+}
+
+fetch_bm25() {
+  local root=$ENG/bm25/root src=$BUILD/bm25
+  rm -rf "$root"; mkdir -p "$root"
+  if [[ -n ${BM25_PKG:-} ]]; then bsdtar -xf "$BM25_PKG" -C "$root"
+  elif [[ -n ${BM25_SRC:-} ]]; then
+    rm -rf "$src"; mkdir -p "$src"
+    tar -xzf "$BM25_SRC" -C "$src" --strip-components=1
+    pgxs_install bm25 "$src" >/dev/null
+  else echo "bm25: set BM25_PKG (the pgx-bm25 Arch package) or BM25_SRC (its source tarball)" >&2; return 1; fi
+}
 
 fetch_pg_search() {
   local deb data root=$ENG/pg_search/root

@@ -2,8 +2,9 @@
 # Usage: TIER=Q|F bench/steps/rank_check.sh ENGINE [NSUB]
 # Soft BM25 sanity check: overlap of the engine's top-10 with pgx-bm25's top-10 for the first
 # NSUB (default 200) substrings, per mode. Ties at rank 10 keep even exact BM25 below 1.0.
-# The pgx-bm25 reference is computed once per tier into $DATA/rankref-$TIER.tsv.
-. "$(dirname "$0")/lib.sh"
+# The pgx-bm25 reference is computed once per tier into $DATA/rankref-$TIER.tsv. Engines outside Postgres (Elasticsearch,
+# Tantivy) are built and driven through bench/xbench (steps/xlib.sh).
+. "$(dirname "$0")/xlib.sh"
 
 NSUB=${2:-200}
 REF=$DATA/rankref-$TIER-$NSUB.tsv
@@ -13,14 +14,27 @@ top10() { q -c "COPY (SELECT q.id, bench_ids(bench_stmt('top10', q.mode, q.terms
 
 if [[ ! -s $REF ]]; then
   load_engine bm25
+  engine_available || { log "bm25: pgx-bm25 is not installed, it is the reference (bench/bench setup --engines bm25)"; exit 1; }
   check_db
   top10 >"$REF.tmp" && mv "$REF.tmp" "$REF"
 fi
 load_engine "${1:?engine}"
-engine_available || { log "$ENGINE: extension $REQUIRES not installed, skipping"; exit 0; }
-check_db
+engine_available || { log "$ENGINE: not installed, skipping"; exit 0; }
 mkdir -p "$OUT"
-top10 | psql -X -v ON_ERROR_STOP=1 -q -c "CREATE TEMP TABLE got (id int, ids bigint[]); CREATE TEMP TABLE ref (id int, ids bigint[])" \
+if [[ -n $EXTERNAL ]]; then
+  RUN=$OUT/$ENGINE; mkdir -p "$RUN"
+  CLASSES=''; SECS=0 WARM=0 UPDATE_RATE=0 CLIENTS=1
+  clone_db "$(engine_db "$ENGINE")" >/dev/null
+  x_export_docs
+  trap 'xe "$ENGINE" x_stop 2>/dev/null || true' EXIT
+  x_start
+  locked x_build "$X/docs.ndjson"
+  got() { x_top10 "$NSUB"; }
+else
+  check_db
+  got() { top10; }
+fi
+got | psql -X -v ON_ERROR_STOP=1 -q -c "CREATE TEMP TABLE got (id int, ids bigint[]); CREATE TEMP TABLE ref (id int, ids bigint[])" \
   -c "\\copy got FROM STDIN" -c "\\copy ref FROM '$REF'" \
   -c "SELECT '$ENGINE' AS engine, q.mode, count(*) AS queries,
              round(avg(cardinality(ARRAY(SELECT unnest(g.ids) INTERSECT SELECT unnest(r.ids)))::numeric

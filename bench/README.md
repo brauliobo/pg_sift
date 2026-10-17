@@ -1,7 +1,12 @@
 # sift benchmark and correctness harness
 
-Two public datasets, measured on sift, sift with `phrase_index = pairs`, ParadeDB pg_search, pg_textsearch and rum with the same
-all of them alike. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
+Two public datasets, measured on sift, its variants (`phrase_index = pairs`, and `positions = off` once the installed sift has that reloption), ParadeDB pg_search, pg_textsearch, rum
+and pgx-bm25 with the same rows, queries, clients, CPU budget and cache state. By default every engine has a cluster of its own on an equal
+share of the CPU budget and all engines are measured at the same time (`--serial`: one cluster, engines interleaved cell by cell), so host
+load drifts hit all of them alike. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
+One suite serves every engine: `engines.tsv` (the registry) plus `engines/<id>.sh` (the adapter), one runner (`steps/articles.sh`, `steps/places.sh`),
+one result format and one report path (`steps/tables.py`, `steps/charts.py`); gin, Tantivy and Elasticsearch
+run through the same pipeline (Tantivy and Elasticsearch through `xbench`) and are charted only when the registry says so.
 
 | use-case | data | what it exercises |
 |---|---|---|
@@ -11,14 +16,14 @@ all of them alike. Everything runs through one entry point, `bench/bench`; `benc
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report at the reduced default scale: about 10 minutes
-bench/bench all --full             # the full-size run (the scale of the published numbers): about 1.5 hours
+bench/bench all                    # setup + run + report at the reduced default scale: about 2 minutes of measurements
+bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
 ```
 
 Scale: the default run uses a reduced dataset (25,000 articles, 34,165 places) and two rounds of 1 s per cell, which is
 enough to see the ordering of the engines but not their exact ratios; `--full` (or `--tier full`) uses all 218,058
-articles and the 236,262 places of cities500 with 4-6 rounds. `--tier ab` is the 150,000 article / 34,165 place tier
-in between (3-6 rounds, about 25 minutes). The first run also downloads and converts the datasets (about 3 minutes,
+articles and the 236,262 places of cities500 with 2-3 rounds. `--tier ab` is the 150,000 article / 34,165 place tier
+in between (2-3 rounds). The first run also downloads and converts the datasets (about 3 minutes,
 once). Ratios depend on the size of the corpus (the default index's phrase and `count(*)` cross pg_search somewhere
 
 Prerequisites: PostgreSQL 18 with its development packages and contrib (`pg_config`, PGXS, `pgbench`, `psql`, the
@@ -27,7 +32,7 @@ server tools, `pg_stat_statements`, `pg_prewarm`, `pg_buffercache`), `gcc` and `
 (default `/tmp/sift-bench`; a fast disk or tmpfs). Nothing is installed system-wide and no sudo is needed. `setup`
 checks all of this before it downloads anything.
 
-`all` is three commands that can be run on their own:
+`docs/img`, so one command regenerates the committed results, tables and charts):
 
 | command | what it does |
 |---|---|
@@ -35,18 +40,24 @@ checks all of this before it downloads anything.
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory |
 
-The other commands: `charts`, `cold` (cache-evicted latency), `check oracle|rank ENGINE` (correctness against a tsvector
-oracle / pgx-bm25), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
+The other commands: `charts`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank ENGINE` (correctness against a tsvector
+oracle / pgx-bm25; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `remote` (the same on an ssh host), `machine`, `clean [--all]`. Options: `--tier quick|ab|full` (`--full` = `--tier full`),
-`--dataset articles|places|all`, `--engines sift,sift_pairs,pg_search,pg_textsearch,rum`, `--clients N`, `--duration S`,
-`--rounds MIN-MAX`, `--out DIR`, `--no-build`, `--no-datasets`.
+`--dataset articles|places|all`, `--engines sift,sift_nopos,sift_pairs,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
+query classes / places workloads), `--cpus LIST` and `--load-cpus LIST` (the CPU budget, below), `--serial` (one cluster, engines interleaved cell by cell, as the published tables were
+measured), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
+the server's parallel workers), `--duration S`, `--rounds MIN-MAX` (default 2-3), `--rse X` (the relative standard error that ends the rounds of a cell, default 0.05),
+`--ref REF` and `--run` (`regress`), `--out DIR`, `--no-build`, `--no-datasets`.
 
 | tier | articles | places | rounds | expected run time of `all` |
 |---|---|---|---|---|
-| `quick` (default) | 25,000 | 34,165 (cities15000) | 2 |  |
-| `ab` | 150,000 | 34,165 | 3-6 |  |
-| `full` (`--full`) | 218,058 | 236,262 (cities500) | 4-6 |  |
+| `quick` (default) | 25,000 | 34,165 (cities15000) | 2 | measured: 2 min for both datasets with the six default engines (builds included), about 1 min more for the cold-cache tables, on the default 8 + 4 CPU budget |
+| `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
+| `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | projected: about 15-20 min including the builds and the cold-cache tables |
+
+The times are those of the default budget (8 server and 4 load generator CPUs, below); a smaller budget runs the cells for as long but builds
+and answers more slowly. `--serial` (one cluster, engines one after the other) took about twice as long with three engines in the measured comparison, and more with more engines.
 
 Result directory (default `bench/out/run-<UTC time>`, gitignored; `bench/out/latest` links to the last one):
 
@@ -56,7 +67,7 @@ Result directory (default `bench/out/run-<UTC time>`, gitignored; `bench/out/lat
 | `results.tsv` | chart input, one row per measurement (columns below) |
 | `builds.tsv` | setup time, index build time, index size and table growth of every build |
 | `tables.md` | the same numbers as Markdown: one row per engine with index size, build time and queries per second per class (articles) or p50 latency per class (places), then the ratios |
-| `articles-<tier>/`, `places-<tier>/` | the raw tables of the run: `cells.tsv`, `builds.tsv`, `summary.tsv`, `machine.txt` |
+| `articles-<tier>/`, `places-<tier>/` | the raw tables of the run: `cells.tsv`, `builds.tsv`, `summary.tsv`, `machine.txt`; `*-cold` for `cold` (`summary.tsv` / `cold.tsv`) |
 
 Read the numbers within one table of one run: the engines were measured one after another in the same session, so
 and on whatever else the host runs. A cell the engine cannot run is `NA`, one whose statement failed or timed out is
@@ -67,12 +78,13 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 | column | values |
 |---|---|
 | `dataset` | `articles`, `places` |
-| `tier` | `quick`, `ab`, `full` |
-| `engine` | `sift`, `sift_pairs` (`phrase_index = pairs`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
+| `tier` | `quick`, `ab`, `full`, `quick-cold`, `ab-cold`, `full-cold` |
+| `engine` | `sift`, `sift_nopos` (`positions = off`), `sift_pairs` (`phrase_index = pairs`), `pg_search`, `pg_textsearch`, `rum`; `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
-| `variant` | places workload `top boost filter count scan`; `-` otherwise |
-| `metric` | `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
+| `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `-` otherwise |
+| `metric` | `cpu_budget` (host row: `value` server CPUs and `min` load generator CPUs of an engine, `max` engines; `variant` the lists and the mode), `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m` |
 | `value`, `min`, `max` | median over the interleaved rounds and its range (`NA` / `error` as above); one build per engine for the build metrics |
+| `stderr`, `n`, `values` | the standard error of the cell, `sd / sqrt(n)` over its `n` rounds (sample standard deviation; `NA` below two rounds and for single measurements: builds, cold-cache cells, host rows), and the per-round values, comma separated |
 | `unit` |  |
 
 Pinned inputs are all in [versions.env](versions.env): Wikipedia dump date and sha1, GeoNames date and sha256 (GeoNames
@@ -82,10 +94,10 @@ rum 1.3.15 (tag of postgrespro/rum, tarball sha256), PostgreSQL major. sift is b
 (`SIFT_SRC=head` builds the last commit instead of the working tree); its commit, and whether the tree had
 uncommitted changes, is in `machine.txt`.
 
-Adding an engine: write `engines/<name>.sh` (see Engine adapters below), add a line (id, labels, chart color) to
-`engines.tsv`, which sets the engine list of `bench`, `steps/ab.sh`, `steps/tables.py` and `steps/charts.py` and the order of every
-table and chart, and a `fetch_<name>` function to `steps/fetch.sh` if it has to be built (and its pinned version to `versions.env`). For places add the setup, index and statements to the `SETUP`, `INDEX` and
-`stmt` tables of `steps/places.sh`.
+Adding an engine: one adapter file `engines/<name>.sh` (see Engine adapters below; for places it holds the `PLACES_*` and `P_*` statements too) and one line
+in `engines.tsv` (id, chart and Markdown labels, color, charted yes/no, in the default run yes/no, reference engine), which sets the engine list of `bench`,
+`steps/articles.sh`, `steps/places.sh`, `steps/tables.py` and `steps/charts.py` and the order of every table and chart. An engine that has to be built also needs a
+`fetch_<name>` function in `steps/fetch.sh` (and its pinned version in `versions.env`).
 
 ## Datasets
 
@@ -107,12 +119,49 @@ put any `articles.tsv` (COPY text of `id, title + body, category_id, created, li
 
 ## How a run works
 
-`bench run` calls `steps/ab.sh` (articles) and `steps/places.sh` (places). `ab.sh` builds every engine database once
-from the cached corpus dump, then runs every class on every engine, one cell at a time, the engine order rotated each
-Rounds stop once every cell's spread is under `TOL` after `MINR`, or
-at `MAXR`.
-with medians and ratios, `machine.txt`) and removes its scratch cluster on exit (`KEEP=1` keeps it); the corpus dump
-stays in the cache. Per-tier cluster, port and dump:
+`bench run` calls `steps/articles.sh` (articles) and `steps/places.sh` (places); `cold` runs the cold-cache variant of the same steps. A run is a series of phases, whose
+wall times each result directory keeps in `phases.txt`:
+
+1. **Lanes.** Every engine gets a lane (`steps/lanes.sh`): a cluster with its own data directory and port, pinned to an equal share of the server CPUs, its load
+   generators pinned to an equal share of the load CPUs. All lanes are restored from the corpus dump and indexed at the same time, so the build phase takes as long as the slowest
+   engine, not the sum. `--serial` uses one cluster with all the server CPUs instead.
+2. **Cache of built lanes.** A built, stopped lane is copied to `$SIFT_BENCH_ROOT/cache/lanes/<key>`, the key being a hash of the adapter, the extension binary, the corpus,
+   the harness, PostgreSQL and the CPU count of the lane; a rerun, a `regress` run, a report change rebuilds nothing that did not change (`--rebuild` builds again; `bench clean --all` removes the cache,
+   which is as large as the clusters it holds).
+3. **Rounds.** Round r runs every class on every engine at the same time, one cell group per class. In round r the engine k takes the CPUs of the lane (k + r) mod n (the servers are pinned
+   again, the load generators follow), so no engine keeps a core that the host happens to load; with the interleaved rounds this also averages out the CPU an engine had. Every statement
+   trace is the same for every engine (pgbench `--random-seed=7`). The first round has a warm-up cell per group, and the relations are prewarmed after the build.
+4. **Stopping.** After `MINR` rounds (default 2) only the cells whose relative standard error is above `--rse` (default 5%) are measured again, up to `MAXR` (default 3); a cell that failed is not repeated.
+5. **Cold cache** (`cold`): per engine and class, `NQ` (12) queries, each after the heap, TOAST and index files of the table were evicted from shared buffers and the page cache (per relation, not the whole cache),
+   in all lanes at once.
+
+It keeps only compact tables and removes its scratch clusters on exit (`KEEP=1` keeps them); the corpus dump
+and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, so two benchmarks never time at once (the lanes of one run overlap on purpose, on disjoint CPUs).
+
+### CPU budget
+
+The CPUs of a run are a parameter, printed in `machine.txt` (`cpu budget:`) and in the header of every table (`CPU budget: ...`): `--cpus LIST` for the servers (default: the 8 least busy
+hardware threads, whole cores, picked by `steps/cpus.sh` from a one second sample of `/proc/stat`, so cores another job keeps busy are left alone) and `--load-cpus LIST` for the load generators (pgbench,
+`xbench`; default 4 threads), two disjoint lists in `taskset` syntax (`0-3,8-11`). With n engines in concurrent mode each lane gets `floor(servers / n)` server CPUs
+(at least one; engines share a CPU, with a warning, when there are more engines than CPUs) and `floor(load / n)` load CPUs; the parallel workers of a server (and an index build) and the pgbench
+threads follow from the lists (`--workers` caps them) and each server runs in a cgroup scope with `CPUQuota` of 100% per CPU when a systemd user session exists. `--serial` gives
+the one cluster all of `--cpus`; to measure with the CPUs of a concurrent lane, pass the share of one lane.
+
+### Standard error
+
+Every cell of `results.tsv`, `tables.md` and the charts is the median over its `n` rounds with a standard error, the sample standard deviation divided by `sqrt(n)`. The tables show `value ± stderr` (and the range of
+the rounds where there is room), the charts draw one standard error as an error bar, and a relative standard error above 10% is flagged (`!` in the tables). With n = 2-3 the standard error is a rough
+indication: it is itself estimated from two or three numbers, and it only covers the variation between the rounds, not the choice of the trace or the host. Read it with the per-round values (`values`).
+
+### Regression check
+
+`bench/bench regress --run` builds sift from this checkout and the reference `sift_ref` from the git ref `--ref` (default the tag `SIFT_REF` of `versions.env`, v1.1.0, under the extension name `pg_sift_ref`),
+measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `p1 p3 w1 a3` with the workloads `top boost`; `--engines sift,sift_ref,sift_pairs,sift_pairs_ref,sift_nopos`
+and `--classes`, `--workloads` widen it) with 3-5 rounds, and compares each cell with its reference: queries per second, p50 latency, cold-cache p50, index size and CREATE INDEX time. A cell is a
+REGRESSION when the new value is worse by more than 5% **and** by more than 2 combined standard errors (`sqrt(se_new^2 + se_ref^2)`); a cell that fails on the new engine only is one too, a cell that fails on both is an
+ERROR. Builds and cold-cache cells are single measurements: 15% relative error is assumed for them (`--noise`). The exit status is 1 on a regression, 2 on an ERROR or when nothing could be compared. `regress`
+The tail latency p95 is not compared: it is too noisy at 1 s cells for a 5% rule.
+Per-tier cluster, port and dump:
 
 | tier letter | articles | port | dump |
 |---|---:|---:|---|
@@ -134,15 +183,16 @@ stays in the cache. Per-tier cluster, port and dump:
 
 | `steps/` | role |
 |---|---|
-| `ab.sh`, `places.sh` | the interleaved A/B runs of articles and places (`run`, `cold`) |
-| `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `spread_ok` (the interleaved rounds), `evict_table` (cold cache), `locked` (perf lock), `limited` (8 CPU / 32 GB budget, a cgroup scope when a systemd user session exists) |
-| `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
+| `articles.sh`, `places.sh` | the runs of articles and places (`run`, `cold`, `suite`, `workload`) |
+| `lanes.sh`, `cpus.sh` | the lanes (a cluster per engine, the cache of built lanes, the rotation of the CPUs); the default CPU budget picked from the load of the host |
+| `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
+| `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `evict_table` (cold cache), `locked` (perf lock), `limited` (a server pinned to its CPUs, a cgroup scope with a CPU quota when a systemd user session exists) |
+| `machine.sh`, `tables.py` | the machine, CPU budget and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
+| `regress.py` | the regression check of `results.tsv` files (`regress`) |
 | `charts.py` |  |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\ | start\ | stop\ | destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, fetch Elasticsearch, build `xbench`: one `$SIFT_BENCH_ROOT/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
-| `run.sh`, `xrun.sh` | one engine: timed index build + pgbench workloads (`BUILD_ONLY=1`: build and keep); non-Postgres engines driven by `xbench` (`workload`) |
-| `quick.sh`, `report.sh` | the multi-engine standard suite and its tables (`suite`) |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch; speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
@@ -156,7 +206,7 @@ queries). The oracle adds a `not` form (all terms, last one negated).
 ## Engine adapters
 
 Postgres adapters (`gin`, `rum`, `pg_textsearch`, `bm25` = pgx-bm25, `pg_search`, `sift`, `sift_pairs` = sift
-with `phrase_index = pairs`) set `REQUIRES` (extension), `SETUP`, `INDEX`, and `PRED` and `RANK`: SQL expressions over
+with `phrase_index = pairs`, `sift_nopos` = sift with `positions = off`) set `REQUIRES` (extension), `PROBE` (optional: a statement over a temp table `probe (t text)` that must work for the engine to run, e.g. a reloption of a newer sift build; the engine is skipped with a message otherwise), `SETUP`, `INDEX`, and `PRED` and `RANK`: SQL expressions over
 `mode` and `terms` rendering the WHERE condition and the ORDER BY of a query, NULL if the engine cannot answer it
 (`HELPERS`: SQL they use). `steps/lib.sh` turns them into `bench_pred(mode, terms)` and `bench_rank(mode, terms)` and
 `sql/harness.sql` composes every statement kind from them (top10, count, match, filter, join), so a new engine is
@@ -165,13 +215,25 @@ one small file.
 `$SIFT_BENCH_ROOT/engines/sift/root`) and the harness skips an engine whose extension is absent. rum is a stored `tsvector` column
 (`simple` configuration) with a `rum_tsvector_ops` index, queried with `@@` and ranked with `<=>`; on places it
 lives in its own database so the column does not enlarge the other engines' table, and it has no per-field boost
-(the `boost` cells are NA). pg_textsearch is a `bm25` index with `text_config = 'simple'` (the analysis of gin and rum); see its adapter for the
+(its `boost` cells are an emulation, below). pg_textsearch is a `bm25` index with `text_config = 'simple'` (the analysis of gin and rum); see its adapter for the
 queries: `@@ tsquery` filters through the index, `ORDER BY body <@> to_bm25query(...)` ranks, a ranked disjunction needs
-no filter, AND and phrase top-k filter through the index in a derived table (the plain form is planned as a sequential
-scan), and the database runs with `enable_seqscan = off` as the extension's README suggests. On places it filters by the
-same prefix tsquery as rum but scores whole terms only, so only the `count` and `scan` workloads run and the ranked ones
-are NA; as its access method is also called `bm25` it lives in its own database next to pg_search. ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
+no filter, AND and phrase top-k filter through the index in a derived table whose matches are scored standalone (the plain form is planned as a
+sequential scan, and a bare `ORDER BY body <@> ...` over the `@@` scan does not rank), and the database runs with `enable_seqscan = off` as
+the extension's README suggests. ParadeDB is indexed as an application would: `bm25 (id, body, created, category_id)`
 with the default tokenizer, and `edge_ngram(1, 15)` on the places name and all-fields text.
+
+Places adapters are part of the engine's file (`PLACES_SETUP`, `PLACES_INDEX`, the statements `P_match`, `P_top`, `P_boost`, `P_filter`, `P_count`, `P_scan`; `engines/_places.sh` has the shared fragments). sift, its variants (`pairs`, `positions = off`) and pg_search answer every workload natively. rum and pg_textsearch
+filter by the prefix tsquery (`'gra':* & 'ho':*`, their native prefix match) for `count` and `scan`; they have no native equivalent of the ranked workloads, which are
+emulations built next to the native index, in the same database, reported as the `emulation` build of the engine (variant `emulation`
+
+| engine | workload | emulation |
+|---|---|---|
+| pg_textsearch | top, filter | `bm25` indexes on stored columns holding the edge n-grams (1-15 letters) of every word, pg_search's analysis, so a typed prefix is a whole term; the matches `ng_text @@ plainto_tsquery(typed)` (a derived table) are scored standalone with the distinct n-grams of the typed words |
+| pg_textsearch | boost | the same matches ordered by the all-fields score plus 3 x the score of a second index on the name field (a weighted sum of two bm25 scores) |
+| rum | boost | a second stored tsvector with the name words at weight A (1.0) and the other fields at B (0.4), indexed with `rum_tsvector_ops` and ranked with `<=>`; the weights are rum's, so the name counts 2.5 times, not 3 |
+| sift pairs, sift positions off | all | the variants of the index are not needed by prefixes (never a phrase); they run to show their cost on a places workload |
+
+Each pg_textsearch and rum database keeps the tables of both: `count` and `scan` run on the native index and are not changed by the emulation.
 
 External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` and define `x_start`, `x_stop`,
 `x_build`, `x_size`, `x_pid` plus SQL `x_req` / `x_write` (in `RENDER`) that render requests from the same query trace.
@@ -181,9 +243,9 @@ External adapters (`elasticsearch`, `tantivy`) set `EXTERNAL`, `URL`, `XB_ARGS` 
 `and`, `or`, `phrase`, `mixed` (all three, top-10), `count` (count(*) of all three), `filter` (top-10 +
 `created >= cutoff`, ~2% of rows), `join` (top-10 joined with `categories`, region filter), `update`
 (`workload` only: writers at `UPDATE_RATE`=1000 ops/s: 70% update, 15% insert, 15% delete, while `mixed`
-readers run; WAL bytes from `pg_current_wal_lsn`). Defaults of `workload`: 8 clients, 5 s warm-up, 30 s timed,
-`statement_timeout` 120 s. Its timed sections hold `flock /tmp/sift-perf.lock`; the engine
-servers run in a `systemd-run --user --scope` with `CPUQuota=800%` and `MemoryMax=32G` when a systemd user session exists.
+readers run; WAL bytes from `pg_current_wal_lsn`; it changes the documents, so it runs last in a round and a run with it should not be compared with one without). Defaults of `workload`: 8 clients, 5 s warm-up, 30 s timed,
+`statement_timeout` 120 s. `workload` and `suite` are `run --dataset articles` over the classes (and engines) they select; the engine
+servers run in a `systemd-run --user --scope` with a CPU quota of 100% per CPU of their lane and `MemoryMax=32G` when a systemd user session exists.
 
 Places classes are what a user has typed: `p1`-`p4` a name's first word cut to 1-4 letters, `w1` a whole
 word, `a2`/`a2s` two words (last cut to 2 / 1 letters), `a3` name, region and country word, `x2` name word
