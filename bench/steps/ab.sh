@@ -7,7 +7,8 @@
 #   bench/steps/ab.sh prepare_places                   the places database of the adapter with a btree on country_code (ABDB=places_sift)
 #   bench/steps/ab.sh shapes                           the filter shapes of the plan-choice tests as scripts shape_NAME.pgb (ABDB=shapes)
 #   bench/steps/ab.sh build LABEL [REF]                production library of git REF (default HEAD; "work": the working tree) -> $AB/libs/LABEL
-#   bench/steps/ab.sh run CLASS REPS SECS LABEL...     cycles and instructions per transaction, one backend, mean +- standard error
+#   bench/steps/ab.sh run CLASS REPS SECS|Nt LABEL...  cycles and instructions per transaction, one backend, mean +- standard error (Nt: N transactions
+#                                                      of the seeded sequence of statements, the same for every build)
 #   bench/steps/ab.sh clients CLASS REPS SECS N LABEL...   transactions per second of N clients, same interleaving
 #   LABEL=L bench/steps/ab.sh psql [ARGS...]           psql into the database, with the library of label L (default main)
 #   bench/steps/ab.sh stop                             stop the cluster
@@ -117,21 +118,30 @@ backend() {
 # mean +- standard error of the numbers in $1
 stat() { echo "$1" | awk '{n = NF; s = 0; for (i = 1; i <= n; i++) s += $i; m = s / n; v = 0; for (i = 1; i <= n; i++) v += ($i - m) ^ 2; printf "%.0f +- %.0f", m, (n > 1) ? sqrt(v / (n - 1) / n) : 0}'; }
 
-run() { # CLASS REPS SECS LABEL...
-  local name=$1 c=$(script "$1") reps=$2 secs=$3 r l pid cyc ins tps out
+run() { # CLASS REPS SECS|Nt LABEL...
+  local name=$1 c=$(script "$1") reps=$2 secs=$3 r l pid cyc ins tps out dur txns per
   shift 3
+  # Nt: every run is N transactions of the same statements (the seeded sequence), so the builds meet the same queries;
+  # SECS: a window of that many seconds of a run that goes on, whose statements differ with the speed
+  if [[ $secs == *t ]]; then txns=${secs%t} dur="-t $txns"; else dur="-T $((secs + 3))"; fi
   declare -A cy in tp
   for r in $(seq "$reps"); do
     for l in "$@"; do
       out=$(mktemp)
-      PGAPPNAME=ab PGOPTIONS=$(options "$l") pgbench -n -c 1 -j 1 -T $((secs + 3)) --random-seed=7 $(protocol "$c") ${PGB:-} -f "$c" "$ABDB" >"$out" 2>&1 &
+      PGAPPNAME=ab PGOPTIONS=$(options "$l") pgbench -n -c 1 -j 1 $dur --random-seed=7 $(protocol "$c") ${PGB:-} -f "$c" "$ABDB" >"$out" 2>&1 &
       pid=$(backend ab)
-      # past the connection and the first statements, then the window
-      read -r cyc ins < <(perf stat -x, -e cycles:u,instructions:u -p "$pid" -- sleep "$secs" 2>&1 | awk -F, '/cycles/ {c = $1} /instructions/ {i = $1} END {print c, i}')
+      if [[ -n ${txns:-} ]]; then
+        read -r cyc ins < <(perf stat -x, -e cycles:u,instructions:u -p "$pid" 2>&1 | awk -F, '/cycles/ {c = $1} /instructions/ {i = $1} END {print c, i}')
+        per=$txns
+      else
+        read -r cyc ins < <(perf stat -x, -e cycles:u,instructions:u -p "$pid" -- sleep "$secs" 2>&1 | awk -F, '/cycles/ {c = $1} /instructions/ {i = $1} END {print c, i}')
+        per=$(grep -oP 'tps = \K[0-9.]+(?= \(without)' "$out" | awk -v s="$secs" '{printf "%.6f", $1 * s}')
+      fi
       wait
       tps=$(grep -oP 'tps = \K[0-9.]+(?= \(without)' "$out"); rm -f "$out"
-      cy[$l]+="$(awk -v c="$cyc" -v t="$tps" -v s="$secs" 'BEGIN {printf "%.0f", c / (t * s)}') "
-      in[$l]+="$(awk -v c="$ins" -v t="$tps" -v s="$secs" 'BEGIN {printf "%.0f", c / (t * s)}') "
+      [[ -n ${txns:-} ]] || per=$(awk -v t="$tps" -v s="$secs" 'BEGIN {printf "%.6f", t * s}')
+      cy[$l]+="$(awk -v c="$cyc" -v n="$per" 'BEGIN {printf "%.0f", c / n}') "
+      in[$l]+="$(awk -v c="$ins" -v n="$per" 'BEGIN {printf "%.0f", c / n}') "
       tp[$l]+="$tps "
     done
   done
