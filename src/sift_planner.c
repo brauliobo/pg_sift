@@ -129,7 +129,7 @@ const_queries(List *queries, text ***texts, int *ntexts)
 	return true;
 }
 
-/* The query operands of the index quals; the clauses may be the operator or its support-function form */
+/* The query operands of the index quals; NIL when one is an array qual (ANY): the bitmap scan runs it as one scan per element, which this estimate does not cover */
 static List *
 qual_query_exprs(IndexPath *path)
 {
@@ -137,7 +137,11 @@ qual_query_exprs(IndexPath *path)
 
 	foreach_node(IndexClause, ic, path->indexclauses)
 		foreach_node(RestrictInfo, rinfo, ic->indexquals)
+		{
+			if (!IsA(rinfo->clause, OpExpr))
+				return NIL;
 			queries = lappend(queries, lsecond(castNode(OpExpr, rinfo->clause)->args));
+		}
 	return queries;
 }
 
@@ -161,7 +165,7 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 				dict_pages;
 	Relation	index;
 
-	w->known = const_queries(queries, &texts, &ntexts);
+	w->known = queries != NIL && const_queries(queries, &texts, &ntexts);
 	w->cost = w->dict_cost = 0;
 	if (!w->known)
 		return;
