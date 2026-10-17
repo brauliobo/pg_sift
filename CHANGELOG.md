@@ -4,6 +4,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fix: a long merge no longer stalls the inserts. Promotion and merge steps now claim the segments they replace instead of holding one
+  exclusive lock per index, so the background worker's merge, an inserter that finds the directory nearly full (112 of 128 entries) and
+  the inserters that promote a backlog of sealed segments work on different segments side by side. Before, every such inserter waited
+  for the whole merge, and the throughput of 8 bulk writers equalled that of one. VACUUM, `sift.promote()` and `sift.merge()` still run
+  alone. The inserter waits only when everything left to merge is being merged by others.
 - New: `sift.standby_conflicts` (superuser, default off). On a hot standby without `hot_standby_feedback`, the primary logs a recovery conflict before it reuses blocks released by a merge, so a standby scan is waited for (up to `max_standby_streaming_delay`) or cancelled by the usual conflict instead of failing with "segment recycled during scan". Default behavior is unchanged.
 - Fix: a promotion or merge that fails (out of disk, a corrupt segment, an error of the host) now returns the blocks it had taken to the
   free list, where it used to leave them allocated until the next orphan sweep, and the background retry doubled its delay after each
