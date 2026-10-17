@@ -24,7 +24,7 @@ cell() { run "$TRACE" "$1" "$2" "$3"; }
 TRACE=$1
 echo "# load average: $(cut -d' ' -f1-3 /proc/loadavg), client cpu: ${CLIENT_CPU:-unpinned}"
 for c in and or phrase; do
-  cell sift-topk "$c" "$c sift-join"
+  cell sift-topk-dt "$c" "$c sift-join"
   cell sift-raw "$c" "$c sift-udf"
   if [[ $c == or ]]; then
     cell inno-topk "$c" "$c inno-natural"

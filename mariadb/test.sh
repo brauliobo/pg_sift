@@ -62,7 +62,8 @@ start_pg() {
   SIFT_TESTING= "$REPO/scripts/pgtest.sh" start >>"$WORK/pg-install.log" 2>&1
   psql -X -At -d bench -c 'select 1' >/dev/null 2>&1 && return
   createdb bench
-  nice pg_restore -j2 -d bench "$DATA/cache/sift-F-ALL.dump" 2>&1 | tail -3
+  nice pg_restore --no-owner -j2 -d bench "$DATA/cache/sift-F-ALL.dump"
+  psql -X -d bench -c "CREATE EXTENSION pg_sift" -c "CREATE INDEX docs_fts ON docs USING sift (body)"
 }
 
 load() {
@@ -106,7 +107,8 @@ pgref() {
   mq print "$T/ref-stmts.sql" >"$T/ref-out.txt"
   python3 -I "$HERE/tools/json2ref.py" "$T/ref-stmts.sql" "$T/ref-out.txt" >"$T/got.tsv"
   echo "queries: $(wc -l <"$T/queries.tsv") (trace of $(wc -l <"$T/trace.tsv") and/or/phrase plus prefix, wildcard, fuzzy, NOT, boost, group, nested)"
-  python3 -I "$HERE/tools/compare.py" "$T/ref.tsv" "$T/got.tsv" --label "pg_sift vs sift/MariaDB (count, top-10 order, float32 scores)"
+  python3 -I "$HERE/tools/compare.py" "$T/ref.tsv" "$T/got.tsv" --known "needs the text of the row" \
+    --label "pg_sift vs sift/MariaDB (count, top-10 order, float32 scores)"
 }
 
 # match sets against InnoDB FULLTEXT: the table as it is, then with the characters InnoDB handles differently turned into

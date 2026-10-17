@@ -6,6 +6,7 @@ FILE of the sift-ref and sift-qmatches kinds: lines "id TAB siftql query" (genq.
 trace, lines "id TAB mode TAB term term ..." (mode and/or/phrase, the plain lowercase words of a substring of an
 article); CLASS keeps only that mode, --limit keeps the first N lines of it. Kinds:
   sift-topk      top-k joined with the table, the way an application would use it (JSON_TABLE + join, ordered by rank)
+  sift-topk-dt   the same with the UDF in a derived table, so that it is evaluated once
   sift-raw       the UDF alone: SELECT sift_topk(...)
   sift-count     SELECT sift_count(...)
   sift-ref       qid, count and the JSON top-k, for the comparison with pg_sift (json2ref.py, compare.py)
@@ -44,6 +45,9 @@ COLS = "(n FOR ORDINALITY, id BIGINT PATH '$.id', s DOUBLE PATH '$.s')"
 def sift_stmt(kind, qid, q, index, k):
     if kind == 'sift-topk':
         return ("SELECT d.id, j.s FROM JSON_TABLE(sift_topk('%s', %s, %d), '$[*]' COLUMNS %s) j "
+                "JOIN docs d ON d.id = j.id ORDER BY j.n" % (index, q, k, COLS))
+    if kind == 'sift-topk-dt':
+        return ("SELECT d.id, j.s FROM (SELECT sift_topk('%s', %s, %d) AS r) x, JSON_TABLE(x.r, '$[*]' COLUMNS %s) j "
                 "JOIN docs d ON d.id = j.id ORDER BY j.n" % (index, q, k, COLS))
     if kind == 'sift-raw':
         return "SELECT sift_topk('%s', %s, %d)" % (index, q, k)
