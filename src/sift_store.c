@@ -253,6 +253,16 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
+uint32
+sift_dir_version(Relation index)
+{
+	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
+	uint32		version = DIR(BufferGetPage(dirbuf))->version;
+
+	UnlockReleaseBuffer(dirbuf);
+	return version;
+}
+
 uint64
 sift_store_new_gen(Relation index)
 {
