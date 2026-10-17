@@ -2015,7 +2015,8 @@ struct SiftRanker
 	int64		K;					/* hits kept by the current search */
 	SiftHit    *hit;				/* keyed by the visible tuple's ctid */
 	HTAB	   *hot;				/* visible ctid -> index entry, where they differ */
-	int			nhit;
+	int64		nhit;
+	int64		hitcap;				/* slots of hit */
 	int64		pos;
 	bool		searched;
 	bool		complete;
@@ -2748,6 +2749,8 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	vis = sift_key_from_tid(&tid);
 	if (!sift_kern_topk_admits(tk, score, vis))
 		return;
+	if (tk->n == tk->cap && tk->n < tk->k)
+		tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
 	sift_kern_topk_push(tk, score, vis);
 	if (vis != key)
 		hot_remember(r, vis, key);
@@ -3002,11 +3005,11 @@ par_hit_cmp(const void *a, const void *b)
 static void
 rank_merge_shared(SiftRanker *r)
 {
-	SiftParHit *mine = palloc(Max(r->nhit, 1) * sizeof(SiftParHit)),
+	SiftParHit *mine = palloc_extended(Max(r->nhit, 1) * sizeof(SiftParHit), MCXT_ALLOC_HUGE),
 			   *all;
 	int64		n;
 
-	for (int i = 0; i < r->nhit; i++)
+	for (int64 i = 0; i < r->nhit; i++)
 	{
 		HotEnt	   *e = r->hot ? hash_search(r->hot, &r->hit[i].key, HASH_FIND, NULL) : NULL;
 
@@ -3023,7 +3026,9 @@ rank_merge_shared(SiftRanker *r)
 	hot_forget(r);
 	r->nhit = Min(n, r->K);
 	r->complete = n < r->K;
-	for (int i = 0; i < r->nhit; i++)
+	if (r->nhit > r->hitcap)
+		r->hit = repalloc_huge(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
+	for (int64 i = 0; i < r->nhit; i++)
 	{
 		r->hit[i] = (SiftHit) {all[i].key, all[i].score};
 		if (all[i].root != all[i].key)
@@ -3033,19 +3038,22 @@ rank_merge_shared(SiftRanker *r)
 	pfree(all);
 }
 
-/* Searches the K best verified hits from scratch */
+#define RANK_INITIAL_K	1024
+
+/* Searches the K best verified hits from scratch; the heap grows with the hits found, not with K */
 static void
 rank_search(SiftRanker *r)
 {
 	SiftPlan   *p = r->plan;
 	SiftTopK	tk;
+	int64		cap;
 	bool		shared = r->par && !r->searched;
 
 	hot_forget(r);
 	if (r->hit)
 		pfree(r->hit);
-	r->hit = MemoryContextAlloc(p->mcxt, r->K * sizeof(SiftHit));
-	sift_kern_topk_init(&tk, r->hit, r->K);
+	cap = Min(r->K, RANK_INITIAL_K);
+	sift_kern_topk_init(&tk, MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
 	if (shared)
 		rank_units_shared(r, &tk);
@@ -3054,12 +3062,12 @@ rank_search(SiftRanker *r)
 	p->stats.theta = sift_kern_topk_theta(&tk);
 	r->complete = tk.n < r->K;
 	r->nhit = sift_kern_topk_sort(&tk);
+	r->hit = tk.hit;
+	r->hitcap = tk.cap;
 	r->searched = true;
 	if (shared)
 		rank_merge_shared(r);
 }
-
-#define RANK_INITIAL_K	1024
 
 static void
 rank_ensure(SiftRanker *r)
@@ -3067,7 +3075,7 @@ rank_ensure(SiftRanker *r)
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : RANK_INITIAL_K;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K = Min(r->K * 4, INT_MAX / 2);
+		r->K *= 4;
 	else
 		return;
 	rank_search(r);
