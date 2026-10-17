@@ -1,6 +1,6 @@
 # Benchmarks
 
-sift and its two variants (`positions = off`, `phrase_index = pairs`; the second was removed in 1.3.0, its numbers were measured on 1.2.0) against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1,
+sift and its variant `positions = off` against ParadeDB pg_search 0.26.1, Timescale pg_textsearch 1.5.1,
 rum 1.3.15 and pgx-bm25 1.0 on two public datasets, measured with `bench/bench all --full --serial` (articles through
 `bench/steps/articles.sh`, places through `bench/steps/places.sh`; method, datasets, licenses and checksums: `bench/README.md`). Every engine
 indexes the same rows with the same analysis (lowercase, no stemming, no stopwords; pg_textsearch and rum through the PostgreSQL `simple`
@@ -38,7 +38,7 @@ for some places workloads (a typed prefix ranked by BM25; a field boost), and pg
 
 | engine | articles | places workload | how it runs |
 |---|---|---|---|
-| sift, sift `positions = off`, sift `pairs` | all | all | native (`fields = 'name', prefix_index = 3`; the variants differ only in the reloption) |
+| sift, sift `positions = off` | all | all | native (`fields = 'name', prefix_index = 3`; the variants differ only in the reloption) |
 | pg_search | all | all | native (`edge_ngram(1, 15)` fields, a typed prefix is a term) |
 | pg_textsearch | all (ranked AND, phrase, mixed, filter, join through the tsquery filter and standalone scores) | count, unordered scan | native: the prefix tsquery `'gra':* & 'ho':*` through its `bm25` index (a tsquery `@@` filter) |
 | pg_textsearch | | top-20, boost, filtered top-20 | **emulation**: `bm25` indexes on stored columns of the edge n-grams of the words |
@@ -78,7 +78,6 @@ table growth, neither counted in the index column):
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 130.9 | 2.2 | 0.0 | 10279 ± 2081 ! (8641-15541) | 2567 ± 268 ! (2529-3351) | 8239 ± 1300 ! (8144-12092) | 4863 ± 766 ! (4143-6716) | 6976 ± 1387 ! (6817-11054) | 4067 ± 315 (3790-4843) | 1657 ± 26 (1631-1683) |
 | sift `positions = off` | 52.5 | 1.7 | 0.0 | 10732 ± 1781 ! (9545-15382) | 2724 ± 248 (2493-3325) | 1999 ± 114 (1980-2331) | 3113 ± 300 (3024-3966) | 956 ± 136 ! (761-1229) | 3678 ± 362 (3385-4587) | 830 ± 62 (793-997) |
-| sift `pairs` | 351.5 | 8.9 | 0.0 | 10387 ± 1418 ! (10361-14629) | 2665 ± 225 (2497-3241) | 8746 ± 1357 ! (8656-12773) | 5213 ± 549 ! (4876-6664) | 11308 ± 2214 ! (7974-15623) | 3638 ± 438 ! (3484-4868) | 1646 ± 59 (1586-1705) |
 | pg_search | 183.6 | 3.1 | 0.0 | 2679 ± 334 ! (2533-3599) | 888 ± 64 (813-1030) | 2520 ± 213 (2341-3051) | 1370 ± 90 (1313-1606) | 1501 ± 173 ! (1258-1855) | 2278 ± 204 (2021-2719) | 186 ± 6.3 (180-192) |
 | pg_textsearch | 147.3 | 10.0 | 0.0 | 6 ± 0.4 (6-7) | 2392 ± 245 ! (2156-2980) | 27 ± 1.4 (25-30) | 7 ± 0.4 (7-8) | 14 ± 0.9 (14-17) | 14 ± 0.9 (14-17) | 14 ± 0.1 (14-14) |
 | rum | 309.9 | 14.9 | 437.7 | 959 ± 72 (913-1149) | 8 ± 0.0 (8-8) | 34 ± 1.3 (33-36) | 16 ± 0.0 (16-16) | 39 ± 1.6 (38-43) | 16 ± 0.3 (16-16) | 13 ± 0.3 (13-13) |
@@ -90,7 +89,6 @@ Ratio of queries per second to pg_search (the baseline of every ratio in this do
 |---|---:|---:|---:|---:|---:|---:|---:|
 | sift / pg_search | 3.84x | 2.89x | 3.27x | 3.55x | 4.65x | 1.79x | 8.91x |
 | sift `positions = off` / pg_search | 4.01x | 3.07x | 0.79x | 2.27x | 0.64x | 1.61x | 4.46x |
-| sift `pairs` / pg_search | 3.88x | 3.00x | 3.47x | 3.80x | 7.53x | 1.60x | 8.85x |
 | pg_textsearch / pg_search | 0.00x | 2.69x | 0.01x | 0.00x | 0.01x | 0.01x | 0.08x |
 | rum / pg_search | 0.36x | 0.01x | 0.01x | 0.01x | 0.03x | 0.01x | 0.07x |
 | pgx-bm25 / pg_search | 0.01x | 0.02x | 0.01x | 0.01x | 0.01x | 0.01x | 0.10x |
@@ -146,37 +144,36 @@ Cold cache (index, heap and TOAST evicted from shared buffers before every query
 `bench/bench cold --full --serial`), p50 / maximum in ms. The scratch data is on tmpfs, so there is no disk behind the evicted pages: this is the
 cost of rebuilding the buffers from memory-backed files, not of disk reads:
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| and | 0.88 / 3.57 | 0.96 / 2.23 | 0.80 / 3.23 | 2.89 / 7.43 | 2.23 / 79.31 | 1.05 / 4.97 | 267.95 / 462.90 |
-| or | 1.94 / 4.22 | 1.90 / 6.91 | 1.74 / 7.33 | 5.34 / 10.12 | 1.64 / 6.90 | 283.51 / 978.39 | 232.01 / 403.52 |
-| phrase | 1.12 / 2.22 | 0.82 / 23.59 | 1.03 / 1.43 | 2.37 / 7.86 | 1.44 / 474.42 | 130.67 / 373.05 | 374.42 / 769.00 |
-| mixed | 2.07 / 3.36 | 1.36 / 23.93 | 1.07 / 2.89 | 3.11 / 17.42 | 2.88 / 419.64 | 239.69 / 784.24 | 267.39 / 540.20 |
-| count | 0.83 / 1.54 | 0.83 / 27.03 | 0.81 / 2.14 | 2.93 / 12.18 | 2.80 / 434.46 | 173.39 / 241.18 | 371.27 / 526.68 |
-| filter | 1.95 / 3.47 | 1.26 / 6.72 | 1.02 / 3.50 | 3.11 / 11.01 | 2.06 / 432.50 | 227.67 / 711.38 | 254.35 / 558.38 |
-| join | 1.24 / 9.67 | 2.59 / 24.27 | 1.07 / 14.43 | 5.55 / 83.81 | 3.08 / 418.81 | 242.70 / 726.72 | 272.36 / 563.62 |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| and | 0.88 / 3.57 | 0.96 / 2.23 | 2.89 / 7.43 | 2.23 / 79.31 | 1.05 / 4.97 | 267.95 / 462.90 |
+| or | 1.94 / 4.22 | 1.90 / 6.91 | 5.34 / 10.12 | 1.64 / 6.90 | 283.51 / 978.39 | 232.01 / 403.52 |
+| phrase | 1.12 / 2.22 | 0.82 / 23.59 | 2.37 / 7.86 | 1.44 / 474.42 | 130.67 / 373.05 | 374.42 / 769.00 |
+| mixed | 2.07 / 3.36 | 1.36 / 23.93 | 3.11 / 17.42 | 2.88 / 419.64 | 239.69 / 784.24 | 267.39 / 540.20 |
+| count | 0.83 / 1.54 | 0.83 / 27.03 | 2.93 / 12.18 | 2.80 / 434.46 | 173.39 / 241.18 | 371.27 / 526.68 |
+| filter | 1.95 / 3.47 | 1.26 / 6.72 | 3.11 / 11.01 | 2.06 / 432.50 | 227.67 / 711.38 | 254.35 / 558.38 |
+| join | 1.24 / 9.67 | 2.59 / 24.27 | 5.55 / 83.81 | 3.08 / 418.81 | 242.70 / 726.72 | 272.36 / 563.62 |
 
 The p50 of sift is 0.8-2.6 ms in every class and variant, pg_search's 2.4-5.5 ms, pg_textsearch's 1.4-3.1 ms, rum's 1.0 ms for AND and 130-284 ms for every
-other class, pgx-bm25's 230-375 ms. pg_textsearch's maximum is 418-475 ms in every class but AND and OR (79 and 7 ms), rum's up to 978 ms, pgx-bm25's up to 769 ms. sift's cold maxima are 1.5-9.7 ms with positions on (up to 14.4 ms with `pairs`); `positions = off` has the slow maxima of its heap recheck (phrase 23.6 ms, mixed 23.9, `count(*)` 27.0, join 24.3 ms) that positions remove.
+other class, pgx-bm25's 230-375 ms. pg_textsearch's maximum is 418-475 ms in every class but AND and OR (79 and 7 ms), rum's up to 978 ms, pgx-bm25's up to 769 ms. sift's cold maxima are 1.5-9.7 ms with positions on; `positions = off` has the slow maxima of its heap recheck (phrase 23.6 ms, mixed 23.9, `count(*)` 27.0, join 24.3 ms) that positions remove.
 
 Reading the numbers:
 
 - **Sizes and builds.** sift's default index is 130.9 MiB, 1.40 times smaller than pg_search's 183.6 MiB and 0.89 times pg_textsearch's 147.3; with `positions = off` it is
   52.5 MiB, 3.5 times smaller than pg_search. The old claim of 47.9 MiB and 3.8x smaller was the index without positions (and before the 8K bitmap groups added 9.6%).
-  `pairs` is 351.5 MiB, 1.9 times pg_search's and 2.7 times the default's. sift builds in 2.2 s (1.7 s without positions), pg_search in 3.1 s, `pairs` in 8.9 s,
+  sift builds in 2.2 s (1.7 s without positions), pg_search in 3.1 s,
   pg_textsearch in 10.0 s, pgx-bm25 in 11.7 s and rum in 14.9 s after 19.0 s to fill its stored column (a table that is 437.7 MiB larger, 748 MiB with the index).
   pg_search is within 1.4 times of sift on the build; the other three engines take 4.5-7 times as long (15 times with rum's column).
 - **Throughput.** With positions on, sift is ahead of pg_search in every class: AND 3.84x, OR 2.89x, phrase 3.27x, mixed 3.55x, `count(*)` 4.65x, filtered top-10 1.79x, join 8.91x.
   These ratios carry the noise of a loaded host (sift's relative standard errors are up to 20%); the order of the engines does not change within the ranges of the rounds,
-  but a ratio of 3.8 is not distinguishable from 3.0 or 4.5 in this session. `pairs` buys nothing beyond the noise over the default except `count(*)` (11,308 against 6,976 queries per second), for
-  2.7 times the index and 4 times the build.
+  but a ratio of 3.8 is not distinguishable from 3.0 or 4.5 in this session.
 - **Where sift is not ahead.** The ranked OR is level with pg_textsearch, whose native query it is (block-max WAND): 2,567 ± 268 against 2,392 ± 245 queries per second, ranges 2,529-3,351 and 2,156-2,980,
   and 2.89 times pg_search. Without positions, phrase and `count(*)` are behind pg_search (0.79x and 0.64x), Larger cold maxima belong to the other engines (pg_textsearch up to 475 ms, rum up to 978 ms, pgx-bm25 up to 769 ms, against sift's 1.5-9.7 ms).
 - **pg_textsearch** wins only the bare ranked OR (above). Everything that is not a bare disjunction goes through the tsquery filter and then scores the matches one by one (see the configuration above): AND runs at 6 queries
   per second and phrase (27), mixed (7), `count(*)` (14), filter (14) and join (14) at 0.00-0.08x of pg_search. The cost follows the number of matching articles, which the 2-15 word queries of the trace make large; I did
   not profile it further. The extension's README says that combining the filter with the ranking is not yet one index scan.
 - **rum** is behind pg_search in every class: its best class is AND at 959 queries per second (0.36x of pg_search, 0.09x of sift), and every other class is two orders of magnitude lower: OR 8, phrase 34, `count(*)` 39,
-  mixed 16, filter 16 and join 13. It is the largest index after `pairs` (309.9 MiB, 748 MiB with its column) and the slowest build. I did not profile it; its `<=>` ordering and the `@@` recheck of the stored `tsvector`
+  mixed 16, filter 16 and join 13. It is the largest index (309.9 MiB, 748 MiB with its column) and the slowest build. I did not profile it; its `<=>` ordering and the `@@` recheck of the stored `tsvector`
   (positions are checked in the heap for phrases) both visit every match of these common-word queries.
 - **pgx-bm25** is 0.01-0.10x of pg_search in every class and builds in 11.7 s into a 204.4 MiB index (1.1 times pg_search's), the only engine of the field whose cold p50 is 230-370 ms in every class including AND.
 
@@ -192,13 +189,12 @@ per cell (`bench/bench run --dataset places --tier full --serial`, host load 5-1
 the visibility map is complete (a harness bug fixed for this session: with only an `ANALYZE` of the template the first engine's `count(*)` read the heap of the pages that were not all-visible and
 measured 2-3 times slower than the same index in the next database). Index size, build time and p50 latency in ms of the top-20 workload per
 query class (pg_textsearch is the emulation described above, pgx-bm25 is native for words of 3 letters or more and emulated inside its index for 1-2 letters). Single-client cells under 0.3 ms
-are near the resolution of the measurement; the standard errors say how much a cell moved between the rounds, and the differences between the sift variants (0.81x-1.30x, median 1.0x) are that noise, not an effect:
+are near the resolution of the measurement; the standard errors say how much a cell moved between the rounds, and the differences between the sift variants (0.89x-1.30x, median 1.0x) are that noise, not an effect:
 
 | engine | index (MiB) | build (s) | p1 | p2 | p3 | p4 | w1 | a2 | a2s | a3 | x2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 50.2 | 1.4 | 0.26 ± 0.012 | 0.23 ± 0.001 | 0.24 ± 0.004 | 0.27 ± 0.004 | 0.17 ± 0.006 | 0.16 ± 0.001 | 0.17 ± 0.004 | 0.20 ± 0.002 | 0.20 ± 0.014 |
 | sift `positions = off` | 44.4 | 1.4 | 0.24 ± 0.007 | 0.23 ± 0.002 | 0.26 ± 0.018 | 0.26 ± 0.004 | 0.16 ± 0.015 | 0.18 ± 0.020 ! | 0.16 ± 0.002 | 0.20 ± 0.010 | 0.21 ± 0.006 |
-| sift `pairs` | 83.3 | 2.3 | 0.24 ± 0.003 | 0.21 ± 0.011 | 0.26 ± 0.002 | 0.27 ± 0.015 | 0.15 ± 0.011 | 0.18 ± 0.004 | 0.17 ± 0.013 | 0.19 ± 0.002 | 0.21 ± 0.009 |
 | pg_search | 142.0 | 2.9 | 0.85 ± 0.022 | 1.04 ± 0.025 | 1.17 ± 0.026 | 1.22 ± 0.029 | 1.30 ± 0.011 | 1.69 ± 0.025 | 1.47 ± 0.004 | 2.68 ± 0.061 | 2.06 ± 0.059 |
 | pg_textsearch | 68.3 | 2.4 | 1002.33 ± 4.91 | 404.19 ± 4.60 | 14.83 ± 0.56 | 4.45 ± 0.038 | 2.80 ± 0.11 | 2.72 ± 0.10 | 2.63 ± 0.008 | 2.83 ± 0.026 | 2.85 ± 0.13 |
 | rum | 94.9 | 2.7 | 107.99 ± 4.44 | 14.25 ± 0.11 | 4.42 ± 0.23 | 1.22 ± 0.008 | 0.31 ± 0.004 | 9.85 ± 0.17 | 49.60 ± 2.03 | 10.29 ± 0.075 | 5.73 ± 0.19 |
@@ -219,73 +215,73 @@ p50 latency in ms of every workload, with the ratio to sift (workloads: top-20, 
 
 **top-20**
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| p1 | 0.26 ± 0.012 | 0.24 ± 0.007 (0.92x) | 0.24 ± 0.003 (0.91x) | 0.85 ± 0.022 (3.28x) | 1002.33 ± 4.91 (3855.11x) | 107.99 ± 4.44 (415.36x) | 33.71 ± 1.84 (129.66x) |
-| p2 | 0.23 ± 0.001 | 0.23 ± 0.002 (0.97x) | 0.21 ± 0.011 (0.90x) | 1.04 ± 0.025 (4.44x) | 404.19 ± 4.60 (1730.99x) | 14.25 ± 0.11 (61.01x) | 6.67 ± 0.31 (28.55x) |
-| p3 | 0.24 ± 0.004 | 0.26 ± 0.018 (1.08x) | 0.26 ± 0.002 (1.06x) | 1.17 ± 0.026 (4.81x) | 14.83 ± 0.56 (60.76x) | 4.42 ± 0.23 (18.09x) | 72.26 ± 0.69 (296.13x) |
-| p4 | 0.27 ± 0.004 | 0.26 ± 0.004 (0.96x) | 0.27 ± 0.015 (1.01x) | 1.22 ± 0.029 (4.56x) | 4.45 ± 0.038 (16.64x) | 1.22 ± 0.008 (4.57x) | 43.01 ± 2.29 (160.77x) |
-| w1 | 0.17 ± 0.006 | 0.16 ± 0.015 (0.94x) | 0.15 ± 0.011 (0.88x) | 1.30 ± 0.011 (7.62x) | 2.80 ± 0.11 (16.49x) | 0.31 ± 0.004 (1.83x) | 4.75 ± 0.43 (27.94x) |
-| a2 | 0.16 ± 0.001 | 0.18 ± 0.020 ! (1.11x) | 0.18 ± 0.004 (1.13x) | 1.69 ± 0.025 (10.35x) | 2.72 ± 0.10 (16.62x) | 9.85 ± 0.17 (60.25x) | 9.70 ± 0.37 (59.35x) |
-| a2s | 0.17 ± 0.004 | 0.16 ± 0.002 (0.97x) | 0.17 ± 0.013 (1.06x) | 1.47 ± 0.004 (8.85x) | 2.63 ± 0.008 (15.89x) | 49.60 ± 2.03 (299.70x) | 26.25 ± 0.86 (158.61x) |
-| a3 | 0.20 ± 0.002 | 0.20 ± 0.010 (0.98x) | 0.19 ± 0.002 (0.96x) | 2.68 ± 0.061 (13.43x) | 2.83 ± 0.026 (14.19x) | 10.29 ± 0.075 (51.57x) | 24.34 ± 0.86 (121.99x) |
-| x2 | 0.20 ± 0.014 | 0.21 ± 0.006 (1.01x) | 0.21 ± 0.009 (1.05x) | 2.06 ± 0.059 (10.13x) | 2.85 ± 0.13 (14.02x) | 5.73 ± 0.19 (28.22x) | 15.42 ± 0.55 (75.95x) |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 | 0.26 ± 0.012 | 0.24 ± 0.007 (0.92x) | 0.85 ± 0.022 (3.28x) | 1002.33 ± 4.91 (3855.11x) | 107.99 ± 4.44 (415.36x) | 33.71 ± 1.84 (129.66x) |
+| p2 | 0.23 ± 0.001 | 0.23 ± 0.002 (0.97x) | 1.04 ± 0.025 (4.44x) | 404.19 ± 4.60 (1730.99x) | 14.25 ± 0.11 (61.01x) | 6.67 ± 0.31 (28.55x) |
+| p3 | 0.24 ± 0.004 | 0.26 ± 0.018 (1.08x) | 1.17 ± 0.026 (4.81x) | 14.83 ± 0.56 (60.76x) | 4.42 ± 0.23 (18.09x) | 72.26 ± 0.69 (296.13x) |
+| p4 | 0.27 ± 0.004 | 0.26 ± 0.004 (0.96x) | 1.22 ± 0.029 (4.56x) | 4.45 ± 0.038 (16.64x) | 1.22 ± 0.008 (4.57x) | 43.01 ± 2.29 (160.77x) |
+| w1 | 0.17 ± 0.006 | 0.16 ± 0.015 (0.94x) | 1.30 ± 0.011 (7.62x) | 2.80 ± 0.11 (16.49x) | 0.31 ± 0.004 (1.83x) | 4.75 ± 0.43 (27.94x) |
+| a2 | 0.16 ± 0.001 | 0.18 ± 0.020 ! (1.11x) | 1.69 ± 0.025 (10.35x) | 2.72 ± 0.10 (16.62x) | 9.85 ± 0.17 (60.25x) | 9.70 ± 0.37 (59.35x) |
+| a2s | 0.17 ± 0.004 | 0.16 ± 0.002 (0.97x) | 1.47 ± 0.004 (8.85x) | 2.63 ± 0.008 (15.89x) | 49.60 ± 2.03 (299.70x) | 26.25 ± 0.86 (158.61x) |
+| a3 | 0.20 ± 0.002 | 0.20 ± 0.010 (0.98x) | 2.68 ± 0.061 (13.43x) | 2.83 ± 0.026 (14.19x) | 10.29 ± 0.075 (51.57x) | 24.34 ± 0.86 (121.99x) |
+| x2 | 0.20 ± 0.014 | 0.21 ± 0.006 (1.01x) | 2.06 ± 0.059 (10.13x) | 2.85 ± 0.13 (14.02x) | 5.73 ± 0.19 (28.22x) | 15.42 ± 0.55 (75.95x) |
 
 **name boost x3**
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| p1 | 0.32 ± 0.039 ! | 0.35 ± 0.026 (1.08x) | 0.33 ± 0.022 (1.04x) | 3.00 ± 0.021 (9.34x) | 3107.60 ± 28.75 (9681.00x) | 113.84 ± 5.29 (354.64x) | 35.17 ± 0.32 (109.58x) |
-| p2 | 0.46 ± 0.002 | 0.45 ± 0.047 ! (0.98x) | 0.46 ± 0.011 (1.00x) | 2.98 ± 0.034 (6.46x) | 257.32 ± 1.21 (558.17x) | 13.60 ± 0.025 (29.51x) | 6.69 ± 0.14 (14.50x) |
-| p3 | 0.33 ± 0.014 | 0.34 ± 0.012 (1.03x) | 0.36 ± 0.011 (1.11x) | 2.59 ± 0.024 (7.92x) | 21.03 ± 0.066 (64.30x) | 4.35 ± 0.21 (13.30x) | 72.62 ± 1.56 (222.07x) |
-| p4 | 0.41 ± 0.019 | 0.37 ± 0.027 (0.90x) | 0.39 ± 0.020 (0.95x) | 2.36 ± 0.11 (5.79x) | 5.71 ± 0.045 (13.99x) | 1.06 ± 0.051 (2.60x) | 41.48 ± 0.077 (101.68x) |
-| w1 | 0.17 ± 0.001 | 0.17 ± 0.003 (1.00x) | 0.17 ± 0.005 (1.00x) | 2.43 ± 0.015 (14.23x) | 2.84 ± 0.025 (16.66x) | 0.27 ± 0.010 (1.60x) | 4.83 ± 0.47 (28.31x) |
-| a2 | 0.23 ± 0.010 | 0.22 ± 0.008 (0.98x) | 0.22 ± 0.006 (0.95x) | 3.28 ± 0.066 (14.37x) | 2.84 ± 0.039 (12.44x) | 9.80 ± 0.11 (42.98x) | 9.34 ± 0.33 (40.96x) |
-| a2s | 0.22 ± 0.004 | 0.21 ± 0.002 (0.96x) | 0.22 ± 0.006 (0.98x) | 2.89 ± 0.024 (13.15x) | 2.85 ± 0.077 (12.94x) | 44.34 ± 0.94 (201.53x) | 26.98 ± 1.84 (122.61x) |
-| a3 | 0.25 ± 0.007 | 0.25 ± 0.002 (0.99x) | 0.26 ± 0.003 (1.04x) | 5.61 ± 0.20 (22.07x) | 2.87 ± 0.059 (11.31x) | 9.91 ± 0.38 (39.02x) | 23.43 ± 0.012 (92.24x) |
-| x2 | 0.24 ± 0.009 | 0.24 ± 0.004 (0.99x) | 0.23 ± 0.008 (0.96x) | 4.00 ± 0.069 (16.75x) | 2.90 ± 0.062 (12.12x) | 5.42 ± 0.24 (22.69x) | 14.98 ± 1.29 (62.66x) |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 | 0.32 ± 0.039 ! | 0.35 ± 0.026 (1.08x) | 3.00 ± 0.021 (9.34x) | 3107.60 ± 28.75 (9681.00x) | 113.84 ± 5.29 (354.64x) | 35.17 ± 0.32 (109.58x) |
+| p2 | 0.46 ± 0.002 | 0.45 ± 0.047 ! (0.98x) | 2.98 ± 0.034 (6.46x) | 257.32 ± 1.21 (558.17x) | 13.60 ± 0.025 (29.51x) | 6.69 ± 0.14 (14.50x) |
+| p3 | 0.33 ± 0.014 | 0.34 ± 0.012 (1.03x) | 2.59 ± 0.024 (7.92x) | 21.03 ± 0.066 (64.30x) | 4.35 ± 0.21 (13.30x) | 72.62 ± 1.56 (222.07x) |
+| p4 | 0.41 ± 0.019 | 0.37 ± 0.027 (0.90x) | 2.36 ± 0.11 (5.79x) | 5.71 ± 0.045 (13.99x) | 1.06 ± 0.051 (2.60x) | 41.48 ± 0.077 (101.68x) |
+| w1 | 0.17 ± 0.001 | 0.17 ± 0.003 (1.00x) | 2.43 ± 0.015 (14.23x) | 2.84 ± 0.025 (16.66x) | 0.27 ± 0.010 (1.60x) | 4.83 ± 0.47 (28.31x) |
+| a2 | 0.23 ± 0.010 | 0.22 ± 0.008 (0.98x) | 3.28 ± 0.066 (14.37x) | 2.84 ± 0.039 (12.44x) | 9.80 ± 0.11 (42.98x) | 9.34 ± 0.33 (40.96x) |
+| a2s | 0.22 ± 0.004 | 0.21 ± 0.002 (0.96x) | 2.89 ± 0.024 (13.15x) | 2.85 ± 0.077 (12.94x) | 44.34 ± 0.94 (201.53x) | 26.98 ± 1.84 (122.61x) |
+| a3 | 0.25 ± 0.007 | 0.25 ± 0.002 (0.99x) | 5.61 ± 0.20 (22.07x) | 2.87 ± 0.059 (11.31x) | 9.91 ± 0.38 (39.02x) | 23.43 ± 0.012 (92.24x) |
+| x2 | 0.24 ± 0.009 | 0.24 ± 0.004 (0.99x) | 4.00 ± 0.069 (16.75x) | 2.90 ± 0.062 (12.12x) | 5.42 ± 0.24 (22.69x) | 14.98 ± 1.29 (62.66x) |
 
 **filtered top-20**
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| p1 | 5.85 ± 0.69 ! | 6.94 ± 0.49 (1.19x) | 6.85 ± 0.13 (1.17x) | 12.82 ± 0.63 (2.19x) | 238.21 ± 3.44 (40.69x) | 101.32 ± 0.47 (17.31x) | 32.80 ± 1.90 (5.60x) |
-| p2 | 1.61 ± 0.12 | 1.96 ± 0.084 (1.22x) | 1.65 ± 0.016 (1.03x) | 5.53 ± 0.11 (3.43x) | 73.19 ± 3.43 (45.46x) | 13.69 ± 0.17 (8.50x) | 7.51 ± 0.19 (4.67x) |
-| p3 | 0.51 ± 0.057 ! | 0.47 ± 0.017 (0.91x) | 0.51 ± 0.012 (1.00x) | 5.54 ± 0.008 (10.85x) | 7.12 ± 0.075 (13.95x) | 3.49 ± 0.077 (6.84x) | 73.25 ± 2.57 (143.62x) |
-| p4 | 0.31 ± 0.009 | 0.28 ± 0.009 (0.93x) | 0.29 ± 0.009 (0.96x) | 4.54 ± 0.34 (14.82x) | 2.91 ± 0.080 (9.50x) | 0.65 ± 0.032 (2.12x) | 41.31 ± 0.092 (135.00x) |
-| w1 | 0.16 ± 0.002 | 0.17 ± 0.002 (1.04x) | 0.15 ± 0.002 (0.95x) | 4.95 ± 0.14 (30.47x) | 2.41 ± 0.029 (14.86x) | 0.24 ± 0.009 (1.46x) | 4.77 ± 0.035 (29.34x) |
-| a2 | 0.21 ± 0.030 ! | 0.19 ± 0.017 (0.89x) | 0.20 ± 0.003 (0.94x) | 5.28 ± 0.35 (25.38x) | 2.46 ± 0.029 (11.83x) | 9.57 ± 0.018 (45.99x) | 9.83 ± 0.025 (47.26x) |
-| a2s | 0.18 ± 0.001 | 0.19 ± 0.004 (1.01x) | 0.20 ± 0.026 ! (1.06x) | 5.55 ± 0.76 ! (30.24x) | 2.53 ± 0.018 (13.78x) | 42.81 ± 1.57 (233.29x) | 29.80 ± 2.02 (162.37x) |
-| a3 | 0.21 ± 0.007 | 0.20 ± 0.002 (0.96x) | 0.20 ± 0.001 (0.94x) | 6.11 ± 0.36 (29.01x) | 2.42 ± 0.006 (11.52x) | 10.10 ± 0.033 (47.99x) | 23.80 ± 0.18 (113.09x) |
-| x2 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.04x) | 0.20 ± 0.022 ! (1.06x) | 5.76 ± 0.24 (30.32x) | 2.40 ± 0.011 (12.65x) | 5.47 ± 0.23 (28.79x) | 15.15 ± 0.43 (79.73x) |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 | 5.85 ± 0.69 ! | 6.94 ± 0.49 (1.19x) | 12.82 ± 0.63 (2.19x) | 238.21 ± 3.44 (40.69x) | 101.32 ± 0.47 (17.31x) | 32.80 ± 1.90 (5.60x) |
+| p2 | 1.61 ± 0.12 | 1.96 ± 0.084 (1.22x) | 5.53 ± 0.11 (3.43x) | 73.19 ± 3.43 (45.46x) | 13.69 ± 0.17 (8.50x) | 7.51 ± 0.19 (4.67x) |
+| p3 | 0.51 ± 0.057 ! | 0.47 ± 0.017 (0.91x) | 5.54 ± 0.008 (10.85x) | 7.12 ± 0.075 (13.95x) | 3.49 ± 0.077 (6.84x) | 73.25 ± 2.57 (143.62x) |
+| p4 | 0.31 ± 0.009 | 0.28 ± 0.009 (0.93x) | 4.54 ± 0.34 (14.82x) | 2.91 ± 0.080 (9.50x) | 0.65 ± 0.032 (2.12x) | 41.31 ± 0.092 (135.00x) |
+| w1 | 0.16 ± 0.002 | 0.17 ± 0.002 (1.04x) | 4.95 ± 0.14 (30.47x) | 2.41 ± 0.029 (14.86x) | 0.24 ± 0.009 (1.46x) | 4.77 ± 0.035 (29.34x) |
+| a2 | 0.21 ± 0.030 ! | 0.19 ± 0.017 (0.89x) | 5.28 ± 0.35 (25.38x) | 2.46 ± 0.029 (11.83x) | 9.57 ± 0.018 (45.99x) | 9.83 ± 0.025 (47.26x) |
+| a2s | 0.18 ± 0.001 | 0.19 ± 0.004 (1.01x) | 5.55 ± 0.76 ! (30.24x) | 2.53 ± 0.018 (13.78x) | 42.81 ± 1.57 (233.29x) | 29.80 ± 2.02 (162.37x) |
+| a3 | 0.21 ± 0.007 | 0.20 ± 0.002 (0.96x) | 6.11 ± 0.36 (29.01x) | 2.42 ± 0.006 (11.52x) | 10.10 ± 0.033 (47.99x) | 23.80 ± 0.18 (113.09x) |
+| x2 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.04x) | 5.76 ± 0.24 (30.32x) | 2.40 ± 0.011 (12.65x) | 5.47 ± 0.23 (28.79x) | 15.15 ± 0.43 (79.73x) |
 
 **count(*)**
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| p1 | 0.13 ± 0.001 | 0.12 ± 0.001 (0.97x) | 0.12 ± 0.002 (0.96x) | 0.68 ± 0.006 (5.39x) | 454.90 ± 14.27 (3624.68x) | 35.78 ± 0.19 (285.12x) | 51.05 ± 1.64 (406.78x) |
-| p2 | 0.14 ± 0.056 ! | 0.14 ± 0.001 (0.99x) | 0.14 ± 0.002 (0.99x) | 1.01 ± 0.008 (7.37x) | 97.85 ± 0.57 (714.24x) | 9.88 ± 0.53 (72.14x) | 10.41 ± 2.84 ! (76.01x) |
-| p3 | 0.12 ± 0.002 | 0.15 ± 0.040 ! (1.30x) | 0.12 ± 0.044 ! (1.00x) | 1.12 ± 0.41 ! (9.74x) | 6.28 ± 1.06 ! (54.60x) | 1.82 ± 0.12 (15.84x) | 73.49 ± 2.16 (639.01x) |
-| p4 | 0.14 ± 0.009 | 0.13 ± 0.005 (0.96x) | 0.14 ± 0.022 ! (1.01x) | 1.25 ± 0.021 (9.09x) | 1.38 ± 0.043 (10.02x) | 0.50 ± 0.028 (3.63x) | 42.73 ± 0.15 (309.64x) |
-| w1 | 0.11 ± 0.007 | 0.12 ± 0.003 (1.07x) | 0.13 ± 0.001 (1.12x) | 1.78 ± 0.029 (15.86x) | 0.79 ± 0.005 (7.03x) | 0.20 ± 0.012 (1.81x) | 4.97 ± 0.035 (44.34x) |
-| a2 | 0.13 ± 0.005 | 0.14 ± 0.006 (1.07x) | 0.15 ± 0.002 (1.16x) | 1.97 ± 0.082 (15.41x) | 2.09 ± 0.043 (16.32x) | 4.67 ± 0.22 (36.45x) | 9.47 ± 0.51 (73.98x) |
-| a2s | 0.14 ± 0.003 | 0.13 ± 0.010 (0.96x) | 0.13 ± 0.004 (0.95x) | 1.79 ± 0.048 (13.09x) | 9.71 ± 0.25 (70.89x) | 38.70 ± 1.73 (282.50x) | 26.70 ± 0.98 (194.92x) |
-| a3 | 0.16 ± 0.013 | 0.15 ± 0.004 (0.93x) | 0.15 ± 0.009 (0.93x) | 3.81 ± 0.081 (23.26x) | 0.82 ± 0.024 (4.99x) | 4.79 ± 0.35 (29.21x) | 24.21 ± 1.01 (147.62x) |
-| x2 | 0.15 ± 0.006 | 0.14 ± 0.009 (0.93x) | 0.16 ± 0.005 (1.05x) | 2.72 ± 0.065 (17.82x) | 0.76 ± 0.031 (5.01x) | 2.72 ± 0.098 (17.84x) | 15.17 ± 0.84 (99.48x) |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 | 0.13 ± 0.001 | 0.12 ± 0.001 (0.97x) | 0.68 ± 0.006 (5.39x) | 454.90 ± 14.27 (3624.68x) | 35.78 ± 0.19 (285.12x) | 51.05 ± 1.64 (406.78x) |
+| p2 | 0.14 ± 0.056 ! | 0.14 ± 0.001 (0.99x) | 1.01 ± 0.008 (7.37x) | 97.85 ± 0.57 (714.24x) | 9.88 ± 0.53 (72.14x) | 10.41 ± 2.84 ! (76.01x) |
+| p3 | 0.12 ± 0.002 | 0.15 ± 0.040 ! (1.30x) | 1.12 ± 0.41 ! (9.74x) | 6.28 ± 1.06 ! (54.60x) | 1.82 ± 0.12 (15.84x) | 73.49 ± 2.16 (639.01x) |
+| p4 | 0.14 ± 0.009 | 0.13 ± 0.005 (0.96x) | 1.25 ± 0.021 (9.09x) | 1.38 ± 0.043 (10.02x) | 0.50 ± 0.028 (3.63x) | 42.73 ± 0.15 (309.64x) |
+| w1 | 0.11 ± 0.007 | 0.12 ± 0.003 (1.07x) | 1.78 ± 0.029 (15.86x) | 0.79 ± 0.005 (7.03x) | 0.20 ± 0.012 (1.81x) | 4.97 ± 0.035 (44.34x) |
+| a2 | 0.13 ± 0.005 | 0.14 ± 0.006 (1.07x) | 1.97 ± 0.082 (15.41x) | 2.09 ± 0.043 (16.32x) | 4.67 ± 0.22 (36.45x) | 9.47 ± 0.51 (73.98x) |
+| a2s | 0.14 ± 0.003 | 0.13 ± 0.010 (0.96x) | 1.79 ± 0.048 (13.09x) | 9.71 ± 0.25 (70.89x) | 38.70 ± 1.73 (282.50x) | 26.70 ± 0.98 (194.92x) |
+| a3 | 0.16 ± 0.013 | 0.15 ± 0.004 (0.93x) | 3.81 ± 0.081 (23.26x) | 0.82 ± 0.024 (4.99x) | 4.79 ± 0.35 (29.21x) | 24.21 ± 1.01 (147.62x) |
+| x2 | 0.15 ± 0.006 | 0.14 ± 0.009 (0.93x) | 2.72 ± 0.065 (17.82x) | 0.76 ± 0.031 (5.01x) | 2.72 ± 0.098 (17.84x) | 15.17 ± 0.84 (99.48x) |
 
 **unordered scan**
 
-| class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| p1 | 11.15 ± 0.37 | 11.72 ± 1.43 ! (1.05x) | 12.56 ± 0.28 (1.13x) | 16.10 ± 0.30 (1.44x) | 451.23 ± 4.43 (40.48x) | 37.58 ± 0.11 (3.37x) | 61.85 ± 7.19 ! (5.55x) |
-| p2 | 2.60 ± 0.22 | 2.84 ± 0.038 (1.10x) | 2.10 ± 0.29 ! (0.81x) | 4.12 ± 0.48 ! (1.59x) | 94.97 ± 0.60 (36.58x) | 10.02 ± 0.42 (3.86x) | 12.20 ± 0.27 (4.70x) |
-| p3 | 0.42 ± 0.024 | 0.44 ± 0.037 (1.06x) | 0.45 ± 0.024 (1.06x) | 1.78 ± 0.081 (4.25x) | 6.51 ± 0.18 (15.57x) | 1.77 ± 0.17 (4.22x) | 72.24 ± 2.81 (172.82x) |
-| p4 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.02x) | 0.20 ± 0.004 (1.02x) | 1.19 ± 0.035 (6.19x) | 1.35 ± 0.066 (7.02x) | 0.51 ± 0.023 (2.66x) | 41.85 ± 0.26 (216.82x) |
-| w1 | 0.12 ± 0.006 | 0.12 ± 0.002 (0.98x) | 0.12 ± 0.002 (1.00x) | 1.58 ± 0.006 (12.68x) | 0.80 ± 0.043 (6.38x) | 0.20 ± 0.010 (1.58x) | 4.97 ± 0.16 (39.79x) |
-| a2 | 0.14 ± 0.000 | 0.14 ± 0.005 (1.04x) | 0.14 ± 0.006 (1.03x) | 1.82 ± 0.050 (13.20x) | 1.94 ± 0.054 (14.07x) | 5.02 ± 0.13 (36.37x) | 9.34 ± 0.43 (67.65x) |
-| a2s | 0.14 ± 0.004 | 0.15 ± 0.005 (1.06x) | 0.15 ± 0.006 (1.06x) | 1.70 ± 0.038 (12.04x) | 9.74 ± 0.10 (69.10x) | 41.44 ± 1.37 (293.89x) | 28.29 ± 1.96 (200.62x) |
-| a3 | 0.16 ± 0.004 | 0.16 ± 0.006 (1.00x) | 0.15 ± 0.015 (0.97x) | 3.47 ± 0.17 (22.24x) | 0.81 ± 0.050 (5.21x) | 4.72 ± 0.056 (30.23x) | 23.16 ± 0.52 (148.48x) |
-| x2 | 0.15 ± 0.001 | 0.15 ± 0.002 (1.00x) | 0.15 ± 0.002 (1.02x) | 2.51 ± 0.012 (16.49x) | 0.96 ± 0.032 (6.33x) | 2.73 ± 0.14 (17.93x) | 14.79 ± 0.37 (97.29x) |
+| class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 | 11.15 ± 0.37 | 11.72 ± 1.43 ! (1.05x) | 16.10 ± 0.30 (1.44x) | 451.23 ± 4.43 (40.48x) | 37.58 ± 0.11 (3.37x) | 61.85 ± 7.19 ! (5.55x) |
+| p2 | 2.60 ± 0.22 | 2.84 ± 0.038 (1.10x) | 4.12 ± 0.48 ! (1.59x) | 94.97 ± 0.60 (36.58x) | 10.02 ± 0.42 (3.86x) | 12.20 ± 0.27 (4.70x) |
+| p3 | 0.42 ± 0.024 | 0.44 ± 0.037 (1.06x) | 1.78 ± 0.081 (4.25x) | 6.51 ± 0.18 (15.57x) | 1.77 ± 0.17 (4.22x) | 72.24 ± 2.81 (172.82x) |
+| p4 | 0.19 ± 0.001 | 0.20 ± 0.009 (1.02x) | 1.19 ± 0.035 (6.19x) | 1.35 ± 0.066 (7.02x) | 0.51 ± 0.023 (2.66x) | 41.85 ± 0.26 (216.82x) |
+| w1 | 0.12 ± 0.006 | 0.12 ± 0.002 (0.98x) | 1.58 ± 0.006 (12.68x) | 0.80 ± 0.043 (6.38x) | 0.20 ± 0.010 (1.58x) | 4.97 ± 0.16 (39.79x) |
+| a2 | 0.14 ± 0.000 | 0.14 ± 0.005 (1.04x) | 1.82 ± 0.050 (13.20x) | 1.94 ± 0.054 (14.07x) | 5.02 ± 0.13 (36.37x) | 9.34 ± 0.43 (67.65x) |
+| a2s | 0.14 ± 0.004 | 0.15 ± 0.005 (1.06x) | 1.70 ± 0.038 (12.04x) | 9.74 ± 0.10 (69.10x) | 41.44 ± 1.37 (293.89x) | 28.29 ± 1.96 (200.62x) |
+| a3 | 0.16 ± 0.004 | 0.16 ± 0.006 (1.00x) | 3.47 ± 0.17 (22.24x) | 0.81 ± 0.050 (5.21x) | 4.72 ± 0.056 (30.23x) | 23.16 ± 0.52 (148.48x) |
+| x2 | 0.15 ± 0.001 | 0.15 ± 0.002 (1.00x) | 2.51 ± 0.012 (16.49x) | 0.96 ± 0.032 (6.33x) | 2.73 ± 0.14 (17.93x) | 14.79 ± 0.37 (97.29x) |
 
 Reading the numbers:
 
@@ -293,8 +289,8 @@ Reading the numbers:
   where the result is a large share of the corpus and both engines spend their time fetching rows); against rum 1.5x to 415x (median 28x; the closest are the whole-word cells, 1.5-1.8x: 0.31 against 0.17 ms); against pgx-bm25 4.7x to 639x (median 100x)
   and against the pg_textsearch emulation 5.0x to 9,700x (median 15x; it is faster than pg_search in 16 of the 45 cells, mostly filtered, multi-word and whole-word queries). The index is 2.8 times smaller than pg_search's (50.2 against 142.0 MiB) and builds 2.1 times faster (1.4 against 2.9 s); the default index is the
   smallest of the native indexes but `positions = off` (44.4 MiB) is smaller still.
-- sift `positions = off` and `pairs` are not needed by prefix queries (none of these reaches a phrase): their latencies are 0.81x-1.30x of sift's cell by cell (median 1.0x), which is the noise of the session, and they cost 0.9x
-  (`positions = off`) and 1.7x (`pairs`) of the index.
+- sift `positions = off` is not needed by prefix queries (none of these reaches a phrase): its latencies are 0.89x-1.30x of sift's cell by cell (median 1.0x), which is the noise of the session, and it costs 0.9x
+  of the index.
 - pg_textsearch (emulation) is behind pg_search on the top-20 in every class and by orders of magnitude on the short prefixes: top-20 1.0 s at one letter, 404 ms at two, 14.8 ms at three and 2.6-4.5 ms from four letters on (sift 0.16-0.27 ms). The exact BM25
   ranking scores every match, and a one-letter prefix matches a large share of the places. Its native `count(*)` and scan are the prefix tsquery: 455 ms for `count(*)` of a one-letter prefix, 0.8-9.7 ms for words and the multi-word classes.
 - rum (native top-20, filtered, count, scan; emulated boost) is within 2-5 times of sift on whole-word and four-letter queries (whole-word top-20 0.31 against 0.17 ms, four letters 1.22 against 0.27 ms) and tens to hundreds of times slower on the multi-word and short-prefix classes:
@@ -303,26 +299,26 @@ Reading the numbers:
 - pgx-bm25 is 4.7x-639x behind sift: 34 ms for a one-letter prefix, 72 ms for a three-letter prefix, 43 ms for four letters, 5 ms for a whole word (with the wildcard limit raised, see above); it is faster than pg_search in 1 of the 45 cells.
 - The name boost costs pg_search 1.9-3.5 times its plain top-20 (3.00 against 0.85 ms at one letter); sift's boost costs 1.0-2.0 times its top-20 (the one-letter prefix 0.32 against 0.26 ms, the two-letter prefix 0.46 against 0.23 ms).
 
-Cold cache (`bench/bench cold --full --dataset places --serial`, 12 queries per cell, scratch data on tmpfs as above), p50 / maximum in ms; all seven engines in one session:
+Cold cache (`bench/bench cold --full --dataset places --serial`, 12 queries per cell, scratch data on tmpfs as above), p50 / maximum in ms; all six engines in one session:
 
-| workload | class | sift | sift `positions = off` | sift `pairs` | pg_search | pg_textsearch | rum | pgx-bm25 |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| top | p1 | 0.51 / 0.61 | 0.56 / 0.77 | 0.60 / 0.86 | 1.94 / 2.28 | 2023.78 / 5502.79 | 95.91 / 339.00 | 38.37 / 116.50 |
-| top | p2 | 0.52 / 0.84 | 0.49 / 0.96 | 0.52 / 2.04 | 2.04 / 3.07 | 400.74 / 793.73 | 17.73 / 38.70 | 10.01 / 16.60 |
-| top | a2 | 0.19 / 2.12 | 0.18 / 2.32 | 0.19 / 2.38 | 1.98 / 2.59 | 0.73 / 10.53 | 9.21 / 46.07 | 14.55 / 486.47 |
-| top | a3 | 0.25 / 0.45 | 0.23 / 0.38 | 0.24 / 0.60 | 2.90 / 3.83 | 0.99 / 1.24 | 12.43 / 17.41 | 32.65 / 3005.16 |
-| boost | p1 | 0.72 / 1.11 | 0.70 / 2.35 | 0.74 / 1.13 | 3.65 / 7.20 | 3258.03 / 8008.28 | 97.41 / 256.46 | 45.10 / 151.56 |
-| boost | p2 | 0.88 / 1.16 | 0.81 / 1.18 | 1.02 / 1.33 | 4.14 / 5.75 | 638.98 / 1337.88 | 17.63 / 29.74 | 10.29 / 16.21 |
-| boost | a2 | 0.27 / 6.38 | 0.39 / 9.24 | 0.34 / 7.59 | 3.38 / 5.18 | 1.27 / 16.04 | 9.60 / 49.45 | 18.23 / 509.45 |
-| boost | a3 | 0.31 / 0.81 | 0.46 / 1.19 | 0.35 / 0.87 | 5.19 / 6.04 | 1.51 / 1.86 | 11.63 / 15.26 | 43.03 / 3477.00 |
-| filter | p1 | 11.51 / 15.42 | 14.26 / 19.22 | 11.74 / 18.97 | 16.69 / 21.89 | 362.20 / 1041.79 | 101.56 / 256.87 | 60.56 / 167.06 |
-| filter | p2 | 6.14 / 11.30 | 6.94 / 19.16 | 7.03 / 12.12 | 9.98 / 14.25 | 66.86 / 106.12 | 17.48 / 36.69 | 13.01 / 20.65 |
-| filter | a2 | 0.28 / 2.48 | 0.24 / 2.72 | 0.20 / 2.80 | 6.86 / 7.46 | 0.45 / 1.83 | 9.29 / 31.86 | 19.91 / 1799.08 |
-| filter | a3 | 0.24 / 0.47 | 0.26 / 0.40 | 0.25 / 0.54 | 8.17 / 8.84 | 0.56 / 1.46 | 11.70 / 17.02 | 29.83 / 4586.19 |
-| count | p1 | 0.16 / 0.38 | 0.15 / 0.19 | 0.15 / 0.20 | 0.93 / 1.40 | 497.87 / 1275.88 | 55.84 / 70.23 | 92.54 / 235.72 |
-| count | p2 | 0.09 / 0.13 | 0.09 / 0.13 | 0.10 / 0.14 | 1.47 / 2.27 | 114.47 / 233.62 | 12.87 / 22.57 | 24.82 / 39.38 |
-| count | a2 | 0.11 / 0.94 | 0.08 / 0.83 | 0.12 / 1.07 | 2.38 / 3.15 | 1.54 / 9.32 | 4.93 / 19.91 | 18.25 / 570.97 |
-| count | a3 | 0.10 / 0.17 | 0.13 / 0.21 | 0.12 / 0.19 | 4.37 / 8.56 | 0.58 / 2.23 | 6.44 / 10.00 | 26.64 / 3244.99 |
+| workload | class | sift | sift `positions = off` | pg_search | pg_textsearch | rum | pgx-bm25 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| top | p1 | 0.51 / 0.61 | 0.56 / 0.77 | 1.94 / 2.28 | 2023.78 / 5502.79 | 95.91 / 339.00 | 38.37 / 116.50 |
+| top | p2 | 0.52 / 0.84 | 0.49 / 0.96 | 2.04 / 3.07 | 400.74 / 793.73 | 17.73 / 38.70 | 10.01 / 16.60 |
+| top | a2 | 0.19 / 2.12 | 0.18 / 2.32 | 1.98 / 2.59 | 0.73 / 10.53 | 9.21 / 46.07 | 14.55 / 486.47 |
+| top | a3 | 0.25 / 0.45 | 0.23 / 0.38 | 2.90 / 3.83 | 0.99 / 1.24 | 12.43 / 17.41 | 32.65 / 3005.16 |
+| boost | p1 | 0.72 / 1.11 | 0.70 / 2.35 | 3.65 / 7.20 | 3258.03 / 8008.28 | 97.41 / 256.46 | 45.10 / 151.56 |
+| boost | p2 | 0.88 / 1.16 | 0.81 / 1.18 | 4.14 / 5.75 | 638.98 / 1337.88 | 17.63 / 29.74 | 10.29 / 16.21 |
+| boost | a2 | 0.27 / 6.38 | 0.39 / 9.24 | 3.38 / 5.18 | 1.27 / 16.04 | 9.60 / 49.45 | 18.23 / 509.45 |
+| boost | a3 | 0.31 / 0.81 | 0.46 / 1.19 | 5.19 / 6.04 | 1.51 / 1.86 | 11.63 / 15.26 | 43.03 / 3477.00 |
+| filter | p1 | 11.51 / 15.42 | 14.26 / 19.22 | 16.69 / 21.89 | 362.20 / 1041.79 | 101.56 / 256.87 | 60.56 / 167.06 |
+| filter | p2 | 6.14 / 11.30 | 6.94 / 19.16 | 9.98 / 14.25 | 66.86 / 106.12 | 17.48 / 36.69 | 13.01 / 20.65 |
+| filter | a2 | 0.28 / 2.48 | 0.24 / 2.72 | 6.86 / 7.46 | 0.45 / 1.83 | 9.29 / 31.86 | 19.91 / 1799.08 |
+| filter | a3 | 0.24 / 0.47 | 0.26 / 0.40 | 8.17 / 8.84 | 0.56 / 1.46 | 11.70 / 17.02 | 29.83 / 4586.19 |
+| count | p1 | 0.16 / 0.38 | 0.15 / 0.19 | 0.93 / 1.40 | 497.87 / 1275.88 | 55.84 / 70.23 | 92.54 / 235.72 |
+| count | p2 | 0.09 / 0.13 | 0.09 / 0.13 | 1.47 / 2.27 | 114.47 / 233.62 | 12.87 / 22.57 | 24.82 / 39.38 |
+| count | a2 | 0.11 / 0.94 | 0.08 / 0.83 | 2.38 / 3.15 | 1.54 / 9.32 | 4.93 / 19.91 | 18.25 / 570.97 |
+| count | a3 | 0.10 / 0.17 | 0.13 / 0.21 | 4.37 / 8.56 | 0.58 / 2.23 | 6.44 / 10.00 | 26.64 / 3244.99 |
 
 These are execution times (`EXPLAIN ANALYZE`), without the planning and the query lookup that the warm p50 includes, so they are not comparable with the tables above. sift is ahead of pg_search in all 16 cold cells
 of the table (the closest, the one-letter filtered top-20, 11.5 against 16.7 ms). pgx-bm25's cold maxima reach 3.0-4.6 s in the cells of the 3-letter-plus classes (a3).
@@ -339,7 +335,6 @@ Queries per second (minimum-maximum over the rounds); rum's column fills in 14.9
 | engine | index (MiB) | build (s) | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 33.5 | 2.0 | 3,388 (2,801-3,615) | 789 (694-908) | 759 (720-922) | 971 (834-1,369) | 581 (463-818) | 1,099 (819-1,350) | 268 (222-354) |
-| sift `pairs` | 192.2 | 9.1 | 3,165 (2,823-3,579) | 775 (653-877) | 2,882 (2,481-3,796) | 1,642 (1,229-1,899) | 2,978 (2,424-3,750) | 1,306 (1,005-1,577) | 483 (396-685) |
 | pg_search | 112.0 | 5.4 | 1,263 (1,108-1,547) | 648 (476-850) | 1,135 (857-1,269) | 841 (636-1,001) | 952 (880-1,017) | 1,100 (803-1,244) | 81 (63-100) |
 | pg_textsearch | 105.6 | 10.7 | 8 (7-20) | 1,207 (1,078-1,372) | 6 (4-11) | 11 (7-15) | 23 (13-45) | 53 (16-94) | 36 (7-66) |
 | rum | 219.2 | 19.5 | 591 (455-610) | 6 (5-6) | 21 (19-23) | 11 (9-15) | 18 (14-22) | 11 (8-15) | 8 (4-9) |
@@ -347,15 +342,14 @@ Queries per second (minimum-maximum over the rounds); rum's column fills in 14.9
 | engine | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | sift / pg_search | 2.68 | 1.22 | 0.67 | 1.15 | 0.61 | 1.00 | 3.29 |
-| sift `pairs` / pg_search | 2.51 | 1.20 | 2.54 | 1.95 | 3.13 | 1.19 | 5.94 |
 | pg_textsearch / pg_search | 0.01 | 1.86 | 0.01 | 0.01 | 0.02 | 0.05 | 0.44 |
 | rum / pg_search | 0.47 | 0.01 | 0.02 | 0.01 | 0.02 | 0.01 | 0.09 |
 
 The 150k tier has the full tier's ordering for every class and the wider margins of a smaller corpus: the default index's `count(*)`
 (0.61x) and phrase (0.67x) are behind pg_search at both sizes. The heap recheck grows with the corpus, so the crossover depends on
 the size (with an earlier build and a 75,000 article tier the phrase and `count(*)` ratios were 1.22x and 1.35x). Judge the
-default index's phrase and `count(*)` on the full tier. The size ordering is the same as at 218k: `pairs` is 192.2 MiB against 112.0 MiB
-for pg_search (1.7 times) and 33.5 MiB for the default index.
+default index's phrase and `count(*)` on the full tier. The size ordering is the same as at 218k: the default index is 33.5 MiB against 112.0 MiB
+for pg_search.
 
 #### 25,000 articles (`quick` tier)
 
@@ -365,7 +359,6 @@ wide; it shows the ordering, not the ratios.
 | engine | index (MiB) | build (s) | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 6.8 | 0.5 | 4,260 (3,229-5,291) | 1,774 (1,485-2,064) | 1,725 (1,573-1,877) | 2,256 (1,743-2,769) | 2,029 (1,656-2,402) | 3,021 (2,961-3,081) | 868 (664-1,073) |
-| sift `pairs` | 40.3 | 2.8 | 3,813 (2,674-4,951) | 1,818 (1,478-2,157) | 3,938 (3,028-4,847) | 3,044 (2,982-3,106) | 4,611 (3,604-5,619) | 2,639 (1,966-3,312) | 350 (328-372) |
 | pg_search | 23.6 | 1.4 | 1,206 (968-1,445) | 1,107 (825-1,390) | 1,114 (842-1,387) | 1,328 (1,136-1,519) | 1,341 (1,236-1,445) | 1,137 (847-1,428) | 479 (467-492) |
 | pg_textsearch | 22.5 | 4.0 | 47 (10-85) | 3,943 (2,643-5,244) | 56 (42-70) | 93 (88-97) | 146 (144-149) | 163 (131-194) | 106 (100-112) |
 | rum | 47.2 | 5.3 | 1,878 (1,379-2,377) | 28 (22-33) | 91 (83-98) | 56 (42-70) | 113 (106-120) | 41 (35-48) | 71 (49-94) |
@@ -373,7 +366,6 @@ wide; it shows the ordering, not the ratios.
 | engine | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | sift / pg_search | 3.53 | 1.60 | 1.55 | 1.70 | 1.51 | 2.66 | 1.81 |
-| sift `pairs` / pg_search | 3.16 | 1.64 | 3.53 | 2.29 | 3.44 | 2.32 | 0.73 |
 | pg_textsearch / pg_search | 0.04 | 3.56 | 0.05 | 0.07 | 0.11 | 0.14 | 0.22 |
 | rum / pg_search | 1.56 | 0.02 | 0.08 | 0.04 | 0.08 | 0.04 | 0.15 |
 
@@ -388,7 +380,6 @@ top-20 workload (the six classes of the quick mode; pg_textsearch is the emulati
 | engine | index (MiB) | build (s) | p1 | p3 | w1 | a2 | a3 | x2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 13.7 | 2.1 | 0.46 | 0.29 | 0.24 | 0.27 | 0.33 | 0.34 |
-| sift `pairs` | 24.0 | 2.9 | 0.54 | 0.31 | 0.24 | 0.26 | 0.30 | 0.29 |
 | pg_search | 27.8 | 11.5 | 0.97 | 1.72 | 1.79 | 1.80 | 3.45 | 2.04 |
 | pg_textsearch | 21.5 | 2.9 | 1,135 | 26.84 | 9.26 | 6.94 | 7.19 | 7.51 |
 | rum | 30.1 | 1.6 | 63.52 | 6.12 | 0.40 | 14.21 | 10.59 | 9.62 |
@@ -400,7 +391,6 @@ there too, 1.1x-21x) has the same ordering:
 | engine | index (MiB) | build (s) | p1 | p3 | w1 | a2 | a3 | x2 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | sift | 13.7 | 3.3 | 2.41 | 1.36 | 0.34 | 0.78 | 1.02 | 1.23 |
-| sift `pairs` | 24.0 | 6.8 | 2.23 | 1.58 | 0.34 | 1.15 | 1.46 | 0.23 |
 | pg_search | 27.8 | 17.8 | 2.70 | 3.80 | 4.26 | 5.41 | 12.94 | 7.75 |
 | pg_textsearch | 21.5 | 5.0 | 4,594 | 94.49 | 24.53 | 20.96 | 18.12 | 11.34 |
 | rum | 30.1 | 8.1 | 94.50 | 27.40 | 2.30 | 29.78 | 37.88 | 10.77 |
@@ -454,7 +444,7 @@ and seven places latencies at 0.17-0.49 ms, whose combined error is 7-16% of a v
 
 ### Articles (25,000-article quick tier, 200 substrings, this session)
 
-- `bench/bench check oracle sift 200`, the same for `sift_nopos` and `sift_pairs` (and, or, phrase, not modes): **the same two mismatches for the three, no others**, which are the known baseline:
+- `bench/bench check oracle sift 200`, the same for `sift_nopos` (and, or, phrase, not modes): **the same two mismatches for both, no others**, which are the known baseline:
   query 167 (`or`: `h pugmire wilum`, the oracle has 481 matches, sift 480, document 21851 missing) and query 255 (`phrase`: `within the`, 367 against 371, four extra documents 1498, 2627, 2793, 17583).
   I did not investigate these two again.
 - `bench/bench check rank sift 200` (top-10 overlap with pgx-bm25's BM25, a soft check): and 0.997, or 0.979, phrase 0.999 (the phrase top-10 differs in size for one query), identical to the baseline.
@@ -590,9 +580,9 @@ The full-scale check against v1.1.0 is its own section above; before it, four qu
 
 ### Measured run time of the published session
 
-`bench/bench all --full --serial` (host load as above), 3069 s in all: articles (the `articles-full` phases: 1 s dump, 79 s corpus restore and the seven index builds one after the other, 842 s of cells, 923 s together), cold-cache tables
+`bench/bench all --full --serial` (host load as above), 3069 s in all: articles (the `articles-full` phases: 1 s dump, 79 s corpus restore and the index builds one after the other, 842 s of cells, 923 s together), cold-cache tables
 437 s (articles 183 s, places 254 s), places 2630 s of cells in that first session (it contained the 24 failing pgx-bm25 cells). The places tiers published here are from a second session after the two harness fixes:
-1639 s of cells (27 min; restore and the builds of the seven engines and two emulations 55 s) and 260 s of cold-cache cells, plus three rounds of the one cell that a stray `pkill` of another job damaged. The published tiers together took
+1639 s of cells (27 min; restore and the builds of the engines and two emulations 55 s) and 260 s of cold-cache cells, plus three rounds of the one cell that a stray `pkill` of another job damaged. The published tiers together took
 about 51 minutes of wall time (articles 923 s and cold 183 s, places 1,695 s and cold 260 s), against about 2 hours for the earlier published session on the 2-CPU budget. The concurrent default (`bench/bench all --full` without `--serial`) was not run at full scale (it was run at the quick tier, 124 s, and the regression check at the full tier, 355 s of cells for the 112 cells of the check).
 
 #### `--serial`: one engine measured at a time
