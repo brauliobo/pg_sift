@@ -91,6 +91,7 @@ struct SiftIdx
 	size_t		caplatest,
 				nlatest;
 	int64		bytes;
+	bool		feeding;		/* a drain is in progress */
 };
 
 typedef struct Registry
@@ -782,8 +783,15 @@ sx_feed_begin(SiftIdx *ix, int64_t upto, char *err, size_t errlen)
 	pthread_mutex_lock(&big);
 	f->ix = ix;
 	f->last = ix->man.drained;
-	rc = SIFT_TRY(feed_init(f));
+	if (ix->feeding)
+	{
+		snprintf(sift_err_msg, sizeof(sift_err_msg), "sift: another drain of index \"%s\" is running", ix->name);
+		rc = -1;
+	}
+	else
+		rc = SIFT_TRY(feed_init(f));
 	MemoryContextSwitchTo(TopMemoryContext);
+	ix->feeding = rc == 0 || ix->feeding;
 	end_call(rc, err, errlen);
 	if (rc != 0)
 	{
@@ -925,6 +933,7 @@ feed_release(SiftFeed *f)
 		sift_slot_unmap(f->ix->sr, f->mapped);
 	MemoryContextSwitchTo(TopMemoryContext);
 	MemoryContextDelete(f->cx);
+	f->ix->feeding = false;
 	free(f->ev);
 	free(f);
 }
