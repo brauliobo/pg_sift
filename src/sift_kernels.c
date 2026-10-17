@@ -225,10 +225,11 @@ sift_kern_bound_u8(const SiftBm25 *ref, uint32 tf, uint32 dl)
 }
 
 float4
-sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref)
+sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref, int nterms)
 {
 	double		c = Max(1.0, avgdl_now / avgdl_ref);
-	double		d = w * c / 255.0 * (1.0 + SIFT_KERN_UB_SLACK);
+	double		slack = Max(SIFT_KERN_UB_SLACK, nterms * SIFT_KERN_UB_SLACK_TERM);
+	double		d = w * c / 255.0 * (1.0 + slack);
 	float4		f = (float4) d;
 
 	return (double) f < d ? nextafterf(f, INFINITY) : f;

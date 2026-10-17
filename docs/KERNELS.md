@@ -36,7 +36,9 @@ Why the block UB is never below a float32 score it covers, for n <= 256 terms:
 - the float UB is at least `sum w_t c bound_t / 255 * (1 + 2^-12) * (1 - u)^n`;
 - `(1 + 2^-12)(1 - u)^256 >= (1 + 7u)(1 + u)^255` holds with 8x margin (`2^-12 = 2.4e-4` against `519u = 3.1e-5`).
 
-The harness checks this on 10 M random documents with 1..256 terms, `avgdl_now / avgdl_ref` in {0.5, 1, 1.0001, 3}.
+A plan can have more leaves than a query names (every distinct term of a phrase is one, up to 256 x 128), so `sift_kern_ub_weight` takes the leaf count and raises the slack to `n * 2^-20` above 256 terms (the same `(1 + slack)(1 - u)^n >= (1 + 7u)(1 + u)^(n-1)` argument, again with 8x margin); the rounding of n additions of one term all going the same way is the worst case of the float32 sum.
+
+The harness checks this on 10 M random documents with 1..256 terms, and on up to 32768 copies of one term, `avgdl_now / avgdl_ref` in {0.5, 1, 1.0001, 3}.
 
 **Ties.** Top-k ranks by score descending, then key ascending. A candidate equal to the worst kept score can still enter, so `sift_kern_topk_theta` returns `nextafterf(worst, -Inf)` and `select_gt` keeps `score > theta`, i.e. `score >= worst`. Block pruning must likewise stop only when `UB < theta_score` (strictly), not `UB <= theta_score`, or an equal-score lower ctid in a later block is missed.
 
