@@ -2,13 +2,14 @@
 
 BM25 full-text search for MariaDB tables: ranked top-k, exact counts, phrases, prefix / wildcard / fuzzy / regular
 expression terms, AND / OR / NOT, boosts, fields, filters and facets, as a user defined function library
-(`libsift_udf.so`) and two SQL files. It is the [pg_sift](../README.md) engine (the sources of `src/`, compiled
-unmodified) behind a small PostgreSQL-backend shim, so the page format, the analyzer, the ranking and the query language are
-those of pg_sift; for the same text and the same options the counts, the top-10 order and the scores are bit identical.
+(`libsift_udf.so`) and two SQL files. It is the portable core of [pg_sift](../README.md) (the files of `src/portable.list`, compiled
+unmodified, the same ones the PostgreSQL and SQLite extensions use) over a small host in `mariadb/host/`, so the page format, the
+analyzer, the ranking and the query language are those of pg_sift; for the same text and the same options the counts, the top-10
+order and the scores are bit identical.
 
 It adds no storage engine and patches nothing: a trigger-fed queue table keeps the index in step with an InnoDB table, the
 index lives in plain files next to the data directory, and a query is a function call. Use it when `MATCH ... AGAINST`
-is too slow or too limited (InnoDB FULLTEXT takes 0.06 to 1.2 s for a ranked top-10 on 218,058 articles, sift 0.2 to 1.3 ms), you
+is too slow or too limited (InnoDB FULLTEXT takes 0.09 to 1.0 s for a ranked top-10 on 218,058 articles, sift 0.4 to 1.3 ms), you
 want BM25 and phrases that behave the same on every engine of the product, or you want filters and facets inside the ranked
 scan. Do not use it if you need `MATCH ... AGAINST` syntax (it cannot be added to a UDF, see "MATCH ... AGAINST") or a
 MySQL server (MariaDB only).
@@ -20,15 +21,19 @@ Contents: [install](#install) - [quick start](#quick-start) - [queries](#queries
 
 ## Install
 
-Needs a MariaDB server 10.5 to 13.x (built and tested on 13.0.2), its development headers (`/usr/include/mysql/server`),
-the PostgreSQL server headers and the static `libpgcommon_shlib.a` / `libpgport_shlib.a` of the same PostgreSQL (types, macros,
-UTF-8 tables and `qsort`; no PostgreSQL code runs), a C compiler and `make` (or CMake). `libmariadb` is only needed for the
-test tools.
+**From a release.** `sift-mariadb-<version>-linux-x86_64.tar.gz` holds one library per MariaDB series (`lib/<series>/libsift_udf.so`,
+`SELECT VERSION()` tells yours; `BUILD-INFO` lists the server version and glibc each was built for), `sql/functions.sql`,
+`sql/sift.sql` and this document. A library loads only into the series it was built for. Copy the one of your series into the
+server's plugin directory and run the two SQL files as below.
+
+**From source.** Needs a MariaDB server 10.5 to 13.x (built and tested on the series listed under "Versions"), its development
+headers (`libmariadbd-dev`, `/usr/include/mysql/server`), a C compiler and `make` (or CMake). Nothing else: the build needs no
+PostgreSQL. `libmariadb` is only needed for the test tools.
 
 ```sh
 nice make -C mariadb -j4 OUT=/tmp/sift-build            # or: cmake -S mariadb -B /tmp/sift-build && nice cmake --build /tmp/sift-build -j4
 mariadb -e "SHOW VARIABLES LIKE 'plugin_dir'"           # where the server loads UDF libraries from
-cp /tmp/sift-build/libsift_udf.so /usr/lib/mysql/plugin/   # that directory (needs write access to it)
+cp /tmp/sift-build/libsift_udf.so /usr/lib/mysql/plugin/   # that directory (needs write access to it); a release: lib/<series>/libsift_udf.so
 mariadb mydb < mariadb/sql/functions.sql                # registers the functions in the server (mysql.func), once per server
 mariadb mydb < mariadb/sql/sift.sql                     # the procedures and the index table, once per database that has indexed tables
 ```
@@ -366,19 +371,30 @@ engine skeleton (`rnd_init`, `index_read_map`, `ha_*` registration) and nothing 
 
 ## Versions, ABI and release artifacts
 
-* Built and tested on MariaDB 13.0.2 with PostgreSQL 18.6 headers. The sources compile against the headers of any MariaDB
-  from 10.5 to 13.x and refuse other versions at compile time (a `#error` on `MYSQL_VERSION_ID`, checked by `tests/version.sh`);
-  the UDF structures are `static_assert`ed. At load time the library compares its series with the running server's
-  (`server_version`) and every function fails with "rebuild it against the headers of this server" on a mismatch. Only 13.0 was
-  run; the other series are unverified. MySQL 8.4 / 9.x are not supported (the UDF interface and the server-side SQL service differ)
-  and no MySQL headers were available to check.
-* `sift_version()` reports the format of the engine, the page format and the server it was built for. An index written by
+* Tested on MariaDB 13.0.2 (the whole suite below, on the host's server) and, with `tests/smoke.sh` (12 checks: version string, ranked
+  top-10, count, matches, DML visible at once, prefix / wildcard / fuzzy / regular expression, sync and merge, restart, detach), on the
+  stock Docker images `mariadb:10.11` (10.11.19), `11.4` (11.4.13), `11.8` (11.8.9), `12.1` (12.1.2) and `13.0` (13.0.2), each loading the
+  library built against the headers of that very image. The sources compile against the headers of any MariaDB from 10.5 to 13.x and
+  refuse other versions at compile time (a `#error` on `MYSQL_VERSION_ID`, checked by `tests/version.sh`); the UDF structures are
+  `static_assert`ed. 10.5 to 10.10, 11.0 to 11.3, 11.5 to 11.7 and 12.0 have no release library and were not run. MySQL 8.4 / 9.x are not
+  supported (the UDF interface and the server-side SQL service differ).
+* ABI. The library calls symbols of `mariadbd` itself, so it works only with the series whose headers it was built against; at load time
+  it compares its series with the running server's (`server_version`) and every function fails with "rebuild it against the headers of
+  this server" on a mismatch. It needs libc and libm
+  only (no libstdc++, no libmariadb), x86-64 baseline (no POPCNT, no vector instruction outside the runtime-dispatched kernels:
+  `make isa-check`), glibc 2.34 (Ubuntu 22.04 image, series 10.11) or 2.38 (the 24.04 and 26.04 images, series 11.4 to 13.0).
+* `sift_version()` reports the release, the format of the engine, the page format and the server it was built for. An index written by
   another format is refused with "rebuild it with sift_rebuild", and `sift_rebuild` replaces it (`tests/version.sh` damages the
-  manifest in four ways).
-* A release artifact is a tarball per MariaDB series and CPU architecture: `libsift_udf.so` built against that series' headers
-  (x86-64 baseline, dynamic glibc), `sql/functions.sql`, `sql/sift.sql`, this document. The library depends on symbols of
-  `mariadbd` of that series, so a tarball for 13.0 does not load on 11.8. The index files do not depend on the server version:
-  they depend on the page format (`sift_version()`), which the library checks when it opens an index.
+  manifest in four ways). The index files do not depend on the server version: they depend on the page format, which the library
+  checks when it opens an index.
+* Release artifact: `sift-mariadb-<version>-linux-x86_64.tar.gz`, built by `scripts/package-mariadb.sh` (and the `mariadb` job of
+  `.github/workflows/release.yml`): `lib/<series>/libsift_udf.so` for each series above, `sql/functions.sql`, `sql/sift.sql`, LICENSE,
+  NOTICE, this document and `BUILD-INFO` (server version and glibc floor of each library). Every library is built in the stock
+  `mariadb:<series>` image against `libmariadbd-dev` from MariaDB's own repository (which pins the headers to that server's exact
+  version) and loaded into a server of the same image by the smoke test before the tarball is accepted; the tarball is reproducible
+  (sorted names, commit time) and goes into the single `SHA256SUMS` of the release. The version is the tag (`v1.4.0` is 1.4.0) and
+  must equal `mariadb/VERSION`; [CHANGELOG.md](CHANGELOG.md) lists the changes. A distribution with an older glibc, or another
+  architecture, builds from source (`make`).
 
 ## Numbers against InnoDB FULLTEXT
 
@@ -386,22 +402,27 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 
 | class | sift, joined | sift, UDF only | sift, plain index | InnoDB FULLTEXT | InnoDB / sift |
 | --- | --- | --- | --- | --- | --- |
-| AND top-10 | 304 | 270 | 281 | 62,305 | 205x |
-| OR top-10 | 1,253 | 1,157 | 1,130 | 1,232,091 natural, 908,285 boolean | 984x / 725x |
-| phrase top-10 | 242 | 156 | 186 | 175,430 | 726x |
-| count AND | 103 |  | 69 | 65,318 | 632x |
-| count OR | 269 |  | 255 | 916,283 | 3,411x |
-| count phrase | 201 |  | 127 | 167,613 | 832x |
-| statement (us) | first version | now, default (`fresh`, `recheck`) | now, plain index |
+| AND top-10 | 476 | 245 | 298 | 87,191 | 183x |
+| OR top-10 | 1,301 | 1,196 | 1,228 | 943,532 natural, 1,032,812 boolean | 725x / 794x |
+| phrase top-10 | 424 | 250 | 338 | 213,772 | 504x |
+| count AND | 110 |  | 83 | 112,650 | 1,025x |
+| count OR | 269 |  | 247 | 1,506,334 | 5,608x |
+| count phrase | 172 |  | 144 | 233,629 | 1,357x |
+| statement | before | after | after / before |
 | --- | --- | --- | --- |
-| AND top-10, joined | 267 | 441 | 307 |
-| AND top-10, UDF only | 163 | 296 | 181 |
-| OR top-10, joined | 1,189 | 1,341 | 983 |
-| phrase top-10, joined | 342 | 397 | 286 |
-| count AND | 77 | 118 | 88 |
-| count OR | 234 | 288 | 225 |
-| count phrase | 140 | 131 | 159 |
-Honest losses. sift's OR is its slowest class (1.1 to 1.5 ms: OR queries over common terms match most of the corpus);
+| AND top-10, joined | 466 +- 56 | 476 +- 81 | 1.05 +- 0.15 |
+| AND top-10, UDF only | 286 +- 36 | 245 +- 36 | 0.89 +- 0.12 |
+| AND top-10, plain index | 373 +- 41 | 298 +- 34 | 0.82 +- 0.09 |
+| OR top-10, joined | 1,488 +- 120 | 1,301 +- 152 | 0.90 +- 0.13 |
+| OR top-10, plain index | 1,361 +- 149 | 1,228 +- 168 | 0.94 +- 0.15 |
+| phrase top-10, joined | 513 +- 113 | 424 +- 52 | 0.94 +- 0.18 |
+| phrase top-10, plain index | 293 +- 41 | 338 +- 51 | 1.20 +- 0.18 |
+| count AND | 139 +- 10 | 110 +- 11 | 0.82 +- 0.12 |
+| count OR | 307 +- 35 | 269 +- 20 | 0.93 +- 0.14 |
+| count phrase | 179 +- 21 | 172 +- 21 | 0.98 +- 0.11 |
+| build (s) | 7.3 +- 0.8 | 6.6 +- 0.9 | 0.93 +- 0.09 |
+| index size (MB) | 135.9 | 135.9 | 1.00 |
+Honest losses. sift's OR is its slowest class (1.2 to 1.3 ms: OR queries over common terms match most of the corpus); the joined shape
 
 ## Tests
 
@@ -414,7 +435,7 @@ its own (`start|stop|sql|destroy`).
 | --- | --- |
 | `test.sh` pgref | 5,098 queries (and / or / phrase traces, prefix, wildcard, fuzzy, NOT, boosts, groups, nesting, phrases under OR/NOT including CJK, regular expressions): count, top-10 order and float32 scores equal to pg_sift |
 | `test.sh` inno | match sets against InnoDB FULLTEXT (boolean mode), with the analyzer differences listed below |
-| `tests/functional.sh` | 63 checks: queries, DML visible at once, rollback, update / delete, drain, merge, restart, kill -9, concurrent writers, EVENT |
+| `tests/functional.sh` | 67 checks: queries, DML visible at once, rollback, update / delete, drain, merge, restart, kill -9, concurrent writers, EVENT |
 | `tests/fresh.sh` | freshness without sync, LIMIT never short, rollback / savepoints, `REPEATABLE READ` / `READ COMMITTED`, TRUNCATE, `fresh=false` |
 | `tests/keys.sh` | text, UUID, composite keys, the integer fast path |
 | `tests/filters.sh` | bitmap, id list and predicate filters, facets against GROUP BY |
@@ -424,6 +445,7 @@ its own (`start|stop|sql|destroy`).
 | `tests/stress.sh` | reader, writer, drain and merge threads at once, then index equals table |
 | `tests/regex_check.sh` | the regular expression engine against PostgreSQL's, 227,040 pattern / word pairs |
 | `tests/repl.sh` | primary, replica, rebuild, prune, dump restore |
+| `tests/smoke.sh` | a release library in a stock MariaDB image (`scripts/package-mariadb.sh`): version, queries, DML, merge, restart, detach |
 
 Against InnoDB FULLTEXT the match sets differ only where the analyzers differ: InnoDB keeps `_` and an apostrophe between letters
 inside a word and splits at U+00AD; sift (like the PostgreSQL parser the trace comes from) splits at `_` and `'` and keeps U+00AD
@@ -435,28 +457,27 @@ are off by 1 or 2 documents of tens of thousands.
 | path | what |
 | --- | --- |
 | `udf.c`, `sql/` | MariaDB-specific: the UDFs (arguments, JSON, the local SQL connection) and the procedures / triggers |
-| `engine.c`, `engine.h`, `ix.h`, `query.c`, `feed.c`, `merge.c` | the index: manifest, event log, live segment, queries, drains, merge, locks |
-| `store.c` | segment files mapped as the buffer pool; write targets; the visibility filter |
-| `shim.c`, `shim.h`, `regex.c` | the PostgreSQL-backend shim: memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, buffer stubs, and the `pg_reg*` regular expression API |
+| `engine.c`, `engine.h`, `ix.h`, `query.c`, `feed.c`, `merge.c` | the index: manifest, event log, live segment, queries, drains, merge driver, locks |
+| `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/sift_host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) is compiled as it is |
+| `host/store.c`, `host/store.h` | `src/sift_store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
+| `host/stubs.c` | the collaborators of the evaluator MariaDB does not have (mutable segments), the engine's own visibility, and the filter of a list of documents as the TID bitmap the shared filter builder reads |
+| `host/host_regex.c` | `pg_regcomp` / `pg_regexec` / `pg_regprefix`: a matcher for PostgreSQL's advanced regular expressions |
 | `cli.c` | `sift_cli`: the engine without a server |
-| `Makefile`, `CMakeLists.txt` | the build |
+| `Makefile`, `CMakeLists.txt` | the build (it reads `src/portable.list`) |
 | `tests/`, `bench/`, `tools/`, `test.sh`, `server.sh` | tests, the benchmark, the comparison tools, the private server |
 
-Compiled from `src/` unmodified: `sift_bitmap*` (with its seek limit made per thread by `sed`), `sift_kernels*`, `sift_analyze*`,
-`sift_query`, `sift_dict`, `sift_posting`, `sift_segment`, `sift_prefix`, `sift_eval`, and `sift_build.c` up to its `ambuild` marker
-(cut with `sed`). Not compiled: the access method, the planner, parallel scans, the SQL-callable test code.
+Compiled from `src/` unmodified: every `.c` file of `src/portable.list`, except that `sift_bitmap.c` is compiled from a copy whose seek limit is
+per thread (`sed`, checked by the build). No PostgreSQL header, library or code is involved: `scripts/check-portable.sh` guarantees that the
+files of the list reach their host only through `sift_host.h`.
 
-**Shared core.** The MariaDB-specific files are `udf.c`, `cli.c`, `sql/`, `engine.c` / `query.c` / `feed.c` (the manifest and queue
-protocol), and `store.c`; the shim (`shim.c`, `shim.h`, `regex.c`, and the thread-local memory-context macros of the Makefile) is
-a separate layer under them. When the common core (`sift_host.h` and the shared algorithms of the `refactor/dry-core` branch)
-lands, these duplicate what it will provide and should be replaced by it:
+**What is shared, and what is not.** Taken from the core and not copied: the merge policy (`sift_merge_pick`, tiers from 1 MiB), the merge of
+segments through sorted runs (`sift_run_from_segment`, `sift_runs_write`), the inverted buffer of a drain (`SiftInvBuf`), the deletion of a
+document from a segment (`sift_seg_delete_key`: the merge deletes the engine's dead documents from its private copy of the pages, then
+rewrites them), the filter builder (`sift_filter_build`), the extent bookkeeping and padding of byte streams (`sift_stream.c`), the CPU
+dispatch, the analyzer options. MariaDB's own: the manifest, the event log and the queue protocol (`engine.c`, `feed.c`, `sql/`), the
+local-connection host callbacks and the UDF glue (`udf.c`), the mapped store with its `MADV_POPULATE_READ`, the background merge thread, the
+live segment of a query. One implementation is kept apart on purpose: the regular expression matcher. The C library's POSIX matcher (what
+the SQLite host uses, in `sqlite/host/host_regex.c`) has no `\d`, `\w`, lookaround, back-references or lazy quantifiers and matches
+bytes, not characters; on the 5,098 comparison queries that alone made two differ from pg_sift (a `.` against a Greek letter),
+and `tests/regex_check.sh` compares this matcher with PostgreSQL's on 227,040 pattern and word pairs.
 
-* `merge.c`: the tier choice (`tier_of`, `pick`) and the driver around `sift_runs_write` (merge policy, run merging);
-* `engine.c`: `apply_opts`, `check_opts`, `set_meta` and the `cfg` hash (option parsing, validation, the analyzer-options hash);
-* `store.c`: `sift_filter_from_docids` and the `sift_filter_*` helpers (copies of `src/sift_filter.c` over docids), the segment
-  write target (`sift_wt_*`);
-* `sql/sift.sql`: `sift_facets` (facet logic as SQL over the matches);
-* `regex.c`: the `pg_reg*` implementation, which any host without PostgreSQL's regex library needs.
-
-What stays MariaDB-specific after that: the local-connection host callbacks and UDF glue of `udf.c`, the queue / trigger / barrier
-protocol of `sql/` and `feed.c`, the `MADV_POPULATE_READ` mapping and thread-local contexts.
