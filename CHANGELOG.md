@@ -4,6 +4,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fix: promoting a mutable segment no longer takes memory in proportion to the segment. The records were all copied to memory, about six
+  times the size of the segment, whatever `maintenance_work_mem` (a segment of 138 MB at `mutable_limit = 1048576`: 827 MB at a 64 MB budget, 797 MB
+  at 16 MB); they are now sorted in a tuplesort that spills to disk (191 MB and 155 MB; a segment of 46 MB at a 4 MB budget: 54 MB, where it took
+  268 MB). A segment that fits the budget promotes as fast as before (1.0 to 1.2 s against 1.2 to 1.7 s at 64 MB); one that does not is slower than with
+  all of it in memory (3.8 s against 1.7 s at 16 MB), the price of staying within the budget.
 - Fix: a long merge no longer stalls the inserts. Promotion and merge steps now claim the segments they replace instead of holding one
   exclusive lock per index, so the background worker's merge, an inserter that finds the directory nearly full (112 of 128 entries) and
   the inserters that promote a backlog of sealed segments work on different segments side by side. Before, every such inserter waited

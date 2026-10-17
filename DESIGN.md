@@ -189,7 +189,7 @@ A header page holds the extent table and the sections table. Its data is a logic
   2. A concurrent appender holds the lane tail lock while appending and re-checks `sealed` under that lock.
   3. The sealer takes each lane tail lock once after flipping the flag, so no append is in flight afterwards.
 - **Promotion** turns a sealed segment into an immutable one.
-  1. Read its records and sort them by key.
+  1. Read its records and sort them by key, in a tuplesort: each live record is packed into a bytea (key and arrival number big-endian, so byte order is key order and the first record of a repeated tid comes first), which keeps the promotion within `maintenance_work_mem` whatever the size of the segment (`mutable_limit` goes up to 1 GB); the excess spills to temporary files. It used to copy every record to memory, about six times the size of the segment: 800 MB at a 16 MB budget for a segment of 138 MB. The inverted buffer then gets what the sort left of the budget when the sort stayed in memory, so a segment that fits promotes as before.
   2. Build with `SiftInvBuf` and write new extents through shared buffers, logged with `log_newpage_range`.
   3. In a single directory record: replace the sealed entry with the new immutable entry, update metapage totals, and free the old pages with `safexid = ReadNextFullTransactionId()`.
 
