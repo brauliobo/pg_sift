@@ -1077,22 +1077,6 @@ sq_store_flush_pages(SqStore *st)
 /* ---------- sift_store.h: pages, directory ---------- */
 
 void
-sift_page_init(Page page, SiftPageType type, uint64 gen)
-{
-	PageHeader	h = (PageHeader) page;
-	SiftPageOpaque o;
-
-	memset(page, 0, BLCKSZ);
-	h->pd_lower = SIFT_PAGE_DATA_OFFSET;
-	h->pd_special = BLCKSZ - MAXALIGN(sizeof(SiftPageOpaqueData));
-	h->pd_upper = h->pd_special;
-	h->pd_pagesize_version = BLCKSZ;
-	o = SiftPageGetOpaque(page);
-	o->type = type;
-	o->gen = gen;
-}
-
-void
 sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 {
 	SiftPageOpaque o = SiftPageGetOpaque(BufferGetPage(buf));
@@ -1138,39 +1122,16 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->buf = InvalidBuffer;
 	sr->blkno = InvalidBlockNumber;
 	sr->pagestart = palloc((nextents + 1) * sizeof(uint32));
-	for (int i = 0; i < nextents; i++)
-	{
-		sr->pagestart[i] = sr->npages;
-		sr->npages += extents[i].nblocks;
-	}
-	sr->pagestart[nextents] = sr->npages;
+	sr->npages = sift_extents_pagestart(extents, nextents, sr->pagestart);
 }
 
 /* The reader keeps its current page pinned until it moves to another one or is released */
 static Buffer
 sr_page(SiftStreamReader *sr, uint32 p)
 {
-	int			e = sr->cur;
-	BlockNumber blk;
+	BlockNumber blk = sift_extents_block(sr->extents, sr->pagestart, sr->nextents, p, &sr->cur);
 	Buffer		nb;
 
-	if (p < sr->pagestart[e] || p >= sr->pagestart[e + 1])
-	{
-		int			lo = 0,
-					hi = sr->nextents - 1;
-
-		while (lo < hi)
-		{
-			int			mid = (lo + hi + 1) / 2;
-
-			if (sr->pagestart[mid] <= p)
-				lo = mid;
-			else
-				hi = mid - 1;
-		}
-		e = sr->cur = lo;
-	}
-	blk = sr->extents[e].start + (p - sr->pagestart[e]);
 	if (sr->buf != InvalidBuffer && sr->blkno == blk)
 		return sr->buf;
 	nb = ReadBuffer(sr->index, blk);
@@ -1346,9 +1307,7 @@ struct SiftStreamWriter
 	uint64		total;
 	uint32		used;
 	char	   *page;
-	SiftExtent *ext;
-	int			next,
-				cap;
+	SiftExtentList ext;
 };
 
 SiftStreamWriter *
@@ -1360,8 +1319,7 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	sw->gen = gen;
 	sw->page = MemoryContextAllocAligned(CurrentMemoryContext, BLCKSZ, 64, 0);
 	sift_page_init(sw->page, SIFT_PT_DATA, gen);
-	sw->cap = 16;
-	sw->ext = palloc(sw->cap * sizeof(SiftExtent));
+	sift_extlist_init(&sw->ext);
 	return sw;
 }
 
@@ -1372,17 +1330,7 @@ sw_flush(SiftStreamWriter *sw)
 
 	SiftPageSetUsed(sw->page, sw->used);
 	blk = sift_wt_write_page(sw->wt, sw->page);
-	if (sw->next > 0 && sw->ext[sw->next - 1].start + sw->ext[sw->next - 1].nblocks == blk)
-		sw->ext[sw->next - 1].nblocks++;
-	else
-	{
-		if (sw->next == sw->cap)
-		{
-			sw->cap *= 2;
-			sw->ext = repalloc(sw->ext, sw->cap * sizeof(SiftExtent));
-		}
-		sw->ext[sw->next++] = (SiftExtent) {blk, 1};
-	}
+	sift_extlist_add(&sw->ext, blk);
 	sift_page_init(sw->page, SIFT_PT_DATA, sw->gen);
 	sw->used = 0;
 }
@@ -1412,22 +1360,11 @@ sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len)
 	}
 }
 
-void
-sift_sw_align(SiftStreamWriter *sw, size_t align)
-{
-	size_t		at = (SIFT_PAGE_DATA_OFFSET + sw->used) % align;
-
-	static const char zeros[SIFT_SIMD_ALIGN];
-
-	if (at)
-		sift_sw_write(sw, zeros, align - at);
-}
-
 SiftExtent *
 sift_sw_finish(SiftStreamWriter *sw, int *nextents)
 {
-	if (sw->used > 0 || sw->next == 0)
+	if (sw->used > 0 || sw->ext.n == 0)
 		sw_flush(sw);
-	*nextents = sw->next;
-	return sw->ext;
+	*nextents = sw->ext.n;
+	return sw->ext.ext;
 }

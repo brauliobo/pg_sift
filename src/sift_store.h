@@ -163,6 +163,88 @@ extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 
 /*
+ * Extents of a stream, the same bookkeeping in every store: the writer collects the blocks of its pages into extents
+ * (runs of contiguous blocks), the reader maps a logical page to its block through the first logical page of each extent.
+ */
+typedef struct SiftExtentList
+{
+	SiftExtent *ext;
+	int			n;
+	int			cap;
+} SiftExtentList;
+
+static inline void
+sift_extlist_init(SiftExtentList *l)
+{
+	l->n = 0;
+	l->cap = 8;
+	l->ext = palloc(l->cap * sizeof(SiftExtent));
+}
+
+/* The next page of the stream is block blk: it extends the last extent when it follows it */
+static inline void
+sift_extlist_add(SiftExtentList *l, BlockNumber blk)
+{
+	SiftExtent *last = l->n > 0 ? &l->ext[l->n - 1] : NULL;
+
+	if (last && last->start + last->nblocks == blk)
+	{
+		last->nblocks++;
+		return;
+	}
+	if (l->n == SIFT_MAX_EXTENTS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift segment stream needs more than %d extents", (int) SIFT_MAX_EXTENTS)));
+	if (l->n == l->cap)
+	{
+		l->cap *= 2;
+		l->ext = repalloc(l->ext, l->cap * sizeof(SiftExtent));
+	}
+	l->ext[l->n++] = (SiftExtent) {blk, 1};
+}
+
+/* pagestart[i] = first logical page of extent i, pagestart[n] = the pages of the stream (returned) */
+static inline uint64
+sift_extents_pagestart(const SiftExtent *ext, int n, uint32 *pagestart)
+{
+	uint64		total = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		pagestart[i] = total;
+		total += ext[i].nblocks;
+	}
+	pagestart[n] = total;
+	return total;
+}
+
+/* The block of logical page lpage; *hint is the extent of the last lookup, where the search starts */
+static inline BlockNumber
+sift_extents_block(const SiftExtent *ext, const uint32 *pagestart, int n, uint32 lpage, int *hint)
+{
+	int			lo = *hint;
+
+	if (lpage < pagestart[lo] || lpage >= pagestart[lo + 1])
+	{
+		int			hi = n - 1;
+
+		lo = 0;
+		while (lo < hi)
+		{
+			int			mid = (lo + hi + 1) / 2;
+
+			if (pagestart[mid] <= lpage)
+				lo = mid;
+			else
+				hi = mid - 1;
+		}
+		*hint = lo;
+	}
+	return ext[lo].start + (lpage - pagestart[lo]);
+}
+
+/*
  * Sequential byte stream over extents allocated from a write target, as
  * SIFT_PT_DATA pages. Extents grow from 16 to 1024 blocks.
  */

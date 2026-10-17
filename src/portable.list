@@ -17,6 +17,7 @@ sift_query.c
 sift_posting.c
 sift_dict.c
 sift_segment.c
+sift_stream.c
 sift_merge.c
 sift_prefix.c
 sift_filter.c

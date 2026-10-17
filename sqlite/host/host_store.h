@@ -45,6 +45,19 @@ typedef PageHeaderData *PageHeader;
 #define PageGetPageSize(p)			BLCKSZ
 
 #define InvalidBuffer				((Buffer) NULL)
+/* An empty page: the standard header, special space of specialSize at the end (storage/bufpage.h) */
+static inline void
+PageInit(Page page, Size pageSize, Size specialSize)
+{
+	PageHeader	h = (PageHeader) page;
+
+	memset(page, 0, pageSize);
+	h->pd_lower = SizeOfPageHeaderData;
+	h->pd_special = pageSize - MAXALIGN(specialSize);
+	h->pd_upper = h->pd_special;
+	h->pd_pagesize_version = pageSize;
+}
+
 #define BUFFER_LOCK_UNLOCK			0
 #define BUFFER_LOCK_SHARE			1
 #define BUFFER_LOCK_EXCLUSIVE		2
