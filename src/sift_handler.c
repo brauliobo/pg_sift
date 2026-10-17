@@ -26,12 +26,13 @@
 #include "sift_build.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
+#include "sift_ops.h"
 #include "sift_posting.h"
 #include "sift_prefix.h"
 #include "sift_pushdown.h"
 #include "sift_sql.h"
 
-PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = "1.0");
+PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_MODULE_VERSION);
 
 PG_FUNCTION_INFO_V1(sift_handler);
 PG_FUNCTION_INFO_V1(sift_match);
@@ -49,6 +50,8 @@ PG_FUNCTION_INFO_V1(sift_segments);
 PG_FUNCTION_INFO_V1(sift_segment_postings);
 PG_FUNCTION_INFO_V1(sift_verify);
 PG_FUNCTION_INFO_V1(sift_facet_counts);
+PG_FUNCTION_INFO_V1(sift_version);
+PG_FUNCTION_INFO_V1(sift_index_info);
 
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
@@ -133,6 +136,7 @@ define_gucs(void)
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 #endif
 	sift_pushdown_init();
+	sift_ops_init();
 	MarkGUCPrefixReserved("sift");
 }
 

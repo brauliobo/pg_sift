@@ -172,6 +172,9 @@ SELECT reloptions FROM pg_class WHERE relname IN ('k_fold', 't_idx') ORDER BY re
 
 -- the analyzer is fixed at build time
 ALTER INDEX k_fold SET (analyzer = text);
+WARNING:  index "k_fold" was built with other analyzer options
+DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
+HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT sift.verify('k_fold');
 ERROR:  sift index "k_fold" was built with other options
 HINT:  REINDEX the index after changing k1, b or analyzer options.
