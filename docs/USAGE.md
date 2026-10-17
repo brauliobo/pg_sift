@@ -105,6 +105,8 @@ SELECT id, region, sift.score(ctid) FROM logs WHERE msg @@> 'disk "node 7"' ORDE
 `analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts the matches of a
 query per value of another column from the bitmaps, equal to the `GROUP BY` of the same snapshot. It pays for broad queries on
 low-cardinality columns (1.9-4.5x on 26 values); for selective queries or thousands of values `GROUP BY` wins.
+A value of more than 255 bytes is indexed as its first bytes and a hash of all of it, so `@@>` still finds exactly the rows with that value
+(`sift.facets` shows it as that start and the hash); it was an error before.
 
 ```sql
 CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);   -- text keys: cast integers

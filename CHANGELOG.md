@@ -18,6 +18,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   analyzed at once. A `maintenance_work_mem` of 4 GB or more (or a document with very many distinct terms) could fail with `inverted buffer
   pool exhausted`: the buffer is now spilled before a document that could exhaust its pool.
 
+- Fix: a keyword value of more than 255 bytes failed an `INSERT`, a `COPY` or the end of a long `CREATE INDEX` with `a keyword value is longer
+  than 255 bytes`. It is now indexed as its first 236 bytes and a hash of all of it (the same term from a build, an insert and a query),
+  so two long values that share their start stay two values and `@@>` finds exactly the rows with that value.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
