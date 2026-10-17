@@ -1,6 +1,7 @@
 # SQLite loadable extension around the portable pg_sift sources.
-#   nice make -j4                builds build/sift.so (load with .load build/sift)
+#   nice make -j4                builds build/sift.so (load with .load build/sift); SIFT_VERSION=x.y.z overrides the version in VERSION
 #   make test                    ./test.sh
+#   make isa-check               no POPCNT or vector instruction outside the AVX2/AVX-512 objects (the baseline runs on any x86-64)
 #   make SIMD=none B=build-scalar   no vector code at all (the vector levels dispatch to the scalar tables): the compile-time scalar build
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
@@ -9,6 +10,8 @@
 # $(B)/gen, src/ is untouched) and sift_prefix.c's one entry point is renamed so that sqinit.c can serialize it.
 SRC := ../src
 B ?= build
+# The release version: the repository tag without the "v" (scripts/package-sqlite.sh checks that VERSION matches the tag)
+SIFT_VERSION ?= $(shell cat VERSION)
 CC ?= cc
 OPT ?= -O2
 ARCH := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
@@ -30,7 +33,7 @@ ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar
 	-Dsift_kernels_avx2_nopdep=sift_kernels_scalar -Dsift_kernels_avx512=sift_kernels_scalar $(CPUPROBE)
 endif
 CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -Wno-misleading-indentation \
-	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE $(ISA) $(EXTRA) -Ishim -I$(SRC) -I.
+	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(EXTRA) -Ishim -I$(SRC) -I.
 LDLIBS := -lm -lpthread
 
 PORTABLE := sift_bitmap sift_bitmap_scalar sift_kernels sift_analyze sift_analyze_stem sift_query sift_posting sift_dict \
@@ -62,6 +65,12 @@ $(B)/sift_kernels.o: $(SRC)/sift_kernels.c | $(B)
 $(B)/%.o: $(SRC)/%.c | $(B)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# sift_version() reports it: rebuild sqinit.o when it changes
+$(B)/gen/version: FORCE | $(B)/gen
+	@echo '$(SIFT_VERSION)' | cmp -s - $@ || echo '$(SIFT_VERSION)' > $@
+$(B)/sqinit.o: $(B)/gen/version
+FORCE:
+
 $(B)/%.o: %.c | $(B)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -70,6 +79,14 @@ $(B) $(B)/gen:
 
 check test: all
 	./test.sh
+
+# The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
+# nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-sqlite.sh).
+isa-check: all
+	@bad=0; n=0; for o in $(B)/*.o; do case $$o in *_avx2.o|*_avx512.o) continue;; esac; n=$$((n + 1)); \
+		if objdump -d $$o | grep -qE '\<(popcnt|[yz]mm[0-9]+)\>'; then echo "baseline object uses POPCNT or vector registers: $$o"; bad=1; fi; done; \
+	if nm $(B)/sift.so | grep -qi '__popcount.i2'; then echo "sift.so links a libgcc popcount helper"; bad=1; fi; \
+	[ $$bad = 0 ] && echo "isa-check: ok, $$n baseline objects without POPCNT or vector instructions, no libgcc popcount helper"; exit $$bad
 
 # The C stress test: N threads, each with a connection, querying while one writes. The extension is linked in and
 # registered with sqlite3_auto_extension.
@@ -102,4 +119,4 @@ clean:
 
 -include $(wildcard $(B)/*.d)
 
-.PHONY: all check test clean asan tsan tsan-run cross-aarch64 cross-objs
+.PHONY: FORCE all check test isa-check clean asan tsan tsan-run cross-aarch64 cross-objs

@@ -22,7 +22,9 @@
 
 /* Layout version of the shadow tables (stored in <t>_config); a table of another version is refused */
 #define SQ_STORE_FORMAT	2
-#define SQ_VERSION		"0.2"
+#ifndef SQ_VERSION
+#error "SQ_VERSION is set by the Makefile from sqlite/VERSION"
+#endif
 
 static inline SiftKey
 sq_key(int64_t rowid)

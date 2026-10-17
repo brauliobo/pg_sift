@@ -5,6 +5,7 @@ facets, commands and loading.
 """
 import os
 import random
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -14,6 +15,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_sift import EXT, TmpDb, connect, ids, segs, top  # noqa: E402
 
+# the release version: sqlite/VERSION unless the build was given another (SIFT_VERSION, as the packaging does)
+VERSION = os.environ.get('SIFT_VERSION') or open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'VERSION')).read().strip()
 WORDS = ['w%d' % i for i in range(300)]
 
 
@@ -512,7 +515,8 @@ class Commands(TmpDb):
 
     def test_version(self):
         db = connect(self.path)
-        self.assertRegex(db.execute('SELECT sift_version()').fetchone()[0], r'^sift-sqlite 0\.\d+ \(engine format \d+\.\d+, storage format 2\)$')
+        self.assertRegex(db.execute('SELECT sift_version()').fetchone()[0],
+                         r'^sift-sqlite %s \(engine format \d+\.\d+, storage format 2\)$' % re.escape(VERSION))
 
     def test_format_mismatch_is_refused(self):
         db = connect(self.path)
