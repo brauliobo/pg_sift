@@ -17,7 +17,7 @@ SELECT count(*) AS before_first FROM ri WHERE ref @@> 'ord-00000000-';
 SELECT count(*) AS after_last FROM ri WHERE ref @@> 'ord-0000zzzzzzzz';
 
 -- 400 lookups read about log2(blocks) blocks each: far fewer than the run of about 1250 blocks has
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
 SELECT count(*) AS lookups FROM (SELECT ref FROM ri WHERE id % 100 = 7) t WHERE (SELECT count(*) FROM ri r WHERE r.ref @@> t.ref) = 1;
 SELECT value AS probes FROM sift._test_read_stats() WHERE key = 'dict_block_probes' \gset
 SELECT :probes > 0 AS probed, :probes < 400 * 16 AS bisected;

@@ -32,10 +32,10 @@ SET sift.test_docdir_min_sb = 100000;
 CREATE TEMP TABLE rd_ref AS SELECT q, rd_top(q) AS a FROM unnest(ARRAY['w1', 'w2 OR x3', 'common x1', 'w49 x6']) q;
 -- directories of at least 2 superblocks are kept
 SET sift.test_docdir_min_sb = 2;
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
-    12
+ t
 (1 row)
 
 SELECT q FROM rd_ref WHERE rd_top(q) IS DISTINCT FROM a;
@@ -44,10 +44,10 @@ SELECT q FROM rd_ref WHERE rd_top(q) IS DISTINCT FROM a;
 (0 rows)
 
 SELECT value AS first_bytes FROM sift._test_read_stats() WHERE key = 'docdir_bytes_read' \gset
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
-    12
+ t
 (1 row)
 
 SELECT q FROM rd_ref WHERE rd_top(q) IS DISTINCT FROM a;

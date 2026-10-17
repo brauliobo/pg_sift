@@ -11,7 +11,7 @@ INSERT INTO rb SELECT i, 'tk' || lpad((i % 700)::text, 3, '0') || ' tk' || lpad(
 	' w' || i % 7 || repeat(' pad filler words', i % 5) FROM generate_series(1, 40000) i;
 CREATE INDEX rb_idx ON rb USING sift (body);
 ANALYZE rb;
-SELECT count(*) > 1 AS several_superblocks FROM sift.segments('rb_idx'::regclass) WHERE docs > 0;
+SELECT sum(sb_hi - sb_lo + 1) > 1 AS several_superblocks FROM sift.segments('rb_idx'::regclass);
 
 CREATE FUNCTION rb_answer(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

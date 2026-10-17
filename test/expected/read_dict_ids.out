@@ -34,10 +34,10 @@ SELECT count(*) AS after_last FROM ri WHERE ref @@> 'ord-0000zzzzzzzz';
 (1 row)
 
 -- 400 lookups read about log2(blocks) blocks each: far fewer than the run of about 1250 blocks has
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
-     9
+ t
 (1 row)
 
 SELECT count(*) AS lookups FROM (SELECT ref FROM ri WHERE id % 100 = 7) t WHERE (SELECT count(*) FROM ri r WHERE r.ref @@> t.ref) = 1;

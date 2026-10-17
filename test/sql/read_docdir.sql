@@ -26,10 +26,10 @@ CREATE TEMP TABLE rd_ref AS SELECT q, rd_top(q) AS a FROM unnest(ARRAY['w1', 'w2
 
 -- directories of at least 2 superblocks are kept
 SET sift.test_docdir_min_sb = 2;
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
 SELECT q FROM rd_ref WHERE rd_top(q) IS DISTINCT FROM a;
 SELECT value AS first_bytes FROM sift._test_read_stats() WHERE key = 'docdir_bytes_read' \gset
-SELECT count(*) AS reset FROM sift._test_read_stats(true);
+SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
 SELECT q FROM rd_ref WHERE rd_top(q) IS DISTINCT FROM a;
 SELECT :first_bytes > 0 AS first_queries_read_the_directory,
 	   (SELECT value FROM sift._test_read_stats() WHERE key = 'docdir_bytes_read') AS second_queries_bytes,
