@@ -77,7 +77,7 @@ def main():
     db.execute('COMMIT')
     after = (count(db, 'the OR city'), count(db, 'river'))
     assert after[0] < before
-    timed('merge', lambda: db.execute("INSERT INTO ft(ft) VALUES('merge')"))
+    timed('optimize', lambda: db.execute("INSERT INTO ft(ft) VALUES('optimize')"))
     segs = db.execute('SELECT count(*) FROM ft_segs').fetchone()[0]
     check('merge keeps matches', (count(db, 'the OR city'), count(db, 'river')), after)
     db.close()
