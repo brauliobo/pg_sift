@@ -53,13 +53,12 @@ RESET sift.filter_pushdown;
 Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no
 stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. The index
 stores word positions (`positions = on`, the default), so phrases are decided from the index; `positions = off` gives a much smaller
-index that rechecks phrases in the heap, and `phrase_index = pairs` also indexes adjacent word pairs, so two-word phrases become bitmap
-ANDs. An index has one
+index that rechecks phrases in the heap. An index has one
 key, a `text` column or an immutable expression, so concatenate columns (`coalesce` nullable ones, `NULL` keys are not indexed).
 
 ```sql
 SELECT token, pos FROM sift.tokenize('Running Cafés, RÉSUMÉ', stemmer => 'en');             -- run, cafe, resum
-CREATE INDEX CONCURRENTLY docs_body_en ON docs USING sift (body) WITH (stemmer = 'en', phrase_index = pairs);
+CREATE INDEX CONCURRENTLY docs_body_en ON docs USING sift (body) WITH (stemmer = 'en');
 DROP INDEX docs_body;
 ALTER INDEX docs_body_en RENAME TO docs_body;
 SELECT id FROM docs WHERE body @@> 'run';                         -- 4: runners, running, runs
@@ -142,7 +141,7 @@ and merges; VACUUM promotes, merges and clears dead postings.
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 
 Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
-(`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `phrase_index` (`none` or `pairs`), `prefix_index` (0-15), `fields`,
+(`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
 `mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
 
 ## Replication

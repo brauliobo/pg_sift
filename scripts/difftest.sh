@@ -5,7 +5,7 @@
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
 #                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--minimize N] [--min-trials N]
 #   scripts/difftest.sh --repro FILE
-#   INDEX_OPTS="WITH (phrase_index = pairs)" scripts/difftest.sh ...   build the index with options
+#   INDEX_OPTS="WITH (positions = off)" scripts/difftest.sh ...   build the index with options
 #
 # Each round checks every query in every stage (parse, seqscan, bitmap, count, ranked and the parallel
 # scan_par, count_par, ranked_par) plus verify/stats/tokenize, then mutates the corpus (deletes, updates,

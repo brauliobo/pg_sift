@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Removed: reloption `phrase_index = pairs`; phrases use word positions. `CREATE INDEX ... WITH (phrase_index = ...)` fails like any unknown
+  parameter, and an index built with it is refused ("built with other analyzer options") until `ALTER INDEX ... RESET (phrase_index)` and
+  `REINDEX`.
+
 ## 1.2.0
 
 - Word positions are stored by default (reloption `positions`, default on): phrase queries are decided from the index instead of
