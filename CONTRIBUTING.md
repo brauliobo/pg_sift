@@ -5,12 +5,14 @@ pg_sift needs PostgreSQL 17 or 18 (19 is experimental) with the server headers (
 ```sh
 make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_config picks another installation
 make installcheck                   # regression tests against a running server that can load pg_sift
-make check                          # quick tier: every suite in a throwaway cluster, about 2-3 minutes
+make check                          # quick tier: every suite in throwaway clusters, about 1.5 minutes on 8 cores, 2.5 on 4
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
-`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56169, nothing
+`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
+`make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
+runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the

@@ -117,10 +117,11 @@ jobs:
           name: pg_sift-test-logs-pg${{ matrix.pg }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
-            ${{ runner.temp }}/sift-ci/lane*/tap/**/*.log
-            ${{ runner.temp }}/sift-ci/lane*/postgres.log
-            ${{ runner.temp }}/sift-ci/lane*/sanitizer
-            ${{ runner.temp }}/sift-ci/lane*/leakcheck.*
+            ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
+            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/**/sanitizer
+            ${{ runner.temp }}/sift-ci/lane*/**/leakcheck.*
+            ${{ runner.temp }}/sift-ci/lane*/regress/*/regression.diffs
             test/regression.diffs
           if-no-files-found: ignore
 
