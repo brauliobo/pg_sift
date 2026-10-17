@@ -21,7 +21,7 @@ engine ids. Writes to OUTDIR:
                 table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
                 columns and indexes of an emulated workload (places: rum boost, pg_textsearch ranked prefixes)
                 are the same metrics with variant = emulation.
-                cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of 12 queries per class
+                cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of up to 12 queries per class
                 (articles: class = and|or|..., variant = -; places: class = p1.., variant = the workload).
                 A value of NA means the engine cannot run the class, error that its statement failed.
                 The uncertainty of a cell: n is the number of interleaved rounds, values their results (comma separated, round
@@ -93,7 +93,7 @@ def cold_rows(dataset, tier, cells):
 
 def articles(tier, path):
     if tier.endswith('-cold'):   # workload class engine p50_ms max_ms
-        return cold_rows('articles', tier, [tuple(r) for r in rows_of(path + '/cold.tsv')]), [], []
+        return cold_rows('articles', tier, [tuple(r[:5]) for r in rows_of(path + '/cold.tsv')]), [], []
     out, builds = [], []
     cells = rows_of(path + '/cells.tsv')   # round load class engine metric value
     engines = list(dict.fromkeys(c[3] for c in cells))
@@ -259,7 +259,7 @@ def md_cold(rows, dataset, tier):
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
     budget = next((r for r in rows if r[:3] == (dataset, tier, '-') and r[5] == 'cpu_budget'), None)
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of 12 queries per cell; CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); CPU budget: %s.' % (budget_text(budget) if budget else 'not recorded'), '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 
