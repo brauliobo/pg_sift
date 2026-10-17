@@ -104,7 +104,17 @@ check_query(sqlite3 *db, unsigned *s, int snapshot)
 				c,
 				rows = 0;
 
-	snprintf(q, sizeof(q), "w%u OR w%u", next(s) % VOCAB, next(s) % VOCAB);
+	switch (next(s) % 4)
+	{
+		case 0:
+			snprintf(q, sizeof(q), "w%u*", next(s) % 100);
+			break;
+		case 1:
+			snprintf(q, sizeof(q), "\"w%u w%u\" OR w%u", next(s) % VOCAB, next(s) % VOCAB, next(s) % VOCAB);
+			break;
+		default:
+			snprintf(q, sizeof(q), "w%u OR w%u", next(s) % VOCAB, next(s) % VOCAB);
+	}
 	if (snapshot)
 		exec(db, "BEGIN");
 	n = scalar(db, "SELECT count(*) FROM t WHERE t MATCH ?1", q);

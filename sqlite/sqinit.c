@@ -266,6 +266,18 @@ already_loaded(sqlite3 *db)
 	return c != NULL;
 }
 
+/* sqlite3_api is process-wide and is the same for every connection: the first load sets it, under a lock the others take to see it */
+static void
+set_api(const sqlite3_api_routines *pApi)
+{
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+	pthread_mutex_lock(&lock);
+	if (sqlite3_api == NULL)
+		SQLITE_EXTENSION_INIT2(pApi);
+	pthread_mutex_unlock(&lock);
+}
+
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
@@ -275,7 +287,7 @@ sqlite3_sift_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi
 	SqConn	   *conn;
 	int			rc;
 
-	SQLITE_EXTENSION_INIT2(pApi);
+	set_api(pApi);
 	if (sqlite3_libversion_number() < 3038000)
 	{
 		*pzErrMsg = sqlite3_mprintf("sift needs SQLite 3.38 or newer (LIMIT/OFFSET pushdown), this is %s", sqlite3_libversion());
