@@ -22,7 +22,7 @@ x_export_docs() {
   local f=$X/articles-${TIER_DOCS[$TIER]}.ndjson
   [[ -s $f ]] && { echo "$f"; return 0; }
   mkdir -p "$X"
-  PGDATABASE=bench q -v FETCH_COUNT=20000 -c "SELECT json_build_object('id', d.id::text, 'body', d.body, 'created', d.created - date '1970-01-01', 'category_id', d.category_id, 'region', c.region)
+  PGDATABASE=$(engine_db "$ENGINE") q -v FETCH_COUNT=20000 -c "SELECT json_build_object('id', d.id::text, 'body', d.body, 'created', d.created - date '1970-01-01', 'category_id', d.category_id, 'region', c.region)
                                               FROM docs d LEFT JOIN categories c ON c.id = d.category_id ORDER BY d.id" >"$f.tmp"
   mv "$f.tmp" "$f"
   echo "$f"
@@ -42,7 +42,7 @@ xp_export_docs() { # places.ndjson of the tier's places
 x_class_file() {
   local wl=${2:-$1} cutoff kind
   [[ $wl != join || -n $JOINS ]] || return 1
-  cutoff=$(PGDATABASE=bench q -c "SELECT v::date - date '1970-01-01' FROM params WHERE k = 'recent_cutoff'")
+  cutoff=$(PGDATABASE=$(engine_db "$ENGINE") q -c "SELECT v::date - date '1970-01-01' FROM params WHERE k = 'recent_cutoff'")
   kind=$(PGDATABASE=$(engine_db "$ENGINE") q -c "SELECT kind FROM workloads WHERE wl = '$wl'")
   x_render "SELECT c.qid, pg_temp.x_req('$kind', c.mode, c.terms, $cutoff) FROM class_queries c WHERE c.wl = '$wl' ORDER BY hashtext(c.qid::text || c.mode), c.qid, c.mode" >"$RUN/$1.q"
   ! grep -qP '^\d+\t$' "$RUN/$1.q"
@@ -81,7 +81,7 @@ x_builds() { # INDEX ELAPSED_MS: `variant TAB seconds TAB bytes` lines of the bu
 }
 x_prepare() {
   local t0 c f v s b
-  clone_db "$(engine_db "$ENGINE")" >/dev/null || return 1
+  if [[ -n ${CONCURRENT:-} ]]; then adopt_db "$(engine_db "$ENGINE")" >/dev/null; else clone_db "$(engine_db "$ENGINE")" >/dev/null; fi || return 1   # the engine's database holds the documents and the params
   f=$(x_export_docs) || return 1
   x_start || return 1
   rm -f "$RUN/build.ms"
