@@ -183,6 +183,7 @@ A header page holds the extent table and the sections table. Its data is a logic
   - This removes GIN's single-tail hot spot.
   - One insert is one generic-WAL record over 1–3 pages (tail, new page, lane header), logged as a delta of roughly the record size.
 - **Search.** Read all pages of the mutable segments, skip a page whose bloom misses the query, and use a SIMD compare of u32 hashes per record. A hash hit is confirmed against the term bytes. Matches are decoded into an in-memory mini-segment, using the same scoring (I4).
+  - **Limit of the page bloom.** With two probes in 256 bits a term is a false positive with probability `(1 - e^(-2n/256))^2` for a page that holds `n` distinct terms: 1% at 20 terms, 15% at 60, 50% at 130, 82% at 300. A page of documents with a hundred terms each (a few documents) therefore gates almost nothing, and a lagging maintenance worker (mutable segments that grow before they are promoted) costs a full read of every page of them per query. The filter is part of the page header (format), so a larger one, or a per-page hash set, needs a format bump with the next one; until then the cost is bounded by `mutable_limit` (promotion) and the worker. Wildcard, regex and fuzzy leaves never use it.
   - Cost is bounded by `mutable_limit` (reloption, default 4 MB): about 0.1–0.2 ms per query worst case **[est]**.
 - **Sealing.**
   1. When the active segment exceeds `mutable_limit`, the inserting backend *seals* it in one directory record: the active entry becomes sealed and a fresh active entry is added.
