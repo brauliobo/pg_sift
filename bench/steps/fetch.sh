@@ -6,8 +6,9 @@
 # unpacked there; the cluster finds every */root (bench/steps/lib.sh). Downloads land in <name>/dl.
 # SIFT_SRC=worktree (default) builds the tracked files of this checkout, SIFT_SRC=head the last commit.
 # sift_ref: sift built from SIFT_REF (a git ref of this repository, default the tag in versions.env) under the extension name
-# pg_sift_ref, the reference of `bench/bench regress`. bm25 (pgx-bm25): BM25_PKG, the Arch package to unpack, or BM25_SRC, its source
-# tarball to build with PGXS. Builds run with nice and JOBS (4) jobs.
+# pg_sift_ref, the reference of `bench/bench regress`. bm25 (pgx-bm25) is the installed system package (pacman -S pgx-bm25: the cluster finds
+# its control file and library in the system directories, nothing is built); without it BM25_PKG, the Arch package to unpack, or
+# BM25_SRC, its source tarball to build with PGXS, and with none of the three the fetch fails with the install hint. Builds run with nice and JOBS (4) jobs.
 # An engine is built once: $ENG/<name>/.key records what it was made from (the pinned version, the sources of this checkout, the
 # PostgreSQL version), and a run with the same key builds nothing (REBUILD_ENGINES=1 does). The build tree and the downloads are removed
 # after a build (KEEP_DOWNLOADS=1 keeps the downloads); the work directory keeps the installed engines only.
@@ -70,12 +71,13 @@ fetch_sift_ref() {
 fetch_bm25() {
   local root=$ENG/bm25/root src=$BUILD/bm25
   rm -rf "$root"; mkdir -p "$root"
-  if [[ -n ${BM25_PKG:-} ]]; then bsdtar -xf "$BM25_PKG" -C "$root"
+  if [[ -f $SHAREDIR/extension/bm25_native.control ]]; then log "bm25: the installed package is used ($(pacman -Q pgx-bm25 2>/dev/null || echo "$SHAREDIR/extension/bm25_native.control"))"
+  elif [[ -n ${BM25_PKG:-} ]]; then bsdtar -xf "$BM25_PKG" -C "$root"
   elif [[ -n ${BM25_SRC:-} ]]; then
     rm -rf "$src"; mkdir -p "$src"
     tar -xzf "$BM25_SRC" -C "$src" --strip-components=1
     pgxs_install bm25 "$src" >/dev/null
-  else echo "bm25: set BM25_PKG (the pgx-bm25 Arch package) or BM25_SRC (its source tarball)" >&2; return 1; fi
+  else echo "bm25: pgx-bm25 is not installed: pacman -S pgx-bm25 (or yay -S pgx-bm25), or set BM25_PKG (its Arch package) or BM25_SRC (its source tarball)" >&2; return 1; fi
 }
 
 fetch_pg_search() {

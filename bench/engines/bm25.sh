@@ -1,8 +1,9 @@
-# pgx-bm25 `bm25_native`, loaded from the extracted Arch package (BM25_PKG) or built from its source tarball (BM25_SRC) by
-# bench/steps/fetch.sh bm25, via extension_control_path. Its analyzer resolves `<language>_stem` in pg_catalog, so a
+# pgx-bm25 `bm25_native`, the installed system package (pacman -S pgx-bm25; found in the system extension and library directories), or,
+# on a host without it, the extracted Arch package (BM25_PKG) or a build of its source tarball (BM25_SRC) by bench/steps/fetch.sh bm25,
+# via extension_control_path. Its analyzer resolves `<language>_stem` in pg_catalog, so a
 # `simple_stem` dictionary (simple template) gives it the same no-stemming analysis as the other engines.
 # Queries that are not answered by WAND materialize their whole match set; the default 256 MB
-# budget fails most M-tier queries, so it is raised to 2 GB (8 clients stay within the 32 GB cap).
+# budget fails most M-tier queries, so it is raised to 2 GB.
 REQUIRES=bm25_native
 BM25_SETUP=$(cat <<'SQL'
 CREATE EXTENSION IF NOT EXISTS bm25_native;
