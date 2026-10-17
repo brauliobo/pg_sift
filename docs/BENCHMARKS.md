@@ -471,10 +471,26 @@ what is measured:
   the rotation a comparison of sift with a build of nearly the same code showed differences of up to 14% in single cells that their standard errors did not explain). `--serial` is the earlier method:
   one cluster, the engines one after the other, the order rotated every round.
 - **Cache.** The built lanes (the database with its index, in a stopped data directory) are cached by a hash of the adapter, the extension binary, the corpus, the harness, PostgreSQL and the CPU count of the lane.
-- **Rounds and stopping.** Short cells (1 s quick, 2-3 s above) in 2-3 rounds: after the second round only the cells with a relative standard error above 5% are measured again. The standard error of
-  a cell is the sample standard deviation of its rounds over `sqrt(n)`; with n = 2-3 it is itself estimated from two or three numbers, so it is a rough indication, and it leaves out whatever the rounds share
-  (the statement trace, the host). Tables show `median ± stderr (min-max)`, charts one standard error as an error bar, and `!` flags a relative standard error above 10%.
-- **Cold cache.** Per engine and class 12 queries, each after the heap, TOAST and index files of the table were evicted (per relation, `pg_buffercache_evict_relation` and `posix_fadvise`), the lanes in parallel.
+- **A cell and when it stops.** A cell is one class (articles: 8 clients, queries per second) or one workload on one class (places: one client, p50 and p95 of the transaction latency, which includes the lookup of the
+  query text) on one engine in one round. It is not measured for a fixed time: `steps/cell.py` runs pgbench in chunks that log every transaction and stops once the cell has at least `--min-time` (0.25 s) and
+  `--min-samples` transactions (3 for places, 1 per client for articles) **and** its relative standard error is at most `--rse` (5%), or after `--max-time` (quick 1 s; full: articles 2 s, places 1 s) whichever comes first.
+  A fast cell therefore takes the minimum, a slow one the maximum. A chunk is a count of transactions per client (`pgbench -t`, the duration option takes whole seconds only) when it is short and a client runs
+  many transactions in it, whole seconds (`-T`) when it is long or slow; the first transaction of every client of a short chunk is dropped (a backend that has just started pays for its caches in its first query), a cell has
+  no other warm-up (the relations are prewarmed after the build), and the statements are seeded alike for every engine (chunk k uses `--random-seed=7+k`). When fewer than `1 / rse^2` = 400 queries fit in the maximum
+  (the batch means below need that many for 5% on a trace of unit coefficient of variation) the cell is measured for the whole maximum in one chunk: no precision is within reach, so the time is not split into chunks that
+  each end with idle clients waiting for the slowest statement. What remains of a slow cell is the statements still running when the time is up (several seconds for the engines with seconds per query).
+- **Standard error.** Within a round: queries per second by batch means (the transactions of each client are cut into consecutive batches of at least 5; the rate of a batch is the clients' transactions over their
+  pooled seconds, so a few slow statements weigh what they last; the error is the standard deviation of the batch rates over the square root of their number, with at least 4 batches, or, with fewer, the standard error
+  of the mean latency, sd / (mean sqrt(n)), whichever is larger); the p50 by order statistics, distribution free: half the distance between the n/2 - sqrt(n)/2 and n/2 + sqrt(n)/2 ranked latencies (the 68% interval
+  of the median). The standard error of a cell is the larger of the sample standard deviation of its rounds over `sqrt(n)` and the error the rounds' own errors leave, `sqrt(sum se^2) / n`; the value is the median
+  of the rounds. The within-round error matters: the rounds replay the same seeded statements, so the spread of the rounds does not show which statements of a heavy-tailed trace a cell happened to run, and the earlier
+  standard errors (the spread alone) were too small for such cells (and for the slow engines, which run few statements) by a large factor. Tables show `median ± stderr (min-max)`, charts one standard error as an error bar,
+  and `!` flags a relative standard error above 10%.
+- **Rounds.** 2-3 (3 is the most, more runs with a warning): after the second round only the cells with a relative standard error above 5% are measured again, except the cells whose own error per round is so large that three
+  rounds cannot bring them to 5% (a cell limited by time: a repetition costs as much as the first measurement and moves the error by a factor of 0.8 at best). `bench regress` runs 3 rounds.
+- **Cold cache.** Per engine and class up to 12 queries, each after the heap, TOAST and index files of the table were evicted (per relation, `pg_buffercache_evict_relation`, and `posix_fadvise` unless the data directory
+  is on tmpfs, where there is no cache other than the shared buffers), the lanes in parallel. At least 5 queries run, then only while the cell has used less than 3 s: a query of seconds (the pg_textsearch emulation of the
+  one-letter ranked prefixes) is not run twelve times; `cold.tsv` has the count.
 - **pgx-bm25** (`bm25`) runs in every table of a run (it is not in the published tables below, which predate it and were not repeated). Articles: `and`, `or`, `phrase`, `mixed`, `count`, `filter` are native (jsonb queries through
   `@@@` / `&@@`); `join` is an error cell (the jsonb `@@@` filter above a join is refused by the extension); `fuzzy` is unsupported (NA). Places: `top`, `filter`, `count`, `scan` and the name boost (`bm25_boost`) are native for words of 3 letters or more
   (`bm25_wildcard`; the extension refuses a wildcard under 3 letters); 1-2 letter words are emulated in the same index with stored edge n-gram columns, reported as part of its index.
@@ -492,7 +508,7 @@ Wall time of the quick tier on the same host, in the same state (load average 3-
 | places: 24 cells per round, 2 rounds | 246 s | 56 s |
 | both datasets | 440 s | 117 s |
 | cold-cache tables, both datasets | not measured at the quick tier | 53 s |
-| `regress --run` (sift against sift_ref, both datasets, 3-5 rounds) | not available | 60-70 s of measurements |
+| `regress --run` (sift against sift_ref, both datasets, 3 rounds) | not available | 60-70 s of measurements |
 | ab tier, articles build phase (150k articles, six engines, one CPU each) | one after the other: the sum of the builds, about 86 s of CREATE INDEX and column fill, plus the restores | 33 s (restores and builds at the same time; the slowest engine, rum with its column, takes 28 s; 1 s once cached) |
 
 What was measured to get there, and what was not taken:
@@ -524,15 +540,51 @@ Running the engines at the same time lowers the absolute numbers of the fast eng
 much as 25% (sift `count` over pg_search: 1.21 concurrent, 0.95 serial; `and`: 3.0 and 2.9; `phrase`: 1.05 and 0.93). For that reason **the published tables above were not re-measured with it**; compare engines within one run and
 use `--serial` (with `--cpus` set to the share of one lane to compare like with like) for numbers that are quoted.
 
-The regression check (`bench/bench regress`) puts sift and sift_ref in the same budget and rotates the CPUs, which is what makes it usable at 3-5 rounds: the control run of the same commit as reference (`--ref` of the commit
+The regression check (`bench/bench regress`) puts sift and sift_ref in the same budget and rotates the CPUs, which is what makes it usable at 3 rounds: the control run of the same commit as reference (`--ref` of the commit
 itself) gave 0 regressions in 18 cells, the run with `sift.simd = 'scalar'` applied to the new sift only (a deliberate slowdown) reported five regressions (0.68x-0.94x of the reference) and exit status 1 (the deliberate slowdown was applied through a temporary hook in the adapter that is not committed).
 Against the tag v1.1.0, whose code differs from this checkout (PostgreSQL 17 and 19 support, store changes), four quick runs flagged 1, 0, 1 and 2 cells, not the same ones (the last: articles `count` 0.92x at 2.03 combined
-standard errors, places `w1` p50 1.16x); at this noise level a flagged cell of a quick run is a reason to repeat with `--rounds 5-5`, not a verdict.
+standard errors, places `w1` p50 1.16x); at this noise level a flagged cell of a quick run is a reason to repeat it, not a verdict.
 
 Projection for the larger tiers (derived from the measured phases, **not measured**; the full tier was not run for this change): cells cost the time of the cell plus about one second of connection and drain overhead per
 cell group, independent of the engine count, since the engines run at the same time. Articles full: 7 classes, 1 warm-up round and 3 rounds of 3 s, about 2 min; builds of the six engines in parallel, about 1 minute (150k articles: 33 s);
 places full: 24 cell groups per round at 2 s, 3 rounds, about 4 min plus about 1.5 minutes of builds (236k places, 7 times the 34k tier's 11 s); cold-cache tables about 3-4 minutes. In all about 12-15 minutes, 15-20 with margin for a loaded
 host, against 1 h 15 min (2 h with the cold-cache tables) measured for the published run. The ab tier: about 4 minutes (6 with the cold-cache tables), against 50 minutes. A first run still downloads and converts the data once.
+
+#### `--serial`: one engine measured at a time
+
+`--serial` is the method of the published numbers (one cluster, the engines interleaved cell by cell), so its cells cannot overlap; the time was cut by measuring each cell only as long as it needs and by not building again. Measured on this host at
+load average 8-14 from other sessions, on 2 server and 2 load generator CPUs, the same engines (six, with pgx-bm25), the same classes, variants and rounds. The reference is the earlier run of the old method, `-T 3` per articles cell and `-T 2` per places cell, 1 warm-up round,
+3 rounds, load average 12-23:
+
+| phase | before | now | what changed |
+|---|---:|---:|---|
+| articles full, cells | 842 s | 518 s | cells stop at 5% or at the cap, no warm-up round for the Postgres engines, the third round only for the cells that can still gain (10 s instead of 240 s) |
+| places full, cells | 1644 s | 574 s | 819 cells of a fixed 2 s: 518 of the cell runs now take under 0.5 s (149 s in all), 186 run the 1-2 s of the cap (216 s) |
+| both, cells | 2486 s (41 min) | 1092 s (18 min) | 2.3 times faster; the target of 15 min is not met on this host (below) |
+| cold-cache tables | 76 s + 185 s | about 43 s + 89 s (projected from the quick tier, measured 14 s and 40 s against 25 s and 84 s) | one process per cold query, 5 to 12 queries and 3 s per cell |
+| builds for the cold session | 105 s + 68 s | a few seconds | the cluster of the serial session is cached whole and restored |
+| quick tier, articles / places cells | 171 s / 348 s | 125 s / 210 s | |
+
+More than half of what is left of the articles time is the drain of pg_textsearch (the run used a 1 s cap; the default 2 s adds about a second to each slow cell): its six classes spend 298 of the 513 s of the cells, because the trace has statements of 8 to 12 s (`and`, `phrase`, `join`, `mixed`) that a `-T` window of 1-2 s lets finish.
+That wall time cannot be cut without changing what is measured (a statement timeout or a cancel censors exactly the statements that decide the mean; pgbench ignores SIGINT until its transaction ends, and its log is only written at exit).
+The cells of those classes have a relative standard error of 30-50% in a round whatever the time, which the tables show with `!`.
+
+Validation, interleaved in one session so the host noise is common (quick tier, 3 rounds, the old `-T 1` cell and the new cell alternating): places 168 cells, 156 of them within 2 combined standard errors of the old value and 164 within 3 (largest 5.9, median 0.59,
+mean ratio new/old 1.02, median relative difference 7%); articles 48 cells, 37 within 2 and 42 within 3 (largest 5.3, median 1.0). The large differences are all heavy-tailed cells (pg_textsearch, rum `filter` and `mixed`, sift_nopos `join` and `count`) where the old `-T 1`
+value includes the drain of the statements in flight and is biased low (mean ratio 1.17), and its standard error, from fixed-seed rounds, ignores the sampling error of the statements. Against 3 seeds of 8 s per cell (the best estimate of the
+truth), the new values of pg_textsearch `and` / `phrase` / `count` / `filter` were 77 / 47 / 176 / 252 qps (standard errors 13-47) against 39 / 32 / 114 / 115 and the old ones 36 / 22 / 164 / 160: inside two standard errors for the new, outside for the old; the fast engines
+(sift, sift_nopos, pg_search) agree within a few percent with all three.
+
+| idea | result |
+|---|---|
+| each cell until its relative standard error is 5% (batch means of the queries per second, order statistics of the p50), at most the cap | **taken.** |
+| the first query of every client dropped from a cell with many queries per client | **taken.** A backend that has just started pays for its caches in it; the warm-up round is gone. |
+| a cell that one more round cannot bring below 5% is not repeated | **taken** (the third round of 56% of the places cells was a repeat). |
+| whole cluster of the serial session in the cache | **taken.** The cold session and a rerun do not build again. |
+| stopping pgbench early (SIGINT, SIGTERM, `pg_cancel_backend`) | **rejected.** SIGINT is ignored until the transaction ends, a kill loses the log, a cancel drops the longest statements and so biases the mean. |
+| `-T` / `-P` with fractions of a second | **rejected.** pgbench takes whole seconds; short chunks use `-t`. |
+| a load generator of my own (Python or psql) | **rejected.** It would distort the throughput of the fast engines. |
+| cold cache in the session of the warm cells | **rejected** (the evictions would perturb the cells), the cache of the cluster made it unnecessary. |
 
 ### Earlier measurements of the harness (published session, `--serial`, two CPUs)
 
