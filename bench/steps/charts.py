@@ -252,12 +252,12 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
 
 
 def host(rows, tier, datasets):
-    """the machine behind a chart (the session row of tables.py): CPU model and threads, one engine at a time"""
+    """the machine behind a chart (the session row of tables.py): CPU model and threads"""
     for (d, t, e, _c, var, metric) in rows:
         if (t, e, metric) == (tier, '-', 'session') and d in datasets:
             kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
             if kv.get('cpu'):
-                return f"{kv['cpu']} ({kv.get('threads', '?')} threads), one engine at a time"
+                return f"{kv['cpu']}, {kv.get('threads', '?')} threads"
     return 'host not recorded'
 
 
