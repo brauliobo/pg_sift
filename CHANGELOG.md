@@ -13,6 +13,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   it: same bounds, same pruning), so a document matching thousands of terms can no longer score above its block's bound and be pruned.
   No wrong result was found at 300 terms (`rank_leaves` compares the top k with an exact reference).
 
+- Fix: a wildcard, regex or fuzzy leaf that expands to more than `sift.max_expansions` (512) terms failed with `the leaf at position N
+  expands to more than 512 terms` in execution (`*ing`, `/.*tion/` or `~2` on a natural vocabulary; `EXPLAIN` worked). Like a prefix, it
+  now matches every word it matches and scores as one term (the documents with such a word, tf the number of those words); a leaf with
+  512 terms or fewer is unchanged. Cost on 100,000 articles (456,027 terms): `*ing` (72,478 documents) 90-170 ms, 42 ms with the blob in
+  the backend's cache; `/.*tion/` 320 ms. `sift.max_expansions` is now the number of terms a leaf scores individually, for every kind.
 - Changed: `sift.max_expansions` and `sift.prefix_cache_size` are superuser settings (`PGC_SUSET`) instead of settable by any role: with
   up to 1,000,000 expansions and 1 GB of cache per backend they let any role exhaust the server's memory. Set them in `postgresql.conf`,
   `ALTER SYSTEM`, `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`; a role that sets them in a session gets `permission denied to set parameter`.

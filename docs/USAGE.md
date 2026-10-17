@@ -5,9 +5,10 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 ## Queries
 
 `AND`, `OR`, `NOT` are keywords in upper case only; juxtaposition is `AND`; precedence is `NOT` > `AND` > `OR`; a `NOT` needs a positive
-term in its AND group. A wildcard, regex or fuzzy leaf expands to dictionary terms; more than `sift.max_expansions` (512) is an
-error, not a truncation. A prefix never is: it matches every word that starts with it, however many (`h*` on a million
-names), and above that many terms it scores as the one term `prefix_index` would hold for it.
+term in its AND group. A wildcard, regex, fuzzy or prefix leaf expands to dictionary terms. It matches every word it matches, however many (`h*`,
+`*ing`, `/.*tion/` or `~2` on a million names), and above `sift.max_expansions` (512) terms it scores as the one term whose documents
+are those with such a word (for a prefix, the term `prefix_index` would hold for it), instead of as the best of its terms. A regex
+cannot have back-references.
 
 ```sql
 SELECT id FROM docs WHERE body @@> 'breakfast NOT noisy';             -- exclusion: 2
@@ -135,8 +136,8 @@ and merges; VACUUM promotes, merges and clears dead postings.
 
 | GUC | default | meaning |
 |---|---|---|
-| `sift.max_expansions` | 512 | terms a wildcard, regex or fuzzy leaf may expand to (error above); a prefix above it scores as one term |
-| `sift.prefix_cache_size` | 8MB | memory per backend for the postings of broad prefixes, `0` keeps none |
+| `sift.max_expansions` | 512 | superuser setting: terms a wildcard, regex, fuzzy or prefix leaf scores individually; above it the leaf scores as one term |
+| `sift.prefix_cache_size` | 8MB | superuser setting: memory per backend for the postings of broad leaves, `0` keeps none |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 

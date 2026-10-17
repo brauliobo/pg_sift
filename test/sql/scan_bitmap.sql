@@ -55,7 +55,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM v WHERE lower(body) @@> 'fuchs';
 RESET enable_seqscan;
 DROP TABLE v;
 
--- plans and the expansion limit
+-- plans and the expansion limit (a leaf over it is wide, not an error)
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM d WHERE body @@> 'fox';
 EXPLAIN (COSTS OFF) SELECT id FROM d WHERE body @@> 'fox' AND body @@> 'dog';

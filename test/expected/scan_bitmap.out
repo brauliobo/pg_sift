@@ -139,7 +139,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM v WHERE lower(body) @@> 'fuchs';
 
 RESET enable_seqscan;
 DROP TABLE v;
--- plans and the expansion limit
+-- plans and the expansion limit (a leaf over it is wide, not an error)
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM d WHERE body @@> 'fox';
                  QUERY PLAN                 
@@ -170,8 +170,11 @@ EXPLAIN (COSTS OFF) SELECT id FROM d WHERE body @@> '"quick brown"';
 
 SET sift.max_expansions = 3;
 SELECT count(*) FROM d WHERE body @@> '*o*';
-ERROR:  sift: the leaf at position 1 expands to more than 3 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+     7
+(1 row)
+
 SELECT count(*) FROM d WHERE body @@> 'fox OR qu*';
  count 
 -------
