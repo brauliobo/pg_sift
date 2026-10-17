@@ -17,7 +17,8 @@
 # job needs one) and one shared install, at nice 19, in a scratch directory $SIFT_CI_TMP (default /tmp/sift-ci-<pid>, or
 # /dev/shm when it can hold the cap twice over) that is removed when everything passed (KEEP=1 keeps it; a failure keeps it for
 # the logs). The ports are SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds
-# CI_MAX_MB (quick 4096, full 8192, 512 more per lane above four). SIFT_CI_JOBS, a regex on the job names (installcheck-facets, tap-001_crash,
+# CI_MAX_MB (quick 4096, full 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run by
+# component. SIFT_CI_JOBS, a regex on the job names (installcheck-facets, tap-001_crash,
 # tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those. Logs: <scratch>/logs/<suite>.log, and <job>.log
 # for each job of a split suite. Stages whose sift code has not landed are skipped, not failed. Exit 1 if any suite fails.
 #
@@ -51,7 +52,8 @@ scratch_root() {
 BASE=${SIFT_CI_TMP:-$(scratch_root)/sift-ci-$$}
 LOG=$BASE/logs
 BASE_PORT=${SIFT_PORT:-56130}
-# one initdb per run: every cluster starts as a copy (the shell tests and lane clusters; the PostgreSQL::Test::Cluster nodes)
+# one initdb per run: every cluster starts as a copy (the shell tests and lane clusters, with 1 MB WAL segments; the
+# PostgreSQL::Test::Cluster nodes, which are all WAL tests)
 export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
 rm -rf "$BASE" && mkdir -p "$LOG" "$BASE/claims" "$PG_TEST_PORT_DIR"
 t0=$SECONDS
@@ -70,8 +72,10 @@ watchdog() { # stops every postmaster under $BASE once the scratch directory pas
 }
 watchdog &
 WATCHDOG=$!
+# SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
+[[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
 cleanup() {
-	kill "$WATCHDOG" 2>/dev/null
+	kill "$WATCHDOG" ${STATS:-} 2>/dev/null
 	if [[ -z ${KEEP:-} && ${failed:-1} == 0 ]]; then rm -rf "$BASE"; else echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
@@ -169,6 +173,13 @@ else
 fi
 (( LANES <= ${#J_ID[@]} )) || LANES=${#J_ID[@]}
 
+# tidy ID: the data of a job that passed goes at once, so that the scratch directory holds only what runs: its databases in the
+# lane's cluster, or its directory after the leak gate scanned it (a finding keeps the directory for the scan of the whole run)
+tidy() {
+	if [[ ${J_CLUSTER[$1]} == 1 ]]; then "$S/pgtest.sh" clean >/dev/null 2>&1
+	else "$S/leakcheck.sh" scan "$SIFT_TMP/$1" >/dev/null 2>&1 && rm -rf "${SIFT_TMP:?}/$1"; fi
+}
+
 # lane N: takes the jobs nobody has claimed, in queue order; its cluster starts with the first job that needs one
 lane() {
 	local id started=
@@ -177,9 +188,10 @@ lane() {
 	mkdir -p "$SIFT_TMP"
 	for id in "${J_ID[@]}"; do
 		mkdir "$BASE/claims/$id" 2>/dev/null || continue
+		echo "$LANE" >"$BASE/claims/$id/lane"
 		if [[ ${J_CLUSTER[$id]} == 1 && -z $started ]]; then started=1; "$S/pgtest.sh" start >"$LOG/$LANE.start.log" 2>&1; fi
 		step "$id" "${J_SUITE[$id]}" bash -c '[[ $1 == 1 ]] || { SIFT_TMP=$SIFT_TMP/$2; mkdir -p "$SIFT_TMP"; export SIFT_TMP; }; eval "$3"' \
-			_ "${J_CLUSTER[$id]}" "$id" "${J_CMD[$id]}"
+			_ "${J_CLUSTER[$id]}" "$id" "${J_CMD[$id]}" && tidy "$id"
 	done
 	[[ -z $started ]] || "$S/pgtest.sh" stop
 }
@@ -238,5 +250,6 @@ for s in "${ORDER[@]}" leakcheck; do
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
+[[ -z ${STATS:-} ]] || { kill "$STATS"; wait "$STATS"; cat "$LOG/stats.txt"; }
 printf 'wall %ss (%s lanes), peak scratch %s MB, logs %s\n' "$((SECONDS - t0))" "$LANES" "$(cat "$LOG/peak_mb" 2>/dev/null || echo '<2')" "$LOG"
 exit $failed
