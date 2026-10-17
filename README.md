@@ -130,12 +130,47 @@ Reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); about 
 
 ## pg_sift for SQLite
 
-The same search engine is also a SQLite loadable extension, `sift` for SQLite (release asset `sift-sqlite-<version>-linux-x86_64.tar.gz`): a
-separate component with its own install, documentation and changelog, see [sqlite/README.md](sqlite/README.md).
+The same engine as a SQLite loadable extension (`sift`, Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: a
+virtual table with exact BM25 and block-max top-k, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets and facets, a
+bounded page cache, and an external-content mode that indexes a table you already have. Full documentation: [sqlite/README.md](sqlite/README.md).
+
+```sh
+V=1.3.1   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
+curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
+curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz     # sift.so, load it with .load ./sift
+```
+
+```sql
+.load ./sift
+CREATE VIRTUAL TABLE docs USING sift(title, body);
+INSERT INTO docs(rowid, title, body) VALUES (1, 'Hotel review', 'Breakfast was great and the staff were friendly. The pool was noisy.'),
+  (2, 'Cafe', 'Friendly staff, no breakfast, but a quiet pool and spa.'), (5, 'Noisy hotel', 'The hotel was noisy at night. Friendly staff though.');
+
+SELECT rowid FROM docs WHERE docs MATCH 'breakfast friendly';                          -- all terms: 1, 2
+SELECT rowid, rank FROM docs WHERE docs MATCH 'pool OR spa' ORDER BY rank LIMIT 10;    -- BM25 top-10, best first: 2, 1
+SELECT sift_count('docs', 'friendly');                                                 -- 3, from the index
+SELECT sift_highlight(docs, 1, '<b>', '</b>') FROM docs WHERE docs MATCH 'spa';        -- Friendly staff, ... pool and <b>spa</b>.
+```
+
+Against SQLite FTS5 (`porter unicode61 remove_diacritics 2`, `bm25` rank), 218,058 Simple English Wikipedia articles, one thread, warm cache, mean of
+2 runs of 200 queries per class, measured 2026-10-17 on a shared 16-thread AVX-512 host (load average 10 to 17, no CPU pinning, so absolute figures are noisy):
+
+| | sift | FTS5 | sift vs FTS5 |
+|---|---|---|---|
+| index, with positions / without | 130.8 MB / 46.9 MB | 125.1 MB / 35.0 MB | 1.05x / 1.34x larger |
+| build (218k docs) | 12.0 s | 12.4 s | equal |
+| AND / OR / phrase, top 10 by BM25 | 5746 / 1209 / 4019 qps | 64.6 / 5.0 / 400 qps | 89x / 242x / 10x |
+| count AND / OR / phrase | 15.3k / 10.2k / 2.6k qps | 795 / 54 / 769 qps | 19x / 189x / 3.4x |
+
+Method, the scalar-kernel column and the cache-size effect: [sqlite/README.md](sqlite/README.md#numbers-against-fts5) and
+[sqlite/DESIGN.md](sqlite/DESIGN.md#measurements). These are SQLite numbers; they come from a different system than the PostgreSQL
+[benchmarks](#benchmarks) above and are not comparable with them.
 
 ## Testing, security, license
 
-`make check` runs every suite in a throwaway cluster (about 2.5 minutes; `make check-full` adds sanitizers, soak, fuzz and mutants).
+`make check` runs every suite in throwaway clusters, in parallel lanes (about 1.5 minutes on 8 cores, 2.5 minutes on the 4 cores of a CI runner;
+`make check-full` adds sanitizers, soak, fuzz and mutants).
 Report crashes, wrong results and index corruption privately as described in [SECURITY.md](SECURITY.md); to contribute see
 [CONTRIBUTING.md](CONTRIBUTING.md). Changes per release: [CHANGELOG.md](CHANGELOG.md). pg_sift is released under the
 [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

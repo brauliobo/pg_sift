@@ -1,5 +1,5 @@
 /*
- * shim_regex.c - PostgreSQL's regex API (pg_regcomp, pg_regexec) over the C library's POSIX extended regular
+ * host_regex.c - PostgreSQL's regex API (pg_regcomp, pg_regexec) over the C library's POSIX extended regular
  * expressions. Terms and patterns are converted back to UTF-8 and matched bytewise in the C locale: the
  * query language of sift (/regex/ leaves) works for ASCII terms and patterns, not with PostgreSQL's ARE extensions.
  */

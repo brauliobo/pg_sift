@@ -2,7 +2,7 @@
  * sift_parallel.c - work distribution and threshold sharing of a parallel
  * SiftScan (sift_parallel.h).
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include <math.h>
 

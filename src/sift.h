@@ -1,17 +1,13 @@
 /*
  * sift.h - shared constants, keys, options, GUCs and catalog lookups.
  *
- * Every sift .c file includes "postgres.h" first, then this header.
+ * Every sift .c file includes "sift_host.h" (PostgreSQL files: "postgres.h" first) and then this header.
  * See DESIGN.md section 0 for the data model and invariants.
  */
 #ifndef SIFT_H
 #define SIFT_H
 
-#include "access/htup_details.h"
-#include "storage/itemptr.h"
-#include "utils/relcache.h"
-
-#include "sift_compat.h"
+#include "sift_host.h"
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1

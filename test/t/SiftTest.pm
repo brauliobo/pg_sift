@@ -123,15 +123,18 @@ sub agree
 	my $plan = $node->safe_psql($db // 'postgres',
 		"SET enable_seqscan = off; EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl WHERE " . $am->{match}->('w1'));
 	unlike($plan, qr/Seq Scan/, "$am->{name}: $what: the plan uses the index");
-	for my $term (qw(w1 w6 w12 w100 rare))
-	{
-		my $res = $node->safe_psql($db // 'postgres', qq{
-			SET enable_seqscan = off;
-			SELECT (SELECT count(*) FROM $tbl WHERE @{[ $am->{match}->($term) ]})
-				= (SELECT count(*) FROM $tbl WHERE sift_ref.match(body, '$term'));
-		});
-		is($res, 't', "$am->{name}: $what: index agrees with the reference on '$term'");
-	}
+	# sift_ref.match(body, term) tokenizes every row for every term, and that is nearly all of its cost: the rows are
+	# tokenized once here (a standby cannot hold a temp table) and each term is evaluated on the same token arrays
+	my @terms = qw(w1 w6 w12 w100 rare);
+	my $probes = join ', ', map {
+		"(SELECT count(*) FROM $tbl WHERE @{[ $am->{match}->($_) ]})"
+		  . " = (SELECT count(*) FROM d WHERE toks IS NOT NULL AND sift_ref.eval_doc(sift_ref.analyzed('$_', NULL), toks))"
+	} @terms;
+	my @res = split /\|/, $node->safe_psql($db // 'postgres', qq{
+		SET enable_seqscan = off;
+		WITH d AS MATERIALIZED (SELECT sift_ref.tokens(body, NULL) AS toks FROM $tbl) SELECT $probes;
+	});
+	is($res[$_], 't', "$am->{name}: $what: index agrees with the reference on '$terms[$_]'") for 0 .. $#terms;
 }
 
 # SIGKILLs a server process on purpose: the postmaster logs its death, which the leak gate expects this once

@@ -84,7 +84,7 @@ options_default(SqVtab *vt)
 	strcpy(o->stemmer, "english");
 	vt->chunk_bytes = SQ_CHUNK_DEFAULT;
 	vt->cache_kib = SQ_CACHE_DEFAULT_KIB;
-	vt->automerge = SQ_MERGE_FANIN;
+	vt->automerge = SIFT_MERGE_FANIN;
 	vt->pending_postings = FLUSH_POSTINGS;
 	vt->ext_rowid = sqlite3_mprintf("rowid");
 }
@@ -389,7 +389,7 @@ index_doc(SqVtab *vt, sqlite3_int64 rowid, sqlite3_value **cols)
 static int
 fanin(const SqVtab *vt)
 {
-	return vt->automerge >= 2 ? vt->automerge : SQ_MERGE_FANIN;
+	return vt->automerge >= 2 ? vt->automerge : SIFT_MERGE_FANIN;
 }
 
 /* Merge steps by the tier policy, at most max of them; each is a bounded rewrite of a few segments */
@@ -405,7 +405,7 @@ merge_steps(SqVtab *vt, int64_t max)
 
 		if (n == 0)
 			break;
-		sq_merge(vt->st, sel, n, vt->opts.base.positions);
+		sq_merge(vt->st, sel, n);
 		steps++;
 	}
 	return steps;
@@ -424,7 +424,7 @@ optimize(SqVtab *vt)
 
 		if (n == 0)
 			break;
-		sq_merge(vt->st, sel, Min(n, at_once), vt->opts.base.positions);
+		sq_merge(vt->st, sel, Min(n, at_once));
 		if (n <= at_once)
 			break;
 	}

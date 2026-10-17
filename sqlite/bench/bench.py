@@ -1,6 +1,6 @@
 """Latency and throughput of sift and FTS5 on the benchmark's query trace, one thread, warm cache.
 
-    python3 -I bench.py --engine sift|fts5 --db FILE --trace trace.tsv [--ext build/sift] [--cpu N]
+    python3 -I bench.py --engine sift|fts5 --db FILE --trace trace.tsv [--ext build/sift]
                         [--n 1000] [--classes and,or,phrase,count_and,count_or,count_phrase] [--table ft]
 
 Per class one pass over the first N subs to warm, one timed pass; one TSV row per class:
@@ -34,7 +34,6 @@ def main():
     ap.add_argument('--db', required=True)
     ap.add_argument('--trace', required=True)
     ap.add_argument('--ext', default=os.path.join(os.path.dirname(__file__), '..', 'build', 'sift'))
-    ap.add_argument('--cpu', type=int)
     ap.add_argument('--n', type=int, default=1000)
     ap.add_argument('--table', default='ft')
     ap.add_argument('--classes', default='and,or,phrase,count_and,count_or,count_phrase')
@@ -44,8 +43,6 @@ def main():
     ap.add_argument('--parallel', type=int, help='sift: worker threads of a scan')
     ap.add_argument('--bare', action='store_true', help='fts5: no quotes around terms (detail=none rejects phrases); both: only subs whose words are all alphanumeric')
     a = ap.parse_args()
-    if a.cpu is not None:
-        os.sched_setaffinity(0, {a.cpu})
     db = sqlite3.connect(a.db)
     db.execute(f'PRAGMA cache_size = -{a.cache_mb * 1024}')
     if a.engine == 'sift':

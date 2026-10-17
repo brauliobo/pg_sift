@@ -1,6 +1,4 @@
-#include "postgres.h"
-
-#include "utils/guc.h"
+#include "sift_host.h"
 
 #include "sift.h"
 #include "sift_cpu.h"
@@ -17,7 +15,7 @@ static int	simd_guc = SIFT_SIMD_AVX512;
 static SiftDispatchRebind rebinds[SIFT_MAX_REBINDS];
 static int	nrebinds;
 
-static const struct config_enum_entry simd_options[] = {
+static const SiftEnumEntry simd_options[] = {
 	{"scalar", SIFT_SIMD_SCALAR, false},
 	{"avx2", SIFT_SIMD_AVX2, false},
 	{"avx512", SIFT_SIMD_AVX512, false},
@@ -102,11 +100,9 @@ sift_cpu_init(void)
 {
 	sift_cpu.flags = detect_flags();
 	sift_cpu.detected = level_from_flags(sift_cpu.flags);
-	DefineCustomEnumVariable("sift.simd",
-							 "Caps the SIMD level used by sift kernels.",
-							 "auto uses the best level the CPU supports.",
-							 &simd_guc, SIFT_SIMD_AVX512, simd_options,
-							 PGC_USERSET, 0, NULL, simd_assign, NULL);
+	sift_host_enum_option("sift.simd", "Caps the SIMD level used by sift kernels.",
+						  "auto uses the best level the CPU supports.",
+						  &simd_guc, SIFT_SIMD_AVX512, simd_options, simd_assign);
 	apply_level();
 }
 

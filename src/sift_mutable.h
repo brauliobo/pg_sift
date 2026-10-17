@@ -5,7 +5,7 @@
 #ifndef SIFT_MUTABLE_H
 #define SIFT_MUTABLE_H
 
-#include "access/genam.h"
+#include "sift_host.h"
 
 #include "sift_analyze.h"
 #include "sift_store.h"

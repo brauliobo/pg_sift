@@ -2,13 +2,7 @@
  * sift_dict.c - term dictionary writer, reader and expansion matchers
  * (layout in sift_dict.h).
  */
-#include "postgres.h"
-
-#include "mb/pg_wchar.h"
-#include "miscadmin.h"
-#include "regex/regex.h"
-#include "storage/buffile.h"
-#include "utils/memutils.h"
+#include "sift_host.h"
 
 #include "sift_dict.h"
 

@@ -6,7 +6,7 @@ highlights, snippets and facets. It is the search engine of [pg_sift](https://gi
 extension, a separate component with its own documentation) running on SQLite's storage; the two share their codec,
 analyzers and query evaluator, and nothing else. The extension is called `sift` in SQLite and its release artifact is `sift-sqlite`.
 
-- **Fast:** 18x to 287x the throughput of FTS5 on ranked top-10 queries over 218,000 Wikipedia articles ([numbers](#numbers-against-fts5)).
+- **Fast:** 10x to 242x the throughput of FTS5 on ranked top-10 queries over 218,000 Wikipedia articles ([numbers](#numbers-against-fts5)).
 - **Bounded memory:** a page cache of your choosing (`cache_size`), streaming merges, no copy of the index in RAM.
 - **Plain SQLite:** transactions, rollback, savepoints and WAL readers behave as for any table; one database file; no server.
 - **Your table or its own:** keep the text in the virtual table, or index a table you already have (`content='tbl'`), or keep only the index.
@@ -184,26 +184,30 @@ format is refused with an error. Internals: [DESIGN.md](https://github.com/braul
 
 ## Numbers against FTS5
 
-Measured on 2026-10-17: Simple English Wikipedia, 218,058 articles (about 300 MB of text), an AVX-512 CPU, one thread pinned to a core and
-run with `nice` on a **shared** host (load average 8 to 12 during all runs: no idle machine was available, so absolute figures carry about
-+-10 percent). 1000 queries per class from the benchmark trace, `stemmer=english` for sift against `porter unicode61 remove_diacritics 2`
-for FTS5, top 10 by BM25, median of 3 runs, page cache 512 MiB (the whole index resident). qps is queries over total time.
+Measured on 2026-10-17: Simple English Wikipedia, 218,058 articles (about 300 MB of text), an AVX-512 CPU (16 threads), one thread, no CPU
+pinning, run with `nice` on a **shared** host (load average 10 to 17 during all runs: no idle machine was available, so absolute figures are
+noisy; the two query runs, at load 16 and 11, differ by up to 1.6x on the heavy OR class). 200 queries per class from the benchmark trace
+(`bench/gen_trace.py`), `stemmer=english` for sift against `porter unicode61 remove_diacritics 2` for FTS5, top 10 by BM25, warm cache of
+512 MiB (the whole index resident), mean of 2 runs. qps is queries over total time.
 
 | | sift, AVX-512 | sift, scalar forced | FTS5 | sift vs FTS5 |
 |---|---|---|---|---|
 | index, with positions | 130.8 MB | 130.8 MB | 125.1 MB | 1.05x larger |
 | index, no positions | 46.9 MB | | 35.0 MB (`detail=none`) | 1.34x larger |
-| build (218k docs) | 7.5 to 8.3 s (10 to 15 s under contention) | same | 7.5 to 8.3 s + 0.9 to 1.1 optimize | equal |
-| AND top 10 | **5779 qps**, 0.154 ms | 2129 qps, 0.307 ms | 97.7 qps, 8.85 ms | 59x |
-| OR top 10 | **1437 qps**, 0.663 ms | 458 qps, 2.14 ms | 5.0 qps, 193 ms | 287x |
-| phrase top 10 | **4040 qps**, 0.154 ms | 1551 qps, 0.320 ms | 220.7 qps, 2.24 ms | 18x |
-| count AND | 16.6k qps | 15.4k qps | 500 qps | 33x |
-| count OR | 10.7k qps | 5.2k qps | 61.5 qps | 175x |
-| count phrase | 2.1k qps | 1.8k qps | 523 qps | 4x |
+| build (218k docs, one segment) | 12.0 s + 0.07 merge | same | 11.2 s + 1.2 optimize | equal |
+| AND top 10 | **5746 qps**, 0.142 ms | 2086 qps | 64.6 qps, 13.2 ms | 89x |
+| OR top 10 | **1209 qps**, 0.836 ms | 451 qps | 5.0 qps, 193 ms | 242x |
+| phrase top 10 | **4019 qps**, 0.160 ms | 1563 qps | 400 qps, 1.13 ms | 10x |
+| count AND | 15.3k qps | 16.2k qps | 795 qps | 19x |
+| count OR | 10.2k qps | 5.3k qps | 53.9 qps | 189x |
+| count phrase | 2.6k qps | 3.0k qps | 769 qps | 3.4x |
 
-With the default 64 MiB cache (smaller than the 130 MB index, so it evicts) the figures are within a few percent: AND 5751, OR 1426, phrase 3881 qps.
-A small cache costs latency, not correctness: 16 MiB peaks at 41 MiB of RSS and is 9 percent slower than a resident index. Memory,
-merge, write-path and parallel-scan measurements, the scripts (`sqlite/bench/`) and the method are in
+Both builds took 11 to 12 s here; an earlier measurement on a quieter host took 7.5 to 8.3 s for both, so build times mostly track the load
+(it was 17 at the start). Sizes do not depend on it. The scalar count rows are within the run-to-run noise of the AVX-512 ones.
+
+With the default 64 MiB cache (smaller than the 130 MB index, so it evicts) the figures are close: AND 5794, OR 1390, phrase 4129 qps. A small cache
+costs latency, not correctness: 16 MiB peaks at 41 MiB of RSS and is about 10 percent slower than the default (AND 5153, OR 1340, phrase 3495 qps).
+Memory, merge, write-path and parallel-scan measurements, the scripts (`sqlite/bench/`) and the method are in
 [DESIGN.md](https://github.com/brauliobo/pg_sift/blob/main/sqlite/DESIGN.md#measurements). The PostgreSQL extension has its own benchmarks
 against other PostgreSQL engines in the [repository README](https://github.com/brauliobo/pg_sift#benchmarks); the two sets of numbers are
 different systems and are not comparable.
