@@ -209,7 +209,7 @@ BEGIN
 	END IF;
 END//
 
--- Drains the queue: on a node that can write, a barrier is added first when rows are waiting; the rows from the watermark to
+-- Drains the queue: on a node that can write (read_only is ON or OFF in this server, 1 or 0 in others: = 'OFF' is true for the writable ones), a barrier is added first when rows are waiting; the rows from the watermark to
 -- the newest barrier are fed, in sequence order, to the engine, which commits one segment atomically. Nothing is deleted:
 -- an interrupted drain is repeated harmlessly (the engine skips what the watermark covers).
 DROP PROCEDURE IF EXISTS sift_sync//
@@ -234,7 +234,7 @@ BEGIN
 		IF v_d < v_pruned THEN
 			CALL sift_fail('sift: the queue was pruned past the watermark of this node: CALL sift_rebuild');
 		END IF;
-		IF @@read_only = 0 THEN
+		IF @@read_only = 'OFF' THEN
 			CALL sift_run(CONCAT('SELECT COUNT(*) INTO @sift_n FROM ', v_q, ' WHERE seq > ', v_d, ' AND op <> ''B'''));
 			IF @sift_n > 0 THEN
 				CALL sift_barrier(v_q);
@@ -297,7 +297,7 @@ BEGIN
 		SELECT sift_create(p_name, v_cfg);
 	END IF;
 	IF GET_LOCK(v_lock, 60) THEN
-		IF @@read_only = 0 THEN
+		IF @@read_only = 'OFF' THEN
 			CALL sift_barrier(v_q);
 		END IF;
 		START TRANSACTION WITH CONSISTENT SNAPSHOT;
