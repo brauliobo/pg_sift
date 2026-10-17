@@ -21,7 +21,7 @@ sql "CREATE TABLE vv (id BIGINT PRIMARY KEY, body TEXT)"
 sql "INSERT INTO vv VALUES (1, 'version check'), (2, 'another document')"
 sql "CALL sift_attach('vv', 'vv', 'id', 't.body', 8)" >/dev/null
 sync vv
-check_match "sift_version names the formats and the server it was built for" "^sift-mariadb format [0-9]+, pages [0-9]+\.[0-9]+ layout [0-9]+, built for MariaDB [0-9.]+" "$(sql 'SELECT sift_version()')"
+check_match "sift_version names the release, the formats and the server it was built for" "^sift-mariadb $(sed 's/\./\\./g' "$HERE/VERSION") \\(format [0-9]+, pages [0-9]+\.[0-9]+ layout [0-9]+, built for MariaDB [0-9.]+" "$(sql 'SELECT sift_version()')"
 check "built for the series of the running server" "$(sql 'SELECT SUBSTRING_INDEX(VERSION(), ".", 2)')" "$(sql 'SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(sift_version(), "built for MariaDB ", -1), ".", 2)')"
 check "the index is readable" 1 "$(cnt version vv)"
 cp "$MANIFEST" "$MANIFEST.good"

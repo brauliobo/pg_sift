@@ -7,16 +7,13 @@
  * table (op 'R') and replaces all segments, the log and the docid space (docbase) in the same atomic step.
  * Drains are idempotent: a row at or below the watermark is skipped, so a drain repeated after the commit applies nothing.
  */
-#include "postgres.h"
+#include "ix.h"
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "utils/memutils.h"
-
 #include "sift_analyze.h"
-#include "sift_build.h"
-#include "ix.h"
+#include "sift_runs.h"
 
 #define BUILD_BUDGET	((Size) 512 << 20)
 

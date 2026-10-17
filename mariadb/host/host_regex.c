@@ -1,5 +1,5 @@
 /*
- * regex.c - pg_regcomp, pg_regexec, pg_regprefix, pg_regfree and pg_regerror (regex/regex.h) for the engine of src/
+ * host_regex.c - pg_regcomp, pg_regexec, pg_regprefix, pg_regfree and pg_regerror (host.h) for the engine of src/
  * without the PostgreSQL backend: a backtracking matcher for the advanced regular expressions (AREs) that SiftQL
  * regex leaves compile to, "[(?flags)]^(?:PATTERN)$", with the semantics of PostgreSQL in the C collation:
  *
@@ -13,14 +13,25 @@
  * Not supported, and rejected with an error: the syntax options x (expanded), q (quoted), b and e (BRE, ERE), and
  * collating-element names of more than one character ([[.space.]]). Matching a pattern without back-references
  * is linear (a state is explored once, a lookaround is run once per position); with them it is bounded by a step
- * budget (REG_ESPACE).
+ * budget (RX_ESPACE).
  * All memory comes from palloc: the engine drops regexes with their memory context and seldom calls pg_regfree.
  */
-#include "postgres.h"
+#include "host.h"
 
 #include <setjmp.h>
 
-#include "regex/regex.h"
+/* the error codes of the matcher, the index of errtext (the numbers of PostgreSQL's regex.h); host.h has the results of the API */
+enum
+{
+	RX_OKAY, RX_NOMATCH, RX_BADPAT, RX_ECOLLATE, RX_ECTYPE, RX_EESCAPE, RX_ESUBREG, RX_EBRACK, RX_EPAREN, RX_EBRACE, RX_BADBR,
+	RX_ERANGE, RX_ESPACE, RX_BADRPT, RX_EMPTY, RX_ASSERT, RX_INVARG, RX_MIXED, RX_BADOPT, RX_ETOOBIG, RX_ECOLORS
+};
+
+typedef struct RxMatch
+{
+	long		rm_so,
+				rm_eo;
+} RxMatch;
 
 #define REMAGIC		0xfed7
 #define CHR_MAX		0x7ffffffe
@@ -256,10 +267,10 @@ digits(Comp *c, int base, int min, int max)
 			break;
 		v = v * base + d;
 		if (v > CHR_MAX)
-			fail(c, REG_EESCAPE);
+			fail(c, RX_EESCAPE);
 	}
 	if (n < min)
-		fail(c, REG_EESCAPE);
+		fail(c, RX_EESCAPE);
 	return v;
 }
 
@@ -276,7 +287,7 @@ escape(Comp *c, bool inbr)
 	long		n;
 
 	if (c->s >= c->end)
-		fail(c, REG_EESCAPE);
+		fail(c, RX_EESCAPE);
 	switch (ch = *c->s++)
 	{
 		case 'a': return 7;
@@ -290,7 +301,7 @@ escape(Comp *c, bool inbr)
 		case 'v': return 11;
 		case 'c':
 			if (c->s >= c->end)
-				fail(c, REG_EESCAPE);
+				fail(c, RX_EESCAPE);
 			return *c->s++ & 037;
 		case 'x': return digits(c, 16, 1, 255);
 		case 'u': return digits(c, 16, 4, 4);
@@ -299,7 +310,7 @@ escape(Comp *c, bool inbr)
 			return -(long) ch;
 		case 'm': case 'M': case 'y': case 'Y': case 'A': case 'Z':
 			if (inbr)
-				fail(c, REG_EESCAPE);
+				fail(c, RX_EESCAPE);
 			return -(long) ch;
 		case '0':
 			c->s--;
@@ -311,7 +322,7 @@ escape(Comp *c, bool inbr)
 			if (c->s == save || n <= c->ncap)
 			{
 				if (inbr)
-					fail(c, REG_EESCAPE);
+					fail(c, RX_EESCAPE);
 				c->num = n;
 				return E_BACK;
 			}
@@ -319,7 +330,7 @@ escape(Comp *c, bool inbr)
 			return digits(c, 8, 1, 3);
 		default:
 			if (isalpha_(ch))
-				fail(c, REG_EESCAPE);
+				fail(c, RX_EESCAPE);
 			return ch;
 	}
 }
@@ -392,24 +403,24 @@ belem(Comp *c, bool endpoint)
 		while (p + 1 < c->end && !(p[0] == kind && p[1] == ']'))
 			p++;
 		if (p + 1 >= c->end)
-			fail(c, REG_EBRACK);
+			fail(c, RX_EBRACK);
 		n = p - name;
 		c->s = p + 2;
 		if (kind == ':')
 		{
 			if ((k = classid(name, n)) < 0)
-				fail(c, REG_ECTYPE);
+				fail(c, RX_ECTYPE);
 			if (endpoint)
-				fail(c, REG_ERANGE);
+				fail(c, RX_ERANGE);
 			c->sets[c->nsets - 1].cls |= 1u << k;
 			return -1;
 		}
 		if (n != 1)
-			fail(c, REG_ECOLLATE);
+			fail(c, RX_ECOLLATE);
 		if (kind == '=')
 		{
 			if (endpoint)
-				fail(c, REG_ERANGE);
+				fail(c, RX_ERANGE);
 			addrange(c, name[0], name[0]);
 			return -1;
 		}
@@ -421,7 +432,7 @@ belem(Comp *c, bool endpoint)
 	if ((v = escape(c, true)) >= 0)
 		return v;
 	if (endpoint)
-		fail(c, REG_ERANGE);
+		fail(c, RX_ERANGE);
 	addclass(c, -v);
 	return -1;
 }
@@ -444,14 +455,14 @@ bracket(Comp *c)
 					hi;
 
 		if (ch < 0)
-			fail(c, REG_EBRACK);
+			fail(c, RX_EBRACK);
 		if (ch == ']' && !first)
 		{
 			c->s++;
 			return mk(c, N_SET, si, -1);
 		}
 		if (ch == '-' && !first && c->s + 1 < c->end && c->s[1] != ']')
-			fail(c, REG_ERANGE);
+			fail(c, RX_ERANGE);
 		first = false;
 		if ((lo = belem(c, false)) < 0)
 			continue;
@@ -460,7 +471,7 @@ bracket(Comp *c)
 		{
 			c->s++;
 			if ((hi = belem(c, true)) < lo)
-				fail(c, REG_ERANGE);
+				fail(c, RX_ERANGE);
 		}
 		addrange(c, lo, hi);
 	}
@@ -485,7 +496,7 @@ escape_atom(Comp *c, bool *quant)
 	if (v == E_BACK)
 	{
 		if (c->nolook || c->num > c->ncap || !c->closed[c->num])
-			fail(c, REG_ESUBREG);
+			fail(c, RX_ESUBREG);
 		c->backref = true;
 		return mk(c, N_BACK, c->num, -1);
 	}
@@ -510,7 +521,7 @@ group(Comp *c, bool *quant)
 		int			ch;
 
 		if (++c->s >= c->end)
-			fail(c, REG_BADRPT);
+			fail(c, RX_BADRPT);
 		switch (ch = *c->s++)
 		{
 			case ':': break;
@@ -518,10 +529,10 @@ group(Comp *c, bool *quant)
 			case '!': lk = 1; break;
 			case '<':
 				if (c->s >= c->end || (*c->s != '=' && *c->s != '!'))
-					fail(c, REG_BADRPT);
+					fail(c, RX_BADRPT);
 				lk = *c->s++ == '=' ? 2 : 3;
 				break;
-			default: fail(c, REG_BADRPT);
+			default: fail(c, RX_BADRPT);
 		}
 	}
 	else if (!c->nolook)
@@ -534,7 +545,7 @@ group(Comp *c, bool *quant)
 	c->haslook |= lk >= 0;
 	kid = alt(c);
 	if (look(c) != ')')
-		fail(c, REG_EPAREN);
+		fail(c, RX_EPAREN);
 	c->s++;
 	c->nolook -= lk >= 0;
 	if (lk >= 0)
@@ -575,7 +586,7 @@ atom(Comp *c, bool *quant)
 			return bracket(c);
 		default:
 			if (ch == '*' || ch == '+' || ch == '?' || (ch == '{' && isdig(cur(c))))
-				fail(c, REG_BADRPT);
+				fail(c, RX_BADRPT);
 			return mk(c, N_CHR, ch, -1);
 	}
 }
@@ -587,7 +598,7 @@ number(Comp *c)
 
 	for (; isdig(cur(c)); c->s++)
 		if ((n = n * 10 + (*c->s - '0')) > DUPMAX)
-			fail(c, REG_BADBR);
+			fail(c, RX_BADBR);
 	return n;
 }
 
@@ -618,16 +629,16 @@ quantifier(Comp *c, int *min, int *max, bool *lazy)
 			c->s++;
 			*max = isdig(cur(c)) ? number(c) : -1;
 			if (*max >= 0 && *max < *min)
-				fail(c, REG_BADBR);
+				fail(c, RX_BADBR);
 		}
 		if (cur(c) != '}')
-			fail(c, REG_BADBR);
+			fail(c, RX_BADBR);
 		c->s++;
 	}
 	if ((*lazy = look(c) == '?'))
 		c->s++;
 	if (quantstart(c))
-		fail(c, REG_BADRPT);
+		fail(c, RX_BADRPT);
 	return true;
 }
 
@@ -643,7 +654,7 @@ piece(Comp *c)
 	if (!quantifier(c, &min, &max, &lazy))
 		return n;
 	if (!quant)
-		fail(c, REG_BADRPT);
+		fail(c, RX_BADRPT);
 	n = mk(c, N_REP, 0, n);
 	c->nodes[n].min = min;
 	c->nodes[n].max = max;
@@ -685,7 +696,7 @@ alt(Comp *c)
 				last;
 
 	if (++c->depth > MAXDEPTH)
-		fail(c, REG_ETOOBIG);
+		fail(c, RX_ETOOBIG);
 	first = last = cat(c);
 	while (look(c) == '|')
 	{
@@ -716,10 +727,10 @@ options(Comp *c)
 			case 's': c->nlstop = c->nlanch = false; break;
 			case 't': break;
 			case 'w': c->nlstop = false; c->nlanch = true; break;
-			default: fail(c, REG_BADOPT);
+			default: fail(c, RX_BADOPT);
 		}
 	if (cur(c) != ')')
-		fail(c, REG_BADOPT);
+		fail(c, RX_BADOPT);
 	c->s++;
 }
 
@@ -729,7 +740,7 @@ static int
 emit(Comp *c, int op, int x, int y)
 {
 	if (c->nprog >= MAXPROG)
-		fail(c, REG_ETOOBIG);
+		fail(c, RX_ETOOBIG);
 	GROW(c->prog, c->nprog, c->nprogcap);
 	c->prog[c->nprog] = (Inst) {op, x, y};
 	return c->nprog++;
@@ -1045,8 +1056,8 @@ pg_regcomp(regex_t *re, const pg_wchar *string, size_t len, int flags, Oid colla
 	Rx		   *x;
 	int			root;
 
-	if ((flags & (REG_ADVANCED | REG_QUOTE | REG_EXPANDED)) != REG_ADVANCED)
-		return REG_INVARG;
+	if (!(flags & REG_ADVANCED))
+		return RX_INVARG;
 	c = palloc0(sizeof(Comp));
 	if (setjmp(c->jb))
 	{
@@ -1057,27 +1068,18 @@ pg_regcomp(regex_t *re, const pg_wchar *string, size_t len, int flags, Oid colla
 	}
 	c->s = string;
 	c->end = string + len;
-	c->icase = flags & REG_ICASE;
-	c->nlstop = flags & REG_NLSTOP;
-	c->nlanch = flags & REG_NLANCH;
 	c->nosub = flags & REG_NOSUB;
 	options(c);
 	root = alt(c);
 	if (c->s < c->end)
-		fail(c, REG_EPAREN);
+		fail(c, RX_EPAREN);
 	c->memo = !c->backref;
 	c->saves = c->backref || !c->nosub;
 	gen(c, root);
 	emit(c, I_MATCH, 0, 0);
 	x = finish(c, root);
-	re->re_magic = REMAGIC;
-	re->re_nsub = c->ncap;
-	re->re_info = (c->backref ? REG_UBACKREF : 0) | (c->haslook ? REG_ULOOKAROUND : 0);
-	re->re_csize = sizeof(pg_wchar);
-	re->re_endp = NULL;
-	re->re_collation = collation;
-	re->re_guts = (char *) x;
-	re->re_fns = NULL;
+	re->magic = REMAGIC;
+	re->posix = x;
 	release(c);
 	return REG_OKAY;
 }
@@ -1266,10 +1268,11 @@ next:
 }
 
 int
-pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start, rm_detail_t *details,
-		   size_t nmatch, regmatch_t pmatch[], int flags)
+pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start, void *details,
+		   size_t nmatch, void *matches, int flags)
 {
-	Rx		   *x = (Rx *) re->re_guts;
+	Rx		   *x = re->posix;
+	RxMatch    *pmatch = matches;
 	size_t		bits = (size_t) x->nprog * (len + 1),
 				st,
 				i;
@@ -1283,7 +1286,7 @@ pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start,
 	if (x->memo)
 	{
 		if (bits > MAXMEMO)
-			return REG_ESPACE;
+			return RX_ESPACE;
 		if ((bits + 7) / 8 > x->seencap)
 		{
 			x->seencap = (bits + 7) / 8;
@@ -1293,7 +1296,7 @@ pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start,
 	}
 	for (st = search_start; st <= len && end < 0; st++)
 		if ((end = run(x, string, len, 0, st, -1)) == R_BUDGET)
-			return REG_ESPACE;
+			return RX_ESPACE;
 	if (end < 0)
 		return REG_NOMATCH;
 	for (i = 0; i < nmatch; i++)
@@ -1309,7 +1312,7 @@ pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start,
 int
 pg_regprefix(regex_t *re, pg_wchar **string, size_t *slength)
 {
-	Rx		   *x = (Rx *) re->re_guts;
+	Rx		   *x = re->posix;
 
 	if (x->npfx == 0)
 		return REG_NOMATCH;
@@ -1321,7 +1324,7 @@ pg_regprefix(regex_t *re, pg_wchar **string, size_t *slength)
 void
 pg_regfree(regex_t *re)
 {
-	Rx		   *x = (Rx *) re->re_guts;
+	Rx		   *x = re->posix;
 
 	drop(x->prog);
 	drop(x->sets);
@@ -1331,14 +1334,14 @@ pg_regfree(regex_t *re)
 	drop(x->seen);
 	drop(x->pfx);
 	pfree(x);
-	re->re_magic = 0;
-	re->re_guts = NULL;
+	re->magic = 0;
+	re->posix = NULL;
 }
 
 size_t
 pg_regerror(int errcode, const regex_t *preg, char *errbuf, size_t errbuf_size)
 {
-	const char *msg = errcode >= 0 && errcode <= REG_ECOLORS ? errtext[errcode] : "unknown error";
+	const char *msg = errcode >= 0 && errcode <= RX_ECOLORS ? errtext[errcode] : "unknown error";
 
 	if (errbuf_size > 0)
 		snprintf(errbuf, errbuf_size, "%s", msg);

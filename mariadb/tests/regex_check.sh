@@ -1,7 +1,7 @@
 #!/bin/bash
-# Compares mariadb/regex.c with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
+# Compares mariadb/host/host_regex.c with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
 # pg_regcomp/pg_regexec (flags and calls of src/sift_query.c, through the throwaway extension tests/rx_oracle.c in a
-# private cluster under /tmp/sift-mdb-rx) and by regex_test.c linked with regex.c; the answers (1, 0 or error) must
+# private cluster under /tmp/sift-mdb-rx) and by regex_test.c linked with host_regex.c; the answers (1, 0 or error) must
 # be identical, for REG_ADVANCED|REG_NOSUB (what the engine uses) and for REG_ADVANCED alone. The prefixes
 # pg_regprefix returns must be true prefixes of every word the pattern matches.
 #   mariadb/tests/regex_check.sh
@@ -11,7 +11,6 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 W=/tmp/sift-mdb-rx
 PORT=56310
 PG_INC=$(pg_config --includedir-server)
-PG_LIB=$(pg_config --libdir)
 PSQL="env -u PGUSER -u PGHOST -u PGPORT psql -h $W -p $PORT -d postgres -XAtq -v ON_ERROR_STOP=1"
 
 cleanup() {
@@ -643,8 +642,7 @@ awk -F'\n' 'NR == FNR {w[n++] = $0; next} {for (i = 0; i < n; i++) print $0 "\t"
 
 nice gcc -O2 -fPIC -shared -I"$PG_INC" -o "$W/rx_oracle.so" "$HERE/tests/rx_oracle.c"
 nice gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
-	-I"$PG_INC" -o "$W/regex_test" "$HERE/regex.c" "$HERE/tests/regex_test.c" \
-	"$PG_LIB/libpgcommon_shlib.a" "$PG_LIB/libpgport_shlib.a" -lm
+	-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/host/host_regex.c" "$HERE/tests/regex_test.c" -lm
 
 initdb -D "$W/pg" -A trust -E UTF8 --locale=C >/dev/null
 pg_ctl -D "$W/pg" -o "-k $W -p $PORT -c listen_addresses=''" -l "$W/pg.log" -w start >/dev/null

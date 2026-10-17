@@ -1,28 +1,24 @@
 /*
  * merge.c - tiered merge of segments and the background thread that runs it.
  *
- * Policy. A segment belongs to a tier by size (factor 4 from 1 MiB); when `merge_fanin` segments of a tier have piled up
- * (every drain adds a small one) they are merged into one of the next tier, so a document is rewritten once per tier and
- * the number of segments stays logarithmic in the size of the index. An index whose dead documents exceed a quarter of
- * its documents, or that comes near the segment limit, is merged more widely; sx_merge(full) merges everything.
- * Streaming. Each source segment becomes a sorted run in a temporary file and the runs are merged page by page: memory
- * does not depend on the size of the segments, only on how many are merged at once (at most 4 * fanin).
+ * Policy. The shared one (sift_merge_pick, src/sift_merge.c): segments of similar size, tiers from 1 MiB, merge when `merge_fanin`
+ * of a tier have piled up (every drain adds a small one), so a document is rewritten once per tier and the number of segments stays
+ * logarithmic in the size of the index. This host adds its own dead documents (they are not in the liveness bits): an index whose
+ * dead documents exceed a quarter of its documents is merged whole, sx_merge(full) always.
+ * Streaming. Each source segment becomes a sorted run in a temporary file and the runs are merged page by page (sift_run_from_segment,
+ * sift_runs_write): memory does not depend on the size of the segments, only on how many are merged at once.
  * Concurrency. The sources are read through a private mapping of their files (the merge clears liveness bits of the
  * documents it drops in its copy only), so queries on the index go on; the merge holds no lock but `mergemu` until it
  * publishes: the manifest and log are written, then the segment table, the document tables and the slots are swapped in
  * under the write lock and the old files are unlinked. A crash before the manifest rename leaves the old state (the new
  * file is removed at open), after it the new state (the old files are removed at open).
  */
-#include "postgres.h"
+#include "ix.h"
 
 #include <unistd.h>
 
-#include "utils/memutils.h"
-
-#include "sift_build.h"
-#include "ix.h"
-
-#define MAX_SOURCES(ix)		((ix)->fanin * 4)
+#include "sift_merge.h"
+#include "sift_runs.h"
 
 static pthread_t bg_thread;
 static pthread_mutex_t bg_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -37,89 +33,32 @@ typedef struct Plan
 	ManSeg		src[SIFT_MAX_SEGMENTS];
 } Plan;
 
-typedef struct Dropped
-{
-	const int64 *dead;			/* the dead documents when the merge began, ascending */
-	size_t		ndead;
-	int64	   *docs;			/* those it dropped, ascending */
-	size_t		n,
-				cap;
-} Dropped;
-
-static int
-tier_of(int64 bytes)
-{
-	int			t = 0;
-
-	for (int64 mb = bytes >> 20; mb >= 1; mb >>= 2)
-		t++;
-	return t;
-}
-
 /* The segments to merge now, copied from the manifest; plan->n = 0 when there is nothing to do */
 static void
 pick(SiftIdx *ix, bool full, Plan *plan)
 {
-	int			count[32] = {0};
-	int			nsegs;
-	bool		wide;
+	SiftMergePolicy pol = {.tier_base = (uint64) 1 << 20,.fanin = ix->fanin};
+	SiftDirSnapshot snap = {.nsegs = 0};
+	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	bool		force;
+	int			n;
 
 	plan->n = 0;
 	RD_LOCK(ix);
-	nsegs = ix->man.nsegs;
-	wide = (ix->ndead > 64 && ix->ndead * 4 > ix->ndoc) || nsegs > MAX_SEGS * 3 / 4;
-	if (full || wide)
+	force = full || (ix->ndead > 64 && ix->ndead * 4 > ix->ndoc);
+	snap.nsegs = ix->man.nsegs;
+	for (int i = 0; i < snap.nsegs; i++)
 	{
-		if (nsegs > 1 || (nsegs == 1 && ix->ndead > 0))
-		{
-			memcpy(plan->src, ix->segs, nsegs * sizeof(ManSeg));
-			plan->n = nsegs;
-		}
-		RD_UNLOCK(ix);
-		return;
+		snap.segs[i] = ix->segs[i].e;
+		if (force && ix->ndead > 0)		/* the engine's dead documents are not in the liveness bits: any segment may hold some */
+			snap.segs[i].flags |= SIFT_SEG_DIRTY;
 	}
-	for (int i = 0; i < nsegs; i++)
-		count[Min(tier_of(ix->segs[i].e.bytes), 31)]++;
-	for (int t = 0; t < 32; t++)
-		if (count[t] >= ix->fanin)
-		{
-			for (int i = 0; i < nsegs && plan->n < MAX_SOURCES(ix); i++)
-				if (Min(tier_of(ix->segs[i].e.bytes), 31) == t)
-					plan->src[plan->n++] = ix->segs[i];
-			break;
-		}
+	n = sift_merge_pick(ix->rel, &pol, &snap, force, sel);
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < snap.nsegs; j++)
+			if (ix->segs[j].e.gen == sel[i].gen)
+				plan->src[plan->n++] = ix->segs[j];
 	RD_UNLOCK(ix);
-}
-
-typedef struct MergeCtx
-{
-	Dropped		d;
-	const SiftRel *sr;
-} MergeCtx;
-
-static bool
-merge_dead_cb(ItemPointer tid, void *state)
-{
-	MergeCtx   *m = state;
-	int64		docid = sift_key_docid(m->sr, sift_key_from_tid(tid));
-	size_t		lo = 0,
-				hi = m->d.ndead;
-
-	while (lo < hi)
-	{
-		size_t		mid = (lo + hi) / 2;
-
-		if (m->d.dead[mid] < docid)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	if (lo == m->d.ndead || m->d.dead[lo] != docid)
-		return false;
-	if (m->d.n == m->d.cap)
-		m->d.docs = realloc(m->d.docs, (m->d.cap = m->d.cap ? m->d.cap * 2 : 1024) * sizeof(int64));
-	m->d.docs[m->d.n++] = docid;
-	return true;
 }
 
 static int
@@ -137,9 +76,26 @@ typedef struct Merged
 	bool		have;
 	int			g;
 	uint32		blocks;
-	int64	   *dropped;
-	size_t		ndropped;
+	int64	   *dropped;		/* the dead documents the segments still held */
+	size_t		ndropped,
+				capdropped;
 } Merged;
+
+/* Deletes from the segment the dead documents it still holds (the ones of its range of superblocks) and notes them */
+static void
+drop_dead(SiftSegment *seg, const SiftRel *sr, const SiftSegEntry *e, const int64 *dead, size_t ndead, Merged *out)
+{
+	int64		end = (int64) (e->sb_hi + 1) * SIFT_SB_PAGES * sr->dpp;
+
+	for (size_t i = lower_bound(dead, ndead, (int64) e->sb_lo * SIFT_SB_PAGES * sr->dpp); i < ndead && dead[i] < end; i++)
+	{
+		if (!sift_seg_delete_key(seg, sift_docid_key(sr, dead[i])))
+			continue;
+		if (out->ndropped == out->capdropped)
+			out->dropped = realloc(out->dropped, (out->capdropped = out->capdropped ? out->capdropped * 2 : 1024) * sizeof(int64));
+		out->dropped[out->ndropped++] = dead[i];
+	}
+}
 
 /* Merges the segments of the plan into one file, mapped but not part of the index yet */
 static void
@@ -149,8 +105,7 @@ merge_write(SiftIdx *ix, const Plan *plan, Relation mrel, const int64 *dead, siz
 	SiftScoreRef ref = {ix->sr->opts.k1, ix->sr->opts.b, 0};
 	SiftRun   **runs = palloc(plan->n * sizeof(SiftRun *));
 	int			nruns = 0;
-	SiftRel    *msr = mrel->rd_amcache;
-	MergeCtx	mc = {.d = {.dead = dead,.ndead = ndead},.sr = msr};
+	SiftRel    *msr = mrel->store;
 	SiftWriteTarget *wt;
 	uint64		gen;
 	int			slot;
@@ -159,14 +114,12 @@ merge_write(SiftIdx *ix, const Plan *plan, Relation mrel, const int64 *dead, siz
 	{
 		char		path[600];
 		SiftSegment *seg;
-		IndexBulkDeleteResult stats = {0};
 		SiftRun    *r;
 
 		path_of(ix, path, sizeof(path), plan->src[i].file);
 		sift_slot_map(msr, plan->src[i].slot, path);
 		seg = sift_seg_open(mrel, &plan->src[i].e, cx);
-		if (ndead > 0)
-			sift_seg_bulkdelete(seg, merge_dead_cb, &mc, &stats);
+		drop_dead(seg, msr, &plan->src[i].e, dead, ndead, out);
 		if ((r = sift_run_from_segment(seg, &ref, cx)) != NULL)
 			runs[nruns++] = r;
 		sift_seg_close(seg);
@@ -181,9 +134,7 @@ merge_write(SiftIdx *ix, const Plan *plan, Relation mrel, const int64 *dead, siz
 		sift_wt_finish(wt);
 		rename_segment(ix, wt, gen, &out->ms, &out->g, &out->blocks);
 	}
-	qsort(mc.d.docs, mc.d.n, sizeof(int64), cmp_i64);
-	out->dropped = mc.d.docs;
-	out->ndropped = mc.d.n;
+	qsort(out->dropped, out->ndropped, sizeof(int64), cmp_i64);
 }
 
 static bool

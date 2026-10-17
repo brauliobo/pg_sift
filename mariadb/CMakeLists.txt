@@ -1,8 +1,8 @@
 # sift for MariaDB with CMake: the same library as the Makefile (libsift_udf.so), built against the installed headers.
 #   cmake -S mariadb -B /tmp/sift-cmake -DCMAKE_BUILD_TYPE=Release && nice cmake --build /tmp/sift-cmake -j4
-# Finds the MariaDB server headers with mariadb_config / mysql_config (or -DMDB_INC=<dir with mysql_version.h>) and the
-# PostgreSQL server headers and libpgcommon / libpgport archives with pg_config (or -DPG_CONFIG=<path>). The UDF file is
-# compiled against the MariaDB headers only; the engine (src/) against the PostgreSQL headers only.
+# Finds the MariaDB server headers with mariadb_config / mysql_config (or -DMDB_INC=<dir with mysql_version.h>) and needs
+# nothing else: the portable core (src/portable.list) is compiled against the host in host/, which is plain C. The UDF file
+# is compiled against the MariaDB headers only.
 cmake_minimum_required(VERSION 3.16)
 project(sift_mariadb C)
 
@@ -34,50 +34,43 @@ endif()
 file(STRINGS "${MDB_INC}/mysql_version.h" mdb_ver_line REGEX "^#define[ \t]+MYSQL_SERVER_VERSION")
 string(REGEX REPLACE ".*\"(.*)\".*" "\\1" MDB_VER "${mdb_ver_line}")
 message(STATUS "MariaDB headers: ${MDB_INC} (${MDB_VER})")
-
-# --- PostgreSQL headers and archives
-if(NOT PG_CONFIG)
-  find_program(PG_CONFIG pg_config REQUIRED)
-endif()
-execute_process(COMMAND ${PG_CONFIG} --includedir-server OUTPUT_VARIABLE PG_INC OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${PG_CONFIG} --libdir OUTPUT_VARIABLE PG_LIB OUTPUT_STRIP_TRAILING_WHITESPACE)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/VERSION SIFT_VERSION LIMIT_COUNT 1)
 
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(SRC ${ROOT}/src)
 set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN})
 
-# the engine sources of src/, compiled unmodified
-set(PGSRC sift_bitmap_scalar sift_bitmap_avx2 sift_bitmap_avx512 sift_kernels sift_kernels_avx2 sift_kernels_avx512
-          sift_analyze sift_analyze_stem sift_query sift_dict sift_posting sift_segment sift_prefix sift_eval)
-list(TRANSFORM PGSRC PREPEND ${SRC}/ OUTPUT_VARIABLE pg_files)
-list(TRANSFORM pg_files APPEND .c)
+# the portable core: the .c files of the list every host shares (sift_bitmap.c is compiled from a copy, see below)
+file(STRINGS ${SRC}/portable.list portable REGEX "^[^#].*\\.c$")
+list(REMOVE_ITEM portable sift_bitmap.c)
+list(TRANSFORM portable PREPEND ${SRC}/)
 
-# the part of src/sift_build.c before the heap build, and src/sift_bitmap.c with its seek limit per thread
-add_custom_command(OUTPUT ${GEN}/sift_build_core.c
-  COMMAND sed "/^\\/\\* ---------- ambuild ---------- \\*\\//,\$d" ${SRC}/sift_build.c > ${GEN}/sift_build_core.c
-  DEPENDS ${SRC}/sift_build.c VERBATIM)
-add_custom_command(OUTPUT ${GEN}/sift_bitmap_tl.c
-  COMMAND sed "s/^static uint32_t seek_limit/static __thread uint32_t seek_limit/" ${SRC}/sift_bitmap.c > ${GEN}/sift_bitmap_tl.c
+# src/sift_bitmap.c with its seek limit per thread (a global that a query sets while it seeks)
+add_custom_command(OUTPUT ${GEN}/sift_bitmap.c
+  COMMAND sed "s/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /" ${SRC}/sift_bitmap.c > ${GEN}/sift_bitmap.c
+  COMMAND grep -q "_Thread_local uint32_t seek_limit" ${GEN}/sift_bitmap.c
   DEPENDS ${SRC}/sift_bitmap.c VERBATIM)
 
-set(SHIM shim.c store.c regex.c engine.c query.c feed.c merge.c)
-add_library(sift_engine OBJECT ${pg_files} ${GEN}/sift_build_core.c ${GEN}/sift_bitmap_tl.c ${SHIM})
-target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${PG_INC})
-target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE
-  SIFT_MDB_SERVER_VERSION="${MDB_VER}"
-  # the current and top memory context of the engine are per thread; the codec's names are those of two UDFs
-  CurrentMemoryContext=\(*sift_cur_cx\(\)\) TopMemoryContext=\(*sift_top_cx\(\)\) sift_count=codec_count sift_topk=codec_topk)
-target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -Wno-declaration-after-statement
-  -Wno-unused-function -march=x86-64 -mtune=generic -fvisibility=hidden)
+# the host: the C library vocabulary of sqlite/host (its host.c as it is), the matcher, the mapped store and the glue
+set(HOST ${ROOT}/sqlite/host/host.c host/host_regex.c host/store.c host/stubs.c)
+set(GLUE engine.c query.c feed.c merge.c)
 
-# the UDFs include MariaDB headers and nothing of PostgreSQL
+add_library(sift_engine OBJECT ${portable} ${GEN}/sift_bitmap.c ${HOST} ${GLUE})
+target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SRC})
+target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
+  SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
+  # the codec's names are those of two UDFs
+  sift_count=codec_count sift_topk=codec_topk)
+target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -Wno-declaration-after-statement
+  -Wno-unused-function -Wno-misleading-indentation -march=x86-64 -mtune=generic -fvisibility=hidden)
+
+# the UDFs include MariaDB headers and nothing of the engine
 add_library(sift_udf SHARED udf.c $<TARGET_OBJECTS:sift_engine>)
 set_target_properties(sift_udf PROPERTIES PREFIX "lib" OUTPUT_NAME sift_udf)
 target_include_directories(sift_udf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${MDB_INC} ${MDB_INC}/private)
 set_source_files_properties(udf.c PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-Wall")
-target_link_libraries(sift_udf PRIVATE ${PG_LIB}/libpgcommon_shlib.a ${PG_LIB}/libpgport_shlib.a m ${CMAKE_DL_LIBS} Threads::Threads
-  -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
+target_link_libraries(sift_udf PRIVATE m ${CMAKE_DL_LIBS} Threads::Threads -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
 
 install(TARGETS sift_udf LIBRARY DESTINATION lib/mysql/plugin)
 install(FILES sql/functions.sql sql/sift.sql DESTINATION share/sift)
