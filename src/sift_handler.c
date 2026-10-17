@@ -23,6 +23,7 @@
 #include "sift_am.h"
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
+#include "sift_build.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_posting.h"
@@ -97,6 +98,15 @@ define_gucs(void)
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_run_docs",
+							"Testing: documents a CREATE INDEX run holds before it is spilled (0 = by memory).",
+							NULL, &sift_test_run_docs, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_merge_fanin",
+							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
+							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_segment_postings",
+							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
+							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	sift_pushdown_init();
 	MarkGUCPrefixReserved("sift");

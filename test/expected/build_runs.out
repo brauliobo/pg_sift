@@ -1,0 +1,147 @@
+-- CREATE INDEX at the smallest memory: a build participant spills runs of a few documents and
+-- merges them in passes (a bounded fan-in), whatever the table size, serial or parallel. The index
+-- is the one a build with plenty of memory writes, but for its segment layout.
+CREATE EXTENSION pg_sift;
+SET max_parallel_maintenance_workers = 2;
+CREATE TABLE br (id serial, body text) WITH (parallel_workers = 2);
+INSERT INTO br (body)
+SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) || ' ' || repeat('filler ', i % 5)
+FROM generate_series(1, 30000) i;
+UPDATE br SET body = NULL WHERE id % 1000 = 0;
+CREATE FUNCTION answers(OUT n bigint, OUT ids text) AS $$
+	SELECT (SELECT count(*) FROM br WHERE body @@> 'common'),
+	       (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM br WHERE body @@> 'g5 OR g7 OR k3 AND word9')
+$$ LANGUAGE sql;
+CREATE FUNCTION ranked() RETURNS text AS $$
+	SELECT string_agg(id::text || ':' || round(s::numeric, 5), ' ' ORDER BY s DESC, id) FROM
+	(SELECT id, sift.score(ctid) AS s FROM br WHERE body @@> 'g5 OR g7 OR k3 AND word9'
+	 ORDER BY s DESC, id LIMIT 30) t
+$$ LANGUAGE sql;
+-- the reference: serial, memory to spare
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX br_ref ON br USING sift (body);
+CREATE TABLE ref AS SELECT a.*, ranked() AS top FROM answers() a;
+SELECT n, top IS NOT NULL AS ranked FROM ref;
+   n   | ranked 
+-------+--------
+ 29970 | t
+(1 row)
+
+-- the answers of the index in use equal the reference's (a seq scan has no scores to rank by)
+CREATE FUNCTION same(seq boolean DEFAULT false) RETURNS boolean AS $$
+	SELECT a.n = r.n AND a.ids = r.ids AND CASE WHEN seq THEN true ELSE ranked() = r.top END
+	FROM answers() a, ref r
+$$ LANGUAGE sql;
+DROP INDEX br_ref;
+-- a seq scan agrees with the reference
+SET sift.enable_scan = off;
+SELECT same(true) AS seqscan_same;
+ seqscan_same 
+--------------
+ t
+(1 row)
+
+RESET sift.enable_scan;
+-- 1MB, three documents a run, merges of three runs: hundreds of runs a participant in the old build
+SET maintenance_work_mem = '1MB';
+SET sift.test_run_docs = 3;
+SET sift.test_merge_fanin = 3;
+SET max_parallel_maintenance_workers = 2;
+SET client_min_messages = debug1;
+CREATE INDEX br_par ON br USING sift (body);
+DEBUG:  building index "br_par" on table "br" with request for 2 parallel workers
+DEBUG:  building sift index "br_par" with 2 parallel workers
+RESET client_min_messages;
+SELECT sift.verify('br_par', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS parallel_same;
+ parallel_same 
+---------------
+ t
+(1 row)
+
+DROP INDEX br_par;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX br_ser ON br USING sift (body);
+SELECT sift.verify('br_ser', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS serial_same;
+ serial_same 
+-------------
+ t
+(1 row)
+
+DROP INDEX br_ser;
+-- more runs than fit the fan-in at the minimum: the 1MB floor of the real build
+RESET sift.test_merge_fanin;
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX br_par ON br USING sift (body);
+SELECT sift.verify('br_par', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS default_fanin_same;
+ default_fanin_same 
+--------------------
+ t
+(1 row)
+
+DROP INDEX br_par;
+-- a directory of 128 segments holds what the memory budget would spread over more: the build writes
+-- larger segments instead of failing
+SET sift.test_run_docs = 20;
+SET sift.test_segment_postings = 5;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX br_seg ON br USING sift (body);
+SELECT count(*) BETWEEN 2 AND 128 AS within_directory FROM sift.segments('br_seg');
+ within_directory 
+------------------
+ t
+(1 row)
+
+SELECT sift.verify('br_seg', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS segments_same;
+ segments_same 
+---------------
+ t
+(1 row)
+
+DROP INDEX br_seg;
+-- the same with forced segment boundaries
+CREATE INDEX br_bound ON br USING sift (body) WITH (build_segments = 60);
+SELECT count(*) BETWEEN 60 AND 128 AS within_directory FROM sift.segments('br_bound');
+ within_directory 
+------------------
+ t
+(1 row)
+
+SELECT sift.verify('br_bound', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS bounded_same;
+ bounded_same 
+--------------
+ t
+(1 row)
+
+DROP TABLE br, ref;
+DROP FUNCTION same(boolean), ranked(), answers();
+DROP EXTENSION pg_sift;
