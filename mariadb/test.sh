@@ -90,14 +90,13 @@ pgref() {
   say "correctness: pg_sift (PostgreSQL) vs sift for MariaDB, same corpus and queries"
   start_pg
   psql -X -A -t -d bench -c "COPY (SELECT id, mode, array_to_string(terms,' ') FROM queries ORDER BY id) TO STDOUT" >"$T/trace.tsv"
-  python3 -I "$HERE/tools/genq.py" "$T/trace.tsv" >"$T/queries.tsv"
+  python3 -I "$HERE/tools/genq.py" "$T/trace.tsv" --regex >"$T/queries.tsv"
   TIE=1 nice "$HERE/tools/pg_ref.sh" "$T/queries.tsv" >"$T/ref.tsv"
   python3 -I "$HERE/bench/mkstmts.py" sift-ref "$T/queries.tsv" >"$T/ref-stmts.sql"
   mq print "$T/ref-stmts.sql" >"$T/ref-out.txt"
   python3 -I "$HERE/tools/json2ref.py" "$T/ref-stmts.sql" "$T/ref-out.txt" >"$T/got.tsv"
-  echo "queries: $(wc -l <"$T/queries.tsv") (trace of $(wc -l <"$T/trace.tsv") and/or/phrase plus prefix, wildcard, fuzzy, NOT, boost, group, nested)"
-  python3 -I "$HERE/tools/compare.py" "$T/ref.tsv" "$T/got.tsv" --known "needs the text of the row" \
-    --label "pg_sift vs sift/MariaDB (count, top-10 order, float32 scores)"
+  echo "queries: $(wc -l <"$T/queries.tsv") (trace of $(wc -l <"$T/trace.tsv") and/or/phrase plus prefix, wildcard, fuzzy, NOT, boost, group, nested, phrases under OR/NOT, regular expressions)"
+  python3 -I "$HERE/tools/compare.py" "$T/ref.tsv" "$T/got.tsv" --label "pg_sift vs sift/MariaDB (count, top-10 order, float32 scores)"
 }
 
 # match sets against InnoDB FULLTEXT: the table as it is, then with the characters InnoDB handles differently turned into
@@ -122,9 +121,14 @@ inno() {
   sql -e "DROP TABLE docs_norm"
 }
 
+# the checks on small tables, in database ft; the corpus server is restarted by some of them (version, live)
 functional() {
   say "functional tests (database ft)"
-  "$HERE/tests/functional.sh"
+  local t failed=0
+  for t in functional fresh keys filters options version live stress regex_check repl; do
+    "$HERE/tests/$t.sh" || failed=1
+  done
+  [[ $failed == 0 ]] || { echo "some functional checks FAILED"; exit 1; }
 }
 
 bench() {

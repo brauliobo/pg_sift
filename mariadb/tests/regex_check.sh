@@ -12,7 +12,7 @@ W=/tmp/sift-mdb-rx
 PORT=56310
 PG_INC=$(pg_config --includedir-server)
 PG_LIB=$(pg_config --libdir)
-PSQL="psql -h $W -p $PORT -d postgres -XAtq -v ON_ERROR_STOP=1"
+PSQL="env -u PGUSER -u PGHOST -u PGPORT psql -h $W -p $PORT -d postgres -XAtq -v ON_ERROR_STOP=1"
 
 cleanup() {
 	[ -d "$W/pg" ] && pg_ctl -D "$W/pg" -m immediate stop >/dev/null 2>&1 || true
