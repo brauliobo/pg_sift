@@ -1,0 +1,3 @@
+\set i random(1, 1000)
+SELECT q FROM qtext WHERE wl = 'and' AND n = :i \gset
+SELECT docs.id FROM docs WHERE docs.body @@> :q AND docs.created >= '2026-09-25' ORDER BY sift.score(docs.ctid) DESC LIMIT 10;
