@@ -203,7 +203,7 @@ sift_map_fd(int fd, int local, uint32 *blocks)
 	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
 
 	if (size < BLCKSZ || size > (off_t) (SLOT_BLOCKS * BLCKSZ) ||
-		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_POPULATE, fd, 0) == MAP_FAILED)
+		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, 0) == MAP_FAILED)
 	{
 		pthread_mutex_lock(&gmu);
 		gowner[g].used = false;
@@ -211,6 +211,7 @@ sift_map_fd(int fd, int local, uint32 *blocks)
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("sift: could not map a segment file")));
 	}
 	*blocks = size / BLCKSZ;
+	madvise(at, size, MADV_POPULATE_READ);	/* prefault from the page cache; MAP_POPULATE would copy every page of a private mapping */
 	return g;
 }
 
