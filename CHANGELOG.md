@@ -2,6 +2,13 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## 1.4.0
+
+- No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.
+- The engine now builds as a portable core shared with the SQLite extension and the new MariaDB extension (`src/portable.list`, one host header `src/sift_host.h`, checked by `scripts/check-portable.sh` in `make check`). The sorted-run and merge code moved from `src/sift_build.c` to `src/sift_runs.c`, the merge policy to `src/sift_merge.c`; the compiled query path is instruction for instruction the same.
+- `make check` takes about 1.5 minutes on 8 cores (it took about 4): one job queue over up to 8 lanes instead of four fixed lanes, faster differential and TAP tests, same coverage.
+- `scripts/build-bench.sh` compares `CREATE INDEX` time, memory and temporary files of two builds at several budgets; the runs merged into each segment are logged at `debug2`.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
