@@ -5,9 +5,9 @@
 - Word positions are stored by default (reloption `positions`, default on): phrase queries are decided from the index instead of
   re-tokenizing the heap text of each candidate. A phrase that every match must contain (not under `OR` or `NOT`) is verified in the
   index, and a phrase under `OR` (a CJK word becomes one) filters its candidates the same way; counts and ranked scans of such phrases
-  read no heap tuple. On the 218k-article benchmark phrase queries run about 4.4x faster than before and 2.2x faster than pg_search,
-  counts 7x faster. The price is a default index about 2.6x larger (48 MB to 126 MB on the 218k articles, pg_search: 160 MB) and a
-  build about 30% slower: `positions = off` restores the small index and the heap recheck of phrases. Indexes built by earlier
+  read no heap tuple. On the 218k-article benchmark phrase queries run about 4.1x faster than with `positions = off` and 3.3x faster than pg_search,
+  counts 7.3x faster. The price is a default index about 2.5x larger (52.5 MiB to 130.9 MiB on the 218k articles, pg_search: 183.6 MiB) and a
+  build about 30% slower (1.7 to 2.2 s): `positions = off` restores the small index and the heap recheck of phrases. Indexes built by earlier
   versions keep working but have no positions: `REINDEX` them to get phrases decided by the index. Terms with at most two postings
   keep their positions in the dictionary entry (up to 256 bytes). Documents inserted after the build (mutable segments, and the
   segments promoted and merged from them) and phrases under `NOT` keep the heap recheck.
