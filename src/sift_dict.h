@@ -89,6 +89,11 @@ extern void sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *h
  * SQ_FUZZY, also SQ_TERM). bounds give the byte range implied by the
  * literal prefix (NULL: unbounded); allocates in CurrentMemoryContext.
  */
+#ifdef SIFT_TESTING
+/* Blocks a term lookup read to find its block (sift._test_read_stats) */
+extern uint64 sift_dict_probes;
+#endif
+
 typedef struct SiftTermMatcher SiftTermMatcher;
 
 extern SiftTermMatcher *sift_matcher_create(const SiftQNode *leaf);

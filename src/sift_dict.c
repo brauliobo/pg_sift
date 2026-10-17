@@ -402,6 +402,10 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	return true;
 }
 
+#ifdef SIFT_TESTING
+uint64		sift_dict_probes;
+#endif
+
 /*
  * Index of the block where term would be: the last block whose first term
  * is <= term, or -1 when term precedes every term.
@@ -446,19 +450,48 @@ find_block(SiftDict *d, const char *term, int len)
 		else
 			hi = mid;
 	}
-	/* blocks from lo - 1 up to the last one with prefix == p are candidates */
+	/*
+	 * The blocks of the run with prefix p (fixed-width ids share it for thousands of blocks) are ordered by
+	 * their first term: the run ends where a doubling step then a bisection of the prefixes finds it, and
+	 * the last block of it whose first term is <= term is found by bisection.
+	 */
 	blo = Max(lo - 1, 0);
-	for (bhi = lo; bhi < (int64) d->nblocks && read_idx(d, bhi).prefix == p; bhi++)
+	rhi = lo;
+	if (lo < (int64) d->nblocks && read_idx(d, lo).prefix == p)
 	{
+		int64		step = 1,
+					from = lo;
+
+		while (from + step < (int64) d->nblocks && read_idx(d, from + step).prefix == p)
+			from += step, step *= 2;
+		for (rhi = from + 1, bhi = Min(from + step, (int64) d->nblocks); rhi < bhi;)
+		{
+			int64		mid = (rhi + bhi) / 2;
+
+			if (read_idx(d, mid).prefix == p)
+				rhi = mid + 1;
+			else
+				bhi = mid;
+		}
+	}
+	for (bhi = lo; bhi < rhi;)
+	{
+		int64		mid = (bhi + rhi) / 2;
 		BlockIter	it;
 		SiftTermInfo info;
 
-		block_begin(d, read_idx(d, bhi).block_off, d->blk, &it);
+		block_begin(d, read_idx(d, mid).block_off, d->blk, &it);
+#ifdef SIFT_TESTING
+		sift_dict_probes++;
+#endif
 		block_next(&it, &info);
 		if (term_cmp(it.term, it.len, term, len) > 0)
-			break;
-		blo = bhi;
+			rhi = mid;
+		else
+			bhi = mid + 1;
 	}
+	if (bhi > lo)
+		blo = bhi - 1;
 	if (blo == 0 && lo == 0 && bhi == 0)
 		return -1;
 	return blo;

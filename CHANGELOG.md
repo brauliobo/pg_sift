@@ -34,6 +34,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   allocated 39 MB for its cursors, now 1.1 MB. Frequent terms are unchanged. The copy of a frequent term's whole blob (a term in every
   row of a billion-row index is hundreds of MB per segment and query) is not windowed yet.
 
+- Fix: a term lookup in a dictionary whose terms share their first 8 bytes (fixed-width ids such as `ord-0000` plus digits, order
+  numbers, hashes with a common prefix) read every block of the run of terms with that prefix, linearly: 625 blocks per lookup in 40,000
+  ids. It finds the block by bisection (10 blocks); other dictionaries read the same blocks as before.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build
