@@ -790,13 +790,13 @@ drain_init(UDF_INIT *initid, UDF_ARGS *args, char *message, int load)
 EXPORT sx_bool
 sift_drain_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
-	return drain_init(initid, args, message, false);
+	return drain_init(initid, args, message, 0);
 }
 
 EXPORT sx_bool
 sift_load_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
-	return drain_init(initid, args, message, true);
+	return drain_init(initid, args, message, 1);
 }
 
 static void
