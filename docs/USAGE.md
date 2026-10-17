@@ -41,6 +41,10 @@ so a filter whose rows lie at the end of a correlated column (recent ids) costs 
 A prepared statement (or any generic plan: `plan_cache_mode`, a driver that prepares) is planned without its query, which the planner
 prices as one matching a tenth of the rows, so a selective filter is pushed down there too, as in the plan of the literal query
 (a prepared 2.6% filter query went from 4.36M to 2.30M cycles, the cycles of the literal one).
+A filter on a value that the table stores in one stretch of the heap (`country_code = 'US'` on rows loaded by country) is placed from the
+btree at planning time (the entries of a key are in heap order, so a few of them tell where the rows that pass start), and is pushed down
+when that stretch is late: the filtered one-letter prefix of the places went from 8.74M to 1.26M user cycles. A stretch at the start of the
+heap keeps the scan that checks the filter after the ranker.
 
 ```sql
 CREATE INDEX docs_published ON docs (published);

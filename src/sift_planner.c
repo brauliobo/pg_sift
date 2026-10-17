@@ -481,6 +481,32 @@ parallel_divisor(int nworkers)
 	return divisor;
 }
 
+/* The estimates the paths of one index share: the matches and their cost, and what the filter bitmap keeps and where */
+typedef struct ScanEst
+{
+	ScanCost	sc;
+	SiftFilterEst fe;
+} ScanEst;
+
+/*
+ * The filter's entries a post-filter ranker has to meet to hold k rows that pass: k matches at the
+ * fraction of the rows the query matches
+ */
+static double
+filter_entries(RelOptInfo *rel, const ScanCost *sc, int64 k)
+{
+	return k > 0 ? k * Max(rel->tuples, 1) / sc->docs : 0;
+}
+
+static void
+scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, BitmapHeapPath *filter, ScanEst *est)
+{
+	est->fe = (SiftFilterEst) {0, 1, 0, 1};
+	scan_cost(root, rel, c, mode == SIFT_MODE_RANKED, &est->sc);
+	if (mode == SIFT_MODE_RANKED && filter)
+		sift_filter_estimate(root, rel, filter, filter_entries(rel, &est->sc, k), &est->fe);
+}
+
 /*
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
  * the verification are shared out. With a pushed down filter the ranker only meets the matches its
@@ -489,13 +515,13 @@ parallel_divisor(int nworkers)
  * parallel (nworkers 0). Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
-scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
 		  BitmapHeapPath *filter, bool push, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
-	ScanCost	sc;
-	SiftFilterEst fe = {0, 1, 0, 1};
+	ScanCost	sc = est->sc;
+	SiftFilterEst fe = est->fe;
 	double		divisor = parallel_divisor(nworkers),
 				pass,
 				verify;
@@ -505,7 +531,6 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 				startup;
 
 	Assert(!push || nworkers == 0);
-	scan_cost(root, rel, c, mode == SIFT_MODE_RANKED, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
@@ -522,8 +547,6 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	if (mode == SIFT_MODE_RANKED)
 	{
 		pass = sc.pass;
-		if (filter)
-			sift_filter_estimate(root, rel, filter, &fe);
 		if (push)
 		{
 			fe.sel = Max(fe.sel, pass);
@@ -580,10 +603,10 @@ cheaper(CustomPath *a, CustomPath *b)
  * points to.
  */
 static void
-add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
 			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
-	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, push, 0);
+	CustomPath *cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, push, 0);
 	int			nworkers = !push && parallel ? scan_workers(rel, c) : 0;
 
 	if (cheaper(cp, *best))
@@ -592,7 +615,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mod
 		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
-		cp = scan_path(root, rel, c, mode, k, pathkeys, filter, false, nworkers);
+		cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, false, nworkers);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
 		if (!only_best)
@@ -764,6 +787,7 @@ static void
 sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
 	ScanCand	c;
+	ScanEst		est;
 	PathKey    *pk = NULL;
 	List	   *scores;
 	bool		ranked,
@@ -821,10 +845,11 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter = sift_filter_bitmap_path(root, rel);
 			filter_looked = true;
 		}
+		scan_est(root, rel, &c, mode, ranked ? k : 0, filter, &est);
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
 	}
 	if (best && only_best)
 	{

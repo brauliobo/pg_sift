@@ -4,6 +4,8 @@
 # dynamic_library_path, one library per label; the on-disk format is the same, so one database serves them all.
 #
 #   bench/steps/ab.sh prepare                          cluster, slim corpus, index and the class scripts ($AB/pgb/CLASS.pgb)
+#   bench/steps/ab.sh prepare_places                   the places database of the adapter with a btree on country_code (ABDB=places_sift)
+#   bench/steps/ab.sh shapes                           the filter shapes of the plan-choice tests as scripts shape_NAME.pgb (ABDB=shapes)
 #   bench/steps/ab.sh build LABEL [REF]                production library of git REF (default HEAD; "work": the working tree) -> $AB/libs/LABEL
 #   bench/steps/ab.sh run CLASS REPS SECS LABEL...     cycles and instructions per transaction, one backend, mean +- standard error
 #   bench/steps/ab.sh clients CLASS REPS SECS N LABEL...   transactions per second of N clients, same interleaving
@@ -16,7 +18,7 @@
 export BENCH_WORK=${BENCH_WORK:-/tmp/sift-ab} PORT=${PORT:-56110} TIER=Q Q_DOCS=${Q_DOCS:-50000}
 . "$(dirname "$0")/lib.sh"
 AB=$ROOT/ab
-ABDB=ab
+ABDB=${ABDB:-ab}
 
 prepare() {
   "$STEPS/fetch.sh" sift
@@ -42,6 +44,44 @@ SQL
   q -c "SELECT sum(pg_prewarm(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname IN ('public', 'pg_toast') AND c.relkind IN ('r', 'i', 't')" >/dev/null
   log "ab: $AB/pgb: $(ls "$AB/pgb" | tr '\n' ' ')"
+}
+
+# The places database of the sift adapter (cities15000) with a btree on country_code, which the filter workload of the adapter
+# has no index for: a bitmap path exists, so the planner chooses between the pushdown and the post-filter scan.
+# Scripts places_WORKLOAD_CLASS.pgb (run with ABDB=places_sift); PLACES_BTREE=0 leaves the btree out.
+prepare_places() {
+  "$STEPS/fetch.sh" sift
+  "$STEPS/cluster.sh" start
+  load_engine sift
+  local db=places_sift wl c n
+  PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" -c "CREATE DATABASE $db"
+  PGDATABASE=$db q -v dir="${PLACES_DIR:-$DATA/places-quick}" -f "$BENCH/sql/places_schema.sql"
+  PGDATABASE=$db q -c "$PLACES_SETUP" -c "$PLACES_INDEX"
+  [[ ${PLACES_BTREE:-1} == 0 ]] || PGDATABASE=$db q -c "CREATE INDEX places_country ON places (country_code)"
+  PGDATABASE=$db q -c "VACUUM (FREEZE, ANALYZE) places" -c "CREATE TABLE pqs AS SELECT class, row_number() OVER (PARTITION BY class ORDER BY id) AS n,
+    regexp_replace(q, '(\\S+)', '\\1*', 'g') AS sq FROM pq" -c "ALTER TABLE pqs ADD PRIMARY KEY (class, n)" -c "ANALYZE pqs"
+  mkdir -p "$AB/pgb"
+  for wl in top filter count; do
+    for c in $(PGDATABASE=$db q -c "SELECT DISTINCT class FROM pqs"); do
+      n=$(PGDATABASE=$db q -c "SELECT count(*) FROM pqs WHERE class = '$c'")
+      v=P_$wl
+      printf '\\set i random(1, %d)\nSELECT quote_literal(sq) AS sq FROM pqs WHERE class = '"'"'%s'"'"' AND n = :i \\gset\n%s;\n' "$n" "$c" "${!v}" >"$AB/pgb/places_${wl}_$c.pgb"
+    done
+  done
+  log "ab: places in $db: $(ls "$AB/pgb" | grep -c '^places_') scripts"
+}
+
+# The filter shapes of the plan-choice tests (sql/ab_shapes.sql) in a database of their own (ABDB=shapes), one script shape_NAME.pgb each:
+# time the planner's choice against the pushdown off and forced (main, main:sift.filter_pushdown=off, main:sift.filter_pushdown=force)
+prepare_shapes() {
+  "$STEPS/fetch.sh" sift
+  "$STEPS/cluster.sh" start
+  load_engine sift
+  PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS shapes WITH (FORCE)" -c "CREATE DATABASE shapes"
+  PGDATABASE=shapes q -c "$SETUP" -f "$BENCH/sql/ab_shapes.sql"
+  mkdir -p "$AB/pgb"
+  PGDATABASE=shapes q -F $'\t' -c "SELECT name, stmt FROM shapes" | while IFS=$'\t' read -r name stmt; do echo "$stmt;" >"$AB/pgb/shape_$name.pgb"; done
+  log "ab: shapes in database shapes: $(ls "$AB/pgb" | grep -c '^shape_') scripts"
 }
 
 build() { # LABEL [REF]
@@ -115,6 +155,8 @@ clients() { # CLASS REPS SECS N LABEL...
 
 case ${1:-} in
   prepare) prepare ;;
+  prepare_places) prepare_places ;;
+  shapes) prepare_shapes ;;
   build) shift; build "$@" ;;
   run) shift; run "$@" ;;
   clients) shift; clients "$@" ;;

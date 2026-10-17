@@ -9,6 +9,13 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   assumes a tenth of the rows, so a selective filter is pushed down and a loose one stays after the ranker. Rows, scores and ties are
   unchanged. Slim tier, one backend, user cycles per query: prepared filter class 4.36M to 2.30M (the literal query takes 2.33M), prepared
   join class 6.67M to 5.28M, prepared or and mixed classes unchanged.
+- Planner: the filter pushdown is chosen for a filter on a value stored in one late stretch of the heap. The planner placed the rows of
+  an equality filter on a btree column from the column's statistics, which say nothing about rows loaded by group (correlation near
+  zero), and priced the scan that checks the filter after the ranker as if they were spread over the heap; it now reads where the
+  entries of the key lie from the btree (a few entries, at planning time) and verifies every match before them. A filter at the start
+  of the heap keeps the post-filter scan, so no plan that was fast changes. Slim places, one backend, user cycles per query: filtered
+  one-letter prefix (p1) 8.74M to 1.26M, two-letter prefix (p2) 1.55M to 0.94M; the other places and article shapes are unchanged
+  within noise. Rows, scores and ties are unchanged.
 
 ## 1.3.1
 
