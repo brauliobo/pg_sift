@@ -992,7 +992,7 @@ Block	   *LocalBufferBlockPointers;
 Buffer
 ReadBuffer(Relation reln, BlockNumber blockNum)
 {
-	return (Buffer) (blockNum + 1);
+	return sift_buf_of(reln, blockNum);
 }
 
 void
@@ -1013,7 +1013,7 @@ ReleaseBuffer(Buffer buffer)
 BlockNumber
 BufferGetBlockNumber(Buffer buffer)
 {
-	return buffer - 1;
+	return sift_buf_block(buffer);
 }
 
 struct GenericXLogState

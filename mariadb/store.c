@@ -81,7 +81,7 @@ static uint32 next_relnumber = 1;
 void
 sift_shim_init(void)
 {
-	size_t		len = (size_t) SIFT_NSLOTS * SLOT_BLOCKS * BLCKSZ;
+	size_t		len = (size_t) SIFT_NGSLOTS * SLOT_BLOCKS * BLCKSZ;
 
 	if (BufferBlocks)
 		return;
@@ -106,6 +106,7 @@ sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out)
 	sr->dpp = dpp;
 	sr->opts = (SiftOptions) {.k1 = SIFT_DEFAULT_K1,.b = SIFT_DEFAULT_B,.case_folding = true,.accent_folding = true,
 	.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,.positions = true};
+	memset(sr->gslot, -1, sizeof(sr->gslot));
 	*out = sr;
 	return rel;
 }
@@ -123,17 +124,62 @@ sift_rel_destroy(Relation rel)
 	free(rel);
 }
 
+/*
+ * The block numbers of an index (slot << SLOT_SHIFT | block of the file) are in its manifest, so they are per index; the
+ * range of the buffers is shared by every index of the process: each mapped slot takes a free slot of the range.
+ */
+static struct
+{
+	SiftRel    *sr;
+	int			local;
+}			gowner[SIFT_NGSLOTS];
+
+Buffer
+sift_buf_of(Relation rel, BlockNumber blk)
+{
+	SiftRel    *sr = rel->rd_amcache;
+
+	return (Buffer) (((BlockNumber) sr->gslot[blk >> SIFT_SLOT_SHIFT] << SIFT_SLOT_SHIFT | (blk & (SLOT_BLOCKS - 1))) + 1);
+}
+
+BlockNumber
+sift_buf_block(Buffer buf)
+{
+	BlockNumber g = buf - 1;
+
+	return (BlockNumber) gowner[g >> SIFT_SLOT_SHIFT].local << SIFT_SLOT_SHIFT | (g & (SLOT_BLOCKS - 1));
+}
+
+static int
+gslot_take(SiftRel *sr, int local)
+{
+	int			g = 0;
+
+	while (g < SIFT_NGSLOTS && gowner[g].sr)
+		g++;
+	if (g == SIFT_NGSLOTS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: too many mapped segments in this server")));
+	gowner[g].sr = sr;
+	gowner[g].local = local;
+	return g;
+}
+
 void
 sift_slot_map(SiftRel *sr, int slot, const char *path)
 {
 	int			fd = open(path, O_RDONLY);
 	off_t		size = fd < 0 ? 0 : lseek(fd, 0, SEEK_END);
-	char	   *at = BufferBlocks + (size_t) slot * SLOT_BLOCKS * BLCKSZ;
+	int			g = gslot_take(sr, slot);
+	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
 
 	if (fd < 0 || size < BLCKSZ || size > (off_t) (SLOT_BLOCKS * BLCKSZ) ||
 		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_POPULATE, fd, 0) == MAP_FAILED)
+	{
+		gowner[g].sr = NULL;
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not map segment file \"%s\"", path)));
+	}
 	close(fd);
+	sr->gslot[slot] = g;
 	sr->slot_used[slot] = true;
 	sr->slot_blocks[slot] = size / BLCKSZ;
 }
@@ -141,9 +187,11 @@ sift_slot_map(SiftRel *sr, int slot, const char *path)
 void
 sift_slot_unmap(SiftRel *sr, int slot)
 {
-	char	   *at = BufferBlocks + (size_t) slot * SLOT_BLOCKS * BLCKSZ;
+	int			g = sr->gslot[slot];
+	char	   *at = BufferBlocks + (size_t) g * SLOT_BLOCKS * BLCKSZ;
 
 	mmap(at, (size_t) sr->slot_blocks[slot] * BLCKSZ, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+	gowner[g].sr = NULL;
 	sr->slot_used[slot] = false;
 	sr->slot_blocks[slot] = 0;
 }
@@ -446,6 +494,7 @@ sr_page(SiftStreamReader *sr, uint32 lpage)
 {
 	int			lo = sr->cur;
 	BlockNumber blk;
+	Buffer		buf;
 	Page		page;
 
 	if (lpage < sr->pagestart[lo] || lpage >= sr->pagestart[lo + 1])
@@ -465,9 +514,10 @@ sr_page(SiftStreamReader *sr, uint32 lpage)
 		sr->cur = lo;
 	}
 	blk = sr->extents[lo].start + (lpage - sr->pagestart[lo]);
-	page = BufferGetPage((Buffer) (blk + 1));
+	buf = sift_buf_of(sr->index, blk);
+	page = BufferGetPage(buf);
 	if (SiftPageGetOpaque(page)->gen != sr->gen)
-		sift_store_check_page(sr->index, (Buffer) (blk + 1), SIFT_PT_DATA, sr->gen);
+		sift_store_check_page(sr->index, buf, SIFT_PT_DATA, sr->gen);
 	return (const char *) page;
 }
 
