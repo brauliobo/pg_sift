@@ -369,7 +369,8 @@ SiftPostStats sift_post_stats;
 
 /*
  * The buffer a cursor decodes its groups into. A sparse term (a LIST blob or inline keys) has a row per
- * page of a group, at most as many as it has postings; SIFT_CUR_BUF is for a group of a GROUPED term
+ * page of a group, at most as many as it has postings (post_attach bounds their width); SIFT_CUR_BUF is for a group of
+ * a GROUPED term
  */
 static uint8 *
 cursor_buf(MemoryContext mcxt, const SiftTermInfo *info)
@@ -397,6 +398,9 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 	{
 		if (!(info->flags & SIFT_TERM_INLINE) || info->df == 0 || info->df > SIFT_INLINE_MAX)
 			corrupt_blob(info);
+		for (uint32 i = 0; i < info->df; i++)
+			if (SIFT_OFF(info->inline_keys[i]) - 1 >= SIFT_MAX_OFF)
+				corrupt_blob(info);
 		if (info->flags & SIFT_TERM_POS)
 		{
 			c->poslen = info->pos_len;
@@ -418,7 +422,7 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 	c->blob = blob;
 	if (info->codec_len > c->bloblen || info->codec_len < 4 ||
 		sift_blob_kind(blob) != ((info->flags & SIFT_TERM_SPARSE) ? SIFT_LIST : SIFT_GROUPED) ||
-		sift_blob_n(blob) != info->df)
+		sift_blob_n(blob) != info->df || ((info->flags & SIFT_TERM_SPARSE) && blob[1] > SIFT_LIST_OB_MAX))
 		corrupt_blob(info);
 	/* the codec follows the blob's own lengths, so verify checks them before any cursor does */
 	if (verify && (detail = sift_blob_check(blob, info->codec_len)) != NULL)

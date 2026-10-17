@@ -181,7 +181,7 @@ static const char *check_list(const uint8_t *blob, size_t len)
 	const uint8_t *p = blob + 2, *end = blob + len;
 	uint64_t n, prev = 0, lim;
 	int wtf = blob[0] >> 4 & SIFT_F_TF;
-	if (blob[1] > nbits(SIFT_MAX_OFF - 1)) return "LIST offset bits out of range";
+	if (blob[1] > SIFT_LIST_OB_MAX) return "LIST offset bits out of range";
 	lim = 1ull << (32 + blob[1]);
 	if (!(p = get_varint_n(p, end, &n)) || n == 0 || n > UINT32_MAX || (wtf && p++ >= end)) return "LIST header overruns the blob";
 	for (uint64_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
