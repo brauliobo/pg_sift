@@ -87,7 +87,8 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 - filter pushdown, partitioned tables, keyword facets, parallel scans;
 - maintenance, settings and index options, replication, limits.
 
-Design and on-disk format: [DESIGN.md](DESIGN.md).
+Design and on-disk format: [DESIGN.md](DESIGN.md). A proof of concept of the same engine for MariaDB (UDFs over a queue
+table, no server patches): [mariadb/README.md](mariadb/README.md).
 
 ## Benchmarks
 
