@@ -1,61 +1,92 @@
 /*
- * sqstore.c - sift_store.h over SQLite. A "relation" is the page file of one virtual table: block b is the row
- * b of the shadow table <name>_pages (8 KiB BLOB), cached in memory on first use and never evicted while the
- * table is open (pointers into pages are handed out, like PostgreSQL's shared buffers). Segments are immutable
- * runs of blocks; the manifest (<name>_segs, <name>_meta) is the directory and commits with the SQLite
- * transaction, so a rollback drops segments and block allocations with it. The LIVE pages of a segment
- * are edited in place in the cache and written back with UPDATE before the transaction commits.
+ * sqstore.c - sift_store.h over SQLite. A "relation" is the page file of one virtual table: the 8 KiB engine
+ * blocks are laid end to end in the shadow table <name>_chunks, chunk_bytes per row. A unit of the cache is one chunk
+ * (or one block when the rows are smaller than a block): a bounded set of 64-byte aligned slots filled straight from the
+ * row with sqlite3_blob_read (one copy), evicted by CLOCK, never while pinned. Pointers into pages are handed out
+ * pinned (like PostgreSQL's shared buffers) and stay valid until released. Segments are immutable runs of blocks that
+ * start on a unit boundary, so a retired segment owns whole rows; the manifest (<name>_segs, <name>_meta) is the
+ * directory and commits with the SQLite transaction, so a rollback drops segments and block allocations with it. The
+ * LIVE pages of a segment are edited in place in the cache and written back with sqlite3_blob_write.
  */
 #include "sqapi.h"
 
+#include <sys/mman.h>
+#include <unistd.h>
+
 SQLITE_EXTENSION_INIT3
 
-#define SQ_PAGE_HDR		64
+#define SQ_PAGE			BLCKSZ
+#define SQ_MIN_SLOTS	64				/* the cache holds at least this many units, whatever its size */
 
-typedef struct SqPage
+typedef struct SqSlot
 {
-	uint32		blk;
-	uint32		dirty;
-	char		pad[SQ_PAGE_HDR - 8];
-	char		data[BLCKSZ];
-} SqPage;
+	uint32		chunk;					/* unit held */
+	uint32		next;					/* hash chain: slot + 1 */
+	int32		pins;
+	uint8		ref;
+	uint8		valid;
+	uint8		dirty;					/* bit per block of the unit edited since the last write-back */
+	uint8		queued;					/* in the dirty list */
+} SqSlot;
+
+typedef struct SqCache
+{
+	char	   *map;
+	size_t		map_len;
+	char	   *base;					/* unit-aligned */
+	SqSlot	   *slot;
+	uint32	   *bucket;
+	uint32		nbucket;
+	uint32	   *freelist;
+	uint32		nfree;
+	uint32		soft,					/* units the cache keeps */
+				hard;					/* units it may hold while the rest is pinned */
+	uint32		nvalid;
+	uint32		hand;
+	uint64		hits,
+				misses,
+				evictions;
+} SqCache;
 
 struct SqStore
 {
 	sqlite3    *db;
 	char	   *schema;
 	char	   *name;
+	char	   *chunks_name;			/* <name>_chunks, for sqlite3_blob_open */
 	SqOptions	opts;
 	RelationData rel;
-	/* page cache: pages[blk], valid blocks are < hw */
-	SqPage	  **pages;
-	uint32		npages_cap;
-	uint64		npages_cached;
-	uint64		pages_read;
-	SqPage	  **dirty;
+	int			chunk_bytes;
+	uint32		unit;					/* bytes of a cache unit */
+	uint32		P;						/* blocks per unit */
+	uint32		R;						/* rows per unit */
+	int			cache_kib;
+	SqCache    *cache;
+	bool		shared;					/* parallel readers: lookups only */
+	uint32	   *dirty;					/* units with edited blocks */
 	int			ndirty,
 				dirty_cap;
-	SqPage	  **garbage;			/* replaced pages, freed when no cursor can hold a pointer to them */
-	int			ngarbage,
-				garbage_cap;
 	/* directory */
 	SiftDirSnapshot dir;
+	uint32		lversion;
 	BlockNumber hw;
 	uint64		next_gen;
 	uint32		epoch;
 	uint32		serial;
+	bool		changed;				/* this transaction wrote something */
+	int32		npinned;				/* pins held on any unit */
+	uint64		pin_leaks;				/* calls that ended holding pins (a bug in the engine paths, counted by the tests) */
 	/* statements */
-	sqlite3_stmt *get,
-			   *put,
-			   *upd,
-			   *del,
+	sqlite3_stmt *put,
 			   *ver;
-	sqlite3_blob *blob;
+	sqlite3_blob *blob,
+			   *wblob;
+	/* fault injection */
+	int			fault_mode;
+	int64_t		fault_after;
 };
 
 static uint32 store_serial;
-int			sq_read_mode = 0;
-int			sift_max_expansions = 512;
 
 /* ---------- SQL helpers ---------- */
 
@@ -72,13 +103,16 @@ tbl(const SqStore *st, const char *suffix)
 	return sqlite3_mprintf("\"%w\".\"%w_%s\"", st->schema, st->name, suffix);
 }
 
+/* fmt gets the quoted shadow table suffix as %s, and optionally one more string */
 static void
-exec(SqStore *st, const char *fmt, const char *a, const char *b)
+exec(SqStore *st, const char *fmt, const char *suffix, const char *extra)
 {
-	char	   *sql = sqlite3_mprintf(fmt, a, b);
+	char	   *t = tbl(st, suffix),
+			   *sql = sqlite3_mprintf(fmt, t, extra);
 	int			rc = sqlite3_exec(st->db, sql, NULL, NULL, NULL);
 
 	sqlite3_free(sql);
+	sqlite3_free(t);
 	CHECK(st, rc);
 }
 
@@ -99,62 +133,312 @@ prep(SqStore *st, sqlite3_stmt **slot, const char *fmt, const char *suffix)
 }
 
 static void
+close_blobs(SqStore *st)
+{
+	sqlite3_blob_close(st->blob);
+	sqlite3_blob_close(st->wblob);
+	st->blob = st->wblob = NULL;
+}
+
+static void
 finalize_all(SqStore *st)
 {
-	sqlite3_finalize(st->get);
 	sqlite3_finalize(st->put);
-	sqlite3_finalize(st->upd);
-	sqlite3_finalize(st->del);
 	sqlite3_finalize(st->ver);
-	st->get = st->put = st->upd = st->del = st->ver = NULL;
-	sqlite3_blob_close(st->blob);
-	st->blob = NULL;
+	st->put = st->ver = NULL;
+	close_blobs(st);
+}
+
+/* ---------- geometry ---------- */
+
+static void
+set_geometry(SqStore *st, int chunk_bytes)
+{
+	st->chunk_bytes = chunk_bytes;
+	st->unit = Max((uint32) chunk_bytes, SQ_PAGE);
+	st->P = st->unit / SQ_PAGE;
+	st->R = st->unit / chunk_bytes;
+}
+
+static bool
+chunk_size_ok(int c)
+{
+	return c >= 4096 && c <= 65536 && (c & (c - 1)) == 0;
+}
+
+/* ---------- cache ---------- */
+
+static SqCache *
+cache_new(SqStore *st)
+{
+	SqCache    *c = calloc(1, sizeof(SqCache));
+	size_t		bytes = (size_t) st->cache_kib * 1024;
+
+	c->soft = Max((uint32) (bytes / st->unit), SQ_MIN_SLOTS);
+	c->hard = c->soft * 2 + 512;
+	c->map_len = (size_t) c->hard * st->unit + st->unit;
+	c->map = mmap(NULL, c->map_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	if (c->map == MAP_FAILED)
+	{
+		free(c);
+		elog(ERROR, "sift: cannot reserve %zu bytes of cache", bytes);
+	}
+	c->base = (char *) TYPEALIGN(st->unit, c->map);
+	c->slot = calloc(c->hard, sizeof(SqSlot));
+	c->nbucket = pg_nextpower2_32(c->hard * 2);
+	c->bucket = calloc(c->nbucket, sizeof(uint32));
+	c->freelist = malloc(c->hard * sizeof(uint32));
+	for (uint32 i = 0; i < c->hard; i++)
+		c->freelist[i] = c->hard - 1 - i;
+	c->nfree = c->hard;
+	return c;
+}
+
+static void
+cache_free(SqCache *c)
+{
+	if (c == NULL)
+		return;
+	munmap(c->map, c->map_len);
+	free(c->slot);
+	free(c->bucket);
+	free(c->freelist);
+	free(c);
+}
+
+static inline uint32
+chunk_hash(const SqCache *c, uint32 chunk)
+{
+	return (chunk * 2654435761u) & (c->nbucket - 1);
+}
+
+static inline char *
+slot_data(const SqStore *st, uint32 s)
+{
+	return st->cache->base + (size_t) s * st->unit;
+}
+
+static int64_t
+cache_find(const SqCache *c, uint32 chunk)
+{
+	for (uint32 s = c->bucket[chunk_hash(c, chunk)]; s; s = c->slot[s - 1].next)
+		if (c->slot[s - 1].chunk == chunk)
+			return s - 1;
+	return -1;
+}
+
+static void
+cache_unlink(SqCache *c, uint32 s)
+{
+	uint32	   *pp = &c->bucket[chunk_hash(c, c->slot[s].chunk)];
+
+	while (*pp != s + 1)
+		pp = &c->slot[*pp - 1].next;
+	*pp = c->slot[s].next;
+	c->slot[s].valid = 0;
+	c->freelist[c->nfree++] = s;
+	c->nvalid--;
+}
+
+/* CLOCK: a unit survives one sweep after its last use; pinned and edited ones are skipped */
+static bool
+cache_evict_one(SqCache *c)
+{
+	for (uint32 steps = 0; steps < 2 * c->hard; steps++)
+	{
+		uint32		s = c->hand;
+		SqSlot	   *sl = &c->slot[s];
+
+		c->hand = (c->hand + 1) % c->hard;
+		if (!sl->valid || __atomic_load_n(&sl->pins, __ATOMIC_ACQUIRE) > 0 || sl->dirty)
+			continue;
+		if (sl->ref)
+		{
+			sl->ref = 0;
+			continue;
+		}
+		cache_unlink(c, s);
+		c->evictions++;
+		return true;
+	}
+	return false;
+}
+
+static void
+read_unit(SqStore *st, uint32 unit, char *dst)
+{
+	char	   *last = NULL;
+
+	for (uint32 j = 0; j < st->R; j++)
+	{
+		int64_t		row = (int64_t) unit * st->R + j;
+		int			rc,
+					len;
+
+		if (st->blob)
+			rc = sqlite3_blob_reopen(st->blob, row);
+		else
+			rc = sqlite3_blob_open(st->db, st->schema, st->chunks_name, "data", row, 0, &st->blob);
+		if (rc != SQLITE_OK)
+		{
+			sqlite3_blob_close(st->blob);
+			st->blob = NULL;
+			if (j > 0)
+				break;				/* the last unit of a segment may stop after a row */
+			elog(ERROR, "sift: chunk %u of \"%s\" is missing", unit, st->name);
+		}
+		len = sqlite3_blob_bytes(st->blob);
+		if (len > st->chunk_bytes || sqlite3_blob_read(st->blob, dst + (size_t) j * st->chunk_bytes, len, 0) != SQLITE_OK)
+			elog(ERROR, "sift: cannot read chunk %u of \"%s\": %s", unit, st->name, sqlite3_errmsg(st->db));
+		last = dst + (size_t) j * st->chunk_bytes + len;
+	}
+	if (last && last < dst + st->unit)
+		memset(last, 0, dst + st->unit - last);
+}
+
+/* The slot holding the unit, loaded if need be */
+static uint32
+cache_get(SqStore *st, uint32 unit)
+{
+	SqCache    *c = st->cache;
+	int64_t		f;
+	uint32		s;
+
+	if (c == NULL)
+		c = st->cache = cache_new(st);
+	f = cache_find(c, unit);
+	if (f >= 0)
+	{
+		c->hits++;
+		if (!st->shared)
+			c->slot[f].ref = 1;
+		return f;
+	}
+	if (st->shared)
+		elog(ERROR, "sift: chunk %u of \"%s\" is not cached in a parallel scan", unit, st->name);
+	while (c->nvalid >= c->soft && cache_evict_one(c))
+		;
+	if (c->nfree == 0)
+		elog(ERROR, "sift: the cache of \"%s\" is full of pinned chunks (%u)", st->name, c->hard);
+	s = c->freelist[--c->nfree];
+	c->misses++;
+	read_unit(st, unit, c->base + (size_t) s * st->unit);
+	c->slot[s] = (SqSlot) {.chunk = unit, .valid = 1, .ref = 1, .next = c->bucket[chunk_hash(c, unit)]};
+	c->bucket[chunk_hash(c, unit)] = s + 1;
+	c->nvalid++;
+	return s;
+}
+
+/* All units go; the caller holds no pin */
+static void
+cache_invalidate(SqStore *st)
+{
+	SqCache    *c = st->cache;
+
+	for (uint32 i = 0; c && i < c->hard; i++)
+		if (c->slot[i].valid && c->slot[i].pins <= 0)
+		{
+			c->slot[i].dirty = 0;
+			c->slot[i].queued = 0;
+			cache_unlink(c, i);
+		}
+	st->ndirty = 0;
+	st->epoch++;
+	st->rel.rd_locator.relNumber = (st->serial << 12) + (st->epoch & 0xFFF);
+}
+
+void
+sq_store_invalidate(SqStore *st)
+{
+	cache_invalidate(st);
+}
+
+static void
+cache_drop_unit(SqStore *st, uint32 unit)
+{
+	int64_t		f = st->cache ? cache_find(st->cache, unit) : -1;
+
+	if (f >= 0 && st->cache->slot[f].pins <= 0 && !st->cache->slot[f].dirty)
+		cache_unlink(st->cache, f);
+}
+
+void
+sq_store_set_cache(SqStore *st, int cache_kib)
+{
+	cache_free(st->cache);
+	st->cache = NULL;
+	st->ndirty = 0;
+	st->cache_kib = cache_kib;
+}
+
+void
+sq_store_recover(SqStore *st)
+{
+	SqCache    *c = st->cache;
+
+	for (uint32 i = 0; c && i < c->hard; i++)
+		c->slot[i].pins = 0;
+	__atomic_store_n(&st->npinned, 0, __ATOMIC_RELAXED);
+	close_blobs(st);
+}
+
+bool
+sq_store_preload(SqStore *st)
+{
+	const SiftDirSnapshot *d = &st->dir;
+	uint64		missing = 0;
+
+	if (st->cache == NULL)
+		st->cache = cache_new(st);
+	for (int i = 0; i < d->nsegs; i++)
+		for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
+			missing += cache_find(st->cache, u) < 0;
+	if (st->cache->nvalid + missing > st->cache->soft)
+		return false;
+	for (int i = 0; i < d->nsegs; i++)
+		for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
+			cache_get(st, u);
+	return true;
+}
+
+void
+sq_store_set_shared(SqStore *st, bool on)
+{
+	st->shared = on;
 }
 
 /* ---------- lifecycle ---------- */
 
 SqStore *
-sq_store_new(sqlite3 *db, const char *schema, const char *name, const SqOptions *opts)
+sq_store_new(sqlite3 *db, const char *schema, const char *name, const SqOptions *opts, int chunk_bytes, int cache_kib)
 {
 	SqStore    *st = calloc(1, sizeof(SqStore));
 
 	st->db = db;
 	st->schema = strdup(schema);
 	st->name = strdup(name);
+	st->chunks_name = sqlite3_mprintf("%s_chunks", name);
 	st->opts = *opts;
-	st->serial = ++store_serial;
+	st->cache_kib = cache_kib;
+	st->serial = __atomic_add_fetch(&store_serial, 1, __ATOMIC_RELAXED);
+	set_geometry(st, chunk_bytes);
+	st->hw = 2;								/* blocks 0 and 1 stay unused, as the metapage and directory of an index */
+	st->next_gen = 1;
 	snprintf(st->rel.relname, sizeof(st->rel.relname), "%s", name);
 	st->rel.store = st;
 	st->rel.rd_locator.relNumber = st->serial << 12;
 	return st;
 }
 
-static void
-free_pages(SqPage **v, int n)
-{
-	for (int i = 0; i < n; i++)
-		free(v[i]);
-}
-
-void
-sq_store_release_garbage(SqStore *st)
-{
-	free_pages(st->garbage, st->ngarbage);
-	st->ngarbage = 0;
-}
-
 void
 sq_store_free(SqStore *st)
 {
 	finalize_all(st);
-	for (uint32 i = 0; i < st->npages_cap; i++)
-		free(st->pages[i]);
-	free(st->pages);
-	sq_store_release_garbage(st);
-	free(st->garbage);
+	cache_free(st->cache);
 	free(st->dirty);
 	free(st->schema);
 	free(st->name);
+	sqlite3_free(st->chunks_name);
 	free(st);
 }
 
@@ -170,29 +454,37 @@ sq_store_options(const SqStore *st)
 	return &st->opts;
 }
 
+int
+sq_store_chunk_bytes(const SqStore *st)
+{
+	return st->chunk_bytes;
+}
+
 void
 sq_store_create_tables(SqStore *st)
 {
-	char	   *p = tbl(st, "pages"),
-			   *s = tbl(st, "segs"),
-			   *m = tbl(st, "meta");
+	char	   *chunk = sqlite3_mprintf("%d", st->chunk_bytes);
 
-	exec(st, "CREATE TABLE %s(blk INTEGER PRIMARY KEY, data BLOB)", p, NULL);
-	exec(st, "CREATE TABLE %s(gen INTEGER PRIMARY KEY, header_blk, first_blk, sb_lo, sb_hi, ndocs, sum_dl, bytes, flags)", s, NULL);
-	exec(st, "CREATE TABLE %s(id INTEGER PRIMARY KEY, version, hw, next_gen)", m, NULL);
-	exec(st, "INSERT INTO %s VALUES(1, 1, 2, 1)", m, NULL);
-	sqlite3_free(p);
-	sqlite3_free(s);
-	sqlite3_free(m);
+	if (!chunk_size_ok(st->chunk_bytes))
+		elog(ERROR, "sift: chunk must be a power of two from 4096 to 65536");
+	exec(st, "CREATE TABLE %s(id INTEGER PRIMARY KEY, data BLOB)", "chunks", NULL);
+	exec(st, "CREATE TABLE %s(gen INTEGER PRIMARY KEY, header_blk, first_blk, sb_lo, sb_hi, ndocs, sum_dl, bytes, flags)", "segs", NULL);
+	exec(st, "CREATE TABLE %s(id INTEGER PRIMARY KEY, version, lversion, hw, next_gen)", "meta", NULL);
+	exec(st, "CREATE TABLE %s(k PRIMARY KEY, v) WITHOUT ROWID", "config", NULL);
+	exec(st, "INSERT INTO %s VALUES(1, 1, 1, 2, 1)", "meta", NULL);		/* version, lversion, hw, next_gen */
+	sq_store_config_set(st, "format", SQ_STORE_FORMAT);
+	sq_store_config_set(st, "chunk", st->chunk_bytes);
+	sqlite3_free(chunk);
 }
 
 void
 sq_store_drop_tables(SqStore *st)
 {
 	finalize_all(st);
-	exec(st, "DROP TABLE IF EXISTS %s", tbl(st, "pages"), NULL);
-	exec(st, "DROP TABLE IF EXISTS %s", tbl(st, "segs"), NULL);
-	exec(st, "DROP TABLE IF EXISTS %s", tbl(st, "meta"), NULL);
+	exec(st, "DROP TABLE IF EXISTS %s", "chunks", NULL);
+	exec(st, "DROP TABLE IF EXISTS %s", "segs", NULL);
+	exec(st, "DROP TABLE IF EXISTS %s", "meta", NULL);
+	exec(st, "DROP TABLE IF EXISTS %s", "config", NULL);
 }
 
 void
@@ -201,6 +493,47 @@ sq_store_rename(SqStore *st, const char *newname)
 	finalize_all(st);
 	free(st->name);
 	st->name = strdup(newname);
+	sqlite3_free(st->chunks_name);
+	st->chunks_name = sqlite3_mprintf("%s_chunks", newname);
+	snprintf(st->rel.relname, sizeof(st->rel.relname), "%s", newname);
+}
+
+int64_t
+sq_store_config_get(SqStore *st, const char *key, int64_t dflt)
+{
+	sqlite3_stmt *q;
+	char	   *t = tbl(st, "config"),
+			   *sql = sqlite3_mprintf("SELECT v FROM %s WHERE k = ?1", t);
+	int			rc = sqlite3_prepare_v2(st->db, sql, -1, &q, NULL);
+	int64_t		v = dflt;
+
+	sqlite3_free(sql);
+	sqlite3_free(t);
+	CHECK(st, rc);
+	sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+	if (sqlite3_step(q) == SQLITE_ROW)
+		v = sqlite3_column_int64(q, 0);
+	sqlite3_finalize(q);
+	return v;
+}
+
+void
+sq_store_config_set(SqStore *st, const char *key, int64_t value)
+{
+	sqlite3_stmt *q;
+	char	   *t = tbl(st, "config"),
+			   *sql = sqlite3_mprintf("INSERT OR REPLACE INTO %s VALUES(?1, ?2)", t);
+	int			rc = sqlite3_prepare_v2(st->db, sql, -1, &q, NULL);
+
+	sqlite3_free(sql);
+	sqlite3_free(t);
+	CHECK(st, rc);
+	sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+	sqlite3_bind_int64(q, 2, value);
+	rc = sqlite3_step(q);
+	sqlite3_finalize(q);
+	CHECK(st, rc);
+	st->changed = true;
 }
 
 /* ---------- directory ---------- */
@@ -240,11 +573,30 @@ analyzer_hash(const SqStore *st)
 }
 
 static void
+load_config(SqStore *st)
+{
+	int64_t		format = sq_store_config_get(st, "format", 0),
+				chunk = sq_store_config_get(st, "chunk", 0);
+
+	if (format != SQ_STORE_FORMAT)
+		elog(ERROR, "sift: table \"%s\" has storage format %lld, this build reads %d", st->name, (long long) format,
+			 SQ_STORE_FORMAT);
+	if (!chunk_size_ok(chunk))
+		elog(ERROR, "sift: table \"%s\" has an invalid chunk size %lld", st->name, (long long) chunk);
+	if (chunk != st->chunk_bytes)
+	{
+		cache_free(st->cache);
+		st->cache = NULL;
+		set_geometry(st, chunk);
+	}
+}
+
+static void
 load_meta(SqStore *st, uint32 *version)
 {
 	sqlite3_stmt *q;
 	char	   *t = tbl(st, "meta"),
-			   *sql = sqlite3_mprintf("SELECT version, hw, next_gen FROM %s", t);
+			   *sql = sqlite3_mprintf("SELECT version, lversion, hw, next_gen FROM %s", t);
 	int			rc = sqlite3_prepare_v2(st->db, sql, -1, &q, NULL);
 
 	sqlite3_free(sql);
@@ -256,8 +608,9 @@ load_meta(SqStore *st, uint32 *version)
 		elog(ERROR, "sift: table \"%s\" has no metadata row", st->name);
 	}
 	*version = sqlite3_column_int(q, 0);
-	st->hw = (BlockNumber) sqlite3_column_int64(q, 1);
-	st->next_gen = sqlite3_column_int64(q, 2);
+	st->lversion = sqlite3_column_int(q, 1);
+	st->hw = (BlockNumber) sqlite3_column_int64(q, 2);
+	st->next_gen = sqlite3_column_int64(q, 3);
 	sqlite3_finalize(q);
 }
 
@@ -318,94 +671,79 @@ init_meta(SqStore *st)
 	m->high_water = st->hw;
 }
 
-/* Cursors may still point into a cached page: it is freed later, when the table has no open cursor */
-static void
-drop_page(SqStore *st, uint32 blk)
+/* The committed (or own uncommitted) versions of the manifest and of the LIVE pages */
+static bool
+versions_moved(SqStore *st)
 {
-	SqPage	   *p = st->pages[blk];
-
-	if (p == NULL)
-		return;
-	for (int i = 0; p->dirty && i < st->ndirty; i++)
-		if (st->dirty[i] == p)
-			st->dirty[i] = st->dirty[--st->ndirty];
-	if (st->ngarbage == st->garbage_cap)
-	{
-		st->garbage_cap = st->garbage_cap ? st->garbage_cap * 2 : 64;
-		st->garbage = realloc(st->garbage, st->garbage_cap * sizeof(SqPage *));
-	}
-	st->garbage[st->ngarbage++] = p;
-	st->pages[blk] = NULL;
-	st->npages_cached--;
-}
-
-static void
-invalidate_pages(SqStore *st, bool all)
-{
-	for (uint32 i = 0; i < st->npages_cap; i++)
-		drop_page(st, i);
-	st->ndirty = 0;
-}
-
-void
-sq_store_invalidate(SqStore *st)
-{
-	invalidate_pages(st, true);
-}
-
-/* The committed (or own uncommitted) version of the manifest, which moves whenever a segment is published or retired */
-static uint32
-meta_version(SqStore *st)
-{
-	sqlite3_stmt *q = prep(st, &st->ver, "SELECT version FROM %s", "meta");
+	sqlite3_stmt *q = prep(st, &st->ver, "SELECT version, lversion FROM %s", "meta");
 	int			rc = sqlite3_step(q);
-	uint32		version = rc == SQLITE_ROW ? sqlite3_column_int(q, 0) : 0;
+	bool		moved = true;
 
+	if (rc == SQLITE_ROW)
+		moved = (uint32) sqlite3_column_int(q, 0) != st->dir.version || (uint32) sqlite3_column_int(q, 1) != st->lversion;
 	sqlite3_reset(q);
 	if (rc != SQLITE_ROW)
 		elog(ERROR, "sift: cannot read the metadata of \"%s\": %s", st->name, sqlite3_errmsg(st->db));
-	return version;
+	return moved;
 }
 
+/*
+ * Another connection's commit adds and retires whole segments, whose chunks are immutable and numbered for good, so
+ * the cache stays; only an edit of LIVE pages (lversion) or a rollback of ours makes cached chunks untrustworthy.
+ */
 bool
 sq_store_refresh(SqStore *st, bool changed_only)
 {
-	uint32		version;
+	uint32		version,
+				lversion = st->lversion;
 
-	if (changed_only && st->dir.version != 0 && meta_version(st) == st->dir.version)
+	if (changed_only && st->dir.version != 0 && !versions_moved(st))
 		return false;
+	if (!changed_only)
+		load_config(st);
 	load_meta(st, &version);
 	load_segs(st);
 	st->dir.version = version;
 	init_meta(st);
-	/* another connection (or a rollback) changed the file: nothing cached can be trusted */
-	invalidate_pages(st, true);
-	st->epoch++;
-	st->rel.rd_locator.relNumber = (st->serial << 12) + (st->epoch & 0xFFF);
+	if (!changed_only || st->lversion != lversion)
+		cache_invalidate(st);
 	return true;
 }
 
+/* final: the transaction is over; else a savepoint was rolled back and what came before it may still be undone */
 void
-sq_store_rollback(SqStore *st)
+sq_store_rollback(SqStore *st, bool final)
 {
+	if (!st->changed)
+		return;
+	st->changed = !final;
+	close_blobs(st);
 	st->dir.version = 0;
 	sq_store_refresh(st, false);
 }
 
+void
+sq_store_commit(SqStore *st)
+{
+	st->changed = false;
+}
+
 static void
-persist_meta(SqStore *st)
+persist_meta(SqStore *st, bool live)
 {
 	char	   *t = tbl(st, "meta"),
-			   *sql = sqlite3_mprintf("UPDATE %s SET version = version + 1, hw = %u, next_gen = %llu", t,
-									  st->hw, (unsigned long long) st->next_gen);
+			   *sql = sqlite3_mprintf("UPDATE %s SET version = version + 1, lversion = lversion + %d, hw = %u, next_gen = %llu", t,
+									  live, st->hw, (unsigned long long) st->next_gen);
 	int			rc = sqlite3_exec(st->db, sql, NULL, NULL, NULL);
 
 	sqlite3_free(sql);
 	sqlite3_free(t);
 	CHECK(st, rc);
 	st->dir.version++;
+	st->lversion += live;
 	st->dir.meta.next_gen = st->next_gen;
 	st->dir.meta.high_water = st->hw;
+	st->changed = true;
 }
 
 void
@@ -427,7 +765,14 @@ sq_store_publish(SqStore *st, const SiftSegEntry *e)
 	d->segs[d->nsegs++] = *e;
 	d->meta.ndocs += e->ndocs;
 	d->meta.sum_dl += e->sum_dl;
-	persist_meta(st);
+	persist_meta(st, false);
+}
+
+void
+sq_store_seg_rows(const SqStore *st, const SiftSegEntry *e, int64_t *lo, int64_t *hi)
+{
+	*lo = (int64_t) (e->reserved / st->P) * st->R;
+	*hi = (int64_t) (e->header_blk / st->P) * st->R + st->R - 1;
 }
 
 void
@@ -435,6 +780,8 @@ sq_store_retire(SqStore *st, uint64 gen)
 {
 	SiftDirSnapshot *d = &st->dir;
 	int			i = 0;
+	int64_t		lo,
+				hi;
 	char	   *t;
 	char	   *sql;
 	int			rc;
@@ -443,14 +790,16 @@ sq_store_retire(SqStore *st, uint64 gen)
 		i++;
 	if (i == d->nsegs)
 		elog(ERROR, "sift: segment %llu is not in the directory", (unsigned long long) gen);
-	t = tbl(st, "pages");
-	sql = sqlite3_mprintf("DELETE FROM %s WHERE blk BETWEEN %u AND %u", t, d->segs[i].reserved, d->segs[i].header_blk);
+	sq_store_seg_rows(st, &d->segs[i], &lo, &hi);
+	close_blobs(st);
+	t = tbl(st, "chunks");
+	sql = sqlite3_mprintf("DELETE FROM %s WHERE id BETWEEN %lld AND %lld", t, (long long) lo, (long long) hi);
 	rc = sqlite3_exec(st->db, sql, NULL, NULL, NULL);
 	sqlite3_free(sql);
 	sqlite3_free(t);
 	CHECK(st, rc);
-	for (uint32 b = d->segs[i].reserved; b <= d->segs[i].header_blk && b < st->npages_cap; b++)
-		drop_page(st, b);
+	for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
+		cache_drop_unit(st, u);
 	t = tbl(st, "segs");
 	sql = sqlite3_mprintf("DELETE FROM %s WHERE gen = %llu", t, (unsigned long long) gen);
 	rc = sqlite3_exec(st->db, sql, NULL, NULL, NULL);
@@ -461,7 +810,7 @@ sq_store_retire(SqStore *st, uint64 gen)
 	d->meta.sum_dl -= d->segs[i].sum_dl;
 	memmove(&d->segs[i], &d->segs[i + 1], (d->nsegs - i - 1) * sizeof(SiftSegEntry));
 	d->nsegs--;
-	persist_meta(st);
+	persist_meta(st, false);
 }
 
 void
@@ -477,114 +826,131 @@ sq_store_set_flags(SqStore *st, uint64 gen, uint16 flags)
 	for (int i = 0; i < st->dir.nsegs; i++)
 		if (st->dir.segs[i].gen == gen)
 			st->dir.segs[i].flags = flags;
-	persist_meta(st);
+	persist_meta(st, false);
+}
+
+/* ---------- chunk rows: statistics and the integrity check ---------- */
+
+bool
+sq_store_rows_between(SqStore *st, int64_t lo, int64_t hi, int64_t *count, int64_t *bytes)
+{
+	sqlite3_stmt *q;
+	char	   *t = tbl(st, "chunks"),
+			   *sql = sqlite3_mprintf("SELECT count(*), coalesce(sum(length(data)), 0) FROM %s WHERE id BETWEEN %lld AND %lld", t,
+									  (long long) lo, (long long) hi);
+	bool		ok = sqlite3_prepare_v2(st->db, sql, -1, &q, NULL) == SQLITE_OK;
+
+	if (ok && sqlite3_step(q) == SQLITE_ROW)
+	{
+		*count = sqlite3_column_int64(q, 0);
+		*bytes = sqlite3_column_int64(q, 1);
+	}
+	else
+		ok = false;
+	if (q)
+		sqlite3_finalize(q);
+	sqlite3_free(sql);
+	sqlite3_free(t);
+	return ok;
+}
+
+int64_t
+sq_store_rows_total(SqStore *st)
+{
+	int64_t		n = 0,
+				b;
+
+	sq_store_rows_between(st, INT64_MIN, INT64_MAX, &n, &b);
+	return n;
+}
+
+void
+sq_store_stats(SqStore *st, SqStoreStats *out)
+{
+	SqCache    *c = st->cache;
+
+	memset(out, 0, sizeof(*out));
+	out->pin_leaks = st->pin_leaks;
+	sq_store_rows_between(st, INT64_MIN, INT64_MAX, (int64_t *) &out->chunks_total, (int64_t *) &out->bytes_total);
+	if (c)
+	{
+		out->cached_bytes = (uint64) c->nvalid * st->unit;
+		out->hits = c->hits;
+		out->misses = c->misses;
+		out->evictions = c->evictions;
+		out->slots = c->soft;
+		for (uint32 i = 0; i < c->hard; i++)
+			out->pinned += c->slot[i].valid && c->slot[i].pins > 0;
+	}
 }
 
 /* ---------- pages ---------- */
 
-static void
-put_row(SqStore *st, sqlite3_stmt *q, BlockNumber blk, const void *data)
-{
-	sqlite3_bind_int64(q, 1, blk);
-	sqlite3_bind_blob(q, 2, data, BLCKSZ, SQLITE_STATIC);
-	{
-		int			rc = sqlite3_step(q);
+/* The store the calling thread is working for: ReleaseBuffer has no relation argument */
+static _Thread_local SqStore *cur_store;
 
-		sqlite3_reset(q);
-		sqlite3_clear_bindings(q);
-		CHECK(st, rc);
-	}
+SqStore *
+sq_store_enter(SqStore *st)
+{
+	SqStore    *old = cur_store;
+
+	cur_store = st;
+	return old;
 }
 
 void
-sq_store_flush_pages(SqStore *st)
+sq_store_leave(SqStore *old)
 {
-	for (int i = 0; i < st->ndirty; i++)
-		if (st->dirty[i]->dirty)
-		{
-			put_row(st, prep(st, &st->upd, "UPDATE %s SET data = ?2 WHERE blk = ?1", "pages"), st->dirty[i]->blk,
-					st->dirty[i]->data);
-			st->dirty[i]->dirty = 0;
-		}
-	st->ndirty = 0;
-	sqlite3_blob_close(st->blob);
-	st->blob = NULL;
+	SqStore    *st = cur_store;
+
+	cur_store = old;
+	if (__atomic_load_n(&st->npinned, __ATOMIC_ACQUIRE) != 0 && !st->shared)
+	{
+		st->pin_leaks++;
+		sq_store_recover(st);
+	}
 }
 
-static void
-read_page(SqStore *st, BlockNumber blk, char *dst)
+static inline uint32
+slot_index(const SqStore *st, Buffer buf)
 {
-	if (sq_read_mode == 1)
-	{
-		int			rc;
-
-		if (st->blob)
-			rc = sqlite3_blob_reopen(st->blob, blk);
-		else
-		{
-			char	   *tn = sqlite3_mprintf("%s_pages", st->name);
-
-			rc = sqlite3_blob_open(st->db, st->schema, tn, "data", blk, 0, &st->blob);
-			sqlite3_free(tn);
-		}
-		if (rc == SQLITE_OK)
-			rc = sqlite3_blob_read(st->blob, dst, BLCKSZ, 0);
-		if (rc != SQLITE_OK)
-		{
-			sqlite3_blob_close(st->blob);
-			st->blob = NULL;
-			elog(ERROR, "sift: cannot read block %u: %s", blk, sqlite3_errmsg(st->db));
-		}
-		return;
-	}
-	{
-		sqlite3_stmt *q = prep(st, &st->get, "SELECT data FROM %s WHERE blk = ?1", "pages");
-		int			rc;
-
-		sqlite3_bind_int64(q, 1, blk);
-		rc = sqlite3_step(q);
-		if (rc == SQLITE_ROW && sqlite3_column_bytes(q, 0) == BLCKSZ)
-			memcpy(dst, sqlite3_column_blob(q, 0), BLCKSZ);
-		sqlite3_reset(q);
-		if (rc != SQLITE_ROW)
-			elog(ERROR, "sift: block %u of \"%s\" is missing", blk, st->name);
-	}
+	return (uint32) ((buf - st->cache->base) / st->unit);
 }
 
 Buffer
 ReadBuffer(Relation rel, BlockNumber blkno)
 {
 	SqStore    *st = rel->store;
-	SqPage	   *p;
+	uint32		s = cache_get(st, blkno / st->P);
 
-	if (blkno >= st->npages_cap)
-	{
-		uint32		cap = Max(1024, st->npages_cap);
+	__atomic_fetch_add(&st->cache->slot[s].pins, 1, __ATOMIC_ACQUIRE);
+	__atomic_fetch_add(&st->npinned, 1, __ATOMIC_RELAXED);
+	return slot_data(st, s) + (size_t) (blkno % st->P) * SQ_PAGE;
+}
 
-		while (cap <= blkno)
-			cap *= 2;
-		st->pages = realloc(st->pages, cap * sizeof(SqPage *));
-		memset(st->pages + st->npages_cap, 0, (cap - st->npages_cap) * sizeof(SqPage *));
-		st->npages_cap = cap;
-	}
-	p = st->pages[blkno];
-	if (p == NULL)
+void
+sq_unpin(Buffer buf)
+{
+	SqStore    *st = cur_store;
+	SqSlot	   *sl;
+
+	if (buf == NULL)
+		return;
+	sl = &st->cache->slot[slot_index(st, buf)];
+	if (__atomic_load_n(&sl->pins, __ATOMIC_RELAXED) > 0)
 	{
-		p = aligned_alloc(64, sizeof(SqPage));
-		p->blk = blkno;
-		p->dirty = 0;
-		read_page(st, blkno, p->data);
-		st->pages[blkno] = p;
-		st->npages_cached++;
-		st->pages_read++;
+		__atomic_fetch_sub(&sl->pins, 1, __ATOMIC_RELEASE);
+		__atomic_fetch_sub(&st->npinned, 1, __ATOMIC_RELAXED);
 	}
-	return p->data;
 }
 
 BlockNumber
 BufferGetBlockNumber(Buffer buf)
 {
-	return ((SqPage *) (buf - SQ_PAGE_HDR))->blk;
+	SqStore    *st = cur_store;
+	uint32		s = slot_index(st, buf);
+
+	return st->cache->slot[s].chunk * st->P + (uint32) ((buf - slot_data(st, s)) / SQ_PAGE);
 }
 
 GenericXLogState *
@@ -596,19 +962,20 @@ GenericXLogStart(Relation rel)
 Page
 GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buf, int flags)
 {
-	Relation	rel = (Relation) state;
-	SqStore    *st = rel->store;
-	SqPage	   *p = (SqPage *) (buf - SQ_PAGE_HDR);
+	SqStore    *st = ((Relation) state)->store;
+	uint32		s = slot_index(st, buf);
+	SqSlot	   *sl = &st->cache->slot[s];
 
-	if (!p->dirty)
+	sl->dirty |= 1 << ((buf - slot_data(st, s)) / SQ_PAGE);
+	if (!sl->queued)
 	{
-		p->dirty = 1;
+		sl->queued = 1;
 		if (st->ndirty == st->dirty_cap)
 		{
 			st->dirty_cap = st->dirty_cap ? st->dirty_cap * 2 : 64;
-			st->dirty = realloc(st->dirty, st->dirty_cap * sizeof(SqPage *));
+			st->dirty = realloc(st->dirty, st->dirty_cap * sizeof(uint32));
 		}
-		st->dirty[st->ndirty++] = p;
+		st->dirty[st->ndirty++] = s;
 	}
 	return buf;
 }
@@ -623,27 +990,56 @@ GenericXLogAbort(GenericXLogState *state)
 {
 }
 
-void
-sq_store_stats(SqStore *st, SqStoreStats *out)
+/* Writes the byte range [off, off + len) of a unit back into its rows, in place */
+static void
+write_range(SqStore *st, uint32 unit, uint32 off, uint32 len, const char *src)
 {
-	sqlite3_stmt *q;
-	char	   *t = tbl(st, "pages"),
-			   *sql = sqlite3_mprintf("SELECT count(*), coalesce(sum(length(data)), 0) FROM %s", t);
-
-	memset(out, 0, sizeof(*out));
-	out->pages_read = st->pages_read;
-	out->pages_cached = st->npages_cached;
-	if (sqlite3_prepare_v2(st->db, sql, -1, &q, NULL) == SQLITE_OK)
+	for (uint32 j = off / st->chunk_bytes; j <= (off + len - 1) / st->chunk_bytes; j++)
 	{
-		if (sqlite3_step(q) == SQLITE_ROW)
+		uint32		lo = Max(off, j * (uint32) st->chunk_bytes),
+					hi = Min(off + len, (j + 1) * (uint32) st->chunk_bytes);
+		int64_t		row = (int64_t) unit * st->R + j;
+		int			rc;
+
+		if (st->wblob)
+			rc = sqlite3_blob_reopen(st->wblob, row);
+		else
+			rc = sqlite3_blob_open(st->db, st->schema, st->chunks_name, "data", row, 1, &st->wblob);
+		if (rc == SQLITE_OK)
+			rc = sqlite3_blob_write(st->wblob, src + (lo - off), hi - lo, lo - j * st->chunk_bytes);
+		if (rc != SQLITE_OK)
 		{
-			out->pages_total = sqlite3_column_int64(q, 0);
-			out->bytes_total = sqlite3_column_int64(q, 1);
+			sqlite3_blob_close(st->wblob);
+			st->wblob = NULL;
+			elog(ERROR, "sift: cannot write chunk %u of \"%s\": %s", unit, st->name, sqlite3_errmsg(st->db));
 		}
-		sqlite3_finalize(q);
 	}
-	sqlite3_free(sql);
-	sqlite3_free(t);
+}
+
+void
+sq_store_flush_pages(SqStore *st)
+{
+	bool		wrote = false;
+
+	close_blobs(st);
+	for (int i = 0; i < st->ndirty; i++)
+	{
+		SqSlot	   *sl = &st->cache->slot[st->dirty[i]];
+
+		for (uint32 pg = 0; pg < st->P; pg++)
+			if (sl->dirty >> pg & 1)
+			{
+				write_range(st, sl->chunk, pg * SQ_PAGE, SQ_PAGE, slot_data(st, st->dirty[i]) + (size_t) pg * SQ_PAGE);
+				wrote = true;
+			}
+		sl->dirty = 0;
+		sl->queued = 0;
+	}
+	st->ndirty = 0;
+	sqlite3_blob_close(st->wblob);
+	st->wblob = NULL;
+	if (wrote)
+		persist_meta(st, true);
 }
 
 /* ---------- sift_store.h: pages, directory ---------- */
@@ -708,6 +1104,7 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->nextents = nextents;
 	sr->gen = gen;
 	sr->buf = InvalidBuffer;
+	sr->blkno = InvalidBlockNumber;
 	sr->pagestart = palloc((nextents + 1) * sizeof(uint32));
 	for (int i = 0; i < nextents; i++)
 	{
@@ -717,10 +1114,13 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->pagestart[nextents] = sr->npages;
 }
 
+/* The reader keeps its current page pinned until it moves to another one or is released */
 static Buffer
 sr_page(SiftStreamReader *sr, uint32 p)
 {
 	int			e = sr->cur;
+	BlockNumber blk;
+	Buffer		nb;
 
 	if (p < sr->pagestart[e] || p >= sr->pagestart[e + 1])
 	{
@@ -738,7 +1138,14 @@ sr_page(SiftStreamReader *sr, uint32 p)
 		}
 		e = sr->cur = lo;
 	}
-	return ReadBuffer(sr->index, sr->extents[e].start + (p - sr->pagestart[e]));
+	blk = sr->extents[e].start + (p - sr->pagestart[e]);
+	if (sr->buf != InvalidBuffer && sr->blkno == blk)
+		return sr->buf;
+	nb = ReadBuffer(sr->index, blk);
+	sq_unpin(sr->buf);
+	sr->buf = nb;
+	sr->blkno = blk;
+	return nb;
 }
 
 const void *
@@ -774,31 +1181,80 @@ sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 void
 sift_sr_release(SiftStreamReader *sr)
 {
+	sq_unpin(sr->buf);
+	sr->buf = InvalidBuffer;
+	sr->blkno = InvalidBlockNumber;
 }
 
 /* ---------- write target and stream writer ---------- */
 
+/* Pages arrive in ascending block order; a unit is inserted as a row (or rows) once its last page is behind us */
 struct SiftWriteTarget
 {
 	SqStore    *st;
 	BlockNumber first;
 	BlockNumber next;
+	int64_t		cur;					/* unit being filled, -1 none */
+	uint32		filled;					/* blocks of it written */
+	char	   *buf;
 };
 
 SiftWriteTarget *
 sift_wt_begin(Relation index, SiftWriteMode mode)
 {
 	SiftWriteTarget *wt = palloc0(sizeof(SiftWriteTarget));
+	SqStore    *st = index->store;
 
-	wt->st = index->store;
-	wt->first = wt->next = index->store->hw;
+	wt->st = st;
+	wt->first = wt->next = (st->hw + st->P - 1) / st->P * st->P;
+	wt->cur = -1;
+	wt->buf = MemoryContextAllocAligned(CurrentMemoryContext, st->unit, 64, 0);
 	return wt;
+}
+
+static void
+fault_check(SqStore *st)
+{
+	if (st->fault_mode && st->fault_after-- == 0)
+	{
+		if (st->fault_mode == 2)
+			_exit(86);
+		st->fault_mode = 0;
+		elog(ERROR, "sift: injected fault while writing chunks");
+	}
+}
+
+static void
+unit_flush(SiftWriteTarget *wt)
+{
+	SqStore    *st = wt->st;
+	sqlite3_stmt *q = prep(st, &st->put, "INSERT INTO %s VALUES(?1, ?2)", "chunks");
+	uint32		total = wt->filled * SQ_PAGE;
+
+	if (wt->cur < 0)
+		return;
+	for (uint32 j = 0; j * st->chunk_bytes < total; j++)
+	{
+		int			rc;
+
+		fault_check(st);
+		sqlite3_bind_int64(q, 1, wt->cur * st->R + j);
+		sqlite3_bind_blob(q, 2, wt->buf + (size_t) j * st->chunk_bytes, Min((uint32) st->chunk_bytes, total - j * st->chunk_bytes),
+						  SQLITE_STATIC);
+		rc = sqlite3_step(q);
+		sqlite3_reset(q);
+		sqlite3_clear_bindings(q);
+		CHECK(st, rc);
+	}
+	wt->cur = -1;
 }
 
 void
 sift_wt_finish(SiftWriteTarget *wt)
 {
+	unit_flush(wt);
 	wt->st->hw = wt->next;
+	wt->st->changed = true;
 }
 
 BlockNumber
@@ -819,7 +1275,20 @@ sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks)
 void
 sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 {
-	put_row(wt->st, prep(wt->st, &wt->st->put, "INSERT INTO %s VALUES(?1, ?2)", "pages"), blkno, page);
+	SqStore    *st = wt->st;
+	int64_t		unit = blkno / st->P;
+
+	if (unit != wt->cur)
+	{
+		if (unit < wt->cur)
+			elog(ERROR, "sift: block %u written out of order", blkno);
+		unit_flush(wt);
+		wt->cur = unit;
+		wt->filled = 0;
+		memset(wt->buf, 0, st->unit);
+	}
+	memcpy(wt->buf + (size_t) (blkno % st->P) * SQ_PAGE, page, SQ_PAGE);
+	wt->filled = Max(wt->filled, blkno % st->P + 1);
 }
 
 BlockNumber
@@ -829,6 +1298,13 @@ sift_wt_write_page(SiftWriteTarget *wt, Page page)
 
 	sift_wt_put_page(wt, blk, page);
 	return blk;
+}
+
+void
+sq_store_set_fault(SqStore *st, int mode, int64_t after_chunks)
+{
+	st->fault_mode = mode;
+	st->fault_after = after_chunks;
 }
 
 struct SiftStreamWriter

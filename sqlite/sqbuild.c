@@ -1,8 +1,8 @@
 /*
  * sqbuild.c - segment construction for the SQLite table: an in-memory inverted buffer (the role of SiftInvBuf in
  * src/sift_build.c, whose heap build, spill files and parallel workers do not apply), written as an
- * immutable segment through the unmodified segment writer; merge (dump the live part of segments into a buffer,
- * write one segment); and deletion of one document by clearing its liveness bit.
+ * immutable segment through the unmodified segment writer, and deletion of one document by clearing its liveness bit.
+ * The merge of segments is in sqmerge.c.
  */
 #include "sqapi.h"
 
@@ -307,7 +307,7 @@ typedef struct RankCtx
 	const uint32 *rank;
 } RankCtx;
 
-static RankCtx rank_ctx;
+static _Thread_local RankCtx rank_ctx;
 
 static int
 posting_cmp(const void *a, const void *b)
@@ -491,96 +491,6 @@ sq_inv_write(SqInv *inv, SqStore *st)
 	sq_inv_clear(inv);
 }
 
-/* ---------- merge ---------- */
-
-typedef struct MergeCtx
-{
-	SqInv	   *inv;
-	SiftKey    *keys;				/* the documents of the segment being dumped, ascending */
-	uint32	   *ords;
-	int			n;
-} MergeCtx;
-
-static void
-merge_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
-{
-	MergeCtx   *c = arg;
-
-	c->keys = realloc(c->keys, (c->n + n) * sizeof(SiftKey));
-	c->ords = realloc(c->ords, (c->n + n) * sizeof(uint32));
-	for (int i = 0; i < n; i++)
-	{
-		c->keys[c->n + i] = keys[i];
-		c->ords[c->n + i] = add_doc(c->inv, keys[i], dl[i]);
-	}
-	c->n += n;
-}
-
-/* The index in c->keys, at or after from, of key (c->keys is ascending) */
-static uint32
-merge_doc(const MergeCtx *c, uint32 from, SiftKey key)
-{
-	uint32		hi = c->n;
-
-	while (from < hi)
-	{
-		uint32		mid = from + (hi - from) / 2;
-
-		if (c->keys[mid] < key)
-			from = mid + 1;
-		else
-			hi = mid;
-	}
-	return from;
-}
-
-static bool
-merge_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys, const uint8 *tf,
-		   const uint16 *dl, const uint8 *pos, const uint32 *poslen)
-{
-	MergeCtx   *c = arg;
-	uint32		hash = sift_term_hash(term, len),
-				d = 0;
-	const uint8 *rec = pos;
-
-	for (uint32 i = 0; i < info->df; i++)
-	{
-		d = merge_doc(c, d, keys[i]);
-		add_posting(c->inv, term, len, hash, c->ords[d], tf[i], pos ? rec : NULL, pos ? poslen[i] : 0);
-		if (pos)
-			rec += poslen[i];
-	}
-	return true;
-}
-
-void
-sq_merge(SqStore *st, const uint64 *gens, int n, bool positions)
-{
-	const SqOptions *o = sq_store_options(st);
-	SiftScoreRef ref = {(float4) o->base.k1, (float4) o->base.b, 0};
-	SqInv	   *inv = sq_inv_new(positions);
-	const SiftDirSnapshot *dir = sq_store_dir(st);
-
-	for (int g = 0; g < n; g++)
-	{
-		MergeCtx	c = {.inv = inv};
-		SiftSegment *seg = NULL;
-
-		for (int i = 0; i < dir->nsegs && seg == NULL; i++)
-			if (dir->segs[i].gen == gens[g])
-				seg = sift_seg_open(sq_store_rel(st), &dir->segs[i], CurrentMemoryContext);
-		if (seg == NULL)
-			elog(ERROR, "sift: segment %llu is not in the directory", (unsigned long long) gens[g]);
-		sift_seg_dump(seg, &ref, merge_docs, merge_term, &c);
-		free(c.keys);
-		free(c.ords);
-	}
-	sq_inv_write(inv, st);
-	for (int g = 0; g < n; g++)
-		sq_store_retire(st, gens[g]);
-	sq_inv_free(inv);
-}
-
 /* ---------- delete ---------- */
 
 static void
@@ -600,6 +510,9 @@ clear_bit(SqStore *st, SiftSegment *seg, uint32 sb, uint64 rank)
 	lh->ndead++;
 	SiftPageGetData(page0)[sizeof(SiftLiveHeaderData) + (sb - seg->hdr->sb_lo) / 8] |= 1 << ((sb - seg->hdr->sb_lo) % 8);
 	GenericXLogFinish(state);
+	ReleaseBuffer(buf);
+	if (buf0 != buf)
+		ReleaseBuffer(buf0);
 }
 
 /* The rank of key in the segment (its position among the segment's documents), or -1 when the segment has no live document with it */
@@ -654,9 +567,11 @@ sq_delete_key(SqStore *st, SiftKey key)
 			continue;
 		seg = sift_seg_open(sq_store_rel(st), &e, CurrentMemoryContext);
 		rank = live_rank(seg, key);
+		if (rank >= 0)
+			clear_bit(st, seg, sb, rank);
+		sift_seg_close(seg);
 		if (rank < 0)
 			continue;
-		clear_bit(st, seg, sb, rank);
 		if (!(e.flags & SIFT_SEG_DIRTY))
 			sq_store_set_flags(st, e.gen, e.flags | SIFT_SEG_DIRTY);
 		return true;
