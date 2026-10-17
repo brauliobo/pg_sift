@@ -353,7 +353,7 @@ cmd_regress() { # [--run] [DIR|results.tsv ...]
     [[ -n $engines ]] || engines="sift sift_ref"
     [[ -n $classes ]] || classes="and or phrase count filter join p1 p3 w1 a3"
     [[ -n $workloads ]] || workloads="top boost"
-    [[ -n $rounds ]] || rounds=3-5   # a standard error needs more than 2 rounds to mean something when a 5% difference is to be told from noise
+    [[ -n $rounds ]] || rounds=3-3   # three rounds, the most the harness runs by default: a 5% difference is told from the noise by the standard errors of the cells
     check_classes; preflight; ready; tier_env
     "$STEPS/fetch.sh" sift
     local sel; sel=" $(selected)"
