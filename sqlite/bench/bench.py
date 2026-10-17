@@ -39,7 +39,9 @@ def main():
     ap.add_argument('--table', default='ft')
     ap.add_argument('--classes', default='and,or,phrase,count_and,count_or,count_phrase')
     ap.add_argument('--cache-mb', type=int, default=1024)
-    ap.add_argument('--read-mode', type=int)
+    ap.add_argument('--cache-kib', type=int, help='sift: cache size of the table, KiB')
+    ap.add_argument('--simd', help='sift: scalar, avx2, avx512 or auto')
+    ap.add_argument('--parallel', type=int, help='sift: worker threads of a scan')
     ap.add_argument('--bare', action='store_true', help='fts5: no quotes around terms (detail=none rejects phrases); both: only subs whose words are all alphanumeric')
     a = ap.parse_args()
     if a.cpu is not None:
@@ -49,8 +51,12 @@ def main():
     if a.engine == 'sift':
         db.enable_load_extension(True)
         db.load_extension(a.ext)
-        if a.read_mode is not None:
-            db.execute('SELECT sift_read_mode(?)', (a.read_mode,)).fetchall()
+        if a.simd:
+            db.execute('SELECT sift_simd(?)', (a.simd,)).fetchall()
+        if a.cache_kib is not None:
+            db.execute(f"INSERT INTO {a.table}({a.table}, rank) VALUES('cache-size', ?)", (a.cache_kib,))
+        if a.parallel is not None:
+            db.execute(f"INSERT INTO {a.table}({a.table}, rank) VALUES('parallel', ?)", (a.parallel,))
     trace = {}
     with open(a.trace, encoding='utf-8') as f:
         for line in f:

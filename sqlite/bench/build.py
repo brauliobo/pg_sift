@@ -50,10 +50,10 @@ def main():
     t0 = time.perf_counter()
     if a.engine == 'sift':
         if not a.no_merge:
-            db.execute("INSERT INTO ft(ft) VALUES('merge')")
+            db.execute("INSERT INTO ft(ft) VALUES('optimize')")
             db.commit()
         segs = db.execute('SELECT count(*) FROM ft_segs').fetchone()[0]
-        size = db.execute("SELECT sum(pgsize) FROM dbstat WHERE name IN ('ft_pages', 'ft_segs', 'ft_meta')").fetchone()[0]
+        size = db.execute("SELECT sum(pgsize) FROM dbstat WHERE name IN ('ft_chunks', 'ft_segs', 'ft_meta', 'ft_config')").fetchone()[0]
     else:
         db.execute("INSERT INTO ft(ft) VALUES('optimize')")
         db.commit()

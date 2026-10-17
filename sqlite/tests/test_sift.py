@@ -262,7 +262,7 @@ class MergeAndReopen(TmpDb):
         self.assertEqual(segs(db), 5)
         queries = ['w1', 'w1 AND w2', 'w3 OR w4 OR w5', '"w6 w7"', 'w1 NOT w2', 'w1*', 'w2 w3^3']
         before = {q: (ids(db, q), top(db, q, 20), db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in queries}
-        db.execute("INSERT INTO t(t) VALUES ('merge')")
+        db.execute("INSERT INTO t(t) VALUES ('optimize')")
         self.assertEqual(segs(db), 1)
         after = {q: (ids(db, q), top(db, q, 20), db.execute("SELECT sift_count('t', ?)", (q,)).fetchone()[0]) for q in queries}
         for q in queries:
@@ -281,7 +281,7 @@ class MergeAndReopen(TmpDb):
         db.execute("INSERT INTO t(rowid, body) VALUES (1, 'a b c d'), (2, 'c b a')")
         db.execute("INSERT INTO t(rowid, body) VALUES (40, 'b c a b')")
         self.assertEqual(ids(db, '"b c"'), [1, 40])
-        db.execute("INSERT INTO t(t) VALUES ('merge')")
+        db.execute("INSERT INTO t(t) VALUES ('optimize')")
         self.assertEqual(ids(db, '"b c"'), [1, 40])
         self.assertEqual(ids(db, '"c b"'), [2])
         self.assertEqual(ids(db, '"a b"'), [1, 40])
@@ -315,18 +315,6 @@ class MergeAndReopen(TmpDb):
         db.execute('DROP TABLE u')
         left = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'u%' OR name LIKE 't%'")]
         self.assertEqual(left, [])
-
-    def test_read_modes_agree(self):
-        db = connect(self.path)
-        db.execute('CREATE VIRTUAL TABLE t USING sift(body)')
-        db.executemany('INSERT INTO t(rowid, body) VALUES (?, ?)', [(i, f'term{i % 9} text{i % 5}') for i in range(1, 3000)])
-        db.close()
-        res = []
-        for mode in (0, 1):
-            db = connect(self.path)
-            db.execute('SELECT sift_read_mode(?)', (mode,)).fetchall()
-            res.append(top(db, 'term1 text2', 50))
-        self.assertEqual(res[0], res[1])
 
 
 # ---------- oracle: brute-force BM25 over the same documents ----------
@@ -444,7 +432,7 @@ class OracleTest(TmpDb):
                     self.assertAlmostEqual(-grank, want[wid][1], delta=1e-3 + 1e-4 * abs(want[wid][1]), msg=f'{phase}: {text}')
                 # ties and float noise may order near-equal scores differently: the score vector must agree
                 self.assertEqual(len(got), len(ranked), text)
-            db.execute("INSERT INTO t(t) VALUES ('merge')")
+            db.execute("INSERT INTO t(t) VALUES ('optimize')")
             self.assertEqual(segs(db), 1)
 
 
