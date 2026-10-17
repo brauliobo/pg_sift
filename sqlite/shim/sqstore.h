@@ -1,8 +1,7 @@
 /*
  * sqstore.h - what the PostgreSQL storage layer looks like to the portable sift sources: a Relation is the
- * page file of one virtual table (8 KiB blocks, one SQLite row each, cached in memory), a Buffer is a pointer to
- * a cached page. Locks and pins are no-ops: a connection is single threaded and pages are never evicted
- * while a Relation is open.
+ * page file of one virtual table (8 KiB blocks, grouped in chunk rows of the shadow table, cached in a bounded
+ * cache), a Buffer is a pointer to a page of a cached chunk. Pins keep a chunk in the cache; locks are no-ops.
  */
 #ifndef SQSTORE_H
 #define SQSTORE_H
@@ -52,10 +51,12 @@ typedef PageHeaderData *PageHeader;
 #define BufferIsValid(b)			((b) != NULL)
 #define BufferGetPage(b)			((Page) (b))
 #define LockBuffer(b, mode)			((void) 0)
-#define ReleaseBuffer(b)			((void) 0)
-#define UnlockReleaseBuffer(b)		((void) 0)
+#define ReleaseBuffer(b)			sq_unpin(b)
+#define UnlockReleaseBuffer(b)		sq_unpin(b)
 
+/* A pinned buffer stays in the cache (and its address valid) until it is released; the engine releases what it reads */
 extern Buffer ReadBuffer(Relation rel, BlockNumber blkno);
+extern void sq_unpin(Buffer buf);
 extern BlockNumber BufferGetBlockNumber(Buffer buf);
 
 /* generic WAL: the page is edited in place, there is no log */

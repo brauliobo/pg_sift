@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>
 
 /* ---------- memory contexts: bump blocks for small chunks, malloc for large ones, both freed with the context ---------- */
 
@@ -36,23 +37,25 @@ struct MemoryContextData
 	char	   *bump_end;
 };
 
-MemoryContext CurrentMemoryContext;
+_Thread_local MemoryContext CurrentMemoryContext;
 MemoryContext TopMemoryContext;
 
+static pthread_mutex_t top_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t top_once = PTHREAD_ONCE_INIT;
+
 static void
-cx_init_top(void)
+top_create(void)
 {
-	if (TopMemoryContext == NULL)
-	{
-		TopMemoryContext = AllocSetContextCreate(NULL, "top", 0, 0, 0);
-		CurrentMemoryContext = TopMemoryContext;
-	}
+	TopMemoryContext = AllocSetContextCreate(NULL, "top", 0, 0, 0);
 }
 
+/* Every thread that calls into the engine starts in the top context */
 void
 sq_mem_init(void)
 {
-	cx_init_top();
+	pthread_once(&top_once, top_create);
+	if (CurrentMemoryContext == NULL)
+		CurrentMemoryContext = TopMemoryContext;
 }
 
 size_t
@@ -77,10 +80,14 @@ AllocSetContextCreate(MemoryContext parent, const char *name, size_t min, size_t
 	cx->parent = parent;
 	if (parent)
 	{
+		if (parent == TopMemoryContext)
+			pthread_mutex_lock(&top_lock);
 		cx->nextsib = parent->child;
 		if (parent->child)
 			parent->child->prevsib = cx;
 		parent->child = cx;
+		if (parent == TopMemoryContext)
+			pthread_mutex_unlock(&top_lock);
 	}
 	return cx;
 }
@@ -127,12 +134,16 @@ MemoryContextDelete(MemoryContext cx)
 	cx_free_chunks(cx);
 	if (cx->parent)
 	{
+		if (cx->parent == TopMemoryContext)
+			pthread_mutex_lock(&top_lock);
 		if (cx->prevsib)
 			cx->prevsib->nextsib = cx->nextsib;
 		else
 			cx->parent->child = cx->nextsib;
 		if (cx->nextsib)
 			cx->nextsib->prevsib = cx->prevsib;
+		if (cx->parent == TopMemoryContext)
+			pthread_mutex_unlock(&top_lock);
 	}
 	if (CurrentMemoryContext == cx)
 		CurrentMemoryContext = cx->parent;
@@ -231,7 +242,7 @@ MemoryContextAllocAligned(MemoryContext cx, Size size, Size alignto, int flags)
 void *
 palloc(Size size)
 {
-	cx_init_top();
+	sq_mem_init();
 	return cx_alloc(CurrentMemoryContext, size);
 }
 
@@ -334,12 +345,12 @@ cstring_to_text_with_len(const char *s, int len)
 
 /* ---------- errors ---------- */
 
-SqErrorFrame *sq_error_top;
+_Thread_local SqErrorFrame *sq_error_top;
 
-static int	err_level;
-static int	err_code;
-static char err_msg[1024];
-static char err_detail[512];
+static _Thread_local int err_level;
+static _Thread_local int err_code;
+static _Thread_local char err_msg[1024];
+static _Thread_local char err_detail[512];
 
 bool
 errstart(int elevel, const char *domain)
@@ -401,6 +412,15 @@ errfinish(const char *filename, int lineno, const char *funcname)
 		fprintf(stderr, "sift: %s (%s:%d)\n", err_msg, filename, lineno);
 		abort();
 	}
+	siglongjmp(sq_error_top->jmp, 1);
+}
+
+/* After a cleanup in SQ_CATCH: the same error goes on to the next handler */
+void
+sq_error_rethrow(void)
+{
+	if (sq_error_top == NULL)
+		abort();
 	siglongjmp(sq_error_top->jmp, 1);
 }
 

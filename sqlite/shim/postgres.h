@@ -114,7 +114,8 @@ extern uint32 hash_bytes(const unsigned char *k, int keylen);
 
 typedef struct MemoryContextData *MemoryContext;
 
-extern MemoryContext CurrentMemoryContext;
+/* Per thread: the context in use. Top is the one process-wide root; only contexts created under it are shared. */
+extern _Thread_local MemoryContext CurrentMemoryContext;
 extern MemoryContext TopMemoryContext;
 
 #define ALLOCSET_DEFAULT_SIZES	0, 8192, 8 * 1024 * 1024
@@ -219,10 +220,11 @@ typedef struct SqErrorFrame
 	MemoryContext cx;				/* restored on catch */
 } SqErrorFrame;
 
-extern SqErrorFrame *sq_error_top;
+extern _Thread_local SqErrorFrame *sq_error_top;
 extern const char *sq_errmsg(void);
 extern int sq_errcode(void);
 extern void sq_error_set(int code, const char *fmt,...) pg_attribute_printf(2, 3);
+extern void sq_error_rethrow(void) pg_attribute_noreturn();
 
 #define SQ_TRY() \
 	do { \
