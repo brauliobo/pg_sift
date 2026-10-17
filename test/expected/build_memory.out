@@ -23,14 +23,24 @@ INSERT INTO peaks SELECT 100000, pg_size_bytes(current_setting('sift.test_build_
 SET sift.test_build_peak = 0;
 CREATE INDEX bm_16x ON bm USING sift (body);
 INSERT INTO peaks SELECT 400000, pg_size_bytes(current_setting('sift.test_build_peak'));
+-- the participants of a parallel build (one leader and two workers, each with a share of the budget)
+SET max_parallel_maintenance_workers = 2;
+ALTER TABLE bm SET (parallel_workers = 2);
+SET sift.test_build_peak = 0;
+CREATE INDEX bm_par_1x ON bm USING sift (body) WHERE id <= 25000;
+INSERT INTO peaks SELECT 25001, pg_size_bytes(current_setting('sift.test_build_peak'));
+SET sift.test_build_peak = 0;
+CREATE INDEX bm_par_16x ON bm USING sift (body) WHERE id > 1;
+INSERT INTO peaks SELECT 400001, pg_size_bytes(current_setting('sift.test_build_peak'));
 -- the peak at 16 times the rows is that of 1 times (within half a MB) and a few times the 1 MB budget
 SELECT max(bytes) FILTER (WHERE rows = 400000) <= max(bytes) FILTER (WHERE rows = 25000) + 524288 AS flat_16x,
        max(bytes) FILTER (WHERE rows = 100000) <= max(bytes) FILTER (WHERE rows = 25000) + 524288 AS flat_4x,
+       max(bytes) FILTER (WHERE rows = 400001) <= max(bytes) FILTER (WHERE rows = 25001) + 524288 AS flat_parallel,
        max(bytes) <= 4 * 1048576 AS bounded
 FROM peaks;
- flat_16x | flat_4x | bounded 
-----------+---------+---------
- t        | t       | t
+ flat_16x | flat_4x | flat_parallel | bounded 
+----------+---------+---------------+---------
+ t        | t       | t             | t
 (1 row)
 
 -- the segments take the table: the hot term is in segments of the limit, within the directory
