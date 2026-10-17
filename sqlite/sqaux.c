@@ -156,13 +156,15 @@ matches_in(const Marks *m, int from, int to)
 	return n;
 }
 
-/* The window of n tokens with the most matched ones (the first of equals) */
+/* The window of n tokens with the most matched ones (the first of equals), moved so that its matches are in the middle */
 static int
-best_window(const Marks *m, int n, int *score)
+best_window(const Marks *m, int n)
 {
 	int			cur = matches_in(m, 0, Min(n, m->n)),
 				best = cur,
-				at = 0;
+				at = 0,
+				first = 0,
+				last;
 
 	for (int i = 1; i + n <= m->n; i++)
 	{
@@ -173,8 +175,13 @@ best_window(const Marks *m, int n, int *score)
 			at = i;
 		}
 	}
-	*score = best;
-	return at;
+	last = Min(n, m->n - at) - 1;
+	while (first < last && !m->span[at + first])
+		first++;
+	while (last > first && !m->span[at + last])
+		last--;
+	at += (n - (last - first + 1)) / 2 * -1 + first;
+	return Max(0, Min(at, m->n - n));
 }
 
 static char *
@@ -198,15 +205,14 @@ snippet(SqVtab *vt, SiftQuery *const *qs, int nqs, const char *text, int len, in
 {
 	StringInfoData out;
 	Marks	   *m = find_matches(vt, qs, nqs, text, len, col);
-	int			score,
-				from,
+	int			from,
 				to;
 
 	initStringInfo(&out);
 	if (m->n == 0)
 		return out.data;
 	ntokens = Max(1, Min(ntokens, SNIPPET_MAX_TOKENS));
-	from = best_window(m, ntokens, &score);
+	from = best_window(m, ntokens);
 	to = Min(from + ntokens, m->n);
 	if (from > 0)
 		appendStringInfoString(&out, ellipsis);

@@ -161,6 +161,7 @@ typedef struct Walk
 	Src			src;
 	void		(*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n);
 	void	   *arg;
+	MemoryContext caller;				/* fn allocates in the caller's context, the walk's goes away */
 } Walk;
 
 static bool find_live(const Src *s, SiftKey key, uint64 *at);
@@ -189,7 +190,12 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		if (find_live(&w->src, keys[j], &at))
 			keys[m++] = keys[j];
 	if (m > 0)
+	{
+		MemoryContext old = MemoryContextSwitchTo(w->caller);
+
 		w->fn(w->arg, term, len, keys, m);
+		MemoryContextSwitchTo(old);
+	}
 	pfree(keys);
 	pfree(tids);
 	return true;
@@ -201,7 +207,7 @@ sq_seg_walk_terms(SqStore *st, const SiftSegEntry *e,
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Walk		w = {.fn = fn, .arg = arg};
+	Walk		w = {.fn = fn, .arg = arg, .caller = old};
 
 	w.src.seg = sift_seg_open(sq_store_rel(st), e, cx);
 	walk_live_docs(w.src.seg, add_doc, &w.src);

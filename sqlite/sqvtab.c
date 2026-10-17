@@ -822,6 +822,7 @@ sqOpen(sqlite3_vtab *pVtab, sqlite3_vtab_cursor **ppCursor)
 	c->vt = vt;
 	c->mode = SC_EOF;
 	vt->ncursors++;
+	sq_store_hold(vt->st, 1);
 	*ppCursor = &c->base;
 	return SQLITE_OK;
 }
@@ -856,6 +857,7 @@ sqClose(sqlite3_vtab_cursor *cur)
 
 	cursor_reset(c);
 	c->vt->ncursors--;
+	sq_store_hold(c->vt->st, -1);
 	sqlite3_free(c);
 	return SQLITE_OK;
 }
