@@ -5,12 +5,14 @@ pg_sift needs PostgreSQL 17 or 18 (19 is experimental) with the server headers (
 ```sh
 make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_config picks another installation
 make installcheck                   # regression tests against a running server that can load pg_sift
-make check                          # quick tier: every suite in a throwaway cluster, about 2-3 minutes
+make check                          # quick tier: every suite in throwaway clusters, about 1.5 minutes on 8 cores, 2.5 on 4
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
-`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56169, nothing
+`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
+`make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
+runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
@@ -27,9 +29,15 @@ everything it ran. A test that crashes or leaks on purpose declares it with `scr
 The SQLite extension in `sqlite/` is tested on its own and needs no PostgreSQL: `sqlite/test.sh` (about 40 s; `SIFT_SANITIZE=1 sqlite/test.sh` adds
 ASan/UBSan and the TSan stress test) needs `cc`, `make`, the SQLite development files (3.38 or newer) and python3 with loadable `sqlite3`
 extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use no POPCNT or vector instruction, and `scripts/package-sqlite.sh`
-builds and tests the release tarball in containers. It compiles the portable files of `src/` (the list `PORTABLE` in `sqlite/Makefile`)
-unmodified against the shim in `sqlite/shim/`: a change to those files that uses another PostgreSQL API, or a global mutable variable, needs the
-shim or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch them. `make check` and `scripts/ci.sh` never
+builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`)
+unmodified against the host implementation in `sqlite/host/`.
+
+**Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
+`src/sift_host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `sift_host.h` (documented at the top of that file) and, when
+it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
+a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
+that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch
+them. Code shared by two hosts goes into the portable core (see "Shared core and hosts" in DESIGN.md), not into both. `make check` and `scripts/ci.sh` never
 build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
 release tag.
 

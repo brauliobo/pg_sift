@@ -5,7 +5,7 @@
 #ifndef SQAPI_H
 #define SQAPI_H
 
-#include "postgres.h"
+#include "sift_host.h"
 
 #include <sqlite3ext.h>
 
@@ -15,6 +15,7 @@
 #include "sift_analyze.h"
 #include "sift_posting.h"
 #include "sift_segment.h"
+#include "sift_merge.h"
 
 /* rowid <-> document key: block = rowid >> SQ_ROWID_SHIFT, offset = (rowid & mask) + 1; rowids 0 .. 2^37 - 1 */
 #define SQ_ROWID_SHIFT	5
@@ -149,13 +150,10 @@ extern bool sq_delete_key(SqStore *st, SiftKey key);
 
 /* ---------- sqmerge.c ---------- */
 
-#define SQ_MERGE_FANIN	8				/* segments of one tier that trigger a merge */
-#define SQ_MERGE_MAX_SEGMENTS 32		/* more segments than this trigger a merge of the smallest ones */
-
-/* Streams the live part of the segments of gens[] into one new segment (bounded memory: the live documents and one
- * term at a time), publishes it and retires them in the caller's transaction. false when nothing live is left (they are
+/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/sift_runs.c),
+ * publishes it and retires them in the caller's transaction. Nothing is published when nothing live is left (they are
  * retired all the same) */
-extern void sq_merge(SqStore *st, const uint64 *gens, int n, bool positions);
+extern void sq_merge(SqStore *st, const uint64 *gens, int n);
 
 /* The segments the policy would merge now (tiers of similar size, else the smallest ones when there are too many, else
  * a segment that is mostly dead): their number, in sel. force: all segments. fanin: segments of a tier that trigger it */

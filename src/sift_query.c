@@ -2,18 +2,9 @@
  * sift_query.c - SiftQL parser, analysis/normalization, canonical deparse
  * and document evaluation (DESIGN.md (h), (g)).
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include <ctype.h>
-
-#include "catalog/pg_collation_d.h"
-#include "common/hashfn.h"
-#include "common/shortest_dec.h"
-#include "lib/stringinfo.h"
-#include "mb/pg_wchar.h"
-#include "miscadmin.h"
-#include "nodes/pg_list.h"
-#include "regex/regex.h"
 
 #include "sift_query.h"
 

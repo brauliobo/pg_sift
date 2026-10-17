@@ -1,13 +1,14 @@
 /*
- * postgres.h - the slice of the PostgreSQL backend API that the portable sift sources use, for building them
- * outside PostgreSQL (the SQLite extension). The sources in src/ compile unmodified against this directory:
- * every header they include from PostgreSQL either lives here or is a forwarding stub (see the other files).
+ * host.h - the SQLite implementation of the host interface of the portable core (src/sift_host.h): the vocabulary
+ * the core uses (memory contexts, ereport, StringInfo, List, hash tables, UTF-8 and regex helpers, atomics and
+ * locks, spool files), over the C library. The sources of src/portable.list compile unmodified against it; they
+ * reach it only through src/sift_host.h (SIFT_HOST_SQLITE, -I sqlite/host).
  *
- * Memory is a context tree over malloc (shim.c); ereport(ERROR) longjmps to the handler a caller pushed with
- * SQ_TRY (shim.c), so no backend state needs unwinding. Pages, buffers and relations are in sqstore.h.
+ * Memory is a context tree over malloc (host.c); ereport(ERROR) longjmps to the handler a caller pushed with
+ * SQ_TRY (host.c), so no engine state needs unwinding. Pages, buffers and relations are in host_store.h.
  */
-#ifndef SQ_POSTGRES_H
-#define SQ_POSTGRES_H
+#ifndef SQ_HOST_H
+#define SQ_HOST_H
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -18,10 +19,6 @@
 #include <string.h>
 #include <limits.h>
 #include <setjmp.h>
-
-/* src/sift_compat.h only adapts to PostgreSQL versions: nothing of it applies here */
-#define SIFT_COMPAT_H
-#define PG_VERSION_NUM 180000
 
 /* ---------- base types and macros ---------- */
 
@@ -49,6 +46,7 @@ typedef struct { uint64 value; } FullTransactionId;
 #define InvalidOffsetNumber		((OffsetNumber) 0)
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
+#define PG_UINT64_MAX			UINT64_MAX
 #define PG_INT32_MAX			(0x7FFFFFFF)
 #define PG_INT32_MIN			(-0x7FFFFFFF - 1)
 #define PGDLLIMPORT
@@ -59,6 +57,7 @@ typedef struct { uint64 value; } FullTransactionId;
 #define BITS_PER_BYTE			8
 #define HIGHBIT					0x80
 
+#define qsort_arg				qsort_r	/* the same (base, n, size, cmp(a, b, arg), arg) */
 #define Max(x, y)				((x) > (y) ? (x) : (y))
 #define Min(x, y)				((x) < (y) ? (x) : (y))
 #define Abs(x)					((x) >= 0 ? (x) : -(x))
@@ -402,8 +401,33 @@ typedef struct BufFile BufFile;
 extern BufFile *BufFileCreateTemp(bool interXact);
 extern void BufFileWrite(BufFile *file, const void *ptr, size_t size);
 extern void BufFileReadExact(BufFile *file, void *ptr, size_t size);
+extern size_t BufFileRead(BufFile *file, void *ptr, size_t size);
 extern int BufFileSeek(BufFile *file, int fileno, long offset, int whence);
 extern void BufFileClose(BufFile *file);
+
+/* named files shared between processes: there is one process, the runs of a fileset are never asked for */
+typedef struct FileSet { int unused; } FileSet;
+typedef struct SharedFileSet { FileSet fs; } SharedFileSet;
+extern BufFile *BufFileCreateFileSet(FileSet *fileset, const char *name);
+extern void BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok);
+
+/* the memory (kB) a rebuild of segments may use: the budget of the run merge (lib/binaryheap.h follows) */
+extern int maintenance_work_mem;
+
+#define PointerGetDatum(X)		((Datum) (X))
+#define DatumGetPointer(X)		((void *) (X))
+
+typedef struct binaryheap binaryheap;
+typedef int (*binaryheap_comparator) (Datum a, Datum b, void *arg);
+extern binaryheap *binaryheap_allocate(int capacity, binaryheap_comparator compare, void *arg);
+extern void binaryheap_free(binaryheap *heap);
+extern void binaryheap_add_unordered(binaryheap *heap, Datum d);
+extern void binaryheap_build(binaryheap *heap);
+extern void binaryheap_add(binaryheap *heap, Datum d);
+extern Datum binaryheap_first(binaryheap *heap);
+extern Datum binaryheap_remove_first(binaryheap *heap);
+extern void binaryheap_replace_first(binaryheap *heap, Datum d);
+extern bool binaryheap_empty(binaryheap *heap);
 
 /* ---------- small odds and ends ---------- */
 
@@ -470,6 +494,6 @@ static inline Size mul_size(Size a, Size b) { return a * b; }
 
 /* ---------- pages, buffers and relations over SQLite rows: sqstore.h ---------- */
 
-#include "sqstore.h"
+#include "host_store.h"
 
-#endif							/* SQ_POSTGRES_H */
+#endif							/* SQ_HOST_H */

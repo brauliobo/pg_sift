@@ -6,7 +6,7 @@
  * tools/analyze check` validates it against the snowball-data English
  * vocabulary (42649 words).
  */
-#include "postgres.h"
+#include "sift_host.h"
 
 #include "sift_analyze.h"
 
