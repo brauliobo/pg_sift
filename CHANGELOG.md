@@ -8,6 +8,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `LIMIT 2147483647` meaning "all"), and so did a ranked scan drained without a limit once it had more than 16.7 million matches. The
   top-k heap now grows with the hits found, in huge allocations, and counts in 64 bits: a huge limit costs what the matches take.
 
+- Fix: the score upper bounds that prune ranked scans were derived for up to 256 scored terms, but a plan has a term for every distinct
+  term of its phrases (up to 256 phrases of 128 terms). Their slack now grows with the number of terms above 256 (nothing changes below
+  it: same bounds, same pruning), so a document matching thousands of terms can no longer score above its block's bound and be pruned.
+  No wrong result was found at 300 terms (`rank_leaves` compares the top k with an exact reference).
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build

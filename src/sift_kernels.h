@@ -154,12 +154,15 @@ sift_kern_bm25(float4 w, uint8 tf, float4 knorm)
  * clamped to [1, 255]. sift_kern_ub_weight scales a term weight w for
  * ub_accum: w * c / 255, c = max(1, avgdl_now / avgdl_ref), raised by
  * SIFT_KERN_UB_SLACK and rounded up, so the float32 block UB is >= every
- * float32 score it covers for up to SIFT_MAX_LEAVES terms.
+ * float32 score it covers for up to SIFT_MAX_LEAVES terms; beyond
+ * them the slack grows by SIFT_KERN_UB_SLACK_TERM per term (a plan has a leaf for every
+ * distinct term of its phrases, so more than SIFT_MAX_LEAVES).
  */
 #define SIFT_KERN_UB_SLACK	(1.0 / 4096)
+#define SIFT_KERN_UB_SLACK_TERM	(1.0 / 1048576)
 
 extern uint8 sift_kern_bound_u8(const SiftBm25 *ref, uint32 tf, uint32 dl);
-extern float4 sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref);
+extern float4 sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref, int nterms);
 
 /*
  * Writes count tf values (1..255) at pos into a term's tf stream; l1 and

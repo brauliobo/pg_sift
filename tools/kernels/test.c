@@ -384,14 +384,14 @@ check_misc(Rng *r)
 
 /*
  * The block UB covers the float32 score: one document, n terms, bounds from
- * avgdl_ref, scores and UB weights at avgdl_now.
+ * avgdl_ref, scores and UB weights at avgdl_now. same: n copies of one term, the
+ * rounding of every addition going the same way (a plan has up to 32768 leaves).
  */
 static void
-check_bound(Rng *r)
+check_bound(Rng *r, int n, bool same)
 {
 	SiftBm25	ref,
 				now;
-	int			n = rng_below(r, 4) ? 1 + rng_below(r, 8) : 1 + rng_below(r, SIFT_MAX_LEAVES);
 	uint16		dl = rand_dl(r);
 	const uint16 *row = &dl;
 	uint64		mask[8] = {1};
@@ -404,14 +404,22 @@ check_bound(Rng *r)
 	rand_bm25(r, &ref);
 	sift_kern_bm25_init(&now, ref.k1, ref.b, (float4) (ref.avgdl * scale));
 	sift_kernels_scalar.knorm(kn, &row, mask, 1, &now);
+	uint8		tf = 0;
+	float4		w = 0;
+
 	for (int t = 0; t < n; t++)
 	{
-		uint8		tf = rand_tf(r, 50);
-		float4		w = sift_kern_term_weight((float4) (rng_unit(r) * 10), sift_kern_idf(ndocs, 1 + rng_below(r, (uint32) ndocs)), ref.k1);
-		uint8		b = sift_kern_bound_u8(&ref, tf, dl);
+		uint8		b;
+
+		if (!same || t == 0)
+		{
+			tf = rand_tf(r, 50);
+			w = sift_kern_term_weight((float4) (rng_unit(r) * 10), sift_kern_idf(ndocs, 1 + rng_below(r, (uint32) ndocs)), ref.k1);
+		}
+		b = sift_kern_bound_u8(&ref, tf, dl);
 
 		sift_kernels_scalar.bm25_accum(sc, mask, 1, &tf, kn, w);
-		sift_kernels_scalar.ub_accum(&ub, &b, sift_kern_ub_weight(w, now.avgdl, ref.avgdl), 1);
+		sift_kernels_scalar.ub_accum(&ub, &b, sift_kern_ub_weight(w, now.avgdl, ref.avgdl, n), 1);
 	}
 	if (!(sc[0] <= ub))
 		FAIL("bound below score: %.9g > %.9g (n %d dl %u)\n", sc[0], ub, n, dl);
@@ -467,8 +475,10 @@ worker(void *arg)
 	{
 		check_mask_kernels(&r);
 		check_misc(&r);
-		check_bound(&r);
-		check_bound(&r);
+		check_bound(&r, rng_below(&r, 4) ? 1 + rng_below(&r, 8) : 1 + rng_below(&r, SIFT_MAX_LEAVES), false);
+		check_bound(&r, rng_below(&r, 4) ? 1 + rng_below(&r, 8) : 1 + rng_below(&r, SIFT_MAX_LEAVES), false);
+		if (i % 64 == 0)
+			check_bound(&r, 1 + rng_below(&r, SIFT_MAX_LEAVES * SIFT_MAX_PHRASE), true);
 		if (i % 8 == 0)
 			check_tf(&r);
 		if (i % 16 == 0)

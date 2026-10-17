@@ -2078,7 +2078,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	{
 		int			n;
 		const SiftGroupBounds *gb = sift_post_bounds(rs->cs.leafpc[leaf][i], &n);
-		float4		w = sift_kern_ub_weight(l->terms[rs->s][i].w, p->stats.avgdl, ref);
+		float4		w = sift_kern_ub_weight(l->terms[rs->s][i].w, p->stats.avgdl, ref, p->nleaves);
 
 		for (int j = 0; j < n; j++, total++)
 		{
@@ -2211,7 +2211,7 @@ term_bounds(SiftPlan *p, RankSeg *rs, int leaf)
 		t->gb = sift_post_bounds(t->pc, &t->ngb);
 		for (int k = 0; k < t->ngb; k++)
 			top = Max(top, t->gb[k].bound);
-		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref);
+		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref, p->nleaves);
 		t->tub = t->ubw * (float4) top;
 		rs->lmax[leaf] = Max(rs->lmax[leaf], t->tub);
 	}
