@@ -52,7 +52,7 @@ Options (not every option applies to every command)
                       quick  25,000 articles, GeoNames cities15000 (34,165 places), 2 rounds of 1 s cells:
                              the whole default run takes about 2 minutes after the one-time downloads
                       ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of docs/BENCHMARKS.md (about 4 minutes)
-                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds (projected 15-20 minutes with the cold-cache tables)
+                      full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds (projected 15-20 minutes with the cold-cache tables; --serial measured about 24)
   --full            same as --tier full: the full-size run, the scale of the published numbers
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
@@ -71,10 +71,16 @@ Options (not every option applies to every command)
                     pseudo-random order, the same for every engine)
   --clients N       concurrent clients of the articles cells (default 8; places is single client)
   --workers N       cap the worker processes: pgbench threads and the server's parallel workers (default: from the CPU lists)
-  --duration S      seconds per measured cell (defaults: quick 1, ab 2, full 3 for articles; places 1 / 1 / 2)
-  --rounds MIN-MAX  rounds (default 2-3): after MIN only the cells whose relative standard error is above --rse are measured again,
-                    up to MAX. The standard error of a cell needs at least 2 rounds; with 2-3 it is a rough indication
-  --rse X           the relative standard error that ends the rounds of a cell (default 0.05)
+  --max-time S      the longest a cell is measured in a round, seconds (alias --duration; defaults: quick 1, ab 2, full 2 for articles;
+                    places 1 / 1 / 1). A cell stops earlier as soon as its relative standard error is at most --rse; the slow ones
+                    (tens of ms and more per query) run the whole time
+  --min-time S      the shortest a cell is measured in a round, seconds (default 0.25)
+  --min-samples N   the fewest transactions of a cell in a round (default 3 for places, the number of clients for articles)
+  --rounds MIN-MAX  rounds (default 2-3, regress 3-3): after MIN only the cells whose relative standard error is above --rse are measured
+                    again, up to MAX. Three is the most there is: a MAX above 3 runs, with a warning. The standard error of a cell
+                    combines the one of each round (batch means, order statistics) with the spread of the rounds
+  --rse X           the relative standard error a cell is measured to in a round, and below which a cell is not measured again
+                    (default 0.05; the cells that one more round cannot bring below it are not repeated)
   --ref REF         regress, setup: the git ref sift_ref is built from (default the tag SIFT_REF of bench/versions.env, v1.1.0)
   --run             regress: build and measure the engines and their references first
   --out DIR         result directory (default bench/out/run-<UTC time>, gitignored; `bench/out/latest` links
@@ -131,7 +137,9 @@ parse() {
       --workloads) workloads=${2//,/ }; shift ;;
       --clients) clients=$2; shift ;;
       --workers) workers=$2; shift ;;
-      --duration) duration=$2; shift ;;
+      --duration|--max-time) duration=$2; shift ;;
+      --min-time) export MIN_TIME=$2; shift ;;
+      --min-samples) export MIN_N=$2; shift ;;
       --rounds) rounds=$2; shift ;;
       --ref) ref=$2; shift ;;
       --run) run=1 ;;
@@ -413,6 +421,7 @@ cmd_workload() { # ENGINE [CLASS...]
   [[ -n $classes ]] || classes="and or phrase mixed count filter join update"
   [[ -n $duration ]] || duration=30
   [[ -n $rounds ]] || rounds=1-1
+  export RSE=${RSE:-0}   # a timed run: every cell takes the whole duration
   rest=(); cmd_run
 }
 
