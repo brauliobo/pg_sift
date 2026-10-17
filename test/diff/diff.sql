@@ -339,6 +339,26 @@ $$;
 CREATE OR REPLACE FUNCTION sift_diff.hex(s real[]) RETURNS text[] LANGUAGE sql IMMUTABLE
 AS $$ SELECT array(SELECT encode(float4send(x), 'hex') FROM unnest(s) WITH ORDINALITY u(x, n) ORDER BY n) $$;
 
+-- sift_ref.topk of the loaded corpus, kept for the session (the corpus is told apart by the temp table sift_ref.load recreates,
+-- the injected bug by its setting): every stage and every filter of a query asks the reference for the same ranking
+CREATE OR REPLACE FUNCTION sift_diff.rtopk(q text, k int) RETURNS TABLE (rank int, ctid tid, score real) LANGUAGE plpgsql AS $$
+DECLARE
+	v_gen oid := 'pg_temp.sift_ref_stat'::regclass::oid;
+	v_mutant text := coalesce(current_setting('sift_ref.mutant', true), '');
+	v_key text := md5(q);
+BEGIN
+	CREATE TEMP TABLE IF NOT EXISTS sift_diff_topk (gen oid, mutant text, key text, k int, rank int, tid tid, score real);
+	CREATE INDEX IF NOT EXISTS sift_diff_topk_key ON pg_temp.sift_diff_topk (key, k);
+	IF NOT EXISTS (SELECT 1 FROM sift_diff_topk m WHERE m.key = v_key AND m.k = rtopk.k AND m.gen = v_gen AND m.mutant = v_mutant) THEN
+		DELETE FROM sift_diff_topk m WHERE m.gen <> v_gen;
+		-- the NULL row stands for a ranking without rows
+		INSERT INTO sift_diff_topk SELECT v_gen, v_mutant, v_key, rtopk.k, t.rank, t.ctid, t.score FROM sift_ref.topk(q, rtopk.k) t
+			UNION ALL SELECT v_gen, v_mutant, v_key, rtopk.k, NULL, NULL, NULL;
+	END IF;
+	RETURN QUERY SELECT m.rank, m.tid, m.score FROM sift_diff_topk m
+		WHERE m.key = v_key AND m.k = rtopk.k AND m.gen = v_gen AND m.mutant = v_mutant AND m.rank IS NOT NULL;
+END $$;
+
 -- Top-k with a filter on another column: the reference top-k restricted to the same rows (the
 -- scores stay those of the whole index). Filters an index serves run with the bitmap pushed down into the
 -- ranker, whatever the planner would choose.
@@ -349,7 +369,7 @@ DECLARE
 	got record;
 BEGIN
 	EXECUTE format('SELECT array_agg(r.ctid ORDER BY r.rank) AS ctids, array_agg(r.score ORDER BY r.rank) AS scores
-		FROM (SELECT t.ctid, t.score, t.rank FROM sift_ref.topk(%L, 100000000) t JOIN %s d ON d.ctid = t.ctid
+		FROM (SELECT t.ctid, t.score, t.rank FROM sift_diff.rtopk(%L, 100000000) t JOIN %s d ON d.ctid = t.ctid
 			WHERE %s ORDER BY t.rank LIMIT %s) r', q, tbl, flt, k) INTO ref;
 	PERFORM set_config('sift.filter_pushdown', CASE WHEN pushdown THEN 'force' ELSE 'on' END, true);
 	EXECUTE format('SELECT array_agg(c ORDER BY n) AS ctids, array_agg(s ORDER BY n) AS scores FROM (SELECT row_number() OVER () AS n, c, s
@@ -386,7 +406,7 @@ DECLARE
 	i int;
 BEGIN
 	SELECT array_agg(t.ctid ORDER BY t.rank) AS ctids, array_agg(t.score ORDER BY t.rank) AS scores INTO ref
-	FROM sift_ref.topk(q, k) t;
+	FROM sift_diff.rtopk(q, k) t;
 	SELECT * INTO got FROM sift_diff.e_topk(q, k, stage);
 	IF clean THEN
 		FOR i IN 1 .. greatest(coalesce(cardinality(ref.ctids), 0), coalesce(cardinality(got.ctids), 0)) LOOP
