@@ -17,7 +17,7 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report on the slim tier (the default): about 5 minutes of builds and measurements once set up
+bench/bench all                    # setup + run + report on the slim tier (the default): about 9 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
@@ -68,7 +68,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 
 | tier | articles | places | rounds | run time of `all` |
 |---|---|---|---|---|
-| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 |  |
+| `slim` (default) | 50,000 | 34,165 (cities15000) | The first setup also downloads and converts the datasets and builds the engines (about 3-5 min) |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | about an hour, projected: the engines are measured one at a time, so the cells take the sum of the engines' times (the earlier method, all engines at once on shares of the CPUs, took 51 min for six engines with fixed-length cells, 18 min of cells that stop on their standard error) |
 
@@ -345,9 +345,9 @@ Measured on this host (slim tier, seven engines; the peak is the sampler's maxim
 |  | before this change | now |
 |---|---|---|
 | setup (five engines) | 163 s | 74 s |
-| peak of the first session | 4.4 GiB (quick, 25,000 articles, five engines) | 2.0 GiB (slim, 50,000 articles, seven engines, `--docs` with the cold-cache tables; 1.8 GiB for `all` alone) |
+| peak of the first session | 4.4 GiB (quick, 25,000 articles, five engines) | 2.05 GiB (slim, 50,000 articles, seven engines, `--docs` with the cold-cache tables) |
 | left after the session | 3.3 GiB, plus 2.1 GiB of orphaned lanes per further session (6.5 GiB after the second, 19.6 GiB after a full-tier probe) | 0.47 GiB: the datasets, the engines and the dump of the tier |
-| full tier, one class, one round | 18.7 GiB peak, 15.3 GiB left (five engines) | 5.2 GiB peak, 2.6 GiB left with `--keep` (the lanes cached; 136 s against 143 s) |
+| full tier, one class, one round | 18.7 GiB peak, 15.3 GiB left (five engines) | 5.2 GiB peak, 2.6 GiB left with `--keep` (the lanes cached; measured with five engines before the one-at-a-time method) |
 
 What made it large, and what changed: the cache of lanes was never pruned and its key changed with every rebuild of the extension (orphans); a lane held the `bench`
 template next to the engine's database (`adopt_db` renames it now); the write-ahead log the build recycled was cached (`lane_trim`); cached lanes were uncompressed (zstd now, written
