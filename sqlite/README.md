@@ -232,6 +232,12 @@ The previous version rewrote through a buffer of the whole inverted index (the b
 `pending_postings=2000000` bounds the build too: 140 MiB peak RSS (no merge), 162 MiB with `automerge=8` (2 segments at the end,
 10 to 12 s vs 8 s), against 687 MiB for the default one-segment build (`bench/build.py --sqlite-cache-mb 16`).
 
+### Write path
+
+`bench/dml.py` on the built index (1000 short documents per step): insert 2 ms, update 8 ms, delete 7 ms per commit of 1000; a rollback
+leaves no trace; `optimize` after deleting 1000 articles from the 218k-document index takes 2.1 s (one segment, 207,495 matches where
+208,481 were); reopening is immediate (the manifest is read, chunks load on demand).
+
 ### Content modes
 
 Same 218k articles: internal copy of the text 362.7 MB + index 130.8 MB (the database file with the user's table 856 MB); `content='articles'`
