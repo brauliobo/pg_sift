@@ -68,11 +68,11 @@ define_gucs(void)
 							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
 							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",
 							&sift_max_expansions, 512, 1, 1000000,
-							PGC_USERSET, 0, NULL, NULL, NULL);
+							PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.prefix_cache_size",
 							"Memory a backend keeps the postings of broad prefixes in (kB), 0 to keep none.",
 							NULL, &sift_prefix_cache_size, 8192, 0, 1048576,
-							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_scan",
 							 "Enables the sift custom scan (ranked and unordered).",
 							 NULL, &sift_enable_scan, true,
@@ -98,6 +98,9 @@ define_gucs(void)
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_prefix_gather",
+							"Testing: kB of postings one pass of a wide prefix gathers (the rest is built in windows).",
+							NULL, &sift_prefix_gather_kb, 131072, 1, INT_MAX, PGC_USERSET, GUC_UNIT_KB | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_run_docs",
 							"Testing: documents a CREATE INDEX run holds before it is spilled (0 = by memory).",
 							NULL, &sift_test_run_docs, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
