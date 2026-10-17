@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SVG charts of the committed benchmark tables (bench/results/*.tsv), standard library only.
 
-Usage: python3 -I bench/steps/charts.py [--results DIR] [--out DIR] [--tier full]
+Usage: python3 -I bench/steps/charts.py [--results DIR] [--out DIR] [--tier slim]
        (bench/bench charts; bench/bench report --docs runs it after writing the tables)
 
 Writes into the output directory (default docs/img), all of them grouped bars drawn by one helper (`grouped`):
@@ -29,12 +29,33 @@ from xml.sax.saxutils import escape
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
-# What the tables do not say: the scale of each dataset, the rounds and the host class of the session.
-DATASETS = {
-    'articles': {'name': 'Simple English Wikipedia, 218,058 articles', 'rounds': 4},
-    'places': {'name': 'GeoNames cities500, 236,262 places', 'rounds': 4},
-}
-DATE = 'Oct 2026'
+DATASETS = ('articles', 'places')
+FULL_SIZES = {'articles': 218058, 'places': 236262}   # the tier whose rows predate the corpus rows
+TIER_NAMES = {'slim': 'Slim tier', 'ab': 'Intermediate tier', 'full': 'Full-size runs'}
+
+
+def describe(rows, tier):
+    """{dataset: {'name', 'rounds'}}: what the tables do not say, from the rows of the tier (the corpus rows of steps/tables.py: documents; the
+    n of the cells: rounds)"""
+    out = {}
+    for d, what in (('articles', 'Simple English Wikipedia, %s articles'), ('places', 'GeoNames %s, %s places')):
+        corpus = rows.get((d, tier, '-', '-', '-', 'corpus'))
+        n = int(corpus[0]) if corpus and corpus[0] else FULL_SIZES[d] if tier == 'full' else 0
+        rounds = sorted({int(v[4]) for k, v in rows.items() if k[:2] == (d, tier) and k[5] in ('qps', 'p50_ms') and v[4].isdigit() and int(v[4]) > 0})
+        name = what % ((f'{n:,}',) if d == 'articles' else ('cities500' if tier == 'full' else 'cities15000', f'{n:,}'))
+        out[d] = {'name': name, 'rounds': '%d-%d' % (rounds[0], rounds[-1]) if rounds and rounds[0] != rounds[-1] else str(rounds[0]) if rounds else '?'}
+    return out
+
+
+def session_date(rows, tier):
+    """Oct 2026: the month of the session row of the tier"""
+    import datetime
+    for (d, t, e, _c, var, metric) in rows:
+        if (t, e, metric) == (tier, '-', 'session'):
+            kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
+            if kv.get('date'):
+                return datetime.date.fromisoformat(kv['date']).strftime('%b %Y')
+    return 'Oct 2026'
 
 
 def engine_table():
@@ -108,7 +129,10 @@ def load(path):
             if line.startswith('#') or line.startswith('dataset\t') or not line.strip():
                 continue
             d, tier, eng, cls, var, metric, val, lo, hi, _unit, se, _n, _values = line.rstrip('\n').split('\t')
-            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi, None if se == 'NA' or val in ('NA', 'error') else float(se))
+            if metric in ('session', 'wall_s', 'corpus'):   # host rows: strings and counts, not measurements
+                rows[(d, tier, eng, cls, var, metric)] = (val, lo, hi, None, _n)
+                continue
+            rows[(d, tier, eng, cls, var, metric)] = (None if val in ('NA', 'error') else float(val), lo, hi, None if se == 'NA' or val in ('NA', 'error') else float(se), _n)
     return rows
 
 
@@ -230,7 +254,7 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
 def host(rows, tier, datasets):
     """the CPU budget of the runs behind a chart (the cpu_budget rows of tables.py), once when the datasets agree"""
     texts = []
-    for (d, t, e, _c, var, metric), (cpus, load_cpus, engines, _se) in rows.items():
+    for (d, t, e, _c, var, metric), (cpus, load_cpus, engines, _se, _n) in rows.items():
         if (t, e, metric) != (tier, '-', 'cpu_budget') or d not in datasets:
             continue
         kv = dict(w.split('=', 1) for w in var.split(';'))
@@ -246,7 +270,7 @@ def host(rows, tier, datasets):
 
 
 def caption(rows, tier, datasets, what):
-    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {DATE}.'
+    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {session_date(rows, tier)}.'
 
 
 def errors_of(rows, tier, dataset, engines, keys, metric):
@@ -258,9 +282,9 @@ def build_chart(rows, tier, title, direction, metric, fmt, ylabel):
     """index size and build time: one group per dataset"""
     engines = engines_of(rows, tier, DATASETS)
     series = [(e, [value(rows, tier, d, e, '-', '-', metric) for d in DATASETS]) for e in engines]
-    groups = [(d, spec['name']) for d, spec in DATASETS.items()]
+    groups = [(d, spec['name']) for d, spec in describe(rows, tier).items()]
     notes = BUILD_NOTES + (BM25_BUILD_NOTES if 'bm25' in engines else []) + (ES_BUILD_NOTES if 'elasticsearch' in engines else [])
-    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, 'Full-size runs, one build per engine'), notes=notes)
+    return grouped(title, direction, groups, series, fmt, ylabel, caption(rows, tier, DATASETS, f'{TIER_NAMES.get(tier, tier)}, one build per engine'), notes=notes)
 
 
 def make(rows, tier):
@@ -268,7 +292,7 @@ def make(rows, tier):
     out['index-size.svg'] = build_chart(rows, tier, 'Index size', 'lower is better', 'index_mib', lambda v: f'{v:.1f}', 'MiB')
     out['build-time.svg'] = build_chart(rows, tier, 'Index build time (CREATE INDEX)', 'lower is better', 'build_s', lambda v: f'{v:.1f}', 'seconds')
 
-    a = DATASETS['articles']
+    a = describe(rows, tier)['articles']
     keys = [(c, '-') for c, _ in ARTICLE_CLASSES]
     groups = [(label, '') for _, label in ARTICLE_CLASSES]
     engines = engines_of(rows, tier, ['articles'])
@@ -285,7 +309,7 @@ def make(rows, tier):
     out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
                                           list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, notes=notes, errors=ratio_se)
 
-    p = DATASETS['places']
+    p = describe(rows, tier)['places']
     keys = [(c, 'top') for c in PLACE_CLASSES]
     engines = engines_of(rows, tier, ['places'])
     lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines}
@@ -300,7 +324,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
     ap.add_argument('--out', default=os.path.join(REPO, 'docs', 'img'))
-    ap.add_argument('--tier', default='full')
+    ap.add_argument('--tier', default='slim')
     args = ap.parse_args()
     rows = {}
     for d in DATASETS:

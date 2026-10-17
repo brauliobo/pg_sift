@@ -3,7 +3,7 @@
     python3 -I steps/tables.py OUTDIR [--engines a,b] [--per-dataset DIR] DATASET:TIER:RESULT_DIR ...
 
 DATASET is articles (a steps/articles.sh directory: cells.tsv, builds.tsv) or places (a steps/places.sh
-directory), TIER quick, ab or full, or <tier>-cold for the directory of a cold-cache run (cold.tsv). --engines keeps only those
+directory), TIER slim, ab or full (quick is the old name of slim), or <tier>-cold for the directory of a cold-cache run (cold.tsv). --engines keeps only those
 engine ids. Writes to OUTDIR:
 
   results.tsv   one row per measurement, tab separated, first line a `#` comment naming the columns:
@@ -21,6 +21,9 @@ engine ids. Writes to OUTDIR:
                 table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
                 columns and indexes of an emulated workload (places: rum boost, pg_textsearch ranked prefixes)
                 are the same metrics with variant = emulation.
+                host rows (engine -): corpus = documents of the dataset (corpus.txt of the directory), wall_s = seconds of a phase of the
+                session (phases.txt, variant = the phase), session = the host and versions (machine.txt; variant = key=value words
+                joined by `;`: date, cpu, threads, pg, sift, elasticsearch).
                 cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of up to 12 queries per class
                 (articles: class = and|or|..., variant = -; places: class = p1.., variant = the workload).
                 A value of NA means the engine cannot run the class, error that its statement failed.
@@ -37,7 +40,7 @@ engine ids. Writes to OUTDIR:
 dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay.
 Engine ids, order and labels: bench/engines.tsv.
 """
-import collections, math, os, statistics as st, sys
+import collections, math, os, re, statistics as st, sys
 
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
     NAME = {r[0]: r[2] for r in (l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#'))}
@@ -137,6 +140,34 @@ def build_rows(builds):
                 (d, t, e, '-', variant, 'build_s', build, build, build, 's', *single(build)),
                 (d, t, e, '-', variant, 'setup_s', setup, setup, setup, 's', *single(setup)),
                 (d, t, e, '-', variant, 'heap_growth_mib', mib(heap), mib(heap), mib(heap), 'MiB', *single(mib(heap)))]
+    return out
+
+
+def host_rows(dataset, tier, path):
+    """what a result directory says about its session, as rows of the engine `-`: the size of the corpus (corpus.txt, documents), the
+    seconds of each phase (phases.txt, metric wall_s, variant = the phase) and the host and versions (machine.txt, metric session, variant =
+    `key=value` words separated by `;`)"""
+    out = []
+    try:
+        n = int(open(os.path.join(path, 'corpus.txt')).read())
+        out.append((dataset, tier, '-', '-', '-', 'corpus', n, n, n, 'documents', *single(n)))
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in open(os.path.join(path, 'phases.txt')):
+            name, secs = line.rstrip('\n').split('\t')
+            out.append((dataset, tier, '-', '-', name, 'wall_s', secs, secs, secs, 's', *single(secs)))
+    except OSError:
+        pass
+    try:
+        text = open(os.path.join(path, 'machine.txt')).read()
+    except OSError:
+        return out
+    grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
+    cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
+    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('pg', grab('postgres')), ('sift', grab('sift commit')),
+             ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
+    out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))
     return out
 
 
@@ -300,6 +331,7 @@ def main(argv):
             cpus, load_cpus, engines, variant = budget_of(path)
             rows.append((dataset, tier, '-', '-', variant, 'cpu_budget', cpus, load_cpus, engines, 'cpus', *single(cpus)))
         builds += [x for x in b if keep is None or x[2] in keep]
+        rows += host_rows(dataset, tier, path)
         loads[dataset, tier] += load
         tiers.append((dataset, tier))
     rows += build_rows(builds)
