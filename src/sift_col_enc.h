@@ -171,6 +171,13 @@ extern void sift_cchunk_decode(const SiftCChunk *c, int64 *dst);
  */
 extern void sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst);
 extern void sift_cchunk_decode_f8(const SiftCChunk *c, double *dst);
+/*
+ * The code lane of a dictionary of ndict values (the NULL code is ndict, the tables built over a dictionary have ndict + 1 entries): the
+ * same as _u32, and a code past the dictionary raises ERRCODE_DATA_CORRUPTED instead of indexing outside those tables.
+ */
+extern void sift_cchunk_decode_codes(const SiftCChunk *c, uint32 ndict, uint32 *dst);
+/* Raises ERRCODE_DATA_CORRUPTED unless codes[0..n) are all below limit (a kernel that indexes a table by them reads limit entries) */
+extern void sift_ccodes_below(const uint32 *codes, uint32 n, uint32 limit);
 /* VAR and inline STR chunks (enc STRS, ISTR): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
 extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);
