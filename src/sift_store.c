@@ -22,6 +22,7 @@
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
@@ -784,13 +785,17 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
  * P4 safexid: every snapshot that could hold the directory as it was before
  * our lock has xmin <= our xid (assigned before the lock), or <= the next xid
  * read after the lock. Parallel mode cannot assign an xid; the next xid is
- * as safe but is only passed once some later xid completes.
+ * as safe but is only passed once some later xid completes. A lazy VACUUM
+ * (PROC_IN_VACUUM) is left out of snapshots and of the horizon, xid included
+ * (procarray.c): a reader that began after its xid was assigned has an xmin
+ * past it and would let the extents go while it still reads them, so a
+ * VACUUM uses the next xid as well.
  */
 static bool
 xid_safexid(void)
 {
-	return FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) ||
-		!(IsInParallelMode() || IsParallelWorker());
+	return !(MyProc->statusFlags & PROC_IN_VACUUM) &&
+		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
 static void
