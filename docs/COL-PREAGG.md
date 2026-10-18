@@ -71,14 +71,14 @@ NULL: an all-NULL measure group (`nn = 0`) yields NULL, the group still counts i
 
 ## 7. Acceptance: the ten questions of the store benchmark (10 M rows = 511 units, 1 M = 52)
 
-Times: psql `\timing` client wall time (median of 41 runs, min in brackets), `sift.agg_preagg` on against off, same plan otherwise, on a host at load 23 to 29 (other agents; no quiet window was available, so medians are pessimistic). ClickHouse and Elasticsearch are the figures of `BENCH-GAP.md`.
+Times: psql `\timing` client wall time (median of 41 runs, min in brackets), `sift.agg_preagg` on against off, same plan otherwise, in a quiet window: CPU pressure (`/proc/pressure/cpu`, some avg10) 2 to 9% and IO pressure 0% before and after every batch (a batch that went above 10% was repeated). ClickHouse and Elasticsearch are the figures of `BENCH-GAP.md`.
 
 | q | question | from pre-aggregates | 10 M scan -> pre-aggregates / ClickHouse / ES | 3 M scan -> pre-aggregates |
 |---|---|---|---|---|
 | 01 | one order by id | no (btree) | 0.41 / 9.4 / 2.6 ms | unchanged |
-| 02 | orders per country | **yes**: histogram of `country`, 30 groups | 17.7 -> 5.7 [3.5] / 13.2 / 5.7 ms | 8.2 -> 0.63 [0.51] ms |
-| 03 | revenue per month | **yes**: histogram of the `date_trunc('month')` leaf, `sum(amount)`, 36 groups | 55.2 -> 3.5 [2.6] / 64.3 / 225 ms | 16.3 -> 0.68 [0.48] ms |
-| 04 | top 10 categories by revenue | **yes**: histogram of `category`, `sum(amount)`, 40 groups, sorted above | 50.6 -> 3.6 [3.0] / 48.7 / 268 ms | 16.1 -> 0.91 [0.65] ms |
+| 02 | orders per country | **yes**: histogram of `country`, 30 groups | 8.0 -> 2.1 [1.7] / 13.2 / 5.7 ms | 8.1 -> 0.60 [0.41] ms |
+| 03 | revenue per month | **yes**: histogram of the `date_trunc('month')` leaf, `sum(amount)`, 36 groups | 35.0 -> 1.4 [1.3] / 64.3 / 225 ms | 12.7 -> 0.65 [0.43] ms |
+| 04 | top 10 categories by revenue | **yes**: histogram of `category`, `sum(amount)`, 40 groups, sorted above | 46.8 -> 3.6 [3.1] / 48.7 / 268 ms | 14.3 -> 0.64 [0.42] ms |
 | 05 | average of shipped, DE, 2025 | no: three predicates on three dimensions, no unit covered (rows are in id order, dates spread) | 39.2 / 13.1 / 12.9 ms | scan (predicate order is the planner track's) |
 | 06 | customers per month | no: `count(DISTINCT)` is exact in PostgreSQL; a per-unit set costs as much as the scan | 600 / 151 / 484 ms | scan |
 | 07 | orders over 100 in 30 days | no: row-level `amount` compare, no unit covered | 14.2 / 5.8 / 3.1 ms | scan |
@@ -86,9 +86,9 @@ Times: psql `\timing` client wall time (median of 41 runs, min in brackets), `si
 | 09 | search facets | no: the BM25 match set is a row subset; partial units cannot use a histogram | 46.5 / 36.6 / 7.4 ms | match set into `SiftAgg` (other track) |
 | 10 | search, newest | no | 46 / 22.9 / 8.6 ms | other track |
 
-Instructions per execution (user space), 10 M: 02 4.76 M -> 0.99 M, 03 5.35 M -> 1.11 M, 04 13.3 M -> 0.29 M (3 M: 1.51 M -> 0.32 M, 1.69 M -> 0.36 M, 4.19 M -> 0.22 M). All 511 units (154 at 3 M) are answered from metadata, Rows Scanned 0, results identical to the scan and the heap.
+Instructions per execution (user space), 10 M: 02 4.76 M -> 0.97 M, 03 5.35 M -> 1.10 M, 04 13.3 M -> 0.29 M (3 M: 1.51 M -> 0.32 M, 1.69 M -> 0.36 M, 4.19 M -> 0.22 M; the counts do not depend on the host). All 511 units (154 at 3 M) are answered from metadata, Rows Scanned 0, results identical to the scan and the heap.
 
-So 03 and 04 are answered entirely from metadata, 13x to 18x faster than ClickHouse and 64x to 74x faster than Elasticsearch at 10 M; 02 ties Elasticsearch (5.7 vs 5.7 ms median, 3.5 ms best) and is 2x ClickHouse's speed. 02 spends 3.4x the instructions of 04 for the same unit count (not yet explained; it is the first candidate for the next trim). 05 and 07 stay scans; a depth-2 cube (`country, status, month`: up to 5 400 groups per 19.6 k rows, about 12% of the index) would answer 05 but is not worth it by default. 06 stays the distinct-set work of the planner track.
+So 02, 03 and 04 are answered entirely from metadata at 10 M: 6x, 46x and 13x faster than ClickHouse and 2.7x, 160x and 74x faster than Elasticsearch (medians). 02 spends 3.3x the instructions of 04 for the same unit count and 04 is the slowest of the three in wall time (top-10 sort over 40 groups above the scan); neither is explained yet, they are the first candidates for the next trim. 05 and 07 stay scans; a depth-2 cube (`country, status, month`: up to 5 400 groups per 19.6 k rows, about 12% of the index) would answer 05 but is not worth it by default. 06 stays the distinct-set work of the planner track.
 
 ## 8. Not done, risks
 
