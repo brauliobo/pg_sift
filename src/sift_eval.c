@@ -3449,6 +3449,12 @@ node_prob(const SiftPlan *p, const EvalNode *n, Estimate *est)
 	return 0.0;
 }
 
+uint32
+sift_plan_dir_version(const SiftPlan *p)
+{
+	return p->st->dir.version;
+}
+
 double
 sift_plan_docs(const SiftPlan *p)
 {

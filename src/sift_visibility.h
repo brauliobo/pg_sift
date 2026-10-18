@@ -17,6 +17,10 @@ typedef struct SiftVis
 	Relation	heap;
 	Snapshot	snapshot;
 	bool		use_vm;			/* MVCC snapshot: all-visible pages skip heap checks */
+	Relation	index;			/* the index whose directory guards the map (sift_vis_begin) */
+	uint32		dir_version;	/* the version of the directory the scan read before it read any liveness */
+	bool		dir_moved;		/* the directory changed since: the map is not trusted for the rest of the scan */
+	Buffer		dirbuf;			/* the directory page, pinned at the first check */
 	Buffer		vmbuf;
 	BlockNumber vm_nblocks;
 	BlockNumber heap_nblocks;
@@ -27,11 +31,26 @@ typedef struct SiftVis
 
 /* Blocks of the table in TID space (the relation size for a heap, the virtual blocks of a sift_table) */
 extern BlockNumber sift_vis_nblocks(Relation heap);
-extern void sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot);
+/*
+ * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
+ * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0.
+ * A page is all-visible once a VACUUM has removed the index entries of its dead tuples, which clears liveness bits and then bumps the
+ * directory version (sift_ambulkdelete): the liveness a scan read before that does not show the removals the map reflects.
+ */
+extern void sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uint32 dir_version);
 extern void sift_vis_end(SiftVis *v);
 
-/* 256-bit mask of all-visible pages of an SB (all zero when !use_vm) */
+/*
+ * 256-bit mask of all-visible pages of an SB (all zero when !use_vm). The directory version is read after the map: once the directory has
+ * changed since the scan read it, no page is all-visible, so the heap decides every candidate.
+ */
 extern void sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask);
+
+#ifdef SIFT_TESTING
+/* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */
+extern PGDLLIMPORT int sift_test_vis_pause;
+extern PGDLLIMPORT int sift_test_vis_jitter_us;
+#endif
 
 /*
  * Keeps only the offsets whose tuple (following its HOT chain) is visible

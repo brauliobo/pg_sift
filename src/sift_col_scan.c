@@ -241,7 +241,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	for (int i = 0; i < src->dir.nsegs; i++)
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
-	sift_vis_begin(&src->vis, heap, snapshot);
+	sift_vis_begin(&src->vis, heap, snapshot, index, src->dir.version);
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 	src->cnt.segments = src->nseg;
