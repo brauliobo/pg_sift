@@ -9,7 +9,7 @@ SELECT sum(checks) > 10000 AS ran, sum(failures) AS failures, bit_or(encodings) 
 FROM generate_series(1, 10) s, LATERAL sift._test_col_enc_roundtrip(s, 300, 10);
 SELECT checks > 10000 AS ran, failures FROM sift._test_col_enc_roundtrip(2, 5000, 10);
 SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(3, 74496, 2);
-SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(12, 74496, 1);
+SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(14, 74496, 1);
 SELECT checks > 1000 AS ran, failures FROM sift._test_col_enc_roundtrip(4, 1, 60);
 SELECT sum(failures) AS failures, count(*) AS runs
 FROM generate_series(10, 40) s, LATERAL sift._test_col_enc_roundtrip(s, 1 + (s * 997) % 4000, 3);

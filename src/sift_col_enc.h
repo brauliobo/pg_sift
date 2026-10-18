@@ -55,8 +55,11 @@ extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
 /* The bytes and length of a code < d->n */
 extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
-/* DICTS section entry: u32 n, u32 off[n + 1], bytes */
-extern void sift_cdict_serialize(const SiftCDict *d, StringInfo out);
+/*
+ * DICTS section entry: u32 form, u32 n, then the plain dictionary (u32 off[n + 1], bytes) or, when the policy is not "none" and it is
+ * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain
+ */
+extern void sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, StringInfo out);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
