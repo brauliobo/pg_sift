@@ -1,0 +1,101 @@
+name: coverity
+
+# Coverity Scan (https://scan.coverity.com), the build-and-upload recipe of Coverity's own documentation: download the analysis tool with the
+# project token, build under cov-build, upload cov-int. Weekly and on demand (Coverity allows few builds a day). It does nothing, and passes,
+# until the project is registered and the secrets COVERITY_SCAN_TOKEN and COVERITY_SCAN_EMAIL exist (steps: docs/SAFETY.md). The Coverity
+# project name is the repository (owner/name) unless the repository variable COVERITY_SCAN_PROJECT says otherwise.
+on:
+  schedule:
+    - cron: '41 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverity
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Coverity Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      COVERITY_SCAN_TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+      COVERITY_SCAN_EMAIL: ${{ secrets.COVERITY_SCAN_EMAIL }}
+      PROJECT: ${{ vars.COVERITY_SCAN_PROJECT || github.repository }}
+    steps:
+      - name: Check the secrets
+        id: gate
+        run: |
+          if [[ -z "$COVERITY_SCAN_TOKEN" || -z "$COVERITY_SCAN_EMAIL" ]]; then
+            echo "::notice::COVERITY_SCAN_TOKEN or COVERITY_SCAN_EMAIL is not set: nothing to do (docs/SAFETY.md, Coverity Scan)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.gate.outputs.enabled == 'true'
+
+      - name: Install PostgreSQL 18 and the build dependencies
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+
+      # the analysis tool is large: cached for a month, then fetched again
+      - name: Month of the cache key
+        if: steps.gate.outputs.enabled == 'true'
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Coverity analysis tool
+        if: steps.gate.outputs.enabled == 'true'
+        id: tool-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/cov-analysis
+          key: coverity-tool-${{ runner.os }}-${{ steps.month.outputs.month }}
+
+      - name: Download the Coverity analysis tool
+        if: steps.gate.outputs.enabled == 'true' && steps.tool-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --data-urlencode "token=$COVERITY_SCAN_TOKEN" --data-urlencode "project=$PROJECT" \
+            -o "$RUNNER_TEMP/cov-analysis.tgz" https://scan.coverity.com/download/cxx/linux64
+          mkdir -p ~/cov-analysis
+          tar -xzf "$RUNNER_TEMP/cov-analysis.tgz" -C ~/cov-analysis --strip-components=1
+          rm -f "$RUNNER_TEMP/cov-analysis.tgz"
+
+      # the test functions are built too (SIFT_TESTING=1), so that the code they exercise is analyzed
+      - name: Build under cov-build
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          export PATH="$HOME/cov-analysis/bin:$PATH"
+          cov-build --dir cov-int make -j2 SIFT_TESTING=1
+
+      - name: Upload the results
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          tar -czf sift-cov.tgz cov-int
+          curl -fsS \
+            --form token="$COVERITY_SCAN_TOKEN" --form email="$COVERITY_SCAN_EMAIL" \
+            --form file=@sift-cov.tgz --form version="$GITHUB_SHA" --form description="pg_sift $GITHUB_REF_NAME" \
+            "https://scan.coverity.com/builds?project=${PROJECT//\//%2F}"
+
+      - name: Keep the build log of a failed run
+        if: failure() && steps.gate.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverity-build-log
+          path: cov-int/build-log.txt
+          if-no-files-found: ignore

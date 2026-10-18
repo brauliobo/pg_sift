@@ -6,6 +6,8 @@
 #   make isa-check               no POPCNT or vector instruction outside the AVX2/AVX-512 objects (the baseline runs on any x86-64)
 #   make SIMD=none B=build-scalar   no vector code at all (the vector levels dispatch to the scalar tables): the compile-time scalar build
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
+#   make span-test               the unit and adversarial tests of src/sift_span.h (docs/SAFETY.md); make span-test-asan under ASan+UBSan;
+#                                make SIMD=none B=build-scalar span-test with the vector-free flags
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
 # only src/sift_host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: sift_bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
@@ -112,6 +114,17 @@ $(B)/col-smoke: tests/col_smoke.c $(COLOBJS) $(OBJS) | $(B)
 col-smoke: $(B)/col-smoke
 	$(B)/col-smoke
 
+# the checked reader of the portable core: C library only, no host, no database
+$(B)/span_test: tests/span_test.c $(SRC)/sift_span.h $(SRC)/sift_varint.h | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -o $@ tests/span_test.c
+
+span-test: $(B)/span_test
+	$(B)/span_test
+
+span-test-asan:
+	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/span_test
+	$(B)-asan/span_test
+
 asan:
 	$(MAKE) B=build-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -fno-sanitize=nonnull-attribute" OPT=-O1 build-asan/sift.so build-asan/stress
 
@@ -138,4 +151,4 @@ clean:
 
 -include $(wildcard $(B)/*.d)
 
-.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan
