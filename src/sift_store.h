@@ -187,6 +187,13 @@ extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
 
 /*
+ * SHARED targets: makes the I/O charged to wt (a page written through it, and what sift_wt_charge adds for pages the caller reads)
+ * sleep delay_ms for every 16 pages, like vacuum_cost_delay; 0 (the default) never sleeps.
+ */
+extern void sift_wt_throttle(SiftWriteTarget *wt, int delay_ms);
+extern void sift_wt_charge(SiftWriteTarget *wt, uint64 pages);
+
+/*
  * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
  * took (written or not, published or not: the caller found nothing published) back to the free list.
  */
