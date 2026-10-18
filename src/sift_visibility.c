@@ -88,10 +88,45 @@ sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 }
 
 int
+sift_vis_filter_mask(BlockNumber blk, uint64 *offmask, SiftTidTest test, void *arg)
+{
+	int			left = 0;
+
+	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+		for (uint64 m = offmask[wd]; m; m &= m - 1)
+		{
+			ItemPointerData tid;
+
+			ItemPointerSet(&tid, blk, wd * 64 + __builtin_ctzll(m) + 1);
+			if (test(arg, &tid))
+				left++;
+			else
+				offmask[wd] &= ~(m & -m);
+		}
+	return left;
+}
+
+typedef struct HeapPage
+{
+	SiftVis    *v;
+	Buffer		buf;
+} HeapPage;
+
+static bool
+heap_tid_visible(void *arg, ItemPointer tid)
+{
+	HeapPage   *p = arg;
+	HeapTupleData tuple;
+	bool		all_dead;
+
+	return heap_hot_search_buffer(tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
+}
+
+int
 sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 {
-	Buffer		buf;
-	int			left = 0;
+	HeapPage	page = {.v = v};
+	int			left;
 
 	if (blk >= v->heap_nblocks)
 		v->heap_nblocks = sift_vis_nblocks(v->heap);
@@ -102,23 +137,11 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	}
 	if (sift_tbl_is_table(v->heap))
 		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
-	buf = ReadBuffer(v->heap, blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page.buf = ReadBuffer(v->heap, blk);
+	LockBuffer(page.buf, BUFFER_LOCK_SHARE);
 	v->heap_pages++;
-	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
-		for (uint64 m = offmask[wd]; m; m &= m - 1)
-		{
-			ItemPointerData tid;
-			HeapTupleData tuple;
-			bool		all_dead;
-
-			ItemPointerSet(&tid, blk, wd * 64 + __builtin_ctzll(m) + 1);
-			if (heap_hot_search_buffer(&tid, v->heap, buf, v->snapshot, &tuple, &all_dead, true))
-				left++;
-			else
-				offmask[wd] &= ~(m & -m);
-		}
-	UnlockReleaseBuffer(buf);
+	left = sift_vis_filter_mask(blk, offmask, heap_tid_visible, &page);
+	UnlockReleaseBuffer(page.buf);
 	return left;
 }
 
