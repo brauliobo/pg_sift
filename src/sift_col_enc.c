@@ -308,6 +308,13 @@ sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 	return (int64) *cdict_probe(d, s, len) - 1;
 }
 
+const char *
+sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
+{
+	*len = cdict_len(d, code);
+	return d->bytes + d->off[code];
+}
+
 void
 sift_cdict_serialize(const SiftCDict *d, StringInfo out)
 {

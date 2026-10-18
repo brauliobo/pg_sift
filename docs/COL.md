@@ -303,7 +303,7 @@ is the only code that sees both models:
   cut or not a list, an `overflow` NULL element is *not* invented: the row's GROUP count is NULL with `overflow` (the whole array is the
   heap's).
 - **Absent array vs empty array**: GROUP count NULL (ABSENT / NULL list) vs 0 (empty list).
-- **Memory**: strings point into `doc.text` (reset by the caller per row). Wildcard keys use the shredder's dictionary (`sift_shred_dict_key`).
+- **Memory**: strings point into `doc.text` (reset by the caller per row). Wildcard keys use the shredder's `SiftCDict` (`sift_cdict_str`).
 
 Planner side (col-plan): a pushdown matches the *jsonb expression of the attribute* (`sift_col_att_expr`, an `equal()` match after
 planning) and the leaf `path`; `jsonb_to_recordset(<expr>-> 'items')` / `EXISTS`-over-elements shapes map to the GROUP leaf and its
