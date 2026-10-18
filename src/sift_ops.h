@@ -29,15 +29,7 @@ extern void sift_log_refused(Relation index);
 /* Adds the index of a maintenance worker to the context of the errors it raises */
 extern void sift_maint_context(ErrorContextCallback *cb, Oid indexoid);
 
-/* Free-list statistics and whether the maintenance lock is taken (sift.index_info, sift.col_index_info) */
-typedef struct SiftFreeStats
-{
-	int64		records;
-	int64		blocks;
-	int64		reusable;			/* blocks whose releasing transactions are older than every snapshot */
-} SiftFreeStats;
-
-extern SiftFreeStats sift_free_stats(Relation index);
+/* Whether the maintenance lock is taken (sift.index_info, sift.col_index_info) */
 extern bool sift_maintenance_busy(Relation index);
 
 extern void sift_ops_init(void);

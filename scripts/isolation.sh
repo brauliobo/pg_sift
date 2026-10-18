@@ -45,7 +45,7 @@ if [[ $MODE == emulate ]]; then
 	db -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/isolation/emulate.sql"
 else
 	db -c "CREATE EXTENSION pg_sift" -c "ALTER DATABASE $DB SET iso.mode = 'sift'" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
-	ok[facets]=1
+	ok[facets]=1 ok[index_info]=1
 	db -c "SELECT 1 FROM pg_am WHERE amname = 'sift_table'" | grep -q 1 && ok[tam]=1
 	db -c "LOAD 'pg_sift'" -c "SHOW sift.test_phase_gate" >/dev/null 2>&1 && ok[gates]=1
 	db -c "CREATE TABLE iso_probe (id int, body text)" -c "INSERT INTO iso_probe VALUES (1, 'probe')"

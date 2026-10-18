@@ -39,6 +39,9 @@ extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
 
+/* Terms of min_postings postings or more are staged in temporary files as they arrive (sift_postw_spool), before the first term */
+extern void sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings);
+
 /* Returns the posting writer for this term; finish it with sift_segw_end_term */
 extern SiftPostingWriter *sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len);
 extern void sift_segw_end_term(SiftSegmentWriter *w);
@@ -179,14 +182,31 @@ extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify
 						  SiftSegStats *st, SiftTermVisit visit, void *arg);
 
 /*
- * Streams the live part of the segment, the input of a merge: docs first
- * (ascending key, dl), then every term with a live posting in dictionary
- * order (info->df is the live count). Memory: O(segment docs) plus the
- * largest term. ref supplies k1 and b.
+ * Dumps the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary
+ * order (info->df is the live count). Memory: O(segment docs) plus the largest term. ref supplies k1 and b.
  */
 typedef void (*SiftDocVisit) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
 
 extern void sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisit docs,
 						  SiftTermVisit terms, void *arg);
+
+/*
+ * The same for a merge (the runs of sift_run_from_segment), in memory that does not grow with the segment. term() comes first
+ * with info->df the number of live postings, then postings() until they are delivered: key order, tf, the dl of the doc, and with
+ * SIFT_TERM_POS in info->flags the records back to back and their lengths. A term comes in batches of one group (a superblock)
+ * at most, except a small term of a vacuumed segment, which is counted first and then comes in one. The memory is the dl of
+ * the docs of the SBs a term touches, kept for the next term (budget bytes at most, 2.3 bytes a doc; a segment that does not
+ * fit has its SBs read again for each term that touches them), a batch, and the blob of the term, which sift_post_open
+ * copies whole: about a byte a posting of the hottest term.
+ */
+typedef struct SiftSegSink
+{
+	void		(*docs) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
+	void		(*term) (void *arg, const char *term, int len, const SiftTermInfo *info);
+	void		(*postings) (void *arg, const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos,
+							 const uint32 *poslen, int n);
+} SiftSegSink;
+
+extern void sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *arg);
 
 #endif							/* SIFT_SEGMENT_H */

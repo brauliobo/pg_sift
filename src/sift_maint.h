@@ -61,6 +61,13 @@ extern bool sift_maint_merge_step(Relation index, bool wait);
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);
 
+/*
+ * Truncation of the free blocks at the end of the file (sift_store.h P7), if they are worth it and
+ * AccessExclusiveLock on the index can be had without waiting. Holds the maintenance lock exclusively.
+ * Reports at elevel what it did.
+ */
+extern void sift_maint_truncate(Relation index, int elevel);
+
 /* Launches the dynamic background worker for this index (no preload needed) */
 extern bool sift_maint_request_async(Relation index);
 

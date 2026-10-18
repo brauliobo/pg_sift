@@ -66,7 +66,7 @@ typedef struct SiftMetaPageData
 	uint64		ndocs;			/* totals over immutable segments */
 	uint64		sum_dl;
 	BlockNumber freelist_head;	/* SIFT_PT_FREELIST chain or InvalidBlockNumber */
-	BlockNumber high_water;		/* blocks ever allocated */
+	BlockNumber high_water;		/* blocks allocated: the file ends here, truncation lowers it (P7) */
 	TimestampTz maint_requested_at; /* async maintenance dedup */
 } SiftMetaPageData;
 

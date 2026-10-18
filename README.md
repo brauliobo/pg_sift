@@ -26,9 +26,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_1.4.0-1_amd64.deb`.
+  and `sudo apt install ./postgresql-18-pg-sift_2.0.0-1_amd64.deb`.
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v1.4.0/pg_sift_18-1.4.0-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v2.0.0/pg_sift_18-2.0.0-1.el9.x86_64.rpm`.
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`):
 
@@ -81,7 +81,7 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 
 ## Configuration
 
-Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_segments` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
+Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
 | Index option | default | range | meaning |
 |---|---|---|---|
@@ -94,6 +94,9 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_
 | `prefix_index` | 0 | 0-15 | prefix lengths indexed for fast autocomplete |
 | `fields` |  |  | columns weighted as separate fields (see USAGE) |
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
+| `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
+| `dead_rewrite_pct` | 50 | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
+| `vacuum_truncate` | true |  | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 
@@ -102,6 +105,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_
 | `sift.async_maintenance` | on | background worker seals and merges segments (superuser); `off` leaves it to inserts and VACUUM |
 | `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
 | `sift.maintenance_naptime` | 2000 ms | `postgresql.conf` only, 200-60000: how long the worker stays after it starts to promote the seals of a bulk load; holds one worker slot per loaded index for that time |
+| `sift.maintenance_cost_delay` | 0 ms | 0-100, superuser: ms the worker sleeps after every 16 pages (128 kB) of merge I/O; 0 is full speed |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 | `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
@@ -126,11 +130,10 @@ exception is **sift_table and logical replication**: publishing a `sift_table` t
 preload time). Without it, a DML on a published `sift_table` table fails with `0A000` and a hint instead of leaving a gap in the stream;
 publish a heap staging table instead if preloading is not possible. Unpublished tables, physical standbys, PITR and `pg_dump` are unaffected.
 
-Merging is automatic: sealed segments are merged 8 at a time per size tier, the directory (128 entries) is kept under 32 by merging the
-8 smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
-down to `vacuum_segments`, except that a segment more than 8 times larger than the ones before it is left alone (`sift.merge(index, true)` merges
-it anyway). These thresholds are constants today; `mutable_limit` is the knob that scales them. Coming with 2.0: `merge_fanin`, `dead_rewrite_pct`
-(segment rewrite threshold, 50 today, as a reloption) and `sift.maintenance_cost_delay`.
+Merging is automatic: sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
+`merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
+down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
+it anyway). `mutable_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
 Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE.md).
 
 ## More
@@ -152,7 +155,7 @@ virtual table with exact BM25 and block-max top-k, phrase, prefix, wildcard, reg
 bounded page cache, and an external-content mode that indexes a table you already have. Full documentation: [sqlite/README.md](sqlite/README.md).
 
 ```sh
-V=1.4.0   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
+V=2.0.0   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz     # sift.so, load it with .load ./sift

@@ -14,7 +14,8 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
 - **Freed blocks are reused only after the transactions that could still read them are gone.** Blocks released by a merge, a promotion or
   VACUUM carry the releasing transaction's xid and are taken again once every snapshot that may hold the old directory has ended. An idle
   `REPEATABLE READ` or long transaction therefore stops reuse: in a test the file grew 41 to 135 MB for 21 MB of live data while one
-  transaction sat idle, and the file never shrinks (only `REINDEX` does). The maintenance worker also keeps one snapshot for its whole run,
+  transaction sat idle, and the file shrinks only at its end, when `VACUUM` truncates the free blocks there (see [USAGE](USAGE.md#maintenance-and-operations)); free
+  space in front of live segments waits for reuse and only `REINDEX` compacts it. The maintenance worker also keeps one snapshot for its whole run,
   so a long run holds back its own frees. `sift.index_info(index)` shows `free_blocks` and how many of them are `reusable_blocks` now.
   *(changes: the worker releases its snapshot and recycles after each step.)*
 - **Temporary files.** A merge reads its input segments into temporary files first: a merge of 117 MB of segments wrote 224 MB of
@@ -40,7 +41,7 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
 ## Dead documents and statistics
 
 Rows of rolled-back transactions and deleted rows stay in the index's document count, document frequencies and average length until
-VACUUM has marked them dead **and** the segment holding them is rewritten (a merge, or a VACUUM that finds a segment mostly dead). Until
+VACUUM has marked them dead **and** the segment holding them is rewritten (a merge, or a VACUUM that finds a segment more than `dead_rewrite_pct` (50) percent dead). Until
 then BM25 scores are computed over live and dead documents. The effect depends on how the dead rows differ from the live ones
 (`bench/sql/dead_docs.sql`, 50,000 live documents, four rolled-back loads of 50,000):
 
@@ -54,6 +55,21 @@ then BM25 scores are computed over live and dead documents. The effect depends o
 `sift.segments(index)` shows `dead_docs` of immutable segments (marked by VACUUM); rolled-back rows not yet vacuumed appear only as the
 difference between `sum(ndocs)` and the table's live rows. Autovacuum counts aborted inserts as dead tuples, so a table whose loads fail
 often should have a low `autovacuum_vacuum_scale_factor` (or a manual `VACUUM` after the failed load).
+
+Vacuumed documents also cost query time until their segment is rewritten: a query drops their postings through the liveness bits of every
+page it reads. With 200,000 documents and a quarter of the rows deleted and vacuumed (`bench/dirty-query.sh`, milliseconds per query;
+"clean" is the same live rows rebuilt by `REINDEX`):
+
+| query | clean | dirty, before | dirty, now |
+|---|---|---|---|
+| ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
+| ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
+| unranked scan with a filter | 0.57 | 2.11 | 0.65 |
+| `count(*)` of a term | 0.019 | 1.82 | 0.17 |
+
+A `count(*)` over dirty superblocks decodes every page it counts, where a clean superblock adds chunk counts, so it stays about 9 times
+slower than clean until the segment is rewritten. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
+liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
 
 ## Updates
 

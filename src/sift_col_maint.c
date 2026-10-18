@@ -143,7 +143,7 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {(uint64) sift_col_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN, mostly_dead};
+	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->mutable_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = mostly_dead};
 
 	return sift_merge_pick(index, &pol, snap, force, sel);
 }
@@ -475,7 +475,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	sift_dir_read(index, snap);
-	fs = sift_free_stats(index);
+	fs = sift_store_free_stats(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

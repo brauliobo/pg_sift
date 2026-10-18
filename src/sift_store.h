@@ -35,6 +35,18 @@
  *    ERRCODE_INDEX_CORRUPTED.
  * P6 Generations. sift_store_new_gen logs the reservation before any page
  *    carries the gen, so durable pages never share a gen across segments.
+ * P7 Truncation. The reusable free run at the end of the relation is given back
+ *    in two steps, in this order: one record writes the free list without it
+ *    and lowers high_water to its start (P2), then RelationTruncate cuts the
+ *    file. A crash between them leaves a file longer than high_water, which
+ *    allocation extends over and the next truncation cuts; the reverse order
+ *    could leave the free list past the end. Only blocks that are reusable (P4)
+ *    go, and the caller holds AccessExclusiveLock on the index (conditionally,
+ *    like VACUUM's truncation of a heap): no backend then has a scan, a
+ *    directory copy or an open write target, a standby replays the lock before
+ *    the truncation and cancels what holds the index there, and the relcache
+ *    entries (the mutable appenders' cached lane tails) are invalidated before
+ *    the lock is released.
  *
  * Store records are not transactional and nothing here flushes WAL: a change
  * is durable once WAL is flushed past it, by the commit of a transaction that
@@ -134,6 +146,23 @@ extern bool sift_store_removable(Relation index, FullTransactionId xid);
 extern FullTransactionId sift_store_horizon(Relation index);
 
 /*
+ * The free-list pages in chain order, each share-locked and validated while visit runs on it (blk is its block);
+ * visit returns false to stop. metabuf is locked: it guards the list.
+ */
+typedef bool (*SiftFreeListVisit) (BlockNumber blk, const SiftFreeListData *fl, void *arg);
+extern void sift_freelist_walk(Relation index, Buffer metabuf, SiftFreeListVisit visit, void *arg);
+
+typedef struct SiftFreeStats
+{
+	int64		pages;			/* pages of the list itself */
+	int64		records;
+	int64		blocks;
+	int64		reusable;		/* blocks whose releasing transactions are older than every snapshot */
+} SiftFreeStats;
+
+extern SiftFreeStats sift_store_free_stats(Relation index);
+
+/*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
  * or INIT write target; the pages are written by sift_wt_finish with the
  * final high-water mark. A BULK build numbers its segments from gen 1 and
@@ -168,6 +197,19 @@ extern BlockNumber sift_alloc_extent(Relation index, uint32 nblocks, SiftPageTyp
 extern int	sift_recycle(Relation index);
 
 /*
+ * Blocks at the end of the file that sift_store_truncate would give back (an estimate: the free
+ * list can change before the caller has the lock).
+ */
+extern BlockNumber sift_store_tail_blocks(Relation index);
+
+/*
+ * Gives back the blocks at the end of the relation that are free (and reusable) and the file past
+ * high_water (P7); returns how many. The caller holds AccessExclusiveLock on the index and the
+ * maintenance lock exclusively. Frees the list's own pages as well when they are in the way.
+ */
+extern BlockNumber sift_store_truncate(Relation index);
+
+/*
  * Write targets (allocate in CurrentMemoryContext):
  *   BULK   ambuild into a new relfilenode: smgr_bulk_*, single writer, WAL
  *          skipped when not needed; blocks 0-1 are written at finish.
@@ -194,6 +236,13 @@ extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
  * rather than extending the file for long ones.
  */
 extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
+
+/*
+ * SHARED targets: makes the I/O charged to wt (a page written through it, and what sift_wt_charge adds for pages the caller reads)
+ * sleep delay_ms for every 16 pages, like vacuum_cost_delay; 0 (the default) never sleeps.
+ */
+extern void sift_wt_throttle(SiftWriteTarget *wt, int delay_ms);
+extern void sift_wt_charge(SiftWriteTarget *wt, uint64 pages);
 
 /*
  * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
@@ -294,6 +343,8 @@ typedef struct SiftStreamWriter SiftStreamWriter;
 extern SiftStreamWriter *sift_sw_begin(SiftWriteTarget *wt, uint64 gen);
 extern uint64 sift_sw_tell(const SiftStreamWriter *sw);
 extern void sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len);
+/* The first len bytes of a temporary file (the spool of a section written out of order), from its start */
+extern void sift_sw_write_file(SiftStreamWriter *sw, BufFile *file, uint64 len);
 
 /*
  * Zero-pads (align: power of two <= SIFT_SIMD_ALIGN) so the next byte's
