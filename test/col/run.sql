@@ -36,7 +36,7 @@ CREATE FUNCTION coldiff.feq(x float8, y float8, rel float8, abs_tol float8) RETU
 -- The tags of a corpus file. The header is the leading `--` lines: `-- tag: value` for the tags below (any other line is a title),
 -- then the body, or, in the files of bench/sql/analytics, the `--@ pg` section.
 --   name shape expect(agg|plain|any) scenario(yes) sets(K10 K400 ...) key(1 2 | -) guc(name = value, repeatable) prepare((types))
---   args(values of EXECUTE) requires(a SELECT that must return true, repeatable) wrap(subquery) error(yes) isolation(serializable ...)
+--   args(values of EXECUTE) requires(a SELECT that must return true, repeatable) wrap(subquery) error(yes | either) isolation(serializable ...)
 CREATE FUNCTION coldiff.header(txt text) RETURNS jsonb IMMUTABLE LANGUAGE plpgsql AS $$
 DECLARE
 	line text; m text[]; h jsonb := '{}'; sect text; body text[] := '{}'; inhead boolean := true; marked boolean := false;
@@ -247,9 +247,13 @@ DECLARE
 	h jsonb := coldiff.header(txt); gucs text[] := ARRAY(SELECT jsonb_array_elements_text(coalesce(h -> 'guc', '[]')));
 	setname text; sets text[]; q text; stmt text; plan text; v text; err_ref text; err_got text; msg text; used boolean; gat boolean;
 	shape_ok boolean; t0 timestamptz; ref_ms float8; ms float8; times float8[]; name text; expect text := coalesce(h ->> 'expect', 'any');
-	keycols int[]; wanted_error boolean := coalesce(h ->> 'error', '') = 'yes'; req text; ok boolean; i int; mutated text;
+	keycols int[]; wanted_error boolean := coalesce(h ->> 'error', '') IN ('yes', 'either'); req text; ok boolean; i int; mutated text;
 	shape text := coalesce(h ->> 'shape', CASE WHEN qname ~ '^[SG][0-9]+$' THEN qname END);
 BEGIN
+	-- a fixture that expects the scan runs where the tiny table makes the btree plan look cheap too: its page costs are raised unless it sets them
+	IF scen <> 'analytics' AND coalesce(h ->> 'expect', 'any') = 'agg' AND NOT EXISTS (SELECT 1 FROM unnest(gucs) g WHERE g ~ '^\s*seq_page_cost') THEN
+		gucs := gucs || ARRAY['seq_page_cost = 10000', 'random_page_cost = 10000'];
+	END IF;
 	sets := CASE WHEN coalesce(h ->> 'sets', '-') IN ('-', '') THEN ARRAY[NULL]::text[] ELSE string_to_array(h ->> 'sets', ' ') END;
 	keycols := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[]
 					ELSE string_to_array(h ->> 'key', ' ')::int[] END;
@@ -323,7 +327,8 @@ BEGIN
 			mutated := NULL;
 			IF mutate IS NOT NULL AND v LIKE 'on%' AND err_got IS NULL THEN mutated := coldiff.mutate('coldiff_got', mutate); END IF;
 			IF err_ref IS NOT NULL OR err_got IS NOT NULL THEN
-				msg := CASE WHEN left(err_ref, 5) IS NOT DISTINCT FROM left(err_got, 5) THEN NULL
+				msg := CASE WHEN left(err_ref, 5) IS NOT DISTINCT FROM left(err_got, 5)
+							  OR (h ->> 'error' = 'either' AND err_ref IS NOT NULL AND err_got IS NOT NULL) THEN NULL
 							ELSE format('error differs: off %s; on %s', coalesce(err_ref, 'no error'), coalesce(err_got, 'no error')) END;
 			ELSE
 				msg := coldiff.compare('coldiff_ref', 'coldiff_got', keycols, rel, abs_tol);

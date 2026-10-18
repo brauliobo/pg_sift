@@ -92,6 +92,7 @@ One query per file, as in `bench/sql/analytics/queries`: header lines, then the 
 | `-- requires: SELECT ...` | the file runs only if the statement returns true (repeatable), e.g. a collation that exists |
 | `-- wrap: subquery` | materialize `SELECT * FROM (query)`, for a statement that `CREATE TABLE AS` does not take (`FOR UPDATE`) |
 | `-- error: yes` | the query raises an error in the reference run |
+| `-- error: either` | the query raises an error in the reference run and in the scan; their SQLSTATE may differ (a value the index cannot store: `0A000` against the cast error `22P02`) |
 | `-- isolation: serializable` | the file runs in a transaction of that isolation level |
 
 The sections `--@ pg`, `--@ flat`, `--@ ch` of an analytics file are cut: only `pg` is run. `-- tol:` is ignored: the contract above is the

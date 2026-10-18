@@ -18,10 +18,7 @@ Files: `src/sift_aggplan.c` (shape matcher, cost), `src/sift_aggspec.[ch]` (what
 | Aggregates | `count(*)`, `count(x)`, `count(DISTINCT x)` (dictionary/integer columns), `count(DISTINCT pk)` at element level (distinct parent rows, proven by a unique NOT NULL column), `sum`/`avg` of int2/int4 and of float8 (also float4 for `avg`), `sum`/`avg` of float8 expressions built of `+ - *` over leaves (`sum(qty * (price - discount))`), `sum`/`avg`/`min`/`max`/`count`/`count(DISTINCT)` and `sum`/`avg(DISTINCT)` of a `numeric(p <= 18, s)` column or of a numeric expression (`sum(price * qty)`, exact, see Numeric), `sum`/`avg`/`percentile_cont` of a `numeric(p <= 15, s)` column cast to float8, `min`/`max` of numbers and dates, `percentile_cont(c)` / `percentile_disc(c) WITHIN GROUP (ORDER BY x)` with a constant fraction in [0, 1] (x: a float8 expression as above, for `percentile_disc` also a float4, int2, int4 or date leaf), each with `FILTER` ; the same over the columns of a lookup join (below) |
 | Above | `HAVING`, projection, ORDER BY, LIMIT, and window functions of an outer query stay in the normal plan on top of the custom scan |
 
-Unproven means no path. Not matched today: `sum(float4)` (PostgreSQL adds in float4), numeric division and modulo, numeric functions other than `abs`, `round`, `trunc`, `floor` and `ceil`, comparisons of `numeric` with float8, a `numeric(p, s)` cast, expressions of more than 38 digits (26 for a sum, see Numeric), `min`/`max` of text, the array and interval forms of `percentile_*`, aggregates with DISTINCT/ORDER BY other than the two `count(DISTINCT)` forms, grouping sets, volatile expressions, columns that are not in the index, joins to other tables (lookup tables, semi joins), a CTE the query reads once (PostgreSQL inlines it, so it is the query above), a `UNION` of aggregates in one pass (see Shared CTE), `EXISTS`/`@>`/`jsonb_path_exists` over elements, expressions of more than one column as a key or filter, nested aggregation of the unnested rows, and the BM25 `@@>` mask. Each is a documented gap, not a silent difference: the query keeps its plan.
-
-
-
+Unproven means no path. Not matched today: `sum(float4)` (PostgreSQL adds in float4), numeric division, modulo and functions other than the ones in Numeric, comparisons of `numeric` with float8, a `numeric(p, s)` cast, expressions of more than 38 digits (26 for a sum), `min`/`max` of text, the array and interval forms of `percentile_*`, aggregates with DISTINCT/ORDER BY other than the `count(DISTINCT)`, `sum`/`avg(DISTINCT)` of numeric forms, volatile expressions, columns that are not in the index, semi joins and joins that are not lookups of the kind below, a `UNION` of aggregates in one pass (see Shared CTE), nested aggregation of the unnested rows, and the BM25 `@@>` mask. Each is a documented gap, not a silent difference: the query keeps its plan.
 
 ### Lookup joins, several leaves, per-order aggregates
 
@@ -37,7 +34,7 @@ Unproven means no path. Not matched today: `sum(float4)` (PostgreSQL adds in flo
 
 ## Shared CTE
 
-PostgreSQL computes a CTE that the query names more than once once and hands the rows to every reference, so aggregates over it (S4: a time series at four granularities, each arm a `GROUP BY` of the same CTE) never reach the index. When a CTE with no recursion over a table that has a column index is read twice or more, `sift_aggcte.c` (a `planner_hook`) plans the query again with the CTE `NOT MATERIALIZED` (PostgreSQL itself refuses that for a CTE with a volatile function or data-modifying statement) and keeps that plan only if it has a `Custom Scan (SiftAgg)` and costs 6 times less than the materialized one. The margin is the planner's 100 rows per `jsonb_to_recordset` call against the handful the data has: on 300000 orders the estimates cross where the times do at about 6. Both plans are plans of the same query. Each arm is its own pass over the index (four for S4); one pass computing the four granularities needs a scan with several group sets sharing the filters, decoded leaves and unnest, and a planner step that fuses the arms of the `UNION ALL` (they are planned apart, each with its own PlannerInfo), which is not done.
+PostgreSQL computes a CTE that the query names more than once once and hands the rows to every reference, so aggregates over it (S4: a time series at four granularities, each arm a `GROUP BY` of the same CTE) never reach the index. When a CTE with no recursion over a table that has a column index is read twice or more, `sift_aggcte.c` (a `planner_hook`) plans the query again with the CTE `NOT MATERIALIZED` (PostgreSQL itself refuses that for a CTE with a volatile function or data-modifying statement) and keeps that plan only if it has a `Custom Scan (SiftAgg)` and costs 2 times less than the materialized one, on top of the factor of about 6 that `agg_cost` charges every scan of an unnest (see Cost): the planner assumes 100 rows per `jsonb_to_recordset` call against the handful the data has. S4 keeps the materialized plan for the 400 store set and takes the inline one for the 4000 store set, where it is 5 times cheaper. Both plans are plans of the same query. Each arm is its own pass over the index (four for S4); one pass computing the four granularities needs a scan with several group sets sharing the filters, decoded leaves and unnest, and a planner step that fuses the arms of the `UNION ALL` (they are planned apart, each with its own PlannerInfo), which is not done.
 
 ## Numeric
 
@@ -137,29 +134,32 @@ Kernels are chosen at run time through the `sift_cpu` rebind registry and `sift.
 
 `agg_cost` prices the scan from the source's statistics: a leaf read, a predicate, a tuple that passes the filters, a key id and an aggregate update, each in `cpu_operator_cost` (about 3 ns here: the constants were fitted on whole table runs of one to three keys and aggregates, 17 ns per unnested element all in). The scan reads every unit that the zone tests leave (above, "Zone pruning"; none on a column the heap order does not follow), so a selective query is priced by its table scan against the btree plan's selected rows: the measured crossover keeps the normal plan for the 10 and 400 store sets and takes the scan for the 4000 store set and the whole table. The grouping sets, the mapped aggregates and the outer WHERE add the update cost of their sets and accumulators only: no constant changed. Heap vetting of the rows on pages that are not all-visible is added per page. Elements per row of an array default to 3 when the source has no statistic.
 
+Two terms keep the selective queries on the normal plan, where the scan reads every unit and the btree plan reads the selected rows. The scan pays a start-up of 140000 operator costs (about 0.4 ms: opening the source, the lookup tables, the first units), which a plan on a few dozen rows does not. A scan of an unnest is charged the square root of the excess of the unnested rows the normal plan expects (100 per call of `jsonb_to_recordset`, `jsonb_array_elements`, `jsonb_each`, less what its filters cut) over the elements the selected orders hold (about 6 for an unfiltered unnest of 3 elements per row, 1 when an element filter cuts the expectation: G2), because its sort, join and aggregate costs grow with that excess though the data has a handful per row. The estimates of the two plans then cross where the times do. A metric of a free key object looked up by key (`metrics->>'overall'`) is charged 9 operator costs per element of the object and key (`AGG_VLEAF_ELEM`): a float key of it at K400 was 0.3 times before. S3 at K400 (0.6 to 0.85 times before) and the summed-`numeric` shape without a path flag at K400 keep the btree plan; S1 and S2 at K400 and every shape at K4000 keep the scan. The fixtures `p_cost_selective_unnest`, `p_cost_selective_numeric` and `p_cost_selective_metric_key` assert it (`expect: plain`).
+
 ## Results
 
 The analytics corpus (`bench/sql/analytics`) on 300000 orders (about 960000 items, `sift_col` index), wall ms, median of 7 runs of `scripts/coldiff.sh --bench --runs 7` on a machine shared with other sessions (load 7 to 10 on 8 cores; two runs agree to about 10 percent). Plain is the normal plan, serial; SiftAgg is the same node with no workers (W=0) and with `--bench-workers 4` (W=4: `max_parallel_workers_per_gather = 4` under the default parallel costs, which plan workers for the parallel kinds only):
 
 | Query | Plain | SiftAgg W=0 | SiftAgg W=4 | Speedup W=0 / W=4 | Note |
 |---|---:|---:|---:|---:|---|
-| G1 count, one item filter | 399 | 3.2 | 11.7 | 125 / 34 | |
-| G2 avg/sum/count, three filters | 150 | 5.0 | 11.7 | 30 / 13 | |
-| G3 two keys, avg | 508 | 9.3 | 11.7 | 55 / 43 | |
-| G4 count(DISTINCT order id) | 250 | 5.7 | 11.0 | 44 / 23 | |
-| G5 group by store | 275 | 4.8 | 11.6 | 57 / 24 | |
-| G6 month and language | 478 | 11.8 | 13.0 | 41 / 37 | |
-| G7 percentile | 538 | 44.8 | 43.8 | 12 / 12 | serial only (ordered sets) |
-| G8 group by order (231151 groups) | 280 | 16.8 | 16.2 | 17 / 17 | |
-| S5@K10, S5@K400 | 0.9, 9.7 | | | 1.0 | normal plan kept (btree) |
-| S5@K4000 | 89 | 32 | 31 | 2.8 / 2.9 | count(DISTINCT customer) per group; the window above the node is PostgreSQL's |
-| S1@K400, S1@K4000 | 14, 265 | 6.7, 9.6 | 6.5, 9.0 | 2.1, 28 / 2.2, 29 | lookup join, multi-leaf key; serial only |
-| S2@K400, S2@K4000 | 40, 687 | 11.8, 34 | 11.7, 33.5 | 3.4, 20 / 3.4, 21 | per-order aggregates, three arms; serial only |
-| S3@K400, S3@K4000 | 12.3, 232 | 14.7, 15.9 | 14.7, 16.6 | 0.8, 15 / 0.8, 14 | K400 is a plan the cost model mis-prices; serial only |
-| S4@K4000 | 270 | 40 | 49 | 6.7 / 5.5 | shared CTE planned inline, four passes |
-| S6@K4000 | 35 | 7.5 | 6.8 | 4.7 / 5.2 | |
-| S7@K4000 | 50 | 7.6 | 7.2 | 6.6 / 6.9 | `EXISTS` of three conditions on one item |
-| S4 to S7 at K10, K400; S1 to S3 at K10 | | | | 0.6 to 1.0 | normal plan kept (btree), no regression beyond noise |
+| G1 count, one item filter | 402 | 3.3 | 11.6 | 121 / 35 | |
+| G2 avg/sum/count, three filters | 152 | 5.0 | 11.9 | 31 / 13 | |
+| G3 two keys, avg | 494 | 9.7 | 12.3 | 51 / 40 | |
+| G4 count(DISTINCT order id) | 279 | 7.0 | 11.0 | 40 / 25 | |
+| G5 group by store | 357 | 5.9 | 11.4 | 61 / 24 | |
+| G6 month and language | 546 | 12.3 | 12.4 | 45 / 39 | |
+| G7 percentile | 554 | 45.4 | 44.4 | 12 / 12 | serial only (ordered sets) |
+| G8 group by order (231151 groups) | 281 | 16.3 | 24.8 | 17 / 11 | |
+| S1@K4000 | 274 | 12.0 | 12.9 | 23 / 21 | lookup join, multi-leaf key; serial only |
+| S1@K400 | 13.8 | plain kept | 7.1 | 1.0 / 2.0 | the two plans are priced within 10 percent of each other |
+| S2@K4000 | 675 | 34.6 | 33.4 | 19.5 / 19.9 | per-order aggregates, three arms; serial only |
+| S2@K400 | 36.6 | 18.8 | 21.1 | 1.9 / 1.8 | |
+| S3@K4000 | 236 | 18.2 | 18.2 | 13 / 12.5 | decode-bound; serial only |
+| S4@K4000 | 271 | 46.9 | 59.2 | 5.8 / 4.7 | shared CTE planned inline, four passes |
+| S5@K4000 | 87 | 30.4 | 29.4 | 2.9 / 3.0 | count(DISTINCT customer) per group; the window above the node is PostgreSQL's |
+| S6@K4000 | 34 | 6.9 | 7.5 | 4.9 / 4.4 | `jsonb_path_exists` flag and `sum` of a `numeric` column: matched |
+| S7@K4000 | 48 | 7.1 | 7.4 | 6.6 / 6.6 | `EXISTS` of three conditions on one item |
+| S1 to S7 at K10; S3 to S7 at K400 | | | | 0.8 to 1.0 | normal plan kept (btree), no regression beyond noise (the 0.8 of S2 and S4 at K10 is the planning time of the matcher on the plain plan, 0.3 to 0.5 ms) |
 
 Reading the table. The scans that are cheap serially (G1 to G5: 3 to 6 ms) do not gain from workers on this machine: starting four processes costs about 8 ms here, in a session that has just run a long query (PostgreSQL's own Gather over a 300000 row table goes from 3.5 to 10.5 ms after the same plain query in the same session), and the cost model charges `parallel_setup_cost` as the server does, so those plans pick workers and run at that floor; in a fresh session the same node with four workers takes 3.5 to 4.5 ms on G1. The scans of 10 to 20 ms (G3, G6) are at the floor too: G6 takes 11.8 ms with the leader alone and 13 ms with four workers. G7, G8, S1 to S3 keep their state in the leader and take no workers (W=4 equals W=0). What the changes bought in the serial path (measured when they were made, before the numeric and set kinds joined): the key-range and parent passes (`rt_cover`, `build_parents`) took G1, G2, G4, G5 and G8 down by 11 to 25 percent, one allocation of the group arrays for a single key took G8 from 18.4 to 15.4 ms, and the zone tests make a range of a clustered column (`id > 290000`: 111 of 125 units skipped) 0.4 ms instead of the 3 to 4 ms of the btree plan.
 
@@ -174,14 +174,15 @@ The forms of grouping sets, a WHERE on the outer query, mapped aggregates and fl
 | S1 `ROLLUP (metric, aspect, period)` | 14, 230 | 11, 15 | 1.2, 14.9 | S1 itself: 17, 204 against 9.5, 10.9 |
 | S2 with an outer WHERE on the category / on an inner average / both | 41, 757 / 56, 757 / 48, 818 | 17, 45 / 20, 41 / 18, 42 | 2.5, 16.7 / 2.8, 18.3 / 2.6, 19.5 | S2 itself: 39, 687 against 17, 38 |
 | `count`, `min`, `max`, `count(DISTINCT)` of a mapped column by language | 14, 167 | 6.7, 8.6 | 2.1, 19.4 | lookup join |
-| float8 key (`metrics->>'overall'`) | 3.4, 31 | 7.3, 7.8 | 0.5, 4.0 | K400 is the mis-priced crossover of S3 above (a few ms either way) |
-| float8 key of the items (`price`) | 5.8, 106 | 7.5, 19 | 0.8, 5.6 | |
+| float8 key (`metrics->>'overall'`) | 1.5, 24 | 1.5, 6.9 | 1.0, 3.5 | K400 keeps the btree plan (the key lookup is priced) |
+| float8 key of the items (`price`) | 4.7, 49 | 4.3, 13.9 | 1.1, 3.5 | |
 
-The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one fixture that differs is the error code above.
+The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one error code that differs (above) is tagged `-- error: either` in its fixture.
 
 ## Open
 
-- Shapes S1 to S3, S6, S7 (lookup joins to mapping tables, `EXISTS` and `jsonb_path_exists` over the same element, cross-leaf `CASE`) and the one-pass S4 (several group sets in one scan).
+- The one-pass S4 (the arms of the `UNION ALL` fused into one scan with several group sets: today four passes).
+- A top-k per group inside the node (S5), and decode-bound shapes (S3, S6, S7 at K4000): fewer bytes per element, parallel kinds for the state that is serial-only.
 - Partial tables for the serial-only kinds (numeric sums, ordered sets, mapped aggregates, grouping sets, combos and joins, arms): each needs a dump and a merge by value of its own state, and the lookup tables of a join loaded once and shared.
 - Float sums in 16 lanes dump and merge a table per lane even in a serial scan; one table with a float accumulator per lane, combined in lane order at the end, would give the same bits for less work.
 - The statistics of the "Statistics request" above.
