@@ -21,6 +21,7 @@ typedef struct SiftColRel
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
+	bool	   *name;			/* [natts + 1] the attribute is a name (a fixed buffer, not a varlena) */
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */

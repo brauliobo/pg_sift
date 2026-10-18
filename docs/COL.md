@@ -23,7 +23,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
   objects inside it is a **group** leaf plus one **child** leaf per object field.
 - **Storage class** of a leaf (`SiftColStore`): `INT` (int2, int4, int8, bool, date, timestamp, timestamptz: an int64; `numeric(p, s)` with p <= 18 and s >= 0: the number times 10^s, `SiftColDef.scale` = s, exact like the sums PostgreSQL computes while they fit int64; NaN is NULL with the overflow flag, an unconstrained or wider numeric is refused at CREATE INDEX; constants are scaled with `sift_col_numeric_key`, values come back with `sift_col_key_numeric`), `F4`, `F8`
   (float4/float8) and `STR` (text, varchar, char(n), name: a per-segment dictionary code, or the string itself in a unit that has a long one, section 2.9; values up
-  to 1 GB). The other types are refused at CREATE INDEX in this version.
+  to 1 GB; char(n) keeps its blank padding and name its bytes up to the first NUL, so equal values have equal bytes; a `bpchar` without a length does not, and its leaf is flagged lossy: no predicate or group is pushed on it). The other types are refused at CREATE INDEX in this version.
 - **Key domain.** Every chunk holds integers: an `INT` value as it is, a float as its **order key** (the IEEE bits turned into a signed
   int64 that sorts like the float; the sign of zero is kept: -0 is the key just below +0, so a float comes back with its bits; every NaN is one NaN, sorted after +Inf as PostgreSQL does. PostgreSQL compares -0 and +0 equal, so a predicate constant of zero spans both keys (`sift_ctest_make`)), a `STR` value as a
   dictionary code. All filters are unsigned range tests on `value - base` (section 2.4), whatever the type.

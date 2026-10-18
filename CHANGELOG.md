@@ -49,6 +49,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
   Details and the glue `SiftAgg` still has to apply: `docs/COL.md` section 2.9.
 
+- Added: `CREATE INDEX ... USING sift_col` accepts `char(n)` and `name` columns, as `docs/COL.md` already said (it refused them). `char(n)` and
+  `name` are pushed to `SiftAgg` like text; a `bpchar` without a length is stored but never filtered or grouped by the column plans, because
+  equal values can differ in trailing blanks. Test: `col_index_chars`.
+
 - Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began (found by the
   differential suite under the sanitizer: 280 against 218 orders, and by the `soak-col` job). The scan took "live in the index" on an
   "all-visible" heap page for "visible", and the two facts were read in the wrong order or from the wrong generation: the liveness of a unit
