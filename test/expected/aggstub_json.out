@@ -171,12 +171,12 @@ SELECT val AS key, count(*) FROM sift._test_aggstub_dump('o_col', 2) GROUP BY va
  b        |   150
  c        |   150
  d        |   150
+ m_tax    |   150
  p        |   150
  q        |   150
  r        |   150
  s        |   150
  shipping |   150
- m_tax  |   150
  total    |   150
  z        |   150
  zz       |   150
@@ -429,3 +429,12 @@ CREATE INDEX e_col ON e USING sift_colstub (id, j) WITH (paths = 'j: l[]{t text}
 ERROR:  sift_colstub: a text value of 256 bytes exceeds the limit of 255 bytes
 HINT:  Index left(column, 255) or a hash of it instead.
 DROP TABLE o, e;
+-- the shared database of a plain installcheck goes on with the next test
+DROP TABLE pat;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

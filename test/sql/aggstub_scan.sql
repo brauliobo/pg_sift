@@ -89,3 +89,11 @@ SELECT * FROM diffs($$SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY smal
 SELECT * FROM diffs($$SELECT g, small % 3 AS k, count(*) AS n FROM s GROUP BY GROUPING SETS ((g), (small % 3), ())$$, false, 0);
 SELECT * FROM diffs($$SELECT g, sum(small::numeric) AS sm, avg(small::numeric) AS av FROM s GROUP BY g$$, false, 0);
 SELECT * FROM diffs($$SELECT small::numeric * g::numeric AS k, count(*) AS n FROM s GROUP BY 1$$, false, 0);
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

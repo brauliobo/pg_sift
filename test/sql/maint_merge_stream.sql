@@ -66,3 +66,11 @@ SELECT (m.ndocs, m.nterms, m.bytes, m.postings_bytes) = (r.ndocs, r.nterms, r.by
        m.dead_docs, postings('h_idx') = postings('hr_idx') AS same_postings
 FROM sift.segments('h_idx') m, sift.segments('hr_idx') r WHERE m.kind = 'immutable' AND r.kind = 'immutable';
 SELECT sift.verify('h_idx', true);
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

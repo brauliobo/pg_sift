@@ -94,3 +94,11 @@ SELECT leaf, nrows, nunits, ndistinct, min, max, elems_per_row FROM sift._test_a
 SELECT count(*) AS units, sum(nrow) AS rows FROM sift._test_aggstub_units('u3_col');
 
 DROP TABLE u, u2, u3;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

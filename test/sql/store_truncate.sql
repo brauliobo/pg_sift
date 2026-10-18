@@ -72,4 +72,7 @@ SELECT sift._test_alloc('ul_idx', 8, 300, 1) > 0 AS allocated;
 SELECT sift._test_truncate('ul_idx') > 2000 AS freed, sized('ul_idx');
 
 DROP TABLE t, ul;
+DROP FUNCTION sized(regclass);
+DROP FUNCTION info(regclass);
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

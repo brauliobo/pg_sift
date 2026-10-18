@@ -134,3 +134,11 @@ FROM sift._test_aggstub_dump('t_extra', 1) d GROUP BY val ORDER BY val;
 DROP INDEX t_extra;
 DROP TABLE t0;
 DROP TABLE t;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -86,3 +86,11 @@ EXPLAIN (COSTS OFF) WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS 
 SELECT same($$WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
 			  SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
 			  UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2$$) AS shared_cte;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

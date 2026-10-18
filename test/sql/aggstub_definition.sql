@@ -132,3 +132,12 @@ SELECT count(*) FROM sift._test_aggstub_dump('d_pkey', 0);
 SELECT count(*) FROM sift._test_aggstub_dump('m_col', 7);
 
 DROP TABLE d, dv, m, mu;
+-- the shared database of a plain installcheck goes on with the next test
+DROP TABLE mt;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

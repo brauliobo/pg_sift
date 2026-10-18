@@ -63,3 +63,11 @@ SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FRO
 SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 63) i)) IS NOT NULL AS ok63;
 SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 64) i));
 SELECT sift._test_shred_spec(repeat('a int4,', 20000) || 'b int4');
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

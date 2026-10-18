@@ -15,3 +15,4 @@ SELECT sift._test_seg_read('ex_idx', gen, 2) = payload AS reads_back FROM sift._
 SELECT sift._test_check('ex_idx') >= 0 AS consistent;
 DROP TABLE ex;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
