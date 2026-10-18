@@ -86,6 +86,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   segments of 50,000 documents): deliberate maintenance work, which leaves 2 segments instead of 46 and makes the queries after it faster
   (`count(*)` 1.20 ms to 0.68 ms, ranked 2.16 ms to 1.95 ms). Queries that run while `VACUUM` merges are 6 to 7% slower, from the
   extra merging itself: the same queries with the same segments and no merge running, and the same maintenance on the old build, measure the same.
+- Fix: after a COPY or bulk insert with `sift.async_maintenance` on, up to three sealed segments could stay unpromoted until the next seal or a
+  `VACUUM` (queries read them as mutable data: 8 to 16 ms instead of 1.3 ms): the worker was started once per 2 s and exited when it had
+  nothing left, so the seals of the rest of that window had none. The worker now stays, and looks for work, until
+  `sift.maintenance_naptime` (new, default 2000 ms, 200 to 60000) after it started. It holds one worker slot for that time.
 - Fix: with the default `vacuum_segments = 2`, adding a small segment to a large index made every `VACUUM` rewrite the whole index (a 0.1 MB
   segment next to 11 MB: 0.8 to 0.97 s and 11 MB of WAL at each, against 5 ms with `vacuum_segments = 3`), because the two smallest segments
   were merged whatever their sizes. A segment more than 8 times the size of the ones before it now stays, so an index may keep more than

@@ -59,6 +59,7 @@ bool		sift_enable_count = true;
 bool		sift_parallel_scan = false;
 bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
+int			sift_maintenance_naptime = 2000;
 
 static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
@@ -101,6 +102,10 @@ define_gucs(void)
 							 "Promotes and merges segments in a dynamic background worker.",
 							 NULL, &sift_async_maintenance, true,
 							 PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.maintenance_naptime",
+							"Time between background maintenance workers of an index; a worker stays this long after it starts.",
+							NULL, &sift_maintenance_naptime, 2000, 200, 60000,
+							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.grouped_min_df",
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
