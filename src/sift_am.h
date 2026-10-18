@@ -11,6 +11,7 @@
 /* sift_build.c */
 extern IndexBuildResult *sift_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);
 extern void sift_ambuildempty(Relation index);
+extern char *sift_ambuildphasename(int64 phase);
 
 /* sift_mutable.c */
 extern bool sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,

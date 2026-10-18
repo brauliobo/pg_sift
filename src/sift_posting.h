@@ -77,6 +77,14 @@ typedef struct SiftScoreRef
 /* SIFT_GROUPED_MIN_DF; the sift.grouped_min_df GUC overrides it in SIFT_TESTING builds */
 extern PGDLLIMPORT int sift_grouped_min_df;
 
+/* The postings of a term take at most this many bytes (the length is a uint32); sift.test_blob_max lowers it in SIFT_TESTING builds */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_blob_max;
+#define SIFT_BLOB_MAX	((uint64) (sift_test_blob_max > 0 ? sift_test_blob_max : PG_UINT32_MAX))
+#else
+#define SIFT_BLOB_MAX	((uint64) PG_UINT32_MAX)
+#endif
+
 extern uint8 sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl);
 
 /*

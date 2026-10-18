@@ -5,6 +5,8 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/htup_details.h"
+#include "access/xlog.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
@@ -12,6 +14,7 @@
 #include "common/pg_prng.h"
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
+#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
@@ -20,6 +23,7 @@
 
 #include "sift_analyze.h"
 #include "sift_mutable.h"
+#include "sift_ops.h"
 #include "sift_segment.h"
 #include "sift_sql.h"
 
@@ -38,6 +42,7 @@ open_sift(Oid relid)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	sift_check_maintain(index);
 	return index;
 }
 
@@ -80,8 +85,8 @@ sift_segments(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
-		Datum		v[15];
-		bool		nulls[15] = {0};
+		Datum		v[17];
+		bool		nulls[17] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
 		v[1] = CStringGetTextDatum(kind_name(e->kind));
@@ -92,7 +97,7 @@ sift_segments(PG_FUNCTION_ARGS)
 		v[6] = Int32GetDatum(e->sb_lo);
 		v[7] = Int32GetDatum(e->sb_hi);
 		v[8] = BoolGetDatum((e->flags & SIFT_SEG_DIRTY) != 0);
-		for (int k = 9; k < 15; k++)
+		for (int k = 9; k < 17; k++)
 			nulls[k] = true;
 		if (e->kind != SIFT_SEG_IMMUTABLE)
 		{
@@ -118,7 +123,9 @@ sift_segments(PG_FUNCTION_ARGS)
 			v[13] = Int64GetDatum(s[SIFT_SEC_DICT].len + s[SIFT_SEC_DICTIDX].len +
 								  seg->hdr->dictroot_n * sizeof(uint64));
 			v[14] = Int64GetDatum((int64) seg->hdr->live_npages * BLCKSZ);
-			memset(nulls + 9, 0, 6);
+			v[15] = Int32GetDatum(seg->hdr->nextents);
+			v[16] = Int64GetDatum(e->ndocs - sift_seg_live_docs(seg));
+			memset(nulls + 9, 0, 8);
 			sift_seg_close(seg);
 			MemoryContextReset(cxt);
 		}
@@ -126,6 +133,90 @@ sift_segments(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+typedef struct FreeStats
+{
+	int64		records;
+	int64		blocks;
+	int64		reusable;			/* blocks whose releasing transactions are older than every snapshot */
+} FreeStats;
+
+/* Walks the free list with the metapage share-locked, like the allocator that changes it */
+static FreeStats
+free_stats(Relation index)
+{
+	FreeStats	fs = {0};
+	Buffer		meta = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
+	BlockNumber blk;
+
+	LockBuffer(meta, BUFFER_LOCK_SHARE);
+	blk = ((SiftMetaPageData *) SiftPageGetData(BufferGetPage(meta)))->freelist_head;
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buf = ReadBuffer(index, blk);
+		Page		page;
+		SiftFreeListData *fl;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		if (SiftPageGetOpaque(page)->type != SIFT_PT_FREELIST)
+			corrupt(index, "Block %u of the free list chain is not a free list page.", blk);
+		fl = (SiftFreeListData *) SiftPageGetData(page);
+		for (uint32 i = 0; i < fl->n; i++)
+		{
+			FullTransactionId xid = fl->ext[i].safexid;
+
+			fs.records++;
+			fs.blocks += fl->ext[i].nblocks;
+			if (!FullTransactionIdIsValid(xid) || sift_store_removable(index, xid))
+				fs.reusable += fl->ext[i].nblocks;
+		}
+		blk = fl->next;
+		UnlockReleaseBuffer(buf);
+	}
+	UnlockReleaseBuffer(meta);
+	return fs;
+}
+
+/* Is the maintenance lock held (a promotion, merge, VACUUM or verify is running)? A momentary probe. */
+static bool
+maintenance_busy(Relation index)
+{
+	if (!ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock))
+		return true;
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	return false;
+}
+
+/* sift.index_info(index): the space and directory state of the index as one row */
+Datum
+sift_index_info(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_sift(PG_GETARG_OID(0));
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	FreeStats	fs;
+	Datum		v[10];
+	bool		nulls[10] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(index, snap);
+	fs = free_stats(index);
+	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
+	v[1] = Int64GetDatum(snap->meta.high_water);
+	v[2] = Int64GetDatum(fs.blocks);
+	v[3] = Int64GetDatum(fs.reusable);
+	v[4] = Int64GetDatum(fs.records);
+	v[5] = Int32GetDatum(snap->nsegs);
+	v[6] = Int32GetDatum(SIFT_MAX_SEGMENTS);
+	v[7] = Int64GetDatum(snap->meta.ndocs);
+	v[8] = Int64GetDatum(snap->meta.sum_dl);
+	nulls[9] = RecoveryInProgress();
+	v[9] = BoolGetDatum(!nulls[9] && maintenance_busy(index));
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 /*

@@ -6,6 +6,10 @@
 
 #include "sift_dict.h"
 
+#ifdef SIFT_TESTING
+int			sift_test_dict_max = 0;
+#endif
+
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
 #define BLOCK_HDR_MAX	(2 + 1 + 10)
 #define SPOOL_CHUNK		65536
@@ -159,7 +163,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			w->maxidx *= 2;
 			w->idx = repalloc_huge(w->idx, w->maxidx * sizeof(SiftDictIdx));
 		}
-		if (w->dict_len > PG_UINT32_MAX)
+		if (w->dict_len > SIFT_DICT_MAX)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift: segment dictionary exceeds 4 GB")));
