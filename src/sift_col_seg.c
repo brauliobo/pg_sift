@@ -686,6 +686,38 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 	pfree(tmp);
 }
 
+/* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
+uint64
+sift_cseg_dir_units(const SiftDirSnapshot *dir)
+{
+	const SiftSegEntry *imm[SIFT_MAX_SEGMENTS];
+	int			n = 0;
+	uint64		units = 0,
+				end = 0;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			int			j = n++;
+
+			for (; j > 0 && imm[j - 1]->sb_lo > dir->segs[i].sb_lo; j--)
+				imm[j] = imm[j - 1];
+			imm[j] = &dir->segs[i];
+		}
+	for (int i = 0; i < n; i++)
+	{
+		uint64		lo = Max(imm[i]->sb_lo, end),
+					hi = (uint64) imm[i]->sb_hi + 1;
+
+		if (hi > lo)
+		{
+			units += hi - lo;
+			end = hi;
+		}
+	}
+	return units;
+}
+
 /* ---------- liveness ---------- */
 
 static bool
