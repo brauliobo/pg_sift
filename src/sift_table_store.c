@@ -831,56 +831,43 @@ tomb_reset(SiftTblRel *st, const SiftSegEntry *e)
 	st->nents = st->nrecent = 0;
 }
 
-/* A new array holding the merge of the sorted a and b; the old a is freed. Entries of one key keep their seq order (b is newer) */
-static SiftTblTomb *
-merge_tombs(SiftTblRel *st, SiftTblTomb *a, uint32 na, const SiftTblTomb *b, uint32 nb)
+/* Merges the sorted b into the sorted array *a (capacity *cap) in place, from the back: the entries before the smallest key of b do not move
+ * (b is newer: entries of one key keep their seq order) */
+static void
+merge_tombs(SiftTblRel *st, SiftTblTomb **a, uint32 *na, uint32 *cap, const SiftTblTomb *b, uint32 nb)
 {
-	SiftTblTomb *res = MemoryContextAlloc(st->cxt, Max(na + nb, 1) * sizeof(SiftTblTomb));
-	uint32		i = 0,
-				j = 0,
-				k = 0;
+	uint32		i = *na,
+				j = nb,
+				k = *na + nb;
 
-	while (i < na && j < nb)
-		res[k++] = cmp_tomb(&a[i], &b[j]) <= 0 ? a[i++] : b[j++];
-	while (i < na)
-		res[k++] = a[i++];
-	while (j < nb)
-		res[k++] = b[j++];
-	if (a)
-		pfree(a);
-	return res;
+	if (k > *cap)
+	{
+		*cap = Max(64, Max(*cap * 2, k));
+		*a = *a ? repalloc(*a, *cap * sizeof(SiftTblTomb)) : MemoryContextAlloc(st->cxt, *cap * sizeof(SiftTblTomb));
+	}
+	while (j > 0)
+		(*a)[--k] = i > 0 && cmp_tomb(&(*a)[i - 1], &b[j - 1]) > 0 ? (*a)[--i] : b[--j];
+	*na += nb;
 }
 
 #define TOMB_RECENT_MAX 512
+
+/* Everything in the main array, in order (the vacuum rewrite walks it) */
+static void
+tomb_flatten(SiftTblRel *st)
+{
+	merge_tombs(st, &st->ents, &st->nents, &st->capents, st->recent, st->nrecent);
+	st->nrecent = 0;
+}
 
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows */
 static void
 tomb_add(SiftTblRel *st, SiftTblTomb *batch, uint32 n)
 {
 	qsort(batch, n, sizeof(SiftTblTomb), cmp_tomb);
-	st->recent = merge_tombs(st, st->recent, st->nrecent, batch, n);
-	st->nrecent += n;
+	merge_tombs(st, &st->recent, &st->nrecent, &st->caprecent, batch, n);
 	if (st->nrecent > TOMB_RECENT_MAX)
-	{
-		st->ents = merge_tombs(st, st->ents, st->nents, st->recent, st->nrecent);
-		st->nents += st->nrecent;
-		pfree(st->recent);
-		st->recent = NULL;
-		st->nrecent = 0;
-	}
-}
-
-/* Everything in the main array, in order (the vacuum rewrite walks it) */
-static void
-tomb_flatten(SiftTblRel *st)
-{
-	if (st->nrecent == 0)
-		return;
-	st->ents = merge_tombs(st, st->ents, st->nents, st->recent, st->nrecent);
-	st->nents += st->nrecent;
-	pfree(st->recent);
-	st->recent = NULL;
-	st->nrecent = 0;
+		tomb_flatten(st);
 }
 
 void
