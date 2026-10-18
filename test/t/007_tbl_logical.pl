@@ -59,6 +59,7 @@ $sub->start;
 install_sift($sub);
 $sub->safe_psql('postgres', $tbl);
 $sub->safe_psql('postgres', "CREATE SUBSCRIPTION sub CONNECTION \$\$" . $pub->connstr('postgres') . "\$\$ PUBLICATION pub");
+$sub->wait_for_subscription_sync($pub, 'sub');
 
 sub same
 {
