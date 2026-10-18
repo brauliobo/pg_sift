@@ -176,6 +176,21 @@ pgbench_bg() {
 	PGBENCH_PID=$!
 }
 
+# crash_cycle NAME LABEL MAXSLEEP CLIENTS ARGS...: pgbench (600 s at most) under CLIENTS clients, killed with the cluster after a random delay
+# of up to MAXSLEEP seconds, then the restart; false (not ok LABEL, the log) when the node does not come back
+crash_cycle() {
+	local name=$1 label=$2 max=$3 clients=$4
+	shift 4
+	pgbench_bg "$name" "$clients" 600 "$@"
+	sleep "$((RANDOM % max)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
+	crash "$name"
+	wait "$PGBENCH_PID"
+	node_start "$name" && return 0
+	not_ok "$label: restart"
+	diag "$(tail -20 "$(dir "$name")/postgres.log")"
+	return 1
+}
+
 # node_leakcheck NAME: the cluster invariants while it runs, a clean shutdown (LeakSanitizer reports as the processes exit)
 # and the scan of its log
 node_leakcheck() {

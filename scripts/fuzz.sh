@@ -11,7 +11,7 @@
 # multiplies the iteration counts of every target (default 10: about 3.5
 # minutes without the server sanitizer). --budget runs scale-1 passes
 # (about 25 s) until SEC seconds have passed, seeded targets with a new seed
-# each pass. The standalone harnesses run with LeakSanitizer (their palloc stubs free at exit, tools/pgarena.h),
+# each pass. The standalone harnesses run with LeakSanitizer (their palloc stubs free at exit, tools/pgshim.c),
 # the server with the leak gate of scripts/leakcheck.sh. colchunk, bm25 and shred are the coverage-guided targets of test/fuzz (libFuzzer
 # under clang, else the portable driver): the decoders of the column chunks, of the term blobs and of the shredder, from seeds the
 # writers make, for 6 s per --scale step (60 s at the default), with the findings recorded in the design notes skipped by

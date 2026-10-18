@@ -23,6 +23,12 @@ typedef struct SiftLive
 	uint64		nbits;			/* rows */
 } SiftLive;
 
+/* A palloc'd copy of the SEGHEADER page of a segment, its size checked against the extents it lists */
+extern SiftSegHeaderData *sift_seg_read_header(Relation index, const SiftSegEntry *entry);
+
+/* Sets the directory's dirty flag of the segment, and that of the entry, unless set: rows may be cleared from then on */
+extern void sift_seg_mark_dirty(Relation index, SiftSegEntry *entry);
+
 /* Writes the LIVE run of a new segment, all rows live and no SB dirty; returns its first block and page count */
 extern void sift_live_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint64 nbits, BlockNumber *first, uint32 *npages);
 

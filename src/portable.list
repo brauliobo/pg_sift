@@ -33,6 +33,7 @@ sift_analyze.h
 sift_analyze_tables.h
 sift_bitmap.h
 sift_bitmap_kern.h
+sift_cmp.h
 sift_cpu.h
 sift_dict.h
 sift_eval.h

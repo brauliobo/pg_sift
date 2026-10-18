@@ -4,6 +4,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_cmp.h"
 #include "sift_dict.h"
 #include "sift_varint.h"
 
@@ -84,14 +85,6 @@ prefix8(const char *s, int len)
 	return p;
 }
 
-static int
-term_cmp(const char *a, int alen, const char *b, int blen)
-{
-	int			c = memcmp(a, b, Min(alen, blen));
-
-	return c ? c : (alen > blen) - (alen < blen);
-}
-
 /* ---------- writer ---------- */
 
 SiftDictWriter *
@@ -138,7 +131,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	bool		inl = (info->flags & SIFT_TERM_INLINE) != 0;
 
 	if (len < 1 || len > SIFT_MAX_TERM_BYTES ||
-		(w->prevlen >= 0 && term_cmp(w->prev, w->prevlen, term, len) >= 0))
+		(w->prevlen >= 0 && sift_term_cmp(w->prev, w->prevlen, term, len) >= 0))
 		elog(ERROR, "sift: dictionary terms must be non-empty, at most %d bytes and strictly ascending",
 			 SIFT_MAX_TERM_BYTES);
 	if (!inl && info->post_off != ALIGN4(w->post_end))
@@ -507,7 +500,7 @@ find_block(SiftDict *d, const char *term, int len)
 		sift_dict_probes++;
 #endif
 		block_next(&it, &info);
-		if (term_cmp(it.term, it.len, term, len) > 0)
+		if (sift_term_cmp(it.term, it.len, term, len) > 0)
 			rhi = mid;
 		else
 			bhi = mid + 1;
@@ -524,7 +517,7 @@ lookup_in_block(BlockIter *it, const char *term, int len, SiftTermInfo *info, bo
 {
 	while (block_next_impl(it, info, slots))
 	{
-		int			c = term_cmp(it->term, it->len, term, len);
+		int			c = sift_term_cmp(it->term, it->len, term, len);
 
 		if (c >= 0)
 		{
@@ -574,9 +567,9 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 		off += it.end - buf;
 		while (more && block_next_slots(&it, &info))
 		{
-			if (lo && term_cmp(it.term, it.len, lo, lolen) < 0)
+			if (lo && sift_term_cmp(it.term, it.len, lo, lolen) < 0)
 				continue;
-			if (hi && term_cmp(it.term, it.len, hi, hilen) >= 0)
+			if (hi && sift_term_cmp(it.term, it.len, hi, hilen) >= 0)
 			{
 				more = false;
 				break;

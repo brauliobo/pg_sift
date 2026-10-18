@@ -27,7 +27,7 @@ LIBS    = -lm -lpthread -ldl
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host
+HOSTC    := host host_stubs
 OWN      := host_regex store stubs
 GLUE     := engine query feed merge
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
@@ -40,8 +40,11 @@ $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the memory, error and string vocabulary of the SQLite host, as it is (its host_regex.c, a POSIX ERE, is not used: host/host_regex.c is)
+# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/host_regex.c is)
 $(OUT)/host.o: $(SQHOST)/host.c | $(OUT)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OUT)/host_stubs.o: $(SQHOST)/host_stubs.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)

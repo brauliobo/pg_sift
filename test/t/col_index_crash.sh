@@ -46,15 +46,7 @@ VERIFY="SELECT sift.col_verify('o_col', true), (SELECT count(*) FROM sift._test_
 	pg_relation_size('o_col') / 1048576"
 
 for i in $(seq "$ITERS"); do
-	pgbench_bg crash 8 600 "${FILES[@]}"
-	sleep "$((RANDOM % 3)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
-	crash crash
-	wait "$PGBENCH_PID"
-	if ! node_start crash; then
-		not_ok "iteration $i: restart"
-		diag "$(tail -20 "$(dir crash)/postgres.log")"
-		break
-	fi
+	crash_cycle crash "iteration $i" 3 8 "${FILES[@]}" || break
 	out=$(sql crash "$VERIFY" 2>&1)
 	IFS='|' read -r _ same same_filtered mb <<<"$out"
 	used=$(node_mb crash)

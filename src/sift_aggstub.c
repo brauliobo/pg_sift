@@ -44,6 +44,7 @@
 #include "utils/syscache.h"
 
 #include "sift_aggstub.h"
+#include "sift_am.h"
 
 PG_FUNCTION_INFO_V1(sift_aggstub_handler);
 
@@ -555,52 +556,22 @@ stub_amendscan(IndexScanDesc scan)
 Datum
 sift_aggstub_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = makeNode(IndexAmRoutine);
+	IndexAmRoutine *am = sift_am_routine(0, 0, true);
 
-	am->amstrategies = 0;
-	am->amsupport = 0;
-	am->amoptsprocnum = 0;
-	am->amcanorder = false;
-	am->amcanorderbyop = false;
-	am->amcanbackward = false;
-	am->amcanunique = false;
-	am->amcanmulticol = true;
-	am->amoptionalkey = true;
-	am->amsearcharray = false;
-	am->amsearchnulls = false;
-	am->amstorage = false;
-	am->amclusterable = false;
-	am->ampredlocks = false;
-	am->amcanparallel = false;
-	am->amcanbuildparallel = false;
-	am->amcaninclude = false;
-	am->amusemaintenanceworkmem = false;
-	am->amsummarizing = false;
+	am->amcanbuildparallel = am->amusemaintenanceworkmem = false;
 	am->amparallelvacuumoptions = 0;
-	am->amkeytype = InvalidOid;
 	am->ambuild = stub_ambuild;
 	am->ambuildempty = stub_ambuildempty;
 	am->aminsert = stub_aminsert;
-	am->aminsertcleanup = NULL;
 	am->ambulkdelete = stub_ambulkdelete;
 	am->amvacuumcleanup = stub_amvacuumcleanup;
-	am->amcanreturn = NULL;
 	am->amcostestimate = stub_amcostestimate;
 	am->amoptions = stub_amoptions;
-	am->ambuildphasename = NULL;
 	am->amvalidate = stub_amvalidate;
-	am->amadjustmembers = NULL;
 	am->ambeginscan = stub_ambeginscan;
 	am->amrescan = stub_amrescan;
-	am->amgettuple = NULL;
 	am->amgetbitmap = stub_amgetbitmap;
 	am->amendscan = stub_amendscan;
-	am->ammarkpos = NULL;
-	am->amrestrpos = NULL;
-	am->amestimateparallelscan = NULL;
-	am->aminitparallelscan = NULL;
-	am->amparallelrescan = NULL;
-	SIFT_AM_NEW_FIELDS(am);
 	PG_RETURN_POINTER(am);
 }
 

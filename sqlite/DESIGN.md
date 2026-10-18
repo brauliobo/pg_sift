@@ -60,7 +60,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
   atomics/spin locks/dsa for `sift_parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
   `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/sift_store.h` (extent index, padding and
-  extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` the collaborators SQLite has no use for (mutable segments, visibility).
+  extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (mutable segments, visibility).
 - **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `mutable_limit` there), the run merge
   (`sift_run_from_segment`, `sift_runs_write`), the deletion
   of one document (`sift_seg_delete_key`, the code of VACUUM's `sift_seg_bulkdelete`), the live-term dump of facets (`sift_seg_dump`, the code of the

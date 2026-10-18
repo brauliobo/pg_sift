@@ -18,7 +18,7 @@ reports the malloc leaks of every server process as it exits, minus PostgreSQL's
 own startup allocations (`scripts/lsan.supp`); palloc memory belongs to memory
 contexts and is not a malloc leak. The standalone harnesses (`tools/analyze`,
 `tools/query`, `tools/codec`) run with leak detection too; their palloc stubs
-free the arena at exit (`tools/pgarena.h`). Reports are written to
+free the arena at exit (`tools/pgshim.c`). Reports are written to
 `$SIFT_TMP/sanitizer/`. The `canary` target loads a deliberately overflowing
 module (`asan_canary.c`) and checks that a report appears, which shows the
 pipeline works. Plain `scripts/pgtest.sh install` switches back to the normal
@@ -55,7 +55,7 @@ before use, so after a backend crash the script prints the input that killed it.
 
 ## Coverage-guided targets (test/fuzz)
 
-`colchunk`, `bm25` and `shred` link the decoders without a backend: `fz_shim.c` stands in for the allocator (every `palloc` is its own
+`colchunk`, `bm25` and `shred` link the decoders without a backend: `tools/pgshim.c` and `fz_shim.c` stand in for the allocator (every `palloc` is its own
 malloc, so ASan sees an overrun of a palloc'd object; `MaxAllocSize` is enforced), for `ereport(ERROR)` (a `longjmp` to `fz_try`; the
 answer a decoder may give to corrupt bytes is DATA_CORRUPTED, INDEX_CORRUPTED, FEATURE_NOT_SUPPORTED or a limit, any other SQLSTATE is
 reported once as `FINDING-LOW`) and for the stream reader. They build with clang as libFuzzer binaries, with gcc (or `FZ_DRIVER=1`)

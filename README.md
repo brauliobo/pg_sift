@@ -288,8 +288,7 @@ differences. MariaDB, SQLite and PostgreSQL numbers are measured on different sy
 
 ## Security and license
 
-`make check` runs every suite in throwaway clusters, in parallel lanes (about 1.5 minutes on 8 cores, 2.5 minutes on the 4 cores of a CI runner;
-`make check-full` adds sanitizers, soak, fuzz and mutants).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)).
 Report crashes, wrong results and index corruption privately as described in [SECURITY.md](SECURITY.md); to contribute see
 [CONTRIBUTING.md](CONTRIBUTING.md). Changes per release: [CHANGELOG.md](CHANGELOG.md). pg_sift is released under the
 [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

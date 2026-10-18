@@ -14,12 +14,7 @@
 #define MAXOFF			SIFT_MAX_OFFSET
 #define PAGE_RANK_WORDS	((MAXOFF + 63) / 64)	/* words of rank bits of a page of docs */
 
-#define corrupt(seg, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" segment %llu is corrupted", \
-					RelationGetRelationName((seg)->index), ULL((seg)->entry.gen)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
 
 /* The liveness pages of a segment, as the shared module addresses them */
 static SiftLive
@@ -352,10 +347,7 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftSegment *seg = palloc0(sizeof(SiftSegment));
-	Buffer		buf;
-	Page		page;
 	SiftSegHeaderData *h;
-	uint32		used;
 
 	seg->index = index;
 	seg->entry = *entry;
@@ -366,21 +358,7 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	if (entry->format > SIFT_FORMAT_MINOR)
 		elog(ERROR, "sift: segment %llu has format %u, this build reads up to %u", ULL(entry->gen), entry->format,
 			 SIFT_FORMAT_MINOR);
-	buf = ReadBuffer(index, entry->header_blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
-	page = BufferGetPage(buf);
-	h = (SiftSegHeaderData *) SiftPageGetData(page);
-	used = SiftPageGetUsed(page);
-	if (used < offsetof(SiftSegHeaderData, extents) || h->nextents > SIFT_MAX_EXTENTS ||
-		used < offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent))
-	{
-		UnlockReleaseBuffer(buf);
-		corrupt(seg, "Header block %u holds %u bytes.", entry->header_blk, used);
-	}
-	seg->hdr = palloc(used);
-	memcpy(seg->hdr, h, used);
-	UnlockReleaseBuffer(buf);
+	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->sum_dl != entry->sum_dl ||
 		h->ndocs == 0 || h->sb_lo != entry->sb_lo || h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi ||
@@ -1097,32 +1075,13 @@ sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
 
 /* ---------- VACUUM ---------- */
 
-static void
-set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].gen == *(uint64 *) arg)
-			dir->segs[i].flags |= SIFT_SEG_DIRTY;
-}
-
-/* The directory flag goes first: bits cleared under a clean flag would be ignored by readers */
-static void
-mark_dirty(SiftSegment *seg)
-{
-	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-	{
-		sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
-		seg->entry.flags |= SIFT_SEG_DIRTY;
-	}
-}
-
 /* Deletes the docs of ranks dead[] (ascending) of one SB (format 1) */
 static void
 delete_ranks(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
 {
 	SiftLive	l = seg_live(seg);
 
-	mark_dirty(seg);
+	sift_seg_mark_dirty(seg->index, &seg->entry);
 	sift_live_clear(&l, sb - seg->hdr->sb_lo, dead, nd);
 	docmap(seg)->live_ok = docmap(seg)->live_om_ok = false;
 }
@@ -1133,7 +1092,7 @@ delete_bits2(SiftSegment *seg, uint32 sb, const uint64 *bits, int nd, uint64 dea
 {
 	SiftLive	l = seg_live(seg);
 
-	mark_dirty(seg);
+	sift_seg_mark_dirty(seg->index, &seg->entry);
 	sift_live2_clear(&l, sb - seg->hdr->sb_lo, bits, nd, dead_dl);
 	live2_cleared(seg, nd, dead_dl);
 }
