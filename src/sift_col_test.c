@@ -12,6 +12,7 @@
 #include "catalog/index.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "storage/lock.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
@@ -31,6 +32,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
 #define TEST_NOMUTABLE	1
 #define TEST_NOVET		2
+#define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
+#define WAIT_KEY		0x51F7
 
 typedef struct TestQuery
 {
@@ -194,6 +197,14 @@ scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 							(flags & TEST_NOMUTABLE) ? SIFT_COLO_NOMUTABLE : 0);
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
+	if (flags & TEST_WAIT)
+	{
+		LOCKTAG		tag;
+
+		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, WAIT_KEY, 1, 2);
+		(void) LockAcquire(&tag, ShareLock, false, false);
+		LockRelease(&tag, ShareLock, false);
+	}
 }
 
 static void
