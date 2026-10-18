@@ -83,6 +83,21 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
   clickbench` runs the 43 ClickBench queries. See [docs/perf/ANALYTICS.md](docs/perf/ANALYTICS.md).
 
+- Fixed: `count(*)` through the index (and `sift.facets`, and an unordered scan that returns no column) could count rows its snapshot does
+  not see while a `VACUUM` ran. A `VACUUM` clears the index entries of the tuples it removes and only then marks their pages
+  all-visible; a scan reads the liveness of a segment (the directory's dirty flag, the dirty-SB bitmap, the live bits, the mutable
+  segments' records) before it reads the visibility-map bit of the pages, so when the `VACUUM` finished in between it took the page as
+  all-visible, took the liveness as read before the removals, and counted the dead documents (rows deleted before the query began and not
+  yet vacuumed: the index count was higher than the sequential count of the same snapshot, by up to the rows deleted). A merge or a promotion that
+  replaced the segments under the scan did the same, because the `VACUUM` after it clears the bits of the new segments and the scan
+  still read the old ones. The heap decides every row this can touch: a `VACUUM` that removed rows now ends with a directory update, and a scan
+  that finds the directory changed since it read it (after the map, per superblock) does not take any page as all-visible for the rest of the scan.
+  Rows returned by a search (`SELECT ... WHERE body @@> ...`) were never affected: the heap checks them. No change to the on-disk format or the SQL.
+  Found while fixing the same race in the column engine; seen on 2.0.2 and every earlier release as an index count above the sequential
+  count (96 differing counts in a 90 s run with 6 readers, deleters, updaters, inserters and a `VACUUM`/`sift.merge` loop; none without the `VACUUM`).
+  Tests: `vacuum_count_snapshot` (the scan waits before the map read while the `VACUUM`, merge or promotion runs: clean segment, dirty segment
+  whose second superblock turns dirty, merge, mutable segment, page-by-page scan) and `vacuum_count_stress` (the run above, 40 s).
+
 ## 2.0.2
 
 No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. Two fixes (the first is a security hardening, the second a correctness fix) and no new behavior.

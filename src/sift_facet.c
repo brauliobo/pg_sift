@@ -188,7 +188,7 @@ collect_matches(Facets *f, const char *query, int len)
 	f->estate = CreateExecutorState();
 	f->iinfo = BuildIndexInfo(f->index);
 	f->slot = table_slot_create(f->heap, NULL);
-	sift_vis_begin(&f->vis, f->heap, snapshot);
+	sift_vis_begin(&f->vis, f->heap, snapshot, f->index, sift_plan_dir_version(plan));
 	f->total = sift_eval_pages(plan, &f->vis, facet_verify, f, add_page, f);
 	sift_vis_end(&f->vis);
 	sift_state_close(st);
