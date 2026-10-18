@@ -112,7 +112,6 @@ typedef struct AggCtx
 	Bitmapset  *used;			/* leaves the spec reads */
 	List	   *dpctx;			/* deparse context of expr_text */
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
-	bool		numeric_ok;		/* the aggregate being compiled may read a numeric leaf (others never do) */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	List	   *combos;			/* ComboCtx */
@@ -256,7 +255,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 		SiftSrcLeaf *l = leaf_of(c, i);
 
 		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, path) &&
-			l->typid == typid && (typid != NUMERICOID || c->numeric_ok))
+			l->typid == typid)
 			return i;
 	}
 	return -1;
@@ -724,7 +723,8 @@ typedef enum TypeClass
 	TC_TS,
 	TC_TSTZ,
 	TC_FLOAT,
-	TC_BOOL
+	TC_BOOL,
+	TC_NUMERIC
 } TypeClass;
 
 static TypeClass
@@ -747,6 +747,8 @@ type_class(Oid t)
 			return TC_FLOAT;
 		case BOOLOID:
 			return TC_BOOL;
+		case NUMERICOID:
+			return TC_NUMERIC;
 		default:
 			return TC_NONE;
 	}
@@ -1236,6 +1238,219 @@ compile_combo_pred(AggCtx *c, Node *n)
 	return p;
 }
 
+/* ---------- numeric expressions ---------- */
+
+/* digits an integer or numeric(p, s) column may hold: from the type modifier of its reference, else what the storage holds */
+static int
+leaf_digits(Oid typid, int32 typmod)
+{
+	if (typid == INT2OID)
+		return 5;
+	if (typid == INT4OID)
+		return 10;
+	return typmod >= 0 ? ((typmod - VARHDRSZ) >> 16) & 0xffff : 19;
+}
+
+static bool
+nx_put(SiftAggNum *o, SiftAggNxOp op, int leaf, int a, int b, sift_i128 c)
+{
+	if (o->n >= SIFT_AGG_MAX_VX)
+		return false;
+	o->step[o->n++] = (SiftAggNx) {op, leaf, a, b, c};
+	return true;
+}
+
+static bool
+nx_leaf(AggCtx *c, Node *n, int leaf, SiftAggNum *o, int *scale, int *dig)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+
+	if (l->kind != SCL_SCALAR || !((l->vtype == SCV_I64 && (l->typid == NUMERICOID || l->typid == INT8OID)) ||
+								   (l->vtype == SCV_I32 && (l->typid == INT2OID || l->typid == INT4OID))))
+		return false;
+	use_leaf(c, leaf);
+	*scale = l->typid == NUMERICOID ? l->scale : 0;
+	*dig = leaf_digits(l->typid, exprTypmod(n));
+	return nx_put(o, SNX_LEAF, leaf, 0, 0, 0);
+}
+
+/* a constant is its text: the digits and the dscale PostgreSQL prints; NaN and the infinities are not numbers of the program */
+static bool
+nx_const(Const *k, SiftAggNum *o, int *scale, int *dig)
+{
+	sift_i128	v,
+				m;
+
+	if (k->constisnull || k->consttype != NUMERICOID ||
+		!sift_parse_decimal(DatumGetCString(DirectFunctionCall1(numeric_out, k->constvalue)), &v, scale))
+		return false;
+	for (*dig = 1, m = v < 0 ? -v : v; m >= 10; m /= 10)
+		(*dig)++;
+	return nx_put(o, SNX_CONST, -1, 0, 0, v);
+}
+
+/* left op right, the result scale the larger one (numeric_add, numeric_sub); *scale and *dig are the left operand's on entry */
+static bool
+nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2)
+{
+	int			s1 = *scale,
+				sc = Max(s1, s2);
+
+	*dig = Max(*dig + sc - s1, d2 + sc - s2) + 1;
+	*scale = sc;
+	return *dig <= SIFT_NUM_MAX_DIGITS && nx_put(o, op, -1, sc - s1, sc - s2, 0);
+}
+
+/* round, trunc, floor, ceil to n digits after the point: the result has scale n (0 for a negative n), as numeric_round and its kin give */
+static bool
+nx_rescale(SiftAggNum *o, SiftAggNxOp op, int n, int *scale, int *dig)
+{
+	int			a = Max(*scale - n, 0),
+				b = n >= *scale ? n - *scale : Max(-n, 0);
+
+	*dig = (a > 0 ? Max(*dig - a, 0) + 1 : *dig) + b;
+	*scale = Max(n, 0);
+	return *dig <= SIFT_NUM_MAX_DIGITS && nx_put(o, op, -1, a, b, 0);
+}
+
+/*
+ * The program of a numeric expression: leaves, numeric constants, + - * and unary minus, abs, round / trunc / floor / ceil with a constant
+ * number of digits, the casts of integers to numeric and of numeric to an integer (the digits it needs fit the integer: no overflow
+ * error to reproduce). Anything else (division, other functions, parameters inside the arithmetic, a result of more than
+ * SIFT_NUM_MAX_DIGITS digits) is false: its scale or its errors are not known here.
+ */
+static bool
+nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig)
+{
+	int			leaf,
+				s2,
+				d2,
+				nd = 0,
+				maxd = SIFT_NUM_MAX_DIGITS;
+	Oid			fid;
+	List	   *args;
+	SiftAggNxOp op;
+
+	n = strip_relabel(n);
+	if (IsA(n, Const))
+		return nx_const((Const *) n, o, scale, dig);
+	if ((leaf = match_leaf(c, n)) >= 0)
+		return nx_leaf(c, n, leaf, o, scale, dig);
+	fid = func_of(n);
+	args = func_args(n);
+	switch (fid)
+	{
+		case F_NUMERIC_ADD:
+		case F_NUMERIC_SUB:
+		case F_NUMERIC_MUL:
+			if (!nx_walk(c, linitial(args), o, scale, dig) || !nx_walk(c, lsecond(args), o, &s2, &d2))
+				return false;
+			if (fid != F_NUMERIC_MUL)
+				return nx_addsub(o, fid == F_NUMERIC_ADD ? SNX_ADD : SNX_SUB, scale, dig, s2, d2);
+			*scale += s2;
+			*dig += d2;
+			return *dig <= SIFT_NUM_MAX_DIGITS && nx_put(o, SNX_MUL, -1, 0, 0, 0);
+		case F_NUMERIC_UMINUS:
+		case F_ABS_NUMERIC:
+		case F_NUMERIC_ABS:
+			return nx_walk(c, linitial(args), o, scale, dig) && nx_put(o, fid == F_NUMERIC_UMINUS ? SNX_NEG : SNX_ABS, -1, 0, 0, 0);
+		case F_NUMERIC_INT2:
+		case F_NUMERIC_INT4:
+		case F_NUMERIC_INT8:
+			return nx_walk(c, linitial(args), o, scale, dig);
+		case F_INT2_NUMERIC:
+		case F_INT4_NUMERIC:
+		case F_INT8_NUMERIC:
+			maxd = fid == F_INT2_NUMERIC ? 4 : fid == F_INT4_NUMERIC ? 9 : 18;
+			return nx_walk(c, linitial(args), o, scale, dig) && nx_rescale(o, SNX_ROUND, 0, scale, dig) && *dig <= maxd;
+		case F_ROUND_NUMERIC:
+		case F_ROUND_NUMERIC_INT4:
+		case F_TRUNC_NUMERIC:
+		case F_TRUNC_NUMERIC_INT4:
+		case F_FLOOR_NUMERIC:
+		case F_CEIL_NUMERIC:
+		case F_CEILING_NUMERIC:
+			if (list_length(args) == 2)
+			{
+				Const	   *k = (Const *) strip_relabel(lsecond(args));
+
+				if (!IsA(k, Const) || k->constisnull || abs(nd = DatumGetInt32(k->constvalue)) > SIFT_NUM_MAX_DIGITS)
+					return false;
+			}
+			op = (fid == F_ROUND_NUMERIC || fid == F_ROUND_NUMERIC_INT4) ? SNX_ROUND :
+				(fid == F_TRUNC_NUMERIC || fid == F_TRUNC_NUMERIC_INT4) ? SNX_TRUNC : fid == F_FLOOR_NUMERIC ? SNX_FLOOR : SNX_CEIL;
+			return nx_walk(c, linitial(args), o, scale, dig) && nx_rescale(o, op, nd, scale, dig);
+		default:
+			return false;
+	}
+}
+
+/* the program of e, at most maxdig digits wide */
+static bool
+compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
+{
+	int			dig;
+
+	o->n = 0;
+	o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
+	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig;
+}
+
+/* the level (0 row, 1 element) of the leaves of a program, -1 when it mixes them */
+static int
+nx_level(AggCtx *c, const SiftAggNum *o)
+{
+	int			lvl = -1;
+
+	for (int k = 0; k < o->n; k++)
+		if (o->step[k].op == SNX_LEAF)
+		{
+			int			l = leaf_level(c, o->step[k].leaf);
+
+			if (lvl >= 0 && l != lvl)
+				return -1;
+			lvl = l;
+		}
+	return lvl;
+}
+
+/* numeric expression op operand; two expressions are compared as their difference against 0 */
+static SiftAggPred *
+compile_ncmp(AggCtx *c, int cmp, Node *l, Node *r)
+{
+	SiftAggPred *p = new_pred(c, SAP_NCMP);
+	Node	   *lhs = l,
+			   *rhs = r,
+			   *operand;
+	int			dig,
+				s2,
+				d2;
+
+	if (!pseudo_const(r) && pseudo_const(l))
+	{
+		lhs = r;
+		rhs = l;
+		cmp = commute(cmp);
+	}
+	operand = rhs;
+	p->num.step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
+	if (!nx_walk(c, lhs, &p->num, &p->num.scale, &dig))
+		return NULL;
+	if (!pseudo_const(rhs))
+	{
+		if (!nx_walk(c, rhs, &p->num, &s2, &d2) || !nx_addsub(&p->num, SNX_SUB, &p->num.scale, &dig, s2, d2))
+			return NULL;
+		operand = (Node *) makeConst(NUMERICOID, -1, InvalidOid, -1, NumericGetDatum(int64_to_numeric(0)), false, false);
+	}
+	if ((p->level = nx_level(c, &p->num)) < 0)
+		return NULL;
+	p->op = cmp;
+	p->expr = operand;
+	p->argtype = NUMERICOID;
+	p->desc = psprintf("%s %s %s", expr_text(c, lhs), cmp_text(cmp), expr_text(c, rhs));
+	return p;
+}
+
 /* leaf op operand, for a leaf the comparison kernels read */
 static SiftAggPred *
 compile_cmp(AggCtx *c, OpExpr *op)
@@ -1265,7 +1480,7 @@ compile_cmp(AggCtx *c, OpExpr *op)
 		lt = rt;
 	}
 	else
-		return NULL;
+		return lt == NUMERICOID && rt == NUMERICOID ? compile_ncmp(c, cmp, l, r) : NULL;
 	lf = leaf_of(c, leaf);
 	if (lf->kind != SCL_SCALAR || lf->vtype == SCV_CODE)
 		return NULL;
@@ -1277,6 +1492,55 @@ compile_cmp(AggCtx *c, OpExpr *op)
 	p->expr = r;
 	p->argtype = exprType(r);
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(cmp), expr_text(c, r));
+	return p;
+}
+
+#define AGG_MAX_NUM_IN		64		/* constants of a numeric IN list: one comparison each */
+
+/* numeric leaf IN (constants) is the OR of its equalities, NOT IN the AND of its inequalities: every operand is scaled like a comparison's */
+static SiftAggPred *
+compile_num_in(AggCtx *c, ScalarArrayOpExpr *sa, int leaf, Node *arr)
+{
+	List	   *elems = NIL;
+	SiftAggPred *p;
+	int			i = 0;
+
+	if (IsA(arr, Const))
+	{
+		Const	   *k = (Const *) arr;
+		Datum	   *el;
+		bool	   *nl;
+		int			ne;
+
+		if (k->constisnull)
+			return new_pred(c, SAP_FALSE);
+		deconstruct_array(DatumGetArrayTypeP(k->constvalue), NUMERICOID, -1, false, TYPALIGN_INT, &el, &nl, &ne);
+		for (int j = 0; j < ne; j++)
+			elems = lappend(elems, makeConst(NUMERICOID, -1, InvalidOid, -1, el[j], nl[j], false));
+	}
+	else if (IsA(arr, ArrayExpr))
+		elems = ((ArrayExpr *) arr)->elements;
+	else
+		return NULL;
+	if (elems == NIL)
+		return new_pred(c, sa->useOr ? SAP_FALSE : SAP_TRUE);
+	if (list_length(elems) > AGG_MAX_NUM_IN)
+		return NULL;
+	p = new_pred(c, sa->useOr ? SAP_OR : SAP_AND);
+	p->level = leaf_level(c, leaf);
+	p->nchild = list_length(elems);
+	p->child = palloc(p->nchild * sizeof(SiftAggPred *));
+	foreach_ptr(Node, e, elems)
+	{
+		SiftAggPred *q = make_leaf_pred(c, SAP_CMP, leaf);
+
+		q->op = sa->useOr ? SCMP_EQ : SCMP_NE;
+		q->expr = e;
+		q->argtype = NUMERICOID;
+		q->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(q->op), expr_text(c, e));
+		p->child[i++] = q;
+	}
+	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, arr));
 	return p;
 }
 
@@ -1300,6 +1564,8 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	if ((leaf = match_leaf(c, l)) < 0 || !pseudo_const(r))
 		return NULL;
 	lf = leaf_of(c, leaf);
+	if (lf->kind == SCL_SCALAR && lf->typid == NUMERICOID && type_class(lt) == TC_NUMERIC)
+		return compile_num_in(c, sa, leaf, r);
 	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_I32 || type_class(lf->typid) == TC_NONE ||
 		type_class(lf->typid) != type_class(lt) || type_class(lf->typid) != type_class(rt) ||
 		type_class(lf->typid) == TC_FLOAT)
@@ -1477,21 +1743,27 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	k->typmod = exprTypmod(expr);
 	k->collid = exprCollation(expr);
 	k->eqop = sgc->eqop;
-	if ((leaf = match_leaf(c, expr)) >= 0)
+	/* a float leaf groups by float_key's bits; an expression of one is not a lookup table (too many values) */
+	if ((leaf = match_leaf(c, expr)) >= 0 && (lut_leaf_ok(c, leaf) || (leaf_of(c, leaf)->kind == SCL_SCALAR && leaf_of(c, leaf)->vtype == SCV_F64)))
 	{
-		/* a float leaf groups by float_key's bits; an expression of one is not a lookup table (too many values) */
-		if (!lut_leaf_ok(c, leaf) && !(leaf_of(c, leaf)->kind == SCL_SCALAR && leaf_of(c, leaf)->vtype == SCV_F64))
-			return false;
 		k->kind = SAK_LEAF;
 		k->leaf = leaf;
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
-	else if (single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_leaf_ok(c, leaf))
+	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_leaf_ok(c, leaf))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;
 		k->expr = substitute_leaf(c, expr, ptype, ptypmod, pcoll);
 		k->desc = psprintf("%s: %s", leaf_name(c, leaf), expr_text(c, expr));
+	}
+	else if ((k->typid == NUMERICOID || k->typid == INT2OID || k->typid == INT4OID || k->typid == INT8OID) &&
+			 compile_nx(c, expr, SIFT_NUM_MAX_DIGITS, &k->num))
+	{
+		k->kind = SAK_NUM;
+		k->leaf = -1;
+		k->desc = expr_text(c, expr);
+		return true;
 	}
 	else
 		return compile_combo_key(c, expr, k);
@@ -1548,18 +1820,20 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 		return true;
 	}
 	if (IsA(n, FuncExpr) && (((FuncExpr *) n)->funcid == F_FLOAT8_INT4 || ((FuncExpr *) n)->funcid == F_FLOAT8_INT2 ||
-							 ((FuncExpr *) n)->funcid == F_FLOAT8_FLOAT4))
+							 ((FuncExpr *) n)->funcid == F_FLOAT8_FLOAT4 || ((FuncExpr *) n)->funcid == F_FLOAT8_NUMERIC))
 		n = strip_relabel(linitial(((FuncExpr *) n)->args));
 	if ((leaf = match_leaf(c, n)) >= 0)
 	{
 		SiftSrcLeaf *l = leaf_of(c, leaf);
 
-		if (l->kind != SCL_SCALAR || (l->vtype != SCV_I32 && l->vtype != SCV_F64) ||
+		/* numeric to float8 is a division of two doubles, correctly rounded like numeric_float8, while the integer is below 2^53 */
+		if (l->kind != SCL_SCALAR || (l->vtype != SCV_I32 && l->vtype != SCV_F64 && l->vtype != SCV_I64) ||
 			(l->vtype == SCV_I32 && l->typid != INT4OID && l->typid != INT2OID) ||
-			(l->vtype == SCV_F64 && l->typid != FLOAT8OID && l->typid != FLOAT4OID))
+			(l->vtype == SCV_F64 && l->typid != FLOAT8OID && l->typid != FLOAT4OID) ||
+			(l->vtype == SCV_I64 && (l->typid != NUMERICOID || leaf_digits(l->typid, exprTypmod(n)) > 15)))
 			return false;
 		use_leaf(c, leaf);
-		out->vx[out->nvx++] = (SiftAggVx) {SVX_LEAF, leaf, 0};
+		out->vx[out->nvx++] = (SiftAggVx) {SVX_LEAF, leaf, l->vtype == SCV_I64 ? (double) sift_pow10(l->scale) : 0};
 		return true;
 	}
 	if (IsA(n, OpExpr))
@@ -1761,7 +2035,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if ((a->aggkind != AGGKIND_NORMAL && !ordered) || (a->aggorder != NIL && !ordered) || a->agglevelsup != 0 ||
 		a->aggvariadic || contain_volatile_functions((Node *) a))
 		return false;
-	if (a->aggdistinct != NIL && fid != F_COUNT_ANY)
+	if (a->aggdistinct != NIL && fid != F_COUNT_ANY && fid != F_SUM_NUMERIC && fid != F_AVG_NUMERIC)
 		return false;
 	out->leaf = -1;
 	out->restype = a->aggtype;
@@ -1785,10 +2059,25 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 			out->kind = SAA_COUNT_STAR;
 		else if (fid == F_COUNT_ANY && a->aggdistinct != NIL && unique_row_column(c, arg))
 			out->kind = SAA_COUNT_ROWS;
+		else if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
+												 fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
+		{
+			bool		sum = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC;
+
+			/* a sum of n values of D digits has D + log10(n) digits: 26 leave room for 10^12 rows in 128 bits */
+			if (!compile_nx(c, arg, sum ? 26 : SIFT_NUM_MAX_DIGITS, &out->num))
+				return compile_mapped(c, a, arg, out, ai);
+			out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
+				fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
+			out->argtype = NUMERICOID;
+			out->distinct = sum && a->aggdistinct != NIL;
+			out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
+			return true;
+		}
 		else if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
 		{
 			out->vx = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggVx));
-			if (!compile_vx(c, arg, out) || out->nvx < 2)
+			if (!compile_vx(c, arg, out) || (out->nvx < 2 && out->vx[0].op != SVX_LEAF))
 				return compile_mapped(c, a, arg, out, ai);
 			out->kind = fid == F_SUM_FLOAT8 ? SAA_SUM_F64 : SAA_AVG_F64;
 			out->argtype = FLOAT8OID;
@@ -1797,10 +2086,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		}
 		else
 		{
-			c->numeric_ok = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC || fid == F_MAX_NUMERIC ||
-							(fid == F_COUNT_ANY && a->aggdistinct == NIL);
 			leaf = match_leaf(c, arg);
-			c->numeric_ok = false;
 			if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
 				return compile_mapped(c, a, arg, out, ai);
 			out->leaf = leaf;
@@ -1841,14 +2127,6 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 						return false;
 					out->kind = SAA_AVG_F64;
 					break;
-				case F_SUM_NUMERIC:
-				case F_AVG_NUMERIC:
-					if (!leaf_numeric(c, leaf, SCV_I64, NUMERICOID, InvalidOid))
-						return false;
-					out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : SAA_AVG_NUM;
-					break;
-				case F_MIN_NUMERIC:
-				case F_MAX_NUMERIC:
 				case F_MIN_INT2:
 				case F_MIN_INT4:
 				case F_MIN_INT8:
@@ -1868,7 +2146,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 					if (leaf_of(c, leaf)->vtype == SCV_CODE || leaf_of(c, leaf)->kind != SCL_SCALAR ||
 						leaf_of(c, leaf)->typid != a->aggtype)
 						return false;
-					out->kind = (fid == F_MIN_NUMERIC || fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
+					out->kind = (fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
 								 fid == F_MIN_TIMESTAMP || fid == F_MIN_TIMESTAMPTZ || fid == F_MIN_FLOAT4 ||
 								 fid == F_MIN_FLOAT8) ? SAA_MIN : SAA_MAX;
 					break;
@@ -2551,6 +2829,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_COMBO_ROW		3.0		/* a tuple's entry in a combo: gathers and a hash probe */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
+#define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
+#define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		400.0
 #define AGG_DEFAULT_ELEMS	3.0
@@ -2559,6 +2839,27 @@ static double
 elems_of(AggCtx *c, int grp)
 {
 	return c->stats.elems_per_row[grp] > 0 ? c->stats.elems_per_row[grp] : AGG_DEFAULT_ELEMS;
+}
+
+static double
+num_cost(const SiftAggNum *o)
+{
+	double		cost = 0;
+
+	for (int k = 0; k < o->n; k++)
+		cost += o->step[k].op >= SNX_ROUND ? AGG_NUM_DIV : o->step[k].op > SNX_CONST ? AGG_NUM_STEP : 0;
+	return cost;
+}
+
+/* the numeric programs of a predicate tree, per row that reaches them */
+static double
+pred_num_cost(const SiftAggPred *p)
+{
+	double		cost = p == NULL ? 0 : num_cost(&p->num);
+
+	for (int i = 0; p && i < p->nchild; i++)
+		cost += pred_num_cost(p->child[i]);
+	return cost;
 }
 
 static void
@@ -2585,8 +2886,15 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	foreach_ptr(JoinCtx, jc, c->joins)
 		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW;
 	for (int i = 0; i < s->naggs; i++)
+	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			scan_cost += agg_rows * AGG_ORDERED_ROW;
+		scan_cost += agg_rows * num_cost(&s->agg[i].num) + rows * pred_num_cost(s->agg[i].filter);
+	}
+	for (int i = 0; i < s->nkeys; i++)
+		scan_cost += agg_rows * num_cost(&s->key[i].num);
+	for (int i = 0; i < s->npred; i++)
+		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost *= cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
 	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;

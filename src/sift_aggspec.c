@@ -8,6 +8,46 @@
 
 #include "sift_aggspec.h"
 
+sift_i128
+sift_pow10(int e)
+{
+	sift_i128	r = 1;
+
+	while (e-- > 0)
+		r *= 10;
+	return r;
+}
+
+bool
+sift_parse_decimal(const char *s, sift_i128 *v, int *scale)
+{
+	bool		neg = *s == '-';
+	int			nd = 0,
+				frac = -1;
+	sift_i128	r = 0;
+
+	s += neg;
+	for (; *s; s++)
+	{
+		if (*s == '.' && frac < 0)
+			frac = 0;
+		else if (*s >= '0' && *s <= '9')
+		{
+			if (r != 0 || *s != '0')
+				nd++;
+			r = r * 10 + (*s - '0');
+			frac += frac >= 0;
+		}
+		else
+			return false;
+		if (nd > SIFT_NUM_MAX_DIGITS)
+			return false;
+	}
+	*v = neg ? -r : r;
+	*scale = Max(frac, 0);
+	return true;
+}
+
 typedef struct Pack
 {
 	List	   *items;
@@ -44,6 +84,32 @@ put_dbl(Pack *p, double d)
 }
 
 static void
+put_num(Pack *p, const SiftAggNum *n)
+{
+	put_int(p, n->n);
+	put_int(p, n->scale);
+	for (int i = 0; i < n->n; i++)
+	{
+		const SiftAggNx *x = &n->step[i];
+		sift_i128	m = x->c;
+		char		buf[48],
+				   *o = buf + sizeof(buf) - 1;
+
+		*o = '\0';
+		do
+			*--o = '0' + (int) (m < 0 ? -(m % 10) : m % 10);
+		while ((m /= 10) != 0);
+		if (x->c < 0)
+			*--o = '-';
+		put_int(p, x->op);
+		put_int(p, x->leaf);
+		put_int(p, x->a);
+		put_int(p, x->b);
+		put_str(p, o);
+	}
+}
+
+static void
 put_pred(Pack *p, const SiftAggPred *pr)
 {
 	if (pr == NULL)
@@ -58,6 +124,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
 	put_node(p, pr->expr);
+	put_num(p, &pr->num);
 	put_str(p, pr->desc);
 	put_int(p, pr->nchild);
 	for (int i = 0; i < pr->nchild; i++)
@@ -86,6 +153,8 @@ put_agg(Pack *p, const SiftAggAgg *a)
 		put_int(p, a->vx[j].leaf);
 		put_dbl(p, a->vx[j].c);
 	}
+	put_num(p, &a->num);
+	put_int(p, a->distinct);
 	put_pred(p, a->filter);
 	put_int(p, (int) a->restype);
 	put_int(p, (int) a->argtype);
@@ -206,6 +275,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, k->leaf);
 		put_int(p, k->slot);
 		put_node(p, k->expr);
+		put_num(p, &k->num);
 		put_int(p, (int) k->typid);
 		put_int(p, k->typmod);
 		put_int(p, (int) k->collid);
@@ -267,6 +337,26 @@ get_node(Unpack *u)
 	return get_int(u) ? get_item(u) : NULL;
 }
 
+static void
+get_num(Unpack *u, SiftAggNum *n)
+{
+	n->n = get_int(u);
+	n->scale = get_int(u);
+	n->step = palloc(Max(n->n, 1) * sizeof(SiftAggNx));
+	for (int i = 0; i < n->n; i++)
+	{
+		SiftAggNx  *x = &n->step[i];
+		int			scale;
+
+		x->op = get_int(u);
+		x->leaf = get_int(u);
+		x->a = get_int(u);
+		x->b = get_int(u);
+		if (!sift_parse_decimal(get_str(u), &x->c, &scale))
+			elog(ERROR, "sift: bad number in the aggregate plan");
+	}
+}
+
 static SiftAggPred *
 get_pred(Unpack *u)
 {
@@ -283,6 +373,7 @@ get_pred(Unpack *u)
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
 	pr->expr = get_node(u);
+	get_num(u, &pr->num);
 	pr->desc = get_str(u);
 	pr->nchild = get_int(u);
 	pr->child = pr->nchild ? palloc(pr->nchild * sizeof(SiftAggPred *)) : NULL;
@@ -314,6 +405,8 @@ get_agg(Unpack *u, SiftAggAgg *a)
 		a->vx[j].leaf = get_int(u);
 		a->vx[j].c = strtod(get_str(u), NULL);
 	}
+	get_num(u, &a->num);
+	a->distinct = get_int(u);
 	a->filter = get_pred(u);
 	a->restype = (Oid) get_int(u);
 	a->argtype = (Oid) get_int(u);
@@ -448,6 +541,7 @@ sift_aggspec_unpack(const List *items)
 		k->leaf = get_int(u);
 		k->slot = get_int(u);
 		k->expr = get_node(u);
+		get_num(u, &k->num);
 		k->typid = (Oid) get_int(u);
 		k->typmod = get_int(u);
 		k->collid = (Oid) get_int(u);

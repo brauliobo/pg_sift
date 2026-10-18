@@ -102,7 +102,7 @@ S2 summary of an array of objects with per-order pre-aggregation, the three roll
 series at day, week, month and quarter, with a date spine; S5 per-store rows and top-N; S6 `jsonb_path_exists` on an array of objects; S7 the
 same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates and quals (`IN`, `NOT IN`, `BETWEEN`, `LIKE`, `OR`, `NOT`,
 `CASE`, `IS [NOT] NULL`, `FILTER`, `HAVING`, grouping by expressions), NULL-heavy documents and empty sets, a BM25 match with an aggregate,
-a prepared statement with a generic plan, and the traps: `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
+a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
 that are not numbers, `ORDER BY` in an aggregate, window functions, `DISTINCT ON`, outer joins, a set-returning function in the select
 list, `TABLESAMPLE`, `FOR UPDATE`, a partitioned table and `SERIALIZABLE`.
