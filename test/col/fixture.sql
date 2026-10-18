@@ -19,7 +19,8 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_text CASCADE;
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_text,
+	map_dup, map_null, map_case, map_part, map_empty CASCADE;
 
 CREATE TABLE orders (
 	id integer NOT NULL, store_id integer NOT NULL, customer_id integer, placed_at date NOT NULL, status text, source text NOT NULL,
@@ -110,6 +111,18 @@ CREATE TABLE kinds_map (kind text NOT NULL, mapped_kind text NOT NULL);
 INSERT INTO kinds_map SELECT upper(k), CASE WHEN k = 'gift' THEN '' ELSE k END
 FROM unnest(ARRAY['standard','express','pickup','digital','subscription','preorder','bundle','gift']) k;
 
+-- the traps of the lookup joins (the key is a category or a kind of the items): a key with two rows, NULL keys (never equal to anything),
+-- keys that differ by case only, a few of the keys, no row
+CREATE TABLE map_dup (category text, tag text);
+INSERT INTO map_dup VALUES ('Apparel', 'a'), ('Apparel', 'b'), ('apparel', 'a'), ('apparel', 'b'), ('Home', 'a'), ('Shoes', 'a'), ('Shoes', 'a');
+CREATE TABLE map_null (category text, tag text);
+INSERT INTO map_null VALUES ('Home', 'h'), ('express', 'e'), (NULL, 'null key'), ('Shoes', NULL), (NULL, NULL);
+CREATE TABLE map_case (category text, tag text);
+INSERT INTO map_case VALUES ('Home', 'exact'), ('home', 'lower'), ('HOME', 'upper'), ('Shoes', 'exact'), ('EXPRESS', 'upper'), ('express', 'lower');
+CREATE TABLE map_part (category text, tag text);
+INSERT INTO map_part VALUES ('Apparel', 'a'), ('Home', 'h'), ('Toys', 't');
+CREATE TABLE map_empty (category text, tag text);
+
 -- the member lists of the queries (as bench/sql/analytics/sets.sql, with the moduli of a table of 4000 orders): K10 inside K400 inside K4000
 CREATE TABLE analytics_sets (set_name text NOT NULL, member text NOT NULL);
 INSERT INTO analytics_sets
@@ -163,8 +176,12 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 	WITH u AS (UPDATE orders SET store_id = 1 + (store_id * 7) % 400, placed_at = placed_at + 1 + id % 3, source = 'web', country_code = 'ZZ'
 			   WHERE coldiff.sample(id, 901, frac) RETURNING 1),
 		 j AS (UPDATE orders SET metrics = metrics || '{"overall": 1.5, "extra_key": 2.5}', items = items || '[{"category": "Toys", "kind": "gift", "qty": 2, "price": 9.9, "discount": 0}]'
-			   WHERE coldiff.sample(id, 902, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM u) + (SELECT count(*) FROM j) $$;
+			   WHERE coldiff.sample(id, 902, frac) RETURNING 1),
+		 m AS (UPDATE categories_map SET mapped_category = CASE WHEN mapped_category = '' THEN 'Other' ELSE initcap(reverse(mapped_category)) END RETURNING 1),
+		 t AS (UPDATE map_dup SET tag = tag || '2' WHERE category = 'Apparel' RETURNING 1),
+		 g AS (INSERT INTO map_empty VALUES ('Home', 'late'), (NULL, 'late') RETURNING 1),
+		 d AS (DELETE FROM map_part WHERE category = 'Home' RETURNING 1)
+	SELECT (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
 CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM orders WHERE coldiff.sample(id, 903, frac) RETURNING 1),

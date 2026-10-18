@@ -64,6 +64,108 @@ put_pred(Pack *p, const SiftAggPred *pr)
 		put_pred(p, pr->child[i]);
 }
 
+static void
+put_agg(Pack *p, const SiftAggAgg *a)
+{
+	put_int(p, a->kind);
+	put_int(p, a->leaf);
+	put_int(p, a->nvx);
+	for (int j = 0; j < a->nvx; j++)
+	{
+		put_int(p, a->vx[j].op);
+		put_int(p, a->vx[j].leaf);
+		put_dbl(p, a->vx[j].c);
+	}
+	put_pred(p, a->filter);
+	put_int(p, (int) a->restype);
+	put_int(p, (int) a->argtype);
+	put_int(p, (int) a->collid);
+	put_int(p, a->col);
+	put_int(p, a->ncond);
+	for (int j = 0; j < a->ncond; j++)
+	{
+		put_int(p, a->cond[j].col);
+		put_int(p, a->cond[j].op);
+		put_int(p, a->cond[j].isint);
+		put_str(p, psprintf(INT64_FORMAT, a->cond[j].ci));
+		put_dbl(p, a->cond[j].cd);
+	}
+	put_str(p, a->desc);
+}
+
+static void
+put_arms(Pack *p, const SiftAggSpec *s)
+{
+	put_int(p, s->narms);
+	for (int i = 0; i < s->narms; i++)
+	{
+		const SiftAggArm *a = &s->arm[i];
+
+		put_int(p, (int) a->keymask);
+		put_int(p, a->nfilter);
+		for (int j = 0; j < a->nfilter; j++)
+			put_pred(p, a->filter[j]);
+		put_int(p, a->ninner);
+		for (int j = 0; j < a->ninner; j++)
+			put_agg(p, &a->inner[j]);
+		put_int(p, a->ncol);
+		for (int j = 0; j < a->ncol; j++)
+			put_int(p, a->colsrc[j]);
+	}
+}
+
+static void
+put_joins(Pack *p, const SiftAggSpec *s)
+{
+	put_int(p, s->njoin);
+	for (int i = 0; i < s->njoin; i++)
+	{
+		const SiftAggJoin *j = &s->join[i];
+
+		put_int(p, (int) j->relid);
+		put_int(p, j->left);
+		put_int(p, j->nkey);
+		for (int k = 0; k < j->nkey; k++)
+		{
+			put_int(p, j->keyatt[k]);
+			put_int(p, (int) j->keytype[k]);
+			put_int(p, j->keypos[k]);
+		}
+		put_int(p, j->ncol);
+		for (int k = 0; k < j->ncol; k++)
+		{
+			put_int(p, j->colatt[k]);
+			put_int(p, (int) j->coltype[k]);
+			put_int(p, j->coltypmod[k]);
+			put_int(p, (int) j->colcoll[k]);
+		}
+		put_str(p, j->desc);
+	}
+	put_int(p, s->ncombo);
+	for (int i = 0; i < s->ncombo; i++)
+	{
+		const SiftAggCombo *c = &s->combo[i];
+
+		put_int(p, c->nleaves);
+		for (int k = 0; k < c->nleaves; k++)
+		{
+			put_int(p, c->leaf[k]);
+			put_int(p, (int) c->ptype[k]);
+			put_int(p, c->ptypmod[k]);
+			put_int(p, (int) c->pcoll[k]);
+		}
+		put_int(p, c->join);
+		put_int(p, c->level);
+		put_int(p, c->nslots);
+		for (int k = 0; k < c->nslots; k++)
+		{
+			put_int(p, c->slot[k].is_key);
+			put_int(p, c->slot[k].key);
+			put_node(p, c->slot[k].expr);
+		}
+	}
+}
+
 List *
 sift_aggspec_pack(const SiftAggSpec *s)
 {
@@ -86,6 +188,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 
 		put_int(p, k->kind);
 		put_int(p, k->leaf);
+		put_int(p, k->slot);
 		put_node(p, k->expr);
 		put_int(p, (int) k->typid);
 		put_int(p, k->typmod);
@@ -95,24 +198,18 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	}
 	put_int(p, s->naggs);
 	for (int i = 0; i < s->naggs; i++)
+		put_agg(p, &s->agg[i]);
+	put_joins(p, s);
+	put_int(p, s->npost);
+	for (int i = 0; i < s->npost; i++)
+		put_pred(p, s->post[i]);
+	put_int(p, s->nvleaf);
+	for (int i = 0; i < s->nvleaf; i++)
 	{
-		const SiftAggAgg *a = &s->agg[i];
-
-		put_int(p, a->kind);
-		put_int(p, a->leaf);
-		put_int(p, a->nvx);
-		for (int j = 0; j < a->nvx; j++)
-		{
-			put_int(p, a->vx[j].op);
-			put_int(p, a->vx[j].leaf);
-			put_dbl(p, a->vx[j].c);
-		}
-		put_pred(p, a->filter);
-		put_int(p, (int) a->restype);
-		put_int(p, (int) a->argtype);
-		put_int(p, (int) a->collid);
-		put_str(p, a->desc);
+		put_int(p, s->vleaf[i].obj);
+		put_str(p, s->vleaf[i].key);
 	}
+	put_arms(p, s);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
 	put_str(p, s->desc_quals);
@@ -175,6 +272,117 @@ get_pred(Unpack *u)
 	return pr;
 }
 
+static void
+get_agg(Unpack *u, SiftAggAgg *a)
+{
+	a->kind = get_int(u);
+	a->leaf = get_int(u);
+	a->nvx = get_int(u);
+	a->vx = palloc(Max(a->nvx, 1) * sizeof(SiftAggVx));
+	for (int j = 0; j < a->nvx; j++)
+	{
+		a->vx[j].op = get_int(u);
+		a->vx[j].leaf = get_int(u);
+		a->vx[j].c = strtod(get_str(u), NULL);
+	}
+	a->filter = get_pred(u);
+	a->restype = (Oid) get_int(u);
+	a->argtype = (Oid) get_int(u);
+	a->collid = (Oid) get_int(u);
+	a->col = get_int(u);
+	a->ncond = get_int(u);
+	a->cond = palloc0(Max(a->ncond, 1) * sizeof(SiftAggCond));
+	for (int j = 0; j < a->ncond; j++)
+	{
+		a->cond[j].col = get_int(u);
+		a->cond[j].op = get_int(u);
+		a->cond[j].isint = get_int(u);
+		a->cond[j].ci = strtoll(get_str(u), NULL, 10);
+		a->cond[j].cd = strtod(get_str(u), NULL);
+	}
+	a->desc = get_str(u);
+}
+
+static void
+get_arms(Unpack *u, SiftAggSpec *s)
+{
+	s->narms = get_int(u);
+	s->arm = palloc0(Max(s->narms, 1) * sizeof(SiftAggArm));
+	for (int i = 0; i < s->narms; i++)
+	{
+		SiftAggArm *a = &s->arm[i];
+
+		a->keymask = (uint32) get_int(u);
+		a->nfilter = get_int(u);
+		a->filter = palloc(Max(a->nfilter, 1) * sizeof(SiftAggPred *));
+		for (int j = 0; j < a->nfilter; j++)
+			a->filter[j] = get_pred(u);
+		a->ninner = get_int(u);
+		a->inner = palloc0(Max(a->ninner, 1) * sizeof(SiftAggAgg));
+		for (int j = 0; j < a->ninner; j++)
+			get_agg(u, &a->inner[j]);
+		a->ncol = get_int(u);
+		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
+		for (int j = 0; j < a->ncol; j++)
+			a->colsrc[j] = get_int(u);
+	}
+}
+
+static void
+get_joins(Unpack *u, SiftAggSpec *s)
+{
+	s->njoin = get_int(u);
+	s->join = palloc0(Max(s->njoin, 1) * sizeof(SiftAggJoin));
+	for (int i = 0; i < s->njoin; i++)
+	{
+		SiftAggJoin *j = &s->join[i];
+
+		j->relid = (Oid) get_int(u);
+		j->left = get_int(u);
+		j->nkey = get_int(u);
+		for (int k = 0; k < j->nkey; k++)
+		{
+			j->keyatt[k] = get_int(u);
+			j->keytype[k] = (Oid) get_int(u);
+			j->keypos[k] = get_int(u);
+		}
+		j->ncol = get_int(u);
+		for (int k = 0; k < j->ncol; k++)
+		{
+			j->colatt[k] = get_int(u);
+			j->coltype[k] = (Oid) get_int(u);
+			j->coltypmod[k] = get_int(u);
+			j->colcoll[k] = (Oid) get_int(u);
+		}
+		j->desc = get_str(u);
+	}
+	s->ncombo = get_int(u);
+	s->combo = palloc0(Max(s->ncombo, 1) * sizeof(SiftAggCombo));
+	for (int i = 0; i < s->ncombo; i++)
+	{
+		SiftAggCombo *c = &s->combo[i];
+
+		c->nleaves = get_int(u);
+		for (int k = 0; k < c->nleaves; k++)
+		{
+			c->leaf[k] = get_int(u);
+			c->ptype[k] = (Oid) get_int(u);
+			c->ptypmod[k] = get_int(u);
+			c->pcoll[k] = (Oid) get_int(u);
+		}
+		c->join = get_int(u);
+		c->level = get_int(u);
+		c->nslots = get_int(u);
+		c->slot = palloc0(Max(c->nslots, 1) * sizeof(SiftAggSlot));
+		for (int k = 0; k < c->nslots; k++)
+		{
+			c->slot[k].is_key = get_int(u);
+			c->slot[k].key = get_int(u);
+			c->slot[k].expr = get_node(u);
+		}
+	}
+}
+
 SiftAggSpec *
 sift_aggspec_unpack(const List *items)
 {
@@ -201,6 +409,7 @@ sift_aggspec_unpack(const List *items)
 
 		k->kind = get_int(u);
 		k->leaf = get_int(u);
+		k->slot = get_int(u);
 		k->expr = get_node(u);
 		k->typid = (Oid) get_int(u);
 		k->typmod = get_int(u);
@@ -211,25 +420,19 @@ sift_aggspec_unpack(const List *items)
 	s->naggs = get_int(u);
 	s->agg = palloc0(Max(s->naggs, 1) * sizeof(SiftAggAgg));
 	for (int i = 0; i < s->naggs; i++)
+		get_agg(u, &s->agg[i]);
+	get_joins(u, s);
+	s->npost = get_int(u);
+	s->post = palloc(Max(s->npost, 1) * sizeof(SiftAggPred *));
+	for (int i = 0; i < s->npost; i++)
+		s->post[i] = get_pred(u);
+	s->nvleaf = get_int(u);
+	for (int i = 0; i < s->nvleaf; i++)
 	{
-		SiftAggAgg *a = &s->agg[i];
-
-		a->kind = get_int(u);
-		a->leaf = get_int(u);
-		a->nvx = get_int(u);
-		a->vx = palloc(Max(a->nvx, 1) * sizeof(SiftAggVx));
-		for (int j = 0; j < a->nvx; j++)
-		{
-			a->vx[j].op = get_int(u);
-			a->vx[j].leaf = get_int(u);
-			a->vx[j].c = strtod(get_str(u), NULL);
-		}
-		a->filter = get_pred(u);
-		a->restype = (Oid) get_int(u);
-		a->argtype = (Oid) get_int(u);
-		a->collid = (Oid) get_int(u);
-		a->desc = get_str(u);
+		s->vleaf[i].obj = get_int(u);
+		s->vleaf[i].key = get_str(u);
 	}
+	get_arms(u, s);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
 	s->desc_quals = get_str(u);

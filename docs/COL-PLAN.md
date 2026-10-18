@@ -16,7 +16,14 @@ Files: `src/sift_aggplan.c` (shape matcher, cost), `src/sift_aggspec.[ch]` (what
 | Aggregates | `count(*)`, `count(x)`, `count(DISTINCT x)` (dictionary/integer columns), `count(DISTINCT pk)` at element level (distinct parent rows, proven by a unique NOT NULL column), `sum`/`avg` of int2/int4 and of float8 (also float4 for `avg`), `sum`/`avg` of float8 expressions built of `+ - *` over leaves (`sum(qty * (price - discount))`), `min`/`max` of numbers and dates, each with `FILTER` |
 | Above | `HAVING`, projection, ORDER BY, LIMIT, and window functions of an outer query stay in the normal plan on top of the custom scan |
 
-Unproven means no path. Not matched today: `sum(float4)` (PostgreSQL adds in float4), `sum`/`avg` of `numeric`, `min`/`max` of text, `percentile_*`, aggregates with DISTINCT/ORDER BY other than the two `count(DISTINCT)` forms, grouping sets, volatile expressions, columns that are not in the index, joins to other tables (lookup tables, semi joins), CTEs and `UNION` arms, `EXISTS`/`@>`/`jsonb_path_exists` over elements, expressions of more than one column as a key or filter, nested aggregation of the unnested rows, and the BM25 `@@>` mask. Each is a documented gap, not a silent difference: the query keeps its plan.
+Unproven means no path. Not matched today: `sum(float4)` (PostgreSQL adds in float4), `sum`/`avg` of `numeric`, `min`/`max` of text, `percentile_*`, aggregates with DISTINCT/ORDER BY other than the two `count(DISTINCT)` forms, grouping sets, volatile expressions, columns that are not in the index, joins that are not lookups (below), semi joins, `EXISTS`/`@>`/`jsonb_path_exists` over elements, expressions of more than three leaves, aggregates or float group keys over a mapped column, and the BM25 `@@>` mask. Each is a documented gap, not a silent difference: the query keeps its plan.
+
+### Lookup joins, several leaves, per-order aggregates
+
+- **Lookup join**: `[LEFT] JOIN small ON small.k = <leaf>` (one to three equalities of dictionary/integer/date leaves and columns of the table, up to four tables). The table is read at executor start with the query's snapshot; its rows are matched per distinct tuple of leaf values, cached across units. Exact: every matching row replicates the input row (a non-unique table needs no proof), a NULL key matches nothing, text compares as `=` does (deterministic collations), the unmatched rows are one row with NULLs (`LEFT`) or gone (`INNER`). The mapped columns are keys, filters and `CASE`/`coalesce` operands like leaves; aggregates over them are not matched.
+- **Several leaves**: a key or filter over up to three leaves (of the order and of its items: `CASE WHEN o.lang = 'en' THEN i.category ELSE ... END`) is evaluated by PostgreSQL per distinct tuple of the values, cached across units. `x->>'k' IS [NOT] NULL` on a leaf of another type is the null test of that leaf (a value it cannot hold raises the overflow error above).
+- **Key of a free key object**: `(o.metrics->>'overall')::float8` next to the unnest, when the index has `metrics.* float8`, is a row level leaf built per unit from the elements whose key is `overall` (NULL for the rows without it).
+- **Per-order aggregates**: `SELECT .. avg(x) .. FROM (SELECT o.id, keys, agg(..) AS x .. GROUP BY o.id, keys) GROUP BY keys` and the same over a `UNION ALL` of up to four such arms (rollup levels over a shared CTE), where each arm groups by the unique id and by outer keys (or a NULL constant). The inner groups are one row's share of an outer group, so the scan keeps the inner aggregates (`count`, `sum`, `avg`, with `FILTER`) of the current row per outer group and adds them to the outer `count(*)`, `count(DISTINCT id)`, `avg`, `sum` (each with `FILTER` over the inner columns) when the row is done. A WHERE on the outer query, and groups that are not one row's share, keep the plan.
 
 ## Executor
 
@@ -62,13 +69,17 @@ The analytics corpus (`bench/sql/analytics`) on 300000 orders (about 960000 item
 | G7 percentile | 1017 | 998 | 1.0 | not matched |
 | S5@K4000 | 109 | 33.8 | 3.2 | count(DISTINCT customer) |
 | S5@K10, S5@K400 | 0.9, 10.3 | 1.0, 12.0 | 0.9 | normal plan kept (btree) |
-| S1 to S4, S6, S7 at K10, K400, K4000 | | | 0.7 to 1.3 | not matched, normal plan, no regression beyond noise |
+| S1@K400, S1@K4000 | 13.0, 258 | 9.3, 11.7 | 1.4, 22.0 | lookup join, multi-leaf key |
+| S2@K400, S2@K4000 | 37.6, 781 | 13.9, 33.2 | 2.7, 23.5 | per-order aggregates, three arms |
+| S3@K400, S3@K4000 | 10.6, 229 | 17.9, 20.1 | 0.6, 11.4 | K400 is a plan the cost model mis-prices (the normal plan's estimate is 4 times SiftAgg's, its run 1.7 times faster); K4000 is bound by decoding the leaves it reads (about 20 ms for the whole table) |
+| S1 to S3 at K10 | 1.0, 1.6, 0.9 | same | 1.0 | normal plan kept |
+| S4 to S7 at K10, K400, K4000 | | | 0.7 to 1.3 | not matched, normal plan, no regression beyond noise |
 
 The comparator found no difference in the 145 corpus runs, 395 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the scan itself is not parallel). The one fixture that differs is the error code above.
 
 ## Open
 
-- Shapes S1 to S4, S6, S7 and G7 (lookup joins to mapping tables, CTE/subquery inlining, `EXISTS` and `jsonb_path_exists` over the same element, cross-leaf `CASE`, `numeric` sums, percentiles).
+- Shapes S4, S6, S7 and G7 (`EXISTS` and `jsonb_path_exists` over the same element, `numeric` sums, percentiles); S1 to S3 only in the forms above (`GROUPING SETS`, a WHERE on the outer query and aggregates of mapped columns are not).
 - Parallel scan: morsels over `sift_colsrc_nsb`, partial aggregation per worker, final combine; the group tables merge by key id values (not by dictionary codes).
 - Zone pruning from the query's predicates (`SiftSrcPrune` is in the seam, no provider uses it): this is what makes selective store sets cheap on a clustered table.
 - `count(DISTINCT)` is a hash set per aggregate (about 25 ns per tuple): a per-group bitmap or sort-based form for dense domains.

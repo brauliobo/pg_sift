@@ -21,6 +21,13 @@
 
 #define SIFT_AGG_MAX_KEYS	4
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
+#define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
+#define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
+#define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
+#define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
+#define SIFT_AGG_MAX_COMBOS	8
+#define SIFT_AGG_MAX_JOINS	4
+#define SIFT_AGG_MAX_VLEAVES	4
 
 typedef enum SiftAggPredKind
 {
@@ -31,7 +38,8 @@ typedef enum SiftAggPredKind
 	SAP_CMP,					/* leaf op operand: kernels on I32/I64/F64 leaves */
 	SAP_IN,						/* leaf IN / NOT IN (array operand): I32 leaves */
 	SAP_NULL,					/* leaf IS [NOT] NULL */
-	SAP_LUT						/* boolean expression of one leaf, evaluated by the executor on every distinct value */
+	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
+	SAP_COMBO					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -51,13 +59,15 @@ typedef struct SiftAggPred
 typedef enum SiftAggKeyKind
 {
 	SAK_LEAF,					/* the leaf's value */
-	SAK_LUT						/* expr(leaf value), evaluated once per distinct value */
+	SAK_LUT,					/* expr(leaf value), evaluated once per distinct value */
+	SAK_COMBO					/* key slot (slot) of a combo (leaf) */
 } SiftAggKeyKind;
 
 typedef struct SiftAggKey
 {
 	SiftAggKeyKind kind;
-	int			leaf;
+	int			leaf;			/* SAK_COMBO: the combo */
+	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;
@@ -77,8 +87,24 @@ typedef enum SiftAggKind
 	SAA_AVG_INT,				/* avg of an I32 leaf: numeric */
 	SAA_AVG_F64,				/* avg of a F64 leaf: float8 */
 	SAA_MIN,
-	SAA_MAX
+	SAA_MAX,
+	/* the aggregates of the outer query over the groups of per-row aggregates (SiftAggArm): they read the arm's inner aggregates */
+	SAA_O_COUNT_STAR,			/* count(*): the inner groups */
+	SAA_O_COUNT_ROWS,			/* count(DISTINCT id): the rows that have an inner group */
+	SAA_O_AVG_F64,				/* avg of a float8 inner aggregate */
+	SAA_O_SUM_F64,				/* sum of a float8 inner aggregate */
+	SAA_O_SUM_I64				/* sum of an int8 inner aggregate: numeric */
 } SiftAggKind;
+
+/* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
+typedef struct SiftAggCond
+{
+	int			col;			/* column of the inner query */
+	int			op;				/* SiftCmpOp */
+	bool		isint;			/* the column is an int8 aggregate: compared as ci, else as cd */
+	int64		ci;
+	double		cd;
+} SiftAggCond;
 
 /* One step of the postfix program of a float8 aggregate argument (+ - * of leaves and constants, evaluated in double) */
 typedef enum SiftAggVxOp
@@ -108,8 +134,81 @@ typedef struct SiftAggAgg
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
 	Oid			collid;			/* input collation: count(DISTINCT) of dictionary values */
+	int			col;			/* SAA_O_*: the inner column it reads, -1 none */
+	int			ncond;			/* SAA_O_*: the FILTER */
+	SiftAggCond *cond;
 	char	   *desc;
 } SiftAggAgg;
+
+/*
+ * The query is an outer aggregate over arms (a UNION ALL of subqueries, or one subquery) that are aggregates of the scanned rows
+ * grouped by a unique row id and by outer keys: every inner group is one row's share of an outer group, so the executor keeps the
+ * inner aggregates of the current row per outer group (row by row, as the rows of a unit follow each other), and adds them to the
+ * outer aggregates when the row is done. SiftAggSpec.key are the outer keys, SiftAggSpec.agg the outer aggregates.
+ */
+typedef struct SiftAggVLeaf
+{
+	int			obj;			/* the object leaf (free keys: children "key" and "value") */
+	char	   *key;			/* the value of its element with this key, NULL when the row has none: leaf nleaves + index */
+} SiftAggVLeaf;
+
+typedef struct SiftAggArm
+{
+	uint32		keymask;		/* the outer keys this arm groups by; the others are NULL in its rows */
+	int			nfilter;		/* the arm's WHERE: boolean slots of combos, ANDed */
+	SiftAggPred **filter;
+	int			ninner;			/* count(*), count(x), sum(int), sum(float8), avg(float8) over the scan */
+	SiftAggAgg *inner;
+	int			ncol;			/* columns of the arm */
+	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
+} SiftAggArm;
+
+/*
+ * A table joined by equality to leaves of the scan (LEFT or INNER): a tuple's join key is read from the leaves, the table's rows with
+ * that key are its matches (any number: the join is exact for duplicates, a tuple is repeated per match, and a LEFT join keeps a tuple
+ * without a match once, with NULL columns). The table is read when the scan starts, with the scan's snapshot. The columns the
+ * expressions read are colatt[]; they reach the expressions as Params nleaves + i of the combo that owns the join.
+ */
+typedef struct SiftAggJoin
+{
+	Oid			relid;
+	bool		left;
+	int			nkey;
+	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
+	Oid			keytype[SIFT_AGG_MAX_JKEYS];
+	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo */
+	int			ncol;
+	int			colatt[SIFT_AGG_MAX_JCOLS];
+	Oid			coltype[SIFT_AGG_MAX_JCOLS];
+	int32		coltypmod[SIFT_AGG_MAX_JCOLS];
+	Oid			colcoll[SIFT_AGG_MAX_JCOLS];
+	char	   *desc;
+} SiftAggJoin;
+
+typedef struct SiftAggSlot
+{
+	bool		is_key;			/* a group key (id in the output table of key `key`) or a boolean */
+	int			key;
+	Node	   *expr;			/* over Params 0..nleaves-1 (the leaves), then the join columns */
+} SiftAggSlot;
+
+/*
+ * A combo evaluates expressions of up to SIFT_AGG_MAX_CLEAVES leaves (and, with a join, of the columns of the matching row) with
+ * PostgreSQL's own evaluator, once per distinct tuple of the leaves' values (dictionary entries are compared by value). A combo
+ * with a join gives the slots of every output row of a tuple: its matches, or one row of NULLs.
+ */
+typedef struct SiftAggCombo
+{
+	int			nleaves;
+	int			leaf[SIFT_AGG_MAX_CLEAVES];
+	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
+	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
+	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
+	int			join;			/* index in SiftAggSpec.join, -1 none */
+	int			level;			/* of the leaves: 0 row, 1 element */
+	int			nslots;
+	SiftAggSlot *slot;
+} SiftAggCombo;
 
 typedef struct SiftAggSpec
 {
@@ -124,6 +223,16 @@ typedef struct SiftAggSpec
 	SiftAggKey *key;
 	int			naggs;
 	SiftAggAgg *agg;
+	int			njoin;
+	SiftAggJoin *join;
+	int			ncombo;
+	SiftAggCombo *combo;
+	int			npost;			/* conjuncts over the joined rows (boolean slots of join combos), ANDed after the joins */
+	SiftAggPred **post;			/* SAP_COMBO nodes */
+	int			nvleaf;			/* leaves after the source's: row level scalars read from a key of an object leaf */
+	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
+	int			narms;			/* > 0: the two level form (SiftAggArm) */
+	SiftAggArm *arm;
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
