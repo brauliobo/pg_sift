@@ -291,7 +291,6 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 
 				v->v.s = VARDATA_ANY(t);
 				v->len = VARSIZE_ANY_EXHDR(t);
-				fits = v->len <= SIFT_COL_MAX_STR;
 				break;
 			}
 		default:

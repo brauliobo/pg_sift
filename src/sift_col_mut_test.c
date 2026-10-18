@@ -32,7 +32,7 @@
 PG_FUNCTION_INFO_V1(sift_test_col_mut_prepare);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_append);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_torn);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_toolong);
+PG_FUNCTION_INFO_V1(sift_test_col_mut_long);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_delete);
@@ -125,7 +125,7 @@ gen_str(pg_prng_state *st, SiftColValue *v, bool vocab)
 		v->len = strlen(w);
 		return;
 	}
-	v->len = r < 2 ? SIFT_COL_MAX_STR : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
+	v->len = r < 2 ? SIFT_COL_DICT_MAX_ENTRY : r < 4 ? pg_prng_uint64_range(st, 256, 20000) : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
 	v->v.s = palloc(v->len + 1);
 	for (uint32 i = 0; i < v->len; i++)
 		((char *) v->v.s)[i] = pg_prng_uint64_range(st, 0, 255);
@@ -436,16 +436,16 @@ sift_test_col_mut_torn(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* (index regclass): appends a row with a 256 byte string, which the engine refuses */
+/* (index regclass): appends a row with a 300 000 byte string: its record spans several pages */
 Datum
-sift_test_col_mut_toolong(PG_FUNCTION_ARGS)
+sift_test_col_mut_long(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	SiftCMutHint hint = {0};
 	TestRow    *t = palloc(sizeof(TestRow));
 
 	gen_row(1, 1, t);
-	t->val[2] = (SiftColValue) {.v.s = palloc0(SIFT_COL_MAX_STR + 1),.len = SIFT_COL_MAX_STR + 1};
+	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
 	sift_cmut_append(index, &hint, test_schema(), &t->row);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();

@@ -563,7 +563,7 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 	Relation	index = open_col(PG_GETARG_OID(0), AccessShareLock);
 	const SiftColSchema *sc = sift_col_rel(index)->schema;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	int64	   *chunks = palloc0(sc->ncols * 4 * sizeof(int64)),
+	int64	   *chunks = palloc0(sc->ncols * 5 * sizeof(int64)),
 			   *bytes = palloc0(sc->ncols * sizeof(int64)),
 			   *dict_n = palloc0(sc->ncols * sizeof(int64)),
 			   *dict_bytes = palloc0(sc->ncols * sizeof(int64));
@@ -591,7 +591,7 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 
 				if (!sift_cunit_chunk(&v, c, &ch))
 					continue;
-				chunks[c * 4 + Min(ch.enc, 3)]++;
+				chunks[c * 5 + (ch.enc == SIFT_COLENC_ISTR ? 4 : Min(ch.enc, 3))]++;
 				bytes[c] += v.chunk_len[c];
 			}
 		}
@@ -609,17 +609,17 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 	}
 	for (int c = 0; c < sc->ncols; c++)
 	{
-		Datum		v[10];
-		bool		nulls[10] = {false};
+		Datum		v[11];
+		bool		nulls[11] = {false};
 
 		v[0] = Int32GetDatum(c);
 		v[1] = CStringGetTextDatum(sc->cols[c].path[0] ? sc->cols[c].path : NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[c].attno - 1)->attname));
 		v[2] = CStringGetTextDatum(sc->cols[c].kind == SIFT_COLK_GROUP ? "group" : "scalar");
 		v[3] = CStringGetTextDatum(format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])));
-		for (int e = 0; e < 4; e++)
-			v[4 + e] = Int64GetDatum(chunks[c * 4 + e]);
-		v[8] = Int64GetDatum(bytes[c]);
-		v[9] = Int64GetDatum(dict_bytes[c]);
+		for (int e = 0; e < 5; e++)
+			v[4 + e] = Int64GetDatum(chunks[c * 5 + e]);
+		v[9] = Int64GetDatum(bytes[c]);
+		v[10] = Int64GetDatum(dict_bytes[c]);
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	index_close(index, AccessShareLock);

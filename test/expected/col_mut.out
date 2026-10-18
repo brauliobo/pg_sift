@@ -265,11 +265,17 @@ SELECT sift._test_check('t_idx') AS orphans;
        0
 (1 row)
 
--- strings of 256 bytes do not fit the dictionaries
-SELECT expect($$ SELECT sift._test_col_mut_toolong('t_idx') $$);
-                                                        expect                                                        
-----------------------------------------------------------------------------------------------------------------------
- N: sift_col value of N bytes exceeds the maximum of N bytes | Index left(column, N) or a hash of the column instead.
+-- a string of any length is held: a record of 300 000 bytes spans pages
+SELECT sift._test_col_mut_long('t_idx');
+ _test_col_mut_long 
+--------------------
+ 
+(1 row)
+
+SELECT sift._test_check('t_idx') AS orphans;
+ orphans 
+---------
+       0
 (1 row)
 
 -- corruption is found: a page header count, a flag byte, the length of a record
