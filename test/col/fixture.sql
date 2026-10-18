@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, tenants, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, tenants, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
 
 CREATE TABLE orders (
@@ -192,6 +192,12 @@ CREATE AGGREGATE coldiff.sum_sq_par(float8) (sfunc = coldiff.fx_sq_add, stype = 
 CREATE AGGREGATE coldiff.sum_all(VARIADIC int[]) (sfunc = coldiff.fx_arr_add, stype = bigint, initcond = '0');
 CREATE FUNCTION coldiff.fx_six_add(acc bigint, a int, b int, c int, d int, e int, f int) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$ SELECT acc + a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 $$;
 CREATE AGGREGATE coldiff.sum_six(int, int, int, int, int, int) (sfunc = coldiff.fx_six_add, stype = bigint, initcond = '0');
+
+-- count(DISTINCT): a dense domain with negative values (v), a sparse wide one (w), a dense domain wide enough to outgrow a small hash_mem (x), NULLs
+CREATE TABLE t_dist (id integer PRIMARY KEY, grp integer NOT NULL, v integer, w integer, x integer);
+INSERT INTO t_dist SELECT i, 1 + i % 8, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 6007 - 3000 END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 100003) % 2000000011 - 1000000000 END,
+	(i * 37) % 1000000
+FROM generate_series(1, 20000) i;
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)
 CREATE TABLE orders_odd (LIKE orders INCLUDING DEFAULTS);

@@ -65,15 +65,7 @@ if wait "$PGBENCH_PID" && healthy; then ok "undisturbed: $SUMMARY"; else not_ok 
 
 for i in $(seq "$ITERS"); do
 	fresh || bail "fresh index failed"
-	pgbench_bg cm "$CLIENTS" 600 "${ARGS[@]}"
-	sleep "$((RANDOM % 2)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
-	crash cm
-	wait "$PGBENCH_PID"
-	if ! node_start cm; then
-		not_ok "iteration $i: restart"
-		diag "$(tail -20 "$D/postgres.log")"
-		break
-	fi
+	crash_cycle cm "iteration $i" 2 "$CLIENTS" "${ARGS[@]}" || break
 	if healthy; then ok "iteration $i: $SUMMARY"; else not_ok "iteration $i"; break; fi
 done
 finish

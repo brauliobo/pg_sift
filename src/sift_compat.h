@@ -170,17 +170,6 @@ sift_plain_index_scans_restore(RelOptInfo *rel, uint64 saved)
 /* EXPLAIN "Index Searches" of a bitmap index scan */
 #define sift_count_search(scan)	do { if ((scan)->instrument) (scan)->instrument->nsearches++; } while (0)
 
-/* IndexAmRoutine fields new in 18, all off */
-#define SIFT_AM_NEW_FIELDS(am) \
-	do { \
-		(am)->amcanhash = false; \
-		(am)->amconsistentequality = false; \
-		(am)->amconsistentordering = false; \
-		(am)->amgettreeheight = NULL; \
-		(am)->amtranslatestrategy = NULL; \
-		(am)->amtranslatecmptype = NULL; \
-	} while (0)
-
 #define sift_pathkey_descending(pk)	((pk)->pk_cmptype == COMPARE_GT)
 
 /* One page of a TIDBitmap: block, lossy, and the offsets of an exact page */
@@ -207,7 +196,6 @@ sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *
 #define PG_MODULE_MAGIC_EXT(...)	PG_MODULE_MAGIC
 
 #define sift_count_search(scan)		((void) 0)
-#define SIFT_AM_NEW_FIELDS(am)		((void) 0)
 #define sift_pathkey_descending(pk)	((pk)->pk_strategy == BTGreaterStrategyNumber)
 
 typedef TBMIterator SiftTbmIter;

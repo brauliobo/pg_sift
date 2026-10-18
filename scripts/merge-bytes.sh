@@ -28,24 +28,9 @@ while (( $# )); do
 	shift
 done
 (( ${#BUILDS[@]} > 1 )) || { sed -n '2,19p' "$0"; exit 1; }
-BASE=$(mktemp -d /tmp/sift-merge-bytes.XXXXXX)
-PORT0=${SIFT_PORT:-56150}
-declare -A DIR TMP PORT
-
-pg() { # LABEL pgtest-args...
-	local l=$1; shift
-	( cd "${DIR[$l]}" && SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING=${SIFT_TESTING-} scripts/pgtest.sh "$@" )
-}
-q() { # LABEL sql...: one psql session, one -c per statement
-	local l=$1 a=() s; shift
-	for s in "$@"; do a+=(-c "$s"); done
-	pg "$l" psql -q -At -v ON_ERROR_STOP=1 "${a[@]}"
-}
-cleanup() {
-	for l in "${!DIR[@]}"; do pg "$l" destroy >/dev/null 2>&1 || true; done
-	rm -rf "$BASE"
-}
-trap cleanup EXIT
+. "$REPO/scripts/multibuild.sh"
+MB_TESTING=${SIFT_TESTING-}
+mb_begin sift-merge-bytes
 
 # The stages of a table t$1 with an index options $2
 stage_build() { q "$1" "SET maintenance_work_mem = '1MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX $2_idx ON $2 USING sift (body) WITH (build_segments = 4$3)"; }
@@ -67,13 +52,8 @@ print("%d vs %d bytes, %d pages differ%s" % (len(a), len(b), len(bad), " (first:
 sys.exit(1 if bad or len(a) != len(b) else 0)' "$1" "$2"
 }
 
-i=0
-for b in "${BUILDS[@]}"; do
-	l=${b%%=*}
-	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=$BASE/$l PORT[$l]=$((PORT0 + i++))
-	mkdir -p "${TMP[$l]}"
-	pg "$l" install >/dev/null
-	pg "$l" start >/dev/null
+mb_start
+for l in "${LABELS[@]}"; do
 	q "$l" "ALTER SYSTEM SET autovacuum = off" "SELECT pg_reload_conf()" "CREATE EXTENSION pg_sift" >/dev/null
 	q "$l" "SELECT setseed(0.42)" "CREATE TABLE tp (id serial, body text)" "CREATE TABLE tn (id serial, body text)" \
 		"INSERT INTO tp (body) SELECT (CASE WHEN i % 10 < 9 THEN 'hot ' ELSE '' END) || (SELECT string_agg('w' || floor(power(random(), 3) * 5000)::int, ' ') FROM generate_series(1, 12) w WHERE i > 0) FROM generate_series(1, $ROWS) i" \

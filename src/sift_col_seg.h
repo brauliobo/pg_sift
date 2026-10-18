@@ -97,6 +97,7 @@ extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z)
 /* Adds what the zones and the dictionary of the segment say about leaf col to acc (sift_col_leaf_stats_init first). Reads the leaf's zone arrays and four bytes of its dictionary, no chunk */
 extern void sift_col_leaf_stats_init(SiftColLeafStats *acc);
 extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
+
 /*
  * Pre-aggregates of unit u (a segment of this format always has the sidecar). sift_cseg_agg: the zone and, for an INT leaf, the exact sum and
  * sum of squares. sift_cseg_cube: the unit's cube blob for sift_cpagg_decode (NULL: the unit has none), valid until the next call on seg.

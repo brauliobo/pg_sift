@@ -28,6 +28,7 @@
 #include "sift_host.h"
 
 #include "sift.h"
+#include "sift_filter.h"
 
 #define SIFT_COLSRC_MAX_LEAVES		128
 
@@ -78,6 +79,7 @@ typedef struct SiftSrcStats
 {
 	double		nrows;			/* rows in the source (dead included) */
 	double		nunits;			/* units */
+	double		bytes;			/* stored (compressed) bytes of the leaves together, 0 when unknown */
 	double		allvisible_frac;	/* share of the heap pages that are all-visible (1 for a table) */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
@@ -273,11 +275,18 @@ typedef struct SiftSrcProvider
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
 	/*
 	 * Optional (NULL: sift_colsrc_read_into reads with `read` and copies). leaf_n: the values a read of the leaf yields (rows, or for a child
-	 * the elements of the whole unit), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
+	 * the elements of the whole unit; an upper bound for a unit restricted to a match set), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
 	 * is a wrapper of in a provider that has it.
 	 */
 	int64		(*leaf_n) (void *impl, const SiftSrcUnit *unit, int leaf);
 	void		(*read_into) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
+	/*
+	 * Optional (NULL: the source cannot be restricted to a match set, sift_colsrc_can_select says so to the planner). select, called before
+	 * `begin`, restricts the units `begin` starts to the rows whose key (blk << 16 | off) the filter has (NULL: all rows again): a unit
+	 * without such a row is not returned (it counts in units_pruned), and in the others `nrow`, `read`, `live` and `vet` are about the kept
+	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/sift_aggsel.h).
+	 */
+	void		(*select) (void *impl, const SiftFilter *keep);
 	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */
 	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
@@ -334,6 +343,12 @@ sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
 }
+
+/* Can the source of this access method be restricted to a match set (SiftSrcProvider.select)? */
+extern bool sift_colsrc_can_select(Oid relam, bool index);
+
+/* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
+extern void sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep);
 
 /* Pre-aggregates of the unit just returned by sift_colsrc_next: false without a provider callback or when the unit cannot answer */
 extern void sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa);

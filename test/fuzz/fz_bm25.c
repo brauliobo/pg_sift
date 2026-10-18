@@ -82,12 +82,12 @@ static void
 blob_run(void *a)
 {
 	Job		   *j = a;
-	uint8	   *buf = fz_copy((const uint8 *) "", 0, SIFT_CUR_BUF, 64);
+	uint8	   *buf = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_CUR_BUF, 64, MCXT_ALLOC_ZERO);
 	sift_cur	c;
 
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = drain(&c, out_tids, false);
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	for (int s = 0; s < 4; s++)
 	{
 		const sift_grp *g = sift_seek(&c, (j->arg >> (8 * s)) & 0xff);
@@ -95,35 +95,30 @@ blob_run(void *a)
 		if (g)
 			j->digest = mix(j->digest, g->gid);
 	}
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = mix(j->digest, sift_count(&c));
-	free(buf);
 }
 
 static void
 checked_run(void *a)
 {
 	Job		   *j = a;
-	uint8	   *buf = fz_copy((const uint8 *) "", 0, SIFT_CUR_BUF, 64);
+	uint8	   *buf = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_CUR_BUF, 64, MCXT_ALLOC_ZERO);
 	sift_cur	c;
 	uint32		n;
 	uint64		cnt;
 
 	if (sift_blob_check(j->p, j->len))
-	{
-		free(buf);
 		return;
-	}
 	n = sift_blob_n(j->p);
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = drain(&c, out_tids, true);
 	cnt = j->digest;
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	if (sift_count(&c) > SIFT_GRP_MAXTIDS * 8)
 		fz_bad("sift_count of an accepted blob is %llu", (unsigned long long) sift_count(&c));
 	(void) n;
 	(void) cnt;
-	free(buf);
 }
 
 /* ---------- mode 2: a term record ---------- */
@@ -241,11 +236,11 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		if (!fz_try(run, &j))
 		{
 			free(copy);
-			fz_reset();
+			pgshim_reset();
 			break;
 		}
 		free(copy);
-		fz_reset();
+		pgshim_reset();
 		if (isa == 0)
 			first = j.digest;
 		else if (j.digest != first && mode != 2)
@@ -427,7 +422,7 @@ LLVMFuzzerInitialize(int *argc, char ***argv)
 
 	fz_init();
 	sift_init();
-	fz_keep();
+	pgshim_keep();
 	if (dir)
 	{
 		mkdir(dir, 0755);

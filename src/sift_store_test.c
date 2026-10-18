@@ -37,6 +37,7 @@
 
 #include "sift_maint.h"
 #include "sift_store.h"
+#include "sift_testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_am_handler);
 PG_FUNCTION_INFO_V1(sift_test_seg_write);
@@ -98,22 +99,13 @@ typedef struct TestSeg
 	SiftExtent *extents;
 } TestSeg;
 
-static inline uint64
-mix64(uint64 x)
-{
-	x += UINT64CONST(0x9E3779B97F4A7C15);
-	x = (x ^ (x >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
-	x = (x ^ (x >> 27)) * UINT64CONST(0x94D049BB133111EB);
-	return x ^ (x >> 31);
-}
-
 /* Payload bytes [k, k + len) of a stream with this seed */
 static void
 fill(uint64 seed, uint64 k, char *dst, size_t len)
 {
 	while (len > 0)
 	{
-		uint64		w = mix64(seed * UINT64CONST(0x100000001B3) + (k >> 3));
+		uint64		w = sift_mix64(seed * UINT64CONST(0x100000001B3) + (k >> 3));
 		size_t		sh = k & 7;
 		size_t		n = Min(8 - sh, len);
 
@@ -128,7 +120,7 @@ fill(uint64 seed, uint64 k, char *dst, size_t len)
 static inline uint32
 next_piece(uint64 *rng, uint32 piece, uint64 left)
 {
-	uint64		r = mix64((*rng)++);
+	uint64		r = sift_mix64((*rng)++);
 	uint64		len = piece > 0 ? piece : 1 + (r >> 8) % ((r & 3) == 0 ? MAX_RANDOM_PIECE : 300);
 
 	return Min(len, left);
@@ -315,7 +307,7 @@ read_random(Relation index, SiftStreamReader *sr, const TestSeg *seg)
 		elog(ERROR, "random reads need an unaligned segment");
 	for (int i = 0; i < 2000 && seg->size > 0; i++)
 	{
-		uint64		off = mix64(rng++) % seg->size;
+		uint64		off = sift_mix64(rng++) % seg->size;
 		uint32		len = next_piece(&rng, 0, seg->size - off);
 
 		fill(seg->seed, off, want, len);
@@ -936,17 +928,17 @@ sift_test_churn(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	uint64		rng = PG_GETARG_INT64(1);
 	int64		maxbytes = Max(PG_GETARG_INT64(2), 1);
-	uint64		op = mix64(rng++) % 100;
+	uint64		op = sift_mix64(rng++) % 100;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TestSeg		seg;
 	uint64		pick;
 	const char *what;
 
 	sift_dir_read(index, snap);
-	pick = snap->nsegs > 0 ? snap->segs[mix64(rng++) % snap->nsegs].gen : 0;
+	pick = snap->nsegs > 0 ? snap->segs[sift_mix64(rng++) % snap->nsegs].gen : 0;
 	if (op < 35 && snap->nsegs < 96)
 	{
-		uint64		r = mix64(rng++);
+		uint64		r = sift_mix64(rng++);
 
 		seg_write(index, r % maxbytes, r | 1, (r >> 40) % 3 == 0 ? 0 : 1 + (r >> 20) % 70000,
 				  aligns[(r >> 50) & 3]);
@@ -961,8 +953,8 @@ sift_test_churn(PG_FUNCTION_ARGS)
 	{
 		if (find_segment(index, pick, snap, &seg))
 		{
-			sleep_ms(mix64(rng++) % 20);
-			read_segment(index, &seg, seg.align ? 0 : mix64(rng++) % 2);
+			sleep_ms(sift_mix64(rng++) % 20);
+			read_segment(index, &seg, seg.align ? 0 : sift_mix64(rng++) % 2);
 		}
 		what = "read";
 	}
@@ -978,7 +970,7 @@ sift_test_churn(PG_FUNCTION_ARGS)
 	}
 	else if (op < 99)
 	{
-		uint64		r = mix64(rng++);
+		uint64		r = sift_mix64(rng++);
 
 		alloc_many(index, 1 + r % 40, 1 + (r >> 32) % 8, 1);
 		what = "alloc";

@@ -5,17 +5,9 @@
 #   make bench-col         the same for the column kernels (src/sift_col_kern*.c)
 #   make bench-shred       the shredder kernels (src/sift_shred_kern*.c) against their composition from the shared slots
 #   make SANITIZE=1 test   ASan + UBSan build (into $(OUT)-san)
-CC      ?= gcc
-SRC      = ../../src
-# Same code generation flags as the extension (Makefile PG_CFLAGS)
-CFLAGS   = -std=gnu11 -O2 -g -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wextra \
-           -Wno-unused-parameter -Wno-sign-compare -I$(SRC) -I$(shell pg_config --includedir-server)
-LDLIBS   = -lm -lpthread
 OUT     ?= /tmp/sift-kernels-tools
-ifdef SANITIZE
-CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
-OUT     := $(OUT)-san
-endif
+N       ?= 2
+
 LIB      = $(SRC)/sift_kernels.c $(SRC)/sift_kernels_avx2.c $(SRC)/sift_kernels_avx512.c \
            $(SRC)/sift_col_kern.c $(SRC)/sift_col_kern_avx2.c $(SRC)/sift_col_kern_avx512.c \
            $(SRC)/sift_shred_kern.c $(SRC)/sift_shred_kern_avx2.c $(SRC)/sift_shred_kern_avx512.c \
@@ -23,30 +15,11 @@ LIB      = $(SRC)/sift_kernels.c $(SRC)/sift_kernels_avx2.c $(SRC)/sift_kernels_
            $(SRC)/sift_aggkern.c $(SRC)/sift_aggkern_avx2.c $(SRC)/sift_aggkern_avx512.c \
            $(SRC)/sift_bitmap_scalar.c $(SRC)/sift_bitmap_avx2.c $(SRC)/sift_bitmap_avx512.c
 HDR      = $(SRC)/sift_kernels.h $(SRC)/sift_kernels_int.h $(SRC)/sift_col_kern.h $(SRC)/sift_col_kern_int.h $(SRC)/sift_shred.h $(SRC)/sift_aggkern.h $(SRC)/sift_colcodec.h $(SRC)/sift_colcodec_int.h harness.h
-OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(LIB)) $(OUT)/shim.o
-N       ?= 2
 
-all: $(OUT)/test $(OUT)/bench
-
-$(OUT)/%.o: $(SRC)/%.c $(HDR)
-	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(OUT)/%.o: %.c $(HDR)
-	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(OUT)/test: $(OUT)/test.o $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+include ../tools.mk
 
 $(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OUT)/alt.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-test: $(OUT)/test
-	flock /tmp/sift-perf.lock $(OUT)/test $(N)
-
-bench: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench
 
 bench-col: $(OUT)/bench
 	flock /tmp/sift-perf.lock $(OUT)/bench col
@@ -54,7 +27,4 @@ bench-col: $(OUT)/bench
 bench-shred: $(OUT)/bench
 	flock /tmp/sift-perf.lock $(OUT)/bench shred
 
-clean:
-	rm -rf $(OUT) $(OUT)-san
-
-.PHONY: all test bench bench-col bench-shred clean
+.PHONY: bench-col bench-shred
