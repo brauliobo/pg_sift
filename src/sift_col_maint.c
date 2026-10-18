@@ -1,6 +1,14 @@
 /*
  * sift_col_maint.c - promotion, merge, VACUUM, the maintenance worker and the SQL functions of sift_col indexes.
- * The lock, the directory switch and the sweep are those of sift_maint.c; what is written is a column segment.
+ * The lock, the directory switch, the room, back-pressure, VACUUM and SQL control flow and the sweep are those of sift_maint.c
+ * (sift_mops_*); what this file supplies in col_ops is a column segment: how a sealed one is promoted and how segments are merged.
+ *
+ * Intentional differences from the BM25 maintenance (sift_maint.c), kept so the behaviour of sift_col stays what it was:
+ * - a step holds the maintenance lock exclusively, not in RowExclusiveLock with claims on its segments: one step of the index at a time;
+ * - a step is not run in a subtransaction: an ERROR goes on to the caller, nothing is counted for the backoff (the failure flags are never
+ *   set, so the backoff of the shared flow never applies) and there is no segment another step could have claimed (busy stays 0);
+ * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM does one merge, not until the policy asks for none;
+ * - no truncation of the file by VACUUM, and the worker runs in one transaction until nothing is left to do.
  */
 #include "postgres.h"
 
@@ -27,8 +35,6 @@
 #include "sift_merge.h"
 #include "sift_ops.h"
 
-#define ROOM_SEGMENTS	(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
-
 #define corrupt(index, ...) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_INDEX_CORRUPTED), \
@@ -50,7 +56,6 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	SiftSegEntry neu;
 	SiftExtent *pages;
 	int			npages;
-	SiftMaintSwitch sw = {.old = &sealed->gen,.nold = 1};
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
 
@@ -65,12 +70,9 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
 		sift_wt_finish(wt);
-		sw.neu = &neu;
 	}
 	pages = sift_cmut_pages(index, sealed, &npages);
-	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = pages,
-			.nrelease = npages,.extra = InvalidBuffer});
-	sift_log_maint(index, "promoted a sealed column segment of", start, rows, sw.neu ? neu.bytes : 0);
+	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -84,44 +86,17 @@ first_sealed(const SiftDirSnapshot *snap)
 	return NULL;
 }
 
-static bool merge_locked(Relation index, bool force);
-static bool make_room_locked(Relation index);
-
-static int
-promote_locked(Relation index, bool seal_active)
+static SiftStepResult
+promote_next(Relation index, bool propagate, uint64 *busy)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *s;
-	int			n = 0;
 
-	if (seal_active)
-	{
-		make_room_locked(index);
-		sift_cmut_seal(index, true);
-	}
-	for (;;)
-	{
-		sift_dir_read(index, snap);
-		if ((s = first_sealed(snap)) == NULL)
-			break;
+	sift_dir_read(index, snap);
+	if ((s = first_sealed(snap)) != NULL)
 		promote_one(index, s);
-		n++;
-		CHECK_FOR_INTERRUPTS();
-	}
 	pfree(snap);
-	return n;
-}
-
-int
-sift_col_maint_promote(Relation index, bool wait)
-{
-	int			n;
-
-	if (!sift_maint_lock(index, wait))
-		return 0;
-	n = promote_locked(index, false);
-	sift_maint_unlock(index);
-	return n;
+	return s ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 
 /* ---------- merge ---------- */
@@ -157,32 +132,19 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	SiftColBatch **part = palloc(n * sizeof(SiftColBatch *));
 	SiftColBatch **use = palloc(n * sizeof(SiftColBatch *));
 	uint32	   *cur = palloc0(n * sizeof(uint32));
-	uint64	   *gens = palloc(n * sizeof(uint64));
+	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	SiftExtent *rel = palloc(0);
-	int			nrel = 0;
 	SiftWriteTarget *wt = NULL;
 	SiftColSegWriter *w = NULL;
 	SiftSegEntry neu;
-	SiftMaintSwitch sw = {.old = gens,.nold = n};
 	TimestampTz start = GetCurrentTimestamp();
-	uint64		expect = 0;
 
 	for (int i = 0; i < n; i++)
 	{
-		int			k;
-		SiftExtent *ext = sift_store_immutable_extents(index, &in[i], &k);
-
-		expect += in[i].bytes;
-
 		seg[i] = sift_cseg_open(index, &in[i], cx);
 		if (seg[i]->schema->hash != schema->hash)
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		part[i] = sift_cbatch_create(cx, schema);
-		gens[i] = in[i].gen;
-		rel = repalloc(rel, (nrel + k) * sizeof(SiftExtent));
-		memcpy(rel + nrel, ext, k * sizeof(SiftExtent));
-		nrel += k;
 	}
 	for (;;)
 	{
@@ -209,7 +171,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		if (w == NULL)
 		{
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-			sift_wt_expect(wt, expect);
+			sift_wt_expect(wt, mi.bytes);
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, cx);
 		}
 		sift_colw_add(w, out);
@@ -221,17 +183,15 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	{
 		sift_colw_finish(w, &neu);
 		sift_wt_finish(wt);
-		sw.neu = &neu;
 	}
-	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = rel,
-			.nrelease = nrel,.extra = InvalidBuffer});
-	sift_log_maint(index, psprintf("merged %d column segments of", n), start, sw.neu ? neu.ndocs : 0, sw.neu ? neu.bytes : 0);
+	sift_maint_replace(index, mi.gens, n, w ? &neu : NULL, mi.release, mi.nrelease,
+					   psprintf("merged %d column segments of", n), start, w ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
 
-static bool
-merge_locked(Relation index, bool force)
+static SiftStepResult
+merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
@@ -242,152 +202,90 @@ merge_locked(Relation index, bool force)
 	pfree(snap);
 	if (n > 0)
 		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, sel, n);
-	return n > 0;
+	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 
-/* Merges until the directory is below ROOM_SEGMENTS entries, so a seal always finds a free one; false when nothing can be merged any more */
+/* ---------- the policy of the index kind ---------- */
+
 static bool
-make_room_locked(Relation index)
+is_col(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	bool		room;
+	return sift_col_is_index(index);
+}
 
-	for (;;)
-	{
-		int			promoted;
+static void
+bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+{
+	SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
 
-		sift_dir_read(index, snap);
-		if (snap->nsegs < ROOM_SEGMENTS)
-			break;
-		promoted = promote_locked(index, false);
-		if (!merge_locked(index, false) && promoted == 0)
-			break;
-		CHECK_FOR_INTERRUPTS();
-	}
-	room = snap->nsegs < ROOM_SEGMENTS;
-	pfree(snap);
-	return room;
+	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
+	sift_cseg_close(seg);
+}
+
+static void
+bulkdelete_mutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+{
+	sift_cmut_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
+}
+
+static const SiftMaintOps col_ops = {
+	.name = "sift_col",
+	.worker = "sift_col_maint_worker_main",
+	.step_lock = ExclusiveLock,
+	.is_index = is_col,
+	.seal = sift_cmut_seal,
+	.promote_next = promote_next,
+	.merge_next = merge_next,
+	.bulkdelete_immutable = bulkdelete_immutable,
+	.bulkdelete_mutable = bulkdelete_mutable,
+};
+
+void
+sift_col_maint_after_seal(Relation index)
+{
+	sift_mops_after_seal(&col_ops, index);
 }
 
 bool
 sift_col_maint_make_room(Relation index)
 {
-	bool		room;
-	TimestampTz start = GetCurrentTimestamp();
+	return sift_mops_make_room(&col_ops, index);
+}
 
-	sift_maint_lock(index, true);
-	room = make_room_locked(index);
-	sift_maint_unlock(index);
-	sift_log_stall(index, start);
-	return room;
+int
+sift_col_maint_promote(Relation index, bool wait)
+{
+	return sift_mops_promote(&col_ops, index, wait);
 }
 
 bool
 sift_col_maint_merge_step(Relation index, bool wait)
 {
-	bool		merged;
-
-	if (!sift_maint_lock(index, wait))
-		return false;
-	merged = merge_locked(index, false);
-	sift_maint_unlock(index);
-	return merged;
+	return sift_mops_merge_step(&col_ops, index, wait);
 }
-
-/* ---------- VACUUM ---------- */
 
 IndexBulkDeleteResult *
 sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state)
 {
-	Relation	index = info->index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	const SiftColSchema *schema = sift_col_rel(index)->schema;
-
-	if (stats == NULL)
-		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	sift_maint_lock(index, true);
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-		{
-			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
-
-			sift_cseg_bulkdelete(seg, callback, callback_state, stats);
-			sift_cseg_close(seg);
-		}
-		else
-			sift_cmut_bulkdelete(index, &snap->segs[i], schema, callback, callback_state, stats);
-	}
-	sift_maint_unlock(index);
-	pfree(snap);
-	return stats;
+	return sift_mops_bulkdelete(&col_ops, info, stats, callback, callback_state);
 }
 
 IndexBulkDeleteResult *
 sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	Relation	index = info->index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-
-	if (info->analyze_only)
-		return stats;
-	if (stats == NULL)
-		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	sift_maint_lock(index, true);
-	promote_locked(index, false);
-	merge_locked(index, false);
-	sift_recycle(index);
-	sift_maint_orphan_sweep(index);
-	sift_maint_unlock(index);
-	sift_dir_read(index, snap);
-	stats->num_pages = RelationGetNumberOfBlocks(index);
-	stats->estimated_count = false;
-	if (stats->num_index_tuples == 0)
-		for (int i = 0; i < snap->nsegs; i++)
-			stats->num_index_tuples += snap->segs[i].ndocs;
-	pfree(snap);
-	return stats;
+	return sift_mops_vacuumcleanup(&col_ops, info, stats);
 }
 
 /* ---------- asynchronous maintenance ---------- */
 
-/* Promotion is asynchronous when allowed; the back-pressure rules are those of sift_maint_after_seal */
-void
-sift_col_maint_after_seal(Relation index)
-{
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	int			nsealed = 0;
-
-	sift_dir_read(index, snap);
-	if (snap->nsegs >= ROOM_SEGMENTS)
-		sift_col_maint_make_room(index);
-	if (sift_cmut_seal(index, false) == 0)
-		return;
-	if (sift_async_maintenance)
-		sift_maint_request_worker(index, "sift_col_maint_worker_main");
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-		nsealed += snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED;
-	pfree(snap);
-	if (nsealed >= 4)
-		sift_col_maint_promote(index, false);
-}
-
 void
 sift_col_maint_worker_main(Datum main_arg)
 {
-	Oid			indexoid = DatumGetObjectId(main_arg);
-	Oid			dboid;
-	Relation	index;
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	Relation	index;
 
-	sift_maint_context(&errctx, indexoid);
-	memcpy(&dboid, MyBgworkerEntry->bgw_extra, sizeof(Oid));
-	pqsignal(SIGTERM, die);
-	BackgroundWorkerUnblockSignals();
-	BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 	index = try_index_open(indexoid, RowExclusiveLock);
@@ -397,9 +295,8 @@ sift_col_maint_worker_main(Datum main_arg)
 		while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
 			CHECK_FOR_INTERRUPTS();
 		sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
-		index_close(index, RowExclusiveLock);
 	}
-	else if (index != NULL)
+	if (index != NULL)
 		index_close(index, RowExclusiveLock);
 	PopActiveSnapshot();
 	CommitTransactionCommand();
@@ -407,36 +304,12 @@ sift_col_maint_worker_main(Datum main_arg)
 
 /* ---------- SQL ---------- */
 
-static Relation
-open_col(Oid indexoid, LOCKMODE lock)
-{
-	Relation	index = index_open(indexoid, lock);
-
-	if (!sift_col_is_index(index))
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
-	return index;
-}
-
-static Relation
-open_col_maintain(Oid indexoid)
-{
-	Relation	index = open_col(indexoid, RowExclusiveLock);
-
-	sift_check_maintain(index);
-	return index;
-}
-
 Datum
 sift_col_promote(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_col_maintain(PG_GETARG_OID(0));
-	int			n;
+	Relation	index = sift_mops_open_maintain(&col_ops, PG_GETARG_OID(0));
+	int			n = sift_mops_sql_promote(&col_ops, index);
 
-	sift_maint_lock(index, true);
-	n = promote_locked(index, true);
-	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT32(n);
 }
@@ -444,18 +317,9 @@ sift_col_promote(PG_FUNCTION_ARGS)
 Datum
 sift_col_merge(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_col_maintain(PG_GETARG_OID(0));
-	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
-	int			n = 0;
+	Relation	index = sift_mops_open_maintain(&col_ops, PG_GETARG_OID(0));
+	int			n = sift_mops_sql_merge(&col_ops, index, PG_NARGS() > 1 && PG_GETARG_BOOL(1));
 
-	sift_maint_lock(index, true);
-	promote_locked(index, false);
-	while (merge_locked(index, force && n == 0))
-	{
-		n++;
-		CHECK_FOR_INTERRUPTS();
-	}
-	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT32(n);
 }
@@ -463,7 +327,7 @@ sift_col_merge(PG_FUNCTION_ARGS)
 Datum
 sift_col_index_info(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_col(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
 	const SiftColIndexMeta *defs = sift_col_index_defs(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	tupdesc;
@@ -511,7 +375,7 @@ Datum
 sift_col_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = open_col(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -560,7 +424,7 @@ Datum
 sift_col_leaves(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = open_col(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
 	const SiftColSchema *sc = sift_col_rel(index)->schema;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int64	   *chunks = palloc0(sc->ncols * 5 * sizeof(int64)),
