@@ -369,30 +369,30 @@ class Aux(TmpDb):
         self.db = connect(self.path)
         self.db.execute('CREATE VIRTUAL TABLE t USING sift(title, body, stemmer=none)')
         self.db.executemany('INSERT INTO t(rowid, title, body) VALUES (?, ?, ?)', [
-            (1, 'Friendly pool', 'a very friendly staff and a nice pool with friendly people near the old town square'),
-            (2, 'Dirty', 'dirty rooms'),
-            (3, 'Pool bar', 'the pool bar was friendly'),
-            (4, 'x', 'friendly pool')])
+            (1, 'Friendly case', 'a very friendly support and a nice case with friendly people near the old town square'),
+            (2, 'Dirty', 'dirty cables'),
+            (3, 'Case bar', 'the case bar was friendly'),
+            (4, 'x', 'friendly case')])
 
     def test_highlight(self):
-        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 1, '<b>', '</b>') FROM t WHERE t MATCH 'friendly pool'"))
-        self.assertEqual(r[4], '<b>friendly</b> <b>pool</b>')
-        self.assertEqual(r[3], 'the <b>pool</b> bar was <b>friendly</b>')
-        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 1, '<', '>') FROM t WHERE t MATCH '\"friendly pool\"'"))
-        self.assertEqual(r[4], '<friendly pool>')
+        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 1, '<b>', '</b>') FROM t WHERE t MATCH 'friendly case'"))
+        self.assertEqual(r[4], '<b>friendly</b> <b>case</b>')
+        self.assertEqual(r[3], 'the <b>case</b> bar was <b>friendly</b>')
+        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 1, '<', '>') FROM t WHERE t MATCH '\"friendly case\"'"))
+        self.assertEqual(r[4], '<friendly case>')
         self.assertNotIn('<', r[1])
-        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 0, '<', '>') FROM t WHERE t MATCH 'pool NOT dirty'"))
-        self.assertEqual(r[1], 'Friendly <pool>')
+        r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 0, '<', '>') FROM t WHERE t MATCH 'case NOT dirty'"))
+        self.assertEqual(r[1], 'Friendly <case>')
         r = dict(self.db.execute("SELECT rowid, sift_highlight(t, 1, '[', ']') FROM t WHERE t MATCH 'fri*'"))
-        self.assertEqual(r[4], '[friendly] pool')
+        self.assertEqual(r[4], '[friendly] case')
 
     def test_snippet(self):
-        r = dict(self.db.execute("SELECT rowid, sift_snippet(t, 1, '[', ']', '...', 6) FROM t WHERE t MATCH 'friendly pool'"))
-        self.assertEqual(r[1], '...[friendly] staff and a nice [pool]...')
-        self.assertEqual(r[4], '[friendly] [pool]')
+        r = dict(self.db.execute("SELECT rowid, sift_snippet(t, 1, '[', ']', '...', 6) FROM t WHERE t MATCH 'friendly case'"))
+        self.assertEqual(r[1], '...[friendly] support and a nice [case]...')
+        self.assertEqual(r[4], '[friendly] [case]')
 
     def test_bm25_is_the_rank(self):
-        rows = self.db.execute("SELECT sift_bm25(t), rank FROM t WHERE t MATCH 'friendly pool' ORDER BY rank").fetchall()
+        rows = self.db.execute("SELECT sift_bm25(t), rank FROM t WHERE t MATCH 'friendly case' ORDER BY rank").fetchall()
         self.assertEqual(len(rows), 3)
         for a, b in rows:
             self.assertEqual(a, b)
@@ -400,8 +400,8 @@ class Aux(TmpDb):
         self.assertEqual(rows, sorted(rows, key=lambda r: r[1]))
 
     def test_text_forms(self):
-        self.assertEqual(self.db.execute("SELECT sift_highlight_text('t', 'The friendly pool bar', 'friendly OR bar', '<', '>')").fetchone()[0],
-                         'The <friendly> pool <bar>')
+        self.assertEqual(self.db.execute("SELECT sift_highlight_text('t', 'The friendly case bar', 'friendly OR bar', '<', '>')").fetchone()[0],
+                         'The <friendly> case <bar>')
         self.assertEqual(self.db.execute(
             "SELECT sift_snippet_text('t', 'one two three four five six seven eight', 'six', '<', '>', '..', 3)").fetchone()[0],
             '..five <six> seven..')
@@ -420,7 +420,7 @@ class Facets(TmpDb):
         db.execute("CREATE VIRTUAL TABLE cat USING sift(c, analyzer='keyword', stemmer=none, positions=0)")
         db.execute('CREATE TABLE plain(id INTEGER PRIMARY KEY, body TEXT, c TEXT)')
         rnd = random.Random(7)
-        cats = ['hotel', 'hostel', 'bnb', 'resort', 'camp']
+        cats = ['headset', 'speaker', 'cable', 'charger', 'adapter']
         for flush in range(3):
             db.execute('BEGIN')
             for i in range(flush * 400 + 1, flush * 400 + 401):
