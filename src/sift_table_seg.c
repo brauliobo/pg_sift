@@ -1318,6 +1318,22 @@ sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 	return sealed;
 }
 
+/* Merge steps a writer takes when it closes a write segment: a load never waits long for it, the next close takes the next steps */
+#define SETTLE_MERGE_STEPS	4
+
+/*
+ * A writer closed a write segment: seal the segments whose rows have settled, then merge the column segments while the directory is more
+ * than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed write segment and ran out of
+ * the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came.
+ */
+void
+sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest)
+{
+	(void) sift_tbl_seal(rel, st, oldest, false);
+	for (int i = 0; i < SETTLE_MERGE_STEPS && st->dir.nsegs > sift_tbl_max_segments / 2 && sift_tbl_merge(rel, st); i++)
+		CHECK_FOR_INTERRUPTS();
+}
+
 int64
 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi)
 {

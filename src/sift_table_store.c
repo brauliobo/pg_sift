@@ -34,6 +34,7 @@
 			 errdetail(__VA_ARGS__)))
 
 int			sift_tbl_delta_limit = 4096;	/* kB */
+int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 
 /* ---------- the per relation cache ---------- */
 
@@ -351,12 +352,13 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		Page		hp,
 					dp;
 
-		if (st->dir.nsegs >= SIFT_MAX_SEGMENTS - 2)
+		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-					 errdetail("Too many unsealed delta segments: a long-running transaction prevents compaction."),
-					 errhint("Run VACUUM on the table once the old transactions end.")));
+					 errdetail("Too many unsealed delta segments: the rows of running transactions cannot be sealed, and one transaction can write about %d MB.",
+							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_delta_limit / 1024)),
+					 errhint("Load in several transactions, or run VACUUM on the table once the old transactions end.")));
 		if (act)
 			old = *act;
 		if (vbase + vcap > (uint64) MaxBlockNumber)
@@ -396,7 +398,7 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_seal)
-		(void) sift_tbl_seal(rel, st, GetOldestNonRemovableTransactionId(rel), false);
+		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel));
 	return first;
 }
 
