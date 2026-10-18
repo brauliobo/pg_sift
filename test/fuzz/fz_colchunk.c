@@ -22,7 +22,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "catalog/pg_type_d.h"
 
 #include "sift_col.h"
 #include "sift_col_enc.h"
@@ -54,13 +53,13 @@ static SiftColSchema *schema;
 static SiftCDict *dicts[8];
 
 static const SiftColDef defs[] = {
-	{0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, INT8OID, "a"},
-	{1, -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 2, FLOAT8OID, "b"},
-	{2, -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 3, TEXTOID, "c"},
-	{3, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 4, INT4OID, "items[]"},
-	{4, 3, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 4, INT8OID, "items[].q"},
-	{5, 3, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 4, TEXTOID, "items[].k"},
-	{6, -1, SIFT_COLK_SCALAR, SIFT_COLS_VAR, 0, 5, BYTEAOID, "v"},
+	{0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT8, "a"},
+	{1, -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 2, SIFT_COLT_FLOAT8, "b"},
+	{2, -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 3, SIFT_COLT_TEXT, "c"},
+	{3, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 4, SIFT_COLT_INT4, "items[]"},
+	{4, 3, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 4, SIFT_COLT_INT8, "items[].q"},
+	{5, 3, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 4, SIFT_COLT_TEXT, "items[].k"},
+	{6, -1, SIFT_COLK_SCALAR, SIFT_COLS_VAR, 0, 5, SIFT_COLT_BYTEA, "v"},
 };
 
 static void
@@ -515,7 +514,7 @@ gen_units(const char *dir)
 		for (int c = 0; c < (int) lengthof(defs); c++)
 			sift_cc_policy_parse(seed_policies[(k + c) % 6], &pol[c]);
 		initStringInfo(&out);
-		sift_cunit_encode(b, NULL, k % 2 ? pol : NULL, &out, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, k % 2 ? pol : NULL, &out, &start, NULL);
 		rec = fz_copy((uint8 *) out.data + start, out.len - start, SIFT_COL_PAD, 8);
 		snprintf(name, sizeof(name), "unit-%d", k);
 		emit(dir, name, 4, 0, rec, out.len - start);
