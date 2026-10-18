@@ -4,12 +4,20 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
+  `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
+; jsonb attributes become typed columns for the paths of its `paths` option (shredder, `docs/COL-SHRED.md`);
+  `sift_table` (`CREATE TABLE ... USING sift_table`, `docs/COL-TAM.md`) is a table access method with native MVCC that also takes BM25
+  indexes; logical replication of a published `sift_table` needs `pg_sift` in `shared_preload_libraries`. The scripts are
+  `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
+  (all kernels). The library reports 3.0.
+
 For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
   (ALP-style) and common-divisor (timestamps of whole seconds, amounts in cents) encodings, and layers LZ4 or zstd on a stream only where the cost rule says the saved bytes are worth the decode time. Filters run on the
   encoded form with scalar, AVX2 and AVX-512 kernels that are bit-identical and selected by `sift.simd`; what is written never depends on the CPU.
   A damaged chunk is a clean `ERRCODE_DATA_CORRUPTED` error (corruption fuzz under ASan/UBSan). The per-column `compression` policy (`auto`, `none`,
-  `lz4[:N]`, `zstd[:N]`, explicit encodings) is parsed here and applied by the engine. Build: LZ4 and zstd are linked when their development packages are
+  `lz4[:N]`, `zstd[:N]`, explicit encodings) is parsed here; the column engine does not apply it yet. Build: LZ4 and zstd are linked when their development packages are
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
 
