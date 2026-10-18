@@ -237,7 +237,7 @@ cmd_clickbench() {
   export PGDATABASE=$CB_DB
   OUT=${OUT:?the result directory (bench/bench analytics clickbench sets it)}
   mkdir -p "$OUT"
-  describe "ClickBench hits, $(q -c 'SELECT count(*) FROM hits') rows (the first $(( (A_ROWS + 999999) / 1000000 )) partitions of hits_compatible), queries of ClickHouse/ClickBench@${CB_COMMIT:0:12}"
+  describe "ClickBench hits, $(q -c 'SELECT count(*) FROM hits') rows (hits_compatible, the first $(( (A_ROWS + 999999) / 1000000 )) file(s) of a million), queries of ClickHouse/ClickBench@${CB_COMMIT:0:12}"
   mapfile -d '' args < <(common_args)
   py run --corpus clickbench --queries-file "$CB_DIR/queries.sql" --table hits --engines "${A_ENGINES:-heap,col}" --tier "$(( A_ROWS / 1000000 ))M" "${args[@]}"
 }
