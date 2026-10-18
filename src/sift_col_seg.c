@@ -361,6 +361,8 @@ seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 		off += n;
 		len -= n;
 	}
+	/* a segment that stays open between calls keeps its page pinned, never locked: a lock holds off interrupts and parallel workers */
+	sift_sr_unlock(&seg->sr);
 }
 
 static const SiftSectionRef *
