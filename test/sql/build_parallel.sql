@@ -1,0 +1,78 @@
+-- Parallel CREATE INDEX: the leader merges with the memory budget of the whole build and the workers with
+-- their share, and an error or a cancel in the middle of a merge pass (a worker's or the leader's, in a
+-- cascade merge or in the segment writer) leaves no temporary file or shared fileset behind.
+-- sift.test_fail_merge cancels the nth merge of the participants sift.test_fail_who selects.
+CREATE EXTENSION pg_sift;
+SET max_parallel_maintenance_workers = 0;
+SET maintenance_work_mem = '64MB';
+
+CREATE TABLE bp (id serial, body text) WITH (parallel_workers = 3);
+INSERT INTO bp (body)
+SELECT CASE WHEN i % 10 < 9 THEN 'hot ' ELSE '' END || 'g' || (i % 1000) || ' k' || (i % 7) || ' u' || i
+FROM generate_series(1, 30000) i;
+
+CREATE FUNCTION answers() RETURNS text AS $$
+	SELECT (SELECT count(*) FROM bp WHERE body @@> 'hot') || ' ' ||
+	       (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM bp WHERE body @@> 'g5 OR u777 OR k3 AND g8') || ' ' ||
+	       (SELECT string_agg(id::text || ':' || round(s::numeric, 5), ' ' ORDER BY s DESC, id) FROM
+	        (SELECT id, sift.score(ctid) AS s FROM bp WHERE body @@> 'hot OR g5 OR k3' ORDER BY s DESC, id LIMIT 20) t)
+$$ LANGUAGE sql;
+CREATE INDEX bp_ref ON bp USING sift (body);
+CREATE TABLE ref AS SELECT answers() AS a;
+DROP INDEX bp_ref;
+
+-- a leader with 4 MB and three workers with a third of it each, runs of 20 documents and segments of 300 postings
+SET maintenance_work_mem = '4MB';
+SET max_parallel_maintenance_workers = 3;
+SET sift.test_run_docs = 20;
+SET sift.test_segment_postings = 300;
+SET client_min_messages = debug1;
+CREATE INDEX bp_idx ON bp USING sift (body);
+RESET client_min_messages;
+SELECT count(*) > 3 AS segments FROM sift.segments('bp_idx');
+SELECT sift.verify('bp_idx', true);
+SELECT answers() = a AS budgets_same FROM ref;
+DROP INDEX bp_idx;
+
+-- a failure in the nth merge: nothing is left in the temporary directory or in the catalog
+CREATE FUNCTION leftovers() RETURNS int LANGUAGE sql AS $$
+	SELECT (SELECT count(*) FROM pg_ls_dir('base/pgsql_tmp', true, false))::int
+$$;
+SET sift.test_merge_fanin = 4;
+-- serial: a merge of the cascade, then the merge that writes the segments (256 runs fit one merge)
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_fail_who = 0;
+SET sift.test_fail_merge = 3;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT leftovers(), to_regclass('bp_idx') IS NULL AS no_index;
+SET sift.test_merge_fanin = 256;
+SET sift.test_fail_merge = 1;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT leftovers(), to_regclass('bp_idx') IS NULL AS no_index;
+-- parallel: a worker, the leader in its scan, then the leader in the merge that writes the segments
+-- (runs of 2,000 documents: no merge before it)
+SET max_parallel_maintenance_workers = 3;
+SET sift.test_merge_fanin = 4;
+SET sift.test_fail_who = 2;
+SET sift.test_fail_merge = 2;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT leftovers(), to_regclass('bp_idx') IS NULL AS no_index;
+SET sift.test_fail_who = 1;
+SET sift.test_fail_merge = 1;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT leftovers(), to_regclass('bp_idx') IS NULL AS no_index;
+SET sift.test_merge_fanin = 256;
+SET sift.test_run_docs = 2000;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT leftovers(), to_regclass('bp_idx') IS NULL AS no_index;
+
+-- and the next build is not the worse for it
+RESET sift.test_fail_merge;
+RESET sift.test_fail_who;
+CREATE INDEX bp_idx ON bp USING sift (body);
+SELECT sift.verify('bp_idx', true);
+SELECT answers() = a AS after_same, leftovers() AS leftovers FROM ref;
+
+DROP TABLE bp, ref;
+DROP FUNCTION answers(), leftovers();
+DROP EXTENSION pg_sift;

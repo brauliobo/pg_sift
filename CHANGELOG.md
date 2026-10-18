@@ -43,6 +43,56 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   segments of 128 superblocks or more (16 MB, least recently used out; a segment never changes, so its generation names the directory
   for good) and a repeated query reads none of it. Smaller segments are read each time, as before.
 
+- Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
+  merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
+  from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
+  smaller segments instead (about 20 for 400,000 such rows at 20,000 postings a term; at the default budget the layout is the same).
+
+- Fix: `CREATE INDEX` no longer fails with `segment dictionary exceeds 4 GB` or `postings of one term exceed 4 GB` (the lengths and offsets
+  of the format are 32 bits): the runs of a build merge, and make a segment, only while their largest term and their dictionary stay
+  under those limits (estimated high, so a segment holds up to a third of them), and the build writes more segments instead.
+
+- Fix: `CREATE INDEX` on documents of a heap page that together passed 1 GB (a few large, out-of-line values: three of 360 MB) failed with
+  `string buffer exceeds maximum allowed length`: a page's documents are no longer all copied before they are analyzed, a large one is
+  analyzed at once. A `maintenance_work_mem` of 4 GB or more (or a document with very many distinct terms) could fail with `inverted buffer
+  pool exhausted`: the buffer is now spilled before a document that could exhaust its pool.
+
+- Fix: a keyword value of more than 255 bytes failed an `INSERT`, a `COPY` or the end of a long `CREATE INDEX` with `a keyword value is longer
+  than 255 bytes`. It is now indexed as its first 236 bytes and a hash of all of it (the same term from a build, an insert and a query),
+  so two long values that share their start stay two values and `@@>` finds exactly the rows with that value.
+
+- `CREATE INDEX` reports its progress in `pg_stat_progress_create_index`: the phases `scanning table`, `spilling runs`, `merging runs` and
+  `writing segments`, and the documents analyzed and then written (`tuples_done` of `tuples_total`), parallel workers included. A parallel
+  build that gets fewer workers than requested logs it at `DEBUG1`.
+
+- Security: `sift.promote`, `sift.merge`, `sift.verify`, `sift.segments` and `sift.segment_postings` were executable by every role with `USAGE`
+  on schema `sift`, which could force rewrites of any index or hold its maintenance lock. They now need the owner of the index's table or
+  the `MAINTAIN` privilege on it (as `VACUUM` and `REINDEX` do); `ALTER EXTENSION pg_sift UPDATE` to 1.2 is not needed for this.
+- Fix: a query with `col @@> ANY (array)` failed in `EXPLAIN` and at run time with `invalid byte sequence for encoding "UTF8": 0x00`. It now
+  plans as a bitmap scan over one index scan per element (an OR), prepared or not; `ALL` and `NOT ANY` use a sequential scan as before.
+- Planner: materialized views get the ranked `SiftScan` and the `SiftCount` pushdown like tables. A prepared `LIMIT $1 [OFFSET $2]` gives the
+  ranked scan of a generic plan its limit hint (a broad term with `LIMIT 10` took 1.38x less time per query on 50,000 articles; custom plans
+  and other shapes are unchanged). `sift.score()` in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE` now fails when it is planned, saying so.
+- Extension 1.2 (`ALTER EXTENSION pg_sift UPDATE`): `sift.segments` gains `extents` and `dead_docs`; new `sift.index_info(index)` (relation
+  size, high-water mark, free and reusable blocks, directory entries, maintenance lock held) and `sift.version()` (the library reported 1.0
+  for a 1.1 extension).
+- Operations: promotions, merges and maintenance worker runs of at least `sift.log_min_duration` (default 1 s, `-1` off) are logged, with
+  the inserts that wait for room in the directory and a maintenance worker that could not be registered; errors of the worker name the index.
+  `ALTER INDEX ... SET/RESET` of an option that changes the analyzer warns that the table's queries and inserts fail until `REINDEX`.
+  `sift.highlight` no longer parses its query for every row.
+- Docs: [docs/SIZING.md](docs/SIZING.md) (disk, memory and time of large indexes, dead documents in BM25 statistics, `SERIALIZABLE`, row-level
+  security, updates). `bench/ab-query.sh` times one statement on two builds, `bench/sql/dead_docs.sql` measures the effect of rolled-back
+  loads on scores.
+- Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the release library
+  (`SIFT_TESTING` off).
+
+## 1.4.0
+
+- No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.
+- The engine now builds as a portable core shared with the SQLite extension and the new MariaDB extension (`src/portable.list`, one host header `src/sift_host.h`, checked by `scripts/check-portable.sh` in `make check`). The sorted-run and merge code moved from `src/sift_build.c` to `src/sift_runs.c`, the merge policy to `src/sift_merge.c`; the compiled query path is instruction for instruction the same.
+- `make check` takes about 1.5 minutes on 8 cores (it took about 4): one job queue over up to 8 lanes instead of four fixed lanes, faster differential and TAP tests, same coverage.
+- `scripts/build-bench.sh` compares `CREATE INDEX` time, memory and temporary files of two builds at several budgets; the runs merged into each segment are logged at `debug2`.
+
 ## 1.3.1
 
 - Fix: `CREATE INDEX` failed with `sift parallel build worker needs more than 256 runs` (`HINT: Increase maintenance_work_mem or build

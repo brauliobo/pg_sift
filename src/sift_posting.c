@@ -11,6 +11,9 @@
 #define BLOB_KEYS(blob)	((const uint32 *) ((blob) + 12))
 
 int			sift_grouped_min_df = SIFT_GROUPED_MIN_DF;
+#ifdef SIFT_TESTING
+int			sift_test_blob_max = 0;
+#endif
 
 struct SiftPostingWriter
 {
@@ -270,7 +273,7 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 		info->flags |= SIFT_TERM_POS;
 		info->pos_len = total - posoff;
 	}
-	if (total > PG_UINT32_MAX)
+	if (total > SIFT_BLOB_MAX)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift: postings of one term exceed 4 GB")));

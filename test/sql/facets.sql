@@ -157,10 +157,10 @@ SELECT * FROM sift.facets('d_body', 'd_part', 'common');
 DROP INDEX d_part;
 DROP TABLE other;
 
--- a value longer than a term is refused, never truncated into another value
+-- a value longer than a term is indexed as its start and a hash of all of it: its facet is that term, and no other value's
 INSERT INTO d VALUES (9000, 'long', repeat('x', 256), 't', 'k', '');
 INSERT INTO d VALUES (9001, 'long', repeat('x', 255), 't', 'k', '');
-SELECT length(value), count FROM sift.facets('d_body', 'd_cat', 'long');
+SELECT length(value), count FROM sift.facets('d_body', 'd_cat', 'long') ORDER BY 1 DESC;
 DELETE FROM d WHERE id = 9001;
 
 -- privileges: the table needs SELECT, and row level security is refused
