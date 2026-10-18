@@ -342,10 +342,22 @@ index entries of the dead tuples go), the heap pass and the VM bit after. A scan
 the all-visible mask first, the liveness of the unit after (`unit_clean` in `sift_col_scan.c`; `sift_cseg_dirty` reads the LIVE page each
 time). A mask that says "all-visible" was set after the index pass, so liveness read later shows the removals; liveness read first (a
 directory snapshot taken when the scan opened, a cached dirty bit) and the mask later counts rows of tuples that VACUUM removed after the
-scan's snapshot, on pages it made all-visible. The mutable lane has no such order, since its batch is a copy made when the source begins:
-no page of a lane batch counts as all-visible, its rows are always checked against the heap (`ColUnit.lane`). Tests: `col_vacuum_scan`
-(a VACUUM between the open and the reads of a scan, stored units, a dirty unit, the lane), `scripts/colsoak.sh` (checkers in REPEATABLE READ
-against writers, VACUUM and maintenance).
+scan's snapshot, on pages it made all-visible. Two more rules complete it:
+
+- **The segments must be current.** The pass flags the segments of the directory as it is; a merge replaces its inputs with an output that
+  has the liveness of its moment, so a scan holding the older directory copy reads inputs that no later pass flags. After the mask is read,
+  `segments_current` checks that every immutable segment of the scan's copy is still in the directory (one version read; a full comparison
+  only when the version moved); if one is gone, no page of the scan counts as all-visible and its rows are checked against the heap. A
+  pass and a merge exclude each other by the maintenance lock, so while the segments are current every pass that finished before the mask
+  was read ran on them.
+- **The mutable lane has no such order**, since its batch is a copy made when the source begins: no page of a lane batch counts as
+  all-visible, its rows are always checked against the heap (`ColUnit.lane`; measured with 400 000 rows in the lane: 41 to 50 ms for a
+  grouped sum either way, the batch decode dominates).
+
+Tests: `col_vacuum_scan` (statements run between the open and the reads of a scan: a VACUUM on stored units, on a dirty unit, a merge and
+then a VACUUM, the lane, DML with promote and merge), `scripts/colsoak.sh` (checkers in REPEATABLE READ against writers, VACUUM and
+maintenance; the CI job `soak-col`). In testing builds `sift.test_col_paranoid` checks the rows on all-visible pages against the heap too and
+logs the ones the snapshot does not see, `sift.test_col_scan_jitter_us` sleeps at the points of a scan where VACUUM can interleave.
 
 Corollaries: rolled-back inserts fail step 3 until VACUUM, whose `ambulkdelete` clears their bits before the heap page can become
 all-visible; a TID reused after VACUUM gets a new row record (I1: a TID is live in at most one segment, as in sift). Write-hot SB ranges
