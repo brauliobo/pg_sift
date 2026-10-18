@@ -24,6 +24,9 @@
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
 #include "sift_build.h"
+#include "sift_col_am.h"
+#include "sift_col_kern.h"
+#include "sift_colcodec.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_ops.h"
@@ -31,6 +34,7 @@
 #include "sift_prefix.h"
 #include "sift_segment.h"
 #include "sift_pushdown.h"
+#include "sift_shred.h"
 #include "sift_sql.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_MODULE_VERSION);
@@ -53,6 +57,13 @@ PG_FUNCTION_INFO_V1(sift_verify);
 PG_FUNCTION_INFO_V1(sift_facet_counts);
 PG_FUNCTION_INFO_V1(sift_version);
 PG_FUNCTION_INFO_V1(sift_index_info);
+PG_FUNCTION_INFO_V1(sift_col_handler);
+PG_FUNCTION_INFO_V1(sift_col_index_info);
+PG_FUNCTION_INFO_V1(sift_col_segments);
+PG_FUNCTION_INFO_V1(sift_col_leaves);
+PG_FUNCTION_INFO_V1(sift_col_verify);
+PG_FUNCTION_INFO_V1(sift_col_promote);
+PG_FUNCTION_INFO_V1(sift_col_merge);
 
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
@@ -226,6 +237,10 @@ _PG_init(void)
 	sift_init();
 	sift_cpu_register(codec_rebind);
 	sift_kernels_init();
+	sift_col_kernels_init();
+	sift_col_init();
+	sift_shred_init();
+	sift_cc_kernels_init();
 	define_gucs();
 	define_reloptions();
 	sift_planner_init();

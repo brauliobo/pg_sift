@@ -46,7 +46,7 @@ jobs:
           # the tests start their own clusters: no default cluster, no service on 5432
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl
+          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
       - name: Resolve the PostgreSQL 19 commit
@@ -81,7 +81,7 @@ jobs:
       - name: Use PostgreSQL 19
         if: ${{ matrix.experimental }}
         run: |
-          sudo apt-get install -y --no-install-recommends libipc-run-perl
+          sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
 
       # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories

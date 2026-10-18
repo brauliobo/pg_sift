@@ -17,6 +17,7 @@ typedef struct SiftMergePolicy
 {
 	uint64		tier_base;		/* bytes: segments below tier_base * fanin are tier 0, then every fanin-fold of size is a tier */
 	int			fanin;
+	bool		(*mostly_dead) (Relation index, const SiftSegEntry *e);	/* NULL: the BM25 segment reader's test */
 } SiftMergePolicy;
 
 /*

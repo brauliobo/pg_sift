@@ -1,7 +1,7 @@
 /*
  * Kernel throughput per level, plus the rejected bm25_accum designs and a
  * memory bandwidth reference. Single thread pinned to KT_CPU (default 2);
- * see BENCH. Run under flock /tmp/sift-perf.lock.
+ * see BENCH. Run under flock /tmp/sift-perf.lock. "bench col" runs the column kernels (bench_col.c) instead.
  *
  * A block is 16 heap pages of maxoff tuples; a term matches each tuple with
  * probability d. "L1 B/lane" counts the bytes a kernel touches per lane.
@@ -12,7 +12,6 @@
 #include <immintrin.h>
 #include <pthread.h>
 #include <sched.h>
-#include <time.h>
 
 #define NPAGES		16
 
@@ -23,37 +22,7 @@ int			alt_bm25_compress(float4 *scores, const uint64 *mask, int npages, const ui
 int			alt_bm25_tfvar(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 						   const float4 *knorm, float4 w, int var);
 
-static double
-now_ns(void)
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	return t.tv_sec * 1e9 + t.tv_nsec;
-}
-
-/*
- * Best ns per evaluation of expr: batches of >= 20 us, minimum over 300
- * batches (the host runs unrelated load; the minimum filters preemption).
- */
-#define BENCH(expr) ({ \
-	long		reps_ = 1; \
-	double		best_ = 1e300; \
-	for (;;) { \
-		double t0_ = now_ns(); \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; } \
-		if (now_ns() - t0_ > 2e4) break; \
-		reps_ *= 2; \
-	} \
-	for (int r_ = 0; r_ < 300; r_++) { \
-		double t0_ = now_ns(), d_; \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; } \
-		d_ = (now_ns() - t0_) / reps_; \
-		best_ = d_ < best_ ? d_ : best_; \
-	} \
-	best_; })
-
-typedef struct Block
+typedef struct BenchBlock
 {
 	int			pop;
 	uint64	   *mask;
@@ -65,14 +34,14 @@ typedef struct Block
 	uint8	   *tf;
 	uint16	   *slot,
 			   *dl[NPAGES];
-} Block;
+} BenchBlock;
 
 static Rng	rng;
 static const SiftKernels *levels[3];
 static int	nlevels;
 
 static void
-block_init(Block *b, int maxoff, double d)
+block_init(BenchBlock *b, int maxoff, double d)
 {
 	SiftBm25	bm;
 
@@ -108,7 +77,7 @@ block_init(Block *b, int maxoff, double d)
 		b->pop += __builtin_popcountll(b->mask[i]);
 }
 
-static void
+void
 row(const char *kernel, const char *scen, const char *lvl, double ns, double lanes, double bytes)
 {
 	printf("%-12s %-22s %-12s %9.1f %8.0f %9.2f %9.1f\n", kernel, scen, lvl, ns, lanes,
@@ -118,7 +87,7 @@ row(const char *kernel, const char *scen, const char *lvl, double ns, double lan
 static void
 bench_block(const char *scen, int maxoff, double d)
 {
-	Block		b;
+	BenchBlock		b;
 	SiftBm25	bm;
 
 	block_init(&b, maxoff, d);
@@ -286,7 +255,7 @@ bench_bandwidth(void)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
 	cpu_set_t	set;
 	int			cpu = getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2;
@@ -301,6 +270,11 @@ main(void)
 
 	printf("%-12s %-22s %-12s %9s %8s %9s %9s\n", "kernel", "scenario", "level", "ns/call",
 		   "lanes", "Glanes/s", "L1 GB/s");
+	if (argc > 1 && strcmp(argv[1], "col") == 0)
+	{
+		bench_col();
+		return 0;
+	}
 	bench_block("30 tup/pg, d=1", 30, 1);
 	bench_block("30 tup/pg, d=0.25", 30, 0.25);
 	bench_block("30 tup/pg, d=0.03", 30, 0.03);
