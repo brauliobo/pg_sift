@@ -549,3 +549,6 @@ SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect''
  same+search 2
 (1 row)
 
+DROP TABLE cs_q, cs_l, cs_t, cs;
+DROP FUNCTION cs_words(int), cs_mode(bool), cs_check(text, text), cs_stat(text, text), cs_stage(text);
+DROP EXTENSION pg_sift;
