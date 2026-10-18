@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: text search as the row selection of the aggregate pushdown. `SELECT ... FROM t WHERE <filters> AND col @@> q GROUP BY ...` on a table with a `sift` and a `sift_col` index (or `sift_table`) takes the matches from the BM25 index without reading the heap, keeps only those rows in the column units and aggregates from columns (`docs/COL-SEARCH.md`); facet-style counts per category are the same query. The plan shows `Search:` in `EXPLAIN`.
 - Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
   (`docs/COL.md`); jsonb attributes become typed columns for the paths of its `paths` option (shredder, `docs/COL-SHRED.md`);
