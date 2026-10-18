@@ -8,7 +8,7 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py cold  --rows N --out DIR             latency of the first run after a restart of the server
     store.py updates --rows N --out DIR           updates, deletes, read-after-write, reads under an update load, space (changes the data: runs last)
     store.py merge OUT... -o docs/results/store.json
-    store.py render [--results FILE] [--readme FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers
+    store.py render [--results FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers of docs/BENCHMARKS.md
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
 cache off), es_cached (the same with the shard request cache on), ch (ClickHouse). A latency is the wall time of one request from this
@@ -1168,7 +1168,7 @@ def readme_block(R):
     else:
         out += ['- pg_sift was the fastest system, or within 5% of it, on every question.']
     out += [f'- The same questions at {R.meta["tiers"][x]["rows"]:,} orders, cold runs after a restart, load times and plans: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).' for x in R.tiers[:-1]]
-    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites this section and docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
+    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
     return out
 
 
@@ -1468,12 +1468,11 @@ def compression_block(R):
 def replace_blocks(args):
     import readme  # steps/readme.py: replace_block
     R = Results(args.results)
-    if args.readme:
-        readme.replace_block(args.readme, 'store', readme_block(R))
-        readme.replace_block(args.readme, 'store-updates', updates_readme(R))
     if args.benchmarks:
-        readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
-        readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
+        readme.replace_block(args.benchmarks, 'store-brief', readme.for_docs(readme_block(R)))
+        readme.replace_block(args.benchmarks, 'store-updates-brief', readme.for_docs(updates_readme(R)))
+        readme.replace_block(args.benchmarks, 'store', readme.for_docs(benchmarks_block(R)))
+        readme.replace_block(args.benchmarks, 'store-updates', readme.for_docs(updates_benchmarks(R)))
         if os.path.exists(args.compression):
             readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
 
@@ -1595,7 +1594,6 @@ def main():
     m.add_argument('-o', required=True)
     r = sub.add_parser('render')
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
-    r.add_argument('--readme')
     r.add_argument('--benchmarks')
     r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store-compression.json'))
     r.add_argument('--stdout', action='store_true')
