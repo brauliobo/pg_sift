@@ -21,7 +21,9 @@
 #define SIFT_COL_FORMAT_MINOR	1			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
-#define SIFT_COL_MAX_STR		255
+#define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
+#define SIFT_COL_DICT_MAX_ENTRY	255			/* a longer string is never a dictionary entry of a segment: its unit stores the strings inline */
+#define SIFT_COL_DICT_MAX_BYTES	(64 << 20)	/* bytes of one segment dictionary: a unit that would exceed it stores its strings inline */
 #define SIFT_COL_UNIT_MAX_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)
 #define SIFT_COL_VEC_ROWS		SIFT_COL_UNIT_MAX_ROWS
 
@@ -137,6 +139,20 @@ sift_col_f8_key(double f)
 	else
 		memcpy(&b, &f, sizeof(b));
 	return (int64) (b ^ ((uint64) ((int64) b >> 63) >> 1)) ;
+}
+
+/*
+ * Order-preserving key of the first 8 bytes of a string: big endian, zero padded, sign bit flipped. s < t (bytewise) implies
+ * prefix(s) <= prefix(t); strings of equal keys differ only after byte 8 or by trailing zero bytes. Zones and filters of inline strings use it.
+ */
+static inline int64
+sift_col_str_prefix(const char *s, uint32 len)
+{
+	uint64		b = 0;
+
+	for (uint32 i = 0; i < 8; i++)
+		b = b << 8 | (i < len ? (uint8) s[i] : 0);
+	return (int64) (b ^ UINT64CONST(0x8000000000000000));
 }
 
 static inline double

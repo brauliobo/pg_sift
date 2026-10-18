@@ -49,7 +49,7 @@ typedef struct SiftCDict
 } SiftCDict;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
-/* The code of the value, adding it when new; len <= SIFT_COL_MAX_STR (ERRCODE_PROGRAM_LIMIT_EXCEEDED otherwise) */
+/* The code of the value, adding it when new; len <= SIFT_COL_MAX_VALUE (ERRCODE_PROGRAM_LIMIT_EXCEEDED otherwise) */
 extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
 /* The code, or -1 */
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
@@ -93,7 +93,7 @@ typedef struct SiftColBatch
 extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema *schema);
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
-/* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned (ERROR over 255 bytes). */
+/* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */
 extern void sift_cbatch_add(SiftColBatch *b, const SiftColRow *row);
 /* Appends row r of src (same schema) re-interning its strings; same key rules */
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
@@ -114,6 +114,7 @@ extern void sift_cbatch_value(const SiftColBatch *b, int col, uint32 slot, SiftC
 #define SIFT_COLZ_NAN		0x2		/* a float chunk holds a NaN */
 #define SIFT_COLZ_CONST		0x4		/* every non-NULL value equal */
 #define SIFT_COLZ_OVERFLOW	0x8		/* some value overflowed: the zone does not describe it */
+#define SIFT_COLZ_INLINE	0x10	/* STR leaf stored inline (SIFT_COLENC_ISTR): min and max are the prefix keys of the smallest and largest value, set is all ones */
 
 typedef struct SiftCZone
 {
@@ -138,6 +139,7 @@ typedef struct SiftCZone
 #define SIFT_COLENC_RLE		3		/* reserved */
 #define SIFT_COLENC_CC		4		/* the payload is one blob of the chunk codec: bits and base are 0 */
 #define SIFT_COLENC_STRS	5		/* VAR leaves: the payload is the codec's list of n strings (the NULL slots are empty strings); bits and base are 0 */
+#define SIFT_COLENC_ISTR	6		/* STR leaves, inline: the same payload as STRS, the unit has no dictionary codes for this leaf */
 
 typedef struct SiftCChunk
 {
@@ -163,9 +165,16 @@ extern bool sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c);
  * n + SIFT_COL_PAD/8 slots.
  */
 extern void sift_cchunk_decode(const SiftCChunk *c, int64 *dst);
-/* VAR chunks (enc STRS): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
+/* VAR and inline STR chunks (enc STRS, ISTR): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
 extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);
+
+/*
+ * An inline STR chunk (enc ISTR) as the dictionary-coded chunk the readers and tests work on: *dict is a dictionary of the chunk's own
+ * strings (palloc'd in mcxt, codes in first-seen order) and *out a FOR chunk of the codes (payload palloc'd in mcxt, with the NULL and
+ * overflow bitmaps of c). False when c is another encoding (*out is then c).
+ */
+extern bool sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict, SiftCChunk *out);
 
 /*
  * Tests: a predicate of a leaf made executable against one segment's dictionary (a STR constant becomes a code or a LUT; a constant
@@ -195,6 +204,7 @@ typedef struct SiftCTest
 	uint32		lutbits;
 	uint64		fold[4];		/* LUT / STR EQ: the bits (code & 255) the test can match, to compare with a zone's set */
 	bool		fold_valid;
+	const SiftColPred *pred;	/* STR: the predicate, for the zones of inline units (which have no codes); not copied */
 } SiftCTest;
 
 /* dict: the segment's dictionary of the leaf (STR; may be NULL for the other stores). Allocates the LUT in CurrentMemoryContext. */
@@ -211,13 +221,20 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
 /*
  * Encodes the batch as one unit record appended to out (the record starts 8-byte aligned in out: padding is added first, *start gets its offset):
  * the row directory then one chunk per leaf (a leaf all of whose values are NULL still gets a CONST chunk with the NULL bitmap). zones[ncols]
- * receives the zones (may be NULL). dictmap[col] (NULL array or NULL entry: identity) translates the batch's STR codes into the segment's.
+ * receives the zones (may be NULL). dictmap[col] (NULL array or NULL entry: identity) translates the batch's STR codes into the segment's; inl[col]
+ * (NULL array: none) stores that STR leaf inline, as strings (enc ISTR), and then dictmap[col] is not used.
  * SIFT_COL_PAD zero bytes stay readable after the record in out's buffer (not counted in out->len), so it can be parsed and filtered in place.
  * pol[ncols] (NULL: none) is the compression policy of each leaf: a chunk that is not constant is then a blob of the chunk codec
  * (SIFT_COLENC_CC); without it the chunk is the plain FOR or PACK form (in-memory units that are only scanned).
  */
-extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const SiftCcPolicy *pol, StringInfo out, Size *start,
-							  SiftCZone *zones);
+extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, StringInfo out,
+							  Size *start, SiftCZone *zones);
+
+/*
+ * Must the STR leaf col of the batch be stored inline in a segment whose dictionary of the leaf is seg: some string is over
+ * SIFT_COL_DICT_MAX_ENTRY bytes, or the dictionary would exceed maxbytes with the strings the batch adds.
+ */
+extern bool sift_cbatch_str_inline(const SiftColBatch *b, int col, SiftCDict *seg, Size maxbytes);
 
 typedef struct SiftCUnitView
 {

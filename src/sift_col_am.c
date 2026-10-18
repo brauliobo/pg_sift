@@ -472,11 +472,6 @@ datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
 
 				v->v.s = VARDATA_ANY(t);
 				v->len = VARSIZE_ANY_EXHDR(t);
-				if (v->len > SIFT_COL_MAX_STR)
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("value of %u bytes is too long for a sift_col index (at most %d bytes)", v->len, SIFT_COL_MAX_STR),
-							 errhint("Index left(column, %d) or a hash of it instead.", SIFT_COL_MAX_STR)));
 			}
 	}
 }

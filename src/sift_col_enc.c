@@ -277,11 +277,10 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 {
 	uint32	   *slot;
 
-	if (len > SIFT_COL_MAX_STR)
+	if (len > SIFT_COL_MAX_VALUE || d->nbytes + len > SIFT_COL_MAX_VALUE)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("value of %u bytes is too large for a sift_col column (maximum %d)", len, SIFT_COL_MAX_STR),
-				 errhint("Index left(column, %d) or a hash of the column instead.", SIFT_COL_MAX_STR)));
+				 errmsg("value of %u bytes does not fit a sift_col column (the strings of a unit are at most %d bytes)", len, SIFT_COL_MAX_VALUE)));
 	cdict_ready(d);
 	slot = cdict_probe(d, s, len);
 	if (*slot)
@@ -306,7 +305,7 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 int64
 sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 {
-	if (d->n == 0 || len > SIFT_COL_MAX_STR)
+	if (d->n == 0)
 		return -1;
 	cdict_ready(d);
 	return (int64) *cdict_probe(d, s, len) - 1;
@@ -348,7 +347,7 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (d->off[0] != 0 || len - sizeof(uint32) - ((Size) n + 1) * sizeof(uint32) < d->nbytes)
 		return NULL;
 	for (uint32 c = 0; c < n; c++)
-		if (d->off[c + 1] < d->off[c] || cdict_len(d, c) > SIFT_COL_MAX_STR)
+		if (d->off[c + 1] < d->off[c] || cdict_len(d, c) > SIFT_COL_DICT_MAX_ENTRY)
 			return NULL;
 	d->bytescap = Max(d->nbytes, 256);
 	d->bytes = MemoryContextAlloc(mcxt, d->bytescap);
@@ -807,6 +806,7 @@ codec_valid(uint8 enc, uint8 bits)
 			return bits >= 1 && bits <= 31 && bits != 8 && bits != 16;
 		case SIFT_COLENC_CC:
 		case SIFT_COLENC_STRS:
+		case SIFT_COLENC_ISTR:
 			return bits == 0;
 		default:
 			return false;
@@ -918,13 +918,13 @@ cc_open(const SiftCChunk *c, bool verify)
 void
 sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes)
 {
-	if (c->enc != SIFT_COLENC_STRS)
+	if (c->enc != SIFT_COLENC_STRS && c->enc != SIFT_COLENC_ISTR)
 		elog(ERROR, "sift_col: chunk encoding %d holds no strings", c->enc);
 	if (sift_cc_decode_strs(mcxt, c->payload, c->paylen, off, bytes) != c->n)
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the string list does not hold %u values", c->n)));
 }
 
-/* The lengths of the strings of a STRS chunk, the keys of its zone and its row tests */
+/* The lengths of the strings of a STRS or ISTR chunk, the keys of its VAR zone and of its row tests */
 static void
 strs_lengths(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst)
 {
@@ -947,6 +947,7 @@ codec_decode(const SiftCChunk *c, int64 *dst)
 	switch (c->enc)
 	{
 		case SIFT_COLENC_STRS:
+		case SIFT_COLENC_ISTR:
 			strs_lengths(c, NULL, c->n, dst);
 			break;
 		case SIFT_COLENC_CC:
@@ -983,6 +984,7 @@ codec_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst)
 	switch (c->enc)
 	{
 		case SIFT_COLENC_STRS:
+		case SIFT_COLENC_ISTR:
 			strs_lengths(c, idx, m, dst);
 			break;
 		case SIFT_COLENC_CC:
@@ -1092,6 +1094,125 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 	put_pad(out, 8);
 }
 
+/* The zone of an inline STR chunk: the prefix keys of the smallest and largest value; no set, so none prunes */
+static void
+istr_zone(const uint64 *nulls, const uint64 *ovf, uint32 n, const uint32 *off, const char *bytes, SiftCZone *z)
+{
+	int64		mn = PG_INT64_MAX,
+				mx = PG_INT64_MIN;
+
+	memset(z, 0, sizeof(*z));
+	z->nvals = n;
+	for (uint32 i = 0; i < n; i++)
+	{
+		int64		k;
+
+		if (sift_col_bit_test(nulls, i))
+		{
+			z->nnull++;
+			continue;
+		}
+		k = sift_col_str_prefix(bytes + off[i], off[i + 1] - off[i]);
+		mn = Min(mn, k);
+		mx = Max(mx, k);
+	}
+	if (z->nnull < n)
+	{
+		z->min = mn;
+		z->max = mx;
+	}
+	z->flags = SIFT_COLZ_INLINE;
+	for (uint32 w = 0; ovf != NULL && w < words_of(n); w++)
+		z->flags |= ovf[w] ? SIFT_COLZ_OVERFLOW : 0;
+	memset(z->set, 0xFF, sizeof(z->set));
+}
+
+/* The chunk of an STR leaf stored inline: the strings of the rows (the batch's codes looked up in its dictionary bd), no codes of the segment */
+static void
+chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const SiftCcPolicy *pol, SiftCZone *z)
+{
+	uint32		n = v->n;
+	uint32	   *off = palloc((Size) (n + 1) * sizeof(uint32));
+	StringInfoData bytes;
+	SiftCcPolicy dp;
+	uint8		head[8] = {SIFT_COLENC_ISTR, 0, 0, 0};
+
+	initStringInfo(&bytes);
+	off[0] = 0;
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (!sift_col_bit_test(v->nulls, i))
+		{
+			uint32		len;
+			const char *s = sift_cdict_str(bd, (uint32) v->key[i], &len);
+
+			appendBinaryStringInfo(&bytes, s, (int) len);
+		}
+		off[i + 1] = (uint32) bytes.len;
+	}
+	istr_zone(v->nulls, v->ovf, n, off, bytes.data, z);
+	head[2] = (z->nnull > 0 ? SIFT_COLC_NULLS : 0) | ((z->flags & SIFT_COLZ_OVERFLOW) ? SIFT_COLC_OVF : 0);
+	memcpy(head + 4, &n, sizeof(n));
+	put_bytes(out, head, sizeof(head));
+	put_zero(out, sizeof(int64));		/* base */
+	if (head[2] & SIFT_COLC_NULLS)
+		put_bitmap(out, v->nulls, n);
+	if (head[2] & SIFT_COLC_OVF)
+		put_bitmap(out, v->ovf, n);
+	if (pol == NULL)
+		sift_cc_policy_default(&dp);
+	sift_cc_encode_strs(out, off, bytes.data, n, pol ? pol : &dp);
+	put_pad(out, 8);
+	pfree(off);
+	pfree(bytes.data);
+}
+
+bool
+sift_cbatch_str_inline(const SiftColBatch *b, int col, SiftCDict *seg, Size maxbytes)
+{
+	const SiftCDict *bd = b->dict[col];
+	Size		add = 0;
+
+	if (b->col[col].n == 0)			/* no values (a group without elements): its chunk is empty */
+		return false;
+	for (uint32 c = 0; c < bd->n; c++)
+		if (cdict_len(bd, c) > SIFT_COL_DICT_MAX_ENTRY)
+			return true;
+	if (seg->nbytes + bd->nbytes <= maxbytes)
+		return false;
+	for (uint32 c = 0; c < bd->n; c++)
+		if (sift_cdict_find(seg, bd->bytes + bd->off[c], cdict_len(bd, c)) < 0)
+			add += cdict_len(bd, c);
+	return seg->nbytes + add > maxbytes;
+}
+
+bool
+sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict, SiftCChunk *out)
+{
+	uint32	   *off,
+			   *codes;
+	char	   *bytes;
+
+	*out = *c;
+	*dict = NULL;
+	if (c->enc != SIFT_COLENC_ISTR)
+		return false;
+	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
+	*dict = sift_cdict_create(mcxt);
+	codes = MemoryContextAllocZero(mcxt, (Size) c->n * sizeof(uint32) + SIFT_COL_PAD);
+	for (uint32 i = 0; i < c->n; i++)
+		if (!sift_col_bit_test(c->nulls, i))
+			codes[i] = sift_cdict_intern(*dict, bytes + off[i], off[i + 1] - off[i]);
+	out->enc = SIFT_COLENC_FOR;
+	out->bits = 32;
+	out->base = 0;
+	out->payload = (const uint8 *) codes;
+	out->paylen = c->n * sizeof(uint32);
+	pfree(off);
+	pfree(bytes);
+	return true;
+}
+
 bool
 sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 {
@@ -1121,7 +1242,7 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 		c->ovf = (const uint64 *) (p + pos);
 		pos += words * 8;
 	}
-	whole = c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS;
+	whole = c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS || c->enc == SIFT_COLENC_ISTR;
 	c->paylen = whole ? (pos <= len ? (uint32) (len - pos) : 0) : (uint32) codec_paylen(c->enc, c->bits, c->n);
 	if (pos + c->paylen > len || (whole && (c->paylen == 0 || c->paylen % 8 != 0 || c->n == 0)))
 		return false;
@@ -1168,6 +1289,18 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
 {
 	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 
+	if (c->enc == SIFT_COLENC_ISTR)
+	{
+		uint32	   *off;
+		char	   *bytes;
+
+		sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);	/* verified by its decoding */
+		istr_zone(c->nulls, c->ovf, c->n, off, bytes, z);
+		pfree(off);
+		pfree(bytes);
+		pfree(key);
+		return;
+	}
 	if (c->enc == SIFT_COLENC_CC)
 		sift_cc_close(cc_open(c, true));
 	sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
@@ -1360,6 +1493,7 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 
 	if (dict == NULL)
 		elog(ERROR, "sift_col: a test on a text column needs its dictionary");
+	t->pred = p;
 	lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
 	switch (p->op)
 	{
@@ -1417,10 +1551,48 @@ sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, Si
 		ctest_make_num(def, p, t);
 }
 
+/* Can a unit with inline strings, whose smallest and largest prefix keys are z->min and z->max, hold a match of p (STR predicates; conservative) */
+static bool
+zone_inline_matches(const SiftColPred *p, const SiftCZone *z)
+{
+	const SiftColValue *c = &p->vals[0];
+	int64		k = p->nvals > 0 ? sift_col_str_prefix(c->v.s, c->len) : 0;
+
+	switch (p->op)
+	{
+		case SIFT_COLOP_EQ:
+			return k >= z->min && k <= z->max;
+		case SIFT_COLOP_IN:
+			for (int i = 0; i < p->nvals; i++)
+			{
+				k = sift_col_str_prefix(p->vals[i].v.s, p->vals[i].len);
+				if (k >= z->min && k <= z->max)
+					return true;
+			}
+			return false;
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			return z->min <= k;
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+			return z->max >= k;
+		case SIFT_COLOP_PREFIX:
+			{
+				char		pad[8];
+
+				memset(pad, 0xFF, sizeof(pad));
+				memcpy(pad, c->v.s, Min(c->len, 8));
+				return z->max >= k && z->min <= (c->len >= 8 ? k : sift_col_str_prefix(pad, 8));
+			}
+		default:					/* NE, NOTIN */
+			return true;
+	}
+}
+
 bool
 sift_ctest_zone(const SiftCTest *t, const SiftCZone *z)
 {
-	if (t->kind == SIFT_CT_NONE)
+	if (t->kind == SIFT_CT_NONE && !(z->flags & SIFT_COLZ_INLINE))	/* NONE: no constant is in the dictionary, which an inline unit does not use */
 		return false;
 	if (z->flags & SIFT_COLZ_OVERFLOW)
 		return true;
@@ -1428,6 +1600,8 @@ sift_ctest_zone(const SiftCTest *t, const SiftCZone *z)
 		return z->nnull > 0;
 	if (z->nnull == z->nvals)
 		return false;
+	if (z->flags & SIFT_COLZ_INLINE)
+		return t->pred == NULL || zone_inline_matches(t->pred, z);
 	switch (t->kind)
 	{
 		case SIFT_CT_RANGE:
@@ -1786,7 +1960,8 @@ unit_put_directory(StringInfo out, const SiftKey *keys, uint32 nrows, uint32 sb)
 }
 
 void
-sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const SiftCcPolicy *pol, StringInfo out, Size *start, SiftCZone *zones)
+sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, StringInfo out, Size *start,
+				  SiftCZone *zones)
 {
 	const SiftColSchema *s = b->schema;
 	Size		tab;
@@ -1805,7 +1980,9 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const SiftCcPol
 		uint32		off,
 					len;
 
-		if (dictmap != NULL && dictmap[col] != NULL)
+		bool		inline_str = inl && inl[col] && v->n > 0;	/* a leaf without values (a group without elements) has the empty chunk */
+
+		if (dictmap != NULL && dictmap[col] != NULL && !inline_str)
 		{
 			mapped = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -1814,7 +1991,10 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const SiftCcPol
 		}
 		put_pad(out, 8);
 		off = (uint32) (out->len - *start);
-		chunk_encode(out, s->cols[col].store, v, key, pol ? &pol[col] : NULL, &zone);
+		if (inline_str)
+			chunk_encode_istr(out, v, b->dict[col], pol ? &pol[col] : NULL, &zone);
+		else
+			chunk_encode(out, s->cols[col].store, v, key, pol ? &pol[col] : NULL, &zone);
 		len = (uint32) (out->len - *start) - off;
 		memcpy(out->data + tab + col * sizeof(uint32), &off, sizeof(off));
 		memcpy(out->data + tab + (s->ncols + col) * sizeof(uint32), &len, sizeof(len));
@@ -1837,6 +2017,13 @@ sparse_valid(const uint8 *bm, uint32 mo, uint32 cnt)
 	for (uint32 i = 0; i < (mo + 7) / 8; i++)
 		pop += sift_pc64(bm[i]);
 	return pop == cnt && ((bm[(mo - 1) / 8] >> ((mo - 1) % 8)) & 1) && (mo % 8 == 0 || (bm[(mo - 1) / 8] >> (mo % 8)) == 0);
+}
+
+/* The strings chunks belong to the VAR (STRS) and the STR (ISTR) leaves, and to no other */
+static bool
+chunk_fits_leaf(const SiftColDef *def, const SiftCChunk *c)
+{
+	return (c->enc == SIFT_COLENC_STRS) == (def->store == SIFT_COLS_VAR) && (c->enc != SIFT_COLENC_ISTR || leaf_is_str(def));
 }
 
 /*
@@ -1902,7 +2089,8 @@ unit_parse(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *sche
 		if (v->chunk_len[col] == 0)
 			continue;
 		if (v->chunk_off[col] % 8 != 0 || v->chunk_off[col] < dirend || (uint64) v->chunk_off[col] + v->chunk_len[col] > len ||
-			(chunks && (!sift_cchunk_parse(rec + v->chunk_off[col], v->chunk_len[col], &c) || (schema->cols[col].parent < 0 && c.n != v->nrows))))
+			(chunks && (!sift_cchunk_parse(rec + v->chunk_off[col], v->chunk_len[col], &c) || (schema->cols[col].parent < 0 && c.n != v->nrows) ||
+						!chunk_fits_leaf(&schema->cols[col], &c))))
 			return false;
 	}
 	return true;
@@ -2017,8 +2205,9 @@ typedef struct UnitLeaf
 	int64	   *key;			/* decoded, NULL slots 0 */
 	uint32	   *remap;			/* STR: code of the unit's dictionary -> code in the destination, PG_UINT32_MAX = not yet */
 	uint32	   *eoff;			/* GROUP: element offset of each row, nrows + 1 */
-	uint32	   *voff;			/* VAR: start of each string, n + 1 */
+	uint32	   *voff;			/* VAR and inline STR: start of each string, n + 1 */
 	char	   *vb;
+	bool		inl;			/* STR stored inline: the strings are interned into the destination's dictionary */
 } UnitLeaf;
 
 /* Appends slot `slot` of leaf col of the unit to dst's leaf */
@@ -2029,6 +2218,11 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 	bool		ovf = lf->present && sift_col_bit_test(lf->c.ovf, slot);
 	int64		key = isnull ? 0 : lf->key[slot];
 
+	if (lf->inl)
+	{
+		vals_put(dst->mcxt, &dst->col[col], isnull ? 0 : sift_cdict_intern(dst->dict[col], lf->vb + lf->voff[slot], (uint32) key), isnull, ovf);
+		return;
+	}
 	if (lf->voff != NULL)
 	{
 		vals_put_var(dst->mcxt, &dst->col[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf);
@@ -2067,9 +2261,10 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 			continue;
 		l->key = palloc((l->c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 		sift_cchunk_decode(&l->c, l->key);
-		if (s->cols[col].store == SIFT_COLS_VAR)
+		l->inl = l->c.enc == SIFT_COLENC_ISTR;
+		if (s->cols[col].store == SIFT_COLS_VAR || l->inl)
 			sift_cchunk_strs(&l->c, CurrentMemoryContext, &l->voff, &l->vb);
-		if (leaf_is_str(&s->cols[col]))
+		if (leaf_is_str(&s->cols[col]) && !l->inl)
 		{
 			l->remap = palloc(Max(dicts[col]->n, 1) * sizeof(uint32));
 			memset(l->remap, 0xFF, Max(dicts[col]->n, 1) * sizeof(uint32));

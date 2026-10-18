@@ -27,6 +27,7 @@
 
 #define COLO_TABLE		0x8000		/* internal flag: a source over a sift_table (sift_col_open_table) */
 #define MEM_ID_FLAG		(UINT64CONST(1) << 63)
+#define INL_ID_FLAG		(UINT64CONST(1) << 62)	/* the dictionary of an inline STR chunk: one per chunk read */
 
 typedef struct ColCursor
 {
@@ -53,6 +54,14 @@ typedef struct ColGroup
 	const uint64 *ovf;			/* rows whose whole array overflowed */
 } ColGroup;
 
+/* An inline STR chunk of the unit as the codes of a dictionary of its own (the form every reader and test works on), built on first use */
+typedef struct ColInline
+{
+	SiftCDict  *dict;
+	SiftCChunk	chunk;
+	uint64		id;
+} ColInline;
+
 typedef struct ColUnit
 {
 	SiftColSource *src;
@@ -61,6 +70,7 @@ typedef struct ColUnit
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
+	ColInline  *istr;			/* [ncols] stored units */
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
@@ -95,6 +105,7 @@ struct SiftColSource
 	int			ocur;
 	uint32		heap_sbs;
 	ColUnit		cu;
+	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
 	SiftColCounters cnt;
 };
 
@@ -373,6 +384,7 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 	if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &cu->v) || cu->v.nrows != seg->sbdir[u].nrows)
 		corrupt("Unit %u of segment %llu does not parse.", u, (unsigned long long) seg->entry.gen);
 	cu->loaded = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols);
+	cu->istr = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols * sizeof(ColInline));
 	cu->clean = !sift_cseg_dirty(seg, u);
 }
 
@@ -385,7 +397,20 @@ unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
 		sift_cseg_unit_fill(cu->seg, cu->u, cu->v.chunk_off[col], cu->v.chunk_len[col]);
 		cu->loaded[col] = 1;
 	}
-	return sift_cunit_chunk(&cu->v, col, c);
+	if (!sift_cunit_chunk(&cu->v, col, c))
+		return false;
+	if (c->enc == SIFT_COLENC_ISTR)
+	{
+		ColInline  *in = &cu->istr[col];
+
+		if (in->dict == NULL)
+		{
+			sift_cchunk_istr_codes(c, cu->src->arena, &in->dict, &in->chunk);
+			in->id = INL_ID_FLAG | ++cu->src->inl_seq << 8 | col;
+		}
+		*c = in->chunk;
+	}
+	return true;
 }
 
 static void
@@ -395,7 +420,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 	Size		start;
 
 	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
-	sift_cunit_encode(m->b, NULL, NULL, buf, &start, cu->mzones);
+	sift_cunit_encode(m->b, NULL, NULL, NULL, buf, &start, cu->mzones);
 	if (!sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v))
 		elog(ERROR, "sift_col: an in-memory unit does not parse");
 	cu->batch = m->b;
@@ -530,14 +555,25 @@ sift_col_sel_idx(const SiftColSel *sel, uint32 *idx)
 static SiftCDict *
 unit_dict(ColUnit *cu, int col)
 {
+	SiftCZone	z;
+	SiftCChunk	c;
+
 	if (cu->src->schema->cols[col].store != SIFT_COLS_STR)
 		return NULL;
-	return cu->seg ? sift_cseg_dict(cu->seg, col) : cu->batch->dict[col];
+	if (cu->seg == NULL)
+		return cu->batch->dict[col];
+	sift_cseg_zone(cu->seg, col, cu->u, &z);
+	if (!(z.flags & SIFT_COLZ_INLINE))
+		return sift_cseg_dict(cu->seg, col);
+	unit_chunk(cu, col, &c);
+	return cu->istr[col].dict;
 }
 
 static uint64
 dict_id(const ColUnit *cu, int col)
 {
+	if (cu->istr && cu->istr[col].dict)
+		return cu->istr[col].id;
 	return cu->seg ? (cu->seg->entry.gen << 8 | col) : (MEM_ID_FLAG | (uint64) cu->memid << 8 | col);
 }
 
@@ -1024,8 +1060,8 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 		sift_cseg_zone(cu->seg, col, cu->u, &z);
 	else
 		z = cu->mzones[col];
-	zone->min = z.min;
-	zone->max = z.max;
+	zone->min = z.flags & SIFT_COLZ_INLINE ? 0 : z.min;	/* an inline unit has no codes to bound */
+	zone->max = z.flags & SIFT_COLZ_INLINE ? PG_INT64_MAX : z.max;
 	zone->sum_i = z.sum_i;
 	zone->sum_f = z.sum_f;
 	zone->nvals = z.nvals;

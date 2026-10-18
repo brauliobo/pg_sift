@@ -238,11 +238,6 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			v->v.f = col->val[i].f;
 			break;
 		case SIFT_SHRED_TEXT:
-			if (col->val[i].s.len > SIFT_COL_MAX_STR)
-			{
-				v->isnull = v->overflow = true;
-				return;
-			}
 			v->v.s = doc->text + col->val[i].s.off;
 			v->len = col->val[i].s.len;
 			break;

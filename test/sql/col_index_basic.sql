@@ -58,12 +58,59 @@ SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 1000 - 500 END,
 FROM generate_series(1, 20000) i;
 ANALYZE orders;
 
--- 255 bytes are the limit of a text value
-CREATE INDEX o_note ON orders USING sift_col (note);
-DELETE FROM orders WHERE length(note) > 255;
+-- Text of any length: a unit that holds a string over 255 bytes stores its text inline
 CREATE INDEX o_note ON orders USING sift_col (note);
 SELECT sift.col_verify('o_note', true);
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('o_note');
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 299), 'note = ' || quote_literal(repeat('n', 299)));
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 255), 'note = ' || quote_literal(repeat('n', 255)));
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 300), 'note = ' || quote_literal(repeat('n', 300)));
+SELECT col_cmp('o_note', '0:prefix:' || repeat('n', 280), 'note LIKE ' || quote_literal(repeat('n', 280) || '%') || ' COLLATE "C"');
+SELECT col_cmp('o_note', '0:in:' || repeat('n', 10) || '|' || repeat('n', 290) || '|zz', format('note IN (%L, %L, ''zz'')', repeat('n', 10), repeat('n', 290)));
+SELECT col_cmp('o_note', '0:ne:' || repeat('n', 290), format('note <> %L', repeat('n', 290)));
+SELECT col_cmp('o_note', '0:notin:' || repeat('n', 5) || '|' || repeat('n', 270), format('note NOT IN (%L, %L)', repeat('n', 5), repeat('n', 270)));
+SELECT col_cmp('o_note', '0:gt:' || repeat('n', 200) || ';0:le:' || repeat('n', 280),
+			   format('note > %L COLLATE "C" AND note <= %L COLLATE "C"', repeat('n', 200), repeat('n', 280)));
+SELECT col_cmp('o_note', '0:null', 'note IS NULL');
 DROP INDEX o_note;
+
+CREATE TABLE longs (id int, s text);
+INSERT INTO longs
+SELECT i, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN '' WHEN i % 5 = 0 THEN repeat('é', 100 + i % 400) || i
+			   WHEN i % 3 = 0 THEN repeat('abc', 50 + i % 3000) ELSE 'short' || i % 40 END
+FROM generate_series(1, 6000) i;
+INSERT INTO longs VALUES (6001, repeat('x', 1000000)), (6002, repeat('x', 1000000)), (6003, repeat('x', 999999) || 'y');
+CREATE INDEX l_idx ON longs USING sift_col (s) WITH (mutable_limit = 64);
+SELECT sift.col_verify('l_idx', true);
+SELECT col_cmp('l_idx', '0:eq:' || s, 's = ' || quote_literal(s)) FROM longs WHERE id IN (5, 15, 25, 3, 9, 6, 8, 6001, 6003) ORDER BY id;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('x', 1000001), 's = ' || quote_literal(repeat('x', 1000001)));
+SELECT col_cmp('l_idx', '0:ne:' || repeat('x', 1000000), 's <> ' || quote_literal(repeat('x', 1000000)));
+SELECT col_cmp('l_idx', '0:prefix:' || repeat('abc', 40), 's LIKE ' || quote_literal(repeat('abc', 40) || '%') || ' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:prefix:' || repeat('é', 120), 's LIKE ' || quote_literal(repeat('é', 120) || '%') || ' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:in:short3|' || repeat('abc', 100) || '|' || repeat('x', 1000000), format('s IN (''short3'', %L, %L)', repeat('abc', 100), repeat('x', 1000000)));
+SELECT col_cmp('l_idx', '0:lt:abd;0:ge:abc', 's < ''abd'' COLLATE "C" AND s >= ''abc'' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:ge:' || repeat('é', 200), format('s >= %L COLLATE "C"', repeat('é', 200)));
+SELECT col_cmp('l_idx', '0:eq:', 's = ''''');
+SELECT col_cmp('l_idx', '0:null', 's IS NULL');
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('l_idx');
+-- rows added to the mutable lane, then sealed and merged
+INSERT INTO longs SELECT 7000 + i, repeat('q', 300 + i) FROM generate_series(1, 50) i;
+INSERT INTO longs SELECT 8000 + i, 'short' || i FROM generate_series(1, 50) i;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
+SELECT col_cmp('l_idx', '0:prefix:qqq', 's LIKE ''qqq%'' COLLATE "C"');
+SELECT sift.col_promote('l_idx') >= 0 AS promoted;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
+SELECT col_cmp('l_idx', '0:eq:short3', 's = ''short3''');
+SELECT sift.col_verify('l_idx', true);
+DELETE FROM longs WHERE id % 4 = 0;
+VACUUM longs;
+SELECT col_cmp('l_idx', '0:prefix:abc', 's LIKE ''abc%'' COLLATE "C"');
+SELECT sift.col_merge('l_idx', true) >= 0 AS merged;
+SELECT sift.col_verify('l_idx', true);
+SELECT col_cmp('l_idx', '0:eq:' || repeat('x', 1000000), 's = ' || quote_literal(repeat('x', 1000000)));
+SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('l_idx', 0, '') EXCEPT SELECT ctid, s FROM longs) z;
+SELECT count(*) AS missing FROM (SELECT ctid, s FROM longs EXCEPT SELECT tid, val FROM sift._test_col_read('l_idx', 0, '')) z;
+DROP TABLE longs;
 
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, amount, discount, placed, paid_at, express, qty);
 SELECT leaves, segments, mutable_segments, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
