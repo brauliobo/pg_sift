@@ -293,7 +293,7 @@ its own docker container.
   - `0A000` for `TABLESAMPLE`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a string over 255 bytes or a float `-0` or non-canonical NaN (`SET sift.enable_agg = off` for that query);
   - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
   - the system columns `xmin`, `xmax`, `cmin` and `cmax` read zero;
-  - settings are server settings (`sift.table_*`, README Configuration), not per-table `WITH (...)` options: PostgreSQL 17 and 18 give a table access method no reloptions of its own (`WITH` knows heap's and TOAST's only; `amoptions` is for indexes), so set them per database or role with `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`;
+  - settings are server settings (`sift.table_*`, README Configuration), not per-table `WITH (...)` options: PostgreSQL 17 through 19 give a table access method no reloptions of its own (`WITH` knows heap's and TOAST's only; `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20), so set them per database or role with `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`;
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
