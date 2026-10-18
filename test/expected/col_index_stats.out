@@ -69,3 +69,8 @@ SELECT leaf, round(ndistinct) AS ndistinct FROM sift._test_col_leaf_stats('t') O
     2 |      3000
 (3 rows)
 
+RESET sift.async_maintenance;
+DROP TABLE t;
+DROP TABLE s;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

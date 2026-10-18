@@ -28,3 +28,9 @@ INSERT INTO t SELECT i, 'v' || (i % 9), i FROM generate_series(1, 3000) i;
 SELECT leaf, ndistinct FROM sift._test_col_leaf_stats('t') ORDER BY leaf;
 ANALYZE t;
 SELECT leaf, round(ndistinct) AS ndistinct FROM sift._test_col_leaf_stats('t') ORDER BY leaf;
+
+RESET sift.async_maintenance;
+DROP TABLE t;
+DROP TABLE s;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
