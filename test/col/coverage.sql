@@ -8,6 +8,7 @@
 --   noscan  none of SiftAgg, SiftScan, SiftCount: the normal plan, the same result
 --   ok      the result equals the reference (any plan)
 --   error:C the statement raises SQLSTATE C; with `avoid` ("name = value"), it runs without error under that setting
+--   true    the statement is a boolean self-check (same, in_tx, workers_agree, snapshot below, or a catalog query) that returns true
 -- The reference run has sift.enable_agg, enable_scan, enable_count and enable_col off and the btree and bitmap scans off: the plan
 -- PostgreSQL has without sift. A query that ranks (sift.score) has no such plan: only its plan and that it runs are checked.
 \set ON_ERROR_STOP on
@@ -52,6 +53,88 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN SQLSTATE;
 END $$;
 
+-- ---------- self-checking probes: the query of a `true` row is one of these calls (or any boolean expression) ----------
+CREATE FUNCTION coverage.rows_text(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION coverage.plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
+	RETURN r;
+END $$;
+
+-- the plan of q has a Custom Scan (SiftAgg) and q returns what it returns with sift.enable_agg off
+CREATE FUNCTION coverage.same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text; p text;
+BEGIN
+	PERFORM set_config('seq_page_cost', '10000', true), set_config('random_page_cost', '10000', true), set_config('sift.enable_agg', 'on', true);
+	p := coverage.plan_of(q); a := coverage.rows_text(q);
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	b := coverage.rows_text(q);
+	RETURN p LIKE '%Custom Scan (SiftAgg)%' AND a = b;
+END $$;
+
+-- the DML statements run, q is the same as with sift off, then they roll back: the transaction's own uncommitted changes
+CREATE FUNCTION coverage.in_tx(stmts text[], q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE s text; ok boolean;
+BEGIN
+	BEGIN
+		FOREACH s IN ARRAY stmts LOOP EXECUTE s; END LOOP;
+		ok := coverage.same(q);
+		RAISE EXCEPTION 'rollback' USING ERRCODE = 'P0RBK';
+	EXCEPTION WHEN SQLSTATE 'P0RBK' THEN NULL;
+	END;
+	RETURN ok;
+END $$;
+
+-- q has the same result at 0, 2 and 4 workers (bit for bit) and a SiftAgg plan with workers planned at 2
+CREATE FUNCTION coverage.workers_agree(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE w int; r text[]; p text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true), set_config('parallel_setup_cost', '0', true), set_config('parallel_tuple_cost', '0', true),
+		set_config('min_parallel_table_scan_size', '0', true), set_config('seq_page_cost', '10000', true), set_config('random_page_cost', '10000', true);
+	FOREACH w IN ARRAY ARRAY[0, 2, 4] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		r := r || coverage.rows_text(q);
+		IF w = 2 THEN p := coverage.plan_of(q); END IF;
+	END LOOP;
+	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg)%' AND p ~ 'Workers Planned: [1-9]';
+END $$;
+
+-- a reader in a transaction of the isolation level iso sees the same rows whatever the writer (a second session) does, before and after
+-- its commit, with and without the aggregate scan; the writer's statements are DML on the table of q
+CREATE FUNCTION coverage.snapshot(iso text, q text, writer text[]) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	cs text := format('dbname=%s user=%s host=%s port=%s', current_database(), session_user, split_part(current_setting('unix_socket_directories'), ',', 1), current_setting('port'));
+	wrap text := format('SELECT coverage.rows_text(%L)', q);
+	s text; before text; open_on text; open_off text; done_on text; done_off text; p text;
+BEGIN
+	PERFORM dblink_connect('cv_r', cs), dblink_connect('cv_w', cs);
+	PERFORM dblink_exec('cv_r', 'LOAD ''pg_sift'''), dblink_exec('cv_r', 'SET seq_page_cost = 10000'), dblink_exec('cv_r', 'SET random_page_cost = 10000');
+	PERFORM dblink_exec('cv_r', 'BEGIN ISOLATION LEVEL ' || iso);
+	SELECT x INTO before FROM dblink('cv_r', wrap) t(x text);
+	PERFORM dblink_exec('cv_w', 'BEGIN');
+	FOREACH s IN ARRAY writer LOOP PERFORM dblink_exec('cv_w', s); END LOOP;
+	SELECT x INTO open_on FROM dblink('cv_r', wrap) t(x text);
+	PERFORM dblink_exec('cv_r', 'SET sift.enable_agg = off');
+	SELECT x INTO open_off FROM dblink('cv_r', wrap) t(x text);
+	PERFORM dblink_exec('cv_w', 'COMMIT'), dblink_exec('cv_r', 'SET sift.enable_agg = on');
+	SELECT x INTO done_on FROM dblink('cv_r', wrap) t(x text);
+	SELECT string_agg(l, E'\n') INTO p FROM dblink('cv_r', format('SELECT coverage.plan_of(%L)', q)) t(l text);
+	PERFORM dblink_exec('cv_r', 'SET sift.enable_agg = off');
+	SELECT x INTO done_off FROM dblink('cv_r', wrap) t(x text);
+	PERFORM dblink_exec('cv_r', 'ROLLBACK'), dblink_disconnect('cv_r'), dblink_disconnect('cv_w');
+	RETURN p LIKE '%Custom Scan (SiftAgg)%' AND before = open_on AND before = open_off AND before = done_on AND before = done_off;
+EXCEPTION WHEN OTHERS THEN
+	PERFORM dblink_disconnect(c) FROM unnest(dblink_get_connections()) c WHERE c IN ('cv_r', 'cv_w');
+	RAISE;
+END $$;
+
 -- rid: the row of the table; expect: the claim; txt: the query (a corpus file: coldiff.header tags guc/key allowed); avoid: "name = value"
 CREATE FUNCTION coverage.check(rid text, expect text, txt text, avoid text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -61,7 +144,7 @@ DECLARE
 	gucs text[] := ARRAY(SELECT jsonb_array_elements_text(coalesce(h -> 'guc', '[]')));
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
 	m text[] := regexp_match(expect, '^(\w+)(?: (!?)~ (.*))?$'); claim text := m[1]; negate boolean := m[2] = '!'; extra text := m[3];
-	i int; who text; err_ref text; err_got text; plan text; msg text; got text; want text; has_agg boolean; has_scan boolean; has_count boolean; has_bitmap boolean; ranks boolean;
+	i int; who text; err_ref text; err_got text; plan text; msg text; got text; want text; has_agg boolean; has_scan boolean; has_count boolean; has_bitmap boolean; ranks boolean; okv boolean;
 BEGIN
 	IF expect LIKE 'error:%' THEN
 		want := substr(expect, 7);
@@ -80,6 +163,19 @@ BEGIN
 			END IF;
 		END IF;
 		PERFORM coverage.record(rid, expect, true, 'ok', NULL, NULL);
+		RETURN;
+	END IF;
+
+	IF claim = 'true' THEN
+		-- the query is a self-check (coverage.same, workers_agree, snapshot, a catalog query): one boolean that must be true
+		PERFORM coldiff.apply('on', gucs);
+		BEGIN
+			EXECUTE stmt INTO okv;
+			msg := CASE WHEN okv IS TRUE THEN NULL ELSE 'the query returned ' || coalesce(okv::text, 'NULL') END;
+		EXCEPTION WHEN OTHERS THEN msg := 'the query raised ' || SQLSTATE || ': ' || SQLERRM;
+		END;
+		PERFORM coverage.reset(gucs);
+		PERFORM coverage.record(rid, expect, msg IS NULL, CASE WHEN msg IS NULL THEN 'ok' ELSE 'plan' END, msg, NULL);
 		RETURN;
 	END IF;
 
