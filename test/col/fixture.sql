@@ -162,6 +162,9 @@ INSERT INTO t_num SELECT 1000 + i, 3, 0.01, 999999999999999999, 0 FROM generate_
 CREATE TABLE t_text (id integer PRIMARY KEY, grp integer NOT NULL, t text, vc varchar(3));
 INSERT INTO t_text SELECT i, 1 + i % 3, v, left(v, 3)
 FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','','  ']) WITH ORDINALITY u(v, i);
+-- strings longer than a dictionary entry (the engine stores them inline), repeated and distinct, with NULLs
+INSERT INTO t_text SELECT 100 + i, 1 + i % 3, CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 4), 250 + (i % 9) * 40) || (i % 5) END, 'lng'
+FROM generate_series(1, 90) i;
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)
 CREATE TABLE orders_odd (LIKE orders INCLUDING DEFAULTS);
