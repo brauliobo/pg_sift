@@ -33,7 +33,7 @@ roundtrip(const SiftColBatch *b, const SiftCcPolicy *pol, const char *name)
 	int64	   *dst = calloc(NROWS + SIFT_COL_PAD, sizeof(int64));
 
 	initStringInfo(&out);
-	sift_cunit_encode(b, NULL, pol, &out, &start, NULL);
+	sift_cunit_encode(b, NULL, NULL, pol, &out, &start, NULL);
 	check(sift_cunit_parse((const uint8 *) out.data + start, out.len - start, b->schema, &v), name);
 	check(v.nrows == NROWS, "nrows");
 	for (int col = 0; col < 2; col++)
@@ -95,7 +95,7 @@ mapping_bytes(MemoryContext cx, const SiftColSchema *schema, int shift, int nrow
 			sift_cbatch_add(b, &row);
 		}
 		initStringInfo(&out);
-		sift_cunit_encode(b, NULL, pol, &out, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, pol, &out, &start, NULL);
 		total += out.len - start;
 		(*nunits)++;
 	}
@@ -107,8 +107,8 @@ main(void)
 {
 	MemoryContext cx = AllocSetContextCreate(NULL, "col-smoke", ALLOCSET_DEFAULT_SIZES);
 	SiftColDef	defs[2] = {
-		{.id = 0, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = SIFT_COLS_INT, .attno = 1, .typid = 20, .path = ""},
-		{.id = 1, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = SIFT_COLS_STR, .attno = 2, .typid = 25, .path = ""},
+		{.id = 0, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = SIFT_COLS_INT, .attno = 1, .type = SIFT_COLT_INT8, .path = ""},
+		{.id = 1, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = SIFT_COLS_STR, .attno = 2, .type = SIFT_COLT_TEXT, .path = ""},
 	};
 	SiftColSchema *schema;
 	SiftColBatch *b;
