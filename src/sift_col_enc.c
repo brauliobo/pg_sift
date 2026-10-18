@@ -2365,18 +2365,30 @@ sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p)
 	return sb * SIFT_SB_PAGES + unit_page(v, p);
 }
 
+uint32
+sift_cunit_page_sparse_len(const SiftCUnitView *v, uint32 p)
+{
+	return page_sparse_len(v, p);
+}
+
 void
-sift_cunit_page_offmask(const SiftCUnitView *v, uint32 p, uint64 *offmask)
+sift_cunit_page_offmask_at(const SiftCUnitView *v, uint32 p, uint32 soff, uint64 *offmask)
 {
 	uint32		cnt = v->rowstart[p + 1] - v->rowstart[p],
 				sl = page_sparse_len(v, p);
 
 	memset(offmask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 	if (sl > 0)
-		memcpy(offmask, v->sparse + page_sparse_off(v, p), sl);
+		memcpy(offmask, v->sparse + soff, sl);
 	else
-		for (uint32 o = 0; o < cnt; o++)
-			offmask[o / 64] |= UINT64CONST(1) << (o % 64);
+		for (uint32 w = 0; w * 64 < cnt; w++)
+			offmask[w] = cnt - w * 64 >= 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (cnt - w * 64)) - 1;
+}
+
+void
+sift_cunit_page_offmask(const SiftCUnitView *v, uint32 p, uint64 *offmask)
+{
+	sift_cunit_page_offmask_at(v, p, page_sparse_off(v, p), offmask);
 }
 
 uint32

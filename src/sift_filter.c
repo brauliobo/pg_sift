@@ -84,6 +84,36 @@ sift_filter_build(TIDBitmap *tbm, Size maxbytes, MemoryContext mcxt)
 	return f;
 }
 
+SiftFilter *
+sift_filter_create(MemoryContext mcxt)
+{
+	SiftFilter *f = MemoryContextAllocZero(mcxt, sizeof(SiftFilter));
+
+	f->mcxt = mcxt;
+	return f;
+}
+
+void
+sift_filter_reset(SiftFilter *f)
+{
+	f->nsb = f->nrow = 0;
+	f->exact_pages = f->lossy_pages = f->tuples = 0;
+}
+
+void
+sift_filter_add_page(SiftFilter *f, BlockNumber blk, const uint64 *offmask)
+{
+	int			page = blk & (SIFT_SB_PAGES - 1);
+	SiftFilterSB *fs = open_sb(f, sift_block_sb(blk));
+	uint64	   *row = new_row(f);
+
+	fs->pages[page / 64] |= UINT64CONST(1) << (page & 63);
+	memcpy(row, offmask, sizeof(f->row[0]));
+	f->exact_pages++;
+	for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		f->tuples += pg_popcount64(offmask[k]);
+}
+
 const SiftFilterSB *
 sift_filter_sb(const SiftFilter *f, uint32 sb)
 {

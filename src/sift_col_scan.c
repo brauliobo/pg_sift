@@ -16,6 +16,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_col_am.h"
+#include "sift_popcount.h"
 #include "sift_col_seg.h"
 #include "sift_visibility.h"
 
@@ -76,6 +77,7 @@ typedef struct ColUnit
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
 	bool		clean;
 	SiftKey    *keys;
+	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	ColGroup   *grp;
@@ -771,48 +773,127 @@ sift_col_filter_elems(const SiftColUnit *unit, const SiftColGroupPred *gp, const
 	return sift_col_sel_count(elemsel);
 }
 
+/* The pages of a unit in order: the heap page (in the superblock) of page index 0, 1, 2, ... (sift_cunit_page_block finds one by scanning the mask) */
+typedef struct PageWalk
+{
+	const uint64 *mask;
+	int			wd;
+	uint64		left;
+} PageWalk;
+
+static inline void
+pw_init(PageWalk *w, const SiftCUnitView *v)
+{
+	w->mask = v->pagemask;
+	w->wd = 0;
+	w->left = v->pagemask[0];
+}
+
+static inline int
+pw_next(PageWalk *w)
+{
+	int			pg;
+
+	while (w->left == 0)
+		w->left = w->mask[++w->wd];
+	pg = w->wd * 64 + pg_rightmost_one_pos64(w->left);
+	w->left &= w->left - 1;
+	return pg;
+}
+
+/* Does some page of the unit list its offsets (a deleted row leaves a gap in them) instead of being the dense run 1..n */
+static bool
+unit_sparse(ColUnit *cu)
+{
+	if (cu->sparse == 0)
+	{
+		cu->sparse = 1;
+		for (uint32 p = 0; p < cu->v.npages; p++)
+			if (sift_cunit_page_sparse_len(&cu->v, p) > 0)
+			{
+				cu->sparse = 2;
+				break;
+			}
+	}
+	return cu->sparse == 2;
+}
+
+/* Rows of page p (its heap page pg) that the filter's page offers: ORs them, kept by sel, into out */
+static void
+select_page(ColUnit *cu, const SiftFilter *filter, const SiftFilterSB *fs, int pg, uint32 p, uint32 soff, const SiftColSel *sel, uint64 *out,
+			uint64 (*offs)[SIFT_OFFMASK_WORDS], int *curblk)
+{
+	uint32		lo = cu->v.rowstart[p],
+				hi = cu->v.rowstart[p + 1];
+	uint64		um[SIFT_OFFMASK_WORDS];
+
+	if (fs->lossy[pg / 64] >> (pg & 63) & 1)
+	{
+		for (uint32 r = lo; r < hi; r++)
+			if (sift_col_bit_test(sel->bits, r))
+				sift_col_bit_set(out, r);
+		return;
+	}
+	if (*curblk != pg / SIFT_BLK_PAGES)
+	{
+		*curblk = pg / SIFT_BLK_PAGES;
+		sift_filter_block(filter, fs, *curblk, offs);
+	}
+	sift_cunit_page_offmask_at(&cu->v, p, soff, um);
+	for (int k = 0, rank = 0; k < SIFT_OFFMASK_WORDS; rank += sift_pc64(um[k++]))
+		for (uint64 b = offs[pg % SIFT_BLK_PAGES][k] & um[k]; b; b &= b - 1)
+		{
+			int			bit = pg_rightmost_one_pos64(b);
+			uint32		r = lo + rank + sift_pc64(um[k] & ((UINT64CONST(1) << bit) - 1));
+
+			if (sift_col_bit_test(sel->bits, r))
+				sift_col_bit_set(out, r);
+		}
+}
+
+/*
+ * Keeps the rows of sel whose key the filter has. The unit stores the offset mask of each of its pages, so a page the filter keeps
+ * exactly is the AND of two masks and its rows are found by rank in the unit's mask: the work is the pages both have and the offsets
+ * the filter names, whatever the number of rows of the unit.
+ */
 bool
 sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColSel *sel)
 {
 	ColUnit    *cu = unit->priv;
 	const SiftFilterSB *fs = sift_filter_sb(filter, cu->sb);
-	const SiftKey *keys;
+	uint64	   *out = MemoryContextAllocZero(cu->src->arena, sel->nwords * sizeof(uint64));
 	uint64		offs[SIFT_BLK_PAGES][SIFT_OFFMASK_WORDS];
 	int			curblk = -1;
 
-	if (fs == NULL)
+	if (fs != NULL && !unit_sparse(cu))
 	{
-		memset(sel->bits, 0, sel->nwords * sizeof(uint64));
-		return sift_col_sel_count(sel) > 0;
-	}
-	keys = unit_keys(cu);
-	for (uint32 p = 0; p < cu->v.npages; p++)
-	{
-		uint32		pg = sift_cunit_page_block(&cu->v, cu->sb, p) & (SIFT_SB_PAGES - 1),
-					lo = cu->v.rowstart[p],
-					hi = cu->v.rowstart[p + 1];
-		bool		in = sift_col_bit_test(fs->pages, pg);
-		const uint64 *om = NULL;
+		/* dense pages: the page index is the rank of the page in the unit's mask, and no bitmap precedes it */
+		uint32		before = 0;
 
-		if (in && !sift_col_bit_test(fs->lossy, pg))
-		{
-			if (curblk != (int) (pg / SIFT_BLK_PAGES))
+		for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; before += sift_pc64(cu->v.pagemask[wd++]))
+			for (uint64 m = cu->v.pagemask[wd] & fs->pages[wd]; m; m &= m - 1)
 			{
-				curblk = pg / SIFT_BLK_PAGES;
-				sift_filter_block(filter, fs, curblk, offs);
-			}
-			om = offs[pg % SIFT_BLK_PAGES];
-		}
-		else if (in)
-			continue;
-		for (uint32 r = lo; r < hi; r++)
-		{
-			uint32		off = (keys[r] & 0xFFFF) - 1;
+				int			bit = pg_rightmost_one_pos64(m);
 
-			if (sift_col_bit_test(sel->bits, r) && (om == NULL || !sift_col_bit_test(om, off)))
-				sift_col_bit_clear(sel->bits, r);
+				select_page(cu, filter, fs, wd * 64 + bit, before + sift_pc64(cu->v.pagemask[wd] & ((UINT64CONST(1) << bit) - 1)), 0, sel, out,
+							offs, &curblk);
+			}
+	}
+	else if (fs != NULL)
+	{
+		PageWalk	pw;
+		uint32		soff = 0;	/* where the bitmap of the page is in the unit's sparse area */
+
+		pw_init(&pw, &cu->v);
+		for (uint32 p = 0; p < cu->v.npages; soff += sift_cunit_page_sparse_len(&cu->v, p++))
+		{
+			int			pg = pw_next(&pw);
+
+			if (fs->pages[pg / 64] >> (pg & 63) & 1)
+				select_page(cu, filter, fs, pg, p, soff, sel, out, offs, &curblk);
 		}
 	}
+	memcpy(sel->bits, out, sel->nwords * sizeof(uint64));
 	return sift_col_sel_count(sel) > 0;
 }
 
@@ -826,10 +907,14 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	const SiftColVisibility *vis = &src->visibility;
 	const uint64 *av = unit_allvisible(cu);
 	const SiftKey *keys = NULL;		/* only a page that is not all-visible needs the row offsets */
+	PageWalk	pw;
 
+	if (sift_col_unit_allvisible(unit))
+		return sift_col_sel_count(sel) > 0;
+	pw_init(&pw, &cu->v);
 	for (uint32 p = 0; p < cu->v.npages; p++)
 	{
-		BlockNumber blk = sift_cunit_page_block(&cu->v, cu->sb, p);
+		BlockNumber blk = cu->sb * SIFT_SB_PAGES + pw_next(&pw);
 		uint32		lo = cu->v.rowstart[p],
 					hi = cu->v.rowstart[p + 1],
 					n = 0;
@@ -973,20 +1058,13 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 }
 
 void
-sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
+sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec)
 {
 	ColUnit    *cu = unit->priv;
 	const SiftColDef *def = &cu->src->schema->cols[col];
 	MemoryContext arena = cu->src->arena;
-	uint32	   *idx = NULL;
-	uint32		m = sel ? sel->count : cu->v.nrows;
 
 	memset(vec, 0, sizeof(SiftColVec));
-	if (sel)
-	{
-		idx = MemoryContextAlloc(arena, (m + SIFT_COL_IDXPAD) * sizeof(uint32));
-		sift_col_sel_idx(sel, idx);
-	}
 	if (def->parent < 0)
 	{
 		read_positions(cu, col, idx, m, cu->v.nrows, vec);
@@ -1022,6 +1100,21 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 		vec->offsets = offsets;
 		vec->nrows = nrows;
 	}
+}
+
+void
+sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
+{
+	ColUnit    *cu = unit->priv;
+	uint32	   *idx = NULL;
+	uint32		m = sel ? sel->count : cu->v.nrows;
+
+	if (sel)
+	{
+		idx = MemoryContextAlloc(cu->src->arena, (m + SIFT_COL_IDXPAD) * sizeof(uint32));
+		sift_col_sel_idx(sel, idx);
+	}
+	sift_col_read_idx(unit, col, idx, m, vec);
 }
 
 void
@@ -1096,16 +1189,19 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 }
 
 bool
-sift_col_unit_exact(const SiftColUnit *unit)
+sift_col_unit_allvisible(const SiftColUnit *unit)
 {
 	ColUnit    *cu = unit->priv;
-	const uint64 *av;
+	const uint64 *av = unit_allvisible(cu);
 
-	if (!cu->clean)
-		return false;
-	av = unit_allvisible(cu);
-	for (uint32 p = 0; p < cu->v.npages; p++)
-		if (!sift_col_bit_test(av, sift_cunit_page_block(&cu->v, cu->sb, p) & (SIFT_SB_PAGES - 1)))
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		if (cu->v.pagemask[w] & ~av[w])
 			return false;
 	return true;
+}
+
+bool
+sift_col_unit_exact(const SiftColUnit *unit)
+{
+	return ((ColUnit *) unit->priv)->clean && sift_col_unit_allvisible(unit);
 }
