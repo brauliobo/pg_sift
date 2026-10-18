@@ -80,7 +80,7 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 
 ## Configuration
 
-Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments` and `merge_fanin` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
+Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin` and `dead_rewrite_pct` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
 | Index option | default | range | meaning |
 |---|---|---|---|
@@ -94,6 +94,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `fields` |  |  | columns weighted as separate fields (see USAGE) |
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
 | `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
+| `dead_rewrite_pct` | 50 | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 
@@ -113,8 +114,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 Merging is automatic: sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
 8 smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
 down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
-it anyway). These thresholds are constants today; `mutable_limit` is the knob that scales them. Coming with 2.0: `dead_rewrite_pct`
-(segment rewrite threshold, 50 today, as a reloption).
+it anyway). `mutable_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
 Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE.md).
 
 ## More

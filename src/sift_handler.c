@@ -210,6 +210,9 @@ define_reloptions(void)
 					   "Analyzer: text, or keyword to index each whole value as one term (facets, REINDEX to apply)",
 					   analyzer_names, SIFT_ANALYZER_TEXT,
 					   "Valid values are \"text\" and \"keyword\".", AccessExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "dead_rewrite_pct",
+					  "Percent of dead documents above which maintenance rewrites a lone segment to drop them (100 never)",
+					  SIFT_MERGE_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -294,6 +297,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
 		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
 		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
+		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftOptions, dead_rewrite_pct)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -312,6 +316,7 @@ sift_index_options(Relation index)
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
 		.merge_fanin = SIFT_MERGE_FANIN,
 		.positions = true,
+		.dead_rewrite_pct = SIFT_MERGE_DEAD_PCT,
 	};
 
 	return index->rd_options ? (const SiftOptions *) index->rd_options : &defaults;

@@ -599,7 +599,8 @@ is_busy(const MergeSel *sel, uint64 gen)
 static int
 pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_only, MergeSel *msel)
 {
-	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, sift_index_options(index)->merge_fanin};
+	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, sift_index_options(index)->merge_fanin,
+						   sift_index_options(index)->dead_rewrite_pct};
 	SiftDirSnapshot *view = NULL;
 	int			n;
 
@@ -613,7 +614,7 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_o
 				view->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
 	}
 	if (dead_only)
-		n = sift_merge_pick_dead(index, view ? view : snap, msel->seg);
+		n = sift_merge_pick_dead(index, &pol, view ? view : snap, msel->seg);
 	else
 		n = sift_merge_pick(index, &pol, view ? view : snap, force, msel->seg);
 	if (view)

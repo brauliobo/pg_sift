@@ -166,15 +166,15 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 
-Reloptions (`WITH (...)`; all but `mutable_limit`, `vacuum_segments` and `merge_fanin` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+Reloptions (`WITH (...)`; all but `mutable_limit`, `vacuum_segments`, `merge_fanin` and `dead_rewrite_pct` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
 `mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128),
-`merge_fanin` (8; 2 to 32).
+`merge_fanin` (8; 2 to 32), `dead_rewrite_pct` (50; 1 to 100).
 
 `vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
 merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
 before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
-A segment more than 8 times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than half the documents are dead is rewritten at any N.
+A segment more than `merge_fanin` times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than `dead_rewrite_pct` percent of the documents are dead is rewritten at any N.
 The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
 
 | `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
@@ -198,6 +198,29 @@ segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sq
 10 MB index took 0.27 s at the default 0 and 5.3 s at 20, at most 6.4 MB/s of I/O (128 kB per 20 ms); set it per database (`ALTER DATABASE ... SET`) or in `postgresql.conf`, as the worker reads the
 settings of its database. It applies to the worker only: `VACUUM`, `sift.merge()` and the merges inserters do for room are never delayed, and neither
 are the worker's promotions of mutable segments, which the writers wait for.
+
+`dead_rewrite_pct` is the share of dead documents above which maintenance rewrites a lone segment to drop them and their terms (a segment
+that no merge picks; the dead postings are cleared by `VACUUM` either way). `ALTER INDEX ... SET (dead_rewrite_pct = N)` applies to the next
+`VACUUM` or worker step, with no `REINDEX`; 100 never rewrites a segment on its own. The default 50 was measured against 5 on 400,000
+documents of 40 words, 10 rounds of updating or deleting 6% of the rows, each followed by `VACUUM` (mean of 5 runs); 5 rewrites the segment
+at every round and costs more everywhere except the queries after the deletes:
+
+| load | `dead_rewrite_pct` | `VACUUM` total | WAL | index file | `count(*)` | ranked top-10 |
+|---|---|---|---|---|---|---|
+| update | 50 (default) | 20.2 s | 1,340 MB | 92 MB | 1.06 ms | 3.9 ms |
+| update | 5 | 37.8 s | 1,428 MB | 133 MB | 1.40 ms | 5.0 ms |
+| delete | 50 (default) | 2.3 s | 86 MB | 67 MB | 3.5 ms | 4.1 ms |
+| delete | 5 | 15.8 s | 455 MB | 89 MB | 0.15 ms | 1.5 ms |
+
+`mutable_limit` (kB, 4096) is the size at which the active mutable segment is sealed for promotion; it is also where the merge tiers start.
+`ALTER INDEX ... SET (mutable_limit = N)` applies from the next seal. 1024 was measured against 4096 on
+100,000 documents of 40 words (mean of 5 runs): it promotes and merges faster per step and leaves queries on the grown index faster, but it
+does that 3.7 times as often and the writers pay for it, so the default stays 4096:
+
+| `mutable_limit` | 16 clients, `INSERT` | `INSERT .. SELECT` | `COPY` | promotion / merge | index, segments | `count(*)` / top-10 OR / top-10 AND |
+|---|---|---|---|---|---|---|
+| 4096 (default) | 107k rows/s, p99 0.69 ms | 113k rows/s | 261k rows/s | 37 ms / 1.4 s | 72 MB, 17 | 11.5 / 12.5 / 6.1 ms |
+| 1024 | 87k rows/s, p99 0.81 ms | 94k rows/s | 137k rows/s | 13 ms / 0.43 s | 98 MB, 78 | 10.6 / 4.1 / 2.6 ms |
 
 ## Replication
 

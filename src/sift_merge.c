@@ -22,9 +22,9 @@ bytes_cmp(const void *a, const void *b)
 	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
 }
 
-/* A segment of which more than half the documents were deleted */
+/* A segment of which more than dead_pct percent of the documents were deleted */
 static bool
-mostly_dead(Relation index, const SiftSegEntry *e)
+mostly_dead(Relation index, const SiftSegEntry *e, int dead_pct)
 {
 	SiftSegment *seg;
 	bool		dead;
@@ -32,7 +32,7 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_seg_open(index, e, CurrentMemoryContext);
-	dead = sift_seg_live_docs(seg) * 2 < e->ndocs;
+	dead = sift_seg_live_docs(seg) * 100 < (uint64) e->ndocs * (100 - dead_pct);
 	sift_seg_close(seg);
 	return dead;
 }
@@ -51,10 +51,10 @@ immutables(const SiftDirSnapshot *snap, SiftSegEntry *imm)
 }
 
 static int
-pick_dead(Relation index, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
+pick_dead(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
 {
 	for (int i = 0; i < n; i++)
-		if (mostly_dead(index, &imm[i]))
+		if (mostly_dead(index, &imm[i], pol->dead_pct ? pol->dead_pct : SIFT_MERGE_DEAD_PCT))
 		{
 			sel[0] = imm[i];
 			return 1;
@@ -63,11 +63,11 @@ pick_dead(Relation index, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
 }
 
 int
-sift_merge_pick_dead(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+sift_merge_pick_dead(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, SiftSegEntry *sel)
 {
 	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
 
-	return pick_dead(index, imm, immutables(snap, imm), sel);
+	return pick_dead(index, pol, imm, immutables(snap, imm), sel);
 }
 
 int
@@ -96,5 +96,5 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
 		return Min(n, fanin);
 	}
-	return pick_dead(index, imm, n, sel);
+	return pick_dead(index, pol, imm, n, sel);
 }
