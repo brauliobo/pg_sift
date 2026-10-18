@@ -359,6 +359,8 @@ typedef struct SiftTblGroupScan SiftTblGroupScan;
 
 /* ERROR when the table has more columns than a column segment holds (called at CREATE TABLE) */
 extern void sift_tbl_layout_check(Relation rel);
+/* Builds (once) the column layout of the table: errors when it is not representable, as ALTER TABLE ADD COLUMN can make it */
+extern void sift_tbl_layout_ready(Relation rel, SiftTblRel *st);
 /* Is there a tombstone entry for a key between lo and hi? */
 extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
