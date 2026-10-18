@@ -83,3 +83,7 @@ SELECT * FROM sh('{"m":{"a":1,"b":2,"c":3}}', 'm.* int4', 2);
 
 -- a spec the document shares nothing with, and nested declared paths that skip siblings
 SELECT * FROM sh('{"x":{"y":{"z":[1,2,3]}},"w":1}', 'q int4, x.y.z[] int4');
+
+-- zero-length copies: an empty text and an empty member name as the first of their kind
+SELECT * FROM sh('{"s":""}', 's text') WHERE kind = 'col';
+SELECT * FROM sh('{"m":{"":1,"a":2}}', 'm.* int4') WHERE kind = 'col';
