@@ -292,7 +292,7 @@ its own docker container.
 
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
-  - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
+  - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192; one transaction writes at most about 126 write segments of `sift.table_delta_limit` (504 MB of row format at the default, 1 GB at 8192 kB) because its rows are sealed into columns only once it has ended: a larger load runs in several transactions (the error says so), and writers merge the column segments as they go;
   - `0A000` for `TABLESAMPLE`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
   - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
   - the system columns `xmin`, `xmax`, `cmin` and `cmax` read zero;
