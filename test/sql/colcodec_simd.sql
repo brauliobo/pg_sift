@@ -1,0 +1,33 @@
+-- Column codec (src/sift_colcodec*.c): what is written and what is read does not depend on the SIMD level (sift.simd), and damaged
+-- chunks raise the corruption errors or decode, never crash.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+-- Hash of the written bytes (policies without LZ4/zstd), the decode, filters, sums and rows of 150 random chunks under ten policies
+-- at each level; the function raises an error when any of them disagrees with the plain values
+SET sift.simd = scalar;
+SELECT sift._test_cc_digest(7, 150) AS scalar_digest \gset
+SET sift.simd = avx2;
+SELECT sift._test_cc_digest(7, 150) = :scalar_digest AS avx2_same;
+SET sift.simd = avx512;
+SELECT sift._test_cc_digest(7, 150) = :scalar_digest AS avx512_same;
+RESET sift.simd;
+SELECT sift._test_cc_digest(7, 150) = :scalar_digest AS auto_same;
+
+-- Every level the CPU supports against scalar, chunk by chunk
+SELECT sift._test_cc_equiv(11, 300) AS mismatches;
+
+-- The same blob decodes the same at every level
+CREATE TEMP TABLE blob AS
+	SELECT sift._test_cc_encode(array_agg(((g * 7919) % 3001)::int8 ORDER BY g), 0, 'auto') AS b FROM generate_series(1, 5000) g;
+SET sift.simd = scalar;
+SELECT sift._test_cc_decode(b) AS dec, (sift._test_cc_filter(b, 100, 900)).rows AS rows FROM blob \gset scalar_
+SET sift.simd = avx512;
+SELECT sift._test_cc_decode(b) = :'scalar_dec'::int8[] AS decode_same, (sift._test_cc_filter(b, 100, 900)).rows = :'scalar_rows'::int4[] AS filter_same FROM blob;
+RESET sift.simd;
+
+-- Damaged chunks
+SELECT raised > 0 AS raised_errors, decoded > 0 AS decoded_some FROM sift._test_cc_corrupt(3, 40);
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
