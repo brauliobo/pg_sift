@@ -6,6 +6,8 @@
 #   bench/steps/ab.sh prepare                          cluster, slim corpus, index and the class scripts ($AB/pgb/CLASS.pgb)
 #   bench/steps/ab.sh prepare_places                   the places database of the adapter with a btree on country_code (ABDB=places_sift)
 #   bench/steps/ab.sh shapes                           the filter shapes of the plan-choice tests as scripts shape_NAME.pgb (ABDB=shapes)
+#   bench/steps/ab.sh filters                          prepared ranked queries with a filter that keeps 0.1, 2.3, 10 and 50% of the rows
+#   bench/steps/ab.sh filter_matrix REPS SECS|Nt LABEL...   run of those scripts, each label with the plan cache free, custom only, generic only
 #   bench/steps/ab.sh build LABEL [REF]                release library of git REF (default HEAD; "work": the working tree) -> $AB/libs/LABEL
 #   bench/steps/ab.sh run CLASS REPS SECS|Nt LABEL...  cycles and instructions per transaction, one backend, mean +- standard error (Nt: N transactions
 #                                                      of the seeded sequence of statements, the same for every build)
@@ -83,6 +85,33 @@ prepare_shapes() {
   mkdir -p "$AB/pgb"
   PGDATABASE=shapes q -F $'\t' -c "SELECT name, stmt FROM shapes" | while IFS=$'\t' read -r name stmt; do echo "$stmt;" >"$AB/pgb/shape_$name.pgb"; done
   log "ab: shapes in database shapes: $(ls "$AB/pgb" | grep -c '^shape_') scripts"
+}
+
+# The ranked queries of the classes and, or and filter with a filter on `created` that keeps 0.1, 2.3, 10 and 50% of the rows, as prepared
+# statements: scripts sel_CLASS_PCT_prep.pgb. Run them with the labels L, L:plan_cache_mode=force_custom_plan and
+# L:plan_cache_mode=force_generic_plan to see the generic plan against the custom plans.
+prepare_filters() {
+  local wl pct day n
+  for wl in and or filter; do
+    n=$(PGDATABASE=$ABDB q -c "SELECT count(*) FROM qtext WHERE wl = '$wl'")
+    for pct in 0.1 2.3 10 50; do
+      day=$(PGDATABASE=$ABDB q -c "SELECT (percentile_disc(1 - $pct / 100.0) WITHIN GROUP (ORDER BY created))::date FROM docs")
+      printf '\\set i random(1, %d)\nSELECT q FROM qtext WHERE wl = '"'"'%s'"'"' AND n = :i \\gset\nSELECT docs.id FROM docs WHERE docs.body @@> :q AND docs.created >= '"'"'%s'"'"' ORDER BY sift.score(docs.ctid) DESC LIMIT 10;\n' \
+        "$n" "$wl" "$day" >"$AB/pgb/sel_${wl}_${pct}_prep.pgb"
+    done
+  done
+  log "ab: $(ls "$AB/pgb" | grep -c '^sel_') filter scripts"
+}
+
+# every sel_* script with each LABEL as it is (the plan cache decides), with custom plans only and with the generic plan only
+filter_matrix() { # REPS SECS|Nt LABEL...
+  local reps=$1 secs=$2 f l labels
+  shift 2
+  for f in "$AB"/pgb/sel_*_prep.pgb; do
+    labels=()
+    for l in "$@"; do labels+=("$l" "$l:plan_cache_mode=force_custom_plan" "$l:plan_cache_mode=force_generic_plan"); done
+    run "$f" "$reps" "$secs" "${labels[@]}"
+  done
 }
 
 build() { # LABEL [REF]
@@ -167,6 +196,8 @@ case ${1:-} in
   prepare) prepare ;;
   prepare_places) prepare_places ;;
   shapes) prepare_shapes ;;
+  filters) prepare_filters ;;
+  filter_matrix) shift; filter_matrix "$@" ;;
   build) shift; build "$@" ;;
   run) shift; run "$@" ;;
   clients) shift; clients "$@" ;;
