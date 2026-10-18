@@ -19,6 +19,7 @@
 #include "storage/read_stream.h"
 #include "utils/snapshot.h"
 
+#include "sift_col_enc.h"
 #include "sift_store.h"
 
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
@@ -382,6 +383,17 @@ extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF); their number */
 extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out);
+
+/* ---------- the column source of the aggregate scan (sift_table_src.c) ---------- */
+
+/* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
+extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
+extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
+/* The rows of superblock sb in the delta segments seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
+ * are left out, visibility is the reader's */
+extern SiftColBatch *sift_tbl_delta_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt);
+/* Registers the table as a column source of SiftAgg (from sift_tbl_init) */
+extern void sift_tbl_src_register(void);
 
 /*
  * Seals the delta segments that stopped taking rows and whose rows are all final (decided, and older than oldest) into column

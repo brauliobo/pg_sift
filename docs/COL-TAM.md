@@ -33,7 +33,7 @@ piece it calls is a stub, section 12), **no** (unsupported, with the error given
 | WAL | **hybrid**: generic WAL for every page change (no `shared_preload_libraries` needed, physical replication, PITR, `pg_basebackup`, `pg_rewind` work), plus one custom-rmgr *logical change record* emitted only when the relation is published and `wal_level = logical` (needs `pg_sift` in `shared_preload_libraries` on the primary and every standby; without it a DML on a published table fails with a clear error, never a silent gap). Section 5. |
 | Isolation | READ COMMITTED, REPEATABLE READ, SERIALIZABLE (relation-level SIREAD lock, conflict-in on every write, conflict-out on invisible concurrent versions: conservative, more false positives than heap). |
 | Parallel | parallel sequential scan over delta pages and (engine) SB morsels, one frozen directory copy shared by all workers. Parallel DML is not offered by PostgreSQL for any AM. |
-| Aggregates | the SiftAgg pushdown of col-plan runs over the table through the engine's `SiftColVisibility` hook: `sift_col_open_table` (section 12) opens a `SiftColSource` over the column groups with the table's visibility (a unit of a superblock without tombstones is entirely visible; others are filtered per row); delta rows are fed as in-memory batches. Not connected yet: SiftAgg lives in the plan track (section 6). |
+| Aggregates | the SiftAgg pushdown of col-plan runs over the table through the engine's `SiftColVisibility` hook: `sift_col_open_table` (section 12) opens a `SiftColSource` over the column groups with the table's visibility (a unit of a superblock without tombstones is entirely visible; others are filtered per row); delta rows are fed as in-memory batches (section 6). |
 | Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_delta_limit` (kB), `sift.table_inline_seal`, `sift.table_compression` (README, Configuration). Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
 | Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, seal, merge, stats); autovacuum triggers through the `pgstat` counters the AM maintains (inserts alone trigger it: `autovacuum_vacuum_insert_threshold`). Inline sealing when a delta segment fills (`sift.table_inline_seal`). There is no background worker for tables. |
 
@@ -293,12 +293,18 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
   candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM. This is a
   small patch to a file this track does not own, kept in its own commit (section 12).
-- **SiftAgg over the table** (col-plan; **todo**: the engine side exists, the planner hook does not): the planner hook asks `sift_tbl_col_source(rel, snapshot)` for an engine `SiftColSource`
-  whose visibility hook (`SiftColVisibility`, docs/COL.md section 12) is the table AM's: `sb_mask` returns all-ones for a unit of a
-  frozen segment when the tombstone cache has no entry in that SB (then zone-map answers `count/sum/min/max` need no row work), else
-  zero; `filter_page(blk, offmask)` clears the offsets whose row is not visible (insert state of the segment, tombstones).
-  Delta rows are presented as in-memory units. Aggregates therefore see exactly the rows a sequential scan sees (differential
-  tests compare them).
+- **SiftAgg over the table** (`src/sift_table_src.c`, the table provider of the seam `src/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
+  columns of the table, in the order of its column layout. The groups are read by the engine, one `sift_col_open_table` source per column layout
+  the segments were written for (the leaves of an older layout are matched by attribute number; a column the segment lacks reads as the
+  catalog's default for rows that lack it, null or the constant of `ADD COLUMN .. DEFAULT`), with the table's visibility as the engine's
+  `SiftColVisibility` hook: `sb_mask` is all-ones for a superblock with no tombstone and no delta row, else zero, and `filter_page` is
+  `sift_tbl_filter_page` (insert state, tombstones). The rows of the delta segments are encoded as one in-memory batch per superblock
+  (`sift_tbl_delta_batch`, the seal's row conversion, fed with `sift_col_add_batches` when a morsel begins) and read like a stored unit. The units of
+  the sources are merged in ascending superblock. Aggregates therefore see exactly the rows a sequential scan sees
+  (`tbl_agg` and the TAP test 008 compare the two plans in every state: delta, sealed, tombstones, own and other transactions' changes,
+  rolled back, added columns). Leaves the executor does not read as values (numeric, `char(n)`, types the engine stores as exact images) are
+  marked lossy: no query uses them. A column group keeps a string over 255 bytes or a `-0` / odd NaN float apart as an exception: a query
+  that reads such a column of a unit holding one raises 0A000 with the hint to set `sift.enable_agg` off (the same as the index).
 
 ---
 
@@ -417,7 +423,7 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | `SIFT_COLS_VAR` (exact datum images, engine), `exceptions` leaf (table layout) | used |
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
 | `sift_colw_set_tag` (segment xmin of a bulk write) | not used: no direct column write |
-| `sift_col_add_batches` (delta rows as in-memory units) | for SiftAgg, not connected |
+| `sift_col_add_batches` (delta rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`sift_table_src.c`) |
 
 **Files outside this track changed in this branch, each in its own small commit** (owner in brackets):
 
