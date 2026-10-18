@@ -4,7 +4,7 @@ result of every query on the engines of the comparison. Called by steps/analytic
 
     python3 -I analytics.py run [--corpus orders|clickbench] [--engines heap,col,flat,ch] [--sets K10,K400,K4000] [--queries S1,G]
                                 [--runs 5] [--out DIR] ...
-    python3 -I analytics.py report [DIR|analytics.json] [--engines ...]
+    python3 -I analytics.py report [DIR|analytics.json] [--markdown]
 
 Engines (the server is the one named by PGHOST / PGPORT / PGDATABASE, never a default one):
   heap  the query as the application writes it, on the heap table, with the GUCs of --base-gucs (default sift.enable_agg = off): the plan
@@ -23,7 +23,7 @@ Results go to DIR/analytics.json in the layout of docs/results (one row per meas
 min max unit stderr n values) and are printed as a table. A result differs from the reference when a string or integer differs, or a
 number by more than the tolerance (--tol, or the `tol:` line of the query), after sorting the rows by the `key:` columns of the query.
 """
-import argparse, glob, json, math, os, re, signal, statistics, subprocess, sys, tempfile, time
+import argparse, glob, json, math, os, re, shutil, signal, statistics, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SQL = os.path.join(HERE, '..', 'sql', 'analytics')
@@ -442,18 +442,19 @@ def cmd_run(args):
             log(f'{q.id} {set_name or "-"}')
             measure_task(q, set_name, sets.get(set_name, ''), sources, args, engines, pg, ch, perf, known, rows)
     pg.close()
+    shutil.rmtree(tmp)
     meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), engines=engines, runs=args.runs, tier=args.tier, base_gucs=args.base_gucs, col_gucs=args.col_gucs,
                 perf=perf.ok, method='single backend, max_parallel_workers_per_gather = 0, CPU time from /proc/PID/schedstat')
     with open(os.path.join(args.out, 'analytics.json'), 'w') as f:
         json.dump(dict(meta=meta, rows=rows.rows), f, indent=1)
-    report(rows.rows, meta, args.engines)
+    report(rows.rows)
     print(f'results: {os.path.join(args.out, "analytics.json")}')
     return 1 if any(r['metric'] == 'result' and str(r['value']).startswith(('DIFF', 'error')) for r in rows.rows) else 0
 
 
 # --- the report
 
-def report(rows, meta, order):
+def report(rows, markdown=False):
     by = {}
     for r in rows:
         if r['class'] != '-':
@@ -461,41 +462,43 @@ def report(rows, meta, order):
     engines = [e for e in ['heap', 'col', 'flat', 'ch'] if any(e in v for v in by.values())]
     cpu = lambda d, e: d.get(e, {}).get('cpu_ms', {}).get('value')
     ins = lambda d, e: d.get(e, {}).get('instr_m', {}).get('value')
-    num = lambda x, w=9: f'{x:{w}.1f}' if x is not None else ' ' * (w - 2) + 'NA'
-    head = f'{"query":6} {"set":6}' + ''.join(f'{e + " cpu ms":>12}' for e in engines)
+    num = lambda x, fmt='.1f': format(x, fmt) if x is not None else 'NA'
+    ratio = lambda a, b: num(a / b if a and b else None, '.2f')
+    head = ['query', 'set'] + [e + ' cpu ms' for e in engines] + ['heap Minstr']
     if 'col' in engines:
-        head += f'{"heap/col":>10}{"instr h/c":>10}'
-    for e in ('flat', 'ch'):
-        if e in engines:
-            head += f'{"heap/" + e:>11}'
-    print(head + '  result')
-    speed = []
+        head += ['heap/col', 'instr heap/col']
+    head += ['heap/' + e for e in engines if e in ('flat', 'ch')] + ['result']
+    lines, speed = [], []
     for (cls, var), d in by.items():
-        line = f'{cls:6} {var:6}' + ''.join(f'{num(cpu(d, e), 12)}' for e in engines)
         h = cpu(d, 'heap')
+        line = [cls, var] + [num(cpu(d, e)) for e in engines] + [num(ins(d, 'heap'), '.0f')]
         if 'col' in engines:
-            c, hi, ci = cpu(d, 'col'), ins(d, 'heap'), ins(d, 'col')
-            line += (f'{h / c:10.2f}' if h and c else f'{"NA":>10}') + (f'{hi / ci:10.2f}' if hi and ci else f'{"NA":>10}')
-            if h and c:
-                speed.append(h / c)
-        for e in ('flat', 'ch'):
-            if e in engines:
-                x = cpu(d, e)
-                line += f'{h / x:11.2f}' if h and x else f'{"NA":>11}'
+            line += [ratio(h, cpu(d, 'col')), ratio(ins(d, 'heap'), ins(d, 'col'))]
+            if h and cpu(d, 'col'):
+                speed.append(h / cpu(d, 'col'))
+        line += [ratio(h, cpu(d, e)) for e in engines if e in ('flat', 'ch')]
         checks = [f'{e}: {d[e]["result"]["value"][:60]}' for e in engines if e in d and d[e].get('result', {}).get('value') not in ('ok', 'reference')]
         plan = d.get('col', {}).get('plan', {}).get('value')
-        print(line + '  ' + ('; '.join(checks) if checks else 'ok') + (f'  [{plan}]' if plan and plan != 'sift_col' else ''))
+        lines.append(line + ['; '.join(checks) if checks else 'ok' + (f' [{plan}]' if plan and plan != 'sift_col' else '')])
+    if markdown:
+        print('| ' + ' | '.join(head) + ' |')
+        print('|' + '|'.join('---' if i < 2 or i == len(head) - 1 else '--:' for i in range(len(head))) + '|')
+        for line in lines:
+            print('| ' + ' | '.join(line) + ' |')
+    else:
+        width = [max(len(c[i]) for c in lines + [head]) for i in range(len(head))]
+        for line in [head] + lines:
+            print('  '.join(c.ljust(w) if i < 2 or i == len(head) - 1 else c.rjust(w) for i, (c, w) in enumerate(zip(line, width))))
     if speed:
-        print(f'geometric mean of heap/col over {len(speed)} queries: {math.exp(sum(map(math.log, speed)) / len(speed)):.2f} (above 1: col is cheaper)')
-    print('cpu ms: median over the runs of the on-CPU time of one backend (ClickHouse: one query thread); h/c, h/flat, h/ch: heap over the engine')
+        print(f'\ngeometric mean of heap/col over {len(speed)} queries: {math.exp(sum(map(math.log, speed)) / len(speed)):.2f} (above 1: col is cheaper)')
+    print('\ncpu ms: median over the runs of the on-CPU time of one backend (ClickHouse: one query thread); heap/X: heap over engine X, above 1 X is cheaper')
 
 
 def cmd_report(args):
     path = args.dir
     if os.path.isdir(path):
         path = os.path.join(path, 'analytics.json')
-    d = json.load(open(path))
-    report(d['rows'], d['meta'], args.engines)
+    report(json.load(open(path))['rows'], args.markdown)
     return 0
 
 
@@ -523,7 +526,7 @@ def main():
     r.add_argument('--ch-pid', type=int)
     p = sub.add_parser('report')
     p.add_argument('dir')
-    p.add_argument('--engines', type=lambda s: s.split(','), default=[])
+    p.add_argument('--markdown', action='store_true', help='a Markdown table (for docs)')
     args = ap.parse_args()
     sys.exit({'run': cmd_run, 'report': cmd_report}[args.cmd](args))
 

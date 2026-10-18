@@ -103,7 +103,8 @@ Options (not every option applies to every command)
   analytics options  --scale S (orders = 1.2M x S), --orders N, --stores N (40000), --cluster store (heap clustered by store and
                     date), --flat, --clickhouse, --runs N (5, after one warm-up), --sets K10,K400,K4000, --queries S1,G (ids or S / G),
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
-                    sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench); SIFT_TMP, SIFT_PORT
+                    sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
+                    to docs/results); SIFT_TMP, SIFT_PORT
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   -h, --help        this text
@@ -420,7 +421,11 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
          A_ROWS=$a_rows A_ENGINES=${engines// /,} A_BUILD=${build:-0} A_ALL=$all_clean
   for c in A_SCALE A_ORDERS A_STORES A_ROWS A_TIMEOUT; do [[ -n ${!c} ]] || unset "$c"; done
   case $sub in
-    run|clickbench) perf_lock; new_out; export OUT; "$STEPS/analytics.sh" "$sub" ;;
+    run|clickbench)   # the load needs no lock: the corpus is there when the lock is taken
+      new_out; export OUT
+      "$STEPS/analytics.sh" "$([[ $sub == run ]] && echo setup || echo clickbench-setup)"
+      perf_lock; "$STEPS/analytics.sh" "$sub"
+      [[ -z $docs ]] || { cp "$OUT/analytics.json" "$REPO/docs/results/${sub/run/analytics}.json"; echo "written: $REPO/docs/results/${sub/run/analytics}.json"; } ;;
     report) "$STEPS/analytics.sh" report "${rest[1]:-}" ;;
     *) "$STEPS/analytics.sh" "$sub" ;;
   esac
