@@ -3,7 +3,8 @@
 # the server processes spend per operation, not throughput or latency. Standalone, run directly; not part of make check or scripts/ci.sh.
 #
 #   bench/steps/cpu_gate.sh [--rows N] [--inserts N] [--queries N] [--reps N] [--max-reps N] [--se PCT] [--budget SECS]
-#                           [--cells REGEX] [--raw FILE] --build LABEL=DIR --build LABEL=DIR ...
+#                           [--cells REGEX] [--raw FILE] [--index-opts LABEL=OPTS] [--guc LABEL=NAME=VALUE]
+#                           --build LABEL=DIR --build LABEL=DIR ...
 #
 # Every --build is a checkout with scripts/pgtest.sh (git worktree add --detach DIR REF); the first is the baseline and the others are
 # compared with it. Each build gets its own release cluster (SIFT_TMP /tmp/sift-gate-LABEL, ports SIFT_PORT=56120 and up).
@@ -25,12 +26,15 @@
 # more, up to --max-reps (25) or until --budget seconds (default 3600) have passed. A cell regresses when its whole interval is above
 # 1.02; "design" marks a cell whose end state differs between builds (segments left, docs not promoted): its ratio is work done by
 # design, reported apart. Also printed: cycles ratio (secondary), WAL bytes, index size, segments.
+# --index-opts and --guc give one build a reloption list for the indexes of its cells (vacuum_truncate = false) or a setting of its cluster
+# (sift.maintenance_cost_delay=0); the same DIR under two labels compares two configurations of one build.
 # Never connects to a server it did not start. Clusters and scratch directories are removed at the end.
 set -Eeuo pipefail
 trap 'echo "cpu-gate: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 export LC_ALL=C
 
 ROWS=20000 INS=10000 NQ=100 REPS=7 MAXREPS=25 SE=1 BUDGET=3600 CELLS=. RAW= BUILDS=()
+declare -A DIR TMP PORT PM IOPTS GUCS
 while (( $# )); do
 	case $1 in
 		--rows) ROWS=$2; shift ;;
@@ -43,6 +47,8 @@ while (( $# )); do
 		--cells) CELLS=$2; shift ;;
 		--raw) RAW=$2; shift ;;
 		--build) BUILDS+=("$2"); shift ;;
+		--index-opts) IOPTS[${2%%=*}]=${2#*=}; shift ;;
+		--guc) GUCS[${2%%=*}]+="${2#*=}"$'\n'; shift ;;
 		*) sed -n '2,28p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -51,7 +57,6 @@ done
 BASE=$(mktemp -d /tmp/sift-gate-run.XXXXXX)
 PORT0=${SIFT_PORT:-56120}
 START=$SECONDS
-declare -A DIR TMP PORT PM
 LABELS=()
 
 pg() { # LABEL pgtest-args...
@@ -63,6 +68,7 @@ Q() { # LABEL DATABASE psql-args...
 	psql -X -q -At -v ON_ERROR_STOP=1 -h "${TMP[$l]}/sock" -p "${PORT[$l]}" -U postgres -d "$db" "$@"
 }
 Qn() { Q "$@" >/dev/null; }
+create_index() { echo "CREATE INDEX $1 ON $2 USING sift (body)${IOPTS[$3]:+ WITH (${IOPTS[$3]})}"; } # NAME TABLE LABEL
 cleanup() {
 	[[ -z ${PERFPID:-} ]] || kill "$PERFPID" 2>/dev/null || true
 	for l in "${LABELS[@]}"; do pg "$l" destroy >/dev/null 2>&1 || true; done
@@ -131,7 +137,7 @@ dropdb() { settle "$1"; Qn "$1" postgres -c "DROP DATABASE $2 WITH (FORCE)"; }
 templates() { # LABEL
 	local l=$1
 	Qn "$l" postgres -c "CREATE DATABASE tpl_empty"
-	Qn "$l" tpl_empty -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE t (id serial, body text)" -c "CREATE INDEX t_idx ON t USING sift (body)" \
+	Qn "$l" tpl_empty -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE t (id serial, body text)" -c "$(create_index t_idx t "$l")" \
 		-c "SELECT setseed(0.42)" -c "CREATE TABLE stage AS SELECT i AS id, $(words 40 i) AS body FROM generate_series(1, $ROWS) i"
 	newdb "$l" tpl_data tpl_empty
 	Qn "$l" tpl_data -c "SET sift.async_maintenance = off" -c "INSERT INTO t (body) SELECT body FROM stage ORDER BY id" \
@@ -199,7 +205,7 @@ run_cell() { # CELL LABEL
 					Qn "$l" "$db" -c "SET sift.async_maintenance = off" -c "INSERT INTO t (body) SELECT body FROM stage WHERE id <= 3000"
 					measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "SELECT sift.promote('t_idx')" ;;
 				merge) measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" ;;
-				create) measure "$c" "$l" "$db" s_idx Qn "$l" "$db" -c "CREATE INDEX s_idx ON stage USING sift (body)" ;;
+				create) measure "$c" "$l" "$db" s_idx Qn "$l" "$db" -c "$(create_index s_idx stage "$l")" ;;
 				vacuum_backlog | vacuum_clean) measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "VACUUM t" ;;
 				vacuum_dead)
 					Qn "$l" "$db" -c "DELETE FROM t WHERE id % 5 <> 0"
@@ -310,6 +316,9 @@ for b in "${BUILDS[@]}"; do
 	pg "$l" start >/dev/null
 	PM[$l]=$(head -1 "${TMP[$l]}/data/postmaster.pid")
 	Qn "$l" postgres -c "ALTER SYSTEM SET autovacuum = off" -c "SELECT pg_reload_conf()"
+	while IFS== read -r name val; do
+		[[ -z $name ]] || Qn "$l" postgres -c "ALTER SYSTEM SET $name = '$val'" -c "SELECT pg_reload_conf()"
+	done <<<"${GUCS[$l]:-}"
 done
 : >"$BASE/all.tsv"
 for l in "${LABELS[@]}"; do templates "$l"; done
