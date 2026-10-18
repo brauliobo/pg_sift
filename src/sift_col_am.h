@@ -82,6 +82,7 @@ extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
  * before the heap checks. Widens the races deterministically in place of host load. */
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_col_jitter_us;
+extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
 extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	sift_col_jitter()
 #else
