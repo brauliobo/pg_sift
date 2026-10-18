@@ -12,12 +12,14 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
+#include "access/tsmapi.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -113,6 +115,8 @@ typedef struct SiftTblScan
 {
 	TableScanDescData base;
 	SiftTblRel *st;
+	BlockNumber sample_blk;		/* TABLESAMPLE: the vblock being sampled, its rows (sorted by offset) in brows, the last offset */
+	OffsetNumber sample_max;
 	MemoryContext rowcxt;		/* the row handed to the slot by the last getnextslot: valid until the next one, as a buffer slot's */
 	TupleDesc	desc;			/* of the rows returned: the slot's, which is the old one while ALTER TABLE rewrites */
 	bool		snap_registered;
@@ -244,6 +248,7 @@ sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyDa
 		PredicateLockRelation(rel, snapshot);
 	}
 	s->st = sift_tbl_rel(rel);
+	s->sample_blk = InvalidBlockNumber;
 	s->copy = palloc(BLCKSZ);
 	s->rowcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_table scan row", ALLOCSET_DEFAULT_SIZES);
 	scan_open_state(rel, s);
@@ -275,6 +280,7 @@ sift_tbl_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_param
 	scan_end_bitmap(scan);
 	scan_close_state(s);
 	s->nbrows = s->bri = 0;
+	s->sample_blk = InvalidBlockNumber;
 	scan_open_state(scan->rs_rd, s);
 }
 
@@ -714,7 +720,8 @@ bitmap_add(SiftTblScan *s, HeapTuple tup)
 	if (s->nbrows == s->nbcap)
 	{
 		s->nbcap = Max(64, s->nbcap * 2);
-		s->brows = s->brows ? repalloc(s->brows, s->nbcap * sizeof(HeapTuple)) : palloc(s->nbcap * sizeof(HeapTuple));
+		s->brows = s->brows ? repalloc(s->brows, s->nbcap * sizeof(HeapTuple)) :
+			MemoryContextAlloc(GetMemoryChunkContext(s), s->nbcap * sizeof(HeapTuple));
 	}
 	s->brows[s->nbrows++] = tup;
 }
@@ -783,6 +790,62 @@ bitmap_emit(SiftTblScan *s, TupleTableSlot *slot)
 		return false;
 	sift_tbl_store(slot, s->brows[s->bri++]);
 	return true;
+}
+
+/* ---------- TABLESAMPLE ---------- */
+
+static int
+cmp_offset(const void *a, const void *b)
+{
+	return pg_cmp_u16(ItemPointerGetOffsetNumberNoCheck(&(*(const HeapTuple *) a)->t_self),
+					  ItemPointerGetOffsetNumberNoCheck(&(*(const HeapTuple *) b)->t_self));
+}
+
+/* The vblocks stand for the blocks: the method (SYSTEM) picks one, or they come in order (BERNOULLI); its visible rows are read at once */
+bool
+sift_tbl_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
+{
+	SiftTblScan *s = (SiftTblScan *) scan;
+	TsmRoutine *tsm = scanstate->tsmroutine;
+	BlockNumber nblocks = sift_tbl_nvblocks(scan->rs_rd);
+	MemoryContext old;
+
+	if (tsm->NextSampleBlock)
+		s->sample_blk = tsm->NextSampleBlock(scanstate, nblocks);
+	else
+		s->sample_blk = s->sample_blk == InvalidBlockNumber ? 0 : s->sample_blk + 1;
+	if (s->sample_blk >= nblocks)
+		s->sample_blk = InvalidBlockNumber;
+	if (s->sample_blk == InvalidBlockNumber)
+		return false;
+	MemoryContextReset(s->rowcxt);
+	old = MemoryContextSwitchTo(s->rowcxt);
+	bitmap_page(scan->rs_rd, s, s->sample_blk, NULL, -1);
+	MemoryContextSwitchTo(old);
+	qsort(s->brows, s->nbrows, sizeof(HeapTuple), cmp_offset);
+	s->sample_max = s->nbrows > 0 ? ItemPointerGetOffsetNumberNoCheck(&s->brows[s->nbrows - 1]->t_self) : 0;
+	return true;
+}
+
+bool
+sift_tbl_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate, TupleTableSlot *slot)
+{
+	SiftTblScan *s = (SiftTblScan *) scan;
+	OffsetNumber off;
+
+	/* (OffsetNumberIsValid evaluates its argument twice) */
+	while ((off = scanstate->tsmroutine->NextSampleTuple(scanstate, s->sample_blk, s->sample_max)) != InvalidOffsetNumber)
+	{
+		CHECK_FOR_INTERRUPTS();
+		while (s->bri < s->nbrows && ItemPointerGetOffsetNumberNoCheck(&s->brows[s->bri]->t_self) < off)
+			s->bri++;
+		if (s->bri < s->nbrows && ItemPointerGetOffsetNumberNoCheck(&s->brows[s->bri]->t_self) == off)
+		{
+			ExecForceStoreHeapTuple(s->brows[s->bri++], slot, false);
+			return true;
+		}
+	}
+	return false;
 }
 
 #if PG_VERSION_NUM >= 180000
