@@ -213,6 +213,9 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "dead_rewrite_pct",
 					  "Percent of dead documents above which maintenance rewrites a lone segment to drop them (100 never)",
 					  SIFT_MERGE_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
+	add_bool_reloption(sift_relopt_kind, "vacuum_truncate",
+					   "VACUUM gives the free blocks at the end of the index file back to the operating system (takes a brief exclusive lock when it can)",
+					   true, ShareUpdateExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -298,6 +301,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
 		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
 		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftOptions, dead_rewrite_pct)},
+		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -317,6 +321,7 @@ sift_index_options(Relation index)
 		.merge_fanin = SIFT_MERGE_FANIN,
 		.positions = true,
 		.dead_rewrite_pct = SIFT_MERGE_DEAD_PCT,
+		.vacuum_truncate = true,
 	};
 
 	return index->rd_options ? (const SiftOptions *) index->rd_options : &defaults;

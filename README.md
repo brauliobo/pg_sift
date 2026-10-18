@@ -84,7 +84,7 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 
 ## Configuration
 
-Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin` and `dead_rewrite_pct` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
+Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
 | Index option | default | range | meaning |
 |---|---|---|---|
@@ -99,6 +99,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
 | `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
 | `dead_rewrite_pct` | 50 | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
+| `vacuum_truncate` | true | | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 

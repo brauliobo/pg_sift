@@ -85,11 +85,13 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 	agree($standby, sift_am(), $t, 'standby after recycling');
 };
 
-# with hot_standby_feedback the primary's horizon holds back VACUUM and recycling for the open scan: it always completes
+# with hot_standby_feedback the primary's horizon holds back VACUUM and recycling for the open scan: it always completes.
+# VACUUM's truncation of the end of the file is not held back by feedback, like a heap's: its exclusive lock cancels the scan
+# when the standby replays it (test/t/006_truncate.pl), so the index here keeps its file
 subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and recycling' => sub {
 	my ($t, $idx) = ('feedback', 'feedback_idx');
 	load_corpus($primary, $t, 20000);
-	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
+	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64, vacuum_truncate = false)");
 	$primary->backup('feedback_base');
 	my $fb = PostgreSQL::Test::Cluster->new('standby_feedback');
 	$fb->init_from_backup($primary, 'feedback_base', has_streaming => 1);

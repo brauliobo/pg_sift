@@ -66,6 +66,9 @@ int64		sift_maint_wait_max_us = 0;
 /* Whatever merge_fanin is, the policy merges (from SIFT_MERGE_ENTRIES entries) before inserters have to make room, and a merge fits a directory */
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
 StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
+/* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
+#define TRUNCATE_MIN_BLOCKS	1000
+#define TRUNCATE_FRACTION	16
 #define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
 
 typedef enum StepResult
@@ -924,6 +927,39 @@ sift_maint_orphan_sweep(Relation index)
 	return freed;
 }
 
+/* ---------- truncation ---------- */
+
+/*
+ * Gives the free blocks at the end of the file back to the operating system, like VACUUM does for a
+ * heap: when they are worth an exclusive lock, and only if AccessExclusiveLock on the index is free
+ * right now (any scan, insert or step of the worker holds a lock on it), released as soon as the file
+ * is cut (sift_store.h P7). The caller holds the maintenance lock exclusively.
+ */
+void
+sift_maint_truncate(Relation index, int elevel)
+{
+	BlockNumber tail;
+	BlockNumber freed;
+
+	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
+	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+		return;
+	tail = sift_store_tail_blocks(index);
+	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
+		return;
+	if (!ConditionalLockRelation(index, AccessExclusiveLock))
+	{
+		ereport(elevel, (errmsg("index \"%s\": stopping truncate due to conflicting lock request",
+								RelationGetRelationName(index))));
+		return;
+	}
+	freed = sift_store_truncate(index);
+	UnlockRelation(index, AccessExclusiveLock);
+	if (freed > 0)
+		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages", RelationGetRelationName(index),
+								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
+}
+
 /* ---------- VACUUM ---------- */
 
 IndexBulkDeleteResult *
@@ -969,6 +1005,8 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	merge_to_fixed_point(index);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
+	if (sift_index_options(index)->vacuum_truncate)
+		sift_maint_truncate(index, info->message_level);
 	maint_unlock(index);
 	sift_dir_read(index, snap);
 	stats->num_pages = RelationGetNumberOfBlocks(index);

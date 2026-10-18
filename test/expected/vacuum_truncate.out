@@ -1,0 +1,150 @@
+-- VACUUM gives the free blocks at the end of the index file back to the operating system (DESIGN.md (i)), like it does for a
+-- heap: after a bulk delete, the merge that rewrites the surviving documents into the space in front of the old segments and the
+-- VACUUM that follows. vacuum_truncate = false keeps the file as it is.
+CREATE EXTENSION pg_sift;
+SET enable_seqscan = off;
+CREATE FUNCTION blocks(idx regclass) RETURNS bigint LANGUAGE sql
+	AS $$ SELECT relation_blocks FROM sift.index_info(idx) $$;
+-- the file ends where the store says
+CREATE FUNCTION sized(idx regclass) RETURNS bool LANGUAGE sql
+	AS $$ SELECT relation_blocks = high_water FROM sift.index_info(idx) $$;
+CREATE TABLE vt (id int, body text) WITH (autovacuum_enabled = off);
+INSERT INTO vt SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word' || (g % 50) || ' u' || g FROM generate_series(1, 100000) g;
+CREATE INDEX vt_idx ON vt USING sift (body) WITH (build_segments = 8);
+SELECT blocks('vt_idx') AS built \gset
+DELETE FROM vt WHERE id % 20 <> 0;
+VACUUM vt;
+-- merged down to the two segments of vacuum_segments, written after the old ones, which the file still holds
+SELECT blocks('vt_idx') > :built AS grew, free_blocks > :built / 2 AS mostly_free FROM sift.index_info('vt_idx');
+ grew | mostly_free 
+------+-------------
+ t    | t
+(1 row)
+
+-- rewritten into the space of the old segments: the end of the file is free now
+SELECT sift.merge('vt_idx', true);
+ merge 
+-------
+     1
+(1 row)
+
+SELECT blocks('vt_idx') AS before_truncate \gset
+SELECT free_blocks > 0 AS free_at_end FROM sift.index_info('vt_idx');
+ free_at_end 
+-------------
+ t
+(1 row)
+
+VACUUM vt;
+SELECT blocks('vt_idx') < :before_truncate / 4 AS shrunk, blocks('vt_idx') < :built / 4 AS far_below_built, sized('vt_idx');
+ shrunk | far_below_built | sized 
+--------+-----------------+-------
+ t      | t               | t
+(1 row)
+
+SELECT sift.verify('vt_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) AS hits FROM vt WHERE body @@> 'common';
+ hits 
+------
+ 5000
+(1 row)
+
+-- nothing more to give back
+SELECT blocks('vt_idx') AS settled \gset
+VACUUM vt;
+SELECT blocks('vt_idx') = :settled AS unchanged;
+ unchanged 
+-----------
+ t
+(1 row)
+
+-- the file grows again as needed, and a session that appended before the truncation appends after it
+INSERT INTO vt SELECT g, 'k' || (g % 7) || ' fresh common u' || g FROM generate_series(200001, 230000) g;
+SELECT count(*) AS hits FROM vt WHERE body @@> 'fresh';
+ hits  
+-------
+ 30000
+(1 row)
+
+SELECT sift.promote('vt_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.verify('vt_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT sized('vt_idx');
+ sized 
+-------
+ t
+(1 row)
+
+-- vacuum_truncate = false: VACUUM leaves the file alone, the next one with the default gives the end back
+CREATE TABLE vt2 (id int, body text) WITH (autovacuum_enabled = off);
+INSERT INTO vt2 SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word' || (g % 50) || ' u' || g FROM generate_series(1, 100000) g;
+CREATE INDEX vt2_idx ON vt2 USING sift (body) WITH (build_segments = 8, vacuum_truncate = false);
+DELETE FROM vt2 WHERE id % 20 <> 0;
+VACUUM vt2;
+SELECT sift.merge('vt2_idx', true);
+ merge 
+-------
+     1
+(1 row)
+
+SELECT blocks('vt2_idx') AS kept \gset
+VACUUM vt2;
+SELECT blocks('vt2_idx') = :kept AS file_kept, free_blocks > :kept / 2 AS mostly_free FROM sift.index_info('vt2_idx');
+ file_kept | mostly_free 
+-----------+-------------
+ t         | t
+(1 row)
+
+ALTER INDEX vt2_idx RESET (vacuum_truncate);
+-- the index cleanup of a parallel VACUUM (several indexes) runs in parallel mode, where the exclusive lock cannot be taken (it
+-- needs a transaction id): it does not truncate and does not fail; autovacuum and a VACUUM without workers do
+CREATE INDEX vt2_id ON vt2 (id);
+SET min_parallel_index_scan_size = 0;
+VACUUM (PARALLEL 2) vt2;
+RESET min_parallel_index_scan_size;
+SELECT blocks('vt2_idx') = :kept AS parallel_keeps;
+ parallel_keeps 
+----------------
+ t
+(1 row)
+
+VACUUM (PARALLEL 0) vt2;
+SELECT blocks('vt2_idx') < :kept / 4 AS truncated, sized('vt2_idx');
+ truncated | sized 
+-----------+-------
+ t         | t
+(1 row)
+
+SELECT sift.verify('vt2_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) AS hits FROM vt2 WHERE body @@> 'common';
+ hits 
+------
+ 5000
+(1 row)
+
+-- the setting takes a boolean
+ALTER INDEX vt_idx SET (vacuum_truncate = 2);
+ERROR:  invalid value for boolean option "vacuum_truncate": 2
+ALTER INDEX vt_idx SET (vacuum_truncate = on);
+ALTER INDEX vt_idx RESET (vacuum_truncate);
+DROP TABLE vt, vt2;
+DROP EXTENSION pg_sift;
