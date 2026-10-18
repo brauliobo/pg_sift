@@ -437,6 +437,7 @@ extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDe
 
 extern PGDLLIMPORT int sift_tbl_delta_limit;
 extern PGDLLIMPORT int sift_tbl_max_segments;
+extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT bool sift_tbl_inline_seal;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
 
