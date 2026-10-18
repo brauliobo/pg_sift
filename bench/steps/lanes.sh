@@ -3,8 +3,8 @@
 # Every engine has a lane of its own, a cluster with its own PGDATA and port (an engine outside Postgres has its server next to it).
 # The lanes are built one after the other (a build is timed alone) and then all stay up, idle; a measured cell runs on one engine
 # at a time, every engine free to use all the CPUs of the host, the engines interleaved in rounds (the order rotates every round).
-# Nothing of another engine runs during a cell, so the engines do not compete with each other, and the host load average of the
-# cells says how much the rest of the machine did.
+# Nothing of another engine runs during a cell, so the engines do not compete with each other, and the pressure of the host
+# (scripts/quiet.sh, logged per round and checked before each batch) says how much the rest of the machine did.
 #
 # A built lane can be cached: its stopped data directory (without the recycled files of the write-ahead log) goes compressed to
 # $CACHE/lanes/<key>/data.tar.zst, the key being a hash of everything the database depends on (the engine's adapter, its extension
