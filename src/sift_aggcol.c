@@ -277,7 +277,8 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	}
 	for (int i = 0; i < src->nspred; i++)
 		preds[2 * nprune + i] = src->spred[i];
-	memcpy(preds + 2 * nprune + src->nspred, src->fpred, src->nflt * sizeof(SiftColPred));
+	for (int i = 0; i < src->nflt; i++)
+		preds[2 * nprune + src->nspred + i] = src->fpred[i];
 	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred + src->nflt, sb_lo, sb_hi);
 }
 
