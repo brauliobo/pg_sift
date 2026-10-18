@@ -15,6 +15,7 @@
 #include "access/htup_details.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/ipc.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -82,6 +83,21 @@ cache_xact(XactEvent event, void *arg)
 		}
 }
 
+/* The backend's caches go before its exit (the scans that the group reads keep between statements are not leaks to the leak check) */
+static void
+cache_exit(int code, Datum arg)
+{
+	HASH_SEQ_STATUS seq;
+	CacheEnt   *e;
+
+	foreach_ptr(MemoryContextData, cxt, retired)
+		MemoryContextDelete(cxt);
+	retired = NIL;
+	hash_seq_init(&seq, cache_tab);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		MemoryContextDelete(e->st->cxt);
+}
+
 SiftTblRel *
 sift_tbl_rel(Relation rel)
 {
@@ -96,6 +112,7 @@ sift_tbl_rel(Relation rel)
 		cache_tab = hash_create("sift_table relations", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		CacheRegisterRelcacheCallback(cache_inval, (Datum) 0);
 		RegisterXactCallback(cache_xact, NULL);
+		on_proc_exit(cache_exit, 0);
 	}
 	e = hash_search(cache_tab, &relid, HASH_ENTER, &found);
 	if (found && (e->st->invalid || e->st->relnumber != rel->rd_locator.relNumber))
