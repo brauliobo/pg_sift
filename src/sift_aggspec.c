@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
+#include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "utils/date.h"
 #include "nodes/value.h"
@@ -108,7 +109,7 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 static bool
 plain_key(const SiftAggKey *k)
 {
-	return (k->kind == SAK_LEAF && k->typid != FLOAT4OID && k->typid != FLOAT8OID) || k->kind == SAK_LUT;
+	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO;
 }
 
 static bool
@@ -123,11 +124,18 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_AVG_INT:
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+		case SAA_PCT_CONT:
+		case SAA_PCT_DISC:
+		case SAA_GROUPING:
 			return true;
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			return !a->distinct;
 		case SAA_COUNT_DISTINCT:
+			return a->num.n == 0;
 		case SAA_MIN:
 		case SAA_MAX:
-			return a->num.n == 0;
+			return true;
 		default:
 			return false;
 	}
@@ -136,7 +144,7 @@ plain_agg(const SiftAggAgg *a)
 bool
 sift_aggspec_parallel_ok(const SiftAggSpec *s)
 {
-	if (s->ncombo || s->njoin || s->nvleaf || s->narms || s->nsets)
+	if (s->narms)
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
@@ -145,6 +153,69 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 		if (!plain_agg(&s->agg[i]))
 			return false;
 	return true;
+}
+
+/*
+ * The arms of one query that scan the same rows for the same aggregates and differ in their group keys (a time series at four
+ * granularities) run in one pass as the grouping sets of one spec: the keys of the arms one after the other, then the number of the set.
+ */
+static bool
+fuse_candidate(const SiftAggSpec *s)
+{
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_GEN)
+			return false;
+	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0 && s->ncombo == 0 && s->njoin == 0 && s->npost == 0 && s->nvleaf == 0;
+}
+
+static List *
+pack_without_keys(const SiftAggSpec *s)
+{
+	SiftAggSpec t = *s;
+
+	t.nkeys = 0;
+	t.key = NULL;
+	t.nworkers = 0;
+	t.est_groups = 0;
+	return sift_aggspec_pack(&t);
+}
+
+bool
+sift_aggspec_fusable(const SiftAggSpec *a, const SiftAggSpec *b)
+{
+	return fuse_candidate(a) && fuse_candidate(b) && equal(pack_without_keys(a), pack_without_keys(b));
+}
+
+SiftAggSpec *
+sift_aggspec_fuse(SiftAggSpec *const *m, int n, int *keyoff)
+{
+	SiftAggSpec *f = palloc(sizeof(SiftAggSpec));
+	int			nk = 0;
+
+	*f = *m[0];
+	for (int i = 0; i < n; i++)
+		nk += m[i]->nkeys;
+	Assert(nk < SIFT_AGG_MAX_KEYS && n <= 32);
+	f->key = palloc0((nk + 1) * sizeof(SiftAggKey));
+	f->setmask = palloc0(n * sizeof(uint32));
+	f->nsets = n;
+	f->est_groups = 0;
+	nk = 0;
+	for (int i = 0; i < n; i++)
+	{
+		keyoff[i] = nk;
+		memcpy(&f->key[nk], m[i]->key, m[i]->nkeys * sizeof(SiftAggKey));
+		for (int j = 0; j < m[i]->nkeys; j++)
+			f->setmask[i] |= (uint32) 1 << (nk + j);
+		nk += m[i]->nkeys;
+		f->nworkers = Max(f->nworkers, m[i]->nworkers);
+		f->est_groups += m[i]->est_groups;
+	}
+	f->key[nk] = (SiftAggKey) {.kind = SAK_SET, .leaf = -1, .typid = INT4OID, .typmod = -1, .eqop = Int4EqualOperator, .desc = "grouping set"};
+	for (int i = 0; i < n; i++)
+		f->setmask[i] |= (uint32) 1 << nk;
+	f->nkeys = nk + 1;
+	return f;
 }
 
 typedef struct Pack

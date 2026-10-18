@@ -3286,6 +3286,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
+#define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
+#define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
 
 static double
@@ -3396,6 +3398,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
+	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
+	rows_out = Min(rows_out, Max(Max(s->nsets, 1) * agg_rows, 1.0));
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW;
@@ -3433,7 +3437,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 		scan_cost = scan_cost / parallel_divisor(s->nworkers) +
 			tables * Min(rows_out, Max(agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
-		startup += parallel_setup_cost;
+		for (int i = 0; i < s->naggs; i++)
+			if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
+				scan_cost += agg_rows * AGG_ORDERED_MERGE * cpu_operator_cost;
+		startup += parallel_setup_cost * AGG_SETUP_FACTOR;
 	}
 	p->startup_cost = startup + scan_cost;
 	p->total_cost = p->startup_cost + rows_out * cpu_tuple_cost;

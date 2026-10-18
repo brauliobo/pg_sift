@@ -405,6 +405,10 @@ extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *l
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
+
+/* Arms that read the same rows for the same aggregates and differ in their keys: can one scan serve them (sets of one spec, keyoff[i] the first key of arm i) */
+extern bool sift_aggspec_fusable(const SiftAggSpec *a, const SiftAggSpec *b);
+extern SiftAggSpec *sift_aggspec_fuse(SiftAggSpec *const *m, int n, int *keyoff);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);
 
 #endif							/* SIFT_AGGSPEC_H */

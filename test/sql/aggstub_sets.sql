@@ -107,6 +107,52 @@ SELECT same($$SELECT v.label, max(v.weight) AS hw, sum(v.weight) AS sw, count(DI
 SELECT same($$SELECT count(v.label) AS c, min(v.label) AS lo, sum(v.weight) AS sw, avg(v.factor) AS af
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
 			  LEFT JOIN vals v ON v.category = i.category WHERE i.category = 'E'$$) AS mapped_no_value;
+
+-- the same from workers: the tables of the grouping sets and of the float keys are merged by value
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+EXPLAIN (COSTS OFF) SELECT kind, store, grouping(kind, store) AS g, grouping(store) AS gs, count(*) AS n, sum(store) AS s FROM o GROUP BY ROLLUP (kind, store);
+EXPLAIN (COSTS OFF) SELECT f8, count(*) AS n, sum(id) AS s FROM o GROUP BY f8;
+SELECT same($$SELECT kind, store, grouping(kind, store) AS g, grouping(store) AS gs, count(*) AS n, sum(store) AS s FROM o GROUP BY ROLLUP (kind, store)$$) AS rollup_nulls_workers;
+SELECT same($$SELECT kind, store % 2 AS odd, grouping(store % 2, kind) AS g, count(*) AS n, count(DISTINCT id) AS ids
+			  FROM o GROUP BY CUBE (kind, store % 2) HAVING grouping(kind) = 0 OR count(*) > 300$$) AS cube_having_workers;
+SELECT same($$SELECT kind, grouping(kind) AS g, count(*) AS n, sum(store) AS s, min(id) AS m FROM o WHERE store < 0 GROUP BY GROUPING SETS ((kind), ())$$) AS empty_set_workers;
+SELECT same($$SELECT i.category, i.kind, grouping(i.category, i.kind) AS g, count(*) AS n, avg(i.price) AS a
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8)
+			  GROUP BY GROUPING SETS ((i.category, i.kind), (i.category), ())$$) AS unnest_sets_workers;
+SELECT same($$SELECT f8, count(*) AS n, sum(id) AS s FROM o GROUP BY f8$$) AS float8_key_workers;
+SELECT same($$SELECT f8, kind, count(*) AS n FROM o GROUP BY ROLLUP (f8, kind)$$) AS float_key_sets_workers;
+RESET max_parallel_workers_per_gather;
+-- arms of one UNION ALL that scan the same rows for the same aggregates share one pass; the rows are the ones of the arms alone
+CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Arms In One Pass' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT arms_shared($$SELECT store AS k, count(*) AS n, sum(id) AS s FROM o GROUP BY store UNION ALL SELECT id % 11, count(*), sum(id) FROM o GROUP BY id % 11$$) AS shared_other_leaves;
+SELECT arms_shared($$SELECT id % 5 AS k, count(*) AS n, sum(id) AS s FROM o GROUP BY id % 5 UNION ALL SELECT id % 11, count(*), sum(id) FROM o GROUP BY id % 11 UNION ALL SELECT id % 3, count(*), sum(id) FROM o GROUP BY id % 3$$) AS shared_three;
+SELECT arms_shared($$SELECT id % 5 AS k, count(*) AS n, sum(id) AS s FROM o GROUP BY id % 5 UNION ALL SELECT id % 11, count(*), sum(id) FROM o WHERE id > 5 GROUP BY id % 11$$) AS shared_other_filter;
+SELECT same($$SELECT store AS k, count(*) AS n, sum(id) AS s, avg(f8) AS a FROM o GROUP BY store UNION ALL SELECT id % 11, count(*), sum(id), avg(f8) FROM o GROUP BY id % 11
+			  UNION ALL SELECT id % 3, count(*), sum(id), avg(f8) FROM o GROUP BY id % 3$$) AS shared_arms;
+SELECT same($$SELECT 1 AS a, kind AS k, count(*) AS n, sum(f4) AS s FROM o GROUP BY kind UNION ALL SELECT 2, f8::text, count(*), sum(f4) FROM o GROUP BY f8
+			  UNION ALL SELECT 3, NULL, count(*), sum(f4) FROM o$$) AS shared_float_null_keys;
+SELECT same($$SELECT 1 AS a, i.category AS k, count(*) AS n, sum(i.price) AS s FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY i.category
+			  UNION ALL SELECT 2, i.kind, count(*), sum(i.price) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY i.kind$$) AS shared_unnest_arms;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT same($$SELECT store AS k, count(*) AS n, sum(id) AS s, avg(f8) AS a FROM o GROUP BY store UNION ALL SELECT id % 11, count(*), sum(id), avg(f8) FROM o GROUP BY id % 11
+			  UNION ALL SELECT id % 3, count(*), sum(id), avg(f8) FROM o GROUP BY id % 3$$) AS shared_arms_workers;
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
