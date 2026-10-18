@@ -21,6 +21,7 @@
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
@@ -782,13 +783,17 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
  * P4 safexid: every snapshot that could hold the directory as it was before
  * our lock has xmin <= our xid (assigned before the lock), or <= the next xid
  * read after the lock. Parallel mode cannot assign an xid; the next xid is
- * as safe but is only passed once some later xid completes.
+ * as safe but is only passed once some later xid completes. A lazy VACUUM
+ * (PROC_IN_VACUUM) is left out of snapshots and of the horizon, xid included
+ * (procarray.c): a reader that began after its xid was assigned has an xmin
+ * past it and would let the extents go while it still reads them, so a
+ * VACUUM uses the next xid as well.
  */
 static bool
 xid_safexid(void)
 {
-	return FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) ||
-		!(IsInParallelMode() || IsParallelWorker());
+	return !(MyProc->statusFlags & PROC_IN_VACUUM) &&
+		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
 static void
@@ -910,9 +915,9 @@ collect_chain(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 
 /* metabuf is locked, which also guards the list. ext has room for the list's pages after the records */
 static void
-read_chain(Relation index, Buffer metabuf, FreeChain *c)
+read_chain(Relation index, Buffer metabuf, FreeChain *c, FullTransactionId horizon)
 {
-	*c = (FreeChain) {.index = index};
+	*c = (FreeChain) {.index = index,.horizon = horizon};
 	sift_freelist_walk(index, metabuf, collect_chain, c);
 }
 
@@ -996,6 +1001,16 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	return newhwm;
 }
 
+/*
+ * What the cut of the file counts as reusable (InvalidFullTransactionId: what the horizon says). A lazy VACUUM releases with the next xid
+ * (xid_safexid) and cuts under AccessExclusiveLock, which keeps every reader out, so for it every record is reusable.
+ */
+static FullTransactionId
+cut_horizon(void)
+{
+	return (MyProc->statusFlags & PROC_IN_VACUUM) ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
+}
+
 /* Clears the safexid of free-list records past the horizon and coalesces adjacent reusable records */
 int
 sift_recycle(Relation index)
@@ -1004,7 +1019,7 @@ sift_recycle(Relation index)
 	FreeChain	c;
 	int			raw;
 
-	read_chain(index, metabuf, &c);
+	read_chain(index, metabuf, &c, InvalidFullTransactionId);
 	raw = c.n;
 	coalesce_chain(&c);
 	if (c.npages == 0 || (c.cleared == 0 && c.n == raw && c.npages == 1))
@@ -1023,7 +1038,7 @@ sift_store_tail_blocks(Relation index)
 	FreeChain	c;
 	BlockNumber tail = hwm;
 
-	read_chain(index, metabuf, &c);
+	read_chain(index, metabuf, &c, cut_horizon());
 	if (c.npages > 0)
 	{
 		coalesce_chain(&c);
@@ -1049,7 +1064,7 @@ sift_store_truncate(Relation index)
 	SharedInvalidationMessage msg;
 	FreeChain	c;
 
-	read_chain(index, metabuf, &c);
+	read_chain(index, metabuf, &c, cut_horizon());
 	if (c.npages > 0)
 		newhwm = rewrite_chain(index, metabuf, &c, true);
 	UnlockReleaseBuffer(metabuf);
