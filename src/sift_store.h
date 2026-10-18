@@ -35,6 +35,18 @@
  *    ERRCODE_INDEX_CORRUPTED.
  * P6 Generations. sift_store_new_gen logs the reservation before any page
  *    carries the gen, so durable pages never share a gen across segments.
+ * P7 Truncation. The reusable free run at the end of the relation is given back
+ *    in two steps, in this order: one record writes the free list without it
+ *    and lowers high_water to its start (P2), then RelationTruncate cuts the
+ *    file. A crash between them leaves a file longer than high_water, which
+ *    allocation extends over and the next truncation cuts; the reverse order
+ *    could leave the free list past the end. Only blocks that are reusable (P4)
+ *    go, and the caller holds AccessExclusiveLock on the index (conditionally,
+ *    like VACUUM's truncation of a heap): no backend then has a scan, a
+ *    directory copy or an open write target, a standby replays the lock before
+ *    the truncation and cancels what holds the index there, and the relcache
+ *    entries (the mutable appenders' cached lane tails) are invalidated before
+ *    the lock is released.
  *
  * Store records are not transactional and nothing here flushes WAL: a change
  * is durable once WAL is flushed past it, by the commit of a transaction that
@@ -157,6 +169,19 @@ extern BlockNumber sift_alloc_extent(Relation index, uint32 nblocks, SiftPageTyp
  * Allocation also checks the horizon itself, so this only speeds it up.
  */
 extern int	sift_recycle(Relation index);
+
+/*
+ * Blocks at the end of the file that sift_store_truncate would give back (an estimate: the free
+ * list can change before the caller has the lock).
+ */
+extern BlockNumber sift_store_tail_blocks(Relation index);
+
+/*
+ * Gives back the blocks at the end of the relation that are free (and reusable) and the file past
+ * high_water (P7); returns how many. The caller holds AccessExclusiveLock on the index and the
+ * maintenance lock exclusively. Frees the list's own pages as well when they are in the way.
+ */
+extern BlockNumber sift_store_truncate(Relation index);
 
 /*
  * Write targets (allocate in CurrentMemoryContext):

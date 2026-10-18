@@ -83,6 +83,7 @@ typedef struct SiftOptions
 	int			fields;			/* comma separated field names, "" = none */
 	int			analyzer;		/* SIFT_ANALYZER_* */
 	bool		positions;		/* CREATE INDEX stores word positions, so phrases are verified from the index */
+	bool		vacuum_truncate; /* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 } SiftOptions;
 
 /* analyzer: keyword indexes the whole value as one term */

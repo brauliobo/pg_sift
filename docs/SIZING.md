@@ -14,7 +14,8 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
 - **Freed blocks are reused only after the transactions that could still read them are gone.** Blocks released by a merge, a promotion or
   VACUUM carry the releasing transaction's xid and are taken again once every snapshot that may hold the old directory has ended. An idle
   `REPEATABLE READ` or long transaction therefore stops reuse: in a test the file grew 41 to 135 MB for 21 MB of live data while one
-  transaction sat idle, and the file never shrinks (only `REINDEX` does). The maintenance worker also keeps one snapshot for its whole run,
+  transaction sat idle, and the file shrinks only at its end, when `VACUUM` truncates the free blocks there (see [USAGE](USAGE.md#maintenance-and-operations)); free
+  space in front of live segments waits for reuse and only `REINDEX` compacts it. The maintenance worker also keeps one snapshot for its whole run,
   so a long run holds back its own frees. `sift.index_info(index)` shows `free_blocks` and how many of them are `reusable_blocks` now.
   *(changes: the worker releases its snapshot and recycles after each step.)*
 - **Temporary files.** A merge reads its input segments into temporary files first: a merge of 117 MB of segments wrote 224 MB of

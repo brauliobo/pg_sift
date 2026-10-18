@@ -47,6 +47,7 @@ PG_FUNCTION_INFO_V1(sift_test_alloc);
 PG_FUNCTION_INFO_V1(sift_test_recycle);
 PG_FUNCTION_INFO_V1(sift_test_check);
 PG_FUNCTION_INFO_V1(sift_test_sweep);
+PG_FUNCTION_INFO_V1(sift_test_truncate);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
@@ -760,6 +761,28 @@ sift_test_sweep(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(n);
 }
 
+/* Blocks the end of the file gave back (sift_maint_truncate, reported at NOTICE); 0 when it gave up or there was nothing to give */
+static int64
+truncate_tail(Relation index)
+{
+	BlockNumber before = RelationGetNumberOfBlocks(index);
+
+	MAINT_LOCK(index, ExclusiveLock);
+	sift_maint_truncate(index, NOTICE);
+	MAINT_UNLOCK(index, ExclusiveLock);
+	return (int64) before - RelationGetNumberOfBlocks(index);
+}
+
+Datum
+sift_test_truncate(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	int64		n = truncate_tail(index);
+
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_INT64(n);
+}
+
 /* Failed maintenance steps in a row (the background retries wait longer after each) */
 Datum
 sift_test_maint_failures(PG_FUNCTION_ARGS)
@@ -926,7 +949,7 @@ sift_test_poke(PG_FUNCTION_ARGS)
 /*
  * One random operation for concurrency and crash tests: write, drop, read
  * (after a pause, so drops and reuse race with it), recycle, allocate +
- * release, or sweep.
+ * release, truncate or sweep.
  */
 Datum
 sift_test_churn(PG_FUNCTION_ARGS)
@@ -965,10 +988,15 @@ sift_test_churn(PG_FUNCTION_ARGS)
 		}
 		what = "read";
 	}
-	else if (op < 95)
+	else if (op < 94)
 	{
 		sift_recycle(index);
 		what = "recycle";
+	}
+	else if (op < 95)
+	{
+		truncate_tail(index);
+		what = "truncate";
 	}
 	else if (op < 99)
 	{
