@@ -24,6 +24,8 @@
 
 #include "sift_am.h"
 #include "sift_build.h"
+#include "sift_table.h"
+#include "sift_visibility.h"
 
 #define BATCH			1024
 #define ULL(x)			((unsigned long long) (x))
@@ -561,7 +563,7 @@ publish(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 static void
 init_bounds(BuildState *bs, Relation heap, int nsegments)
 {
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+	BlockNumber nblocks = sift_vis_nblocks(heap);
 
 	bs->bounds = palloc(Max(nsegments, 1) * sizeof(BlockNumber));
 	for (int i = 1; i < nsegments; i++)
@@ -883,10 +885,10 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	BuildState *bs;
 	MemoryContext old;
 
-	if (heap->rd_tableam != GetHeapamTableAmRoutine())
+	if (heap->rd_tableam != GetHeapamTableAmRoutine() && !sift_tbl_is_table(heap))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift indexes require a heap table")));
+				 errmsg("sift indexes require a heap or sift_table table")));
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
 		ldr = begin_parallel(heap, index, info);
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ldr->shared->nparticipants : 1));
