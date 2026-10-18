@@ -29,6 +29,7 @@
 #include "sift_maint.h"
 #include "sift_merge.h"
 #include "sift_mutable.h"
+#include "sift_ops.h"
 #include "sift_sql.h"
 
 #define REQUEST_INTERVAL_MS	2000
@@ -214,6 +215,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	SiftExtent *pages;
 	int			npages;
 	Switch		sw = {.old = &sealed->gen,.nold = 1};
+	TimestampTz start = GetCurrentTimestamp();
 
 	sift_mut_flag_sealed(index, sealed);
 	docs = read_docs(index, sealed, &ndocs);
@@ -224,6 +226,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	sw.neu = any ? &neu : NULL;
 	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = pages,
 			.nrelease = npages,.extra = InvalidBuffer});
+	sift_log_maint(index, "promoted a sealed segment of", start, ndocs, any ? neu.bytes : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -302,6 +305,7 @@ merge_segments(Relation index, const SiftSegEntry *in, int n)
 	SiftSegEntry neu;
 	SiftWriteTarget *wt;
 	Switch		sw = {.old = gens,.nold = n};
+	TimestampTz start = GetCurrentTimestamp();
 
 	for (int i = 0; i < n; i++)
 	{
@@ -327,6 +331,7 @@ merge_segments(Relation index, const SiftSegEntry *in, int n)
 	sift_wt_finish(wt);
 	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = rel,
 			.nrelease = nrel,.extra = InvalidBuffer});
+	sift_log_maint(index, psprintf("merged %d segments of", n), start, sw.neu ? neu.ndocs : 0, sw.neu ? neu.bytes : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -377,10 +382,12 @@ bool
 sift_maint_make_room(Relation index)
 {
 	bool		room;
+	TimestampTz start = GetCurrentTimestamp();
 
 	maint_lock(index, true);
 	room = make_room_locked(index);
 	maint_unlock(index);
+	sift_log_stall(index, start);
 	return room;
 }
 
@@ -532,7 +539,10 @@ sift_maint_request_async(Relation index)
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
 	bw.bgw_main_arg = ObjectIdGetDatum(RelationGetRelid(index));
 	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	return RegisterDynamicBackgroundWorker(&bw, &handle);
+	if (RegisterDynamicBackgroundWorker(&bw, &handle))
+		return true;
+	sift_log_refused(index);
+	return false;
 }
 
 /*
@@ -568,7 +578,10 @@ sift_maint_worker_main(Datum main_arg)
 	Oid			indexoid = DatumGetObjectId(main_arg);
 	Oid			dboid;
 	Relation	index;
+	ErrorContextCallback errctx;
+	TimestampTz start = GetCurrentTimestamp();
 
+	sift_maint_context(&errctx, indexoid);
 	memcpy(&dboid, MyBgworkerEntry->bgw_extra, sizeof(Oid));
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
@@ -581,6 +594,7 @@ sift_maint_worker_main(Datum main_arg)
 		/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 		while (sift_maint_promote(index, false) > 0 || sift_maint_merge_step(index, false))
 			CHECK_FOR_INTERRUPTS();
+		sift_log_maint(index, "maintenance worker finished", start, -1, -1);
 		index_close(index, RowExclusiveLock);
 	}
 	else if (index != NULL)
@@ -600,6 +614,7 @@ open_sift_index(Oid indexoid)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	sift_check_maintain(index);
 	return index;
 }
 

@@ -94,17 +94,9 @@ jobs:
           pg_config --version
           make -j4
 
-      - name: Regression tests (installcheck, release build)
-        run: |
-          export SIFT_TMP="$RUNNER_TEMP/sift-installcheck" SIFT_TESTING=
-          scripts/pgtest.sh install
-          scripts/pgtest.sh start
-          scripts/pgtest.sh regress
-          scripts/pgtest.sh stop      # the leak gate of the cluster (scripts/leakcheck.sh)
-          scripts/pgtest.sh destroy
-
       # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
+      # includes the regression tests against the release library (SIFT_TESTING off, stage release-library-regress), with its own leak gate
       - name: Quick test tier (make check, with the leak gate)
         run: make check
         env:
@@ -161,3 +153,23 @@ jobs:
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           SIFT_SANITIZE=1 sqlite/test.sh
+
+  # the MariaDB extension (mariadb/): the portable-core check, then the release recipe for two series: build the library in the stock
+  # mariadb:<series> image against the headers of its server, and load it into a server of that image (scripts/package-mariadb.sh,
+  # mariadb/tests/smoke.sh). The full suite, mariadb/test.sh (218k-article corpus, pg_sift reference, InnoDB FULLTEXT, about 30 minutes
+  # on a quiet machine), needs a PostgreSQL and the corpus and is run by hand before a release.
+  mariadb:
+    name: MariaDB extension (${{ matrix.series }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ['11.8', '13.0']
+    steps:
+      - uses: actions/checkout@v6
+
+      - run: scripts/check-portable.sh
+
+      - name: Build and smoke-test the library of the series
+        run: SERIES=${{ matrix.series }} scripts/package-mariadb.sh all HEAD dist-mariadb

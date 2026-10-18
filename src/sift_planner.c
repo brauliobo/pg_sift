@@ -130,7 +130,7 @@ const_queries(List *queries, text ***texts, int *ntexts)
 	return true;
 }
 
-/* The query operands of the index quals; the clauses may be the operator or its support-function form */
+/* The query operands of the index quals; NIL when one is an array qual (ANY): the bitmap scan runs it as one scan per element, which this estimate does not cover */
 static List *
 qual_query_exprs(IndexPath *path)
 {
@@ -138,7 +138,11 @@ qual_query_exprs(IndexPath *path)
 
 	foreach_node(IndexClause, ic, path->indexclauses)
 		foreach_node(RestrictInfo, rinfo, ic->indexquals)
+		{
+			if (!IsA(rinfo->clause, OpExpr))
+				return NIL;
 			queries = lappend(queries, lsecond(castNode(OpExpr, rinfo->clause)->args));
+		}
 	return queries;
 }
 
@@ -162,7 +166,7 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 				dict_pages;
 	Relation	index;
 
-	w->known = const_queries(queries, &texts, &ntexts);
+	w->known = queries != NIL && const_queries(queries, &texts, &ntexts);
 	w->cost = w->dict_cost = 0;
 	if (!w->known)
 		return;
@@ -780,6 +784,38 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 		carry_join_scores(root, joinrel);
 }
 
+/* The statement that has no SiftScan to rank its rows: the ones that lock or change them re-check each row, which a scan cannot */
+static const char *
+unranked_statement(PlannerInfo *root)
+{
+	switch (root->parse->commandType)
+	{
+		case CMD_UPDATE:
+			return "UPDATE";
+		case CMD_DELETE:
+			return "DELETE";
+		case CMD_MERGE:
+			return "MERGE";
+		default:
+			return "FOR UPDATE and FOR SHARE";
+	}
+}
+
+static void
+reject_scores(PlannerInfo *root, RelOptInfo *rel)
+{
+	ScoreRefs	refs = {rel->relid, score_exprs(root, rel)};
+
+	score_walker((Node *) root->parse->returningList, &refs);
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		score_walker((Node *) rinfo->clause, &refs);
+	if (refs.found != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.score() is not available in %s", unranked_statement(root)),
+				 errhint("Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.")));
+}
+
 /*
  * A score the query reads can only come from a ranked scan, so that path
  * replaces the others; without one the unordered scan competes with them.
@@ -801,17 +837,21 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->tablesample ||
-		root->parse->commandType != CMD_SELECT || root->rowMarks != NIL ||
 		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
 		sift_catalog()->am == InvalidOid)
 		return;
+	if (root->parse->commandType != CMD_SELECT || root->rowMarks != NIL)
+	{
+		reject_scores(root, rel);
+		return;
+	}
 	if (rte->inh)
 	{
 		if (!holds_all_rels(root, rel))
 			carry_parent_scores(root, rel);
 		return;
 	}
-	if (rte->relkind != RELKIND_RELATION)
+	if (rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_MATVIEW)
 		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
@@ -994,7 +1034,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 		bms_membership(input_rel->relids) != BMS_SINGLETON)
 		return;
 	rte = root->simple_rte_array[input_rel->relid];
-	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample || rte->inh)
+	if (rte->rtekind != RTE_RELATION || (rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_MATVIEW) || rte->tablesample || rte->inh)
 		return;
 	foreach_ptr(Node, e, output_rel->reltarget->exprs)
 		if (!plain_count(e))
@@ -1050,6 +1090,29 @@ score_outputs(PlannerInfo *root, RelOptInfo *rel, List *tlist)
 	return tlist;
 }
 
+/*
+ * LIMIT $n [OFFSET $m] of a generic plan: its limit cannot be costed, but the scan reads the parameters when
+ * it starts (the plan's k hint is what root->limit_tuples says, which for a parameter is nothing)
+ */
+static List *
+limit_params(PlannerInfo *root, CustomPath *best)
+{
+	Query	   *q = root->parse;
+
+	if (DatumGetInt64(list_nth_node(Const, best->custom_private, SIFT_PRIV_K)->constvalue) > 0 ||
+		DatumGetInt32(list_nth_node(Const, best->custom_private, SIFT_PRIV_MODE)->constvalue) != SIFT_MODE_RANKED ||
+		q->limitCount == NULL || q->limitOption != LIMIT_OPTION_COUNT || q->groupClause || q->groupingSets ||
+		q->distinctClause || q->hasAggs || q->hasWindowFuncs || q->havingQual || q->hasTargetSRFs)
+		return NIL;
+	if (!IsA(q->limitCount, Param) || ((Param *) q->limitCount)->paramkind != PARAM_EXTERN)
+		return NIL;
+	if (q->limitOffset == NULL)
+		return list_make1(q->limitCount);
+	if (IsA(q->limitOffset, Const) || (IsA(q->limitOffset, Param) && ((Param *) q->limitOffset)->paramkind == PARAM_EXTERN))
+		return list_make2(q->limitCount, q->limitOffset);
+	return NIL;
+}
+
 static Plan *
 sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses,
 			   List *custom_plans)
@@ -1071,7 +1134,8 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = scan_tlist(root, rel, residual);
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make2(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual);
+	cs->custom_exprs = list_make3(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
+								  limit_params(root, best));
 	cs->methods = &sift_scan_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, ii->indexoid);
 	if (custom_plans != NIL)
@@ -1094,7 +1158,7 @@ sift_plan_count(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlis
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = tlist;
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make2(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL);
+	cs->custom_exprs = list_make3(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL, NIL);
 	cs->methods = &sift_count_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids,
 										   DatumGetObjectId(((Const *) linitial(best->custom_private))->constvalue));

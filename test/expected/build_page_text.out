@@ -1,0 +1,61 @@
+-- CREATE INDEX copies the text of the documents of a heap page to analyze them in tid order (a HOT chain
+-- reports the tid of its root, which can be below the ones before it). A page of large documents does not
+-- hold them all: what is buffered is analyzed when the page's text passes sift.test_page_text, and a
+-- document that is larger is analyzed at once. The documents that come after with a lower tid start a run.
+CREATE EXTENSION pg_sift;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE pt (id int, body text) WITH (fillfactor = 40);
+INSERT INTO pt SELECT i, 'w' || i || ' common g' || (i % 10) FROM generate_series(1, 3000) i;
+-- HOT updates of rows before the index: the new versions are after the next rows in the page
+BEGIN;
+UPDATE pt SET body = body || ' extra' WHERE id % 3 = 0;
+SELECT pg_stat_get_xact_tuples_hot_updated('pt'::regclass) = 1000 AS hot_updates;
+ hot_updates 
+-------------
+ t
+(1 row)
+
+COMMIT;
+CREATE FUNCTION answers() RETURNS text AS $$
+	SELECT (SELECT count(*) FROM pt WHERE body @@> 'common') || ' ' || (SELECT count(*) FROM pt WHERE body @@> 'extra') || ' ' ||
+	       (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM pt WHERE body @@> 'g5 OR w1500 OR extra AND g3')
+$$ LANGUAGE sql;
+CREATE INDEX pt_ref ON pt USING sift (body);
+CREATE TABLE ref AS SELECT answers() AS a;
+DROP INDEX pt_ref;
+-- 100 bytes of text: about two documents at a time, and the ones after a HOT chain out of order
+SET sift.test_page_text = 100;
+CREATE INDEX pt_small ON pt USING sift (body);
+SELECT sift.verify('pt_small', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT answers() = a AS small_same FROM ref;
+ small_same 
+------------
+ t
+(1 row)
+
+DROP INDEX pt_small;
+-- every document larger than the limit: analyzed on its own
+SET sift.test_page_text = 10;
+SET max_parallel_maintenance_workers = 2;
+ALTER TABLE pt SET (parallel_workers = 2);
+CREATE INDEX pt_each ON pt USING sift (body);
+SELECT sift.verify('pt_each', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT answers() = a AS each_same FROM ref;
+ each_same 
+-----------
+ t
+(1 row)
+
+DROP TABLE pt, ref;
+DROP FUNCTION answers();
+DROP EXTENSION pg_sift;

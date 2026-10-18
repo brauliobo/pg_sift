@@ -17,6 +17,11 @@ runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-00
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
 `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
+The regression tests listed in `TESTING_REGRESS` (Makefile) need those functions and are skipped by a release build; every other one
+(but the slow ones of `SLOW_REGRESS` in `scripts/ci.sh`) runs twice in `make check`, against the testing build and against the release library (`SIFT_TESTING` unset, built in a copy of the tree,
+job `release-library-regress`, `scripts/release-library-check.sh`). Tests of limits, privileges and the planner belong in the second group (do not use
+`sift._test_*` or the `sift.test_*` settings in them), so that they run against the library users get. `SIFT_TESTING= scripts/pgtest.sh install`
+builds it by hand.
 
 Every suite runs under one leak gate, `scripts/leakcheck.sh`, without any test referring to it: the server logs of every
 cluster and node are scanned for what PostgreSQL logs when a transaction or backend leaks (buffer, relcache, TupleDesc,

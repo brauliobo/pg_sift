@@ -23,6 +23,8 @@ static const uint16 slice_size[NLEVELS] = {8, 16, 32, 64, 128, 256, 512, 1024, 2
 int			sift_test_run_docs = 0;
 int			sift_test_fanin = 0;
 int			sift_test_segment_postings = 0;
+int			sift_test_pool_blocks = 0;
+void		(*sift_test_merge_term) (uint32 nterms, uint64 df) = NULL;
 #endif
 
 /* A term's postings: varint(delta << 1 | tf > 1) [tf] [position record] over doc ordinals, in pool slices */
@@ -60,11 +62,49 @@ struct SiftInvBuf
 	uint8	  **blocks;
 	uint32		nblocks;
 	uint32		pool_next;
-	uint32		maxdf;
+	bool		term_full;		/* a term has maxdf_full postings */
+	uint32		maxdf_full;		/* the buffer is full when a term has this many postings */
+	uint32		pool_room;		/* blocks of the pool the buffer leaves free for the doc it is about to take */
+	Size		small_doc;		/* a doc of fewer bytes of text always fits those blocks */
 	uint32	   *doc_terms;		/* term indexes of the doc being added */
 	int			maxdoc_terms;
 	bool		positions;		/* docs carry position records */
 };
+
+static uint32
+pool_max(void)
+{
+	return TEST_KNOB(sift_test_pool_blocks, POOL_MAX_BLOCKS);
+}
+
+/* A leaf run holds a term up to half of a segment's limit, but at least this many postings (small test limits) */
+#define MIN_RUN_POSTINGS	64
+
+/* Bytes of the pool a doc takes for each byte of its text, at most (3 for a position, 1024 for a term of every 2 bytes) */
+#define SMALL_DOC_BYTES	1100
+
+/*
+ * What a term takes of a segment, at most: a posting 8 bytes of its blob besides its position record, a
+ * dictionary entry 32 bytes besides the term (lengths, df, flags, bound; front coding is ignored).
+ */
+#define BLOB_POSTING_BYTES	8
+#define DICT_ENTRY_BYTES	32
+
+/* The term of a run: len bytes, df postings and posbytes bytes of position records */
+static void
+run_note_term(SiftRun *run, int len, uint64 df, uint64 posbytes)
+{
+	run->maxdf = Max(run->maxdf, df);
+	run->maxblob = Max(run->maxblob, df * BLOB_POSTING_BYTES + posbytes);
+	run->dict += len + DICT_ENTRY_BYTES;
+}
+
+/* Postings of the largest term of a segment that fit its memory: the posting writer takes about 10 bytes of each */
+uint64
+sift_seg_postings(Size budget)
+{
+	return TEST_KNOB(sift_test_segment_postings, budget / 10);
+}
 
 const char *
 sift_run_file(int worker, int run)
@@ -88,6 +128,15 @@ run_new(MemoryContext mcxt, SharedFileSet *fileset, int worker, int id)
 	run->file = fileset ? BufFileCreateFileSet(&fileset->fs, sift_run_file(worker, id)) : BufFileCreateTemp(false);
 	MemoryContextSwitchTo(old);
 	return run;
+}
+
+/* The file of a run another process wrote: opened when the run is merged, not while it waits */
+static BufFile *
+run_open(SiftRun *run)
+{
+	if (run->file == NULL)
+		run->file = BufFileOpenFileSet(&run->fileset->fs, sift_run_file(run->worker, run->id), O_RDONLY, false);
+	return run->file;
 }
 
 /* Closes a merged run; a fileset's file goes too, as the leader or the worker has no more use for it */
@@ -165,6 +214,7 @@ typedef struct Batch
 	uint8		tf[BATCH];
 	uint16		dl[BATCH];
 	bool		haspos;			/* the term's postings carry position records */
+	uint64		termpos;		/* bytes of the position records of the term's postings so far */
 	uint8	   *pos;			/* of the n postings, back to back */
 	Size		poslen;
 	Size		poscap;
@@ -202,7 +252,7 @@ inv_init(SiftInvBuf *b)
 	b->blocks = palloc(POOL_MAX_BLOCKS * sizeof(uint8 *));
 	b->nblocks = 0;
 	b->pool_next = 0;
-	b->maxdf = 0;
+	b->term_full = false;
 	b->doc_terms = NULL;
 	b->maxdoc_terms = 0;
 	MemoryContextSwitchTo(old);
@@ -216,6 +266,10 @@ sift_inv_create(Size budget, MemoryContext mcxt, bool positions)
 	b->positions = positions;
 	b->parent = mcxt;
 	b->budget = Max(budget, 1024 * 1024);
+	b->maxdf_full = Max(Min(Min(Max(sift_seg_postings(b->budget) / 2, MIN_RUN_POSTINGS), SIFT_BLOB_MAX / (4 * BLOB_POSTING_BYTES)),
+							PG_INT32_MAX), 1);
+	b->pool_room = Max(pool_max() / 32, 3);
+	b->small_doc = (Size) (b->pool_room - 2) * POOL_BLOCK / SMALL_DOC_BYTES;
 	b->mcxt = AllocSetContextCreate(mcxt, "sift inverted buffer", ALLOCSET_DEFAULT_SIZES);
 	inv_init(b);
 	return b;
@@ -235,11 +289,43 @@ inv_mem(const SiftInvBuf *b)
 		(Size) (b->mask + 1) * sizeof(uint64) + b->tcap + (Size) b->nblocks * POOL_BLOCK;
 }
 
+static inline bool
+inv_full(const SiftInvBuf *b)
+{
+	return inv_mem(b) >= b->budget || b->nblocks + b->pool_room >= pool_max() ||
+		b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
+		b->term_full || b->tlen + (Size) b->nterms * DICT_ENTRY_BYTES >= SIFT_DICT_MAX / 4;
+}
+
 bool
 sift_inv_full(const SiftInvBuf *b)
 {
-	return inv_mem(b) >= b->budget || b->nblocks >= POOL_MAX_BLOCKS - 1 || b->ndocs >= TEST_KNOB(sift_test_run_docs, PG_INT32_MAX / 2) ||
-		b->tlen >= PG_INT32_MAX;
+	return inv_full(b);
+}
+
+/*
+ * Can the buffer take a doc of nterms terms and textlen bytes of text? Its terms must not exhaust the pool, which the doc
+ * is not stopped by once added: a term takes a slice of 8 bytes, or one of up to 2 kB when its slice is full, and each
+ * position at most 5 bytes of a record. A buffer that is not full always has room for a doc of fewer than small_doc bytes
+ * (a token takes 2 bytes of text at least), so only larger ones need the check.
+ */
+bool
+sift_inv_fits(const SiftInvBuf *b, int nterms, Size textlen)
+{
+	return (Size) b->nblocks * POOL_BLOCK + (Size) nterms * 2048 + 3 * textlen + 2 * POOL_BLOCK <= (Size) pool_max() * POOL_BLOCK;
+}
+
+Size
+sift_inv_small_doc(const SiftInvBuf *b)
+{
+	return b->small_doc;
+}
+
+/* Is tid's key above that of the last doc? Docs must be added in ascending order */
+bool
+sift_inv_after(const SiftInvBuf *b, ItemPointer tid)
+{
+	return b->ndocs == 0 || sift_key_from_tid(tid) > DOC_KEY(b->docs[b->ndocs - 1]);
 }
 
 bool
@@ -255,7 +341,7 @@ pool_alloc(SiftInvBuf *b, uint32 size)
 
 	if ((b->pool_next >> POOL_SHIFT) >= b->nblocks || (b->pool_next & (POOL_BLOCK - 1)) + size > POOL_BLOCK)
 	{
-		if (b->nblocks == POOL_MAX_BLOCKS)
+		if (b->nblocks == pool_max())
 			elog(ERROR, "sift: inverted buffer pool exhausted");
 		b->blocks[b->nblocks++] = MemoryContextAlloc(b->mcxt, POOL_BLOCK);
 		b->pool_next = (b->nblocks - 1) << POOL_SHIFT;
@@ -404,7 +490,7 @@ term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 	return &b->terms[b->nterms - 1];
 }
 
-void
+bool
 sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
 {
 	SiftKey		key = sift_key_from_tid(tid);
@@ -456,8 +542,10 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 				slice_put(b, t, terms[i].pos[k]);
 		t->last = ord;
 		t->df++;
-		b->maxdf = Max(b->maxdf, t->df);
+		if (t->df >= b->maxdf_full)
+			b->term_full = true;
 	}
+	return inv_full(b);
 }
 
 /* Next posting of a term: doc ordinal and tf (see term_chunk) */
@@ -573,6 +661,7 @@ batch_flush(Batch *bt)
 	else if (bt->n)
 		sift_postw_add(bt->pw, bt->keys, bt->tf, bt->dl, bt->n, bt->haspos ? bt->pos : NULL, bt->plen);
 	bt->n = 0;
+	bt->termpos += bt->poslen;
 	bt->poslen = 0;
 }
 
@@ -735,9 +824,10 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 	SortTerm   *order = sorted_terms(b);
 	SiftKey		prev = 0;
 	PosChunk   *pc = palloc0(sizeof(PosChunk));
+	uint64		maxblob = 0,
+				maxdf = 0;
 
 	run->ndocs = b->ndocs;
-	run->maxdf = b->maxdf;
 	io_varint(&io, b->ndocs);
 	io_varint(&io, b->positions);
 	for (uint32 i = 0; i < b->ndocs; prev = DOC_KEY(b->docs[i++]))
@@ -751,6 +841,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 		TermIter	it;
 		uint32		ords[CHUNK];
 		uint8		tf[CHUNK];
+		uint64		posbytes = 0;
 
 		io_varint(&io, t->len);
 		io_put(&io, b->tbytes + t->term_off, t->len);
@@ -777,12 +868,18 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 				}
 				prev = DOC_KEY(d);
 			}
+			posbytes += off;
 		}
+		maxdf = Max(maxdf, t->df);
+		maxblob = Max(maxblob, t->df * BLOB_POSTING_BYTES + posbytes);
 		if (i % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
 	io_varint(&io, 0);
 	io_flush(&io);
+	run->maxdf = maxdf;
+	run->maxblob = maxblob;
+	run->dict = b->tlen + (uint64) b->nterms * DICT_ENTRY_BYTES;
 	MemoryContextSwitchTo(old);
 	inv_reset(b);
 	return run;
@@ -799,12 +896,6 @@ SiftRun *
 sift_inv_spill_shared(SiftInvBuf *b, SharedFileSet *fileset, int worker, int id)
 {
 	return spill_to(b, run_new(b->parent, fileset, worker, id));
-}
-
-uint64
-sift_run_maxdf(const SiftRun *run)
-{
-	return run->maxdf;
 }
 
 static void
@@ -879,9 +970,9 @@ batch_to_run(Batch *bt)
 typedef struct MergeOut
 {
 	SiftSegmentWriter *sw;
+	SiftRun    *run;			/* the run that is written, when there is no sw */
 	RunIO		io;
 	SiftKey		prev;
-	uint64		maxdf;
 } MergeOut;
 
 static void
@@ -902,6 +993,7 @@ static void
 out_begin_term(MergeOut *mo, Batch *bt, const char *term, int len, uint64 df)
 {
 	bt->n = 0;
+	bt->termpos = 0;
 	if (mo->sw)
 	{
 		bt->pw = sift_segw_begin_term(mo->sw, term, len);
@@ -912,7 +1004,6 @@ out_begin_term(MergeOut *mo, Batch *bt, const char *term, int len, uint64 df)
 	io_varint(&mo->io, df);
 	io_varint(&mo->io, bt->haspos);
 	bt->prev = 0;
-	mo->maxdf = Max(mo->maxdf, df);
 }
 
 /* All runs' docs in key order (the runs' key ranges may interleave) */
@@ -1065,10 +1156,10 @@ open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint64 *nd
 	for (int i = 0; i < nruns; i++)
 	{
 		rd[i].idx = i;
-		rd[i].io.file = runs[i]->file;
+		rd[i].io.file = run_open(runs[i]);
 		rd[i].io.cap = reader_buf(budget, nruns);
 		rd[i].io.buf = palloc(rd[i].io.cap);
-		if (BufFileSeek(runs[i]->file, 0, 0, SEEK_SET) != 0)
+		if (BufFileSeek(rd[i].io.file, 0, 0, SEEK_SET) != 0)
 			elog(ERROR, "sift: could not rewind a build run");
 		rd[i].dleft = io_get_varint(&rd[i].io);
 		rd[i].haspos = io_get_varint(&rd[i].io);
@@ -1126,13 +1217,16 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 		batch_flush(bt);
 		if (mo->sw)
 			sift_segw_end_term(mo->sw);
+		else
+			run_note_term(mo->run, len, df, bt->termpos);
 		for (int i = 0; i < k; i++)
 		{
 			reader_next_term(cur[i]);
 			if (cur[i]->len)
 				binaryheap_add(heap, PointerGetDatum(cur[i]));
 		}
-		if (++nterms % 1024 == 0)
+		TEST_MERGE_TERM(++nterms, df);
+		if (nterms % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
 }
@@ -1144,7 +1238,7 @@ sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 	SiftRun    *out = run_new(CurrentMemoryContext, home->fileset, home->worker, home->nfiles++);
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
-	MergeOut	mo = {.io = {.file = out->file,.buf = palloc(IO_BUF)}};
+	MergeOut	mo = {.run = out,.io = {.file = out->file,.buf = palloc(IO_BUF)}};
 	bool		positions;
 	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &out->ndocs);
 
@@ -1153,7 +1247,6 @@ sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 	merge_readers(rd, nruns, positions, &mo);
 	io_varint(&mo.io, 0);
 	io_flush(&mo.io);
-	out->maxdf = mo.maxdf;
 	for (int i = 0; i < nruns; i++)
 	{
 		run_close(runs[i]);
@@ -1170,15 +1263,15 @@ run_size_cmp(const void *a, const void *b)
 	return pg_cmp_u64((*(SiftRun *const *) b)->ndocs, (*(SiftRun *const *) a)->ndocs);
 }
 
-/* Merges the smallest runs, as few as it takes, until a merge can read all that are left; returns their number */
+/* Merges the smallest runs, as few as it takes, until target are left; returns their number */
 int
-sift_shrink_runs(SiftRun **runs, int nruns, Size budget, RunHome *home)
+sift_shrink_runs(SiftRun **runs, int nruns, int target, Size budget, RunHome *home)
 {
 	int			fanin = sift_merge_fanin(budget);
 
-	while (nruns > fanin)
+	while (nruns > target)
 	{
-		int			k = Min(fanin, nruns - fanin + 1);
+		int			k = Min(fanin, nruns - target + 1);
 
 		qsort(runs, nruns, sizeof(SiftRun *), run_size_cmp);
 		runs[nruns - k] = sift_merge_to_run(runs + nruns - k, k, budget, home);
@@ -1201,7 +1294,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	RunReader  *rd;
 
 	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
-	nruns = sift_shrink_runs(runs, nruns, budget, &tmp);
+	nruns = sift_shrink_runs(runs, nruns, sift_merge_fanin(budget), budget, &tmp);
 	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(cxt);
 	rd = open_readers(runs, nruns, budget, &positions, &ndocs);
@@ -1222,7 +1315,7 @@ typedef struct DumpState
 	RunIO		io;
 	SiftKey		prev;
 	uint64		ndocs;
-	uint64		maxdf;
+	SiftRun    *run;
 } DumpState;
 
 static void
@@ -1261,7 +1354,7 @@ dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const 
 			pos += poslen[j];
 		}
 	}
-	ds->maxdf = Max(ds->maxdf, info->df);
+	run_note_term(ds->run, len, info->df, pos ? info->pos_len : 0);
 	return true;
 }
 
@@ -1278,6 +1371,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	old = MemoryContextSwitchTo(mcxt);
 	run = palloc0(sizeof(SiftRun));
 	run->file = ds.io.file = BufFileCreateTemp(false);
+	ds.run = run;
 	ds.io.buf = palloc(IO_BUF);
 	run->ndocs = ndocs;
 	io_varint(&ds.io, ndocs);
@@ -1288,7 +1382,6 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	io_varint(&ds.io, 0);
 	io_flush(&ds.io);
 	pfree(ds.io.buf);
-	run->maxdf = ds.maxdf;
 	MemoryContextSwitchTo(old);
 	return run;
 }
