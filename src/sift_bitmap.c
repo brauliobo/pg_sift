@@ -124,13 +124,15 @@ static uint8_t *put_varint(uint8_t *p, uint64_t x)
 	return p;
 }
 
+/* varint at p of at most 56 bits (a key or a count has 41 at most, so a sum of three cannot wrap); a blob is followed by SIFT_KERN_PAD zero bytes, which end a run that the blob does not */
 static const uint8_t *get_varint(const uint8_t *p, uint64_t *x)
 {
 	*x = 0;
-	for (int s = 0;; s += 7) {
+	for (int s = 0; s < 56; s += 7) {
 		*x |= (uint64_t)(*p & 0x7f) << s;
 		if (!(*p++ & 0x80)) return p;
 	}
+	sift_codec_corrupt("varint longer than 56 bits");
 }
 
 static uint32_t list_ob(const sift_tid *t, uint32_t n)
@@ -424,6 +426,9 @@ static uint32_t gallop_tid(const sift_tid *t, uint32_t n, uint32_t i, uint32_t g
 	return lo;
 }
 
+/* a group's offset bitmap is 1, 2, 4, 8, 16, ..., 64 bytes per page */
+static inline int group_width_ok(uint32_t w) { return w && ((w <= 8 && !(w & (w - 1))) || (w <= SIFT_MAX_W && !(w & 7))); }
+
 /* incremental builder of a decoded group in c->buf; narrow bitmaps accumulate in cur */
 typedef struct { uint64_t pages[4], cur; uint32_t r, last, w; uint8_t *off; } builder;
 
@@ -435,6 +440,7 @@ static inline void build_flush(builder *b)
 static inline void build_add(builder *b, uint32_t pg, uint32_t o)
 {
 	if (pg != b->last) {
+		if (b->last != UINT32_MAX && pg < b->last) sift_codec_corrupt("postings of a group are not in page order");
 		build_flush(b);
 		b->cur = 0, b->r++, b->last = pg, b->pages[pg >> 6] |= 1ull << (pg & 63);
 		if (b->w > 8) memset(b->off + (b->r - 1) * b->w, 0, b->w);
@@ -465,20 +471,34 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	if (i == c->gr.ng) return ended(c);
 	c->gr.i = i;
 	uint32_t key = c->gr.key[i], w = key & 0x7f, base = c->gr.base[i], n = c->gr.base[i + 1] - base;
-	const uint8_t *p = c->gr.payload + c->gr.poff[i];
+	uint32_t lo = c->gr.poff[i], hi = c->gr.poff[i + 1], plen = c->gr.plen;
+	const uint8_t *p = c->gr.payload + lo;
+	/* the group lies inside the payload and its width and posting count are possible: what follows reads only [p, p + hi - lo) */
+	if (!group_width_ok(w) || lo > hi || hi > plen || c->gr.base[i + 1] <= base ||
+	    c->gr.base[i + 1] > c->gr.base[c->gr.ng])
+		sift_codec_corrupt("GROUPED group extents are out of order");
 	/* software prefetch 4 groups ahead: groups are small and visited in order */
 	if (i + 4 < c->gr.ng)
-		for (uint32_t q = c->gr.poff[i + 4], e = c->gr.poff[i + 5]; q < e; q += 64) __builtin_prefetch(c->gr.payload + q);
+		for (uint32_t q = c->gr.poff[i + 4], e = c->gr.poff[i + 5] < plen ? c->gr.poff[i + 5] : plen; q < e; q += 64) __builtin_prefetch(c->gr.payload + q);
 	if (!(key & 0x80)) {
 		uint64_t pages[4];
+		if (hi - lo < 32) sift_codec_corrupt("GROUPED bitmap group is shorter than its page mask");
 		memcpy(pages, p, 32);
+		if (hi - lo - 32 != sift_popcount((const uint8_t *)pages, 32) * w) sift_codec_corrupt("GROUPED bitmap group does not match its page mask");
 		return found(c, key >> 8, w, pages, p + 32, base, n);
 	}
+	if (hi - lo != (uint64_t)n * (w <= 32 ? 2 : 4)) sift_codec_corrupt("GROUPED array group has the wrong size");
+	/* the entries are page << 8 | offset (u16) or page << 16 | offset (u32): they are masked into the builder's arrays and range checked
+	 * once for the group, so a damaged entry raises after the loop and never indexes outside them */
 	builder b = { { 0 }, 0, 0, UINT32_MAX, w, c->buf };
+	uint32_t bad = 0, olim = 8 * w, omask = w <= 8 ? 63 : 511;
 	for (uint32_t k = 0; k < n; k++) {
 		uint32_t e = w <= 32 ? (uint32_t)p[2 * k] | (uint32_t)p[2 * k + 1] << 8 : ld32(p + 4 * k);
-		build_add(&b, w <= 32 ? e >> 8 : e >> 16, w <= 32 ? e & 0xff : e & 0xffff);
+		uint32_t pg = w <= 32 ? e >> 8 : e >> 16, o = w <= 32 ? e & 0xff : e & 0xffff;
+		bad |= (pg >= SIFT_GROUP_PAGES) | (o >= olim);
+		build_add(&b, pg & (SIFT_GROUP_PAGES - 1), o & omask);
 	}
+	if (bad) sift_codec_corrupt("GROUPED array entry lies outside its page bitmap");
 	build_flush(&b);
 	return found(c, key >> 8, w, b.pages, c->buf, base, n);
 }
@@ -491,24 +511,36 @@ static inline uint64_t ld_upto8(const uint8_t *p, const uint8_t *end)
 	return x;
 }
 
-static void ef_hdr(const uint8_t *p, uint64_t prev, uint32_t cnt, ef_blk *b)
+/*
+ * The header of the block of cnt postings at p, whose keys are below lim (a power of two: a key's group number then fits 24 bits, and
+ * sift_next never wraps). chk: the block lies inside the blob that ends at end and its keys are below lim. A cursor checks a block
+ * once: when it opens a blob that has a tf stream, it walks every header to find the stream and later reads without chk; otherwise
+ * each block is checked as it is read. A varint of at most 9 bytes that starts before end stays inside the zero bytes after the blob.
+ */
+static inline void ef_hdr(const uint8_t *p, const uint8_t *end, uint64_t lim, uint64_t prev, uint32_t cnt, int chk, ef_blk *b)
 {
 	uint64_t d, u1;
 	p = get_varint(get_varint(p, &d), &u1);
+	if (chk && (p > end || u1 + 1 < cnt || prev + d + u1 >= lim)) sift_codec_corrupt("LIST block header is out of bounds");
 	b->x0 = prev + d, b->u = u1 + 1, b->cnt = cnt, b->l = ef_l(b->u, cnt);
-	b->lows = p, b->highs = p + ef_lows(cnt, b->l), b->end = b->highs + ef_highs(b->u, cnt, b->l);
+	size_t lows = ef_lows(cnt, b->l), highs = ef_highs(b->u, cnt, b->l);
+	if (chk && (size_t)(end - p) < lows + highs) sift_codec_corrupt("LIST block overruns the blob");
+	b->lows = p, b->highs = p + lows, b->end = b->highs + highs;
 }
 
 static void ef_decode(const ef_blk *b, uint32_t ob, sift_tid *out)
 {
 	uint32_t l = b->l, k = 0;
 	uint64_t mask = (1ull << l) - 1, omask = (1ull << ob) - 1;
-	for (uint32_t wi = 0; k < b->cnt; wi++)
+	size_t nw = (size_t)(b->end - b->highs + 7) / 8;
+	/* the high bits are the block's own bytes: a block whose bits run out before cnt postings is damaged */
+	for (uint32_t wi = 0; wi < nw && k < b->cnt; wi++)
 		for (uint64_t w = ld_upto8(b->highs + 8 * wi, b->end); w && k < b->cnt; w &= w - 1, k++) {
 			uint64_t pos = (uint64_t)k * l, h = 64 * wi + (uint32_t)__builtin_ctzll(w) - k;
 			uint64_t x = b->x0 + (h << l | ((ld_upto8(b->lows + (pos >> 3), b->highs) >> (pos & 7)) & mask));
 			out[k] = SIFT_TID(x >> ob, (x & omask) + 1);
 		}
+	if (k != b->cnt) sift_codec_corrupt("LIST block high bits do not count its postings");
 }
 
 /* decode the LIST block b (postings [start, start + cnt)) into ls.blk */
@@ -525,12 +557,16 @@ static inline sift_tid ls_at(sift_cur *c, uint32_t *i, uint32_t target)
 	while (*i >= c->ls.bi + c->ls.bn) {
 		uint32_t start = c->ls.bi + c->ls.bn, cnt = blk_cnt(c->ls.n, start);
 		ef_blk b;
-		ef_hdr(c->ls.p, c->ls.prev, cnt, &b);
+		ef_hdr(c->ls.p, c->ls.end, c->ls.lim, c->ls.prev, cnt, !c->tf, &b);
 		uint64_t last = b.x0 + b.u - 1, d;
 		c->ls.p = b.end, c->ls.prev = last;
-		if (*i <= start && start + cnt < c->ls.n && ((last + (get_varint(b.end, &d), d)) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
-			c->ls.bi = start + cnt, c->ls.bn = 0, *i = start + cnt;
-			continue;
+		/* the next block starts at last + d: when that is before the target group, skip this block undecoded */
+		if (*i <= start && start + cnt < c->ls.n) {
+			get_varint(b.end, &d);
+if (((last + d) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
+				c->ls.bi = start + cnt, c->ls.bn = 0, *i = start + cnt;
+				continue;
+			}
 		}
 		ls_decode(c, &b, start);
 	}
@@ -555,6 +591,7 @@ static const sift_grp *ls_seek(sift_cur *c, uint32_t target)
 			for (; i < end && SIFT_GID(t[i]) == gid; i++) {
 				uint32_t pg = SIFT_BLK(t[i]) & (SIFT_GROUP_PAGES - 1);
 				if (pg != b.last) {
+					if (b.last != UINT32_MAX && pg < b.last) sift_codec_corrupt("postings of a group are not in page order");
 					build_flush(&b);
 					b.cur = 0, b.r++, b.last = pg, b.pages[pg >> 6] |= 1ull << (pg & 63);
 				}
@@ -579,7 +616,7 @@ uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
 		uint32_t cnt = blk_cnt(n, i);
 		if (!t) {
 			ef_blk b;
-			ef_hdr(c->ls.p, c->ls.prev, cnt, &b);
+			ef_hdr(c->ls.p, c->ls.end, c->ls.lim, c->ls.prev, cnt, !c->tf, &b);
 			c->ls.p = b.end, c->ls.prev = b.x0 + b.u - 1;
 			ef_decode(&b, c->ls.ob, blk);
 		}
@@ -603,7 +640,7 @@ void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi)
 	uint64_t prev = c->ls.prev, first = 0;
 	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 		ef_blk b;
-		ef_hdr(p, prev, blk_cnt(n, i), &b);
+		ef_hdr(p, c->ls.end, c->ls.lim, prev, blk_cnt(n, i), !c->tf, &b);
 		if (i == 0) first = b.x0;
 		p = b.end, prev = b.x0 + b.u - 1;
 	}
@@ -625,36 +662,50 @@ void sift_cur_tids(sift_cur *c, const sift_tid *t, uint32_t n, uint8_t *buf)
 	c->ls.t = t, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0, c->ls.w = sift_w_for(maxoff);
 }
 
-void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
+void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf)
 {
-	uint32_t n = sift_blob_n(blob);
+	const uint8_t *end = blob + len;
+	if (len < 3 || blob[0] >> 4 & ~SIFT_F_TF) sift_codec_corrupt("blob header is invalid");
 	int wtf = blob[0] >> 4 & SIFT_F_TF;
 	if (sift_blob_kind(blob) == SIFT_LIST) {
-		cur_init(c, ls_seek, buf);
 		uint64_t nn;
-		c->ls.t = NULL, c->ls.p = get_varint(blob + 2, &nn), c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
-		if (wtf) c->ub1 = *c->ls.p++;
+		const uint8_t *p;
+		if (blob[1] > SIFT_LIST_OB_MAX) sift_codec_corrupt("LIST offset bits out of range");
+		if (!(p = get_varint_n(blob + 2, end, &nn)) || nn > UINT32_MAX || (wtf && p >= end)) sift_codec_corrupt("LIST header overruns the blob");
+		uint32_t n = (uint32_t)nn;
+		cur_init(c, ls_seek, buf);
+		c->ls.t = NULL, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
+		if (wtf) c->ub1 = *p++;
+		c->ls.p = p, c->ls.end = end, c->ls.lim = 1ull << (32 + blob[1]);
 		c->ls.ob = blob[1], c->ls.w = sift_w_for(1u << blob[1]), c->ls.prev = 0;
 		if (wtf) {
-			const uint8_t *p = c->ls.p;
 			uint64_t prev = 0;
 			for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 				ef_blk b;
-				ef_hdr(p, prev, blk_cnt(n, i), &b);
+				ef_hdr(p, end, c->ls.lim, prev, blk_cnt(n, i), 1, &b);
 				p = b.end, prev = b.x0 + b.u - 1;
 			}
+			if ((size_t)(end - p) < ((size_t)n + 1) / 2) sift_codec_corrupt("LIST tf stream overruns the blob");
 			c->tf = p;
 		}
 		return;
 	}
+	if (sift_blob_kind(blob) != SIFT_GROUPED) sift_codec_corrupt("blob kind is unknown");
+	if (len < 12) sift_codec_corrupt("GROUPED header overruns the blob");
+	uint64_t n = ld32(blob + 4), ng = ld32(blob + 8), tables = 12 + 4 * (3 * ng + 2), plen;
+	if (ng > n) sift_codec_corrupt("GROUPED group count is out of range");
+	if (tables > len) sift_codec_corrupt("GROUPED tables overrun the blob");
 	cur_init(c, gr_seek, buf);
-	uint32_t ng = ld32(blob + 8);
-	c->gr.ng = ng, c->gr.i = 0;
+	c->gr.ng = (uint32_t)ng, c->gr.i = 0;
 	c->gr.key = (const uint32_t *)(blob + 12);
 	c->gr.poff = c->gr.key + ng;
 	c->gr.base = c->gr.poff + ng + 1;
-	c->gr.payload = (const uint8_t *)(c->gr.base + ng + 1);
-	if (wtf) c->ub = c->gr.payload + c->gr.poff[ng], c->blk = c->ub + ng, c->tf = c->blk + 8 * ng;
+	c->gr.payload = blob + tables;
+	plen = c->gr.poff[ng];
+	if (plen > len - tables || (wtf && len - tables - plen < 9 * ng + (n + 1) / 2)) sift_codec_corrupt("GROUPED payload overruns the blob");
+	if (c->gr.poff[0] != 0 || c->gr.base[0] != 0 || c->gr.base[ng] != n) sift_codec_corrupt("GROUPED offsets do not start at zero and end at the count");
+	c->gr.plen = (uint32_t)plen;
+	if (wtf) c->ub = c->gr.payload + plen, c->blk = c->ub + ng, c->tf = c->blk + 8 * ng;
 }
 
 /* ---- operator cursors ---- */
@@ -931,13 +982,16 @@ size_t sift_keylist_encode(const sift_tid *t, uint32_t n, uint8_t *out)
 	return sift_encode(t, NULL, NULL, n, &o, out);
 }
 
-uint32_t sift_keylist_decode(const uint8_t *blob, sift_tid *out)
+uint32_t sift_keylist_decode(const uint8_t *blob, size_t len, sift_tid *out)
 {
-	uint64_t n, prev = 0;
-	const uint8_t *p = get_varint(blob + 2, &n) + (blob[0] >> 4 & SIFT_F_TF);
+	const uint8_t *end = blob + len, *p;
+	uint64_t n, prev = 0, lim;
+	if (len < 3 || sift_blob_kind(blob) != SIFT_LIST || blob[1] > SIFT_LIST_OB_MAX) sift_codec_corrupt("blob header is invalid");
+	lim = 1ull << (32 + blob[1]);
+if (!(p = get_varint_n(blob + 2, end, &n)) || n > UINT32_MAX || ((blob[0] >> 4 & SIFT_F_TF) && p++ >= end)) sift_codec_corrupt("LIST header overruns the blob");
 	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 		ef_blk b;
-		ef_hdr(p, prev, blk_cnt((uint32_t)n, i), &b);
+		ef_hdr(p, end, lim, prev, blk_cnt((uint32_t)n, i), 1, &b);
 		ef_decode(&b, blob[1], out + i);
 		p = b.end, prev = b.x0 + b.u - 1;
 	}

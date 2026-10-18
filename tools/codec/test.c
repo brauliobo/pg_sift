@@ -112,7 +112,7 @@ static void open_set(sift_cur *c, const set *s, int mode, int slot)
 	CHECK(len <= sift_encode_bound(s->n), "bound %zu > %zu", len, sift_encode_bound(s->n));
 	CHECK(len == sift_encode(s->t, s->tf, s->tf, s->n, &opts[mode], NULL), "size query mismatch mode %d: %zu vs %zu n %u", mode, len, sift_encode(s->t, s->tf, s->tf, s->n, &opts[mode], NULL), s->n);
 	CHECK(sift_blob_n(blob[slot]) == s->n, "n");
-	sift_cur_blob(c, blob[slot], cbuf[slot]);
+	sift_cur_blob(c, blob[slot], len, cbuf[slot]);
 }
 
 static void check_tf(const set *s, int mode, int slot, sift_cur *src, const sift_grp *res, const sift_tid *rt)
@@ -239,7 +239,7 @@ static void test_chunks(const set *a, sift_tid *tmp)
 	static uint64_t om[SIFT_GROUP_PAGES * 8], om2[SIFT_GROUP_PAGES * 8], om3[SIFT_GROUP_PAGES * 8];
 	static uint8_t chunk[4 + SIFT_GRP_MAXTIDS * 4], gb[SIFT_GRP_BYTES];
 	size_t len = sift_keylist_encode(a->t, a->n, blob[3]);
-	CHECK(len > 0 && sift_keylist_decode(blob[3], tmp) == a->n && !memcmp(tmp, a->t, a->n * 8ull), "keylist");
+	CHECK(len > 0 && sift_keylist_decode(blob[3], len, tmp) == a->n && !memcmp(tmp, a->t, a->n * 8ull), "keylist");
 	for (uint32_t i = 0; i < a->n;) {
 		uint32_t j = i, gid = SIFT_GID(a->t[i]), np = 0, last = UINT32_MAX;
 		uint64_t pm[4] = { 0 };
@@ -305,8 +305,8 @@ static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
 		sift_qterm qt[3];
 		static const sift_enc_opts eo[] = { { 0, 0, 0, 1 }, { SIFT_GROUPED, 0, 0, 1 }, { SIFT_LIST, 0, 0, 1 } };
 		for (int i = 0; i < nt; i++) {
-			sift_encode(s[i].t, s[i].tf, ub[i], s[i].n, &eo[rndn(3)], blob[i]);
-			sift_cur_blob(&c[i], blob[i], cbuf[i]);
+			size_t blen = sift_encode(s[i].t, s[i].tf, ub[i], s[i].n, &eo[rndn(3)], blob[i]);
+			sift_cur_blob(&c[i], blob[i], blen, cbuf[i]);
 			qt[i] = (sift_qterm){ &c[i], w[i], 0 };
 		}
 		/* filter: the last set when unused as a term, else a random superset-ish set */
@@ -354,8 +354,8 @@ static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
 	/* facets: counts of s[0] AND each value set */
 	sift_cur qc, vc[2], *vk[2] = { &vc[0], &vc[1] };
 	uint64_t cnt[2] = { 0, 0 };
-	sift_encode(s[0].t, NULL, NULL, s[0].n, NULL, blob[0]);
-	sift_cur_blob(&qc, blob[0], cbuf[0]);
+	size_t qlen = sift_encode(s[0].t, NULL, NULL, s[0].n, NULL, blob[0]);
+	sift_cur_blob(&qc, blob[0], qlen, cbuf[0]);
 	sift_cur_tids(&vc[0], s[1].t, s[1].n, cbuf[1]);
 	sift_cur_tids(&vc[1], s[2].t, s[2].n, cbuf[2]);
 	sift_facets(&qc, vk, 2, cnt);
