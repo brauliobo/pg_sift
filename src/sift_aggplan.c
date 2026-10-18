@@ -19,6 +19,7 @@
 #include "access/htup_details.h"
 #include "access/stratnum.h"
 #include "access/table.h"
+#include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
@@ -49,6 +50,7 @@
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
@@ -79,6 +81,7 @@ typedef struct SlotReq
 	Node	   *expr;
 	bool		is_key;
 	int			key;
+	int			agg;
 } SlotReq;
 
 typedef struct ComboCtx
@@ -589,6 +592,11 @@ nulltest_mutator(Node *n, AggCtx *c)
 static Node *
 normalize_expr(AggCtx *c, Node *n)
 {
+#if PG_VERSION_NUM >= 180000
+	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
+	if (c->root->group_rtindex > 0)
+		n = remove_nulling_relids(n, bms_make_singleton(c->root->group_rtindex), NULL);
+#endif
 	return nulltest_mutator(n, c);
 }
 
@@ -1104,6 +1112,7 @@ combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si)
 	rq = palloc0(sizeof(SlotReq));
 	rq->expr = expr;
 	rq->is_key = is_key;
+	rq->agg = -1;
 	cb->slots = lappend(cb->slots, rq);
 	*ci = combo_index(c, cb);
 	*si = list_length(cb->slots) - 1;
@@ -1188,6 +1197,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 
 			sl->is_key = rq->is_key;
 			sl->key = rq->key;
+			sl->agg = rq->agg;
 			sl->expr = combo_sub_mutator(rq->expr, &sub);
 		}
 	}
@@ -1420,12 +1430,18 @@ compile_pred(AggCtx *c, Node *n)
 
 /* ---------- keys and aggregates ---------- */
 
+static SlotReq *
+slot_req(AggCtx *c, int combo, int slot)
+{
+	return list_nth(((ComboCtx *) list_nth(c->combos, combo))->slots, slot);
+}
+
 /* the output table of a combo's key slot is the one of key `key` */
 static void
 combo_set_key(AggCtx *c, SiftAggKey *k, int key)
 {
 	if (k->kind == SAK_COMBO)
-		((SlotReq *) list_nth(((ComboCtx *) list_nth(c->combos, k->leaf))->slots, k->slot))->key = key;
+		slot_req(c, k->leaf, k->slot)->key = key;
 }
 
 /* a key that is an expression of several leaves, or reads the matching row of a joined table */
@@ -1463,7 +1479,8 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	k->eqop = sgc->eqop;
 	if ((leaf = match_leaf(c, expr)) >= 0)
 	{
-		if (!lut_leaf_ok(c, leaf))
+		/* a float leaf groups by float_key's bits; an expression of one is not a lookup table (too many values) */
+		if (!lut_leaf_ok(c, leaf) && !(leaf_of(c, leaf)->kind == SCL_SCALAR && leaf_of(c, leaf)->vtype == SCV_F64))
 			return false;
 		k->kind = SAK_LEAF;
 		k->leaf = leaf;
@@ -1662,8 +1679,79 @@ share_ordered(SiftAggSpec *s)
 	}
 }
 
+#if PG_VERSION_NUM >= 180000
+typedef CompareType SortStrategy;
+#define SORT_LT		COMPARE_LT
+#else
+typedef int16 SortStrategy;
+#define SORT_LT		BTLessStrategyNumber
+#endif
+
+/* the kind of min() or max(): its sort operator is the less (greater) than of the default btree order of the argument's type */
+static int
+minmax_kind(Aggref *a, Oid argtype)
+{
+	HeapTuple	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(a->aggfnoid));
+	TypeCacheEntry *tc = lookup_type_cache(argtype, TYPECACHE_BTREE_OPFAMILY | TYPECACHE_CMP_PROC_FINFO);
+	Oid			sortop,
+				opfamily,
+				opcintype;
+	SortStrategy strategy;
+
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for aggregate %u", a->aggfnoid);
+	sortop = ((Form_pg_aggregate) GETSTRUCT(tup))->aggsortop;
+	ReleaseSysCache(tup);
+	if (!OidIsValid(sortop) || !get_ordering_op_properties(sortop, &opfamily, &opcintype, &strategy) ||
+		opfamily != tc->btree_opf || !OidIsValid(tc->cmp_proc))
+		return -1;
+	return strategy == SORT_LT ? SAA_M_MIN : SAA_M_MAX;
+}
+
+/*
+ * count, count(DISTINCT), min, max, and sum, avg of numeric and float8 of an expression that reads a column of a joined table: the
+ * expression is a slot of the join's combo, which gives the id of the value of each joined row (none: NULL, for the rows a LEFT JOIN
+ * does not match). ai: the number of the aggregate in the spec, the owner of the table of the distinct values; -1: not allowed here.
+ */
 static bool
-compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
+compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
+{
+	Oid			fid = a->aggfnoid,
+				typ = exprType(arg);
+	TypeCacheEntry *tc = lookup_type_cache(typ, TYPECACHE_EQ_OPR);
+	RegProcedure lhs,
+				rhs;
+	bool		joined = false;
+	int			kind,
+				ci,
+				si;
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+		joined |= bms_is_member(jc->rti, pull_varnos(c->root, arg));
+	if (ai < 0 || !joined || !OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))
+		return false;
+	if (fid == F_COUNT_ANY)
+		kind = a->aggdistinct != NIL ? SAA_M_DISTINCT : SAA_M_COUNT;
+	else if ((fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC) && typ == NUMERICOID)
+		kind = fid == F_SUM_NUMERIC ? SAA_M_SUM : SAA_M_AVG;
+	else if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && typ == FLOAT8OID)
+		kind = fid == F_SUM_FLOAT8 ? SAA_M_SUM : SAA_M_AVG;
+	else if ((kind = minmax_kind(a, typ)) < 0)
+		return false;
+	if (!combo_slot(c, normalize_expr(c, arg), true, &ci, &si))
+		return false;
+	slot_req(c, ci, si)->agg = ai;
+	out->kind = kind;
+	out->nvx = 0;
+	out->argtype = typ;
+	out->combo = ci;
+	out->slot = si;
+	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
+	return true;
+}
+
+static bool
+compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	int			leaf = -1;
 	Node	   *arg = NULL;
@@ -1701,7 +1789,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		{
 			out->vx = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggVx));
 			if (!compile_vx(c, arg, out) || out->nvx < 2)
-				return false;
+				return compile_mapped(c, a, arg, out, ai);
 			out->kind = fid == F_SUM_FLOAT8 ? SAA_SUM_F64 : SAA_AVG_F64;
 			out->argtype = FLOAT8OID;
 			out->desc = psprintf("%s(%s)", get_func_name(fid), expr_text(c, arg));
@@ -1714,7 +1802,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 			leaf = match_leaf(c, arg);
 			c->numeric_ok = false;
 			if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
-				return false;
+				return compile_mapped(c, a, arg, out, ai);
 			out->leaf = leaf;
 			out->argtype = leaf_of(c, leaf)->typid;
 			switch (fid)
@@ -2435,14 +2523,13 @@ out_walker(Node *n, OutWalk *w)
 	foreach_ptr(Node, k, w->keys)
 		if (equal(n, k))
 			return false;
-	if (IsA(n, Aggref))
+	if (IsA(n, Aggref) || IsA(n, GroupingFunc))
 	{
 		if (!list_member(w->aggs, n))
 			w->aggs = lappend(w->aggs, n);
 		return false;
 	}
-	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, GroupingFunc) || IsA(n, WindowFunc) || IsA(n, SubPlan) ||
-		IsA(n, SubLink))
+	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, WindowFunc) || IsA(n, SubPlan) || IsA(n, SubLink))
 	{
 		w->bad = true;
 		return false;
@@ -2494,7 +2581,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
-	scan_cost += agg_rows * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW + s->ncombo * AGG_COMBO_ROW);
+	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW;
 	for (int i = 0; i < s->naggs; i++)
@@ -2782,6 +2869,24 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 	}
 }
 
+/* the groups the scan makes: those of the keys, or of each grouping set */
+static double
+set_groups(PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
+{
+	double		n = 0;
+
+	for (int set = 0; set < Max(s->nsets, 1); set++)
+	{
+		List	   *sub = NIL;
+
+		for (int j = 0; j < list_length(keys); j++)
+			if (s->nsets == 0 || (s->setmask[set] >> j & 1))
+				sub = lappend(sub, list_nth(keys, j));
+		n += sub == NIL ? 1.0 : Max(estimate_num_groups(root, sub, rows, NULL, NULL), 1.0);
+	}
+	return n;
+}
+
 /* the leaves the spec reads, the combos, the cost; adds the path to output_rel. keys: the group expressions of root's query */
 static void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
@@ -2805,7 +2910,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	c->used = bms_union(c->used, c->elem_used);
 	finish_leaves(c, s);
 	finish_combos(c, s);
-	s->est_groups = s->nkeys == 0 ? 1.0 : Max(estimate_num_groups(root, keys, input_rel->rows, NULL, NULL), 1.0);
+	s->est_groups = set_groups(root, s, keys, input_rel->rows);
 
 	cp = makeNode(CustomPath);
 	cp->path.pathtype = T_CustomScan;
@@ -2817,6 +2922,64 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	spec_deps(root, s);
 	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
 	add_path(output_rel, &cp->path);
+}
+
+/* the index among the group columns of the one with the sortgroupref ref */
+static int
+key_of_ref(Query *parse, int ref)
+{
+	foreach_node(SortGroupClause, sgc, parse->groupClause)
+		if (sgc->tleSortGroupRef == ref)
+			return foreach_current_index(sgc);
+	elog(ERROR, "sift: grouping column %d not found", ref);
+}
+
+/* GROUPING(columns): the keys of its arguments; the executor makes its bitmask of the set of each group */
+static bool
+compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out)
+{
+	if (g->agglevelsup != 0 || parse->groupingSets == NIL)
+		return false;
+	out->kind = SAA_GROUPING;
+	out->leaf = -1;
+	out->restype = INT4OID;
+	out->nref = list_length(g->refs);
+	out->ref = palloc(out->nref * sizeof(int));
+	foreach_int(ref, g->refs)
+		out->ref[foreach_current_index(ref)] = key_of_ref(parse, ref);
+	out->desc = "GROUPING";
+	return true;
+}
+
+/*
+ * The grouping sets as PostgreSQL expanded them (parse->groupingSets: a list of lists of sortgrouprefs, ROLLUP and CUBE included,
+ * duplicates as written): a mask over the group columns for each, and the number of the set as one more key, so that the groups of
+ * two sets never meet. The scan emits it as a constant column, which nothing reads.
+ */
+static void
+add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist)
+{
+	SiftAggKey *k = &s->key[s->nkeys];
+
+	s->nsets = list_length(parse->groupingSets);
+	s->setmask = palloc(s->nsets * sizeof(uint32));
+	foreach_ptr(List, set, parse->groupingSets)
+	{
+		uint32		mask = (uint32) 1 << s->nkeys;
+
+		foreach_int(ref, set)
+			mask |= (uint32) 1 << key_of_ref(parse, ref);
+		s->setmask[foreach_current_index(set)] = mask;
+	}
+	k->kind = SAK_SET;
+	k->leaf = -1;
+	k->typid = INT4OID;
+	k->typmod = -1;
+	k->eqop = Int4EqualOperator;
+	k->desc = "grouping set";
+	*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
+													   list_length(*scan_tlist) + 1, NULL, false));
+	s->nkeys++;
 }
 
 static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra);
@@ -2834,9 +2997,9 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL;
 
-	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause) ||
-		parse->commandType != CMD_SELECT || parse->groupingSets != NIL || parse->hasWindowFuncs || parse->hasTargetSRFs ||
-		parse->hasDistinctOn || root->rowMarks != NIL || parse->hasRecursive || parse->groupDistinct)
+	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause || parse->groupingSets) ||
+		parse->commandType != CMD_SELECT || parse->hasWindowFuncs || parse->hasTargetSRFs || parse->hasDistinctOn ||
+		root->rowMarks != NIL || parse->hasRecursive)
 		return;
 	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
 		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
@@ -2852,9 +3015,9 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		return;
 
 	/* keys */
-	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS)
+	if (list_length(parse->groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
 		return;
-	s->key = palloc0(Max(list_length(parse->groupClause), 1) * sizeof(SiftAggKey));
+	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
@@ -2866,6 +3029,8 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
 		s->nkeys++;
 	}
+	if (parse->groupingSets != NIL)
+		add_sets(parse, s, &scan_tlist);
 
 	/* aggregates, in the output and the HAVING clause */
 	foreach_ptr(Node, e, output_rel->reltarget->exprs)
@@ -2875,9 +3040,10 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	if (ow.bad)
 		return;
 	s->agg = palloc0(Max(list_length(ow.aggs), 1) * sizeof(SiftAggAgg));
-	foreach_ptr(Aggref, a, ow.aggs)
+	foreach_ptr(Node, a, ow.aggs)
 	{
-		if (!compile_agg(c, a, &s->agg[s->naggs]))
+		if (!(IsA(a, GroupingFunc) ? compile_grouping(parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
+			  compile_agg(c, (Aggref *) a, &s->agg[s->naggs], s->naggs)))
 			return;
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
@@ -2946,15 +3112,22 @@ cte_root(PlannerInfo *root, RangeTblEntry *rte)
 	return list_nth(root->glob->subroots, list_nth_int(cteroot->cte_plan_ids, ndx) - 1);
 }
 
-/* the arms of the outer query's one FROM item: the subqueries of a UNION ALL (appendrel) or the subquery itself */
+/*
+ * The arms of the outer query's one FROM item: the subqueries of a UNION ALL (appendrel) or the subquery itself. The quals of the
+ * outer query that PostgreSQL pushed into the arms (to their WHERE, or HAVING) are theirs now: an arm whose rel still has a qual
+ * (one it did not push: volatile, a one-time filter) is not one.
+ */
 static List *
 outer_arms(PlannerInfo *root, Index srti)
 {
 	List	   *arms = NIL;
 
 	if (!rt_fetch(srti, root->parse->rtable)->inh)
-		return root->simple_rel_array[srti] && root->simple_rel_array[srti]->subroot ?
-			list_make1(root->simple_rel_array[srti]->subroot) : NIL;
+		return root->simple_rel_array[srti] && root->simple_rel_array[srti]->subroot &&
+			root->simple_rel_array[srti]->baserestrictinfo == NIL ? list_make1(root->simple_rel_array[srti]->subroot) : NIL;
+	foreach_node(RestrictInfo, rinfo, root->simple_rel_array[srti]->baserestrictinfo)
+		if (rinfo->pseudoconstant)
+			return NIL;
 	foreach_node(AppendRelInfo, ai, root->append_rel_list)
 	{
 		RelOptInfo *rel;
@@ -2963,7 +3136,7 @@ outer_arms(PlannerInfo *root, Index srti)
 		if (ai->parent_relid != srti)
 			continue;
 		rel = root->simple_rel_array[ai->child_relid];
-		if (rel == NULL || rel->subroot == NULL)
+		if (rel == NULL || rel->subroot == NULL || rel->baserestrictinfo != NIL)
 			return NIL;
 		foreach_node(Var, v, ai->translated_vars)
 			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
@@ -2980,7 +3153,7 @@ arm_base(PlannerInfo *arm, ArmIn *in)
 	Query	   *q = arm->parse;
 	RangeTblEntry *rte;
 
-	if (!q->hasAggs || q->groupClause == NIL || q->havingQual || q->groupingSets || q->hasWindowFuncs || q->hasTargetSRFs ||
+	if (!q->hasAggs || q->groupClause == NIL || q->groupingSets || q->hasWindowFuncs || q->hasTargetSRFs ||
 		q->distinctClause || q->sortClause || q->limitCount || q->limitOffset || q->groupDistinct || q->hasForUpdate ||
 		q->setOperations || q->cteList != NIL || list_length(q->jointree->fromlist) != 1 ||
 		!IsA(linitial(q->jointree->fromlist), RangeTblRef))
@@ -2999,16 +3172,16 @@ null_const(Node *e)
 	return IsA(e, Const) && ((Const *) e)->constisnull;
 }
 
-/* `column op constant` (either side) on an output column of the arms: the column, the comparison */
+/* `operand op constant` (either side) on an int8 or float8 operand: the operand, the comparison and the constant in *out */
 static bool
-outer_cond(Node *q, Index srti, SiftAggCond *out)
+cond_split(Node *q, Node **operand, SiftAggCond *out)
 {
 	Oid			lt,
-				rt;
+				rt,
+				vtype;
 	OpExpr	   *op;
 	Node	   *l,
 			   *r;
-	Var		   *v;
 	Const	   *k;
 	int			cmp;
 
@@ -3019,29 +3192,29 @@ outer_cond(Node *q, Index srti, SiftAggCond *out)
 		return false;
 	l = strip_relabel(linitial(op->args));
 	r = strip_relabel(lsecond(op->args));
-	if (IsA(l, Var) && IsA(r, Const))
+	if (IsA(r, Const))
 	{
-		v = (Var *) l;
+		*operand = l;
 		k = (Const *) r;
 	}
-	else if (IsA(r, Var) && IsA(l, Const))
+	else if (IsA(l, Const))
 	{
-		v = (Var *) r;
+		*operand = r;
 		k = (Const *) l;
 		cmp = commute(cmp);
 	}
 	else
 		return false;
-	if (v->varno != srti || v->varlevelsup != 0 || k->constisnull)
-		return false;
-	out->col = v->varattno - 1;
+	vtype = exprType(*operand);
 	out->op = cmp;
-	if (v->vartype == FLOAT8OID && k->consttype == FLOAT8OID)
+	if (k->constisnull)
+		return false;
+	if (vtype == FLOAT8OID && k->consttype == FLOAT8OID)
 	{
 		out->isint = false;
 		out->cd = DatumGetFloat8(k->constvalue);
 	}
-	else if (v->vartype == INT8OID && (k->consttype == INT8OID || k->consttype == INT4OID || k->consttype == INT2OID))
+	else if (vtype == INT8OID && (k->consttype == INT8OID || k->consttype == INT4OID || k->consttype == INT2OID))
 	{
 		out->isint = true;
 		out->ci = k->consttype == INT8OID ? DatumGetInt64(k->constvalue) : k->consttype == INT4OID ?
@@ -3052,20 +3225,26 @@ outer_cond(Node *q, Index srti, SiftAggCond *out)
 	return true;
 }
 
-/* the inner aggregate that is the arm's column `col`, compiled once: its index in the arm; -1 if the arm cannot give it */
+/* `column op constant` on an output column of the arms: the column in out->col */
+static bool
+outer_cond(Node *q, Index srti, SiftAggCond *out)
+{
+	Node	   *x;
+
+	if (!cond_split(q, &x, out) || !IsA(x, Var) || ((Var *) x)->varno != srti || ((Var *) x)->varlevelsup != 0)
+		return false;
+	out->col = ((Var *) x)->varattno - 1;
+	return true;
+}
+
+/* the inner aggregate e of the arm, added to its inner aggregates: its index; -1 if the arm cannot give it */
 static int
-arm_inner(AggCtx *c, ArmIn *in, CteSub *sub, int col, Oid want_type)
+arm_inner_agg(AggCtx *c, ArmIn *in, Node *e, Oid want_type)
 {
 	SiftAggArm *a = in->out;
-	Node	   *e = list_nth(in->cols, col);
-	SiftAggAgg *ia;
+	SiftAggAgg *ia = &a->inner[a->ninner];
 
-	if (a->colsrc[col] >= 0)
-		return a->colsrc[col];
-	if (!IsA(e, Aggref) || exprType(e) != want_type)
-		return -1;
-	ia = &a->inner[a->ninner];
-	if (!compile_agg(c, (Aggref *) e, ia))
+	if (!IsA(e, Aggref) || exprType(e) != want_type || !compile_agg(c, (Aggref *) e, ia, -1))
 		return -1;
 	switch (ia->kind)
 	{
@@ -3078,8 +3257,27 @@ arm_inner(AggCtx *c, ArmIn *in, CteSub *sub, int col, Oid want_type)
 		default:
 			return -1;
 	}
-	a->colsrc[col] = a->ninner;
 	return a->ninner++;
+}
+
+/* the inner aggregate that is the arm's column `col`, compiled once: its index in the arm; -1 if the arm cannot give it */
+static int
+arm_inner(AggCtx *c, ArmIn *in, int col, Oid want_type)
+{
+	SiftAggArm *a = in->out;
+
+	if (a->colsrc[col] < 0)
+		a->colsrc[col] = arm_inner_agg(c, in, list_nth(in->cols, col), want_type);
+	return a->colsrc[col];
+}
+
+/* a conjunct of the arm's HAVING: `inner aggregate op constant` (in terms of the scanned table), with the aggregate's index as cond.col */
+static bool
+arm_having(AggCtx *c, ArmIn *in, Node *q, SiftAggCond *out)
+{
+	Node	   *x;
+
+	return cond_split(q, &x, out) && (out->col = arm_inner_agg(c, in, x, exprType(x))) >= 0;
 }
 
 /* The outer aggregate: avg/sum of a float8 or int8 column of the arms, count(DISTINCT id), count(*), with a FILTER of comparisons of columns */
@@ -3137,10 +3335,10 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 	for (int k = 0; k < narms; k++)
 	{
 		if (out->kind == SAA_O_AVG_F64 || out->kind == SAA_O_SUM_F64 || out->kind == SAA_O_SUM_I64)
-			if (arm_inner(c, &arms[k], &arms[k].sub, out->col, v->vartype) < 0)
+			if (arm_inner(c, &arms[k], out->col, v->vartype) < 0)
 				return false;
 		for (int i = 0; i < out->ncond; i++)
-			if (arm_inner(c, &arms[k], &arms[k].sub, out->cond[i].col, out->cond[i].isint ? INT8OID : FLOAT8OID) < 0)
+			if (arm_inner(c, &arms[k], out->cond[i].col, out->cond[i].isint ? INT8OID : FLOAT8OID) < 0)
 				return false;
 	}
 	out->desc = psprintf("%s", out->kind == SAA_O_COUNT_STAR ? "count(*)" : out->kind == SAA_O_COUNT_ROWS ? "count(DISTINCT row)" :
@@ -3172,7 +3370,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	int			okey[SIFT_AGG_MAX_KEYS];
 	int			ncols = 0;
 
-	if (parse->jointree->quals != NULL || list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS)
+	if (parse->groupingSets != NIL || list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
 		return;
 	roots = outer_arms(root, srti);
 	if (roots == NIL || list_length(roots) > AGG_MAX_ARMS)
@@ -3227,7 +3425,11 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		in->out->colsrc = palloc(Max(ncols, 1) * sizeof(int));
 		for (int i = 0; i < ncols; i++)
 			in->out->colsrc[i] = -1;
-		in->out->inner = palloc0(Max(ncols, 1) * sizeof(SiftAggAgg));
+		in->out->inner = palloc0((ncols + list_length((List *) aq->havingQual)) * sizeof(SiftAggAgg) + 1);
+		in->out->having = palloc0(Max(list_length((List *) aq->havingQual), 1) * sizeof(SiftAggCond));
+		foreach_ptr(Node, q, (List *) aq->havingQual)
+			if (!arm_having(c, in, normalize_expr(c, cte_sub_mutator(q, &in->sub)), &in->out->having[in->out->nhaving++]))
+				return;
 		in->out->filter = palloc(Max(list_length(in->quals), 1) * sizeof(SiftAggPred *));
 		foreach_ptr(Node, q, in->quals)
 		{
@@ -3280,9 +3482,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	if (ow.bad)
 		return;
 	s->agg = palloc0(Max(list_length(ow.aggs), 1) * sizeof(SiftAggAgg));
-	foreach_ptr(Aggref, a, ow.aggs)
+	foreach_ptr(Node, a, ow.aggs)
 	{
-		if (!outer_agg(c, s, a, srti, arms, narms, &s->agg[s->naggs]))
+		if (!IsA(a, Aggref) || !outer_agg(c, s, (Aggref *) a, srti, arms, narms, &s->agg[s->naggs]))
 			return;
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
