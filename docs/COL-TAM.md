@@ -352,7 +352,8 @@ input so that free space left by earlier merges is reused instead of extending t
    backend holds a scan, a directory copy or a target page; the store sends a relcache invalidation of the table before the lock goes, which
    marks every backend's `SiftTblRel` invalid (its target page, delta page tables and fetch scan are rebuilt on next use), and a standby
    replays the lock first, cancelling the queries that hold the table there. A lazy VACUUM is in no snapshot or horizon, so its own releases
-   carry the next xid (`xid_safexid`): what it frees becomes reusable, and can be cut, once another transaction has ended, by the next VACUUM.
+   carry the next xid (`xid_safexid`) and are reused once another transaction has ended; under the lock every record is reusable
+   (`sift_store_horizon`), so the cut takes the free run at the end whatever released it.
    Live segments in the middle of the file stop the cut, as live rows do for a heap; their space is reused by later writes.
 7. `vac_update_relstats` (relpages, reltuples = live rows, `relfrozenxid`), `pgstat_report_vacuum` (live rows; dead rows = deleted by a
    committed transaction but not removable yet), counted as a heap does: an in-progress insertion is not live yet, an in-progress deletion
