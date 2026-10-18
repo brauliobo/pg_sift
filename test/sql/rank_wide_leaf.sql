@@ -48,5 +48,7 @@ SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, 
 
 DROP FUNCTION rw_diff(text, int), rw_count(text);
 DROP TABLE rw;
+SET client_min_messages = warning;
 DROP SCHEMA sift_ref CASCADE;
+RESET client_min_messages;
 DROP EXTENSION pg_sift;

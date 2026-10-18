@@ -7,7 +7,7 @@ SET enable_seqscan = off;
 CREATE TABLE ps (id serial, body text) WITH (autovacuum_enabled = off);
 CREATE INDEX ps_idx ON ps USING sift (body) WITH (mutable_limit = 1048576);
 INSERT INTO ps (body)
-SELECT string_agg('t' || ((g * 7 + j * 13) % 2003) || ' u' || (g % 31) || ' common', ' ') FROM generate_series(1, 6000) g, generate_series(1, 40) j GROUP BY g;
+SELECT string_agg('t' || ((g * 7 + j * 13) % 2003) || ' u' || (g % 31) || ' common', ' ') FROM generate_series(1, 6000) g, generate_series(1, 40) j GROUP BY g ORDER BY g;
 DELETE FROM ps WHERE id % 10 = 0;
 SELECT kind, ndocs FROM sift.segments('ps_idx') ORDER BY gen;
 SELECT count(*) FROM ps WHERE body @@> 'common';
