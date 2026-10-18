@@ -63,6 +63,9 @@ ifeq ($(shell test $(PG_MAJOR) -ge $(PG_MIN_MAJOR) && echo ok),)
 $(error pg_sift needs PostgreSQL $(PG_MIN_MAJOR) or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
 endif
 
+# SIFT_HARDEN=pkg|init|1: opt-in compiler hardening (scripts/harden.mk, docs/SAFETY.md)
+include $(dir $(lastword $(MAKEFILE_LIST)))scripts/harden.mk
+
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
 # claim "check" is unsupported, so it is not included for these goals.
 ifneq ($(filter check check-full,$(MAKECMDGOALS)),)
