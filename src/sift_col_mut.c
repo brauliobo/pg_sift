@@ -21,6 +21,7 @@
 #include "utils/rel.h"
 
 #include "sift_col_mut.h"
+#include "sift_col_pg.h"
 #include "sift_lane.h"
 #include "sift_varint.h"
 
