@@ -103,8 +103,8 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-2 | sift_bitmap.c:sift_chunk_pagemask/offsets/count (called by sift_segment.c:load_sb) | no length argument; pass `sift_span_sub(rec,8,h[1])`, require w in {1,2,4,8..64}, pg<256 |
 | P1-3 | sift_segment.c:load_sb, walk_docs, live_sb_bits | ndocs from mask popcounts never compared with the header; `keys[]` overflow |
 | P1-4 | sift_col_scan.c:unit_group, sift_col_read; sift_col_enc.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
-| P1-5 | sift_col_enc.c:chunk_lut, cc_lut | codes index the LUT unchecked (F-COL-1): `max32(codes) < sbits` after unpack |
-| P1-6 | sift_col_scan.c:read_positions (STR) | codes not range-checked against `dict->n` before sift_agg.c indexes `map[code]` |
+| P1-5 | sift_col_enc.c:chunk_lut, cc_lut | done (F-COL-1): tables of at most 16 bits cover the width, wider codes pass `max32(codes) < sbits` |
+| P1-6 | sift_col_scan.c:read_positions (STR), sift_col_read_lane (CODE lane) | done: `max32(codes) <= dict->n` once per chunk read, before sift_agg.c indexes `map[code]` or the LUT |
 | P1-7 | sift_table_store.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
 | P1-8 | sift_table_store.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
 | P1-9 | sift_table_store.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |

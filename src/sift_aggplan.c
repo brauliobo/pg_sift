@@ -24,6 +24,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
+#include "commands/defrem.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
@@ -58,6 +59,7 @@
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
+#include "sift_topn.h"
 #include "sift_aggspec.h"
 #include "sift_colsrc.h"
 #include "sift_search.h"
@@ -129,7 +131,9 @@ typedef struct AggCtx
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
+	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
+	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -1886,6 +1890,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	p->expr = r;
 	p->argtype = rt;
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, r));
+	p->sel = clause_selectivity(c->root, (Node *) sa, c->relid, JOIN_INNER, NULL);
 	return p;
 }
 
@@ -3584,6 +3589,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNIT_COST		200.0
+#define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
+#define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
@@ -3905,6 +3912,17 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	return cost;
 }
 
+/* The share of the units the pre-aggregates answer: the pages of the heap that are all-visible (a unit is exact when its pages are); 0 when the spec cannot use them */
+static double
+preagg_share(AggCtx *c, SiftAggSpec *s)
+{
+	int			dim;
+
+	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
+		return 0.0;
+	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
+}
+
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
 static double
 leaf_width(const SiftSrcLeaf *lf)
@@ -3938,12 +3956,15 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				units = Max(c->stats.nunits, ceil(rows / 2000.0)),
 				vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
 				scan_cost,
+				open_cost,
 				gen_cost = 0,
+				exact,
 				agg_rows;
 	Cost		startup;
 
 	if (s->group >= 0)
 		elems = elems_of(c, s->group);
+	open_cost = c->search ? sift_search_open_cost(c->search, rows) : 0;
 	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
 	for (int i = 0; i < s->nleaves; i++)
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
@@ -3974,6 +3995,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
 	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
+	/* a top-N reads a fraction of the units, but opens the match set whole */
+	if (s->topn)
+		scan_cost = (scan_cost - open_cost) * c->topn_frac + open_cost;
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
@@ -3987,7 +4011,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	scan_cost += gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
-	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
+	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	/* the exact units cost their groups, not their rows */
+	exact = preagg_share(c, s);
+	if (exact > 0)
+		scan_cost += exact * (units * (AGG_UNIT_COST + Min(rows_out, 256.0) * AGG_PREAGG_GROUP) * cpu_operator_cost - scan_cost);
 	startup = AGG_START_COST * cpu_operator_cost;
 	if (s->nworkers > 0)
 	{
@@ -4003,6 +4031,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	}
 	p->startup_cost = startup + scan_cost;
 	p->total_cost = p->startup_cost + rows_out * cpu_tuple_cost;
+	/* the rows of a top-N are fetched from the heap, one page each */
+	if (s->topn)
+		p->total_cost += rows_out * random_page_cost * 0.5;
 	p->rows = rows_out;
 }
 
@@ -4122,6 +4153,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		rel = index_open(ii->indexoid, AccessShareLock);
 		c->lay = sift_colsrc_layout(rel);
 		sift_colsrc_stats(rel, &c->stats);
+		sift_colsrc_preagg(rel, &c->pa);
 		index_close(rel, AccessShareLock);
 		c->indexoid = ii->indexoid;
 		*ixout = ii;
@@ -4365,23 +4397,21 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 	return compute_parallel_worker(c->rel, c->rel->pages, -1, max_parallel_workers_per_gather);
 }
 
-/* the leaves the spec reads, the combos, the cost; adds the paths to output_rel. keys: the group expressions of root's query */
-static void
-agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
+/* the leaves the spec reads and the combos; false when the spec cannot be run. keys: the group expressions of root's query */
+static bool
+spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
-	int			nworkers;
-
 	if (c->other_group)
-		return;
+		return false;
 	share_ordered(s);
 	if (c->group < 0)
 		for (int i = 0; i < c->lay->nleaves; i++)
 			if (bms_is_member(i, c->used) && leaf_of(c, i)->parent >= 0)
-				return;
+				return false;
 	if (c->group >= 0 && !bms_is_member(c->group, c->used))
-		return;
+		return false;
 	if (list_length(c->combos) > SIFT_AGG_MAX_COMBOS || list_length(c->joins) > SIFT_AGG_MAX_JOINS)
-		return;
+		return false;
 	s->npreds_total = c->npred;
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
@@ -4393,8 +4423,19 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		s->search = c->search->spec;
 
 	spec_deps(root, s);
+	return true;
+}
+
+/* the cost; adds the paths to output_rel */
+static void
+agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
+{
+	int			nworkers;
+
+	if (!spec_finish(c, s, root, input_rel, keys))
+		return;
 	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
-	nworkers = parallel_workers(c, s, input_rel);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, scan_tlist, nworkers);
 }
@@ -4459,6 +4500,8 @@ add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist)
 
 static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *gextra);
 
+static void topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
 					 void *extra)
@@ -4472,6 +4515,11 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL;
 
+	if (stage == UPPERREL_ORDERED)
+	{
+		topn_paths(root, input_rel, output_rel);
+		return;
+	}
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause || parse->groupingSets) ||
 		parse->commandType != CMD_SELECT || parse->hasWindowFuncs || parse->hasTargetSRFs || parse->hasDistinctOn ||
 		root->rowMarks != NIL || parse->hasRecursive)
@@ -4525,6 +4573,166 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		s->naggs++;
 	}
 	agg_finish(c, s, root, input_rel, output_rel, ow.keys, scan_tlist);
+}
+
+/* ---------- top-N: ORDER BY <columns> LIMIT n ---------- */
+
+/* LIMIT and OFFSET constants of the query: the rows the top-N must produce; 0 when there is no bound it can use */
+static int64
+topn_rows(Query *parse)
+{
+	int64		n;
+
+	if (parse->limitCount == NULL || !IsA(parse->limitCount, Const) || ((Const *) parse->limitCount)->constisnull ||
+		parse->limitOption != LIMIT_OPTION_COUNT || (parse->limitOffset != NULL && (!IsA(parse->limitOffset, Const) || ((Const *) parse->limitOffset)->constisnull)))
+		return 0;
+	n = DatumGetInt64(((Const *) parse->limitCount)->constvalue);
+	if (parse->limitOffset)
+		n += DatumGetInt64(((Const *) parse->limitOffset)->constvalue);
+	return n >= 1 && n <= SIFT_TOPN_MAX_ROWS ? n : 0;
+}
+
+/* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator */
+static bool
+topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
+{
+	Node	   *e = (Node *) get_sortgroupclause_expr(sgc, c->root->processed_tlist);
+	Oid			opfamily,
+				opcintype;
+#if PG_VERSION_NUM >= 180000
+	CompareType strategy;
+#define TOPN_DESC	COMPARE_GT
+#else
+	int16		strategy;
+#define TOPN_DESC	BTGreaterStrategyNumber
+#endif
+
+	if (!get_ordering_op_properties(sgc->sortop, &opfamily, &opcintype, &strategy))
+		return false;
+	*leaf = match_leaf(c, normalize_expr(c, e));
+	if (*leaf < 0 || !sift_topn_key_ok(leaf_of(c, *leaf)) || opcintype != leaf_of(c, *leaf)->typid ||
+		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
+		return false;
+	*desc = strategy == TOPN_DESC;
+	appendStringInfo(txt, "%s%s%s", txt->len ? ", " : "", leaf_name(c, *leaf), *desc ? " DESC" : "");
+	if (sgc->nulls_first != *desc)
+		appendStringInfoString(txt, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
+	use_leaf(c, *leaf);
+	return true;
+}
+
+/*
+ * A first sort column that follows the physical order of the table (pg_statistic correlation) lets the scan stop at the end its best values
+ * are at: it reads a window of superblocks, and more only while the rows it needs are not in it. Otherwise it reads them all.
+ */
+static double
+topn_fraction(AggCtx *c, Node *key, double matches, int64 limit)
+{
+	Node	   *x = strip_relabel(key);
+	HeapTuple	tp;
+	AttStatsSlot sslot;
+	double		corr = 0,
+				nsb = Max(c->stats.nunits, 1.0);
+
+	if (!IsA(x, Var))
+		return 1.0;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tp))
+		return 1.0;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		corr = sslot.nnumbers > 0 ? sslot.numbers[0] : 0;
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	if (fabs(corr) < 0.9)
+		return 1.0;
+	return Min(1.0, (8.0 + 2.0 * nsb * (double) limit / Max(matches, 1.0)) / nsb);
+}
+
+/*
+ * The scan tuple of the top-N is the heap columns the output reads, in custom_scan_tlist: their attribute numbers go in the spec, and
+ * the node's tlist (PostgreSQL's projection) computes the rest from them.
+ */
+static bool
+topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno)
+{
+	List	   *vars;
+
+	if (contain_volatile_functions((Node *) target->exprs))
+		return false;
+	vars = pull_var_clause((Node *) target->exprs, PVC_RECURSE_PLACEHOLDERS);
+	foreach_node(Var, v, vars)
+	{
+		if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0)
+			return false;
+		if (list_member(*scan_tlist, v) || tlist_member((Expr *) v, *scan_tlist))
+			continue;
+		if (list_length(*scan_tlist) >= MaxHeapAttributeNumber)
+			return false;
+		attno[list_length(*scan_tlist)] = v->varattno;
+		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(v), list_length(*scan_tlist) + 1, NULL, false));
+	}
+	return true;
+}
+
+static void
+topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
+{
+	Query	   *parse = root->parse;
+	AggCtx		ctx = {0},
+			   *c = &ctx;
+	FromScan	fs = {NIL, NIL, NIL, true};
+	SiftAggSpec *s;
+	CustomPath *cp;
+	StringInfoData txt;
+	List	   *scan_tlist = NIL;
+	int			leaf[SIFT_TOPN_MAX_KEYS];
+	bool		desc[SIFT_TOPN_MAX_KEYS],
+				nulls_first[SIFT_TOPN_MAX_KEYS];
+	int		   *attno;
+	int64		rows = topn_rows(parse);
+	int			nkey = list_length(parse->sortClause);
+	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
+
+	if (!sift_enable_agg || !sift_enable_topn || rows == 0 || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || nkey > SIFT_TOPN_MAX_KEYS ||
+		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
+		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
+		return;
+	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL || !OidIsValid(c->indexoid) ||
+		!sift_colsrc_can_tids(get_rel_relam(c->indexoid), true))
+		return;
+	s = agg_spec_new(c);
+	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
+	if (!agg_quals(c, s, &fs) || s->npost > 0)
+		return;
+	initStringInfo(&txt);
+	foreach_node(SortGroupClause, sgc, parse->sortClause)
+	{
+		int			j = foreach_current_index(sgc);
+
+		if (!topn_key(c, sgc, &leaf[j], &desc[j], &txt))
+			return;
+		nulls_first[j] = sgc->nulls_first;
+	}
+	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
+	if (!topn_columns(c, target, &scan_tlist, attno) || !spec_finish(c, s, root, input_rel, NIL))
+		return;
+	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
+								 input_rel->rows, rows);
+	s->topn = sift_topn_spec((int) rows, nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno);
+	s->desc_topn = txt.data;
+
+	cp = makeNode(CustomPath);
+	cp->path.pathtype = T_CustomScan;
+	cp->path.parent = output_rel;
+	cp->path.pathtarget = target;
+	cp->path.parallel_safe = false;
+	cp->path.pathkeys = root->sort_pathkeys;
+	cp->methods = &agg_path_methods;
+	agg_cost(c, s, input_rel, &cp->path, Min((double) rows, Max(input_rel->rows, 1.0)));
+	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	add_path(output_rel, &cp->path);
 }
 
 /* ---------- two level: an outer aggregate over aggregates grouped by row ---------- */

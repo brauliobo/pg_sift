@@ -12,6 +12,8 @@
 #include "nodes/pathnodes.h"
 
 extern PGDLLIMPORT bool sift_enable_agg;
+extern PGDLLIMPORT bool sift_agg_preagg;
+extern PGDLLIMPORT bool sift_enable_topn;
 
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
