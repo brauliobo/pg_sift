@@ -166,6 +166,20 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
 
+-- against an ordered btree on the sort column the planner keeps the cheaper plan: a common word is found in a few rows of the index, a rare
+-- combination of words is not (the cost of the top-N is its units and its match set, whatever the table order)
+CREATE INDEX ct_ts_idx ON ct (ts);
+CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' WHEN plan ~ 'Index Scan' THEN 'btree' ELSE 'other' END;
+END $$;
+SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY ts DESC LIMIT 10') AS common_ts,
+	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT 10') AS common_id,
+	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift AND wire AND label'' ORDER BY ts DESC LIMIT 10') AS rare_ts,
+	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift AND wire AND label'' ORDER BY id DESC LIMIT 10') AS rare_id;
+
 -- a table in column format has no TIDs to give: the normal plan
 CREATE TABLE ct_t (id serial, store int, ts timestamp, memo text) USING sift_table;
 INSERT INTO ct_t (store, ts, memo) SELECT store, ts, memo FROM ct ORDER BY id;
@@ -173,5 +187,5 @@ CREATE INDEX ct_t_bm ON ct_t USING sift (memo);
 SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') AS tbl;
 
 DROP TABLE ct_q, ct_t, ct;
-DROP FUNCTION ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
+DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
 DROP EXTENSION pg_sift;
