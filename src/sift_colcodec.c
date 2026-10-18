@@ -1136,7 +1136,7 @@ sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, con
 		appendBinaryStringInfo(out, h, SIFT_CC_HDRLEN);
 	}
 	body = out->len;
-	inner = enc_node(&w, out, v, n, 3, CCR_HOT);
+	inner = enc_node(&w, out, v, n, SIFT_CC_MAXDEPTH - 1, CCR_HOT);
 	{
 		uint32		check = sift_term_hash(out->data + hdr, out->len - hdr);
 
@@ -1441,7 +1441,7 @@ sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify)
 		CC_CORRUPT("row count or range out of bounds");
 	if (((c->flags & SIFT_CCF_OFF32) != 0) != ((uint64) c->max - (uint64) c->min <= 0xFFFFFFFFu))
 		CC_CORRUPT("offset flag contradicts the range");
-	c->root = parse_node(cx, c->kind, blob + SIFT_CC_HDRLEN, len - SIFT_CC_HDRLEN - CC_TRAILER, c->n, 1, &used);
+	c->root = parse_node(cx, c->kind, blob + SIFT_CC_HDRLEN, len - SIFT_CC_HDRLEN - CC_TRAILER, c->n, 0, &used);
 	if (used != len - SIFT_CC_HDRLEN - CC_TRAILER)
 		CC_CORRUPT("trailing bytes after the root node");
 	return c;
@@ -2177,7 +2177,7 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	for (uint32 i = 0; i < n; i++)
 		lens[i] = off[i + 1] - off[i];
 	initStringInfo(&ln);
-	enc_node(&w, &ln, lens, n, 3, CCR_COLD);
+	enc_node(&w, &ln, lens, n, SIFT_CC_MAXDEPTH - 1, CCR_COLD);
 	put32(out, (CC_STRS_MAGIC | (SIFT_CC_VERSION << 8)));
 	put32(out, n);
 	put32(out, (uint32) ln.len);
@@ -2225,7 +2225,7 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 **of
 	total = get32(blob + 12);
 	if (n > SIFT_CC_MAXROWS || (ll & 7) || (uint64) ll + 16 + 8 > len || total > (uint64) 1 << 31)
 		CC_CORRUPT("bad string list sizes");
-	nd = parse_node(cx, SIFT_CC_INT, blob + 16, ll, n, 1, &u);
+	nd = parse_node(cx, SIFT_CC_INT, blob + 16, ll, n, 0, &u);
 	if (u != ll)
 		CC_CORRUPT("string lengths node does not match");
 	pos = 16 + (size_t) ll;
@@ -2303,7 +2303,7 @@ sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const Sif
 			if ((((words[i / 64] >> (i % 64)) & 1) != 0) == want)
 				pos[npos++] = i;
 		initStringInfo(&node);
-		enc_node(&w, &node, pos, npos, 3, CCR_COLD);
+		enc_node(&w, &node, pos, npos, SIFT_CC_MAXDEPTH - 1, CCR_COLD);
 		if (8 + node.len < rawsz)
 			form = want ? CCB_SET : CCB_CLEAR;
 	}
@@ -2377,7 +2377,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 				nl = get32(blob + 12);
 				if (npos > nbits || (nl & 7) || (uint64) nl + 16 != len)
 					CC_CORRUPT("bit vector positions do not match");
-				nd = parse_node(cx, SIFT_CC_INT, blob + 16, nl, npos, 1, &u);
+				nd = parse_node(cx, SIFT_CC_INT, blob + 16, nl, npos, 0, &u);
 				if (u != nl)
 					CC_CORRUPT("bit vector node does not match");
 				pos = palloc(sizeof(int64) * ((size_t) npos + SIFT_CC_PAD / 8));

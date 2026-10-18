@@ -27,7 +27,7 @@
 #define SIFT_CC_MAGIC		0xC5
 #define SIFT_CC_VERSION		1
 #define SIFT_CC_HDRLEN		24		/* magic, version, kind, flags, u32 n, i64 min, i64 max; then the root node, then u32 check */
-#define SIFT_CC_MAXDEPTH	4		/* nodes nested below the root node (a wrapper counts) */
+#define SIFT_CC_MAXDEPTH	4		/* nodes nested below the root node (a wrapper counts); the writer cascades MAXDEPTH - 1 levels, then wraps a leaf */
 #define SIFT_CC_MAXROWS		(1 << 24)
 
 typedef enum SiftCcKind
