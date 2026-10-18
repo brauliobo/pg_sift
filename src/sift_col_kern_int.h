@@ -90,5 +90,7 @@ extern void sift_colk_for_sel_u16_scalar(const void *a, const uint32 *idx, uint3
 extern void sift_colk_for_sel_u32_scalar(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 extern void sift_colk_for_sel_u64_scalar(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 extern void sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
+extern void sift_colk_f8_from_keys_scalar(int64 *a, uint32 n);
+extern void sift_colk_bits_to_flags_scalar(const uint64 *bits, uint32 n, uint8 *flags);
 
 #endif							/* SIFT_COL_KERN_INT_H */

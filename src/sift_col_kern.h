@@ -105,6 +105,14 @@ typedef struct SiftColKernels
 	void		(*gather_u32) (const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
 
 	/*
+	 * Decoding to the consumer's vector: f8_from_keys turns the n order-preserving keys of floats (sift_col_f8_key) in a into the
+	 * IEEE bits of the doubles, in place. bits_to_flags: flags[i] = bit i of bits as 0 or 1, i < n; it stores whole vectors, so
+	 * flags has room for n rounded up to SIFT_COL_PAD bytes (the bytes past n are undefined); bits has the words of n bits.
+	 */
+	void		(*f8_from_keys) (int64 *a, uint32 n);
+	void		(*bits_to_flags) (const uint64 *bits, uint32 n, uint8 *flags);
+
+	/*
 	 * The owner of each element of a list column: parent[i] = p for i in [end[p - 1], end[p]) (end[-1] = 0), end non-decreasing (the
 	 * running ends of np lists); parent needs end[np - 1] entries and receives no more.
 	 */
