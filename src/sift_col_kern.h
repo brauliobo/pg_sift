@@ -8,6 +8,9 @@
  * a kernel that fills a bit vector of n bits (range, lut, zone_range) writes all its SIFT_COL_NWORDS(n) words, the bits past n zero; one
  * that updates it in place (zone_set, zone_notnull) touches only the bits below n. Arrays read by a kernel must have SIFT_COL_PAD
  * readable bytes past their last used byte (contents irrelevant); bit vectors are allocated in multiples of SIFT_COL_SELWORDS words.
+ *
+ * This is the one table of the generic operations on bit vectors, selections and integer columns: the aggregation executor
+ * (sift_aggkern.h) and the JSON shredder (sift_shred.h) call these slots instead of keeping their own.
  */
 #ifndef SIFT_COL_KERN_H
 #define SIFT_COL_KERN_H
@@ -19,6 +22,7 @@
 
 #define SIFT_COL_PAD			64
 #define SIFT_COL_SELWORDS		8	/* bit vectors are padded to 512 bits */
+#define SIFT_COL_IDXPAD			16	/* entries of room bits_to_idx needs after the last position it returns */
 
 /* Words of a bit vector of n bits, padded */
 #define SIFT_COL_NWORDS(n)		((((uint64) (n) + 511) / 512) * SIFT_COL_SELWORDS)
@@ -72,7 +76,10 @@ typedef struct SiftColKernels
 	uint64		(*bits_count) (const uint64 *a, uint32 nwords);
 	uint64		(*bits_and_count) (const uint64 *a, const uint64 *b, uint32 nwords);
 
-	/* The positions of the set bits of bits (nwords words), ascending, each plus base, into idx; returns their number (idx has room for it) */
+	/*
+	 * The positions of the set bits of bits (nwords words), ascending, each plus base, into idx; returns their number (idx has room for it
+	 * and SIFT_COL_IDXPAD more entries: a level stores whole vectors)
+	 */
 	uint32		(*bits_to_idx) (const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx);
 
 	/*
@@ -90,12 +97,18 @@ typedef struct SiftColKernels
 	/*
 	 * Decoding. unpack: n values of `bits` bits into dst (u32). for_i64:
 	 * dst[i] = base + (int64) a[i] for a unsigned array of the slot's width (wrapping). for_i64_sel: the same for the n positions
-	 * idx[k] of a (gather), dst[k]. dict_gather: dst[k] = a[idx[k]] (u32 codes).
+	 * idx[k] of a (gather), dst[k] (with base 0 and the 64-bit slot, the gather of 8-byte values). gather_u32: dst[k] = a[idx[k]] (u32 codes).
 	 */
 	void		(*unpack) (const uint8 *src, uint32 bits, uint32 n, uint32 *dst);
 	void		(*for_i64[4]) (const void *a, uint32 n, int64 base, int64 *dst);
 	void		(*for_i64_sel[4]) (const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 	void		(*gather_u32) (const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
+
+	/*
+	 * The owner of each element of a list column: parent[i] = p for i in [end[p - 1], end[p]) (end[-1] = 0), end non-decreasing (the
+	 * running ends of np lists); parent needs end[np - 1] entries and receives no more.
+	 */
+	void		(*expand_parents) (const uint32 *end, uint32 np, uint32 *parent);
 } SiftColKernels;
 
 /* The active table (follows sift.simd), and a level's table for tests; never NULL, falls back downwards */
@@ -104,5 +117,12 @@ extern const SiftColKernels *sift_col_kernels_for(SiftSimdLevel level);
 
 /* Registers the rebind with the cpu module; _PG_init */
 extern void sift_col_kernels_init(void);
+
+/* Bit i of bits = b[i] != 0, i < n (a null flag array): the u8 range test [1, 255] */
+static inline void
+sift_colk_nonzero(const uint8 *b, uint32 n, uint64 *bits)
+{
+	sift_colk->range[SIFT_COLW_8](b, n, 1, 254, bits);
+}
 
 #endif							/* SIFT_COL_KERN_H */

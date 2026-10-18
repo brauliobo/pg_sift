@@ -859,7 +859,7 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 	memset(vec, 0, sizeof(SiftColVec));
 	if (sel)
 	{
-		idx = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
+		idx = MemoryContextAlloc(arena, (m + SIFT_COL_IDXPAD) * sizeof(uint32));
 		sift_col_sel_idx(sel, idx);
 	}
 	if (def->parent < 0)
@@ -911,7 +911,7 @@ sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel,
 		elog(ERROR, "sift_col: leaf %d is not an element column", col);
 	g = unit_group(cu, def->parent);
 	memset(vec, 0, sizeof(SiftColVec));
-	idx = MemoryContextAlloc(cu->src->arena, (elemsel->count + 1) * sizeof(uint32));
+	idx = MemoryContextAlloc(cu->src->arena, (elemsel->count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(elemsel, idx);
 	read_positions(cu, col, idx, elemsel->count, g->nelems, vec);
 }
@@ -931,9 +931,7 @@ sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent
 	if (g->parent == NULL)
 	{
 		g->parent = MemoryContextAlloc(cu->src->arena, (g->nelems + 1) * sizeof(uint32));
-		for (uint32 r = 0; r < cu->v.nrows; r++)
-			for (uint32 e = g->eoff[r]; e < g->eoff[r + 1]; e++)
-				g->parent[e] = r;
+		sift_colk->expand_parents(g->eoff + 1, cu->v.nrows, g->parent);
 	}
 	*parent = g->parent;
 	*counts = g->counts;

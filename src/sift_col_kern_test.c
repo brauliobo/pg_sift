@@ -199,6 +199,23 @@ test_range(Test *t, int w)
 	mix_bits(t, bits, SIFT_COL_NWORDS(n));
 }
 
+/* The null flag test of the executors is the u8 range [1, 255]: checked against the plain loop as well as digested */
+static void
+test_nonzero(Test *t)
+{
+	uint32		n = pick_n(t);
+	uint8	   *b = in_array(t, 1, n);
+	uint64	   *bits = out_bits(t, n);
+
+	for (uint32 i = 0; i < n; i++)
+		b[i] = rnd(t, 3) ? 0 : 1 + rnd(t, 255);
+	t->k->range[SIFT_COLW_8] (b, n, 1, 254, bits);
+	for (uint32 i = 0; i < n; i++)
+		if (((bits[i / 64] >> (i % 64)) & 1) != (b[i] != 0))
+			elog(ERROR, "sift_col_kern: the non-zero test of %u bytes is wrong at %u", n, i);
+	mix_bits(t, bits, SIFT_COL_NWORDS(n));
+}
+
 static void
 test_lut(Test *t, int w)
 {
@@ -248,10 +265,10 @@ test_bitops(Test *t)
 	mix64(t, t->k->bits_and_count(a, b, nw));
 	for (uint32 i = 0; i < nw; i++)
 		cnt += pg_popcount64(a[i]);
-	idx = out_array(t, sizeof(uint32), cnt);
+	idx = out_array(t, sizeof(uint32), cnt + SIFT_COL_IDXPAD);
 	ni = t->k->bits_to_idx(a, nw, base, idx);
 	mix64(t, ni);
-	mix(t, idx, (cnt + GUARD) * sizeof(uint32));
+	mix(t, idx, ni * sizeof(uint32));
 }
 
 static void
@@ -385,6 +402,30 @@ test_gather(Test *t)
 	mix(t, dst, (k + GUARD) * sizeof(uint32));
 }
 
+/* The running ends of np lists (empty ones, long runs, the odd length), the parent of every element they cover */
+static void
+test_expand_parents(Test *t)
+{
+	uint32		np = rnd(t, 3) ? rnd(t, 70) : rnd(t, 5),
+				e = 0;
+	uint32	   *end = in_array(t, sizeof(uint32), np),
+			   *parent;
+	int			shape = rnd(t, 3);
+
+	for (uint32 p = 0; p < np; p++)
+	{
+		e += rnd(t, 3) == 0 ? 0 : rnd(t, shape == 0 ? 3 : shape == 1 ? 20 : 90);
+		end[p] = e;
+	}
+	parent = out_array(t, sizeof(uint32), e);
+	t->k->expand_parents(end, np, parent);
+	for (uint32 p = 0, i = 0; p < np; p++)
+		for (; i < end[p]; i++)
+			if (parent[i] != p)
+				elog(ERROR, "sift_col_kern: the parent of element %u is %u, not %u", i, parent[i], p);
+	mix(t, parent, (e + GUARD) * sizeof(uint32));
+}
+
 static int64
 run_cases(const SiftColKernels *k, int32 seed)
 {
@@ -397,6 +438,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 	{
 		for (int w = 0; w < 4; w++)
 			test_range(&t, w);
+		test_nonzero(&t);
 		for (int w = 0; w < 3; w++)
 			test_lut(&t, w);
 		test_bitops(&t);
@@ -408,6 +450,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 		for (int w = 0; w < 4; w++)
 			test_for(&t, w);
 		test_gather(&t);
+		test_expand_parents(&t);
 		MemoryContextReset(cx);
 		unmap_all(&t);
 	}

@@ -360,7 +360,7 @@ extern bool sift_col_next(SiftColSource *src, SiftColUnit *unit);
 extern void sift_col_sel_alloc(SiftColSource *src, uint32 n, SiftColSel *sel);	/* all clear, from the source's arena, reused after sift_col_next */
 extern void sift_col_sel_all(const SiftColUnit *unit, SiftColSel *sel);		/* every live row of the unit (allocates sel) */
 extern uint32 sift_col_sel_count(SiftColSel *sel);							/* recounts */
-extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* positions of the set bits (room for sel->count) */
+extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* positions of the set bits (room for sel->count + SIFT_COL_IDXPAD) */
 
 /* ---- filters: each narrows sel and returns whether any row is left ---- */
 
