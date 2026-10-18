@@ -1,6 +1,6 @@
 /*
  * sift_colcodec_avx2.c - AVX2 kernels of the chunk codec (x86-64-v3 function-level target, safe to link on any x86-64). Bit-identical to
- * the scalar table in sift_colcodec_kern.c; slots past the last value of rle_expand32 are unspecified (the caller allocates SIFT_CC_PAD).
+ * the scalar table in sift_colcodec_kern.c; slots past the last value of rle_expand32 are unspecified (the caller allocates SIFT_COL_PAD).
  */
 #if defined(__x86_64__)
 #include "sift_host.h"
@@ -66,114 +66,6 @@ unpack_range32_avx2(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 
 		}
 		src += R == 32 ? (size_t) 32 * W : (size_t) 32 * ((R * W + 31) / 32);
 	}
-}
-
-static void
-range8_avx2(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint8 *v = a;
-	uint32		nw = n / 64;
-	__m256i		vlo = _mm256_set1_epi8((char) lo),
-				vsp = _mm256_set1_epi8((char) span);
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		__m256i		x0 = _mm256_sub_epi8(LD256(v + w * 64), vlo),
-					x1 = _mm256_sub_epi8(LD256(v + w * 64 + 32), vlo);
-		uint32		m0 = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_min_epu8(x0, vsp), x0)),
-					m1 = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_min_epu8(x1, vsp), x1));
-
-		bits[w] = (uint64) m0 | (uint64) m1 << 32;
-	}
-	if (n % 64)
-		sift_cc_kernels_scalar.range[0](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-CC_INLINE uint32
-mask16x32(const uint16 *v, __m256i vlo, __m256i vsp)
-{
-	__m256i		x0 = _mm256_sub_epi16(LD256(v), vlo),
-				x1 = _mm256_sub_epi16(LD256(v + 16), vlo),
-				c0 = _mm256_cmpeq_epi16(_mm256_min_epu16(x0, vsp), x0),
-				c1 = _mm256_cmpeq_epi16(_mm256_min_epu16(x1, vsp), x1),
-				p = _mm256_permute4x64_epi64(_mm256_packs_epi16(c0, c1), 0xD8);
-
-	return (uint32) _mm256_movemask_epi8(p);
-}
-
-static void
-range16_avx2(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint16 *v = a;
-	uint32		nw = n / 64;
-	__m256i		vlo = _mm256_set1_epi16((short) lo),
-				vsp = _mm256_set1_epi16((short) span);
-
-	for (uint32 w = 0; w < nw; w++)
-		bits[w] = (uint64) mask16x32(v + w * 64, vlo, vsp) | (uint64) mask16x32(v + w * 64 + 32, vlo, vsp) << 32;
-	if (n % 64)
-		sift_cc_kernels_scalar.range[1](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-range32_avx2(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint32 *v = a;
-	uint32		nw = n / 64;
-	__m256i		vlo = _mm256_set1_epi32((int) lo),
-				vsp = _mm256_set1_epi32((int) span);
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		uint64		m = 0;
-
-		for (int q = 0; q < 8; q++)
-		{
-			__m256i		x = _mm256_sub_epi32(LD256(v + w * 64 + q * 8), vlo);
-
-			m |= (uint64) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x, vsp))) << (8 * q);
-		}
-		bits[w] = m;
-	}
-	if (n % 64)
-		sift_cc_kernels_scalar.range[2](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-range64_avx2(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint64 *v = a;
-	uint32		nw = n / 64;
-	__m256i		vlo = _mm256_set1_epi64x((long long) lo),
-				sign = _mm256_set1_epi64x((long long) UINT64CONST(0x8000000000000000)),
-				vsp = _mm256_xor_si256(_mm256_set1_epi64x((long long) span), sign);
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		uint64		m = 0;
-
-		for (int q = 0; q < 16; q++)
-		{
-			__m256i		x = _mm256_xor_si256(_mm256_sub_epi64(LD256(v + w * 64 + q * 4), vlo), sign),
-						gt = _mm256_cmpgt_epi64(x, vsp);
-
-			m |= (uint64) (~_mm256_movemask_pd(_mm256_castsi256_pd(gt)) & 0xF) << (4 * q);
-		}
-		bits[w] = m;
-	}
-	if (n % 64)
-		sift_cc_kernels_scalar.range[3](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-widen_add64_avx2(const uint32 *a, uint32 n, int64 base, int64 *dst)
-{
-	__m256i		vb = _mm256_set1_epi64x((long long) base);
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-		ST256(dst + i, _mm256_add_epi64(_mm256_cvtepu32_epi64(_mm_loadu_si128((const __m128i *) (a + i))), vb));
-	sift_cc_kernels_scalar.widen_add64(a + i, n - i, base, dst + i);
 }
 
 static void
@@ -250,26 +142,6 @@ prefix64_avx2(const uint32 *a, uint32 n, int64 *dst, int64 first, int64 add)
 			dst[k] = (int64) run;
 		}
 	}
-}
-
-static void
-gather32_avx2(const uint32 *dict, const uint32 *codes, uint32 n, uint32 *dst)
-{
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-		ST256(dst + i, _mm256_i32gather_epi32((const int *) dict, LD256(codes + i), 4));
-	sift_cc_kernels_scalar.gather32(dict, codes + i, n - i, dst + i);
-}
-
-static void
-gather64_avx2(const int64 *dict, const uint32 *codes, uint32 n, int64 *dst)
-{
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-		ST256(dst + i, _mm256_i32gather_epi64((const long long *) dict, _mm_loadu_si128((const __m128i *) (codes + i)), 8));
-	sift_cc_kernels_scalar.gather64(dict, codes + i, n - i, dst + i);
 }
 
 static uint32
@@ -354,12 +226,8 @@ rle_expand32_avx2(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *
 const SiftCcKernels sift_cc_kernels_avx2 = {
 	.unpack32 = cc_unpack32_avx2,
 	.unpack_range32 = unpack_range32_avx2,
-	.range = {range8_avx2, range16_avx2, range32_avx2, range64_avx2},
-	.widen_add64 = widen_add64_avx2,
 	.prefix32 = prefix32_avx2,
 	.prefix64 = prefix64_avx2,
-	.gather32 = gather32_avx2,
-	.gather64 = gather64_avx2,
 	.max32 = max32_avx2,
 	.alp_keys_f8 = alp_keys_f8_avx2,
 	.alp_keys_f4 = alp_keys_f4_avx2,

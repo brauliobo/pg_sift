@@ -3,7 +3,8 @@
  *   round trips of typical and adversarial chunks under every policy, with and without NULL slots;
  *   decode, random access, selected rows, filters on the encoded form and sums against the plain values;
  *   the same at every SIMD level, and the written bytes identical at every level;
- *   every kernel at every level against the scalar table, on exact-size buffers;
+ *   every kernel of the codec's table at every level against the scalar table, on exact-size buffers (the column engine's kernels the codec
+ *   calls are tools/kernels' and the col_kernels_* regress tests');
  *   string lists and bit vectors;
  *   corruption fuzz: damaged blobs must raise an error of the corruption class or decode safely, never crash.
  * Usage: test [scale [seed]]   (scale 1 is about 30 s under ASan)
@@ -15,6 +16,10 @@
 #include "../../src/sift_colcodec_int.h"
 #include "harness.h"
 #include "ccshim.h"
+
+typedef Rng CcgRng;
+#define ccg_next rng_next
+#include "../../src/sift_colcodec_gen.h"	/* the chunk generators of the in-backend test too */
 
 static int	nfail;
 static uint64 tag_hist[16][16];	/* [root tag][inner tag] of every written chunk */
@@ -35,163 +40,7 @@ xalloc(size_t n)
 
 /* ---------- data ---------- */
 
-enum
-{
-	G_CONST, G_RAMP, G_BITS, G_FULL64, G_EXTREME, G_RUNS, G_LOWCARD, G_SORTED, G_OUTLIER, G_DECIMAL, G_DECIMAL_EXC, G_FLOAT4,
-	G_RANDOM_F8, G_NEGATIVE, G_EDGE32, G_JITTER, G_ARITH, G_MICROS, G_MICROS_SORTED, G_STEP40, G_ALT, G_NGEN
-};
-
 static const uint32 sizes[] = {0, 1, 2, 3, 31, 32, 33, 63, 64, 65, 1023, 1024, 1025, 1056, 2047, 2048, 2049, 5000, 33000, 70001};
-
-static int64
-rnd64(Rng *r, int bits)
-{
-	return bits >= 64 ? (int64) rng_next(r) : (int64) (rng_next(r) >> (64 - bits));
-}
-
-/* Fills v[0..n) of generator g; *kind is the chunk kind */
-static void
-gen(Rng *r, int g, uint32 n, int64 *v, SiftCcKind *kind)
-{
-	int64		base = rnd64(r, 40) - ((int64) 1 << 39),
-				step = (int64) rng_below(r, 1000) - 100;
-	int			W = 1 + rng_below(r, 32);
-	uint32		k = 0;
-
-	*kind = SIFT_CC_INT;
-	switch (g)
-	{
-		case G_CONST:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base;
-			break;
-		case G_RAMP:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base + (int64) i * step;
-			break;
-		case G_ARITH:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base + (int64) i * 86400000000;
-			break;
-		case G_BITS:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base + (int64) (rng_next(r) >> (64 - W));
-			break;
-		case G_FULL64:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = (int64) rng_next(r);
-			break;
-		case G_EXTREME:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = rng_below(r, 3) ? (rng_below(r, 2) ? INT64_MIN : INT64_MAX) : (int64) rng_below(r, 5) - 2;
-			break;
-		case G_RUNS:
-			while (k < n)
-			{
-				uint32		len = 1 + rng_below(r, rng_below(r, 2) ? 3 : 400);
-				int64		x = rnd64(r, 1 + rng_below(r, 40));
-
-				for (; len && k < n; len--)
-					v[k++] = x;
-			}
-			break;
-		case G_LOWCARD:
-			{
-				int64		pool[300];
-				uint32		d = 2 + rng_below(r, rng_below(r, 2) ? 8 : 290);
-
-				for (uint32 i = 0; i < d; i++)
-					pool[i] = rnd64(r, 50);
-				for (uint32 i = 0; i < n; i++)
-					v[i] = pool[rng_below(r, d)];
-				break;
-			}
-		case G_SORTED:
-			{
-				int64		x = base;
-
-				for (uint32 i = 0; i < n; i++)
-					v[i] = x += rng_below(r, 1 + (1u << rng_below(r, 20)));
-				break;
-			}
-		case G_OUTLIER:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = rng_below(r, 200) ? (int64) rng_below(r, 100) : rnd64(r, 62);
-			break;
-		case G_DECIMAL:
-		case G_DECIMAL_EXC:
-			{
-				double		div = (double) (int64) pow(10, 1 + rng_below(r, 4));
-
-				*kind = SIFT_CC_F8;
-				for (uint32 i = 0; i < n; i++)
-				{
-					double		x = (double) ((int64) rng_below(r, 2000000) - 1000000) / div;
-
-					if (g == G_DECIMAL_EXC && rng_below(r, 30) == 0)
-					{
-						double		odd[] = {NAN, INFINITY, -INFINITY, -0.0, 5e-324, 1.7976931348623157e308, 0.1 + 0.2, 1e300, M_PI};
-
-						x = odd[rng_below(r, 9)];
-					}
-					v[i] = sift_cc_f8_key(x);
-				}
-				break;
-			}
-		case G_FLOAT4:
-			*kind = SIFT_CC_F4;
-			for (uint32 i = 0; i < n; i++)
-			{
-				float		x = (float) ((int64) rng_below(r, 100000) - 50000) / 100.0f;
-
-				if (rng_below(r, 40) == 0)
-					x = rng_below(r, 2) ? -0.0f : (float) rng_unit(r);
-				v[i] = sift_cc_f8_key((double) x);
-			}
-			break;
-		case G_RANDOM_F8:
-			*kind = SIFT_CC_F8;
-			for (uint32 i = 0; i < n; i++)
-				v[i] = sift_cc_f8_key((rng_unit(r) - 0.5) * 1e6);
-			break;
-		case G_NEGATIVE:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = -(int64) rng_below(r, 1u << 20) - 1;
-			break;
-		case G_EDGE32:
-			{
-				int64		span = rng_below(r, 2) ? 0xFFFFFFFFLL : 0x100000000LL;
-
-				for (uint32 i = 0; i < n; i++)
-					v[i] = base + (rng_below(r, 2) ? 0 : span * (int64) rng_below(r, 2));
-				break;
-			}
-		case G_MICROS:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base + (int64) rng_below(r, 1u << 27) * 1000000;
-			break;
-		case G_MICROS_SORTED:
-			{
-				int64		x = base;
-
-				for (uint32 i = 0; i < n; i++)
-					v[i] = x += (int64) rng_below(r, 3000) * 1000000;
-				break;
-			}
-		case G_STEP40:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = INT64_MIN + (int64) rng_below(r, 1u << 23) * ((int64) 1 << 40);
-			break;
-		case G_JITTER:
-			for (uint32 i = 0; i < n; i++)
-				v[i] = base + (int64) i * 1000 + (int64) rng_below(r, 900);
-			break;
-		case G_ALT:				/* a flag alternating with rare repeats, then one long run: run values and lengths are runs themselves */
-			for (uint32 i = 0, head = n / 4 + rng_below(r, n / 2 + 1); i < n; i++)
-				v[i] = !i ? 0 : i >= head || !rng_below(r, 16) ? v[i - 1] : 1 - v[i - 1];
-			break;
-	}
-}
 
 static const char *const policies[] = {
 	"auto", "none", "lz4", "lz4:9", "zstd", "zstd:19", "for", "delta", "rle", "dict", "alp", "for+lz4", "rle+dict", "dict+zstd",
@@ -242,7 +91,7 @@ bits_naive(const int64 *dec, uint32 n, int64 lo, int64 hi, uint64 *bits)
 			bits[i / 64] |= UINT64CONST(1) << (i % 64);
 }
 
-static const SiftCcKernels *levels[3];
+static SiftSimdLevel levels[3];
 static int	nlevels;
 
 /* The operations on an open chunk, compared with the plain values (non-NULL slots) and with the decode of the first level */
@@ -251,9 +100,9 @@ check_open(const Chunk *c, SiftCc *cc, const char *pol, int64 *ref_dec, uint64 (
 {
 	uint32		n = c->n;
 	uint32		nw = (n + 63) / 64;
-	int64	   *dec = xalloc(sizeof(int64) * (n + SIFT_CC_PAD / 8));
+	int64	   *dec = xalloc(sizeof(int64) * (n + SIFT_COL_PAD / 8));
 	uint32	   *off = xalloc(sizeof(uint32) * (SIFT_CC_CAP32(n)));
-	uint64	   *bits = xalloc(sizeof(uint64) * (nw ? nw : 1));
+	uint64	   *bits = xalloc(sizeof(uint64) * SIFT_COL_NWORDS(n));
 	int64		lohi[8][2];
 	int			nr = 0;
 
@@ -422,14 +271,14 @@ test_chunk(Rng *r, Chunk *c, int ngen)
 			SiftCcInfo i2;
 			StringInfoData s2;
 
-			sift_cck = levels[l];
+			cc_use_level(levels[l]);
 			check_open(c, oa.cc, policies[p], ref, refb, r, l == 0);
 			initStringInfo(&s2);
 			sift_cc_encode(&s2, c->kind, c->v, c->n, c->nulls, &pol, &i2);
 			CHECK(s2.len == s.len && !memcmp(s2.data, s.data, s.len), "%s: bytes written differ at level %d", policies[p], l);
 			pfree(s2.data);
 		}
-		sift_cck = levels[nlevels - 1];
+		cc_use_level(levels[nlevels - 1]);
 		sift_cc_close(oa.cc);
 		free(blob);
 		free(ref);
@@ -441,7 +290,7 @@ test_chunk(Rng *r, Chunk *c, int ngen)
 static void
 test_roundtrip(Rng *r, int scale)
 {
-	for (int g = 0; g < G_NGEN; g++)
+	for (int g = 0; g < CCG_NGEN; g++)
 		for (size_t si = 0; si < lengthof(sizes); si++)
 			for (int rep = 0; rep < scale; rep++)
 			{
@@ -452,7 +301,7 @@ test_roundtrip(Rng *r, int scale)
 					continue;
 				c.n = n;
 				c.v = xalloc(sizeof(int64) * (n + 1));
-				gen(r, g, n, c.v, &c.kind);
+				ccg_fill(r, g, n, c.v, &c.kind);
 				c.nulls = NULL;
 				test_chunk(r, &c, g);
 				if (n)
@@ -481,13 +330,13 @@ test_alternating(Rng *r, int scale)
 
 		c.n = 1000 + rng_below(r, 3001);
 		c.v = xalloc(sizeof(int64) * c.n);
-		gen(r, G_ALT, c.n, c.v, &c.kind);
+		ccg_fill(r, CCG_ALT, c.n, c.v, &c.kind);
 		c.nulls = NULL;
-		test_chunk(r, &c, G_ALT);
+		test_chunk(r, &c, CCG_ALT);
 		c.nulls = xalloc(sizeof(uint64) * ((c.n + 63) / 64));
 		for (uint32 w = 0; w < (c.n + 63) / 64; w++)
 			c.nulls[w] = rng_next(r) & rng_next(r);
-		test_chunk(r, &c, G_ALT);
+		test_chunk(r, &c, CCG_ALT);
 		free(c.nulls);
 		free(c.v);
 	}
@@ -510,9 +359,11 @@ fill_random(Rng *r, void *p, size_t bytes)
 	do { if (memcmp(a, b, bytes)) { CHECK(0, __VA_ARGS__); } else nchecks++; } while (0)
 
 static void
-test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
+test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 {
-	const SiftCcKernels *S = &sift_cc_kernels_scalar;
+	const SiftCcKernels *S = &sift_cc_kernels_scalar,
+			   *K = sift_cc_kernels_for(level);
+	const char *name = kt_level_name[level];
 
 	for (int it = 0; it < iters; it++)
 	{
@@ -522,13 +373,13 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 					lo = rng_below(r, 4) ? (uint32) rng_next(r) : rng_below(r, 3),
 					span = rng_below(r, 3) == 0 ? 0xFFFFFFFFu : rng_below(r, 2) ? (uint32) rng_next(r) : rng_below(r, 100);
 		uint64		words = sift_cc_words(rows * 32, W);
-		uint32	   *src = xalloc(4 * words + SIFT_CC_PAD),
+		uint32	   *src = xalloc(4 * words + SIFT_COL_PAD),
 				   *d1 = xalloc(4 * (size_t) rows * 32),
 				   *d2 = xalloc(4 * (size_t) rows * 32);
 		uint64	   *b1 = xalloc(8 * ((rows + 1) / 2)),
 				   *b2 = xalloc(8 * ((rows + 1) / 2));
 
-		fill_random(r, src, 4 * words + SIFT_CC_PAD);
+		fill_random(r, src, 4 * words + SIFT_COL_PAD);
 		S->unpack32(src, W, rows, base, d1);
 		K->unpack32(src, W, rows, base, d2);
 		CMP(d1, d2, 4 * (size_t) rows * 32, "%s unpack32 W=%u rows=%u", name, W, rows);
@@ -539,59 +390,23 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 	}
 	for (int it = 0; it < iters; it++)
 	{
-		int			k = it % 4;
-		size_t		esz = (size_t) 1 << k;
-		uint32		n = rng_below(r, 4) ? rng_below(r, 400) : rng_below(r, 5000);
-		uint64		mask = k == 3 ? ~UINT64CONST(0) : (UINT64CONST(1) << (8 * esz)) - 1,
-					lo = rng_next(r) & mask,
-					span = rng_below(r, 3) == 0 ? mask : rng_next(r) & mask & (rng_below(r, 2) ? ~UINT64CONST(0) : 0xFF);
-		uint8	   *a = xalloc(esz * n + SIFT_CC_PAD);
-		uint64	   *b1 = xalloc(8 * ((n + 63) / 64)),
-				   *b2 = xalloc(8 * ((n + 63) / 64));
-
-		fill_random(r, a, esz * n + SIFT_CC_PAD);
-		if (n && rng_below(r, 2))		/* values at the edges of [lo, lo + span] */
-			for (uint32 i = 0; i < n; i += 1 + rng_below(r, 4))
-			{
-				uint64		x = rng_below(r, 2) ? lo + span + rng_below(r, 2) : lo - rng_below(r, 2);
-
-				x &= mask;
-				memcpy(a + esz * i, &x, esz);
-			}
-		S->range[k] (a, n, lo, span & mask, b1);
-		K->range[k] (a, n, lo, span & mask, b2);
-		CMP(b1, b2, 8 * ((n + 63) / 64), "%s range%zu n=%u", name, esz * 8, n);
-		free(a), free(b1), free(b2);
-	}
-	for (int it = 0; it < iters; it++)
-	{
 		uint32		n = 1 + (rng_below(r, 3) ? rng_below(r, 300) : rng_below(r, 4000)),
 					d = 1 + rng_below(r, 1000);
-		int64		base = rnd64(r, 64);
-		uint32	   *u = xalloc(4 * n + SIFT_CC_PAD),
+		int64		base = ccg_bits(r, 64);
+		uint32	   *u = xalloc(4 * n + SIFT_COL_PAD),
 				   *p1 = xalloc(4 * n),
 				   *p2 = xalloc(4 * n),
-				   *codes = xalloc(4 * n + SIFT_CC_PAD),
-				   *dict32 = xalloc(4 * d + SIFT_CC_PAD);
+				   *codes = xalloc(4 * n + SIFT_COL_PAD);
 		int64	   *q1 = xalloc(8 * n),
-				   *q2 = xalloc(8 * n),
-				   *dict64 = xalloc(8 * d + SIFT_CC_PAD);
+				   *q2 = xalloc(8 * n);
 		uint32		add = (uint32) rng_next(r);
 
-		fill_random(r, u, 4 * n + SIFT_CC_PAD);
-		fill_random(r, dict32, 4 * d + SIFT_CC_PAD);
-		fill_random(r, dict64, 8 * d + SIFT_CC_PAD);
+		fill_random(r, u, 4 * n + SIFT_COL_PAD);
 		for (uint32 i = 0; i < n; i++)
 			codes[i] = rng_below(r, d);
-		S->widen_add64(u, n, base, q1);
-		K->widen_add64(u, n, base, q2);
-		CMP(q1, q2, 8 * (size_t) n, "%s widen_add64 n=%u", name, n);
 		S->prefix32(u, n, p1, (uint32) base, add);
 		K->prefix32(u, n, p2, (uint32) base, add);
 		CMP(p1, p2, 4 * (size_t) n, "%s prefix32 n=%u", name, n);
-		S->prefix64(u, n, q1, base, (int64) rng_next(r) >> rng_below(r, 64));
-		K->prefix64(u, n, q2, base, (int64) rng_next(r) >> rng_below(r, 64));
-		/* the two adds differ above: redo with one */
 		{
 			int64		a64 = (int64) rng_next(r) >> rng_below(r, 64);
 
@@ -599,14 +414,8 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 			K->prefix64(u, n, q2, base, a64);
 			CMP(q1, q2, 8 * (size_t) n, "%s prefix64 n=%u", name, n);
 		}
-		S->gather32(dict32, codes, n, p1);
-		K->gather32(dict32, codes, n, p2);
-		CMP(p1, p2, 4 * (size_t) n, "%s gather32 n=%u", name, n);
-		S->gather64(dict64, codes, n, q1);
-		K->gather64(dict64, codes, n, q2);
-		CMP(q1, q2, 8 * (size_t) n, "%s gather64 n=%u", name, n);
 		CHECK(S->max32(u, n) == K->max32(u, n) && S->max32(codes, n) == K->max32(codes, n), "%s max32 n=%u", name, n);
-		free(u), free(p1), free(p2), free(codes), free(dict32), free(q1), free(q2), free(dict64);
+		free(u), free(p1), free(p2), free(codes), free(q1), free(q2);
 	}
 	for (int it = 0; it < iters; it++)
 	{
@@ -615,8 +424,8 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 					e4 = rng_below(r, SIFT_CC_ALP_EMAX_F4 + 1);
 		int64		dbase8 = (int64) (rng_next(r) % ((UINT64CONST(1) << 53) - ((uint64) 1 << 32) - 1)) - ((int64) 1 << 52),
 					dbase4 = (int64) rng_below(r, 1 << 24) - (1 << 23);
-		uint32	   *u8 = xalloc(4 * n + SIFT_CC_PAD),
-				   *u4 = xalloc(4 * n + SIFT_CC_PAD);
+		uint32	   *u8 = xalloc(4 * n + SIFT_COL_PAD),
+				   *u4 = xalloc(4 * n + SIFT_COL_PAD);
 		int64	   *q1 = xalloc(8 * n),
 				   *q2 = xalloc(8 * n);
 
@@ -637,8 +446,8 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 	{
 		uint32		nr = 1 + rng_below(r, rng_below(r, 4) ? 40 : 1500),
 					total = 0;
-		uint32	   *vals = xalloc(4 * nr + SIFT_CC_PAD),
-				   *lens = xalloc(4 * nr + SIFT_CC_PAD);
+		uint32	   *vals = xalloc(4 * nr + SIFT_COL_PAD),
+				   *lens = xalloc(4 * nr + SIFT_COL_PAD);
 
 		for (uint32 i = 0; i < nr; i++)
 		{
@@ -646,8 +455,8 @@ test_kernels_level(Rng *r, const SiftCcKernels *K, const char *name, int iters)
 			total += lens[i] = 1 + rng_below(r, rng_below(r, 2) ? 3 : 70);
 		}
 		{
-			uint32	   *d1 = xalloc(4 * (size_t) total + SIFT_CC_PAD),
-					   *d2 = xalloc(4 * (size_t) total + SIFT_CC_PAD);
+			uint32	   *d1 = xalloc(4 * (size_t) total + SIFT_COL_PAD),
+					   *d2 = xalloc(4 * (size_t) total + SIFT_COL_PAD);
 
 			S->rle_expand32(vals, lens, nr, d1);
 			K->rle_expand32(vals, lens, nr, d2);
@@ -770,9 +579,9 @@ fuzz_fn(void *a)
 
 		if (n <= (1u << 22))
 		{
-			int64	   *dec = palloc(sizeof(int64) * (n + SIFT_CC_PAD / 8));
+			int64	   *dec = palloc(sizeof(int64) * (n + SIFT_COL_PAD / 8));
 			uint32	   *off = palloc(sizeof(uint32) * SIFT_CC_CAP32(n));
-			uint64	   *bits = palloc(8 * ((n + 63) / 64 + 1));
+			uint64	   *bits = palloc(8 * SIFT_COL_NWORDS(n));
 			int64		sum;
 
 			sift_cc_decode(cc, dec);
@@ -859,7 +668,7 @@ test_fuzz(Rng *r, int scale)
 		initStringInfo(&s);
 		if (what == 0)
 		{
-			gen(r, rng_below(r, G_NGEN), n, c.v, &c.kind);
+			ccg_fill(r, rng_below(r, CCG_NGEN), n, c.v, &c.kind);
 			sift_cc_encode(&s, c.kind, c.v, n, NULL, &pol, NULL);
 		}
 		else if (what == 1)
@@ -946,16 +755,13 @@ main(int argc, char **argv)
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	rng_seed(&r, argc > 2 ? (uint64) atoll(argv[2]) : 20260101);
-	kt_cpu_init();
-	sift_cc_kernels_init();
-	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512; l++)
-		if (!nlevels || sift_cc_kernels_for((SiftSimdLevel) l) != levels[nlevels - 1])
-			levels[nlevels++] = sift_cc_kernels_for((SiftSimdLevel) l);
+	cc_init();
+	nlevels = cc_levels(levels);
 	printf("levels tested: %d (detected %s)\n", nlevels, kt_level_name[sift_cpu.detected]);
 
 	test_policy();
 	for (int l = 1; l < nlevels; l++)
-		test_kernels_level(&r, levels[l], kt_level_name[l], 3000 * scale);
+		test_kernels_level(&r, levels[l], 3000 * scale);
 	test_roundtrip(&r, scale);
 	test_alternating(&r, scale);
 	test_strs(&r, scale);

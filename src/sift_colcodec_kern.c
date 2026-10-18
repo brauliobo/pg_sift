@@ -80,37 +80,6 @@ unpack_range32_scalar(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint3
 	}
 }
 
-#define RANGE_FN(NAME, T) \
-static void \
-NAME(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits) \
-{ \
-	const T    *v = a; \
-	for (uint32 w = 0; w * 64 < n; w++) \
-	{ \
-		uint64		m = 0; \
-		uint32		cnt = n - w * 64 > 64 ? 64 : n - w * 64; \
-		for (uint32 j = 0; j < cnt; j++) \
-		{ \
-			T x; \
-			memcpy(&x, v + (size_t) w * 64 + j, sizeof(T)); \
-			m |= (uint64) ((T) (x - (T) lo) <= (T) span) << j; \
-		} \
-		bits[w] = m; \
-	} \
-}
-
-RANGE_FN(range8_scalar, uint8)
-RANGE_FN(range16_scalar, uint16)
-RANGE_FN(range32_scalar, uint32)
-RANGE_FN(range64_scalar, uint64)
-
-static void
-widen_add64_scalar(const uint32 *a, uint32 n, int64 base, int64 *dst)
-{
-	for (uint32 i = 0; i < n; i++)
-		dst[i] = (int64) ((uint64) base + (uint64) a[i]);
-}
-
 static void
 prefix32_scalar(const uint32 *a, uint32 n, uint32 *dst, uint32 first, uint32 add)
 {
@@ -141,20 +110,6 @@ prefix64_scalar(const uint32 *a, uint32 n, int64 *dst, int64 first, int64 add)
 	}
 }
 
-static void
-gather32_scalar(const uint32 *dict, const uint32 *codes, uint32 n, uint32 *dst)
-{
-	for (uint32 i = 0; i < n; i++)
-		dst[i] = dict[codes[i]];
-}
-
-static void
-gather64_scalar(const int64 *dict, const uint32 *codes, uint32 n, int64 *dst)
-{
-	for (uint32 i = 0; i < n; i++)
-		dst[i] = dict[codes[i]];
-}
-
 static uint32
 max32_scalar(const uint32 *a, uint32 n)
 {
@@ -169,14 +124,14 @@ static void
 alp_keys_f8_scalar(int64 *dst, const uint32 *u, uint32 n, int64 dbase, double div)
 {
 	for (uint32 i = 0; i < n; i++)
-		dst[i] = sift_cc_f8_key((double) (int64) ((uint64) dbase + u[i]) / div);
+		dst[i] = sift_col_f8_key((double) (int64) ((uint64) dbase + u[i]) / div);
 }
 
 static void
 alp_keys_f4_scalar(int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div)
 {
 	for (uint32 i = 0; i < n; i++)
-		dst[i] = sift_cc_f8_key((double) ((float) (int32) (uint32) ((uint64) dbase + u[i]) / div));
+		dst[i] = sift_col_f8_key((double) ((float) (int32) (uint32) ((uint64) dbase + u[i]) / div));
 }
 
 static void
@@ -190,12 +145,8 @@ rle_expand32_scalar(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32
 const SiftCcKernels sift_cc_kernels_scalar = {
 	.unpack32 = unpack32_scalar,
 	.unpack_range32 = unpack_range32_scalar,
-	.range = {range8_scalar, range16_scalar, range32_scalar, range64_scalar},
-	.widen_add64 = widen_add64_scalar,
 	.prefix32 = prefix32_scalar,
 	.prefix64 = prefix64_scalar,
-	.gather32 = gather32_scalar,
-	.gather64 = gather64_scalar,
 	.max32 = max32_scalar,
 	.alp_keys_f8 = alp_keys_f8_scalar,
 	.alp_keys_f4 = alp_keys_f4_scalar,

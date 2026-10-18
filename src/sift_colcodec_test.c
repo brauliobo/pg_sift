@@ -100,7 +100,7 @@ Datum
 sift_test_cc_decode(PG_FUNCTION_ARGS)
 {
 	SiftCc	   *cc = open_blob(PG_GETARG_BYTEA_PP(0), PG_GETARG_BOOL(1));
-	int64	   *v = palloc(sizeof(int64) * (sift_cc_nrows(cc) + SIFT_CC_PAD / 8));
+	int64	   *v = palloc(sizeof(int64) * (sift_cc_nrows(cc) + SIFT_COL_PAD / 8));
 
 	sift_cc_decode(cc, v);
 	PG_RETURN_ARRAYTYPE_P(int8_array(v, sift_cc_nrows(cc)));
@@ -133,7 +133,7 @@ sift_test_cc_filter(PG_FUNCTION_ARGS)
 {
 	SiftCc	   *cc = open_blob(PG_GETARG_BYTEA_PP(0), true);
 	uint32		n = sift_cc_nrows(cc);
-	uint64	   *bits = palloc0(sizeof(uint64) * ((n + 63) / 64 + 1));
+	uint64	   *bits = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(n));
 	Datum	   *rows = palloc(sizeof(Datum) * (n + 1));
 	int			nr = 0;
 	int64		sum;
@@ -172,16 +172,26 @@ sift_test_cc_has(PG_FUNCTION_ARGS)
 Datum
 sift_test_cc_key(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(sift_cc_f8_key(PG_GETARG_FLOAT8(0)));
+	PG_RETURN_INT64(sift_col_f8_key(PG_GETARG_FLOAT8(0)));
 }
 
 Datum
 sift_test_cc_unkey(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_FLOAT8(sift_cc_f8_from_key(PG_GETARG_INT64(0)));
+	PG_RETURN_FLOAT8(sift_col_f8_from_key(PG_GETARG_INT64(0)));
 }
 
 /* ---------- random chunks ---------- */
+
+typedef pg_prng_state CcgRng;
+
+static inline uint64
+ccg_next(CcgRng *r)
+{
+	return pg_prng_uint64(r);
+}
+
+#include "sift_colcodec_gen.h"
 
 typedef struct Chunk
 {
@@ -199,56 +209,10 @@ static void
 gen_chunk(pg_prng_state *rs, Chunk *c)
 {
 	static const uint32 sizes[] = {0, 1, 2, 31, 32, 33, 1000, 1024, 1025, 2100, 5000};
-	int			shape = (int) (pg_prng_uint32(rs) % 9);
-	int64		base = (int64) pg_prng_uint64(rs) >> (1 + pg_prng_uint32(rs) % 60);
-	uint32		w = 1 + pg_prng_uint32(rs) % 32,
-				run = 0;
-	int64		cur = 0;
 
 	c->n = sizes[pg_prng_uint32(rs) % lengthof(sizes)];
-	c->kind = SIFT_CC_INT;
 	c->v = palloc0(sizeof(int64) * (c->n + 1));
-	for (uint32 i = 0; i < c->n; i++)
-	{
-		switch (shape)
-		{
-			case 0:
-				c->v[i] = base;
-				break;
-			case 1:
-				c->v[i] = base + (int64) i * 7;
-				break;
-			case 2:
-				c->v[i] = base + (int64) (pg_prng_uint64(rs) >> (64 - w));
-				break;
-			case 3:
-				if (run == 0)
-				{
-					run = 1 + pg_prng_uint32(rs) % 300;
-					cur = (int64) pg_prng_uint64(rs) >> 30;
-				}
-				run--;
-				c->v[i] = cur;
-				break;
-			case 4:
-				c->v[i] = (int64) (pg_prng_uint32(rs) % 40) * 1000003;
-				break;
-			case 5:
-				c->v[i] = pg_prng_uint32(rs) % 150 ? (int64) (pg_prng_uint32(rs) % 100) : (int64) pg_prng_uint64(rs);
-				break;
-			case 6:
-				c->kind = SIFT_CC_F8;
-				c->v[i] = sift_cc_f8_key((double) ((int64) (pg_prng_uint32(rs) % 2000000) - 1000000) / 100.0);
-				break;
-			case 7:
-				c->kind = SIFT_CC_F4;
-				c->v[i] = sift_cc_f8_key((double) ((float) ((int64) (pg_prng_uint32(rs) % 100000) - 50000) / 100.0f));
-				break;
-			default:
-				c->v[i] = pg_prng_uint32(rs) % 3 ? INT64_MIN + (int64) (pg_prng_uint32(rs) % 3) : INT64_MAX - (int64) (pg_prng_uint32(rs) % 3);
-				break;
-		}
-	}
+	ccg_fill(rs, pg_prng_uint32(rs) % CCG_NGEN, c->n, c->v, &c->kind);
 	c->nulls = palloc0(sizeof(uint64) * (c->n / 64 + 1));
 	if (c->n && pg_prng_uint32(rs) % 2)
 		for (uint32 i = 0; i < c->n; i++)
@@ -280,8 +244,8 @@ chunk_digest(const Chunk *c, const SiftCcPolicy *pol, uint64 *bad)
 	StringInfoData out;
 	SiftCc	   *cc;
 	uint32		n = c->n;
-	int64	   *dec = palloc(sizeof(int64) * (n + SIFT_CC_PAD / 8));
-	uint64	   *bits = palloc0(sizeof(uint64) * (n / 64 + 2));
+	int64	   *dec = palloc(sizeof(int64) * (n + SIFT_COL_PAD / 8));
+	uint64	   *bits = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(n));
 	uint64		h = 0x9E3779B97F4A7C15;
 	int64		mn = INT64_MAX,
 				mx = INT64_MIN,
@@ -310,7 +274,7 @@ chunk_digest(const Chunk *c, const SiftCcPolicy *pol, uint64 *bad)
 					hi = q == 0 ? mx : lo + ((mx - lo) >> (2 * q));
 		uint64		cnt;
 
-		memset(bits, 0, sizeof(uint64) * (n / 64 + 1));
+		memset(bits, 0, sizeof(uint64) * SIFT_COL_NWORDS(n));
 		sift_cc_filter(cc, lo, hi, bits);
 		for (uint32 i = 0; i < n; i++)
 			*bad += (((bits[i / 64] >> (i % 64)) & 1) != 0) != (dec[i] >= lo && dec[i] <= hi);
@@ -348,12 +312,21 @@ sift_test_cc_digest(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64((int64) h);
 }
 
+/* The kernels of a level: the codec's table and the column engine's one it runs on */
+static void
+set_level(SiftSimdLevel level)
+{
+	sift_cck = sift_cc_kernels_for(level);
+	sift_colk = sift_col_kernels_for(level);
+}
+
 /* sift._test_cc_equiv(seed int8, iters int4): chunk digests at every level the CPU supports that differ from the scalar level's */
 Datum
 sift_test_cc_equiv(PG_FUNCTION_ARGS)
 {
 	pg_prng_state rs;
 	const SiftCcKernels *saved = sift_cck;
+	const SiftColKernels *saved_col = sift_colk;
 	uint64		mismatches = 0,
 				bad = 0;
 
@@ -370,16 +343,17 @@ sift_test_cc_equiv(PG_FUNCTION_ARGS)
 
 			if (!policy_at(p, &pol))
 				continue;
-			sift_cck = sift_cc_kernels_for(SIFT_SIMD_SCALAR);
+			set_level(SIFT_SIMD_SCALAR);
 			want = chunk_digest(&c, &pol, &bad);
 			for (int l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_AVX512; l++)
 			{
-				sift_cck = sift_cc_kernels_for((SiftSimdLevel) l);
+				set_level((SiftSimdLevel) l);
 				mismatches += chunk_digest(&c, &pol, &bad) != want;
 			}
 		}
 	}
 	sift_cck = saved;
+	sift_colk = saved_col;
 	PG_RETURN_INT64((int64) (mismatches + bad));
 }
 
@@ -400,8 +374,8 @@ try_blob(const uint8 *blob, Size len, bool verify, uint64 *raised, uint64 *decod
 
 		if (n <= (1u << 20))
 		{
-			int64	   *dec = palloc(sizeof(int64) * (n + SIFT_CC_PAD / 8));
-			uint64	   *bits = palloc0(sizeof(uint64) * (n / 64 + 2));
+			int64	   *dec = palloc(sizeof(int64) * (n + SIFT_COL_PAD / 8));
+			uint64	   *bits = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(n));
 
 			sift_cc_decode(cc, dec);
 			sift_cc_filter(cc, sift_cc_min(cc), sift_cc_min(cc) + 1000, bits);

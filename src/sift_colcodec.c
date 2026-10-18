@@ -672,7 +672,7 @@ alp_digit(SiftCcKind kind, int64 key, int e, int64 *d)
 {
 	if (kind == SIFT_CC_F8)
 	{
-		double		x = sift_cc_f8_from_key(key),
+		double		x = sift_col_f8_from_key(key),
 					t,
 					back;
 
@@ -683,11 +683,11 @@ alp_digit(SiftCcKind kind, int64 key, int e, int64 *d)
 			return false;
 		*d = (int64) nearbyint(t);
 		back = (double) *d / sift_cc_p10[e];
-		return sift_cc_f8_key(back) == key;
+		return sift_col_f8_key(back) == key;
 	}
 	else
 	{
-		double		xd = sift_cc_f8_from_key(key);
+		double		xd = sift_col_f8_from_key(key);
 		float		x = (float) xd,
 					t,
 					back;
@@ -699,7 +699,7 @@ alp_digit(SiftCcKind kind, int64 key, int e, int64 *d)
 			return false;
 		*d = (int64) nearbyintf(t);
 		back = (float) (int32) *d / sift_cc_p10f[e];
-		return sift_cc_f8_key((double) back) == key;
+		return sift_col_f8_key((double) back) == key;
 	}
 }
 
@@ -1398,7 +1398,7 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 									errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg)));
 				if (f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) n * 9 + 4096 + 64)
 					CC_CORRUPT("wrapped length out of range");
-				buf = rd_alloc(cx, (size_t) f1 + SIFT_CC_PAD);
+				buf = rd_alloc(cx, (size_t) f1 + SIFT_COL_PAD);
 				if (!sift_colz_decompress(nd->alg, p + CC_NHDR, cl, buf, f1))
 					CC_CORRUPT("compressed stream is damaged");
 				nd->a = parse_node(cx, kind, buf, f1, n, depth + 1, &u);
@@ -1606,7 +1606,7 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 				nd_u32(nd->b, 0, codes);
 				if (sift_cck->max32(codes, n) >= nd->d)
 					CC_CORRUPT("dictionary code out of range");
-				sift_cck->gather32(dv, codes, n, dst);
+				sift_colk->gather_u32(dv, codes, n, dst);
 				pfree(dv);
 				pfree(codes);
 				break;
@@ -1616,7 +1616,7 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 			break;
 		default:
 			{
-				int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_CC_PAD / 8));
+				int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 				nd_i64(nd, tmp);
 				for (uint32 i = 0; i < n; i++)
@@ -1643,7 +1643,7 @@ nd_i64(const CcNode *nd, int64 *dst)
 				uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
 
 				sift_cck->unpack32((const uint32 *) nd->words, nd->W, rows_for(n), 0, tmp);
-				sift_cck->widen_add64(tmp, n, nd->base, dst);
+				sift_colk->for_i64[SIFT_COLW_32](tmp, n, nd->base, dst);
 				pfree(tmp);
 				break;
 			}
@@ -1661,7 +1661,7 @@ nd_i64(const CcNode *nd, int64 *dst)
 			}
 		case SIFT_CCN_RLE:
 			{
-				int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_CC_PAD / 8));
+				int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
 
 				nd_i64(nd->a, rv);
 				for (uint32 r = 0; r < nd->nruns; r++)
@@ -1677,7 +1677,7 @@ nd_i64(const CcNode *nd, int64 *dst)
 				nd_u32(nd->b, 0, codes);
 				if (sift_cck->max32(codes, n) >= nd->d)
 					CC_CORRUPT("dictionary code out of range");
-				sift_cck->gather64(nd->dict, codes, n, dst);
+				sift_colk->for_i64_sel[SIFT_COLW_64](nd->dict, codes, n, 0, dst);
 				pfree(codes);
 				break;
 			}
@@ -1746,8 +1746,8 @@ static int64
 alp_key(const CcNode *nd, int64 d)
 {
 	if (nd->kind == SIFT_CC_F8)
-		return sift_cc_f8_key((double) d / sift_cc_p10[nd->e]);
-	return sift_cc_f8_key((double) ((float) (int32) d / sift_cc_p10f[nd->e]));
+		return sift_col_f8_key((double) d / sift_cc_p10[nd->e]);
+	return sift_col_f8_key((double) ((float) (int32) d / sift_cc_p10f[nd->e]));
 }
 
 static int64
@@ -1774,7 +1774,7 @@ nd_get(const CcNode *nd, uint32 i)
 
 				if (upto)
 				{
-					uint32		tmp[1024 + SIFT_CC_PAD / 4];
+					uint32		tmp[1024 + SIFT_COL_PAD / 4];
 
 					sift_cck->unpack32((const uint32 *) nd->words + (size_t) blk * 32 * nd->W, nd->W, upto / 32 + 1, 0, tmp);
 					for (uint32 j = 1; j <= upto; j++)
@@ -1847,7 +1847,7 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 		return;
 	if ((uint64) m * 8 > c->n)
 	{
-		int64	   *all = palloc(sizeof(int64) * ((size_t) c->n + SIFT_CC_PAD / 8));
+		int64	   *all = palloc(sizeof(int64) * ((size_t) c->n + SIFT_COL_PAD / 8));
 
 		nd_i64(c->root, all);
 		for (uint32 k = 0; k < m; k++)
@@ -1958,13 +1958,13 @@ nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *b
 					set_zeros(bits, n);
 					return;
 				}
-				sift_cck->range[nd->B == 1 ? 0 : nd->B == 2 ? 1 : nd->B == 4 ? 2 : 3] (nd->words, n, l, span, bits);
+				sift_colk->range[nd->B == 1 ? 0 : nd->B == 2 ? 1 : nd->B == 4 ? 2 : 3] (nd->words, n, l, span, bits);
 				return;
 			}
 			break;
 		case SIFT_CCN_RLE:
 			{
-				uint64	   *rb = palloc0(sizeof(uint64) * (((size_t) nd->nruns + 63) / 64 + 1));
+				uint64	   *rb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
 				uint32		start = 0;
 				bool		open = false;
 
@@ -2077,16 +2077,16 @@ nd_filter(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *b
 		else
 		{
 			nd_u32(nd, sub, tmp);
-			sift_cck->range[2](tmp, n, l, span, bits);
+			sift_colk->range[2](tmp, n, l, span, bits);
 		}
 		pfree(tmp);
 	}
 	else
 	{
-		int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_CC_PAD / 8));
+		int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 		nd_i64(nd, tmp);
-		sift_cck->range[3](tmp, n, (uint64) lo, (uint64) hi - (uint64) lo, bits);
+		sift_colk->range[3](tmp, n, (uint64) lo, (uint64) hi - (uint64) lo, bits);
 		pfree(tmp);
 	}
 }
@@ -2122,7 +2122,7 @@ sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum)
 		s = cnt * (uint64) nd->base;
 	else if (nd->tag == SIFT_CCN_RLE)
 	{
-		int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_CC_PAD / 8));
+		int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
 
 		nd_i64(nd->a, rv);
 		for (uint32 r = 0; r < nd->nruns; r++)
@@ -2131,7 +2131,7 @@ sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum)
 	}
 	else
 	{
-		int64	   *all = palloc(sizeof(int64) * ((size_t) n + SIFT_CC_PAD / 8));
+		int64	   *all = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 		nd_i64(nd, all);
 		for (uint32 i = 0; i < n; i++)
@@ -2380,7 +2380,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 				nd = parse_node(cx, SIFT_CC_INT, blob + 16, nl, npos, 0, &u);
 				if (u != nl)
 					CC_CORRUPT("bit vector node does not match");
-				pos = palloc(sizeof(int64) * ((size_t) npos + SIFT_CC_PAD / 8));
+				pos = palloc(sizeof(int64) * ((size_t) npos + SIFT_COL_PAD / 8));
 				nd_i64(nd, pos);
 				if (form == CCB_CLEAR)
 					set_ones(words, nbits);
