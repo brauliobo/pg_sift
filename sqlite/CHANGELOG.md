@@ -10,6 +10,14 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md).
   prefix, instead of failing (the shared engine, as in the PostgreSQL extension); a regular expression cannot have back-references;
   `ORDER BY rank LIMIT` above 67 million rows works.
 
+## 1.4.0
+
+- No change to the storage format (2), the SQL interface or the results: tables of 1.3.x open as they are. The extension now runs on the portable core
+  it shares with the PostgreSQL and MariaDB extensions: merges use the shared sorted-run and merge code (`src/sift_runs.c`, `src/sift_merge.c`), deletes the
+  shared segment code, and the fake PostgreSQL headers of the old shim are replaced by the host in `sqlite/host/`. Index tables are byte identical to 1.3.1's
+  and scores are bit equal (1,242 queries); queries and merges run at the same speed (merge 3.55 s against 3.65 s, peak memory 62 MiB against 68 MiB).
+- README: install, usage and the numbers against FTS5, measured without CPU pinning (ranked top-10 AND 89x, OR 242x, phrase 10x faster than FTS5 on 218,058 articles).
+
 ## 1.3.1
 
 - No change to the extension; released with the PostgreSQL extension 1.3.1.

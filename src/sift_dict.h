@@ -31,6 +31,14 @@
 #define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
 #define SIFT_TERM_POS			0x08	/* the postings have position records (sift_posting.h): at the end of the term blob, or inline */
 
+/* A segment's DICT section starts its last block within this many bytes (offsets are uint32); sift.test_dict_max lowers it in SIFT_TESTING builds */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_dict_max;
+#define SIFT_DICT_MAX	((uint64) (sift_test_dict_max > 0 ? sift_test_dict_max : PG_UINT32_MAX))
+#else
+#define SIFT_DICT_MAX	((uint64) PG_UINT32_MAX)
+#endif
+
 typedef struct SiftTermInfo
 {
 	uint32		df;

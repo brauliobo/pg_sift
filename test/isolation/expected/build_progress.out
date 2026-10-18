@@ -1,0 +1,64 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2h s1b s2p s2r2 s2p s2r3 s2p s2r4 s2p s2r5
+step s2h: SELECT pg_advisory_lock(1002), pg_advisory_lock(1003), pg_advisory_lock(1004), pg_advisory_lock(1005);
+pg_advisory_lock|pg_advisory_lock|pg_advisory_lock|pg_advisory_lock
+----------------+----------------+----------------+----------------
+                |                |                |                
+(1 row)
+
+step s1b: SET maintenance_work_mem = '1MB'; SET max_parallel_maintenance_workers = 0; SET sift.test_run_docs = 3000;
+			  SET sift.test_phase_gate = 1000; CREATE INDEX iso_prog_idx ON iso_prog USING sift (body); <waiting ...>
+step s2p: SELECT phase, tuples_done > 0 AS some_done, tuples_done <= tuples_total AS within_total, tuples_total FROM pg_stat_progress_create_index
+			  WHERE relid = 'iso_prog'::regclass;
+phase                         |some_done|within_total|tuples_total
+------------------------------+---------+------------+------------
+building index: scanning table|f        |t           |       20000
+(1 row)
+
+step s2r2: SELECT pg_advisory_unlock(1002);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2p: SELECT phase, tuples_done > 0 AS some_done, tuples_done <= tuples_total AS within_total, tuples_total FROM pg_stat_progress_create_index
+			  WHERE relid = 'iso_prog'::regclass;
+phase                        |some_done|within_total|tuples_total
+-----------------------------+---------+------------+------------
+building index: spilling runs|t        |t           |       20000
+(1 row)
+
+step s2r3: SELECT pg_advisory_unlock(1003);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2p: SELECT phase, tuples_done > 0 AS some_done, tuples_done <= tuples_total AS within_total, tuples_total FROM pg_stat_progress_create_index
+			  WHERE relid = 'iso_prog'::regclass;
+phase                       |some_done|within_total|tuples_total
+----------------------------+---------+------------+------------
+building index: merging runs|f        |t           |       20000
+(1 row)
+
+step s2r4: SELECT pg_advisory_unlock(1004);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2p: SELECT phase, tuples_done > 0 AS some_done, tuples_done <= tuples_total AS within_total, tuples_total FROM pg_stat_progress_create_index
+			  WHERE relid = 'iso_prog'::regclass;
+phase                           |some_done|within_total|tuples_total
+--------------------------------+---------+------------+------------
+building index: writing segments|f        |t           |       20000
+(1 row)
+
+step s2r5: SELECT pg_advisory_unlock(1005);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1b: <... completed>

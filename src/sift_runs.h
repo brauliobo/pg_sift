@@ -24,11 +24,14 @@
 extern PGDLLIMPORT int sift_test_run_docs;
 extern PGDLLIMPORT int sift_test_fanin;
 extern PGDLLIMPORT int sift_test_segment_postings;
-#endif
-
-#ifdef SIFT_TESTING
+/* blocks of 64 kB the buffer's pool has (0 = 60000) */
+extern PGDLLIMPORT int sift_test_pool_blocks;
+/* Called by a merge to a run or a segment after each term (nterms so far, df of the term), when set: how the host tests it */
+extern PGDLLIMPORT void (*sift_test_merge_term) (uint32 nterms, uint64 df);
+#define TEST_MERGE_TERM(nterms, df)	do { if (sift_test_merge_term) sift_test_merge_term(nterms, df); } while (0)
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
 #else
+#define TEST_MERGE_TERM(nterms, df)	((void) 0)
 #define TEST_KNOB(knob, normal)	(normal)
 #endif
 
@@ -40,7 +43,9 @@ struct SiftRun
 {
 	BufFile    *file;
 	uint64		ndocs;
-	uint64		maxdf;
+	uint64		maxdf;			/* postings of its largest term */
+	uint64		maxblob;		/* bytes the largest term takes of a segment, at most */
+	uint64		dict;			/* bytes the terms take of a segment's dictionary, at most */
 	int			level;			/* merge passes the run has been through (spill cascade) */
 	SharedFileSet *fileset;		/* NULL for a temporary file, else the file sift_run_file(worker, id) of the set */
 	int			worker;
@@ -57,11 +62,18 @@ extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt, bool positio
 /*
  * Adds a document (nterms = 0 and dl = 0 for text without tokens: it still
  * counts in N); keys must be strictly ascending (the heap build sorts each
- * page, promotion sorts its records). Term bytes are copied.
+ * page, promotion sorts its records). Term bytes are copied. Returns whether the buffer is full now.
  */
-extern void sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
+extern bool sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
 						 int nterms, uint32 dl);
 extern bool sift_inv_full(const SiftInvBuf *buf);
+
+/* Can a doc of nterms terms (from textlen bytes of text) be added? Spill first if not; only docs of sift_inv_small_doc bytes or more need to ask */
+extern bool sift_inv_fits(const SiftInvBuf *buf, int nterms, Size textlen);
+extern Size sift_inv_small_doc(const SiftInvBuf *buf);
+
+/* Is the key of tid above that of the last doc added (or is the buffer empty)? Spill first if not */
+extern bool sift_inv_after(const SiftInvBuf *buf, ItemPointer tid);
 extern bool sift_inv_empty(const SiftInvBuf *buf);
 
 /* Writes one immutable segment through wt and fills its directory entry; then resets */
@@ -73,9 +85,6 @@ extern SiftRun *sift_inv_spill(SiftInvBuf *buf);
 
 /* Spills to a file of a fileset (parallel build workers hand their runs to the leader) */
 extern SiftRun *sift_inv_spill_shared(SiftInvBuf *buf, SharedFileSet *fileset, int worker, int id);
-
-/* Postings of the run's most frequent term (merge memory planning) */
-extern uint64 sift_run_maxdf(const SiftRun *run);
 
 /*
  * Spills the live part of an immutable segment (docs and postings VACUUM did
@@ -106,6 +115,9 @@ typedef struct RunHome
 extern const char *sift_run_file(int worker, int run);
 extern int	sift_merge_fanin(Size budget);
 extern SiftRun *sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home);
-extern int	sift_shrink_runs(SiftRun **runs, int nruns, Size budget, RunHome *home);
+extern int	sift_shrink_runs(SiftRun **runs, int nruns, int target, Size budget, RunHome *home);
+
+/* Postings of the largest term of a segment that fit its memory budget (the posting writer takes about 10 bytes of each) */
+extern uint64 sift_seg_postings(Size budget);
 
 #endif							/* SIFT_RUNS_H */

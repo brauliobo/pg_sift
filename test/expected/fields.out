@@ -392,6 +392,9 @@ SELECT q, plans('ft', 'name @@> ' || quote_literal(q)) AS no_sift_index_on_the_c
 
 -- the field count is part of the analyzer
 ALTER INDEX fn_idx SET (fields = 'name');
+WARNING:  index "fn_idx" was built with other analyzer options
+DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
+HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT count(*) FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
 ERROR:  index "fn_idx" was built with other analyzer options
 HINT:  Use REINDEX to apply the new options.

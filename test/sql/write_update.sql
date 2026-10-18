@@ -1,0 +1,31 @@
+-- an update that leaves the indexed text alone adds a document to the index when it is not HOT: the new row version has
+-- its own TID, which is what the index finds documents by (indexUnchanged cannot let aminsert skip it); a HOT update adds none
+CREATE EXTENSION pg_sift;
+
+CREATE FUNCTION mutable_docs(idx regclass) RETURNS bigint LANGUAGE sql AS
+	$$ SELECT coalesce(sum(ndocs), 0)::bigint FROM sift.segments(idx) WHERE kind <> 'immutable' $$;
+
+-- room in every page (fillfactor): the updates are HOT, the index is not touched
+CREATE TABLE wu_hot (id int PRIMARY KEY, body text, n int) WITH (fillfactor = 40, autovacuum_enabled = off);
+INSERT INTO wu_hot SELECT i, 'alpha beta ' || i, 0 FROM generate_series(1, 300) i;
+CREATE INDEX wu_hot_idx ON wu_hot USING sift (body);
+BEGIN;
+UPDATE wu_hot SET n = n + 1;
+SELECT pg_stat_get_xact_tuples_hot_updated('wu_hot'::regclass) AS hot_updates, mutable_docs('wu_hot_idx') AS index_entries;
+COMMIT;
+SELECT count(*) FROM wu_hot WHERE body @@> 'alpha';
+
+-- full pages: the updates that do not fit are not HOT and each adds a document, though the text is unchanged
+CREATE TABLE wu_cold (id int PRIMARY KEY, body text, n int) WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO wu_cold SELECT i, 'alpha beta ' || i, 0 FROM generate_series(1, 300) i;
+CREATE INDEX wu_cold_idx ON wu_cold USING sift (body);
+BEGIN;
+UPDATE wu_cold SET n = n + 1;
+SELECT pg_stat_get_xact_tuples_hot_updated('wu_cold'::regclass) < 300 AS some_not_hot,
+	mutable_docs('wu_cold_idx') = 300 - pg_stat_get_xact_tuples_hot_updated('wu_cold'::regclass) AS one_entry_per_not_hot;
+COMMIT;
+SELECT count(*) FROM wu_cold WHERE body @@> 'alpha';
+
+DROP TABLE wu_hot, wu_cold;
+DROP FUNCTION mutable_docs(regclass);
+DROP EXTENSION pg_sift;

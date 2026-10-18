@@ -1,0 +1,120 @@
+-- CREATE INDEX splits what a segment cannot hold: the postings of a term and the dictionary of a segment
+-- have a 4 GB limit (a uint32 length and offset), so the build writes more segments instead of failing.
+-- sift.test_blob_max and sift.test_dict_max lower the limits to bytes a test can reach; the runs of the
+-- build merge only while their terms and dictionaries fit them together.
+CREATE EXTENSION pg_sift;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE bl (id serial, body text);
+INSERT INTO bl (body)
+SELECT 'all g' || (i % 100) || ' u' || i || ' v' || (i * 7919 % 100003) || ' w' || (i % 50)
+FROM generate_series(1, 40000) i;
+CREATE FUNCTION answers(OUT n bigint, OUT ids text) AS $$
+	SELECT (SELECT count(*) FROM bl WHERE body @@> 'all'),
+	       (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM bl WHERE body @@> 'g5 OR u777 OR w3 AND g8')
+$$ LANGUAGE sql;
+CREATE FUNCTION ranked() RETURNS text AS $$
+	SELECT string_agg(id::text || ':' || round(s::numeric, 5), ' ' ORDER BY s DESC, id) FROM
+	(SELECT id, sift.score(ctid) AS s FROM bl WHERE body @@> 'g5 OR u777 OR w3 AND g8'
+	 ORDER BY s DESC, id LIMIT 30) t
+$$ LANGUAGE sql;
+CREATE INDEX bl_ref ON bl USING sift (body);
+CREATE TABLE ref AS SELECT a.*, ranked() AS top FROM answers() a;
+DROP INDEX bl_ref;
+CREATE FUNCTION same() RETURNS boolean AS $$
+	SELECT a.n = r.n AND a.ids = r.ids AND ranked() = r.top FROM answers() a, ref r
+$$ LANGUAGE sql;
+-- the postings of 'all' take more than 40,000 bytes in one segment
+SET sift.test_run_docs = 1000;
+SET sift.test_merge_fanin = 8;
+SET sift.test_blob_max = 40000;
+CREATE INDEX bl_blob ON bl USING sift (body);
+RESET sift.test_blob_max;
+SELECT count(*) BETWEEN 4 AND 128 AS blob_segments FROM sift.segments('bl_blob');
+ blob_segments 
+---------------
+ t
+(1 row)
+
+SELECT sift.verify('bl_blob', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS blob_same;
+ blob_same 
+-----------
+ t
+(1 row)
+
+DROP INDEX bl_blob;
+-- the dictionary of the table takes more than 150,000 bytes in one segment
+SET sift.test_dict_max = 150000;
+CREATE INDEX bl_dict ON bl USING sift (body);
+RESET sift.test_dict_max;
+SELECT count(*) BETWEEN 4 AND 128 AS dict_segments FROM sift.segments('bl_dict');
+ dict_segments 
+---------------
+ t
+(1 row)
+
+SELECT sift.verify('bl_dict', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS dict_same;
+ dict_same 
+-----------
+ t
+(1 row)
+
+DROP INDEX bl_dict;
+-- both, in parallel and with forced boundaries
+SET sift.test_blob_max = 40000;
+SET sift.test_dict_max = 150000;
+SET max_parallel_maintenance_workers = 2;
+ALTER TABLE bl SET (parallel_workers = 2);
+CREATE INDEX bl_par ON bl USING sift (body);
+SELECT count(*) BETWEEN 4 AND 128 AS parallel_segments FROM sift.segments('bl_par');
+ parallel_segments 
+-------------------
+ t
+(1 row)
+
+SELECT sift.verify('bl_par', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS parallel_same;
+ parallel_same 
+---------------
+ t
+(1 row)
+
+DROP INDEX bl_par;
+CREATE INDEX bl_bound ON bl USING sift (body) WITH (build_segments = 3);
+SELECT count(*) BETWEEN 4 AND 128 AS bound_segments FROM sift.segments('bl_bound');
+ bound_segments 
+----------------
+ t
+(1 row)
+
+SELECT sift.verify('bl_bound', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT same() AS bound_same;
+ bound_same 
+------------
+ t
+(1 row)
+
+DROP TABLE bl, ref;
+DROP FUNCTION same(), ranked(), answers();
+DROP EXTENSION pg_sift;
