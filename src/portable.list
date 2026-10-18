@@ -17,6 +17,7 @@ sift_query.c
 sift_posting.c
 sift_dict.c
 sift_segment.c
+sift_live.c
 sift_runs.c
 sift_stream.c
 sift_merge.c
@@ -46,6 +47,7 @@ sift_prefix.h
 sift_runs.h
 sift_query.h
 sift_merge.h
+sift_live.h
 sift_segment.h
 sift_store.h
 sift_varint.h
