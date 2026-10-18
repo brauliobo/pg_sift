@@ -1,6 +1,6 @@
--- trap: a sum of a product of 30 digits: no bound on the number of rows keeps it in 128 bits (the normal plan, same rows)
+-- trap: a sum of a product of 30 digits: no bound on the rows keeps it in 128 bits, numeric_add sums it (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

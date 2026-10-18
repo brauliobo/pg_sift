@@ -20,7 +20,7 @@ CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
 DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_text,
-	map_dup, map_null, map_case, map_part, map_empty, map_vals CASCADE;
+	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
 
 CREATE TABLE orders (
 	id integer NOT NULL, store_id integer NOT NULL, customer_id integer, placed_at date NOT NULL, status text, source text NOT NULL,
@@ -127,6 +127,11 @@ CREATE TABLE map_vals (category text, label text, weight numeric(8,2), factor fl
 INSERT INTO map_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Apparel', 'a', 2.25, 1.5, 2, NULL), ('Shoes', 'S', NULL, NULL, 3, '2023-05-05'),
 	('Home', 'H', 3.10, 2.0, NULL, '2021-01-01'), ('Toys', 'T', 0.05, 0.25, 5, '2024-02-02'), ('Toys', NULL, 0.10, NULL, 4, '2020-03-03');
 
+-- a joined column of every type PostgreSQL's own sum and average run on: a key with two rows, NULL values, a key without a row, big and negative values
+CREATE TABLE map_nums (category text, i2 int2, i4 int4, i8 int8, f4 float4, iv interval);
+INSERT INTO map_nums VALUES ('Apparel', 1, 10, 4000000000, 1.5, '1 day 02:00'), ('Apparel', 2, NULL, 5, 2.25, '2 mons'),
+	('Shoes', NULL, 7, NULL, NULL, NULL), ('Home', -3, -4, -6, 0.1, '-3 hours'), ('Toys', 5, 5, 5, 3.5, '1 mon 1 day 1 sec');
+
 -- the member lists of the queries (as bench/sql/analytics/sets.sql, with the moduli of a table of 4000 orders): K10 inside K400 inside K4000
 CREATE TABLE analytics_sets (set_name text NOT NULL, member text NOT NULL);
 INSERT INTO analytics_sets
@@ -165,6 +170,17 @@ FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','
 -- strings longer than a dictionary entry (the engine stores them inline), repeated and distinct, with NULLs
 INSERT INTO t_text SELECT 100 + i, 1 + i % 3, CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 4), 250 + (i % 9) * 40) || (i % 5) END, 'lng'
 FROM generate_series(1, 90) i;
+
+-- aggregates of the generic path: a user aggregate with an immutable transition function, and one with a volatile one
+CREATE FUNCTION coldiff.fx_sq_add(acc float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT acc + x * x $$;
+CREATE AGGREGATE coldiff.sum_sq(float8) (sfunc = coldiff.fx_sq_add, stype = float8, initcond = '0');
+CREATE FUNCTION coldiff.fx_vol_add(acc float8, x float8) RETURNS float8 LANGUAGE sql VOLATILE AS $$ SELECT acc + x + 0 * random() $$;
+CREATE AGGREGATE coldiff.sum_vol(float8) (sfunc = coldiff.fx_vol_add, stype = float8, initcond = '0');
+CREATE FUNCTION coldiff.fx_arr_add(acc bigint, a int[]) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$ SELECT acc + coalesce((SELECT sum(x) FROM unnest(a) x), 0) $$;
+CREATE AGGREGATE coldiff.sum_sq_par(float8) (sfunc = coldiff.fx_sq_add, stype = float8, initcond = '0', combinefunc = float8pl, parallel = safe);
+CREATE AGGREGATE coldiff.sum_all(VARIADIC int[]) (sfunc = coldiff.fx_arr_add, stype = bigint, initcond = '0');
+CREATE FUNCTION coldiff.fx_six_add(acc bigint, a int, b int, c int, d int, e int, f int) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$ SELECT acc + a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 $$;
+CREATE AGGREGATE coldiff.sum_six(int, int, int, int, int, int) (sfunc = coldiff.fx_six_add, stype = bigint, initcond = '0');
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)
 CREATE TABLE orders_odd (LIKE orders INCLUDING DEFAULTS);

@@ -1,4 +1,4 @@
--- the array form, an interval and a text argument, a fraction that is not a constant and one out of range keep the normal plan (the last raises in both)
+-- a per-group (column-valued) fraction keeps the normal plan, and so does the out of range constant of the same query (the last raises in both); the array form and a text argument are generic aggregates (g_ordered_set)
 -- shape: trap
 -- expect: plain
 -- key: -
