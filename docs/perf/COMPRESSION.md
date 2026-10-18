@@ -72,14 +72,11 @@ C; the shipped SIMD kernels are measured in section 7.
   would decompress megabytes). FSST is only selected at a ratio of 1.2 or better. https://duckdb.org/2022/10/28/lightweight-compression.html,
   https://raw.githubusercontent.com/duckdb/duckdb/main/src/storage/table/column_data_checkpointer.cpp,
   https://raw.githubusercontent.com/duckdb/duckdb/main/src/storage/compression/bitpacking.cpp
-- **ClickHouse**: default LZ4 (self-managed) or ZSTD (Cloud); LZ4HC levels 1 to 12 (default 9); ZSTD 1 to 22 (default 1, "rarely justifies" going past 3).
+- **A general-purpose column store**: default LZ4 or ZSTD; LZ4HC levels 1 to 12 (default 9); ZSTD 1 to 22 (default 1, going past 3 rarely pays).
   Specialised codecs are preparation steps chained with a general-purpose one: Delta, DoubleDelta, Gorilla, FPC, T64 (64x64 bit transpose that drops
-  unused high bits), GCD, ALP (beta). Their own experiments: Delta+ZSTD or DoubleDelta cut a date column from 2.24 GiB to about 24 MiB; Gorilla and FPC
-  increased size on floats where plain ZSTD won. LowCardinality is advised below about 10 000 distinct values. An experimental adaptive codec picks
+  unused high bits), GCD, ALP (beta). Its own experiments: Delta+ZSTD or DoubleDelta cut a date column from 2.24 GiB to about 24 MiB; Gorilla and FPC
+  increased size on floats where plain ZSTD won. Dictionary encoding is advised below about 10 000 distinct values. An experimental adaptive codec picks
   per block the smallest of the default codec, NONE and type-specific chains and never emits a block larger than the default.
-  https://clickhouse.com/docs/reference/statements/create/table/codec,
-  https://clickhouse.com/docs/data-compression/compression-in-clickhouse,
-  https://clickhouse.com/blog/optimize-clickhouse-codecs-compression-schema
 - **Parquet / Arrow**: PLAIN, RLE_DICTIONARY (one dictionary per column chunk, indexes as the RLE/bit-packing hybrid), DELTA_BINARY_PACKED (blocks of
   128, miniblocks of 32, one width per miniblock), DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY (front coding), BYTE_STREAM_SPLIT (does not shrink, helps the
   next compressor). Writers try the dictionary first and fall back when it exceeds 1 MB (or, on the first page, when dictionary + indexes are not
@@ -104,7 +101,7 @@ C; the shipped SIMD kernels are measured in section 7.
   al., VLDB 2024, https://www.vldb.org/pvldb/vol17/p148-zeng.pdf); Vortex: zstd decodes at about 1 to 2 GB/s against 100+ G values/s for FastLanes
   kernels, its default strategy is lightweight only and a "compact" strategy adds zstd (TPC-H SF10: Parquet+zstd 4 465 MB, default 2 776 MB, compact
   2 016 MB; https://vortex.dev/blog/btrblocks-compressor); LeCo finds zstd still shrinks lightweight-encoded files, more for weaker encodings
-  (https://arxiv.org/pdf/2306.15374). ClickHouse is the counterexample: chains with ZSTD are its best on dates and integers. **UNVERIFIED**: no
+  (https://arxiv.org/pdf/2306.15374). A column store that chains ZSTD after delta codecs is the counterexample: that is its best on dates and integers. **UNVERIFIED**: no
   source measures LZ4/zstd on top of FastLanes-style packed data specifically.
 
 ## 4. Measurements
@@ -335,7 +332,7 @@ nanosecond of per-scan decode must save:
 `u` comes from MEASURED unwrap speeds (section 7: LZ4 4 to 5 GB/s, zstd 1.4 to 2 GB/s on the streams here); `rho = 1` is "a byte saved must pay 1 ns of
 CPU per scan", about 1 GB/s, the order of one cold NVMe read, and 10x the cost of a DRAM read (the reason the hot rule is strict: in cache, packed words are read at
 10 GB/s or more and any general-purpose decode loses). Rationale and counter-arguments: Zeng et al. and BtrBlocks (SOURCE above) advise no layer by
-default; ClickHouse chains ZSTD by default because it has no SIMD-friendly lightweight layer to lean on. The measured gain on the hot streams is 9 to 23
+default; a column store with a chained general-purpose layer by default pays its decode cost on every scan. The measured gain on the hot streams is 9 to 23
 %, which at `rho = 1` is accepted only for LZ4-compressible streams (`item_idx`'s counter pattern, 60 %). A user who prefers footprint to scan speed sets
 `zstd` on the column. Whole-table effect is in section 7.
 
