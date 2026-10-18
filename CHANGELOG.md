@@ -4,11 +4,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
-- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 2.4 to 8
+- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 3 to 36
   times faster. The liveness of a page was read one document at a time, a buffer pin, lock and bit test each, which was most of the
   query; the bits of a superblock are now read once and spread over the page's offsets. 200,000 documents with a quarter deleted and
   vacuumed, ms per query (the same rows rebuilt: clean): ranked AND 1.36 to 0.26 (clean 0.26), ranked OR 2.39 to 0.70 (0.64),
-  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.17 (0.019). Clean indexes are unchanged (interleaved A/B on the same
+  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.05 (0.019). Clean indexes are unchanged (interleaved A/B on the same
   data, 0.93x to 1.23x with 7 to 10% error; slim bench: 0 regressions). N, df and avgdl still count vacuumed documents until a merge
   (documented in DESIGN.md and docs/SIZING.md: the live df costs a posting walk per query and nothing stores it).
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
