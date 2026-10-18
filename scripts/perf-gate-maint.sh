@@ -217,6 +217,36 @@ cell() { # LABEL: the selected groups
 	return 0
 }
 
+# Group mergebig (only with --cells mergebig): sift.merge(.., true) of 4 big segments in one process, 4 x --rows documents of 40
+# words (one term in 9 of 10, a 16MB budget): the memory and the time of a merge by the size of its segments.
+#   mergebig_s / mergebig_peak_mb / mergebig_temp_kb / mergebig_index_mb  time; most anonymous memory the cluster's processes took
+#                                   above what they took before; temporary bytes; size of the index (--rows 500000 is 2M documents)
+g_mergebig() {
+	local t0 kb0 base poller
+	[[ $CELLS == *mergebig* ]] || return 0
+	fresh "$1"
+	q "$1" "DROP INDEX t_idx" "INSERT INTO t (body) SELECT (CASE WHEN i % 10 < 9 THEN 'hot ' ELSE '' END) || $(words 40 i) FROM generate_series(1, $ROWS * 4) i" \
+		"SET maintenance_work_mem = '16MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body) WITH (build_segments = 4)" >/dev/null
+	kb0=$(temp_kb "$1")
+	rm -f "$BASE/stop"; base=$(anon_kb "$1"); peak_kb "$1" >"$BASE/peak" &
+	poller=$!
+	t0=$(now); q "$1" "SET maintenance_work_mem = '16MB'" "SELECT sift.merge('t_idx', true)" >/dev/null
+	echo "mergebig_s $(elapsed "$t0")"
+	touch "$BASE/stop"; wait "$poller"
+	echo "mergebig_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
+	echo "mergebig_temp_kb $(( $(temp_kb "$1") - kb0 ))"
+	echo "mergebig_index_mb $(q "$1" "SELECT pg_relation_size('t_idx') / 1048576.0")"
+}
+GROUPS_ALL+=(mergebig)
+
+# anon_kb above fails (and with it the poller, and the cell) when a child of the postmaster exits between pgrep and awk, which a
+# merge with workers makes likely: a vanished process takes no memory.
+anon_kb() {
+	local pm p
+	pm=$(head -1 "${TMP[$1]}/data/postmaster.pid")
+	for p in $(pgrep -P "$pm"); do awk '/^RssAnon/ {print $2}' "/proc/$p/status" 2>/dev/null || true; done | awk '{s += $1} END {print s + 0}'
+}
+
 i=0
 for b in "${BUILDS[@]}"; do
 	l=${b%%=*}
