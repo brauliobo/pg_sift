@@ -67,13 +67,18 @@ endif
 include $(dir $(lastword $(MAKEFILE_LIST)))scripts/harden.mk
 
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
-# claim "check" is unsupported, so it is not included for these goals.
-ifneq ($(filter check check-full,$(MAKECMDGOALS)),)
-.PHONY: check check-full
+# claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
+# and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
+ifneq ($(filter check check-full pg-assert pg-valgrind,$(MAKECMDGOALS)),)
+.PHONY: check check-full pg-assert pg-valgrind
 check:
 	scripts/ci.sh quick
 check-full:
 	scripts/ci.sh full
+pg-assert:
+	nice scripts/pg-assert.sh $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
+pg-valgrind:
+	nice scripts/pg-assert.sh --valgrind $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 else
 include $(PGXS)
 endif
