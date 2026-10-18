@@ -1,0 +1,26 @@
+-- Aggregation operators (src/sift_aggkern*.c): every SIMD level is bit-identical to the scalar
+-- specification, whatever sift.simd says. Levels above what the CPU supports fall back to the
+-- best supported one, so the output does not depend on the host.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+-- Digest of every operator's output over 300 random cases (lengths 0..4096, NaN / Inf / -0
+-- doubles, int extremes, sparse and full masks, LUT bounds), per sift.simd level; the fixed value
+-- pins the specification itself.
+SET sift.simd = scalar;
+SELECT sift._test_aggkern_level() AS level;
+SELECT sift._test_aggkern_digest(1, 300) AS scalar_digest \gset
+SELECT :scalar_digest;
+SET sift.simd = avx2;
+SELECT sift._test_aggkern_level() <> 'avx512' AS avx2_caps_level;
+SELECT sift._test_aggkern_digest(1, 300) = :scalar_digest AS avx2_same;
+SET sift.simd = avx512;
+SELECT sift._test_aggkern_digest(1, 300) = :scalar_digest AS avx512_same;
+RESET sift.simd;
+SELECT sift._test_aggkern_digest(1, 300) = :scalar_digest AS auto_same;
+
+-- Every level the CPU supports against scalar, case by case
+SELECT sift._test_aggkern_equiv(42, 1500) AS mismatches;
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

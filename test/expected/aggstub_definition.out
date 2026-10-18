@@ -1,0 +1,283 @@
+-- The sift_colstub access method (SIFT_TESTING builds): the definition of an index is validated when it is created, the layout
+-- lists the leaves of the column source, and the index is a shell that no ordinary plan uses.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE d (id int PRIMARY KEY, tenant_id int, order_date date, segment text, kind varchar(8), tag char(3), nm name, price float4,
+				cost float8, qty int2, big int8, at timestamp, atz timestamptz, ok bool, n numeric, metrics jsonb, items jsonb, details jsonb);
+-- the supported types, one leaf each
+CREATE INDEX d_scalar ON d USING sift_colstub (id, tenant_id, order_date, segment, kind, tag, nm, price, cost, qty, big, at, atz, ok);
+SELECT leaf, attno, parent, kind, vtype, typid, path, name, expr FROM sift._test_aggstub_layout('d_scalar') ORDER BY leaf;
+ leaf | attno | parent |  kind  | vtype |            typid            | path | name |    expr    
+------+-------+--------+--------+-------+-----------------------------+------+------+------------
+    0 |     1 |     -1 | scalar | i32   | integer                     |      |      | id
+    1 |     2 |     -1 | scalar | i32   | integer                     |      |      | tenant_id
+    2 |     3 |     -1 | scalar | i32   | date                        |      |      | order_date
+    3 |     4 |     -1 | scalar | code  | text                        |      |      | segment
+    4 |     5 |     -1 | scalar | code  | character varying           |      |      | kind
+    5 |     6 |     -1 | scalar | code  | character                   |      |      | tag
+    6 |     7 |     -1 | scalar | code  | name                        |      |      | nm
+    7 |     8 |     -1 | scalar | f64   | real                        |      |      | price
+    8 |     9 |     -1 | scalar | f64   | double precision            |      |      | cost
+    9 |    10 |     -1 | scalar | i32   | smallint                    |      |      | qty
+   10 |    11 |     -1 | scalar | i64   | bigint                      |      |      | big
+   11 |    12 |     -1 | scalar | i64   | timestamp without time zone |      |      | at
+   12 |    13 |     -1 | scalar | i64   | timestamp with time zone    |      |      | atz
+   13 |    14 |     -1 | scalar | i32   | boolean                     |      |      | ok
+(14 rows)
+
+SELECT sift._test_aggstub_is_index(relam) AS is_index FROM pg_class WHERE relname = 'd_scalar';
+ is_index 
+----------
+ t
+(1 row)
+
+SELECT sift._test_aggstub_is_index(relam) AS is_index FROM pg_class WHERE relname = 'd_pkey';
+ is_index 
+----------
+ f
+(1 row)
+
+DROP INDEX d_scalar;
+-- expressions are leaves too; their expression is the one of the index, over the table row
+CREATE INDEX d_expr ON d USING sift_colstub (id, (tenant_id + 1), (lower(segment)), (order_date + 7));
+SELECT leaf, attno, vtype, typid, expr FROM sift._test_aggstub_layout('d_expr') ORDER BY leaf;
+ leaf | attno | vtype |  typid  |       expr       
+------+-------+-------+---------+------------------
+    0 |     1 | i32   | integer | id
+    1 |     2 | i32   | integer | (tenant_id + 1)
+    2 |     3 | code  | text    | lower(segment)
+    3 |     4 | i32   | date    | (order_date + 7)
+(4 rows)
+
+DROP INDEX d_expr;
+-- the reference index of the analytics queries: scalars, a free-key object, an array of objects and a scalar path
+CREATE INDEX d_col ON d USING sift_colstub (id, tenant_id, order_date, segment, kind, metrics, items, details)
+	WITH (paths = 'metrics: *:float8; items: []{category text, sku text, qty int4, price float8}; details: lang text, nested.at timestamp, nested.ok bool');
+SELECT leaf, attno, parent, kind, vtype, typid, path, name, expr FROM sift._test_aggstub_layout('d_col') ORDER BY leaf;
+ leaf | attno | parent |  kind  | vtype |            typid            |   path    |   name   |    expr    
+------+-------+--------+--------+-------+-----------------------------+-----------+----------+------------
+    0 |     1 |     -1 | scalar | i32   | integer                     |           |          | id
+    1 |     2 |     -1 | scalar | i32   | integer                     |           |          | tenant_id
+    2 |     3 |     -1 | scalar | i32   | date                        |           |          | order_date
+    3 |     4 |     -1 | scalar | code  | text                        |           |          | segment
+    4 |     5 |     -1 | scalar | code  | character varying           |           |          | kind
+    5 |     6 |     -1 | object | i32   | integer                     |           |          | metrics
+    6 |     6 |      5 | scalar | code  | text                        |           | key      | metrics
+    7 |     6 |      5 | scalar | f64   | double precision            |           | value    | metrics
+    8 |     7 |     -1 | array  | i32   | integer                     |           |          | items
+    9 |     7 |      8 | scalar | code  | text                        |           | category | items
+   10 |     7 |      8 | scalar | code  | text                        |           | sku      | items
+   11 |     7 |      8 | scalar | i32   | integer                     |           | qty      | items
+   12 |     7 |      8 | scalar | f64   | double precision            |           | price    | items
+   13 |     8 |     -1 | scalar | code  | text                        | lang      |          | details
+   14 |     8 |     -1 | scalar | i64   | timestamp without time zone | nested.at |          | details
+   15 |     8 |     -1 | scalar | i32   | boolean                     | nested.ok |          | details
+(16 rows)
+
+SELECT pg_get_indexdef('d_col'::regclass);
+                                                                                                                               pg_get_indexdef                                                                                                                               
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ CREATE INDEX d_col ON public.d USING sift_colstub (id, tenant_id, order_date, segment, kind, metrics, items, details) WITH (paths='metrics: *:float8; items: []{category text, sku text, qty int4, price float8}; details: lang text, nested.at timestamp, nested.ok bool')
+(1 row)
+
+DROP INDEX d_col;
+-- a path below an object, an array below an object, quoted names, any case and blanks of the grammar
+CREATE INDEX d_col ON d USING sift_colstub (metrics, items, details)
+	WITH (paths = ' metrics : *:Double Precision ; items : a.b[] { "x y" INTEGER , "z""q" bigint } ; details : "a.b".c Date , d BOOLEAN ; ');
+SELECT leaf, attno, parent, kind, vtype, typid, path, name FROM sift._test_aggstub_layout('d_col') ORDER BY leaf;
+ leaf | attno | parent |  kind  | vtype |      typid       | path  | name  
+------+-------+--------+--------+-------+------------------+-------+-------
+    0 |     1 |     -1 | object | i32   | integer          |       | 
+    1 |     1 |      0 | scalar | code  | text             |       | key
+    2 |     1 |      0 | scalar | f64   | double precision |       | value
+    3 |     2 |     -1 | array  | i32   | integer          | a.b   | 
+    4 |     2 |      3 | scalar | i32   | integer          |       | x y
+    5 |     2 |      3 | scalar | i64   | bigint           |       | z"q
+    6 |     3 |     -1 | scalar | i32   | date             | a.b.c | 
+    7 |     3 |     -1 | scalar | i32   | boolean          | d     | 
+(8 rows)
+
+DROP INDEX d_col;
+-- what the definition refuses
+CREATE INDEX ON d USING sift_colstub (id) WHERE id > 0;
+ERROR:  sift_colstub does not support partial indexes
+CREATE INDEX ON d USING sift_colstub (id) INCLUDE (tenant_id);
+ERROR:  access method "sift_colstub" does not support included columns
+CREATE UNIQUE INDEX ON d USING sift_colstub (id);
+ERROR:  access method "sift_colstub" does not support unique indexes
+CREATE INDEX ON d USING sift_colstub (n);
+ERROR:  sift_colstub does not support the type numeric of index column 1
+CREATE INDEX ON d USING sift_colstub (id, (ARRAY[id]));
+ERROR:  sift_colstub does not support the type integer[] of index column 2
+CREATE INDEX ON d USING sift_colstub (metrics);
+ERROR:  sift_colstub index column 1 is jsonb: declare its paths in the "paths" option of the index
+HINT:  Only a plain column can have paths.
+CREATE INDEX ON d USING sift_colstub ((metrics || '{}'::jsonb)) WITH (paths = 'metrics: *:float8');
+ERROR:  sift_colstub index column 1 is jsonb: declare its paths in the "paths" option of the index
+HINT:  Only a plain column can have paths.
+CREATE INDEX ON d USING sift_colstub (id, details) WITH (paths = 'metrics: *:float8');
+ERROR:  sift_colstub index column 2 is jsonb: declare its paths in the "paths" option of the index
+HINT:  Only a plain column can have paths.
+CREATE INDEX ON d USING sift_colstub (id, metrics) WITH (paths = 'id: *:float8');
+ERROR:  sift_colstub index column 2 is jsonb: declare its paths in the "paths" option of the index
+HINT:  Only a plain column can have paths.
+CREATE INDEX ON d USING sift_colstub (id, metrics) WITH (paths = 'metrics: *:float8; metrics: *:float8');
+ERROR:  invalid sift_colstub paths: column "metrics" declared twice at position 27
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: *:float8, a.b int4');
+ERROR:  invalid sift_colstub paths: *:type has to be the only item of its column at position 28
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b int4, *:float8');
+ERROR:  invalid sift_colstub paths: *:type has to be the only item of its column at position 28
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b numeric');
+ERROR:  sift_colstub paths: type "numeric" is not supported
+HINT:  Use int4, int8, float8, bool, date, timestamp or text.
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b');
+ERROR:  invalid sift_colstub paths: type expected at position 13
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b int4,');
+ERROR:  invalid sift_colstub paths: name expected at position 19
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics a.b int4');
+ERROR:  invalid sift_colstub paths: ":" expected at position 9
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a..b int4');
+ERROR:  invalid sift_colstub paths: name expected at position 12
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b[]{}');
+ERROR:  invalid sift_colstub paths: name expected at position 16
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b[]{x}');
+ERROR:  invalid sift_colstub paths: type expected at position 17
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a.b[]{x int4');
+ERROR:  invalid sift_colstub paths: "}" expected at position 22
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: "a int4');
+ERROR:  invalid sift_colstub paths: unterminated quoted name at position 17
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = 'metrics: a int4 x');
+ERROR:  sift_colstub paths: type "int4 x" is not supported
+HINT:  Use int4, int8, float8, bool, date, timestamp or text.
+CREATE INDEX ON d USING sift_colstub (metrics) WITH (paths = '');
+ERROR:  invalid sift_colstub paths: name expected at position 1
+CREATE INDEX ON d USING sift_colstub (id) WITH (fillfactor = 50);
+ERROR:  unrecognized parameter "fillfactor"
+SELECT count(*) AS indexes FROM pg_index WHERE indrelid = 'd'::regclass;
+ indexes 
+---------
+       1
+(1 row)
+
+-- more leaves than a source can hold
+SELECT 'CREATE INDEX ON d USING sift_colstub (details) WITH (paths = ''details: ' ||
+	string_agg('k' || i || ' int4', ', ') || ''')' AS ddl FROM generate_series(1, 129) i \gexec
+CREATE INDEX ON d USING sift_colstub (details) WITH (paths = 'details: k1 int4, k2 int4, k3 int4, k4 int4, k5 int4, k6 int4, k7 int4, k8 int4, k9 int4, k10 int4, k11 int4, k12 int4, k13 int4, k14 int4, k15 int4, k16 int4, k17 int4, k18 int4, k19 int4, k20 int4, k21 int4, k22 int4, k23 int4, k24 int4, k25 int4, k26 int4, k27 int4, k28 int4, k29 int4, k30 int4, k31 int4, k32 int4, k33 int4, k34 int4, k35 int4, k36 int4, k37 int4, k38 int4, k39 int4, k40 int4, k41 int4, k42 int4, k43 int4, k44 int4, k45 int4, k46 int4, k47 int4, k48 int4, k49 int4, k50 int4, k51 int4, k52 int4, k53 int4, k54 int4, k55 int4, k56 int4, k57 int4, k58 int4, k59 int4, k60 int4, k61 int4, k62 int4, k63 int4, k64 int4, k65 int4, k66 int4, k67 int4, k68 int4, k69 int4, k70 int4, k71 int4, k72 int4, k73 int4, k74 int4, k75 int4, k76 int4, k77 int4, k78 int4, k79 int4, k80 int4, k81 int4, k82 int4, k83 int4, k84 int4, k85 int4, k86 int4, k87 int4, k88 int4, k89 int4, k90 int4, k91 int4, k92 int4, k93 int4, k94 int4, k95 int4, k96 int4, k97 int4, k98 int4, k99 int4, k100 int4, k101 int4, k102 int4, k103 int4, k104 int4, k105 int4, k106 int4, k107 int4, k108 int4, k109 int4, k110 int4, k111 int4, k112 int4, k113 int4, k114 int4, k115 int4, k116 int4, k117 int4, k118 int4, k119 int4, k120 int4, k121 int4, k122 int4, k123 int4, k124 int4, k125 int4, k126 int4, k127 int4, k128 int4, k129 int4')
+ERROR:  sift_colstub: an index has at most 128 leaves
+-- values the index would refuse, found by CREATE INDEX
+CREATE TABLE dv (id int, s text, details jsonb);
+INSERT INTO dv VALUES (1, repeat('x', 255), '{"k": 1}'), (2, 'short', '{"k": "2"}');
+CREATE INDEX dv_col ON dv USING sift_colstub (id, s, details) WITH (paths = 'details: k int4, t text');
+INSERT INTO dv VALUES (3, repeat('x', 256), NULL);
+ERROR:  sift_colstub: a text value of 256 bytes exceeds the limit of 255 bytes
+HINT:  Index left(column, 255) or a hash of it instead.
+INSERT INTO dv VALUES (4, 'a', '{"k": 7.5}');
+ERROR:  invalid input syntax for type integer: "7.5"
+INSERT INTO dv VALUES (5, 'a', '{"k": "seven"}');
+ERROR:  invalid input syntax for type integer: "seven"
+INSERT INTO dv VALUES (6, 'a', jsonb_build_object('t', repeat('y', 256)));
+ERROR:  sift_colstub: a text value of 256 bytes exceeds the limit of 255 bytes
+HINT:  Index left(column, 255) or a hash of it instead.
+INSERT INTO dv VALUES (7, 'a', '{"k": [1]}');
+ERROR:  invalid input syntax for type integer: "[1]"
+INSERT INTO dv VALUES (8, 'a', '{"k": 8, "t": {"a": [1, "b"]}}');
+-- the same casts in SQL fail the same way
+SELECT ('{"k": 7.5}'::jsonb #>> '{k}')::int4;
+ERROR:  invalid input syntax for type integer: "7.5"
+SELECT ('{"k": [1]}'::jsonb #>> '{k}')::int4;
+ERROR:  invalid input syntax for type integer: "[1]"
+-- the aborted rows stay in the heap until VACUUM, where the raw read finds them
+SELECT count(*) AS dump_fails FROM (SELECT 1 FROM sift._test_aggstub_dump('dv_col', 1)) x;
+ERROR:  sift_colstub: a text value of 256 bytes exceeds the limit of 255 bytes
+HINT:  Index left(column, 255) or a hash of it instead.
+VACUUM dv;
+SELECT count(*) AS rows_after_vacuum FROM sift._test_aggstub_dump('dv_col', 1);
+ rows_after_vacuum 
+-------------------
+                 3
+(1 row)
+
+DROP INDEX dv_col;
+INSERT INTO dv VALUES (9, repeat('z', 300), NULL);
+CREATE INDEX dv_col ON dv USING sift_colstub (id, s, details) WITH (paths = 'details: k int4');
+ERROR:  sift_colstub: a text value of 300 bytes exceeds the limit of 255 bytes
+HINT:  Index left(column, 255) or a hash of it instead.
+CREATE INDEX dv_col ON dv USING sift_colstub (id, details) WITH (paths = 'details: k int4');
+SELECT count(*) AS rows FROM sift._test_aggstub_dump('dv_col', 0);
+ rows 
+------
+    4
+(1 row)
+
+-- never chosen by an ordinary plan: no operators, and a cost that is never the best
+CREATE FUNCTION plan_uses(q text, idx text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%' || idx || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE INDEX d_stub ON d USING sift_colstub (id, tenant_id, segment);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT plan_uses('SELECT * FROM d WHERE tenant_id = 5', 'd_stub') AS eq_filter,
+	   plan_uses('SELECT tenant_id FROM d ORDER BY tenant_id', 'd_stub') AS order_by,
+	   plan_uses('SELECT tenant_id FROM d WHERE tenant_id > 1', 'd_stub') AS index_only,
+	   plan_uses('SELECT * FROM d WHERE id = 5 AND tenant_id = 5 AND segment = ''x''', 'd_stub') AS all_columns,
+	   plan_uses('SELECT * FROM d WHERE id = 5', 'd_pkey') AS control_plan_uses_pkey;
+ eq_filter | order_by | index_only | all_columns | control_plan_uses_pkey 
+-----------+----------+------------+-------------+------------------------
+ f         | f        | f          | f           | t
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP INDEX d_stub;
+-- an index of this kind works through DML, maintenance and the other index builds
+CREATE TABLE m (id int, s text, metrics jsonb);
+CREATE INDEX m_col ON m USING sift_colstub (id, s, metrics) WITH (paths = 'metrics: *:float8');
+INSERT INTO m SELECT i, 'v' || i, jsonb_build_object('a', i) FROM generate_series(1, 50) i;
+UPDATE m SET s = 's' || id WHERE id % 2 = 0;
+DELETE FROM m WHERE id > 40;
+VACUUM m;
+ANALYZE m;
+REINDEX INDEX m_col;
+REINDEX INDEX CONCURRENTLY m_col;
+CREATE INDEX CONCURRENTLY m_col2 ON m USING sift_colstub (id, s);
+SELECT count(*) AS rows FROM sift._test_aggstub_dump('m_col', 0);
+ rows 
+------
+   40
+(1 row)
+
+SELECT count(*) AS rows FROM sift._test_aggstub_dump('m_col2', 0);
+ rows 
+------
+   40
+(1 row)
+
+CREATE UNLOGGED TABLE mu (id int, s text);
+CREATE INDEX mu_col ON mu USING sift_colstub (id, s);
+INSERT INTO mu VALUES (1, 'a');
+SELECT count(*) AS rows FROM sift._test_aggstub_dump('mu_col', 1);
+ rows 
+------
+    1
+(1 row)
+
+CREATE TEMP TABLE mt (id int, s text);
+CREATE INDEX mt_col ON mt USING sift_colstub (id, s);
+INSERT INTO mt VALUES (1, 'a');
+SELECT count(*) AS rows FROM sift._test_aggstub_dump('mt_col', 1);
+ rows 
+------
+    1
+(1 row)
+
+-- a source needs the index
+SELECT count(*) FROM sift._test_aggstub_dump('d_pkey', 0);
+ERROR:  "d_pkey" is not a sift_colstub index
+SELECT count(*) FROM sift._test_aggstub_dump('m_col', 7);
+ERROR:  leaf 7 does not exist
+DROP TABLE d, dv, m, mu;

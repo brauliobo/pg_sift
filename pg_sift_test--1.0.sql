@@ -72,6 +72,14 @@ CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
 CREATE FUNCTION sift._test_col_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_level' LANGUAGE C STRICT;
 
+-- Aggregation operators module (src/sift_aggkern_test.c): bit-exact SIMD checks through sift.simd.
+CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_digest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_equiv' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_aggkern_level() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_level' LANGUAGE C STRICT;
+
 -- Index build (src/sift_segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
@@ -202,3 +210,52 @@ CREATE FUNCTION sift._test_cc_equiv(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_cc_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_cc_corrupt(seed int8, iters int4, OUT raised int8, OUT decoded int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_cc_corrupt' LANGUAGE C STRICT;
+
+-- sift_colstub (src/sift_aggstub*.c): an index access method without storage that carries the definition of a column index
+-- (key columns, expressions, the `paths` option for jsonb columns) and a column source (src/sift_colsrc.h) that reads the heap
+-- pages raw, so that the aggregate planner and executor can be tried before sift_col exists. Every row of a page is present
+-- (no visibility check), the executor vets them. The index is never used by an ordinary plan.
+CREATE FUNCTION sift._test_aggstub_handler(internal) RETURNS index_am_handler
+	AS 'MODULE_PATHNAME', 'sift_aggstub_handler' LANGUAGE C STRICT;
+CREATE ACCESS METHOD sift_colstub TYPE INDEX HANDLER sift._test_aggstub_handler;
+CREATE OPERATOR CLASS sift.colstub_ops DEFAULT FOR TYPE anyelement USING sift_colstub AS STORAGE anyelement;
+
+CREATE FUNCTION sift._test_aggstub_is_index(relam oid) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_is_index' LANGUAGE C STRICT STABLE PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_layout(index regclass, OUT leaf int4, OUT attno int4, OUT parent int4, OUT kind text,
+										  OUT vtype text, OUT typid regtype, OUT path text, OUT name text, OUT expr text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_layout' LANGUAGE C STRICT PARALLEL SAFE;
+-- one row per row of the unit; for a child leaf one per element (ord = the row it belongs to, elem = its number in the unit)
+CREATE FUNCTION sift._test_aggstub_dump(index regclass, leaf int4, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
+										OUT unit int4, OUT sb int4, OUT ord int4, OUT elem int4, OUT tid tid,
+										OUT code int8, OUT val text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_dump' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_units(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
+										 prune_leaf int4 DEFAULT NULL, prune_lo int8 DEFAULT NULL, prune_hi int8 DEFAULT NULL,
+										 OUT unit int4, OUT sb int4, OUT nrow int4, OUT first_tid tid, OUT last_tid tid,
+										 OUT all_live bool, OUT vetted bool)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_units' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_dicts(index regclass, only_leaf int4 DEFAULT NULL, OUT unit int4, OUT leaf int4, OUT id text,
+										 OUT n int4, OUT nbytes int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_dicts' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_counters(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
+											prune_leaf int4 DEFAULT NULL, prune_lo int8 DEFAULT NULL, prune_hi int8 DEFAULT NULL,
+											OUT units int8, OUT units_pruned int8, OUT rows int8, OUT bytes int8)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_counters' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_sb(index regclass, sb int4, OUT rows int8, OUT checksum int8, OUT in_worker bool)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_sb' LANGUAGE C STRICT PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_memory(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
+										  OUT units int8, OUT peak_bytes int8, OUT max_rows int8)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_memory' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrows float8, OUT nunits float8,
+										 OUT allvisible_frac float8, OUT ndistinct float8, OUT min float8, OUT max float8,
+										 OUT elems_per_row float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;

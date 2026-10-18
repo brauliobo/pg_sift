@@ -20,6 +20,8 @@
 #include "utils/syscache.h"
 
 #include "sift.h"
+#include "sift_agg.h"
+#include "sift_aggstub.h"
 #include "sift_am.h"
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
@@ -244,8 +246,10 @@ _PG_init(void)
 	define_gucs();
 	define_reloptions();
 	sift_planner_init();
+	sift_agg_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
+	sift_aggstub_init();
 #endif
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);
