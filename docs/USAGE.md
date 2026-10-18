@@ -164,6 +164,9 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.async_maintenance` | on | promote and merge in a background worker; off leaves it to the inserts and `VACUUM` (superuser) |
 | `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the seals of a bulk load that fall in between are promoted too |
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
+| `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
+| `sift.enable_col` | on | use `sift_col` indexes for column scans |
+| `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
 
 Reloptions (`WITH (...)`; all but `mutable_limit` and `vacuum_segments` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
@@ -181,6 +184,25 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 4 | 0.15 s | 0.14 ms | 0.21 ms |
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
+
+## Column indexes, aggregates and sift_table
+
+Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared_preload_libraries`, and `CREATE EXTENSION pg_sift` (3.0) installs all of them.
+
+- **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (store_id, status, total, (placed_at::date))` keeps those
+  columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
+  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
+  `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)).
+  Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
+  `col_merge` inspect and drive one.
+- **Aggregate pushdown:** a `GROUP BY` over a table with a `sift_col` index (or over a lateral unnest of an indexed `jsonb` array) with `count`, `count(DISTINCT)`, `sum`,
+  `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps
+  its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus.
+- **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump`
+  support ([docs/COL-TAM.md](COL-TAM.md)); its rows are still stored in row-format delta pages (sealing them into column groups is not implemented). A `sift_table` replicates physically like any table; to publish one under `wal_level = logical`, see [Replication](#replication).
+
+The chunk codec (encodings plus LZ4 or zstd, [docs/COL-CODEC.md](COL-CODEC.md)) is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
+The column engine does not apply it to the chunks of an index yet.
 
 ## Replication
 
