@@ -39,6 +39,9 @@ Engine ids, order and labels: bench/engines.tsv.
 """
 import collections, math, os, re, statistics as st, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stats import number as num, sem  # noqa: E402  (steps/stats.py)
+
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
     NAME = {r[0]: r[2] for r in (l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#'))}
 ORDER = list(NAME)
@@ -55,13 +58,6 @@ def rows_of(path, skip_header=True):
     with open(path) as f:
         lines = [l.rstrip('\n').split('\t') for l in f if l.strip()]
     return lines[1:] if skip_header else lines
-
-
-def num(x):
-    try:
-        return float(x)
-    except ValueError:
-        return None
 
 
 def fmt(v, digits=0):
@@ -81,7 +77,7 @@ def stats(values, errors=()):
         return 'NA', 'NA', 'NA', 'NA', n, rounds
     if any(v != v for v in values):
         return 'error', 'error', 'error', 'NA', n, rounds
-    spread = st.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else None
+    spread = sem(values)
     own = math.sqrt(sum(e * e for e in errors)) / len(values) if len(errors) == len(values) and all(e is not None for e in errors) else None
     known = [e for e in (spread, own) if e is not None]
     return st.median(values), min(values), max(values), '%.4g' % max(known) if known else 'NA', n, rounds
