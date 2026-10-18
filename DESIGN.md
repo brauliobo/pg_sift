@@ -444,7 +444,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
 ### Versioning
 
 - **Metapage version.** A different major version raises an ERROR asking for REINDEX on open. A newer minor version is readable; older minors are upgraded lazily by merge, and each segment entry carries `format`.
-- **SQL upgrades** use `pg_sift--1.0--1.1.sql` scripts; `pg_sift--1.2.sql` is the install script of the current version and `pg_sift--1.1--1.2.sql` adds `sift.index_info`, `sift.version` and the `extents`, `dead_docs` columns of `sift.segments`. `SIFT_MODULE_VERSION` (`src/sift_ops.h`) is the version the library reports and must equal the control file's `default_version`.
+- **SQL upgrades** use `pg_sift--1.0--1.1.sql` scripts; `pg_sift--3.0.sql` is the install script of the current version, `pg_sift--1.1--1.2.sql` adds `sift.index_info`, `sift.version` and the `extents`, `dead_docs` columns of `sift.segments`, and `pg_sift--1.2--3.0.sql` adds the `sift_col` index access method (`sift.col_*`) and the `sift_table` table access method; a fresh 3.0 install and 1.2 plus that update are the same objects (`test/t/extension_lifecycle.sh`). `SIFT_MODULE_VERSION` (`src/sift_ops.h`) is the version the library reports and must equal the control file's `default_version`.
 - **pg_upgrade** copies the relfilenode files unchanged, so the on-disk format must stay stable across PostgreSQL minor releases. Any PostgreSQL-dependent layout, such as the VM constants, is tested.
 
 ---

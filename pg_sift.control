@@ -1,5 +1,5 @@
 comment = 'pg_sift: CTID-bitmap full-text search index with BM25 ranking'
-default_version = '1.3'
+default_version = '3.0'
 module_pathname = '$libdir/pg_sift'
 schema = sift
 relocatable = false

@@ -1,8 +1,7 @@
-EXTENSION = pg_sift pg_sift_tam
+EXTENSION = pg_sift
 MODULE_big = pg_sift
 OBJS = $(patsubst %.c,%.o,$(wildcard src/*.c))
 DATA = $(wildcard pg_sift--*.sql)
-DATA_built = pg_sift_tam--1.0.sql
 PGFILEDESC = "pg_sift - CTID-bitmap full-text search index"
 
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
@@ -77,10 +76,6 @@ include $(PGXS)
 endif
 
 -include $(wildcard src/*.d)
-
-# The table access method script, until the version script of pg_sift includes it
-pg_sift_tam--1.0.sql: sql/col_tam.sql
-	(printf '%s\n' '\echo Use "CREATE EXTENSION pg_sift_tam" to load this file. \quit'; cat $<) > $@
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
