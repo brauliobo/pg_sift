@@ -114,6 +114,7 @@ run_corpus() {
 		echo "LOAD 'pg_sift';"
 		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
 		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
+		echo "SET coldiff.no_index = ${NOINDEX:+1};"
 		echo "\\o /dev/null"
 		[[ -z ${HELD:-} ]] || {
 			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"
