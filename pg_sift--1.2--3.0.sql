@@ -54,3 +54,19 @@ CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
 	AS 'MODULE_PATHNAME', 'sift_table_handler' LANGUAGE C STRICT;
 
 CREATE ACCESS METHOD sift_table TYPE TABLE HANDLER sift.table_handler;
+
+-- One row per segment of a sift_table: kind delta (the row format write buffer; bytes = its pages), sealed delta (no more rows,
+-- waiting to become columns), columns (a column segment: rows including dead ones, units, dead rows) or tombstones.
+CREATE FUNCTION sift.table_segments(tbl regclass,
+									OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8,
+									OUT sb_lo int4, OUT sb_hi int4, OUT units int4, OUT dead_rows int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_table_segments' LANGUAGE C STRICT VOLATILE;
+
+-- The space of a sift_table: relation_blocks (the file), high_water (blocks ever used), free_blocks (on the free list, of which
+-- reusable_blocks can be taken now, the rest wait for snapshots that may still read them), free_extents.
+CREATE FUNCTION sift.table_space(tbl regclass,
+								 OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
+								 OUT free_extents int8)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_table_space' LANGUAGE C STRICT VOLATILE;
