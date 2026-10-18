@@ -16,8 +16,8 @@ tier_of(const SiftSegEntry *s, const SiftMergePolicy *pol)
 	return t;
 }
 
-static int
-bytes_cmp(const void *a, const void *b)
+int
+sift_seg_bytes_cmp(const void *a, const void *b)
 {
 	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
 }
@@ -46,7 +46,7 @@ immutables(const SiftDirSnapshot *snap, SiftSegEntry *imm)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			imm[n++] = snap->segs[i];
-	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
+	qsort(imm, n, sizeof(SiftSegEntry), sift_seg_bytes_cmp);
 	return n;
 }
 

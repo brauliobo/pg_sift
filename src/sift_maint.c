@@ -625,12 +625,6 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_o
 	return n;
 }
 
-static int
-bytes_cmp(const void *a, const void *b)
-{
-	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
-}
-
 /*
  * The smallest segments, up to want of them, that are worth merging for the count: each after the first is at most
  * merge_fanin times the size of the ones before it, so a segment past the tier of the others stays (its rewrite would
@@ -647,7 +641,7 @@ pick_smallest(const SiftDirSnapshot *snap, int want, int fanin, MergeSel *sel)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !is_busy(sel, snap->segs[i].gen))
 			imm[n++] = snap->segs[i];
-	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
+	qsort(imm, n, sizeof(SiftSegEntry), sift_seg_bytes_cmp);
 	for (; k < Min(n, want) && (k < 1 || imm[k].bytes <= fanin * sum); k++)
 	{
 		sel->seg[k] = imm[k];
