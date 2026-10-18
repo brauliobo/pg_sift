@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: `WHERE col @@> q [AND filters] ORDER BY <columns> LIMIT n` is answered from the `sift_col` units (`docs/COL-SEARCH.md`, "Top-N"): a bounded heap over the match set, zone maps to skip units and stop early on columns that follow the table, and the heap read for the `n` winners only. Q10 shape: 7.1 to 2.4 ms at 1M, 191 to 19.5 ms at 10M. Setting `sift.enable_topn`; `EXPLAIN` shows `Top-N:`.
 - Added: text search as the row selection of the aggregate pushdown. `SELECT ... FROM t WHERE <filters> AND col @@> q GROUP BY ...` on a table with a `sift` and a `sift_col` index (or `sift_table`) takes the matches from the BM25 index without reading the heap, keeps only those rows in the column units and aggregates from columns (`docs/COL-SEARCH.md`); facet-style counts per category are the same query. The plan shows `Search:` in `EXPLAIN`.
 - Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
