@@ -8,7 +8,7 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py cold  --rows N --out DIR             latency of the first run after a restart of the server
     store.py updates --rows N --out DIR           updates, deletes, read-after-write, reads under an update load, space (changes the data: runs last)
     store.py merge OUT... -o docs/results/store.json
-    store.py render [--results FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers of docs/BENCHMARKS.md
+    store.py render [--results FILE] [--readme FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
 cache off), es_cached (the same with the shard request cache on), ch (ClickHouse). A latency is the wall time of one request from this
@@ -112,6 +112,7 @@ class Query:
         self.sec = sections(text)
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
+        self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.title)
         self.key = next(([int(k) - 1 for k in m[8:].split()] for m in head if m.startswith('-- key: ')), [])
 
     def statement(self, eid, n, cache=False):
@@ -1090,10 +1091,10 @@ def best_bold(values, cells):
 
 
 def bench_table(R, tier, engines, labels, detail=False, variant='warm'):
-    head = ['question'] + [labels[e] for e in engines]
+    head = ['question' if detail else 'query'] + [labels[e] for e in engines]
     body = []
     for qid in R.queries(tier):
-        title = QUERY_TITLES[qid]
+        title = (QUERY_TITLES if detail else QUERY_LABELS)[qid]
         rs = [R.get(tier, e, qid, variant, 'latency_ms') for e in engines]
         vals = [r['value'] if r else None for r in rs]
         cells = [spread(r) if detail else ms(r['value'] if r else None) for r in rs]
@@ -1110,6 +1111,7 @@ def load_rows(R, tier, engines):
 
 
 QUERY_TITLES = {q.id: q.title for q in load_queries()}
+QUERY_LABELS = {q.id: q.label for q in load_queries()}
 
 
 def losses(R, tier, engines, labels):
@@ -1186,11 +1188,11 @@ def readme_block(R):
                 f'{ratio(min(ratios), 1)} to {ratio(max(ratios), 1)} the time of PostgreSQL\'s heap on those; the other layout, `sift_col`, is an index over the ordinary table.']
     lo = losses(R, tier, engines, labels)
     if lo:
-        out += ['- **Where pg_sift is not the fastest:** ' + '; '.join(f'{title.lower()}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for _, title, lb, v1, lb2, v2 in lo) + '.']
+        out += ['- **Where pg_sift is not the fastest:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.']
     else:
         out += ['- pg_sift was the fastest system, or within 5% of it, on every question.']
     out += [f'- The same questions at {R.meta["tiers"][x]["rows"]:,} orders, cold runs after a restart, load times and plans: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).' for x in R.tiers[:-1]]
-    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
+    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites this section and docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
     return out
 
 
@@ -1267,7 +1269,7 @@ UPD_PATH = {'pg': '`UPDATE` / `DELETE` ... `WHERE id IN (...)`, 1,000 ids per st
             'ch_rmt': '`INSERT ... SELECT` of a new version of the rows, 1,000 ids per statement; reads use `FINAL`'}
 UPD_DOCS = [
     ('PostgreSQL', [('Routine vacuuming', 'https://www.postgresql.org/docs/18/routine-vacuuming.html'), ('UPDATE', 'https://www.postgresql.org/docs/18/sql-update.html')]),
-    ('pg_sift', [('Column indexes, aggregates and sift_table', 'docs/USAGE.md#column-indexes-aggregates-and-sift_table')]),
+    ('pg_sift', [('Column indexes, aggregates and sift_table', 'USAGE.md#column-indexes-aggregates-and-sift_table')]),
     ('Elasticsearch', [('Update API', 'https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-update'),
                        ('Bulk API', 'https://www.elastic.co/guide/en/elasticsearch/reference/8.19/docs-bulk.html'),
                        ('The refresh parameter', 'https://www.elastic.co/docs/reference/elasticsearch/rest-apis/refresh-parameter'),
@@ -1496,11 +1498,12 @@ def compression_block(R):
 def replace_blocks(args):
     import readme  # steps/readme.py: replace_block
     R = Results(args.results)
+    if args.readme:
+        readme.replace_block(args.readme, 'store', readme_block(R))
+        readme.replace_block(args.readme, 'store-updates', updates_readme(R))
     if args.benchmarks:
-        readme.replace_block(args.benchmarks, 'store-brief', readme.for_docs(readme_block(R)))
-        readme.replace_block(args.benchmarks, 'store-updates-brief', readme.for_docs(updates_readme(R)))
-        readme.replace_block(args.benchmarks, 'store', readme.for_docs(benchmarks_block(R)))
-        readme.replace_block(args.benchmarks, 'store-updates', readme.for_docs(updates_benchmarks(R)))
+        readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
+        readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
         if os.path.exists(args.compression):
             readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
 
@@ -1622,6 +1625,7 @@ def main():
     m.add_argument('-o', required=True)
     r = sub.add_parser('render')
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
+    r.add_argument('--readme')
     r.add_argument('--benchmarks')
     r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store-compression.json'))
     r.add_argument('--stdout', action='store_true')

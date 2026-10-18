@@ -1,4 +1,5 @@
 -- The 10 categories with the most revenue
+-- label: `sum(amount) GROUP BY category` top 10
 --@ pg
 SELECT category, sum(amount) AS revenue FROM orders GROUP BY category ORDER BY revenue DESC, category LIMIT 10
 --@ ch
