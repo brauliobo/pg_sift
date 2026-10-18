@@ -690,6 +690,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_dbl(p, s->est_groups);
 	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
+	put_node(p, s->search);
 	return pk.items;
 }
 
@@ -1005,5 +1006,6 @@ sift_aggspec_unpack(const List *items)
 	s->est_groups = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
+	s->search = get_node(u);
 	return s;
 }

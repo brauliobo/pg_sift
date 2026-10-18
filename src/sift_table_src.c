@@ -21,6 +21,7 @@
 #include "utils/syscache.h"
 
 #include "sift_aggkern.h"
+#include "sift_aggsel.h"
 #include "sift_col.h"
 #include "sift_col_am.h"
 #include "sift_col_seg.h"
@@ -64,6 +65,7 @@ typedef struct TblSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
 	TblLeafBuf *buf;			/* per leaf */
+	SiftAggSel	sel;			/* the match set the units are restricted to */
 } TblSource;
 
 static bool
@@ -208,6 +210,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->cxt = mcxt;
 	t->snapshot = RegisterSnapshot(snapshot);
 	t->last = -1;
+	sift_aggsel_init(&t->sel, mcxt);
 	sift_tbl_refresh(heap, st);
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
@@ -308,20 +311,34 @@ static bool
 tbl_next(void *impl, SiftSrcUnit *unit)
 {
 	TblSource  *t = impl;
-	TblPart    *best = NULL;
 
-	if (t->last >= 0)
-		t->part[t->last].have = sift_col_next(t->part[t->last].src, &t->part[t->last].unit);
-	for (int k = 0; k < t->nparts; k++)
-		if (t->part[k].have && (best == NULL || t->part[k].unit.sb < best->unit.sb))
-			best = &t->part[k];
-	if (best == NULL)
-		return false;
-	t->last = best - t->part;
-	unit->sb = best->unit.sb;
-	unit->nrow = best->unit.nrows;
-	unit->priv = best;
-	return true;
+	for (;;)
+	{
+		TblPart    *best = NULL;
+		uint32		nrow;
+
+		if (t->last >= 0)
+			t->part[t->last].have = sift_col_next(t->part[t->last].src, &t->part[t->last].unit);
+		for (int k = 0; k < t->nparts; k++)
+			if (t->part[k].have && (best == NULL || t->part[k].unit.sb < best->unit.sb))
+				best = &t->part[k];
+		if (best == NULL)
+			return false;
+		t->last = best - t->part;
+		nrow = best->unit.nrows;
+		if (t->sel.keep && !sift_aggsel_unit(&t->sel, &best->unit, &nrow))
+			continue;
+		unit->sb = best->unit.sb;
+		unit->nrow = nrow;
+		unit->priv = best;
+		return true;
+	}
+}
+
+static void
+tbl_select(void *impl, const SiftFilter *keep)
+{
+	((TblSource *) impl)->sel.keep = keep;
 }
 
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
@@ -432,7 +449,7 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 		read_absent(t, leaf, unit->nrow, vec);
 		return;
 	}
-	sift_col_read(&p->unit, p->col[leaf], NULL, &v);
+	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
 	n = v.n;
 	if (v.ovf)
 		ereport(ERROR,
@@ -470,23 +487,16 @@ static void
 tbl_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	TblPart    *p = unit->priv;
-	SiftColSel	sel;
 
-	sift_col_sel_all(&p->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_live(&((TblSource *) impl)->sel, &p->unit, bits);
 }
 
 static void
 tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	TblPart    *p = unit->priv;
-	SiftColSel	sel;
 
-	sift_col_sel_alloc(p->src, unit->nrow, &sel);
-	memcpy(sel.bits, bits, sel.nwords * sizeof(uint64));
-	sel.count = sift_col_sel_count(&sel);
-	sift_col_vet(&p->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_vet(&((TblSource *) impl)->sel, p->src, &p->unit, bits);
 }
 
 static void
@@ -506,6 +516,7 @@ tbl_counters(const void *impl, SiftSrcCounters *c)
 		c->rows_vetted += cc->rows_vetted;
 		c->heap_pages += cc->heap_pages;
 	}
+	c->units_pruned += t->sel.units_skipped;
 }
 
 static const SiftSrcProvider tbl_provider = {
@@ -523,6 +534,7 @@ static const SiftSrcProvider tbl_provider = {
 	.live = tbl_live,
 	.vet = tbl_vet,
 	.counters = tbl_counters,
+	.select = tbl_select,
 };
 
 void

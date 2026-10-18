@@ -66,6 +66,7 @@
 #include "sift_aggspec.h"
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
+#include "sift_search.h"
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
@@ -86,6 +87,7 @@ sift_agg_init(void)
 	sift_aggkern_init();
 	sift_aggcol_register();
 	sift_aggcte_init();
+	sift_search_init();
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
@@ -559,6 +561,7 @@ typedef struct AggExec
 	bool		heap_opened;
 	Relation	index;
 	SiftSrcSource *src;
+	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
 	const SiftSrcLayout *lay;
 	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
 	struct
@@ -7268,11 +7271,27 @@ shared_init(ScanShared *sh, AggExec *ex)
 }
 
 static void
-scan_range(AggExec *ex, uint32 lo, uint32 hi)
+scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 		process_unit(ex);
+}
+
+/* With a match set, the source keeps the matching rows of the units of the range only (sift_search.h) */
+static void
+scan_range(AggExec *ex, uint32 lo, uint32 hi)
+{
+	if (ex->search == NULL)
+	{
+		scan_units(ex, lo, hi);
+		return;
+	}
+	for (uint32 a = lo; a < hi; a += sift_search_chunk_sbs)
+	{
+		sift_colsrc_select(ex->src, sift_search_range(ex->search, a, Min(a + sift_search_chunk_sbs, hi)));
+		scan_units(ex, a, Min(a + sift_search_chunk_sbs, hi));
+	}
 }
 
 /* a grouping set without columns has its group even when no row reached it, as the plain aggregate has its row */
@@ -7374,6 +7393,7 @@ typedef struct WorkerDone
 	int64		n_units;
 	int64		n_rows;
 	int64		n_tuples;
+	int64		n_matches;
 	SiftSrcCounters cc;
 } WorkerDone;
 
@@ -7385,6 +7405,7 @@ typedef struct AggPar
 	shm_mq_handle **mqh;
 	bool	   *done;
 	SiftSrcCounters cc;			/* of the workers, added */
+	int64		matches;		/* BM25 matches the workers found, added */
 } AggPar;
 
 static void
@@ -7485,6 +7506,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_units = ex->n_units;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
+	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
 	shm_mq_detach(ex->mqh);
@@ -7571,6 +7593,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_units += d->n_units;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
+		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
@@ -8087,6 +8110,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->lutcx = CreateStandaloneExprContext();
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
+	if (ex->spec->search)
+		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
 		register_pred(ex, ex->spec->pred[i]);
@@ -8105,6 +8130,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 static void
 engine_close(AggExec *ex)
 {
+	if (ex->search)
+		sift_search_close(ex->search);
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
@@ -8180,6 +8207,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText("Index", s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
 	if (s->desc_quals && s->desc_quals[0])
 		ExplainPropertyText("Filters", s->desc_quals, es);
+	if (s->search)
+		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
 		if (j < h0 || j >= h1)
@@ -8224,6 +8253,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			cc.rows_vetted += c->par->cc.rows_vetted;
 			cc.heap_pages += c->par->cc.heap_pages;
 		}
+		if (s->search)
+			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
