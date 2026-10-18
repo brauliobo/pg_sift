@@ -78,11 +78,14 @@ typedef struct SiftOptions
 	bool		accent_folding;
 	int			mutable_limit;	/* kB; seal the active mutable segment above it */
 	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */
+	int			merge_fanin;	/* segments of a tier that trigger a merge (read at merge time, not part of the format) */
 	int			build_segments; /* 0 = one per build participant */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
 	int			analyzer;		/* SIFT_ANALYZER_* */
 	bool		positions;		/* CREATE INDEX stores word positions, so phrases are verified from the index (DESIGN.md (g)) */
+	int			dead_rewrite_pct; /* percent of dead documents above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
+	bool		vacuum_truncate; /* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 } SiftOptions;
 
 /* analyzer: keyword indexes the whole value as one term (DESIGN.md (l)) */
@@ -131,6 +134,7 @@ extern PGDLLIMPORT bool sift_enable_count;
 extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_async_maintenance;
 extern PGDLLIMPORT int sift_maintenance_naptime;
+extern PGDLLIMPORT int sift_maintenance_cost_delay;
 extern PGDLLIMPORT bool sift_prefetch;
 
 /*

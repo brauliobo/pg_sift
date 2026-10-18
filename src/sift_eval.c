@@ -2618,18 +2618,21 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	{
 		uint64		present[SIFT_OFFMASK_WORDS];
 		uint64		live[SIFT_OFFMASK_WORDS];
+		uint64		cand = 0;
 
 		sift_seg_page(seg, dc, b * SIFT_BLK_PAGES + pg, present, &wk->dl[pg]);
 		if (wk->dl[pg] == NULL)
 			wk->dl[pg] = wk->zero;
-		if (dc->dirty)
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+			cand |= wk->res[pg][k];
+		if (dc->dirty && cand)
 		{
 			sift_seg_page_live(seg, dc, b * SIFT_BLK_PAGES + pg, live);
+			cand = 0;
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-				wk->res[pg][k] &= live[k];
+				cand |= wk->res[pg][k] &= live[k];
 		}
-		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-			any |= wk->res[pg][k] != 0;
+		any |= cand != 0;
 	}
 	if (!any)
 		return 0;

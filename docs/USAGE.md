@@ -167,15 +167,17 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
 | `sift.enable_col` | on | use `sift_col` indexes for column scans |
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
+| `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 
-Reloptions (`WITH (...)`; all but `mutable_limit` and `vacuum_segments` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+Reloptions (`WITH (...)`; all but `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
-`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128).
+`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128),
+`merge_fanin` (8; 2 to 32), `dead_rewrite_pct` (50; 1 to 100), `vacuum_truncate` (true).
 
 `vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
 merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
 before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
-A segment more than 8 times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than half the documents are dead is rewritten at any N.
+A segment more than `merge_fanin` times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than `dead_rewrite_pct` percent of the documents are dead is rewritten at any N.
 The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
 
 | `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
@@ -184,6 +186,56 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 4 | 0.15 s | 0.14 ms | 0.21 ms |
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
+
+`merge_fanin` is the number of segments of one size tier (a tier is a factor of `merge_fanin` in size, starting at `mutable_limit`) that
+makes the background worker, the inserters that need room and `sift.merge()` merge them, and the most one merge takes is twice that. A
+lower value merges sooner and more often, which is more write work and fewer segments to query; a higher one merges less and keeps up to
+`merge_fanin` - 1 segments per tier. It is read when a merge is chosen: `ALTER INDEX ... SET (merge_fanin = N)` applies to the next one, with no
+`REINDEX`, and an index built before the option keeps working with the default. A value out of 2 to 32 is an error. The limits the
+policy keeps on the directory follow it: more than `greatest(32, 2 * merge_fanin)` entries merge the smallest segments whatever their tier, and inserters
+still merge themselves from 112 of the 128 entries, so no value in range can fill a directory. Merging 39 segments of similar size leaves 1
+segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sql`).
+
+`sift.maintenance_cost_delay` slows the merges of the maintenance worker so that they leave I/O to the queries and inserts: after every 16 pages
+(128 kB) the merge reads (the segments it merges) or writes (the new segment) the worker sleeps that many milliseconds. A worker merge of a
+10 MB index took 0.27 s at the default 0 and 5.3 s at 20, at most 6.4 MB/s of I/O (128 kB per 20 ms); set it per database (`ALTER DATABASE ... SET`) or in `postgresql.conf`, as the worker reads the
+settings of its database. It applies to the worker only: `VACUUM`, `sift.merge()` and the merges inserters do for room are never delayed, and neither
+are the worker's promotions of mutable segments, which the writers wait for.
+
+`dead_rewrite_pct` is the share of dead documents above which maintenance rewrites a lone segment to drop them and their terms (a segment
+that no merge picks; the dead postings are cleared by `VACUUM` either way). `ALTER INDEX ... SET (dead_rewrite_pct = N)` applies to the next
+`VACUUM` or worker step, with no `REINDEX`; 100 never rewrites a segment on its own. The default 50 was measured against 5 on 400,000
+documents of 40 words, 10 rounds of updating or deleting 6% of the rows, each followed by `VACUUM` (mean of 5 runs); 5 rewrites the segment
+at every round and costs more everywhere except the queries after the deletes:
+
+| load | `dead_rewrite_pct` | `VACUUM` total | WAL | index file | `count(*)` | ranked top-10 |
+|---|---|---|---|---|---|---|
+| update | 50 (default) | 20.2 s | 1,340 MB | 92 MB | 1.06 ms | 3.9 ms |
+| update | 5 | 37.8 s | 1,428 MB | 133 MB | 1.40 ms | 5.0 ms |
+| delete | 50 (default) | 2.3 s | 86 MB | 67 MB | 3.5 ms | 4.1 ms |
+| delete | 5 | 15.8 s | 455 MB | 89 MB | 0.15 ms | 1.5 ms |
+
+`mutable_limit` (kB, 4096) is the size at which the active mutable segment is sealed for promotion; it is also where the merge tiers start.
+`ALTER INDEX ... SET (mutable_limit = N)` applies from the next seal. 1024 was measured against 4096 on
+100,000 documents of 40 words (mean of 5 runs): it promotes and merges faster per step and leaves queries on the grown index faster, but it
+does that 3.7 times as often and the writers pay for it, so the default stays 4096:
+
+| `mutable_limit` | 16 clients, `INSERT` | `INSERT .. SELECT` | `COPY` | promotion / merge | index, segments | `count(*)` / top-10 OR / top-10 AND |
+|---|---|---|---|---|---|---|
+| 4096 (default) | 107k rows/s, p99 0.69 ms | 113k rows/s | 261k rows/s | 37 ms / 1.4 s | 72 MB, 17 | 11.5 / 12.5 / 6.1 ms |
+| 1024 | 87k rows/s, p99 0.81 ms | 94k rows/s | 137k rows/s | 13 ms / 0.43 s | 98 MB, 78 | 10.6 / 4.1 / 2.6 ms |
+
+`VACUUM` also gives the free blocks at the end of the index file back to the operating system, as it does for a heap (`sift.index_info(index)`:
+`relation_blocks` falls to `high_water`). It tries when they are 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` on the
+index only if that is free right now, and lets go of it as soon as the file is cut; if any query, insert or maintenance step holds the index it
+does nothing, and the next `VACUUM` tries again (it says so at `DEBUG2`; `VACUUM VERBOSE` shows the new size of the index). A hot standby
+cancels the queries that hold the index when it replays that lock (or delays replay up to `max_standby_streaming_delay`), as for a heap
+(`hot_standby_feedback` does not prevent it; `vacuum_truncate = false` does). A
+`VACUUM` that runs with parallel workers (it vacuums several large indexes at once) cannot take the lock, which needs a transaction id, and
+leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate. Only space that is free and past the point where an old
+snapshot could still read it goes, so the end of the file is what the merges released, once the snapshots older than them are gone.
+Freed space in the middle of the file is not moved, it is reused by the next merge or promotion. `ALTER INDEX ... SET (vacuum_truncate = false)`
+turns the truncation off for an index (no `REINDEX`), like `vacuum_truncate` of a heap table.
 
 ## Column indexes, aggregates and sift_table
 

@@ -9,7 +9,9 @@
  * the posting counts (one buffered reader per run, a bounded number at a
  * time: more runs are merged in passes first). Runs come from the heap
  * build (ascending, disjoint key ranges) or from segments being merged
- * (interleaved ranges).
+ * (interleaved ranges). The segment a merge writes is streamed too: the docmap and the
+ * dictionary index go through temporary files, and the postings of a large term are staged
+ * there (sift_segw_spool), so no part of the memory grows with the postings of a term.
  */
 #ifndef SIFT_RUNS_H
 #define SIFT_RUNS_H

@@ -13,16 +13,20 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_class.h"
+#include "catalog/storage.h"
+#include "storage/procarray.h"
+#include "storage/sinval.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
-#include "storage/procarray.h"
+#include "storage/latch.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_event.h"
 
 #include "sift_estimate.h"
 #include "sift_store.h"
@@ -69,6 +73,8 @@ struct SiftWriteTarget
 	int			ntaken;
 	int			maxtaken;
 	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
+	int			delay_ms;		/* sift_wt_throttle: sleep per THROTTLE_PAGES charged, 0 = none */
+	uint64		charged;		/* pages charged since the last sleep */
 #ifdef SIFT_TESTING
 	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
 #endif
@@ -316,17 +322,64 @@ check_freelist(Relation index, Buffer buf, BlockNumber hwm)
 	return fl;
 }
 
-static Buffer
-read_freelist(Relation index, BlockNumber blk, BlockNumber hwm, uint32 hops, int mode,
-			  SiftFreeListData **fl)
+void
+sift_freelist_walk(Relation index, Buffer metabuf, SiftFreeListVisit visit, void *arg)
 {
-	Buffer		buf;
+	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
+	BlockNumber blk = meta->freelist_head;
 
-	if (blk < FIRST_DATA_BLKNO || blk >= hwm || hops >= hwm)
-		corrupt(index, "Free list chain reaches block %u after %u pages.", blk, hops);
-	buf = read_locked(index, blk, mode);
-	*fl = check_freelist(index, buf, hwm);
-	return buf;
+	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
+	{
+		Buffer		buf;
+		SiftFreeListData *fl;
+		BlockNumber next;
+		bool		more;
+
+		if (blk < FIRST_DATA_BLKNO || blk >= meta->high_water || hops >= meta->high_water)
+			corrupt(index, "Free list chain reaches block %u after %u pages.", blk, hops);
+		buf = read_locked(index, blk, BUFFER_LOCK_SHARE);
+		fl = check_freelist(index, buf, meta->high_water);
+		next = fl->next;
+		more = visit(blk, fl, arg);
+		UnlockReleaseBuffer(buf);
+		if (!more)
+			break;
+		blk = next;
+	}
+}
+
+typedef struct FreeCount
+{
+	Relation	index;
+	SiftFreeStats fs;
+} FreeCount;
+
+static bool
+count_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeCount  *c = arg;
+
+	c->fs.pages++;
+	for (uint32 i = 0; i < fl->n; i++)
+	{
+		c->fs.records++;
+		c->fs.blocks += fl->ext[i].nblocks;
+		if (!FullTransactionIdIsValid(fl->ext[i].safexid) || sift_store_removable(c->index, fl->ext[i].safexid))
+			c->fs.reusable += fl->ext[i].nblocks;
+	}
+	return true;
+}
+
+/* The free list counted with the metapage share-locked, like the allocator that changes it */
+SiftFreeStats
+sift_store_free_stats(Relation index)
+{
+	FreeCount	c = {.index = index};
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+
+	sift_freelist_walk(index, metabuf, count_free, &c);
+	UnlockReleaseBuffer(metabuf);
+	return c.fs;
 }
 
 /* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
@@ -380,7 +433,7 @@ log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
 		return;
 	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = safexid};
 	XLogBeginInsert();
-	XLogRegisterData(&xlrec, SizeOfBtreeReusePage);
+	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
 	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 	last_rel = index->rd_locator.relNumber;
 	last = safexid;
@@ -442,6 +495,39 @@ extend(Relation index, Buffer metabuf, uint32 n)
 	return first;
 }
 
+/* The reusable record to take from the free list so far */
+typedef struct FreePick
+{
+	Relation	index;
+	uint32		want;
+	uint32		min;
+	BlockNumber blk;			/* its free-list page */
+	int			idx;			/* its place in the page, -1 if none */
+	uint32		nblocks;
+	FullTransactionId safexid;
+	FullTransactionId horizon;
+} FreePick;
+
+static bool
+pick_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreePick   *p = arg;
+
+	for (uint32 i = 0; i < fl->n && p->nblocks < p->want; i++)
+	{
+		const SiftFreeExtent *e = &fl->ext[i];
+
+		if (e->nblocks >= p->min && e->nblocks > p->nblocks && reusable(p->index, e->safexid, &p->horizon))
+		{
+			p->blk = blk;
+			p->idx = i;
+			p->nblocks = e->nblocks;
+			p->safexid = e->safexid;
+		}
+	}
+	return p->nblocks < p->want;
+}
+
 /*
  * Takes up to want contiguous blocks (at least min): the first reusable
  * free-list record holding want, else the largest holding min, else extends
@@ -450,38 +536,13 @@ extend(Relation index, Buffer metabuf, uint32 n)
 static BlockNumber
 alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *got)
 {
-	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
-	BlockNumber blk = meta->freelist_head;
-	BlockNumber pick_blk = InvalidBlockNumber;
-	int			pick = -1;
-	uint32		pick_n = 0;
-	FullTransactionId pick_safexid = InvalidFullTransactionId;
-	FullTransactionId horizon = InvalidFullTransactionId;
+	FreePick	p = {index, want, min, InvalidBlockNumber, -1, 0, InvalidFullTransactionId, InvalidFullTransactionId};
 
-	for (uint32 hops = 0; BlockNumberIsValid(blk) && pick_n < want; hops++)
-	{
-		SiftFreeListData *fl;
-		Buffer		buf = read_freelist(index, blk, meta->high_water, hops, BUFFER_LOCK_SHARE, &fl);
-
-		for (uint32 i = 0; i < fl->n && pick_n < want; i++)
-		{
-			SiftFreeExtent *e = &fl->ext[i];
-
-			if (e->nblocks >= min && e->nblocks > pick_n && reusable(index, e->safexid, &horizon))
-			{
-				pick_blk = blk;
-				pick = i;
-				pick_n = e->nblocks;
-				pick_safexid = e->safexid;
-			}
-		}
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
-	*got = pick >= 0 ? Min(want, pick_n) : want;
-	if (pick >= 0 && FullTransactionIdIsValid(pick_safexid))
-		log_reuse(index, pick_blk, pick_safexid);
-	return pick >= 0 ? take_free(index, pick_blk, pick, *got) : extend(index, metabuf, want);
+	sift_freelist_walk(index, metabuf, pick_free, &p);
+	*got = p.idx >= 0 ? Min(want, p.nblocks) : want;
+	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid))
+		log_reuse(index, p.blk, p.safexid);
+	return p.idx >= 0 ? take_free(index, p.blk, p.idx, *got) : extend(index, metabuf, want);
 }
 
 /* Under the metapage lock, so the orphan sweep never sees them uninitialized */
@@ -577,6 +638,35 @@ write_free_pages(Relation index, Buffer metabuf, const SiftFreeExtent *ext, int 
 	return blks[0];
 }
 
+/* What prepare_free learns of the free list: every record and page (to refuse a double free) and the first page with room */
+typedef struct FreeScan
+{
+	SiftFreeExtent *have;		/* the records, and the pages of the list as one-block records */
+	int			nhave;
+	int			maxhave;
+	BlockNumber room;			/* the first page with room for need records */
+	int			need;
+} FreeScan;
+
+static bool
+scan_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeScan   *s = arg;
+
+	if (!BlockNumberIsValid(s->room) && SIFT_FREELIST_CAP - fl->n >= (uint32) s->need)
+		s->room = blk;
+	if (s->nhave + fl->n + 1 > s->maxhave)
+	{
+		s->maxhave = Max(64, 2 * (s->nhave + fl->n + 1));
+		s->have = s->have ? repalloc(s->have, s->maxhave * sizeof(SiftFreeExtent)) :
+			palloc(s->maxhave * sizeof(SiftFreeExtent));
+	}
+	memcpy(s->have + s->nhave, fl->ext, fl->n * sizeof(SiftFreeExtent));
+	s->nhave += fl->n;
+	s->have[s->nhave++] = (SiftFreeExtent) {blk, 1};
+	return true;
+}
+
 /*
  * Sorts and coalesces the release list, rejects blocks outside the index or
  * already free (a double free would hand one block to two owners), and finds
@@ -588,11 +678,7 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 {
 	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
 	SiftExtent *rel = palloc(nrelease * sizeof(SiftExtent));
-	SiftFreeExtent *have = NULL;
-	int			nhave = 0;
-	int			maxhave = 0;
-	BlockNumber blk = meta->freelist_head;
-	BlockNumber room = InvalidBlockNumber;
+	FreeScan	scan = {.room = InvalidBlockNumber};
 	int			n = 0;
 
 	memcpy(rel, release, nrelease * sizeof(SiftExtent));
@@ -615,38 +701,21 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 	}
 	plan->n = n;
 
-	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
+	scan.need = n;
+	sift_freelist_walk(index, metabuf, scan_free, &scan);
+	if (scan.nhave > 0)
+		qsort(scan.have, scan.nhave, sizeof(SiftFreeExtent), cmp_free);
+	for (int i = 0, j = 0; i < n && j < scan.nhave;)
 	{
-		SiftFreeListData *fl;
-		Buffer		buf = read_freelist(index, blk, meta->high_water, hops, BUFFER_LOCK_SHARE, &fl);
-
-		if (!BlockNumberIsValid(room) && SIFT_FREELIST_CAP - fl->n >= (uint32) n)
-			room = blk;
-		if (nhave + fl->n + 1 > maxhave)
-		{
-			maxhave = Max(64, 2 * (nhave + fl->n + 1));
-			have = have ? repalloc(have, maxhave * sizeof(SiftFreeExtent)) :
-				palloc(maxhave * sizeof(SiftFreeExtent));
-		}
-		memcpy(have + nhave, fl->ext, fl->n * sizeof(SiftFreeExtent));
-		nhave += fl->n;
-		have[nhave++] = (SiftFreeExtent) {blk, 1};
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
-	if (nhave > 0)
-		qsort(have, nhave, sizeof(SiftFreeExtent), cmp_free);
-	for (int i = 0, j = 0; i < n && j < nhave;)
-	{
-		if (plan->ext[i].start + plan->ext[i].nblocks <= have[j].start)
+		if (plan->ext[i].start + plan->ext[i].nblocks <= scan.have[j].start)
 			i++;
-		else if (have[j].start + have[j].nblocks <= plan->ext[i].start)
+		else if (scan.have[j].start + scan.have[j].nblocks <= plan->ext[i].start)
 			j++;
 		else
-			corrupt(index, "Block %u is released twice.", Max(plan->ext[i].start, have[j].start));
+			corrupt(index, "Block %u is released twice.", Max(plan->ext[i].start, scan.have[j].start));
 	}
-	if (BlockNumberIsValid(room))
-		plan->flbuf = read_locked(index, room, BUFFER_LOCK_EXCLUSIVE);
+	if (BlockNumberIsValid(scan.room))
+		plan->flbuf = read_locked(index, scan.room, BUFFER_LOCK_EXCLUSIVE);
 	else
 		plan->newhead = write_free_pages(index, metabuf, plan->ext, n);
 }
@@ -794,92 +863,213 @@ coalesce(SiftFreeExtent *ext, int n)
 	return m;
 }
 
+/* The free list read into memory */
+typedef struct FreeChain
+{
+	SiftFreeExtent *ext;		/* every record; those past the horizon are made reusable (safexid cleared) */
+	int			n;
+	int			maxext;
+	BlockNumber *page;			/* the pages of the list itself */
+	int			npages;
+	int			maxpage;
+	int			cleared;		/* records this read made reusable */
+	FullTransactionId newest;	/* the newest safexid among them */
+	Relation	index;
+	FullTransactionId horizon;
+} FreeChain;
+
+static bool
+collect_chain(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeChain  *c = arg;
+
+	if (c->n + fl->n + c->npages + 1 > c->maxext)
+	{
+		c->maxext = Max(64, 2 * (c->n + (int) fl->n + c->npages + 1));
+		c->ext = c->ext ? repalloc(c->ext, c->maxext * sizeof(SiftFreeExtent)) : palloc(c->maxext * sizeof(SiftFreeExtent));
+	}
+	if (c->npages + 1 > c->maxpage)
+	{
+		c->maxpage = Max(8, 2 * c->maxpage);
+		c->page = c->page ? repalloc(c->page, c->maxpage * sizeof(BlockNumber)) : palloc(c->maxpage * sizeof(BlockNumber));
+	}
+	for (uint32 i = 0; i < fl->n; i++)
+	{
+		SiftFreeExtent *e = &c->ext[c->n++];
+
+		*e = fl->ext[i];
+		if (FullTransactionIdIsValid(e->safexid) && reusable(c->index, e->safexid, &c->horizon))
+		{
+			if (!FullTransactionIdIsValid(c->newest) || FullTransactionIdPrecedes(c->newest, e->safexid))
+				c->newest = e->safexid;
+			e->safexid = InvalidFullTransactionId;
+			c->cleared++;
+		}
+	}
+	c->page[c->npages++] = blk;
+	return true;
+}
+
+/* metabuf is locked, which also guards the list. ext has room for the list's pages after the records */
+static void
+read_chain(Relation index, Buffer metabuf, FreeChain *c)
+{
+	*c = (FreeChain) {.index = index};
+	sift_freelist_walk(index, metabuf, collect_chain, c);
+}
+
+static void
+coalesce_chain(FreeChain *c)
+{
+	c->n = coalesce(c->ext, c->n);
+}
+
+/* The pages of the list itself as free records, for when the list that holds them is replaced */
+static void
+free_own_pages(FreeChain *c)
+{
+	for (int i = 0; i < c->npages; i++)
+		c->ext[c->n++] = (SiftFreeExtent) {c->page[i], 1};
+	coalesce_chain(c);
+}
+
+/* Where the reusable blocks at the end of the relation start: the last of the sorted, coalesced records if it ends at hwm, else hwm */
+static BlockNumber
+free_tail(const FreeChain *c, BlockNumber hwm)
+{
+	const SiftFreeExtent *last = c->n > 0 ? &c->ext[c->n - 1] : NULL;
+
+	return last && !FullTransactionIdIsValid(last->safexid) && last->start + last->nblocks == hwm ?
+		last->start : hwm;
+}
+
 /*
- * Rewrites the free list as one sorted, coalesced chain in blocks that are
- * free now, then switches the head in one record; the old chain pages become
- * free records. A crash before the switch leaves the old chain intact.
+ * Writes the free list anew as one sorted, coalesced chain in blocks that are free now, then switches
+ * the head in one record; the old chain pages become free records. A crash before the switch leaves
+ * the old chain intact. trim: the free run at the end of the relation also leaves the list and the
+ * high-water mark moves to its start (the caller then truncates the file, after this record: a
+ * relation longer than the mark is harmless, one shorter is not). With trim, returns the new mark, or
+ * InvalidBlockNumber when there is nothing to give back (nothing is written then).
  */
+static BlockNumber
+rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
+{
+	BlockNumber hwm = META(BufferGetPage(metabuf))->high_water;
+	BlockNumber newhwm = hwm;
+	SiftMetaPageData *meta;
+	BlockNumber *blks;
+	GenericXLogState *state;
+	int			k;
+
+	coalesce_chain(c);
+	k = (c->n + c->npages + SIFT_FREELIST_CAP - 1) / SIFT_FREELIST_CAP;
+	blks = palloc(k * sizeof(BlockNumber));
+	/* New pages come from free records, never from the live old chain; a trim never extends the relation */
+	for (int i = 0, j = 0; i < k; i++)
+	{
+		while (j < c->n && FullTransactionIdIsValid(c->ext[j].safexid))
+			j++;
+		if (j == c->n && trim)
+			return InvalidBlockNumber;
+		if (j == c->n)
+			blks[i] = extend(index, metabuf, 1);
+		else
+		{
+			blks[i] = c->ext[j].start++;
+			c->ext[j].nblocks--;
+			if (c->ext[j].nblocks == 0)
+				memmove(&c->ext[j], &c->ext[j + 1], (--c->n - j) * sizeof(SiftFreeExtent));
+		}
+	}
+	free_own_pages(c);
+	if (trim && (newhwm = free_tail(c, hwm)) == hwm)
+		return InvalidBlockNumber;
+	if (trim)
+		c->n--;
+	if (c->cleared > 0)
+		log_reuse(index, InvalidBlockNumber, c->newest);
+	write_chain(index, blks, k, c->ext, c->n, InvalidBlockNumber);
+	state = GenericXLogStart(index);
+	meta = META(GenericXLogRegisterBuffer(state, metabuf, 0));
+	meta->freelist_head = blks[0];
+	if (trim)
+		meta->high_water = newhwm;
+	GenericXLogFinish(state);
+	return newhwm;
+}
+
+/* Clears the safexid of free-list records past the horizon and coalesces adjacent reusable records */
 int
 sift_recycle(Relation index)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
-	BlockNumber blk = meta->freelist_head;
-	SiftFreeExtent *ext = NULL;
-	BlockNumber *old = NULL;
-	BlockNumber *blks;
-	int			n = 0;
-	int			npages = 0;
-	int			cleared = 0;
-	int			k;
-	FullTransactionId horizon = InvalidFullTransactionId;
-	FullTransactionId newest = InvalidFullTransactionId;
-	GenericXLogState *state;
+	FreeChain	c;
+	int			raw;
 
-	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
-	{
-		SiftFreeListData *fl;
-		Buffer		buf = read_freelist(index, blk, meta->high_water, hops, BUFFER_LOCK_SHARE, &fl);
-
-		ext = ext ? repalloc(ext, (n + fl->n + npages + 1) * sizeof(SiftFreeExtent)) :
-			palloc((fl->n + 1) * sizeof(SiftFreeExtent));
-		old = old ? repalloc(old, (npages + 1) * sizeof(BlockNumber)) : palloc(sizeof(BlockNumber));
-		for (uint32 i = 0; i < fl->n; i++)
-		{
-			ext[n] = fl->ext[i];
-			if (FullTransactionIdIsValid(ext[n].safexid) && reusable(index, ext[n].safexid, &horizon))
-			{
-				if (!FullTransactionIdIsValid(newest) || FullTransactionIdPrecedes(newest, ext[n].safexid))
-					newest = ext[n].safexid;
-				ext[n].safexid = InvalidFullTransactionId;
-				cleared++;
-			}
-			n++;
-		}
-		old[npages++] = blk;
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
-	if (npages == 0)
-	{
-		UnlockReleaseBuffer(metabuf);
-		return 0;
-	}
-	k = n;
-	n = coalesce(ext, n);
-	if (cleared > 0)
-		log_reuse(index, blk, newest);
-	if (cleared == 0 && n == k && npages == 1)
-	{
-		UnlockReleaseBuffer(metabuf);
-		return 0;
-	}
-	k = (n + npages + SIFT_FREELIST_CAP - 1) / SIFT_FREELIST_CAP;
-	blks = palloc(k * sizeof(BlockNumber));
-	/* New pages come from free records, never from the live old chain */
-	for (int i = 0, j = 0; i < k; i++)
-	{
-		while (j < n && FullTransactionIdIsValid(ext[j].safexid))
-			j++;
-		if (j == n)
-			blks[i] = extend(index, metabuf, 1);
-		else
-		{
-			blks[i] = ext[j].start++;
-			ext[j].nblocks--;
-			if (ext[j].nblocks == 0)
-				memmove(&ext[j], &ext[j + 1], (--n - j) * sizeof(SiftFreeExtent));
-		}
-	}
-	for (int i = 0; i < npages; i++)
-		ext[n++] = (SiftFreeExtent) {old[i], 1};
-	n = coalesce(ext, n);
-	write_chain(index, blks, k, ext, n, InvalidBlockNumber);
-	state = GenericXLogStart(index);
-	META(GenericXLogRegisterBuffer(state, metabuf, 0))->freelist_head = blks[0];
-	GenericXLogFinish(state);
+	read_chain(index, metabuf, &c);
+	raw = c.n;
+	coalesce_chain(&c);
+	if (c.npages == 0 || (c.cleared == 0 && c.n == raw && c.npages == 1))
+		c.cleared = 0;
+	else
+		rewrite_chain(index, metabuf, &c, false);
 	UnlockReleaseBuffer(metabuf);
-	return cleared;
+	return c.cleared;
+}
+
+BlockNumber
+sift_store_tail_blocks(Relation index)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	BlockNumber hwm = META(BufferGetPage(metabuf))->high_water;
+	FreeChain	c;
+	BlockNumber tail = hwm;
+
+	read_chain(index, metabuf, &c);
+	if (c.npages > 0)
+	{
+		coalesce_chain(&c);
+		free_own_pages(&c);
+		tail = free_tail(&c, hwm);
+	}
+	UnlockReleaseBuffer(metabuf);
+	return RelationGetNumberOfBlocks(index) - tail;
+}
+
+/*
+ * No backend uses the index (the caller holds AccessExclusiveLock), so none holds a directory copy, a
+ * scan or a cached block number (see below) that the truncation could outdate; a standby replays
+ * the lock first and cancels what holds one there.
+ */
+BlockNumber
+sift_store_truncate(Relation index)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
+	BlockNumber hwm = META(BufferGetPage(metabuf))->high_water;
+	BlockNumber newhwm = InvalidBlockNumber;
+	BlockNumber nblocks;
+	SharedInvalidationMessage msg;
+	FreeChain	c;
+
+	read_chain(index, metabuf, &c);
+	if (c.npages > 0)
+		newhwm = rewrite_chain(index, metabuf, &c, true);
+	UnlockReleaseBuffer(metabuf);
+	/* a crash between the record and the truncation left a file longer than the mark: it ends there too */
+	if (!BlockNumberIsValid(newhwm))
+		newhwm = hwm;
+	if ((nblocks = RelationGetNumberOfBlocks(index)) <= newhwm)
+		return 0;
+	RelationTruncate(index, newhwm);
+	/*
+	 * A backend appending to the mutable segment keeps the blocks of its lane tails in the relcache
+	 * entry (sift_mut_append), validated by reading them, and a block past the new end cannot be
+	 * read. Their next lock on the index happens after ours is released, and takes this message first.
+	 */
+	msg = (SharedInvalidationMessage) {.rc = {SHAREDINVALRELCACHE_ID, MyDatabaseId, RelationGetRelid(index)}};
+	SendSharedInvalidMessages(&msg, 1);
+	LocalExecuteInvalidationMessage(&msg);
+	return nblocks - newhwm;
 }
 
 /* ---------- write targets ---------- */
@@ -1038,11 +1228,36 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 	wt->spare[wt->nspare++] = (SiftExtent) {start, n};
 }
 
+#define THROTTLE_PAGES	16		/* pages (128 kB) of I/O that earn one delay */
+
+void
+sift_wt_throttle(SiftWriteTarget *wt, int delay_ms)
+{
+	wt->delay_ms = delay_ms;
+}
+
+/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly */
+void
+sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
+{
+	if (wt->delay_ms == 0)
+		return;
+	wt->charged += pages;
+	for (; wt->charged >= THROTTLE_PAGES; wt->charged -= THROTTLE_PAGES)
+	{
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, wt->delay_ms, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 /* Writes a complete page; BULK takes ownership of a smgr_bulk_get_buf page */
 static void
 wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 {
 	Buffer		buf;
+
+	sift_wt_charge(wt, 1);
 
 	if (wt->bulk)
 	{
@@ -1493,20 +1708,15 @@ mark(BlockMap *m, BlockNumber start, uint64 n, const char *what, uint64 gen)
 	m->set = bms_add_range(m->set, start, start + n - 1);
 }
 
-static void
-mark_freelist(BlockMap *m, BlockNumber blk)
+static bool
+mark_freelist_page(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 {
-	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
-	{
-		SiftFreeListData *fl;
-		Buffer		buf = read_freelist(m->index, blk, m->hwm, hops, BUFFER_LOCK_SHARE, &fl);
+	BlockMap   *m = arg;
 
-		mark(m, blk, 1, "free list page", 0);
-		for (uint32 i = 0; i < fl->n; i++)
-			mark(m, fl->ext[i].start, fl->ext[i].nblocks, "free extent", 0);
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
+	mark(m, blk, 1, "free list page", 0);
+	for (uint32 i = 0; i < fl->n; i++)
+		mark(m, fl->ext[i].start, fl->ext[i].nblocks, "free extent", 0);
+	return true;
 }
 
 /* The extents and the liveness run of a segment, read from its header page */
@@ -1615,7 +1825,7 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	m.hwm = META(BufferGetPage(metabuf))->high_water;
 	mark(&m, SIFT_METAPAGE_BLKNO, 2, "metapage and directory", 0);
-	mark_freelist(&m, META(BufferGetPage(metabuf))->freelist_head);
+	sift_freelist_walk(index, metabuf, mark_freelist_page, &m);
 	UnlockReleaseBuffer(metabuf);
 	return m.set;
 }

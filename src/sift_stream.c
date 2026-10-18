@@ -41,3 +41,21 @@ sift_sw_align(SiftStreamWriter *sw, size_t align)
 		sift_sw_write(sw, zeros, room);
 	}
 }
+
+#define SPOOL_CHUNK		65536
+
+void
+sift_sw_write_file(SiftStreamWriter *sw, BufFile *file, uint64 len)
+{
+	char	   *buf = palloc(SPOOL_CHUNK);
+
+	if (BufFileSeek(file, 0, 0, SEEK_SET) != 0)
+		elog(ERROR, "sift: could not rewind a spool file");
+	for (uint64 n; len > 0; len -= n)
+	{
+		n = Min(len, SPOOL_CHUNK);
+		BufFileReadExact(file, buf, n);
+		sift_sw_write(sw, buf, n);
+	}
+	pfree(buf);
+}

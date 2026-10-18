@@ -16,15 +16,15 @@ tier_of(const SiftSegEntry *s, const SiftMergePolicy *pol)
 	return t;
 }
 
-static int
-bytes_cmp(const void *a, const void *b)
+int
+sift_seg_bytes_cmp(const void *a, const void *b)
 {
 	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
 }
 
-/* A segment of which more than half the documents were deleted */
+/* A segment of which more than dead_pct percent of the documents were deleted */
 static bool
-mostly_dead(Relation index, const SiftSegEntry *e)
+mostly_dead(Relation index, const SiftSegEntry *e, int dead_pct)
 {
 	SiftSegment *seg;
 	bool		dead;
@@ -32,7 +32,7 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_seg_open(index, e, CurrentMemoryContext);
-	dead = sift_seg_live_docs(seg) * 2 < e->ndocs;
+	dead = sift_seg_live_docs(seg) * 100 < (uint64) e->ndocs * (100 - dead_pct);
 	sift_seg_close(seg);
 	return dead;
 }
@@ -46,7 +46,7 @@ immutables(const SiftDirSnapshot *snap, SiftSegEntry *imm)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			imm[n++] = snap->segs[i];
-	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
+	qsort(imm, n, sizeof(SiftSegEntry), sift_seg_bytes_cmp);
 	return n;
 }
 
@@ -54,7 +54,7 @@ static int
 pick_dead(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
 {
 	for (int i = 0; i < n; i++)
-		if (pol && pol->mostly_dead ? pol->mostly_dead(index, &imm[i]) : mostly_dead(index, &imm[i]))
+		if (pol->mostly_dead ? pol->mostly_dead(index, &imm[i]) : mostly_dead(index, &imm[i], pol->dead_pct ? pol->dead_pct : SIFT_MERGE_DEAD_PCT))
 		{
 			sel[0] = imm[i];
 			return 1;
@@ -63,11 +63,11 @@ pick_dead(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *imm, i
 }
 
 int
-sift_merge_pick_dead(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+sift_merge_pick_dead(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, SiftSegEntry *sel)
 {
 	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
 
-	return pick_dead(index, NULL, imm, immutables(snap, imm), sel);
+	return pick_dead(index, pol, imm, immutables(snap, imm), sel);
 }
 
 int
@@ -91,7 +91,7 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 				sel[k++] = imm[j];
 			return k;
 		}
-	if (snap->nsegs > SIFT_MERGE_MAX_SEGMENTS && n >= 2)
+	if (snap->nsegs > SIFT_MERGE_ENTRIES(fanin) && n >= 2)
 	{
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
 		return Min(n, fanin);

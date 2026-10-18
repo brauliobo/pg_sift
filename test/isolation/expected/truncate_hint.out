@@ -1,0 +1,39 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3snap s2v s1i s3c s2p s2rec s2t s2size s1j s2check
+step s3snap: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_th;
+snapshot
+--------
+t       
+(1 row)
+
+step s2v: VACUUM iso_th;
+step s1i: INSERT INTO iso_th SELECT g, 'common appended ' || g FROM generate_series(100001, 140000) g;
+step s3c: COMMIT;
+step s2p: SELECT sift.promote('iso_th_idx') > 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2rec: CREATE TABLE iso_th_size AS SELECT relation_blocks AS blocks FROM sift.index_info('iso_th_idx');
+step s2t: SELECT sift._test_truncate('iso_th_idx') > 0 AS truncated;
+truncated
+---------
+t        
+(1 row)
+
+step s2size: SELECT i.relation_blocks < s.blocks AS shrunk, i.relation_blocks = i.high_water AS sized
+			  FROM sift.index_info('iso_th_idx') i, iso_th_size s;
+shrunk|sized
+------+-----
+t     |t    
+(1 row)
+
+step s1j: INSERT INTO iso_th SELECT g, 'common again ' || g FROM generate_series(150001, 150100) g;
+step s2check: SELECT iso_agree('iso_th', 'common') AS agree, iso_agree('iso_th', 'appended') AS agree_appended, iso_verify('iso_th_idx') AS verified;
+agree|agree_appended|verified
+-----+--------------+--------
+t    |t             |t       
+(1 row)
+

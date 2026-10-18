@@ -31,6 +31,7 @@
 #include "sift_colcodec.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
+#include "sift_merge.h"
 #include "sift_ops.h"
 #include "sift_posting.h"
 #include "sift_prefix.h"
@@ -75,6 +76,7 @@ bool		sift_parallel_scan = false;
 bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
+int			sift_maintenance_cost_delay = 0;
 
 static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
@@ -121,6 +123,10 @@ define_gucs(void)
 							"Time between background maintenance workers of an index; a worker stays this long after it starts.",
 							NULL, &sift_maintenance_naptime, 2000, 200, 60000,
 							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.maintenance_cost_delay",
+							"Milliseconds the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, 0 to run them at full speed.",
+							NULL, &sift_maintenance_cost_delay, 0, 0, 100,
+							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.grouped_min_df",
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
@@ -199,6 +205,9 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "vacuum_segments",
 					  "Directory entries (segments, the mutable one included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
 					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "merge_fanin",
+					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
+					  SIFT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -215,6 +224,12 @@ define_reloptions(void)
 					   "Analyzer: text, or keyword to index each whole value as one term (facets, REINDEX to apply)",
 					   analyzer_names, SIFT_ANALYZER_TEXT,
 					   "Valid values are \"text\" and \"keyword\".", AccessExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "dead_rewrite_pct",
+					  "Percent of dead documents above which maintenance rewrites a lone segment to drop them (100 never)",
+					  SIFT_MERGE_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
+	add_bool_reloption(sift_relopt_kind, "vacuum_truncate",
+					   "VACUUM gives the free blocks at the end of the index file back to the operating system (takes a brief exclusive lock when it can)",
+					   true, ShareUpdateExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -300,11 +315,14 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
 		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
+		{"merge_fanin", RELOPT_TYPE_INT, offsetof(SiftOptions, merge_fanin)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
 		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
 		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
+		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftOptions, dead_rewrite_pct)},
+		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -321,7 +339,10 @@ sift_index_options(Relation index)
 		.accent_folding = true,
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
+		.merge_fanin = SIFT_MERGE_FANIN,
 		.positions = true,
+		.dead_rewrite_pct = SIFT_MERGE_DEAD_PCT,
+		.vacuum_truncate = true,
 	};
 
 	return index->rd_options ? (const SiftOptions *) index->rd_options : &defaults;
