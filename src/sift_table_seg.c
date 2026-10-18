@@ -398,7 +398,8 @@ typedef struct UnitTids
 	int			src;
 	uint32		ordinal;
 	uint32		n;				/* live rows */
-	ItemPointerData *tid;		/* of the live rows, ascending: the position of a row in the vectors of sift_col_sel_all */
+	ItemPointerData *tid;		/* of the live rows, ascending */
+	uint32	   *ord;			/* of tid: the row index in the vectors of the unit, taken together with tid (VACUUM clears live bits in place) */
 } UnitTids;
 
 /* A unit of the scan's range: which source, its superblock, and its place among the units of that superblock */
@@ -877,6 +878,7 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 		for (int k = 0; k < g->ncu; k++)
 		{
 			pfree(g->cu[k].tid);
+			pfree(g->cu[k].ord);
 		}
 		pfree(g->cu);
 	}
@@ -899,8 +901,9 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 				g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));
 			u = &g->cu[g->ncu++];
 			sift_col_sel_all(&unit, &sel);
-			*u = (UnitTids) {s, ordinal++, sel.count, palloc(Max(sel.count, 1) * sizeof(ItemPointerData))};
+			*u = (UnitTids) {s, ordinal++, sel.count, palloc(Max(sel.count, 1) * sizeof(ItemPointerData)), palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32))};
 			sift_col_tids(&unit, &sel, u->tid);
+			sift_col_sel_idx(&sel, u->ord);
 		}
 	}
 	g->cache_sb = sb;
@@ -933,7 +936,6 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 {
 	const UnitTids *u = &g->cu[k];
 	SiftColSource *src = g->s[u->src].src;
-	MemoryContext old;
 
 	if (g->rd_unit == k && g->rd_serial == g->serial)
 		return;
@@ -945,11 +947,6 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 		if (!sift_col_next(src, &g->unit))
 			elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, sb);
 	MemoryContextReset(g->unitcxt);
-	old = MemoryContextSwitchTo(g->unitcxt);
-	sift_col_sel_all(&g->unit, &g->sel);
-	g->ord = palloc((g->sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
-	sift_col_sel_idx(&g->sel, g->ord);
-	MemoryContextSwitchTo(old);
 	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
 		g->vec[c].n = PG_UINT32_MAX;
 	g->rd_unit = k;
@@ -975,7 +972,7 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 			if (offmask == NULL || sift_col_bit_test(offmask, ItemPointerGetOffsetNumberNoCheck(&u->tid[j]) - 1))
 			{
 				unit_load(g, k, sb);
-				out[nout++] = row_tuple(g, g->ord[j], &u->tid[j]);
+				out[nout++] = row_tuple(g, u->ord[j], &u->tid[j]);
 			}
 	}
 	return nout;
@@ -1046,7 +1043,7 @@ sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGrou
 		return false;
 	}
 	unit_load(*g, k, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
-	*pos = (*g)->ord[j];
+	*pos = (*g)->cu[k].ord[j];
 	*token = (*g)->token;
 	gscan_park(*g);
 	return true;
