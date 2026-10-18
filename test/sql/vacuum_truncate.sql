@@ -17,7 +17,9 @@ DELETE FROM vt WHERE id % 20 <> 0;
 VACUUM vt;
 -- merged down to the two segments of vacuum_segments, written after the old ones, which the file still holds
 SELECT blocks('vt_idx') > :built AS grew, free_blocks > :built / 2 AS mostly_free FROM sift.index_info('vt_idx');
--- rewritten into the space of the old segments: the end of the file is free now
+-- rewritten into the space of the old segments, which a reader that began before the VACUUM may still read: they are reusable once a
+-- transaction has passed (a VACUUM is in no snapshot, so its own xid does not count), and the end of the file is free then
+SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
 SELECT sift.merge('vt_idx', true);
 SELECT blocks('vt_idx') AS before_truncate \gset
 SELECT free_blocks > 0 AS free_at_end FROM sift.index_info('vt_idx');
@@ -43,6 +45,7 @@ INSERT INTO vt2 SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word'
 CREATE INDEX vt2_idx ON vt2 USING sift (body) WITH (build_segments = 8, vacuum_truncate = false);
 DELETE FROM vt2 WHERE id % 20 <> 0;
 VACUUM vt2;
+SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
 SELECT sift.merge('vt2_idx', true);
 SELECT blocks('vt2_idx') AS kept \gset
 VACUUM vt2;
