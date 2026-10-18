@@ -225,6 +225,33 @@ bench_decode(void)
 	free(src), free(dst), free(ref), free(idx), free(d64), free(r64), free(a);
 }
 
+/* The consumer's lanes: float keys back to doubles in place, a NULL bitmap as 0/1 flags */
+static void
+bench_lanes(void)
+{
+	int64	   *keys = rand_array(N * 8),
+			   *want = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *work = kt_alloc(N * 8 + SIFT_COL_PAD);
+	uint64	   *bits = rand_bits(SIFT_COL_NWORDS(N), 2);
+	uint8	   *ref = kt_alloc(N + SIFT_COL_PAD),
+			   *flags = kt_alloc(N + SIFT_COL_PAD);
+
+	memcpy(want, keys, N * 8);
+	levels[0]->f8_from_keys(want, N);
+	levels[0]->bits_to_flags(bits, N, ref);
+	for (int l = 0; l < nlevels; l++)
+	{
+		memcpy(work, keys, N * 8);
+		levels[l]->f8_from_keys(work, N);
+		same("f8_from_keys", l, work, want, N * 8);
+		levels[l]->bits_to_flags(bits, N, flags);
+		same("bits_to_flags", l, flags, ref, N);
+		row("f8_from_keys", "n=4096, in place", kt_level_name[l], BENCH(levels[l]->f8_from_keys(work, N)), N, 8);
+		row("bits_to_flags", "n=4096", kt_level_name[l], BENCH(levels[l]->bits_to_flags(bits, N, flags)), N, 1.0 / 8);
+	}
+	free(keys), free(want), free(work), free(bits), free(ref), free(flags);
+}
+
 void
 bench_col(void)
 {
@@ -236,4 +263,5 @@ bench_col(void)
 	bench_bits();
 	bench_zone();
 	bench_decode();
+	bench_lanes();
 }
