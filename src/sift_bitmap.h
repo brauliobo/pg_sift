@@ -83,11 +83,12 @@ struct sift_cur {
 	const uint8_t *tf, *ub, *blk;  /* ub: per-group bounds, blk: 16-page block nibbles (GROUPED) */
 	uint32_t ub1;               /* term bound (LIST), 255 if unknown */
 	union {
-		struct { const uint8_t *payload; const uint32_t *key, *poff, *base; uint32_t ng, i; } gr;
+		struct { const uint8_t *payload; const uint32_t *key, *poff, *base; uint32_t ng, i, plen; } gr;
 		struct {
 			const sift_tid *t;          /* raw tids, or NULL for a LIST blob */
 			const uint8_t *p;           /* next LIST block */
-			uint64_t prev;              /* last key of the block before p */
+			const uint8_t *end;         /* end of the blob */
+			uint64_t prev, lim;         /* last key of the block before p; keys are below lim, a power of two */
 			uint32_t n, i, bi, bn, w, ob;  /* postings, position, block window [bi, bi + bn) */
 			sift_tid blk[SIFT_LIST_BLOCK];
 		} ls;
@@ -116,8 +117,19 @@ int sift_blob_kind(const uint8_t *blob);
 uint32_t sift_w_for(uint32_t maxoff);
 uint32_t sift_tf_quant(uint32_t tf);
 
-/* cursors: seek returns the first group with gid >= target at or after the current one, NULL at end */
-void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf);
+/*
+ * Raises ERRCODE_DATA_CORRUPTED (the host provides it; it does not return) for bytes a decoder found to be damaged: a length, offset, count
+ * or parameter that does not lie inside the blob it came from. Cursors check them at the granularity they read (the blob header, a group,
+ * a LIST block), not per posting.
+ */
+extern void sift_codec_corrupt(const char *what) __attribute__((noreturn));
+
+/*
+ * cursors: seek returns the first group with gid >= target at or after the current one, NULL at end.
+ * sift_cur_blob follows the lengths and offsets of blob[0, len), which it validates as it reads them (sift_blob_check is the exhaustive
+ * check that sift.verify runs); the blob is followed by SIFT_KERN_PAD zero bytes.
+ */
+void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf);
 void sift_cur_tids(sift_cur *c, const sift_tid *t, uint32_t n, uint8_t *buf);
 void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
 void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
@@ -166,11 +178,12 @@ static inline float sift_blk_ub(const sift_cur *c, int b)
 size_t sift_chunk_bound(uint32_t npages);   /* for SIFT_CT_AUTO / SIFT_CT_BITMAP */
 size_t sift_chunk_encode(const uint64_t pagemask[4], const uint64_t *offmasks, int ctype, uint8_t *out);
 uint32_t sift_chunk_count(const uint8_t *chunk);
+uint32_t sift_chunk_width(const uint8_t *chunk);   /* bytes of offsets of a page, the same for every page */
 void sift_chunk_pagemask(const uint8_t *chunk, uint64_t pagemask[4]);
 uint32_t sift_chunk_offsets(const uint8_t *chunk, const uint64_t pagesel[4], uint64_t *offmasks);  /* returns pages written */
 void sift_chunk_grp(const uint8_t *chunk, uint32_t gid, sift_grp *g, uint8_t *buf);              /* zero-copy for bitmaps */
 size_t sift_keylist_encode(const sift_tid *t, uint32_t n, uint8_t *out);                          /* a LIST blob */
-uint32_t sift_keylist_decode(const uint8_t *blob, sift_tid *out);
+uint32_t sift_keylist_decode(const uint8_t *blob, size_t len, sift_tid *out);
 
 /* canonical offset-mask kernels over npages masks of 8 words; o may alias a or b */
 void sift_offmask_and(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t npages);

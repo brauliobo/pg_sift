@@ -1,278 +1,129 @@
 # pg_sift
 
-[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml)
-[![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml)
-[![release](https://img.shields.io/github/v/release/brauliobo/pg_sift)](https://github.com/brauliobo/pg_sift/releases/latest)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018-336791)](#install)
-[![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
+[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![release](https://img.shields.io/github/v/release/brauliobo/pg_sift)](https://github.com/brauliobo/pg_sift/releases/latest) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018-336791)](#install) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
-Fast full-text search with BM25 ranking inside PostgreSQL. pg_sift is an index type (`USING sift`) that answers boolean, phrase, prefix,
-wildcard, regex and fuzzy queries, ranks results with exact BM25 and counts matches straight from the index. It needs no external search
-server and no `shared_preload_libraries`.
+pg_sift adds fast full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`. No external search
+server, no separate analytics database, no `shared_preload_libraries`. The search engine also runs as a SQLite extension and a MariaDB library.
 
-The same engine also runs [as a SQLite extension](#pg_sift-for-sqlite) and [as a MariaDB UDF library](#mariadb-bm25-search-as-a-udf-library).
+## Features
+
+- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan, counts from the index, facets, autocomplete.
+- **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` run on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
+- **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
+- **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
+
+## Install
+
+Needs PostgreSQL 17 or 18, `pg_config` on `PATH` and a C compiler (x86-64 tested). Packages for Arch (AUR), Debian, Ubuntu and RHEL-family systems: [docs/USAGE.md](docs/USAGE.md#install).
+
+```sh
+make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
+psql -d mydb -c 'CREATE EXTENSION pg_sift'          # as a superuser; after an upgrade: ALTER EXTENSION pg_sift UPDATE
+```
+
+## Search
+
+```sql
+CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
+INSERT INTO docs VALUES
+  (1, 'Wireless headphones', 'Battery was great and the support was friendly. The case was squeaky.', '2026-01-10', 1),
+  (2, 'Charger', 'Friendly support, no battery, but a sturdy case and clip.', '2026-02-11', 1),
+  (3, 'Resume tips', 'A good résumé is short. Cafés near the office help.', '2026-03-12', 2),
+  (4, 'Running', 'Runners were running; she runs every day.', '2026-04-13', 2),
+  (5, 'Squeaky headphones', 'The headphones were squeaky at night, squeak everywhere. Friendly support though.', '2026-05-14', 1);
+CREATE INDEX docs_body ON docs USING sift (body);
+
+SELECT id FROM docs WHERE body @@> 'battery friendly';                     -- all terms: 1, 2
+SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'case OR clip' ORDER BY sift.score(ctid) DESC LIMIT 10;   -- BM25 top-10
+SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3, from the index
+```
+
+Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `frendly~1` and `^3` boosts combine them: [docs/USAGE.md](docs/USAGE.md#queries).
+
+## Analytics
+
+```sql
+CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
+CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at);
+
+SELECT category, count(*), sum(amount) FROM orders
+WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;          -- Custom Scan (SiftAgg) on orders_col
+CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) USING sift_table;   -- the table itself in column format
+```
+
+`SET sift.enable_agg = off` gives the plan PostgreSQL has without sift. Types, options and limits: [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table).
+
+## Benchmarks
 
 <!-- bench:summary:begin (generated by `bench/bench readme` from docs/results; do not edit by hand) -->
 - **Fast:** ahead of ParadeDB pg_search on every query class we measured, 3.7x to 14x on 50,000 Wikipedia articles ([benchmarks](#benchmarks)).
 - **Small:** 31 MiB for those articles with phrase support, 1.6x smaller than pg_search; 13 MiB without word positions.
 <!-- bench:summary:end -->
-- **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes, crash and replica safe (generic WAL).
-- **Built for search pages:** top-k ranking, filters pushed into the ranked scan, facet counts, autocomplete with field boosts.
 
-## Install
+| 50,000 articles (queries/s) | sift | pg_search | Elasticsearch |
+|---|---:|---:|---:|
+| `@@> 'a b' ORDER BY score LIMIT 10` | 19,300 | 2,310 | 10,800 |
+| `@@> '"a b"' ORDER BY score LIMIT 10` | 17,300 | 1,920 | 11,700 |
+| `count(*) WHERE @@> '...'` | 22,700 | 1,740 | 25,000 |
+| index size | 31 MiB | 50 MiB | 70 MiB |
 
-Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
-development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
+| 10,000,000 orders (ms, lower is better) | PostgreSQL | sift_col | Elasticsearch | ClickHouse |
+|---|---:|---:|---:|---:|
+| `count(*) GROUP BY country` | 178 | 13.5 | 5.65 | 13.2 |
+| `sum(amount) GROUP BY month` | 1,901 | 51.1 | 225 | 64.3 |
+| `count(DISTINCT customer_id) GROUP BY month` | 7,630 | 600 | 484 | 151 |
+| `count(*) WHERE title @@> 'a b'` | 96.9 | 3.48 | 3.27 | 4.53 |
 
-```sh
-make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
-```
+`month` is `date_trunc('month', created_at)`. Elasticsearch and ClickHouse win some queries, and `sift_table` is slower than the heap on others; every table, the losses and the method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Reproduce: `bench/bench all` and `bench/bench store all` ([bench/README.md](bench/README.md)).
 
-- Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)).
-- Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_2.0.0-1_amd64.deb`.
-- RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v2.0.0/pg_sift_18-2.0.0-1.el9.x86_64.rpm`.
+## What is covered
 
-Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`):
+[docs/COVERAGE.md](docs/COVERAGE.md) lists 173 query shapes with a sample each (101 Yes, 18 Partly, 43 No, 11 Error), checked on a test cluster by `scripts/coverage.sh --check`.
 
-```sql
-CREATE EXTENSION pg_sift;
-```
+- Search: `@@> 'a b'`, `"a b"`, `batt*`, `sq?eaky`, `/re/`, `frendly~1`, `ORDER BY score LIMIT k`, `count(*)` and `AND` filters run on the `sift` index.
+- Analytics: `count`, `count(DISTINCT x)`, `sum`, `avg`, `min`, `max`, `stddev`, `corr` ... `WHERE ... GROUP BY ...`, with joins, run as `Custom Scan (SiftAgg)`.
+- Everything else keeps the normal plan (correct, only not accelerated), and a few cases raise an error that names the rewrite.
 
-## Quick start
+## SQLite
 
-```sql
-CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
-INSERT INTO docs VALUES
-  (1, 'Hotel review', 'Breakfast was great and the staff were friendly. The pool was noisy.', '2026-01-10', 1),
-  (2, 'Cafe', 'Friendly staff, no breakfast, but a quiet pool and spa.', '2026-02-11', 1),
-  (3, 'Resume tips', 'A good résumé is short. Cafés near the office help.', '2026-03-12', 2),
-  (4, 'Running', 'Runners were running; she runs every day.', '2026-04-13', 2),
-  (5, 'Noisy hotel', 'The hotel was noisy at night, noise everywhere. Friendly staff though.', '2026-05-14', 1);
-CREATE INDEX docs_body ON docs USING sift (body);
-
-SELECT id FROM docs WHERE body @@> 'breakfast friendly';                   -- all terms: 1, 2
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'pool OR spa'
-ORDER BY sift.score(ctid) DESC LIMIT 10;                                    -- BM25 top-10
-SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3, from the index
-```
-
-`text @@> text` matches a document against a query; without an index it runs per row with the same results, only slower.
-
-## Query language
-
-Words are `AND`ed; `OR`, `NOT` (upper case), parentheses, quotes and a few operators combine them:
-
-```sql
-SELECT id FROM docs WHERE body @@> 'breakfast NOT noisy';             -- exclusion: 2
-SELECT id FROM docs WHERE body @@> '"friendly staff"';                -- phrase: 2, 5
-SELECT id FROM docs WHERE body @@> '{pool spa noisy}';                -- any of a set of words
-SELECT id FROM docs WHERE body @@> 'brea* OR n?isy OR /no.*y/ OR frendly~1';  -- prefix, wildcard, regex, fuzzy
-SELECT id FROM docs WHERE body @@> '(pool OR spa) AND friendly^3';    -- grouping and boost
-```
-
-## Ranking and filters
-
-`ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips the blocks that cannot reach the top k. Other conditions of the
-query (`published >= ...`, joins) are applied inside that scan when the planner finds it cheaper, so a selective filter stays fast even
-with a very common search term:
-
-```sql
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01'
-ORDER BY sift.score(ctid) DESC LIMIT 10;
-```
-
-## Configuration
-
-Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
-
-| Index option | default | range | meaning |
-|---|---|---|---|
-| `k1` | 1.2 | 0-1000 | BM25 term-frequency saturation |
-| `b` | 0.75 | 0-1 | BM25 length normalization |
-| `analyzer` | `text` | `text`, `keyword` | tokenize words, or index the whole value as one term |
-| `stemmer` | none | `none`, `en` | Snowball English stemming |
-| `case_folding`, `accent_folding` | true | | fold case / accents |
-| `positions` | true | | store positions (needed for phrase queries) |
-| `prefix_index` | 0 | 0-15 | prefix lengths indexed for fast autocomplete |
-| `fields` | | | columns weighted as separate fields (see USAGE) |
-| `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
-| `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
-| `dead_rewrite_pct` | 50 | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
-| `vacuum_truncate` | true | | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
-| `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
-| `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
-
-| Setting (GUC) | default | meaning |
-|---|---|---|
-| `sift.async_maintenance` | on | background worker seals and merges segments (superuser); `off` leaves it to inserts and VACUUM |
-| `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
-| `sift.maintenance_naptime` | 2000 ms | `postgresql.conf` only, 200-60000: how long the worker stays after it starts to promote the seals of a bulk load; holds one worker slot per loaded index for that time |
-| `sift.maintenance_cost_delay` | 0 ms | 0-100, superuser: ms the worker sleeps after every 16 pages (128 kB) of merge I/O; 0 is full speed |
-| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
-| `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
-| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
-| `sift.max_expansions` | 512 | superuser: terms a wildcard, regex, fuzzy or prefix leaf scores individually |
-| `sift.prefix_cache_size` | 8MB | superuser: per-backend memory for the postings of broad leaves |
-| `sift.log_min_duration` | 1s | log promotions, merges and worker runs at least this long (`-1` none) |
-| `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel; results are bit-identical at every level |
-| `sift.enable_col` | on | allow column scans over `sift_col` indexes |
-| `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
-| `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
-| `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
-| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server setting |
-
-`sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
-
-| `sift_col` option | default | range | meaning |
-|---|---|---|---|
-| `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed; `ALTER INDEX ... SET` works |
-| `paths` | | | jsonb paths shredded into typed columns, e.g. `'metrics.* float4, items[]{sku text, qty int4}'`; needs `REINDEX` |
-| `compression` | `auto` | `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings | chunk compression of the column data; per column: `'auto; col=zstd:9'`; needs `REINDEX` |
-
-`sift_table` has no table options: PostgreSQL does not let a table access method add `WITH (...)` options, so its settings are the three GUCs above (`SET` per session, or per role or database with `ALTER ROLE/DATABASE ... SET`). It has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks.
-
-pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike; only publishing a `sift_table` under `wal_level = logical` does ([Replication](docs/USAGE.md#replication)). The limits of `sift_table` are listed in [docs/USAGE.md](docs/USAGE.md#limits).
-
-Merging is automatic: sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
-`merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
-down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
-it anyway). `mutable_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
-Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE.md).
-
-## More
-
-[docs/USAGE.md](docs/USAGE.md) covers the rest, each with examples:
-
-- analyzers (stemming, accent folding), phrases and the `positions` option, several columns;
-- autocomplete: prefix indexes, `fields` and field boosts;
-- filter pushdown, partitioned tables, keyword facets, parallel scans;
-- maintenance, settings and index options, replication, limits; sizing a large index: [docs/SIZING.md](docs/SIZING.md).
-
-Design and on-disk format: [DESIGN.md](DESIGN.md). A proof of concept of the same engine for MariaDB (UDFs over a queue
-table, no server patches): [mariadb/README.md](mariadb/README.md).
-
-## Benchmarks
-
-<!-- bench:readme:begin (generated by `bench/bench readme` from docs/results; do not edit by hand) -->
-Simple English Wikipedia (50,000 articles, 8 clients) and GeoNames cities15000 (34,166 places, autocomplete, 1 client): the slim tier of the suite, the default of `bench/bench all`, with the engines, query classes and workloads of the full tier on a smaller corpus and cells that stop at a 5% relative standard error (at most 1 s). Same data, queries and clients for every engine, one engine at a time on every CPU of the host, median of 2-3 interleaved rounds, measured 2026-10-17 on AMD Ryzen 7 9700X (16 threads), PostgreSQL 18.6. Cells are queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value.
-
-| articles (queries/s) | index | build | and | or | phrase | mixed | `count(*)` | filter | join |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **sift** (default) | 31 MiB | 0.8 s | 19,300 | 6,210 | **17,300 ± 2,100** | **10,600** | **22,700** | 12,100 | 5,320 |
-| sift `positions = off` | 13 MiB | 0.6 s | **22,800 ± 2,900** | 7,150 | 5,390 | 6,900 ± 880 | 5,580 | 9,380 | 3,160 |
-| pg_search 0.26.1 | 50 MiB | 0.7 s | 2,310 | 1,660 | 1,920 | 1,820 | 1,740 ± 220 | 1,870 | 388 |
-| pg_textsearch 1.5.1 | 40 MiB | 5.2 s | 148 ± 22 | **8,310** | 138 ± 33 | 99.1 ± 20 | 149 ± 32 | 131 ± 42 | 153 ± 40 |
-| rum 1.3.15 | 86 MiB | 3.5 s | 4,470 | 41.5 ± 6 | 137 | 66.7 ± 11 | 209 | 83.5 | 94.4 |
-| pgx-bm25 | 54 MiB | 3.1 s | 164 | 128 | 92.6 | 125 | 123 | 130 | 141 |
-| Elasticsearch | 70 MiB | 3.1 s | 10,800 ± 2,600 | 7,600 | 11,700 | 10,200 ± 2,500 | **25,000 ± 3,900** | **14,400** | **16,400** |
-
-| places (p50 ms, top 20) | p1 | p3 | w1 | a2 | a3 | x2 |
-|---|---:|---:|---:|---:|---:|---:|
-| **sift** | **0.206 ± 0.032** | **0.204 ± 0.027** | **0.193 ± 0.022** | 0.236 | 0.29 | **0.241** |
-| sift `positions = off` | **0.197** | 0.261 | **0.191** | **0.196** | **0.25 ± 0.029** | **0.251** |
-| pg_search 0.26.1 | 0.59 | 0.75 | 0.802 | 0.928 | 1.38 ± 0.23 | 1.15 ± 0.2 |
-| pg_textsearch 1.5.1 | 597 | 9.06 ± 1.4 | 3.26 | 3.27 | 3.47 | 3.28 ± 0.78 |
-| rum 1.3.15 | 23.2 | 2.53 | 0.319 ± 0.034 | 4.95 | 4.65 ± 0.89 | 3.03 ± 0.49 |
-| pgx-bm25 | 5 | 24.5 ± 6.6 | 1.67 | 3.65 ± 0.67 | 7.68 ± 0.92 | 3.84 ± 0.61 |
-| Elasticsearch | 0.397 ± 0.042 | 0.436 | 0.262 | 0.266 ± 0.028 | 0.282 ± 0.034 | 0.327 |
-
-- Autocomplete on 34,166 places: sift answers the top 20 in 0.19-0.29 ms in every query class, pg_search in 0.59-1.4 ms, Elasticsearch in 0.26-0.44 ms; sift is ahead of pg_search in 24 of 24 warm cells (2.1x to 8.1x).
-- `positions = off` shrinks the index to 13 MiB (4.0x smaller than pg_search's 50 MiB, the default sift index is 31 MiB); phrase runs at 5,390 queries/s and `count(*)` at 5,580 (pg_search: 1,920 and 1,740), against 17,300 and 22,700 with positions.
-- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search's does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).
-- The host was shared (load average 7-18 during the cells, median 16), so absolute numbers are noisy and ratios close to each other are not distinguishable; every cell with its standard error, the cold-cache tables and the method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-
-![Throughput by workload](docs/img/articles-throughput.svg)
-![Index size](docs/img/index-size.svg)
-![Autocomplete latency](docs/img/places-latency.svg)
-
-Reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); about 9 minutes of builds and measurements for the slim tier, about 13 minutes with the cold-cache tables of `--docs`); `bench/bench all --docs` rewrites this section from a new session. `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour); its last numbers are kept in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as history. `bench/bench regress --run` compares this checkout with an earlier release and exits non-zero on a regression.
-<!-- bench:readme:end -->
-
-## pg_sift for SQLite
-
-The same engine as a SQLite loadable extension (`sift`, Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: a
-virtual table with exact BM25 and block-max top-k, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets and facets, a
-bounded page cache, and an external-content mode that indexes a table you already have. Full documentation: [sqlite/README.md](sqlite/README.md).
-
-```sh
-V=2.0.0   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
-curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
-curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz     # sift.so, load it with .load ./sift
-```
+The search engine as a loadable extension (Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: exact BM25, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets, facets.
+89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
 
 ```sql
 .load ./sift
 CREATE VIRTUAL TABLE docs USING sift(title, body);
-INSERT INTO docs(rowid, title, body) VALUES (1, 'Hotel review', 'Breakfast was great and the staff were friendly. The pool was noisy.'),
-  (2, 'Cafe', 'Friendly staff, no breakfast, but a quiet pool and spa.'), (5, 'Noisy hotel', 'The hotel was noisy at night. Friendly staff though.');
-
-SELECT rowid FROM docs WHERE docs MATCH 'breakfast friendly';                          -- all terms: 1, 2
-SELECT rowid, rank FROM docs WHERE docs MATCH 'pool OR spa' ORDER BY rank LIMIT 10;    -- BM25 top-10, best first: 2, 1
-SELECT sift_count('docs', 'friendly');                                                 -- 3, from the index
-SELECT sift_highlight(docs, 1, '<b>', '</b>') FROM docs WHERE docs MATCH 'spa';        -- Friendly staff, ... pool and <b>spa</b>.
+SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT 10;   -- BM25 top-10, best first
 ```
 
-Against SQLite FTS5 (`porter unicode61 remove_diacritics 2`, `bm25` rank), 218,058 Simple English Wikipedia articles, one thread, warm cache, mean of
-2 runs of 200 queries per class, measured 2026-10-17 on a shared 16-thread AVX-512 host (load average 10 to 17, no CPU pinning, so absolute figures are noisy):
+## MariaDB
 
-| | sift | FTS5 | sift vs FTS5 |
-|---|---|---|---|
-| index, with positions / without | 130.8 MB / 46.9 MB | 125.1 MB / 35.0 MB | 1.05x / 1.34x larger |
-| build (218k docs) | 12.0 s | 12.4 s | equal |
-| AND / OR / phrase, top 10 by BM25 | 5746 / 1209 / 4019 qps | 64.6 / 5.0 / 400 qps | 89x / 242x / 10x |
-| count AND / OR / phrase | 15.3k / 10.2k / 2.6k qps | 795 / 54 / 769 qps | 19x / 189x / 3.4x |
-
-Method, the scalar-kernel column and the cache-size effect: [sqlite/README.md](sqlite/README.md#numbers-against-fts5) and
-[sqlite/DESIGN.md](sqlite/DESIGN.md#measurements). These are SQLite numbers; they come from a different system than the PostgreSQL
-[benchmarks](#benchmarks) above and are not comparable with them.
-
-## MariaDB: BM25 search as a UDF library
-
-`mariadb/` brings the pg_sift engine to MariaDB 10.5 to 13.x as `libsift_udf.so` plus two SQL files (release tarballs carry a tested
-library for 10.11, 11.4, 11.8, 12.1 and 13.0): ranked top-k, counts, phrases, prefix / wildcard / fuzzy / regular expression terms,
-boosts, fields, filters and facets, on InnoDB tables, with results (counts, top-10 order, scores) identical to pg_sift. It is the portable
-core (`src/portable.list`) compiled unmodified over a small host in `mariadb/host/`. No storage engine, no server patch: triggers feed a
-queue, the index lives in files next to the data directory, queries see writes at once. Full guide: [mariadb/README.md](mariadb/README.md).
-
-```sh
-nice make -C mariadb -j4 OUT=/tmp/sift-build               # needs the MariaDB server headers (libmariadbd-dev), no PostgreSQL
-cp /tmp/sift-build/libsift_udf.so "$(mariadb -NBe 'SELECT @@plugin_dir')"/     # or lib/<series>/ of a release tarball
-mariadb mydb < mariadb/sql/functions.sql && mariadb mydb < mariadb/sql/sift.sql
-```
+`libsift_udf.so` and two SQL files bring the engine to MariaDB 10.5 to 13.x with no storage engine and no server patch; results are identical to pg_sift.
+183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
 
 ```sql
 CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
-SELECT a.id, a.title, j.s
-FROM (SELECT sift_topk('news', 'solar OR "power plant"', 10) AS r) x,
-     JSON_TABLE(x.r, '$[*]' COLUMNS (n FOR ORDINALITY, id BIGINT PATH '$.id', s DOUBLE PATH '$.s')) j
-JOIN articles a ON a.id = j.id ORDER BY j.n;
-SELECT sift_count('news', 'power AND plant');          CALL sift_sync('news');   -- drain the queue into a segment
+SELECT sift_count('news', 'power AND plant');
 ```
 
-Against InnoDB FULLTEXT (218,058 Simple English Wikipedia articles, one client, warm cache, the host as it is, median of 200 queries per
-class, sift mean of six interleaved rounds, host load average 21 to 32 so absolute values are about 1.5x those of a quiet host):
+## Operations
 
-| class | sift | InnoDB FULLTEXT | InnoDB / sift |
-| --- | --- | --- | --- |
-| AND top-10 | 0.48 ms | 87 ms | 183x |
-| OR top-10 | 1.30 ms | 944 to 1,033 ms | 725x to 794x |
-| phrase top-10 | 0.42 ms | 214 ms | 504x |
-| count AND / OR | 0.11 / 0.27 ms | 113 / 1,506 ms | 1,025x / 5,608x |
-| build | 6.6 s rebuild, 10.9 s first drain | 58.9 s | 8.9x, 5.4x |
-| index size | 135.9 MB | 232.0 MB | 1.7x smaller |
+- Index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `mutable_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- A background worker (`sift.async_maintenance`) seals and merges segments, VACUUM clears dead rows; `sift.index_info`, `sift.segments` and `sift.verify` inspect an index.
+- Physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
+- Cost of one library (3.0): the BM25 index and the column engine share one library, about twice the size of 2.0's. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells stay above 1.02: the first query of a session (about 1.04 to 1.05), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03); every other cell is within 1.02. Connection pooling amortizes the session cost.
+- Settings, options, maintenance, replication and limits: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
 
-Writes are visible to the next query by default; that costs 70 to 180 us per top-10 (20 to 30 us per count), and an index created with
-`fresh=false, recheck=false` skips it. Moving the engine onto the shared core changed nothing measurable: interleaved before / after
-rounds put every cell within the noise (mean ratio 0.97), the index is the same size, and the 5,098-query comparison with pg_sift has 0
-differences. MariaDB, SQLite and PostgreSQL numbers are measured on different systems and are not comparable with one another.
+## Docs
+
+- [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
+- [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every benchmark table, the losses and the method; [docs/COVERAGE.md](docs/COVERAGE.md): what the engine accelerates.
+- [docs/COL.md](docs/COL.md): the column engine; [docs/COL-PLAN.md](docs/COL-PLAN.md) and [docs/AGG.md](docs/AGG.md): aggregate pushdown and its test suite.
+- [docs/COL-TAM.md](docs/COL-TAM.md): `sift_table`; [docs/COL-SHRED.md](docs/COL-SHRED.md): `jsonb` paths; [docs/COL-CODEC.md](docs/COL-CODEC.md): chunk compression.
+- [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
+- [DESIGN.md](DESIGN.md): design and on-disk format; [CHANGELOG.md](CHANGELOG.md): changes per release.
 
 ## Testing, security, license
 
-`make check` runs every suite in throwaway clusters, in parallel lanes (about 1.5 minutes on 8 cores, 2.5 minutes on the 4 cores of a CI runner;
-`make check-full` adds sanitizers, soak, fuzz and mutants).
-Report crashes, wrong results and index corruption privately as described in [SECURITY.md](SECURITY.md); to contribute see
-[CONTRIBUTING.md](CONTRIBUTING.md). Changes per release: [CHANGELOG.md](CHANGELOG.md). pg_sift is released under the
-[PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)). Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

@@ -23,7 +23,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
   objects inside it is a **group** leaf plus one **child** leaf per object field.
 - **Storage class** of a leaf (`SiftColStore`): `INT` (int2, int4, int8, bool, date, timestamp, timestamptz: an int64; `numeric(p, s)` with p <= 18 and s >= 0: the number times 10^s, `SiftColDef.scale` = s, exact like the sums PostgreSQL computes while they fit int64; NaN is NULL with the overflow flag, an unconstrained or wider numeric is refused at CREATE INDEX; constants are scaled with `sift_col_numeric_key`, values come back with `sift_col_key_numeric`), `F4`, `F8`
   (float4/float8) and `STR` (text, varchar, char(n), name: a per-segment dictionary code, or the string itself in a unit that has a long one, section 2.9; values up
-  to 1 GB). The other types are refused at CREATE INDEX in this version.
+  to 1 GB; char(n) keeps its blank padding and name its bytes up to the first NUL, so equal values have equal bytes; a `bpchar` without a length does not, and its leaf is flagged lossy: no predicate or group is pushed on it). The other types are refused at CREATE INDEX in this version.
 - **Key domain.** Every chunk holds integers: an `INT` value as it is, a float as its **order key** (the IEEE bits turned into a signed
   int64 that sorts like the float; the sign of zero is kept: -0 is the key just below +0, so a float comes back with its bits; every NaN is one NaN, sorted after +Inf as PostgreSQL does. PostgreSQL compares -0 and +0 equal, so a predicate constant of zero spans both keys (`sift_ctest_make`)), a `STR` value as a
   dictionary code. All filters are unsigned range tests on `value - base` (section 2.4), whatever the type.
@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 1)
+## 2. Format (format major 1, col minor 2)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -46,7 +46,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (0 now). A reader refuses a minor it does not know; older minors are
+- Every `SiftSegEntry` carries `format` = the col segment minor (2 now). A reader refuses a minor it does not know; older minors are
   read as written and rewritten by merge. `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -92,6 +92,8 @@ being row order), `u64 set[nsb][4]` (STR only: a 256-bit set of `code & 255`), `
 is outside int64 (exactly: not merely an intermediate overflow; `sum` is then 0), `SIFT_COLZ_NAN` a float chunk holds a NaN, `SIFT_COLZ_CONST`
 at least one value is not NULL and all non-NULL values are equal, `SIFT_COLZ_OVERFLOW` some value overflowed). Zone checks never read a unit.
 `sum`/`nnull`/`nvals` also answer `count(col)`, `sum(col)`, `min`, `max` of a unit that is entirely visible without reading its chunks.
+
+**PAGG** (minor 2): the pre-aggregates of every unit, written at the end of the ZONES section (header `COLP`): the exact int128 `sum` and `sum of squares` of the INT leaves, and per unit the cube of low-cardinality dimensions (`GROUP BY dim` -> count, per measure non-NULL count and sum). Computed wherever a unit is written (build, parallel build, promotion, merge), never updated; format, option `preagg`, the rule for using it and the `SiftAgg` consumption: docs/COL-PREAGG.md.
 
 **Unit record** (UNITS, at `SiftColSBRef.off`), 8-byte aligned fields:
 
@@ -257,8 +259,9 @@ builds: serial 2.6 s, 2 workers 0.9 s (2.9x), 4 workers 0.8 s (3.2x).
 LIVE pages as in sift (`SiftLiveHeaderData`, a dirty-SB bitmap then one bit per row in rank order, rank = `rank_base` of the unit + row
 ordinal). `ambulkdelete` walks every row of every immutable segment of the SBs, calls the callback with its TID and clears the bit of the
 dead ones (a unit's TIDs come from its row directory; chunks are not read), marks the SB dirty; mutable records get the deleted flag.
-A scan ANDs the liveness bits only in dirty SBs. Dead rows are removed from the segment by the next merge, which a segment with more
-than half of its rows dead triggers.
+A scan ANDs the liveness bits only in dirty SBs; whether an SB is dirty is read from the LIVE page every time (not from the directory
+snapshot or an earlier read), see section 3, "Order of reads". Dead rows are removed from the segment by the next merge, which a segment
+with more than half of its rows dead triggers.
 
 ### 2.8 Shared with the table AM: VAR leaves, the segment tag, the next vblock, delta batches
 
@@ -334,6 +337,28 @@ version, whatever the snapshot, and the only question is visibility:
    for its root TID, whose indexed values are still the visible version's).
 4. Rows are vetted **after** the value filters, so the heap is touched only for rows that matter (`sift_col_vet`).
 
+**Order of reads.** Step 2 trusts two facts, "live" and "all-visible", that VACUUM changes in a fixed order: `ambulkdelete` first (the
+index entries of the dead tuples go), the heap pass and the VM bit after. A scan can use the pair only in that order's reading direction:
+the all-visible mask first, the liveness of the unit after (`unit_clean` in `sift_col_scan.c`; `sift_cseg_dirty` reads the LIVE page each
+time). A mask that says "all-visible" was set after the index pass, so liveness read later shows the removals; liveness read first (a
+directory snapshot taken when the scan opened, a cached dirty bit) and the mask later counts rows of tuples that VACUUM removed after the
+scan's snapshot, on pages it made all-visible. Two more rules complete it:
+
+- **The segments must be current.** The pass flags the segments of the directory as it is; a merge replaces its inputs with an output that
+  has the liveness of its moment, so a scan holding the older directory copy reads inputs that no later pass flags. After the mask is read,
+  `segments_current` checks that every immutable segment of the scan's copy is still in the directory (one version read; a full comparison
+  only when the version moved); if one is gone, no page of the scan counts as all-visible and its rows are checked against the heap. A
+  pass and a merge exclude each other by the maintenance lock, so while the segments are current every pass that finished before the mask
+  was read ran on them.
+- **The mutable lane has no such order**, since its batch is a copy made when the source begins: no page of a lane batch counts as
+  all-visible, its rows are always checked against the heap (`ColUnit.lane`; measured with 400 000 rows in the lane: 41 to 50 ms for a
+  grouped sum either way, the batch decode dominates).
+
+Tests: `col_vacuum_scan` (statements run between the open and the reads of a scan: a VACUUM on stored units, on a dirty unit, a merge and
+then a VACUUM, the lane, DML with promote and merge), `scripts/colsoak.sh` (checkers in REPEATABLE READ against writers, VACUUM and
+maintenance; the CI job `soak-col`). In testing builds `sift.test_col_paranoid` checks the rows on all-visible pages against the heap too and
+logs the ones the snapshot does not see, `sift.test_col_scan_jitter_us` sleeps at the points of a scan where VACUUM can interleave.
+
 Corollaries: rolled-back inserts fail step 3 until VACUUM, whose `ambulkdelete` clears their bits before the heap page can become
 all-visible; a TID reused after VACUUM gets a new row record (I1: a TID is live in at most one segment, as in sift). Write-hot SB ranges
 make steps 3 expensive; the planner costs the share of pages that are not all-visible (`SiftColIndexStats.allvisible_frac`) and falls
@@ -359,16 +384,28 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 1 is the first a release reads: segments
-  of the pre-release minor 0 (leaf types as PostgreSQL OIDs) are not read.
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 2 is the first a release reads: segments
+  of the pre-release minors 0 (leaf types as PostgreSQL OIDs) and 1 (no pre-aggregates) are not read.
 
 ## 5. Planner-facing metadata
 
 `sift_col_index_meta(index)` returns the leaf list (id, kind, store, logical type tag and the type OID it yields to SQL, index attribute number, parent group, path text),
 the attribute expressions (`sift_col_att_expr`), whether the index is partial and whether it is valid for scans, and
-`SiftColIndexStats` (rows, segments, bytes, per-leaf distinct counts from the dictionaries, zone-based min/max per leaf, share of
-all-visible pages). `amcostestimate` prices the index out of every ordinary plan: the operator class has no operators, so
+`SiftColIndexStats` (rows, segments, bytes, share of all-visible pages). `amcostestimate` prices the index out of every ordinary plan: the operator class has no operators, so
 the planner never forms an index path; only the custom scan of the plan track uses it, through this API.
+
+### Statistics of a leaf
+
+`SiftSrcStats` (`sift_colsrc.h`, what `provider->stats` fills) carries, per leaf, `ndistinct`, `min`, `max` and, for a group leaf, `elems_per_row`; 0 means unknown. The `sift_col` provider derives them from what the immutable segments hold without reading a chunk: the unit zones (`nvals`, `nnull`, `min`, `max`, the integer sum) and the first word of each dictionary (its entry count). The counts are over the non-NULL values of the leaf (the elements, for a child), and include rows deleted since the build; rows still in a mutable segment are not counted until they are promoted.
+
+| Leaf | `ndistinct` | `min`, `max` | `elems_per_row` |
+|---|---|---|---|
+| text, no inline unit | the largest segment dictionary, capped by the non-NULL values: exact for one segment, a lower bound when segments hold different values (a merge makes it exact) | 0 | |
+| text with an inline unit, float | the non-NULL values (an upper bound) | 0 | |
+| integer, date, timestamp, bool, numeric (scaled) | the smaller of the non-NULL values and `max - min + 1`: exact for a dense column, an upper bound otherwise | the smallest and largest value of any unit (numeric: the scaled integer) | |
+| group | 0 | 0 | the sum of the counts over the rows, when no unit's sum overflowed |
+
+`sift_col_leaf_stats(index)` (`sift_col_pg.h`) is the per-leaf accumulation; it is memoized per backend (8 indexes) under a key made of the generations of the immutable segments, so a build, promotion, merge or VACUUM rewrite refreshes it on the next plan and nothing else reads the zones again. This is the statistics hook: it runs when the directory changes, not per query, and no ANALYZE is needed for an index. A `sift_table` table has no dictionary or zone per column in the layout the planner sees; its provider reports the `n_distinct` that ANALYZE of the table stored in `pg_statistic` (a negative value is a share of the rows) and 0 before the first ANALYZE. `sift._test_col_leaf_stats(rel)` returns the six numbers per leaf of an index or a table (test extension); `col_index_stats` is its test.
 
 ## 6. Shredding jsonb (col-json's `sift_shred.h`, through the adapter `sift_col_shred.c`)
 
@@ -422,6 +459,10 @@ Parallelism: a worker takes **SB-range morsels** `[m*K, (m+1)*K)` from a shared 
 directory copy; any consistent directory covers every live row, section 3 makes the answer independent of which one). `sift_col_heap_sbs`
 gives the number of SBs to split. EXPLAIN data: `sift_col_counters(src)` (units seen, pruned by zones, rows scanned, rows vetted by the
 heap, heap pages, bytes decoded, `simd` level name).
+
+`sift_col_read_lane(unit, col, lane, dst, isnull, &info)` is the form the aggregation scan uses: the whole leaf decoded straight into the caller's int32, int64, double or dictionary-code array (the codec's 32-bit domain for int4, date and codes, `sift_cc_decode_f8` for floats, which divides an ALP chunk into doubles without forming float keys), NULL slots 0, the NULL bitmap expanded to 0/1 flags (`bits_to_flags`). `dst` has room for `sift_col_lane_n()` values and `SIFT_COL_PAD` bytes more. `sift_col_read` stays for selections. Reads through one selection share its positions: the unit keeps the row positions of the last selection (keyed by its bits, so another selection replaces it) and, per group, the element positions and offsets of those rows. A unit's page table (the page of the p-th page of the unit) is filled when it is parsed.
+
+The source seam (`sift_colsrc.h`) adds `sift_colsrc_leaf_n` and `sift_colsrc_read_into(src, unit, leaf, &SiftSrcBuf, &vec)` for storage the caller owns (room for `leaf_n + SIFT_AGG_PAD` values, the pad zero on return); `sift_colsrc_read` is the same over the provider's own buffers, and a provider without `read_into` is served by a copy.
 
 Memory: vectors returned by `sift_col_read` live in the source's scan arena and stay valid until the next read of the same leaf or the
 next `sift_col_next`; a selection is allocated by the caller or the source arena (`sift_col_sel_alloc`).
@@ -575,6 +616,9 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (preagg2): `SiftSrcPreagg.aggs`; `sift_aggspec_preagg`, `sift_aggspec_pred_leaf` (sift_aggspec.h); SiftAgg answers the units that are exact from `unit_agg` / `unit_hist` (`sift_agg.c` `preagg_unit`), `sift.agg_preagg` (GUC, on), the cost of the exact share of the units and no workers from 98% exact (`sift_aggplan.c`), `Units From Pre-aggregates` in EXPLAIN ANALYZE. A provider that has `unit_exact`, `unit_agg`, `unit_hist` and `preagg` gets all of it; the others scan.
+- 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
+- 2026-10 (decode): `sift_col_read_lane`, `sift_col_lane_n`, `SiftColLane`, `SiftColLaneInfo`; `sift_colsrc_leaf_n`, `sift_colsrc_read_into`, `SiftSrcBuf` and the provider slots `leaf_n`, `read_into`; `SiftColKernels.f8_from_keys`, `bits_to_flags`; `SiftCcKernels.scale32`, `scale64`, `alp_f8`, `alp_f4`, `sift_cc_decode_u32`, `sift_cc_decode_f8`, `sift_cchunk_decode_u32`, `sift_cchunk_decode_f8`; **`SiftColKernels.expand_parents` writes up to `SIFT_COL_PAD` bytes past `end[np - 1]`**: allocate the room; `SiftCUnitView.page`; `SiftColLeafStats`, `sift_cseg_leaf_stats`, `sift_col_leaf_stats`; `SiftSrcStats.ndistinct`, `min`, `max` and `elems_per_row` are filled (section 5).
 - 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`
   (section 2.9); `SIFT_COL_MAX_STR` is gone (`SIFT_COL_MAX_VALUE`, `SIFT_COL_DICT_MAX_ENTRY`, `SIFT_COL_DICT_MAX_BYTES`); `sift_cunit_encode` takes `inl[]`
   after `dictmap`; `SiftCTest.pred`, `SIFT_CT_STRS`, `sift_ctest_make_strs`, `sift_cchunk_istr_codes`, `sift_cchunk_strs_length`, `sift_cbatch_str_inline`;

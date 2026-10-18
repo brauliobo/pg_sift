@@ -74,7 +74,12 @@ sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
 	Node	   *rhs;
 
 	if (IsA(clause, RestrictInfo))
+	{
+		/* a scan evaluates the match before the security quals of the rel (row-level security, security barrier views), as an index qual would */
+		if (!restriction_is_securely_promotable((RestrictInfo *) clause, index->rel))
+			return false;
 		clause = (Node *) ((RestrictInfo *) clause)->clause;
+	}
 	if (IsA(clause, OpExpr) && ((OpExpr *) clause)->opno == cat->match_op)
 		args = ((OpExpr *) clause)->args;
 	else if (IsA(clause, FuncExpr) && ((FuncExpr *) clause)->funcid == cat->match_func)
@@ -1007,6 +1012,11 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		rel->pathlist = list_make1(best);
 		rel->partial_pathlist = best_partial ? list_make1(best_partial) : NIL;
 	}
+	else if (only_best && rte->securityQuals != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
+				 errdetail("A ranked scan counts the rows that the policy hides in the scores.")));
 	else if (only_best && is_partition(rel) && has_match_clause(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

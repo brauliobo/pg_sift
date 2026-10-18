@@ -222,6 +222,7 @@ void
 sift_tbl_init(void)
 {
 	sift_tbl_define_gucs();
+	sift_tbl_slot_init();
 	sift_tbl_src_register();
 	if (!process_shared_preload_libraries_in_progress)
 		return;

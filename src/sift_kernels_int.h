@@ -11,9 +11,11 @@ extern const SiftKernels sift_kernels_avx2;
 extern const SiftKernels sift_kernels_avx2_nopdep;	/* microcoded PDEP/PEXT */
 extern const SiftKernels sift_kernels_avx512;
 
-extern int	sift_kern_expand_scalar(uint64 *out, const uint64 *base, const uint64 *rankbits, int nwords);
+extern int	sift_kern_expand_scalar(uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits,
+									uint32 pos, int nwords);
 extern void sift_kern_vm_scalar(uint64 *pagemask, const uint8 *vmbytes);
-extern int	sift_kern_expand_pdep(uint64 *out, const uint64 *base, const uint64 *rankbits, int nwords);
+extern int	sift_kern_expand_pdep(uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits,
+								  uint32 pos, int nwords);
 extern void sift_kern_vm_pext(uint64 *pagemask, const uint8 *vmbytes);
 
 /* Row k: for each set bit of k, its rank among the set bits; 0x80 (PSHUFB zero) if clear */

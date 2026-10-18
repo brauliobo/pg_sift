@@ -164,6 +164,33 @@ typedef struct SiftLiveHeaderData
 } SiftLiveHeaderData;
 
 /*
+ * Liveness of a segment of format 2 (SIFT_SEGFMT_LIVEROWS), the LIVE run: SiftLive2HeaderData, the dirty-SB bitmap (bit sb - sb_lo,
+ * padded to 8 bytes), u64 reg[nsb + 1] at reg_off (the byte, from rows_off, where the region of SB sb_lo + i starts; reg[nsb] is
+ * the end), the regions at rows_off, and at tbl_off u32 dead[nslots] (the postings of vacuumed docs of each term that has a
+ * slot: the terms that are not inline, in dictionary order). nsb and ndead lead the header as in SiftLiveHeaderData.
+ * A region (empty for an SB without docs) is a SiftLive2RegionData and np rows of w bytes: the live offsets of the SB's
+ * present pages in page order, bit off - 1 of a row, the layout of a term's group of bitmaps (sift_grp).
+ */
+typedef struct SiftLive2HeaderData
+{
+	uint32		nsb;			/* bits in the dirty-SB bitmap */
+	uint32		ndead;			/* docs vacuumed */
+	uint64		dead_dl;		/* their dl */
+	uint32		nslots;
+	uint32		tbl_ndead;		/* docs the table of dead postings counts: ndead, unless a crash cut a VACUUM short */
+	uint64		reg_off;
+	uint64		rows_off;
+	uint64		tbl_off;
+} SiftLive2HeaderData;
+
+typedef struct SiftLive2RegionData
+{
+	uint32		w;				/* bytes of a row, a multiple of 8 */
+	uint32		np;				/* present pages */
+	uint64		pages[SIFT_PAGEMASK_WORDS];
+} SiftLive2RegionData;
+
+/*
  * Mutable segment: one MUTHEADER page with SIFT_LANES lanes. A lane always has
  * a head page; tail is a hint (the true tail is found by following next) kept
  * with the page count when a page is added. The page after the last one has

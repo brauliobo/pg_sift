@@ -135,6 +135,34 @@ alp_keys_f4_scalar(int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div
 }
 
 static void
+alp_f8_scalar(double *dst, const uint32 *u, uint32 n, int64 dbase, double div)
+{
+	for (uint32 i = 0; i < n; i++)
+		dst[i] = (double) (int64) ((uint64) dbase + u[i]) / div;
+}
+
+static void
+alp_f4_scalar(double *dst, const uint32 *u, uint32 n, int64 dbase, float div)
+{
+	for (uint32 i = 0; i < n; i++)
+		dst[i] = (double) ((float) (int32) (uint32) ((uint64) dbase + u[i]) / div);
+}
+
+static void
+scale32_scalar(uint32 *a, uint32 n, uint32 base, uint32 mul)
+{
+	for (uint32 i = 0; i < n; i++)
+		a[i] = base + mul * a[i];
+}
+
+static void
+scale64_scalar(int64 *a, uint32 n, int64 base, int64 mul)
+{
+	for (uint32 i = 0; i < n; i++)
+		a[i] = (int64) ((uint64) base + (uint64) mul * (uint64) a[i]);
+}
+
+static void
 rle_expand32_scalar(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst)
 {
 	for (uint32 r = 0; r < nruns; r++)
@@ -151,6 +179,10 @@ const SiftCcKernels sift_cc_kernels_scalar = {
 	.alp_keys_f8 = alp_keys_f8_scalar,
 	.alp_keys_f4 = alp_keys_f4_scalar,
 	.rle_expand32 = rle_expand32_scalar,
+	.scale32 = scale32_scalar,
+	.scale64 = scale64_scalar,
+	.alp_f8 = alp_f8_scalar,
+	.alp_f4 = alp_f4_scalar,
 };
 
 const SiftCcKernels *

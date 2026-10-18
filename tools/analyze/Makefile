@@ -13,11 +13,11 @@ CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-f
 endif
 LIBS = $(PGLIB) -lpgcommon -lpgport -lm
 DATA ?= data
-# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgarena.h), so what it reports is a real malloc leak
+# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgshim.c), so what it reports is a real malloc leak
 
-harness: harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(SRC)/sift_analyze.h \
-		$(SRC)/sift_analyze_tables.h ../pgarena.h
-	$(CC) $(CFLAGS) -o $@ harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(LIBS)
+harness: harness.c ../pgshim.c ../pgshim.h $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(SRC)/sift_analyze.h \
+		$(SRC)/sift_analyze_tables.h
+	$(CC) $(CFLAGS) -o $@ harness.c ../pgshim.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(LIBS)
 
 check: harness
 	./harness stem $(DATA)/en_voc.txt $(DATA)/en_output.txt

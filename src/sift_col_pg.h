@@ -14,6 +14,8 @@
 
 /* The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map) */
 extern SiftColIndexMeta *sift_col_index_meta(Relation index);
+/* Per leaf (ncols entries, memoized per backend, valid until a call for a ninth index): what the zones and dictionaries of the immutable segments say, no chunk read */
+extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 
 /* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
 extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
@@ -58,11 +60,13 @@ typedef struct SiftColOptions
 	int			mutable_limit;	/* kB */
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string (docs/COL-CODEC.md 6), 0 = auto */
+	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
 } SiftColOptions;
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
 extern const char *sift_col_options_compression(Relation index);	/* "" when none (auto) */
+extern const char *sift_col_options_preagg(Relation index);	/* "" when none (default) */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */

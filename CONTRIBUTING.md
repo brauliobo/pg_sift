@@ -15,6 +15,12 @@ installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgt
 runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown, plain SQL aggregates with `sift.enable_agg` off and on, the results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
+The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB, at the price of about a quarter more time, as the two big WAL tests then run one after the other): a lane starts a job when
+the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci.sh`), and a job's data goes when it passes.
+`SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
+you add a heavy test and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
+crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
+settings, since the WAL is what they test.
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
@@ -51,7 +57,7 @@ release tag.
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
-  (`test/t/`) for a fix or a new behavior;
+  (`test/t/`) for a fix or a new behavior. For a bug, write the test first and see it fail before you fix it;
 - keep the build free of compiler warnings;
 - start the commit subject with the module or feature it changes: `query: parse fuzzy terms with a distance above 2`.
 

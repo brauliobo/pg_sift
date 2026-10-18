@@ -35,6 +35,7 @@ for w in ${*:-0 2 4}; do
   q -c "DROP INDEX IF EXISTS docs_fts"
   prewarm
   load=$(loadavg)
+  batch "build, $w workers"
   locked timed_build "$w"
   printf '%s\t%s\t%.1f\t%s\t%s\t%s\n' "$TIER$([[ $COPIES == 1 ]] || echo "x$COPIES")" "$w" "$(cat "$OUT/build-workers.ms")e-3" \
     "$(q -c "SELECT round(pg_relation_size('docs_fts') / 1e6)")" "$(q -c "SELECT count(*) FROM sift.segments('docs_fts')")" \

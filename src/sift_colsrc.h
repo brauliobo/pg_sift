@@ -115,6 +115,18 @@ typedef struct SiftSrcVec
 	const uint64 *ovf;
 } SiftSrcVec;
 
+/*
+ * Storage the caller owns for one leaf read (sift_colsrc_read_into): the leaf is decoded into it, with no copy between the decoder and the
+ * caller's vector. Both have room for sift_colsrc_leaf_n() + SIFT_AGG_PAD values (data: of the leaf's vtype, SIFT_SIMD_ALIGN aligned;
+ * isnull: bytes); the SIFT_AGG_PAD values after the last one are zero when the read returns.
+ */
+typedef struct SiftSrcBuf
+{
+	void	   *data;
+	uint8	   *isnull;
+	uint64	   *ovf;			/* optional, bits for the values of the leaf the index cannot hold (a numeric NaN): NULL, such a value is an error */
+} SiftSrcBuf;
+
 typedef struct SiftSrcUnit
 {
 	uint32		sb;
@@ -171,6 +183,64 @@ typedef struct SiftSrcZone
 	uint32		nnull;
 	bool		inexact;		/* some value is outside what min/max describe (overflow): no bound */
 } SiftSrcZone;
+/*
+ * Pre-aggregates (docs/COL-PREAGG.md), optional provider callbacks: what a unit knows about its rows without reading a chunk. A unit may answer
+ * only when it is fully visible and clean (unit_exact: no dead row, every page it has rows on all-visible to the snapshot; a unit of the write
+ * buffer never is); the consumer applies its predicate on top (a unit whose zone lies inside the predicate answers whole, any other is scanned).
+ * unit_agg / unit_hist return false when the unit cannot answer (not exact, an overflow value, no histogram for that dim in that unit).
+ * Memory of a result is valid until the next unit_hist call of the source.
+ */
+typedef __int128 SiftSrcI128 __attribute__((aligned(8)));
+
+#define SIFT_SRC_MAX_DIMS		16
+#define SIFT_SRC_MAX_MEAS		8
+
+typedef struct SiftSrcUnitAgg
+{
+	int64		nvals;			/* rows of the unit (elements, for a child leaf) */
+	int64		nnull;
+	bool		has_minmax;		/* some value is not NULL and the leaf is not text: min and max are set */
+	int64		min;			/* SCV_I32 / SCV_I64 leaves: the values as stored (numeric: times 10^scale) */
+	int64		max;
+	double		min_f;			/* SCV_F64 leaves (NaN is the largest value, as in PostgreSQL's order) */
+	double		max_f;
+	bool		has_sums;		/* integer leaf: sum and sumsq are exact */
+	bool		has_sumsq;		/* sumsq did not overflow int128 */
+	SiftSrcI128 sum;
+	SiftSrcI128 sumsq;
+	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */
+	bool		has_nan;
+	bool		is_const;		/* every non-NULL value equal */
+} SiftSrcUnitAgg;
+
+/* GROUP BY dim over one unit: count of rows per group and, per stored measure, the non-NULL count and the sum. The NULL group, when there is one, is last */
+typedef struct SiftSrcHist
+{
+	uint32		ngroups;
+	bool		has_null;
+	const int64 *key;			/* group value as stored; SCV_CODE dims: a code of dict (the executor translates by value) */
+	const SiftSrcDict *dict;	/* SCV_CODE dims */
+	const uint32 *count;
+	int			nmeas;
+	int			meas[SIFT_SRC_MAX_MEAS];	/* leaf ids */
+	const uint32 *nn[SIFT_SRC_MAX_MEAS];
+	const SiftSrcI128 *sum[SIFT_SRC_MAX_MEAS];	/* integer measure (numeric: times 10^scale), else NULL */
+	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
+} SiftSrcHist;
+
+/* Planner: the histograms the index writes (a unit may still lack one); ndims 0 when none. aggs: units have unit_agg sums (always, even with ndims 0) */
+typedef struct SiftSrcPreagg
+{
+	bool		aggs;
+	int			ndims;
+	struct
+	{
+		int			leaf;
+		int			nmeas;
+		int			meas[SIFT_SRC_MAX_MEAS];
+	}			dim[SIFT_SRC_MAX_DIMS];
+} SiftSrcPreagg;
+
 /*
  * A conjunct the source may evaluate on its stored (encoded) values instead of the executor on decoded ones: `leaf op constant` on an
  * integer-valued scalar leaf of rows (int, date, timestamp, numeric as its scaled integer), with the SQL meaning (a NULL value never
@@ -243,12 +313,24 @@ typedef struct SiftSrcProvider
 	void		(*prune_str) (void *impl, const SiftSrcStrTest *t, int nt);
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
 	/*
+	 * Optional (NULL: sift_colsrc_read_into reads with `read` and copies). leaf_n: the values a read of the leaf yields (rows, or for a child
+	 * the elements of the whole unit; an upper bound for a unit restricted to a match set), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
+	 * is a wrapper of in a provider that has it.
+	 */
+	int64		(*leaf_n) (void *impl, const SiftSrcUnit *unit, int leaf);
+	void		(*read_into) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
+	/*
 	 * Optional (NULL: the source cannot be restricted to a match set, sift_colsrc_can_select says so to the planner). select, called before
 	 * `begin`, restricts the units `begin` starts to the rows whose key (blk << 16 | off) the filter has (NULL: all rows again): a unit
 	 * without such a row is not returned (it counts in units_pruned), and in the others `nrow`, `read`, `live` and `vet` are about the kept
 	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/sift_aggsel.h).
 	 */
 	void		(*select) (void *impl, const SiftFilter *keep);
+	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */
+	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
+	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
+	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
+	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
 	/*
 	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows
 	 * `rows` (ascending, in the numbering `read` and `live` use) of the unit the source is at. zone: the zone of an integer-typed leaf
@@ -261,7 +343,7 @@ typedef struct SiftSrcProvider
 	/* optional: the int filters above. set_filters (before begin) returns the bits of those it will apply, filter narrows the rows of a unit by them */
 	uint64		(*set_filters) (void *impl, const SiftSrcFilter *f, int nf);
 	bool		(*filter) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
-	/* optional: read only the rows of bits; the other rows of the vector are zero */
+	/* optional: read only the rows of bits (the other rows of the vector are zero; a source restricted to a match set may read the whole leaf) */
 	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 } SiftSrcProvider;
 
@@ -327,6 +409,27 @@ extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, i
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
 extern void sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep);
 
+/* Pre-aggregates of the unit just returned by sift_colsrc_next: false without a provider callback or when the unit cannot answer */
+extern void sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa);
+
+static inline bool
+sift_colsrc_unit_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->unit_exact != NULL && src->prov->unit_exact(src->impl, unit);
+}
+
+static inline bool
+sift_colsrc_unit_agg(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	return src->prov->unit_agg != NULL && src->prov->unit_agg(src->impl, unit, leaf, agg);
+}
+
+static inline bool
+sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, h);
+}
+
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */
 extern void sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
 extern bool sift_colsrc_next(SiftSrcSource *src, SiftSrcUnit *unit);
@@ -337,6 +440,14 @@ extern bool sift_colsrc_next(SiftSrcSource *src, SiftSrcUnit *unit);
  * elements of the unit.
  */
 extern void sift_colsrc_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
+
+/*
+ * The same into storage of the caller (sift_colsrc_leaf_n values and SIFT_AGG_PAD more, see SiftSrcBuf): vec->data and vec->isnull point into
+ * buf, valid as long as the caller keeps it. For a caller that keeps its vectors across units or wants them next to each other, and the one
+ * way to read without a copy by the source: sift_colsrc_read is this over the source's own buffers.
+ */
+extern int64 sift_colsrc_leaf_n(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
+extern void sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
 
 /*
  * Row bitmaps of the unit (nrow bits in ceil(nrow / 64) words, zero past nrow). live: the rows that exist (an index entry of a

@@ -173,23 +173,23 @@ plan_cost_without_unread_ctes(PlannedStmt *stmt)
 }
 
 static PlannedStmt *
-plan_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+plan_cte(SIFT_PLANNER_PARAMS)
 {
 	Query	   *inline_parse;
 	PlannedStmt *plain,
 			   *inlined;
 
 	if (!sift_enable_agg || !has_shared_cte(parse))
-		return prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
-			standard_planner(parse, query_string, cursorOptions, boundParams);
+		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
+			standard_planner(SIFT_PLANNER_ARGS(parse));
 	inline_parse = copyObject(parse);
 	foreach_node(CommonTableExpr, cte, inline_parse->cteList)
 		if (shared_cte_over_column_index(cte))
 			cte->ctematerialized = CTEMaterializeNever;
-	plain = prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
-		standard_planner(parse, query_string, cursorOptions, boundParams);
-	inlined = prev_planner_hook ? prev_planner_hook(inline_parse, query_string, cursorOptions, boundParams) :
-		standard_planner(inline_parse, query_string, cursorOptions, boundParams);
+	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(parse));
+	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
 	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plan_cost_without_unread_ctes(plain) &&
 		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
@@ -202,9 +202,9 @@ plan_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInf
  * above it handle its groups. Compiling their projections takes 3 to 5 ms of a 15 to 40 ms query.
  */
 static PlannedStmt *
-sift_planner(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+sift_planner(SIFT_PLANNER_PARAMS)
 {
-	PlannedStmt *stmt = plan_cte(parse, query_string, cursorOptions, boundParams);
+	PlannedStmt *stmt = plan_cte(SIFT_PLANNER_ARGS(parse));
 
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 		stmt->jitFlags = PGJIT_NONE;

@@ -18,7 +18,7 @@
 #include "sift_col_kern.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	1			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0) */
+#define SIFT_COL_FORMAT_MINOR	2			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0 or 1): minor 2 adds the pre-aggregates (docs/COL-PREAGG.md) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -57,7 +57,7 @@ typedef enum SiftColStore
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
 
-#define SIFT_COLD_LOSSY		0x0001	/* shredded path whose values may not fit the declared type: predicates on it must not be pushed down */
+#define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
  * Logical type of a leaf, part of the stored schema and of its hash. It is a tag of the format, not of any host: a host maps its own types
@@ -186,6 +186,23 @@ typedef struct SiftColIndexStats
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */
 	BlockNumber heap_pages;
 } SiftColIndexStats;
+
+/*
+ * What the immutable segments know about a leaf without reading a chunk: the unit zones (counts, min and max, the integer sum) and the
+ * size of the segment dictionary (docs/COL.md "Statistics of a leaf"). All counts include rows that were deleted since the build.
+ */
+typedef struct SiftColLeafStats
+{
+	double		nvals;			/* values the leaf holds: rows, or elements for a child */
+	double		nnull;
+	double		sum;			/* total of a GROUP leaf's counts (its elements), when has_sum */
+	int64		min;			/* INT leaves, when has_range: the smallest and largest value of any unit */
+	int64		max;
+	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
+	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
+	bool		has_sum;
+	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
+} SiftColLeafStats;
 
 typedef struct SiftColIndexMeta
 {
@@ -326,7 +343,6 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_mutable;		/* rows of a mutable segment (chunks encoded in memory) */
-	bool		clean;			/* no dead rows (the SB is not dirty) */
 	void	   *priv;
 } SiftColUnit;
 
@@ -416,6 +432,34 @@ extern void sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *se
 /* The same for the rows idx[0..m) (ascending ordinals) a caller keeps: it saves the positions of the selection, which every leaf read would compute again */
 extern void sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec);
 extern void sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel, SiftColVec *vec);
+
+/*
+ * The whole leaf straight into the consumer's lane, with no intermediate int64 vector: I32 the int4/date/bool keys (and a group's element
+ * counts per row), I64 the int8/timestamp/numeric keys, F64 the doubles of a float4 or float8 leaf, CODE the dictionary codes (info->dict is
+ * their dictionary). The values are those of sift_col_read with NULL slots 0. dst has room for sift_col_lane_n() values of the lane's size
+ * and SIFT_COL_PAD bytes more (decoders store whole vectors; what they write past the values is undefined); isnull, when given, receives n
+ * 0/1 flags (and the same room), info->nulls says whether any is set (NULL isnull: not asked, the flags are not written). A leaf whose
+ * chunk is absent reads as all NULL. info->ovf: some value overflowed the index, the lane holds filler there.
+ */
+typedef enum SiftColLane
+{
+	SIFT_COLL_I32,
+	SIFT_COLL_I64,
+	SIFT_COLL_F64,
+	SIFT_COLL_CODE
+} SiftColLane;
+
+typedef struct SiftColLaneInfo
+{
+	uint32		n;
+	bool		nulls;
+	bool		ovf;
+	SiftColDict	dict;			/* CODE */
+} SiftColLaneInfo;
+
+/* Values of leaf col in the unit: its rows, or for a child leaf the elements of the whole unit */
+extern uint32 sift_col_lane_n(const SiftColUnit *unit, int col);
+extern void sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info);
 
 /* Per element of the unit's group: the ordinal of its row (nelems entries) and the element count of every row (nrows entries, NULL array = 0) */
 extern uint32 sift_col_group_elems(const SiftColUnit *unit, int group);

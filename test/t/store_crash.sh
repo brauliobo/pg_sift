@@ -11,7 +11,8 @@
 ITERS=$(knob SIFT_CRASH_ITERS 100 10)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
 plan $((ITERS + 1))
-node_init crash 1 "checkpoint_timeout = 30s
+node_init crash 1 "$WAL_CONF
+checkpoint_timeout = 30s
 max_wal_size = 256MB"
 node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
@@ -21,7 +22,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE UNLOGGED TABLE u (v int)" "INSERT INTO u VALUES (70000)" \
 	"CREATE INDEX u_idx ON u USING sift_store_test (v)" >/dev/null || bail "setup failed"
 ok "setup"
-read -ra FILES <<<"$(churn crash t_idx 2000000 \
+read -ra FILES <<<"$(churn crash t_idx "$CHURN_BYTES" \
 	"reindex:2:REINDEX INDEX b_idx;" \
 	"unlogged:3:SELECT sift._test_seg_write('u_idx', 50000, 7);")"
 
@@ -39,15 +40,7 @@ VERIFY="SELECT sift._test_check('t_idx'),
 
 total_orphans=0
 for i in $(seq "$ITERS"); do
-	pgbench_bg crash 8 600 "${FILES[@]}"
-	sleep "$((RANDOM % 3)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
-	crash crash
-	wait "$PGBENCH_PID"
-	if ! node_start crash; then
-		not_ok "iteration $i: restart"
-		diag "$(tail -20 "$(dir crash)/postgres.log")"
-		break
-	fi
+	crash_cycle crash "iteration $i" 3 8 "${FILES[@]}" || break
 	out=$(sql crash "$VERIFY" 2>&1)
 	IFS='|' read -r orphans tsegs bsegs borphans unlogged swept after mb <<<"$out"
 	used=$(node_mb crash)

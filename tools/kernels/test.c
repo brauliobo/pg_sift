@@ -36,13 +36,13 @@ static long iters;
 
 
 static float4
-pick_f(Rng *r, const float4 *v, int n, float4 lo, float4 hi)
+pick_f(SiftRng *r, const float4 *v, int n, float4 lo, float4 hi)
 {
-	return rng_below(r, 2) ? v[rng_below(r, n)] : lo + (float4) rng_unit(r) * (hi - lo);
+	return sift_rng_below(r, 2) ? v[sift_rng_below(r, n)] : lo + (float4) sift_rng_unit(r) * (hi - lo);
 }
 
 static void
-rand_bm25(Rng *r, SiftBm25 *bm)
+rand_bm25(SiftRng *r, SiftBm25 *bm)
 {
 	static const float4 k1s[] = {0, 1e-6f, 0.5f, 1.2f, 2.0f, 1000.0f};
 	static const float4 bs[] = {0, 1e-6f, 0.25f, 0.75f, 1.0f};
@@ -53,34 +53,34 @@ rand_bm25(Rng *r, SiftBm25 *bm)
 }
 
 static uint16
-rand_dl(Rng *r)
+rand_dl(SiftRng *r)
 {
-	switch (rng_below(r, 4))
+	switch (sift_rng_below(r, 4))
 	{
 		case 0:
-			return (uint16) rng_next(r);
+			return (uint16) sift_rng_next(r);
 		case 1:
-			return (uint16[]) {0, 1, 65535, 65534}[rng_below(r, 4)];
+			return (uint16[]) {0, 1, 65535, 65534}[sift_rng_below(r, 4)];
 		default:
-			return rng_below(r, 300);
+			return sift_rng_below(r, 300);
 	}
 }
 
 static uint8
-rand_tf(Rng *r, int p1)
+rand_tf(SiftRng *r, int p1)
 {
-	uint32		x = rng_below(r, 100);
+	uint32		x = sift_rng_below(r, 100);
 
 	if (x < p1)
 		return 1;
 	if (x < 96)
-		return 2 + rng_below(r, 15);
-	return x < 98 ? 17 + rng_below(r, 239) : (uint8[]) {16, 17, 18, 255}[rng_below(r, 4)];
+		return 2 + sift_rng_below(r, 15);
+	return x < 98 ? 17 + sift_rng_below(r, 239) : (uint8[]) {16, 17, 18, 255}[sift_rng_below(r, 4)];
 }
 
 /* Random mask; maxoff[p] = row length needed for page p */
 static int
-rand_mask(Rng *r, uint64 *mask, int npages, int *maxoff)
+rand_mask(SiftRng *r, uint64 *mask, int npages, int *maxoff)
 {
 	static const int offs[] = {1, 2, 7, 8, 9, 15, 16, 17, 30, 63, 64, 65, 128, 291, 511, 512};
 	static const double dens[] = {0, 0.02, 0.1, 0.25, 0.5, 0.9, 1};
@@ -89,22 +89,22 @@ rand_mask(Rng *r, uint64 *mask, int npages, int *maxoff)
 	memset(mask, 0, SIFT_KERN_WORDS(npages) * 8);
 	for (int p = 0; p < npages; p++)
 	{
-		double		d = dens[rng_below(r, lengthof(dens))];
+		double		d = dens[sift_rng_below(r, lengthof(dens))];
 
-		maxoff[p] = rng_below(r, 3) ? offs[rng_below(r, lengthof(offs))] : 1 + rng_below(r, 512);
+		maxoff[p] = sift_rng_below(r, 3) ? offs[sift_rng_below(r, lengthof(offs))] : 1 + sift_rng_below(r, 512);
 		for (int o = 0; o < maxoff[p]; o++)
-			if (rng_unit(r) < d)
+			if (sift_rng_unit(r) < d)
 				mask[p * 8 + o / 64] |= UINT64CONST(1) << (o % 64), n++;
 	}
 	return n;
 }
 
 static void
-fill_garbage(Rng *r, void *p, size_t n)
+fill_garbage(SiftRng *r, void *p, size_t n)
 {
 	for (size_t i = 0; i < n; i += 8)
 	{
-		uint64		x = rng_next(r);
+		uint64		x = sift_rng_next(r);
 
 		memcpy((char *) p + i, &x, Min(8, n - i));
 	}
@@ -112,9 +112,9 @@ fill_garbage(Rng *r, void *p, size_t n)
 
 /* knorm, bm25_accum, max_merge, select_gt on one random page run */
 static void
-check_mask_kernels(Rng *r)
+check_mask_kernels(SiftRng *r)
 {
-	int			npages = 1 + rng_below(r, MAXPAGES),
+	int			npages = 1 + sift_rng_below(r, MAXPAGES),
 				nslots = npages * SIFT_KERN_SLOTS,
 				maxoff[MAXPAGES],
 				pop,
@@ -128,14 +128,14 @@ check_mask_kernels(Rng *r)
 			   *out = kt_alloc(nslots * 4),
 			   *sc0 = kt_alloc(nslots * 4),
 			   *other = kt_alloc(nslots * 4),
-				w = rng_below(r, 8) ? (float4) (rng_unit(r) * 1e4) : 0,
+				w = sift_rng_below(r, 8) ? (float4) (sift_rng_unit(r) * 1e4) : 0,
 				theta,
 			   *vref = kt_alloc(nslots * 4),
 			   *vout = kt_alloc(nslots * 4);
 	uint16	   *sref = kt_alloc(nslots * 2),
 			   *sout = kt_alloc(nslots * 2);
 	uint8	   *tf;
-	bool		tf1 = rng_below(r, 8) == 0,
+	bool		tf1 = sift_rng_below(r, 8) == 0,
 				valid = true;
 
 	pop = rand_mask(r, mask, npages, maxoff);
@@ -155,8 +155,8 @@ check_mask_kernels(Rng *r)
 	for (int s = 0; s < nslots; s++)
 		if (mask[s / 64] >> (s % 64) & 1)
 		{
-			sc0[s] = rng_below(r, 4) ? (float4) (rng_unit(r) * 1e5) : 0;
-			other[s] = rng_below(r, 4) ? (float4) (rng_unit(r) * 1e5) : sc0[s];
+			sc0[s] = sift_rng_below(r, 4) ? (float4) (sift_rng_unit(r) * 1e5) : 0;
+			other[s] = sift_rng_below(r, 4) ? (float4) (sift_rng_unit(r) * 1e5) : sc0[s];
 		}
 
 	/* knorm */
@@ -194,10 +194,10 @@ check_mask_kernels(Rng *r)
 					cref[MAXPAGES * 8],
 					cout[MAXPAGES * 8];
 		int			nref;
-		float4		thr = (float4[]) {-INFINITY, INFINITY, 0, 5e4f, sc0[rng_below(r, nslots)]}[rng_below(r, 5)];
+		float4		thr = (float4[]) {-INFINITY, INFINITY, 0, 5e4f, sc0[sift_rng_below(r, nslots)]}[sift_rng_below(r, 5)];
 
 		for (int i = 0; i < npages * 8; i++)
-			cand[i] = rng_below(r, 4) ? (rng_next(r) & (mask[i] | rng_next(r))) : mask[i];
+			cand[i] = sift_rng_below(r, 4) ? (sift_rng_next(r) & (mask[i] | sift_rng_next(r))) : mask[i];
 		memcpy(ref, sc0, nslots * 4);
 		if (sift_kernels_scalar.bm25_sel(ref, mask, cand, npages, tf1 ? NULL : tf, kn, w) != pop)
 			FAIL("bm25_sel scalar count\n");
@@ -233,17 +233,17 @@ check_mask_kernels(Rng *r)
 	}
 
 	/* select_gt, often with theta equal to a stored score */
-	if (pop && rng_below(r, 2))
+	if (pop && sift_rng_below(r, 2))
 	{
 		int			s;
 
 		do
-			s = rng_below(r, nslots);
+			s = sift_rng_below(r, nslots);
 		while (!(mask[s / 64] >> (s % 64) & 1));
 		theta = sc0[s];
 	}
 	else
-		theta = (float4[]) {-INFINITY, INFINITY, 0, 5e4f}[rng_below(r, 4)];
+		theta = (float4[]) {-INFINITY, INFINITY, 0, 5e4f}[sift_rng_below(r, 4)];
 	ref_n = sift_kernels_scalar.select_gt(sref, vref, sc0, mask, npages, theta);
 	for (int t = 1; t < ntabs; t++)
 	{
@@ -264,19 +264,19 @@ check_mask_kernels(Rng *r)
 
 /* Encodes random tf at random stream positions, decodes in random pieces */
 static void
-check_tf(Rng *r)
+check_tf(SiftRng *r)
 {
-	uint32		count = rng_below(r, 8) ? rng_below(r, 2000) : rng_below(r, 70000),
+	uint32		count = sift_rng_below(r, 8) ? sift_rng_below(r, 2000) : sift_rng_below(r, 70000),
 				m = 0,
 				e = 0;
-	SiftTfPos	p0 = {rng_below(r, 128), rng_below(r, 64), rng_below(r, 32)},
+	SiftTfPos	p0 = {sift_rng_below(r, 128), sift_rng_below(r, 64), sift_rng_below(r, 32)},
 				pe;
 	uint8	   *tf = malloc(count + 1),
 			   *out = malloc(count + SIFT_KERN_PAD),
 			   *blob;
 	size_t		l1n,
 				nibn;
-	int			p1 = (int[]) {0, 50, 75, 95, 100}[rng_below(r, 5)];
+	int			p1 = (int[]) {0, 50, 75, 95, 100}[sift_rng_below(r, 5)];
 
 	for (uint32 i = 0; i < count; i++)
 	{
@@ -297,7 +297,7 @@ check_tf(Rng *r)
 
 		for (uint32 done = 0; done < count;)
 		{
-			uint32		piece = rng_below(r, 3) ? count - done : rng_below(r, count - done + 1);
+			uint32		piece = sift_rng_below(r, 3) ? count - done : sift_rng_below(r, count - done + 1);
 
 			tabs[t].k->tf_decode(out + done, blob, blob + l1n, blob + l1n + nibn, &pos, piece);
 			done += piece;
@@ -310,14 +310,26 @@ check_tf(Rng *r)
 	free(tf), free(out), free(blob);
 }
 
-static void
-check_misc(Rng *r)
+static int
+popcount_words(const uint64 *w, int n)
 {
-	int			nwords = 1 + rng_below(r, 16),
+	int			c = 0;
+
+	for (int i = 0; i < n; i++)
+		c += __builtin_popcountll(w[i]);
+	return c;
+}
+
+static void
+check_misc(SiftRng *r)
+{
+	int			nwords = 1 + sift_rng_below(r, 16),
 				pop = 0,
-				n = rng_below(r, 300),
-				off = rng_below(r, 4);
+				n = sift_rng_below(r, 300),
+				off = sift_rng_below(r, 4),
+				bit0 = sift_rng_below(r, 130);
 	uint64		base[16],
+				emask[16],
 				outr[16],
 				outs[16],
 				pm[4],
@@ -328,27 +340,29 @@ check_misc(Rng *r)
 	float4		ubr[304],
 				ubs[304],
 				ub0[304],
-				w = (float4) rng_unit(r) * 100;
-	double		d = rng_unit(r);
+				w = (float4) sift_rng_unit(r) * 100;
+	double		d = sift_rng_unit(r);
 
 	for (int i = 0; i < nwords; i++)
-		pop += __builtin_popcountll(base[i] = rng_below(r, 4) ? rng_next(r) & rng_next(r) : rng_next(r));
-	rb = malloc(((pop + 63) / 64) * 8 + 8);
-	fill_garbage(r, rb, ((pop + 63) / 64) * 8);
-	if (sift_kernels_scalar.expand(outr, base, rb, nwords) != pop)
+		pop += __builtin_popcountll(base[i] = sift_rng_below(r, 4) ? sift_rng_next(r) & sift_rng_next(r) : sift_rng_next(r));
+	for (int i = 0; i < nwords; i++)
+		emask[i] = sift_rng_below(r, 3) ? sift_rng_next(r) : ~UINT64CONST(0);
+	rb = malloc(((bit0 + pop + 63) / 64) * 8 + 8);
+	fill_garbage(r, rb, ((bit0 + pop + 63) / 64) * 8);
+	if (sift_kernels_scalar.expand(outr, emask, base, rb, bit0, nwords) != popcount_words(outr, nwords))
 		FAIL("expand count\n");
-	for (int i = 0, pos = 0; i < nwords; pos += __builtin_popcountll(base[i]), i++)
+	for (int i = 0, pos = bit0; i < nwords; pos += __builtin_popcountll(base[i]), i++)
 		for (int b = 0, j = 0; b < 64; b++)
 			if (base[i] >> b & 1)
 			{
-				if ((outr[i] >> b & 1) != (rb[(pos + j) / 64] >> ((pos + j) % 64) & 1))
+				if ((outr[i] >> b & 1) != ((rb[(pos + j) / 64] >> ((pos + j) % 64) & 1) & (emask[i] >> b & 1)))
 					FAIL("expand scalar bit\n");
 				j++;
 			}
 			else if (outr[i] >> b & 1)
 				FAIL("expand outside base\n");
 	for (int t = 1; t < ntabs; t++)
-		if (tabs[t].k->expand(outs, base, rb, nwords) != pop || memcmp(outs, outr, nwords * 8))
+		if (tabs[t].k->expand(outs, emask, base, rb, bit0, nwords) != popcount_words(outr, nwords) || memcmp(outs, outr, nwords * 8))
 			FAIL("expand mismatch on %s\n", tabs[t].name);
 
 	fill_garbage(r, vm, 64);
@@ -365,8 +379,8 @@ check_misc(Rng *r)
 
 	for (int i = 0; i < n + off; i++)
 	{
-		bounds[i] = rng_below(r, 4) ? (uint8) rng_next(r) : (uint8[]) {0, 1, 255}[rng_below(r, 3)];
-		ub0[i] = (float4) (d * 1e6 * rng_unit(r));
+		bounds[i] = sift_rng_below(r, 4) ? (uint8) sift_rng_next(r) : (uint8[]) {0, 1, 255}[sift_rng_below(r, 3)];
+		ub0[i] = (float4) (d * 1e6 * sift_rng_unit(r));
 	}
 	memcpy(ubr, ub0, sizeof(ub0));
 	sift_kernels_scalar.ub_accum(ubr + off, bounds + off, w, n);
@@ -388,7 +402,7 @@ check_misc(Rng *r)
  * rounding of every addition going the same way (a plan has up to 32768 leaves).
  */
 static void
-check_bound(Rng *r, int n, bool same)
+check_bound(SiftRng *r, int n, bool same)
 {
 	SiftBm25	ref,
 				now;
@@ -398,8 +412,8 @@ check_bound(Rng *r, int n, bool same)
 	float4		kn[SIFT_KERN_SLOTS] __attribute__((aligned(64))),
 				sc[SIFT_KERN_SLOTS] __attribute__((aligned(64))) = {0},
 				ub = 0;
-	double		ndocs = 1 + rng_below(r, 1u << 30),
-				scale = (double[]) {1, 1, 0.5, 1.0001, 3}[rng_below(r, 5)];
+	double		ndocs = 1 + sift_rng_below(r, 1u << 30),
+				scale = (double[]) {1, 1, 0.5, 1.0001, 3}[sift_rng_below(r, 5)];
 
 	rand_bm25(r, &ref);
 	sift_kern_bm25_init(&now, ref.k1, ref.b, (float4) (ref.avgdl * scale));
@@ -414,7 +428,7 @@ check_bound(Rng *r, int n, bool same)
 		if (!same || t == 0)
 		{
 			tf = rand_tf(r, 50);
-			w = sift_kern_term_weight((float4) (rng_unit(r) * 10), sift_kern_idf(ndocs, 1 + rng_below(r, (uint32) ndocs)), ref.k1);
+			w = sift_kern_term_weight((float4) (sift_rng_unit(r) * 10), sift_kern_idf(ndocs, 1 + sift_rng_below(r, (uint32) ndocs)), ref.k1);
 		}
 		b = sift_kern_bound_u8(&ref, tf, dl);
 
@@ -436,10 +450,10 @@ hit_cmp(const void *a, const void *b)
 }
 
 static void
-check_topk(Rng *r)
+check_topk(SiftRng *r)
 {
-	int			n = rng_below(r, 400),
-				k = 1 + rng_below(r, 40);
+	int			n = sift_rng_below(r, 400),
+				k = 1 + sift_rng_below(r, 40);
 	SiftHit    *all = malloc((n + 1) * sizeof(SiftHit)),
 			   *buf = malloc(k * sizeof(SiftHit));
 	SiftTopK	t;
@@ -447,8 +461,8 @@ check_topk(Rng *r)
 	sift_kern_topk_init(&t, buf, k, k);
 	for (int i = 0; i < n; i++)
 	{
-		all[i].score = (float4) rng_below(r, 20);
-		all[i].key = rng_below(r, 64) * 65536 + i;
+		all[i].score = (float4) sift_rng_below(r, 20);
+		all[i].key = sift_rng_below(r, 64) * 65536 + i;
 		if (sift_kern_topk_admits(&t, all[i].score, all[i].key))
 		{
 			if (!(all[i].score > sift_kern_topk_theta(&t)))
@@ -468,17 +482,17 @@ check_topk(Rng *r)
 static void *
 worker(void *arg)
 {
-	Rng			r;
+	SiftRng			r;
 
-	rng_seed(&r, (uint64) (uintptr_t) arg);
+	sift_rng_seed(&r, (uint64) (uintptr_t) arg);
 	for (long i = 0; i < iters; i++)
 	{
 		check_mask_kernels(&r);
 		check_misc(&r);
-		check_bound(&r, rng_below(&r, 4) ? 1 + rng_below(&r, 8) : 1 + rng_below(&r, SIFT_MAX_LEAVES), false);
-		check_bound(&r, rng_below(&r, 4) ? 1 + rng_below(&r, 8) : 1 + rng_below(&r, SIFT_MAX_LEAVES), false);
+		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, SIFT_MAX_LEAVES), false);
+		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, SIFT_MAX_LEAVES), false);
 		if (i % 64 == 0)
-			check_bound(&r, 1 + rng_below(&r, SIFT_MAX_LEAVES * SIFT_MAX_PHRASE), true);
+			check_bound(&r, 1 + sift_rng_below(&r, SIFT_MAX_LEAVES * SIFT_MAX_PHRASE), true);
 		if (i % 8 == 0)
 			check_tf(&r);
 		if (i % 16 == 0)

@@ -1,0 +1,215 @@
+-- The query path follows the lengths, counts and offsets of the term blob it reads without the exhaustive checks of sift.verify, so a
+-- damaged blob (a bad page, or a query with verify off) must raise ERRCODE_DATA_CORRUPTED (or the dictionary mismatch of
+-- ERRCODE_INDEX_CORRUPTED) and never read or write outside the blob: stored bytes set to other values, in LIST and GROUPED blobs
+-- (bitmap and array containers, with and without tf nibbles and escapes). Meaningful under SANITIZE=1 (make check SANITIZE=1)
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE TABLE rc (id serial, body text);
+INSERT INTO rc (body)
+SELECT 'dense' || CASE WHEN i % 4 = 0 THEN ' quarter' ELSE '' END
+	|| CASE WHEN i % 4 = 1 THEN ' q1 q1' ELSE '' END
+	|| CASE WHEN i % 29 = 0 THEN repeat(' heavy', 20) ELSE '' END
+	|| CASE WHEN i % 41 = 0 THEN ' lst lst' ELSE '' END
+	|| CASE WHEN i % 997 = 0 THEN repeat(' lst', 22) ELSE '' END
+	|| CASE WHEN i % 3001 = 0 THEN ' few' ELSE '' END
+	|| CASE WHEN i % 2 = 0 THEN ' dense2' ELSE '' END
+	|| CASE WHEN i % 5 = 0 THEN ' dense2' ELSE '' END
+	|| CASE WHEN i % 7 = 0 THEN repeat(' dense2', 22) ELSE '' END
+FROM generate_series(1, 20000) i;
+-- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too
+CREATE INDEX rc_list ON rc USING sift (body);
+SET sift.grouped_min_df = 10;
+CREATE INDEX rc_grp ON rc USING sift (body);
+RESET sift.grouped_min_df;
+SELECT idx, term, CASE WHEN flags & 4 = 0 THEN 'tf' ELSE 'all tf 1' END AS tfs, CASE WHEN flags & 1 = 1 THEN 'LIST' ELSE 'GROUPED' END AS kind
+FROM (VALUES ('rc_list', 'quarter'), ('rc_list', 'q1'), ('rc_list', 'heavy'), ('rc_list', 'few'), ('rc_list', 'dense'), ('rc_list', 'dense2'),
+			 ('rc_grp', 'quarter'), ('rc_grp', 'q1'), ('rc_grp', 'heavy'), ('rc_grp', 'lst')) v(idx, term),
+	LATERAL sift._test_term_blob(idx::regclass, term)
+ORDER BY 1, 2;
+   idx   |  term   |   tfs    |  kind   
+---------+---------+----------+---------
+ rc_grp  | heavy   | tf       | GROUPED
+ rc_grp  | lst     | tf       | GROUPED
+ rc_grp  | q1      | tf       | GROUPED
+ rc_grp  | quarter | all tf 1 | GROUPED
+ rc_list | dense   | all tf 1 | GROUPED
+ rc_list | dense2  | tf       | GROUPED
+ rc_list | few     | all tf 1 | LIST
+ rc_list | heavy   | tf       | LIST
+ rc_list | q1      | tf       | LIST
+ rc_list | quarter | all tf 1 | LIST
+(10 rows)
+
+-- the verdict of one read: the postings and their tf sum, or the error
+CREATE FUNCTION rc_read(blob bytea, flags int4, df int4, codec_len int4, nnib int4) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN (SELECT format('%s postings, tf sum %s', postings, tf_sum) FROM sift._test_blob_read(blob, flags, df, codec_len, nnib));
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- an intact blob reads; the damage is the bytes [off, off + len) set to val
+CREATE FUNCTION rc_damage(idx regclass, term text, off int4, len int4, val int4) RETURNS text LANGUAGE sql AS $$
+	SELECT rc_read((SELECT string_agg(set_byte('\x00'::bytea, 0, CASE WHEN i >= off AND i < off + len THEN val ELSE get_byte(blob, i) END), ''::bytea)
+					FROM generate_series(0, length(blob) - 1) i), flags, df, codec_len, nnib)
+	FROM sift._test_term_blob(idx, term)
+$$;
+-- one damage of each kind the reads check: LIST blocks (high bits, ranges, header and block ends, the page order of the postings), GROUPED
+-- groups (extents, offsets, bitmap and array containers, the page order), and the tf stream (nibbles and escape bytes of each group)
+SELECT what, idx, term, rc_damage(idx::regclass, term, off, len, val) AS verdict
+FROM (VALUES
+	('intact LIST', 'rc_list', 'quarter', 0, 0, 0),
+	('intact GROUPED with tf', 'rc_grp', 'heavy', 0, 0, 0),
+	('varint without an end', 'rc_list', 'quarter', 2, 12, 255),
+	('block range', 'rc_list', 'quarter', 4, 1, 128),
+	('block high bits', 'rc_list', 'quarter', 5, 1, 128),
+	('block header past the blob', 'rc_list', 'quarter', 419, 1, 255),
+	('page order', 'rc_list', 'quarter', 558, 1, 127),
+	('block past the blob', 'rc_list', 'quarter', 2492, 1, 255),
+	('LIST escape bytes', 'rc_list', 'q1', 3329, 1, 127),
+	('LIST keys past the limit', 'rc_list', 'q1', 697, 1, 127),
+	('GROUPED offsets', 'rc_list', 'dense', 8, 1, 0),
+	('GROUPED group extents', 'rc_list', 'dense', 12, 1, 0),
+	('GROUPED bitmap and page mask', 'rc_list', 'dense', 12, 1, 1),
+	('GROUPED payload', 'rc_list', 'dense', 20, 1, 127),
+	('GROUPED short bitmap', 'rc_list', 'dense', 21, 1, 0),
+	('GROUPED array size', 'rc_grp', 'heavy', 20, 1, 0),
+	('GROUPED array entry', 'rc_grp', 'heavy', 32, 1, 128),
+	('GROUPED array page order', 'rc_grp', 'heavy', 33, 1, 255),
+	('tf nibbles', 'rc_list', 'dense2', 3120, 1, 1),
+	('tf group start', 'rc_list', 'dense2', 3121, 1, 127),
+	('tf escape bytes', 'rc_list', 'dense2', 3124, 1, 127)
+) v(what, idx, term, off, len, val);
+             what             |   idx   |  term   |                                              verdict                                               
+------------------------------+---------+---------+----------------------------------------------------------------------------------------------------
+ intact LIST                  | rc_list | quarter | 5000 postings, tf sum 5000
+ intact GROUPED with tf       | rc_grp  | heavy   | 689 postings, tf sum 13780
+ varint without an end        | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
+ block range                  | rc_list | quarter | XX001 sift: corrupt posting data: LIST block header is out of bounds
+ block high bits              | rc_list | quarter | XX001 sift: corrupt posting data: LIST block high bits do not count its postings
+ block header past the blob   | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
+ page order                   | rc_list | quarter | XX001 sift: corrupt posting data: postings of a group are not in page order
+ block past the blob          | rc_list | quarter | XX001 sift: corrupt posting data: LIST block overruns the blob
+ LIST escape bytes            | rc_list | q1      | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
+ LIST keys past the limit     | rc_list | q1      | XX001 sift: corrupt posting data: LIST block header is out of bounds
+ GROUPED offsets              | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED offsets do not start at zero and end at the count
+ GROUPED group extents        | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED group extents are out of order
+ GROUPED bitmap and page mask | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group does not match its page mask
+ GROUPED payload              | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED payload overruns the blob
+ GROUPED short bitmap         | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group is shorter than its page mask
+ GROUPED array size           | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array group has the wrong size
+ GROUPED array entry          | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array entry lies outside its page bitmap
+ GROUPED array page order     | rc_grp  | heavy   | XX001 sift: corrupt posting data: postings of a group are not in page order
+ tf nibbles                   | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
+ tf group start               | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: a group starts past the nibbles
+ tf escape bytes              | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
+(21 rows)
+
+-- the dictionary's count of the term's nibbles: fewer than the L1 bits count, none, and 2^32 - 1 (its byte count wraps in 32 bits)
+SELECT n.nnib, rc_read(t.blob, t.flags, t.df, t.codec_len, n.nnib) AS verdict
+FROM sift._test_term_blob('rc_list', 'q1') t, unnest(ARRAY[1, 2500, 4999, 5000, 0, -1]) n(nnib);
+ nnib |                                            verdict                                            
+------+-----------------------------------------------------------------------------------------------
+    1 | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
+ 2500 | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
+ 4999 | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
+ 5000 | 5000 postings, tf sum 10000
+    0 | XX002 sift: term blob at 0 does not match its dictionary entry
+   -1 | XX002 sift: term blob at 0 does not match its dictionary entry
+(6 rows)
+
+-- a blob that ends inside the padding after its codec, with a group count that would fit if the length arithmetic wrapped
+SELECT rc_read(set_byte(set_byte(set_byte(substr(blob, 1, codec_len + 1), 8, 255), 9, 255), 10, 255), flags, df, codec_len, nnib) AS verdict
+FROM sift._test_term_blob('rc_grp', 'heavy');
+                            verdict                             
+----------------------------------------------------------------
+ XX002 sift: term blob at 0 does not match its dictionary entry
+(1 row)
+
+-- every byte of every term blob set to a few values, and every length the dictionary holds for the blob changed
+CREATE FUNCTION rc_sweep(idx regclass, term text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	t record;
+	v text;
+	ok int := 0;
+	corrupt int := 0;
+	other int := 0;
+	val int;
+BEGIN
+	SELECT * INTO t FROM sift._test_term_blob(idx, term);
+	FOR o IN 0 .. length(t.blob) - 1 LOOP
+		FOREACH val IN ARRAY ARRAY[0, 1, 127, 128, 255] LOOP
+			v := rc_read(set_byte(t.blob, o, val), t.flags, t.df, t.codec_len, t.nnib);
+			IF v ~ '^[0-9]+ postings' THEN ok := ok + 1; ELSIF left(v, 5) IN ('XX001', 'XX002') THEN corrupt := corrupt + 1; ELSE other := other + 1; RAISE NOTICE '%', v; END IF;
+		END LOOP;
+	END LOOP;
+	FOREACH val IN ARRAY ARRAY[0, 1, 2, 3, 255, 65535, 1000000, 2147483647, -1] LOOP
+		FOR f IN 1 .. 3 LOOP
+			v := rc_read(t.blob, t.flags, CASE f WHEN 1 THEN val ELSE t.df END, CASE f WHEN 2 THEN val ELSE t.codec_len END, CASE f WHEN 3 THEN val ELSE t.nnib END);
+			IF v ~ '^[0-9]+ postings' THEN ok := ok + 1; ELSIF left(v, 5) IN ('XX001', 'XX002') THEN corrupt := corrupt + 1; ELSE other := other + 1; RAISE NOTICE '%', v; END IF;
+		END LOOP;
+	END LOOP;
+	RETURN format('%s %s: %s', idx, term, CASE WHEN other = 0 AND corrupt > 0 AND ok > 0 THEN 'every read is ok or corrupt' ELSE format('ok %s, corrupt %s, other %s', ok, corrupt, other) END);
+END $$;
+SELECT rc_sweep('rc_list', 'quarter');
+                   rc_sweep                   
+----------------------------------------------
+ rc_list quarter: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_list', 'q1');
+                rc_sweep                 
+-----------------------------------------
+ rc_list q1: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_list', 'heavy');
+                  rc_sweep                  
+--------------------------------------------
+ rc_list heavy: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_list', 'few');
+                 rc_sweep                 
+------------------------------------------
+ rc_list few: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_list', 'dense');
+                  rc_sweep                  
+--------------------------------------------
+ rc_list dense: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_list', 'dense2');
+                  rc_sweep                   
+---------------------------------------------
+ rc_list dense2: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_grp', 'quarter');
+                  rc_sweep                   
+---------------------------------------------
+ rc_grp quarter: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_grp', 'q1');
+                rc_sweep                
+----------------------------------------
+ rc_grp q1: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_grp', 'heavy');
+                 rc_sweep                  
+-------------------------------------------
+ rc_grp heavy: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_grp', 'lst');
+                rc_sweep                 
+-----------------------------------------
+ rc_grp lst: every read is ok or corrupt
+(1 row)
+
+DROP TABLE rc;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -26,12 +26,14 @@ sift_filter.c
 sift_eval.c
 sift_parallel.c
 sift_cpu.c
+sift_span.c
 # headers (the data tables and kernels included by the sources above come with them)
 sift.h
 sift_analyze.h
 sift_analyze_tables.h
 sift_bitmap.h
 sift_bitmap_kern.h
+sift_cmp.h
 sift_cpu.h
 sift_dict.h
 sift_eval.h
@@ -49,6 +51,7 @@ sift_query.h
 sift_merge.h
 sift_live.h
 sift_segment.h
+sift_span.h
 sift_store.h
 sift_varint.h
 sift_visibility.h

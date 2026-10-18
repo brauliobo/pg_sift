@@ -1,0 +1,104 @@
+name: assert
+
+# The memory-debugging lanes (docs/SAFETY.md): sift on a PostgreSQL built from source with assertions, memory-context checking, clobbered
+# freed memory and randomized new memory (scripts/assert.sh), and the same server under valgrind memcheck (scripts/valgrind.sh). Weekly
+# and on demand, never blocking a pull request: a failure is a finding to read, not a gate.
+on:
+  schedule:
+    - cron: '23 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assert-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assert:
+    name: Assertions and memory checking (PostgreSQL ${{ matrix.pg }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [17, 18]
+    env:
+      SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl liblz4-dev libzstd-dev
+
+      # the build is about five minutes: cached on the recipe (scripts/pg-assert.sh holds the version and flags)
+      - name: Cache the PostgreSQL build
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-assert-${{ matrix.pg }}-${{ hashFiles('scripts/pg-assert.sh') }}
+
+      - name: Build PostgreSQL ${{ matrix.pg }} with assertions
+        run: |
+          prefix=$(PG_ASSERT_MAJOR=${{ matrix.pg }} scripts/pg-assert.sh)
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Regression and TAP subset
+        run: |
+          pg_config --version
+          SIFT_CI_JOBS=assert scripts/ci.sh quick
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-assert-logs-pg${{ matrix.pg }}
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/**/assert/cluster/**/*.log
+            ${{ runner.temp }}/sift-ci/**/assert/tree/test/regression.diffs
+          if-no-files-found: ignore
+
+  valgrind:
+    name: Memcheck (PostgreSQL 18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    env:
+      SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies and valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl liblz4-dev libzstd-dev valgrind libc6-dbg
+
+      - name: Cache the PostgreSQL build
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-valgrind-18-${{ hashFiles('scripts/pg-assert.sh') }}
+
+      - name: Build PostgreSQL 18 for valgrind
+        run: |
+          prefix=$(PG_ASSERT_MAJOR=18 scripts/pg-assert.sh --valgrind)
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Memcheck over the regression subset
+        run: SIFT_CI_JOBS=valgrind scripts/ci.sh quick
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-valgrind-logs
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/**/valgrind/vg/*.log
+            ${{ runner.temp }}/sift-ci/**/valgrind/postgres.out
+          if-no-files-found: ignore
