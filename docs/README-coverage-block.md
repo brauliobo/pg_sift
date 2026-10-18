@@ -14,6 +14,7 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 
 | Query / feature | Covered by sift? | Index or engine | Example |
 |---|---|---|---|
+| Top-N rows of a text match: WHERE col @@> q [AND filters] ORDER BY created_at DESC LIMIT n | Partly (the BM25 index and a sift_col index with the sort columns are on the table; the planner takes it by cost against an ordered btree) | BM25 + sift_col | `SELECT id FROM docs WHERE body @@> 'wireless' ORDER BY created_at DESC, id LIMIT 10` |
 | All terms: body @@> 'clean wifi' (words are ANDed) | Yes | BM25 | `SELECT id FROM docs WHERE body @@> 'breakfast friendly'` |
 | Phrase: "friendly staff" | Yes | BM25 | `SELECT id FROM docs WHERE body @@> '"friendly staff"'` |
 | Prefix (cle*), wildcard (w?fi), regex (/thank.*/), fuzzy (clen~1) | Yes | BM25 | `SELECT id FROM docs WHERE body @@> 'brea* OR n?isy OR /no.*y/ OR frendly~1'` |
@@ -21,7 +22,7 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 | count(*) of a match | Yes | BM25 | `SELECT count(*) FROM docs WHERE body @@> 'friendly'` |
 | Match with other filters: score ranking plus a range or equality filter | Yes | BM25 | `SELECT id FROM docs WHERE body @@> 'friendly' AND published >= '2026-02-01' ORDER BY sift.score(ctid) DESC LIMIT 10` |
 | Keyword facets: sift.facets(index, facet_index, query, limit) | Partly (keyword analyzer, text keys, a table without row-level security) | BM25 | `SELECT * FROM sift.facets('docs_body', 'docs_category', 'friendly OR pool', 10)` |
-| Aggregate over the rows of a match: GROUP BY with @@> in the WHERE | Partly (the match runs on the BM25 index (SiftScan), the aggregate on the normal plan) | BM25 | `SELECT source, count(*) FROM orders WHERE memo @@> 'clean' GROUP BY source` |
+| Aggregate over the rows of a match: GROUP BY with @@> in the WHERE | Partly (the table has a sift_col index with the grouped and aggregated columns; the planner takes the match set when its cost is lower, else SiftScan and a normal aggregate) | BM25 + sift_col | `SELECT source, count(*) FROM orders WHERE memo @@> 'clean' GROUP BY source` |
 | sift.score() in WHERE | Error (0A000; filter on the score from a subquery) | BM25 | `SELECT ... WHERE body @@> 'a' AND sift.score(ctid) > 1` |
 
 **Analytics** (`sift_col` index on a heap table or a `sift_table`: aggregates, `GROUP BY`)
@@ -43,6 +44,7 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 | EXISTS (...) and IN (SELECT ...) (semi join) | Yes | sift_col | `SELECT count(*) FROM orders o WHERE EXISTS (SELECT 1 FROM stores s WHERE s.id = o.store_id AND s.kind = 'outlet')` |
 | NOT IN (SELECT ...) | No (a hashed SubPlan with the NULL rule of NOT IN, no anti join) | sift_col | `SELECT count(*) FROM orders WHERE store_id NOT IN (SELECT id FROM stores WHERE kind = 'outlet')` |
 | Per-order aggregates with the outer aggregate in the same scan: UNION ALL arms (up to 4), HAVING or WHERE on the inner aggregates, gates, ROLLUP / GROUPING SETS, count(DISTINCT id) | Yes | sift_col | `SELECT category, kind, avg(avg_price), count(DISTINCT order_id) FROM (... GROUP BY order_id, ...) x GROUP BY ROLLUP (category, kind)` |
+| Top-N rows: WHERE ... ORDER BY index columns [ASC\|DESC] LIMIT n [OFFSET m] with no aggregate | Partly (the sort columns and the tie-break column (usually id) are in the sift_col index; the planner takes it when its cost is lower) | sift_col | `SELECT id, total FROM orders ORDER BY total DESC, id LIMIT 5` |
 | Parallel scan of the aggregate (count, sum, avg, min, max, count(DISTINCT), percentiles, keys of any kind, lookup joins, grouping sets) | Yes | sift_col | `SELECT store_id, count(*), sum(total) FROM orders GROUP BY store_id` |
 | Rows inserted after the index was built, not yet vacuumed (pages not all-visible) | Yes | sift_col, sift_table | `SELECT grp, count(*), sum(v) FROM t GROUP BY grp` |
 

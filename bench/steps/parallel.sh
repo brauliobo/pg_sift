@@ -11,9 +11,10 @@
 # plan shape does not depend on the cost model; the last column says whether the default costs would
 # have chosen the parallel plan on their own. Every parallel result is compared with the serial one
 # (md5 of the rows, in the order the plan returns them). Output: TSV with the median of REPS timed
-# runs per cell (one warm-up run first) and the load average, also kept in bench/out/parallel-<time>/.
+# runs per cell (one warm-up run first) and the pressure (cpu, io: PSI some avg10; NOISY when the host did not get quiet within SIFT_QUIET_TIMEOUT, scripts/quiet.sh), also kept in bench/out/parallel-<time>/.
 set -euo pipefail
 export LC_ALL=C
+. "$(dirname "$0")/../../scripts/quiet.sh"
 
 WORKERS="1 2 4 8" REPS=7 ONLY=
 while getopts w:r:c: opt; do
@@ -59,19 +60,22 @@ median_ms() { # runs the query REPS + 1 times in one session; prints the median 
 digest() { q -c "$1" -c "SELECT md5(string_agg(t::text, ',' $([[ $3 == scan ]] && echo 'ORDER BY t::text'))) FROM ($2) t" | tail -n 1; }
 parallel_plan() { q -c "$1" -c "EXPLAIN (COSTS OFF) $2" | grep -c 'Parallel Custom Scan' || true; }
 
-printf 'kind\tquery\tworkers\tms\tspeedup\tidentical\tparallel_plan\tauto_parallel\tload\n' | tee "$OUT/summary.tsv"
-{ echo "# host: $(uptime)"; echo "# $(nproc) CPUs, $(psql -X -qAt -d "$DB" -c 'SELECT version()')"; } | tee -a "$OUT/summary.tsv" >&2
+printf 'kind\tquery\tworkers\tms\tspeedup\tidentical\tparallel_plan\tauto_parallel\tpressure\n' | tee "$OUT/summary.tsv"
+{ echo "# host: $(quiet_report 2>&1)"; echo "# $(nproc) CPUs, $(psql -X -qAt -d "$DB" -c 'SELECT version()')"; } | tee -a "$OUT/summary.tsv" >&2
 for cell in "${CELLS[@]}"; do
 	[[ -z $ONLY || $cell =~ $ONLY ]] || continue
 	IFS='|' read -r kind label sql <<<"$cell"
+	quiet_batch
 	base=$(median_ms "$(settings 0 0)" "$sql")
 	ref=$(digest "$(settings 0 0)" "$sql" "$kind")
-	printf '%s\t%s\t0\t%s\t1.00\tyes\t0\t-\t%s\n' "$kind" "$label" "$base" "$(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/summary.tsv"
+	printf '%s\t%s\t0\t%s\t1.00\tyes\t0\t-\t%s\n' "$kind" "$label" "$base" "$(quiet_tag)" | tee -a "$OUT/summary.tsv"
 	for w in $WORKERS; do
+		quiet_batch
 		ms=$(median_ms "$(settings "$w" 1)" "$sql")
 		same=$([[ $(digest "$(settings "$w" 1)" "$sql" "$kind") == "$ref" ]] && echo yes || echo NO)
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$label" "$w" "$ms" "$(awk "BEGIN { printf \"%.2f\", $base / $ms }")" "$same" \
-			"$(parallel_plan "$(settings "$w" 1)" "$sql")" "$(parallel_plan "$(settings "$w" 0)" "$sql")" "$(cut -d' ' -f1-3 /proc/loadavg)" |
+			"$(parallel_plan "$(settings "$w" 1)" "$sql")" "$(parallel_plan "$(settings "$w" 0)" "$sql")" "$(quiet_tag)" |
 			tee -a "$OUT/summary.tsv"
 	done
 done
+echo "# $(quiet_summary)" | tee -a "$OUT/summary.tsv" >&2

@@ -141,6 +141,8 @@ extern void sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int
 extern int64 sift_cc_get(const SiftCc *c, uint32 row);
 /* The offsets key - min as u32 when SIFT_CCF_OFF32 (returns false otherwise, dst untouched); dst needs SIFT_CC_CAP32(n) slots. */
 extern bool sift_cc_decode_off32(const SiftCc *c, uint32 *dst);
+/* An upper bound of the offsets that writes, from the root node alone (what the blob holds is not read); UINT32_MAX when the nodes do not tell */
+extern uint32 sift_cc_off32_bound(const SiftCc *c);
 /*
  * bits = rows whose key is in [lo, hi] (signed), (n + 63) / 64 words, bits past n zero; bits has room for SIFT_COL_NWORDS(n) words, the column
  * kernels it runs on write the padded vector (the words past the first are zero). NULL slots hold the filler, the caller

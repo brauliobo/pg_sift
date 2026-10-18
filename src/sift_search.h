@@ -38,6 +38,7 @@ extern SiftSearchPlan *sift_search_extract(PlannerInfo *root, RelOptInfo *rel, L
 extern char *sift_search_describe(Node *spec);
 
 /* The scan reads `*rows` of the table's `rows` values per leaf in `*units` of `units` units, and the match set costs the returned operator costs */
+extern double sift_search_open_cost(const SiftSearchPlan *sp, double nrows);
 extern double sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *rows, double *units);
 
 /* ---- executor ---- */

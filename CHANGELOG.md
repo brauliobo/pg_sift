@@ -4,6 +4,14 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
+  past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
+  check that the stream is inside the blob; they are 64-bit now and the term raises the corruption error. Bytes that are not what the writer
+  wrote (a bad disk, a torn page, a file edited with the server stopped) were the only way in.
+- Security: a damaged index whose term blob ends between its codec and the next 4-byte boundary, with a large group count, could make a query
+  read far past the blob (a crash). The length left after the codec wrapped around when the codec length was not a multiple of 4; the term now
+  raises the corruption error.
+- Added: `WHERE col @@> q [AND filters] ORDER BY <columns> LIMIT n` is answered from the `sift_col` units (`docs/COL-SEARCH.md`, "Top-N"): a bounded heap over the match set, zone maps to skip units and stop early on columns that follow the table, and the heap read for the `n` winners only. Q10 shape: 7.1 to 2.4 ms at 1M, 191 to 19.5 ms at 10M. Setting `sift.enable_topn`; `EXPLAIN` shows `Top-N:`. The planner compares it with an ordered btree on the sort column by cost: the top-N is charged the opening of the match set whole, and a correlated sort column is read best superblock first.
 - Added: text search as the row selection of the aggregate pushdown. `SELECT ... FROM t WHERE <filters> AND col @@> q GROUP BY ...` on a table with a `sift` and a `sift_col` index (or `sift_table`) takes the matches from the BM25 index without reading the heap, keeps only those rows in the column units and aggregates from columns (`docs/COL-SEARCH.md`); facet-style counts per category are the same query. The plan shows `Search:` in `EXPLAIN`.
 - Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
@@ -48,6 +56,22 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
   callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
   Details and the glue `SiftAgg` still has to apply: `docs/COL.md` section 2.9.
+
+- Added: `CREATE INDEX ... USING sift_col` accepts `char(n)` and `name` columns, as `docs/COL.md` already said (it refused them). `char(n)` and
+  `name` are pushed to `SiftAgg` like text; a `bpchar` without a length is stored but never filtered or grouped by the column plans, because
+  equal values can differ in trailing blanks. Test: `col_index_chars`.
+
+- Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began (found by the
+  differential suite under the sanitizer: 280 against 218 orders, and by the `soak-col` job). The scan took "live in the index" on an
+  "all-visible" heap page for "visible", and the two facts were read in the wrong order or from the wrong generation: the liveness of a unit
+  came from the directory the scan copied at its start (or a cached flag) while the VM was read later, after a `VACUUM` had removed the dead
+  tuples and made their pages all-visible; a merge that replaced the scan's segments meant that no later `VACUUM` pass reached them at all;
+  and the mutable lane is a copy made when the scan begins. The all-visible mask is now read first and the unit's dirty flag from its LIVE
+  page after it, the shortcut is dropped once a segment of the scan's copy has left the directory, and rows of the mutable lane are always
+  checked against the heap (`docs/COL.md` 3, "Order of reads"). Tests: `col_vacuum_scan` (a VACUUM, a merge, DML and promotion between the
+  open and the reads of a scan) and the `soak-col` job (`scripts/colsoak.sh`). Present in `v3` as well. The BM25 count path
+  (`sift_eval.c`: the dirty flags of a segment copied at its open, the all-visible mask read later) has a similar read order and is not
+  changed here; it needs the same check.
 
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.

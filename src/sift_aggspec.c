@@ -87,18 +87,23 @@ integer_type(Oid t)
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
 }
 
+/* the conjuncts a unit's zone can refuse: a comparison (not <>) of an integer-valued leaf with a constant, a numeric leaf as its scaled integer, an IN list */
 static List *
 zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 {
 	const SiftSrcLeaf *lf;
+	bool		num;
 
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
 			out = zone_cmps(out, p->child[i], lay, nbase);
-	if (p->kind != SAP_CMP || p->op == SCMP_NE || !integer_type(p->argtype) || p->leaf >= nbase)
+	if ((p->kind != SAP_CMP && p->kind != SAP_IN) || p->leaf >= nbase || (p->kind == SAP_CMP && p->op == SCMP_NE) || (p->kind == SAP_IN && p->op))
 		return out;
 	lf = &lay->leaf[p->leaf];
-	return lf->parent < 0 && !lf->lossy && integer_type(lf->typid) ? lappend(out, (void *) p) : out;
+	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
+	if (lf->parent >= 0 || lf->lossy || !(num || (integer_type(p->argtype) && integer_type(lf->typid))))
+		return out;
+	return lappend(out, (void *) p);
 }
 
 List *
@@ -226,7 +231,7 @@ sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, c
 	int			dim = -1,
 				d = -1;
 
-	if (s->group >= 0 || s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0 || s->search)
+	if (s->group >= 0 || s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0 || s->search || s->topn)
 		return false;
 	if (s->nkeys == 1)
 	{
@@ -845,6 +850,8 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
 	put_node(p, s->search);
+	put_node(p, s->topn);
+	put_str(p, s->desc_topn ? s->desc_topn : "");
 	return pk.items;
 }
 
@@ -1161,5 +1168,7 @@ sift_aggspec_unpack(const List *items)
 	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
 	s->search = get_node(u);
+	s->topn = get_node(u);
+	s->desc_topn = get_str(u);
 	return s;
 }

@@ -72,6 +72,12 @@ sift_col_init(void)
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
+							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
+							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_paranoid",
+							 "Testing: a column scan checks the rows on all-visible pages against the heap too and logs the ones the snapshot does not see.",
+							 NULL, &sift_test_col_paranoid, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -173,6 +179,16 @@ sift_col_leaf_store(Oid typid, SiftColStore *store)
 			return true;
 	}
 	return false;
+}
+
+/* The types of a sift_col index: the table AM's set plus char(n) and name, which are strings too (the table AM keeps its narrower set) */
+static bool
+col_leaf_store(Oid typid, SiftColStore *store)
+{
+	if (typid != BPCHAROID && typid != NAMEOID)
+		return sift_col_leaf_store(typid, store);
+	*store = SIFT_COLS_STR;
+	return true;
 }
 
 /* The format's tag of a PostgreSQL type, and the type a tag stands for: the one place the engine's logical types meet type OIDs */
@@ -278,6 +294,7 @@ build_rel(Relation index)
 	r->first = palloc((natts + 1) * sizeof(int));
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
+	r->name = palloc0((natts + 1) * sizeof(bool));
 	r->shred = sift_col_shred_create(index->rd_indexcxt, index);
 	for (int a = 1; a <= natts; a++)
 	{
@@ -286,12 +303,12 @@ build_rel(Relation index)
 		uint8		scale = typid == NUMERICOID ? numeric_scale_of(TupleDescAttr(desc, a - 1)) : 0;
 		int			k = typid == JSONBOID ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 1;
 
-		if (typid != JSONBOID && !sift_col_leaf_store(typid, &store))
+		if (typid != JSONBOID && !col_leaf_store(typid, &store))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid),
 							NameStr(TupleDescAttr(desc, a - 1)->attname)),
-					 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p, s) with p <= 18, real, double precision, text, varchar and jsonb with paths.")));
+					 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p, s) with p <= 18, real, double precision, text, varchar, char(n), name and jsonb with paths.")));
 		if (typid == JSONBOID && k == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -301,9 +318,11 @@ build_rel(Relation index)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", SIFT_COL_MAX_COLS)));
 		r->first[a] = n;
 		r->json[a] = typid == JSONBOID;
+		r->name[a] = typid == NAMEOID;
 		r->nleaves[a] = k;
 		if (typid != JSONBOID)
-			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale};
+			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale,
+				.flags = typid == BPCHAROID && TupleDescAttr(desc, a - 1)->atttypmod < 0 ? SIFT_COLD_LOSSY : 0};
 		else
 			for (int i = 0; i < k; i++)
 			{
@@ -540,7 +559,7 @@ sift_col_key_numeric(int scale, int64 key)
 /* ---------- tuple to row ---------- */
 
 static void
-datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
+datum_value(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
 {
 	v->isnull = v->overflow = false;
 	v->len = 0;
@@ -574,6 +593,12 @@ datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
 			v->v.f = DatumGetFloat8(d);
 			break;
 		default:
+			if (name)
+			{
+				v->v.s = NameStr(*DatumGetName(d));
+				v->len = strlen(v->v.s);
+			}
+			else
 			{
 				text	   *t = DatumGetTextPP(d);
 
@@ -602,7 +627,7 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 		if (isnull[a - 1])
 			row->val[def->id].isnull = true;
 		else
-			datum_value(def, values[a - 1], &row->val[def->id]);
+			datum_value(def, values[a - 1], r->name[a], &row->val[def->id]);
 	}
 	if (r->shred)
 	{

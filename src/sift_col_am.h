@@ -21,6 +21,7 @@ typedef struct SiftColRel
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
+	bool	   *name;			/* [natts + 1] the attribute is a name (a fixed buffer, not a varlena) */
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
@@ -81,5 +82,17 @@ extern bool sift_col_maint_make_room(Relation index);
 extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
+
+/* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
+ * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
+ * before the heap checks. Widens the races deterministically in place of host load. */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_col_jitter_us;
+extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
+extern void sift_col_jitter(void);
+#define SIFT_COL_JITTER()	sift_col_jitter()
+#else
+#define SIFT_COL_JITTER()	((void) 0)
+#endif
 
 #endif							/* SIFT_COL_AM_H */
