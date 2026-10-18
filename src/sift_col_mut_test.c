@@ -57,18 +57,18 @@ test_schema(void)
 		int16		parent;
 		uint8		kind;
 		uint8		store;
-		Oid			typid;
+		uint8		type;
 	}			leaves[NCOLS] = {
-		{"order_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT8OID},
-		{"store_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT4OID},
-		{"status", -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"total", -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, FLOAT8OID},
-		{"weight", -1, SIFT_COLK_SCALAR, SIFT_COLS_F4, FLOAT4OID},
-		{"items", -1, SIFT_COLK_GROUP, SIFT_COLS_INT, INT4OID},
-		{"items[].category", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"items[].sku", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"items[].qty", 5, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT4OID},
-		{"items[].price", 5, SIFT_COLK_SCALAR, SIFT_COLS_F8, FLOAT8OID},
+		{"order_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT8},
+		{"store_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"status", -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"total", -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, SIFT_COLT_FLOAT8},
+		{"weight", -1, SIFT_COLK_SCALAR, SIFT_COLS_F4, SIFT_COLT_FLOAT4},
+		{"items", -1, SIFT_COLK_GROUP, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"items[].category", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"items[].sku", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"items[].qty", 5, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"items[].price", 5, SIFT_COLK_SCALAR, SIFT_COLS_F8, SIFT_COLT_FLOAT8},
 	};
 
 	if (schema == NULL)
@@ -76,7 +76,7 @@ test_schema(void)
 		SiftColDef	defs[NCOLS] = {0};
 
 		for (int i = 0; i < NCOLS; i++)
-			defs[i] = (SiftColDef) {i, leaves[i].parent, leaves[i].kind, leaves[i].store, 0, i + 1, leaves[i].typid, leaves[i].path};
+			defs[i] = (SiftColDef) {i, leaves[i].parent, leaves[i].kind, leaves[i].store, 0, i + 1, leaves[i].type, leaves[i].path};
 		schema = sift_cschema_create(TopMemoryContext, defs, NCOLS);
 	}
 	return schema;

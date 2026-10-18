@@ -90,10 +90,10 @@ rand_store(TCtx *t, bool top)
 	return s[RAND(t, top ? 7 : 6)];
 }
 
-static Oid
+static uint8
 store_type(SiftColStore s)
 {
-	return s == SIFT_COLS_INT ? INT8OID : s == SIFT_COLS_F4 ? FLOAT4OID : s == SIFT_COLS_F8 ? FLOAT8OID : s == SIFT_COLS_VAR ? BYTEAOID : TEXTOID;
+	return s == SIFT_COLS_INT ? SIFT_COLT_INT8 : s == SIFT_COLS_F4 ? SIFT_COLT_FLOAT4 : s == SIFT_COLS_F8 ? SIFT_COLT_FLOAT8 : s == SIFT_COLS_VAR ? SIFT_COLT_BYTEA : SIFT_COLT_TEXT;
 }
 
 static void
@@ -158,7 +158,7 @@ gen_case(TCtx *t)
 			defs[n] = (SiftColDef) {n, gid, SIFT_COLK_SCALAR, rand_store(t, false), 0, gid + 1, 0, item_paths[k]};
 	}
 	for (int i = 0; i < n; i++)
-		defs[i].typid = defs[i].kind == SIFT_COLK_GROUP ? INT4OID : store_type(defs[i].store);
+		defs[i].type = defs[i].kind == SIFT_COLK_GROUP ? SIFT_COLT_INT4 : store_type(defs[i].store);
 	c->schema = sift_cschema_create(CurrentMemoryContext, defs, n);
 	c->prof = palloc(n * sizeof(LeafProf));
 	for (int i = 0; i < n; i++)
@@ -446,7 +446,7 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, p != NULL && p->ncols == s->ncols && p->hash == s->hash && p->ngroups == s->ngroups, "schema parse");
 	for (int i = 0; p != NULL && i < s->ncols; i++)
 		CHECK(t, p->cols[i].id == s->cols[i].id && p->cols[i].parent == s->cols[i].parent && p->cols[i].kind == s->cols[i].kind &&
-			  p->cols[i].store == s->cols[i].store && p->cols[i].attno == s->cols[i].attno && p->cols[i].typid == s->cols[i].typid &&
+			  p->cols[i].store == s->cols[i].store && p->cols[i].attno == s->cols[i].attno && p->cols[i].type == s->cols[i].type &&
 			  strcmp(p->cols[i].path, s->cols[i].path) == 0, "schema leaf %d", i);
 	for (Size cut = 0; cut < buf.len; cut += 1 + RAND(t, 9))
 		CHECK(t, sift_cschema_parse(CurrentMemoryContext, buf.data, cut) == NULL, "truncated schema (%zu bytes) parsed", cut);
@@ -454,7 +454,7 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, sift_cschema_parse(CurrentMemoryContext, buf.data, buf.len) == NULL, "schema with a wrong hash parsed");
 
 	/* the hash covers everything but the flags */
-	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, INT8OID, "total"};
+	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT8, "total"};
 	defs[1] = defs[0];
 	defs[1].id = 1;
 	defs[1].path = "total2";
@@ -1305,10 +1305,10 @@ size_batch(TCtx *t, SizeShape shape, SiftColSchema **schema)
 	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, store, 0, 1, store_type(store), "col"};
 	if (shape == SZ_ITEMS)
 	{
-		defs[0] = (SiftColDef) {0, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 1, INT4OID, "items[]"};
-		defs[1] = (SiftColDef) {1, 0, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 1, TEXTOID, "items[].sku"};
-		defs[2] = (SiftColDef) {2, 0, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, INT4OID, "items[].qty"};
-		defs[3] = (SiftColDef) {3, 0, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 1, FLOAT8OID, "items[].price"};
+		defs[0] = (SiftColDef) {0, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT4, "items[]"};
+		defs[1] = (SiftColDef) {1, 0, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 1, SIFT_COLT_TEXT, "items[].sku"};
+		defs[2] = (SiftColDef) {2, 0, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT4, "items[].qty"};
+		defs[3] = (SiftColDef) {3, 0, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 1, SIFT_COLT_FLOAT8, "items[].price"};
 		n = 4;
 		for (int i = 0; i < 200; i++)
 			snprintf(skus[i], sizeof(skus[i]), "SKU-%05d", i * 37);

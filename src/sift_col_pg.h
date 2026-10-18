@@ -6,6 +6,7 @@
 #ifndef SIFT_COL_PG_H
 #define SIFT_COL_PG_H
 
+#include "access/tupdesc.h"
 #include "fmgr.h"
 #include "nodes/nodes.h"
 
@@ -22,6 +23,10 @@ extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
  * (varno 1, ready for ChangeVarNodes). Allocates in CurrentMemoryContext.
  */
 extern Node *sift_col_att_expr(Relation index, int attno);
+
+/* The format's type tag of a PostgreSQL type (OTHER for one the tags do not name), and the type a leaf yields to SQL (desc: the relation the leaf's attno refers to) */
+extern uint8 sift_col_type_of_oid(Oid typid);
+extern Oid	sift_col_def_typid(TupleDesc desc, const SiftColDef *def);
 
 /* Is relam the sift_col access method (the catalog lookup is cached) */
 extern bool sift_col_is_index(Relation index);

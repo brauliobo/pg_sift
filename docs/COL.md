@@ -76,7 +76,11 @@ last unit has been added; the header page, written last, points to all of them).
 are 8-byte aligned in the stream.
 
 **SCHEMA**: `u32 magic 'COLS'`, `u32 ncols`, `u32 schema_hash`, then per leaf a 16-byte `SiftColDefDisk` (`i16 id, i16 parent, u8 kind, u8
-store, u16 flags, i16 attno, u16 pathlen, u32 typid`) and `pathlen` path bytes. The hash is `hash_bytes` of the same serialization of
+store, u16 flags, i16 attno, u16 pathlen, u8 type, u8 scale, u16 reserved`) and `pathlen` path bytes. `type` is the leaf's logical type, a tag of the
+format (`SiftColType`: bool, int2/4/8, float4/8, numeric (a scaled integer), text, bytea, date, timestamp(tz), uuid, jsonb, or OTHER) that
+never changes how a chunk is stored; a host maps its own types to it at its boundary (PostgreSQL: `sift_col_type_of_oid`, and
+`sift_col_def_typid` for the type a leaf yields to SQL, which for a plain attribute is the attribute's own type, so `varchar` stays `varchar`) and
+resolves what the tag cannot name (OTHER) from its own catalog. The hash is `hash_bytes` of the same serialization of
 all leaves with the flags zeroed. A reader checks the hash and the leaf list against the index definition (the schema of a segment never changes).
 
 **SBDIR**: per unit, ascending `sb`: `{u32 sb, u32 nrows, u64 off (of the unit record in UNITS), u64 rank_base (liveness rank of its first
@@ -269,11 +273,12 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). A newer col minor is refused with a REINDEX hint; layout changes bump it.
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 1 is the first a release reads: segments
+  of the pre-release minor 0 (leaf types as PostgreSQL OIDs) are not read.
 
 ## 5. Planner-facing metadata
 
-`sift_col_index_meta(index)` returns the leaf list (id, kind, store, type OID, index attribute number, parent group, path text),
+`sift_col_index_meta(index)` returns the leaf list (id, kind, store, logical type tag and the type OID it yields to SQL, index attribute number, parent group, path text),
 the attribute expressions (`sift_col_att_expr`), whether the index is partial and whether it is valid for scans, and
 `SiftColIndexStats` (rows, segments, bytes, per-leaf distinct counts from the dictionaries, zone-based min/max per leaf, share of
 all-visible pages). `amcostestimate` prices the index out of every ordinary plan: the operator class has no operators, so

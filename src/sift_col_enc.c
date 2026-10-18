@@ -61,8 +61,8 @@ typedef struct SiftColDefDisk
 	uint16		flags;
 	int16		attno;
 	uint16		pathlen;
-	uint32		typid;
-	uint16		scale;
+	uint8		type;
+	uint8		scale;
 	uint16		reserved;
 } SiftColDefDisk;
 
@@ -82,6 +82,8 @@ schema_check(const SiftColDef *defs, int n)
 			return "unknown leaf kind";
 		if (d->store < SIFT_COLS_INT || d->store > SIFT_COLS_VAR)
 			return "unknown storage class";
+		if (d->type >= SIFT_COLT_END)
+			return "unknown leaf type";
 		if (d->store == SIFT_COLS_VAR && (d->kind != SIFT_COLK_SCALAR || d->parent != -1))
 			return "a variable-length leaf is a top level scalar";
 		if (d->path != NULL && strlen(d->path) > PG_UINT16_MAX)
@@ -101,7 +103,7 @@ static void
 schema_put_def(StringInfo out, const SiftColDef *d, bool with_flags)
 {
 	const char *path = d->path ? d->path : "";
-	SiftColDefDisk disk = {d->id, d->parent, d->kind, d->store, with_flags ? d->flags : 0, d->attno, (uint16) strlen(path), d->typid, d->scale};
+	SiftColDefDisk disk = {d->id, d->parent, d->kind, d->store, with_flags ? d->flags : 0, d->attno, (uint16) strlen(path), d->type, d->scale};
 
 	put_val(out, disk);
 	put_bytes(out, path, disk.pathlen);
@@ -195,7 +197,7 @@ sift_cschema_parse(MemoryContext mcxt, const void *data, Size len)
 		memcpy(path, p + pos, disk.pathlen);
 		path[disk.pathlen] = '\0';
 		pos += disk.pathlen;
-		defs[i] = (SiftColDef) {disk.id, disk.parent, disk.kind, disk.store, disk.flags, disk.attno, disk.typid, path, (uint8) disk.scale};
+		defs[i] = (SiftColDef) {disk.id, disk.parent, disk.kind, disk.store, disk.flags, disk.attno, disk.type, path, disk.scale};
 	}
 	if (schema_check(defs, (int) head[1]) == NULL && schema_hash(defs, (int) head[1]) == head[2])
 		s = schema_build(mcxt, defs, (int) head[1]);
