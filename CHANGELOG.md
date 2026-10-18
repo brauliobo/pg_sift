@@ -2,7 +2,41 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 2.0.0
+
+A major version because several behaviors change (listed first); the on-disk format is unchanged, so no `REINDEX`.
+
+### Upgrade
+
+- **Run `ALTER EXTENSION pg_sift UPDATE` in every database after installing the new files.** The extension SQL goes from 1.1 (what 1.4.0 shipped) to 1.2:
+  `sift.segments` gains `extents` and `dead_docs` (it is dropped and recreated, so a view that selects from it must be dropped before the update and
+  recreated after), and `sift.index_info(index)` and `sift.version()` are new. The packages' smoke test installs 1.0, updates it to the packaged
+  version and runs the queries again. Existing indexes keep working: no `REINDEX`.
+
+### Breaking / behaviour changes
+
+- `sift.max_expansions` and `sift.prefix_cache_size` can only be set by a superuser (`PGC_SUSET`). A role that sets them in a session gets
+  `permission denied to set parameter`. Set them in `postgresql.conf`, `ALTER SYSTEM`, `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`.
+- `sift.promote`, `sift.merge`, `sift.verify`, `sift.segments` and `sift.segment_postings` need the owner of the index's table or the `MAINTAIN`
+  privilege on it (PostgreSQL 17 and 18: `GRANT MAINTAIN ON table TO role`), as `VACUUM` and `REINDEX` do. Monitoring roles that called them need the grant.
+- A regular expression leaf cannot have back-references (`/(a+)\1/`); the query fails at parse time like any invalid expression. Rewrite it without one.
+- `sift.score()` in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE` fails when the statement is planned, saying so.
+- `VACUUM` merges until the policy asks for no more, down to the new reloption `vacuum_segments` (default 2), instead of one step: a `VACUUM` of an index
+  left in many segments takes about 4 times as long as before (0.08 s to 0.33 s at 60 segments of 50,000 documents) and queries after it are faster.
+  Raise `vacuum_segments` (`ALTER INDEX ... SET`, no `REINDEX`) to keep `VACUUM` short. A segment more than 8 times the size of the ones before it is
+  left alone, so an index may keep more segments than the target.
+- `VACUUM` returns the free blocks at the end of the index file to the operating system (when they are 1000 blocks or a 16th of the index, and only if it
+  gets `AccessExclusiveLock` on the index without waiting); a hot standby cancels the queries that hold the index when it replays the lock, like for a
+  heap. `ALTER INDEX ... SET (vacuum_truncate = false)` turns it off.
+- The maintenance worker stays up to `sift.maintenance_naptime` (default 2000 ms) after it started, holding a background worker slot for that time;
+  leave room in `max_worker_processes`.
+- A wildcard, regex or fuzzy leaf that expands to more than `sift.max_expansions` (512) terms now matches every word it matches and scores as one term
+  instead of failing; `sift.max_expansions` is now the number of terms a leaf scores individually.
+- `CREATE INDEX` at a small `maintenance_work_mem` writes more, smaller segments instead of growing its memory or failing (at the default budget the
+  layout is the same), and a merge reads at most 16 GB of segments at a time.
+- Source builds link without LTO unless `SIFT_LTO=1` (at most 4 link jobs); the deb, rpm and AUR packages set it, so packages are built with LTO as before.
+
+### Changes
 
 - Fix: a ranked scan with `LIMIT` plus `OFFSET` of 67,108,864 or more failed with `invalid memory alloc request size` (so did
   `LIMIT 2147483647` meaning "all"), and so did a ranked scan drained without a limit once it had more than 16.7 million matches. The
@@ -103,7 +137,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 - Fix: a keyword value of more than 255 bytes failed an `INSERT`, a `COPY` or the end of a long `CREATE INDEX` with `a keyword value is longer
   than 255 bytes`. It is now indexed as its first 236 bytes and a hash of all of it (the same term from a build, an insert and a query),
-  so two long values that share their start stay two values and `@@>` finds exactly the rows with that value.
+  so two long values that share their start stay two values and `@@>` finds exactly the rows with that value. A facet over such a value
+  counts it under its start and hash instead of failing.
 
 - `CREATE INDEX` reports its progress in `pg_stat_progress_create_index`: the phases `scanning table`, `spilling runs`, `merging runs` and
   `writing segments`, and the documents analyzed and then written (`tuples_done` of `tuples_total`), parallel workers included. A parallel
@@ -154,12 +189,16 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   one; `VACUUM (PARALLEL 0)` and autovacuum truncate. No on-disk change. Only blocks the horizon already lets the allocator reuse are
   given back. `ALTER INDEX ... SET (vacuum_truncate = false)` turns it off for an index (no `REINDEX`).
 
-## 1.4.0
+- Performance: `CREATE INDEX` takes fewer instructions per document and posting: the checks of the memory bounds left that path (the order of the
+  documents is checked once per page, the pool once per large document, a page is sorted only when its HOT chains made it unsorted), and a
+  table with few runs writes no extra runs at 1MB. Runs are merged only when the run to come does not fit a segment, not before: a level that
+  already fits is read by the merge that writes it, with no pass of its own (at 1 MB that pass cost 46% more temporary bytes on a table whose
+  largest term just fits).
+- Fix: an index with damaged offsets in a sparse term (inline keys or a LIST blob with more than 512 offsets) reports a corrupt term, as
+  `sift.verify` does, instead of crashing; a damaged docmap directory no longer shares the cache entry of an intact one.
+- Build: `make` links without LTO unless `SIFT_LTO=1` (at most 4 link jobs): PGXS inherits `-flto=auto` from some distributions' `pg_config`, which
+  started one link job per core in every development, CI and bench build. The deb, rpm and AUR recipes set `SIFT_LTO=1`.
 
-- No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.
-- The engine now builds as a portable core shared with the SQLite extension and the new MariaDB extension (`src/portable.list`, one host header `src/sift_host.h`, checked by `scripts/check-portable.sh` in `make check`). The sorted-run and merge code moved from `src/sift_build.c` to `src/sift_runs.c`, the merge policy to `src/sift_merge.c`; the compiled query path is instruction for instruction the same.
-- `make check` takes about 1.5 minutes on 8 cores (it took about 4): one job queue over up to 8 lanes instead of four fixed lanes, faster differential and TAP tests, same coverage.
-- `scripts/build-bench.sh` compares `CREATE INDEX` time, memory and temporary files of two builds at several budgets; the runs merged into each segment are logged at `debug2`.
 - Fix: promoting a mutable segment no longer takes memory in proportion to the segment. The records were all copied to memory, about six
   times the size of the segment, whatever `maintenance_work_mem` (a segment of 138 MB at `mutable_limit = 1048576`: 827 MB at a 64 MB budget, 797 MB
   at 16 MB); they are now sorted in a tuplesort that spills to disk (191 MB and 155 MB; a segment of 46 MB at a 4 MB budget: 54 MB, where it took
@@ -205,6 +244,13 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - New: reloption `vacuum_segments` (default 2, 1 to 128): the number of segments `VACUUM` leaves an index with. A higher value is shorter
   `VACUUM` and more segments to query (60 segments of 50,000 documents: 0.19, 0.15, 0.12 and 0.10 s at 2, 4, 8 and 16, `count(*)` 0.08, 0.14,
   0.22 and 0.35 ms). `ALTER INDEX ... SET` applies it with no `REINDEX`; the worker's and the inserters' merges are unchanged.
+
+## 1.4.0
+
+- No change to the PostgreSQL extension's behavior, on-disk format or SQL: install the new files, no `ALTER EXTENSION` and no `REINDEX`. Indexes, scores and plans are the same as 1.3.1; the benchmark queries run at the same speed.
+- The engine now builds as a portable core shared with the SQLite extension and the new MariaDB extension (`src/portable.list`, one host header `src/sift_host.h`, checked by `scripts/check-portable.sh` in `make check`). The sorted-run and merge code moved from `src/sift_build.c` to `src/sift_runs.c`, the merge policy to `src/sift_merge.c`; the compiled query path is instruction for instruction the same.
+- `make check` takes about 1.5 minutes on 8 cores (it took about 4): one job queue over up to 8 lanes instead of four fixed lanes, faster differential and TAP tests, same coverage.
+- `scripts/build-bench.sh` compares `CREATE INDEX` time, memory and temporary files of two builds at several budgets; the runs merged into each segment are logged at `debug2`.
 
 ## 1.3.1
 

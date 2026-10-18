@@ -4,6 +4,20 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 2.0.0
+
+- No change to the index format (2) or the SQL files: an index of 1.4.0 opens as it is, nothing to rebuild with `sift_rebuild`. The library is rebuilt
+  on the shared core of the PostgreSQL extension 2.0.0, whose fixes it takes:
+- Queries: a wildcard, regex or fuzzy leaf that expands to more than 512 terms matches every word it matches and scores as one term, like a
+  prefix, instead of failing; a regular expression cannot have back-references (the query fails at parse time: rewrite it without one).
+- Ranking: the score bounds that prune a ranked scan stay valid for queries with more than 256 scored terms.
+- Reading: a dictionary whose terms share their first 8 bytes (fixed-width ids, hashes with a common prefix) is searched by bisection instead of
+  block by block; a cursor over a sparse term allocates what its rows need instead of 32 kB; an index with damaged offsets in a sparse term
+  reports a corrupt term instead of crashing.
+- Merges: unchanged. This extension merges with its own streaming code (memory bounded by the number of segments merged at once, as in 1.4.0) and
+  the shared policy, whose new parameters (`merge_fanin`, the dead percentage) keep the values it always used; the memory bound of the PostgreSQL
+  extension's merge (140 MB down to 16 MB for 4 segments of 3M documents) is that extension's own and not a MariaDB figure.
+
 ## 1.4.0
 
 - First release. `sift` is a UDF library (`libsift_udf.so`) and two SQL files that add the search engine of pg_sift to MariaDB: boolean,
