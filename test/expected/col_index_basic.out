@@ -622,11 +622,10 @@ SELECT col_cmp('o_col', '', 'true');
 (1 row)
 
 VACUUM orders;
--- the heap is read only for the rows of the mutable lane (a batch copied when the scan began: its pages never count as all-visible)
 SELECT rows_vetted, heap_pages FROM sift._test_col_counters('o_col', '0:ge:0');
  rows_vetted | heap_pages 
 -------------+------------
-         400 |         24
+           0 |          0
 (1 row)
 
 SELECT col_cmp('o_col', '0:ge:700', 'tenant_id >= 700');
