@@ -384,6 +384,38 @@ sift_store_free_stats(Relation index)
 	return c.fs;
 }
 
+typedef struct FreeBelow
+{
+	Relation	index;
+	BlockNumber limit;
+	uint32		min_run;
+	int64		blocks;
+} FreeBelow;
+
+static bool
+count_below(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeBelow  *c = arg;
+
+	for (uint32 i = 0; i < fl->n; i++)
+		if (fl->ext[i].start + fl->ext[i].nblocks <= c->limit && fl->ext[i].nblocks >= c->min_run &&
+			(!FullTransactionIdIsValid(fl->ext[i].safexid) || sift_store_removable(c->index, fl->ext[i].safexid)))
+			c->blocks += fl->ext[i].nblocks;
+	return true;
+}
+
+/* The reusable free blocks in runs of at least min_run that end before limit: what a segment above limit can be rewritten into */
+int64
+sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run)
+{
+	FreeBelow	c = {index, limit, min_run, 0};
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+
+	sift_freelist_walk(index, metabuf, count_below, &c);
+	UnlockReleaseBuffer(metabuf);
+	return c.blocks;
+}
+
 /* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
 bool
 sift_store_removable(Relation index, FullTransactionId xid)
