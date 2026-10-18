@@ -28,4 +28,7 @@ typedef struct SiftMergePolicy
 extern int	sift_merge_pick(Relation index, const SiftMergePolicy *policy, const SiftDirSnapshot *snap, bool force,
 							SiftSegEntry *sel);
 
+/* Only the last of those: the first segment (smallest first) of which more than half the documents are dead, else 0. */
+extern int	sift_merge_pick_dead(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel);
+
 #endif							/* SIFT_MERGE_H */

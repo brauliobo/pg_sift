@@ -1,0 +1,61 @@
+-- vacuum_segments: the directory entries VACUUM merges an index down to (default 2), changed with ALTER INDEX and no REINDEX.
+CREATE EXTENSION pg_sift;
+SET enable_seqscan = off;
+CREATE TABLE vs (id serial, body text) WITH (autovacuum_enabled = off);
+INSERT INTO vs (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) FROM generate_series(1, 30000) i;
+-- built without the option: the default
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 60);
+SELECT count(*) AS built FROM sift.segments('vs_idx');
+SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
+VACUUM vs;
+SELECT count(*) AS after_default FROM sift.segments('vs_idx');
+SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
+
+-- a higher value: less merging, more segments
+DROP INDEX vs_idx;
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 60);
+ALTER INDEX vs_idx SET (vacuum_segments = 4);
+SELECT sift.verify('vs_idx');
+VACUUM vs;
+SELECT count(*) AS after_4 FROM sift.segments('vs_idx');
+SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
+SELECT sift.verify('vs_idx', true);
+
+-- lowered to 1, VACUUM merges further; raised above the segments it has: a no-op
+ALTER INDEX vs_idx SET (vacuum_segments = 1);
+VACUUM vs;
+SELECT count(*) AS after_1 FROM sift.segments('vs_idx');
+CREATE TEMP TABLE before AS SELECT gen FROM sift.segments('vs_idx');
+ALTER INDEX vs_idx SET (vacuum_segments = 128);
+VACUUM vs;
+SELECT count(*) AS unchanged FROM sift.segments('vs_idx') s JOIN before b USING (gen);
+SELECT sift.verify('vs_idx', true);
+
+-- out of range
+ALTER INDEX vs_idx SET (vacuum_segments = 0);
+ALTER INDEX vs_idx SET (vacuum_segments = 129);
+ALTER INDEX vs_idx RESET (vacuum_segments);
+SELECT sift.verify('vs_idx');
+
+-- a segment far smaller than the rest stays above the target: merging it would rewrite the whole index at every VACUUM
+DROP INDEX vs_idx;
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 1, mutable_limit = 64);
+INSERT INTO vs (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) FROM generate_series(1, 400) i;
+SELECT sift.promote('vs_idx');
+CREATE TEMP TABLE small AS SELECT gen FROM sift.segments('vs_idx');
+VACUUM vs;
+SELECT count(*) AS kept, (SELECT count(*) FROM sift.segments('vs_idx')) AS segments FROM sift.segments('vs_idx') JOIN small USING (gen);
+SELECT sift.verify('vs_idx', true);
+
+-- a mostly dead segment is rewritten whatever the target: with 128 the tiered merges are not for the count, the rewrite is for the garbage
+DROP INDEX vs_idx;
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 10, vacuum_segments = 128);
+SELECT count(*) AS built FROM sift.segments('vs_idx');
+SELECT sum(ndocs) AS docs FROM sift.segments('vs_idx');
+DELETE FROM vs WHERE id <= 2000;
+VACUUM vs;
+SELECT count(*) AS segments, sum(ndocs) AS docs FROM sift.segments('vs_idx');
+SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
+SELECT sift.verify('vs_idx', true);
+DROP TABLE vs;
+DROP EXTENSION pg_sift;

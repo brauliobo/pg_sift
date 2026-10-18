@@ -1,13 +1,25 @@
 /*
  * sift_maint.h - promotion, merge, recycle, orphan sweep and the async
  * maintenance worker. Every entry point takes the
- * maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO): wait = false uses
- * ConditionalLockPage and returns false when busy.
+ * maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO): promotion and merge
+ * steps hold it in RowExclusiveLock and claim the segments they replace, so
+ * steps on other segments run side by side; wait = false uses ConditionalLockPage and
+ * returns false when busy. VACUUM and the SQL functions hold it exclusive.
  */
 #ifndef SIFT_MAINT_H
 #define SIFT_MAINT_H
 
 #include "utils/rel.h"
+
+#ifdef SIFT_TESTING
+/* Testing knob (sift.test_merge_max_kb, 0 = off): bytes of the segments one merge may read, in kB */
+extern PGDLLIMPORT int sift_test_merge_max_kb;
+/* Testing knob (sift.test_merge_sleep_ms, 0 = off): a merge of the background worker sleeps this long, its segments claimed */
+extern PGDLLIMPORT int sift_test_merge_sleep_ms;
+/* Testing knob (sift.test_room_segments, 0 = off): directory entries from which inserters merge */
+extern PGDLLIMPORT int sift_test_room_segments;
+extern PGDLLIMPORT int64 sift_maint_wait_max_us;
+#endif
 
 /* Called by aminsert after an append crossed mutable_limit */
 extern void sift_maint_after_seal(Relation index);

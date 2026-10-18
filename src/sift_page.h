@@ -19,6 +19,7 @@
 #define SIFT_DIRECTORY_BLKNO	1
 #define SIFT_MAINT_LOCK_BLKNO	0	/* LockPage() target for maintenance */
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
+#define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
 
 typedef enum SiftPageType
 {
@@ -60,7 +61,7 @@ typedef struct SiftMetaPageData
 	float4		k1;				/* options snapshot at build time */
 	float4		b;
 	uint32		analyzer_hash;
-	uint32		flags;
+	uint32		flags;			/* bits 0-7: failed maintenance steps in a row (backoff); older indexes: 0 */
 	uint64		next_gen;		/* next segment generation */
 	uint64		ndocs;			/* totals over immutable segments */
 	uint64		sum_dl;
@@ -68,6 +69,8 @@ typedef struct SiftMetaPageData
 	BlockNumber high_water;		/* blocks ever allocated */
 	TimestampTz maint_requested_at; /* async maintenance dedup */
 } SiftMetaPageData;
+
+#define SIFT_META_FAILURES_MASK	0xFF
 
 /* Segment directory (block 1) */
 typedef enum SiftSegKind
