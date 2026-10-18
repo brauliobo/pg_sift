@@ -35,6 +35,9 @@ typedef struct SiftMergePolicy
 extern int	sift_merge_pick(Relation index, const SiftMergePolicy *policy, const SiftDirSnapshot *snap, bool force,
 							SiftSegEntry *sel);
 
+/* qsort order of segment entries: smallest first */
+extern int	sift_seg_bytes_cmp(const void *a, const void *b);
+
 /* Only the last of those: the first segment (smallest first) of which more than dead_pct percent of the documents are dead, else 0. */
 extern int	sift_merge_pick_dead(Relation index, const SiftMergePolicy *policy, const SiftDirSnapshot *snap, SiftSegEntry *sel);
 
