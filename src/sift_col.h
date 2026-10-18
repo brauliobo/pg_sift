@@ -423,6 +423,8 @@ extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uin
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */
 extern void sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids);
+/* The same for the rows ords (ascending ordinals of the unit), n of them: without decoding the keys of the other rows */
+extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint32 n, ItemPointerData *tids);
 
 /*
  * The zone of a leaf in the unit (no chunk read). sift_col_unit_exact: the zone describes exactly the rows a query without filters would

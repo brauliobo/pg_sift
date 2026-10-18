@@ -277,6 +277,7 @@ extern bool sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c);
 
 /* Keys (blk << 16 | off) of rows [0, nrows) of the unit for superblock sb */
 extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
+extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);
 extern void sift_cunit_page_offmask(const SiftCUnitView *v, uint32 p, uint64 *offmask);
