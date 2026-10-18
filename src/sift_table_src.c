@@ -11,12 +11,14 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/bitmapset.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 #include "sift_aggkern.h"
 #include "sift_col.h"
@@ -130,10 +132,24 @@ tbl_layout(Relation rel)
 static void
 tbl_stats(Relation rel, SiftSrcStats *st)
 {
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
+
 	memset(st, 0, sizeof(*st));
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
 	st->nunits = SIFT_TBL_NEXT_VBLOCK(&sift_tbl_rel(rel)->dir.meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
+	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
+	{
+		HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(rel)), Int16GetDatum(cur->cols[i].attno), BoolGetDatum(false));
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		st->ndistinct[i] = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+		if (st->ndistinct[i] < 0)
+			st->ndistinct[i] *= -st->nrows;
+		ReleaseSysCache(tp);
+	}
 }
 
 static void

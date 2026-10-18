@@ -187,6 +187,23 @@ typedef struct SiftColIndexStats
 	BlockNumber heap_pages;
 } SiftColIndexStats;
 
+/*
+ * What the immutable segments know about a leaf without reading a chunk: the unit zones (counts, min and max, the integer sum) and the
+ * size of the segment dictionary (docs/COL.md "Statistics of a leaf"). All counts include rows that were deleted since the build.
+ */
+typedef struct SiftColLeafStats
+{
+	double		nvals;			/* values the leaf holds: rows, or elements for a child */
+	double		nnull;
+	double		sum;			/* total of a GROUP leaf's counts (its elements), when has_sum */
+	int64		min;			/* INT leaves, when has_range: the smallest and largest value of any unit */
+	int64		max;
+	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
+	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
+	bool		has_sum;
+	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
+} SiftColLeafStats;
+
 typedef struct SiftColIndexMeta
 {
 	Oid			indexoid;

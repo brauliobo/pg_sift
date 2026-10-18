@@ -387,6 +387,70 @@ sift_col_index_meta(Relation index)
 	return m;
 }
 
+/*
+ * The leaf statistics of an index's immutable segments, memoized per backend: the key of an entry is the index and the generations of
+ * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. Eight indexes
+ * are kept (the oldest is dropped).
+ */
+#define LEAF_STATS_CACHE	8
+
+static struct
+{
+	Oid			index;
+	uint64		stamp;
+	int			ncols;
+	SiftColLeafStats *st;
+}			leaf_cache[LEAF_STATS_CACHE];
+static int	leaf_cache_next;
+
+const SiftColLeafStats *
+sift_col_leaf_stats(Relation index)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftDirSnapshot dir;
+	uint64		stamp = 0;
+	int			slot = -1;
+
+	sift_dir_read(index, &dir);
+	for (int i = 0; i < dir.nsegs; i++)
+		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+			stamp = stamp * 31 + dir.segs[i].gen + 1;
+	for (int i = 0; i < LEAF_STATS_CACHE; i++)
+		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
+			slot = i;
+	if (slot >= 0 && leaf_cache[slot].stamp == stamp && leaf_cache[slot].ncols == d->ncols)
+		return leaf_cache[slot].st;
+	if (slot < 0)
+		slot = leaf_cache_next++ % LEAF_STATS_CACHE;
+	if (leaf_cache[slot].st)
+		pfree(leaf_cache[slot].st);
+	leaf_cache[slot].st = NULL;
+	{
+		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
+		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+
+		for (int c = 0; c < d->ncols; c++)
+			sift_col_leaf_stats_init(&st[c]);
+		for (int i = 0; i < dir.nsegs; i++)
+		{
+			SiftColSegment *seg;
+
+			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+				continue;
+			seg = sift_cseg_open(index, &dir.segs[i], cx);
+			for (int c = 0; c < d->ncols; c++)
+				sift_cseg_leaf_stats(seg, c, &st[c]);
+			sift_cseg_close(seg);
+		}
+		MemoryContextDelete(cx);
+		leaf_cache[slot].index = RelationGetRelid(index);
+		leaf_cache[slot].stamp = stamp;
+		leaf_cache[slot].ncols = d->ncols;
+		leaf_cache[slot].st = st;
+		return st;
+	}
+}
+
 bool
 sift_col_is_index(Relation index)
 {

@@ -21,11 +21,13 @@
 #include "utils/tuplestore.h"
 
 #include "sift_col_am.h"
+#include "sift_colsrc.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
+PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
 #define TEST_NOMUTABLE	1
 #define TEST_NOVET		2
@@ -425,6 +427,29 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	v[8] = CStringGetTextDatum(sift_simd_level_name(c->simd));
 	scan_close(&ts);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* One row per leaf of an index or sift_table: the planner statistics its column source reports (sift_colsrc.h SiftSrcStats), 0 where unknown */
+Datum
+sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	int			nleaves = sift_colsrc_layout(rel)->nleaves;
+	SiftSrcStats st;
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_colsrc_stats(rel, &st);
+	for (int i = 0; i < nleaves; i++)
+	{
+		Datum		v[5] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
+		Float8GetDatum(st.elems_per_row[i])};
+		bool		nulls[5] = {false, false, false, false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	relation_close(rel, AccessShareLock);
+	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */

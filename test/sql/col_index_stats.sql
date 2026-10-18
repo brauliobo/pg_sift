@@ -1,0 +1,30 @@
+-- The statistics the sift_col source reports to the planner without reading a chunk (docs/COL.md "Statistics of a leaf"): distinct values
+-- from the dictionary of a text leaf and the range of an integer leaf, the range, and the elements per row of a group.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+CREATE TABLE s (id int, k int, flag bool, t text, f float8, items jsonb);
+INSERT INTO s SELECT i, i % 7, i % 2 = 0, 'v' || (i % 5), i / 3.0,
+	jsonb_build_array(jsonb_build_object('c', 'x' || (i % 3), 'q', i % 4), jsonb_build_object('c', 'y', 'q', 10 + i % 2))
+FROM generate_series(1, 5000) i;
+UPDATE s SET t = NULL WHERE id % 10 = 0;
+CREATE INDEX s_col ON s USING sift_col (id, k, flag, t, f, items) WITH (paths = 'items[]{c text, q int4}');
+
+-- leaf, path, distinct values, range, elements per row
+SELECT l.leaf, l.path, round(st.ndistinct) AS ndistinct, st.min, st.max, st.elems_per_row
+FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING (leaf) ORDER BY leaf;
+
+-- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a mutable segment are not counted)
+INSERT INTO s SELECT 5000 + i, 100 + i % 3, true, 'w' || (i % 40), 1.5, '[]'::jsonb FROM generate_series(1, 2000) i;
+SELECT sift.col_promote('s_col') > 0 AS promoted;
+SELECT sift.col_merge('s_col', true) >= 0 AS merged;
+SELECT l.leaf, l.path, round(st.ndistinct) AS ndistinct, st.min, st.max, st.elems_per_row
+FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING (leaf) WHERE l.leaf IN (0, 1, 3, 6, 7) ORDER BY leaf;
+
+-- a sift_table reports what ANALYZE found for its columns (a share of the rows when negative), nothing before
+CREATE TABLE t (a int, b text, c float8) USING sift_table;
+INSERT INTO t SELECT i, 'v' || (i % 9), i FROM generate_series(1, 3000) i;
+SELECT leaf, ndistinct FROM sift._test_col_leaf_stats('t') ORDER BY leaf;
+ANALYZE t;
+SELECT leaf, round(ndistinct) AS ndistinct FROM sift._test_col_leaf_stats('t') ORDER BY leaf;

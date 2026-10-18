@@ -88,6 +88,10 @@ extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
 /* The zone of leaf col in unit u (the zone arrays of the leaf are read on first use) */
 extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z);
 
+/* Adds what the zones and the dictionary of the segment say about leaf col to acc (sift_col_leaf_stats_init first). Reads the leaf's zone arrays and four bytes of its dictionary, no chunk */
+extern void sift_col_leaf_stats_init(SiftColLeafStats *acc);
+extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
+
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test (docs/COL.md 2.4), with the zone kernels */
 extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep);
 
