@@ -312,7 +312,7 @@ delta_vcap(void)
  * backend was first.
  */
 static BlockNumber
-create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vblock)
+create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vblock, uint64 *newgen)
 {
 	const SiftSegEntry *act;
 	BlockNumber first = InvalidBlockNumber;
@@ -362,6 +362,7 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		SiftPageSetUsed(hp, TBL_DELTA_HDR_USED);
 		init_data_page(dp, vbase, flags);
 		*vblock = vbase;
+		*newgen = gen;
 		GenericXLogFinish(state);
 		arg.sealed = act ? act->gen : 0;
 		arg.next_vblock = vbase + vcap;
@@ -460,10 +461,10 @@ extend_delta(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock
 
 /*
  * Adds a page to the active delta segment (creating the segment when needed) and returns it, initialized and unlocked,
- * its vblock in *vblock.
+ * its vblock in *vblock and its segment's generation in *gen.
  */
 static BlockNumber
-claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock)
+claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock, uint64 *gen)
 {
 	for (;;)
 	{
@@ -473,10 +474,25 @@ claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock)
 		sift_tbl_refresh(rel, st);
 		act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
 		if (act && BlockNumberIsValid(blk = extend_delta(rel, act, flags, vblock)))
+		{
+			*gen = act->gen;
 			return blk;
-		if (BlockNumberIsValid(blk = create_delta(rel, st, act ? act->gen : 0, flags, vblock)))
+		}
+		if (BlockNumberIsValid(blk = create_delta(rel, st, act ? act->gen : 0, flags, vblock, gen)))
 			return blk;
 	}
+}
+
+/* A page of the delta segment gen, which must still be the active one and have room; InvalidBlockNumber otherwise */
+static BlockNumber
+claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags)
+{
+	const SiftSegEntry *act;
+	uint32		vb;
+
+	sift_tbl_refresh(rel, st);
+	act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
+	return act && act->gen == gen ? extend_delta(rel, act, flags, &vb) : InvalidBlockNumber;
 }
 
 /* The record of TID offset off in a delta page (locked or a copy); NULL when there is none */
@@ -491,16 +507,27 @@ sift_tbl_page_rec(Page page, uint64 gen, uint32 off)
 	return (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
 }
 
-/* Writes the bytes of a row that does not fit a page into overflow pages (chained front to back); returns the first block */
+/*
+ * Writes the bytes of a row that does not fit a page into overflow pages of the delta segment gen (chained front to back); returns the
+ * first block, InvalidBlockNumber when the segment cannot take them (sealed meanwhile, or full: the caller moves to the next segment).
+ * They must share the segment of the row's record: the record's reader checks them against its generation, and reclaiming a segment
+ * must take every byte of its rows.
+ */
 static BlockNumber
-write_overflow(Relation rel, SiftTblRel *st, MinimalTuple mtup)
+write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 {
 	uint32		npg = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD;
 	BlockNumber *blks = palloc(npg * sizeof(BlockNumber));
-	uint32		vb;
+	BlockNumber first = InvalidBlockNumber;
 
+	if (npg >= delta_vcap())
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
+				 errdetail("A row has to fit one delta segment of %u kB.", sift_tbl_delta_limit)));
 	for (uint32 i = 0; i < npg; i++)
-		blks[i] = claim_page(rel, st, SIFT_TBL_PAGE_OVFDATA, &vb);
+		if (!BlockNumberIsValid(blks[i] = claim_page_in(rel, st, gen, SIFT_TBL_PAGE_OVFDATA)))
+			goto done;
 	for (uint32 i = 0; i < npg; i++)
 	{
 		Buffer		buf = sift_lane_read_locked(rel, blks[i], BUFFER_LOCK_EXCLUSIVE);
@@ -514,9 +541,10 @@ write_overflow(Relation rel, SiftTblRel *st, MinimalTuple mtup)
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(buf);
 	}
-	vb = blks[0];
+	first = blks[0];
+done:
 	pfree(blks);
-	return vb;
+	return first;
 }
 
 void
@@ -525,14 +553,12 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 {
 	SiftTblRec	rec = {.len = mtup->t_len,.xmin = xmin,.cmin = cmin,.token = token};
 	Size		need;
+	uint64		ovf_gen = 0;		/* the segment holding the overflow pages written so far */
 
 	if (token)
 		rec.flags |= SIFT_TBL_REC_SPEC;
 	if (mtup->t_len > SIFT_TBL_ROW_MAX_INLINE)
-	{
 		rec.flags |= SIFT_TBL_REC_OVF;
-		rec.aux = write_overflow(rel, st, mtup);
-	}
 	else
 		rec.inline_len = mtup->t_len;
 	need = TBL_REC_SIZE(rec.inline_len);
@@ -548,19 +574,26 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 		{
 			uint32		vb;
 
-			st->tgt_blk = claim_page(rel, st, 0, &vb);
-			st->tgt_gen = 0;
+			st->tgt_blk = claim_page(rel, st, 0, &vb, &st->tgt_gen);
+		}
+		if ((rec.flags & SIFT_TBL_REC_OVF) && ovf_gen != st->tgt_gen)
+		{
+			if (!BlockNumberIsValid(rec.aux = write_overflow(rel, st, st->tgt_gen, mtup)))
+			{
+				st->tgt_blk = InvalidBlockNumber;	/* the segment of the target is full or sealed: row and bytes go to the next */
+				continue;
+			}
+			ovf_gen = st->tgt_gen;
 		}
 		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
 		if (!PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_MUTDATA &&
 			!(TBL_PAGE(page)->flags & (SIFT_TBL_PAGE_SEALED | SIFT_TBL_PAGE_OVFDATA)) &&
 			TBL_PAGE(page)->nrows < SIFT_TBL_MAX_OFF && SiftPageGetUsed(page) + need <= SIFT_PAGE_PAYLOAD &&
-			(st->tgt_gen == 0 || SiftPageGetOpaque(page)->gen == st->tgt_gen))
+			SiftPageGetOpaque(page)->gen == st->tgt_gen)
 		{
 			uint32		off;
 
-			st->tgt_gen = SiftPageGetOpaque(page)->gen;
 			state = GenericXLogStart(rel);
 			page = GenericXLogRegisterBuffer(state, buf, 0);
 			ph = TBL_PAGE(page);
