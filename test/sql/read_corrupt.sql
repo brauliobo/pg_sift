@@ -73,6 +73,10 @@ FROM (VALUES
 SELECT n.nnib, rc_read(t.blob, t.flags, t.df, t.codec_len, n.nnib) AS verdict
 FROM sift._test_term_blob('rc_list', 'q1') t, unnest(ARRAY[1, 2500, 4999, 5000, 0, -1]) n(nnib);
 
+-- a blob that ends inside the padding after its codec, with a group count that would fit if the length arithmetic wrapped
+SELECT rc_read(set_byte(set_byte(set_byte(substr(blob, 1, codec_len + 1), 8, 255), 9, 255), 10, 255), flags, df, codec_len, nnib) AS verdict
+FROM sift._test_term_blob('rc_grp', 'heavy');
+
 -- every byte of every term blob set to a few values, and every length the dictionary holds for the blob changed
 CREATE FUNCTION rc_sweep(idx regclass, term text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
