@@ -228,9 +228,10 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 } SiftSrcHist;
 
-/* Planner: the histograms the index writes (a unit may still lack one); ndims 0 when none */
+/* Planner: the histograms the index writes (a unit may still lack one); ndims 0 when none. aggs: units have unit_agg sums (always, even with ndims 0) */
 typedef struct SiftSrcPreagg
 {
+	bool		aggs;
 	int			ndims;
 	struct
 	{

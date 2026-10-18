@@ -184,6 +184,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
 | `sift.enable_col` | on | use `sift_col` indexes for column scans |
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
+| `sift.agg_preagg` | on | answer the units of a `SiftAgg` scan whose rows are all visible from the sums and group counts the `sift_col` index stored with them (`Units From Pre-aggregates` in `EXPLAIN ANALYZE`); `off` scans every unit |
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 | `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
 | `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
