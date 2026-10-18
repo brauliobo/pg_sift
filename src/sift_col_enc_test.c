@@ -922,7 +922,7 @@ check_directory(TCtx *t, const SiftCUnitView *v, const SiftColBatch *b)
 
 		sift_cunit_page_offmask(v, p, mask);
 		for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
-			pop += __builtin_popcountll(mask[w]);
+			pop += sift_pc64(mask[w]);
 		CHECK(t, pop == v->rowstart[p + 1] - v->rowstart[p], "offset mask of page %u has %u bits", p, pop);
 	}
 }
