@@ -76,6 +76,17 @@ uint32_t sift_w_for(uint32_t maxoff)
 	return b <= 1 ? 1 : b <= 2 ? 2 : b <= 4 ? 4 : (b + 7) & ~7u;
 }
 
+/* varint at p of at most 56 bits (a key or a count has 41 at most, so a sum of three cannot wrap); a blob is followed by SIFT_KERN_PAD zero bytes, which end a run that the blob does not */
+static const uint8_t *get_varint(const uint8_t *p, uint64_t *x)
+{
+	*x = 0;
+	for (int s = 0; s < 56; s += 7) {
+		*x |= (uint64_t)(*p & 0x7f) << s;
+		if (!(*p++ & 0x80)) return p;
+	}
+	sift_codec_corrupt("varint longer than 56 bits");
+}
+
 uint32_t sift_tf_quant(uint32_t tf) { return tf > 15 ? 15 : tf ? tf : 1; }
 int sift_blob_kind(const uint8_t *blob) { return blob[0] & 0xf; }
 
@@ -83,7 +94,7 @@ uint32_t sift_blob_n(const uint8_t *blob)
 {
 	uint64_t n;
 	if (sift_blob_kind(blob) == SIFT_GROUPED) return ld32(blob + 4);
-	sift_get_varint(blob + 2, &n);
+	get_varint(blob + 2, &n);
 	return (uint32_t)n;
 }
 
@@ -116,17 +127,6 @@ static inline uint32_t ef_l(uint64_t u, uint32_t cnt) { return u > cnt ? nbits(u
 static inline size_t ef_lows(uint32_t cnt, uint32_t l) { return ((size_t)cnt * l + 7) / 8; }
 static inline size_t ef_highs(uint64_t u, uint32_t cnt, uint32_t l) { return (cnt + ((u - 1) >> l) + 7) / 8; }
 static inline uint32_t vlen(uint64_t x) { uint32_t n = 1; while (x >>= 7) n++; return n; }
-
-/* varint at p of at most 56 bits (a key or a count has 41 at most, so a sum of three cannot wrap); a blob is followed by SIFT_KERN_PAD zero bytes, which end a run that the blob does not */
-static const uint8_t *get_varint(const uint8_t *p, uint64_t *x)
-{
-	*x = 0;
-	for (int s = 0; s < 56; s += 7) {
-		*x |= (uint64_t)(*p & 0x7f) << s;
-		if (!(*p++ & 0x80)) return p;
-	}
-	sift_codec_corrupt("varint longer than 56 bits");
-}
 
 static uint32_t list_ob(const sift_tid *t, uint32_t n)
 {
