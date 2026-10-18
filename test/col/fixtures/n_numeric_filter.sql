@@ -2,8 +2,6 @@
 -- shape: S6
 -- expect: agg
 -- sets: K10 K400 K4000
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 -- scenario: yes
 SELECT country_code, count(*) AS orders, sum(total) AS revenue, avg(total) AS avg_total, sum(total) FILTER (WHERE lang = 'en') AS en_total, max(discount) AS top_discount,

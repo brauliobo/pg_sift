@@ -105,6 +105,12 @@ typedef struct SiftSrcVec
 	const uint8 *isnull;		/* NULL: none is null; else n flags, 1 = null (the data slot is readable, content undefined) */
 	const SiftSrcDict *dict;	/* SCV_CODE leaves */
 	int64		n;
+	/*
+	 * numeric leaves (the only values a numeric(p <= 18, s) column cannot hold are its NaNs): NULL when none of the values is one,
+	 * else bit i set = value i is a NaN of the heap (isnull is set too, the data slot is undefined). Zeroed by sift_colsrc_read,
+	 * set by the provider. The executor refuses a vector that has it unless the reader evaluates the value with PostgreSQL.
+	 */
+	const uint64 *ovf;
 } SiftSrcVec;
 
 /*
@@ -116,6 +122,7 @@ typedef struct SiftSrcBuf
 {
 	void	   *data;
 	uint8	   *isnull;
+	uint64	   *ovf;			/* optional, bits for the values of the leaf the index cannot hold (a numeric NaN): NULL, such a value is an error */
 } SiftSrcBuf;
 
 typedef struct SiftSrcUnit

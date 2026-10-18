@@ -469,6 +469,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->op);
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
+	put_int(p, pr->late);
 	put_node(p, pr->expr);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
@@ -630,6 +631,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, c->slot[k].key);
 			put_int(p, c->slot[k].agg);
 			put_node(p, c->slot[k].expr);
+			put_int(p, c->slot[k].direct);
 		}
 	}
 }
@@ -756,6 +758,7 @@ get_pred(Unpack *u)
 	pr->op = get_int(u);
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
+	pr->late = get_int(u);
 	pr->expr = get_node(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
@@ -934,6 +937,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			c->slot[k].key = get_int(u);
 			c->slot[k].agg = get_int(u);
 			c->slot[k].expr = get_node(u);
+			c->slot[k].direct = get_int(u);
 		}
 	}
 }

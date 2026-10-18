@@ -26,6 +26,7 @@ typedef struct ColLeafBuf
 	size_t		cap;			/* elements the buffers hold */
 	void	   *data;
 	uint8	   *isnull;
+	uint64	   *ovf;			/* numeric leaves: the NaNs of the heap */
 } ColLeafBuf;
 
 typedef struct ColSource
@@ -371,7 +372,17 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	SiftColLaneInfo info;
 
 	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
-	if (info.ovf)
+	vec->ovf = NULL;
+	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+	if (info.ovf && buf->ovf && l->typid == NUMERICOID && l->kind == SCL_SCALAR)
+	{
+		SiftColVec	v;
+
+		sift_col_read(&src->unit, leaf, NULL, &v);
+		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(info.n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
+	}
+	else if (info.ovf)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
@@ -401,10 +412,12 @@ leaf_buf(ColSource *src, int leaf, size_t n)
 		{
 			pfree(b->data);
 			pfree(b->isnull);
+			pfree(b->ovf);
 		}
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
+		b->ovf = MemoryContextAlloc(src->cxt, (b->cap / 64 + 1) * sizeof(uint64));
 	}
 	return b;
 }
@@ -416,7 +429,7 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	ColSource  *src = impl;
 	ColLeafBuf *b = leaf_buf(src, leaf, sift_col_lane_n(&src->unit, leaf));
 
-	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull}, vec);
+	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
 }
 
 static void

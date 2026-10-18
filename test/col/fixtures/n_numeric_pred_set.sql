@@ -1,8 +1,6 @@
 -- numeric IN, NOT IN (NULL, repeated and inexact members, none representable), BETWEEN, IS NULL, AND/OR of numeric comparisons in a WHERE
 -- shape: S6
 -- expect: agg
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 SELECT grp, count(*) AS n,
        count(*) FILTER (WHERE n2 IN (10.5, 7, 0.05, 1.234)) AS in_set,
