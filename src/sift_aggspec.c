@@ -87,18 +87,23 @@ integer_type(Oid t)
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
 }
 
+/* the conjuncts a unit's zone can refuse: a comparison (not <>) of an integer-valued leaf with a constant, a numeric leaf as its scaled integer, an IN list */
 static List *
 zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 {
 	const SiftSrcLeaf *lf;
+	bool		num;
 
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
 			out = zone_cmps(out, p->child[i], lay, nbase);
-	if (p->kind != SAP_CMP || p->op == SCMP_NE || !integer_type(p->argtype) || p->leaf >= nbase)
+	if ((p->kind != SAP_CMP && p->kind != SAP_IN) || p->leaf >= nbase || (p->kind == SAP_CMP && p->op == SCMP_NE) || (p->kind == SAP_IN && p->op))
 		return out;
 	lf = &lay->leaf[p->leaf];
-	return lf->parent < 0 && !lf->lossy && integer_type(lf->typid) ? lappend(out, (void *) p) : out;
+	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
+	if (lf->parent >= 0 || lf->lossy || !(num || (integer_type(p->argtype) && integer_type(lf->typid))))
+		return out;
+	return lappend(out, (void *) p);
 }
 
 List *
