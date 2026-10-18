@@ -1,7 +1,8 @@
 /*
  * Kernel throughput per level, plus the rejected bm25_accum designs and a
  * memory bandwidth reference. Single thread pinned to KT_CPU (default 2);
- * see BENCH. Run under flock /tmp/sift-perf.lock. "bench col" runs the column kernels (bench_col.c) instead.
+ * see BENCH. Run under flock /tmp/sift-perf.lock. "bench col" runs the column kernels (bench_col.c) and "bench shred" the shredder
+ * kernels against their composition from the shared slots (bench_shred.c) instead.
  *
  * A block is 16 heap pages of maxoff tuples; a term matches each tuple with
  * probability d. "L1 B/lane" counts the bytes a kernel touches per lane.
@@ -268,6 +269,11 @@ main(int argc, char **argv)
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && sift_kernels_for(l); l++)
 		levels[nlevels++] = sift_kernels_for(l);
 
+	if (argc > 1 && strcmp(argv[1], "shred") == 0)
+	{
+		bench_shred();
+		return 0;
+	}
 	printf("%-12s %-22s %-12s %9s %8s %9s %9s\n", "kernel", "scenario", "level", "ns/call",
 		   "lanes", "Glanes/s", "L1 GB/s");
 	if (argc > 1 && strcmp(argv[1], "col") == 0)
