@@ -79,3 +79,25 @@ CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETU
 -- Read side (src/sift_read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_read_stats' LANGUAGE C STRICT;
+
+-- Shredder (src/sift_shred_test.c, docs/COL-SHRED.md)
+CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_shred_spec' LANGUAGE C STRICT;
+-- kind: col (a slot), list (a list under a parent element: ord = first element, val = count), ovf (the overflow reasons of a column)
+CREATE FUNCTION sift._test_shred(doc jsonb, spec text, max_elems int4 DEFAULT 0, max_bytes int4 DEFAULT 0,
+								 OUT kind text, OUT path text, OUT parent int4, OUT ord int4, OUT key text,
+								 OUT state text, OUT val text) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_shred' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_count(doc jsonb, spec text) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_shred_count' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_summary(doc jsonb, spec text, OUT path text, OUT absent int4, OUT nulls int4,
+										 OUT vals int4, OUT overflow int4, OUT min text, OUT max text) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_shred_summary' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_kern_level() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_level' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_kern_digest(seed int8, iters int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_digest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_kern_equiv(seed int8, iters int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_equiv' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_kern_rate(kernel text, n int4, iters int4) RETURNS float8
+	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_rate' LANGUAGE C STRICT;
