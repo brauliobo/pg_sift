@@ -197,7 +197,7 @@ typedef struct PieceArg
 } PieceArg;
 
 static void
-fill_piece(Page cp, void *arg)
+fill_piece(Page cp, Page np, Page hp, void *arg)
 {
 	PieceArg   *a = arg;
 
@@ -265,7 +265,7 @@ sift_cmut_append(Relation index, SiftCMutHint *h, const SiftColSchema *schema, c
 	{
 		if (h->gen == 0)
 			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
-		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, &lane)))
+		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
 		h->gen = 0;
 	}

@@ -48,14 +48,12 @@
 typedef struct SiftTblDeltaHdr
 {
 	uint32		magic;
-	uint32		flags;			/* SIFT_TBL_DELTA_SEALED */
+	uint32		flags;			/* reserved (was a sealed flag: a sealed segment is told by the flags of its pages) */
 	uint64		vbase;			/* first vblock; page i is vblock vbase + i */
 	uint32		vcap;			/* vblocks reserved (>= the pages the segment may take) */
 	uint32		npages;
 	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
 } SiftTblDeltaHdr;
-
-#define SIFT_TBL_DELTA_SEALED	0x0001
 
 #define TBL_DELTA_HDR(page) \
 	((SiftTblDeltaHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
@@ -75,7 +73,7 @@ typedef struct SiftTblPageHdr
 	uint16		slot[SIFT_TBL_MAX_OFF];
 } SiftTblPageHdr;
 
-#define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_MUTPAGE_SEALED */
+#define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_MUTPAGE_SEALED: set on every page when the segment is sealed (sift_lane_flag_sealed_pages) */
 #define SIFT_TBL_PAGE_OVFDATA	0x0100	/* continuation bytes of an overflow row, no slots */
 
 #define TBL_PAGE(page)	((SiftTblPageHdr *) SiftPageGetData(page))
@@ -116,7 +114,8 @@ typedef struct SiftTblTombPage
 #define TBL_TOMB_HDR(page) \
 	((SiftTblTombHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
 #define TBL_TOMB_PAGE(page)	((SiftTblTombPage *) SiftPageGetData(page))
-#define TBL_TOMB_ENTS(page)	((SiftTblTomb *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftTblTombPage))))
+#define TBL_TOMB_PAGE_INIT	MAXALIGN(sizeof(SiftTblTombPage))
+#define TBL_TOMB_ENTS(page)	((SiftTblTomb *) (SiftPageGetData(page) + TBL_TOMB_PAGE_INIT))
 
 typedef enum SiftTblTombKind
 {
@@ -136,7 +135,7 @@ typedef struct SiftTblTomb
 	uint32		seq;			/* position in the log (not stored: set when loaded) */
 } SiftTblTomb;
 
-#define TBL_TOMB_CAP	((SIFT_PAGE_PAYLOAD - MAXALIGN(sizeof(SiftTblTombPage))) / sizeof(SiftTblTomb))
+#define TBL_TOMB_CAP	((SIFT_PAGE_PAYLOAD - TBL_TOMB_PAGE_INIT) / sizeof(SiftTblTomb))
 
 StaticAssertDecl(sizeof(SiftTblTomb) == 32, "tombstone entries are 32 bytes");
 StaticAssertDecl(sizeof(SiftTblPageHdr) + 16 < BLCKSZ / 4, "page header leaves room for rows");
@@ -151,7 +150,6 @@ typedef struct SiftTblSeg
 	uint64		vbase;
 	uint32		vcap;
 	uint32		npages;			/* pages known */
-	bool		sealed;
 	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
 } SiftTblSeg;
 
