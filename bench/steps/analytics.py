@@ -398,6 +398,8 @@ def sizes(pg, rows, args):
     if pg.scalar("SELECT to_regclass('analytics_meta') IS NOT NULL") == 't':
         for line in pg.run('SELECT key, value FROM analytics_meta ORDER BY key', capture=True):
             key, val = line.split('\t')
+            if key.endswith('stamp'):
+                continue
             rows.add('-', '-', '-', key, 's' if key.endswith('_s') else 'rows', value=number(val) if number(val) is not None else val)
     mib = lambda sql: round(float(pg.scalar(sql)) / 1048576, 1)
     rows.add('-', '-', '-', 'table_mib', 'MiB', value=mib(f"SELECT pg_table_size('{args.table}')"))

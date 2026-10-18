@@ -47,8 +47,16 @@ Commands
   remote     run the harness on a remote host: `remote sync|setup|sift|quick|run|sh|pull|clean ...` (RHOST)
   machine    print the machine and engine description (CPU, RAM, kernel, PostgreSQL, versions, load)
   du         what the work directory and the store hold, by component and in total
+  analytics  the analytics benchmark of sift_col (docs/perf/ANALYTICS.md): `analytics setup|run|report|clean|clickbench|clickbench-setup`
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
+
+analytics (steps/analytics.sh, steps/analytics.py): a deterministic orders corpus of the usual e-commerce ORM shape (1.2M orders, jsonb
+attributes, metrics, items and notes) on a throwaway cluster of its own (SIFT_TMP, SIFT_PORT), the queries S1-S7 (store sets K10, K400, K4000)
+and G1-G8 (whole table) as plain SQL, measured as the CPU time and instructions of one backend with the baseline plan against the sift_col
+plan (an index of the access method sift_col, --col-index; without one the baseline is measured alone), optionally against flat tables
+(--flat) and a throwaway ClickHouse (--clickhouse). `analytics run` writes analytics.json (docs/results layout) and prints the table;
+`analytics clickbench` runs the 43 queries of ClickBench on --rows rows of hits (10,000,000).
 
 check, workers and the engines' databases of a run start the tier's cluster, load the corpus if needed and leave it running
 (`check`, `workers`); `clean` stops it.
@@ -91,7 +99,11 @@ Options (not every option applies to every command)
                     to the last one). report: where results.tsv / builds.tsv / tables.md are written
   --docs            report: also write docs/results/<dataset>.tsv (the committed chart input), redraw docs/img and rewrite the generated
                     blocks of README.md and docs/BENCHMARKS.md; all: also measure the cold-cache tables, then report --docs
-  --no-build        setup/all: use the engines already built under $BENCH_WORK
+  --no-build        setup/all: use the engines already built under $BENCH_WORK (analytics: do not build sift from this checkout)
+  analytics options  --scale S (orders = 1.2M x S), --orders N, --stores N (40000), --cluster store (heap clustered by store and
+                    date), --flat, --clickhouse, --runs N (5, after one warm-up), --sets K10,K400,K4000, --queries S1,G (ids or S / G),
+                    --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
+                    sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench); SIFT_TMP, SIFT_PORT
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   -h, --help        this text
@@ -133,6 +145,9 @@ Examples
   bench/bench check oracle sift 200
   bench/bench readme                                  the README block from docs/results, without measuring
   bench/bench clean --all
+  bench/bench analytics run --flat --clickhouse        the analytics corpus: baseline, flat tables and ClickHouse (+ sift_col when built)
+  bench/bench analytics run --queries S1,S2 --sets K400 --col-index @my_index.sql
+  bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
 EOF
 }
 
@@ -141,6 +156,7 @@ trap '[[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true' EXIT   # t
 
 # --- options
 SLIM_DOCS=50000   # articles of the slim tier (the places are cities15000): bench/README.md says why this size
+a_scale='' a_orders='' a_stores='' a_cluster='' a_flat='' a_ch='' a_runs='' a_sets='' a_queries='' a_col_index='' a_base_gucs='' a_col_gucs='' a_col_plan='' a_timeout='' a_rows=''
 tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean='' ref='' run='' keep='' clean_cache='' clean_build=''
 rest=()
 parse() {
@@ -171,6 +187,21 @@ parse() {
       --no-datasets) fetch_data= ;;
       --all) all_clean=1 ;;
       --full) tier=full ;;
+      --scale) a_scale=$2; shift ;;
+      --orders) a_orders=$2; shift ;;
+      --stores) a_stores=$2; shift ;;
+      --cluster) a_cluster=$2; shift ;;
+      --flat) a_flat=1 ;;
+      --clickhouse) a_ch=1 ;;
+      --runs) a_runs=$2; shift ;;
+      --sets) a_sets=$2; shift ;;
+      --queries) a_queries=$2; shift ;;
+      --col-index) a_col_index=$2; shift ;;
+      --base-gucs) a_base_gucs=$2; shift ;;
+      --col-gucs) a_col_gucs=$2; shift ;;
+      --col-plan) a_col_plan=$2; shift ;;
+      --timeout) a_timeout=$2; shift ;;
+      --rows) a_rows=$2; shift ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown option $1 (bench/bench --help)" ;;
       *) rest+=("$1") ;;
@@ -380,6 +411,21 @@ cmd_all() {
   end_session
 }
 
+cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench-setup: steps/analytics.sh; the settings travel as A_* variables
+  local sub=${rest[0]:-run}
+  case $sub in setup|run|report|clean|clickbench|clickbench-setup) ;; *) die "usage: analytics setup|run|report|clean|clickbench|clickbench-setup" ;; esac
+  for c in psql initdb pg_ctl python3; do command -v "$c" >/dev/null || die "missing prerequisite: $c"; done
+  export A_SCALE=$a_scale A_ORDERS=$a_orders A_STORES=$a_stores A_CLUSTER=$a_cluster A_FLAT=$a_flat A_CH=$a_ch A_RUNS=${a_runs:-5} A_SETS=$a_sets \
+         A_QUERIES=$a_queries A_COL_INDEX=$a_col_index A_BASE_GUCS=$a_base_gucs A_COL_GUCS=$a_col_gucs A_COL_PLAN=$a_col_plan A_TIMEOUT=$a_timeout \
+         A_ROWS=$a_rows A_ENGINES=${engines// /,} A_BUILD=${build:-0} A_ALL=$all_clean
+  for c in A_SCALE A_ORDERS A_STORES A_ROWS A_TIMEOUT; do [[ -n ${!c} ]] || unset "$c"; done
+  case $sub in
+    run|clickbench) perf_lock; new_out; export OUT; "$STEPS/analytics.sh" "$sub" ;;
+    report) "$STEPS/analytics.sh" report "${rest[1]:-}" ;;
+    *) "$STEPS/analytics.sh" "$sub" ;;
+  esac
+}
+
 cmd_regress() { # [--run] [DIR|results.tsv ...]
   local files=() arg rc=0
   if [[ $run ]]; then
@@ -481,5 +527,6 @@ case $cmd in
   clean) load_lib; cmd_clean ;;
   du) load_lib; cmd_du ;;
   readme) cmd_readme ;;
+  analytics) cmd_analytics ;;
   *) echo "bench: unknown command $cmd" >&2; usage; exit 1 ;;
 esac
