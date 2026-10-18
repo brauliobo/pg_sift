@@ -1043,6 +1043,24 @@ random_policy(TCtx *t, int ncols)
 	return pol;
 }
 
+/* The rule that sends a unit's text inline: a string over 255 bytes, or a dictionary that would pass the limit with the entries the unit adds */
+static void
+check_inline_rule(TCtx *t, const SiftColBatch *b, int col, SiftCDict *seg)
+{
+	const SiftCDict *bd = b->dict[col];
+	Size		limit = RAND(t, 4) == 0 ? seg->nbytes + RAND(t, 200) : RAND(t, 2000),
+				add = 0;
+	bool		want = false;
+
+	for (uint32 c = 0; c < bd->n; c++)
+	{
+		want |= dict_len(bd, c) > SIFT_COL_DICT_MAX_ENTRY;
+		add += sift_cdict_find(seg, bd->bytes + bd->off[c], dict_len(bd, c)) < 0 ? dict_len(bd, c) : 0;
+	}
+	want |= seg->nbytes + add > limit;
+	CHECK(t, sift_cbatch_str_inline(b, col, seg, limit) == want, "leaf %d: inline rule for a limit of %zu (dictionary %zu, adds %zu)", col, limit, seg->nbytes, add);
+}
+
 static void
 check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows, uint32 n, const SiftCcPolicy *pol)
 {
@@ -1059,7 +1077,11 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 	SiftColBatch *dst;
 	uint64	   *live;
 	for (int col = 0; col < s->ncols; col++)
+	{
 		inl[col] = b->dict[col] != NULL && (sift_cbatch_str_inline(b, col, dicts[col], SIFT_COL_DICT_MAX_BYTES) || RAND(t, 3) == 0);
+		if (b->dict[col] != NULL && b->col[col].n > 0)
+			check_inline_rule(t, b, col, dicts[col]);
+	}
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "x");	/* the record starts after a pad: encode aligns it */
 	sift_cunit_encode(b, dictmap, inl, pol, &buf, &start, zones);

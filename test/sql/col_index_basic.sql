@@ -112,6 +112,18 @@ SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('l_i
 SELECT count(*) AS missing FROM (SELECT ctid, s FROM longs EXCEPT SELECT tid, val FROM sift._test_col_read('l_idx', 0, '')) z;
 DROP TABLE longs;
 
+-- a shredded text member holds up to its declared length, however long; the longer one (row 3001) is an overflow, which a scan always returns for the heap to decide
+CREATE TABLE jl (id int, doc jsonb);
+INSERT INTO jl SELECT i, jsonb_build_object('t', repeat('é', 100 + i % 400), 'u', i) FROM generate_series(1, 3000) i;
+INSERT INTO jl VALUES (3001, jsonb_build_object('t', repeat('z', 2001), 'u', 3001));
+CREATE INDEX jl_idx ON jl USING sift_col (doc) WITH (paths = 'doc.t text(2000), doc.u int4');
+SELECT sift.col_verify('jl_idx', true);
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('jl_idx') WHERE leaf = 0;
+SELECT col_cmp('jl_idx', '0:eq:' || repeat('é', 350), format('doc->>''t'' = %L OR id = 3001', repeat('é', 350)));
+SELECT col_cmp('jl_idx', '0:prefix:' || repeat('é', 120) || ';1:gt:100', format('(doc->>''t'' LIKE %L COLLATE "C" AND (doc->>''u'')::int > 100) OR id = 3001', repeat('é', 120) || '%'));
+SELECT count(*) AS overflowed FROM sift._test_col_read('jl_idx', 0, '') WHERE val IS NULL;
+DROP TABLE jl;
+
 CREATE INDEX o_col ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty);
 SELECT leaves, segments, mutable_segments, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
 SELECT sift.col_verify('o_col', true);
