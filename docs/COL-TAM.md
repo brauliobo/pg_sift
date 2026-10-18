@@ -25,7 +25,7 @@ piece it calls is a stub, section 12), **no** (unsupported, with the error given
 |---|---|
 | Storage | the page store of `sift_store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
 | TIDs | **synthetic and never reused**: a TID is `(vblock, offset)` with `offset` in 1..`MaxHeapTuplesPerPage` (291) so every index AM, TID bitmaps and GIN accept it. `vblock` comes from a counter in the metapage and never decreases; it is *not* a physical block number. A superblock (SB, 256 vblocks, 74,496 TIDs) is the engine's unit, so the engine's row directory returns the table's own TIDs. |
-| Row versions | **delta + groups.** New rows go to a row-format *delta segment* (mutable lane family: pages of `SIFT_PT_MUTDATA`, directory kind `SIFT_SEG_MUTABLE_*`) with `xmin`/`cmin` per row. Sealing (section 7) turns a delta segment whose rows are all final into a **column group** (an engine immutable segment with the same TIDs; rows frozen: no per-row xmin). COPY and rewrites still go through the delta (there is no segment-level xmin and no direct column write); the delta is sealed as soon as it fills (VACUUM FULL: while it is copied). |
+| Row versions | **delta + groups.** New rows go to a row-format *delta segment* (mutable lane family: pages of `SIFT_PT_MUTDATA`, directory kind `SIFT_SEG_MUTABLE_*`) with `xmin`/`cmin` per row. Sealing (section 7) turns a delta segment whose rows are all final into a **column group** (an engine immutable segment with the same TIDs; rows frozen: no per-row xmin). COPY goes through the delta (there is no segment-level xmin); the delta is sealed as soon as it fills. A rewrite (VACUUM FULL, CLUSTER) writes frozen column segments directly. |
 | Deletes, updates, locks | **tombstones**: one 32-byte entry (`tid`, deleter `xid`, `cid`, kind, successor TID) appended to one per-relation **tombstone segment** (same lane page family). A row version is visible iff its insert is visible and no non-aborted DELETE/UPDATE tombstone of it is visible. UPDATE = new row in the delta + UPDATE tombstone carrying the successor TID (this is the update chain `FIND_LAST_VERSION` and EvalPlanQual follow). HOT does not exist (`TU_All`). |
 | Why tombstones | the deleter's `xid`/`cid` in an append-only log gives MVCC for every snapshot type with the PostgreSQL transaction machinery (subtransactions, savepoints, own-command visibility, aborts) and never rewrites a sealed group. |
 | Lock modes | all four `FOR ...` modes are supported and behave as one exclusive row lock between different transactions (no MultiXact): `FOR SHARE`/`KEY SHARE` of two transactions on the same row serialize. Foreign keys to a `sift_table` parent therefore serialize concurrent children of the same parent row; correct, not fast. |
@@ -191,7 +191,7 @@ PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece o
 | `relation_set_new_filelocator` | creates the fork, writes meta + directory + the empty tombstone segment (init fork for UNLOGGED, as `ambuildempty`), returns `*freezeXid = RecentXmin`, `*minmulti = GetOldestMultiXactId()`. | done |
 | `relation_nontransactional_truncate` | rewrites meta/directory empty (new relfilenode is created by TRUNCATE itself in the same transaction; this callback is the `TRUNCATE` of a relation created in the transaction and of temp tables). | done |
 | `relation_copy_data` | `ALTER TABLE SET TABLESPACE`, `SET LOGGED/UNLOGGED`: block-for-block copy of the fork (`RelationCopyStorage` through smgr, WAL-logged per page); the store is position independent, so the copy is exact. | done |
-| `relation_copy_for_cluster` | `CLUSTER`, `VACUUM FULL`, rewriting `ALTER TABLE`: scans the old table with a fresh MVCC-for-vacuum rule (live rows plus rows a snapshot older than `OldestXmin` can still see are kept; recently dead rows are counted in `tups_recently_dead` and dropped as heap's rewrite does not keep them for new snapshots), writes frozen groups in `OldIndex` order or by sorting (`use_sort`) into the new table's bulk segments, new dense TIDs; reports `num_tuples`, `tups_vacuumed`, `*xid_cutoff = OldestXmin`. | done |
+| `relation_copy_for_cluster` | `CLUSTER`, `VACUUM FULL`: reads the old table's stored versions (live rows are kept; recently dead rows are counted in `tups_recently_dead` and dropped, as are the rows the rewriting transaction deleted), writes frozen column segments directly (section 7), sorted by the btree `OldIndex` for CLUSTER, new dense TIDs; reports `num_tuples`, `tups_vacuumed`, `*xid_cutoff = OldestXmin`. | done |
 | `relation_vacuum` | section 7. | done |
 | `scan_analyze_next_block` / `_next_tuple` | PG 17+: the `ReadStream` is only a budget (its buffers are released unread); the AM walks sampling units (delta pages, engine units chosen at random up to `300 * max statistics target` rows) and reports `liverows` so that `totalrows` equals the exact live count. | done |
 | `index_build_range_scan` | `CREATE INDEX [CONCURRENTLY]`, `REINDEX`: iterates the SB range `[start_blockno, start_blockno + numblocks)` in vblock space (the parallel btree build splits it), `SnapshotAny` + own visibility for the concurrent build (the same rules as `heapam_index_build_range_scan`: in-progress inserters and deleters are waited for with `XactLockTableWait` when the build is not concurrent, indexed anyway when concurrent), partial index predicates, expression indexes, `anyvisible`, progress reporting. | done |
@@ -342,8 +342,12 @@ input so that free space left by earlier merges is reused instead of extending t
 6. `vac_update_relstats` (relpages, reltuples, `relfrozenxid`), `pgstat_report_vacuum`; the counters of insert/update/delete that
    the AM reports keep autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
 
-`VACUUM FULL` is `relation_copy_for_cluster`: the stored versions are copied into a new table, sealed as its delta segments fill, and
-the rest at the end (a small table keeps the write segment's blocks free in its file: up to `sift.table_delta_limit`).
+`VACUUM FULL` and `CLUSTER` are `relation_copy_for_cluster`: the kept versions are written straight into frozen column segments of the
+new table with dense TIDs (`sift_tbl_bulk_*`: no row-format pages, no seal). VACUUM FULL re-keys the rows of the old units as they decode
+(no tuple is formed) when every column segment has the current layout, then adds the delta rows; otherwise (after `ALTER TABLE`) it reads
+the scan's tuples. CLUSTER sorts the scan's tuples by a btree index whatever the planner's `use_sort` says (a TID fetch decodes the unit of
+its superblock, so an index scan in random order would decode a unit per row) and fetches by index scan only for an index that cannot
+order a sort. A version deleted or updated by the rewriting transaction itself is dropped (the rewrite commits or aborts with it).
 `VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). Truncation of empty tail space is not done: freed extents go to
 the free list and are reused by later writes (`sift.table_space(tbl)` shows the file, the high-water mark and the free list; the
 file of a table that was filled once and emptied stays at its high-water mark until `VACUUM FULL`).
@@ -387,7 +391,9 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
   MERGE, INSERT SELECT, aggregates, windows, FOR UPDATE, VACUUM [FULL], REINDEX, CLUSTER, rewrite to heap and back, TRUNCATE).
 - Regression `tbl_seal` (a heap twin through bulk load, VACUUM sealing, point/index/bitmap reads, updates and deletes of sealed rows, aborts, dead-row
   clearing, merges, special values (`-0`, NaN, long text, huge numerics), VACUUM FULL, CLUSTER, ADD/DROP COLUMN, a type change, TRUNCATE),
-  `tbl_space` (released blocks are reused: an emptied and refilled table keeps its size), `tbl_sample` (TABLESAMPLE over delta rows and groups).
+  `tbl_space` (released blocks are reused: an emptied and refilled table keeps its size),
+  `tbl_rewrite` (CLUSTER by a btree sort and a GiST index scan, CLUSTER after deletions of its own transaction, VACUUM FULL over two
+  column layouts), `tbl_sample` (TABLESAMPLE over delta rows and groups).
 - Isolation `test/isolation/specs/tbl_concurrency.spec`: update/update, update/delete, delete/update at READ COMMITTED (the waiter
   re-evaluates), key update, REPEATABLE READ first-updater-wins, SERIALIZABLE write skew, FOR UPDATE / SHARE / NOWAIT / SKIP LOCKED, uncommitted
   rows, unique wait on the inserter (commit and abort), `ON CONFLICT` against an in-progress insert.
@@ -422,7 +428,7 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | `sift_col_open_table(rel, schema, dir, vis, heap_sbs, mcxt)`: a source over the groups of a table | used by scans, fetches, ANALYZE |
 | `SIFT_COLS_VAR` (exact datum images, engine), `exceptions` leaf (table layout) | used |
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
-| `sift_colw_set_tag` (segment xmin of a bulk write) | not used: no direct column write |
+| `sift_colw_set_tag` (segment xmin of a bulk write) | not used: the direct column writes of a rewrite are frozen |
 | `sift_col_add_batches` (delta rows as in-memory units), the `SiftSrcProvider` seam of `sift_colsrc.h` | used by the table provider (`sift_table_src.c`) |
 
 **Files outside this track changed in this branch, each in its own small commit** (owner in brackets):

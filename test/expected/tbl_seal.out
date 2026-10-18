@@ -182,17 +182,17 @@ SELECT id, r8::text, r4::text, nu::text, length(w), t IS NULL AS tnull FROM s WH
 VACUUM FULL s;
 VACUUM FULL h;
 SELECT seal_compare('VACUUM FULL'), seal_layout();
-   seal_compare    |             seal_layout             
--------------------+-------------------------------------
- VACUUM FULL: same | columns x1, delta x1, tombstones x1
+   seal_compare    |        seal_layout        
+-------------------+---------------------------
+ VACUUM FULL: same | columns x1, tombstones x1
 (1 row)
 
 CLUSTER s USING s_i2;
 CLUSTER h USING h_i2;
 SELECT seal_compare('CLUSTER'), seal_layout();
- seal_compare  |             seal_layout             
----------------+-------------------------------------
- CLUSTER: same | columns x1, delta x1, tombstones x1
+ seal_compare  |        seal_layout        
+---------------+---------------------------
+ CLUSTER: same | columns x1, tombstones x1
 (1 row)
 
 -- ALTER TABLE after sealing: old segments keep their layout
