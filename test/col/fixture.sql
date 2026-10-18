@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_text,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
 
 CREATE TABLE orders (
@@ -146,6 +146,8 @@ INSERT INTO t_int SELECT i, 1 + i % 4,
 	CASE i % 4 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN 4611686018427387904 WHEN 2 THEN -9223372036854775807 ELSE i END,
 	i * 33333333333333.3333333333
 FROM generate_series(1, 40) i;
+INSERT INTO t_int SELECT 100 + i, 1 + i % 4, (i % 1009) - 500, (i * 104729::bigint) % 20011 - 10000, (i % 5000) * 3.3333333333
+FROM generate_series(1, greatest(:n - 4000, 0)) i;
 CREATE TABLE t_float (id integer PRIMARY KEY, grp integer NOT NULL, f4 float4, f8 float8);
 INSERT INTO t_float VALUES
 	(1, 1, 0.1, 0.1), (2, 1, 0.2, 0.2), (3, 1, 0.3, 0.3), (4, 1, 16777216, 1e15), (5, 1, 1, 1e-15), (6, 1, NULL, NULL),
@@ -154,6 +156,7 @@ INSERT INTO t_float VALUES
 	(15, 4, 'Infinity', 'Infinity'), (16, 4, 3, 3), (17, 5, 0, 0), (18, 5, '-0', '-0'), (19, 5, 0, 0), (20, 5, '-0', '-0'),
 	(21, 6, 1e30, 1e300), (22, 6, 1e30, 1e300), (23, 6, -1e30, -1e300), (24, 6, 3.4e38, 1.7e308), (25, 6, 3.4e38, 1.7e308);
 INSERT INTO t_float SELECT 100 + i, 7, (0.1 * (i % 10))::float4, 0.1 * (i % 10) + 1e-9 * i FROM generate_series(1, 300) i;
+INSERT INTO t_float SELECT 1000 + i, 7, ((i % 64) / 4.0 - 3)::float4, (i % 997) / 7.0 FROM generate_series(1, greatest(:n - 4000, 0)) i;
 CREATE TABLE t_num (id integer PRIMARY KEY, grp integer NOT NULL, n2 numeric(12,2), n0 numeric(18,0), n6 numeric(18,6));
 INSERT INTO t_num VALUES
 	(1, 1, 10.50, 1, 0.000001), (2, 1, 0.05, 2, -0.5), (3, 1, -3.25, 3, 123456789012.123456), (4, 1, NULL, NULL, NULL), (5, 1, 7.00, 4, 0.1),
@@ -164,6 +167,14 @@ INSERT INTO t_num VALUES
 	(13, 5, 0.00, 0, 0.000000), (14, 5, 0.00, 0, 0.000000), (15, 5, 1.00, 1, 1.000000);
 INSERT INTO t_num SELECT 100 + i, 7, round((i * 13.37 - 400)::numeric, 2), (i * 1000003) % 1000, round((i * 0.123457)::numeric, 6) FROM generate_series(1, 300) i;
 INSERT INTO t_num SELECT 1000 + i, 3, 0.01, 999999999999999999, 0 FROM generate_series(1, 12) i;
+INSERT INTO t_num SELECT 100000 + i, 7, round(((i * 37) % 4001 - 2000) / 7.0, 2), (i * 31) % 500 - 250, round(((i * 101) % 100001 - 50000) / 3.0, 6)
+FROM generate_series(1, greatest(:n - 4000, 0)) i;
+CREATE TABLE t_nan (id integer PRIMARY KEY, grp integer NOT NULL, n2 numeric(12,2), n6 numeric(18,6));
+INSERT INTO t_nan VALUES
+	(1, 1, 1.50, 0.5), (2, 1, 'NaN', 'NaN'), (3, 1, NULL, NULL), (4, 1, -7.25, 2),
+	(5, 2, 'NaN', 3), (6, 2, 'NaN', 'NaN'), (7, 3, 0, 1), (8, 3, 2, 'NaN');
+INSERT INTO t_nan SELECT 100 + i, 4 + i % 5, CASE WHEN i % 997 = 0 THEN 'NaN' ELSE round(((i * 37) % 4001 - 2000) / 7.0, 2) END, CASE WHEN i % 1999 = 0 THEN 'NaN' ELSE round(((i * 101) % 100001 - 50000) / 3.0, 6) END
+FROM generate_series(1, greatest(:n - 4000, 0)) i;
 CREATE TABLE t_text (id integer PRIMARY KEY, grp integer NOT NULL, t text, vc varchar(3));
 INSERT INTO t_text SELECT i, 1 + i % 3, v, left(v, 3)
 FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','','  ']) WITH ORDINALITY u(v, i);

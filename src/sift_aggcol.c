@@ -28,6 +28,7 @@ typedef struct ColLeafBuf
 	size_t		cap;			/* elements the buffers hold */
 	void	   *data;
 	uint8	   *isnull;
+	uint64	   *ovf;			/* numeric leaves: the NaNs of the heap */
 } ColLeafBuf;
 
 typedef struct ColSource
@@ -183,6 +184,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	memset(st, 0, sizeof(*st));
 	st->nrows = meta->stats.nrows;
 	st->nunits = meta->stats.nunits;
+	st->bytes = meta->stats.bytes;
 	st->allvisible_frac = meta->stats.allvisible_frac;
 }
 
@@ -352,10 +354,12 @@ leaf_buf(ColSource *src, int leaf, SiftSrcVecType vt, size_t n)
 		{
 			pfree(b->data);
 			pfree(b->isnull);
+			pfree(b->ovf);
 		}
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
+		b->ovf = MemoryContextAlloc(src->cxt, (b->cap / 64 + 1) * sizeof(uint64));
 	}
 	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
@@ -372,7 +376,8 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 
 	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
 	n = v.n;
-	if (v.ovf)
+	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+	if (v.ovf && !(l->typid == NUMERICOID && l->kind == SCL_SCALAR))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
@@ -402,6 +407,11 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
 	vec->n = n;
 	vec->isnull = NULL;
+	if (v.ovf)
+	{
+		memcpy(b->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = b->ovf;
+	}
 	if (v.nulls)
 	{
 		for (size_t i = 0; i < n; i++)

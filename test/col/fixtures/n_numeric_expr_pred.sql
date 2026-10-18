@@ -1,8 +1,6 @@
 -- numeric predicates on expressions: arithmetic against constants (inexact ones too), a comparison of two columns, round/floor in a filter, NULL operands
 -- shape: S6
 -- expect: agg
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 SELECT grp, count(*) AS n,
        count(*) FILTER (WHERE n2 * 2 > 20) AS dbl_gt, count(*) FILTER (WHERE n2 * 2 = 21) AS dbl_eq, count(*) FILTER (WHERE n2 + n6 < 0.5) AS add_lt,

@@ -1,8 +1,6 @@
 -- count(DISTINCT) of numeric columns and expressions: equal by value at one scale, NULL left out, per group and over everything, with FILTER
 -- shape: S6
 -- expect: agg
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 -- scenario: yes
 SELECT grp, count(DISTINCT n2) AS d2, count(DISTINCT n0) AS d0, count(DISTINCT n6) AS d6, count(DISTINCT n2 * 10) AS d_x10, count(DISTINCT round(n2, 0)) AS d_round,

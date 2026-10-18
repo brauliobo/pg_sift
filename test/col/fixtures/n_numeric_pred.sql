@@ -2,8 +2,6 @@
 -- trailing zeros (0.10), negative, out of the column's range (1e30), NaN and the infinities, in the aggregate filters of one scan
 -- shape: S6
 -- expect: agg
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 SELECT grp,
        count(*) FILTER (WHERE n2 = 10.5::numeric) AS eq_a,

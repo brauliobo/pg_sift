@@ -251,7 +251,8 @@ DECLARE
 	shape text := coalesce(h ->> 'shape', CASE WHEN qname ~ '^[SG][0-9]+$' THEN qname END);
 BEGIN
 	-- a fixture that expects the scan runs where the tiny table makes the btree plan look cheap too: its page costs are raised unless it sets them
-	IF scen <> 'analytics' AND coalesce(h ->> 'expect', 'any') = 'agg' AND NOT EXISTS (SELECT 1 FROM unnest(gucs) g WHERE g ~ '^\s*seq_page_cost') THEN
+	-- or the run is at the server's costs (coldiff.sh --default-costs, on a table large enough for them)
+	IF scen <> 'analytics' AND coalesce(current_setting('coldiff.default_costs', true), '0') = '0' AND coalesce(h ->> 'expect', 'any') = 'agg' AND NOT EXISTS (SELECT 1 FROM unnest(gucs) g WHERE g ~ '^\s*seq_page_cost') THEN
 		gucs := gucs || ARRAY['seq_page_cost = 10000', 'random_page_cost = 10000'];
 	END IF;
 	sets := CASE WHEN coalesce(h ->> 'sets', '-') IN ('-', '') THEN ARRAY[NULL]::text[] ELSE string_to_array(h ->> 'sets', ' ') END;
@@ -333,7 +334,8 @@ BEGIN
 			ELSE
 				msg := coldiff.compare('coldiff_ref', 'coldiff_got', keycols, rel, abs_tol);
 			END IF;
-			shape_ok := CASE WHEN expect = 'agg' AND v = 'on' THEN used WHEN expect = 'plain' AND v LIKE 'on%' THEN NOT used END;
+			-- a scenario dirties the heap pages (the visibility checks make the scan dearer than a btree plan under the raised page costs): only its results are compared there
+			shape_ok := CASE WHEN expect = 'agg' AND v = 'on' AND scen NOT LIKE 'scenario-%' THEN used WHEN expect = 'plain' AND v LIKE 'on%' THEN NOT used END;
 			INSERT INTO coldiff.results (scenario, name, shape, expect, variant, ok, used, gather, shape_ok, ref_ms, ms, detail)
 			VALUES (scen, name, shape, expect, v, msg IS NULL, used, gat, shape_ok, ref_ms, ms,
 					nullif(concat(coalesce(msg, CASE WHEN err_ref IS NOT NULL THEN 'both raise ' || left(err_ref, 80) END),

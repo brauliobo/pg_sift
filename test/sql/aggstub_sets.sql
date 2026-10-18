@@ -96,6 +96,29 @@ SELECT same($$SELECT category, kind, grouping(category, kind) AS g, avg(p) AS a,
 					FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY o.id, i.category) x
 			  GROUP BY GROUPING SETS ((category, kind), (kind), ())$$) AS arms_sets;
 
+-- arms that group by more than the outer keys: the other group expressions are keys of the cells (a row has several cells in a group)
+EXPLAIN (COSTS OFF) WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
+SELECT count(DISTINCT id) AS orders, sum(n) AS items, count(*) AS cells
+FROM (SELECT id, category, kind, count(*) AS n FROM base GROUP BY id, category, kind UNION ALL SELECT id, category, NULL::text, count(*) FROM base GROUP BY id, category) x;
+SELECT same($$WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
+			  SELECT count(DISTINCT id) AS orders, sum(n) AS items, count(*) AS cells, avg(p) AS a
+			  FROM (SELECT id, category, kind, count(*) AS n, avg(price) AS p FROM base GROUP BY id, category, kind
+					UNION ALL SELECT id, category, NULL::text, count(*), avg(price) FROM base GROUP BY id, category) x$$) AS cells_global;
+SELECT same($$WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
+			  SELECT category, count(DISTINCT id) AS orders, sum(n) AS items, count(*) AS cells
+			  FROM (SELECT id, category, kind, count(*) AS n FROM base GROUP BY id, category, kind HAVING count(*) > 1
+					UNION ALL SELECT id, category, NULL::text, count(*) FROM base GROUP BY id, category) x
+			  GROUP BY category$$) AS cells_keyed;
+SELECT same($$WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
+			  SELECT category, GROUPING(category) AS g, count(DISTINCT id) AS orders, count(*) AS cells
+			  FROM (SELECT id, category, kind, count(*) AS n FROM base GROUP BY id, category, kind
+					UNION ALL SELECT id, category, NULL::text, count(*) FROM base GROUP BY id, category) x
+			  GROUP BY ROLLUP (category)$$) AS cells_rollup;
+SELECT same($$WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
+			  SELECT count(DISTINCT id) AS orders, count(*) AS cells
+			  FROM (SELECT id, category, kind, sum(qty) AS n FROM base GROUP BY id, category, kind HAVING sum(qty) > 100
+					UNION ALL SELECT id, category, NULL::text, sum(qty) FROM base GROUP BY id, category HAVING sum(qty) > 100) x$$) AS cells_none;
+
 -- aggregates of the columns of a lookup join: count, DISTINCT, min, max, sum and avg of numeric and float8, NULL columns of the LEFT JOIN
 SELECT same($$SELECT i.category, count(v.label) AS c, count(DISTINCT v.label) AS d, min(v.label) AS lo, max(v.label) AS hi, sum(v.weight) AS sw, avg(v.weight) AS aw,
 					 sum(v.factor) AS sf, avg(v.factor) AS af, sum(v.weight * i.qty) AS wq, count(*) AS n

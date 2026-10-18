@@ -46,6 +46,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/jsonb.h"
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
@@ -87,6 +88,8 @@ typedef struct SlotReq
 	bool		is_key;
 	int			key;
 	int			agg;
+	bool		direct;			/* the value itself (SiftAggSlot.direct) */
+	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
 } SlotReq;
 
 typedef struct ComboCtx
@@ -719,6 +722,114 @@ lut_leaf_ok(AggCtx *c, int leaf)
 	return l->kind == SCL_SCALAR && (l->vtype == SCV_CODE || l->vtype == SCV_I32);
 }
 
+/* a leaf an expression PostgreSQL evaluates may read: a combo gives an id to each distinct value of a dictionary, integer, 64-bit integer (numeric included) or float leaf */
+static bool
+combo_leaf_ok(AggCtx *c, int leaf)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+
+	return l->kind == SCL_SCALAR && (l->vtype == SCV_CODE || l->vtype == SCV_I32 || l->vtype == SCV_I64 || l->vtype == SCV_F64);
+}
+
+/* an integer division or remainder by a constant other than 0 and -1 (the overflow of the smallest value) cannot raise */
+static bool
+safe_int_divisor(const char *name, List *args)
+{
+	Const	   *k;
+
+	if (strncmp(name, "int", 3) != 0 || (!strstr(name, "div") && !strstr(name, "mod")) || list_length(args) != 2)
+		return false;
+	k = (Const *) lsecond(args);
+	if (!IsA(k, Const) || k->constisnull || (k->consttype != INT2OID && k->consttype != INT4OID && k->consttype != INT8OID))
+		return false;
+	return k->consttype == INT2OID ? DatumGetInt16(k->constvalue) != 0 && DatumGetInt16(k->constvalue) != -1 :
+		k->consttype == INT4OID ? DatumGetInt32(k->constvalue) != 0 && DatumGetInt32(k->constvalue) != -1 :
+		DatumGetInt64(k->constvalue) != 0 && DatumGetInt64(k->constvalue) != -1;
+}
+
+/*
+ * Functions that raise an error for some values of their input (a zero divisor, a negative root, a text that is no number). A lookup table
+ * evaluates its expression on every value of the dictionary or of the range of the unit, also on values no selected row has; the combos
+ * evaluate it for the values of the tuples that reach it (docs/COL-PLAN.md, "Expressions PostgreSQL evaluates").
+ */
+static bool
+raising_walker(Node *n, void *context)
+{
+	static const char *const names[] = {"int2div", "int4div", "int8div", "int24div", "int42div", "int28div", "int82div", "int48div", "int84div",
+		"int2mod", "int4mod", "int8mod", "numeric_div", "numeric_mod", "numeric_div_trunc", "float8div", "float4div", "float48div",
+		"float84div", "dpow", "numeric_power", "dlog1", "dlog10", "numeric_ln", "numeric_log", "dsqrt", "numeric_sqrt", "dcbrt", "acos",
+		"asin", "acosh", "atanh", "trunc_div"};
+	Oid			fid = InvalidOid;
+	List	   *args = NIL;
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, CoerceViaIO))
+		return true;
+	if (IsA(n, FuncExpr))
+	{
+		fid = ((FuncExpr *) n)->funcid;
+		args = ((FuncExpr *) n)->args;
+	}
+	else if (IsA(n, OpExpr))
+	{
+		set_opfuncid((OpExpr *) n);
+		fid = ((OpExpr *) n)->opfuncid;
+		args = ((OpExpr *) n)->args;
+	}
+	if (OidIsValid(fid))
+	{
+		const char *name = get_func_name(fid);
+
+		for (int i = 0; name && i < lengthof(names); i++)
+			if (strcmp(name, names[i]) == 0 && !safe_int_divisor(name, args))
+				return true;
+	}
+	return expression_tree_walker(n, raising_walker, context);
+}
+
+/* the values of an integer leaf the lookup table covers: the span of the column's statistics (histogram, most common values) fits, or there are none */
+static bool
+lut_range_ok(AggCtx *c, int leaf)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+	Node	   *e = l->path == NIL && l->parent < 0 ? list_nth(c->attexpr, l->attno - 1) : NULL;
+	HeapTuple	tp;
+	AttStatsSlot sslot;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+	bool		known = false;
+
+	if (e == NULL || !IsA(e, Var))
+		return true;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
+						 Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tp))
+		return true;
+	for (int k = 0; k < 2; k++)
+		if (get_attstatsslot(&sslot, tp, k == 0 ? STATISTIC_KIND_HISTOGRAM : STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_VALUES))
+		{
+			for (int i = 0; i < sslot.nvalues; i++)
+			{
+				int64		v = sift_aggspec_operand_int(l->typid, sslot.values[i]);
+
+				lo = Min(lo, v);
+				hi = Max(hi, v);
+				known = true;
+			}
+			free_attstatsslot(&sslot);
+		}
+	ReleaseSysCache(tp);
+	return !known || (double) hi - (double) lo < (double) (1 << 22);
+}
+
+/* is an expression of one dictionary or integer leaf evaluated by a lookup table (once per value of the dictionary or of the range of the leaf)? */
+static bool
+lut_expr_ok(AggCtx *c, int leaf, Node *expr)
+{
+	return lut_leaf_ok(c, leaf) && !raising_walker(expr, NULL) && (leaf_of(c, leaf)->vtype == SCV_CODE || lut_range_ok(c, leaf));
+}
+
 /* ---------- predicates ---------- */
 
 typedef enum TypeClass
@@ -1064,7 +1175,7 @@ combo_walker(Node *n, ComboWalk *w)
 				w->pcoll[p] = exprCollation(n);
 				w->nl++;
 			}
-			w->bad |= !lut_leaf_ok(w->c, id);
+			w->bad |= !combo_leaf_ok(w->c, id);
 			return false;
 		}
 		w->bad |= IsA(n, Var);
@@ -1075,6 +1186,109 @@ combo_walker(Node *n, ComboWalk *w)
 		w->bad = true;
 	return !w->bad && expression_tree_walker(n, combo_walker, w);
 }
+
+/* a divisor that is a constant other than zero */
+static bool
+nonzero_const(Node *n)
+{
+	Const	   *k = (Const *) strip_relabel(n);
+
+	if (!IsA(k, Const) || k->constisnull)
+		return false;
+	if (k->consttype == NUMERICOID)
+		return !DatumGetBool(DirectFunctionCall2(numeric_eq, k->constvalue, NumericGetDatum(int64_to_numeric(0))));
+	return false;
+}
+
+/* can the function raise an error on some argument? Only what is known not to: leakproof functions (PostgreSQL's own promise), numeric arithmetic, and the widening of a leaf */
+static bool
+func_may_raise(Oid fid, List *args)
+{
+	switch (fid)
+	{
+		case F_NUMERIC_ADD:
+		case F_NUMERIC_SUB:
+		case F_NUMERIC_MUL:
+		case F_NUMERIC_UMINUS:
+		case F_NUMERIC_ABS:
+		case F_ABS_NUMERIC:
+		case F_SIGN_NUMERIC:
+		case F_CEIL_NUMERIC:
+		case F_CEILING_NUMERIC:
+		case F_FLOOR_NUMERIC:
+		case F_NUMERIC_INT2:
+		case F_NUMERIC_INT4:
+		case F_NUMERIC_INT8:
+			return false;
+		case F_ROUND_NUMERIC_INT4:
+		case F_TRUNC_NUMERIC_INT4:
+			return !IsA(strip_relabel(lsecond(args)), Const);
+		case F_NUMERIC_DIV:
+		case F_NUMERIC_MOD:
+			return !nonzero_const(lsecond(args));
+		case F_FLOAT8_NUMERIC:
+			return !IsA(strip_relabel(linitial(args)), Var);
+		default:
+			return !get_func_leakproof(fid);
+	}
+}
+
+/* may the expression raise an error (a division by zero, a cast, an overflow)? The leaves it reads are the Vars of the table */
+static bool
+may_raise_walker(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return false;
+	if ((IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType)) && match_leaf(c, n) >= 0)
+		return false;
+	switch (nodeTag(n))
+	{
+		case T_Var:
+		case T_Const:
+		case T_Param:
+		case T_RelabelType:
+		case T_BoolExpr:
+		case T_NullTest:
+		case T_BooleanTest:
+		case T_CaseExpr:
+		case T_CaseWhen:
+		case T_CoalesceExpr:
+		case T_ArrayExpr:
+			break;
+		case T_FuncExpr:
+			if (func_may_raise(((FuncExpr *) n)->funcid, ((FuncExpr *) n)->args))
+				return true;
+			break;
+		case T_OpExpr:
+		case T_DistinctExpr:
+			{
+				OpExpr	   *o = (OpExpr *) n;
+
+				Oid			lt,
+							rt;
+
+				set_opfuncid(o);
+				if (builtin_cmp(o->opno, &lt, &rt) < 0 && func_may_raise(o->opfuncid, o->args))
+					return true;
+			}
+			break;
+		case T_ScalarArrayOpExpr:
+			{
+				ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) n;
+				Oid			lt,
+							rt;
+
+				set_sa_opfuncid(sa);
+				if (builtin_cmp(sa->opno, &lt, &rt) < 0 && func_may_raise(sa->opfuncid, sa->args))
+					return true;
+			}
+			break;
+		default:
+			return true;
+	}
+	return expression_tree_walker(n, may_raise_walker, c);
+}
+
 
 /*
  * `column = expression of leaves` of the joined table: PostgreSQL evaluates the expression once per distinct tuple of the leaves'
@@ -1197,6 +1411,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 	rq->expr = expr;
 	rq->is_key = is_key;
 	rq->agg = -1;
+	rq->late = !is_key && w.jc == NULL && may_raise_walker(expr, c);
 	cb->slots = lappend(cb->slots, rq);
 	*ci = combo_index(c, cb);
 	*si = list_length(cb->slots) - 1;
@@ -1291,6 +1506,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 			sl->is_key = rq->is_key;
 			sl->key = rq->key;
 			sl->agg = rq->agg;
+			sl->direct = rq->direct;
 			sl->expr = combo_sub_mutator(rq->expr, &sub);
 		}
 	}
@@ -1309,6 +1525,8 @@ combo_text(AggCtx *c, int ci, Node *expr)
 	return psprintf("%s: %s", s.data, expr_text(c, expr));
 }
 
+static SlotReq *slot_req(AggCtx *c, int combo, int slot);
+
 /* a boolean expression of several leaves, or of leaves and the columns of the matching row of a joined table */
 static SiftAggPred *
 compile_combo_pred(AggCtx *c, Node *n)
@@ -1325,6 +1543,7 @@ compile_combo_pred(AggCtx *c, Node *n)
 	p->leaf = ci;
 	p->op = si;
 	p->level = cb->join >= 0 ? 2 : combo_level(c, cb);
+	p->late = slot_req(c, ci, si)->late;
 	p->desc = combo_text(c, ci, n);
 	return p;
 }
@@ -1682,7 +1901,7 @@ compile_lut(AggCtx *c, Node *n)
 
 	if (exprType(n) != BOOLOID)
 		return NULL;
-	if (!single_leaf(c, n, &leaf, &ptype, &ptypmod, &pcoll) || !lut_leaf_ok(c, leaf))
+	if (!single_leaf(c, n, &leaf, &ptype, &ptypmod, &pcoll) || !lut_expr_ok(c, leaf, n))
 		return compile_combo_pred(c, n);
 	p = make_leaf_pred(c, SAP_LUT, leaf);
 	p->expr = substitute_leaf(c, n, ptype, ptypmod, pcoll);
@@ -1714,6 +1933,7 @@ junction_done(SiftAggPred *p)
 	for (int i = 0; i < p->nchild; i++)
 	{
 		p->level = Max(p->level, p->child[i]->level);
+		p->late |= p->child[i]->late;
 		appendStringInfo(&s, "%s%s", i ? (p->kind == SAP_AND ? " AND " : " OR ") : "", p->child[i]->desc);
 	}
 	p->desc = psprintf("(%s)", s.data);
@@ -1856,7 +2076,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 		k->leaf = leaf;
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
-	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_leaf_ok(c, leaf))
+	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_expr_ok(c, leaf, expr))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;
@@ -2127,31 +2347,40 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	TypeCacheEntry *tc = lookup_type_cache(typ, TYPECACHE_EQ_OPR);
 	RegProcedure lhs,
 				rhs;
-	bool		joined = false;
+	bool		joined = false,
+				direct;
 	int			kind,
 				ci,
 				si;
 
 	foreach_ptr(JoinCtx, jc, c->joins)
 		joined |= bms_is_member(jc->rti, pull_varnos(c->root, arg));
-	if (ai < 0 || !joined || !OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))
+	/* without a join the expression is evaluated for every tuple: its value is added as it comes, the distinct values of count(DISTINCT) get ids */
+	direct = !joined && !(fid == F_COUNT_ANY && a->aggdistinct != NIL);
+	if (ai < 0 || (!direct && (!OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs))))
+		return false;
+	if (a->aggdistinct != NIL && fid != F_COUNT_ANY)
 		return false;
 	if (fid == F_COUNT_ANY)
-		kind = a->aggdistinct != NIL ? SAA_M_DISTINCT : SAA_M_COUNT;
+		kind = a->aggdistinct != NIL ? SAA_M_DISTINCT : direct ? SAA_X_COUNT : SAA_M_COUNT;
 	else if ((fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC) && typ == NUMERICOID)
-		kind = fid == F_SUM_NUMERIC ? SAA_M_SUM : SAA_M_AVG;
+		kind = fid == F_SUM_NUMERIC ? (direct ? SAA_X_SUM : SAA_M_SUM) : (direct ? SAA_X_AVG : SAA_M_AVG);
 	else if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && typ == FLOAT8OID)
-		kind = fid == F_SUM_FLOAT8 ? SAA_M_SUM : SAA_M_AVG;
-	else if (a->aggdistinct == NIL && mapped_pg_agg(fid))
+		kind = fid == F_SUM_FLOAT8 ? (direct ? SAA_X_SUM : SAA_M_SUM) : (direct ? SAA_X_AVG : SAA_M_AVG);
+	else if (!direct && a->aggdistinct == NIL && mapped_pg_agg(fid))
 		kind = SAA_M_PG;
 	else if ((kind = minmax_kind(a, typ)) < 0)
 		return false;
-	if (!combo_slot(c, normalize_expr(c, arg), true, &ci, &si))
+	else if (direct)
+		kind = kind == SAA_M_MIN ? SAA_X_MIN : SAA_X_MAX;
+	if (!combo_slot(c, normalize_expr(c, arg), !direct, &ci, &si))
 		return false;
-	slot_req(c, ci, si)->agg = ai;
+	slot_req(c, ci, si)->agg = direct ? -1 : ai;
+	slot_req(c, ci, si)->direct = direct;
 	out->kind = kind;
 	out->aggfn = fid;
 	out->nvx = 0;
+	out->num.n = 0;
 	out->argtype = typ;
 	out->combo = ci;
 	out->slot = si;
@@ -3340,12 +3569,20 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
 #define AGG_KEY_ROW			1.0		/* a group key id */
-#define AGG_COMBO_ROW		3.0		/* a tuple's entry in a combo: gathers and a hash probe */
+#define AGG_COMBO_ROW		2.5		/* a tuple's entry in a combo: gathers and a hash probe */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
 #define AGG_VLEAF_ELEM		9.0		/* an element of an object looked up by key (a metric of a free key object), per row and key */
+#define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
+#define AGG_WIDE_LEAF		3.0		/* a 64-bit leaf of a combo, per tuple: the hash probe for the id of its value */
+#define AGG_DIRECT_NUM		2.0		/* the transition of a PostgreSQL-evaluated value (numeric_add): the normal plan pays it per row too, at the price PostgreSQL gives a transition function */
+#define AGG_DIRECT_CMP		1.0		/* the type's comparison of one (min, max): the same in both plans */
+#define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
+#define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
+#define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
+#define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
@@ -3381,6 +3618,171 @@ pred_num_cost(const SiftAggPred *p)
 	for (int i = 0; p && i < p->nchild; i++)
 		cost += pred_num_cost(p->child[i]);
 	return cost;
+}
+
+/* the numeric operations of a program, and of the predicate tree (one more for the comparison of each): PostgreSQL's numeric functions in the normal plan */
+static int
+num_ops(const SiftAggNum *o)
+{
+	int			n = 0;
+
+	for (int k = 0; k < o->n; k++)
+		n += o->step[k].op > SNX_CONST;
+	return n;
+}
+
+static int
+pred_num_ops(const SiftAggPred *p)
+{
+	int			n = p == NULL ? 0 : p->num.n > 0 ? num_ops(&p->num) + 1 : 0;
+
+	for (int i = 0; p && i < p->nchild; i++)
+		n += pred_num_ops(p->child[i]);
+	return n;
+}
+
+/* distinct value combinations of the leaves of a combo among `tuples`: what the statistics say of the columns, the tuples when a leaf is not one */
+static double
+combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
+{
+	List	   *exprs = NIL;
+
+	for (int p = 0; p < cb->nleaves; p++)
+	{
+		SiftSrcLeaf *lf = leaf_of(c, cb->leaf[p]);
+
+		if (lf->parent >= 0 || lf->path != NIL || lf->attno > list_length(c->attexpr) || list_nth(c->attexpr, lf->attno - 1) == NULL)
+			return tuples;
+		exprs = lappend(exprs, list_nth(c->attexpr, lf->attno - 1));
+	}
+	return Min(tuples, estimate_num_groups(c->root, exprs, tuples, NULL, NULL));
+}
+
+/*
+ * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
+ * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
+ * dictionary and small integer leaves have few combinations and keep the price they had.
+ */
+static double
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
+{
+	double		cost = 0;
+
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		const SiftAggCombo *cb = &s->combo[ci];
+		int			wide = 0;
+		bool		direct = false,
+					filter = false;
+		double		tuples;
+
+		if (cb->join >= 0)
+			continue;
+		for (int p = 0; p < cb->nleaves; p++)
+			wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+		for (int sl = 0; sl < cb->nslots; sl++)
+		{
+			direct |= cb->slot[sl].direct;
+			filter |= !cb->slot[sl].is_key && !cb->slot[sl].direct;
+		}
+		if (wide == 0 && !direct)
+			continue;
+		tuples = filter ? rows : agg_rows;
+		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
+	}
+	return cost;
+}
+
+/*
+ * What the executor really spends on an expression, in operators (PostgreSQL prices a function at procost, 1 for almost all, while a
+ * numeric one allocates and does digit arithmetic).
+ */
+static bool
+real_cost_walker(Node *n, double *excess)
+{
+	List	   *args = NIL;
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr))
+		args = ((FuncExpr *) n)->args;
+	else if (IsA(n, OpExpr) || IsA(n, DistinctExpr))
+		args = ((OpExpr *) n)->args;
+	if (IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, DistinctExpr))
+	{
+		double		real = exprType(n) == NUMERICOID ? AGG_REAL_NUMERIC : AGG_REAL_CALL;
+
+		foreach_ptr(Node, a, args)
+			if (exprType(a) == NUMERICOID)
+				real = AGG_REAL_NUMERIC;
+		*excess += real;
+	}
+	else if (IsA(n, CoerceViaIO))
+		*excess += AGG_REAL_NUMERIC;
+	return expression_tree_walker(n, real_cost_walker, excess);
+}
+
+/*
+ * The credit of the expressions and numeric aggregates: both plans evaluate the expressions of a query, the normal plan once per row at the price PostgreSQL gives
+ * them, which is the executor's cost of a call for the cheap ones and an order of magnitude less than the real one for a numeric one;
+ * the scan evaluates once per distinct combination of values and is priced with the real cost of its machinery (AGG_EVAL_SLOT). The
+ * rows the normal plan evaluates the expressions for, times what its price leaves out, are what the scan saves: AGG_PLAIN_CREDIT of it.
+ */
+static double
+plain_credit(AggCtx *c, const SiftAggSpec *s, double agg_rows)
+{
+	double		excess = 0;
+
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (s->combo[ci].join < 0)
+			for (int sl = 0; sl < s->combo[ci].nslots; sl++)
+			{
+				Node	   *e = (Node *) s->combo[ci].slot[sl].expr;
+				QualCost	priced;
+				double		real = 0;
+
+				real_cost_walker(e, &real);
+				cost_qual_eval_node(&priced, e, c->root);
+				excess += Max(real - priced.per_tuple / cpu_operator_cost, 0.0);
+			}
+	{
+		int			ops = 0;
+
+		for (int i = 0; i < s->npred; i++)
+			ops += pred_num_ops(s->pred[i]);
+		for (int i = 0; i < s->nkeys; i++)
+			ops += num_ops(&s->key[i].num);
+		for (int i = 0; i < s->naggs; i++)
+			ops += num_ops(&s->agg[i].num) + pred_num_ops(s->agg[i].filter);
+		excess += ops * (AGG_REAL_NUMERIC - 2.0);
+	}
+	/* the transition of a numeric sum, average or extreme: PostgreSQL prices it as one operator, the executor allocates and adds digits */
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+
+		if (a->restype == NUMERICOID && (a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM || a->kind == SAA_MIN || a->kind == SAA_MAX ||
+										 a->kind == SAA_X_SUM || a->kind == SAA_X_AVG || a->kind == SAA_X_MIN || a->kind == SAA_X_MAX))
+			excess += AGG_REAL_NUMERIC - 2.0;
+	}
+	return excess * agg_rows * AGG_PLAIN_CREDIT;
+}
+
+/* the per tuple cost of the arithmetic of a PostgreSQL-evaluated aggregate */
+static double
+direct_agg_cost(const SiftAggAgg *a)
+{
+	switch (a->kind)
+	{
+		case SAA_X_MIN:
+		case SAA_X_MAX:
+			return AGG_DIRECT_CMP;
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			return a->restype == NUMERICOID ? AGG_DIRECT_NUM : 0;
+		default:
+			return 0;
+	}
 }
 
 /* what PostgreSQL divides the cost of a parallel scan by: the workers, and the share of the leader that scans too */
@@ -3476,7 +3878,7 @@ leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
 
 /* The average width of the heap column a plain text leaf is read from (0: unknown, or the leaf is a jsonb path or an expression) */
 static int
-leaf_width(AggCtx *c, int leaf)
+leaf_heap_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -3497,10 +3899,34 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	{
 		const SiftSrcLeaf *lf = &c->lay->leaf[s->leaves[i]];
 
-		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
+		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_heap_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
 			cost += leaf_read_whole(c, s, s->leaves[i]) ? AGG_INLINE_ROW : AGG_INLINE_TEST;
 	}
 	return cost;
+}
+
+/* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
+static double
+leaf_width(const SiftSrcLeaf *lf)
+{
+	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64 ? 8.0 : 4.0;
+}
+
+/*
+ * The stored bytes the scan reads: the leaves it reads take their share (by value width) of the compressed bytes of the source; a
+ * source that does not know them (a table, a sample) is taken to compress its values by half.
+ */
+static double
+scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
+{
+	double		all = 0,
+				used = 0;
+
+	for (int i = 0; i < c->lay->nleaves; i++)
+		all += leaf_width(&c->lay->leaf[i]);
+	for (int i = 0; i < s->nleaves; i++)
+		used += leaf_width(leaf_of(c, s->leaves[i]));
+	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
 }
 
 static void
@@ -3537,14 +3963,17 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			scan_cost += agg_rows * AGG_ORDERED_ROW;
-		scan_cost += agg_rows * num_cost(&s->agg[i].num) + rows * pred_num_cost(s->agg[i].filter);
+		scan_cost += agg_rows * (num_cost(&s->agg[i].num) + direct_agg_cost(&s->agg[i])) + rows * pred_num_cost(s->agg[i].filter);
 		if (s->agg[i].kind == SAA_GEN)
 			gen_cost += agg_rows * s->agg[i].gen->cost + rows_out * AGG_GEN_GROUP;
 	}
+	scan_cost += combo_eval_cost(c, s, rows, agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		scan_cost += agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
 		scan_cost += rows * pred_num_cost(s->pred[i]);
+	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
+	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
@@ -4128,6 +4557,8 @@ typedef struct ArmIn
 	CteSub		sub;
 	List	   *cols;			/* the expressions of its output columns */
 	List	   *group;			/* its group expressions */
+	List	   *gsgc;			/* their SortGroupClauses */
+	List	   *used;			/* the group expressions that are an outer key */
 	List	   *quals;			/* its WHERE, when it reads a common table expression */
 	Node	   *id;				/* the group expression that is unique per row */
 	SiftAggArm *out;
@@ -4481,6 +4912,51 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 }
 
 /*
+ * A cell is an inner group, the share of one row in one group of an arm. When an arm groups by more than the outer keys and its id, one
+ * row has several cells in an outer group, so the group expressions that are no outer key are keys of the cells: one key each, shared by
+ * the arms that have an equal expression, after the outer keys and before the number of the set. They name no group (a group has id 0
+ * for them, and the scan emits NULL).
+ */
+static bool
+hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist, bool sets)
+{
+	int			nouter = s->nkeys;
+	List	   *defs = NIL;
+
+	for (int k = 0; k < narms; k++)
+		for (int i = 0; i < list_length(arms[k].group); i++)
+		{
+			Node	   *g = list_nth(arms[k].group, i);
+			SortGroupClause *sgc = list_nth_node(SortGroupClause, arms[k].gsgc, i);
+			int			pos;
+			SiftAggKey *key;
+
+			if (equal(g, arms[k].id) || list_member(arms[k].used, g))
+				continue;
+			pos = -1;
+			foreach_ptr(Node, d, defs)
+				if (equal(d, g))
+					pos = foreach_current_index(d);
+			if (pos < 0)
+			{
+				if (s->nkeys + sets >= SIFT_AGG_MAX_KEYS)
+					return false;
+				key = &s->key[s->nkeys];
+				if (!compile_key(c, sgc, g, key))
+					return false;
+				combo_set_key(c, key, s->nkeys);
+				*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) makeNullConst(key->typid, key->typmod, key->collid),
+																   list_length(*scan_tlist) + 1, NULL, false));
+				defs = lappend(defs, g);
+				pos = s->nkeys++ - nouter;
+			}
+			arms[k].out->hmask |= (uint32) 1 << (nouter + pos);
+		}
+	s->nhidden = s->nkeys - nouter;
+	return true;
+}
+
+/*
  * The outer query aggregates the rows of its FROM item, the arms: a UNION ALL of aggregates (or one) of the same scan, each grouped by
  * a unique row id and by outer keys (a NULL constant where an arm has none of them): see SiftAggArm. The arms are read from their
  * planned roots, so that group expressions and constants are in the planner's final form; an arm that reads a common table
@@ -4504,6 +4980,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	int			okey[SIFT_AGG_MAX_KEYS];
 	int			ncols = 0;
 	List	   *gates = NIL;
+	int			nkeyslots = list_length(parse->groupClause) + 1;
 
 	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
 		return;
@@ -4547,6 +5024,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
 
 			in->group = lappend(in->group, g);
+			in->gsgc = lappend(in->gsgc, sgc);
 			if (unique_row_column(c, g))
 			{
 				in->id = g;
@@ -4589,7 +5067,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	}
 
 	/* the outer keys: columns that every arm groups by or has as NULL */
-	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
+	for (int k = 0; k < narms; k++)
+		nkeyslots += list_length(arms[k].group);
+	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
@@ -4607,6 +5087,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			if (!list_member(arms[k].group, x) || equal(x, arms[k].id) || (def != NULL && !equal(x, def)))
 				return;
 			def = x;
+			arms[k].used = lappend(arms[k].used, x);
 			arms[k].out->keymask |= 1 << s->nkeys;
 		}
 		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
@@ -4616,10 +5097,8 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
 		s->nkeys++;
 	}
-	/* an inner group is the share of one row in an outer group: every group expression is an outer key (but the id) */
-	for (int k = 0; k < narms; k++)
-		if (list_length(arms[k].group) != 1 + pg_popcount32(arms[k].out->keymask))
-			return;
+	if (!hidden_keys(c, s, arms, narms, &scan_tlist, parse->groupingSets != NIL))
+		return;
 	if (parse->groupingSets != NIL)
 		add_sets(parse, s, &scan_tlist);
 

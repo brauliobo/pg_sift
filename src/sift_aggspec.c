@@ -469,6 +469,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->op);
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
+	put_int(p, pr->late);
 	put_node(p, pr->expr);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
@@ -560,6 +561,7 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		const SiftAggArm *a = &s->arm[i];
 
 		put_int(p, (int) a->keymask);
+		put_int(p, (int) a->hmask);
 		put_int(p, a->nfilter);
 		for (int j = 0; j < a->nfilter; j++)
 			put_pred(p, a->filter[j]);
@@ -630,6 +632,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, c->slot[k].key);
 			put_int(p, c->slot[k].agg);
 			put_node(p, c->slot[k].expr);
+			put_int(p, c->slot[k].direct);
 		}
 	}
 }
@@ -682,6 +685,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nsets);
 	for (int i = 0; i < s->nsets; i++)
 		put_int(p, (int) s->setmask[i]);
+	put_int(p, s->nhidden);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
 	put_int(p, s->nworkers);
@@ -757,6 +761,7 @@ get_pred(Unpack *u)
 	pr->op = get_int(u);
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
+	pr->late = get_int(u);
 	pr->expr = get_node(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
@@ -857,6 +862,7 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		SiftAggArm *a = &s->arm[i];
 
 		a->keymask = (uint32) get_int(u);
+		a->hmask = (uint32) get_int(u);
 		a->nfilter = get_int(u);
 		a->filter = palloc(Max(a->nfilter, 1) * sizeof(SiftAggPred *));
 		for (int j = 0; j < a->nfilter; j++)
@@ -935,6 +941,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			c->slot[k].key = get_int(u);
 			c->slot[k].agg = get_int(u);
 			c->slot[k].expr = get_node(u);
+			c->slot[k].direct = get_int(u);
 		}
 	}
 }
@@ -994,6 +1001,7 @@ sift_aggspec_unpack(const List *items)
 	s->setmask = palloc(Max(s->nsets, 1) * sizeof(uint32));
 	for (int i = 0; i < s->nsets; i++)
 		s->setmask[i] = (uint32) get_int(u);
+	s->nhidden = get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
