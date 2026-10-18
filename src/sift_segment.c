@@ -57,6 +57,12 @@ struct SiftSegmentWriter
 	SiftDocSBRef *sbdir;
 	uint32		nsb;
 	uint32		maxsb;
+	/* format 2: the live rows of every SB, spooled, and where each region starts (by SB from sb_lo) */
+	int			fmt;
+	BufFile    *liverows;
+	uint64	   *reg;
+	uint32		nreg;
+	uint32		maxreg;
 	/* terms */
 	SiftPostingWriter *pw;
 	SiftDictWriter *dw;
@@ -109,6 +115,7 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 
 	w->wt = wt;
 	w->gen = gen;
+	w->fmt = SIFT_WRITE_SEGFMT;
 	w->mcxt = mcxt;
 	w->ref = *ref;
 	w->positions = positions;
@@ -117,6 +124,12 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->dl = palloc0(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
 	w->maxsb = 64;
 	w->sbdir = palloc(w->maxsb * sizeof(SiftDocSBRef));
+	if (w->fmt >= SIFT_SEGFMT_LIVEROWS)
+	{
+		w->liverows = BufFileCreateTemp(false);
+		w->maxreg = 64;
+		w->reg = palloc(w->maxreg * sizeof(uint64));
+	}
 	w->termlen = -1;
 	MemoryContextSwitchTo(old);
 	return w;
@@ -126,6 +139,39 @@ void
 sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings)
 {
 	w->spool_min = min_postings;
+}
+
+/*
+ * The region of the SB being flushed in the LIVE rows: the live offsets of its present pages, all live for now, as wide as the
+ * widest page needs (np rows of om)
+ */
+static void
+write_region(SiftSegmentWriter *w, const uint64 *om, int np)
+{
+	SiftLive2RegionData r = {.np = np};
+	uint32		idx = w->sb - w->hdr.sb_lo;
+	int			nw = 1,
+				k = 0;
+
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+		nw = Max(nw, (w->maxoff[p] + 63) / 64);
+	r.w = nw * sizeof(uint64);
+	memcpy(r.pages, w->pagemask, sizeof(r.pages));
+	while (w->nreg <= idx + 1)
+	{
+		if (w->nreg == w->maxreg)
+		{
+			w->maxreg *= 2;
+			w->reg = repalloc_huge(w->reg, w->maxreg * sizeof(uint64));
+		}
+		w->reg[w->nreg] = w->nreg == 0 ? 0 : w->reg[w->nreg - 1];
+		w->nreg++;
+	}
+	/* entries up to idx are the end of the region before; idx + 1 is the end of this one */
+	w->reg[idx + 1] = w->reg[idx] + sizeof(r) + (uint64) np * r.w;
+	BufFileWrite(w->liverows, &r, sizeof(r));
+	for (; k < np; k++)
+		BufFileWrite(w->liverows, om + SIFT_OFFMASK_WORDS * k, r.w);
 }
 
 static void
@@ -142,6 +188,8 @@ flush_sb(SiftSegmentWriter *w)
 		if (w->pagemask[p / 64] & (1ULL << (p % 64)))
 			memcpy(om + SIFT_OFFMASK_WORDS * np++, w->offmask + SIFT_OFFMASK_WORDS * p,
 				   SIFT_OFFMASK_WORDS * sizeof(uint64));
+	if (w->liverows)
+		write_region(w, om, np);
 	hdr[0] = w->sb_ndocs;
 	hdr[1] = sift_chunk_encode(w->pagemask, om, SIFT_CT_AUTO, NULL);
 	chunk = palloc(hdr[1]);
@@ -262,7 +310,16 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	w->hdr.sections[SIFT_SEC_POSTINGS].len = sift_sw_tell(w->sw) - w->hdr.sections[SIFT_SEC_POSTINGS].off;
 	sift_dict_writer_finish(w->dw, &w->hdr);
 	ext = sift_sw_finish(w->sw, &n);
-	sift_live_write(w->wt, w->gen, w->hdr.sb_hi - w->hdr.sb_lo + 1, w->ndocs, &w->hdr.live_first, &w->hdr.live_npages);
+	if (w->liverows)
+	{
+		sift_live2_write(w->wt, w->gen, w->hdr.sb_hi - w->hdr.sb_lo + 1, sift_dict_writer_nslots(w->dw), w->reg, w->liverows,
+						 &w->hdr.live_first, &w->hdr.live_npages);
+		BufFileClose(w->liverows);
+		pfree(w->reg);
+		w->liverows = NULL;
+	}
+	else
+		sift_live_write(w->wt, w->gen, w->hdr.sb_hi - w->hdr.sb_lo + 1, w->ndocs, &w->hdr.live_first, &w->hdr.live_npages);
 	w->hdr.gen = w->gen;
 	w->hdr.ndocs = w->ndocs;
 	w->hdr.sum_dl = w->sum_dl;
@@ -278,7 +335,7 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	memset(entry, 0, sizeof(SiftSegEntry));
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
-	entry->format = SIFT_FORMAT_MINOR;
+	entry->format = w->fmt;
 	entry->flags = w->positions ? SIFT_SEG_POSITIONS : 0;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->hdr.sb_lo;
@@ -303,8 +360,12 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->index = index;
 	seg->entry = *entry;
 	seg->mcxt = mcxt;
+	seg->fmt = Max(entry->format, SIFT_SEGFMT_RANKBITS);
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift: segment %llu is not immutable", ULL(entry->gen));
+	if (entry->format > SIFT_FORMAT_MINOR)
+		elog(ERROR, "sift: segment %llu has format %u, this build reads up to %u", ULL(entry->gen), entry->format,
+			 SIFT_FORMAT_MINOR);
 	buf = ReadBuffer(index, entry->header_blk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
@@ -338,6 +399,8 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 			corrupt(seg, "Sections do not tile the %llu-byte stream.", ULL(size));
 	}
 	seg->dict = sift_dict_open(&seg->sr, h, mcxt);
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS && (entry->flags & SIFT_SEG_DIRTY))
+		sift_dict_track_slots(seg->dict);
 	MemoryContextSwitchTo(old);
 	return seg;
 }
@@ -596,6 +659,143 @@ sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *presen
 	*dl = dm->rows[page];
 }
 
+/* ---------- liveness, format 2 ---------- */
+
+/* The header of the LIVE run, and the region of one SB (its live offsets as a group of bitmaps) read last */
+typedef struct Live2
+{
+	SiftLive2HeaderData h;
+	bool		rok;			/* grp holds the region of SB rsb */
+	uint32		rsb;
+	uint64		rstart;			/* byte of the run where that region starts */
+	Size		rcap;
+	uint8	   *rbuf;			/* the region from byte 24, so that its rows start at 64 */
+	sift_grp	grp;
+} Live2;
+
+static Live2 *
+live2(SiftSegment *seg)
+{
+	Live2	   *l2 = seg->l2;
+	SiftLive	l;
+
+	if (l2)
+		return l2;
+	l = seg_live(seg);
+	l2 = MemoryContextAllocZero(seg->mcxt, sizeof(Live2));
+	sift_live2_header(&l, &l2->h);
+	seg->l2 = l2;
+	return l2;
+}
+
+/* The row of the page in a group of bitmaps, NULL when the page is not in it */
+static const uint8 *
+grp_row(const sift_grp *g, int page)
+{
+	int			wd = page / 64,
+				idx = 0;
+
+	if (!(g->pages[wd] >> (page % 64) & 1))
+		return NULL;
+	for (int j = 0; j < wd; j++)
+		idx += sift_pc64(g->pages[j]);
+	idx += sift_pc64(g->pages[wd] & ((UINT64CONST(1) << (page % 64)) - 1));
+	return g->off + (Size) idx * g->w;
+}
+
+/*
+ * The live offsets of the SB's pages, NULL for an SB without docs. They are kept until the reader asks for another SB, like the
+ * dirty-SB bitmap: a doc vacuumed meanwhile is dead to every snapshot, so the heap check refuses it all the same. The group is
+ * valid until the next call on seg.
+ */
+static const sift_grp *
+live2_rows(SiftSegment *seg, uint32 sb)
+{
+	Live2	   *l2 = live2(seg);
+
+	if (!l2->rok || l2->rsb != sb)
+	{
+		SiftLive	l = seg_live(seg);
+		SiftLive2RegionData *r;
+		uint64		len;
+
+		l2->rok = false;
+		if (sb < seg->hdr->sb_lo || sb > seg->hdr->sb_hi)
+			return NULL;
+		l2->rstart = sift_live2_region(&l, &l2->h, sb - seg->hdr->sb_lo, &len);
+		if (len == 0)
+			return NULL;
+		if (len < sizeof(*r) || len > sizeof(*r) + SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64))
+			corrupt(seg, "Live rows of SB %u span %llu bytes.", sb, ULL(len));
+		if (l2->rcap < len + 24)
+		{
+			l2->rcap = Max(len + 24, 4096);
+			if (l2->rbuf)
+				pfree(l2->rbuf);
+			l2->rbuf = MemoryContextAllocAligned(seg->mcxt, l2->rcap, SIFT_SIMD_ALIGN, 0);
+		}
+		sift_live_copy(&l, l2->rstart, len, l2->rbuf + 24);
+		r = (SiftLive2RegionData *) (l2->rbuf + 24);
+		if (r->w == 0 || r->w % 8 != 0 || r->w > SIFT_OFFMASK_WORDS * 8 || r->np == 0 || r->np > SIFT_SB_PAGES ||
+			len != sizeof(*r) + (uint64) r->np * r->w ||
+			r->np != (uint32) (sift_pc64(r->pages[0]) + sift_pc64(r->pages[1]) + sift_pc64(r->pages[2]) + sift_pc64(r->pages[3])))
+			corrupt(seg, "Live rows of SB %u: %u rows of %u bytes in %llu bytes.", sb, r->np, r->w, ULL(len));
+		l2->grp = (sift_grp) {.gid = sb,.w = r->w,.off = l2->rbuf + 24 + sizeof(*r)};
+		memcpy(l2->grp.pages, r->pages, sizeof(r->pages));
+		l2->rsb = sb;
+		l2->rok = true;
+	}
+	return &l2->grp;
+}
+
+static int
+live2_mask(SiftSegment *seg, uint32 sb, int page, uint64 *mask)
+{
+	const sift_grp *g = live2_rows(seg, sb);
+	const uint64 *row = g ? (const uint64 *) grp_row(g, page) : NULL;
+	int			n = 0;
+
+	for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		n += sift_pc64(mask[k] &= row && k < (int) (g->w / 8) ? row[k] : 0);
+	return n;
+}
+
+static uint64
+live2_count(SiftSegment *seg, const sift_grp *g, const uint64 *pages)
+{
+	const sift_grp *rows = live2_rows(seg, g->gid);
+	const uint8 *off = g->off;
+	uint64		n = 0;
+
+	if (rows == NULL)
+		return 0;
+	if (memcmp(pages, g->pages, sizeof(g->pages)) == 0)
+		return sift_grp_and_count(g, rows);
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
+		{
+			int			bit = pg_rightmost_one_pos64(m);
+			uint64		mask[SIFT_OFFMASK_WORDS] = {0};
+
+			if (pages[wd] >> bit & 1)
+			{
+				memcpy(mask, off, g->w);
+				n += live2_mask(seg, g->gid, wd * 64 + bit, mask);
+			}
+		}
+	return n;
+}
+
+static void
+live2_cleared(SiftSegment *seg, int nd, uint64 dead_dl)
+{
+	Live2	   *l2 = live2(seg);
+
+	l2->rok = false;
+	l2->h.ndead += nd;
+	l2->h.dead_dl += dead_dl;
+}
+
 /* ---------- liveness ---------- */
 
 static void
@@ -606,14 +806,18 @@ load_live_header(SiftSegment *seg)
 	if (seg->live || !(seg->entry.flags & SIFT_SEG_DIRTY))
 		return;
 	seg->live = MemoryContextAlloc(seg->mcxt, (l.nsb + 7) / 8);
-	sift_live_dirty(&l, seg->live);
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		sift_live2_dirty(&l, &live2(seg)->h, seg->live);
+	else
+		sift_live_dirty(&l, seg->live);
 }
 
 /*
  * The liveness bits of the docs of the SB, read once for all its pages: the bit of rank rank_base + i is bit
- * rank_base % 8 + i of the result, followed by zeros for the word loads past a last page. A reader keeps the bits it
- * first read until it asks for another SB, like it keeps the dirty-SB bitmap: a doc vacuumed meanwhile is dead to
- * every snapshot, so the heap check refuses it all the same. A writer that changes the bits drops them (delete_ranks), and the rows made from them (live_om).
+ * rank_base % 8 + i of the result (a word array), followed by zeros for the word loads past a last page. A reader
+ * keeps the bits it first read until it asks for another SB, like it keeps the dirty-SB bitmap: a doc vacuumed meanwhile
+ * is dead to every snapshot, so the heap check refuses it all the same. A writer that changes the bits drops them
+ * (delete_ranks), and the rows made from them (live_om).
  */
 static const uint8 *
 live_sb_bits(SiftSegment *seg, DocMap *dm, const SiftDocChunk *dc)
@@ -649,7 +853,11 @@ live_sb_bits(SiftSegment *seg, DocMap *dm, const SiftDocChunk *dc)
 int
 sift_seg_page_mask_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *mask)
 {
-	DocMap	   *dm = indexed(seg, dc);
+	DocMap	   *dm;
+
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return live2_mask(seg, dc->sb, page, mask);
+	dm = indexed(seg, dc);
 	const uint64 *bits = (const uint64 *) live_sb_bits(seg, dm, dc);
 	int			nw = dm->rows[page] ? (dm->rowlen[page] + 63) / 64 : 0,
 				left = sift_kern->expand(mask, mask, dm->om + dm->maskidx[page] * SIFT_OFFMASK_WORDS, bits,
@@ -685,8 +893,8 @@ live_sb_offsets(SiftSegment *seg, DocMap *dm, const SiftDocChunk *dc)
 	return rows;
 }
 
-uint64
-sift_seg_count_live(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g, const uint64 *pages)
+static uint64
+count_live1(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g, const uint64 *pages)
 {
 	DocMap	   *dm = loaded(seg, dc);
 	const uint8 *off = g->off;
@@ -717,6 +925,26 @@ sift_seg_count_live(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g,
 	return n;
 }
 
+uint64
+sift_seg_live_count(SiftSegment *seg, const sift_grp *g, const uint64 *pages)
+{
+	SiftDocChunk dc;
+
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return live2_count(seg, g, pages);
+	return sift_seg_docs(seg, g->gid, &dc) ? count_live1(seg, &dc, g, pages) : 0;
+}
+
+int
+sift_seg_live_mask(SiftSegment *seg, uint32 sb, int page, uint64 *mask)
+{
+	SiftDocChunk dc;
+
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return live2_mask(seg, sb, page, mask);
+	return sift_seg_docs(seg, sb, &dc) ? sift_seg_page_mask_live(seg, &dc, page, mask) : 0;
+}
+
 /* The live offsets of a page */
 void
 sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *live)
@@ -731,7 +959,11 @@ sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *l
 bool
 sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info)
 {
-	return sift_dict_lookup(seg->dict, term, len, info);
+	if (!sift_dict_lookup(seg->dict, term, len, info))
+		return false;
+	if (seg->entry.flags & SIFT_SEG_DIRTY)
+		sift_seg_term_stats(seg, info);
+	return true;
 }
 
 /* Does the group hold a posting of a live doc */
@@ -758,6 +990,86 @@ group_has_live(SiftSegment *seg, const sift_grp *g)
 	return false;
 }
 
+void
+sift_seg_live_totals(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl)
+{
+	*ndocs = seg->hdr->ndocs;
+	*sum_dl = seg->hdr->sum_dl;
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS && (seg->entry.flags & SIFT_SEG_DIRTY))
+	{
+		const SiftLive2HeaderData *h = &live2(seg)->h;
+
+		*ndocs -= h->ndead;
+		*sum_dl -= h->dead_dl;
+	}
+}
+
+/* Is the doc of the key live: its offset is in the rows of its SB, which are all the SB's docs while the SB is clean */
+static bool
+live2_key(SiftSegment *seg, SiftKey key)
+{
+	BlockNumber blk = sift_key_block(key);
+	int			off = (int) (key & 0xFFFF) - 1;
+	const sift_grp *g;
+	const uint64 *row;
+
+	if (!sift_seg_sb_dirty(seg, sift_block_sb(blk)))
+		return true;
+	g = live2_rows(seg, sift_block_sb(blk));
+	row = g ? (const uint64 *) grp_row(g, blk & (SIFT_SB_PAGES - 1)) : NULL;
+	return row && off / 64 < (int) (g->w / 8) && (row[off / 64] >> (off % 64) & 1);
+}
+
+bool
+sift_seg_live_stable(SiftSegment *seg)
+{
+	SiftLive	l;
+	SiftLive2HeaderData h;
+
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+		return true;
+	if (seg->fmt < SIFT_SEGFMT_LIVEROWS)
+		return false;
+	l = seg_live(seg);
+	sift_live2_header(&l, &h);
+	return h.tbl_ndead == h.ndead && h.ndead == live2(seg)->h.ndead;
+}
+
+bool
+sift_seg_key_live(SiftSegment *seg, SiftKey key)
+{
+	BlockNumber blk = sift_key_block(key);
+	SiftDocChunk dc;
+	uint64		live[SIFT_OFFMASK_WORDS];
+	int			off = (int) (key & 0xFFFF) - 1;
+
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
+		return true;
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return live2_key(seg, key);
+	if (!sift_seg_sb_dirty(seg, sift_block_sb(blk)) || !sift_seg_docs(seg, sift_block_sb(blk), &dc))
+		return true;
+	sift_seg_page_live(seg, &dc, blk & (SIFT_SB_PAGES - 1), live);
+	return off >= 0 && off < SIFT_OFFMASK_WORDS * 64 && (live[off / 64] >> (off % 64) & 1);
+}
+
+void
+sift_seg_term_stats(SiftSegment *seg, SiftTermInfo *info)
+{
+	info->ldf = info->df;
+	if (seg->fmt < SIFT_SEGFMT_LIVEROWS || !(seg->entry.flags & SIFT_SEG_DIRTY))
+		return;
+	if (info->slot >= 0)
+	{
+		SiftLive	l = seg_live(seg);
+
+		info->ldf -= Min(info->df, sift_live2_dead(&l, &live2(seg)->h, info->slot));
+	}
+	else
+		for (uint32 i = 0; i < info->df; i++)
+			info->ldf -= !live2_key(seg, info->inline_keys[i]);
+}
+
 bool
 sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
 {
@@ -767,6 +1079,13 @@ sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
 
 	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
 		return true;
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+	{
+		SiftTermInfo t = *info;
+
+		sift_seg_term_stats(seg, &t);
+		return t.ldf > 0;
+	}
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift term live", ALLOCSET_SMALL_SIZES);
 	c = sift_post_open(&seg->sr, info, cx);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g && !live; g = sift_next(sift_post_cursor(c)))
@@ -786,19 +1105,37 @@ set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 			dir->segs[i].flags |= SIFT_SEG_DIRTY;
 }
 
-/* Deletes the docs of ranks dead[] (ascending) of one SB. The flag first: bits cleared under a clean flag would be ignored by readers */
+/* The directory flag goes first: bits cleared under a clean flag would be ignored by readers */
 static void
-delete_ranks(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
+mark_dirty(SiftSegment *seg)
 {
-	SiftLive	l = seg_live(seg);
-
 	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
 	{
 		sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
 		seg->entry.flags |= SIFT_SEG_DIRTY;
 	}
+}
+
+/* Deletes the docs of ranks dead[] (ascending) of one SB (format 1) */
+static void
+delete_ranks(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
+{
+	SiftLive	l = seg_live(seg);
+
+	mark_dirty(seg);
 	sift_live_clear(&l, sb - seg->hdr->sb_lo, dead, nd);
 	docmap(seg)->live_ok = docmap(seg)->live_om_ok = false;
+}
+
+/* Deletes the docs with these bits of the run (format 2) in one SB, dead_dl the sum of their dl */
+static void
+delete_bits2(SiftSegment *seg, uint32 sb, const uint64 *bits, int nd, uint64 dead_dl)
+{
+	SiftLive	l = seg_live(seg);
+
+	mark_dirty(seg);
+	sift_live2_clear(&l, sb - seg->hdr->sb_lo, bits, nd, dead_dl);
+	live2_cleared(seg, nd, dead_dl);
 }
 
 int64
@@ -825,11 +1162,43 @@ sift_seg_live_rank(SiftSegment *seg, SiftKey key)
 	return rank + pg_popcount64(present[off / 64] & ((UINT64CONST(1) << (off % 64)) - 1));
 }
 
+/*
+ * One doc of a segment of format 2. The table of dead postings is left behind (tbl_ndead < ndead) until a VACUUM of the index
+ * counts it again: a host that deletes one doc at a time writes format 1
+ */
+static bool
+delete_key2(SiftSegment *seg, SiftKey key)
+{
+	BlockNumber blk = sift_key_block(key);
+	int			page = blk & (SIFT_SB_PAGES - 1),
+				off = (key & 0xFFFF) - 1;
+	SiftDocChunk dc;
+	const sift_grp *rows;
+	const uint64 *row;
+	uint64		present[SIFT_OFFMASK_WORDS],
+				bit;
+	const uint16 *dl;
+
+	if (!sift_seg_docs(seg, sift_block_sb(blk), &dc) || !(dc.pagemask[page / 64] >> (page % 64) & 1))
+		return false;
+	rows = live2_rows(seg, dc.sb);
+	row = rows ? (const uint64 *) grp_row(rows, page) : NULL;
+	if (row == NULL || off / 64 >= (int) (rows->w / 8) || !(row[off / 64] >> (off % 64) & 1))
+		return false;
+	sift_seg_page(seg, &dc, page, present, &dl);
+	bit = (live2(seg)->rstart + sizeof(SiftLive2RegionData) + ((const uint8 *) row - rows->off)) * 8 + off;
+	delete_bits2(seg, dc.sb, &bit, 1, dl[off]);
+	return true;
+}
+
 bool
 sift_seg_delete_key(SiftSegment *seg, SiftKey key)
 {
-	int64		rank = sift_seg_live_rank(seg, key);
+	int64		rank;
 
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return delete_key2(seg, key);
+	rank = sift_seg_live_rank(seg, key);
 	if (rank < 0)
 		return false;
 	delete_ranks(seg, sift_block_sb(sift_key_block(key)), (uint64 *) &rank, 1);
@@ -873,20 +1242,198 @@ sb_dead(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, vo
 	return nd;
 }
 
+/*
+ * Asks cb about every live doc of the SB (format 2); returns the bits of the dead ones in the LIVE run in bits[] and the sum of
+ * their dl in *dead_dl
+ */
+static int
+sb_dead2(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, void *cbstate,
+		 IndexBulkDeleteResult *stats, uint64 *bits, uint64 *dead_dl)
+{
+	const sift_grp *rows = live2_rows(seg, dc->sb);
+	uint64		first = (live2(seg)->rstart + sizeof(SiftLive2RegionData)) * 8;
+	int			nd = 0,
+				k = 0;
+
+	if (rows == NULL || memcmp(rows->pages, dc->pagemask, sizeof(dc->pagemask)) != 0)
+		corrupt(seg, "The live rows of SB %u are not those of its pages.", dc->sb);
+	*dead_dl = 0;
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+	{
+		uint64		present[SIFT_OFFMASK_WORDS];
+		const uint64 *live = (const uint64 *) (rows->off + (Size) k * rows->w);
+		const uint16 *dl;
+
+		if (!(dc->pagemask[p / 64] & (1ULL << (p % 64))))
+			continue;
+		sift_seg_page(seg, dc, p, present, &dl);
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			for (uint64 m = present[wd] & (wd < (int) (rows->w / 8) ? live[wd] : 0); m; m &= m - 1)
+			{
+				ItemPointerData tid;
+				int			o = wd * 64 + __builtin_ctzll(m);
+
+				ItemPointerSet(&tid, dc->sb * SIFT_SB_PAGES + p, o + 1);
+				if (cb(&tid, cbstate))
+				{
+					bits[nd++] = first + (uint64) k * rows->w * 8 + o;
+					*dead_dl += dl[o];
+				}
+				else
+					stats->num_index_tuples++;
+			}
+		k++;
+	}
+	return nd;
+}
+
+/* ---------- the dead postings of each term (format 2) ---------- */
+
+typedef struct DeadScan
+{
+	SiftSegment *seg;
+	MemoryContext tcxt;
+	sift_grp  **grp;			/* by SB from sb_lo: the dead docs as rows, NULL when the SB has none */
+	uint32	   *dead;			/* by slot */
+	uint32		nslots;
+} DeadScan;
+
+/* The dead docs of the SB at position i of the SB directory (present and not live), as a group of the rows' width */
+static sift_grp *
+dead_rows(SiftSegment *seg, DocMap *dm, int64 i, MemoryContext cx)
+{
+	uint32		sb = dm->dir[i].sb;
+	const sift_grp *rows;
+	sift_grp   *g;
+	uint64	   *out;
+	bool		any = false;
+
+	load_sb(seg, dm, i);
+	rows = live2_rows(seg, sb);
+	if (rows == NULL || memcmp(rows->pages, dm->pagemask, sizeof(dm->pagemask)) != 0)
+		corrupt(seg, "The live rows of SB %u are not those of its pages.", sb);
+	g = MemoryContextAlloc(cx, sizeof(sift_grp));
+	out = MemoryContextAllocAligned(cx, (Size) dm->np * rows->w, SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	for (int k = 0; k < dm->np; k++)
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+		{
+			uint64		om = dm->om[k * SIFT_OFFMASK_WORDS + wd];
+
+			if (wd >= (int) (rows->w / 8))
+			{
+				if (om)
+					corrupt(seg, "The live rows of SB %u are narrower than its docs.", sb);
+				continue;
+			}
+			out[(Size) k * (rows->w / 8) + wd] = om & ~((const uint64 *) rows->off)[(Size) k * (rows->w / 8) + wd];
+			any |= out[(Size) k * (rows->w / 8) + wd] != 0;
+		}
+	*g = (sift_grp) {.gid = sb,.w = rows->w,.off = (const uint8 *) out};
+	memcpy(g->pages, rows->pages, sizeof(g->pages));
+	return any ? g : NULL;
+}
+
+static bool
+dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
+{
+	DeadScan   *ds = arg;
+	SiftSegment *seg = ds->seg;
+	SiftPostingCursor *c;
+	sift_cur   *cur;
+	uint64		n = 0;
+
+	if (info->slot < 0)
+		return true;
+	if (info->slot >= ds->nslots)
+		corrupt(seg, "A term has slot %d in a table of %u.", info->slot, ds->nslots);
+	c = sift_post_open(&seg->sr, info, ds->tcxt);
+	sift_sr_unlock(&seg->sr);
+	cur = sift_post_cursor(c);
+	for (const sift_grp *g = sift_next(cur); g; g = sift_next(cur))
+	{
+		const sift_grp *d;
+
+		if (g->gid < seg->hdr->sb_lo || g->gid > seg->hdr->sb_hi)
+			corrupt(seg, "A posting lies in SB %u, outside the segment's %u to %u.", g->gid, seg->hdr->sb_lo, seg->hdr->sb_hi);
+		d = ds->grp[g->gid - seg->hdr->sb_lo];
+		if (d)
+			n += sift_grp_and_count(g, d);
+	}
+	ds->dead[info->slot] = n;
+	MemoryContextReset(ds->tcxt);
+	CHECK_FOR_INTERRUPTS();
+	return true;
+}
+
+/* Counts again, for every term with a slot, the postings of the docs that are dead now: the whole table, so that a repeat is harmless */
+static void
+count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
+{
+	SiftLive	l = seg_live(seg);
+	DocMap	   *dm = docmap(seg);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift dead postings", ALLOCSET_DEFAULT_SIZES);
+	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
+	uint8	   *dirty = palloc((h->nsb + 7) / 8);
+
+	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
+	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
+	memset(dead, 0, (Size) h->nslots * sizeof(uint32));
+	sift_live2_dirty(&l, h, dirty);
+	live2(seg)->rok = false;
+	for (int64 i = 0; i < dm->nsb; i++)
+	{
+		uint32		idx = dm->dir[i].sb - seg->hdr->sb_lo;
+
+		if (dirty[idx / 8] >> (idx % 8) & 1)
+			ds.grp[idx] = dead_rows(seg, dm, i, cx);
+		CHECK_FOR_INTERRUPTS();
+	}
+	live2(seg)->rok = false;
+	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, dead_term, &ds);
+	sift_sr_release(&seg->sr);
+	pfree(dirty);
+	MemoryContextDelete(cx);
+}
+
+/* When the docs were cleared since the table was counted (VACUUM, or a crash that left it short): counts the table again and stores it */
+void
+sift_seg_refresh_dead(SiftSegment *seg)
+{
+	SiftLive	l = seg_live(seg);
+	SiftLive2HeaderData h;
+	uint32	   *dead;
+
+	if (seg->fmt < SIFT_SEGFMT_LIVEROWS)
+		return;
+	sift_live2_header(&l, &h);
+	if (h.tbl_ndead == h.ndead)
+		return;
+	dead = MemoryContextAllocHuge(CurrentMemoryContext, Max(h.nslots, 1) * sizeof(uint32));
+	count_dead(seg, &h, dead);
+	sift_live2_set_dead(&l, &h, dead);
+	pfree(dead);
+	sift_sr_release(&seg->sr);
+}
+
 int64
 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {
 	SiftDocChunk dc;
 	uint64	   *dead = palloc(SIFT_SB_PAGES * MAXOFF * sizeof(uint64));
 	int64		removed = 0;
+	bool		rows = seg->fmt >= SIFT_SEGFMT_LIVEROWS;
 
 	for (uint32 sb = seg->hdr->sb_lo; sb <= seg->hdr->sb_hi && sift_seg_docs_next(seg, sb, &dc); sb = dc.sb + 1)
 	{
-		int			nd = sb_dead(seg, &dc, cb, cbstate, stats, dead);
+		uint64		dl = 0;
+		int			nd = rows ? sb_dead2(seg, &dc, cb, cbstate, stats, dead, &dl) : sb_dead(seg, &dc, cb, cbstate, stats, dead);
 
 		if (nd == 0)
 			continue;
-		delete_ranks(seg, dc.sb, dead, nd);
+		if (rows)
+			delete_bits2(seg, dc.sb, dead, nd, dl);
+		else
+			delete_ranks(seg, dc.sb, dead, nd);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -931,6 +1478,7 @@ typedef struct Walk
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
 	bool		stopped;
+	uint32		nslots;			/* terms with a slot so far (format 2) */
 } Walk;
 
 /* Every doc of the segment with its dl; checks the docmap on the way */
@@ -1004,6 +1552,97 @@ verify_live(Walk *w)
 	if (live + lh.ndead != seg->hdr->ndocs || ((seg->entry.flags & SIFT_SEG_DIRTY) == 0 && (dirty || lh.ndead)))
 		corrupt(seg, "%llu live and %u dead of %llu docs (dirty flag %d).",
 				ULL(live), lh.ndead, ULL(seg->hdr->ndocs), (seg->entry.flags & SIFT_SEG_DIRTY) != 0);
+}
+
+/* Format 2: the live rows are the docmap's offsets less the vacuumed docs, the header counts them, and the table counts their postings */
+static void
+verify_live2(Walk *w)
+{
+	SiftSegment *seg = w->seg;
+	SiftLive	l = seg_live(seg);
+	SiftLive2HeaderData h;
+	DocMap	   *dm = docmap(seg);
+	uint8	   *dirty;
+	uint64		dead = 0,
+				dead_dl = 0,
+				rowbytes = 0;
+	bool		anydirty = false;
+
+	sift_live2_header(&l, &h);
+	dirty = palloc((h.nsb + 7) / 8);
+	sift_live2_dirty(&l, &h, dirty);
+	for (uint32 i = 0; i < (h.nsb + 7) / 8; i++)
+		anydirty |= dirty[i] != 0;
+	live2(seg)->rok = false;
+	for (int64 i = 0; i < dm->nsb; i++)
+	{
+		uint32		sb = dm->dir[i].sb,
+					idx = sb - seg->hdr->sb_lo;
+		const sift_grp *rows;
+		uint64		sbdead = 0;
+		int			k = 0;
+
+		load_sb(seg, dm, i);
+		index_sb(seg, dm);
+		live2(seg)->rok = false;
+		rows = live2_rows(seg, sb);
+		if (rows == NULL || memcmp(rows->pages, dm->pagemask, sizeof(dm->pagemask)) != 0)
+			corrupt(seg, "The live rows of SB %u are not those of its pages.", sb);
+		rowbytes += sizeof(SiftLive2RegionData) + (uint64) dm->np * rows->w;
+		for (int p = 0; p < SIFT_SB_PAGES; p++)
+		{
+			const uint64 *om = dm->om + dm->maskidx[p] * SIFT_OFFMASK_WORDS,
+					   *live = (const uint64 *) (rows->off + (Size) k * rows->w);
+
+			if (!dm->rows[p])
+				continue;
+			for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			{
+				uint64		lv = wd < (int) (rows->w / 8) ? live[wd] : 0;
+
+				if ((lv & ~om[wd]) || (wd >= (int) (rows->w / 8) && om[wd]))
+					corrupt(seg, "The live row of page %d of SB %u holds offsets the docmap does not (word %d).", p, sb, wd);
+				for (uint64 m = om[wd] & ~lv; m; m &= m - 1, sbdead++)
+					dead_dl += dm->rows[p][wd * 64 + __builtin_ctzll(m)];
+			}
+			k++;
+		}
+		if (sbdead > 0 && !(dirty[idx / 8] >> (idx % 8) & 1))
+			corrupt(seg, "SB %u has %llu dead docs and no dirty bit.", sb, ULL(sbdead));
+		dead += sbdead;
+	}
+	if (dead != h.ndead || dead_dl != h.dead_dl || rowbytes != h.tbl_off - h.rows_off ||
+		((seg->entry.flags & SIFT_SEG_DIRTY) == 0 && (anydirty || h.ndead)))
+		corrupt(seg, "%llu dead docs (%llu tokens) in %llu bytes of rows; the header %u (%llu), %llu bytes (dirty flag %d).",
+				ULL(dead), ULL(dead_dl), ULL(rowbytes), h.ndead, ULL(h.dead_dl), ULL(h.tbl_off - h.rows_off),
+				(seg->entry.flags & SIFT_SEG_DIRTY) != 0);
+	pfree(dirty);
+}
+
+/* The table of dead postings against the postings themselves; after the walk of the terms has checked them */
+static void
+verify_dead2(Walk *w)
+{
+	SiftSegment *seg = w->seg;
+	SiftLive	l = seg_live(seg);
+	SiftLive2HeaderData h;
+
+	sift_live2_header(&l, &h);
+	if (h.tbl_ndead == h.ndead)
+	{
+		uint32	   *have = palloc(Max(h.nslots, 1) * sizeof(uint32)),
+				   *want = palloc(Max(h.nslots, 1) * sizeof(uint32));
+
+		if (w->nslots != h.nslots)
+			corrupt(seg, "The dictionary has %u terms with a slot, the table %u.", w->nslots, h.nslots);
+		sift_live2_dead_all(&l, &h, have);
+		count_dead(seg, &h, want);
+		for (uint32 i = 0; i < h.nslots; i++)
+			if (have[i] != want[i])
+				corrupt(seg, "The table counts %u dead postings for slot %u, the postings %u.", have[i], i, want[i]);
+		pfree(have);
+		pfree(want);
+	}
 }
 
 static int
@@ -1105,6 +1744,10 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	w->prevlen = len;
 	if (info->df > w->ndocs)
 		corrupt(seg, "Term \"%.*s\" has df %u in a segment of %llu docs.", len, term, info->df, ULL(w->ndocs));
+	if (w->verify && seg->fmt >= SIFT_SEGFMT_LIVEROWS &&
+		info->slot != ((info->flags & SIFT_TERM_INLINE) ? -1 : (int32) w->nslots++))
+		corrupt(seg, "Term \"%.*s\" has slot %d, expected %d.", len, term, info->slot,
+				(info->flags & SIFT_TERM_INLINE) ? -1 : (int) w->nslots - 1);
 	if (info->df > w->tcap)
 	{
 		w->tcap = Max(info->df, w->tcap * 2);
@@ -1198,11 +1841,15 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	st->dict_bytes = s[SIFT_SEC_DICT].len + s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	walk_docs(&w);
-	if (verify)
+	if (verify && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		verify_live2(&w);
+	else if (verify)
 		verify_live(&w);
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
+	if (verify && !w.stopped && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		verify_dead2(&w);
 	MemoryContextDelete(w.tcxt);
 }
 

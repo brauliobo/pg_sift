@@ -11,8 +11,25 @@
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
-/* 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before */
-#define SIFT_FORMAT_MINOR		1
+/*
+ * 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before
+ * 1.2: segments of segment format 2 (below); segments of 1.0 and 1.1 are read as before
+ */
+#define SIFT_FORMAT_MINOR		2
+
+/*
+ * Segment formats (SiftSegEntry.format). 1: one liveness bit per doc in rank order, a segment's df, N and avgdl count
+ * its vacuumed docs. 2: the liveness bits are rows of live offsets per superblock, and the header and a table of dead
+ * postings per term keep the statistics of the live docs. The SQLite and MariaDB hosts delete one doc
+ * at a time, which cannot keep that table, so they keep writing format 1 (and read both).
+ */
+#define SIFT_SEGFMT_RANKBITS	1
+#define SIFT_SEGFMT_LIVEROWS	2
+#if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
+#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_RANKBITS
+#else
+#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_LIVEROWS
+#endif
 
 /* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
 #define SIFT_SB_SHIFT			8

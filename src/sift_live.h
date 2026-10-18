@@ -51,4 +51,37 @@ extern void sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out
  */
 extern void sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd);
 
+/* ---------- format 2: rows of live offsets (sift_page.h SiftLive2HeaderData) ---------- */
+
+/*
+ * Writes the LIVE run of a new segment of format 2, all docs live and no SB dirty: reg[nsb + 1] are the region starts and the end
+ * (reg[nsb] bytes long), rows the spool file holding the regions, nslots the terms with a slot (their counters are zero)
+ */
+extern void sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, const uint64 *reg, BufFile *rows,
+							 BlockNumber *first, uint32 *npages);
+
+/* The header, checked against the run (ERRCODE_INDEX_CORRUPTED when the run cannot hold what it lists) */
+extern void sift_live2_header(const SiftLive *l, SiftLive2HeaderData *h);
+
+/* The dirty bitmap, (nsb + 7) / 8 bytes, bit sb - sb_lo */
+extern void sift_live2_dirty(const SiftLive *l, const SiftLive2HeaderData *h, uint8 *out);
+
+/* The byte of the run where the region of SB sbidx starts, and its length */
+extern uint64 sift_live2_region(const SiftLive *l, const SiftLive2HeaderData *h, uint32 sbidx, uint64 *len);
+
+/*
+ * Clears the bits (bit numbers of the run) of nd docs of SB sbidx, counts them and their dl dead and sets the SB's dirty bit,
+ * in one generic WAL record. The caller marks the directory entry SIFT_SEG_DIRTY first.
+ */
+extern void sift_live2_clear(const SiftLive *l, uint32 sbidx, const uint64 *bits, int nd, uint64 dead_dl);
+
+/* The dead postings of the term with this slot */
+extern uint32 sift_live2_dead(const SiftLive *l, const SiftLive2HeaderData *h, uint32 slot);
+
+/* The dead postings of every slot */
+extern void sift_live2_dead_all(const SiftLive *l, const SiftLive2HeaderData *h, uint32 *out);
+
+/* Stores the table (the pages that differ, a generic WAL record each) and then sets tbl_ndead to ndead, with the header read again */
+extern void sift_live2_set_dead(const SiftLive *l, const SiftLive2HeaderData *h, const uint32 *dead);
+
 #endif							/* SIFT_LIVE_H */
