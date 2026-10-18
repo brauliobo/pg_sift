@@ -88,6 +88,10 @@ SELECT * FROM sh('{"x":{"y":{"z":[1,2,3]}},"w":1}', 'q int4, x.y.z[] int4');
 SELECT * FROM sift._test_shred_summary(jsonb_build_object('a', (SELECT jsonb_agg(i) FROM generate_series(1, 1100000) i)), 'a[] int4');
 SELECT kind, path, state, val FROM sh(jsonb_build_object('a', (SELECT jsonb_agg(i) FROM generate_series(1, 20) i)), 'a[] int4', 5) WHERE kind <> 'col';
 
+-- zero-length copies: an empty text and an empty member name as the first of their kind
+SELECT * FROM sh('{"s":""}', 's text') WHERE kind = 'col';
+SELECT * FROM sh('{"m":{"":1,"a":2}}', 'm.* int4') WHERE kind = 'col';
+
 -- the shredder is kept between documents: nothing of the previous one remains
 SELECT id, sift._test_shred_count(doc, 'items[]{category text, qty int4}, tags[] text, m.* int4')
 FROM (VALUES (1, '{"items":[{"category":"x","qty":1},{"category":"y","qty":2},{"category":"z"}],"tags":["a","b"],"m":{"a":1,"b":2}}'::jsonb),
