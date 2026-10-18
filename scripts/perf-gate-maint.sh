@@ -71,8 +71,8 @@ echo "INSERT INTO t (body) SELECT $ROW;" >"$BASE/insert.sql"
 echo "SELECT count(*) FROM t WHERE body @@> 'w1 OR w2 OR w3';" >"$BASE/count.sql"
 echo "SELECT id FROM t WHERE body @@> 'w1 OR w2 OR w3' ORDER BY sift.score(ctid) DESC LIMIT 10;" >"$BASE/rank.sql"
 
-fresh() { # LABEL [index options]: empty table and index
-	q "$1" "DROP TABLE IF EXISTS t; CREATE TABLE t (id serial, body text); CREATE INDEX t_idx ON t USING sift (body) ${2:-}" >/dev/null
+fresh() { # LABEL [index options, default $FRESH_OPTS]: empty table and index
+	q "$1" "DROP TABLE IF EXISTS t; CREATE TABLE t (id serial, body text); CREATE INDEX t_idx ON t USING sift (body) ${2:-${FRESH_OPTS:-}}" >/dev/null
 }
 settle() { # LABEL: waits for the maintenance worker to finish
 	until [[ $(q "$1" "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]]; do sleep 0.2; done
@@ -216,6 +216,87 @@ cell() { # LABEL: the selected groups
 	done
 	return 0
 }
+
+# Groups dead and mut (only with --cells dead / --cells mut): A/Bs of two values of a reloption inside one build (the order of the two alternates with
+# the run, so that drifts of the load hit both).
+#   dead<upd|del><P>_*  10 rounds of updating / deleting 6% of 4 x --rows rows, each followed by VACUUM, on an index built with dead_rewrite_pct = P
+#                       (50, 5): vac_s (VACUUM time), vac_wal_mb (WAL of the VACUUM and the maintenance after it: the write amplification),
+#                       idx_mb (size at the end), idx_max_mb (largest size after a round), segs, and the count / rank latency (ms) at the end
+#   mut<L>_*            the same table at mutable_limit = L kB (4096, 1024): one-row INSERTs at 16 clients and at 1 (insert16_tps / _p99_ms,
+#                       insert1_tps / _p99_ms), the worker's promotion and merge durations of that load from the server log (promo_ms / merge_ms,
+#                       mean, and promo_n / merge_n), bulk_rows_s, copy_rows_s, then on the index that grew idx_mb, segs and the latency (ms)
+#                       of a count, a ranked OR, a ranked AND and a single term at 4 clients
+alt() { if (( r % 2 )); then echo "$1 $2"; else echo "$2 $1"; fi; }
+# VACUUM seconds and the WAL bytes of the VACUUM and the maintenance that follows it, as "SECONDS BYTES"
+timed_vacuum() { # LABEL
+	local lsn0 t0 s
+	settle "$1"; lsn0=$(q "$1" "SELECT pg_current_wal_lsn()")
+	t0=$(now); q "$1" "VACUUM t" >/dev/null; s=$(elapsed "$t0")
+	settle "$1"
+	echo "$s $(q "$1" "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '$lsn0')")"
+}
+# A table of 4 x --rows rows with its index built (one segment) at dead_rewrite_pct = P, then 10 rounds of LOAD (upd|del) + VACUUM
+dead_load() { # LABEL LOAD P
+	local l=$1 load=$2 pct=$3 n=$((ROWS * 4)) r v s wal tv=0 tw=0 mx=0 mb p=dead$2$3
+	q "$l" "DROP TABLE IF EXISTS t; CREATE TABLE t (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = off)" \
+		"INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, $n) i" \
+		"CREATE INDEX t_idx ON t USING sift (body) WITH (dead_rewrite_pct = $pct, build_segments = 1)" "VACUUM ANALYZE t" >/dev/null
+	settle "$l"
+	for r in $(seq 10); do
+		if [[ $load == upd ]]; then q "$l" "UPDATE t SET body = $(words 40 id) WHERE id % 17 = $r" >/dev/null
+		else q "$l" "DELETE FROM t WHERE id % 17 = $r" >/dev/null; fi
+		read -r v wal < <(timed_vacuum "$l")
+		tv=$(bc <<<"$tv + $v"); tw=$(bc <<<"$tw + $wal")
+		mb=$(q "$l" "SELECT pg_relation_size('t_idx') / 1048576.0")
+		(( $(bc <<<"$mb > $mx") )) && mx=$mb
+	done
+	echo "${p}_vac_s $tv"
+	echo "${p}_vac_wal_mb $(bc <<<"$tw / 1048576")"
+	echo "${p}_idx_mb $mb"
+	echo "${p}_idx_max_mb $mx"
+	echo "${p}_segs $(q "$l" "SELECT count(*) FROM sift.segments('t_idx')")"
+	bench "$l" ${p}_count 4 "$BASE/count.sql" 4 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$l" ${p}_rank 4 "$BASE/rank.sql" 4 | grep lat_ms | sed 's/_lat_ms/_ms/'
+}
+g_dead() {
+	local pct load
+	[[ $CELLS == *dead* ]] || return 0
+	for pct in $(alt 50 5); do
+		for load in upd del; do dead_load "$1" "$load" "$pct"; done
+	done
+}
+# The worker's promotions and merges in the server log since byte offset $2: "PREFIX_promo_ms", "_merge_ms" (mean) and the counts
+log_durations() { # LABEL OFFSET PREFIX
+	tail -c +"$(( $2 + 1 ))" "${TMP[$1]}/postgres.log" | awk -v p="$3" '
+		/sift: promoted a sealed segment of/ { match($0, / in [0-9]+ ms/); a += substr($0, RSTART + 4, RLENGTH - 7); na++ }
+		/sift: merged [0-9]+ segments of/    { match($0, / in [0-9]+ ms/); m += substr($0, RSTART + 4, RLENGTH - 7); nm++ }
+		END { printf "%s_promo_ms %.2f\n%s_promo_n %d\n%s_merge_ms %.2f\n%s_merge_n %d\n", p, na ? a / na : 0, p, na, p, nm ? m / nm : 0, p, nm }'
+}
+mut_load() { # LABEL L: the groups insert and bulk, and the queries on what they grew, on an index at mutable_limit = L
+	local l=$1 p=mut$2 off c
+	FRESH_OPTS="WITH (mutable_limit = $2)"
+	cat >"$BASE/and.sql" <<<"SELECT id FROM t WHERE body @@> 'w1 w5' ORDER BY sift.score(ctid) DESC LIMIT 10;"
+	cat >"$BASE/term.sql" <<<"SELECT id FROM t WHERE body @@> 'w3' ORDER BY sift.score(ctid) DESC LIMIT 10;"
+	off=$(stat -c %s "${TMP[$l]}/postgres.log")
+	g_insert "$l" | sed "s/^/${p}_/"
+	bench "$l" ${p}_insert1 1 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
+	settle "$l"
+	log_durations "$l" "$off" "$p"
+	g_bulk "$l" | sed "s/^/${p}_/"
+	q "$l" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, $ROWS) i" >/dev/null; settle "$l"
+	echo "${p}_idx_mb $(q "$l" "SELECT pg_relation_size('t_idx') / 1048576.0")"
+	echo "${p}_segs $(q "$l" "SELECT count(*) FROM sift.segments('t_idx')")"
+	for c in count rank and term; do bench "$l" ${p}_$c 4 "$BASE/$c.sql" 4 | grep lat_ms | sed 's/_lat_ms/_ms/'; done
+	FRESH_OPTS=
+}
+g_mut() {
+	local L
+	[[ $CELLS == *mut* ]] || return 0
+	q "$1" "ALTER SYSTEM SET sift.log_min_duration = 0" "SELECT pg_reload_conf()" >/dev/null
+	for L in $(alt 4096 1024); do mut_load "$1" "$L"; done
+	q "$1" "ALTER SYSTEM RESET sift.log_min_duration" "SELECT pg_reload_conf()" >/dev/null
+}
+GROUPS_ALL+=(dead mut)
 
 i=0
 for b in "${BUILDS[@]}"; do
