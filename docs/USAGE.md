@@ -192,7 +192,7 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
 - **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (store_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
   is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
-  `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)).
+  `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`).
   Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
   `col_merge` inspect and drive one.
 - **Aggregate pushdown:** a `GROUP BY` over a table with a `sift_col` index (or over a lateral unnest of an indexed `jsonb` array) with `count`, `count(DISTINCT)`, `sum`,
@@ -201,8 +201,7 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
 - **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump`
   support ([docs/COL-TAM.md](COL-TAM.md)); its rows are still stored in row-format delta pages (sealing them into column groups is not implemented). A `sift_table` replicates physically like any table; to publish one under `wal_level = logical`, see [Replication](#replication).
 
-The chunk codec (encodings plus LZ4 or zstd, [docs/COL-CODEC.md](COL-CODEC.md)) is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
-The column engine does not apply it to the chunks of an index yet.
+The chunk codec (encodings plus LZ4 or zstd, [docs/COL-CODEC.md](COL-CODEC.md)) compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
 ## Replication
 
