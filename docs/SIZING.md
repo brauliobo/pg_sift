@@ -40,7 +40,7 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
 ## Dead documents and statistics
 
 Rows of rolled-back transactions and deleted rows stay in the index's document count, document frequencies and average length until
-VACUUM has marked them dead **and** the segment holding them is rewritten (a merge, or a VACUUM that finds a segment mostly dead). Until
+VACUUM has marked them dead **and** the segment holding them is rewritten (a merge, or a VACUUM that finds a segment more than `dead_rewrite_pct` (50) percent dead). Until
 then BM25 scores are computed over live and dead documents. The effect depends on how the dead rows differ from the live ones
 (`bench/sql/dead_docs.sql`, 50,000 live documents, four rolled-back loads of 50,000):
 

@@ -119,6 +119,13 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   (112 of 128 entries). Tests: `merge_fanin` (every fanin from 2 to 32) and the TAP test `maint_fanin` (inserts against the worker at 2 and 32).
 - New: setting `sift.maintenance_cost_delay` (milliseconds, 0 to 100, default 0): the maintenance worker sleeps that long after every 16 pages (128 kB)
   its merges read or write, like `vacuum_cost_delay`. At 0 nothing changes. `VACUUM`, `sift.merge()` and the inserters' merges are not delayed.
+- New: reloption `dead_rewrite_pct` (default 50, 1 to 100): the percent of dead documents above which maintenance rewrites a lone segment, so far
+  the constant 50. `ALTER INDEX ... SET` applies it to the next `VACUUM` or worker step, with no `REINDEX`; 100 never rewrites. The default is today's
+  behavior: against 5 (400,000 documents, 10 rounds of 6% updated or deleted rows) it took `VACUUM` 1.9x (update) and 6.9x (delete) as long, wrote 5.3x
+  the WAL on deletes and left a 1.3-1.4x larger file, for faster queries only after deletes. Tests: `dead_rewrite_pct`.
+- Measured, no change: `mutable_limit` stays 4096 kB. At 1024 the 16-client insert rate was 18% lower, `INSERT .. SELECT` 17% and `COPY` 47% lower, and the
+  index grew 37% larger in 4.5 times the segments, for ranked queries 2 to 4 times faster; promotions and merges were 3 times shorter but 3.7 times as many
+  (`scripts/perf-gate-maint.sh --cells mut`, `--cells dead`; numbers in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations)).
 
 ## 1.4.0
 
