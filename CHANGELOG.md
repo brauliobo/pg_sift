@@ -8,6 +8,9 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
   check that the stream is inside the blob; they are 64-bit now and the term raises the corruption error. Bytes that are not what the writer
   wrote (a bad disk, a torn page, a file edited with the server stopped) were the only way in.
+- Security: a damaged index whose term blob ends between its codec and the next 4-byte boundary, with a large group count, could make a query
+  read far past the blob (a crash). The length left after the codec wrapped around when the codec length was not a multiple of 4; the term now
+  raises the corruption error.
 - Added: text search as the row selection of the aggregate pushdown. `SELECT ... FROM t WHERE <filters> AND col @@> q GROUP BY ...` on a table with a `sift` and a `sift_col` index (or `sift_table`) takes the matches from the BM25 index without reading the heap, keeps only those rows in the column units and aggregates from columns (`docs/COL-SEARCH.md`); facet-style counts per category are the same query. The plan shows `Search:` in `EXPLAIN`.
 - Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps

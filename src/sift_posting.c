@@ -776,7 +776,7 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 		if (!(info->flags & SIFT_TERM_SPARSE))
 		{
 			c->ng = BLOB_NG(blob);
-			if ((uint64) c->ng * sizeof(SiftGroupScore) > c->bloblen - ALIGN4(info->codec_len))
+			if (ALIGN4(info->codec_len) > c->bloblen || (uint64) c->ng * sizeof(SiftGroupScore) > c->bloblen - ALIGN4(info->codec_len))
 				corrupt_blob(info);
 			c->gs = (const SiftGroupScore *) p;
 			c->blkrows = p + c->ng * sizeof(SiftGroupScore);
