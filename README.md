@@ -119,6 +119,9 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel; results are bit-identical at every level |
 | `sift.enable_col` | on | allow column scans over `sift_col` indexes |
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
+| `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
+| `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
+| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server setting |
 
 `sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
 
@@ -127,6 +130,8 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed; `ALTER INDEX ... SET` works |
 | `paths` | | | jsonb paths shredded into typed columns, e.g. `'metrics.* float4, items[]{sku text, qty int4}'`; needs `REINDEX` |
 | `compression` | `auto` | `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings | chunk compression of the column data; per column: `'auto; col=zstd:9'`; needs `REINDEX` |
+
+`sift_table` has no table options: PostgreSQL does not let a table access method add `WITH (...)` options, so its settings are the three GUCs above (`SET` per session, or per role or database with `ALTER ROLE/DATABASE ... SET`). It has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks.
 
 pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike. The one
 exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
