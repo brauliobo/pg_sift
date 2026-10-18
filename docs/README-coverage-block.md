@@ -36,7 +36,7 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 | FILTER (WHERE ...) on any aggregate | Yes | sift_col | `SELECT count(*) FILTER (WHERE status = 'paid'), sum(total) FILTER (WHERE total > 100) FROM orders` |
 | numeric(p > 18), unconstrained numeric, negative scale | No (the index refuses the column, so no query reads it from the index) | sift_col | `SELECT grp, sum(n38) FROM t GROUP BY grp` |
 | GROUP BY an expression of one column: lower(), CASE, date_trunc of a date, x % 7, extract() | Yes | sift_col | `SELECT date_trunc('month', placed_at::timestamp)::date, count(*) FROM orders GROUP BY 1` |
-| GROUP BY date_trunc, extract of a timestamp or timestamptz, or CASE over numeric | Yes (in v3, pending merge) | sift_col | `SELECT date_trunc('month', ts), count(*) FROM t GROUP BY 1` |
+| GROUP BY date_trunc, extract of a timestamp or timestamptz, or CASE over numeric | Yes | sift_col | `SELECT date_trunc('month', ts), count(*) FROM t GROUP BY 1` |
 | GROUPING SETS, ROLLUP, CUBE, GROUPING() | Yes | sift_col | `SELECT store_id, status, count(*) FROM orders GROUP BY CUBE (store_id, status)` |
 | LIKE, ILIKE, prefix, regex (~), any boolean function of one text or integer column | Yes | sift_col | `SELECT count(*) FROM orders WHERE source LIKE 'market%'` |
 | INNER JOIN to a small table on equality (lookup join, up to 4 tables, up to 3 key columns) | Yes | sift_col | `SELECT s.kind, count(*), sum(o.total) FROM orders o JOIN stores s ON s.id = o.store_id GROUP BY s.kind` |
