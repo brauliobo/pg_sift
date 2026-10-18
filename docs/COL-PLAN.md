@@ -119,7 +119,7 @@ Integer, date, timestamp, dictionary, boolean and numeric results are exact. `su
 
 PostgreSQL's float8 aggregates raise errors that a plain double sum would hide. `sum(float8)` raises the overflow error when a group's sum is infinite and none of its inputs was. `avg(float8)` keeps a sum of squares (`float8_accum`) that overflows first; the scan does not keep it and raises the same error when the inputs are so large that it could have (`8 * n * max(x)^2 >= DBL_MAX`). The one input where the normal plan does not fail although the bound is met (all values equal and above 1e150) fails here too; set `sift.enable_agg` off for it. Overflow errors inside a float8 expression argument are not reproduced (the result is infinite).
 
-A value the index cannot hold (a jsonb member that does not fit the declared type, text over 255 bytes: the shredder's overflow) makes the scan raise `0A000` with a hint instead of the cast error the normal plan raises on such a value (`22P02`): both fail, the codes differ. The planner refuses leaves the engine marks lossy.
+A value the index cannot hold (a jsonb member that does not fit the declared type, text over its declared `text(N)`: the shredder's overflow) makes the scan raise `0A000` with a hint instead of the cast error the normal plan raises on such a value (`22P02`): both fail, the codes differ. The planner refuses leaves the engine marks lossy.
 
 ## SIMD
 
@@ -128,7 +128,7 @@ Kernels are chosen at run time through the `sift_cpu` rebind registry and `sift.
 ### Grouping sets and float keys
 
 - **Sets**: the scan keeps one group table per set over the same key ids; the set is a key of the groups, so a group of the empty set is one group and a data `NULL` is not the `NULL` of a rolled up key. `GROUPING(a, b)` is the bit mask of the sets (the first argument is the highest bit); the empty set returns its one row over no input too. A query of N sets is priced as N group updates per tuple; the filters, leaf reads and unnest are paid once.
-- **Float keys**: a float4/float8 column or expression is a key through its bits, with `-0` as `0` and every NaN as one NaN (`float8_eq` and `hashfloat8`); the index stores `-0` as `0` and a value it cannot hold raises `0A000` as above, and the group is emitted as the type's value (`float4` stays `float4`).
+- **Float keys**: a float4/float8 column or expression is a key through its bits, with `-0` as `0` and every NaN as one NaN (`float8_eq` and `hashfloat8`); the index stores `-0` with its sign (the scan treats it as `0`) and a value it cannot hold raises `0A000` as above, and the group is emitted as the type's value (`float4` stays `float4`).
 
 ## Cost
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The portable core (src/portable.list, and src/portable-col.list of the column track) reaches its host only through src/sift_host.h: every #include of a listed file is
-# the C library, a compiler intrinsics header, src/sift_host.h or another file of the list. A PostgreSQL, SQLite or other
+# the C library, a compiler intrinsics header, the optional lz4/zstd headers, src/sift_host.h or another file of the list. A PostgreSQL, SQLite or other
 # host header there means the core is no longer portable (CONTRIBUTING.md). Needs no PostgreSQL, no SQLite and no build.
 #
 #   scripts/check-portable.sh
@@ -9,6 +9,7 @@ set -euo pipefail
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
 std='assert|ctype|errno|float|inttypes|limits|locale|math|setjmp|stdarg|stdatomic|stdbool|stddef|stdint|stdio|stdlib|string|time'
 intrinsics='immintrin|emmintrin|x86intrin|cpuid'
+compress='lz4|lz4hc|zstd'	# the optional libraries of src/sift_colz.c, behind SIFT_HAVE_LZ4 / SIFT_HAVE_ZSTD
 mapfile -t files < <(cat "$SRC/portable.list" "$SRC/portable-col.list" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
 bad=0
 for f in "${files[@]}"; do
@@ -17,7 +18,7 @@ for f in "${files[@]}"; do
 		inc=$(sed -E 's/^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]([^>"]+)[>"].*/\1/' <<<"$line")
 		case $line in
 		*'<'*)
-			[[ $inc =~ ^($std|$intrinsics)\.h$ ]] && continue ;;
+			[[ $inc =~ ^($std|$intrinsics|$compress)\.h$ ]] && continue ;;
 		*)
 			[[ $inc == sift_host.h ]] && continue
 			[[ " ${files[*]} " == *" $inc "* ]] && continue ;;

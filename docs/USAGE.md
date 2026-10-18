@@ -243,10 +243,13 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
 
 - **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (store_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
-  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
+  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `mutable_limit` (kB, 4096, like the
   `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`).
   Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
   `col_merge` inspect and drive one.
+  `CREATE INDEX` and `REINDEX` (also `CONCURRENTLY`) are parallel on large tables with the workers PostgreSQL plans (`max_parallel_maintenance_workers`, `min_parallel_table_scan_size`,
+  the table's `parallel_workers`, 32 MB of `maintenance_work_mem` for each process): each process writes the segments of the superblocks it took, so the index has a segment per process until a merge,
+  and its file is longer by the unused end of each process's last run (free space, up to 64 MB each); the rows it serves are those of a serial build ([COL.md](COL.md) 2.6).
 - **Aggregate pushdown:** a `GROUP BY` over a table with a `sift_col` index (or over a lateral unnest of an indexed `jsonb` array) with `count`, `count(DISTINCT)`, `sum`,
   `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps
   its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus.
@@ -290,7 +293,7 @@ its own docker container.
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
-  - `0A000` for `TABLESAMPLE`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a string over 255 bytes or a float `-0` or non-canonical NaN (`SET sift.enable_agg = off` for that query);
+  - `0A000` for `TABLESAMPLE`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
   - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
   - the system columns `xmin`, `xmax`, `cmin` and `cmax` read zero;
   - settings are server settings (`sift.table_*`, README Configuration), not per-table `WITH (...)` options: PostgreSQL 17 through 19 give a table access method no reloptions of its own (`WITH` knows heap's and TOAST's only; `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20), so set them per database or role with `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`;

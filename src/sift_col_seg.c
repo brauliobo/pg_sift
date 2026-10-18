@@ -35,6 +35,7 @@ struct SiftColSegWriter
 	SiftStreamWriter *sw;
 	SiftCDict **dict;			/* [ncols], STR leaves */
 	uint32	  **dictmap;		/* [ncols] scratch: batch code -> segment code */
+	bool	   *inl;			/* [ncols] scratch: the STR leaf is stored inline in the unit being added */
 	SiftCZone  *zones;			/* [unit * ncols + col] */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
@@ -68,6 +69,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
+	w->inl = palloc0(schema->ncols * sizeof(bool));
 	for (int c = 0; c < schema->ncols; c++)
 		if (schema->cols[c].store == SIFT_COLS_STR)
 			w->dict[c] = sift_cdict_create(mcxt);
@@ -79,15 +81,15 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	return w;
 }
 
-/* Interns the batch dictionary of each STR leaf into the segment's: dictmap[col][batch code] = segment code */
+/* Interns the batch dictionary of each STR leaf not stored inline into the segment's: dictmap[col][batch code] = segment code */
 static void
-map_dicts(SiftColSegWriter *w, const SiftColBatch *b)
+map_dicts(SiftColSegWriter *w, const SiftColBatch *b, const bool *inl)
 {
 	for (int c = 0; c < w->schema->ncols; c++)
 	{
 		const SiftCDict *bd = b->dict[c];
 
-		if (w->dict[c] == NULL)
+		if (w->dict[c] == NULL || inl[c])
 			continue;
 		w->dictmap[c] = w->dictmap[c] ? repalloc(w->dictmap[c], Max(bd->n, 1) * sizeof(uint32)) :
 			MemoryContextAlloc(w->mcxt, Max(bd->n, 1) * sizeof(uint32));
@@ -112,9 +114,11 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->zones = repalloc_huge(w->zones, (Size) w->capsb * ncols * sizeof(SiftCZone));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 	}
-	map_dicts(w, b);
+	for (int c = 0; c < ncols; c++)
+		w->inl[c] = w->dict[c] != NULL && sift_cbatch_str_inline(b, c, w->dict[c], SIFT_COL_DICT_MAX_BYTES);
+	map_dicts(w, b, w->inl);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
 	sift_sw_write(w->sw, w->buf.data + start, w->buf.len - start);
@@ -330,6 +334,7 @@ typedef struct ZoneArrays
 	const uint32 *flags;
 	const uint64 (*set)[4];
 	bool		any_ovf;		/* some unit flags SIFT_COLZ_OVERFLOW */
+	bool		any_inl;		/* some unit flags SIFT_COLZ_INLINE: its min and max are prefix keys, not codes */
 } ZoneArrays;
 
 typedef struct SegPriv
@@ -392,12 +397,12 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format > SIFT_COL_FORMAT_MINOR)
+	if (entry->format != SIFT_COL_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads up to 1.%d",
+				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
-				 errhint("Use a newer pg_sift, or REINDEX.")));
+				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
 	buf = ReadBuffer(index, entry->header_blk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
@@ -599,7 +604,7 @@ zone_arrays(SiftColSegment *seg, int col)
 		if (def->store == SIFT_COLS_STR)
 			z->set = (const uint64 (*)[4]) (blk + ALIGN8(seg->nsb * (3 * sizeof(uint64) + 3 * sizeof(uint32))));
 		for (uint32 u = 0; u < seg->nsb; u++)
-			z->any_ovf |= (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0;
+			z->any_ovf |= (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0, z->any_inl |= (z->flags[u] & SIFT_COLZ_INLINE) != 0;
 		pv->zones[col] = z;
 	}
 	return pv->zones[col];
@@ -634,7 +639,7 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 	uint64	   *tmp = palloc(nw * sizeof(uint64));
 	uint64	   *save = NULL;
 
-	if (z->any_ovf)
+	if (z->any_ovf || z->any_inl)
 	{
 		save = palloc(nw * sizeof(uint64));
 		memcpy(save, keep, nw * sizeof(uint64));
@@ -660,6 +665,7 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:
 		case SIFT_CT_NSET:
+		case SIFT_CT_STRS:
 			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
 			break;
 		case SIFT_CT_ISNULL:
@@ -677,13 +683,56 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 	}
 	if (save)
 	{
+		/* an inline unit has no codes: the passes above said nothing about it, its zone is the strings' */
+		for (uint32 u = 0; z->any_inl && u < n; u++)
+			if (z->flags[u] & SIFT_COLZ_INLINE)
+			{
+				SiftCZone	uz = {.min = z->min[u], .max = z->max[u], .nnull = z->nnull[u], .nvals = z->nvals[u], .flags = z->flags[u]};
+
+				if (sift_ctest_zone(t, &uz))
+					keep[u / 64] |= save[u / 64] & (UINT64CONST(1) << (u % 64));
+				else
+					keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
+			}
 		/* units with overflow values cannot be pruned by this leaf: their zone does not describe the heap */
-		for (uint32 u = 0; u < n; u++)
+		for (uint32 u = 0; z->any_ovf && u < n; u++)
 			if (z->flags[u] & SIFT_COLZ_OVERFLOW)
 				keep[u / 64] |= save[u / 64] & (UINT64CONST(1) << (u % 64));
 		pfree(save);
 	}
 	pfree(tmp);
+}
+
+/* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
+uint64
+sift_cseg_dir_units(const SiftDirSnapshot *dir)
+{
+	const SiftSegEntry *imm[SIFT_MAX_SEGMENTS];
+	int			n = 0;
+	uint64		units = 0,
+				end = 0;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			int			j = n++;
+
+			for (; j > 0 && imm[j - 1]->sb_lo > dir->segs[i].sb_lo; j--)
+				imm[j] = imm[j - 1];
+			imm[j] = &dir->segs[i];
+		}
+	for (int i = 0; i < n; i++)
+	{
+		uint64		lo = Max(imm[i]->sb_lo, end),
+					hi = (uint64) imm[i]->sb_hi + 1;
+
+		if (hi > lo)
+		{
+			units += hi - lo;
+			end = hi;
+		}
+	}
+	return units;
 }
 
 /* ---------- liveness ---------- */
@@ -882,7 +931,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 			corrupt(seg, "The zone of leaf %d in the unit of SB %u differs from its chunk.", c, r->sb);
 		if (def->kind == SIFT_COLK_GROUP)
 			group_elems[c] = computed.sum_i;
-		if (def->store == SIFT_COLS_STR)
+		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
 

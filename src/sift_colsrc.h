@@ -126,6 +126,34 @@ typedef struct SiftSrcPrune
 	int64		hi;
 } SiftSrcPrune;
 
+/*
+ * A test on a text leaf (SCV_CODE, top level scalar) that a source may run on the encoded form of its units instead of the executor
+ * evaluating the predicate over the leaf's dictionary and codes (docs/COL.md 2.9, "Reading text from SiftAgg"). Bytewise, so the planner
+ * pushes EQ, NE, IN and NOT IN for any deterministic collation and the range operators and PREFIX only for the C collation. vals are
+ * not copied: they outlive the call (prune_str: the scan).
+ */
+typedef enum SiftSrcStrOp
+{
+	SSTR_EQ = 1,
+	SSTR_NE,					/* non-NULL values different from vals[0] */
+	SSTR_LT,
+	SSTR_LE,
+	SSTR_GT,
+	SSTR_GE,
+	SSTR_IN,
+	SSTR_NOTIN,					/* non-NULL values none of vals */
+	SSTR_PREFIX					/* values that start with vals[0] */
+} SiftSrcStrOp;
+
+typedef struct SiftSrcStrTest
+{
+	int			leaf;
+	SiftSrcStrOp op;
+	int			nvals;
+	const char *const *vals;
+	const uint32 *lens;
+} SiftSrcStrTest;
+
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -158,6 +186,15 @@ typedef struct SiftSrcProvider
 	void		(*live) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	void		(*vet) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	void		(*counters) (const void *impl, SiftSrcCounters *c);
+	/*
+	 * Optional (NULL: the executor tests the values itself). prune_str, called before `begin`, adds text tests to the zone pruning of the
+	 * scan: units whose zones prove that no value can satisfy one are skipped (and counted in units_pruned); for a unit that stores its
+	 * text as codes this reads the segment dictionary once, for an inline unit the prefix zone. filter_str ANDs `rows` (the unit's nrow bits,
+	 * positions as in `read` and `live`) with the rows whose value satisfies the test, NULL never; it returns false, leaving rows as
+	 * they were, when it cannot (the executor then reads the leaf and tests it). The tests are exact, not conservative.
+	 */
+	void		(*prune_str) (void *impl, const SiftSrcStrTest *t, int nt);
+	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -194,6 +231,20 @@ static inline bool
 sift_colsrc_bit(const uint64 *bits, size_t i)
 {
 	return (bits[i >> 6] >> (i & 63)) & 1;
+}
+
+/* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
+static inline void
+sift_colsrc_prune_str(SiftSrcSource *src, const SiftSrcStrTest *t, int nt)
+{
+	if (src->prov->prune_str)
+		src->prov->prune_str(src->impl, t, nt);
+}
+
+static inline bool
+sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
+{
+	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
 }
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */

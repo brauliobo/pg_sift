@@ -64,7 +64,7 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 ### Wildcard dictionary
 
 `*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`sift_col_enc.c`) created with the
-shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes, or beyond `max_keys`
+shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes (`SIFT_COL_DICT_MAX_ENTRY`), or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 
 ## Types and the overflow rule
@@ -81,7 +81,7 @@ incomplete or unrepresentable.
 | float4 / float8 | any number whose conversion does not overflow | `VALUE`: the correctly rounded value of the decimal text, i.e. `strtof` / `strtod`, which is what `float4in` / `float8in` do, hence equal to `(doc #> path)::float4`, `(doc #>> path)::float4`, and to `jsonb_to_recordset` |
 |  | rounds to infinity (`1e400`) or to zero from a non-zero value (`1e-400`) | `OVERFLOW` `RANGE` (PostgreSQL raises "out of range"); denormals are values |
 | bool | `true` / `false` | `VALUE` |
-| text | string, at most `N` bytes (default 255 bytes, what the text dictionary of sift_col holds) | `VALUE` |
+| text | string, at most `N` bytes (default 255 bytes, at most 1 MiB; the engine stores any length, docs/COL.md 2.9) | `VALUE` |
 |  | longer | `OVERFLOW` `LENGTH` |
 | any | JSON null | `NULL` |
 | any scalar type | a different JSON scalar (string in a number column, number in a text column, ...) | `OVERFLOW` `TYPE` (no coercion: `->>` would give `'12'` for the number 12) |
@@ -186,21 +186,18 @@ or faster than AVX-512 (memory bound on this host).
 ## Integration notes
 
 - `expand_parents` is the column table's. `state_counts`, `state_bits` and `minmax_*` overlap with the engine's kernels only in what
-  they compute: they work on the shredder's `state` bytes before the engine has bitmaps. The composition from the generic kernels was
-  measured (4096 elements, ns per call, best of 300, Zen 5, heavy host load) as `sift_colk->range[SIFT_COLW_8]` on the bytes
-  (`state_bits`: `range(state, VALUE + 1, 254)` for the NULL bitmap, `range(state, OVERFLOW, 0)` for the overflow one) and
-  `SiftAggKernels.minmax_*` under the bitmap of the `VALUE` slots:
-
-  | kernel | scalar | AVX2 | AVX-512 |
-  |---|---|---|---|
-  | `minmax_i64` fused / composed | 2701 / 4193 | 845 / 476 | 301 / 315 |
-  | `minmax_f64` fused / composed | 2401 / 4866 | 452 / 535 | 304 / 403 |
-  | `state_bits` fused / two ranges | 3117 / 3424 | 53 / 77 | 54 / 40 |
-
-  The composed kernels are slower for float8 at every level (1.2x to 2x), for the scalar level and for `state_bits` on AVX2 (1.5x), and
-  they need the value arrays to have `SIFT_AGG_PAD` readable bytes behind them (the shredder's arrays do not promise it), so the fused kernels
-  stay. When the adapter has bitmaps anyway (`state_bits`), the engine's `minmax_*` apply as they are. The AVX2 `minmax_i64` here is
-  the weak one (a single dependency chain): the aggregation kernel's four accumulator pairs would make it 1.8x faster.
+  they compute: they work on the shredder's `state` bytes before the engine has bitmaps. The composition from the generic kernels is
+  measured by `tools/kernels` (`make bench-shred`) as `sift_colk->range[SIFT_COLW_8]` on the bytes (`state_bits`: `range(state, VALUE + 1,
+  254)` for the NULL bitmap, `range(state, OVERFLOW, 0)` for the overflow one; `state_counts`: a range and a `bits_count` per state) and
+  `SiftAggKernels.minmax_*` under the bitmap of the `VALUE` slots, against the fused kernel. The ratios (composition / fused, 4096
+  elements, 90 % `VALUE`) are in docs/KERNELS.md (Overlaps between the kernel families): the composition loses by more than 3 % at the
+  scalar level for every kernel (`state_counts` on a column of `VALUE`s 6x, `minmax_f64` 2.1x, `minmax_i64` 1.5x, `state_bits` 1.09x), at
+  AVX2 for `state_bits`, `state_counts` and `minmax_f64` (1.5x, 1.4x, 1.14x) and at AVX-512 for `minmax_f64` (1.26x), and it needs the
+  value arrays to have `SIFT_AGG_PAD` readable bytes behind them (the shredder's arrays do not promise it), so the fused kernels stay.
+  The composition wins at AVX-512 for `state_bits` and `state_counts` (0.7x at 4096 elements) and for `minmax_i64` at AVX2 and AVX-512
+  at 4 Mi elements; a level that is better composed does not make the scalar level's loss go away, and a table that mixes the two would
+  keep both implementations. When the adapter has bitmaps anyway (`state_bits`), the engine's `minmax_*` apply as they are. The AVX2
+  `minmax_i64` here is the weak one (a single dependency chain): the aggregation kernel's four accumulator pairs would make it 1.8x faster.
 - Each module that owns a dispatch table registers one rebind with `sift_cpu_register` (`SIFT_MAX_REBINDS` is 8).
 
 ## Tests

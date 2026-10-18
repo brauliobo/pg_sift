@@ -150,11 +150,11 @@ CREATE FUNCTION sift.col_segments(index regclass,
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_segments' LANGUAGE C STRICT VOLATILE;
 
--- One row per leaf: its chunks by encoding (const, for, pack, other), their bytes, and the bytes of its dictionaries (text leaves).
+-- One row per leaf: its chunks by encoding (const, for, pack, other, text stored inline), their bytes, and the bytes of its dictionaries (text leaves).
 CREATE FUNCTION sift.col_leaves(index regclass,
 								OUT leaf int4, OUT path text, OUT kind text, OUT type text,
 								OUT const_chunks int8, OUT for_chunks int8, OUT pack_chunks int8, OUT codec_chunks int8,
-								OUT chunk_bytes int8, OUT dict_bytes int8)
+								OUT inline_chunks int8, OUT chunk_bytes int8, OUT dict_bytes int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_leaves' LANGUAGE C STRICT VOLATILE;
 
