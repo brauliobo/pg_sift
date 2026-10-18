@@ -785,6 +785,29 @@ gather_bits(MemoryContext cx, const uint64 *src, const uint32 *idx, uint32 m)
 	return any ? out : NULL;
 }
 
+/* VAR leaf: the strings at idx[0..m) (idx NULL: all of them) with their byte offsets; a unit without the chunk holds m empty strings */
+static void
+read_strs(MemoryContext arena, const SiftCChunk *c, const uint32 *idx, uint32 m, SiftColVec *vec)
+{
+	uint64	   *vo = MemoryContextAllocZero(arena, ((Size) m + 1) * sizeof(uint64));
+	uint32	   *off;
+	char	   *bytes;
+
+	vec->voff = vo;
+	vec->vbytes = "";
+	if (c == NULL)
+		return;
+	sift_cchunk_strs(c, arena, &off, &bytes);
+	for (uint32 k = 0; k < m; k++)
+		vo[k + 1] = vo[k] + (idx ? off[idx[k] + 1] - off[idx[k]] : off[k + 1] - off[k]);
+	vec->vbytes = bytes;
+	if (idx == NULL)
+		return;
+	vec->vbytes = MemoryContextAlloc(arena, vo[m] + 1);
+	for (uint32 k = 0; k < m; k++)
+		memcpy((char *) vec->vbytes + vo[k], bytes + off[idx[k]], vo[k + 1] - vo[k]);
+}
+
 /* Decodes the values at positions idx[0..m) of leaf col's chunk (idx NULL: all of them) */
 static void
 read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, SiftColVec *vec)
@@ -793,10 +816,11 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 	const SiftColDef *def = &cu->src->schema->cols[col];
 	int64	   *keys = MemoryContextAllocZero(arena, (m + SIFT_COL_PAD / 8) * sizeof(int64));
 	SiftCChunk	c;
+	bool		present = unit_chunk(cu, col, &c);
 
 	vec->store = def->store;
 	vec->n = m;
-	if (!unit_chunk(cu, col, &c))
+	if (!present)
 	{
 		uint64	   *nulls = MemoryContextAllocZero(arena, SIFT_COL_NWORDS(m) * sizeof(uint64));
 
@@ -842,6 +866,9 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 				vec->dict = d;
 				break;
 			}
+		case SIFT_COLS_VAR:
+			read_strs(arena, present ? &c : NULL, idx, m, vec);
+			break;
 		default:
 			elog(ERROR, "sift_col: storage class %d cannot be read yet", def->store);
 	}

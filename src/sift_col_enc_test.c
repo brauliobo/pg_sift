@@ -22,7 +22,7 @@ typedef struct TCtx
 	pg_prng_state rng;
 	int64		checks;
 	int64		failures;
-	uint32		encodings;		/* bit per chunk encoding written: CONST, PACK, FOR 8, 16, 32, 64; bit 9: the chunk codec */
+	uint32		encodings;		/* bit per chunk encoding written: CONST, PACK, FOR 8, 16, 32, 64; bit 9: the chunk codec, bit 10: string lists */
 	bool		wide;			/* the next text leaf gets tens of thousands of distinct values (codes of 16 and 17 bits) */
 	bool		full;			/* this round is a full superblock: 256 dense pages */
 } TCtx;
@@ -81,18 +81,19 @@ typedef struct Case
 static const char *const scalar_paths[] = {"tenant_id", "status", "total", "discount", "channel", "region", "note", "units"};
 static const char *const item_paths[] = {"items[].category", "items[].sku", "items[].kind", "items[].qty", "items[].price"};
 
+/* Variable-length leaves are top level scalars */
 static SiftColStore
-rand_store(TCtx *t)
+rand_store(TCtx *t, bool top)
 {
-	static const SiftColStore s[] = {SIFT_COLS_INT, SIFT_COLS_INT, SIFT_COLS_F4, SIFT_COLS_F8, SIFT_COLS_STR, SIFT_COLS_STR};
+	static const SiftColStore s[] = {SIFT_COLS_INT, SIFT_COLS_INT, SIFT_COLS_F4, SIFT_COLS_F8, SIFT_COLS_STR, SIFT_COLS_STR, SIFT_COLS_VAR};
 
-	return s[RAND(t, 6)];
+	return s[RAND(t, top ? 7 : 6)];
 }
 
 static Oid
 store_type(SiftColStore s)
 {
-	return s == SIFT_COLS_INT ? INT8OID : s == SIFT_COLS_F4 ? FLOAT4OID : s == SIFT_COLS_F8 ? FLOAT8OID : TEXTOID;
+	return s == SIFT_COLS_INT ? INT8OID : s == SIFT_COLS_F4 ? FLOAT4OID : s == SIFT_COLS_F8 ? FLOAT8OID : s == SIFT_COLS_VAR ? BYTEAOID : TEXTOID;
 }
 
 static void
@@ -101,36 +102,38 @@ gen_prof(TCtx *t, LeafProf *p, SiftColStore store)
 	static const int bitsv[] = {0, 1, 3, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 40, 62, 64};
 
 	memset(p, 0, sizeof(*p));
-	p->mode = RAND(t, store == SIFT_COLS_STR ? 1 : store == SIFT_COLS_INT ? 4 : 3);
+	p->mode = RAND(t, store == SIFT_COLS_STR || store == SIFT_COLS_VAR ? 1 : store == SIFT_COLS_INT ? 4 : 3);
 	p->bits = bitsv[RAND(t, lengthof(bitsv))];
 	p->base = (int64) pg_prng_uint64(&t->rng) >> RAND(t, 64);
 	p->pnull = RAND(t, 4) == 0 ? 0 : RAND(t, 8) == 0 ? 1.0 : 0.15 * pg_prng_double(&t->rng);
 	p->povf = RAND(t, 4) == 0 ? 0.04 : 0;
 	p->step = 1 + RAND(t, 1000);
-	if (store == SIFT_COLS_STR)
+	if (store == SIFT_COLS_STR || store == SIFT_COLS_VAR)
 	{
+		bool		wide = t->wide && store == SIFT_COLS_STR;
 		static const char *const stems[] = {"ship", "shipped", "ship_", "a", "", "zz", "pending", "paid", "paid_late", "\xC3\xA9t\xC3\xA9"};
-		uint32		np = t->wide ? 33000 + RAND(t, 41000) : RAND(t, 3) == 0 ? 1 + RAND(t, 300) : 1 + RAND(t, 20);
+		uint32		np = wide ? 33000 + RAND(t, 41000) : RAND(t, 3) == 0 ? 1 + RAND(t, 300) : 1 + RAND(t, 20);
 
 		p->npool = np;
-		p->seqpick = t->wide;
+		p->seqpick = wide;
 		p->pool = palloc(np * sizeof(char *));
 		p->plen = palloc(np * sizeof(uint32));
 		for (uint32 i = 0; i < np; i++)
 		{
 			const char *stem = stems[RAND(t, lengthof(stems))];
-			uint32		len = t->wide ? 8 : RAND(t, 40) == 0 ? SIFT_COL_MAX_STR - RAND(t, 2) : strlen(stem) + RAND(t, 6) * (RAND(t, 3) == 0);
+			uint32		len = wide ? 8 : RAND(t, 40) == 0 ? (store == SIFT_COLS_VAR ? 300 + RAND(t, 9000) : SIFT_COL_MAX_STR - RAND(t, 2)) :
+				strlen(stem) + RAND(t, 6) * (RAND(t, 3) == 0);
 			char	   *s = palloc(len + 1);
 
 			for (uint32 j = 0; j < len; j++)
 				s[j] = j < strlen(stem) ? stem[j] : "abc\xFF\x01xyz"[RAND(t, 8)];
-			if (t->wide)
+			if (wide)
 				snprintf(s, len + 1, "w%07u", i);
 			s[len] = '\0';
 			p->pool[i] = s;
 			p->plen[i] = len;
 		}
-		t->wide = false;
+		t->wide &= store != SIFT_COLS_STR;
 	}
 }
 
@@ -144,7 +147,7 @@ gen_case(TCtx *t)
 	int			ngroup = RAND(t, 3);
 
 	for (int i = 0; i < nscalar; i++, n++)
-		defs[n] = (SiftColDef) {n, -1, SIFT_COLK_SCALAR, rand_store(t), 0, n + 1, 0, scalar_paths[i]};
+		defs[n] = (SiftColDef) {n, -1, SIFT_COLK_SCALAR, rand_store(t, true), 0, n + 1, 0, scalar_paths[i]};
 	for (int g = 0; g < ngroup; g++)
 	{
 		int			gid = n++;
@@ -152,7 +155,7 @@ gen_case(TCtx *t)
 
 		defs[gid] = (SiftColDef) {gid, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, gid + 1, 0, "items[]"};
 		for (int k = 0; k < nchild; k++, n++)
-			defs[n] = (SiftColDef) {n, gid, SIFT_COLK_SCALAR, rand_store(t), 0, gid + 1, 0, item_paths[k]};
+			defs[n] = (SiftColDef) {n, gid, SIFT_COLK_SCALAR, rand_store(t, false), 0, gid + 1, 0, item_paths[k]};
 	}
 	for (int i = 0; i < n; i++)
 		defs[i].typid = defs[i].kind == SIFT_COLK_GROUP ? INT4OID : store_type(defs[i].store);
@@ -269,6 +272,7 @@ gen_value(TCtx *t, const LeafProf *p, SiftColStore store, uint32 seq, SiftColVal
 			v->v.i = gen_int(t, p, seq);
 			break;
 		case SIFT_COLS_STR:
+		case SIFT_COLS_VAR:
 			{
 				uint32		k = p->seqpick ? seq % p->npool : RAND(t, p->npool);
 
@@ -359,6 +363,7 @@ value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 		case SIFT_COLS_INT:
 			return a->v.i == b->v.i;
 		case SIFT_COLS_STR:
+		case SIFT_COLS_VAR:
 			return a->len == b->len && memcmp(a->v.s, b->v.s, a->len) == 0;
 		default:
 			return sift_col_f8_key(a->v.f) == sift_col_f8_key(b->v.f);
@@ -717,7 +722,7 @@ gen_pred(TCtx *t, const SiftColDef *d, const Ref *ref, SiftColPred *p, SiftColVa
 	int			nops = d->store == SIFT_COLS_STR ? lengthof(num) : lengthof(num) - 1;
 
 	p->col = d->id;
-	p->op = num[RAND(t, nops)];
+	p->op = d->store == SIFT_COLS_VAR ? (RAND(t, 2) ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL) : num[RAND(t, nops)];
 	p->nvals = p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN ? RAND(t, maxconsts + 1) : p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL ? 0 : 1;
 	for (int i = 0; i < p->nvals; i++)
 		gen_const(t, d, ref, &consts[i]);
@@ -731,7 +736,8 @@ gen_pred(TCtx *t, const SiftColDef *d, const Ref *ref, SiftColPred *p, SiftColVa
 static int64
 key_of(const SiftColDef *d, SiftCDict *segdict, const SiftColValue *v)
 {
-	return d->store == SIFT_COLS_INT ? v->v.i : d->store == SIFT_COLS_STR ? sift_cdict_find(segdict, v->v.s, v->len) : sift_col_f8_key(v->v.f);
+	return d->store == SIFT_COLS_INT ? v->v.i : d->store == SIFT_COLS_VAR ? v->len :
+		d->store == SIFT_COLS_STR ? sift_cdict_find(segdict, v->v.s, v->len) : sift_col_f8_key(v->v.f);
 }
 
 /* The zone of the reference values, computed independently of the encoder (128 bit sums) */
@@ -820,6 +826,26 @@ check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, 
 	}
 }
 
+/* The bytes of a string list chunk are the reference values; NULL slots are empty */
+static void
+check_strs(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch)
+{
+	uint32	   *off;
+	char	   *bytes;
+	uint32		bad = 0;
+
+	sift_cchunk_strs(ch, CurrentMemoryContext, &off, &bytes);
+	for (uint32 i = 0; i < ref->n; i++)
+	{
+		uint32		len = ref_null(&ref->v[i]) ? 0 : ref->v[i].len;
+
+		bad += off[i + 1] - off[i] != len || (len > 0 && memcmp(bytes + off[i], ref->v[i].v.s, len) != 0);
+	}
+	CHECK(t, bad == 0, "%s: %u strings differ", what, bad);
+	pfree(off);
+	pfree(bytes);
+}
+
 /* Decodes the chunk (all, and a selection) against the reference keys */
 static void
 check_decode(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCChunk *ch)
@@ -847,6 +873,8 @@ check_decode(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict,
 	for (uint32 k = 0; k < m; k++)
 		bad_sel += sel[k] != got[idx[k]];
 	CHECK(t, bad_sel == 0, "%s: %u selected values decode wrongly", what, bad_sel);
+	if (d->store == SIFT_COLS_VAR)
+		check_strs(t, what, ref, ch);
 }
 
 /* ---------------------------------------------------------------------------
@@ -859,9 +887,9 @@ note_encoding(TCtx *t, SiftColStore store, const SiftCChunk *c)
 {
 	int			bit;
 
-	if (c->enc == SIFT_COLENC_CC)
+	if (c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS)
 	{
-		t->encodings |= 1 << 9;
+		t->encodings |= 1 << (c->enc == SIFT_COLENC_CC ? 9 : 10);
 		return;
 	}
 	if (c->enc == SIFT_COLENC_CONST)

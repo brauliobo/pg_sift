@@ -4,12 +4,12 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 
 -- Small and large batches, many seeds: every storage class, NULLs, overflow values, arrays, dense and sparse pages, strings, every
--- chunk encoding (encodings = 767: every width class of CONST, PACK and FOR written, and the chunk codec's blobs), every predicate operator, zones, merges, corrupt records
-SELECT sum(checks) > 10000 AS ran, sum(failures) AS failures, bit_or(encodings) = 767 AS all_encodings
+-- chunk encoding (encodings = 1791: every width class of CONST, PACK and FOR written, and the chunk codec's blobs), every predicate operator, zones, merges, corrupt records
+SELECT sum(checks) > 10000 AS ran, sum(failures) AS failures, bit_or(encodings) = 1791 AS all_encodings
 FROM generate_series(1, 8) s, LATERAL sift._test_col_enc_roundtrip(s, 300, 10);
 SELECT checks > 10000 AS ran, failures FROM sift._test_col_enc_roundtrip(2, 5000, 10);
 SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(3, 74496, 2);
-SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(11, 74496, 1);
+SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(12, 74496, 1);
 SELECT checks > 1000 AS ran, failures FROM sift._test_col_enc_roundtrip(4, 1, 60);
 SELECT sum(failures) AS failures, count(*) AS runs
 FROM generate_series(10, 40) s, LATERAL sift._test_col_enc_roundtrip(s, 1 + (s * 997) % 4000, 3);

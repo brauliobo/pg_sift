@@ -72,6 +72,10 @@ typedef struct SiftCVals
 	uint64	   *nulls;			/* NULL until the first NULL; bit set = NULL; capacity cap bits */
 	uint64	   *ovf;			/* NULL until the first overflow value; bit set = overflow (also set in nulls) */
 	uint32	   *eoff;			/* GROUP leaves: element offset of each row, nrows + 1 entries */
+	/* VAR leaves: key[i] is the byte length of value i (0 for NULL), the bytes of all values follow each other in vb, voff[i] the start of value i */
+	uint32	   *voff;			/* n + 1 entries once a value was added */
+	char	   *vb;
+	Size		vcap;
 } SiftCVals;
 
 typedef struct SiftColBatch
@@ -133,6 +137,7 @@ typedef struct SiftCZone
 #define SIFT_COLENC_PACK	2
 #define SIFT_COLENC_RLE		3		/* reserved */
 #define SIFT_COLENC_CC		4		/* the payload is one blob of the chunk codec: bits and base are 0 */
+#define SIFT_COLENC_STRS	5		/* VAR leaves: the payload is the codec's list of n strings (the NULL slots are empty strings); bits and base are 0 */
 
 typedef struct SiftCChunk
 {
@@ -158,6 +163,8 @@ extern bool sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c);
  * n + SIFT_COL_PAD/8 slots.
  */
 extern void sift_cchunk_decode(const SiftCChunk *c, int64 *dst);
+/* VAR chunks (enc STRS): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
+extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);
 
 /*

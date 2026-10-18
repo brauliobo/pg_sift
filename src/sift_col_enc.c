@@ -80,8 +80,10 @@ schema_check(const SiftColDef *defs, int n)
 			return "leaf ids must be 0..n-1 in order";
 		if (d->kind != SIFT_COLK_SCALAR && d->kind != SIFT_COLK_GROUP)
 			return "unknown leaf kind";
-		if (d->store < SIFT_COLS_INT || d->store > SIFT_COLS_STR)
+		if (d->store < SIFT_COLS_INT || d->store > SIFT_COLS_VAR)
 			return "unknown storage class";
+		if (d->store == SIFT_COLS_VAR && (d->kind != SIFT_COLK_SCALAR || d->parent != -1))
+			return "a variable-length leaf is a top level scalar";
 		if (d->path != NULL && strlen(d->path) > PG_UINT16_MAX)
 			return "leaf path too long";
 		if (d->scale > SIFT_COL_MAX_SCALE || (d->scale > 0 && d->store != SIFT_COLS_INT))
@@ -409,6 +411,8 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 		v->n = 0;
 		if (v->eoff)
 			v->eoff[0] = 0;
+		if (v->voff)
+			v->voff[0] = 0;
 		if (b->dict[i])
 			cdict_reset(b->dict[i]);
 	}
@@ -451,6 +455,35 @@ vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf)
 	v->n++;
 }
 
+/* Appends one slot of a VAR leaf: the bytes of the value (none for a NULL) */
+static void
+vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool isnull, bool ovf)
+{
+	uint32		start = v->n == 0 ? 0 : v->voff[v->n];
+
+	if (isnull)
+		len = 0;
+	if ((uint64) start + len > (uint64) PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col: the variable-length values of a unit exceed 2 GB")));
+	if (v->voff == NULL)
+	{
+		v->voff = MemoryContextAlloc(mcxt, sizeof(uint32));
+		v->voff[0] = 0;
+	}
+	if (v->n == v->cap)
+		v->voff = repalloc(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
+	vals_put(mcxt, v, len, isnull, ovf);
+	if (start + len > v->vcap)
+	{
+		v->vcap = Max(Max(1024, v->vcap * 2), (Size) start + len);
+		v->vb = v->vb ? repalloc(v->vb, v->vcap) : MemoryContextAlloc(mcxt, v->vcap);
+	}
+	if (len > 0)
+		memcpy(v->vb + start, s, len);
+	v->voff[v->n] = start + len;
+}
+
 /* Validates the key against the batch and makes room for the row; the row is counted by batch_row_end */
 static void
 batch_row_begin(SiftColBatch *b, SiftKey key)
@@ -484,6 +517,11 @@ put_value(SiftColBatch *b, int id, const SiftColValue *v)
 	bool		isnull = v->isnull || v->overflow;
 	int64		key = 0;
 
+	if (b->schema->cols[id].store == SIFT_COLS_VAR)
+	{
+		vals_put_var(b->mcxt, &b->col[id], v->v.s, v->len, isnull, v->overflow);
+		return;
+	}
 	if (!isnull)
 		switch (b->schema->cols[id].store)
 		{
@@ -549,6 +587,10 @@ sift_cbatch_value(const SiftColBatch *b, int col, uint32 slot, SiftColValue *v)
 		case SIFT_COLS_STR:
 			v->v.s = b->dict[col]->bytes + b->dict[col]->off[key];
 			v->len = cdict_len(b->dict[col], (uint32) key);
+			break;
+		case SIFT_COLS_VAR:
+			v->v.s = vals->vb + vals->voff[slot];
+			v->len = (uint32) key;
 			break;
 		default:
 			v->v.f = sift_col_f8_from_key(key);
@@ -706,7 +748,7 @@ zone_of_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n,
 		}
 		mn = Min(mn, k);
 		mx = Max(mx, k);
-		if (store == SIFT_COLS_INT)
+		if (store == SIFT_COLS_INT || store == SIFT_COLS_VAR)		/* VAR: the keys are the lengths, their zone is no use but is exact */
 		{
 			uint64		before = sum;
 
@@ -762,6 +804,7 @@ codec_valid(uint8 enc, uint8 bits)
 		case SIFT_COLENC_PACK:
 			return bits >= 1 && bits <= 31 && bits != 8 && bits != 16;
 		case SIFT_COLENC_CC:
+		case SIFT_COLENC_STRS:
 			return bits == 0;
 		default:
 			return false;
@@ -870,6 +913,29 @@ cc_open(const SiftCChunk *c, bool verify)
 	return cc;
 }
 
+void
+sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes)
+{
+	if (c->enc != SIFT_COLENC_STRS)
+		elog(ERROR, "sift_col: chunk encoding %d holds no strings", c->enc);
+	if (sift_cc_decode_strs(mcxt, c->payload, c->paylen, off, bytes) != c->n)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the string list does not hold %u values", c->n)));
+}
+
+/* The lengths of the strings of a STRS chunk, the keys of its zone and its row tests */
+static void
+strs_lengths(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst)
+{
+	uint32	   *off;
+	char	   *bytes;
+
+	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
+	for (uint32 k = 0; k < m; k++)
+		dst[k] = off[(idx ? idx[k] : k) + 1] - off[idx ? idx[k] : k];
+	pfree(off);
+	pfree(bytes);
+}
+
 /* dst[0..n) = base + payload (the NULL slots hold base) */
 static void
 codec_decode(const SiftCChunk *c, int64 *dst)
@@ -878,6 +944,9 @@ codec_decode(const SiftCChunk *c, int64 *dst)
 
 	switch (c->enc)
 	{
+		case SIFT_COLENC_STRS:
+			strs_lengths(c, NULL, c->n, dst);
+			break;
 		case SIFT_COLENC_CC:
 			{
 				SiftCc	   *cc = cc_open(c, false);
@@ -911,6 +980,9 @@ codec_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst)
 
 	switch (c->enc)
 	{
+		case SIFT_COLENC_STRS:
+			strs_lengths(c, idx, m, dst);
+			break;
 		case SIFT_COLENC_CC:
 			{
 				SiftCc	   *cc = cc_open(c, false);
@@ -964,9 +1036,11 @@ put_bitmap(StringInfo out, const uint64 *bits, uint32 n)
 
 /* Appends the chunk of n keys (NULL slots hold 0) and returns its zone; pol: the codec's policy of the leaf, NULL for the plain form */
 static void
-chunk_encode(StringInfo out, SiftColStore store, const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n,
-			 const SiftCcPolicy *pol, SiftCZone *z)
+chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const int64 *key, const SiftCcPolicy *pol, SiftCZone *z)
 {
+	const uint64 *nulls = vals->nulls,
+			   *ovf = vals->ovf;
+	uint32		n = vals->n;
 	uint8		enc,
 				bits,
 				flags;
@@ -981,19 +1055,29 @@ chunk_encode(StringInfo out, SiftColStore store, const int64 *key, const uint64 
 	codec_choose(span, n, &enc, &bits);
 	if (pol != NULL && enc != SIFT_COLENC_CONST)
 		enc = SIFT_COLENC_CC, bits = 0;
+	if (store == SIFT_COLS_VAR)
+		enc = SIFT_COLENC_STRS, bits = 0;
 	head[0] = enc;
 	head[1] = bits;
 	head[2] = flags;
 	head[3] = 0;
 	memcpy(head + 4, &n, sizeof(n));
 	put_bytes(out, head, sizeof(head));
-	base = enc == SIFT_COLENC_CC ? 0 : z->min;
+	base = enc == SIFT_COLENC_CC || enc == SIFT_COLENC_STRS ? 0 : z->min;
 	put_val(out, base);
 	if (flags & SIFT_COLC_NULLS)
 		put_bitmap(out, nulls, n);
 	if (flags & SIFT_COLC_OVF)
 		put_bitmap(out, ovf, n);
-	if (enc == SIFT_COLENC_CC)
+	if (enc == SIFT_COLENC_STRS)
+	{
+		SiftCcPolicy dp;
+
+		if (pol == NULL)
+			sift_cc_policy_default(&dp);
+		sift_cc_encode_strs(out, vals->voff, vals->vb, n, pol ? pol : &dp);
+	}
+	else if (enc == SIFT_COLENC_CC)
 		sift_cc_encode(out, store == SIFT_COLS_F4 ? SIFT_CC_F4 : store == SIFT_COLS_F8 ? SIFT_CC_F8 : SIFT_CC_INT, key, n, nulls, pol, NULL);
 	else if (enc != SIFT_COLENC_CONST)
 	{
@@ -1011,6 +1095,7 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 {
 	uint64		pos = CHUNK_HEAD,
 				words;
+	bool		whole;
 
 	if (len < CHUNK_HEAD || ((uintptr_t) p & 7) != 0)
 		return false;
@@ -1034,8 +1119,9 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 		c->ovf = (const uint64 *) (p + pos);
 		pos += words * 8;
 	}
-	c->paylen = c->enc == SIFT_COLENC_CC ? (pos <= len ? (uint32) (len - pos) : 0) : (uint32) codec_paylen(c->enc, c->bits, c->n);
-	if (pos + c->paylen > len || (c->enc == SIFT_COLENC_CC && (c->paylen == 0 || c->paylen % 8 != 0 || c->n == 0)))
+	whole = c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS;
+	c->paylen = whole ? (pos <= len ? (uint32) (len - pos) : 0) : (uint32) codec_paylen(c->enc, c->bits, c->n);
+	if (pos + c->paylen > len || (whole && (c->paylen == 0 || c->paylen % 8 != 0 || c->n == 0)))
 		return false;
 	c->payload = p + pos;
 	if (c->n % 64 != 0)
@@ -1082,7 +1168,7 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
 
 	if (c->enc == SIFT_COLENC_CC)
 		sift_cc_close(cc_open(c, true));
-	sift_cchunk_decode(c, key);
+	sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
 	zone_of_keys(key, c->nulls, c->ovf, c->n, store, z);
 	pfree(key);
 }
@@ -1304,6 +1390,8 @@ sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, Si
 	memset(t, 0, sizeof(*t));
 	if (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL)
 		t->kind = p->op == SIFT_COLOP_ISNULL ? SIFT_CT_ISNULL : SIFT_CT_NOTNULL;
+	else if (def->store == SIFT_COLS_VAR)
+		elog(ERROR, "sift_col: a variable-length leaf is tested for NULL only");
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
 		elog(ERROR, "sift_col: predicate without a constant");
 	else if (def->store == SIFT_COLS_STR)
@@ -1709,7 +1797,7 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const SiftCcPol
 		}
 		put_pad(out, 8);
 		off = (uint32) (out->len - *start);
-		chunk_encode(out, s->cols[col].store, key, v->nulls, v->ovf, v->n, pol ? &pol[col] : NULL, &zone);
+		chunk_encode(out, s->cols[col].store, v, key, pol ? &pol[col] : NULL, &zone);
 		len = (uint32) (out->len - *start) - off;
 		memcpy(out->data + tab + col * sizeof(uint32), &off, sizeof(off));
 		memcpy(out->data + tab + (s->ncols + col) * sizeof(uint32), &len, sizeof(len));
@@ -1912,6 +2000,8 @@ typedef struct UnitLeaf
 	int64	   *key;			/* decoded, NULL slots 0 */
 	uint32	   *remap;			/* STR: code of the unit's dictionary -> code in the destination, PG_UINT32_MAX = not yet */
 	uint32	   *eoff;			/* GROUP: element offset of each row, nrows + 1 */
+	uint32	   *voff;			/* VAR: start of each string, n + 1 */
+	char	   *vb;
 } UnitLeaf;
 
 /* Appends slot `slot` of leaf col of the unit to dst's leaf */
@@ -1919,8 +2009,14 @@ static void
 unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uint32 slot)
 {
 	bool		isnull = !lf->present || sift_col_bit_test(lf->c.nulls, slot);
+	bool		ovf = lf->present && sift_col_bit_test(lf->c.ovf, slot);
 	int64		key = isnull ? 0 : lf->key[slot];
 
+	if (lf->voff != NULL)
+	{
+		vals_put_var(dst->mcxt, &dst->col[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf);
+		return;
+	}
 	if (!isnull && lf->remap != NULL)
 	{
 		uint32	   *to;
@@ -1932,7 +2028,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 			*to = sift_cdict_intern(dst->dict[col], dicts[col]->bytes + dicts[col]->off[key], cdict_len(dicts[col], (uint32) key));
 		key = *to;
 	}
-	vals_put(dst->mcxt, &dst->col[col], key, isnull, lf->present && sift_col_bit_test(lf->c.ovf, slot));
+	vals_put(dst->mcxt, &dst->col[col], key, isnull, ovf);
 }
 
 void
@@ -1954,6 +2050,8 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 			continue;
 		l->key = palloc((l->c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 		sift_cchunk_decode(&l->c, l->key);
+		if (s->cols[col].store == SIFT_COLS_VAR)
+			sift_cchunk_strs(&l->c, CurrentMemoryContext, &l->voff, &l->vb);
 		if (leaf_is_str(&s->cols[col]))
 		{
 			l->remap = palloc(Max(dicts[col]->n, 1) * sizeof(uint32));
@@ -2000,6 +2098,11 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 			pfree(lf[col].remap);
 		if (lf[col].eoff)
 			pfree(lf[col].eoff);
+		if (lf[col].voff)
+		{
+			pfree(lf[col].voff);
+			pfree(lf[col].vb);
+		}
 	}
 	pfree(lf);
 	pfree(keys);
