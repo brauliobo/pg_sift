@@ -982,6 +982,21 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 	return stats;
 }
 
+/* The dead-posting tables of the segments VACUUM cleared docs of and the merges left as they are */
+static void
+refresh_dead_tables(Relation index, SiftDirSnapshot *snap)
+{
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
+		{
+			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], CurrentMemoryContext);
+
+			sift_seg_refresh_dead(seg);
+			sift_seg_close(seg);
+		}
+}
+
 IndexBulkDeleteResult *
 sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
@@ -995,6 +1010,7 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	sift_maint_lock(index, true);
 	promote_locked(index, false, false);
 	merge_to_fixed_point(index);
+	refresh_dead_tables(index, snap);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	if (sift_index_options(index)->vacuum_truncate)

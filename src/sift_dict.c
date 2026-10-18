@@ -337,12 +337,11 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	it->p += suffix;
 	memset(info, 0, sizeof(SiftTermInfo));
 	it->p = get_varint(it->p, it->end, &v);
-	info->df = info->ldf = v;
+	info->df = v;
 	if (it->end - it->p < 2)
 		corrupt("Truncated dictionary entry.");
 	info->flags = *it->p++;
 	info->max_bound = *it->p++;
-	info->slot = (info->flags & SIFT_TERM_INLINE) ? -1 : it->slot++;
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
@@ -394,7 +393,16 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;
+	it->slot++;
 	return true;
+}
+
+/* The live df and the slot of the entry block_next returned, for the callers that keep it (the others do not pay for them) */
+static void
+entry_stats(const BlockIter *it, SiftTermInfo *info)
+{
+	info->ldf = info->df;
+	info->slot = (info->flags & SIFT_TERM_INLINE) ? -1 : (int32) it->slot - 1;
 }
 
 #ifdef SIFT_TESTING
@@ -507,6 +515,8 @@ sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info)
 	{
 		int			c = term_cmp(it.term, it.len, term, len);
 
+		if (c == 0)
+			entry_stats(&it, info);
 		if (c >= 0)
 			return c == 0;
 	}
@@ -539,7 +549,13 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 		{
 			if (lo && term_cmp(it.term, it.len, lo, lolen) < 0)
 				continue;
-			more = (!hi || term_cmp(it.term, it.len, hi, hilen) < 0) && fn(arg, it.term, it.len, &info);
+			if (hi && term_cmp(it.term, it.len, hi, hilen) >= 0)
+			{
+				more = false;
+				break;
+			}
+			entry_stats(&it, &info);
+			more = fn(arg, it.term, it.len, &info);
 		}
 		slot = it.slot;
 		if ((++nblk & 15) == 0)
