@@ -91,4 +91,17 @@ CREATE INDEX cv_places_sift ON cv_places USING sift ((name || chr(29) || admin1 
 CREATE TABLE cv_stem (id int PRIMARY KEY, body text);
 INSERT INTO cv_stem SELECT i, (ARRAY['runners were running', 'she runs every day', 'a quiet pool', 'cafes near the office'])[1 + i % 4] FROM generate_series(1, 400) i;
 CREATE INDEX cv_stem_body ON cv_stem USING sift (body) WITH (stemmer = 'en');
+-- tables of the doc-claim rows (D, L, S rows): the probes of test/col/coverage.sql and the `pre` lines of the table run on them
+CREATE EXTENSION dblink;
+CREATE EXTENSION pageinspect;
+CREATE EXTENSION pg_walinspect;
+CREATE TABLE cv_snap (id int, grp int, v int);
+INSERT INTO cv_snap SELECT i, i % 5, i FROM generate_series(1, 2000) i;
+CREATE INDEX cv_snap_col ON cv_snap USING sift_col (id, grp, v);
+CREATE TABLE cv_hot (id int PRIMARY KEY, grp int, v int, pad text) WITH (fillfactor = 50);
+INSERT INTO cv_hot SELECT i, i % 5, i, 'p' FROM generate_series(1, 2000) i;
+CREATE INDEX cv_hot_col ON cv_hot USING sift_col (id, grp, v);
+CREATE TABLE cv_maint (id int PRIMARY KEY, grp int, v int);
+INSERT INTO cv_maint SELECT i, i % 5, i FROM generate_series(1, 3000) i;
+CREATE INDEX cv_maint_col ON cv_maint USING sift_col (id, grp, v);
 ANALYZE;
