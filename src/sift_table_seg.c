@@ -21,6 +21,7 @@
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
@@ -201,9 +202,14 @@ static Datum
 image_datum(Form_pg_attribute att, const char *p, uint32 len)
 {
 	char	   *c = palloc(Max(len, sizeof(Datum)));
+	Datum		d;
 
 	memcpy(c, p, len);
-	return att->attbyval ? fetch_att(c, true, att->attlen) : PointerGetDatum(c);
+	if (!att->attbyval)
+		return PointerGetDatum(c);
+	d = fetch_att(c, true, att->attlen);
+	pfree(c);
+	return d;
 }
 
 static bool
@@ -437,6 +443,11 @@ struct SiftTblGroupScan
 	int			rd_unit;
 	uint64		serial;			/* of cu */
 	uint64		rd_serial;
+	/* readers of the current unit that outlive the call that found the row: a slot holds a reference and its token */
+	int			refs;
+	bool		ended;
+	bool		park_fill;		/* the fetch scan: the pages a fill pinned are released at once (nothing ends it before the transaction does) */
+	uint32		token;		/* changes whenever another unit becomes the current one: vec, ord and unit are then not the slot's */
 };
 
 static SiftColSchema *
@@ -563,7 +574,22 @@ void
 sift_tbl_gscan_end(SiftTblGroupScan *g)
 {
 	gscan_park(g);
-	MemoryContextDelete(g->cxt);
+	g->ended = true;
+	if (g->refs == 0)
+		MemoryContextDelete(g->cxt);
+}
+
+void
+sift_tbl_gscan_ref(SiftTblGroupScan *g)
+{
+	g->refs++;
+}
+
+void
+sift_tbl_gscan_unref(SiftTblGroupScan *g)
+{
+	if (--g->refs == 0 && g->ended)
+		MemoryContextDelete(g->cxt);
 }
 
 void
@@ -584,6 +610,7 @@ unit_start(SiftTblGroupScan *g)
 	MemoryContext old;
 
 	g->rd_unit = -1;
+	g->token++;
 	MemoryContextReset(g->unitcxt);
 	old = MemoryContextSwitchTo(g->unitcxt);
 	sift_col_sel_all(&g->unit, &g->sel);
@@ -641,50 +668,82 @@ sift_tbl_gscan_plain(const SiftTblGroupScan *g)
 	return g->plain;
 }
 
-/* Every row of the current unit, in its own order: cheaper to decode than a selection that leaves a few dead rows out */
-static void
-unit_read(SiftTblGroupScan *g)
+/* The leaf c of the current unit with every row (in the unit's own order: cheaper to decode than a selection that leaves a few dead rows out), read on first use */
+static const SiftColVec *
+col_vec(SiftTblGroupScan *g, int c)
 {
-	MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
+	if (g->vec[c].n == PG_UINT32_MAX)
+	{
+		MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
 
-	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
 		sift_col_read(&g->unit, c, NULL, &g->vec[c]);
-	MemoryContextSwitchTo(old);
+		MemoryContextSwitchTo(old);
+	}
+	return &g->vec[c];
+}
+
+/* Attribute a of the row at position pos of the vectors of the current unit, allocated in the current memory context */
+static void
+fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
+{
+	const GroupSrc *gs = &g->s[g->cur];
+	Form_pg_attribute att = TupleDescAttr(g->desc, a - 1);
+	int			leaf = gs->leaf[a];
+	const SiftColVec *vec;
+
+	*isnull = false;
+	*value = (Datum) 0;
+	if (att->attisdropped)
+		*isnull = true;
+	else if (leaf < 0)
+	{
+		*value = getmissingattr(g->desc, a, isnull);
+		if (!*isnull)
+			*value = datumCopy(*value, att->attbyval, att->attlen);	/* like every value: the caller owns it */
+	}
+	else if ((vec = col_vec(g, leaf))->nulls != NULL && sift_col_bit_test(vec->nulls, pos))
+	{
+		const char *p;
+		uint32		len;
+
+		if (vec->ovf != NULL && sift_col_bit_test(vec->ovf, pos) && exc_find(col_vec(g, gs->exc), pos, a, &p, &len))
+			*value = image_datum(att, p, len);
+		else
+			*isnull = true;
+	}
+	else
+		*value = value_out(&gs->schema->cols[leaf], att, vec, pos);
+}
+
+bool
+sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull)
+{
+	if (g->token != token)
+		return false;
+	for (int a = from + 1; a <= to; a++)
+		fill_attr(g, pos, a, &values[a - 1], &isnull[a - 1]);
+	if (g->park_fill)
+		gscan_park(g);
+	return true;
+}
+
+uint32
+sift_tbl_gscan_cursor(const SiftTblGroupScan *g, ItemPointer tid, uint32 *pos)
+{
+	*tid = g->tids[g->i - 1];
+	*pos = g->ord[g->i - 1];
+	return g->token;
 }
 
 /* The tuple of row i of the vectors read (position i of the selection) */
 static HeapTuple
 row_tuple(SiftTblGroupScan *g, uint32 i, ItemPointer tid)
 {
-	const GroupSrc *gs = &g->s[g->cur];
 	MemoryContext old = MemoryContextSwitchTo(g->rowcxt);
 	HeapTuple	tup;
 
 	for (int a = 1; a <= g->desc->natts; a++)
-	{
-		Form_pg_attribute att = TupleDescAttr(g->desc, a - 1);
-		int			leaf = gs->leaf[a];
-		const SiftColVec *vec;
-
-		g->isnull[a - 1] = false;
-		g->values[a - 1] = (Datum) 0;
-		if (att->attisdropped)
-			g->isnull[a - 1] = true;
-		else if (leaf < 0)
-			g->values[a - 1] = getmissingattr(g->desc, a, &g->isnull[a - 1]);
-		else if ((vec = &g->vec[leaf])->nulls != NULL && sift_col_bit_test(vec->nulls, i))
-		{
-			const char *p;
-			uint32		len;
-
-			if (vec->ovf != NULL && sift_col_bit_test(vec->ovf, i) && exc_find(&g->vec[gs->exc], i, a, &p, &len))
-				g->values[a - 1] = image_datum(att, p, len);
-			else
-				g->isnull[a - 1] = true;
-		}
-		else
-			g->values[a - 1] = value_out(&gs->schema->cols[leaf], att, vec, i);
-	}
+		fill_attr(g, i, a, &g->values[a - 1], &g->isnull[a - 1]);
 	MemoryContextSwitchTo(old);
 	tup = heap_form_tuple(g->desc, g->values, g->isnull);
 	MemoryContextReset(g->rowcxt);
@@ -696,8 +755,6 @@ row_tuple(SiftTblGroupScan *g, uint32 i, ItemPointer tid)
 HeapTuple
 sift_tbl_gscan_tuple(SiftTblGroupScan *g)
 {
-	if (g->vec[0].n == PG_UINT32_MAX)
-		unit_read(g);
 	return row_tuple(g, g->ord[g->i - 1], &g->tids[g->i - 1]);
 }
 
@@ -778,6 +835,7 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 	if (g->rd_unit == k && g->rd_serial == g->serial)
 		return;
 	g->rd_unit = -1;
+	g->token++;
 	g->cur = u->src;
 	sift_col_begin(src, NULL, 0, sb, sb + 1);
 	for (uint32 j = 0; j <= u->ordinal; j++)
@@ -789,7 +847,8 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 	g->ord = palloc((g->sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&g->sel, g->ord);
 	MemoryContextSwitchTo(old);
-	unit_read(g);
+	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
+		g->vec[c].n = PG_UINT32_MAX;
 	g->rd_unit = k;
 	g->rd_serial = g->serial;
 }
@@ -837,6 +896,7 @@ fetch_scan(Relation rel, SiftTblRel *st)
 		MemoryContext old = MemoryContextSwitchTo(st->cxt);
 
 		c->fetch = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
+		c->fetch->park_fill = true;
 		c->fetch_version = st->dir.version;
 		c->fetch_xmin = TransactionXmin;
 		MemoryContextSwitchTo(old);
@@ -844,18 +904,49 @@ fetch_scan(Relation rel, SiftTblRel *st)
 	return c->fetch;
 }
 
-/* Is tid a live row of the groups? (the TIDs of its units, no values read) */
+/* Where tid is among the cached units of its superblock: unit k, position j of its TIDs */
 static bool
-gscan_has(SiftTblGroupScan *g, ItemPointer tid)
+gscan_find(SiftTblGroupScan *g, ItemPointer tid, int *k, uint32 *j)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 
 	cache_superblock(g, vblock / SIFT_SB_PAGES);
-	for (int k = 0; k < g->ncu; k++)
-		for (uint32 j = block_start(&g->cu[k], vblock); j < g->cu[k].n && ItemPointerGetBlockNumberNoCheck(&g->cu[k].tid[j]) == vblock; j++)
-			if (ItemPointerEquals(&g->cu[k].tid[j], tid))
+	for (*k = 0; *k < g->ncu; (*k)++)
+		for (*j = block_start(&g->cu[*k], vblock); *j < g->cu[*k].n && ItemPointerGetBlockNumberNoCheck(&g->cu[*k].tid[*j]) == vblock; (*j)++)
+			if (ItemPointerEquals(&g->cu[*k].tid[*j], tid))
 				return true;
 	return false;
+}
+
+/* Is tid a live row of the groups? (the TIDs of its units, no values read) */
+static bool
+gscan_has(SiftTblGroupScan *g, ItemPointer tid)
+{
+	int			k;
+	uint32		j;
+
+	return gscan_find(g, tid, &k, &j);
+}
+
+bool
+sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGroupScan **g, uint32 *token, uint32 *pos)
+{
+	int			k;
+	uint32		j;
+
+	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
+		return false;
+	*g = fetch_scan(rel, st);
+	if (!gscan_find(*g, tid, &k, &j))
+	{
+		gscan_park(*g);
+		return false;
+	}
+	unit_load(*g, k, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
+	*pos = (*g)->ord[j];
+	*token = (*g)->token;
+	gscan_park(*g);
+	return true;
 }
 
 bool

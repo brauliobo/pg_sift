@@ -707,7 +707,7 @@ sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, ui
 void
 sift_tbl_store(TupleTableSlot *slot, HeapTuple tup)
 {
-	ExecForceStoreHeapTuple(tup, slot, false);
+	sift_tbl_slot_store_tuple(slot, tup);
 	ExecMaterializeSlot(slot);
 	heap_freetuple(tup);
 }

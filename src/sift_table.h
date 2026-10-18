@@ -369,6 +369,23 @@ extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
 extern bool sift_tbl_xid_aborted(TransactionId xid);
 
+/*
+ * The slot of a sift_table (sift_table_slot.c): a virtual slot that decodes the attributes of a row of a column group on demand.
+ * store_group: the row at position pos of the vectors of the current unit of g (token), tid its TID; store_tuple: a row as a HeapTuple
+ * that stays valid until the slot is cleared (t_self and t_tableOid are the row's TID and table).
+ */
+extern void sift_tbl_slot_init(void);
+extern const TupleTableSlotOps *sift_tbl_slot_ops(void);
+extern void sift_tbl_slot_store_group(TupleTableSlot *slot, Relation rel, ItemPointer tid, SiftTblGroupScan *g, uint32 token, uint32 pos);
+extern void sift_tbl_slot_store_tuple(TupleTableSlot *slot, HeapTuple tup);
+/* Stores the live row tid of a column group lazily; false when no group holds it */
+extern bool sift_tbl_slot_locate(TupleTableSlot *slot, Relation rel, SiftTblRel *st, ItemPointer tid);
+static inline bool
+sift_tbl_slot_is_lazy(TupleTableSlot *slot)
+{
+	return slot->tts_ops == sift_tbl_slot_ops();
+}
+
 /* Does a column group hold the row of tid (live)? On true *rv is filled, rv->tuple palloc'd. */
 extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy);
 
@@ -377,6 +394,12 @@ extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, 
  * next: the next live row of the groups in the range of superblocks, rv->key and rv->xmin (always unset: frozen) only; plain: no tombstone
  * can concern the rows of its unit (every snapshot sees them); tuple: the row as a HeapTuple (t_self set), palloc'd.
  */
+extern bool sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull);
+extern uint32 sift_tbl_gscan_cursor(const SiftTblGroupScan *g, ItemPointer tid, uint32 *pos);
+extern void sift_tbl_gscan_ref(SiftTblGroupScan *g);
+extern void sift_tbl_gscan_unref(SiftTblGroupScan *g);
+/* Makes the unit of the live row tid the current one of the table's fetch scan: *token and *pos are what sift_tbl_slot_store_group takes */
+extern bool sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGroupScan **g, uint32 *token, uint32 *pos);
 extern SiftTblGroupScan *sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDirSnapshot *dir, Snapshot snapshot);
 extern void sift_tbl_gscan_end(SiftTblGroupScan *g);
 extern void sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi);	/* [sb_lo, sb_hi), restarts */

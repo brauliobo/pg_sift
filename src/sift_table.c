@@ -85,7 +85,7 @@ sift_tbl_routine(void)
 static const TupleTableSlotOps *
 tbl_slot_callbacks(Relation rel)
 {
-	return &TTSOpsHeapTuple;
+	return sift_tbl_slot_ops();
 }
 
 /* ---------- rows ---------- */
