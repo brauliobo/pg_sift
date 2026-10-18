@@ -474,7 +474,7 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 	if (v->n == v->cap)
 		v->voff = repalloc(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
 	vals_put(mcxt, v, len, isnull, ovf);
-	if (start + len > v->vcap)
+	if (v->vb == NULL || start + len > v->vcap)
 	{
 		v->vcap = Max(Max(1024, v->vcap * 2), (Size) start + len);
 		v->vb = v->vb ? repalloc(v->vb, v->vcap) : MemoryContextAlloc(mcxt, v->vcap);
