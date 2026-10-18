@@ -5,6 +5,9 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
+-- the tables are tiny: the scan's start-up cost would keep the btree plans these tests are not about
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
 
 CREATE TABLE o (id int PRIMARY KEY, store int, kind text, f8 float8, f4 float4, items jsonb, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO o

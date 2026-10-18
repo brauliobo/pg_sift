@@ -2834,8 +2834,9 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
+#define AGG_VLEAF_ELEM		9.0		/* an element of an object looked up by key (a metric of a free key object), per row and key */
 #define AGG_UNIT_COST		200.0
-#define AGG_START_COST		400.0
+#define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_DEFAULT_ELEMS	3.0
 
@@ -2942,6 +2943,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
+	for (int i = 0; i < s->nvleaf; i++)
+		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
@@ -2958,6 +2961,15 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost *= cpu_operator_cost;
+	/*
+	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
+	 * jsonb_each) minus its filters, and prices its sort, join and aggregate with them, though the data has a handful per row: when it
+	 * expects more unnested rows than the selected orders hold elements, this path is charged the square root of the excess. The
+	 * estimates of the two plans then cross where the times do: a selective store set keeps the btree plan, a whole table or a
+	 * filter on the elements (which cuts the expected rows) keeps its price.
+	 */
+	if (s->group >= 0)
+		scan_cost *= Max(sqrt(input_rel->rows / (sel_rows * elems)), 1.0);
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
 	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
 	startup = AGG_START_COST * cpu_operator_cost;

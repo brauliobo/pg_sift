@@ -23,7 +23,7 @@
 #                       access method or a failing CREATE INDEX skips the suite with a message
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
-#                       $SIFT_ANALYTICS_DIR/col_index.sql, USING sift_col replaced by --col-am)
+#                       test/col/col_index.sql, USING sift_col replaced by --col-am)
 #   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed
 #   --mutate KIND       perturbs the "on" results (int float float-tiny text null rows dup order type cols), to prove a failure is seen
 #   --selftest          runs the fixture corpus plain against plain (must pass), then every mutation (must fail, float-tiny pass)
@@ -333,7 +333,7 @@ analytics_suite() {
 	sql -1 -v n="$ROWS" -v tenants="$STORES" -v order_by= -f "$ANALYTICS_DIR/schema.sql" -f "$ANALYTICS_DIR/gen.sql" >/dev/null
 	sql -f "$ANALYTICS_DIR/sets.sql" -f "$ANALYTICS_DIR/indexes.sql" >/dev/null
 	if [[ -z $NOINDEX ]]; then
-		col=${COL_INDEX:-$ANALYTICS_DIR/col_index.sql}
+		col=${COL_INDEX:-$REPO/test/col/col_index.sql}
 		if ! err=$(sed "s/USING sift_col\b/USING $AM/" "$col" | grep -v '^--' | sql -f - 2>&1); then skip "analytics: CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 0; fi
 	fi
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null

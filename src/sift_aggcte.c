@@ -25,11 +25,11 @@
 #include "sift_colsrc.h"
 
 /*
- * The inline plan must cost this many times less. The plain plan is priced with the 100 rows per call that PostgreSQL assumes
- * for jsonb_to_recordset (the data has a handful), so its estimate is several times too high; the margin is where the
- * measured times of the analytics corpus (S4 on 300000 orders) cross.
+ * The inline plan must cost this many times less on top of the unnest factor that agg_cost charges its scans (the plain plan is
+ * priced with the 100 rows per call that PostgreSQL assumes for jsonb_to_recordset, the data has a handful): S4 on 300000 orders
+ * stays on the materialized plan for the 400 store set and takes the inline one for the 4000 store set, where it is 5 times cheaper.
  */
-#define CTE_INLINE_MARGIN	6.0
+#define CTE_INLINE_MARGIN	2.0
 
 static planner_hook_type prev_planner_hook;
 
