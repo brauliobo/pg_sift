@@ -11,7 +11,12 @@
 #include "sift_segment.h"
 
 #define SIFT_MERGE_FANIN		8		/* segments of a tier that trigger a merge (the default of a host that lets it be set) */
-#define SIFT_MERGE_MAX_SEGMENTS	32		/* more directory entries than this trigger a merge of the smallest segments */
+#define SIFT_MERGE_MAX_SEGMENTS	32		/* more directory entries than this trigger a merge of the smallest segments (2 * fanin from a fanin of 16 up) */
+#define SIFT_MERGE_MIN_FANIN	2		/* the range of merge_fanin of the PostgreSQL host */
+#define SIFT_MERGE_MAX_FANIN	32
+
+/* Directory entries from which the policy merges the smallest segments: never fewer than the tiers it waits for need (2 * fanin) */
+#define SIFT_MERGE_ENTRIES(fanin)	Max(SIFT_MERGE_MAX_SEGMENTS, 2 * (fanin))
 
 typedef struct SiftMergePolicy
 {
@@ -21,7 +26,7 @@ typedef struct SiftMergePolicy
 
 /*
  * The immutable segments of snap to merge now, in sel (room for SIFT_MAX_SEGMENTS), and their number: fanin or more of one tier
- * (at most 2 * fanin of it), else the smallest fanin when the directory has more than SIFT_MERGE_MAX_SEGMENTS entries, else a
+ * (at most 2 * fanin of it), else the smallest fanin when the directory has more than SIFT_MERGE_ENTRIES(fanin) entries, else a
  * lone segment that is more than half dead. force: all of them, a lone one only if some of its documents are dead (the rewrite
  * drops them and their terms). 0 when there is nothing to merge.
  */

@@ -18,10 +18,12 @@
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
+#include "storage/latch.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_event.h"
 
 #include "sift_estimate.h"
 #include "sift_store.h"
@@ -72,6 +74,8 @@ struct SiftWriteTarget
 	int			ntaken;
 	int			maxtaken;
 	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
+	int			delay_ms;		/* sift_wt_throttle: sleep per THROTTLE_PAGES charged, 0 = none */
+	uint64		charged;		/* pages charged since the last sleep */
 #ifdef SIFT_TESTING
 	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
 #endif
@@ -1029,11 +1033,36 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 	wt->spare[wt->nspare++] = (SiftExtent) {start, n};
 }
 
+#define THROTTLE_PAGES	16		/* pages (128 kB) of I/O that earn one delay */
+
+void
+sift_wt_throttle(SiftWriteTarget *wt, int delay_ms)
+{
+	wt->delay_ms = delay_ms;
+}
+
+/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly */
+void
+sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
+{
+	if (wt->delay_ms == 0)
+		return;
+	wt->charged += pages;
+	for (; wt->charged >= THROTTLE_PAGES; wt->charged -= THROTTLE_PAGES)
+	{
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, wt->delay_ms, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 /* Writes a complete page; BULK takes ownership of a smgr_bulk_get_buf page */
 static void
 wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 {
 	Buffer		buf;
+
+	sift_wt_charge(wt, 1);
 
 	if (wt->bulk)
 	{

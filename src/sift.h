@@ -78,6 +78,7 @@ typedef struct SiftOptions
 	bool		accent_folding;
 	int			mutable_limit;	/* kB; seal the active mutable segment above it */
 	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */
+	int			merge_fanin;	/* segments of a tier that trigger a merge (read at merge time, not part of the format) */
 	int			build_segments; /* 0 = one per build participant */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
@@ -131,6 +132,7 @@ extern PGDLLIMPORT bool sift_enable_count;
 extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_async_maintenance;
 extern PGDLLIMPORT int sift_maintenance_naptime;
+extern PGDLLIMPORT int sift_maintenance_cost_delay;
 extern PGDLLIMPORT bool sift_prefetch;
 
 /*
