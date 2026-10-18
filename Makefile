@@ -15,6 +15,15 @@ PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement
 ifeq ($(shell uname -m),x86_64)
 PG_CFLAGS += -march=x86-64 -mtune=generic
 endif
+# PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
+# Off by default; SIFT_LTO=1 enables it with at most 4 jobs. Switching it needs `make clean`.
+ifdef SIFT_LTO
+PG_CFLAGS += -flto=4
+SHLIB_LINK += -flto=4
+else
+PG_CFLAGS += -fno-lto
+SHLIB_LINK += -fno-lto
+endif
 EXTRA_CLEAN = src/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer

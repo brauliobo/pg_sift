@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 PG_CONFIG = /usr/lib/postgresql/18/bin/pg_config
-PGXS_MAKE = $(MAKE) USE_PGXS=1 PG_CONFIG=$(PG_CONFIG)
+PGXS_MAKE = $(MAKE) USE_PGXS=1 SIFT_LTO=1 PG_CONFIG=$(PG_CONFIG)
 
 %:
 	dh $@

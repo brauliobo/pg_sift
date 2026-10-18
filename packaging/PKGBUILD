@@ -15,12 +15,12 @@ sha256sums=('SKIP')
 
 build() {
   cd pg_sift
-  make
+  make SIFT_LTO=1
 }
 
 package() {
   cd pg_sift
-  make DESTDIR="$pkgdir" install
+  make SIFT_LTO=1 DESTDIR="$pkgdir" install
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE NOTICE
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/*.md
 }
