@@ -92,7 +92,7 @@ bench() { # LABEL PREFIX clients script secs: pgbench; prints PREFIX_tps and PRE
 anon_kb() { # anonymous memory of the processes of a cluster (children of its postmaster)
 	local pm p
 	pm=$(head -1 "${TMP[$1]}/data/postmaster.pid")
-	for p in $(pgrep -P "$pm"); do awk '/^RssAnon/ {print $2}' "/proc/$p/status" 2>/dev/null; done | awk '{s += $1} END {print s + 0}'
+	for p in $(pgrep -P "$pm"); do awk '/^RssAnon/ {print $2}' "/proc/$p/status" 2>/dev/null || true; done | awk '{s += $1} END {print s + 0}'
 }
 peak_kb() { # LABEL: polls until the file $BASE/stop exists, prints the highest sample
 	local best=0 kb
