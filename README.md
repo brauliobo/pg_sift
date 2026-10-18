@@ -56,7 +56,7 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 ## SQLite
 
 The search engine as a loadable extension (Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: exact BM25, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets, facets.
-89x, 242x and 10x the throughput of FTS5 on AND, OR and phrase top-10 (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
+89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
 
 ```sql
 .load ./sift
@@ -67,7 +67,7 @@ SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT
 ## MariaDB
 
 `libsift_udf.so` and two SQL files bring the engine to MariaDB 10.5 to 13.x with no storage engine and no server patch; results are identical to pg_sift.
-183x to 794x faster than InnoDB FULLTEXT on AND, OR and phrase top-10 (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
 
 ```sql
 CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
