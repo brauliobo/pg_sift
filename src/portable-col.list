@@ -34,3 +34,4 @@ sift_colz.h
 sift_aggkern.h
 sift_aggkern_int.h
 sift_aggkern_cases.h
+sift_testrng.h
