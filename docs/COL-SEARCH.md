@@ -75,7 +75,11 @@ bind (20000) + terms * 400 + postings * 0.25 + matching pages * 12
 | `wireless headphones` (7k) | 7.0 ms | 2.7 ms |
 | `cookware` (9k) | 6.6 ms | 1.4 ms |
 
-**Top-N.** `ORDER BY created_at DESC LIMIT n` with a search is **not** done by the column engine yet (see Limits): it still runs as `Limit -> Sort -> SiftScan` and fetches every match from the heap. `ORDER BY sift.score(...) DESC LIMIT n` is the ranked `SiftScan`, which already restricts itself to a filter mask (`sift_pushdown.c`, bitmap path over other indexes). The design for both: the same `select` seam in the opposite direction, `sift_colsrc_tids(src, sel)` giving the keys of the rows that pass column filters, converted to the `SiftFilter` the ranked scan ANDs into its candidates (so the filter comes from `sift_col` instead of a bitmap heap scan), and for order by a column a top-N collector over the match set with the key columns decoded for the kept rows and the heap read for the n winners only.
+**Top-N.** `WHERE col @@> q [AND filters] ORDER BY <columns> [ASC|DESC] LIMIT n [OFFSET m]` is a SiftAgg path too (`sift.enable_topn`, default on, needs `sift.enable_agg`). The planner adds it at `UPPERREL_ORDERED` (`topn_paths`, `src/sift_aggplan.c`) when the query has no groups, aggregates, windows, `DISTINCT`, joins or row marks, `LIMIT`/`OFFSET` are constants with `n + m <= 100000`, and every sort expression is a column of the `sift_col` index (int2/int4/int8, date, timestamp(tz), numeric, float4/float8, default btree order, any `ASC`/`DESC`/`NULLS` combination; NaN is the largest). The scan evaluates filters and the match set as for an aggregate; per unit the rows that pass go to a bounded heap (`src/sift_topn.c`) of the `n + m` best, ties broken by TID. Only the first sort key is decoded for all passing rows; the other keys and the TIDs are read (`read_rows`, `tids`) for the rows that beat the heap's worst, so they are read for a handful of rows. At the end the heap rows are fetched from the heap by TID in order (virtual slot of the scan tuple): the heap is read `n + m` times, whatever the number of matches. The `Limit` node stays above the scan.
+
+Early stop uses the zone maps (`zone` provider op: min, max, nulls of the first sort key per unit). Before the scan six superblocks spread over the table are probed to tell whether the first key follows the table order (a clustered or monotonic column such as `created_at` or a serial `id`); if so the superblocks are visited in windows of eight from the end its best values are at, and the scan stops at the first window whose best superblock cannot beat the heap's worst. For columns that do not follow the table every unit is still skipped when its zone cannot beat the worst row, and nothing else changes. `EXPLAIN` shows `Top-N: <keys> (limit n)`, `Superblocks Skipped By Top-N` and `Heap Fetches`. The cost model scales the scan by the fraction a correlated column needs (`pg_statistic` correlation >= 0.9) and adds `n` random heap fetches, so uncorrelated columns with many matches still choose the sort plan when it is cheaper.
+
+`ORDER BY sift.score(...) DESC LIMIT n` is the ranked `SiftScan`, unchanged.
 
 ## Measured
 
@@ -88,7 +92,20 @@ Bench question 09 (`status = 'shipped' AND amount >= 50 AND title @@> 'wireless 
 | 1M | 6.4 ms | 2.1 ms | 3.1x | 21.6 M | 11.6 M | 1.8 ms |
 | 10M | 60.6 ms | 23.3 ms | 2.6x | 213.7 M | 116.1 M | 21.3 ms |
 
-Bench question 10 (`ORDER BY created_at DESC, id DESC LIMIT 10`) is unchanged by this work: 6.0 ms at 1M, 52.8 ms at 10M (216 M instructions).
+Top-N, same table and conditions (`title @@> 'wireless headphones'` unless noted), serial, warm; before is `sift.enable_topn = off` (`Limit -> Sort -> SiftScan`). Bench question 10 is the first row (the earlier measurement of this cluster for the sort plan was 6.0 ms at 1M and 52.8 ms at 10M with another build of the data; the column "Before" is measured now on the same table):
+
+| Query | 1M before | 1M after | 10M before | 10M after |
+|---|---|---|---|---|
+| `ORDER BY created_at DESC, id DESC LIMIT 10` (Q10) | 7.1 ms | 2.4 ms | 191 ms | 19.5 ms |
+| `ORDER BY created_at, id LIMIT 10` | 7.5 ms | 3.1 ms | 288 ms | 24.5 ms |
+| `... LIMIT 100` (Q10 shape) | 6.0 ms | 3.1 ms | 189 ms | 22.0 ms |
+| `ORDER BY amount DESC, id LIMIT 20` | 101 ms | 6.7 ms | 842 ms | 38.2 ms |
+| `ORDER BY customer_id, id LIMIT 10` | 18.9 ms | 4.2 ms | 487 ms | 34.1 ms |
+| Q10 shape, 292k matches (`wireless`) | 96 ms | 5.1 ms | 785 ms | 29.1 ms |
+| Q10 shape, no search, filters only | 91.7 ms | 4.2 ms | 1196 ms | 19.5 ms |
+| `ORDER BY id DESC LIMIT 10` (id follows the table) | 0.41 ms | 0.32 ms | 11 ms (default plan) | 0.74-1.1 ms |
+
+`created_at` is not ordered like the table in this data, so Q10 reads all units whose zone can beat the heap; the gain is the avoided heap fetches and sort. A column that follows the table (`id`) stops after the first window: 2 units of 496 superblocks read at 1M, 8 units at 10M.
 
 Selectivity at 1M (`... AND status = 'shipped' GROUP BY category`, serial):
 
@@ -107,6 +124,7 @@ Worker start-up is about 6.5 ms at 10M, so parallel plans only win when the seri
 
 ## Tests
 
+- `test/sql/col_topn.sql` (pg_regress) and `test/col/fixtures/h_topn_*.sql` (coldiff): about 33 queries (search, filters, `ASC`/`DESC`, nulls first/last, float and numeric NaN, two and three keys, offset, parameters, phrase, prefix, fuzzy, boolean; text key, `OR` and `sift_table` stay plain) compared with the sort plan in the same stages and scenarios as above.
 - `test/sql/col_search.sql` (pg_regress): a 24,000-row table with wide rows (many pages), a BM25 index and a `sift_col` index with a small mutable limit; about 26 queries (term, and, or, not, phrase, negated phrase, prefix, wildcard, regex, fuzzy, boost, no match, NULL query, parameters, filters, global aggregate, float sums, nulls, `HAVING`, expression keys, generic aggregates, `IN`, two search conjuncts, a function index) compared with the plan without SiftAgg (`EXCEPT ALL` both ways) in the stages build, chunks of one superblock, parameters, counter check, forced plan, insert, update, delete, own transaction, rollback, vacuum, column-index promotion, parallel workers, and `sift_table`. Tie order of ranked results is not touched: no ranked path changed.
 - `test/col/fixtures/h_search_*.sql` (coldiff): term, boolean, phrase, prefix, fuzzy, global, no match, two conjuncts, `HAVING`, parameter, all with the DML scenarios (insert, update, delete, abort, vacuum, HOT, TID recycle, held transactions, reindex, promotion) and the five variants (parallel 0/2, SIMD scalar/auto).
 
@@ -116,7 +134,7 @@ Worker start-up is about 6.5 ms at 10M, so parallel plans only win when the seri
 - One BM25 index per search; several conjuncts on the same index are all evaluated by it, conjuncts on two different indexes are not extracted.
 - Phrase matches that the index leaves undecided need their text from the heap (`recheck_page`): phrase-heavy queries read the heap for the undecided pages only.
 - Each participant of a parallel scan evaluates the query for its own superblocks (the set is not shared), so the posting decode is not divided by the worker start-up cost.
-- Top-N on a column order is not implemented (see above); `sift.facets()` on keyword indexes is unchanged.
+- Top-N: only `sift_col` (not `sift_table`, whose source has no TIDs or zones), serial scans only, sort keys must be plain columns of the index with the numeric/date types above (text keys, expressions, `sift.score` mixed with columns keep the normal plan), no `OR` of searches, `n + m <= 100000`, and the tie-break column (usually `id`) must be in the `sift_col` index. `sift.facets()` on keyword indexes is unchanged.
 - Units are skipped only when none of their keys is in the match set; term statistics are not used to skip units.
 
 ## Hooks in files owned by other work
@@ -124,6 +142,7 @@ Worker start-up is about 6.5 ms at 10M, so parallel plans only win when the seri
 - `src/sift_aggplan.c`: `AggCtx.search` and the call `sift_search_extract(...)` after `agg_spec_new` in `sift_agg_upper_paths`; `agg_cost` adds `sift_search_cost`; `agg_finish` copies the spec; `spec_deps` records the index dependency.
 - `src/sift_aggspec.[ch]`: `Node *search` in `SiftAggSpec`, packed last in `custom_private` (`put_node`/`get_node`).
 - `src/sift_agg.c`: open/close of the match set in `engine_open/close`, chunking in `scan_range`, EXPLAIN lines, worker counters.
-- `src/sift_colsrc.h`, `src/sift_aggsrc.c`: the optional `select` provider callback.
+- `src/sift_colsrc.h`, `src/sift_aggsrc.c`, `src/sift_aggcol.c`: the optional `select` provider callback, and for top-N the `tids`, `zone` and `read_rows` ops (`SiftSrcZone`).
+- Top-N: `src/sift_aggplan.c` (`spec_finish` split out of `agg_finish`, `topn_paths`, the `UPPERREL_ORDERED` dispatch, heap-fetch and correlation terms in `agg_cost`), `src/sift_aggspec.[ch]` (`topn`, `desc_topn`), `src/sift_agg.c` (`topn_run`/`topn_unit`/`topn_next`, hooks in `process_unit`, `engine_open/close`, EXPLAIN, GUC `sift.enable_topn`), `src/sift_colcodec.c` (`sift_cc_decode_sel` goes dense earlier for delta-coded nodes), `src/sift_col_enc.[ch]`, `src/sift_col_scan.c`, `src/sift_col.h` (`sift_cunit_row_keys`, `sift_col_row_tids`).
 - `src/sift_col_scan.c`, `src/sift_col_enc.[ch]`, `src/sift_col.h`: `sift_col_filter_tids` (match-driven), `sift_col_read_idx`, `sift_col_unit_allvisible`, sparse page masks, a faster `sift_col_vet`; `src/sift_filter.[ch]`: `sift_filter_create/reset/add_page`.
 - BM25 side: only the existing iterator entry points (`sift_plan_bind`, `sift_iter_*`, `sift_plan_recheck`, `sift_vis_fetch`, `sift_estimate_cached`); `feat/v3-bm25fmt` has not landed, so nothing in `sift_scan.c`, `sift_eval.c` or `sift_segment.c` changed.
