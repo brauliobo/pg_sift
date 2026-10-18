@@ -7,6 +7,7 @@
 #include <cpuid.h>
 #endif
 
+/* One rebind per dispatch table: BM25 kernels, bitmap codec, column kernels, shredder, aggregation, chunk codec (6 today) */
 #define SIFT_MAX_REBINDS 16
 
 SiftCpu		sift_cpu;
