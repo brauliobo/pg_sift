@@ -19,12 +19,12 @@ pkgver() {
 
 build() {
   cd pg_sift
-  nice make -j4
+  nice make -j4 SIFT_LTO=1
 }
 
 package() {
   cd pg_sift
-  make DESTDIR="$pkgdir" install
+  make SIFT_LTO=1 DESTDIR="$pkgdir" install
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE NOTICE
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md DESIGN.md docs/*.md
 }

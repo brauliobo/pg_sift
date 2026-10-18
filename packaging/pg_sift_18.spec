@@ -23,10 +23,10 @@ queries, exact BM25 ranking, count(*) from the index and parallel index builds.
 %autosetup -n pg_sift-%{version}
 
 %build
-make USE_PGXS=1 PG_CONFIG=%{pgbin}/pg_config %{?_smp_mflags}
+make USE_PGXS=1 SIFT_LTO=1 PG_CONFIG=%{pgbin}/pg_config %{?_smp_mflags}
 
 %install
-make USE_PGXS=1 PG_CONFIG=%{pgbin}/pg_config DESTDIR=%{buildroot} install
+make USE_PGXS=1 SIFT_LTO=1 PG_CONFIG=%{pgbin}/pg_config DESTDIR=%{buildroot} install
 
 %files
 %license LICENSE NOTICE

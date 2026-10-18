@@ -48,14 +48,14 @@ PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
-FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing}"
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)"
 
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
 
 install() {
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	# on the make command line: sudo resets the environment, which would install another flavor
-	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}")
+	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}")
 	nice make -C "$REPO" -j4 "${flavor[@]}"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )); then
