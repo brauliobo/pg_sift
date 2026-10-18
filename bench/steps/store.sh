@@ -36,7 +36,7 @@ heap_gb() { echo $(( $(numfmt --from=iec "${MEMORY^^}") / 2 / 1073741824 )); }  
 build_image() {
   local ctx key
   ctx=$(mktemp -d /tmp/sift-store-image.XXXXXX)
-  (cd "$REPO" && git ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src | tar --null -T - -cf -) | tar -xf - -C "$ctx"
+  (cd "$REPO" && git ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src scripts/harden.mk | tar --null -T - -cf -) | tar -xf - -C "$ctx"
   key=$(tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C "$ctx" . | sha256sum | cut -c1-12)
   if [[ $(docker image inspect -f '{{index .Config.Labels "sift-store-key"}}' "$PG_IMAGE" 2>/dev/null) == "$key" ]]; then log "image $PG_IMAGE is up to date"; rm -rf "$ctx"; return; fi
   cat >"$ctx/Dockerfile" <<EOF
