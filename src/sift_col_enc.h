@@ -190,7 +190,8 @@ typedef enum SiftCTestKind
 	SIFT_CT_ISNULL,
 	SIFT_CT_NOTNULL,
 	SIFT_CT_SET,				/* INT/F4/F8 IN with two or more distinct constants: key is one of set[] (ascending) */
-	SIFT_CT_NSET				/* non-NULL and none of set[] */
+	SIFT_CT_NSET,				/* non-NULL and none of set[] */
+	SIFT_CT_STRS				/* STRS and ISTR chunks: pred holds, string by string; an inline chunk first filters on its prefix blob */
 } SiftCTestKind;
 
 typedef struct SiftCTest
@@ -209,6 +210,15 @@ typedef struct SiftCTest
 
 /* dict: the segment's dictionary of the leaf (STR; may be NULL for the other stores). Allocates the LUT in CurrentMemoryContext. */
 extern void sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t);
+
+/*
+ * The test of a predicate on a leaf whose chunks hold the strings themselves (VAR leaves, and the inline chunks of STR leaves, whose unit has
+ * no dictionary to translate the constants with): no dictionary needed, pred must outlive t. For a VAR leaf sift_ctest_make does this.
+ */
+extern void sift_ctest_make_strs(const SiftColPred *p, SiftCTest *t);
+
+/* bits = the non-NULL rows of a STRS or ISTR chunk whose byte length is in [lo, hi] (a column kernel over the decoded lengths), padded words of c->n rows */
+extern void sift_cchunk_strs_length(const SiftCChunk *c, uint32 lo, uint32 hi, uint64 *bits);
 
 /* Can a unit with this zone hold a matching row (conservative) */
 extern bool sift_ctest_zone(const SiftCTest *t, const SiftCZone *z);

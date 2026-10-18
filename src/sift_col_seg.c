@@ -665,6 +665,7 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:
 		case SIFT_CT_NSET:
+		case SIFT_CT_STRS:
 			sift_colk->zone_notnull(z->nnull, z->nvals, n, keep);
 			break;
 		case SIFT_CT_ISNULL:

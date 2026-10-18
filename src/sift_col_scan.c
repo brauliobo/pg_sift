@@ -388,16 +388,23 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 	cu->clean = !sift_cseg_dirty(seg, u);
 }
 
-/* The chunk of leaf col of the unit; false when the unit has none. A stored unit reads its bytes on first use. */
+/* The chunk of leaf col of the unit as stored; false when the unit has none. A stored unit reads its bytes on first use. */
 static bool
-unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
+unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c)
 {
 	if (cu->loaded && !cu->loaded[col] && cu->v.chunk_len[col] > 0)
 	{
 		sift_cseg_unit_fill(cu->seg, cu->u, cu->v.chunk_off[col], cu->v.chunk_len[col]);
 		cu->loaded[col] = 1;
 	}
-	if (!sift_cunit_chunk(&cu->v, col, c))
+	return sift_cunit_chunk(&cu->v, col, c);
+}
+
+/* The same, an inline STR chunk as codes of a dictionary of its own (unit_dict, dict_id) */
+static bool
+unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
+{
+	if (!unit_chunk_raw(cu, col, c))
 		return false;
 	if (c->enc == SIFT_COLENC_ISTR)
 	{
@@ -552,18 +559,28 @@ sift_col_sel_idx(const SiftColSel *sel, uint32 *idx)
 
 /* ---------- unit helpers ---------- */
 
+/* Is the STR leaf stored inline in this unit (known from the zones, without reading the chunk) */
+static bool
+unit_inline(ColUnit *cu, int col)
+{
+	SiftCZone	z;
+
+	if (cu->seg == NULL || cu->src->schema->cols[col].store != SIFT_COLS_STR)
+		return false;
+	sift_cseg_zone(cu->seg, col, cu->u, &z);
+	return (z.flags & SIFT_COLZ_INLINE) != 0;
+}
+
 static SiftCDict *
 unit_dict(ColUnit *cu, int col)
 {
-	SiftCZone	z;
 	SiftCChunk	c;
 
 	if (cu->src->schema->cols[col].store != SIFT_COLS_STR)
 		return NULL;
 	if (cu->seg == NULL)
 		return cu->batch->dict[col];
-	sift_cseg_zone(cu->seg, col, cu->u, &z);
-	if (!(z.flags & SIFT_COLZ_INLINE))
+	if (!unit_inline(cu, col))
 		return sift_cseg_dict(cu->seg, col);
 	unit_chunk(cu, col, &c);
 	return cu->istr[col].dict;
@@ -642,10 +659,16 @@ chunk_filter(ColUnit *cu, const SiftColPred *p, SiftColSel *sel, uint64 *ovf)
 	const SiftColDef *def = &cu->src->schema->cols[p->col];
 	SiftCTest	t;
 	SiftCChunk	c;
+	bool		nulltest = p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL,
+				inl = !nulltest && unit_inline(cu, p->col);
 	MemoryContext old = MemoryContextSwitchTo(cu->src->arena);
 
-	sift_ctest_make(def, unit_dict(cu, p->col), p, &t);
-	if (!unit_chunk(cu, p->col, &c))
+	/* an inline chunk is tested as stored, without a dictionary of its own */
+	if (inl)
+		sift_ctest_make_strs(p, &t);
+	else
+		sift_ctest_make(def, nulltest ? NULL : unit_dict(cu, p->col), p, &t);
+	if (!(inl ? unit_chunk_raw(cu, p->col, &c) : unit_chunk(cu, p->col, &c)))
 	{
 		if (t.kind != SIFT_CT_ISNULL)
 			memset(sel->bits, 0, sel->nwords * sizeof(uint64));
