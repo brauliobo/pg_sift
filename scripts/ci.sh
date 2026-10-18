@@ -22,6 +22,11 @@
 # tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those. Logs: <scratch>/logs/<suite>.log, and <job>.log
 # for each job of a split suite. Stages whose sift code has not landed are skipped, not failed. Exit 1 if any suite fails.
 #
+# hardened (scripts/hardened.sh) builds the tree with SIFT_HARDEN=1 (docs/SAFETY.md: stack protector, FORTIFY_SOURCE=3, zero-initialized locals, trap-mode
+# UBSan) in a private copy and runs the regression tests of the decoders on it (quick: six; full: all of them); span-test runs the unit tests of
+# the bounds-checked reader (src/sift_span.h) plain and under ASan+UBSan; static (full only, scripts/static.sh) runs clang-tidy, the gcc and
+# clang analyzers and cppcheck where installed, and reports the findings that are not in scripts/static.baseline without failing the run.
+#
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
 # server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
 # recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
@@ -131,6 +136,8 @@ if [[ $MODE == full ]]; then
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 20000 --rows 200000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	job fuzz fuzz 1 "$S/fuzz.sh"
+	job hardened hardened 0 "$S/hardened.sh"
+	job static static 0 "$S/static.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS) $(rest sql .sql $SLOW_REGRESS)
@@ -152,6 +159,7 @@ else
 	if (( PG_MAJOR >= 18 )); then job production-regress production-regress 0 "$S/production-check.sh" $(production_tests); else production_last=1; fi
 	installcheck facets index_build_postings
 	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
+	job hardened hardened 0 "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
 		--docs 1500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 1 --minimize 0 \
@@ -197,17 +205,19 @@ step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
 selftest=$!
 step portable-core portable-core "$S/check-portable.sh" &
 portable=$!
+step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
+spantest=$!
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait "$selftest" "$portable"; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait "$selftest" "$portable" "$spantest"; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" "$selftest" "$portable"
+wait "${pids[@]}" "$selftest" "$portable" "$spantest"
 if [[ -n ${production_last:-} ]] && [[ -z ${SIFT_CI_JOBS:-} || production-regress =~ $SIFT_CI_JOBS ]]; then
 	SUITES+=(production-regress)
 	step production-regress production-regress "$S/production-check.sh" $(production_tests)
@@ -230,8 +240,8 @@ green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
 [[ -t 1 ]] || green= red= off=
 failed=0
 # the suites in the order of the report (a suite not listed follows the others)
-ORDER=(build leakcheck-selftest portable-core)
-for s in isa-baseline installcheck isolation-emulated isolation fuzz difftest-mutants soak soak-gin difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
+ORDER=(build leakcheck-selftest portable-core span-test)
+for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
 	[[ " ${SUITES[*]} " != *" $s "* || " ${ORDER[*]} " == *" $s "* ]] || ORDER+=("$s")
 done
 for s in "${ORDER[@]}" leakcheck; do
