@@ -249,7 +249,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
-| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema |
+| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries) |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
 
 | `steps/` | role |
@@ -274,6 +274,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
 the join workload, `params` (tier constants) and `queries`: 1000 substrings of 2-15 consecutive plain
@@ -334,6 +335,14 @@ Places classes are what a user has typed: `p1`-`p4` a name's first word cut to 1
 word, `a2`/`a2s` two words (last cut to 2 / 1 letters), `a3` name, region and country word, `x2` name word
 plus country word; workloads `top` (top-20), `boost` (name matches x3), `filter` (`country_code = 'US'`),
 `count`, `scan` (unordered, `population >= 100000`).
+
+## Analytics (sift_col)
+
+`bench/bench analytics run` measures aggregate queries over jsonb (objects with dynamic keys, arrays of objects) instead of text search:
+a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), the queries S1-S7 on the store sets K10, K400 and K4000 and the
+whole-table scans G1-G8, as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
+against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 43 queries of ClickBench. It uses a cluster of its own
+under `SIFT_TMP` (port `SIFT_PORT`) and does not touch the tiers above. docs/perf/ANALYTICS.md has the method, the options and the numbers.
 
 ## Remote host
 
