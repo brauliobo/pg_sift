@@ -78,6 +78,43 @@ SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >=
 ORDER BY sift.score(ctid) DESC LIMIT 10;
 ```
 
+## Configuration
+
+Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_segments` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
+
+| Index option | default | range | meaning |
+|---|---|---|---|
+| `k1` | 1.2 | 0-1000 | BM25 term-frequency saturation |
+| `b` | 0.75 | 0-1 | BM25 length normalization |
+| `analyzer` | `text` | `text`, `keyword` | tokenize words, or index the whole value as one term |
+| `stemmer` | none | `none`, `en` | Snowball English stemming |
+| `case_folding`, `accent_folding` | true |  | fold case / accents |
+| `positions` | true |  | store positions (needed for phrase queries) |
+| `prefix_index` | 0 | 0-15 | prefix lengths indexed for fast autocomplete |
+| `fields` |  |  | columns weighted as separate fields (see USAGE) |
+| `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
+| `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
+| `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
+
+| Setting (GUC) | default | meaning |
+|---|---|---|
+| `sift.async_maintenance` | on | background worker seals and merges segments (superuser); `off` leaves it to inserts and VACUUM |
+| `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
+| `sift.maintenance_naptime` | 2000 ms | `postgresql.conf` only, 200-60000: how long the worker stays after it starts to promote the seals of a bulk load; holds one worker slot per loaded index for that time |
+| `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
+| `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
+| `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
+| `sift.max_expansions` | 512 | superuser: terms a wildcard, regex, fuzzy or prefix leaf scores individually |
+| `sift.prefix_cache_size` | 8MB | superuser: per-backend memory for the postings of broad leaves |
+| `sift.log_min_duration` | 1s | log promotions, merges and worker runs at least this long (`-1` none) |
+
+Merging is automatic: sealed segments are merged 8 at a time per size tier, the directory (128 entries) is kept under 32 by merging the
+8 smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
+down to `vacuum_segments`, except that a segment more than 8 times larger than the ones before it is left alone (`sift.merge(index, true)` merges
+it anyway). These thresholds are constants today; `mutable_limit` is the knob that scales them. Coming with 2.0: `merge_fanin`, `dead_rewrite_pct`
+(segment rewrite threshold, 50 today, as a reloption) and `sift.maintenance_cost_delay`.
+Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE.md).
+
 ## More
 
 [docs/USAGE.md](docs/USAGE.md) covers the rest, each with examples:
