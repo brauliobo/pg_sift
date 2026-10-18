@@ -1,0 +1,11 @@
+# The portable files of the sift_col track (the shredder, docs/COL-SHRED.md): the same rule as portable.list (C library, intrinsics,
+# sift_host.h and files of the lists; scripts/check-portable.sh enforces it) but not compiled by the SQLite and MariaDB hosts yet,
+# which build portable.list only. Move a file to portable.list when a host needs it.
+#
+# sources
+sift_shred.c
+sift_shred_kern.c
+sift_shred_kern_avx2.c
+sift_shred_kern_avx512.c
+# headers
+sift_shred.h
