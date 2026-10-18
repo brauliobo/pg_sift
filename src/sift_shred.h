@@ -17,7 +17,7 @@
 #define SIFT_SHRED_MAX_COLS			256
 #define SIFT_SHRED_MAX_GROUPS		64
 #define SIFT_SHRED_MAX_STEPS		16
-#define SIFT_SHRED_DEFAULT_TEXT		SIFT_MAX_TERM_BYTES	/* what a text dictionary of sift_col holds */
+#define SIFT_SHRED_DEFAULT_TEXT		SIFT_MAX_TERM_BYTES	/* a text(N) column holds this many bytes unless declared longer */
 #define SIFT_SHRED_MAX_TEXT			(1024 * 1024)
 #define SIFT_SHRED_DEFAULT_ELEMS	(1 << 20)
 #define SIFT_SHRED_DEFAULT_BYTES	(16 << 20)

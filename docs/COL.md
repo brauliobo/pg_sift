@@ -22,9 +22,8 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
   An index attribute that is a plain type is one leaf; a `jsonb` attribute with declared paths is several leaves (section 6); an array of
   objects inside it is a **group** leaf plus one **child** leaf per object field.
 - **Storage class** of a leaf (`SiftColStore`): `INT` (int2, int4, int8, bool, date, timestamp, timestamptz: an int64; `numeric(p, s)` with p <= 18 and s >= 0: the number times 10^s, `SiftColDef.scale` = s, exact like the sums PostgreSQL computes while they fit int64; NaN is NULL with the overflow flag, an unconstrained or wider numeric is refused at CREATE INDEX; constants are scaled with `sift_col_numeric_key`, values come back with `sift_col_key_numeric`), `F4`, `F8`
-  (float4/float8) and `STR` (text, varchar, char(n), name: a per-segment dictionary code, values up to 255 bytes; a longer value is an
-  error at CREATE INDEX and INSERT, as btree rejects a too large row: index `left(col, 255)` or a hash instead). The
-  other types are refused at CREATE INDEX in this version.
+  (float4/float8) and `STR` (text, varchar, char(n), name: a per-segment dictionary code, or the string itself in a unit that has a long one, section 2.9; values up
+  to 1 GB). The other types are refused at CREATE INDEX in this version.
 - **Key domain.** Every chunk holds integers: an `INT` value as it is, a float as its **order key** (the IEEE bits turned into a signed
   int64 that sorts like the float; the sign of zero is kept: -0 is the key just below +0, so a float comes back with its bits; every NaN is one NaN, sorted after +Inf as PostgreSQL does. PostgreSQL compares -0 and +0 equal, so a predicate constant of zero spans both keys (`sift_ctest_make`)), a `STR` value as a
   dictionary code. All filters are unsigned range tests on `value - base` (section 2.4), whatever the type.
@@ -39,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 0)
+## 2. Format (format major 1, col minor 1)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -131,8 +130,10 @@ payload
 | `CONST` (0) | none; every non-NULL value is `base` |
 | `FOR` (1) | `n` unsigned values `key - base` of `bits` = 8, 16, 32 or 64 bits, plain little endian array. NULL slots hold 0. |
 | `PACK` (2) | `n` unsigned values of `bits` = 1..31 bits (not 8 or 16), LSB first, in blocks of 64 values of `8 * bits` bytes (the last block padded) |
-| `RLE` (3) | reserved, not written in 0 |
+| `RLE` (3) | reserved, not written |
 | `CC` (4) | the payload is one self-describing blob of the chunk codec (`src/sift_colcodec.h`, docs/COL-CODEC.md): `bits` and `base` are 0, the blob holds its own frame of reference, `min` and `max`. Readers dispatch to `sift_cc_open` + `sift_cc_filter` / `sift_cc_decode(_sel)` (a LUT test takes the codes with `sift_cc_decode_off32`). The blob starts 8-aligned and ends on a multiple of 8, so the payload is the rest of the chunk. Written by every segment writer (`sift_colw_begin` takes the policy of each leaf); an in-memory unit that is only scanned, a constant chunk and a unit built with no policy keep `CONST`/`FOR`/`PACK`, which stay readable. The reloption `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, encodings joined by `+`; per column `'auto; col=zstd:9'`, the column being the attribute name or the shredder path) sets the policy; a change applies to the chunks written afterwards (merge rewrites). `sift.col_leaves` counts the blobs in `codec_chunks`. |
+| `STRS` (5) | VAR leaves: the codec's string list (section 2.8); `bits` and `base` 0 |
+| `ISTR` (6) | STR leaves stored inline: prefix blob and string list (section 2.9); `bits` and `base` 0; `sift.col_leaves` counts them in `inline_chunks` |
 
 The writer takes CONST when `max == min` (or every value is NULL: `bits` 0, `base` 0), else the smaller of FOR (the narrowest of 8/16/32/64
 bits that holds `max - min`) and, when that span is below 32 bits and not exactly 8 or 16, PACK of as many bits as the span needs (counting
@@ -155,7 +156,7 @@ rows are then filtered by `lut_u8/u16/u32`. Range operators on text are only mea
 ### 2.3 Dictionaries
 
 Per segment and STR leaf, in the order the values were first seen (code = first-seen order): `u32 n`, `u32 off[n + 1]`, bytes (no padding;
-`sift_cdict_parse` reports the bytes used, and refuses a value over 255 bytes). Codes are
+`sift_cdict_parse` reports the bytes used, and refuses an entry over 255 bytes: longer strings are never entries, section 2.9). Codes are
 dense 0..n-1 inside the segment and are **not comparable across segments or ordered**; a query that groups across segments maps codes to
 values (`SiftColDict`), and the filter translates constants to codes per segment. A merge rebuilds the dictionary (kept in first-seen order
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
@@ -186,7 +187,7 @@ payload: for every top level leaf in id order: u8 flag (bit0 NULL, bit1 OVERFLOW
 A record that does not fit the tail page is split in pieces of its payload (first piece without CONT, the rest with it) written while the
 tail is held, as in sift; a row that fits an empty page moves there whole. A piece's page has `SIFT_MUTPAGE_SPANS` set. A writer that dies
 between two pieces (crash, error) leaves a **torn** row: it never committed, and a reader skips it (the pieces end where the next record is not a
-continuation). A string over `SIFT_COL_MAX_STR` bytes is `ERRCODE_PROGRAM_LIMIT_EXCEEDED` at append, before any lock. A repeated TID keeps its
+continuation). A string is a varint length and its bytes, up to `SIFT_COL_MAX_VALUE`. A repeated TID keeps its
 first live record in the batches (a crashed insert is not repeated). A mutable segment is read by decoding its records into per-SB batches (key
 order) and presenting each batch as a unit whose chunks are encoded in memory by the chunk writer with a throwaway dictionary
 (`SIFT_COLO_NOMUTABLE` skips them: build and verification paths). The deleted flag is set by VACUUM on the first piece. The directory being
@@ -223,8 +224,9 @@ than half of its rows dead triggers.
 - **VAR leaves** (`SIFT_COLS_VAR`): opaque bytes of any length with an exact round trip (numeric, uuid, long text, jsonb, arrays). The
   chunk (encoding 5, `STRS`) holds the null bitmap and the codec's string list (`sift_cc_encode_strs`: the lengths as an integer
   cascade, the concatenated bytes under the cold wrapper rule; NULL slots are empty strings); there is no dictionary and no zone
-  min/max (the zone of a VAR leaf is the INT zone of the value lengths, so only `nvals`/`nnull` are of use) and the only predicate is
-  IS NULL / IS NOT NULL. The engine never interprets the bytes: the owner of the segment defines the image. Read through
+  min/max (the zone of a VAR leaf is the INT zone of the value lengths, so only `nvals`/`nnull` are of use). Predicates: IS NULL / IS NOT NULL,
+  and EQ, NE, IN, NOT IN, the range operators and PREFIX bytewise on the strings (`sift_ctest_make_strs`, section 2.9), and a length range
+  (`sift_cchunk_strs_length`). The engine never interprets the bytes: the owner of the segment defines the image. Read through
   `SiftColVec.voff/vbytes` (`n + 1` byte offsets). A VAR leaf is a top level scalar; the index AM does not offer VAR (CREATE INDEX
   refuses those types). Implemented in the one chunk writer and reader (no table-specific fork); `sift._test_col_enc_roundtrip` covers it.
 - **Segment tag**: `SiftSegEntry.reserved` is the owner's tag (the table AM keeps the segment xmin there, 0 = none). The writer sets it
@@ -233,6 +235,49 @@ than half of its rows dead triggers.
   Col segments always have `sum_dl` 0, so the generic directory switch never changes it.
 - **Delta batches**: `sift_col_add_batches` gives a source in-memory units (one SB each, rows in key order, all live) that are read
   with the stored units of the same SB as `in_mutable` units; the installed `SiftColVisibility` decides their visibility.
+
+### 2.9 Text of any length: inline STR chunks
+
+A value is at most `SIFT_COL_MAX_VALUE` (1 GB, PostgreSQL's limit) bytes. The dictionary of a segment holds strings of at most
+`SIFT_COL_DICT_MAX_ENTRY` (255) bytes and at most `SIFT_COL_DICT_MAX_BYTES` (64 MiB) in all, because a reader loads it whole and a
+group-by builds a table over its codes. A unit whose STR leaf has a string over 255 bytes, or would take the dictionary past 64 MiB, does not
+use the dictionary for that leaf: the writer (`sift_cbatch_str_inline`, decided per unit and leaf) stores the **strings themselves**, as chunk
+encoding 6 (`ISTR`, the zone flag `SIFT_COLZ_INLINE`). The other units of the segment, and the other leaves of the unit, keep their codes; a
+segment mixes both and a merge re-decides every unit. This is what the dictionary-or-plain choice of other columnar formats comes to
+(Parquet falls back to plain pages once the dictionary page is too large, DuckDB to uncompressed or FSST strings): the dictionary stays the form of low-cardinality text, long and distinct text is
+stored as a string list.
+
+`ISTR` chunk: the common head and null/overflow bitmaps (`bits` and `base` 0), then `u32 plen, u32 0`, the **prefix blob** (a chunk-codec
+blob, `plen` bytes, of the `n` keys `sift_col_str_prefix`: the first 8 bytes of the string big endian, zero padded, sign bit flipped, so
+signed order of keys follows bytewise order of strings; NULL slots are filler) and the **string list** of the `STRS` chunk (section 2.8:
+lengths as an integer cascade, bytes under the cold wrapper rule; NULL slots are empty). The prefix blob follows the leaf's compression
+policy like any key stream, the strings the cold rule (LZ4 or zstd where the saved bytes are worth it). A reader validates both parts
+before it uses either; an unknown wrapper or a damaged part is `ERRCODE_DATA_CORRUPTED`.
+
+Zone of an inline chunk: `min` and `max` are the prefix keys of the smallest and largest prefix (so `s < t` implies `key(s) <= key(t)`; equal
+keys mean "differs after byte 8"), `set` is all ones, flags carry `INLINE`; `sum` and `CONST` are not used. Pruning
+(`sift_ctest_zone`, `sift_cseg_prune`) answers for an inline unit from the predicate itself (`SiftCTest.pred`): EQ and IN by the constants'
+prefix keys inside `[min, max]`, `<` / `<=` by `min <= key(c)`, `>` / `>=` by `max >= key(c)`, PREFIX by the interval from the prefix padded
+with 0x00 to the prefix padded with 0xFF (a prefix of 8 or more bytes is one key), NE and NOT IN never prune; the SIMD passes over the
+segment's zones do not apply to such units, their bit is recomputed afterwards. Source-level zone data (`SiftColZone`) of an inline unit
+reports `min = 0`, `max = INT64_MAX` and not constant: a unit without codes has no code bounds.
+
+Tests on the encoded form (`sift_ctest_make_strs`, kind `SIFT_CT_STRS`; the only test a VAR leaf has besides NULL): EQ, NE, IN, NOT IN, the range
+operators and PREFIX compare **whole strings bytewise** with no dictionary to translate the constants. On an `ISTR` chunk the prefix blob
+is filtered first (`sift_cc_filter`, the codec's scalar / AVX2 / AVX-512 kernels, bit-identical, selected by `sift.simd`): one range test per
+constant (IN lists above 16 constants skip it), and only the rows whose prefix can match have their string compared; when no row can
+match, the string list is not decoded at all (a selective equality over high-cardinality text reads only the prefix blob, the
+lengths and no bytes). `sift_cchunk_strs_length` answers "byte length in [lo, hi]" for `STRS` and `ISTR` chunks: it decodes the lengths cascade
+(never the bytes) and runs the `range_u32` column kernel. FSST was measured against and not taken: the codec's cold wrapper (zstd) already
+leaves the bytes of this layout small, and FSST gives random access to a string that this layout never needs (a filter either
+rejects on the prefix and the lengths, or has to compare the string whole).
+
+Reading: the scan turns an inline chunk into the form every consumer knows (`sift_cchunk_istr_codes`): a dictionary of its own, built
+from the chunk's strings in first-seen order, and a chunk of its codes; the source reports it as a `SiftColDict` with a **unique `id`**
+(a fresh one per chunk read, so a consumer that caches work per dictionary id, as SiftAgg does, never mixes it with another unit's), so
+group-by, distinct and LUT filters need no change. Row-level code (`sift_cunit_decode`, merges, verify) interns the strings into the destination's dictionary. The
+mutable lane stores a string as a varint length and the bytes (a row may span pages as before); a mutable batch keeps any length in its dictionary,
+and its in-memory unit uses that dictionary directly.
 
 ## 3. MVCC: when a row may be read from the index
 
@@ -301,8 +346,8 @@ is the only code that sees both models:
   children. A map group (`key.*`) is a GROUP leaf (path `metrics.*`) with an extra STR child `metrics.*#key` (the member name) before its
   value columns, so `metrics.* float4` gives rows (key, value) per element. One level of groups only: a group below another group is
   refused at CREATE INDEX (`ERRCODE_FEATURE_NOT_SUPPORTED`, "nested lists deeper than one level").
-- **States.** ABSENT and NULL are NULL; VALUE is a value; OVERFLOW (including a text longer than 255 bytes, which the STR dictionary
-  cannot hold) is NULL with the `overflow` flag: the value exists in the heap but the index cannot hold it. A chunk with any overflow sets
+- **States.** ABSENT and NULL are NULL; VALUE is a value; OVERFLOW (a value that does not fit the declared type: a text longer than its `text(N)`,
+  a number out of range) is NULL with the `overflow` flag: the value exists in the heap but the index cannot hold it. A chunk with any overflow sets
   `SIFT_COLC_OVF` (the per-value overflow bitmap) and its zone `SIFT_COLZ_OVERFLOW`; the source reports it (`SiftColVec.ovf`,
   `SiftColZone.has_ovf`) and the rule is the shredder's: **no pruning, no zone/metadata answer and no definite answer from such a leaf in
   such a unit**: the plan track either refuses the pushdown or rechecks those rows against the heap. A list under a parent whose list
@@ -445,7 +490,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 
 ## 10. Limits
 
-BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 255 bytes. Types:
+BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
 integers, bool, date, timestamp(tz), numeric(p <= 18, s), float4/8, text-like. A group's elements: any number, one level. Not supported: wider `numeric`, `uuid`,
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_zone_exact`).
@@ -489,6 +534,10 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`
+  (section 2.9); `SIFT_COL_MAX_STR` is gone (`SIFT_COL_MAX_VALUE`, `SIFT_COL_DICT_MAX_ENTRY`, `SIFT_COL_DICT_MAX_BYTES`); `sift_cunit_encode` takes `inl[]`
+  after `dictmap`; `SiftCTest.pred`, `SIFT_CT_STRS`, `sift_ctest_make_strs`, `sift_cchunk_istr_codes`, `sift_cchunk_strs_length`, `sift_cbatch_str_inline`;
+  the lane stores string lengths as varints; `sift.col_leaves` has `inline_chunks`. `-0.0` keeps its sign in the float key.
 - 2026-10: the history of the column engine is squashed into seven commits (contract, kern, enc, shred, codec, lane, index) on `feat/col-core-clean`, which has the tree of `feat/col-core`; the contract commit stays first. Take that branch for the integration.
 - 2026-10: chunk encoding 4 (`CC`) is written: reloption `compression`, `sift_colw_begin(..., pol, ...)` and `sift_cunit_encode(..., pol, ...)` take the policy of each leaf (array, NULL = plain chunks), `SiftColRel.policy`, `sift.col_leaves.other_chunks` is now `codec_chunks`. The column engine headers and sources (`sift_col.h`, `sift_col_enc.[ch]`, `sift_colcodec*`) are listed in `src/portable-col.list`: they are checked by `check-portable.sh` but SQLite and MariaDB do not compile them yet (`sift_col.h` still carries the PostgreSQL types of the SQL entry points and the planner hooks).
 - 2026-10: `numeric(p <= 18, s)` leaves: `SiftColDef.scale` (serialized in the schema, hash included), INT storage of the scaled value, `sift_col_numeric_key` / `sift_col_key_numeric` in `sift_col_am.h`.

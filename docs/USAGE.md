@@ -243,7 +243,7 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
 
 - **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (store_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
-  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
+  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `mutable_limit` (kB, 4096, like the
   `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`).
   Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
   `col_merge` inspect and drive one.
@@ -290,7 +290,7 @@ its own docker container.
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
-  - `0A000` for backward scans (a `SCROLL` cursor fetching backward; use `FETCH ABSOLUTE` over a `NO SCROLL` cursor), `TABLESAMPLE`, the system columns `xmin`, `xmax`, `cmin` and `cmax`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a string over 255 bytes or a float `-0` or non-canonical NaN (`SET sift.enable_agg = off` for that query);
+  - `0A000` for backward scans (a `SCROLL` cursor fetching backward; use `FETCH ABSOLUTE` over a `NO SCROLL` cursor), `TABLESAMPLE`, the system columns `xmin`, `xmax`, `cmin` and `cmax`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
   - `numeric` and `char(n)` columns are not read by `SiftAgg` (no pushdown of a query that needs their values); no HOT, and shared row locks degrade to exclusive;
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
