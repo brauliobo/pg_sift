@@ -2,7 +2,7 @@
 -- before must work after, against a heap twin: scans, indexes, updates and deletes of sealed rows, VACUUM, ANALYZE, rewrites, ALTER TABLE.
 CREATE EXTENSION pg_sift;
 CREATE TABLE s (id int PRIMARY KEY, i2 int2, i8 int8, n numeric(12,3), nu numeric, r4 float4, r8 float8, d date, ts timestamptz, b bool,
-	t text, vc varchar(20), c char(5), y bytea, u uuid, j jsonb, a int[], iv interval, o "char", w text) USING sift_table;
+	t text, vc varchar(20), c char(5), y bytea, u uuid, j jsonb, a int[], iv interval, o "char", w text) USING sift_table WITH (vacuum_truncate = false);
 CREATE TABLE h (LIKE s INCLUDING ALL) USING heap;
 CREATE INDEX s_i2 ON s (i2, i8);
 CREATE INDEX h_i2 ON h (i2, i8);

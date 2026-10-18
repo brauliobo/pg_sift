@@ -173,6 +173,7 @@ typedef struct SiftFreeStats
 } SiftFreeStats;
 
 extern SiftFreeStats sift_store_free_stats(Relation index);
+extern int64 sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run);
 
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
