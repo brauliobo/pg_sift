@@ -86,6 +86,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   does not change.
 - Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the release library
   (`SIFT_TESTING` off).
+- Tooling: `bench/bench analytics` measures aggregate queries over jsonb (objects with dynamic keys, arrays of objects) on a deterministic
+  orders corpus: the queries S1-S7 on store sets of 10, 400 and 4,000 stores and the whole-table scans G1-G8 as the CPU time and instructions
+  of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
+  clickbench` runs the 43 ClickBench queries.
 
 ## 1.4.0
 
