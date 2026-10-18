@@ -140,9 +140,21 @@ and merges; VACUUM promotes, merges and clears dead postings.
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 
-Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+Reloptions (`WITH (...)`; all but `mutable_limit` and `vacuum_segments` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
-`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
+`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128).
+
+`vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
+merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
+before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
+The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
+
+| `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
+|---|---|---|---|
+| 2 (default) | 0.19 s | 0.08 ms | 0.18 ms |
+| 4 | 0.15 s | 0.14 ms | 0.21 ms |
+| 8 | 0.12 s | 0.22 ms | 0.28 ms |
+| 16 | 0.10 s | 0.35 ms | 0.33 ms |
 
 ## Replication
 

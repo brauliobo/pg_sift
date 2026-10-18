@@ -77,6 +77,7 @@ typedef struct SiftOptions
 	bool		case_folding;
 	bool		accent_folding;
 	int			mutable_limit;	/* kB; seal the active mutable segment above it */
+	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */
 	int			build_segments; /* 0 = one per build participant */
 	int			prefix_index;	/* longest word prefix (characters) indexed as a term, 0 = none */
 	int			fields;			/* comma separated field names, "" = none */
@@ -116,6 +117,7 @@ typedef struct SiftOptions
 #define SIFT_DEFAULT_K1				1.2
 #define SIFT_DEFAULT_B				0.75
 #define SIFT_DEFAULT_MUTABLE_LIMIT	4096
+#define SIFT_DEFAULT_VACUUM_SEGMENTS	2
 
 /* Returns the index options with defaults filled in; never NULL */
 extern const SiftOptions *sift_index_options(Relation index);

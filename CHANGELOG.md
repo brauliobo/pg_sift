@@ -32,7 +32,14 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   stream now grow with it (up to 64 MB), 16 GB take about 300 extents, and a merge reads at most 16 GB of segments, so a segment past
   that size is left alone (the policy takes the smaller ones of its run, `sift.merge(index, true)` too). Nothing changes below 1 GB.
 - `VACUUM` merges until the policy asks for no more, instead of one step: an index that a build with a small `maintenance_work_mem` left in
-  60 to 128 segments (queries 2.2x slower at 11 segments than merged) needed one VACUUM per 8 segments less; now one reaches 32 or fewer.
+  60 to 128 segments (queries 2.2x slower at 11 segments than merged) needed one VACUUM per 8 segments less; now one merges down to
+  `vacuum_segments` (below). A `VACUUM` of such a backlog takes about 4 times as long as the single step it did before (0.08 s to 0.33 s at 60
+  segments of 50,000 documents): deliberate maintenance work, which leaves 2 segments instead of 46 and makes the queries after it faster
+  (`count(*)` 1.20 ms to 0.68 ms, ranked 2.16 ms to 1.95 ms). Queries that run while `VACUUM` merges are 6 to 7% slower, from the
+  extra merging itself: the same queries with the same segments and no merge running, and the same maintenance on the old build, measure the same.
+- New: reloption `vacuum_segments` (default 2, 1 to 128): the number of segments `VACUUM` leaves an index with. A higher value is shorter
+  `VACUUM` and more segments to query (60 segments of 50,000 documents: 0.19, 0.15, 0.12 and 0.10 s at 2, 4, 8 and 16, `count(*)` 0.08, 0.14,
+  0.22 and 0.35 ms). `ALTER INDEX ... SET` applies it with no `REINDEX`; the worker's and the inserters' merges are unchanged.
 
 ## 1.3.1
 
