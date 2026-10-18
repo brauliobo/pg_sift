@@ -258,8 +258,8 @@ SELECT sift.score(ctid) FROM r;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'fox' ORDER BY sift.score(ctid) DESC LIMIT 1 FOR UPDATE;
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+ERROR:  sift.score() is not available in FOR UPDATE and FOR SHARE
+HINT:  Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.
 SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
