@@ -117,6 +117,17 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way. Column types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, `text` up to 255 bytes, and `jsonb` paths (`WITH (paths = ...)`).
 
+### Options of `sift_col` and settings of `sift_table`
+
+PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background sealing by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](docs/USAGE.md#limits) in docs/USAGE.md.
+
+| option | `sift_col` (per index) | `sift_table` (setting) |
+|---|---|---|
+| compression of the column chunks | `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, per column `'auto; col=zstd:9'`; needs `REINDEX`) | `sift.table_compression` (empty = `auto`; same grammar) |
+| size of the write segment before it is sealed | `mutable_limit` (kB, `ALTER INDEX ... SET`) | `sift.table_delta_limit` (kB) |
+| sealing while rows are inserted | not applicable (the index follows the heap) | `sift.table_inline_seal` (`on`; `off` leaves it to `VACUUM`) |
+| dead rows | `dead_rewrite_pct` (per index) | no setting in 3.0: the rule is built in |
+
 ## Operations
 
 ### Configuration
@@ -157,7 +168,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
 | `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
 | `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
-| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server setting |
+| `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server setting |
 
 `sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
 
