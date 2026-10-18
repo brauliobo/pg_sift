@@ -88,7 +88,11 @@ $(OUT)/bm25: $(OUT)/fz_bm25.o $(OBJ) $(DRIVER)
 $(OUT)/shred: $(OUT)/fz_shred.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
 
+# every file of regress/ is an input that crashed a target before its fix, named TARGET-what: replays them, fails if one comes back
+regress: all
+	@for f in regress/*; do t=$${f#regress/}; $(OUT)/$${t%%-*} $$f >/dev/null 2>&1 || { echo "FAIL $$f"; exit 1; }; done; echo "regress: ok"
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all clean
+.PHONY: all clean regress
