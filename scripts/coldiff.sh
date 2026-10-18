@@ -25,6 +25,8 @@
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
 #                       test/col/col_index.sql, USING sift_col replaced by --col-am)
+#   --scenario-slices N each scenario runs the scenario queries of one slice of N (query i is in slice i mod N), the slice moving from one scenario to
+#                       the next, so that every query meets a heap state and every state meets queries of every kind (default 1: all of them everywhere)
 #   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed; above 4000 the t_* tables grow with it
 #   --default-costs     the fixtures run at the server's costs: the page costs of a fixture that expects the scan are not raised (they are on the
 #                       default tiny table, where the btree plan looks cheap too); with --fixture-rows 300000 the plan choice is the planner's own
@@ -39,7 +41,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all COL_AM= COL_INDEX= VERBOSE=
+VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE=
 COL_PATHS='attributes->channel text, attributes->normalized bool, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -51,7 +53,7 @@ while (( $# )); do
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
 		*) sed -n '2,40p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -250,40 +252,42 @@ wait_for() { local i; for (( i = 0; i < 600; i++ )); do [[ -e $1 ]] && return 0;
 
 # the scenarios: DML into the heap states that the column index must still answer for, each compared on the scenario subset
 scenarios() {
-	local list=$SCENARIOS names f
+	local list=$SCENARIOS names f turn=0
 	[[ $list != none ]] || return 0
 	mapfile -t names < <(scenario_files "$@")
 	want() { [[ $list == all || ,$list, == *,$1,* ]]; }
 	named() { [[ ,$list, == *,$1,* ]]; }
+	# slice: SLICED is the slice of the scenario queries this scenario runs (--scenario-slices; all of them by default)
+	slice() { local i; SLICED=(); for i in "${!names[@]}"; do (( i % SLICES == turn % SLICES )) && SLICED+=("${names[i]}"); done; turn=$((turn + 1)); }
 	if named dml; then
 		log "scenario dml: 20% new orders, indexed updates, hard and soft deletes, no VACUUM"
 		sql -c "SELECT coldiff.sc_insert(0.2)" -c "SELECT coldiff.sc_update_indexed(0.03)" -c "SELECT coldiff.sc_delete(0.03)" >/dev/null
-		check scenario-dml "${names[@]}"
+		slice; check scenario-dml "${SLICED[@]}"
 	fi
-	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; check scenario-insert "${names[@]}"; fi
-	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; check scenario-update "${names[@]}"; fi
-	if want delete; then log "scenario delete: hard and soft deletes"; sql -c "SELECT coldiff.sc_delete(0.03)" >/dev/null; check scenario-delete "${names[@]}"; fi
+	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; slice; check scenario-insert "${SLICED[@]}"; fi
+	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; slice; check scenario-update "${SLICED[@]}"; fi
+	if want delete; then log "scenario delete: hard and soft deletes"; sql -c "SELECT coldiff.sc_delete(0.03)" >/dev/null; slice; check scenario-delete "${SLICED[@]}"; fi
 	if want abort; then
 		log "scenario abort: rolled-back insert, update and delete"
 		sql >/dev/null <<-'SQL'
 			BEGIN; SELECT coldiff.sc_insert(0.1); SELECT coldiff.sc_update_indexed(0.05); SELECT coldiff.sc_delete(0.05); ROLLBACK;
 		SQL
-		check scenario-abort "${names[@]}"
+		slice; check scenario-abort "${SLICED[@]}"
 	fi
-	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders"; check scenario-vacuum "${names[@]}"; fi
+	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders"; slice; check scenario-vacuum "${SLICED[@]}"; fi
 	if want hot; then
 		sql -c "SELECT coldiff.sc_hot(0.05)" >/dev/null
 		log "scenario hot: HOT updates of columns no index holds: $(sql -c "SELECT n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'orders'")"
-		check scenario-hot "${names[@]}"
+		slice; check scenario-hot "${SLICED[@]}"
 	fi
 	if want recycle; then
 		sql -c "DROP TABLE IF EXISTS coldiff_gone" -c "CREATE TABLE coldiff_gone AS SELECT ctid AS tid, id FROM orders WHERE coldiff.sample(id, 906, 0.05)" \
 			-c "DELETE FROM orders WHERE id IN (SELECT id FROM coldiff_gone)" -c "VACUUM (TRUNCATE off) orders" -c "SELECT coldiff.sc_insert(0.06)" >/dev/null
 		log "scenario recycle: new orders on recycled TIDs: $(sql -c "SELECT count(*) FROM orders WHERE ctid = ANY (ARRAY(SELECT tid FROM coldiff_gone))")"
-		check scenario-recycle "${names[@]}"
+		slice; check scenario-recycle "${SLICED[@]}"
 	fi
-	if want held || named held-lite; then scenario_held "${names[@]}"; fi
-	if want maint && [[ -n ${AM:-} ]]; then scenario_maint "${names[@]}"; fi
+	if want held || named held-lite; then slice; scenario_held "${SLICED[@]}"; fi
+	if want maint && [[ -n ${AM:-} ]]; then slice; scenario_maint "${SLICED[@]}"; fi
 }
 
 # a writer with an uncommitted insert, update and delete next to the corpus (read committed, then repeatable read), and a repeatable
