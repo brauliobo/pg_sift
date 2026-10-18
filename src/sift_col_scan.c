@@ -25,6 +25,7 @@
 			 errmsg("sift_col unit is corrupted"), \
 			 errdetail(__VA_ARGS__)))
 
+#define COLO_TABLE		0x8000		/* internal flag: a source over a sift_table (sift_col_open_table) */
 #define MEM_ID_FLAG		(UINT64CONST(1) << 63)
 
 typedef struct ColCursor
@@ -141,20 +142,56 @@ check_access(Relation heap)
 				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(heap))));
 }
 
+static SiftColSource *
+col_source(Relation heap, Relation store, const SiftColSchema *schema, MemoryContext mcxt, uint32 flags)
+{
+	SiftColSource *src = MemoryContextAllocZero(mcxt, sizeof(SiftColSource));
+
+	src->heap = heap;
+	src->index = store;
+	src->mcxt = mcxt;
+	src->flags = flags;
+	src->schema = schema;
+	src->arena = AllocSetContextCreate(mcxt, "sift_col arena", ALLOCSET_DEFAULT_SIZES);
+	src->scan = AllocSetContextCreate(mcxt, "sift_col scan", ALLOCSET_DEFAULT_SIZES);
+	return src;
+}
+
+SiftColSource *
+sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnapshot *dir, const SiftColVisibility *vis, uint32 heap_sbs,
+					MemoryContext mcxt)
+{
+	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOMUTABLE | SIFT_COLO_NOCHECKS | COLO_TABLE);
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+
+	src->dir = *dir;
+	src->seg = palloc0(dir->nsegs * sizeof(ColCursor));
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(rel, &dir->segs[i], mcxt);
+		if (seg->schema->hash == schema->hash)
+			src->seg[src->nseg++].seg = seg;
+		else
+			sift_cseg_close(seg);
+	}
+	src->visibility = *vis;
+	src->heap_sbs = heap_sbs;
+	src->cnt.segments = src->nseg;
+	MemoryContextSwitchTo(old);
+	return src;
+}
+
 SiftColSource *
 sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
-	SiftColSource *src = palloc0(sizeof(SiftColSource));
+	SiftColSource *src = col_source(heap, index, sift_col_rel(index)->schema, mcxt, flags);
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
-	src->heap = heap;
-	src->index = index;
-	src->mcxt = mcxt;
-	src->flags = flags;
-	src->schema = sift_col_rel(index)->schema;
-	src->arena = AllocSetContextCreate(mcxt, "sift_col arena", ALLOCSET_DEFAULT_SIZES);
-	src->scan = AllocSetContextCreate(mcxt, "sift_col scan", ALLOCSET_DEFAULT_SIZES);
 	if (!(flags & SIFT_COLO_NOCHECKS))
 		check_access(heap);
 	if (IsolationIsSerializable())
@@ -183,6 +220,8 @@ sift_col_close(SiftColSource *src)
 {
 	for (int i = 0; i < src->nseg; i++)
 		sift_cseg_close(src->seg[i].seg);
+	if (src->flags & COLO_TABLE)
+		return;
 	sift_vis_end(&src->vis);
 	UnregisterSnapshot(src->snap);
 }
