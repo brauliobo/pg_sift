@@ -1144,7 +1144,7 @@ sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent
 
 	if (g->parent == NULL)
 	{
-		g->parent = MemoryContextAlloc(cu->src->arena, (g->nelems + 1) * sizeof(uint32));
+		g->parent = MemoryContextAlloc(cu->src->arena, g->nelems * sizeof(uint32) + SIFT_COL_PAD);
 		sift_colk->expand_parents(g->eoff + 1, cu->v.nrows, g->parent);
 	}
 	*parent = g->parent;

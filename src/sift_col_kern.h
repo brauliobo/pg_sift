@@ -114,7 +114,8 @@ typedef struct SiftColKernels
 
 	/*
 	 * The owner of each element of a list column: parent[i] = p for i in [end[p - 1], end[p]) (end[-1] = 0), end non-decreasing (the
-	 * running ends of np lists); parent needs end[np - 1] entries and receives no more.
+	 * running ends of np lists). A list is stored a register at a time and the next list overwrites what the last one stored past
+	 * its end, so parent has room for end[np - 1] entries and SIFT_COL_PAD bytes more (the entries past end[np - 1] are undefined).
 	 */
 	void		(*expand_parents) (const uint32 *end, uint32 np, uint32 *parent);
 } SiftColKernels;

@@ -198,7 +198,7 @@ extern void sift_shred_string(SiftShred *sh, const char *s, int len);
 extern void sift_shred_number(SiftShred *sh, const char *text, int len);
 extern void sift_shred_finish(SiftShred *sh);
 
-/* parent[i] for the n elements of group g (n = doc->grp[g].n): the ordinal of the parent element each belongs to (sift_colk->expand_parents) */
+/* parent[i] for the n elements of group g (n = doc->grp[g].n): the ordinal of the parent element each belongs to (sift_colk->expand_parents; parent has room for SIFT_COL_PAD bytes more) */
 extern void sift_shred_expand_parents(const SiftShredDoc *doc, int g, uint32 *parent);
 
 /* Elements [lo, hi) of group g that belong to element p of its parent group */

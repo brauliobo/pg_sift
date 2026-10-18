@@ -461,13 +461,13 @@ test_expand_parents(Test *t)
 		e += rnd(t, 3) == 0 ? 0 : rnd(t, shape == 0 ? 3 : shape == 1 ? 20 : 90);
 		end[p] = e;
 	}
-	parent = out_array(t, sizeof(uint32), e);
+	parent = out_array(t, sizeof(uint32), e + SIFT_COL_PAD / sizeof(uint32));
 	t->k->expand_parents(end, np, parent);
 	for (uint32 p = 0, i = 0; p < np; p++)
 		for (; i < end[p]; i++)
 			if (parent[i] != p)
 				elog(ERROR, "sift_col_kern: the parent of element %u is %u, not %u", i, parent[i], p);
-	mix(t, parent, (e + GUARD) * sizeof(uint32));
+	mix(t, parent, e * sizeof(uint32));
 }
 
 static int64
