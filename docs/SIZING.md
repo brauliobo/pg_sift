@@ -64,9 +64,9 @@ deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`), the d
 
 | query | 2.0.0 | 2.0.1 | now |
 |---|---|---|---|
-| `count(*)` of a term | 19.7x | 7.7 to 8.7x | 1.16 to 1.28x |
-| `count(*)` of two terms | 2.7 to 4.3x | 1.4 to 2.3x | 1.0 to 1.25x |
-| `count(*)` of three with OR | 4.1 to 6.2x | 1.4 to 2.2x | 1.0 to 1.2x |
+| `count(*)` of a term | 18.5 to 18.6x | 6.6 to 6.7x | 1.16 to 1.28x |
+| `count(*)` of two terms | 3.5 to 4.4x | 1.7 to 2.3x | 1.0 to 1.25x |
+| `count(*)` of three with OR | 4.5 to 6.2x | 1.5 to 2.1x | 1.0 to 1.2x |
 | ranked AND, top 10 | | | 1.0 to 1.3x |
 | ranked OR of three terms, top 10 | | | 1.3 to 1.8x |
 | a rare term, top 10 | | | 1.3 to 2.0x |
@@ -103,10 +103,12 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   serializable transaction fail with `40001` that a btree-indexed query would not. Finer locks would need one per term searched (a new
   document conflicts only if it has that term) and one for the vocabulary range of every wildcard, prefix or regex; a lock per page
   does not work because a document is appended to the mutable segment, not to the page where its terms are read. Retry on `40001`.
-- **Row-level security and security barrier views.** A ranked scan and the cost estimates read the statistics of the whole index (document
-  count, document frequencies, expansion limits), including rows the role cannot see: a score and a `EXPLAIN` estimate can depend on
-  hidden rows (a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000
-  rows a policy hid). Do not expose ranked search to roles that must not learn the size or vocabulary of the hidden rows.
+- **Row-level security and security barrier views.** A role under a policy (or reading a security barrier view) gets no ranked scan, no
+  `count(*)` pushdown and no estimate from the index: the match is not leakproof and the index statistics (document count, document
+  frequencies, expansion limits) include rows the role cannot see, so a score and an `EXPLAIN` estimate would depend on hidden rows (before
+  2.0.1 a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000 rows a policy hid).
+  Its matches come from a sequential scan, which is slower on a large table, and `sift.score()` raises an error. The table owner, who
+  bypasses the policy, keeps the scan.
 - **`ALTER INDEX ... SET/RESET`** of `k1`, `b` or an analyzer option (`stemmer`, `fields`, `analyzer`, `prefix_index`, folding)
   needs a `REINDEX`. Until then queries and inserts on the table fail ("built with other analyzer options"), and the statement warns about
   it. To change them without downtime build the new index with `CREATE INDEX CONCURRENTLY` and drop the old one.

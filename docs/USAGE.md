@@ -302,8 +302,10 @@ its own docker container.
 - `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it. It is not available with `@@> ANY (array)` (write
   the OR in the query text), nor in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
 - Under `SERIALIZABLE` a sift scan locks the whole relation (the index access method has no finer predicate locks), so concurrent writers
-  can make a serializable transaction fail with `40001`: retry. Ranked scans and statistics see rows that row-level security hides from the
-  role ([SIZING.md](SIZING.md#features-and-their-costs)).
+  can make a serializable transaction fail with `40001`: retry.
+- Row-level security and security barrier views: a role under a policy gets no ranked scan, no `count(*)` pushdown and no index estimate
+  (the document frequencies would include the rows the policy hides), so `sift.score()` raises an error for it and its matches come from
+  a sequential scan; the table owner and roles that bypass row-level security are not affected ([SIZING.md](SIZING.md#features-and-their-costs)).
 - Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
   still work).
 - Partitions: BM25 statistics are per partition, so scores can differ across partitions.

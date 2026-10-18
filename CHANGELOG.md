@@ -14,7 +14,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 - Changed (3.0): segment format 2 for vacuumed documents. A segment now keeps its live documents by offset in each superblock and, for each
   term, the number of its postings that VACUUM dropped. A dirty segment (vacuumed documents, not yet merged) therefore counts and scores as
-  its live documents: `count(*)` of a term costs 1.16 to 1.28 times the clean index's in user instructions at 10 to 45% deleted (was 7.7 to 8.7
+  its live documents: `count(*)` of a term costs 1.16 to 1.28 times the clean index's in user instructions at 10 to 45% deleted (was 6.6 to 6.7
   times with 2.0.1), and N, df and avgdl exclude vacuumed documents, so `sift.score()` before and after the merge are equal (`live_stats` test).
   Indexes of 2.x keep working with no `REINDEX`: their segments are read as they are (the old statistics, until they are merged) and rewritten
   as format 2 when merged; the metapage becomes format 1.2 with the first format 2 segment, and a 2.x library refuses such an index. The
@@ -62,6 +62,41 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   orders corpus: the queries S1-S7 on store sets of 10, 400 and 4,000 stores and the whole-table scans G1-G8 as the CPU time and instructions
   of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
   clickbench` runs the 43 ClickBench queries. See [docs/perf/ANALYTICS.md](docs/perf/ANALYTICS.md).
+
+## 2.0.1
+
+No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. One behavior changes for roles under row-level security (first entry).
+
+- Security: a role under row-level security or reading a security barrier view could learn about the rows the policy hides. The ranked scan and
+  the match estimate ran before the security quals of the relation, so the BM25 statistics of the whole index (document count, document
+  frequencies, average length) entered the scores of the visible rows, and the planner's costs and row estimates followed the postings of the
+  hidden rows. With a policy hiding 3,000 of 3,020 rows, a visible row of a term that 20 visible documents have scored 0.000184, a value
+  computed from the 3,020 documents. What a role could infer is aggregate (how many documents the hidden rows have and how common a term is
+  in them); the hidden rows themselves, and the rows and counts the queries return, were never exposed. Affected: any table with a sift index
+  that is read under a policy (`ENABLE ROW LEVEL SECURITY`, for the roles the policy applies to) or through a `security_barrier` view, by a
+  role that can run ranked queries or `EXPLAIN`; not affected: tables without row-level security, and the table owner and the roles that
+  bypass it. The match must now be securely promotable, as an index qual must be, and the estimate uses the default selectivity when the
+  relation has security quals: for those roles the rows come from a sequential scan, there is no `SiftScan` or `SiftCount`, and
+  `sift.score()` raises `sift.score() is not available on "t" while row-level security or a security barrier view applies`. A query that
+  ranked under a policy before now fails; rank as a role that the policy does not apply to. `sift.facets` already refused tables with
+  row-level security. Test: `rls_stats` (plans and `EXPLAIN` costs of two tables that differ only in their hidden rows are identical;
+  no scan, count pushdown or score under a policy or a security barrier view; the owner keeps the scan).
+- Performance: `count(*)` over vacuumed documents (segments with dirty superblocks, until a merge rewrites them) costs a fifth to a half of
+  what it did in 2.0.0. User instructions per query, interleaved A/B against 2.0.0, 200,000 documents with 10, 25 and 45% deleted and
+  vacuumed: the count of a term 0.21x, of two terms 0.49x, of three with OR 0.30x; ranked AND 0.87x to 0.88x, ranked OR 0.84x to 0.85x, the
+  filtered scan 0.91x to 0.94x. Against the same live rows rebuilt, the count of a term went from 18.5 to 18.6 times the clean index's to 6.6
+  to 6.7 times, two terms from 3.5 to 4.4 to 1.7 to 2.3, three with OR from 4.5 to 6.2 to 1.5 to 2.1. A dirty superblock now cuts a group out
+  of its liveness bits in one pass instead of one expansion per page; a clean superblock of a segment that has dirty ones is counted without
+  decoding its documents; and the page index of a superblock is built only by what reads a page's rows. **Known limit:** a count over vacuumed
+  documents still costs several times a clean index's (6.6 to 6.7 times for a term) until a merge rewrites the segment; closing that gap needs
+  a change of the on-disk format and is not part of this release. Clean indexes are no slower: the clean count of a term takes 0.57x of the
+  instructions (a group counted in bulk no longer walks its pages), of two terms 0.95x to 0.97x and of three with OR 0.87x to 0.91x, and the
+  instruction gate (`bench/steps/cpu_gate.sh`, 16 query cells on 61 segments, one segment and after `VACUUM`) shows no regression (0.98x to
+  1.00x). No change of the format; counts, rows and scores are the same. The `expand` kernel takes the mask and the start bit and returns the
+  popcount (the digest pinned by `kernels_simd` changes; every level stays bit-identical). `bench/dirty-query.sh` also times the count of two
+  terms, of three with OR and the parallel count.
+- CI: `make check` keeps its scratch small (admission of jobs by the scratch they need, 1 MB WAL segments and a small WAL for the throwaway
+  clusters, the postings comparison of `index_build_postings` in four batches over the same rows); no change for users.
 
 ## 2.0.0
 
@@ -182,16 +217,6 @@ A major version because several behaviors change (listed first); the on-disk for
   anonymous memory and 17.4 s, and takes 16 MB and 8.3 s now (0.4M documents: 22 to 10 MB). `scripts/merge-bytes.sh` compares the
   index files of two builds page by page, and the `mergebig` group of `scripts/perf-gate-maint.sh` measures the peak and the time.
 
-- Performance: `count(*)` over vacuumed documents costs a fifth to a half of what it did (user instructions per query, interleaved A/B,
-  200,000 documents with 10, 25 and 45% deleted and vacuumed, 95% intervals under 1%): a term 0.21x, two terms 0.51x, three terms with OR
-  0.31x, the parallel count 0.77x, ranked AND 0.91x, ranked OR 0.86x, the filtered scan 0.94x. Against the same live rows rebuilt, the count
-  of a term went from 19.7 to 7.7 times the clean index's, at every dead fraction. A dirty superblock now cuts a group out of its liveness
-  bits in one pass instead of one expansion per page; a clean superblock of a segment that has dirty ones is counted without decoding its
-  documents; and the page index of a superblock is built only by what reads a page's rows. Clean indexes are no slower: a group counted in
-  bulk no longer walks its pages, so the clean count of a term takes 0.53x and the other clean counts 0.87x to 0.97x. No change of the
-  format; counts, rows and scores are the same. The `expand` kernel takes the mask and the start bit and returns the popcount (the digest
-  pinned by `kernels_simd` changes; every level stays bit-identical). `bench/dirty-query.sh` also times the count of two terms, of three
-  with OR and the parallel count.
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
