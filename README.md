@@ -118,6 +118,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_
 |---|---|---|---|
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed; `ALTER INDEX ... SET` works |
 | `paths` |  |  | jsonb paths shredded into typed columns, e.g. `'metrics.* float4, items[]{sku text, qty int4}'`; needs `REINDEX` |
+| `compression` | `auto` | `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings | chunk compression of the column data; per column: `'auto; col=zstd:9'`; needs `REINDEX` |
 
 pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike. The one
 exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
