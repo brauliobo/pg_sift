@@ -12,6 +12,18 @@ extern const SiftColKernels sift_col_kernels_scalar;
 extern const SiftColKernels sift_col_kernels_avx2;
 extern const SiftColKernels sift_col_kernels_avx512;
 
+/* Fully unrolled loop of a constant trip count (a vector step per iteration), whichever compiler builds the file */
+#if defined(__clang__)
+#define SIFT_COLK_UNROLL(n)	_Pragma("clang loop unroll(full)")
+#else
+#define SIFT_COLK_UNROLL(n)	SIFT_COLK_PRAGMA(GCC unroll n)
+#define SIFT_COLK_PRAGMA(x)	_Pragma(#x)
+#endif
+
+/* bits_to_idx: a word with at most this many bits is walked bit by bit, the vector expansion costs more (docs/KERNELS.md) */
+#define SIFT_COLK_SEL_SPARSE_AVX2	8
+#define SIFT_COLK_SEL_SPARSE_AVX512	2
+
 /* Words that hold n bits, and the mask of the bits of word w that are below n */
 #define SIFT_COLK_WORDS(n)		(((uint32) (n) + 63) / 64)
 
@@ -64,6 +76,9 @@ sift_colk_zero_pad(uint64 *bits, uint32 from, uint32 n)
 	static void bits_or_##sfx(uint64 *dst, const uint64 *src, uint32 nwords) { (tab).vop(dst, dst, src, nwords, SIFT_VOP_OR); } \
 	static void bits_andnot_##sfx(uint64 *dst, const uint64 *src, uint32 nwords) { (tab).vop(dst, dst, src, nwords, SIFT_VOP_ANDNOT); } \
 	SIFT_COLK_BITS_COUNT(sfx, tab)
+
+/* The positions of the set bits of a byte, lane j of row b (0 past the last): the AVX2 expansion of bits_to_idx and count_changes */
+extern const uint8 sift_colk_lut_pos[256][8];
 
 /* The scalar kernels the AVX2 kernels finish with (the tail of an array) */
 extern void sift_colk_for_i64_u8_scalar(const void *a, uint32 n, int64 base, int64 *dst);

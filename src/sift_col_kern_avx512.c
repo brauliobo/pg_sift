@@ -5,8 +5,9 @@
  * Compares write mask registers, so a range test is a subtraction and one unsigned compare whose result is the bit vector word; the
  * tail of every array is a masked load, the padding is not read. The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use
  * gathers, bits_to_idx compresses the bit positions of a word with VPCOMPRESSB, zone_set tests two units per register. unpack cuts 16
- * values per step from four 128-bit windows of the stream. bits_count is the bitmap module's AVX-512 popcount. The selection decodes
- * (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they replace (docs/COL.md section 8, Measured).
+ * values per step from four 128-bit windows of the stream. bits_count is the bitmap module's AVX-512 popcount. gather_u32 is a masked
+ * VPGATHERDD; the other selection decodes (for_i64_sel) stay scalar: gathers were slower than the loads they replace (docs/COL.md
+ * section 8, Measured).
  */
 #include "sift_host.h"
 
@@ -33,6 +34,7 @@ SIFT_COLK_BITS_COUNT(avx512, sift_kern_avx512)
 		for (; i_ + 64 <= (n); i_ += 64) \
 		{ \
 			uint64		m_ = 0; \
+			SIFT_COLK_UNROLL(64) \
 			for (uint32 j_ = 0; j_ < 64; j_ += (L)) \
 				m_ |= (uint64) vec(i_ + j_, ~UINT64CONST(0), __VA_ARGS__) << j_; \
 			(bits)[i_ / 64] = m_; \
@@ -209,8 +211,12 @@ bits_to_idx_avx512(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)
 		__m512i		pos,
 					vb;
 
-		if (!m)
+		if (c <= SIFT_COLK_SEL_SPARSE_AVX512)
+		{
+			for (; m; m = _blsr_u64(m))
+				*o++ = base + _tzcnt_u64(m);
 			continue;
+		}
 		pos = _mm512_maskz_compress_epi8(m, iota);
 		vb = _mm512_set1_epi32(base);
 		store_pos(o, _mm512_castsi512_si128(pos), vb, c);
@@ -354,6 +360,21 @@ unpack_avx512(const uint8 *src, uint32 bits, uint32 n, uint32 *dst)
 		unpack_tmpl(src, bits, n, dst, false);
 }
 
+F5 void
+gather_u32_avx512(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst)
+{
+	uint32		i = 0;
+
+	for (; i + 16 <= n; i += 16)
+		_mm512_storeu_si512(dst + i, _mm512_i32gather_epi32(_mm512_loadu_si512(idx + i), a, 4));
+	if (i < n)
+	{
+		__mmask16	k = LANES(n, i, 16);
+
+		_mm512_mask_storeu_epi32(dst + i, k, _mm512_mask_i32gather_epi32(_mm512_setzero_si512(), k, _mm512_maskz_loadu_epi32(k, idx + i), a, 4));
+	}
+}
+
 /* dst[i..] = base + zero extended elements of 8 lanes: load(k, i) fetches the elements in the lanes k as qwords */
 #define FOR_I64_AVX512(name, T, load) \
 F5 void \
@@ -381,6 +402,22 @@ FOR_I64_AVX512(for_i64_u16_avx512, uint16, LD16)
 FOR_I64_AVX512(for_i64_u32_avx512, uint32, LD32)
 FOR_I64_AVX512(for_i64_u64_avx512, uint64, LD64)
 
+/* A parent's run is stored under a lane mask, 16 elements at a time: no scalar tail */
+F5 void
+expand_parents_avx512(const uint32 *end, uint32 np, uint32 *parent)
+{
+	uint32		i = 0;
+
+	for (uint32 p = 0; p < np; p++)
+	{
+		__m512i		v = _mm512_set1_epi32((int) p);
+
+		for (; i < end[p]; i += 16)
+			_mm512_mask_storeu_epi32(parent + i, LANES(end[p], i, 16), v);
+		i = end[p];
+	}
+}
+
 const SiftColKernels sift_col_kernels_avx512 = {
 	.range = {range_u8_avx512, range_u16_avx512, range_u32_avx512, range_u64_avx512},
 	.lut = {lut_u8_avx512, lut_u16_avx512, lut_u32_avx512},
@@ -396,7 +433,8 @@ const SiftColKernels sift_col_kernels_avx512 = {
 	.unpack = unpack_avx512,
 	.for_i64 = {for_i64_u8_avx512, for_i64_u16_avx512, for_i64_u32_avx512, for_i64_u64_avx512},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
-	.gather_u32 = sift_colk_gather_u32_scalar,
+	.gather_u32 = gather_u32_avx512,
+	.expand_parents = expand_parents_avx512,
 };
 
 #endif

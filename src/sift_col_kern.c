@@ -149,6 +149,16 @@ sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32
 		dst[k] = a[idx[k]];
 }
 
+static void
+expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
+{
+	uint32		i = 0;
+
+	for (uint32 p = 0; p < np; p++)
+		for (; i < end[p]; i++)
+			parent[i] = p;
+}
+
 const SiftColKernels sift_col_kernels_scalar = {
 	.range = {range_u8_scalar, range_u16_scalar, range_u32_scalar, range_u64_scalar},
 	.lut = {lut_u8_scalar, lut_u16_scalar, lut_u32_scalar},
@@ -165,6 +175,7 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.for_i64 = {sift_colk_for_i64_u8_scalar, sift_colk_for_i64_u16_scalar, sift_colk_for_i64_u32_scalar, sift_colk_for_i64_u64_scalar},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
+	.expand_parents = expand_parents_scalar,
 };
 
 const SiftColKernels *

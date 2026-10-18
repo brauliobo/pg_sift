@@ -4,9 +4,11 @@
  * A range test is one subtraction and one signed compare: with the sign bit of the element width added to lo and xored into span,
  * (x - lo) <= span unsigned is !((x - lo') > span') signed. A 64-element word comes out of movemasks (u16 and u32 compare results
  * are packed to bytes first). The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use gathers; unpack cuts 8 values per step
- * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount. The
- * selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they replace (docs/COL.md section 8,
- * Measured). The last partial word of a bit vector is computed from a zero padded copy of the remaining elements.
+ * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount; bits_to_idx
+ * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table (also the aggregation
+ * operators' count_changes). The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
+ * replace (docs/COL.md section 8, Measured). The last partial word of a bit vector is computed from a zero padded copy of the
+ * remaining elements.
  */
 #include "sift_host.h"
 
@@ -80,6 +82,7 @@ range64w(const uint64 *p, __m256i lo, __m256i span)
 {
 	uint64		m = 0;
 
+	SIFT_COLK_UNROLL(16)
 	for (int k = 0; k < 16; k++)
 		m |= (uint64) _mm256_movemask_pd(_mm256_castsi256_pd(_mm256_cmpgt_epi64(_mm256_sub_epi64(ld(p + 4 * k), lo), span))) << (4 * k);
 	return ~m;
@@ -167,6 +170,7 @@ lut16w(const uint16 *p, const uint64 *lutbits)
 {
 	uint64		m = 0;
 
+	SIFT_COLK_UNROLL(8)
 	for (int k = 0; k < 8; k++)
 		m |= (uint64) lutg8(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *) (p + 8 * k))), lutbits) << (8 * k);
 	return m;
@@ -177,6 +181,7 @@ lut32w(const uint32 *p, const uint64 *lutbits)
 {
 	uint64		m = 0;
 
+	SIFT_COLK_UNROLL(8)
 	for (int k = 0; k < 8; k++)
 		m |= (uint64) lutg8(ld(p + 8 * k), lutbits) << (8 * k);
 	return m;
@@ -236,6 +241,18 @@ bits_and_count_avx2(const uint64 *a, const uint64 *b, uint32 nwords)
 	return c0 + c1 + c2 + c3;
 }
 
+/* Position of the j-th set bit of m (0 past the last), lane j of row m */
+#define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
+#define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
+#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
+#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
+#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
+#define POS(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
+#define LANE(m, j)	(POS(m, j, 0) + POS(m, j, 1) + POS(m, j, 2) + POS(m, j, 3) + \
+					 POS(m, j, 4) + POS(m, j, 5) + POS(m, j, 6) + POS(m, j, 7))
+#define POSROW(m)	{LANE(m, 0), LANE(m, 1), LANE(m, 2), LANE(m, 3), LANE(m, 4), LANE(m, 5), LANE(m, 6), LANE(m, 7)}
+const uint8 sift_colk_lut_pos[256][8] = {R256(POSROW)};
+
 F2 uint32
 bits_to_idx_avx2(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)
 {
@@ -244,22 +261,22 @@ bits_to_idx_avx2(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)
 	for (uint32 w = 0; w < nwords; w++, base += 64)
 	{
 		uint64		m = bits[w];
-		uint32		c = _mm_popcnt_u64(m);
 
-		for (; c >= 4; c -= 4, o += 4)
+		if (_mm_popcnt_u64(m) <= SIFT_COLK_SEL_SPARSE_AVX2)
 		{
-			uint64		m1 = _blsr_u64(m),
-						m2 = _blsr_u64(m1),
-						m3 = _blsr_u64(m2);
-
-			o[0] = base + _tzcnt_u64(m);
-			o[1] = base + _tzcnt_u64(m1);
-			o[2] = base + _tzcnt_u64(m2);
-			o[3] = base + _tzcnt_u64(m3);
-			m = _blsr_u64(m3);
+			for (; m; m = _blsr_u64(m))
+				*o++ = base + _tzcnt_u64(m);
+			continue;
 		}
-		for (; c; c--, m = _blsr_u64(m))
-			*o++ = base + _tzcnt_u64(m);
+		SIFT_COLK_UNROLL(8)
+		for (uint32 j = 0; j < 8; j++)
+		{
+			const uint32 b = (m >> (8 * j)) & 0xFF;
+
+			st(o, _mm256_add_epi32(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) sift_colk_lut_pos[b])),
+								   _mm256_set1_epi32(base + 8 * j)));
+			o += _mm_popcnt_u32(b);
+		}
 	}
 	return o - idx;
 }
@@ -270,6 +287,7 @@ zone_range_w(const int64 *mn, const int64 *mx, __m256i lo, __m256i hi)
 {
 	uint64		m = 0;
 
+	SIFT_COLK_UNROLL(16)
 	for (int k = 0; k < 16; k++)
 	{
 		__m256i		drop = _mm256_or_si256(_mm256_cmpgt_epi64(lo, ld(mx + 4 * k)), _mm256_cmpgt_epi64(ld(mn + 4 * k), hi));
@@ -470,6 +488,28 @@ for_i64_u64_avx2(const void *a, uint32 n, int64 base, int64 *dst)
 	sift_colk_for_i64_u64_scalar(p + i, n - i, base, dst + i);
 }
 
+/* A run of 8 or more elements of one parent is stored a register at a time */
+F2 void
+expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
+{
+	uint32		i = 0;
+
+	for (uint32 p = 0; p < np; p++)
+	{
+		uint32		e = end[p];
+
+		if (e - i >= 8)
+		{
+			__m256i		v = _mm256_set1_epi32((int) p);
+
+			for (; i + 8 <= e; i += 8)
+				st(parent + i, v);
+		}
+		for (; i < e; i++)
+			parent[i] = p;
+	}
+}
+
 const SiftColKernels sift_col_kernels_avx2 = {
 	.range = {range_u8_avx2, range_u16_avx2, range_u32_avx2, range_u64_avx2},
 	.lut = {lut_u8_avx2, lut_u16_avx2, lut_u32_avx2},
@@ -486,6 +526,7 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.for_i64 = {for_i64_u8_avx2, for_i64_u16_avx2, for_i64_u32_avx2, for_i64_u64_avx2},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
+	.expand_parents = expand_parents_avx2,
 };
 
 #endif
