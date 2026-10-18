@@ -431,7 +431,7 @@ log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
 		return;
 	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = safexid};
 	XLogBeginInsert();
-	XLogRegisterData(&xlrec, SizeOfBtreeReusePage);
+	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
 	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 	last_rel = index->rd_locator.relNumber;
 	last = safexid;
