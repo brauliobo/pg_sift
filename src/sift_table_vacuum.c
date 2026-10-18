@@ -332,9 +332,9 @@ truncate_tail(Relation rel, int elevel)
 #define VACUUM_CLOSE_PAGES	8
 
 /*
- * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the reusable run at the
- * end of the file is cut. What this VACUUM releases waits for the next: a lazy VACUUM's own xid is in no snapshot or horizon, so it
- * releases with the next xid, which only passes once another transaction has ended (sift_store.c, xid_safexid).
+ * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the free run at the end
+ * of the file is cut. What this VACUUM releases is reused once another transaction has ended: a lazy VACUUM's own xid is in no snapshot
+ * or horizon, so it releases with the next xid (sift_store.c, xid_safexid); the cut, under AccessExclusiveLock, does not wait for it.
  */
 static void
 vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
