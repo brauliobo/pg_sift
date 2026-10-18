@@ -222,6 +222,7 @@ void
 sift_tbl_init(void)
 {
 	sift_tbl_define_gucs();
+	sift_tbl_src_register();
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 	RegisterCustomRmgr(SIFT_TBL_RMGR_ID, &tbl_rmgr);

@@ -886,6 +886,77 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 	return true;
 }
 
+/* ---------- the column source of the aggregate scan (sift_table_src.c) ---------- */
+
+const SiftColSchema *
+sift_tbl_layout_schema(Relation rel, SiftTblRel *st)
+{
+	return layout_of(rel, st)->schema;
+}
+
+const SiftColSchema *
+sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
+{
+	return schema_of(rel, st, e);
+}
+
+/* The page idx of seg into copy; false for a page of overflow bytes */
+static bool
+seg_page(Relation rel, SiftTblSeg *seg, uint32 idx, Page copy)
+{
+	Buffer		buf = sift_lane_read_locked(rel, sift_tbl_delta_page(rel, seg, idx), BUFFER_LOCK_SHARE);
+
+	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+	memcpy(copy, BufferGetPage(buf), BLCKSZ);
+	UnlockReleaseBuffer(buf);
+	return !(TBL_PAGE(copy)->flags & SIFT_TBL_PAGE_OVFDATA);
+}
+
+SiftColBatch *
+sift_tbl_delta_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+	TupleDesc	desc = RelationGetDescr(rel);
+	MemoryContext rowcx = AllocSetContextCreate(CurrentMemoryContext, "sift_table batch row", ALLOCSET_SMALL_SIZES);
+	SiftColBatch *b = sift_cbatch_create(mcxt, l->schema);
+	Datum	   *values = palloc(desc->natts * sizeof(Datum));
+	bool	   *isnull = palloc(desc->natts * sizeof(bool));
+	PGAlignedBlock copy;
+
+	sift_cbatch_reset(b, sb);
+	for (int i = 0; i < nseg; i++)
+		for (uint32 p = 0; p < seg[i].npages; p++)
+		{
+			BlockNumber vblock = seg[i].vbase + p;
+
+			if (vblock / SIFT_SB_PAGES != sb || !seg_page(rel, &seg[i], p, copy.data))
+				continue;
+			for (uint32 off = 1; off <= TBL_PAGE(copy.data)->nrows; off++)
+			{
+				const SiftTblRec *rec = sift_tbl_page_rec(copy.data, seg[i].gen, off);
+				MemoryContext old = MemoryContextSwitchTo(rowcx);
+				ItemPointerData tid;
+				SiftColRow	row;
+				HeapTupleData tup;
+
+				if (rec != NULL && !(rec->flags & SIFT_TBL_REC_DEAD))
+				{
+					ItemPointerSet(&tid, vblock, off);
+					tup = *sift_tbl_rec_tuple(rel, rec, seg[i].gen, sift_key_from_tid(&tid));
+					heap_deform_tuple(&tup, desc, values, isnull);
+					row_in(l, desc, &tid, values, isnull, &row);
+					sift_cbatch_add(b, &row);
+				}
+				MemoryContextSwitchTo(old);
+				MemoryContextReset(rowcx);
+			}
+		}
+	MemoryContextDelete(rowcx);
+	pfree(values);
+	pfree(isnull);
+	return b;
+}
+
 /* ---------- sealing ---------- */
 
 typedef enum Fate
@@ -904,18 +975,6 @@ row_fate(const SiftTblRec *rec, TransactionId oldest, bool vacuum)
 	if (!TransactionIdIsNormal(rec->xmin))
 		return FATE_KEEP;
 	return TransactionIdPrecedes(rec->xmin, oldest) && !sift_tbl_xid_aborted(rec->xmin) ? FATE_KEEP : FATE_WAIT;
-}
-
-/* The page idx of seg into copy; false for a page of overflow bytes */
-static bool
-seg_page(Relation rel, SiftTblSeg *seg, uint32 idx, Page copy)
-{
-	Buffer		buf = sift_lane_read_locked(rel, sift_tbl_delta_page(rel, seg, idx), BUFFER_LOCK_SHARE);
-
-	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
-	memcpy(copy, BufferGetPage(buf), BLCKSZ);
-	UnlockReleaseBuffer(buf);
-	return !(TBL_PAGE(copy)->flags & SIFT_TBL_PAGE_OVFDATA);
 }
 
 /* Is every row of the segment settled? The newest rows are in the last pages, so a segment that is not final answers after one page */

@@ -40,7 +40,7 @@ subtest 'autovacuum reclaims what updates and deletes leave' => sub {
 };
 
 subtest 'parallel workers read the delta pages and the column groups' => sub {
-	my $set = 'SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 3;';
+	my $set = 'SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 3; SET sift.enable_agg = off;';
 	$primary->safe_psql('postgres', "INSERT INTO a SELECT g, 'late ' || g FROM generate_series($rows + 1, $rows + 3000) g");
 	my $plan = $primary->safe_psql('postgres', "$set EXPLAIN (COSTS OFF) SELECT count(*) FROM a");
 	like($plan, qr/Gather/, 'a parallel plan');
@@ -61,6 +61,29 @@ subtest 'a reader that began before a seal keeps its rows' => sub {
 	$bg->quit;
 	$primary->safe_psql('postgres', 'VACUUM r');
 	is($primary->safe_psql('postgres', 'SELECT count(*) FROM r'), 3000, 'a new snapshot sees the delete');
+};
+
+subtest 'the aggregate scan sees what the snapshot sees across a seal and an open transaction' => sub {
+	my $agg = 'SET cpu_tuple_cost = 0.5; SELECT count(*) || $$:$$ || sum(id) || $$:$$ || count(note) FROM g';
+	my $off = 'SET sift.enable_agg = off; ' . $agg;
+	$primary->safe_psql('postgres', 'CREATE TABLE g (id int, note text) USING sift_table; INSERT INTO g SELECT x, $$n$$ FROM generate_series(1, 5000) x');
+	like($primary->safe_psql('postgres', "SET cpu_tuple_cost = 0.5; EXPLAIN (COSTS OFF) SELECT count(*) FROM g"), qr/SiftAgg/, 'the plan is a SiftAgg');
+	my $writer = $primary->background_psql('postgres');
+	$writer->query_safe('BEGIN');
+	$writer->query_safe('DELETE FROM g WHERE id <= 1000');
+	$writer->query_safe('INSERT INTO g SELECT x, $$m$$ FROM generate_series(5001, 5500) x');
+	is($primary->safe_psql('postgres', $agg), '5000:12502500:5000', 'rows of an open transaction are not seen');
+	my $reader = $primary->background_psql('postgres');
+	$reader->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+	is($reader->query_safe($agg), '5000:12502500:5000', 'the repeatable read snapshot');
+	$writer->query_safe('COMMIT');
+	$writer->quit;
+	$primary->safe_psql('postgres', 'VACUUM g');
+	is($reader->query_safe($agg), '5000:12502500:5000', 'still, after the commit and VACUUM');
+	$reader->query_safe('COMMIT');
+	$reader->quit;
+	is($primary->safe_psql('postgres', $agg), $primary->safe_psql('postgres', $off), 'a new snapshot: the same as the plain plan');
+	is($primary->safe_psql('postgres', $agg), '4500:14627250:4500', 'with the commit');
 };
 
 subtest 'a standby reads the sealed tables' => sub {
