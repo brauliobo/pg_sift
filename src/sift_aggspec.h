@@ -19,7 +19,7 @@
 #include "sift_aggkern.h"
 #include "sift_colsrc.h"
 
-#define SIFT_AGG_MAX_KEYS	4
+#define SIFT_AGG_MAX_KEYS	5		/* group columns (at most 4) and the grouping set number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
@@ -61,7 +61,8 @@ typedef enum SiftAggKeyKind
 {
 	SAK_LEAF,					/* the leaf's value */
 	SAK_LUT,					/* expr(leaf value), evaluated once per distinct value */
-	SAK_COMBO					/* key slot (slot) of a combo (leaf) */
+	SAK_COMBO,					/* key slot (slot) of a combo (leaf) */
+	SAK_SET						/* the number of the grouping set of a row: the last key of a query with grouping sets */
 } SiftAggKeyKind;
 
 typedef struct SiftAggKey
@@ -93,6 +94,14 @@ typedef enum SiftAggKind
 	SAA_AVG_NUM,				/* avg of a numeric leaf: the numeric division of the exact sum and count */
 	SAA_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 argument): float8 */
 	SAA_PCT_DISC,				/* percentile_disc(frac) WITHIN GROUP (ORDER BY leaf or float8 argument): the argument's type */
+	/* aggregates of an expression over a column of a joined table: the ids of its distinct values come from a combo slot */
+	SAA_M_COUNT,				/* count(x) */
+	SAA_M_DISTINCT,				/* count(DISTINCT x) */
+	SAA_M_MIN,					/* min(x), max(x): the distinct values of a group compared at the end by the type's btree order */
+	SAA_M_MAX,
+	SAA_M_SUM,					/* sum(x), avg(x) of numeric and float8: the count of each distinct value of a group, summed at the end */
+	SAA_M_AVG,
+	SAA_GROUPING,				/* GROUPING(keys) of the grouping sets */
 	/* the aggregates of the outer query over the groups of per-row aggregates (SiftAggArm): they read the arm's inner aggregates */
 	SAA_O_COUNT_STAR,			/* count(*): the inner groups */
 	SAA_O_COUNT_ROWS,			/* count(DISTINCT id): the rows that have an inner group */
@@ -142,6 +151,10 @@ typedef struct SiftAggAgg
 	int			col;			/* SAA_O_*: the inner column it reads, -1 none */
 	int			ncond;			/* SAA_O_*: the FILTER */
 	SiftAggCond *cond;
+	int			combo;			/* SAA_M_*: the combo and slot that give the ids of the values */
+	int			slot;
+	int			nref;			/* SAA_GROUPING: the keys of its arguments */
+	int		   *ref;
 	char	   *desc;
 	double		frac;			/* SAA_PCT_*: the fraction (a constant in [0, 1]) */
 	bool		desc_order;		/* SAA_PCT_*: ORDER BY ... DESC */
@@ -167,6 +180,8 @@ typedef struct SiftAggArm
 	SiftAggPred **filter;
 	int			ninner;			/* count(*), count(x), sum(int), sum(float8), avg(float8) over the scan */
 	SiftAggAgg *inner;
+	int			nhaving;		/* the arm's HAVING, ANDed: `inner aggregate (cond.col) op constant`; a cell that fails is no group of the arm */
+	SiftAggCond *having;
 	int			ncol;			/* columns of the arm */
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
@@ -195,8 +210,9 @@ typedef struct SiftAggJoin
 
 typedef struct SiftAggSlot
 {
-	bool		is_key;			/* a group key (id in the output table of key `key`) or a boolean */
+	bool		is_key;			/* the id of the value in the output table of key `key` (of aggregate `agg`, if >= 0), or a boolean */
 	int			key;
+	int			agg;
 	Node	   *expr;			/* over Params 0..nleaves-1 (the leaves), then the join columns */
 } SiftAggSlot;
 
@@ -247,6 +263,8 @@ typedef struct SiftAggSpec
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
 	int			narms;			/* > 0: the two level form (SiftAggArm) */
 	SiftAggArm *arm;
+	int			nsets;			/* > 0: grouping sets, as PostgreSQL expanded them; the last key is the number of the set */
+	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */

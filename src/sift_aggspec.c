@@ -65,6 +65,16 @@ put_pred(Pack *p, const SiftAggPred *pr)
 }
 
 static void
+put_cond(Pack *p, const SiftAggCond *c)
+{
+	put_int(p, c->col);
+	put_int(p, c->op);
+	put_int(p, c->isint);
+	put_str(p, psprintf(INT64_FORMAT, c->ci));
+	put_dbl(p, c->cd);
+}
+
+static void
 put_agg(Pack *p, const SiftAggAgg *a)
 {
 	put_int(p, a->kind);
@@ -83,13 +93,12 @@ put_agg(Pack *p, const SiftAggAgg *a)
 	put_int(p, a->col);
 	put_int(p, a->ncond);
 	for (int j = 0; j < a->ncond; j++)
-	{
-		put_int(p, a->cond[j].col);
-		put_int(p, a->cond[j].op);
-		put_int(p, a->cond[j].isint);
-		put_str(p, psprintf(INT64_FORMAT, a->cond[j].ci));
-		put_dbl(p, a->cond[j].cd);
-	}
+		put_cond(p, &a->cond[j]);
+	put_int(p, a->combo);
+	put_int(p, a->slot);
+	put_int(p, a->nref);
+	for (int j = 0; j < a->nref; j++)
+		put_int(p, a->ref[j]);
 	put_str(p, a->desc);
 	put_dbl(p, a->frac);
 	put_int(p, a->desc_order);
@@ -111,6 +120,9 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		put_int(p, a->ninner);
 		for (int j = 0; j < a->ninner; j++)
 			put_agg(p, &a->inner[j]);
+		put_int(p, a->nhaving);
+		for (int j = 0; j < a->nhaving; j++)
+			put_cond(p, &a->having[j]);
 		put_int(p, a->ncol);
 		for (int j = 0; j < a->ncol; j++)
 			put_int(p, a->colsrc[j]);
@@ -164,6 +176,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		{
 			put_int(p, c->slot[k].is_key);
 			put_int(p, c->slot[k].key);
+			put_int(p, c->slot[k].agg);
 			put_node(p, c->slot[k].expr);
 		}
 	}
@@ -213,6 +226,9 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_str(p, s->vleaf[i].key);
 	}
 	put_arms(p, s);
+	put_int(p, s->nsets);
+	for (int i = 0; i < s->nsets; i++)
+		put_int(p, (int) s->setmask[i]);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
 	put_str(p, s->desc_quals);
@@ -276,6 +292,16 @@ get_pred(Unpack *u)
 }
 
 static void
+get_cond(Unpack *u, SiftAggCond *c)
+{
+	c->col = get_int(u);
+	c->op = get_int(u);
+	c->isint = get_int(u);
+	c->ci = strtoll(get_str(u), NULL, 10);
+	c->cd = strtod(get_str(u), NULL);
+}
+
+static void
 get_agg(Unpack *u, SiftAggAgg *a)
 {
 	a->kind = get_int(u);
@@ -296,13 +322,13 @@ get_agg(Unpack *u, SiftAggAgg *a)
 	a->ncond = get_int(u);
 	a->cond = palloc0(Max(a->ncond, 1) * sizeof(SiftAggCond));
 	for (int j = 0; j < a->ncond; j++)
-	{
-		a->cond[j].col = get_int(u);
-		a->cond[j].op = get_int(u);
-		a->cond[j].isint = get_int(u);
-		a->cond[j].ci = strtoll(get_str(u), NULL, 10);
-		a->cond[j].cd = strtod(get_str(u), NULL);
-	}
+		get_cond(u, &a->cond[j]);
+	a->combo = get_int(u);
+	a->slot = get_int(u);
+	a->nref = get_int(u);
+	a->ref = palloc(Max(a->nref, 1) * sizeof(int));
+	for (int j = 0; j < a->nref; j++)
+		a->ref[j] = get_int(u);
 	a->desc = get_str(u);
 	a->frac = strtod(get_str(u), NULL);
 	a->desc_order = get_int(u);
@@ -327,6 +353,10 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		a->inner = palloc0(Max(a->ninner, 1) * sizeof(SiftAggAgg));
 		for (int j = 0; j < a->ninner; j++)
 			get_agg(u, &a->inner[j]);
+		a->nhaving = get_int(u);
+		a->having = palloc0(Max(a->nhaving, 1) * sizeof(SiftAggCond));
+		for (int j = 0; j < a->nhaving; j++)
+			get_cond(u, &a->having[j]);
 		a->ncol = get_int(u);
 		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
 		for (int j = 0; j < a->ncol; j++)
@@ -384,6 +414,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		{
 			c->slot[k].is_key = get_int(u);
 			c->slot[k].key = get_int(u);
+			c->slot[k].agg = get_int(u);
 			c->slot[k].expr = get_node(u);
 		}
 	}
@@ -439,6 +470,10 @@ sift_aggspec_unpack(const List *items)
 		s->vleaf[i].key = get_str(u);
 	}
 	get_arms(u, s);
+	s->nsets = get_int(u);
+	s->setmask = palloc(Max(s->nsets, 1) * sizeof(uint32));
+	for (int i = 0; i < s->nsets; i++)
+		s->setmask[i] = (uint32) get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
 	s->desc_quals = get_str(u);

@@ -250,12 +250,12 @@ typedef struct KeyState
 	ExprState  *expr;
 	Param	   *param;
 	RangeTab	rt;				/* integer leaves: value -> id */
-	bool		ident;			/* integer leaf as the key: ids are given to the values in order of appearance */
-	int32	   *idval;			/* ident: the value of id i + 1 */
+	bool		ident;			/* integer or float leaf as the key (and the grouping set number): ids are given to the values in order of appearance */
+	int64	   *idval;			/* ident: the value of id i + 1 (a float: float_key) */
 	uint32		nident;
 	uint32		capident;
 	uint32		wcap;			/* ident, values too far apart for a table: open addressing value -> id (0 = free), power of 2 */
-	int32	   *wval;
+	int64	   *wval;
 	uint32	   *wid;
 	uint32		nullid;			/* LUT keys on integer leaves: the id of expr(NULL) */
 	uint32		cap;			/* direct mode: ids 0..cap-1 */
@@ -266,8 +266,10 @@ typedef struct KeyState
 typedef struct DSet
 {
 	uint64	   *slot;
+	int64	   *cnt;			/* counted sets: the times each pair was added, per slot */
 	uint64		n;
 	uint64		cap;
+	bool		counted;
 } DSet;
 
 /*
@@ -304,6 +306,7 @@ typedef struct AggAcc
 	double	   *d;
 	uint64	   *last;			/* count distinct of the rows: the last row counted */
 	uint8	   *nf;				/* float sums: a non-finite input was added */
+	Datum	   *v;				/* aggregates over distinct values (SAA_M_*): the result, made by mapped_finish */
 } AggAcc;
 
 /* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
@@ -421,7 +424,8 @@ typedef struct AggExec
 	int			jcombo[SIFT_AGG_MAX_JOINS];
 	MemoryContext tcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
-	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's */
+	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
+	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
 	Touch	   *touched;		/* the cells of the current row */
 	uint32		ntouch;
@@ -499,6 +503,26 @@ typedef struct AggExec
 
 /* ---------- value conversions ---------- */
 
+/* The group of a float: its bits, with the one zero and the one NaN of float8_eq / hashfloat8 (-0 = 0, NaN = NaN) */
+static int64
+float_key(double d)
+{
+	int64		bits;
+
+	d = d == 0 ? 0.0 : isnan(d) ? get_float8_nan() : d;
+	memcpy(&bits, &d, sizeof(bits));
+	return bits;
+}
+
+static double
+float_from_key(int64 bits)
+{
+	double		d;
+
+	memcpy(&d, &bits, sizeof(d));
+	return d;
+}
+
 static Datum
 leaf_datum(Oid typid, int64 iv)
 {
@@ -516,6 +540,10 @@ leaf_datum(Oid typid, int64 iv)
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
 			return Int64GetDatum(iv);
+		case FLOAT4OID:			/* the bits of a float key (float_key) */
+			return Float4GetDatum((float4) float_from_key(iv));
+		case FLOAT8OID:
+			return Float8GetDatum(float_from_key(iv));
 		default:
 			elog(ERROR, "sift: unexpected integer leaf type %u", typid);
 	}
@@ -1360,6 +1388,13 @@ combo_grow_out(AggExec *ex, ComboSt *cs, int nslots, uint32 add)
 	}
 }
 
+/* the table of the distinct values a slot gives ids to: of the key, or of the aggregate it is the argument of */
+static OutTable *
+slot_ot(AggExec *ex, const SiftAggSlot *sl)
+{
+	return sl->agg >= 0 ? &ex->aot[sl->agg] : &ex->ks[sl->key].ot;
+}
+
 /* evaluates the slots of a new entry for every output row */
 static void
 combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
@@ -1397,7 +1432,7 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 			else
 			{
 				MemoryContextSwitchTo(ex->cxt);
-				r = ot_id(&ex->ks[cb->slot[sl].key].ot, d);
+				r = ot_id(slot_ot(ex, &cb->slot[sl]), d);
 				MemoryContextSwitchTo(ex->tcxt);
 			}
 			cs->val[(size_t) cs->nout * cb->nslots + sl] = r;
@@ -1757,7 +1792,7 @@ dset_hash(uint64 x)
 	return x ^ (x >> 32);
 }
 
-static void
+static uint64
 dset_insert_raw(DSet *s, uint64 pair)
 {
 	uint64		h = dset_hash(pair) & (s->cap - 1);
@@ -1766,6 +1801,7 @@ dset_insert_raw(DSet *s, uint64 pair)
 		h = (h + 1) & (s->cap - 1);
 	s->slot[h] = pair;
 	s->n++;
+	return h;
 }
 
 /* twice the slots, the groups renumbered through remap (NULL: as they are) */
@@ -1773,16 +1809,25 @@ static void
 dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
 {
 	uint64	   *old = s->slot;
+	int64	   *ocnt = s->cnt;
 	uint64		ocap = s->cap;
 
 	s->cap = Max(ocap * 2, 1024);
 	s->slot = MemoryContextAllocZero(ex->cxt, s->cap * sizeof(uint64));
+	s->cnt = s->counted ? MemoryContextAllocZero(ex->cxt, s->cap * sizeof(int64)) : NULL;
 	s->n = 0;
 	for (uint64 i = 0; i < ocap; i++)
 		if (old[i])
-			dset_insert_raw(s, remap ? DSET_PAIR(remap[(old[i] >> 32) & 0x7fffffff], old[i]) : old[i]);
+		{
+			uint64		h = dset_insert_raw(s, remap ? DSET_PAIR(remap[(old[i] >> 32) & 0x7fffffff], old[i]) : old[i]);
+
+			if (s->counted)
+				s->cnt[h] = ocnt[i];
+		}
 	if (old)
 		pfree(old);
+	if (ocnt)
+		pfree(ocnt);
 }
 
 /* true when the pair is new */
@@ -1795,14 +1840,18 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 	if (s->n * 2 >= s->cap)
 		dset_grow(ex, s, NULL);
 	h = dset_hash(pair) & (s->cap - 1);
-	while (s->slot[h])
-	{
-		if (s->slot[h] == pair)
-			return false;
+	while (s->slot[h] && s->slot[h] != pair)
 		h = (h + 1) & (s->cap - 1);
+	if (s->slot[h])
+	{
+		if (s->counted)
+			s->cnt[h]++;
+		return false;
 	}
 	s->slot[h] = pair;
 	s->n++;
+	if (s->counted)
+		s->cnt[h] = 1;
 	return true;
 }
 
@@ -1842,6 +1891,15 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_O_SUM_I64:
 				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+				break;
+			case SAA_M_SUM:
+			case SAA_M_AVG:
+				a[i].d = MemoryContextAllocZero(ex->cxt, cap * sizeof(double));
+				a[i].nf = MemoryContextAllocZero(ex->cxt, cap);
+				/* fall through */
+			case SAA_M_MIN:
+			case SAA_M_MAX:
+				a[i].v = MemoryContextAllocZero(ex->cxt, cap * sizeof(Datum));
 				break;
 			case SAA_O_COUNT_ROWS:
 			case SAA_COUNT_ROWS:
@@ -1912,18 +1970,26 @@ direct_layout(AggExec *ex)
 	}
 }
 
+static inline uint32
+ids_hash(const uint32 *ids, uint32 nslot)
+{
+	uint64		h = 0;
+
+	for (int j = 0; j < SIFT_AGG_MAX_KEYS; j++)
+	{
+		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
+		h ^= h >> 32;
+	}
+	return (uint32) h & (nslot - 1);
+}
+
 /* the group of an id tuple in hash mode */
 static uint32
 hash_group(AggExec *ex, const uint32 *ids)
 {
-	uint64		a = ids[0] | ((uint64) ids[1] << 32),
-				b = ids[2] | ((uint64) ids[3] << 32),
-				h = (a * UINT64CONST(0x9E3779B97F4A7C15)) ^ (b * UINT64CONST(0xC2B2AE3D27D4EB4F));
-	uint32		pos,
+	uint32		pos = ids_hash(ids, ex->nhslot),
 				g;
 
-	h ^= h >> 29;
-	pos = (uint32) h & (ex->nhslot - 1);
 	while (ex->hslot[pos])
 	{
 		const uint32 *k = &ex->hkey[(ex->hslot[pos] - 1) * SIFT_AGG_MAX_KEYS];
@@ -1948,14 +2014,8 @@ hash_group(AggExec *ex, const uint32 *ids)
 
 		for (uint32 x = 0; x < ex->ngroups; x++)
 		{
-			const uint32 *k = &ex->hkey[(Size) x * SIFT_AGG_MAX_KEYS];
-			uint64		ka = k[0] | ((uint64) k[1] << 32),
-						kb = k[2] | ((uint64) k[3] << 32),
-						hh = (ka * UINT64CONST(0x9E3779B97F4A7C15)) ^ (kb * UINT64CONST(0xC2B2AE3D27D4EB4F));
-			uint32		p;
+			uint32		p = ids_hash(&ex->hkey[(Size) x * SIFT_AGG_MAX_KEYS], nn);
 
-			hh ^= hh >> 29;
-			p = (uint32) hh & (nn - 1);
 			while (ns[p])
 				p = (p + 1) & (nn - 1);
 			ns[p] = x + 1;
@@ -1965,6 +2025,13 @@ hash_group(AggExec *ex, const uint32 *ids)
 		ex->nhslot = nn;
 	}
 	return g;
+}
+
+/* the id of key j in group g (0: NULL) */
+static uint32
+key_id(AggExec *ex, int j, uint32 g)
+{
+	return ex->hash ? ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
 }
 
 static uint32
@@ -2041,11 +2108,31 @@ typedef struct KeyFill
 	int			ki;
 } KeyFill;
 
+/* the next id of an ident key, for the value v */
+static uint32
+ident_add(AggExec *ex, KeyState *k, int64 v)
+{
+	if (k->nident == k->capident)
+	{
+		k->capident = Max(k->capident * 2, 64);
+		k->idval = k->idval ? repalloc(k->idval, k->capident * sizeof(int64)) :
+			MemoryContextAlloc(ex->cxt, k->capident * sizeof(int64));
+	}
+	k->idval[k->nident++] = v;
+	return k->nident;
+}
+
+static inline uint32
+wide_hash(int64 v, uint32 cap)
+{
+	return (uint32) (((uint64) v * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & (cap - 1);
+}
+
 /* the id of an ident key's value when the range table is not used: ids are given in order of appearance, as the table does */
 static uint32
-ident_wide_id(AggExec *ex, KeyState *k, int32 v)
+ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 {
-	uint32		h = (uint32) ((uint32) v * 0x9E3779B1u) & (k->wcap - 1);
+	uint32		h = wide_hash(v, k->wcap);
 
 	while (k->wid[h])
 	{
@@ -2053,28 +2140,21 @@ ident_wide_id(AggExec *ex, KeyState *k, int32 v)
 			return k->wid[h];
 		h = (h + 1) & (k->wcap - 1);
 	}
-	if (k->nident == k->capident)
-	{
-		k->capident = Max(k->capident * 2, 64);
-		k->idval = k->idval ? repalloc(k->idval, k->capident * sizeof(int32)) :
-			MemoryContextAlloc(ex->cxt, k->capident * sizeof(int32));
-	}
-	k->idval[k->nident++] = v;
 	k->wval[h] = v;
-	k->wid[h] = k->nident;
+	k->wid[h] = ident_add(ex, k, v);
 	if ((uint64) k->nident * 2 > k->wcap)
 	{
 		uint32		ocap = k->wcap;
-		int32	   *ov = k->wval;
+		int64	   *ov = k->wval;
 		uint32	   *oi = k->wid;
 
 		k->wcap *= 2;
-		k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int32));
+		k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int64));
 		k->wid = MemoryContextAllocZero(ex->cxt, k->wcap * sizeof(uint32));
 		for (uint32 s = 0; s < ocap; s++)
 			if (oi[s])
 			{
-				uint32		p = (uint32) ((uint32) ov[s] * 0x9E3779B1u) & (k->wcap - 1);
+				uint32		p = wide_hash(ov[s], k->wcap);
 
 				while (k->wid[p])
 					p = (p + 1) & (k->wcap - 1);
@@ -2096,7 +2176,7 @@ ident_go_wide(AggExec *ex, KeyState *k)
 	k->wcap = 1024;
 	while (k->wcap < 4 * n)
 		k->wcap *= 2;
-	k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int32));
+	k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->cxt, k->wcap * sizeof(uint32));
 	k->nident = 0;				/* ident_wide_id gives the same ids back, in the same order */
 	for (uint32 i = 0; i < n; i++)
@@ -2110,16 +2190,7 @@ key_range_fill(void *arg, int32 v, void *entry)
 	KeyState   *k = &f->ex->ks[f->ki];
 
 	if (k->ident)
-	{
-		if (k->nident == k->capident)
-		{
-			k->capident = Max(k->capident * 2, 64);
-			k->idval = k->idval ? repalloc(k->idval, k->capident * sizeof(int32)) :
-				MemoryContextAlloc(f->ex->cxt, k->capident * sizeof(int32));
-		}
-		k->idval[k->nident++] = v;
-		*(uint32 *) entry = k->nident;
-	}
+		*(uint32 *) entry = ident_add(f->ex, k, v);
 	else
 		*(uint32 *) entry = key_value_id(f->ex, f->ki, leaf_datum(k->param->paramtype, v), false);
 }
@@ -2136,11 +2207,17 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	const SiftSrcVec *v;
 	const SiftSrcLeaf *lf;
 
+	*map_out = NULL;			/* the values are the ids */
+	*base_out = 0;
 	if (!(ex->arm_mask >> ki & 1))
 	{
-		memset(vals_out, 0, nsel * sizeof(uint32));	/* NULL in this arm */
-		*map_out = NULL;
-		*base_out = 0;
+		memset(vals_out, 0, nsel * sizeof(uint32));	/* NULL in this arm, or in this grouping set */
+		return;
+	}
+	if (sk->kind == SAK_SET)
+	{
+		for (int i = 0; i < nsel; i++)
+			vals_out[i] = ex->curset + 1;
 		return;
 	}
 	if (sk->kind == SAK_COMBO)
@@ -2151,12 +2228,16 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 
 		for (int i = 0; i < nsel; i++)
 			vals_out[i] = val[(size_t) out[i] * ns + sk->slot];
-		*map_out = NULL;			/* the values are the ids */
-		*base_out = 0;
 		return;
 	}
 	v = get_vec(ex, sk->leaf);
 	lf = &ex->lay->leaf[sk->leaf];
+	if (lf->vtype == SCV_F64)
+	{
+		for (int i = 0; i < nsel; i++)
+			vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, float_key(((const double *) v->data)[idx[i]]));
+		return;
+	}
 	sift_aggk->gather_u32(vals_out, (const uint32 *) v->data, idx, nsel);
 	if (lf->vtype == SCV_CODE)
 	{
@@ -2264,6 +2345,15 @@ gather_idx(AggExec *ex, int leaf, int nsel, const uint32 **idx_out)
 	*idx_out = (leaf_lvl(ex, leaf) == ex->qlevel) ? ex->tidx : ex->ridx;
 }
 
+/* the leaf a key reads; NULL for the keys of a combo and the grouping set number */
+static const SiftSrcLeaf *
+key_lf(AggExec *ex, int j)
+{
+	const SiftAggKey *k = &ex->spec->key[j];
+
+	return k->kind == SAK_COMBO || k->kind == SAK_SET ? NULL : &ex->lay->leaf[k->leaf];
+}
+
 static void
 compute_gids(AggExec *ex, int nsel)
 {
@@ -2286,7 +2376,7 @@ compute_gids(AggExec *ex, int nsel)
 		{
 			const uint32 *idx = NULL;
 
-			if (ex->spec->key[j].kind != SAK_COMBO)
+			if (key_lf(ex, j))
 				gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 			vals[j] = ex->kids + (Size) j * (VEC + PADW);
 			key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals[j]);
@@ -2301,7 +2391,7 @@ compute_gids(AggExec *ex, int nsel)
 			for (int j = 0; j < nk; j++)
 			{
 				const uint32 *idx = NULL;
-				const SiftSrcLeaf *lf = ex->spec->key[j].kind == SAK_COMBO ? NULL : &ex->lay->leaf[ex->spec->key[j].leaf];
+				const SiftSrcLeaf *lf = key_lf(ex, j);
 
 				if (lf)
 					gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
@@ -2327,7 +2417,7 @@ compute_gids(AggExec *ex, int nsel)
 		for (int j = 0; j < nk; j++)
 		{
 			const uint32 *idx = NULL;
-			const SiftSrcLeaf *lf = ex->spec->key[j].kind == SAK_COMBO ? NULL : &ex->lay->leaf[ex->spec->key[j].leaf];
+			const SiftSrcLeaf *lf = key_lf(ex, j);
 			uint32	   *vals = ex->kids + (Size) j * (VEC + PADW);
 
 			if (lf)
@@ -2841,6 +2931,123 @@ osa_finish_all(AggExec *ex)
 			osa_finish(ex, ai);
 }
 
+/*
+ * An aggregate of an expression over a column of a joined table: the combo gives the id (0: NULL) of the value of each tuple, in the
+ * table of the distinct values of the aggregate. count(x) counts the ids; the others add the (group, id) pairs to a set (with the
+ * times each was added, for sum and avg) that mapped_finish turns into the result with PostgreSQL's own comparison and arithmetic.
+ */
+static void
+mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const uint32 *out = combo_outs(ex, a->combo),
+			   *val = ex->cs[a->combo].val;
+	int			ns = ex->spec->combo[a->combo].nslots;
+
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		id = val[(size_t) out[j] * ns + a->slot];
+
+		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
+			continue;
+		if (a->kind == SAA_M_COUNT || (dset_add(ex, &ex->dset[ai], ex->gid[j], id) && a->kind == SAA_M_DISTINCT))
+			acc->n[ex->gid[j]]++;
+	}
+}
+
+/* `times` rows of group g had the value id: min, max, sum or avg of the aggregate ai */
+static void
+mapped_add(AggExec *ex, int ai, uint32 g, uint32 id, int64 times)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	Datum		val = ex->aot[ai].val[id - 1];
+
+	switch (a->kind)
+	{
+		case SAA_M_MIN:
+		case SAA_M_MAX:
+			{
+				FmgrInfo   *cmp = &lookup_type_cache(a->argtype, TYPECACHE_CMP_PROC_FINFO)->cmp_proc_finfo;
+				int32		c = acc->n[g] ? DatumGetInt32(FunctionCall2Coll(cmp, a->collid, val, acc->v[g])) : 0;
+
+				if (acc->n[g] == 0 || (a->kind == SAA_M_MIN ? c < 0 : c > 0))
+					acc->v[g] = val;
+				acc->n[g] = 1;
+			}
+			break;
+		default:
+			if (a->restype == NUMERICOID)
+			{
+				Datum		sum = DirectFunctionCall2(numeric_mul, DirectFunctionCall1(int8_numeric, Int64GetDatum(times)), val);
+
+				acc->v[g] = acc->n[g] ? DirectFunctionCall2(numeric_add, acc->v[g], sum) : sum;
+			}
+			else
+			{
+				double		x = DatumGetFloat8(val);
+
+				acc->d[g] += times * x;
+				if (!isfinite(x))
+					acc->nf[g] = 1;
+				else
+					ex->amax[ai] = Max(ex->amax[ai], fabs(x));
+			}
+			acc->n[g] += times;
+	}
+}
+
+/* the results of the aggregates over distinct values, from the pairs of their sets */
+static void
+mapped_finish(AggExec *ex)
+{
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		const SiftAggAgg *a = &ex->spec->agg[ai];
+		const DSet *d = &ex->dset[ai];
+
+		if (a->kind < SAA_M_MIN || a->kind > SAA_M_AVG)
+			continue;
+		for (uint64 i = 0; i < d->cap; i++)
+			if (d->slot[i])
+				mapped_add(ex, ai, (d->slot[i] >> 32) & 0x7fffffff, (uint32) d->slot[i], d->counted ? d->cnt[i] : 1);
+		if (a->kind == SAA_M_AVG && a->restype == FLOAT8OID && 8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
+			float_overflow_error();
+	}
+	MemoryContextSwitchTo(old);
+}
+
+static Datum
+mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull)
+{
+	AggAcc	   *acc = &ex->acc[ai];
+
+	*isnull = acc->n[g] == 0;
+	if (*isnull)
+		return (Datum) 0;
+	if (a->restype == NUMERICOID)
+		return a->kind == SAA_M_SUM ? acc->v[g] :
+			DirectFunctionCall2(numeric_div, acc->v[g], DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
+	if (isinf(acc->d[g]) && !acc->nf[g])
+		float_overflow_error();
+	return Float8GetDatum(a->kind == SAA_M_SUM ? acc->d[g] : acc->d[g] / (double) acc->n[g]);
+}
+
+/* GROUPING(args) in a group of grouping set s: bit i (the first argument is the highest) is 1 when argument i is not grouped by the set */
+static int32
+grouping_bits(AggExec *ex, const SiftAggAgg *a, uint32 g)
+{
+	uint32		mask = ex->spec->setmask[key_id(ex, ex->spec->nkeys - 1, g) - 1];
+	int32		bits = 0;
+
+	for (int i = 0; i < a->nref; i++)
+		bits = bits << 1 | !(mask >> a->ref[i] & 1);
+	return bits;
+}
+
 static void
 agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 {
@@ -2963,6 +3170,16 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 				if ((!ok || sift_colsrc_bit(ok, j)) && dset_add(ex, &ex->dset[ai], ex->gid[j], ex->cu32[j]))
 					acc->n[ex->gid[j]]++;
 			break;
+		case SAA_GROUPING:
+			break;
+		case SAA_M_COUNT:
+		case SAA_M_DISTINCT:
+		case SAA_M_MIN:
+		case SAA_M_MAX:
+		case SAA_M_SUM:
+		case SAA_M_AVG:
+			mapped_update(ex, ai, ok, nsel);
+			break;
 		default:
 			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
 	}
@@ -3019,10 +3236,16 @@ agg_tuples(AggExec *ex, Tup *t)
 		return;
 	}
 	ex->n_tuples += t->n;
-	compute_gids(ex, t->n);
-	sift_aggk->count_gid(ex->seen, ex->gid, NULL, t->n);
-	for (int i = 0; i < s->naggs; i++)
-		agg_update(ex, i, ex->cstart, ex->cn, t->n);
+	for (int set = 0; set < Max(s->nsets, 1); set++)
+	{
+		ex->curset = set;
+		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
+		compute_gids(ex, t->n);
+		sift_aggk->count_gid(ex->seen, ex->gid, NULL, t->n);
+		for (int i = 0; i < s->naggs; i++)
+			agg_update(ex, i, ex->cstart, ex->cn, t->n);
+	}
+	ex->arm_mask = ~(uint32) 0;
 }
 
 /* applies the lookup joins one at a time: a tuple is repeated per match of its key, and dropped (INNER) or kept once (LEFT) without one */
@@ -3344,6 +3567,17 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	SiftAggArm *sa = &ex->spec->arm[k];
 	ArmSt	   *a = &ex->arm[k];
 
+	for (int h = 0; h < sa->nhaving; h++)
+	{
+		double		dv = 0;
+		int64		iv = 0;
+
+		if (!cell_value(a, &sa->inner[sa->having[h].col], sa->having[h].col, g, &dv, &iv) || !cond_holds(&sa->having[h], dv, iv))
+		{
+			ex->seen[g]--;		/* the cell is no group of the arm */
+			return;
+		}
+	}
 	for (int oi = 0; oi < ex->spec->naggs; oi++)
 	{
 		SiftAggAgg *o = &ex->spec->agg[oi];
@@ -3616,19 +3850,25 @@ register_key(AggExec *ex, int ki)
 {
 	SiftAggKey *sk = &ex->spec->key[ki];
 	KeyState   *k = &ex->ks[ki];
-	SiftSrcLeaf *lf = sk->kind == SAK_COMBO ? NULL : &ex->lay->leaf[sk->leaf];
+	const SiftSrcLeaf *lf = key_lf(ex, ki);
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
 	ot_init(&k->ot, sk->eqop, sk->typid, sk->collid);
 	rt_init(&k->rt, sizeof(uint32));
 	k->cap = 4;
 	k->nullid = UINT32_MAX;
-	if (sk->kind == SAK_LUT)
+	if (sk->kind == SAK_SET)
+	{
+		k->ident = true;
+		for (int i = 0; i < ex->spec->nsets; i++)
+			ident_add(ex, k, i);
+	}
+	else if (sk->kind == SAK_LUT)
 	{
 		k->expr = ExecInitExpr((Expr *) sk->expr, &ex->css.ss.ps);
 		k->param = find_param(sk->expr);
 	}
-	else if (sk->kind != SAK_COMBO)
+	else if (sk->kind == SAK_LEAF)
 	{
 		/* the leaf itself: the placeholder has the key's type */
 		k->param = makeNode(Param);
@@ -3636,7 +3876,9 @@ register_key(AggExec *ex, int ki)
 		k->param->paramtype = sk->typid;
 		k->param->paramtypmod = sk->typmod;
 		k->param->paramcollid = sk->collid;
-		k->ident = lf->vtype == SCV_I32;
+		k->ident = lf->vtype == SCV_I32 || lf->vtype == SCV_F64;
+		if (lf->vtype == SCV_F64)
+			ident_go_wide(ex, k);
 	}
 	MemoryContextSwitchTo(old);
 }
@@ -3685,7 +3927,9 @@ register_aggs(AggExec *ex)
 
 		if (is_ordered_agg(a))
 			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
-		if (a->kind != SAA_COUNT_DISTINCT || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
+		if (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG)
+			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG;
+		else if (a->kind != SAA_COUNT_DISTINCT || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
 			continue;
 		tc = lookup_type_cache(a->argtype, TYPECACHE_EQ_OPR);
 		ot_init(&ex->aot[i], tc->eq_opr, a->argtype, a->collid);
@@ -3754,6 +3998,21 @@ start_scan(AggExec *ex)
 	osa_finish_all(ex);
 }
 
+/* a grouping set without columns has its group even when no row reached it, as the plain aggregate has its row */
+static void
+empty_set_groups(AggExec *ex)
+{
+	for (int set = 0; set < ex->spec->nsets; set++)
+		if (ex->spec->setmask[set] == (uint32) 1 << (ex->spec->nkeys - 1))
+		{
+			ex->curset = set;
+			ex->arm_mask = ex->spec->setmask[set];
+			compute_gids(ex, 1);
+			ex->seen[ex->gid[0]] = Max(ex->seen[ex->gid[0]], 1);
+		}
+	ex->arm_mask = ~(uint32) 0;
+}
+
 /* the groups that exist, in index order */
 static void
 list_groups(AggExec *ex)
@@ -3775,7 +4034,7 @@ static Datum
 key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 {
 	KeyState   *k = &ex->ks[j];
-	uint32		id = ex->hash ? ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS + j] : (g / k->mult) % k->cap;
+	uint32		id = key_id(ex, j, g);
 
 	*isnull = id == 0;
 	if (id == 0)
@@ -3827,7 +4086,18 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_COUNT_DISTINCT:
 		case SAA_O_COUNT_STAR:
 		case SAA_O_COUNT_ROWS:
+		case SAA_M_COUNT:
+		case SAA_M_DISTINCT:
 			return Int64GetDatum(acc->n[g]);
+		case SAA_GROUPING:
+			return Int32GetDatum(grouping_bits(ex, a, g));
+		case SAA_M_MIN:
+		case SAA_M_MAX:
+			*isnull = acc->n[g] == 0;
+			return acc->v[g];
+		case SAA_M_SUM:
+		case SAA_M_AVG:
+			return mapped_sum_datum(ex, a, ai, g, isnull);
 		case SAA_O_SUM_I64:
 			*isnull = acc->n[g] == 0;
 			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
@@ -3902,6 +4172,8 @@ agg_next(ScanState *node)
 	if (!ex->started)
 	{
 		start_scan(ex);
+		empty_set_groups(ex);
+		mapped_finish(ex);
 		list_groups(ex);
 	}
 	if (ex->gpos >= ex->nglist)

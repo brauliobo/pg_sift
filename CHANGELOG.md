@@ -20,6 +20,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   prove the result is the plain plan's; everything else keeps its plan (`docs/COL-PLAN.md`). `scripts/coldiff.sh` runs a corpus both
   ways and compares the results, including float tolerances, errors and the DML states of the table.
 
+- Added: the aggregate pushdown now matches `GROUPING SETS`, `ROLLUP`, `CUBE` and `GROUPING()` (all sets in one scan, with the NULLs and
+  bit masks PostgreSQL gives), float4/float8 group keys (`-0` and `0` are one group, every NaN is one group), `count`, `count(DISTINCT)`,
+  `min`, `max`, `sum` and `avg` of the columns of a lookup join, and a `WHERE` on the outer query of per-order aggregates (quals on the
+  keys filter the rows, quals on the inner aggregates are a per-order HAVING). Anything else keeps its plan.
+
 - Added: the vectorized operators of the aggregate pushdown (`src/sift_aggkern*.c`, `docs/KERNELS.md`): comparisons and range tests on
   int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
   min/max, per-group accumulation and adjacent-distinct counting, as one scalar, AVX2 and AVX-512 table chosen at run time by `sift.simd`.
