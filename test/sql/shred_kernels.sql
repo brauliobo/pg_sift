@@ -18,7 +18,7 @@ SELECT sift._test_shred_kern_digest(1, 400) = :scalar_digest AS auto_same;
 -- Every level the CPU supports against scalar, case by case (lengths 0..1200, every state, extreme values, empty and long runs)
 SELECT sift._test_shred_kern_equiv(42, 4000) AS mismatches;
 
--- The same documents shredded at every level: slots, parents (expand_parents), counts and min/max (the summaries) agree
+-- The same documents shredded at every level: slots, parents (the column table's expand_parents), counts and min/max (the summaries) agree
 CREATE TABLE d AS SELECT i AS id, jsonb_build_object('xs', (SELECT jsonb_agg(jsonb_build_object('a', j, 'b', j::float8 / 7, 'c', CASE WHEN j % 5 = 0 THEN NULL END,
 							'l', (SELECT jsonb_agg(k) FROM generate_series(1, j % 4) k))) FROM generate_series(1, 40 + i) j)) AS doc FROM generate_series(1, 6) i;
 \set spec 'xs[]{a int4, b float8, c int4, l[] int2}'

@@ -76,22 +76,11 @@ minmax_f64_scalar(const uint8 *state, const double *val, uint32 n, double *min, 
 	return found;
 }
 
-static void
-expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
-{
-	uint32		i = 0;
-
-	for (uint32 p = 0; p < np; p++)
-		for (; i < end[p]; i++)
-			parent[i] = p;
-}
-
 const SiftShredKernels sift_shred_kernels_scalar = {
 	.state_counts = state_counts_scalar,
 	.state_bits = state_bits_scalar,
 	.minmax_i64 = minmax_i64_scalar,
-	.minmax_f64 = minmax_f64_scalar,
-	.expand_parents = expand_parents_scalar
+	.minmax_f64 = minmax_f64_scalar
 };
 
 const SiftShredKernels *sift_shred_kern = &sift_shred_kernels_scalar;

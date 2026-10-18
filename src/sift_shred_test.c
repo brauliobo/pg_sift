@@ -11,6 +11,7 @@
 #include "funcapi.h"
 #include "utils/jsonb.h"
 
+#include "sift_col_kern.h"
 #include "sift_shred_pg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_shred_spec);
@@ -260,7 +261,6 @@ sift_test_shred_summary(PG_FUNCTION_ARGS)
 /* ---------- kernels: scalar is the specification ---------- */
 
 #define KN_MAX	1200
-#define KN_P	48
 
 typedef struct KCase
 {
@@ -268,8 +268,6 @@ typedef struct KCase
 	uint8		state[KN_MAX + 64];
 	int64		ival[KN_MAX + 8];
 	double		fval[KN_MAX + 8];
-	uint32		np;
-	uint32		end[KN_P];
 } KCase;
 
 typedef struct KOut
@@ -281,7 +279,6 @@ typedef struct KOut
 				fmax;
 	bool		ifound,
 				ffound;
-	uint32		parent[KN_MAX + 64];
 	uint64		nulls[KN_MAX / 64 + 2];
 	uint64		ovf[KN_MAX / 64 + 2];
 } KOut;
@@ -291,7 +288,6 @@ gen_kcase(pg_prng_state *rs, KCase *c)
 {
 	int			shape = pg_prng_uint32(rs) % 4;
 	uint32		lim = shape == 0 ? 20 : shape == 1 ? 100 : shape == 2 ? 300 : KN_MAX;
-	uint32		e = 0;
 
 	memset(c, 0, sizeof(*c));
 	c->n = pg_prng_uint32(rs) % (lim + 1);
@@ -313,13 +309,6 @@ gen_kcase(pg_prng_state *rs, KCase *c)
 		if (c->fval[i] == 0)
 			c->fval[i] = 0.0;
 	}
-	c->np = pg_prng_uint32(rs) % (KN_P + 1);
-	for (uint32 p = 0; p < c->np; p++)
-	{
-		e += pg_prng_uint32(rs) % 3 == 0 ? 0 : pg_prng_uint32(rs) % (shape == 3 ? 40 : 12);
-		c->end[p] = Min(e, KN_MAX);
-		e = c->end[p];
-	}
 }
 
 static void
@@ -329,34 +318,27 @@ run_kcase(const SiftShredKernels *k, const KCase *c, KOut *o)
 	k->state_counts(c->state, c->n, o->counts);
 	o->ifound = k->minmax_i64(c->state, c->ival, c->n, &o->imin, &o->imax);
 	o->ffound = k->minmax_f64(c->state, c->fval, c->n, &o->fmin, &o->fmax);
-	if (c->np > 0)
-		k->expand_parents(c->end, c->np, o->parent);
 	k->state_bits(c->state, c->n, o->nulls, o->ovf);
 }
 
-/* Only what the kernels promise to write is compared: the parents up to the last end */
 static bool
 kout_equal(const KCase *c, const KOut *a, const KOut *b)
 {
-	uint32		np = c->np > 0 ? c->end[c->np - 1] : 0;
-
 	return memcmp(a->counts, b->counts, sizeof(a->counts)) == 0 && a->ifound == b->ifound && a->ffound == b->ffound &&
 		(!a->ifound || (a->imin == b->imin && a->imax == b->imax)) &&
 		(!a->ffound || (memcmp(&a->fmin, &b->fmin, 8) == 0 && memcmp(&a->fmax, &b->fmax, 8) == 0)) &&
-		memcmp(a->parent, b->parent, np * sizeof(uint32)) == 0 &&
 		memcmp(a->nulls, b->nulls, (c->n + 63) / 64 * sizeof(uint64)) == 0 && memcmp(a->ovf, b->ovf, (c->n + 63) / 64 * sizeof(uint64)) == 0;
 }
 
 static uint64
 kout_hash(const KCase *c, const KOut *o, uint64 h)
 {
-	uint32		np = c->np > 0 ? c->end[c->np - 1] : 0;
 	const uint8 *p[] = {(const uint8 *) o->counts, (const uint8 *) &o->imin, (const uint8 *) &o->imax,
-	(const uint8 *) &o->fmin, (const uint8 *) &o->fmax, (const uint8 *) o->parent, (const uint8 *) o->nulls, (const uint8 *) o->ovf};
-	size_t		len[] = {sizeof(o->counts), 8 * o->ifound, 8 * o->ifound, 8 * o->ffound, 8 * o->ffound, np * sizeof(uint32),
+	(const uint8 *) &o->fmin, (const uint8 *) &o->fmax, (const uint8 *) o->nulls, (const uint8 *) o->ovf};
+	size_t		len[] = {sizeof(o->counts), 8 * o->ifound, 8 * o->ifound, 8 * o->ffound, 8 * o->ffound,
 	(c->n + 63) / 64 * sizeof(uint64), (c->n + 63) / 64 * sizeof(uint64)};
 
-	for (int k = 0; k < 8; k++)
+	for (int k = 0; k < 7; k++)
 		for (size_t j = 0; j < len[k]; j++)
 			h = (h ^ p[k][j]) * UINT64CONST(0x100000001B3);
 	return (h ^ o->ifound ^ (o->ffound << 1)) * UINT64CONST(0x100000001B3);
@@ -420,7 +402,7 @@ sift_test_shred_kern_equiv(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(bad);
 }
 
-/* Elements per second of one kernel (state_counts, state_bits, minmax_i64, minmax_f64, expand_parents) at the active level over n-element columns */
+/* Elements per second of one kernel (state_counts, state_bits, minmax_i64, minmax_f64; expand_parents is the column table's) at the active level over n-element columns */
 Datum
 sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 {
@@ -463,7 +445,7 @@ sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 		else if (strcmp(name, "minmax_f64") == 0)
 			sink += sift_shred_kern->minmax_f64(state, (const double *) val, n, (double *) &mn, (double *) &mx);
 		else if (strcmp(name, "expand_parents") == 0)
-			sift_shred_kern->expand_parents(end, np, parent), sink += parent[0];
+			sift_colk->expand_parents(end, np, parent), sink += parent[0];
 		else
 			elog(ERROR, "unknown kernel \"%s\"", name);
 	}
