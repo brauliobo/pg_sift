@@ -78,6 +78,15 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 .
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
   or rolled back).
+- Fix: the memory of a merge (`sift.merge`, the maintenance worker, VACUUM's rewrite of a segment with dead documents) no longer grows with
+  the size of the segments: it streams them. The documents of a segment are read a superblock at a time (a cache of the rows that
+  fits `maintenance_work_mem`, in place of arrays of every key and length), a term is written from the postings of its runs without being
+  collected first, and the dictionary index, and the postings of a large term (at least half of what a segment's budget holds, and the
+  grouped threshold), are staged in temporary files and copied into the segment. The segments are byte for byte the ones the merge wrote
+  before, and the format is unchanged. Merging 4 segments of 3M documents (690 MB) at 16MB of `maintenance_work_mem` took 140 MB of
+  anonymous memory and 17.4 s, and takes 16 MB and 8.3 s now (0.4M documents: 22 to 10 MB). `scripts/merge-bytes.sh` compares the
+  index files of two builds page by page, and the `mergebig` group of `scripts/perf-gate-maint.sh` measures the peak and the time.
+
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,

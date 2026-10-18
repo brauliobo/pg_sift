@@ -101,6 +101,14 @@ extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint
 						   const uint16 *dl, int n, const uint8 *pos, const uint32 *poslen);
 
 /*
+ * A term that reaches min_postings postings (and SIFT_GROUPED_MIN_DF) is staged group by group in temporary files while it
+ * arrives, and its blob is copied from them when it ends, the same bytes as from memory. The memory of a term is then the
+ * postings of its last group and 36 bytes of each group (a superblock), whatever its df; below min_postings it is the
+ * postings (10 bytes each, as without). A writer without a stream stages nothing; none by default.
+ */
+extern void sift_postw_spool(SiftPostingWriter *w, uint64 min_postings);
+
+/*
  * Finishes the term: encodes, writes the blob (unless inline) and fills every
  * SiftTermInfo field. Memory: about 10 bytes per posting of the term.
  */
@@ -193,6 +201,15 @@ extern void sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *o
 
 /* The checkpoints and the records of a term with positions, and the records' length */
 extern void sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **rec, uint32 *len);
+
+/*
+ * The records of a term with positions in rank order, read through a window of the stream instead of whole: each call returns
+ * the next record and its length, valid until the next call. The cursor must outlive the reader.
+ */
+typedef struct SiftPosReader SiftPosReader;
+
+extern SiftPosReader *sift_post_pos_reader(SiftPostingCursor *c, MemoryContext mcxt);
+extern const uint8 *sift_post_pos_next(SiftPosReader *r, uint32 *len);
 
 /*
  * The record at p: its end, the occurrences it holds and the last one; raises
