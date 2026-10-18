@@ -1,0 +1,97 @@
+-- Row-level security: what a role under a policy sees of the plan, the estimates and the scores does not depend on the rows the policy hides.
+-- Two tables hold the same visible rows (20 documents with "needle" owned by the role); the hidden rows of one repeat "needle" 3,000 times
+-- and those of the other never do. Before the scan and the match estimate learned to keep out of a relation with security quals, the
+-- statistics of the whole index made the plan, the estimated rows and the scores of the two tables differ for the role.
+CREATE EXTENSION pg_sift;
+\set VERBOSITY terse
+CREATE ROLE sift_t_rls;
+GRANT USAGE ON SCHEMA sift TO sift_t_rls;
+CREATE TABLE rls_a (id int, owner text, body text);
+CREATE TABLE rls_b (id int, owner text, body text);
+INSERT INTO rls_a SELECT i, 'sift_t_rls', 'needle visible ' || i FROM generate_series(1, 20) i;
+INSERT INTO rls_b SELECT i, 'sift_t_rls', 'needle visible ' || i FROM generate_series(1, 20) i;
+INSERT INTO rls_a SELECT i, 'hidden', 'needle needle hidden ' || i FROM generate_series(21, 3020) i;
+INSERT INTO rls_b SELECT i, 'hidden', 'zzzzzz yyyyyy hidden ' || i FROM generate_series(21, 3020) i;
+CREATE INDEX rls_a_idx ON rls_a USING sift (body);
+CREATE INDEX rls_b_idx ON rls_b USING sift (body);
+VACUUM ANALYZE rls_a, rls_b;
+GRANT SELECT ON rls_a, rls_b TO sift_t_rls;
+-- the plan and the estimates of a statement (EXPLAIN with costs) with the table named t
+CREATE FUNCTION rls_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP r := r || l || E'\n'; END LOOP;
+	RETURN r;
+END $$;
+GRANT EXECUTE ON FUNCTION rls_plan(text) TO sift_t_rls;
+-- the table owner is not under the policy: it keeps the scan
+SELECT rls_plan('SELECT count(*) FROM rls_a WHERE body @@> ''needle''') ~ 'SiftCount' AS owner_counts_with_the_index;
+ owner_counts_with_the_index 
+-----------------------------
+ t
+(1 row)
+
+ALTER TABLE rls_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rls_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON rls_a USING (owner = current_user);
+CREATE POLICY own ON rls_b USING (owner = current_user);
+SET ROLE sift_t_rls;
+SELECT count(*) FROM rls_a WHERE body @@> 'needle';
+ count 
+-------
+    20
+(1 row)
+
+SELECT count(*) FROM rls_b WHERE body @@> 'needle';
+ count 
+-------
+    20
+(1 row)
+
+-- no scan and no estimate from the index: the plans and their costs are the same whatever the hidden rows hold
+SELECT rls_plan('SELECT count(*) FROM rls_a WHERE body @@> ''needle''') ~ 'Sift' AS scan_a,
+	   rls_plan('SELECT count(*) FROM rls_b WHERE body @@> ''needle''') ~ 'Sift' AS scan_b;
+ scan_a | scan_b 
+--------+--------
+ f      | f
+(1 row)
+
+SELECT replace(rls_plan('SELECT id FROM rls_a WHERE body @@> ''needle'' ORDER BY id LIMIT 5'), 'rls_a', 'rls_x')
+	 = replace(rls_plan('SELECT id FROM rls_b WHERE body @@> ''needle'' ORDER BY id LIMIT 5'), 'rls_b', 'rls_x') AS same_plan_and_estimates;
+ same_plan_and_estimates 
+-------------------------
+ t
+(1 row)
+
+SELECT replace(rls_plan('SELECT id FROM rls_a WHERE body @@> ''needle OR visible'''), 'rls_a', 'rls_x')
+	 = replace(rls_plan('SELECT id FROM rls_b WHERE body @@> ''needle OR visible'''), 'rls_b', 'rls_x') AS same_plan_and_estimates_or;
+ same_plan_and_estimates_or 
+----------------------------
+ t
+(1 row)
+
+-- a score would be computed from the hidden rows too
+SELECT id FROM rls_a WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() is not available on "rls_a" while row-level security or a security barrier view applies
+SELECT id FROM rls_b WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+ERROR:  sift.score() is not available on "rls_b" while row-level security or a security barrier view applies
+SELECT sift.score(ctid) FROM rls_a WHERE body @@> 'needle' LIMIT 1;
+ERROR:  sift.score() is not available on "rls_a" while row-level security or a security barrier view applies
+RESET ROLE;
+-- a security barrier view is the same
+CREATE VIEW rls_v WITH (security_barrier) AS SELECT * FROM rls_a WHERE owner = 'sift_t_rls';
+GRANT SELECT ON rls_v TO sift_t_rls;
+SET ROLE sift_t_rls;
+SELECT rls_plan('SELECT count(*) FROM rls_v WHERE body @@> ''needle''') ~ 'Sift' AS scan_view;
+ scan_view 
+-----------
+ f
+(1 row)
+
+RESET ROLE;
+DROP VIEW rls_v;
+DROP FUNCTION rls_plan(text);
+DROP TABLE rls_a, rls_b;
+DROP OWNED BY sift_t_rls;
+DROP ROLE sift_t_rls;
+DROP EXTENSION pg_sift;

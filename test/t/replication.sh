@@ -69,7 +69,8 @@ sub_catchup() {
 }
 
 # ---- physical: primary, hot standby
-node_init primary 0 "wal_level = logical
+node_init primary 0 "$WAL_CONF
+wal_level = logical
 max_wal_senders = 10
 max_replication_slots = 10
 wal_keep_size = 256MB"

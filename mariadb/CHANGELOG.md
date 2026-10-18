@@ -4,6 +4,14 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 2.0.1
+
+- No change to the index format (2) or the SQL files: an index of 2.0.0 opens as it is, nothing to rebuild with `sift_rebuild`. The library is
+  rebuilt on the shared core of the PostgreSQL extension 2.0.1, which changes how the shared engine counts documents of segments with
+  vacuumed (deleted) documents: the same results. No MariaDB speed-up is claimed: the measurements (user
+  instructions per `count(*)` over vacuumed documents, 0.21x for a term) are the PostgreSQL extension's. The row-level security fix of the
+  PostgreSQL extension does not apply (the planner hook is PostgreSQL's).
+
 ## 2.0.0
 
 - No change to the index format (2) or the SQL files: an index of 1.4.0 opens as it is, nothing to rebuild with `sift_rebuild`. The library is rebuilt
