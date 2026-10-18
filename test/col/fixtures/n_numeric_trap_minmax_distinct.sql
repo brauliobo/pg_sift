@@ -1,6 +1,6 @@
--- trap: min and max of DISTINCT values, and an ordered-set aggregate over numerics, keep the normal plan (same rows)
+-- trap: min and max of DISTINCT numerics: PostgreSQL's transition functions over the distinct values (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

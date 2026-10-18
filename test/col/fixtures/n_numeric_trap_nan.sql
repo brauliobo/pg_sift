@@ -1,6 +1,6 @@
--- trap: a NaN inside the arithmetic (the normal plan, same rows)
+-- trap: a NaN inside the arithmetic: PostgreSQL computes it (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

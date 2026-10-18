@@ -1,6 +1,6 @@
--- trap: percentile_disc over a numeric column returns a numeric the final function picks from the sorted values (the normal plan, same rows)
+-- trap: percentile_disc over a numeric column: the final function picks from the sorted values (generic ordered-set aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

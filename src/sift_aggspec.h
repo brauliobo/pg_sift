@@ -153,7 +153,9 @@ typedef enum SiftAggKind
 	SAA_O_COUNT_ROWS,			/* count(DISTINCT id): the rows that have an inner group */
 	SAA_O_AVG_F64,				/* avg of a float8 inner aggregate */
 	SAA_O_SUM_F64,				/* sum of a float8 inner aggregate */
-	SAA_O_SUM_I64				/* sum of an int8 inner aggregate: numeric */
+	SAA_O_SUM_I64,				/* sum of an int8 inner aggregate: numeric */
+	/* kinds are added at the end */
+	SAA_GEN						/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
 } SiftAggKind;
 
 /* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
@@ -184,6 +186,35 @@ typedef struct SiftAggVx
 	double		c;
 } SiftAggVx;
 
+/*
+ * SAA_GEN: an aggregate whose transition and final functions are not volatile, run by PostgreSQL's own functions through fmgr on the
+ * values of the scan (as ExecAgg runs them), so that the result is PostgreSQL's by construction. An argument is a leaf of the
+ * source (decoded to a Datum of its type), an expression of up to SIFT_AGG_MAX_GLEAVES leaves evaluated by PostgreSQL's evaluator
+ * with the leaves' values as Params, or a constant. The aggregate is serial: its state is a Datum per group, with no merge.
+ */
+#define SIFT_AGG_MAX_GARGS		4		/* aggregated arguments of a generic aggregate */
+#define SIFT_AGG_MAX_GLEAVES	4		/* leaves one argument expression reads */
+
+typedef struct SiftAggGenArg
+{
+	Oid			typid;
+	int			nleaves;		/* 0: a constant; 1 with expr NULL: the leaf itself */
+	int			leaf[SIFT_AGG_MAX_GLEAVES];
+	Node	   *expr;			/* a constant, or an expression of Params (PARAM_EXEC) 0..nleaves-1, one per leaf */
+} SiftAggGenArg;
+
+typedef struct SiftAggGen
+{
+	Node	   *aggref;			/* the planner's Aggref (what AggGetAggref gives the aggregate's functions) */
+	int			nargs;
+	SiftAggGenArg arg[SIFT_AGG_MAX_GARGS];
+	Node	   *direct;			/* ordered-set aggregates: the List of direct arguments (constant expressions) */
+	bool		distinct;		/* DISTINCT: the distinct values of a group, in btree order, go through the transition function */
+	int			darg;			/* DISTINCT: the argument that varies (the others are constants) */
+	bool		ordered;		/* WITHIN GROUP: the values of a group go through a tuplesort, then through the transition function */
+	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
+} SiftAggGen;
+
 typedef struct SiftAggAgg
 {
 	SiftAggKind kind;
@@ -207,6 +238,7 @@ typedef struct SiftAggAgg
 	double		frac;			/* SAA_PCT_*: the fraction (a constant in [0, 1]) */
 	bool		desc_order;		/* SAA_PCT_*: ORDER BY ... DESC */
 	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
+	SiftAggGen *gen;			/* SAA_GEN */
 } SiftAggAgg;
 
 /*
