@@ -1,6 +1,8 @@
 # SQLite loadable extension around the portable pg_sift sources.
 #   nice make -j4                builds build/sift.so (load with .load build/sift); SIFT_VERSION=x.y.z overrides the version in VERSION
 #   make test                    ./test.sh
+#   make col-smoke              compiles src/portable-col.list (the column engine) on this host, links it with the portable core and runs
+#                               tests/col_smoke.c: unit encode/parse round trip. The column engine is not in sift.so yet (docs/COL-PORTS.md)
 #   make isa-check               no POPCNT or vector instruction outside the AVX2/AVX-512 objects (the baseline runs on any x86-64)
 #   make SIMD=none B=build-scalar   no vector code at all (the vector levels dispatch to the scalar tables): the compile-time scalar build
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
@@ -95,6 +97,21 @@ isa-check: all
 $(B)/stress: tests/stress.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -o $@ tests/stress.c $(OBJS) $(LDLIBS) -lsqlite3
 
+# the column engine of src/portable-col.list, unmodified, against this host; SIMD=none leaves out its vector files and aliases their tables
+COLSRC := $(basename $(filter %.c,$(shell grep -v '^[#]' $(SRC)/portable-col.list)))
+COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512,$(s)),$(s)))),$(COLSRC))
+COLOBJS := $(addprefix $(B)/,$(addsuffix .o,$(COLSRC)))
+COLALIASES := $(if $(filter none,$(SIMD)),$(foreach l,avx2 avx512,-Dsift_col_kernels_$(l)=sift_col_kernels_scalar -Dsift_cc_kernels_$(l)=sift_cc_kernels_scalar \
+	-Dsift_shred_kernels_$(l)=sift_shred_kernels_scalar -Dsift_aggkern_$(l)=sift_aggkern_scalar))
+$(COLOBJS): $(B)/%.o: $(SRC)/%.c | $(B)
+	$(CC) $(CFLAGS) $(COLALIASES) -c -o $@ $<
+
+$(B)/col-smoke: tests/col_smoke.c $(COLOBJS) $(OBJS) | $(B)
+	$(CC) $(CFLAGS) -o $@ tests/col_smoke.c $(COLOBJS) $(OBJS) $(LDLIBS)
+
+col-smoke: $(B)/col-smoke
+	$(B)/col-smoke
+
 asan:
 	$(MAKE) B=build-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -fno-sanitize=nonnull-attribute" OPT=-O1 build-asan/sift.so build-asan/stress
 
@@ -121,4 +138,4 @@ clean:
 
 -include $(wildcard $(B)/*.d)
 
-.PHONY: FORCE all check test isa-check clean asan tsan tsan-run cross-aarch64 cross-objs
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs
