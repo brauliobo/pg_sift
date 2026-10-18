@@ -129,11 +129,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 
 `sift_table` has no table options: PostgreSQL does not let a table access method add `WITH (...)` options, so its settings are the three GUCs above (`SET` per session, or per role or database with `ALTER ROLE/DATABASE ... SET`). It has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks.
 
-pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike. The one
-exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
-`shared_preload_libraries` on the publisher and on every standby that replays its WAL (a custom WAL resource manager registers only at
-preload time). Without it, a DML on a published `sift_table` table fails with `0A000` and a hint instead of leaving a gap in the stream;
-publish a heap staging table instead if preloading is not possible. Unpublished tables, physical standbys, PITR and `pg_dump` are unaffected.
+pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike; only publishing a `sift_table` under `wal_level = logical` does ([Replication](docs/USAGE.md#replication)). The limits of `sift_table` are listed in [docs/USAGE.md](docs/USAGE.md#limits).
 
 Merging is automatic: sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
 `merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges

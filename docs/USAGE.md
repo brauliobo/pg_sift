@@ -251,7 +251,7 @@ Three pieces share the column engine; none needs `shared_preload_libraries`, and
   `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps
   its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus.
 - **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump`
-  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write segment fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_delta_limit`, `sift.table_inline_seal`, `sift.table_compression`, README, Configuration). Every type is kept exactly; at most 127 columns; backward scans are not supported. A `sift_table` replicates physically like any table; to publish one under `wal_level = logical`, see [Replication](#replication).
+  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write segment fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_delta_limit`, `sift.table_inline_seal`, `sift.table_compression`, README, Configuration). Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
 
 The chunk codec compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
@@ -288,6 +288,10 @@ its own docker container.
 ## Limits
 
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
+  - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
+  - `0A000` for backward scans (a `SCROLL` cursor fetching backward; use `FETCH ABSOLUTE` over a `NO SCROLL` cursor), `TABLESAMPLE`, the system columns `xmin`, `xmax`, `cmin` and `cmax`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a string over 255 bytes or a float `-0` or non-canonical NaN (`SET sift.enable_agg = off` for that query);
+  - `numeric` and `char(n)` columns are not read by `SiftAgg` (no pushdown of a query that needs their values); no HOT, and shared row locks degrade to exclusive;
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
