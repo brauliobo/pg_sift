@@ -13,6 +13,7 @@
 #include "funcapi.h"
 
 #include "sift_col_enc.h"
+#include "sift_popcount.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_enc_roundtrip);
 
