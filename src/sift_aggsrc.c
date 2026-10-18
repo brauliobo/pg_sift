@@ -95,6 +95,22 @@ sift_colsrc_nsb(SiftSrcSource *src)
 	return src->prov->nsb(src->impl);
 }
 
+bool
+sift_colsrc_can_select(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->select != NULL;
+}
+
+void
+sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
+{
+	if (src->prov->select == NULL)
+		elog(ERROR, "sift: this column source cannot be restricted to a match set");
+	src->prov->select(src->impl, keep);
+}
+
 void
 sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {

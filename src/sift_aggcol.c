@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 
 #include "sift_aggkern.h"
+#include "sift_aggsel.h"
 #include "sift_col.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
@@ -37,6 +38,7 @@ typedef struct ColSource
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
+	SiftAggSel	sel;			/* the match set the units are restricted to */
 } ColSource;
 
 static bool
@@ -189,6 +191,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
+	sift_aggsel_init(&src->sel, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
 }
@@ -232,13 +235,24 @@ static bool
 col_next(void *impl, SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
+	uint32		nrow;
 
-	if (!sift_col_next(src->cs, &src->unit))
-		return false;
+	do
+	{
+		if (!sift_col_next(src->cs, &src->unit))
+			return false;
+		nrow = src->unit.nrows;
+	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
-	unit->nrow = src->unit.nrows;
+	unit->nrow = nrow;
 	unit->priv = src;
 	return true;
+}
+
+static void
+col_select(void *impl, const SiftFilter *keep)
+{
+	((ColSource *) impl)->sel.keep = keep;
 }
 
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
@@ -274,7 +288,7 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	ColLeafBuf *b;
 	size_t		n;
 
-	sift_col_read(&src->unit, leaf, NULL, &v);
+	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
 	n = v.n;
 	if (v.ovf)
 		ereport(ERROR,
@@ -318,23 +332,16 @@ static void
 col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
-	SiftColSel	sel;
 
-	sift_col_sel_all(&src->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_live(&src->sel, &src->unit, bits);
 }
 
 static void
 col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
-	SiftColSel	sel;
 
-	sift_col_sel_alloc(src->cs, unit->nrow, &sel);
-	memcpy(sel.bits, bits, sel.nwords * sizeof(uint64));
-	sel.count = sift_col_sel_count(&sel);
-	sift_col_vet(&src->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_vet(&src->sel, src->cs, &src->unit, bits);
 }
 
 static void
@@ -343,7 +350,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	const SiftColCounters *cc = sift_col_counters(((const ColSource *) impl)->cs);
 
 	c->units = cc->units;
-	c->units_pruned = cc->units_pruned;
+	c->units_pruned = cc->units_pruned + ((const ColSource *) impl)->sel.units_skipped;
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
@@ -365,6 +372,7 @@ static const SiftSrcProvider col_provider = {
 	.live = col_live,
 	.vet = col_vet,
 	.counters = col_counters,
+	.select = col_select,
 };
 
 void
