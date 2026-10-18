@@ -166,11 +166,14 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	SiftSegEntry neu;
 	SiftMaintSwitch sw = {.old = gens,.nold = n};
 	TimestampTz start = GetCurrentTimestamp();
+	uint64		expect = 0;
 
 	for (int i = 0; i < n; i++)
 	{
 		int			k;
 		SiftExtent *ext = sift_store_immutable_extents(index, &in[i], &k);
+
+		expect += in[i].bytes;
 
 		seg[i] = sift_cseg_open(index, &in[i], cx);
 		if (seg[i]->schema->hash != schema->hash)
@@ -206,6 +209,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		if (w == NULL)
 		{
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+			sift_wt_expect(wt, expect);
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, cx);
 		}
 		sift_colw_add(w, out);

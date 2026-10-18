@@ -132,6 +132,7 @@ typedef struct SiftDirChange
 	const SiftExtent *release;
 	int			nrelease;
 	Buffer		extra;			/* InvalidBuffer if none */
+	bool		immediate;		/* no snapshot can hold the released extents (a relation still being written by its creator): reusable at once */
 } SiftDirChange;
 
 extern void sift_dir_update(Relation index, const SiftDirChange *chg);

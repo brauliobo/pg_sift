@@ -796,7 +796,7 @@ xid_safexid(void)
 static void
 store_update(Relation index, const SiftDirChange *chg, bool publish)
 {
-	bool		pending = publish && chg->nrelease > 0;
+	bool		pending = publish && chg->nrelease > 0 && !chg->immediate;
 	FullTransactionId safexid = pending && xid_safexid() ?
 		GetTopFullTransactionId() : InvalidFullTransactionId;
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
