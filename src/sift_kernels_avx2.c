@@ -302,18 +302,19 @@ tf_decode_avx2(uint8 *tf, const uint8 *l1, const uint8 *nib, const uint8 *esc,
 }
 
 SIFT_TARGET_AVX2 int
-sift_kern_expand_pdep(uint64 *out, const uint64 *base, const uint64 *rankbits, int nwords)
+sift_kern_expand_pdep(uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits, uint32 pos, int nwords)
 {
-	uint32		pos = 0;
+	int			left = 0;
 
 	for (int i = 0; i < nwords; i++)
 	{
 		int			n = _mm_popcnt_u64(base[i]);
 
-		out[i] = _pdep_u64(sift_kern_rank_bits(rankbits, pos, n), base[i]);
+		out[i] = mask[i] & _pdep_u64(sift_kern_rank_bits(rankbits, pos, n), base[i]);
+		left += _mm_popcnt_u64(out[i]);
 		pos += n;
 	}
-	return pos;
+	return left;
 }
 
 SIFT_TARGET_AVX2 void

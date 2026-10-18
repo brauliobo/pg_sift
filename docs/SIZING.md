@@ -65,10 +65,13 @@ page it reads. With 200,000 documents and a quarter of the rows deleted and vacu
 | ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
 | ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
 | unranked scan with a filter | 0.57 | 2.11 | 0.65 |
-| `count(*)` of a term | 0.019 | 1.82 | 0.17 |
+| `count(*)` of a term | 0.019 | 1.82 | 0.05 |
 
-A `count(*)` over dirty superblocks decodes every page it counts, where a clean superblock adds chunk counts, so it stays about 9 times
-slower than clean until the segment is rewritten. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
+A `count(*)` over dirty superblocks spreads the liveness bits over the pages' offsets, where a clean superblock adds chunk counts without
+decoding a page. Measured in user instructions per query (the same data, 10 to 45% deleted and vacuumed; the cost does not depend on
+the dead fraction), the count of a term costs 7.7 times the clean index's until the segment is rewritten (19.7 times with 2.0.0), the
+count of two terms 1.4 to 2.3 times (2.7 to 4.3) and of three with OR 1.4 to 2.2 times (4.1 to 6.2); superblocks without vacuumed
+documents inside a dirty segment cost nothing extra. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
 liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
 
 ## Updates

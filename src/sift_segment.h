@@ -113,6 +113,15 @@ extern void sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
 extern void sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page,
 							   uint64 *live);
 
+/* Does the SB hold vacuumed docs, known without reading its docs (false when the segment has none there) */
+extern bool sift_seg_sb_dirty(SiftSegment *seg, uint32 sb);
+
+/* The live postings of the pages of group g (of the SB of dc, dirty) that pages, a subset of g's, selects */
+extern uint64 sift_seg_count_live(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g, const uint64 *pages);
+
+/* Keeps in mask, a subset of the present offsets of a page of a dirty SB (dc->dirty), the live ones; returns how many are left */
+extern int	sift_seg_page_mask_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *mask);
+
 extern bool sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info);
 
 /* Does the dictionary term still have a posting of a live doc (always true in a clean segment) */
