@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 
 #include "sift_aggkern.h"
+#include "sift_aggsel.h"
 #include "sift_col.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
@@ -38,6 +39,7 @@ typedef struct ColSource
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
+	SiftAggSel	sel;			/* the match set the units are restricted to */
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
@@ -229,6 +231,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
+	sift_aggsel_init(&src->sel, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
 }
@@ -319,12 +322,17 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 			src->spred[src->nspred++] = str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)));
 }
 
+static void
+filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
+{
+	sift_col_filter(cu, pred, 1, sel);
+}
+
 /* the rows whose value passes, on the encoded form of the unit: the strings are not decoded unless the prefixes cannot decide */
 static bool
 col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
 	ColSource  *src = impl;
-	SiftColSel	sel;
 	SiftColPred pred;
 
 	if (src->lay->leaf[t->leaf].lossy)
@@ -335,11 +343,7 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
 	}
 	pred = str_pred(t, src->fvals);
-	sift_col_sel_alloc(src->cs, unit->nrow, &sel);
-	memcpy(sel.bits, rows, sel.nwords * sizeof(uint64));
-	sel.count = sift_col_sel_count(&sel);
-	sift_col_filter(&src->unit, &pred, 1, &sel);
-	memcpy(rows, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
 	return true;
 }
 
@@ -347,22 +351,86 @@ static bool
 col_next(void *impl, SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
+	uint32		nrow;
 
-	if (!sift_col_next(src->cs, &src->unit))
-		return false;
+	do
+	{
+		if (!sift_col_next(src->cs, &src->unit))
+			return false;
+		nrow = src->unit.nrows;
+	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
-	unit->nrow = src->unit.nrows;
+	unit->nrow = nrow;
 	unit->priv = src;
 	return true;
+}
+
+static void
+col_select(void *impl, const SiftFilter *keep)
+{
+	((ColSource *) impl)->sel.keep = keep;
 }
 
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
+/* of the unit as stored: a compacted unit of a match set yields fewer */
 static int64
 col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
+}
+
+/* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
+static void
+col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	SiftColVec	v;
+	size_t		n;
+
+	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
+	n = v.n;
+	vec->ovf = NULL;
+	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+	if (v.ovf && !(buf->ovf && l->typid == NUMERICOID && l->kind == SCL_SCALAR))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
+				 errhint("Set sift.enable_agg to off for this query.")));
+	switch (l->vtype)
+	{
+		case SCV_I32:
+			for (size_t i = 0; i < n; i++)
+				((int32 *) buf->data)[i] = (int32) v.i[i];
+			break;
+		case SCV_I64:
+			memcpy(buf->data, v.i, n * sizeof(int64));
+			break;
+		case SCV_F64:
+			memcpy(buf->data, v.f, n * sizeof(double));
+			break;
+		case SCV_CODE:
+			memcpy(buf->data, v.codes, n * sizeof(uint32));
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes};
+			break;
+	}
+	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
+	vec->n = n;
+	vec->isnull = NULL;
+	if (v.ovf)
+	{
+		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
+	}
+	if (v.nulls)
+	{
+		for (size_t i = 0; i < n; i++)
+			buf->isnull[i] = sift_colsrc_bit(v.nulls, i);
+		vec->isnull = buf->isnull;
+	}
 }
 
 /* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
@@ -373,6 +441,11 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 	SiftColLaneInfo info;
 
+	if (src->sel.keep && src->sel.compact)
+	{
+		col_read_selected(src, leaf, buf, vec);
+		return;
+	}
 	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
 	vec->ovf = NULL;
 	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
@@ -438,23 +511,16 @@ static void
 col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
-	SiftColSel	sel;
 
-	sift_col_sel_all(&src->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_live(&src->sel, &src->unit, bits);
 }
 
 static void
 col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
-	SiftColSel	sel;
 
-	sift_col_sel_alloc(src->cs, unit->nrow, &sel);
-	memcpy(sel.bits, bits, sel.nwords * sizeof(uint64));
-	sel.count = sift_col_sel_count(&sel);
-	sift_col_vet(&src->unit, &sel);
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
+	sift_aggsel_vet(&src->sel, src->cs, &src->unit, bits);
 }
 
 static void
@@ -463,7 +529,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	const SiftColCounters *cc = sift_col_counters(((const ColSource *) impl)->cs);
 
 	c->units = cc->units;
-	c->units_pruned = cc->units_pruned;
+	c->units_pruned = cc->units_pruned + ((const ColSource *) impl)->sel.units_skipped;
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
@@ -487,6 +553,7 @@ static const SiftSrcProvider col_provider = {
 	.counters = col_counters,
 	.leaf_n = col_leaf_n,
 	.read_into = col_read_into,
+	.select = col_select,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 };

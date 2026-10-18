@@ -28,6 +28,7 @@
 #include "sift_host.h"
 
 #include "sift.h"
+#include "sift_filter.h"
 
 #define SIFT_COLSRC_MAX_LEAVES		128
 
@@ -216,11 +217,18 @@ typedef struct SiftSrcProvider
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
 	/*
 	 * Optional (NULL: sift_colsrc_read_into reads with `read` and copies). leaf_n: the values a read of the leaf yields (rows, or for a child
-	 * the elements of the whole unit), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
+	 * the elements of the whole unit; an upper bound for a unit restricted to a match set), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
 	 * is a wrapper of in a provider that has it.
 	 */
 	int64		(*leaf_n) (void *impl, const SiftSrcUnit *unit, int leaf);
 	void		(*read_into) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
+	/*
+	 * Optional (NULL: the source cannot be restricted to a match set, sift_colsrc_can_select says so to the planner). select, called before
+	 * `begin`, restricts the units `begin` starts to the rows whose key (blk << 16 | off) the filter has (NULL: all rows again): a unit
+	 * without such a row is not returned (it counts in units_pruned), and in the others `nrow`, `read`, `live` and `vet` are about the kept
+	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/sift_aggsel.h).
+	 */
+	void		(*select) (void *impl, const SiftFilter *keep);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -272,6 +280,12 @@ sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
 }
+
+/* Can the source of this access method be restricted to a match set (SiftSrcProvider.select)? */
+extern bool sift_colsrc_can_select(Oid relam, bool index);
+
+/* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
+extern void sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep);
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */
 extern void sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);

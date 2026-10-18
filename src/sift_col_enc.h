@@ -289,6 +289,9 @@ extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);
 extern void sift_cunit_page_offmask(const SiftCUnitView *v, uint32 p, uint64 *offmask);
+/* The same for a caller that visits the pages in order: the bitmaps of the sparse pages follow each other, soff is where page p's starts (the sum of sift_cunit_page_sparse_len of the pages before) */
+extern uint32 sift_cunit_page_sparse_len(const SiftCUnitView *v, uint32 p);
+extern void sift_cunit_page_offmask_at(const SiftCUnitView *v, uint32 p, uint32 soff, uint64 *offmask);
 /* Page index of a row (binary search of rowstart) */
 extern uint32 sift_cunit_row_page(const SiftCUnitView *v, uint32 row);
 
