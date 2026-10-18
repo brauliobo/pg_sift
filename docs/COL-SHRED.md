@@ -64,7 +64,7 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 ### Wildcard dictionary
 
 `*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`sift_col_enc.c`) created with the
-shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes, or beyond `max_keys`
+shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes (`SIFT_COL_DICT_MAX_ENTRY`), or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 
 ## Types and the overflow rule
@@ -81,7 +81,7 @@ incomplete or unrepresentable.
 | float4 / float8 | any number whose conversion does not overflow | `VALUE`: the correctly rounded value of the decimal text, i.e. `strtof` / `strtod`, which is what `float4in` / `float8in` do, hence equal to `(doc #> path)::float4`, `(doc #>> path)::float4`, and to `jsonb_to_recordset` |
 |  | rounds to infinity (`1e400`) or to zero from a non-zero value (`1e-400`) | `OVERFLOW` `RANGE` (PostgreSQL raises "out of range"); denormals are values |
 | bool | `true` / `false` | `VALUE` |
-| text | string, at most `N` bytes (default 255 bytes, what the text dictionary of sift_col holds) | `VALUE` |
+| text | string, at most `N` bytes | `VALUE` |
 |  | longer | `OVERFLOW` `LENGTH` |
 | any | JSON null | `NULL` |
 | any scalar type | a different JSON scalar (string in a number column, number in a text column, ...) | `OVERFLOW` `TYPE` (no coercion: `->>` would give `'12'` for the number 12) |
