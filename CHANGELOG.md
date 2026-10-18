@@ -13,6 +13,18 @@ For each chunk it picks, from exact sizes, the
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
 
+- Added: aggregate pushdown on column indexes (`sift.enable_agg`, default on). A `GROUP BY` query over a table with a `sift_col` index
+  (or over a lateral unnest of an indexed jsonb array or object) with `count`, `count(DISTINCT)`, `sum`, `avg`, `min` and `max`, filters,
+  `IN` lists and group keys that are expressions of one column runs as `Custom Scan (SiftAgg)` on the column data when the planner can
+  prove the result is the plain plan's; everything else keeps its plan (`docs/COL-PLAN.md`). `scripts/coldiff.sh` runs a corpus both
+  ways and compares the results, including float tolerances, errors and the DML states of the table.
+
+- Added: the vectorized operators of the aggregate pushdown: comparisons and range tests on
+  int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
+  min/max, per-group accumulation and adjacent-distinct counting, as one scalar, AVX2 and AVX-512 table chosen at run time by `sift.simd`.
+  Every level returns bit-identical results (doubles follow PostgreSQL's float8 order, the float sum has one fixed accumulation order).
+  The `aggkern_simd` regression test and `tools/aggkern` (`make test`, `make bench`) check every operator at every level against scalar.
+
 - Fix: a ranked scan with `LIMIT` plus `OFFSET` of 67,108,864 or more failed with `invalid memory alloc request size` (so did
   `LIMIT 2147483647` meaning "all"), and so did a ranked scan drained without a limit once it had more than 16.7 million matches. The
   top-k heap now grows with the hits found, in huge allocations, and counts in 64 bits: a huge limit costs what the matches take.

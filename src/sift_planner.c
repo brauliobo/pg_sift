@@ -30,6 +30,7 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
+#include "sift_agg.h"
 #include "sift_am.h"
 #include "sift_eval.h"
 #include "sift_planner.h"
@@ -975,6 +976,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
+	sift_agg_upper_paths(root, stage, input_rel, output_rel, extra);
 	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
 	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
 		carry_join_scores(root, input_rel);
