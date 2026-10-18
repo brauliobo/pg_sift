@@ -1,6 +1,6 @@
 /*
- * fz_shim.h - the backend stand-in of the fuzz targets (fz_shim.c): the allocation, error and CPU symbols the decoders need, so
- * that they link and run without a server, under AddressSanitizer and UBSan.
+ * fz_shim.h - the backend stand-in of the fuzz targets (tools/pgshim.c and fz_shim.c): the allocation, error and CPU symbols the
+ * decoders need, so that they link and run without a server, under AddressSanitizer and UBSan.
  */
 #ifndef FZ_SHIM_H
 #define FZ_SHIM_H
@@ -10,9 +10,7 @@
 #include "sift.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
-
-extern int	fz_sqlstate;
-extern char fz_errmsg[256];
+#include "../../tools/pgshim.h"
 
 /* Once per process: CPU detection, dispatch tables of the kernels */
 extern void fz_init(void);
@@ -22,10 +20,6 @@ extern void fz_init(void);
  * class (an elog(ERROR) is XX000) is a finding and aborts, as does an ereport outside fz_try.
  */
 extern bool fz_try(void (*fn) (void *), void *arg);
-/* Everything palloc'd so far (the set-up of a target) stays; fz_reset frees what comes after */
-extern void fz_keep(void);
-/* Frees everything palloc'd since the last reset (the memory context of the statement ending) */
-extern void fz_reset(void);
 /* SIMD levels this CPU runs (scalar first); make the tables of one the active ones */
 extern int	fz_levels(SiftSimdLevel lv[3]);
 extern void fz_use_level(SiftSimdLevel level);

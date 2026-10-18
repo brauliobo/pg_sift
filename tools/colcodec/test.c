@@ -259,9 +259,9 @@ test_chunk(SiftRng *r, Chunk *c, int ngen)
 			CHECK(len0 <= size_none, "auto (%zu) larger than none (%zu), gen %d n %u", (size_t) len0, (size_t) size_none, ngen, c->n);
 
 		oa = (OpenArg) {blob, s.len, true, NULL};
-		if (!cc_try(open_fn, &oa))
+		if (!pgshim_try(open_fn, &oa))
 		{
-			CHECK(0, "%s: open failed on a fresh blob: %s (gen %d n %u)", policies[p], cc_errmsg, ngen, c->n);
+			CHECK(0, "%s: open failed on a fresh blob: %s (gen %d n %u)", policies[p], pgshim_errmsg, ngen, c->n);
 			free(blob);
 			free(ref);
 			continue;
@@ -708,16 +708,16 @@ test_fuzz(SiftRng *r, int scale)
 			fa.blob = xalloc(fa.len);
 			memcpy(fa.blob, tmp, fa.len);
 			free(tmp);
-			if (cc_try(fuzz_fn, &fa))
+			if (pgshim_try(fuzz_fn, &fa))
 				oks++;
 			else
 			{
 				errs++;
-				CHECK(cc_sqlstate == ERRCODE_DATA_CORRUPTED || cc_sqlstate == ERRCODE_FEATURE_NOT_SUPPORTED, "fuzz: unexpected error: %s",
-					  cc_errmsg);
+				CHECK(pgshim_sqlstate == ERRCODE_DATA_CORRUPTED || pgshim_sqlstate == ERRCODE_FEATURE_NOT_SUPPORTED ||
+					  pgshim_sqlstate == ERRCODE_PROGRAM_LIMIT_EXCEEDED, "fuzz: unexpected error: %s", pgshim_errmsg);	/* a length field past the 1 GB palloc limit */
 			}
 			free(fa.blob);
-			cc_arena_reset();
+			pgshim_reset();
 		}
 		free(c.v), free(off), free(bytes), free(w), free(orig);
 	}
