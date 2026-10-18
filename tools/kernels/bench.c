@@ -194,7 +194,7 @@ bench_misc(void)
 
 		row("ub_accum", "n=16 (one SB)", kt_level_name[l], BENCH(k->ub_accum(ub, bounds, 1e-9f, 16)), 16, 9);
 		row("ub_accum", "n=4096", kt_level_name[l], BENCH(k->ub_accum(ub, bounds, 1e-9f, 4096)), 4096, 9);
-		row("expand", "8 words, 50%", kt_level_name[l], BENCH(k->expand(out, base, rb, 8)), 512, 0.25);
+		row("expand", "8 words, 50%", kt_level_name[l], BENCH(k->expand(out, base, base, rb, 0, 8)), 512, 0.25);
 		row("vm_allvisible", "one SB", kt_level_name[l], BENCH(k->vm_allvisible(pm, vm)), 256, 0.25);
 	}
 	free(bounds), free(ub);

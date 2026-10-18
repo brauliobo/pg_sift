@@ -154,11 +154,11 @@ A major version because several behaviors change (listed first); the on-disk for
   of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
 - Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
   thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
-- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 2.4 to 8
+- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 3 to 36
   times faster. The liveness of a page was read one document at a time, a buffer pin, lock and bit test each, which was most of the
   query; the bits of a superblock are now read once and spread over the page's offsets. 200,000 documents with a quarter deleted and
   vacuumed, ms per query (the same rows rebuilt: clean): ranked AND 1.36 to 0.26 (clean 0.26), ranked OR 2.39 to 0.70 (0.64),
-  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.17 (0.019). Clean indexes are unchanged (interleaved A/B on the same
+  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.05 (0.019). Clean indexes are unchanged (interleaved A/B on the same
   data, 0.93x to 1.23x with 7 to 10% error; slim bench: 0 regressions). N, df and avgdl still count vacuumed documents until a merge
   (documented in DESIGN.md and docs/SIZING.md: the live df costs a posting walk per query and nothing stores it).
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
@@ -172,6 +172,16 @@ A major version because several behaviors change (listed first); the on-disk for
   anonymous memory and 17.4 s, and takes 16 MB and 8.3 s now (0.4M documents: 22 to 10 MB). `scripts/merge-bytes.sh` compares the
   index files of two builds page by page, and the `mergebig` group of `scripts/perf-gate-maint.sh` measures the peak and the time.
 
+- Performance: `count(*)` over vacuumed documents costs a fifth to a half of what it did (user instructions per query, interleaved A/B,
+  200,000 documents with 10, 25 and 45% deleted and vacuumed, 95% intervals under 1%): a term 0.21x, two terms 0.51x, three terms with OR
+  0.31x, the parallel count 0.77x, ranked AND 0.91x, ranked OR 0.86x, the filtered scan 0.94x. Against the same live rows rebuilt, the count
+  of a term went from 19.7 to 7.7 times the clean index's, at every dead fraction. A dirty superblock now cuts a group out of its liveness
+  bits in one pass instead of one expansion per page; a clean superblock of a segment that has dirty ones is counted without decoding its
+  documents; and the page index of a superblock is built only by what reads a page's rows. Clean indexes are no slower: a group counted in
+  bulk no longer walks its pages, so the clean count of a term takes 0.53x and the other clean counts 0.87x to 0.97x. No change of the
+  format; counts, rows and scores are the same. The `expand` kernel takes the mask and the start bit and returns the popcount (the digest
+  pinned by `kernels_simd` changes; every level stays bit-identical). `bench/dirty-query.sh` also times the count of two terms, of three
+  with OR and the parallel count.
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
