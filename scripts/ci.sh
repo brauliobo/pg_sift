@@ -27,6 +27,9 @@
 # the bounds-checked reader (src/sift_span.h) plain and under ASan+UBSan; static (full only, scripts/static.sh) runs clang-tidy, the gcc and
 # clang analyzers and cppcheck where installed, and reports the findings that are not in scripts/static.baseline without failing the run.
 #
+# assert (scripts/assert.sh) and valgrind (scripts/valgrind.sh) are not part of quick or full: they run a PostgreSQL built from source with assertions and
+# memory-context checking (and USE_VALGRIND) on the regression subset, plus two TAP tests for assert, when SIFT_CI_JOBS names them (SIFT_CI_JOBS=assert).
+#
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
 # server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
 # recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
@@ -180,6 +183,10 @@ else
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 fi
+# opt-in lanes on a PostgreSQL built from source (scripts/pg-assert.sh, cached outside the repo; docs/SAFETY.md): queued only when
+# SIFT_CI_JOBS names them, e.g. `SIFT_CI_JOBS=assert scripts/ci.sh quick`
+[[ ${SIFT_CI_JOBS:-} != *assert* ]] || job assert assert 0 "$S/assert.sh"
+[[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
 (( LANES <= ${#J_ID[@]} )) || LANES=${#J_ID[@]}
 
 # lane N: takes the jobs nobody has claimed, in queue order; its cluster starts with the first job that needs one
