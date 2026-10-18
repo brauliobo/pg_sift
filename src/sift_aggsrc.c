@@ -114,6 +114,33 @@ sift_colsrc_can_select(Oid relam, bool index)
 	return prov != NULL && prov->select != NULL;
 }
 
+bool
+sift_colsrc_can_tids(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->tids != NULL && prov->zone != NULL && prov->read_rows != NULL;
+}
+
+void
+sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	src->prov->tids(src->impl, unit, rows, n, tids);
+}
+
+void
+sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	src->prov->zone(src->impl, unit, leaf, z);
+}
+
+void
+sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	vec->ovf = NULL;
+	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
+}
+
 void
 sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
 {

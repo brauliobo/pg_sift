@@ -1464,6 +1464,19 @@ sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *t
 	FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { sift_key_to_tid(keys[r], &tids[k++]); });
 }
 
+/* The TIDs of the rows ords (ascending ordinals of the unit as stored), without the keys of the others */
+void
+sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint32 n, ItemPointerData *tids)
+{
+	ColUnit    *cu = unit->priv;
+	SiftKey	   *keys = palloc(Max(n, 1) * sizeof(SiftKey));
+
+	sift_cunit_row_keys(&cu->v, cu->sb, ords, n, keys);
+	for (uint32 k = 0; k < n; k++)
+		sift_key_to_tid(keys[k], &tids[k]);
+	pfree(keys);
+}
+
 /* ---------- zones ---------- */
 
 void

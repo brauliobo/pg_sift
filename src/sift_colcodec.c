@@ -1901,12 +1901,19 @@ sift_cc_get(const SiftCc *c, uint32 row)
 	return nd_get(c->root, row);
 }
 
+/* A delta-coded value is the sum of the deltas before it in its block of 1024: a lookup costs a block's prefix, not a few operations */
+static bool
+nd_has_delta(const CcNode *nd)
+{
+	return nd != NULL && (nd->tag == SIFT_CCN_DELTA || nd_has_delta(nd->a) || nd_has_delta(nd->b));
+}
+
 void
 sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 {
 	if (m == 0)
 		return;
-	if ((uint64) m * 8 > c->n)
+	if ((uint64) m * (nd_has_delta(c->root) ? 256 : 8) > c->n)
 	{
 		int64	   *all = palloc(sizeof(int64) * ((size_t) c->n + SIFT_COL_PAD / 8));
 

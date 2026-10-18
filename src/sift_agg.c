@@ -68,9 +68,11 @@
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
 #include "sift_search.h"
+#include "sift_topn.h"
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
+bool		sift_enable_topn = true;
 static int	sift_agg_combo_cache = 1 << 20;
 
 #define VEC			SIFT_AGG_VEC
@@ -92,6 +94,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.enable_topn",
+							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
+							 NULL, &sift_enable_topn, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
@@ -565,6 +571,8 @@ typedef struct AggExec
 	Relation	index;
 	SiftSrcSource *src;
 	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
+	SiftTopN   *topn;			/* ORDER BY .. LIMIT n: the scan keeps the best rows instead of groups (spec->topn) */
+	int			topn_n;			/* rows of the result */
 	const SiftSrcLayout *lay;
 	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
 	struct
@@ -6861,6 +6869,28 @@ apply_late(AggExec *ex, uint64 *mask, int total)
 	}
 }
 
+/* A unit whose zone of the first sort leaf has nothing that sorts before the n-th best so far is not read */
+static bool
+topn_viable(AggExec *ex)
+{
+	SiftSrcZone z;
+
+	if (!sift_topn_wants_zones(ex->topn))
+		return true;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), &z);
+	if (sift_topn_zone_viable(ex->topn, &z))
+		return true;
+	sift_topn_skip(ex->topn);
+	return false;
+}
+
+/* the rows that pass go to the heap of the best n, by the sort leaves (sift_topn.h) */
+static void
+topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
+{
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec_raw(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
+}
+
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
 #define SPARSE_RATIO	8
 
@@ -6882,6 +6912,8 @@ process_unit(AggExec *ex)
 	ex->n_units++;
 	ex->n_rows += nrow;
 	if (nrow == 0)
+		return;
+	if (ex->topn && !topn_viable(ex))
 		return;
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 	ex->rsel = NULL;
@@ -6907,8 +6939,11 @@ process_unit(AggExec *ex)
 	{
 		sift_colsrc_vet(ex->src, u, rmask);
 		apply_late(ex, rmask, nrow);
-		for (int st = 0; st < nrow; st += VEC)
-			agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
+		if (ex->topn)
+			topn_unit(ex, rmask, nrow);
+		else
+			for (int st = 0; st < nrow; st += VEC)
+				agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
 	}
 	else
 	{
@@ -7138,7 +7173,8 @@ filter_init(AggExec *ex)
 		if (int_filter(ex, p, &f[n]))
 			at[n++] = i;
 	}
-	ok = n > 0 ? sift_colsrc_set_filters(ex->src, f, n) : 0;
+	/* the source tests the stored rows of a unit, the rows of a match set may be renumbered: with a search the executor tests them */
+	ok = n > 0 && s->search == NULL ? sift_colsrc_set_filters(ex->src, f, n) : 0;
 	for (int k = 0; k < n; k++)
 		if (ok >> k & 1)
 		{
@@ -8783,6 +8819,95 @@ fuse_next(AggExec *ex, TupleTableSlot *slot)
 	return ExecStoreVirtualTuple(slot);
 }
 
+/* The zone of the first sort leaf in the unit of superblock sb; false when it has none */
+static bool
+topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
+{
+	if (ex->search)
+		sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
+	sift_colsrc_begin(ex->src, sb, sb + 1, NULL, 0);
+	if (!sift_colsrc_next(ex->src, &ex->unit))
+		return false;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), z);
+	return true;
+}
+
+/* Windows of superblocks from the end the best values are at (sift_topn.h) */
+
+/*
+ * The match set of the superblocks a window is in. The first window is asked for alone (the scan often ends in it, and a match set costs by
+ * the superblocks it covers); the chunk around each later one holds the windows that follow it, which a backwards visit cannot get cheaply:
+ * the match iterator restarts when asked for superblocks it has passed.
+ */
+typedef struct TopnChunk
+{
+	uint32		lo,
+				hi;
+	const SiftFilter *flt;
+} TopnChunk;
+
+static void
+topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
+{
+	if (ex->search)
+	{
+		if (ch->flt == NULL || lo < ch->lo || hi > ch->hi)
+		{
+			uint32		width = ch->flt == NULL ? hi - lo : Max(hi - lo, sift_search_chunk_sbs);
+
+			ch->lo = sift_topn_reverse(ex->topn) ? (hi > width ? hi - width : 0) : lo;
+			ch->hi = sift_topn_reverse(ex->topn) ? hi : Min(lo + width, nsb);
+			ch->flt = sift_search_range(ex->search, ch->lo, ch->hi);
+		}
+		sift_colsrc_select(ex->src, ch->flt);
+	}
+	scan_units(ex, lo, hi);
+}
+static void
+topn_run(AggExec *ex)
+{
+	SiftTopN   *t;
+	uint32		nsb,
+				lo,
+				hi,
+				best;
+	SiftSrcZone z;
+	TopnChunk	ch = {0, 0, NULL};
+
+	ex->started = true;
+	engine_open(ex, ex->snap, ex->params);
+	scan_buffers(ex);
+	table_init(ex);
+	t = ex->topn;
+	nsb = sift_colsrc_nsb(ex->src);
+	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
+		for (int i = 0; i < sift_topn_nprobes(); i++)
+			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
+				sift_topn_probe(t, ex->unit.sb, &z);
+	sift_topn_start(t, nsb);
+	while (sift_topn_next_window(t, &lo, &hi, &best))
+	{
+		if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
+		{
+			sift_topn_stop(t);
+			break;
+		}
+		topn_scan(ex, lo, hi, nsb, &ch);
+	}
+	ex->topn_n = sift_topn_finish(t);
+}
+
+static TupleTableSlot *
+topn_next(AggExec *ex, TupleTableSlot *slot)
+{
+	if (!ex->started)
+		topn_run(ex);
+	if (ex->gpos >= ex->topn_n)
+		return NULL;
+	sift_topn_fetch(ex->topn, ex->gpos++, slot);
+	return slot;
+}
+
 static TupleTableSlot *
 agg_next(ScanState *node)
 {
@@ -8791,6 +8916,8 @@ agg_next(ScanState *node)
 	AggExec    *t;
 	uint32		g;
 
+	if (ex->spec->topn)
+		return topn_next(ex, slot);
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
@@ -8862,6 +8989,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
+	if (ex->spec->topn)
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->cxt);
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
 		register_pred(ex, ex->spec->pred[i]);
@@ -8883,6 +9012,8 @@ engine_close(AggExec *ex)
 {
 	if (ex->search)
 		sift_search_close(ex->search);
+	if (ex->topn)
+		sift_topn_close(ex->topn);
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
@@ -8963,6 +9094,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Filters", s->desc_quals, es);
 	if (s->search)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
+	if (s->topn)
+		ExplainPropertyText("Top-N", psprintf("%s (limit %d)", s->desc_topn, sift_topn_limit(s->topn)), es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
 		if (j < h0 || j >= h1)
@@ -9009,6 +9142,11 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		if (s->search)
 			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
+		if (s->topn && ex->topn)
+		{
+			ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+			ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
+		}
 		if (c->nfilter > 0)
 			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
