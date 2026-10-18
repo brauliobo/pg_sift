@@ -1,10 +1,11 @@
 # Column codec research harness, tests and benchmark (no backend linked).
-#   nice make -j4              build research, test and bench into $(OUT)
+#   nice make -j4              build test and bench into $(OUT) (the research tool is opt-in: make research)
 #   make research ARGS='-s'    encoding/compressor sizes on order-shaped data (-s adds decode speeds, -k clustered order)
 #   make test [N=2]            round trips, adversarial data, corruption fuzz, per-level kernel differential
 #   make SANITIZE=1 test       ASan + UBSan build (into $(OUT)-san)
 #   make bench                 ratios per policy and decode/filter speeds per SIMD level (under flock /tmp/sift-perf.lock)
-# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h).
+# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h); the column kernels the codec runs on are src/sift_col_kern*.c.
+# The chunk generators of test.c are src/sift_colcodec_gen.h, the ones of the in-backend regress test (test/sql/colcodec_*.sql) too.
 CC      ?= gcc
 SRC      = ../../src
 KT       = ../kernels
@@ -22,11 +23,12 @@ endif
 N       ?= 1
 
 CODEC    = $(addprefix $(SRC)/,sift_colcodec.c sift_colcodec_kern.c sift_colcodec_avx2.c sift_colcodec_avx512.c sift_colz.c \
-                               sift_kernels.c sift_kernels_avx2.c sift_kernels_avx512.c sift_analyze.c sift_analyze_stem.c) $(KT)/shim.c
+                               sift_kernels.c sift_kernels_avx2.c sift_kernels_avx512.c sift_analyze.c sift_analyze_stem.c \
+                               sift_col_kern.c sift_col_kern_avx2.c sift_col_kern_avx512.c sift_bitmap_scalar.c sift_bitmap_avx2.c sift_bitmap_avx512.c) $(KT)/shim.c
 OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o
-HDR      = $(wildcard $(SRC)/sift_colcodec*.h $(SRC)/sift_colz.h $(SRC)/sift_kernels*.h $(SRC)/sift_analyze*.h) ccshim.h
+HDR      = $(wildcard $(SRC)/sift_colcodec*.h $(SRC)/sift_colz.h $(SRC)/sift_kernels*.h $(SRC)/sift_analyze*.h $(SRC)/sift_col_kern*.h $(SRC)/sift_col.h) ccshim.h
 
-all: $(OUT)/research $(OUT)/test $(OUT)/bench
+all: $(OUT)/test $(OUT)/bench
 
 $(OUT)/research: research.c gen.h
 	@mkdir -p $(OUT)
@@ -42,7 +44,7 @@ $(OUT)/%.o: %.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/test: test.c $(OBJ) $(HDR)
+$(OUT)/test: test.c $(SRC)/sift_colcodec_gen.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) $(PGLIB) -lpgport $(LDLIBS)
 
 $(OUT)/bench: bench.c gen.h $(OBJ) $(HDR)

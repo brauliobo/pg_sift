@@ -48,9 +48,9 @@ key_at(const Col *c, u32 i)
 	switch (c->kind)
 	{
 		case K_F32:
-			return sift_cc_f8_key((double) ((float *) c->d)[i]);
+			return sift_col_f8_key((double) ((float *) c->d)[i]);
 		case K_F64:
-			return sift_cc_f8_key(((double *) c->d)[i]);
+			return sift_col_f8_key(((double *) c->d)[i]);
 		default:
 			switch (c->width)
 			{
@@ -253,21 +253,21 @@ op_get(Blob *b, void *arg)
 }
 
 static void
-speeds(const Table *t, const char *spec, const char *name[3], const SiftCcKernels *lv[3], int nl)
+speeds(const Table *t, const char *spec, const SiftSimdLevel lv[3], int nl)
 {
 	Set			s;
 	double		open_ns;
 
 	build(&s, t, spec, false);
 	g_dec = malloc(sizeof(int64) * (g_chunk + 16));
-	g_bits = malloc(8 * (g_chunk / 64 + 2));
+	g_bits = malloc(8 * SIFT_COL_NWORDS(g_chunk));
 	open_ns = timed(&s, op_open, NULL);
 	for (int i = 0; i < s.nb; i++)
 		s.b[i].cc = sift_cc_open(CurrentMemoryContext, s.b[i].p, s.b[i].len, false);
 	for (int l = 0; l < nl; l++)
 	{
-		sift_cck = lv[l];
-		printf("  %-8s %-7s open %7.3f  decode %6.3f  filter %6.3f  ns/value  get %6.1f ns\n", spec, name[l], open_ns, timed(&s, op_decode, NULL),
+		cc_use_level(lv[l]);
+		printf("  %-8s %-7s open %7.3f  decode %6.3f  filter %6.3f  ns/value  get %6.1f ns\n", spec, kt_level_name[lv[l]], open_ns, timed(&s, op_decode, NULL),
 			   timed(&s, op_filter, NULL), timed(&s, op_get, NULL) * (double) s.rows / s.nb / 64);
 	}
 	for (int i = 0; i < s.nb; i++)
@@ -288,9 +288,8 @@ main(int argc, char **argv)
 	bool		verbose = false;
 	Table		ot = {"orders"},
 				it = {"items"};
-	const char *lname[3];
-	const SiftCcKernels *lv[3];
-	int			nl = 0;
+	SiftSimdLevel lv[3];
+	int			nl;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -302,14 +301,8 @@ main(int argc, char **argv)
 			verbose = true;
 	}
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	kt_cpu_init();
-	sift_cc_kernels_init();
-	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512; l++)
-		if (!nl || sift_cc_kernels_for((SiftSimdLevel) l) != lv[nl - 1])
-		{
-			lname[nl] = kt_level_name[l];
-			lv[nl++] = sift_cc_kernels_for((SiftSimdLevel) l);
-		}
+	cc_init();
+	nl = cc_levels(lv);
 	gen_tables(&ot, &it, norders, 0);
 	ratio_table(&ot, verbose);
 	ratio_table(&it, verbose);
@@ -318,7 +311,7 @@ main(int argc, char **argv)
 		static const char *const specs[] = {"none", "auto", "lz4", "zstd"};
 
 		for (size_t p = 0; p < lengthof(specs); p++)
-			speeds(&it, specs[p], lname, lv, nl);
+			speeds(&it, specs[p], lv, nl);
 	}
 	printf("sink %u\n", g_sink);
 	return 0;

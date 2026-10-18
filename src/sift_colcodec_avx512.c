@@ -1,6 +1,6 @@
 /*
  * sift_colcodec_avx512.c - AVX-512 kernels of the chunk codec (F, BW, VL, DQ + the options of SIFT_TARGET_AVX512). Bit-identical to the
- * scalar table in sift_colcodec_kern.c; slots past the last value of rle_expand32 are unspecified (the caller allocates SIFT_CC_PAD).
+ * scalar table in sift_colcodec_kern.c; slots past the last value of rle_expand32 are unspecified (the caller allocates SIFT_COL_PAD).
  */
 #if defined(__x86_64__)
 #include "sift_host.h"
@@ -55,86 +55,6 @@ unpack_range32_avx512(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint3
 		}
 		src += R == 32 ? (size_t) 32 * W : (size_t) 32 * ((R * W + 31) / 32);
 	}
-}
-
-static void
-range8_avx512(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint8 *v = a;
-	uint32		nw = n / 64;
-	__m512i		vlo = _mm512_set1_epi8((char) lo),
-				vsp = _mm512_set1_epi8((char) span);
-
-	for (uint32 w = 0; w < nw; w++)
-		bits[w] = _mm512_cmple_epu8_mask(_mm512_sub_epi8(LD512(v + w * 64), vlo), vsp);
-	if (n % 64)
-		sift_cc_kernels_scalar.range[0](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-range16_avx512(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint16 *v = a;
-	uint32		nw = n / 64;
-	__m512i		vlo = _mm512_set1_epi16((short) lo),
-				vsp = _mm512_set1_epi16((short) span);
-
-	for (uint32 w = 0; w < nw; w++)
-		bits[w] = (uint64) _mm512_cmple_epu16_mask(_mm512_sub_epi16(LD512(v + w * 64), vlo), vsp) |
-			(uint64) _mm512_cmple_epu16_mask(_mm512_sub_epi16(LD512(v + w * 64 + 32), vlo), vsp) << 32;
-	if (n % 64)
-		sift_cc_kernels_scalar.range[1](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-range32_avx512(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint32 *v = a;
-	uint32		nw = n / 64;
-	__m512i		vlo = _mm512_set1_epi32((int) lo),
-				vsp = _mm512_set1_epi32((int) span);
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		uint64		m = 0;
-
-		for (int q = 0; q < 4; q++)
-			m |= (uint64) _mm512_cmple_epu32_mask(_mm512_sub_epi32(LD512(v + w * 64 + q * 16), vlo), vsp) << (16 * q);
-		bits[w] = m;
-	}
-	if (n % 64)
-		sift_cc_kernels_scalar.range[2](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-range64_avx512(const void *a, uint32 n, uint64 lo, uint64 span, uint64 *bits)
-{
-	const uint64 *v = a;
-	uint32		nw = n / 64;
-	__m512i		vlo = _mm512_set1_epi64((long long) lo),
-				vsp = _mm512_set1_epi64((long long) span);
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		uint64		m = 0;
-
-		for (int q = 0; q < 8; q++)
-			m |= (uint64) _mm512_cmple_epu64_mask(_mm512_sub_epi64(LD512(v + w * 64 + q * 8), vlo), vsp) << (8 * q);
-		bits[w] = m;
-	}
-	if (n % 64)
-		sift_cc_kernels_scalar.range[3](v + (size_t) nw * 64, n % 64, lo, span, bits + nw);
-}
-
-static void
-widen_add64_avx512(const uint32 *a, uint32 n, int64 base, int64 *dst)
-{
-	__m512i		vb = _mm512_set1_epi64((long long) base);
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-		ST512(dst + i, _mm512_add_epi64(_mm512_cvtepu32_epi64(_mm256_loadu_si256((const __m256i *) (a + i))), vb));
-	sift_cc_kernels_scalar.widen_add64(a + i, n - i, base, dst + i);
 }
 
 static void
@@ -214,26 +134,6 @@ prefix64_avx512(const uint32 *a, uint32 n, int64 *dst, int64 first, int64 add)
 	}
 }
 
-static void
-gather32_avx512(const uint32 *dict, const uint32 *codes, uint32 n, uint32 *dst)
-{
-	uint32		i = 0;
-
-	for (; i + 16 <= n; i += 16)
-		ST512(dst + i, _mm512_i32gather_epi32(LD512(codes + i), (const void *) dict, 4));
-	sift_cc_kernels_scalar.gather32(dict, codes + i, n - i, dst + i);
-}
-
-static void
-gather64_avx512(const int64 *dict, const uint32 *codes, uint32 n, int64 *dst)
-{
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-		ST512(dst + i, _mm512_i32gather_epi64(_mm256_loadu_si256((const __m256i *) (codes + i)), (const void *) dict, 8));
-	sift_cc_kernels_scalar.gather64(dict, codes + i, n - i, dst + i);
-}
-
 static uint32
 max32_avx512(const uint32 *a, uint32 n)
 {
@@ -310,12 +210,8 @@ rle_expand32_avx512(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32
 const SiftCcKernels sift_cc_kernels_avx512 = {
 	.unpack32 = cc_unpack32_avx512,
 	.unpack_range32 = unpack_range32_avx512,
-	.range = {range8_avx512, range16_avx512, range32_avx512, range64_avx512},
-	.widen_add64 = widen_add64_avx512,
 	.prefix32 = prefix32_avx512,
 	.prefix64 = prefix64_avx512,
-	.gather32 = gather32_avx512,
-	.gather64 = gather64_avx512,
 	.max32 = max32_avx512,
 	.alp_keys_f8 = alp_keys_f8_avx512,
 	.alp_keys_f4 = alp_keys_f4_avx512,
