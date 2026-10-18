@@ -82,7 +82,7 @@ static void
 blob_run(void *a)
 {
 	Job		   *j = a;
-	uint8	   *buf = fz_copy((const uint8 *) "", 0, SIFT_CUR_BUF, 64);
+	uint8	   *buf = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_CUR_BUF, 64, MCXT_ALLOC_ZERO);
 	sift_cur	c;
 
 	sift_cur_blob(&c, j->p, j->len, buf);
@@ -97,23 +97,19 @@ blob_run(void *a)
 	}
 	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = mix(j->digest, sift_count(&c));
-	free(buf);
 }
 
 static void
 checked_run(void *a)
 {
 	Job		   *j = a;
-	uint8	   *buf = fz_copy((const uint8 *) "", 0, SIFT_CUR_BUF, 64);
+	uint8	   *buf = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_CUR_BUF, 64, MCXT_ALLOC_ZERO);
 	sift_cur	c;
 	uint32		n;
 	uint64		cnt;
 
 	if (sift_blob_check(j->p, j->len))
-	{
-		free(buf);
 		return;
-	}
 	n = sift_blob_n(j->p);
 	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = drain(&c, out_tids, true);
@@ -123,7 +119,6 @@ checked_run(void *a)
 		fz_bad("sift_count of an accepted blob is %llu", (unsigned long long) sift_count(&c));
 	(void) n;
 	(void) cnt;
-	free(buf);
 }
 
 /* ---------- mode 2: a term record ---------- */
