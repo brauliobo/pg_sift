@@ -26,6 +26,7 @@
 #include "utils/rel.h"
 
 #include "sift.h"
+#include "sift_am.h"
 #include "sift_col_am.h"
 #include "sift_col_build.h"
 #include "sift_col_seg.h"
@@ -672,53 +673,20 @@ col_amendscan(IndexScanDesc scan)
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = makeNode(IndexAmRoutine);
-
-	am->amstrategies = 0;
-	am->amsupport = 1;
-	am->amoptsprocnum = 0;
-	am->amcanorder = false;
-	am->amcanorderbyop = false;
-	am->amcanbackward = false;
-	am->amcanunique = false;
-	am->amcanmulticol = true;
-	am->amoptionalkey = true;
-	am->amsearcharray = false;
-	am->amsearchnulls = false;
-	am->amstorage = false;
-	am->amclusterable = false;
-	am->ampredlocks = false;
-	am->amcanparallel = false;
-	am->amcanbuildparallel = true;
-	am->amcaninclude = false;
-	am->amusemaintenanceworkmem = true;
-	am->amsummarizing = false;
-	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
-	am->amkeytype = InvalidOid;
+	IndexAmRoutine *am = sift_am_routine(0, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
 	am->aminsert = sift_col_aminsert;
-	am->aminsertcleanup = NULL;
 	am->ambulkdelete = sift_col_ambulkdelete;
 	am->amvacuumcleanup = sift_col_amvacuumcleanup;
-	am->amcanreturn = NULL;
 	am->amcostestimate = col_amcostestimate;
 	am->amoptions = col_amoptions;
 	am->ambuildphasename = sift_col_ambuildphasename;
 	am->amvalidate = col_amvalidate;
-	am->amadjustmembers = NULL;
 	am->ambeginscan = col_ambeginscan;
 	am->amrescan = col_amrescan;
-	am->amgettuple = NULL;
-	am->amgetbitmap = NULL;
 	am->amendscan = col_amendscan;
-	am->ammarkpos = NULL;
-	am->amrestrpos = NULL;
-	am->amestimateparallelscan = NULL;
-	am->aminitparallelscan = NULL;
-	am->amparallelrescan = NULL;
-	SIFT_AM_NEW_FIELDS(am);
 
 	PG_RETURN_POINTER(am);
 }

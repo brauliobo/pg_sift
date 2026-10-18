@@ -1,4 +1,4 @@
-# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: fz_shim.c stands in for it.
+# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: tools/pgshim.c and fz_shim.c stand in for it.
 #   nice make -j4 -C test/fuzz OUT=/tmp/x all         build the three targets
 #   make FZ_DRIVER=1 ...                              the portable coverage-guided driver (fz_driver.c) instead of libFuzzer
 #
@@ -44,8 +44,8 @@ CORE     = sift_colcodec sift_colcodec_kern sift_colcodec_avx2 sift_colcodec_avx
            sift_col_kern_avx512 sift_col_enc sift_shred sift_shred_kern sift_shred_kern_avx2 sift_shred_kern_avx512 \
            sift_kernels sift_kernels_avx2 sift_kernels_avx512 sift_analyze sift_analyze_stem sift_posting sift_bitmap sift_bitmap_scalar \
            sift_bitmap_avx2 sift_bitmap_avx512 sift_span
-OBJ      = $(addprefix $(OUT)/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/fz_shim.o
-HDR      = $(wildcard $(SRC)/*.h) fz_shim.h Makefile
+OBJ      = $(addprefix $(OUT)/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
+HDR      = $(wildcard $(SRC)/*.h) fz_shim.h ../../tools/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
 DRIVER   = $(OUT)/fz_driver.o
 endif
@@ -60,6 +60,11 @@ $(OUT)/%.o: $(SRC)/%.c $(HDR)
 $(OUT)/shim.o: $(KT)/shim.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(COV) -Dsift_k=fz_unused_sift_k -c -o $@ $<
+
+# the stand-ins are not instrumented
+$(OUT)/pgshim.o: ../../tools/pgshim.c $(HDR)
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/fz_shim.o: fz_shim.c $(HDR)
 	@mkdir -p $(OUT)

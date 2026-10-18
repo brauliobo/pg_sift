@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sift_testrng.h"
+
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -46,19 +48,10 @@ typedef struct Table
 	Col			col[40];
 } Table;
 
-static inline u64
-cc_mix(u64 x)
-{
-	x += 0x9E3779B97F4A7C15ull;
-	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
-	x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
-	return x ^ (x >> 31);
-}
-
 static inline double
 cc_u(u64 n, int k)
 {
-	return (cc_mix(n * 1024 + (u64) k) % 1000003) / 1000003.0;
+	return (sift_mix64(n * 1024 + (u64) k) % 1000003) / 1000003.0;
 }
 
 static const char *const g_locales[] = {"en", "de", "fr", "es", "it", "pt", "nl", "ru", "ja", "zh", "sv", "pl"};
@@ -75,10 +68,10 @@ gen_vocab(void)
 {
 	for (int i = 0; i < NVOCAB; i++)
 	{
-		int			len = 3 + (int) (cc_mix(i) % 8);
+		int			len = 3 + (int) (sift_mix64(i) % 8);
 
 		for (int j = 0; j < len; j++)
-			g_vocab[i][j] = 'a' + (int) (cc_mix(i * 31 + j) % 26);
+			g_vocab[i][j] = 'a' + (int) (sift_mix64(i * 31 + j) % 26);
 		g_vocab[i][len] = 0;
 	}
 }
@@ -217,8 +210,8 @@ gen_tables(Table *ot, Table *it, u32 norders, int clustered)
 		o->total = floor(exp(3 + 3.2 * cc_u(n, 14) + 0.5 * cc_u(n, 15)) * 100) / 100;
 		o->lat = floor((cc_u(n, 16) * 140 - 70) * 1e6) / 1e6;
 		o->lon = floor((cc_u(n, 17) * 360 - 180) * 1e6) / 1e6;
-		o->noise = (double) (cc_mix(n + 77) >> 11) * 0x1p-53;
-		o->updated = INT64_C(1704067200000000) + (i64) n * 2300000 + (i64) (cc_mix(n + 5) % 2000000);
+		o->noise = (double) (sift_mix64(n + 77) >> 11) * 0x1p-53;
+		o->updated = INT64_C(1704067200000000) + (i64) n * 2300000 + (i64) (sift_mix64(n + 5) % 2000000);
 		nitems += o->nitems;
 	}
 	if (clustered)
@@ -265,26 +258,26 @@ gen_tables(Table *ot, Table *it, u32 norders, int clustered)
 			snprintf(buf, sizeof buf, "%c%c", 65 + o->country / 8, 65 + o->country % 8);
 			strb_add(&sc, buf, 2);
 			strb_add(&sk, g_kinds[o->kind], strlen(g_kinds[o->kind]));
-			snprintf(buf, sizeof buf, "%s %s %s", vocab_word(cc_mix(o->store * 3)), vocab_word(cc_mix(o->store * 3 + 1)),
-					 vocab_word(cc_mix(o->store * 3 + 2)));
+			snprintf(buf, sizeof buf, "%s %s %s", vocab_word(sift_mix64(o->store * 3)), vocab_word(sift_mix64(o->store * 3 + 1)),
+					 vocab_word(sift_mix64(o->store * 3 + 2)));
 			buf[0] -= 32;
 			strb_add(&sn, buf, strlen(buf));
 			snprintf(buf, sizeof buf, "https://shop.example/store/%u/order/%u", o->store, o->id);
 			strb_add(&su, buf, strlen(buf));
 			{
-				int			nw = 3 + (int) (cc_mix(o->id + 1) % 4),
+				int			nw = 3 + (int) (sift_mix64(o->id + 1) % 4),
 							len = 0;
 
 				for (int j = 0; j < nw; j++)
-					len += snprintf(buf + len, sizeof buf - len, "%s%s", j ? " " : "", vocab_word(cc_mix((u64) o->id * 977 + j)));
+					len += snprintf(buf + len, sizeof buf - len, "%s%s", j ? " " : "", vocab_word(sift_mix64((u64) o->id * 977 + j)));
 				strb_add(&st, buf, len);
 			}
 			{
-				int			nw = 12 + (int) (cc_mix(o->id + 2) % 30),
+				int			nw = 12 + (int) (sift_mix64(o->id + 2) % 30),
 							len = 0;
 
 				for (int j = 0; j < nw; j++)
-					len += snprintf(buf + len, sizeof buf - len, "%s%s", j ? " " : "", vocab_word(cc_mix((u64) o->id * 1013 + 100 + j)));
+					len += snprintf(buf + len, sizeof buf - len, "%s%s", j ? " " : "", vocab_word(sift_mix64((u64) o->id * 1013 + 100 + j)));
 				strb_add(&sx, buf, len);
 			}
 		}
@@ -317,7 +310,7 @@ gen_tables(Table *ot, Table *it, u32 norders, int clustered)
 				SETI(oid, k, ords[i].id);
 				SETI(idx, k, j);
 				SETI(cat, k, ci);
-				SETI(var, k, cc_mix(n * 8 + 300 + j) % 8);
+				SETI(var, k, sift_mix64(n * 8 + 300 + j) % 8);
 				SETI(sta, k, s);
 				((float *) p4->d)[k] = (float) pr;
 				((double *) p8->d)[k] = pr;

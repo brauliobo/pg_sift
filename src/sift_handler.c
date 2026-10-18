@@ -367,57 +367,38 @@ sift_amvalidate(Oid opclassoid)
 	return true;
 }
 
-Datum
-sift_handler(PG_FUNCTION_ARGS)
+/* What the sift access methods share: bitmap scans only, no ordering or uniqueness, a parallel build and parallel bulk delete (makeNode zeroes the rest) */
+IndexAmRoutine *
+sift_am_routine(int strategies, int support, bool multicol)
 {
 	IndexAmRoutine *am = makeNode(IndexAmRoutine);
 
-	am->amstrategies = 1;
-	am->amsupport = 0;
-	am->amoptsprocnum = 0;
-	am->amcanorder = false;
-	am->amcanorderbyop = false;
-	am->amcanbackward = false;
-	am->amcanunique = false;
-	am->amcanmulticol = false;
-	am->amoptionalkey = false;
-	am->amsearcharray = false;
-	am->amsearchnulls = false;
-	am->amstorage = false;
-	am->amclusterable = false;
-	am->ampredlocks = false;
-	am->amcanparallel = false;
-	am->amcanbuildparallel = true;
-	am->amcaninclude = false;
-	am->amusemaintenanceworkmem = true;
-	am->amsummarizing = false;
+	am->amstrategies = strategies;
+	am->amsupport = support;
+	am->amcanmulticol = am->amoptionalkey = multicol;
+	am->amcanbuildparallel = am->amusemaintenanceworkmem = true;
 	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
 	am->amkeytype = InvalidOid;
+	return am;
+}
+
+Datum
+sift_handler(PG_FUNCTION_ARGS)
+{
+	IndexAmRoutine *am = sift_am_routine(1, 0, false);
 
 	am->ambuild = sift_ambuild;
 	am->ambuildempty = sift_ambuildempty;
 	am->aminsert = sift_aminsert;
-	am->aminsertcleanup = NULL;
 	am->ambulkdelete = sift_ambulkdelete;
 	am->amvacuumcleanup = sift_amvacuumcleanup;
-	am->amcanreturn = NULL;
 	am->amcostestimate = sift_amcostestimate;
 	am->amoptions = sift_amoptions;
-	am->amproperty = NULL;
 	am->ambuildphasename = sift_ambuildphasename;
 	am->amvalidate = sift_amvalidate;
-	am->amadjustmembers = NULL;
 	am->ambeginscan = sift_ambeginscan;
 	am->amrescan = sift_amrescan;
-	am->amgettuple = NULL;
 	am->amgetbitmap = sift_amgetbitmap;
 	am->amendscan = sift_amendscan;
-	am->ammarkpos = NULL;
-	am->amrestrpos = NULL;
-	am->amestimateparallelscan = NULL;
-	am->aminitparallelscan = NULL;
-	am->amparallelrescan = NULL;
-	SIFT_AM_NEW_FIELDS(am);
-
 	PG_RETURN_POINTER(am);
 }

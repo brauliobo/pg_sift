@@ -8,6 +8,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_cmp.h"
 #include "sift_col_enc.h"
 #include "sift_popcount.h"
 
@@ -1415,19 +1416,10 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
  * comparing a float4 column against a float8 constant in the key domain is exactly PostgreSQL's float48 comparison.
  * ------------------------------------------------------------------------- */
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 static bool
 set_has(const SiftCTest *t, int64 k)
 {
-	return bsearch(&k, t->set, t->nset, sizeof(int64), cmp_i64) != NULL;
+	return bsearch(&k, t->set, t->nset, sizeof(int64), sift_cmp_i64) != NULL;
 }
 
 static void
@@ -1444,7 +1436,7 @@ ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 {
 	uint32		m = 0;
 
-	qsort(keys, n, sizeof(int64), cmp_i64);
+	qsort(keys, n, sizeof(int64), sift_cmp_i64);
 	for (uint32 i = 0; i < n; i++)
 		if (m == 0 || keys[m - 1] != keys[i])
 			keys[m++] = keys[i];

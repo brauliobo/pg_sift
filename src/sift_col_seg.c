@@ -18,12 +18,7 @@
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
 
-#define corrupt(seg, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" segment %llu is corrupted", \
-					RelationGetRelationName((seg)->index), ULL((seg)->entry.gen)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
 
 /* ---------- writer ---------- */
 
@@ -539,10 +534,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSegment *seg = palloc0(sizeof(SiftColSegment));
 	SegPriv    *pv = palloc0(sizeof(SegPriv));
-	Buffer		buf;
-	Page		page;
 	SiftSegHeaderData *h;
-	uint32		used;
 	uint64		size,
 				rank = 0;
 	char	   *schema;
@@ -560,21 +552,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
 				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
-	buf = ReadBuffer(index, entry->header_blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
-	page = BufferGetPage(buf);
-	h = (SiftSegHeaderData *) SiftPageGetData(page);
-	used = SiftPageGetUsed(page);
-	if (used < offsetof(SiftSegHeaderData, extents) || h->nextents > SIFT_MAX_EXTENTS ||
-		used < offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent))
-	{
-		UnlockReleaseBuffer(buf);
-		corrupt(seg, "Header block %u holds %u bytes.", entry->header_blk, used);
-	}
-	seg->hdr = palloc(used);
-	memcpy(seg->hdr, h, used);
-	UnlockReleaseBuffer(buf);
+	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->ndocs == 0 || h->sb_lo != entry->sb_lo ||
 		h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi || h->live_npages == 0 || h->dictroot_n == 0 ||
@@ -1156,14 +1134,6 @@ sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 
 /* ---------- VACUUM ---------- */
 
-static void
-set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].gen == *(uint64 *) arg)
-			dir->segs[i].flags |= SIFT_SEG_DIRTY;
-}
-
 int64
 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {
@@ -1200,11 +1170,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 		}
 		if (nd == 0)
 			continue;
-		if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-		{
-			sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
-			seg->entry.flags |= SIFT_SEG_DIRTY;
-		}
+		sift_seg_mark_dirty(seg->index, &seg->entry);
 		sift_live_clear(&pv->live, r->sb - seg->hdr->sb_lo, dead, nd);
 		if (pv->dirty)
 			pv->dirty[(r->sb - seg->hdr->sb_lo) / 8] |= 1 << ((r->sb - seg->hdr->sb_lo) % 8);

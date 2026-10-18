@@ -9,8 +9,7 @@
 #include "mb/pg_wchar.h"
 
 #include "sift_analyze.h"
-
-extern int	stub_encoding;
+#include "../pgshim.h"
 
 static SiftAnalyzer *
 analyzer(int mode, SiftStemmer stem)
@@ -260,7 +259,7 @@ cmd_fuzz(long iters, unsigned long seed)
 	rng_state = seed;
 	for (int e = 0; e < 2; e++)
 	{
-		stub_encoding = e ? PG_SQL_ASCII : PG_UTF8;
+		pgshim_encoding = e ? PG_SQL_ASCII : PG_UTF8;
 		for (int m = 0; m < 4; m++)
 			for (int s = 0; s < 2; s++)
 			{
@@ -447,7 +446,7 @@ main(int argc, char **argv)
 		return cmd_stem(argv[2], argv[3]);
 	if (strcmp(cmd, "dump") == 0 && argc >= 3)
 	{
-		stub_encoding = argc > 4 && strcmp(argv[4], "sql_ascii") == 0 ? PG_SQL_ASCII : PG_UTF8;
+		pgshim_encoding = argc > 4 && strcmp(argv[4], "sql_ascii") == 0 ? PG_SQL_ASCII : PG_UTF8;
 		return cmd_dump(atoi(argv[2]), argc > 3 ? atoi(argv[3]) : 0);
 	}
 	if (strcmp(cmd, "invariant") == 0)

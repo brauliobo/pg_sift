@@ -33,19 +33,9 @@ while (( $# )); do
 	shift
 done
 (( ${#BUILDS[@]} )) || BUILDS=("new=$REPO")
-BASE=$(mktemp -d /tmp/sift-build-bench.XXXXXX)
-PORT0=${SIFT_PORT:-56150}
-declare -A DIR TMP PORT
-
-pg() { # LABEL psql-args...: the build's cluster
-	local l=$1; shift
-	( cd "${DIR[$l]}" && SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING= scripts/pgtest.sh "$@" )
-}
-cleanup() {
-	for l in "${!DIR[@]}"; do pg "$l" destroy >/dev/null 2>&1 || true; done
-	rm -rf "$BASE"
-}
-trap cleanup EXIT
+. "$REPO/scripts/multibuild.sh"
+MB_TESTING=
+mb_begin sift-build-bench
 
 anon_kb() { # anonymous memory of the processes of a cluster (children of its postmaster)
 	local pm
@@ -101,13 +91,8 @@ cell() { # LABEL MEM WORKERS TABLE: one build; prints "seconds peakMB tempMB run
 		"$(sed -n 's/^SEGS //p' <<<"$out")" $(( $(sed -n 's/^SIZE //p' <<<"$out") / 1048576 ))
 }
 
-i=0
-for b in "${BUILDS[@]}"; do
-	l=${b%%=*}
-	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=$BASE/$l PORT[$l]=$((PORT0 + i++))
-	mkdir -p "${TMP[$l]}"
-	pg "$l" install >/dev/null
-	pg "$l" start >/dev/null
+mb_start
+for l in "${LABELS[@]}"; do
 	pg "$l" psql -q -v rows="$ROWS" -f "$REPO/scripts/build-bench.sql" >/dev/null
 done
 declare -A TABLE=([articles]=art [hot]=hotc [unique]=uniq)
