@@ -1,6 +1,8 @@
 -- Rows above half a page keep their overflow pages in the delta segment of their record, also when the segment fills up in the middle
 -- of a row (the bytes used to land in the next segment and the read failed with a generation error).
 CREATE EXTENSION pg_sift;
+-- the rows are read from the table; an aggregate scan refuses a column group that cannot hold such values
+SET sift.enable_agg = off;
 
 CREATE TABLE wide (id int, v text) USING sift_table;
 -- 4100 .. 34100 bytes per row: 2 to 5 pages each, so that the 512 pages of the first delta segment end inside some row
