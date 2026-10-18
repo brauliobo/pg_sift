@@ -23,8 +23,8 @@ assert version is None or got.split()[1] == version, f'sift_version() is {got!r}
 
 db.execute('CREATE VIRTUAL TABLE docs USING sift(title, body)')
 db.executemany('INSERT INTO docs(rowid, title, body) VALUES (?, ?, ?)', [
-    (1, 'Venue note', 'Breakfast was great and the staff were friendly. The pool was noisy.'),
-    (2, 'Cafe', 'Friendly staff, no breakfast, but a quiet pool and spa.'),
+    (1, 'Wireless headphones', 'Battery was great and the support was friendly. The case was squeaky.'),
+    (2, 'Charger', 'Friendly support, no battery, but a sturdy case and clip.'),
     (3, 'Resume tips', 'A good résumé is short. Cafés near the office help.'),
     (4, 'Running', 'Runners were running; she runs every day.'),
 ])
@@ -34,15 +34,15 @@ def rows(q, *args):
     return [r[0] for r in db.execute(q, args)]
 
 
-assert rows("SELECT rowid FROM docs WHERE docs MATCH 'breakfast friendly'") == [1, 2]
-assert rows("SELECT rowid FROM docs WHERE docs MATCH '\"friendly staff\"'") == [2]
+assert rows("SELECT rowid FROM docs WHERE docs MATCH 'battery friendly'") == [1, 2]
+assert rows("SELECT rowid FROM docs WHERE docs MATCH '\"friendly support\"'") == [2]
 assert rows("SELECT rowid FROM docs WHERE docs MATCH 'resume AND cafe'") == [3]
 assert rows("SELECT rowid FROM docs WHERE docs MATCH 'run' ORDER BY rank LIMIT 5") == [4]
 assert rows("SELECT sift_count('docs', 'friendly')") == [2]
-assert db.execute("SELECT sift_highlight(docs, 1, '[', ']') FROM docs WHERE docs MATCH 'breakfast'").fetchone()[0].count('[') >= 1
+assert db.execute("SELECT sift_highlight(docs, 1, '[', ']') FROM docs WHERE docs MATCH 'battery'").fetchone()[0].count('[') >= 1
 db.execute("INSERT INTO docs(docs) VALUES('integrity-check')")
 db.execute("INSERT INTO docs(docs) VALUES('optimize')")
-assert rows("SELECT rowid FROM docs WHERE docs MATCH 'breakfast friendly'") == [1, 2]
+assert rows("SELECT rowid FROM docs WHERE docs MATCH 'battery friendly'") == [1, 2]
 db.close()
 
 sqlite3_shell = shutil.which('sqlite3')
