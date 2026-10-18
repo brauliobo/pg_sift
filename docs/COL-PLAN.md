@@ -186,6 +186,26 @@ The groups leave as the rows of `custom_scan_tlist` (keys, then aggregates); the
 
 The inlined arms of S4 scan the same rows for the same aggregates and differ in their keys. The nodes of one executor state register when they begin (`fuse_register`); the first to run takes every registered node whose spec equals its own with the keys left out (`sift_aggspec_fusable`: same leaves, filters, aggregates, no sets, combos, joins or arms; at most four keys together) and scans once with their keys side by side and the arm as the set key, the machinery of the grouping sets above (`sift_aggspec_fuse`). Each node then returns the groups of its set. The tuples of a set are those of the node alone, in the same order, so the rows and the float sums are the ones of separate passes; `EXPLAIN ANALYZE` shows `Arms In One Pass` and the counters of the shared scan on each node.
 
+### count(DISTINCT) of a 32 bit value
+
+A dictionary code, a dense id of a numeric expression or an integer column up to 32 bits is counted per group in one of three forms (`struct Dist`); NULLs never enter, and the count is exact.
+
+- **Bitmaps**: the values are dense (the range seen is covered by few enough 4096 bit chunks): each group has a directory over the shared range, its chunks are allocated when a value falls in one, and the count is a popcount. Parallel workers send their chunks and the leader ORs them.
+- **Bounded set**: sparse values go to an open addressing set of (group, value) pairs, inserted in batches with the slots prefetched.
+- **Sort**: past `get_hash_memory_limit()` (`work_mem` times `hash_mem_multiplier`, per aggregate) the pairs move to a tuplesort that spills to temp files, and the count of a group is read from the sorted runs. A bitmap or a set that outgrows the budget converts, so the memory never grows with the distinct values; EXPLAIN ANALYZE shows `Distinct Sets Spilled`.
+
+Question 06 (`count(DISTINCT customer_id)` per month, 10M orders, 2M customers), one backend, `work_mem` 4MB and 64MB, peak anonymous memory: 398 MB before (the hash set, whatever the `work_mem`), 16 MB and 14 MB after, with the same rows. Fixtures `d_*` and the `aggstub_agg` regress case cover the three forms, the spill (`work_mem` 64kB), NULLs and the global case.
+
+| Q06 (ms: median of the last 5 of 7 runs; instructions: mean of 20) | rows | before | after |  |
+|---|---|---|---|---|
+| instructions | 1M | 141.5 M | 89.3 M | 1.6x fewer |
+| instructions | 10M | 1626 M | 891 M | 1.8x fewer |
+| ms, no workers | 1M | 68.8 | 9.5 - 10.4 | 6.6x |
+| ms, no workers | 10M | 971 | 314 - 348 | 2.9x |
+| ms, 3 workers | 10M | 777 | 255 - 307 | 2.8x |
+
+The cycles of the 10M run fall from 3.77 G to 1.41 G. Before, 79% of them were `dset_add` and `dset_grow`; after, 81% are the random bit sets of `dist_update` into 36 bitmaps of 2M bits (9 MB, past the L2). Wall times were taken with the host busy (cpu PSI avg10 23% to 40%, io under 1%), so they carry that noise; the instruction counts do not.
+
 ## Parallel scan
 
 The planner offers a second path with the workers PostgreSQL would give a parallel sequential scan of the table (`compute_parallel_worker`: table size, the `parallel_workers` reloption, `max_parallel_workers_per_gather`), only when the whole query is parallel safe (`glob->parallelModeOK`, no unsafe function in the spec) and the spec is one of the parallel kinds below; the cheaper of the two paths wins. The cost divides the scan by PostgreSQL's divisor (the workers plus the share of a leader that scans too, `parallel_leader_participation`), adds `parallel_setup_cost`, and charges every partial table for its groups (merge cost per group). `sift.enable_agg = off` removes both paths.
