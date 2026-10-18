@@ -35,6 +35,14 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
   Details and the glue `SiftAgg` still has to apply: `docs/COL.md` section 2.9.
 
+- Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began. The scan read
+  the liveness of a unit (from the directory it copied at the start, or from a cached flag) before the all-visible mask of the unit's heap
+  pages; a `VACUUM` in between removed the dead tuples and turned their pages all-visible, so their stale index rows passed as visible
+  (found by the differential suite under the sanitizer, 280 against 218 orders). The mask is now read first and the dirty flag of the unit
+  from its LIVE page after it (`docs/COL.md` 3, "Order of reads"); rows of the mutable lane, a copy made when the scan begins, are always
+  checked against the heap. Tests: `col_vacuum_scan` (a VACUUM, DML, promote and merge between the open and the reads of a scan) and the
+  `soak-col` job (`scripts/colsoak.sh`).
+
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.
 

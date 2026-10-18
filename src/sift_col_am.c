@@ -62,6 +62,9 @@ sift_col_init(void)
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
+							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
+							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
