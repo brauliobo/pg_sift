@@ -28,6 +28,47 @@
 #define SIFT_AGG_MAX_COMBOS	8
 #define SIFT_AGG_MAX_JOINS	4
 #define SIFT_AGG_MAX_VLEAVES	4
+#define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
+
+/* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */
+typedef __int128 sift_i128 __attribute__((aligned(8)));
+
+/*
+ * A numeric expression: the postfix program of leaves (numeric(p <= 18, s), int2, int4 or int8 columns), constants and the
+ * operations whose result PostgreSQL's numeric functions give exactly, over int128 values scaled by 10^scale of the step's result,
+ * where the scale is the dscale numeric_add / numeric_sub (the larger one), numeric_mul (their sum), round / trunc / floor / ceil
+ * (the digits asked for) give. The planner proves that no step needs more than SIFT_NUM_MAX_DIGITS digits, so none overflows.
+ */
+typedef enum SiftAggNxOp
+{
+	SNX_LEAF,					/* push the leaf (an INT leaf: int2, int4, numeric as its integer) */
+	SNX_CONST,					/* push c */
+	SNX_ADD,					/* left * 10^a + right * 10^b (aligned to the larger scale) */
+	SNX_SUB,
+	SNX_MUL,
+	SNX_NEG,
+	SNX_ABS,
+	SNX_ROUND,					/* x / 10^a rounded (half away from zero), times 10^b */
+	SNX_TRUNC,					/* toward zero */
+	SNX_FLOOR,
+	SNX_CEIL
+} SiftAggNxOp;
+
+typedef struct SiftAggNx
+{
+	SiftAggNxOp op;
+	int			leaf;
+	int			a;
+	int			b;
+	sift_i128	c;
+} SiftAggNx;
+
+typedef struct SiftAggNum
+{
+	int			n;				/* steps; 0: no program */
+	SiftAggNx  *step;
+	int			scale;			/* digits after the point of the result: the dscale PostgreSQL gives it */
+} SiftAggNum;
 
 typedef enum SiftAggPredKind
 {
@@ -40,7 +81,8 @@ typedef enum SiftAggPredKind
 	SAP_NULL,					/* leaf IS [NOT] NULL */
 	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
 	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
-	SAP_ANY_ELEM				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
+	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
+	SAP_NCMP					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -49,8 +91,9 @@ typedef struct SiftAggPred
 	int			id;				/* preorder number, the index of the node's executor state */
 	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT; SAP_ANY_ELEM: the array leaf */
 	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT */
-	Node	   *expr;			/* SAP_CMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC) */
-	Oid			argtype;		/* SAP_CMP, SAP_IN: type of the operand (element type for IN) */
+	Node	   *expr;			/* SAP_CMP, SAP_NCMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC) */
+	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
+	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	int			nchild;
 	struct SiftAggPred **child;
@@ -62,7 +105,8 @@ typedef enum SiftAggKeyKind
 	SAK_LEAF,					/* the leaf's value */
 	SAK_LUT,					/* expr(leaf value), evaluated once per distinct value */
 	SAK_COMBO,					/* key slot (slot) of a combo (leaf) */
-	SAK_SET						/* the number of the grouping set of a row: the last key of a query with grouping sets */
+	SAK_SET,					/* the number of the grouping set of a row: the last key of a query with grouping sets */
+	SAK_NUM						/* a numeric expression (a numeric or int8 column included): the key is its scaled value */
 } SiftAggKeyKind;
 
 typedef struct SiftAggKey
@@ -71,6 +115,7 @@ typedef struct SiftAggKey
 	int			leaf;			/* SAK_COMBO: the combo */
 	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
+	SiftAggNum	num;			/* SAK_NUM */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;
 	Oid			collid;
@@ -90,8 +135,8 @@ typedef enum SiftAggKind
 	SAA_AVG_F64,				/* avg of a F64 leaf: float8 */
 	SAA_MIN,
 	SAA_MAX,
-	SAA_SUM_NUM,				/* sum of a numeric leaf: numeric, added exactly in 128 bits */
-	SAA_AVG_NUM,				/* avg of a numeric leaf: the numeric division of the exact sum and count */
+	SAA_SUM_NUM,				/* sum of a numeric expression: numeric, added exactly in 128 bits */
+	SAA_AVG_NUM,				/* avg of a numeric expression: the numeric division of the exact sum and count */
 	SAA_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 argument): float8 */
 	SAA_PCT_DISC,				/* percentile_disc(frac) WITHIN GROUP (ORDER BY leaf or float8 argument): the argument's type */
 	/* aggregates of an expression over a column of a joined table: the ids of its distinct values come from a combo slot */
@@ -144,6 +189,8 @@ typedef struct SiftAggAgg
 	int			leaf;			/* -1: none */
 	int			nvx;			/* SUM_F64 / AVG_F64: the argument is this program instead of a leaf */
 	SiftAggVx  *vx;
+	SiftAggNum	num;			/* a numeric argument (SUM_NUM, AVG_NUM, and MIN, MAX, COUNT, COUNT_DISTINCT of a numeric): the argument is this program, leaf is -1 */
+	bool		distinct;		/* SUM_NUM, AVG_NUM: of the distinct values */
 	SiftAggPred *filter;		/* NULL: none */
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
@@ -269,6 +316,10 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 } SiftAggSpec;
+
+/* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */
+extern bool sift_parse_decimal(const char *s, sift_i128 *v, int *scale);
+extern sift_i128 sift_pow10(int e);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);

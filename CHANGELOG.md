@@ -25,6 +25,13 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `min`, `max`, `sum` and `avg` of the columns of a lookup join, and a `WHERE` on the outer query of per-order aggregates (quals on the
   keys filter the rows, quals on the inner aggregates are a per-order HAVING). Anything else keeps its plan.
 
+- Added: numeric(p <= 18, s) predicates, group keys, expressions and distinct counts in the aggregate pushdown. A `numeric` column is an int64
+  leaf with a scale: `= <> < <= > >=`, `BETWEEN`, `IN` and `IS NULL` against constants and parameters (scaled with PostgreSQL's `numeric_mul`,
+  `numeric_floor` and `numeric_ceil`; NaN, infinite and out of range constants are decided without a scan), `GROUP BY` the column or an
+  expression, `count(DISTINCT)`, `sum`/`avg(DISTINCT)`, and `+ - *`, `abs`, `round`, `trunc`, `floor`, `ceil` and integer casts in aggregate
+  arguments, keys and filters, with the scales PostgreSQL gives and exact int128 arithmetic; whatever is not proven exact (division, other
+  functions, more than 38 digits) keeps the plan. `GROUP BY` an `int8` column is pushed down too (`docs/COL-PLAN.md`, Numeric).
+
 - Added: the vectorized operators of the aggregate pushdown (`src/sift_aggkern*.c`, `docs/KERNELS.md`): comparisons and range tests on
   int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
   min/max, per-group accumulation and adjacent-distinct counting, as one scalar, AVX2 and AVX-512 table chosen at run time by `sift.simd`.
