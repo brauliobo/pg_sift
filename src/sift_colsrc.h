@@ -373,12 +373,6 @@ sift_colsrc_prune_str(SiftSrcSource *src, const SiftSrcStrTest *t, int nt)
 }
 
 static inline bool
-sift_colsrc_has_filter_str(const SiftSrcSource *src)
-{
-	return src->prov->filter_str != NULL;
-}
-
-static inline bool
 sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
