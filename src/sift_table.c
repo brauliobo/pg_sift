@@ -36,6 +36,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_col_am.h"
+#include "sift_merge.h"
 #include "sift_table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
@@ -72,6 +73,16 @@ sift_tbl_define_gucs(void)
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
+							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 16, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write segment of a sift_table may take.", NULL,
+							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
+#endif
+	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
+							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
+							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_MERGE_DEAD_PCT, 1, 100,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
 static const TableAmRoutine sift_tbl_methods;
@@ -85,7 +96,7 @@ sift_tbl_routine(void)
 static const TupleTableSlotOps *
 tbl_slot_callbacks(Relation rel)
 {
-	return &TTSOpsHeapTuple;
+	return sift_tbl_slot_ops();
 }
 
 /* ---------- rows ---------- */
@@ -112,13 +123,13 @@ form_mtuple(Relation rel, TupleTableSlot *slot)
 }
 
 static TransactionId
-insert_xmin(int options)
+insert_xmin(SiftTamOptions options)
 {
 	return (options & TABLE_INSERT_FROZEN) ? FrozenTransactionId : GetCurrentTransactionId();
 }
 
 static void
-insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, int options, uint32 token)
+insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, uint32 token)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	MinimalTuple mtup;
@@ -138,13 +149,13 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, int options, uint3
 }
 
 static void
-tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, int options, BulkInsertState bistate)
+tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	insert_one(rel, slot, cid, options, 0);
 }
 
 static void
-tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, int options, BulkInsertState bistate,
+tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate,
 							 uint32 specToken)
 {
 	insert_one(rel, slot, cid, options, specToken);
@@ -169,7 +180,7 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 }
 
 static void
-tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, int options, BulkInsertState bistate)
+tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	for (int i = 0; i < nslots; i++)
 		insert_one(rel, slots[i], cid, options, 0);
@@ -347,6 +358,9 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	return result;
 }
 
+SIFT_TAM_DELETE_ADAPTER(tbl_tuple_delete)
+SIFT_TAM_UPDATE_ADAPTER(tbl_tuple_update)
+
 static TM_Result
 tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid,
 			   LockTupleMode mode, LockWaitPolicy wait_policy, uint8 flags, TM_FailureData *tmfd)
@@ -387,7 +401,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 }
 
 static void
-tbl_finish_bulk_insert(Relation rel, int options)
+tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
 }
 
@@ -492,8 +506,8 @@ static const TableAmRoutine sift_tbl_methods = {
 	.tuple_insert_speculative = tbl_tuple_insert_speculative,
 	.tuple_complete_speculative = tbl_tuple_complete_speculative,
 	.multi_insert = tbl_multi_insert,
-	.tuple_delete = tbl_tuple_delete,
-	.tuple_update = tbl_tuple_update,
+	.tuple_delete = SIFT_TAM(tbl_tuple_delete),
+	.tuple_update = SIFT_TAM(tbl_tuple_update),
 	.tuple_lock = tbl_tuple_lock,
 	.finish_bulk_insert = tbl_finish_bulk_insert,
 	.relation_set_new_filelocator = tbl_relation_set_new_filelocator,

@@ -2381,7 +2381,7 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 	if (lit->kind == 'n' && (typid == INT2OID || typid == INT4OID || typid == INT8OID))
 	{
 		bool		err;
-		int64		v = numeric_int8_opt_error(lit->num, &err);
+		int64		v = sift_numeric_int8(lit->num, &err);
 
 		if (err || !DatumGetBool(DirectFunctionCall2(numeric_eq, NumericGetDatum(lit->num),
 													 DirectFunctionCall1(int8_numeric, Int64GetDatum(v)))))

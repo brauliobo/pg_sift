@@ -17,6 +17,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_am_d.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
@@ -387,7 +388,8 @@ start_scan(SiftScanState *ss)
 static bool
 next_match(SiftScanState *ss)
 {
-	if (!ss->need_heap || !sift_prefetch)
+	/* only a heap has pages at the block numbers of its TIDs (those of another table access method are not blocks of its file) */
+	if (!ss->need_heap || !sift_prefetch || ss->heap->rd_rel->relam != HEAP_TABLE_AM_OID)
 		return sift_iter_next(ss->it, &ss->pm);
 	while (ss->ahead_n < PREFETCH_PAGES && !ss->ahead_done)
 	{
