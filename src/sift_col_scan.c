@@ -5,6 +5,8 @@
  */
 #include "postgres.h"
 
+#include "common/pg_prng.h"
+
 #include "access/xact.h"
 #include "miscadmin.h"
 #include "utils/rls.h"
@@ -39,10 +41,22 @@ typedef struct ColCursor
 	uint32		end;
 } ColCursor;
 
+#ifdef SIFT_TESTING
+int			sift_test_col_jitter_us = 0;
+
+void
+sift_col_jitter(void)
+{
+	if (sift_test_col_jitter_us > 0)
+		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_col_jitter_us));
+}
+#endif
+
 typedef struct ColMem
 {
 	SiftColBatch *b;
 	uint32		id;
+	bool		lane;			/* read from the mutable lane when the source began */
 } ColMem;
 
 /* The element structure of one group leaf in the current unit */
@@ -95,7 +109,9 @@ typedef struct ColUnit
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
-	bool		clean;
+	bool		lane;			/* a batch of the mutable lane: no all-visible page (unit_allvisible) */
+	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
+	bool		clean_ready;
 	SiftKey    *keys;
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
@@ -242,6 +258,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
 	sift_vis_begin(&src->vis, heap, snapshot);
+	SIFT_COL_JITTER();
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 	src->cnt.segments = src->nseg;
@@ -288,21 +305,21 @@ sift_col_counters(const SiftColSource *src)
 /* ---------- in-memory batches ---------- */
 
 static void
-add_mem(SiftColSource *src, SiftColBatch *b)
+add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 {
 	if (src->nmem == src->capmem)
 	{
 		src->capmem = Max(16, src->capmem * 2);
 		src->mem = src->mem ? repalloc(src->mem, src->capmem * sizeof(ColMem)) : MemoryContextAlloc(src->mcxt, src->capmem * sizeof(ColMem));
 	}
-	src->mem[src->nmem++] = (ColMem) {b, src->nmem};
+	src->mem[src->nmem++] = (ColMem) {b, src->nmem, lane};
 }
 
 void
 sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatches)
 {
 	for (int i = 0; i < nbatches; i++)
-		add_mem(src, batches[i]);
+		add_mem(src, batches[i], false);
 }
 
 static void
@@ -317,7 +334,7 @@ load_mutable(SiftColSource *src)
 			continue;
 		bs = sift_cmut_batches(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
 		for (int j = 0; j < n; j++)
-			add_mem(src, bs[j]);
+			add_mem(src, bs[j], true);
 	}
 	src->mem_loaded = true;
 }
@@ -408,7 +425,6 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 		corrupt("Unit %u of segment %llu does not parse.", u, (unsigned long long) seg->entry.gen);
 	cu->loaded = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols);
 	cu->istr = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols * sizeof(ColInline));
-	cu->clean = !sift_cseg_dirty(seg, u);
 }
 
 /* The chunk of leaf col of the unit as stored; false when the unit has none. A stored unit reads its bytes on first use. */
@@ -456,7 +472,8 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->batch = m->b;
 	cu->sb = m->b->sb;
 	cu->memid = m->id;
-	cu->clean = true;
+	cu->lane = m->lane;
+	cu->clean = cu->clean_ready = true;
 }
 
 bool
@@ -496,6 +513,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	}
 	else
 		load_stored(cu, best->seg, best->cur++);
+	SIFT_COL_JITTER();
 	cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
 	src->cnt.units++;
 	src->cnt.rows_scanned += cu->v.nrows;
@@ -503,7 +521,6 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	unit->sb = bsb;
 	unit->nrows = cu->v.nrows;
 	unit->in_mutable = mem;
-	unit->clean = cu->clean;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -546,6 +563,8 @@ range_any(const uint64 *bits, uint32 lo, uint32 hi)
 			} \
 	} while (0)
 
+static bool unit_clean(ColUnit *cu);
+
 void
 sift_col_sel_alloc(SiftColSource *src, uint32 n, SiftColSel *sel)
 {
@@ -561,7 +580,7 @@ sift_col_sel_all(const SiftColUnit *unit, SiftColSel *sel)
 	ColUnit    *cu = unit->priv;
 
 	sift_col_sel_alloc(unit->src, cu->v.nrows, sel);
-	if (cu->clean)
+	if (unit_clean(cu))
 		set_ones(sel->bits, sel->n);
 	else
 		sift_cseg_live(cu->seg, cu->u, sel->bits);
@@ -633,10 +652,32 @@ unit_allvisible(ColUnit *cu)
 {
 	if (!cu->av_ready)
 	{
-		cu->src->visibility.sb_mask(cu->src->visibility.arg, cu->sb, cu->av);
+		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
+		 * and made their pages all-visible: no page of a lane batch is taken as all-visible, so its rows are checked against the heap */
+		if (!cu->lane)
+			cu->src->visibility.sb_mask(cu->src->visibility.arg, cu->sb, cu->av);
 		cu->av_ready = true;
 	}
 	return cu->av;
+}
+
+/*
+ * Whether the stored unit has no dead row, read from the liveness pages now and after the all-visible mask: a page turns all-visible only
+ * after the VACUUM that made it so has removed the index entries of its dead tuples, so a mask that says "all-visible" is followed by liveness
+ * that already shows those removals. The other order lets a unit read as clean before the VACUUM, and the page as all-visible after it, count
+ * rows that no snapshot sees.
+ */
+static bool
+unit_clean(ColUnit *cu)
+{
+	if (!cu->clean_ready)
+	{
+		unit_allvisible(cu);
+		SIFT_COL_JITTER();
+		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
+		cu->clean_ready = true;
+	}
+	return cu->clean;
 }
 
 /* The element structure of a group leaf of the unit (counts decoded from the group's chunk) */
@@ -927,6 +968,7 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	const SiftKey *keys = NULL;		/* only a page that is not all-visible needs the row offsets */
 	PageWalk	pw;
 
+	SIFT_COL_JITTER();
 	if (sift_col_unit_allvisible(unit))
 		return sift_col_sel_count(sel) > 0;
 	pw_init(&pw, &cu->v);
@@ -1351,6 +1393,8 @@ sift_col_unit_allvisible(const SiftColUnit *unit)
 	ColUnit    *cu = unit->priv;
 	const uint64 *av = unit_allvisible(cu);
 
+	if (!unit_clean(cu))
+		return false;
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (cu->v.pagemask[w] & ~av[w])
 			return false;
@@ -1360,7 +1404,7 @@ sift_col_unit_allvisible(const SiftColUnit *unit)
 bool
 sift_col_unit_exact(const SiftColUnit *unit)
 {
-	return ((ColUnit *) unit->priv)->clean && sift_col_unit_allvisible(unit);
+	return sift_col_unit_allvisible(unit);
 }
 
 /* ---------- pre-aggregates (sift_col_pagg.c, docs/COL-PREAGG.md) ---------- */
