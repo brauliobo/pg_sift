@@ -32,6 +32,7 @@ struct SiftDictWriter
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
 	uint64		nterms;
+	uint32		nslots;			/* terms that are not inline */
 	BufFile    *idx;			/* DICTIDX bytes: one entry per block */
 	uint64		nidx;
 	uint64	   *root;			/* the first prefix of every SIFT_DICT_ROOT_FANOUT entries */
@@ -49,6 +50,7 @@ struct SiftDict
 	uint64	   *root;
 	uint32		nroot;
 	uint8	   *blk;			/* copy of the current block */
+	bool		slots;			/* lookups count the terms without inline postings */
 	MemoryContext mcxt;
 };
 
@@ -59,6 +61,7 @@ typedef struct BlockIter
 	const uint8 *end;
 	int			left;
 	uint64		post;
+	uint32		slot;			/* of the next term without inline postings */
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			len;
 } BlockIter;
@@ -143,7 +146,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			 (unsigned long long) info->post_off, (unsigned long long) ALIGN4(w->post_end));
 	if (w->nblk == 0)
 	{
-		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, 0};
+		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, w->nslots};
 
 		if (w->dict_len > SIFT_DICT_MAX)
 			ereport(ERROR,
@@ -202,8 +205,15 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	memcpy(w->prev, term, len);
 	w->prevlen = len;
 	w->nterms++;
+	w->nslots += !inl;
 	if (++w->nblk == SIFT_DICT_BLOCK)
 		flush_block(w);
+}
+
+uint32
+sift_dict_writer_nslots(const SiftDictWriter *w)
+{
+	return w->nslots;
 }
 
 void
@@ -272,9 +282,9 @@ read_idx(SiftDict *d, uint64 b)
 	return e;
 }
 
-/* Copies the block at offset off of DICT into buf (UINT16_MAX + 1 bytes) and starts decoding it */
+/* Copies the block at offset off of DICT into buf (UINT16_MAX + 1 bytes) and starts decoding it; slot_base: its DICTIDX entry's */
 static void
-block_begin(SiftDict *d, uint64 off, uint8 *buf, BlockIter *it)
+block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it)
 {
 	const uint8 *src;
 	uint32		len;
@@ -294,13 +304,14 @@ block_begin(SiftDict *d, uint64 off, uint8 *buf, BlockIter *it)
 	it->left = buf[2];
 	it->p = get_varint(buf + 3, it->end, &post);
 	it->post = post;
+	it->slot = slot_base;
 	it->len = 0;
 	if (it->left < 1 || it->left > SIFT_DICT_BLOCK)
 		corrupt("Block at %llu holds %d terms.", (unsigned long long) off, it->left);
 }
 
-static bool
-block_next(BlockIter *it, SiftTermInfo *info)
+static pg_attribute_always_inline bool
+block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 {
 	uint64		v;
 	int			shared,
@@ -383,7 +394,34 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;
+	it->slot += slots;
 	return true;
+}
+
+static bool
+block_next(BlockIter *it, SiftTermInfo *info)
+{
+	return block_next_impl(it, info, false);
+}
+
+static bool
+block_next_slots(BlockIter *it, SiftTermInfo *info)
+{
+	return block_next_impl(it, info, true);
+}
+
+/* The live df and the slot of the entry block_next returned, for the callers that keep it (the others do not pay for them) */
+static pg_attribute_always_inline void
+entry_stats(const BlockIter *it, SiftTermInfo *info, bool slots)
+{
+	info->ldf = info->df;
+	info->slot = (slots && !(info->flags & SIFT_TERM_INLINE)) ? (int32) it->slot - 1 : -1;
+}
+
+void
+sift_dict_track_slots(SiftDict *d)
+{
+	d->slots = true;
 }
 
 #ifdef SIFT_TESTING
@@ -464,7 +502,7 @@ find_block(SiftDict *d, const char *term, int len)
 		BlockIter	it;
 		SiftTermInfo info;
 
-		block_begin(d, read_idx(d, mid).block_off, d->blk, &it);
+		block_begin(d, read_idx(d, mid).block_off, 0, d->blk, &it);
 #ifdef SIFT_TESTING
 		sift_dict_probes++;
 #endif
@@ -481,23 +519,35 @@ find_block(SiftDict *d, const char *term, int len)
 	return blo;
 }
 
+static pg_attribute_always_inline bool
+lookup_in_block(BlockIter *it, const char *term, int len, SiftTermInfo *info, bool slots)
+{
+	while (block_next_impl(it, info, slots))
+	{
+		int			c = term_cmp(it->term, it->len, term, len);
+
+		if (c >= 0)
+		{
+			if (c == 0)
+				entry_stats(it, info, slots);
+			return c == 0;
+		}
+	}
+	return false;
+}
+
 bool
 sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info)
 {
 	int64		b = d->nblocks ? find_block(d, term, len) : -1;
 	BlockIter	it;
+	SiftDictIdx e;
 
 	if (b < 0)
 		return false;
-	block_begin(d, read_idx(d, b).block_off, d->blk, &it);
-	while (block_next(&it, info))
-	{
-		int			c = term_cmp(it.term, it.len, term, len);
-
-		if (c >= 0)
-			return c == 0;
-	}
-	return false;
+	e = read_idx(d, b);
+	block_begin(d, e.block_off, e.slot_base, d->blk, &it);
+	return d->slots ? lookup_in_block(&it, term, len, info, true) : lookup_in_block(&it, term, len, info, false);
 }
 
 void
@@ -507,25 +557,34 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 	int64		b = lo && d->nblocks ? Max(find_block(d, lo, lolen), 0) : 0;
 	uint8	   *buf;
 	bool		more = true;
-	uint32		nblk = 0;
+	uint32		nblk = 0,
+				slot;
 
 	if (d->nblocks == 0)
 		return;
 	/* own copy: fn may look terms up in this dictionary */
 	buf = palloc(UINT16_MAX + 1);
+	slot = read_idx(d, b).slot_base;
 	for (uint64 off = read_idx(d, b).block_off; more && off < d->dict_len;)
 	{
 		BlockIter	it;
 		SiftTermInfo info;
 
-		block_begin(d, off, buf, &it);
+		block_begin(d, off, slot, buf, &it);
 		off += it.end - buf;
-		while (more && block_next(&it, &info))
+		while (more && block_next_slots(&it, &info))
 		{
 			if (lo && term_cmp(it.term, it.len, lo, lolen) < 0)
 				continue;
-			more = (!hi || term_cmp(it.term, it.len, hi, hilen) < 0) && fn(arg, it.term, it.len, &info);
+			if (hi && term_cmp(it.term, it.len, hi, hilen) >= 0)
+			{
+				more = false;
+				break;
+			}
+			entry_stats(&it, &info, true);
+			more = fn(arg, it.term, it.len, &info);
 		}
+		slot = it.slot;
 		if ((++nblk & 15) == 0)
 		{
 			sift_sr_unlock(d->sr);	/* a buffer lock holds off interrupts */

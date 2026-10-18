@@ -35,7 +35,7 @@ static char base_dir[400] = ".";
 static char tmp_dir[400] = "/tmp";
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
-#define SIFT_FORMAT_ID		((uint32) SIFT_FORMAT_MAJOR << 16 | SIFT_FORMAT_MINOR)
+#define SIFT_FORMAT_ID		((uint32) SIFT_FORMAT_MAJOR << 16 | SIFT_WRITE_SEGFMT)
 #define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
 /* ------------------------------------------------ small helpers */

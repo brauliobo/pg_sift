@@ -13,6 +13,16 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   (all kernels). The library reports 3.0.
   `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel on large tables (`max_parallel_maintenance_workers`): each process writes the segments of the superblocks it claims (`docs/COL.md` 2.6).
 
+- Changed (3.0): segment format 2 for vacuumed documents. A segment now keeps its live documents by offset in each superblock and, for each
+  term, the number of its postings that VACUUM dropped. A dirty segment (vacuumed documents, not yet merged) therefore counts and scores as
+  its live documents: `count(*)` of a term costs 1.16 to 1.28 times the clean index's in user instructions at 10 to 45% deleted (was 6.6 to 6.7
+  times with 2.0.1), and N, df and avgdl exclude vacuumed documents, so `sift.score()` before and after the merge are equal (`live_stats` test).
+  Indexes of 2.x keep working with no `REINDEX`: their segments are read as they are (the old statistics, until they are merged) and rewritten
+  as format 2 when merged; the metapage becomes format 1.2 with the first format 2 segment, and a 2.x library refuses such an index. The
+  SQLite and MariaDB hosts keep writing format 1. The index grows by 4 bytes per term of each segment (+1.4 to 2.4% in `scripts/merge-bytes.sh`).
+  Queries that read postings (OR, rare terms, scans) still pay for the dead ones until the merge (up to 2 times at 45% dead).
+  Stored 2.0.0 files are the fixture of the `compat_2x_fixture` test. See DESIGN.md (Liveness) and docs/SIZING.md.
+
 - Column chunk codec (`src/sift_colcodec.c`, interface in [docs/COL-CODEC.md](docs/COL-CODEC.md), research and measurements in
   [docs/perf/COMPRESSION.md](docs/perf/COMPRESSION.md)): the compression of the column engine's chunks. For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
@@ -205,11 +215,11 @@ A major version because several behaviors change (listed first); the on-disk for
   of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
 - Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
   thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
-- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 2.4 to 8
+- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 3 to 36
   times faster. The liveness of a page was read one document at a time, a buffer pin, lock and bit test each, which was most of the
   query; the bits of a superblock are now read once and spread over the page's offsets. 200,000 documents with a quarter deleted and
   vacuumed, ms per query (the same rows rebuilt: clean): ranked AND 1.36 to 0.26 (clean 0.26), ranked OR 2.39 to 0.70 (0.64),
-  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.17 (0.019). Clean indexes are unchanged (interleaved A/B on the same
+  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.05 (0.019). Clean indexes are unchanged (interleaved A/B on the same
   data, 0.93x to 1.23x with 7 to 10% error; slim bench: 0 regressions). N, df and avgdl still count vacuumed documents until a merge
   (documented in DESIGN.md and docs/SIZING.md: the live df costs a posting walk per query and nothing stores it).
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
