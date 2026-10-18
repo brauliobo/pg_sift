@@ -56,6 +56,20 @@
 
 #include "sift_page.h"
 
+#ifdef SIFT_TESTING
+/*
+ * Testing knobs (sift.test_*, 0 = off): pages a SHARED write target writes before it fails, extents a
+ * segment stream may use, a block allocated by another backend after every run a SHARED stream takes
+ */
+extern PGDLLIMPORT int sift_test_fail_pages;
+extern PGDLLIMPORT int sift_test_max_extents;
+extern PGDLLIMPORT bool sift_test_run_gap;
+extern void sift_store_test_init(void);
+#endif
+
+/* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in sift_store.c) */
+extern PGDLLIMPORT bool sift_standby_conflicts;
+
 /* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
@@ -108,6 +122,9 @@ extern uint64 sift_store_new_gen(Relation index);
 
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
+
+/* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
+extern FullTransactionId sift_store_horizon(Relation index);
 
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
@@ -163,6 +180,19 @@ extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 
 /*
+ * SHARED targets: the bytes the streams written through wt will take about (upper bound of a merge,
+ * a promotion's mutable pages). Streams then reuse free space in runs as short as a 256th of it
+ * rather than extending the file for long ones.
+ */
+extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
+
+/*
+ * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
+ * took (written or not, published or not: the caller found nothing published) back to the free list.
+ */
+extern void sift_wt_abort(SiftWriteTarget *wt);
+
+/*
  * Extents of a stream, the same bookkeeping in every store: the writer collects the blocks of its pages into extents
  * (runs of contiguous blocks), the reader maps a logical page to its block through the first logical page of each extent.
  */
@@ -171,6 +201,7 @@ typedef struct SiftExtentList
 	SiftExtent *ext;
 	int			n;
 	int			cap;
+	int			max;			/* extents a stream may use: what a header page lists, less for tests */
 } SiftExtentList;
 
 static inline void
@@ -178,6 +209,7 @@ sift_extlist_init(SiftExtentList *l)
 {
 	l->n = 0;
 	l->cap = 8;
+	l->max = SIFT_MAX_EXTENTS;
 	l->ext = palloc(l->cap * sizeof(SiftExtent));
 }
 
@@ -192,10 +224,10 @@ sift_extlist_add(SiftExtentList *l, BlockNumber blk)
 		last->nblocks++;
 		return;
 	}
-	if (l->n == SIFT_MAX_EXTENTS)
+	if (l->n == l->max)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift segment stream needs more than %d extents", (int) SIFT_MAX_EXTENTS)));
+				 errmsg("sift segment stream needs more than %d extents", l->max)));
 	if (l->n == l->cap)
 	{
 		l->cap *= 2;

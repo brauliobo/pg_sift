@@ -6,11 +6,13 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
+#include "access/nbtxlog.h"
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "storage/procarray.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
 #include "miscadmin.h"
@@ -27,6 +29,8 @@
 #define FIRST_DATA_BLKNO	(SIFT_DIRECTORY_BLKNO + 1)
 #define RUN_MIN				16
 #define RUN_MAX				1024
+#define RUN_BIG				8192
+#define EXTENT_TARGET		256
 
 #define META(page)	((SiftMetaPageData *) SiftPageGetData(page))
 #define DIR(page)	((SiftDirectoryData *) SiftPageGetData(page))
@@ -34,6 +38,17 @@
 #define DIR_USED(n)	(offsetof(SiftDirectoryData, segs) + (n) * sizeof(SiftSegEntry))
 #define FL_USED(n)	(offsetof(SiftFreeListData, ext) + (n) * sizeof(SiftFreeExtent))
 #define ULL(x)		((unsigned long long) (x))
+
+bool		sift_standby_conflicts = false;
+
+#ifdef SIFT_TESTING
+int			sift_test_fail_pages = 0;
+int			sift_test_max_extents = 0;
+bool		sift_test_run_gap = false;
+#define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
+#else
+#define TEST_KNOB(knob, normal)	(normal)
+#endif
 
 #define corrupt(index, ...) \
 	ereport(ERROR, \
@@ -52,6 +67,13 @@ struct SiftWriteTarget
 	SiftExtent *spare;			/* allocated, never written */
 	int			nspare;
 	int			maxspare;
+	SiftExtent *taken;			/* SHARED: every block taken from the store and not given back yet */
+	int			ntaken;
+	int			maxtaken;
+	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
+#ifdef SIFT_TESTING
+	int			npages;			/* SHARED: pages written, for sift_test_fail_pages */
+#endif
 };
 
 struct SiftStreamWriter
@@ -66,6 +88,7 @@ struct SiftStreamWriter
 	BlockNumber run_next;		/* unused part of the current run */
 	BlockNumber run_end;
 	uint32		grow;
+	uint64		blocks;			/* blocks taken for this stream */
 	SiftExtentList ext;
 };
 
@@ -309,10 +332,56 @@ sift_store_removable(Relation index, FullTransactionId xid)
 	return removable;
 }
 
-static bool
-reusable(Relation index, FullTransactionId safexid)
+/*
+ * The horizon computed anew: the one GlobalVis caches only moves when this backend takes a
+ * snapshot, so a backend without one (the maintenance worker, or a merge that takes long) would not
+ * see the extents it freed become reusable. Records before it are reusable.
+ */
+FullTransactionId
+sift_store_horizon(Relation index)
 {
-	return !FullTransactionIdIsValid(safexid) || sift_store_removable(index, safexid);
+	Relation	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	TransactionId oldest = GetOldestNonRemovableTransactionId(heap);
+
+	RelationClose(heap);
+	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
+}
+
+/*
+ * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
+ * hot_standby_feedback. With sift.standby_conflicts, before blocks released with safexid are
+ * reused (or their record is cleared for reuse) this logs a btree page-reuse record for the index:
+ * a standby replays it as the usual recovery conflict with the snapshots older than safexid (wait for
+ * them up to max_standby_streaming_delay, then cancel them), touching no page. Once per backend and
+ * horizon: an older one is covered by a newer.
+ */
+static void
+log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
+{
+	static RelFileNumber last_rel = InvalidRelFileNumber;
+	static FullTransactionId last = {0};
+	xl_btree_reuse_page xlrec;
+
+	if (!sift_standby_conflicts || !XLogStandbyInfoActive() || !RelationNeedsWAL(index) ||
+		(last_rel == index->rd_locator.relNumber && !FullTransactionIdPrecedes(last, safexid)))
+		return;
+	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = safexid};
+	XLogBeginInsert();
+	XLogRegisterData(&xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
+	last_rel = index->rd_locator.relNumber;
+	last = safexid;
+}
+
+/* horizon: computed by the first record that needs it, InvalidFullTransactionId until then */
+static bool
+reusable(Relation index, FullTransactionId safexid, FullTransactionId *horizon)
+{
+	if (!FullTransactionIdIsValid(safexid))
+		return true;
+	if (!FullTransactionIdIsValid(*horizon))
+		*horizon = sift_store_horizon(index);
+	return FullTransactionIdPrecedes(safexid, *horizon);
 }
 
 static BlockNumber
@@ -373,6 +442,8 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 	BlockNumber pick_blk = InvalidBlockNumber;
 	int			pick = -1;
 	uint32		pick_n = 0;
+	FullTransactionId pick_safexid = InvalidFullTransactionId;
+	FullTransactionId horizon = InvalidFullTransactionId;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk) && pick_n < want; hops++)
 	{
@@ -383,17 +454,20 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 		{
 			SiftFreeExtent *e = &fl->ext[i];
 
-			if (e->nblocks >= min && e->nblocks > pick_n && reusable(index, e->safexid))
+			if (e->nblocks >= min && e->nblocks > pick_n && reusable(index, e->safexid, &horizon))
 			{
 				pick_blk = blk;
 				pick = i;
 				pick_n = e->nblocks;
+				pick_safexid = e->safexid;
 			}
 		}
 		blk = fl->next;
 		UnlockReleaseBuffer(buf);
 	}
 	*got = pick >= 0 ? Min(want, pick_n) : want;
+	if (pick >= 0 && FullTransactionIdIsValid(pick_safexid))
+		log_reuse(index, pick_blk, pick_safexid);
 	return pick >= 0 ? take_free(index, pick_blk, pick, *got) : extend(index, metabuf, want);
 }
 
@@ -725,6 +799,8 @@ sift_recycle(Relation index)
 	int			npages = 0;
 	int			cleared = 0;
 	int			k;
+	FullTransactionId horizon = InvalidFullTransactionId;
+	FullTransactionId newest = InvalidFullTransactionId;
 	GenericXLogState *state;
 
 	for (uint32 hops = 0; BlockNumberIsValid(blk); hops++)
@@ -738,9 +814,10 @@ sift_recycle(Relation index)
 		for (uint32 i = 0; i < fl->n; i++)
 		{
 			ext[n] = fl->ext[i];
-			if (FullTransactionIdIsValid(ext[n].safexid) &&
-				sift_store_removable(index, ext[n].safexid))
+			if (FullTransactionIdIsValid(ext[n].safexid) && reusable(index, ext[n].safexid, &horizon))
 			{
+				if (!FullTransactionIdIsValid(newest) || FullTransactionIdPrecedes(newest, ext[n].safexid))
+					newest = ext[n].safexid;
 				ext[n].safexid = InvalidFullTransactionId;
 				cleared++;
 			}
@@ -757,6 +834,8 @@ sift_recycle(Relation index)
 	}
 	k = n;
 	n = coalesce(ext, n);
+	if (cleared > 0)
+		log_reuse(index, blk, newest);
 	if (cleared == 0 && n == k && npages == 1)
 	{
 		UnlockReleaseBuffer(metabuf);
@@ -829,12 +908,54 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 	wt->have_meta = true;
 }
 
+/* Room for one more extent in a list that lives as long as wt, whatever context the stream writer ran in */
+static SiftExtent *
+wt_list_room(SiftWriteTarget *wt, SiftExtent *list, int n, int *max)
+{
+	if (n < *max)
+		return list;
+	*max = Max(8, 2 * *max);
+	return list ? repalloc(list, *max * sizeof(SiftExtent)) :
+		MemoryContextAlloc(GetMemoryChunkContext(wt), *max * sizeof(SiftExtent));
+}
+
+/* a minus b (disjoint extents each) in a list of wt's lifetime */
+static SiftExtent *
+extents_subtract(SiftWriteTarget *wt, SiftExtent *a, int *na, SiftExtent *b, int nb)
+{
+	SiftExtent *out = MemoryContextAlloc(GetMemoryChunkContext(wt), Max(1, *na + nb) * sizeof(SiftExtent));
+	int			m = 0;
+
+	qsort(a, *na, sizeof(SiftExtent), cmp_extent);
+	qsort(b, nb, sizeof(SiftExtent), cmp_extent);
+	for (int i = 0, j = 0; i < *na; i++)
+	{
+		uint64		s = a[i].start,
+					e = (uint64) a[i].start + a[i].nblocks;
+
+		while (j < nb && (uint64) b[j].start + b[j].nblocks <= s)
+			j++;
+		for (int k = j; k < nb && b[k].start < e; k++)
+		{
+			if (b[k].start > s)
+				out[m++] = (SiftExtent) {s, b[k].start - s};
+			s = Max(s, (uint64) b[k].start + b[k].nblocks);
+		}
+		if (s < e)
+			out[m++] = (SiftExtent) {s, e - s};
+	}
+	pfree(a);
+	*na = m;
+	return out;
+}
+
 /* Takes want blocks (at least min): spare runs first, then fresh ones */
 static BlockNumber
 wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 {
 	Buffer		metabuf;
 	BlockNumber start;
+	SiftExtent *last;
 
 	for (int i = 0; i < wt->nspare; i++)
 	{
@@ -870,9 +991,21 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 		wt->next += want;
 		return wt->next - want;
 	}
+	/* the note cannot fail once the blocks are taken */
+	wt->taken = wt_list_room(wt, wt->taken, wt->ntaken, &wt->maxtaken);
 	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
 	start = alloc_blocks(wt->index, metabuf, want, min, got);
 	UnlockReleaseBuffer(metabuf);
+	last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
+	if (last && last->start + last->nblocks == start)
+		last->nblocks += *got;
+	else
+		wt->taken[wt->ntaken++] = (SiftExtent) {start, *got};
+#ifdef SIFT_TESTING
+	/* another backend allocating in between: the next run is not adjacent to this one */
+	if (sift_test_run_gap)
+		UnlockReleaseBuffer(sift_alloc_page(wt->index, SIFT_PT_FREE, 0));
+#endif
 	return start;
 }
 
@@ -881,13 +1014,7 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 {
 	if (n == 0)
 		return;
-	if (wt->nspare == wt->maxspare)
-	{
-		wt->maxspare = Max(8, 2 * wt->maxspare);
-		/* lives as long as wt, whatever context the stream writer ran in */
-		wt->spare = wt->spare ? repalloc(wt->spare, wt->maxspare * sizeof(SiftExtent)) :
-			MemoryContextAlloc(GetMemoryChunkContext(wt), wt->maxspare * sizeof(SiftExtent));
-	}
+	wt->spare = wt_list_room(wt, wt->spare, wt->nspare, &wt->maxspare);
 	wt->spare[wt->nspare++] = (SiftExtent) {start, n};
 }
 
@@ -902,6 +1029,10 @@ wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 		smgr_bulk_write(wt->bulk, blkno, (BulkWriteBuffer) page, true);
 		return;
 	}
+#ifdef SIFT_TESTING
+	if (sift_test_fail_pages > 0 && ++wt->npages > sift_test_fail_pages)
+		elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);
+#endif
 	buf = new_locked(wt->index, blkno);
 	log_pages(wt->index, &buf, &page, 1);
 	UnlockReleaseBuffer(buf);
@@ -993,8 +1124,12 @@ sift_wt_finish(SiftWriteTarget *wt)
 	if (wt->bulk == NULL)
 	{
 		if (wt->nspare > 0)
+		{
 			store_update(wt->index, &(SiftDirChange) {.release = wt->spare, .nrelease = wt->nspare,
 					.extra = InvalidBuffer}, false);
+			wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, wt->spare, wt->nspare);
+			wt->maxtaken = wt->ntaken;
+		}
 		wt->nspare = 0;
 		return;
 	}
@@ -1005,6 +1140,22 @@ sift_wt_finish(SiftWriteTarget *wt)
 	bulk_put_meta(wt);
 	smgr_bulk_finish(wt->bulk);
 	wt->bulk = NULL;
+}
+
+void
+sift_wt_expect(SiftWriteTarget *wt, uint64 bytes)
+{
+	wt->expect = bytes / BLCKSZ;
+}
+
+/* The step that wrote through a SHARED target failed (its transaction is rolled back): the blocks go back */
+void
+sift_wt_abort(SiftWriteTarget *wt)
+{
+	if (wt->ntaken > 0)
+		store_update(wt->index, &(SiftDirChange) {.release = wt->taken, .nrelease = wt->ntaken,
+				.extra = InvalidBuffer}, false);
+	wt->ntaken = wt->nspare = 0;
 }
 
 /* ---------- stream writer ---------- */
@@ -1018,6 +1169,7 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	sw->gen = gen;
 	sw->grow = RUN_MIN;
 	sift_extlist_init(&sw->ext);
+	sw->ext.max = TEST_KNOB(sift_test_max_extents, (int) SIFT_MAX_EXTENTS);
 	if (wt->bulk == NULL)
 		sw->local = palloc_aligned(sizeof(PGIOAlignedBlock), PG_IO_ALIGN_SIZE, 0);
 	return sw;
@@ -1040,16 +1192,53 @@ sw_flush(SiftStreamWriter *sw)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/*
+ * Runs grow with the stream, so a segment of any size fits the extents its header page lists: by
+ * RUN_MAX blocks as before, then a 16th of what is written, up to RUN_BIG (a metapage-locked
+ * extension of 64 MB at most).
+ */
+static uint32
+run_cap(const SiftStreamWriter *sw)
+{
+	return Max(RUN_MAX, Min(RUN_BIG, sw->pos / SIFT_PAGE_PAYLOAD / 16));
+}
+
+/*
+ * The shortest run worth taking off the free list. With the size of the stream known, anything that
+ * keeps its extents within EXTENT_TARGET, so fragmented space left by merged segments is reused
+ * instead of extending the file; unknown, a quarter of the run wanted.
+ */
+static uint32
+run_min(const SiftStreamWriter *sw)
+{
+	if (sw->wt->expect == 0)
+		return Max(RUN_MIN, sw->grow / 4);
+	return Max(RUN_MIN, Min(sw->grow, sw->wt->expect / EXTENT_TARGET));
+}
+
+/* The run wanted: the growing one, but not far past what the stream is expected to still need */
+static uint32
+run_want(const SiftStreamWriter *sw, uint32 min)
+{
+	uint64		expect = sw->wt->expect + sw->wt->expect / 16 + RUN_MIN;
+
+	if (sw->wt->expect == 0)
+		return sw->grow;
+	return Max(min, Min(sw->grow, expect > sw->blocks ? expect - sw->blocks : 0));
+}
+
 static void
 sw_start_page(SiftStreamWriter *sw)
 {
 	if (sw->run_next == sw->run_end)
 	{
 		uint32		got;
+		uint32		min = run_min(sw);
 
-		sw->run_next = wt_take(sw->wt, sw->grow, Max(RUN_MIN, sw->grow / 4), &got);
+		sw->run_next = wt_take(sw->wt, run_want(sw, min), min, &got);
 		sw->run_end = sw->run_next + got;
-		sw->grow = Min(sw->grow * 2, RUN_MAX);
+		sw->blocks += got;
+		sw->grow = Min(sw->grow * 2, run_cap(sw));
 	}
 	sw->blk = sw->run_next++;
 	sift_extlist_add(&sw->ext, sw->blk);

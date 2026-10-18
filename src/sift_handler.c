@@ -60,6 +60,7 @@ bool		sift_enable_count = true;
 bool		sift_parallel_scan = false;
 bool		sift_prefetch = true;
 bool		sift_async_maintenance = true;
+int			sift_maintenance_naptime = 2000;
 
 static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
@@ -93,10 +94,19 @@ define_gucs(void)
 							 "Reads ahead the heap pages an unordered scan is about to visit.",
 							 NULL, &sift_prefetch, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.standby_conflicts",
+							 "Logs the reuse of released blocks as a recovery conflict, so a standby without hot_standby_feedback waits for or cancels the queries that may still read them.",
+							 "Off, such a query fails with \"segment recycled during scan, retry\" when the blocks it reads are reused.",
+							 &sift_standby_conflicts, false,
+							 PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.async_maintenance",
 							 "Promotes and merges segments in a dynamic background worker.",
 							 NULL, &sift_async_maintenance, true,
 							 PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.maintenance_naptime",
+							"Time between background maintenance workers of an index; a worker stays this long after it starts.",
+							NULL, &sift_maintenance_naptime, 2000, 200, 60000,
+							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.grouped_min_df",
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
@@ -117,6 +127,7 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_segment_postings",
 							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
 							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	sift_store_test_init();
 	DefineCustomIntVariable("sift.test_blob_max",
 							"Testing: bytes the postings of one term may take (0 = 4 GB).",
 							NULL, &sift_test_blob_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -171,6 +182,9 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "mutable_limit",
 					  "Mutable segment size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_MUTABLE_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "vacuum_segments",
+					  "Directory entries (segments, the mutable one included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
+					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -264,6 +278,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
+		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
@@ -284,6 +299,7 @@ sift_index_options(Relation index)
 		.case_folding = true,
 		.accent_folding = true,
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
+		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
 		.positions = true,
 	};
 

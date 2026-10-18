@@ -151,18 +151,33 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.prefix_cache_size` | 8MB | superuser setting: memory per backend for the postings of broad leaves, `0` keeps none |
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
+| `sift.async_maintenance` | on | promote and merge in a background worker; off leaves it to the inserts and `VACUUM` (superuser) |
+| `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the seals of a bulk load that fall in between are promoted too |
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
 
-Reloptions (`WITH (...)`; all but `mutable_limit` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+Reloptions (`WITH (...)`; all but `mutable_limit` and `vacuum_segments` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
-`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build).
+`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128).
+
+`vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
+merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
+before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
+A segment more than 8 times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than half the documents are dead is rewritten at any N.
+The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
+
+| `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
+|---|---|---|---|
+| 2 (default) | 0.19 s | 0.08 ms | 0.18 ms |
+| 4 | 0.15 s | 0.14 ms | 0.21 ms |
+| 8 | 0.12 s | 0.22 ms | 0.28 ms |
+| 16 | 0.10 s | 0.35 ms | 0.33 ms |
 
 ## Replication
 
 **Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,
 `CREATE INDEX CONCURRENTLY` and `REINDEX`, and serves `@@>`, ranked `sift.score()`, `count(*)` and pushed-down filters read-only with the
 primary's rows and scores; a promoted standby takes writes at once. No `shared_preload_libraries`, but install the same pg_sift version on
-every node that queries. `sift.*` settings are per node; `hot_standby_feedback = on` avoids retryable "segment recycled during scan" errors.
+every node that queries. `sift.*` settings are per node; `hot_standby_feedback = on` avoids retryable "segment recycled during scan" errors. Without feedback, `sift.standby_conflicts = on` on the primary logs recovery conflicts for reused space instead: standby scans are waited for (`max_standby_streaming_delay`) or cancelled like any standby query, never served recycled pages; it also delays standby replay for other long snapshots, so it is off by default.
 
 **Logical:** only table rows replicate, never indexes or `CREATE EXTENSION`. On the subscriber install pg_sift, create the table and its own
 sift index (before or after the initial sync) and the apply worker maintains it, with a primary key or `REPLICA IDENTITY FULL` (a sift index
@@ -185,7 +200,7 @@ its own docker container.
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap tables only; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
-- Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index.
+- Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
 - Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
 - `positions = on` is the default and makes the index about 2.6x larger (`positions = off` restores the small index). Phrases are
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows

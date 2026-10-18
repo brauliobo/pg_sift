@@ -14,8 +14,8 @@ INSERT INTO pw SELECT i, pw_doc(i), i % 5 FROM generate_series(1, 6000) i;
 INSERT INTO pw VALUES (6001, NULL, 1), (6002, '', 1), (6003, 'tk', 1), (6004, 'TK0001 tk0001', 2);
 CREATE TABLE pg (LIKE pw INCLUDING ALL);
 INSERT INTO pg SELECT * FROM pw;
-CREATE INDEX pw_idx ON pw USING sift (body);
-CREATE INDEX pg_idx ON pg USING sift (body) WITH (prefix_index = 3);
+CREATE INDEX pw_idx ON pw USING sift (body) WITH (vacuum_segments = 128);
+CREATE INDEX pg_idx ON pg USING sift (body) WITH (prefix_index = 3, vacuum_segments = 128);
 VACUUM ANALYZE pw;
 VACUUM ANALYZE pg;
 CREATE FUNCTION qs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
