@@ -47,4 +47,4 @@ es_description() { # the Elasticsearch of the run, when it is installed: the sys
 es_description
 echo "sift commit: $(sift_commit)"
 [[ -f $ENG/sift_ref/root/.build-info ]] && echo "sift reference build: $(cat "$ENG/sift_ref/root/.build-info")"
-echo "load average at start: $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "$(quiet_report 2>&1) at start (the host is judged quiet below ${SIFT_QUIET_MAX:-10}%)"

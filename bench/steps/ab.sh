@@ -169,7 +169,7 @@ run() { # CLASS REPS SECS|Nt LABEL...
       tp[$l]+="$tps "
     done
   done
-  echo "class=$name reps=$reps secs=$secs load=$(cut -d' ' -f1-3 /proc/loadavg)"
+  echo "class=$name reps=$reps secs=$secs $(quiet_report 2>&1)"   # counts do not depend on the load: the pressure is context, never waited for
   for l in "$@"; do printf '  %-28s cycles/txn %-20s instr/txn %-20s tps %s\n' "$l" "$(stat "${cy[$l]}")" "$(stat "${in[$l]}")" "$(stat "${tp[$l]}")"; done
 }
 
@@ -177,13 +177,14 @@ clients() { # CLASS REPS SECS N LABEL...
   local name=$1 c=$(script "$1") reps=$2 secs=$3 n=$4 r l out
   shift 4
   declare -A tp
+  quiet_batch
   for r in $(seq "$reps"); do
     for l in "$@"; do
       out=$(PGOPTIONS=$(options "$l") pgbench -n -c "$n" -j 4 -T "$secs" --random-seed=7 $(protocol "$c") ${PGB:-} -f "$c" "$ABDB" 2>&1)
       tp[$l]+="$(grep -oP 'tps = \K[0-9.]+(?= \(without)' <<<"$out") "
     done
   done
-  echo "class=$name reps=$reps secs=$secs clients=$n load=$(cut -d' ' -f1-3 /proc/loadavg)"
+  echo "class=$name reps=$reps secs=$secs clients=$n$QUIET_MARK $(quiet_report 2>&1)"
   for l in "$@"; do printf '  %-28s qps %s\n' "$l" "$(stat "${tp[$l]}")"; done
 }
 

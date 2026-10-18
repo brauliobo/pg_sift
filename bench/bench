@@ -139,6 +139,8 @@ Environment
   BENCH_STORE       datasets, downloads, corpus dumps and the cache of lanes (default BENCH_WORK; point it at a disk to keep them out of RAM:
                     inputs and caches only, it changes no measurement). `bench du` shows both
   BENCH_CACHE_MAX   MiB of the cache of lanes kept after a session with --keep (default 4096)
+  SIFT_QUIET_MAX    percent of cpu / io pressure (PSI, avg10) under which the host is quiet before a timed batch (default 10); SIFT_QUIET_TIMEOUT: seconds to
+                    wait for that (default 60) before the batch runs marked NOISY; SIFT_QUIET_WINDOW avg10 | avg60 (scripts/quiet.sh)
   KEEP_DOWNLOADS=1  keep the raw downloads and engine tarballs after setup (removed by default); REFRESH_DATASETS=1, REBUILD_ENGINES=1: setup
                     converts / builds again what it finds up to date
   SIFT_SRC          head | worktree: sift is built from the last commit or the tracked files (default worktree)
@@ -376,7 +378,7 @@ measure() { # [cold]: every selected dataset at the tier into $OUT, after the ma
       places)   ENGINES=$e CLASSES=$(class_set places) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
-  echo "wall time of the measurements $(( SECONDS - t0 )) s, load average at end $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/machine.txt"
+  echo "wall time of the measurements $(( SECONDS - t0 )) s, at end $(cat "$OUT"/*/noisy.txt 2>/dev/null | wc -l) NOISY batches (noisy.txt of each table directory), $(quiet_report 2>&1)" | tee -a "$OUT/machine.txt"
 }
 
 end_session() { cache_prune; peak_report; }   # after a successful session: the cache of lanes goes unless it is kept, the peak footprint is printed
