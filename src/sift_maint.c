@@ -22,12 +22,14 @@
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "postmaster/bgworker.h"
+#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_classes.h"
 #include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
@@ -39,7 +41,6 @@
 #include "sift_ops.h"
 #include "sift_sql.h"
 
-#define REQUEST_INTERVAL_MS	2000
 #define BACKOFF_MAX_MS		3600000
 /* inputs of one merge: its output (runs grow with a stream, sift_store.c) stays well within the extents a header page lists */
 #define MERGE_MAX_BYTES		(UINT64CONST(16) << 30)
@@ -209,7 +210,7 @@ backoff_ms(const SiftMetaPageData *meta)
 {
 	uint32		failures = meta->flags & SIFT_META_FAILURES_MASK;
 
-	return Min((int64) REQUEST_INTERVAL_MS << Min(failures, 20), BACKOFF_MAX_MS);
+	return Min((int64) sift_maintenance_naptime << Min(failures, 20), BACKOFF_MAX_MS);
 }
 
 /* Failed steps double the time before the next one is attempted in the background, up to an hour */
@@ -652,9 +653,9 @@ static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeGoal goal, MergeSel *sel)
 {
 	int			excess = snap->nsegs - sift_index_options(index)->vacuum_segments;
-	uint64		total = 0;
 	bool		counted = goal != MERGE_ANY && !force;
 	int			n = pick_policy(index, snap, force, counted && excess <= 0, sel);
+	uint64		total = 0;
 	int			k = 0;
 
 	if (counted)
@@ -1040,8 +1041,8 @@ sift_maint_after_seal(Relation index)
  * reusable by the next step, because neither its xid nor its xmin hold the horizon back once it
  * committed. The worker lock makes it the only worker of the index at work; the others leave.
  */
-static bool
-worker_step(Oid indexoid, TimestampTz start)
+static StepResult
+worker_step(Oid indexoid, TimestampTz start, bool last)
 {
 	Relation	index;
 	StepResult	r = STEP_IDLE;
@@ -1060,14 +1061,19 @@ worker_step(Oid indexoid, TimestampTz start)
 				r = merge_next(index, false, MERGE_BACKGROUND, false, &busy);
 			maint_unlock_step(index);
 		}
-		if (r != STEP_DONE)
+		if (last || r == STEP_FAILED)
 			sift_log_maint(index, "maintenance worker finished", start, -1, -1);
 		index_close(index, RowExclusiveLock);
 	}
 	CommitTransactionCommand();
-	return r == STEP_DONE;
+	return r;
 }
 
+/*
+ * The worker stays until sift.maintenance_naptime after it started, looking for work every so often: a seal inside that window
+ * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM.
+ * The last look is made after the window ended, so every such seal is before it.
+ */
 void
 sift_maint_worker_main(Datum main_arg)
 {
@@ -1081,8 +1087,20 @@ sift_maint_worker_main(Datum main_arg)
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
-	while (worker_step(indexoid, start))
+	for (;;)
+	{
+		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+		StepResult	r;
+
+		while ((r = worker_step(indexoid, start, left <= 0)) == STEP_DONE)
+			CHECK_FOR_INTERRUPTS();
+		if (r == STEP_FAILED || left <= 0)
+			break;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)), PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
+	}
 }
 
 /* ---------- SQL ---------- */
