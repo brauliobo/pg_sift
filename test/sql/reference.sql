@@ -801,7 +801,9 @@ BEGIN
 				format('= ANY (%L::text[])', sift_ref.expand(a)), 'GROUP BY r.tid')];
 		WHEN 'and', 'or' THEN
 			FOR c IN SELECT jsonb_array_elements(a -> 'args') LOOP
-				res := res || sift_ref.units(c, consts);
+				-- a subquery keeps it out of plpgsql's simple-expression path: recursion runs a simple expression through SPI, which
+				-- trips an assertion of the read/write parameter optimization of an array variable (PostgreSQL 18, 19)
+				res := res || (SELECT sift_ref.units(c, consts));
 			END LOOP;
 			RETURN res;
 		ELSE
