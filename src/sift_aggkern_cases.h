@@ -380,8 +380,10 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 	}
 	for (int g = 0; g < c->ngrp; g++)
 	{
+		int64		x = (int64) agk_next(r);	/* its own statement: the order of two calls in one expression is the compiler's */
+
 		c->cnt0[g] = agk_below(r, 100);
-		c->iacc0[g] = (int64) agk_next(r) >> agk_below(r, 60);
+		c->iacc0[g] = x >> agk_below(r, 60);
 		c->facc0[g] = agk_f64(r, mf);
 	}
 
