@@ -962,9 +962,11 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	int64		removed;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
+	removed = stats->tuples_removed;
 	maint_lock(index);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -979,6 +981,9 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 		else
 			sift_mut_bulkdelete(index, &snap->segs[i], callback, callback_state, stats);
 	}
+	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
+	if (stats->tuples_removed > removed)
+		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	maint_unlock(index);
 	pfree(snap);
 	return stats;
