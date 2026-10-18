@@ -106,6 +106,18 @@ BEGIN
 	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg)%' AND p ~ 'Workers Planned: [1-9]';
 END $$;
 
+-- a SCROLL cursor over the table: FETCH LAST and five FETCH PRIOR return the last rows of the forward scan, in reverse
+CREATE FUNCTION coverage.scroll_back(tbl text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE c refcursor; fwd int[]; back int[] := '{}'; r record; i int;
+BEGIN
+	EXECUTE format('SELECT array_agg(id) FROM (SELECT id FROM %s) x', tbl) INTO fwd;
+	OPEN c SCROLL FOR EXECUTE format('SELECT id FROM %s', tbl);
+	FETCH LAST FROM c INTO r; back := back || r.id;
+	FOR i IN 1..5 LOOP FETCH PRIOR FROM c INTO r; back := back || r.id; END LOOP;
+	CLOSE c;
+	RETURN back = ARRAY(SELECT fwd[cardinality(fwd) - g] FROM generate_series(0, 5) g);
+END $$;
+
 -- a reader in a transaction of the isolation level iso sees the same rows whatever the writer (a second session) does, before and after
 -- its commit, with and without the aggregate scan; the writer's statements are DML on the table of q
 CREATE FUNCTION coverage.snapshot(iso text, q text, writer text[]) RETURNS boolean LANGUAGE plpgsql AS $$
