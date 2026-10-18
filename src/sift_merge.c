@@ -37,17 +37,46 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 	return dead;
 }
 
-int
-sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+/* The immutable segments of snap, smallest first */
+static int
+immutables(const SiftDirSnapshot *snap, SiftSegEntry *imm)
 {
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
-	int			n = 0,
-				fanin = pol->fanin;
+	int			n = 0;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			imm[n++] = snap->segs[i];
 	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
+	return n;
+}
+
+static int
+pick_dead(Relation index, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
+{
+	for (int i = 0; i < n; i++)
+		if (mostly_dead(index, &imm[i]))
+		{
+			sel[0] = imm[i];
+			return 1;
+		}
+	return 0;
+}
+
+int
+sift_merge_pick_dead(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+{
+	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+
+	return pick_dead(index, imm, immutables(snap, imm), sel);
+}
+
+int
+sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
+{
+	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+	int			n = immutables(snap, imm),
+				fanin = pol->fanin;
+
 	if (force)
 	{
 		memcpy(sel, imm, n * sizeof(SiftSegEntry));
@@ -67,11 +96,5 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
 		return Min(n, fanin);
 	}
-	for (int i = 0; i < n; i++)
-		if (mostly_dead(index, &imm[i]))
-		{
-			sel[0] = imm[i];
-			return 1;
-		}
-	return 0;
+	return pick_dead(index, imm, n, sel);
 }

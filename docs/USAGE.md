@@ -161,6 +161,7 @@ merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes ef
 before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
 The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
 
+A segment more than 8 times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than half the documents are dead is rewritten at any N.
 | `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
 |---|---|---|---|
 | 2 (default) | 0.19 s | 0.08 ms | 0.18 ms |
