@@ -217,10 +217,12 @@ than half of its rows dead triggers.
 ### 2.8 Shared with the table AM: VAR leaves, the segment tag, the next vblock, delta batches
 
 - **VAR leaves** (`SIFT_COLS_VAR`): opaque bytes of any length with an exact round trip (numeric, uuid, long text, jsonb, arrays). The
-  chunk holds the null bitmap, the value lengths (FOR-packed) and the concatenated bytes; there is no dictionary, no zone min/max/sum
-  (zones carry `nvals`/`nnull`) and the only predicate is IS NULL. The engine never interprets the bytes: the owner of the segment
-  defines the image. Read through `SiftColVec.voff/vbytes`. The index AM does not offer VAR (CREATE INDEX refuses those types).
-  Implemented after the index milestone, in the one chunk writer and reader (no table-specific fork).
+  chunk (encoding 5, `STRS`) holds the null bitmap and the codec's string list (`sift_cc_encode_strs`: the lengths as an integer
+  cascade, the concatenated bytes under the cold wrapper rule; NULL slots are empty strings); there is no dictionary and no zone
+  min/max (the zone of a VAR leaf is the INT zone of the value lengths, so only `nvals`/`nnull` are of use) and the only predicate is
+  IS NULL / IS NOT NULL. The engine never interprets the bytes: the owner of the segment defines the image. Read through
+  `SiftColVec.voff/vbytes` (`n + 1` byte offsets). A VAR leaf is a top level scalar; the index AM does not offer VAR (CREATE INDEX
+  refuses those types). Implemented in the one chunk writer and reader (no table-specific fork); `sift._test_col_enc_roundtrip` covers it.
 - **Segment tag**: `SiftSegEntry.reserved` is the owner's tag (the table AM keeps the segment xmin there, 0 = none). The writer sets it
   (`sift_colw_set_tag`); the index AM leaves it 0; whoever rewrites a segment sets the tag of the new one.
 - **Next vblock**: `SIFT_COL_META_NEXT_VBLOCK(meta)` names the metapage field (`sum_dl`) the table AM uses for its TID block counter.
@@ -492,3 +494,4 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
   `SiftColValue.overflow`, `SiftColVec.ovf`, `SiftColZone.has_ovf`, chunk flag `SIFT_COLC_OVF`, zone flag `SIFT_COLZ_OVERFLOW` added.
 - 2026-10: the index AM is `sift_col`, the table AM `sift_table`; engine headers `sift_col_enc.h` (L1), `sift_col_seg.h` (L2), `sift_col_mut.h` (L3).
 - 2026-10: first contract: `sift_col.h`, `sift_col_kern.h`, kernel dispatch pattern (section 8), `SIFT_MAX_REBINDS` 16.
+- 2026-10: `SIFT_COLS_VAR` is written and read: chunk encoding 5 (`STRS`, the codec's string list), `SiftColVec.voff/vbytes`, `sift_cchunk_strs`.
