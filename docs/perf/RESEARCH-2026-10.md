@@ -303,3 +303,46 @@ Fetched (read) unless marked.
 * PostgreSQL 18 documentation: index scanning https://www.postgresql.org/docs/current/index-scanning.html ; JIT decision https://www.postgresql.org/docs/18/jit-decision.html ; custom scan execution https://www.postgresql.org/docs/18/custom-scan-execution.html
 * Snippet only: Mallia et al. "Faster BlockMax WAND with Variable-sized Blocks" SIGIR 2017 https://dl.acm.org/doi/10.1145/3077136.3080780 ; "Fast Disjunctive Candidate Generation Using Live Block Filtering" WSDM 2021; Siedlaczek et al. "Using Conjunctions for Faster Disjunctive Top-k Queries" WSDM 2022 https://dl.acm.org/doi/10.1145/3488560.3498489 ; Chakrabarti et al. "Interval-based pruning" 2011 https://www.microsoft.com/en-us/research/publication/interval-based-pruning-for-top-k-processing-over-compressed-lists/ ; Bruch et al. "Seismic" 2024 https://arxiv.org/abs/2404.18812 ; CRoaring PR 851 https://github.com/RoaringBitmap/CRoaring/pull/851 ; Elasticsearch PR 37466 https://github.com/elastic/elasticsearch/pull/37466 ; Weaviate BlockMax WAND https://weaviate.io/blog/blockmax-wand ; timescale/pg_textsearch https://github.com/timescale/pg_textsearch
 * Not fetched, cited through the papers above: Broder et al. 2003 (WAND); Ding, Suel 2011 (Block-Max WAND); Turtle, Flood 1995 (MaxScore).
+
+## 10. Follow-up: what was implemented (October 2026)
+
+The user approved implementing the findings. Branch `perf/research`, one commit and one regression test per item; every number is user cycles per
+transaction of one backend, the same seeded statements for both builds (`bench/steps/ab.sh run ... Nt`), mean +- standard error of 5 interleaved
+runs, host load 6 to 12.
+
+| Item | Class | main (b6e7d3b) | this branch |
+|---|---|---|---|
+| 4. generic plans keep the pushdown | prepared filter | 2.81M +- 0.02M | 1.69M +- 0.01M (-40%) |
+| | prepared join | 4.63M +- 0.03M | 3.84M +- 0.02M (-17%) |
+| | prepared rare AND with a 2.3% filter | 733k +- 17k | 779k +- 17k (+6%, 14% more instructions): see below |
+| 5. late stretch of the heap | places p1 filter | 3.52M +- 0.10M | 0.67M +- 0.01M (-81%) |
+| | places p2 filter | 1.05M +- 0.03M | 0.68M +- 0.02M (-36%) |
+| | clustered article shapes (late, middle) | 2.46M, 1.51M | 0.11M, 0.23M |
+| estimate memo | count / filter / mixed / and | 867k / 1.86M / 1.52M / 846k | 761k / 1.77M / 1.45M / 811k |
+| over-pull 16x | join | 4.74M +- 0.02M | 3.90M +- 0.05M (-18%) |
+
+**Regression check** (`bench/bench regress --run --ref b6e7d3b`, slim, articles and places, all classes): 51 cells, 0 regressions, 2 improved (places
+a2 and w1 boost). The suite's own noise on this loaded host is 70% to 200% for the articles qps cells and 10% to 30% for the places p50 cells,
+so it cannot tell 2% from 20%; every class was therefore measured again interleaved (5 repeats, one backend, cycles and instructions per
+transaction): no article class and no places top, filter or count cell of the nine classes is worse than main beyond noise. Instructions
+fell in all of them (or -3%, phrase -9%, prefix -26%, fuzzy -70%, places top -11% to -33%, count -5% to -44%); the cycle ratio of `term` read 1.05
++- 0.04 in one run and 0.85, 0.99 and 1.12 in three more (its instructions are 3% lower every time). The `update` class has no single-backend
+script in `ab.sh` and was measured by the suite only (0.93, standard error 72%).
+
+**One known exception.** A prepared statement with a rare query and a selective filter (bench/sql/ab_and_filter_prep.pgb) costs about 5% more
+cycles. Main's generic plan assumes the operator's default (0.5% of the rows match), so it prices the post-filter scan as nearly free, wins
+against the custom plans and is reused; that plan is right for rare queries and wrong for the common words of the filter class. The generic
+plan now assumes a tenth of the rows (`UNKNOWN_QUERY_SEL`) and pushes the filter down, which costs more than the custom plans of the rare queries,
+so PostgreSQL keeps planning them. Values from 0.02 to 0.1 gave the same result for both shapes; no value of the assumption serves both, only a
+decision at execution time (the scan knows the query when it starts) would. Not done.
+
+**Row 3 (join predicate pushed into the scan as a mask) was not implemented.** The oracle of section 6 (-30% for perfect knowledge of the join
+selectivity) needs a dimension child plan, a TIDBitmap built at execution from one index probe per join key, a cost model against `only_best`
+(a ranked relation keeps one path) and the limit hint; the safe first step, giving the join the right number of rows to hint the scan with,
+was built and measured: instructions -9%, cycles +9% (more cache misses), so it was dropped. The over-pull growth (above) took the part of the
+gain that is free.
+
+**Sanitizer finding.** `SANITIZE=1 scripts/ci.sh quick` failed `parallel_scan` on this branch and passed on main. The cause is older than the
+branch: `add_parallel_count` passed an uninitialized `AggClauseCosts` to `get_agg_clause_costs`, so the parallel count was priced with stack
+garbage (889 or 2684 for the same plan depending on the stack) and sometimes lost to a partial aggregate over a parallel scan. The late-stretch
+commit moved the stack. Fixed by zeroing the struct (commit `planner: count:`).
