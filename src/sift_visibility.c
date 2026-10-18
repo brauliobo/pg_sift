@@ -12,11 +12,19 @@
 #include "utils/snapmgr.h"
 
 #include "sift_kernels.h"
+#include "sift_table.h"
 #include "sift_visibility.h"
 
 /* visibilitymap.c layout: 2 bits per heap page after the page header */
 #define VM_MAPSIZE		(BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
 #define VM_BYTES_PER_SB	(SIFT_SB_PAGES / 4)
+
+/* Blocks of the table in TID space: a sift_table hands out virtual blocks, not pages of its relation */
+BlockNumber
+sift_vis_nblocks(Relation heap)
+{
+	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
+}
 
 void
 sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot)
@@ -27,7 +35,7 @@ sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot)
 	v->use_vm = IsMVCCSnapshot(snapshot);
 	v->vmbuf = InvalidBuffer;
 	v->fetch = sift_table_index_fetch_begin(heap);
-	v->heap_nblocks = RelationGetNumberOfBlocks(heap);
+	v->heap_nblocks = sift_vis_nblocks(heap);
 	v->vm_nblocks = smgrexists(RelationGetSmgr(heap), VISIBILITYMAP_FORKNUM) ?
 		smgrnblocks(RelationGetSmgr(heap), VISIBILITYMAP_FORKNUM) : 0;
 }
@@ -86,12 +94,14 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	int			left = 0;
 
 	if (blk >= v->heap_nblocks)
-		v->heap_nblocks = RelationGetNumberOfBlocks(v->heap);
+		v->heap_nblocks = sift_vis_nblocks(v->heap);
 	if (blk >= v->heap_nblocks)
 	{
 		memset(offmask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 		return 0;
 	}
+	if (sift_tbl_is_table(v->heap))
+		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
 	buf = ReadBuffer(v->heap, blk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	v->heap_pages++;
