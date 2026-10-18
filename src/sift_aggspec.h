@@ -82,7 +82,8 @@ typedef enum SiftAggPredKind
 	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
 	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
 	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
-	SAP_NCMP					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
+	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
+	SAP_GATE					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -91,7 +92,7 @@ typedef struct SiftAggPred
 	int			id;				/* preorder number, the index of the node's executor state */
 	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT; SAP_ANY_ELEM: the array leaf */
 	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT */
-	Node	   *expr;			/* SAP_CMP, SAP_NCMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC) */
+	Node	   *expr;			/* SAP_CMP, SAP_NCMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
@@ -154,6 +155,8 @@ typedef enum SiftAggKind
 	SAA_O_AVG_F64,				/* avg of a float8 inner aggregate */
 	SAA_O_SUM_F64,				/* sum of a float8 inner aggregate */
 	SAA_O_SUM_I64,				/* sum of an int8 inner aggregate: numeric */
+	/* PostgreSQL's own aggregate (aggfn: sum, avg of int2, int4, int8, interval, avg of float4) of a column of a joined table: its transition function runs on the distinct values, each as many times as it occurred, then its final function */
+	SAA_M_PG,
 	/* kinds are added at the end */
 	SAA_GEN						/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
 } SiftAggKind;
@@ -239,6 +242,7 @@ typedef struct SiftAggAgg
 	bool		desc_order;		/* SAA_PCT_*: ORDER BY ... DESC */
 	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
 	SiftAggGen *gen;			/* SAA_GEN */
+	Oid			aggfn;			/* SAA_M_PG: the aggregate function */
 } SiftAggAgg;
 
 /*
@@ -262,24 +266,38 @@ typedef struct SiftAggArm
 	SiftAggAgg *inner;
 	int			nhaving;		/* the arm's HAVING, ANDed: `inner aggregate (cond.col) op constant`; a cell that fails is no group of the arm */
 	SiftAggCond *having;
+	Node	   *hexpr;			/* the rest of the arm's HAVING (what is not `inner aggregate op constant`): a boolean expression of Params ... */
+	int			nhp;			/* ... Param i being the inner aggregate hsrc[i] */
+	int		   *hsrc;
 	int			ncol;			/* columns of the arm */
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
 
 /*
- * A table joined by equality to leaves of the scan (LEFT or INNER): a tuple's join key is read from the leaves, the table's rows with
- * that key are its matches (any number: the join is exact for duplicates, a tuple is repeated per match, and a LEFT join keeps a tuple
- * without a match once, with NULL columns). The table is read when the scan starts, with the scan's snapshot. The columns the
- * expressions read are colatt[]; they reach the expressions as Params nleaves + i of the combo that owns the join.
+ * A table joined by equality to leaves of the scan or to expressions of them (INNER, LEFT, SEMI or ANTI): a tuple's join key is read
+ * from the leaves, the table's rows with that key that pass the rest of the ON clause are its matches (any number: the join is exact
+ * for duplicates, a tuple is repeated per match, and a LEFT join keeps a tuple without a match once, with NULL columns). The table is
+ * read when the scan starts, with the scan's snapshot. The columns the expressions read are colatt[]; they reach the expressions as
+ * Params nleaves + i of the combo that owns the join.
  */
+typedef enum SiftJoinKind
+{
+	SJ_INNER,
+	SJ_LEFT,
+	SJ_SEMI,					/* EXISTS / IN: a tuple is kept once if some row matches, and its columns are the table's no more */
+	SJ_ANTI						/* NOT EXISTS: a tuple is kept if no row matches */
+} SiftJoinKind;
+
 typedef struct SiftAggJoin
 {
 	Oid			relid;
-	bool		left;
+	SiftJoinKind kind;
 	int			nkey;
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];
-	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo */
+	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo; -1: the key is keyexpr */
+	Node	   *keyexpr[SIFT_AGG_MAX_JKEYS];	/* an expression of the combo's leaves (Params), evaluated per distinct tuple of their values */
+	int			fslot;			/* slot of the combo that is the rest of the ON clause (leaves and columns of the row), -1 none: a row matches if it holds */
 	int			ncol;
 	int			colatt[SIFT_AGG_MAX_JCOLS];
 	Oid			coltype[SIFT_AGG_MAX_JCOLS];

@@ -98,7 +98,7 @@ One query per file, as in `bench/sql/analytics/queries`: header lines, then the 
 The sections `--@ pg`, `--@ flat`, `--@ ch` of an analytics file are cut: only `pg` is run. `-- tol:` is ignored: the contract above is the
 tolerance.
 
-The fixture corpus (about 170 files) has the shapes of the report queries (S1 summary of an object with dynamic keys by key, mapped key and period;
+The fixture corpus (about 180 files; lookup joins `j_*` with semi, anti, key expressions and ON filters, per-order arms with sets, gates and general HAVING `s2_per_order_*` / `t_two_level_*`, mapped aggregates `t_mapped_agg_*`) has the shapes of the report queries (S1 summary of an object with dynamic keys by key, mapped key and period;
 S2 summary of an array of objects with per-order pre-aggregation, the three rollup levels as `UNION ALL` and as `GROUPING SETS`; S4 time
 series at day, week, month and quarter, with a date spine; S5 per-store rows and top-N; S6 `jsonb_path_exists` on an array of objects; S7 the
 same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates and quals (`IN`, `NOT IN`, `BETWEEN`, `LIKE`, `OR`, `NOT`,

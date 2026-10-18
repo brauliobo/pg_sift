@@ -1,6 +1,6 @@
 -- a condition on the mapped column filters the joined rows
 -- shape: flat
--- expect: any
+-- expect: agg
 -- key: -
 -- scenario: yes
 SELECT i.category, count(*) AS n, count(DISTINCT o.id) AS orders

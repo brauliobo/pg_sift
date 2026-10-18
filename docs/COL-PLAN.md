@@ -22,10 +22,10 @@ Unproven means no path. Not matched today: numeric division, modulo and function
 
 ### Lookup joins, several leaves, per-order aggregates
 
-- **Lookup join**: `[LEFT] JOIN small ON small.k = <leaf>` (one to three equalities of dictionary/integer/date leaves and columns of the table, up to four tables). The table is read at executor start with the query's snapshot; its rows are matched per distinct tuple of leaf values, cached across units. Exact: every matching row replicates the input row (a non-unique table needs no proof), a NULL key matches nothing, text compares as `=` does (deterministic collations), the unmatched rows are one row with NULLs (`LEFT`) or gone (`INNER`). The mapped columns are keys, filters and `CASE`/`coalesce` operands like leaves. `count`, `count(DISTINCT)` (hashable types), `min`, `max` (types with a btree order) and `sum`, `avg` (`numeric`, `float8`) of an expression of the joined columns are taken per matching row: the value is `NULL` for an unmatched `LEFT` row (an `INNER` join drops the row), the distinct values of the expression are kept once, and the aggregate compares them (the type's own comparison function) or adds them (`numeric` through its own functions, so the scale of the result is the normal plan's) when the scan ends.
+- **Lookup join**: `[LEFT] JOIN small ON small.k = <leaf>` (one to three equalities of dictionary/integer/date leaves and columns of the table, up to four tables), `EXISTS` / `IN (SELECT ..)` (semi join: the row stays once however many rows match) and `NOT EXISTS` (anti join: the row stays when none matches), a key that is an expression of leaves (`small.k = lower(o.source)`), the rest of an `ON` that is no key (`ON small.k = o.x AND small.flag`, `AND o.y > small.min`: a filter of the combo; for a `LEFT` join it decides the match, for an inner join it is a `WHERE`), and a `WHERE` on the joined columns of an outer join (evaluated after the join, so an unmatched row meets NULLs). At least one equality of leaves and columns is the key; a join with none stays. The table is read at executor start with the query's snapshot; its rows are matched per distinct tuple of leaf values, cached across units. Exact: every matching row replicates the input row (a non-unique table needs no proof), a NULL key matches nothing, text compares as `=` does (deterministic collations), the unmatched rows are one row with NULLs (`LEFT`) or gone (`INNER`). The mapped columns are keys, filters and `CASE`/`coalesce` operands like leaves. `count`, `count(DISTINCT)` (hashable types), `min`, `max` (types with a btree order) and `sum`, `avg` (`numeric`, `float8`) of an expression of the joined columns are taken per matching row: the value is `NULL` for an unmatched `LEFT` row (an `INNER` join drops the row), the distinct values of the expression are kept once, and the aggregate compares them (the type's own comparison function) or adds them (`numeric` through its own functions, so the scale of the result is the normal plan's) when the scan ends. `sum` and `avg` of `int2`/`int4`/`int8`, `interval` and `avg(float4)` run PostgreSQL's own transition and final functions of `pg_aggregate` on the distinct values and their counts (`SAA_M_PG`: the state is copied and added `count` times as `nodeAgg` would, strict inputs skipped), so the type and scale of the result are the normal plan's.
 - **Several leaves**: a key or filter over up to three leaves (of the order and of its items: `CASE WHEN o.lang = 'en' THEN i.category ELSE ... END`) is evaluated by PostgreSQL per distinct tuple of the values, cached across units. `x->>'k' IS [NOT] NULL` on a leaf of another type is the null test of that leaf (a value it cannot hold raises the overflow error above).
 - **Key of a free key object**: `(o.metrics->>'overall')::float8` next to the unnest, when the index has `metrics.* float8`, is a row level leaf built per unit from the elements whose key is `overall` (NULL for the rows without it).
-- **Per-order aggregates**: `SELECT .. avg(x) .. FROM (SELECT o.id, keys, agg(..) AS x .. GROUP BY o.id, keys) GROUP BY keys` and the same over a `UNION ALL` of up to four such arms (rollup levels over a shared CTE), where each arm groups by the unique id and by outer keys (or a NULL constant). The inner groups are one row's share of an outer group, so the scan keeps the inner aggregates (`count`, `sum`, `avg`, with `FILTER`) of the current row per outer group and adds them to the outer `count(*)`, `count(DISTINCT id)`, `avg`, `sum` (each with `FILTER` over the inner columns) when the row is done. A WHERE on the outer query is taken when PostgreSQL pushed all of it into the arms: quals on the keys filter the rows of an arm, quals on the inner aggregates are the arm's HAVING (a cell that fails it is no group of the arm and adds nothing to the outer aggregates). A qual that stays above the arms (on an expression of several arms, a volatile or a `pseudoconstant` one), grouping sets in the aggregating query, and groups that are not one row's share keep the plan.
+- **Per-order aggregates**: `SELECT .. avg(x) .. FROM (SELECT o.id, keys, agg(..) AS x .. GROUP BY o.id, keys) GROUP BY keys` and the same over a `UNION ALL` of up to four such arms (rollup levels over a shared CTE), where each arm groups by the unique id and by outer keys (or a NULL constant). The inner groups are one row's share of an outer group, so the scan keeps the inner aggregates (`count`, `sum`, `avg`, with `FILTER`) of the current row per outer group and adds them to the outer `count(*)`, `count(DISTINCT id)`, `avg`, `sum` (each with `FILTER` over the inner columns) when the row is done. A WHERE on the outer query is taken when PostgreSQL pushed all of it into the arms: quals on the keys filter the rows of an arm, quals on the inner aggregates are the arm's HAVING (a cell that fails it is no group of the arm and adds nothing to the outer aggregates). A HAVING or WHERE conjunct that is not `inner aggregate <op> constant` (`sum(x) > 2 * count(y)`, an `OR` of aggregates, a function of several) is a boolean expression of the arm's inner aggregates that PostgreSQL's evaluator runs per cell, with the aggregates as parameters. A `pseudoconstant` qual PostgreSQL leaves above the arms (`WHERE (SELECT ...) > 3`, `now() > ..`, a stable function of constants) is a gate: it is evaluated when the scan starts and turns the arm off or on. **Grouping sets** (`ROLLUP`, `CUBE`, `GROUPING SETS`, `GROUPING()`) in the aggregating query run in the same scan: a cell is added to the group of each set, keyed by the set number as for flat sets.
 
 
 ## Ordered-set aggregates
@@ -199,9 +199,9 @@ The analytics corpus (`bench/sql/analytics`) on 300000 orders (about 960000 item
 | G7 percentile | 554 | 45.4 | 44.4 | 12 / 12 | serial only (ordered sets) |
 | G8 group by order (231151 groups) | 281 | 16.3 | 24.8 | 17 / 11 | |
 | S1@K4000 | 274 | 12.0 | 12.9 | 23 / 21 | lookup join, multi-leaf key; serial only |
-| S1@K400 | 13.8 | plain kept | 7.1 | 1.0 / 2.0 | the two plans are priced within 10 percent of each other |
+| S1@K400 | 16.8 | 7.6 | 7.1 | 2.2 / 2.4 | the two plans are priced within 10 percent of each other; the scan wins by cost (W=4 and its plain time from an earlier run) |
 | S2@K4000 | 675 | 34.6 | 33.4 | 19.5 / 19.9 | per-order aggregates, three arms; serial only |
-| S2@K400 | 36.6 | 18.8 | 21.1 | 1.9 / 1.8 | |
+| S2@K400 | 41.5 | 22.3 | 21.1 | 1.9 / 1.8 | |
 | S3@K4000 | 236 | 18.2 | 18.2 | 13 / 12.5 | decode-bound; serial only |
 | S4@K4000 | 271 | 46.9 | 59.2 | 5.8 / 4.7 | shared CTE planned inline, four passes |
 | S5@K4000 | 87 | 30.4 | 29.4 | 2.9 / 3.0 | count(DISTINCT customer) per group; the window above the node is PostgreSQL's |
@@ -225,9 +225,65 @@ The forms of grouping sets, a WHERE on the outer query, mapped aggregates and fl
 | float8 key (`metrics->>'overall'`) | 1.5, 24 | 1.5, 6.9 | 1.0, 3.5 | K400 keeps the btree plan (the key lookup is priced) |
 | float8 key of the items (`price`) | 4.7, 49 | 4.3, 13.9 | 1.1, 3.5 | |
 
+Joins, gates, grouping sets and the general arm HAVING (fixtures on 300000 orders of `test/col/fixtures`, about 960000 items, median of 7, `--bench --bench-workers 0` and `4`; the times include the temporary table of the result and the machine was shared with other sessions, so two runs agree to about 15 percent). Joins, arms and sets are serial-only kinds (no workers are planned, so W=4 is W=0 up to noise); the flat gate is a parallel kind and pays the launch of workers like G1 to G5:
+
+| Fixture | Query | Plain ms | W=0 ms | W=4 ms | Speedup W=0 / W=4 |
+|---|---|---:|---:|---:|---|
+| `j_semi_exists` | `EXISTS` on a lookup table, count by category | 503 | 10.0 | 12.8 | 50 / 41 |
+| `j_semi_in_subquery` | `IN (SELECT ..)` | 252 | 5.1 | 5.9 | 49 / 49 |
+| `j_anti_not_exists` | `NOT EXISTS` | 536 | 12.3 | 12.9 | 44 / 54 |
+| `j_key_expr` | key `small.k = lower(leaf)` | 783 | 11.0 | 11.7 | 71 / 79 |
+| `j_on_filter` | filter in the `ON` of a `LEFT` join | 480 | 14.7 | 14.6 | 33 / 35 |
+| `j_where_left` | `WHERE` on the joined column of a `LEFT` join | 696 | 16.0 | 16.9 | 44 / 48 |
+| `j_inner_filter` | filter over leaves of both sides, evaluated per distinct tuple | 98 | 31.0 | 41.0 | 3.2 / 2.7 |
+| `t_mapped_agg_pg` | `sum`/`avg` of int2/int4/int8/interval/float4 of a joined column | 524 | 47.5 | 44.5 | 11 / 15 |
+| `t_mapped_agg_pg_inner` | the same under `ROLLUP` | 540 | 48.2 | 58.0 | 11 / 10.5 |
+| `f_gate_stable` | a qual with no column of the table (`now() > ..`, a scalar sub-select) | 110 | 2.7 | 4.0 | 41 / 33 |
+| `s2_per_order_union` | per-order aggregates, three arms (the form without the changes) | 1539 | 82.4 | 132.9 | 19 / 17 |
+| `s2_per_order_gate` | the same with a gate in the arms | 1447 | 74.0 | 91.2 | 20 / 18 |
+| `s2_per_order_union_sets` | arms with `GROUPING SETS` in the aggregating query | 1457 | 117.1 | 137.4 | 12 / 16 |
+| `t_two_level_where_exprs` | `OR` and expressions of several inner aggregates as the arm's HAVING | 800 | 149.4 | 188.8 | 5.4 / 5.4 |
+| `s2_per_order_rollup` | `ROLLUP` over per-order aggregates, 3 levels, one arm | 1018 | 569 | 401 | 1.8 / 2.2 |
+| `s2_per_order_sets_hash` | sets whose outer groups overflow the direct array (hash groups) | 4319 | 3819 | 3987 | 1.1 / 1.0 |
+
+The last two are bound by the cells: a hash of (row, group) per set and per cell, in one process, so the scan is as fast as PostgreSQL's sort and aggregate; they are chosen by cost and are not slower. The analytics corpus at 300000 orders after these changes (same method, `--bench --runs 7`, W=0): G1 to G8 30 to 137 times, S1@K4000 22, S2@K4000 22, S3@K4000 13, S4@K4000 5.7, S5@K4000 2.5, S6@K4000 5.1, S7@K4000 6.4; S1@K400 2.2 and S2@K400 1.9 on the scan; S1, S2 at K10 and S3 to S7 at K10 and K400 on the normal plan, 0.7 to 1.2 times (the 0.7 of S2 and S4 at K10 is the planning time of the matcher). All 29 queries equal.
+
 The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one error code that differs (above) is tagged `-- error: either` in its fixture.
 
+## Stays on the normal plan
+
+What the planner refuses among the joins and the per-order form, each once with the reason. The traps with a fixture (`t_not_in_subquery`, `t_key_expr_volatile`, `t_two_level_where_*`) must keep the plan and equal `sift.enable_agg = off`; the others are listed from the planner's refusals.
+
+| Shape | Reason |
+|---|---|
+| `FULL JOIN` to a table | the unmatched rows of the table would be output rows with no source row; the scan only emits tuples of source rows |
+| `RIGHT JOIN` | PostgreSQL turns it into a `LEFT` join of the other side, so the table is the preserved side: the same reason as `FULL` |
+| `NOT IN (SELECT ..)` | a hashed `SubPlan` with the NULL rule of `NOT IN` (one NULL member turns every answer into NULL); it is no anti join. `NOT EXISTS` is (pushed) |
+| join to a sub-select with `GROUP BY`/`LIMIT`/`DISTINCT`, a CTE that is read more than once, `VALUES`, a function in `FROM` | PostgreSQL does not pull them up to a base table, so the right side is a plan, not a table the scan can read at start; running a child plan under the node is not done |
+| join with no equality between leaves and columns of the table (a range or inequality join, `ON true`) | nothing to hash the table by; each distinct tuple would scan the table |
+| more than 3 keys, more than 4 joined tables, more than 8 combos | the limits of the spec (`SIFT_AGG_MAX_JOINS`, `SIFT_AGG_MAX_COMBOS`) |
+| key or filter that is volatile (`random()`, `clock_timestamp()`) | PostgreSQL evaluates it per row; the combo cache evaluates it once per distinct tuple |
+| the same leaf with two types in one combo (`varchar` leaf compared with a `text` column and `IS NULL` of the leaf as `varchar`) | the combo types each leaf once; the relabelled use is another type |
+| join key of text with a nondeterministic collation | the equality of the collation is not byte equality of the dictionary entries |
+| `sum`/`avg`/`min`/`max` of a joined `money` column | no hash opclass for the distinct-values table of mapped aggregates |
+| `sum(float4)` of a joined column | float4 addition is order dependent: the distinct-values form adds `value * count` |
+| `sum`/`avg` of other types of a joined column (`numeric` and `float8` are matched; `int2`/`int4`/`int8`, `interval` and `avg(float4)` through the PostgreSQL functions) | the aggregate is not in the allowlist of `mapped_pg_agg`; a function whose transition state is not a copyable datum cannot run per distinct value |
+| volatile outer qual above the arms (`WHERE random() < 0.5`) | PostgreSQL evaluates it once per inner group; the scan would evaluate it per cell, in another order; fixture `t_two_level_where_volatile` |
+| outer qual above the arms that mixes a group column of an arm with an inner aggregate (`avg_price > 100 OR kind = ..`) | the column belongs to the cell's outer group, which is known only when the cell is attributed; fixture `t_two_level_where_mixed` (the inner aggregate may still run in the scan) |
+| outer qual that reads the columns of several arms of the `UNION ALL` (it stays as a filter of the append) | a cell belongs to one arm; the qual would need the other arms' cells of the same row, which the scan has not seen yet |
+| `count(DISTINCT id)` alone over the arms, without a key | priced on the normal plan (not investigated: the cost of the two plans decides) |
+
 ## Requests to the column engine
+
+Not done here (the engine files are not part of this track). In order of what they would buy:
+
+1. **Lookup read through the seam.** `map_load` reads the joined table from the heap with the query's snapshot at executor start (a `sift_table` or `sift_col` table is read through the heap AM). A `sift_colsrc` call that returns the rows of a table with an index as dictionary codes and integers (`sift_colsrc_lookup`) would give the same snapshot rules without the tuple deforming, and let the same keys be hashed once for the parallel kinds.
+2. **Stable dictionary ids across units.** A combo evaluates PostgreSQL's expressions once per distinct tuple of leaf values; the cache is keyed by the values of the unit's dictionary, so a column with a dictionary per unit re-evaluates at every unit. A global (per index) id for each value, or the per-unit remap table kept by the engine, would turn those re-evaluations into lookups.
+3. **Partial tables for the serial-only kinds.** Joins, arms, sets, mapped aggregates: the state is a `dset` of (group, value) pairs, a cell table and per-set group tables. A dump and a merge by value (documented in "Parallel scan") for each would give them workers; the engine side needs a worker-shared view of the units after the pruning and per-unit row-id ranges for arms (a row never spans two workers).
+4. **`ndistinct`, `min`, `max`, `elems_per_row`, `zone_width` of the "Statistics request".** The cost of the lookup joins and the arms uses a default of 3 elements per row and no key cardinality; with the numbers the cost could price the combo cache (distinct tuples) and the cell table (groups per row) instead of a flat charge.
+5. **`money` leaf.** `money` is an `int8` with scale 2 (`cash_*` functions); a leaf of that type would make the column a key and an aggregate of the main table, and a joined `money` column hashable through it.
+
+## Requests to the column engine (generic aggregates)
 
 What the generic aggregates would gain from the engine (`src/sift_col*`, not changed here), in the order of what they save:
 
