@@ -14,27 +14,25 @@ CREATE TABLE ls_q (n serial, q text);
 INSERT INTO ls_q (q) VALUES
 	('w5'), ('w5 w50'), ('w5 OR w50 OR w7 OR w100'), ('w5 NOT w7'), ('w1*'), ('w12~1'), ('"w5 w7"'), ('w5 OR "w1 w2"'), ('missing OR w9');
 
+CREATE TABLE ls_s (tag text, n int, id int, s real);
 CREATE FUNCTION ls_scores(tag text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
 	c record;
 BEGIN
 	FOR c IN SELECT * FROM ls_q LOOP
-		EXECUTE format('CREATE TABLE ls_%s_%s AS SELECT id, sift.score(ctid) s FROM ls WHERE body @@> %L', tag, c.n, c.q);
+		EXECUTE format('CREATE TEMP TABLE ls_t AS SELECT id, sift.score(ctid) s FROM ls WHERE body @@> %L', c.q);
+		INSERT INTO ls_s SELECT tag, c.n, id, s FROM ls_t;
+		DROP TABLE ls_t;
 	END LOOP;
 END $$;
 
-CREATE FUNCTION ls_compare(a text, b text) RETURNS TABLE (q text, matched bool, same_rows bool, differ bigint) LANGUAGE plpgsql AS $$
-DECLARE
-	c record;
-BEGIN
-	FOR c IN SELECT * FROM ls_q ORDER BY n LOOP
-		q := c.q;
-		EXECUTE format('SELECT count(*) > 0, (SELECT count(*) FROM ls_%s_%s) = (SELECT count(*) FROM ls_%s_%s),
-			count(*) FILTER (WHERE x.s <> y.s) FROM ls_%s_%s x JOIN ls_%s_%s y USING (id)', a, c.n, b, c.n, a, c.n, b, c.n)
-			INTO matched, same_rows, differ;
-		RETURN NEXT;
-	END LOOP;
-END $$;
+CREATE FUNCTION ls_compare(a text, b text) RETURNS TABLE (q text, matched bool, same_rows bool, differ bigint) LANGUAGE sql AS $$
+	SELECT q.q, count(*) > 0,
+		(SELECT count(*) FROM ls_s WHERE tag = a AND n = q.n) = (SELECT count(*) FROM ls_s WHERE tag = b AND n = q.n),
+		count(*) FILTER (WHERE x.s <> y.s)
+	FROM ls_q q JOIN ls_s x ON x.tag = a AND x.n = q.n JOIN ls_s y ON y.tag = b AND y.n = q.n AND y.id = x.id
+	GROUP BY q.n, q.q ORDER BY q.n
+$$;
 
 -- vacuumed documents in a built segment
 DELETE FROM ls WHERE random() < 0.3 OR id % 7 = 0 AND id < 5000;
@@ -64,3 +62,7 @@ SELECT sift.merge('ls_idx', true) > 0 AS merged;
 SELECT count(*) FILTER (WHERE kind = 'immutable') = 1 AS one_segment, count(*) FILTER (WHERE dirty) AS dirty_left FROM sift.segments('ls_idx');
 SELECT ls_scores('final');
 SELECT * FROM ls_compare('mixed', 'final');
+
+DROP FUNCTION ls_scores(text), ls_compare(text, text);
+DROP TABLE ls, ls_q, ls_s;
+DROP EXTENSION pg_sift;
