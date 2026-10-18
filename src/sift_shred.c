@@ -532,6 +532,7 @@ sift_shred_spec_parse(const char *text)
 {
 	Parser		P;
 	SiftShredSpec *spec;
+	Step		none[1];
 
 	if (strlen(text) > SIFT_SHRED_MAX_SPEC_BYTES)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -546,7 +547,7 @@ sift_shred_spec_parse(const char *text)
 	P.groups[0].name = "";
 	P.ngroups = 1;
 	lex(&P);
-	parse_items(&P, NULL, 0);
+	parse_items(&P, none, 0);
 	if (P.tok != T_END)
 		SPEC_SYNTAX(P.loc, "expected \",\" or the end of the paths");
 
@@ -824,6 +825,7 @@ static bool
 dec_float(const Dec *d, const char *text, int len, bool is4, double *out)
 {
 	double		v;
+	char	   *end;
 
 	if (d->nfrac == 0 && d->ex == 0 && d->nint <= 15)
 	{
@@ -833,33 +835,16 @@ dec_float(const Dec *d, const char *text, int len, bool is4, double *out)
 			m = m * 10 + (d->ip[i] - '0');
 		if (!is4 || m <= (UINT64CONST(1) << 24))
 		{
-			*out = d->neg ? -(double) m : (double) m;
-			if (m == 0)
-				*out = 0.0;
+			*out = d->neg && m ? -(double) m : (double) m;
 			return true;
 		}
 	}
-	else
-	{
-		char	   *end;
-
-		errno = 0;
-		v = is4 ? (double) strtof(text, &end) : strtod(text, &end);
-		if (end != text + len || isinf(v) || (errno == ERANGE && v == 0))
-			return false;
-		*out = v == 0 ? 0.0 : v;
-		return true;
-	}
-	{
-		char	   *end;
-
-		errno = 0;
-		v = (double) strtof(text, &end);
-		if (end != text + len || isinf(v) || (errno == ERANGE && v == 0))
-			return false;
-		*out = v;
-		return true;
-	}
+	errno = 0;
+	v = is4 ? (double) strtof(text, &end) : strtod(text, &end);
+	if (end != text + len || isinf(v) || (errno == ERANGE && v == 0))
+		return false;
+	*out = v == 0 ? 0.0 : v;
+	return true;
 }
 
 /* ======================================================================== */
@@ -881,6 +866,7 @@ sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftShred  *sh = palloc0(sizeof(SiftShred));
 
+	sift_shred_init();
 	sh->mcxt = cx;
 	sh->spec = spec;
 	sh->limits.max_elems = limits && limits->max_elems ? limits->max_elems : SIFT_SHRED_DEFAULT_ELEMS;
@@ -1194,6 +1180,23 @@ sift_shred_full(const SiftShred *sh)
 	return sh->nframes > 0 && sh->frames[sh->nframes - 1].truncated;
 }
 
+int
+sift_shred_object_keys(const SiftShred *sh)
+{
+	const SiftShredNode *n = sh->frames[sh->nframes - 1].node;
+
+	return n->kind == N_OBJ ? n->nmembers : 0;
+}
+
+const char *
+sift_shred_object_key(const SiftShred *sh, int i, int *len)
+{
+	const Member *m = &sh->frames[sh->nframes - 1].node->members[i];
+
+	*len = m->len;
+	return m->key;
+}
+
 bool
 sift_shred_wants_number(const SiftShred *sh)
 {
@@ -1257,7 +1260,7 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TRUNC);
 	else
 	{
-		if (doc->ntext + len > doc->textcap)
+		if (doc->text == NULL || doc->ntext + len > doc->textcap)
 		{
 			doc->textcap = Max(Max(4096, doc->textcap * 2), doc->ntext + len);
 			doc->text = regrow(sh, doc->text, doc->textcap);

@@ -497,3 +497,31 @@ SELECT * FROM sh('{"x":{"y":{"z":[1,2,3]}},"w":1}', 'q int4, x.y.z[] int4');
  list | x.y.z[] |      0 |   0 |     | value  | 3
 (5 rows)
 
+-- bounded memory: a list is cut at max_elems (1 Mi by default) whatever the size of the array
+SELECT * FROM sift._test_shred_summary(jsonb_build_object('a', (SELECT jsonb_agg(i) FROM generate_series(1, 1100000) i)), 'a[] int4');
+ path | absent | nulls |  vals   | overflow | min |   max   
+------+--------+-------+---------+----------+-----+---------
+ a[]  |      0 |     0 | 1048576 |        0 | 1   | 1048576
+(1 row)
+
+SELECT kind, path, state, val FROM sh(jsonb_build_object('a', (SELECT jsonb_agg(i) FROM generate_series(1, 20) i)), 'a[] int4', 5) WHERE kind <> 'col';
+ kind | path |  state   | val 
+------+------+----------+-----
+ list | a[]  | overflow | 5
+ ovf  | a[]  | overflow | 16
+(2 rows)
+
+-- the shredder is kept between documents: nothing of the previous one remains
+SELECT id, sift._test_shred_count(doc, 'items[]{category text, qty int4}, tags[] text, m.* int4')
+FROM (VALUES (1, '{"items":[{"category":"x","qty":1},{"category":"y","qty":2},{"category":"z"}],"tags":["a","b"],"m":{"a":1,"b":2}}'::jsonb),
+			 (2, '{}'), (3, '{"tags":["c"]}'), (4, '{"items":[{"qty":9}]}'), (5, '[1]'), (6, '{"m":{"a":1}}')) v(id, doc) ORDER BY id;
+ id | _test_shred_count 
+----+-------------------
+  1 |                 9
+  2 |                 0
+  3 |                 1
+  4 |                 1
+  5 |                 0
+  6 |                 1
+(6 rows)
+

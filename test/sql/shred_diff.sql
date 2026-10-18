@@ -50,12 +50,16 @@ $$ SELECT coalesce(jsonb_object_agg(kv[i] #>> '{}', kv[i + 1]), '{}') FROM gener
 -- an odd value in place of a container, for dirty documents
 CREATE FUNCTION odd(j jsonb, clean bool) RETURNS jsonb LANGUAGE sql AS
 $$ SELECT CASE WHEN clean OR random() > 0.12 THEN j ELSE pick(ARRAY['null', '5', '"s"', '[]', '{}', '[1,2]', '{"k":1}'])::jsonb END $$;
+-- members no path declares; an object with many of them is searched key by key instead of walked
+CREATE FUNCTION noise(n int) RETURNS jsonb LANGUAGE sql AS
+$$ SELECT coalesce(jsonb_object_agg('z' || j, CASE j % 4 WHEN 0 THEN to_jsonb(j) WHEN 1 THEN to_jsonb('s' || j)
+							WHEN 2 THEN jsonb_build_object('items', j, 'k', jsonb_build_array(j)) ELSE jsonb_build_array(j, 'x') END), '{}') FROM generate_series(1, n) j $$;
 CREATE FUNCTION arr_of(n int, kind text, clean bool) RETURNS jsonb LANGUAGE sql AS
 $$ SELECT coalesce(jsonb_agg(CASE kind
 		WHEN 'text' THEN el(gv('text', clean))
 		WHEN 'float8' THEN el(gv('float8', clean))
 		WHEN 'item' THEN odd(obj('"category"', gv('cat', clean), '"kind"', gv('kind', clean), '"sku"', gv('text', clean),
-								 '"qty"', gv('int4', clean), '"price"', gv('float4', clean)), clean)
+								 '"qty"', gv('int4', clean), '"price"', gv('float4', clean)) || CASE WHEN random() < 0.2 THEN noise(20) ELSE '{}' END, clean)
 		WHEN 'leaf' THEN odd(obj('"v"', gv('text', clean)), clean)
 		END), '[]') FROM generate_series(1, n) $$;
 
@@ -68,7 +72,7 @@ BEGIN
 	END LOOP;
 	SELECT coalesce(jsonb_agg(odd(arr_of(rint(0, 4)::int, 'float8', clean), clean)), '[]') INTO matrix FROM generate_series(1, rint(0, 3)::int);
 	SELECT coalesce(jsonb_agg(odd(obj('"id"', gv('int4', clean), '"l"', odd(arr_of(rint(0, 3)::int, 'leaf', clean), clean)), clean)), '[]') INTO o FROM generate_series(1, rint(0, 3)::int);
-	RETURN obj('"attributes"', odd(obj('"locale"', gv('text', clean)), clean),
+	RETURN CASE WHEN random() < 0.3 THEN noise(rint(40, 70)::int) ELSE '{}' END || obj('"attributes"', odd(obj('"locale"', gv('text', clean)), clean),
 			   '"s"', gv('text', clean), '"i2"', gv('int2', clean), '"i4"', gv('int4', clean), '"i8"', gv('int8', clean),
 			   '"f4"', gv('float4', clean), '"f8"', gv('float8', clean), '"b"', gv('bool', clean),
 			   '"metrics"', odd(m, clean), '"items"', odd(arr_of(rint(0, 6)::int, 'item', clean), clean),

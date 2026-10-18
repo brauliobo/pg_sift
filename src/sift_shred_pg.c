@@ -1,7 +1,7 @@
 /*
  * sift_shred_pg.c - walks a jsonb for the shredder (docs/COL-SHRED.md). The iterator keeps one frame per level and never builds
- * the document; a container no declared path reaches is not entered (skipNested), and an object is left as soon as its last
- * declared key was seen.
+ * the document; a container no declared path reaches is not entered (skipNested), an object is left as soon as its last
+ * declared key was seen, and a wide object is searched key by key.
  */
 #include "sift_host.h"
 
@@ -10,15 +10,42 @@
 
 #include "sift_shred_pg.h"
 
+/* An object with more than this many members per declared key is searched by key, else walked */
+#define LOOKUP_RATIO 3
+
 static void walk_value(SiftShred *sh, JsonbValue *v);
+
+/* A wide object with few declared keys: one binary search per key beats walking every member */
+static void
+lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys)
+{
+	for (int i = 0; i < nkeys; i++)
+	{
+		int			len;
+		const char *key = sift_shred_object_key(sh, i, &len);
+		JsonbValue	v;
+
+		if (getKeyJsonValueFromContainer(c, key, len, &v) == NULL)
+			continue;
+		sift_shred_key(sh, key, len);
+		walk_value(sh, &v);
+	}
+}
 
 static void
 walk_object(SiftShred *sh, JsonbContainer *c)
 {
-	JsonbIterator *it = JsonbIteratorInit(c);
+	int			nkeys = sift_shred_object_keys(sh);
+	JsonbIterator *it;
 	JsonbValue	k,
 				v;
 
+	if (nkeys > 0 && JsonContainerSize(c) > LOOKUP_RATIO * nkeys)
+	{
+		lookup_members(sh, c, nkeys);
+		return;
+	}
+	it = JsonbIteratorInit(c);
 	JsonbIteratorNext(&it, &v, true);	/* WJB_BEGIN_OBJECT */
 	while (JsonbIteratorNext(&it, &k, true) == WJB_KEY)
 	{
