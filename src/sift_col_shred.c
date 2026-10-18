@@ -256,10 +256,10 @@ static void
 set_key(SiftColValue *v, const SiftShred *sh, uint32 id)
 {
 	uint32		len;
-	const char *s = id == SIFT_SHRED_NO_KEY ? NULL : sift_shred_dict_key(sh->dict, id, &len);
+	const char *s = id == SIFT_SHRED_NO_KEY ? NULL : sift_cdict_str(sh->dict, id, &len);
 
 	memset(v, 0, sizeof(*v));
-	if (s == NULL || len > SIFT_COL_MAX_STR)
+	if (s == NULL)
 		v->isnull = v->overflow = true;
 	else
 	{

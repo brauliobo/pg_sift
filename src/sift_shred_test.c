@@ -112,7 +112,7 @@ sift_test_shred(PG_FUNCTION_ARGS)
 
 			if (spec->groups[cd->group].kind == SIFT_SHRED_MAP && gr->keyid[i] != SIFT_SHRED_NO_KEY)
 			{
-				const char *k = sift_shred_dict_key(sh->dict, gr->keyid[i], &klen);
+				const char *k = sift_cdict_str(sh->dict, gr->keyid[i], &klen);
 
 				key = pnstrdup(k, klen);
 			}

@@ -10,6 +10,7 @@
 #define SIFT_SHRED_H
 
 #include "sift.h"
+#include "sift_col_enc.h"
 #include "sift_cpu.h"
 
 #define SIFT_SHRED_MAX_SPEC_BYTES	(64 * 1024)
@@ -147,16 +148,6 @@ typedef struct SiftShredLimits
 	uint32		max_keys;		/* distinct wildcard keys of the dictionary */
 } SiftShredLimits;
 
-/* ---------- wildcard keys ---------- */
-
-typedef struct SiftShredDict SiftShredDict;
-
-extern SiftShredDict *sift_shred_dict_create(uint32 max_keys);
-extern uint32 sift_shred_dict_find(const SiftShredDict *d, const char *key, uint32 len);	/* SIFT_SHRED_NO_KEY if unknown */
-extern uint32 sift_shred_dict_intern(SiftShredDict *d, const char *key, uint32 len);	/* SIFT_SHRED_NO_KEY if over the limits */
-extern const char *sift_shred_dict_key(const SiftShredDict *d, uint32 id, uint32 *len);
-extern uint32 sift_shred_dict_count(const SiftShredDict *d);
-
 /* ---------- the shredder ---------- */
 
 typedef enum SiftShredKey
@@ -179,7 +170,7 @@ typedef struct SiftShred
 {
 	const SiftShredSpec *spec;
 	SiftShredDoc doc;			/* the output of the document being shredded / last shredded */
-	SiftShredDict *dict;		/* wildcard keys; may be replaced before the first document */
+	SiftCDict  *dict;			/* wildcard keys: the id of a map member is its code */
 	SiftShredLimits limits;
 	MemoryContext mcxt;
 	SiftShredFrame *frames;

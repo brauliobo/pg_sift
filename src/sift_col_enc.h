@@ -53,6 +53,8 @@ extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
 extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
 /* The code, or -1 */
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
+/* The bytes and length of a code < d->n */
+extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 /* DICTS section entry: u32 n, u32 off[n + 1], bytes */
 extern void sift_cdict_serialize(const SiftCDict *d, StringInfo out);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */

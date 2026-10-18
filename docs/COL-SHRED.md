@@ -63,8 +63,8 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 
 ### Wildcard dictionary
 
-`*` members are `(keyid, value)` pairs of a map group. Ids come from a `SiftShredDict` (created with the shredder, replaceable
-before the first document): `intern` assigns the next id, `find` and `key` look up. A key over 255 bytes, or beyond `max_keys`
+`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`sift_col_enc.c`) created with the
+shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes, or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 
 ## Types and the overflow rule
@@ -182,9 +182,6 @@ or faster than AVX-512 (memory bound on this host).
 
 ## Integration notes
 
-- `SiftShredDict` is a first-seen string dictionary like col-core's `SiftCDict` (`sift_col_enc.c`): at integration the five
-  `sift_shred_dict_*` functions can be reimplemented over `sift_cdict_*` (the limits `max_keys` and `SIFT_SHRED_MAX_KEY_BYTES` stay
-  in the shredder).
 - `state_counts`, `minmax_*` and `expand_parents` overlap with the aggregation kernels of the plan track (`SiftAggKernels`:
   `bytes_mask`, `popcount_w`, min/max reductions, `gather_bits`); they work on the shredder's `state` bytes before the engine has
   bitmaps, so they stay until the adapter feeds the engine's kernels with `state_bits`.

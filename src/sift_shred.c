@@ -1,5 +1,5 @@
 /*
- * sift_shred.c - the path spec of sift_col, the shredder state machine and the wildcard dictionary (docs/COL-SHRED.md).
+ * sift_shred.c - the path spec of sift_col, the shredder state machine and its wildcard keys (docs/COL-SHRED.md).
  *
  * A spec is a tree of nodes: OBJ (a JSON object with declared members), LEAF (a typed column), LIST (key[]: an array whose
  * elements are the node `elem`, a group of its own) and MAP (key.*: every member of an object, a group of its own). The
@@ -596,127 +596,21 @@ sift_shred_spec_deparse(const SiftShredSpec *spec)
 }
 
 /* ======================================================================== */
-/* the wildcard dictionary */
+/* wildcard keys: ids are the codes of the shredder's SiftCDict, capped by max_keys and SIFT_SHRED_MAX_KEY_BYTES */
 /* ======================================================================== */
 
-struct SiftShredDict
-{
-	MemoryContext mcxt;
-	uint32		max_keys;
-	uint32		n;
-	uint32		tabsize;		/* power of two, at least twice n */
-	uint32	   *tab;			/* id + 1; 0 = empty */
-	uint32		idcap;
-	uint32	   *off;
-	uint32	   *len;
-	char	   *bytes;
-	uint32		nbytes;
-	uint32		bytescap;
-};
-
-SiftShredDict *
-sift_shred_dict_create(uint32 max_keys)
-{
-	SiftShredDict *d = palloc0(sizeof(SiftShredDict));
-
-	d->mcxt = CurrentMemoryContext;
-	d->max_keys = max_keys;
-	d->tabsize = 64;
-	d->tab = palloc0(d->tabsize * sizeof(uint32));
-	return d;
-}
+StaticAssertDecl(SIFT_SHRED_MAX_KEY_BYTES <= SIFT_COL_MAX_STR, "a wildcard key must fit a col dictionary string");
 
 static uint32
-key_hash(const char *key, uint32 len)
+intern_key(SiftShred *sh, const char *key, uint32 len)
 {
-	return sift_term_hash(key, len);
-}
+	int64		id = sift_cdict_find(sh->dict, key, len);
 
-uint32
-sift_shred_dict_find(const SiftShredDict *d, const char *key, uint32 len)
-{
-	for (uint32 i = key_hash(key, len) & (d->tabsize - 1);; i = (i + 1) & (d->tabsize - 1))
-	{
-		uint32		id = d->tab[i];
-
-		if (id == 0)
-			return SIFT_SHRED_NO_KEY;
-		id--;
-		if (d->len[id] == len && memcmp(d->bytes + d->off[id], key, len) == 0)
-			return id;
-	}
-}
-
-static void
-dict_grow_table(SiftShredDict *d)
-{
-	uint32	   *old = d->tab;
-	uint32		oldsize = d->tabsize;
-
-	d->tabsize *= 2;
-	d->tab = MemoryContextAllocZero(d->mcxt, d->tabsize * sizeof(uint32));
-	for (uint32 j = 0; j < oldsize; j++)
-	{
-		uint32		id = old[j];
-		uint32		i;
-
-		if (id == 0)
-			continue;
-		i = key_hash(d->bytes + d->off[id - 1], d->len[id - 1]) & (d->tabsize - 1);
-		while (d->tab[i])
-			i = (i + 1) & (d->tabsize - 1);
-		d->tab[i] = id;
-	}
-	pfree(old);
-}
-
-uint32
-sift_shred_dict_intern(SiftShredDict *d, const char *key, uint32 len)
-{
-	uint32		id = sift_shred_dict_find(d, key, len);
-	uint32		i;
-
-	if (id != SIFT_SHRED_NO_KEY)
-		return id;
-	if (d->n >= d->max_keys || len > SIFT_SHRED_MAX_KEY_BYTES)
+	if (id >= 0)
+		return (uint32) id;
+	if (sh->dict->n >= sh->limits.max_keys || len > SIFT_SHRED_MAX_KEY_BYTES)
 		return SIFT_SHRED_NO_KEY;
-	if (d->n == d->idcap)
-	{
-		d->idcap = d->idcap ? d->idcap * 2 : 64;
-		d->off = d->off ? repalloc(d->off, d->idcap * sizeof(uint32)) : MemoryContextAlloc(d->mcxt, d->idcap * sizeof(uint32));
-		d->len = d->len ? repalloc(d->len, d->idcap * sizeof(uint32)) : MemoryContextAlloc(d->mcxt, d->idcap * sizeof(uint32));
-	}
-	if (d->bytes == NULL || d->nbytes + len > d->bytescap)
-	{
-		d->bytescap = Max(d->bytescap * 2, Max(1024, d->nbytes + len));
-		d->bytes = d->bytes ? repalloc(d->bytes, d->bytescap) : MemoryContextAlloc(d->mcxt, d->bytescap);
-	}
-	memcpy(d->bytes + d->nbytes, key, len);
-	d->off[d->n] = d->nbytes;
-	d->len[d->n] = len;
-	d->nbytes += len;
-	id = d->n++;
-	if (d->n * 2 > d->tabsize)
-		dict_grow_table(d);
-	for (i = key_hash(key, len) & (d->tabsize - 1); d->tab[i]; i = (i + 1) & (d->tabsize - 1))
-		;
-	d->tab[i] = id + 1;
-	return id;
-}
-
-const char *
-sift_shred_dict_key(const SiftShredDict *d, uint32 id, uint32 *len)
-{
-	if (id >= d->n)
-		return NULL;
-	*len = d->len[id];
-	return d->bytes + d->off[id];
-}
-
-uint32
-sift_shred_dict_count(const SiftShredDict *d)
-{
-	return d->n;
+	return sift_cdict_intern(sh->dict, key, len);
 }
 
 /* ======================================================================== */
@@ -876,7 +770,7 @@ sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits)
 	sh->doc.grp = palloc0(spec->ngroups * sizeof(SiftShredGroup));
 	sh->frames = palloc(MAX_FRAMES * sizeof(SiftShredFrame));
 	sh->maxframes = MAX_FRAMES;
-	sh->dict = sift_shred_dict_create(sh->limits.max_keys);
+	sh->dict = sift_cdict_create(cx);
 	MemoryContextSwitchTo(old);
 	return sh;
 }
@@ -1129,7 +1023,7 @@ sift_shred_key(SiftShred *sh, const char *key, int len)
 
 	if (f->node->kind == N_MAP)
 	{
-		f->keyid = sift_shred_dict_intern(sh->dict, key, len);
+		f->keyid = intern_key(sh, key, len);
 		return SIFT_SHRED_TAKE;
 	}
 	m = find_member(f->node, key, len, NULL);
