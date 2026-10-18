@@ -26,6 +26,10 @@ typedef struct SiftColRel
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
+/* The storage class of a type the engine holds natively (false: not natively); the scale of a numeric(p, s) leaf (false: not representable) */
+extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
+extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
+
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
 

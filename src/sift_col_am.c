@@ -112,8 +112,8 @@ sift_col_options_compression(Relation index)
 
 /* ---------- the leaves of an index ---------- */
 
-static bool
-leaf_store(Oid typid, SiftColStore *store)
+bool
+sift_col_leaf_store(Oid typid, SiftColStore *store)
 {
 	switch (typid)
 	{
@@ -142,14 +142,25 @@ leaf_store(Oid typid, SiftColStore *store)
 }
 
 /* The scale of numeric(p, s); the INT class holds the number times 10^s exactly while p <= 18 (docs/COL.md 2.3) */
-static uint8
-numeric_scale_of(Form_pg_attribute att)
+bool
+sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
 {
 	int32		tm = att->atttypmod - VARHDRSZ;
 	int			prec = (tm >> 16) & 0xFFFF,
-				scale = ((tm & 0x7FF) ^ 1024) - 1024;
+				s = ((tm & 0x7FF) ^ 1024) - 1024;
 
-	if (att->atttypmod < VARHDRSZ || prec > SIFT_COL_MAX_SCALE || scale < 0)
+	if (att->atttypmod < VARHDRSZ || prec > SIFT_COL_MAX_SCALE || s < 0)
+		return false;
+	*scale = s;
+	return true;
+}
+
+static uint8
+numeric_scale_of(Form_pg_attribute att)
+{
+	uint8		scale;
+
+	if (!sift_col_numeric_scale(att, &scale))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift_col holds numeric(p, s) with p <= %d and s >= 0, not the type of column \"%s\"", SIFT_COL_MAX_SCALE,
@@ -182,7 +193,7 @@ build_rel(Relation index)
 		uint8		scale = typid == NUMERICOID ? numeric_scale_of(TupleDescAttr(desc, a - 1)) : 0;
 		int			k = typid == JSONBOID ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 1;
 
-		if (typid != JSONBOID && !leaf_store(typid, &store))
+		if (typid != JSONBOID && !sift_col_leaf_store(typid, &store))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid),
