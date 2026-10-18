@@ -4,6 +4,15 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+For each chunk it picks, from exact sizes, the
+  smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
+  (ALP-style) and common-divisor (timestamps of whole seconds, amounts in cents) encodings, and layers LZ4 or zstd on a stream only where the cost rule says the saved bytes are worth the decode time. Filters run on the
+  encoded form with scalar, AVX2 and AVX-512 kernels that are bit-identical and selected by `sift.simd`; what is written never depends on the CPU.
+  A damaged chunk is a clean `ERRCODE_DATA_CORRUPTED` error (corruption fuzz under ASan/UBSan). The per-column `compression` policy (`auto`, `none`,
+  `lz4[:N]`, `zstd[:N]`, explicit encodings) is parsed here and applied by the engine. Build: LZ4 and zstd are linked when their development packages are
+  installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
+  `colcodec_simd` and `make -C tools/colcodec test`.
+
 - Fix: a ranked scan with `LIMIT` plus `OFFSET` of 67,108,864 or more failed with `invalid memory alloc request size` (so did
   `LIMIT 2147483647` meaning "all"), and so did a ranked scan drained without a limit once it had more than 16.7 million matches. The
   top-k heap now grows with the hits found, in huge allocations, and counts in 64 bits: a huge limit costs what the matches take.

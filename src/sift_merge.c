@@ -51,10 +51,10 @@ immutables(const SiftDirSnapshot *snap, SiftSegEntry *imm)
 }
 
 static int
-pick_dead(Relation index, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
+pick_dead(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *imm, int n, SiftSegEntry *sel)
 {
 	for (int i = 0; i < n; i++)
-		if (mostly_dead(index, &imm[i]))
+		if (pol && pol->mostly_dead ? pol->mostly_dead(index, &imm[i]) : mostly_dead(index, &imm[i]))
 		{
 			sel[0] = imm[i];
 			return 1;
@@ -67,7 +67,7 @@ sift_merge_pick_dead(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *
 {
 	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
 
-	return pick_dead(index, imm, immutables(snap, imm), sel);
+	return pick_dead(index, NULL, imm, immutables(snap, imm), sel);
 }
 
 int
@@ -96,5 +96,5 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
 		return Min(n, fanin);
 	}
-	return pick_dead(index, imm, n, sel);
+	return pick_dead(index, pol, imm, n, sel);
 }
