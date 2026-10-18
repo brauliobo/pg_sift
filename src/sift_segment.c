@@ -399,6 +399,8 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 			corrupt(seg, "Sections do not tile the %llu-byte stream.", ULL(size));
 	}
 	seg->dict = sift_dict_open(&seg->sr, h, mcxt);
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS && (entry->flags & SIFT_SEG_DIRTY))
+		sift_dict_track_slots(seg->dict);
 	MemoryContextSwitchTo(old);
 	return seg;
 }

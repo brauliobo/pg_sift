@@ -43,9 +43,7 @@ extern PGDLLIMPORT int sift_test_dict_max;
 typedef struct SiftTermInfo
 {
 	uint32		df;
-	uint8		flags;
-	uint8		max_bound;		/* u8 bound over all postings */
-	uint16		reserved;
+	uint32		ldf;			/* df of the live docs: the dictionary's df until sift_seg_term_stats takes the vacuumed postings off */
 	uint64		post_off;		/* term blob in the POSTINGS section */
 	uint32		post_len;
 	uint32		codec_len;		/* codec blob at the start of the term blob */
@@ -54,8 +52,9 @@ typedef struct SiftTermInfo
 	const uint8 *inline_pos;	/* inline term: its records back to back, in the dictionary block or the writer */
 	SiftKey		inline_keys[SIFT_INLINE_MAX];
 	uint8		inline_tf[SIFT_INLINE_MAX];
-	uint32		ldf;			/* df of the live docs: the dictionary's df until sift_seg_term_stats takes the vacuumed postings off */
-	int32		slot;			/* of the term in the segment's dead-postings table, -1 for an inline term (set by the reader) */
+	uint8		flags;
+	uint8		max_bound;		/* u8 bound over all postings */
+	int32		slot;			/* of the term in the segment's dead-postings table, -1 for an inline term (see sift_dict_track_slots) */
 } SiftTermInfo;
 
 /* On-disk DICTIDX entry */
@@ -88,6 +87,12 @@ typedef struct SiftDict SiftDict;
 
 extern SiftDict *sift_dict_open(SiftStreamReader *sr, const SiftSegHeaderData *hdr, MemoryContext mcxt);
 extern bool sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info);
+
+/*
+ * Lookups give a term's slot (SiftTermInfo.slot) only when asked to, which the segments with vacuumed docs of format 2 do: the others
+ * read the same entries without counting them. Scans always give it.
+ */
+extern void sift_dict_track_slots(SiftDict *d);
 
 /*
  * Visits terms in [lo, hi) (lo NULL = from the start, hi NULL = unbounded)
