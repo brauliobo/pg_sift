@@ -17,7 +17,7 @@ CREATE INDEX d_body ON d USING sift (body) WITH (mutable_limit = 64);
 -- folded: case and accent folding on (the default); raw: values kept byte for byte
 CREATE INDEX d_cat ON d USING sift (cat) WITH (analyzer = keyword);
 CREATE INDEX d_raw ON d USING sift (cat) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 2);
-CREATE INDEX d_hc ON d USING sift (hc) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 3);
+CREATE INDEX d_hc ON d USING sift (hc) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 3, vacuum_segments = 128);
 VACUUM ANALYZE d;
 SELECT idx, count(*) AS segments, max(sb_hi) AS last_sb
 FROM (SELECT 'd_raw' idx, * FROM sift.segments('d_raw') UNION ALL SELECT 'd_hc', * FROM sift.segments('d_hc')) s GROUP BY idx ORDER BY idx;
@@ -157,10 +157,10 @@ SELECT * FROM sift.facets('d_body', 'd_part', 'common');
 DROP INDEX d_part;
 DROP TABLE other;
 
--- a value longer than a term is refused, never truncated into another value
+-- a value longer than a term is indexed as its start and a hash of all of it: its facet is that term, and no other value's
 INSERT INTO d VALUES (9000, 'long', repeat('x', 256), 't', 'k', '');
 INSERT INTO d VALUES (9001, 'long', repeat('x', 255), 't', 'k', '');
-SELECT length(value), count FROM sift.facets('d_body', 'd_cat', 'long');
+SELECT length(value), count FROM sift.facets('d_body', 'd_cat', 'long') ORDER BY 1 DESC;
 DELETE FROM d WHERE id = 9001;
 
 -- privileges: the table needs SELECT, and row level security is refused

@@ -30,11 +30,29 @@ SELECT q, k_ids(q), k_ids(q) = k_ids_seq(q) AS same FROM (VALUES ('ALPHA'), ('ca
 SELECT value, count(*) FROM (SELECT (SELECT token FROM sift.tokenize(v, 'k_fold')) AS value FROM k) s
 GROUP BY value ORDER BY 2 DESC, value COLLATE "C";
 
--- a value is at most a term long, and is never cut into another value
+-- a value over a term long (255 bytes) is its start and a hash of all of it, so it is never cut into another value
+-- nor an error: in the build of an index, in an insert and in a query alike
 INSERT INTO k VALUES (20, repeat('é', 127));
 INSERT INTO k VALUES (21, repeat('é', 128));
-INSERT INTO k VALUES (22, repeat('x', 256));
+INSERT INTO k VALUES (22, repeat('x', 256)), (23, repeat('x', 255) || 'a'), (24, repeat('x', 255) || 'b'), (25, repeat('X', 255) || 'A'),
+	(26, repeat('x', 256) || 'a');
+SELECT id, octet_length(f.token) AS bytes, right(f.token, 16) AS hash
+FROM k JOIN LATERAL sift.tokenize(v, 'k_fold') f ON true WHERE octet_length(v) > 200 ORDER BY id;
 SELECT sift.verify('k_fold', true), sift.verify('k_exact', true), sift.verify('k_case', true);
+
+-- a long value finds the rows with the same value, exact or folded, and no other with the same start
+SELECT left(q, 1) || '*' || length(q) || right(q, 1) AS value, k_ids('"' || q || '"') AS ids,
+	k_ids('"' || q || '"') = k_ids_seq('"' || q || '"') AS same
+FROM (VALUES (repeat('x', 256)), (repeat('x', 255) || 'a'), (repeat('x', 255) || 'b'), (repeat('x', 256) || 'a'),
+	(repeat('é', 128)), (repeat('é', 127)), (repeat('x', 300))) v(q);
+SELECT k_ids(repeat('x', 200) || '*') AS prefix_ids;
+
+-- the build of an index writes the terms the inserts did
+CREATE TABLE kl_before AS SELECT q, k_ids('"' || q || '"') AS ids
+FROM (VALUES (repeat('x', 256)), (repeat('x', 255) || 'a'), (repeat('x', 255) || 'b'), (repeat('é', 128))) v(q);
+REINDEX INDEX k_fold;
+SELECT bool_and(k_ids('"' || q || '"') = ids) AS rebuilt_same, count(*) FROM kl_before;
+DROP TABLE kl_before;
 
 -- options
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, stemmer = en);

@@ -3,8 +3,8 @@
 #
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
 #
-# quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck,
-#   isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
+# quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
+#   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
 #   fast-to-detect ones), a 30 s soak and a 20 s fuzz budget.
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
@@ -32,6 +32,7 @@ MODE=${1:-quick}
 renice -n 19 $$ >/dev/null
 S=$REPO/scripts
 CORES=$(nproc 2>/dev/null || echo 4)
+[[ $(pg_config --version) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 # the cap of the scratch directory: 4096 MB (full 8192) up to four lanes, 512 MB more for each lane above
 if [[ $MODE == full ]]; then
@@ -135,6 +136,17 @@ if [[ $MODE == full ]]; then
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 else
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
+	# the regression tests that need no test-only function, against the release library: beside the others on PostgreSQL 18,
+	# after the pool on 17, where the install is the server's own
+	# (the quick tests only: the slow ones and the ones that need the test-only build, TESTING_REGRESS of the Makefile, are not run)
+	release_library_tests() {
+		local t p
+		for t in $(rest sql .sql $SLOW_REGRESS); do
+			for p in $(sed -n 's/^TESTING_REGRESS = //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
+			echo "$t"
+		done
+	}
+	if (( PG_MAJOR >= 18 )); then job release-library-regress release-library-regress 0 "$S/release-library-check.sh" $(release_library_tests); else release_last=1; fi
 	installcheck facets index_build_postings
 	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
@@ -191,6 +203,10 @@ for (( n = 1; n <= LANES; n++ )); do
 	pids+=($!)
 done
 wait "${pids[@]}" "$selftest" "$portable"
+if [[ -n ${release_last:-} ]] && [[ -z ${SIFT_CI_JOBS:-} || release-library-regress =~ $SIFT_CI_JOBS ]]; then
+	SUITES+=(release-library-regress)
+	step release-library-regress release-library-regress "$S/release-library-check.sh" $(release_library_tests)
+fi
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
 
 # ---------- summary ----------

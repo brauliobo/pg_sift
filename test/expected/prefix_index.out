@@ -164,6 +164,9 @@ SELECT sift.verify('px_idx', true);
 
 -- the option is part of the analyzer: switching it needs a REINDEX
 ALTER INDEX pn_idx SET (prefix_index = 2);
+WARNING:  index "pn_idx" was built with other analyzer options
+DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
+HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT count(*) FROM pn WHERE body @@> 'al*';
 ERROR:  index "pn_idx" was built with other analyzer options
 HINT:  Use REINDEX to apply the new options.

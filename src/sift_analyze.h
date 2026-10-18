@@ -113,8 +113,8 @@ extern void sift_analyzer_config_set_synthetic(SiftAnalyzerConfig *cfg, int pref
 /*
  * Keyword analyzer (facets): a text is one token, folded like a word (case_fold / accent_fold; with
  * both off it is kept byte for byte) and never stemmed. Empty text, or text that folds to nothing,
- * has no token; one longer than SIFT_MAX_TERM_BYTES raises ERRCODE_PROGRAM_LIMIT_EXCEEDED, because
- * truncating would merge distinct values. Refreshes the hash.
+ * has no token; one longer than SIFT_MAX_TERM_BYTES is its start, U+FFFF and a 64-bit hash of all of it
+ * (distinct values stay apart). Refreshes the hash.
  */
 extern void sift_analyzer_config_set_keyword(SiftAnalyzerConfig *cfg, bool keyword);
 
