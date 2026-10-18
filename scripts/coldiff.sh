@@ -24,7 +24,9 @@
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
 #                       test/col/col_index.sql, USING sift_col replaced by --col-am)
-#   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed
+#   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed; above 4000 the t_* tables grow with it
+#   --default-costs     the fixtures run at the server's costs: the page costs of a fixture that expects the scan are not raised (they are on the
+#                       default tiny table, where the btree plan looks cheap too); with --fixture-rows 300000 the plan choice is the planner's own
 #   --mutate KIND       perturbs the "on" results (int float float-tiny text null rows dup order type cols), to prove a failure is seen
 #   --selftest          runs the fixture corpus plain against plain (must pass), then every mutation (must fail, float-tiny pass)
 #   --keep              keeps the databases (sift_coldiff_fix, sift_coldiff_ana) and the scripts in $SIFT_TMP/coldiff
@@ -35,7 +37,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
-SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 REL=1e-9 ABS=1e-12
+SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 REL=1e-9 ABS=1e-12
 VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all COL_AM= COL_INDEX= VERBOSE=
 COL_PATHS='attributes->channel text, attributes->normalized bool, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_role text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
@@ -48,12 +50,12 @@ while (( $# )); do
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
-		*) sed -n '2,38p' "$0"; exit 1 ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		*) sed -n '2,40p' "$0"; exit 1 ;;
 	esac
 	shift
 done
-[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,38p' "$0"; exit 1; }
+[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,40p' "$0"; exit 1; }
 [[ -n $STORES ]] || STORES=$(( ROWS / 30 > 100 ? ROWS / 30 : 100 ))
 QUERIES=${QUERIES:-$ANALYTICS_DIR/queries/*.sql}
 # a variant list as a PostgreSQL array literal: the reference always runs
@@ -111,6 +113,7 @@ run_corpus() {
 		echo "\\set ON_ERROR_STOP 0"
 		echo "LOAD 'pg_sift';"
 		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
+		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
 		echo "\\o /dev/null"
 		[[ -z ${HELD:-} ]] || {
 			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"
@@ -168,6 +171,10 @@ report() {
 	(( $(sql -v scen="$scen" <<<"SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND NOT ok") == 0 )) || table -v scen="$scen" <<-'SQL'
 		SELECT name AS "FAIL", variant, detail FROM coldiff.results WHERE scenario = :'scen' AND NOT ok ORDER BY id LIMIT 40
 	SQL
+	(( $(sql -v scen="$scen" <<<"SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND shape_ok = false") == 0 )) || table -v scen="$scen" <<-'SQL'
+		SELECT name AS "FAIL (plan against its expect tag)", variant, expect, CASE WHEN used THEN 'SiftAgg' ELSE 'plain' END AS plan FROM coldiff.results
+		WHERE scenario = :'scen' AND shape_ok = false ORDER BY id LIMIT 40
+	SQL
 	sql -v scen="$scen" <<-'SQL'
 		SELECT format('coldiff[%s]: %s queries, %s runs: %s equal, %s DIFFER, %s requires unmet; SiftAgg used by %s of %s; plans against their expect tag %s',
 			:'scen', count(DISTINCT name), count(*) FILTER (WHERE variant <> 'skip'), count(*) FILTER (WHERE ok AND variant <> 'skip'), count(*) FILTER (WHERE NOT ok),
@@ -218,6 +225,7 @@ col_index() {
 			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, store_id, customer_id, source, placed_at, country_code, lang, status, total, discount, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
 		t_int) ddl="CREATE INDEX t_int_col ON t_int USING $AM (id, grp, i4, i8)" ;;
 		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
+		t_nan) ddl="CREATE INDEX t_nan_col ON t_nan USING $AM (id, grp, n2, n6)" ;;
 		t_float) ddl="CREATE INDEX t_float_col ON t_float USING $AM (id, grp, f4, f8)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 	esac
@@ -227,7 +235,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_text orders_odd orders_part; do
+	for t in t_int t_float t_num t_nan t_text orders_odd orders_part; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
