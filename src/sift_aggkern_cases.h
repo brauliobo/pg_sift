@@ -75,11 +75,9 @@ typedef struct AgkCase
 	int64	   *i64;
 	double	   *f64;
 	uint32	   *code;			/* < ncode */
-	uint8	   *bytes;
 	uint64	   *mask;			/* n bits */
 	uint64	   *mask2;
 	int			ncode;
-	uint8	   *lut;			/* ncode entries */
 	uint32	   *map;			/* ncode entries */
 	int32	   *v2;				/* around gbase, for lut_i32 */
 	int32		gbase;
@@ -99,15 +97,7 @@ typedef struct AgkCase
 	int			nrows;
 	uint64	   *rowmask;
 	uint32	   *parent;			/* n entries < nrows */
-	int			nrs;
-	uint32	   *rsel;			/* nrs entries < n, any order */
 	uint32		prev0;
-	int32		c32,
-				lo32,
-				hi32;
-	int64		c64,
-				lo64,
-				hi64;
 	double		cf,
 				lof,
 				hif,
@@ -244,29 +234,6 @@ agk_f64(AgkRng *r, int mode)
 	}
 }
 
-/* A threshold near x: x, a neighbour, an extreme or random */
-static inline int64
-agk_pick_int(AgkRng *r, int64 x, int64 lo, int64 hi)
-{
-	switch (agk_below(r, 5))
-	{
-		case 0:
-			return x;
-		case 1:
-			return x < hi ? x + 1 : x;
-		case 2:
-			return x > lo ? x - 1 : x;
-		case 3:
-			return agk_below(r, 2) ? lo : hi;
-		default:
-			{
-				const int64 x = (int64) agk_next(r);
-
-				return Max(lo, Min(hi, x));
-			}
-	}
-}
-
 static inline double
 agk_pick_f64(AgkRng *r, const double *v, int n)
 {
@@ -348,7 +315,6 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 	c->i32 = AGK_ARR(c, r, int32, n);
 	c->i64 = AGK_ARR(c, r, int64, n);
 	c->f64 = AGK_ARR(c, r, double, n);
-	c->bytes = AGK_ARR(c, r, uint8, n);
 	c->code = AGK_ARR(c, r, uint32, n);
 	c->parent = AGK_ARR(c, r, uint32, n);
 	c->gid = AGK_ARR(c, r, uint32, n);
@@ -365,7 +331,6 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 	c->msz = agk_pick_size(r, 3000);
 	c->ngrp = agk_pick_size(r, 300);
 	c->nrows = agk_pick_size(r, SIFT_AGG_VEC);
-	c->lut = AGK_ARR(c, r, uint8, c->ncode);
 	c->map = AGK_ARR(c, r, uint32, c->ncode);
 	c->lut2 = AGK_ARR(c, r, uint8, c->nlut);
 	c->map2 = AGK_ARR(c, r, uint32, c->msz);
@@ -379,11 +344,7 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 		c->i32[i] = agk_i32(r, m32);
 		c->i64[i] = agk_i64(r, m64);
 		c->f64[i] = agk_f64(r, mf);
-		c->bytes[i] = agk_below(r, 3) ? 0 : 1 + agk_below(r, 255);
 	}
-	if (agk_below(r, 3) == 0)
-		for (int i = 0; i < n; i++)
-			c->bytes[i] = 0;
 
 	/* dictionary codes: uniform, runs, near the top of the LUT, sorted */
 	for (int i = 0; i < n; i++)
@@ -395,10 +356,8 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 
 		for (int i = 0; i < c->ncode; i++)
 		{
-			c->lut[i] = agk_unit(r) < d ? (uint8) (agk_below(r, 2) ? 1 + agk_below(r, 255) : 0x80) : 0;
 			c->map[i] = agk_below(r, 64);
 		}
-		c->lut[c->ncode - 1] = agk_below(r, 2) ? 0xFF : 0;
 		for (uint32 i = 0; i < c->nlut; i++)
 			c->lut2[i] = agk_unit(r) < d ? 1 + agk_below(r, 255) : 0;
 	}
@@ -436,27 +395,8 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 				pmode == 1 ? (uint32) ((int64) e * c->nrows / Max(n, 1)) :
 				(e > 0 && agk_below(r, 4) ? parent_step(r, c->parent[e - 1], c->nrows) : agk_below(r, c->nrows));
 	}
-	c->nrs = n > 0 ? agk_below(r, n + 1) : 0;
-	c->rsel = AGK_ARR(c, r, uint32, c->nrs);
-	for (int j = 0; j < c->nrs; j++)
-		c->rsel[j] = agk_below(r, n);
 	c->prev0 = agk_below(r, 3) ? UINT32_MAX : agk_below(r, c->ncode);
 
-#define PICK(arr, lo, hi)	agk_pick_int(r, n > 0 ? (arr)[agk_below(r, n)] : 0, lo, hi)
-	{
-		int64		x = PICK(c->i32, INT32_MIN, INT32_MAX),
-					y = PICK(c->i32, INT32_MIN, INT32_MAX),
-					z = PICK(c->i64, INT64_MIN, INT64_MAX),
-					t = PICK(c->i64, INT64_MIN, INT64_MAX);
-
-		c->c32 = PICK(c->i32, INT32_MIN, INT32_MAX);
-		c->lo32 = Min(x, y);
-		c->hi32 = Max(x, y);
-		c->c64 = PICK(c->i64, INT64_MIN, INT64_MAX);
-		c->lo64 = Min(z, t);
-		c->hi64 = Max(z, t);
-	}
-#undef PICK
 	c->cf = agk_pick_f64(r, c->f64, n);
 	c->lof = agk_pick_f64(r, c->f64, n);
 	c->hif = agk_pick_f64(r, c->f64, n);
@@ -516,12 +456,8 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 	const int	n = c->n,
 				nw = c->nw;
 	const uint64 *masks[] = {c->mask, NULL};
-	uint64	   *bm = agk_out_words(nw),
-			   *w2 = agk_out_words(nw);
-	uint32	   *sel = AGK_ALLOC((size_t) (64 * nw + SIFT_AGG_PAD / 4) * 4),
-			   *ssel = AGK_ALLOC((size_t) (64 * nw + SIFT_AGG_PAD / 4) * 4),
-			   *g = AGK_ALLOC(n > 0 ? (size_t) n * 4 : 4);
-	int			nssel;
+	uint64	   *bm = agk_out_words(nw);
+	uint32	   *g = AGK_ALLOC(n > 0 ? (size_t) n * 4 : 4);
 
 	memset(res, 0, sizeof(*res));
 	res->h = UINT64CONST(0xCBF29CE484222325);
@@ -529,71 +465,15 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 #define BM(label, call) do { memset(bm, 0xA5, (size_t) nw * 8); call; agk_hash(res, bm, (size_t) nw * 8); agk_step(res, label); } while (0)
 	for (int o = 0; o < lengthof(ops); o++)
 	{
-		BM("cmp_i32", k->cmp_i32(bm, c->i32, n, ops[o], c->c32));
-		BM("cmp_i64", k->cmp_i64(bm, c->i64, n, ops[o], c->c64));
 		BM("cmp_f64", k->cmp_f64(bm, c->f64, n, ops[o], c->cf));
 		BM("cmp_f64 special", k->cmp_f64(bm, c->f64, n, ops[o], c->cf2));
 	}
-	BM("between_i32", k->between_i32(bm, c->i32, n, c->lo32, c->hi32));
-	BM("between_i32 empty", k->between_i32(bm, c->i32, n, c->hi32, c->lo32));
-	BM("between_i64", k->between_i64(bm, c->i64, n, c->lo64, c->hi64));
-	BM("between_i64 empty", k->between_i64(bm, c->i64, n, c->hi64, c->lo64));
 	BM("between_f64", k->between_f64(bm, c->f64, n, c->lof, c->hif));
 	BM("between_f64 swapped", k->between_f64(bm, c->f64, n, c->hif, c->lof));
 	BM("between_f64 special lo", k->between_f64(bm, c->f64, n, c->cf2, c->hif));
 	BM("between_f64 special hi", k->between_f64(bm, c->f64, n, c->lof, c->cf2));
-	BM("lut_code", k->lut_code(bm, c->code, n, c->lut));
 	BM("lut_i32", k->lut_i32(bm, c->v2, n, c->gbase, c->nlut, c->lut2));
-	BM("bytes_mask", k->bytes_mask(bm, c->bytes, n));
-
-	memcpy(w2, c->mask, (size_t) nw * 8);
-	k->and_w(w2, c->mask2, nw);
-	agk_hash(res, w2, (size_t) nw * 8);
-	agk_step(res, "and_w");
-	memcpy(w2, c->mask, (size_t) nw * 8);
-	k->or_w(w2, c->mask2, nw);
-	agk_hash(res, w2, (size_t) nw * 8);
-	agk_step(res, "or_w");
-	memcpy(w2, c->mask, (size_t) nw * 8);
-	k->andnot_w(w2, c->mask2, nw);
-	agk_hash(res, w2, (size_t) nw * 8);
-	agk_step(res, "andnot_w");
-	AGK_HV(res, k->popcount_w(c->mask, nw));
-	AGK_HV(res, k->popcount_w(c->mask2, nw));
-	agk_step(res, "popcount_w");
 	BM("gather_bits", k->gather_bits(bm, c->rowmask, c->parent, n));
-
-	for (int m = 0; m < 2; m++)
-	{
-		const uint64 *mm = m ? c->mask2 : c->mask;
-		int			cnt;
-
-		memset(sel, 0xA5, (size_t) (64 * nw + SIFT_AGG_PAD / 4) * 4);
-		cnt = k->mask_sel(sel, mm, nw);
-		AGK_HV(res, cnt);
-		agk_hash(res, sel, (size_t) cnt * 4);
-	}
-	agk_step(res, "mask_sel");
-
-	/* gathers from the scalar selection vector (so that they are checked on their own), and from a random one */
-	nssel = sift_aggkern_scalar.mask_sel(ssel, c->mask, nw);
-	for (int s = 0; s < 2; s++)
-	{
-		const uint32 *idx = s ? c->rsel : ssel;
-		const int	nidx = s ? c->nrs : nssel;
-		uint32	   *d32 = AGK_ALLOC(nidx > 0 ? (size_t) nidx * 4 : 4);
-		uint64	   *d64 = AGK_ALLOC(nidx > 0 ? (size_t) nidx * 8 : 8);
-
-		memset(d32, 0xA5, (size_t) nidx * 4);
-		k->gather_u32(d32, c->code, idx, nidx);
-		agk_hash(res, d32, (size_t) nidx * 4);
-		memset(d64, 0xA5, (size_t) nidx * 8);
-		k->gather_u64(d64, (const uint64 *) c->i64, idx, nidx);
-		agk_hash(res, d64, (size_t) nidx * 8);
-		AGK_FREE(d32);
-		AGK_FREE(d64);
-	}
-	agk_step(res, "gather");
 
 	memcpy(g, c->gid0, (size_t) n * 4);
 	k->gid_code(g, c->code, c->map, n, c->mult);
@@ -671,9 +551,6 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 	}
 #undef BM
 	AGK_FREE(bm);
-	AGK_FREE(w2);
-	AGK_FREE(sel);
-	AGK_FREE(ssel);
 	AGK_FREE(g);
 }
 

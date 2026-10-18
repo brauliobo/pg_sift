@@ -1,10 +1,8 @@
 /*
  * sift_aggkern_avx512.c - AVX-512 (F/BW/VL/DQ/VBMI2/VPOPCNTDQ) aggregation operators. Compares produce mask registers directly
- * (16 int32 or 8 int64 / double rows per instruction), selections are applied as merging masked min/max and masked loads,
- * selection vectors are VPCOMPRESSB of the bit positions (register form only: the memory forms are microcoded on Zen 4),
- * lookups and gathers are masked VPGATHER, popcounts are VPOPCNTQ. Results are bit-identical to the scalar table
- * (sift_aggkern.c). Slots that gathers or a per-group scatter do not speed up (gather_u64, count_gid, sum_gid_*) are the
- * scalar functions.
+ * (8 double rows per instruction), selections are applied as merging masked min/max and masked loads, lookups are masked
+ * VPGATHER. Results are bit-identical to the scalar table (sift_aggkern.c). Slots that a per-group scatter does not speed up
+ * (count_gid, sum_gid_*) are the scalar functions.
  */
 #include "sift_host.h"
 
@@ -23,66 +21,6 @@
 #define SEL8(mask, i)	((__mmask8) ((mask)[(i) >> 6] >> ((i) & 63)))
 
 /* ---- predicates ---- */
-
-F5 void
-cmp_i32_avx512(uint64 *out, const int32 *v, int n, SiftCmpOp op, int32 c)
-{
-	const __m512i vc = _mm512_set1_epi32(c);
-
-#define CMP32(IMM) AGK_BITS(out, n, 16, 0, i, _mm512_cmp_epi32_mask(L5(v + i), vc, IMM))
-	switch (op)
-	{
-		case SCMP_EQ:
-			CMP32(_MM_CMPINT_EQ);
-			break;
-		case SCMP_NE:
-			CMP32(_MM_CMPINT_NE);
-			break;
-		case SCMP_LT:
-			CMP32(_MM_CMPINT_LT);
-			break;
-		case SCMP_LE:
-			CMP32(_MM_CMPINT_LE);
-			break;
-		case SCMP_GT:
-			CMP32(_MM_CMPINT_NLE);
-			break;
-		default:
-			CMP32(_MM_CMPINT_NLT);
-			break;
-	}
-#undef CMP32
-}
-
-F5 void
-cmp_i64_avx512(uint64 *out, const int64 *v, int n, SiftCmpOp op, int64 c)
-{
-	const __m512i vc = _mm512_set1_epi64(c);
-
-#define CMP64(IMM) AGK_BITS(out, n, 8, 0, i, _mm512_cmp_epi64_mask(L5(v + i), vc, IMM))
-	switch (op)
-	{
-		case SCMP_EQ:
-			CMP64(_MM_CMPINT_EQ);
-			break;
-		case SCMP_NE:
-			CMP64(_MM_CMPINT_NE);
-			break;
-		case SCMP_LT:
-			CMP64(_MM_CMPINT_LT);
-			break;
-		case SCMP_LE:
-			CMP64(_MM_CMPINT_LE);
-			break;
-		case SCMP_GT:
-			CMP64(_MM_CMPINT_NLE);
-			break;
-		default:
-			CMP64(_MM_CMPINT_NLT);
-			break;
-	}
-#undef CMP64
-}
 
 /* Same predicate mapping as the AVX2 level: "not <=" / "not <" are true for a NaN row; a NaN constant is the scalar function's */
 F5 void
@@ -121,34 +59,6 @@ cmp_f64_avx512(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 }
 
 F5 void
-between_i32_avx512(uint64 *out, const int32 *v, int n, int32 lo, int32 hi)
-{
-	const __m512i vlo = _mm512_set1_epi32(lo),
-				d = _mm512_set1_epi32((uint32) hi - (uint32) lo);
-
-	if (lo > hi)
-	{
-		memset(out, 0, AGK_NW(n) * 8);
-		return;
-	}
-	AGK_BITS(out, n, 16, 0, i, _mm512_cmple_epu32_mask(_mm512_sub_epi32(L5(v + i), vlo), d));
-}
-
-F5 void
-between_i64_avx512(uint64 *out, const int64 *v, int n, int64 lo, int64 hi)
-{
-	const __m512i vlo = _mm512_set1_epi64(lo),
-				d = _mm512_set1_epi64((uint64) hi - (uint64) lo);
-
-	if (lo > hi)
-	{
-		memset(out, 0, AGK_NW(n) * 8);
-		return;
-	}
-	AGK_BITS(out, n, 8, 0, i, _mm512_cmple_epu64_mask(_mm512_sub_epi64(L5(v + i), vlo), d));
-}
-
-F5 void
 between_f64_avx512(uint64 *out, const double *v, int n, double lo, double hi)
 {
 	const __m512d vlo = _mm512_set1_pd(lo),
@@ -170,16 +80,6 @@ nonzero_byte(__m512i g)
 	return _mm512_test_epi32_mask(g, _mm512_set1_epi32(0xFF));
 }
 
-F5 void
-lut_code_avx512(uint64 *out, const uint32 *code, int n, const uint8 *lut)
-{
-	const __m512i z = _mm512_setzero_si512();
-
-	AGK_BITS2(out, n, 16, 0, i, nonzero_byte(_mm512_i32gather_epi32(L5(code + i), lut, 1)),
-			  nonzero_byte(_mm512_mask_i32gather_epi32(z, AGK_LANES(n - i, 16),
-													   _mm512_maskz_loadu_epi32(AGK_LANES(n - i, 16), code + i), lut, 1)));
-}
-
 /* Lanes outside the table are masked out of the gather (zero, so they read as "not set") */
 K5 __mmask16
 lut_i32_step(const uint8 *lut, __m512i x, __m512i vb, __m512i vn)
@@ -198,63 +98,6 @@ lut_i32_avx512(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, cons
 	AGK_BITS(out, n, 16, 0, i, lut_i32_step(lut, L5(v + i), vb, vn));
 }
 
-F5 void
-bytes_mask_avx512(uint64 *out, const uint8 *b, int n)
-{
-	const int	nf = n >> 6,
-				rem = n & 63;
-
-	for (int w = 0; w < nf; w++)
-	{
-		__m512i		x = L5(b + w * 64);
-
-		out[w] = _mm512_test_epi8_mask(x, x);
-	}
-	if (rem)
-	{
-		__m512i		x = _mm512_maskz_loadu_epi8(AGK_LOW(rem), b + nf * 64);
-
-		out[nf] = _mm512_test_epi8_mask(x, x);
-	}
-}
-
-/* ---- bitmaps ---- */
-
-#define DEF_BITOP(fn, VOP) \
-F5 void \
-fn(uint64 *dst, const uint64 *a, int nw) \
-{ \
-	int			i = 0; \
-\
-	for (; i + 8 <= nw; i += 8) \
-		S5(dst + i, VOP(L5(dst + i), L5(a + i))); \
-	if (i < nw) \
-	{ \
-		const __mmask8 k = AGK_LOW(nw - i); \
-\
-		_mm512_mask_storeu_epi64(dst + i, k, VOP(_mm512_maskz_loadu_epi64(k, dst + i), \
-												 _mm512_maskz_loadu_epi64(k, a + i))); \
-	} \
-}
-
-#define ANDNOT(d, a)	_mm512_andnot_si512(a, d)
-DEF_BITOP(and_w_avx512, _mm512_and_si512)
-DEF_BITOP(or_w_avx512, _mm512_or_si512)
-DEF_BITOP(andnot_w_avx512, ANDNOT)
-
-F5 int64
-popcount_w_avx512(const uint64 *a, int nw)
-{
-	__m512i		acc = _mm512_setzero_si512();
-	int			i = 0;
-
-	for (; i + 8 <= nw; i += 8)
-		acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(L5(a + i)));
-	if (i < nw)
-		acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(_mm512_maskz_loadu_epi64(AGK_LOW(nw - i), a + i)));
-	return _mm512_reduce_add_epi64(acc);
-}
-
 /* bit e = bit parent[e] of rowmask: gather the dword that holds it (k: the lanes that exist), shift it down */
 K5 __mmask16
 row_bits(const uint64 *rowmask, __m512i p, __mmask16 k)
@@ -269,56 +112,6 @@ gather_bits_avx512(uint64 *out, const uint64 *rowmask, const uint32 *parent, int
 {
 	AGK_BITS2(out, m, 16, 0, e, row_bits(rowmask, L5(parent + e), 0xFFFF),
 			  row_bits(rowmask, _mm512_maskz_loadu_epi32(AGK_LANES(m - e, 16), parent + e), AGK_LANES(m - e, 16)));
-}
-
-/* ---- selection vectors ---- */
-
-/* One VPCOMPRESSB packs the positions of the bits of a word, four widening stores write them (the buffer has room for 64 more) */
-F5 int
-mask_sel_avx512(uint32 *sel, const uint64 *mask, int nw)
-{
-	const __m512i iota = _mm512_set_epi64(0x3F3E3D3C3B3A3938, 0x3736353433323130, 0x2F2E2D2C2B2A2928, 0x2726252423222120,
-										  0x1F1E1D1C1B1A1918, 0x1716151413121110, 0x0F0E0D0C0B0A0908, 0x0706050403020100);
-	int			cnt = 0;
-
-	for (int w = 0; w < nw; w++)
-	{
-		uint64		m = mask[w];
-		__m512i		pos,
-					base;
-
-		if (__builtin_popcountll(m) <= AGK_SEL_SPARSE)
-		{
-			for (; m; m &= m - 1)
-				sel[cnt++] = w * 64 + __builtin_ctzll(m);
-			continue;
-		}
-		pos = _mm512_maskz_compress_epi8(m, iota);
-		base = _mm512_set1_epi32(w * 64);
-		S5(sel + cnt, _mm512_add_epi32(_mm512_cvtepu8_epi32(_mm512_castsi512_si128(pos)), base));
-		S5(sel + cnt + 16, _mm512_add_epi32(_mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32(pos, 1)), base));
-		S5(sel + cnt + 32, _mm512_add_epi32(_mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32(pos, 2)), base));
-		S5(sel + cnt + 48, _mm512_add_epi32(_mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32(pos, 3)), base));
-		cnt += __builtin_popcountll(m);
-	}
-	return cnt;
-}
-
-F5 void
-gather_u32_avx512(uint32 *dst, const uint32 *src, const uint32 *sel, int nsel)
-{
-	int			j = 0;
-
-	for (; j + 16 <= nsel; j += 16)
-		S5(dst + j, _mm512_i32gather_epi32(L5(sel + j), src, 4));
-	if (j < nsel)
-	{
-		const __mmask16 k = AGK_LOW(nsel - j);
-
-		_mm512_mask_storeu_epi32(dst + j, k,
-								 _mm512_mask_i32gather_epi32(_mm512_setzero_si512(), k,
-															 _mm512_maskz_loadu_epi32(k, sel + j), src, 4));
-	}
 }
 
 /* ---- group ids ---- */
@@ -608,13 +401,9 @@ count_changes_avx512(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
 #define AGK_INIT5(s)	.s = s##_avx512,
 
 const SiftAggKernels sift_aggkern_avx512 = {
-	AGK_INIT5(cmp_i32) AGK_INIT5(cmp_i64) AGK_INIT5(cmp_f64)
-	AGK_INIT5(between_i32) AGK_INIT5(between_i64) AGK_INIT5(between_f64)
-	AGK_INIT5(lut_code) AGK_INIT5(lut_i32) AGK_INIT5(bytes_mask)
-	AGK_INIT5(and_w) AGK_INIT5(or_w) AGK_INIT5(andnot_w) AGK_INIT5(popcount_w) AGK_INIT5(gather_bits)
-	AGK_INIT5(mask_sel) AGK_INIT5(gather_u32) AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
+	AGK_INIT5(cmp_f64) AGK_INIT5(between_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
+	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
 	AGK_INIT5(sum_i32) AGK_INIT5(sum_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
-	.gather_u64 = agk_gather_u64_scalar,
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
