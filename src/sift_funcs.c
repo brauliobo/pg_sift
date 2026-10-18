@@ -24,6 +24,7 @@
 #include "sift.h"
 #include "sift_estimate.h"
 #include "sift_eval.h"
+#include "sift_ops.h"
 #include "sift_planner.h"
 #include "sift_query.h"
 #include "sift_sql.h"
@@ -360,6 +361,13 @@ sift_match_support(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(ret);
 }
 
+/* sift.version(): the version of the loaded library, to compare with the installed extension's */
+Datum
+sift_version(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TEXT_P(cstring_to_text(SIFT_MODULE_VERSION));
+}
+
 /* ---------- sift.score / sift.max_score ---------- */
 
 static Datum
@@ -421,9 +429,8 @@ tag_arg(FunctionCallInfo fcinfo, int argno, const char *dflt)
 Datum
 sift_highlight(PG_FUNCTION_ARGS)
 {
-	SiftAnalyzerConfig cfg;
+	MatchCache *c;
 	SiftAnalyzer *a;
-	SiftQuery  *q;
 	SiftToken  *toks;
 	text	   *doc;
 	const char *s,
@@ -435,16 +442,15 @@ sift_highlight(PG_FUNCTION_ARGS)
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		PG_RETURN_NULL();
-	analyzer_config(PG_ARGISNULL(4) ? InvalidOid : PG_GETARG_OID(4), &cfg);
-	a = sift_analyzer_create(&cfg, CurrentMemoryContext);
-	q = query_from_text(PG_GETARG_TEXT_PP(1), a);
+	c = match_cache(fcinfo, PG_GETARG_TEXT_PP(1), PG_ARGISNULL(4) ? InvalidOid : PG_GETARG_OID(4));
+	a = c->analyzer;
 	doc = PG_GETARG_TEXT_PP(0);
 	s = VARDATA_ANY(doc);
 	ntok = sift_analyze_tokens(a, s, VARSIZE_ANY_EXHDR(doc), &toks);
 	initStringInfo(&buf);
 	for (int i = 0; i < ntok; i++)
 	{
-		if (!token_hit(q->root, &toks[i]))
+		if (!token_hit(c->query->root, &toks[i]))
 			continue;
 		appendBinaryStringInfo(&buf, s + done, toks[i].start - done);
 		appendStringInfo(&buf, "%s", start_tag);
@@ -453,5 +459,6 @@ sift_highlight(PG_FUNCTION_ARGS)
 		done = toks[i].end;
 	}
 	appendBinaryStringInfo(&buf, s + done, VARSIZE_ANY_EXHDR(doc) - done);
+	sift_analyzer_reset(a);
 	PG_RETURN_TEXT_P(cstring_to_text_with_len(buf.data, buf.len));
 }

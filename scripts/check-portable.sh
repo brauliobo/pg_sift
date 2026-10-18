@@ -20,7 +20,7 @@ for f in "${files[@]}"; do
 			[[ $inc =~ ^($std|$intrinsics)\.h$ ]] && continue ;;
 		*)
 			[[ $inc == sift_host.h ]] && continue
-			printf '%s\n' "${files[@]}" | grep -qx "$inc" && continue ;;
+			[[ " ${files[*]} " == *" $inc "* ]] && continue ;;
 		esac
 		echo "$f:$n: $line  (a portable file includes only the C library, intrinsics, sift_host.h and files of portable.list)"
 		bad=1
