@@ -12,7 +12,8 @@
 #                       on its generator (--rows orders, default 20000, --stores N); all (default) runs both
 #   --corpus REGEX      only the queries whose file name matches (name@K400 is the query on the set K400)
 #   --variants LIST     comma separated: off-par on on-par on-scalar on-par-scalar (the reference "off" always runs; default all five)
-#   --scenarios LIST    fixtures: insert update delete abort vacuum hot recycle held maint, or all (default) or none
+#   --scenarios LIST    fixtures: insert update delete abort vacuum hot recycle held maint, or all (default) or none; dml (the inserts, updates and
+#                       deletes of the first three in one state, one check) and held-lite (held without its repeatable read twin and the check after the writer committed: the dml and vacuum states cover them) are named only
 #   --bench [--runs N]  only the corpus, with the median of N runs (default 5) of the reference and of "on"; prints the go/no-go lines:
 #                       the K4000 queries of the shapes that must push down at least 20 times faster, K10 and K400 not slower (0.95)
 #   --bench-workers N   the "on" runs of --bench use max_parallel_workers_per_gather N with the real parallel costs (default 0; the reference stays serial)
@@ -253,6 +254,12 @@ scenarios() {
 	[[ $list != none ]] || return 0
 	mapfile -t names < <(scenario_files "$@")
 	want() { [[ $list == all || ,$list, == *,$1,* ]]; }
+	named() { [[ ,$list, == *,$1,* ]]; }
+	if named dml; then
+		log "scenario dml: 20% new orders, indexed updates, hard and soft deletes, no VACUUM"
+		sql -c "SELECT coldiff.sc_insert(0.2)" -c "SELECT coldiff.sc_update_indexed(0.03)" -c "SELECT coldiff.sc_delete(0.03)" >/dev/null
+		check scenario-dml "${names[@]}"
+	fi
 	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; check scenario-insert "${names[@]}"; fi
 	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; check scenario-update "${names[@]}"; fi
 	if want delete; then log "scenario delete: hard and soft deletes"; sql -c "SELECT coldiff.sc_delete(0.03)" >/dev/null; check scenario-delete "${names[@]}"; fi
@@ -275,7 +282,7 @@ scenarios() {
 		log "scenario recycle: new orders on recycled TIDs: $(sql -c "SELECT count(*) FROM orders WHERE ctid = ANY (ARRAY(SELECT tid FROM coldiff_gone))")"
 		check scenario-recycle "${names[@]}"
 	fi
-	if want held; then scenario_held "${names[@]}"; fi
+	if want held || named held-lite; then scenario_held "${names[@]}"; fi
 	if want maint && [[ -n ${AM:-} ]]; then scenario_maint "${names[@]}"; fi
 }
 
@@ -295,7 +302,7 @@ scenario_held() {
 	sql -f "$hold" >/dev/null & hp=$!
 	if wait_for "$OUT/hold.open"; then
 		check scenario-held-uncommitted "$@"
-		HELD=1 check scenario-held-uncommitted-rr "$@"
+		[[ $SCENARIOS == *held-lite* ]] || HELD=1 check scenario-held-uncommitted-rr "$@"
 	fi
 	touch "$OUT/hold.release"; wait "$hp" || FAILED=1
 	log "scenario held: snapshot, then a writer commits"
@@ -303,7 +310,7 @@ scenario_held() {
 	HELD=1 SNAP_SYNC=1 check scenario-held-snapshot "$@" & hp=$!
 	if wait_for "$OUT/snap.taken"; then sql -c "SELECT coldiff.sc_insert(0.1)" -c "SELECT coldiff.sc_update_indexed(0.05)" -c "SELECT coldiff.sc_delete(0.05)" >/dev/null; fi
 	touch "$OUT/snap.go"; wait "$hp" || FAILED=1
-	check scenario-held-after "$@"
+	[[ $SCENARIOS == *held-lite* ]] || check scenario-held-after "$@"
 }
 
 # maintenance of the index: REINDEX, then promotion and merge when the functions exist
