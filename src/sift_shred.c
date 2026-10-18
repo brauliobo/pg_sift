@@ -600,7 +600,7 @@ sift_shred_spec_deparse(const SiftShredSpec *spec)
 /* wildcard keys: ids are the codes of the shredder's SiftCDict, capped by max_keys and SIFT_SHRED_MAX_KEY_BYTES */
 /* ======================================================================== */
 
-StaticAssertDecl(SIFT_SHRED_MAX_KEY_BYTES <= SIFT_COL_MAX_STR, "a wildcard key must fit a col dictionary string");
+StaticAssertDecl(SIFT_SHRED_MAX_KEY_BYTES <= SIFT_COL_DICT_MAX_ENTRY, "a wildcard key must fit a col dictionary string");
 
 static uint32
 intern_key(SiftShred *sh, const char *key, uint32 len)

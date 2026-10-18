@@ -18,6 +18,7 @@
 
 #include "sift_aggkern.h"
 #include "sift_col.h"
+#include "sift_col_pg.h"
 #include "sift_colsrc.h"
 
 typedef struct ColLeafBuf
@@ -55,7 +56,7 @@ leaf_vtype(const SiftColDef *def)
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID || def->typid == NUMERICOID) ? SCV_I64 : SCV_I32;
+			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ || def->type == SIFT_COLT_NUMERIC) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -141,7 +142,7 @@ col_layout(Relation index)
 		l->id = def->id;
 		l->attno = def->attno;
 		l->parent = def->parent;
-		l->typid = def->typid;
+		l->typid = sift_col_def_typid(tupdesc, def);
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		if (def->kind == SIFT_COLK_GROUP)

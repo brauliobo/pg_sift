@@ -89,30 +89,30 @@ attr_of(const SiftColShredAdapter *a, const char *path)
 }
 
 static void
-leaf_type(SiftShredType t, uint8 *store, Oid *typid)
+leaf_type(SiftShredType t, uint8 *store, uint8 *type)
 {
 	switch (t)
 	{
 		case SIFT_SHRED_BOOL:
-			*store = SIFT_COLS_INT, *typid = BOOLOID;
+			*store = SIFT_COLS_INT, *type = SIFT_COLT_BOOL;
 			break;
 		case SIFT_SHRED_INT2:
-			*store = SIFT_COLS_INT, *typid = INT2OID;
+			*store = SIFT_COLS_INT, *type = SIFT_COLT_INT2;
 			break;
 		case SIFT_SHRED_INT4:
-			*store = SIFT_COLS_INT, *typid = INT4OID;
+			*store = SIFT_COLS_INT, *type = SIFT_COLT_INT4;
 			break;
 		case SIFT_SHRED_INT8:
-			*store = SIFT_COLS_INT, *typid = INT8OID;
+			*store = SIFT_COLS_INT, *type = SIFT_COLT_INT8;
 			break;
 		case SIFT_SHRED_FLOAT4:
-			*store = SIFT_COLS_F4, *typid = FLOAT4OID;
+			*store = SIFT_COLS_F4, *type = SIFT_COLT_FLOAT4;
 			break;
 		case SIFT_SHRED_FLOAT8:
-			*store = SIFT_COLS_F8, *typid = FLOAT8OID;
+			*store = SIFT_COLS_F8, *type = SIFT_COLT_FLOAT8;
 			break;
 		case SIFT_SHRED_TEXT:
-			*store = SIFT_COLS_STR, *typid = TEXTOID;
+			*store = SIFT_COLS_STR, *type = SIFT_COLT_TEXT;
 			break;
 	}
 }
@@ -136,7 +136,7 @@ add_column(const SiftColShredAdapter *a, ShredAttr *at, int c, int parent, LeafK
 	const SiftShredColDef *cd = &a->spec->cols[c];
 	ShredLeaf  *l = add_leaf(at, kind, parent, SIFT_COLK_SCALAR, pstrdup(cd->name), c, group);
 
-	leaf_type(cd->type, &l->def.store, &l->def.typid);
+	leaf_type(cd->type, &l->def.store, &l->def.type);
 }
 
 static void
@@ -152,12 +152,12 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 				 errmsg("sift_col holds one level of arrays and objects: \"%s\" is nested in another", gd->name)));
 	l = add_leaf(at, LEAF_GROUP, -1, SIFT_COLK_GROUP, pstrdup(gd->name), -1, g);
 	l->def.store = SIFT_COLS_INT;
-	l->def.typid = INT8OID;
+	l->def.type = SIFT_COLT_INT8;
 	if (gd->kind == SIFT_SHRED_MAP)
 	{
 		l = add_leaf(at, LEAF_MAP_KEY, gid, SIFT_COLK_SCALAR, psprintf("%s#key", gd->name), -1, g);
 		l->def.store = SIFT_COLS_STR;
-		l->def.typid = TEXTOID;
+		l->def.type = SIFT_COLT_TEXT;
 	}
 	for (int i = 0; i < gd->ncols; i++)
 		add_column(a, at, gd->cols[i], gid, LEAF_CHILD_COL, g);
@@ -238,11 +238,6 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			v->v.f = col->val[i].f;
 			break;
 		case SIFT_SHRED_TEXT:
-			if (col->val[i].s.len > SIFT_COL_MAX_STR)
-			{
-				v->isnull = v->overflow = true;
-				return;
-			}
 			v->v.s = doc->text + col->val[i].s.off;
 			v->len = col->val[i].s.len;
 			break;

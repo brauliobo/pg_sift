@@ -7,7 +7,7 @@
 
 #include "access/amapi.h"
 
-#include "sift_col.h"
+#include "sift_col_pg.h"
 #include "sift_col_enc.h"
 #include "sift_col_mut.h"
 

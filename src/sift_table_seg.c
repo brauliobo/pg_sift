@@ -3,8 +3,8 @@
  *
  * A sealed delta segment becomes a column segment of the engine (sift_col_seg.h) with the same TIDs: one leaf per column (typed when
  * the engine stores the type natively, SIFT_COLS_VAR holding the exact datum image otherwise) and one VAR leaf of exceptions, the
- * exact images of the values a typed leaf cannot hold (a string over 255 bytes, a numeric NaN, a float that the order preserving
- * key would alter: -0, a NaN payload). Rows of a group have no xmin: they are frozen; their deletion is the tombstone log's, by TID.
+ * exact images of the values a typed leaf cannot hold (a numeric NaN or infinity, a NaN payload of a float that the order
+ * preserving key would alter). Rows of a group have no xmin: they are frozen; their deletion is the tombstone log's, by TID.
  * Reads go through the engine's column source (sift_col_open_table); a segment written for another column layout (after ALTER TABLE)
  * is read with its own schema, the columns being matched by attribute number.
  */
@@ -86,12 +86,12 @@ layout_build(Relation rel, MemoryContext cxt)
 			continue;
 		store = att_store(att, &scale);
 		l->leaf[a] = n;
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.typid = getBaseType(att->atttypid),
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.type = sift_col_type_of_oid(getBaseType(att->atttypid)),
 		.path = "",.scale = scale};
 		n++;
 	}
 	l->exc = n;
-	defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_VAR,.attno = 0,.typid = BYTEAOID,.path = "exceptions"};
+	defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_VAR,.attno = 0,.type = SIFT_COLT_BYTEA,.path = "exceptions"};
 	n++;
 	if (n > SIFT_COL_MAX_COLS)
 		ereport(ERROR,
@@ -271,7 +271,7 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			if (def->typid == NUMERICOID)
+			if (def->type == SIFT_COLT_NUMERIC)
 			{
 				Numeric		n = DatumGetNumeric(d);
 
@@ -297,7 +297,6 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 
 				v->v.s = VARDATA_ANY(t);
 				v->len = VARSIZE_ANY_EXHDR(t);
-				fits = v->len <= SIFT_COL_MAX_STR;
 				break;
 			}
 		default:
@@ -318,7 +317,7 @@ value_out(const SiftColDef *def, Form_pg_attribute att, const SiftColVec *vec, u
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return def->typid == NUMERICOID ? sift_col_key_numeric(def->scale, vec->i[i]) : int_datum(att->attlen, vec->i[i]);
+			return def->type == SIFT_COLT_NUMERIC ? sift_col_key_numeric(def->scale, vec->i[i]) : int_datum(att->attlen, vec->i[i]);
 		case SIFT_COLS_F4:
 			return Float4GetDatum((float4) vec->f[i]);
 		case SIFT_COLS_F8:

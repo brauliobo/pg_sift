@@ -112,6 +112,7 @@ now_ns(void)
 /* One line of a benchmark table: lanes per call, bytes touched per lane (bench.c) */
 extern void row(const char *kernel, const char *scen, const char *lvl, double ns, double lanes, double bytes);
 extern void bench_col(void);
+extern void bench_shred(void);
 
 extern void kt_cpu_init(void);
 extern const char *const kt_level_name[];

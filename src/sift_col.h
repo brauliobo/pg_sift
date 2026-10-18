@@ -18,10 +18,12 @@
 #include "sift_col_kern.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	0			/* SiftSegEntry.format of a col segment */
+#define SIFT_COL_FORMAT_MINOR	1			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
-#define SIFT_COL_MAX_STR		255
+#define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
+#define SIFT_COL_DICT_MAX_ENTRY	255			/* a longer string is never a dictionary entry of a segment: its unit stores the strings inline */
+#define SIFT_COL_DICT_MAX_BYTES	(64 << 20)	/* bytes of one segment dictionary: a unit that would exceed it stores its strings inline */
 #define SIFT_COL_UNIT_MAX_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)
 #define SIFT_COL_VEC_ROWS		SIFT_COL_UNIT_MAX_ROWS
 
@@ -57,6 +59,31 @@ typedef enum SiftColStore
 
 #define SIFT_COLD_LOSSY		0x0001	/* shredded path whose values may not fit the declared type: predicates on it must not be pushed down */
 
+/*
+ * Logical type of a leaf, part of the stored schema and of its hash. It is a tag of the format, not of any host: a host maps its own types
+ * to it at its boundary (the PostgreSQL side is sift_col_pg.h) and keeps what it cannot name here as OTHER, resolving the exact type from
+ * its own catalog. The tag never changes how a chunk is stored (that is the storage class).
+ */
+typedef enum SiftColType
+{
+	SIFT_COLT_OTHER = 0,
+	SIFT_COLT_BOOL,
+	SIFT_COLT_INT2,
+	SIFT_COLT_INT4,
+	SIFT_COLT_INT8,
+	SIFT_COLT_FLOAT4,
+	SIFT_COLT_FLOAT8,
+	SIFT_COLT_NUMERIC,			/* exact decimal; a scaled integer (SiftColDef.scale) in the INT class */
+	SIFT_COLT_TEXT,				/* text, varchar, char(n), name */
+	SIFT_COLT_BYTEA,
+	SIFT_COLT_DATE,
+	SIFT_COLT_TIMESTAMP,
+	SIFT_COLT_TIMESTAMPTZ,
+	SIFT_COLT_UUID,
+	SIFT_COLT_JSONB,
+	SIFT_COLT_END
+} SiftColType;
+
 typedef struct SiftColDef
 {
 	int16		id;				/* position in the leaf list, 0..ncols-1 */
@@ -65,7 +92,7 @@ typedef struct SiftColDef
 	uint8		store;			/* SiftColStore */
 	uint16		flags;			/* SIFT_COLD_* */
 	int16		attno;			/* 1-based attribute of the index the leaf comes from */
-	Oid			typid;			/* type of the values the leaf yields to SQL: int2/4/8, bool, date, timestamp(tz), float4/8, text... */
+	uint8		type;			/* SiftColType: the logical type of the values the leaf yields to the host */
 	const char *path;			/* "" for a plain attribute, else the shredder's path text (e.g. items[].category) */
 	uint8		scale;			/* numeric(p <= 18, s): digits after the decimal point; the INT value is the number times 10^scale. 0 otherwise */
 } SiftColDef;
@@ -97,7 +124,11 @@ typedef struct SiftColRow
 	SiftColValue **elem;
 } SiftColRow;
 
-/* Order-preserving key of a float and back (-0 is +0, every NaN one NaN above +Inf) */
+/*
+ * Order-preserving key of a float and back. The sign of zero is kept: -0 is the key just below +0 (-1 and 0), so every non-NaN value
+ * comes back with the bits it went in with; PostgreSQL compares -0 and +0 equal, which the tests built by sift_ctest_make account
+ * for (a constant of zero spans both keys). Every NaN is one NaN above +Inf.
+ */
 static inline int64
 sift_col_f8_key(double f)
 {
@@ -106,12 +137,22 @@ sift_col_f8_key(double f)
 	if (f != f)
 		b = UINT64CONST(0x7FF8000000000000);
 	else
-	{
-		if (f == 0)
-			f = 0;
 		memcpy(&b, &f, sizeof(b));
-	}
 	return (int64) (b ^ ((uint64) ((int64) b >> 63) >> 1)) ;
+}
+
+/*
+ * Order-preserving key of the first 8 bytes of a string: big endian, zero padded, sign bit flipped. s < t (bytewise) implies
+ * prefix(s) <= prefix(t); strings of equal keys differ only after byte 8 or by trailing zero bytes. Zones and filters of inline strings use it.
+ */
+static inline int64
+sift_col_str_prefix(const char *s, uint32 len)
+{
+	uint64		b = 0;
+
+	for (uint32 i = 0; i < 8; i++)
+		b = b << 8 | (i < len ? (uint8) s[i] : 0);
+	return (int64) (b ^ UINT64CONST(0x8000000000000000));
 }
 
 static inline double
@@ -157,24 +198,6 @@ typedef struct SiftColIndexMeta
 	SiftColDef *cols;			/* [ncols] */
 	SiftColIndexStats stats;
 } SiftColIndexMeta;
-
-/* The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map) */
-extern SiftColIndexMeta *sift_col_index_meta(Relation index);
-
-/* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
-extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
-
-/*
- * The expression of index attribute attno (1-based): a Var with varno 1 for a plain column, else the index expression as stored
- * (varno 1, ready for ChangeVarNodes). Allocates in CurrentMemoryContext.
- */
-extern Node *sift_col_att_expr(Relation index, int attno);
-
-/* Is relam the sift_col access method (the catalog lookup is cached) */
-extern bool sift_col_is_index(Relation index);
-extern Oid	sift_col_am_oid(void);
-
-extern PGDLLIMPORT bool sift_enable_col;
 
 /* ---------------------------------------------------------------------------
  * 3. The column source
@@ -407,43 +430,6 @@ extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 
 extern const SiftColCounters *sift_col_counters(const SiftColSource *src);
-
-/* ---------------------------------------------------------------------------
- * 4. Shred adapter (sift_col_shred.c): the index's jsonb attributes, shredded by col-json's sift_shred.h
- * ------------------------------------------------------------------------- */
-
-typedef struct SiftColShredAdapter SiftColShredAdapter;
-
-/* Parses the "paths" reloption against the index; NULL when it has none. ERROR for a specification the engine cannot hold (deeper nesting than one list level, ...) */
-extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index);
-/* Leaves the specification declares for index attribute attno, in the order sift_col_shred_row fills them (0: not shredded); parent is relative to the first */
-extern int	sift_col_shred_nleaves(const SiftColShredAdapter *a, int attno);
-extern void sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *def);
-/* All the shredded attributes of one tuple (values/isnull as the index build gives them, indexed by attribute) into row->val / row->elem, whose leaf ids start at first[attno] */
-extern void sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt);
-
-/* ---------------------------------------------------------------------------
- * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in sift_handler.c)
- * ------------------------------------------------------------------------- */
-
-typedef struct SiftColOptions
-{
-	int32		vl_len_;
-	int			mutable_limit;	/* kB */
-	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
-	int			compression;	/* offset of the "compression" string, 0 = auto */
-} SiftColOptions;
-
-extern const SiftColOptions *sift_col_options(Relation index);
-extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
-extern const char *sift_col_options_compression(Relation index);	/* "" when none (auto) */
-
-extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
-extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_verify(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);
+/* The index-bound declarations (relcache, planner expressions, shredder adapter, options, SQL entry points): sift_col_pg.h, PostgreSQL only */
 
 #endif							/* SIFT_COL_H */
