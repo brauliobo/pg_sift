@@ -39,13 +39,13 @@ BEGIN
 END $$;
 
 SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE n > 100 AND t >= '2025-03-01'$$) AS two_ranges;
-SELECT filters_in_source($$SELECT count(*), sum(v) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01'$$) AS text_and_date;
-SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE k IN ('paid', 'shipped') AND g IN (1, 2, 3) AND v BETWEEN 100 AND 9000$$) AS lists;
+SELECT filters_in_source($$SELECT count(*), sum(v) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01'$$) AS integer_and_date_not_text;
+SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE k IN ('paid', 'shipped') AND g IN (1, 2, 3) AND v BETWEEN 100 AND 9000$$) AS integer_lists_not_text;
 SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE k = 'shipped' OR c = 'DE'$$) AS or_stays_in_the_executor;
 SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE lower(k) = 'paid'$$) AS expression_stays_in_the_executor;
 
 SELECT same($$SELECT count(*), sum(v), avg(n) FROM f_t WHERE n > 100 AND t >= '2025-03-01'$$) AS ranges;
-SELECT same($$SELECT g, count(*), sum(v), min(d), max(t) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01' GROUP BY g$$) AS text_and_date;
+SELECT same($$SELECT g, count(*), sum(v), min(d), max(t) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01' GROUP BY g$$) AS integer_and_date_not_text;
 SELECT same($$SELECT k, c, count(*), sum(n) FROM f_t WHERE k IN ('paid', 'shipped', 'none') AND c NOT IN ('DE', 'XX') GROUP BY k, c$$) AS text_lists;
 SELECT same($$SELECT k, count(*) FROM f_t WHERE k <> 'paid' GROUP BY k$$) AS text_ne_nulls;
 SELECT same($$SELECT count(*), sum(v) FROM f_t WHERE g IN (1, 2, 3) AND g NOT IN (2) AND v BETWEEN 100 AND 9000$$) AS int_lists;
