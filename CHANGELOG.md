@@ -82,7 +82,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `sift.highlight` no longer parses its query for every row.
 - Docs: [docs/SIZING.md](docs/SIZING.md) (disk, memory and time of large indexes, dead documents in BM25 statistics, `SERIALIZABLE`, row-level
   security, updates). `bench/ab-query.sh` times one statement on two builds, `bench/sql/dead_docs.sql` measures the effect of rolled-back
-  loads on scores.
+  loads on scores. `bench/cpu-query.sh` counts the instructions and CPU time of a backend per transaction on two builds, which a loaded host
+  does not change.
 - Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the production library
   (`SIFT_TESTING` off).
 
