@@ -18,10 +18,12 @@
 #include <float.h>
 #include <math.h>
 
+#include "access/parallel.h"
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_operator.h"
+#include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
@@ -29,7 +31,11 @@
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
+#include "storage/shm_mq.h"
+#include "storage/shm_toc.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
@@ -43,6 +49,7 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "utils/tuplesort.h"
+#include "utils/wait_event.h"
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
@@ -57,6 +64,8 @@ bool		sift_enable_agg = true;
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
+#define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
+#define LANE_DIRECT_MAX	(1 << 15)	/* a lane table is built and dumped sixteen times: sparse group spaces go to the hash table */
 #define NDICT_SLOTS	8
 
 void
@@ -158,8 +167,11 @@ typedef struct RangeTab
 {
 	int32		lo;
 	int32		hi;				/* covered values lo..hi; lo > hi: none */
-	void	   *tab;			/* esize bytes per value */
+	void	   *tab;			/* esize bytes per value, the entry of lo first */
 	int			esize;
+	char	   *mem;			/* the allocation: it holds the values plo..phi, so that growing a range is not a copy */
+	int32		plo;
+	int32		phi;
 } RangeTab;
 
 static void
@@ -168,6 +180,7 @@ rt_init(RangeTab *r, int esize)
 	r->lo = 1;
 	r->hi = 0;
 	r->tab = NULL;
+	r->mem = NULL;
 	r->esize = esize;
 }
 
@@ -192,7 +205,6 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 				nlo = had ? Min(r->lo, lo) : lo,
 				nhi = had ? Max(r->hi, hi) : hi;
 	int64		span = (int64) nhi - nlo + 1;
-	char	   *nt;
 
 	if (had && lo >= old_lo && hi <= old_hi)
 		return;
@@ -201,18 +213,32 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift: a column range of %lld values is too wide for the aggregate scan", (long long) span),
 				 errhint("Set sift.enable_agg to off for this query.")));
-	nt = MemoryContextAllocZero(CurrentMemoryContext, span * r->esize + SIFT_AGG_PAD);
-	if (had)
+	if (r->mem == NULL || nlo < r->plo || nhi > r->phi)
 	{
-		memcpy(nt + (int64) (old_lo - nlo) * r->esize, r->tab, ((int64) old_hi - old_lo + 1) * r->esize);
-		pfree(r->tab);
+		/* twice the room, on the side the range grows (bounded by MAX_RANGE): a range that creeps along is not copied every time */
+		int64		room = Min(span * 2, Max(MAX_RANGE, span)) - span,
+					plo = nlo - (had && nlo < old_lo ? room : 0),
+					phi = nhi + (had && nlo < old_lo ? 0 : room);
+		char	   *nt;
+
+		plo = Max(plo, PG_INT32_MIN);
+		phi = Min(phi, PG_INT32_MAX);
+		nt = MemoryContextAllocZero(CurrentMemoryContext, (phi - plo + 1) * r->esize + SIFT_AGG_PAD);
+		if (had)
+			memcpy(nt + (int64) (old_lo - plo) * r->esize, r->tab, ((int64) old_hi - old_lo + 1) * r->esize);
+		if (r->mem)
+			pfree(r->mem);
+		r->mem = nt;
+		r->plo = (int32) plo;
+		r->phi = (int32) phi;
 	}
-	r->tab = nt;
+	r->tab = r->mem + (int64) (nlo - r->plo) * r->esize;
 	r->lo = nlo;
 	r->hi = nhi;
-	for (int64 v = nlo; v <= nhi; v++)
-		if (!had || v < old_lo || v > old_hi)
-			fill(arg, (int32) v, nt + (v - nlo) * r->esize);
+	for (int64 v = nlo; v <= (had ? old_lo - 1 : nhi); v++)
+		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
+	for (int64 v = had ? old_hi + 1 : nhi + 1; v <= nhi; v++)
+		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
 }
 
 /* ---------- executor state ---------- */
@@ -430,6 +456,7 @@ typedef struct AggExec
 		uint32		code;
 	}			vl[SIFT_AGG_MAX_VLEAVES];
 	MemoryContext cxt;			/* the scan */
+	MemoryContext tcxt;			/* the group table: keys, groups, aggregate states (reset by table_reset) */
 	MemoryContext ucxt;			/* one unit */
 	ExprContext *lutcx;
 	ParamExecData lutparams[SIFT_AGG_MAX_PARAMS];
@@ -438,7 +465,7 @@ typedef struct AggExec
 	int			ncl;
 	int			nj;				/* join combos, in the order the stages apply them */
 	int			jcombo[SIFT_AGG_MAX_JOINS];
-	MemoryContext tcxt;			/* temporaries of one combo entry */
+	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
@@ -454,6 +481,7 @@ typedef struct AggExec
 	bool		started;
 	/* groups */
 	bool		hash;
+	uint32		direct_max;		/* groups above which the table is a hash table */
 	uint32		ngroups;		/* hash mode: groups made */
 	uint32		gcap;			/* allocated groups */
 	int64	   *seen;
@@ -473,6 +501,19 @@ typedef struct AggExec
 	uint32	   *glist;
 	uint32		nglist;
 	uint32		gpos;
+	/* items of work, lanes and workers (run_scan) */
+	struct ScanShared *shared;
+	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */
+	bool		lanes;			/* this table is one of the lanes */
+	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
+	uint32		next_lane;		/* lanes: the next one to combine */
+	struct AggPar *par;			/* workers launched by the leader */
+	SiftSrcPrune *prune;		/* the zone tests of the conjuncts */
+	int			nprune;
+	List	   *pack;			/* the plan's spec, for the workers */
+	ParamListInfo params;
+	Snapshot	snap;
+	struct shm_mq_handle *mqh;	/* in a worker: the queue to the leader */
 	/* the unit */
 	SiftSrcUnit unit;
 	SiftSrcVec *uvec;
@@ -519,6 +560,9 @@ typedef struct AggExec
 	int64		n_tuples;
 	int64		n_groups;
 } AggExec;
+
+/* the parent of the expressions: a parallel worker has no plan state */
+#define EXPR_PARENT(ex)	((ex)->css.ss.ps.state ? &(ex)->css.ss.ps : NULL)
 
 /* ---------- value conversions ---------- */
 
@@ -705,7 +749,7 @@ key_value_id(AggExec *ex, int ki, Datum in, bool in_null)
 		id = 0;
 	else
 	{
-		MemoryContextSwitchTo(ex->cxt);
+		MemoryContextSwitchTo(ex->tcxt);
 		id = ot_id(&k->ot, out);
 	}
 	MemoryContextSwitchTo(old);
@@ -722,7 +766,7 @@ dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki)
 
 	if (map)
 		return map;
-	map = MemoryContextAlloc(ex->cxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
+	map = MemoryContextAlloc(ex->tcxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	for (uint32 c = 0; c < d->n; c++)
 	{
@@ -749,8 +793,8 @@ dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 
 	if (map)
 		return map;
-	map = MemoryContextAlloc(ex->cxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
-	old = MemoryContextSwitchTo(ex->cxt);
+	map = MemoryContextAlloc(ex->tcxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
+	old = MemoryContextSwitchTo(ex->tcxt);
 	for (uint32 c = 0; c < d->n; c++)
 		map[c] = ot_id(&ex->aot[ai], text_datum(a->argtype, -1, d->bytes + d->off[c], d->off[c + 1] - d->off[c]));
 	MemoryContextSwitchTo(old);
@@ -1034,29 +1078,6 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 
 /* ---------- predicates ---------- */
 
-static int64
-operand_int(Oid t, Datum d)
-{
-	switch (t)
-	{
-		case INT2OID:
-			return DatumGetInt16(d);
-		case INT4OID:
-			return DatumGetInt32(d);
-		case INT8OID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			return DatumGetInt64(d);
-		case DATEOID:
-			return DatumGetDateADT(d);
-		case BOOLOID:
-			return DatumGetBool(d);
-		default:
-			elog(ERROR, "sift: unexpected operand type %u", t);
-	}
-	return 0;
-}
-
 static int
 int32_cmp_asc(const void *a, const void *b)
 {
@@ -1138,8 +1159,8 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 	ExprState  *e;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-	e = ExecInitExpr((Expr *) p->expr, &ex->css.ss.ps);
-	d = ExecEvalExprSwitchContext(e, ex->css.ss.ps.ps_ExprContext, &isnull);
+	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	st->cnull = isnull;
 	if ((p->kind == SAP_CMP || p->kind == SAP_NCMP) && !isnull)
 	{
@@ -1155,7 +1176,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 		else if (p->argtype == FLOAT8OID)
 			st->cd = DatumGetFloat8(d);
 		else
-			st->ci = operand_int(p->argtype, d);
+			st->ci = sift_aggspec_operand_int(p->argtype, d);
 	}
 	else if (p->kind == SAP_IN && !isnull)
 	{
@@ -1183,7 +1204,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 				st->in_hasnull = true;
 				continue;
 			}
-			v = operand_int(p->argtype, el[i]);
+			v = sift_aggspec_operand_int(p->argtype, el[i]);
 			if (v < PG_INT32_MIN || v > PG_INT32_MAX)
 				continue;		/* no int4 value equals it */
 			vals[nv++] = (int32) v;
@@ -1542,7 +1563,7 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 			m->klen[kb + k] = VARSIZE_ANY_EXHDR(v);
 		}
 		else
-			m->kint[kb + k] = operand_int(j->keytype[k], kd[k]);
+			m->kint[kb + k] = sift_aggspec_operand_int(j->keytype[k], kd[k]);
 	}
 	for (int c = 0; c < m->ncol; c++)
 	{
@@ -1675,7 +1696,7 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 	const SiftAggJoin *j = cb->join >= 0 ? &ex->spec->join[cb->join] : NULL;
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+	MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
 	uint32	   *rows = NULL;
 	int			nm = 0;
 	uint32		nout;
@@ -1705,7 +1726,7 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 			{
 				MemoryContextSwitchTo(ex->cxt);
 				r = ot_id(slot_ot(ex, &cb->slot[sl]), d);
-				MemoryContextSwitchTo(ex->tcxt);
+				MemoryContextSwitchTo(ex->comcxt);
 			}
 			cs->val[(size_t) cs->nout * cb->nslots + sl] = r;
 		}
@@ -1713,7 +1734,7 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 		ResetExprContext(ex->lutcx);
 	}
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(ex->tcxt);
+	MemoryContextReset(ex->comcxt);
 }
 
 static inline uint32
@@ -2088,8 +2109,8 @@ dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
 	uint64		ocap = s->cap;
 
 	s->cap = Max(ocap * 2, 1024);
-	s->slot = MemoryContextAllocZero(ex->cxt, s->cap * sizeof(uint64));
-	s->cnt = s->counted ? MemoryContextAllocZero(ex->cxt, s->cap * sizeof(int64)) : NULL;
+	s->slot = MemoryContextAllocZero(ex->tcxt, s->cap * sizeof(uint64));
+	s->cnt = s->counted ? MemoryContextAllocZero(ex->tcxt, s->cap * sizeof(int64)) : NULL;
 	s->n = 0;
 	for (uint64 i = 0; i < ocap; i++)
 		if (old[i])
@@ -2135,52 +2156,52 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 static AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
 {
-	AggAcc	   *a = MemoryContextAllocZero(ex->cxt, Max(ex->spec->naggs, 1) * sizeof(AggAcc));
+	AggAcc	   *a = MemoryContextAllocZero(ex->tcxt, Max(ex->spec->naggs, 1) * sizeof(AggAcc));
 
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
-		a[i].n = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+		a[i].n = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 		switch (ex->spec->agg[i].kind)
 		{
 			case SAA_SUM_INT:
 			case SAA_AVG_INT:
 			case SAA_PCT_CONT:
 			case SAA_PCT_DISC:
-				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 				break;
 			case SAA_SUM_NUM:
 			case SAA_AVG_NUM:
-				a[i].w = MemoryContextAllocZero(ex->cxt, cap * sizeof(sift_i128));
+				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
 				break;
 			case SAA_MIN:
 			case SAA_MAX:
-				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
-				a[i].d = MemoryContextAllocZero(ex->cxt, cap * sizeof(double));
+				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
+				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
 				if (ex->spec->agg[i].num.n)
-					a[i].w = MemoryContextAllocZero(ex->cxt, cap * sizeof(sift_i128));
+					a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
 				break;
 			case SAA_SUM_F64:
 			case SAA_AVG_F64:
 			case SAA_O_SUM_F64:
 			case SAA_O_AVG_F64:
-				a[i].d = MemoryContextAllocZero(ex->cxt, cap * sizeof(double));
-				a[i].nf = MemoryContextAllocZero(ex->cxt, cap);
+				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				break;
 			case SAA_O_SUM_I64:
-				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 				break;
 			case SAA_M_SUM:
 			case SAA_M_AVG:
-				a[i].d = MemoryContextAllocZero(ex->cxt, cap * sizeof(double));
-				a[i].nf = MemoryContextAllocZero(ex->cxt, cap);
+				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				/* fall through */
 			case SAA_M_MIN:
 			case SAA_M_MAX:
-				a[i].v = MemoryContextAllocZero(ex->cxt, cap * sizeof(Datum));
+				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
 				break;
 			case SAA_O_COUNT_ROWS:
 			case SAA_COUNT_ROWS:
-				a[i].last = MemoryContextAlloc(ex->cxt, cap * sizeof(uint64));
+				a[i].last = MemoryContextAlloc(ex->tcxt, cap * sizeof(uint64));
 				memset(a[i].last, 0xff, cap * sizeof(uint64));
 				break;
 			default:
@@ -2190,6 +2211,20 @@ acc_alloc(AggExec *ex, uint32 cap)
 	return a;
 }
 
+static void
+acc_free(AggAcc *a, int naggs)
+{
+	for (int i = 0; i < naggs; i++)
+	{
+		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].last, a[i].nf};
+
+		for (int c = 0; c < lengthof(col); c++)
+			if (col[c])
+				pfree(col[c]);
+	}
+	pfree(a);
+}
+
 static void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 
 /* every per-group array to newcap groups; remap[old] = new index (UINT32_MAX: drop), NULL: identity */
@@ -2197,7 +2232,7 @@ static void
 groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 {
 	AggAcc	   *na = acc_alloc(ex, newcap);
-	int64	   *nseen = MemoryContextAllocZero(ex->cxt, newcap * sizeof(int64));
+	int64	   *nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
 
 	for (uint32 g = 0; g < oldcap; g++)
 	{
@@ -2229,6 +2264,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 			if (ex->dset[i].slot)
 				dset_grow(ex, &ex->dset[i], remap);
 	arms_resize(ex, newcap, remap, oldcap);
+	acc_free(ex->acc, ex->spec->naggs);
+	pfree(ex->seen);
 	ex->gen++;
 	ex->seen = nseen;
 	ex->acc = na;
@@ -2280,14 +2317,14 @@ hash_group(AggExec *ex, const uint32 *ids)
 	{
 		ex->hkcap = Max(ex->hkcap * 2, 1024);
 		ex->hkey = ex->hkey ? repalloc(ex->hkey, (Size) ex->hkcap * SIFT_AGG_MAX_KEYS * sizeof(uint32)) :
-			MemoryContextAlloc(ex->cxt, (Size) ex->hkcap * SIFT_AGG_MAX_KEYS * sizeof(uint32));
+			MemoryContextAlloc(ex->tcxt, (Size) ex->hkcap * SIFT_AGG_MAX_KEYS * sizeof(uint32));
 	}
 	memcpy(&ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS], ids, SIFT_AGG_MAX_KEYS * sizeof(uint32));
 	ex->hslot[pos] = g + 1;
 	if ((uint64) ex->ngroups * 2 > ex->nhslot)
 	{
 		uint32		nn = ex->nhslot * 2;
-		uint32	   *ns = MemoryContextAllocZero(ex->cxt, nn * sizeof(uint32));
+		uint32	   *ns = MemoryContextAllocZero(ex->tcxt, nn * sizeof(uint32));
 
 		for (uint32 x = 0; x < ex->ngroups; x++)
 		{
@@ -2339,12 +2376,12 @@ direct_grow(AggExec *ex)
 		total *= k->cap;
 	}
 	remap = palloc(oldcap * sizeof(uint32));
-	if (total > DIRECT_MAX)
+	if (total > ex->direct_max)
 	{
 		/* the existing groups keep their ids in the hash table */
 		ex->hash = true;
 		ex->nhslot = 1024;
-		ex->hslot = MemoryContextAllocZero(ex->cxt, ex->nhslot * sizeof(uint32));
+		ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 		ex->ngroups = 0;
 		for (uint32 g = 0; g < oldcap; g++)
 		{
@@ -2393,7 +2430,7 @@ ident_add(AggExec *ex, KeyState *k, int64 v)
 	{
 		k->capident = Max(k->capident * 2, 64);
 		k->idval = k->idval ? repalloc(k->idval, k->capident * sizeof(int64)) :
-			MemoryContextAlloc(ex->cxt, k->capident * sizeof(int64));
+			MemoryContextAlloc(ex->tcxt, k->capident * sizeof(int64));
 	}
 	k->idval[k->nident++] = v;
 	return k->nident;
@@ -2426,8 +2463,8 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 		uint32	   *oi = k->wid;
 
 		k->wcap *= 2;
-		k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int64));
-		k->wid = MemoryContextAllocZero(ex->cxt, k->wcap * sizeof(uint32));
+		k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
+		k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
 		for (uint32 s = 0; s < ocap; s++)
 			if (oi[s])
 			{
@@ -2453,8 +2490,8 @@ ident_go_wide(AggExec *ex, KeyState *k)
 	k->wcap = 1024;
 	while (k->wcap < 4 * n)
 		k->wcap *= 2;
-	k->wval = MemoryContextAlloc(ex->cxt, k->wcap * sizeof(int64));
-	k->wid = MemoryContextAllocZero(ex->cxt, k->wcap * sizeof(uint32));
+	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
+	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
 	k->nident = 0;				/* ident_wide_id gives the same ids back, in the same order */
 	for (uint32 i = 0; i < n; i++)
 		(void) ident_wide_id(ex, k, k->idval[i]);
@@ -2566,7 +2603,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		}
 		if (any)
 		{
-			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 
 			rt_cover(&k->rt, mn, mx, key_range_fill, &f);
 			MemoryContextSwitchTo(old);
@@ -2574,7 +2611,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		else
 		{
 			/* only NULLs: any covered value will do for the kernel, the rows are corrected below */
-			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 
 			rt_cover(&k->rt, 0, 0, key_range_fill, &f);
 			MemoryContextSwitchTo(old);
@@ -2603,7 +2640,7 @@ key_null_fix(AggExec *ex, int ki, int nsel, const uint32 *idx, const uint32 *val
 	{
 		if (k->nullid == UINT32_MAX)
 		{
-			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 
 			k->nullid = key_value_id(ex, ki, (Datum) 0, true);
 			MemoryContextSwitchTo(old);
@@ -2911,10 +2948,10 @@ osa_hash(uint32 sid, uint64 key)
 static Osa *
 osa_new(AggExec *ex)
 {
-	Osa		   *o = MemoryContextAllocZero(ex->cxt, sizeof(Osa));
+	Osa		   *o = MemoryContextAllocZero(ex->tcxt, sizeof(Osa));
 
 	o->cap = 1024;
-	o->slot = MemoryContextAllocZero(ex->cxt, o->cap * sizeof(OsaSlot));
+	o->slot = MemoryContextAllocZero(ex->tcxt, o->cap * sizeof(OsaSlot));
 	o->maxn = Max((uint64) work_mem * 1024 / (4 * sizeof(OsaSlot)), 256);	/* the table has at most 4 slots per pair */
 	return o;
 }
@@ -2967,7 +3004,7 @@ osa_grow(AggExec *ex, Osa *o)
 	uint64		ocap = o->cap;
 
 	o->cap *= 2;
-	o->slot = MemoryContextAllocZero(ex->cxt, o->cap * sizeof(OsaSlot));
+	o->slot = MemoryContextAllocZero(ex->tcxt, o->cap * sizeof(OsaSlot));
 	for (uint64 i = 0; i < ocap; i++)
 		if (old[i].sid1)
 		{
@@ -3181,7 +3218,7 @@ osa_finish(AggExec *ex, int owner)
 			nrows[own->i[g] - 1] = own->n[g];
 	for (int ai = 0; ai < s->naggs; ai++)
 		if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
-			ex->oval[ai] = MemoryContextAlloc(ex->cxt, Max(o->nsid, 1) * sizeof(double));
+			ex->oval[ai] = MemoryContextAlloc(ex->tcxt, Max(o->nsid, 1) * sizeof(double));
 	osa_sort(o);
 	for (bool more = osa_next(o, &r);; more = osa_next(o, &r))
 	{
@@ -3293,7 +3330,7 @@ mapped_add(AggExec *ex, int ai, uint32 g, uint32 id, int64 times)
 static void
 mapped_finish(AggExec *ex)
 {
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 
 	for (int ai = 0; ai < ex->spec->naggs; ai++)
 	{
@@ -3672,15 +3709,15 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	{
 		ArmSt	   *a = &ex->arm[k];
 		SiftAggArm *sa = &s->arm[k];
-		uint64	   *nord = MemoryContextAlloc(ex->cxt, newcap * sizeof(uint64));
+		uint64	   *nord = MemoryContextAlloc(ex->tcxt, newcap * sizeof(uint64));
 
 		memset(nord, 0xff, newcap * sizeof(uint64));
 		for (int ai = 0; ai < sa->ninner; ai++)
 		{
-			int64	   *nn = MemoryContextAllocZero(ex->cxt, newcap * sizeof(int64)),
-					   *ni = MemoryContextAllocZero(ex->cxt, newcap * sizeof(int64));
-			double	   *nd = MemoryContextAllocZero(ex->cxt, newcap * sizeof(double));
-			uint8	   *nnf = MemoryContextAllocZero(ex->cxt, newcap);
+			int64	   *nn = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64)),
+					   *ni = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
+			double	   *nd = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
+			uint8	   *nnf = MemoryContextAllocZero(ex->tcxt, newcap);
 
 			for (uint32 g = 0; g < oldcap && a->ord; g++)
 			{
@@ -4042,10 +4079,12 @@ build_parents(AggExec *ex)
 
 	ex->offs = elem_offs(ex, ex->spec->group);
 	ex->nelem = m = ex->offs[u->nrow];
-	ex->parent = MemoryContextAlloc(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
+	ex->parent = MemoryContextAllocZero(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
+	/* the row is written at the offset of its first element (an empty row is overwritten by the next one that has any), then carried forward */
 	for (int r = 0; r < u->nrow; r++)
-		for (uint32 e = ex->offs[r]; e < ex->offs[r + 1]; e++)
-			ex->parent[e] = r;
+		ex->parent[ex->offs[r]] = r;
+	for (uint32 e = 1, p = ex->parent[0]; e < m; e++)
+		ex->parent[e] = p = Max(p, ex->parent[e]);
 }
 
 static void
@@ -4156,7 +4195,7 @@ register_pred(AggExec *ex, SiftAggPred *p)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-		st->expr = ExecInitExpr((Expr *) p->expr, &ex->css.ss.ps);
+		st->expr = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
 		st->param = find_param(p->expr);
 		rt_init(&st->rt, 1);
 		if (ex->lay->leaf[p->leaf].vtype == SCV_I32)
@@ -4167,6 +4206,40 @@ register_pred(AggExec *ex, SiftAggPred *p)
 		register_pred(ex, p->child[i]);
 }
 
+/* The interval each leaf's comparisons leave: a unit whose zone misses it holds no row that passes (docs/COL-PLAN.md, "Zone pruning") */
+static void
+prune_init(AggExec *ex)
+{
+	List	   *cmps = sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase);
+
+	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(cmps), 1) * sizeof(SiftSrcPrune));
+	foreach_ptr(SiftAggPred, p, cmps)
+	{
+		PredState  *st = &ex->ps[p->id];
+		SiftSrcPrune *z = NULL;
+		int64		c;
+
+		if (!st->ready)
+			eval_operand(ex, p, st);
+		if (st->cnull)
+			continue;
+		for (int k = 0; k < ex->nprune; k++)
+			if (ex->prune[k].leaf == p->leaf)
+				z = &ex->prune[k];
+		if (z == NULL)
+		{
+			z = &ex->prune[ex->nprune++];
+			*z = (SiftSrcPrune) {p->leaf, PG_INT64_MIN, PG_INT64_MAX};
+		}
+		c = st->ci;
+		if (p->op != SCMP_GT && p->op != SCMP_GE)
+			z->hi = Min(z->hi, p->op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c);
+		if (p->op != SCMP_LT && p->op != SCMP_LE)
+			z->lo = Max(z->lo, p->op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c);
+	}
+}
+
+/* what a key keeps for the whole scan: its expression and the type of its input; the ids are the table's (table_init) */
 static void
 register_key(AggExec *ex, int ki)
 {
@@ -4175,19 +4248,11 @@ register_key(AggExec *ex, int ki)
 	const SiftSrcLeaf *lf = key_lf(ex, ki);
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-	ot_init(&k->ot, sk->eqop, sk->typid, sk->collid);
-	rt_init(&k->rt, sizeof(uint32));
-	k->cap = 4;
-	k->nullid = UINT32_MAX;
 	if (sk->kind == SAK_SET)
-	{
 		k->ident = true;
-		for (int i = 0; i < ex->spec->nsets; i++)
-			ident_add(ex, k, i);
-	}
 	else if (sk->kind == SAK_LUT)
 	{
-		k->expr = ExecInitExpr((Expr *) sk->expr, &ex->css.ss.ps);
+		k->expr = ExecInitExpr((Expr *) sk->expr, EXPR_PARENT(ex));
 		k->param = find_param(sk->expr);
 	}
 	else if (sk->kind == SAK_NUM)
@@ -4216,7 +4281,7 @@ register_combos(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-	ex->tcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
+	ex->comcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
 	ex->cs = palloc0(Max(s->ncombo, 1) * sizeof(ComboSt));
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
@@ -4227,7 +4292,7 @@ register_combos(AggExec *ex)
 		cs->ht = palloc0(cs->nht * sizeof(uint32));
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
 		for (int sl = 0; sl < cb->nslots; sl++)
-			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, &ex->css.ss.ps);
+			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, EXPR_PARENT(ex));
 		ex->clbase[ci] = ex->ncl;
 		ex->ncl += cb->nleaves;
 		if (cb->join >= 0)
@@ -4236,12 +4301,50 @@ register_combos(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* An empty group table, all in tcxt: key ids, group arrays, count(DISTINCT) sets */
 static void
-register_aggs(AggExec *ex)
+table_init(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+	uint32		total = 1;
 
+	ex->hash = false;
+	ex->direct_max = ex->lanes ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->ngroups = 0;
+	ex->hkey = NULL;
+	ex->hkcap = 0;
+	ex->hslot = NULL;
+	ex->nhslot = 0;
+	ex->row_base = 0;
+	for (int j = 0; j < s->nkeys; j++)
+	{
+		KeyState   *k = &ex->ks[j];
+		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk};
+
+		*k = keep;
+		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
+		rt_init(&k->rt, sizeof(uint32));
+		k->cap = 4;
+		k->nullid = UINT32_MAX;
+		if (s->key[j].kind == SAK_SET)
+			for (int i = 0; i < s->nsets; i++)
+				ident_add(ex, k, i);
+		else if (k->numk)
+			idmap_init(&k->im);
+		else if (s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64)
+			ident_go_wide(ex, k);
+	}
+	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */
+	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max)
+		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
+	direct_layout(ex);
+	for (int j = 0; j < s->nkeys; j++)
+		total *= ex->ks[j].cap;
+	ex->gcap = total;
+	ex->seen = palloc0(total * sizeof(int64));
+	ex->acc = acc_alloc(ex, total);
+	arms_resize(ex, total, NULL, 0);
 	ex->dset = palloc0(Max(s->naggs, 1) * sizeof(DSet));
 	ex->aot = palloc0(Max(s->naggs, 1) * sizeof(OutTable));
 	ex->amax = palloc0(Max(s->naggs, 1) * sizeof(double));
@@ -4267,24 +4370,27 @@ register_aggs(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* forgets every group (the dictionary maps hold key ids of the table) */
 static void
-start_scan(AggExec *ex)
+table_reset(AggExec *ex)
+{
+	int			nk = Max(ex->spec->nkeys + ex->spec->naggs, 1);
+
+	for (int i = 0; i < NDICT_SLOTS; i++)
+		if (ex->dslot[i].kmap)
+			memset(ex->dslot[i].kmap, 0, nk * sizeof(uint32 *));
+	MemoryContextReset(ex->tcxt);
+	table_init(ex);
+}
+
+static void
+scan_buffers(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
-	uint32		total;
 	int			maxv = VEC + PADW;
 
-	ex->started = true;
-	ex->glist = NULL;
-	direct_layout(ex);
-	total = 1;
-	for (int j = 0; j < s->nkeys; j++)
-		total *= ex->ks[j].cap;
-	ex->gcap = total;
-	ex->seen = MemoryContextAllocZero(ex->cxt, total * sizeof(int64));
-	ex->acc = acc_alloc(ex, total);
 	arms_init(ex);
-	arms_resize(ex, total, NULL, 0);
+
 	ex->t0.sel = MemoryContextAlloc(ex->cxt, (maxv + 16) * sizeof(uint32));
 	ex->t0.tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->t0.ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -4322,11 +4428,490 @@ start_scan(AggExec *ex)
 	ex->tmpm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm2 = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpu32 = MemoryContextAlloc(ex->cxt, (Size) maxv * SIFT_AGG_MAX_KEYS * sizeof(uint32));
-	sift_colsrc_begin(ex->src, 0, sift_colsrc_nsb(ex->src), NULL, 0);
+}
+
+/* ---------- partial group tables ---------- */
+
+/*
+ * A group table leaves a process as a blob: the key values its groups use, then per group the key ids (numbered from 1 in the
+ * blob) and the states of the aggregates, in 8-byte aligned sections. blob_merge adds a blob to a table by value: the keys through
+ * the table's own ids, the count(DISTINCT) sets by union, the sums in the order the blobs are merged (which the caller fixes).
+ */
+#define BLOB_MAGIC	0x53414731
+
+typedef struct BlobHdr
+{
+	uint32		magic;
+	int32		lane;
+	uint32		ngroups;
+	uint32		pad;
+} BlobHdr;
+
+static void
+bw_put(StringInfo b, const void *p, Size n)
+{
+	appendBinaryStringInfo(b, p, n);
+	while (b->len % 8)
+		appendStringInfoChar(b, 0);
+}
+
+static const void *
+br_get(const char **p, Size n)
+{
+	const void *r = *p;
+
+	*p += TYPEALIGN(8, n);
+	return r;
+}
+
+/* the aggregate arrays a state holds per group, besides the count: what acc_alloc made */
+static void
+bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
+{
+	char	   *tmp = palloc(Max(ng, 1) * sizeof(int64));
+	struct
+	{
+		const void *src;
+		int			esize;
+	}			col[] = {{acc->n, 8}, {acc->i, 8}, {acc->d, 8}, {acc->nf, 1}};
+
+	for (int c = 0; c < lengthof(col); c++)
+	{
+		if (col[c].src == NULL)
+			continue;
+		for (uint32 r = 0; r < ng; r++)
+			memcpy(tmp + (Size) r * col[c].esize, (const char *) col[c].src + (Size) gl[r] * col[c].esize, col[c].esize);
+		bw_put(b, tmp, (Size) ng * col[c].esize);
+	}
+	pfree(tmp);
+}
+
+/* the values of an output table whose ids are listed in old[0..nused), as datums */
+static void
+bw_values(StringInfo b, const OutTable *t, const uint32 *old, uint32 nused)
+{
+	StringInfoData vb;
+	uint32		hd[2];
+
+	initStringInfo(&vb);
+	for (uint32 i = 0; i < nused; i++)
+	{
+		Datum		d = t->val[old[i] - 1];
+		Size		sz = datumEstimateSpace(d, false, t->byval, t->len);
+		char	   *at;
+
+		enlargeStringInfo(&vb, sz);
+		at = vb.data + vb.len;
+		datumSerialize(d, false, t->byval, t->len, &at);
+		vb.len += sz;
+	}
+	hd[0] = nused;
+	hd[1] = vb.len;
+	bw_put(b, hd, sizeof(hd));
+	if (vb.len)
+		bw_put(b, vb.data, vb.len);
+	pfree(vb.data);
+}
+
+/* renumbers the ids ids[0..n) from 1 in order of use (0 stays 0); returns the old ids by new id */
+static uint32 *
+renumber(uint32 *ids, uint32 n, uint32 nold, uint32 *nused)
+{
+	uint32	   *rm = palloc0((nold + 1) * sizeof(uint32)),
+			   *old;
+
+	*nused = 0;
+	for (uint32 r = 0; r < n; r++)
+		if (ids[r] && !rm[ids[r]])
+			rm[ids[r]] = ++*nused;
+	old = palloc(Max(*nused, 1) * sizeof(uint32));
+	for (uint32 id = 1; id <= nold; id++)
+		if (rm[id])
+			old[rm[id] - 1] = id;
+	for (uint32 r = 0; r < n; r++)
+		ids[r] = ids[r] ? rm[ids[r]] : 0;
+	pfree(rm);
+	return old;
+}
+
+static uint32
+group_key_id(AggExec *ex, int j, uint32 g)
+{
+	return ex->hash ? ex->hkey[(Size) g * SIFT_AGG_MAX_KEYS + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
+}
+
+static void
+blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
+{
+	KeyState   *k = &ex->ks[j];
+	uint32	   *ids = palloc(Max(ng, 1) * sizeof(uint32)),
+			   *old,
+				nused;
+
+	for (uint32 r = 0; r < ng; r++)
+		ids[r] = group_key_id(ex, j, gl[r]);
+	old = renumber(ids, ng, k->ident ? k->nident : k->ot.n, &nused);
+	if (k->ident)
+	{
+		uint32		hd[2] = {nused, nused * sizeof(int32)};
+		int32	   *vals = palloc(Max(nused, 1) * sizeof(int32));
+
+		for (uint32 i = 0; i < nused; i++)
+			vals[i] = k->idval[old[i] - 1];
+		bw_put(b, hd, sizeof(hd));
+		bw_put(b, vals, nused * sizeof(int32));
+	}
+	else
+		bw_values(b, &k->ot, old, nused);
+	bw_put(b, ids, (Size) ng * sizeof(uint32));
+}
+
+/* the (group, value) pairs of a count(DISTINCT): values of a dictionary leaf by value, the others as they are */
+static void
+blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
+{
+	DSet	   *ds = &ex->dset[ai];
+	bool		dict = ex->lay->leaf[ex->spec->agg[ai].leaf].vtype == SCV_CODE;
+	uint32		np = 0,
+			   *pg = palloc(Max(ds->n, 1) * sizeof(uint32)),
+			   *pv = palloc(Max(ds->n, 1) * sizeof(uint32)),
+				hd[2],
+			   *old = NULL,
+				nused = 0;
+
+	for (uint64 i = 0; i < ds->cap; i++)
+		if (ds->slot[i])
+		{
+			pg[np] = cidx[(ds->slot[i] >> 32) & 0x7fffffff];
+			pv[np++] = (uint32) ds->slot[i];
+		}
+	if (dict)
+		old = renumber(pv, np, ex->aot[ai].n, &nused);
+	hd[0] = np;
+	hd[1] = 0;
+	bw_put(b, hd, sizeof(hd));
+	bw_put(b, pg, (Size) np * sizeof(uint32));
+	bw_put(b, pv, (Size) np * sizeof(uint32));
+	if (dict)
+		bw_values(b, &ex->aot[ai], old, nused);
+}
+
+static void
+blob_dump(AggExec *ex, int lane, StringInfo b)
+{
+	SiftAggSpec *s = ex->spec;
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+				ng = 0,
+			   *gl = palloc(Max(n, 1) * sizeof(uint32)),
+			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+	BlobHdr		h = {BLOB_MAGIC, lane, 0, 0};
+
+	for (uint32 g = 0; g < n; g++)
+	{
+		cidx[g] = UINT32_MAX;
+		if (ex->seen[g] > 0)
+		{
+			cidx[g] = ng;
+			gl[ng++] = g;
+		}
+	}
+	h.ngroups = ng;
+	bw_put(b, &h, sizeof(h));
+	for (int j = 0; j < s->nkeys; j++)
+		blob_key(ex, j, gl, ng, b);
+	{
+		AggAcc		seen = {.n = ex->seen};
+
+		bw_acc(b, &seen, gl, ng);
+	}
+	for (int i = 0; i < s->naggs; i++)
+	{
+		bw_acc(b, &ex->acc[i], gl, ng);
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+			blob_set(ex, i, cidx, b);
+	}
+	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
+	pfree(gl);
+	pfree(cidx);
+}
+
+/* ids of the values of an integer key in the table (the ids of the range table, or of the wide one) */
+static void
+merge_ident(AggExec *g, int j, const int32 *vals, uint32 nv, uint32 *xid)
+{
+	KeyState   *k = &g->ks[j];
+	int32		mn = PG_INT32_MAX,
+				mx = PG_INT32_MIN;
+
+	for (uint32 i = 0; i < nv; i++)
+	{
+		mn = Min(mn, vals[i]);
+		mx = Max(mx, vals[i]);
+	}
+	if (nv == 0)
+		return;
+	if (k->wcap || rt_span(&k->rt, mn, mx) > MAX_RANGE)
+	{
+		if (!k->wcap)
+			ident_go_wide(g, k);
+		for (uint32 i = 0; i < nv; i++)
+			xid[i + 1] = ident_wide_id(g, k, vals[i]);
+	}
+	else
+	{
+		KeyFill		f = {g, j};
+		MemoryContext old = MemoryContextSwitchTo(g->tcxt);
+
+		rt_cover(&k->rt, mn, mx, key_range_fill, &f);
+		MemoryContextSwitchTo(old);
+		for (uint32 i = 0; i < nv; i++)
+			xid[i + 1] = ((uint32 *) k->rt.tab)[vals[i] - k->rt.lo];
+	}
+}
+
+/* xid[1..] = the ids in table t of the values a blob lists; the reader is left after them */
+static void
+merge_values(AggExec *g, OutTable *t, const char **p, uint32 *xid)
+{
+	const uint32 *hd = br_get(p, 8);
+	const char *at = *p;
+
+	for (uint32 i = 0; i < hd[0]; i++)
+	{
+		bool		isnull;
+		Datum		d = datumRestore((char **) &at, &isnull);
+		MemoryContext old = MemoryContextSwitchTo(g->tcxt);
+
+		xid[i + 1] = ot_id(t, d);
+		MemoryContextSwitchTo(old);
+	}
+	*p += TYPEALIGN(8, hd[1]);
+}
+
+typedef struct BlobAgg
+{
+	AggAcc		a;				/* the arrays of the blob, read only */
+	uint32		npairs;
+	const uint32 *pg;
+	const uint32 *pv;
+	uint32	   *xv;				/* dictionary values: the ids in the table */
+} BlobAgg;
+
+static void
+merge_minmax(AggExec *g, int ai, const BlobAgg *ba, uint32 r, uint32 t)
+{
+	SiftAggAgg *a = &g->spec->agg[ai];
+	AggAcc	   *acc = &g->acc[ai];
+	bool		ismin = a->kind == SAA_MIN,
+				f64 = g->lay->leaf[a->leaf].vtype == SCV_F64;
+
+	if (ba->a.n[r] == 0)
+		return;
+	if (acc->n[t] == 0)
+	{
+		acc->i[t] = ba->a.i[r];
+		acc->d[t] = ba->a.d[r];
+	}
+	else if (f64 ? (ismin ? float8_cmp_internal(ba->a.d[r], acc->d[t]) < 0 : float8_cmp_internal(ba->a.d[r], acc->d[t]) > 0) :
+			 (ismin ? ba->a.i[r] < acc->i[t] : ba->a.i[r] > acc->i[t]))
+	{
+		acc->i[t] = ba->a.i[r];
+		acc->d[t] = ba->a.d[r];
+	}
+	acc->n[t] += ba->a.n[r];
+}
+
+static void
+merge_agg(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids, uint32 r0, uint32 n)
+{
+	SiftAggAgg *a = &g->spec->agg[ai];
+	AggAcc	   *acc = &g->acc[ai];
+
+	for (uint32 r = r0; r < r0 + n; r++)
+	{
+		uint32		t = gids[r];
+
+		switch (a->kind)
+		{
+			case SAA_COUNT_STAR:
+			case SAA_COUNT:
+			case SAA_COUNT_ROWS:
+				acc->n[t] += ba->a.n[r];
+				break;
+			case SAA_SUM_INT:
+			case SAA_AVG_INT:
+				acc->n[t] += ba->a.n[r];
+				acc->i[t] += ba->a.i[r];
+				break;
+			case SAA_SUM_F64:
+			case SAA_AVG_F64:
+				acc->n[t] += ba->a.n[r];
+				acc->d[t] += ba->a.d[r];
+				acc->nf[t] |= ba->a.nf[r];
+				break;
+			case SAA_MIN:
+			case SAA_MAX:
+				merge_minmax(g, ai, ba, r, t);
+				break;
+			case SAA_COUNT_DISTINCT:
+				break;
+			default:
+				elog(ERROR, "sift: aggregate kind %d has no partial table", a->kind);
+		}
+	}
+}
+
+/* the arrays of a blob's aggregate (the layout of bw_acc), with the pairs of its set */
+static void
+merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
+{
+	const AggAcc *acc = &g->acc[ai];
+
+	ba->a.n = (int64 *) br_get(p, (Size) ng * 8);
+	if (acc->i)
+		ba->a.i = (int64 *) br_get(p, (Size) ng * 8);
+	if (acc->d)
+		ba->a.d = (double *) br_get(p, (Size) ng * 8);
+	if (acc->nf)
+		ba->a.nf = (uint8 *) br_get(p, ng);
+	if (g->spec->agg[ai].kind == SAA_COUNT_DISTINCT)
+	{
+		const uint32 *hd = br_get(p, 8);
+
+		ba->npairs = hd[0];
+		ba->pg = br_get(p, (Size) ba->npairs * 4);
+		ba->pv = br_get(p, (Size) ba->npairs * 4);
+		if (g->lay->leaf[g->spec->agg[ai].leaf].vtype == SCV_CODE)
+		{
+			const uint32 *vh = (const uint32 *) *p;
+
+			ba->xv = palloc0((vh[0] + 1) * sizeof(uint32));
+			merge_values(g, &g->aot[ai], p, ba->xv);
+		}
+	}
+}
+
+static void
+merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
+{
+	for (uint32 i = 0; i < ba->npairs; i++)
+	{
+		uint32		t = gids[ba->pg[i]];
+
+		if (dset_add(g, &g->dset[ai], t, ba->xv ? ba->xv[ba->pv[i]] : ba->pv[i]))
+			g->acc[ai].n[t]++;
+	}
+}
+
+static void
+blob_merge(AggExec *g, const char *p)
+{
+	SiftAggSpec *s = g->spec;
+	const BlobHdr *h = br_get(&p, sizeof(BlobHdr));
+	uint32		ng = h->ngroups,
+			   *xid[SIFT_AGG_MAX_KEYS],
+			   *gids = palloc(Max(ng, 1) * sizeof(uint32));
+	const uint32 *lid[SIFT_AGG_MAX_KEYS];
+	const int64 *seen;
+	BlobAgg    *ba = palloc0(Max(s->naggs, 1) * sizeof(BlobAgg));
+	bool		grow = false;
+
+	if (h->magic != BLOB_MAGIC)
+		elog(ERROR, "sift: bad partial aggregate");
+	for (int j = 0; j < s->nkeys; j++)
+	{
+		KeyState   *k = &g->ks[j];
+		const uint32 *hd = (const uint32 *) p;
+
+		xid[j] = palloc0((hd[0] + 1) * sizeof(uint32));
+		if (k->ident)
+		{
+			br_get(&p, 8);
+			merge_ident(g, j, br_get(&p, (Size) hd[0] * sizeof(int32)), hd[0], xid[j]);
+		}
+		else
+			merge_values(g, &k->ot, &p, xid[j]);
+		lid[j] = br_get(&p, (Size) ng * sizeof(uint32));
+	}
+	seen = br_get(&p, (Size) ng * sizeof(int64));
+	for (int i = 0; i < s->naggs; i++)
+		merge_read_agg(g, i, &p, ng, &ba[i]);
+	if (s->naggs)
+		for (int i = 0; i < s->naggs; i++)
+			g->amax[i] = Max(g->amax[i], ((const double *) p)[i]);
+	if (!g->hash)
+		for (int j = 0; j < s->nkeys; j++)
+			grow |= key_used(&g->ks[j]) > g->ks[j].cap;
+	if (grow)
+		direct_grow(g);
+	for (uint32 r0 = 0; r0 < ng; r0 += VEC)
+	{
+		uint32		n = Min(VEC, ng - r0);
+
+		for (uint32 r = r0; r < r0 + n; r++)
+		{
+			uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
+
+			for (int j = 0; j < s->nkeys; j++)
+				ids[j] = xid[j][lid[j][r]];
+			if (g->hash)
+				gids[r] = hash_group(g, ids);
+			else
+			{
+				gids[r] = 0;
+				for (int j = 0; j < s->nkeys; j++)
+					gids[r] += ids[j] * g->ks[j].mult;
+			}
+		}
+		if (g->ngroups > g->gcap)
+			groups_resize(g, Max(g->gcap * 2, g->ngroups), NULL, g->gcap);
+		for (uint32 r = r0; r < r0 + n; r++)
+			g->seen[gids[r]] += seen[r];
+		for (int i = 0; i < s->naggs; i++)
+			merge_agg(g, i, &ba[i], gids, r0, n);
+	}
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+			merge_set(g, i, &ba[i], gids);
+	pfree(gids);
+	pfree(ba);
+}
+
+/* ---------- the scan: items of work, lanes ---------- */
+
+/*
+ * The superblocks are split in items that the participants take from a counter. Float sums are order dependent, so that a result
+ * does not depend on the number of workers: such a scan has SIFT_AGG_LANES items, lane l being the superblocks l, l + SIFT_AGG_LANES, ..., and the
+ * tables of the lanes are combined in lane order, whoever scanned them. The other aggregates are exact in any order: items are
+ * MORSEL_SBS superblocks, and a participant keeps one table for all its items.
+ */
+#define MORSEL_SBS	2
+
+typedef struct ScanShared
+{
+	pg_atomic_uint32 next;		/* the next item to take */
+	uint32		nitems;
+	uint32		nsb;
+	uint32		morsel;			/* superblocks of an item (the scans that keep their state in the leader: all of them) */
+	bool		ordered;
+} ScanShared;
+
+static void
+shared_init(ScanShared *sh, AggExec *ex)
+{
+	sh->nsb = sift_colsrc_nsb(ex->src);
+	sh->ordered = sift_aggspec_ordered(ex->spec);
+	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
+	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
+	pg_atomic_init_u32(&sh->next, 0);
+}
+
+static void
+scan_range(AggExec *ex, uint32 lo, uint32 hi)
+{
+	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 		process_unit(ex);
-	arms_flush(ex);
-	osa_finish_all(ex);
 }
 
 /* a grouping set without columns has its group even when no row reached it, as the plain aggregate has its row */
@@ -4342,6 +4927,364 @@ empty_set_groups(AggExec *ex)
 			ex->seen[ex->gid[0]] = Max(ex->seen[ex->gid[0]], 1);
 		}
 	ex->arm_mask = ~(uint32) 0;
+}
+
+static void
+scan_item(AggExec *ex, uint32 item)
+{
+	ScanShared *sh = ex->shared;
+
+	if (sh->ordered)
+		for (uint32 sb = item; sb < sh->nsb; sb += SIFT_AGG_LANES)
+			scan_range(ex, sb, sb + 1);
+	else
+		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));
+}
+
+static bool
+take_item(AggExec *ex, uint32 *item)
+{
+	*item = pg_atomic_fetch_add_u32(&ex->shared->next, 1);
+	return *item < ex->shared->nitems;
+}
+
+/* the lanes that are next in order go into the result */
+static void
+lanes_combine(AggExec *ex)
+{
+	while (ex->next_lane < SIFT_AGG_LANES && ex->pending[ex->next_lane])
+	{
+		blob_merge(ex->gtab, ex->pending[ex->next_lane]);
+		pfree(ex->pending[ex->next_lane]);
+		ex->pending[ex->next_lane++] = NULL;
+	}
+}
+
+static void
+lanes_put(AggExec *ex, int lane, const char *data, Size len)
+{
+	ex->pending[lane] = MemoryContextAlloc(ex->cxt, len);
+	memcpy(ex->pending[lane], data, len);
+	lanes_combine(ex);
+}
+
+static AggExec *
+result_view(AggExec *ex)
+{
+	AggExec    *g = MemoryContextAlloc(ex->cxt, sizeof(AggExec));
+
+	*g = *ex;
+	g->lanes = false;
+	g->tcxt = AllocSetContextCreate(ex->cxt, "sift agg result", ALLOCSET_DEFAULT_SIZES);
+	g->ks = MemoryContextAlloc(ex->cxt, Max(ex->spec->nkeys, 1) * sizeof(KeyState));
+	memcpy(g->ks, ex->ks, Max(ex->spec->nkeys, 1) * sizeof(KeyState));
+	table_init(g);
+	return g;
+}
+
+/* the check that avg(float8) owes (float_guard): the inputs of the whole scan could have overflowed the sum of squares */
+static void
+final_checks(AggExec *g, int64 ntuples)
+{
+	for (int i = 0; i < g->spec->naggs; i++)
+		if (g->spec->agg[i].kind == SAA_AVG_F64 && 8.0 * ntuples * g->amax[i] * g->amax[i] >= DBL_MAX)
+			float_overflow_error();
+}
+
+/* ---------- workers ---------- */
+
+/*
+ * A scan whose plan asks for workers runs them under a parallel context of its own (not under a Gather: the partial tables are
+ * not tuples). The leader and the workers take items from the counter in the shared memory; a worker sends its tables to the
+ * leader through a shm_mq, as blobs, and the leader merges them. Lanes wait for the lanes before them.
+ */
+#define KEY_SHARED	UINT64CONST(0x53494654A001)
+#define KEY_SPEC	UINT64CONST(0x53494654A002)
+#define KEY_PARAMS	UINT64CONST(0x53494654A003)
+#define KEY_SNAP	UINT64CONST(0x53494654A004)
+#define KEY_MQ		UINT64CONST(0x53494654A005)
+#define MQ_SIZE		(1 << 20)
+#define DONE_MAGIC	0x53414732
+
+typedef struct WorkerDone
+{
+	uint32		magic;
+	uint32		pad;
+	int64		n_units;
+	int64		n_rows;
+	int64		n_tuples;
+	SiftSrcCounters cc;
+} WorkerDone;
+
+typedef struct AggPar
+{
+	ParallelContext *pcxt;
+	int			nlaunched;
+	int			ndone;
+	shm_mq_handle **mqh;
+	bool	   *done;
+	SiftSrcCounters cc;			/* of the workers, added */
+} AggPar;
+
+static void
+send_blob(shm_mq_handle *mqh, const void *data, Size len)
+{
+	if (shm_mq_send(mqh, len, data, false, true) != SHM_MQ_SUCCESS)
+		ereport(ERROR, (errmsg("sift: the leader of a parallel aggregate went away")));
+}
+
+/* the table of the lane just scanned, as a blob: kept in order here, sent by a worker */
+static void
+lane_done(AggExec *ex, uint32 lane)
+{
+	StringInfoData b;
+
+	initStringInfo(&b);
+	blob_dump(ex, lane, &b);
+	if (ex->mqh)
+		send_blob(ex->mqh, b.data, b.len);
+	else
+		lanes_put(ex, lane, b.data, b.len);
+	pfree(b.data);
+	table_reset(ex);
+}
+
+static void par_poll(AggExec *ex);
+static void engine_contexts(AggExec *ex, MemoryContext parent);
+static void engine_rels(AggExec *ex);
+static void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
+static void engine_close(AggExec *ex);
+
+static void
+scan_items(AggExec *ex)
+{
+	uint32		item;
+
+	while (take_item(ex, &item))
+	{
+		scan_item(ex, item);
+		if (ex->shared->ordered)
+			lane_done(ex, item);
+		if (ex->par)
+			par_poll(ex);
+	}
+}
+
+void
+sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
+{
+	ScanShared *sh = shm_toc_lookup(toc, KEY_SHARED, false);
+	char	   *params = shm_toc_lookup(toc, KEY_PARAMS, false);
+	shm_mq	   *mq = (shm_mq *) ((char *) shm_toc_lookup(toc, KEY_MQ, false) + (Size) ParallelWorkerNumber * MQ_SIZE);
+	AggExec    *ex = palloc0(sizeof(AggExec));
+	WorkerDone	done = {DONE_MAGIC};
+
+	shm_mq_set_sender(mq, MyProc);
+	ex->mqh = shm_mq_attach(mq, seg, NULL);
+	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
+	engine_contexts(ex, CurrentMemoryContext);
+	engine_rels(ex);
+	engine_open(ex, RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)), RestoreParamList(&params));
+	ex->shared = sh;
+	ex->lanes = sh->ordered;
+	scan_buffers(ex);
+	table_init(ex);
+	scan_items(ex);
+	if (!sh->ordered)
+	{
+		StringInfoData b;
+
+		initStringInfo(&b);
+		blob_dump(ex, -1, &b);
+		send_blob(ex->mqh, b.data, b.len);
+	}
+	done.n_units = ex->n_units;
+	done.n_rows = ex->n_rows;
+	done.n_tuples = ex->n_tuples;
+	sift_colsrc_counters(ex->src, &done.cc);
+	send_blob(ex->mqh, &done, sizeof(done));
+	shm_mq_detach(ex->mqh);
+	engine_close(ex);
+}
+
+/* Starts the workers of the plan; the leader scans alone when none could be launched */
+static void
+par_launch(AggExec *ex)
+{
+	ParallelContext *pcxt;
+	char	   *spec_txt = nodeToString(ex->pack),
+			   *p;
+	Size		plen = EstimateParamListSpace(ex->params),
+				slen = EstimateSnapshotSpace(ex->snap);
+	int			nw = ex->spec->nworkers;
+	ScanShared  *ps;
+	AggPar	   *par;
+
+	if (nw <= 0 || IsParallelWorker())
+		return;
+	EnterParallelMode();
+	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
+	shm_toc_estimate_chunk(&pcxt->estimator, sizeof(ScanShared));
+	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
+	shm_toc_estimate_chunk(&pcxt->estimator, plen);
+	shm_toc_estimate_chunk(&pcxt->estimator, slen);
+	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
+	shm_toc_estimate_keys(&pcxt->estimator, 5);
+	InitializeParallelDSM(pcxt);
+	if (pcxt->seg == NULL)
+	{
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return;
+	}
+	ps = shm_toc_allocate(pcxt->toc, sizeof(ScanShared));
+	shared_init(ps, ex);
+	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
+	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
+	strcpy(p, spec_txt);
+	shm_toc_insert(pcxt->toc, KEY_SPEC, p);
+	p = shm_toc_allocate(pcxt->toc, plen);
+	shm_toc_insert(pcxt->toc, KEY_PARAMS, p);
+	SerializeParamList(ex->params, &p);
+	p = shm_toc_allocate(pcxt->toc, slen);
+	SerializeSnapshot(ex->snap, p);
+	shm_toc_insert(pcxt->toc, KEY_SNAP, p);
+	p = shm_toc_allocate(pcxt->toc, mul_size(MQ_SIZE, nw));
+	for (int i = 0; i < nw; i++)
+		shm_mq_set_receiver(shm_mq_create(p + (Size) i * MQ_SIZE, MQ_SIZE), MyProc);
+	shm_toc_insert(pcxt->toc, KEY_MQ, p);
+	LaunchParallelWorkers(pcxt);
+	if (pcxt->nworkers_launched == 0)
+	{
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return;
+	}
+	par = MemoryContextAllocZero(ex->cxt, sizeof(AggPar));
+	par->pcxt = pcxt;
+	par->nlaunched = pcxt->nworkers_launched;
+	par->mqh = MemoryContextAllocZero(ex->cxt, par->nlaunched * sizeof(shm_mq_handle *));
+	par->done = MemoryContextAllocZero(ex->cxt, par->nlaunched * sizeof(bool));
+	for (int i = 0; i < par->nlaunched; i++)
+	{
+		par->mqh[i] = shm_mq_attach((shm_mq *) (p + (Size) i * MQ_SIZE), pcxt->seg, NULL);
+		shm_mq_set_handle(par->mqh[i], pcxt->worker[i].bgwhandle);
+	}
+	ex->par = par;
+	ex->shared = ps;
+}
+
+static void
+par_message(AggExec *ex, int w, const char *data, Size len)
+{
+	AggPar	   *par = ex->par;
+
+	if (*(const uint32 *) data == DONE_MAGIC)
+	{
+		const WorkerDone *d = (const WorkerDone *) data;
+
+		ex->n_units += d->n_units;
+		ex->n_rows += d->n_rows;
+		ex->n_tuples += d->n_tuples;
+		par->cc.units_pruned += d->cc.units_pruned;
+		par->cc.rows_vetted += d->cc.rows_vetted;
+		par->cc.heap_pages += d->cc.heap_pages;
+		par->done[w] = true;
+		par->ndone++;
+		shm_mq_detach(par->mqh[w]);
+	}
+	else if (ex->shared->ordered)
+	{
+		const BlobHdr *h = (const BlobHdr *) data;
+
+		if (h->magic != BLOB_MAGIC)
+			elog(ERROR, "sift: bad message of a parallel aggregate");
+		lanes_put(ex, h->lane, data, len);
+	}
+	else
+		blob_merge(ex->gtab, data);
+}
+
+/* the messages that are there; whether there were any */
+static bool
+par_receive(AggExec *ex)
+{
+	AggPar	   *par = ex->par;
+	bool		any = false;
+
+	for (int w = 0; w < par->nlaunched; w++)
+		while (!par->done[w])
+		{
+			Size		len;
+			void	   *data;
+			shm_mq_result r = shm_mq_receive(par->mqh[w], &len, &data, true);
+
+			if (r == SHM_MQ_WOULD_BLOCK)
+				break;
+			if (r == SHM_MQ_DETACHED)
+				ereport(ERROR, (errmsg("sift: a worker of a parallel aggregate stopped without its result")));
+			par_message(ex, w, data, len);
+			any = true;
+		}
+	return any;
+}
+
+static void
+par_poll(AggExec *ex)
+{
+	par_receive(ex);
+	CHECK_FOR_INTERRUPTS();
+}
+
+/* waits for the workers' tables, then for the workers */
+static void
+par_finish(AggExec *ex)
+{
+	AggPar	   *par = ex->par;
+
+	while (par->ndone < par->nlaunched)
+	{
+		if (!par_receive(ex))
+		{
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0, PG_WAIT_EXTENSION);
+			ResetLatch(MyLatch);
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+	WaitForParallelWorkersToFinish(par->pcxt);
+	DestroyParallelContext(par->pcxt);
+	par->pcxt = NULL;
+	ExitParallelMode();
+}
+
+static void
+run_scan(AggExec *ex)
+{
+	bool		ordered = sift_aggspec_ordered(ex->spec);
+
+	ex->started = true;
+	ex->glist = NULL;
+	engine_open(ex, ex->snap, ex->params);
+	scan_buffers(ex);
+	par_launch(ex);
+	if (ex->shared == NULL)
+	{
+		ex->shared = MemoryContextAlloc(ex->cxt, sizeof(ScanShared));
+		shared_init(ex->shared, ex);
+	}
+	ex->lanes = ordered;
+	table_init(ex);
+	ex->gtab = ordered ? result_view(ex) : ex;
+	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
+	if (ex->par == NULL || parallel_leader_participation)
+		scan_items(ex);
+	arms_flush(ex);
+	osa_finish_all(ex);
+	if (ex->par)
+		par_finish(ex);
+	if (ordered && ex->next_lane != SIFT_AGG_LANES)
+		elog(ERROR, "sift: a lane of the aggregate scan is missing");
+	final_checks(ex->gtab, ex->n_tuples);
 }
 
 /* the groups that exist, in index order */
@@ -4503,26 +5446,29 @@ agg_next(ScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
 	TupleTableSlot *slot = node->ss_ScanTupleSlot;
+	AggExec    *t;
 	uint32		g;
 
 	if (!ex->started)
 	{
-		start_scan(ex);
-		empty_set_groups(ex);
-		mapped_finish(ex);
-		list_groups(ex);
+		run_scan(ex);
+		empty_set_groups(ex->gtab);
+		mapped_finish(ex->gtab);
+		list_groups(ex->gtab);
+		ex->n_groups = ex->gtab->nglist;
 	}
-	if (ex->gpos >= ex->nglist)
+	t = ex->gtab;
+	if (ex->gpos >= t->nglist)
 		return NULL;
-	g = ex->glist[ex->gpos++];
+	g = t->glist[ex->gpos++];
 	ExecClearTuple(slot);
-	for (int j = 0; j < ex->spec->nkeys; j++)
-		slot->tts_values[j] = key_datum(ex, j, g, &slot->tts_isnull[j]);
-	for (int i = 0; i < ex->spec->naggs; i++)
+	for (int j = 0; j < t->spec->nkeys; j++)
+		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
+	for (int i = 0; i < t->spec->naggs; i++)
 	{
-		int			c = ex->spec->nkeys + i;
+		int			c = t->spec->nkeys + i;
 
-		slot->tts_values[c] = agg_datum(ex, i, g, &slot->tts_isnull[c]);
+		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
 	}
 	return ExecStoreVirtualTuple(slot);
 }
@@ -4536,28 +5482,36 @@ agg_recheck(ScanState *node, TupleTableSlot *slot)
 /* ---------- executor methods ---------- */
 
 static void
-agg_begin(CustomScanState *node, EState *estate, int eflags)
+engine_contexts(AggExec *ex, MemoryContext parent)
 {
-	AggExec    *ex = (AggExec *) node;
-	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
-
-	ex->spec = sift_aggspec_unpack(cs->custom_private);
-	ex->cxt = AllocSetContextCreate(estate->es_query_cxt, "sift agg", ALLOCSET_DEFAULT_SIZES);
+	ex->cxt = AllocSetContextCreate(parent, "sift agg", ALLOCSET_DEFAULT_SIZES);
+	ex->tcxt = AllocSetContextCreate(ex->cxt, "sift agg table", ALLOCSET_DEFAULT_SIZES);
 	ex->ucxt = AllocSetContextCreate(ex->cxt, "sift agg unit", ALLOCSET_DEFAULT_SIZES);
-	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
-		return;
+}
+
+static void
+engine_rels(AggExec *ex)
+{
 	if (OidIsValid(ex->spec->indexoid))
 		ex->index = index_open(ex->spec->indexoid, AccessShareLock);
 	ex->heap = table_open(ex->spec->heapoid, AccessShareLock);
 	ex->heap_opened = true;
-	ex->src = sift_colsrc_open(ex->heap, ex->index, estate->es_snapshot, ex->cxt);
+}
+
+/* The scan engine on the relations of the spec: shared by the node and by a parallel worker */
+static void
+engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
+{
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	ex->src = sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
 	ex->lay = sift_colsrc_source_layout(ex->src);
 	extend_layout(ex);
-	ex->uvec = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(SiftSrcVec));
-	ex->uvec_ok = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(bool));
-	ex->gofs = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(uint32 *));
+	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->lutcx = CreateStandaloneExprContext();
-	ex->lutcx->ecxt_param_list_info = estate->es_param_list_info;
+	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
@@ -4567,7 +5521,37 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
 	register_combos(ex);
-	register_aggs(ex);
+	prune_init(ex);
+	MemoryContextSwitchTo(old);
+}
+
+static void
+engine_close(AggExec *ex)
+{
+	if (ex->src)
+		sift_colsrc_close(ex->src);
+	if (ex->lutcx)
+		FreeExprContext(ex->lutcx, true);
+	if (ex->index)
+		index_close(ex->index, NoLock);
+	if (ex->heap_opened)
+		table_close(ex->heap, NoLock);
+}
+
+static void
+agg_begin(CustomScanState *node, EState *estate, int eflags)
+{
+	AggExec    *ex = (AggExec *) node;
+	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
+
+	ex->spec = sift_aggspec_unpack(cs->custom_private);
+	ex->pack = cs->custom_private;
+	ex->params = estate->es_param_list_info;
+	ex->snap = estate->es_snapshot;
+	engine_contexts(ex, estate->es_query_cxt);
+	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+		return;
+	engine_rels(ex);
 	PredicateLockRelation(ex->heap, estate->es_snapshot);
 }
 
@@ -4585,14 +5569,7 @@ agg_end(CustomScanState *node)
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
 			tuplesort_end(ex->osa[i]->sort);
-	if (ex->src)
-		sift_colsrc_close(ex->src);
-	if (ex->lutcx)
-		FreeExprContext(ex->lutcx, true);
-	if (ex->index)
-		index_close(ex->index, NoLock);
-	if (ex->heap_opened)
-		table_close(ex->heap, NoLock);
+	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
 }
@@ -4635,12 +5612,22 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			appendStringInfo(&buf, "%s%s", i ? ", " : "", s->join[i].desc);
 		ExplainPropertyText("Lookup Joins", buf.data, es);
 	}
+	if (s->nworkers > 0)
+		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
 	if (es->analyze && ex->started)
 	{
-		ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
 		SiftSrcCounters cc;
 
 		sift_colsrc_counters(ex->src, &cc);
+		ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
+		if (s->nworkers > 0)
+			ExplainPropertyInteger("Workers Launched", NULL, ex->par ? ex->par->nlaunched : 0, es);
+		if (ex->par)
+		{
+			cc.units_pruned += ex->par->cc.units_pruned;
+			cc.rows_vetted += ex->par->cc.rows_vetted;
+			cc.heap_pages += ex->par->cc.heap_pages;
+		}
 		ExplainPropertyInteger("Units", NULL, ex->n_units, es);
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, ex->n_rows, es);

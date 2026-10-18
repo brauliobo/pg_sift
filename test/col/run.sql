@@ -7,11 +7,13 @@
 --     `-- key:` (columns, then every column as text) or, with `-- key: -`, as the query itself ordered them (a total ORDER BY);
 --   * integer, date, text, boolean, numeric, json(b), array and every other type: equal as text (a numeric keeps its scale);
 --   * float4 and float8: |x - y| <= 1e-12 + 1e-9 * max(|x|, |y|); NaN equals NaN, an infinity only itself, -0 equals 0, NULL only NULL.
---     Parallel workers and SIMD lanes add in another order, so sums and averages of floats differ in the last digits;
+--     The normal plan adds in heap order, SiftAgg in lane order (the same at every worker count and SIMD level), so sums and
+--     averages of floats can differ from it in the last digits;
 --   * a query that raises an error must raise one with the same SQLSTATE in every variant (the message may name another value).
 --
 -- Variants: off (reference: sift.enable_agg off, no parallel workers), off-par, on, on-par, on-scalar, on-par-scalar. "on" in the name:
--- sift.enable_agg = on; "par": max_parallel_workers_per_gather 2 with free parallel costs; "scalar": sift.simd = scalar (else auto).
+-- sift.enable_agg = on; "par": max_parallel_workers_per_gather 2 with free parallel costs; "scalar": sift.simd = scalar (else auto). The
+-- "on" runs of --bench use coldiff.bench_workers (--bench-workers) instead, with the real costs.
 \set ON_ERROR_STOP on
 CREATE SCHEMA IF NOT EXISTS coldiff;
 DROP TABLE IF EXISTS coldiff.results;
@@ -81,7 +83,8 @@ DECLARE g text; m text[];
 BEGIN
 	PERFORM set_config('sift.enable_agg', CASE WHEN variant LIKE 'on%' THEN 'on' ELSE 'off' END, false);
 	PERFORM set_config('sift.simd', CASE WHEN variant LIKE '%scalar%' THEN 'scalar' ELSE 'auto' END, false);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN variant LIKE '%par%' THEN '2' ELSE '0' END, false);
+	PERFORM set_config('max_parallel_workers_per_gather',
+					   CASE WHEN variant LIKE '%par%' THEN '2' WHEN variant = 'on' THEN coalesce(current_setting('coldiff.bench_workers', true), '0') ELSE '0' END, false);
 	IF variant LIKE '%par%' THEN
 		PERFORM set_config('parallel_setup_cost', '0', false), set_config('parallel_tuple_cost', '0', false),
 				set_config('min_parallel_table_scan_size', '0', false), set_config('min_parallel_index_scan_size', '0', false);

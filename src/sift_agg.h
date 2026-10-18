@@ -26,6 +26,11 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;
 /* sift_aggcol.c: registers the sift_col index as a column source (does nothing in a build without the column engine) */
 extern void sift_aggcol_register(void);
 
+/* sift_agg.c: entry point of the parallel workers of a scan (access/parallel.h) */
+struct dsm_segment;
+struct shm_toc;
+extern PGDLLEXPORT void sift_agg_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
+
 /* sift_agg.c: CreateCustomScanState callback */
 extern Node *sift_agg_create_state(CustomScan *cscan);
 

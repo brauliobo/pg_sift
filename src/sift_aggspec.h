@@ -98,6 +98,7 @@ typedef struct SiftAggPred
 	int			nchild;
 	struct SiftAggPred **child;
 	char	   *desc;			/* EXPLAIN */
+	double		sel;			/* planner only, not packed: the selectivity of a SAP_CMP, for the cost of the scan */
 } SiftAggPred;
 
 typedef enum SiftAggKeyKind
@@ -314,12 +315,44 @@ typedef struct SiftAggSpec
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
+	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */
 extern bool sift_parse_decimal(const char *s, sift_i128 *v, int *scale);
 extern sift_i128 sift_pow10(int e);
+
+/*
+ * Float sums depend on the order of the additions. A scan with one is split in SIFT_AGG_LANES lanes, lane l being the
+ * superblocks l, l + SIFT_AGG_LANES, ...; each lane is summed in superblock order and the lanes are added in lane order,
+ * so that the result does not depend on how many processes scan (docs/COL-PLAN.md, "Parallel scan").
+ */
+#define SIFT_AGG_LANES		16
+
+/*
+ * The specs whose group tables can leave a process (dumped and merged by value) and be reset: plain keys (a column, or an
+ * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column). The others
+ * (combos, joins, ordered sets, two level arms, grouping sets, numeric and float keys, numeric states, mapped aggregates) keep
+ * their state in the leader: the plan asks for no workers and the scan has no lanes.
+ */
+extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
+
+static inline bool
+sift_aggspec_ordered(const SiftAggSpec *s)
+{
+	if (!sift_aggspec_parallel_ok(s))
+		return false;
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64)
+			return true;
+	return false;
+}
+
+/* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
+extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
+
+extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 extern SiftAggSpec *sift_aggspec_unpack(const List *items);

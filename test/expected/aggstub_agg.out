@@ -47,14 +47,16 @@ EXPLAIN (COSTS OFF) SELECT kind, sum(amount::float4) FROM o GROUP BY kind;
    ->  Seq Scan on o
 (3 rows)
 
+-- a range of a column that follows the heap order is priced by the units its zone leaves, and is cheaper than the btree scan
 EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM o WHERE id < 100 GROUP BY kind;
-             QUERY PLAN             
-------------------------------------
- HashAggregate
-   Group Key: kind
-   ->  Index Scan using o_pkey on o
-         Index Cond: (id < 100)
-(4 rows)
+          QUERY PLAN           
+-------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Filters: id < 100
+   Group Keys: kind
+   Pushed Aggregates: count(*)
+(5 rows)
 
 -- the rows of the two plans
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$

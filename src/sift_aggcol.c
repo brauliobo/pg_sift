@@ -212,7 +212,18 @@ col_nsb(void *impl)
 static void
 col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
-	sift_col_begin(((ColSource *) impl)->cs, NULL, 0, sb_lo, sb_hi);
+	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
+	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES];
+
+	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
+	for (int k = 0; k < nprune; k++)
+	{
+		vals[2 * k].v.i = prune[k].lo;
+		vals[2 * k + 1].v.i = prune[k].hi;
+		preds[2 * k] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_GE, 1, &vals[2 * k]};
+		preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_LE, 1, &vals[2 * k + 1]};
+	}
+	sift_col_begin(((ColSource *) impl)->cs, preds, 2 * nprune, sb_lo, sb_hi);
 }
 
 static bool

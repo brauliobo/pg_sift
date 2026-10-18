@@ -24,6 +24,7 @@ FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty in
 
 -- shapes it does not take keep the normal plan
 EXPLAIN (COSTS OFF) SELECT kind, sum(amount::float4) FROM o GROUP BY kind;
+-- a range of a column that follows the heap order is priced by the units its zone leaves, and is cheaper than the btree scan
 EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM o WHERE id < 100 GROUP BY kind;
 
 -- the rows of the two plans
