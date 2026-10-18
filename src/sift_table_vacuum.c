@@ -28,6 +28,7 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
 
+#include "sift_col_seg.h"
 #include "sift_maint.h"
 #include "sift_table.h"
 
@@ -182,6 +183,23 @@ in_delta(const SiftTblRel *st, uint64 vblock)
 	return false;
 }
 
+/* The live rows of the column segments: with the delta rows, the tuples of the table (sealing moves rows from one to the other) */
+static double
+group_live_rows(Relation rel, const SiftTblRel *st)
+{
+	double		n = 0;
+
+	for (int i = 0; i < st->dir.nsegs; i++)
+		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+
+			n += sift_cseg_live_rows(seg);
+			sift_cseg_close(seg);
+		}
+	return n;
+}
+
 /* The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their superblocks */
 static void
 group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, uint32 *lo, uint32 *hi)
@@ -243,6 +261,7 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 		tid_sort(&v.dead_tids);
 		if (sb_lo <= sb_hi)
 			(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v.dead_tids, sb_lo, sb_hi);
+		v.live += group_live_rows(rel, st);
 	}
 	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
 	for (int i = 0; i < nindexes; i++)
