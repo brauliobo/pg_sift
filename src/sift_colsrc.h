@@ -172,6 +172,63 @@ typedef struct SiftSrcStrTest
 	const uint32 *lens;
 } SiftSrcStrTest;
 
+/*
+ * Pre-aggregates (docs/COL-PREAGG.md), optional provider callbacks: what a unit knows about its rows without reading a chunk. A unit may answer
+ * only when it is fully visible and clean (unit_exact: no dead row, every page it has rows on all-visible to the snapshot; a unit of the write
+ * buffer never is); the consumer applies its predicate on top (a unit whose zone lies inside the predicate answers whole, any other is scanned).
+ * unit_agg / unit_hist return false when the unit cannot answer (not exact, an overflow value, no histogram for that dim in that unit).
+ * Memory of a result is valid until the next unit_hist call of the source.
+ */
+typedef __int128 SiftSrcI128 __attribute__((aligned(8)));
+
+#define SIFT_SRC_MAX_DIMS		16
+#define SIFT_SRC_MAX_MEAS		8
+
+typedef struct SiftSrcUnitAgg
+{
+	int64		nvals;			/* rows of the unit (elements, for a child leaf) */
+	int64		nnull;
+	bool		has_minmax;		/* some value is not NULL and the leaf is not text: min and max are set */
+	int64		min;			/* SCV_I32 / SCV_I64 leaves: the values as stored (numeric: times 10^scale) */
+	int64		max;
+	double		min_f;			/* SCV_F64 leaves (NaN is the largest value, as in PostgreSQL's order) */
+	double		max_f;
+	bool		has_sums;		/* integer leaf: sum and sumsq are exact */
+	bool		has_sumsq;		/* sumsq did not overflow int128 */
+	SiftSrcI128 sum;
+	SiftSrcI128 sumsq;
+	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */
+	bool		has_nan;
+	bool		is_const;		/* every non-NULL value equal */
+} SiftSrcUnitAgg;
+
+/* GROUP BY dim over one unit: count of rows per group and, per stored measure, the non-NULL count and the sum. The NULL group, when there is one, is last */
+typedef struct SiftSrcHist
+{
+	uint32		ngroups;
+	bool		has_null;
+	const int64 *key;			/* group value as stored; SCV_CODE dims: a code of dict (the executor translates by value) */
+	const SiftSrcDict *dict;	/* SCV_CODE dims */
+	const uint32 *count;
+	int			nmeas;
+	int			meas[SIFT_SRC_MAX_MEAS];	/* leaf ids */
+	const uint32 *nn[SIFT_SRC_MAX_MEAS];
+	const SiftSrcI128 *sum[SIFT_SRC_MAX_MEAS];	/* integer measure (numeric: times 10^scale), else NULL */
+	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
+} SiftSrcHist;
+
+/* Planner: the histograms the index writes (a unit may still lack one); ndims 0 when none */
+typedef struct SiftSrcPreagg
+{
+	int			ndims;
+	struct
+	{
+		int			leaf;
+		int			nmeas;
+		int			meas[SIFT_SRC_MAX_MEAS];
+	}			dim[SIFT_SRC_MAX_DIMS];
+} SiftSrcPreagg;
+
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -220,6 +277,11 @@ typedef struct SiftSrcProvider
 	 */
 	int64		(*leaf_n) (void *impl, const SiftSrcUnit *unit, int leaf);
 	void		(*read_into) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
+	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */
+	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
+	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
+	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
+	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -270,6 +332,27 @@ static inline bool
 sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
+}
+
+/* Pre-aggregates of the unit just returned by sift_colsrc_next: false without a provider callback or when the unit cannot answer */
+extern void sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa);
+
+static inline bool
+sift_colsrc_unit_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->unit_exact != NULL && src->prov->unit_exact(src->impl, unit);
+}
+
+static inline bool
+sift_colsrc_unit_agg(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	return src->prov->unit_agg != NULL && src->prov->unit_agg(src->impl, unit, leaf, agg);
+}
+
+static inline bool
+sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, h);
 }
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */
