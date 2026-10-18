@@ -4,7 +4,7 @@
  * VACUUM: delta rows whose insertion aborted, or whose deleter is committed and older than OldestXmin, are flagged DEAD (and are
  * the dead TIDs the indexes drop); committed old insertions are frozen; then the tombstone segment is rewritten without the
  * entries that no longer matter. TIDs are never reused, so no ordering between these steps is needed for safety. Column segments
- * left mostly dead are rewritten.
+ * left mostly dead are rewritten, and the free run at the end of the file goes back to the operating system.
  *
  * VACUUM FULL / CLUSTER write the kept versions straight into column segments of the new table (sift_tbl_bulk_*).
  */
@@ -26,6 +26,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
+#include "storage/lmgr.h"
 #include "storage/procarray.h"
 #include "utils/rel.h"
 #include "utils/sampling.h"
@@ -284,20 +285,70 @@ vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
 	return nindexes;
 }
 
+/* Would the tombstone rewrite drop an entry? tomb_keep notes the xids of the entries kept either way */
+static bool
+tomb_drops(SiftTblRel *st, VacState *v)
+{
+	bool		drops = false;
+
+	for (uint32 i = 0; i < st->nents; i++)
+		drops |= !tomb_keep(&st->ents[i], v);
+	for (uint32 i = 0; i < st->nrecent; i++)
+		drops |= !tomb_keep(&st->recent[i], v);
+	return drops;
+}
+
+/* Tail space worth an exclusive lock, as for a heap (REL_TRUNCATE_MINIMUM, REL_TRUNCATE_FRACTION) */
+#define TRUNCATE_MIN_BLOCKS	1000
+#define TRUNCATE_FRACTION	16
+
+/*
+ * Gives the reusable free blocks at the end of the file back as a heap's VACUUM does: when they are worth it and AccessExclusiveLock
+ * on the table is free now (sift_store.h P7; the store invalidates every backend's cache of the table, whose target pages and delta
+ * page tables may point past the new end). Returns the blocks given back.
+ */
+static BlockNumber
+truncate_tail(Relation rel, int elevel)
+{
+	BlockNumber tail = sift_store_tail_blocks(rel);
+	BlockNumber freed;
+
+	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(rel) / TRUNCATE_FRACTION))
+		return 0;
+	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	{
+		ereport(elevel, (errmsg("table \"%s\": stopping truncate due to conflicting lock request", RelationGetRelationName(rel))));
+		return 0;
+	}
+	freed = sift_store_truncate(rel);
+	UnlockRelation(rel, AccessExclusiveLock);
+	if (freed > 0)
+		ereport(elevel, (errmsg("table \"%s\": truncated %u to %u pages", RelationGetRelationName(rel),
+								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
+	return freed;
+}
+
 /* Closes the active delta segment once it is worth a column segment (pages) */
 #define VACUUM_CLOSE_PAGES	8
 
-/* Steps 4 and 5, then the blocks released before are recycled */
+/*
+ * Steps 4 and 5, then the space: the blocks released before (by earlier VACUUMs and writers) are recycled, and the reusable run at the
+ * end of the file is cut. What this VACUUM releases waits for the next: a lazy VACUUM's own xid is in no snapshot or horizon, so it
+ * releases with the next xid, which only passes once another transaction has ended (sift_store.c, xid_safexid).
+ */
 static void
-vacuum_space(Relation rel, SiftTblRel *st, VacState *v)
+vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
 {
 	sift_tbl_close_delta(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_seal(rel, st, v->oldest, true);
 	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
 		CHECK_FOR_INTERRUPTS();
-	(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
+	if (tomb_drops(st, v))
+		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
+	if (truncate)
+		(void) truncate_tail(rel, elevel);
 }
 
 /* Step 6, with the counts of a heap: reltuples and the live rows, the recently dead ones for autovacuum */
@@ -338,7 +389,7 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 		vacuum_rows(rel, st, &v);
 	nindexes = vacuum_indexes(rel, &v, bstrategy);
 	if (st->initialized)
-		vacuum_space(rel, st, &v);
+		vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, elevel);
 	sift_maint_unlock(rel);
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
