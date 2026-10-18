@@ -139,6 +139,23 @@ extern bool sift_store_removable(Relation index, FullTransactionId xid);
 extern FullTransactionId sift_store_horizon(Relation index);
 
 /*
+ * The free-list pages in chain order, each share-locked and validated while visit runs on it (blk is its block);
+ * visit returns false to stop. metabuf is locked: it guards the list.
+ */
+typedef bool (*SiftFreeListVisit) (BlockNumber blk, const SiftFreeListData *fl, void *arg);
+extern void sift_freelist_walk(Relation index, Buffer metabuf, SiftFreeListVisit visit, void *arg);
+
+typedef struct SiftFreeStats
+{
+	int64		pages;			/* pages of the list itself */
+	int64		records;
+	int64		blocks;
+	int64		reusable;		/* blocks whose releasing transactions are older than every snapshot */
+} SiftFreeStats;
+
+extern SiftFreeStats sift_store_free_stats(Relation index);
+
+/*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK
  * or INIT write target; the pages are written by sift_wt_finish with the
  * final high-water mark. A BULK build numbers its segments from gen 1 and
