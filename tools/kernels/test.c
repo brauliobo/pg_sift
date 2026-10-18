@@ -310,14 +310,26 @@ check_tf(Rng *r)
 	free(tf), free(out), free(blob);
 }
 
+static int
+popcount_words(const uint64 *w, int n)
+{
+	int			c = 0;
+
+	for (int i = 0; i < n; i++)
+		c += __builtin_popcountll(w[i]);
+	return c;
+}
+
 static void
 check_misc(Rng *r)
 {
 	int			nwords = 1 + rng_below(r, 16),
 				pop = 0,
 				n = rng_below(r, 300),
-				off = rng_below(r, 4);
+				off = rng_below(r, 4),
+				bit0 = rng_below(r, 130);
 	uint64		base[16],
+				emask[16],
 				outr[16],
 				outs[16],
 				pm[4],
@@ -333,22 +345,24 @@ check_misc(Rng *r)
 
 	for (int i = 0; i < nwords; i++)
 		pop += __builtin_popcountll(base[i] = rng_below(r, 4) ? rng_next(r) & rng_next(r) : rng_next(r));
-	rb = malloc(((pop + 63) / 64) * 8 + 8);
-	fill_garbage(r, rb, ((pop + 63) / 64) * 8);
-	if (sift_kernels_scalar.expand(outr, base, rb, nwords) != pop)
+	for (int i = 0; i < nwords; i++)
+		emask[i] = rng_below(r, 3) ? rng_next(r) : ~UINT64CONST(0);
+	rb = malloc(((bit0 + pop + 63) / 64) * 8 + 8);
+	fill_garbage(r, rb, ((bit0 + pop + 63) / 64) * 8);
+	if (sift_kernels_scalar.expand(outr, emask, base, rb, bit0, nwords) != popcount_words(outr, nwords))
 		FAIL("expand count\n");
-	for (int i = 0, pos = 0; i < nwords; pos += __builtin_popcountll(base[i]), i++)
+	for (int i = 0, pos = bit0; i < nwords; pos += __builtin_popcountll(base[i]), i++)
 		for (int b = 0, j = 0; b < 64; b++)
 			if (base[i] >> b & 1)
 			{
-				if ((outr[i] >> b & 1) != (rb[(pos + j) / 64] >> ((pos + j) % 64) & 1))
+				if ((outr[i] >> b & 1) != ((rb[(pos + j) / 64] >> ((pos + j) % 64) & 1) & (emask[i] >> b & 1)))
 					FAIL("expand scalar bit\n");
 				j++;
 			}
 			else if (outr[i] >> b & 1)
 				FAIL("expand outside base\n");
 	for (int t = 1; t < ntabs; t++)
-		if (tabs[t].k->expand(outs, base, rb, nwords) != pop || memcmp(outs, outr, nwords * 8))
+		if (tabs[t].k->expand(outs, emask, base, rb, bit0, nwords) != popcount_words(outr, nwords) || memcmp(outs, outr, nwords * 8))
 			FAIL("expand mismatch on %s\n", tabs[t].name);
 
 	fill_garbage(r, vm, 64);

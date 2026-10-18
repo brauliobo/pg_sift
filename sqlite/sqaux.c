@@ -6,7 +6,7 @@
  *   sift_bm25(t)                                      the rank of the current row (negated BM25), as the rank column
  *   sift_highlight_text(table, text, query, open, close), sift_snippet_text(table, text, query, open, close, ellipsis, n)
  *                                                     the same on any text, with the analyzer of a table
- *   SELECT value, n FROM sift_facets('docs', 'docs_category', 'friendly OR pool'[, lim[, nulls]])
+ *   SELECT value, n FROM sift_facets('docs', 'docs_category', 'friendly OR case'[, lim[, nulls]])
  *                                                     matches of docs per value of a keyword-analyzer table
  *
  * The first three are overloads (xFindFunction): t is the table-named column of the row being read, which the table

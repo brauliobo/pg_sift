@@ -13,7 +13,7 @@ sql conc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" \
 	"CREATE INDEX t_idx ON t USING sift_store_test (v)" \
 	"CREATE TABLE r (v int)" "CREATE INDEX r_idx ON r USING sift_store_test (v)" >/dev/null || bail "setup failed"
 
-read -ra FILES <<<"$(churn conc t_idx 2000000)"
+read -ra FILES <<<"$(churn conc t_idx "$CHURN_BYTES")"
 pgbench_bg conc 16 "$SECS" "${FILES[@]}"
 wait "$PGBENCH_PID"
 check "pgbench churn: no failed transaction" grep -q "number of failed transactions: 0 " "$(dir conc)/pgbench.log"

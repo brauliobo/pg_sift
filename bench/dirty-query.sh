@@ -11,7 +11,7 @@
 #   rollback  documents worth that fraction of the live ones, all repeating w7, are loaded and rolled back, then the index is
 #             promoted and merged into one segment: postings of dead heap tuples that VACUUM has not marked yet (the mutable
 #             segments that hold them before the promotion, and the segments it makes, are costs of their own)
-# Each query is timed (pgbench, SECONDS per query, default 2) and its top 10 kept; the index is then rebuilt (REINDEX) on the same
+# Each query is timed (pgbench, SECONDS per query, default 2; count_par with two parallel workers) and its top 10 kept; the index is then rebuilt (REINDEX) on the same
 # live rows and the queries are timed and compared again. A row is: the mode, the dead fraction, the dead documents as a percentage
 # of the index's, the query, milliseconds dirty and clean, their ratio, how many of the clean top 10 the dirty one returned, and the dirty top score
 # over the clean one. -o appends the rows to FILE as TSV. HOST:PORT is as in bench/ab-query.sh; the database is created if missing.
@@ -42,13 +42,18 @@ queries=(
 	'or3|SELECT ctid FROM dq WHERE body @@> '"'w5 OR w50 OR w7'"' ORDER BY sift.score(ctid) DESC LIMIT 10'
 	'rare|SELECT ctid FROM dq WHERE body @@> '"'w1500 OR w1501 OR w20'"' ORDER BY sift.score(ctid) DESC LIMIT 10'
 	'count|SELECT count(*) FROM dq WHERE body @@> '"'w5'"
+	'count_and|SELECT count(*) FROM dq WHERE body @@> '"'w5 w50'"
+	'count_or|SELECT count(*) FROM dq WHERE body @@> '"'w5 OR w50 OR w7'"
+	'count_par|SELECT count(*) FROM dq WHERE body @@> '"'w5'"
 	'scan|SELECT count(ctid) FROM dq WHERE body @@> '"'w300 OR w301'"' AND id % 7 <> 0'
 )
 
-time_ms() { # SQL -> milliseconds per statement
+time_ms() { # SQL NAME -> milliseconds per statement; the *_par ones run with parallel workers
+	local opts=$PGOPTIONS
+	[[ $2 != *_par ]] || opts+=' -c max_parallel_workers_per_gather=2 -c parallel_setup_cost=0 -c parallel_tuple_cost=0 -c min_parallel_index_scan_size=0 -c sift.parallel_scan=on'
 	printf '%s;\n' "$1" >"$work/q.sql"
-	pgbench -n -f "$work/q.sql" -M prepared -t 300 -h "$host" -p "$port" -U postgres "$db" >/dev/null
-	pgbench -n -f "$work/q.sql" -M prepared -T "$secs" -h "$host" -p "$port" -U postgres "$db" | sed -n 's/^latency average = \([0-9.]*\) ms.*/\1/p'
+	PGOPTIONS=$opts pgbench -n -f "$work/q.sql" -M prepared -t 300 -h "$host" -p "$port" -U postgres "$db" >/dev/null
+	PGOPTIONS=$opts pgbench -n -f "$work/q.sql" -M prepared -T "$secs" -h "$host" -p "$port" -U postgres "$db" | sed -n 's/^latency average = \([0-9.]*\) ms.*/\1/p'
 }
 
 top10() { # SQL -> "ids|top score" of the ranked statement, from the table of this run
@@ -60,7 +65,7 @@ build() { # fraction
 	psql_ "$db" -v docs="$docs" -v f="$1" -v mode="$mode" <<-'SQL'
 		CREATE EXTENSION IF NOT EXISTS pg_sift;
 		DROP TABLE IF EXISTS dq;
-		CREATE TABLE dq (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+		CREATE TABLE dq (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = off, parallel_workers = 2);
 		CREATE OR REPLACE FUNCTION dq_doc(skew bool) RETURNS text LANGUAGE sql AS
 			$$ SELECT (CASE WHEN skew THEN 'w7 w7 w7 ' ELSE '' END) ||
 				(SELECT string_agg('w' || floor(3000 * power(random(), 3))::int, ' ') FROM generate_series(1, 30)) $$;
@@ -100,13 +105,13 @@ for f in $fracs; do
 	declare -A dms=() dtop=()
 	for q in "${queries[@]}"; do
 		n=${q%%|*} s=${q#*|}
-		dms[$n]=$(time_ms "$s")
+		dms[$n]=$(time_ms "$s" "$n")
 		[[ $s == *"LIMIT 10"* ]] && dtop[$n]=$(top10 "$(sed -n "s/.*@@> '\([^']*\)'.*/\1/p" <<<"$s")")
 	done
 	psql_ "$db" -c "REINDEX INDEX dq_idx" -c "VACUUM dq"
 	for q in "${queries[@]}"; do
 		n=${q%%|*} s=${q#*|}
-		cms=$(time_ms "$s")
+		cms=$(time_ms "$s" "$n")
 		same=- ratio=-
 		if [[ -n ${dtop[$n]:-} ]]; then
 			ct=$(top10 "$(sed -n "s/.*@@> '\([^']*\)'.*/\1/p" <<<"$s")")

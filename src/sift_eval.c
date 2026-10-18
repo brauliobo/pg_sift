@@ -1732,7 +1732,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 	SiftSegment *seg = p->seg[s];
 	const uint8 *off = g->off;
 	SiftDocChunk dc;
-	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_docs(seg, g->gid, &dc) && dc.dirty;
+	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid) && sift_seg_docs(seg, g->gid, &dc);
 	bool		pos = !sure && p->npleaf > 0,
 				decided = !sure && it->som && !p->hardrecheck && !p->segheap[s];
 
@@ -1748,13 +1748,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 
 			memcpy(mask, off, g->w);
 			if (dirty)
-			{
-				uint64		live[SIFT_OFFMASK_WORDS];
-
-				sift_seg_page_live(seg, &dc, page, live);
-				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-					mask[k] &= live[k];
-			}
+				sift_seg_page_mask_live(seg, &dc, page, mask);
 			if (pos)
 				phrases_filter(it->pos, s, page, mask);
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
@@ -2617,7 +2611,6 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
 		uint64		present[SIFT_OFFMASK_WORDS];
-		uint64		live[SIFT_OFFMASK_WORDS];
 		uint64		cand = 0;
 
 		sift_seg_page(seg, dc, b * SIFT_BLK_PAGES + pg, present, &wk->dl[pg]);
@@ -2626,12 +2619,7 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 			cand |= wk->res[pg][k];
 		if (dc->dirty && cand)
-		{
-			sift_seg_page_live(seg, dc, b * SIFT_BLK_PAGES + pg, live);
-			cand = 0;
-			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-				cand |= wk->res[pg][k] &= live[k];
-		}
+			cand = sift_seg_page_mask_live(seg, dc, b * SIFT_BLK_PAGES + pg, wk->res[pg]);
 		any |= cand != 0;
 	}
 	if (!any)
@@ -3264,12 +3252,12 @@ count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g)
 	const uint64 *allvis = allvisible(cc, g->gid);
 	uint64		bulk[SIFT_PAGEMASK_WORDS];
 	int64		n;
-	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_docs(seg, g->gid, &dc) && dc.dirty;
+	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid) && sift_seg_docs(seg, g->gid, &dc);
 
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
-		bulk[wd] = dirty ? 0 : g->pages[wd] & allvis[wd];
-	n = sift_grp_count_mask(g, bulk);
-	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
+		bulk[wd] = g->pages[wd] & allvis[wd];
+	n = dirty ? sift_seg_count_live(seg, &dc, g, bulk) : sift_grp_count_mask(g, bulk);
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS && memcmp(bulk, g->pages, sizeof(bulk)) != 0; wd++)
 		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
 		{
 			int			page = wd * 64 + pg_rightmost_one_pos64(m);
@@ -3278,14 +3266,8 @@ count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g)
 			if (bulk[wd] >> (page & 63) & 1)
 				continue;
 			memcpy(mask, off, g->w);
-			if (dirty)
-			{
-				uint64		live[SIFT_OFFMASK_WORDS];
-
-				sift_seg_page_live(seg, &dc, page, live);
-				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-					mask[k] &= live[k];
-			}
+			if (dirty && sift_seg_page_mask_live(seg, &dc, page, mask) == 0)
+				continue;
 			n += visible_offsets(cc, (BlockNumber) g->gid << SIFT_SB_SHIFT | page, mask);
 		}
 	sift_sr_release(&seg->sr);
