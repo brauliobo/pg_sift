@@ -103,7 +103,7 @@ sift_test_shred(PG_FUNCTION_ARGS)
 		const SiftShredColDef *cd = &spec->cols[c];
 		const SiftShredGroup *gr = &sh->doc.grp[cd->group];
 		const SiftShredCol *col = &sh->doc.col[c];
-		uint32	   *parent = palloc(gr->n * sizeof(uint32) + 1);
+		uint32	   *parent = palloc(gr->n * sizeof(uint32) + SIFT_COL_PAD);
 
 		if (cd->group != 0)
 			sift_shred_expand_parents(&sh->doc, cd->group, parent);

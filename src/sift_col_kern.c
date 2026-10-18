@@ -149,6 +149,31 @@ sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32
 		dst[k] = a[idx[k]];
 }
 
+void
+sift_colk_f8_from_keys_scalar(int64 *a, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		k = (uint64) a[i];
+
+		a[i] = (int64) (k ^ ((uint64) ((int64) k >> 63) >> 1));
+	}
+}
+
+/* Eight flags a step: the byte replicated, one bit kept per lane, and each lane's nonzero turned into 1 (no carry out of a lane: at most 0x80 + 0x7F) */
+void
+sift_colk_bits_to_flags_scalar(const uint64 *bits, uint32 n, uint8 *flags)
+{
+	for (uint32 i = 0; i < n; i += 8)
+	{
+		uint64		x = ((bits[i / 64] >> (i % 64)) & 0xFF) * UINT64CONST(0x0101010101010101) & UINT64CONST(0x8040201008040201);
+
+		x = ((x + UINT64CONST(0x7F7F7F7F7F7F7F7F)) >> 7) & UINT64CONST(0x0101010101010101);
+		for (int j = 0; j < 8; j++)
+			flags[i + j] = (uint8) (x >> (8 * j));
+	}
+}
+
 static void
 expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
 {
@@ -175,6 +200,8 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.for_i64 = {sift_colk_for_i64_u8_scalar, sift_colk_for_i64_u16_scalar, sift_colk_for_i64_u32_scalar, sift_colk_for_i64_u64_scalar},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
+	.f8_from_keys = sift_colk_f8_from_keys_scalar,
+	.bits_to_flags = sift_colk_bits_to_flags_scalar,
 	.expand_parents = expand_parents_scalar,
 };
 

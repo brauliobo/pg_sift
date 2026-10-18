@@ -51,8 +51,27 @@ typedef struct ColGroup
 	uint32	   *counts;			/* nrows */
 	uint32	   *eoff;			/* nrows + 1 */
 	uint32	   *parent;			/* nelems, on demand */
+	const uint64 *nulls;		/* rows without an array */
 	const uint64 *ovf;			/* rows whose whole array overflowed */
+	uint32		selgen;			/* the ColSelCache generation selpos / seloff belong to (0: none) */
+	uint32		selne;
+	uint32	   *selpos;			/* the elements of the cached selection's rows */
+	uint32	   *seloff;			/* per selected row, its first element in selpos (+ the end) */
 } ColGroup;
+
+/*
+ * The positions of the last selection a unit was read through: the leaves read through one selection (the usual scan step) share its
+ * row positions and, per group, the element positions and offsets of those rows. Keyed by the selection's bits, so a different
+ * selection (even at the same address) replaces it; owned by the unit and gone with it.
+ */
+typedef struct ColSelCache
+{
+	uint32		gen;			/* bumped for each new selection */
+	uint32		n;
+	uint32		count;
+	uint64	   *bits;			/* copy of the selection */
+	uint32	   *idx;			/* its row positions */
+} ColSelCache;
 
 /* An inline STR chunk of the unit as the codes of a dictionary of its own (the form every reader and test works on), built on first use */
 typedef struct ColInline
@@ -79,6 +98,7 @@ typedef struct ColUnit
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	ColGroup   *grp;
+	ColSelCache selc;
 } ColUnit;
 
 struct SiftColSource
@@ -627,23 +647,20 @@ unit_group(ColUnit *cu, int group)
 		MemoryContext arena = cu->src->arena;
 		uint32		n = cu->v.nrows;
 		SiftCChunk	c;
+		uint32	   *lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
 
-		g->counts = MemoryContextAllocZero(arena, (n + 1) * sizeof(uint32));
-		g->eoff = MemoryContextAllocZero(arena, (n + 1) * sizeof(uint32));
+		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
+		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
 		if (unit_chunk(cu, group, &c))
 		{
-			int64	   *dec = MemoryContextAlloc(arena, (n + SIFT_COL_PAD / 8) * sizeof(int64));
-
 			if (c.n != n)
 				corrupt("The counts of group %d hold %u values for %u rows.", group, c.n, n);
-			sift_cchunk_decode(&c, dec);
-			for (uint32 r = 0; r < n; r++)
-				g->counts[r] = (uint32) dec[r];
+			sift_cchunk_decode_u32(&c, g->counts);
+			g->nulls = c.nulls;
 			g->ovf = c.ovf;
 			cu->src->cnt.bytes_decoded += c.paylen;
 		}
-		for (uint32 r = 0; r < n; r++)
-			g->eoff[r + 1] = g->eoff[r] + g->counts[r];
+		sift_cck->prefix32(lead, n + 1, g->eoff, 0, 0);
 		g->nelems = g->eoff[n];
 		g->ready = true;
 	}
@@ -972,21 +989,63 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 	}
 }
 
+/* The row positions of sel, decoded once for the leaves read through it (a new selection replaces the cache) */
+static const uint32 *
+sel_positions(ColUnit *cu, const SiftColSel *sel)
+{
+	ColSelCache *sc = &cu->selc;
+
+	if (sc->idx == NULL || sc->n != sel->n || sc->count != sel->count || memcmp(sc->bits, sel->bits, sel->nwords * sizeof(uint64)) != 0)
+	{
+		MemoryContext arena = cu->src->arena;
+
+		sc->gen++;
+		sc->n = sel->n;
+		sc->count = sel->count;
+		sc->bits = MemoryContextAlloc(arena, sel->nwords * sizeof(uint64));
+		memcpy(sc->bits, sel->bits, sel->nwords * sizeof(uint64));
+		sc->idx = MemoryContextAlloc(arena, (sel->count + SIFT_COL_IDXPAD) * sizeof(uint32));
+		sift_col_sel_idx(sel, sc->idx);
+	}
+	return sc->idx;
+}
+
+/* The element positions and per-row offsets of the cached selection's rows in a group, built once per group */
+static void
+group_sel_elems(ColUnit *cu, ColGroup *g, const uint32 *idx, uint32 m)
+{
+	MemoryContext arena = cu->src->arena;
+	uint32		ne = 0;
+
+	if (g->selgen == cu->selc.gen)
+		return;
+	for (uint32 k = 0; k < m; k++)
+		ne += g->counts[idx[k]];
+	g->seloff = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
+	g->selpos = MemoryContextAlloc(arena, (ne + 1) * sizeof(uint32));
+	ne = 0;
+	for (uint32 k = 0; k < m; k++)
+	{
+		g->seloff[k] = ne;
+		for (uint32 e = g->eoff[idx[k]]; e < g->eoff[idx[k] + 1]; e++)
+			g->selpos[ne++] = e;
+	}
+	g->seloff[m] = ne;
+	g->selne = ne;
+	g->selgen = cu->selc.gen;
+}
+
 void
 sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
 {
 	ColUnit    *cu = unit->priv;
 	const SiftColDef *def = &cu->src->schema->cols[col];
-	MemoryContext arena = cu->src->arena;
-	uint32	   *idx = NULL;
+	const uint32 *idx = NULL;
 	uint32		m = sel ? sel->count : cu->v.nrows;
 
 	memset(vec, 0, sizeof(SiftColVec));
 	if (sel)
-	{
-		idx = MemoryContextAlloc(arena, (m + SIFT_COL_IDXPAD) * sizeof(uint32));
-		sift_col_sel_idx(sel, idx);
-	}
+		idx = sel_positions(cu, sel);
 	if (def->parent < 0)
 	{
 		read_positions(cu, col, idx, m, cu->v.nrows, vec);
@@ -994,33 +1053,18 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 	}
 	{
 		ColGroup   *g = unit_group(cu, def->parent);
-		uint32	   *offsets,
-				   *pos;
-		uint32		nrows = m,
-					ne = 0;
 
 		if (idx == NULL)
 		{
 			read_positions(cu, col, NULL, g->nelems, g->nelems, vec);
 			vec->offsets = g->eoff;
-			vec->nrows = nrows;
+			vec->nrows = m;
 			return;
 		}
-		for (uint32 k = 0; k < m; k++)
-			ne += g->counts[idx[k]];
-		offsets = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
-		pos = MemoryContextAlloc(arena, (ne + 1) * sizeof(uint32));
-		ne = 0;
-		for (uint32 k = 0; k < m; k++)
-		{
-			offsets[k] = ne;
-			for (uint32 e = g->eoff[idx[k]]; e < g->eoff[idx[k] + 1]; e++)
-				pos[ne++] = e;
-		}
-		offsets[m] = ne;
-		read_positions(cu, col, pos, ne, g->nelems, vec);
-		vec->offsets = offsets;
-		vec->nrows = nrows;
+		group_sel_elems(cu, g, idx, m);
+		read_positions(cu, col, g->selpos, g->selne, g->nelems, vec);
+		vec->offsets = g->seloff;
+		vec->nrows = m;
 	}
 }
 
@@ -1042,6 +1086,97 @@ sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel,
 }
 
 uint32
+sift_col_lane_n(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+	int			parent = cu->src->schema->cols[col].parent;
+
+	return parent < 0 ? cu->v.nrows : unit_group(cu, parent)->nelems;
+}
+
+static const size_t lane_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+
+/* The lane a storage class is read into: the one its keys decode to without conversion, or (INT) the 32-bit one for int2, int4, date, bool */
+static bool
+lane_fits(SiftColStore store, SiftColLane lane)
+{
+	switch (store)
+	{
+		case SIFT_COLS_INT:
+			return lane == SIFT_COLL_I32 || lane == SIFT_COLL_I64;
+		case SIFT_COLS_F4:
+		case SIFT_COLS_F8:
+			return lane == SIFT_COLL_F64;
+		case SIFT_COLS_STR:
+			return lane == SIFT_COLL_CODE;
+		default:
+			return false;
+	}
+}
+
+static void
+decode_lane(const SiftCChunk *c, SiftColLane lane, void *dst)
+{
+	switch (lane)
+	{
+		case SIFT_COLL_I64:
+			sift_cchunk_decode(c, dst);
+			break;
+		case SIFT_COLL_F64:
+			sift_cchunk_decode_f8(c, dst);
+			break;
+		default:
+			sift_cchunk_decode_u32(c, dst);
+	}
+}
+
+void
+sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftColDef *def = &cu->src->schema->cols[col];
+	const uint64 *nulls = NULL;
+	uint32		n = sift_col_lane_n(unit, col);
+	SiftCChunk	c;
+
+	memset(info, 0, sizeof(*info));
+	info->n = n;
+	if (def->kind == SIFT_COLK_GROUP ? lane != SIFT_COLL_I32 : !lane_fits(def->store, lane))
+		elog(ERROR, "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
+	if (def->kind == SIFT_COLK_GROUP)
+	{
+		ColGroup   *g = unit_group(cu, col);
+
+		memcpy(dst, g->counts, n * sizeof(uint32));
+		nulls = g->nulls;
+		info->ovf = g->ovf != NULL;
+	}
+	else if (!unit_chunk(cu, col, &c))
+	{
+		memset(dst, 0, n * lane_size[lane]);
+		if (isnull)
+			memset(isnull, 1, n);
+		info->nulls = isnull != NULL;
+	}
+	else
+	{
+		if (c.n != n)
+			corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, n);
+		decode_lane(&c, lane, dst);
+		cu->src->cnt.bytes_decoded += c.paylen;
+		nulls = c.nulls;
+		info->ovf = c.ovf != NULL;
+	}
+	if (nulls != NULL && isnull != NULL)
+	{
+		sift_colk->bits_to_flags(nulls, n, isnull);
+		info->nulls = true;
+	}
+	if (lane == SIFT_COLL_CODE)
+		sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), &info->dict);
+}
+
+uint32
 sift_col_group_elems(const SiftColUnit *unit, int group)
 {
 	return unit_group(unit->priv, group)->nelems;
@@ -1055,7 +1190,7 @@ sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent
 
 	if (g->parent == NULL)
 	{
-		g->parent = MemoryContextAlloc(cu->src->arena, (g->nelems + 1) * sizeof(uint32));
+		g->parent = MemoryContextAlloc(cu->src->arena, g->nelems * sizeof(uint32) + SIFT_COL_PAD);
 		sift_colk->expand_parents(g->eoff + 1, cu->v.nrows, g->parent);
 	}
 	*parent = g->parent;
