@@ -2,7 +2,9 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 2.0.3
+
+No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results of any query that was right: install the new files, no `REINDEX`. A correctness fix (`count(*)` and facets under a concurrent `VACUUM`) and two more hardenings of the decoder against damaged index data, which now fails the query with a corruption error (`XX001`/`XX002`) instead of reading past the data or crashing a backend. No new behavior.
 
 - Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
   past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
@@ -19,7 +21,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   yet vacuumed: the index count was higher than the sequential count of the same snapshot, by up to the rows deleted). A merge or a promotion that
   replaced the segments under the scan did the same, because the `VACUUM` after it clears the bits of the new segments and the scan
   still read the old ones. The heap decides every row this can touch: a `VACUUM` that removed rows now ends with a directory update, and a scan
-  that finds the directory changed since it read it (after the map, per superblock) does not take any page as all-visible for the rest of the scan.
+  that finds the directory changed since it read it (after the map, per superblock) does not take any page as all-visible for the rest of the scan
+  (a count that overlaps a merge, a promotion or a `VACUUM` checks the heap for its remaining superblocks, which costs a little for that scan only; a count with nothing running next to it is unchanged).
   Rows returned by a search (`SELECT ... WHERE body @@> ...`) were never affected: the heap checks them. No change to the on-disk format or the SQL.
   Found while fixing the same race in the column engine; seen on 2.0.2 and every earlier release as an index count above the sequential
   count (96 differing counts in a 90 s run with 6 readers, deleters, updaters, inserters and a `VACUUM`/`sift.merge` loop; none without the `VACUUM`).

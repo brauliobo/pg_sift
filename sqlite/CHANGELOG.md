@@ -4,6 +4,14 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## 2.0.3
+
+- No change to the storage format (2) or the SQL interface: tables of 2.0.2 open as they are. The extension is rebuilt on the shared core of
+  the PostgreSQL extension 2.0.3, whose posting decoder (`sift_posting.c`) gets two more checks on the term blob it reads: the byte counts of the
+  tf stream no longer wrap in 32 bits, and a blob that ends inside the padding after its codec is rejected. Security: a table file with damaged bytes
+  now fails the query with a data-corruption error ('corrupt posting data') instead of reading past the data or crashing the process. Nothing to
+  rebuild unless the table is damaged. `tests/test_sift.py` and `tests/test_features.py` pass under ASan and UBSan. No speed change is claimed. The `count(*)` fix of the PostgreSQL extension does not apply (SQLite has no visibility map).
+
 ## 2.0.2
 
 - No change to the storage format (2) or the SQL interface: tables of 2.0.1 open as they are. The extension is rebuilt on the shared core of
