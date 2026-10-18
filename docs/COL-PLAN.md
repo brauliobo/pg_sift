@@ -384,7 +384,7 @@ Cell keys (arms that group by more than the outer keys; fixtures on 300000 order
 | `s2_per_order_hidden_empty` | no cell survives: the global row of an empty input | 992 | 76.3 | 68.2 | 79.7 | 13.0 / 11.6 / 13.3 |
 | `s2_per_order_union` | the form without cell keys, for reference | 2195 | 110.3 | 98.7 | 185.8 | 19.9 / 18.5 / 17.6 |
 
-`t_two_level_hidden_many` (six cell keys, more than the scan's five) is the trap: it keeps the normal plan at every variant.
+`t_two_level_hidden_many` (six cell keys, more than the scan's five) is the trap: the outer aggregate stays in the normal plan at every size; its arms with five keys run in the scan when the cost says so (1500 orders: 9.4 ms against 9.9 plain, 4000: the normal plan), so the fixture tag is `any`.
 
 The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one error code that differs (above) is tagged `-- error: either` in its fixture.
 
