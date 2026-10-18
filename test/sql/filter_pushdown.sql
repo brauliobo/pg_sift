@@ -110,9 +110,11 @@ INSERT INTO pd_filters VALUES
 	('tenant = 7 AND id % 2 = 0', 'btree and a qual no index serves'), ('tenant = 999', 'nothing'),
 	('tenant < 300', 'half the table'), ('id % 2 = 0', 'no index serves it');
 
-CREATE FUNCTION pd_run(tbl regclass) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
+-- the filters named in whats, else all of them (a WHERE on the result would run every check first: pd_check is volatile)
+CREATE FUNCTION pd_run(tbl regclass, whats text[] DEFAULT NULL) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
 	SELECT f.what, pd_kind(tbl, 'w3 OR x2', f.flt, 'force'), count(*)::int, coalesce(string_agg(q.q || ': ' || r, '; ') FILTER (WHERE r <> 'ok'), 'none')
 	FROM pd_filters f CROSS JOIN pd_queries q, LATERAL pd_check(tbl, q.q, f.flt) r
+	WHERE whats IS NULL OR f.what = ANY (whats)
 	GROUP BY f.flt, f.what ORDER BY f.flt
 $$;
 
@@ -130,7 +132,7 @@ SET sift.filter_pushdown = force;
 SELECT (j ->> 'Filter Pages Lossy')::int > 0 AS lossy
 FROM (SELECT sift_scan_node('SELECT id FROM fd WHERE body @@> ''common'' AND tenant < 300 ORDER BY sift.score(ctid) DESC LIMIT 5') AS j) t;
 RESET sift.filter_pushdown;
-SELECT * FROM pd_run('fd') WHERE what IN ('half the table', 'btree range', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['half the table', 'btree range', 'BitmapOr']);
 RESET work_mem;
 
 -- planning: a selective filter pushes down, a filter that keeps half the table does not, off and force say so
@@ -199,18 +201,19 @@ BEGIN;
 INSERT INTO fd SELECT i, 7, 17, ARRAY[5], 'common w3 x2 fox', 'p' FROM generate_series(30001, 30050) i;
 DELETE FROM fd WHERE tenant = 7 AND id < 5000;
 SELECT pd_seq_load('fd');
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BitmapAnd of btree and BRIN');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BitmapAnd of btree and BRIN']);
 ROLLBACK;
 SELECT pd_seq_load('fd');
+-- after VACUUM and after the merge one filter of each bitmap kind: the index kinds do not interact with the state of the sift index
 VACUUM fd;
-SELECT * FROM pd_run('fd');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
 SELECT sift.promote('fd_body') IS NOT NULL AS promoted;
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BRIN, lossy by nature', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
 INSERT INTO fd SELECT i, (i * 7919) % 500, i / 300, ARRAY[i % 100], 'common w3 x2 late', 'p' FROM generate_series(25001, 25600) i;
 SELECT pd_seq_load('fd');
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BRIN, lossy by nature', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
 SELECT sift.merge('fd_body', true) IS NOT NULL AS merged;
-SELECT * FROM pd_run('fd');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
 SELECT sift.verify('fd_body', true);
 
 -- a partial sift index, only used under its predicate
@@ -244,5 +247,5 @@ DROP TABLE fq;
 
 DROP TABLE fd, pd_queries, pd_seq, pd_filters;
 DROP FUNCTION pd_top(regclass, text, text, int, text), pd_kind(regclass, text, text, text), pd_seq_load(regclass),
-	pd_check(regclass, text, text), pd_run(regclass), sift_plan(text), sift_scan_node(text);
+	pd_check(regclass, text, text), pd_run(regclass, text[]), sift_plan(text), sift_scan_node(text);
 DROP EXTENSION pg_sift;
