@@ -55,6 +55,21 @@ then BM25 scores are computed over live and dead documents. The effect depends o
 difference between `sum(ndocs)` and the table's live rows. Autovacuum counts aborted inserts as dead tuples, so a table whose loads fail
 often should have a low `autovacuum_vacuum_scale_factor` (or a manual `VACUUM` after the failed load).
 
+Vacuumed documents also cost query time until their segment is rewritten: a query drops their postings through the liveness bits of every
+page it reads. With 200,000 documents and a quarter of the rows deleted and vacuumed (`bench/dirty-query.sh`, milliseconds per query;
+"clean" is the same live rows rebuilt by `REINDEX`):
+
+| query | clean | dirty, before | dirty, now |
+|---|---|---|---|
+| ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
+| ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
+| unranked scan with a filter | 0.57 | 2.11 | 0.65 |
+| `count(*)` of a term | 0.019 | 1.82 | 0.17 |
+
+A `count(*)` over dirty superblocks decodes every page it counts, where a clean superblock adds chunk counts, so it stays about 9 times
+slower than clean until the segment is rewritten. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
+liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
+
 ## Updates
 
 A `HOT` update does not touch the index; any other update of a row inserts the row's text into the index again, even when the indexed
