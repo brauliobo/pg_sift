@@ -402,6 +402,14 @@ typedef struct UnitTids
 	ItemPointerData *tid;		/* of the live rows, ascending: the position of a row in the vectors of sift_col_sel_all */
 } UnitTids;
 
+/* A unit of the scan's range: which source, its superblock, and its place among the units of that superblock */
+typedef struct UnitRef
+{
+	int			src;
+	uint32		sb;
+	uint32		ordinal;
+} UnitRef;
+
 typedef struct VisArg
 {
 	Relation	rel;
@@ -435,6 +443,10 @@ struct SiftTblGroupScan
 	uint32		i;
 	bool		in_unit;
 	bool		plain;
+	/* the units of the range in the order of a forward scan, listed when a scan first goes backward; uidx is the current one (-1: none yet) */
+	UnitRef    *units;
+	uint32		nunits;
+	int64		uidx;
 	/* the rows of the superblock of the last block read */
 	uint32		cache_sb;
 	UnitTids   *cu;
@@ -536,6 +548,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	g->vec = palloc(SIFT_COL_MAX_COLS * sizeof(SiftColVec));
 	g->cache_sb = PG_UINT32_MAX;
 	g->rd_unit = -1;
+	g->uidx = -1;
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftColSchema *schema;
@@ -601,6 +614,10 @@ sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi)
 	g->begun = false;
 	g->in_unit = false;
 	g->rd_unit = -1;
+	if (g->units)
+		pfree(g->units);
+	g->units = NULL;
+	g->uidx = -1;
 }
 
 static void
@@ -627,9 +644,32 @@ unit_start(SiftTblGroupScan *g)
 		g->vec[c].n = PG_UINT32_MAX;	/* not read yet */
 }
 
+/* Makes unit k of the list the current one */
+static void
+unit_goto(SiftTblGroupScan *g, int64 k)
+{
+	const UnitRef *u = &g->units[k];
+
+	g->cur = u->src;
+	g->begun = false;
+	sift_col_begin(g->s[u->src].src, NULL, 0, u->sb, u->sb + 1);
+	for (uint32 j = 0; j <= u->ordinal; j++)
+		if (!sift_col_next(g->s[u->src].src, &g->unit))
+			elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, u->sb);
+	unit_start(g);
+	g->uidx = k;
+}
+
 static bool
 next_unit(SiftTblGroupScan *g)
 {
+	if (g->units)
+	{
+		if (g->uidx + 1 >= (int64) g->nunits)
+			return false;
+		unit_goto(g, g->uidx + 1);
+		return true;
+	}
 	while (g->cur < g->nsrc)
 	{
 		if (!g->begun)
@@ -640,12 +680,76 @@ next_unit(SiftTblGroupScan *g)
 		if (sift_col_next(g->s[g->cur].src, &g->unit))
 		{
 			unit_start(g);
+			g->uidx++;
 			return true;
 		}
 		g->cur++;
 		g->begun = false;
 	}
 	return false;
+}
+
+/* The units of the range in the order next_unit returns them, found again by superblock and place in it, whichever way the scan goes */
+static void
+units_list(SiftTblGroupScan *g)
+{
+	MemoryContext old = MemoryContextSwitchTo(g->cxt);
+	int			cap = 16;
+
+	g->units = palloc(cap * sizeof(UnitRef));
+	g->nunits = 0;
+	for (int k = 0; k < g->nsrc; k++)
+	{
+		uint32		sb = PG_UINT32_MAX,
+					ordinal = 0;
+		SiftColUnit unit;
+
+		sift_col_begin(g->s[k].src, NULL, 0, g->sb_lo, g->sb_hi);
+		while (sift_col_next(g->s[k].src, &unit))
+		{
+			ordinal = unit.sb == sb ? ordinal + 1 : 0;
+			sb = unit.sb;
+			if (g->nunits == cap)
+				g->units = repalloc(g->units, (cap *= 2) * sizeof(UnitRef));
+			g->units[g->nunits++] = (UnitRef) {k, sb, ordinal};
+		}
+	}
+	MemoryContextSwitchTo(old);
+	g->begun = false;
+}
+
+/* Positions the scan after its last unit, so that sift_tbl_gscan_prev starts from the last row */
+void
+sift_tbl_gscan_seek_end(SiftTblGroupScan *g)
+{
+	if (g->units == NULL)
+		units_list(g);
+	g->uidx = g->nunits;
+	g->in_unit = false;
+}
+
+/* The row before the one last returned (by sift_tbl_gscan_next too), in the scan's order; false at its start */
+bool
+sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv)
+{
+	for (;;)
+	{
+		if (g->in_unit && g->i > 1)
+		{
+			g->i--;
+			*rv = (SiftTblRowVer) {.key = sift_key_from_tid(&g->tids[g->i - 1]),.delta = false,.xmin = InvalidTransactionId};
+			return true;
+		}
+		if (g->units == NULL)
+			units_list(g);
+		if (g->uidx <= 0)
+		{
+			g->in_unit = false;
+			return false;
+		}
+		unit_goto(g, g->uidx - 1);
+		g->i = g->n + 1;
+	}
 }
 
 bool

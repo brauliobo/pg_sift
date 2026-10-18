@@ -122,8 +122,9 @@ typedef struct SiftTblScan
 	bool		snap_registered;
 	int			nseg;
 	SiftTblSeg *seg;			/* private copy of the delta segments (page tables complete) */
-	int			si;				/* segment of the next page */
-	uint32		pi;				/* next page of it */
+	uint32		dpos;			/* delta pages passed, in the segments' order: the page in the copy is number dpos - 1 */
+	uint32		ndpages;
+	bool		fresh;			/* at the start or at the end: a forward scan goes on from the first row, a backward one from the last */
 	SiftTblSeg *cur;			/* segment of the page copy */
 	BlockNumber curv;			/* vblock of the page copy */
 	Page		copy;
@@ -160,6 +161,17 @@ typedef struct SiftTblScan
 	double		aweight;
 } SiftTblScan;
 
+/* Back to the position before the first row */
+static void
+scan_rewind(SiftTblScan *s)
+{
+	s->dpos = 0;
+	s->nrows = s->ri = 0;
+	s->cur = NULL;
+	s->in_groups = s->groups_done = false;
+	s->fresh = true;
+}
+
 static void
 scan_open_state(Relation rel, SiftTblScan *s)
 {
@@ -192,11 +204,10 @@ scan_open_state(Relation rel, SiftTblScan *s)
 		if (s->par)
 			s->seg[i].npages = Min(s->seg[i].npages, s->par->seg[i].npages);
 	}
-	s->si = 0;
-	s->pi = 0;
-	s->nrows = s->ri = 0;
-	s->cur = NULL;
-	s->in_groups = s->groups_done = false;
+	s->ndpages = 0;
+	for (int i = 0; i < s->nseg; i++)
+		s->ndpages += s->seg[i].npages;
+	scan_rewind(s);
 }
 
 /* Frees what the state of scan_open_state holds */
@@ -320,6 +331,46 @@ scan_groups(Relation rel, SiftTblScan *s, uint32 lo, uint32 hi)
 	return true;
 }
 
+/* The segment of the delta page number lin (of all the pages in the segments' order) and its page index there */
+static SiftTblSeg *
+delta_page(SiftTblScan *s, uint32 lin, uint32 *idx)
+{
+	SiftTblSeg *seg = s->seg;
+
+	while (lin >= seg->npages)
+		lin -= (seg++)->npages;
+	*idx = lin;
+	return seg;
+}
+
+/* Reads page idx of seg into the copy; false when there is nothing to scan in it (outside the TID range, or bytes of an overflowing row) */
+static bool
+load_page(Relation rel, SiftTblScan *s, SiftTblSeg *seg, uint32 idx)
+{
+	Buffer		buf;
+	Page		page;
+
+	if (s->range && (seg->vbase + idx < ItemPointerGetBlockNumberNoCheck(&s->mintid) ||
+					 seg->vbase + idx > ItemPointerGetBlockNumberNoCheck(&s->maxtid)))
+		return false;
+	buf = ReadBuffer(rel, seg->page[idx]);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+	page = BufferGetPage(buf);
+	if (TBL_PAGE(page)->flags & SIFT_TBL_PAGE_OVFDATA)
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+	memcpy(s->copy, page, BLCKSZ);
+	UnlockReleaseBuffer(buf);
+	s->cur = seg;
+	s->curv = seg->vbase + idx;
+	s->nrows = TBL_PAGE(s->copy)->nrows;
+	s->ri = 0;
+	return true;
+}
+
 /* The next unit of work: a delta page with rows (into s->copy) or the column groups */
 static ScanUnit
 scan_next_unit(Relation rel, SiftTblScan *s)
@@ -327,9 +378,6 @@ scan_next_unit(Relation rel, SiftTblScan *s)
 	for (;;)
 	{
 		SiftTblSeg *seg;
-		BlockNumber blk;
-		Buffer		buf;
-		Page		page;
 		uint32		idx;
 
 		if (s->par)
@@ -353,43 +401,42 @@ scan_next_unit(Relation rel, SiftTblScan *s)
 		}
 		else
 		{
-			if (s->si >= s->nseg)
+			if (s->dpos >= s->ndpages)
 			{
 				if (s->groups_done)
 					return UNIT_NONE;
 				s->groups_done = true;
 				return scan_groups(rel, s, 0, PG_UINT32_MAX) ? UNIT_GROUPS : UNIT_NONE;
 			}
-			seg = &s->seg[s->si];
-			if (s->pi >= seg->npages)
-			{
-				s->si++;
-				s->pi = 0;
-				continue;
-			}
-			idx = s->pi++;
+			seg = delta_page(s, s->dpos++, &idx);
 		}
-		if (s->range && (seg->vbase + idx < ItemPointerGetBlockNumberNoCheck(&s->mintid) ||
-						 seg->vbase + idx > ItemPointerGetBlockNumberNoCheck(&s->maxtid)))
-			continue;
-		blk = seg->page[idx];
-		buf = ReadBuffer(rel, blk);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
-		page = BufferGetPage(buf);
-		if (TBL_PAGE(page)->flags & SIFT_TBL_PAGE_OVFDATA)
-		{
-			UnlockReleaseBuffer(buf);
-			continue;
-		}
-		memcpy(s->copy, page, BLCKSZ);
-		UnlockReleaseBuffer(buf);
-		s->cur = seg;
-		s->curv = seg->vbase + idx;
-		s->nrows = TBL_PAGE(s->copy)->nrows;
-		s->ri = 0;
-		return UNIT_DELTA_PAGE;
+		if (load_page(rel, s, seg, idx))
+			return UNIT_DELTA_PAGE;
 	}
+}
+
+/* The delta page before the one in the copy, backward; UNIT_NONE before the first */
+static ScanUnit
+scan_prev_unit(Relation rel, SiftTblScan *s)
+{
+	while (s->dpos > 1)
+	{
+		uint32		idx;
+		SiftTblSeg *seg = delta_page(s, --s->dpos - 1, &idx);
+
+		if (load_page(rel, s, seg, idx))
+		{
+			s->ri = s->nrows + 1;
+			return UNIT_DELTA_PAGE;
+		}
+	}
+	return UNIT_NONE;
+}
+
+static bool
+scan_in_range(SiftTblScan *s, ItemPointer tid)
+{
+	return !s->range || (ItemPointerCompare(tid, &s->mintid) >= 0 && ItemPointerCompare(tid, &s->maxtid) <= 0);
 }
 
 /* The next stored row version, visible or not: a delta record or a row of a column group (rv->xmin unset). rv->tuple is not set. */
@@ -405,7 +452,7 @@ scan_next_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 			if (sift_tbl_gscan_next(s->g, rv))
 			{
 				sift_key_to_tid(rv->key, &tid);
-				if (!s->range || (ItemPointerCompare(&tid, &s->mintid) >= 0 && ItemPointerCompare(&tid, &s->maxtid) <= 0))
+				if (scan_in_range(s, &tid))
 					return true;
 				continue;
 			}
@@ -417,7 +464,7 @@ scan_next_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 			if ((s->rec = sift_tbl_page_rec(s->copy, s->cur->gen, s->ri)) == NULL)
 				continue;
 			ItemPointerSet(&tid, s->curv, s->ri);
-			if (s->range && (ItemPointerCompare(&tid, &s->mintid) < 0 || ItemPointerCompare(&tid, &s->maxtid) > 0))
+			if (!scan_in_range(s, &tid))
 				continue;
 			sift_tbl_rowver(rv, &tid, s->rec);
 			return true;
@@ -425,6 +472,54 @@ scan_next_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 		else if (scan_next_unit(rel, s) == UNIT_NONE)
 			return false;
 	}
+}
+
+/* Backward from the row last returned: the same versions in the opposite order (the column groups from their last row, then the delta pages) */
+static bool
+scan_prev_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
+{
+	for (;;)
+	{
+		ItemPointerData tid;
+
+		if (s->in_groups)
+		{
+			if (sift_tbl_gscan_prev(s->g, rv))
+			{
+				sift_key_to_tid(rv->key, &tid);
+				if (scan_in_range(s, &tid))
+					return true;
+				continue;
+			}
+			s->in_groups = s->groups_done = false;
+			s->cur = NULL;
+			s->ri = 0;
+			s->dpos = s->ndpages + 1;
+		}
+		else if (s->cur != NULL && s->ri > 1)
+		{
+			s->ri--;
+			if ((s->rec = sift_tbl_page_rec(s->copy, s->cur->gen, s->ri)) == NULL)
+				continue;
+			ItemPointerSet(&tid, s->curv, s->ri);
+			if (!scan_in_range(s, &tid))
+				continue;
+			sift_tbl_rowver(rv, &tid, s->rec);
+			return true;
+		}
+		else if (scan_prev_unit(rel, s) == UNIT_NONE)
+			return false;
+	}
+}
+
+/* A backward scan that has not read yet starts after the last row */
+static void
+scan_seek_end(Relation rel, SiftTblScan *s)
+{
+	s->dpos = s->ndpages + 1;
+	s->groups_done = true;
+	if ((s->in_groups = scan_groups(rel, s, 0, PG_UINT32_MAX)))
+		sift_tbl_gscan_seek_end(s->g);
 }
 
 /* The row of the version scan_next_version returned last (palloc'd, t_self set) */
@@ -456,13 +551,13 @@ scan_store(Relation rel, SiftTblScan *s, SiftTblRowVer *rv, TupleTableSlot *slot
 		sift_tbl_store(slot, scan_version_tuple(rel, s, rv));
 }
 
-/* The next visible row into slot; false at the end */
+/* The next visible row into slot in the direction of the scan; false at the end */
 static bool
-scan_next_slot(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
+scan_next_slot(Relation rel, SiftTblScan *s, TupleTableSlot *slot, bool forward)
 {
 	SiftTblRowVer rv;
 
-	while (scan_next_version(rel, s, &rv))
+	while (forward ? scan_next_version(rel, s, &rv) : scan_prev_version(rel, s, &rv))
 		if ((s->in_groups && sift_tbl_gscan_plain(s->g)) || sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 		{
 			scan_store(rel, s, &rv, slot);
@@ -487,14 +582,16 @@ sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTabl
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
 
-	if (!ScanDirectionIsForward(direction))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_table tables do not support backward scans")));
+	bool		forward = ScanDirectionIsForward(direction);
+
 	s->desc = slot->tts_tupleDescriptor;
-	if (scan_next_slot(scan->rs_rd, s, slot))
+	if (!forward && s->fresh)
+		scan_seek_end(scan->rs_rd, s);
+	s->fresh = false;
+	if (scan_next_slot(scan->rs_rd, s, slot, forward))
 		return true;
 	ExecClearTuple(slot);
+	scan_rewind(s);
 	return false;
 }
 
