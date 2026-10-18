@@ -690,6 +690,8 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	for (int i = 0; i < in->n; i++)
 		bytes += in->seg[i].bytes;
 	sift_wt_expect(wt, bytes);
+	if (MyBackendType == B_BG_WORKER)
+		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 #ifdef SIFT_TESTING
 	/* a long merge of the worker, the segments claimed */
 	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)
@@ -700,10 +702,15 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 #endif
 	for (int i = 0; i < in->n; i++)
 	{
-		SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
-		SiftRun    *run = sift_run_from_segment(seg, &ref, cx);
+		SiftSegment *seg;
+		SiftRun    *run;
 		int			k;
-		SiftExtent *ext = sift_store_immutable_extents(index, &in->seg[i], &k);
+		SiftExtent *ext;
+
+		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of this segment */
+		seg = sift_seg_open(index, &in->seg[i], cx);
+		run = sift_run_from_segment(seg, &ref, cx);
+		ext = sift_store_immutable_extents(index, &in->seg[i], &k);
 
 		sift_seg_close(seg);
 		if (run)
