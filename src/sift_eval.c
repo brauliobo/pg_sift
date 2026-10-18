@@ -3359,6 +3359,14 @@ node_prob(const SiftPlan *p, const EvalNode *n, Estimate *est)
 	return 0.0;
 }
 
+double
+sift_plan_docs(const SiftPlan *p)
+{
+	Estimate	e = {0};
+
+	return node_prob(p, p->root, &e) * p->stats.ndocs;
+}
+
 void
 sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est)
 {

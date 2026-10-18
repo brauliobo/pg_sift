@@ -1,0 +1,86 @@
+-- A prepared statement's generic plan keeps the filter bitmap as a child that the scan builds only for a query that matches
+-- enough documents to need it (the bound query is known when the scan starts): a rare query is answered by checking the
+-- filter after the ranker, a common one by the mask, and the rows, scores and ties are those of the literal query either way
+-- (DESIGN.md, extras item 10).
+CREATE EXTENSION pg_sift;
+-- 24000 rows, 'common' in 3 of 5, the 5% of the rows with grp = 7 spread over the heap; 'zzrare' in 3 rows
+CREATE TABLE fg (id int PRIMARY KEY, grp int, body text, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO fg
+SELECT i, i % 40,
+	CASE WHEN i % 5 < 3 THEN repeat('common ', 1 + i % 3) ELSE '' END || CASE WHEN i IN (7, 11127, 20007) THEN 'zzrare ' ELSE '' END ||
+	'w' || i % 97 || repeat(' filler' || i % 11, 1 + i % 13), repeat('p', 100)
+FROM generate_series(1, 24000) i;
+CREATE INDEX fg_body ON fg USING sift (body);
+CREATE INDEX fg_grp ON fg (grp);
+ANALYZE fg;
+SET plan_cache_mode = force_generic_plan;
+PREPARE fg_q(text) AS SELECT ctid AS c, sift.score(ctid) AS s FROM fg WHERE body @@> $1 AND grp = 7 ORDER BY sift.score(ctid) DESC LIMIT 10;
+-- the plan has the bitmap child whatever the query, and the scan runs it only for a query that matches many documents
+CREATE FUNCTION fg_mask(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE format('EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, COSTS OFF, SUMMARY OFF, BUFFERS OFF) EXECUTE fg_q(%L)', q) INTO j;
+	RETURN CASE WHEN jsonb_path_query_first(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') IS NULL THEN 'no bitmap child'
+		WHEN (jsonb_path_query_first(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') ->> 'Actual Loops')::int = 0 THEN 'bitmap skipped'
+		ELSE 'bitmap built' END;
+END $$;
+SELECT fg_mask('common') AS common_query, fg_mask('zzrare') AS rare_query, fg_mask('w5') AS thin_query, fg_mask('zzrare OR common') AS union_query;
+ common_query |   rare_query   |  thin_query  | union_query  
+--------------+----------------+--------------+--------------
+ bitmap built | bitmap skipped | bitmap built | bitmap built
+(1 row)
+
+-- the same rows and scores as the literal query, built or skipped
+CREATE FUNCTION fg_top(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r record;
+	t text := '';
+BEGIN
+	FOR r IN EXECUTE format('EXECUTE fg_q(%L)', q) LOOP
+		t := t || r.c || ':' || r.s || ',';
+	END LOOP;
+	RETURN t;
+END $$;
+CREATE FUNCTION fg_lit(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r record;
+	t text := '';
+BEGIN
+	FOR r IN EXECUTE format('SELECT ctid AS c, sift.score(ctid) AS s FROM fg WHERE body @@> %L AND grp = 7 ORDER BY sift.score(ctid) DESC LIMIT 10', q) LOOP
+		t := t || r.c || ':' || r.s || ',';
+	END LOOP;
+	RETURN t;
+END $$;
+SELECT q, fg_top(q) = fg_lit(q) AS same_as_literal, fg_top(q) <> '' AS has_rows
+FROM (VALUES ('common'), ('zzrare'), ('w5'), ('zzrare OR common'), ('nothing')) v(q);
+        q         | same_as_literal | has_rows 
+------------------+-----------------+----------
+ common           | t               | t
+ zzrare           | t               | t
+ w5               | t               | t
+ zzrare OR common | t               | t
+ nothing          | t               | f
+(5 rows)
+
+-- a loose filter has no child: the generic plan is the scan alone
+PREPARE fg_loose(text) AS SELECT ctid FROM fg WHERE body @@> $1 AND grp < 39 ORDER BY sift.score(ctid) DESC LIMIT 10;
+CREATE FUNCTION fg_has_bitmap() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	p text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) EXECUTE fg_loose(''common'')' LOOP
+		p := p || l;
+	END LOOP;
+	RETURN p ~ 'Bitmap';
+END $$;
+SELECT fg_has_bitmap() AS bitmap_child;
+ bitmap_child 
+--------------
+ f
+(1 row)
+
+DROP FUNCTION fg_mask(text), fg_top(text), fg_lit(text), fg_has_bitmap();
+DROP TABLE fg;
+DROP EXTENSION pg_sift;

@@ -41,9 +41,12 @@ results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 
 (scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans. The post-filter plan is priced
 from the filter column's statistics: the ranker visits the heap in order and verifies every match until it holds `k` rows that pass,
 so a filter whose rows lie at the end of a correlated column (recent ids) costs it the whole heap before them. Both plans are also charged for the blocks the ranker scores, and an id list (`= ANY(array)`) is priced by the btree leaf pages it touches, so a long list of scattered ids is pushed down.
-A prepared statement (or any generic plan: `plan_cache_mode`, a driver that prepares) is planned without its query, which the planner
-prices as one matching a tenth of the rows, so a selective filter is pushed down there too, as in the plan of the literal query
-(a prepared 2.6% filter query went from 4.36M to 2.30M cycles, the cycles of the literal one).
+A prepared statement (or any generic plan: `plan_cache_mode`, a driver that prepares) is planned without its query, so no plan is right for
+every query: the plan keeps the filter's bitmap as a child that the scan builds only when the bound query matches enough documents for it
+to pay (`Filter Mask From Matches` in `EXPLAIN VERBOSE`; the planner finds the number on the costs of both plans, and a loose filter, one that keeps
+a tenth of the rows or more on the benchmark corpus, never gets one). A rare query is
+answered by checking the filter after the ranker, a common one by the mask, as in the plan of the literal query (a prepared 2.3% filter
+query on common words went from 2.72M to 1.51M cycles, a rare one from 772k to 658k; a filter of 10% or more is left after the ranker).
 A filter on a value that the table stores in one stretch of the heap (`country_code = 'US'` on rows loaded by country) is placed from the
 btree at planning time (the entries of a key are in heap order, so a few of them tell where the rows that pass start), and is pushed down
 when that stretch is late: the filtered one-letter prefix of the places went from 8.74M to 1.26M user cycles. A stretch at the start of the

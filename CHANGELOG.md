@@ -13,13 +13,14 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   as many hits (4 times beyond 4096) instead of 4 times, so a join that keeps a tenth of the rows searches twice instead of three times. Rows,
   scores and ties are those of the full ranking. Slim tier join class, one backend, the same 1500 statements, user cycles per query: 4.74M +- 0.02M
   to 3.90M +- 0.05M (-18%).
-- Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query.
-  The ranked scan priced such a query by the operator's default of 0.5% of the rows, which made a filter after the ranker look free; it now
-  assumes a tenth of the rows, so a selective filter is pushed down and a loose one stays after the ranker. Rows, scores and ties are
-  unchanged. Slim tier, one backend, the same 1500 statements, user cycles per query: prepared filter class 2.81M +- 0.02M to 1.69M +- 0.01M
-  (-40%), prepared join class 4.63M to 3.84M (-17%), prepared count unchanged. A prepared rare AND query with a selective filter
-  (bench/sql/ab_and_filter_prep.pgb) takes about 5% more cycles and 12% more instructions: main's generic plan priced it as free and was
-  reused, the new one costs more than the custom plans of rare queries and is planned again.
+- Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query,
+  decided when the query is known: the plan keeps the filter's bitmap as a child and the scan builds it only when the bound query matches
+  enough documents for it to pay (`EXPLAIN VERBOSE` shows the number); a rare query is answered by checking the filter after the ranker.
+  The plan is priced as before, so the plan cache keeps reusing it. Rows, scores and ties are unchanged. Slim tier, one backend, the same
+  1500 statements, user cycles per query, prepared statements: filter class 3.23M +- 0.12M to 1.66M +- 0.06M (-49%), join class 5.93M to 4.68M,
+  rare AND with a 2.3% filter 772k to 658k; with the filter keeping 0.1% of the rows the ranked or class goes from 18.7M to 2.5M and the
+  filter class from 4.2M to 0.95M; at 2.3% 8.5M to 3.8M and 2.7M to 1.5M; with a filter of 10% or 50% of the rows nothing changes
+  (`bench/steps/ab.sh filter_matrix`: three query classes, four filters, automatic, custom and generic plans).
 - Planner: the filter pushdown is chosen for a filter on a value stored in one late stretch of the heap. The planner placed the rows of
   an equality filter on a btree column from the column's statistics, which say nothing about rows loaded by group (correlation near
   zero), and priced the scan that checks the filter after the ranker as if they were spread over the heap; it now reads where the
