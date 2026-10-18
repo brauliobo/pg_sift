@@ -8706,6 +8706,8 @@ fuse_start(AggExec *ex)
 	MemoryContextSwitchTo(old);
 	run_scan(F);
 	empty_set_groups(F->gtab);
+	dist_finish_all(F->gtab);
+	dist_end_all(F->gtab);
 	mapped_finish(F->gtab);
 	list_groups(F->gtab);
 	for (int i = 0; i < n; i++)
