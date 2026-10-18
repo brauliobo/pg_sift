@@ -642,7 +642,6 @@ typedef struct AggExec
 	int			nprune;
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	int			nfilter;		/* how many */
-	int			nstr;			/* text tests the source runs on the encoded strings (str_init) */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
@@ -7058,7 +7057,6 @@ str_init(AggExec *ex)
 			ex->ps[ex->spec->pred[i]->id].str = &all[n++];
 	if (n > 0)
 		sift_colsrc_prune_str(ex->src, all, n);
-	ex->nstr = sift_colsrc_has_filter_str(ex->src) ? n : 0;
 }
 
 /*
@@ -8977,8 +8975,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			cc.rows_vetted += c->par->cc.rows_vetted;
 			cc.heap_pages += c->par->cc.heap_pages;
 		}
-		if (c->nfilter + c->nstr > 0)
-			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter + c->nstr, es);
+		if (c->nfilter > 0)
+			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
