@@ -22,6 +22,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_analyze.h"
+#include "sift_kernels.h"
 #include "sift_mutable.h"
 #include "sift_ops.h"
 #include "sift_segment.h"
@@ -533,6 +534,107 @@ sift_test_postings(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_term_blob);
+PG_FUNCTION_INFO_V1(sift_test_blob_read);
+
+/*
+ * sift._test_term_blob(index, term) returns (blob bytea, flags int4, df int4, codec_len int4, nnib int4): the term blob of the first
+ * immutable segment that has the term, as the query reads it (without positions), with the dictionary entry's lengths
+ */
+Datum
+sift_test_term_blob(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_sift(PG_GETARG_OID(0));
+	text	   *term = PG_GETARG_TEXT_PP(1);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	Datum		v[5];
+	bool		nulls[5] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftSegment *seg;
+		SiftTermInfo info;
+		Size		len;
+		bytea	   *blob;
+		const void *src;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_seg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (!sift_seg_lookup(seg, VARDATA_ANY(term), VARSIZE_ANY_EXHDR(term), &info) || (info.flags & SIFT_TERM_INLINE))
+		{
+			sift_seg_close(seg);
+			continue;
+		}
+		len = info.post_len - ((info.flags & SIFT_TERM_POS) ? info.pos_len : 0);
+		blob = palloc(VARHDRSZ + len);
+		SET_VARSIZE(blob, VARHDRSZ + len);
+		src = sift_sr_get(&seg->sr, info.post_off, len, VARDATA(blob));
+		if (src != VARDATA(blob))
+			memcpy(VARDATA(blob), src, len);
+		sift_seg_close(seg);
+		v[0] = PointerGetDatum(blob);
+		v[1] = Int32GetDatum(info.flags & ~SIFT_TERM_POS);
+		v[2] = Int32GetDatum(info.df);
+		v[3] = Int32GetDatum(info.codec_len);
+		v[4] = Int32GetDatum(info.nnib);
+		index_close(index, AccessShareLock);
+		PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	}
+	index_close(index, AccessShareLock);
+	ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no segment has a blob for term \"%s\"", text_to_cstring(term))));
+}
+
+/*
+ * sift._test_blob_read(blob, flags, df, codec_len, nnib) returns (postings int8, tf_sum int8): the query's read of a term blob, as
+ * sift._test_term_blob returned it or after the test damaged it: every group and its tfs, without the checks of sift.verify
+ */
+Datum
+sift_test_blob_read(PG_FUNCTION_ARGS)
+{
+	bytea	   *b = PG_GETARG_BYTEA_PP(0);
+	Size		len = VARSIZE_ANY_EXHDR(b);
+	SiftTermInfo info = {.flags = PG_GETARG_INT32(1),.df = PG_GETARG_INT32(2),.codec_len = PG_GETARG_INT32(3),.nnib = PG_GETARG_INT32(4),
+	.post_len = len};
+	uint8	   *blob = MemoryContextAllocAligned(CurrentMemoryContext, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	SiftPostingCursor *pc;
+	sift_cur   *cur;
+	const sift_grp *g;
+	uint64		postings = 0,
+				tfsum = 0,
+				groups = 0;
+	uint8	   *tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
+	TupleDesc	tupdesc;
+	Datum		v[2];
+	bool		nulls[2] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	memcpy(blob, VARDATA_ANY(b), len);
+	pc = sift_post_open_blob(&info, blob, CurrentMemoryContext);
+	cur = sift_post_cursor(pc);
+	while ((g = sift_next(cur)) != NULL)
+	{
+		uint64		n = sift_grp_count(g);
+
+		/* a cursor ends after at most one group per posting and per group number: a damaged blob must not keep it running */
+		if (n > SIFT_GRP_MAXTIDS || ++groups > Min(info.df, 1 << 24))
+			elog(ERROR, "cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups);
+		CHECK_FOR_INTERRUPTS();
+		sift_post_group_tf(pc, tf);
+		for (uint64 i = 0; i < n; i++)
+			tfsum += tf[i];
+		postings += n;
+	}
+	v[0] = Int64GetDatum(postings);
+	v[1] = Int64GetDatum(tfsum);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
 #endif							/* SIFT_TESTING */

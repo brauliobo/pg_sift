@@ -667,6 +667,15 @@ sift_postw_end_term_mem(SiftPostingWriter *w, SiftTermInfo *info, MemoryContext 
 
 /* ---------- reader ---------- */
 
+/* the codec of the portable core (sift_bitmap.c) raises through the host */
+void
+sift_codec_corrupt(const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_DATA_CORRUPTED),
+			 errmsg("sift: corrupt posting data: %s", what)));
+}
+
 static void
 corrupt_blob(const SiftTermInfo *info)
 {
@@ -775,7 +784,10 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 		c->l1 = p;
 		c->nib = p + (info->df + 7) / 8;
 		c->esc = c->nib + (info->nnib + 1) / 2;
-		if ((info->nnib && c->esc > blob + c->bloblen) || p > blob + c->bloblen)
+		/* a term with a tf stream has its L1 bits and nibbles inside the blob (the escape bytes are the rest); one without has none */
+		if (p > blob + c->bloblen ||
+			(!(info->flags & SIFT_TERM_ALL_TF1) &&
+			 (info->nnib == 0 || (uint64) (blob + c->bloblen - p) < (uint64) (info->df + 7) / 8 + (info->nnib + 1) / 2)))
 			corrupt_blob(info);
 	}
 	else if (!(info->flags & SIFT_TERM_SPARSE) || !(info->flags & SIFT_TERM_ALL_TF1))
@@ -849,7 +861,7 @@ void
 sift_post_rewind(SiftPostingCursor *c)
 {
 	if (c->blob)
-		sift_cur_blob(&c->cur, c->blob, c->curbuf);
+		sift_cur_blob(&c->cur, c->blob, c->info.codec_len, c->curbuf);
 	else
 		sift_cur_tids(&c->cur, c->info.inline_keys, c->info.df, c->curbuf);
 	memset(&c->next, 0, sizeof(SiftTfPos));
@@ -932,6 +944,32 @@ escapes(const uint8 *nib, uint32 n)
 	return esc;
 }
 
+/* Escape nibbles among the n nibbles from nibble index a */
+static uint32
+escapes_from(const uint8 *nib, uint32 a, uint32 n)
+{
+	uint32		esc = 0;
+
+	if ((a & 1) && n)
+		esc = ((nib[a >> 1] >> 4) & 15) == 15, a++, n--;
+	return esc + escapes(nib + a / 2, n);
+}
+
+/* Set bits among the n of l1 from bit r on: the nibbles the tf stream holds for those ranks */
+static uint32
+l1_count(const uint8 *l1, uint32 r, uint32 n)
+{
+	uint32		cnt = 0,
+				head = (r % 8) ? Min(8 - r % 8, n) : 0;
+
+	if (head)
+		cnt = sift_pc64((l1[r / 8] >> (r % 8)) & ((1u << head) - 1)), r += head, n -= head;
+	cnt += sift_popcount(l1 + r / 8, n / 8);
+	if (n % 8)
+		cnt += sift_pc64(l1[(r + n) / 8] & ((1u << (n % 8)) - 1));
+	return cnt;
+}
+
 /* Stream position of rank r, counted from the start (LIST random access) */
 static SiftTfPos
 list_tf_pos(const SiftPostingCursor *c, uint32 r)
@@ -941,8 +979,31 @@ list_tf_pos(const SiftPostingCursor *c, uint32 r)
 	pos.nib = sift_popcount(c->l1, r / 8);
 	if (r % 8)
 		pos.nib += sift_pc64(c->l1[r / 8] & ((1u << (r % 8)) - 1));
+	if (pos.nib > c->info.nnib)
+		sift_codec_corrupt("tf stream: the L1 bits count more nibbles than the stream holds");
 	pos.esc = escapes(c->nib, pos.nib);
 	return pos;
+}
+
+/*
+ * The kernels read 64 bytes at the nibble and escape positions they reach, so the group's n ranks from pos must find the nibbles
+ * their L1 bits count and the escape bytes of their escape nibbles inside the stream (the escapes are counted only when the
+ * stream could end before them: the stream holds one escape byte per escape nibble of the term)
+ */
+static void
+tf_check(const SiftPostingCursor *c, const SiftTfPos *pos, uint32 n)
+{
+	const SiftTermInfo *info = &c->info;
+	uint64		elen = c->blob + c->bloblen - c->esc;
+	uint32		nn;
+
+	if (pos->nib > info->nnib)
+		sift_codec_corrupt("tf stream: a group starts past the nibbles");
+	nn = l1_count(c->l1, pos->rank, n);
+	if (nn > info->nnib - pos->nib)
+		sift_codec_corrupt("tf stream: the nibbles of a group are not inside the stream");
+	if (pos->esc > elen || (nn > elen - pos->esc && escapes_from(c->nib, pos->nib, nn) > elen - pos->esc))
+		sift_codec_corrupt("tf stream: the escape bytes of a group are not inside the stream");
 }
 
 void
@@ -962,10 +1023,13 @@ sift_post_group_tf(SiftPostingCursor *c, uint8 *tf)
 		memset(tf, 1, n);
 		return;
 	}
+	if ((uint64) g->base + n > c->info.df)
+		sift_codec_corrupt("tf stream: a group lies past the last posting");
 	if (c->gs)
 		pos = (SiftTfPos) {g->base, c->gs[c->cur.gr.i].nib_base, c->gs[c->cur.gr.i].esc_base};
 	else
 		pos = c->next.rank == g->base ? c->next : list_tf_pos(c, g->base);
+	tf_check(c, &pos, n);
 	sift_kern->tf_decode(tf, c->l1, c->nib, c->esc, &pos, n);
 	c->next = pos;
 }
@@ -1007,6 +1071,8 @@ sift_post_check(SiftPostingCursor *c)
 		for (; r < hi && !(info->flags & SIFT_TERM_ALL_TF1); r++)
 			if ((c->l1[r >> 3] >> (r & 7)) & 1)
 			{
+				if (nib >= info->nnib)
+					corrupt_blob(info);
 				tf1 = false;
 				esc += nibble(c->nib, nib++) == 15;
 			}
