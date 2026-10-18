@@ -14,8 +14,6 @@
 
 #include "sift_lane.h"
 
-#define MUTHDR(page)	((SiftMutHeaderData *) SiftPageGetData(page))
-
 /* ---------- pages ---------- */
 
 void
@@ -26,14 +24,14 @@ sift_lane_init_page(Page page, Size hdrsize)
 	SiftPageSetUsed(page, hdrsize);
 }
 
-static void
-init_header_page(Page page, uint64 gen, BlockNumber first)
+void
+sift_lane_init_header(Page page, uint64 gen, BlockNumber first, int nlanes)
 {
-	SiftMutHeaderData *hdr = MUTHDR(page);
+	SiftMutHeaderData *hdr = SiftLaneHdr(page);
 
 	hdr->gen = gen;
 	for (int l = 0; l < SIFT_LANES; l++)
-		hdr->lanes[l] = (SiftLaneData) {first + l, first + l, 1};
+		hdr->lanes[l] = l < nlanes ? (SiftLaneData) {first + l, first + l, 1} : (SiftLaneData) {InvalidBlockNumber, InvalidBlockNumber, 0};
 	SiftPageSetUsed(page, sizeof(SiftMutHeaderData));
 }
 
@@ -62,7 +60,7 @@ sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftMutHeaderData *
 	Buffer		buf = sift_lane_read_locked(index, e->header_blk, BUFFER_LOCK_SHARE);
 
 	sift_store_check_page(index, buf, SIFT_PT_MUTHEADER, e->gen);
-	*hdr = *MUTHDR(BufferGetPage(buf));
+	*hdr = *SiftLaneHdr(BufferGetPage(buf));
 	UnlockReleaseBuffer(buf);
 }
 
@@ -99,7 +97,7 @@ new_segment(Relation index, Size hdrsize)
 			Page		page = GenericXLogRegisterBuffer(state, bufs[i + j], 0);
 
 			if (i + j == 0)
-				init_header_page(page, gen, first);
+				sift_lane_init_header(page, gen, first, SIFT_LANES);
 			else
 				sift_lane_init_page(page, hdrsize);
 		}
@@ -116,15 +114,21 @@ typedef struct SwapArg
 	SiftSegEntry fresh;
 } SwapArg;
 
+void
+sift_lane_swap_active(SiftDirectoryData *dir, uint64 sealed, const SiftSegEntry *fresh)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == sealed)
+			dir->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
+	dir->segs[dir->nsegs++] = *fresh;
+}
+
 static void
 swap_active(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
 	SwapArg    *a = arg;
 
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].gen == a->sealed)
-			dir->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
-	dir->segs[dir->nsegs++] = a->fresh;
+	sift_lane_swap_active(dir, a->sealed, &a->fresh);
 }
 
 static void
@@ -158,17 +162,19 @@ create_active(Relation index, Size hdrsize)
 	return room;
 }
 
-void
-sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry)
+/* Seals the chain of every lane from `start` on (a lane's head for whole, else its tail as the header has it) up to its true tail, which
+ * is flagged under its exclusive lock: an appender needs that lock on an unsealed tail to grow the lane, so none can after this */
+static void
+flag_chains(Relation index, const SiftSegEntry *entry, bool whole)
 {
 	SiftMutHeaderData hdr;
 
 	sift_lane_read_header(index, entry, &hdr);
 	for (int l = 0; l < SIFT_LANES; l++)
 	{
-		BlockNumber blk = hdr.lanes[l].tail;
+		BlockNumber blk = whole ? hdr.lanes[l].head : hdr.lanes[l].tail;
 
-		for (;;)
+		while (BlockNumberIsValid(blk))
 		{
 			Buffer		buf = sift_lane_read_locked(index, blk, BUFFER_LOCK_EXCLUSIVE);
 			Page		page;
@@ -176,7 +182,7 @@ sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry)
 			sift_store_check_page(index, buf, SIFT_PT_MUTDATA, entry->gen);
 			page = BufferGetPage(buf);
 			blk = SiftLaneHead(page)->next;
-			if (!BlockNumberIsValid(blk) && !(SiftLaneHead(page)->flags & SIFT_MUTPAGE_SEALED))
+			if ((whole || !BlockNumberIsValid(blk)) && !(SiftLaneHead(page)->flags & SIFT_MUTPAGE_SEALED))
 			{
 				GenericXLogState *state = GenericXLogStart(index);
 
@@ -184,10 +190,20 @@ sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry)
 				GenericXLogFinish(state);
 			}
 			UnlockReleaseBuffer(buf);
-			if (!BlockNumberIsValid(blk))
-				break;
 		}
 	}
+}
+
+void
+sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry)
+{
+	flag_chains(index, entry, false);
+}
+
+void
+sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry)
+{
+	flag_chains(index, entry, true);
 }
 
 uint64
@@ -268,16 +284,16 @@ open_tail(Page page, uint64 gen)
 }
 
 Buffer
-sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int *lane)
+sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int nlanes, int *lane)
 {
-	int			start = (uint32) MyProcNumber % SIFT_LANES;
+	int			start = (uint32) MyProcNumber % nlanes;
 
-	for (int i = 0; i <= SIFT_LANES; i++)
+	for (int i = 0; i <= nlanes; i++)
 	{
-		int			l = (start + i) % SIFT_LANES;
+		int			l = (start + i) % nlanes;
 		Buffer		buf = ReadBuffer(index, tail[l]);
 
-		if (i == SIFT_LANES)
+		if (i == nlanes)
 			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		else if (!ConditionalLockBuffer(buf))
 		{
@@ -311,15 +327,16 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 	GenericXLogState *state = GenericXLogStart(index);
 	Page		cp = GenericXLogRegisterBuffer(state, cur, 0);
 	Page		np = GenericXLogRegisterBuffer(state, nb, 0);
-	SiftMutHeaderData *hd = MUTHDR(GenericXLogRegisterBuffer(state, hb, 0));
+	Page		hp = GenericXLogRegisterBuffer(state, hb, 0);
+	SiftMutHeaderData *hd = SiftLaneHdr(hp);
 
-	if (fill)
-		fill(cp, arg);
 	SiftLaneHead(cp)->next = BufferGetBlockNumber(nb);
 	sift_lane_init_page(np, hdrsize);
 	hd->lanes[lane].tail = BufferGetBlockNumber(nb);
 	hd->lanes[lane].npages++;
 	*crossed = sift_lane_npages(hd) >= limit;
+	if (fill)
+		fill(cp, np, hp, arg);
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(hb);
 	UnlockReleaseBuffer(cur);

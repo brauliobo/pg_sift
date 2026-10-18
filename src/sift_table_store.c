@@ -2,8 +2,11 @@
  * sift_table_store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, delta
  * segments (the row-format write buffer) and the tombstone segment. Pages and the directory are those of sift_store.h.
  *
- * Lock order: a newly allocated page, then the segment header page, then the chain tail. Appenders hold their target page only;
- * a reader never holds two buffers.
+ * The page chains (a delta segment's data pages, the tombstone log) are the lane 0 of the lane segments of sift_lane.h, which also
+ * seals them and takes the segment directory swaps; what differs from the record segments of the BM25 and column indexes is the
+ * page format (slots of rows, tombstone entries), the single lane (a row must keep its vblock = position in the chain) and that
+ * rows go to any unsealed page a backend holds, not just the tail. Lock order as there: the chain tail, the newly allocated page,
+ * then the segment header page. Appenders of rows hold their target page only; a reader never holds two buffers.
  */
 #include "postgres.h"
 
@@ -17,9 +20,9 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "sift_lane.h"
 #include "sift_table.h"
 
-#define MUTHDR(page)	((SiftMutHeaderData *) SiftPageGetData(page))
 #define OVF_PAYLOAD		(SIFT_PAGE_PAYLOAD - TBL_PAGE_INIT)
 
 #define corrupt(rel, ...) \
@@ -118,33 +121,13 @@ sift_tbl_rel(Relation rel)
 
 /* ---------- pages and segments ---------- */
 
-static Buffer
-read_locked(Relation rel, BlockNumber blk, int mode)
-{
-	Buffer		buf = ReadBuffer(rel, blk);
-
-	LockBuffer(buf, mode);
-	return buf;
-}
-
 static void
 init_data_page(Page page, uint32 vblock, uint16 flags)
 {
-	memset(TBL_PAGE(page), 0, sizeof(SiftTblPageHdr));
-	TBL_PAGE(page)->next = InvalidBlockNumber;
+	sift_lane_init_page(page, TBL_PAGE_INIT);
 	TBL_PAGE(page)->ovf_next = InvalidBlockNumber;
 	TBL_PAGE(page)->vblock = vblock;
 	TBL_PAGE(page)->flags = flags;
-	SiftPageSetUsed(page, TBL_PAGE_INIT);
-}
-
-static void
-init_lanes(SiftMutHeaderData *h, uint64 gen, BlockNumber first)
-{
-	h->gen = gen;
-	for (int l = 0; l < SIFT_LANES; l++)
-		h->lanes[l] = (SiftLaneData) {InvalidBlockNumber, InvalidBlockNumber, 0};
-	h->lanes[0] = (SiftLaneData) {first, first, 1};
 }
 
 bool
@@ -198,11 +181,10 @@ new_tomb_segment(Relation rel)
 	Page		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
 	SiftSegEntry e = {.gen = gen,.kind = SIFT_SEG_MUTABLE_ACTIVE,.flags = SIFT_TBL_SEG_TOMB,.header_blk = BufferGetBlockNumber(hbuf)};
 
-	init_lanes(MUTHDR(hp), gen, BufferGetBlockNumber(dbuf));
+	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
 	TBL_TOMB_HDR(hp)->magic = SIFT_TBL_TOMB_MAGIC;
 	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblTombHdr));
-	TBL_TOMB_PAGE(dp)->next = InvalidBlockNumber;
-	SiftPageSetUsed(dp, MAXALIGN(sizeof(SiftTblTombPage)));
+	sift_lane_init_page(dp, TBL_TOMB_PAGE_INIT);
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(hbuf);
 	UnlockReleaseBuffer(dbuf);
@@ -284,7 +266,6 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 		s->hdr = e->header_blk;
 		s->vbase = (uint64) e->sb_lo * SIFT_TBL_VBLOCKS_SB;
 		s->vcap = (e->sb_hi - e->sb_lo + 1) * SIFT_TBL_VBLOCKS_SB;
-		s->sealed = e->kind == SIFT_SEG_MUTABLE_SEALED;
 	}
 	if (old)
 		pfree(old);
@@ -313,10 +294,7 @@ swap_delta(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 {
 	SwapArg    *a = arg;
 
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].gen == a->sealed)
-			dir->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
-	dir->segs[dir->nsegs++] = a->fresh;
+	sift_lane_swap_active(dir, a->sealed, &a->fresh);
 	SIFT_TBL_NEXT_VBLOCK(meta) = a->next_vblock;
 }
 
@@ -328,42 +306,13 @@ delta_vcap(void)
 	return Max(1, pages / SIFT_TBL_VBLOCKS_SB) * SIFT_TBL_VBLOCKS_SB;
 }
 
-/* Sets SEALED on the header and on every page of a delta segment: no append can start after it returns */
-static void
-flag_sealed(Relation rel, const SiftSegEntry *e)
-{
-	Buffer		hbuf = read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		hp;
-	SiftTblDeltaHdr h;
-
-	sift_store_check_page(rel, hbuf, SIFT_PT_MUTHEADER, e->gen);
-	hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-	TBL_DELTA_HDR(hp)->flags |= SIFT_TBL_DELTA_SEALED;
-	h = *TBL_DELTA_HDR(hp);
-	GenericXLogFinish(state);
-	UnlockReleaseBuffer(hbuf);
-	for (uint32 i = 0; i < h.npages; i++)
-	{
-		Buffer		buf = read_locked(rel, h.page[i], BUFFER_LOCK_EXCLUSIVE);
-
-		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, e->gen);
-		if (!(TBL_PAGE(BufferGetPage(buf))->flags & SIFT_TBL_PAGE_SEALED))
-		{
-			state = GenericXLogStart(rel);
-			TBL_PAGE(GenericXLogRegisterBuffer(state, buf, 0))->flags |= SIFT_TBL_PAGE_SEALED;
-			GenericXLogFinish(state);
-		}
-		UnlockReleaseBuffer(buf);
-	}
-}
-
 /*
  * Replaces the active delta segment (if any, and if it is still the one the caller saw: seen) with a fresh one. The first page of
- * the fresh segment is returned for the caller's appends; InvalidBlockNumber when another backend was first.
+ * the fresh segment is returned for the caller's appends, flagged flags, its vblock in *vblock; InvalidBlockNumber when another
+ * backend was first.
  */
 static BlockNumber
-create_delta(Relation rel, SiftTblRel *st, uint64 seen)
+create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vblock)
 {
 	const SiftSegEntry *act;
 	BlockNumber first = InvalidBlockNumber;
@@ -404,14 +353,15 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen)
 		state = GenericXLogStart(rel);
 		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
 		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
-		init_lanes(MUTHDR(hp), gen, first);
+		sift_lane_init_header(hp, gen, first, 1);
 		TBL_DELTA_HDR(hp)->magic = SIFT_TBL_DELTA_MAGIC;
 		TBL_DELTA_HDR(hp)->vbase = vbase;
 		TBL_DELTA_HDR(hp)->vcap = vcap;
 		TBL_DELTA_HDR(hp)->npages = 1;
 		TBL_DELTA_HDR(hp)->page[0] = first;
 		SiftPageSetUsed(hp, TBL_DELTA_HDR_USED);
-		init_data_page(dp, vbase, 0);
+		init_data_page(dp, vbase, flags);
+		*vblock = vbase;
 		GenericXLogFinish(state);
 		arg.sealed = act ? act->gen : 0;
 		arg.next_vblock = vbase + vcap;
@@ -424,7 +374,7 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen)
 	}
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	if (old.gen)
-		flag_sealed(rel, &old);
+		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	return first;
 }
@@ -435,17 +385,77 @@ sift_tbl_delta_page(Relation rel, SiftTblSeg *seg, uint32 idx)
 {
 	if (idx >= seg->npages)
 	{
-		Buffer		buf = read_locked(rel, seg->hdr, BUFFER_LOCK_SHARE);
+		Buffer		buf = sift_lane_read_locked(rel, seg->hdr, BUFFER_LOCK_SHARE);
 		const SiftTblDeltaHdr *h;
 
 		sift_store_check_page(rel, buf, SIFT_PT_MUTHEADER, seg->gen);
 		h = TBL_DELTA_HDR(BufferGetPage(buf));
 		seg->npages = h->npages;
 		memcpy(seg->page, h->page, h->npages * sizeof(BlockNumber));
-		seg->sealed = h->flags & SIFT_TBL_DELTA_SEALED;
 		UnlockReleaseBuffer(buf);
 	}
 	return idx < seg->npages ? seg->page[idx] : InvalidBlockNumber;
+}
+
+/* Is the delta segment act still open to new pages: its header is its own and the vblocks reserved are not all in use; *tail: its last page */
+static bool
+delta_open(Relation rel, const SiftSegEntry *act, BlockNumber *tail)
+{
+	Buffer		hbuf = sift_lane_read_locked(rel, act->header_blk, BUFFER_LOCK_SHARE);
+	Page		hp = BufferGetPage(hbuf);
+	bool		open = !PageIsNew(hp) && SiftPageGetOpaque(hp)->type == SIFT_PT_MUTHEADER && SiftPageGetOpaque(hp)->gen == act->gen &&
+		TBL_DELTA_HDR(hp)->npages < TBL_DELTA_HDR(hp)->vcap;
+
+	if (open)
+		*tail = SiftLaneHdr(hp)->lanes[0].tail;
+	UnlockReleaseBuffer(hbuf);
+	return open;
+}
+
+typedef struct DeltaLink
+{
+	uint16		flags;
+	uint32		vblock;
+} DeltaLink;
+
+/* sift_lane_grow's fill: the new page is the next vblock of the segment, and enters its page table */
+static void
+link_delta_page(Page cur, Page np, Page hp, void *arg)
+{
+	DeltaLink  *l = arg;
+	SiftTblDeltaHdr *h = TBL_DELTA_HDR(hp);
+
+	l->vblock = h->vbase + h->npages;
+	init_data_page(np, l->vblock, l->flags);
+	h->page[h->npages++] = SiftLaneHead(cur)->next;
+}
+
+/*
+ * Links a page after the tail of the delta segment act, initialized, flagged flags, unlocked, its vblock in *vblock. InvalidBlockNumber
+ * when the segment is sealed, full or gone. The segment is full when its vblocks are used up (delta_open under the tail lock, which
+ * is what the growers of the chain hold).
+ */
+static BlockNumber
+extend_delta(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock)
+{
+	DeltaLink	link = {.flags = flags};
+	BlockNumber tail;
+	Buffer		cur;
+	int			lane;
+	bool		crossed;
+
+	if (!delta_open(rel, act, &tail) || !BufferIsValid(cur = sift_lane_lock_tail(rel, act->gen, &tail, 1, &lane)))
+		return InvalidBlockNumber;
+	if (!delta_open(rel, act, &tail))
+	{
+		UnlockReleaseBuffer(cur);
+		return InvalidBlockNumber;
+	}
+	cur = sift_lane_grow(rel, act->gen, act->header_blk, lane, cur, TBL_PAGE_INIT, PG_UINT32_MAX, link_delta_page, &link, &crossed);
+	tail = BufferGetBlockNumber(cur);
+	UnlockReleaseBuffer(cur);
+	*vblock = link.vblock;
+	return tail;
 }
 
 /*
@@ -458,76 +468,14 @@ claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock)
 	for (;;)
 	{
 		const SiftSegEntry *act;
-		Buffer		newbuf,
-					hbuf,
-					tbuf;
-		GenericXLogState *state;
-		Page		hp,
-					tp,
-					np;
-		SiftTblDeltaHdr *h;
 		BlockNumber blk;
-		uint64		seen;
 
 		sift_tbl_refresh(rel, st);
 		act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
-		seen = act ? act->gen : 0;
-		if (act == NULL)
-		{
-			if (BlockNumberIsValid(blk = create_delta(rel, st, seen)))
-			{
-				*vblock = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) - delta_vcap();
-				if (flags)
-				{
-					Buffer		b = read_locked(rel, blk, BUFFER_LOCK_EXCLUSIVE);
-
-					state = GenericXLogStart(rel);
-					TBL_PAGE(GenericXLogRegisterBuffer(state, b, 0))->flags |= flags;
-					GenericXLogFinish(state);
-					UnlockReleaseBuffer(b);
-				}
-				return blk;
-			}
-			continue;
-		}
-		newbuf = sift_alloc_page(rel, SIFT_PT_MUTDATA, act->gen);
-		hbuf = read_locked(rel, act->header_blk, BUFFER_LOCK_EXCLUSIVE);
-		hp = BufferGetPage(hbuf);
-		if (PageIsNew(hp) || SiftPageGetOpaque(hp)->type != SIFT_PT_MUTHEADER || SiftPageGetOpaque(hp)->gen != act->gen ||
-			(TBL_DELTA_HDR(hp)->flags & SIFT_TBL_DELTA_SEALED) || TBL_DELTA_HDR(hp)->npages >= TBL_DELTA_HDR(hp)->vcap)
-		{
-			bool		stale = PageIsNew(hp) || SiftPageGetOpaque(hp)->gen != act->gen;
-			BlockNumber nb = BufferGetBlockNumber(newbuf);
-
-			UnlockReleaseBuffer(hbuf);
-			UnlockReleaseBuffer(newbuf);
-			sift_dir_update(rel, &(SiftDirChange) {.release = &(SiftExtent) {nb, 1},.nrelease = 1,.extra = InvalidBuffer});
-			if (!stale && BlockNumberIsValid(blk = create_delta(rel, st, seen)))
-			{
-				*vblock = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) - delta_vcap();
-				return blk;
-			}
-			continue;
-		}
-		tbuf = read_locked(rel, MUTHDR(hp)->lanes[0].tail, BUFFER_LOCK_EXCLUSIVE);
-		sift_store_check_page(rel, tbuf, SIFT_PT_MUTDATA, act->gen);
-		state = GenericXLogStart(rel);
-		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-		tp = GenericXLogRegisterBuffer(state, tbuf, 0);
-		np = GenericXLogRegisterBuffer(state, newbuf, 0);
-		h = TBL_DELTA_HDR(hp);
-		blk = BufferGetBlockNumber(newbuf);
-		*vblock = h->vbase + h->npages;
-		init_data_page(np, *vblock, flags);
-		TBL_PAGE(tp)->next = blk;
-		h->page[h->npages++] = blk;
-		MUTHDR(hp)->lanes[0].tail = blk;
-		MUTHDR(hp)->lanes[0].npages++;
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(tbuf);
-		UnlockReleaseBuffer(hbuf);
-		UnlockReleaseBuffer(newbuf);
-		return blk;
+		if (act && BlockNumberIsValid(blk = extend_delta(rel, act, flags, vblock)))
+			return blk;
+		if (BlockNumberIsValid(blk = create_delta(rel, st, act ? act->gen : 0, flags, vblock)))
+			return blk;
 	}
 }
 
@@ -552,10 +500,10 @@ write_overflow(Relation rel, SiftTblRel *st, MinimalTuple mtup)
 	uint32		vb;
 
 	for (uint32 i = 0; i < npg; i++)
-		blks[i] = claim_page(rel, st, SIFT_TBL_PAGE_OVFDATA | SIFT_TBL_PAGE_SEALED, &vb);
+		blks[i] = claim_page(rel, st, SIFT_TBL_PAGE_OVFDATA, &vb);
 	for (uint32 i = 0; i < npg; i++)
 	{
-		Buffer		buf = read_locked(rel, blks[i], BUFFER_LOCK_EXCLUSIVE);
+		Buffer		buf = sift_lane_read_locked(rel, blks[i], BUFFER_LOCK_EXCLUSIVE);
 		GenericXLogState *state = GenericXLogStart(rel);
 		Page		p = GenericXLogRegisterBuffer(state, buf, 0);
 		uint32		n = Min(OVF_PAYLOAD, mtup->t_len - i * OVF_PAYLOAD);
@@ -603,7 +551,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 			st->tgt_blk = claim_page(rel, st, 0, &vb);
 			st->tgt_gen = 0;
 		}
-		buf = read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
+		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
 		if (!PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_MUTDATA &&
 			!(TBL_PAGE(page)->flags & (SIFT_TBL_PAGE_SEALED | SIFT_TBL_PAGE_OVFDATA)) &&
@@ -648,7 +596,7 @@ sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key)
 	else
 		for (blk = rec->aux; BlockNumberIsValid(blk) && got < rec->len;)
 		{
-			Buffer		buf = read_locked(rel, blk, BUFFER_LOCK_SHARE);
+			Buffer		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 			Page		p = BufferGetPage(buf);
 			uint32		n = Min(SiftPageGetUsed(p) - TBL_PAGE_INIT, rec->len - got);
 
@@ -713,7 +661,7 @@ sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer 
 			blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
 			if (!BlockNumberIsValid(blk))
 				return false;
-			buf = read_locked(rel, blk, BUFFER_LOCK_SHARE);
+			buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 			sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
 			rec = sift_tbl_page_rec(BufferGetPage(buf), seg->gen, off);
 			if (rec == NULL)
@@ -752,7 +700,7 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 		blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
 		if (!BlockNumberIsValid(blk))
 			break;
-		buf = read_locked(rel, blk, BUFFER_LOCK_EXCLUSIVE);
+		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_EXCLUSIVE);
 		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
 		if (sift_tbl_page_rec(BufferGetPage(buf), seg->gen, ItemPointerGetOffsetNumberNoCheck(tid)) != NULL)
 		{
@@ -860,10 +808,10 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 	}
 	if (e->gen != st->tomb_gen)
 		tomb_reset(st, e);
-	buf = read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
+	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
 	sift_store_check_page(rel, buf, SIFT_PT_MUTHEADER, e->gen);
 	n = TBL_TOMB_HDR(BufferGetPage(buf))->nentries;
-	blk = BlockNumberIsValid(st->tomb_last) ? st->tomb_last : MUTHDR(BufferGetPage(buf))->lanes[0].head;
+	blk = BlockNumberIsValid(st->tomb_last) ? st->tomb_last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
 	UnlockReleaseBuffer(buf);
 	if (n == st->tomb_synced)
 		return;
@@ -872,7 +820,7 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 		const SiftTblTombPage *tp;
 		uint32		from = blk == st->tomb_last ? st->tomb_lastcnt : 0;
 
-		buf = read_locked(rel, blk, BUFFER_LOCK_SHARE);
+		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, e->gen);
 		tp = TBL_TOMB_PAGE(BufferGetPage(buf));
 		if (nbatch + (tp->nent - from) > capbatch)
@@ -951,64 +899,37 @@ sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid
 					 uint64 succ)
 {
 	const SiftSegEntry *e;
-	Buffer		newbuf = InvalidBuffer;
 	SiftTblTomb ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind};
-	bool		linked = false;
+	SiftMutHeaderData hdr;
+	Buffer		cur,
+				hbuf;
+	GenericXLogState *state;
+	Page		tp,
+				hp;
+	int			lane;
+	bool		crossed;
 
 	/* VACUUM replaces the segment under the exclusive form of this lock: the current one is read inside it */
 	LockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ShareLock);
 	sift_dir_read(rel, &st->dir);
 	if ((e = find_seg(&st->dir, is_tomb, 0)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
-	for (;;)
-	{
-		Buffer		hbuf = read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-		Buffer		tbuf;
-		GenericXLogState *state;
-		Page		hp,
-					tp;
-
-		sift_store_check_page(rel, hbuf, SIFT_PT_MUTHEADER, e->gen);
-		tbuf = read_locked(rel, MUTHDR(BufferGetPage(hbuf))->lanes[0].tail, BUFFER_LOCK_EXCLUSIVE);
-		sift_store_check_page(rel, tbuf, SIFT_PT_MUTDATA, e->gen);
-		if (TBL_TOMB_PAGE(BufferGetPage(tbuf))->nent < TBL_TOMB_CAP || BufferIsValid(newbuf))
-		{
-			state = GenericXLogStart(rel);
-			hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-			tp = GenericXLogRegisterBuffer(state, tbuf, 0);
-			if (TBL_TOMB_PAGE(tp)->nent >= TBL_TOMB_CAP)
-			{
-				Page		np = GenericXLogRegisterBuffer(state, newbuf, 0);
-
-				linked = true;
-				TBL_TOMB_PAGE(tp)->next = BufferGetBlockNumber(newbuf);
-				TBL_TOMB_PAGE(np)->next = InvalidBlockNumber;
-				SiftPageSetUsed(np, MAXALIGN(sizeof(SiftTblTombPage)));
-				MUTHDR(hp)->lanes[0].tail = BufferGetBlockNumber(newbuf);
-				MUTHDR(hp)->lanes[0].npages++;
-				tp = np;
-			}
-			TBL_TOMB_ENTS(tp)[TBL_TOMB_PAGE(tp)->nent++] = ent;
-			SiftPageSetUsed(tp, MAXALIGN(sizeof(SiftTblTombPage)) + TBL_TOMB_PAGE(tp)->nent * sizeof(SiftTblTomb));
-			TBL_TOMB_HDR(hp)->nentries++;
-			GenericXLogFinish(state);
-			UnlockReleaseBuffer(tbuf);
-			UnlockReleaseBuffer(hbuf);
-			if (BufferIsValid(newbuf))
-			{
-				BlockNumber nb = BufferGetBlockNumber(newbuf);
-
-				UnlockReleaseBuffer(newbuf);
-				if (!linked)	/* another backend added a page first: this one goes back to the free list */
-					sift_dir_update(rel, &(SiftDirChange) {.release = &(SiftExtent) {nb, 1},.nrelease = 1,.extra = InvalidBuffer});
-			}
-			UnlockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ShareLock);
-			return;
-		}
-		UnlockReleaseBuffer(tbuf);
-		UnlockReleaseBuffer(hbuf);
-		newbuf = sift_alloc_page(rel, SIFT_PT_MUTDATA, e->gen);
-	}
+	sift_lane_read_header(rel, e, &hdr);
+	if (!BufferIsValid(cur = sift_lane_lock_tail(rel, e->gen, &hdr.lanes[0].tail, 1, &lane)))
+		corrupt(rel, "The tombstone segment is sealed.");
+	if (TBL_TOMB_PAGE(BufferGetPage(cur))->nent >= TBL_TOMB_CAP)
+		cur = sift_lane_grow(rel, e->gen, e->header_blk, lane, cur, TBL_TOMB_PAGE_INIT, PG_UINT32_MAX, NULL, NULL, &crossed);
+	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(rel);
+	hp = GenericXLogRegisterBuffer(state, hbuf, 0);
+	tp = GenericXLogRegisterBuffer(state, cur, 0);
+	TBL_TOMB_ENTS(tp)[TBL_TOMB_PAGE(tp)->nent++] = ent;
+	SiftPageSetUsed(tp, TBL_TOMB_PAGE_INIT + TBL_TOMB_PAGE(tp)->nent * sizeof(SiftTblTomb));
+	TBL_TOMB_HDR(hp)->nentries++;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(hbuf);
+	UnlockReleaseBuffer(cur);
+	UnlockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ShareLock);
 }
 
 /* Brings the page table of seg up to the header's now */
@@ -1036,7 +957,7 @@ sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy
 			blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
 			if (!BlockNumberIsValid(blk))
 				return false;
-			buf = read_locked(rel, blk, BUFFER_LOCK_SHARE);
+			buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
 			sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
 			memcpy(copy, BufferGetPage(buf), BLCKSZ);
 			UnlockReleaseBuffer(buf);
@@ -1080,8 +1001,7 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 				last;
 	uint32		npages = 0;
 	SiftExtent *rel_ext;
-	int			nrel = 0;
-	BlockNumber blk;
+	int			nrel;
 
 	LockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(rel, &st->dir);
@@ -1104,15 +1024,15 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 		if (BufferIsValid(prev))
 			pp = GenericXLogRegisterBuffer(state, prev, 0);
 		np = GenericXLogRegisterBuffer(state, nb, 0);
+		sift_lane_init_page(np, TBL_TOMB_PAGE_INIT);
 		tp = TBL_TOMB_PAGE(np);
-		tp->next = InvalidBlockNumber;
 		for (; i < st->nents && tp->nent < TBL_TOMB_CAP; i++)
 			if (keep(&st->ents[i], arg))
 			{
 				TBL_TOMB_ENTS(np)[tp->nent++] = st->ents[i];
 				kept++;
 			}
-		SiftPageSetUsed(np, MAXALIGN(sizeof(SiftTblTombPage)) + tp->nent * sizeof(SiftTblTomb));
+		SiftPageSetUsed(np, TBL_TOMB_PAGE_INIT + tp->nent * sizeof(SiftTblTomb));
 		if (pp)
 			TBL_TOMB_PAGE(pp)->next = BufferGetBlockNumber(nb);
 		GenericXLogFinish(state);
@@ -1131,8 +1051,7 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 			GenericXLogState *state = GenericXLogStart(rel);
 			Page		np = GenericXLogRegisterBuffer(state, prev, 0);
 
-			TBL_TOMB_PAGE(np)->next = InvalidBlockNumber;
-			SiftPageSetUsed(np, MAXALIGN(sizeof(SiftTblTombPage)));
+			sift_lane_init_page(np, TBL_TOMB_PAGE_INIT);
 			GenericXLogFinish(state);
 		}
 		npages = 1;
@@ -1143,9 +1062,9 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 		GenericXLogState *state = GenericXLogStart(rel);
 		Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
 
-		init_lanes(MUTHDR(hp), gen, head);
-		MUTHDR(hp)->lanes[0].tail = last;
-		MUTHDR(hp)->lanes[0].npages = npages;
+		sift_lane_init_header(hp, gen, head, 1);
+		SiftLaneHdr(hp)->lanes[0].tail = last;
+		SiftLaneHdr(hp)->lanes[0].npages = npages;
 		TBL_TOMB_HDR(hp)->magic = SIFT_TBL_TOMB_MAGIC;
 		TBL_TOMB_HDR(hp)->nentries = kept;
 		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblTombHdr));
@@ -1154,29 +1073,7 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_MUTABLE_ACTIVE,.flags = SIFT_TBL_SEG_TOMB,
 	.header_blk = BufferGetBlockNumber(hbuf)};
 	UnlockReleaseBuffer(hbuf);
-	/* the pages of the old segment, one extent each (walking its chain) */
-	{
-		Buffer		b = read_locked(rel, old->header_blk, BUFFER_LOCK_SHARE);
-		SiftExtent *ext;
-		int			cap = 64;
-
-		sift_store_check_page(rel, b, SIFT_PT_MUTHEADER, old->gen);
-		blk = MUTHDR(BufferGetPage(b))->lanes[0].head;
-		UnlockReleaseBuffer(b);
-		ext = palloc(cap * sizeof(SiftExtent));
-		ext[nrel++] = (SiftExtent) {old->header_blk, 1};
-		while (BlockNumberIsValid(blk))
-		{
-			if (nrel == cap)
-				ext = repalloc(ext, (cap *= 2) * sizeof(SiftExtent));
-			ext[nrel++] = (SiftExtent) {blk, 1};
-			b = read_locked(rel, blk, BUFFER_LOCK_SHARE);
-			sift_store_check_page(rel, b, SIFT_PT_MUTDATA, old->gen);
-			blk = TBL_TOMB_PAGE(BufferGetPage(b))->next;
-			UnlockReleaseBuffer(b);
-		}
-		rel_ext = ext;
-	}
+	rel_ext = sift_lane_extents(rel, old, &nrel);
 	sift_dir_update(rel, &(SiftDirChange) {.fn = swap_tomb,.arg = &sw,.release = rel_ext,.nrelease = nrel,.extra = InvalidBuffer});
 	UnlockPage(rel, SIFT_TBL_TOMB_LOCK_BLKNO, ExclusiveLock);
 	pfree(rel_ext);
@@ -1187,7 +1084,7 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 Buffer
 sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx)
 {
-	Buffer		buf = read_locked(rel, seg->page[idx], BUFFER_LOCK_EXCLUSIVE);
+	Buffer		buf = sift_lane_read_locked(rel, seg->page[idx], BUFFER_LOCK_EXCLUSIVE);
 
 	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
 	return buf;

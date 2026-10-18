@@ -164,7 +164,7 @@ typedef struct PieceArg
 } PieceArg;
 
 static void
-fill_piece(Page cp, void *arg)
+fill_piece(Page cp, Page np, Page hp, void *arg)
 {
 	PieceArg   *a = arg;
 
@@ -237,7 +237,7 @@ sift_mut_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int 
 			sift_analyzer_config_from_index(index, &cfg);
 			refresh_hint(index, h, cfg.hash);
 		}
-		if (BufferIsValid(buf = sift_lane_lock_tail(index, h->gen, h->tail, &lane)))
+		if (BufferIsValid(buf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
 		h->gen = 0;
 	}
