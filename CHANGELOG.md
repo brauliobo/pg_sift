@@ -135,6 +135,15 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Measured, no change: `mutable_limit` stays 4096 kB. At 1024 the 16-client insert rate was 18% lower, `INSERT .. SELECT` 17% and `COPY` 47% lower, and the
   index grew 37% larger in 4.5 times the segments, for ranked queries 2 to 4 times faster; promotions and merges were 3 times shorter but 3.7 times as many
   (`scripts/perf-gate-maint.sh --cells mut`, `--cells dead`; numbers in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations)).
+- Fix: the file of an index never shrank. The space `VACUUM` and the merges free at the end of the file stayed allocated (a table that kept 5%
+  of 200,000 documents: 722 blocks after the bulk delete, a `VACUUM`, `sift.merge(index, true)` and another `VACUUM`, 639 of them free).
+  `VACUUM` now returns the free blocks at the end of the file to the operating system, as it does for a heap: when they are 1000 blocks or a
+  16th of the index, and only if it gets `AccessExclusiveLock` on the index without waiting (a query or an insert that holds the index, or the
+  maintenance worker in a step, keeps it from truncating until the next `VACUUM`); the lock is released as soon as the file is cut. That
+  example: 722 blocks before, 83 after. A hot standby cancels the queries that hold the index when it replays the lock, like for a heap.
+  A `VACUUM` with parallel workers (several large indexes) cannot take the lock, which needs a transaction id, and leaves it to the next
+  one; `VACUUM (PARALLEL 0)` and autovacuum truncate. No on-disk change. Only blocks the horizon already lets the allocator reuse are
+  given back. `ALTER INDEX ... SET (vacuum_truncate = false)` turns it off for an index (no `REINDEX`).
 
 ## 1.4.0
 

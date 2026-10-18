@@ -57,8 +57,7 @@ sub workload
 sub healthy
 {
 	my ($node, $what) = @_;
-	$node->safe_psql('postgres', $sift->{verify}->($idx));
-	agree($node, $sift, $t, $what);
+	verify_agree($node, $sift, $t, $idx, $what);
 }
 
 sub rows

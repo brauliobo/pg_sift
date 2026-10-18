@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree crash_during kill_expected);
+our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -135,6 +135,14 @@ sub agree
 		WITH d AS MATERIALIZED (SELECT sift_ref.tokens(body, NULL) AS toks FROM $tbl) SELECT $probes;
 	});
 	is($res[$_], 't', "$am->{name}: $what: index agrees with the reference on '$terms[$_]'") for 0 .. $#terms;
+}
+
+# The index passes its own verification and agrees with the SQL reference
+sub verify_agree
+{
+	my ($node, $am, $tbl, $idx, $what) = @_;
+	$node->safe_psql('postgres', $am->{verify}->($idx));
+	agree($node, $am, $tbl, $what);
 }
 
 # SIGKILLs a server process on purpose: the postmaster logs its death, which the leak gate expects this once

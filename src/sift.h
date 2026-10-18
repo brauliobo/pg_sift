@@ -85,6 +85,7 @@ typedef struct SiftOptions
 	int			analyzer;		/* SIFT_ANALYZER_* */
 	bool		positions;		/* CREATE INDEX stores word positions, so phrases are verified from the index */
 	int			dead_rewrite_pct; /* percent of dead documents above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
+	bool		vacuum_truncate; /* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 } SiftOptions;
 
 /* analyzer: keyword indexes the whole value as one term */
