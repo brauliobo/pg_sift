@@ -52,7 +52,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
  SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
@@ -83,7 +83,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
  SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
@@ -103,7 +103,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
  SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
@@ -124,7 +124,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
  SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
@@ -142,7 +142,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
  SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
@@ -163,7 +163,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
@@ -183,7 +183,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
  SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
@@ -214,7 +214,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                        | t      | t
  SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
@@ -237,7 +237,7 @@ SELECT * FROM agg_compare();
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
  SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                        | t      | t
  SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
@@ -266,7 +266,7 @@ SELECT * FROM agg_compare();
 -------------------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                                  | t      | t
  SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c                              | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | t      | t
  SELECT count(*) FROM agg_t WHERE c = repeat('y', 1000)                                    | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                                    | t      | t
  SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                                     | t      | t
@@ -293,7 +293,7 @@ SELECT * FROM agg_compare();
 -------------------------------------------------------------------------------------------+--------+------
  SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                                  | t      | t
  SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c                              | t      | t
- SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | f      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | t      | t
  SELECT count(*) FROM agg_t WHERE c = repeat('y', 1000)                                    | t      | t
  SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                                    | t      | t
  SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                                     | t      | t
