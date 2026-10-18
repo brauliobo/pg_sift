@@ -1063,6 +1063,7 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 				for (uint32 k = 0; k < m; k++)
 					codes[k] = (uint32) keys[k];
 				sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
+				sift_ccodes_below(codes, m, d->n + 1);
 				vec->codes = codes;
 				vec->dict = d;
 				break;
@@ -1230,10 +1231,13 @@ lane_fits(SiftColStore store, SiftColLane lane)
 }
 
 static void
-decode_lane(const SiftCChunk *c, SiftColLane lane, void *dst)
+decode_lane(const SiftCChunk *c, SiftColLane lane, uint32 ndict, void *dst)
 {
 	switch (lane)
 	{
+		case SIFT_COLL_CODE:
+			sift_cchunk_decode_codes(c, ndict, dst);
+			break;
 		case SIFT_COLL_I64:
 			sift_cchunk_decode(c, dst);
 			break;
@@ -1258,6 +1262,12 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 	info->n = n;
 	if (def->kind == SIFT_COLK_GROUP ? lane != SIFT_COLL_I32 : !lane_fits(def->store, lane))
 		elog(ERROR, "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
+	if (lane == SIFT_COLL_CODE)
+	{
+		SiftCDict  *dict = unit_dict(cu, col);	/* first: an inline chunk's dictionary and its id exist once the chunk is read */
+
+		sift_cdict_view(dict, dict_id(cu, col), &info->dict);
+	}
 	if (def->kind == SIFT_COLK_GROUP)
 	{
 		ColGroup   *g = unit_group(cu, col);
@@ -1277,7 +1287,7 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 	{
 		if (c.n != n)
 			corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, n);
-		decode_lane(&c, lane, dst);
+		decode_lane(&c, lane, info->dict.n, dst);
 		cu->src->cnt.bytes_decoded += c.paylen;
 		nulls = c.nulls;
 		info->ovf = c.ovf != NULL;
@@ -1287,8 +1297,6 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 		sift_colk->bits_to_flags(nulls, n, isnull);
 		info->nulls = true;
 	}
-	if (lane == SIFT_COLL_CODE)
-		sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), &info->dict);
 }
 
 uint32
