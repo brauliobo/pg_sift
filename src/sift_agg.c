@@ -100,6 +100,7 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_preagg",
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_topn",
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
