@@ -7,11 +7,11 @@
 #   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
 #   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
-#   the coverage table, a 30 s soak and a
+#   the coverage table, a 30 s soak, a 45 s column-index soak (scripts/colsoak.sh) and a
 #   20 s fuzz budget.
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
 #   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
-#   and sift soaks (600 s) and the server sanitizer report.
+#   and sift soaks (600 s), the column-index soak (300 s) and the server sanitizer report.
 # SANITIZE=1 makes quick run on the ASan build too.
 #
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
@@ -143,6 +143,7 @@ SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_cra
 if [[ $MODE == full ]]; then
 	job soak soak 1 "$S/soak.sh" --duration 600 --check-every 30
 	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration 120 --rows 20000 --clients 2 --check-every 20
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration 300
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 5000 --queries 150 --rounds 4
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
@@ -186,6 +187,7 @@ else
 	tap_perl 001_crash
 	installcheck filter_pushdown
 	job soak soak 1 "$S/soak.sh" --duration 30 --rows 20000 --rate 400 --clients 2 --check-every 10
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration 45 --clients 6
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
@@ -291,7 +293,7 @@ green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
 failed=0
 # the suites in the order of the report (a suite not listed follows the others)
 ORDER=(build leakcheck-selftest portable-core span-test)
-for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
+for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin soak-col difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
 	[[ " ${SUITES[*]} " != *" $s "* || " ${ORDER[*]} " == *" $s "* ]] || ORDER+=("$s")
 done
 for s in "${ORDER[@]}" leakcheck; do

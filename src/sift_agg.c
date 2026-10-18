@@ -29,6 +29,7 @@
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
+#include "common/int.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "executor/nodeHash.h"
@@ -68,9 +69,12 @@
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
 #include "sift_search.h"
+#include "sift_topn.h"
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
+bool		sift_agg_preagg = true;
+bool		sift_enable_topn = true;
 static int	sift_agg_combo_cache = 1 << 20;
 
 #define VEC			SIFT_AGG_VEC
@@ -92,6 +96,14 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_preagg",
+							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
+							 NULL, &sift_agg_preagg, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.enable_topn",
+							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
+							 NULL, &sift_enable_topn, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
@@ -565,6 +577,8 @@ typedef struct AggExec
 	Relation	index;
 	SiftSrcSource *src;
 	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
+	SiftTopN   *topn;			/* ORDER BY .. LIMIT n: the scan keeps the best rows instead of groups (spec->topn) */
+	int			topn_n;			/* rows of the result */
 	const SiftSrcLayout *lay;
 	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
 	struct
@@ -643,6 +657,9 @@ typedef struct AggExec
 	struct AggPar *par;			/* workers launched by the leader */
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts */
 	int			nprune;
+	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
+	int			nfilter;		/* how many */
+	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
 	Snapshot	snap;
@@ -687,9 +704,13 @@ typedef struct AggExec
 	uint64	   *tmpm;
 	uint64	   *tmpm2;
 	uint32	   *tmpu32;
+	/* pre-aggregates (preagg_init) */
+	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
+	int			pa_dim;			/* the leaf of the histograms that answer it, -1: the sums of the leaves */
 	/* counters */
 	int64		n_units;
-	int64		n_rows;
+	int64		n_pre_units;	/* of them, answered from pre-aggregates */
+	int64		n_rows;			/* of the others */
 	int64		n_tuples;
 	int64		n_groups;
 	/* arms that share one pass (fuse_start) */
@@ -1072,6 +1093,8 @@ get_vec_raw(AggExec *ex, int leaf)
 	{
 		if (leaf >= ex->nbase)
 			read_vleaf(ex, leaf, &ex->uvec[leaf]);
+		else if (ex->rsel && ex->lay->leaf[leaf].kind == SCL_SCALAR && ex->lay->leaf[leaf].parent < 0)
+			sift_colsrc_read_sel(ex->src, &ex->unit, leaf, ex->rsel, &ex->uvec[leaf]);
 		else
 			sift_colsrc_read(ex->src, &ex->unit, leaf, &ex->uvec[leaf]);
 		ex->uvec_ok[leaf] = true;
@@ -3854,6 +3877,27 @@ key_range_fill(void *arg, int32 v, void *entry)
 		*(uint32 *) entry = key_value_id(f->ex, f->ki, leaf_datum(k->param->paramtype, v), false);
 }
 
+/* The ids of the integer values in [mn, mx] of key ki are made; false: the key keeps its ids in a hash table instead of the range table (ident_wide_id) */
+static bool
+key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx)
+{
+	KeyState   *k = &ex->ks[ki];
+	KeyFill		f = {ex, ki};
+	MemoryContext old;
+
+	if (k->ident && (k->wcap || (any && rt_span(&k->rt, mn, mx) > MAX_RANGE)))
+	{
+		if (!k->wcap)
+			ident_go_wide(ex, k);
+		return false;
+	}
+	old = MemoryContextSwitchTo(ex->tcxt);
+	/* only NULLs (!any): any covered value will do for the kernel, the rows are corrected afterwards */
+	rt_cover(&k->rt, any ? mn : 0, any ? mx : 0, key_range_fill, &f);
+	MemoryContextSwitchTo(old);
+	return true;
+}
+
 /*
  * Adds the ids of the selected tuples' key j to gid[i] (times mult); the data of the key's leaf is gathered through idx.
  * Ids that do not exist yet are made first, so key_used() is final when this returns.
@@ -3929,7 +3973,6 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		int32		mn,
 					mx;
 		int			nw = (nsel + 63) / 64;
-		KeyFill		f = {ex, ki};
 
 		/* the range of the non-null values */
 		fill_ones(ex->tmpm, nsel);
@@ -3942,30 +3985,13 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		}
 		bool		any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) vals_out, ex->tmpm, nsel);
 
-		if (k->ident && (k->wcap || (any && rt_span(&k->rt, mn, mx) > MAX_RANGE)))
+		if (!key_cover(ex, ki, any, mn, mx))
 		{
-			if (!k->wcap)
-				ident_go_wide(ex, k);
 			for (int i = 0; i < nsel; i++)
 				vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, (int32) vals_out[i]);
 			*map_out = NULL;		/* the values are the ids */
 			*base_out = 0;
 			return;
-		}
-		if (any)
-		{
-			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
-
-			rt_cover(&k->rt, mn, mx, key_range_fill, &f);
-			MemoryContextSwitchTo(old);
-		}
-		else
-		{
-			/* only NULLs: any covered value will do for the kernel, the rows are corrected below */
-			MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
-
-			rt_cover(&k->rt, 0, 0, key_range_fill, &f);
-			MemoryContextSwitchTo(old);
 		}
 		if (v->isnull)
 			for (int i = 0; i < nsel; i++)
@@ -6856,6 +6882,332 @@ apply_late(AggExec *ex, uint64 *mask, int total)
 	}
 }
 
+/* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
+
+/*
+ * A unit whose rows are all visible and alive (sift_colsrc_unit_exact) is answered from what the index stored with it, as if its
+ * rows had gone through the aggregates: the sums of its leaves (no key), or the groups of the histogram of the key's column. The
+ * conjuncts on that column run on the groups, the others are zone comparisons that the unit's zone must lie inside. A unit that
+ * cannot answer (a dirty page, the write buffer, no histogram, a measure the histogram lacks) is scanned, into the same table.
+ */
+typedef struct PaVal
+{
+	int64		rows;			/* of the group */
+	int64		nn;				/* ... whose argument is not NULL */
+	sift_i128	sum;			/* the sum of the argument */
+	bool		has_mm;
+	int64		min;
+	int64		max;
+} PaVal;
+
+/* the leaf an aggregate reads: its column, the only leaf of its numeric program; -1: count(*) */
+static int
+pa_leaf(const SiftAggAgg *a)
+{
+	return a->kind == SAA_COUNT_STAR ? -1 : a->num.n ? a->num.step[0].leaf : a->leaf;
+}
+
+/* v into the state of aggregate ai in group g, as the rows it stands for would have been added */
+static void
+preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
+{
+	const SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+
+	switch (a->kind)
+	{
+		case SAA_COUNT_STAR:
+			acc->n[g] += v->rows;
+			break;
+		case SAA_COUNT:
+			acc->n[g] += v->nn;
+			break;
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+			if (v->sum != (int64) v->sum || pg_add_s64_overflow(acc->i[g], (int64) v->sum, &acc->i[g]))
+				ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("bigint out of range")));
+			acc->n[g] += v->nn;
+			break;
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			acc->w[g] += v->sum;
+			acc->n[g] += v->nn;
+			break;
+		default:					/* SAA_MIN, SAA_MAX */
+			if (v->has_mm)
+			{
+				bool		ismin = a->kind == SAA_MIN;
+				int64		x = ismin ? v->min : v->max;
+				sift_i128	cur = a->num.n ? acc->w[g] : acc->i[g];
+
+				if (acc->n[g] == 0 || (ismin ? x < cur : x > cur))
+				{
+					if (a->num.n)
+						acc->w[g] = x;
+					else
+						acc->i[g] = x;
+				}
+				acc->n[g] += v->nn;
+			}
+	}
+}
+
+/* group g takes rows rows, the aggregates their values v[] */
+static void
+preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v)
+{
+	ex->seen[g] += rows;
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+		preagg_add(ex, ai, g, &v[ai]);
+}
+
+/* the unit's zone of every leaf the conjuncts compare lies inside the comparison, and holds no NULL: they hold for all the rows */
+static bool
+preagg_zones(AggExec *ex)
+{
+	for (int k = 0; k < ex->nprune; k++)
+	{
+		const SiftSrcPrune *z = &ex->prune[k];
+		SiftSrcUnitAgg a;
+
+		if (z->leaf != ex->pa_dim &&
+			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
+			return false;
+	}
+	return true;
+}
+
+/* no key: the unit's rows are one group, from the sums of the leaves */
+static bool
+preagg_sums(AggExec *ex)
+{
+	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, Max(ex->spec->naggs, 1) * sizeof(PaVal));
+	int			nrow = ex->unit.nrow;
+
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		const SiftAggAgg *a = &ex->spec->agg[ai];
+		int			leaf = pa_leaf(a);
+		SiftSrcUnitAgg ua;
+
+		v[ai].rows = v[ai].nn = nrow;
+		if (leaf < 0)
+			continue;
+		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums))
+			return false;
+		v[ai] = (PaVal) {nrow, ua.nvals - ua.nnull, ua.sum, ua.has_minmax, ua.min, ua.max};
+	}
+	preagg_fold(ex, 0, nrow, v);
+	return true;
+}
+
+/*
+ * The groups of the histogram that pass the conjuncts on the key's column (a bitmap; NULL: all): the tests run on the groups as
+ * on the rows of a unit that has one per group, the column's vector being the histogram's keys.
+ */
+static uint64 *
+preagg_keep(AggExec *ex, const SiftSrcHist *h)
+{
+	SiftAggSpec *s = ex->spec;
+	int			ng = h->ngroups,
+				nw = (ng + 63) / 64;
+	uint64	   *keep = NULL;
+	uint32	   *data = NULL;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase) != ex->pa_dim)
+			continue;
+		if (keep == NULL)
+		{
+			uint8	   *isnull = h->has_null ? MemoryContextAllocZero(ex->ucxt, ng + SIFT_AGG_PAD) : NULL;
+
+			keep = MemoryContextAlloc(ex->ucxt, (nw + PADW) * sizeof(uint64));
+			fill_ones(keep, ng);
+			data = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, ng * sizeof(uint32) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+			for (int k = 0; k < ng - h->has_null; k++)
+				data[k] = (uint32) h->key[k];
+			if (h->has_null)
+			{
+				isnull[ng - 1] = 1;
+				data[ng - 1] = h->dict ? h->dict->n : 0;
+			}
+			ex->uvec[ex->pa_dim] = (SiftSrcVec) {data, isnull, h->dict, ng, NULL};
+			ex->uvec_ok[ex->pa_dim] = true;
+		}
+		for (int st = 0; st < ng; st += VEC)
+		{
+			int			n = Min(VEC, ng - st);
+			uint64		t[VECW + PADW];
+
+			eval_pred(ex, s->pred[i], 0, st, n, t);
+			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
+		}
+	}
+	ex->uvec_ok[ex->pa_dim] = false;
+	return keep;
+}
+
+/* the ids of the key of the kept groups (the NULL group is the last one of h): the unit's dictionary entries, or the integers */
+static void
+preagg_key_ids(AggExec *ex, const SiftSrcHist *h, const uint32 *kept, int nkept, uint32 *ids)
+{
+	KeyState   *k = &ex->ks[0];
+	int			nk = h->ngroups - h->has_null;
+	int32		mn = PG_INT32_MAX,
+				mx = PG_INT32_MIN;
+	const uint32 *map = NULL;
+	bool		cover = false;
+
+	if (h->dict)
+		map = dict_kmap(ex, dict_slot(ex, h->dict), h->dict, 0);
+	for (int j = 0; j < nkept && !h->dict; j++)
+		if (kept[j] < nk)
+		{
+			mn = Min(mn, (int32) h->key[kept[j]]);
+			mx = Max(mx, (int32) h->key[kept[j]]);
+		}
+	if (!h->dict)
+		cover = key_cover(ex, 0, mn <= mx, mn, mx);
+	for (int j = 0; j < nkept; j++)
+	{
+		int			g = kept[j];
+
+		if (h->dict)
+			ids[j] = map[g < nk ? (uint32) h->key[g] : h->dict->n];
+		else if (g >= nk)
+			ids[j] = 0;
+		else
+			ids[j] = cover ? ((const uint32 *) k->rt.tab)[(int32) h->key[g] - k->rt.lo] : ident_wide_id(ex, k, (int32) h->key[g]);
+	}
+}
+
+/* the groups of the table for tuples that have the key ids ids[] (one key): compute_gids for ids that are known */
+static void
+ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid)
+{
+	if (!ex->hash && key_used(&ex->ks[0]) > ex->ks[0].cap)
+		direct_grow(ex);
+	if (!ex->hash)
+	{
+		for (int i = 0; i < n; i++)
+			gid[i] = ids[i] * ex->ks[0].mult;
+		return;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		uint32		k[SIFT_AGG_MAX_KEYS] = {ids[i]};
+
+		gid[i] = hash_group(ex, k);
+	}
+	if (ex->ngroups > ex->gcap)
+		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+}
+
+/* the groups of the unit's histogram of the key's column, or of the column the conjuncts test (no key: one group) */
+static bool
+preagg_hist(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcHist h;
+	int		   *slot = MemoryContextAlloc(ex->ucxt, Max(s->naggs, 1) * sizeof(int));
+	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(PaVal));
+	uint32	   *kept,
+			   *ids,
+			   *gid;
+	uint64	   *keep;
+	int			nkept = 0;
+
+	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa_dim, &h))
+		return false;
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		int			leaf = pa_leaf(&s->agg[ai]);
+		int			m = 0;
+
+		while (leaf >= 0 && leaf != ex->pa_dim && m < h.nmeas && h.meas[m] != leaf)
+			m++;
+		if (leaf >= 0 && leaf != ex->pa_dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL)))
+			return false;
+		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa_dim ? -2 : m;
+	}
+	keep = preagg_keep(ex, &h);
+	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
+	for (uint32 k = 0; k < h.ngroups; k++)
+		if (keep == NULL || sift_colsrc_bit(keep, k))
+			kept[nkept++] = k;
+	ids = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
+	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
+	if (s->nkeys == 1)
+	{
+		preagg_key_ids(ex, &h, kept, nkept, ids);
+		ids_to_gids(ex, nkept, ids, gid);
+	}
+	for (int j = 0; j < nkept; j++)
+	{
+		for (int ai = 0; ai < s->naggs; ai++)
+		{
+			int			m = slot[ai];
+
+			v[ai].rows = v[ai].nn = h.count[kept[j]];
+			if (m == -2)
+				v[ai].nn = kept[j] < h.ngroups - h.has_null ? h.count[kept[j]] : 0;
+			else if (m >= 0)
+			{
+				v[ai].nn = h.nn[m][kept[j]];
+				v[ai].sum = h.sum[m] ? h.sum[m][kept[j]] : 0;
+			}
+		}
+		preagg_fold(ex, gid[j], h.count[kept[j]], v);
+	}
+	return true;
+}
+
+static bool
+preagg_unit(AggExec *ex)
+{
+	return sift_colsrc_unit_exact(ex->src, &ex->unit) && preagg_zones(ex) && (ex->pa_dim < 0 ? preagg_sums(ex) : preagg_hist(ex));
+}
+
+static void
+preagg_init(AggExec *ex)
+{
+	SiftSrcPreagg pa;
+
+	ex->pa_on = false;
+	if (!sift_agg_preagg || ex->index == NULL)
+		return;
+	sift_colsrc_preagg(ex->index, &pa);
+	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa_dim);
+	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside */
+	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
+		ex->pa_on &= !ex->ps[p->id].cnull;
+}
+/* A unit whose zone of the first sort leaf has nothing that sorts before the n-th best so far is not read */
+static bool
+topn_viable(AggExec *ex)
+{
+	SiftSrcZone z;
+
+	if (!sift_topn_wants_zones(ex->topn))
+		return true;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), &z);
+	if (sift_topn_zone_viable(ex->topn, &z))
+		return true;
+	sift_topn_skip(ex->topn);
+	return false;
+}
+
+/* the rows that pass go to the heap of the best n, by the sort leaves (sift_topn.h) */
+static void
+topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
+{
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec_raw(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
+}
+
+/* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
+#define SPARSE_RATIO	8
+
 static void
 process_unit(AggExec *ex)
 {
@@ -6872,17 +7224,35 @@ process_unit(AggExec *ex)
 	for (int i = 0; i < s->npreds_total; i++)
 		ex->ps[i].rowmask_ok = false;
 	ex->n_units++;
+	if (nrow > 0 && ex->pa_on && preagg_unit(ex))
+	{
+		ex->n_pre_units++;
+		ex->row_base += nrow;
+		CHECK_FOR_INTERRUPTS();
+		return;
+	}
 	ex->n_rows += nrow;
 	if (nrow == 0)
 		return;
+	if (ex->topn && !topn_viable(ex))
+		return;
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
+	if (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask))
+	{
+		ex->row_base += nrow;
+		return;
+	}
+	/* a few rows left: the leaves are decoded for them only */
+	if (ex->nfilter > 0 && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
+		ex->rsel = rmask;
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
 	{
 		SiftSrcStrTest *str = ex->ps[s->pred[i]->id].str;
 
-		if (s->pred[i]->level == 0 && !s->pred[i]->late && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
+		if (s->pred[i]->level == 0 && !s->pred[i]->late && !(ex->pushed && ex->pushed[i]) && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
 			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
 	}
 	ex->qlevel = elem;
@@ -6890,8 +7260,11 @@ process_unit(AggExec *ex)
 	{
 		sift_colsrc_vet(ex->src, u, rmask);
 		apply_late(ex, rmask, nrow);
-		for (int st = 0; st < nrow; st += VEC)
-			agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
+		if (ex->topn)
+			topn_unit(ex, rmask, nrow);
+		else
+			for (int st = 0; st < nrow; st += VEC)
+				agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
 	}
 	else
 	{
@@ -6992,12 +7365,33 @@ prune_init(AggExec *ex)
 	{
 		PredState  *st = &ex->ps[p->id];
 		SiftSrcPrune *z = NULL;
-		int64		c;
+		int64		lo = PG_INT64_MIN,
+					hi = PG_INT64_MAX;
 
 		if (!st->ready)
 			eval_operand(ex, p, st);
 		if (st->cnull)
 			continue;
+		if (p->kind == SAP_IN)
+		{
+			if (st->in_sorted || st->in_nlut == 0 || st->in_hasnull)
+				continue;
+			lo = st->in_lo;
+			hi = (int64) st->in_lo + st->in_nlut - 1;
+		}
+		else
+		{
+			bool		num = ex->lay->leaf[p->leaf].typid == NUMERICOID;
+			SiftCmpOp	op = num ? (SiftCmpOp) st->nop : (SiftCmpOp) p->op;
+			int64		c = num ? (int64) st->cn : st->ci;
+
+			if (num && st->konst >= 0)
+				continue;
+			if (op != SCMP_GT && op != SCMP_GE)
+				hi = op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c;
+			if (op != SCMP_LT && op != SCMP_LE)
+				lo = op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c;
+		}
 		for (int k = 0; k < ex->nprune; k++)
 			if (ex->prune[k].leaf == p->leaf)
 				z = &ex->prune[k];
@@ -7006,11 +7400,8 @@ prune_init(AggExec *ex)
 			z = &ex->prune[ex->nprune++];
 			*z = (SiftSrcPrune) {p->leaf, PG_INT64_MIN, PG_INT64_MAX};
 		}
-		c = st->ci;
-		if (p->op != SCMP_GT && p->op != SCMP_GE)
-			z->hi = Min(z->hi, p->op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c);
-		if (p->op != SCMP_LT && p->op != SCMP_LE)
-			z->lo = Max(z->lo, p->op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c);
+		z->hi = Min(z->hi, hi);
+		z->lo = Max(z->lo, lo);
 	}
 }
 
@@ -7026,6 +7417,91 @@ str_init(AggExec *ex)
 			ex->ps[ex->spec->pred[i]->id].str = &all[n++];
 	if (n > 0)
 		sift_colsrc_prune_str(ex->src, all, n);
+}
+
+/*
+ * The conjuncts the source can apply on its stored integer values, as filters: a comparison of an integer-valued leaf with a constant (a
+ * numeric as its scaled integer) and a short IN list. The text tests have their own path (str_init).
+ */
+#define FILTER_MAX_SET	8
+
+/* a comparison or short IN list of an integer-valued leaf */
+static bool
+int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
+{
+	PredState  *st = &ex->ps[p->id];
+	const SiftSrcLeaf *lf = &ex->lay->leaf[p->leaf];
+
+	if (lf->vtype != SCV_I32 && lf->vtype != SCV_I64)
+		return false;
+	if (!st->ready)
+		eval_operand(ex, p, st);
+	if (st->cnull)
+		return false;
+	f->leaf = p->leaf;
+	if (p->kind == SAP_CMP)
+	{
+		bool		num = lf->typid == NUMERICOID;
+
+		if (num && st->konst >= 0)
+		{
+			f->op = SSF_NOTNULL;
+			if (st->konst == 0)
+				return false;
+		}
+		else
+		{
+			f->op = (SiftSrcFilterOp) (num ? st->nop : p->op);
+			f->val = num ? (int64) st->cn : st->ci;
+		}
+		return true;
+	}
+	{
+		int64	   *set = palloc(FILTER_MAX_SET * sizeof(int64));
+		int			n = 0;
+
+		if ((p->op && st->in_hasnull) || st->in_sorted)
+			return false;
+		for (uint32 i = 0; i < st->in_nlut; i++)
+			if (st->in_lut[i] && n++ < FILTER_MAX_SET)
+				set[n - 1] = (int64) st->in_lo + i;
+		if (n == 0 || n > FILTER_MAX_SET)
+			return false;
+		f->op = p->op ? SSF_NOTIN : SSF_IN;
+		f->nset = n;
+		f->set = set;
+		return true;
+	}
+}
+
+static void
+filter_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcFilter f[SIFT_COLSRC_MAX_FILTERS];
+	int			at[SIFT_COLSRC_MAX_FILTERS],
+				n = 0;
+	uint64		ok;
+
+	ex->pushed = MemoryContextAllocZero(ex->cxt, Max(s->npred, 1) * sizeof(bool));
+	for (int i = 0; i < s->npred && n < SIFT_COLSRC_MAX_FILTERS; i++)
+	{
+		SiftAggPred *p = s->pred[i];
+
+		if (p->level != 0 || p->late || p->leaf >= ex->nbase || (p->kind != SAP_CMP && p->kind != SAP_IN))
+			continue;
+		memset(&f[n], 0, sizeof(SiftSrcFilter));
+		if (int_filter(ex, p, &f[n]))
+			at[n++] = i;
+	}
+	/* the source tests the stored rows of a unit, the rows of a match set may be renumbered: with a search the executor tests them */
+	ok = n > 0 && s->search == NULL ? sift_colsrc_set_filters(ex->src, f, n) : 0;
+	for (int k = 0; k < n; k++)
+		if (ok >> k & 1)
+		{
+			ex->pushed[at[k]] = true;
+			ex->nfilter++;
+		}
 }
 
 /* what a key keeps for the whole scan: its expression and the type of its input; the ids are the table's (table_init) */
@@ -8018,6 +8494,7 @@ typedef struct WorkerDone
 	uint32		magic;
 	uint32		pad;
 	int64		n_units;
+	int64		n_pre_units;
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_matches;
@@ -8131,6 +8608,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		send_blob(ex->mqh, b.data, b.len);
 	}
 	done.n_units = ex->n_units;
+	done.n_pre_units = ex->n_pre_units;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
 	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
@@ -8218,6 +8696,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		const WorkerDone *d = (const WorkerDone *) data;
 
 		ex->n_units += d->n_units;
+		ex->n_pre_units += d->n_pre_units;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		par->matches += d->n_matches;
@@ -8611,6 +9090,8 @@ fuse_start(AggExec *ex)
 	MemoryContextSwitchTo(old);
 	run_scan(F);
 	empty_set_groups(F->gtab);
+	dist_finish_all(F->gtab);
+	dist_end_all(F->gtab);
 	mapped_finish(F->gtab);
 	list_groups(F->gtab);
 	for (int i = 0; i < n; i++)
@@ -8662,6 +9143,95 @@ fuse_next(AggExec *ex, TupleTableSlot *slot)
 	return ExecStoreVirtualTuple(slot);
 }
 
+/* The zone of the first sort leaf in the unit of superblock sb; false when it has none */
+static bool
+topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
+{
+	if (ex->search)
+		sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
+	sift_colsrc_begin(ex->src, sb, sb + 1, NULL, 0);
+	if (!sift_colsrc_next(ex->src, &ex->unit))
+		return false;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), z);
+	return true;
+}
+
+/* Windows of superblocks from the end the best values are at (sift_topn.h) */
+
+/*
+ * The match set of the superblocks a window is in. The first window is asked for alone (the scan often ends in it, and a match set costs by
+ * the superblocks it covers); the chunk around each later one holds the windows that follow it, which a backwards visit cannot get cheaply:
+ * the match iterator restarts when asked for superblocks it has passed.
+ */
+typedef struct TopnChunk
+{
+	uint32		lo,
+				hi;
+	const SiftFilter *flt;
+} TopnChunk;
+
+static void
+topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
+{
+	if (ex->search)
+	{
+		if (ch->flt == NULL || lo < ch->lo || hi > ch->hi)
+		{
+			uint32		width = ch->flt == NULL ? hi - lo : Max(hi - lo, sift_search_chunk_sbs);
+
+			ch->lo = sift_topn_reverse(ex->topn) ? (hi > width ? hi - width : 0) : lo;
+			ch->hi = sift_topn_reverse(ex->topn) ? hi : Min(lo + width, nsb);
+			ch->flt = sift_search_range(ex->search, ch->lo, ch->hi);
+		}
+		sift_colsrc_select(ex->src, ch->flt);
+	}
+	scan_units(ex, lo, hi);
+}
+static void
+topn_run(AggExec *ex)
+{
+	SiftTopN   *t;
+	uint32		nsb,
+				lo,
+				hi,
+				best;
+	SiftSrcZone z;
+	TopnChunk	ch = {0, 0, NULL};
+
+	ex->started = true;
+	engine_open(ex, ex->snap, ex->params);
+	scan_buffers(ex);
+	table_init(ex);
+	t = ex->topn;
+	nsb = sift_colsrc_nsb(ex->src);
+	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
+		for (int i = 0; i < sift_topn_nprobes(); i++)
+			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
+				sift_topn_probe(t, ex->unit.sb, &z);
+	sift_topn_start(t, nsb);
+	while (sift_topn_next_window(t, &lo, &hi, &best))
+	{
+		if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
+		{
+			sift_topn_stop(t);
+			break;
+		}
+		topn_scan(ex, lo, hi, nsb, &ch);
+	}
+	ex->topn_n = sift_topn_finish(t);
+}
+
+static TupleTableSlot *
+topn_next(AggExec *ex, TupleTableSlot *slot)
+{
+	if (!ex->started)
+		topn_run(ex);
+	if (ex->gpos >= ex->topn_n)
+		return NULL;
+	sift_topn_fetch(ex->topn, ex->gpos++, slot);
+	return slot;
+}
+
 static TupleTableSlot *
 agg_next(ScanState *node)
 {
@@ -8670,6 +9240,8 @@ agg_next(ScanState *node)
 	AggExec    *t;
 	uint32		g;
 
+	if (ex->spec->topn)
+		return topn_next(ex, slot);
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
@@ -8741,6 +9313,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
+	if (ex->spec->topn)
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->cxt);
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
 		register_pred(ex, ex->spec->pred[i]);
@@ -8751,7 +9325,9 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	register_combos(ex);
 	pgagg_init(ex);
 	prune_init(ex);
+	filter_init(ex);
 	str_init(ex);
+	preagg_init(ex);
 	gen_open(ex);
 	MemoryContextSwitchTo(old);
 }
@@ -8761,6 +9337,8 @@ engine_close(AggExec *ex)
 {
 	if (ex->search)
 		sift_search_close(ex->search);
+	if (ex->topn)
+		sift_topn_close(ex->topn);
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
@@ -8841,6 +9419,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Filters", s->desc_quals, es);
 	if (s->search)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
+	if (s->topn)
+		ExplainPropertyText("Top-N", psprintf("%s (limit %d)", s->desc_topn, sift_topn_limit(s->topn)), es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
 		if (j < h0 || j >= h1)
@@ -8887,7 +9467,16 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		if (s->search)
 			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
+		if (s->topn && ex->topn)
+		{
+			ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+			ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
+		}
+		if (c->nfilter > 0)
+			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
+		if (c->pa_on)
+			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 		ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);

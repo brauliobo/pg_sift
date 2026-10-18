@@ -1,0 +1,160 @@
+-- SiftAgg over a sift_col index: the conjuncts the column engine applies on its stored values (comparisons of integer, date, timestamp and
+-- numeric leaves, short IN lists, text equality, inequality and lists) and the leaves read for the surviving rows only. Every query
+-- runs with and without the pushdown; the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE f_t (id int, g int, k text, v int, n numeric(10,2), t timestamp, d date, c text, big text) WITH (autovacuum_enabled = false);
+INSERT INTO f_t
+SELECT i, i % 11, CASE WHEN i % 13 = 0 THEN NULL ELSE (ARRAY['paid', 'shipped', 'delivered', 'cancelled'])[1 + i % 4] END,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE (i * 7919) % 10007 END, ((i * 31) % 50000)::numeric / 100,
+       timestamp '2024-01-01' + i * interval '97 minutes', date '2024-01-01' + i % 700, CASE WHEN i % 5 = 0 THEN 'DE' WHEN i % 7 = 0 THEN 'US' ELSE 'FR' END, 'b'
+FROM generate_series(1, 20000) i;
+CREATE INDEX f_t_col ON f_t USING sift_col (id, g, k, v, n, t, d, c);
+VACUUM (FREEZE, ANALYZE) f_t;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0;
+END $$;
+-- the conjuncts the source applies, from EXPLAIN ANALYZE (0 when the plan has no SiftAgg)
+CREATE FUNCTION filters_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Filters In Source' THEN n := regexp_replace(l, '\D', '', 'g')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE n > 100 AND t >= '2025-03-01'$$) AS two_ranges;
+ two_ranges 
+------------
+          2
+(1 row)
+
+SELECT filters_in_source($$SELECT count(*), sum(v) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01'$$) AS integer_and_date_not_text;
+ integer_and_date_not_text 
+---------------------------
+                         1
+(1 row)
+
+SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE k IN ('paid', 'shipped') AND g IN (1, 2, 3) AND v BETWEEN 100 AND 9000$$) AS integer_lists_not_text;
+ integer_lists_not_text 
+------------------------
+                      3
+(1 row)
+
+SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE k = 'shipped' OR c = 'DE'$$) AS or_stays_in_the_executor;
+ or_stays_in_the_executor 
+--------------------------
+                        0
+(1 row)
+
+SELECT filters_in_source($$SELECT count(*) FROM f_t WHERE lower(k) = 'paid'$$) AS expression_stays_in_the_executor;
+ expression_stays_in_the_executor 
+----------------------------------
+                                0
+(1 row)
+
+SELECT same($$SELECT count(*), sum(v), avg(n) FROM f_t WHERE n > 100 AND t >= '2025-03-01'$$) AS ranges;
+ ranges 
+--------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(v), min(d), max(t) FROM f_t WHERE k = 'shipped' AND c <> 'US' AND d >= date '2024-06-01' GROUP BY g$$) AS integer_and_date_not_text;
+ integer_and_date_not_text 
+---------------------------
+ t
+(1 row)
+
+SELECT same($$SELECT k, c, count(*), sum(n) FROM f_t WHERE k IN ('paid', 'shipped', 'none') AND c NOT IN ('DE', 'XX') GROUP BY k, c$$) AS text_lists;
+ text_lists 
+------------
+ t
+(1 row)
+
+SELECT same($$SELECT k, count(*) FROM f_t WHERE k <> 'paid' GROUP BY k$$) AS text_ne_nulls;
+ text_ne_nulls 
+---------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(v) FROM f_t WHERE g IN (1, 2, 3) AND g NOT IN (2) AND v BETWEEN 100 AND 9000$$) AS int_lists;
+ int_lists 
+-----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*) FROM f_t WHERE n > 1000000$$) AS none_pass;
+ none_pass 
+-----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*) FROM f_t WHERE n < 1000000$$) AS all_pass;
+ all_pass 
+----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(n) FROM f_t WHERE n = 100 OR n BETWEEN 99.995 AND 100.004$$) AS numeric_scale;
+ numeric_scale 
+---------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(n) FROM f_t WHERE n > 100.005 AND n <= 480.5 AND id <> 77$$) AS numeric_constants;
+ numeric_constants 
+-------------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*) AS c, sum(v) AS sv, sum(n) AS sn FROM f_t WHERE id < 40 AND k = 'delivered' GROUP BY g$$) AS sparse_rows;
+ sparse_rows 
+-------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(v) AS cv, count(k) AS ck, min(t) AS mt, sum(n) AS sn FROM f_t WHERE id > 19900 GROUP BY g$$) AS sparse_nulls;
+ sparse_nulls 
+--------------
+ t
+(1 row)
+
+SELECT same($$SELECT k, count(*) FROM f_t WHERE k = 'delivered' AND id IN (5, 6, 7, 8, 9, 10, 11, 12, 13) GROUP BY k$$) AS one_unit_few_rows;
+ one_unit_few_rows 
+-------------------
+ t
+(1 row)
+
+-- generic plans: the constants are read when the scan starts
+PREPARE gen(text, numeric, int[]) AS SELECT count(*), sum(v) FROM f_t WHERE k = $1 AND n > $2 AND g = ANY ($3);
+SET plan_cache_mode = force_generic_plan;
+SET sift.enable_agg = on;
+CREATE TEMP TABLE gen_on AS EXECUTE gen('shipped', 12.5, '{1,2,3}');
+SET sift.enable_agg = off;
+CREATE TEMP TABLE gen_off AS EXECUTE gen('shipped', 12.5, '{1,2,3}');
+SELECT count(*) = 0 AS generic_same FROM ((TABLE gen_on EXCEPT TABLE gen_off) UNION ALL (TABLE gen_off EXCEPT TABLE gen_on)) d;
+ generic_same 
+--------------
+ t
+(1 row)
+
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;

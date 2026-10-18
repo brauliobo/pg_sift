@@ -73,11 +73,11 @@ analyze() {
 # libfuzz TARGET: a test/fuzz target for 6 s per scale step; a kept corpus in $OUT/lf-TARGET, crash files in $OUT/lf-TARGET/artifacts
 libfuzz() {
 	local t=$1 d=$OUT/lf-$1 known=${FZ_SKIP-} supp="$REPO/test/fuzz/ubsan.supp"
-	[[ -v FZ_SKIP ]] || case $t in colchunk) known=lut ;; esac		# findings of the design notes that are not fixed yet
 	[[ -z ${FZ_NO_SUPP:-} ]] || supp=/dev/null
 	build -C "$REPO/test/fuzz" OUT="$OUT/lf" "$OUT/lf/$t" || return 1
 	rm -rf "$d/seeds" && mkdir -p "$d/corpus" "$d/artifacts"
 	FZ_GEN="$d/seeds" "$OUT/lf/$t" >/dev/null 2>&1 && cp -n "$d"/seeds/* "$d/corpus/" || { echo "no seeds"; return 1; }
+	find "$REPO/test/fuzz/regress" -name "$t-*" -exec cp -n {} "$d/corpus/" \;		# the inputs of the fixed findings run first
 	env FZ_SKIP="$known" ${FZ_MODE:+FZ_MODE=$FZ_MODE} UBSAN_OPTIONS="suppressions=$supp:print_stacktrace=1" \
 		"$OUT/lf/$t" -max_total_time=$((6 * SCALE)) -seed="$SEED" -timeout=10 -rss_limit_mb=4096 -artifact_prefix="$d/artifacts/" "$d/corpus" 2>&1 |
 		grep -v -E '^(#[0-9]+\s+(NEW|REDUCE|pulse)|MS:|stat::|\s*$|"|#+ )'
