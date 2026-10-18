@@ -401,7 +401,29 @@ FOR_I64_AVX512(for_i64_u16_avx512, uint16, LD16)
 FOR_I64_AVX512(for_i64_u32_avx512, uint32, LD32)
 FOR_I64_AVX512(for_i64_u64_avx512, uint64, LD64)
 
-/* A parent's run is stored under a lane mask, 16 elements at a time: no scalar tail */
+F5 void
+f8_from_keys_avx512(int64 *a, uint32 n)
+{
+	for (uint32 i = 0; i < n; i += 8)
+	{
+		__mmask8	k = LANES(n, i, 8);
+		__m512i		v = _mm512_maskz_loadu_epi64(k, a + i);
+
+		_mm512_mask_storeu_epi64(a + i, k, _mm512_xor_si512(v, _mm512_srli_epi64(_mm512_srai_epi64(v, 63), 1)));
+	}
+}
+
+/* 64 flags a step: the mask word is the byte mask of the stores */
+F5 void
+bits_to_flags_avx512(const uint64 *bits, uint32 n, uint8 *flags)
+{
+	const __m512i one = _mm512_set1_epi8(1);
+
+	for (uint32 i = 0; i < n; i += 64)
+		_mm512_storeu_si512(flags + i, _mm512_maskz_mov_epi8(bits[i / 64], one));
+}
+
+/* A parent's run is stored 16 elements at a time, past its end too (the next run, or the padding, takes the tail): one store for a run of up to 16 */
 F5 void
 expand_parents_avx512(const uint32 *end, uint32 np, uint32 *parent)
 {
@@ -412,7 +434,7 @@ expand_parents_avx512(const uint32 *end, uint32 np, uint32 *parent)
 		__m512i		v = _mm512_set1_epi32((int) p);
 
 		for (; i < end[p]; i += 16)
-			_mm512_mask_storeu_epi32(parent + i, LANES(end[p], i, 16), v);
+			_mm512_storeu_si512(parent + i, v);
 		i = end[p];
 	}
 }
@@ -433,6 +455,8 @@ const SiftColKernels sift_col_kernels_avx512 = {
 	.for_i64 = {for_i64_u8_avx512, for_i64_u16_avx512, for_i64_u32_avx512, for_i64_u64_avx512},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = gather_u32_avx512,
+	.f8_from_keys = f8_from_keys_avx512,
+	.bits_to_flags = bits_to_flags_avx512,
 	.expand_parents = expand_parents_avx512,
 };
 

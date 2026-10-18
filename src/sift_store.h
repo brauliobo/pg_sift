@@ -26,7 +26,11 @@
  *    precedes the index's GlobalVis horizon, i.e. as soon as the releasing
  *    transaction and those readers are gone. (In parallel mode, which cannot
  *    assign an xid, safexid is the next xid read after the lock: as safe,
- *    reusable once a later xid completes.) New content enters a reused
+ *    reusable once a later xid completes. A lazy VACUUM is left out of the
+ *    snapshots and of the horizon, its xid included, so a reader that began
+ *    after that xid was assigned could see it as passed: a VACUUM releases
+ *    with the next xid too, and its truncation, which excludes every reader
+ *    (P7), counts every released extent as reusable.) New content enters a reused
  *    block's buffer only inside the critical section that logs it, so
  *    WAL-before-data orders it after the release record.
  * P5 Standby. Generic WAL raises no recovery conflicts. Readers check page

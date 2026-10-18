@@ -105,7 +105,25 @@ typedef struct SiftSrcVec
 	const uint8 *isnull;		/* NULL: none is null; else n flags, 1 = null (the data slot is readable, content undefined) */
 	const SiftSrcDict *dict;	/* SCV_CODE leaves */
 	int64		n;
+	/*
+	 * numeric leaves (the only values a numeric(p <= 18, s) column cannot hold are its NaNs): NULL when none of the values is one,
+	 * else bit i set = value i is a NaN of the heap (isnull is set too, the data slot is undefined). Zeroed by sift_colsrc_read,
+	 * set by the provider. The executor refuses a vector that has it unless the reader evaluates the value with PostgreSQL.
+	 */
+	const uint64 *ovf;
 } SiftSrcVec;
+
+/*
+ * Storage the caller owns for one leaf read (sift_colsrc_read_into): the leaf is decoded into it, with no copy between the decoder and the
+ * caller's vector. Both have room for sift_colsrc_leaf_n() + SIFT_AGG_PAD values (data: of the leaf's vtype, SIFT_SIMD_ALIGN aligned;
+ * isnull: bytes); the SIFT_AGG_PAD values after the last one are zero when the read returns.
+ */
+typedef struct SiftSrcBuf
+{
+	void	   *data;
+	uint8	   *isnull;
+	uint64	   *ovf;			/* optional, bits for the values of the leaf the index cannot hold (a numeric NaN): NULL, such a value is an error */
+} SiftSrcBuf;
 
 typedef struct SiftSrcUnit
 {
@@ -195,6 +213,13 @@ typedef struct SiftSrcProvider
 	 */
 	void		(*prune_str) (void *impl, const SiftSrcStrTest *t, int nt);
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
+	/*
+	 * Optional (NULL: sift_colsrc_read_into reads with `read` and copies). leaf_n: the values a read of the leaf yields (rows, or for a child
+	 * the elements of the whole unit), without reading it. read_into: `read` into the caller's storage (SiftSrcBuf), the form `read` itself
+	 * is a wrapper of in a provider that has it.
+	 */
+	int64		(*leaf_n) (void *impl, const SiftSrcUnit *unit, int leaf);
+	void		(*read_into) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -257,6 +282,14 @@ extern bool sift_colsrc_next(SiftSrcSource *src, SiftSrcUnit *unit);
  * elements of the unit.
  */
 extern void sift_colsrc_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
+
+/*
+ * The same into storage of the caller (sift_colsrc_leaf_n values and SIFT_AGG_PAD more, see SiftSrcBuf): vec->data and vec->isnull point into
+ * buf, valid as long as the caller keeps it. For a caller that keeps its vectors across units or wants them next to each other, and the one
+ * way to read without a copy by the source: sift_colsrc_read is this over the source's own buffers.
+ */
+extern int64 sift_colsrc_leaf_n(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
+extern void sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
 
 /*
  * Row bitmaps of the unit (nrow bits in ceil(nrow / 64) words, zero past nrow). live: the rows that exist (an index entry of a

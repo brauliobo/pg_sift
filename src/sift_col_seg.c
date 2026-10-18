@@ -608,6 +608,67 @@ sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *out)
 		memcpy(out->set, z->set[u], 4 * sizeof(uint64));
 }
 
+/* The entries of the segment's dictionary of leaf col: the count that starts it, without parsing the dictionary */
+static uint32
+dict_count(SiftColSegment *seg, int col)
+{
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
+	uint32		hdr[2],
+				n;
+	uint64		tab[SIFT_COL_MAX_COLS];
+
+	seg_read(seg, s->off, sizeof(hdr), hdr);
+	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
+		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
+	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+	if (tab[col] == 0 || tab[col] + sizeof(n) > s->len)
+		corrupt(seg, "Leaf %d has no dictionary.", col);
+	seg_read(seg, s->off + tab[col], sizeof(n), &n);
+	return n;
+}
+
+void
+sift_col_leaf_stats_init(SiftColLeafStats *acc)
+{
+	memset(acc, 0, sizeof(*acc));
+	acc->min = PG_INT64_MAX;
+	acc->max = PG_INT64_MIN;
+	acc->has_range = acc->has_sum = true;
+}
+
+void
+sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
+{
+	const SiftColDef *def = &seg->schema->cols[col];
+	const ZoneArrays *z = zone_arrays(seg, col);
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		bool		any = z->nnull[u] < z->nvals[u];
+
+		acc->nvals += z->nvals[u];
+		acc->nnull += z->nnull[u];
+		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
+			acc->has_range = acc->has_sum = false;
+		if (def->kind == SIFT_COLK_GROUP)
+			acc->has_sum &= !(z->flags[u] & SIFT_COLZ_NOSUM);
+		else if (def->store == SIFT_COLS_INT && any)
+		{
+			acc->min = Min(acc->min, z->min[u]);
+			acc->max = Max(acc->max, z->max[u]);
+		}
+		else if (def->store != SIFT_COLS_INT)
+			acc->has_range = false;
+		if (def->kind == SIFT_COLK_GROUP)
+			acc->sum += (double) z->sum[u];
+	}
+	if (def->store == SIFT_COLS_STR)
+	{
+		acc->inl |= z->any_inl;
+		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
+	}
+}
+
 void
 sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 {

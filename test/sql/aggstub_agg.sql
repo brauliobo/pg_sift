@@ -25,8 +25,8 @@ EXPLAIN (COSTS OFF) SELECT kind, count(*), sum(amount) FROM o WHERE store IN (1,
 EXPLAIN (COSTS OFF) SELECT i.category, count(*), avg(i.price)
 FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) WHERE i.qty > 1 GROUP BY 1;
 
--- shapes it does not take keep the normal plan
-EXPLAIN (COSTS OFF) SELECT kind, sum(amount::float4) FROM o GROUP BY kind;
+-- ORDER BY in the call: a generic aggregate over the sorted rows
+EXPLAIN (COSTS OFF) SELECT kind, string_agg(kind, ',' ORDER BY id) FROM o GROUP BY kind;
 -- a range of a column that follows the heap order is priced by the units its zone leaves, and is cheaper than the btree scan
 EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM o WHERE id < 100 GROUP BY kind;
 

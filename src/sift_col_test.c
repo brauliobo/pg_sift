@@ -21,11 +21,13 @@
 #include "utils/tuplestore.h"
 
 #include "sift_col_am.h"
+#include "sift_colsrc.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
+PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
 #define TEST_NOMUTABLE	1
 #define TEST_NOVET		2
@@ -305,6 +307,26 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			continue;
 		tids = palloc(sel.count * sizeof(ItemPointerData));
 		sift_col_tids(&unit, &sel, tids);
+		/*
+		 * The selection's positions are cached for the leaves read through it: every other leaf is read first (the group offsets are
+		 * built by a sibling), then a selection with one row less (which replaces the cache), then this one again, which must read as if
+		 * it were the first.
+		 */
+		for (int c = 0; c < sift_col_ncols(ts.src); c++)
+			if (c != leaf)
+				sift_col_read(&unit, c, &sel, &vec);
+		if (sel.count > 1)
+		{
+			SiftColSel	less = sel;
+			uint32	   *first = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+
+			less.bits = palloc(sel.nwords * sizeof(uint64));
+			memcpy(less.bits, sel.bits, sel.nwords * sizeof(uint64));
+			sift_col_sel_idx(&sel, first);
+			sift_col_bit_clear(less.bits, first[0]);
+			sift_col_sel_count(&less);
+			sift_col_read(&unit, leaf, &less, &vec);
+		}
 		sift_col_read(&unit, leaf, &sel, &vec);
 		for (uint32 r = 0; r < sel.count; r++)
 		{
@@ -405,6 +427,29 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	v[8] = CStringGetTextDatum(sift_simd_level_name(c->simd));
 	scan_close(&ts);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* One row per leaf of an index or sift_table: the planner statistics its column source reports (sift_colsrc.h SiftSrcStats), 0 where unknown */
+Datum
+sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	int			nleaves = sift_colsrc_layout(rel)->nleaves;
+	SiftSrcStats st;
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_colsrc_stats(rel, &st);
+	for (int i = 0; i < nleaves; i++)
+	{
+		Datum		v[5] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
+		Float8GetDatum(st.elems_per_row[i])};
+		bool		nulls[5] = {false, false, false, false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	relation_close(rel, AccessShareLock);
+	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */
