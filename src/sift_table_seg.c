@@ -1238,7 +1238,7 @@ bool
 sift_tbl_merge(Relation rel, SiftTblRel *st)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	SiftMergePolicy pol = {(uint64) sift_tbl_delta_limit * 1024, SIFT_MERGE_FANIN, sift_col_mostly_dead};
+	SiftMergePolicy pol = {(uint64) sift_tbl_delta_limit * 1024, SIFT_MERGE_FANIN, sift_tbl_mostly_dead};
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	int			n;
 
@@ -1569,3 +1569,20 @@ sift_tbl_bulk_finish(SiftTblBulk *b)
 	MemoryContextDelete(b->sw.cxt);
 }
 
+/* ---------- dead rows of the column segments ---------- */
+
+int			sift_tbl_dead_rewrite_pct = SIFT_MERGE_DEAD_PCT;
+
+bool
+sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e)
+{
+	SiftColSegment *seg;
+	bool		dead;
+
+	if (!(e->flags & SIFT_SEG_DIRTY))
+		return false;
+	seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+	dead = sift_cseg_live_rows(seg) * 100 < e->ndocs * (100 - sift_tbl_dead_rewrite_pct);
+	sift_cseg_close(seg);
+	return dead;
+}
