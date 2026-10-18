@@ -291,7 +291,7 @@ its own docker container.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192;
   - `0A000` for backward scans (a `SCROLL` cursor fetching backward; use `FETCH ABSOLUTE` over a `NO SCROLL` cursor), `TABLESAMPLE`, the system columns `xmin`, `xmax`, `cmin` and `cmax`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a string over 255 bytes or a float `-0` or non-canonical NaN (`SET sift.enable_agg = off` for that query);
-  - `numeric` and `char(n)` columns are not read by `SiftAgg` (no pushdown of a query that needs their values); no HOT, and shared row locks degrade to exclusive;
+  - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
