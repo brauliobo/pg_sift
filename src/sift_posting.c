@@ -15,6 +15,40 @@ int			sift_grouped_min_df = SIFT_GROUPED_MIN_DF;
 int			sift_test_blob_max = 0;
 #endif
 
+/*
+ * The blob of a GROUPED term staged group by group (SiftPostingWriter.spool_min), so that the memory of a term does not
+ * grow with its postings: the containers of the groups, the three parts of the tf stream and the checkpoints and records
+ * of the positions are temporary files, copied into the segment when the term ends. What stays in memory is the index of
+ * the blob, 36 bytes a group (a group is a superblock: up to 74,496 documents).
+ */
+typedef struct TermSpool
+{
+	BufFile    *payload;
+	BufFile    *l1;
+	BufFile    *nib;
+	BufFile    *esc;
+	BufFile    *ckpt;
+	BufFile    *pos;
+	uint64		npayload;
+	uint64		nstaged;		/* postings staged */
+	uint32		nnib;			/* L1 members and escape bytes of the groups staged */
+	uint32		nesc;
+	uint32		tfnib;			/* nibbles written to the tf stream (nnib once the tf of every group is) */
+	uint8		pend_l1;		/* the partial last byte of the L1 bits and of the nibbles */
+	uint8		pend_nib;
+	uint32		ng;
+	uint32		maxg;
+	uint32	   *key;			/* the codec index of the blob, ng entries (poff and base ng + 1 once complete) */
+	uint32	   *poff;
+	uint32	   *base;
+	SiftGroupScore *gs;
+	uint8	   *rows;			/* the block bound rows of the groups that have one */
+	uint32		nrows;
+	uint8		max_bound;
+} TermSpool;
+
+#define TF_PIECE		4096	/* postings of the tf stream encoded at once when staging */
+
 struct SiftPostingWriter
 {
 	SiftStreamWriter *sw;
@@ -26,12 +60,15 @@ struct SiftPostingWriter
 	uint32		n;
 	uint32		cap;
 	uint32		grouped_min;	/* df from which the term is GROUPED */
+	uint32		spool_min;		/* GROUPED terms of this many postings or more are staged (0 = never) */
+	uint32		open_start;		/* first posting of the last group in keys (staging keeps it) */
+	TermSpool  *sp;				/* the staging of the current term, once it reached spool_min */
 	uint8	   *out;
 	Size		outcap;
-	uint8	   *pos;			/* position records of the term's postings, back to back */
-	Size		poslen;
+	uint8	   *pos;			/* position records of the term's postings, back to back (not with sp) */
+	Size		poslen;			/* their bytes so far, staged or not */
 	Size		poscap;
-	uint32	   *ckpt;			/* offset in pos of every SIFT_POS_EVERY-th posting */
+	uint32	   *ckpt;			/* offset in pos of every SIFT_POS_EVERY-th posting (not with sp) */
 	bool		haspos;
 	uint8		bound1[SIFT_MAX_DL + 1];	/* bound for tf 1 by dl; 0 = not computed */
 };
@@ -103,6 +140,44 @@ bound_of(SiftPostingWriter *w, uint8 tf, uint16 dl)
 	return w->bound1[dl];
 }
 
+/* The checkpoint of the posting at rank (a multiple of SIFT_POS_EVERY) in the term: the record bytes before it */
+static void
+ckpt_put(SiftPostingWriter *w, uint64 rank, Size at)
+{
+	uint32		v = at;
+
+	if (w->sp)
+		BufFileWrite(w->sp->ckpt, &v, sizeof(v));
+	else
+		w->ckpt[rank / SIFT_POS_EVERY] = v;
+}
+
+/* Appends the n postings' records (their lengths in poslen) to the term's */
+static void
+pos_put(SiftPostingWriter *w, const uint8 *pos, const uint32 *poslen, int n, uint64 rank)
+{
+	Size		len = 0;
+
+	for (int i = 0; i < n; len += poslen[i++])
+		if ((rank + i) % SIFT_POS_EVERY == 0)
+			ckpt_put(w, rank + i, w->poslen + len);
+	if (w->sp)
+		BufFileWrite(w->sp->pos, pos, len);
+	else
+	{
+		if (w->poslen + len > w->poscap)
+		{
+			w->poscap = Max(w->poslen + len, Max(4096, w->poscap * 2));
+			w->pos = grow(w->mcxt, w->pos, w->poscap);
+		}
+		memcpy(w->pos + w->poslen, pos, len);
+	}
+	w->poslen += len;
+}
+
+static void spool_begin(SiftPostingWriter *w);
+static void spool_stage(SiftPostingWriter *w, uint32 upto);
+
 void
 sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n,
 			   const uint8 *pos, const uint32 *poslen)
@@ -128,28 +203,18 @@ sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const
 		if (tf[i] == 0)
 			elog(ERROR, "sift: posting with tf 0");
 		w->bound[w->n + i] = bound_of(w, tf[i], dl[i]);
+		if (w->spool_min && (w->n + i == 0 || SIFT_GID(keys[i]) != SIFT_GID(i > 0 ? keys[i - 1] : w->keys[w->n - 1])))
+			w->open_start = w->n + i;
 	}
 	memcpy(w->keys + w->n, keys, (Size) n * sizeof(SiftKey));
 	memcpy(w->tf + w->n, tf, (Size) n);
 	if (pos)
-	{
-		Size		len = 0;
-
-		for (int i = 0; i < n; i++)
-		{
-			if ((w->n + i) % SIFT_POS_EVERY == 0)
-				w->ckpt[(w->n + i) / SIFT_POS_EVERY] = w->poslen + len;
-			len += poslen[i];
-		}
-		if (w->poslen + len > w->poscap)
-		{
-			w->poscap = Max(w->poslen + len, Max(4096, w->poscap * 2));
-			w->pos = grow(w->mcxt, w->pos, w->poscap);
-		}
-		memcpy(w->pos + w->poslen, pos, len);
-		w->poslen += len;
-	}
+		pos_put(w, pos, poslen, n, w->sp ? w->sp->nstaged + w->n : w->n);
 	w->n += n;
+	if (w->sp == NULL && w->spool_min && w->n >= w->spool_min)
+		spool_begin(w);
+	if (w->sp && w->open_start > 0)
+		spool_stage(w, w->open_start);
 }
 
 static uint8 *
@@ -166,6 +231,50 @@ out_buf(SiftPostingWriter *w, Size len)
 	return w->out;
 }
 
+/* The end of the group that starts at posting i */
+static uint32
+group_end(const SiftPostingWriter *w, uint32 i, uint32 n)
+{
+	uint32		j = i;
+
+	while (j < n && SIFT_GID(w->keys[j]) == SIFT_GID(w->keys[i]))
+		j++;
+	return j;
+}
+
+/*
+ * The score entry of the group of postings [i, j), nib and esc being the L1 members and the escape bytes before it (advanced),
+ * and its block bound row when it has one (returns whether it does)
+ */
+static bool
+group_score(const SiftPostingWriter *w, uint32 i, uint32 j, uint32 *nib, uint32 *esc, SiftGroupScore *gs, uint8 *row)
+{
+	uint8		blk[SIFT_BLKS_PER_SB] = {0};
+	bool		tf1 = true;
+
+	*gs = (SiftGroupScore) {.nib_base = *nib,.esc_base = *esc};
+	for (uint32 k = i; k < j; k++)
+	{
+		int			b = (SIFT_BLK(w->keys[k]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT;
+
+		blk[b] = Max(blk[b], w->bound[k]);
+		if (w->tf[k] > 1)
+		{
+			tf1 = false;
+			(*nib)++;
+			*esc += w->tf[k] >= 17;
+		}
+	}
+	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
+		gs->bound = Max(gs->bound, blk[b]);
+	gs->flags = tf1 ? SIFT_GS_ALL_TF1 : 0;
+	if (j - i < SIFT_BLKBOUND_MIN)
+		return false;
+	gs->flags |= SIFT_GS_BLKBOUND;
+	memcpy(row, blk, SIFT_BLKS_PER_SB);
+	return true;
+}
+
 /* Group scores and block bound rows of a GROUPED term, in codec group order */
 static void
 fill_groups(SiftPostingWriter *w, SiftGroupScore *gs, uint8 *rows)
@@ -173,37 +282,10 @@ fill_groups(SiftPostingWriter *w, SiftGroupScore *gs, uint8 *rows)
 	uint32		nib = 0,
 				esc = 0;
 
-	for (uint32 i = 0, g = 0; i < w->n; g++)
+	for (uint32 i = 0, j, g = 0; i < w->n; i = j, g++)
 	{
-		uint32		gid = SIFT_GID(w->keys[i]),
-					j = i;
-		uint8		blk[SIFT_BLKS_PER_SB] = {0};
-		bool		tf1 = true;
-
-		gs[g].nib_base = nib;
-		gs[g].esc_base = esc;
-		for (; j < w->n && SIFT_GID(w->keys[j]) == gid; j++)
-		{
-			int			b = (SIFT_BLK(w->keys[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT;
-
-			blk[b] = Max(blk[b], w->bound[j]);
-			if (w->tf[j] > 1)
-			{
-				tf1 = false;
-				nib++;
-				esc += w->tf[j] >= 17;
-			}
-		}
-		for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
-			gs[g].bound = Max(gs[g].bound, blk[b]);
-		gs[g].flags = tf1 ? SIFT_GS_ALL_TF1 : 0;
-		if (j - i >= SIFT_BLKBOUND_MIN)
-		{
-			gs[g].flags |= SIFT_GS_BLKBOUND;
-			memcpy(rows, blk, SIFT_BLKS_PER_SB);
-			rows += SIFT_BLKS_PER_SB;
-		}
-		i = j;
+		j = group_end(w, i, w->n);
+		rows += group_score(w, i, j, &nib, &esc, &gs[g], rows) ? SIFT_BLKS_PER_SB : 0;
 	}
 }
 
@@ -309,16 +391,222 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 	return out;
 }
 
+/* ---------- terms staged in temporary files ---------- */
+
+static void
+blob_too_big(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: postings of one term exceed 4 GB")));
+}
+
+void
+sift_postw_spool(SiftPostingWriter *w, uint64 min_postings)
+{
+	if (w->sw)
+		w->spool_min = (uint32) Min(Max(min_postings, w->grouped_min), PG_INT32_MAX);
+}
+
+/* The term reached spool_min postings: its records and checkpoints so far go to the files */
+static void
+spool_begin(SiftPostingWriter *w)
+{
+	TermSpool  *sp = MemoryContextAllocZero(w->mcxt, sizeof(TermSpool));
+
+	sp->payload = BufFileCreateTemp(false);
+	sp->l1 = BufFileCreateTemp(false);
+	sp->nib = BufFileCreateTemp(false);
+	sp->esc = BufFileCreateTemp(false);
+	sp->ckpt = BufFileCreateTemp(false);
+	sp->pos = BufFileCreateTemp(false);
+	w->sp = sp;
+	if (w->haspos)
+	{
+		BufFileWrite(sp->ckpt, w->ckpt, (Size) ((w->n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32));
+		BufFileWrite(sp->pos, w->pos, w->poslen);
+		pfree(w->pos);
+		w->pos = NULL;
+		w->poscap = 0;
+	}
+}
+
+/* The tf of the next postings of the term to the three parts of its tf stream (sift_kern_tf_encode, a piece at a time) */
+static void
+spool_tf(TermSpool *sp, const uint8 *tf, uint32 n)
+{
+	uint8		l1[TF_PIECE / 8 + 1],
+				nib[TF_PIECE / 2 + 1],
+				esc[TF_PIECE];
+
+	for (uint32 i = 0; i < n; i += TF_PIECE)
+	{
+		uint32		k = Min(n - i, TF_PIECE);
+		SiftTfPos	at = {sp->nstaged % 8, sp->tfnib % 2, 0};
+
+		memset(l1, 0, sizeof(l1));
+		memset(nib, 0, sizeof(nib));
+		l1[0] = sp->pend_l1;
+		nib[0] = sp->pend_nib;
+		sift_kern_tf_encode(l1, nib, esc, &at, tf + i, k);
+		BufFileWrite(sp->l1, l1, at.rank / 8);
+		BufFileWrite(sp->nib, nib, at.nib / 2);
+		BufFileWrite(sp->esc, esc, at.esc);
+		sp->pend_l1 = l1[at.rank / 8];
+		sp->pend_nib = nib[at.nib / 2];
+		sp->tfnib += at.nib - sp->tfnib % 2;
+	}
+}
+
+/* Stages the group of postings [i, j) of the writer: its container, its score and its entries of the index of the blob */
+static void
+spool_group(SiftPostingWriter *w, uint32 i, uint32 j)
+{
+	TermSpool  *sp = w->sp;
+	sift_enc_opts opts = {.kind = SIFT_GROUPED};
+	size_t		size = sift_encode(w->keys + i, NULL, NULL, j - i, &opts, NULL);
+	uint8	   *blob = out_buf(w, size);
+	uint32		plen;
+
+	/* the term of one group: 8 bytes, ng, key, poff[2], base[2], and then the container */
+	if (sift_encode(w->keys + i, NULL, NULL, j - i, &opts, blob) != size)
+		elog(ERROR, "sift: codec size mismatch");
+	memcpy(&plen, blob + 20, sizeof(plen));
+	if (sp->ng == sp->maxg)
+	{
+		sp->maxg = Max(64, sp->maxg * 2);
+		sp->key = grow(w->mcxt, sp->key, (Size) sp->maxg * sizeof(uint32));
+		sp->poff = grow(w->mcxt, sp->poff, (Size) (sp->maxg + 1) * sizeof(uint32));
+		sp->base = grow(w->mcxt, sp->base, (Size) (sp->maxg + 1) * sizeof(uint32));
+		sp->gs = grow(w->mcxt, sp->gs, (Size) sp->maxg * sizeof(SiftGroupScore));
+		sp->rows = grow(w->mcxt, sp->rows, (Size) sp->maxg * SIFT_BLKS_PER_SB);
+	}
+	if (20 + 12 * (uint64) (sp->ng + 1) + sp->npayload + plen > SIFT_BLOB_MAX)
+		blob_too_big();
+	memcpy(&sp->key[sp->ng], blob + 12, sizeof(uint32));
+	sp->poff[sp->ng] = sp->npayload;
+	sp->base[sp->ng] = sp->nstaged + i;
+	BufFileWrite(sp->payload, blob + 32, plen);
+	sp->npayload += plen;
+	if (group_score(w, i, j, &sp->nnib, &sp->nesc, &sp->gs[sp->ng], sp->rows + (Size) sp->nrows * SIFT_BLKS_PER_SB))
+		sp->nrows++;
+	sp->ng++;
+}
+
+/* Stages the first upto postings of the writer, whole groups, and keeps the rest */
+static void
+spool_stage(SiftPostingWriter *w, uint32 upto)
+{
+	TermSpool  *sp = w->sp;
+
+	for (uint32 i = 0, j; i < upto; i = j)
+		spool_group(w, i, j = group_end(w, i, upto));
+	spool_tf(sp, w->tf, upto);
+	for (uint32 i = 0; i < upto; i++)
+		sp->max_bound = Max(sp->max_bound, w->bound[i]);
+	sp->nstaged += upto;
+	memmove(w->keys, w->keys + upto, (Size) (w->n - upto) * sizeof(SiftKey));
+	memmove(w->tf, w->tf + upto, w->n - upto);
+	memmove(w->bound, w->bound + upto, w->n - upto);
+	w->n -= upto;
+	w->open_start = 0;
+}
+
+/* The last groups of the term, and its blob out of the pieces, byte for byte what postw_encode makes of the term in memory */
+static void
+spool_end(SiftPostingWriter *w, SiftTermInfo *info)
+{
+	TermSpool  *sp;
+	uint64		n,
+				clen,
+				total,
+				posoff,
+				nck;
+	uint8		hdr[3 * sizeof(uint32)] = {SIFT_GROUPED};
+
+	spool_stage(w, w->n);
+	sp = w->sp;
+	n = sp->nstaged;
+	nck = (n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY;
+	memset(info, 0, sizeof(SiftTermInfo));
+	info->df = n;
+	info->max_bound = sp->max_bound;
+	info->nnib = sp->nnib;
+	if (sp->nnib == 0)
+		info->flags |= SIFT_TERM_ALL_TF1;
+	clen = 20 + 12 * (uint64) sp->ng + sp->npayload;
+	total = ALIGN4(clen) + (uint64) sp->ng * sizeof(SiftGroupScore) + (uint64) sp->nrows * SIFT_BLKS_PER_SB +
+		(sp->nnib ? (n + 7) / 8 + (sp->nnib + 1) / 2 + sp->nesc : 0);
+	posoff = total;
+	if (w->haspos)
+	{
+		total += nck * sizeof(uint32) + w->poslen;
+		info->flags |= SIFT_TERM_POS;
+		info->pos_len = total - posoff;
+	}
+	if (total > SIFT_BLOB_MAX)
+		blob_too_big();
+	info->post_len = total;
+	info->codec_len = clen;
+	sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
+	info->post_off = sift_sw_tell(w->sw);
+	memcpy(hdr + 4, &(uint32) {n}, sizeof(uint32));
+	memcpy(hdr + 8, &sp->ng, sizeof(uint32));
+	sp->poff[sp->ng] = sp->npayload;
+	sp->base[sp->ng] = n;
+	sift_sw_write(w->sw, hdr, sizeof(hdr));
+	sift_sw_write(w->sw, sp->key, (Size) sp->ng * sizeof(uint32));
+	sift_sw_write(w->sw, sp->poff, (Size) (sp->ng + 1) * sizeof(uint32));
+	sift_sw_write(w->sw, sp->base, (Size) (sp->ng + 1) * sizeof(uint32));
+	sift_sw_write_file(w->sw, sp->payload, sp->npayload);
+	sift_sw_write(w->sw, "\0\0\0", ALIGN4(clen) - clen);
+	sift_sw_write(w->sw, sp->gs, (Size) sp->ng * sizeof(SiftGroupScore));
+	sift_sw_write(w->sw, sp->rows, (Size) sp->nrows * SIFT_BLKS_PER_SB);
+	if (sp->nnib)
+	{
+		if (n % 8)
+			BufFileWrite(sp->l1, &sp->pend_l1, 1);
+		if (sp->nnib % 2)
+			BufFileWrite(sp->nib, &sp->pend_nib, 1);
+		sift_sw_write_file(w->sw, sp->l1, (n + 7) / 8);
+		sift_sw_write_file(w->sw, sp->nib, (sp->nnib + 1) / 2);
+		sift_sw_write_file(w->sw, sp->esc, sp->nesc);
+	}
+	if (w->haspos)
+	{
+		sift_sw_write_file(w->sw, sp->ckpt, nck * sizeof(uint32));
+		sift_sw_write_file(w->sw, sp->pos, w->poslen);
+	}
+	BufFileClose(sp->payload);
+	BufFileClose(sp->l1);
+	BufFileClose(sp->nib);
+	BufFileClose(sp->esc);
+	BufFileClose(sp->ckpt);
+	BufFileClose(sp->pos);
+	pfree(sp->key);
+	pfree(sp->poff);
+	pfree(sp->base);
+	pfree(sp->gs);
+	pfree(sp->rows);
+	pfree(sp);
+	w->sp = NULL;
+}
+
 void
 sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 {
-	const uint8 *out = postw_encode(w, info);
-
-	if (out)
+	if (w->sp)
+		spool_end(w, info);
+	else
 	{
-		sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
-		info->post_off = sift_sw_tell(w->sw);
-		sift_sw_write(w->sw, out, info->post_len);
+		const uint8 *out = postw_encode(w, info);
+
+		if (out)
+		{
+			sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
+			info->post_off = sift_sw_tell(w->sw);
+			sift_sw_write(w->sw, out, info->post_len);
+		}
 	}
 	w->n = 0;
 	w->poslen = 0;
@@ -899,4 +1187,67 @@ sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **re
 	*ckpt = (const uint32 *) buf;
 	*rec = buf + (Size) c->nck * sizeof(uint32);
 	*len = c->poslen - c->nck * sizeof(uint32);
+}
+
+struct SiftPosReader
+{
+	SiftPostingCursor *c;
+	uint8	   *buf;			/* the window; the records of an inline term themselves */
+	Size		cap;
+	Size		pos;			/* of the next record in the window */
+	Size		len;			/* bytes in the window */
+	uint64		next;			/* offset in the records of the byte after the window */
+	uint64		recs;			/* bytes of records */
+};
+
+#define POS_READER_WINDOW	65536
+
+SiftPosReader *
+sift_post_pos_reader(SiftPostingCursor *c, MemoryContext mcxt)
+{
+	SiftPosReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftPosReader));
+
+	r->c = c;
+	if (c->info.flags & SIFT_TERM_INLINE)
+	{
+		r->buf = (uint8 *) c->info.inline_pos;
+		r->len = r->next = r->recs = c->poslen;
+		return r;
+	}
+	r->recs = c->poslen - (uint64) c->nck * sizeof(uint32);
+	r->cap = POS_READER_WINDOW;
+	r->buf = MemoryContextAlloc(mcxt, r->cap);
+	return r;
+}
+
+const uint8 *
+sift_post_pos_next(SiftPosReader *r, uint32 *len)
+{
+	for (;;)
+	{
+		const uint8 *rec = r->buf + r->pos;
+		uint32		n,
+					last;
+		const uint8 *end = pos_next(rec, r->buf + r->len, &n, &last);
+		Size		keep = r->len - r->pos,
+					have;
+
+		if (end)
+		{
+			*len = end - rec;
+			r->pos += *len;
+			return rec;
+		}
+		if (r->next >= r->recs)
+			corrupt_pos(r->c);
+		/* the record is cut off by the window: its start moves to the front and the window is refilled (a record longer than the window grows it) */
+		if (keep == r->cap)
+			r->buf = repalloc(r->buf, r->cap *= 2);
+		memmove(r->buf, r->buf + r->pos, keep);
+		have = Min(r->recs - r->next, r->cap - keep);
+		pos_read(r->c, (uint64) r->c->nck * sizeof(uint32) + r->next, have, r->buf + keep);
+		r->next += have;
+		r->pos = 0;
+		r->len = keep + have;
+	}
 }
