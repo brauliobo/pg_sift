@@ -13,6 +13,8 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
 `make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
 runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
+`scripts/coldiff.sh` is the differential test of the aggregate pushdown, plain SQL aggregates with `sift.enable_agg` off and on, the results compared,
+with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
