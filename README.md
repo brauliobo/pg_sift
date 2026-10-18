@@ -6,14 +6,27 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018-336791)](#install)
 [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
-Fast full-text search with BM25 ranking inside PostgreSQL. pg_sift is an index type (`USING sift`) that answers boolean, phrase, prefix,
-wildcard, regex and fuzzy queries, ranks results with exact BM25 and counts matches straight from the index. It needs no external search
-server and no `shared_preload_libraries`.
+pg_sift adds two things to PostgreSQL, built on one engine and installed with one `CREATE EXTENSION pg_sift`:
 
-The same engine also runs [as a SQLite extension](#pg_sift-for-sqlite) and [as a MariaDB UDF library](#mariadb-bm25-search-as-a-udf-library).
+- **[Search](#search):** fast full-text search with BM25 ranking. An index type (`USING sift`) that answers boolean, phrase, prefix, wildcard, regex and fuzzy queries, ranks results with exact BM25 and counts matches straight from the index. It needs no external search server and no `shared_preload_libraries`.
+- **[Analytics](#analytics):** column-store speed for reports over your own tables. A column index (`USING sift_col`) or a table in column format (`USING sift_table`), and a planner step that answers `GROUP BY` aggregates from the columns. It needs no separate analytics database and no `shared_preload_libraries`.
+
+The search engine also runs [as a SQLite extension](#pg_sift-for-sqlite) and [as a MariaDB UDF library](#mariadb-bm25-search-as-a-udf-library); the column engine is PostgreSQL-only.
+
+## Overview
+
+Search:
 
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, partial and expression indexes, crash and replica safe (generic WAL).
 - **Built for search pages:** top-k ranking, filters pushed into the ranked scan, facet counts, autocomplete with field boosts.
+
+Analytics:
+
+- **Reports from columns:** `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` run on compressed columns with zone maps instead of heap rows, as `Custom Scan (SiftAgg)`.
+- **Same plain PostgreSQL:** the heap stays authoritative (MVCC, VACUUM, replicas and `pg_dump` are the table's), and a query the planner cannot prove equal keeps its normal plan; `SET sift.enable_agg = off` gives the plan PostgreSQL has without sift.
+- **Measured against the usual suspects:** PostgreSQL alone, Elasticsearch and ClickHouse on an online-store table, including updates and deletes ([benchmark](#online-store-benchmark)).
+
+On this page: [Install](#install), [Search](#search), [Analytics](#analytics), [Operations](#operations) (settings and maintenance), [More](#more), [SQLite](#pg_sift-for-sqlite), [MariaDB](#mariadb-bm25-search-as-a-udf-library).
 
 ## Install
 
@@ -36,7 +49,11 @@ Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_s
 CREATE EXTENSION pg_sift;
 ```
 
-## Quick start
+## Search
+
+Full-text search with BM25 ranking over a text column: `CREATE INDEX ... USING sift (col)`, `@@>` to match, `sift.score(ctid)` to rank. Boolean, phrase, prefix, wildcard, regex and fuzzy queries, ranked top-k with the other filters applied inside the scan, counts from the index, facets and autocomplete.
+
+### Quick start
 
 ```sql
 CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
@@ -56,7 +73,7 @@ SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3
 
 `text @@> text` matches a document against a query; without an index it runs per row with the same results, only slower.
 
-## Query language
+### Query language
 
 Words are `AND`ed; `OR`, `NOT` (upper case), parentheses, quotes and a few operators combine them:
 
@@ -68,7 +85,7 @@ SELECT id FROM docs WHERE body @@> 'batt* OR sq?eaky OR /sq.*y/ OR frendly~1';  
 SELECT id FROM docs WHERE body @@> '(case OR clip) AND friendly^3';   -- grouping and boost
 ```
 
-## Ranking and filters
+### Ranking and filters
 
 `ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips the blocks that cannot reach the top k. Other conditions of the
 query (`published >= ...`, joins) are applied inside that scan when the planner finds it cheaper, so a selective filter stays fast even
@@ -79,7 +96,41 @@ SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >=
 ORDER BY sift.score(ctid) DESC LIMIT 10;
 ```
 
-## Configuration
+## Analytics
+
+Reports over a table you already have, answered from compressed columns instead of heap rows. A `sift_col` index keeps the columns you choose once more, column by column, with zone maps; `GROUP BY` queries with `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max`, filters and `IN` lists run on it as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's, and everything else keeps its plan. The heap stays authoritative, so MVCC, VACUUM, replication and `pg_dump` work as for any table. `sift_table` is a table access method that stores the table itself in column format.
+
+### Example
+
+```sql
+CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
+CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at, (date_trunc('month', created_at)::date));
+
+SELECT category, count(*), sum(amount) FROM orders
+WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;          -- Custom Scan (SiftAgg) on orders_col
+SELECT date_trunc('month', created_at)::date AS month, count(DISTINCT customer_id), avg(amount) FROM orders
+WHERE status = 'shipped' GROUP BY 1 ORDER BY 1;                                  -- the month is an indexed expression of its own
+
+SET sift.enable_agg = off;      -- the plan PostgreSQL has without sift, to compare results and times
+CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) USING sift_table;   -- the table itself in column format
+```
+
+Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way. Column types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, `text` up to 255 bytes, and `jsonb` paths (`WITH (paths = ...)`).
+
+### Options of `sift_col` and settings of `sift_table`
+
+PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background sealing by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](docs/USAGE.md#limits) in docs/USAGE.md.
+
+| option | `sift_col` (per index) | `sift_table` (setting) |
+|---|---|---|
+| compression of the column chunks | `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, per column `'auto; col=zstd:9'`; needs `REINDEX`) | `sift.table_compression` (empty = `auto`; same grammar) |
+| size of the write segment before it is sealed | `mutable_limit` (kB, `ALTER INDEX ... SET`) | `sift.table_delta_limit` (kB) |
+| sealing while rows are inserted | not applicable (the index follows the heap) | `sift.table_inline_seal` (`on`; `off` leaves it to `VACUUM`) |
+| dead rows | `dead_rewrite_pct` (per index) | no setting in 3.0: the rule is built in |
+
+## Operations
+
+### Configuration
 
 Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
@@ -117,7 +168,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
 | `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
 | `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
-| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings (scope: docs/USAGE.md, Limits) |
+| `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings (scope: docs/USAGE.md, Limits) |
 | `sift.table_dead_rewrite_pct` | 50 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
 
 `sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
@@ -145,7 +196,7 @@ Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE
 - analyzers (stemming, accent folding), phrases and the `positions` option, several columns;
 - autocomplete: prefix indexes, `fields` and field boosts;
 - filter pushdown, partitioned tables, keyword facets, parallel scans;
-- maintenance, settings and index options, replication, limits; sizing a large index: [docs/SIZING.md](docs/SIZING.md).
+- maintenance, settings and index options, replication, limits; sizing a large index: [docs/SIZING.md](docs/SIZING.md);
 
 A proof of concept of the same engine for MariaDB (UDFs over a queue
 table, no server patches): [mariadb/README.md](mariadb/README.md).
@@ -155,6 +206,10 @@ table, no server patches): [mariadb/README.md](mariadb/README.md).
 The same engine as a SQLite loadable extension (`sift`, Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: a
 virtual table with exact BM25 and block-max top-k, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets and facets, a
 bounded page cache, and an external-content mode that indexes a table you already have. Full documentation: [sqlite/README.md](sqlite/README.md).
+
+The column engine (Analytics: `sift_col`, `sift_table`, `SiftAgg`) is PostgreSQL-only in 3.0. Its codec, encodings and kernels already compile and pass a smoke test on the
+SQLite host; a SQLite column virtual table is planned as an opt-in preview after 3.0 (with lz4 and zstd vendored). The remaining work is listed in
+[docs/COL-PORTS.md](docs/COL-PORTS.md).
 
 ```sh
 V=2.0.1   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
@@ -196,6 +251,9 @@ library for 10.11, 11.4, 11.8, 12.1 and 13.0): ranked top-k, counts, phrases, pr
 boosts, fields, filters and facets, on InnoDB tables, with results (counts, top-10 order, scores) identical to pg_sift. It is the portable
 core (`src/portable.list`) compiled unmodified over a small host in `mariadb/host/`. No storage engine, no server patch: triggers feed a
 queue, the index lives in files next to the data directory, queries see writes at once. Full guide: [mariadb/README.md](mariadb/README.md).
+
+The column engine (Analytics) is PostgreSQL-only in 3.0; a MariaDB column engine is planned for later, after a licensing check. The remaining work is listed in
+[docs/COL-PORTS.md](docs/COL-PORTS.md).
 
 ```sh
 nice make -C mariadb -j4 OUT=/tmp/sift-build               # needs the MariaDB server headers (libmariadbd-dev), no PostgreSQL
