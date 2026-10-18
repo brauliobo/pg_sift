@@ -7,7 +7,7 @@ indexes, unique constraints, foreign keys, triggers, `pg_dump`, `pg_basebackup`,
 requirement, section 5) logical replication.
 
 Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
-index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `sql/col_tam.sql`. C identifiers `sift_tbl_*`, files
+index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
 `src/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
 the table AM track; where it and the code disagree, fix one in the same commit.
 
@@ -409,8 +409,7 @@ code path of this document works on them).
 | `src/sift_visibility.c/.h` [BM25 core] | `sift_vis_nblocks` (virtual blocks for a sift_table), page filter delegated to `sift_tbl_filter_page` for a sift_table |
 | `src/sift_build.c`, `src/sift_cscan.c` [BM25 core] | the `sift` index accepts a sift_table; block counts through `sift_vis_nblocks` |
 | `src/sift_handler.c` [BM25 core] | `_PG_init` calls `sift_tbl_init` (registers the change-record resource manager when preloaded) |
-| `scripts/isolation.sh` [test tooling] | `# requires: tam` (the spec is skipped when `pg_sift_tam` cannot be created) |
-| `Makefile`, `pg_sift_tam.control`, `.gitignore` [build] | the generated `pg_sift_tam--1.0.sql` (`DATA_built`) and the second extension; to be folded into the pg_sift version script at merge time |
+| `scripts/isolation.sh` [test tooling] | `# requires: tam` (the spec is skipped when the installed pg_sift has no `sift_table` access method) |
 
 **Requests (for the owners, as notes; nothing here edits their files):**
 

@@ -1,7 +1,6 @@
 -- BM25 `sift` index on a sift_table: build, maintenance, MVCC checks of candidates (delta rows have no visibility map),
 -- agreement with the sequential scan, VACUUM, REINDEX CONCURRENTLY
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_tam;
 
 CREATE TABLE docs (id int, body text) USING sift_table;
 INSERT INTO docs SELECT g, 'order number ' || g || CASE WHEN g % 2 = 0 THEN ' express shipping' ELSE ' standard shipping' END
@@ -64,5 +63,4 @@ RESET enable_seqscan;
 CREATE INDEX CONCURRENTLY docs_bm25_c ON docs USING sift (body);
 SELECT agree('express');
 DROP TABLE docs;
-DROP EXTENSION pg_sift_tam;
 DROP EXTENSION pg_sift;

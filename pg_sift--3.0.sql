@@ -119,7 +119,6 @@ CREATE FUNCTION sift.version() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_version' LANGUAGE C STABLE;
 
 -- The sift_col index access method (docs/COL.md): a columnar index over an existing heap table.
--- Appended to the extension's install script and update script by the release that ships it.
 
 CREATE FUNCTION sift.col_handler(internal) RETURNS index_am_handler
 	AS 'MODULE_PATHNAME', 'sift_col_handler' LANGUAGE C STRICT;
@@ -167,3 +166,9 @@ CREATE FUNCTION sift.col_promote(index regclass) RETURNS int4
 
 CREATE FUNCTION sift.col_merge(index regclass, force bool DEFAULT false) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_col_merge' LANGUAGE C STRICT VOLATILE;
+
+-- The sift_table table access method (docs/COL-TAM.md): CREATE TABLE ... USING sift_table.
+CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
+	AS 'MODULE_PATHNAME', 'sift_table_handler' LANGUAGE C STRICT;
+
+CREATE ACCESS METHOD sift_table TYPE TABLE HANDLER sift.table_handler;

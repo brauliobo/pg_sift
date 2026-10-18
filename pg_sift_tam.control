@@ -1,9 +1,0 @@
-# Stand-in until sql/col_tam.sql is wired into the pg_sift version script (merge time): installs the table access method sift_table
-comment = 'sift_table: columnar table access method (docs/COL-TAM.md)'
-default_version = '1.0'
-module_pathname = '$libdir/pg_sift'
-requires = 'pg_sift'
-schema = sift
-relocatable = false
-superuser = true
-trusted = false

@@ -1,7 +1,6 @@
 -- sift_table against heap: the same statements on a heap table and a sift_table must leave identical rows. Every phase compares
 -- both ways (EXCEPT ALL), through a sequential scan and through the indexes; a mismatch prints the differing rows.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_tam;
 
 CREATE TABLE h (id int PRIMARY KEY, grp int, qty int, price numeric(10,2), tag text, doc jsonb, ts timestamptz);
 CREATE TABLE s (LIKE h INCLUDING ALL) USING sift_table;
@@ -116,5 +115,4 @@ TRUNCATE h, s;
 SELECT compare('truncate');
 
 DROP TABLE h, s;
-DROP EXTENSION pg_sift_tam;
 DROP EXTENSION pg_sift;

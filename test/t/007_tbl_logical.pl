@@ -10,14 +10,14 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-sub install_tam { $_[0]->safe_psql('postgres', 'CREATE EXTENSION IF NOT EXISTS pg_sift_tam CASCADE') }
+sub install_sift { $_[0]->safe_psql('postgres', 'CREATE EXTENSION IF NOT EXISTS pg_sift') }
 
 my $tbl = 'CREATE TABLE orders (id int PRIMARY KEY, store text, total numeric, note text)';
 
 # ---------- no preload ----------
 my $plain = sift_node('plain', allows_streaming => 'logical');
 $plain->start;
-install_tam($plain);
+install_sift($plain);
 
 subtest 'without preload an unpublished table works under wal_level = logical' => sub {
 	$plain->safe_psql('postgres', "$tbl USING sift_table");
@@ -54,13 +54,13 @@ my $pub = sift_node('publisher', allows_streaming => 'logical');
 $pub->append_conf('postgresql.conf', "shared_preload_libraries = 'pg_sift'");
 $pub->start;
 install_sift($pub);
-install_tam($pub);
+install_sift($pub);
 $pub->safe_psql('postgres', "$tbl USING sift_table; CREATE PUBLICATION pub FOR TABLE orders");
 
 my $sub = sift_node('subscriber');
 $sub->start;
 install_sift($sub);
-install_tam($sub);
+install_sift($sub);
 $sub->safe_psql('postgres', $tbl);
 $sub->safe_psql('postgres', "CREATE SUBSCRIPTION sub CONNECTION \$\$" . $pub->connstr('postgres') . "\$\$ PUBLICATION pub");
 

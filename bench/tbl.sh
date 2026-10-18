@@ -18,7 +18,7 @@ ms() { # SQL -> elapsed milliseconds
 best() { local b=999999999 v; for _ in 1 2 3; do v=$(ms "$1"); ((v < b)) && b=$v; done; echo "$b"; }
 row() { printf '%-34s heap %8s ms   sift_table %8s ms   ratio %s\n' "$1" "$2" "$3" "$(awk -v a="$2" -v b="$3" 'BEGIN { printf "%.2f", (a > 0 ? b / a : 0) }')"; }
 
-q -c "CREATE EXTENSION IF NOT EXISTS pg_sift_tam CASCADE" >/dev/null
+q -c "CREATE EXTENSION IF NOT EXISTS pg_sift" >/dev/null
 for t in b_heap b_tam; do q -c "DROP TABLE IF EXISTS $t"; done
 q -c "CREATE TABLE b_heap (id bigint, tenant_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb)"
 q -c "CREATE TABLE b_tam  (id bigint, tenant_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb) USING sift_table"

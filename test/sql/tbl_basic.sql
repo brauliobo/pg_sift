@@ -1,7 +1,6 @@
 -- sift_table: the table access method end to end in one session. DML, MVCC under rollback and savepoints, row locks,
 -- btree indexes on it, VACUUM, ANALYZE, TRUNCATE, CLUSTER-style rewrites. Differential counterpart: tbl_diff.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_tam;
 
 CREATE TABLE orders (id int, store text, total numeric, items jsonb, note text) USING sift_table;
 SELECT amname, amtype FROM pg_am WHERE amname = 'sift_table';
@@ -141,5 +140,4 @@ SELECT * FROM orders;
 REINDEX TABLE orders;
 SELECT count(*) FROM orders;
 DROP TABLE orders, uq, copy_h, p, tmp_t, heap_t;
-DROP EXTENSION pg_sift_tam;
 DROP EXTENSION pg_sift;

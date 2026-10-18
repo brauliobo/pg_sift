@@ -4,7 +4,7 @@
 
 setup
 {
-	CREATE EXTENSION IF NOT EXISTS pg_sift_tam;
+	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_tbl (id int PRIMARY KEY, v int, note text) USING sift_table;
 	INSERT INTO iso_tbl VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c');
 }
