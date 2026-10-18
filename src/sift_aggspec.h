@@ -367,6 +367,7 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
+	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */
