@@ -352,10 +352,11 @@ sift_store_removable(Relation index, FullTransactionId xid)
 FullTransactionId
 sift_store_horizon(Relation index)
 {
-	Relation	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	Relation	heap = index->rd_rel->relkind == RELKIND_INDEX ? RelationIdGetRelation(index->rd_index->indrelid) : index;
 	TransactionId oldest = GetOldestNonRemovableTransactionId(heap);
 
-	RelationClose(heap);
+	if (heap != index)
+		RelationClose(heap);
 	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
 }
 
