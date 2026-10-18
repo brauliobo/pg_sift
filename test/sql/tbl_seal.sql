@@ -8,7 +8,7 @@ CREATE TABLE h (LIKE s INCLUDING ALL) USING heap;
 CREATE INDEX s_i2 ON s (i2, i8);
 CREATE INDEX h_i2 ON h (i2, i8);
 
-CREATE FUNCTION fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
+CREATE FUNCTION seal_fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 	INSERT INTO s SELECT g, CASE WHEN g % 17 = 0 THEN NULL ELSE (g % 300)::int2 END, g * 1000003::int8 % 99991, (g % 977) / 8.0,
 		CASE WHEN g % 31 = 0 THEN NULL WHEN g % 29 = 0 THEN 'NaN' WHEN g % 23 = 0 THEN 'Infinity' ELSE g::numeric / 7 * 1e10 END,
 		CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 100) / 4.0 END, CASE g % 41 WHEN 0 THEN '-0' WHEN 1 THEN 'NaN' WHEN 2 THEN '-Infinity' ELSE g / 3.0 END,
@@ -20,7 +20,7 @@ CREATE FUNCTION fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 	INSERT INTO h SELECT * FROM s WHERE id BETWEEN lo AND hi;
 $$;
 
-CREATE FUNCTION compare(what text) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION seal_compare(what text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	a bigint; b bigint; ia text; ib text; ba text; bb text;
 BEGIN
@@ -37,14 +37,14 @@ BEGIN
 	RETURN what || ': ' || CASE WHEN a = 0 AND b = 0 AND ia = ib AND ba = bb THEN 'same' ELSE format('DIFFERENT s-h=%s h-s=%s index %s vs %s bitmap %s vs %s', a, b, ia, ib, ba, bb) END;
 END $$;
 
-CREATE FUNCTION layout() RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION seal_layout() RETURNS text LANGUAGE sql AS $$
 	SELECT string_agg(kind || ' x' || n, ', ' ORDER BY kind) FROM (SELECT kind, count(*) n FROM sift.table_segments('s') GROUP BY kind) x
 $$;
 
-SELECT fill(1, 3000);
-SELECT compare('bulk insert'), layout();
+SELECT seal_fill(1, 3000);
+SELECT seal_compare('bulk insert'), seal_layout();
 VACUUM s;
-SELECT compare('sealed by VACUUM'), layout();
+SELECT seal_compare('sealed by VACUUM'), seal_layout();
 
 -- point reads of sealed rows by every access path
 SELECT s::text = h::text AS same FROM s JOIN h USING (id) WHERE id IN (1, 41, 42, 1500, 2999, 3000) ORDER BY id;
@@ -56,14 +56,14 @@ UPDATE s SET w = 'upd', i8 = i8 + 1 WHERE id % 7 = 0;
 UPDATE h SET w = 'upd', i8 = i8 + 1 WHERE id % 7 = 0;
 DELETE FROM s WHERE id % 5 = 0;
 DELETE FROM h WHERE id % 5 = 0;
-SELECT compare('update and delete of sealed rows'), layout();
+SELECT seal_compare('update and delete of sealed rows'), seal_layout();
 -- an aborted change and a savepoint
 BEGIN; DELETE FROM s WHERE id < 100; ROLLBACK;
 BEGIN; SAVEPOINT a; UPDATE s SET i8 = 0 WHERE id BETWEEN 10 AND 20; ROLLBACK TO a; COMMIT;
-SELECT compare('aborted changes');
+SELECT seal_compare('aborted changes');
 
 VACUUM s;
-SELECT compare('VACUUM clears the dead rows'), layout();
+SELECT seal_compare('VACUUM clears the dead rows'), seal_layout();
 SELECT sum(dead_rows) > 0 AS dead_rows_counted FROM sift.table_segments('s') WHERE kind = 'columns';
 
 -- statistics
@@ -71,21 +71,21 @@ ANALYZE s;
 SELECT reltuples::int = (SELECT count(*) FROM s) AS reltuples_exact FROM pg_class WHERE relname = 's';
 
 -- more rows, more segments, merged
-SELECT fill(3001, 4000);
+SELECT seal_fill(3001, 4000);
 UPDATE s SET vc = 'again' WHERE id > 3500;
 UPDATE h SET vc = 'again' WHERE id > 3500;
 VACUUM s;
-SELECT fill(4001, 4500);
+SELECT seal_fill(4001, 4500);
 VACUUM s;
-SELECT fill(4501, 5000);
+SELECT seal_fill(4501, 5000);
 VACUUM s;
-SELECT compare('segments added'), layout();
+SELECT seal_compare('segments added'), seal_layout();
 
 -- segments that are mostly dead are rewritten without their dead rows
 DELETE FROM s WHERE id % 10 <> 0 AND id > 1000;
 DELETE FROM h WHERE id % 10 <> 0 AND id > 1000;
 VACUUM s;
-SELECT compare('mostly dead segments merged'), layout();
+SELECT seal_compare('mostly dead segments merged'), seal_layout();
 SELECT sum(dead_rows) AS dead_rows, sum(rows) = (SELECT count(*) FROM s) AS rows_live FROM sift.table_segments('s') WHERE kind = 'columns';
 
 -- special values survive exactly
@@ -94,29 +94,29 @@ SELECT id, r8::text, r4::text, nu::text, length(w), t IS NULL AS tnull FROM s WH
 -- rewrites
 VACUUM FULL s;
 VACUUM FULL h;
-SELECT compare('VACUUM FULL'), layout();
+SELECT seal_compare('VACUUM FULL'), seal_layout();
 CLUSTER s USING s_i2;
 CLUSTER h USING h_i2;
-SELECT compare('CLUSTER'), layout();
+SELECT seal_compare('CLUSTER'), seal_layout();
 
 -- ALTER TABLE after sealing: old segments keep their layout
 VACUUM s;
 ALTER TABLE s ADD COLUMN extra int DEFAULT 7;
 ALTER TABLE h ADD COLUMN extra int DEFAULT 7;
-SELECT compare('add column'), (SELECT count(*) FROM s WHERE extra = 7) AS defaulted;
+SELECT seal_compare('add column'), (SELECT count(*) FROM s WHERE extra = 7) AS defaulted;
 ALTER TABLE s DROP COLUMN w;
 ALTER TABLE h DROP COLUMN w;
-SELECT compare('drop column');
+SELECT seal_compare('drop column');
 INSERT INTO s SELECT id + 100000, i2, i8, n, nu, r4, r8, d, ts, b, t, vc, c, y, u, j, a, iv, o, 9 FROM s WHERE id < 50;
 INSERT INTO h SELECT id + 100000, i2, i8, n, nu, r4, r8, d, ts, b, t, vc, c, y, u, j, a, iv, o, 9 FROM h WHERE id < 50;
 VACUUM s;
-SELECT compare('new layout beside the old one'), layout();
+SELECT seal_compare('new layout beside the old one'), seal_layout();
 ALTER TABLE s ALTER COLUMN i8 TYPE numeric;
 ALTER TABLE h ALTER COLUMN i8 TYPE numeric;
-SELECT compare('type change rewrites');
+SELECT seal_compare('type change rewrites');
 
 TRUNCATE s;
-SELECT count(*), layout() FROM s;
+SELECT count(*), seal_layout() FROM s;
 DROP TABLE s, h;
-DROP FUNCTION fill(int, int), compare(text), layout();
+DROP FUNCTION seal_fill(int, int), seal_compare(text), seal_layout();
 DROP EXTENSION pg_sift;
