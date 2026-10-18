@@ -65,12 +65,13 @@ page it reads. With 200,000 documents and a quarter of the rows deleted and vacu
 | ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
 | ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
 | unranked scan with a filter | 0.57 | 2.11 | 0.65 |
-| `count(*)` of a term | 0.019 | 1.82 | 0.05 |
+| `count(*)` of a term | 0.019 | 1.82 | 0.06 |
 
-A `count(*)` over dirty superblocks spreads the liveness bits over the pages' offsets, where a clean superblock adds chunk counts without
-decoding a page. Measured in user instructions per query (the same data, 10 to 45% deleted and vacuumed; the cost does not depend on
-the dead fraction), the count of a term costs 7.7 times the clean index's until the segment is rewritten (19.7 times with 2.0.0), the
-count of two terms 1.4 to 2.3 times (2.7 to 4.3) and of three with OR 1.4 to 2.2 times (4.1 to 6.2); superblocks without vacuumed
+A `count(*)` over dirty superblocks cuts a group out of the liveness bits in one pass, where a clean superblock adds chunk counts without
+decoding a page. Measured in user instructions per query against the same live rows rebuilt (200,000 documents, 10, 25 and 45% deleted
+and vacuumed), until the segment is rewritten the count of a term costs 6.6 to 6.7 times the clean index's (18.5 to 18.6 times with 2.0.0), the
+count of two terms 1.7 to 2.3 times (3.5 to 4.4) and of three with OR 1.5 to 2.1 times (4.5 to 6.2). That gap remains: closing it needs
+a change of the on-disk format, which is not part of this release. Superblocks without vacuumed
 documents inside a dirty segment cost nothing extra. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
 liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
 
