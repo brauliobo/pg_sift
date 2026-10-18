@@ -204,11 +204,12 @@ main(int argc, char **argv)
 {
 	double		thousands = argc > 1 ? atof(argv[1]) : 20;
 
-	ak_cpu_init();
+	kt_cpu_init();
+	sift_aggkern_init();
 	tabs[ntabs++] = (Tab) {"scalar", &sift_aggkern_scalar};
 	for (SiftSimdLevel l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_AVX512; l++)
 		if (sift_aggkern_for(l) != tabs[ntabs - 1].k)
-			tabs[ntabs++] = (Tab) {ak_level_name[l], sift_aggkern_for(l)};
+			tabs[ntabs++] = (Tab) {kt_level_name[l], sift_aggkern_for(l)};
 	printf("levels:");
 	for (int t = 0; t < ntabs; t++)
 		printf(" %s", tabs[t].name);

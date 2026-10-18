@@ -21,32 +21,9 @@ extern double alt_sum_f64_plain(const double *v, const uint64 *mask, int n);
 #define N			SIFT_AGG_VEC
 #define NW			SIFT_AGG_VECW
 
-static double
-now_ns(void)
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	return t.tv_sec * 1e9 + t.tv_nsec;
-}
-
-/* Best ns per evaluation of expr: batches of >= 50 us, minimum over 200 batches, AK_BATCHES to change (the host runs unrelated load) */
-#define BENCH(expr) ({ \
-	long		reps_ = 1; \
-	double		best_ = 1e300; \
-	for (;;) { \
-		double t0_ = now_ns(); \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; __asm__ volatile ("" ::: "memory"); } \
-		if (now_ns() - t0_ > 5e4) break; \
-		reps_ *= 2; \
-	} \
-	for (int r_ = 0; r_ < nbatch; r_++) { \
-		double t0_ = now_ns(), d_; \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; __asm__ volatile ("" ::: "memory"); } \
-		d_ = (now_ns() - t0_) / reps_; \
-		best_ = d_ < best_ ? d_ : best_; \
-	} \
-	best_; })
+/* Batches of >= 50 us, minimum over nbatch batches (AK_BATCHES to change), a compiler barrier after every evaluation */
+#undef BENCH
+#define BENCH(expr) BENCH_EX(expr, 5e4, nbatch, __asm__ volatile ("" ::: "memory"))
 
 static SiftRng rng;
 static int	nbatch = 200;
@@ -122,7 +99,8 @@ main(void)
 	CPU_ZERO(&set);
 	CPU_SET(cpu, &set);
 	sched_setaffinity(0, sizeof(set), &set);
-	ak_cpu_init();
+	kt_cpu_init();
+	sift_aggkern_init();
 	nbatch = getenv("AK_BATCHES") ? atoi(getenv("AK_BATCHES")) : nbatch;
 	sift_rng_seed(&rng, 42);
 	i32 = arr(N * 4);
@@ -149,7 +127,7 @@ main(void)
 		if (l == 0 || sift_aggkern_for(l) != levels[nlevels - 1])
 		{
 			levels[nlevels] = sift_aggkern_for(l);
-			lname[nlevels++] = ak_level_name[l];
+			lname[nlevels++] = kt_level_name[l];
 		}
 
 	for (int i = 0; i < N; i++)

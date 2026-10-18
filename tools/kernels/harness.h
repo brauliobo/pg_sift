@@ -38,25 +38,26 @@ now_ns(void)
 }
 
 /*
- * Best ns per evaluation of expr: batches of >= 20 us, minimum over 300
- * batches (the host runs unrelated load; the minimum filters preemption).
+ * Best ns per evaluation of expr: batches of >= window_ns, minimum over nbatch batches (the host runs unrelated load; the minimum
+ * filters preemption); fence runs after every evaluation.
  */
-#define BENCH(expr) ({ \
+#define BENCH_EX(expr, window_ns, nbatch, fence) ({ \
 	long		reps_ = 1; \
 	double		best_ = 1e300; \
 	for (;;) { \
 		double t0_ = now_ns(); \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; } \
-		if (now_ns() - t0_ > 2e4) break; \
+		for (long i_ = 0; i_ < reps_; i_++) { expr; fence; } \
+		if (now_ns() - t0_ > (window_ns)) break; \
 		reps_ *= 2; \
 	} \
-	for (int r_ = 0; r_ < 300; r_++) { \
+	for (int r_ = 0; r_ < (nbatch); r_++) { \
 		double t0_ = now_ns(), d_; \
-		for (long i_ = 0; i_ < reps_; i_++) { expr; } \
+		for (long i_ = 0; i_ < reps_; i_++) { expr; fence; } \
 		d_ = (now_ns() - t0_) / reps_; \
 		best_ = d_ < best_ ? d_ : best_; \
 	} \
 	best_; })
+#define BENCH(expr) BENCH_EX(expr, 2e4, 300, (void) 0)
 
 /* One line of a benchmark table: lanes per call, bytes touched per lane (bench.c) */
 extern void row(const char *kernel, const char *scen, const char *lvl, double ns, double lanes, double bytes);
