@@ -3,20 +3,41 @@
 # (milliseconds, best of 3 for reads; the writes run once), and the relation sizes.
 #
 #   bench/tbl.sh [ROWS]        (default 1000000; start the cluster first: scripts/pgtest.sh install && scripts/pgtest.sh start)
+#   TBL_IC=1 bench/tbl.sh ROWS the same with the user-space instructions (millions, perf stat on the postmaster and the processes it forks,
+#                              one session's cost subtracted, no parallel workers) instead of milliseconds: stable on a busy host
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ROWS=${1:-1000000}
 q() { "$REPO/scripts/pgtest.sh" psql -X -qAt "$@"; }
-ms() { # SQL -> elapsed milliseconds
-	local t0 t1
-	t0=$(date +%s%N)
-	q -c "$1" >/dev/null
-	t1=$(date +%s%N)
-	echo $(((t1 - t0) / 1000000))
-}
+UNIT=ms
+if [[ -n ${TBL_IC:-} ]]; then
+	UNIT=Minstr
+	export PGOPTIONS='-c max_parallel_workers_per_gather=0'
+	PM=$(head -1 "${SIFT_TMP:-/tmp/sift-arch}/data/postmaster.pid")
+	ms() { # SQL -> millions of user instructions of the server processes
+		local out
+		out=$(mktemp)
+		perf stat -x, -e instructions:u -p "$PM" -o "$out" &
+		local pp=$!
+		sleep 0.2
+		q -c "$1" >/dev/null
+		kill -INT "$pp"
+		wait "$pp" || true
+		awk -F, '/instructions/ { printf "%d", $1 / 1e6 }' "$out"
+		rm -f "$out"
+	}
+else
+	ms() { # SQL -> elapsed milliseconds
+		local t0 t1
+		t0=$(date +%s%N)
+		q -c "$1" >/dev/null
+		t1=$(date +%s%N)
+		echo $(((t1 - t0) / 1000000))
+	}
+fi
 best() { local b=999999999 v; for _ in 1 2 3; do v=$(ms "$1"); ((v < b)) && b=$v; done; echo "$b"; }
-row() { printf '%-34s heap %8s ms   sift_table %8s ms   ratio %s\n' "$1" "$2" "$3" "$(awk -v a="$2" -v b="$3" 'BEGIN { printf "%.2f", (a > 0 ? b / a : 0) }')"; }
+row() { printf '%-34s heap %8s %s   sift_table %8s %s   ratio %s\n' "$1" "$2" "$UNIT" "$3" "$UNIT" "$(awk -v a="$2" -v b="$3" 'BEGIN { printf "%.2f", (a > 0 ? b / a : 0) }')"; }
 
 q -c "CREATE EXTENSION IF NOT EXISTS pg_sift" >/dev/null
 for t in b_heap b_tam; do q -c "DROP TABLE IF EXISTS $t"; done
