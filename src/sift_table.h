@@ -438,4 +438,20 @@ extern PGDLLIMPORT char *sift_tbl_compression_spec;
 /* Registers sift.table_delta_limit, sift.table_inline_seal and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
 
+/* ---------- rewrites and dead rows (sift_table_seg.c) ---------- */
+
+/*
+ * The new table of a rewrite written as column segments directly: the rows get dense TIDs in the order they are added; finish
+ * publishes the segments in one directory change. The table is private to the rewrite.
+ */
+typedef struct SiftTblBulk SiftTblBulk;
+/* Does the rewrite keep the stored version rv (rv->tuple unset)? */
+typedef bool (*SiftTblKeep) (const SiftTblRowVer *rv, void *arg);
+extern SiftTblBulk *sift_tbl_bulk_begin(Relation rel, SiftTblRel *st);
+extern void sift_tbl_bulk_tuple(SiftTblBulk *b, HeapTuple tup);
+/* Every version of old that keep accepts, the rows of its column units re-keyed without forming tuples; false (nothing added) when a
+ * column segment of old has another layout than the new table */
+extern bool sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep keep, void *arg);
+extern void sift_tbl_bulk_finish(SiftTblBulk *b);
+
 #endif							/* SIFT_TABLE_H */
