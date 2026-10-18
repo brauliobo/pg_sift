@@ -11,8 +11,6 @@ use Test::More;
 
 my $rows = knob('SIFT_ROWS', 20000, 3000);
 
-sub install_sift { $_[0]->safe_psql($_[1] // 'postgres', 'CREATE EXTENSION IF NOT EXISTS pg_sift') }
-
 # row count and a digest of every column, the same query on every node
 sub digest
 {
@@ -49,7 +47,6 @@ sub workload
 # ---------- crash recovery ----------
 my $node = sift_node('crash');
 $node->start;
-install_sift($node);
 install_sift($node);
 
 subtest 'committed work survives an immediate shutdown' => sub {
@@ -102,7 +99,6 @@ $node->stop;
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->start;
 install_sift($primary);
-install_sift($primary);
 $primary->backup('base');
 my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
@@ -151,7 +147,6 @@ my $minimal = sift_node('minimal');
 $minimal->append_conf('postgresql.conf', "wal_level = minimal\nmax_wal_senders = 0");
 $minimal->start;
 install_sift($minimal);
-install_sift($minimal);
 
 for my $threshold ('0', '1GB')
 {
@@ -174,7 +169,6 @@ $minimal->stop;
 # ---------- pg_dump / pg_restore ----------
 my $src = sift_node('dump_src');
 $src->start;
-install_sift($src);
 install_sift($src);
 $src->safe_psql('postgres', q{
 	CREATE TABLE d_orders (id int PRIMARY KEY, store text, total numeric, items jsonb, note text) USING sift_table;
