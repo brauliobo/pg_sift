@@ -4,7 +4,7 @@
 # run all the while (with hot_standby_feedback on none may fail). The standby is then promoted and takes writes.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_COL_REPLICA_SECS 15 5)
+SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 8
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4

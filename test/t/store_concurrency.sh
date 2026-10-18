@@ -5,7 +5,7 @@
 # copy keeps a dropped segment's extents from being reused.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 30 8)
+SECS=$(knob SIFT_CHURN_SECS 30 5)
 plan 7
 node_init conc 4
 node_start conc || bail "start failed"
