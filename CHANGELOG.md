@@ -47,13 +47,17 @@ For each chunk it picks, from exact sizes, the
   prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
   callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
 
-- Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began. The scan read
-  the liveness of a unit (from the directory it copied at the start, or from a cached flag) before the all-visible mask of the unit's heap
-  pages; a `VACUUM` in between removed the dead tuples and turned their pages all-visible, so their stale index rows passed as visible
-  (found by the differential suite under the sanitizer, 280 against 218 orders). The mask is now read first and the dirty flag of the unit
-  from its LIVE page after it; rows of the mutable lane, a copy made when the scan begins, are always
-  checked against the heap. Tests: `col_vacuum_scan` (a VACUUM, DML, promote and merge between the open and the reads of a scan) and the
-  `soak-col` job (`scripts/colsoak.sh`).
+- Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began (found by the
+  differential suite under the sanitizer: 280 against 218 orders, and by the `soak-col` job). The scan took "live in the index" on an
+  "all-visible" heap page for "visible", and the two facts were read in the wrong order or from the wrong generation: the liveness of a unit
+  came from the directory the scan copied at its start (or a cached flag) while the VM was read later, after a `VACUUM` had removed the dead
+  tuples and made their pages all-visible; a merge that replaced the scan's segments meant that no later `VACUUM` pass reached them at all;
+  and the mutable lane is a copy made when the scan begins. The all-visible mask is now read first and the unit's dirty flag from its LIVE
+  page after it, the shortcut is dropped once a segment of the scan's copy has left the directory, and rows of the mutable lane are always
+  checked against the heap. Tests: `col_vacuum_scan` (a VACUUM, a merge, DML and promotion between the
+  open and the reads of a scan) and the `soak-col` job (`scripts/colsoak.sh`). Present in `v3` as well. The BM25 count path
+  (`sift_eval.c`: the dirty flags of a segment copied at its open, the all-visible mask read later) has a similar read order and is not
+  changed here; it needs the same check.
 
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.

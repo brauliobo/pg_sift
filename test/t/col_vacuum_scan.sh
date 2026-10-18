@@ -2,11 +2,11 @@
 # A VACUUM that runs while a sift_col scan is open (after its snapshot and directory, before it reads the units). The scan must return exactly
 # the rows its snapshot sees: a tuple deleted before the snapshot and removed by that VACUUM is not one of them, however the VACUUM leaves
 # the heap pages (all-visible) and the liveness of the unit. Stored units, a unit that was already dirty,
-# the mutable lane, and the lane next to stored units. The scan (sift._test_col_tids, flag 4) waits for an advisory lock after it opens, which the test holds
-# until the VACUUM is done: no timing involved.
+# segments that a merge replaced before the VACUUM, the mutable lane, and the lane next to stored units. The scan (sift._test_col_tids,
+# flag 4) waits for an advisory lock after it opens, which the test holds until the statements are done: no timing involved.
 . "$(dirname "$0")/lib.bash"
 
-plan 8
+plan 11
 node_init vs 14 "autovacuum = off"
 node_start vs || bail "start failed"
 D=$(dir vs)
@@ -49,6 +49,18 @@ sql vs "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, 
 race dirty
 check "dirty units: the scan returns the rows of its snapshot" test "$(differ dirty)" == 0
 check "dirty units: the index verifies" test "$(sql vs "SELECT sift.col_verify('dirty_idx', true)" 2>&1)" == ""
+
+# a merge replaces the segments of the scan's directory copy before the VACUUM: the VACUUM flags the merged segment, never the ones the scan reads
+# (the index is built empty, the inserts fill small mutable segments, which are promoted: several immutable segments)
+IMM="SELECT count(*) FROM sift.col_segments('merged_idx') WHERE kind = 'immutable'"
+sql vs "CREATE TABLE merged (id int, g int, n int)" "CREATE INDEX merged_idx ON merged USING sift_col (id, g, n) WITH (mutable_limit = 64)" \
+	"INSERT INTO merged SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM merged" "DELETE FROM merged WHERE id % 5 = 0" >/dev/null || bail "setup merged failed"
+before=$(sql vs "$IMM")
+[[ $before -gt 1 ]] || bail "the index has $before immutable segments: nothing to merge"
+race merged "SELECT sift.col_merge('merged_idx', true)" "VACUUM merged"
+check "merged segments: the merge replaced the segments under the scan" test "$(sql vs "$IMM")" -lt "$before"
+check "merged segments: the scan returns the rows of its snapshot" test "$(differ merged)" == 0
+check "merged segments: the index verifies" test "$(sql vs "SELECT sift.col_verify('merged_idx', true)" 2>&1)" == ""
 
 # the mutable lane, and the lane next to stored units
 sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (mutable_limit = 65536)" \

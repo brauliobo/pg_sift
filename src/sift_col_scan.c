@@ -7,6 +7,7 @@
 
 #include "common/pg_prng.h"
 
+#include "access/htup_details.h"
 #include "access/xact.h"
 #include "miscadmin.h"
 #include "utils/rls.h"
@@ -20,6 +21,7 @@
 #include "sift_col_am.h"
 #include "sift_popcount.h"
 #include "sift_col_pagg.h"
+#include "sift_estimate.h"
 #include "sift_col_seg.h"
 #include "sift_visibility.h"
 
@@ -43,6 +45,7 @@ typedef struct ColCursor
 
 #ifdef SIFT_TESTING
 int			sift_test_col_jitter_us = 0;
+bool		sift_test_col_paranoid = false;
 
 void
 sift_col_jitter(void)
@@ -131,6 +134,8 @@ struct SiftColSource
 	uint32		flags;
 	const SiftColSchema *schema;
 	SiftDirSnapshot dir;
+	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
+	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
 	int			nseg;
@@ -248,6 +253,8 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 		PredicateLockRelation(heap, snapshot);
 	src->snap = RegisterSnapshot(snapshot);
 	sift_dir_read(index, &src->dir);
+	src->dir_checked = src->dir.version;
+	src->dir_current = true;
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -647,6 +654,37 @@ unit_keys(ColUnit *cu)
 	return cu->keys;
 }
 
+/*
+ * Whether every immutable segment the source opened is still in the directory. A merge replaces its inputs with an output that has the liveness
+ * of its moment; the VACUUM passes after it flag the output, never the inputs, which a scan holding the older directory copy still reads. Such a
+ * scan must not take "live on an all-visible page" for "visible": the all-visible bit may have been set by a pass that never reached its
+ * segments. While the segments are current, every pass that finished before the mask was read ran on them (a pass and a merge exclude each
+ * other by the maintenance lock) and the liveness read after the mask shows it.
+ */
+static bool
+segments_current(SiftColSource *src)
+{
+	uint32		v = sift_dir_version(src->index);
+
+	if (v != src->dir_checked)
+	{
+		SiftDirSnapshot now;
+
+		sift_dir_read(src->index, &now);
+		src->dir_current = true;
+		for (int i = 0; i < src->dir.nsegs && src->dir_current; i++)
+		{
+			bool		found = src->dir.segs[i].kind != SIFT_SEG_IMMUTABLE;
+
+			for (int j = 0; j < now.nsegs && !found; j++)
+				found = now.segs[j].gen == src->dir.segs[i].gen;
+			src->dir_current = found;
+		}
+		src->dir_checked = v;
+	}
+	return src->dir_current;
+}
+
 static const uint64 *
 unit_allvisible(ColUnit *cu)
 {
@@ -656,6 +694,9 @@ unit_allvisible(ColUnit *cu)
 		 * and made their pages all-visible: no page of a lane batch is taken as all-visible, so its rows are checked against the heap */
 		if (!cu->lane)
 			cu->src->visibility.sb_mask(cu->src->visibility.arg, cu->sb, cu->av);
+		/* the directory is checked after the mask, as the liveness is */
+		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+			memset(cu->av, 0, sizeof(cu->av));
 		cu->av_ready = true;
 	}
 	return cu->av;
@@ -958,6 +999,37 @@ sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColS
 
 /* ---------- MVCC ---------- */
 
+#ifdef SIFT_TESTING
+/* Testing (sift.test_col_paranoid): what the heap holds at the TID of a row that the all-visible shortcut would have counted */
+static void
+paranoid_report(SiftColSource *src, const ColUnit *cu, BlockNumber blk, OffsetNumber off)
+{
+	Buffer		buf = ReadBuffer(src->heap, blk);
+	Page		page;
+	ItemId		lp;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	lp = off <= PageGetMaxOffsetNumber(page) ? PageGetItemId(page, off) : NULL;
+	if (lp != NULL && ItemIdIsNormal(lp))
+	{
+		HeapTupleHeader th = (HeapTupleHeader) PageGetItem(page, lp);
+
+		elog(LOG, "sift_col paranoid: (%u,%u) %s unit sb %u gen %llu: tuple xmin %u xmax %u infomask %x ctid (%u,%u); snapshot %u:%u; page all-visible flag %d",
+			 blk, off, cu->lane ? "lane" : "stored", cu->sb, cu->seg ? (unsigned long long) cu->seg->entry.gen : 0ULL,
+			 HeapTupleHeaderGetRawXmin(th), HeapTupleHeaderGetRawXmax(th), th->t_infomask,
+			 ItemPointerGetBlockNumber(&th->t_ctid), ItemPointerGetOffsetNumber(&th->t_ctid), src->snap->xmin, src->snap->xmax,
+			 PageIsAllVisible(page));
+	}
+	else
+		elog(LOG, "sift_col paranoid: (%u,%u) %s unit sb %u gen %llu: line pointer %s; snapshot %u:%u; page all-visible flag %d", blk, off,
+			 cu->lane ? "lane" : "stored", cu->sb, cu->seg ? (unsigned long long) cu->seg->entry.gen : 0ULL,
+			 lp == NULL ? "past the page" : ItemIdIsDead(lp) ? "dead" : ItemIdIsRedirected(lp) ? "redirect" : "unused",
+			 src->snap->xmin, src->snap->xmax, PageIsAllVisible(page));
+	UnlockReleaseBuffer(buf);
+}
+#endif
+
 bool
 sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 {
@@ -969,6 +1041,9 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	PageWalk	pw;
 
 	SIFT_COL_JITTER();
+#ifdef SIFT_TESTING
+	if (!sift_test_col_paranoid)	/* the paranoid check reads the heap under every all-visible page */
+#endif
 	if (sift_col_unit_allvisible(unit))
 		return sift_col_sel_count(sel) > 0;
 	pw_init(&pw, &cu->v);
@@ -979,8 +1054,16 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 					hi = cu->v.rowstart[p + 1],
 					n = 0;
 		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
+		bool		allvis = sift_col_bit_test(av, blk & (SIFT_SB_PAGES - 1));
 
-		if (sift_col_bit_test(av, blk & (SIFT_SB_PAGES - 1)) || !range_any(sel->bits, lo, hi))
+#ifdef SIFT_TESTING
+		if (allvis && sift_test_col_paranoid)
+			allvis = false;		/* checked like the others, and reported below */
+		else
+#endif
+		if (allvis)
+			continue;
+		if (!range_any(sel->bits, lo, hi))
 			continue;
 		if (keys == NULL)
 			keys = unit_keys(cu);
@@ -998,7 +1081,17 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		vis->filter_page(vis->arg, blk, offmask);
 		for (uint32 r = lo; r < hi; r++)
 			if (sift_col_bit_test(sel->bits, r) && !sift_col_bit_test(offmask, (keys[r] & 0xFFFF) - 1))
+			{
+#ifdef SIFT_TESTING
+				if (sift_test_col_paranoid && sift_col_bit_test(av, blk & (SIFT_SB_PAGES - 1)))
+				{
+					/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
+					paranoid_report(src, cu, blk, (OffsetNumber) (keys[r] & 0xFFFF));
+					continue;
+				}
+#endif
 				sift_col_bit_clear(sel->bits, r);
+			}
 	}
 	if (vis->counters)
 	{
