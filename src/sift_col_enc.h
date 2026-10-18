@@ -260,12 +260,15 @@ typedef struct SiftCUnitView
 	uint32		nrows;
 	uint32		npages;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
+	uint8		page[SIFT_SB_PAGES];	/* page within the superblock of the p-th page of the unit: the set bits of pagemask, in order */
 	const uint32 *rowstart;		/* npages + 1 (unaligned access is avoided by the parser copying when needed) */
 	const uint16 *maxoff;
 	const uint8 *sparse;
 	const uint32 *chunk_off;
 	const uint32 *chunk_len;
 } SiftCUnitView;
+
+_Static_assert(SIFT_SB_PAGES <= 256, "SiftCUnitView.page holds page numbers in a byte");
 
 /* false when inconsistent (the caller raises ERRCODE_INDEX_CORRUPTED); rec must stay valid and be 8-byte aligned */
 extern bool sift_cunit_parse(const uint8 *rec, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);

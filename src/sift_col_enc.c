@@ -1360,8 +1360,19 @@ sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst)
 void
 sift_cchunk_decode_f8(const SiftCChunk *c, double *dst)
 {
-	sift_cchunk_decode(c, (int64 *) dst);
-	sift_colk->f8_from_keys((int64 *) dst, c->n);
+	if (c->enc == SIFT_COLENC_CC)
+	{
+		SiftCc	   *cc = cc_open(c, false);
+
+		sift_cc_decode_f8(cc, dst);
+		sift_cc_close(cc);
+		ZERO_NULLS(c->nulls, c->n, dst);
+	}
+	else
+	{
+		sift_cchunk_decode(c, (int64 *) dst);
+		sift_colk->f8_from_keys((int64 *) dst, c->n);
+	}
 }
 
 void
@@ -2302,6 +2313,9 @@ unit_parse(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *sche
 	v->schema = schema;
 	v->nrows = head[1];
 	v->npages = np;
+	for (uint32 w = 0, p = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		for (uint64 m = v->pagemask[w]; m; m &= m - 1)
+			v->page[p++] = (uint8) (w * 64 + pg_rightmost_one_pos64(m));
 	if (pos + (uint64) (np + 1) * 4 + (uint64) np * 2 > avail)
 		return false;
 	v->rowstart = (const uint32 *) (rec + pos);
@@ -2366,26 +2380,13 @@ sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c)
 	return true;
 }
 
-/* The p-th set bit of the page mask: the page of the superblock */
+/* The p-th set bit of the page mask: the page of the superblock (the table is built when the unit is parsed) */
 static uint32
 unit_page(const SiftCUnitView *v, uint32 p)
 {
-	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-	{
-		uint32		c = sift_pc64(v->pagemask[w]);
-		uint64		m = v->pagemask[w];
-
-		if (p >= c)
-		{
-			p -= c;
-			continue;
-		}
-		for (; p > 0; p--)
-			m &= m - 1;
-		return w * 64 + pg_rightmost_one_pos64(m);
-	}
-	elog(ERROR, "sift_col: page index %u is outside the unit", p);
-	return 0;
+	if (p >= v->npages)
+		elog(ERROR, "sift_col: page index %u is outside the unit", p);
+	return v->page[p];
 }
 
 BlockNumber
