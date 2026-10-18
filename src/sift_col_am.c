@@ -92,6 +92,9 @@ sift_col_init(void)
 	add_int_reloption(col_relopt_kind, "mutable_limit",
 					  "Mutable segment size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_MUTABLE_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
+					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (100 never)",
+					  SIFT_COL_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "paths",
 						 "jsonb paths shredded into columns, by index attribute name",
 						 "", NULL, AccessExclusiveLock);
@@ -110,6 +113,7 @@ col_amoptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, mutable_limit)},
+		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
 		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
 		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
@@ -121,7 +125,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT};
+	static const SiftColOptions defaults = {.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
