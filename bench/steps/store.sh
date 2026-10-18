@@ -10,7 +10,8 @@
 #   report  the tables of bench/results/store.json into the generated blocks, without measuring
 #   table [FILE], gap [FILE]  the warm medians / the gap tables (pg_sift against ClickHouse and Elasticsearch) of a results file; compare A B  two results files side by side
 # Settings come from bench/bench as S_* variables: S_SIZES (orders, comma separated), S_CPUS, S_MEMORY, S_RUNS, S_COLD (cold runs, 0 = none),
-# S_ENGINES, S_QUERIES, S_PORT, S_NAME, S_DATA, S_UPDATE_SIZES (sizes that also get the updates run, default the first; none = no updates). Images are pinned in bench/versions.env.
+# S_ENGINES, S_QUERIES, S_PORT, S_NAME, S_DATA, S_UPDATE_SIZES (sizes that also get the updates run, default the first; none = no updates),
+# S_COMPRESSION (the pg_sift `compression` variants as lanes, the size of every system with its other compression settings; results in store-compression.json). Images are pinned in bench/versions.env.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -50,21 +51,24 @@ EOF
   rm -rf "$ctx"
 }
 
+want() { [[ -z ${S_ENGINES:-} || ,$S_ENGINES, == *,$1* ]]; }   # a server starts only when an engine of it is selected (S_ENGINES empty: all)
 port_free() { [[ -z $(ss -ltnH "sport = :$1") ]] || { echo "store: port $1 is in use (S_PORT / --port)" >&2; return 1; }; }
 up() {
   [[ -z $(containers) ]] || { echo "store: containers of '$NAME' exist (bench/bench store clean)" >&2; return 1; }
   for i in 0 1 2 3; do port_free $((PORT + i)); done
   build_image
-  docker pull -q "$STORE_ES_IMAGE" >/dev/null; docker pull -q "$STORE_CH_IMAGE" >/dev/null
+  if want es; then docker pull -q "$STORE_ES_IMAGE" >/dev/null; fi
+  if want ch; then docker pull -q "$STORE_CH_IMAGE" >/dev/null; fi
   local run=(docker run -d --label "sift-store=$NAME" --cpus "$CPUS" --memory "$MEMORY" --memory-swap "$MEMORY")
   "${run[@]}" --name "$NAME-pg" -p "127.0.0.1:$PORT:5432" --shm-size 1g -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
   "${run[@]}" --name "$NAME-sift" -p "127.0.0.1:$((PORT + 1)):5432" --shm-size 1g -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
-  "${run[@]}" --name "$NAME-es" -p "127.0.0.1:$((PORT + 2)):9200" -e discovery.type=single-node -e xpack.security.enabled=false -e xpack.ml.enabled=false \
-    -e ES_JAVA_OPTS="-Xms$(heap_gb)g -Xmx$(heap_gb)g" "$STORE_ES_IMAGE" >/dev/null
-  "${run[@]}" --name "$NAME-ch" -p "127.0.0.1:$((PORT + 3)):8123" --ulimit nofile=262144:262144 -e CLICKHOUSE_USER=bench -e CLICKHOUSE_PASSWORD=bench "$STORE_CH_IMAGE" >/dev/null
+  if want es; then "${run[@]}" --name "$NAME-es" -p "127.0.0.1:$((PORT + 2)):9200" -e discovery.type=single-node -e xpack.security.enabled=false -e xpack.ml.enabled=false \
+    -e ES_JAVA_OPTS="-Xms$(heap_gb)g -Xmx$(heap_gb)g" "$STORE_ES_IMAGE" >/dev/null; fi
+  if want ch; then "${run[@]}" --name "$NAME-ch" -p "127.0.0.1:$((PORT + 3)):8123" --ulimit nofile=262144:262144 -e CLICKHOUSE_USER=bench -e CLICKHOUSE_PASSWORD=bench "$STORE_CH_IMAGE" >/dev/null; fi
   local t=0
   until pg_isready -q -h 127.0.0.1 -p "$PORT" && pg_isready -q -h 127.0.0.1 -p $((PORT + 1)) \
-        && curl -fs "http://127.0.0.1:$((PORT + 2))/_cluster/health?wait_for_status=green&timeout=5s" >/dev/null && curl -fs "http://127.0.0.1:$((PORT + 3))/ping" >/dev/null; do
+        && { ! want es || curl -fs "http://127.0.0.1:$((PORT + 2))/_cluster/health?wait_for_status=green&timeout=5s" >/dev/null; } \
+        && { ! want ch || curl -fs "http://127.0.0.1:$((PORT + 3))/ping" >/dev/null; }; do
     (( ++t < 300 )) || { echo "store: the servers did not start; docker logs $NAME-*" >&2; return 1; }
     sleep 1
   done
@@ -73,9 +77,11 @@ up() {
 down() { containers | xargs -r docker rm -fv >/dev/null; }
 
 setup() { # SIZE
+  local extra=()
+  mapfile -t extra < <(engine_args)
   up
   py gen --rows "$1"
-  py load --rows "$1" --out "$OUT"
+  py load --rows "$1" --out "$OUT" ${S_COMPRESSION:+--compression} "${extra[@]}"
 }
 measure() { # SIZE
   local extra=()
@@ -89,7 +95,7 @@ updates() { # SIZE: last, it changes the data
 }
 merge() { py merge "$OUT"/store-*.json -o "$OUT/store.json"; }
 docs() {
-  cp "$OUT/store.json" "$REPO/bench/results/store.json"
+  cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
   report
 }
 report() { py render --readme "$REPO/README.md" --benchmarks "$REPO/docs/BENCHMARKS.md"; }
@@ -110,6 +116,18 @@ all() {
   [[ -z ${S_DOCS:-} ]] || docs
   rm -rf "$DATA"
 }
+stats() { # what ClickHouse and Elasticsearch read and spend per question, for each size (steps/store.py stats; the containers are removed after each)
+  local s
+  mkdir -p "$OUT"
+  trap 'down' EXIT
+  for s in ${SIZES//,/ }; do
+    setup "$s"
+    py stats --rows "$s" -o "$OUT/store-stats-$s.json"
+    down
+  done
+  trap - EXIT
+  rm -rf "$DATA"
+}
 clean() {
   down
   rm -rf "$DATA"
@@ -123,9 +141,10 @@ case ${1:-all} in
   cold) mkdir -p "$OUT"; locked py cold --rows "${SIZES%%,*}" --out "$OUT" --cold-runs "$COLD" ;;
   updates) mkdir -p "$OUT"; updates "${SIZES%%,*}" ;;
   report) report ;;
+  stats) mkdir -p "$OUT"; stats ;;
   merge) merge ;;
   table|gap) py "$1" "${2:-$REPO/bench/results/store.json}" ;;
   compare) py compare "$2" "$3" ;;
   clean) clean ;;
-  *) echo "usage: store.sh all|setup|run|cold|updates|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
+  *) echo "usage: store.sh all|setup|run|cold|updates|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
 esac
