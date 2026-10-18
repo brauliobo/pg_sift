@@ -62,6 +62,46 @@ roundtrip(const SiftColBatch *b, const SiftCcPolicy *pol, const char *name)
 	free(dst);
 }
 
+/* rowid -> key mapping of a host (docs/COL-PORTS.md section 4): block = rowid >> shift, offset = (rowid & mask) + 1. Dense rowids, one unit per superblock */
+static uint64
+mapping_bytes(MemoryContext cx, const SiftColSchema *schema, int shift, int nrows, int *nunits)
+{
+	SiftColBatch *b = sift_cbatch_create(cx, schema);
+	SiftCcPolicy pol[2];
+	uint64		total = 0;
+	int			i = 0;
+
+	sift_cc_policy_default(&pol[0]);
+	pol[1] = pol[0];
+	*nunits = 0;
+	while (i < nrows)
+	{
+		StringInfoData out;
+		Size		start;
+		uint32		sb = (uint32) (i >> shift) >> SIFT_SB_SHIFT;
+
+		sift_cbatch_reset(b, sb);
+		for (; i < nrows && ((uint32) (i >> shift) >> SIFT_SB_SHIFT) == sb; i++)
+		{
+			SiftColValue val[2] = {0};
+			SiftColRow	row = {.ncols = 2, .val = val};
+			char		str[16];
+
+			val[0].v.i = 1700000000 + i * 3 + (i * 7) % 11;
+			snprintf(str, sizeof(str), "status-%d", (i / 5) % 6);
+			val[1].v.s = str;
+			val[1].len = (uint32) strlen(str);
+			ItemPointerSet(&row.tid, (uint32) (i >> shift), (i & ((1 << shift) - 1)) + 1);
+			sift_cbatch_add(b, &row);
+		}
+		initStringInfo(&out);
+		sift_cunit_encode(b, NULL, pol, &out, &start, NULL);
+		total += out.len - start;
+		(*nunits)++;
+	}
+	return total;
+}
+
 int
 main(void)
 {
@@ -97,5 +137,14 @@ main(void)
 	sift_cc_policy_default(&pol[0]);
 	pol[1] = pol[0];
 	roundtrip(b, pol, "chunk codec");
+	{
+		int			n5, n8;
+		uint64		b5 = mapping_bytes(cx, schema, 5, 1 << 18, &n5),
+					b8 = mapping_bytes(cx, schema, 8, 1 << 18, &n8);
+
+		printf("col-smoke: rowid >> 5: %d units, %.2f bytes/row; rowid >> 8: %d units, %.2f bytes/row\n",
+			   n5, (double) b5 / (1 << 18), n8, (double) b8 / (1 << 18));
+		check(b8 < b5, "rowid >> 8 packs smaller than rowid >> 5");
+	}
 	return 0;
 }
