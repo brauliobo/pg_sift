@@ -191,7 +191,7 @@ Three pieces share the column engine ([docs/COL.md](COL.md)); none needs `shared
 
 - **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (store_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
-  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
+  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` up to 255 bytes. Reloptions: `mutable_limit` (kB, 4096, like the
   `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)).
   Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
   `col_merge` inspect and drive one.
