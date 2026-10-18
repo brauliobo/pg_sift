@@ -1240,7 +1240,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
-	fs = sift_free_stats(rel);
+	fs = sift_store_free_stats(rel);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
 	v[1] = Int64GetDatum(st->dir.meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);
