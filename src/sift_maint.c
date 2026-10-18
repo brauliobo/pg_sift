@@ -488,7 +488,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	sw.neu = any ? &neu : NULL;
 	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = pages,
 			.nrelease = npages,.extra = InvalidBuffer});
-	sift_log_maint(index, "promoted a sealed segment of", start, ndocs, any ? neu.bytes : 0);
+	sift_log_maint(index, "promoted a sealed segment of", start, sealed->ndocs, any ? neu.bytes : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
