@@ -175,7 +175,6 @@ define_gucs(void)
 #endif
 	sift_pushdown_init();
 	sift_ops_init();
-	MarkGUCPrefixReserved("sift");
 }
 
 static relopt_enum_elt_def analyzer_names[] = {
@@ -268,6 +267,8 @@ _PG_init(void)
 	sift_leak_test_init();
 	sift_aggstub_init();
 #endif
+	/* after the last GUC is defined: a value set before the library loaded is applied to its GUC, not dropped with the placeholder */
+	MarkGUCPrefixReserved("sift");
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(OPEROID, catalog_invalidate, (Datum) 0);
