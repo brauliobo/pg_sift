@@ -50,6 +50,7 @@ struct SiftDict
 	uint64	   *root;
 	uint32		nroot;
 	uint8	   *blk;			/* copy of the current block */
+	bool		slots;			/* lookups count the terms without inline postings */
 	MemoryContext mcxt;
 };
 
@@ -309,8 +310,8 @@ block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it
 		corrupt("Block at %llu holds %d terms.", (unsigned long long) off, it->left);
 }
 
-static bool
-block_next(BlockIter *it, SiftTermInfo *info)
+static pg_attribute_always_inline bool
+block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 {
 	uint64		v;
 	int			shared,
@@ -393,16 +394,34 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;
-	it->slot++;
+	it->slot += slots;
 	return true;
 }
 
+static bool
+block_next(BlockIter *it, SiftTermInfo *info)
+{
+	return block_next_impl(it, info, false);
+}
+
+static bool
+block_next_slots(BlockIter *it, SiftTermInfo *info)
+{
+	return block_next_impl(it, info, true);
+}
+
 /* The live df and the slot of the entry block_next returned, for the callers that keep it (the others do not pay for them) */
-static void
-entry_stats(const BlockIter *it, SiftTermInfo *info)
+static pg_attribute_always_inline void
+entry_stats(const BlockIter *it, SiftTermInfo *info, bool slots)
 {
 	info->ldf = info->df;
-	info->slot = (info->flags & SIFT_TERM_INLINE) ? -1 : (int32) it->slot - 1;
+	info->slot = (slots && !(info->flags & SIFT_TERM_INLINE)) ? (int32) it->slot - 1 : -1;
+}
+
+void
+sift_dict_track_slots(SiftDict *d)
+{
+	d->slots = true;
 }
 
 #ifdef SIFT_TESTING
@@ -500,6 +519,23 @@ find_block(SiftDict *d, const char *term, int len)
 	return blo;
 }
 
+static pg_attribute_always_inline bool
+lookup_in_block(BlockIter *it, const char *term, int len, SiftTermInfo *info, bool slots)
+{
+	while (block_next_impl(it, info, slots))
+	{
+		int			c = term_cmp(it->term, it->len, term, len);
+
+		if (c >= 0)
+		{
+			if (c == 0)
+				entry_stats(it, info, slots);
+			return c == 0;
+		}
+	}
+	return false;
+}
+
 bool
 sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info)
 {
@@ -511,16 +547,7 @@ sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info)
 		return false;
 	e = read_idx(d, b);
 	block_begin(d, e.block_off, e.slot_base, d->blk, &it);
-	while (block_next(&it, info))
-	{
-		int			c = term_cmp(it.term, it.len, term, len);
-
-		if (c == 0)
-			entry_stats(&it, info);
-		if (c >= 0)
-			return c == 0;
-	}
-	return false;
+	return d->slots ? lookup_in_block(&it, term, len, info, true) : lookup_in_block(&it, term, len, info, false);
 }
 
 void
@@ -545,7 +572,7 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 
 		block_begin(d, off, slot, buf, &it);
 		off += it.end - buf;
-		while (more && block_next(&it, &info))
+		while (more && block_next_slots(&it, &info))
 		{
 			if (lo && term_cmp(it.term, it.len, lo, lolen) < 0)
 				continue;
@@ -554,7 +581,7 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 				more = false;
 				break;
 			}
-			entry_stats(&it, &info);
+			entry_stats(&it, &info, true);
 			more = fn(arg, it.term, it.len, &info);
 		}
 		slot = it.slot;
