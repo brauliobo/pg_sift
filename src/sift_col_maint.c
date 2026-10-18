@@ -65,6 +65,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	{
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, cx);
+		sift_colw_set_preagg(w, &sift_col_rel(index)->pagg);
 		for (int i = 0; i < nb; i++)
 			sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
@@ -124,7 +125,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 }
 
 void
-sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftSegEntry *in, int n)
+sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -173,6 +174,8 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 			sift_wt_expect(wt, mi.bytes);
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, cx);
+			if (pagg)
+				sift_colw_set_preagg(w, pagg);
 		}
 		sift_colw_add(w, out);
 		CHECK_FOR_INTERRUPTS();
@@ -201,7 +204,7 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	n = pick_merge(index, snap, force, sel);
 	pfree(snap);
 	if (n > 0)
-		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, sel, n);
+		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n);
 	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 
@@ -332,11 +335,13 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	tupdesc;
 	SiftFreeStats fs;
-	Datum		v[14];
-	bool		nulls[14] = {0};
+	Datum		v[16];
+	bool		nulls[16] = {0};
 	int64		rows = 0,
 				bytes = 0,
-				units = 0;
+				units = 0,
+				pagg_bytes = 0,
+				pagg_units = 0;
 	int			nmut = 0;
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -346,8 +351,13 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+
 			rows += snap->segs[i].ndocs;
 			bytes += snap->segs[i].bytes;
+			pagg_bytes += sift_cseg_preagg_bytes(seg);
+			pagg_units += sift_cseg_preagg_units(seg);
+			sift_cseg_close(seg);
 		}
 		else
 			nmut++;
@@ -367,6 +377,8 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	nulls[12] = RecoveryInProgress();
 	v[12] = BoolGetDatum(!nulls[12] && sift_maintenance_busy(index));
 	v[13] = CStringGetTextDatum(sift_simd_level_name(sift_cpu.active));
+	v[14] = Int64GetDatum(pagg_bytes);
+	v[15] = Int64GetDatum(pagg_units);
 	index_close(index, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }

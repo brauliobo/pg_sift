@@ -1157,7 +1157,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st)
 			return false;
 	if (n == 0)
 		return false;
-	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), sel, n);
+	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, sel, n);
 	sift_tbl_refresh(rel, st);
 	return true;
 }
