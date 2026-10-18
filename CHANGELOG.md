@@ -69,6 +69,15 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
 - Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
   thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
+- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 2.4 to 8
+  times faster. The liveness of a page was read one document at a time, a buffer pin, lock and bit test each, which was most of the
+  query; the bits of a superblock are now read once and spread over the page's offsets. 200,000 documents with a quarter deleted and
+  vacuumed, ms per query (the same rows rebuilt: clean): ranked AND 1.36 to 0.26 (clean 0.26), ranked OR 2.39 to 0.70 (0.64),
+  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.17 (0.019). Clean indexes are unchanged (interleaved A/B on the same
+  data, 0.93x to 1.23x with 7 to 10% error; slim bench: 0 regressions). N, df and avgdl still count vacuumed documents until a merge
+.
+  `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
+  or rolled back).
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
