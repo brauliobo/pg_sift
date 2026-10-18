@@ -1,6 +1,6 @@
 -- A prepared statement's generic plan is made without its query, so the planner cannot count the matches that its filter
--- has to cut down. It prices the plans for a query that holds a tenth of the rows, so that the filter-mask pushdown is
--- chosen as for a literal common query when the filter is selective, and a loose filter stays after the ranker; the rows,
+-- has to cut down. It keeps the filter-mask bitmap as a child of the scan for the match counts at which the pushdown is
+-- cheaper (a selective filter), as for a literal common query, and a loose filter stays after the ranker; the rows,
 -- scores and ties are those of the plan with the literal query in every mode.
 CREATE EXTENSION pg_sift;
 -- the plan of a prepared query with a filter, as a generic plan (the query unknown) or a custom one (the query bound)
