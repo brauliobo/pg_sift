@@ -1105,8 +1105,8 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	if (!cu->clean)
 		return false;
 	av = unit_allvisible(cu);
-	for (uint32 p = 0; p < cu->v.npages; p++)
-		if (!sift_col_bit_test(av, sift_cunit_page_block(&cu->v, cu->sb, p) & (SIFT_SB_PAGES - 1)))
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)	/* the unit's pages are a subset of the all-visible ones: bit p of both is page p of the superblock */
+		if (cu->v.pagemask[w] & ~av[w])
 			return false;
 	return true;
 }
