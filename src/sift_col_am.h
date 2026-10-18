@@ -65,6 +65,10 @@ extern bool sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemP
 extern IndexBulkDeleteResult *sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 													IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
+/* Merges the segments in[0..n) (written for schema; all of the page store rel, an index or a table) into one, dropping their dead rows */
+extern void sift_col_merge_segments(Relation rel, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftSegEntry *in, int n);
+/* Is more than half of the segment's rows dead (the merge policy's "mostly dead" test) */
+extern bool sift_col_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern void sift_col_maint_after_seal(Relation index);
 extern bool sift_col_maint_make_room(Relation index);
 extern int	sift_col_maint_promote(Relation index, bool wait);
