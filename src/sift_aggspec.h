@@ -19,7 +19,7 @@
 #include "sift_aggkern.h"
 #include "sift_colsrc.h"
 
-#define SIFT_AGG_MAX_KEYS	5		/* group columns (at most 4) and the grouping set number */
+#define SIFT_AGG_MAX_KEYS	5		/* group columns (at most 4), the cell keys of the arms and the grouping set number */
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
@@ -96,6 +96,7 @@ typedef struct SiftAggPred
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
+	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */
 	int			nchild;
 	struct SiftAggPred **child;
 	char	   *desc;			/* EXPLAIN */
@@ -158,7 +159,13 @@ typedef enum SiftAggKind
 	/* PostgreSQL's own aggregate (aggfn: sum, avg of int2, int4, int8, interval, avg of float4) of a column of a joined table: its transition function runs on the distinct values, each as many times as it occurred, then its final function */
 	SAA_M_PG,
 	/* kinds are added at the end */
-	SAA_GEN						/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
+	SAA_GEN,					/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
+	/* aggregates of an expression that PostgreSQL evaluates (a combo slot with `direct`): the value of each tuple, added one at a time with the aggregate's own arithmetic */
+	SAA_X_COUNT,				/* count(x) */
+	SAA_X_MIN,					/* min(x), max(x): the type's btree comparison, a tie takes the later value as PostgreSQL's larger / smaller do */
+	SAA_X_MAX,
+	SAA_X_SUM,					/* sum(x), avg(x) of numeric (numeric_add) and float8 (float8pl) */
+	SAA_X_AVG
 } SiftAggKind;
 
 /* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
@@ -267,6 +274,7 @@ typedef struct SiftAggVLeaf
 typedef struct SiftAggArm
 {
 	uint32		keymask;		/* the outer keys this arm groups by; the others are NULL in its rows */
+	uint32		hmask;			/* the hidden keys it groups by: an inner group is finer than an outer one when it has any */
 	int			nfilter;		/* the arm's WHERE: boolean slots of combos, ANDed */
 	SiftAggPred **filter;
 	int			ninner;			/* count(*), count(x), sum(int), sum(float8), avg(float8) over the scan */
@@ -319,6 +327,7 @@ typedef struct SiftAggSlot
 	int			key;
 	int			agg;
 	Node	   *expr;			/* over Params 0..nleaves-1 (the leaves), then the join columns */
+	bool		direct;			/* a combo without a join: the value itself (a number into the combo's values, 0 NULL), for the aggregates SAA_X_* */
 } SiftAggSlot;
 
 /*
@@ -369,6 +378,7 @@ typedef struct SiftAggSpec
 	int			narms;			/* > 0: the two level form (SiftAggArm) */
 	SiftAggArm *arm;
 	int			nsets;			/* > 0: grouping sets, as PostgreSQL expanded them; the last key is the number of the set */
+	int			nhidden;		/* keys after the outer ones (and before the set's): group expressions of the arms that are no outer key. A cell is an inner group, so these are part of its identity; no group has them */
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;

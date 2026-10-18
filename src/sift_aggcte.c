@@ -113,6 +113,65 @@ uses_sift_agg(Plan *plan)
 	return uses_sift_agg(plan->lefttree) || uses_sift_agg(plan->righttree);
 }
 
+/* the CTEs (plan ids) that a CteScan of the plan, or of a CTE it reads, names */
+static void cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs);
+
+static void
+cte_refs_list(PlannedStmt *stmt, List *plans, Bitmapset **refs)
+{
+	foreach_ptr(Plan, p, plans)
+		cte_refs(stmt, p, refs);
+}
+
+static void
+cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, CteScan) && !bms_is_member(((CteScan *) plan)->ctePlanId, *refs))
+	{
+		*refs = bms_add_member(*refs, ((CteScan *) plan)->ctePlanId);
+		cte_refs(stmt, list_nth(stmt->subplans, ((CteScan *) plan)->ctePlanId - 1), refs);
+	}
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			cte_refs_list(stmt, ((Append *) plan)->appendplans, refs);
+			break;
+		case T_MergeAppend:
+			cte_refs_list(stmt, ((MergeAppend *) plan)->mergeplans, refs);
+			break;
+		case T_SubqueryScan:
+			cte_refs(stmt, ((SubqueryScan *) plan)->subplan, refs);
+			break;
+		case T_CustomScan:
+			cte_refs_list(stmt, ((CustomScan *) plan)->custom_plans, refs);
+			break;
+		default:
+			break;
+	}
+	cte_refs(stmt, plan->lefttree, refs);
+	cte_refs(stmt, plan->righttree, refs);
+}
+
+/*
+ * PostgreSQL charges the plan the cost of every CTE it computes, also of one that no node reads: a SiftAgg node that aggregates the
+ * arms of a UNION ALL in one scan of the index (or reads the table of the CTE itself) leaves the CTE unread, and it is not run.
+ */
+static double
+plan_cost_without_unread_ctes(PlannedStmt *stmt)
+{
+	Bitmapset  *refs = NULL;
+	double		cost = stmt->planTree->total_cost;
+	int			id = 0;
+
+	cte_refs(stmt, stmt->planTree, &refs);
+	foreach_ptr(Plan, sub, stmt->subplans)
+		if (!bms_is_member(++id, refs) && sub != NULL)
+			cost -= sub->total_cost;
+	return Max(cost, 0.0);
+}
+
 static PlannedStmt *
 plan_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
 {
@@ -131,8 +190,8 @@ plan_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInf
 		standard_planner(parse, query_string, cursorOptions, boundParams);
 	inlined = prev_planner_hook ? prev_planner_hook(inline_parse, query_string, cursorOptions, boundParams) :
 		standard_planner(inline_parse, query_string, cursorOptions, boundParams);
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plain->planTree->total_cost, inlined->planTree->total_cost);
-	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plain->planTree->total_cost &&
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
+	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plan_cost_without_unread_ctes(plain) &&
 		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
 		return inlined;
 	return plain;

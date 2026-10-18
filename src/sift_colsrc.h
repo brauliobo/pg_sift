@@ -79,6 +79,7 @@ typedef struct SiftSrcStats
 {
 	double		nrows;			/* rows in the source (dead included) */
 	double		nunits;			/* units */
+	double		bytes;			/* stored (compressed) bytes of the leaves together, 0 when unknown */
 	double		allvisible_frac;	/* share of the heap pages that are all-visible (1 for a table) */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
@@ -106,6 +107,12 @@ typedef struct SiftSrcVec
 	const uint8 *isnull;		/* NULL: none is null; else n flags, 1 = null (the data slot is readable, content undefined) */
 	const SiftSrcDict *dict;	/* SCV_CODE leaves */
 	int64		n;
+	/*
+	 * numeric leaves (the only values a numeric(p <= 18, s) column cannot hold are its NaNs): NULL when none of the values is one,
+	 * else bit i set = value i is a NaN of the heap (isnull is set too, the data slot is undefined). Zeroed by sift_colsrc_read,
+	 * set by the provider. The executor refuses a vector that has it unless the reader evaluates the value with PostgreSQL.
+	 */
+	const uint64 *ovf;
 } SiftSrcVec;
 
 typedef struct SiftSrcUnit

@@ -126,6 +126,7 @@ sift_colsrc_next(SiftSrcSource *src, SiftSrcUnit *unit)
 void
 sift_colsrc_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
+	vec->ovf = NULL;
 	src->prov->read(src->impl, unit, leaf, vec);
 }
 
