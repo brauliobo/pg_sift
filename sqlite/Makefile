@@ -105,8 +105,8 @@ span-test: $(B)/span_test
 	$(B)/span_test
 
 span-test-asan:
-	$(MAKE) B=build-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 build-asan/span_test
-	build-asan/span_test
+	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/span_test
+	$(B)-asan/span_test
 
 asan:
 	$(MAKE) B=build-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -fno-sanitize=nonnull-attribute" OPT=-O1 build-asan/sift.so build-asan/stress
