@@ -8,7 +8,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
   (`docs/COL.md`); jsonb attributes become typed columns for the paths of its `paths` option (shredder, `docs/COL-SHRED.md`);
   `sift_table` (`CREATE TABLE ... USING sift_table`, `docs/COL-TAM.md`) is a table access method with native MVCC that also takes BM25
-  indexes; logical replication of a published `sift_table` needs `pg_sift` in `shared_preload_libraries`. The scripts are
+  indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. The scripts are
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
 
