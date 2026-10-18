@@ -34,6 +34,7 @@
 #include "sift_ops.h"
 #include "sift_posting.h"
 #include "sift_prefix.h"
+#include "sift_table.h"
 #include "sift_segment.h"
 #include "sift_pushdown.h"
 #include "sift_shred.h"
@@ -247,6 +248,7 @@ _PG_init(void)
 	define_reloptions();
 	sift_planner_init();
 	sift_agg_init();
+	sift_tbl_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
 	sift_aggstub_init();

@@ -1,0 +1,345 @@
+/*
+ * sift_table.h - the table access method sift_table (docs/COL-TAM.md): formats and the interfaces between its modules.
+ *
+ *   sift_table.c         handler, the TableAmRoutine callbacks, DML
+ *   sift_table_store.c   layout, per-relation cache, delta segments (row format), tombstone segment
+ *   sift_table_mvcc.c    visibility of a row version under every snapshot type
+ *   sift_table_scan.c    scans, TID fetches, bitmap, analyze, index build
+ *   sift_table_vacuum.c  VACUUM, sealing, rewrites
+ *   sift_table_seg.c     the column groups: the engine glue (stubs until the column engine lands)
+ *
+ * A TID is (vblock, offset), offset 1..SIFT_TBL_MAX_OFF, vblock from the metapage counter, never reused.
+ */
+#ifndef SIFT_TABLE_H
+#define SIFT_TABLE_H
+
+#include "sift_host.h"
+
+#include "access/tableam.h"
+#include "storage/read_stream.h"
+#include "utils/snapshot.h"
+
+#include "sift_store.h"
+
+/* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
+#if PG_VERSION_NUM >= 180000
+#define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull, 0)
+#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup, 0)
+#else
+#define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull)
+#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup)
+#endif
+
+#define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
+#define SIFT_TBL_SEG_DELTA		0x0100		/* SiftSegEntry.flags of a delta segment */
+#define SIFT_TBL_SEG_TOMB		0x0200		/* ... of the tombstone segment */
+#define SIFT_TBL_DELTA_MAGIC	0x444C5441	/* "DLTA" */
+#define SIFT_TBL_TOMB_MAGIC		0x544F4D42	/* "TOMB" */
+#define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage
+#define SIFT_TBL_MAX_DELTA_PAGES 1024
+#define SIFT_TBL_VBLOCKS_SB		SIFT_SB_PAGES
+#define SIFT_TBL_TOMB_LOCK_BLKNO 3	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them */
+#define SIFT_TBL_ROW_MAX_INLINE	(BLCKSZ / 2)	/* a row above this goes to overflow pages */
+
+/* The next vblock to hand out: the field a table has no other use for (col-core: SIFT_COL_META_NEXT_VBLOCK) */
+#define SIFT_TBL_NEXT_VBLOCK(meta)	((meta)->sum_dl)
+
+/* Delta segment header page: SiftMutHeaderData (lane 0 is the page chain) then this */
+typedef struct SiftTblDeltaHdr
+{
+	uint32		magic;
+	uint32		flags;			/* SIFT_TBL_DELTA_SEALED */
+	uint64		vbase;			/* first vblock; page i is vblock vbase + i */
+	uint32		vcap;			/* vblocks reserved (>= the pages the segment may take) */
+	uint32		npages;
+	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
+} SiftTblDeltaHdr;
+
+#define SIFT_TBL_DELTA_SEALED	0x0001
+
+#define TBL_DELTA_HDR(page) \
+	((SiftTblDeltaHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
+#define TBL_DELTA_HDR_USED	(MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblDeltaHdr))
+
+/*
+ * Delta data page: SiftTblPageHdr (next first: the store walks the chain to mark referenced blocks, flags at the offset of
+ * SIFT_MUTPAGE_SEALED), then records forward. slot[k] is the offset (from the page data start) of the record of TID offset k + 1, 0 = none.
+ */
+typedef struct SiftTblPageHdr
+{
+	BlockNumber next;
+	uint16		nrows;			/* slots used */
+	uint16		flags;
+	uint32		vblock;
+	BlockNumber ovf_next;		/* OVERFLOW pages: the next page of the row's bytes */
+	uint16		slot[SIFT_TBL_MAX_OFF];
+} SiftTblPageHdr;
+
+#define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_MUTPAGE_SEALED */
+#define SIFT_TBL_PAGE_OVFDATA	0x0100	/* continuation bytes of an overflow row, no slots */
+
+#define TBL_PAGE(page)	((SiftTblPageHdr *) SiftPageGetData(page))
+#define TBL_PAGE_INIT	MAXALIGN(sizeof(SiftTblPageHdr))
+
+/* A row record; a MinimalTuple of len bytes follows (an overflow head: its first piece; see aux) */
+typedef struct SiftTblRec
+{
+	uint32		len;			/* bytes of the row (MinimalTuple t_len) */
+	TransactionId xmin;
+	CommandId	cmin;
+	uint16		flags;
+	uint16		inline_len;		/* bytes of the row stored in this record (0 for an overflow row) */
+	uint32		aux;			/* OVF: first overflow block */
+	uint32		token;			/* SPEC: the speculative insertion token */
+} SiftTblRec;
+
+#define SIFT_TBL_REC_DEAD		0x0001	/* removed (killed speculative insertion, or VACUUM) */
+#define SIFT_TBL_REC_SPEC		0x0002	/* speculative insertion in progress: token is set */
+#define SIFT_TBL_REC_OVF		0x0004	/* the row continues in overflow pages */
+#define TBL_REC_SIZE(inline_len)	MAXALIGN(sizeof(SiftTblRec) + (inline_len))
+
+/* Tombstone segment header page: SiftMutHeaderData then this; data pages: SiftTblTombPage then SiftTblTomb[] */
+typedef struct SiftTblTombHdr
+{
+	uint32		magic;
+	uint32		pad;
+	uint64		nentries;		/* appended so far: the version of the log */
+} SiftTblTombHdr;
+
+typedef struct SiftTblTombPage
+{
+	BlockNumber next;
+	uint16		nent;
+	uint16		flags;
+} SiftTblTombPage;
+
+#define TBL_TOMB_HDR(page) \
+	((SiftTblTombHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
+#define TBL_TOMB_PAGE(page)	((SiftTblTombPage *) SiftPageGetData(page))
+#define TBL_TOMB_ENTS(page)	((SiftTblTomb *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftTblTombPage))))
+
+typedef enum SiftTblTombKind
+{
+	SIFT_TBL_TOMB_DELETE = 1,
+	SIFT_TBL_TOMB_UPDATE,		/* succ is the new version */
+	SIFT_TBL_TOMB_LOCK			/* row lock: never deletes */
+} SiftTblTombKind;
+
+typedef struct SiftTblTomb
+{
+	uint64		key;			/* SiftKey of the row version */
+	TransactionId xid;
+	CommandId	cid;
+	uint64		succ;			/* UPDATE: key of the new version */
+	uint16		kind;
+	uint16		flags;
+	uint32		seq;			/* position in the log (not stored: set when loaded) */
+} SiftTblTomb;
+
+#define TBL_TOMB_CAP	((SIFT_PAGE_PAYLOAD - MAXALIGN(sizeof(SiftTblTombPage))) / sizeof(SiftTblTomb))
+
+StaticAssertDecl(sizeof(SiftTblTomb) == 32, "tombstone entries are 32 bytes");
+StaticAssertDecl(sizeof(SiftTblPageHdr) + 16 < BLCKSZ / 4, "page header leaves room for rows");
+StaticAssertDecl(TBL_DELTA_HDR_USED <= SIFT_PAGE_PAYLOAD, "delta header fits a page");
+
+/* ---------- per relation backend cache (sift_table_store.c) ---------- */
+
+typedef struct SiftTblSeg
+{
+	uint64		gen;
+	BlockNumber hdr;
+	uint64		vbase;
+	uint32		vcap;
+	uint32		npages;			/* pages known */
+	bool		sealed;
+	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
+} SiftTblSeg;
+
+typedef struct SiftTblRel
+{
+	Oid			relid;
+	RelFileNumber relnumber;
+	MemoryContext cxt;
+	bool		initialized;	/* blocks exist and carry the table layout */
+	bool		invalid;		/* relcache invalidation: replaced by the next sift_tbl_rel */
+	SiftDirSnapshot dir;
+	int			ndelta;
+	SiftTblSeg *delta;			/* [ndelta], directory order = ascending vbase */
+	/* tombstones, sorted by (key, seq) */
+	uint64		tomb_gen;
+	BlockNumber tomb_hdr;
+	uint64		tomb_synced;
+	BlockNumber tomb_last;
+	uint32		tomb_lastcnt;
+	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
+	uint32		nents;
+	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
+	uint32		nrecent;
+	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
+	uint32		caprun;
+	/* the page this backend appends to */
+	uint64		tgt_gen;
+	BlockNumber tgt_blk;
+} SiftTblRel;
+
+/* The cache of rel (created on first use); ReadBuffer-level state is not held */
+extern SiftTblRel *sift_tbl_rel(Relation rel);
+/* Re-reads the directory; delta page tables are extended lazily by sift_tbl_delta_page */
+extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
+/* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
+extern void sift_tbl_ensure_init(Relation rel);
+extern bool sift_tbl_is_table(Relation rel);
+extern const TableAmRoutine *sift_tbl_routine(void);
+extern uint64 sift_tbl_nvblocks(Relation rel);
+
+/* A row version found in storage */
+typedef struct SiftTblRowVer
+{
+	SiftKey		key;
+	bool		delta;			/* delta row: xmin/cmin/flags valid, else a column group row (frozen unless segxmin) */
+	TransactionId xmin;
+	CommandId	cmin;
+	uint16		flags;
+	uint32		token;			/* SPEC: the speculative insertion token */
+	HeapTuple	tuple;			/* the row, palloc'd (HeapTuple format, t_self set) */
+} SiftTblRowVer;
+
+/* The record of TID offset off in a delta page (locked or a copy); NULL when there is none */
+extern const SiftTblRec *sift_tbl_page_rec(Page page, uint64 gen, uint32 off);
+/* The row of a record as a HeapTuple (an overflow row is read from its pages); t_self/t_tableOid are the caller's */
+extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key);
+extern BlockNumber sift_tbl_delta_page(Relation rel, SiftTblSeg *seg, uint32 idx);
+extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
+extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
+/* The version header of a delta record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
+extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
+extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
+/* Clears the bits of offmask (bit i: offset i + 1, SIFT_OFFMASK_WORDS words of 64) whose row is not visible to snapshot; returns the bits left */
+extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
+extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
+extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+
+/* Appends a row (a MinimalTuple) to the active delta segment; sets *tid. spec_token != 0: speculative insertion */
+extern void sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId xmin, CommandId cmin,
+							uint32 spec_token, ItemPointer tid);
+/* Sets flag bits of the record of tid (killed speculative insertion) */
+extern void sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set);
+/* A delta page, exclusively locked, for VACUUM: the caller edits records through a GenericXLog copy */
+extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx);
+
+/* Tombstones */
+extern void sift_tbl_tomb_sync(Relation rel, SiftTblRel *st);
+extern void sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid,
+								 SiftTblTombKind kind, uint64 succ);
+/*
+ * Rewrites the tombstone segment without the entries keep() refuses, under the lock that keeps appenders out, and switches the
+ * new segment in (the old pages are released with a safexid). Returns the entries kept.
+ */
+typedef bool (*SiftTblTombKeep) (const SiftTblTomb *e, void *arg);
+extern uint64 sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *arg);
+
+/* The entries of key (sorted by log position), n of them; NULL when none */
+extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n);
+
+/* ---------- visibility (sift_table_mvcc.c) ---------- */
+
+extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
+/* The insertion of the version is visible; *dead set when no snapshot will ever see it */
+extern bool sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead);
+
+typedef enum SiftTblDelState
+{
+	SIFT_TBL_DEL_NONE,			/* not deleted by anyone (locks aside) */
+	SIFT_TBL_DEL_SELF,			/* deleted or updated by the current transaction */
+	SIFT_TBL_DEL_INPROGRESS,	/* another transaction is deleting or updating it */
+	SIFT_TBL_DEL_DELETED,		/* committed delete */
+	SIFT_TBL_DEL_UPDATED		/* committed update: succ is the newer version */
+} SiftTblDelState;
+
+typedef struct SiftTblDel
+{
+	SiftTblDelState state;
+	TransactionId xid;			/* the deleter (state != NONE) */
+	CommandId	cid;
+	uint64		succ;
+	TransactionId lockxid;		/* an in-progress locker (another transaction), InvalidTransactionId if none */
+	bool		self_locked;	/* the current transaction holds a lock entry */
+} SiftTblDel;
+
+/* The deletion state of key by the log as it is now (no snapshot: the writers' view) */
+extern void sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del);
+
+/* ---------- table AM callbacks implemented outside sift_table.c ---------- */
+
+extern TableScanDesc sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
+										 ParallelTableScanDesc pscan, uint32 flags);
+extern void sift_tbl_scan_end(TableScanDesc scan);
+extern void sift_tbl_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_params, bool allow_strat,
+								 bool allow_sync, bool allow_pagemode);
+extern bool sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
+extern void sift_tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid);
+extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
+extern Size sift_tbl_parallelscan_estimate(Relation rel);
+extern Size sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
+extern void sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
+extern IndexFetchTableData *sift_tbl_index_fetch_begin(Relation rel);
+extern void sift_tbl_index_fetch_reset(IndexFetchTableData *data);
+extern void sift_tbl_index_fetch_end(IndexFetchTableData *data);
+extern bool sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot,
+									   TupleTableSlot *slot, bool *call_again, bool *all_dead);
+extern bool sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot);
+extern bool sift_tbl_tuple_tid_valid(TableScanDesc scan, ItemPointer tid);
+extern void sift_tbl_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid);
+extern bool sift_tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot snapshot);
+extern TransactionId sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate);
+#if PG_VERSION_NUM >= 180000
+extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *recheck,
+											uint64 *lossy_pages, uint64 *exact_pages);
+#else
+extern bool sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres);
+extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot);
+#endif
+extern bool sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
+extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
+											 double *deadrows, TupleTableSlot *slot);
+extern double sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
+											  bool allow_sync, bool anyvisible, bool progress, BlockNumber start_blockno,
+											  BlockNumber numblocks, IndexBuildCallback callback, void *callback_state,
+											  TableScanDesc scan);
+extern void sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
+										 Snapshot snapshot, struct ValidateIndexState *state);
+extern void sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
+											   TransactionId OldestXmin, TransactionId *xid_cutoff,
+											   MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
+											   double *tups_recently_dead);
+extern void sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy);
+extern bool sift_tbl_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate);
+extern bool sift_tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate,
+											TupleTableSlot *slot);
+
+/* ---------- dml helpers (sift_table.c) ---------- */
+
+extern bool sift_tbl_published(Relation rel);
+/* Logical replication (sift_table_wal.c): a published table under wal_level = logical also writes a record per row change */
+typedef enum SiftTblOp
+{
+	SIFT_TBL_OP_INSERT,
+	SIFT_TBL_OP_UPDATE,
+	SIFT_TBL_OP_DELETE
+} SiftTblOp;
+
+/* Registers the resource manager when pg_sift is preloaded (called from _PG_init) */
+extern void sift_tbl_init(void);
+/* True when changes to rel must be logged for decoding; 0A000 when they must but pg_sift is not preloaded */
+extern bool sift_tbl_check_publication(Relation rel);
+/* newrow: the row after the change (NULL for DELETE); old: the row before it (NULL for INSERT), reduced to its replica identity */
+extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
+
+/* ---------- column groups: the engine glue (sift_table_seg.c) ---------- */
+
+/* Does a column group hold key? On true *rv is filled (tuple palloc'd). STUB(col-core): there are no groups yet. */
+extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+
+extern PGDLLIMPORT int sift_tbl_delta_limit;
+
+#endif							/* SIFT_TABLE_H */

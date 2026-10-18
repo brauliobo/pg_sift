@@ -202,12 +202,19 @@ CREATE INDEX docs_body ON docs USING sift (body);
 CREATE SUBSCRIPTION docs_sub CONNECTION 'host=primary dbname=app' PUBLICATION docs_pub;
 ```
 
+**sift_table:** a table created `USING sift_table` replicates physically like any table (generic WAL, no preload). To *publish* one under
+`wal_level = logical`, `pg_sift` must be in `shared_preload_libraries` on the publisher and on every standby of it: the logical change records
+use a custom WAL resource manager, which a server can only register at preload time. Without the preload a DML on the published table fails
+with `0A000` (`sift_table table "t" is published ... but pg_sift is not in shared_preload_libraries`, hint: preload or publish a heap staging
+table); unpublished sift_table tables never need it. INSERT, UPDATE, DELETE and TRUNCATE reach a heap or sift_table subscriber, UPDATE and
+DELETE with a primary key or `REPLICA IDENTITY FULL` as for heap.
+
 `scripts/replication.sh` checks all of it on a primary, a standby and a subscriber in temporary clusters; `--container` puts every node in
 its own docker container.
 
 ## Limits
 
-- PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap tables only; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).

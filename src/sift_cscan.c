@@ -702,7 +702,7 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 static uint32
 heap_superblocks(SiftScanState *ss)
 {
-	return ((uint64) RelationGetNumberOfBlocks(ss->heap) + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
+	return ((uint64) sift_vis_nblocks(ss->heap) + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 }
 
 /*
