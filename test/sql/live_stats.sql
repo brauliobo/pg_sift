@@ -1,0 +1,66 @@
+-- live_stats: a segment with vacuumed documents scores as the merged segment of its live documents does (N, df and avgdl
+-- count live documents only). Each query is scored over the dirty index, then again after the merge that drops the dead
+-- documents, and the rows and scores must be equal.
+CREATE EXTENSION pg_sift;
+SET enable_seqscan = off;
+
+CREATE TABLE ls (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+SELECT setseed(0.3);
+INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
+	FROM generate_series(1, 20000) i;
+CREATE INDEX ls_idx ON ls USING sift (body);
+
+CREATE TABLE ls_q (n serial, q text);
+INSERT INTO ls_q (q) VALUES
+	('w5'), ('w5 w50'), ('w5 OR w50 OR w7 OR w100'), ('w5 NOT w7'), ('w1*'), ('w12~1'), ('"w5 w7"'), ('w5 OR "w1 w2"'), ('missing OR w9');
+
+CREATE FUNCTION ls_scores(tag text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	c record;
+BEGIN
+	FOR c IN SELECT * FROM ls_q LOOP
+		EXECUTE format('CREATE TABLE ls_%s_%s AS SELECT id, sift.score(ctid) s FROM ls WHERE body @@> %L', tag, c.n, c.q);
+	END LOOP;
+END $$;
+
+CREATE FUNCTION ls_compare(a text, b text) RETURNS TABLE (q text, matched bool, same_rows bool, differ bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	c record;
+BEGIN
+	FOR c IN SELECT * FROM ls_q ORDER BY n LOOP
+		q := c.q;
+		EXECUTE format('SELECT count(*) > 0, (SELECT count(*) FROM ls_%s_%s) = (SELECT count(*) FROM ls_%s_%s),
+			count(*) FILTER (WHERE x.s <> y.s) FROM ls_%s_%s x JOIN ls_%s_%s y USING (id)', a, c.n, b, c.n, a, c.n, b, c.n)
+			INTO matched, same_rows, differ;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+-- vacuumed documents in a built segment
+DELETE FROM ls WHERE random() < 0.3 OR id % 7 = 0 AND id < 5000;
+VACUUM ls;
+SELECT dirty, dead_docs > 5000 AS dead FROM sift.segments('ls_idx');
+SELECT sift.verify('ls_idx', true);
+SELECT ls_scores('dirty');
+SELECT sift.merge('ls_idx', true);
+SELECT dirty, dead_docs FROM sift.segments('ls_idx');
+SELECT ls_scores('merged');
+SELECT * FROM ls_compare('dirty', 'merged');
+
+-- more rows, deleted ones in the mutable segment and in the vacuumed one, and a promoted segment beside them
+INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
+	FROM generate_series(1, 3000) i;
+DELETE FROM ls WHERE id > 20000 AND id % 5 = 0;
+SELECT sift.promote('ls_idx') > 0 AS promoted;
+INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
+	FROM generate_series(1, 1000) i;
+DELETE FROM ls WHERE id % 11 = 3;
+VACUUM ls;
+DELETE FROM ls WHERE id % 13 = 4;
+SELECT ls_scores('mixed');
+SELECT sift.verify('ls_idx', true);
+SELECT sift.promote('ls_idx') > 0 AS promoted;
+SELECT sift.merge('ls_idx', true) > 0 AS merged;
+SELECT count(*) FILTER (WHERE kind = 'immutable') = 1 AS one_segment, count(*) FILTER (WHERE dirty) AS dirty_left FROM sift.segments('ls_idx');
+SELECT ls_scores('final');
+SELECT * FROM ls_compare('mixed', 'final');
