@@ -9,6 +9,28 @@
 
 #include "utils/rel.h"
 
+#include "sift_store.h"
+
+/* The maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO), shared by the BM25 and the column maintenance: wait = false returns false when busy */
+extern bool sift_maint_lock(Relation index, bool wait);
+extern void sift_maint_unlock(Relation index);
+
+/*
+ * SiftDirMutator that replaces segments in the directory: the generations old[0..nold) are dropped (their totals leave the metapage) and neu, if any,
+ * takes the place of the first of them (its totals enter it)
+ */
+typedef struct SiftMaintSwitch
+{
+	const uint64 *old;			/* generations replaced */
+	int			nold;
+	const SiftSegEntry *neu;	/* the replacement or NULL */
+} SiftMaintSwitch;
+
+extern void sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg);
+
+/* Registers a dynamic background worker running function in pg_sift for this index (sift_maint_request_async is the BM25 one) */
+extern bool sift_maint_request_worker(Relation index, const char *function);
+
 /* Called by aminsert after an append crossed mutable_limit */
 extern void sift_maint_after_seal(Relation index);
 

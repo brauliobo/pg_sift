@@ -68,7 +68,7 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 		return Min(n, fanin);
 	}
 	for (int i = 0; i < n; i++)
-		if (mostly_dead(index, &imm[i]))
+		if (pol->mostly_dead ? pol->mostly_dead(index, &imm[i]) : mostly_dead(index, &imm[i]))
 		{
 			sel[0] = imm[i];
 			return 1;

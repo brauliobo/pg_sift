@@ -5,6 +5,7 @@
 #include "sift_host.h"
 
 #include "sift_dict.h"
+#include "sift_varint.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_dict_max = 0;
@@ -62,29 +63,12 @@ typedef struct BlockIter
 	int			len;
 } BlockIter;
 
-static uint8 *
-put_varint(uint8 *p, uint64 x)
-{
-	for (; x >= 0x80; x >>= 7)
-		*p++ = (uint8) (x | 0x80);
-	*p++ = (uint8) x;
-	return p;
-}
-
 static const uint8 *
 get_varint(const uint8 *p, const uint8 *end, uint64 *x)
 {
-	*x = 0;
-	for (int s = 0; s < 64; s += 7)
-	{
-		if (p >= end)
-			break;
-		*x |= (uint64) (*p & 0x7f) << s;
-		if (!(*p++ & 0x80))
-			return p;
-	}
-	corrupt("Truncated varint in a dictionary block.");
-	pg_unreachable();
+	if ((p = sift_get_varint64_n(p, end, x)) == NULL)
+		corrupt("Truncated varint in a dictionary block.");
+	return p;
 }
 
 static uint64
@@ -126,7 +110,7 @@ static void
 flush_block(SiftDictWriter *w)
 {
 	uint8		hdr[BLOCK_HDR_MAX];
-	uint8	   *p = put_varint(hdr + 3, w->blk_post);
+	uint8	   *p = sift_put_varint(hdr + 3, w->blk_post);
 	uint32		len = (p - hdr) + w->blk.len;
 
 	if (w->nblk == 0)
@@ -177,20 +161,20 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	*p++ = len - shared;
 	memcpy(p, term + shared, len - shared);
 	p += len - shared;
-	p = put_varint(p, info->df);
+	p = sift_put_varint(p, info->df);
 	*p++ = info->flags;
 	*p++ = info->max_bound;
 	if (inl)
 	{
-		p = put_varint(p, info->inline_keys[0]);
+		p = sift_put_varint(p, info->inline_keys[0]);
 		if (info->df > 1)
-			p = put_varint(p, info->inline_keys[1] - info->inline_keys[0]);
+			p = sift_put_varint(p, info->inline_keys[1] - info->inline_keys[0]);
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
 			for (uint32 i = 0; i < info->df; i++)
 				*p++ = info->inline_tf[i];
 		if (info->flags & SIFT_TERM_POS)
 		{
-			p = put_varint(p, info->pos_len);
+			p = sift_put_varint(p, info->pos_len);
 			appendBinaryStringInfo(&w->blk, (const char *) e, p - e);
 			p = e;
 			appendBinaryStringInfo(&w->blk, (const char *) info->inline_pos, info->pos_len);
@@ -198,12 +182,12 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	}
 	else
 	{
-		p = put_varint(p, info->post_len);
-		p = put_varint(p, info->post_len - info->codec_len);
+		p = sift_put_varint(p, info->post_len);
+		p = sift_put_varint(p, info->post_len - info->codec_len);
 		if (!(info->flags & SIFT_TERM_ALL_TF1))
-			p = put_varint(p, info->nnib);
+			p = sift_put_varint(p, info->nnib);
 		if (info->flags & SIFT_TERM_POS)
-			p = put_varint(p, info->pos_len);
+			p = sift_put_varint(p, info->pos_len);
 		w->post_end = info->post_off + info->post_len;
 	}
 	appendBinaryStringInfo(&w->blk, e, p - e);

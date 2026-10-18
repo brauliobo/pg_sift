@@ -37,8 +37,8 @@
 
 /* ---------- locking and directory helpers ---------- */
 
-static bool
-maint_lock(Relation index, bool wait)
+bool
+sift_maint_lock(Relation index, bool wait)
 {
 	if (wait)
 	{
@@ -48,8 +48,8 @@ maint_lock(Relation index, bool wait)
 	return ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 }
 
-static void
-maint_unlock(Relation index)
+void
+sift_maint_unlock(Relation index)
 {
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 }
@@ -64,17 +64,10 @@ score_ref(Relation index)
 
 /* ---------- switching segments in the directory ---------- */
 
-typedef struct Switch
+void
+sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
-	const uint64 *old;			/* generations replaced */
-	int			nold;
-	const SiftSegEntry *neu;	/* the replacement or NULL */
-} Switch;
-
-static void
-switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	Switch	   *sw = arg;
+	SiftMaintSwitch *sw = arg;
 	int			n = 0;
 	int			at = -1;
 
@@ -214,7 +207,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	bool		any;
 	SiftExtent *pages;
 	int			npages;
-	Switch		sw = {.old = &sealed->gen,.nold = 1};
+	SiftMaintSwitch sw = {.old = &sealed->gen,.nold = 1};
 	TimestampTz start = GetCurrentTimestamp();
 
 	sift_mut_flag_sealed(index, sealed);
@@ -224,7 +217,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	sift_wt_finish(wt);
 	pages = sift_mut_pages(index, sealed, &npages);
 	sw.neu = any ? &neu : NULL;
-	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = pages,
+	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = pages,
 			.nrelease = npages,.extra = InvalidBuffer});
 	sift_log_maint(index, "promoted a sealed segment of", start, ndocs, any ? neu.bytes : 0);
 	MemoryContextSwitchTo(old);
@@ -273,10 +266,10 @@ sift_maint_promote(Relation index, bool wait)
 {
 	int			n;
 
-	if (!maint_lock(index, wait))
+	if (!sift_maint_lock(index, wait))
 		return 0;
 	n = promote_locked(index, false);
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	return n;
 }
 
@@ -304,7 +297,7 @@ merge_segments(Relation index, const SiftSegEntry *in, int n)
 				nruns = 0;
 	SiftSegEntry neu;
 	SiftWriteTarget *wt;
-	Switch		sw = {.old = gens,.nold = n};
+	SiftMaintSwitch sw = {.old = gens,.nold = n};
 	TimestampTz start = GetCurrentTimestamp();
 
 	for (int i = 0; i < n; i++)
@@ -329,7 +322,7 @@ merge_segments(Relation index, const SiftSegEntry *in, int n)
 		sw.neu = &neu;
 	}
 	sift_wt_finish(wt);
-	sift_dir_update(index, &(SiftDirChange) {.fn = switch_segments,.arg = &sw,.release = rel,
+	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = rel,
 			.nrelease = nrel,.extra = InvalidBuffer});
 	sift_log_maint(index, psprintf("merged %d segments of", n), start, sw.neu ? neu.ndocs : 0, sw.neu ? neu.bytes : 0);
 	MemoryContextSwitchTo(old);
@@ -384,9 +377,9 @@ sift_maint_make_room(Relation index)
 	bool		room;
 	TimestampTz start = GetCurrentTimestamp();
 
-	maint_lock(index, true);
+	sift_maint_lock(index, true);
 	room = make_room_locked(index);
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	sift_log_stall(index, start);
 	return room;
 }
@@ -396,10 +389,10 @@ sift_maint_merge_step(Relation index, bool wait)
 {
 	bool		merged;
 
-	if (!maint_lock(index, wait))
+	if (!sift_maint_lock(index, wait))
 		return false;
 	merged = merge_locked(index, false);
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	return merged;
 }
 
@@ -462,7 +455,7 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	maint_lock(index, true);
+	sift_maint_lock(index, true);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -476,7 +469,7 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 		else
 			sift_mut_bulkdelete(index, &snap->segs[i], callback, callback_state, stats);
 	}
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	pfree(snap);
 	return stats;
 }
@@ -491,12 +484,12 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		return stats;
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	maint_lock(index, true);
+	sift_maint_lock(index, true);
 	promote_locked(index, false);
 	merge_locked(index, false);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	sift_dir_read(index, snap);
 	stats->num_pages = RelationGetNumberOfBlocks(index);
 	stats->estimated_count = false;
@@ -518,6 +511,12 @@ stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 bool
 sift_maint_request_async(Relation index)
 {
+	return sift_maint_request_worker(index, "sift_maint_worker_main");
+}
+
+bool
+sift_maint_request_worker(Relation index, const char *function)
+{
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TimestampTz now = GetCurrentTimestamp();
 	BackgroundWorker bw = {0};
@@ -534,7 +533,7 @@ sift_maint_request_async(Relation index)
 	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
-	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_maint_worker_main");
+	snprintf(bw.bgw_function_name, BGW_MAXLEN, "%s", function);
 	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", RelationGetRelid(index));
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
 	bw.bgw_main_arg = ObjectIdGetDatum(RelationGetRelid(index));
@@ -625,9 +624,9 @@ sift_promote(PG_FUNCTION_ARGS)
 	Relation	index = open_sift_index(PG_GETARG_OID(0));
 	int			n;
 
-	maint_lock(index, true);
+	sift_maint_lock(index, true);
 	n = promote_locked(index, true);
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT32(n);
 }
@@ -640,14 +639,14 @@ sift_merge(PG_FUNCTION_ARGS)
 	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
 	int			n = 0;
 
-	maint_lock(index, true);
+	sift_maint_lock(index, true);
 	promote_locked(index, false);
 	while (merge_locked(index, force && n == 0))
 	{
 		n++;
 		CHECK_FOR_INTERRUPTS();
 	}
-	maint_unlock(index);
+	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT32(n);
 }

@@ -122,8 +122,8 @@ aligned_pos(uint64 pos, uint32 align)
 	}
 }
 
-static Relation
-open_index(Oid relid, LOCKMODE mode)
+Relation
+sift_test_open_index(Oid relid, LOCKMODE mode)
 {
 	Relation	index = relation_open(relid, mode);
 
@@ -610,7 +610,7 @@ sift_test_am_handler(PG_FUNCTION_ARGS)
 Datum
 sift_test_seg_write(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	int64		nbytes = PG_GETARG_INT64(1);
 	int32		piece = PG_GETARG_INT32(3);
 	int32		align = PG_GETARG_INT32(4);
@@ -626,7 +626,7 @@ sift_test_seg_write(PG_FUNCTION_ARGS)
 Datum
 sift_test_seg_read(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TestSeg		seg;
 	int64		n = -1;
@@ -643,7 +643,7 @@ sift_test_seg_read(PG_FUNCTION_ARGS)
 Datum
 sift_test_seg_drop(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	int64		n = seg_drop(index, PG_GETARG_INT64(1));
 
 	relation_close(index, RowExclusiveLock);
@@ -654,7 +654,7 @@ Datum
 sift_test_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftDirSnapshot *tmp = palloc(sizeof(SiftDirSnapshot));
 
@@ -682,7 +682,7 @@ sift_test_segments(PG_FUNCTION_ARGS)
 Datum
 sift_test_alloc(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	int32		nblocks = PG_GETARG_INT32(1);
 	int32		count = PG_GETARG_INT32(2);
 	BlockNumber last;
@@ -697,7 +697,7 @@ sift_test_alloc(PG_FUNCTION_ARGS)
 Datum
 sift_test_recycle(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	int			n = sift_recycle(index);
 
 	relation_close(index, RowExclusiveLock);
@@ -710,7 +710,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 {
 	bool		standby = RecoveryInProgress();
 	LOCKMODE	mode = standby ? AccessShareLock : RowExclusiveLock;
-	Relation	index = open_index(PG_GETARG_OID(0), mode);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), mode);
 	int64		n;
 
 	if (!standby)
@@ -726,7 +726,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 Datum
 sift_test_sweep(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	int64		n = sweep(index);
 
 	relation_close(index, RowExclusiveLock);
@@ -746,7 +746,7 @@ Datum
 sift_test_info(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SMgrRelation smgr = RelationGetSmgr(index);
 	SiftDirSnapshot snap;
 	int64		pages = 0;
@@ -802,7 +802,7 @@ Datum
 sift_test_freelist(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot snap;
 	BlockNumber blk;
 
@@ -834,7 +834,7 @@ sift_test_freelist(PG_FUNCTION_ARGS)
 Datum
 sift_test_page(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
 	Page		page;
 	TupleDesc	desc;
@@ -858,7 +858,7 @@ sift_test_page(PG_FUNCTION_ARGS)
 Datum
 sift_test_poke(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
 	int32		off = PG_GETARG_INT32(2);
 	int64		value = PG_GETARG_INT64(3);
@@ -883,7 +883,7 @@ Datum
 sift_test_churn(PG_FUNCTION_ARGS)
 {
 	static const uint32 aligns[] = {0, 0, 8, 64};
-	Relation	index = open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	uint64		rng = PG_GETARG_INT64(1);
 	int64		maxbytes = Max(PG_GETARG_INT64(2), 1);
 	uint64		op = mix64(rng++) % 100;

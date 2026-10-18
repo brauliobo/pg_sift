@@ -7,7 +7,7 @@
 #include <cpuid.h>
 #endif
 
-#define SIFT_MAX_REBINDS 8
+#define SIFT_MAX_REBINDS 16
 
 SiftCpu		sift_cpu;
 
