@@ -91,8 +91,7 @@ Open (not fixed, each a work item of the phases below): no host owns a `sift_col
 linked but its writer/reader path is only tested on PostgreSQL; the unit key space is heap TIDs (`MaxHeapTuplesPerPage` = 291 in the
 host shim, 256-page superblocks) and each host must choose its rowid mapping; `sift_shred_pg.c` has no counterpart (SQLite needs a
 driver over `json_each`/JSONB text, MariaDB over its JSON text); `SiftColVisibility` has no non-PG implementation (a manifest-only one
-is trivial); PostgreSQL's `numeric`/`jsonb`/`date` type OIDs inside `SiftColDef.typid` leak into the schema hash (a host maps its own
-types to `SiftColStore` and keeps `typid` as an opaque tag); the aggregate planner/executor (`sift_agg*.c`) and partial-state types
+is trivial); the aggregate planner/executor (`sift_agg*.c`) and partial-state types
 are PG; `make isa-check` and the sanitizer targets do not cover the column objects yet.
 
 ## 5. Recommendation
@@ -114,5 +113,4 @@ phase 2 shows demand and legal has answered; 3a is optional and only worth it if
 
 Decisions needed: (a) accept the `sift_col_pg.h` split and its three one-line includes in files other work touches; (b) rowid mapping
 for SQLite (`>> 8`, above) and whether its segments may differ in unit size from PostgreSQL's; (c) vendoring LZ4/zstd in the SQLite
-release artifact; (d) GPL sign-off for any MariaDB engine; (e) whether `typid` becomes an opaque tag in the format (a format change,
-so before 3.0 final if at all).
+release artifact; (d) GPL sign-off for any MariaDB engine; (e) none: the leaf type in the format is the host-independent tag `SiftColType` (done, column format version 1), PostgreSQL OIDs are mapped at the PG boundary only.

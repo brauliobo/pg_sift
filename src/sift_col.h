@@ -18,7 +18,7 @@
 #include "sift_col_kern.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	0			/* SiftSegEntry.format of a col segment */
+#define SIFT_COL_FORMAT_MINOR	1			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_STR		255
@@ -57,6 +57,31 @@ typedef enum SiftColStore
 
 #define SIFT_COLD_LOSSY		0x0001	/* shredded path whose values may not fit the declared type: predicates on it must not be pushed down */
 
+/*
+ * Logical type of a leaf, part of the stored schema and of its hash. It is a tag of the format, not of any host: a host maps its own types
+ * to it at its boundary (the PostgreSQL side is sift_col_pg.h) and keeps what it cannot name here as OTHER, resolving the exact type from
+ * its own catalog. The tag never changes how a chunk is stored (that is the storage class).
+ */
+typedef enum SiftColType
+{
+	SIFT_COLT_OTHER = 0,
+	SIFT_COLT_BOOL,
+	SIFT_COLT_INT2,
+	SIFT_COLT_INT4,
+	SIFT_COLT_INT8,
+	SIFT_COLT_FLOAT4,
+	SIFT_COLT_FLOAT8,
+	SIFT_COLT_NUMERIC,			/* exact decimal; a scaled integer (SiftColDef.scale) in the INT class */
+	SIFT_COLT_TEXT,				/* text, varchar, char(n), name */
+	SIFT_COLT_BYTEA,
+	SIFT_COLT_DATE,
+	SIFT_COLT_TIMESTAMP,
+	SIFT_COLT_TIMESTAMPTZ,
+	SIFT_COLT_UUID,
+	SIFT_COLT_JSONB,
+	SIFT_COLT_END
+} SiftColType;
+
 typedef struct SiftColDef
 {
 	int16		id;				/* position in the leaf list, 0..ncols-1 */
@@ -65,7 +90,7 @@ typedef struct SiftColDef
 	uint8		store;			/* SiftColStore */
 	uint16		flags;			/* SIFT_COLD_* */
 	int16		attno;			/* 1-based attribute of the index the leaf comes from */
-	Oid			typid;			/* type of the values the leaf yields to SQL: int2/4/8, bool, date, timestamp(tz), float4/8, text... */
+	uint8		type;			/* SiftColType: the logical type of the values the leaf yields to the host */
 	const char *path;			/* "" for a plain attribute, else the shredder's path text (e.g. items[].category) */
 	uint8		scale;			/* numeric(p <= 18, s): digits after the decimal point; the INT value is the number times 10^scale. 0 otherwise */
 } SiftColDef;

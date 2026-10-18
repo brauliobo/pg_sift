@@ -84,7 +84,7 @@ leaf_vtype(const SiftColDef *def)
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID) ? SCV_I64 : SCV_I32;
+			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -118,10 +118,11 @@ tbl_layout(Relation rel)
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftColDef *def = &cur->cols[i];
+		Oid			typid = sift_col_def_typid(desc, def);
 		SiftColStore store;
 
-		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),.typid = def->typid,
-		.lossy = def->typid == NUMERICOID || !sift_col_leaf_store(def->typid, &store)};
+		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),.typid = typid,
+		.lossy = def->type == SIFT_COLT_NUMERIC || !sift_col_leaf_store(typid, &store)};
 	}
 	return lay;
 }

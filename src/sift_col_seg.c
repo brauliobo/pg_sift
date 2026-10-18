@@ -392,12 +392,12 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format > SIFT_COL_FORMAT_MINOR)
+	if (entry->format != SIFT_COL_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads up to 1.%d",
+				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
-				 errhint("Use a newer pg_sift, or REINDEX.")));
+				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
 	buf = ReadBuffer(index, entry->header_blk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);

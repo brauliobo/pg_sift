@@ -21,6 +21,14 @@ For each chunk it picks, from exact sizes, the
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
 
+- Changed (column format 1.1, clean break from the pre-release 1.0): the leaf type in the stored schema is a host-independent tag
+  (`SiftColType`: bool, int2/4/8, float4/8, numeric, text, bytea, date, timestamp(tz), uuid, jsonb, other) instead of a PostgreSQL type OID, so
+  the format and its schema hash port to other hosts; the OIDs are mapped at the PostgreSQL boundary only (`sift_col_type_of_oid`,
+  `sift_col_def_typid`). Segments written by a build before this one are refused with a REINDEX hint.
+
+- Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
+  `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.
+
 - Added: aggregate pushdown on column indexes (`sift.enable_agg`, default on). A `GROUP BY` query over a table with a `sift_col` index
   (or over a lateral unnest of an indexed jsonb array or object) with `count`, `count(DISTINCT)`, `sum`, `avg`, `min` and `max`, filters,
   `IN` lists and group keys that are expressions of one column runs as `Custom Scan (SiftAgg)` on the column data when the planner can
