@@ -319,42 +319,98 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
 	return d->bytes + d->off[code];
 }
 
+/*
+ * A serialized dictionary starts with u32 form, u32 n. The plain form (0) goes on with u32 off[n + 1] and the bytes; the string list form
+ * (1) with the codec's list (the lengths as an integer cascade, the bytes under the cold wrapper rule), which starts 8-aligned.
+ */
+#define DICT_PLAIN		0
+#define DICT_STRS		1
+#define DICT_HEAD		(2 * sizeof(uint32))
+
 void
-sift_cdict_serialize(const SiftCDict *d, StringInfo out)
+sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, StringInfo out)
 {
+	Size		plain = sizeof(uint32) * (d->n + 1) + d->nbytes;
+	uint32		form = DICT_PLAIN;
+	StringInfoData z;
+
+	z.data = NULL;
+	if (pol != NULL && pol->mode != SIFT_CCM_NONE && d->n <= SIFT_CC_MAXROWS && plain >= SIFT_CC_MIN_WRAP)
+	{
+		initStringInfo(&z);
+		sift_cc_encode_strs(&z, d->off, d->bytes, d->n, pol);
+		if ((Size) z.len < plain)
+			form = DICT_STRS;
+	}
+	put_val(out, form);
 	put_val(out, d->n);
-	put_bytes(out, d->off, (d->n + 1) * sizeof(uint32));
-	put_bytes(out, d->bytes, d->nbytes);
+	if (form == DICT_STRS)
+		put_bytes(out, z.data, z.len);
+	else
+	{
+		put_bytes(out, d->off, (d->n + 1) * sizeof(uint32));
+		put_bytes(out, d->bytes, d->nbytes);
+	}
+	if (z.data)
+		pfree(z.data);
+}
+
+/* A dictionary of n strings: off[n + 1] and bytes[off[n]] are copied */
+static SiftCDict *
+cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
+{
+	SiftCDict  *d;
+
+	if (off[0] != 0)
+		return NULL;
+	d = sift_cdict_create(mcxt);
+	d->n = n;
+	d->cap = Max(n, DICT_MINCAP);
+	d->off = MemoryContextAlloc(mcxt, ((Size) d->cap + 1) * sizeof(uint32));
+	memcpy(d->off, off, ((Size) n + 1) * sizeof(uint32));
+	d->nbytes = d->off[n];
+	for (uint32 c = 0; c < n; c++)
+		if (d->off[c + 1] < d->off[c] || cdict_len(d, c) > SIFT_COL_DICT_MAX_ENTRY)
+			return NULL;
+	d->bytescap = Max(d->nbytes, 256);
+	d->bytes = MemoryContextAlloc(mcxt, d->bytescap);
+	memcpy(d->bytes, bytes, d->nbytes);
+	return d;
 }
 
 SiftCDict *
 sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 {
 	const uint8 *p = data;
-	uint32		n;
-	SiftCDict  *d;
+	uint32		head[2],
+				nbytes;
 
-	if (len < sizeof(uint32))
+	if (len < DICT_HEAD)
 		return NULL;
-	memcpy(&n, p, sizeof(n));
-	if ((len - sizeof(uint32)) / sizeof(uint32) < (Size) n + 1)
-		return NULL;
-	d = sift_cdict_create(mcxt);
-	d->n = n;
-	d->cap = Max(n, DICT_MINCAP);
-	d->off = MemoryContextAlloc(mcxt, ((Size) d->cap + 1) * sizeof(uint32));
-	memcpy(d->off, p + sizeof(uint32), ((Size) n + 1) * sizeof(uint32));
-	d->nbytes = d->off[n];
-	if (d->off[0] != 0 || len - sizeof(uint32) - ((Size) n + 1) * sizeof(uint32) < d->nbytes)
-		return NULL;
-	for (uint32 c = 0; c < n; c++)
-		if (d->off[c + 1] < d->off[c] || cdict_len(d, c) > SIFT_COL_DICT_MAX_ENTRY)
+	memcpy(head, p, DICT_HEAD);
+	p += DICT_HEAD;
+	len -= DICT_HEAD;
+	if (head[0] == DICT_STRS)
+	{
+		uint32	   *off;
+		char	   *bytes;
+		SiftCDict  *d;
+
+		if (sift_cc_decode_strs(mcxt, p, len, &off, &bytes) != head[1])
 			return NULL;
-	d->bytescap = Max(d->nbytes, 256);
-	d->bytes = MemoryContextAlloc(mcxt, d->bytescap);
-	memcpy(d->bytes, p + sizeof(uint32) * (n + 2), d->nbytes);
-	*used = sizeof(uint32) * (n + 2) + d->nbytes;
-	return d;
+		d = cdict_from(mcxt, head[1], off, bytes);
+		pfree(off);
+		pfree(bytes);
+		*used = DICT_HEAD + len;
+		return d;
+	}
+	if (head[0] != DICT_PLAIN || len / sizeof(uint32) < (Size) head[1] + 1)
+		return NULL;
+	memcpy(&nbytes, p + sizeof(uint32) * head[1], sizeof(nbytes));
+	if (len - sizeof(uint32) * ((Size) head[1] + 1) < nbytes)
+		return NULL;
+	*used = DICT_HEAD + sizeof(uint32) * ((Size) head[1] + 1) + nbytes;
+	return cdict_from(mcxt, head[1], (const uint32 *) p, (const char *) (p + sizeof(uint32) * ((Size) head[1] + 1)));
 }
 
 void

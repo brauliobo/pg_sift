@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 2)
+## 2. Format (format major 1, col minor 3)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -157,8 +157,12 @@ rows are then filtered by `lut_u8/u16/u32`. Range operators on text are only mea
 
 ### 2.3 Dictionaries
 
-Per segment and STR leaf, in the order the values were first seen (code = first-seen order): `u32 n`, `u32 off[n + 1]`, bytes (no padding;
-`sift_cdict_parse` reports the bytes used, and refuses an entry over 255 bytes: longer strings are never entries, section 2.9). Codes are
+Per segment and STR leaf, in the order the values were first seen (code = first-seen order), starting 8-aligned: `u32 form`, `u32 n`, then for form 0 (plain)
+`u32 off[n + 1]` and the bytes (no padding), for form 1 the codec's string list (`sift_cc_encode_strs`: the lengths as an integer cascade, the bytes
+under the cold wrapper rule of docs/perf/COMPRESSION.md 5.4: LZ4 or zstd where they save a share worth the unwrap). The writer takes form 1 when the leaf's
+`compression` is not `none` and the list is smaller than the plain form (a dictionary of 30 countries stays plain, one of 150,000 titles is 4.4 MB plain
+and 0.95 MB as a list); `sift_cdict_parse` reports the bytes used and refuses an entry over 255 bytes: longer strings are never entries, section 2.9.
+The dictionary is read whole by the first scan that needs a code of the leaf (the unwrap is paid once per segment and query, at 1 to 2 GB/s). Codes are
 dense 0..n-1 inside the segment and are **not comparable across segments or ordered**; a query that groups across segments maps codes to
 values (`SiftColDict`), and the filter translates constants to codes per segment. A merge rebuilds the dictionary (kept in first-seen order
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
@@ -361,8 +365,8 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 2 is the first a release reads: segments
-  of the pre-release minors 0 (leaf types as PostgreSQL OIDs) and 1 (no pre-aggregates) are not read.
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads: segments
+  of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
 
@@ -593,6 +597,7 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy. A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
 - 2026-10 (decode): `sift_col_read_lane`, `sift_col_lane_n`, `SiftColLane`, `SiftColLaneInfo`; `sift_colsrc_leaf_n`, `sift_colsrc_read_into`, `SiftSrcBuf` and the provider slots `leaf_n`, `read_into`; `SiftColKernels.f8_from_keys`, `bits_to_flags`; `SiftCcKernels.scale32`, `scale64`, `alp_f8`, `alp_f4`, `sift_cc_decode_u32`, `sift_cc_decode_f8`, `sift_cchunk_decode_u32`, `sift_cchunk_decode_f8`; **`SiftColKernels.expand_parents` writes up to `SIFT_COL_PAD` bytes past `end[np - 1]`**: allocate the room; `SiftCUnitView.page`; `SiftColLeafStats`, `sift_cseg_leaf_stats`, `sift_col_leaf_stats`; `SiftSrcStats.ndistinct`, `min`, `max` and `elems_per_row` are filled (section 5).
 - 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`

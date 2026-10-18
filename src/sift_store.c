@@ -29,6 +29,7 @@
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
+#include "sift_col.h"
 #include "sift_estimate.h"
 #include "sift_store.h"
 
@@ -762,7 +763,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
-		else if (s->format > SIFT_FORMAT_MINOR)
+		else if (s->format > Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MINOR))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
 			if (dir->segs[j].gen == s->gen)
@@ -835,7 +836,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is 0) */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
-			META(mp)->format_minor = Max(META(mp)->format_minor, DIR(dp)->segs[i].format);
+			META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));	/* a column segment's format is its own (sift_col.h) */
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
