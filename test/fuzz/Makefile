@@ -29,10 +29,15 @@ CC      ?= gcc
 COV      = -fsanitize-coverage=trace-pc
 endif
 
-SAN      = -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer
+# SAN, DSAN (the driver's) and DEFS/COLZ can be replaced: MSan needs SAN='-fsanitize=memory -fsanitize-memory-track-origins' DEFS= COLZ= (lz4 and zstd are
+# not instrumented), valgrind needs SAN='-fno-omit-frame-pointer' DSAN= COV= FZ_DRIVER=1 (docs/SAFETY.md)
+SAN     ?= -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer
+DSAN    ?= -fsanitize=address,undefined
+DEFS    ?= -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
+COLZ    ?= -lzstd -llz4
 CFLAGS  += -std=gnu11 -O1 -g $(SAN) -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare -I$(SRC) -I$(KT) -I. -I$(PGINC) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD -D_GNU_SOURCE
-LDLIBS   = -lm -lzstd -llz4 $(PGLIB) -lpgport -lpgcommon
+           -Wno-sign-compare -I$(SRC) -I$(KT) -I. -I$(PGINC) $(DEFS) -D_GNU_SOURCE
+LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
 CORE     = sift_colcodec sift_colcodec_kern sift_colcodec_avx2 sift_colcodec_avx512 sift_colz sift_col_kern sift_col_kern_avx2 \
@@ -67,7 +72,7 @@ $(OUT)/fz_%.o: fz_%.c $(HDR)
 # the driver is not instrumented: it is the callback
 $(OUT)/fz_driver.o: fz_driver.c
 	@mkdir -p $(OUT)
-	$(CC) -O1 -g -fsanitize=address,undefined -c -o $@ $<
+	$(CC) -O1 -g $(DSAN) -c -o $@ $<
 
 $(OUT)/colchunk: $(OUT)/fz_colchunk.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
