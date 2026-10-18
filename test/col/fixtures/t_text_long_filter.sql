@@ -1,6 +1,6 @@
 -- flat: an equality, an IN list and a prefix on text longer than a dictionary entry
 -- shape: flat
--- expect: any
+-- expect: agg
 -- key: -
 -- scenario: yes
 SELECT count(*) AS eq, count(*) FILTER (WHERE t LIKE 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb%' COLLATE "C") AS pre,

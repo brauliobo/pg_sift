@@ -5,7 +5,12 @@
 
 #include "nodes/makefuncs.h"
 #include "catalog/pg_operator_d.h"
+#include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/nodeFuncs.h"
+#include "utils/array.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "utils/date.h"
 #include "nodes/value.h"
 
@@ -104,6 +109,169 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 	for (int i = 0; i < s->npred; i++)
 		out = zone_cmps(out, s->pred[i], lay, nbase);
 	return out;
+}
+
+/* ---------- text tests on the encoded form ---------- */
+
+static Node *
+strip_relabel(Node *n)
+{
+	while (n && IsA(n, RelabelType))
+		n = (Node *) ((RelabelType *) n)->arg;
+	return n;
+}
+
+static bool
+text_type(Oid t)
+{
+	return t == TEXTOID || t == VARCHAROID;
+}
+
+/* a text constant that is not NULL */
+static bool
+str_const(Node *n, const char **s, uint32 *len)
+{
+	Const	   *k = (Const *) strip_relabel(n);
+	text	   *t;
+
+	if (!IsA(k, Const) || k->constisnull || !text_type(k->consttype))
+		return false;
+	t = DatumGetTextPP(k->constvalue);
+	*s = VARDATA_ANY(t);
+	*len = VARSIZE_ANY_EXHDR(t);
+	return true;
+}
+
+static SiftSrcStrOp
+str_commute(SiftSrcStrOp op)
+{
+	return op == SSTR_LT ? SSTR_GT : op == SSTR_LE ? SSTR_GE : op == SSTR_GT ? SSTR_LT : op == SSTR_GE ? SSTR_LE : op;
+}
+
+/* the comparison a text function is, or 0; the range operators and LIKE only compare bytes in the C collation or for a prefix */
+static SiftSrcStrOp
+str_func_op(Oid funcid)
+{
+	switch (funcid)
+	{
+		case F_TEXTEQ:
+			return SSTR_EQ;
+		case F_TEXTNE:
+			return SSTR_NE;
+		case F_TEXT_LT:
+			return SSTR_LT;
+		case F_TEXT_LE:
+			return SSTR_LE;
+		case F_TEXT_GT:
+			return SSTR_GT;
+		case F_TEXT_GE:
+			return SSTR_GE;
+		case F_TEXTLIKE:
+			return SSTR_PREFIX;
+	}
+	return 0;
+}
+
+/* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' */
+static bool
+str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
+{
+	Node	   *a,
+			   *b;
+	SiftSrcStrOp sop;
+	const char *s;
+	uint32		len;
+
+	set_opfuncid(op);
+	if (list_length(op->args) != 2 || (sop = str_func_op(op->opfuncid)) == 0)
+		return false;
+	a = strip_relabel(linitial(op->args));
+	b = strip_relabel(lsecond(op->args));
+	if (IsA(b, Param) && sop != SSTR_PREFIX)
+	{
+		Node	   *t = a;
+
+		a = b;
+		b = t;
+		sop = str_commute(sop);
+	}
+	if (!IsA(a, Param) || !str_const(b, &s, &len))
+		return false;
+	if (sop == SSTR_PREFIX)
+	{
+		/* 'abc%': a LIKE with no other wildcard is bytewise for every deterministic collation */
+		if (len < 2 || s[len - 1] != '%' || memchr(s, '%', len - 1) || memchr(s, '_', len - 1) || memchr(s, '\\', len - 1))
+			return false;
+		len--;
+	}
+	if (sop >= SSTR_LT && sop <= SSTR_GE ? op->inputcollid != C_COLLATION_OID : !get_collation_isdeterministic(op->inputcollid))
+		return false;
+	out->op = sop;
+	out->nvals = 1;
+	out->vals = palloc(sizeof(char *));
+	out->lens = palloc(sizeof(uint32));
+	((const char **) out->vals)[0] = s;
+	((uint32 *) out->lens)[0] = len;
+	return true;
+}
+
+/* leaf = ANY (constants), leaf <> ALL (constants); a NULL among the constants never matches, and makes NOT IN false for every row */
+static bool
+str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
+{
+	Const	   *k;
+	Datum	   *el;
+	bool	   *nl;
+	int			ne,
+				n = 0;
+	const char **vals;
+	uint32	   *lens;
+
+	set_sa_opfuncid(sa);
+	if (list_length(sa->args) != 2 || !IsA(strip_relabel(linitial(sa->args)), Param) ||
+		!((sa->useOr && sa->opfuncid == F_TEXTEQ) || (!sa->useOr && sa->opfuncid == F_TEXTNE)) ||
+		!get_collation_isdeterministic(sa->inputcollid))
+		return false;
+	k = (Const *) lsecond(sa->args);
+	if (!IsA(k, Const) || k->constisnull || !text_type(get_element_type(k->consttype)))
+		return false;
+	deconstruct_array(DatumGetArrayTypeP(k->constvalue), get_element_type(k->consttype), -1, false, TYPALIGN_INT, &el, &nl, &ne);
+	vals = palloc(Max(ne, 1) * sizeof(char *));
+	lens = palloc(Max(ne, 1) * sizeof(uint32));
+	for (int i = 0; i < ne; i++)
+	{
+		if (nl[i])
+		{
+			if (sa->useOr)
+				continue;
+			return false;
+		}
+		vals[n] = VARDATA_ANY(DatumGetPointer(el[i]));
+		lens[n++] = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]));
+	}
+	if (n == 0)
+		return false;
+	out->op = sa->useOr ? SSTR_IN : SSTR_NOTIN;
+	out->nvals = n;
+	out->vals = vals;
+	out->lens = lens;
+	return true;
+}
+
+bool
+sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out)
+{
+	const SiftSrcLeaf *lf;
+	Node	   *e;
+
+	if (p->kind != SAP_LUT || p->level != 0)
+		return false;
+	lf = &lay->leaf[p->leaf];
+	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
+		return false;
+	out->leaf = p->leaf;
+	e = strip_relabel(p->expr);
+	return IsA(e, OpExpr) ? str_cmp_test((OpExpr *) e, out) : IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
 }
 
 static bool

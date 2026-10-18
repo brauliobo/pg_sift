@@ -3289,6 +3289,9 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
+#define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
+#define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
+#define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
 
 static double
 elems_of(AggCtx *c, int grp)
@@ -3374,6 +3377,69 @@ zone_kept(AggCtx *c, SiftAggSpec *s)
 	return kept;
 }
 
+static bool
+pred_uses_leaf(const SiftAggPred *p, int leaf)
+{
+	if (p == NULL)
+		return false;
+	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf == leaf)
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_uses_leaf(p->child[i], leaf))
+			return true;
+	return false;
+}
+
+/* is the leaf read by something besides the text tests that run on the encoded strings? */
+static bool
+leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
+{
+	SiftSrcStrTest t;
+
+	/* combos and joins read leaves in ways not followed here */
+	if (s->ncombo > 0 || c->joins != NIL)
+		return true;
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].leaf == leaf && s->key[i].kind != SAK_NUM && s->key[i].kind != SAK_SET)
+			return true;
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].leaf == leaf || pred_uses_leaf(s->agg[i].filter, leaf))
+			return true;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s->pred[i], leaf) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, &t)))
+			return true;
+	return false;
+}
+
+/* The average width of the heap column a plain text leaf is read from (0: unknown, or the leaf is a jsonb path or an expression) */
+static int
+leaf_width(AggCtx *c, int leaf)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+
+	return e && IsA(e, Var) ? get_attavgwidth(planner_rt_fetch(c->relid, c->root)->relid, ((Var *) e)->varattno) : 0;
+}
+
+/*
+ * Text leaves of long strings: a unit stores the strings inline, and reading the leaf as codes builds a dictionary of the unit
+ * (measured 0.5 us a row, which the heap scan beats when few rows pass); a test on the encoded strings costs a few ns a row.
+ */
+static double
+inline_text_cost(AggCtx *c, SiftAggSpec *s)
+{
+	double		cost = 0;
+
+	for (int i = 0; i < s->nleaves; i++)
+	{
+		const SiftSrcLeaf *lf = &c->lay->leaf[s->leaves[i]];
+
+		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
+			cost += leaf_read_whole(c, s, s->leaves[i]) ? AGG_INLINE_ROW : AGG_INLINE_TEST;
+	}
+	return cost;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -3396,6 +3462,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
 		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
