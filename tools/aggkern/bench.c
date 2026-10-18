@@ -2,7 +2,8 @@
  * Aggregation operator throughput per level: ns per call over one vector of 4096 rows (and the speedup over scalar). Single thread
  * pinned to KT_CPU (default 2); run under flock /tmp/sift-perf.lock (make bench). Output is a markdown table.
  *
- * Inputs: random data, 50 % selection masks unless the row says otherwise (dens = fraction of rows selected).
+ * Inputs: random data, 50 % selection masks unless the row says otherwise (dens = fraction of rows selected). The bit vector and
+ * integer column operations are slots of the column kernels (tools/kernels bench col).
  */
 #define _GNU_SOURCE
 #include "harness.h"
@@ -12,9 +13,6 @@
 
 #include "sift_aggkern_cases.h"
 
-extern int	alt_mask_sel_compressb(uint32 *sel, const uint64 *mask, int nw);
-extern int	alt_mask_sel_avx2_sparse(uint32 *sel, const uint64 *mask, int nw, int thr);
-extern int	alt_mask_sel_avx512_sparse(uint32 *sel, const uint64 *mask, int nw, int thr);
 extern double alt_sum_f64_a(const double *v, const uint64 *mask, int n);
 extern double alt_sum_f64_b(const double *v, const uint64 *mask, int n);
 extern double alt_sum_f64_c(const double *v, const uint64 *mask, int n);
@@ -111,26 +109,15 @@ main(void)
 			   *map2,
 			   *gid,
 			   *gid0,
-			   *parent,
-			   *sel,
-			   *ssel,
-			   *dst32;
-	uint64	   *dst64,
-			   *out,
-			   *w2,
+			   *parent;
+	uint64	   *out,
 			   *rowmask,
 			   *m50,
-			   *m1,
-			   *m10,
-			   *m100,
 			   *mb;
-	uint8	   *lut,
-			   *lut2,
-			   *bytes;
+	uint8	   *lut2;
 	int64	   *cnt,
 			   *iacc;
 	double	   *facc;
-	int			nsel;
 
 	CPU_ZERO(&set);
 	CPU_SET(cpu, &set);
@@ -150,21 +137,11 @@ main(void)
 	gid = arr(N * 4);
 	gid0 = arr(N * 4);
 	parent = arr(N * 4);
-	sel = arr(N * 4 + 64);
-	ssel = arr(N * 4 + 64);
-	dst32 = arr(N * 4);
-	dst64 = arr(N * 8);
 	out = arr(NW * 8);
-	w2 = arr(NW * 8);
 	rowmask = arr(NW * 8);
 	m50 = make_mask(0.5);
-	m1 = make_mask(0.01);
-	m10 = make_mask(0.1);
-	m100 = make_mask(1.0);
 	mb = make_mask(0.3);
-	lut = arr(1024);
 	lut2 = arr(1000);
-	bytes = arr(N);
 	cnt = arr(64 * 8);
 	iacc = arr(64 * 8);
 	facc = arr(64 * 8);
@@ -187,13 +164,9 @@ main(void)
 		gid[i] = agk_below(&rng, 64);
 		gid0[i] = agk_below(&rng, 100);
 		parent[i] = i / 4;
-		bytes[i] = agk_below(&rng, 2);
 	}
 	for (int i = 0; i < 1024; i++)
-	{
-		lut[i] = agk_below(&rng, 2);
 		map[i] = agk_below(&rng, 16);
-	}
 	for (int i = 0; i < 1000; i++)
 	{
 		lut2[i] = agk_below(&rng, 2);
@@ -203,7 +176,6 @@ main(void)
 		rowmask[i] = agk_next(&rng);
 	for (int i = 0; i < 64; i++)
 		facc[i] = 0, iacc[i] = 0, cnt[i] = 0;
-	nsel = sift_aggkern_scalar.mask_sel(ssel, m50, NW);
 
 	printf("Vector of %d rows; ns per call, speedup over scalar\n\n| operator | scalar |", N);
 	for (int l = 1; l < nlevels; l++)
@@ -213,28 +185,11 @@ main(void)
 		printf("---|---|");
 	printf("\n");
 
-	ROW("cmp_i32 <", k->cmp_i32(out, i32, N, SCMP_LT, 500000));
-	ROW("cmp_i32 ==", k->cmp_i32(out, i32, N, SCMP_EQ, 500000));
-	ROW("cmp_i64 <", k->cmp_i64(out, i64, N, SCMP_LT, INT64CONST(1) << 39));
 	ROW("cmp_f64 <", k->cmp_f64(out, f64, N, SCMP_LT, 500));
 	ROW("cmp_f64 >", k->cmp_f64(out, f64, N, SCMP_GT, 500));
-	ROW("between_i32", k->between_i32(out, i32, N, 250000, 750000));
-	ROW("between_i64", k->between_i64(out, i64, N, INT64CONST(1) << 38, INT64CONST(3) << 38));
 	ROW("between_f64", k->between_f64(out, f64, N, 250, 750));
-	ROW("lut_code (1024 codes)", k->lut_code(out, code, N, lut));
 	ROW("lut_i32 (1000 entries)", k->lut_i32(out, v2, N, 10, 1000, lut2));
-	ROW("bytes_mask", k->bytes_mask(out, bytes, N));
-	ROW("and_w", k->and_w(w2, m50, NW));
-	ROW("or_w", k->or_w(w2, m50, NW));
-	ROW("andnot_w", k->andnot_w(w2, m50, NW));
-	ROW("popcount_w", sink = k->popcount_w(m50, NW));
 	ROW("gather_bits (4 elements per row)", k->gather_bits(out, rowmask, parent, N));
-	ROW("mask_sel 1 %", sink = k->mask_sel(sel, m1, NW));
-	ROW("mask_sel 10 %", sink = k->mask_sel(sel, m10, NW));
-	ROW("mask_sel 50 %", sink = k->mask_sel(sel, m50, NW));
-	ROW("mask_sel 100 %", sink = k->mask_sel(sel, m100, NW));
-	ROW("gather_u32 (2048 of 4096)", k->gather_u32(dst32, code, ssel, nsel));
-	ROW("gather_u64 (2048 of 4096)", k->gather_u64(dst64, (const uint64 *) i64, ssel, nsel));
 	ROW("gid_code", k->gid_code(gid0, code, map, N, 4));
 	ROW("gid_i32", k->gid_i32(gid0, k32, -5, map2, N, 4));
 	ROW("sum_i32 all rows", sink = k->sum_i32(i32, NULL, N));
@@ -266,34 +221,6 @@ main(void)
 		ROW("count_changes all rows (10 % change)", sink = k->count_changes(runs, NULL, N, &prev));
 		ROW("count_changes 30 %", sink = k->count_changes(runs, mb, N, &prev));
 		ROW("count_changes 50 %", sink = k->count_changes(runs, m50, N, &prev));
-	}
-	printf("\nCandidate designs (ns per call):\n\n| mask_sel design | 1 %% | 10 %% | 50 %% | 100 %% |\n|---|---|---|---|---|\n");
-	{
-		uint64	   *ms[] = {m1, m10, m50, m100};
-		static const int thr[] = {0, 2, 4, 8, 16};
-
-		if (sift_aggkern_for(SIFT_SIMD_AVX2) != &sift_aggkern_scalar)
-			for (int t = 0; t < lengthof(thr); t++)
-			{
-				printf("| AVX2, words with <= %d bits scalar |", thr[t]);
-				for (int d = 0; d < 4; d++)
-					printf(" %.0f |", BENCH(sink = alt_mask_sel_avx2_sparse(sel, ms[d], NW, thr[t])));
-				printf("\n");
-			}
-		if (sift_aggkern_for(SIFT_SIMD_AVX512) != sift_aggkern_for(SIFT_SIMD_AVX2))
-		{
-			for (int t = 0; t < lengthof(thr); t++)
-			{
-				printf("| AVX-512 VPCOMPRESSD, words with <= %d bits scalar |", thr[t]);
-				for (int d = 0; d < 4; d++)
-					printf(" %.0f |", BENCH(sink = alt_mask_sel_avx512_sparse(sel, ms[d], NW, thr[t])));
-				printf("\n");
-			}
-			printf("| AVX-512 VPCOMPRESSB |");
-			for (int d = 0; d < 4; d++)
-				printf(" %.0f |", BENCH(sink = alt_mask_sel_compressb(sel, ms[d], NW)));
-			printf("\n");
-		}
 	}
 	if (sift_aggkern_for(SIFT_SIMD_AVX512) != sift_aggkern_for(SIFT_SIMD_AVX2))
 		printf("\n| sum_f64, AVX-512 selection | 50 %% | all rows |\n|---|---|---|\n| zeroing masked load | %.0f | |\n"
