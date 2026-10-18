@@ -143,7 +143,7 @@ run_case(const SiftKernels *k, const Case *c, Out *o)
 	k->tf_decode(o->tf, c->stream, c->stream + c->l1n, c->stream + c->l1n + c->nibn, &p, c->count);
 	memset(o->tf + c->count, 0, sizeof(o->tf) - c->count);
 	o->pos = p;
-	o->nex = k->expand(o->ex, c->base, c->rank, 8);
+	o->nex = k->expand(o->ex, c->mask, c->base, c->rank, c->p0.nib, 8);
 	k->vm_allvisible(o->pm, c->vm);
 	k->ub_accum(o->ub, c->bounds, c->w, 61);
 }
