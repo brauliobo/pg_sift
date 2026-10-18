@@ -4524,6 +4524,8 @@ typedef struct ArmIn
 	CteSub		sub;
 	List	   *cols;			/* the expressions of its output columns */
 	List	   *group;			/* its group expressions */
+	List	   *gsgc;			/* their SortGroupClauses */
+	List	   *used;			/* the group expressions that are an outer key */
 	List	   *quals;			/* its WHERE, when it reads a common table expression */
 	Node	   *id;				/* the group expression that is unique per row */
 	SiftAggArm *out;
@@ -4877,6 +4879,51 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 }
 
 /*
+ * A cell is an inner group, the share of one row in one group of an arm. When an arm groups by more than the outer keys and its id, one
+ * row has several cells in an outer group, so the group expressions that are no outer key are keys of the cells: one key each, shared by
+ * the arms that have an equal expression, after the outer keys and before the number of the set. They name no group (a group has id 0
+ * for them, and the scan emits NULL).
+ */
+static bool
+hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist, bool sets)
+{
+	int			nouter = s->nkeys;
+	List	   *defs = NIL;
+
+	for (int k = 0; k < narms; k++)
+		for (int i = 0; i < list_length(arms[k].group); i++)
+		{
+			Node	   *g = list_nth(arms[k].group, i);
+			SortGroupClause *sgc = list_nth_node(SortGroupClause, arms[k].gsgc, i);
+			int			pos;
+			SiftAggKey *key;
+
+			if (equal(g, arms[k].id) || list_member(arms[k].used, g))
+				continue;
+			pos = -1;
+			foreach_ptr(Node, d, defs)
+				if (equal(d, g))
+					pos = foreach_current_index(d);
+			if (pos < 0)
+			{
+				if (s->nkeys + sets >= SIFT_AGG_MAX_KEYS)
+					return false;
+				key = &s->key[s->nkeys];
+				if (!compile_key(c, sgc, g, key))
+					return false;
+				combo_set_key(c, key, s->nkeys);
+				*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) makeNullConst(key->typid, key->typmod, key->collid),
+																   list_length(*scan_tlist) + 1, NULL, false));
+				defs = lappend(defs, g);
+				pos = s->nkeys++ - nouter;
+			}
+			arms[k].out->hmask |= (uint32) 1 << (nouter + pos);
+		}
+	s->nhidden = s->nkeys - nouter;
+	return true;
+}
+
+/*
  * The outer query aggregates the rows of its FROM item, the arms: a UNION ALL of aggregates (or one) of the same scan, each grouped by
  * a unique row id and by outer keys (a NULL constant where an arm has none of them): see SiftAggArm. The arms are read from their
  * planned roots, so that group expressions and constants are in the planner's final form; an arm that reads a common table
@@ -4900,6 +4947,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	int			okey[SIFT_AGG_MAX_KEYS];
 	int			ncols = 0;
 	List	   *gates = NIL;
+	int			nkeyslots = list_length(parse->groupClause) + 1;
 
 	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
 		return;
@@ -4943,6 +4991,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
 
 			in->group = lappend(in->group, g);
+			in->gsgc = lappend(in->gsgc, sgc);
 			if (unique_row_column(c, g))
 			{
 				in->id = g;
@@ -4985,7 +5034,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	}
 
 	/* the outer keys: columns that every arm groups by or has as NULL */
-	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
+	for (int k = 0; k < narms; k++)
+		nkeyslots += list_length(arms[k].group);
+	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
@@ -5003,6 +5054,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			if (!list_member(arms[k].group, x) || equal(x, arms[k].id) || (def != NULL && !equal(x, def)))
 				return;
 			def = x;
+			arms[k].used = lappend(arms[k].used, x);
 			arms[k].out->keymask |= 1 << s->nkeys;
 		}
 		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
@@ -5012,10 +5064,8 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
 		s->nkeys++;
 	}
-	/* an inner group is the share of one row in an outer group: every group expression is an outer key (but the id) */
-	for (int k = 0; k < narms; k++)
-		if (list_length(arms[k].group) != 1 + pg_popcount32(arms[k].out->keymask))
-			return;
+	if (!hidden_keys(c, s, arms, narms, &scan_tlist, parse->groupingSets != NIL))
+		return;
 	if (parse->groupingSets != NIL)
 		add_sets(parse, s, &scan_tlist);
 
