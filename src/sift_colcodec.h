@@ -132,6 +132,8 @@ extern uint8 sift_cc_tag(const SiftCc *c);		/* tag of the root node under any wr
 
 /* dst[0..n) = the keys; dst needs n + SIFT_COL_PAD/8 slots */
 extern void sift_cc_decode(const SiftCc *c, int64 *dst);
+/* dst[i] = the low 32 bits of key i (the keys of an int4, a date, a dictionary code); dst needs SIFT_CC_CAP32(n) slots */
+extern void sift_cc_decode_u32(const SiftCc *c, uint32 *dst);
 /* dst[k] = key of row idx[k], k < m (idx ascending or not, all < n) */
 extern void sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
 extern int64 sift_cc_get(const SiftCc *c, uint32 row);

@@ -1611,6 +1611,16 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 				pfree(codes);
 				break;
 			}
+		case SIFT_CCN_SCALE:
+			{
+				uint32		b = (uint32) ((uint64) nd->base - (uint64) sub),
+							m = (uint32) nd->mind;
+
+				nd_u32(nd->a, 0, dst);
+				for (uint32 i = 0; i < n; i++)
+					dst[i] = b + m * dst[i];
+				break;
+			}
 		case SIFT_CCN_WRAP:
 			nd_u32(nd->a, sub, dst);
 			break;
@@ -1711,6 +1721,13 @@ sift_cc_decode(const SiftCc *c, int64 *dst)
 {
 	if (c->n)
 		nd_i64(c->root, dst);
+}
+
+void
+sift_cc_decode_u32(const SiftCc *c, uint32 *dst)
+{
+	if (c->n)
+		nd_u32(c->root, 0, dst);
 }
 
 bool

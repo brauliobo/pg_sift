@@ -51,6 +51,7 @@ typedef struct ColGroup
 	uint32	   *counts;			/* nrows */
 	uint32	   *eoff;			/* nrows + 1 */
 	uint32	   *parent;			/* nelems, on demand */
+	const uint64 *nulls;		/* rows without an array */
 	const uint64 *ovf;			/* rows whose whole array overflowed */
 } ColGroup;
 
@@ -627,23 +628,20 @@ unit_group(ColUnit *cu, int group)
 		MemoryContext arena = cu->src->arena;
 		uint32		n = cu->v.nrows;
 		SiftCChunk	c;
+		uint32	   *lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
 
-		g->counts = MemoryContextAllocZero(arena, (n + 1) * sizeof(uint32));
-		g->eoff = MemoryContextAllocZero(arena, (n + 1) * sizeof(uint32));
+		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
+		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
 		if (unit_chunk(cu, group, &c))
 		{
-			int64	   *dec = MemoryContextAlloc(arena, (n + SIFT_COL_PAD / 8) * sizeof(int64));
-
 			if (c.n != n)
 				corrupt("The counts of group %d hold %u values for %u rows.", group, c.n, n);
-			sift_cchunk_decode(&c, dec);
-			for (uint32 r = 0; r < n; r++)
-				g->counts[r] = (uint32) dec[r];
+			sift_cchunk_decode_u32(&c, g->counts);
+			g->nulls = c.nulls;
 			g->ovf = c.ovf;
 			cu->src->cnt.bytes_decoded += c.paylen;
 		}
-		for (uint32 r = 0; r < n; r++)
-			g->eoff[r + 1] = g->eoff[r] + g->counts[r];
+		sift_cck->prefix32(lead, n + 1, g->eoff, 0, 0);
 		g->nelems = g->eoff[n];
 		g->ready = true;
 	}
@@ -1039,6 +1037,97 @@ sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel,
 	idx = MemoryContextAlloc(cu->src->arena, (elemsel->count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(elemsel, idx);
 	read_positions(cu, col, idx, elemsel->count, g->nelems, vec);
+}
+
+uint32
+sift_col_lane_n(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+	int			parent = cu->src->schema->cols[col].parent;
+
+	return parent < 0 ? cu->v.nrows : unit_group(cu, parent)->nelems;
+}
+
+static const size_t lane_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+
+/* The lane a storage class is read into: the one its keys decode to without conversion, or (INT) the 32-bit one for int2, int4, date, bool */
+static bool
+lane_fits(SiftColStore store, SiftColLane lane)
+{
+	switch (store)
+	{
+		case SIFT_COLS_INT:
+			return lane == SIFT_COLL_I32 || lane == SIFT_COLL_I64;
+		case SIFT_COLS_F4:
+		case SIFT_COLS_F8:
+			return lane == SIFT_COLL_F64;
+		case SIFT_COLS_STR:
+			return lane == SIFT_COLL_CODE;
+		default:
+			return false;
+	}
+}
+
+static void
+decode_lane(const SiftCChunk *c, SiftColLane lane, void *dst)
+{
+	switch (lane)
+	{
+		case SIFT_COLL_I64:
+			sift_cchunk_decode(c, dst);
+			break;
+		case SIFT_COLL_F64:
+			sift_cchunk_decode_f8(c, dst);
+			break;
+		default:
+			sift_cchunk_decode_u32(c, dst);
+	}
+}
+
+void
+sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftColDef *def = &cu->src->schema->cols[col];
+	const uint64 *nulls = NULL;
+	uint32		n = sift_col_lane_n(unit, col);
+	SiftCChunk	c;
+
+	memset(info, 0, sizeof(*info));
+	info->n = n;
+	if (def->kind == SIFT_COLK_GROUP ? lane != SIFT_COLL_I32 : !lane_fits(def->store, lane))
+		elog(ERROR, "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
+	if (def->kind == SIFT_COLK_GROUP)
+	{
+		ColGroup   *g = unit_group(cu, col);
+
+		memcpy(dst, g->counts, n * sizeof(uint32));
+		nulls = g->nulls;
+		info->ovf = g->ovf != NULL;
+	}
+	else if (!unit_chunk(cu, col, &c))
+	{
+		memset(dst, 0, n * lane_size[lane]);
+		if (isnull)
+			memset(isnull, 1, n);
+		info->nulls = isnull != NULL;
+	}
+	else
+	{
+		if (c.n != n)
+			corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, n);
+		decode_lane(&c, lane, dst);
+		cu->src->cnt.bytes_decoded += c.paylen;
+		nulls = c.nulls;
+		info->ovf = c.ovf != NULL;
+	}
+	if (nulls != NULL && isnull != NULL)
+	{
+		sift_colk->bits_to_flags(nulls, n, isnull);
+		info->nulls = true;
+	}
+	if (lane == SIFT_COLL_CODE)
+		sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), &info->dict);
 }
 
 uint32

@@ -1,8 +1,8 @@
 /*
  * sift_aggcol.c - the column source of the aggregate scan over a sift_col index (sift_colsrc.h over the column engine of
  * docs/COL.md, src/sift_col.h): the leaf list becomes the layout, a unit's selection-based reads become whole-unit vectors of the
- * types the kernels take (int64 narrowed to int32 for the leaves of SCV_I32, NULL bitmaps expanded to flags), liveness and MVCC
- * vetting are the engine's. Compiled only when the engine is part of the build.
+ * types the kernels take (the engine decodes a chunk straight into the lane of the leaf's vector type, NULL bitmaps expanded to flags),
+ * liveness and MVCC vetting are the engine's. Compiled only when the engine is part of the build.
  */
 #include "postgres.h"
 
@@ -242,10 +242,43 @@ col_next(void *impl, SiftSrcUnit *unit)
 }
 
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
-/* the leaf's buffers for n elements; the tail up to SIFT_AGG_PAD elements is zero */
+static int64
+col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
+}
+
+/* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
+static void
+col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	SiftColLaneInfo info;
+
+	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
+	if (info.ovf)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
+				 errhint("Set sift.enable_agg to off for this query.")));
+	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->n = info.n;
+	vec->isnull = info.nulls ? buf->isnull : NULL;
+	vec->dict = NULL;
+	if (l->vtype == SCV_CODE)
+	{
+		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes};
+		vec->dict = &src->dict[leaf];
+	}
+}
+
+/* the leaf's buffers for n elements and SIFT_AGG_PAD more */
 static ColLeafBuf *
-leaf_buf(ColSource *src, int leaf, SiftSrcVecType vt, size_t n)
+leaf_buf(ColSource *src, int leaf, size_t n)
 {
 	ColLeafBuf *b = &src->buf[leaf];
 	size_t		need = n + SIFT_AGG_PAD;
@@ -261,57 +294,17 @@ leaf_buf(ColSource *src, int leaf, SiftSrcVecType vt, size_t n)
 		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
 	}
-	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
 }
 
+/* read_into over the source's own buffers of the leaf: valid until the next read of the leaf or the next unit */
 static void
 col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
 	ColSource  *src = impl;
-	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	SiftColVec	v;
-	ColLeafBuf *b;
-	size_t		n;
+	ColLeafBuf *b = leaf_buf(src, leaf, sift_col_lane_n(&src->unit, leaf));
 
-	sift_col_read(&src->unit, leaf, NULL, &v);
-	n = v.n;
-	if (v.ovf)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-				 errhint("Set sift.enable_agg to off for this query.")));
-	b = leaf_buf(src, leaf, l->vtype, n);
-	switch (l->vtype)
-	{
-		case SCV_I32:
-			for (size_t i = 0; i < n; i++)
-				((int32 *) b->data)[i] = (int32) v.i[i];
-			break;
-		case SCV_I64:
-			memcpy(b->data, v.i, n * sizeof(int64));
-			break;
-		case SCV_F64:
-			memcpy(b->data, v.f, n * sizeof(double));
-			break;
-		case SCV_CODE:
-			memcpy(b->data, v.codes, n * sizeof(uint32));
-			src->dict[leaf].id = (const void *) (uintptr_t) v.dict->id;
-			src->dict[leaf].n = v.dict->n;
-			src->dict[leaf].off = v.dict->off;
-			src->dict[leaf].bytes = v.dict->bytes;
-			break;
-	}
-	vec->data = b->data;
-	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
-	vec->n = n;
-	vec->isnull = NULL;
-	if (v.nulls)
-	{
-		for (size_t i = 0; i < n; i++)
-			b->isnull[i] = sift_colsrc_bit(v.nulls, i);
-		vec->isnull = b->isnull;
-	}
+	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull}, vec);
 }
 
 static void
@@ -365,6 +358,8 @@ static const SiftSrcProvider col_provider = {
 	.live = col_live,
 	.vet = col_vet,
 	.counters = col_counters,
+	.leaf_n = col_leaf_n,
+	.read_into = col_read_into,
 };
 
 void

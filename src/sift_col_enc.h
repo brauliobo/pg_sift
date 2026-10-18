@@ -165,6 +165,12 @@ extern bool sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c);
  * n + SIFT_COL_PAD/8 slots.
  */
 extern void sift_cchunk_decode(const SiftCChunk *c, int64 *dst);
+/*
+ * The same into the consumer's lane, without the int64 pass: _u32 the low 32 bits of the keys (an int4 or date, a dictionary code; dst needs
+ * SIFT_CC_CAP32(n) slots), _f8 the doubles of a float chunk (dst needs n + SIFT_COL_PAD/8 slots). NULL slots 0.
+ */
+extern void sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst);
+extern void sift_cchunk_decode_f8(const SiftCChunk *c, double *dst);
 /* VAR and inline STR chunks (enc STRS, ISTR): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
 extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);

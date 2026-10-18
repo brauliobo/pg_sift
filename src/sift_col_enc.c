@@ -1320,19 +1320,48 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 	return true;
 }
 
-static void
-zero_nulls(const uint64 *nulls, uint32 n, int64 *dst)
-{
-	for (uint32 w = 0; nulls != NULL && w < words_of(n); w++)
-		for (uint64 m = nulls[w]; m; m &= m - 1)
-			dst[w * 64 + pg_rightmost_one_pos64(m)] = 0;
-}
+/* The NULL slots of a decoded lane (any element type) are 0 */
+#define ZERO_NULLS(nulls, n, dst) \
+	do { \
+		for (uint32 w_ = 0; (nulls) != NULL && w_ < words_of(n); w_++) \
+			for (uint64 m_ = (nulls)[w_]; m_; m_ &= m_ - 1) \
+				(dst)[w_ * 64 + pg_rightmost_one_pos64(m_)] = 0; \
+	} while (0)
 
 void
 sift_cchunk_decode(const SiftCChunk *c, int64 *dst)
 {
 	codec_decode(c, dst);
-	zero_nulls(c->nulls, c->n, dst);
+	ZERO_NULLS(c->nulls, c->n, dst);
+}
+
+void
+sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst)
+{
+	if (c->enc == SIFT_COLENC_CC)
+	{
+		SiftCc	   *cc = cc_open(c, false);
+
+		sift_cc_decode_u32(cc, dst);
+		sift_cc_close(cc);
+	}
+	else
+	{
+		int64	   *tmp = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+
+		codec_decode(c, tmp);
+		for (uint32 i = 0; i < c->n; i++)
+			dst[i] = (uint32) tmp[i];
+		pfree(tmp);
+	}
+	ZERO_NULLS(c->nulls, c->n, dst);
+}
+
+void
+sift_cchunk_decode_f8(const SiftCChunk *c, double *dst)
+{
+	sift_cchunk_decode(c, (int64 *) dst);
+	sift_colk->f8_from_keys((int64 *) dst, c->n);
 }
 
 void
