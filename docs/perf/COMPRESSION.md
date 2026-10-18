@@ -368,7 +368,7 @@ node:   u8 tag | u8 parameter (width, byte width, exponent, algorithm) | u16 0 |
 - **MVCC and the write lane**: rows of the mutable lane stay uncompressed (the engine's row records) until sealed; compression happens at promotion and
   merge, where the engine already decodes and re-encodes whole superblocks into batches. Chunks are immutable; only liveness bits change after the
   write, so compression never interacts with MVCC. Dead rows are only dropped by the merge's re-encode.
-- **CPU budget** (ESTIMATE, section 7 for the measured): the statistics pass and winner encode are about 10 ns/value, trial compression of the streams
+- **CPU budget** (ESTIMATE, section 7.3 for the measured): the statistics pass and winner encode are about 10 ns/value, trial compression of the streams
   about 1 to 3 ns/value for LZ4 and 5 to 15 ns/value for zstd 3 on the packed streams; for a table of 10 columns, build and merge cost on the order of
   100 to 300 ns per row per core, against the heap scan and index sort that dominate a build. Merge-time re-encode may use a higher zstd level
   (`zstd:N`) at no read cost.
@@ -394,5 +394,85 @@ kernel table `SiftCcKernels` with scalar, AVX2 and AVX-512 levels dispatched thr
 
 ## 7. Results of the implementation
 
-(Filled in by the implementation commit: ratios on the generated tables per policy, decode and filter speeds per SIMD level, general-purpose compressor
-table, build cost.)
+All figures MEASURED with `make -C tools/colcodec bench` (CPU time, one core, 16 384-row chunks, heap order, library build with LZ4 and zstd) on the
+generated tables of section 2 (400 k order rows with 67 B/row of fixed-width numeric columns, 1.25 M item rows with 30 B/row).
+
+### 7.1 Size per policy (B/row, numeric columns; `ratio` = raw / policy)
+
+| table | policy | int | f32 | f64 | numeric | ratio | strings | encode ns/value |
+|---|---|---|---|---|---|---|---|---|
+| orders (raw 67.00, strings 315.25) | none | 22.03 | 8.00 | 32.01 | 62.05 | 1.08x | 321.27 | 6.8 |
+| | for | 14.78 | 7.00 | 30.26 | 52.04 | 1.29x | 318.40 | 4.2 |
+| | auto | 9.23 | 0.88 | 16.51 | 26.63 | 2.52x | 97.54 | 12.4 |
+| | lz4 | 9.23 | 0.88 | 16.51 | 26.62 | 2.52x | 203.39 | 16.0 |
+| | zstd | 8.75 | 0.79 | 16.41 | 25.95 | 2.58x | 97.52 | 18.0 |
+| | zstd:9 | 8.77 | 0.79 | 16.41 | 25.97 | 2.58x | 95.83 | 27.3 |
+| items (raw 30.00, strings 13.93) | none | 12.02 | 8.00 | 8.00 | 28.03 | 1.07x | 15.94 | 6.7 |
+| | for | 7.77 | 7.00 | 7.00 | 21.78 | 1.38x | 14.57 | 3.4 |
+| | auto | 3.99 | 1.26 | 1.26 | 6.50 | 4.62x | 2.08 | 46.9 |
+| | lz4 | 4.01 | 1.26 | 1.26 | 6.52 | 4.60x | 4.39 | 57.7 |
+| | zstd | 3.50 | 1.13 | 1.13 | 5.76 | 5.20x | 2.06 | 68.1 |
+| | zstd:9 | 3.48 | 1.13 | 1.13 | 5.74 | 5.22x | 1.76 | 118.3 |
+
+`none` is the plain value at 1, 2, 4 or 8 bytes (about the raw size, the small gain is constants and the narrowest width), `for` is bit-packing
+with a frame of reference, the ordinary lightweight baseline. `auto` is 2.3x to 4.3x smaller than `none` and 2.0x to 3.4x smaller than `for`.
+The general-purpose layer on top of the lightweight cascade adds 2.5 % (orders) to 11 % (items) with zstd and nothing with LZ4 in `auto`'s
+choices, which is the cost rule of section 5.4 working: a stream is only wrapped when it pays. Strings (dictionary codes plus the dictionary
+bytes) gain from either layer because the dictionary is wrapped freely: 321 to 97.5 B/row (orders), 15.9 to 2.1 B/row (items).
+
+Per column under `auto` (B/row, raw in brackets): orders `id` 0.01 (4), `store_id` 2.00 (4), `order_date` 1.38 (4), `discount` 0.88 (4), `total`
+2.13 (8), `lat`/`lon` 3.51/3.63 (8; six decimals, 2.2x to 2.3x), `noise` 7.25 (8; random, nothing to gain), `updated_at` 2.76 (8), `cancelled` 0.05 (1);
+items `order_id` 0.16 (4), `price` 1.26 (4), `price8` 1.26 (8), `store_id` 0.60 (4), `order_date` 0.47 (4).
+
+Shared orders corpus used by the other column branches (400 k rows, 16 384-row chunks), B/row, `none` / `for` / `auto` / `zstd`:
+
+| column | none | for | auto | zstd |
+|---|---|---|---|---|
+| id | 2.00 | 1.75 | 0.010 | 0.008 |
+| store_id | 2.00 | 2.00 | 2.00 | 1.95 |
+| customer_id | 4.00 | 2.38 | 2.38 | 2.38 |
+| placed_at | 2.00 | 1.38 | 1.38 | 1.38 |
+| created_at / updated_at (microseconds) | 8.00 | 6.00 | 3.38 | 3.38 |
+| total | 8.00 | 8.00 | 1.82 | 1.64 |
+| discount | 8.00 | 8.00 | 1.42 | 0.98 |
+| 7 code columns (status, currency, source, country, lang, shipping, payment) | 7.00 | 3.01 | 3.01 | 2.76 |
+| **all 15 columns** | **49.05** | **38.54** | **18.79** | **17.86** |
+
+`auto` is 0.38 of `none` and 0.49 of `for`. The microsecond timestamps went from 6.00 (bit-packed) to 3.38 B/row with the common-divisor node
+(`SCALE`): values that are whole seconds or milliseconds divide by the gcd of their offsets, and the quotients bit-pack or delta.
+
+Against the private prototype figures on its own data (plain 60 MB, bit-packed about 35 MB, a tuned columnar server 39.3 MB), bit-packed is 0.58 of plain
+and the tuned server 0.655 of plain; here `for` is 0.79 of `none` on the shared corpus and `auto` 0.38. The data differ, so only the ratios are
+comparable, not the byte counts.
+
+### 7.2 Speed per SIMD level (items table, ns/value, CPU time)
+
+`open` unwraps and validates the chunk once; `decode` and `filter` run on the opened chunk (filter selects 10 % of the range); `get` is one random access.
+
+| policy | level | open | decode | filter | get (ns) |
+|---|---|---|---|---|---|
+| none | scalar | 0.001 | 0.324 | 0.441 | 5.6 |
+| | avx2 | 0.001 | 0.334 | 0.081 | 5.3 |
+| | avx512 | 0.001 | 0.337 | 0.091 | 5.3 |
+| auto | scalar | 0.066 | 1.460 | 0.740 | 60.5 |
+| | avx2 | 0.066 | 0.879 | 0.224 | 84.3 |
+| | avx512 | 0.066 | 0.710 | 0.152 | 66.8 |
+| lz4 | scalar | 0.040 | 1.446 | 0.674 | 91.3 |
+| | avx2 | 0.040 | 0.849 | 0.203 | 73.5 |
+| | avx512 | 0.040 | 0.784 | 0.134 | 72.3 |
+| zstd | scalar | 0.457 | 1.271 | 0.591 | 105.4 |
+| | avx2 | 0.457 | 0.933 | 0.197 | 71.1 |
+| | avx512 | 0.457 | 0.777 | 0.128 | 71.2 |
+
+- `none` decodes at memory speed (a widening copy, 0.32 ns/value at every level) and filters 5.4x faster with AVX2 than scalar.
+- `auto` decodes the whole mixed table (all column kinds, cascades included) at 0.71 to 1.46 ns/value, filters 3.3x (AVX2) to 4.9x (AVX-512) faster
+  than scalar, and keeps `get` at 60 to 85 ns including delta checkpoints and run searches (the `get` figure is noisy and not SIMD dependent).
+- zstd costs 0.46 ns/value at open (decompressing every wrapped stream once), LZ4 0.04, `auto` 0.07; after open all policies decode alike.
+- The bytes written, the decode and the filter result are identical at the three levels (`colcodec_simd`, `tools/colcodec` test).
+
+### 7.3 Build cost
+
+Encode takes 3.4 to 12.4 ns/value for `none`, `for` and `auto` on the orders table and 47 ns/value for `auto` on the item table (many small
+cascaded streams per chunk); trial compression with zstd raises it to 18 and 68, and zstd:9 to 27 and 118. In the CPU budget of section 5.6 (ESTIMATE 10 ns/value
+for the statistics pass and winner) the measured cost is in range for the orders table and about 5x above it for the item columns; a
+10-column table of that kind costs about 0.5 microseconds per row per core. Merge-time re-encode at `zstd:9` costs about 1.2 microseconds per row for the same table.
