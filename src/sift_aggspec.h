@@ -39,15 +39,16 @@ typedef enum SiftAggPredKind
 	SAP_IN,						/* leaf IN / NOT IN (array operand): I32 leaves */
 	SAP_NULL,					/* leaf IS [NOT] NULL */
 	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
-	SAP_COMBO					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
+	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
+	SAP_ANY_ELEM				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
 {
 	SiftAggPredKind kind;
 	int			id;				/* preorder number, the index of the node's executor state */
-	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT */
-	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL */
+	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT; SAP_ANY_ELEM: the array leaf */
+	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT */
 	Node	   *expr;			/* SAP_CMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC) */
 	Oid			argtype;		/* SAP_CMP, SAP_IN: type of the operand (element type for IN) */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */

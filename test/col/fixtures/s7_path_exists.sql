@@ -1,6 +1,6 @@
 -- S7: the same filter as jsonb_path_exists
 -- shape: S7
--- expect: any
+-- expect: agg
 -- sets: K400 K4000
 -- key: -
 SELECT count(*) AS orders, count(DISTINCT o.store_id) AS stores

@@ -17,11 +17,14 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/stratnum.h"
 #include "access/table.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
@@ -39,7 +42,10 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/jsonb.h"
+#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
+#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
@@ -109,6 +115,9 @@ typedef struct AggCtx
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
+	List	   *rtable;			/* the range table expr_text resolves Vars in; NIL: the query's */
+	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
+	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 } AggCtx;
 
@@ -158,11 +167,16 @@ leaf_name(AggCtx *c, int id)
 	return s.data;
 }
 
-/* an expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter */
+/*
+ * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context
+ * lets the EXISTS sub-plans through: the clause was compiled, and compile_exists proved the ones it kept.
+ */
 static bool
 has_exec_param_walker(Node *node, void *context)
 {
 	if (node == NULL)
+		return false;
+	if (IsA(node, SubPlan) && context)
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
 		return true;
@@ -797,7 +811,7 @@ expr_text(AggCtx *c, Node *n)
 	{
 		PlannedStmt *stmt = makeNode(PlannedStmt);
 
-		stmt->rtable = c->root->parse->rtable;
+		stmt->rtable = c->rtable ? c->rtable : c->root->parse->rtable;
 		c->dpctx = deparse_context_for_plan_tree(stmt, select_rtable_names_for_explain(stmt->rtable, NULL));
 	}
 	return deparse_expression(n, c->dpctx, true, false);
@@ -1309,26 +1323,65 @@ compile_lut(AggCtx *c, Node *n)
 }
 
 static SiftAggPred *compile_pred(AggCtx *c, Node *n);
+static SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **nullable_target);
+static bool target_not_null(AggCtx *c, Node *target);
+
+/* an AND / OR node of nchild children, the children to be set (junction_done after) */
+static SiftAggPred *
+new_junction(AggCtx *c, SiftAggPredKind kind, int nchild)
+{
+	SiftAggPred *p = new_pred(c, kind);
+
+	p->nchild = nchild;
+	p->child = palloc(nchild * sizeof(SiftAggPred *));
+	return p;
+}
+
+static void
+junction_done(SiftAggPred *p)
+{
+	StringInfoData s;
+
+	initStringInfo(&s);
+	for (int i = 0; i < p->nchild; i++)
+	{
+		p->level = Max(p->level, p->child[i]->level);
+		appendStringInfo(&s, "%s%s", i ? (p->kind == SAP_AND ? " AND " : " OR ") : "", p->child[i]->desc);
+	}
+	p->desc = psprintf("(%s)", s.data);
+}
+
+static SiftAggPred *
+compile_junction(AggCtx *c, SiftAggPredKind kind, List *args)
+{
+	SiftAggPred *p = new_junction(c, kind, list_length(args));
+	int			i = 0;
+
+	foreach_ptr(Node, a, args)
+	{
+		if ((p->child[i] = compile_pred(c, a)) == NULL || p->child[i]->level > 1)
+			return NULL;
+		i++;
+	}
+	junction_done(p);
+	return p;
+}
 
 static SiftAggPred *
 compile_bool(AggCtx *c, BoolExpr *b)
 {
 	SiftAggPred *p;
-	int			i = 0;
+	Node	   *target;
 
-	if (b->boolop == NOT_EXPR)
+	if (b->boolop != NOT_EXPR)
+		return compile_junction(c, b->boolop == AND_EXPR ? SAP_AND : SAP_OR, b->args);
+	/* NOT of an existential test is its negation unless the test can be NULL (a NULL document) */
+	if ((p = compile_existential(c, strip_relabel(linitial(b->args)), &target)) == NULL)
 		return compile_lut(c, (Node *) b);
-	p = new_pred(c, b->boolop == AND_EXPR ? SAP_AND : SAP_OR);
-	p->nchild = list_length(b->args);
-	p->child = palloc(p->nchild * sizeof(SiftAggPred *));
-	foreach_ptr(Node, a, b->args)
-	{
-		if ((p->child[i] = compile_pred(c, a)) == NULL || p->child[i]->level > 1)
-			return NULL;
-		p->level = Max(p->level, p->child[i]->level);
-		i++;
-	}
-	p->desc = psprintf("%s of %d", b->boolop == AND_EXPR ? "AND" : "OR", p->nchild);
+	if (target && !target_not_null(c, target))
+		return NULL;
+	p->op = 1;
+	p->desc = psprintf("NOT %s", p->desc);
 	return p;
 }
 
@@ -1336,6 +1389,7 @@ static SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
 	SiftAggPred *p;
+	Node	   *leaf_target;
 	int			leaf;
 
 	n = strip_relabel(n);
@@ -1358,6 +1412,8 @@ compile_pred(AggCtx *c, Node *n)
 	if (IsA(n, OpExpr) && (p = compile_cmp(c, (OpExpr *) n)) != NULL)
 		return p;
 	if (IsA(n, ScalarArrayOpExpr) && (p = compile_in(c, (ScalarArrayOpExpr *) n)) != NULL)
+		return p;
+	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
 		return p;
 	return compile_lut(c, n);
 }
@@ -1816,9 +1872,16 @@ func_kind_of(RangeTblFunction *f)
 	}
 }
 
-/* the group leaf an unnested function reads: its argument is the jsonb array (object) leaf */
+/* the kind of group leaf a set-returning function reads */
+static SiftSrcLeafKind
+func_leaf_kind(FuncKind k)
+{
+	return k == FK_EACH || k == FK_EACH_TEXT ? SCL_OBJECT : SCL_ARRAY;
+}
+
+/* the group leaf of the given kind an expression is: the jsonb array (object) leaf an unnested function reads */
 static int
-group_leaf_of(AggCtx *c, Node *arg)
+group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind)
 {
 	JsonRef		r = {0};
 
@@ -1828,12 +1891,490 @@ group_leaf_of(AggCtx *c, Node *arg)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == r.att && l->parent < 0 && paths_equal(l->path, r.path) &&
-			((l->kind == SCL_ARRAY && (c->func_kind == FK_RECORDSET || c->func_kind == FK_ELEMENTS)) ||
-			 (l->kind == SCL_OBJECT && (c->func_kind == FK_EACH || c->func_kind == FK_EACH_TEXT))))
+		if (l->attno == r.att && l->parent < 0 && paths_equal(l->path, r.path) && l->kind == kind)
 			return i;
 	}
 	return -1;
+}
+
+/* ---------- existential predicates: some element of one array passes (SAP_ANY_ELEM) ---------- */
+
+static double elems_of(AggCtx *c, int grp);
+
+/*
+ * The element predicate is compiled with the array in scope as the query's group (so its leaves are element leaves of that array,
+ * not a second unnest) and with its own set of leaves; whatever it changes but the counters is undone.
+ */
+static AggCtx
+scope_enter(AggCtx *c, int grp)
+{
+	AggCtx		saved = *c;
+
+	c->group = grp;
+	c->used = NULL;
+	return saved;
+}
+
+static void
+scope_leave(AggCtx *c, const AggCtx *saved, int grp)
+{
+	c->elem_used = bms_join(c->elem_used, c->used);
+	c->used = bms_add_member(saved->used, grp);
+	c->group = saved->group;
+	c->func_rti = saved->func_rti;
+	c->func = saved->func;
+	c->func_kind = saved->func_kind;
+	c->rtable = saved->rtable;
+	c->dpctx = saved->dpctx;
+}
+
+typedef SiftAggPred *(*ElemBuild) (AggCtx *c, int grp, void *arg);
+
+/* some element of array leaf grp passes the predicate that build compiles over the leaves of its elements */
+static SiftAggPred *
+any_elem(AggCtx *c, int grp, ElemBuild build, void *arg)
+{
+	SiftAggPred *p = new_pred(c, SAP_ANY_ELEM),
+			   *e;
+	int			n0 = c->npred;
+	AggCtx		saved = scope_enter(c, grp);
+
+	e = build(c, grp, arg);
+	scope_leave(c, &saved, grp);
+	if (e == NULL)
+		return NULL;
+	p->leaf = grp;
+	p->nchild = 1;
+	p->child = palloc(sizeof(SiftAggPred *));
+	p->child[0] = e;
+	c->elem_work += (c->npred - n0) * elems_of(c, grp);
+	p->desc = psprintf("EXISTS %s[] (%s)", leaf_name(c, grp), e->desc);
+	return p;
+}
+
+/* a value the element leaf is compared with: a JSON string, number or boolean */
+typedef struct Lit
+{
+	char		kind;			/* 's', 'n', 'b' */
+	const char *s;
+	int			len;
+	Numeric		num;
+	bool		b;
+} Lit;
+
+static int
+child_named(AggCtx *c, int group, const char *name)
+{
+	for (int i = 0; i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->parent == group && !l->lossy && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/* element leaf (JSON member `name`) op lit with the semantics of a jsonpath / containment comparison of JSON values, or NULL when not provable */
+static SiftAggPred *
+lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
+{
+	int			leaf = child_named(c, grp, name);
+	SiftAggPred *p;
+	Const	   *k;
+	Oid			typid;
+
+	if (leaf < 0)
+		return NULL;
+	typid = leaf_of(c, leaf)->typid;
+	if (lit->kind == 's' && typid == TEXTOID && op == SCMP_EQ && lut_leaf_ok(c, leaf))
+	{
+		/* bytewise equality: the C collation is deterministic whatever the database collation is */
+		Param	   *pm = makeNode(Param);
+		char	   *str = pnstrdup(lit->s, lit->len);
+		OpExpr	   *e;
+
+		pm->paramkind = PARAM_EXEC;
+		pm->paramtype = TEXTOID;
+		pm->paramtypmod = -1;
+		pm->paramcollid = C_COLLATION_OID;
+		pm->location = -1;
+		k = makeConst(TEXTOID, -1, C_COLLATION_OID, -1, PointerGetDatum(cstring_to_text_with_len(lit->s, lit->len)), false, false);
+		e = (OpExpr *) make_opclause(get_opfamily_member(TEXT_BTREE_FAM_OID, TEXTOID, TEXTOID, BTEqualStrategyNumber), BOOLOID,
+									 false, (Expr *) pm, (Expr *) k, InvalidOid, C_COLLATION_OID);
+		set_opfuncid(e);
+		p = make_leaf_pred(c, SAP_LUT, leaf);
+		p->expr = (Node *) e;
+		p->desc = psprintf("%s = %s", leaf_name(c, leaf), quote_literal_cstr(str));
+		return p;
+	}
+	/* jsonb numbers are numerics: only an integer leaf and an integral literal compare exactly (a float8 leaf holds the rounded value) */
+	if (lit->kind == 'n' && (typid == INT2OID || typid == INT4OID || typid == INT8OID))
+	{
+		bool		err;
+		int64		v = numeric_int8_opt_error(lit->num, &err);
+
+		if (err || !DatumGetBool(DirectFunctionCall2(numeric_eq, NumericGetDatum(lit->num),
+													 DirectFunctionCall1(int8_numeric, Int64GetDatum(v)))))
+			return NULL;
+		k = makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(v), false, FLOAT8PASSBYVAL);
+	}
+	else if (lit->kind == 'b' && typid == BOOLOID)
+		k = makeConst(BOOLOID, -1, InvalidOid, 1, BoolGetDatum(lit->b), false, true);
+	else
+		return NULL;
+	p = make_leaf_pred(c, SAP_CMP, leaf);
+	p->op = op;
+	p->expr = (Node *) k;
+	p->argtype = k->consttype;
+	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(op), expr_text(c, (Node *) k));
+	return p;
+}
+
+/* ---- EXISTS (SELECT 1 FROM <unnest of the array> AS t(..) WHERE <element conjunction>) ---- */
+
+typedef struct ExistsArg
+{
+	Query	   *q;
+	RangeTblFunction *f;
+	FuncKind	kind;
+} ExistsArg;
+
+/* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE */
+static Query *
+exists_query(AggCtx *c, SubPlan *sp)
+{
+	Query	   *q;
+	RangeTblEntry *rte;
+
+	if (sp->subLinkType != EXISTS_SUBLINK || sp->testexpr || sp->useHashTable || sp->setParam || sp->parParam == NIL ||
+		list_length(sp->parParam) != list_length(sp->args) || sp->plan_id < 1 ||
+		sp->plan_id > list_length(c->root->glob->subroots))
+		return NULL;
+	q = ((PlannerInfo *) list_nth(c->root->glob->subroots, sp->plan_id - 1))->parse;
+	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->groupClause || q->havingQual ||
+		q->distinctClause || q->limitCount || q->limitOffset || q->setOperations || q->cteList || q->rowMarks ||
+		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 ||
+		!IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		return NULL;
+	rte = linitial_node(RangeTblEntry, q->rtable);
+	if (rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 ||
+		contain_volatile_functions(q->jointree->quals))
+		return NULL;
+	return q;
+}
+
+/* the outer expressions the sub-plan's parameters stand for */
+static Node *
+outer_mutator(Node *n, SubPlan *sp)
+{
+	if (n && IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	{
+		ListCell   *lp,
+				   *la;
+
+		forboth(lp, sp->parParam, la, sp->args)
+			if (lfirst_int(lp) == ((Param *) n)->paramid)
+				return copyObject(lfirst(la));
+	}
+	return expression_tree_mutator(n, outer_mutator, sp);
+}
+
+/* the conjunction as one predicate */
+static SiftAggPred *
+compile_conj(AggCtx *c, List *quals)
+{
+	SiftAggPred *p;
+
+	if (quals == NIL)
+	{
+		p = new_pred(c, SAP_TRUE);
+		p->desc = pstrdup("true");
+		return p;
+	}
+	return list_length(quals) == 1 ? compile_pred(c, linitial(quals)) : compile_junction(c, SAP_AND, quals);
+}
+
+static SiftAggPred *
+build_exists(AggCtx *c, int grp, void *arg)
+{
+	ExistsArg  *x = arg;
+
+	c->func_rti = 1;
+	c->func = x->f;
+	c->func_kind = x->kind;
+	c->rtable = x->q->rtable;
+	c->dpctx = NIL;
+	return compile_conj(c, (List *) x->q->jointree->quals);
+}
+
+static SiftAggPred *
+compile_exists(AggCtx *c, SubPlan *sp)
+{
+	ExistsArg	x;
+	Query	   *q = exists_query(c, sp);
+	int			grp;
+
+	if (q == NULL)
+		return NULL;
+	x.q = q;
+	x.f = linitial_node(RangeTblFunction, linitial_node(RangeTblEntry, q->rtable)->functions);
+	x.kind = func_kind_of(x.f);
+	if (x.kind == FK_NONE)
+		return NULL;
+	grp = group_leaf_of(c, outer_mutator(linitial(((FuncExpr *) x.f->funcexpr)->args), sp), func_leaf_kind(x.kind));
+	return grp < 0 ? NULL : any_elem(c, grp, build_exists, &x);
+}
+
+/* ---- jsonb_path_exists(col, '$[*] ? (<comparisons of @.key with literals, && ||>)') ---- */
+
+static int
+path_cmp_op(JsonPathItemType t)
+{
+	switch (t)
+	{
+		case jpiEqual:
+			return SCMP_EQ;
+		case jpiLess:
+			return SCMP_LT;
+		case jpiLessOrEqual:
+			return SCMP_LE;
+		case jpiGreater:
+			return SCMP_GT;
+		case jpiGreaterOrEqual:
+			return SCMP_GE;
+		default:					/* <>: JSON null is "not equal" to a literal but looks like an absent key in the index */
+			return -1;
+	}
+}
+
+static bool
+path_lit(JsonPathItem *v, Lit *lit)
+{
+	if (jspHasNext(v))
+		return false;
+	switch (v->type)
+	{
+		case jpiString:
+			lit->kind = 's';
+			lit->s = jspGetString(v, &lit->len);
+			return true;
+		case jpiNumeric:
+			lit->kind = 'n';
+			lit->num = jspGetNumeric(v);
+			return true;
+		case jpiBool:
+			lit->kind = 'b';
+			lit->b = jspGetBool(v);
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* @.key, as the name of the member */
+static char *
+path_key(JsonPathItem *v)
+{
+	JsonPathItem k;
+	int32		len;
+	char	   *name;
+
+	if (v->type != jpiCurrent || !jspGetNext(v, &k) || k.type != jpiKey || jspHasNext(&k))
+		return NULL;
+	name = jspGetString(&k, &len);
+	return pnstrdup(name, len);
+}
+
+static SiftAggPred *
+path_pred(AggCtx *c, int grp, JsonPathItem *v)
+{
+	JsonPathItem l,
+				r;
+	SiftAggPred *p;
+	int			op;
+	char	   *key;
+	Lit			lit;
+
+	op = path_cmp_op(v->type);
+	if (jspHasNext(v) || (op < 0 && v->type != jpiAnd && v->type != jpiOr))
+		return NULL;
+	jspGetLeftArg(v, &l);
+	jspGetRightArg(v, &r);
+	if (op < 0)
+	{
+		p = new_junction(c, v->type == jpiAnd ? SAP_AND : SAP_OR, 2);
+		if ((p->child[0] = path_pred(c, grp, &l)) == NULL || (p->child[1] = path_pred(c, grp, &r)) == NULL)
+			return NULL;
+		junction_done(p);
+		return p;
+	}
+	if ((key = path_key(&l)) != NULL && path_lit(&r, &lit))
+		;
+	else if ((key = path_key(&r)) != NULL && path_lit(&l, &lit))
+		op = commute(op);
+	else
+		return NULL;
+	return lit_cmp(c, grp, key, op, &lit);
+}
+
+static SiftAggPred *
+build_path(AggCtx *c, int grp, void *arg)
+{
+	return path_pred(c, grp, arg);
+}
+
+static bool
+empty_jsonb_object(Node *n)
+{
+	n = strip_relabel(n);
+	return IsA(n, Const) && !((Const *) n)->constisnull && JB_ROOT_IS_OBJECT(DatumGetJsonbP(((Const *) n)->constvalue)) &&
+		JB_ROOT_COUNT(DatumGetJsonbP(((Const *) n)->constvalue)) == 0;
+}
+
+/* lax mode `$[*] ? (filter)` on the array column; no variables */
+static SiftAggPred *
+compile_path_exists(AggCtx *c, Node *n)
+{
+	List	   *args = func_args(n);
+	Node	   *path = strip_relabel(lsecond(args));
+	JsonPathItem root,
+				any,
+				filt,
+				expr;
+	JsonPath   *jp;
+	int			grp;
+
+	if ((func_of(n) == F_JSONB_PATH_EXISTS && (list_length(args) != 4 || !empty_jsonb_object(lthird(args)))) || !IsA(path, Const) ||
+		((Const *) path)->constisnull || (grp = group_leaf_of(c, linitial(args), SCL_ARRAY)) < 0)
+		return NULL;
+	jp = DatumGetJsonPathP(((Const *) path)->constvalue);
+	jspInit(&root, jp);
+	if (!(jp->header & JSONPATH_LAX) || root.type != jpiRoot || !jspGetNext(&root, &any) || any.type != jpiAnyArray ||
+		!jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
+		return NULL;
+	jspGetArg(&filt, &expr);
+	return any_elem(c, grp, build_path, &expr);
+}
+
+/* ---- col @> '[{"k": v, ...}, ...]': every object of the right side is contained by some element ---- */
+
+static SiftAggPred *
+build_contains(AggCtx *c, int grp, void *arg)
+{
+	JsonbContainer *obj = arg;
+	int			n = JsonContainerSize(obj);
+	JsonbIterator *it = JsonbIteratorInit(obj);
+	JsonbValue	k,
+				v;
+	SiftAggPred *p = n > 1 ? new_junction(c, SAP_AND, n) : NULL;
+
+	if (n == 0)
+		return NULL;
+	(void) JsonbIteratorNext(&it, &k, true);	/* the start of the object */
+	for (int i = 0; i < n; i++)
+	{
+		Lit			lit;
+		SiftAggPred *e;
+
+		(void) JsonbIteratorNext(&it, &k, true);
+		(void) JsonbIteratorNext(&it, &v, true);
+		/* a JSON null equals an absent member in the index but only a JSON null contains it */
+		if (v.type == jbvString)
+			lit = (Lit) {'s', v.val.string.val, v.val.string.len};
+		else if (v.type == jbvNumeric)
+			lit = (Lit) {'n', NULL, 0, v.val.numeric};
+		else if (v.type == jbvBool)
+			lit = (Lit) {'b', NULL, 0, NULL, v.val.boolean};
+		else
+			return NULL;
+		if ((e = lit_cmp(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit)) == NULL)
+			return NULL;
+		if (p)
+			p->child[i] = e;
+		else
+			p = e;
+	}
+	if (n > 1)
+		junction_done(p);
+	return p;
+}
+
+static SiftAggPred *
+compile_contains(AggCtx *c, Node *target, Node *rhs)
+{
+	Jsonb	   *jb;
+	JsonbIterator *it;
+	JsonbValue	v;
+	SiftAggPred *p = NULL;
+	int			grp,
+				n;
+
+	rhs = strip_relabel(rhs);
+	if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull || (grp = group_leaf_of(c, target, SCL_ARRAY)) < 0)
+		return NULL;
+	jb = DatumGetJsonbP(((Const *) rhs)->constvalue);
+	if (!JB_ROOT_IS_ARRAY(jb) || JB_ROOT_IS_SCALAR(jb) || (n = JB_ROOT_COUNT(jb)) == 0)
+		return NULL;
+	if (n > 1)
+		p = new_junction(c, SAP_AND, n);
+	it = JsonbIteratorInit(&jb->root);
+	(void) JsonbIteratorNext(&it, &v, true);	/* the start of the array */
+	for (int i = 0; i < n; i++)
+	{
+		SiftAggPred *e;
+
+		(void) JsonbIteratorNext(&it, &v, true);
+		if (v.type != jbvBinary || !JsonContainerIsObject(v.val.binary.data) ||
+			(e = any_elem(c, grp, build_contains, v.val.binary.data)) == NULL)
+			return NULL;
+		if (p)
+			p->child[i] = e;
+		else
+			p = e;
+	}
+	if (n > 1)
+		junction_done(p);
+	return p;
+}
+
+/*
+ * The existential tests: EXISTS over the elements of an array, jsonb_path_exists / @? and @> on an array of objects. The result is
+ * never NULL for EXISTS; the others are NULL for a NULL document, which the executor (like WHERE) treats as false: *target is that
+ * document's expression, for the negation to prove it NOT NULL.
+ */
+static SiftAggPred *
+compile_existential(AggCtx *c, Node *n, Node **target)
+{
+	Oid			fid;
+
+	*target = NULL;
+	if (IsA(n, SubPlan))
+		return compile_exists(c, (SubPlan *) n);
+	fid = func_of(n);
+	if (fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR)
+	{
+		*target = linitial(func_args(n));
+		return compile_path_exists(c, n);
+	}
+	if (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED)
+	{
+		bool		fwd = fid == F_JSONB_CONTAINS;
+
+		*target = fwd ? linitial(func_args(n)) : lsecond(func_args(n));
+		return compile_contains(c, *target, fwd ? lsecond(func_args(n)) : linitial(func_args(n)));
+	}
+	return NULL;
+}
+
+/* the document is a column with a NOT NULL constraint */
+static bool
+target_not_null(AggCtx *c, Node *target)
+{
+	Var		   *v = (Var *) strip_relabel(target);
+
+	return IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0 &&
+		bms_is_member(v->varattno, c->rel->notnullattnums);
 }
 
 static void
@@ -1927,6 +2468,12 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_START_COST		400.0
 #define AGG_DEFAULT_ELEMS	3.0
 
+static double
+elems_of(AggCtx *c, int grp)
+{
+	return c->stats.elems_per_row[grp] > 0 ? c->stats.elems_per_row[grp] : AGG_DEFAULT_ELEMS;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -1940,15 +2487,12 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	Cost		startup;
 
 	if (s->group >= 0)
-		elems = c->stats.elems_per_row[s->group] > 0 ? c->stats.elems_per_row[s->group] : AGG_DEFAULT_ELEMS;
+		elems = elems_of(c, s->group);
 	scan_cost = 0;
 	for (int i = 0; i < s->nleaves; i++)
-	{
-		bool		lvl = leaf_level(c, s->leaves[i]);
-
-		scan_cost += rows * (lvl ? elems : 1.0) * AGG_SCAN_LEAF;
-	}
+		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
+	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	scan_cost += agg_rows * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -1972,7 +2516,7 @@ static const CustomPathMethods agg_path_methods;
 static bool
 unsupported_clause(Node *n)
 {
-	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, NULL));
+	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, n));
 }
 
 /* a table in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
@@ -2170,7 +2714,7 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	build_attexprs(c);
 	if (c->func_rti)
 	{
-		c->group = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args));
+		c->group = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
 		if (c->group < 0)
 			return false;
 		c->used = bms_add_member(c->used, c->group);
@@ -2258,6 +2802,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	s->npreds_total = c->npred;
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
+	c->used = bms_union(c->used, c->elem_used);
 	finish_leaves(c, s);
 	finish_combos(c, s);
 	s->est_groups = s->nkeys == 0 ? 1.0 : Max(estimate_num_groups(root, keys, input_rel->rows, NULL, NULL), 1.0);
