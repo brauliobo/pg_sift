@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 1)
+## 2. Format (format major 1, col minor 2)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -46,7 +46,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (0 now). A reader refuses a minor it does not know; older minors are
+- Every `SiftSegEntry` carries `format` = the col segment minor (2 now). A reader refuses a minor it does not know; older minors are
   read as written and rewritten by merge. `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -92,6 +92,8 @@ being row order), `u64 set[nsb][4]` (STR only: a 256-bit set of `code & 255`), `
 is outside int64 (exactly: not merely an intermediate overflow; `sum` is then 0), `SIFT_COLZ_NAN` a float chunk holds a NaN, `SIFT_COLZ_CONST`
 at least one value is not NULL and all non-NULL values are equal, `SIFT_COLZ_OVERFLOW` some value overflowed). Zone checks never read a unit.
 `sum`/`nnull`/`nvals` also answer `count(col)`, `sum(col)`, `min`, `max` of a unit that is entirely visible without reading its chunks.
+
+**PAGG** (minor 2): the pre-aggregates of every unit, written at the end of the ZONES section (header `COLP`): the exact int128 `sum` and `sum of squares` of the INT leaves, and per unit the cube of low-cardinality dimensions (`GROUP BY dim` -> count, per measure non-NULL count and sum). Computed wherever a unit is written (build, parallel build, promotion, merge), never updated; format, option `preagg`, the rule for using it and the `SiftAgg` consumption: docs/COL-PREAGG.md.
 
 **Unit record** (UNITS, at `SiftColSBRef.off`), 8-byte aligned fields:
 
@@ -359,8 +361,8 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 1 is the first a release reads: segments
-  of the pre-release minor 0 (leaf types as PostgreSQL OIDs) are not read.
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 2 is the first a release reads: segments
+  of the pre-release minors 0 (leaf types as PostgreSQL OIDs) and 1 (no pre-aggregates) are not read.
 
 ## 5. Planner-facing metadata
 
@@ -575,6 +577,7 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
 - 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`
   (section 2.9); `SIFT_COL_MAX_STR` is gone (`SIFT_COL_MAX_VALUE`, `SIFT_COL_DICT_MAX_ENTRY`, `SIFT_COL_DICT_MAX_BYTES`); `sift_cunit_encode` takes `inl[]`
   after `dictmap`; `SiftCTest.pred`, `SIFT_CT_STRS`, `sift_ctest_make_strs`, `sift_cchunk_istr_codes`, `sift_cchunk_strs_length`, `sift_cbatch_str_inline`;
