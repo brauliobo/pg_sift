@@ -2,6 +2,13 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
+  past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
+  check that the stream is inside the blob; they are 64-bit now and the term raises the corruption error. Bytes that are not what the writer
+  wrote (a bad disk, a torn page, a file edited with the server stopped) were the only way in.
+
 ## 2.0.2
 
 No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. Two fixes (the first is a security hardening, the second a correctness fix) and no new behavior.
