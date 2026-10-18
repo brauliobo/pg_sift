@@ -32,8 +32,13 @@ Repros (the target is chosen by the first byte for `bm25`):
     F-BM25-1 bm25      00, 104 bytes f0, then 00000000010503ab01d90380491629   (120 bytes)
     F-BM25-4/5: 1.5 KB and 1.3 KB inputs; `scripts/fuzz.sh --scale 10 bm25-raw` finds both within minutes
 
-F-BM25-1 and F-COL-1 stop a fuzz run at the first hit, so scripts/fuzz.sh suppresses F-BM25-1 (test/fuzz/ubsan.supp) and skips the LUT
-check of `colchunk` (`FZ_SKIP=lut`); delete both when the fixes land.
+F-BM25-1 stops a fuzz run at the first hit, so scripts/fuzz.sh suppresses it (test/fuzz/ubsan.supp); delete the entry when the fix lands.
+
+F-COL-1 is fixed: `chunk_lut` gives a table of at most 16 bits a bit for every code the width can hold, and checks the wider codes (FOR32, PACK
+above 16 bits, the codec's offsets in `cc_lut`) with `codes_below` before the LUT kernels read them (ERRCODE_DATA_CORRUPTED). The inputs of the
+three paths (FOR32, PACK, CC with a valid check word) are in test/fuzz/regress/, replayed by `make -C test/fuzz regress` and first in every
+`colchunk` run; scripts/fuzz.sh no longer skips the LUT check. Not the same finding: `eval_lut` in src/sift_agg.c feeds the LUT kernel with the
+codes of a source vector; see the `read_positions` row of the suspect list.
 
 ## Suspect (audit only, no repro run)
 

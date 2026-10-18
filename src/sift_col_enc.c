@@ -1845,6 +1845,14 @@ lut_shift(const uint64 *src, uint64 srcbits, uint64 by, uint64 *dst, uint32 nbit
 	}
 }
 
+/* The LUT kernels index their table by the code they read, so every code must be below the table's bits: the stored ones are not trusted */
+static void
+codes_below(const uint32 *codes, uint32 n, uint32 sbits)
+{
+	if (sift_cck->max32(codes, n) >= sbits)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: a dictionary code is past the dictionary")));
+}
+
 /* chunk_lut of a CC chunk: the codec hands the codes as offsets from its minimum */
 static void
 cc_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
@@ -1862,7 +1870,11 @@ cc_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		shifted = palloc0(SIFT_COL_NWORDS(sbits) * sizeof(uint64));
 		lut_shift(t->lut, t->lutbits, min, shifted, sbits);
 		if (sift_cc_decode_off32(cc, off))
+		{
+			if (sift_cc_off32_bound(cc) >= sbits)
+				codes_below(off, c->n, sbits);
 			sift_colk->lut[2](off, c->n, shifted, tmp);
+		}
 		else
 			chunk_scalar(t, c, tmp);
 		pfree(shifted);
@@ -1898,13 +1910,17 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		chunk_scalar(t, c, tmp);
 		return;
 	}
-	sbits = c->enc == SIFT_COLENC_FOR && c->bits == 8 ? 256 : c->enc == SIFT_COLENC_FOR && c->bits == 16 ? 65536 : t->lutbits - (uint32) c->base;
+	/* a code of at most 16 bits has a bit of its own in the table, whatever the chunk holds; wider codes are checked against the table */
+	sbits = c->bits <= 16 ? 1U << c->bits : t->lutbits - (uint32) c->base;
 	shifted = palloc0(SIFT_COL_NWORDS(sbits) * sizeof(uint64));
 	lut_shift(t->lut, t->lutbits, c->base, shifted, sbits);
 	if (c->enc == SIFT_COLENC_FOR && c->bits <= 16)
 		sift_colk->lut[codec_slot(c->bits)](c->payload, c->n, shifted, tmp);
-	else if (c->enc == SIFT_COLENC_FOR && c->bits == 32)
+	else if (c->enc == SIFT_COLENC_FOR)
+	{
+		codes_below((const uint32 *) c->payload, c->n, sbits);
 		sift_colk->lut[2](c->payload, c->n, shifted, tmp);
+	}
 	else if (c->enc == SIFT_COLENC_PACK)
 	{
 		uint32		blk[CODEC_BLOCK + SIFT_COL_PAD / sizeof(uint32)];
@@ -1914,6 +1930,8 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 			uint32		m = Min(CODEC_BLOCK, c->n - s);
 
 			sift_colk->unpack(c->payload + (s / 64) * 8 * c->bits, c->bits, m, blk);
+			if (c->bits > 16)
+				codes_below(blk, m, sbits);
 			sift_colk->lut[2](blk, m, shifted, tmp + s / 64);
 		}
 	}
