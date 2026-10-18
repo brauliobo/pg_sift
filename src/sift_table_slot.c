@@ -82,18 +82,22 @@ relocate(SiftTblSlot *ss, TupleTableSlot *slot)
 }
 
 static void
+own(SiftTblSlot *ss, TupleTableSlot *slot, void *p)
+{
+	if (ss->nowned == ss->capowned)
+	{
+		ss->capowned = Max(8, ss->capowned * 2);
+		ss->owned = ss->owned ? repalloc(ss->owned, ss->capowned * sizeof(void *)) : MemoryContextAlloc(slot->tts_mcxt, ss->capowned * sizeof(void *));
+	}
+	ss->owned[ss->nowned++] = p;
+}
+
+static void
 own_values(SiftTblSlot *ss, TupleTableSlot *slot, int from, int to)
 {
 	for (int a = from; a < to; a++)
 		if (!slot->tts_isnull[a] && !TupleDescAttr(slot->tts_tupleDescriptor, a)->attbyval)
-		{
-			if (ss->nowned == ss->capowned)
-			{
-				ss->capowned = Max(8, ss->capowned * 2);
-				ss->owned = ss->owned ? repalloc(ss->owned, ss->capowned * sizeof(void *)) : MemoryContextAlloc(slot->tts_mcxt, ss->capowned * sizeof(void *));
-			}
-			ss->owned[ss->nowned++] = DatumGetPointer(slot->tts_values[a]);
-		}
+			own(ss, slot, DatumGetPointer(slot->tts_values[a]));
 }
 
 static void
@@ -212,10 +216,22 @@ sift_tbl_slot_locate(TupleTableSlot *slot, Relation rel, SiftTblRel *st, ItemPoi
 	return true;
 }
 
+/* The slot keeps a copy of tup (the caller frees its own): the values point into it, nothing else is copied */
 void
 sift_tbl_slot_store_tuple(TupleTableSlot *slot, HeapTuple tup)
 {
-	ExecForceStoreHeapTuple(tup, slot, false);
+	SiftTblSlot *ss = (SiftTblSlot *) slot;
+	MemoryContext old;
+	HeapTuple	copy;
+
+	Assert(slot->tts_ops == &sift_slot_ops);
+	ExecClearTuple(slot);
+	old = MemoryContextSwitchTo(slot->tts_mcxt);
+	copy = heap_copytuple(tup);
+	MemoryContextSwitchTo(old);
+	heap_deform_tuple(copy, slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+	own(ss, slot, copy);
+	ExecStoreVirtualTuple(slot);
 	slot->tts_tid = tup->t_self;
 	slot->tts_tableOid = tup->t_tableOid;
 }
