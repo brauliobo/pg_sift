@@ -915,12 +915,46 @@ cc_open(const SiftCChunk *c, bool verify)
 	return cc;
 }
 
+/*
+ * The payload of an inline STR chunk: u32 length of the prefix blob, u32 0, the prefix blob (a codec blob of the n keys sift_col_str_prefix of
+ * the strings, NULL slots filler: filters answer "which rows can hold this string" on the encoded form), then the string list.
+ */
+static bool
+istr_split(const SiftCChunk *c, const uint8 **pre, uint32 *prelen, const uint8 **strs, uint32 *strslen)
+{
+	uint32		plen,
+				zero;
+
+	if (c->paylen < 8)
+		return false;
+	memcpy(&plen, c->payload, sizeof(plen));
+	memcpy(&zero, c->payload + 4, sizeof(zero));
+	if (zero != 0 || plen == 0 || plen % 8 != 0 || (uint64) plen + 8 + 8 > c->paylen)
+		return false;
+	*pre = c->payload + 8;
+	*prelen = plen;
+	*strs = c->payload + 8 + plen;
+	*strslen = c->paylen - 8 - plen;
+	return true;
+}
+
 void
 sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes)
 {
+	const uint8 *pl = c->payload;
+	uint32		len = c->paylen;
+
 	if (c->enc != SIFT_COLENC_STRS && c->enc != SIFT_COLENC_ISTR)
 		elog(ERROR, "sift_col: chunk encoding %d holds no strings", c->enc);
-	if (sift_cc_decode_strs(mcxt, c->payload, c->paylen, off, bytes) != c->n)
+	if (c->enc == SIFT_COLENC_ISTR)
+	{
+		const uint8 *pre;
+		uint32		prelen;
+
+		if (!istr_split(c, &pre, &prelen, &pl, &len))
+			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the inline text payload is malformed")));
+	}
+	if (sift_cc_decode_strs(mcxt, pl, len, off, bytes) != c->n)
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the string list does not hold %u values", c->n)));
 }
 
@@ -1161,6 +1195,22 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 		put_bitmap(out, v->ovf, n);
 	if (pol == NULL)
 		sift_cc_policy_default(&dp);
+	{
+		int64	   *pre = palloc((Size) (n + 1) * sizeof(int64));
+		StringInfoData pb;
+		uint32		plen;
+
+		for (uint32 i = 0; i < n; i++)
+			pre[i] = sift_col_str_prefix(bytes.data + off[i], off[i + 1] - off[i]);
+		initStringInfo(&pb);
+		sift_cc_encode(&pb, SIFT_CC_INT, pre, n, v->nulls, pol ? pol : &dp, NULL);
+		plen = (uint32) pb.len;
+		put_val(out, plen);
+		put_zero(out, sizeof(uint32));
+		put_bytes(out, pb.data, pb.len);
+		pfree(pb.data);
+		pfree(pre);
+	}
 	sift_cc_encode_strs(out, off, bytes.data, n, pol ? pol : &dp);
 	put_pad(out, 8);
 	pfree(off);
@@ -1247,6 +1297,16 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 	if (pos + c->paylen > len || (whole && (c->paylen == 0 || c->paylen % 8 != 0 || c->n == 0)))
 		return false;
 	c->payload = p + pos;
+	if (c->enc == SIFT_COLENC_ISTR)
+	{
+		const uint8 *pre,
+				   *strs;
+		uint32		prelen,
+					strslen;
+
+		if (!istr_split(c, &pre, &prelen, &strs, &strslen))
+			return false;
+	}
 	if (c->n % 64 != 0)
 	{
 		uint64		tail = ~UINT64CONST(0) << (c->n % 64);
@@ -1536,13 +1596,28 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 }
 
 void
+sift_ctest_make_strs(const SiftColPred *p, SiftCTest *t)
+{
+	memset(t, 0, sizeof(*t));
+	if (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL)
+		t->kind = p->op == SIFT_COLOP_ISNULL ? SIFT_CT_ISNULL : SIFT_CT_NOTNULL;
+	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
+		elog(ERROR, "sift_col: predicate without a constant");
+	else if (p->nvals < 1)
+		t->kind = p->op == SIFT_COLOP_IN ? SIFT_CT_NONE : SIFT_CT_NONNULL;
+	else
+		t->kind = SIFT_CT_STRS;
+	t->pred = p;
+}
+
+void
 sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 {
 	memset(t, 0, sizeof(*t));
 	if (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL)
 		t->kind = p->op == SIFT_COLOP_ISNULL ? SIFT_CT_ISNULL : SIFT_CT_NOTNULL;
 	else if (def->store == SIFT_COLS_VAR)
-		elog(ERROR, "sift_col: a variable-length leaf is tested for NULL only");
+		sift_ctest_make_strs(p, t);
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
 		elog(ERROR, "sift_col: predicate without a constant");
 	else if (def->store == SIFT_COLS_STR)
@@ -1813,6 +1888,147 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	pfree(shifted);
 }
 
+/* Whole-string comparison of a STRS or ISTR chunk's row with the predicate's constants (EQ and IN: equal to one of them) */
+static bool
+strs_match(SiftColOp op, const SiftColPred *p, const char *s, uint32 len)
+{
+	switch (op)
+	{
+		case SIFT_COLOP_EQ:
+			return len == p->vals[0].len && memcmp(s, p->vals[0].v.s, len) == 0;
+		case SIFT_COLOP_IN:
+			for (int i = 0; i < p->nvals; i++)
+				if (len == p->vals[i].len && memcmp(s, p->vals[i].v.s, len) == 0)
+					return true;
+			return false;
+		default:
+			return str_matches(op, s, len, &p->vals[0]);
+	}
+}
+
+/* IN lists longer than this are verified on every row: the prefix filter would run once per constant */
+#define STRS_PREFIX_MAXIN	16
+
+/*
+ * The rows of an inline chunk that can satisfy op (EQ, IN, a range or PREFIX) according to the prefix blob alone, on the encoded form (the
+ * codec's filter: bit-packed keys compare in registers, a constant blob never expands). The string list is not touched. NULL: the operator
+ * gives the prefix no use, every row is a candidate.
+ */
+static uint64 *
+istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
+{
+	const uint8 *pre,
+			   *strs;
+	uint32		prelen,
+				strslen,
+				nw = SIFT_COL_NWORDS(c->n);
+	SiftCc	   *cc;
+	uint64	   *cand,
+			   *one;
+	int64		k;
+
+	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || !istr_split(c, &pre, &prelen, &strs, &strslen))
+		return NULL;
+	cc = sift_cc_open(CurrentMemoryContext, pre, prelen, false);
+	if (sift_cc_nrows(cc) != c->n)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the prefix blob has %u values, the chunk %u", sift_cc_nrows(cc), c->n)));
+	cand = palloc0(nw * sizeof(uint64));
+	k = p->nvals > 0 ? sift_col_str_prefix(p->vals[0].v.s, p->vals[0].len) : 0;
+	switch (op)
+	{
+		case SIFT_COLOP_EQ:
+			sift_cc_filter(cc, k, k, cand);
+			break;
+		case SIFT_COLOP_IN:
+			one = palloc(nw * sizeof(uint64));
+			for (int i = 0; i < p->nvals; i++)
+			{
+				k = sift_col_str_prefix(p->vals[i].v.s, p->vals[i].len);
+				sift_cc_filter(cc, k, k, one);
+				sift_colk->bits_or(cand, one, nw);
+			}
+			pfree(one);
+			break;
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			sift_cc_filter(cc, PG_INT64_MIN, k, cand);
+			break;
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+			sift_cc_filter(cc, k, PG_INT64_MAX, cand);
+			break;
+		default:					/* PREFIX: the strings with it have the prefix keys from the constant padded with 0 up to padded with 255 */
+			{
+				char		pad[8];
+
+				memset(pad, 0xFF, sizeof(pad));
+				memcpy(pad, p->vals[0].v.s, Min(p->vals[0].len, 8));
+				sift_cc_filter(cc, k, p->vals[0].len >= 8 ? k : sift_col_str_prefix(pad, 8), cand);
+			}
+	}
+	sift_cc_close(cc);
+	return cand;
+}
+
+/* tmp = rows of a STRS or ISTR chunk whose string satisfies the predicate (NE and NOTIN: its opposite, EQ and IN), NULL slots may be set */
+static void
+chunk_strs(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
+{
+	const SiftColPred *p = t->pred;
+	SiftColOp	op = p->op == SIFT_COLOP_NE ? SIFT_COLOP_EQ : p->op == SIFT_COLOP_NOTIN ? SIFT_COLOP_IN : p->op;
+	uint64	   *cand = c->enc == SIFT_COLENC_ISTR ? istr_candidates(c, op, p) : NULL;
+	uint32		nw = SIFT_COL_NWORDS(c->n),
+				cw = words_of(c->n),
+			   *off;
+	char	   *bytes;
+	bool		any = cand == NULL;
+
+	memset(tmp, 0, nw * sizeof(uint64));
+	for (uint32 w = 0; cand != NULL && w < cw; w++)
+		any |= cand[w] != 0;
+	if (!any)
+		return;
+	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
+	for (uint32 w = 0; w < cw; w++)
+	{
+		uint64		m = cand ? cand[w] : ~UINT64CONST(0);
+
+		if (w == c->n / 64)
+			m &= (UINT64CONST(1) << (c->n % 64)) - 1;
+		for (; m; m &= m - 1)
+		{
+			uint32		i = w * 64 + pg_rightmost_one_pos64(m);
+
+			if (!sift_col_bit_test(c->nulls, i) && strs_match(op, p, bytes + off[i], off[i + 1] - off[i]))
+				tmp[w] |= UINT64CONST(1) << (i % 64);
+		}
+	}
+	pfree(off);
+	pfree(bytes);
+	if (cand)
+		pfree(cand);
+}
+
+void
+sift_cchunk_strs_length(const SiftCChunk *c, uint32 lo, uint32 hi, uint64 *bits)
+{
+	int64	   *len = palloc((Size) (c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+	uint32	   *u32 = palloc((Size) c->n * sizeof(uint32) + SIFT_COL_PAD);
+
+	memset(bits, 0, SIFT_COL_NWORDS(c->n) * sizeof(uint64));
+	if (lo <= hi)
+	{
+		sift_cchunk_decode(c, len);
+		for (uint32 i = 0; i < c->n; i++)
+			u32[i] = (uint32) len[i];
+		sift_colk->range[SIFT_COLW_32](u32, c->n, lo, hi - lo, bits);
+		if (c->nulls)
+			sift_colk->bits_andnot(bits, c->nulls, words_of(c->n));
+	}
+	pfree(len);
+	pfree(u32);
+}
+
 /* Sets of up to this many members are OR-ed range tests, larger ones are searched */
 #define SET_RANGES_MAX	8
 
@@ -1836,7 +2052,8 @@ sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 	uint32		nw = SIFT_COL_NWORDS(c->n),
 				cw = words_of(c->n);
 	uint64	   *tmp;
-	bool		negate = t->kind == SIFT_CT_NRANGE || t->kind == SIFT_CT_NSET;
+	bool		negate = t->kind == SIFT_CT_NRANGE || t->kind == SIFT_CT_NSET ||
+	(t->kind == SIFT_CT_STRS && (t->pred->op == SIFT_COLOP_NE || t->pred->op == SIFT_COLOP_NOTIN));
 
 	switch (t->kind)
 	{
@@ -1861,6 +2078,8 @@ sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 		chunk_range(c, t->lo, t->hi, tmp);
 	else if (t->kind == SIFT_CT_LUT)
 		chunk_lut(t, c, tmp);
+	else if (t->kind == SIFT_CT_STRS)
+		chunk_strs(t, c, tmp);
 	else if (t->nset > SET_RANGES_MAX)
 	{
 		chunk_scalar(t, c, tmp);	/* key_matches includes the negation of NSET */
