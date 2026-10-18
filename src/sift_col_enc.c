@@ -2427,6 +2427,30 @@ sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys)
 	}
 }
 
+/* The keys of the rows ords (ascending) only: the pages that hold them are decoded, the others skipped */
+void
+sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out)
+{
+	const uint8 *bm = v->sparse;
+	uint16		offs[MaxHeapTuplesPerPage];
+	uint32		k = 0;
+
+	for (uint32 p = 0; p < v->npages && k < n; p++)
+	{
+		uint32		sl = page_sparse_len(v, p);
+
+		if (ords[k] < v->rowstart[p + 1])
+		{
+			SiftKey		blk = sift_cunit_page_block(v, sb, p);
+
+			page_offsets(v, p, sl > 0 ? bm : NULL, offs);
+			for (; k < n && ords[k] < v->rowstart[p + 1]; k++)
+				out[k] = (blk << 16) | offs[ords[k] - v->rowstart[p]];
+		}
+		bm += sl;
+	}
+}
+
 /* ---- decoding a unit into a batch ---- */
 
 typedef struct UnitLeaf
