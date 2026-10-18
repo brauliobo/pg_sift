@@ -244,21 +244,28 @@ ext_logical_run() {
 	side logical psql -qAt -c "INSERT INTO cv_pub VALUES (1, 1)" >/dev/null || { echo "the INSERT still fails with pg_sift in shared_preload_libraries"; return 1; }
 }
 
-# D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the same SiftAgg result as the primary
+# D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
+# sift_col index and on a sift_table, and a BM25 match from a SiftScan / SiftCount plan
 ext_standby_run() {
-	local q='SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' lsn want got
+	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'clean'"
+	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
 	pg_basebackup -h "$SIFT_TMP/sock" -p "${SIFT_PORT:-56100}" -U postgres -D "$SIFT_TMP/side-standby/data" -X stream -c fast -R || return 1
 	side_conf standby || return 1
 	side standby start || return 1
-	sql -c "INSERT INTO cv_dml SELECT 9000 + i, i % 5, i, i, 'r' FROM generate_series(1, 300) i" || return 1
+	sql -c "INSERT INTO cv_dml SELECT 9000 + i, i % 5, i, i, 'r' FROM generate_series(1, 300) i" -c "INSERT INTO cv_tt SELECT * FROM cv_types WHERE id <= 60" || return 1
 	lsn=$(sql -c "SELECT pg_current_wal_lsn()")
 	for _ in $(seq 150); do
 		[[ $(SIFT_DB=$DB side standby psql -qAt -c "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && break
 		sleep 0.2
 	done
-	want=$(sql -c "SELECT coverage.rows_text('$q')")
-	got=$(SIFT_DB=$DB side standby psql -qAt -c "LOAD 'pg_sift'" -c "SELECT CASE WHEN pg_is_in_recovery() AND coverage.same('$q') THEN coverage.rows_text('$q') END" | grep -v '^LOAD$')
-	[[ -n $got && $got == "$want" ]] || { echo "the standby returned [${got:-no SiftAgg plan or not in recovery}], the primary [$want]"; return 1; }
+	for q in "${aggs[@]}"; do
+		want=$(sql -c "SELECT coverage.rows_text(\$\$$q\$\$)")
+		got=$(SIFT_DB=$DB side standby psql -qAt -c "LOAD 'pg_sift'" -c "SELECT CASE WHEN pg_is_in_recovery() AND coverage.same(\$\$$q\$\$) THEN coverage.rows_text(\$\$$q\$\$) END" | grep -v '^LOAD$')
+		[[ -n $got && $got == "$want" ]] || { echo "the standby returned [${got:-no SiftAgg plan or not in recovery}] for $q, the primary [$want]"; return 1; }
+	done
+	want=$(sql -c "$bm")
+	got=$(SIFT_DB=$DB side standby psql -qAt -c "LOAD 'pg_sift'" -c "SELECT CASE WHEN coverage.plan_of(\$q\$$bm\$q\$) ~ 'Custom Scan \\(Sift(Scan|Count)\\)' THEN ($bm)::text END" | grep -v '^LOAD$')
+	[[ -n $got && $got == "$want" ]] || { echo "the standby returned [${got:-no SiftScan plan}] for the BM25 match, the primary [$want]"; return 1; }
 }
 
 ext_record() {
@@ -317,11 +324,11 @@ cleanup() {
 # --check proves the proofs themselves: a table with wrong claims must fail on exactly those rows
 selftest() {
 	local mut=$OUT/mutated.tsv out n
-	awk -F'\t' -v OFS='\t' '$1 == "A01" { $10 = "plain" } $1 == "T07" { $10 = "agg" } $1 == "T05" { $10 = "error:42601" } $1 == "A02" { $12 = "selftest" } { print } END { print "#feature\tselftest\tnone\tno/such/marker" }' "$TSV" >"$mut"
-	out=$(TSV=$mut ROWS='^(A01|T07|T05|A02)$' run_proofs 2>&1 >/dev/null || true)
+	awk -F'\t' -v OFS='\t' '$1 == "A01" { $10 = "plain" } $1 == "T07" { $10 = "agg" } $1 == "T05" { $10 = "error:42601" } $1 == "A02" { $12 = "selftest" } $1 == "X03" { $11 = "SELECT false" } { print } END { print "#feature\tselftest\tnone\tno/such/marker" }' "$TSV" >"$mut"
+	out=$(TSV=$mut ROWS='^(A01|T07|T05|A02|X03)$' run_proofs 2>&1 >/dev/null || true)
 	n=$(grep -c '^FAIL' <<<"$out" || true)
-	(( n == 4 )) || { echo "coverage: selftest: 4 wrong claims (a plan that is not there, a node that is, a SQLSTATE, a feature that is not there) must fail, $n did:" >&2; echo "$out" >&2; return 1; }
-	log "selftest: the 4 wrong claims failed as they should"
+	(( n == 5 )) || { echo "coverage: selftest: 5 wrong claims (a plan that is not there, a node that is, a SQLSTATE, a feature that is not there, a probe that is false) must fail, $n did:" >&2; echo "$out" >&2; return 1; }
+	log "selftest: the 5 wrong claims failed as they should"
 }
 
 # ---------- main ----------
