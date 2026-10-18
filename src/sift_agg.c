@@ -8708,6 +8708,36 @@ topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
 }
 
 /* Windows of superblocks from the end the best values are at (sift_topn.h) */
+
+/*
+ * The match set of the superblocks a window is in. The first window is asked for alone (the scan often ends in it, and a match set costs by
+ * the superblocks it covers); the chunk around each later one holds the windows that follow it, which a backwards visit cannot get cheaply:
+ * the match iterator restarts when asked for superblocks it has passed.
+ */
+typedef struct TopnChunk
+{
+	uint32		lo,
+				hi;
+	const SiftFilter *flt;
+} TopnChunk;
+
+static void
+topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
+{
+	if (ex->search)
+	{
+		if (ch->flt == NULL || lo < ch->lo || hi > ch->hi)
+		{
+			uint32		width = ch->flt == NULL ? hi - lo : Max(hi - lo, sift_search_chunk_sbs);
+
+			ch->lo = sift_topn_reverse(ex->topn) ? (hi > width ? hi - width : 0) : lo;
+			ch->hi = sift_topn_reverse(ex->topn) ? hi : Min(lo + width, nsb);
+			ch->flt = sift_search_range(ex->search, ch->lo, ch->hi);
+		}
+		sift_colsrc_select(ex->src, ch->flt);
+	}
+	scan_units(ex, lo, hi);
+}
 static void
 topn_run(AggExec *ex)
 {
@@ -8717,6 +8747,7 @@ topn_run(AggExec *ex)
 				hi,
 				best;
 	SiftSrcZone z;
+	TopnChunk	ch = {0, 0, NULL};
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
@@ -8736,7 +8767,7 @@ topn_run(AggExec *ex)
 			sift_topn_stop(t);
 			break;
 		}
-		scan_range(ex, lo, hi);
+		topn_scan(ex, lo, hi, nsb, &ch);
 	}
 	ex->topn_n = sift_topn_finish(t);
 }
