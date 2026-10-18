@@ -1230,50 +1230,65 @@ ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 	}
 }
 
-static int64
-const_key(const SiftColDef *def, const SiftColValue *v)
+/* The keys a constant stands for: PostgreSQL compares -0 and +0 equal, so a zero spans the two keys of the float domain */
+static void
+const_span(const SiftColDef *def, const SiftColValue *v, int64 *lo, int64 *hi)
 {
-	return def->store == SIFT_COLS_INT ? v->v.i : sift_col_f8_key(v->v.f);
+	*lo = *hi = def->store == SIFT_COLS_INT ? v->v.i : sift_col_f8_key(v->v.f);
+	if (def->store != SIFT_COLS_INT && v->v.f == 0)
+	{
+		*lo = sift_col_f8_key(-0.0);
+		*hi = sift_col_f8_key(0.0);
+	}
 }
 
 static void
 ctest_make_num(const SiftColDef *def, const SiftColPred *p, SiftCTest *t)
 {
-	int64		c = p->nvals > 0 ? const_key(def, &p->vals[0]) : 0;
+	int64		lo = 0,
+				hi = 0;
 
+	if (p->nvals > 0)
+		const_span(def, &p->vals[0], &lo, &hi);
 	switch (p->op)
 	{
 		case SIFT_COLOP_EQ:
 		case SIFT_COLOP_NE:
-			ctest_range(t, c, c);
+			ctest_range(t, lo, hi);
 			t->kind = p->op == SIFT_COLOP_EQ ? SIFT_CT_RANGE : SIFT_CT_NRANGE;
 			break;
 		case SIFT_COLOP_LT:
-			if (c == PG_INT64_MIN)
+			if (lo == PG_INT64_MIN)
 				t->kind = SIFT_CT_NONE;
 			else
-				ctest_range(t, PG_INT64_MIN, c - 1);
+				ctest_range(t, PG_INT64_MIN, lo - 1);
 			break;
 		case SIFT_COLOP_LE:
-			ctest_range(t, PG_INT64_MIN, c);
+			ctest_range(t, PG_INT64_MIN, hi);
 			break;
 		case SIFT_COLOP_GT:
-			if (c == PG_INT64_MAX)
+			if (hi == PG_INT64_MAX)
 				t->kind = SIFT_CT_NONE;
 			else
-				ctest_range(t, c + 1, PG_INT64_MAX);
+				ctest_range(t, hi + 1, PG_INT64_MAX);
 			break;
 		case SIFT_COLOP_GE:
-			ctest_range(t, c, PG_INT64_MAX);
+			ctest_range(t, lo, PG_INT64_MAX);
 			break;
 		case SIFT_COLOP_IN:
 		case SIFT_COLOP_NOTIN:
 			{
-				int64	   *keys = palloc(Max(p->nvals, 1) * sizeof(int64));
+				int64	   *keys = palloc(Max(p->nvals, 1) * 2 * sizeof(int64));
+				int			m = 0;
 
 				for (int i = 0; i < p->nvals; i++)
-					keys[i] = const_key(def, &p->vals[i]);
-				ctest_keys(t, keys, p->nvals, p->op == SIFT_COLOP_NOTIN);
+				{
+					const_span(def, &p->vals[i], &lo, &hi);
+					keys[m++] = lo;
+					if (hi != lo)
+						keys[m++] = hi;
+				}
+				ctest_keys(t, keys, m, p->op == SIFT_COLOP_NOTIN);
 			}
 			break;
 		default:

@@ -97,7 +97,11 @@ typedef struct SiftColRow
 	SiftColValue **elem;
 } SiftColRow;
 
-/* Order-preserving key of a float and back (-0 is +0, every NaN one NaN above +Inf) */
+/*
+ * Order-preserving key of a float and back. The sign of zero is kept: -0 is the key just below +0 (-1 and 0), so every non-NaN value
+ * comes back with the bits it went in with; PostgreSQL compares -0 and +0 equal, which the tests built by sift_ctest_make account
+ * for (a constant of zero spans both keys). Every NaN is one NaN above +Inf.
+ */
 static inline int64
 sift_col_f8_key(double f)
 {
@@ -106,11 +110,7 @@ sift_col_f8_key(double f)
 	if (f != f)
 		b = UINT64CONST(0x7FF8000000000000);
 	else
-	{
-		if (f == 0)
-			f = 0;
 		memcpy(&b, &f, sizeof(b));
-	}
 	return (int64) (b ^ ((uint64) ((int64) b >> 63) >> 1)) ;
 }
 

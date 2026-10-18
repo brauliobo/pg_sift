@@ -127,7 +127,7 @@ Kernels are chosen at run time through the `sift_cpu` rebind registry and `sift.
 ### Grouping sets and float keys
 
 - **Sets**: the scan keeps one group table per set over the same key ids; the set is a key of the groups, so a group of the empty set is one group and a data `NULL` is not the `NULL` of a rolled up key. `GROUPING(a, b)` is the bit mask of the sets (the first argument is the highest bit); the empty set returns its one row over no input too. A query of N sets is priced as N group updates per tuple; the filters, leaf reads and unnest are paid once.
-- **Float keys**: a float4/float8 column or expression is a key through its bits, with `-0` as `0` and every NaN as one NaN (`float8_eq` and `hashfloat8`); the index stores `-0` as `0` and a value it cannot hold raises `0A000` as above, and the group is emitted as the type's value (`float4` stays `float4`).
+- **Float keys**: a float4/float8 column or expression is a key through its bits, with `-0` as `0` and every NaN as one NaN (`float8_eq` and `hashfloat8`); the index stores `-0` with its sign (the scan treats it as `0`) and a value it cannot hold raises `0A000` as above, and the group is emitted as the type's value (`float4` stays `float4`).
 
 ## Cost
 

@@ -140,6 +140,12 @@ INSERT INTO col_checks (preds, heapwhere) VALUES
 	('1:eq:new;0:eq:7', 'status = ''new'' AND tenant_id = 7'),
 	('2:gt:10', 'amount > 10'),
 	('2:eq:0', 'amount = 0'),
+	('2:eq:-0', 'amount = 0'),
+	('2:lt:-0', 'amount < 0'),
+	('2:gt:-0', 'amount > 0'),
+	('2:ge:-0', 'amount >= 0'),
+	('2:ne:0', 'amount <> 0'),
+	('2:notin:-0|1', 'amount NOT IN (0, 1)'),
 	('2:ge:1e308', 'amount >= 1e308'),
 	('2:eq:nan', 'amount = ''NaN'''),
 	('2:ge:inf', 'amount >= ''Infinity'''),
@@ -186,28 +192,34 @@ SELECT n, preds, col_cmp('o_col', preds, heapwhere) FROM col_checks ORDER BY n;
  20 | 1:eq:new;0:eq:7                                | ok
  21 | 2:gt:10                                        | ok
  22 | 2:eq:0                                         | ok
- 23 | 2:ge:1e308                                     | ok
- 24 | 2:eq:nan                                       | ok
- 25 | 2:ge:inf                                       | ok
- 26 | 2:le:-inf                                      | ok
- 27 | 2:lt:-1e308                                    | ok
- 28 | 2:null                                         | ok
- 29 | 2:in:0|12.5|nan                                | ok
- 30 | 3:le:20.5                                      | ok
- 31 | 3:gt:20.3                                      | ok
- 32 | 3:eq:0.25                                      | ok
- 33 | 4:ge:18500                                     | ok
- 34 | 4:lt:18500;4:gt:18000                          | ok
- 35 | 5:ge:1000000000000                             | ok
- 36 | 5:null                                         | ok
- 37 | 6:eq:1                                         | ok
- 38 | 6:eq:0                                         | ok
- 39 | 6:null                                         | ok
- 40 | 7:lt:0                                         | ok
- 41 | 7:in:-50000|0|49999                            | ok
- 42 | 7:ge:9223372036854775807                       | ok
- 43 | 0:eq:7;1:eq:paid;2:gt:0;3:lt:100;6:eq:1;7:gt:0 | ok
-(43 rows)
+ 23 | 2:eq:-0                                        | ok
+ 24 | 2:lt:-0                                        | ok
+ 25 | 2:gt:-0                                        | ok
+ 26 | 2:ge:-0                                        | ok
+ 27 | 2:ne:0                                         | ok
+ 28 | 2:notin:-0|1                                   | ok
+ 29 | 2:ge:1e308                                     | ok
+ 30 | 2:eq:nan                                       | ok
+ 31 | 2:ge:inf                                       | ok
+ 32 | 2:le:-inf                                      | ok
+ 33 | 2:lt:-1e308                                    | ok
+ 34 | 2:null                                         | ok
+ 35 | 2:in:0|12.5|nan                                | ok
+ 36 | 3:le:20.5                                      | ok
+ 37 | 3:gt:20.3                                      | ok
+ 38 | 3:eq:0.25                                      | ok
+ 39 | 4:ge:18500                                     | ok
+ 40 | 4:lt:18500;4:gt:18000                          | ok
+ 41 | 5:ge:1000000000000                             | ok
+ 42 | 5:null                                         | ok
+ 43 | 6:eq:1                                         | ok
+ 44 | 6:eq:0                                         | ok
+ 45 | 6:null                                         | ok
+ 46 | 7:lt:0                                         | ok
+ 47 | 7:in:-50000|0|49999                            | ok
+ 48 | 7:ge:9223372036854775807                       | ok
+ 49 | 0:eq:7;1:eq:paid;2:gt:0;3:lt:100;6:eq:1;7:gt:0 | ok
+(49 rows)
 
 -- Without the mutable segments the result is the same (nothing is there yet), with the visibility check skipped it can only grow
 SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_mutable_same FROM col_checks;
@@ -279,6 +291,13 @@ SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_c
  differing 
 -----------
          0
+(1 row)
+
+-- the sign of a zero survives the encoding
+SELECT (SELECT count(*) FROM sift._test_col_read('o_col', 2, '') WHERE val = '-0') = (SELECT count(*) FROM orders WHERE amount::text = '-0') AS negative_zeros_kept;
+ negative_zeros_kept 
+---------------------
+ t
 (1 row)
 
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 3, '') EXCEPT SELECT ctid, discount::float8::text FROM orders) z;
