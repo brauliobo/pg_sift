@@ -78,6 +78,21 @@ SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' AND published >=
 ORDER BY sift.score(ctid) DESC LIMIT 10;
 ```
 
+## Configuration
+
+The index options and settings of the background maintenance (the rest is in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations)):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `sift.async_maintenance` | on | promote and merge segments in a background worker |
+| `sift.log_min_duration` | 1s | log promotions, merges and worker runs of at least that long |
+
+| Index option | Default | Meaning |
+|---|---|---|
+| `mutable_limit` | 4096 | kB of the mutable segment before it is sealed for promotion |
+| `vacuum_segments` | 2 | segments `VACUUM` leaves an index with (1 to 128) |
+| `dead_rewrite_pct` | 50 | percent of dead documents above which maintenance rewrites a lone segment (1 to 100, 100 never); `ALTER INDEX ... SET`, no `REINDEX` |
+
 ## More
 
 [docs/USAGE.md](docs/USAGE.md) covers the rest, each with examples:

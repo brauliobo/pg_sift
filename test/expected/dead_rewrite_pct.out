@@ -1,0 +1,97 @@
+-- dead_rewrite_pct: the percent of dead documents above which maintenance rewrites a lone segment (default 50), changed with ALTER INDEX and no REINDEX.
+CREATE EXTENSION pg_sift;
+SET enable_seqscan = off;
+SET sift.async_maintenance = off;
+CREATE TABLE dr (id serial, body text) WITH (autovacuum_enabled = off);
+INSERT INTO dr (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common' FROM generate_series(1, 10000) i;
+CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1);
+CREATE TEMP TABLE built AS SELECT gen FROM sift.segments('dr_idx');
+SELECT count(*) AS segments FROM built;
+ segments 
+----------
+        1
+(1 row)
+
+-- 30% dead: under the default 50 the segment stays
+DELETE FROM dr WHERE id % 10 < 3;
+VACUUM dr;
+SELECT count(*) AS kept_at_default FROM sift.segments('dr_idx') s JOIN built USING (gen);
+ kept_at_default 
+-----------------
+               1
+(1 row)
+
+-- the same 30% with the threshold at 25: VACUUM rewrites it and drops the dead documents
+ALTER INDEX dr_idx SET (dead_rewrite_pct = 25);
+VACUUM dr;
+SELECT count(*) AS kept_at_25 FROM sift.segments('dr_idx') s JOIN built USING (gen);
+ kept_at_25 
+------------
+          0
+(1 row)
+
+SELECT sum(ndocs) AS docs FROM sift.segments('dr_idx');
+ docs 
+------
+ 7000
+(1 row)
+
+SELECT count(*) AS hits FROM dr WHERE body @@> 'common';
+ hits 
+------
+ 7000
+(1 row)
+
+SELECT sift.verify('dr_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+-- 100 never rewrites, 1 rewrites at the first dead document
+DELETE FROM dr WHERE id % 10 IN (3, 4);
+CREATE TEMP TABLE before AS SELECT gen FROM sift.segments('dr_idx');
+ALTER INDEX dr_idx SET (dead_rewrite_pct = 100);
+VACUUM dr;
+SELECT count(*) AS kept_at_100 FROM sift.segments('dr_idx') JOIN before USING (gen);
+ kept_at_100 
+-------------
+           1
+(1 row)
+
+ALTER INDEX dr_idx SET (dead_rewrite_pct = 1);
+VACUUM dr;
+SELECT count(*) AS kept_at_1 FROM sift.segments('dr_idx') JOIN before USING (gen);
+ kept_at_1 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS hits FROM dr WHERE body @@> 'common';
+ hits 
+------
+ 5000
+(1 row)
+
+SELECT sift.verify('dr_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+-- out of range
+ALTER INDEX dr_idx SET (dead_rewrite_pct = 0);
+ERROR:  value 0 out of bounds for option "dead_rewrite_pct"
+DETAIL:  Valid values are between "1" and "100".
+ALTER INDEX dr_idx SET (dead_rewrite_pct = 101);
+ERROR:  value 101 out of bounds for option "dead_rewrite_pct"
+DETAIL:  Valid values are between "1" and "100".
+ALTER INDEX dr_idx RESET (dead_rewrite_pct);
+SELECT sift.verify('dr_idx');
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE dr;
+DROP EXTENSION pg_sift;

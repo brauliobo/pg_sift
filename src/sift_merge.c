@@ -22,9 +22,9 @@ bytes_cmp(const void *a, const void *b)
 	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
 }
 
-/* A segment of which more than half the documents were deleted */
+/* A segment of which more than dead_pct percent of the documents were deleted */
 static bool
-mostly_dead(Relation index, const SiftSegEntry *e)
+mostly_dead(Relation index, const SiftSegEntry *e, int dead_pct)
 {
 	SiftSegment *seg;
 	bool		dead;
@@ -32,7 +32,7 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_seg_open(index, e, CurrentMemoryContext);
-	dead = sift_seg_live_docs(seg) * 2 < e->ndocs;
+	dead = sift_seg_live_docs(seg) * 100 < (uint64) e->ndocs * (100 - dead_pct);
 	sift_seg_close(seg);
 	return dead;
 }
@@ -68,7 +68,7 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 		return Min(n, fanin);
 	}
 	for (int i = 0; i < n; i++)
-		if (mostly_dead(index, &imm[i]))
+		if (mostly_dead(index, &imm[i], pol->dead_pct ? pol->dead_pct : SIFT_MERGE_DEAD_PCT))
 		{
 			sel[0] = imm[i];
 			return 1;
