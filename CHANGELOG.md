@@ -29,7 +29,7 @@ No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE
   Found while fixing the same race in the column engine; seen on 2.0.2 and every earlier release as an index count above the sequential
   count (96 differing counts in a 90 s run with 6 readers, deleters, updaters, inserters and a `VACUUM`/`sift.merge` loop; none without the `VACUUM`).
   Tests: `vacuum_count_snapshot` (the scan waits before the map read while the `VACUUM`, merge or promotion runs: clean segment, dirty segment
-  whose second superblock turns dirty, merge, mutable segment, page-by-page scan) and `vacuum_count_stress` (the run above, 40 s).
+  whose second superblock turns dirty, merge, mutable segment, page-by-page scan) and `vacuum_count_stress` (a reader, DML and a VACUUM/merge loop on 100,000 rows, 40 s).
 
 ## 2.0.2
 
