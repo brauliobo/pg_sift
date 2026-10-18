@@ -1,7 +1,12 @@
 /* Stand-ins for the backend-side cpu module (same detection rules as src/sift_cpu.c). */
 #include "harness.h"
 
+#include "sift_bitmap_kern.h"
+
 SiftCpu		sift_cpu;
+
+/* The bitmap kernels of the col kernels reach their own table only through count_mask, which no tool calls */
+const sift_kernels *sift_k = &sift_kern_scalar;
 const char *const ak_level_name[] = {"scalar", "avx2", "avx512"};
 
 void
