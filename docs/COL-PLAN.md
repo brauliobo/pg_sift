@@ -78,9 +78,47 @@ One unit at a time (the rows of a segment inside one superblock), through the se
 
 The groups leave as the rows of `custom_scan_tlist` (keys, then aggregates); the plan above projects and filters. `Rows Vetted By Heap`, `Heap Pages`, `Units`, `Units Pruned`, `Rows Scanned`, `Tuples Aggregated` and `Groups` are in EXPLAIN ANALYZE, the filters, group keys and pushed aggregates in plain EXPLAIN.
 
+## Parallel scan
+
+The planner offers a second path with the workers PostgreSQL would give a parallel sequential scan of the table (`compute_parallel_worker`: table size, the `parallel_workers` reloption, `max_parallel_workers_per_gather`), only when the whole query is parallel safe (`glob->parallelModeOK`, no unsafe function in the spec) and the spec is one of the parallel kinds below; the cheaper of the two paths wins. The cost divides the scan by PostgreSQL's divisor (the workers plus the share of a leader that scans too, `parallel_leader_participation`), adds `parallel_setup_cost`, and charges every partial table for its groups (merge cost per group). `sift.enable_agg = off` removes both paths.
+
+The node is not under a Gather: its workers return tables, not tuples, so it keeps a parallel context of its own (`sift_agg_worker_main`, one `shm_mq` per worker). The leader opens the source, creates the context, fills the shared state and launches, and waits for the workers with the source still open: the sources keep their page pinned, never locked, between calls, so no interrupt is held off (a held-off interrupt makes `InitializeParallelDSM` plan no workers and the wait never end). A worker opens the relations and the source with the leader's snapshot and parameters and registers the same predicates and keys from the spec. The work is a counter in shared memory that the leader and the workers take items from:
+
+- Exact aggregates (counts, integer sums, min/max, count(DISTINCT)): an item is 2 superblocks. A participant aggregates all its items into one table and sends it when the counter runs out; the leader merges the tables by key value (dictionary codes and key ids are per process), unions the count(DISTINCT) sets and adds the rest. Integer arithmetic is exact, so the order does not matter.
+- Float sums (`sum`, `avg` of float8): additions are not associative. The scan has 16 lanes (`SIFT_AGG_LANES`): lane l is the superblocks l, l + 16, l + 32, ..., summed in superblock order into a table of its own, and the leader adds the lane tables in lane order, as soon as the lanes before them arrived. Whether the leader or a worker scans a lane, the additions are the same, so the result is bit-identical for 0, 1, 2, ... workers and every SIMD level. `avg` counts and the "no float seen" flag merge with it; the overflow guard of `avg(float8)` takes the largest input of all lanes.
+- Without workers the leader runs the same items, so a serial run is the same computation; a query whose workers cannot be launched (none free, nested in a worker, no DSM) runs on the leader alone.
+
+All the memory that grows with the groups (key ids and values, the group arrays, count(DISTINCT) sets) is in one table context that is reset between lanes; the buffers of a unit and the registered expressions live as long as the scan.
+
+Which specs run in parallel is `sift_aggspec_parallel_ok`, shared by the planner and the executor:
+
+| | Parallel (a table is dumped, merged by value, reset) | Serial only (the leader scans alone: no workers planned, no lanes) |
+|---|---|---|
+| Keys | a column (dictionary, integer, date, bool), an expression of one column (`SAK_LEAF`, `SAK_LUT`) | float keys, numeric keys (`SAK_NUM`, an `IdMap` of values), keys of a combo (several leaves), the grouping set number (`SAK_SET`) |
+| Aggregates | `count(*)`, `count(x)`, `count(DISTINCT row id)` of an unnest, `sum` / `avg` of integers and float8 (leaf or expression), `min` / `max` of a leaf, `count(DISTINCT)` of a dictionary or integer leaf, any `FILTER` | numeric `sum` / `avg` (int128 states), `min` / `max` / `count(DISTINCT)` of a numeric expression, ordered-set aggregates (`percentile_*`: a histogram per group), mapped aggregates (`SAA_M_*`: values of a lookup table), `GROUPING()`, per-order aggregates (`SAA_O_*`) |
+| Shape | row filters of every kind, element filters, unnest, `sum(x * y)` programs | lookup joins and combos, two-level (per-order arms), grouping sets, virtual leaves (`jsonb` member by key) |
+
+The serial-only kinds keep their state in structures that are not dumped (histograms, tuple sorts, arms, maps of ids) and have no merge defined: their scan is one item over all the superblocks into one table, with float sums in tuple order. The test `aggstub_scan` checks that they get no workers and give the rows of the normal plan.
+
+`Workers Planned` and `Workers Launched` are in EXPLAIN; `Units`, `Rows Scanned`, `Tuples Aggregated`, `Units Pruned` and the heap counters add the workers'.
+
+## Zone pruning
+
+The row conjuncts of the query that compare an integer leaf of the rows (`int2`, `int4`, `int8`, `date`, `timestamp`, `timestamptz`, `bool`; not a jsonb element, not a lossy leaf) with a constant or parameter by `=`, `<`, `<=`, `>`, `>=` become, per leaf, an interval `[lo, hi]` (`sift_aggspec_zone_cmps`, `prune_init`: the operand is evaluated once per scan, comparisons of one leaf are intersected, `<>`, `IN`, `OR`, element conjuncts and float leaves are not used). The executor passes the intervals to `sift_colsrc_begin` as `SiftSrcPrune`; the `sift_col` provider turns each into two comparisons (`>= lo`, `<= hi`) for `sift_col_begin`, which skips the units whose min/max zone map excludes either, before any leaf is decoded, and counts them (`Units Pruned`). The test provider skips by the minimum and maximum of the unit's values. The executor still applies every conjunct to the rows of the units it reads, so pruning only removes work: a unit is skipped only when no row of it can pass. It applies to every spec, parallel or not.
+
+`agg_cost` prices the scan of the units that are left. The share kept for one comparison is `f + (1 - f) * (1 - corr^2)`, f being the selectivity PostgreSQL estimates for it (`clause_selectivity`: the column's MCVs and histogram, taken when the conjunct is compiled) and corr the correlation of the heap column with the heap order from `pg_statistic` (0 when unknown, and for jsonb paths and index expressions); the most selective comparison counts, and at least one unit is read. A column that grows with the heap (ids, insertion time) has |corr| near 1 and a range query is priced by its range, an unclustered column is priced by the whole table. The leaf read, predicate and unit terms scale with the share; tuples and aggregate updates already follow the selectivity.
+
+### Statistics request
+
+The correlation is a stand-in for what the planner needs, and `SiftSrcStats` of the `sift_col` provider carries only the row and unit counts and the visibility share today (`ndistinct`, `min`, `max` and `elems_per_row` are zero). For each integer leaf of the rows, from the engine (computed at build or ANALYZE from the zone maps it already keeps, nothing read per query):
+
+- `zone_width[leaf]`: the mean over units of `(zone.max - zone.min) / (leaf max - leaf min)`: how wide a unit's zone is relative to the range (0 for a perfectly clustered column, 1 for a random one). With it the share of units a window of fraction f of the range overlaps is `min(1, f + zone_width)`, which replaces `f + (1 - f) * (1 - corr^2)`.
+- `zone_hist[leaf]`: 32 equal-width buckets of the range, each with the number of units whose zone overlaps it, to price skewed ranges and `=` on a clustered column exactly.
+- `ndistinct`, `min`, `max` of every scalar leaf and `elems_per_row` of every group leaf, for the key-table sizes and the unnest cost.
+
 ## Exactness
 
-Integer, date, timestamp, dictionary, boolean and numeric results are exact. `sum(int)` is int8, `avg(int)` is the `numeric` division of the exact sum and count. Float `sum` and `avg` add in tuple order per group, so the result does not depend on the SIMD level or the number of workers; it can differ from the normal plan, which adds in heap order, by the rounding of reordered float addition (the comparator's tolerance: relative 1e-9, absolute 1e-12).
+Integer, date, timestamp, dictionary, boolean and numeric results are exact. `sum(int)` is int8, `avg(int)` is the `numeric` division of the exact sum and count. Float `sum` and `avg` add in the order of the lanes above per group (a scan that is serial only adds in tuple order), so the result does not depend on the SIMD level or the number of workers; it can differ from the normal plan, which adds in heap order, by the rounding of reordered float addition (the comparator's tolerance: relative 1e-9, absolute 1e-12).
 
 PostgreSQL's float8 aggregates raise errors that a plain double sum would hide. `sum(float8)` raises the overflow error when a group's sum is infinite and none of its inputs was. `avg(float8)` keeps a sum of squares (`float8_accum`) that overflows first; the scan does not keep it and raises the same error when the inputs are so large that it could have (`8 * n * max(x)^2 >= DBL_MAX`). The one input where the normal plan does not fail although the bound is met (all values equal and above 1e150) fails here too; set `sift.enable_agg` off for it. Overflow errors inside a float8 expression argument are not reproduced (the result is infinite).
 
@@ -97,32 +135,35 @@ Kernels are chosen at run time through the `sift_cpu` rebind registry and `sift.
 
 ## Cost
 
-`agg_cost` prices the scan from the source's statistics: a leaf read, a predicate, a tuple that passes the filters, a key id and an aggregate update, each in `cpu_operator_cost` (about 3 ns here: the constants were fitted on whole table runs of one to three keys and aggregates, 17 ns per unnested element all in). The scan reads every unit (zone pruning by the query's predicates is not requested yet), so a selective query is priced by its whole table scan against the btree plan's selected rows: the measured crossover keeps the normal plan for the 10 and 400 store sets and takes the scan for the 4000 store set and the whole table. The grouping sets, the mapped aggregates and the outer WHERE add the update cost of their sets and accumulators only: no constant changed. Heap vetting of the rows on pages that are not all-visible is added per page. Elements per row of an array default to 3 when the source has no statistic.
+`agg_cost` prices the scan from the source's statistics: a leaf read, a predicate, a tuple that passes the filters, a key id and an aggregate update, each in `cpu_operator_cost` (about 3 ns here: the constants were fitted on whole table runs of one to three keys and aggregates, 17 ns per unnested element all in). The scan reads every unit that the zone tests leave (above, "Zone pruning"; none on a column the heap order does not follow), so a selective query is priced by its table scan against the btree plan's selected rows: the measured crossover keeps the normal plan for the 10 and 400 store sets and takes the scan for the 4000 store set and the whole table. The grouping sets, the mapped aggregates and the outer WHERE add the update cost of their sets and accumulators only: no constant changed. Heap vetting of the rows on pages that are not all-visible is added per page. Elements per row of an array default to 3 when the source has no statistic.
 
 ## Results
 
-The analytics corpus (`bench/sql/analytics`) on 300000 orders (about 960000 items, one core, `sift_col` index, `scripts/coldiff.sh --bench --runs 5`, median of 5), plain plan against SiftAgg:
+The analytics corpus (`bench/sql/analytics`) on 300000 orders (about 960000 items, `sift_col` index), wall ms, median of 7 runs of `scripts/coldiff.sh --bench --runs 7` on a machine shared with other sessions (load 7 to 10 on 8 cores; two runs agree to about 10 percent). Plain is the normal plan, serial; SiftAgg is the same node with no workers (W=0) and with `--bench-workers 4` (W=4: `max_parallel_workers_per_gather = 4` under the default parallel costs, which plan workers for the parallel kinds only):
 
-| Query | Plain ms | SiftAgg ms | Speedup | Note |
-|---|---:|---:|---:|---|
-| G1 count, one item filter | 665 | 12.6 | 52.7 | |
-| G2 avg/sum/count, three filters | 246 | 15.3 | 16.0 | |
-| G3 two keys, avg | 738 | 22.3 | 33.1 | |
-| G4 count(DISTINCT order id) | 425 | 17.2 | 24.6 | |
-| G5 group by store | 364 | 13.9 | 26.1 | |
-| G6 month and language | 848 | 22.5 | 37.7 | |
-| G8 group by order (300000 groups) | 509 | 52.4 | 9.7 | |
-| G7 percentile | 585 | 47.6 | 12.3 | `percentile_cont` x2, exact histogram |
-| S5@K4000 | 109 | 33.8 | 3.2 | count(DISTINCT customer) |
-| S5@K10, S5@K400 | 0.9, 10.3 | 1.0, 12.0 | 0.9 | normal plan kept (btree) |
-| S1@K400, S1@K4000 | 13.0, 258 | 9.3, 11.7 | 1.4, 22.0 | lookup join, multi-leaf key |
-| S2@K400, S2@K4000 | 37.6, 781 | 13.9, 33.2 | 2.7, 23.5 | per-order aggregates, three arms |
-| S3@K400, S3@K4000 | 10.6, 229 | 17.9, 20.1 | 0.6, 11.4 | K400 is a plan the cost model mis-prices (the normal plan's estimate is 4 times SiftAgg's, its run 1.7 times faster); K4000 is bound by decoding the leaves it reads (about 20 ms for the whole table) |
-| S4@K4000 | 265 | 49.8 | 5.3 | shared CTE planned inline, four passes |
-| S4@K10, S4@K400 | 0.9, 12.6 | 1.3, 13.5 | 0.7, 0.9 | materialized plan kept; includes the second planning |
-| S7@K4000 | 50.1 | 9.3 | 5.4 | `EXISTS` of three conditions on one item |
-| S6@K4000 with an integer sum | 32.1 | 7.3 | 4.4 | `jsonb_path_exists` flag in two `FILTER`s; the corpus S6 sums `numeric`: not matched |
-| S7@K10, S7@K400 | 0.5, 4.9 | 0.6, 5.2 | 0.9 | normal plan kept (btree) |
+| Query | Plain | SiftAgg W=0 | SiftAgg W=4 | Speedup W=0 / W=4 | Note |
+|---|---:|---:|---:|---:|---|
+| G1 count, one item filter | 399 | 3.2 | 11.7 | 125 / 34 | |
+| G2 avg/sum/count, three filters | 150 | 5.0 | 11.7 | 30 / 13 | |
+| G3 two keys, avg | 508 | 9.3 | 11.7 | 55 / 43 | |
+| G4 count(DISTINCT order id) | 250 | 5.7 | 11.0 | 44 / 23 | |
+| G5 group by store | 275 | 4.8 | 11.6 | 57 / 24 | |
+| G6 month and language | 478 | 11.8 | 13.0 | 41 / 37 | |
+| G7 percentile | 538 | 44.8 | 43.8 | 12 / 12 | serial only (ordered sets) |
+| G8 group by order (231151 groups) | 280 | 16.8 | 16.2 | 17 / 17 | |
+| S5@K10, S5@K400 | 0.9, 9.7 | | | 1.0 | normal plan kept (btree) |
+| S5@K4000 | 89 | 32 | 31 | 2.8 / 2.9 | count(DISTINCT customer) per group; the window above the node is PostgreSQL's |
+| S1@K400, S1@K4000 | 14, 265 | 6.7, 9.6 | 6.5, 9.0 | 2.1, 28 / 2.2, 29 | lookup join, multi-leaf key; serial only |
+| S2@K400, S2@K4000 | 40, 687 | 11.8, 34 | 11.7, 33.5 | 3.4, 20 / 3.4, 21 | per-order aggregates, three arms; serial only |
+| S3@K400, S3@K4000 | 12.3, 232 | 14.7, 15.9 | 14.7, 16.6 | 0.8, 15 / 0.8, 14 | K400 is a plan the cost model mis-prices; serial only |
+| S4@K4000 | 270 | 40 | 49 | 6.7 / 5.5 | shared CTE planned inline, four passes |
+| S6@K4000 | 35 | 7.5 | 6.8 | 4.7 / 5.2 | |
+| S7@K4000 | 50 | 7.6 | 7.2 | 6.6 / 6.9 | `EXISTS` of three conditions on one item |
+| S4 to S7 at K10, K400; S1 to S3 at K10 | | | | 0.6 to 1.0 | normal plan kept (btree), no regression beyond noise |
+
+Reading the table. The scans that are cheap serially (G1 to G5: 3 to 6 ms) do not gain from workers on this machine: starting four processes costs about 8 ms here, in a session that has just run a long query (PostgreSQL's own Gather over a 300000 row table goes from 3.5 to 10.5 ms after the same plain query in the same session), and the cost model charges `parallel_setup_cost` as the server does, so those plans pick workers and run at that floor; in a fresh session the same node with four workers takes 3.5 to 4.5 ms on G1. The scans of 10 to 20 ms (G3, G6) are at the floor too: G6 takes 11.8 ms with the leader alone and 13 ms with four workers. G7, G8, S1 to S3 keep their state in the leader and take no workers (W=4 equals W=0). What the changes bought in the serial path (measured when they were made, before the numeric and set kinds joined): the key-range and parent passes (`rt_cover`, `build_parents`) took G1, G2, G4, G5 and G8 down by 11 to 25 percent, one allocation of the group arrays for a single key took G8 from 18.4 to 15.4 ms, and the zone tests make a range of a clustered column (`id > 290000`: 111 of 125 units skipped) 0.4 ms instead of the 3 to 4 ms of the btree plan.
+
+What is left to the 20 times of the K4000 shapes: S5@K4000 is 32 ms against 89 ms plain, mostly PostgreSQL's sort, window and JIT above the node (a top 3 per store inside the node would be needed); inside the node the profile is flat. S3@K4000, S4@K4000, S6@K4000 and S7@K4000 are bound by decoding the leaves they read and by serial-only state (above).
 
 The forms of grouping sets, a WHERE on the outer query, mapped aggregates and float keys over the same orders (best of 4 runs of the query, K400 and K4000 stores, `sift.enable_agg` off against on):
 
@@ -136,13 +177,13 @@ The forms of grouping sets, a WHERE on the outer query, mapped aggregates and fl
 | float8 key (`metrics->>'overall'`) | 3.4, 31 | 7.3, 7.8 | 0.5, 4.0 | K400 is the mis-priced crossover of S3 above (a few ms either way) |
 | float8 key of the items (`price`) | 5.8, 106 | 7.5, 19 | 0.8, 5.6 | |
 
-The comparator found no difference in the 145 corpus runs, 545 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the scan itself is not parallel). The one fixture that differs is the error code above.
+The comparator found no difference in the 145 corpus runs, 880 fixture runs and the 13 DML/maintenance scenarios (insert, update, delete, abort, vacuum, HOT, TID recycling, held writers and snapshots, reindex, promote), on the `sift_col` index and on the test provider, at `sift.simd` scalar and auto, with 0 and 2 workers (the plain kinds run in the workers: `on-par` plans them with free parallel costs). The one fixture that differs is the error code above.
 
 ## Open
 
 - Shapes S1 to S3, S6, S7 (lookup joins to mapping tables, `EXISTS` and `jsonb_path_exists` over the same element, cross-leaf `CASE`) and the one-pass S4 (several group sets in one scan).
-- Parallel scan: morsels over `sift_colsrc_nsb`, partial aggregation per worker, final combine; the group tables merge by key id values (not by dictionary codes).
-- Zone pruning from the query's predicates (`SiftSrcPrune` is in the seam, no provider uses it): this is what makes selective store sets cheap on a clustered table.
+- Partial tables for the serial-only kinds (numeric sums, ordered sets, mapped aggregates, grouping sets, combos and joins, arms): each needs a dump and a merge by value of its own state, and the lookup tables of a join loaded once and shared.
+- Float sums in 16 lanes dump and merge a table per lane even in a serial scan; one table with a float accumulator per lane, combined in lane order at the end, would give the same bits for less work.
+- The statistics of the "Statistics request" above.
 - `count(DISTINCT)` is a hash set per aggregate (about 25 ns per tuple): a per-group bitmap or sort-based form for dense domains.
 - A lookup-table expression (a key or a filter that is not a plain comparison) over an integer column whose values span more than 2^22 raises an error with a hint to switch `sift.enable_agg` off; plain group keys, comparisons and `IN` lists over such columns work (hash ids, binary search).
-- Statistics of the `sift_col` provider (distinct values and elements per row per leaf) once the engine exposes them.

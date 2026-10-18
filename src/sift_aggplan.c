@@ -26,6 +26,8 @@
 #include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
+#include "catalog/pg_proc.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
@@ -1492,6 +1494,7 @@ compile_cmp(AggCtx *c, OpExpr *op)
 	p->expr = r;
 	p->argtype = exprType(r);
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(cmp), expr_text(c, r));
+	p->sel = clause_selectivity(c->root, (Node *) op, c->relid, JOIN_INNER, NULL);
 	return p;
 }
 
@@ -2833,6 +2836,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		400.0
+#define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_DEFAULT_ELEMS	3.0
 
 static double
@@ -2862,6 +2866,63 @@ pred_num_cost(const SiftAggPred *p)
 	return cost;
 }
 
+/* what PostgreSQL divides the cost of a parallel scan by: the workers, and the share of the leader that scans too */
+static double
+parallel_divisor(int workers)
+{
+	double		d = workers;
+
+	if (parallel_leader_participation)
+		d += Max(1.0 - 0.3 * workers, 0.0);
+	return d;
+}
+
+/* The correlation of the heap column a leaf is read from with the heap order (0: unknown, or the leaf is a jsonb path or an expression) */
+static double
+leaf_correlation(AggCtx *c, int leaf)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	HeapTuple	tp;
+	AttStatsSlot sslot;
+	double		corr = 0.0;
+
+	if (e == NULL || !IsA(e, Var))
+		return 0.0;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
+						 Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tp))
+		return 0.0;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		corr = sslot.numbers[0];
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	return corr;
+}
+
+/*
+ * The share of the units a zone test leaves: a comparison keeps the fraction f of the rows (its selectivity, which for a
+ * comparison is also the fraction of the leaf's range); the units are consecutive in the heap, so their zones are narrow in the
+ * share the column is correlated with the heap order (corr^2) and as wide as the range otherwise: kept = f + (1 - f) * (1 - corr^2).
+ * The most selective comparison counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
+ */
+static double
+zone_kept(AggCtx *c, SiftAggSpec *s)
+{
+	double		kept = 1.0;
+
+	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, c->lay, c->lay->nleaves))
+	{
+		double		f = Min(Max(p->sel, 0.0), 1.0),
+					corr = leaf_correlation(c, p->leaf);
+
+		kept = Min(kept, f + (1.0 - f) * (1.0 - corr * corr));
+	}
+	return kept;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -2881,6 +2942,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
+	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -2898,7 +2960,16 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost *= cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
 	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
-	startup = (AGG_START_COST + units * AGG_UNIT_COST) * cpu_operator_cost;
+	startup = AGG_START_COST * cpu_operator_cost;
+	if (s->nworkers > 0)
+	{
+		/* each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them */
+		double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
+
+		scan_cost = scan_cost / parallel_divisor(s->nworkers) +
+			tables * Min(rows_out, Max(agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * cpu_operator_cost;
+		startup += parallel_setup_cost;
+	}
 	p->startup_cost = startup + scan_cost;
 	p->total_cost = p->startup_cost + rows_out * cpu_tuple_cost;
 	p->rows = rows_out;
@@ -3195,11 +3266,44 @@ set_groups(PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
 	return n;
 }
 
-/* the leaves the spec reads, the combos, the cost; adds the path to output_rel. keys: the group expressions of root's query */
+/* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
+static void
+add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int nworkers)
+{
+	CustomPath *cp = makeNode(CustomPath);
+
+	s->nworkers = nworkers;
+	cp->path.pathtype = T_CustomScan;
+	cp->path.parent = output_rel;
+	cp->path.pathtarget = output_rel->reltarget;
+	cp->path.parallel_safe = false;
+	cp->methods = &agg_path_methods;
+	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
+	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	add_path(output_rel, &cp->path);
+}
+
+/*
+ * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the whole
+ * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
+ * (sift_aggspec_parallel_ok).
+ */
+static int
+parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	PlannerGlobal *glob = c->root->glob;
+
+	if (!sift_aggspec_parallel_ok(s) || !glob->parallelModeOK || glob->maxParallelHazard != PROPARALLEL_SAFE ||
+		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
+		return 0;
+	return compute_parallel_worker(c->rel, c->rel->pages, -1, max_parallel_workers_per_gather);
+}
+
+/* the leaves the spec reads, the combos, the cost; adds the paths to output_rel. keys: the group expressions of root's query */
 static void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
 {
-	CustomPath *cp;
+	int			nworkers;
 
 	if (c->other_group)
 		return;
@@ -3220,16 +3324,11 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	finish_combos(c, s);
 	s->est_groups = set_groups(root, s, keys, input_rel->rows);
 
-	cp = makeNode(CustomPath);
-	cp->path.pathtype = T_CustomScan;
-	cp->path.parent = output_rel;
-	cp->path.pathtarget = output_rel->reltarget;
-	cp->path.parallel_safe = false;
-	cp->methods = &agg_path_methods;
-	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
 	spec_deps(root, s);
-	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
-	add_path(output_rel, &cp->path);
+	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
+	nworkers = parallel_workers(c, s, input_rel);
+	if (nworkers > 0)
+		add_agg_path(c, s, input_rel, output_rel, scan_tlist, nworkers);
 }
 
 /* the index among the group columns of the one with the sortgroupref ref */

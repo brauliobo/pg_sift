@@ -15,6 +15,7 @@
 #   --scenarios LIST    fixtures: insert update delete abort vacuum hot recycle held maint, or all (default) or none
 #   --bench [--runs N]  only the corpus, with the median of N runs (default 5) of the reference and of "on"; prints the go/no-go lines:
 #                       the K4000 queries of the shapes that must push down at least 20 times faster, K10 and K400 not slower (0.95)
+#   --bench-workers N   the "on" runs of --bench use max_parallel_workers_per_gather N with the real parallel costs (default 0; the reference stays serial)
 #   --strict-shape      a query whose plan does not meet its `-- expect:` tag (agg: SiftAgg; plain: no SiftAgg), and a bench target
 #                       missed, fail (default: reported as NOTE, so that the harness ships before the planner)
 #   --rel X --abs X     tolerance of float columns: |x - y| <= abs + rel * max(|x|, |y|) (defaults 1e-9 and 1e-12)
@@ -34,7 +35,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
-SUITE=all CORPUS= ROWS=20000 STORES= BENCH= RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 REL=1e-9 ABS=1e-12
+SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 REL=1e-9 ABS=1e-12
 VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all COL_AM= COL_INDEX= VERBOSE=
 COL_PATHS='attributes->channel text, attributes->normalized bool, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_role text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
@@ -43,7 +44,7 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 
 while (( $# )); do
 	case $1 in
-		--bench) BENCH=1 ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
@@ -109,6 +110,7 @@ run_corpus() {
 	{
 		echo "\\set ON_ERROR_STOP 0"
 		echo "LOAD 'pg_sift';"
+		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
 		echo "\\o /dev/null"
 		[[ -z ${HELD:-} ]] || {
 			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"

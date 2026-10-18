@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
+#include "catalog/pg_type_d.h"
+#include "utils/date.h"
 #include "nodes/value.h"
 
 #include "sift_aggspec.h"
@@ -45,6 +47,103 @@ sift_parse_decimal(const char *s, sift_i128 *v, int *scale)
 	}
 	*v = neg ? -r : r;
 	*scale = Max(frac, 0);
+	return true;
+}
+
+/* an integer-like operand as the int64 the kernels compare */
+int64
+sift_aggspec_operand_int(Oid t, Datum d)
+{
+	switch (t)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+			return DatumGetInt32(d);
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return DatumGetInt64(d);
+		case DATEOID:
+			return DatumGetDateADT(d);
+		case BOOLOID:
+			return DatumGetBool(d);
+		default:
+			elog(ERROR, "sift: unexpected operand type %u", t);
+	}
+	return 0;
+}
+
+/* the types sift_aggspec_operand_int reads */
+static bool
+integer_type(Oid t)
+{
+	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
+}
+
+static List *
+zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	const SiftSrcLeaf *lf;
+
+	if (p->kind == SAP_AND)
+		for (int i = 0; i < p->nchild; i++)
+			out = zone_cmps(out, p->child[i], lay, nbase);
+	if (p->kind != SAP_CMP || p->op == SCMP_NE || !integer_type(p->argtype) || p->leaf >= nbase)
+		return out;
+	lf = &lay->leaf[p->leaf];
+	return lf->parent < 0 && !lf->lossy && integer_type(lf->typid) ? lappend(out, (void *) p) : out;
+}
+
+List *
+sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase)
+{
+	List	   *out = NIL;
+
+	for (int i = 0; i < s->npred; i++)
+		out = zone_cmps(out, s->pred[i], lay, nbase);
+	return out;
+}
+
+static bool
+plain_key(const SiftAggKey *k)
+{
+	return (k->kind == SAK_LEAF && k->typid != FLOAT4OID && k->typid != FLOAT8OID) || k->kind == SAK_LUT;
+}
+
+static bool
+plain_agg(const SiftAggAgg *a)
+{
+	switch (a->kind)
+	{
+		case SAA_COUNT_STAR:
+		case SAA_COUNT:
+		case SAA_COUNT_ROWS:
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			return true;
+		case SAA_COUNT_DISTINCT:
+		case SAA_MIN:
+		case SAA_MAX:
+			return a->num.n == 0;
+		default:
+			return false;
+	}
+}
+
+bool
+sift_aggspec_parallel_ok(const SiftAggSpec *s)
+{
+	if (s->ncombo || s->njoin || s->nvleaf || s->narms || s->nsets)
+		return false;
+	for (int j = 0; j < s->nkeys; j++)
+		if (!plain_key(&s->key[j]))
+			return false;
+	for (int i = 0; i < s->naggs; i++)
+		if (!plain_agg(&s->agg[i]))
+			return false;
 	return true;
 }
 
@@ -301,6 +400,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, (int) s->setmask[i]);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
+	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
 	return pk.items;
 }
@@ -570,6 +670,7 @@ sift_aggspec_unpack(const List *items)
 		s->setmask[i] = (uint32) get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
+	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
 	return s;
 }
