@@ -18,6 +18,7 @@
 
 #include "sift_aggkern.h"
 #include "sift_col.h"
+#include "sift_col_pg.h"
 #include "sift_colsrc.h"
 
 typedef struct ColLeafBuf

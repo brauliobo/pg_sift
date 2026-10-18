@@ -48,8 +48,12 @@ typedef struct { uint64 value; } FullTransactionId;
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
 #define PG_UINT64_MAX			UINT64_MAX
+#define PG_INT16_MAX			(0x7FFF)
+#define PG_INT16_MIN			(-0x7FFF - 1)
 #define PG_INT32_MAX			(0x7FFFFFFF)
 #define PG_INT32_MIN			(-0x7FFFFFFF - 1)
+#define PG_INT64_MAX			INT64_MAX
+#define PG_INT64_MIN			INT64_MIN
 #define PGDLLIMPORT
 #define PGDLLEXPORT
 #define BLCKSZ					8192
