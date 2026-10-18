@@ -294,6 +294,7 @@ put_agg(Pack *p, const SiftAggAgg *a)
 	put_int(p, a->desc_order);
 	put_int(p, a->share);
 	put_gen(p, a->gen);
+	put_int(p, (int) a->aggfn);
 }
 
 static void
@@ -314,6 +315,10 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		put_int(p, a->nhaving);
 		for (int j = 0; j < a->nhaving; j++)
 			put_cond(p, &a->having[j]);
+		put_node(p, a->hexpr);
+		put_int(p, a->nhp);
+		for (int j = 0; j < a->nhp; j++)
+			put_int(p, a->hsrc[j]);
 		put_int(p, a->ncol);
 		for (int j = 0; j < a->ncol; j++)
 			put_int(p, a->colsrc[j]);
@@ -329,13 +334,15 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		const SiftAggJoin *j = &s->join[i];
 
 		put_int(p, (int) j->relid);
-		put_int(p, j->left);
+		put_int(p, j->kind);
+		put_int(p, j->fslot);
 		put_int(p, j->nkey);
 		for (int k = 0; k < j->nkey; k++)
 		{
 			put_int(p, j->keyatt[k]);
 			put_int(p, (int) j->keytype[k]);
 			put_int(p, j->keypos[k]);
+			put_node(p, j->keyexpr[k]);
 		}
 		put_int(p, j->ncol);
 		for (int k = 0; k < j->ncol; k++)
@@ -575,6 +582,7 @@ get_agg(Unpack *u, SiftAggAgg *a)
 	a->desc_order = get_int(u);
 	a->share = get_int(u);
 	a->gen = get_gen(u);
+	a->aggfn = (Oid) get_int(u);
 }
 
 static void
@@ -599,6 +607,11 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		a->having = palloc0(Max(a->nhaving, 1) * sizeof(SiftAggCond));
 		for (int j = 0; j < a->nhaving; j++)
 			get_cond(u, &a->having[j]);
+		a->hexpr = get_node(u);
+		a->nhp = get_int(u);
+		a->hsrc = palloc(Max(a->nhp, 1) * sizeof(int));
+		for (int j = 0; j < a->nhp; j++)
+			a->hsrc[j] = get_int(u);
 		a->ncol = get_int(u);
 		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
 		for (int j = 0; j < a->ncol; j++)
@@ -616,13 +629,15 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		SiftAggJoin *j = &s->join[i];
 
 		j->relid = (Oid) get_int(u);
-		j->left = get_int(u);
+		j->kind = get_int(u);
+		j->fslot = get_int(u);
 		j->nkey = get_int(u);
 		for (int k = 0; k < j->nkey; k++)
 		{
 			j->keyatt[k] = get_int(u);
 			j->keytype[k] = (Oid) get_int(u);
 			j->keypos[k] = get_int(u);
+			j->keyexpr[k] = get_node(u);
 		}
 		j->ncol = get_int(u);
 		for (int k = 0; k < j->ncol; k++)

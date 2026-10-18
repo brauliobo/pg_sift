@@ -379,6 +379,22 @@ typedef struct Osa
 	TupleTableSlot *get;
 } Osa;
 
+/* PostgreSQL's own aggregate of a joined column (SAA_M_PG): its functions, and the state the transition function starts from */
+typedef struct PgAgg
+{
+	FmgrInfo	trans;
+	FmgrInfo	final;
+	bool		strict;			/* the transition function is strict: the first value is the state when there is no initial one */
+	bool		has_final;
+	bool		final_extra;
+	bool		init_null;
+	Datum		init;
+	int16		tlen;			/* the state's type */
+	bool		tbyval;
+	int16		rlen;			/* the result's type */
+	bool		rbyval;
+} PgAgg;
+
 typedef struct AggAcc
 {
 	int64	   *n;				/* tuples / non-null values */
@@ -435,6 +451,7 @@ typedef struct ComboSt
 	Intern		in[SIFT_AGG_MAX_CLEAVES];
 	MapTab	   *map;
 	ExprState **slot;
+	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* the join keys that are expressions */
 	uint32		nent;
 	uint32		entcap;
 	uint64	   *vid;			/* [ent * SIFT_AGG_MAX_CLEAVES]: 0 NULL, else the value's id in `in` / the integer + 1 */
@@ -461,6 +478,7 @@ typedef struct ArmSt
 {
 	uint32	   *gid;
 	uint8	   *ok;				/* the arm's filters hold */
+	ExprState  *hstate;			/* the rest of the arm's HAVING */
 	uint8	  **iok;			/* per inner aggregate: it takes the tuple */
 	double	  **dx;				/* its float8 value */
 	int64	  **ix;				/* its integer value */
@@ -499,6 +517,8 @@ typedef struct AggExec
 	MemoryContext tcxt;			/* the group table: keys, groups, aggregate states (reset by table_reset) */
 	MemoryContext ucxt;			/* one unit */
 	ExprContext *lutcx;
+	PgAgg	  **pgagg;			/* per aggregate: SAA_M_PG */
+	AggState   *pgstate;		/* the context the transition functions see, their states live in pgstate->curaggcontext's memory */
 	ParamExecData lutparams[SIFT_AGG_MAX_PARAMS];
 	ComboSt    *cs;
 	int			clbase[SIFT_AGG_MAX_COMBOS];	/* per combo: its first dictionary map slot (after the keys and aggregates) */
@@ -510,6 +530,7 @@ typedef struct AggExec
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
+	uint32	   *setg;			/* per grouping set: the outer group of the cell being flushed */
 	Touch	   *touched;		/* the cells of the current row */
 	uint32		ntouch;
 	uint32		captouch;
@@ -1211,7 +1232,9 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	st->cnull = isnull;
-	if ((p->kind == SAP_CMP || p->kind == SAP_NCMP) && !isnull)
+	if (p->kind == SAP_GATE)
+		st->konst = !isnull && DatumGetBool(d);
+	else if ((p->kind == SAP_CMP || p->kind == SAP_NCMP) && !isnull)
 	{
 		if (p->argtype == NUMERICOID)
 		{
@@ -1734,7 +1757,7 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 	}
 }
 
-/* the matching rows of the entry's key (none when a key leaf is NULL) */
+/* the rows of the table with the entry's key (none when a key is NULL) */
 static int
 combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 {
@@ -1748,19 +1771,77 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	*rows = NULL;
 	for (int k = 0; k < j->nkey; k++)
 	{
-		int			p = j->keypos[k];
+		if (j->keyexpr[k])
+		{
+			bool		isnull;
+			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
 
-		if (v[p] == 0)
+			if (isnull)
+				return 0;
+			if (cs->map->ktext[k])
+			{
+				struct varlena *t = PG_DETOAST_DATUM_PACKED(d);
+
+				ptr[k] = VARDATA_ANY(t);
+				len[k] = VARSIZE_ANY_EXHDR(t);
+			}
+			else
+				iv[k] = sift_aggspec_operand_int(exprType(j->keyexpr[k]), d);
+			continue;
+		}
+		if (v[j->keypos[k]] == 0)
 			return 0;
 		if (cs->map->ktext[k])
 		{
-			ptr[k] = cs->in[p].ptr[v[p] - 1];
-			len[k] = cs->in[p].len[v[p] - 1];
+			ptr[k] = cs->in[j->keypos[k]].ptr[v[j->keypos[k]] - 1];
+			len[k] = cs->in[j->keypos[k]].len[v[j->keypos[k]] - 1];
 		}
 		else
-			iv[k] = (int32) (v[p] - 1);
+			iv[k] = (int32) (v[j->keypos[k]] - 1);
 	}
 	return map_find(cs->map, ptr, len, iv, rows);
+}
+
+/* the rows that hold the rest of the ON clause, moved to the front: how many */
+static int
+combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ComboSt    *cs = &ex->cs[ci];
+	int			keep = 0;
+
+	for (int r = 0; r < nm; r++)
+	{
+		bool		isnull;
+		Datum		d;
+
+		for (int c = 0; c < j->ncol; c++)
+			bind_param(ex, cb->nleaves + c, cs->map->col[(size_t) rows[r] * cs->map->ncol + c], cs->map->cnull[(size_t) rows[r] * cs->map->ncol + c]);
+		d = ExecEvalExprSwitchContext(cs->slot[j->fslot], ex->lutcx, &isnull);
+		if (!isnull && DatumGetBool(d))
+			rows[keep++] = rows[r];
+	}
+	ResetExprContext(ex->lutcx);
+	return keep;
+}
+
+/* the output rows of a tuple whose key has nm matches */
+static uint32
+join_nout(SiftJoinKind kind, int nm)
+{
+	switch (kind)
+	{
+		case SJ_INNER:
+			return nm;
+		case SJ_LEFT:
+			return nm > 0 ? nm : 1;
+		case SJ_SEMI:
+			return nm > 0;
+		case SJ_ANTI:
+			return nm == 0;
+	}
+	return 0;
 }
 
 static void
@@ -1796,8 +1877,12 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 
 	combo_bind_leaves(ex, ci, v);
 	if (j)
+	{
 		nm = combo_matches(ex, ci, v, &rows);
-	nout = j == NULL ? 1 : nm > 0 ? nm : j->left ? 1 : 0;
+		if (j->fslot >= 0 && nm > 0)
+			nm = combo_filter_rows(ex, ci, rows, nm);
+	}
+	nout = j == NULL ? 1 : join_nout(j->kind, nm);
 	combo_grow_out(ex, cs, cb->nslots, nout);
 	ent->nout = nout;
 	ent->base = cs->nout;
@@ -2114,18 +2199,24 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 	PredState  *st = &ex->ps[p->id];
 	int			nw = (n + 63) / 64;
 
-	if (p->level < qlevel && p->kind != SAP_TRUE && p->kind != SAP_FALSE)
+	if (p->level < qlevel && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
 	{
 		/* a row level predicate seen from the elements */
 		sift_aggk->gather_bits(out, row_bitmap(ex, p), ex->parent + start, n);
 		return;
 	}
-	if (!st->ready && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NCMP))
+	if (!st->ready && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NCMP || p->kind == SAP_GATE))
 		eval_operand(ex, p, st);
 	switch (p->kind)
 	{
 		case SAP_TRUE:
 			fill_ones(out, n);
+			break;
+		case SAP_GATE:
+			if (st->konst)
+				fill_ones(out, n);
+			else
+				clear_words(out, n);
 			break;
 		case SAP_FALSE:
 			clear_words(out, n);
@@ -2282,6 +2373,10 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_O_SUM_I64:
 				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
+				break;
+			case SAA_M_PG:
+				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
+				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
 				break;
 			case SAA_M_SUM:
 			case SAA_M_AVG:
@@ -3389,6 +3484,153 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	}
 }
 
+/* the lookup of the aggregate's functions, once per scan */
+static void
+pgagg_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+
+	ex->pgagg = palloc0(Max(s->naggs, 1) * sizeof(PgAgg *));
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+		HeapTuple	tup;
+		Form_pg_aggregate ag;
+		PgAgg	   *pa;
+		bool		isnull;
+		Datum		init;
+
+		if (a->kind != SAA_M_PG)
+			continue;
+		if (ex->pgstate == NULL)
+		{
+			ex->pgstate = makeNode(AggState);
+			ex->pgstate->curaggcontext = CreateStandaloneExprContext();
+		}
+		tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(a->aggfn));
+		if (!HeapTupleIsValid(tup))
+			elog(ERROR, "cache lookup failed for aggregate %u", a->aggfn);
+		ag = (Form_pg_aggregate) GETSTRUCT(tup);
+		pa = ex->pgagg[ai] = palloc0(sizeof(PgAgg));
+		fmgr_info(ag->aggtransfn, &pa->trans);
+		pa->strict = pa->trans.fn_strict;
+		pa->has_final = OidIsValid(ag->aggfinalfn);
+		if (pa->has_final)
+			fmgr_info(ag->aggfinalfn, &pa->final);
+		pa->final_extra = ag->aggfinalextra;
+		get_typlenbyval(ag->aggtranstype, &pa->tlen, &pa->tbyval);
+		get_typlenbyval(a->restype, &pa->rlen, &pa->rbyval);
+		init = SysCacheGetAttr(AGGFNOID, tup, Anum_pg_aggregate_agginitval, &isnull);
+		pa->init_null = isnull;
+		if (!isnull)
+		{
+			Oid			typinput,
+						typioparam;
+
+			getTypeInputInfo(ag->aggtranstype, &typinput, &typioparam);
+			pa->init = OidInputFunctionCall(typinput, TextDatumGetCString(init), typioparam, -1);
+		}
+		ReleaseSysCache(tup);
+	}
+}
+
+/* the state of group g gets `times` more occurrences of val: the transition function as nodeAgg calls it (strictness, initial value, the state copied out of the call's memory) */
+static void
+pgagg_add(AggExec *ex, int ai, uint32 g, Datum val, int64 times)
+{
+	PgAgg	   *pa = ex->pgagg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	MemoryContext aggcxt = ex->pgstate->curaggcontext->ecxt_per_tuple_memory;
+	LOCAL_FCINFO(fc, 2);
+
+	for (int64 t = 0; t < times; t++)
+	{
+		Datum		r;
+		MemoryContext old;
+
+		if (!acc->nf[g] && !pa->init_null)
+		{
+			old = MemoryContextSwitchTo(aggcxt);
+			acc->v[g] = datumCopy(pa->init, pa->tbyval, pa->tlen);
+			MemoryContextSwitchTo(old);
+			acc->nf[g] = 1;
+		}
+		else if (!acc->nf[g] && pa->strict)
+		{
+			old = MemoryContextSwitchTo(aggcxt);
+			acc->v[g] = datumCopy(val, pa->tbyval, pa->tlen);
+			MemoryContextSwitchTo(old);
+			acc->nf[g] = 1;
+			continue;
+		}
+		InitFunctionCallInfoData(*fc, &pa->trans, 2, ex->spec->agg[ai].collid, (Node *) ex->pgstate, NULL);
+		fc->args[0].value = acc->v[g];
+		fc->args[0].isnull = !acc->nf[g];
+		fc->args[1].value = val;
+		fc->args[1].isnull = false;
+		old = MemoryContextSwitchTo(ex->comcxt);
+		r = FunctionCallInvoke(fc);
+		MemoryContextSwitchTo(aggcxt);
+		if (fc->isnull)
+		{
+			acc->nf[g] = 0;
+			acc->v[g] = (Datum) 0;
+		}
+		else if (pa->tbyval)
+		{
+			acc->v[g] = r;
+			acc->nf[g] = 1;
+		}
+		else if (DatumGetPointer(r) != DatumGetPointer(acc->v[g]))
+		{
+			Datum		prev = acc->v[g];
+			bool		had = acc->nf[g];
+
+			acc->v[g] = datumCopy(r, false, pa->tlen);
+			acc->nf[g] = 1;
+			if (had)
+				pfree(DatumGetPointer(prev));
+		}
+		else
+			acc->nf[g] = 1;
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(ex->comcxt);
+	}
+}
+
+/* the result of group g: the final function on its state (the state itself without one), kept in acc->v; acc->nf says whether it is not NULL */
+static void
+pgagg_final(AggExec *ex, int ai, uint32 g)
+{
+	PgAgg	   *pa = ex->pgagg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	LOCAL_FCINFO(fc, 2);
+	Datum		r;
+	bool		isnull;
+	MemoryContext old;
+
+	if (!pa->has_final)
+		return;
+	if (pa->final.fn_strict && !acc->nf[g])
+	{
+		acc->v[g] = (Datum) 0;
+		return;
+	}
+	InitFunctionCallInfoData(*fc, &pa->final, pa->final_extra ? 2 : 1, ex->spec->agg[ai].collid, (Node *) ex->pgstate, NULL);
+	fc->args[0].value = acc->v[g];
+	fc->args[0].isnull = !acc->nf[g];
+	fc->args[1].value = (Datum) 0;
+	fc->args[1].isnull = true;
+	old = MemoryContextSwitchTo(ex->comcxt);
+	r = FunctionCallInvoke(fc);
+	isnull = fc->isnull;
+	MemoryContextSwitchTo(ex->tcxt);
+	acc->v[g] = isnull ? (Datum) 0 : datumCopy(r, pa->rbyval, pa->rlen);
+	acc->nf[g] = !isnull;
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(ex->comcxt);
+}
+
 /* `times` rows of group g had the value id: min, max, sum or avg of the aggregate ai */
 static void
 mapped_add(AggExec *ex, int ai, uint32 g, uint32 id, int64 times)
@@ -3399,6 +3641,10 @@ mapped_add(AggExec *ex, int ai, uint32 g, uint32 id, int64 times)
 
 	switch (a->kind)
 	{
+		case SAA_M_PG:
+			pgagg_add(ex, ai, g, val, times);
+			acc->n[g] += times;
+			break;
 		case SAA_M_MIN:
 		case SAA_M_MAX:
 			{
@@ -3442,11 +3688,14 @@ mapped_finish(AggExec *ex)
 		const SiftAggAgg *a = &ex->spec->agg[ai];
 		const DSet *d = &ex->dset[ai];
 
-		if (a->kind < SAA_M_MIN || a->kind > SAA_M_AVG)
+		if ((a->kind < SAA_M_MIN || a->kind > SAA_M_AVG) && a->kind != SAA_M_PG)
 			continue;
 		for (uint64 i = 0; i < d->cap; i++)
 			if (d->slot[i])
 				mapped_add(ex, ai, (d->slot[i] >> 32) & 0x7fffffff, (uint32) d->slot[i], d->counted ? d->cnt[i] : 1);
+		for (uint32 g = 0; a->kind == SAA_M_PG && g < (ex->hash ? ex->ngroups : ex->gcap); g++)
+			if (ex->acc[ai].n[g] > 0)
+				pgagg_final(ex, ai, g);
 		if (a->kind == SAA_M_AVG && a->restype == FLOAT8OID && 8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
 			float_overflow_error();
 	}
@@ -4263,6 +4512,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_M_MAX:
 		case SAA_M_SUM:
 		case SAA_M_AVG:
+		case SAA_M_PG:
 			mapped_update(ex, ai, ok, nsel);
 			break;
 		case SAA_GEN:
@@ -4487,6 +4737,7 @@ arms_init(AggExec *ex)
 	ex->arm = MemoryContextAllocZero(ex->cxt, Max(s->narms, 1) * sizeof(ArmSt));
 	ex->arm_mask = ~(uint32) 0;
 	ex->cur_order = UINT64_MAX;
+	ex->setg = MemoryContextAlloc(ex->cxt, Max(s->nsets, 1) * sizeof(uint32));
 	for (int k = 0; k < s->narms; k++)
 	{
 		ArmSt	   *a = &ex->arm[k];
@@ -4494,6 +4745,13 @@ arms_init(AggExec *ex)
 
 		a->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		a->ok = MemoryContextAlloc(ex->cxt, maxv);
+		if (s->arm[k].hexpr)
+		{
+			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+			a->hstate = ExecInitExpr((Expr *) s->arm[k].hexpr, EXPR_PARENT(ex));
+			MemoryContextSwitchTo(old);
+		}
 		a->iok = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(uint8 *));
 		a->dx = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(double *));
 		a->ix = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(int64 *));
@@ -4648,24 +4906,35 @@ cond_holds(const SiftAggCond *c, double dv, int64 iv)
 	return false;
 }
 
-/* the cell (arm k, group g) of the row `row` into the outer aggregates */
+/* the arm's HAVING that is not `inner aggregate op constant`, evaluated by PostgreSQL on the values of the cell */
+static bool
+cell_having(AggExec *ex, int k, uint32 g)
+{
+	SiftAggArm *sa = &ex->spec->arm[k];
+	bool		isnull;
+	Datum		d;
+
+	for (int j = 0; j < sa->nhp; j++)
+	{
+		SiftAggAgg *ia = &sa->inner[sa->hsrc[j]];
+		double		dv = 0;
+		int64		iv = 0;
+		bool		notnull = cell_value(&ex->arm[k], ia, sa->hsrc[j], g, &dv, &iv);
+
+		bind_param(ex, j, ia->kind == SAA_SUM_F64 || ia->kind == SAA_AVG_F64 ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
+	}
+	d = ExecEvalExprSwitchContext(ex->arm[k].hstate, ex->lutcx, &isnull);
+	ResetExprContext(ex->lutcx);
+	return !isnull && DatumGetBool(d);
+}
+
+/* the outer aggregates of group og take the cell (arm k, group g) of the row `row` */
 static void
-flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
+cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 {
 	SiftAggArm *sa = &ex->spec->arm[k];
 	ArmSt	   *a = &ex->arm[k];
 
-	for (int h = 0; h < sa->nhaving; h++)
-	{
-		double		dv = 0;
-		int64		iv = 0;
-
-		if (!cell_value(a, &sa->inner[sa->having[h].col], sa->having[h].col, g, &dv, &iv) || !cond_holds(&sa->having[h], dv, iv))
-		{
-			ex->seen[g]--;		/* the cell is no group of the arm */
-			return;
-		}
-	}
 	for (int oi = 0; oi < ex->spec->naggs; oi++)
 	{
 		SiftAggAgg *o = &ex->spec->agg[oi];
@@ -4680,28 +4949,28 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 
 			pass = cell_value(a, &sa->inner[src], src, g, &dv, &iv) && cond_holds(&o->cond[c], dv, iv);
 		}
-		if (!pass)
+		if (!pass || o->kind == SAA_GROUPING)
 			continue;
 		if (o->kind == SAA_O_COUNT_STAR)
 		{
-			acc->n[g]++;
+			acc->n[og]++;
 			continue;
 		}
 		if (o->kind == SAA_O_COUNT_ROWS)
 		{
-			if (acc->last[g] != row)
+			if (acc->last[og] != row)
 			{
-				acc->last[g] = row;
-				acc->n[g]++;
+				acc->last[og] = row;
+				acc->n[og]++;
 			}
 			continue;
 		}
 		if (!cell_value(a, &sa->inner[sa->colsrc[o->col]], sa->colsrc[o->col], g, &dv, &iv))
 			continue;
-		acc->n[g]++;
+		acc->n[og]++;
 		if (o->kind == SAA_O_SUM_I64)
 		{
-			if (pg_add_s64_overflow(acc->i[g], iv, &acc->i[g]))
+			if (pg_add_s64_overflow(acc->i[og], iv, &acc->i[og]))
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
@@ -4709,10 +4978,69 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 		}
 		else
 		{
-			acc->d[g] += dv;
+			acc->d[og] += dv;
 			if (!isfinite(dv))
-				acc->nf[g] = 1;
+				acc->nf[og] = 1;
 		}
+	}
+}
+
+/* the group of cell g of arm k in grouping set `set`: the keys the arm and the set share, and the set's number */
+static uint32
+cell_set_gid(AggExec *ex, int k, uint32 g, int set)
+{
+	SiftAggSpec *s = ex->spec;
+	uint32		mask = s->setmask[set] & s->arm[k].keymask,
+				ids[SIFT_AGG_MAX_KEYS] = {0},
+				gid = 0;
+
+	for (int j = 0; j < s->nkeys - 1; j++)
+		if (mask >> j & 1)
+			ids[j] = key_id(ex, j, g);
+	ids[s->nkeys - 1] = set + 1;
+	if (ex->hash)
+		return hash_group(ex, ids);
+	for (int j = 0; j < s->nkeys; j++)
+		gid += ids[j] * ex->ks[j].mult;
+	return gid;
+}
+
+/*
+ * The cell (arm k, group g) of the row `row` is done: its group exists if it passes the HAVING of the arm, once per grouping set in the
+ * sets' groups (the cell stands for the inner group, so a coarser set adds every cell it covers to its group).
+ */
+static void
+flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftAggArm *sa = &s->arm[k];
+	ArmSt	   *a = &ex->arm[k];
+
+	ex->seen[g]--;
+	for (int h = 0; h < sa->nhaving; h++)
+	{
+		double		dv = 0;
+		int64		iv = 0;
+
+		if (!cell_value(a, &sa->inner[sa->having[h].col], sa->having[h].col, g, &dv, &iv) || !cond_holds(&sa->having[h], dv, iv))
+			return;				/* the cell is no group of the arm */
+	}
+	if (a->hstate && !cell_having(ex, k, g))
+		return;
+	if (s->nsets == 0)
+	{
+		ex->seen[g]++;
+		cell_into(ex, k, g, g, row);
+		return;
+	}
+	for (int set = 0; set < s->nsets; set++)
+		ex->setg[set] = cell_set_gid(ex, k, g, set);
+	if (ex->hash && ex->ngroups > ex->gcap)
+		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+	for (int set = 0; set < s->nsets; set++)
+	{
+		ex->seen[ex->setg[set]]++;
+		cell_into(ex, k, g, ex->setg[set], row);
 	}
 }
 
@@ -5018,6 +5346,9 @@ register_combos(AggExec *ex)
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
 		for (int sl = 0; sl < cb->nslots; sl++)
 			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, EXPR_PARENT(ex));
+		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
+			if (s->join[cb->join].keyexpr[k])
+				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
 		ex->clbase[ci] = ex->ncl;
 		ex->ncl += cb->nleaves;
 		if (cb->join >= 0)
@@ -5090,8 +5421,8 @@ table_init(AggExec *ex)
 			ot_init_image(&ex->aot[i], a->gen->arg[a->gen->darg].typid);
 			continue;
 		}
-		if (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG)
-			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG;
+		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
+			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG || a->kind == SAA_M_PG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
 			continue;
 		tc = lookup_type_cache(a->argtype, TYPECACHE_EQ_OPR);
@@ -6111,6 +6442,9 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_GEN:
 			*isnull = (acc->nf[g] & GEN_RNULL) != 0;
 			return *isnull ? (Datum) 0 : acc->r[g];
+		case SAA_M_PG:
+			*isnull = acc->n[g] == 0 || !acc->nf[g];
+			return *isnull ? (Datum) 0 : acc->v[g];
 		case SAA_O_SUM_I64:
 			*isnull = acc->n[g] == 0;
 			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
@@ -6256,6 +6590,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
 	register_combos(ex);
+	pgagg_init(ex);
 	prune_init(ex);
 	gen_open(ex);
 	MemoryContextSwitchTo(old);
@@ -6268,6 +6603,8 @@ engine_close(AggExec *ex)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
 		FreeExprContext(ex->lutcx, true);
+	if (ex->pgstate)
+		FreeExprContext(ex->pgstate->curaggcontext, true);
 	if (ex->index)
 		index_close(ex->index, NoLock);
 	if (ex->heap_opened)

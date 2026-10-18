@@ -20,7 +20,7 @@ CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
 DROP TABLE IF EXISTS orders, orders_odd, orders_part, tenants, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_text,
-	map_dup, map_null, map_case, map_part, map_empty, map_vals CASCADE;
+	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
 
 CREATE TABLE orders (
 	id integer NOT NULL, tenant_id integer NOT NULL, customer_id integer, placed_at date NOT NULL, status text, source text NOT NULL,
@@ -126,6 +126,11 @@ CREATE TABLE map_empty (category text, tag text);
 CREATE TABLE map_vals (category text, label text, weight numeric(8,2), factor float8, rank int, since date);
 INSERT INTO map_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Apparel', 'a', 2.25, 1.5, 2, NULL), ('Shoes', 'S', NULL, NULL, 3, '2023-05-05'),
 	('Home', 'H', 3.10, 2.0, NULL, '2021-01-01'), ('Toys', 'T', 0.05, 0.25, 5, '2024-02-02'), ('Toys', NULL, 0.10, NULL, 4, '2020-03-03');
+
+-- a joined column of every type PostgreSQL's own sum and average run on: a key with two rows, NULL values, a key without a row, big and negative values
+CREATE TABLE map_nums (category text, i2 int2, i4 int4, i8 int8, f4 float4, iv interval);
+INSERT INTO map_nums VALUES ('Apparel', 1, 10, 4000000000, 1.5, '1 day 02:00'), ('Apparel', 2, NULL, 5, 2.25, '2 mons'),
+	('Shoes', NULL, 7, NULL, NULL, NULL), ('Home', -3, -4, -6, 0.1, '-3 hours'), ('Toys', 5, 5, 5, 3.5, '1 mon 1 day 1 sec');
 
 -- the member lists of the queries (as bench/sql/analytics/sets.sql, with the moduli of a table of 4000 orders): K10 inside K400 inside K4000
 CREATE TABLE analytics_sets (set_name text NOT NULL, member text NOT NULL);

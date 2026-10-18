@@ -89,6 +89,27 @@ SELECT same($$SELECT m.flag_a, count(*) AS n
 SELECT same($$SELECT m.flag_a, count(*) AS n
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
 			  LEFT JOIN empty_map m ON m.category = i.category GROUP BY 1$$) AS changed_empty;
+-- semi and anti joins, a key that is an expression, the rest of an ON, and aggregates of other numeric types taken from PostgreSQL's own functions
+CREATE TABLE num_map (category text, a2 int2, a4 int4, a8 int8, iv interval);
+INSERT INTO num_map VALUES ('A', 1, 10, 100, '1 day'), ('A', 2, NULL, 200, '2 hours'), ('b', 3, 30, NULL, NULL), ('C', NULL, 40, 400, '3 days'), (NULL, 5, 50, 500, '5 days');
+EXPLAIN (COSTS OFF) SELECT i.category, count(*) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+WHERE EXISTS (SELECT 1 FROM cat_map m WHERE m.category = i.category) GROUP BY 1;
+SELECT same($$SELECT i.category, count(*) AS n, sum(i.qty) AS q FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  WHERE EXISTS (SELECT 1 FROM cat_map m WHERE m.category = i.category) GROUP BY 1$$) AS semi;
+SELECT same($$SELECT i.category, count(*) AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  WHERE NOT EXISTS (SELECT 1 FROM cat_map m WHERE m.category = i.category) GROUP BY 1$$) AS anti;
+SELECT same($$SELECT i.category, count(*) AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  WHERE i.category IN (SELECT category FROM cat_map WHERE flag_a IS NOT NULL) GROUP BY 1$$) AS semi_in;
+SELECT same($$SELECT m.flag_a, count(*) AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  JOIN cat_map m ON m.category = upper(i.category) GROUP BY 1$$) AS key_expr;
+SELECT same($$SELECT i.category, m.flag_a, count(*) AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  LEFT JOIN cat_map m ON m.category = i.category AND m.flag_a <> 'a2' AND i.price > 2 GROUP BY 1, 2$$) AS on_filter;
+SELECT same($$SELECT i.category, count(*) AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  LEFT JOIN cat_map m ON m.category = i.category WHERE m.flag_a IS NULL GROUP BY 1$$) AS where_left;
+EXPLAIN (COSTS OFF) SELECT i.category, sum(m.a2), avg(m.a4), sum(m.a8), sum(m.iv), avg(m.iv)
+FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) LEFT JOIN num_map m ON m.category = i.category GROUP BY 1;
+SELECT same($$SELECT i.category, sum(m.a2) AS s2, avg(m.a4) AS v4, sum(m.a4) AS s4, sum(m.a8) AS s8, avg(m.a8) AS v8, sum(m.iv) AS si, avg(m.iv) AS vi
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) LEFT JOIN num_map m ON m.category = i.category GROUP BY 1$$) AS pg_aggregates;
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
