@@ -35,11 +35,7 @@
 #include "sift_merge.h"
 #include "sift_ops.h"
 
-#define corrupt(index, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt SIFT_CORRUPT
 
 /* ---------- promotion ---------- */
 
