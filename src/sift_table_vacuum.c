@@ -419,23 +419,3 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	if (have.tid)
 		pfree(have.tid);
 }
-
-/* ---------- TABLESAMPLE ---------- */
-
-bool
-sift_tbl_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("TABLESAMPLE is not supported for sift_table tables")));
-	return false;
-}
-
-bool
-sift_tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate, TupleTableSlot *slot)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("TABLESAMPLE is not supported for sift_table tables")));
-	return false;
-}
