@@ -59,6 +59,7 @@
 #include "sift_agg.h"
 #include "sift_aggspec.h"
 #include "sift_colsrc.h"
+#include "sift_search.h"
 
 typedef enum FuncKind
 {
@@ -125,6 +126,7 @@ typedef struct AggCtx
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
+	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -3389,7 +3391,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 	if (s->group >= 0)
 		elems = elems_of(c, s->group);
-	scan_cost = 0;
+	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
 	for (int i = 0; i < s->nleaves; i++)
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
@@ -3732,6 +3734,8 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 static void
 spec_deps(PlannerInfo *root, SiftAggSpec *s)
 {
+	if (s->search)
+		record_deps(root, s->search);
 	for (int i = 0; i < s->npred; i++)
 		pred_deps(root, s->pred[i]);
 	for (int i = 0; i < s->nkeys; i++)
@@ -3828,6 +3832,8 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	finish_leaves(c, s);
 	finish_combos(c, s);
 	s->est_groups = set_groups(root, s, keys, input_rel->rows);
+	if (c->search)
+		s->search = c->search->spec;
 
 	spec_deps(root, s);
 	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
@@ -3923,6 +3929,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
+	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
 	if (!agg_quals(c, s, &fs))
 		return;
 
