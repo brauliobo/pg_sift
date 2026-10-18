@@ -12,7 +12,6 @@ int			sift_test_dict_max = 0;
 
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
 #define BLOCK_HDR_MAX	(2 + 1 + 10)
-#define SPOOL_CHUNK		65536
 
 #define corrupt(...) \
 	ereport(ERROR, \
@@ -32,9 +31,10 @@ struct SiftDictWriter
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
 	uint64		nterms;
-	SiftDictIdx *idx;
+	BufFile    *idx;			/* DICTIDX bytes: one entry per block */
 	uint64		nidx;
-	uint64		maxidx;
+	uint64	   *root;			/* the first prefix of every SIFT_DICT_ROOT_FANOUT entries */
+	uint64		maxroot;
 };
 
 struct SiftDict
@@ -116,9 +116,10 @@ sift_dict_writer_begin(SiftStreamWriter *sw)
 	w->spool = BufFileCreateTemp(false);
 	w->post_end = sift_sw_tell(sw);
 	w->prevlen = -1;
+	w->idx = BufFileCreateTemp(false);
+	w->maxroot = 64;
+	w->root = palloc(w->maxroot * sizeof(uint64));
 	initStringInfo(&w->blk);
-	w->maxidx = 1024;
-	w->idx = palloc(w->maxidx * sizeof(SiftDictIdx));
 	return w;
 }
 
@@ -158,16 +159,23 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			 (unsigned long long) info->post_off, (unsigned long long) ALIGN4(w->post_end));
 	if (w->nblk == 0)
 	{
-		if (w->nidx == w->maxidx)
-		{
-			w->maxidx *= 2;
-			w->idx = repalloc_huge(w->idx, w->maxidx * sizeof(SiftDictIdx));
-		}
+		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, 0};
+
 		if (w->dict_len > SIFT_DICT_MAX)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift: segment dictionary exceeds 4 GB")));
-		w->idx[w->nidx++] = (SiftDictIdx) {prefix8(term, len), (uint32) w->dict_len, 0};
+		if (w->nidx % SIFT_DICT_ROOT_FANOUT == 0)
+		{
+			if (w->nidx / SIFT_DICT_ROOT_FANOUT == w->maxroot)
+			{
+				w->maxroot *= 2;
+				w->root = repalloc_huge(w->root, w->maxroot * sizeof(uint64));
+			}
+			w->root[w->nidx / SIFT_DICT_ROOT_FANOUT] = e.prefix;
+		}
+		BufFileWrite(w->idx, &e, sizeof(e));
+		w->nidx++;
 		w->blk_post = ALIGN4(w->post_end);
 	}
 	else
@@ -217,32 +225,20 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 void
 sift_dict_writer_finish(SiftDictWriter *w, SiftSegHeaderData *hdr)
 {
-	char	   *buf = palloc(SPOOL_CHUNK);
-
 	flush_block(w);
 	hdr->nterms = w->nterms;
 	hdr->sections[SIFT_SEC_DICT].off = sift_sw_tell(w->sw);
 	hdr->sections[SIFT_SEC_DICT].len = w->dict_len;
-	if (BufFileSeek(w->spool, 0, 0, SEEK_SET) != 0)
-		elog(ERROR, "sift: could not rewind the dictionary spool");
-	for (uint64 left = w->dict_len; left > 0;)
-	{
-		size_t		n = Min(left, SPOOL_CHUNK);
-
-		BufFileReadExact(w->spool, buf, n);
-		sift_sw_write(w->sw, buf, n);
-		left -= n;
-	}
+	sift_sw_write_file(w->sw, w->spool, w->dict_len);
 	BufFileClose(w->spool);
 	hdr->sections[SIFT_SEC_DICTIDX].off = sift_sw_tell(w->sw);
 	hdr->sections[SIFT_SEC_DICTIDX].len = w->nidx * sizeof(SiftDictIdx);
-	sift_sw_write(w->sw, w->idx, w->nidx * sizeof(SiftDictIdx));
+	sift_sw_write_file(w->sw, w->idx, w->nidx * sizeof(SiftDictIdx));
+	BufFileClose(w->idx);
 	hdr->dictroot_off = sift_sw_tell(w->sw);
 	hdr->dictroot_n = (w->nidx + SIFT_DICT_ROOT_FANOUT - 1) / SIFT_DICT_ROOT_FANOUT;
-	for (uint64 i = 0; i < w->nidx; i += SIFT_DICT_ROOT_FANOUT)
-		sift_sw_write(w->sw, &w->idx[i].prefix, sizeof(uint64));
-	pfree(buf);
-	pfree(w->idx);
+	sift_sw_write(w->sw, w->root, hdr->dictroot_n * sizeof(uint64));
+	pfree(w->root);
 	pfree(w->blk.data);
 }
 
