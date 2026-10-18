@@ -106,7 +106,7 @@ tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 				snapshot->xmax = e->xid;
 			return false;
 		case SNAPSHOT_NON_VACUUMABLE:
-			return TransactionIdDidCommit(e->xid) && GlobalVisTestIsRemovableXid(snapshot->vistest, e->xid);
+			return TransactionIdDidCommit(e->xid) && sift_vis_removable_xid(snapshot->vistest, e->xid);
 		default:
 			elog(ERROR, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}

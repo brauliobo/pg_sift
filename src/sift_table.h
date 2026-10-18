@@ -302,7 +302,7 @@ extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection
 extern Size sift_tbl_parallelscan_estimate(Relation rel);
 extern Size sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
 extern void sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
-extern IndexFetchTableData *sift_tbl_index_fetch_begin(Relation rel);
+extern IndexFetchTableData *sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM);
 extern void sift_tbl_index_fetch_reset(IndexFetchTableData *data);
 extern void sift_tbl_index_fetch_end(IndexFetchTableData *data);
 extern bool sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot,
@@ -320,7 +320,7 @@ extern bool sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult
 extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot);
 #endif
 extern bool sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
-extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
+extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows,
 											 double *deadrows, TupleTableSlot *slot);
 extern double sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
 											  bool allow_sync, bool anyvisible, bool progress, BlockNumber start_blockno,
@@ -329,10 +329,10 @@ extern double sift_tbl_index_build_range_scan(Relation table_rel, Relation index
 extern void sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
 										 Snapshot snapshot, struct ValidateIndexState *state);
 extern void sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
-											   TransactionId OldestXmin, TransactionId *xid_cutoff,
+											   TransactionId OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff,
 											   MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
 											   double *tups_recently_dead);
-extern void sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy);
+extern void sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy);
 extern bool sift_tbl_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate);
 extern bool sift_tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate,
 											TupleTableSlot *slot);
