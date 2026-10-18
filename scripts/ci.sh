@@ -38,7 +38,7 @@ S=$REPO/scripts
 CORES=$(nproc 2>/dev/null || echo 4)
 [[ $(pg_config --version) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
-# BUDGET_MB, the scratch the running jobs may need together (estimates below): quick 900, full 2000, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the
+# BUDGET_MB, the scratch the running jobs may need together (estimates below): quick 1200, full 2000, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the
 # run when the directory really exceeds it: twice the budget (full: 8192 up to four lanes, 512 more for each lane above)
 if [[ $MODE == full ]]; then
 	export SANITIZE=1; BUDGET_MB=${CI_BUDGET_MB:-2000}; MAX_MB=${CI_MAX_MB:-$(( 8192 + 512 * (LANES > 4 ? LANES - 4 : 0) ))}; unset SIFT_QUICK
