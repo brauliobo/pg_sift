@@ -1369,6 +1369,60 @@ def cmd_render(args):
     return 0
 
 
+def all_lanes(R, tier):
+    return R.engines(tier, list(LANES))
+
+
+def cmd_table(args):
+    """the warm medians of every tier, as a Markdown table (stdout)"""
+    R = Results(args.file)
+    for tier in R.tiers:
+        engines = all_lanes(R, tier)
+        head, body = bench_table(R, tier, engines, {e: LANES[e][0] for e in LANES})
+        print(f'\n{R.meta["tiers"][tier]["rows"]:,} orders, warm median ms\n')
+        print('\n'.join(md_table(head, body)))
+    return 0
+
+
+def cmd_compare(args):
+    """two result files side by side: the warm median of every question and system, and the ratio B / A (below 1: B is faster)"""
+    A, B = Results(args.a), Results(args.b)
+    body = []
+    for tier in [t for t in A.tiers if t in B.tiers]:
+        for q in A.queries(tier):
+            for e in all_lanes(A, tier):
+                a, b = (X.num(tier, e, q, 'warm', 'latency_ms') for X in (A, B))
+                if a and b:
+                    body.append([tier, q, QUERY_TITLES[q][:44], LANES[e][0], ms(a), ms(b), f'{b / a:.2f}' + (' *' if abs(b / a - 1) > 0.1 else '')])
+    print('\n'.join(md_table(['size', 'q', 'question', 'system', 'A ms', 'B ms', 'B / A'], body, ['---'] * 4 + ['---:'] * 3)))
+    print('\n* changed by more than 10%')
+    return 0
+
+
+def gap_rows(R, tier):
+    """one row per question: the warm medians of sift_col, sift_table, PostgreSQL, ClickHouse and Elasticsearch (request cache off, on), and sift_col / ClickHouse, sift_col / Elasticsearch"""
+    out = []
+    for q in R.queries(tier):
+        v = {e: R.num(tier, e, q, 'warm', 'latency_ms') for e in ('sift', 'sift_table', 'pg', 'ch', 'es', 'es_cached')}
+        rel = lambda e: f'**{v["sift"] / v[e]:.2f}**' if v['sift'] and v[e] and v['sift'] > v[e] else f'{v["sift"] / v[e]:.2f}' if v['sift'] and v[e] else 'n/a'
+        out.append([q, QUERY_TITLES[q], *(ms(v[e]) for e in v), rel('ch'), rel('es'), rel('es_cached')])
+    return out
+
+
+def gap_table(R):
+    head = ['q', 'question', 'sift_col', 'sift_table', 'PostgreSQL', 'ClickHouse', 'Elasticsearch', 'ES, cache on', 'sift_col / ClickHouse', 'sift_col / ES', 'sift_col / ES cache on']
+    out = []
+    for tier in R.tiers:
+        out += [f'#### {R.meta["tiers"][tier]["rows"]:,} orders (warm median, ms; a ratio above 1, in bold, means pg_sift is slower)', '']
+        out += md_table(head, gap_rows(R, tier), ['---:', '---'] + ['---:'] * 9) + ['']
+    return out
+
+
+def cmd_gap(args):
+    print('\n'.join(gap_table(Results(args.file))))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -1396,13 +1450,18 @@ def main():
     r.add_argument('--readme')
     r.add_argument('--benchmarks')
     r.add_argument('--stdout', action='store_true')
+    for name in ('table', 'gap'):
+        sub.add_parser(name).add_argument('file', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
+    c = sub.add_parser('compare')
+    c.add_argument('a')
+    c.add_argument('b')
     args = ap.parse_args()
-    if args.cmd != 'merge' and args.cmd != 'render' and not args.engines:
+    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
     if getattr(args, 'rows', None) and not args.tier:
         args.tier = f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k'
     try:
-        sys.exit({'gen': cmd_gen, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render}[args.cmd](args))
+        sys.exit({'gen': cmd_gen, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table, 'gap': cmd_gap, 'compare': cmd_compare}[args.cmd](args))
     except RuntimeError as x:
         die(str(x))
 

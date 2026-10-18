@@ -8,6 +8,7 @@
 #   setup   one size: containers up (they stay), data generated and loaded     run, cold, updates: measure that size (updates changes the data)
 #   clean   remove everything
 #   report  the tables of docs/results/store.json into the generated blocks, without measuring
+#   table [FILE], gap [FILE]  the warm medians / the gap tables (pg_sift against ClickHouse and Elasticsearch) of a results file; compare A B  two results files side by side
 # Settings come from bench/bench as S_* variables: S_SIZES (orders, comma separated), S_CPUS, S_MEMORY, S_RUNS, S_COLD (cold runs, 0 = none),
 # S_ENGINES, S_QUERIES, S_PORT, S_NAME, S_DATA, S_UPDATE_SIZES (sizes that also get the updates run, default the first; none = no updates). Images are pinned in bench/versions.env.
 set -euo pipefail
@@ -105,6 +106,7 @@ all() {
   done
   trap - EXIT
   merge
+  py table "$OUT/store.json"
   [[ -z ${S_DOCS:-} ]] || docs
   rm -rf "$DATA"
 }
@@ -122,6 +124,8 @@ case ${1:-all} in
   updates) mkdir -p "$OUT"; updates "${SIZES%%,*}" ;;
   report) report ;;
   merge) merge ;;
+  table|gap) py "$1" "${2:-$REPO/docs/results/store.json}" ;;
+  compare) py compare "$2" "$3" ;;
   clean) clean ;;
-  *) echo "usage: store.sh all|setup|run|cold|updates|report|merge|clean" >&2; exit 1 ;;
+  *) echo "usage: store.sh all|setup|run|cold|updates|report|merge|table|gap|compare|clean" >&2; exit 1 ;;
 esac
