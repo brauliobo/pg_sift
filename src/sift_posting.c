@@ -140,28 +140,33 @@ bound_of(SiftPostingWriter *w, uint8 tf, uint16 dl)
 	return w->bound1[dl];
 }
 
-/* The checkpoint of the posting at rank (a multiple of SIFT_POS_EVERY) in the term: the record bytes before it */
-static void
-ckpt_put(SiftPostingWriter *w, uint64 rank, Size at)
-{
-	uint32		v = at;
+static void spool_begin(SiftPostingWriter *w);
+static void spool_stage(SiftPostingWriter *w, uint32 upto);
 
-	if (w->sp)
+/* The checkpoint of the posting at rank (a multiple of SIFT_POS_EVERY) in the term: the record bytes before it */
+static pg_attribute_always_inline void
+ckpt_put(SiftPostingWriter *w, uint64 rank, Size at, bool staged)
+{
+	if (staged && w->sp)
+	{
+		uint32		v = at;
+
 		BufFileWrite(w->sp->ckpt, &v, sizeof(v));
+	}
 	else
-		w->ckpt[rank / SIFT_POS_EVERY] = v;
+		w->ckpt[rank / SIFT_POS_EVERY] = at;
 }
 
 /* Appends the n postings' records (their lengths in poslen) to the term's */
-static void
-pos_put(SiftPostingWriter *w, const uint8 *pos, const uint32 *poslen, int n, uint64 rank)
+static pg_attribute_always_inline void
+pos_put(SiftPostingWriter *w, const uint8 *pos, const uint32 *poslen, int n, uint64 rank, bool staged)
 {
 	Size		len = 0;
 
 	for (int i = 0; i < n; len += poslen[i++])
 		if ((rank + i) % SIFT_POS_EVERY == 0)
-			ckpt_put(w, rank + i, w->poslen + len);
-	if (w->sp)
+			ckpt_put(w, rank + i, w->poslen + len, staged);
+	if (staged && w->sp)
 		BufFileWrite(w->sp->pos, pos, len);
 	else
 	{
@@ -175,12 +180,14 @@ pos_put(SiftPostingWriter *w, const uint8 *pos, const uint32 *poslen, int n, uin
 	w->poslen += len;
 }
 
-static void spool_begin(SiftPostingWriter *w);
-static void spool_stage(SiftPostingWriter *w, uint32 upto);
-
-void
-sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n,
-			   const uint8 *pos, const uint32 *poslen)
+/*
+ * The postings of a term in memory (staged false), or a term that is staged in files or reaches the size from which it is
+ * (staged true, out of line so that the common case keeps its own small frame: the address of a local in it, a stack
+ * protector and a larger frame are some 30 instructions for each of the terms of a segment)
+ */
+static pg_attribute_always_inline void
+postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n, const uint8 *pos,
+		  const uint32 *poslen, bool staged)
 {
 	if (n <= 0)
 		return;
@@ -203,18 +210,37 @@ sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const
 		if (tf[i] == 0)
 			elog(ERROR, "sift: posting with tf 0");
 		w->bound[w->n + i] = bound_of(w, tf[i], dl[i]);
-		if (w->spool_min && (w->n + i == 0 || SIFT_GID(keys[i]) != SIFT_GID(i > 0 ? keys[i - 1] : w->keys[w->n - 1])))
+		if (staged && w->n + i > 0 && SIFT_GID(keys[i]) != SIFT_GID(i > 0 ? keys[i - 1] : w->keys[w->n - 1]))
 			w->open_start = w->n + i;
 	}
 	memcpy(w->keys + w->n, keys, (Size) n * sizeof(SiftKey));
 	memcpy(w->tf + w->n, tf, (Size) n);
 	if (pos)
-		pos_put(w, pos, poslen, n, w->sp ? w->sp->nstaged + w->n : w->n);
+		pos_put(w, pos, poslen, n, staged && w->sp ? w->sp->nstaged + w->n : w->n, staged);
 	w->n += n;
-	if (w->sp == NULL && w->spool_min && w->n >= w->spool_min)
+	if (!staged)
+		return;
+	if (w->sp == NULL && w->n >= w->spool_min)
 		spool_begin(w);
-	if (w->sp && w->open_start > 0)
+	if (w->open_start > 0)
 		spool_stage(w, w->open_start);
+}
+
+static pg_noinline void
+postw_add_staged(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n, const uint8 *pos,
+				 const uint32 *poslen)
+{
+	postw_add(w, keys, tf, dl, n, pos, poslen, true);
+}
+
+void
+sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n,
+			   const uint8 *pos, const uint32 *poslen)
+{
+	if (unlikely(w->sp != NULL || (w->spool_min && (int64) w->n + n >= w->spool_min)))
+		postw_add_staged(w, keys, tf, dl, n, pos, poslen);
+	else
+		postw_add(w, keys, tf, dl, n, pos, poslen, false);
 }
 
 static uint8 *
@@ -231,29 +257,39 @@ out_buf(SiftPostingWriter *w, Size len)
 	return w->out;
 }
 
-/* The end of the group that starts at posting i */
+/* The end of the group that starts at posting i, by bisection: the keys ascend, so do the group ids */
 static uint32
 group_end(const SiftPostingWriter *w, uint32 i, uint32 n)
 {
-	uint32		j = i;
+	uint32		lo = i + 1,
+				hi = n;
 
-	while (j < n && SIFT_GID(w->keys[j]) == SIFT_GID(w->keys[i]))
-		j++;
-	return j;
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (SIFT_GID(w->keys[mid]) == SIFT_GID(w->keys[i]))
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
 }
 
 /*
  * The score entry of the group of postings [i, j), nib and esc being the L1 members and the escape bytes before it (advanced),
  * and its block bound row when it has one (returns whether it does)
  */
-static bool
-group_score(const SiftPostingWriter *w, uint32 i, uint32 j, uint32 *nib, uint32 *esc, SiftGroupScore *gs, uint8 *row)
+static pg_attribute_always_inline bool
+group_score(const SiftPostingWriter *w, uint32 i, uint32 n, uint32 *end, uint32 *nib, uint32 *esc, SiftGroupScore *gs,
+			uint8 *row)
 {
 	uint8		blk[SIFT_BLKS_PER_SB] = {0};
 	bool		tf1 = true;
+	uint32		k;
 
 	*gs = (SiftGroupScore) {.nib_base = *nib,.esc_base = *esc};
-	for (uint32 k = i; k < j; k++)
+	for (k = i; k < n && SIFT_GID(w->keys[k]) == SIFT_GID(w->keys[i]); k++)
 	{
 		int			b = (SIFT_BLK(w->keys[k]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT;
 
@@ -268,7 +304,8 @@ group_score(const SiftPostingWriter *w, uint32 i, uint32 j, uint32 *nib, uint32 
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
 		gs->bound = Max(gs->bound, blk[b]);
 	gs->flags = tf1 ? SIFT_GS_ALL_TF1 : 0;
-	if (j - i < SIFT_BLKBOUND_MIN)
+	*end = k;
+	if (k - i < SIFT_BLKBOUND_MIN)
 		return false;
 	gs->flags |= SIFT_GS_BLKBOUND;
 	memcpy(row, blk, SIFT_BLKS_PER_SB);
@@ -283,10 +320,7 @@ fill_groups(SiftPostingWriter *w, SiftGroupScore *gs, uint8 *rows)
 				esc = 0;
 
 	for (uint32 i = 0, j, g = 0; i < w->n; i = j, g++)
-	{
-		j = group_end(w, i, w->n);
-		rows += group_score(w, i, j, &nib, &esc, &gs[g], rows) ? SIFT_BLKS_PER_SB : 0;
-	}
+		rows += group_score(w, i, w->n, &j, &nib, &esc, &gs[g], rows) ? SIFT_BLKS_PER_SB : 0;
 }
 
 /*
@@ -421,6 +455,8 @@ spool_begin(SiftPostingWriter *w)
 	sp->ckpt = BufFileCreateTemp(false);
 	sp->pos = BufFileCreateTemp(false);
 	w->sp = sp;
+	for (w->open_start = w->n - 1; w->open_start > 0 && SIFT_GID(w->keys[w->open_start - 1]) == SIFT_GID(w->keys[w->n - 1]);)
+		w->open_start--;
 	if (w->haspos)
 	{
 		BufFileWrite(sp->ckpt, w->ckpt, (Size) ((w->n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32));
@@ -488,7 +524,7 @@ spool_group(SiftPostingWriter *w, uint32 i, uint32 j)
 	sp->base[sp->ng] = sp->nstaged + i;
 	BufFileWrite(sp->payload, blob + 32, plen);
 	sp->npayload += plen;
-	if (group_score(w, i, j, &sp->nnib, &sp->nesc, &sp->gs[sp->ng], sp->rows + (Size) sp->nrows * SIFT_BLKS_PER_SB))
+	if (group_score(w, i, j, &j, &sp->nnib, &sp->nesc, &sp->gs[sp->ng], sp->rows + (Size) sp->nrows * SIFT_BLKS_PER_SB))
 		sp->nrows++;
 	sp->ng++;
 }
@@ -513,7 +549,7 @@ spool_stage(SiftPostingWriter *w, uint32 upto)
 }
 
 /* The last groups of the term, and its blob out of the pieces, byte for byte what postw_encode makes of the term in memory */
-static void
+static pg_noinline void
 spool_end(SiftPostingWriter *w, SiftTermInfo *info)
 {
 	TermSpool  *sp;
