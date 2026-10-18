@@ -26,6 +26,12 @@ For each chunk it picks, from exact sizes, the
   the format and its schema hash port to other hosts; the OIDs are mapped at the PostgreSQL boundary only (`sift_col_type_of_oid`,
   `sift_col_def_typid`). Segments written by a build before this one are refused with a REINDEX hint.
 
+- Added (column format 1.1): text and bytea of any length in the column engine. A string longer than 255 bytes (or a dictionary past 64 MiB) is
+  stored inline in its chunk with a sortable 8-byte prefix, so there is no length limit below 1 GB per unit and the `0A000` that `SiftAgg` raised
+  for long strings is gone. Equality, `IN`, comparisons, prefix and length tests run on the encoded form (prefix zone maps prune units; the
+  prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
+  callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
+
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.
 
