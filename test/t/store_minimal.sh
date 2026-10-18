@@ -5,7 +5,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 6
-node_init min 5 "wal_level = minimal
+node_init min 5 "$WAL_CONF
+wal_level = minimal
 max_wal_senders = 0
 wal_skip_threshold = '1MB'"
 node_start min || bail "start failed"

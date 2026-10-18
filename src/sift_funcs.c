@@ -137,12 +137,13 @@ static Oid	bind_analyzer(List *indexes, bool *contested);
  * does: the one `@@>` means on that key, or the one sift.match_idx names (named)
  */
 static double
-match_selectivity(RelOptInfo *rel, Node *expr, text *query, const Const *named)
+match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query, const Const *named)
 {
 	List	   *keyed = NIL;
 	Oid			analyzer;
 
-	if (rel->rtekind != RTE_RELATION)
+	/* the match is not leakproof: the index's document frequencies include the rows a policy or security barrier hides */
+	if (rel->rtekind != RTE_RELATION || planner_rt_fetch(rel->relid, root)->securityQuals != NIL)
 		return DEFAULT_MATCH_SEL;
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->indpred == NIL && !ii->hypothetical && sift_index_matches_key(ii, expr))
@@ -179,7 +180,7 @@ sift_matchsel(PG_FUNCTION_ARGS)
 	if (get_restriction_variable(root, args, varRelid, &vardata, &other, &varonleft))
 	{
 		if (varonleft && vardata.rel && IsA(other, Const) && !((Const *) other)->constisnull)
-			sel = match_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue), NULL);
+			sel = match_selectivity(root, vardata.rel, vardata.var, DatumGetTextPP(((Const *) other)->constvalue), NULL);
 		ReleaseVariableStats(vardata);
 	}
 	PG_RETURN_FLOAT8(Min(Max(sel, 0.0), 1.0));
@@ -201,7 +202,7 @@ call_selectivity(SupportRequestSelectivity *req)
 		return NULL;
 	examine_variable(req->root, linitial(req->args), req->varRelid, &vardata);
 	if (vardata.rel)
-		req->selectivity = Min(Max(match_selectivity(vardata.rel, vardata.var, DatumGetTextPP(((Const *) query)->constvalue),
+		req->selectivity = Min(Max(match_selectivity(req->root, vardata.rel, vardata.var, DatumGetTextPP(((Const *) query)->constvalue),
 													 lthird_node(Const, req->args)), 0.0), 1.0);
 	ReleaseVariableStats(vardata);
 	return vardata.rel ? (Node *) req : NULL;

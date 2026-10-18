@@ -12,11 +12,13 @@
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
 #                                each in its own database and output directory $SIFT_TMP/regress/<t> (parallel runs)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
+#   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database)
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
-#   scripts/pgtest.sh initdb-template DIR   the data directory SIFT_INITDB_TEMPLATE points at
-#   scripts/pgtest.sh new-data DIR          a fresh data directory (the template copied, else initdb)
+#   scripts/pgtest.sh initdb-template DIR   the data directory SIFT_INITDB_TEMPLATE points at (1 MB WAL segments)
+#   scripts/pgtest.sh new-data DIR [wal]    a fresh data directory (the template copied, else initdb); wal: the default 16 MB WAL
+#                                           segments, for the tests whose point is WAL (always a real initdb)
 #
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56299, default
 # 56100) let several jobs run clusters side by side; SIFT_ROOT (default
@@ -24,8 +26,8 @@
 # SIFT_PORT + 1 and up. SIFT_TESTING=1 (default) builds the sift._test_*
 # functions; SIFT_TESTING= builds the release library.
 #
-# SANITIZE=1 install builds with ASan+UBSan; install runs make clean whenever
-# SANITIZE or SIFT_TESTING changes. start then preloads the sanitizer runtimes
+# SANITIZE=1 install builds with ASan+UBSan; SIFT_HARDEN=pkg|init|1 builds with the hardening flags of scripts/harden.mk
+# (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap); install runs make clean whenever SANITIZE, SIFT_TESTING or SIFT_HARDEN changes. start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
 # $SIFT_TMP/sanitizer/ (sanitizer-report). SIFT_INITDB_TEMPLATE, a data directory made by `initdb-template`, is copied
 # instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib.bash uses it too).
@@ -48,14 +50,14 @@ PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
-FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)"
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)"
 
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
 
 install() {
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	# on the make command line: sudo resets the environment, which would install another flavor
-	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}")
+	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1})
 	nice make -C "$REPO" -j4 "${flavor[@]}"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )); then
@@ -78,12 +80,17 @@ conf() {
 # The server binary is not instrumented, so the ASan runtime must be preloaded.
 sanitizer_env() { [[ $(cat "$ROOT/.flavor" 2>/dev/null) != asan* ]] || leak_sanitizer_env "$SANDIR"; }
 
-# The cluster every test starts from: superuser postgres, UTF8, no locale. The clusters run with fsync off, so initdb need not sync either.
-initdb_template() { initdb --no-sync -D "$1" -A trust -U postgres -E UTF8 --no-locale --no-instructions >/dev/null; }
+# The cluster every test starts from: superuser postgres, UTF8, no locale. The clusters run with fsync off, so initdb need not sync
+# either. WAL segments of 1 MB (the default 16 MB is a floor of 64 MB of pg_wal per cluster) except for KIND wal.
+initdb_template() {
+	local seg=(--wal-segsize=1)
+	[[ ${2:-} != wal ]] || seg=()
+	initdb --no-sync -D "$1" -A trust -U postgres -E UTF8 --no-locale --no-instructions "${seg[@]}" >/dev/null
+}
 
-# new_data DIR: a fresh data directory, copied from SIFT_INITDB_TEMPLATE when there is one
+# new_data DIR [wal]: a fresh data directory, copied from SIFT_INITDB_TEMPLATE when there is one
 new_data() {
-	if [[ -n ${SIFT_INITDB_TEMPLATE:-} ]]; then cp -a "$SIFT_INITDB_TEMPLATE" "$1"; else initdb_template "$1"; fi
+	if [[ -n ${SIFT_INITDB_TEMPLATE:-} && ${2:-} != wal ]]; then cp -a "$SIFT_INITDB_TEMPLATE" "$1"; else initdb_template "$1" "${2:-}"; fi
 }
 
 start() {
@@ -96,8 +103,10 @@ start() {
 			unix_socket_directories = '$SOCK'
 			$(conf)
 			fsync = off
-			max_wal_size = 256MB
-			shared_buffers = 256MB
+			max_wal_size = 48MB
+			min_wal_size = 32MB
+			wal_recycle = off
+			shared_buffers = 64MB
 			max_worker_processes = 16
 		EOF
 	fi
@@ -114,6 +123,14 @@ stop() {
 	leak_after_stop "$DATA" || rc=1
 	leak_scan "$TMP" || rc=1
 	return $rc
+}
+
+# clean: drops every database but the template ones, postgres and the test database: what a job created
+clean() {
+	local d
+	for d in $(psql -U postgres -d postgres -X -qAt -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1', '$DB')"); do
+		dropdb -U postgres --force "$d"
+	done
 }
 
 # regress [TEST...]: without names, make installcheck (the Makefile's database and test list)
@@ -149,8 +166,9 @@ case ${1:-} in
 		;;
 	regress) shift; regress "$@" ;;
 	initdb-template) initdb_template "$2" ;;
-	new-data) new_data "$2" ;;
+	new-data) new_data "$2" "${3:-}" ;;
 	tap) tap "${2:-}" ;;
+	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
 	*) sed -n '2,29p' "$0"; exit 1 ;;

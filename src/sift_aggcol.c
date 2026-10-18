@@ -1,7 +1,7 @@
 /*
  * sift_aggcol.c - the column source of the aggregate scan over a sift_col index: the leaf list becomes the layout, a unit's selection-based reads become whole-unit vectors of the
- * types the kernels take (int64 narrowed to int32 for the leaves of SCV_I32, NULL bitmaps expanded to flags), liveness and MVCC
- * vetting are the engine's. Compiled only when the engine is part of the build.
+ * types the kernels take (the engine decodes a chunk straight into the lane of the leaf's vector type, NULL bitmaps expanded to flags),
+ * liveness and MVCC vetting are the engine's. Compiled only when the engine is part of the build.
  */
 #include "postgres.h"
 
@@ -18,7 +18,9 @@
 
 #include "sift_aggkern.h"
 #include "sift_aggsel.h"
+#include "sift_popcount.h"
 #include "sift_col.h"
+#include "sift_col_pagg.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
 
@@ -45,6 +47,8 @@ typedef struct ColSource
 	int			nspred;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
+	MemoryContext pcx;			/* the histogram of the last unit_hist */
+	SiftSrcDict hdict;			/* its dictionary */
 } ColSource;
 
 #define COL_MAX_STR_PRUNE	16
@@ -177,6 +181,37 @@ col_layout(Relation index)
 	return lay;
 }
 
+/*
+ * The per-leaf numbers of SiftSrcStats from the zones and dictionaries, counted over the non-NULL values
+ * of the leaf (elements for a child). ndistinct: a text leaf with no inline unit is its largest segment dictionary, exact for one segment
+ * and a lower bound for several that hold different values; an integer leaf is bounded by its range (max - min + 1); any leaf by its
+ * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
+ */
+static void
+leaf_stats(const SiftColIndexMeta *meta, const SiftColLeafStats *ls, SiftSrcStats *st)
+{
+	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+	{
+		const SiftColDef *def = &meta->cols[i];
+		double		nonnull = ls[i].nvals - ls[i].nnull;
+
+		if (def->kind == SIFT_COLK_GROUP)
+		{
+			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
+			continue;
+		}
+		st->ndistinct[i] = nonnull;
+		if (def->store == SIFT_COLS_STR && !ls[i].inl)
+			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);
+		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0)
+		{
+			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
+			st->min[i] = (double) ls[i].min;
+			st->max[i] = (double) ls[i].max;
+		}
+	}
+}
+
 static void
 col_stats(Relation index, SiftSrcStats *st)
 {
@@ -187,6 +222,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->nunits = meta->stats.nunits;
 	st->bytes = meta->stats.bytes;
 	st->allvisible_frac = meta->stats.allvisible_frac;
+	leaf_stats(meta, sift_col_leaf_stats(index), st);
 }
 
 static void *
@@ -240,7 +276,8 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	}
 	for (int i = 0; i < src->nspred; i++)
 		preds[2 * nprune + i] = src->spred[i];
-	memcpy(preds + 2 * nprune + src->nspred, src->fpred, src->nflt * sizeof(SiftColPred));
+	for (int i = 0; i < src->nflt; i++)
+		preds[2 * nprune + src->nspred + i] = src->fpred[i];
 	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred + src->nflt, sb_lo, sb_hi);
 }
 
@@ -370,29 +407,13 @@ col_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 }
 
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
-/* the leaf's buffers for n elements; the tail up to SIFT_AGG_PAD elements is zero */
-static ColLeafBuf *
-leaf_buf(ColSource *src, int leaf, SiftSrcVecType vt, size_t n)
+/* of the unit as stored: a compacted unit of a match set yields fewer */
+static int64
+col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 {
-	ColLeafBuf *b = &src->buf[leaf];
-	size_t		need = n + SIFT_AGG_PAD;
-
-	if (b->cap < need)
-	{
-		if (b->data)
-		{
-			pfree(b->data);
-			pfree(b->isnull);
-			pfree(b->ovf);
-		}
-		b->cap = Max(need, 4096);
-		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
-		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
-		b->ovf = MemoryContextAlloc(src->cxt, (b->cap / 64 + 1) * sizeof(uint64));
-	}
-	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
-	return b;
+	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
 }
 
 /* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
@@ -411,48 +432,129 @@ overflow_error(void)
 			 errhint("Set sift.enable_agg to off for this query.")));
 }
 
-/* The values of a whole-leaf read into the leaf's buffer */
+/* The values of a read of the engine into the caller's storage, in the vector type of the leaf */
 static void
-col_fill(ColSource *src, int leaf, const SiftColVec *v, SiftSrcVec *vec)
+col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcVec *vec)
 {
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 	size_t		n = v->n;
-	ColLeafBuf *b;
 
-	if (v->ovf && !nan_leaf(l))
+	vec->ovf = NULL;
+	if (v->ovf && !(buf->ovf && nan_leaf(l)))
 		overflow_error();
-	b = leaf_buf(src, leaf, l->vtype, n);
 	switch (l->vtype)
 	{
 		case SCV_I32:
 			for (size_t i = 0; i < n; i++)
-				((int32 *) b->data)[i] = (int32) v->i[i];
+				((int32 *) buf->data)[i] = (int32) v->i[i];
 			break;
 		case SCV_I64:
-			memcpy(b->data, v->i, n * sizeof(int64));
+			memcpy(buf->data, v->i, n * sizeof(int64));
 			break;
 		case SCV_F64:
-			memcpy(b->data, v->f, n * sizeof(double));
+			memcpy(buf->data, v->f, n * sizeof(double));
 			break;
 		case SCV_CODE:
-			memcpy(b->data, v->codes, n * sizeof(uint32));
+			memcpy(buf->data, v->codes, n * sizeof(uint32));
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
 			break;
 	}
-	vec->data = b->data;
+	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
 	vec->n = n;
 	vec->isnull = NULL;
-	vec->ovf = NULL;
 	if (v->ovf)
 	{
-		memcpy(b->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
-		vec->ovf = b->ovf;
+		memcpy(buf->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
 	}
 	if (v->nulls)
 	{
 		for (size_t i = 0; i < n; i++)
-			b->isnull[i] = sift_colsrc_bit(v->nulls, i);
-		vec->isnull = b->isnull;
+			buf->isnull[i] = sift_colsrc_bit(v->nulls, i);
+		vec->isnull = buf->isnull;
 	}
+}
+
+/* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
+static void
+col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	SiftColVec	v;
+
+	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
+	col_fill(src, leaf, &v, buf, vec);
+}
+
+/* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
+static void
+col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	SiftColLaneInfo info;
+
+	if (src->sel.keep && src->sel.compact)
+	{
+		col_read_selected(src, leaf, buf, vec);
+		return;
+	}
+	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
+	vec->ovf = NULL;
+	if (info.ovf && buf->ovf && nan_leaf(l))
+	{
+		SiftColVec	v;
+
+		sift_col_read(&src->unit, leaf, NULL, &v);
+		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(info.n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
+	}
+	else if (info.ovf)
+		overflow_error();
+	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->n = info.n;
+	vec->isnull = info.nulls ? buf->isnull : NULL;
+	vec->dict = NULL;
+	if (l->vtype == SCV_CODE)
+	{
+		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes};
+		vec->dict = &src->dict[leaf];
+	}
+}
+
+/* the leaf's buffers for n elements and SIFT_AGG_PAD more */
+static ColLeafBuf *
+leaf_buf(ColSource *src, int leaf, size_t n)
+{
+	ColLeafBuf *b = &src->buf[leaf];
+	size_t		need = n + SIFT_AGG_PAD;
+
+	if (b->cap < need)
+	{
+		if (b->data)
+		{
+			pfree(b->data);
+			pfree(b->isnull);
+			pfree(b->ovf);
+		}
+		b->cap = Max(need, 4096);
+		b->data = MemoryContextAlloc(src->cxt, b->cap * 8);
+		b->isnull = MemoryContextAlloc(src->cxt, b->cap);
+		b->ovf = MemoryContextAlloc(src->cxt, (b->cap / 64 + 1) * sizeof(uint64));
+	}
+	return b;
+}
+
+/* read_into over the source's own buffers of the leaf: valid until the next read of the leaf or the next unit */
+static void
+col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	ColLeafBuf *b = leaf_buf(src, leaf, sift_col_lane_n(&src->unit, leaf));
+
+	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
 }
 
 /* The values of a read of the rows idx[0..m) of a unit of nrow rows, at their rows in the leaf's buffer; the other rows are zero */
@@ -465,8 +567,8 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 
 	if (v->ovf && !nan_leaf(l))
 		overflow_error();
-	b = leaf_buf(src, leaf, l->vtype, nrow);
-	memset(b->data, 0, nrow * vtype_size[l->vtype]);
+	b = leaf_buf(src, leaf, nrow);
+	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -484,9 +586,11 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 		case SCV_CODE:
 			for (size_t k = 0; k < m; k++)
 				((uint32 *) b->data)[idx[k]] = v->codes[k];
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
 			break;
 	}
 	vec->data = b->data;
+	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
 	vec->n = nrow;
 	vec->isnull = NULL;
 	vec->ovf = NULL;
@@ -507,22 +611,6 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 	}
 }
 
-/* the dictionary of a text leaf read last */
-static void
-col_dict(ColSource *src, int leaf, const SiftColVec *v, SiftSrcVec *vec)
-{
-	SiftSrcDict *d = &src->dict[leaf];
-
-	vec->dict = NULL;
-	if (src->lay->leaf[leaf].vtype != SCV_CODE)
-		return;
-	d->id = (const void *) (uintptr_t) v->dict->id;
-	d->n = v->dict->n;
-	d->off = v->dict->off;
-	d->bytes = v->dict->bytes;
-	vec->dict = d;
-}
-
 /* A selection of the unit's rows, of the bits of the executor */
 static void
 col_sel(ColSource *src, const SiftSrcUnit *unit, const uint64 *bits, SiftColSel *sel)
@@ -540,24 +628,17 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	SiftColVec	v;
 	uint32	   *idx;
 
+	if (src->sel.keep && src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
+	{
+		col_read(impl, unit, leaf, vec);
+		return;
+	}
 	col_sel(src, unit, bits, &sel);
 	idx = MemoryContextAlloc(src->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&sel, idx);
 	sift_col_read(&src->unit, leaf, &sel, &v);
 	col_scatter(src, leaf, &v, idx, unit->nrow, vec);
-	col_dict(src, leaf, &v, vec);
 	pfree(idx);
-}
-
-static void
-col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
-{
-	ColSource  *src = impl;
-	SiftColVec	v;
-
-	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
-	col_fill(src, leaf, &v, vec);
-	col_dict(src, leaf, &v, vec);
 }
 
 /* the rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
@@ -567,12 +648,14 @@ col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	ColSource  *src = impl;
 	uint32	   *ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
 	SiftColVec	v;
+	ColLeafBuf *b;
 
 	for (int i = 0; i < n; i++)
 		ords[i] = src->sel.keep && src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
 	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
 	sift_col_read_idx(&src->unit, leaf, ords, n, &v);
-	col_fill(src, leaf, &v, vec);
+	b = leaf_buf(src, leaf, n);
+	col_fill(src, leaf, &v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
 	pfree(ords);
 }
 
@@ -686,11 +769,11 @@ clear_nan_rows(ColSource *src, const SiftColPred *p, SiftColSel *sel)
 	sift_col_sel_count(sel);
 }
 
-static bool
-col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+/* the filters of the source on the unit as stored, the most selective first */
+static void
+filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 {
-	ColSource  *src = impl;
-	SiftColSel	sel;
+	ColSource  *src = arg;
 	double		share[SIFT_COLSRC_MAX_FILTERS];
 	int			order[SIFT_COLSRC_MAX_FILTERS];
 
@@ -703,22 +786,31 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 			order[j] = order[j - 1];
 		order[j] = i;
 	}
-	col_sel(src, unit, bits, &sel);
 	for (int i = 0; i < src->nflt; i++)
 	{
 		const SiftColPred *p = &src->fpred[order[i]];
 		SiftColZone z;
 
-		sift_col_zone(&src->unit, p->col, &z);
+		sift_col_zone(cu, p->col, &z);
 		if (z.has_ovf && !nan_leaf(&src->lay->leaf[p->col]))
 			overflow_error();
-		if (!sift_col_filter(&src->unit, p, 1, &sel))
+		if (!sift_col_filter(cu, p, 1, sel))
 			break;
 		if (z.has_ovf)
-			clear_nan_rows(src, p, &sel);
+			clear_nan_rows(src, p, sel);
 	}
-	memcpy(bits, sel.bits, sel.nwords * sizeof(uint64));
-	return sel.count > 0;
+}
+
+static bool
+col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	ColSource  *src = impl;
+	uint64		left = 0;
+
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, filter_op, src);
+	for (int w = 0; w < (unit->nrow + 63) / 64; w++)
+		left += sift_pc64(bits[w]);
+	return left > 0;
 }
 
 static void
@@ -732,6 +824,102 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
 	c->heap_pages = cc->heap_pages;
+}
+
+/* ---- pre-aggregates (src/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
+
+static void
+col_preagg(Relation index, SiftSrcPreagg *pa)
+{
+	SiftCPaggSpec spec;
+
+	pa->aggs = true;
+	sift_col_pagg_spec(index, &spec);
+	if (spec.off)
+		return;
+	for (int d = 0; d < spec.ndims; d++)
+	{
+		pa->dim[pa->ndims].leaf = spec.dim[d].leaf;
+		pa->dim[pa->ndims].nmeas = spec.dim[d].nmeas;
+		for (int m = 0; m < spec.dim[d].nmeas; m++)
+			pa->dim[pa->ndims].meas[m] = spec.dim[d].meas[m];
+		pa->ndims++;
+	}
+}
+
+static bool
+col_unit_exact(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
+}
+
+static bool
+col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	ColSource  *src = impl;
+	const SiftColDef *def = sift_col_def(src->cs, leaf);
+	SiftCAgg	a;
+
+	if (!sift_col_unit_agg(&src->unit, leaf, &a))
+		return false;
+	memset(agg, 0, sizeof(*agg));
+	agg->nvals = a.nvals;
+	agg->nnull = a.nnull;
+	agg->has_nan = (a.zflags & SIFT_COLZ_NAN) != 0;
+	agg->is_const = (a.zflags & SIFT_COLZ_CONST) != 0;
+	agg->has_minmax = a.nnull < a.nvals && def->store != SIFT_COLS_STR && !(a.zflags & SIFT_COLZ_INLINE);
+	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)
+	{
+		agg->min_f = sift_col_f8_from_key(a.min);
+		agg->max_f = sift_col_f8_from_key(a.max);
+		agg->sum_f = a.sum_f;
+	}
+	else
+	{
+		agg->min = a.min;
+		agg->max = a.max;
+	}
+	if (a.has_sums)
+	{
+		agg->has_sums = !(a.zflags & SIFT_COLZ_OVERFLOW);
+		agg->has_sumsq = !(a.flags & SIFT_CAGG_SUMSQ_OVF);
+		agg->sum = a.sum;
+		agg->sumsq = a.sumsq;
+	}
+	return true;
+}
+
+static bool
+col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	ColSource  *src = impl;
+	SiftCHistDim d;
+	SiftColDict dict;
+
+	if (src->pcx == NULL)
+		src->pcx = AllocSetContextCreate(src->cxt, "sift_aggcol histogram", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextReset(src->pcx);
+	if (!sift_col_unit_hist(&src->unit, dim, src->pcx, &d, &dict))
+		return false;
+	memset(h, 0, sizeof(*h));
+	h->ngroups = d.ngroups;
+	h->has_null = d.has_null;
+	h->key = d.key;
+	h->count = d.count;
+	h->nmeas = d.nmeas;
+	for (int m = 0; m < d.nmeas; m++)
+	{
+		h->meas[m] = d.meas[m];
+		h->nn[m] = d.nn[m];
+		h->sum[m] = d.sum[m];
+		h->sumf[m] = d.sumf[m];
+	}
+	if (sift_col_def(src->cs, dim)->store == SIFT_COLS_STR)
+	{
+		src->hdict = (SiftSrcDict) {(const void *) (uintptr_t) dict.id, dict.n, dict.off, dict.bytes};
+		h->dict = &src->hdict;
+	}
+	return true;
 }
 
 static const SiftSrcProvider col_provider = {
@@ -749,6 +937,8 @@ static const SiftSrcProvider col_provider = {
 	.live = col_live,
 	.vet = col_vet,
 	.counters = col_counters,
+	.leaf_n = col_leaf_n,
+	.read_into = col_read_into,
 	.select = col_select,
 	.tids = col_tids,
 	.zone = col_zone,
@@ -758,6 +948,10 @@ static const SiftSrcProvider col_provider = {
 	.read_sel = col_read_sel,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
+	.preagg = col_preagg,
+	.unit_exact = col_unit_exact,
+	.unit_agg = col_unit_agg,
+	.unit_hist = col_unit_hist,
 };
 
 void

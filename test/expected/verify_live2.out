@@ -1,0 +1,62 @@
+-- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on a segment with vacuumed documents (the liveness rows and the
+-- table of dead postings of segment format 2) with random bytes overwritten; and passes on the same index rebuilt
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE TABLE vl (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+INSERT INTO vl (body) SELECT 'w' || (i % 7) || ' x' || (i % 101) || ' common doc' || i FROM generate_series(1, 3000) i;
+CREATE INDEX vl_idx ON vl USING sift (body);
+DELETE FROM vl WHERE id % 3 = 0;
+VACUUM vl;
+SELECT dirty, dead_docs FROM sift.segments('vl_idx');
+ dirty | dead_docs 
+-------+-----------
+ t     |      1000
+(1 row)
+
+SELECT sift.verify('vl_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+CREATE TABLE vl_res (verdict text);
+CREATE FUNCTION vl_verify(heapall bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM sift.verify('vl_idx', heapall);
+	INSERT INTO vl_res VALUES ('ok');
+EXCEPTION WHEN OTHERS THEN
+	INSERT INTO vl_res VALUES (CASE WHEN SQLSTATE = 'XX002' THEN 'corrupt' ELSE 'other: ' || SQLERRM END);
+END $$;
+-- VACUUM cannot run in a function: the statements of each round are generated and run in order
+SELECT setseed(0.42);
+ setseed 
+---------
+ 
+(1 row)
+
+\set ECHO none
+SELECT count(*) FILTER (WHERE verdict LIKE 'other%') = 0 AS every_verdict_ok_or_corrupt, count(*) FILTER (WHERE verdict = 'corrupt') > 0 AS some_found FROM vl_res;
+ every_verdict_ok_or_corrupt | some_found 
+-----------------------------+------------
+ t                           | t
+(1 row)
+
+REINDEX INDEX vl_idx;
+DELETE FROM vl WHERE id % 5 = 0;
+VACUUM vl;
+SELECT sift.verify('vl_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) = (SELECT count(*) FROM vl WHERE body ~ 'common') AS count_ok FROM vl WHERE body @@> 'common';
+ count_ok 
+----------
+ t
+(1 row)
+
+DROP TABLE vl, vl_res;
+DROP FUNCTION vl_verify(bool);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

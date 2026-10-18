@@ -190,6 +190,9 @@ static const char *p_name[NPR] = { "auto", "grouped", "bitmap", "list", "u64", "
 typedef struct { uint32_t t[3]; int k; } query;
 static query Q[NQ][NPAIR];
 static uint8_t *blobs[NSIFT][NQ][NPAIR][3];
+
+/* the benchmark keeps its blobs without their lengths: the encoder's bound for the postings they hold */
+static void cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf) { sift_cur_blob(c, blob, sift_encode_bound(sift_blob_n(blob)), buf); }
 static sift_tid *arrays[NQ][NPAIR][3];
 static forlist fors[NQ][NPAIR][3];
 static sift_tid *OUT;
@@ -348,7 +351,7 @@ static uint64_t run_query(int r, int q, int p, int op)
 	if (r >= P_RDOC) return 0;
 #endif
 	sift_cur c[3], op_c, *kids[3] = { &c[0], &c[1], &c[2] };
-	for (int i = 0; i < k; i++) sift_cur_blob(&c[i], blobs[r][q][p][i], cb[i]);
+	for (int i = 0; i < k; i++) cur_blob(&c[i], blobs[r][q][p][i], cb[i]);
 	if (op == O_DECODE) return sift_tids(&c[0], OUT);
 	if (op == O_AND || op == O_ANDCNT) sift_cur_and(&op_c, kids, k, cb[4]);
 	else if (op == O_OR || op == O_ORCNT) sift_cur_or(&op_c, kids, 2, cb[4]);
@@ -644,7 +647,7 @@ static void rank_bench(double secs)
 						sift_cur c[4];
 						sift_qterm qt[4];
 						for (int i = 0; i < rq[f][p].nt; i++) {
-							sift_cur_blob(&c[i], blob[p][i], cb[i]);
+							cur_blob(&c[i], blob[p][i], cb[i]);
 							qt[i] = (sift_qterm){ &c[i], idf(C.df[rq[f][p].t[i]]) * (K1 + 1), 0 };
 						}
 						sift_topk_q tq = { qt, rq[f][p].nt, rq[f][p].conj, NULL, &nm, 10, ex };
@@ -742,13 +745,13 @@ static void facet_bench(const char *dir, double secs)
 					for (int p = 0; p < 48; p++) {
 						if (m == 0) {
 							sift_cur qc_, vc[1024], *vk[1024];
-							sift_cur_blob(&qc_, qb[p], buf);
-							for (int v = 0; v < nv[fc]; v++) sift_cur_blob(&vc[v], vb[v], vbuf[v]), vk[v] = &vc[v];
+							cur_blob(&qc_, qb[p], buf);
+							for (int v = 0; v < nv[fc]; v++) cur_blob(&vc[v], vb[v], vbuf[v]), vk[v] = &vc[v];
 							sift_facets(&qc_, vk, nv[fc], counts);
 						} else if (m == 1) {
 							/* doc values: decode the term, look up each hit's value */
 							sift_cur qc_;
-							sift_cur_blob(&qc_, qb[p], buf);
+							cur_blob(&qc_, qb[p], buf);
 							size_t n = sift_tids(&qc_, OUT);
 							for (size_t i = 0; i < n; i++)
 								counts[col[fc][rowstart[SIFT_BLK(OUT[i])] + SIFT_OFF(OUT[i]) - 1]]++;  /* slot == doc here */

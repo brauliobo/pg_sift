@@ -2,7 +2,7 @@
 # Builds the extension and runs every test. Needs a C compiler, make and python3 whose sqlite3 module can load
 # extensions and has FTS5; no root, nothing is installed.
 #
-#   ./test.sh                   portable-core include check (scripts/check-portable.sh), smoke test, baseline instruction check, unit tests + FTS5 differential on a synthetic corpus, the same with the scalar kernels forced
+#   ./test.sh                   portable-core include check (scripts/check-portable.sh), smoke test, baseline instruction check, the bounds-checked reader's unit tests (src/sift_span.h), unit tests + FTS5 differential on a synthetic corpus, the same with the scalar kernels forced
 #                               (runtime switch) and with the vector-free build (make SIMD=none) (about 40 s)
 #   SIFT_SANITIZE=1 ./test.sh   also the unit tests under ASan+UBSan and the thread stress test under TSan and ASan (about 3 min)
 #   SIFT_ARTICLES=articles.db ./test.sh
@@ -22,10 +22,12 @@ SIFT_SIMD=scalar python3 -I tests/test_sift.py
 SIFT_SIMD=scalar python3 -I tests/test_features.py
 SIFT_SIMD=scalar python3 -I tests/diff_fts5.py
 nice make -j4 SIMD=none B=build-scalar
+nice make -j4 span-test col-smoke
+nice make -j4 SIMD=none B=build-scalar span-test col-smoke
 SIFT_EXT="$PWD/build-scalar/sift" python3 -I tests/test_sift.py
 SIFT_EXT="$PWD/build-scalar/sift" python3 -I tests/test_features.py
 if [ -n "$SIFT_SANITIZE" ]; then
-	nice make -j4 asan
+	nice make -j4 asan span-test-asan
 	export ASAN_OPTIONS=detect_leaks=0
 	for t in test_sift test_features; do
 		SIFT_EXT="$PWD/build-asan/sift" LD_PRELOAD="$(cc -print-file-name=libasan.so) $(cc -print-file-name=libubsan.so)" python3 -I tests/$t.py

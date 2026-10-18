@@ -21,7 +21,7 @@ CREATE TABLE jp3 PARTITION OF jp FOR VALUES FROM (2001) TO (3001);
 CREATE TABLE ji (id int, tenant int, body text);
 CREATE TABLE ji1 (CHECK (id <= 1500)) INHERITS (ji);
 CREATE TABLE ji2 (CHECK (id > 1500)) INHERITS (ji);
-INSERT INTO jd SELECT i, i % 50, repeat('venue ', 1 + i % 7) || repeat('word ', i % 3) || 'n' || i FROM generate_series(1, 3000) i;
+INSERT INTO jd SELECT i, i % 50, repeat('honey ', 1 + i % 7) || repeat('word ', i % 3) || 'n' || i FROM generate_series(1, 3000) i;
 INSERT INTO jp SELECT * FROM jd;
 INSERT INTO ji1 SELECT * FROM jd WHERE id <= 1500;
 INSERT INTO ji2 SELECT * FROM jd WHERE id > 1500;
@@ -49,14 +49,14 @@ ANALYZE jo;
 ANALYZE js;
 ANALYZE jt;
 -- the repro of the report: a join and a semi join under a ranked scan
-SELECT sift_plan('SELECT d.id, o.v FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> ''venue''
+SELECT sift_plan('SELECT d.id, o.v FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> ''honey''
 	ORDER BY sift.score(d.ctid) DESC LIMIT 10') ~ 'SiftScan' AS scan;
  scan 
 ------
  t
 (1 row)
 
-SELECT d.id, o.v, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> 'venue'
+SELECT d.id, o.v, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.body @@> 'honey'
 	ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 5;
  id  |  v  |     score     
 -----+-----+---------------
@@ -70,7 +70,7 @@ SELECT d.id, o.v, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.
 -- every shape answers what the score of a join-free scan, read in a subquery and joined above it, answers
 CREATE FUNCTION join_shapes(r text) RETURNS TABLE (shape text, n int, same boolean, scanned boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	one text := format($q$(SELECT id, tenant, sift.score(ctid) AS s FROM %s WHERE body @@> 'venue' ORDER BY sift.score(ctid) DESC OFFSET 0)$q$, r);
+	one text := format($q$(SELECT id, tenant, sift.score(ctid) AS s FROM %s WHERE body @@> 'honey' ORDER BY sift.score(ctid) DESC OFFSET 0)$q$, r);
 	two text := format($q$(SELECT id, tenant, sift.score(ctid) AS s FROM %s WHERE body @@> 'word' ORDER BY sift.score(ctid) DESC OFFSET 0)$q$, r);
 	q text;
 	q0 text;
@@ -79,40 +79,40 @@ DECLARE
 BEGIN
 	FOR shape, q, q0 IN SELECT v.shape, format(v.q, r), format(v.q0, one, two) FROM (VALUES
 		('semi join', $q$SELECT d.id, o.v, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js)
-			AND d.body @@> 'venue' AND d.tenant < 25 ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+			AND d.body @@> 'honey' AND d.tenant < 25 ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
 		 $q$SELECT d.id, o.v, d.s FROM %1$s d JOIN jo o ON o.id = d.id WHERE d.id IN (SELECT id FROM js) AND d.tenant < 25
 			ORDER BY d.s DESC, d.id LIMIT 10$q$),
 		('three joins', $q$SELECT d.id, o.v, t.w, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id
-			WHERE d.body @@> 'venue' ORDER BY 4 DESC, 1 LIMIT 10$q$,
+			WHERE d.body @@> 'honey' ORDER BY 4 DESC, 1 LIMIT 10$q$,
 		 $q$SELECT d.id, o.v, t.w, d.s FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id ORDER BY 4 DESC, 1 LIMIT 10$q$),
 		('left joins', $q$SELECT d.id, o.v, t.w FROM %1$s d LEFT JOIN jo o ON o.id = d.id LEFT JOIN jt t ON t.id = d.id
-			WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+			WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
 		 $q$SELECT d.id, o.v, t.w FROM %1$s d LEFT JOIN jo o ON o.id = d.id LEFT JOIN jt t ON t.id = d.id ORDER BY d.s DESC, d.id LIMIT 10$q$),
 		('semi and anti join', $q$SELECT d.id, o.v, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id
-			WHERE EXISTS (SELECT 1 FROM js WHERE js.id = d.id) AND NOT EXISTS (SELECT 1 FROM jt WHERE jt.id = d.id) AND d.body @@> 'venue'
+			WHERE EXISTS (SELECT 1 FROM js WHERE js.id = d.id) AND NOT EXISTS (SELECT 1 FROM jt WHERE jt.id = d.id) AND d.body @@> 'honey'
 			ORDER BY sift.score(d.ctid) DESC, d.id$q$,
 		 $q$SELECT d.id, o.v, d.s FROM %1$s d JOIN jo o ON o.id = d.id
 			WHERE EXISTS (SELECT 1 FROM js WHERE js.id = d.id) AND NOT EXISTS (SELECT 1 FROM jt WHERE jt.id = d.id) ORDER BY d.s DESC, d.id$q$),
 		('lateral', $q$SELECT d.id, x.n, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id,
-			LATERAL (SELECT count(*) AS n FROM jt WHERE jt.id <= d.id) x WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
+			LATERAL (SELECT count(*) AS n FROM jt WHERE jt.id <= d.id) x WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
 		 $q$SELECT d.id, x.n, d.s FROM %1$s d JOIN jo o ON o.id = d.id,
 			LATERAL (SELECT count(*) AS n FROM jt WHERE jt.id <= d.id) x ORDER BY d.s DESC, d.id LIMIT 10$q$),
 		('left lateral', $q$SELECT d.id, x.v, sift.score(d.ctid) FROM %1$s d JOIN js ON js.id = d.id
-			LEFT JOIN LATERAL (SELECT o.v FROM jo o WHERE o.id = d.id LIMIT 1) x ON true WHERE d.body @@> 'venue'
+			LEFT JOIN LATERAL (SELECT o.v FROM jo o WHERE o.id = d.id LIMIT 1) x ON true WHERE d.body @@> 'honey'
 			ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 10$q$,
 		 $q$SELECT d.id, x.v, d.s FROM %1$s d JOIN js ON js.id = d.id
 			LEFT JOIN LATERAL (SELECT o.v FROM jo o WHERE o.id = d.id LIMIT 1) x ON true ORDER BY d.s DESC, d.id LIMIT 10$q$),
 		('other order', $q$SELECT d.id, sift.score(d.ctid) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id
-			WHERE d.body @@> 'venue' ORDER BY d.id LIMIT 10$q$,
+			WHERE d.body @@> 'honey' ORDER BY d.id LIMIT 10$q$,
 		 $q$SELECT d.id, d.s FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id ORDER BY d.id LIMIT 10$q$),
 		('aggregate', $q$SELECT count(*), max(sift.score(d.ctid)), min(sift.score(d.ctid)) FROM %1$s d JOIN jo o ON o.id = d.id
-			JOIN jt t ON t.id = d.id WHERE d.body @@> 'venue'$q$,
+			JOIN jt t ON t.id = d.id WHERE d.body @@> 'honey'$q$,
 		 $q$SELECT count(*), max(d.s), min(d.s) FROM %1$s d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id$q$),
 		('group by', $q$SELECT mod(o.v, 4) AS g, count(*), max(sift.score(d.ctid)) FROM %1$s d JOIN jo o ON o.id = d.id
-			JOIN js ON js.id = d.id WHERE d.body @@> 'venue' GROUP BY 1 ORDER BY 1$q$,
+			JOIN js ON js.id = d.id WHERE d.body @@> 'honey' GROUP BY 1 ORDER BY 1$q$,
 		 $q$SELECT mod(o.v, 4) AS g, count(*), max(d.s) FROM %1$s d JOIN jo o ON o.id = d.id JOIN js ON js.id = d.id GROUP BY 1 ORDER BY 1$q$),
 		('self join', $q$SELECT a.id, b.id, sift.score(a.ctid), sift.score(b.ctid) FROM %1$s a JOIN %1$s b ON b.id = a.id + 1
-			JOIN jo o ON o.id = a.id WHERE a.body @@> 'venue' AND b.body @@> 'word'
+			JOIN jo o ON o.id = a.id WHERE a.body @@> 'honey' AND b.body @@> 'word'
 			ORDER BY sift.score(a.ctid) DESC, sift.score(b.ctid) DESC, a.id LIMIT 10$q$,
 		 $q$SELECT a.id, b.id, a.s, b.s FROM %1$s a JOIN %2$s b ON b.id = a.id + 1 JOIN jo o ON o.id = a.id
 			ORDER BY a.s DESC, b.s DESC, a.id LIMIT 10$q$),
@@ -249,11 +249,11 @@ HINT:  Call it on the ctid of a table with a sift index, in the query level that
 SELECT d.id FROM jd d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id WHERE d.id < 100 ORDER BY sift.score(d.ctid) DESC;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
-SELECT o.id, sift.score(o.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'venue';
+SELECT o.id, sift.score(o.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey';
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SET sift.enable_scan = off;
-SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'venue' ORDER BY sift.score(d.ctid) DESC LIMIT 3;
+SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;

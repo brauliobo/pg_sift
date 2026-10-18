@@ -40,7 +40,7 @@ endif
 # SIFT_TESTING=1 compiles the sift._test_* functions and installs the
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
-TESTING_REGRESS = shred_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_mut colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_%
+TESTING_REGRESS = shred_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_mut colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_% tbl_cap tbl_vblocks
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += pg_sift_test--1.0.sql
@@ -63,14 +63,22 @@ ifeq ($(shell test $(PG_MAJOR) -ge $(PG_MIN_MAJOR) && echo ok),)
 $(error pg_sift needs PostgreSQL $(PG_MIN_MAJOR) or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
 endif
 
+# SIFT_HARDEN=pkg|init|1: opt-in compiler hardening (scripts/harden.mk, docs/SAFETY.md)
+include $(dir $(lastword $(MAKEFILE_LIST)))scripts/harden.mk
+
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
-# claim "check" is unsupported, so it is not included for these goals.
-ifneq ($(filter check check-full,$(MAKECMDGOALS)),)
-.PHONY: check check-full
+# claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
+# and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
+ifneq ($(filter check check-full pg-assert pg-valgrind,$(MAKECMDGOALS)),)
+.PHONY: check check-full pg-assert pg-valgrind
 check:
 	scripts/ci.sh quick
 check-full:
 	scripts/ci.sh full
+pg-assert:
+	nice scripts/pg-assert.sh $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
+pg-valgrind:
+	nice scripts/pg-assert.sh --valgrind $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 else
 include $(PGXS)
 endif

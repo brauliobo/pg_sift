@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# bench/analytics [--quick] [store options]   the quick run: the online-store benchmark at 1M orders, 3 timed runs, the same equality checks
+#                                             (a few minutes; results in bench/out/latest/store.json, `bench/bench store compare A B` diffs two runs)
+# bench/analytics --final [--dry-run]         the one command behind the published numbers (steps/final.sh): every system, 1M and 10M orders,
+#                                             warm, cold, updates, compression, the engines' accounting and the pg_sift profile, then the tables
+#                                             of README.md and docs/BENCHMARKS.md and docs/BENCH-GAP.md; --dry-run prints the plan and the estimates
+here=$(dirname "$0")
+case ${1:-} in
+  --final) shift; exec "$here/steps/final.sh" "$@" ;;
+  --quick) shift ;;
+esac
+exec "$here/bench" store all --quick "$@"

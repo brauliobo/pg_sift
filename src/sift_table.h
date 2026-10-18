@@ -172,8 +172,10 @@ typedef struct SiftTblRel
 	uint32		tomb_lastcnt;
 	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
 	uint32		nents;
+	uint32		capents;
 	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
+	uint32		caprecent;
 	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;
 	/* the page this backend appends to */
@@ -300,7 +302,7 @@ extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection
 extern Size sift_tbl_parallelscan_estimate(Relation rel);
 extern Size sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
 extern void sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
-extern IndexFetchTableData *sift_tbl_index_fetch_begin(Relation rel);
+extern IndexFetchTableData *sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM);
 extern void sift_tbl_index_fetch_reset(IndexFetchTableData *data);
 extern void sift_tbl_index_fetch_end(IndexFetchTableData *data);
 extern bool sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot,
@@ -318,7 +320,7 @@ extern bool sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult
 extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot);
 #endif
 extern bool sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
-extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
+extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows,
 											 double *deadrows, TupleTableSlot *slot);
 extern double sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
 											  bool allow_sync, bool anyvisible, bool progress, BlockNumber start_blockno,
@@ -327,10 +329,10 @@ extern double sift_tbl_index_build_range_scan(Relation table_rel, Relation index
 extern void sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info,
 										 Snapshot snapshot, struct ValidateIndexState *state);
 extern void sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
-											   TransactionId OldestXmin, TransactionId *xid_cutoff,
+											   TransactionId OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff,
 											   MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
 											   double *tups_recently_dead);
-extern void sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy);
+extern void sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy);
 extern bool sift_tbl_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate);
 extern bool sift_tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate,
 											TupleTableSlot *slot);
@@ -367,6 +369,23 @@ extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
 extern bool sift_tbl_xid_aborted(TransactionId xid);
 
+/*
+ * The slot of a sift_table (sift_table_slot.c): a virtual slot that decodes the attributes of a row of a column group on demand.
+ * store_group: the row at position pos of the vectors of the current unit of g (token), tid its TID; store_tuple: a row as a HeapTuple
+ * that stays valid until the slot is cleared (t_self and t_tableOid are the row's TID and table).
+ */
+extern void sift_tbl_slot_init(void);
+extern const TupleTableSlotOps *sift_tbl_slot_ops(void);
+extern void sift_tbl_slot_store_group(TupleTableSlot *slot, Relation rel, ItemPointer tid, SiftTblGroupScan *g, uint32 token, uint32 pos);
+extern void sift_tbl_slot_store_tuple(TupleTableSlot *slot, HeapTuple tup);
+/* Stores the live row tid of a column group lazily; false when no group holds it */
+extern bool sift_tbl_slot_locate(TupleTableSlot *slot, Relation rel, SiftTblRel *st, ItemPointer tid);
+static inline bool
+sift_tbl_slot_is_lazy(TupleTableSlot *slot)
+{
+	return slot->tts_ops == sift_tbl_slot_ops();
+}
+
 /* Does a column group hold the row of tid (live)? On true *rv is filled, rv->tuple palloc'd. */
 extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy);
 
@@ -375,10 +394,19 @@ extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, 
  * next: the next live row of the groups in the range of superblocks, rv->key and rv->xmin (always unset: frozen) only; plain: no tombstone
  * can concern the rows of its unit (every snapshot sees them); tuple: the row as a HeapTuple (t_self set), palloc'd.
  */
+extern bool sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull);
+extern uint32 sift_tbl_gscan_cursor(const SiftTblGroupScan *g, ItemPointer tid, uint32 *pos);
+extern void sift_tbl_gscan_ref(SiftTblGroupScan *g);
+extern void sift_tbl_gscan_unref(SiftTblGroupScan *g);
+/* Makes the unit of the live row tid the current one of the table's fetch scan: *token and *pos are what sift_tbl_slot_store_group takes */
+extern bool sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGroupScan **g, uint32 *token, uint32 *pos);
 extern SiftTblGroupScan *sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDirSnapshot *dir, Snapshot snapshot);
 extern void sift_tbl_gscan_end(SiftTblGroupScan *g);
 extern void sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi);	/* [sb_lo, sb_hi), restarts */
 extern bool sift_tbl_gscan_next(SiftTblGroupScan *g, SiftTblRowVer *rv);
+/* Backward: the row before the one last returned, in the order sift_tbl_gscan_next goes; seek_end first starts from the last row */
+extern bool sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv);
+extern void sift_tbl_gscan_seek_end(SiftTblGroupScan *g);
 extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF); their number */
@@ -401,16 +429,39 @@ extern void sift_tbl_src_register(void);
  * Takes the maintenance lock (not waiting unless vacuum).
  */
 extern int	sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
+extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest);
 /* One merge step over the column segments (the maintenance lock held); true when it merged. Segments of another column layout are left alone. */
 extern bool sift_tbl_merge(Relation rel, SiftTblRel *st);
 /* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
 extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 
 extern PGDLLIMPORT int sift_tbl_delta_limit;
+extern PGDLLIMPORT int sift_tbl_max_segments;
+extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT bool sift_tbl_inline_seal;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
 
 /* Registers sift.table_delta_limit, sift.table_inline_seal and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
+
+/* ---------- rewrites and dead rows (sift_table_seg.c) ---------- */
+
+/*
+ * The new table of a rewrite written as column segments directly: the rows get dense TIDs in the order they are added; finish
+ * publishes the segments in one directory change. The table is private to the rewrite.
+ */
+typedef struct SiftTblBulk SiftTblBulk;
+/* Does the rewrite keep the stored version rv (rv->tuple unset)? */
+typedef bool (*SiftTblKeep) (const SiftTblRowVer *rv, void *arg);
+extern SiftTblBulk *sift_tbl_bulk_begin(Relation rel, SiftTblRel *st);
+extern void sift_tbl_bulk_tuple(SiftTblBulk *b, HeapTuple tup);
+/* Every version of old that keep accepts, the rows of its column units re-keyed without forming tuples; false (nothing added) when a
+ * column segment of old has another layout than the new table */
+extern bool sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep keep, void *arg);
+extern void sift_tbl_bulk_finish(SiftTblBulk *b);
+
+/* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone */
+extern bool sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e);
+extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
 
 #endif							/* SIFT_TABLE_H */

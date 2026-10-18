@@ -20,11 +20,7 @@
 #include "sift_col_am.h"
 #include "sift_col_seg.h"
 
-#define corrupt(index, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt SIFT_CORRUPT
 
 typedef struct RowHash
 {

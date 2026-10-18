@@ -4,6 +4,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_cmp.h"
 #include "sift_runs.h"
 
 #define POOL_SHIFT		16
@@ -604,14 +605,6 @@ term_chunk(const SiftInvBuf *b, TermIter *it, uint32 *ords, uint8 *tf, PosChunk 
 	return n;
 }
 
-static int
-term_cmp(const char *a, int alen, const char *b, int blen)
-{
-	int			c = memcmp(a, b, Min(alen, blen));
-
-	return c ? c : (alen > blen) - (alen < blen);
-}
-
 typedef struct SortTerm
 {
 	uint64		prefix;
@@ -629,7 +622,7 @@ sort_term_cmp(const void *x, const void *y, void *arg)
 
 	if (a->prefix != c->prefix)
 		return a->prefix < c->prefix ? -1 : 1;
-	return term_cmp(b->tbytes + ta->term_off, ta->len, b->tbytes + tc->term_off, tc->len);
+	return sift_term_cmp(b->tbytes + ta->term_off, ta->len, b->tbytes + tc->term_off, tc->len);
 }
 
 /* Term indexes in byte order (allocated in the buffer's context) */
@@ -919,7 +912,7 @@ reader_cmp(Datum a, Datum b, void *arg)
 {
 	const RunReader *x = (const RunReader *) DatumGetPointer(a),
 			   *y = (const RunReader *) DatumGetPointer(b);
-	int			c = term_cmp(x->term, x->len, y->term, y->len);
+	int			c = sift_term_cmp(x->term, x->len, y->term, y->len);
 
 	/* binaryheap keeps the largest on top */
 	return c ? -c : y->idx - x->idx;
@@ -1200,7 +1193,7 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 		{
 			RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
 
-			if (term_cmp(top->term, top->len, term, len) != 0)
+			if (sift_term_cmp(top->term, top->len, term, len) != 0)
 				break;
 			cur[k++] = top;
 			binaryheap_remove_first(heap);

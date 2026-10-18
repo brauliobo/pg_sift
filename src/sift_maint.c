@@ -927,6 +927,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	sift_maint_lock(index, true);
 	promote_locked(ops, index, false, false);
 	vacuum_merge(ops, index);
+	if (ops->vacuum_refresh)
+		ops->vacuum_refresh(index);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
@@ -1024,6 +1026,24 @@ vacuum_truncates(Relation index)
 	return sift_index_options(index)->vacuum_truncate;
 }
 
+/* The dead-posting tables of the segments VACUUM cleared docs of and the merges left as they are */
+static void
+refresh_dead_tables(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
+		{
+			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], CurrentMemoryContext);
+
+			sift_seg_refresh_dead(seg);
+			sift_seg_close(seg);
+		}
+	pfree(snap);
+}
+
 static const SiftMaintOps bm25_ops = {
 	.name = "sift",
 	.worker = "sift_maint_worker_main",
@@ -1036,6 +1056,7 @@ static const SiftMaintOps bm25_ops = {
 	.bulkdelete_immutable = bulkdelete_immutable,
 	.bulkdelete_mutable = bulkdelete_mutable,
 	.vacuum_truncate = vacuum_truncates,
+	.vacuum_refresh = refresh_dead_tables,
 };
 
 void

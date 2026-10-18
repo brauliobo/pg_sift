@@ -22,13 +22,13 @@ PG_FUNCTION_INFO_V1(sift_test_aggkern_level);
 Datum
 sift_test_aggkern_digest(PG_FUNCTION_ARGS)
 {
-	AgkRng		r;
+	SiftRng		r;
 	AgkCase		c;
 	AgkRes		res;
 	uint64		h = UINT64CONST(0xCBF29CE484222325);
 
 	sift_aggkern_init();
-	agk_seed(&r, PG_GETARG_INT64(0));
+	sift_rng_seed(&r, PG_GETARG_INT64(0));
 	for (int i = 0; i < PG_GETARG_INT32(1); i++)
 	{
 		CHECK_FOR_INTERRUPTS();
@@ -44,13 +44,13 @@ sift_test_aggkern_digest(PG_FUNCTION_ARGS)
 Datum
 sift_test_aggkern_equiv(PG_FUNCTION_ARGS)
 {
-	AgkRng		r;
+	SiftRng		r;
 	AgkCase		c;
 	AgkRes		ref,
 				got;
 	int64		bad = 0;
 
-	agk_seed(&r, PG_GETARG_INT64(0));
+	sift_rng_seed(&r, PG_GETARG_INT64(0));
 	for (int i = 0; i < PG_GETARG_INT32(1); i++)
 	{
 		CHECK_FOR_INTERRUPTS();

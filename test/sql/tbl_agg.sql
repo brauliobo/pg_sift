@@ -4,7 +4,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
-CREATE TABLE agg_t (id int, g int, k text, v bigint, f float8, t timestamptz, d date, b bool, n numeric(10,2), c text) USING sift_table;
+CREATE TABLE agg_t (id int, g int, k text, v bigint, f float8, t timestamptz, d date, b bool, n numeric(10,2), c text, ch char(6), w8 numeric) USING sift_table;
 
 -- the rows of the query's result as text, in a fixed order, and whether the plan is a SiftAgg
 CREATE FUNCTION agg_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -33,7 +33,12 @@ INSERT INTO agg_q VALUES
 	('SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k'),
 	('SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b'),
 	('SELECT count(*) FROM agg_t WHERE k = ''k1'' OR c IS NULL'),
-	('SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)');
+	('SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)'),
+	('SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g'),
+	('SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20'),
+	('SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch'),
+	('SELECT count(*), count(ch) FROM agg_t WHERE ch = ''c1'' OR ch = ''zz'''),
+	('SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g');
 
 CREATE FUNCTION agg_compare(OUT query text, OUT pushed bool, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
@@ -45,7 +50,8 @@ BEGIN
 END $$;
 
 INSERT INTO agg_t SELECT i, i % 7, 'k' || (i % 5), i * 3, i / 4.0, '2024-01-01'::timestamptz + (i || ' min')::interval, '2024-01-01'::date + i % 90,
-	i % 3 = 0, i / 3.0, CASE WHEN i % 10 = 0 THEN NULL ELSE repeat('x', i % 40) END FROM generate_series(1, 20000) i;
+	i % 3 = 0, i / 3.0, CASE WHEN i % 10 = 0 THEN NULL ELSE repeat('x', i % 40) END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE 'c' || (i % 4) END, i / 7.0 FROM generate_series(1, 20000) i;
 ANALYZE agg_t;
 
 -- rows in the delta segments
@@ -65,14 +71,14 @@ SELECT * FROM agg_compare();
 -- the transaction's own changes, and a rolled back one
 BEGIN;
 DELETE FROM agg_t WHERE id % 5 = 0;
-INSERT INTO agg_t SELECT 100000 + i, i % 7, 'new', i, i, now(), current_date, true, i, 'n' FROM generate_series(1, 500) i;
+INSERT INTO agg_t SELECT 100000 + i, i % 7, 'new', i, i, now(), current_date, true, i, 'n', 'zz', i FROM generate_series(1, 500) i;
 SELECT * FROM agg_compare();
 ROLLBACK;
 SELECT * FROM agg_compare();
 
 -- a column added later (null in the older segments), with rows of both layouts, and after sealing the new ones
 ALTER TABLE agg_t ADD COLUMN z int;
-INSERT INTO agg_t SELECT 200000 + i, i % 7, 'z' || (i % 3), i, i, now(), current_date, false, i, NULL, i FROM generate_series(1, 3000) i;
+INSERT INTO agg_t SELECT 200000 + i, i % 7, 'z' || (i % 3), i, i, now(), current_date, false, i, NULL, 'c0', i, i FROM generate_series(1, 3000) i;
 INSERT INTO agg_q VALUES ('SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k'), ('SELECT count(*) FROM agg_t WHERE z > 100');
 SELECT * FROM agg_compare();
 VACUUM agg_t;

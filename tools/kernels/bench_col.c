@@ -6,12 +6,13 @@
 #include "harness.h"
 
 #include "sift_col_kern_int.h"
+#include "sift_colcodec_int.h"
 
 #define N			4096			/* rows of a filter call */
 #define NW			1152			/* words of a selection of a full unit (73728 rows) */
 #define NZ			1024			/* units of a segment */
 
-static Rng	rng;
+static SiftRng	rng;
 static const SiftColKernels *levels[3];
 static int	nlevels;
 
@@ -21,7 +22,7 @@ rand_array(size_t bytes)
 	uint64	   *p = kt_alloc(bytes + SIFT_COL_PAD);
 
 	for (size_t i = 0; i < (bytes + SIFT_COL_PAD) / 8; i++)
-		p[i] = rng_next(&rng);
+		p[i] = sift_rng_next(&rng);
 	return p;
 }
 
@@ -34,9 +35,9 @@ rand_bits(uint32 nwords, int density)
 	memset(p, 0, (size_t) nwords * 8 + SIFT_COL_PAD);
 	for (uint32 i = 0; i < nwords; i++)
 	{
-		p[i] = rng_next(&rng);
+		p[i] = sift_rng_next(&rng);
 		for (int j = 1; j < density; j++)
-			p[i] &= rng_next(&rng);
+			p[i] &= sift_rng_next(&rng);
 	}
 	return p;
 }
@@ -59,7 +60,7 @@ bench_range(void)
 	{
 		void	   *a = rand_array((size_t) N << w);
 		uint64		max = w == SIFT_COLW_64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (8 << w)) - 1,
-					lo = rng_next(&rng) & max,
+					lo = sift_rng_next(&rng) & max,
 					span = max / 4;
 
 		sift_col_kernels_for(SIFT_SIMD_SCALAR)->range[w] (a, N, lo, span, want);
@@ -89,7 +90,7 @@ bench_lut(void)
 
 		for (uint32 i = 0; i < N; i++)
 		{
-			uint32		c = rng_below(&rng, ncodes);
+			uint32		c = sift_rng_below(&rng, ncodes);
 
 			memcpy((uint8 *) a + ((size_t) i << w), &c, 1 << w);
 		}
@@ -155,10 +156,10 @@ bench_zone(void)
 
 	for (uint32 i = 0; i < NZ; i++)
 	{
-		mn[i] = (int64) (rng_next(&rng) >> 40);
-		mx[i] = mn[i] + (int64) (rng_next(&rng) >> 44);
-		nvals[i] = rng_below(&rng, 4);
-		nnull[i] = rng_below(&rng, 4);
+		mn[i] = (int64) (sift_rng_next(&rng) >> 40);
+		mx[i] = mn[i] + (int64) (sift_rng_next(&rng) >> 44);
+		nvals[i] = sift_rng_below(&rng, 4);
+		nnull[i] = sift_rng_below(&rng, 4);
 	}
 	memset(keep0, 0xFF, sizeof(keep0));
 	s->zone_range(mn, mx, NZ, 1 << 22, 3 << 22, want);
@@ -190,7 +191,7 @@ bench_decode(void)
 	static const char *const scen[] = {"7 bits, n=4096", "13 bits, n=4096", "20 bits, n=4096", "29 bits, n=4096"};
 
 	for (uint32 i = 0; i < N; i++)
-		idx[i] = rng_below(&rng, N);
+		idx[i] = sift_rng_below(&rng, N);
 	for (int wi = 0; wi < lengthof(widths); wi++)
 	{
 		s->unpack(src, widths[wi], N, ref);
@@ -225,10 +226,79 @@ bench_decode(void)
 	free(src), free(dst), free(ref), free(idx), free(d64), free(r64), free(a);
 }
 
+/* The consumer's lanes: float keys back to doubles in place, a NULL bitmap as 0/1 flags */
+static void
+bench_lanes(void)
+{
+	int64	   *keys = rand_array(N * 8),
+			   *want = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *work = kt_alloc(N * 8 + SIFT_COL_PAD);
+	uint64	   *bits = rand_bits(SIFT_COL_NWORDS(N), 2);
+	uint8	   *ref = kt_alloc(N + SIFT_COL_PAD),
+			   *flags = kt_alloc(N + SIFT_COL_PAD);
+
+	memcpy(want, keys, N * 8);
+	levels[0]->f8_from_keys(want, N);
+	levels[0]->bits_to_flags(bits, N, ref);
+	for (int l = 0; l < nlevels; l++)
+	{
+		memcpy(work, keys, N * 8);
+		levels[l]->f8_from_keys(work, N);
+		same("f8_from_keys", l, work, want, N * 8);
+		levels[l]->bits_to_flags(bits, N, flags);
+		same("bits_to_flags", l, flags, ref, N);
+		row("f8_from_keys", "n=4096, in place", kt_level_name[l], BENCH(levels[l]->f8_from_keys(work, N)), N, 8);
+		row("bits_to_flags", "n=4096", kt_level_name[l], BENCH(levels[l]->bits_to_flags(bits, N, flags)), N, 1.0 / 8);
+	}
+	free(keys), free(want), free(work), free(bits), free(ref), free(flags);
+}
+
+/* The SCALE node's multiply and the ALP node's division into doubles (SiftCcKernels), each level against the scalar one; alp_f8 against the keys and the pass that turns them */
+static void
+bench_cc(void)
+{
+	uint32	   *u = rand_array(N * 4),
+			   *a32 = rand_array(N * 4),
+			   *w32 = kt_alloc(N * 4 + SIFT_COL_PAD),
+			   *r32 = kt_alloc(N * 4 + SIFT_COL_PAD);
+	int64	   *a64 = rand_array(N * 8),
+			   *w64 = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *r64 = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *keys = kt_alloc(N * 8 + SIFT_COL_PAD);
+	double	   *d = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *rd = kt_alloc(N * 8 + SIFT_COL_PAD);
+	const SiftCcKernels *s = sift_cc_kernels_for(SIFT_SIMD_SCALAR);
+
+	memcpy(r32, a32, N * 4);
+	s->scale32(r32, N, 7, 1000);
+	memcpy(r64, a64, N * 8);
+	s->scale64(r64, N, 7, 1000003);
+	s->alp_f8(rd, u, N, -50000, 100.0);
+	for (int l = 0; l < nlevels; l++)
+	{
+		const SiftCcKernels *k = sift_cc_kernels_for(SIFT_SIMD_SCALAR + l);
+
+		memcpy(w32, a32, N * 4);
+		k->scale32(w32, N, 7, 1000);
+		same("scale32", l, w32, r32, N * 4);
+		memcpy(w64, a64, N * 8);
+		k->scale64(w64, N, 7, 1000003);
+		same("scale64", l, w64, r64, N * 8);
+		k->alp_f8(d, u, N, -50000, 100.0);
+		same("alp_f8", l, d, rd, N * 8);
+		row("scale32", "n=4096, in place", kt_level_name[l], BENCH(k->scale32(w32, N, 7, 1000)), N, 4);
+		row("scale64", "n=4096, in place", kt_level_name[l], BENCH(k->scale64(w64, N, 7, 1000003)), N, 8);
+		row("alp_f8", "n=4096, to doubles", kt_level_name[l], BENCH(k->alp_f8(d, u, N, -50000, 100.0)), N, 4);
+		row("alp_keys_f8+f8_from_keys", "n=4096, the old two passes", kt_level_name[l],
+			BENCH(k->alp_keys_f8(keys, u, N, -50000, 100.0); levels[l]->f8_from_keys(keys, N)), N, 4);
+	}
+	free(u), free(a32), free(w32), free(r32), free(a64), free(w64), free(r64), free(keys), free(d), free(rd);
+}
+
 void
 bench_col(void)
 {
-	rng_seed(&rng, 42);
+	sift_rng_seed(&rng, 42);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && l <= sift_cpu.detected; l++)
 		levels[nlevels++] = sift_col_kernels_for(l);
 	bench_range();
@@ -236,4 +306,6 @@ bench_col(void)
 	bench_bits();
 	bench_zone();
 	bench_decode();
+	bench_lanes();
+	bench_cc();
 }

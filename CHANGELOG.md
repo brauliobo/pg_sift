@@ -4,16 +4,34 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
+  past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
+  check that the stream is inside the blob; they are 64-bit now and the term raises the corruption error. Bytes that are not what the writer
+  wrote (a bad disk, a torn page, a file edited with the server stopped) were the only way in.
+- Security: a damaged index whose term blob ends between its codec and the next 4-byte boundary, with a large group count, could make a query
+  read far past the blob (a crash). The length left after the codec wrapped around when the codec length was not a multiple of 4; the term now
+  raises the corruption error.
 - Added: `WHERE col @@> q [AND filters] ORDER BY <columns> LIMIT n` is answered from the `sift_col` units (`docs/COL-SEARCH.md`, "Top-N"): a bounded heap over the match set, zone maps to skip units and stop early on columns that follow the table, and the heap read for the `n` winners only. Q10 shape: 7.1 to 2.4 ms at 1M, 191 to 19.5 ms at 10M. Setting `sift.enable_topn`; `EXPLAIN` shows `Top-N:`. The planner compares it with an ordered btree on the sort column by cost: the top-N is charged the opening of the match set whole, and a correlated sort column is read best superblock first.
 - Added: text search as the row selection of the aggregate pushdown. `SELECT ... FROM t WHERE <filters> AND col @@> q GROUP BY ...` on a table with a `sift` and a `sift_col` index (or `sift_table`) takes the matches from the BM25 index without reading the heap, keeps only those rows in the column units and aggregates from columns (`docs/COL-SEARCH.md`); facet-style counts per category are the same query. The plan shows `Search:` in `EXPLAIN`.
 - Added (3.0, `ALTER EXTENSION pg_sift UPDATE TO '3.0'`): the column track, one extension and one set of kernels.
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
 ; jsonb attributes become typed columns for the paths of its `paths` option (shredder, `docs/COL-SHRED.md`);
   `sift_table` (`CREATE TABLE ... USING sift_table`, `docs/COL-TAM.md`) is a table access method with native MVCC that also takes BM25
-  indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. The scripts are
+  indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. A plain scan decodes only the columns a query reads, scans go both ways (`SCROLL` cursors), `VACUUM FULL` and `CLUSTER` write column
+  segments directly, and `VACUUM` counts dead rows as a heap does, rewrites mostly dead segments (`sift.table_dead_rewrite_pct`) and gives the free end of the file back. The scripts are
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
   `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel on large tables (`max_parallel_maintenance_workers`): each process writes the segments of the superblocks it claims.
+
+- Changed (3.0): segment format 2 for vacuumed documents. A segment now keeps its live documents by offset in each superblock and, for each
+  term, the number of its postings that VACUUM dropped. A dirty segment (vacuumed documents, not yet merged) therefore counts and scores as
+  its live documents: `count(*)` of a term costs 1.16 to 1.28 times the clean index's in user instructions at 10 to 45% deleted (was 6.6 to 6.7
+  times with 2.0.1), and N, df and avgdl exclude vacuumed documents, so `sift.score()` before and after the merge are equal (`live_stats` test).
+  Indexes of 2.x keep working with no `REINDEX`: their segments are read as they are (the old statistics, until they are merged) and rewritten
+  as format 2 when merged; the metapage becomes format 1.2 with the first format 2 segment, and a 2.x library refuses such an index. The
+  SQLite and MariaDB hosts keep writing format 1. The index grows by 4 bytes per term of each segment (+1.4 to 2.4% in `scripts/merge-bytes.sh`).
+  Queries that read postings (OR, rare terms, scans) still pay for the dead ones until the merge (up to 2 times at 45% dead).
+  Stored 2.0.0 files are the fixture of the `compat_2x_fixture` test.
 
 For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
@@ -23,6 +41,8 @@ For each chunk it picks, from exact sizes, the
   `lz4[:N]`, `zstd[:N]`, explicit encodings) is parsed here and applied by the column engine (reloption `compression`, per column `'auto; col=zstd:9'`). Build: LZ4 and zstd are linked when their development packages are
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
+
+- Added (column format 1.2, clean break from the pre-release 1.1): pre-aggregates of every unit, written with it by every path that writes a unit: exact 128-bit sums and sums of squares of the integer columns and, per low-cardinality column (dictionary text, integers, dates, `numeric(p, s)`), a histogram with the row count and the non-NULL count and sum of up to three measures per group, so counts and sums per country, category or month need no scan of the units that are clean and all-visible. Reloption `preagg` (`default`, `off`, `cube(dim: measure, ...; ...)`); about 1% of the index on the store benchmark. `sift.col_unit_agg`, `sift.col_unit_hist` and the columns `preagg_bytes` and `preagg_units` of `sift.col_index_info` show them (`docs/COL-PREAGG.md`). Segments written by a build before this one are refused with a REINDEX hint.
 
 - Changed (column format 1.1, clean break from the pre-release 1.0): the leaf type in the stored schema is a host-independent tag
   (`SiftColType`: bool, int2/4/8, float4/8, numeric, text, bytea, date, timestamp(tz), uuid, jsonb, other) instead of a PostgreSQL type OID, so
@@ -34,6 +54,22 @@ For each chunk it picks, from exact sizes, the
   for long strings is gone. Equality, `IN`, comparisons, prefix and length tests run on the encoded form (prefix zone maps prune units; the
   prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
   callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
+
+- Added: `CREATE INDEX ... `char(n)` and
+  `name` are pushed to `SiftAgg` like text; a `bpchar` without a length is stored but never filtered or grouped by the column plans, because
+  equal values can differ in trailing blanks. Test: `col_index_chars`.
+
+- Fixed: a `sift_col` scan (and `SiftAgg`) counted rows that its snapshot does not see when a `VACUUM` ran after the scan began (found by the
+  differential suite under the sanitizer: 280 against 218 orders, and by the `soak-col` job). The scan took "live in the index" on an
+  "all-visible" heap page for "visible", and the two facts were read in the wrong order or from the wrong generation: the liveness of a unit
+  came from the directory the scan copied at its start (or a cached flag) while the VM was read later, after a `VACUUM` had removed the dead
+  tuples and made their pages all-visible; a merge that replaced the scan's segments meant that no later `VACUUM` pass reached them at all;
+  and the mutable lane is a copy made when the scan begins. The all-visible mask is now read first and the unit's dirty flag from its LIVE
+  page after it, the shortcut is dropped once a segment of the scan's copy has left the directory, and rows of the mutable lane are always
+  checked against the heap. Tests: `col_vacuum_scan` (a VACUUM, a merge, DML and promotion between the
+  open and the reads of a scan) and the `soak-col` job (`scripts/colsoak.sh`). Present in `v3` as well. The BM25 count path
+  (`sift_eval.c`: the dirty flags of a segment copied at its open, the all-visible mask read later) has a similar read order and is not
+  changed here; it needs the same check.
 
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.
@@ -68,6 +104,79 @@ For each chunk it picks, from exact sizes, the
   orders corpus: the queries S1-S7 on store sets of 10, 400 and 4,000 stores and the whole-table scans G1-G8 as the CPU time and instructions
   of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
   clickbench` runs the 43 ClickBench queries.
+
+## 2.0.2
+
+No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. Two fixes (the first is a security hardening, the second a correctness fix) and no new behavior.
+
+- Security: a query that read a damaged index could read outside the term it was decoding, write to the stack, or never end. The query path
+  follows the lengths, counts and offsets that a term blob stores (the sizes of its blocks and groups, its Rice parameter, the extents of
+  its bitmap and array containers, the nibbles and escape bytes of its tf stream) without the exhaustive checks of `sift.verify`, and used them
+  unchecked. Bytes of the index that are not what the writer wrote (a bad disk or controller, a torn page, a file edited with the server
+  stopped, a physical copy from a damaged or hostile source) could therefore make a backend read past the blob (an out-of-bounds read, or a
+  `memcpy` with a negative length), write past a stack array, or return one group without end. Fuzzing the
+  decoder (libFuzzer with ASan and UBSan) found 35 distinct crash inputs on 2.0.1 in five minutes; the decoder is now clean on all of them
+  and on about 4 million further executions, and on the six reproductions of the audit. **There is no remote vector**: no SQL role can write
+  index pages, so this needs damage on disk or write access to the data directory. What to do: install 2.0.2. A damaged index now fails the
+  query with `ERRCODE_DATA_CORRUPTED` (`XX001`, `sift: corrupt posting data: ...`, naming what is wrong) instead; it still has to be
+  rebuilt (`REINDEX`), which is needed only for an index that is actually damaged, and `sift.verify` reports it. Checks are made once per blob
+  header, per group and per block, not per posting. Also fixed: `sift.verify` read one nibble past the tf stream of a term whose L1 bits
+  counted more nibbles than the stream holds, and a varint of any length was accepted by the decoder (it ended on the zero bytes after the
+  blob). Test: `read_corrupt` (every byte of ten term blobs, LIST and GROUPED, with and without tf, set to five values, and every length of the
+  dictionary entry changed: the read finds the blob intact or raises `XX001`/`XX002`, and one case per kind of damage with its message), run
+  under `SANITIZE=1` in CI. Cost, user instructions per operation against 2.0.1 (`bench/steps/cpu_gate.sh`, interleaved, 7 rounds): the
+  queries 0.995x to 1.006x (the cells with a tight interval 1.000x to 1.003x), `VACUUM` after deleting 80% of the rows 1.007x (it opens
+  every term blob of the segment it rewrites), `CREATE INDEX` 1.004x, `COPY`/inserts/`sift.merge`/`sift.promote` 1.000x to 1.003x.
+- Fixed: a lazy `VACUUM` running next to queries could reuse the index blocks of a segment while a query was still reading them. A
+  `VACUUM` (manual or autovacuum) is left out of snapshots and of the xid horizon, its own xid included, so a query that began after the
+  `VACUUM` had taken its xid saw that xid as passed, and the blocks the `VACUUM` released with it (the segments it merged or rewrote) became
+  reusable while the query still held the directory that listed them. The query then failed with `sift index "t" is corrupted`
+  (`Block 23: expected page type 4 generation 107, found type 8 generation 0`): the page checks every read makes turn the reuse into an error;
+  no wrong result was seen. Reproduced on 2.0.1 within seconds by 24 pgbench clients (inserts, deletes, and searches of 3,000 stable
+  rows with a content check) with `VACUUM` in a loop, and not without the `VACUUM` loop; with the fix the same run passes (three runs). **Who is
+  affected:** indexes that are searched while `VACUUM` or autovacuum runs on their table and the segments get rewritten (dead documents,
+  merges by the `VACUUM`); only the reuse of released blocks changes, never the contents of a segment. What to do: install 2.0.2; the
+  error is transient (retry), nothing is stored wrong, no `REINDEX`. A `VACUUM` now releases with the next xid, so the blocks it frees are
+  reusable once a later transaction has started (its own truncation of the free end of the file, which holds an exclusive lock that keeps
+  every query out, counts them as reusable at once, so the file still shrinks in the `VACUUM` that freed the space). Test:
+  `test/t/maint_readers.sh` (inserters, deleters, searches of fixed rows with a content check, and `VACUUM` in a loop); `vacuum_truncate` takes
+  a transaction between the `VACUUM` and the merge that reuses its space.
+- Docs: sample queries and documents in the documentation and tests use neutral wording; no change for users.
+
+## 2.0.1
+
+No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. One behavior changes for roles under row-level security (first entry).
+
+- Security: a role under row-level security or reading a security barrier view could learn about the rows the policy hides. The ranked scan and
+  the match estimate ran before the security quals of the relation, so the BM25 statistics of the whole index (document count, document
+  frequencies, average length) entered the scores of the visible rows, and the planner's costs and row estimates followed the postings of the
+  hidden rows. With a policy hiding 3,000 of 3,020 rows, a visible row of a term that 20 visible documents have scored 0.000184, a value
+  computed from the 3,020 documents. What a role could infer is aggregate (how many documents the hidden rows have and how common a term is
+  in them); the hidden rows themselves, and the rows and counts the queries return, were never exposed. Affected: any table with a sift index
+  that is read under a policy (`ENABLE ROW LEVEL SECURITY`, for the roles the policy applies to) or through a `security_barrier` view, by a
+  role that can run ranked queries or `EXPLAIN`; not affected: tables without row-level security, and the table owner and the roles that
+  bypass it. The match must now be securely promotable, as an index qual must be, and the estimate uses the default selectivity when the
+  relation has security quals: for those roles the rows come from a sequential scan, there is no `SiftScan` or `SiftCount`, and
+  `sift.score()` raises `sift.score() is not available on "t" while row-level security or a security barrier view applies`. A query that
+  ranked under a policy before now fails; rank as a role that the policy does not apply to. `sift.facets` already refused tables with
+  row-level security. Test: `rls_stats` (plans and `EXPLAIN` costs of two tables that differ only in their hidden rows are identical;
+  no scan, count pushdown or score under a policy or a security barrier view; the owner keeps the scan).
+- Performance: `count(*)` over vacuumed documents (segments with dirty superblocks, until a merge rewrites them) costs a fifth to a half of
+  what it did in 2.0.0. User instructions per query, interleaved A/B against 2.0.0, 200,000 documents with 10, 25 and 45% deleted and
+  vacuumed: the count of a term 0.21x, of two terms 0.49x, of three with OR 0.30x; ranked AND 0.87x to 0.88x, ranked OR 0.84x to 0.85x, the
+  filtered scan 0.91x to 0.94x. Against the same live rows rebuilt, the count of a term went from 18.5 to 18.6 times the clean index's to 6.6
+  to 6.7 times, two terms from 3.5 to 4.4 to 1.7 to 2.3, three with OR from 4.5 to 6.2 to 1.5 to 2.1. A dirty superblock now cuts a group out
+  of its liveness bits in one pass instead of one expansion per page; a clean superblock of a segment that has dirty ones is counted without
+  decoding its documents; and the page index of a superblock is built only by what reads a page's rows. **Known limit:** a count over vacuumed
+  documents still costs several times a clean index's (6.6 to 6.7 times for a term) until a merge rewrites the segment; closing that gap needs
+  a change of the on-disk format and is not part of this release. Clean indexes are no slower: the clean count of a term takes 0.57x of the
+  instructions (a group counted in bulk no longer walks its pages), of two terms 0.95x to 0.97x and of three with OR 0.87x to 0.91x, and the
+  instruction gate (`bench/steps/cpu_gate.sh`, 16 query cells on 61 segments, one segment and after `VACUUM`) shows no regression (0.98x to
+  1.00x). No change of the format; counts, rows and scores are the same. The `expand` kernel takes the mask and the start bit and returns the
+  popcount (the digest pinned by `kernels_simd` changes; every level stays bit-identical). `bench/dirty-query.sh` also times the count of two
+  terms, of three with OR and the parallel count.
+- CI: `make check` keeps its scratch small (admission of jobs by the scratch they need, 1 MB WAL segments and a small WAL for the throwaway
+  clusters, the postings comparison of `index_build_postings` in four batches over the same rows); no change for users.
 
 ## 2.0.0
 
@@ -170,11 +279,11 @@ A major version because several behaviors change (listed first); the on-disk for
   of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
 - Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
   thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
-- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 2.4 to 8
+- Performance: queries over an index with vacuumed documents (segments with dirty superblocks, until a merge rewrites them) are 3 to 36
   times faster. The liveness of a page was read one document at a time, a buffer pin, lock and bit test each, which was most of the
   query; the bits of a superblock are now read once and spread over the page's offsets. 200,000 documents with a quarter deleted and
   vacuumed, ms per query (the same rows rebuilt: clean): ranked AND 1.36 to 0.26 (clean 0.26), ranked OR 2.39 to 0.70 (0.64),
-  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.17 (0.019). Clean indexes are unchanged (interleaved A/B on the same
+  unranked filtered scan 2.11 to 0.65 (0.57), `count(*)` 1.82 to 0.05 (0.019). Clean indexes are unchanged (interleaved A/B on the same
   data, 0.93x to 1.23x with 7 to 10% error; slim bench: 0 regressions). N, df and avgdl still count vacuumed documents until a merge
 .
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
@@ -341,7 +450,7 @@ A major version because several behaviors change (listed first); the on-disk for
 - Planner: a ranked scan with a `LIMIT` is costed for what it does when drained. Past its limit hint it ranks again for four times as many
   rows, to the last match, as a hash join or a sort above it makes it; its total cost was its startup plus a hundredth per row, so hash
   plans over the whole scan looked far cheaper than they are and won against the nested loop semi join that stops at the limit. 1M names,
-  152k matches of `venue`, a tenant with 0.3% of the names: 190 ms, now 68 ms (`h*`: 247 to 69 ms; a rare term 9.1 to 1.6 ms); tenants
+  152k matches of `honey`, a tenant with 0.3% of the names: 190 ms, now 68 ms (`h*`: 247 to 69 ms; a rare term 9.1 to 1.6 ms); tenants
   with 2% to 50% keep their nested loop (17 and 3 ms), and one with 0.05% its hash join (about 110 ms).
 - Removed: reloption `phrase_index = pairs`; phrases use word positions. `CREATE INDEX ... WITH (phrase_index = ...)` fails like any unknown
   parameter, and an index built with it is refused ("built with other analyzer options") until `ALTER INDEX ... RESET (phrase_index)` and

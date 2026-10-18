@@ -5,7 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE FUNCTION pw_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT 'tk' || lpad((i % 1500)::text, 4, '0') || ' '
-		|| (ARRAY['venue', 'house venue', 'tkaa tkab', 'garden', 'harbour venue'])[1 + i % 5]
+		|| (ARRAY['honey', 'house honey', 'tkaa tkab', 'garden', 'harbour honey'])[1 + i % 5]
 		|| ' w' || i % 7 || repeat(' pad', i % 4) || CASE WHEN i % 13 = 0 THEN ' rare' ELSE '' END
 $$;
 -- pw: no prefix terms (the wide path); pg: prefix_index = 3 (the one-term path), same rows in the same places
@@ -19,14 +19,14 @@ CREATE INDEX pg_idx ON pg USING sift (body) WITH (prefix_index = 3, vacuum_segme
 VACUUM ANALYZE pw;
 VACUUM ANALYZE pg;
 CREATE FUNCTION qs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
-	't*', 'tk*', 'tk0*', 'tk00*', 'tk000*', 'tk0001*', 'tk1*', 'tk14*', 'h*', 'ha*', 'ho*', 'hot*', 'w*', 'p*', 'ra*', 'x*',
-	'tk* venue*', 'tk* AND NOT w3', 'NOT w3 AND tk*', '(tk0* OR h*) AND pad', 'tk0*^3 OR garden', 'h* w*', 'tk* "house venue"',
+	't*', 'tk*', 'tk0*', 'tk00*', 'tk000*', 'tk0001*', 'tk1*', 'tk14*', 'h*', 'ha*', 'ho*', 'hon*', 'w*', 'p*', 'ra*', 'x*',
+	'tk* honey*', 'tk* AND NOT w3', 'NOT w3 AND tk*', '(tk0* OR h*) AND pad', 'tk0*^3 OR garden', 'h* w*', 'tk* "house honey"',
 	'(tk* w*) AND (ha* OR ho*)', 'tk*^2 OR w1^3']) $$;
 -- the prefixes of these have more than 512 terms or one: a leaf over the limit scores as the indexed prefix term, a lone
 -- term as itself (the two coincide), and only below the limit with several terms is the score the max over them
 CREATE FUNCTION wq() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
-	't*', 'tk*', 'tk0*', 'tk0001*', 'ha*', 'hot*', 'p*', 'ra*', 'x*', 'tk* venue*', 'tk* AND NOT w3', 'NOT w3 AND tk*',
-	'tk0*^3 OR garden', 'tk* "house venue"', 'tk*^2 OR w1^3']) $$;
+	't*', 'tk*', 'tk0*', 'tk0001*', 'ha*', 'hon*', 'p*', 'ra*', 'x*', 'tk* honey*', 'tk* AND NOT w3', 'NOT w3 AND tk*',
+	'tk0*^3 OR garden', 'tk* "house honey"', 'tk*^2 OR w1^3']) $$;
 CREATE FUNCTION cnt(tbl text, q text, flt text DEFAULT 'true') RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE n bigint;
 BEGIN
@@ -173,7 +173,7 @@ SELECT top('pw', 'h* w*', 5), top('pg', 'h* w*', 5);
  4:0.7517075,16:0.7517075,24:0.7517075,36:0.7517075,44:0.7517075 | 4:0.7517075,16:0.7517075,24:0.7517075,36:0.7517075,44:0.7517075
 (1 row)
 
-SELECT cnt('pw', 'w*'), cnt('pw', 'hot*'), cnt('pw', 'venue*'), cnt('pw', 'tkaa*');
+SELECT cnt('pw', 'w*'), cnt('pw', 'hon*'), cnt('pw', 'honey*'), cnt('pw', 'tkaa*');
  cnt  | cnt  | cnt  | cnt  
 ------+------+------+------
  6000 | 3600 | 3600 | 1200
@@ -208,7 +208,7 @@ WHERE cnt('pw', q) <> oracle('pw', q);
 (0 rows)
 
 SET sift.max_expansions = 2;
-SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3', 'hot?l', 'hotl~1']) q
+SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3', 'hon?y', 'hony~1']) q
 WHERE cnt('pw', q) <> oracle('pw', q);
  q 
 ---

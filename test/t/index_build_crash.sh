@@ -9,7 +9,8 @@
 ITERS=$(knob SIFT_CRASH_ITERS 5 3)
 ROWS=$(knob SIFT_ROWS 200000 80000)
 plan $((2 * ITERS + 1))
-node_init build 1 "checkpoint_timeout = 1h
+node_init build 1 "$WAL_CONF
+checkpoint_timeout = 1h
 max_wal_size = 4GB
 maintenance_work_mem = 8MB"
 node_start build || bail "start failed"

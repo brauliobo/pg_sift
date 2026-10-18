@@ -1,4 +1,4 @@
--- A ranked search restricted by a subquery on another table (the attributes of a tenant). The planner prices the
+-- A ranked search restricted by a subquery on another table (the items of a tenant). The planner prices the
 -- ranked SiftScan from the matches the index counts, also on a key whose index has fields (where `@@>` is the call
 -- sift.match_idx, which has no RESTRICT of its own), and prices draining it past its limit hint at what that costs.
 -- A join that keeps enough of the matches takes them from the scan with a Nested Loop Semi Join, which stops at the
@@ -33,34 +33,34 @@ BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO plan;
 	RETURN (jsonb_path_query_first(plan::jsonb, '$.** ? (@."Node Type" == "Custom Scan")') ->> what)::numeric;
 END $$;
--- 30000 attributes: 'venue' in 2 of 5 names, 'hilton' in 1 of 500; tenant 1 owns 2% of them, tenant 2 half, tenant 3 twenty.
--- sp_plain holds the same names under a plain index, sp the sections of a name and a city under an index with fields
-CREATE TABLE sp (id int PRIMARY KEY, name text, city text, pad text) WITH (autovacuum_enabled = off);
-INSERT INTO sp SELECT i, CASE WHEN i % 5 < 2 THEN repeat('venue ', 1 + i % 3) ELSE '' END || CASE WHEN i % 500 = 100 THEN 'hilton ' ELSE '' END
+-- 30000 items: 'honey' in 2 of 5 names, 'helion' in 1 of 500; tenant 1 owns 2% of them, tenant 2 half, tenant 3 twenty.
+-- items_plain holds the same names under a plain index, items the sections of a name and a city under an index with fields
+CREATE TABLE items (id int PRIMARY KEY, name text, city text, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO items SELECT i, CASE WHEN i % 5 < 2 THEN repeat('honey ', 1 + i % 3) ELSE '' END || CASE WHEN i % 500 = 100 THEN 'helion ' ELSE '' END
 	|| 'w' || i % 997 || ' x' || i % 31, 'city' || i % 50, repeat('p', 60) FROM generate_series(1, 30000) i;
-CREATE TABLE sp_plain (LIKE sp INCLUDING ALL) WITH (autovacuum_enabled = off);
-INSERT INTO sp_plain SELECT * FROM sp;
-CREATE INDEX sp_sift ON sp USING sift ((name || chr(29) || city)) WITH (fields = 'name', prefix_index = 3);
-CREATE INDEX sp_plain_sift ON sp_plain USING sift (name);
-CREATE TABLE sa (id serial PRIMARY KEY, tenant int, dim_a_id int) WITH (autovacuum_enabled = off);
-INSERT INTO sa (tenant, dim_a_id) SELECT v.t, i FROM generate_series(1, 30000) i,
+CREATE TABLE items_plain (LIKE items INCLUDING ALL) WITH (autovacuum_enabled = off);
+INSERT INTO items_plain SELECT * FROM items;
+CREATE INDEX items_sift ON items USING sift ((name || chr(29) || city)) WITH (fields = 'name', prefix_index = 3);
+CREATE INDEX items_plain_sift ON items_plain USING sift (name);
+CREATE TABLE accounts (id serial PRIMARY KEY, tenant int, item_id int) WITH (autovacuum_enabled = off);
+INSERT INTO accounts (tenant, item_id) SELECT v.t, i FROM generate_series(1, 30000) i,
 	LATERAL (VALUES (1, i % 50 = 0), (2, i % 2 = 0), (3, i % 3000 IN (1, 100))) v(t, owns) WHERE v.owns;
-CREATE INDEX sa_tenant ON sa (tenant);
-CREATE INDEX sa_attribute ON sa (dim_a_id);
-CREATE TABLE sg (dim_a_id int) WITH (autovacuum_enabled = off);
-INSERT INTO sg SELECT i FROM generate_series(1, 30000) i WHERE i % 3 = 0;
-CREATE INDEX sg_attribute ON sg (dim_a_id);
-ANALYZE sp;
-ANALYZE sp_plain;
-ANALYZE sa;
-ANALYZE sg;
+CREATE INDEX accounts_tenant ON accounts (tenant);
+CREATE INDEX accounts_item ON accounts (item_id);
+CREATE TABLE catalogs (item_id int) WITH (autovacuum_enabled = off);
+INSERT INTO catalogs SELECT i FROM generate_series(1, 30000) i WHERE i % 3 = 0;
+CREATE INDEX catalogs_item ON catalogs (item_id);
+ANALYZE items;
+ANALYZE items_plain;
+ANALYZE accounts;
+ANALYZE catalogs;
 -- the estimate of the matches is the index's for the plain index and for the call on the index with fields
-SELECT est_ratio($$SELECT id FROM sp_plain WHERE name @@> 'venue'$$) AS plain_site,
-	est_ratio($$SELECT id FROM sp_plain WHERE name @@> 'hilton'$$) AS plain_hilton,
-	est_ratio($$SELECT id FROM sp WHERE (name || chr(29) || city) @@> 'venue'$$) AS fields_site,
-	est_ratio($$SELECT id FROM sp WHERE (name || chr(29) || city) @@> 'hilton'$$) AS fields_hilton,
-	est_ratio($$SELECT id FROM sp WHERE (name || chr(29) || city) @@> 'name:venue'$$) AS fields_name;
- plain_site | plain_hilton | fields_site | fields_hilton | fields_name 
+SELECT est_ratio($$SELECT id FROM items_plain WHERE name @@> 'honey'$$) AS plain_honey,
+	est_ratio($$SELECT id FROM items_plain WHERE name @@> 'helion'$$) AS plain_helion,
+	est_ratio($$SELECT id FROM items WHERE (name || chr(29) || city) @@> 'honey'$$) AS fields_honey,
+	est_ratio($$SELECT id FROM items WHERE (name || chr(29) || city) @@> 'helion'$$) AS fields_helion,
+	est_ratio($$SELECT id FROM items WHERE (name || chr(29) || city) @@> 'name:honey'$$) AS fields_name;
+ plain_honey | plain_helion | fields_honey | fields_helion | fields_name 
 -------------+--------------+--------------+---------------+-------------
          1.0 |          1.0 |          1.0 |           1.0 |         1.0
 (1 row)
@@ -68,7 +68,7 @@ SELECT est_ratio($$SELECT id FROM sp_plain WHERE name @@> 'venue'$$) AS plain_si
 -- a scan with a limit hint costs its k rows up to its startup, and drained costs what the scan without a limit does
 SELECT round(scan_cost(q || ' LIMIT 20', 'Total Cost') / scan_cost(q, 'Total Cost'), 1) AS drained,
 	scan_cost(q || ' LIMIT 20', 'Startup Cost') < scan_cost(q || ' LIMIT 20', 'Total Cost') / 10 AS startup_for_k
-	FROM (VALUES ($$SELECT id FROM sp WHERE (name || chr(29) || city) @@> 'venue' ORDER BY sift.score(ctid) DESC$$)) v(q);
+	FROM (VALUES ($$SELECT id FROM items WHERE (name || chr(29) || city) @@> 'honey' ORDER BY sift.score(ctid) DESC$$)) v(q);
  drained | startup_for_k 
 ---------+---------------
      1.0 | t
@@ -78,14 +78,14 @@ SELECT round(scan_cost(q || ' LIMIT 20', 'Total Cost') / scan_cost(q, 'Total Cos
 -- which are read through a left join; the answer is ordered by score and id, so that the ties are those of the id order
 CREATE FUNCTION tenant_query(form text, tenant int, term text) RETURNS text LANGUAGE sql AS
 $$ SELECT format(CASE form
-	WHEN 'in' THEN $q$SELECT p.id, sift.score(p.ctid) FROM sp p WHERE (p.name || chr(29) || p.city) @@> %2$L AND p.id IN
-		(SELECT a.dim_a_id FROM sa a LEFT JOIN sg g ON g.dim_a_id = a.dim_a_id WHERE a.tenant = %1$s)
-		ORDER BY sift.score(p.ctid) DESC, p.id LIMIT 20$q$
-	WHEN 'exists' THEN $q$SELECT p.id, sift.score(p.ctid) FROM sp p WHERE (p.name || chr(29) || p.city) @@> %2$L AND EXISTS
-		(SELECT 1 FROM sa a WHERE a.dim_a_id = p.id AND a.tenant = %1$s) ORDER BY sift.score(p.ctid) DESC, p.id LIMIT 20$q$
-	WHEN 'join' THEN $q$SELECT p.id, sift.score(p.ctid) FROM sp p JOIN (SELECT DISTINCT a.dim_a_id FROM sa a
-		LEFT JOIN sg g ON g.dim_a_id = a.dim_a_id WHERE a.tenant = %1$s) t ON t.dim_a_id = p.id
-		WHERE (p.name || chr(29) || p.city) @@> %2$L ORDER BY sift.score(p.ctid) DESC, p.id LIMIT 20$q$
+	WHEN 'in' THEN $q$SELECT i.id, sift.score(i.ctid) FROM items i WHERE (i.name || chr(29) || i.city) @@> %2$L AND i.id IN
+		(SELECT a.item_id FROM accounts a LEFT JOIN catalogs g ON g.item_id = a.item_id WHERE a.tenant = %1$s)
+		ORDER BY sift.score(i.ctid) DESC, i.id LIMIT 20$q$
+	WHEN 'exists' THEN $q$SELECT i.id, sift.score(i.ctid) FROM items i WHERE (i.name || chr(29) || i.city) @@> %2$L AND EXISTS
+		(SELECT 1 FROM accounts a WHERE a.item_id = i.id AND a.tenant = %1$s) ORDER BY sift.score(i.ctid) DESC, i.id LIMIT 20$q$
+	WHEN 'join' THEN $q$SELECT i.id, sift.score(i.ctid) FROM items i JOIN (SELECT DISTINCT a.item_id FROM accounts a
+		LEFT JOIN catalogs g ON g.item_id = a.item_id WHERE a.tenant = %1$s) t ON t.item_id = i.id
+		WHERE (i.name || chr(29) || i.city) @@> %2$L ORDER BY sift.score(i.ctid) DESC, i.id LIMIT 20$q$
 	END, tenant, term) $$;
 CREATE FUNCTION tenant_shape(form text, tenant int, term text) RETURNS text LANGUAGE sql AS
 $$ SELECT CASE WHEN p !~ 'SiftScan' THEN 'no scan' WHEN p ~ 'Nested Loop Semi Join' THEN 'ranked scan, nested loop semi join'
@@ -93,15 +93,15 @@ $$ SELECT CASE WHEN p !~ 'SiftScan' THEN 'no scan' WHEN p ~ 'Nested Loop Semi Jo
 -- the tenant owns half of the heap, so a few rows of the scan reach the limit: a nested loop, for a broad and a narrow term;
 -- it owns twenty rows, fewer than the limit, so the scan is drained whatever the join: not a nested loop
 SELECT f.form, w.tenant, w.term, tenant_shape(f.form, w.tenant, w.term)
-	FROM (VALUES ('in'), ('exists')) f(form), (VALUES (2, 'venue'), (2, 'hilton'), (3, 'venue')) w(tenant, term) ORDER BY 1, 2, 3;
+	FROM (VALUES ('in'), ('exists')) f(form), (VALUES (2, 'honey'), (2, 'helion'), (3, 'honey')) w(tenant, term) ORDER BY 1, 2, 3;
   form  | tenant |  term  |            tenant_shape            
 --------+--------+--------+------------------------------------
- exists |      2 | hilton | ranked scan, nested loop semi join
- exists |      2 | venue  | ranked scan, nested loop semi join
- exists |      3 | venue  | ranked scan, other join
- in     |      2 | hilton | ranked scan, nested loop semi join
- in     |      2 | venue  | ranked scan, nested loop semi join
- in     |      3 | venue  | ranked scan, other join
+ exists |      2 | helion | ranked scan, nested loop semi join
+ exists |      2 | honey  | ranked scan, nested loop semi join
+ exists |      3 | honey  | ranked scan, other join
+ in     |      2 | helion | ranked scan, nested loop semi join
+ in     |      2 | honey  | ranked scan, nested loop semi join
+ in     |      3 | honey  | ranked scan, other join
 (6 rows)
 
 -- every plan answers what the scan without a join answers, the ones the planner picks and the ones it does not
@@ -120,14 +120,14 @@ CREATE FUNCTION tenant_base(tenant int, term text) RETURNS text LANGUAGE plpgsql
 DECLARE
 	r text;
 BEGIN
-	EXECUTE format($q$SELECT string_agg(t::text, ',') FROM (SELECT id, s FROM (SELECT p.id, sift.score(p.ctid) AS s FROM sp p
-		WHERE (p.name || chr(29) || p.city) @@> %L ORDER BY sift.score(p.ctid) DESC OFFSET 0) r
-		WHERE id IN (SELECT dim_a_id FROM sa WHERE sa.tenant = %s) ORDER BY s DESC, id LIMIT 20) t$q$, term, tenant) INTO r;
+	EXECUTE format($q$SELECT string_agg(t::text, ',') FROM (SELECT id, s FROM (SELECT i.id, sift.score(i.ctid) AS s FROM items i
+		WHERE (i.name || chr(29) || i.city) @@> %L ORDER BY sift.score(i.ctid) DESC OFFSET 0) r
+		WHERE id IN (SELECT item_id FROM accounts WHERE accounts.tenant = %s) ORDER BY s DESC, id LIMIT 20) t$q$, term, tenant) INTO r;
 	RETURN r;
 END $$;
 SELECT f.form, m.mode, count(*) AS cells, count(*) FILTER (WHERE x.got IS DISTINCT FROM x.base) AS differ, count(*) FILTER (WHERE x.base IS NULL) AS empty
 	FROM (VALUES ('in'), ('exists'), ('join')) f(form), (VALUES ('planner'), ('hash or merge'), ('nested loop')) m(mode),
-	(VALUES (1), (2), (3)) t(tenant), (VALUES ('venue'), ('hilton'), ('venue hilton'), ('name:venue')) w(term),
+	(VALUES (1), (2), (3)) t(tenant), (VALUES ('honey'), ('helion'), ('honey helion'), ('name:honey')) w(term),
 	LATERAL (SELECT tenant_rows(f.form, t.tenant, w.term, m.mode) AS got, tenant_base(t.tenant, w.term) AS base) x
 	GROUP BY 1, 2 ORDER BY 1, 2;
   form  |     mode      | cells | differ | empty 
@@ -145,5 +145,5 @@ SELECT f.form, m.mode, count(*) AS cells, count(*) FILTER (WHERE x.got IS DISTIN
 
 DROP FUNCTION tenant_base(int, text), tenant_rows(text, int, text, text), tenant_shape(text, int, text), tenant_query(text, int, text),
 	scan_cost(text, text), est_ratio(text), sift_plan(text);
-DROP TABLE sp, sp_plain, sa, sg;
+DROP TABLE items, items_plain, accounts, catalogs;
 DROP EXTENSION pg_sift;

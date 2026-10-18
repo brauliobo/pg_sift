@@ -11,12 +11,14 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/bitmapset.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 #include "sift_aggkern.h"
 #include "sift_aggsel.h"
@@ -86,7 +88,8 @@ leaf_vtype(const SiftColDef *def)
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ) ? SCV_I64 : SCV_I32;
+			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ ||
+					def->type == SIFT_COLT_NUMERIC) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -97,7 +100,7 @@ leaf_vtype(const SiftColDef *def)
 	}
 }
 
-/* The planner's view of the table: a scalar leaf per column, and no query may use the ones the executor does not read as values */
+/* The planner's view of the table: a scalar leaf per column; the exact datum images (SIFT_COLS_VAR) are not values the executor reads */
 static SiftSrcLayout *
 tbl_layout(Relation rel)
 {
@@ -120,11 +123,9 @@ tbl_layout(Relation rel)
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftColDef *def = &cur->cols[i];
-		Oid			typid = sift_col_def_typid(desc, def);
-		SiftColStore store;
 
-		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),.typid = typid,
-		.lossy = def->type == SIFT_COLT_NUMERIC || !sift_col_leaf_store(typid, &store)};
+		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),
+		.typid = sift_col_def_typid(desc, def),.scale = def->scale,.lossy = def->store == SIFT_COLS_VAR};
 	}
 	return lay;
 }
@@ -132,10 +133,24 @@ tbl_layout(Relation rel)
 static void
 tbl_stats(Relation rel, SiftSrcStats *st)
 {
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
+
 	memset(st, 0, sizeof(*st));
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
 	st->nunits = SIFT_TBL_NEXT_VBLOCK(&sift_tbl_rel(rel)->dir.meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
+	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
+	{
+		HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(rel)), Int16GetDatum(cur->cols[i].attno), BoolGetDatum(false));
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		st->ndistinct[i] = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+		if (st->ndistinct[i] < 0)
+			st->ndistinct[i] *= -st->nrows;
+		ReleaseSysCache(tp);
+	}
 }
 
 static void
@@ -404,6 +419,9 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 			case TIMESTAMPOID:
 			case TIMESTAMPTZOID:
 				((int64 *) b->data)[i] = DatumGetInt64(d);
+				break;
+			case NUMERICOID:
+				((int64 *) b->data)[i] = sift_col_numeric_key(l->scale, d, SIFT_COL_ROUND_NEAREST);
 				break;
 			case FLOAT4OID:
 				((double *) b->data)[i] = DatumGetFloat4(d);

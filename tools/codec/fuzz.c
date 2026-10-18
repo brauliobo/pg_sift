@@ -134,7 +134,7 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 		for (int i = 0; i < 6; i++) buf[i] = aligned(SIFT_CUR_BUF);
 		sift_cur c, o, a, b2;
 		uint64_t cnt;
-		sift_cur_blob(&c, blob, buf[0]);
+		sift_cur_blob(&c, blob, len, buf[0]);
 		size_t cap = sizeof(out[0]) / 8;
 		size_t n = drain(&c, out[0], cap, &cnt);
 		tot[isa] = n;
@@ -147,46 +147,46 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 		if (isa == 0) memcpy(ref, out[0], n * 8);
 		else if (memcmp(ref, out[0], n * 8) || tot[isa] != tot[0]) BAD("isa %d decodes differently from scalar", isa);
 		/* seeks and counts */
-		sift_cur_blob(&c, blob, buf[0]);
+		sift_cur_blob(&c, blob, len, buf[0]);
 		for (int s = 0; s < 6; s++) {
 			uint32_t target = n ? SIFT_GID(ref[rndn((uint32_t)n)]) : 0;
 			const sift_grp *g = sift_seek(&c, target + rndn(2));
 			if (g && g->gid < target) BAD("seek(%u) returned group %u (kind %d, n %zu, mutated blob)", target, g->gid, sift_blob_kind(blob), n);
 		}
-		sift_cur_blob(&c, blob, buf[0]);
+		sift_cur_blob(&c, blob, len, buf[0]);
 		if (sift_count(&c) != n) BAD("isa %d: sift_count != tids", isa);
 		/* operators against the other blob (when it passed the check) and against a raw tid cursor */
 		if (have_o) {
 			sift_cur *kid[2] = { &a, &b2 };
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_and(&o, kid, 2, buf[2]);
 			uint64_t c1;
 			size_t na = drain(&o, out[1], cap, &c1);
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_and(&o, kid, 2, buf[2]);
 			if (sift_count(&o) != na) BAD("isa %d: AND count != tids", isa);
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_or(&o, kid, 2, buf[2]);
 			size_t no = drain(&o, out[1], cap, &c1);
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_or(&o, kid, 2, buf[2]);
 			if (sift_count(&o) != no) BAD("isa %d: OR count != tids", isa);
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_andnot(&o, kid, buf[2]);
 			size_t nn = drain(&o, out[1], cap, &c1);
-			sift_cur_blob(&a, blob, buf[0]);
-			sift_cur_blob(&b2, oblob, buf[1]);
+			sift_cur_blob(&a, blob, len, buf[0]);
+			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_andnot(&o, kid, buf[2]);
 			if (sift_count(&o) != nn) BAD("isa %d: ANDNOT count != tids", isa);
 			if (na > no || nn > n) BAD("isa %d: AND/OR/ANDNOT sizes inconsistent", isa);
 		}
 		/* ranks of a group within itself */
-		sift_cur_blob(&c, blob, buf[0]);
+		sift_cur_blob(&c, blob, len, buf[0]);
 		const sift_grp *g = sift_next(&c);
 		if (g) {
 			uint32_t *rank = malloc(SIFT_GRP_MAXTIDS * 4);

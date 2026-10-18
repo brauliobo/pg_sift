@@ -26,6 +26,7 @@
 #include "utils/rel.h"
 
 #include "sift.h"
+#include "sift_am.h"
 #include "sift_col_am.h"
 #include "sift_col_build.h"
 #include "sift_col_seg.h"
@@ -55,6 +56,15 @@ sift_col_validate_compression(const char *value)
 }
 
 void
+sift_col_validate_preagg(const char *value)
+{
+	const char *err = sift_cpagg_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -62,6 +72,12 @@ sift_col_init(void)
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
+							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
+							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_paranoid",
+							 "Testing: a column scan checks the rows on all-visible pages against the heap too and logs the ones the snapshot does not see.",
+							 NULL, &sift_test_col_paranoid, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -82,6 +98,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "compression",
 						 "chunk compression: auto, none, lz4, zstd, encodings; per column: 'auto; col=zstd:9'",
 						 "", sift_col_validate_compression, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "preagg",
+						 "pre-aggregates of every unit: default, off, or cube(dim: measure, ...; dim2: ...)",
+						 "", sift_col_validate_preagg, ShareUpdateExclusiveLock);
 }
 
 /* ---------- options ---------- */
@@ -93,6 +112,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, mutable_limit)},
 		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
+		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
@@ -120,6 +140,14 @@ sift_col_options_compression(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->compression ? (const char *) o + o->compression : "";
+}
+
+const char *
+sift_col_options_preagg(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->preagg ? (const char *) o + o->preagg : "";
 }
 
 /* ---------- the leaves of an index ---------- */
@@ -151,6 +179,16 @@ sift_col_leaf_store(Oid typid, SiftColStore *store)
 			return true;
 	}
 	return false;
+}
+
+/* The types of a sift_col index: the table AM's set plus char(n) and name, which are strings too (the table AM keeps its narrower set) */
+static bool
+col_leaf_store(Oid typid, SiftColStore *store)
+{
+	if (typid != BPCHAROID && typid != NAMEOID)
+		return sift_col_leaf_store(typid, store);
+	*store = SIFT_COLS_STR;
+	return true;
 }
 
 /* The format's tag of a PostgreSQL type, and the type a tag stands for: the one place the engine's logical types meet type OIDs */
@@ -247,6 +285,7 @@ build_rel(Relation index)
 	TupleDesc	desc = RelationGetDescr(index);
 	int			natts = IndexRelationGetNumberOfKeyAttributes(index);
 	SiftColDef *defs = palloc0(SIFT_COL_MAX_COLS * sizeof(SiftColDef));
+	char	  **names;
 	int			n = 0;
 
 	if (index->rd_index->indnatts != natts)
@@ -255,6 +294,7 @@ build_rel(Relation index)
 	r->first = palloc((natts + 1) * sizeof(int));
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
+	r->name = palloc0((natts + 1) * sizeof(bool));
 	r->shred = sift_col_shred_create(index->rd_indexcxt, index);
 	for (int a = 1; a <= natts; a++)
 	{
@@ -263,12 +303,12 @@ build_rel(Relation index)
 		uint8		scale = typid == NUMERICOID ? numeric_scale_of(TupleDescAttr(desc, a - 1)) : 0;
 		int			k = typid == JSONBOID ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 1;
 
-		if (typid != JSONBOID && !sift_col_leaf_store(typid, &store))
+		if (typid != JSONBOID && !col_leaf_store(typid, &store))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid),
 							NameStr(TupleDescAttr(desc, a - 1)->attname)),
-					 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p, s) with p <= 18, real, double precision, text, varchar and jsonb with paths.")));
+					 errhint("Supported: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p, s) with p <= 18, real, double precision, text, varchar, char(n), name and jsonb with paths.")));
 		if (typid == JSONBOID && k == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -278,9 +318,11 @@ build_rel(Relation index)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", SIFT_COL_MAX_COLS)));
 		r->first[a] = n;
 		r->json[a] = typid == JSONBOID;
+		r->name[a] = typid == NAMEOID;
 		r->nleaves[a] = k;
 		if (typid != JSONBOID)
-			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale};
+			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale,
+				.flags = typid == BPCHAROID && TupleDescAttr(desc, a - 1)->atttypmod < 0 ? SIFT_COLD_LOSSY : 0};
 		else
 			for (int i = 0; i < k; i++)
 			{
@@ -295,13 +337,21 @@ build_rel(Relation index)
 	}
 	r->schema = sift_cschema_create(index->rd_indexcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
+	names = palloc(n * sizeof(char *));
 	for (int i = 0; i < n; i++)
 	{
 		const char *name = defs[i].path[0] ? defs[i].path : NameStr(TupleDescAttr(desc, defs[i].attno - 1)->attname);
 		const char *err = sift_cc_policy_for_column(sift_col_options_compression(index), name, &r->policy[i]);
 
+		names[i] = pstrdup(name);
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
+	}
+	{
+		const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &r->pagg);
+
+		if (err)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
@@ -387,6 +437,70 @@ sift_col_index_meta(Relation index)
 	return m;
 }
 
+/*
+ * The leaf statistics of an index's immutable segments, memoized per backend: the key of an entry is the index and the generations of
+ * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. Eight indexes
+ * are kept (the oldest is dropped).
+ */
+#define LEAF_STATS_CACHE	8
+
+static struct
+{
+	Oid			index;
+	uint64		stamp;
+	int			ncols;
+	SiftColLeafStats *st;
+}			leaf_cache[LEAF_STATS_CACHE];
+static int	leaf_cache_next;
+
+const SiftColLeafStats *
+sift_col_leaf_stats(Relation index)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftDirSnapshot dir;
+	uint64		stamp = 0;
+	int			slot = -1;
+
+	sift_dir_read(index, &dir);
+	for (int i = 0; i < dir.nsegs; i++)
+		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+			stamp = stamp * 31 + dir.segs[i].gen + 1;
+	for (int i = 0; i < LEAF_STATS_CACHE; i++)
+		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
+			slot = i;
+	if (slot >= 0 && leaf_cache[slot].stamp == stamp && leaf_cache[slot].ncols == d->ncols)
+		return leaf_cache[slot].st;
+	if (slot < 0)
+		slot = leaf_cache_next++ % LEAF_STATS_CACHE;
+	if (leaf_cache[slot].st)
+		pfree(leaf_cache[slot].st);
+	leaf_cache[slot].st = NULL;
+	{
+		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
+		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+
+		for (int c = 0; c < d->ncols; c++)
+			sift_col_leaf_stats_init(&st[c]);
+		for (int i = 0; i < dir.nsegs; i++)
+		{
+			SiftColSegment *seg;
+
+			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+				continue;
+			seg = sift_cseg_open(index, &dir.segs[i], cx);
+			for (int c = 0; c < d->ncols; c++)
+				sift_cseg_leaf_stats(seg, c, &st[c]);
+			sift_cseg_close(seg);
+		}
+		MemoryContextDelete(cx);
+		leaf_cache[slot].index = RelationGetRelid(index);
+		leaf_cache[slot].stamp = stamp;
+		leaf_cache[slot].ncols = d->ncols;
+		leaf_cache[slot].st = st;
+		return st;
+	}
+}
+
 bool
 sift_col_is_index(Relation index)
 {
@@ -445,7 +559,7 @@ sift_col_key_numeric(int scale, int64 key)
 /* ---------- tuple to row ---------- */
 
 static void
-datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
+datum_value(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
 {
 	v->isnull = v->overflow = false;
 	v->len = 0;
@@ -479,6 +593,12 @@ datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
 			v->v.f = DatumGetFloat8(d);
 			break;
 		default:
+			if (name)
+			{
+				v->v.s = NameStr(*DatumGetName(d));
+				v->len = strlen(v->v.s);
+			}
+			else
 			{
 				text	   *t = DatumGetTextPP(d);
 
@@ -507,7 +627,7 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 		if (isnull[a - 1])
 			row->val[def->id].isnull = true;
 		else
-			datum_value(def, values[a - 1], &row->val[def->id]);
+			datum_value(def, values[a - 1], r->name[a], &row->val[def->id]);
 	}
 	if (r->shred)
 	{
@@ -578,53 +698,20 @@ col_amendscan(IndexScanDesc scan)
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = makeNode(IndexAmRoutine);
-
-	am->amstrategies = 0;
-	am->amsupport = 1;
-	am->amoptsprocnum = 0;
-	am->amcanorder = false;
-	am->amcanorderbyop = false;
-	am->amcanbackward = false;
-	am->amcanunique = false;
-	am->amcanmulticol = true;
-	am->amoptionalkey = true;
-	am->amsearcharray = false;
-	am->amsearchnulls = false;
-	am->amstorage = false;
-	am->amclusterable = false;
-	am->ampredlocks = false;
-	am->amcanparallel = false;
-	am->amcanbuildparallel = true;
-	am->amcaninclude = false;
-	am->amusemaintenanceworkmem = true;
-	am->amsummarizing = false;
-	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
-	am->amkeytype = InvalidOid;
+	IndexAmRoutine *am = sift_am_routine(0, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
 	am->aminsert = sift_col_aminsert;
-	am->aminsertcleanup = NULL;
 	am->ambulkdelete = sift_col_ambulkdelete;
 	am->amvacuumcleanup = sift_col_amvacuumcleanup;
-	am->amcanreturn = NULL;
 	am->amcostestimate = col_amcostestimate;
 	am->amoptions = col_amoptions;
 	am->ambuildphasename = sift_col_ambuildphasename;
 	am->amvalidate = col_amvalidate;
-	am->amadjustmembers = NULL;
 	am->ambeginscan = col_ambeginscan;
 	am->amrescan = col_amrescan;
-	am->amgettuple = NULL;
-	am->amgetbitmap = NULL;
 	am->amendscan = col_amendscan;
-	am->ammarkpos = NULL;
-	am->amrestrpos = NULL;
-	am->amestimateparallelscan = NULL;
-	am->aminitparallelscan = NULL;
-	am->amparallelrescan = NULL;
-	SIFT_AM_NEW_FIELDS(am);
 
 	PG_RETURN_POINTER(am);
 }

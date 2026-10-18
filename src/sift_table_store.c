@@ -34,6 +34,8 @@
 			 errdetail(__VA_ARGS__)))
 
 int			sift_tbl_delta_limit = 4096;	/* kB */
+int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write segment at least */
+int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 
 /* ---------- the per relation cache ---------- */
 
@@ -344,19 +346,20 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		SwapArg		arg = {0};
 		uint32		vcap = delta_vcap();
 		uint64		gen,
-					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
+					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
 					dbuf;
 		GenericXLogState *state;
 		Page		hp,
 					dp;
 
-		if (st->dir.nsegs >= SIFT_MAX_SEGMENTS - 2)
+		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-					 errdetail("Too many unsealed delta segments: a long-running transaction prevents compaction."),
-					 errhint("Run VACUUM on the table once the old transactions end.")));
+					 errdetail("Too many unsealed delta segments: the rows of running transactions cannot be sealed, and one transaction can write about %d MB.",
+							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_delta_limit / 1024)),
+					 errhint("Load in several transactions, or run VACUUM on the table once the old transactions end.")));
 		if (act)
 			old = *act;
 		if (vbase + vcap > (uint64) MaxBlockNumber)
@@ -396,7 +399,7 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_seal)
-		(void) sift_tbl_seal(rel, st, GetOldestNonRemovableTransactionId(rel), false);
+		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel));
 	return first;
 }
 
@@ -707,8 +710,7 @@ sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, ui
 void
 sift_tbl_store(TupleTableSlot *slot, HeapTuple tup)
 {
-	ExecForceStoreHeapTuple(tup, slot, false);
-	ExecMaterializeSlot(slot);
+	sift_tbl_slot_store_tuple(slot, tup);
 	heap_freetuple(tup);
 }
 
@@ -831,56 +833,43 @@ tomb_reset(SiftTblRel *st, const SiftSegEntry *e)
 	st->nents = st->nrecent = 0;
 }
 
-/* A new array holding the merge of the sorted a and b; the old a is freed. Entries of one key keep their seq order (b is newer) */
-static SiftTblTomb *
-merge_tombs(SiftTblRel *st, SiftTblTomb *a, uint32 na, const SiftTblTomb *b, uint32 nb)
+/* Merges the sorted b into the sorted array *a (capacity *cap) in place, from the back: the entries before the smallest key of b do not move
+ * (b is newer: entries of one key keep their seq order) */
+static void
+merge_tombs(SiftTblRel *st, SiftTblTomb **a, uint32 *na, uint32 *cap, const SiftTblTomb *b, uint32 nb)
 {
-	SiftTblTomb *res = MemoryContextAlloc(st->cxt, Max(na + nb, 1) * sizeof(SiftTblTomb));
-	uint32		i = 0,
-				j = 0,
-				k = 0;
+	uint32		i = *na,
+				j = nb,
+				k = *na + nb;
 
-	while (i < na && j < nb)
-		res[k++] = cmp_tomb(&a[i], &b[j]) <= 0 ? a[i++] : b[j++];
-	while (i < na)
-		res[k++] = a[i++];
-	while (j < nb)
-		res[k++] = b[j++];
-	if (a)
-		pfree(a);
-	return res;
+	if (k > *cap)
+	{
+		*cap = Max(64, Max(*cap * 2, k));
+		*a = *a ? repalloc(*a, *cap * sizeof(SiftTblTomb)) : MemoryContextAlloc(st->cxt, *cap * sizeof(SiftTblTomb));
+	}
+	while (j > 0)
+		(*a)[--k] = i > 0 && cmp_tomb(&(*a)[i - 1], &b[j - 1]) > 0 ? (*a)[--i] : b[--j];
+	*na += nb;
 }
 
 #define TOMB_RECENT_MAX 512
+
+/* Everything in the main array, in order (the vacuum rewrite walks it) */
+static void
+tomb_flatten(SiftTblRel *st)
+{
+	merge_tombs(st, &st->ents, &st->nents, &st->capents, st->recent, st->nrecent);
+	st->nrecent = 0;
+}
 
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows */
 static void
 tomb_add(SiftTblRel *st, SiftTblTomb *batch, uint32 n)
 {
 	qsort(batch, n, sizeof(SiftTblTomb), cmp_tomb);
-	st->recent = merge_tombs(st, st->recent, st->nrecent, batch, n);
-	st->nrecent += n;
+	merge_tombs(st, &st->recent, &st->nrecent, &st->caprecent, batch, n);
 	if (st->nrecent > TOMB_RECENT_MAX)
-	{
-		st->ents = merge_tombs(st, st->ents, st->nents, st->recent, st->nrecent);
-		st->nents += st->nrecent;
-		pfree(st->recent);
-		st->recent = NULL;
-		st->nrecent = 0;
-	}
-}
-
-/* Everything in the main array, in order (the vacuum rewrite walks it) */
-static void
-tomb_flatten(SiftTblRel *st)
-{
-	if (st->nrecent == 0)
-		return;
-	st->ents = merge_tombs(st, st->ents, st->nents, st->recent, st->nrecent);
-	st->nents += st->nrecent;
-	pfree(st->recent);
-	st->recent = NULL;
-	st->nrecent = 0;
+		tomb_flatten(st);
 }
 
 void

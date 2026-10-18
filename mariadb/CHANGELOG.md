@@ -4,6 +4,25 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 2.0.2
+
+- No change to the index format (2) or the SQL files: an index of 2.0.1 opens as it is. The library is rebuilt on the shared core of the
+  PostgreSQL extension 2.0.2, whose posting decoder (`sift_bitmap.c`, `sift_posting.c`) now checks the lengths, counts and offsets of the
+  term blob it reads. Security: segment files that were damaged (a bad disk, a truncated or edited file; they sit in the data directory,
+  outside InnoDB, and are only writable by the server's OS user) could make a query read outside the blob, write to the stack or never end.
+  Such an index now fails the query with a data-corruption error ('corrupt posting data') instead, and `CALL sift_rebuild` rebuilds it from the table. Nothing
+  to rebuild otherwise. The functional, live (kill -9 during a merge) and stress tests pass on MariaDB 13.0.2. No speed change is claimed:
+  the measurements (the instruction gate of the PostgreSQL extension) are not MariaDB's. The VACUUM fix of the PostgreSQL extension does not
+  apply (MariaDB has no shared page store).
+
+## 2.0.1
+
+- No change to the index format (2) or the SQL files: an index of 2.0.0 opens as it is, nothing to rebuild with `sift_rebuild`. The library is
+  rebuilt on the shared core of the PostgreSQL extension 2.0.1, which changes how the shared engine counts documents of segments with
+  vacuumed (deleted) documents: the same results. No MariaDB speed-up is claimed: the measurements (user
+  instructions per `count(*)` over vacuumed documents, 0.21x for a term) are the PostgreSQL extension's. The row-level security fix of the
+  PostgreSQL extension does not apply (the planner hook is PostgreSQL's).
+
 ## 2.0.0
 
 - No change to the index format (2) or the SQL files: an index of 1.4.0 opens as it is, nothing to rebuild with `sift_rebuild`. The library is rebuilt

@@ -25,7 +25,7 @@ N       ?= 1
 CODEC    = $(addprefix $(SRC)/,sift_colcodec.c sift_colcodec_kern.c sift_colcodec_avx2.c sift_colcodec_avx512.c sift_colz.c \
                                sift_kernels.c sift_kernels_avx2.c sift_kernels_avx512.c sift_analyze.c sift_analyze_stem.c \
                                sift_col_kern.c sift_col_kern_avx2.c sift_col_kern_avx512.c sift_bitmap_scalar.c sift_bitmap_avx2.c sift_bitmap_avx512.c) $(KT)/shim.c
-OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o
+OBJ      = $(patsubst %.c,$(OUT)/%.o,$(notdir $(CODEC))) $(OUT)/ccshim.o $(OUT)/pgshim.o
 HDR      = $(wildcard $(SRC)/sift_colcodec*.h $(SRC)/sift_colz.h $(SRC)/sift_kernels*.h $(SRC)/sift_analyze*.h $(SRC)/sift_col_kern*.h $(SRC)/sift_col.h) ccshim.h
 
 all: $(OUT)/test $(OUT)/bench
@@ -36,7 +36,7 @@ $(OUT)/research: research.c gen.h
 
 vpath %.c $(SRC) $(KT)
 
-$(OUT)/ccshim.o: ccshim.c $(HDR)
+$(OUT)/pgshim.o: ../pgshim.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

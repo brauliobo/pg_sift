@@ -66,6 +66,65 @@ SELECT sift.merge('dq_idx', true) > 0 AS merged;
 SELECT count(*) FILTER (WHERE dirty) AS dirty FROM sift.segments('dq_idx') WHERE kind = 'immutable';
 SELECT * FROM dq_check();
 
-DROP TABLE dq, dq_cases;
-DROP FUNCTION dq_check(), dq_text(int);
+-- Counts over a dirty segment whose superblocks differ: the first is dirty, the others are clean (a tenth of each page is
+-- filled, so four superblocks of 5632 rows are there to hand to parallel workers). A term on every page is counted for
+-- the whole group, a term on a few pages page by page, and the pages of rows deleted since the VACUUM are left to the heap.
+CREATE TABLE dq2 (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off, fillfactor = 10);
+INSERT INTO dq2 SELECT i, chr(98 + i % 7) || ' ' || chr(106 + i % 13) || CASE WHEN i % 997 = 0 THEN ' z' ELSE '' END FROM generate_series(1, 18000) i;
+CREATE INDEX dq2_idx ON dq2 USING sift (body);
+DELETE FROM dq2 WHERE id <= 3000 AND id % 3 <> 0;
+VACUUM dq2;
+SELECT dirty, sb_hi - sb_lo + 1 > 2 AS superblocks FROM sift.segments('dq2_idx');
+-- the first superblock is the only dirty one: the SB bitmap of the liveness decides, without reading the others
+SELECT sift.verify('dq2_idx', true);
+
+CREATE TABLE dq2_cases (q text, pred text);
+INSERT INTO dq2_cases VALUES
+	('d', 'id % 7 = 2'),
+	('m d', 'id % 13 = 3 AND id % 7 = 2'),
+	('c OR e', 'id % 7 IN (1, 3)'),
+	('z', 'id % 997 = 0'),
+	('z OR v', 'id % 997 = 0 OR id % 13 = 12'),
+	('z c', 'id % 997 = 0 AND id % 7 = 1');
+CREATE FUNCTION dq2_check() RETURNS TABLE (q text, count_ok bool, par_ok bool) LANGUAGE plpgsql AS $$
+DECLARE
+	c record;
+BEGIN
+	FOR c IN SELECT * FROM dq2_cases LOOP
+		q := c.q;
+		PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+		EXECUTE format('SELECT (SELECT count(*) FROM dq2 WHERE body @@> %L) = (SELECT count(*) FROM dq2 WHERE %s)', c.q, c.pred) INTO count_ok;
+		PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+		EXECUTE format('SELECT (SELECT count(*) FROM dq2 WHERE body @@> %L) = (SELECT count(*) FROM dq2 WHERE %s)', c.q, c.pred) INTO par_ok;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SET sift.parallel_scan = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+ALTER TABLE dq2 SET (parallel_workers = 2);
+SELECT * FROM dq2_check();
+-- the parallel counts above are parallel
+DO $$
+DECLARE
+	l text;
+	p bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT count(*) FROM dq2 WHERE body @@> ''d''' LOOP
+		p := p OR l LIKE '%Gather%';
+	END LOOP;
+	RAISE NOTICE 'parallel plan: %', p;
+END $$;
+
+-- rows deleted since the VACUUM sit on pages that are not all-visible
+DELETE FROM dq2 WHERE id BETWEEN 3001 AND 3300 OR id BETWEEN 9001 AND 9300;
+SELECT * FROM dq2_check();
+-- the scalar kernels count the same
+SET sift.simd = scalar;
+SELECT * FROM dq2_check();
+RESET sift.simd;
+
+DROP TABLE dq, dq_cases, dq2, dq2_cases;
+DROP FUNCTION dq_check(), dq_text(int), dq2_check();
 DROP EXTENSION pg_sift;

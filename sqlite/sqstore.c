@@ -651,7 +651,7 @@ load_segs(SqStore *st)
 		memset(e, 0, sizeof(*e));
 		e->gen = sqlite3_column_int64(q, 0);
 		e->kind = SIFT_SEG_IMMUTABLE;
-		e->format = SIFT_FORMAT_MINOR;
+		e->format = SIFT_WRITE_SEGFMT;
 		e->header_blk = sqlite3_column_int64(q, 1);
 		e->reserved = sqlite3_column_int64(q, 2);
 		e->sb_lo = sqlite3_column_int64(q, 3);
@@ -674,7 +674,7 @@ init_meta(SqStore *st)
 
 	m->magic = SIFT_MAGIC;
 	m->format_major = SIFT_FORMAT_MAJOR;
-	m->format_minor = SIFT_FORMAT_MINOR;
+	m->format_minor = SIFT_WRITE_SEGFMT;
 	m->k1 = (float4) st->opts.base.k1;
 	m->b = (float4) st->opts.base.b;
 	m->analyzer_hash = analyzer_hash(st);

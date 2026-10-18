@@ -8,6 +8,8 @@
 
 #ifdef SIFT_TESTING
 
+#include <math.h>
+
 #include "common/pg_prng.h"
 #include "fmgr.h"
 #include "port/pg_bitutils.h"
@@ -19,6 +21,7 @@
 #include <unistd.h>
 #endif
 
+#include "sift_col.h"
 #include "sift_col_kern_int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_kernels);
@@ -402,6 +405,47 @@ test_gather(Test *t)
 	mix(t, dst, (k + GUARD) * sizeof(uint32));
 }
 
+/* Float keys of every kind of double back to doubles, in place; a bit vector as byte flags (the bits past n are zero, as in a chunk's bitmap) */
+static void
+test_decode_lanes(Test *t)
+{
+	uint32		n = pick_n(t),
+				words = (n + 63) / 64;
+	int64	   *keys = out_array(t, sizeof(int64), n);
+	uint64	   *bits = in_array(t, sizeof(uint64), words);
+	uint8	   *flags = out_array(t, 1, (n + 63) / 64 * 64);
+	uint64	   *want;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		double		d[] = {0.0, -0.0, 1.5, -1.5, HUGE_VAL, -HUGE_VAL, (double) pg_prng_int64(&t->rs), pg_prng_double(&t->rs) - 0.5};
+		uint64		b;
+
+		memcpy(&b, &d[rnd(t, lengthof(d))], sizeof(b));
+		keys[i] = rnd(t, 4) ? (int64) pg_prng_uint64(&t->rs) : (int64) (b ^ ((uint64) ((int64) b >> 63) >> 1));
+	}
+	want = palloc((n + 1) * sizeof(uint64));
+	for (uint32 i = 0; i < n; i++)
+	{
+		double		f = sift_col_f8_from_key(keys[i]);
+
+		memcpy(&want[i], &f, sizeof(f));
+	}
+	t->k->f8_from_keys(keys, n);
+	if (n > 0 && memcmp(keys, want, n * sizeof(uint64)) != 0)
+		elog(ERROR, "sift_col_kern: f8_from_keys differs from sift_col_f8_from_key");
+	mix(t, keys, (n + GUARD) * sizeof(int64));
+	for (uint32 w = 0; w < words; w++)
+		bits[w] = rnd(t, 3) ? sparse(t, rnd(t, 4)) : pg_prng_uint64(&t->rs);
+	if (n % 64)
+		bits[words - 1] &= (UINT64CONST(1) << (n % 64)) - 1;
+	t->k->bits_to_flags(bits, n, flags);
+	for (uint32 i = 0; i < n; i++)
+		if (flags[i] != sift_col_bit_test(bits, i))
+			elog(ERROR, "sift_col_kern: flag %u is %d, not %d", i, flags[i], sift_col_bit_test(bits, i));
+	mix(t, flags, n);
+}
+
 /* The running ends of np lists (empty ones, long runs, the odd length), the parent of every element they cover */
 static void
 test_expand_parents(Test *t)
@@ -417,13 +461,13 @@ test_expand_parents(Test *t)
 		e += rnd(t, 3) == 0 ? 0 : rnd(t, shape == 0 ? 3 : shape == 1 ? 20 : 90);
 		end[p] = e;
 	}
-	parent = out_array(t, sizeof(uint32), e);
+	parent = out_array(t, sizeof(uint32), e + SIFT_COL_PAD / sizeof(uint32));
 	t->k->expand_parents(end, np, parent);
 	for (uint32 p = 0, i = 0; p < np; p++)
 		for (; i < end[p]; i++)
 			if (parent[i] != p)
 				elog(ERROR, "sift_col_kern: the parent of element %u is %u, not %u", i, parent[i], p);
-	mix(t, parent, (e + GUARD) * sizeof(uint32));
+	mix(t, parent, e * sizeof(uint32));
 }
 
 static int64
@@ -450,6 +494,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 		for (int w = 0; w < 4; w++)
 			test_for(&t, w);
 		test_gather(&t);
+		test_decode_lanes(&t);
 		test_expand_parents(&t);
 		MemoryContextReset(cx);
 		unmap_all(&t);

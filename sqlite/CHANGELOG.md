@@ -4,6 +4,25 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## 2.0.2
+
+- No change to the storage format (2) or the SQL interface: tables of 2.0.1 open as they are. The extension is rebuilt on the shared core of
+  the PostgreSQL extension 2.0.2, whose posting decoder (`sift_bitmap.c`, `sift_posting.c`) now checks the lengths, counts and offsets of
+  the term blob it reads. Security: bytes of a table file that were damaged (a bad disk, a truncated or edited file; the files are only
+  writable by the process that owns them, no query can write them) could make a query read outside the blob, write to the stack or never
+  end. Such a table now fails the query with a data-corruption error ('corrupt posting data') instead. Nothing to rebuild; a damaged table still has to be
+  rebuilt from its source. `tests/test_sift.py` and `tests/test_features.py` pass under ASan and UBSan with the new checks, and the
+  stress test under TSan and ASan. No speed change is claimed: the measurements (the instruction gate of the PostgreSQL extension) are not
+  SQLite's. The VACUUM fix of the PostgreSQL extension does not apply (SQLite has no shared page store).
+
+## 2.0.1
+
+- No change to the storage format (2) or the SQL interface: tables of 2.0.0 open as they are. The extension is rebuilt on the shared core of
+  the PostgreSQL extension 2.0.1, which changes how the shared engine counts documents of segments with vacuumed (deleted) documents: the
+  same results. No SQLite speed-up is claimed: the measurements (user instructions per `count(*)` over vacuumed documents, 0.21x for a
+  term) are the PostgreSQL extension's. The row-level security fix of the PostgreSQL extension does not apply
+  (SQLite has no row-level security).
+
 ## 2.0.0
 
 - No change to the storage format (2) or the SQL interface: tables of 1.4.0 open as they are, nothing to rebuild. The extension is rebuilt on the

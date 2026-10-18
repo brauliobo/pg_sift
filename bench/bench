@@ -50,6 +50,8 @@ Commands
   machine    print the machine and engine description (CPU, RAM, kernel, PostgreSQL, versions, load)
   du         what the work directory and the store hold, by component and in total
   analytics  the analytics benchmark of sift_col: `analytics setup|run|report|clean|clickbench|clickbench-setup`
+  store      the store benchmark, for everyone: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift,
+             Elasticsearch and ClickHouse in docker containers with equal limits: `store [all|setup|run|cold|updates|report|merge|clean]`
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
 
@@ -59,6 +61,14 @@ and G1-G8 (whole table) as plain SQL, measured as the CPU time and instructions 
 plan (an index of the access method sift_col, --col-index; without one the baseline is measured alone), optionally against flat tables
 (--flat) and a throwaway ClickHouse (--clickhouse). `analytics run` writes analytics.json (bench/results layout) and prints the table;
 `analytics clickbench` runs the 43 queries of ClickBench on --rows rows of hits (10,000,000).
+
+store (steps/store.sh, steps/store.py, sql/store/): a seeded `orders` table (1M and 10M rows, --sizes), the same CSV loaded into a container each of
+PostgreSQL (heap, btree, GIN), PostgreSQL with pg_sift (`sift_col` + `sift`, and `sift_table`), Elasticsearch and ClickHouse (images pinned in versions.env,
+--cpus and --memory per container), ten queries (lookup by id, orders per country, revenue per month, top categories, an average, distinct customers
+per month, a filtered count, and three after a full-text search), the result of each checked against PostgreSQL's before it is timed, median of --runs
+(7) warm runs and --cold-runs (3) runs after a restart, load time and size per system. `store all` runs both sizes and writes store.json; with --docs also
+bench/results/store.json and the generated blocks of README.md and docs/BENCHMARKS.md; `store report` redraws the blocks from bench/results/store.json.
+Needs docker, psql, python3; nothing else is installed and every container and volume is removed at the end.
 
 check, workers and the engines' databases of a run start the tier's cluster, load the corpus if needed and leave it running
 (`check`, `workers`); `clean` stops it.
@@ -107,6 +117,11 @@ Options (not every option applies to every command)
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
                     sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
                     to bench/results); SIFT_TMP, SIFT_PORT
+  store options     --sizes N,N (orders, default 1000000,10000000), --cpus N and --memory SIZE (limits of every container, default 4 and 8g), --runs N (7),
+                    --cold-runs N (3, 0 = no cold runs), --engines pg,sift,sift_table,es,es_cached,ch, --queries IDS (01..10 or names), --docs, --out DIR,
+                    --quick (1M orders, 3 runs, no cold runs, no updates: bench/analytics, a few minutes), --compression (the pg_sift compression
+                    variants none, encodings only, auto, lz4, zstd:3 as extra lanes and the size of every system with its other settings; bench/results/store-compression.json);
+                    STORE_PORT_BASE (first of four ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   -h, --help        this text
@@ -124,6 +139,8 @@ Environment
   BENCH_STORE       datasets, downloads, corpus dumps and the cache of lanes (default BENCH_WORK; point it at a disk to keep them out of RAM:
                     inputs and caches only, it changes no measurement). `bench du` shows both
   BENCH_CACHE_MAX   MiB of the cache of lanes kept after a session with --keep (default 4096)
+  SIFT_QUIET_MAX    percent of cpu / io pressure (PSI, avg10) under which the host is quiet before a timed batch (default 10); SIFT_QUIET_TIMEOUT: seconds to
+                    wait for that (default 60) before the batch runs marked NOISY; SIFT_QUIET_WINDOW avg10 | avg60 (scripts/quiet.sh)
   KEEP_DOWNLOADS=1  keep the raw downloads and engine tarballs after setup (removed by default); REFRESH_DATASETS=1, REBUILD_ENGINES=1: setup
                     converts / builds again what it finds up to date
   SIFT_SRC          head | worktree: sift is built from the last commit or the tracked files (default worktree)
@@ -151,6 +168,9 @@ Examples
   bench/bench analytics run --flat --clickhouse        the analytics corpus: baseline, flat tables and ClickHouse (+ sift_col when built)
   bench/bench analytics run --queries S1,S2 --sets K400 --col-index @my_index.sql
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
+  bench/bench store all --docs                         the store benchmark at 1M and 10M orders, then bench/results/store.json, README.md and docs/BENCHMARKS.md
+  bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
+  bench/analytics                                      the quick store run (the same as store all --quick); `store compare A.json B.json` diffs two runs, `store gap` prints the gap tables
 EOF
 }
 
@@ -160,6 +180,7 @@ trap '[[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true' EXIT   # t
 # --- options
 SLIM_DOCS=50000   # articles of the slim tier (the places are cities15000): bench/README.md says why this size
 a_scale='' a_orders='' a_stores='' a_cluster='' a_flat='' a_ch='' a_runs='' a_sets='' a_queries='' a_col_index='' a_base_gucs='' a_col_gucs='' a_col_plan='' a_timeout='' a_rows=''
+s_sizes='' s_cpus='' s_memory='' s_cold='' s_update_sizes='' s_quick='' s_compression=''
 tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' build=1 fetch_data=1 all_clean='' ref='' run='' keep='' clean_cache='' clean_build=''
 rest=()
 parse() {
@@ -205,6 +226,13 @@ parse() {
       --col-plan) a_col_plan=$2; shift ;;
       --timeout) a_timeout=$2; shift ;;
       --rows) a_rows=$2; shift ;;
+      --sizes) s_sizes=$2; shift ;;
+      --cpus) s_cpus=$2; shift ;;
+      --memory) s_memory=$2; shift ;;
+      --cold-runs) s_cold=$2; shift ;;
+      --update-sizes) s_update_sizes=$2; shift ;;
+      --quick) s_quick=1 ;;
+      --compression) s_compression=1 ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown option $1 (bench/bench --help)" ;;
       *) rest+=("$1") ;;
@@ -350,7 +378,7 @@ measure() { # [cold]: every selected dataset at the tier into $OUT, after the ma
       places)   ENGINES=$e CLASSES=$(class_set places) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
-  echo "wall time of the measurements $(( SECONDS - t0 )) s, load average at end $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/machine.txt"
+  echo "wall time of the measurements $(( SECONDS - t0 )) s, at end $(cat "$OUT"/*/noisy.txt 2>/dev/null | wc -l) NOISY batches (noisy.txt of each table directory), $(quiet_report 2>&1)" | tee -a "$OUT/machine.txt"
 }
 
 end_session() { cache_prune; peak_report; }   # after a successful session: the cache of lanes goes unless it is kept, the peak footprint is printed
@@ -431,6 +459,22 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
     report) "$STEPS/analytics.sh" report "${rest[1]:-}" ;;
     *) "$STEPS/analytics.sh" "$sub" ;;
   esac
+}
+
+cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
+  local sub=${rest[0]:-all}
+  case $sub in all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare]" ;; esac
+  if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, ClickHouse and Elasticsearch
+    engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch"
+  fi
+  if [[ $s_quick ]]; then   # 1M orders, 3 runs, no cold runs, no updates: the same queries and the same equality checks, a few minutes
+    : "${s_sizes:=1000000}" "${a_runs:=3}" "${s_cold:=0}" "${s_update_sizes:=none}"
+  fi
+  for c in docker psql python3 flock ss; do command -v "$c" >/dev/null || die "missing prerequisite: $c"; done
+  export S_SIZES=$s_sizes S_CPUS=$s_cpus S_MEMORY=$s_memory S_RUNS=$a_runs S_COLD=$s_cold S_ENGINES=${engines// /,} S_QUERIES=$a_queries S_DOCS=$docs S_UPDATE_SIZES=$s_update_sizes S_COMPRESSION=$s_compression S_PORT=${STORE_PORT_BASE:-} S_NAME=${STORE_NAME:-}
+  for c in S_SIZES S_CPUS S_MEMORY S_RUNS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME; do [[ -n ${!c} ]] || unset "$c"; done
+  case $sub in all|setup|run|cold|updates|stats) new_out; export OUT ;; esac
+  "$STEPS/store.sh" "$sub" "${rest[@]:1}"
 }
 
 cmd_regress() { # [--run] [DIR|results.tsv ...]
@@ -538,5 +582,6 @@ case $cmd in
   du) load_lib; cmd_du ;;
   readme) cmd_readme ;;
   analytics) cmd_analytics ;;
+  store) cmd_store ;;
   *) echo "bench: unknown command $cmd" >&2; usage; exit 1 ;;
 esac

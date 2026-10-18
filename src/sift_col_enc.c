@@ -8,6 +8,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_cmp.h"
 #include "sift_col_enc.h"
 #include "sift_popcount.h"
 
@@ -1320,19 +1321,67 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 	return true;
 }
 
-static void
-zero_nulls(const uint64 *nulls, uint32 n, int64 *dst)
-{
-	for (uint32 w = 0; nulls != NULL && w < words_of(n); w++)
-		for (uint64 m = nulls[w]; m; m &= m - 1)
-			dst[w * 64 + pg_rightmost_one_pos64(m)] = 0;
-}
+/* The NULL slots of a decoded lane (any element type) are 0 */
+#define ZERO_NULLS(nulls, n, dst) \
+	do { \
+		for (uint32 w_ = 0; (nulls) != NULL && w_ < words_of(n); w_++) \
+			for (uint64 m_ = (nulls)[w_]; m_; m_ &= m_ - 1) \
+				(dst)[w_ * 64 + pg_rightmost_one_pos64(m_)] = 0; \
+	} while (0)
 
 void
 sift_cchunk_decode(const SiftCChunk *c, int64 *dst)
 {
 	codec_decode(c, dst);
-	zero_nulls(c->nulls, c->n, dst);
+	ZERO_NULLS(c->nulls, c->n, dst);
+}
+
+void
+sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst)
+{
+	if (c->enc == SIFT_COLENC_CC)
+	{
+		SiftCc	   *cc = cc_open(c, false);
+
+		sift_cc_decode_u32(cc, dst);
+		sift_cc_close(cc);
+	}
+	else
+	{
+		int64	   *tmp = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+
+		codec_decode(c, tmp);
+		for (uint32 i = 0; i < c->n; i++)
+			dst[i] = (uint32) tmp[i];
+		pfree(tmp);
+	}
+	ZERO_NULLS(c->nulls, c->n, dst);
+}
+
+/* the codes of a dictionary of ndict values, whose NULL code is ndict: the tables the executor indexes by them have ndict + 1 entries */
+void
+sift_cchunk_decode_codes(const SiftCChunk *c, uint32 ndict, uint32 *dst)
+{
+	sift_cchunk_decode_u32(c, dst);
+	sift_ccodes_below(dst, c->n, ndict + 1);
+}
+
+void
+sift_cchunk_decode_f8(const SiftCChunk *c, double *dst)
+{
+	if (c->enc == SIFT_COLENC_CC)
+	{
+		SiftCc	   *cc = cc_open(c, false);
+
+		sift_cc_decode_f8(cc, dst);
+		sift_cc_close(cc);
+		ZERO_NULLS(c->nulls, c->n, dst);
+	}
+	else
+	{
+		sift_cchunk_decode(c, (int64 *) dst);
+		sift_colk->f8_from_keys((int64 *) dst, c->n);
+	}
 }
 
 void
@@ -1375,19 +1424,10 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
  * comparing a float4 column against a float8 constant in the key domain is exactly PostgreSQL's float48 comparison.
  * ------------------------------------------------------------------------- */
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 static bool
 set_has(const SiftCTest *t, int64 k)
 {
-	return bsearch(&k, t->set, t->nset, sizeof(int64), cmp_i64) != NULL;
+	return bsearch(&k, t->set, t->nset, sizeof(int64), sift_cmp_i64) != NULL;
 }
 
 static void
@@ -1404,7 +1444,7 @@ ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 {
 	uint32		m = 0;
 
-	qsort(keys, n, sizeof(int64), cmp_i64);
+	qsort(keys, n, sizeof(int64), sift_cmp_i64);
 	for (uint32 i = 0; i < n; i++)
 		if (m == 0 || keys[m - 1] != keys[i])
 			keys[m++] = keys[i];
@@ -1813,6 +1853,13 @@ lut_shift(const uint64 *src, uint64 srcbits, uint64 by, uint64 *dst, uint32 nbit
 	}
 }
 
+void
+sift_ccodes_below(const uint32 *codes, uint32 n, uint32 limit)
+{
+	if (sift_cck->max32(codes, n) >= limit)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: a code is past the table it indexes (%u entries)", limit)));
+}
+
 /* chunk_lut of a CC chunk: the codec hands the codes as offsets from its minimum */
 static void
 cc_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
@@ -1830,7 +1877,11 @@ cc_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		shifted = palloc0(SIFT_COL_NWORDS(sbits) * sizeof(uint64));
 		lut_shift(t->lut, t->lutbits, min, shifted, sbits);
 		if (sift_cc_decode_off32(cc, off))
+		{
+			if (sift_cc_off32_bound(cc) >= sbits)
+				sift_ccodes_below(off, c->n, sbits);
 			sift_colk->lut[2](off, c->n, shifted, tmp);
+		}
 		else
 			chunk_scalar(t, c, tmp);
 		pfree(shifted);
@@ -1866,13 +1917,17 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		chunk_scalar(t, c, tmp);
 		return;
 	}
-	sbits = c->enc == SIFT_COLENC_FOR && c->bits == 8 ? 256 : c->enc == SIFT_COLENC_FOR && c->bits == 16 ? 65536 : t->lutbits - (uint32) c->base;
+	/* a code of at most 16 bits has a bit of its own in the table, whatever the chunk holds; wider codes are checked against the table */
+	sbits = c->bits <= 16 ? 1U << c->bits : t->lutbits - (uint32) c->base;
 	shifted = palloc0(SIFT_COL_NWORDS(sbits) * sizeof(uint64));
 	lut_shift(t->lut, t->lutbits, c->base, shifted, sbits);
 	if (c->enc == SIFT_COLENC_FOR && c->bits <= 16)
 		sift_colk->lut[codec_slot(c->bits)](c->payload, c->n, shifted, tmp);
-	else if (c->enc == SIFT_COLENC_FOR && c->bits == 32)
+	else if (c->enc == SIFT_COLENC_FOR)
+	{
+		sift_ccodes_below((const uint32 *) c->payload, c->n, sbits);
 		sift_colk->lut[2](c->payload, c->n, shifted, tmp);
+	}
 	else if (c->enc == SIFT_COLENC_PACK)
 	{
 		uint32		blk[CODEC_BLOCK + SIFT_COL_PAD / sizeof(uint32)];
@@ -1882,6 +1937,8 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 			uint32		m = Min(CODEC_BLOCK, c->n - s);
 
 			sift_colk->unpack(c->payload + (s / 64) * 8 * c->bits, c->bits, m, blk);
+			if (c->bits > 16)
+				sift_ccodes_below(blk, m, sbits);
 			sift_colk->lut[2](blk, m, shifted, tmp + s / 64);
 		}
 	}
@@ -2273,6 +2330,9 @@ unit_parse(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *sche
 	v->schema = schema;
 	v->nrows = head[1];
 	v->npages = np;
+	for (uint32 w = 0, p = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		for (uint64 m = v->pagemask[w]; m; m &= m - 1)
+			v->page[p++] = (uint8) (w * 64 + pg_rightmost_one_pos64(m));
 	if (pos + (uint64) (np + 1) * 4 + (uint64) np * 2 > avail)
 		return false;
 	v->rowstart = (const uint32 *) (rec + pos);
@@ -2337,26 +2397,13 @@ sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c)
 	return true;
 }
 
-/* The p-th set bit of the page mask: the page of the superblock */
+/* The p-th set bit of the page mask: the page of the superblock (the table is built when the unit is parsed) */
 static uint32
 unit_page(const SiftCUnitView *v, uint32 p)
 {
-	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-	{
-		uint32		c = sift_pc64(v->pagemask[w]);
-		uint64		m = v->pagemask[w];
-
-		if (p >= c)
-		{
-			p -= c;
-			continue;
-		}
-		for (; p > 0; p--)
-			m &= m - 1;
-		return w * 64 + pg_rightmost_one_pos64(m);
-	}
-	elog(ERROR, "sift_col: page index %u is outside the unit", p);
-	return 0;
+	if (p >= v->npages)
+		elog(ERROR, "sift_col: page index %u is outside the unit", p);
+	return v->page[p];
 }
 
 BlockNumber

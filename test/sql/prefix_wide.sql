@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift;
 
 CREATE FUNCTION pw_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT 'tk' || lpad((i % 1500)::text, 4, '0') || ' '
-		|| (ARRAY['venue', 'house venue', 'tkaa tkab', 'garden', 'harbour venue'])[1 + i % 5]
+		|| (ARRAY['honey', 'house honey', 'tkaa tkab', 'garden', 'harbour honey'])[1 + i % 5]
 		|| ' w' || i % 7 || repeat(' pad', i % 4) || CASE WHEN i % 13 = 0 THEN ' rare' ELSE '' END
 $$;
 
@@ -22,15 +22,15 @@ VACUUM ANALYZE pw;
 VACUUM ANALYZE pg;
 
 CREATE FUNCTION qs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
-	't*', 'tk*', 'tk0*', 'tk00*', 'tk000*', 'tk0001*', 'tk1*', 'tk14*', 'h*', 'ha*', 'ho*', 'hot*', 'w*', 'p*', 'ra*', 'x*',
-	'tk* venue*', 'tk* AND NOT w3', 'NOT w3 AND tk*', '(tk0* OR h*) AND pad', 'tk0*^3 OR garden', 'h* w*', 'tk* "house venue"',
+	't*', 'tk*', 'tk0*', 'tk00*', 'tk000*', 'tk0001*', 'tk1*', 'tk14*', 'h*', 'ha*', 'ho*', 'hon*', 'w*', 'p*', 'ra*', 'x*',
+	'tk* honey*', 'tk* AND NOT w3', 'NOT w3 AND tk*', '(tk0* OR h*) AND pad', 'tk0*^3 OR garden', 'h* w*', 'tk* "house honey"',
 	'(tk* w*) AND (ha* OR ho*)', 'tk*^2 OR w1^3']) $$;
 
 -- the prefixes of these have more than 512 terms or one: a leaf over the limit scores as the indexed prefix term, a lone
 -- term as itself (the two coincide), and only below the limit with several terms is the score the max over them
 CREATE FUNCTION wq() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
-	't*', 'tk*', 'tk0*', 'tk0001*', 'ha*', 'hot*', 'p*', 'ra*', 'x*', 'tk* venue*', 'tk* AND NOT w3', 'NOT w3 AND tk*',
-	'tk0*^3 OR garden', 'tk* "house venue"', 'tk*^2 OR w1^3']) $$;
+	't*', 'tk*', 'tk0*', 'tk0001*', 'ha*', 'hon*', 'p*', 'ra*', 'x*', 'tk* honey*', 'tk* AND NOT w3', 'NOT w3 AND tk*',
+	'tk0*^3 OR garden', 'tk* "house honey"', 'tk*^2 OR w1^3']) $$;
 
 CREATE FUNCTION cnt(tbl text, q text, flt text DEFAULT 'true') RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE n bigint;
@@ -94,7 +94,7 @@ SELECT q FROM qs() q WHERE top('pw', q, 25) IS DISTINCT FROM top('pg', q, 25);
 SELECT q FROM qs() q WHERE top('pw', q, 25, 'tenant = 2') IS DISTINCT FROM top('pg', q, 25, 'tenant = 2');
 SELECT top('pw', 'w*', 5), top('pg', 'w*', 5);
 SELECT top('pw', 'h* w*', 5), top('pg', 'h* w*', 5);
-SELECT cnt('pw', 'w*'), cnt('pw', 'hot*'), cnt('pw', 'venue*'), cnt('pw', 'tkaa*');
+SELECT cnt('pw', 'w*'), cnt('pw', 'hon*'), cnt('pw', 'honey*'), cnt('pw', 'tkaa*');
 RESET sift.max_expansions;
 -- wildcards, regexes and fuzzy terms above the limit are wide too (through the index: a seq scan evaluates documents and has
 -- no expansion): they match what document evaluation matches, and score as one term like a prefix does
@@ -105,7 +105,7 @@ SELECT count(*) FROM pw WHERE body @@> 'tk* OR /tk.*/';
 SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3']) q
 WHERE cnt('pw', q) <> oracle('pw', q);
 SET sift.max_expansions = 2;
-SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3', 'hot?l', 'hotl~1']) q
+SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3', 'hon?y', 'hony~1']) q
 WHERE cnt('pw', q) <> oracle('pw', q);
 RESET sift.max_expansions;
 SET sift.max_expansions = 5000;

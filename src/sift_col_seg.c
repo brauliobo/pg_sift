@@ -8,6 +8,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_col_preagg.h"
 #include "sift_col_seg.h"
 #include "sift_live.h"
 
@@ -15,13 +16,9 @@
 #define ALIGN8(x)		TYPEALIGN(8, x)
 #define DICTS_MAGIC		0x44444F43		/* "COLD" */
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
+#define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
 
-#define corrupt(seg, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" segment %llu is corrupted", \
-					RelationGetRelationName((seg)->index), ULL((seg)->entry.gen)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
 
 /* ---------- writer ---------- */
 
@@ -37,6 +34,10 @@ struct SiftColSegWriter
 	uint32	  **dictmap;		/* [ncols] scratch: batch code -> segment code */
 	bool	   *inl;			/* [ncols] scratch: the STR leaf is stored inline in the unit being added */
 	SiftCZone  *zones;			/* [unit * ncols + col] */
+	SiftCPaggSpec pagg;			/* the pre-aggregates to write (docs/COL-PREAGG.md) */
+	SiftCLeafAgg *lagg;			/* [unit * ncols + col] exact sums of the INT leaves */
+	uint64	   *cubeoff;		/* [unit]: offset of the unit's cube blob in cube; [nsb] the end */
+	StringInfoData cube;		/* the cube blobs of all units */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
 	uint32		capsb;
@@ -75,6 +76,10 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 			w->dict[c] = sift_cdict_create(mcxt);
 	w->capsb = 64;
 	w->zones = palloc(w->capsb * schema->ncols * sizeof(SiftCZone));
+	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
+	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	sift_cpagg_spec_default(schema, &w->pagg);
+	initStringInfo(&w->cube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
 	initStringInfo(&w->buf);
 	MemoryContextSwitchTo(old);
@@ -99,6 +104,54 @@ map_dicts(SiftColSegWriter *w, const SiftColBatch *b, const bool *inl)
 }
 
 void
+sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
+{
+	w->pagg = *spec;
+}
+
+/*
+ * The pre-aggregates of the unit just encoded (docs/COL-PREAGG.md): the exact sums of its INT leaves and the cube blob, from the batch's
+ * columns with the dictionary leaves in the segment's codes (what a reader of the unit sees).
+ */
+static void
+add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
+{
+	int			ncols = w->schema->ncols;
+	SiftCPaggCol *cols = palloc(ncols * sizeof(SiftCPaggCol));
+	bool	   *dim = palloc0(ncols * sizeof(bool));
+	int64	  **tk = palloc0(ncols * sizeof(int64 *));
+	SiftCLeafAgg *la = w->lagg + (Size) w->nsb * ncols;
+
+	for (int d = 0; d < w->pagg.ndims; d++)
+		dim[w->pagg.dim[d].leaf] = true;
+	for (int c = 0; c < ncols; c++)
+	{
+		const SiftCVals *v = &b->col[c];
+		const SiftColDef *def = &w->schema->cols[c];
+
+		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
+		if (def->store == SIFT_COLS_STR && dim[c] && !w->inl[c])
+		{
+			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
+			for (uint32 i = 0; i < v->n; i++)
+				tk[c][i] = (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1)) ? 0 : w->dictmap[c][v->key[i]];
+			cols[c].key = tk[c];
+		}
+		if (def->store == SIFT_COLS_INT)
+			sift_cpagg_leaf(&cols[c], &la[c]);
+	}
+	w->cubeoff[w->nsb] = w->cube.len;
+	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube);
+	w->cubeoff[w->nsb + 1] = w->cube.len;
+	for (int c = 0; c < ncols; c++)
+		if (tk[c])
+			pfree(tk[c]);
+	pfree(tk);
+	pfree(dim);
+	pfree(cols);
+}
+
+void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
 	int			ncols = w->schema->ncols;
@@ -112,6 +165,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	{
 		w->capsb *= 2;
 		w->zones = repalloc_huge(w->zones, (Size) w->capsb * ncols * sizeof(SiftCZone));
+		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
+		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 	}
 	for (int c = 0; c < ncols; c++)
@@ -119,6 +174,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	map_dicts(w, b, w->inl);
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	add_preagg(w, b, w->buf.len - start);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
 	sift_sw_write(w->sw, w->buf.data + start, w->buf.len - start);
@@ -151,7 +207,7 @@ sift_colw_bytes(const SiftColSegWriter *w)
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
-	Size		m = (Size) w->nsb * (w->schema->ncols * sizeof(SiftCZone) + sizeof(SiftColSBRef));
+	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + sizeof(uint64)) + w->cube.len;
 
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
@@ -210,6 +266,94 @@ zone_block_size(const SiftColDef *def, uint32 nsb)
 	return ALIGN8(nsb * (3 * sizeof(uint64) + 3 * sizeof(uint32))) + (def->store == SIFT_COLS_STR ? nsb * 4 * sizeof(uint64) : 0);
 }
 
+/*
+ * The pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2): a header (magic, version, ncols, nsb, the offset of the
+ * cube directory and its blob bytes, the offset of each INT leaf's sums), then per INT leaf the sums of all units as arrays, then the cube
+ * directory (u64 offset of each unit's blob, nsb + 1 entries) and the blobs. Offsets are from the start of the header.
+ */
+typedef struct PaggHeader
+{
+	uint32		magic;
+	uint32		version;
+	uint32		ncols;
+	uint32		nsb;
+	uint64		cubedir_off;			/* 0: no cube in any unit */
+	uint64		cube_bytes;
+	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
+} PaggHeader;
+
+#define PAGG_HDR_SIZE(ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + (ncols) * sizeof(uint64))
+
+/* One INT leaf's sums: sum_lo, sum_hi, sumsq_lo, sumsq_hi (u64 each), flags (u32), all over the units */
+static Size
+lagg_block_size(uint32 nsb)
+{
+	return ALIGN8((Size) nsb * (4 * sizeof(uint64) + sizeof(uint32)));
+}
+
+static void
+write_pagg(SiftColSegWriter *w)
+{
+	int			ncols = w->schema->ncols;
+	uint32		nsb = w->nsb;
+	Size		hsz = PAGG_HDR_SIZE(ncols),
+				at = hsz;
+	PaggHeader *h = palloc0(hsz);
+
+	h->magic = PAGG_MAGIC;
+	h->version = 1;
+	h->ncols = ncols;
+	h->nsb = nsb;
+	for (int c = 0; c < ncols; c++)
+		if (w->schema->cols[c].store == SIFT_COLS_INT)
+		{
+			h->lagg_off[c] = at;
+			at += lagg_block_size(nsb);
+		}
+	if (w->cube.len > 0)
+	{
+		h->cubedir_off = at;
+		h->cube_bytes = w->cube.len;
+	}
+	sift_sw_write(w->sw, h, hsz);
+	for (int c = 0; c < ncols; c++)
+	{
+		uint64	   *blk;
+		uint64	   *slo,
+				   *shi,
+				   *qlo,
+				   *qhi;
+		uint32	   *fl;
+
+		if (!h->lagg_off[c])
+			continue;
+		blk = palloc0(lagg_block_size(nsb));
+		slo = blk;
+		shi = slo + nsb;
+		qlo = shi + nsb;
+		qhi = qlo + nsb;
+		fl = (uint32 *) (qhi + nsb);
+		for (uint32 u = 0; u < nsb; u++)
+		{
+			const SiftCLeafAgg *a = &w->lagg[(Size) u * ncols + c];
+
+			slo[u] = (uint64) a->sum;
+			shi[u] = (uint64) (a->sum >> 64);
+			qlo[u] = (uint64) a->sumsq;
+			qhi[u] = (uint64) (a->sumsq >> 64);
+			fl[u] = a->flags;
+		}
+		sift_sw_write(w->sw, blk, lagg_block_size(nsb));
+		pfree(blk);
+	}
+	if (w->cube.len > 0)
+	{
+		sift_sw_write(w->sw, w->cubeoff, (Size) (nsb + 1) * sizeof(uint64));
+		sift_sw_write(w->sw, w->cube.data, w->cube.len);
+	}
+	pfree(h);
+}
+
 static void
 write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 {
@@ -262,6 +406,8 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 		sift_sw_write(w->sw, blk, sz);
 		pfree(blk);
 	}
+	sw_pad8(w->sw);
+	write_pagg(w);
 	sw_pad8(w->sw);
 	sec->len = sift_sw_tell(w->sw) - sec->off;
 	pfree(dir);
@@ -340,11 +486,16 @@ typedef struct ZoneArrays
 typedef struct SegPriv
 {
 	SiftLive	live;
-	uint8	   *dirty;			/* dirty-SB bitmap, loaded when the entry is flagged dirty */
 	SiftCDict **dict;
 	ZoneArrays **zones;
 	uint8	   *unitbuf;
 	Size		unitcap;
+	PaggHeader *pagg;			/* the sidecar's header, read on first use */
+	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
+	uint64	   *cubedir;		/* nsb + 1 */
+	uint8	   *cubebuf;
+	Size		cubecap;
+	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
 } SegPriv;
 
 #define PRIV(seg)	((SegPriv *) (seg)->priv)
@@ -382,10 +533,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSegment *seg = palloc0(sizeof(SiftColSegment));
 	SegPriv    *pv = palloc0(sizeof(SegPriv));
-	Buffer		buf;
-	Page		page;
 	SiftSegHeaderData *h;
-	uint32		used;
 	uint64		size,
 				rank = 0;
 	char	   *schema;
@@ -403,21 +551,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
 				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
-	buf = ReadBuffer(index, entry->header_blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
-	page = BufferGetPage(buf);
-	h = (SiftSegHeaderData *) SiftPageGetData(page);
-	used = SiftPageGetUsed(page);
-	if (used < offsetof(SiftSegHeaderData, extents) || h->nextents > SIFT_MAX_EXTENTS ||
-		used < offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent))
-	{
-		UnlockReleaseBuffer(buf);
-		corrupt(seg, "Header block %u holds %u bytes.", entry->header_blk, used);
-	}
-	seg->hdr = palloc(used);
-	memcpy(seg->hdr, h, used);
-	UnlockReleaseBuffer(buf);
+	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->ndocs == 0 || h->sb_lo != entry->sb_lo ||
 		h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi || h->live_npages == 0 || h->dictroot_n == 0 ||
@@ -630,6 +764,196 @@ sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *out)
 		memcpy(out->set, z->set[u], 4 * sizeof(uint64));
 }
 
+/* The entries of the segment's dictionary of leaf col: the count that starts it, without parsing the dictionary */
+static uint32
+dict_count(SiftColSegment *seg, int col)
+{
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
+	uint32		hdr[2],
+				n;
+	uint64		tab[SIFT_COL_MAX_COLS];
+
+	seg_read(seg, s->off, sizeof(hdr), hdr);
+	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
+		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
+	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+	if (tab[col] == 0 || tab[col] + sizeof(n) > s->len)
+		corrupt(seg, "Leaf %d has no dictionary.", col);
+	seg_read(seg, s->off + tab[col], sizeof(n), &n);
+	return n;
+}
+
+void
+sift_col_leaf_stats_init(SiftColLeafStats *acc)
+{
+	memset(acc, 0, sizeof(*acc));
+	acc->min = PG_INT64_MAX;
+	acc->max = PG_INT64_MIN;
+	acc->has_range = acc->has_sum = true;
+}
+
+void
+sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
+{
+	const SiftColDef *def = &seg->schema->cols[col];
+	const ZoneArrays *z = zone_arrays(seg, col);
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		bool		any = z->nnull[u] < z->nvals[u];
+
+		acc->nvals += z->nvals[u];
+		acc->nnull += z->nnull[u];
+		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
+			acc->has_range = acc->has_sum = false;
+		if (def->kind == SIFT_COLK_GROUP)
+			acc->has_sum &= !(z->flags[u] & SIFT_COLZ_NOSUM);
+		else if (def->store == SIFT_COLS_INT && any)
+		{
+			acc->min = Min(acc->min, z->min[u]);
+			acc->max = Max(acc->max, z->max[u]);
+		}
+		else if (def->store != SIFT_COLS_INT)
+			acc->has_range = false;
+		if (def->kind == SIFT_COLK_GROUP)
+			acc->sum += (double) z->sum[u];
+	}
+	if (def->store == SIFT_COLS_STR)
+	{
+		acc->inl |= z->any_inl;
+		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
+	}
+}
+
+/* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
+
+/* Where the sidecar starts: after the zone blocks, which are laid out back to back */
+static Size
+zones_end(const SiftColSegment *seg)
+{
+	Size		at = ALIGN8(sizeof(uint32) * 2 + seg->schema->ncols * sizeof(uint64));
+
+	for (int c = 0; c < seg->schema->ncols; c++)
+		at += zone_block_size(&seg->schema->cols[c], seg->nsb);
+	return at;
+}
+
+static const PaggHeader *
+pagg_header(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (pv->pagg == NULL)
+	{
+		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
+		int			ncols = seg->schema->ncols;
+		Size		end = zones_end(seg),
+					hsz = PAGG_HDR_SIZE(ncols);
+		PaggHeader *h;
+
+		if (end + hsz > s->len)
+			corrupt(seg, "The ZONES section holds %llu bytes, no room for the pre-aggregates after %zu.", ULL(s->len), end);
+		h = MemoryContextAlloc(seg->mcxt, hsz);
+		seg_read(seg, s->off + end, hsz, h);
+		if (h->magic != PAGG_MAGIC || h->version != 1 || h->ncols != (uint32) ncols || h->nsb != seg->nsb)
+			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units.", h->magic, h->version, h->ncols, h->nsb);
+		for (int c = 0; c < ncols; c++)
+			if (h->lagg_off[c] % 8 != 0 || (h->lagg_off[c] && end + h->lagg_off[c] + lagg_block_size(seg->nsb) > s->len))
+				corrupt(seg, "The sums of leaf %d lie outside the section.", c);
+		if (h->cubedir_off && (h->cubedir_off % 8 != 0 || end + h->cubedir_off + (seg->nsb + 1) * sizeof(uint64) + h->cube_bytes > s->len))
+			corrupt(seg, "The cubes (%llu bytes at %llu) lie outside the section.", ULL(h->cube_bytes), ULL(h->cubedir_off));
+		pv->pagg_end = end;
+		pv->pagg = h;
+		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
+	}
+	return pv->pagg;
+}
+
+void
+sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h = pagg_header(seg);
+	SiftCZone	z;
+
+	sift_cseg_zone(seg, col, u, &z);
+	memset(a, 0, sizeof(*a));
+	a->nvals = z.nvals;
+	a->nnull = z.nnull;
+	a->min = z.min;
+	a->max = z.max;
+	a->sum_f = z.sum_f;
+	a->zflags = z.flags;
+	if (h->lagg_off[col])
+	{
+		const uint64 *b = pv->lagg[col];
+
+		if (b == NULL)
+		{
+			uint64	   *blk = MemoryContextAlloc(seg->mcxt, lagg_block_size(seg->nsb));
+
+			seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->lagg_off[col], lagg_block_size(seg->nsb), blk);
+			pv->lagg[col] = b = blk;
+		}
+		a->sum = (SiftCI128) (((unsigned __int128) b[seg->nsb + u] << 64) | b[u]);
+		a->sumsq = (SiftCI128) (((unsigned __int128) b[3 * seg->nsb + u] << 64) | b[2 * seg->nsb + u]);
+		a->flags = ((const uint32 *) (b + 4 * seg->nsb))[u];
+		a->has_sums = true;
+	}
+}
+
+const uint8 *
+sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h = pagg_header(seg);
+	uint64		b0,
+				b1;
+
+	*len = 0;
+	if (!h->cubedir_off)
+		return NULL;
+	if (pv->cubedir == NULL)
+	{
+		pv->cubedir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
+		seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->cubedir_off, (seg->nsb + 1) * sizeof(uint64), pv->cubedir);
+		for (uint32 i = 0; i < seg->nsb; i++)
+			if (pv->cubedir[i] > pv->cubedir[i + 1] || pv->cubedir[i + 1] > h->cube_bytes)
+				corrupt(seg, "The cube directory is out of order at unit %u.", i);
+	}
+	b0 = pv->cubedir[u];
+	b1 = pv->cubedir[u + 1];
+	if (b1 == b0)
+		return NULL;
+	if (b1 - b0 > pv->cubecap)
+	{
+		pv->cubecap = Max(b1 - b0, 2 * pv->cubecap);
+		pv->cubebuf = pv->cubebuf ? repalloc(pv->cubebuf, pv->cubecap) : MemoryContextAlloc(seg->mcxt, pv->cubecap);
+	}
+	seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->cubedir_off + (seg->nsb + 1) * sizeof(uint64) + b0, b1 - b0, pv->cubebuf);
+	*len = b1 - b0;
+	return pv->cubebuf;
+}
+
+uint64
+sift_cseg_preagg_bytes(SiftColSegment *seg)
+{
+	pagg_header(seg);
+	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end;
+}
+
+uint32
+sift_cseg_preagg_units(SiftColSegment *seg)
+{
+	uint32		n = 0,
+				len;
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (sift_cseg_cube(seg, u, &len) != NULL)
+			n++;
+	return n;
+}
+
 void
 sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep)
 {
@@ -737,20 +1061,17 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 
 /* ---------- liveness ---------- */
 
+/* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
+ * a scan must read liveness after it reads the all-visible mask */
 static bool
 unit_dirty(SiftColSegment *seg, uint32 u)
 {
-	SegPriv    *pv = PRIV(seg);
 	uint32		i = seg->sbdir[u].sb - seg->hdr->sb_lo;
+	Buffer		buf = InvalidBuffer;
+	uint8		b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
 
-	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-		return false;
-	if (pv->dirty == NULL)
-	{
-		pv->dirty = MemoryContextAlloc(seg->mcxt, (pv->live.nsb + 7) / 8);
-		sift_live_dirty(&pv->live, pv->dirty);
-	}
-	return (pv->dirty[i / 8] >> (i % 8)) & 1;
+	UnlockReleaseBuffer(buf);
+	return (b >> (i % 8)) & 1;
 }
 
 bool
@@ -809,14 +1130,6 @@ sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 
 /* ---------- VACUUM ---------- */
 
-static void
-set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].gen == *(uint64 *) arg)
-			dir->segs[i].flags |= SIFT_SEG_DIRTY;
-}
-
 int64
 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {
@@ -853,14 +1166,8 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 		}
 		if (nd == 0)
 			continue;
-		if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-		{
-			sift_dir_update(seg->index, &(SiftDirChange) {.fn = set_dirty,.arg = &seg->entry.gen,.extra = InvalidBuffer});
-			seg->entry.flags |= SIFT_SEG_DIRTY;
-		}
+		sift_seg_mark_dirty(seg->index, &seg->entry);
 		sift_live_clear(&pv->live, r->sb - seg->hdr->sb_lo, dead, nd);
-		if (pv->dirty)
-			pv->dirty[(r->sb - seg->hdr->sb_lo) / 8] |= 1 << ((r->sb - seg->hdr->sb_lo) % 8);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -902,9 +1209,29 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 	uint32		len;
 	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 	uint64		group_elems[SIFT_COL_MAX_COLS] = {0};
+	SiftCPaggCol pcol[SIFT_COL_MAX_COLS];
+	int64	   *kept[SIFT_COL_MAX_COLS] = {NULL};
+	bool		need[SIFT_COL_MAX_COLS] = {false};
+	uint32		clen;
+	const uint8 *cube = sift_cseg_cube(seg, u, &clen);
 
 	if (!sift_cunit_parse(rec, len, sc, &v) || v.nrows != r->nrows)
 		corrupt(seg, "Unit %u (SB %u) does not parse or lists another row count.", u, r->sb);
+	if (cube)
+	{
+		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift verify cube", ALLOCSET_SMALL_SIZES);
+		SiftCHist	hist;
+
+		if (!sift_cpagg_decode(sc, cube, clen, cx, &hist))
+			corrupt(seg, "The cube of the unit of SB %u does not decode.", r->sb);
+		for (int d = 0; d < hist.ndims; d++)
+		{
+			need[hist.dim[d].leaf] = true;
+			for (int m = 0; m < hist.dim[d].nmeas; m++)
+				need[hist.dim[d].meas[m]] = true;
+		}
+		MemoryContextDelete(cx);
+	}
 	sift_cunit_keys(&v, r->sb, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
 		if (sift_block_sb(sift_key_block(keys[i])) != r->sb || (i > 0 && keys[i] <= keys[i - 1]) ||
@@ -931,6 +1258,17 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 			corrupt(seg, "The zone of leaf %d in the unit of SB %u differs from its chunk.", c, r->sb);
 		if (def->kind == SIFT_COLK_GROUP)
 			group_elems[c] = computed.sum_i;
+		pcol[c] = (SiftCPaggCol) {vals, ch.nulls, ch.ovf, ch.n, def->store != SIFT_COLS_VAR && ch.enc != SIFT_COLENC_ISTR};
+		if (def->store == SIFT_COLS_INT)
+		{
+			SiftCLeafAgg la;
+			SiftCAgg	sa;
+
+			sift_cpagg_leaf(&pcol[c], &la);
+			sift_cseg_agg(seg, c, u, &sa);
+			if (sa.sum != la.sum || sa.sumsq != la.sumsq || sa.flags != la.flags)
+				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
+		}
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
@@ -940,8 +1278,16 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 					corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->sb,
 							(long long) vals[i], d->n);
 		}
-		pfree(vals);
+		if (need[c])
+			kept[c] = vals;
+		else
+			pfree(vals);
 	}
+	if (cube && !sift_cpagg_check(sc, pcol, r->nrows, cube, clen))
+		corrupt(seg, "The cube of the unit of SB %u differs from its chunks.", r->sb);
+	for (int c = 0; c < sc->ncols; c++)
+		if (kept[c])
+			pfree(kept[c]);
 }
 
 uint64

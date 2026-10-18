@@ -21,7 +21,7 @@ ship such a SQLite; RHEL 9 and Ubuntu 22.04 do not.
 [latest release](https://github.com/brauliobo/pg_sift/releases/latest):
 
 ```sh
-V=2.0.0
+V=2.0.2
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz
@@ -44,14 +44,14 @@ other architectures build with scalar kernels only (compiled, but not tested on 
 .load ./sift
 CREATE VIRTUAL TABLE docs USING sift(title, body);
 INSERT INTO docs(rowid, title, body) VALUES
-  (1, 'Venue note', 'Breakfast was great and the staff were friendly. The pool was noisy.'),
-  (2, 'Cafe', 'Friendly staff, no breakfast, but a quiet pool and spa.'),
+  (1, 'Wireless headphones', 'Battery was great and the support was friendly. The case was squeaky.'),
+  (2, 'Charger', 'Friendly support, no battery, but a sturdy case and clip.'),
   (3, 'Resume tips', 'A good résumé is short. Cafés near the office help.'),
   (4, 'Running', 'Runners were running; she runs every day.'),
-  (5, 'Noisy venue', 'The venue was noisy at night, noise everywhere. Friendly staff though.');
+  (5, 'Squeaky headphones', 'The headphones were squeaky at night, squeak everywhere. Friendly support though.');
 
-SELECT rowid FROM docs WHERE docs MATCH 'breakfast friendly';                   -- all terms: 1, 2
-SELECT rowid, rank FROM docs WHERE docs MATCH 'pool OR spa' ORDER BY rank LIMIT 10;   -- BM25 top 10, best first
+SELECT rowid FROM docs WHERE docs MATCH 'battery friendly';                     -- all terms: 1, 2
+SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT 10;  -- BM25 top 10, best first
 SELECT sift_count('docs', 'friendly');                                          -- 3, from the index, without scoring
 SELECT sift_highlight(docs, 1, '<b>', '</b>') FROM docs WHERE docs MATCH 'friendly' ORDER BY rank LIMIT 3;
 ```
@@ -73,18 +73,18 @@ The text after `MATCH` is SiftQL. Words are `AND`ed; operators are case sensitiv
 | `word~1`, `word~2` | fuzzy: edit distance 1 or 2 |
 | `a^3` | boost the score of a term |
 | `{a b c}` | any of a set of words or patterns |
-| `title:venue` | restrict a term to a column of the table |
+| `title:headphones` | restrict a term to a column of the table |
 
 ```sql
-SELECT rowid FROM docs WHERE docs MATCH 'breakfast NOT noisy';               -- 2
-SELECT rowid FROM docs WHERE docs MATCH '"friendly staff"';                  -- phrase: 2, 5
-SELECT rowid FROM docs WHERE docs MATCH '(pool OR spa) AND friendly^3';      -- grouping and boost
-SELECT rowid FROM docs WHERE docs MATCH 'title:venue';                       -- 1, 5
+SELECT rowid FROM docs WHERE docs MATCH 'battery NOT squeaky';               -- 2
+SELECT rowid FROM docs WHERE docs MATCH '"friendly support"';                -- phrase: 2, 5
+SELECT rowid FROM docs WHERE docs MATCH '(case OR clip) AND friendly^3';     -- grouping and boost
+SELECT rowid FROM docs WHERE docs MATCH 'title:headphones';                  -- 1, 5
 ```
 
 Text is split into words, case folded, accent folded (`résumé` matches `resume`) and, by default, stemmed with the Snowball English
 stemmer (`running` matches `run`). Prefix, wildcard, regex and fuzzy patterns are matched against the *indexed* terms, so with the
-default stemmer `n?isy` does not match `noisy` (indexed as `noisi`): create the table with `stemmer=none` when you search by pattern.
+default stemmer `sq?eaky` does not match `squeaky` (indexed as `squeaki`): create the table with `stemmer=none` when you search by pattern.
 There is no stopword list.
 
 ## Ranking
@@ -96,7 +96,7 @@ Equal scores come out in rowid order.
 
 ```sql
 SELECT rowid, rank FROM docs WHERE docs MATCH 'friendly' ORDER BY rank LIMIT 2 OFFSET 1;
-SELECT rowid, sift_bm25(docs) FROM docs WHERE docs MATCH 'pool' ORDER BY rank;
+SELECT rowid, sift_bm25(docs) FROM docs WHERE docs MATCH 'case' ORDER BY rank;
 ```
 
 Deleted documents stay in the collection statistics (document count, average length, term frequencies) until a merge purges them, so scores
@@ -105,15 +105,15 @@ of a table with deletes move when it merges; the order of the matches does not d
 ## Highlights, snippets, facets
 
 ```sql
-SELECT sift_highlight(docs, 1, '<b>', '</b>')               FROM docs WHERE docs MATCH 'noisy';   -- column 1 (0-based) with the matches wrapped
-SELECT sift_snippet(docs, 1, '[', ']', '…', 6)              FROM docs WHERE docs MATCH 'noisy';   -- the 6-token window with most matches
+SELECT sift_highlight(docs, 1, '<b>', '</b>')               FROM docs WHERE docs MATCH 'squeaky';  -- column 1 (0-based) with the matches wrapped
+SELECT sift_snippet(docs, 1, '[', ']', '…', 6)              FROM docs WHERE docs MATCH 'squeaky';  -- the 6-token window with most matches
 SELECT sift_highlight_text('docs', 'The quick fox', 'fox', '<b>', '</b>');                         -- any text, with the analyzer of a table
-SELECT sift_snippet_text('docs', 'one two three venue four five six', 'venue', '[', ']', '…', 3);
+SELECT sift_snippet_text('docs', 'one two three headphones four five six', 'headphones', '[', ']', '…', 3);
 
 -- matches per value of another sift table with the same rowids (one value per rowid, analyzer=keyword)
 CREATE VIRTUAL TABLE docs_category USING sift(category, analyzer=keyword, stemmer=none);
-INSERT INTO docs_category(rowid, category) VALUES (1, 'travel'), (2, 'travel'), (5, 'food');
-SELECT value, n FROM sift_facets('docs', 'docs_category', 'friendly');       -- travel 2, food 1
+INSERT INTO docs_category(rowid, category) VALUES (1, 'audio'), (2, 'audio'), (5, 'power');
+SELECT value, n FROM sift_facets('docs', 'docs_category', 'friendly');       -- audio 2, power 1
 ```
 
 `sift_facets(t, facet_table, query [, limit [, nulls]])` returns the values ordered by count, then value; `nulls=1` adds a NULL row for matches without a value. Highlights and snippets re-analyze the stored text of

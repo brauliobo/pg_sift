@@ -8,6 +8,9 @@
 
 #include "access/amapi.h"
 
+/* sift_handler.c: the IndexAmRoutine the handlers start from; they set the callbacks */
+extern IndexAmRoutine *sift_am_routine(int strategies, int support, bool multicol);
+
 /* sift_build.c */
 extern IndexBuildResult *sift_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);
 extern void sift_ambuildempty(Relation index);

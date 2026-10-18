@@ -113,7 +113,7 @@ RESET sift_ref.tokenizer;
 CREATE TABLE rw (id int PRIMARY KEY, body text);
 INSERT INTO rw
 SELECT i, 'tok' || lpad((i % 90)::text, 3, '0') || ' ing' || (i % 11) || ' walking' || (i % 5) || ' fil' || (i % 6) || 'tion' ||
-	' venue' || (i % 4) || repeat(' pad', i % 6) || CASE WHEN i % 7 = 0 THEN ' tok005 walking' ELSE '' END
+	' honey' || (i % 4) || repeat(' pad', i % 6) || CASE WHEN i % 7 = 0 THEN ' tok005 walking' ELSE '' END
 FROM generate_series(1, 400) i;
 CREATE INDEX rw_idx ON rw USING sift (body);
 ANALYZE rw;
@@ -124,8 +124,8 @@ SELECT sift_ref.load_index('rw_idx') > 0 AS loaded;
 (1 row)
 
 CREATE TEMP TABLE rw_q (q text);
-INSERT INTO rw_q VALUES ('*ing*'), ('*tion'), ('/.*ing[0-9]+/'), ('/walk(ing|ed)[0-9]/'), ('venue~1'), ('tok05~2'), ('t?k00?'),
-	('*tion AND NOT hotel1'), ('*ing* OR hotel3^2'), ('/.*k0[0-4].*/ walking'), ('tok1* OR *tion'), ('"tok005 walking"'), ('walking^3 *ing*');
+INSERT INTO rw_q VALUES ('*ing*'), ('*tion'), ('/.*ing[0-9]+/'), ('/walk(ing|ed)[0-9]/'), ('honey~1'), ('tok05~2'), ('t?k00?'),
+	('*tion AND NOT honey1'), ('*ing* OR honey3^2'), ('/.*k0[0-4].*/ walking'), ('tok1* OR *tion'), ('"tok005 walking"'), ('walking^3 *ing*');
 CREATE FUNCTION rw_diff(q text, k int) RETURNS bigint LANGUAGE sql AS $$
 	WITH got AS (SELECT row_number() OVER (ORDER BY score DESC, tid) AS rank, tid, score FROM
 			(SELECT ctid AS tid, sift.score(ctid) AS score FROM rw WHERE body @@> q ORDER BY sift.score(ctid) DESC LIMIT k) g),

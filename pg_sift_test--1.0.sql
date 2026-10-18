@@ -88,6 +88,15 @@ CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
 
+-- Term blobs (src/sift_segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
+-- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
+CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,
+									 OUT codec_len int4, OUT nnib int4)
+	AS 'MODULE_PATHNAME', 'sift_test_term_blob' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_blob_read(blob bytea, flags int4, df int4, codec_len int4, nnib int4,
+									 OUT postings int8, OUT tf_sum int8)
+	AS 'MODULE_PATHNAME', 'sift_test_blob_read' LANGUAGE C STRICT;
+
 -- Filter masks (src/sift_filter_test.c): a TIDBitmap of tids and lossy blocks converted under a byte budget,
 -- probed with sift_filter_has and, as a block mask, sift_filter_block (block_mismatches counts disagreements).
 CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8, probes tid[],
@@ -154,6 +163,8 @@ CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags
 CREATE FUNCTION sift._test_col_read(index regclass, leaf int4, preds text DEFAULT '', flags int4 DEFAULT 0,
 									OUT tid tid, OUT val text) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_read' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_leaf_stats(index regclass, OUT leaf int4, OUT ndistinct float8, OUT min float8, OUT max float8, OUT elems_per_row float8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_leaf_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_zones(index regclass, leaf int4, preds text DEFAULT '',
 									 OUT sb int4, OUT in_mutable bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
 									 OUT min int8, OUT max int8, OUT sum_i int8, OUT exact bool) RETURNS SETOF record
@@ -163,6 +174,9 @@ CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', f
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,
 										OUT heap_pages int8, OUT simd text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_counters' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
+										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
 
 -- Shredder (src/sift_shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text

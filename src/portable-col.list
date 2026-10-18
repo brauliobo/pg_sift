@@ -13,6 +13,7 @@ sift_colcodec_avx2.c
 sift_colcodec_avx512.c
 sift_colz.c
 sift_col_seg.c
+sift_col_preagg.c
 sift_shred.c
 sift_shred_kern.c
 sift_shred_kern_avx2.c
@@ -27,6 +28,7 @@ sift_col_kern.h
 sift_col_kern_int.h
 sift_col_enc.h
 sift_col_seg.h
+sift_col_preagg.h
 sift_colcodec.h
 sift_colcodec_int.h
 sift_colcodec_vec.h
@@ -34,3 +36,4 @@ sift_colz.h
 sift_aggkern.h
 sift_aggkern_int.h
 sift_aggkern_cases.h
+sift_testrng.h
