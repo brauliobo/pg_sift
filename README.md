@@ -86,6 +86,7 @@ The index options and settings of the background maintenance (the rest is in [do
 |---|---|---|
 | `sift.async_maintenance` | on | promote and merge segments in a background worker |
 | `sift.log_min_duration` | 1s | log promotions, merges and worker runs of at least that long |
+| `sift.maintenance_cost_delay` | 0 | ms the worker sleeps after every 16 pages (128 kB) of merge I/O; 0 is full speed |
 
 | Index option | Default | Meaning |
 |---|---|---|
