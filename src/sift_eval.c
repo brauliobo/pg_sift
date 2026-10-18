@@ -108,7 +108,9 @@ struct SiftPlan
 	int		   *mutno;			/* directory index of each mutable segment */
 	MutHit	   *mhit;			/* live matches of the mutable segments, ascending */
 	int64		nmhit;
-	uint64		mut_ndocs;		/* documents and tokens of the mutable segments, deleted ones included */
+	uint64		seg_ndocs;		/* live documents and tokens of the immutable segments */
+	uint64		seg_sum_dl;
+	uint64		mut_ndocs;		/* live documents and tokens of the mutable segments */
 	uint64		mut_sum_dl;
 	int			nleaves;
 	int			maxleaves;
@@ -392,6 +394,7 @@ typedef struct Expand
 	SiftPlan   *plan;
 	const SiftTermMatcher *matcher;
 	SiftQKind	kind;			/* of the leaf */
+	SiftSegment *seg;
 	SiftSegment *live_in;		/* when set, terms without a live posting in it are skipped */
 	LeafTerm   *terms;
 	int			n;
@@ -426,21 +429,23 @@ static bool
 expand_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
 	Expand	   *e = arg;
+	SiftTermInfo live = *info;
 
 	if (!sift_matcher_match(e->matcher, term, len) || (e->live_in && !sift_seg_term_live(e->live_in, info)))
 		return true;
+	sift_seg_term_stats(e->seg, &live);
 	if (e->n == sift_max_expansions)
 	{
 		e->over = true;
 		/* an estimate of a prefix reads on, from the dictionary only: the terms it keeps are the first ones, not the typical ones */
 		if (!e->plan->capped || e->kind != SQ_PREFIX)
 			return false;
-		e->tail_none *= 1.0 - Min(1.0, info->df / Max((double) e->plan->stats.ndocs, 1.0));
-		e->tail_postings += info->df;
+		e->tail_none *= 1.0 - Min(1.0, live.ldf / Max((double) e->plan->stats.ndocs, 1.0));
+		e->tail_postings += live.ldf;
 		e->tail_terms++;
 		return true;
 	}
-	expand_add(e, term, len, info);
+	expand_add(e, term, len, &live);
 	return true;
 }
 
@@ -489,7 +494,7 @@ static bool
 expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
 {
 	SiftSegment *seg = p->seg[s];
-	Expand		e = {.plan = p, .matcher = l->m, .kind = l->node->kind, .live_in = live_only ? seg : NULL, .tail_none = 1.0};
+	Expand		e = {.plan = p, .matcher = l->m, .kind = l->node->kind, .seg = seg, .live_in = live_only ? seg : NULL, .tail_none = 1.0};
 	SiftTermInfo info;
 
 	if (l->m == NULL)
@@ -812,13 +817,13 @@ mutdoc_copy(MemoryContext cx, const SiftMutDoc *d)
 	return c;
 }
 
-/* Statistics count the mutable docs too (deleted ones like the immutable entries do) */
+/* Statistics count the live docs of the mutable segments too: those of the immutable ones are in p->seg_ndocs and p->seg_sum_dl */
 static void
 bind_stats(SiftPlan *p, uint64 mut_ndocs, uint64 mut_sum_dl)
 {
-	double		sum = p->stats.avgdl + mut_sum_dl;
+	double		sum = p->seg_sum_dl + mut_sum_dl;
 
-	p->stats.ndocs += mut_ndocs;
+	p->stats.ndocs = p->seg_ndocs + mut_ndocs;
 	p->stats.avgdl = p->stats.ndocs > 0 ? sum / p->stats.ndocs : 0;
 }
 
@@ -826,7 +831,9 @@ static void
 bind_mutable(SiftPlan *p)
 {
 	uint64		ndocs = 0,
-				sum_dl = 0;
+				sum_dl = 0,
+				dead_docs = 0,
+				dead_dl = 0;
 	int64		cap = 0;
 
 	for (int i = 0; i < p->nmut && !p->capped; i++)
@@ -842,9 +849,15 @@ bind_mutable(SiftPlan *p)
 		{
 			if ((++seen & 1023) == 0)
 				CHECK_FOR_INTERRUPTS();
+			if (doc.deleted)
+			{
+				dead_docs++;
+				dead_dl += doc.dl;
+				continue;
+			}
 			if (p->scoring)
 				doc_count_terms(p, &doc);
-			if (doc.deleted || !doc_matches(p, p->root, &doc))
+			if (!doc_matches(p, p->root, &doc))
 				continue;
 			if (p->nmhit == cap)
 			{
@@ -869,9 +882,9 @@ bind_mutable(SiftPlan *p)
 				p->mhit[k++] = p->mhit[j];
 		p->nmhit = k;
 	}
-	p->mut_ndocs = ndocs;
-	p->mut_sum_dl = sum_dl;
-	bind_stats(p, ndocs, sum_dl);
+	p->mut_ndocs = ndocs - dead_docs;
+	p->mut_sum_dl = sum_dl - dead_dl;
+	bind_stats(p, p->mut_ndocs, p->mut_sum_dl);
 }
 
 /* ---------- parallel bind ---------- */
@@ -886,17 +899,48 @@ typedef struct SharedHit
 typedef struct SharedBind
 {
 	SiftDirSnapshot dir;
+	uint64		seg_ndocs;
+	uint64		seg_sum_dl;
 	uint64		mut_ndocs;
 	uint64		mut_sum_dl;
 	int64		nmhit;
 	int			nleaves;
 } SharedBind;
 
+/*
+ * The live docs and tokens of the immutable segments, which every participant of a parallel scan takes from the one that
+ * exported the bind: a VACUUM running meanwhile must not give the workers other statistics than the leader's
+ */
+static void
+bind_segment_totals(SiftPlan *p, const void *shared)
+{
+	if (shared)
+	{
+		const SharedBind *h = shared;
+
+		p->seg_ndocs = h->seg_ndocs;
+		p->seg_sum_dl = h->seg_sum_dl;
+	}
+	else
+		for (int s = 0; s < p->nsegs; s++)
+		{
+			uint64		n,
+						sum;
+
+			sift_seg_live_totals(p->seg[s], &n, &sum);
+			p->seg_ndocs += n;
+			p->seg_sum_dl += sum;
+		}
+	p->stats.ndocs = p->seg_ndocs;
+	p->stats.avgdl = p->seg_sum_dl;
+}
+
 void *
 sift_plan_export(const SiftPlan *p, Size *len)
 {
 	StringInfoData buf;
-	SharedBind	h = {.dir = p->st->dir, .mut_ndocs = p->mut_ndocs, .mut_sum_dl = p->mut_sum_dl,
+	SharedBind	h = {.dir = p->st->dir,.seg_ndocs = p->seg_ndocs,.seg_sum_dl = p->seg_sum_dl,
+					 .mut_ndocs = p->mut_ndocs,.mut_sum_dl = p->mut_sum_dl,
 					 .nmhit = p->nmhit, .nleaves = p->nleaves};
 
 	initStringInfo(&buf);
@@ -985,7 +1029,7 @@ leaf_mut_terms(EvalLeaf *l, LeafTerm **out)
 
 		t->term = e->term;
 		t->len = strlen(e->term);
-		t->info.df = e->df;
+		t->info.df = t->info.ldf = e->df;
 		out[n++] = t;
 	}
 	return n;
@@ -1014,7 +1058,7 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 		float4		w;
 
 		for (j = i; j < n && leaf_term_cmp(&all[i], &all[j]) == 0; j++)
-			df += all[j]->info.df;
+			df += all[j]->info.ldf;
 		w = sift_kern_term_weight(l->node->boost, sift_kern_idf(p->stats.ndocs, df), p->bm.k1);
 		for (int k = i; k < j; k++)
 			all[k]->w = w;
@@ -1311,8 +1355,6 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 			continue;
 		}
 		p->segno[p->nsegs++] = i;
-		p->stats.ndocs += st->dir.segs[i].ndocs;
-		p->stats.avgdl += st->dir.segs[i].sum_dl;
 	}
 	p->stats.nmutable = p->nmut;
 	p->capped = (flags & SIFT_BIND_CAPPED) != 0;
@@ -1320,6 +1362,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	p->seg = MemoryContextAlloc(st->mcxt, Max(p->nsegs, 1) * sizeof(SiftSegment *));
 	for (int s = 0; s < p->nsegs; s++)
 		p->seg[s] = state_segment(st, p->segno[s]);
+	bind_segment_totals(p, shared);
 
 	for (int i = 0; i < nqueries; i++)
 	{
@@ -1731,8 +1774,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 	const SiftPlan *p = it->plan;
 	SiftSegment *seg = p->seg[s];
 	const uint8 *off = g->off;
-	SiftDocChunk dc;
-	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid) && sift_seg_docs(seg, g->gid, &dc);
+	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid);
 	bool		pos = !sure && p->npleaf > 0,
 				decided = !sure && it->som && !p->hardrecheck && !p->segheap[s];
 
@@ -1748,7 +1790,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 
 			memcpy(mask, off, g->w);
 			if (dirty)
-				sift_seg_page_mask_live(seg, &dc, page, mask);
+				sift_seg_live_mask(seg, g->gid, page, mask);
 			if (pos)
 				phrases_filter(it->pos, s, page, mask);
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
@@ -3242,21 +3284,23 @@ count_page(void *arg, BlockNumber blk, const uint64 *offmask)
 
 /*
  * The visible matches of one segment's group of a superblock, counted where they lie in the group: the
- * all-visible pages of a clean group in one pass, the others page by page
+ * all-visible pages of a clean group in one pass, the others page by page. With delta, the live postings of the group
+ * are counted already (the term's df over the segment) and the result is what the pages the heap decides add to
+ * or take off them
  */
 static int64
-count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g)
+count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g, bool delta)
 {
-	SiftDocChunk dc;
 	const uint8 *off = g->off;
 	const uint64 *allvis = allvisible(cc, g->gid);
 	uint64		bulk[SIFT_PAGEMASK_WORDS];
-	int64		n;
-	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid) && sift_seg_docs(seg, g->gid, &dc);
+	int64		n = 0;
+	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid);
 
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
 		bulk[wd] = g->pages[wd] & allvis[wd];
-	n = dirty ? sift_seg_count_live(seg, &dc, g, bulk) : sift_grp_count_mask(g, bulk);
+	if (!delta)
+		n = dirty ? sift_seg_live_count(seg, g, bulk) : sift_grp_count_mask(g, bulk);
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS && memcmp(bulk, g->pages, sizeof(bulk)) != 0; wd++)
 		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
 		{
@@ -3266,34 +3310,75 @@ count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g)
 			if (bulk[wd] >> (page & 63) & 1)
 				continue;
 			memcpy(mask, off, g->w);
-			if (dirty && sift_seg_page_mask_live(seg, &dc, page, mask) == 0)
+			if (dirty && sift_seg_live_mask(seg, g->gid, page, mask) == 0)
 				continue;
+			n -= delta ? sift_offmask_popcount(mask, 1) : 0;
 			n += visible_offsets(cc, (BlockNumber) g->gid << SIFT_SB_SHIFT | page, mask);
 		}
 	sift_sr_release(&seg->sr);
 	return n;
 }
 
-/* count(*) of a plan the bitmaps decide alone, without the mutable segments' matches: no page is copied */
+/*
+ * The live postings of a plan that is one plain term, from the segments' counts of them (a term's df less its dead postings), or -1
+ * when the plan is another or a segment cannot say: a segment with vacuumed docs of format 1, or whose table of dead postings a
+ * VACUUM is changing
+ */
+static int64
+count_by_df(const SiftPlan *plan)
+{
+	const EvalLeaf *l;
+	int64		n = 0;
+
+	if (plan->root->kind != EN_LEAF || plan->filter)
+		return -1;
+	l = &plan->leaves[plan->root->leaf];
+	if (l->m != NULL || l->phrase != NULL)
+		return -1;
+	for (int s = 0; s < plan->nsegs; s++)
+	{
+		if (l->nterms[s] > 1 || !sift_seg_live_stable(plan->seg[s]))
+			return -1;
+		n += l->nterms[s] ? l->terms[s][0].info.ldf : 0;
+	}
+	return n;
+}
+
+/*
+ * count(*) of a plan the bitmaps decide alone, without the mutable segments' matches: no page is copied. A plan that is one term
+ * starts from the segments' counts of its live postings and corrects them for the pages the heap decides, so a superblock with
+ * vacuumed docs and all-visible pages costs what a clean one does; a VACUUM that changed a segment meanwhile has the count redone
+ * from the liveness rows
+ */
 static int64
 count_visible(SiftPlan *plan, SiftVis *vis, SiftNextRangeFn next, void *next_arg)
 {
 	CountCtx	cc = {.plan = plan,.vis = vis,.sb = UINT32_MAX};
-	SiftMatchIter *it = sift_iter_begin(plan);
-	int64		n = 0;
+	SiftMatchIter *it;
+	int64		n = next ? -1 : count_by_df(plan);
+	bool		delta = n >= 0;
 	uint32		sb;
 
+retry:
+	it = sift_iter_begin(plan);
+	n = delta ? n : 0;
 	if (next)
 		sift_iter_ranges(it, next, next_arg);
 	while (iter_find_sb(it, &sb))
 	{
 		for (int s = 0; s < plan->nsegs; s++)
 			if (it->grp[s] && it->grp[s]->gid == sb)
-				n += count_group(&cc, plan->seg[s], it->grp[s]);
+				n += count_group(&cc, plan->seg[s], it->grp[s], delta);
 		it->next_sb = sb + 1;
 		plan->stats.sb_scanned++;
 	}
 	sift_iter_end(it);
+	for (int s = 0; delta && s < plan->nsegs; s++)
+		if (!sift_seg_live_stable(plan->seg[s]))
+		{
+			delta = false;
+			goto retry;
+		}
 	plan->stats.verified = n;
 	return n;
 }
@@ -3330,8 +3415,8 @@ leaf_prob(const SiftPlan *p, const EvalLeaf *l, Estimate *est)
 	for (int s = 0; s < p->nsegs; s++)
 		for (int i = 0; i < l->nterms[s]; i++)
 		{
-			none *= 1.0 - Min(1.0, l->terms[s][i].info.df / ndocs);
-			est->postings += l->terms[s][i].info.df;
+			none *= 1.0 - Min(1.0, l->terms[s][i].info.ldf / ndocs);
+			est->postings += l->terms[s][i].info.ldf;
 			est->terms++;
 		}
 	est->postings += l->tail_postings;

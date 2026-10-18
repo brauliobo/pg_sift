@@ -10,7 +10,8 @@
  *   or varint post_len, varint post_len - codec_len, [varint nnib unless
  *   SIFT_TERM_ALL_TF1] [varint pos_len if SIFT_TERM_POS]. Term blobs follow each other in term
  *   order, each at the next 4-byte aligned offset, so post_off is implied.
- * DICTIDX: SiftDictIdx per block; every 256th prefix forms the root array
+ * DICTIDX: SiftDictIdx per block (slot_base: the number of terms with a counter slot before the block, see SiftTermInfo.slot; 0 in
+ * segments written before format 2, whose terms have no slot); every 256th prefix forms the root array
  * (u64[dictroot_n]) kept in memory with the opened dictionary. A lookup
  * touches the root array, <= 1 DICTIDX page (binary search) and one block.
  */
@@ -53,6 +54,8 @@ typedef struct SiftTermInfo
 	const uint8 *inline_pos;	/* inline term: its records back to back, in the dictionary block or the writer */
 	SiftKey		inline_keys[SIFT_INLINE_MAX];
 	uint8		inline_tf[SIFT_INLINE_MAX];
+	uint32		ldf;			/* df of the live docs: the dictionary's df until sift_seg_term_stats takes the vacuumed postings off */
+	int32		slot;			/* of the term in the segment's dead-postings table, -1 for an inline term (set by the reader) */
 } SiftTermInfo;
 
 /* On-disk DICTIDX entry */
@@ -60,7 +63,7 @@ typedef struct SiftDictIdx
 {
 	uint64		prefix;			/* first term's first 8 bytes, big-endian, zero padded */
 	uint32		block_off;		/* from the DICT section start */
-	uint32		reserved;
+	uint32		slot_base;		/* terms with a slot before the block (0 before segment format 2) */
 } SiftDictIdx;
 
 /*
@@ -73,6 +76,9 @@ typedef struct SiftDictWriter SiftDictWriter;
 
 extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw);
 extern void sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *info);
+
+/* Terms added so far that are not inline: each has a slot (0, 1, ...) in dictionary order */
+extern uint32 sift_dict_writer_nslots(const SiftDictWriter *w);
 
 /* Writes DICT then DICTIDX then the root array into sw; fills the header fields */
 extern void sift_dict_writer_finish(SiftDictWriter *w, SiftSegHeaderData *hdr);

@@ -224,6 +224,21 @@ union_dl(Union *u, uint32 gid, const SiftKey *keys, int n, uint16 *dl)
 	}
 }
 
+/* The postings of docs that VACUUM has not removed: a vacuumed doc counts in no df and no score, as in the merged segment */
+static int
+union_live(Union *u, SiftKey *keys, uint8 *tf, int n)
+{
+	int			k = 0;
+
+	for (int i = 0; i < n; i++)
+		if (sift_seg_key_live(u->seg, keys[i]))
+		{
+			keys[k] = keys[i];
+			tf[k++] = tf[i];
+		}
+	return k;
+}
+
 /*
  * Merges the superblock's postings into the writer, in key order: a document that has several words
  * sums their tf. The slots are summed in a dense array, which the scan also clears.
@@ -269,6 +284,8 @@ union_emit(Union *u, uint32 gid)
 			u->acc[slot] = 0;
 		}
 	}
+	if (sift_seg_sb_dirty(u->seg, gid))
+		n = union_live(u, keys, tf, n);
 	if (n == 0)
 		return;
 	if (u->scoring)
@@ -366,6 +383,8 @@ union_build(SiftSegment *seg, const SiftTermMatcher *m, const SiftScoreRef *ref,
 			union_emit(&u, sb);
 	if (u.any)
 		blob = sift_postw_end_term_mem(u.w, info, mcxt);
+	info->ldf = info->df;		/* the union holds live docs only */
+	info->slot = -1;
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return blob;
@@ -379,6 +398,7 @@ typedef struct CacheKey
 	RelFileLocator rel;
 	uint64		gen;
 	BlockNumber header_blk;
+	uint64		live_ndocs;		/* the union holds live docs only: another VACUUM makes another blob */
 	uint16		keylen;
 	bool		scoring;
 	char		key[SIFT_MAX_TERM_BYTES + 2];
@@ -401,10 +421,13 @@ static uint64 cache_clock;
 static void
 cache_key(const SiftSegment *seg, const char *key, int keylen, bool scoring, CacheKey *k)
 {
+	uint64		sum_dl;
+
 	memset(k, 0, sizeof(CacheKey));
 	k->rel = seg->index->rd_locator;
 	k->gen = seg->entry.gen;
 	k->header_blk = seg->entry.header_blk;
+	sift_seg_live_totals((SiftSegment *) seg, &k->live_ndocs, &sum_dl);
 	k->keylen = keylen;
 	k->scoring = scoring;
 	memcpy(k->key, key, keylen);
