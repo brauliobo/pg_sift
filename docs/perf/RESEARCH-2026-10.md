@@ -312,9 +312,9 @@ runs, host load 6 to 12.
 
 | Item | Class | main (b6e7d3b) | this branch |
 |---|---|---|---|
-| 4. generic plans keep the pushdown | prepared filter | 2.81M +- 0.02M | 1.69M +- 0.01M (-40%) |
-| | prepared join | 4.63M +- 0.03M | 3.84M +- 0.02M (-17%) |
-| | prepared rare AND with a 2.3% filter | 733k +- 17k | 779k +- 17k (+6%, 14% more instructions): see below |
+| 4. generic plans keep the pushdown, decided at execution | prepared filter | 3.23M +- 0.12M | 1.66M +- 0.06M (-49%) |
+| | prepared join | 5.93M +- 0.41M | 4.68M +- 0.37M (-21%) |
+| | prepared rare AND with a 2.3% filter | 772k +- 27k | 658k +- 11k (-15%) |
 | 5. late stretch of the heap | places p1 filter | 3.52M +- 0.10M | 0.67M +- 0.01M (-81%) |
 | | places p2 filter | 1.05M +- 0.03M | 0.68M +- 0.02M (-36%) |
 | | clustered article shapes (late, middle) | 2.46M, 1.51M | 0.11M, 0.23M |
@@ -329,18 +329,41 @@ fell in all of them (or -3%, phrase -9%, prefix -26%, fuzzy -70%, places top -11
 +- 0.04 in one run and 0.85, 0.99 and 1.12 in three more (its instructions are 3% lower every time). The `update` class has no single-backend
 script in `ab.sh` and was measured by the suite only (0.93, standard error 72%).
 
-**One known exception.** A prepared statement with a rare query and a selective filter (bench/sql/ab_and_filter_prep.pgb) costs about 5% more
-cycles. Main's generic plan assumes the operator's default (0.5% of the rows match), so it prices the post-filter scan as nearly free, wins
-against the custom plans and is reused; that plan is right for rare queries and wrong for the common words of the filter class. The generic
-plan now assumes a tenth of the rows (`UNKNOWN_QUERY_SEL`) and pushes the filter down, which costs more than the custom plans of the rare queries,
-so PostgreSQL keeps planning them. Values from 0.02 to 0.1 gave the same result for both shapes; no value of the assumption serves both, only a
-decision at execution time (the scan knows the query when it starts) would. Not done.
+**Prepared statements, the first version and the fix.** The first version priced a generic plan as if its query matched a tenth of the rows,
+which pushed the filter down for common queries but made a prepared rare AND query with a 2.3% filter 5% (cycles) and 12-14% (instructions)
+dearer than on main: main's generic plan assumed the operator's default (0.5% of the rows), priced the post-filter scan as nearly free, won
+against the custom plans and was reused, while the new plan cost more than the custom plans of rare queries, so PostgreSQL planned it again.
+PostgreSQL has no choose-plan node, but the scan knows the query when it starts, so the decision moved there: the generic plan keeps the filter's
+bitmap as a child and a window of match counts (`SIFT_PRIV_GATE`, `SIFT_PRIV_GATE_TO`, found by `push_window` from the costs of both paths on a
+geometric grid of match counts), and `start_scan` binds the query and builds the bitmap only when `sift_plan_docs` is inside the window. The plan
+is priced as main priced it, so the plan cache reuses it as before. Two things the measurements forced: the cost ratio is not monotonic in the
+match count (a query that matches so much that the ranker holds its rows after a few candidates is better off without the bitmap), and the
+planner's charge per candidate checked (a random page) is above what data in memory costs, so the window opens only where the pushed down plan is
+expected to cost a quarter of the other and stays open while it is not dearer: at a margin of one half, a prepared rare AND query with a 10% filter
+cost 7% more instructions than main. Shape matrix, 5 interleaved runs, cycles / instructions of the gated build over main (automatic plan
+cache; the generic-only and custom-only modes give the same ratios, and the custom plans are the same code):
+
+| query class | filter 0.1% | 2.3% | 10% | 50% |
+|---|---|---|---|---|
+| and (rare) | 0.69 / 0.74 | 0.89 / 0.88 | 0.97 / 1.00 | 0.95 / 1.01 |
+| filter (common) | 0.23 / 0.28 | 0.54 / 0.64 | 1.05 / 1.01 | 0.98 / 0.92 |
+| or (common, ranked) | 0.13 / 0.23 | 0.45 / 0.61 | 0.94 / 1.00 | 0.96 / 0.99 |
+
+The other prepared classes (and, or, phrase, mixed, count, filter, join, term, prefix, fuzzy) and the literal ones are within noise or better in
+cycles and instructions; `fuzzy_prep`, `or`, and the shapes fc_end5, fc_scat5, fc_grp7 and fk_g7 read 1.1 to 1.3 in some single runs where the
+reference had a low outlier or the instructions did not move, and were measured again with 8 runs in both orders: no difference beyond noise.
 
 **Row 3 (join predicate pushed into the scan as a mask) was not implemented.** The oracle of section 6 (-30% for perfect knowledge of the join
 selectivity) needs a dimension child plan, a TIDBitmap built at execution from one index probe per join key, a cost model against `only_best`
 (a ranked relation keeps one path) and the limit hint; the safe first step, giving the join the right number of rows to hint the scan with,
 was built and measured: instructions -9%, cycles +9% (more cache misses), so it was dropped. The over-pull growth (above) took the part of the
-gain that is free.
+gain that is free. The gated bitmap of the prepared filter is the mechanism that would carry the join as well (a child plan that the scan builds
+when the bound query is known), but the join differs in three ways that make it a project of its own and not a step: the mask must be the
+union of the index probes of the dimension's keys (a different executor node, with a count of keys that is not known at planning time), the
+number of keys to probe depends on the join's other side (a nested loop that has not run yet), and the ranked relation keeps one path whatever
+the join order (`only_best`), so a masked scan that wins for one tenant cannot be offered next to the plain one for the tenants where the hash
+join wins. Without a guard that picks between them at execution by the number of keys, a tenant with many keys pays for a mask it does not need.
+Not started: the oracle gain (-30% of the join class) does not pay for the risk of a slower shape.
 
 **Sanitizer finding.** `SANITIZE=1 scripts/ci.sh quick` failed `parallel_scan` on this branch and passed on main. The cause is older than the
 branch: `add_parallel_count` passed an uninitialized `AggClauseCosts` to `get_agg_clause_costs`, so the parallel count was priced with stack
