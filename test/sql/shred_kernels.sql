@@ -43,3 +43,11 @@ FROM r_scalar;
 SELECT k, sift._test_shred_kern_rate(k, 4096, 20) > 0 AS runs
 FROM unnest(ARRAY['state_counts', 'state_bits', 'minmax_i64', 'minmax_f64', 'expand_parents']) k;
 SELECT sift._test_shred_kern_rate('nope', 16, 1);
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

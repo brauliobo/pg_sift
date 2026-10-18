@@ -89,3 +89,11 @@ SELECT same($$SELECT m.mapped, count(*) AS n
 SELECT same($$SELECT m.mapped, count(*) AS n
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
 			  LEFT JOIN empty_map m ON m.category = i.category GROUP BY 1$$) AS changed_empty;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -72,3 +72,12 @@ SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? 
 SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"role": null}]') AS f FROM d GROUP BY g$$) AS contains_null;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"n": 2.5}]') AS f FROM d GROUP BY g$$) AS contains_float;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.g)) AS f FROM d GROUP BY g$$) AS exists_outer_reference;
+-- the shared database of a plain installcheck goes on with the next test
+DROP TABLE pat;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

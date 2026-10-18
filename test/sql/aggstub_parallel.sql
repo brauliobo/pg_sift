@@ -48,3 +48,11 @@ SELECT count(*) AS dump_differences FROM (
 RESET debug_parallel_query;
 
 DROP TABLE w, morsels, reference, parallel_read, dump_serial, dump_serial_s;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

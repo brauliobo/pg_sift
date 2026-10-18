@@ -150,3 +150,12 @@ SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_
  plain, same rows
 (1 row)
 
+-- the shared database of a plain installcheck goes on with the next test
+DROP TABLE pat;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

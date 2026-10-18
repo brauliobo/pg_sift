@@ -190,3 +190,12 @@ INSERT INTO e VALUES (3, jsonb_build_object('l', jsonb_build_array(jsonb_build_o
 CREATE INDEX e_col ON e USING sift_colstub (id, j) WITH (paths = 'j: l[]{t text}');
 
 DROP TABLE o, e;
+-- the shared database of a plain installcheck goes on with the next test
+DROP TABLE pat;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

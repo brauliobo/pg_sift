@@ -214,4 +214,7 @@ SELECT sift._test_truncate('ul_idx') > 2000 AS freed, sized('ul_idx');
 (1 row)
 
 DROP TABLE t, ul;
+DROP FUNCTION sized(regclass);
+DROP FUNCTION info(regclass);
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

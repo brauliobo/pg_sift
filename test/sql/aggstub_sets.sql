@@ -94,3 +94,11 @@ SELECT same($$SELECT v.label, max(v.weight) AS hw, sum(v.weight) AS sw, count(DI
 SELECT same($$SELECT count(v.label) AS c, min(v.label) AS lo, sum(v.weight) AS sw, avg(v.factor) AS af
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
 			  LEFT JOIN vals v ON v.category = i.category WHERE i.category = 'E'$$) AS mapped_no_value;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
