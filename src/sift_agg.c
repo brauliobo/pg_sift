@@ -456,6 +456,7 @@ typedef struct AggExec
 	SiftSrcUnit unit;
 	SiftSrcVec *uvec;
 	bool	   *uvec_ok;
+	uint32	  **gofs;			/* per array leaf: elem_offs of the unit, NULL when not built yet */
 	int			qlevel;			/* 1: element queries */
 	uint32	   *parent;
 	uint32	   *offs;
@@ -809,6 +810,30 @@ static int
 leaf_lvl(AggExec *ex, int leaf)
 {
 	return ex->lay->leaf[leaf].parent >= 0;
+}
+
+/* row r of the unit owns the elements [offs[r], offs[r + 1]) of the children of the array leaf */
+static uint32 *
+elem_offs(AggExec *ex, int leaf)
+{
+	if (ex->gofs[leaf] == NULL)
+	{
+		const SiftSrcVec *cnt = get_vec(ex, leaf);
+		const int32 *c = cnt->data;
+		int			nrow = ex->unit.nrow;
+		uint32	   *offs = MemoryContextAlloc(ex->ucxt, (nrow + 1) * sizeof(uint32)),
+					m = 0;
+
+		for (int r = 0; r < nrow; r++)
+		{
+			offs[r] = m;
+			if (!(cnt->isnull && cnt->isnull[r]) && c[r] > 0)
+				m += c[r];
+		}
+		offs[nrow] = m;
+		ex->gofs[leaf] = offs;
+	}
+	return ex->gofs[leaf];
 }
 
 /* ---------- predicates ---------- */
@@ -1587,6 +1612,60 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 
 static void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
 
+/* is a bit set in [lo, hi) */
+static bool
+any_bit(const uint64 *b, uint32 lo, uint32 hi)
+{
+	uint32		w0 = lo >> 6,
+				w1;
+	uint64		m0 = ~UINT64CONST(0) << (lo & 63),
+				m1;
+
+	if (lo >= hi)
+		return false;
+	w1 = (hi - 1) >> 6;
+	m1 = ~UINT64CONST(0) >> (63 - ((hi - 1) & 63));
+	if (w0 == w1)
+		return (b[w0] & m0 & m1) != 0;
+	if ((b[w0] & m0) || (b[w1] & m1))
+		return true;
+	for (uint32 w = w0 + 1; w < w1; w++)
+		if (b[w])
+			return true;
+	return false;
+}
+
+/* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
+static void
+any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
+{
+	const uint32 *offs = elem_offs(ex, p->leaf);
+	int			nrow = ex->unit.nrow,
+				nw = (nrow + 63) / 64;
+	uint32		m = offs[nrow];
+	uint64	   *eb = MemoryContextAlloc(ex->ucxt, ((m + 63) / 64 + PADW) * sizeof(uint64));
+	uint64		t[VECW + PADW];
+
+	for (uint32 s = 0; s < m; s += VEC)
+	{
+		int			n = Min(VEC, m - s);
+
+		eval_pred(ex, p->child[0], 1, s, n, t);
+		memcpy(eb + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
+	}
+	clear_words(out, nrow);
+	for (int r = 0; r < nrow; r++)
+		if (any_bit(eb, offs[r], offs[r + 1]))
+			out[r >> 6] |= UINT64CONST(1) << (r & 63);
+	if (p->op)
+	{
+		for (int w = 0; w < nw; w++)
+			out[w] = ~out[w];
+		if (nrow & 63)
+			out[nw - 1] &= (UINT64CONST(1) << (nrow & 63)) - 1;
+	}
+}
+
 /* the bitmap of a row level predicate over the unit's rows, computed once */
 static uint64 *
 row_bitmap(AggExec *ex, SiftAggPred *p)
@@ -1598,8 +1677,11 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 		int			nrow = ex->unit.nrow;
 
 		st->rowmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
-		for (int s = 0; s < nrow; s += VEC)
-			eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
+		if (p->kind == SAP_ANY_ELEM)
+			any_elem_rows(ex, p, st->rowmask);
+		else
+			for (int s = 0; s < nrow; s += VEC)
+				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
 		st->rowmask_ok = true;
 	}
 	return st->rowmask;
@@ -1657,6 +1739,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_COMBO:
 			eval_combo(ex, p, qlevel, start, n, out);
+			break;
+		case SAP_ANY_ELEM:
+			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
 			break;
 	}
 }
@@ -3397,19 +3482,10 @@ static void
 build_parents(AggExec *ex)
 {
 	SiftSrcUnit *u = &ex->unit;
-	const SiftSrcVec *cnt = get_vec(ex, ex->spec->group);
-	const int32 *c = cnt->data;
-	uint32		m = 0;
+	uint32		m;
 
-	ex->offs = MemoryContextAlloc(ex->ucxt, (u->nrow + 1) * sizeof(uint32));
-	for (int r = 0; r < u->nrow; r++)
-	{
-		ex->offs[r] = m;
-		if (!(cnt->isnull && cnt->isnull[r]) && c[r] > 0)
-			m += c[r];
-	}
-	ex->offs[u->nrow] = m;
-	ex->nelem = m;
+	ex->offs = elem_offs(ex, ex->spec->group);
+	ex->nelem = m = ex->offs[u->nrow];
 	ex->parent = MemoryContextAlloc(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
 	for (int r = 0; r < u->nrow; r++)
 		for (uint32 e = ex->offs[r]; e < ex->offs[r + 1]; e++)
@@ -3428,6 +3504,7 @@ process_unit(AggExec *ex)
 
 	MemoryContextReset(ex->ucxt);
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
+	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < s->npreds_total; i++)
 		ex->ps[i].rowmask_ok = false;
 	ex->n_units++;
@@ -3870,6 +3947,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	extend_layout(ex);
 	ex->uvec = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(SiftSrcVec));
 	ex->uvec_ok = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(bool));
+	ex->gofs = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(uint32 *));
 	ex->lutcx = CreateStandaloneExprContext();
 	ex->lutcx->ecxt_param_list_info = estate->es_param_list_info;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
