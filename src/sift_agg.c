@@ -6236,15 +6236,26 @@ apply_late(AggExec *ex, uint64 *mask, int total)
 	}
 }
 
+/* A unit whose zone of the first sort leaf has nothing that sorts before the n-th best so far is not read */
+static bool
+topn_viable(AggExec *ex)
+{
+	SiftSrcZone z;
+
+	if (!sift_topn_wants_zones(ex->topn))
+		return true;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), &z);
+	if (sift_topn_zone_viable(ex->topn, &z))
+		return true;
+	sift_topn_skip(ex->topn);
+	return false;
+}
+
 /* the rows that pass go to the heap of the best n, by the sort leaves (sift_topn.h) */
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	const SiftSrcVec *keys[SIFT_TOPN_MAX_KEYS];
-
-	for (int j = 0; j < sift_topn_nkey(ex->topn); j++)
-		keys[j] = get_vec_raw(ex, sift_topn_leaf(ex->topn, j));
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, keys, rmask, nrow);
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec_raw(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
 }
 
 static void
@@ -6265,6 +6276,8 @@ process_unit(AggExec *ex)
 	ex->n_units++;
 	ex->n_rows += nrow;
 	if (nrow == 0)
+		return;
+	if (ex->topn && !topn_viable(ex))
 		return;
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 	sift_colsrc_live(ex->src, u, rmask);
@@ -8054,14 +8067,29 @@ fuse_next(AggExec *ex, TupleTableSlot *slot)
 	return ExecStoreVirtualTuple(slot);
 }
 
-/* The zones of the first sort leaf of every unit, then the superblocks that can hold a better row than the n-th, in the order they pay in */
+/* The zone of the first sort leaf in the unit of superblock sb; false when it has none */
+static bool
+topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
+{
+	if (ex->search)
+		sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
+	sift_colsrc_begin(ex->src, sb, sb + 1, NULL, 0);
+	if (!sift_colsrc_next(ex->src, &ex->unit))
+		return false;
+	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), z);
+	return true;
+}
+
+/* Windows of superblocks from the end the best values are at (sift_topn.h) */
 static void
 topn_run(AggExec *ex)
 {
 	SiftTopN   *t;
 	uint32		nsb,
 				lo,
-				hi;
+				hi,
+				best;
+	SiftSrcZone z;
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
@@ -8069,21 +8097,20 @@ topn_run(AggExec *ex)
 	table_init(ex);
 	t = ex->topn;
 	nsb = sift_colsrc_nsb(ex->src);
-	if (sift_topn_wants_zones(t))
-	{
-		sift_topn_zones_begin(t, nsb);
-		sift_colsrc_begin(ex->src, 0, nsb, NULL, 0);
-		while (sift_colsrc_next(ex->src, &ex->unit))
-		{
-			SiftSrcZone z;
-
-			sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(t, 0), &z);
-			sift_topn_zone(t, ex->unit.sb, &z);
-		}
-	}
+	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
+		for (int i = 0; i < sift_topn_nprobes(); i++)
+			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
+				sift_topn_probe(t, ex->unit.sb, &z);
 	sift_topn_start(t, nsb);
-	while (sift_topn_next_range(t, &lo, &hi))
+	while (sift_topn_next_window(t, &lo, &hi, &best))
+	{
+		if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
+		{
+			sift_topn_stop(t);
+			break;
+		}
 		scan_range(ex, lo, hi);
+	}
 	ex->topn_n = sift_topn_finish(t);
 }
 

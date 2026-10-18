@@ -16,6 +16,8 @@
 
 /* Superblocks per window of the visit order: the zones are looked at again, and the match set is asked for, once per window */
 #define TOPN_WINDOW		8
+/* Superblocks whose zones tell whether the sort column follows the table */
+#define TOPN_PROBES		6
 
 /* ---------- planner ---------- */
 
@@ -81,15 +83,6 @@ typedef struct TopEnt
 	ItemPointerData tid;
 } TopEnt;
 
-typedef struct TopZone
-{
-	int64		lo;
-	int64		hi;
-	uint32		nvals;
-	uint32		nnull;
-	uint8		state;			/* 0: no unit, 1: described, 2: no bound */
-} TopZone;
-
 struct SiftTopN
 {
 	int			limit;
@@ -101,18 +94,26 @@ struct SiftTopN
 	int			n;
 	TopEnt	   *lh;				/* the best rows of the unit */
 	int			ln;
+	uint32	   *crow;			/* the rows of the unit that pass, their first sort key and whether it is NULL */
+	int64	   *ck;
+	uint8	   *cnul;
+	int			ccap;
+	TopEnt	   *ce;				/* the rows whose first key is not worse than the n-th of the unit's and of the heap */
+	uint32	   *cand;			/* the rows of ce */
 	uint32	   *rows;
 	ItemPointerData *tids;
 	TopEnt	   *res;			/* after sift_topn_finish: the heap in order */
 	/* the visit order */
-	TopZone    *zone;
 	uint32		nsb;
-	bool		reverse;
-	uint32		win;			/* windows left after the current one, counting in visit order */
-	uint32		wlo,
-				wend,
-				p;
-	bool		started;
+	bool		reverse;			/* the superblocks are visited from the last */
+	bool		follows;			/* the first sort column follows the superblocks: the windows farther from its best end are worse */
+	uint32		win;				/* windows left, counting in visit order */
+	uint32		nprobe;
+	struct
+	{
+		uint32		sb;
+		int64		best;
+	}			probe[TOPN_PROBES];
 	Relation	rel;
 	Snapshot	snap;
 	TupleTableSlot *fslot;
@@ -183,11 +184,11 @@ sift_topn_fetched(const SiftTopN *t)
 	return t->fetched;
 }
 
-/* < 0: a sorts before b by the keys */
+/* < 0: a sorts before b by the first nk keys */
 static int
-key_cmp(const SiftTopN *t, const TopEnt *a, const TopEnt *b)
+key_cmp_n(const SiftTopN *t, const TopEnt *a, const TopEnt *b, int nk)
 {
-	for (int j = 0; j < t->nkey; j++)
+	for (int j = 0; j < nk; j++)
 	{
 		bool		an = (a->nul >> j) & 1,
 					bn = (b->nul >> j) & 1;
@@ -199,6 +200,12 @@ key_cmp(const SiftTopN *t, const TopEnt *a, const TopEnt *b)
 		return (a->k[j] < b->k[j]) != t->key[j].desc ? -1 : 1;
 	}
 	return 0;
+}
+
+static int
+key_cmp(const SiftTopN *t, const TopEnt *a, const TopEnt *b)
+{
+	return key_cmp_n(t, a, b, t->nkey);
 }
 
 static int
@@ -313,26 +320,41 @@ tid_key(const ItemPointerData *tid)
 	return ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
 }
 
-void
-sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *const *keys, const uint64 *rmask, int nrow)
+static void *
+grow(SiftTopN *t, void *p, Size sz)
 {
-	const TopEnt *worst = t->n == t->limit ? &t->heap[0] : NULL;
-	int			nw = (nrow + 63) / 64;
+	return p ? repalloc(p, sz) : MemoryContextAlloc(GetMemoryChunkContext(t), sz);
+}
 
+static void
+grow_unit_buffers(SiftTopN *t, int nrow)
+{
+	if (t->ccap >= nrow)
+		return;
+	t->ccap = Max(nrow, 2 * t->ccap);
+	t->crow = grow(t, t->crow, t->ccap * sizeof(uint32));
+	t->ck = grow(t, t->ck, t->ccap * sizeof(int64));
+	t->cnul = grow(t, t->cnul, t->ccap);
+	t->cand = grow(t, t->cand, t->ccap * sizeof(uint32));
+	t->ce = grow(t, t->ce, t->ccap * sizeof(TopEnt));
+}
+
+/* The rows cand[0..nc) (ascending) with their first key in ce: the other keys by position, the best n by all of them to the heap with their TIDs */
+static void
+finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
+{
 	t->ln = 0;
-	for (int w = 0; w < nw; w++)
-		for (uint64 b = rmask[w]; b; b &= b - 1)
-		{
-			int			i = w * 64 + pg_rightmost_one_pos64(b);
-			TopEnt		e = {.row = i, .tie = i};
+	for (int j = 1; j < t->nkey; j++)
+	{
+		SiftSrcVec	v;
 
-			for (int j = 0; j < t->nkey; j++)
-				if (!row_key(&t->key[j], keys[j], i, &e.k[j]))
-					e.nul |= 1 << j;
-			if (worst && key_cmp(t, &e, worst) > 0)
-				continue;
-			heap_push(t, t->lh, &t->ln, &e);
-		}
+		sift_colsrc_read_rows(src, unit, t->key[j].leaf, t->cand, nc, &v);
+		for (int x = 0; x < nc; x++)
+			if (!row_key(&t->key[j], &v, x, &t->ce[x].k[j]))
+				t->ce[x].nul |= 1 << j;
+	}
+	for (int x = 0; x < nc; x++)
+		heap_push(t, t->lh, &t->ln, &t->ce[x]);
 	if (t->ln == 0)
 		return;
 	for (int i = 0; i < t->ln; i++)
@@ -350,6 +372,104 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	}
 }
 
+/* The first key as a position in the sort order: NULLs in front of or behind the values, the values by the direction */
+typedef struct Rank
+{
+	int			cls;
+	uint64		ord;
+} Rank;
+
+static inline Rank
+rank_of(const TopKey *k, bool isnull, int64 v)
+{
+	Rank		r = {isnull ? (k->nulls_first ? 0 : 2) : 1, 0};
+
+	if (!isnull)
+		r.ord = k->desc ? ~((uint64) v ^ UINT64CONST(0x8000000000000000)) : (uint64) v ^ UINT64CONST(0x8000000000000000);
+	return r;
+}
+
+static inline bool
+rank_after(Rank a, Rank b)
+{
+	return a.cls != b.cls ? a.cls > b.cls : a.ord > b.ord;
+}
+
+static inline Rank
+ent_rank(const SiftTopN *t, const TopEnt *e)
+{
+	return rank_of(&t->key[0], e->nul & 1, e->k[0]);
+}
+
+/*
+ * The rows of the unit are cut in two steps, so that the leaves of the other sort keys are read for a handful of rows and not for all of
+ * them. First the first key of every row that passes: a row strictly worse on it than the n-th of the heap, or than the n-th of the unit
+ * so far, cannot be in the result whatever its other keys are. Then the others, for the rows that remain (the n best and those tied with
+ * the n-th).
+ */
+void
+sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+{
+	const TopKey *k0 = &t->key[0];
+	Rank		bar = {0, 0},
+				mine;
+	bool		barred = false;
+	int			nw = (nrow + 63) / 64,
+				m = 0,
+				nc = 0;
+
+	grow_unit_buffers(t, nrow);
+	t->ln = 0;
+	if (t->n == t->limit)
+	{
+		bar = ent_rank(t, &t->heap[0]);
+		barred = true;
+	}
+	for (int w = 0; w < nw; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			int			i = w * 64 + pg_rightmost_one_pos64(b);
+			int64		v = 0;
+			bool		isnull = !row_key(k0, key0, i, &v);
+			TopEnt		e;
+
+			if (barred && rank_after(rank_of(k0, isnull, v), bar))
+				continue;
+			memset(&e, 0, sizeof(e));
+			e.k[0] = v;
+			e.nul = isnull;
+			e.row = e.tie = i;
+			t->crow[m] = i;
+			t->ck[m] = v;
+			t->cnul[m++] = isnull;
+			heap_push(t, t->lh, &t->ln, &e);	/* the other keys are 0 in all of them: the order is the first key's, then the row */
+			if (t->ln == t->limit)
+			{
+				mine = ent_rank(t, &t->lh[0]);
+				if (!barred || rank_after(bar, mine))
+				{
+					bar = mine;
+					barred = true;
+				}
+			}
+		}
+	for (int q = 0; q < m; q++)
+	{
+		TopEnt	   *e = &t->ce[nc];
+
+		if (barred && rank_after(rank_of(k0, t->cnul[q], t->ck[q]), bar))
+			continue;
+		memset(e, 0, sizeof(TopEnt));
+		e->k[0] = t->ck[q];
+		e->nul = t->cnul[q];
+		e->row = t->cand[nc] = t->crow[q];
+		e->tie = e->row;
+		nc++;
+	}
+	if (nc > 0)
+		finish_unit(t, src, unit, nc);
+}
+
 /* ---------- the visit order ---------- */
 
 bool
@@ -358,49 +478,20 @@ sift_topn_wants_zones(const SiftTopN *t)
 	return t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64;
 }
 
-void
-sift_topn_zones_begin(SiftTopN *t, uint32 nsb)
-{
-	t->nsb = nsb;
-	t->zone = MemoryContextAllocZero(GetMemoryChunkContext(t), Max(nsb, 1) * sizeof(TopZone));
-}
-
-void
-sift_topn_zone(SiftTopN *t, uint32 sb, const SiftSrcZone *z)
-{
-	TopZone    *tz;
-
-	if (sb >= t->nsb)
-		return;
-	tz = &t->zone[sb];
-	if (z->inexact)
-		tz->state = 2;
-	if (tz->state == 2)
-		return;
-	if (z->nnull < z->nvals)
-	{
-		tz->lo = tz->nvals > tz->nnull ? Min(tz->lo, z->min) : z->min;
-		tz->hi = tz->nvals > tz->nnull ? Max(tz->hi, z->max) : z->max;
-	}
-	tz->nvals += z->nvals;
-	tz->nnull += z->nnull;
-	tz->state = 1;
-}
-
 /*
- * Can a row of the superblock sort before the n-th best so far (or tie with it)? Its first sort column is within the zone: nulls sort
- * as the query says, the rest between lo and hi. Rows tied on the first key may win on the others, so a bound equal to the worst's is kept.
+ * Can a row of a unit with this zone of the first sort column sort before the n-th best so far (or tie with it)? Nulls sort as the query
+ * says, the rest between min and max. Rows tied on the first key may win on the others, so a bound equal to the n-th's is kept. The zone
+ * counts the dead rows too: it only ever says "no" for a unit that has nothing better.
  */
-static bool
-sb_viable(const SiftTopN *t, uint32 sb)
+bool
+sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
 {
-	const TopZone *z = t->zone ? &t->zone[sb] : NULL;
 	const TopKey *k = &t->key[0];
 	const TopEnt *w;
 	bool		wnull;
 	int64		best;
 
-	if (t->n < t->limit || z == NULL || z->state != 1)
+	if (t->n < t->limit || z->inexact)
 		return true;
 	w = &t->heap[0];
 	wnull = w->nul & 1;
@@ -410,47 +501,66 @@ sb_viable(const SiftTopN *t, uint32 sb)
 		return wnull;
 	if (wnull)
 		return !k->nulls_first;
-	best = k->desc ? z->hi : z->lo;
+	best = k->desc ? z->max : z->min;
 	return k->desc ? best >= w->k[0] : best <= w->k[0];
+}
+
+/* The zone of the unit of superblock sb, probed before the scan; it may be passed in any order */
+void
+sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z)
+{
+	if (t->nprobe < TOPN_PROBES && !z->inexact && z->nnull < z->nvals)
+	{
+		t->probe[t->nprobe].sb = sb;
+		t->probe[t->nprobe++].best = t->key[0].desc ? z->max : z->min;
+	}
+}
+
+/* The superblocks to probe: spread over the table */
+uint32
+sift_topn_probe_sb(const SiftTopN *t, int i, uint32 nsb)
+{
+	return (uint32) (((uint64) i * (nsb - 1)) / (TOPN_PROBES - 1));
+}
+
+int
+sift_topn_nprobes(void)
+{
+	return TOPN_PROBES;
 }
 
 void
 sift_topn_start(SiftTopN *t, uint32 nsb)
 {
-	uint32		ups = 0,
+	int			ups = 0,
 				downs = 0;
-	int64		prev = 0;
-	bool		have = false;
 
-	t->started = true;
 	t->nsb = nsb;
-	t->reverse = false;
-	for (uint32 sb = 0; t->zone && sb < nsb; sb++)
+	t->reverse = t->follows = false;
+	for (uint32 i = 1; i < t->nprobe; i++)
 	{
-		const TopZone *z = &t->zone[sb];
-		int64		b;
-
-		if (z->state != 1 || z->nnull == z->nvals)
-			continue;
-		b = t->key[0].desc ? z->hi : z->lo;
-		if (have)
-			ups += b > prev, downs += b < prev;
-		prev = b;
-		have = true;
+		ups += t->probe[i].best > t->probe[i - 1].best;
+		downs += t->probe[i].best < t->probe[i - 1].best;
 	}
-	/* a column that grows (or shrinks) with the superblocks is visited from the end its best values are at */
-	if (ups + downs >= 4)
+	/* a column that grows (or shrinks) with the superblocks: probes in ascending sb order all go the same way */
+	if (t->nprobe >= 4 && (ups == (int) t->nprobe - 1 || downs == (int) t->nprobe - 1))
 	{
-		double		up = (double) ups / (ups + downs);
-
-		t->reverse = t->key[0].desc ? up >= 0.75 : up <= 0.25;
+		t->follows = true;
+		/* best values at the high end of the table: desc and growing, or asc and shrinking */
+		t->reverse = (ups > 0) == t->key[0].desc;
 	}
 	t->win = (nsb + TOPN_WINDOW - 1) / TOPN_WINDOW;
-	t->wend = t->p = 0;
 }
 
-static bool
-next_window(SiftTopN *t)
+bool
+sift_topn_follows(const SiftTopN *t)
+{
+	return t->follows;
+}
+
+/* The next window of superblocks in the visit order, [*lo, *hi); *best: its superblock nearest to the best values */
+bool
+sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best)
 {
 	uint32		w;
 
@@ -458,32 +568,25 @@ next_window(SiftTopN *t)
 		return false;
 	t->win--;
 	w = t->reverse ? t->win : (t->nsb + TOPN_WINDOW - 1) / TOPN_WINDOW - 1 - t->win;
-	t->wlo = w * TOPN_WINDOW;
-	t->p = t->wlo;
-	t->wend = Min(t->wlo + TOPN_WINDOW, t->nsb);
+	*lo = w * TOPN_WINDOW;
+	*hi = Min(*lo + TOPN_WINDOW, t->nsb);
+	*best = t->reverse ? *hi - 1 : *lo;
 	return true;
 }
 
-bool
-sift_topn_next_range(SiftTopN *t, uint32 *lo, uint32 *hi)
+/* The scan stops: the superblocks that are left are not read */
+void
+sift_topn_stop(SiftTopN *t)
 {
-	for (;;)
-	{
-		if (t->p >= t->wend && !next_window(t))
-			return false;
-		while (t->p < t->wend && !sb_viable(t, t->p))
-		{
-			t->skipped++;
-			t->p++;
-		}
-		if (t->p >= t->wend)
-			continue;
-		*lo = t->p;
-		while (t->p < t->wend && sb_viable(t, t->p))
-			t->p++;
-		*hi = t->p;
-		return true;
-	}
+	for (uint32 w = 0; w < t->win; w++)
+		t->skipped += TOPN_WINDOW;
+	t->win = 0;
+}
+
+void
+sift_topn_skip(SiftTopN *t)
+{
+	t->skipped++;
 }
 
 /* ---------- the result ---------- */

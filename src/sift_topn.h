@@ -41,18 +41,25 @@ extern int	sift_topn_nkey(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 
 /*
- * Before the scan: the zones of the sort column's first key in every unit (sift_topn_zone, over a pass of the units), then the order
- * the superblocks are visited in. The scan asks sift_topn_next_range for the next run of superblocks that can still hold a row of the
- * result, [*lo, *hi), until it returns false.
+ * The order the superblocks are visited in. Before the scan the zones of the sort column's first key in a few superblocks, spread over the
+ * table (sift_topn_probe_sb), tell whether it follows the table (sift_topn_probe, sift_topn_start). The scan then takes windows of
+ * superblocks from the end its best values are at (sift_topn_next_window); when the column follows the table and the best superblock of
+ * a window cannot beat the n-th best so far, none of the rest can (sift_topn_zone_viable, sift_topn_stop); within a window each unit is
+ * tested by its zone before it is read.
  */
 extern bool sift_topn_wants_zones(const SiftTopN *t);
-extern void sift_topn_zones_begin(SiftTopN *t, uint32 nsb);
-extern void sift_topn_zone(SiftTopN *t, uint32 sb, const SiftSrcZone *z);
+extern int	sift_topn_nprobes(void);
+extern uint32 sift_topn_probe_sb(const SiftTopN *t, int i, uint32 nsb);
+extern void sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z);
 extern void sift_topn_start(SiftTopN *t, uint32 nsb);
-extern bool sift_topn_next_range(SiftTopN *t, uint32 *lo, uint32 *hi);
+extern bool sift_topn_follows(const SiftTopN *t);
+extern bool sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best);
+extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
+extern void sift_topn_stop(SiftTopN *t);
+extern void sift_topn_skip(SiftTopN *t);
 
-/* The rows of the unit in rmask (nrow bits); keys[j]: the decoded sort leaf j, in the numbering of the rows */
-extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *const *keys, const uint64 *rmask, int nrow);
+/* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */
+extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow);
 
 /* After the scan: the rows in order; sift_topn_fetch stores row i (all its attributes, copied) in slot, a virtual slot of the scan tuple */
 extern int	sift_topn_finish(SiftTopN *t);

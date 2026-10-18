@@ -132,6 +132,7 @@ typedef struct AggCtx
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
+	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -3976,6 +3977,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
 	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
+	if (s->topn)
+		scan_cost *= c->topn_frac;
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
@@ -3989,7 +3992,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	scan_cost += gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
-	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
+	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
 	startup = AGG_START_COST * cpu_operator_cost;
 	if (s->nworkers > 0)
 	{
@@ -4595,6 +4598,35 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt)
 }
 
 /*
+ * A first sort column that follows the physical order of the table (pg_statistic correlation) lets the scan stop at the end its best values
+ * are at: it reads a window of superblocks, and more only while the rows it needs are not in it. Otherwise it reads them all.
+ */
+static double
+topn_fraction(AggCtx *c, Node *key, double matches, int64 limit)
+{
+	Node	   *x = strip_relabel(key);
+	HeapTuple	tp;
+	AttStatsSlot sslot;
+	double		corr = 0,
+				nsb = Max(c->stats.nunits, 1.0);
+
+	if (!IsA(x, Var))
+		return 1.0;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tp))
+		return 1.0;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		corr = sslot.nnumbers > 0 ? sslot.numbers[0] : 0;
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	if (fabs(corr) < 0.9)
+		return 1.0;
+	return Min(1.0, (8.0 + 2.0 * nsb * (double) limit / Max(matches, 1.0)) / nsb);
+}
+
+/*
  * The scan tuple of the top-N is the heap columns the output reads, in custom_scan_tlist: their attribute numbers go in the spec, and
  * the node's tlist (PostgreSQL's projection) computes the rest from them.
  */
@@ -4662,6 +4694,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
 	if (!topn_columns(c, target, &scan_tlist, attno) || !spec_finish(c, s, root, input_rel, NIL))
 		return;
+	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
+								 input_rel->rows, rows);
 	s->topn = sift_topn_spec((int) rows, nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno);
 	s->desc_topn = txt.data;
 
