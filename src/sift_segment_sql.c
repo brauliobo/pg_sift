@@ -135,50 +135,6 @@ sift_segments(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-typedef struct FreeStats
-{
-	int64		records;
-	int64		blocks;
-	int64		reusable;			/* blocks whose releasing transactions are older than every snapshot */
-} FreeStats;
-
-/* Walks the free list with the metapage share-locked, like the allocator that changes it */
-static FreeStats
-free_stats(Relation index)
-{
-	FreeStats	fs = {0};
-	Buffer		meta = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
-	BlockNumber blk;
-
-	LockBuffer(meta, BUFFER_LOCK_SHARE);
-	blk = ((SiftMetaPageData *) SiftPageGetData(BufferGetPage(meta)))->freelist_head;
-	while (blk != InvalidBlockNumber)
-	{
-		Buffer		buf = ReadBuffer(index, blk);
-		Page		page;
-		SiftFreeListData *fl;
-
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		if (SiftPageGetOpaque(page)->type != SIFT_PT_FREELIST)
-			corrupt(index, "Block %u of the free list chain is not a free list page.", blk);
-		fl = (SiftFreeListData *) SiftPageGetData(page);
-		for (uint32 i = 0; i < fl->n; i++)
-		{
-			FullTransactionId xid = fl->ext[i].safexid;
-
-			fs.records++;
-			fs.blocks += fl->ext[i].nblocks;
-			if (!FullTransactionIdIsValid(xid) || sift_store_removable(index, xid))
-				fs.reusable += fl->ext[i].nblocks;
-		}
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
-	UnlockReleaseBuffer(meta);
-	return fs;
-}
-
 /* Is the maintenance lock held (a promotion, merge, VACUUM or verify is running)? A momentary probe. */
 static bool
 maintenance_busy(Relation index)
@@ -196,14 +152,14 @@ sift_index_info(PG_FUNCTION_ARGS)
 	Relation	index = open_sift(PG_GETARG_OID(0));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	tupdesc;
-	FreeStats	fs;
+	SiftFreeStats fs;
 	Datum		v[10];
 	bool		nulls[10] = {0};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	sift_dir_read(index, snap);
-	fs = free_stats(index);
+	fs = sift_store_free_stats(index);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);

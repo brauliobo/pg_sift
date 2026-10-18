@@ -814,6 +814,17 @@ put_info(ReturnSetInfo *rsinfo, const char *key, int64 value)
 	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 }
 
+/* Runs visit on the free list with the metapage share-locked */
+static void
+walk_free(Relation index, SiftFreeListVisit visit, void *arg)
+{
+	Buffer		metabuf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
+
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	sift_freelist_walk(index, metabuf, visit, arg);
+	UnlockReleaseBuffer(metabuf);
+}
+
 Datum
 sift_test_info(PG_FUNCTION_ARGS)
 {
@@ -821,39 +832,11 @@ sift_test_info(PG_FUNCTION_ARGS)
 	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
 	SMgrRelation smgr = RelationGetSmgr(index);
 	SiftDirSnapshot snap;
-	int64		pages = 0;
-	int64		extents = 0;
-	int64		blocks = 0;
-	int64		pending = 0;
-	Buffer		metabuf;
-	BlockNumber blk;
+	SiftFreeStats fs;
 
 	InitMaterializedSRF(fcinfo, 0);
 	sift_dir_read(index, &snap);
-	metabuf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	blk = ((SiftMetaPageData *) SiftPageGetData(BufferGetPage(metabuf)))->freelist_head;
-	while (BlockNumberIsValid(blk))
-	{
-		Buffer		buf = ReadBuffer(index, blk);
-		SiftFreeListData *fl;
-
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		sift_store_check_page(index, buf, SIFT_PT_FREELIST, 0);
-		fl = (SiftFreeListData *) SiftPageGetData(BufferGetPage(buf));
-		pages++;
-		for (uint32 i = 0; i < fl->n; i++)
-		{
-			extents++;
-			blocks += fl->ext[i].nblocks;
-			if (FullTransactionIdIsValid(fl->ext[i].safexid) &&
-				!sift_store_removable(index, fl->ext[i].safexid))
-				pending += fl->ext[i].nblocks;
-		}
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
-	UnlockReleaseBuffer(metabuf);
+	fs = sift_store_free_stats(index);
 	put_info(rsinfo, "high_water", snap.meta.high_water);
 	put_info(rsinfo, "nblocks", RelationGetNumberOfBlocks(index));
 	put_info(rsinfo, "init_blocks", smgrexists(smgr, INIT_FORKNUM) ? (int64) smgrnblocks(smgr, INIT_FORKNUM) : -1);
@@ -861,12 +844,28 @@ sift_test_info(PG_FUNCTION_ARGS)
 	put_info(rsinfo, "dir_version", snap.version);
 	put_info(rsinfo, "nsegs", snap.nsegs);
 	put_info(rsinfo, "freelist_head", BlockNumberIsValid(snap.meta.freelist_head) ? (int64) snap.meta.freelist_head : -1);
-	put_info(rsinfo, "freelist_pages", pages);
-	put_info(rsinfo, "free_extents", extents);
-	put_info(rsinfo, "free_blocks", blocks);
-	put_info(rsinfo, "pending_blocks", pending);
+	put_info(rsinfo, "freelist_pages", fs.pages);
+	put_info(rsinfo, "free_extents", fs.records);
+	put_info(rsinfo, "free_blocks", fs.blocks);
+	put_info(rsinfo, "pending_blocks", fs.blocks - fs.reusable);
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+static bool
+put_free_records(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	ReturnSetInfo *rsinfo = arg;
+
+	for (uint32 i = 0; i < fl->n; i++)
+	{
+		Datum		values[4] = {Int64GetDatum(blk), Int64GetDatum(fl->ext[i].start),
+		Int64GetDatum(fl->ext[i].nblocks), BoolGetDatum(FullTransactionIdIsValid(fl->ext[i].safexid))};
+		bool		nulls[4] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	return true;
 }
 
 /* Free-list records in chain order */
@@ -875,30 +874,9 @@ sift_test_freelist(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirSnapshot snap;
-	BlockNumber blk;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, &snap);
-	for (blk = snap.meta.freelist_head; BlockNumberIsValid(blk);)
-	{
-		Buffer		buf = ReadBuffer(index, blk);
-		SiftFreeListData *fl;
-
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		sift_store_check_page(index, buf, SIFT_PT_FREELIST, 0);
-		fl = (SiftFreeListData *) SiftPageGetData(BufferGetPage(buf));
-		for (uint32 i = 0; i < fl->n; i++)
-		{
-			Datum		values[4] = {Int64GetDatum(blk), Int64GetDatum(fl->ext[i].start),
-			Int64GetDatum(fl->ext[i].nblocks), BoolGetDatum(FullTransactionIdIsValid(fl->ext[i].safexid))};
-			bool		nulls[4] = {0};
-
-			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-		}
-		blk = fl->next;
-		UnlockReleaseBuffer(buf);
-	}
+	walk_free(index, put_free_records, rsinfo);
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
 }
