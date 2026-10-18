@@ -506,6 +506,7 @@ worker(void *arg)
  * finiteness for tf >= 1, and the error against double precision.
  */
 static atomic_int grid_next;
+static int grid_stride = 1;		/* argv[2]: every Nth combination of k1, b and avgdl (1: all); coprime with 6, 5 and 7 it still meets every value of each */
 static _Atomic double max_ulps;
 
 static void *
@@ -530,7 +531,7 @@ grid_worker(void *arg)
 		dlv[i] = i;
 	for (int p = 0; p < npages; p++)
 		rows[p] = dlv + p * SIFT_KERN_SLOTS;
-	while ((g = atomic_fetch_add(&grid_next, 1)) < (int) (lengthof(k1s) * lengthof(bs) * lengthof(avgs)))
+	while ((g = atomic_fetch_add(&grid_next, 1) * grid_stride) < (int) (lengthof(k1s) * lengthof(bs) * lengthof(avgs)))
 	{
 		SiftBm25	bm;
 		float4		w = 7.3f;
@@ -594,6 +595,9 @@ int
 main(int argc, char **argv)
 {
 	double		millions = argc > 1 ? atof(argv[1]) : 2;
+
+	if (argc > 2)
+		grid_stride = atoi(argv[2]);
 
 	kt_cpu_init();
 	tabs[ntabs++] = (Tab) {"scalar", &sift_kernels_scalar};
