@@ -3,7 +3,7 @@
 # the server processes spend per operation, not throughput or latency. Standalone, run directly; not part of make check or scripts/ci.sh.
 #
 #   bench/steps/cpu_gate.sh [--rows N] [--inserts N] [--queries N] [--reps N] [--max-reps N] [--se PCT] [--budget SECS]
-#                           [--cells REGEX] [--raw FILE] [--index-opts LABEL=OPTS] [--guc LABEL=NAME=VALUE]
+#                           [--cells REGEX] [--raw FILE] [--index-opts LABEL=OPTS] [--guc LABEL=NAME=VALUE] [--env LABEL=NAME=VALUE]
 #                           --build LABEL=DIR --build LABEL=DIR ...
 #
 # Every --build is a checkout with scripts/pgtest.sh (git worktree add --detach DIR REF); the first is the baseline and the others are
@@ -27,14 +27,15 @@
 # 1.02; "design" marks a cell whose end state differs between builds (segments left, docs not promoted): its ratio is work done by
 # design, reported apart. Also printed: cycles ratio (secondary), WAL bytes, index size, segments.
 # --index-opts and --guc give one build a reloption list for the indexes of its cells (vacuum_truncate = false) or a setting of its cluster
-# (sift.maintenance_cost_delay=0); the same DIR under two labels compares two configurations of one build.
+# (sift.maintenance_cost_delay=0); the same DIR under two labels compares two configurations of one build. --env LABEL=NAME=VALUE sets a variable of that build's
+# scripts/pgtest.sh (SIFT_HARDEN=1: the same DIR under two labels compares compiler flag sets, docs/SAFETY.md).
 # Never connects to a server it did not start. Clusters and scratch directories are removed at the end.
 set -Eeuo pipefail
 trap 'echo "cpu-gate: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 export LC_ALL=C
 
 ROWS=20000 INS=10000 NQ=100 REPS=7 MAXREPS=25 SE=1 BUDGET=3600 CELLS=. RAW= BUILDS=()
-declare -A DIR TMP PORT PM IOPTS GUCS
+declare -A DIR TMP PORT PM IOPTS GUCS ENVS
 while (( $# )); do
 	case $1 in
 		--rows) ROWS=$2; shift ;;
@@ -49,6 +50,7 @@ while (( $# )); do
 		--build) BUILDS+=("$2"); shift ;;
 		--index-opts) IOPTS[${2%%=*}]=${2#*=}; shift ;;
 		--guc) GUCS[${2%%=*}]+="${2#*=}"$'\n'; shift ;;
+		--env) ENVS[${2%%=*}]+="${2#*=} "; shift ;;
 		*) sed -n '2,28p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -61,7 +63,8 @@ LABELS=()
 
 pg() { # LABEL pgtest-args...
 	local l=$1; shift
-	( cd "${DIR[$l]}" && SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING= scripts/pgtest.sh "$@" )
+	# shellcheck disable=SC2086  # ENVS holds NAME=VALUE words
+	( cd "${DIR[$l]}" && env SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING= ${ENVS[$l]:-} scripts/pgtest.sh "$@" )
 }
 Q() { # LABEL DATABASE psql-args...
 	local l=$1 db=$2; shift 2
