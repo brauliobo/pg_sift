@@ -1002,7 +1002,7 @@ scheduled (a share of the machine for the engines), not in what is measured:
   For each class, the engines run their cells one after the other, each alone on the host with every CPU to itself, the same client counts for all (8 in the articles cells, one in the places cells), the same
   statements (`--random-seed=7`), and the order of the engines rotates every round (engine k first in round k). Why not all at once: engines side by side compete for cores, memory bandwidth and the turbo
   budget, so what one of them measures depends on what the others do at that moment, and equal slices of the machine are smaller than any server wants (a build or a parallel scan uses more than one core); alone,
-  every engine sees the same whole machine, and the cost is wall time. What stays uncontrolled is the rest of the host: the load average is recorded with every cell and printed with every table, the interleaved rounds spread a
+  every engine sees the same whole machine, and the cost is wall time. What stays uncontrolled is the rest of the host: each timed batch waits for it to be quiet (pressure stall information under 10%, `scripts/quiet.sh`; a batch that did not get it is marked NOISY), the load average is recorded with every cell and printed with every table, the interleaved rounds spread a
   drift over the engines alike, and a busy host shows as wide standard errors. Nothing limits or shares the CPUs, and the load generators run on the same CPUs as the servers, as any client would.
 - **Cache.** The built lanes (the database with its index, in a stopped data directory) are cached by a hash of the adapter, the extension binary, the corpus, the harness and PostgreSQL; the slim tier does not write the cache (its builds are quick), the full tier does.
 
