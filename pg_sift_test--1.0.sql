@@ -79,3 +79,31 @@ CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETU
 -- Read side (src/sift_read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_read_stats' LANGUAGE C STRICT;
+
+-- Column codec (src/sift_colcodec_test.c): chunks through the backend, sift.simd and the build's LZ4/zstd.
+-- kind 0 integers, 1 float4 keys, 2 float8 keys; NULL elements are NULL slots (decode returns the filler there)
+CREATE FUNCTION sift._test_cc_encode(keys int8[], kind int4, policy text) RETURNS bytea
+	AS 'MODULE_PATHNAME', 'sift_test_cc_encode' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_decode(blob bytea, verify bool DEFAULT true) RETURNS int8[]
+	AS 'MODULE_PATHNAME', 'sift_test_cc_decode' LANGUAGE C STRICT;
+-- tag: 1 constant, 2 bit-packed, 3 plain bytes, 4 delta, 5 runs, 6 dictionary, 7 decimal floats, 8 wrapped, 9 common divisor
+CREATE FUNCTION sift._test_cc_info(blob bytea, OUT kind int4, OUT n int4, OUT min int8, OUT max int8,
+								   OUT tag int4, OUT bytes int4) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_cc_info' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_filter(blob bytea, lo int8, hi int8, OUT rows int4[], OUT sum int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_cc_filter' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_get(blob bytea, rownum int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_cc_get' LANGUAGE C STRICT;
+-- whether the build has the library: 'lz4' or 'zstd' (SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 leave one out)
+CREATE FUNCTION sift._test_cc_has(alg text) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_cc_has' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_key(float8) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_cc_key' LANGUAGE C STRICT IMMUTABLE;
+CREATE FUNCTION sift._test_cc_unkey(int8) RETURNS float8
+	AS 'MODULE_PATHNAME', 'sift_test_cc_unkey' LANGUAGE C STRICT IMMUTABLE;
+CREATE FUNCTION sift._test_cc_digest(seed int8, iters int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_cc_digest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_equiv(seed int8, iters int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_cc_equiv' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cc_corrupt(seed int8, iters int4, OUT raised int8, OUT decoded int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_cc_corrupt' LANGUAGE C STRICT;
