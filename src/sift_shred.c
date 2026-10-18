@@ -755,9 +755,10 @@ regrow(SiftShred *sh, void *p, size_t size)
 }
 
 SiftShred *
-sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits)
+sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift shred", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = cached ? AllocSetContextCreate(CurrentMemoryContext, "sift cache shred", ALLOCSET_DEFAULT_SIZES) :
+		AllocSetContextCreate(CurrentMemoryContext, "sift shred", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftShred  *sh = palloc0(sizeof(SiftShred));
 

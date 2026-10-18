@@ -90,7 +90,7 @@ sift_test_shred(PG_FUNCTION_ARGS)
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	SiftShredSpec *spec = sift_shred_spec_parse(text_to_cstring(PG_GETARG_TEXT_PP(1)));
 	SiftShredLimits lim = {PG_GETARG_INT32(2), PG_GETARG_INT32(3), 0};
-	SiftShred  *sh = sift_shred_create(spec, &lim);
+	SiftShred  *sh = sift_shred_create(spec, &lim, false);
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	StringInfoData val;
 
@@ -179,7 +179,7 @@ sift_test_shred_count(PG_FUNCTION_ARGS)
 		else
 			cc = palloc(sizeof(CountCache));
 		cc->spec_text = pstrdup(spec_text);
-		cc->sh = sift_shred_create(sift_shred_spec_parse(spec_text), NULL);
+		cc->sh = sift_shred_create(sift_shred_spec_parse(spec_text), NULL, false);
 		fcinfo->flinfo->fn_extra = cc;
 		MemoryContextSwitchTo(old);
 	}
@@ -203,7 +203,7 @@ sift_test_shred_summary(PG_FUNCTION_ARGS)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
 	SiftShredSpec *spec = sift_shred_spec_parse(text_to_cstring(PG_GETARG_TEXT_PP(1)));
-	SiftShred  *sh = sift_shred_create(spec, NULL);
+	SiftShred  *sh = sift_shred_create(spec, NULL, false);
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	InitMaterializedSRF(fcinfo, 0);

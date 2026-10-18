@@ -116,7 +116,7 @@ document grew them past 64 Ki elements.
 ```c
 SiftShredSpec *sift_shred_spec_parse(const char *text);          /* errors raise; allocated in the current context */
 const char    *sift_shred_spec_deparse(const SiftShredSpec *);   /* canonical; spec->fingerprint */
-SiftShred     *sift_shred_create(const SiftShredSpec *, const SiftShredLimits *);  /* own memory context, NULL limits = defaults */
+SiftShred     *sift_shred_create(const SiftShredSpec *, const SiftShredLimits *, bool cached);  /* own memory context (cached: named "sift cache shred", for a relcache lifetime), NULL limits = defaults */
 void           sift_shred_free(SiftShred *);
 
 /* portable event interface: any driver (the jsonb iterator, a JSON text parser) */

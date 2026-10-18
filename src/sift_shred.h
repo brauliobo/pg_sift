@@ -179,7 +179,7 @@ typedef struct SiftShred
 	bool		root_done;
 } SiftShred;
 
-extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits);
+extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached);
 extern void sift_shred_free(SiftShred *sh);
 
 extern void sift_shred_begin(SiftShred *sh);
