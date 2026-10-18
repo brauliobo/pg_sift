@@ -302,8 +302,8 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   (`sift_tbl_delta_batch`, the seal's row conversion, fed with `sift_col_add_batches` when a morsel begins) and read like a stored unit. The units of
   the sources are merged in ascending superblock. Aggregates therefore see exactly the rows a sequential scan sees
   (`tbl_agg` and the TAP test 008 compare the two plans in every state: delta, sealed, tombstones, own and other transactions' changes,
-  rolled back, added columns). Leaves the executor does not read as values (numeric, `char(n)`, types the engine stores as exact images) are
-  marked lossy: no query uses them. A column group keeps a string over 255 bytes or a `-0` / odd NaN float apart as an exception: a query
+  rolled back, added columns). `numeric(p<=18, s>=0)` leaves are the scaled integers of the engine (`SiftSrcLeaf.scale`, `sift_col_numeric_key`), `char(n)` is a dictionary leaf of the padded
+  values; leaves the engine stores as exact images (`SIFT_COLS_VAR`: other types, wider numerics) are marked lossy: no query uses them. A column group keeps a string over 255 bytes or a `-0` / odd NaN float apart as an exception: a query
   that reads such a column of a unit holding one raises 0A000 with the hint to set `sift.enable_agg` off (the same as the index).
 
 ---
