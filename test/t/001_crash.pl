@@ -9,7 +9,9 @@ use SiftTest;
 use Test::More;
 
 my $rows = knob('SIFT_ROWS', 60000, 20000);
-my $torn = knob('SIFT_TORN_ROWS', 300000, 100000);
+my $torn = knob('SIFT_TORN_ROWS', 300000, 40000);	# an insert still running 150 ms in, at any speed
+my $late = knob('SIFT_LATE_ROWS', 15000, 6000);	# rows the maintenance step has to promote or merge
+my $batch = knob('SIFT_BATCH_ROWS', 40000, 15000);	# rows of a merge batch: dozens of segments at the 64 kB mutable_limit
 my $node = sift_node('crash');
 $node->start;
 install_sift($node);
@@ -39,7 +41,7 @@ for my $am (ams())
 		for my $delay (0, 50)
 		{
 			$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w1 rare late ' || g"
-				. " FROM generate_series(100001 + $delay * 1000, 115000 + $delay * 1000) g");
+				. " FROM generate_series(100001 + $delay * 1000, 100000 + $late + $delay * 1000) g");
 			$hits += crash_during($node, $am->{maint}->($idx), $delay);
 			$node->safe_psql('postgres', $am->{verify}->($idx));
 			agree($node, $am, $t, "crash in maintenance after $delay ms");
@@ -47,12 +49,12 @@ for my $am (ams())
 
 		if ($n eq 'sift')
 		{
-			for my $batch (1 .. 3)
+			for my $b (1 .. 3)
 			{
 				# a 64 kB mutable_limit seals dozens of segments per batch: keep room below the 128 segment cap
 				$node->safe_psql('postgres', "SELECT sift.merge('$idx')");
-				$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w6 merge batch$batch ' || g"
-					. " FROM generate_series(1000000 + $batch * 100000, 1040000 + $batch * 100000) g;"
+				$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w6 merge batch$b ' || g"
+					. " FROM generate_series(1000000 + $b * 100000, 999999 + $batch + $b * 100000) g;"
 					. " SELECT sift.promote('$idx')");
 			}
 			$hits += crash_during($node, "SELECT sift.merge('$idx')", 5);
