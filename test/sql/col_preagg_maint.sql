@@ -1,0 +1,61 @@
+-- Maintenance gives the pre-aggregates back (docs/COL-PREAGG.md section 8): a unit with a dead row answers from its rows, not from the sums
+-- stored with it, so after DELETE and UPDATE traffic the units are exact again only when a rewrite drops the dead rows. VACUUM and the
+-- normal maintenance (promote, the merge policy) have to do it, without REINDEX and without a forced merge.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE pm (id int, grp text, amt numeric(10,2), qty int);
+ALTER TABLE pm SET (autovacuum_enabled = false, fillfactor = 40);
+INSERT INTO pm SELECT g, 'g' || g % 20, g % 997, g % 9 FROM generate_series(1, 300000) g;
+CREATE TABLE pm_off (LIKE pm);
+ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 40);
+INSERT INTO pm_off SELECT * FROM pm;
+CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096);
+CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096, dead_rewrite_pct = 100);
+VACUUM ANALYZE pm, pm_off;
+
+-- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
+CREATE FUNCTION pm_state(tbl text) RETURNS TABLE (all_units bool, some_exact bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; u int; p int; q text := format('SELECT grp, count(*), sum(amt), sum(qty) FROM %s GROUP BY grp', tbl); a text; b text; c text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
+		p := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, p);
+	END LOOP;
+	SET LOCAL sift.agg_preagg = on;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
+	SET LOCAL sift.agg_preagg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
+	RETURN QUERY SELECT p = u, p > 0, a = b AND b = c;
+END $$;
+
+SELECT 'built' AS step, * FROM pm_state('pm');
+
+-- 10% of the rows deleted, 10% updated (the new versions go to the write buffer)
+DELETE FROM pm WHERE id % 10 = 0;
+UPDATE pm SET qty = qty + 1 WHERE id % 10 = 1;
+DELETE FROM pm_off WHERE id % 10 = 0;
+UPDATE pm_off SET qty = qty + 1 WHERE id % 10 = 1;
+SELECT 'dml' AS step, * FROM pm_state('pm');
+
+-- VACUUM and the promotion of the write buffer, as the maintenance worker does: nothing else
+VACUUM (index_cleanup on) pm, pm_off;
+SELECT 'vacuumed' AS step, * FROM pm_state('pm');
+SELECT sift.col_promote('pm_col') > 0 AS promoted, sift.col_promote('pm_off_col') > 0 AS promoted_off;
+VACUUM (index_cleanup on) pm, pm_off;
+SELECT 'maintained' AS step, * FROM pm_state('pm');
+SELECT sum(dead_rows) AS dead_rows, count(*) FILTER (WHERE dirty) AS dirty_segments FROM sift.col_segments('pm_col');
+SELECT sum(dead_rows) > 0 AS dead_rows_kept FROM sift.col_segments('pm_off_col');
+SELECT sift.col_verify('pm_col', true);
+
+-- dead_rewrite_pct = 100 never rewrites a lone segment: its units stay on the scan, the results stay right
+SELECT 'never' AS step, * FROM pm_state('pm_off');
+SELECT sift.col_merge('pm_off_col') AS merge_step;
+SELECT 'never, after merge' AS step, * FROM pm_state('pm_off');
+
+DROP TABLE pm, pm_off;
+DROP FUNCTION pm_state(text);
+DROP EXTENSION pg_sift;

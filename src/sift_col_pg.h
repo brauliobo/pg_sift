@@ -61,7 +61,11 @@ typedef struct SiftColOptions
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string, 0 = auto */
 	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
+	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
 } SiftColOptions;
+
+/* A unit with a dead row answers from its rows, not from its pre-aggregates: a lone segment is rewritten once a tenth of its rows is dead */
+#define SIFT_COL_DEAD_PCT	10
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
