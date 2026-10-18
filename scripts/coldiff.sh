@@ -357,7 +357,8 @@ analytics_suite() {
 # plain against plain must pass, every mutation of the "on" results that a bug could cause must fail, the one inside the tolerance pass
 selftest() {
 	local kind want got applied files fl
-	NOINDEX=1 SCENARIOS=none
+	# plain against plain: one variant is all the harness needs to compare and to mutate (the others repeat the same plan)
+	NOINDEX=1 SCENARIOS=none VARIANT_ARRAY='{on}'
 	log "selftest: $FIXROWS orders, plain against plain"
 	fresh_db "${DB_PREFIX}_fix"
 	sql -v n="$FIXROWS" -v seed="$SEED" -f "$REPO/test/col/fixture.sql" >/dev/null
