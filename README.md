@@ -35,6 +35,14 @@ Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_s
 CREATE EXTENSION pg_sift;
 ```
 
+## Configuration
+
+pg_sift needs no `shared_preload_libraries` entry, for the `sift` BM25 index and for the `sift_table` table access method alike. The one
+exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
+`shared_preload_libraries` on the publisher and on every standby that replays its WAL (a custom WAL resource manager registers only at
+preload time). Without it, a DML on a published `sift_table` table fails with `0A000` and a hint instead of leaving a gap in the stream;
+publish a heap staging table instead if preloading is not possible. Unpublished tables, physical standbys, PITR and `pg_dump` are unaffected.
+
 ## Quick start
 
 ```sql
