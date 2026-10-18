@@ -95,16 +95,15 @@ SELECT * FROM agg_compare();
 VACUUM agg_t;
 SELECT * FROM agg_compare();
 
--- values a column group keeps apart (a string over 255 bytes, -0): the queries that read them refuse, the others work
+-- a string over 255 bytes and -0 are stored exactly: the queries that read them are pushed down and agree with the plain plan
 INSERT INTO agg_t (id, g, k, c, f) VALUES (500000, 1, 'long', repeat('y', 1000), '-0'::float8);
-SELECT count(*) FROM agg_t WHERE g = 1 AND k = 'long';
-SELECT count(c) FROM agg_t;
+INSERT INTO agg_q VALUES ('SELECT count(DISTINCT c) FROM agg_t'),
+	('SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c'),
+	('SELECT k, count(*), count(DISTINCT c) FROM agg_t WHERE c LIKE ''y%'' COLLATE "C" GROUP BY k'),
+	('SELECT count(*) FROM agg_t WHERE c = repeat(''y'', 1000)');
+SELECT * FROM agg_compare();
 VACUUM agg_t;
-SELECT count(*) FROM agg_t WHERE g = 1 AND k = 'long';
-SELECT count(f) FROM agg_t;
-SET sift.enable_agg = off;
-SELECT count(c), count(f) FROM agg_t;
-RESET sift.enable_agg;
+SELECT * FROM agg_compare();
 
 DROP TABLE agg_t, agg_q;
 DROP FUNCTION agg_rows, agg_pushed, agg_compare;

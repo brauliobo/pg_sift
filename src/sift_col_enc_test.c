@@ -22,7 +22,7 @@ typedef struct TCtx
 	pg_prng_state rng;
 	int64		checks;
 	int64		failures;
-	uint32		encodings;		/* bit per chunk encoding written: CONST, PACK, FOR 8, 16, 32, 64; bit 9: the chunk codec, bit 10: string lists */
+	uint32		encodings;		/* bit per chunk encoding written: CONST, PACK, FOR 8, 16, 32, 64; bit 9: the chunk codec, bit 10: string lists, bit 11: inline text */
 	bool		wide;			/* the next text leaf gets tens of thousands of distinct values (codes of 16 and 17 bits) */
 	bool		full;			/* this round is a full superblock: 256 dense pages */
 } TCtx;
@@ -90,10 +90,10 @@ rand_store(TCtx *t, bool top)
 	return s[RAND(t, top ? 7 : 6)];
 }
 
-static Oid
+static uint8
 store_type(SiftColStore s)
 {
-	return s == SIFT_COLS_INT ? INT8OID : s == SIFT_COLS_F4 ? FLOAT4OID : s == SIFT_COLS_F8 ? FLOAT8OID : s == SIFT_COLS_VAR ? BYTEAOID : TEXTOID;
+	return s == SIFT_COLS_INT ? SIFT_COLT_INT8 : s == SIFT_COLS_F4 ? SIFT_COLT_FLOAT4 : s == SIFT_COLS_F8 ? SIFT_COLT_FLOAT8 : s == SIFT_COLS_VAR ? SIFT_COLT_BYTEA : SIFT_COLT_TEXT;
 }
 
 static void
@@ -121,7 +121,7 @@ gen_prof(TCtx *t, LeafProf *p, SiftColStore store)
 		for (uint32 i = 0; i < np; i++)
 		{
 			const char *stem = stems[RAND(t, lengthof(stems))];
-			uint32		len = wide ? 8 : RAND(t, 40) == 0 ? (store == SIFT_COLS_VAR ? 300 + RAND(t, 9000) : SIFT_COL_MAX_STR - RAND(t, 2)) :
+			uint32		len = wide ? 8 : RAND(t, 40) == 0 ? (store == SIFT_COLS_VAR || RAND(t, 2) ? 300 + RAND(t, 9000) : SIFT_COL_DICT_MAX_ENTRY - RAND(t, 2)) :
 				strlen(stem) + RAND(t, 6) * (RAND(t, 3) == 0);
 			char	   *s = palloc(len + 1);
 
@@ -158,7 +158,7 @@ gen_case(TCtx *t)
 			defs[n] = (SiftColDef) {n, gid, SIFT_COLK_SCALAR, rand_store(t, false), 0, gid + 1, 0, item_paths[k]};
 	}
 	for (int i = 0; i < n; i++)
-		defs[i].typid = defs[i].kind == SIFT_COLK_GROUP ? INT4OID : store_type(defs[i].store);
+		defs[i].type = defs[i].kind == SIFT_COLK_GROUP ? SIFT_COLT_INT4 : store_type(defs[i].store);
 	c->schema = sift_cschema_create(CurrentMemoryContext, defs, n);
 	c->prof = palloc(n * sizeof(LeafProf));
 	for (int i = 0; i < n; i++)
@@ -350,7 +350,7 @@ batch_of(const Case *c, const SiftColRow *rows, uint32 n)
  * Comparing rows
  * ------------------------------------------------------------------------- */
 
-/* Two stored values are equal: the same NULL/overflow state, the same key (floats: -0 and NaN are one value) or bytes */
+/* Two stored values are equal: the same NULL/overflow state, the same key (floats: the bits, but every NaN is one value) or bytes */
 static bool
 value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 {
@@ -446,7 +446,7 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, p != NULL && p->ncols == s->ncols && p->hash == s->hash && p->ngroups == s->ngroups, "schema parse");
 	for (int i = 0; p != NULL && i < s->ncols; i++)
 		CHECK(t, p->cols[i].id == s->cols[i].id && p->cols[i].parent == s->cols[i].parent && p->cols[i].kind == s->cols[i].kind &&
-			  p->cols[i].store == s->cols[i].store && p->cols[i].attno == s->cols[i].attno && p->cols[i].typid == s->cols[i].typid &&
+			  p->cols[i].store == s->cols[i].store && p->cols[i].attno == s->cols[i].attno && p->cols[i].type == s->cols[i].type &&
 			  strcmp(p->cols[i].path, s->cols[i].path) == 0, "schema leaf %d", i);
 	for (Size cut = 0; cut < buf.len; cut += 1 + RAND(t, 9))
 		CHECK(t, sift_cschema_parse(CurrentMemoryContext, buf.data, cut) == NULL, "truncated schema (%zu bytes) parsed", cut);
@@ -454,7 +454,7 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, sift_cschema_parse(CurrentMemoryContext, buf.data, buf.len) == NULL, "schema with a wrong hash parsed");
 
 	/* the hash covers everything but the flags */
-	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, INT8OID, "total"};
+	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT8, "total"};
 	defs[1] = defs[0];
 	defs[1].id = 1;
 	defs[1].path = "total2";
@@ -501,7 +501,7 @@ check_dict(TCtx *t)
 
 	for (uint32 i = 0; i < n; i++)
 	{
-		uint32		l = RAND(t, 6) == 0 ? RAND(t, SIFT_COL_MAX_STR + 1) : RAND(t, 6);
+		uint32		l = RAND(t, 6) == 0 ? RAND(t, SIFT_COL_DICT_MAX_ENTRY + 1) : RAND(t, 6);
 		uint32		code;
 
 		str[i] = palloc(l + 1);
@@ -526,7 +526,7 @@ check_dict(TCtx *t)
 		memset(absent, 'Z', sizeof(absent));
 		CHECK(t, sift_cdict_find(d, absent, sizeof(absent)) == -1, "find of an absent value");
 	}
-	CHECK(t, ERRCODE_OF(sift_cdict_intern(d, str[0], SIFT_COL_MAX_STR + 1)) == ERRCODE_PROGRAM_LIMIT_EXCEEDED, "256 byte value accepted");
+	CHECK(t, ERRCODE_OF(sift_cdict_intern(d, str[0], SIFT_COL_MAX_VALUE + 1)) == ERRCODE_PROGRAM_LIMIT_EXCEEDED, "a value over 1 GB accepted");
 
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "pad");
@@ -606,6 +606,7 @@ vcmp(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 		case SIFT_COLS_INT:
 			return (a->v.i > b->v.i) - (a->v.i < b->v.i);
 		case SIFT_COLS_STR:
+		case SIFT_COLS_VAR:
 			r = memcmp(a->v.s, b->v.s, Min(a->len, b->len));
 			return r != 0 ? r : (a->len > b->len) - (a->len < b->len);
 		default:
@@ -673,6 +674,7 @@ gen_const(TCtx *t, const SiftColDef *d, const Ref *ref, SiftColValue *c)
 			c->v.i = from ? from->v.i + (RAND(t, 4) == 0 ? (int64) RAND(t, 3) - 1 : 0) : (int64) pg_prng_uint64(&t->rng) >> RAND(t, 64);
 			break;
 		case SIFT_COLS_STR:
+		case SIFT_COLS_VAR:
 			{
 				uint32		len = from ? from->len : RAND(t, 5);
 				char	   *s = palloc(len + 2);
@@ -719,10 +721,10 @@ gen_pred(TCtx *t, const SiftColDef *d, const Ref *ref, SiftColPred *p, SiftColVa
 	static const SiftColOp num[] = {SIFT_COLOP_EQ, SIFT_COLOP_NE, SIFT_COLOP_LT, SIFT_COLOP_LE, SIFT_COLOP_GT, SIFT_COLOP_GE,
 		SIFT_COLOP_IN, SIFT_COLOP_NOTIN, SIFT_COLOP_ISNULL, SIFT_COLOP_NOTNULL, SIFT_COLOP_EQ, SIFT_COLOP_IN, SIFT_COLOP_LT, SIFT_COLOP_GE,
 	SIFT_COLOP_PREFIX};
-	int			nops = d->store == SIFT_COLS_STR ? lengthof(num) : lengthof(num) - 1;
+	int			nops = d->store == SIFT_COLS_STR || d->store == SIFT_COLS_VAR ? lengthof(num) : lengthof(num) - 1;
 
 	p->col = d->id;
-	p->op = d->store == SIFT_COLS_VAR ? (RAND(t, 2) ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL) : num[RAND(t, nops)];
+	p->op = num[RAND(t, nops)];
 	p->nvals = p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN ? RAND(t, maxconsts + 1) : p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL ? 0 : 1;
 	for (int i = 0; i < p->nvals; i++)
 		gen_const(t, d, ref, &consts[i]);
@@ -786,10 +788,38 @@ check_zone(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, c
 	CHECK(t, d->store != SIFT_COLS_STR || memcmp(z->set, set, sizeof(set)) == 0, "%s zone set", what);
 }
 
+/* The zone of an inline text chunk, from the reference values: prefix keys of the smallest and largest, no set */
+static void
+check_zone_inline(TCtx *t, const char *what, const Ref *ref, const SiftCZone *z)
+{
+	uint32		nn = 0,
+				flags = SIFT_COLZ_INLINE;
+	int64		mn = 0,
+				mx = 0;
+	uint64		ones[4] = {~UINT64CONST(0), ~UINT64CONST(0), ~UINT64CONST(0), ~UINT64CONST(0)};
+
+	for (uint32 i = 0; i < ref->n; i++)
+	{
+		int64		k;
+
+		flags |= ref->v[i].overflow ? SIFT_COLZ_OVERFLOW : 0;
+		if (ref_null(&ref->v[i]))
+			continue;
+		k = sift_col_str_prefix(ref->v[i].v.s, ref->v[i].len);
+		mn = nn == 0 ? k : Min(mn, k);
+		mx = nn == 0 ? k : Max(mx, k);
+		nn++;
+	}
+	CHECK(t, z->nvals == ref->n && z->nnull == ref->n - nn && z->flags == flags, "%s inline zone counts/flags %u/%u %x, expected %u/%u %x", what,
+		  z->nnull, z->nvals, z->flags, ref->n - nn, ref->n, flags);
+	CHECK(t, z->min == mn && z->max == mx && memcmp(z->set, ones, sizeof(ones)) == 0, "%s inline zone range or set", what);
+}
+
 #define NPREDS	8
 
+/* direct: the chunk is inline text and is tested as stored, by the strings (and its prefix blob), not through a dictionary */
 static void
-check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCChunk *ch, const SiftCZone *z)
+check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, const Ref *ref, const SiftCChunk *ch, const SiftCZone *z, bool direct)
 {
 	uint32		n = ref->n,
 				nw = SIFT_COL_NWORDS(n);
@@ -805,7 +835,10 @@ check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, 
 					masked = RAND(t, 2);
 
 		gen_pred(t, d, ref, &p, consts, 13);
-		sift_ctest_make(d, segdict, &p, &test);
+		if (direct)
+			sift_ctest_make_strs(&p, &test);
+		else
+			sift_ctest_make(d, segdict, &p, &test);
 		memset(bits, 0, nw * sizeof(uint64));
 		memset(want, 0, nw * sizeof(uint64));
 		for (uint32 i = 0; i < n; i++)
@@ -844,6 +877,27 @@ check_strs(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch)
 	CHECK(t, bad == 0, "%s: %u strings differ", what, bad);
 	pfree(off);
 	pfree(bytes);
+}
+
+/* The byte lengths of a string chunk's rows against sift_cchunk_strs_length */
+static void
+check_lengths(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch)
+{
+	uint32		nw = SIFT_COL_NWORDS(ref->n);
+	uint64	   *bits = palloc(nw * sizeof(uint64));
+
+	for (int k = 0; k < 4; k++)
+	{
+		uint32		lo = RAND(t, 3) == 0 ? 0 : RAND(t, 300),
+					hi = RAND(t, 4) == 0 ? PG_UINT32_MAX : lo + RAND(t, 400) - (k == 3 ? 5 : 0),
+					bad = 0;
+
+		sift_cchunk_strs_length(ch, lo, hi, bits);
+		for (uint32 i = 0; i < ref->n; i++)
+			bad += sift_col_bit_test(bits, i) != (!ref_null(&ref->v[i]) && ref->v[i].len >= lo && ref->v[i].len <= hi);
+		CHECK(t, bad == 0, "%s: %u rows differ for lengths in [%u, %u]", what, bad, lo, hi);
+	}
+	pfree(bits);
 }
 
 /* Decodes the chunk (all, and a selection) against the reference keys */
@@ -887,9 +941,9 @@ note_encoding(TCtx *t, SiftColStore store, const SiftCChunk *c)
 {
 	int			bit;
 
-	if (c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS)
+	if (c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS || c->enc == SIFT_COLENC_ISTR)
 	{
-		t->encodings |= 1 << (c->enc == SIFT_COLENC_CC ? 9 : 10);
+		t->encodings |= 1 << (c->enc == SIFT_COLENC_CC ? 9 : c->enc == SIFT_COLENC_STRS ? 10 : 11);
 		return;
 	}
 	if (c->enc == SIFT_COLENC_CONST)
@@ -989,6 +1043,24 @@ random_policy(TCtx *t, int ncols)
 	return pol;
 }
 
+/* The rule that sends a unit's text inline: a string over 255 bytes, or a dictionary that would pass the limit with the entries the unit adds */
+static void
+check_inline_rule(TCtx *t, const SiftColBatch *b, int col, SiftCDict *seg)
+{
+	const SiftCDict *bd = b->dict[col];
+	Size		limit = RAND(t, 4) == 0 ? seg->nbytes + RAND(t, 200) : RAND(t, 2000),
+				add = 0;
+	bool		want = false;
+
+	for (uint32 c = 0; c < bd->n; c++)
+	{
+		want |= dict_len(bd, c) > SIFT_COL_DICT_MAX_ENTRY;
+		add += sift_cdict_find(seg, bd->bytes + bd->off[c], dict_len(bd, c)) < 0 ? dict_len(bd, c) : 0;
+	}
+	want |= seg->nbytes + add > limit;
+	CHECK(t, sift_cbatch_str_inline(b, col, seg, limit) == want, "leaf %d: inline rule for a limit of %zu (dictionary %zu, adds %zu)", col, limit, seg->nbytes, add);
+}
+
 static void
 check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows, uint32 n, const SiftCcPolicy *pol)
 {
@@ -997,15 +1069,22 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 	bool		identity = RAND(t, 4) == 0;		/* the segment's dictionaries are the batch's: no map */
 	SiftCDict **dicts = identity ? b->dict : seg_dicts(t, b, &dictmap);
 	SiftCZone  *zones = palloc(s->ncols * sizeof(SiftCZone));
+	bool	   *inl = palloc0(s->ncols * sizeof(bool));
 	StringInfoData buf;
 	Size		start;
 	uint8	   *rec;
 	SiftCUnitView v;
 	SiftColBatch *dst;
 	uint64	   *live;
+	for (int col = 0; col < s->ncols; col++)
+	{
+		inl[col] = b->dict[col] != NULL && (sift_cbatch_str_inline(b, col, dicts[col], SIFT_COL_DICT_MAX_BYTES) || RAND(t, 3) == 0);
+		if (b->dict[col] != NULL && b->col[col].n > 0)
+			check_inline_rule(t, b, col, dicts[col]);
+	}
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "x");	/* the record starts after a pad: encode aligns it */
-	sift_cunit_encode(b, dictmap, pol, &buf, &start, zones);
+	sift_cunit_encode(b, dictmap, inl, pol, &buf, &start, zones);
 	{
 		static const char zero[SIFT_COL_PAD];
 
@@ -1037,11 +1116,28 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 			continue;
 		}
 		note_encoding(t, s->cols[col].store, &ch);
-		check_decode(t, what, &s->cols[col], dicts[col], &ref, &ch);
 		sift_cchunk_zone(&ch, s->cols[col].store, &z2);
 		CHECK(t, memcmp(&z2, &zones[col], sizeof(z2)) == 0, "%s: recomputed zone differs from the encoder's", what);
+		CHECK(t, (ch.enc == SIFT_COLENC_ISTR) == (inl[col] && ch.n > 0), "%s: inline chunk %d, asked %d", what, ch.enc == SIFT_COLENC_ISTR, inl[col]);
+		if (ch.enc == SIFT_COLENC_ISTR)
+		{
+			SiftCDict  *own;
+			SiftCChunk	codes;
+
+			check_strs(t, what, &ref, &ch);
+			check_zone_inline(t, what, &ref, &zones[col]);
+			CHECK(t, sift_cchunk_istr_codes(&ch, CurrentMemoryContext, &own, &codes), "%s: no codes of an inline chunk", what);
+			check_decode(t, what, &s->cols[col], own, &ref, &codes);
+			check_tests(t, what, &s->cols[col], own, &ref, &codes, &zones[col], false);
+			check_tests(t, what, &s->cols[col], NULL, &ref, &ch, &zones[col], true);
+			check_lengths(t, what, &ref, &ch);
+			continue;
+		}
+		check_decode(t, what, &s->cols[col], dicts[col], &ref, &ch);
 		check_zone(t, what, &s->cols[col], dicts[col], &ref, &zones[col]);
-		check_tests(t, what, &s->cols[col], dicts[col], &ref, &ch, &zones[col]);
+		check_tests(t, what, &s->cols[col], dicts[col], &ref, &ch, &zones[col], false);
+		if (s->cols[col].store == SIFT_COLS_VAR)
+			check_lengths(t, what, &ref, &ch);
 	}
 
 	dst = sift_cbatch_create(CurrentMemoryContext, s);
@@ -1112,7 +1208,7 @@ check_merge(TCtx *t, const Case *c, const SiftKey *keys, uint32 n)
 	check_batch_rows(t, "merge", c, dst, want, n);
 }
 
-/* Rows out of order, outside the superblock, with a bad offset or an oversized string are refused */
+/* Rows out of order, outside the superblock or with a bad offset are refused; a string over the dictionary limit is not */
 static void
 check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 {
@@ -1136,7 +1232,7 @@ check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 			str = col;
 	if (str >= 0 && (last & 0xFFFF) < MaxHeapTuplesPerPage)
 	{
-		char		big[SIFT_COL_MAX_STR + 1];
+		char		big[SIFT_COL_DICT_MAX_ENTRY + 1];
 
 		memset(big, 'x', sizeof(big));
 		row = rows[n - 1];
@@ -1144,11 +1240,7 @@ check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
 		memcpy(row.val, rows[n - 1].val, c->schema->ncols * sizeof(SiftColValue));
 		row.val[str] = (SiftColValue) {.v.s = big, .len = sizeof(big)};
 		ItemPointerSet(&row.tid, sift_key_block(last), (last & 0xFFFF) + 1);
-		CHECK(t, ERRCODE_OF(sift_cbatch_add(b, &row)) == ERRCODE_PROGRAM_LIMIT_EXCEEDED, "a value of 256 bytes was accepted");
-		row.val[str].len = SIFT_COL_MAX_STR;
-		ItemPointerSet(&row.tid, sift_key_block(last), (last & 0xFFFF) + 1);
-		b = batch_of(c, rows, n);
-		CHECK(t, ERRCODE_OF(sift_cbatch_add(b, &row)) == 0, "a value of 255 bytes was refused");
+		CHECK(t, ERRCODE_OF(sift_cbatch_add(b, &row)) == 0, "a value of 256 bytes was refused");
 	}
 }
 
@@ -1305,10 +1397,10 @@ size_batch(TCtx *t, SizeShape shape, SiftColSchema **schema)
 	defs[0] = (SiftColDef) {0, -1, SIFT_COLK_SCALAR, store, 0, 1, store_type(store), "col"};
 	if (shape == SZ_ITEMS)
 	{
-		defs[0] = (SiftColDef) {0, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 1, INT4OID, "items[]"};
-		defs[1] = (SiftColDef) {1, 0, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 1, TEXTOID, "items[].sku"};
-		defs[2] = (SiftColDef) {2, 0, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, INT4OID, "items[].qty"};
-		defs[3] = (SiftColDef) {3, 0, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 1, FLOAT8OID, "items[].price"};
+		defs[0] = (SiftColDef) {0, -1, SIFT_COLK_GROUP, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT4, "items[]"};
+		defs[1] = (SiftColDef) {1, 0, SIFT_COLK_SCALAR, SIFT_COLS_STR, 0, 1, SIFT_COLT_TEXT, "items[].sku"};
+		defs[2] = (SiftColDef) {2, 0, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT4, "items[].qty"};
+		defs[3] = (SiftColDef) {3, 0, SIFT_COLK_SCALAR, SIFT_COLS_F8, 0, 1, SIFT_COLT_FLOAT8, "items[].price"};
 		n = 4;
 		for (int i = 0; i < 200; i++)
 			snprintf(skus[i], sizeof(skus[i]), "SKU-%05d", i * 37);
@@ -1371,7 +1463,7 @@ sift_test_col_enc_sizes(PG_FUNCTION_ARGS)
 		bool		nulls[4] = {false, false, false, false};
 
 		initStringInfo(&buf);
-		sift_cunit_encode(b, NULL, NULL, &buf, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, NULL, &buf, &start, NULL);
 		MemoryContextSwitchTo(old);
 		values[0] = CStringGetTextDatum(size_names[shape]);
 		values[1] = Int64GetDatum(b->nrows);

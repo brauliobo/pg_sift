@@ -12,6 +12,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   segments directly, and `VACUUM` counts dead rows as a heap does, rewrites mostly dead segments (`sift.table_dead_rewrite_pct`) and gives the free end of the file back. The scripts are
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
+  `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel on large tables (`max_parallel_maintenance_workers`): each process writes the segments of the superblocks it claims (`docs/COL.md` 2.6).
 
 - Column chunk codec (`src/sift_colcodec.c`, interface in [docs/COL-CODEC.md](docs/COL-CODEC.md), research and measurements in
   [docs/perf/COMPRESSION.md](docs/perf/COMPRESSION.md)): the compression of the column engine's chunks. For each chunk it picks, from exact sizes, the
@@ -22,6 +23,21 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `lz4[:N]`, `zstd[:N]`, explicit encodings) is parsed here and applied by the column engine (reloption `compression`, per column `'auto; col=zstd:9'`). Build: LZ4 and zstd are linked when their development packages are
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
+
+- Changed (column format 1.1, clean break from the pre-release 1.0): the leaf type in the stored schema is a host-independent tag
+  (`SiftColType`: bool, int2/4/8, float4/8, numeric, text, bytea, date, timestamp(tz), uuid, jsonb, other) instead of a PostgreSQL type OID, so
+  the format and its schema hash port to other hosts; the OIDs are mapped at the PostgreSQL boundary only (`sift_col_type_of_oid`,
+  `sift_col_def_typid`). Segments written by a build before this one are refused with a REINDEX hint.
+
+- Added (column format 1.1): text and bytea of any length in the column engine. A string longer than 255 bytes (or a dictionary past 64 MiB) is
+  stored inline in its chunk with a sortable 8-byte prefix, so there is no length limit below 1 GB per unit and the `0A000` that `SiftAgg` raised
+  for long strings is gone. Equality, `IN`, comparisons, prefix and length tests run on the encoded form (prefix zone maps prune units; the
+  prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
+  callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
+  Details and the glue `SiftAgg` still has to apply: `docs/COL.md` section 2.9.
+
+- Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
+  `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.
 
 - Added: aggregate pushdown on column indexes (`sift.enable_agg`, default on). A `GROUP BY` query over a table with a `sift_col` index
   (or over a lateral unnest of an indexed jsonb array or object) with `count`, `count(DISTINCT)`, `sum`, `avg`, `min` and `max`, filters,
