@@ -237,7 +237,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
-| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries) |
+| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries); `sql/store/`: the online-store data generator, the layout of each system and the ten queries |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
 
 | `steps/` | role |
@@ -264,6 +264,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch; speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `store.sh`, `store.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
@@ -331,6 +332,45 @@ plus country word; workloads `top` (top-20), `boost` (name matches x3), `filter`
 a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), the queries S1-S7 on the store sets K10, K400 and K4000 and the
 whole-table scans G1-G8, as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
 against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 43 queries of ClickBench. It uses a cluster of its own
+
+## Analytics for everyone: the online store (`bench/bench store`)
+
+amount, quantity, created_at, title`), ten questions anyone can ask of it (an order by id, orders per country, revenue per month, the top 10 categories,
+an average, distinct customers per month, a filtered count, and three after a full-text search: a count, counts per category, the 10 newest), and four
+servers: PostgreSQL (heap, btree and GIN indexes: what most teams run), PostgreSQL with pg_sift (`sift_col` + `sift`, and `sift_table`), Elasticsearch and
+ClickHouse. It extends this harness rather than replacing it: `bench` is the entry point and holds the perf lock for the timed runs, `steps/lib.sh` gives the
+
+```sh
+bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
+bench/bench store clean                 # containers, volumes, the image, the CSV
+```
+
+Needs docker (it pulls the images pinned in `versions.env` and builds the PostgreSQL image from this checkout's tracked files, as `scripts/replication.sh --container`
+does), `psql`, `python3`; nothing is installed on the host and every container and anonymous volume is removed at the end (`store all` removes them on any exit).
+What it does, in order, for each size:
+
+1. Four containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (4) and `--memory` (8g) with no swap, on
+   ports `STORE_PORT_BASE` to `+3` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers are the same image and settings
+   (`shared_buffers` 2GB, `max_parallel_workers_per_gather` as many as CPUs, `jit` off); Elasticsearch has a heap of half the memory; ClickHouse sizes itself from the
+   container limit.
+2. The data: `sql/store/gen.sql` writes the rows with hashes of (id, draw number), so a size gives the same CSV every run (its sha256 is in the results); the same
+   file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
+   are recorded. Elasticsearch is merged to one segment and ClickHouse optimized after the load, PostgreSQL vacuumed and analyzed.
+3. Warm runs (`steps/store.py run`): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
+   relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3), two more untimed runs, then `--runs` (7) timed runs
+   with the engines interleaved and the first rotating each run. A timing is the wall time of one request over a persistent local connection, one client, until the
+   last byte; Elasticsearch is timed with its request cache off and, as a separate engine, on. The plan nodes of the PostgreSQL engines are recorded.
+4. Cold runs (`cold`): for each engine and query, restart the container, then time the first run (`--cold-runs`, 3); the operating system's page cache is not dropped
+   (that needs root), so this is "first run after a restart", not a cold disk.
+5. Updates (`updates`, the first size only; `--update-sizes`): update 1% and 10% of the rows and delete 5% by primary key, in batches of 1,000, each system by the path its
+   documentation recommends, the state compared with PostgreSQL's after each step; single-row changes timed until
+   a query sees them; the revenue-per-month query timed under 0, 1,000 and 10,000 updated rows per second (a second connection, batches of 100 rows); sizes before,
+   after the changes and after a maintenance step (`VACUUM`, `OPTIMIZE ... FINAL`, `_forcemerge`). A system that fails is a row of the results, not a gap.
+
+The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. Options: `--sizes`, `--cpus`, `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
+`--engines pg,sift,sift_table,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`), `--queries 01,03,search_count`, `--docs`, `--out`;
+`STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `run`, `cold`, `updates`, `merge`,
+`render`); `store.sh setup|run|cold|updates` keep the containers up for development.
 
 ## Remote host
 
