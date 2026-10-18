@@ -15,6 +15,12 @@
 
 #include "sift_table.h"
 
+bool
+sift_tbl_xid_aborted(TransactionId xid)
+{
+	return !TransactionIdIsCurrentTransactionId(xid) && !TransactionIdIsInProgress(xid) && !TransactionIdDidCommit(xid);
+}
+
 /* The insertion of rv is visible to snapshot; *dead: no snapshot will ever see it (aborted insertion, killed record) */
 bool
 sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead)

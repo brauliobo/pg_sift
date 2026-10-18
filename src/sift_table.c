@@ -31,12 +31,48 @@
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "sift_col_am.h"
 #include "sift_table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
+
+bool		sift_tbl_inline_seal = true;
+char	   *sift_tbl_compression_spec = NULL;
+
+static void
+check_compression(const char *spec)
+{
+	if (spec != NULL)
+		sift_col_validate_compression(spec);
+}
+
+static bool
+compression_check_hook(char **newval, void **extra, GucSource source)
+{
+	check_compression(*newval);
+	return true;
+}
+
+void
+sift_tbl_define_gucs(void)
+{
+	DefineCustomIntVariable("sift.table_delta_limit",
+							"Size of a sift_table write segment (row format) before it is closed, to be sealed into columns.",
+							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",
+							&sift_tbl_delta_limit, 4096, 2048, 8192,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_inline_seal",
+							 "Seals the closed write segments of a sift_table into columns while rows are inserted (VACUUM always does).",
+							 NULL, &sift_tbl_inline_seal, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.table_compression",
+							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
+							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
+}
 
 static const TableAmRoutine sift_tbl_methods;
 
@@ -156,7 +192,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 		LockTuple(rel, tid, ExclusiveLock);
 		sift_tbl_refresh(rel, st);
 		sift_tbl_tomb_sync(rel, st);
-		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
+		if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 		{
 			UnlockTuple(rel, tid, ExclusiveLock);
 			if (locking)
@@ -168,7 +204,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 			elog(ERROR, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
 				 ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
 		}
-		heap_freetuple(rv.tuple);
+		sift_tbl_free_row(&rv);
 		sift_tbl_del_state(st, rv.key, del);
 		tmfd->ctid = *tid;
 		tmfd->xmax = del->xid;
@@ -241,11 +277,11 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 	{
 		SiftTblRowVer rv;
 
-		if (sift_tbl_fetch_row(rel, st, tid, &rv))
+		if (sift_tbl_fetch_lazy(rel, st, tid, &rv))
 		{
 			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
 				result = TM_Updated;
-			heap_freetuple(rv.tuple);
+			sift_tbl_free_row(&rv);
 		}
 	}
 	if (result == TM_Ok)
@@ -285,11 +321,11 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	{
 		SiftTblRowVer rv;
 
-		if (sift_tbl_fetch_row(rel, st, otid, &rv))
+		if (sift_tbl_fetch_lazy(rel, st, otid, &rv))
 		{
 			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
 				result = TM_Updated;
-			heap_freetuple(rv.tuple);
+			sift_tbl_free_row(&rv);
 		}
 	}
 	if (result == TM_Ok)
@@ -366,6 +402,7 @@ tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift_table needs BLCKSZ 8192")));
+	sift_tbl_layout_check(rel);
 	*freezeXid = RecentXmin;
 	*minmulti = GetOldestMultiXactId();
 	srel = RelationCreateStorage(*newrlocator, persistence, true);
