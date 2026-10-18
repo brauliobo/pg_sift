@@ -24,6 +24,7 @@
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
 #include "sift_build.h"
+#include "sift_colcodec.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_ops.h"
@@ -212,6 +213,7 @@ _PG_init(void)
 	sift_init();
 	sift_cpu_register(codec_rebind);
 	sift_kernels_init();
+	sift_cc_kernels_init();
 	define_gucs();
 	define_reloptions();
 	sift_planner_init();
