@@ -11,6 +11,7 @@
 #include "access/table.h"
 #include "catalog/index.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
@@ -201,6 +202,20 @@ scan_close(TestScan *ts)
 	index_close(ts->index, AccessShareLock);
 }
 
+/* The next unit; an open source holds no buffer lock between calls (a lock holds off interrupts, so parallel workers could not be launched or awaited) */
+static bool
+test_next(TestScan *ts, SiftColUnit *unit)
+{
+	bool		more;
+
+	if (InterruptHoldoffCount != 0)
+		elog(ERROR, "the column source holds a buffer lock between calls");
+	more = sift_col_next(ts->src, unit);
+	if (InterruptHoldoffCount != 0)
+		elog(ERROR, "the column source holds a buffer lock after reading a unit");
+	return more;
+}
+
 /* The visible rows of the unit that satisfy the query */
 static bool
 unit_select(TestScan *ts, const SiftColUnit *unit, int flags, SiftColSel *sel)
@@ -224,7 +239,7 @@ sift_test_col_tids(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(1)), flags);
-	while (sift_col_next(ts.src, &unit))
+	while (test_next(&ts, &unit))
 	{
 		SiftColSel	sel;
 		ItemPointerData *tids;
@@ -280,7 +295,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(2)), flags);
-	while (sift_col_next(ts.src, &unit))
+	while (test_next(&ts, &unit))
 	{
 		SiftColSel	sel;
 		SiftColVec	vec;
@@ -333,7 +348,7 @@ sift_test_col_zones(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(2)), 0);
-	while (sift_col_next(ts.src, &unit))
+	while (test_next(&ts, &unit))
 	{
 		SiftColZone z;
 		Datum		v[9];
@@ -371,7 +386,7 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(1)), flags);
-	while (sift_col_next(ts.src, &unit))
+	while (test_next(&ts, &unit))
 	{
 		SiftColSel	sel;
 
