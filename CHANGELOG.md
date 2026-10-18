@@ -43,6 +43,32 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   segments of 128 superblocks or more (16 MB, least recently used out; a segment never changes, so its generation names the directory
   for good) and a repeated query reads none of it. Smaller segments are read each time, as before.
 
+- Planner: the estimate of a query is computed once per statement instead of three or four times (the selectivity of the clause, the cost of each
+  path, the index path). The last 8 estimates of a backend are kept under the index file, the version of its directory, the expansion cap and the
+  query; a promotion, a merge, VACUUM or REINDEX changes the key. Slim tier, one backend, the same 1500 statements, user cycles per statement
+  (mean +- standard error of 5 interleaved runs): count 867k +- 31k to 761k +- 15k (-12%), filter 1.86M to 1.77M (-5%), mixed 1.52M to 1.45M
+  (-4%), and 846k to 811k (-4%).
+- Ranker: a join (or any consumer) that keeps a small share of the rows and pulls past the limit hint makes the scan search again for 16 times
+  as many hits (4 times beyond 4096) instead of 4 times, so a join that keeps a tenth of the rows searches twice instead of three times. Rows,
+  scores and ties are those of the full ranking. Slim tier join class, one backend, the same 1500 statements, user cycles per query: 4.74M +- 0.02M
+  to 3.90M +- 0.05M (-18%).
+- Planner: a prepared statement (a generic plan, whose query the planner cannot read) now gets the filter pushdown like the literal query,
+  decided when the query is known: the plan keeps the filter's bitmap as a child and the scan builds it only when the bound query matches
+  enough documents for it to pay (`EXPLAIN VERBOSE` shows the number); a rare query is answered by checking the filter after the ranker.
+  The plan is priced as before, so the plan cache keeps reusing it. Rows, scores and ties are unchanged. Slim tier, one backend, the same
+  1500 statements, user cycles per query, prepared statements: filter class 3.23M +- 0.12M to 1.66M +- 0.06M (-49%), join class 5.93M to 4.68M,
+  rare AND with a 2.3% filter 772k to 658k; with the filter keeping 0.1% of the rows the ranked or class goes from 18.7M to 2.5M and the
+  filter class from 4.2M to 0.95M; at 2.3% 8.5M to 3.8M and 2.7M to 1.5M; with a filter of 10% or 50% of the rows nothing changes
+  (`bench/steps/ab.sh filter_matrix`: three query classes, four filters, automatic, custom and generic plans).
+- Planner: the filter pushdown is chosen for a filter on a value stored in one late stretch of the heap. The planner placed the rows of
+  an equality filter on a btree column from the column's statistics, which say nothing about rows loaded by group (correlation near
+  zero), and priced the scan that checks the filter after the ranker as if they were spread over the heap; it now reads where the
+  entries of the key lie from the btree (a few entries, at planning time) and verifies every match before them. A filter at the start
+  of the heap keeps the post-filter scan, so no plan that was fast changes. Slim places, one backend, user cycles per query: filtered
+  one-letter prefix (p1) 3.52M +- 0.10M to 0.67M +- 0.01M, two-letter prefix (p2) 1.05M +- 0.03M to 0.68M +- 0.02M; the top and count workloads
+  of p1 and the other article shapes are unchanged within noise. Rows, scores and ties are unchanged.
+- Fix: the final aggregate of a parallel `count(*)` plan started from uninitialized costs, so the planner sometimes priced the parallel count at
+  thousands more and chose a partial aggregate over a parallel scan instead (found by the sanitizer run of `parallel_scan`).
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,

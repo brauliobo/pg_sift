@@ -30,6 +30,8 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_MODE,				/* SiftScanMode */
 	SIFT_PRIV_K,				/* int64 k hint, 0 = unbounded */
 	SIFT_PRIV_HEAP_OID,			/* Oid of the scanned heap */
+	SIFT_PRIV_GATE,				/* float8: matches from which the scan builds its filter bitmap child, 0 = from the start */
+	SIFT_PRIV_GATE_TO,			/* float8: ... and up to which, infinity = to the end */
 	SIFT_NPRIV
 } SiftPrivateField;
 

@@ -22,6 +22,7 @@
 #include "utils/selfuncs.h"
 
 #include "sift.h"
+#include "sift_estimate.h"
 #include "sift_eval.h"
 #include "sift_ops.h"
 #include "sift_planner.h"
@@ -156,7 +157,7 @@ match_selectivity(RelOptInfo *rel, Node *expr, text *query, const Const *named)
 		if (!sift_index_serves(indexoid, analyzer))
 			continue;
 		index = index_open(indexoid, AccessShareLock);
-		sift_eval_estimate(index, &query, 1, &est);
+		sift_estimate_cached(index, &query, 1, &est);
 		index_close(index, AccessShareLock);
 		return est.docs / Max(rel->tuples > 0 ? rel->tuples : est.ndocs, 1);
 	}

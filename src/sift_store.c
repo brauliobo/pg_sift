@@ -23,6 +23,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "sift_estimate.h"
 #include "sift_store.h"
 
 #define SPECIAL_SIZE		MAXALIGN(sizeof(SiftPageOpaqueData))
@@ -274,6 +275,16 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
 	UnlockReleaseBuffer(dirbuf);
 	UnlockReleaseBuffer(metabuf);
+}
+
+uint32
+sift_dir_version(Relation index)
+{
+	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
+	uint32		version = DIR(BufferGetPage(dirbuf))->version;
+
+	UnlockReleaseBuffer(dirbuf);
+	return version;
 }
 
 uint64

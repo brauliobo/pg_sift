@@ -10,6 +10,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/table.h"
@@ -91,6 +93,8 @@ typedef struct SiftScanState
 	SiftIndexState *st;
 	SiftPlan   *plan;
 	PlanState  *bitmap;				/* ranked pushdown: bitmap of the tuples the other quals keep */
+	double		gate,				/* the bitmap is built when the query matches between gate and gate_to documents */
+				gate_to;
 	SiftFilter *filter;
 	SiftMatchIter *it;
 	SiftRanker *rank;
@@ -323,6 +327,19 @@ build_filter(SiftScanState *ss)
 	ss->empty = sift_filter_empty(ss->filter);
 }
 
+/* A pushdown of a plan made without its query (a generic plan) waits for the bound query to say how many documents it matches */
+static bool
+gated(const SiftScanState *ss)
+{
+	return ss->gate > 0 || !isinf(ss->gate_to);
+}
+
+static bool
+in_gate(const SiftScanState *ss, double docs)
+{
+	return docs >= ss->gate && docs <= ss->gate_to;
+}
+
 static void
 start_scan(SiftScanState *ss)
 {
@@ -331,11 +348,13 @@ start_scan(SiftScanState *ss)
 
 	ss->started = true;
 	ss->nsearches++;
-	if (ss->bitmap)
+	if (ss->bitmap && !gated(ss))
 		build_filter(ss);
 	old = MemoryContextSwitchTo(ss->cxt);
 	if (!ss->empty)
 		bind_scan(ss);
+	if (ss->bitmap && gated(ss) && !ss->empty && in_gate(ss, sift_plan_docs(ss->plan)))
+		build_filter(ss);
 	if (!ss->empty)
 	{
 		sift_vis_begin(&ss->vis, ss->heap, estate->es_snapshot);
@@ -551,6 +570,8 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->mode = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_MODE))->constvalue);
 	ss->k = DatumGetInt64(((Const *) list_nth(cs->custom_private, SIFT_PRIV_K))->constvalue);
 	ss->heapoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_HEAP_OID))->constvalue);
+	ss->gate = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE))->constvalue);
+	ss->gate_to = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE_TO))->constvalue);
 	ss->queries = ExecInitExprList(linitial_node(List, cs->custom_exprs), &node->ss.ps);
 	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
@@ -632,6 +653,12 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Order", "score DESC", es);
 		if (ss->k > 0)
 			ExplainPropertyInteger("Limit Hint", NULL, ss->k, es);
+		if (ss->bitmap && gated(ss) && es->verbose)
+		{
+			ExplainPropertyFloat("Filter Mask From Matches", NULL, ss->gate, 0, es);
+			if (!isinf(ss->gate_to))
+				ExplainPropertyFloat("Filter Mask Up To Matches", NULL, ss->gate_to, 0, es);
+		}
 	}
 	if (!es->analyze)
 		return;
