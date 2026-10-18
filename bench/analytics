@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The quick analytics run: the online-store benchmark at 1M orders, 3 timed runs, same equality checks, results in bench/out/latest/store.json (bench/bench store --help)
+exec "$(dirname "$0")/bench" store all --quick "$@"
