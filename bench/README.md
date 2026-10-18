@@ -217,6 +217,28 @@ Per-tier cluster, port and dump:
 | Q (`slim` 50,000, `ab` 150,000: `Q_DOCS`) | 50,000 / 150,000 | 56040 | `$BENCH_STORE/cache/sift-Q-<docs>.dump` |
 | F (`full`) | 218,058 | 56050 | `$BENCH_STORE/cache/sift-F-ALL.dump` |
 
+### Gate on a busy host (`steps/cpu_gate.sh`)
+
+Throughput and latency say nothing on a host with a load average above its cores, so this gate compares builds by what the server executes: user-space instructions (and cycles, as secondary
+evidence, because the other load contends for the caches) that `perf stat -e instructions:u,cycles:u -p POSTMASTER` counts for the processes the postmaster forks during one operation. That is the
+backend plus the maintenance worker and parallel workers, summed; a write's window ends when the worker has gone. It is standalone, never part of `make check` or `scripts/ci.sh`, needs `perf`
+(`perf_event_paranoid` <= 2) and one checkout per build with `scripts/pgtest.sh` (`git worktree add --detach /tmp/x REF`; build everything the same way, the Makefile links without LTO by default):
+
+```sh
+bench/steps/cpu_gate.sh --build before=/tmp/x-before --build after=/tmp/x-after [--build head=/tmp/x-head] \
+    [--reps 7] [--max-reps 25] [--se 1] [--budget 3600] [--cells REGEX] [--rows 20000] [--inserts 10000] [--queries 100] [--raw FILE]
+```
+
+The first `--build` is the baseline. Each build gets a production cluster under `/tmp/sift-gate-LABEL` (ports `SIFT_PORT`, default 56120, and up); nothing else is touched, and clusters and scratch files are removed
+at the end. The data are deterministic (`setseed`), made once per build into template databases and copied per run, and the heap's md5 must be equal on all builds. Cells: `insert1 bulk copy update
+delete promote merge create` (writes on a fresh copy), `vacuum_backlog vacuum_dead vacuum_clean`, and the query classes `count rank and or phrase` on 61 segments (`idle60_*`), on one (`idle1_*`) and
+on the index after VACUUM and more rows (`vac_*`), plus `session` (connect, load sift, one query on an empty index), whose cost is subtracted from every other cell, which is divided by its operations.
+Per round every cell runs on every build one after the other, the first of the round rotating (ABAB, BABA). The ratio to the baseline is the geometric mean of the per-round ratios of instructions per
+operation with a 95% interval (t distribution); `--reps` rounds run for every cell, then only the cells whose standard error of the ratio is above `--se` percent get more, up to `--max-reps` rounds or
+`--budget` seconds. A cell regresses when its whole interval is above 1.02; the table also gives the ratio of cycles, WAL bytes, index size, segments left and documents not promoted. A cell whose end
+state differs between builds (`design`: VACUUM merging further, the worker promoting the tail of a bulk load) is work done by design: its ratio is reported apart, with the segment counts, and does not gate.
+Run the gate with the same checkout under two labels to see the noise floor: at a load average of 24 the instruction ratios were 1.000 with intervals within 0.2%, the cycle ratios 0.89-1.04. `--raw FILE` keeps every measurement (`cell build round metric value`). The run time is printed at the end: the default sizes take about 1 minute per round for three builds on a 16-core host with a load average of 20, so 7 rounds are about 10 minutes and the cap of 25 rounds about 30.
+
 ## Layout
 
 | path | role |
@@ -247,6 +269,7 @@ Per-tier cluster, port and dump:
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench` (in a scratch target; only the stripped binary stays): one `$BENCH_WORK/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `ab.sh` | standalone, run directly: interleaved A/B of sift builds (git refs or the working tree) on the slim corpus, one backend's user cycles and instructions per transaction (or qps at N clients), mean and standard error; `prepare`, `prepare_places` (adapter index plus a btree on `country_code`), `shapes` (`sql/ab_shapes.sql`, the filter shapes of the plan-choice tests), `build`, `run`, `clients` (header of the script; `run bench/sql/ab_and_filter_prep.pgb ...` is a prepared rare AND query with a selective filter, the shape a generic plan with the pushdown serves worse than main's post-filter plan) |
+| `cpu_gate.sh` | standalone, run directly: gate of two or more sift builds by user instructions and cycles per operation of the server processes (backend plus maintenance worker), per cell ratio to the baseline with a 95% interval, interleaved rounds extended until the standard error is small; holds up on a busy host (section Gate on a busy host) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
