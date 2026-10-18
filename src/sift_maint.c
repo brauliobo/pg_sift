@@ -61,6 +61,10 @@ int64		sift_maint_wait_max_us = 0;
 #define wait_done(start)	((void) (start))
 #endif
 #define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
+#define SELF_PROMOTE_SEALED	4		/* sealed segments from which an inserter promotes them itself */
+/* Whatever merge_fanin is, the policy merges (from SIFT_MERGE_ENTRIES entries) before inserters have to make room, and a merge fits a directory */
+StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
+StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
 #define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
 
 typedef enum StepResult
@@ -591,7 +595,7 @@ is_busy(const MergeSel *sel, uint64 gen)
 static int
 pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *msel)
 {
-	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN};
+	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, sift_index_options(index)->merge_fanin};
 	SiftDirSnapshot *view = NULL;
 	int			n;
 
@@ -617,11 +621,11 @@ bytes_cmp(const void *a, const void *b)
 }
 
 /*
- * The smallest segments, up to want of them, that are worth merging for the count: each is at most SIFT_MERGE_FANIN times the
+ * The smallest segments, up to want of them, that are worth merging for the count: each is at most merge_fanin times the
  * size of the ones before it, so a segment past the tier of the others stays (its rewrite would cost more than the count gains).
  */
 static int
-pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
+pick_smallest(const SiftDirSnapshot *snap, int want, int fanin, MergeSel *sel)
 {
 	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
 	uint64		sum = 0;
@@ -632,7 +636,7 @@ pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !is_busy(sel, snap->segs[i].gen))
 			imm[n++] = snap->segs[i];
 	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
-	for (; k < Min(n, want) && (k < 2 || imm[k].bytes <= SIFT_MERGE_FANIN * sum); k++)
+	for (; k < Min(n, want) && (k < 2 || imm[k].bytes <= fanin * sum); k++)
 	{
 		sel->seg[k] = imm[k];
 		sum += imm[k].bytes;
@@ -658,7 +662,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeGoal go
 		if (goal == MERGE_VACUUM && n > 1)
 			n = Min(n, excess + 1);
 		if (goal == MERGE_VACUUM && n == 0 && excess > 0)
-			n = pick_smallest(snap, excess + 1, sel);
+			n = pick_smallest(snap, excess + 1, sift_index_options(index)->merge_fanin, sel);
 	}
 
 	while (k < n && total + sel->seg[k].bytes <= merge_max_bytes())
@@ -1025,7 +1029,7 @@ sift_maint_after_seal(Relation index)
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 		nsealed += snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED;
-	if (nsealed >= 4 && !in_backoff(&snap->meta))
+	if (nsealed >= SELF_PROMOTE_SEALED && !in_backoff(&snap->meta))
 		sift_maint_promote(index, false);
 	pfree(snap);
 }

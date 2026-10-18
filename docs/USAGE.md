@@ -152,9 +152,10 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
 
-Reloptions (`WITH (...)`; all but `mutable_limit` and `vacuum_segments` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
+Reloptions (`WITH (...)`; all but `mutable_limit`, `vacuum_segments` and `merge_fanin` need REINDEX): `k1` (1.2), `b` (0.75), `analyzer` (`text` or `keyword`), `stemmer`
 (`none` or `en`), `case_folding` and `accent_folding` (true), `positions` (true), `prefix_index` (0-15), `fields`,
-`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128).
+`mutable_limit` (kB, 4096), `build_segments` (0; forces N segments and disables the parallel build), `vacuum_segments` (2; 1 to 128),
+`merge_fanin` (8; 2 to 32).
 
 `vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
 merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
@@ -167,6 +168,15 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 4 | 0.15 s | 0.14 ms | 0.21 ms |
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
+
+`merge_fanin` is the number of segments of one size tier (a tier is a factor of `merge_fanin` in size, starting at `mutable_limit`) that
+makes the background worker, the inserters that need room and `sift.merge()` merge them, and the most one merge takes is twice that. A
+lower value merges sooner and more often, which is more write work and fewer segments to query; a higher one merges less and keeps up to
+`merge_fanin` - 1 segments per tier. It is read when a merge is chosen: `ALTER INDEX ... SET (merge_fanin = N)` applies to the next one, with no
+`REINDEX`, and an index built before the option keeps working with the default. A value out of 2 to 32 is an error. The limits the
+policy keeps on the directory follow it: more than `greatest(32, 2 * merge_fanin)` entries merge the smallest segments whatever their tier, and inserters
+still merge themselves from 112 of the 128 entries, so no value in range can fill a directory. Merging 39 segments of similar size leaves 1
+segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sql`).
 
 ## Replication
 
