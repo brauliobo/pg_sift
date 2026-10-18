@@ -32,14 +32,14 @@ BEGIN
 END
 $f$;
 
--- 100k documents, Zipf-like vocabulary of 20k words, a term in every
--- document (GROUPED), repeated words (tf escapes, tf and dl saturation)
+-- 40k documents (4 superblocks: build_segments = 3 gets three segments, the groups of a GROUPED term are several), Zipf-like vocabulary of 20k
+-- words, a term in every document (GROUPED), repeated words (tf escapes, tf and dl saturation)
 SELECT setseed(0.42);
 CREATE TABLE z (id int, body text);
 INSERT INTO z
 SELECT i, 'common ' || (SELECT string_agg('w' || floor(exp(random() * ln(20000)))::int, ' ')
 						FROM generate_series(1, 1 + (random() * 60)::int + i % 2))
-FROM generate_series(1, 100000) i;
+FROM generate_series(1, 40000) i;
 UPDATE z SET body = body || repeat(' rep', id % 40) WHERE id % 97 = 0;
 UPDATE z SET body = body || repeat(' many', 300) || repeat(' x', 70000) WHERE id = 5000;
 VACUUM FULL z;
