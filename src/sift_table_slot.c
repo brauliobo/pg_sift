@@ -151,8 +151,13 @@ slot_materialize(TupleTableSlot *slot)
 static HeapTuple
 slot_copy_heap_tuple(TupleTableSlot *slot)
 {
+	HeapTuple	tup;
+
 	realize(slot);
-	return TTSOpsVirtual.copy_heap_tuple(slot);
+	tup = TTSOpsVirtual.copy_heap_tuple(slot);
+	tup->t_self = slot->tts_tid;
+	tup->t_tableOid = slot->tts_tableOid;
+	return tup;
 }
 
 #if PG_VERSION_NUM >= 180000
