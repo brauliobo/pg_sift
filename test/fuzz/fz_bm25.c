@@ -85,9 +85,9 @@ blob_run(void *a)
 	uint8	   *buf = fz_copy((const uint8 *) "", 0, SIFT_CUR_BUF, 64);
 	sift_cur	c;
 
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = drain(&c, out_tids, false);
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	for (int s = 0; s < 4; s++)
 	{
 		const sift_grp *g = sift_seek(&c, (j->arg >> (8 * s)) & 0xff);
@@ -95,7 +95,7 @@ blob_run(void *a)
 		if (g)
 			j->digest = mix(j->digest, g->gid);
 	}
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = mix(j->digest, sift_count(&c));
 	free(buf);
 }
@@ -115,10 +115,10 @@ checked_run(void *a)
 		return;
 	}
 	n = sift_blob_n(j->p);
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	j->digest = drain(&c, out_tids, true);
 	cnt = j->digest;
-	sift_cur_blob(&c, j->p, buf);
+	sift_cur_blob(&c, j->p, j->len, buf);
 	if (sift_count(&c) > SIFT_GRP_MAXTIDS * 8)
 		fz_bad("sift_count of an accepted blob is %llu", (unsigned long long) sift_count(&c));
 	(void) n;
