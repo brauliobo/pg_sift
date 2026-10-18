@@ -121,7 +121,8 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes and `sift_table` tables (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
 | `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
 | `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
-| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server setting |
+| `sift.table_compression` | `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings (scope: docs/USAGE.md, Limits) |
+| `sift.table_dead_rewrite_pct` | 50 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
 
 `sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
 

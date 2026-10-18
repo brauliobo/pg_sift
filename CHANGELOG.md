@@ -8,7 +8,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `sift_col` is an index access method that stores the columns of a heap table or `sift_table` once more, column by column with zone maps
   (`docs/COL.md`); jsonb attributes become typed columns for the paths of its `paths` option (shredder, `docs/COL-SHRED.md`);
   `sift_table` (`CREATE TABLE ... USING sift_table`, `docs/COL-TAM.md`) is a table access method with native MVCC that also takes BM25
-  indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. The scripts are
+  indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. A plain scan decodes only the columns a query reads, scans go both ways (`SCROLL` cursors), `VACUUM FULL` and `CLUSTER` write column
+  segments directly, and `VACUUM` counts dead rows as a heap does, rewrites mostly dead segments (`sift.table_dead_rewrite_pct`) and gives the free end of the file back. The scripts are
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
   `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel on large tables (`max_parallel_maintenance_workers`): each process writes the segments of the superblocks it claims (`docs/COL.md` 2.6).

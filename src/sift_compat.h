@@ -9,10 +9,12 @@
 
 #include "access/genam.h"
 #include "access/tableam.h"
+#include "nodes/miscnodes.h"
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
+#include "utils/numeric.h"
 #include "utils/tuplestore.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -21,18 +23,108 @@
 
 /* Table AM scan flags (19): the plain heap scan options */
 #if PG_VERSION_NUM >= 190000
+#define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key, SO_NONE)
 #define sift_table_beginscan_parallel(rel, pscan)	table_beginscan_parallel(rel, pscan, SO_NONE)
 #define sift_table_index_fetch_begin(rel)			table_index_fetch_begin(rel, SO_NONE)
 #else
+#define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key)
 #define sift_table_beginscan_parallel(rel, pscan)	table_beginscan_parallel(rel, pscan)
 #define sift_table_index_fetch_begin(rel)			table_index_fetch_begin(rel)
 #endif
 
-/* index_beginscan takes the scan's instrumentation (18) */
-#if PG_VERSION_NUM >= 180000
+/* index_beginscan takes the scan's instrumentation (18) and its flags (19) */
+#if PG_VERSION_NUM >= 190000
+#define sift_index_beginscan(heap, index, snapshot, nkeys)	index_beginscan(heap, index, snapshot, NULL, nkeys, 0, SO_NONE)
+#elif PG_VERSION_NUM >= 180000
 #define sift_index_beginscan(heap, index, snapshot, nkeys)	index_beginscan(heap, index, snapshot, NULL, nkeys, 0)
 #else
 #define sift_index_beginscan(heap, index, snapshot, nkeys)	index_beginscan(heap, index, snapshot, nkeys, 0)
+#endif
+
+/*
+ * The table AM callbacks of 19: the insert options are unsigned, a delete and an update get them after the command id (a delete that
+ * moves the row to another partition is TABLE_DELETE_CHANGING_PARTITION in them, not an argument), the index fetch gets the scan
+ * flags, a CLUSTER copy gets the snapshot of its scan, an ANALYZE tuple no horizon and a VACUUM constant parameters. The callbacks
+ * keep the 17/18 shape; SIFT_TAM_*_ADAPTER defines the 19 one in front of them and SIFT_TAM_* names what goes in the routine.
+ */
+#if PG_VERSION_NUM >= 190000
+typedef uint32 SiftTamOptions;
+
+#define SIFT_TAM_FLAGS_PARAM			, uint32 flags
+#define SIFT_TAM_CLUSTER_SNAPSHOT		Snapshot cluster_snapshot,
+#define SIFT_TAM_ANALYZE_XMIN			/* none */
+#define SIFT_TAM_VACUUM_PARAMS			const struct VacuumParams *params
+
+#define SIFT_TAM_DELETE_ADAPTER(fn) \
+	static TM_Result fn##_tam(Relation rel, ItemPointer tid, CommandId cid, uint32 options, Snapshot snapshot, Snapshot crosscheck, \
+							  bool wait, TM_FailureData *tmfd) \
+	{ return fn(rel, tid, cid, snapshot, crosscheck, wait, tmfd, (options & TABLE_DELETE_CHANGING_PARTITION) != 0); }
+#define SIFT_TAM_UPDATE_ADAPTER(fn) \
+	static TM_Result fn##_tam(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, uint32 options, Snapshot snapshot, \
+							  Snapshot crosscheck, bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode, \
+							  TU_UpdateIndexes *update_indexes) \
+	{ return fn(rel, otid, slot, cid, snapshot, crosscheck, wait, tmfd, lockmode, update_indexes); }
+#define SIFT_TAM(fn)	fn##_tam
+#else
+typedef int SiftTamOptions;
+
+#define SIFT_TAM_FLAGS_PARAM			/* none */
+#define SIFT_TAM_CLUSTER_SNAPSHOT		/* none */
+#define SIFT_TAM_ANALYZE_XMIN			TransactionId OldestXmin,
+#define SIFT_TAM_VACUUM_PARAMS			struct VacuumParams *params
+
+#define SIFT_TAM_DELETE_ADAPTER(fn)
+#define SIFT_TAM_UPDATE_ADAPTER(fn)
+#define SIFT_TAM(fn)	fn
+#endif
+
+/* A tuple descriptor built by hand is finalized before its first use (19) */
+#if PG_VERSION_NUM >= 190000
+#define sift_tupdesc_finalize(desc)	TupleDescFinalize(desc)
+#else
+#define sift_tupdesc_finalize(desc)	((void) (desc))
+#endif
+
+/* The planner hook and standard_planner take the EXPLAIN state too (19) */
+#if PG_VERSION_NUM >= 190000
+#define SIFT_PLANNER_PARAMS		Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams, ExplainState *es
+#define SIFT_PLANNER_ARGS(q)	(q), query_string, cursorOptions, boundParams, es
+#else
+#define SIFT_PLANNER_PARAMS		Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams
+#define SIFT_PLANNER_ARGS(q)	(q), query_string, cursorOptions, boundParams
+#endif
+
+/* GlobalVisTestIsRemovableXid may update its bounds (19) */
+#if PG_VERSION_NUM >= 190000
+#define sift_vis_removable_xid(state, xid)	GlobalVisTestIsRemovableXid((state), (xid), true)
+#else
+#define sift_vis_removable_xid(state, xid)	GlobalVisTestIsRemovableXid((state), (xid))
+#endif
+
+/* The int8 value of a numeric and whether it did not fit (19 reports it through an error-saving context) */
+#if PG_VERSION_NUM >= 190000
+static inline int64
+sift_numeric_int8(Numeric num, bool *err)
+{
+	ErrorSaveContext esc = {T_ErrorSaveContext};
+	int64		v = numeric_int8_safe(num, (Node *) &esc);
+
+	*err = esc.error_occurred;
+	return v;
+}
+#else
+#define sift_numeric_int8(num, err)	numeric_int8_opt_error((num), (err))
+#endif
+
+/* pg_stat's report of a VACUUM: the relation (19) or its oid and whether it is shared, and the dead rows only from 18 */
+#if PG_VERSION_NUM >= 190000
+#define sift_pgstat_report_vacuum(rel, live, dead, start)	pgstat_report_vacuum((rel), (live), (dead), (start))
+#elif PG_VERSION_NUM >= 180000
+#define sift_pgstat_report_vacuum(rel, live, dead, start) \
+	pgstat_report_vacuum(RelationGetRelid(rel), (rel)->rd_rel->relisshared, (live), (dead), (start))
+#else
+#define sift_pgstat_report_vacuum(rel, live, dead, start) \
+	pgstat_report_vacuum(RelationGetRelid(rel), (rel)->rd_rel->relisshared, (live), (dead))
 #endif
 
 /* Plain and index-only scans off while create_index_paths builds the bitmap paths: 19 reads them from the rel, not the GUCs */

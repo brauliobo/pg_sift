@@ -86,6 +86,29 @@ subtest 'the aggregate scan sees what the snapshot sees across a seal and an ope
 	is($primary->safe_psql('postgres', $agg), '4500:14627250:4500', 'with the commit');
 };
 
+subtest 'VACUUM cuts the free end of the file under a writer that cached a page there, and the standby follows' => sub {
+	my $xid = 'SELECT pg_current_xact_id()';
+	$primary->safe_psql('postgres', 'CREATE TABLE t (id int PRIMARY KEY, note text) USING sift_table WITH (autovacuum_enabled = false);'
+		. 'INSERT INTO t SELECT g, repeat($$t$$, 60) FROM generate_series(1, 20000) g; VACUUM t');
+	# the writer's pages are taken at the end of the file, since what the VACUUM released is not reusable yet
+	my $w = $primary->background_psql('postgres');
+	$w->query_safe('INSERT INTO t SELECT g, repeat($$w$$, 60) FROM generate_series(20001, 21500) g');
+	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 7'), 't' x 60, 'the writer fetches a sealed row');
+	my $full = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
+	$primary->safe_psql('postgres', "DELETE FROM t WHERE id <= 20000; VACUUM t; $xid; VACUUM t");
+	my $cut = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
+	cmp_ok($cut, '<', $full / 2, "the file went from $full to $cut blocks");
+	$w->query_safe('INSERT INTO t VALUES (30000, $$after$$)');
+	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 21000'), 'w' x 60, 'the writer fetches after the cut');
+	$w->quit;
+	is($primary->safe_psql('postgres', 'SELECT count(*) FROM t'), 1501, 'the rows that stay');
+	$primary->wait_for_catchup($standby);
+	is($standby->safe_psql('postgres', 'SELECT count(*), sum(id) FROM t'), $primary->safe_psql('postgres', 'SELECT count(*), sum(id) FROM t'),
+		'the standby has the same rows');
+	is($standby->safe_psql('postgres', 'SELECT pg_relation_size($$t$$)'), $primary->safe_psql('postgres', 'SELECT pg_relation_size($$t$$)'),
+		'and the same file');
+};
+
 subtest 'a standby reads the sealed tables' => sub {
 	$primary->safe_psql('postgres', 'VACUUM a');
 	$primary->wait_for_catchup($standby);
