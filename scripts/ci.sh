@@ -2,6 +2,7 @@
 # Single entry point for the test suites, with a pass/fail/skip summary.
 #
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
+#   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
 #   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
@@ -42,6 +43,14 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
+# --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
+# seconds (client plus server processes), lane, status
+if [[ $MODE == --times ]]; then
+	R=${2:-$(ls -td "${TMPDIR:-/tmp}"/sift-ci-*/logs/results 2>/dev/null | head -1)}
+	sort -k4,4nr "$R" | awk 'BEGIN { printf "%-44s %7s %7s  %-6s %s\n", "job", "wall_s", "cpu_s", "lane", "status" }
+		{ printf "%-44s %7d %7.1f  %-6s %s\n", $1, $4, $9, $6, $3; w += $4; c += $9 } END { printf "%-44s %7d %7.1f\n", "total", w, c }'
+	exit
+fi
 [[ $MODE == quick || $MODE == full ]] || { sed -n '2,26p' "$0"; exit 1; }
 renice -n 19 $$ >/dev/null
 S=$REPO/scripts
@@ -88,15 +97,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end"
+# lane_cpu ID: the CPU seconds the lane cluster's postmaster has spent on the backends and workers it reaped (a job on the lane cluster
+# runs its queries there; the other jobs start clusters of their own, which scripts/cpu_time.py counts)
+lane_cpu() {
+	[[ ${J_CLUSTER[$1]:-0} == 1 && -f $SIFT_TMP/data/postmaster.pid ]] || { echo 0; return; }
+	awk '{ print ($16 + $17) / 100 }' "/proc/$(head -1 "$SIFT_TMP/data/postmaster.pid")/stat" 2>/dev/null || echo 0
+}
+# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
 # to the results and returns its status
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
-	"$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	c0=$(lane_cpu "$id")
+	"$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	c1=$(lane_cpu "$id")
 	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
-	printf '%s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" >>"$LOG/results"
+	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
+		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
 	[[ $status == PASS ]]
 }
 
