@@ -26,6 +26,8 @@ typedef struct SiftColRel
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
+/* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
+extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the engine holds natively (false: not natively); the scale of a numeric(p, s) leaf (false: not representable) */
 extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
 extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);

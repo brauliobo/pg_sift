@@ -220,7 +220,7 @@ sift_col_close(SiftColSource *src)
 {
 	for (int i = 0; i < src->nseg; i++)
 		sift_cseg_close(src->seg[i].seg);
-	if (src->flags & COLO_TABLE)
+	if (src->flags & COLO_TABLE)		/* a table source stays usable: its owner frees the memory, and parks it between uses */
 		return;
 	sift_vis_end(&src->vis);
 	UnregisterSnapshot(src->snap);

@@ -35,8 +35,8 @@ bool		sift_enable_col = true;
 static relopt_kind col_relopt_kind;
 
 /* Every entry of the option is a policy, optionally prefixed by "column =" */
-static void
-validate_compression(const char *value)
+void
+sift_col_validate_compression(const char *value)
 {
 	char	   *list = pstrdup(value),
 			   *save = NULL;
@@ -69,7 +69,7 @@ sift_col_init(void)
 						 "", NULL, AccessExclusiveLock);
 	add_string_reloption(col_relopt_kind, "compression",
 						 "chunk compression: auto, none, lz4, zstd, encodings; per column: 'auto; col=zstd:9'",
-						 "", validate_compression, ShareUpdateExclusiveLock);
+						 "", sift_col_validate_compression, ShareUpdateExclusiveLock);
 }
 
 /* ---------- options ---------- */
