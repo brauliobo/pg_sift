@@ -97,3 +97,120 @@ Other kernels, ns per 16-page call, 30 tuples per page, d = 1 (480 slots) / 291 
 - `tools/kernels/test`: random equivalence of every table against scalar (`make test N=5`), the exhaustive tf x dl grid, double-precision error, bound coverage, tf stream round trips at random positions and piece sizes, top-k against a sort. ASan + UBSan: `make SANITIZE=1 test`.
 - `tools/kernels/bench`: throughput per level and the rejected designs (`tools/kernels/alt.c`).
 - `kernels_simd` regress test (`test/sql/kernels_simd.sql`, needs `SIFT_TESTING`): the same digest at every `sift.simd` level, per-case equivalence of every supported level, the float4 SQL formula, bound spot checks.
+
+# Aggregation operators (sift_aggkern)
+
+`src/sift_aggkern.h` is the contract of every slot, the scalar table in `src/sift_aggkern.c` is the specification, `src/sift_aggkern_avx2.c` and `src/sift_aggkern_avx512.c` must match it bit for bit, the order of the float sum included. Same pattern as the scoring kernels above: `sift_aggk` is the active table and follows `sift.simd` through the cpu module's rebind registry (`sift_aggkern_init`, idempotent), `sift_aggkern_for(level)` returns a level's table for tests (never NULL, a level the CPU lacks falls back downwards), and a slot a level does not speed up points at the scalar function.
+
+The operators work on decoded vectors (at most `SIFT_AGG_VEC` = 4096 rows or array elements of int32, int64, double or uint32 dictionary codes) and `uint64` bitmaps, not on the packed chunks of the column index (`SiftColKernels`, docs/COL.md section 8). Where the two tables do the same job they differ in the data: `and_w` / `or_w` / `andnot_w` / `popcount_w` / `mask_sel` / `gather_u32` here and `bits_and` / `bits_or` / `bits_andnot` / `bits_count` / `bits_to_idx` / `gather_u32` there, but with `int` lengths, bitmaps of exactly `ceil(n / 64)` words (no padding words), row numbers from 0, a LUT with one byte per code (`lut_code`) instead of a bit set. They are kept separate on purpose: a bitmap that comes out of a chunk filter is padded to 512 bits, one that comes out of `cmp_*` is not.
+
+## Conventions
+
+- A bitmap writer writes `ceil(n / 64)` whole words and leaves the bits `>= n` zero; a reader expects them zero. NULL rows are the caller's: a predicate is ANDed with the not-null bitmap and NULL rows are cleared from a mask before a reduction.
+- **Padding.** Every input array (columns, codes, parents, selection vectors, LUTs, maps, bitmaps) is `SIFT_SIMD_ALIGN` aligned and has `SIFT_AGG_PAD` (64) readable bytes after its last element, contents irrelevant: a level loads whole registers at the tail, and the gathers of `lut_code` / `lut_i32` read a dword at a byte-indexed LUT. Outputs are written exactly, except `mask_sel` (`64 * nw + 16` entries). A lane the data does not name is never dereferenced: the tail of a gather loads its indexes under a lane mask.
+- **Scalar loops are the specification.** A bitmap is the bits of `COND(i)` for the rows; a reduction visits the selected rows in row order.
+
+## Semantics
+
+| Operator | Result |
+|---|---|
+| `cmp_i32/i64/f64` | bit `i` = `v[i] op c`, `op` one of `= <> < <= > >=` |
+| `between_*` | bit `i` = `lo <= v[i] <= hi`; `lo > hi` selects nothing. Integers: one unsigned compare, `(uint) (v - lo) <= hi - lo` |
+| `lut_code` | bit `i` = `lut[code[i]] != 0` (every code is below the LUT's size) |
+| `lut_i32` | bit `i` = `(uint32) (v[i] - base) < nlut && lut[(uint32) (v[i] - base)] != 0` |
+| `bytes_mask` | bit `i` = `b[i] != 0` |
+| `and_w`, `or_w`, `andnot_w` | `dst &= a`, `dst \|= a`, `dst &= ~a` |
+| `gather_bits` | bit `e` of `out` (`m` bits) = bit `parent[e]` of `rowmask`: the row mask of the elements of an array column |
+| `mask_sel` | `sel` = the indexes of the set bits, ascending; returns their number |
+| `gather_u32/u64` | `dst[j] = src[sel[j]]` |
+| `gid_code`, `gid_i32` | `gid[i] += map[key] * mult` in `uint32` arithmetic; `key` = `code[i]`, or `(uint32) (v[i] - base)` |
+| `sum_i32` | exact `int64` sum of the selected rows |
+| `sum_f64` | eight accumulators, see below |
+| `minmax_*` | minimum and maximum of the selected rows; false (outputs untouched) when none is selected |
+| `count_gid`, `sum_gid_*` | `cnt[gid[i]] += 1`, `acc[gid[i]] += v[i]` over the selected rows in row order |
+| `count_changes` | the number of selected rows whose value differs from the previous selected row's (the one before the first is `*prev`); `*prev` ends at the last selected value |
+
+**Doubles follow PostgreSQL's float8 order**: `-Inf < finite < +Inf < NaN`, NaN equals NaN, `-0` equals `+0`. SIMD compares against a constant that is not NaN map to one predicate each: `=` `EQ_OQ`, `<>` `NEQ_UQ`, `<` `LT_OQ`, `<=` `LE_OQ`, `>` `NLE_UQ`, `>=` `NLT_UQ` (an ordered predicate is false for a NaN row, "not <=" and "not <" are true: NaN is the greatest). In `between_f64` a NaN row fails the upper bound, so `>= lo` is the plain ordered `GE_OQ`. A NaN constant (a bound or the right side of a comparison) is rare and takes the scalar function in every level. Float compares of the scalar table are `f8_cmp`, PostgreSQL's `float8_cmp_internal`.
+
+**The float sum has one order for every level** (a replica on another CPU answers the same): eight accumulators `a[0..7]` start at `+0.0`; selected row `i` is added to `a[i % 8]` in row order; the result is `((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))`. Unselected rows add nothing; the SIMD levels add `+0.0` for them, which is the same thing because an accumulator is never `-0.0` (it starts at `+0.0`, and a round-to-nearest sum is `-0` only for `-0 + -0`). A NaN result (a NaN row, or `Inf - Inf`) is always the canonical quiet NaN `0x7FF8000000000000`: the payload that an x86 add keeps depends on the operand order the compiler picked, so no level may promise it. Both vector levels keep the eight accumulators in two ymm registers.
+
+**min / max of doubles** use the same order and normalize the result: a zero result is `+0` (PostgreSQL's `float8smaller` keeps the first-seen zero; the two differ only for a column that holds both signs of zero), a NaN result is the canonical NaN. The minimum is NaN only if every selected row is NaN, the maximum if any is. The vector levels exploit that `MINPD` / `MAXPD` return their second operand for a NaN: with the running value second, a NaN row never enters it, NaN rows are noted on the side, and "every row was NaN" is `lo > hi` (the running minimum never left `+Inf`, the maximum never left `-Inf`).
+
+## Design choices (measured)
+
+AMD Ryzen 7 9700X (Zen 5), single thread pinned to one core, GCC 16, `-O2 -march=x86-64 -ffp-contract=off`, best of 200 batches, under heavy unrelated host load (load average 17 to 40 on 16 threads, other agents' builds and benchmarks; the perf lock was not taken for these short runs): treat absolute numbers as lower bounds. The same code measured twice varies by about 10 to 15 %, so read 0.9x to 1.1x as "equal". Ns per call over one vector of 4096 rows.
+
+- **Where the factor comes from.** Predicates and the bitmap kernels are compare-and-mask-extract: the scalar loop is 0.4 to 0.8 ns per row, AVX2 handles 4 to 32 rows per instruction (MOVMSK), AVX-512 writes the compare mask straight into a mask register. Reductions go 3x to 25x faster unmasked, 2x to 10x under a 50 % mask.
+- **Gathers do not beat scalar loads on Zen 5.** `VPGATHERDD` / `VPGATHERQQ` take about as long as the loads they replace. Measured in four runs: AVX2 `gather_u32` 0.8x to 1.1x, AVX2 `gid_code` / `gid_i32` 0.9x to 1.2x, AVX2 `gather_u64` 0.8x to 1.0x, AVX-512 `gather_u64` 0.6x to 1.5x: those slots are the scalar functions. AVX-512 `gather_u32` (1.2x to 1.7x) and `gid_code` / `gid_i32` (1.2x to 1.4x) are kept. `lut_code`, `lut_i32` and `gather_bits` are gathers too but replace a load plus a test plus a store of a bit, hence their 2x. A CPU with fast gathers (recent Intel server parts) would do better; not measured here.
+- **`count_gid`, `sum_gid_*`** are per-group scatters: row order is the contract (a float group sum is sequential), the only exact speedups would need the group count, which the contract does not carry. Every level shares the scalar loop (the 0.8x to 1.1x in the table is noise).
+- **`mask_sel`.** One expansion per nonzero word costs about 4 ns (AVX2: eight byte-table stores; AVX-512: one `VPCOMPRESSB` and four widening stores), a bit-by-bit walk about 0.45 ns per set bit plus a mispredicted loop exit. A sparse mask is faster walked, so a word with at most 8 bits takes the walk (`AGK_SEL_SPARSE`). `VPCOMPRESSB` of the 64 bit positions is 15 % faster than four `VPCOMPRESSD` of 16 row numbers on dense words. Cutover measured on masks of 1 / 10 / 50 / 100 % density (scalar walk: 50 / 193 / 944 / 1900):
+
+| mask_sel design | 1 % | 10 % | 50 % | 100 % |
+|---|---|---|---|---|
+| AVX2, byte table for every nonzero word | 123 | 248 | 262 | 260 |
+| AVX2, words with <= 2 / 4 / 8 / 16 bits walked | 45 / 35 / 35 / 35 | 256 / 214 / 168 / 154 | 245 / 246 / 265 / 280 | 248 / 252 / 239 / 242 |
+| AVX-512, `VPCOMPRESSD`, every nonzero word | 124 | 285 | 289 | 283 |
+| AVX-512, `VPCOMPRESSD`, words with <= 2 / 4 / 8 / 16 bits walked | 35 / 33 / 34 / 34 | 275 / 216 / 151 / 178 | 275 / 284 / 286 / 290 | 281 / 276 / 283 / 278 |
+| AVX-512, `VPCOMPRESSB`, every nonzero word | 111 | 249 | 248 | 250 |
+| **kept: `VPCOMPRESSB`, <= 8 bits walked** (table below) | 56 | 193 | 242 | 240 |
+
+- **Float sum.** The eight accumulators are eight chains of `n / 8` dependent adds, so the sum is latency bound whatever the level: 4096 rows are 512 adds of 2 cycles. Plain adds on two ymm accumulators reach that bound (AVX2 236, AVX-512 225 ns, 7x scalar). A single zmm accumulator with a merging masked add (the first AVX-512 version) took 393 ns, a merging masked add on ymm 421 ns: the masked forms have a longer latency. A zeroing masked load (`VMOVUPD ymm{k}{z}`) is slower than a plain load, so the unmasked path uses plain loads and only a mask or the tail uses the masked ones. Selecting the lanes of a 50 % mask, AVX-512, ns: zeroing masked load 427, plain load + zeroing move 566, plain load + AND with a 16-entry lane table 406; the same table is what AVX2 uses (a broadcast + AND + compare per nibble was 528).
+- **Reductions need independent accumulators.** `min` / `max` over int64 and double are a compare, blend or merging min per vector on one chain: the first versions ran at the latency of that chain (all rows, ns: AVX2 `minmax_i64` 820, AVX2 `minmax_f64` 808, AVX-512 `minmax_f64` 511). Four accumulator pairs over 16 (AVX2) or 32 (AVX-512) rows a step brought them to 290, 460 and 233. An unmasked vector needs no mask handling at all (a plain `VPMINSQ`), only the tail and masked vectors do.
+- **`count_changes`.** The first version carried the last selected value in a vector from one group of rows to the next (permute, align, compare), a dependency chain of several instructions per group: 535 ns (AVX2) and 639 ns (AVX-512) for all rows, 756 / 618 ns at 30 %. Now the selected values are compacted into a buffer behind the previous value (`VPERMD` with the position table, `VPCOMPRESSD`) and every value is compared with its predecessor there, and without a mask the rows are compared with themselves shifted by one: 436 / 203 ns all rows, 605 / 371 ns at 30 %, 579 / 349 ns at 50 %.
+- **Where the SIMD level is not much faster than scalar:** a sparse mask in `mask_sel` and `count_changes` (the walk is proportional to the selected rows, the vector code to the words), the gathers above, `count_gid` / `sum_gid_*`.
+
+## Throughput
+
+Ns per call, one vector of 4096 rows (a bitmap of 64 words), same host and conditions as above; "50 %" is a random mask selecting half of the rows, "all rows" is `mask == NULL`. The slots that are the scalar function at a level (see above) show the noise of the measurement.
+
+| operator | scalar | avx2 | x | avx512 | x |
+|---|---|---|---|---|---|
+| cmp_i32 < | 1802 | 125 | 14.5x | 96 | 18.7x |
+| cmp_i32 == | 1794 | 124 | 14.5x | 91 | 19.8x |
+| cmp_i64 < | 1814 | 239 | 7.6x | 182 | 10.0x |
+| cmp_f64 < | 3338 | 305 | 10.9x | 181 | 18.4x |
+| cmp_f64 > | 2637 | 265 | 9.9x | 182 | 14.5x |
+| between_i32 | 2690 | 159 | 17.0x | 98 | 27.3x |
+| between_i64 | 2562 | 425 | 6.0x | 202 | 12.7x |
+| between_f64 | 4616 | 426 | 10.8x | 314 | 14.7x |
+| lut_code (1024 codes) | 2251 | 1246 | 1.8x | 916 | 2.5x |
+| lut_i32 (1000 entries) | 2802 | 1269 | 2.2x | 1154 | 2.4x |
+| bytes_mask | 2080 | 44 | 47.1x | 32 | 64.4x |
+| and_w | 25 | 8 | 2.9x | 6 | 4.0x |
+| or_w | 25 | 9 | 2.9x | 6 | 4.4x |
+| andnot_w | 25 | 9 | 2.8x | 5 | 4.9x |
+| popcount_w | 60 | 12 | 4.9x | 6 | 10.2x |
+| gather_bits (4 elements per row) | 2201 | 1242 | 1.8x | 1135 | 1.9x |
+| mask_sel 1 % | 50 | 55 | 0.9x | 56 | 0.9x |
+| mask_sel 10 % | 193 | 239 | 0.8x | 193 | 1.0x |
+| mask_sel 50 % | 944 | 340 | 2.8x | 242 | 3.9x |
+| mask_sel 100 % | 1900 | 356 | 5.3x | 240 | 7.9x |
+| gather_u32 (2048 of 4096) | 873 | 743 | 1.2x | 528 | 1.7x |
+| gather_u64 (2048 of 4096) | 835 | 808 | 1.0x | 844 | 1.0x |
+| gid_code | 1624 | 1820 | 0.9x | 1361 | 1.2x |
+| gid_i32 | 1844 | 1958 | 0.9x | 1338 | 1.4x |
+| sum_i32 all rows | 1083 | 333 | 3.3x | 157 | 6.9x |
+| sum_i32 50 % | 895 | 334 | 2.7x | 168 | 5.3x |
+| sum_f64 all rows | 1612 | 236 | 6.8x | 225 | 7.2x |
+| sum_f64 50 % | 958 | 466 | 2.1x | 350 | 2.7x |
+| minmax_i32 all rows | 2780 | 212 | 13.1x | 108 | 25.7x |
+| minmax_i32 50 % | 1362 | 294 | 4.6x | 137 | 9.9x |
+| minmax_i64 all rows | 2759 | 290 | 9.5x | 225 | 12.3x |
+| minmax_i64 50 % | 1369 | 633 | 2.2x | 314 | 4.4x |
+| minmax_f64 all rows | 3728 | 460 | 8.1x | 233 | 16.0x |
+| minmax_f64 50 % | 2107 | 873 | 2.4x | 535 | 3.9x |
+| count_gid all rows (64 groups) | 1262 | 1114 | 1.1x | 1392 | 0.9x |
+| count_gid 50 % | 1095 | 1296 | 0.8x | 1153 | 0.9x |
+| sum_gid_i32 50 % | 1202 | 1102 | 1.1x | 1137 | 1.1x |
+| sum_gid_f64 50 % | 1250 | 1201 | 1.0x | 1188 | 1.1x |
+| count_changes all rows (10 % change) | 1810 | 436 | 4.2x | 203 | 8.9x |
+| count_changes 30 % | 716 | 605 | 1.2x | 371 | 1.9x |
+| count_changes 50 % | 1334 | 579 | 2.3x | 349 | 3.8x |
+
+`tools/aggkern/bench` prints this table (`make bench`).
+
+## Verification
+
+- `tools/aggkern/test`: every slot of every level against scalar, bit for bit (`make test N=20`, N thousand random cases per thread plus a grid of every length 0..300 and every multiple of 64 and its neighbours up to 4096). A case (`src/sift_aggkern_cases.h`) draws the data per type: int32 and int64 small, full range and extremes (`INT_MIN`, `INT_MAX`, around 2^31 and 2^32); doubles from normal values, small integers with both zeros, `NaN` (several payloads, signalling), `Inf`, subnormals and the extremes; dictionary codes uniform, in runs, sorted and at the top of the LUT; masks empty, full, 1 % to 99 %, in runs, one bit, alternating; thresholds at the data, at its neighbours and at the type's bounds. The padding after every input is random garbage and every output is poisoned before the call. The inputs are allocated at their exact size, so the ASan build (`make SANITIZE=1 test`, with UBSan) catches a read past the padding or a write past an output. The scalar table is also checked against values written out by hand (float order, zeros, NaN, the sum order, `count_changes`).
+- `tools/aggkern/bench`: the table above (`make bench`) and the rejected designs of `tools/aggkern/alt.c`.
+- `aggkern_simd` regression test (`test/sql/aggkern_simd.sql`, needs `SIFT_TESTING`): the same random cases inside the backend; the digest of every operator's output is the same at `sift.simd` = scalar, avx2, avx512 and auto, and every level the CPU supports equals scalar case by case.

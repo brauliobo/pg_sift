@@ -67,6 +67,14 @@ CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
 CREATE FUNCTION sift._test_col_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_level' LANGUAGE C STRICT;
 
+-- Aggregation operators module (src/sift_aggkern_test.c): bit-exact SIMD checks through sift.simd.
+CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_digest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_equiv' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_aggkern_level() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_aggkern_level' LANGUAGE C STRICT;
+
 -- Index build (src/sift_segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
