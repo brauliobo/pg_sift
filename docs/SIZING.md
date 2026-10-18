@@ -41,38 +41,40 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
 ## Dead documents and statistics
 
 Rows of rolled-back transactions and deleted rows stay in the index's document count, document frequencies and average length until
-VACUUM has marked them dead **and** the segment holding them is rewritten (a merge, or a VACUUM that finds a segment more than `dead_rewrite_pct` (50) percent dead). Until
-then BM25 scores are computed over live and dead documents. The effect depends on how the dead rows differ from the live ones
-(`bench/sql/dead_docs.sql`, 50,000 live documents, four rolled-back loads of 50,000):
+VACUUM has marked them dead. From then on a segment written by this version (format 2) leaves them out of all three, so a dirty index
+scores exactly as the merged one does (`test/sql/live_stats.sql`). A segment written by 2.x (format 1) keeps counting them until it is
+rewritten (a merge, or a VACUUM that finds it more than `dead_rewrite_pct` (50) percent dead); no REINDEX is needed. The effect of
+counting them depends on how the dead rows differ from the live ones (`bench/sql/dead_docs.sql`, 50,000 live documents, four
+rolled-back loads of 50,000):
 
 | dead documents | top-score change | top 10 of 5 queries |
 |---|---|---|
 | like the live ones | -1.3% to +0.4% | unchanged |
 | all about one term | -24% to +1.7% | 3 of 10 kept for `w40 OR w41 OR w7`, the others unchanged |
-| after `VACUUM` | -5.7% to +0.3% | unchanged |
+| after `VACUUM` | exactly the original (2.x: -5.7% to +0.3%) | unchanged |
 | after `VACUUM`, `sift.promote` and `sift.merge(index, true)` | exactly the original | unchanged |
 
 `sift.segments(index)` shows `dead_docs` of immutable segments (marked by VACUUM); rolled-back rows not yet vacuumed appear only as the
 difference between `sum(ndocs)` and the table's live rows. Autovacuum counts aborted inserts as dead tuples, so a table whose loads fail
 often should have a low `autovacuum_vacuum_scale_factor` (or a manual `VACUUM` after the failed load).
 
-Vacuumed documents also cost query time until their segment is rewritten: a query drops their postings through the liveness bits of every
-page it reads. With 200,000 documents and a quarter of the rows deleted and vacuumed (`bench/dirty-query.sh`, milliseconds per query;
-"clean" is the same live rows rebuilt by `REINDEX`):
+Vacuumed documents also cost query time until their segment is rewritten: a query that walks postings drops the dead ones through the
+liveness rows of every page it reads. Measured in user instructions per query (`bench/dirty-query.sh` data, 200,000 documents, 10 to 45%
+deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`), the dirty segment costs:
 
-| query | clean | dirty, before | dirty, now |
+| query | 2.0.0 | 2.0.1 | now |
 |---|---|---|---|
-| ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
-| ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
-| unranked scan with a filter | 0.57 | 2.11 | 0.65 |
-| `count(*)` of a term | 0.019 | 1.82 | 0.05 |
+| `count(*)` of a term | 19.7x | 7.7 to 8.7x | 1.16 to 1.28x |
+| `count(*)` of two terms | 2.7 to 4.3x | 1.4 to 2.3x | 1.0 to 1.25x |
+| `count(*)` of three with OR | 4.1 to 6.2x | 1.4 to 2.2x | 1.0 to 1.2x |
+| ranked AND, top 10 | | | 1.0 to 1.3x |
+| ranked OR of three terms, top 10 | | | 1.3 to 1.8x |
+| a rare term, top 10 | | | 1.3 to 2.0x |
 
-A `count(*)` over dirty superblocks spreads the liveness bits over the pages' offsets, where a clean superblock adds chunk counts without
-decoding a page. Measured in user instructions per query (the same data, 10 to 45% deleted and vacuumed; the cost does not depend on
-the dead fraction), the count of a term costs 7.7 times the clean index's until the segment is rewritten (19.7 times with 2.0.0), the
-count of two terms 1.4 to 2.3 times (2.7 to 4.3) and of three with OR 1.4 to 2.2 times (4.1 to 6.2); superblocks without vacuumed
-documents inside a dirty segment cost nothing extra. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
-liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
+The count of a term is the sum of its live document frequencies (each segment stores the vacuumed postings of every term) corrected for
+the pages the heap decides, so it does not depend on how much of the segment is dead. Queries that read postings still read the dead
+ones before dropping them, up to twice the clean cost at 45% dead. Dead rows of transactions that were rolled back (not yet vacuumed)
+are not in the liveness rows: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
 
 ## Updates
 

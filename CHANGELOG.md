@@ -12,6 +12,16 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
 
+- Changed (3.0): segment format 2 for vacuumed documents. A segment now keeps its live documents by offset in each superblock and, for each
+  term, the number of its postings that VACUUM dropped. A dirty segment (vacuumed documents, not yet merged) therefore counts and scores as
+  its live documents: `count(*)` of a term costs 1.16 to 1.28 times the clean index's in user instructions at 10 to 45% deleted (was 7.7 to 8.7
+  times with 2.0.1), and N, df and avgdl exclude vacuumed documents, so `sift.score()` before and after the merge are equal (`live_stats` test).
+  Indexes of 2.x keep working with no `REINDEX`: their segments are read as they are (the old statistics, until they are merged) and rewritten
+  as format 2 when merged; the metapage becomes format 1.2 with the first format 2 segment, and a 2.x library refuses such an index. The
+  SQLite and MariaDB hosts keep writing format 1. The index grows by 4 bytes per term of each segment (+1.4 to 2.4% in `scripts/merge-bytes.sh`).
+  Queries that read postings (OR, rare terms, scans) still pay for the dead ones until the merge (up to 2 times at 45% dead).
+  Stored 2.0.0 files are the fixture of the `compat_2x_fixture` test. See DESIGN.md (Liveness) and docs/SIZING.md.
+
 - Column chunk codec (`src/sift_colcodec.c`, interface in [docs/COL-CODEC.md](docs/COL-CODEC.md), research and measurements in
   [docs/perf/COMPRESSION.md](docs/perf/COMPRESSION.md)): the compression of the column engine's chunks. For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
