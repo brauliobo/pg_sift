@@ -186,17 +186,23 @@ g_vacuum() {
 	bench "$1" after_vacuum_count 4 "$BASE/count.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
 	bench "$1" after_vacuum_rank 4 "$BASE/rank.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
 }
-g_merge() {
-	local t0 kb0 base poller
-	fresh "$1"; backlog "$1"
-	kb0=$(temp_kb "$1")
-	rm -f "$BASE/stop"; base=$(anon_kb "$1"); peak_kb "$1" >"$BASE/peak" &
+# LABEL PREFIX STATEMENT...: runs the statements, prints PREFIX_s (time), PREFIX_peak_mb (most anonymous memory the cluster's
+# processes took above what they took before) and PREFIX_temp_kb (temporary bytes written)
+measured() {
+	local l=$1 p=$2 t0 kb0 base poller
+	shift 2
+	kb0=$(temp_kb "$l")
+	rm -f "$BASE/stop"; base=$(anon_kb "$l"); peak_kb "$l" >"$BASE/peak" &
 	poller=$!
-	t0=$(now); q "$1" "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" >/dev/null
-	echo "merge_s $(elapsed "$t0")"
+	t0=$(now); q "$l" "$@" >/dev/null
+	echo "${p}_s $(elapsed "$t0")"
 	touch "$BASE/stop"; wait "$poller"
-	echo "merge_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
-	echo "merge_temp_kb $(( $(temp_kb "$1") - kb0 ))"
+	echo "${p}_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
+	echo "${p}_temp_kb $(( $(temp_kb "$l") - kb0 ))"
+}
+g_merge() {
+	fresh "$1"; backlog "$1"
+	measured "$1" merge "SELECT sift.merge('t_idx') FROM generate_series(1, 20)"
 	settle "$1"
 	echo "churn_index_mb $(q "$1" "SELECT pg_relation_size('t_idx') / 1048576.0")"
 }
@@ -303,19 +309,11 @@ GROUPS_ALL+=(dead mut)
 #   mergebig_s / mergebig_peak_mb / mergebig_temp_kb / mergebig_index_mb  time; most anonymous memory the cluster's processes took
 #                                   above what they took before; temporary bytes; size of the index (--rows 500000 is 2M documents)
 g_mergebig() {
-	local t0 kb0 base poller
 	[[ $CELLS == *mergebig* ]] || return 0
 	fresh "$1"
 	q "$1" "DROP INDEX t_idx" "INSERT INTO t (body) SELECT (CASE WHEN i % 10 < 9 THEN 'hot ' ELSE '' END) || $(words 40 i) FROM generate_series(1, $ROWS * 4) i" \
 		"SET maintenance_work_mem = '16MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body) WITH (build_segments = 4)" >/dev/null
-	kb0=$(temp_kb "$1")
-	rm -f "$BASE/stop"; base=$(anon_kb "$1"); peak_kb "$1" >"$BASE/peak" &
-	poller=$!
-	t0=$(now); q "$1" "SET maintenance_work_mem = '16MB'" "SELECT sift.merge('t_idx', true)" >/dev/null
-	echo "mergebig_s $(elapsed "$t0")"
-	touch "$BASE/stop"; wait "$poller"
-	echo "mergebig_peak_mb $(( ($(<"$BASE/peak") - base) / 1024 ))"
-	echo "mergebig_temp_kb $(( $(temp_kb "$1") - kb0 ))"
+	measured "$1" mergebig "SET maintenance_work_mem = '16MB'" "SELECT sift.merge('t_idx', true)"
 	echo "mergebig_index_mb $(q "$1" "SELECT pg_relation_size('t_idx') / 1048576.0")"
 }
 GROUPS_ALL+=(mergebig)
