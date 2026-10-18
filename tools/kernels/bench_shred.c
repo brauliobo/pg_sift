@@ -17,7 +17,7 @@
 
 #undef snprintf
 
-static Rng	rng;
+static SiftRng	rng;
 
 static void
 verdict(const char *kernel, const char *scen, int l, double fused, double shared)
@@ -33,7 +33,7 @@ rand_state(uint32 n, int pct)
 	uint8	   *s = kt_alloc(n + SIFT_AGG_PAD);
 
 	for (uint32 i = 0; i < n; i++)
-		s[i] = rng_below(&rng, 100) < pct ? SIFT_SHRED_VALUE : (uint8) (rng_below(&rng, 3) == 0 ? SIFT_SHRED_OVERFLOW : rng_below(&rng, 2));
+		s[i] = sift_rng_below(&rng, 100) < pct ? SIFT_SHRED_VALUE : (uint8) (sift_rng_below(&rng, 3) == 0 ? SIFT_SHRED_OVERFLOW : sift_rng_below(&rng, 2));
 	memset(s + n, 0, SIFT_AGG_PAD);
 	return s;
 }
@@ -98,8 +98,8 @@ bench_minmax(uint32 n, const char *size, int pct)
 	snprintf(scen, sizeof(scen), "%s, %d%% VALUE", size, pct);
 	for (uint32 i = 0; i < n; i++)
 	{
-		vi[i] = (int64) rng_next(&rng) >> rng_below(&rng, 40);
-		vf[i] = (rng_unit(&rng) - 0.5) * 1e9;	/* never NaN, never -0.0, as the shredder guarantees */
+		vi[i] = (int64) sift_rng_next(&rng) >> sift_rng_below(&rng, 40);
+		vf[i] = (sift_rng_unit(&rng) - 0.5) * 1e9;	/* never NaN, never -0.0, as the shredder guarantees */
 	}
 	memset(vi + n, 0, SIFT_AGG_PAD), memset(vf + n, 0, SIFT_AGG_PAD);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && l <= sift_cpu.detected; l++)
@@ -176,7 +176,7 @@ bench_runs(uint32 len)
 	{
 		lens[p] = len;
 		iota[p] = p;
-		vals[p] = (uint32) rng_next(&rng);
+		vals[p] = (uint32) sift_rng_next(&rng);
 	}
 	lens_to_ends(lens, np, end);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && l <= sift_cpu.detected; l++)
@@ -207,7 +207,7 @@ bench_runs(uint32 len)
 void
 bench_shred(void)
 {
-	rng_seed(&rng, 42);
+	sift_rng_seed(&rng, 42);
 	printf("%-14s %-24s %-8s %10s %10s %8s\n", "kernel", "scenario", "level", "fused ns", "shared ns", "shared/fused");
 	for (int pct = 100; pct >= 90; pct -= 10)
 	{

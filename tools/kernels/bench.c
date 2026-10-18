@@ -37,7 +37,7 @@ typedef struct BenchBlock
 			   *dl[NPAGES];
 } BenchBlock;
 
-static Rng	rng;
+static SiftRng	rng;
 static const SiftKernels *levels[3];
 static int	nlevels;
 
@@ -61,16 +61,16 @@ block_init(BenchBlock *b, int maxoff, double d)
 		b->dl[p] = kt_alloc(SIFT_KERN_SLOTS * 2);
 		for (int o = 0; o < maxoff; o++)
 		{
-			b->dl[p][o] = 20 + rng_below(&rng, 400);
-			if (rng_unit(&rng) < d)
+			b->dl[p][o] = 20 + sift_rng_below(&rng, 400);
+			if (sift_rng_unit(&rng) < d)
 				b->mask[p * 8 + o / 64] |= UINT64CONST(1) << (o % 64);
 		}
 	}
 	for (int i = 0; i < NPAGES * SIFT_KERN_SLOTS; i++)
 	{
-		b->sc[i] = (float4) rng_unit(&rng) * 10;
-		b->other[i] = (float4) rng_unit(&rng) * 10;
-		b->tf[i] = rng_below(&rng, 4) ? 1 : 2 + rng_below(&rng, 6);
+		b->sc[i] = (float4) sift_rng_unit(&rng) * 10;
+		b->other[i] = (float4) sift_rng_unit(&rng) * 10;
+		b->tf[i] = sift_rng_below(&rng, 4) ? 1 : 2 + sift_rng_below(&rng, 6);
 	}
 	sift_kern_bm25_init(&bm, 1.2f, 0.75f, 180);
 	sift_kernels_scalar.knorm(b->kn, (const uint16 *const *) b->dl, b->mask, NPAGES, &bm);
@@ -154,7 +154,7 @@ bench_tf(const char *scen, int p1, uint32 count)
 				nibn;
 
 	for (uint32 i = 0; i < count; i++)
-		tf[i] = rng_below(&rng, 100) < p1 ? 1 : rng_below(&rng, 50) ? 2 + rng_below(&rng, 15) : 17 + rng_below(&rng, 200);
+		tf[i] = sift_rng_below(&rng, 100) < p1 ? 1 : sift_rng_below(&rng, 50) ? 2 + sift_rng_below(&rng, 15) : 17 + sift_rng_below(&rng, 200);
 	for (uint32 i = 0; i < count; i++)
 		end.nib += tf[i] > 1;
 	nibn = (end.nib + 1) / 2;
@@ -184,11 +184,11 @@ bench_misc(void)
 				pm[4];
 
 	for (int i = 0; i < 4096; i++)
-		bounds[i] = (uint8) rng_next(&rng), ub[i] = 0;
+		bounds[i] = (uint8) sift_rng_next(&rng), ub[i] = 0;
 	for (int i = 0; i < 8; i++)
-		base[i] = rng_next(&rng), rb[i] = rng_next(&rng);
+		base[i] = sift_rng_next(&rng), rb[i] = sift_rng_next(&rng);
 	for (int i = 0; i < 64; i++)
-		vm[i] = (uint8) rng_next(&rng);
+		vm[i] = (uint8) sift_rng_next(&rng);
 	for (int l = 0; l < nlevels; l++)
 	{
 		const SiftKernels *k = levels[l];
@@ -265,7 +265,7 @@ main(int argc, char **argv)
 	CPU_SET(cpu, &set);
 	sched_setaffinity(0, sizeof(set), &set);
 	kt_cpu_init();
-	rng_seed(&rng, 42);
+	sift_rng_seed(&rng, 42);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && sift_kernels_for(l); l++)
 		levels[nlevels++] = sift_kernels_for(l);
 

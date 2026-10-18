@@ -10,61 +10,10 @@
 #define SIFT_AGGKERN_CASES_H
 
 #include "sift_aggkern_int.h"
+#include "sift_testrng.h"
 
 #define AGK_MAXMEM		64
 #define AGK_MAXSTEP		128
-
-typedef struct AgkRng
-{
-	uint64		s[4];
-} AgkRng;
-
-static inline uint64
-agk_split(uint64 *x)
-{
-	uint64		z = (*x += UINT64CONST(0x9E3779B97F4A7C15));
-
-	z = (z ^ (z >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
-	z = (z ^ (z >> 27)) * UINT64CONST(0x94D049BB133111EB);
-	return z ^ (z >> 31);
-}
-
-static inline void
-agk_seed(AgkRng *r, uint64 seed)
-{
-	for (int i = 0; i < 4; i++)
-		r->s[i] = agk_split(&seed);
-}
-
-/* xoshiro256** */
-static inline uint64
-agk_next(AgkRng *r)
-{
-	uint64	   *s = r->s,
-				x = s[1] * 5,
-				t = s[1] << 17;
-
-	x = ((x << 7) | (x >> 57)) * 9;
-	s[2] ^= s[0];
-	s[3] ^= s[1];
-	s[1] ^= s[2];
-	s[0] ^= s[3];
-	s[2] ^= t;
-	s[3] = (s[3] << 45) | (s[3] >> 19);
-	return x;
-}
-
-static inline uint32
-agk_below(AgkRng *r, uint32 n)
-{
-	return (uint32) (((agk_next(r) >> 32) * n) >> 32);
-}
-
-static inline double
-agk_unit(AgkRng *r)
-{
-	return (agk_next(r) >> 11) * 0x1p-53;
-}
 
 /* The inputs of one run of every operator */
 typedef struct AgkCase
@@ -116,12 +65,12 @@ typedef struct AgkRes
 } AgkRes;
 
 static inline void *
-agk_new(AgkCase *c, AgkRng *r, size_t bytes)
+agk_new(AgkCase *c, SiftRng *r, size_t bytes)
 {
 	uint8	   *p = AGK_ALLOC(bytes + SIFT_AGG_PAD);
 
 	for (int i = 0; i < SIFT_AGG_PAD; i++)
-		p[bytes + i] = (uint8) agk_next(r);
+		p[bytes + i] = (uint8) sift_rng_next(r);
 	c->mem[c->nmem++] = p;
 	return p;
 }
@@ -137,44 +86,44 @@ agk_case_free(AgkCase *c)
 }
 
 static inline int
-agk_pick_n(AgkRng *r)
+agk_pick_n(SiftRng *r)
 {
-	int			k = agk_below(r, 65);
+	int			k = sift_rng_below(r, 65);
 
-	switch (agk_below(r, 5))
+	switch (sift_rng_below(r, 5))
 	{
 		case 0:
-			return agk_below(r, 130);
+			return sift_rng_below(r, 130);
 		case 1:
-			k = k * 64 + (int) agk_below(r, 3) - 1;
+			k = k * 64 + (int) sift_rng_below(r, 3) - 1;
 			return Min(SIFT_AGG_VEC, Max(0, k));
 		case 2:
-			return SIFT_AGG_VEC - agk_below(r, 3);
+			return SIFT_AGG_VEC - sift_rng_below(r, 3);
 		default:
-			return agk_below(r, SIFT_AGG_VEC + 1);
+			return sift_rng_below(r, SIFT_AGG_VEC + 1);
 	}
 }
 
 static inline int32
-agk_i32(AgkRng *r, int mode)
+agk_i32(SiftRng *r, int mode)
 {
 	static const int32 ext[] = {INT32_MIN, INT32_MIN + 1, -2, -1, 0, 1, 2, INT32_MAX - 1, INT32_MAX};
 
 	switch (mode)
 	{
 		case 0:
-			return (int32) agk_below(r, 17) - 8;
+			return (int32) sift_rng_below(r, 17) - 8;
 		case 1:
-			return (int32) agk_next(r);
+			return (int32) sift_rng_next(r);
 		case 2:
-			return agk_below(r, 2) ? ext[agk_below(r, lengthof(ext))] : (int32) agk_next(r);
+			return sift_rng_below(r, 2) ? ext[sift_rng_below(r, lengthof(ext))] : (int32) sift_rng_next(r);
 		default:
-			return 1000000 + (int32) agk_below(r, 1000) - 500;
+			return 1000000 + (int32) sift_rng_below(r, 1000) - 500;
 	}
 }
 
 static inline int64
-agk_i64(AgkRng *r, int mode)
+agk_i64(SiftRng *r, int mode)
 {
 	static const int64 ext[] = {INT64_MIN, INT64_MIN + 1, -(INT64CONST(1) << 32), -(INT64CONST(1) << 31) - 1, -1, 0, 1,
 								INT64CONST(1) << 31, INT64CONST(1) << 32, (INT64CONST(1) << 32) - 1, INT64_MAX - 1, INT64_MAX};
@@ -182,13 +131,13 @@ agk_i64(AgkRng *r, int mode)
 	switch (mode)
 	{
 		case 0:
-			return (int64) agk_below(r, 17) - 8;
+			return (int64) sift_rng_below(r, 17) - 8;
 		case 1:
-			return (int64) agk_next(r);
+			return (int64) sift_rng_next(r);
 		case 2:
-			return agk_below(r, 2) ? ext[agk_below(r, lengthof(ext))] : (int64) agk_next(r);
+			return sift_rng_below(r, 2) ? ext[sift_rng_below(r, lengthof(ext))] : (int64) sift_rng_next(r);
 		default:
-			return (INT64CONST(1) << 40) + (int64) agk_below(r, 1000) - 500;
+			return (INT64CONST(1) << 40) + (int64) sift_rng_below(r, 1000) - 500;
 	}
 }
 
@@ -202,7 +151,7 @@ agk_bits_f64(uint64 b)
 }
 
 static inline double
-agk_special(AgkRng *r)
+agk_special(SiftRng *r)
 {
 	static const uint64 sp[] = {
 		0, UINT64CONST(0x8000000000000000), UINT64CONST(0x3FF0000000000000), UINT64CONST(0xBFF0000000000000),
@@ -211,43 +160,43 @@ agk_special(AgkRng *r)
 		UINT64CONST(0x7FEFFFFFFFFFFFFF), UINT64CONST(0xFFEFFFFFFFFFFFFF), 1, UINT64CONST(0x8000000000000001),
 		UINT64CONST(0x0010000000000000), UINT64CONST(0x3FE0000000000000), UINT64CONST(0x4004000000000000)};
 
-	return agk_bits_f64(sp[agk_below(r, lengthof(sp))]);
+	return agk_bits_f64(sp[sift_rng_below(r, lengthof(sp))]);
 }
 
 static inline double
-agk_f64(AgkRng *r, int mode)
+agk_f64(SiftRng *r, int mode)
 {
 	switch (mode)
 	{
 		case 0:
-			return (agk_unit(r) - 0.5) * 200;
+			return (sift_rng_unit(r) - 0.5) * 200;
 		case 1:
 			{
-				int			v = (int) agk_below(r, 7) - 3;
+				int			v = (int) sift_rng_below(r, 7) - 3;
 
-				return v == 0 && agk_below(r, 2) ? -0.0 : v;
+				return v == 0 && sift_rng_below(r, 2) ? -0.0 : v;
 			}
 		case 2:
 			return agk_special(r);
 		default:
-			return agk_below(r, 4) ? (agk_unit(r) - 0.5) * 1e6 : agk_special(r);
+			return sift_rng_below(r, 4) ? (sift_rng_unit(r) - 0.5) * 1e6 : agk_special(r);
 	}
 }
 
 static inline double
-agk_pick_f64(AgkRng *r, const double *v, int n)
+agk_pick_f64(SiftRng *r, const double *v, int n)
 {
-	return n > 0 && agk_below(r, 10) < 7 ? v[agk_below(r, n)] : agk_special(r);
+	return n > 0 && sift_rng_below(r, 10) < 7 ? v[sift_rng_below(r, n)] : agk_special(r);
 }
 
 static inline void
-agk_gen_mask(AgkRng *r, uint64 *m, int n)
+agk_gen_mask(SiftRng *r, uint64 *m, int n)
 {
 	static const double dens[] = {0.01, 0.1, 0.5, 0.9, 0.99};
-	const int	mode = agk_below(r, 7),
-				one = n > 0 ? agk_below(r, n) : 0;
-	const double d = dens[agk_below(r, lengthof(dens))];
-	bool		on = agk_below(r, 2);
+	const int	mode = sift_rng_below(r, 7),
+				one = n > 0 ? sift_rng_below(r, n) : 0;
+	const double d = dens[sift_rng_below(r, lengthof(dens))];
+	bool		on = sift_rng_below(r, 2);
 
 	memset(m, 0, AGK_NW(n) * 8);
 	for (int i = 0; i < n; i++)
@@ -263,10 +212,10 @@ agk_gen_mask(AgkRng *r, uint64 *m, int n)
 				set = true;
 				break;
 			case 2:
-				set = agk_unit(r) < d;
+				set = sift_rng_unit(r) < d;
 				break;
 			case 3:
-				on ^= agk_below(r, 1 + agk_below(r, 100)) == 0;
+				on ^= sift_rng_below(r, 1 + sift_rng_below(r, 100)) == 0;
 				set = on;
 				break;
 			case 4:
@@ -283,29 +232,29 @@ agk_gen_mask(AgkRng *r, uint64 *m, int n)
 }
 
 static inline uint32
-agk_pick_size(AgkRng *r, int max)
+agk_pick_size(SiftRng *r, int max)
 {
 	static const int sizes[] = {1, 2, 3, 63, 64, 65, 255, 256, 257, 1000, 4096};
-	int			s = agk_below(r, 3) ? sizes[agk_below(r, lengthof(sizes))] : 1 + agk_below(r, max);
+	int			s = sift_rng_below(r, 3) ? sizes[sift_rng_below(r, lengthof(sizes))] : 1 + sift_rng_below(r, max);
 
 	return Min(s, max);
 }
 
 static inline uint32
-parent_step(AgkRng *r, uint32 prev, int nrows)
+parent_step(SiftRng *r, uint32 prev, int nrows)
 {
-	const uint32 next = prev + agk_below(r, 2);
+	const uint32 next = prev + sift_rng_below(r, 2);
 
 	return Min((uint32) nrows - 1, next);
 }
 
 static inline void
-agk_case_gen(AgkRng *r, AgkCase *c, int n)
+agk_case_gen(SiftRng *r, AgkCase *c, int n)
 {
-	const int	m32 = agk_below(r, 4),
-				m64 = agk_below(r, 4),
-				mf = agk_below(r, 4),
-				cmode = agk_below(r, 4);
+	const int	m32 = sift_rng_below(r, 4),
+				m64 = sift_rng_below(r, 4),
+				mf = sift_rng_below(r, 4),
+				cmode = sift_rng_below(r, 4);
 
 	memset(c, 0, sizeof(*c));
 	c->n = n >= 0 ? n : agk_pick_n(r);
@@ -327,7 +276,7 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 	agk_gen_mask(r, c->mask2, n);
 
 	c->ncode = agk_pick_size(r, 5000);
-	c->nlut = agk_below(r, 4) == 0 ? agk_below(r, 3) : agk_pick_size(r, 1000);
+	c->nlut = sift_rng_below(r, 4) == 0 ? sift_rng_below(r, 3) : agk_pick_size(r, 1000);
 	c->msz = agk_pick_size(r, 3000);
 	c->ngrp = agk_pick_size(r, 300);
 	c->nrows = agk_pick_size(r, SIFT_AGG_VEC);
@@ -348,56 +297,56 @@ agk_case_gen(AgkRng *r, AgkCase *c, int n)
 
 	/* dictionary codes: uniform, runs, near the top of the LUT, sorted */
 	for (int i = 0; i < n; i++)
-		c->code[i] = cmode == 0 ? agk_below(r, c->ncode) :
-			cmode == 1 ? (i > 0 && agk_below(r, 10) ? c->code[i - 1] : agk_below(r, c->ncode)) :
-			cmode == 2 ? c->ncode - 1 - agk_below(r, Min(c->ncode, 4)) : (uint32) ((int64) i * c->ncode / Max(n, 1));
+		c->code[i] = cmode == 0 ? sift_rng_below(r, c->ncode) :
+			cmode == 1 ? (i > 0 && sift_rng_below(r, 10) ? c->code[i - 1] : sift_rng_below(r, c->ncode)) :
+			cmode == 2 ? c->ncode - 1 - sift_rng_below(r, Min(c->ncode, 4)) : (uint32) ((int64) i * c->ncode / Max(n, 1));
 	{
-		const double d = agk_unit(r);
+		const double d = sift_rng_unit(r);
 
 		for (int i = 0; i < c->ncode; i++)
 		{
-			c->map[i] = agk_below(r, 64);
+			c->map[i] = sift_rng_below(r, 64);
 		}
 		for (uint32 i = 0; i < c->nlut; i++)
-			c->lut2[i] = agk_unit(r) < d ? 1 + agk_below(r, 255) : 0;
+			c->lut2[i] = sift_rng_unit(r) < d ? 1 + sift_rng_below(r, 255) : 0;
 	}
 	for (int i = 0; i < c->msz; i++)
-		c->map2[i] = agk_below(r, 50);
+		c->map2[i] = sift_rng_below(r, 50);
 
 	/* lut_i32: values around gbase + [0, nlut), with the boundaries on both sides, wrapping */
-	c->gbase = agk_below(r, 3) ? agk_i32(r, 2) : 0;
+	c->gbase = sift_rng_below(r, 3) ? agk_i32(r, 2) : 0;
 	for (int i = 0; i < n; i++)
-		c->v2[i] = (int32) ((uint32) c->gbase + (uint32) ((int) agk_below(r, c->nlut + 20) - 10));
+		c->v2[i] = (int32) ((uint32) c->gbase + (uint32) ((int) sift_rng_below(r, c->nlut + 20) - 10));
 	c->kbase = agk_i32(r, 2);
 	for (int i = 0; i < n; i++)
-		c->k32[i] = (int32) ((uint32) c->kbase + agk_below(r, c->msz));
+		c->k32[i] = (int32) ((uint32) c->kbase + sift_rng_below(r, c->msz));
 
-	c->mult = agk_below(r, 2) ? agk_below(r, 6) : (uint32) agk_next(r);
+	c->mult = sift_rng_below(r, 2) ? sift_rng_below(r, 6) : (uint32) sift_rng_next(r);
 	for (int i = 0; i < n; i++)
 	{
-		c->gid[i] = agk_below(r, c->ngrp);
-		c->gid0[i] = agk_below(r, 2) ? (uint32) agk_next(r) : agk_below(r, 1000);
+		c->gid[i] = sift_rng_below(r, c->ngrp);
+		c->gid0[i] = sift_rng_below(r, 2) ? (uint32) sift_rng_next(r) : sift_rng_below(r, 1000);
 	}
 	for (int g = 0; g < c->ngrp; g++)
 	{
-		int64		x = (int64) agk_next(r);	/* its own statement: the order of two calls in one expression is the compiler's */
+		int64		x = (int64) sift_rng_next(r);	/* its own statement: the order of two calls in one expression is the compiler's */
 
-		c->cnt0[g] = agk_below(r, 100);
-		c->iacc0[g] = x >> agk_below(r, 60);
+		c->cnt0[g] = sift_rng_below(r, 100);
+		c->iacc0[g] = x >> sift_rng_below(r, 60);
 		c->facc0[g] = agk_f64(r, mf);
 	}
 
 	for (int w = 0; w < AGK_NW(c->nrows); w++)
-		c->rowmask[w] = agk_next(r);
+		c->rowmask[w] = sift_rng_next(r);
 	{
-		const int	pmode = agk_below(r, 3);
+		const int	pmode = sift_rng_below(r, 3);
 
 		for (int e = 0; e < n; e++)
-			c->parent[e] = pmode == 0 ? agk_below(r, c->nrows) :
+			c->parent[e] = pmode == 0 ? sift_rng_below(r, c->nrows) :
 				pmode == 1 ? (uint32) ((int64) e * c->nrows / Max(n, 1)) :
-				(e > 0 && agk_below(r, 4) ? parent_step(r, c->parent[e - 1], c->nrows) : agk_below(r, c->nrows));
+				(e > 0 && sift_rng_below(r, 4) ? parent_step(r, c->parent[e - 1], c->nrows) : sift_rng_below(r, c->nrows));
 	}
-	c->prev0 = agk_below(r, 3) ? UINT32_MAX : agk_below(r, c->ncode);
+	c->prev0 = sift_rng_below(r, 3) ? UINT32_MAX : sift_rng_below(r, c->ncode);
 
 	c->cf = agk_pick_f64(r, c->f64, n);
 	c->lof = agk_pick_f64(r, c->f64, n);

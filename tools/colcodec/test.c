@@ -17,8 +17,8 @@
 #include "harness.h"
 #include "ccshim.h"
 
-typedef Rng CcgRng;
-#define ccg_next rng_next
+typedef SiftRng CcgRng;
+#define ccg_next sift_rng_next
 #include "../../src/sift_colcodec_gen.h"	/* the chunk generators of the in-backend test too */
 
 static int	nfail;
@@ -96,7 +96,7 @@ static int	nlevels;
 
 /* The operations on an open chunk, compared with the plain values (non-NULL slots) and with the decode of the first level */
 static void
-check_open(const Chunk *c, SiftCc *cc, const char *pol, int64 *ref_dec, uint64 (*ref_bits)[8], Rng *r, bool first)
+check_open(const Chunk *c, SiftCc *cc, const char *pol, int64 *ref_dec, uint64 (*ref_bits)[8], SiftRng *r, bool first)
 {
 	uint32		n = c->n;
 	uint32		nw = (n + 63) / 64;
@@ -134,18 +134,18 @@ check_open(const Chunk *c, SiftCc *cc, const char *pol, int64 *ref_dec, uint64 (
 
 	for (uint32 k = 0; k < (n < 3000 ? n : 300); k++)
 	{
-		uint32		i = n < 3000 ? k : rng_below(r, n);
+		uint32		i = n < 3000 ? k : sift_rng_below(r, n);
 
 		CHECK(sift_cc_get(cc, i) == dec[i], "%s: get(%u) of %u", pol, i, n);
 	}
 	if (n)
 	{
-		uint32		m = 1 + rng_below(r, n < 200 ? n : 200),
+		uint32		m = 1 + sift_rng_below(r, n < 200 ? n : 200),
 				   *idx = xalloc(sizeof(uint32) * m);
 		int64	   *sel = xalloc(sizeof(int64) * m);
 
 		for (uint32 k = 0; k < m; k++)
-			idx[k] = rng_below(r, n);
+			idx[k] = sift_rng_below(r, n);
 		sift_cc_decode_sel(cc, idx, m, sel);
 		for (uint32 k = 0; k < m; k++)
 			CHECK(sel[k] == dec[idx[k]], "%s: decode_sel", pol);
@@ -158,8 +158,8 @@ check_open(const Chunk *c, SiftCc *cc, const char *pol, int64 *ref_dec, uint64 (
 	lohi[nr][0] = 5, lohi[nr++][1] = 4;
 	if (n)
 	{
-		int64		a = dec[rng_below(r, n)],
-					b = dec[rng_below(r, n)];
+		int64		a = dec[sift_rng_below(r, n)],
+					b = dec[sift_rng_below(r, n)];
 
 		lohi[nr][0] = a, lohi[nr++][1] = a;
 		lohi[nr][0] = a < b ? a : b, lohi[nr++][1] = a < b ? b : a;
@@ -220,7 +220,7 @@ open_fn(void *a)
 }
 
 static void
-test_chunk(Rng *r, Chunk *c, int ngen)
+test_chunk(SiftRng *r, Chunk *c, int ngen)
 {
 	char	   *blob0 = NULL;
 	Size		len0 = 0;
@@ -288,7 +288,7 @@ test_chunk(Rng *r, Chunk *c, int ngen)
 }
 
 static void
-test_roundtrip(Rng *r, int scale)
+test_roundtrip(SiftRng *r, int scale)
 {
 	for (int g = 0; g < CCG_NGEN; g++)
 		for (size_t si = 0; si < lengthof(sizes); si++)
@@ -308,7 +308,7 @@ test_roundtrip(Rng *r, int scale)
 				{
 					c.nulls = xalloc(sizeof(uint64) * ((n + 63) / 64));
 					for (uint32 w = 0; w < (n + 63) / 64; w++)
-						c.nulls[w] = rng_below(r, 3) ? 0 : rng_next(r) & rng_next(r);
+						c.nulls[w] = sift_rng_below(r, 3) ? 0 : sift_rng_next(r) & sift_rng_next(r);
 					if (rep == 0)
 						c.nulls[0] |= 1;	/* a leading NULL */
 					test_chunk(r, &c, g);
@@ -322,20 +322,20 @@ test_roundtrip(Rng *r, int scale)
 
 /* Chunks of 1000 to 4000 values of the flag generator, whose run values and lengths are themselves runs */
 static void
-test_alternating(Rng *r, int scale)
+test_alternating(SiftRng *r, int scale)
 {
 	for (int rep = 0; rep < 8 * scale; rep++)
 	{
 		Chunk		c;
 
-		c.n = 1000 + rng_below(r, 3001);
+		c.n = 1000 + sift_rng_below(r, 3001);
 		c.v = xalloc(sizeof(int64) * c.n);
 		ccg_fill(r, CCG_ALT, c.n, c.v, &c.kind);
 		c.nulls = NULL;
 		test_chunk(r, &c, CCG_ALT);
 		c.nulls = xalloc(sizeof(uint64) * ((c.n + 63) / 64));
 		for (uint32 w = 0; w < (c.n + 63) / 64; w++)
-			c.nulls[w] = rng_next(r) & rng_next(r);
+			c.nulls[w] = sift_rng_next(r) & sift_rng_next(r);
 		test_chunk(r, &c, CCG_ALT);
 		free(c.nulls);
 		free(c.v);
@@ -345,21 +345,21 @@ test_alternating(Rng *r, int scale)
 /* ---------- kernels ---------- */
 
 static void
-fill_random(Rng *r, void *p, size_t bytes)
+fill_random(SiftRng *r, void *p, size_t bytes)
 {
 	uint64	   *q = p;
 
 	for (size_t i = 0; i < bytes / 8; i++)
-		q[i] = rng_next(r);
+		q[i] = sift_rng_next(r);
 	for (size_t i = bytes & ~(size_t) 7; i < bytes; i++)
-		((uint8 *) p)[i] = (uint8) rng_next(r);
+		((uint8 *) p)[i] = (uint8) sift_rng_next(r);
 }
 
 #define CMP(a, b, bytes, ...) \
 	do { if (memcmp(a, b, bytes)) { CHECK(0, __VA_ARGS__); } else nchecks++; } while (0)
 
 static void
-test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
+test_kernels_level(SiftRng *r, SiftSimdLevel level, int iters)
 {
 	const SiftCcKernels *S = &sift_cc_kernels_scalar,
 			   *K = sift_cc_kernels_for(level);
@@ -368,10 +368,10 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 	for (int it = 0; it < iters; it++)
 	{
 		uint32		W = it % 33,
-					rows = 1 + rng_below(r, it % 5 ? 70 : 3),
-					base = (uint32) rng_next(r),
-					lo = rng_below(r, 4) ? (uint32) rng_next(r) : rng_below(r, 3),
-					span = rng_below(r, 3) == 0 ? 0xFFFFFFFFu : rng_below(r, 2) ? (uint32) rng_next(r) : rng_below(r, 100);
+					rows = 1 + sift_rng_below(r, it % 5 ? 70 : 3),
+					base = (uint32) sift_rng_next(r),
+					lo = sift_rng_below(r, 4) ? (uint32) sift_rng_next(r) : sift_rng_below(r, 3),
+					span = sift_rng_below(r, 3) == 0 ? 0xFFFFFFFFu : sift_rng_below(r, 2) ? (uint32) sift_rng_next(r) : sift_rng_below(r, 100);
 		uint64		words = sift_cc_words(rows * 32, W);
 		uint32	   *src = xalloc(4 * words + SIFT_COL_PAD),
 				   *d1 = xalloc(4 * (size_t) rows * 32),
@@ -390,8 +390,8 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 	}
 	for (int it = 0; it < iters; it++)
 	{
-		uint32		n = 1 + (rng_below(r, 3) ? rng_below(r, 300) : rng_below(r, 4000)),
-					d = 1 + rng_below(r, 1000);
+		uint32		n = 1 + (sift_rng_below(r, 3) ? sift_rng_below(r, 300) : sift_rng_below(r, 4000)),
+					d = 1 + sift_rng_below(r, 1000);
 		int64		base = ccg_bits(r, 64);
 		uint32	   *u = xalloc(4 * n + SIFT_COL_PAD),
 				   *p1 = xalloc(4 * n),
@@ -399,16 +399,16 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 				   *codes = xalloc(4 * n + SIFT_COL_PAD);
 		int64	   *q1 = xalloc(8 * n),
 				   *q2 = xalloc(8 * n);
-		uint32		add = (uint32) rng_next(r);
+		uint32		add = (uint32) sift_rng_next(r);
 
 		fill_random(r, u, 4 * n + SIFT_COL_PAD);
 		for (uint32 i = 0; i < n; i++)
-			codes[i] = rng_below(r, d);
+			codes[i] = sift_rng_below(r, d);
 		S->prefix32(u, n, p1, (uint32) base, add);
 		K->prefix32(u, n, p2, (uint32) base, add);
 		CMP(p1, p2, 4 * (size_t) n, "%s prefix32 n=%u", name, n);
 		{
-			int64		a64 = (int64) rng_next(r) >> rng_below(r, 64);
+			int64		a64 = (int64) sift_rng_next(r) >> sift_rng_below(r, 64);
 
 			S->prefix64(u, n, q1, base, a64);
 			K->prefix64(u, n, q2, base, a64);
@@ -419,11 +419,11 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 	}
 	for (int it = 0; it < iters; it++)
 	{
-		uint32		n = 1 + (rng_below(r, 3) ? rng_below(r, 300) : rng_below(r, 4000));
-		int			e8 = rng_below(r, SIFT_CC_ALP_EMAX_F8 + 1),
-					e4 = rng_below(r, SIFT_CC_ALP_EMAX_F4 + 1);
-		int64		dbase8 = (int64) (rng_next(r) % ((UINT64CONST(1) << 53) - ((uint64) 1 << 32) - 1)) - ((int64) 1 << 52),
-					dbase4 = (int64) rng_below(r, 1 << 24) - (1 << 23);
+		uint32		n = 1 + (sift_rng_below(r, 3) ? sift_rng_below(r, 300) : sift_rng_below(r, 4000));
+		int			e8 = sift_rng_below(r, SIFT_CC_ALP_EMAX_F8 + 1),
+					e4 = sift_rng_below(r, SIFT_CC_ALP_EMAX_F4 + 1);
+		int64		dbase8 = (int64) (sift_rng_next(r) % ((UINT64CONST(1) << 53) - ((uint64) 1 << 32) - 1)) - ((int64) 1 << 52),
+					dbase4 = (int64) sift_rng_below(r, 1 << 24) - (1 << 23);
 		uint32	   *u8 = xalloc(4 * n + SIFT_COL_PAD),
 				   *u4 = xalloc(4 * n + SIFT_COL_PAD);
 		int64	   *q1 = xalloc(8 * n),
@@ -431,8 +431,8 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 
 		for (uint32 i = 0; i < n; i++)
 		{
-			u8[i] = rng_below(r, 2) ? (uint32) rng_next(r) : rng_below(r, 1 << 20);
-			u4[i] = rng_below(r, 1 << 23);
+			u8[i] = sift_rng_below(r, 2) ? (uint32) sift_rng_next(r) : sift_rng_below(r, 1 << 20);
+			u4[i] = sift_rng_below(r, 1 << 23);
 		}
 		S->alp_keys_f8(q1, u8, n, dbase8, sift_cc_p10[e8]);
 		K->alp_keys_f8(q2, u8, n, dbase8, sift_cc_p10[e8]);
@@ -444,15 +444,15 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 	}
 	for (int it = 0; it < iters; it++)
 	{
-		uint32		nr = 1 + rng_below(r, rng_below(r, 4) ? 40 : 1500),
+		uint32		nr = 1 + sift_rng_below(r, sift_rng_below(r, 4) ? 40 : 1500),
 					total = 0;
 		uint32	   *vals = xalloc(4 * nr + SIFT_COL_PAD),
 				   *lens = xalloc(4 * nr + SIFT_COL_PAD);
 
 		for (uint32 i = 0; i < nr; i++)
 		{
-			vals[i] = (uint32) rng_next(r);
-			total += lens[i] = 1 + rng_below(r, rng_below(r, 2) ? 3 : 70);
+			vals[i] = (uint32) sift_rng_next(r);
+			total += lens[i] = 1 + sift_rng_below(r, sift_rng_below(r, 2) ? 3 : 70);
 		}
 		{
 			uint32	   *d1 = xalloc(4 * (size_t) total + SIFT_COL_PAD),
@@ -470,11 +470,11 @@ test_kernels_level(Rng *r, SiftSimdLevel level, int iters)
 /* ---------- strings and bit vectors ---------- */
 
 static void
-test_strs(Rng *r, int scale)
+test_strs(SiftRng *r, int scale)
 {
 	for (int it = 0; it < 40 * scale; it++)
 	{
-		uint32		n = it % 5 == 0 ? it / 5 : rng_below(r, 3000);
+		uint32		n = it % 5 == 0 ? it / 5 : sift_rng_below(r, 3000);
 		uint32	   *off = xalloc(4 * (n + 1));
 		char	   *bytes = xalloc(n * 40 + 16);
 		StringInfoData s;
@@ -488,10 +488,10 @@ test_strs(Rng *r, int scale)
 		off[0] = 0;
 		for (uint32 i = 0; i < n; i++)
 		{
-			uint32		len = rng_below(r, 4) ? rng_below(r, 12) : rng_below(r, 40);
+			uint32		len = sift_rng_below(r, 4) ? sift_rng_below(r, 12) : sift_rng_below(r, 40);
 
 			for (uint32 j = 0; j < len; j++)
-				bytes[tot + j] = "abcdefgh"[rng_below(r, it % 2 ? 3 : 8)];
+				bytes[tot + j] = "abcdefgh"[sift_rng_below(r, it % 2 ? 3 : 8)];
 			off[i + 1] = tot += len;
 		}
 		initStringInfo(&s);
@@ -505,7 +505,7 @@ test_strs(Rng *r, int scale)
 }
 
 static void
-test_bits(Rng *r, int scale)
+test_bits(SiftRng *r, int scale)
 {
 	static const uint32 nbs[] = {0, 1, 7, 8, 63, 64, 65, 1000, 4096, 70001};
 
@@ -522,7 +522,7 @@ test_bits(Rng *r, int scale)
 
 		memset(w, dens == 1 ? 0xFF : 0, 8 * (nw + 1));
 		for (uint32 i = 0; i < nb; i++)
-			if (dens == 2 ? rng_below(r, 100) == 0 : dens == 3 ? rng_below(r, 100) != 0 : dens == 4 ? rng_below(r, 2) : 0)
+			if (dens == 2 ? sift_rng_below(r, 100) == 0 : dens == 3 ? sift_rng_below(r, 100) != 0 : dens == 4 ? sift_rng_below(r, 2) : 0)
 				w[i / 64] ^= UINT64CONST(1) << (i % 64);
 		if (dens == 5)
 			for (uint32 i = 0; i < nb; i++)
@@ -550,7 +550,7 @@ typedef struct FuzzArg
 	int			what;			/* 0 chunk, 1 strings, 2 bits */
 	bool		verify;
 	uint32		nbits;
-	Rng		   *r;
+	SiftRng		   *r;
 } FuzzArg;
 
 static void
@@ -589,7 +589,7 @@ fuzz_fn(void *a)
 			sift_cc_filter(cc, sift_cc_min(cc), sift_cc_min(cc) + 1000, bits);
 			sift_cc_sum(cc, bits, &sum);
 			for (int k = 0; n && k < 20; k++)
-				sift_cc_get(cc, rng_below(f->r, n));
+				sift_cc_get(cc, sift_rng_below(f->r, n));
 			pfree(dec), pfree(off), pfree(bits);
 		}
 		sift_cc_close(cc);
@@ -597,44 +597,44 @@ fuzz_fn(void *a)
 }
 
 static void
-mutate(Rng *r, uint8 *b, Size len)
+mutate(SiftRng *r, uint8 *b, Size len)
 {
-	switch (rng_below(r, 6))
+	switch (sift_rng_below(r, 6))
 	{
 		case 0:
-			b[rng_below(r, len)] ^= (uint8) (1 << rng_below(r, 8));
+			b[sift_rng_below(r, len)] ^= (uint8) (1 << sift_rng_below(r, 8));
 			break;
 		case 1:
-			for (int k = 1 + rng_below(r, 4); k; k--)
-				b[rng_below(r, len)] = (uint8) rng_next(r);
+			for (int k = 1 + sift_rng_below(r, 4); k; k--)
+				b[sift_rng_below(r, len)] = (uint8) sift_rng_next(r);
 			break;
 		case 2:
 			{
-				Size		at = rng_below(r, len),
-							cnt = 1 + rng_below(r, 16);
+				Size		at = sift_rng_below(r, len),
+							cnt = 1 + sift_rng_below(r, 16);
 
-				memset(b + at, rng_below(r, 2) ? 0 : 0xFF, Min(len - at, cnt));
+				memset(b + at, sift_rng_below(r, 2) ? 0 : 0xFF, Min(len - at, cnt));
 				break;
 			}
 		case 3:
 			{
-				Size		at = rng_below(r, len > 8 ? len - 8 : 1) & ~(Size) 7;
-				uint64		x = rng_below(r, 2) ? ~UINT64CONST(0) : rng_below(r, 1 << 16);
+				Size		at = sift_rng_below(r, len > 8 ? len - 8 : 1) & ~(Size) 7;
+				uint64		x = sift_rng_below(r, 2) ? ~UINT64CONST(0) : sift_rng_below(r, 1 << 16);
 
 				memcpy(b + at, &x, Min((Size) 8, len - at));
 				break;
 			}
 		case 4:
 			{
-				Size		at = rng_below(r, len);
+				Size		at = sift_rng_below(r, len);
 
-				b[at] = rng_below(r, 2) ? b[at] + 1 : b[at] - 1;
+				b[at] = sift_rng_below(r, 2) ? b[at] + 1 : b[at] - 1;
 				break;
 			}
 		default:
 			{
-				Size		a = rng_below(r, len),
-							c = rng_below(r, len);
+				Size		a = sift_rng_below(r, len),
+							c = sift_rng_below(r, len);
 
 				memmove(b + (a & ~(Size) 7), b + (c & ~(Size) 7), Min((Size) 16, len - Max(a & ~(Size) 7, c & ~(Size) 7)));
 				break;
@@ -643,7 +643,7 @@ mutate(Rng *r, uint8 *b, Size len)
 }
 
 static void
-test_fuzz(Rng *r, int scale)
+test_fuzz(SiftRng *r, int scale)
 {
 	uint64		errs = 0,
 				oks = 0;
@@ -654,21 +654,21 @@ test_fuzz(Rng *r, int scale)
 		SiftCcPolicy pol;
 		StringInfoData s;
 		int			what = it % 12 == 10 ? 1 : it % 12 == 11 ? 2 : 0;
-		uint32		n = sizes[2 + rng_below(r, 17)] % 6000;
+		uint32		n = sizes[2 + sift_rng_below(r, 17)] % 6000;
 		uint32	   *off = NULL;
 		char	   *bytes = NULL;
 		uint64	   *w = NULL;
 		uint8	   *orig;
 		Size		olen;
 
-		sift_cc_policy_parse(policies[rng_below(r, NPOL)], &pol);
+		sift_cc_policy_parse(policies[sift_rng_below(r, NPOL)], &pol);
 		c.n = n;
 		c.v = xalloc(sizeof(int64) * (n + 1));
 		c.nulls = NULL;
 		initStringInfo(&s);
 		if (what == 0)
 		{
-			ccg_fill(r, rng_below(r, CCG_NGEN), n, c.v, &c.kind);
+			ccg_fill(r, sift_rng_below(r, CCG_NGEN), n, c.v, &c.kind);
 			sift_cc_encode(&s, c.kind, c.v, n, NULL, &pol, NULL);
 		}
 		else if (what == 1)
@@ -678,7 +678,7 @@ test_fuzz(Rng *r, int scale)
 			off[0] = 0;
 			for (uint32 i = 0; i < n; i++)
 			{
-				off[i + 1] = off[i] + rng_below(r, 8);
+				off[i + 1] = off[i] + sift_rng_below(r, 8);
 				memset(bytes + off[i], 'a' + (i % 5), off[i + 1] - off[i]);
 			}
 			sift_cc_encode_strs(&s, off, bytes, n, &pol);
@@ -688,7 +688,7 @@ test_fuzz(Rng *r, int scale)
 			w = xalloc(8 * ((n + 63) / 64 + 1));
 			memset(w, 0, 8 * ((n + 63) / 64 + 1));
 			for (uint32 i = 0; i < n; i++)
-				if (rng_below(r, 40) == 0)
+				if (sift_rng_below(r, 40) == 0)
 					w[i / 64] |= UINT64CONST(1) << (i % 64);
 			sift_cc_encode_bits(&s, w, n, &pol);
 		}
@@ -698,13 +698,13 @@ test_fuzz(Rng *r, int scale)
 		pfree(s.data);
 		for (int m = 0; m < 400 * scale; m++)
 		{
-			FuzzArg		fa = {NULL, olen, what, rng_below(r, 4) == 0, n, r};
+			FuzzArg		fa = {NULL, olen, what, sift_rng_below(r, 4) == 0, n, r};
 			uint8	   *tmp = xalloc(olen);
 
 			memcpy(tmp, orig, olen);
 			mutate(r, tmp, olen);
-			if (rng_below(r, 8) == 0)
-				fa.len = rng_below(r, olen) & ~(Size) 7;
+			if (sift_rng_below(r, 8) == 0)
+				fa.len = sift_rng_below(r, olen) & ~(Size) 7;
 			fa.blob = xalloc(fa.len);
 			memcpy(fa.blob, tmp, fa.len);
 			free(tmp);
@@ -751,10 +751,10 @@ int
 main(int argc, char **argv)
 {
 	int			scale = argc > 1 ? atoi(argv[1]) : 1;
-	Rng			r;
+	SiftRng			r;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	rng_seed(&r, argc > 2 ? (uint64) atoll(argv[2]) : 20260101);
+	sift_rng_seed(&r, argc > 2 ? (uint64) atoll(argv[2]) : 20260101);
 	cc_init();
 	nlevels = cc_levels(levels);
 	printf("levels tested: %d (detected %s)\n", nlevels, kt_level_name[sift_cpu.detected]);

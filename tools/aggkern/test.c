@@ -57,10 +57,10 @@ check_case(const AgkCase *c, uint64 seed)
 static void
 one_case(uint64 seed, int n)
 {
-	AgkRng		r;
+	SiftRng		r;
 	AgkCase		c;
 
-	agk_seed(&r, seed);
+	sift_rng_seed(&r, seed);
 	agk_case_gen(&r, &c, n);
 	check_case(&c, seed);
 	agk_case_free(&c);
