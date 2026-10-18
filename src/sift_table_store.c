@@ -34,6 +34,7 @@
 			 errdetail(__VA_ARGS__)))
 
 int			sift_tbl_delta_limit = 4096;	/* kB */
+int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write segment at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 
 /* ---------- the per relation cache ---------- */
@@ -345,7 +346,7 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 		SwapArg		arg = {0};
 		uint32		vcap = delta_vcap();
 		uint64		gen,
-					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
+					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
 					dbuf;
 		GenericXLogState *state;
