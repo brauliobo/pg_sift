@@ -7,7 +7,7 @@ pkgrel=1
 pkgdesc='CTID-bitmap full-text search index with BM25 ranking for PostgreSQL'
 arch=('x86_64')
 license=('PostgreSQL')
-depends=('postgresql>=18' 'postgresql<19')
+depends=('postgresql>=18' 'postgresql<19' 'lz4' 'zstd')
 makedepends=('git' 'make' 'gcc')
 source=("pg_sift::git+file://${startdir%/packaging}")
 sha256sums=('SKIP')
