@@ -12,6 +12,7 @@
 #include "sift_host.h"
 
 #include "sift_col_enc.h"
+#include "sift_col_preagg.h"
 #include "sift_store.h"
 
 #define SIFT_COL_SEG_MAGIC_UNIT		0x554C4F43	/* "COLU" */
@@ -37,6 +38,11 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
 										 MemoryContext mcxt);
 /* The owner's tag of the segment (SiftSegEntry.reserved: the table AM's xmin, 0 = none); sift_colw_finish stores it in the entry, a rewrite sets it again */
 extern void sift_colw_set_tag(SiftColSegWriter *w, uint32 tag);
+/*
+ * The pre-aggregates the writer computes for every unit (docs/COL-PREAGG.md): the default spec unless the owner sets one (the reloption
+ * `preagg`). Set before the first sift_colw_add.
+ */
+extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
@@ -87,6 +93,16 @@ extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
 
 /* The zone of leaf col in unit u (the zone arrays of the leaf are read on first use) */
 extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z);
+
+/*
+ * Pre-aggregates of unit u (a segment of this format always has the sidecar). sift_cseg_agg: the zone and, for an INT leaf, the exact sum and
+ * sum of squares. sift_cseg_cube: the unit's cube blob for sift_cpagg_decode (NULL: the unit has none), valid until the next call on seg.
+ * Sizes of the whole sidecar and the units that have a cube, for sift.col_index_info.
+ */
+extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
+extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
+extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */
 extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep);

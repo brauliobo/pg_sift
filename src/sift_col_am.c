@@ -55,6 +55,15 @@ sift_col_validate_compression(const char *value)
 }
 
 void
+sift_col_validate_preagg(const char *value)
+{
+	const char *err = sift_cpagg_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
@@ -82,6 +91,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "compression",
 						 "chunk compression: auto, none, lz4, zstd, encodings; per column: 'auto; col=zstd:9'",
 						 "", sift_col_validate_compression, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "preagg",
+						 "pre-aggregates of every unit: default, off, or cube(dim: measure, ...; dim2: ...)",
+						 "", sift_col_validate_preagg, ShareUpdateExclusiveLock);
 }
 
 /* ---------- options ---------- */
@@ -93,6 +105,7 @@ col_amoptions(Datum reloptions, bool validate)
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, mutable_limit)},
 		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
+		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
@@ -120,6 +133,14 @@ sift_col_options_compression(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->compression ? (const char *) o + o->compression : "";
+}
+
+const char *
+sift_col_options_preagg(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->preagg ? (const char *) o + o->preagg : "";
 }
 
 /* ---------- the leaves of an index ---------- */
@@ -247,6 +268,7 @@ build_rel(Relation index)
 	TupleDesc	desc = RelationGetDescr(index);
 	int			natts = IndexRelationGetNumberOfKeyAttributes(index);
 	SiftColDef *defs = palloc0(SIFT_COL_MAX_COLS * sizeof(SiftColDef));
+	char	  **names;
 	int			n = 0;
 
 	if (index->rd_index->indnatts != natts)
@@ -295,13 +317,21 @@ build_rel(Relation index)
 	}
 	r->schema = sift_cschema_create(index->rd_indexcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
+	names = palloc(n * sizeof(char *));
 	for (int i = 0; i < n; i++)
 	{
 		const char *name = defs[i].path[0] ? defs[i].path : NameStr(TupleDescAttr(desc, defs[i].attno - 1)->attname);
 		const char *err = sift_cc_policy_for_column(sift_col_options_compression(index), name, &r->policy[i]);
 
+		names[i] = pstrdup(name);
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
+	}
+	{
+		const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &r->pagg);
+
+		if (err)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

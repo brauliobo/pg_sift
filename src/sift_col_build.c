@@ -90,7 +90,10 @@ flush_batch(ColBuild *b)
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
 	if (b->w == NULL)
+	{
 		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, b->cxt);
+		sift_colw_set_preagg(b->w, &b->r->pagg);
+	}
 	sift_colw_add(b->w, b->batch);
 	if (sift_colw_memory(b->w) > b->budget && b->nsegs + 1 < b->maxsegs)
 		end_segment(b);

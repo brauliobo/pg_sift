@@ -9,6 +9,7 @@
 
 #include "sift_col_pg.h"
 #include "sift_col_enc.h"
+#include "sift_col_preagg.h"
 #include "sift_col_mut.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
@@ -22,10 +23,13 @@ typedef struct SiftColRel
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
+	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
 	SiftCMutHint hint;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
+/* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */
+extern void sift_col_validate_preagg(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the engine holds natively (false: not natively); the scale of a numeric(p, s) leaf (false: not representable) */
@@ -68,7 +72,8 @@ extern IndexBulkDeleteResult *sift_col_ambulkdelete(IndexVacuumInfo *info, Index
 													IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
 /* Merges the segments in[0..n) (written for schema; all of the page store rel, an index or a table) into one, dropping their dead rows */
-extern void sift_col_merge_segments(Relation rel, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftSegEntry *in, int n);
+extern void sift_col_merge_segments(Relation rel, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg,
+									const SiftSegEntry *in, int n);
 /* Is more than half of the segment's rows dead (the merge policy's "mostly dead" test) */
 extern bool sift_col_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern void sift_col_maint_after_seal(Relation index);
