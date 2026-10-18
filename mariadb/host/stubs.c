@@ -8,6 +8,7 @@
 
 #include "sift_eval.h"
 #include "sift_mutable.h"
+#include "sift_segment.h"
 
 int			sift_max_expansions = 512;
 
@@ -29,6 +30,22 @@ const char *
 sift_options_fields(const SiftOptions *opts)
 {
 	return opts->fields ? (const char *) opts + opts->fields : "";
+}
+
+/* ---------- docmap directories (sift_docdir.c): not kept between queries ---------- */
+
+bool
+sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
+{
+	*dir = MemoryContextAllocHuge(seg->mcxt, nsb * sizeof(SiftDocSBRef));
+	*rank_base = MemoryContextAllocHuge(seg->mcxt, (nsb + 1) * sizeof(uint64));
+	*handle = NULL;
+	return false;
+}
+
+void
+sift_docdir_ready(void *handle)
+{
 }
 
 /* ---------- visibility (sift_visibility.c): the engine's dead documents ---------- */
