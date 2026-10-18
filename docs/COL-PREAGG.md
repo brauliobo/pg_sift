@@ -76,9 +76,9 @@ Times: psql `\timing` client wall time (median of 41 runs, min in brackets), `si
 | q | question | from pre-aggregates | 10 M scan -> pre-aggregates / ClickHouse / ES | 3 M scan -> pre-aggregates |
 |---|---|---|---|---|
 | 01 | one order by id | no (btree) | 0.41 / 9.4 / 2.6 ms | unchanged |
-| 02 | orders per country | **yes**: histogram of `country`, 30 groups | 32.2 -> 6.0 [3.7] / 13.2 / 5.7 ms | 6.6 -> 0.44 [0.35] ms |
-| 03 | revenue per month | **yes**: histogram of the `date_trunc('month')` leaf, `sum(amount)`, 36 groups | 52.9 -> 3.8 [3.3] / 64.3 / 225 ms | 14.8 -> 0.75 [0.62] ms |
-| 04 | top 10 categories by revenue | **yes**: histogram of `category`, `sum(amount)`, 40 groups, sorted above | 49.6 -> 3.8 [3.0] / 48.7 / 268 ms | 14.2 -> 0.84 [0.64] ms |
+| 02 | orders per country | **yes**: histogram of `country`, 30 groups | 17.7 -> 5.7 [3.5] / 13.2 / 5.7 ms | 8.2 -> 0.63 [0.51] ms |
+| 03 | revenue per month | **yes**: histogram of the `date_trunc('month')` leaf, `sum(amount)`, 36 groups | 55.2 -> 3.5 [2.6] / 64.3 / 225 ms | 16.3 -> 0.68 [0.48] ms |
+| 04 | top 10 categories by revenue | **yes**: histogram of `category`, `sum(amount)`, 40 groups, sorted above | 50.6 -> 3.6 [3.0] / 48.7 / 268 ms | 16.1 -> 0.91 [0.65] ms |
 | 05 | average of shipped, DE, 2025 | no: three predicates on three dimensions, no unit covered (rows are in id order, dates spread) | 39.2 / 13.1 / 12.9 ms | scan (predicate order is the planner track's) |
 | 06 | customers per month | no: `count(DISTINCT)` is exact in PostgreSQL; a per-unit set costs as much as the scan | 600 / 151 / 484 ms | scan |
 | 07 | orders over 100 in 30 days | no: row-level `amount` compare, no unit covered | 14.2 / 5.8 / 3.1 ms | scan |
@@ -86,9 +86,9 @@ Times: psql `\timing` client wall time (median of 41 runs, min in brackets), `si
 | 09 | search facets | no: the BM25 match set is a row subset; partial units cannot use a histogram | 46.5 / 36.6 / 7.4 ms | match set into `SiftAgg` (other track) |
 | 10 | search, newest | no | 46 / 22.9 / 8.6 ms | other track |
 
-Instructions per execution (user space), 10 M: 02 4.89 M -> 1.02 M, 03 5.47 M -> 1.13 M, 04 13.4 M -> 0.29 M (3 M: 1.55 M -> 0.33 M, 1.72 M -> 0.37 M, 4.23 M -> 0.22 M). All 511 units (154 at 3 M) are answered from metadata, Rows Scanned 0, results identical to the scan and the heap.
+Instructions per execution (user space), 10 M: 02 4.76 M -> 0.99 M, 03 5.35 M -> 1.11 M, 04 13.3 M -> 0.29 M (3 M: 1.51 M -> 0.32 M, 1.69 M -> 0.36 M, 4.19 M -> 0.22 M). All 511 units (154 at 3 M) are answered from metadata, Rows Scanned 0, results identical to the scan and the heap.
 
-So 03 and 04 are answered entirely from metadata, 13x to 17x faster than ClickHouse and 59x to 70x faster than Elasticsearch at 10 M; 02 ties Elasticsearch (6.0 vs 5.7 ms median, 3.7 ms best) and is 2x ClickHouse's speed. 02 spends 3.5x the instructions of 04 for the same unit count (not yet explained; it is the first candidate for the next trim). 05 and 07 stay scans; a depth-2 cube (`country, status, month`: up to 5 400 groups per 19.6 k rows, about 12% of the index) would answer 05 but is not worth it by default. 06 stays the distinct-set work of the planner track.
+So 03 and 04 are answered entirely from metadata, 13x to 18x faster than ClickHouse and 64x to 74x faster than Elasticsearch at 10 M; 02 ties Elasticsearch (5.7 vs 5.7 ms median, 3.5 ms best) and is 2x ClickHouse's speed. 02 spends 3.4x the instructions of 04 for the same unit count (not yet explained; it is the first candidate for the next trim). 05 and 07 stay scans; a depth-2 cube (`country, status, month`: up to 5 400 groups per 19.6 k rows, about 12% of the index) would answer 05 but is not worth it by default. 06 stays the distinct-set work of the planner track.
 
 ## 8. Not done, risks
 
