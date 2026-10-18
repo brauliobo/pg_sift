@@ -42,13 +42,13 @@ FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty in
 (6 rows)
 
 -- shapes it does not take keep the normal plan
-EXPLAIN (COSTS OFF) SELECT kind, sum(amount::float4) FROM o GROUP BY kind;
-        QUERY PLAN         
----------------------------
+EXPLAIN (COSTS OFF) SELECT kind, string_agg(kind, ',' ORDER BY id) FROM o GROUP BY kind;
+         QUERY PLAN         
+----------------------------
  GroupAggregate
    Group Key: kind
    ->  Sort
-         Sort Key: kind
+         Sort Key: kind, id
          ->  Seq Scan on o
 (5 rows)
 

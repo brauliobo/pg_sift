@@ -1,6 +1,6 @@
--- trap: numeric functions other than abs, round, trunc, floor and ceil (the normal plan, same rows)
+-- trap: numeric functions other than abs, round, trunc, floor and ceil run in PostgreSQL (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

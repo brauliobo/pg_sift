@@ -241,6 +241,28 @@ put_cond(Pack *p, const SiftAggCond *c)
 }
 
 static void
+put_gen(Pack *p, const SiftAggGen *g)
+{
+	put_int(p, g != NULL);
+	if (g == NULL)
+		return;
+	put_node(p, g->aggref);
+	put_int(p, g->nargs);
+	for (int k = 0; k < g->nargs; k++)
+	{
+		put_int(p, (int) g->arg[k].typid);
+		put_int(p, g->arg[k].nleaves);
+		for (int l = 0; l < g->arg[k].nleaves; l++)
+			put_int(p, g->arg[k].leaf[l]);
+		put_node(p, g->arg[k].expr);
+	}
+	put_node(p, g->direct);
+	put_int(p, g->distinct);
+	put_int(p, g->darg);
+	put_int(p, g->ordered);
+}
+
+static void
 put_agg(Pack *p, const SiftAggAgg *a)
 {
 	put_int(p, a->kind);
@@ -271,6 +293,7 @@ put_agg(Pack *p, const SiftAggAgg *a)
 	put_dbl(p, a->frac);
 	put_int(p, a->desc_order);
 	put_int(p, a->share);
+	put_gen(p, a->gen);
 }
 
 static void
@@ -492,6 +515,31 @@ get_cond(Unpack *u, SiftAggCond *c)
 	c->cd = strtod(get_str(u), NULL);
 }
 
+static SiftAggGen *
+get_gen(Unpack *u)
+{
+	SiftAggGen *g;
+
+	if (!get_int(u))
+		return NULL;
+	g = palloc0(sizeof(SiftAggGen));
+	g->aggref = get_node(u);
+	g->nargs = get_int(u);
+	for (int k = 0; k < g->nargs; k++)
+	{
+		g->arg[k].typid = (Oid) get_int(u);
+		g->arg[k].nleaves = get_int(u);
+		for (int l = 0; l < g->arg[k].nleaves; l++)
+			g->arg[k].leaf[l] = get_int(u);
+		g->arg[k].expr = get_node(u);
+	}
+	g->direct = get_node(u);
+	g->distinct = get_int(u);
+	g->darg = get_int(u);
+	g->ordered = get_int(u);
+	return g;
+}
+
 static void
 get_agg(Unpack *u, SiftAggAgg *a)
 {
@@ -526,6 +574,7 @@ get_agg(Unpack *u, SiftAggAgg *a)
 	a->frac = strtod(get_str(u), NULL);
 	a->desc_order = get_int(u);
 	a->share = get_int(u);
+	a->gen = get_gen(u);
 }
 
 static void

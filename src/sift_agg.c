@@ -22,31 +22,39 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/pg_aggregate.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_proc.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
+#include "executor/nodeAgg.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_agg.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
+#include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/expandeddatum.h"
 #include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/numeric.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/tuplesort.h"
 #include "utils/wait_event.h"
@@ -86,6 +94,7 @@ sift_agg_init(void)
 typedef struct OutTable
 {
 	Oid			collid;
+	bool		image;			/* values are the same when their bytes are (generic DISTINCT), not when the type's equality says so */
 	bool		byval;
 	int16		len;
 	FmgrInfo	hashfn;
@@ -117,6 +126,34 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 	t->hv = palloc(t->cap * sizeof(uint32));
 }
 
+/* a table of the distinct byte images of values of any type: the equal values of the type that differ (1.0 and 1.00) keep their ids */
+static void
+ot_init_image(OutTable *t, Oid typid)
+{
+	get_typlenbyval(typid, &t->len, &t->byval);
+	t->image = true;
+	t->collid = InvalidOid;
+	t->nslot = 64;
+	t->slot = palloc0(t->nslot * sizeof(uint32));
+	t->cap = 16;
+	t->val = palloc(t->cap * sizeof(Datum));
+	t->hv = palloc(t->cap * sizeof(uint32));
+}
+
+static uint32
+image_hash(const OutTable *t, Datum d)
+{
+	if (t->byval)
+		return hash_bytes((const unsigned char *) &d, sizeof(Datum));
+	if (t->len == -1)
+	{
+		struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+		return hash_bytes((const unsigned char *) VARDATA_ANY(v), VARSIZE_ANY_EXHDR(v));
+	}
+	return hash_bytes((const unsigned char *) DatumGetPointer(d), t->len == -2 ? strlen(DatumGetCString(d)) : t->len);
+}
+
 static void
 ot_rehash(OutTable *t)
 {
@@ -137,14 +174,15 @@ ot_rehash(OutTable *t)
 static uint32
 ot_id(OutTable *t, Datum d)
 {
-	uint32		hv = DatumGetUInt32(FunctionCall1Coll(&t->hashfn, t->collid, d)),
+	uint32		hv = t->image ? image_hash(t, d) : DatumGetUInt32(FunctionCall1Coll(&t->hashfn, t->collid, d)),
 				h = hv & (t->nslot - 1);
 
 	while (t->slot[h])
 	{
 		uint32		id = t->slot[h];
 
-		if (t->hv[id - 1] == hv && DatumGetBool(FunctionCall2Coll(&t->eqfn, t->collid, t->val[id - 1], d)))
+		if (t->hv[id - 1] == hv && (t->image ? datumIsEqual(t->val[id - 1], d, t->byval, t->len) :
+									DatumGetBool(FunctionCall2Coll(&t->eqfn, t->collid, t->val[id - 1], d))))
 			return id;
 		h = (h + 1) & (t->nslot - 1);
 	}
@@ -349,7 +387,8 @@ typedef struct AggAcc
 	double	   *d;
 	uint64	   *last;			/* count distinct of the rows: the last row counted */
 	uint8	   *nf;				/* float sums: a non-finite input was added */
-	Datum	   *v;				/* aggregates over distinct values (SAA_M_*): the result, made by mapped_finish */
+	Datum	   *v;				/* aggregates over distinct values (SAA_M_*): the result, made by mapped_finish; SAA_GEN: the state */
+	Datum	   *r;				/* SAA_GEN: the result */
 } AggAcc;
 
 /* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
@@ -498,6 +537,9 @@ typedef struct AggExec
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
 	double	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
+	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
+	AggState   *gas;			/* the AggState their functions are called with */
+	MemoryContext gres;			/* their results */
 	/* output */
 	uint32	   *glist;
 	uint32		nglist;
@@ -2255,6 +2297,13 @@ acc_alloc(AggExec *ex, uint32 cap)
 				a[i].last = MemoryContextAlloc(ex->tcxt, cap * sizeof(uint64));
 				memset(a[i].last, 0xff, cap * sizeof(uint64));
 				break;
+			case SAA_GEN:
+				if (ex->spec->agg[i].gen->ordered)
+					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));	/* the group's number among the sorted values */
+				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+				a[i].r = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
+				break;
 			default:
 				break;
 		}
@@ -2267,7 +2316,7 @@ acc_free(AggAcc *a, int naggs)
 {
 	for (int i = 0; i < naggs; i++)
 	{
-		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].last, a[i].nf};
+		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf};
 
 		for (int c = 0; c < lengthof(col); c++)
 			if (col[c])
@@ -2304,6 +2353,11 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 				n->w[t] = o->w[g];
 			if (o->d)
 				n->d[t] = o->d[g];
+			if (ex->spec->agg[i].kind == SAA_GEN)
+			{
+				n->v[t] = o->v[g];
+				n->r[t] = o->r[g];
+			}
 			if (o->last)
 				n->last[t] = o->last[g];
 			if (o->nf)
@@ -3427,6 +3481,627 @@ grouping_bits(AggExec *ex, const SiftAggAgg *a, uint32 g)
 	return bits;
 }
 
+/* ---------- generic aggregates (SAA_GEN): PostgreSQL's own transition and final functions ---------- */
+
+/*
+ * The aggregate runs as ExecAgg runs it (advance_transition_function, finalize_aggregate): the state of each group is a Datum made
+ * by the aggregate's transition function, called through fmgr with an AggState as its context (AggCheckCallContext, AggGetAggref,
+ * AggRegisterCallback), in memory that lives as long as the scan; the final function runs once per group when the scan has ended.
+ * DISTINCT: the (group, value) pairs go to a set, and the distinct values of a group go through the transition function in the
+ * order of the type's btree, as PostgreSQL's sort gives them. WITHIN GROUP: the values of all groups go through one tuplesort
+ * (memory bounded by work_mem) by group; each group's values are then given to the aggregate, which sorts them as it does in
+ * ExecAgg, and the state is freed after the group's final function.
+ */
+#define GEN_INIT	1				/* the group's state is made */
+#define GEN_NULL	2				/* transValueIsNull */
+#define GEN_NOVAL	4				/* noTransValue: a strict transition function without initial value takes its first input as the state */
+#define GEN_DONE	8				/* acc->r is the result */
+#define GEN_RNULL	16				/* ... and it is NULL */
+
+typedef struct GenSt
+{
+	const SiftAggGen *g;
+	Aggref	   *aggref;
+	ExprContext *cx;				/* the states live in its per-tuple memory */
+	AggStatePerTransData pertrans;
+	AggStatePerAggData peragg;
+	FmgrInfo	transfn;
+	FmgrInfo	finalfn;
+	FmgrInfo   *cmp;				/* DISTINCT: the btree comparison and the equality of the argument's type */
+	FmgrInfo   *eq;
+	FunctionCallInfo tfc;
+	FunctionCallInfo ffc;
+	bool		strict;
+	bool		has_final;
+	int			nfinal;
+	int			ndirect;
+	Oid			transtype;
+	int16		tlen;
+	bool		tbyval;
+	int16		rlen;
+	bool		rbyval;
+	Datum		initval;
+	bool		initnull;
+	ExprState  *argx[SIFT_AGG_MAX_GARGS];
+	Datum		argk[SIFT_AGG_MAX_GARGS];		/* constant arguments */
+	bool		argknull[SIFT_AGG_MAX_GARGS];
+	Datum		dir[FUNC_MAX_ARGS];				/* direct arguments, evaluated once */
+	bool		dirnull[FUNC_MAX_ARGS];
+	Tuplesortstate *sort;
+	TupleTableSlot *put;
+	TupleTableSlot *get;
+	uint32		nsid;				/* WITHIN GROUP: groups numbered as their first value arrives (group indexes change as the table grows) */
+} GenSt;
+
+/* the leaves an argument reads, decoded for the chunk's tuples */
+typedef struct GenIn
+{
+	const SiftSrcVec *vec[SIFT_AGG_MAX_GARGS][SIFT_AGG_MAX_GLEAVES];
+	const uint32 *idx[SIFT_AGG_MAX_GARGS][SIFT_AGG_MAX_GLEAVES];
+} GenIn;
+
+static Datum
+gen_eval_once(AggExec *ex, ExprState *e, Oid typid, bool *isnull)
+{
+	int16		len;
+	bool		byval;
+	Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, isnull);
+
+	get_typlenbyval(typid, &len, &byval);
+	d = *isnull ? (Datum) 0 : datumCopy(d, byval, len);
+	ResetExprContext(ex->lutcx);
+	return d;
+}
+
+static GenSt *
+gen_new(AggExec *ex, const SiftAggAgg *a)
+{
+	GenSt	   *st = palloc0(sizeof(GenSt));
+	const SiftAggGen *g = a->gen;
+	Aggref	   *ref = (Aggref *) g->aggref;
+	HeapTuple	tup,
+				proc;
+	Form_pg_aggregate ag;
+	Oid			owner,
+				inputTypes[FUNC_MAX_ARGS];
+	int			numArguments = get_aggregate_argtypes(ref, inputTypes),
+				ntrans = 1 + list_length(ref->args);
+	Expr	   *transfnexpr,
+			   *finalfnexpr;
+	AclResult	ar;
+	int			k = 0;
+
+	st->g = g;
+	st->aggref = ref;
+	ar = object_aclcheck(ProcedureRelationId, ref->aggfnoid, GetUserId(), ACL_EXECUTE);
+	if (ar != ACLCHECK_OK)
+		aclcheck_error(ar, OBJECT_AGGREGATE, get_func_name(ref->aggfnoid));
+	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(ref->aggfnoid));
+	proc = SearchSysCache1(PROCOID, ObjectIdGetDatum(ref->aggfnoid));
+	if (!HeapTupleIsValid(tup) || !HeapTupleIsValid(proc))
+		elog(ERROR, "cache lookup failed for aggregate %u", ref->aggfnoid);
+	ag = (Form_pg_aggregate) GETSTRUCT(tup);
+	owner = ((Form_pg_proc) GETSTRUCT(proc))->proowner;
+	ReleaseSysCache(proc);
+	foreach_oid(fn, list_make2_oid(ag->aggtransfn, ag->aggfinalfn))
+	{
+		if (!OidIsValid(fn))
+			continue;
+		ar = object_aclcheck(ProcedureRelationId, fn, owner, ACL_EXECUTE);
+		if (ar != ACLCHECK_OK)
+			aclcheck_error(ar, OBJECT_FUNCTION, get_func_name(fn));
+	}
+	st->transtype = resolve_aggregate_transtype(ref->aggfnoid, ag->aggtranstype, inputTypes, numArguments);
+	get_typlenbyval(st->transtype, &st->tlen, &st->tbyval);
+	get_typlenbyval(ref->aggtype, &st->rlen, &st->rbyval);
+	build_aggregate_transfn_expr(inputTypes, numArguments, list_length(ref->aggdirectargs), ref->aggvariadic, st->transtype,
+								 ref->inputcollid, ag->aggtransfn, InvalidOid, &transfnexpr, NULL);
+	fmgr_info(ag->aggtransfn, &st->transfn);
+	fmgr_info_set_expr((Node *) transfnexpr, &st->transfn);
+	st->strict = st->transfn.fn_strict;
+	st->tfc = palloc0(SizeForFunctionCallInfo(ntrans));
+	InitFunctionCallInfoData(*st->tfc, &st->transfn, ntrans, ref->inputcollid, (Node *) ex->gas, NULL);
+	st->ndirect = list_length(ref->aggdirectargs);
+	if (OidIsValid(ag->aggfinalfn))
+	{
+		st->has_final = true;
+		st->nfinal = ag->aggfinalextra ? numArguments + 1 : st->ndirect + 1;
+		build_aggregate_finalfn_expr(inputTypes, st->nfinal, st->transtype, ref->aggtype, ref->inputcollid, ag->aggfinalfn,
+									 &finalfnexpr);
+		fmgr_info(ag->aggfinalfn, &st->finalfn);
+		fmgr_info_set_expr((Node *) finalfnexpr, &st->finalfn);
+		st->ffc = palloc0(SizeForFunctionCallInfo(st->nfinal));
+		InitFunctionCallInfoData(*st->ffc, &st->finalfn, st->nfinal, ref->inputcollid, (Node *) ex->gas, NULL);
+	}
+	{
+		Datum		txt = SysCacheGetAttr(AGGFNOID, tup, Anum_pg_aggregate_agginitval, &st->initnull);
+
+		if (!st->initnull)
+		{
+			Oid			infn,
+						ioparam;
+
+			getTypeInputInfo(st->transtype, &infn, &ioparam);
+			st->initval = OidInputFunctionCall(infn, TextDatumGetCString(txt), ioparam, -1);
+		}
+	}
+	ReleaseSysCache(tup);
+	foreach_ptr(Node, d, ref->aggdirectargs)
+	{
+		st->dir[k] = gen_eval_once(ex, ExecInitExpr((Expr *) d, EXPR_PARENT(ex)), exprType(d), &st->dirnull[k]);
+		k++;
+	}
+	for (k = 0; k < g->nargs; k++)
+	{
+		const SiftAggGenArg *ar2 = &g->arg[k];
+
+		if (ar2->nleaves == 0)
+			st->argk[k] = gen_eval_once(ex, ExecInitExpr((Expr *) ar2->expr, EXPR_PARENT(ex)), ar2->typid, &st->argknull[k]);
+		else if (ar2->expr)
+			st->argx[k] = ExecInitExpr((Expr *) ar2->expr, EXPR_PARENT(ex));
+	}
+	st->cx = CreateStandaloneExprContext();
+	st->pertrans.aggref = ref;
+	st->pertrans.aggshared = false;
+	st->peragg.aggref = ref;
+	st->peragg.transno = 0;
+	if (g->distinct)
+	{
+		TypeCacheEntry *tc = lookup_type_cache(g->arg[g->darg].typid, TYPECACHE_CMP_PROC_FINFO | TYPECACHE_EQ_OPR_FINFO);
+
+		st->cmp = &tc->cmp_proc_finfo;
+		st->eq = &tc->eq_opr_finfo;
+	}
+	if (g->ordered)
+	{
+		TupleDesc	desc = CreateTemplateTupleDesc(2);
+		AttrNumber	att[1] = {1};
+		Oid			ops[1] = {Int4LessOperator},
+					coll[1] = {InvalidOid};
+		bool		nulls[1] = {false};
+
+		TupleDescInitEntry(desc, 1, "gid", INT4OID, -1, 0);
+		TupleDescInitEntry(desc, 2, "val", g->arg[0].typid, -1, 0);
+		st->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+		st->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+		st->sort = tuplesort_begin_heap(desc, 1, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_NONE);
+	}
+	return st;
+}
+
+/* the generic aggregates of the spec, ready to run (the scan's context, after the expression context exists) */
+static void
+gen_open(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	ex->gst = palloc0(Max(s->naggs, 1) * sizeof(GenSt *));
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (s->agg[ai].kind == SAA_GEN)
+		{
+			if (ex->gas == NULL)
+			{
+				ex->gas = makeNode(AggState);
+				ex->gas->tmpcontext = ex->lutcx;
+				ex->gres = AllocSetContextCreate(ex->cxt, "sift agg results", ALLOCSET_DEFAULT_SIZES);
+			}
+			ex->gst[ai] = gen_new(ex, &s->agg[ai]);
+		}
+	MemoryContextSwitchTo(old);
+}
+
+static void
+gen_close(AggExec *ex)
+{
+	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
+		if (ex->gst[ai])
+		{
+			if (ex->gst[ai]->sort)
+				tuplesort_end(ex->gst[ai]->sort);
+			FreeExprContext(ex->gst[ai]->cx, true);
+		}
+}
+
+/* a leaf value as a Datum of the leaf's type, in the current memory context */
+static Datum
+gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull)
+{
+	*isnull = v->isnull && v->isnull[i];
+	if (*isnull)
+		return (Datum) 0;
+	switch (l->vtype)
+	{
+		case SCV_I32:
+			return leaf_datum(l->typid, ((const int32 *) v->data)[i]);
+		case SCV_I64:
+			if (l->typid == NUMERICOID)
+				return NumericGetDatum(int64_div_fast_to_numeric(((const int64 *) v->data)[i], l->scale));
+			return Int64GetDatum(((const int64 *) v->data)[i]);
+		case SCV_F64:
+			return l->typid == FLOAT4OID ? Float4GetDatum((float4) ((const double *) v->data)[i]) :
+				Float8GetDatum(((const double *) v->data)[i]);
+		case SCV_CODE:
+			{
+				uint32		code = ((const uint32 *) v->data)[i];
+
+				return PointerGetDatum(cstring_to_text_with_len(v->dict->bytes + v->dict->off[code],
+																v->dict->off[code + 1] - v->dict->off[code]));
+			}
+	}
+	return (Datum) 0;
+}
+
+/* the aggregated arguments of tuple j */
+static void
+gen_args(AggExec *ex, GenSt *st, const GenIn *in, int j, Datum *args, bool *nulls)
+{
+	const SiftAggGen *g = st->g;
+
+	for (int k = 0; k < g->nargs; k++)
+	{
+		const SiftAggGenArg *ar = &g->arg[k];
+
+		if (ar->nleaves == 0)
+		{
+			args[k] = st->argk[k];
+			nulls[k] = st->argknull[k];
+		}
+		else if (ar->expr == NULL)
+			args[k] = gen_leaf_value(&ex->lay->leaf[ar->leaf[0]], in->vec[k][0], in->idx[k][0][j], &nulls[k]);
+		else
+		{
+			for (int p = 0; p < ar->nleaves; p++)
+			{
+				bool		isnull;
+				Datum		d = gen_leaf_value(&ex->lay->leaf[ar->leaf[p]], in->vec[k][p], in->idx[k][p][j], &isnull);
+
+				bind_param(ex, p, d, isnull);
+			}
+			args[k] = ExecEvalExprSwitchContext(st->argx[k], ex->lutcx, &nulls[k]);
+		}
+	}
+}
+
+/* initialize_aggregate */
+static void
+gen_state_init(GenSt *st, AggAcc *acc, uint32 g)
+{
+	acc->nf[g] = GEN_INIT;
+	if (st->initnull)
+		acc->nf[g] |= GEN_NULL | (st->strict ? GEN_NOVAL : 0);
+	else
+	{
+		MemoryContext old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
+
+		acc->v[g] = datumCopy(st->initval, st->tbyval, st->tlen);
+		MemoryContextSwitchTo(old);
+	}
+}
+
+/* advance_transition_function: the transition function on one input; its temporary memory is the scan's per-tuple memory */
+static void
+gen_advance(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls)
+{
+	FunctionCallInfo fc = st->tfc;
+	int			nargs = st->g->nargs;
+	uint8		f;
+	Datum		nv,
+				ov;
+	MemoryContext old;
+
+	if (!(acc->nf[g] & GEN_INIT))
+		gen_state_init(st, acc, g);
+	f = acc->nf[g];
+	if (st->strict)
+	{
+		for (int k = 0; k < nargs; k++)
+			if (nulls[k])
+				return;
+		if (f & GEN_NOVAL)
+		{
+			old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
+			acc->v[g] = datumCopy(args[0], st->tbyval, st->tlen);
+			MemoryContextSwitchTo(old);
+			acc->nf[g] = f & ~(GEN_NOVAL | GEN_NULL);
+			return;
+		}
+		if (f & GEN_NULL)
+			return;
+	}
+	ov = acc->v[g];
+	fc->args[0].value = ov;
+	fc->args[0].isnull = (f & GEN_NULL) != 0;
+	for (int k = 0; k < nargs; k++)
+	{
+		fc->args[k + 1].value = args[k];
+		fc->args[k + 1].isnull = nulls[k];
+	}
+	fc->isnull = false;
+	ex->gas->curpertrans = &st->pertrans;
+	ex->gas->curperagg = NULL;
+	ex->gas->curaggcontext = st->cx;
+	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+	nv = FunctionCallInvoke(fc);
+	MemoryContextSwitchTo(old);
+	/* ExecAggCopyTransValue: a new pass-by-reference state is copied into the aggregate's memory, the old one freed */
+	if (!st->tbyval && DatumGetPointer(nv) != DatumGetPointer(ov))
+	{
+		if (!fc->isnull)
+		{
+			old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
+			if (!(DatumIsReadWriteExpandedObject(nv, false, st->tlen) &&
+				  MemoryContextGetParent(DatumGetEOHP(nv)->eoh_context) == CurrentMemoryContext))
+				nv = datumCopy(nv, st->tbyval, st->tlen);
+			MemoryContextSwitchTo(old);
+		}
+		if (!(f & GEN_NULL))
+		{
+			if (DatumIsReadWriteExpandedObject(ov, false, st->tlen))
+				DeleteExpandedObject(ov);
+			else
+				pfree(DatumGetPointer(ov));
+		}
+	}
+	acc->v[g] = nv;
+	acc->nf[g] = (f & ~GEN_NULL) | (fc->isnull ? GEN_NULL : 0);
+}
+
+/* finalize_aggregate, once per group; the result lives as long as the scan */
+static void
+gen_final(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g)
+{
+	uint8		f;
+	Datum		res;
+	bool		rnull;
+	MemoryContext old;
+
+	if (!(acc->nf[g] & GEN_INIT))
+		gen_state_init(st, acc, g);
+	f = acc->nf[g];
+	old = MemoryContextSwitchTo(ex->gres);
+	if (!st->has_final)
+	{
+		res = acc->v[g];
+		rnull = (f & GEN_NULL) != 0;
+	}
+	else
+	{
+		FunctionCallInfo fc = st->ffc;
+		bool		anynull = (f & GEN_NULL) != 0;
+
+		ex->gas->curperagg = &st->peragg;
+		ex->gas->curpertrans = NULL;
+		ex->gas->curaggcontext = st->cx;
+		fc->args[0].value = MakeExpandedObjectReadOnly(acc->v[g], anynull, st->tlen);
+		fc->args[0].isnull = anynull;
+		for (int i = 1; i < st->nfinal; i++)
+		{
+			fc->args[i].value = i <= st->ndirect ? st->dir[i - 1] : (Datum) 0;
+			fc->args[i].isnull = i <= st->ndirect ? st->dirnull[i - 1] : true;
+			anynull |= fc->args[i].isnull;
+		}
+		if (st->finalfn.fn_strict && anynull)
+		{
+			res = (Datum) 0;
+			rnull = true;
+		}
+		else
+		{
+			fc->isnull = false;
+			res = FunctionCallInvoke(fc);
+			rnull = fc->isnull;
+		}
+	}
+	if (!rnull && !st->rbyval)
+		res = datumCopy(res, st->rbyval, st->rlen);
+	MemoryContextSwitchTo(old);
+	acc->r[g] = res;
+	acc->nf[g] = f | GEN_DONE | (rnull ? GEN_RNULL : 0);
+}
+
+/* the tuples of the chunk: DISTINCT collects the pairs, WITHIN GROUP sorts the values by group, the others advance the states */
+static void
+gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	GenSt	   *st = ex->gst[ai];
+	const SiftAggGen *g = st->g;
+	AggAcc	   *acc = &ex->acc[ai];
+	GenIn		in;
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+	MemoryContext old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+
+	for (int k = 0; k < g->nargs; k++)
+		for (int p = 0; p < g->arg[k].nleaves; p++)
+		{
+			in.vec[k][p] = get_vec(ex, g->arg[k].leaf[p]);
+			gather_idx(ex, g->arg[k].leaf[p], nsel, &in.idx[k][p]);
+		}
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		gid = ex->gid[j];
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		gen_args(ex, st, &in, j, args, nulls);
+		if (g->ordered)
+		{
+			if (!nulls[0])
+			{
+				if (acc->i[gid] == 0)
+					acc->i[gid] = ++st->nsid;
+				ExecClearTuple(st->put);
+				st->put->tts_values[0] = Int32GetDatum((int32) (acc->i[gid] - 1));
+				st->put->tts_values[1] = args[0];
+				st->put->tts_isnull[0] = st->put->tts_isnull[1] = false;
+				ExecStoreVirtualTuple(st->put);
+				tuplesort_puttupleslot(st->sort, st->put);
+			}
+		}
+		else if (g->distinct)
+		{
+			bool		dn = nulls[g->darg];
+
+			if (!(st->strict && memchr(nulls, true, g->nargs)))
+			{
+				uint32		id = 0;
+
+				if (!dn)
+				{
+					MemoryContextSwitchTo(ex->tcxt);
+					id = ot_id(&ex->aot[ai], args[g->darg]);
+					MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+				}
+				dset_add(ex, &ex->dset[ai], gid, id);
+			}
+		}
+		else
+			gen_advance(ex, st, acc, gid, args, nulls);
+		ResetExprContext(ex->lutcx);
+	}
+	MemoryContextSwitchTo(old);
+}
+
+typedef struct GenPair
+{
+	uint32		g;
+	uint32		id;
+} GenPair;
+
+typedef struct GenSortArg
+{
+	GenSt	   *st;
+	const OutTable *ot;
+	Oid			collid;
+} GenSortArg;
+
+/* by group, then the type's btree order (NULL last), then the id: PostgreSQL sorts a DISTINCT aggregate's input this way */
+static int
+gen_pair_cmp(const void *pa, const void *pb, void *arg)
+{
+	const GenPair *a = pa,
+			   *b = pb;
+	const GenSortArg *sa = arg;
+	int32		c;
+
+	if (a->g != b->g)
+		return a->g < b->g ? -1 : 1;
+	if (a->id == 0 || b->id == 0)
+		return a->id == b->id ? 0 : a->id == 0 ? 1 : -1;
+	c = DatumGetInt32(FunctionCall2Coll(sa->st->cmp, sa->collid, sa->ot->val[a->id - 1], sa->ot->val[b->id - 1]));
+	if (c != 0)
+		return c;
+	return a->id < b->id ? -1 : 1;
+}
+
+/* DISTINCT: the distinct values of each group go through the transition function, in order, the first of a run of equal ones only */
+static void
+gen_flush_distinct(AggExec *ex, int ai)
+{
+	GenSt	   *st = ex->gst[ai];
+	const DSet *d = &ex->dset[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	GenSortArg	sa = {st, &ex->aot[ai], ((Aggref *) st->g->aggref)->inputcollid};
+	GenPair    *pr = palloc(Max(d->n, 1) * sizeof(GenPair));
+	uint64		n = 0;
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+	int			darg = st->g->darg;
+
+	for (int k = 0; k < st->g->nargs; k++)
+	{
+		args[k] = st->argk[k];
+		nulls[k] = st->argknull[k];
+	}
+	for (uint64 i = 0; i < d->cap; i++)
+		if (d->slot[i])
+			pr[n++] = (GenPair) {(d->slot[i] >> 32) & 0x7fffffff, (uint32) d->slot[i]};
+	qsort_arg(pr, n, sizeof(GenPair), gen_pair_cmp, &sa);
+	for (uint64 i = 0; i < n; i++)
+	{
+		Datum		v = pr[i].id ? ex->aot[ai].val[pr[i].id - 1] : (Datum) 0;
+
+		if (i > 0 && pr[i - 1].g == pr[i].g)
+		{
+			if (pr[i].id == 0 && pr[i - 1].id == 0)
+				continue;
+			if (pr[i].id != 0 && pr[i - 1].id != 0 &&
+				DatumGetBool(FunctionCall2Coll(st->eq, sa.collid, ex->aot[ai].val[pr[i - 1].id - 1], v)))
+				continue;
+		}
+		args[darg] = v;
+		nulls[darg] = pr[i].id == 0;
+		gen_advance(ex, st, acc, pr[i].g, args, nulls);
+		ResetExprContext(ex->lutcx);
+	}
+	pfree(pr);
+}
+
+/* WITHIN GROUP: the sorted values of a group go through the transition function, then the final function; the state is freed */
+static void
+gen_flush_ordered(AggExec *ex, int ai)
+{
+	GenSt	   *st = ex->gst[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	uint32		cur = UINT32_MAX,
+				ngr = ex->hash ? ex->ngroups : ex->gcap,
+			   *sid2g = palloc(Max(st->nsid, 1) * sizeof(uint32));
+	bool		isnull,
+				nulls[1] = {false};
+
+	for (uint32 g = 0; g < ngr; g++)
+		if (acc->i[g])
+			sid2g[acc->i[g] - 1] = g;
+	tuplesort_performsort(st->sort);
+	while (tuplesort_gettupleslot(st->sort, true, false, st->get, NULL))
+	{
+		uint32		g = sid2g[DatumGetInt32(slot_getattr(st->get, 1, &isnull))];
+		Datum		v = slot_getattr(st->get, 2, &isnull);
+
+		if (g != cur && cur != UINT32_MAX)
+		{
+			gen_final(ex, st, acc, cur);
+			acc->v[cur] = (Datum) 0;
+			ReScanExprContext(st->cx);
+		}
+		cur = g;
+		gen_advance(ex, st, acc, g, &v, nulls);
+		ResetExprContext(ex->lutcx);
+	}
+	if (cur != UINT32_MAX)
+	{
+		gen_final(ex, st, acc, cur);
+		acc->v[cur] = (Datum) 0;
+		ReScanExprContext(st->cx);
+	}
+	tuplesort_end(st->sort);
+	st->sort = NULL;
+	pfree(sid2g);
+}
+
+/* the scan has ended: the aggregates that kept their values until now give them to the transition functions */
+static void
+gen_flush(AggExec *ex)
+{
+	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
+		if (ex->gst[ai] && ex->gst[ai]->g->distinct)
+			gen_flush_distinct(ex, ai);
+		else if (ex->gst[ai] && ex->gst[ai]->g->ordered)
+			gen_flush_ordered(ex, ai);
+}
+
+/* the final function of every group that is listed and was not finished */
+static void
+gen_finish(AggExec *ex)
+{
+	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
+		if (ex->gst[ai])
+			for (uint32 i = 0; i < ex->nglist; i++)
+				if (!(ex->acc[ai].nf[ex->glist[i]] & GEN_DONE))
+					gen_final(ex, ex->gst[ai], &ex->acc[ai], ex->glist[i]);
+}
+
 /* true when the number is new in the group: distinct numbers have one id, a (group, id) pair is counted once */
 static bool
 num_first(AggExec *ex, int ai, uint32 g, sift_i128 v)
@@ -3589,6 +4264,9 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_M_SUM:
 		case SAA_M_AVG:
 			mapped_update(ex, ai, ok, nsel);
+			break;
+		case SAA_GEN:
+			gen_update(ex, ai, ok, nsel);
 			break;
 		default:
 			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
@@ -4407,6 +5085,11 @@ table_init(AggExec *ex)
 			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
 		if (a->num.n && (a->kind == SAA_COUNT_DISTINCT || a->distinct))
 			idmap_init(&ex->amap[i]);
+		if (a->kind == SAA_GEN && a->gen->distinct)
+		{
+			ot_init_image(&ex->aot[i], a->gen->arg[a->gen->darg].typid);
+			continue;
+		}
 		if (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG)
 			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
@@ -5327,6 +6010,7 @@ run_scan(AggExec *ex)
 		scan_items(ex);
 	arms_flush(ex);
 	osa_finish_all(ex);
+	gen_flush(ex);
 	if (ex->par)
 		par_finish(ex);
 	if (ordered && ex->next_lane != SIFT_AGG_LANES)
@@ -5424,6 +6108,9 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_M_SUM:
 		case SAA_M_AVG:
 			return mapped_sum_datum(ex, a, ai, g, isnull);
+		case SAA_GEN:
+			*isnull = (acc->nf[g] & GEN_RNULL) != 0;
+			return *isnull ? (Datum) 0 : acc->r[g];
 		case SAA_O_SUM_I64:
 			*isnull = acc->n[g] == 0;
 			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
@@ -5502,6 +6189,7 @@ agg_next(ScanState *node)
 		empty_set_groups(ex->gtab);
 		mapped_finish(ex->gtab);
 		list_groups(ex->gtab);
+		gen_finish(ex->gtab);
 		ex->n_groups = ex->gtab->nglist;
 	}
 	t = ex->gtab;
@@ -5569,6 +6257,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		register_key(ex, j);
 	register_combos(ex);
 	prune_init(ex);
+	gen_open(ex);
 	MemoryContextSwitchTo(old);
 }
 
@@ -5616,6 +6305,7 @@ agg_end(CustomScanState *node)
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
 			tuplesort_end(ex->osa[i]->sort);
+	gen_close(ex);
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
