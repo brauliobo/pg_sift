@@ -369,3 +369,118 @@ Not started: the oracle gain (-30% of the join class) does not pay for the risk 
 branch: `add_parallel_count` passed an uninitialized `AggClauseCosts` to `get_agg_clause_costs`, so the parallel count was priced with stack
 garbage (889 or 2684 for the same plan depending on the stack) and sometimes lost to a partial aggregate over a parallel scan. The late-stretch
 commit moved the stack. Fixed by zeroing the struct (commit `planner: count:`).
+
+### 10.1 Measurements of the follow-up
+
+User cycles and instructions per transaction, mean +- standard error of 5 interleaved runs of one backend (host load 6 to 22), main = `b6e7d3b` and the gated build; a ratio above 1.02 that is more than two standard errors is marked. Rows with a standard error of a third of the mean or more had an outlier run in one of the builds; the ones that mattered were measured again (section 10).
+
+#### Prepared ranked queries with a filter of 0.1, 2.3, 10 and 50% of the rows, by plan cache mode (`ab.sh filter_matrix`)
+
+| class | filter | plan cache | main cycles | gate cycles | cycles ratio | main instr | gate instr | instr ratio |
+|---|---|---|---|---|---|---|---|---|
+| and | 0.1% | auto | 920k +- 94k | 635k +- 39k | 0.69 | 1556k +- 13k | 1153k +- 6k | 0.74 |
+| and | 0.1% | custom | 1027k +- 84k | 847k +- 52k | 0.82 | 1918k +- 10k | 1523k +- 9k | 0.79 |
+| and | 0.1% | generic | 948k +- 61k | 587k +- 41k | 0.62 | 1567k +- 11k | 1161k +- 3k | 0.74 |
+| and | 10% | auto | 756k +- 26k | 737k +- 43k | 0.97 | 1367k +- 1k | 1365k +- 5k | 1.00 |
+| and | 10% | custom | 1227k +- 65k | 1098k +- 44k | 0.89 | 2205k +- 6k | 1833k +- 21k | 0.83 |
+| and | 10% | generic | 761k +- 46k | 716k +- 34k | 0.94 | 1357k +- 9k | 1369k +- 1k | 1.01 |
+| and | 2.3% | auto | 897k +- 85k | 801k +- 25k | 0.89 | 1451k +- 11k | 1283k +- 8k | 0.88 |
+| and | 2.3% | custom | 990k +- 250k | 1147k +- 67k | 1.16 | 1634k +- 409k | 1702k +- 1k | 1.04 |
+| and | 2.3% | generic | 981k +- 37k | 649k +- 167k | 0.66 | 1459k +- 7k | 1041k +- 260k | 0.71 |
+| and | 50% | auto | 760k +- 25k | 719k +- 30k | 0.95 | 1269k +- 11k | 1278k +- 6k | 1.01 |
+| and | 50% | custom | 1184k +- 24k | 961k +- 43k | 0.81 | 1980k +- 7k | 1643k +- 2k | 0.83 |
+| and | 50% | generic | 709k +- 35k | 702k +- 44k | 0.99 | 1275k +- 5k | 1266k +- 13k | 0.99 |
+| filter | 0.1% | auto | 4168k +- 186k | 953k +- 11k | 0.23 | 8608k +- 1k | 2399k +- 11k | 0.28 |
+| filter | 0.1% | custom | 1286k +- 48k | 1201k +- 20k | 0.93 | 3143k +- 10k | 2797k +- 2k | 0.89 |
+| filter | 0.1% | generic | 4051k +- 170k | 950k +- 22k | 0.23 | 8633k +- 1k | 2383k +- 14k | 0.28 |
+| filter | 10% | auto | 2024k +- 129k | 2116k +- 108k | 1.05 | 4034k +- 15k | 4064k +- 4k | 1.01 |
+| filter | 10% | custom | 2425k +- 94k | 2501k +- 115k | 1.03 | 4842k +- 3k | 4508k +- 7k | 0.93 |
+| filter | 10% | generic | 2080k +- 168k | 2081k +- 94k | 1.00 | 4057k +- 11k | 4062k +- 3k | 1.00 |
+| filter | 2.3% | auto | 2715k +- 56k | 1458k +- 35k | 0.54 | 5276k +- 4k | 3370k +- 11k | 0.64 |
+| filter | 2.3% | custom | 1951k +- 62k | 1801k +- 52k | 0.92 | 4124k +- 5k | 3769k +- 8k | 0.91 |
+| filter | 2.3% | generic | 2727k +- 77k | 1512k +- 42k | 0.55 | 5287k +- 1k | 3367k +- 19k | 0.64 |
+| filter | 50% | auto | 1991k +- 113k | 1948k +- 98k | 0.98 | 3910k +- 14k | 3594k +- 1k | 0.92 |
+| filter | 50% | custom | 1949k +- 129k | 1975k +- 87k | 1.01 | 3984k +- 12k | 3663k +- 2k | 0.92 |
+| filter | 50% | generic | 1669k +- 66k | 1656k +- 90k | 0.99 | 3302k +- 2k | 3299k +- 5k | 1.00 |
+| or | 0.1% | auto | 18732k +- 1501k | 2451k +- 57k | 0.13 | 22119k +- 4k | 5137k +- 10k | 0.23 |
+| or | 0.1% | custom | 2421k +- 614k | 2925k +- 158k | 1.21 | 4755k +- 1189k | 5571k +- 2k | 1.17 |
+| or | 0.1% | generic | 17454k +- 1170k | 1998k +- 503k | 0.11 | 22201k +- 8k | 4124k +- 1031k | 0.19 |
+| or | 10% | auto | 5613k +- 306k | 5293k +- 315k | 0.94 | 9349k +- 8k | 9361k +- 2k | 1.00 |
+| or | 10% | custom | 5108k +- 1289k | 5682k +- 333k | 1.11 | 8198k +- 2050k | 9905k +- 6k | 1.21 |
+| or | 10% | generic | 5421k +- 348k | 5302k +- 350k | 0.98 | 9342k +- 9k | 9357k +- 1k | 1.00 |
+| or | 2.3% | auto | 8499k +- 581k | 3837k +- 174k | 0.45 | 12714k +- 11k | 7742k +- 13k | 0.61 |
+| or | 2.3% | custom | 4522k +- 213k | 4214k +- 233k | 0.93 | 8526k +- 10k | 8143k +- 10k | 0.96 |
+| or | 2.3% | generic | 8394k +- 511k | 3739k +- 222k | 0.45 | 12775k +- 5k | 7753k +- 2k | 0.61 |
+| or | 50% | auto | 3159k +- 51k | 3040k +- 53k | 0.96 | 7319k +- 2k | 7274k +- 12k | 0.99 |
+| or | 50% | custom | 3798k +- 230k | 3363k +- 122k | 0.89 | 7977k +- 14k | 7651k +- 15k | 0.96 |
+| or | 50% | generic | 3067k +- 72k | 3129k +- 146k | 1.02 | 7299k +- 6k | 7280k +- 14k | 1.00 |
+
+#### Every class and shape (`ab.sh run`; _prep: prepared statements; fixed number of seeded statements)
+
+| shape | main cycles | gate cycles | cyc ratio | main instr | gate instr | instr ratio |
+|---|---|---|---|---|---|---|
+| articles and | 938k +- 37k | 971k +- 91k | 1.03 | 1821k +- 5k | 1598k +- 3k | 0.88 |
+| articles or | 1988k +- 843k | 3360k +- 307k | 1.69 | 4398k +- 1796k | 7104k +- 9k | 1.62 |
+| articles phrase | 945k +- 27k | 946k +- 41k | 1.00 | 1986k +- 1k | 1801k +- 1k | 0.91 |
+| articles mixed | 1863k +- 61k | 1784k +- 31k | 0.96 | 3681k +- 7k | 3455k +- 5k | 0.94 |
+| articles count | 1275k +- 96k | 1237k +- 73k | 0.97 | 2162k +- 5k | 1851k +- 4k | 0.86 |
+| articles filter | 2118k +- 183k | 2036k +- 110k | 0.96 | 4254k +- 3k | 3888k +- 9k | 0.91 |
+| articles join | 5581k +- 293k | 4510k +- 281k | 0.81 | 11300k +- 6k | 8455k +- 1k | 0.75 |
+| articles term | 991k +- 45k | 1007k +- 71k | 1.02 | 2184k +- 8k | 2131k +- 3k | 0.98 |
+| articles prefix | 1591k +- 114k | 1303k +- 105k | 0.82 | 3230k +- 11k | 2406k +- 3k | 0.74 |
+| articles fuzzy | 13634k +- 335k | 4388k +- 193k | 0.32 | 38867k +- 5k | 11758k +- 3k | 0.30 |
+| articles and_prep | 797k +- 20k | 705k +- 9k | 0.89 | 1712k +- 1k | 1492k +- 2k | 0.87 |
+| articles or_prep | 2855k +- 178k | 2757k +- 36k | 0.97 | 6767k +- 4k | 6776k +- 1k | 1.00 |
+| articles phrase_prep | 975k +- 56k | 922k +- 45k | 0.95 | 1853k +- 13k | 1687k +- 5k | 0.91 |
+| articles mixed_prep | 1615k +- 80k | 1644k +- 75k | 1.02 | 3573k +- 1k | 3357k +- 10k | 0.94 |
+| articles count_prep | 694k +- 24k | 670k +- 15k | 0.97 | 1550k +- 4k | 1556k +- 2k | 1.00 |
+| articles filter_prep | 3232k +- 123k | 1656k +- 64k | 0.51 | 5445k +- 6k | 3452k +- 0k | 0.63 |
+| articles join_prep | 5927k +- 411k | 4683k +- 371k | 0.79 | 11177k +- 3k | 8323k +- 5k | 0.74 |
+| articles term_prep | 588k +- 20k | 577k +- 8k | 0.98 | 1900k +- 1k | 1876k +- 16k | 0.99 |
+| articles prefix_prep | 951k +- 40k | 969k +- 36k | 1.02 | 2170k +- 9k | 2175k +- 4k | 1.00 |
+| articles fuzzy_prep | 3766k +- 991k | 4900k +- 263k | 1.30 | 9261k +- 2315k | 11512k +- 9k | 1.24 |
+| articles ab_and_filter_prep | 772k +- 27k | 658k +- 11k | 0.85 | 1472k +- 1k | 1306k +- 4k | 0.89 |
+| places top p1 | 811k +- 22k | 745k +- 30k | 0.92 | 1310k +- 4k | 1174k +- 8k | 0.90 |
+| places top p2 | 764k +- 47k | 700k +- 50k | 0.92 | 1433k +- 4k | 1313k +- 8k | 0.92 |
+| places top p3 | 505k +- 44k | 443k +- 14k | 0.88 | 1037k +- 2k | 906k +- 18k | 0.87 |
+| places top p4 | 630k +- 40k | 516k +- 15k | 0.82 | 1123k +- 1k | 903k +- 9k | 0.80 |
+| places top w1 | 365k +- 11k | 293k +- 15k | 0.80 | 737k +- 2k | 501k +- 14k | 0.68 |
+| places top a2 | 590k +- 60k | 475k +- 35k | 0.81 | 962k +- 3k | 722k +- 12k | 0.75 |
+| places top a2s | 616k +- 50k | 497k +- 34k | 0.81 | 950k +- 1k | 725k +- 7k | 0.76 |
+| places top a3 | 579k +- 55k | 477k +- 47k | 0.82 | 1130k +- 3k | 764k +- 2k | 0.68 |
+| places top x2 | 677k +- 59k | 604k +- 45k | 0.89 | 962k +- 10k | 725k +- 4k | 0.75 |
+| places filter p1 | 3832k +- 200k | 723k +- 18k | 0.19 | 12087k +- 2k | 1916k +- 9k | 0.16 |
+| places filter p2 | 1446k +- 143k | 826k +- 67k | 0.57 | 2855k +- 15k | 1908k +- 2k | 0.67 |
+| places filter p3 | 724k +- 29k | 686k +- 45k | 0.95 | 1720k +- 4k | 1465k +- 7k | 0.85 |
+| places filter p4 | 781k +- 59k | 647k +- 35k | 0.83 | 1570k +- 3k | 1215k +- 12k | 0.77 |
+| places filter w1 | 744k +- 99k | 539k +- 156k | 0.72 | 1078k +- 4k | 634k +- 159k | 0.59 |
+| places filter a2 | 928k +- 103k | 672k +- 101k | 0.72 | 1283k +- 4k | 907k +- 6k | 0.71 |
+| places filter a2s | 636k +- 28k | 488k +- 13k | 0.77 | 1290k +- 3k | 927k +- 6k | 0.72 |
+| places filter a3 | 747k +- 25k | 579k +- 16k | 0.78 | 1442k +- 3k | 913k +- 2k | 0.63 |
+| places filter x2 | 879k +- 115k | 812k +- 99k | 0.92 | 1262k +- 11k | 889k +- 6k | 0.70 |
+| places count p1 | 414k +- 70k | 373k +- 80k | 0.90 | 658k +- 11k | 537k +- 6k | 0.82 |
+| places count p2 | 256k +- 21k | 264k +- 27k | 1.03 | 642k +- 41k | 541k +- 16k | 0.84 |
+| places count p3 | 210k +- 12k | 196k +- 13k | 0.93 | 503k +- 16k | 399k +- 6k | 0.79 |
+| places count p4 | 352k +- 21k | 284k +- 19k | 0.81 | 692k +- 6k | 477k +- 3k | 0.69 |
+| places count w1 | 267k +- 21k | 229k +- 29k | 0.86 | 572k +- 3k | 398k +- 2k | 0.70 |
+| places count a2 | 330k +- 8k | 274k +- 12k | 0.83 | 797k +- 1k | 534k +- 3k | 0.67 |
+| places count a2s | 352k +- 21k | 301k +- 44k | 0.86 | 745k +- 4k | 510k +- 3k | 0.68 |
+| places count a3 | 423k +- 28k | 313k +- 14k | 0.74 | 1009k +- 3k | 588k +- 2k | 0.58 |
+| places count x2 | 403k +- 32k | 321k +- 38k | 0.80 | 834k +- 4k | 540k +- 2k | 0.65 |
+| shape fc_end5 | 276k +- 88k | 304k +- 36k | 1.10 | 588k +- 153k | 634k +- 54k | 1.08 |
+| shape fc_grp7 | 808k +- 79k | 872k +- 69k | 1.08 | 1398k +- 29k | 1393k +- 12k | 1.00 |
+| shape fc_last70 | 1865k +- 167k | 1755k +- 149k | 0.94 | 4979k +- 28k | 4869k +- 29k | 0.98 |
+| shape fc_scat30 | 454k +- 17k | 455k +- 55k | 1.00 | 1258k +- 24k | 1104k +- 57k | 0.88 |
+| shape fc_scat5 | 800k +- 204k | 910k +- 39k | 1.14 | 1405k +- 351k | 1516k +- 45k | 1.08 |
+| shape fc_start5 | 654k +- 45k | 566k +- 11k | 0.87 | 1180k +- 19k | 1028k +- 7k | 0.87 |
+| shape fk_every | 847k +- 85k | 820k +- 88k | 0.97 | 1840k +- 13k | 1849k +- 13k | 1.00 |
+| shape fk_g0 | 573k +- 44k | 435k +- 111k | 0.76 | 1314k +- 52k | 1015k +- 257k | 0.77 |
+| shape fk_g1 | 1801k +- 45k | 336k +- 138k | 0.19 | 4275k +- 56k | 592k +- 242k | 0.14 |
+| shape fk_g2 | 2471k +- 301k | 376k +- 37k | 0.15 | 7347k +- 22k | 989k +- 24k | 0.13 |
+| shape fk_g3 | 2690k +- 138k | 348k +- 17k | 0.13 | 10122k +- 62k | 872k +- 16k | 0.09 |
+| shape fk_g4 | 1418k +- 36k | 463k +- 32k | 0.33 | 3298k +- 70k | 959k +- 42k | 0.29 |
+| shape fk_g5 | 2849k +- 260k | 333k +- 90k | 0.12 | 6237k +- 80k | 744k +- 194k | 0.12 |
+| shape fk_g6 | 3582k +- 311k | 458k +- 71k | 0.13 | 9371k +- 22k | 1101k +- 46k | 0.12 |
+| shape fk_g7 | 632k +- 11k | 757k +- 91k | 1.20 | 2309k +- 44k | 2262k +- 33k | 0.98 |
+| shape fk_g8 | 1646k +- 127k | 407k +- 33k | 0.25 | 5352k +- 30k | 1265k +- 8k | 0.24 |
+| shape fk_g9 | 2905k +- 166k | 383k +- 27k | 0.13 | 8351k +- 41k | 1038k +- 9k | 0.12 |
