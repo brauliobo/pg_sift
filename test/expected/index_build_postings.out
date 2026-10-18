@@ -30,8 +30,8 @@ BEGIN
 	RETURN NEXT;
 END
 $f$;
--- 100k documents, Zipf-like vocabulary of 20k words, a term in every
--- document (GROUPED), repeated words (tf escapes, tf and dl saturation)
+-- 40k documents (4 superblocks: build_segments = 3 gets three segments, the groups of a GROUPED term are several), Zipf-like vocabulary of 20k
+-- words, a term in every document (GROUPED), repeated words (tf escapes, tf and dl saturation)
 SELECT setseed(0.42);
  setseed 
 ---------
@@ -42,27 +42,27 @@ CREATE TABLE z (id int, body text);
 INSERT INTO z
 SELECT i, 'common ' || (SELECT string_agg('w' || floor(exp(random() * ln(20000)))::int, ' ')
 						FROM generate_series(1, 1 + (random() * 60)::int + i % 2))
-FROM generate_series(1, 100000) i;
+FROM generate_series(1, 40000) i;
 UPDATE z SET body = body || repeat(' rep', id % 40) WHERE id % 97 = 0;
 UPDATE z SET body = body || repeat(' many', 300) || repeat(' x', 70000) WHERE id = 5000;
 VACUUM FULL z;
 CREATE INDEX z_idx ON z USING sift (body);
 SELECT gen, ndocs, sum_dl, nterms, sb_lo, sb_hi FROM sift.segments('z_idx');
- gen | ndocs  | sum_dl  | nterms | sb_lo | sb_hi 
------+--------+---------+--------+-------+-------
-   1 | 100000 | 3333204 |  20003 |     0 |     9
+ gen | ndocs | sum_dl  | nterms | sb_lo | sb_hi 
+-----+-------+---------+--------+-------+-------
+   1 | 40000 | 1367871 |  20000 |     0 |     3
 (1 row)
 
 SELECT * FROM sift.segment_postings('z_idx');
  gen | df_class | terms | postings | inline_terms | list_terms | grouped_terms | codec_bytes | sidecar_bytes |  bits_per_posting  
 -----+----------+-------+----------+--------------+------------+---------------+-------------+---------------+--------------------
-   1 | 1        |     2 |        2 |            2 |          0 |             0 |           0 |             0 |                  0
-   1 | 3-15     |  1514 |    19689 |            0 |       1514 |             0 |       50966 |            16 | 20.714916958707907
-   1 | 16-127   | 15977 |   639891 |            0 |      15977 |             0 |     1220566 |          2406 | 15.289754036234296
-   1 | 128-1K   |  2203 |   666076 |            0 |       2203 |             0 |      913852 |         51801 | 11.598111927167471
-   1 | 1K-8K    |   270 |   658286 |            0 |        270 |             0 |      641482 |         90193 |  8.891879821232717
-   1 | 8K-64K   |    34 |   643801 |            0 |          0 |            34 |      653272 |        150910 |  9.992926385637798
-   1 | 64K-512K |     3 |   245309 |            0 |          0 |             3 |       58644 |         65691 |    4.0548043488009
+   1 | 1        |    24 |       24 |           24 |          0 |             0 |           0 |             0 |                  0
+   1 | 2        |   109 |      218 |          109 |          0 |             0 |           0 |             0 |                  0
+   1 | 3-15     | 11374 |   104453 |            0 |      11374 |             0 |      283615 |            81 | 21.728126525805866
+   1 | 16-127   |  7502 |   276318 |            0 |       7502 |             0 |      489777 |          3030 |  14.26782185742514
+   1 | 128-1K   |   871 |   266029 |            0 |        871 |             0 |      319703 |         27838 | 10.451221483372114
+   1 | 1K-8K    |   107 |   264571 |            0 |        107 |             0 |      212518 |         41036 |  7.666872030570244
+   1 | 8K-64K   |    13 |   233989 |            0 |          0 |            13 |      101548 |         63124 |  5.630076627533773
 (7 rows)
 
 SELECT sift.verify('z_idx');
@@ -74,16 +74,16 @@ SELECT sift.verify('z_idx');
 SELECT * FROM roundtrip('z_idx', 'SELECT ctid AS tid, body FROM z');
  postings | missing | extra | differ 
 ----------+---------+-------+--------
-  2873054 |       0 |     0 |      0
+  1145602 |       0 |     0 |      0
 (1 row)
 
 -- Bounded memory: 1 MB spills sorted runs that merge into one segment
 SET maintenance_work_mem = '1MB';
 REINDEX INDEX z_idx;
 SELECT gen, ndocs, sum_dl, nterms FROM sift.segments('z_idx');
- gen | ndocs  | sum_dl  | nterms 
------+--------+---------+--------
-   1 | 100000 | 3333204 |  20003
+ gen | ndocs | sum_dl  | nterms 
+-----+-------+---------+--------
+   1 | 40000 | 1367871 |  20000
 (1 row)
 
 SELECT sift.verify('z_idx');
@@ -95,17 +95,17 @@ SELECT sift.verify('z_idx');
 SELECT * FROM roundtrip('z_idx', 'SELECT ctid AS tid, body FROM z');
  postings | missing | extra | differ 
 ----------+---------+-------+--------
-  2873054 |       0 |     0 |      0
+  1145602 |       0 |     0 |      0
 (1 row)
 
 -- Runs and forced heap ranges: several segments
 CREATE INDEX z_seg ON z USING sift (body) WITH (build_segments = 3);
 SELECT gen, ndocs, sum_dl, nterms, sb_lo, sb_hi FROM sift.segments('z_seg');
- gen | ndocs | sum_dl  | nterms | sb_lo | sb_hi 
------+-------+---------+--------+-------+-------
-   1 | 33637 | 1085217 |  19990 |     0 |     3
-   2 | 33434 | 1087106 |  19989 |     3 |     6
-   3 | 32929 | 1160881 |  19994 |     6 |     9
+ gen | ndocs | sum_dl | nterms | sb_lo | sb_hi 
+-----+-------+--------+--------+-------+-------
+   1 | 13429 | 432802 |  19386 |     0 |     1
+   2 | 13328 | 433805 |  19336 |     1 |     2
+   3 | 13243 | 501264 |  19296 |     2 |     3
 (3 rows)
 
 SELECT sift.verify('z_seg');
@@ -117,7 +117,7 @@ SELECT sift.verify('z_seg');
 SELECT * FROM roundtrip('z_seg', 'SELECT ctid AS tid, body FROM z');
  postings | missing | extra | differ 
 ----------+---------+-------+--------
-  2873054 |       0 |     0 |      0
+  1145602 |       0 |     0 |      0
 (1 row)
 
 RESET maintenance_work_mem;
@@ -132,7 +132,7 @@ SELECT sift.verify('z_part');
 SELECT * FROM roundtrip('z_part', 'SELECT ctid AS tid, body FROM z WHERE id % 10 = 3');
  postings | missing | extra | differ 
 ----------+---------+-------+--------
-   289915 |       0 |     0 |      0
+   115557 |       0 |     0 |      0
 (1 row)
 
 CREATE INDEX z_expr ON z USING sift ((upper(substr(body, 1, 40)) || ' Ünïcödé ' || id))
@@ -146,7 +146,7 @@ SELECT sift.verify('z_expr');
 SELECT * FROM roundtrip('z_expr', $$SELECT ctid AS tid, upper(substr(body, 1, 40)) || ' Ünïcödé ' || id AS body FROM z$$);
  postings | missing | extra | differ 
 ----------+---------+-------+--------
-   992928 |       0 |     0 |      0
+   397151 |       0 |     0 |      0
 (1 row)
 
 -- UTF-8, emoji, duplicates
