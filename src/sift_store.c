@@ -1456,7 +1456,15 @@ sw_flush(SiftStreamWriter *sw)
 static uint32
 run_cap(const SiftStreamWriter *sw)
 {
-	return Max(RUN_MAX, Min(RUN_BIG, sw->pos / SIFT_PAGE_PAYLOAD / 16));
+	uint32		share = sw->pos / SIFT_PAGE_PAYLOAD / 16;
+
+	/*
+	 * A shared stream of unknown size (a parallel build's) gives back the unused end of its last run as a hole in the file, and
+	 * the other streams are written next to it: the run is a 16th of what the stream has written, so the hole is at most that.
+	 */
+	if (sw->wt->expect == 0 && sw->wt->bulk == NULL)
+		return Min(RUN_BIG, Max(RUN_MIN, share));
+	return Max(RUN_MAX, Min(RUN_BIG, share));
 }
 
 /*
