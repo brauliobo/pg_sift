@@ -25,6 +25,8 @@ typedef struct SiftVis
 	int64		heap_pages;
 } SiftVis;
 
+/* Blocks of the table in TID space (the relation size for a heap, the virtual blocks of a sift_table) */
+extern BlockNumber sift_vis_nblocks(Relation heap);
 extern void sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot);
 extern void sift_vis_end(SiftVis *v);
 

@@ -12,12 +12,13 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
-#include "storage/procarray.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
+#include "storage/procarray.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
@@ -328,13 +329,17 @@ read_freelist(Relation index, BlockNumber blk, BlockNumber hwm, uint32 hops, int
 	return buf;
 }
 
-/* The GlobalVis horizon is the heap's: it asserts a table, not the index */
+/* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
 bool
 sift_store_removable(Relation index, FullTransactionId xid)
 {
-	Relation	heap = RelationIdGetRelation(index->rd_index->indrelid);
-	bool		removable = GlobalVisCheckRemovableFullXid(heap, xid);
+	Relation	heap;
+	bool		removable;
 
+	if (index->rd_rel->relkind != RELKIND_INDEX)
+		return GlobalVisCheckRemovableFullXid(index, xid);
+	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	removable = GlobalVisCheckRemovableFullXid(heap, xid);
 	RelationClose(heap);
 	return removable;
 }

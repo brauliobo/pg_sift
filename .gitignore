@@ -30,3 +30,4 @@ packaging/pkg/
 packaging/pg_sift/
 *.pkg.tar.*
 dist/
+pg_sift_tam--1.0.sql
