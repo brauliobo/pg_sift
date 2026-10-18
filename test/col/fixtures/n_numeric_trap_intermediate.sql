@@ -1,6 +1,6 @@
--- trap: a product of 54 digits that a floor brings back to 37: every step has to fit 128 bits, not only the result (the normal plan, same rows)
+-- trap: a product of 54 digits that a floor brings back to 37 does not fit 128 bits: PostgreSQL computes it (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

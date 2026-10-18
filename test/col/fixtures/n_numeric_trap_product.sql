@@ -1,6 +1,6 @@
--- trap: a product of 48 digits does not fit 128 bits (the normal plan, same rows)
+-- trap: a product of 48 digits does not fit 128 bits: PostgreSQL computes it (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

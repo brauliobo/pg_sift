@@ -1,0 +1,270 @@
+-- Custom Scan (SiftAgg) over the test column source: aggregates without a kernel run PostgreSQL's own transition and final functions on the
+-- decoded values (sum of float4, the variance family, bit and boolean aggregates, min/max of text, DISTINCT, string_agg, array_agg,
+-- ordered-set aggregates of any type, user aggregates). The rows are the ones of the normal plan (sift.enable_agg off); what keeps the plan is listed.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+-- the tables are tiny: the scan's start-up cost would keep the btree plans these tests are not about
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE o (id int PRIMARY KEY, store int, kind text, price int4, f8 float8, f4 float4, day date, tag varchar, items jsonb, pad text)
+	WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO o
+SELECT g, g % 7, CASE WHEN g % 5 = 0 THEN NULL ELSE (ARRAY['web', 'shop', 'phone'])[1 + g % 3] END, (g % 97) * 137 + 5,
+	   (g % 23) * 0.37, (g % 13) * 0.11, date '2024-01-01' + g % 40, CASE WHEN g % 11 = 0 THEN NULL ELSE 't' || g % 6 END,
+	   CASE WHEN g % 19 = 0 THEN NULL ELSE jsonb_build_array(
+			jsonb_build_object('category', (ARRAY['A', 'b', 'C'])[1 + g % 3], 'qty', g % 5, 'price', (g % 9) * 2.5),
+			jsonb_build_object('category', (ARRAY['A', 'b', 'C'])[1 + (g / 3) % 3], 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
+	   repeat('x', 100)
+FROM generate_series(1, 1500) g;
+CREATE INDEX o_col ON o USING sift_colstub (id, store, kind, price, f8, f4, day, tag, items) WITH (paths = 'items: []{category text, qty int4, price float8}');
+VACUUM ANALYZE o;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0;
+END $$;
+CREATE FUNCTION sq_add(acc float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE AS $$ SELECT acc + x * x $$;
+CREATE AGGREGATE sum_sq(float8) (sfunc = sq_add, stype = float8, initcond = '0');
+CREATE FUNCTION vol_add(acc float8, x float8) RETURNS float8 LANGUAGE sql VOLATILE AS $$ SELECT acc + x + 0 * random() $$;
+CREATE AGGREGATE sum_vol(float8) (sfunc = vol_add, stype = float8, initcond = '0');
+-- the plans: the aggregates are pushed with their arguments (ORDER BY in the call, hypothetical-set aggregates and floats shown as arrays too); a volatile transition function keeps the plan
+EXPLAIN (COSTS OFF) SELECT kind, stddev_samp(price), sum(f4), min(tag), bool_and(day > '2024-01-10') FROM o GROUP BY kind;
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: stddev_samp(o.price), sum(o.f4), min(o.tag), bool_and((o.day > '01-10-2024'::date))
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, string_agg(DISTINCT tag, ','), array_agg(DISTINCT day), count(DISTINCT f8) FROM o GROUP BY kind;
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: string_agg(DISTINCT o.tag, ','::text), array_agg(DISTINCT o.day), count(DISTINCT o.f8)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.25, 0.75]) WITHIN GROUP (ORDER BY price::float8 / 100), mode() WITHIN GROUP (ORDER BY tag) FROM o GROUP BY kind;
+                                                                                          QUERY PLAN                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: percentile_cont('{0.25,0.75}'::double precision[]) WITHIN GROUP (ORDER BY ((o.price)::double precision / '100'::double precision)), mode() WITHIN GROUP (ORDER BY o.tag)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, sum_sq(f8) FROM o GROUP BY kind;
+            QUERY PLAN             
+-----------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: sum_sq(o.f8)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, sum_vol(f8) FROM o GROUP BY kind;
+        QUERY PLAN         
+---------------------------
+ GroupAggregate
+   Group Key: kind
+   ->  Sort
+         Sort Key: kind
+         ->  Seq Scan on o
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, string_agg(tag, ',' ORDER BY tag) FROM o GROUP BY kind;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: string_agg(o.tag, ','::text ORDER BY o.tag)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, rank(10) WITHIN GROUP (ORDER BY store) FROM o GROUP BY kind;
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: rank(10) WITHIN GROUP (ORDER BY o.store)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, array_agg(f8) FROM o GROUP BY kind;
+              QUERY PLAN              
+--------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: array_agg(o.f8)
+(4 rows)
+
+-- numbers: sum(float4) adds in float4 in the order of the heap, the variance family accumulates in numeric (exact) or in float8
+SELECT same($$SELECT kind, round(sum(f4)::numeric, 3) AS s, round(sum(f4) FILTER (WHERE store > 2)::numeric, 3) AS sf, round(avg(f4)::numeric, 6) AS a FROM o GROUP BY kind$$) AS sum_float4;
+ sum_float4 
+------------
+ t
+(1 row)
+
+SELECT same($$SELECT kind, stddev_samp(price) AS sd, var_pop(price) AS vp, variance(store) AS vs, stddev_pop(store) AS ss, bit_and(store) AS ba, bit_or(id) AS bo FROM o GROUP BY kind$$) AS variance_exact;
+ variance_exact 
+----------------
+ t
+(1 row)
+
+SELECT same($$SELECT store, round(stddev_samp(f8)::numeric, 9) AS sd, round(corr(f8, f4)::numeric, 9) AS c, regr_count(f8, f4) AS n,
+			  round(regr_slope(f8, f4)::numeric, 9) AS slope FROM o GROUP BY store$$) AS float_stats;
+ float_stats 
+-------------
+ t
+(1 row)
+
+SELECT same($$SELECT kind, bool_and(price > 500) AS a, bool_or(tag IS NULL) AS b, every(store < 9) AS e, min(tag) AS lo, max(tag) AS hi, min(kind) AS lk FROM o GROUP BY kind$$) AS booleans_text;
+ booleans_text 
+---------------
+ t
+(1 row)
+
+-- expressions of several columns and of the unnested items
+SELECT same($$SELECT kind, variance(price * store) AS v, max(upper(tag) || kind) AS m, min(price - store) AS d FROM o GROUP BY kind$$) AS expressions;
+ expressions 
+-------------
+ t
+(1 row)
+
+SELECT same($$SELECT i.category, round(stddev_samp(i.qty * i.price)::numeric, 9) AS sd, bit_or(i.qty) AS bo, string_agg(DISTINCT o.tag, '-') AS tags
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY i.category$$) AS items;
+ items 
+-------
+ t
+(1 row)
+
+-- DISTINCT: btree order, the first of equal values, NULL last, a constant second argument
+SELECT same($$SELECT kind, sum(DISTINCT store) AS s, avg(DISTINCT price) AS a, array_agg(DISTINCT tag) AS tags, string_agg(DISTINCT tag, ',') AS tg,
+			  array_agg(DISTINCT day) AS days, count(DISTINCT f4) AS f FROM o GROUP BY kind$$) AS distinct_values;
+ distinct_values 
+-----------------
+ t
+(1 row)
+
+SELECT same($$SELECT kind, min(DISTINCT price) AS lo, max(DISTINCT tag) AS hi, sum(DISTINCT store) FILTER (WHERE id < 300) AS sf FROM o GROUP BY kind$$) AS distinct_filter;
+ distinct_filter 
+-----------------
+ t
+(1 row)
+
+-- the rows arrive in scan order (the normal plan sorts first, so the collected values are compared sorted)
+SELECT same($$SELECT kind, (SELECT array_agg(x ORDER BY x) FROM unnest(array_agg(id)) x) AS ids, (SELECT string_agg(x, ',' ORDER BY x) FROM unnest(array_agg(tag)) x) AS tags,
+			  (SELECT jsonb_agg(x ORDER BY x) FROM unnest(array_agg(price)) x) AS js FROM o WHERE store < 3 GROUP BY kind$$) AS scan_order;
+ scan_order 
+------------
+ t
+(1 row)
+
+-- ordered-set aggregates: arrays of fractions, intervals, text, mode(), DESC, FILTER, a group without values
+SELECT same($$SELECT kind, percentile_cont(ARRAY[0.1, 0.5, 0.9]) WITHIN GROUP (ORDER BY price::float8 / 100) AS arr,
+			  percentile_cont(0.5) WITHIN GROUP (ORDER BY (day - date '2024-01-01') * interval '1 hour') AS iv,
+			  percentile_disc(ARRAY[0, 0.5, 1]::float8[]) WITHIN GROUP (ORDER BY tag) AS tg,
+			  mode() WITHIN GROUP (ORDER BY tag) AS m, mode() WITHIN GROUP (ORDER BY store) FILTER (WHERE price > 5000) AS m2,
+			  percentile_disc(0.3) WITHIN GROUP (ORDER BY day DESC) AS d3, percentile_disc(0.5) WITHIN GROUP (ORDER BY price) FILTER (WHERE id < 0) AS none
+			  FROM o GROUP BY kind$$) AS ordered_sets;
+ ordered_sets 
+--------------
+ t
+(1 row)
+
+SELECT same($$SELECT kind, store, grouping(kind, store) AS g, stddev_pop(price) AS sd, mode() WITHIN GROUP (ORDER BY tag) AS m FROM o GROUP BY ROLLUP (kind, store)$$) AS rollup_ordered;
+ rollup_ordered 
+----------------
+ t
+(1 row)
+
+SELECT same($$SELECT stddev_samp(price) AS sd, string_agg(tag, ',') AS s, mode() WITHIN GROUP (ORDER BY tag) AS m, sum(f4) AS f, array_agg(day) AS d FROM o WHERE id < 0$$) AS no_rows;
+ no_rows 
+---------
+ t
+(1 row)
+
+-- user aggregates
+SELECT same($$SELECT kind, round(sum_sq(f8)::numeric, 6) AS q, sum_sq(store) FILTER (WHERE tag IS NULL) AS n FROM o GROUP BY kind$$) AS user_aggregate;
+ user_aggregate 
+----------------
+ t
+(1 row)
+
+-- memory: DISTINCT, ORDER BY and WITHIN GROUP inputs go through a tuplesort bounded by work_mem; a DISTINCT hash set that outgrows it moves there
+SET work_mem = 64;
+SET client_min_messages = debug1;
+SELECT kind, cardinality(array_agg(DISTINCT id)) AS ids, sum(DISTINCT id % 100) AS s FROM o GROUP BY kind ORDER BY kind;
+DEBUG:  sift: DISTINCT of array_agg moved to a tuplesort
+ kind  | ids |  s   
+-------+-----+------
+ phone | 400 | 4000
+ shop  | 400 | 4000
+ web   | 400 | 4000
+       | 300 |  950
+(4 rows)
+
+RESET client_min_messages;
+SELECT same($$SELECT kind, array_agg(DISTINCT id) AS ids, sum(DISTINCT id % 100) AS s, string_agg(DISTINCT tag, ',') AS tags FROM o GROUP BY kind$$) AS distinct_spill;
+ distinct_spill 
+----------------
+ t
+(1 row)
+
+SELECT same($$SELECT kind, array_agg(id ORDER BY price, id) AS ids, regr_count(DISTINCT f8, price) AS pairs, percentile_disc(0.5) WITHIN GROUP (ORDER BY id) AS med FROM o GROUP BY kind$$) AS sorted_small_work_mem;
+ sorted_small_work_mem 
+-----------------------
+ t
+(1 row)
+
+RESET work_mem;
+-- errors are the aggregate's own: float4 overflow in the transition function, and the same row order
+SELECT kind, sum(f4 * 1e38::float4) FROM o GROUP BY kind;
+ERROR:  value out of range: overflow
+SET sift.enable_agg = off;
+SELECT kind, sum(f4 * 1e38::float4) FROM o GROUP BY kind;
+ERROR:  value out of range: overflow
+RESET sift.enable_agg;
+-- privileges are ExecAgg's: EXECUTE on the aggregate for the user, the component functions are the aggregate owner's business
+CREATE ROLE generic_reader;
+GRANT USAGE ON SCHEMA sift TO generic_reader;
+GRANT SELECT ON o TO generic_reader;
+REVOKE EXECUTE ON FUNCTION sq_add(float8, float8) FROM PUBLIC;
+SET ROLE generic_reader;
+SELECT kind, round(sum_sq(f8)::numeric, 3) AS q FROM o GROUP BY kind ORDER BY kind;
+ kind  |    q     
+-------+----------
+ phone | 8965.718
+ shop  | 9071.542
+ web   | 8982.693
+       | 6757.384
+(4 rows)
+
+RESET ROLE;
+REVOKE EXECUTE ON FUNCTION sum_sq(float8) FROM PUBLIC;
+SET ROLE generic_reader;
+SELECT kind, round(sum_sq(f8)::numeric, 3) AS q FROM o GROUP BY kind ORDER BY kind;
+ERROR:  permission denied for aggregate sum_sq
+RESET ROLE;
+-- the shared database of a plain installcheck goes on with the next test
+DROP OWNED BY generic_reader;
+DROP ROLE generic_reader;
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

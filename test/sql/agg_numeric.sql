@@ -22,7 +22,7 @@ EXPLAIN (COSTS OFF) SELECT price, count(*) FROM items GROUP BY price;
 EXPLAIN (COSTS OFF) SELECT store, sum(price * qty), max(round(rate, 2) - price) FROM items WHERE price * 2 <= rate GROUP BY store;
 EXPLAIN (COSTS OFF) SELECT store, count(DISTINCT price), count(DISTINCT round(price, 0)) FROM items GROUP BY store;
 
--- not exact in 128 bits, or not the stored value: the normal plan
+-- not exact in 128 bits, or not the stored value: PostgreSQL's own numeric functions (a generic aggregate), or the normal plan for a float8 comparison
 EXPLAIN (COSTS OFF) SELECT store, sum(price / 3) FROM items GROUP BY store;
 EXPLAIN (COSTS OFF) SELECT store, sum(price * rate) FROM items GROUP BY store;
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 1.5::float8 GROUP BY store;
@@ -53,6 +53,7 @@ SELECT same($$SELECT store, count(*) FILTER (WHERE price * 2 > 20) AS a, count(*
 			  FROM items GROUP BY store$$) AS expression_predicates;
 SELECT same($$SELECT store, count(DISTINCT price) AS a, count(DISTINCT rate) AS b, count(DISTINCT price + 0.10) AS c, count(DISTINCT price * qty) AS d FROM items GROUP BY store$$) AS distincts;
 SELECT same($$SELECT sum(price / 3) AS a, sum(price * rate) AS b, count(*) FILTER (WHERE price > 1.5::float8) AS c FROM items$$) AS plain_kept;
+SELECT same($$SELECT store, sum(price / 3) AS a, sum(price * rate) AS b FROM items GROUP BY store$$) AS generic_numeric;
 DROP FUNCTION same(text);
 DROP TABLE items;
 DROP EXTENSION pg_sift;

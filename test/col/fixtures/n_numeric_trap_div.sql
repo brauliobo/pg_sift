@@ -1,6 +1,6 @@
--- trap: a division: its scale and rounding are numeric_div's (the normal plan, same rows)
+-- trap: numeric division: the scale and rounding of numeric_div, evaluated by PostgreSQL itself (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

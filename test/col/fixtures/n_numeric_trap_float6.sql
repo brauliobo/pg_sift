@@ -1,6 +1,6 @@
--- trap: numeric(18, 6) as float8 can lose digits (the normal plan, same rows)
+-- trap: numeric(18, 6) as float8 can lose digits: the cast is PostgreSQL's, float8 addition over its result (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -

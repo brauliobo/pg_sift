@@ -1,6 +1,6 @@
--- trap: a rescale to a column type rounds and may raise an error (the normal plan, same rows)
+-- trap: a rescale to a column type rounds and may raise an error: PostgreSQL's cast does (generic aggregate)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -
