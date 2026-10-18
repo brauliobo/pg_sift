@@ -76,6 +76,8 @@ sift_tbl_define_gucs(void)
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
 							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 16, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write segment of a sift_table may take.", NULL,
+							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
 #endif
 	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
 							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
