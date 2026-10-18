@@ -3941,12 +3941,14 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				units = Max(c->stats.nunits, ceil(rows / 2000.0)),
 				vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
 				scan_cost,
+				open_cost,
 				gen_cost = 0,
 				agg_rows;
 	Cost		startup;
 
 	if (s->group >= 0)
 		elems = elems_of(c, s->group);
+	open_cost = c->search ? sift_search_open_cost(c->search, rows) : 0;
 	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
 	for (int i = 0; i < s->nleaves; i++)
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
@@ -3977,8 +3979,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
 	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
+	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
-		scan_cost *= c->topn_frac;
+		scan_cost = (scan_cost - open_cost) * c->topn_frac + open_cost;
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
