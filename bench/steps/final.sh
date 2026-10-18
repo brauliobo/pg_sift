@@ -82,4 +82,5 @@ for line in "${STEPS_LIST[@]}"; do
     "pg_sift profile"*) for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/docs/results/store-${f##*/}"; done ;;
   esac
 done
+"$BENCH/bench" store clean
 log "final: done; review git diff for README.md, docs/BENCHMARKS.md, docs/BENCH-GAP.md and docs/results/"

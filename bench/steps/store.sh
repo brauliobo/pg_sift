@@ -91,7 +91,9 @@ measure() { # SIZE
   [[ ,$UPDATE_SIZES, == *,"$1",* ]] && updates "$1" || true
 }
 updates() { # SIZE: last, it changes the data
-  locked py updates --rows "$1" --out "$OUT" --runs "$RUNS"
+  local extra=()
+  mapfile -t extra < <(engine_args)
+  locked py updates --rows "$1" --out "$OUT" --runs "$RUNS" "${extra[@]}"
 }
 merge() { py merge "$OUT"/store-*.json -o "$OUT/store.json"; }
 docs() {
@@ -114,7 +116,6 @@ all() {
   merge
   py table "$OUT/store.json"
   [[ -z ${S_DOCS:-} ]] || docs
-  rm -rf "$DATA"
 }
 stats() { # what ClickHouse and Elasticsearch read and spend per question, for each size (steps/store.py stats; the containers are removed after each)
   local s
@@ -126,7 +127,6 @@ stats() { # what ClickHouse and Elasticsearch read and spend per question, for e
     down
   done
   trap - EXIT
-  rm -rf "$DATA"
 }
 clean() {
   down
