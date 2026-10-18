@@ -161,6 +161,36 @@ typedef struct SiftSrcStrTest
 	const uint32 *lens;
 } SiftSrcStrTest;
 
+/*
+ * A conjunct the source may evaluate on its stored (encoded) values instead of the executor on decoded ones: `leaf op constant` on an
+ * integer-valued scalar leaf of rows (int, date, timestamp, numeric as its scaled integer), with the SQL meaning (a NULL value never
+ * passes). A source that accepts it (set_filters) applies it exactly: the executor does not test the rows again, and the source may use
+ * it to skip units (docs/COL-PLAN.md, "Filters in the source"). The text tests are SiftSrcStrTest above.
+ */
+typedef enum SiftSrcFilterOp
+{
+	SSF_EQ,
+	SSF_NE,
+	SSF_LT,
+	SSF_LE,
+	SSF_GT,
+	SSF_GE,
+	SSF_IN,
+	SSF_NOTIN,
+	SSF_NOTNULL					/* a value is present */
+} SiftSrcFilterOp;
+
+typedef struct SiftSrcFilter
+{
+	int			leaf;
+	SiftSrcFilterOp op;
+	int64		val;			/* a comparison */
+	int			nset;			/* IN, NOTIN: the members */
+	const int64 *set;
+} SiftSrcFilter;
+
+#define SIFT_COLSRC_MAX_FILTERS		64
+
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -202,6 +232,11 @@ typedef struct SiftSrcProvider
 	 */
 	void		(*prune_str) (void *impl, const SiftSrcStrTest *t, int nt);
 	bool		(*filter_str) (void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);
+	/* optional: the int filters above. set_filters (before begin) returns the bits of those it will apply, filter narrows the rows of a unit by them */
+	uint64		(*set_filters) (void *impl, const SiftSrcFilter *f, int nf);
+	bool		(*filter) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
+	/* optional: read only the rows of bits; the other rows of the vector are zero */
+	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -249,6 +284,12 @@ sift_colsrc_prune_str(SiftSrcSource *src, const SiftSrcStrTest *t, int nt)
 }
 
 static inline bool
+sift_colsrc_has_filter_str(const SiftSrcSource *src)
+{
+	return src->prov->filter_str != NULL;
+}
+
+static inline bool
 sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
 	return src->prov->filter_str != NULL && src->prov->filter_str(src->impl, unit, t, rows);
@@ -274,5 +315,17 @@ extern void sift_colsrc_live(SiftSrcSource *src, const SiftSrcUnit *unit, uint64
 extern void sift_colsrc_vet(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
 
 extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
+
+/*
+ * Offers the conjuncts (at most SIFT_COLSRC_MAX_FILTERS, the constants outlive the scan) to the source before sift_colsrc_begin; returns the
+ * bits of those it applies (0: none, or the source has no filters). sift_colsrc_filter then clears the rows of `bits` that fail any of them
+ * (all of them: the order is the source's) and says whether any row is left. A raise of the value-overflow error is the same as a read of the leaf.
+ */
+extern uint64 sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf);
+extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
+
+/* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */
+extern bool sift_colsrc_can_read_sel(const SiftSrcSource *src);
+extern void sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 
 #endif							/* SIFT_COLSRC_H */
