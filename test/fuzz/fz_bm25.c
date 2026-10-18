@@ -241,11 +241,11 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		if (!fz_try(run, &j))
 		{
 			free(copy);
-			fz_reset();
+			pgshim_reset();
 			break;
 		}
 		free(copy);
-		fz_reset();
+		pgshim_reset();
 		if (isa == 0)
 			first = j.digest;
 		else if (j.digest != first && mode != 2)
@@ -427,7 +427,7 @@ LLVMFuzzerInitialize(int *argc, char ***argv)
 
 	fz_init();
 	sift_init();
-	fz_keep();
+	pgshim_keep();
 	if (dir)
 	{
 		mkdir(dir, 0755);

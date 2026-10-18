@@ -220,7 +220,7 @@ op_open(Blob *b, void *arg)
 	SiftCc	   *cc = sift_cc_open(CurrentMemoryContext, b->p, b->len, false);
 
 	sift_cc_close(cc);
-	cc_arena_reset();
+	pgshim_reset();
 }
 
 static void
@@ -275,7 +275,7 @@ speeds(const Table *t, const char *spec, const SiftSimdLevel lv[3], int nl)
 		sift_cc_close(s.b[i].cc);
 		free(s.b[i].p);
 	}
-	cc_arena_reset();
+	pgshim_reset();
 	free(s.b);
 	free(g_dec);
 	free(g_bits);

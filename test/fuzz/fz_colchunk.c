@@ -22,7 +22,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-
 #include "sift_col.h"
 #include "sift_col_enc.h"
 #include "sift_colcodec.h"
@@ -76,7 +75,7 @@ setup(void)
 				sift_cdict_intern(dicts[c], s, (uint32) snprintf(s, sizeof(s), "k%d", i));
 			}
 		}
-	fz_keep();
+	pgshim_keep();
 }
 
 /* ---------- one decoder run, per mode ---------- */
@@ -361,11 +360,11 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		if (!fz_try(runs[mode], &j))
 		{
 			free(j.p);
-			fz_reset();
+			pgshim_reset();
 			break;				/* the same error at every level: the check is not kernel code */
 		}
 		free(j.p);
-		fz_reset();
+		pgshim_reset();
 		if (l == 0)
 			first = j.digest;
 		else if (j.digest != first)
