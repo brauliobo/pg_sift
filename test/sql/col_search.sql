@@ -180,3 +180,7 @@ SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''clean wi
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''gift'' AND note = repeat(''b'', 300) || ''2'' GROUP BY store ORDER BY store') AS long_eq;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''fast OR late'' AND note LIKE ''cccc%'' GROUP BY store ORDER BY store') AS long_prefix;
 SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect'' AND note IN (repeat(''a'', 300) || ''0'', repeat(''d'', 300) || ''3'') GROUP BY note ORDER BY note') AS long_in;
+
+DROP TABLE cs_q, cs_l, cs_t, cs;
+DROP FUNCTION cs_words(int), cs_mode(bool), cs_check(text, text), cs_stat(text, text), cs_stage(text);
+DROP EXTENSION pg_sift;
