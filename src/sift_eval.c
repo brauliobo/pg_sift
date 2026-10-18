@@ -3081,13 +3081,26 @@ rank_search(SiftRanker *r)
 		rank_merge_shared(r);
 }
 
+/*
+ * A consumer that pulls past K rows is lossy (a join or a filter above the scan): every search scores
+ * the blocks again, so the next K grows fast while the hit array is small (an unfiltered join passes
+ * about a tenth of the rows, a search of 160 serves it where 40 did not) and slowly beyond it.
+ */
+#define RANK_FAST_GROWTH_K	4096
+
+static int64
+rank_next_k(int64 k)
+{
+	return k * (k < RANK_FAST_GROWTH_K ? 16 : 4);
+}
+
 static void
 rank_ensure(SiftRanker *r)
 {
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : RANK_INITIAL_K;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K *= 4;
+		r->K = rank_next_k(r->K);
 	else
 		return;
 	rank_search(r);
@@ -3364,6 +3377,14 @@ node_prob(const SiftPlan *p, const EvalNode *n, Estimate *est)
 			return prob;
 	}
 	return 0.0;
+}
+
+double
+sift_plan_docs(const SiftPlan *p)
+{
+	Estimate	e = {0};
+
+	return node_prob(p, p->root, &e) * p->stats.ndocs;
 }
 
 void

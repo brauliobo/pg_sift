@@ -25,12 +25,14 @@
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "utils/float.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
 #include "sift_am.h"
+#include "sift_estimate.h"
 #include "sift_eval.h"
 #include "sift_planner.h"
 #include "sift_pushdown.h"
@@ -170,7 +172,7 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	if (!w->known)
 		return;
 	index = index_open(indexoid, AccessShareLock);
-	sift_eval_estimate(index, texts, ntexts, &w->est);
+	sift_estimate_cached(index, texts, ntexts, &w->est);
 	index_close(index, AccessShareLock);
 	get_tablespace_page_costs(tablespace, &random_cost, &seq_cost);
 	dict_pages = w->est.terms * DICT_PAGES_PER_TERM;
@@ -316,29 +318,47 @@ typedef struct ScanCost
 {
 	IndexWork	idx;
 	double		docs;			/* tuples the scan fetches from the heap */
+	Cost		qual;			/* residual quals per tuple */
 	Cost		tuple;			/* heap access and residual quals per fetched tuple */
 	Cost		page;			/* per page of a fetch in heap order */
+	double		pass;			/* fraction of the fetched tuples that pass the scan's own quals */
 } ScanCost;
 
+/*
+ * Matches of a ranked query the planner cannot read (a parameter of a generic plan), as a fraction of
+ * the rows, for placing the filter's entries in the heap: the queries a ranker is asked for hold common
+ * words (26% to 78% of the articles in the benchmark's ranked classes)
+ */
+#define UNKNOWN_QUERY_SEL		0.1
+
+/* What fetching docs matches costs per heap tuple; docs is clamped to the rows the rel keeps and has */
 static void
-scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, ScanCost *sc)
+scan_cost_docs(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, double docs, ScanCost *sc)
 {
-	QualCost	qual;
 	double		random_cost,
 				seq_cost,
 				pages = Max(rel->pages, 1),
 				fetched;
 
-	index_work(c->index->indexoid, c->index->reltablespace, c->queries, &sc->idx);
-	sc->docs = sc->idx.known ? sc->idx.est.docs : rel->rows;
-	sc->docs = Min(Max(sc->docs, rel->rows), Max(rel->tuples, 1));
-	cost_qual_eval(&qual, c->residual, root);
-	sc->tuple = cpu_tuple_cost + qual.per_tuple;
+	sc->docs = Min(Max(docs, rel->rows), Max(rel->tuples, 1));
 	get_tablespace_page_costs(rel->reltablespace, &random_cost, &seq_cost);
 	fetched = Min(index_pages_fetched(sc->docs, rel->pages, c->index->pages, root), pages);
 	sc->page = random_cost - (random_cost - seq_cost) * sqrt(fetched / pages);
 	sc->docs = Max(sc->docs, 1);
-	sc->tuple += fetched / sc->docs * sc->page;
+	sc->tuple = cpu_tuple_cost + sc->qual + fetched / sc->docs * sc->page;
+}
+
+static void
+scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost *sc)
+{
+	QualCost	qual;
+
+	index_work(c->index->indexoid, c->index->reltablespace, c->queries, &sc->idx);
+	cost_qual_eval(&qual, c->residual, root);
+	sc->qual = qual.per_tuple;
+	scan_cost_docs(root, rel, c, sc->idx.known ? sc->idx.est.docs : ranked ? rel->tuples * UNKNOWN_QUERY_SEL : rel->rows, sc);
+	/* rows holds the default match fraction when the query is unknown: the quals' own selectivity is what passes */
+	sc->pass = sc->idx.known || !ranked ? Min(rel->rows / sc->docs, 1.0) : clauselist_selectivity(root, c->residual, rel->relid, JOIN_INNER, NULL);
 }
 
 static CustomPath *
@@ -356,7 +376,9 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 									makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(mode), false, true),
 									makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(k), false, FLOAT8PASSBYVAL),
 									makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(heapoid), false, true),
-									c->queries);
+									makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(0), false, FLOAT8PASSBYVAL));
+	cp->custom_private = lappend(cp->custom_private, makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(get_float8_infinity()), false, FLOAT8PASSBYVAL));
+	cp->custom_private = lappend(cp->custom_private, c->queries);
 	return cp;
 }
 
@@ -469,6 +491,32 @@ parallel_divisor(int nworkers)
 	return divisor;
 }
 
+/* The estimates the paths of one index share: the matches and their cost, and what the filter bitmap keeps and where */
+typedef struct ScanEst
+{
+	ScanCost	sc;
+	SiftFilterEst fe;
+} ScanEst;
+
+/*
+ * The filter's entries a post-filter ranker has to meet to hold k rows that pass: k matches at the
+ * fraction of the rows the query matches
+ */
+static double
+filter_entries(RelOptInfo *rel, const ScanCost *sc, int64 k)
+{
+	return k > 0 ? k * Max(rel->tuples, 1) / sc->docs : 0;
+}
+
+static void
+scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, BitmapHeapPath *filter, ScanEst *est)
+{
+	est->fe = (SiftFilterEst) {0, 1, 0, 1};
+	scan_cost(root, rel, c, mode == SIFT_MODE_RANKED, &est->sc);
+	if (mode == SIFT_MODE_RANKED && filter)
+		sift_filter_estimate(root, rel, filter, filter_entries(rel, &est->sc, k), &est->fe);
+}
+
 /*
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
  * the verification are shared out. With a pushed down filter the ranker only meets the matches its
@@ -477,13 +525,13 @@ parallel_divisor(int nworkers)
  * parallel (nworkers 0). Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
-scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
 		  BitmapHeapPath *filter, bool push, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
 							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
-	ScanCost	sc;
-	SiftFilterEst fe = {0, 1, 0, 1};
+	ScanCost	sc = est->sc;
+	SiftFilterEst fe = est->fe;
 	double		divisor = parallel_divisor(nworkers),
 				pass,
 				verify;
@@ -493,7 +541,6 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 				startup;
 
 	Assert(!push || nworkers == 0);
-	scan_cost(root, rel, c, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
@@ -509,9 +556,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, in
 	verify = sc.docs * sc.tuple;
 	if (mode == SIFT_MODE_RANKED)
 	{
-		pass = Min(rel->rows / sc.docs, 1.0);
-		if (filter)
-			sift_filter_estimate(root, rel, filter, &fe);
+		pass = sc.pass;
 		if (push)
 		{
 			fe.sel = Max(fe.sel, pass);
@@ -568,10 +613,10 @@ cheaper(CustomPath *a, CustomPath *b)
  * points to.
  */
 static void
-add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, List *pathkeys,
+add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
 			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
-	CustomPath *cp = scan_path(root, rel, c, mode, k, pathkeys, filter, push, 0);
+	CustomPath *cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, push, 0);
 	int			nworkers = !push && parallel ? scan_workers(rel, c) : 0;
 
 	if (cheaper(cp, *best))
@@ -580,12 +625,111 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mod
 		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
-		cp = scan_path(root, rel, c, mode, k, pathkeys, filter, false, nworkers);
+		cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, false, nworkers);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
 		if (!only_best)
 			add_partial_path(rel, &cp->path);
 	}
+}
+
+/*
+ * A query the planner cannot read (a parameter of a generic plan) with a filter that can be pushed down
+ * has no plan that is right for every query: the common words of a ranker's queries want the bitmap, a
+ * rare query pays more for it than it saves. The plan keeps the bitmap as a child that the scan builds
+ * only when the bound query matches a number of documents inside a window, found on the costs of both
+ * paths. The window opens where the pushed down plan is expected to cost a quarter of the other (the costs
+ * are estimates, and a bitmap that is not clearly worth its build is a loss on data in memory, where
+ * checking a candidate costs less than the planner charges) and stays open while it is not dearer. The plan
+ * is priced as the post-filter scan of the operator's default match fraction, whatever the query turns
+ * out to be, so the plan cache keeps reusing it as it reuses a plan without a filter.
+ */
+#define GATE_STEP		4
+#define GATE_REFINE		6
+#define GATE_OPEN		0.25
+#define GATE_CLOSE		1.0
+
+/* What the pushed down plan costs per cost of checking the filter after the ranker, for docs matches */
+static double
+push_ratio(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, int64 k, List *pathkeys, BitmapHeapPath *filter,
+		   double docs)
+{
+	ScanEst		e = *est;
+
+	scan_cost_docs(root, rel, c, docs, &e.sc);
+	return pick_cost(scan_path(root, rel, c, &e, SIFT_MODE_RANKED, k, pathkeys, filter, true, 0)) /
+		Max(pick_cost(scan_path(root, rel, c, &e, SIFT_MODE_RANKED, k, pathkeys, filter, false, 0)), 1e-9);
+}
+
+/* Where the ratio crosses `limit` between the match counts `below` (under it) and `above` (over it): the side under */
+static double
+push_edge(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, int64 k, List *pathkeys, BitmapHeapPath *filter,
+		  double limit, double below, double above)
+{
+	for (int j = 0; j < GATE_REFINE; j++)
+	{
+		double		mid = sqrt(below * above);
+
+		if (push_ratio(root, rel, c, est, k, pathkeys, filter, mid) < limit)
+			below = mid;
+		else
+			above = mid;
+	}
+	return below;
+}
+
+/* The match counts between which the pushed down filter is worth building: false when there are none */
+static bool
+push_window(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, int64 k, List *pathkeys, BitmapHeapPath *filter,
+			double *from, double *to)
+{
+	double		top = Max(rel->tuples, 1),
+				prev = 0,
+				first = 0;
+
+	for (double docs = 1;; docs = Min(docs * GATE_STEP, top))
+	{
+		double		ratio = push_ratio(root, rel, c, est, k, pathkeys, filter, docs);
+
+		if (first == 0 && ratio < GATE_OPEN)
+		{
+			first = docs;
+			*from = prev > 0 ? push_edge(root, rel, c, est, k, pathkeys, filter, GATE_OPEN, first, prev) : 0;
+		}
+		else if (first > 0 && ratio >= GATE_CLOSE)
+		{
+			*to = push_edge(root, rel, c, est, k, pathkeys, filter, GATE_CLOSE, prev, docs);
+			return true;
+		}
+		if (docs >= top)
+			break;
+		prev = docs;
+	}
+	*to = get_float8_infinity();
+	return first > 0;
+}
+
+static void
+unknown_query_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, int64 k, List *pathkeys, BitmapHeapPath *filter,
+				   bool parallel, CustomPath **best, CustomPath **best_partial)
+{
+	ScanEst		def = {.fe = {0, 1, 0, 1}};
+	double		from = 0,
+				to = 0;
+	CustomPath *cp;
+
+	scan_cost(root, rel, c, false, &def.sc);
+	if (!filter || !push_window(root, rel, c, est, k, pathkeys, filter, &from, &to))
+	{
+		add_scan_paths(root, rel, c, &def, SIFT_MODE_RANKED, k, pathkeys, filter, false, parallel, true, best, best_partial);
+		return;
+	}
+	cp = scan_path(root, rel, c, &def, SIFT_MODE_RANKED, k, pathkeys, filter, false, 0);
+	cp->custom_paths = list_make1(filter);
+	list_nth_node(Const, cp->custom_private, SIFT_PRIV_GATE)->constvalue = Float8GetDatum(from);
+	list_nth_node(Const, cp->custom_private, SIFT_PRIV_GATE_TO)->constvalue = Float8GetDatum(to);
+	if (cheaper(cp, *best))
+		*best = cp;
 }
 
 /* Does the rel have a restriction that is a sift match, of whichever index? */
@@ -784,6 +928,7 @@ static void
 sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
 	ScanCand	c;
+	ScanEst		est;
 	PathKey    *pk = NULL;
 	List	   *scores;
 	bool		ranked,
@@ -845,10 +990,16 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter = sift_filter_bitmap_path(root, rel);
 			filter_looked = true;
 		}
+		scan_est(root, rel, &c, mode, ranked ? k : 0, filter, &est);
+		if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
+		{
+			unknown_query_path(root, rel, &c, &est, k, pathkeys, filter, parallel, &best, &best_partial);
+			continue;
+		}
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
 	}
 	if (best && only_best)
 	{
@@ -902,7 +1053,7 @@ count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Sca
 	Cost		dict,
 				shared;
 
-	scan_cost(root, input_rel, c, &sc);
+	scan_cost(root, input_rel, c, false, &sc);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	/* only matches on pages that are not all-visible are checked in the heap, a page at a time */
 	shared = (sc.idx.known ? sc.idx.cost - dict : 0) +
@@ -928,7 +1079,7 @@ add_parallel_count(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	PathTarget *partial_target = create_empty_pathtarget();
 	CustomPath *cp;
 	GatherPath *gather;
-	AggClauseCosts final_costs;
+	AggClauseCosts final_costs = {0};
 	double		rows = nworkers + 1;
 
 	if (nworkers == 0)

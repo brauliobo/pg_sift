@@ -28,6 +28,13 @@
 #define sift_table_index_fetch_begin(rel)			table_index_fetch_begin(rel)
 #endif
 
+/* index_beginscan takes the scan's instrumentation (18) */
+#if PG_VERSION_NUM >= 180000
+#define sift_index_beginscan(heap, index, snapshot, nkeys)	index_beginscan(heap, index, snapshot, NULL, nkeys, 0)
+#else
+#define sift_index_beginscan(heap, index, snapshot, nkeys)	index_beginscan(heap, index, snapshot, nkeys, 0)
+#endif
+
 /* Plain and index-only scans off while create_index_paths builds the bitmap paths: 19 reads them from the rel, not the GUCs */
 #if PG_VERSION_NUM >= 190000
 
