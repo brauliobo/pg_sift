@@ -305,6 +305,7 @@ typedef struct PredState
 	ExprState  *expr;			/* SAP_LUT */
 	Param	   *param;
 	bool		null_result;	/* SAP_LUT: the expression for a NULL input */
+	SiftSrcStrTest *str;		/* a row level text test of the query, which the source runs on the encoded form (str_init) */
 	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
 	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */
 	bool		rowmask_ok;
@@ -5263,8 +5264,12 @@ process_unit(AggExec *ex)
 	sift_colsrc_live(ex->src, u, rmask);
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 0)
+	{
+		SiftSrcStrTest *str = ex->ps[s->pred[i]->id].str;
+
+		if (s->pred[i]->level == 0 && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
 			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
+	}
 	ex->qlevel = elem;
 	if (!elem)
 	{
@@ -5390,6 +5395,20 @@ prune_init(AggExec *ex)
 		if (p->op != SCMP_LT && p->op != SCMP_LE)
 			z->lo = Max(z->lo, p->op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c);
 	}
+}
+
+/* The text tests of the query a source can run on the encoded form: they prune its units and narrow the rows of each (process_unit) */
+static void
+str_init(AggExec *ex)
+{
+	SiftSrcStrTest *all = palloc(Max(ex->spec->npred, 1) * sizeof(SiftSrcStrTest));
+	int			n = 0;
+
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (sift_aggspec_str_test(ex->spec->pred[i], ex->lay, &all[n]))
+			ex->ps[ex->spec->pred[i]->id].str = &all[n++];
+	if (n > 0)
+		sift_colsrc_prune_str(ex->src, all, n);
 }
 
 /* what a key keeps for the whole scan: its expression and the type of its input; the ids are the table's (table_init) */
@@ -7014,6 +7033,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	register_combos(ex);
 	pgagg_init(ex);
 	prune_init(ex);
+	str_init(ex);
 	gen_open(ex);
 	MemoryContextSwitchTo(old);
 }
