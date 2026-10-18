@@ -65,6 +65,7 @@
 #include "sift_aggspec.h"
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
+#include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
 
@@ -74,7 +75,7 @@ bool		sift_enable_agg = true;
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
 #define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
-#define LANE_DIRECT_MAX	(1 << 15)	/* a lane table is built and dumped sixteen times: sparse group spaces go to the hash table */
+#define LANE_DIRECT_MAX	(1 << 15)	/* a lane is built and folded or dumped sixteen times: sparse group spaces go to the hash table */
 #define NDICT_SLOTS	8
 
 void
@@ -331,6 +332,7 @@ typedef struct KeyState
 	RangeTab	rt;				/* integer leaves: value -> id */
 	bool		ident;			/* integer or float leaf as the key (and the grouping set number): ids are given to the values in order of appearance */
 	int64	   *idval;			/* ident: the value of id i + 1 (a float: float_key) */
+	uint32		negzero;		/* a float: the id of the zero group when the first zero seen was -0 (the one PG shows), else 0 */
 	uint32		nident;
 	uint32		capident;
 	uint32		wcap;			/* ident, values too far apart for a table: open addressing value -> id (0 = free), power of 2 */
@@ -359,6 +361,8 @@ typedef struct DSet
  * once it does not. A value is its order key (float8 in the order of float8_cmp: -0 = 0, NaN last), a group the id of its
  * sorted values (in order of appearance; acc->i of the aggregate that owns the values, which the group renumbering carries).
  */
+#define OSA_BLOCK	64
+
 typedef struct OsaSlot
 {
 	uint64		key;
@@ -405,6 +409,7 @@ typedef struct AggAcc
 	uint8	   *nf;				/* float sums: a non-finite input was added */
 	Datum	   *v;				/* aggregates over distinct values (SAA_M_*): the result, made by mapped_finish; SAA_GEN: the state */
 	Datum	   *r;				/* SAA_GEN: the result */
+	double	   *dt;				/* float sums of a scan that goes through the lanes in one table: the sum of the lanes done */
 } AggAcc;
 
 /* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
@@ -569,6 +574,7 @@ typedef struct AggExec
 	struct ScanShared *shared;
 	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */
 	bool		lanes;			/* this table is one of the lanes */
+	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
 	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
 	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
@@ -623,6 +629,10 @@ typedef struct AggExec
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_groups;
+	/* arms that share one pass (fuse_start) */
+	struct FuseSt *fuse;
+	int			fuse_set;		/* this node's set in the fused spec */
+	int			fuse_off;		/* the first of its keys */
 } AggExec;
 
 /* the parent of the expressions: a parallel worker has no plan state */
@@ -918,21 +928,60 @@ dict_code(const SiftSrcDict *d, const char *key)
 	return PG_UINT32_MAX;
 }
 
+static uint32 *elem_offs(AggExec *ex, int leaf);
+
+/* the last set bit in [lo, hi) of a bitmap, -1 if none: the usual row owns a few elements, which lie in one word */
+static inline int64
+last_bit(const uint64 *b, uint32 lo, uint32 hi)
+{
+	uint32		w0 = lo >> 6,
+				w = (hi - 1) >> 6;
+	uint64		x;
+
+	if (lo == hi)
+		return -1;
+	x = b[w] & ((UINT64CONST(2) << ((hi - 1) & 63)) - 1);
+	for (;;)
+	{
+		if (w == w0)
+			x &= ~UINT64CONST(0) << (lo & 63);
+		if (x || w == w0)
+			break;
+		x = b[--w];
+	}
+	return x ? (int64) w * 64 + 63 - __builtin_clzll(x) : -1;
+}
+
+/* the value of the element of each row that eq marks, esz bytes of it (a constant at the callers) */
+static pg_attribute_always_inline void
+vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, const uint32 *offs, int nrow, size_t esz)
+{
+	for (int r = 0; r < nrow; r++)
+	{
+		int64		e = last_bit(eq, offs[r], offs[r + 1]);
+
+		if (e >= 0)
+		{
+			memcpy(data + (size_t) r * esz, (const char *) val->data + (size_t) e * esz, esz);
+			isnull[r] = val->isnull ? val->isnull[e] : 0;
+		}
+	}
+}
+
 /* the leaf of a SiftAggVLeaf: per row the value of its element with the key, NULL where it has none */
 static void
 read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 {
 	int			j = leaf - ex->nbase,
 				nrow = ex->unit.nrow;
-	const SiftSrcVec *cnt = get_vec(ex, ex->spec->vleaf[j].obj),
-			   *key = get_vec(ex, ex->vl[j].key),
+	const SiftSrcVec *key = get_vec(ex, ex->vl[j].key),
 			   *val = get_vec(ex, ex->vl[j].val);
 	size_t		esz = ex->lay->leaf[leaf].vtype == SCV_I64 || ex->lay->leaf[leaf].vtype == SCV_F64 ? 8 : 4;
-	const int32 *c = cnt->data;
-	const uint32 *kc = key->data;
+	const uint32 *offs = elem_offs(ex, ex->spec->vleaf[j].obj);
+	uint32		m = offs[nrow];
 	char	   *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, nrow * esz + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
 	uint8	   *isnull = MemoryContextAlloc(ex->ucxt, nrow + SIFT_AGG_PAD);
-	uint32		e = 0;
+	uint64	   *eq = MemoryContextAlloc(ex->ucxt, (SIFT_COL_NWORDS(m) + 1) * sizeof(uint64));
 
 	if (ex->vl[j].dict != key->dict->id)
 	{
@@ -940,13 +989,12 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 		ex->vl[j].code = dict_code(key->dict, ex->spec->vleaf[j].key);
 	}
 	memset(isnull, 1, nrow);
-	for (int r = 0; r < nrow; r++)
-		for (int n = (cnt->isnull && cnt->isnull[r]) ? 0 : Max(c[r], 0); n > 0; n--, e++)
-			if (kc[e] == ex->vl[j].code)
-			{
-				memcpy(data + r * esz, (const char *) val->data + e * esz, esz);
-				isnull[r] = val->isnull ? val->isnull[e] : 0;
-			}
+	/* the elements whose key is the member's; a row owns at most one (the member names of an object are distinct) */
+	sift_colk->range[SIFT_COLW_32](key->data, m, ex->vl[j].code, 0, eq);
+	if (esz == 8)
+		vleaf_fill(data, isnull, val, eq, offs, nrow, 8);
+	else
+		vleaf_fill(data, isnull, val, eq, offs, nrow, 4);
 	out->data = data;
 	out->isnull = isnull;
 	out->dict = val->dict;
@@ -1700,7 +1748,7 @@ map_load(AggExec *ex, const SiftAggJoin *j)
 {
 	MapTab	   *m;
 	Relation	rel = table_open(j->relid, AccessShareLock);
-	TableScanDesc scan = table_beginscan(rel, ex->css.ss.ps.state->es_snapshot, 0, NULL);
+	TableScanDesc scan = table_beginscan(rel, ex->snap, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
@@ -2118,29 +2166,6 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 
 static void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
 
-/* is a bit set in [lo, hi) */
-static bool
-any_bit(const uint64 *b, uint32 lo, uint32 hi)
-{
-	uint32		w0 = lo >> 6,
-				w1;
-	uint64		m0 = ~UINT64CONST(0) << (lo & 63),
-				m1;
-
-	if (lo >= hi)
-		return false;
-	w1 = (hi - 1) >> 6;
-	m1 = ~UINT64CONST(0) >> (63 - ((hi - 1) & 63));
-	if (w0 == w1)
-		return (b[w0] & m0 & m1) != 0;
-	if ((b[w0] & m0) || (b[w1] & m1))
-		return true;
-	for (uint32 w = w0 + 1; w < w1; w++)
-		if (b[w])
-			return true;
-	return false;
-}
-
 /* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
 static void
 any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
@@ -2149,7 +2174,7 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 	int			nrow = ex->unit.nrow,
 				nw = (nrow + 63) / 64;
 	uint32		m = offs[nrow];
-	uint64	   *eb = MemoryContextAlloc(ex->ucxt, ((m + 63) / 64 + PADW) * sizeof(uint64));
+	uint64	   *eb = MemoryContextAllocZero(ex->ucxt, ((m + 63) / 64 + PADW + 1) * sizeof(uint64));
 	uint64		t[VECW + PADW];
 
 	for (uint32 s = 0; s < m; s += VEC)
@@ -2159,10 +2184,20 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 		eval_pred(ex, p->child[0], 1, s, n, t);
 		memcpy(eb + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
 	}
-	clear_words(out, nrow);
+	memset(out, 0, nw * sizeof(uint64));
+	/* a row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows take the slow way) */
 	for (int r = 0; r < nrow; r++)
-		if (any_bit(eb, offs[r], offs[r + 1]))
-			out[r >> 6] |= UINT64CONST(1) << (r & 63);
+	{
+		uint32		lo = offs[r],
+					len = offs[r + 1] - lo;
+		uint64		x;
+
+		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
+		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
+		if (len > 56)
+			x |= last_bit(eb, lo, lo + len) >= 0;
+		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
+	}
 	if (p->op)
 	{
 		for (int w = 0; w < nw; w++)
@@ -2366,6 +2401,9 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_SUM_F64:
 			case SAA_AVG_F64:
+				if (ex->lane_serial)
+					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+				/* fall through */
 			case SAA_O_SUM_F64:
 			case SAA_O_AVG_F64:
 				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
@@ -2411,7 +2449,7 @@ acc_free(AggAcc *a, int naggs)
 {
 	for (int i = 0; i < naggs; i++)
 	{
-		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf};
+		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf, a[i].dt};
 
 		for (int c = 0; c < lengthof(col); c++)
 			if (col[c])
@@ -2453,6 +2491,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 				n->v[t] = o->v[g];
 				n->r[t] = o->r[g];
 			}
+			if (o->dt)
+				n->dt[t] = o->dt[g];
 			if (o->last)
 				n->last[t] = o->last[g];
 			if (o->nf)
@@ -2757,7 +2797,15 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	if (lf->vtype == SCV_F64)
 	{
 		for (int i = 0; i < nsel; i++)
-			vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, float_key(((const double *) v->data)[idx[i]]));
+		{
+			double		d = ((const double *) v->data)[idx[i]];
+			uint32		n = k->nident;
+
+			if (v->isnull && v->isnull[idx[i]])
+				vals_out[i] = 0;
+			else if ((vals_out[i] = ident_wide_id(ex, k, float_key(d))) > n && d == 0 && signbit(d))
+				k->negzero = vals_out[i];
+		}
 		return;
 	}
 	sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, vals_out);
@@ -3217,17 +3265,15 @@ osa_grow(AggExec *ex, Osa *o)
 	pfree(old);
 }
 
+/* one more of the value (sid, key), whose slot chain starts at h (osa_hash & (cap - 1) of the table as it is now) */
 static void
-osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key)
+osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 {
-	uint64		h;
-
 	if (o->sort)
 	{
 		osa_put(o, sid, key, 1);
 		return;
 	}
-	h = osa_hash(sid, key) & (o->cap - 1);
 	for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
 		if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
 		{
@@ -3243,6 +3289,42 @@ osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key)
 	o->slot[h] = (OsaSlot) {key, sid + 1, 1};
 	if (++o->n * 2 > o->cap)
 		osa_grow(ex, o);
+}
+
+/* cnt more of the value (sid, key): the counts of a partial table, a slot holds at most UINT32_MAX */
+static void
+osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
+{
+	while (cnt > 0)
+	{
+		uint64		h;
+		uint32		take;
+
+		if (o->sort)
+		{
+			osa_put(o, sid, key, cnt);
+			return;
+		}
+		h = osa_hash(sid, key) & (o->cap - 1);
+		for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
+			if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
+				break;
+		take = (uint32) Min(cnt, (uint64) UINT32_MAX - (o->slot[h].sid1 ? o->slot[h].cnt : 0));
+		if (o->slot[h].sid1)
+			o->slot[h].cnt += take;
+		else if (o->n >= o->maxn)
+		{
+			osa_spill(ex, o);
+			continue;
+		}
+		else
+		{
+			o->slot[h] = (OsaSlot) {key, sid + 1, take};
+			if (++o->n * 2 > o->cap)
+				osa_grow(ex, o);
+		}
+		cnt -= take;
+	}
 }
 
 /* the argument of ordered-set aggregate ai for the nsel tuples, in double */
@@ -3278,15 +3360,33 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	if (a->leaf >= 0)
 		gather_idx(ex, a->leaf, nsel, &idx);
 	x = osa_values(ex, a, idx, nsel);
-	for (int j = 0; j < nsel; j++)
+	/* a block of values at a time: the slots of the whole block are requested before the first is probed (a histogram of 10^5 pairs is out of the cache) */
+	for (int b = 0; b < nsel; b += OSA_BLOCK)
 	{
-		uint32		g = ex->gid[j];
+		int			n = Min(OSA_BLOCK, nsel - b),
+					m = 0;
+		uint32		sid[OSA_BLOCK];
+		uint64		key[OSA_BLOCK],
+					h[OSA_BLOCK],
+					cap = o->cap;
 
-		if (ok && !sift_colsrc_bit(ok, j))
-			continue;
-		if (own->i[g] == 0)
-			own->i[g] = ++o->nsid;
-		osa_add(ex, o, own->i[g] - 1, f8_key(x[j]));
+		for (int k = 0; k < n; k++)
+		{
+			uint32		g = ex->gid[b + k];
+
+			if (ok && !sift_colsrc_bit(ok, b + k))
+				continue;
+			if (own->i[g] == 0)
+				own->i[g] = ++o->nsid;
+			sid[m] = own->i[g] - 1;
+			key[m] = f8_key(x[b + k]);
+			h[m] = osa_hash(sid[m], key[m]) & (cap - 1);
+			if (o->slot)
+				__builtin_prefetch(&o->slot[h[m]]);
+			m++;
+		}
+		for (int k = 0; k < m; k++)
+			osa_add(ex, o, sid[k], key[k], o->cap == cap && o->slot ? h[k] : osa_hash(sid[k], key[k]) & (o->cap - 1));
 	}
 }
 
@@ -5366,7 +5466,7 @@ table_init(AggExec *ex)
 	uint32		total = 1;
 
 	ex->hash = false;
-	ex->direct_max = ex->lanes ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->direct_max = ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;
@@ -5441,6 +5541,12 @@ table_reset(AggExec *ex)
 		if (ex->dslot[i].kmap)
 			memset(ex->dslot[i].kmap, 0, nk * sizeof(uint32 *));
 	MemoryContextReset(ex->tcxt);
+	/* the output rows of a combo hold ids of the key tables just forgotten */
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+	{
+		ex->cs[ci].nent = ex->cs[ci].nout = 0;
+		memset(ex->cs[ci].ht, 0, ex->cs[ci].nht * sizeof(uint32));
+	}
 	table_init(ex);
 }
 
@@ -5529,12 +5635,12 @@ br_get(const char **p, Size n)
 static void
 bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
 {
-	char	   *tmp = palloc(Max(ng, 1) * sizeof(int64));
+	char	   *tmp = palloc(Max(ng, 1) * sizeof(sift_i128));
 	struct
 	{
 		const void *src;
 		int			esize;
-	}			col[] = {{acc->n, 8}, {acc->i, 8}, {acc->d, 8}, {acc->nf, 1}};
+	}			col[] = {{acc->n, 8}, {acc->i, 8}, {acc->d, 8}, {acc->nf, 1}, {acc->w, sizeof(sift_i128)}};
 
 	for (int c = 0; c < lengthof(col); c++)
 	{
@@ -5611,16 +5717,21 @@ blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
 
 	for (uint32 r = 0; r < ng; r++)
 		ids[r] = group_key_id(ex, j, gl[r]);
-	old = renumber(ids, ng, k->ident ? k->nident : k->ot.n, &nused);
-	if (k->ident)
+	old = renumber(ids, ng, k->numk ? k->im.n : k->ident ? k->nident : k->ot.n, &nused);
+	if (k->ident || k->numk)
 	{
-		uint32		hd[2] = {nused, nused * sizeof(int32)};
-		int32	   *vals = palloc(Max(nused, 1) * sizeof(int32));
+		/* the values themselves: 64 bits for an integer or the bits of a float, 128 for a numeric */
+		Size		esz = k->numk ? sizeof(sift_i128) : sizeof(int64);
+		uint32		hd[2] = {nused, nused * esz};
+		char	   *vals = palloc(Max(nused, 1) * esz);
 
 		for (uint32 i = 0; i < nused; i++)
-			vals[i] = k->idval[old[i] - 1];
+			if (k->numk)
+				memcpy(vals + i * esz, &k->im.val[old[i] - 1], esz);
+			else
+				memcpy(vals + i * esz, &k->idval[old[i] - 1], esz);
 		bw_put(b, hd, sizeof(hd));
-		bw_put(b, vals, nused * sizeof(int32));
+		bw_put(b, vals, nused * esz);
 	}
 	else
 		bw_values(b, &k->ot, old, nused);
@@ -5657,6 +5768,57 @@ blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 		bw_values(b, &ex->aot[ai], old, nused);
 }
 
+typedef struct OsaRec
+{
+	uint32		g;				/* group of the blob */
+	uint32		pad;
+	uint64		key;
+	uint64		cnt;
+} OsaRec;
+
+/* the values of an ordered-set aggregate that owns them, as runs (group of the blob, value, count): the histogram or the sorted tuples */
+static void
+blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
+{
+	Osa		   *o = ex->osa[ai];
+	AggAcc	   *own = &ex->acc[ai];
+	uint32	   *sid2g = palloc(Max(o->nsid, 1) * sizeof(uint32)),
+				hd[2] = {0, 0};
+	StringInfoData rb;
+	OsaRun		r;
+
+	for (uint32 g = 0; g < n; g++)
+		if (own->i[g])
+			sid2g[own->i[g] - 1] = cidx[g];
+	initStringInfo(&rb);
+	if (o->sort)
+	{
+		osa_sort(o);
+		while (osa_next(o, &r))
+		{
+			OsaRec		rec = {sid2g[r.sid], 0, r.key, r.cnt};
+
+			appendBinaryStringInfo(&rb, (const char *) &rec, sizeof(rec));
+			hd[0]++;
+		}
+		tuplesort_end(o->sort);
+		o->sort = NULL;
+	}
+	else
+		for (uint64 i = 0; i < o->cap; i++)
+			if (o->slot[i].sid1)
+			{
+				OsaRec		rec = {sid2g[o->slot[i].sid1 - 1], 0, o->slot[i].key, o->slot[i].cnt};
+
+				appendBinaryStringInfo(&rb, (const char *) &rec, sizeof(rec));
+				hd[0]++;
+			}
+	bw_put(b, hd, sizeof(hd));
+	bw_put(b, rb.data, rb.len);
+	pfree(rb.data);
+	pfree(sid2g);
+}
+
 static void
 blob_dump(AggExec *ex, int lane, StringInfo b)
 {
@@ -5690,6 +5852,8 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 		bw_acc(b, &ex->acc[i], gl, ng);
 		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
 			blob_set(ex, i, cidx, b);
+		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
+			blob_osa(ex, i, cidx, n, b);
 	}
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
 	pfree(gl);
@@ -5698,11 +5862,11 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 
 /* ids of the values of an integer key in the table (the ids of the range table, or of the wide one) */
 static void
-merge_ident(AggExec *g, int j, const int32 *vals, uint32 nv, uint32 *xid)
+merge_ident(AggExec *g, int j, const int64 *vals, uint32 nv, uint32 *xid)
 {
 	KeyState   *k = &g->ks[j];
-	int32		mn = PG_INT32_MAX,
-				mx = PG_INT32_MIN;
+	int64		mn = PG_INT64_MAX,
+				mx = PG_INT64_MIN;
 
 	for (uint32 i = 0; i < nv; i++)
 	{
@@ -5711,7 +5875,7 @@ merge_ident(AggExec *g, int j, const int32 *vals, uint32 nv, uint32 *xid)
 	}
 	if (nv == 0)
 		return;
-	if (k->wcap || rt_span(&k->rt, mn, mx) > MAX_RANGE)
+	if (k->wcap || mn < PG_INT32_MIN || mx > PG_INT32_MAX || rt_span(&k->rt, (int32) mn, (int32) mx) > MAX_RANGE)
 	{
 		if (!k->wcap)
 			ident_go_wide(g, k);
@@ -5723,10 +5887,10 @@ merge_ident(AggExec *g, int j, const int32 *vals, uint32 nv, uint32 *xid)
 		KeyFill		f = {g, j};
 		MemoryContext old = MemoryContextSwitchTo(g->tcxt);
 
-		rt_cover(&k->rt, mn, mx, key_range_fill, &f);
+		rt_cover(&k->rt, (int32) mn, (int32) mx, key_range_fill, &f);
 		MemoryContextSwitchTo(old);
 		for (uint32 i = 0; i < nv; i++)
-			xid[i + 1] = ((uint32 *) k->rt.tab)[vals[i] - k->rt.lo];
+			xid[i + 1] = ((uint32 *) k->rt.tab)[(int32) vals[i] - k->rt.lo];
 	}
 }
 
@@ -5756,6 +5920,8 @@ typedef struct BlobAgg
 	const uint32 *pg;
 	const uint32 *pv;
 	uint32	   *xv;				/* dictionary values: the ids in the table */
+	uint32		nrec;			/* ordered sets: the runs of the values */
+	const OsaRec *rec;
 } BlobAgg;
 
 static void
@@ -5764,10 +5930,17 @@ merge_minmax(AggExec *g, int ai, const BlobAgg *ba, uint32 r, uint32 t)
 	SiftAggAgg *a = &g->spec->agg[ai];
 	AggAcc	   *acc = &g->acc[ai];
 	bool		ismin = a->kind == SAA_MIN,
-				f64 = g->lay->leaf[a->leaf].vtype == SCV_F64;
+				f64 = a->num.n == 0 && g->lay->leaf[a->leaf].vtype == SCV_F64;
 
 	if (ba->a.n[r] == 0)
 		return;
+	if (a->num.n)
+	{
+		if (acc->n[t] == 0 || (ismin ? ba->a.w[r] < acc->w[t] : ba->a.w[r] > acc->w[t]))
+			acc->w[t] = ba->a.w[r];
+		acc->n[t] += ba->a.n[r];
+		return;
+	}
 	if (acc->n[t] == 0)
 	{
 		acc->i[t] = ba->a.i[r];
@@ -5814,7 +5987,17 @@ merge_agg(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids, uint32 r0, 
 			case SAA_MAX:
 				merge_minmax(g, ai, ba, r, t);
 				break;
+			case SAA_SUM_NUM:
+			case SAA_AVG_NUM:
+				acc->n[t] += ba->a.n[r];
+				acc->w[t] += ba->a.w[r];
+				break;
 			case SAA_COUNT_DISTINCT:
+			case SAA_GROUPING:
+				break;
+			case SAA_PCT_CONT:
+			case SAA_PCT_DISC:
+				acc->n[t] += ba->a.n[r];
 				break;
 			default:
 				elog(ERROR, "sift: aggregate kind %d has no partial table", a->kind);
@@ -5835,6 +6018,8 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		ba->a.d = (double *) br_get(p, (Size) ng * 8);
 	if (acc->nf)
 		ba->a.nf = (uint8 *) br_get(p, ng);
+	if (acc->w)
+		ba->a.w = (sift_i128 *) br_get(p, (Size) ng * sizeof(sift_i128));
 	if (g->spec->agg[ai].kind == SAA_COUNT_DISTINCT)
 	{
 		const uint32 *hd = br_get(p, 8);
@@ -5850,6 +6035,11 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 			merge_values(g, &g->aot[ai], p, ba->xv);
 		}
 	}
+	if (is_ordered_agg(&g->spec->agg[ai]) && g->spec->agg[ai].share == ai)
+	{
+		ba->nrec = *(const uint32 *) br_get(p, 8);
+		ba->rec = br_get(p, (Size) ba->nrec * sizeof(OsaRec));
+	}
 }
 
 static void
@@ -5861,6 +6051,22 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 
 		if (dset_add(g, &g->dset[ai], t, ba->xv ? ba->xv[ba->pv[i]] : ba->pv[i]))
 			g->acc[ai].n[t]++;
+	}
+}
+
+static void
+merge_osa(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
+{
+	Osa		   *o = g->osa[ai];
+	AggAcc	   *own = &g->acc[ai];
+
+	for (uint32 i = 0; i < ba->nrec; i++)
+	{
+		uint32		t = gids[ba->rec[i].g];
+
+		if (own->i[t] == 0)
+			own->i[t] = ++o->nsid;
+		osa_add_n(g, o, own->i[t] - 1, ba->rec[i].key, ba->rec[i].cnt);
 	}
 }
 
@@ -5887,8 +6093,24 @@ blob_merge(AggExec *g, const char *p)
 		xid[j] = palloc0((hd[0] + 1) * sizeof(uint32));
 		if (k->ident)
 		{
+			const int64 *iv;
+
 			br_get(&p, 8);
-			merge_ident(g, j, br_get(&p, (Size) hd[0] * sizeof(int32)), hd[0], xid[j]);
+			iv = br_get(&p, (Size) hd[0] * sizeof(int64));
+			if (s->key[j].kind == SAK_SET)
+				for (uint32 i = 0; i < hd[0]; i++)
+					xid[j][i + 1] = iv[i] + 1;	/* the ids of the sets are fixed: set + 1 */
+			else
+				merge_ident(g, j, iv, hd[0], xid[j]);
+		}
+		else if (k->numk)
+		{
+			const sift_i128 *nv;
+
+			br_get(&p, 8);
+			nv = br_get(&p, (Size) hd[0] * sizeof(sift_i128));
+			for (uint32 i = 0; i < hd[0]; i++)
+				xid[j][i + 1] = idmap_id(&k->im, nv[i]);
 		}
 		else
 			merge_values(g, &k->ot, &p, xid[j]);
@@ -5934,6 +6156,8 @@ blob_merge(AggExec *g, const char *p)
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
 			merge_set(g, i, &ba[i], gids);
+		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
+			merge_osa(g, i, &ba[i], gids);
 	pfree(gids);
 	pfree(ba);
 }
@@ -6110,6 +6334,25 @@ lane_done(AggExec *ex, uint32 lane)
 	table_reset(ex);
 }
 
+/* the float sums of the lane just scanned are added to those of the lanes before it, as the leader adds the table of each lane */
+static void
+lane_fold(AggExec *ex)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+
+	for (int i = 0; i < ex->spec->naggs; i++)
+	{
+		AggAcc	   *a = &ex->acc[i];
+
+		if (a->dt)
+			for (uint32 g = 0; g < n; g++)
+			{
+				a->dt[g] += a->d[g];
+				a->d[g] = 0;
+			}
+	}
+}
+
 static void par_poll(AggExec *ex);
 static void engine_contexts(AggExec *ex, MemoryContext parent);
 static void engine_rels(AggExec *ex);
@@ -6124,7 +6367,9 @@ scan_items(AggExec *ex)
 	while (take_item(ex, &item))
 	{
 		scan_item(ex, item);
-		if (ex->shared->ordered)
+		if (ex->lane_serial)
+			lane_fold(ex);
+		else if (ex->shared->ordered)
 			lane_done(ex, item);
 		if (ex->par)
 			par_poll(ex);
@@ -6145,7 +6390,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
-	engine_open(ex, RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)), RestoreParamList(&params));
+	ex->snap = RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false));
+	engine_open(ex, ex->snap, RestoreParamList(&params));
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	scan_buffers(ex);
@@ -6333,18 +6579,22 @@ run_scan(AggExec *ex)
 		ex->shared = MemoryContextAlloc(ex->cxt, sizeof(ScanShared));
 		shared_init(ex->shared, ex);
 	}
-	ex->lanes = ordered;
+	ex->lane_serial = ordered && ex->par == NULL;
+	ex->lanes = ordered && !ex->lane_serial;
 	table_init(ex);
-	ex->gtab = ordered ? result_view(ex) : ex;
+	ex->gtab = ex->lanes ? result_view(ex) : ex;
 	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
 	if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	arms_flush(ex);
-	osa_finish_all(ex);
-	gen_flush(ex);
 	if (ex->par)
 		par_finish(ex);
-	if (ordered && ex->next_lane != SIFT_AGG_LANES)
+	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
+		if (ex->acc[i].dt)
+			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
+	osa_finish_all(ex->gtab);
+	gen_flush(ex->gtab);
+	if (ex->lanes && ex->next_lane != SIFT_AGG_LANES)
 		elog(ERROR, "sift: a lane of the aggregate scan is missing");
 	final_checks(ex->gtab, ex->n_tuples);
 }
@@ -6381,7 +6631,8 @@ key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 		return ex->spec->key[j].typid == NUMERICOID ? scaled_numeric(k->im.val[id - 1], ex->spec->key[j].num.scale) :
 			leaf_datum(ex->spec->key[j].typid, (int64) k->im.val[id - 1]);
 	if (k->ident)
-		return leaf_datum(ex->spec->key[j].typid, k->idval[id - 1]);
+		/* PG_INT64_MIN: the bits of -0 */
+		return id == k->negzero ? leaf_datum(ex->spec->key[j].typid, PG_INT64_MIN) : leaf_datum(ex->spec->key[j].typid, k->idval[id - 1]);
 	return k->ot.val[id - 1];
 }
 
@@ -6509,6 +6760,175 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 	return (Datum) 0;
 }
 
+/*
+ * ---------- arms that share one pass ----------
+ *
+ * The arms of a UNION ALL over one CTE (a time series at four granularities) are nodes that scan the same rows for the same aggregates and
+ * group by different keys. The first of them to run finds the others (nodes of the same executor state register when they begin) and
+ * scans for all of them as the grouping sets of one spec: the leaves are decoded and the filters run once, and every arm gets its groups
+ * from the set that is its own. The sums are those of an arm alone (the same tuples in the same lanes), so the rows are the same.
+ */
+typedef struct FuseSt
+{
+	AggExec    *F;				/* the executor of the fused spec */
+	int			refs;
+} FuseSt;
+
+typedef struct FuseReg
+{
+	EState	   *estate;
+	List	   *nodes;			/* the AggExec of the estate that have not started */
+} FuseReg;
+
+static List *fuse_regs;
+
+static void
+fuse_reg_free(void *arg)
+{
+	FuseReg    *r = arg;
+
+	fuse_regs = list_delete_ptr(fuse_regs, r);
+	list_free(r->nodes);
+	pfree(r);
+}
+
+static FuseReg *
+fuse_reg(EState *estate, bool create)
+{
+	FuseReg    *r;
+	MemoryContextCallback *cb;
+	MemoryContext old;
+
+	foreach_ptr(FuseReg, x, fuse_regs)
+		if (x->estate == estate)
+			return x;
+	if (!create)
+		return NULL;
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	r = palloc0(sizeof(FuseReg));
+	r->estate = estate;
+	fuse_regs = lappend(fuse_regs, r);
+	MemoryContextSwitchTo(old);
+	cb = MemoryContextAlloc(estate->es_query_cxt, sizeof(MemoryContextCallback));
+	cb->func = fuse_reg_free;
+	cb->arg = r;
+	MemoryContextRegisterResetCallback(estate->es_query_cxt, cb);
+	return r;
+}
+
+static void
+fuse_register(AggExec *ex)
+{
+	FuseReg    *r = fuse_reg(ex->css.ss.ps.state, true);
+	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+
+	r->nodes = lappend(r->nodes, ex);
+	MemoryContextSwitchTo(old);
+}
+
+static void
+fuse_unregister(AggExec *ex)
+{
+	FuseReg    *r = fuse_reg(ex->css.ss.ps.state, false);
+
+	if (r)
+		r->nodes = list_delete_ptr(r->nodes, ex);
+}
+
+/* the nodes (this one first) that one pass can serve, scanned into the groups of a fused executor; false when this node runs alone */
+static bool
+fuse_start(AggExec *ex)
+{
+	FuseReg    *r = fuse_reg(ex->css.ss.ps.state, false);
+	AggExec    *m[SIFT_AGG_MAX_KEYS];
+	SiftAggSpec *specs[SIFT_AGG_MAX_KEYS];
+	int			keyoff[SIFT_AGG_MAX_KEYS],
+				n = 0,
+				nk = 1;
+	EState	   *estate = ex->css.ss.ps.state;
+	MemoryContext old;
+	FuseSt	   *fs;
+	AggExec    *F;
+
+	if (r == NULL)
+		return false;
+	m[n] = ex;
+	specs[n++] = ex->spec;
+	nk += ex->spec->nkeys;
+	foreach_ptr(AggExec, o, r->nodes)
+		if (o != ex && !o->started && nk + o->spec->nkeys <= SIFT_AGG_MAX_KEYS && sift_aggspec_fusable(ex->spec, o->spec))
+		{
+			m[n] = o;
+			specs[n++] = o->spec;
+			nk += o->spec->nkeys;
+		}
+	if (n < 2)
+		return false;
+	old = MemoryContextSwitchTo(estate->es_query_cxt);
+	F = palloc0(sizeof(AggExec));
+	F->spec = sift_aggspec_fuse(specs, n, keyoff);
+	F->pack = sift_aggspec_pack(F->spec);
+	F->params = ex->params;
+	F->snap = ex->snap;
+	fs = palloc0(sizeof(FuseSt));
+	fs->F = F;
+	fs->refs = n;
+	engine_contexts(F, estate->es_query_cxt);
+	engine_rels(F);
+	MemoryContextSwitchTo(old);
+	run_scan(F);
+	empty_set_groups(F->gtab);
+	mapped_finish(F->gtab);
+	list_groups(F->gtab);
+	for (int i = 0; i < n; i++)
+	{
+		m[i]->fuse = fs;
+		m[i]->fuse_set = i;
+		m[i]->fuse_off = keyoff[i];
+		m[i]->started = true;
+		r->nodes = list_delete_ptr(r->nodes, m[i]);
+	}
+	return true;
+}
+
+/* the groups of the fused scan that are this node's set */
+static void
+fuse_list(AggExec *ex)
+{
+	AggExec    *t = ex->fuse->F->gtab;
+	int			setkey = t->spec->nkeys - 1;
+
+	ex->glist = MemoryContextAlloc(ex->cxt, Max(t->nglist, 1) * sizeof(uint32));
+	ex->nglist = 0;
+	for (uint32 i = 0; i < t->nglist; i++)
+		if (key_id(t, setkey, t->glist[i]) == (uint32) ex->fuse_set + 1)
+			ex->glist[ex->nglist++] = t->glist[i];
+	ex->n_groups = ex->nglist;
+}
+
+static TupleTableSlot *
+fuse_next(AggExec *ex, TupleTableSlot *slot)
+{
+	AggExec    *t = ex->fuse->F->gtab;
+	uint32		g;
+
+	if (ex->glist == NULL)
+		fuse_list(ex);
+	if (ex->gpos >= ex->nglist)
+		return NULL;
+	g = ex->glist[ex->gpos++];
+	ExecClearTuple(slot);
+	for (int j = 0; j < ex->spec->nkeys; j++)
+		slot->tts_values[j] = key_datum(t, ex->fuse_off + j, g, &slot->tts_isnull[j]);
+	for (int i = 0; i < ex->spec->naggs; i++)
+	{
+		int			c = ex->spec->nkeys + i;
+
+		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
+	}
+	return ExecStoreVirtualTuple(slot);
+}
+
 static TupleTableSlot *
 agg_next(ScanState *node)
 {
@@ -6517,7 +6937,7 @@ agg_next(ScanState *node)
 	AggExec    *t;
 	uint32		g;
 
-	if (!ex->started)
+	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
 		empty_set_groups(ex->gtab);
@@ -6526,6 +6946,8 @@ agg_next(ScanState *node)
 		gen_finish(ex->gtab);
 		ex->n_groups = ex->gtab->nglist;
 	}
+	if (ex->fuse)
+		return fuse_next(ex, slot);
 	t = ex->gtab;
 	if (ex->gpos >= t->nglist)
 		return NULL;
@@ -6626,6 +7048,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 		return;
 	engine_rels(ex);
 	PredicateLockRelation(ex->heap, estate->es_snapshot);
+	fuse_register(ex);
 }
 
 static TupleTableSlot *
@@ -6643,6 +7066,10 @@ agg_end(CustomScanState *node)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
 			tuplesort_end(ex->osa[i]->sort);
 	gen_close(ex);
+	if (ex->css.ss.ps.state)
+		fuse_unregister(ex);
+	if (ex->fuse && --ex->fuse->refs == 0)
+		engine_close(ex->fuse->F);
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
@@ -6691,26 +7118,29 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (es->analyze && ex->started)
 	{
 		SiftSrcCounters cc;
+		AggExec    *c = ex->fuse ? ex->fuse->F : ex;
 
-		sift_colsrc_counters(ex->src, &cc);
+		sift_colsrc_counters(c->src, &cc);
+		if (ex->fuse)
+			ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
 		ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
 		if (s->nworkers > 0)
-			ExplainPropertyInteger("Workers Launched", NULL, ex->par ? ex->par->nlaunched : 0, es);
-		if (ex->par)
+			ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
+		if (c->par)
 		{
-			cc.units_pruned += ex->par->cc.units_pruned;
-			cc.rows_vetted += ex->par->cc.rows_vetted;
-			cc.heap_pages += ex->par->cc.heap_pages;
+			cc.units_pruned += c->par->cc.units_pruned;
+			cc.rows_vetted += c->par->cc.rows_vetted;
+			cc.heap_pages += c->par->cc.heap_pages;
 		}
-		ExplainPropertyInteger("Units", NULL, ex->n_units, es);
+		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
-		ExplainPropertyInteger("Rows Scanned", NULL, ex->n_rows, es);
-		ExplainPropertyInteger("Tuples Aggregated", NULL, ex->n_tuples, es);
+		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
+		ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
 		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
-		if (ex->n_osa_spilled)
-			ExplainPropertyInteger("Ordered Sets Spilled", NULL, ex->n_osa_spilled, es);
+		if (c->n_osa_spilled)
+			ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
 	}
 }
 

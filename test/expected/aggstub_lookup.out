@@ -112,7 +112,7 @@ SELECT same($$SELECT CASE WHEN o.kind = 'web' THEN i.category ELSE coalesce(i.ki
 (1 row)
 
 -- a key of the metrics next to the unnest
-SELECT same($$SELECT i.category, count((o.metrics->>'overall')::float8) AS c, avg((o.metrics->>'overall')::float8) AS a, max((o.metrics->>'value')::float8) AS v
+SELECT same($$SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS metric_key;
  metric_key 
 ------------
@@ -240,6 +240,83 @@ SELECT same($$SELECT i.category, sum(m.a2) AS s2, avg(m.a4) AS v4, sum(m.a4) AS 
  t
 (1 row)
 
+-- the same from workers: the tables of the lookup joins, the combos and the members of a free-key object are merged by value, and the float sums are the leader's alone
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+EXPLAIN (COSTS OFF) SELECT m.mapped, count(*) AS n, sum(i.qty) AS q, count(DISTINCT o.id) AS orders
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  LEFT JOIN cat_map m ON m.category = i.category GROUP BY 1;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: items[].category: m.mapped
+   Pushed Aggregates: count(*), sum(items[].qty), count
+   Unnests: yes
+   Lookup Joins: cat_map (left)
+   Workers Planned: 2
+(7 rows)
+
+EXPLAIN (COSTS OFF) SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: items[].category
+   Pushed Aggregates: count(metrics.overall), avg(metrics.overall), max(metrics.value)
+   Unnests: yes
+   Workers Planned: 2
+(6 rows)
+
+SELECT same($$SELECT m.mapped, count(*) AS n, sum(i.qty) AS q, count(DISTINCT o.id) AS orders
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  LEFT JOIN cat_map m ON m.category = i.category GROUP BY 1$$) AS left_join_workers;
+ left_join_workers 
+-------------------
+ t
+(1 row)
+
+SELECT same($$SELECT i.category, m.mapped, count(*) AS n, sum(i.price) AS p
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8)
+			  JOIN cat_map m ON m.category = i.category GROUP BY 1, 2$$) AS inner_join_workers;
+ inner_join_workers 
+--------------------
+ t
+(1 row)
+
+SELECT same($$SELECT m.mapped, count(*) AS n FROM o LEFT JOIN cat_map m ON m.category = o.kind GROUP BY 1$$) AS row_level_workers;
+ row_level_workers 
+-------------------
+ t
+(1 row)
+
+SELECT same($$SELECT CASE WHEN o.kind = 'web' THEN i.category ELSE coalesce(i.kind, '?') END AS pick, coalesce(o.kind, '') || '/' || (o.store % 2) AS k, count(*) AS n
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8)
+			  WHERE o.kind = 'web' OR i.price > 10 GROUP BY 1, 2$$) AS several_leaves_workers;
+ several_leaves_workers 
+------------------------
+ t
+(1 row)
+
+SELECT same($$SELECT i.category, count((o.metrics->>'overall')::float8) AS c, round(avg((o.metrics->>'overall')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS metric_key_workers;
+ metric_key_workers 
+--------------------
+ t
+(1 row)
+
+SELECT same($$SELECT category, avg(p) AS a, count(DISTINCT id) AS orders, sum(n) AS items, count(DISTINCT id) FILTER (WHERE p > 5) AS high
+			  FROM (SELECT o.id, i.category, avg(i.price) AS p, count(*) AS n
+					FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY o.id, i.category) x GROUP BY category$$) AS per_order_workers;
+ per_order_workers 
+-------------------
+ t
+(1 row)
+
+RESET max_parallel_workers_per_gather;
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;

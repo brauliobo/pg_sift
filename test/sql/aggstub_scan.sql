@@ -78,17 +78,26 @@ SELECT * FROM diffs($$SELECT g, count(DISTINCT small) AS d, count(DISTINCT wide)
 SELECT * FROM diffs($$SELECT count(DISTINCT small) AS d, count(DISTINCT wide) AS w FROM s$$, true, 2);
 SELECT * FROM diffs($$SELECT g, count(DISTINCT wide) FILTER (WHERE id % 3 = 0) AS d FROM s WHERE id > 2000 GROUP BY g$$, true, 2);
 
--- the aggregates that keep their state in the leader (ordered sets, grouping sets, numeric sums and keys) take no worker, and their rows are the normal plan's
+-- ordered sets (the histograms are merged by value), numeric sums and keys, grouping sets and float keys come from the workers as the other kinds do
 SET max_parallel_workers_per_gather = 2;
 EXPLAIN (COSTS OFF) SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY small) AS m FROM s GROUP BY g;
-EXPLAIN (COSTS OFF) SELECT g, small % 3 AS k, count(*) AS n FROM s GROUP BY GROUPING SETS ((g), (small % 3), ());
 EXPLAIN (COSTS OFF) SELECT g, sum(small::numeric) AS sm FROM s GROUP BY g;
 EXPLAIN (COSTS OFF) SELECT small::numeric * g::numeric AS k, count(*) AS n FROM s GROUP BY 1;
+EXPLAIN (COSTS OFF) SELECT a, count(*) AS n FROM s GROUP BY a;
 RESET max_parallel_workers_per_gather;
 SELECT * FROM diffs($$SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY small) AS m, count(*) AS n FROM s GROUP BY g$$, false, 0);
+SELECT * FROM diffs($$SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY small) AS m, percentile_cont(0.9) WITHIN GROUP (ORDER BY small) AS c, percentile_cont(0.25) WITHIN GROUP (ORDER BY b) AS cb, count(*) AS n FROM s GROUP BY g$$, true, 3);
+SELECT * FROM diffs($$SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY b) AS cb FROM s$$, true, 2);
+-- a histogram that does not fit work_mem is a sort of the pairs, in the workers and in the leader that merges them
+SET work_mem = '64kB';
+SELECT * FROM diffs($$SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY wide) AS m, percentile_cont(0.9) WITHIN GROUP (ORDER BY wide) AS c FROM s GROUP BY g$$, true, 3);
+RESET work_mem;
 SELECT * FROM diffs($$SELECT g, small % 3 AS k, count(*) AS n FROM s GROUP BY GROUPING SETS ((g), (small % 3), ())$$, false, 0);
+SELECT * FROM diffs($$SELECT g, small % 3 AS k, count(*) AS n, sum(b) AS sb FROM s GROUP BY GROUPING SETS ((g), (small % 3), ())$$, true, 3);
 SELECT * FROM diffs($$SELECT g, sum(small::numeric) AS sm, avg(small::numeric) AS av FROM s GROUP BY g$$, false, 0);
-SELECT * FROM diffs($$SELECT small::numeric * g::numeric AS k, count(*) AS n FROM s GROUP BY 1$$, false, 0);
+SELECT * FROM diffs($$SELECT g, sum(small::numeric) AS sm, avg(small::numeric) AS av, min(small::numeric * 1.5) AS lo, max(small::numeric * 1.5) AS hi FROM s GROUP BY g$$, true, 3);
+SELECT * FROM diffs($$SELECT small::numeric * g::numeric AS k, count(*) AS n, sum(b) AS sb FROM s GROUP BY 1$$, true, 2);
+SELECT * FROM diffs($$SELECT a, count(*) AS n, sum(b) AS sb FROM s GROUP BY a$$, true, 3);
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;

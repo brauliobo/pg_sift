@@ -13,6 +13,7 @@
 #include "access/genam.h"
 #include "access/relation.h"
 #include "catalog/pg_class.h"
+#include "jit/jit.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
@@ -113,7 +114,7 @@ uses_sift_agg(Plan *plan)
 }
 
 static PlannedStmt *
-sift_planner_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+plan_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
 {
 	Query	   *inline_parse;
 	PlannedStmt *plain,
@@ -137,9 +138,23 @@ sift_planner_cte(Query *parse, const char *query_string, int cursorOptions, Para
 	return plain;
 }
 
+/*
+ * The cost of a SiftAgg plan turns on JIT (jit_above_cost) for work that does not use it: the node reads columns, and the nodes
+ * above it handle its groups. Compiling their projections takes 3 to 5 ms of a 15 to 40 ms query.
+ */
+static PlannedStmt *
+sift_planner(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+{
+	PlannedStmt *stmt = plan_cte(parse, query_string, cursorOptions, boundParams);
+
+	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
+		stmt->jitFlags = PGJIT_NONE;
+	return stmt;
+}
+
 void
 sift_aggcte_init(void)
 {
 	prev_planner_hook = planner_hook;
-	planner_hook = sift_planner_cte;
+	planner_hook = sift_planner;
 }
