@@ -1483,6 +1483,30 @@ sift_cc_tag(const SiftCc *c)
 	return unwrap(c->root)->tag;
 }
 
+uint32
+sift_cc_off32_bound(const SiftCc *c)
+{
+	const CcNode *nd = unwrap(c->root);
+	uint64		off = (uint32) ((uint64) nd->base - (uint64) c->min),
+				span;
+
+	switch (nd->tag)
+	{
+		case SIFT_CCN_CONST:
+			span = 0;
+			break;
+		case SIFT_CCN_FORBIT:
+			span = nd->W < 32 ? (UINT64CONST(1) << nd->W) - 1 : UINT32_MAX;
+			break;
+		case SIFT_CCN_FORBYTE:
+			span = nd->B < 4 ? (UINT64CONST(1) << (8 * nd->B)) - 1 : UINT32_MAX;
+			break;
+		default:
+			return UINT32_MAX;
+	}
+	return Min(off + span, UINT32_MAX);
+}
+
 /* ---- decoding ---- */
 
 /* The B-byte little-endian values of a FORBYTE node plus a base, wrapped to the domain: a loop per width, so the compiler vectorizes it */

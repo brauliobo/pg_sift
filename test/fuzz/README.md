@@ -70,7 +70,7 @@ and without `-fwrapv`: signed overflow is a finding here.
     nice /tmp/x/bm25 -fork=3 -ignore_crashes=1 -max_total_time=60 /tmp/corpus   # many findings in one run (libFuzzer)
 
 Environment: `FZ_MODE=n` forces the mode of an input (the first byte otherwise), `FZ_SKIP=a,b` skips checks whose finding is recorded
-(`lut` in colchunk), `FZ_NOERR=1` makes any raised error fatal (a seed that does not parse is a bug of the seed), `FZ_STRICT=1` makes a
+(none now; the name is the argument of `fz_skip`), `FZ_NOERR=1` makes any raised error fatal (a seed that does not parse is a bug of the seed), `FZ_STRICT=1` makes a
 wrong SQLSTATE fatal, `FZ_TRACE=1` prints the digest after each step (to see which operation two SIMD levels disagree on),
 `UBSAN_OPTIONS=suppressions=test/fuzz/ubsan.supp` skips the UB findings already recorded. `scripts/fuzz.sh` sets the skips and
 suppressions of the findings that are not fixed yet; delete an entry when its fix lands.

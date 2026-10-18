@@ -73,7 +73,6 @@ analyze() {
 # libfuzz TARGET: a test/fuzz target for 6 s per scale step; a kept corpus in $OUT/lf-TARGET, crash files in $OUT/lf-TARGET/artifacts
 libfuzz() {
 	local t=$1 d=$OUT/lf-$1 known=${FZ_SKIP-} supp="$REPO/test/fuzz/ubsan.supp"
-	[[ -v FZ_SKIP ]] || case $t in colchunk) known=lut ;; esac		# findings of the design notes that are not fixed yet
 	[[ -z ${FZ_NO_SUPP:-} ]] || supp=/dev/null
 	build -C "$REPO/test/fuzz" OUT="$OUT/lf" "$OUT/lf/$t" || return 1
 	rm -rf "$d/seeds" && mkdir -p "$d/corpus" "$d/artifacts"
