@@ -30,7 +30,7 @@ Unproven means no path. Not matched today: numeric division, modulo and function
 
 ## Ordered-set aggregates
 
-`percentile_cont` and `percentile_disc` keep the values of each group exactly and pick the ranks with the final functions' arithmetic: `ceil(c * n)` for `disc`, `floor` and `ceil` of `c * (n - 1)` and `lo + frac * (hi - lo)` in double for `cont`, `DESC` counting from the end, NULL inputs left out, NaN last, `-0` equal to `0`. Aggregates on the same argument share one set of values. The values are an exact histogram of the distinct (group, value) pairs as long as it fits `work_mem` (4 slots of 16 bytes per pair at most); beyond that every value goes through a `tuplesort` in `work_mem` that spills to disk like the normal plan's sort (EXPLAIN ANALYZE: `Ordered Sets Spilled`), so memory is bounded and nothing fails or falls back. A constant fraction outside [0, 1] and a fraction that is not a constant keep the normal plan (which raises its own error); the array forms and the other argument types are generic aggregates (below). The overflow errors inside a float8 expression argument are not reproduced (as for `sum`).
+`percentile_cont` and `percentile_disc` keep the values of each group exactly and pick the ranks with the final functions' arithmetic: `ceil(c * n)` for `disc`, `floor` and `ceil` of `c * (n - 1)` and `lo + frac * (hi - lo)` in double for `cont`, `DESC` counting from the end, NULL inputs left out, NaN last, `-0` equal to `0`. Aggregates on the same argument share one set of values. The values are an exact histogram of the distinct (group, value) pairs as long as it fits `work_mem` (4 slots of 16 bytes per pair at most); beyond that every value goes through a `tuplesort` in `work_mem` that spills to disk like the normal plan's sort (EXPLAIN ANALYZE: `Ordered Sets Spilled`), so memory is bounded and nothing fails or falls back. A constant fraction outside [0, 1] and a fraction that is a column of the group keep the normal plan (which raises its own error; a `Param` or stable expression is evaluated once); the array forms and the other argument types are generic aggregates (below). The overflow errors inside a float8 expression argument are not reproduced (as for `sum`).
 
 ## Generic aggregates
 
@@ -38,26 +38,32 @@ An aggregate without a native kernel runs on PostgreSQL's own functions (`SAA_GE
 
 | Family | Examples | How |
 |---|---|---|
-| Statistics | `stddev*`, `var*`, `corr`, `covar_*`, `regr_*`, over numeric, float8, int | `float8_accum`/`numeric_accum`/`int8_accum` and their finals |
+| Statistics | `stddev*`, `var*`, `corr`, `covar_*`, `regr_*`, over numeric, float8, int | `float8_accum`/`numeric_accum`/`int8_accum` and their finals; parallel through their combine functions |
 | Booleans, bits | `bool_and`, `bool_or`, `every`, `bit_and`, `bit_or`, `bit_xor` | the transition functions |
 | Sums without a kernel | `sum(float4)` | `float4pl` in heap order (the kernel adds in float8) |
 | Min and max of text | `min(text)`, `max(varchar)`, any collation | `text_smaller`/`text_larger` over the decoded text |
-| `DISTINCT` | `min`/`max`/`sum`/`avg`/`count(DISTINCT)` of other types, `string_agg(DISTINCT t, ',')`, `array_agg(DISTINCT x)`, `jsonb_agg(DISTINCT x)` | the distinct values of the one varying argument are kept per group and fed in the type's btree order (NULL last, the first of equal values kept) |
+| `DISTINCT` | `min`/`max`/`sum`/`avg`/`count(DISTINCT)` of other types, `string_agg(DISTINCT t, ',')`, `array_agg(DISTINCT x)`, `jsonb_agg(DISTINCT x)` | one varying argument without `ORDER BY`: the distinct values are kept per group in a hash set and fed in the type's btree order (NULL last, the first of equal values kept); when the sets pass `work_mem` the values move to the `tuplesort` above (`DEBUG1`: `DISTINCT of ... moved to a tuplesort`) |
 | Collecting | `string_agg`, `array_agg`, `json_agg`, `jsonb_agg`, `json_object_agg` without `ORDER BY` | the transition function in scan order |
+| `ORDER BY` in the call | `string_agg(x, ',' ORDER BY y DESC NULLS LAST)`, `array_agg(x ORDER BY y, z)`, `jsonb_agg(... ORDER BY ...)`, also with `DISTINCT` | one `tuplesort` of `(group, arguments)` in `work_mem` (spills to disk), then the transition function over each group's sorted rows; the sort operators, collations and NULL placement are the ones of the call |
+| Several varying `DISTINCT` arguments | `regr_count(DISTINCT y, x)`, `array_agg(DISTINCT x ORDER BY x DESC)` | the same sort, with the rows equal on the `DISTINCT` keys (NULLs equal) dropped as they are read back |
+| Hypothetical sets | `rank(c) WITHIN GROUP (ORDER BY x)`, `dense_rank`, `percent_rank`, `cume_dist` | the group's sort, then the aggregate's own transition function (it adds the hypothetical row) |
+| Variadic, many arguments | `VARIADIC` aggregates, aggregates of more than 4 arguments | the argument slots are as many as the call has |
+| Joined and mapped columns | `string_agg(c.mapped_category ...)`, `max(upper(c.name))` over a lookup join | the value of the lookup table's row for the row, one joined argument per aggregate |
 | Ordered sets | `percentile_cont`/`percentile_disc` with an array of fractions, over an interval, a date, text or any other type with a btree order, `mode()`, `DESC`, with `FILTER` | the values of a group go through one `tuplesort` of `(group, value)` (bounded by `work_mem`, spills like the normal plan's sort), then the group's transition function over the sorted values and the final function with the direct arguments |
 | User aggregates | any `CREATE AGGREGATE` whose transition and final functions are not volatile | as above |
 
-Rules that keep the plan, all checked at plan time:
+Stays on the normal plan, all checked at plan time:
 
-- `ORDER BY` inside the aggregate call (`string_agg(x, ',' ORDER BY y)`), hypothetical-set aggregates (`rank(c) WITHIN GROUP`, `dense_rank`, `percent_rank`, `cume_dist`), variadic aggregates and aggregates of more than 4 arguments: the input order or the argument shape is not the scan's.
-- A volatile transition or final function, or a volatile argument expression: calling it per row and per group is not a function of the data.
-- A column that is not a scalar leaf of the index (`jsonb` members of a type the index does not hold, arrays, `numeric(p > 18)`, `uuid`, `time`, `interval`, `bytea`, `char(n)`), an expression of more than 4 leaves, a column of another table than the index's (a joined or mapped column) or a lookup, and any sub-query or parameter that is not a constant.
-- A float leaf whose result shows the sign of a zero (`-0` is stored as `0`): a generic aggregate over `float4`/`float8` is taken only when its result is a number or a boolean (`stddev`, `sum`, `min`, `bool_and`, ...), not text, an array, jsonb or an interval of the value (`array_agg(f8)`, `string_agg(f8::text)`).
-- `DISTINCT` over more than one varying argument, or over a type without a btree comparison.
-- A fraction that is not a constant, outside [0, 1] or a hypothetical value: the normal plan raises its own error.
-- Parallel scan: generic aggregates are serial only (their states are PostgreSQL datums with no dump format). Merging per-worker states with the aggregate's combine function is possible for the ones that have one (`stddev`, `sum`, `bool_*`, `array_agg`) and is not done: a query with a generic aggregate plans no workers. `DISTINCT` and ordered sets keep their values until the scan ends (the DISTINCT sets are not bounded by `work_mem`: one entry of the value's size per distinct pair; the ordered ones are).
+- A volatile transition, final or combine function, or a volatile argument expression: calling it per row and per group is not a function of the data.
+- A column that is not a scalar leaf of the index (`jsonb` members of a type the index does not hold, arrays, `bytea`, `char(n)`, and the types the index does not store yet), an argument expression of more than 4 leaves, more than one joined column in an aggregate, `DISTINCT` of a joined column over a hash set (it is taken through the sort), a lookup, and any sub-query or parameter that is not a constant or stable.
+- `DISTINCT` or `ORDER BY` over a type without a btree ordering.
+- A fraction or hypothetical value that is a column of the group (the normal plan evaluates it per group and raises its own error when it is outside [0, 1]); a constant, `Param` or stable-function fraction is taken.
+- A parallel plan (no workers are planned, the leader scans alone) when the aggregate is ordered (`ORDER BY` in the call, ordered sets, hypothetical sets), `DISTINCT`, over a joined column, has no combine function (a user aggregate declared without `combinefunc`), has an internal state without serial and deserial functions, uses a function that is not `PARALLEL SAFE`, or when a native float `sum`/`avg` is in the same query (its lanes fix the additions' order; the generic states merge by worker). The plan is then the serial scan, not the normal plan.
+- Hypothetical-set aggregates (`rank(c) WITHIN GROUP`) are priced by `AGG_GEN_HYP` so that the default plan stays the normal one: the scan sorts the group's rows and the transition function sorts them again, which measured 0.9 times the normal plan; the fixtures force the scan with page costs.
 
-Cost: a generic aggregate is priced per row by `AGG_GEN_ROW` (12 operator costs for the call through `fmgr` and the Datum of a leaf) plus the transition function's own cost (`procost`: 1 for the built-in ones, 100 for a SQL function), the argument's expression cost and 2 per leaf, `AGG_GEN_DISTINCT` (10: the hash probe of the pair) and `AGG_GEN_ORDERED` (24: the tuplesort put), and per group by `AGG_GEN_GROUP` (150: state, final function and the sort of an ordered group). They are the measured prices (a boolean or bit aggregate takes about 40 ns a row, a numeric accumulation 100 ns, a SQL function 1 us). The calls count the elements the data has, outside the factor that the unnest of the normal plan puts on the rest of the scan (see Cost): the whole table takes the scan, a selective store set keeps the btree plan (the S shapes at K10 and K400 of the analytics corpus did not change, and the fixture `g_cost_selective` asserts it).
+Generic aggregates in a parallel scan: each participant keeps the states of its rows per group; at the end the leader merges the workers' by key value with the aggregate's combine function (an `internal` state travels through its serial and deserial functions, any other state as a serialized datum of its type). The merged result is the aggregate's in the same sense as PostgreSQL's own parallel aggregates: exact where the function is (integers, numeric, text, booleans, bits, `array_agg` of a set with a following sort) and, for float accumulation (`stddev`, `corr`, `regr_*`, `sum(float4)`), different in the last digits since the additions are regrouped by worker (the comparator's tolerance, relative 1e-9). Collecting aggregates (`array_agg`, `jsonb_agg`) concatenate the workers' arrays in worker order, which is no order the normal plan promises either.
+
+Cost: a generic aggregate is priced per row by `AGG_GEN_ROW` (12 operator costs for the call through `fmgr` and the Datum of a leaf) plus the transition function's own cost (`procost`: 1 for the built-in ones, 100 for a SQL function), the argument's expression cost and 2 per leaf, `AGG_GEN_DISTINCT` (10: the hash probe of the pair), `AGG_GEN_ORDERED` (24: the tuplesort put of an ordered set) and `AGG_GEN_SORTED` (30: the put and read back of `ORDER BY` or a multi-argument `DISTINCT`), and per group by `AGG_GEN_GROUP` (150: state, final function and the sort of an ordered group). They are the measured prices (a boolean or bit aggregate takes about 40 ns a row, a numeric accumulation 100 ns, a SQL function 1 us). The calls count the elements the data has, outside the factor that the unnest of the normal plan puts on the rest of the scan (see Cost): the whole table takes the scan, a selective store set keeps the btree plan (the S shapes at K10 and K400 of the analytics corpus did not change, and the fixture `g_cost_selective` asserts it).
 
 On 300000 orders (960000 items, one core, `sift_col` index, median of 7, wall ms; "default" is the plan PostgreSQL's planner picks with the default costs and workers), plain plan against SiftAgg without workers:
 
@@ -75,6 +81,29 @@ On 300000 orders (960000 items, one core, `sift_col` index, median of 7, wall ms
 | `percentile_disc` of a date per status | 114 | 129 | 9.5 | 12.0 | SiftAgg |
 | `array_agg(int)` per status | 95 | 54 | 20 | 4.7 | SiftAgg |
 | user aggregate (SQL transition function) per status | 291 | 292 | 180 | 1.6 | SiftAgg |
+
+The aggregates of `ORDER BY`, `DISTINCT` over several arguments, hypothetical sets, joined columns and the combine-function parallel kinds, same data and method (wall ms, median of 7; page costs raised so that the scan is the plan; W is `max_parallel_workers_per_gather`; "default" says whether the planner takes SiftAgg with the default costs):
+
+| Query | Plain W=0 | SiftAgg W=0 | W=2 | W=4 | Speedup W=0 | Default plan |
+|---|---:|---:|---:|---:|---:|---|
+| `string_agg(country_code, ',' ORDER BY id)` per status | 341 | 236 | 276 | 245 | 1.4 | SiftAgg |
+| `array_agg(store_id ORDER BY total DESC, id)` per status | 790 | 330 | 289 | 374 | 2.4 | SiftAgg |
+| `jsonb_agg(store_id ORDER BY id)` per 50 groups | 204 | 158 | 155 | 138 | 1.3 | SiftAgg |
+| `array_agg(id ORDER BY placed_at DESC, id)` per country | 306 | 151 | 153 | 145 | 2.0 | SiftAgg |
+| `array_agg(DISTINCT store_id ORDER BY store_id DESC)` per status | 481 | 137 | 149 | 152 | 3.5 | SiftAgg |
+| `regr_count(DISTINCT total, store_id)` per status | 717 | 403 | 334 | 370 | 1.8 | SiftAgg |
+| `array_agg(DISTINCT id)` per status, `work_mem` 4 MB (spills) | 378 | 171 | 190 | 226 | 2.2 | SiftAgg |
+| `sum(DISTINCT customer_id)` per status (hash set) | 469 | 176 | 240 | 213 | 2.7 | SiftAgg |
+| `rank(10) WITHIN GROUP`, `dense_rank(10)` per status | 260 | 284 | 271 | 238 | 0.9 | normal plan |
+| `string_agg(total::float8::text, ',')` per status (sign of zero kept) | 181 | 71 | 71 | 70 | 2.5 | SiftAgg |
+| `percentile_cont(stable fraction)` per status | 147 | 87 | 94 | 91 | 1.7 | SiftAgg |
+| `max(upper(c.mapped_category))`, `string_agg(DISTINCT ...)` of a joined column | 588 | 139 | 129 | 159 | 4.2 | SiftAgg |
+| `stddev_samp`, `var_pop`, `regr_slope` per source | 101 | 57 | 33 | 22 | 1.8 | SiftAgg |
+| `bool_and`, `bit_or`, `bit_xor` per status | 66 | 30 | 16 | 13 | 2.2 | SiftAgg |
+| `cardinality(array_agg(store_id))` per status | 58 | 12.7 | 8.3 | 11.6 | 4.6 | SiftAgg |
+| `stddev_pop(numeric)`, no group | 61 | 26 | 12.8 | 13.7 | 2.3 | SiftAgg |
+
+The ordered and `DISTINCT` kinds are serial (W=2 and W=4 equal W=0 within noise), the combine-function kinds go to 2.5 to 4.5 times the W=0 scan with 4 workers. Hypothetical sets are the only family slower than the normal plan: the table forces the scan, the default plan keeps the normal one.
 
 The scan is the cost of decoding the leaves and building a Datum per value; what the aggregate itself costs (the numeric accumulation, a SQL function, the tuplesort of an ordered set) is PostgreSQL's and is the same in both plans, which is why the user aggregate and the sorting ones gain least.
 
@@ -142,12 +171,12 @@ Which specs run in parallel is `sift_aggspec_parallel_ok`, shared by the planner
 | | Parallel (a table is dumped, merged by value, reset) | Serial only (the leader scans alone: no workers planned, no lanes) |
 |---|---|---|
 | Keys | a column (dictionary, integer, date, bool), an expression of one column (`SAK_LEAF`, `SAK_LUT`), float keys (bits), numeric keys (`SAK_NUM`: the value, 128 bits), keys of a combo (`SAK_COMBO`), the grouping set number (`SAK_SET`) | |
-| Aggregates | `count(*)`, `count(x)`, `count(DISTINCT row id)` of an unnest, `sum` / `avg` of integers, float8 and numeric (leaf or expression), `min` / `max` of a leaf or a numeric expression, `count(DISTINCT)` of a dictionary or integer leaf, ordered-set aggregates (`percentile_*`: the histogram of values with their counts, or the sorted pairs of a spilled one), any `FILTER` | `count(DISTINCT)` and `sum` / `avg` with `DISTINCT` of a numeric expression (a set of 128 bit values per group), mapped aggregates (`SAA_M_*`: values of a lookup table), per-order aggregates (`SAA_O_*`) |
+| Aggregates | `count(*)`, `count(x)`, `count(DISTINCT row id)` of an unnest, `sum` / `avg` of integers, float8 and numeric (leaf or expression), `min` / `max` of a leaf or a numeric expression, `count(DISTINCT)` of a dictionary or integer leaf, ordered-set aggregates (`percentile_*`: the histogram of values with their counts, or the sorted pairs of a spilled one), generic aggregates with a combine function (`stddev`, `var`, `corr`, `bool_*`, `bit_*`, `array_agg`, `string_agg`, user aggregates with `combinefunc`; not with a native float `sum`/`avg` in the query), any `FILTER` | `count(DISTINCT)` and `sum` / `avg` with `DISTINCT` of a numeric expression (a set of 128 bit values per group), mapped aggregates (`SAA_M_*`: values of a lookup table), per-order aggregates (`SAA_O_*`), generic aggregates that are ordered, `DISTINCT`, over a joined column, hypothetical or whose functions are not parallel safe or have no combine function |
 | Shape | row filters of every kind, element filters, unnest, `sum(x * y)` programs, lookup joins and combos, grouping sets, virtual leaves (`jsonb` member by key) | two-level (per-order arms) |
 
 A worker loads the lookup tables of the joins itself, with the leader's snapshot (a few rows each), and evaluates the slots of its combos; the output rows of a combo hold ids of the key tables, so a lane forgets them with the table. The partial table of a numeric sum carries the 128 bit state, the grouping sets are groups of the set number (an integer key), an ordered set sends its histogram as (group, value, count) runs and the leader adds the counts into one histogram (or a tuple sort once it does not fit `work_mem`), and `percentile_*` then walks the sorted values once as in a serial scan.
 
-Generic aggregates (`SAA_GEN`, PostgreSQL's own transition and final functions) run on the leader alone: their states are not dumped or merged, so a query with one gets no workers and is never fused with other arms.
+Generic aggregates (`SAA_GEN`, PostgreSQL's own transition and final functions) with a combine function are dumped as the aggregate's partial states and merged by key value with it; their workers are morsel based like the exact kinds. The others run on the leader alone, and a query with any generic aggregate is never fused with other arms.
 
 The kinds that stay serial keep their state in structures that are not dumped and have no merge defined: their scan is one item over all the superblocks into one table, with float sums in tuple order. The per-order arms hold a cell per (arm, group) while a row is read and flush it into the outer accumulators at the end of the row, which would merge like any other table, but the guard of an inner `avg(float8)` takes the tuple count and the largest input of the whole scan and S2 is already 22 times faster than the normal plan on one process (32 ms, of which a worker start is 8). A mapped aggregate keeps the values of a lookup table that its sets refer to by id. The test `aggstub_scan` checks that every parallel kind gets workers and gives the rows of the one-process scan and of the normal plan.
 
@@ -333,8 +362,7 @@ Not done here (the engine files are not part of this track). In order of what th
 What the generic aggregates would gain from the engine (`src/sift_col*`, not changed here), in the order of what they save:
 
 - **Datum-ready text and numeric reads**: `sift_colsrc_read` gives codes into a per-unit dictionary and scaled int64; every generic aggregate over text builds a `text` Datum per row from the dictionary bytes, and over a numeric builds a `numeric` from the integer (`int64_to_numeric`). A read that returns the varlena of each distinct code once per unit (a `Datum[]` over the dictionary, built lazily) and a `numeric` Datum per distinct scaled value would take that out of the per-row path for text keys and for low-cardinality numbers.
-- **More scalar leaf types**: the generic aggregates read bool, int2/4/8, date, timestamp(tz), float4/8, text, varchar and numeric(p <= 18). `uuid`, `time`, `interval`, `bytea`, `char(n)` and `numeric(p > 18)` columns are refused at `CREATE INDEX` or by the planner, so `min(uuid)`, `array_agg(interval)` and the like keep the plan.
-- **The sign of a float zero**: the index stores `-0` as `0`. A generic aggregate whose result shows it (`array_agg(f8)`, `string_agg(f8::text)`, `jsonb_agg`) is refused for that reason; keeping the sign bit (a float leaf that round-trips the bits) would let them match.
+- **More scalar leaf types**: the generic aggregates read bool, int2/4/8, date, timestamp(tz), float4/8, text, varchar and numeric(p <= 18). `bytea` and `char(n)` columns are refused at `CREATE INDEX` or by the planner, so `array_agg(bytea)` and the like keep the plan (`uuid`, `interval` and `numeric(p > 18)` are being added to the engine).
 - **Row order**: a unit gives its rows in TID order and the units come in superblock order, which is the heap order the order-sensitive aggregates (`array_agg`, `string_agg` without `ORDER BY`) see in a sequential scan. After a rewrite of the index (merge, promote) that order is what the source documents; a statement in `docs/COL.md` that the read order is the TID order of the table would make it a guarantee.
 - **Per-dictionary order**: `DISTINCT` and ordered sets over text sort by the type's comparison function on decoded values. A dictionary that is sorted in the collation's order (or a rank per code) would make `min`/`max`/`DISTINCT`/`percentile_disc` of a text leaf integer work.
 - **Distinct counts**: `ndistinct` of the leaves (`SiftSrcStats`) would size the `DISTINCT` hash and the groups of a generic aggregate (today a flat price per group).
@@ -345,9 +373,9 @@ What the generic aggregates would gain from the engine (`src/sift_col*`, not cha
 - A top-k per group inside the node (S5), and decode-bound shapes (S3, S6, S7 at K4000): fewer bytes per element (the requests to the column engine below).
 - Partial tables for the per-order arms and the mapped aggregates (above, why), and for `count(DISTINCT)` of a numeric expression.
 - The statistics of the "Statistics request" above.
-- Generic aggregates in parallel: the partial states of the aggregates that have a combine function (`stddev`, `sum`, `bool_*`, `array_agg`, ...) dumped as datums and merged with it; `DISTINCT` and ordered sets need the values moved, not the states.
-- `ORDER BY` inside the call (`string_agg(x, ',' ORDER BY y)`, `array_agg(x ORDER BY y)`): a tuplesort per group on the order keys, then the transition function; hypothetical-set and variadic aggregates; an expression of a joined column.
-- Generic aggregate memory: the `DISTINCT` pairs of a group are kept until the scan ends and are not bounded by `work_mem` (the ordered sets are).
+- Generic aggregates that are ordered, `DISTINCT` or over a joined column in parallel: they need the rows moved (a sort per worker and a merge of the sorted runs), not the states.
+- Hypothetical-set aggregates without the double sort (the scan sorts the group's rows, then the transition function sorts them again): a transition path that takes the sorted rows.
+- More than one joined column in a generic aggregate, and an argument expression of more than 4 leaves.
 - `count(DISTINCT)` is a hash set per aggregate (about 25 ns per tuple): a per-group bitmap or sort-based form for dense domains.
 - A lookup-table expression (a key or a filter that is not a plain comparison) over an integer column whose values span more than 2^22 raises an error with a hint to switch `sift.enable_agg` off; plain group keys, comparisons and `IN` lists over such columns work (hash ids, binary search).
 

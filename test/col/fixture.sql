@@ -176,6 +176,11 @@ CREATE FUNCTION coldiff.fx_sq_add(acc float8, x float8) RETURNS float8 LANGUAGE 
 CREATE AGGREGATE coldiff.sum_sq(float8) (sfunc = coldiff.fx_sq_add, stype = float8, initcond = '0');
 CREATE FUNCTION coldiff.fx_vol_add(acc float8, x float8) RETURNS float8 LANGUAGE sql VOLATILE AS $$ SELECT acc + x + 0 * random() $$;
 CREATE AGGREGATE coldiff.sum_vol(float8) (sfunc = coldiff.fx_vol_add, stype = float8, initcond = '0');
+CREATE FUNCTION coldiff.fx_arr_add(acc bigint, a int[]) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$ SELECT acc + coalesce((SELECT sum(x) FROM unnest(a) x), 0) $$;
+CREATE AGGREGATE coldiff.sum_sq_par(float8) (sfunc = coldiff.fx_sq_add, stype = float8, initcond = '0', combinefunc = float8pl, parallel = safe);
+CREATE AGGREGATE coldiff.sum_all(VARIADIC int[]) (sfunc = coldiff.fx_arr_add, stype = bigint, initcond = '0');
+CREATE FUNCTION coldiff.fx_six_add(acc bigint, a int, b int, c int, d int, e int, f int) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$ SELECT acc + a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 $$;
+CREATE AGGREGATE coldiff.sum_six(int, int, int, int, int, int) (sfunc = coldiff.fx_six_add, stype = bigint, initcond = '0');
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)
 CREATE TABLE orders_odd (LIKE orders INCLUDING DEFAULTS);

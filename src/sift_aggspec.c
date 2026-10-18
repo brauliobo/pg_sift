@@ -304,6 +304,8 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_MIN:
 		case SAA_MAX:
 			return true;
+		case SAA_GEN:
+			return a->gen->parallel;
 		default:
 			return false;
 	}
@@ -320,6 +322,12 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 	for (int i = 0; i < s->naggs; i++)
 		if (!plain_agg(&s->agg[i]))
 			return false;
+	/* the float sums of the scan are merged in lane order, the generic states as the workers finish: not in one scan */
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_GEN)
+			for (int j = 0; j < s->naggs; j++)
+				if (s->agg[j].kind == SAA_SUM_F64 || s->agg[j].kind == SAA_AVG_F64)
+					return false;
 	return true;
 }
 
@@ -487,6 +495,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 		return;
 	put_node(p, g->aggref);
 	put_int(p, g->nargs);
+	put_int(p, g->ntrans);
 	for (int k = 0; k < g->nargs; k++)
 	{
 		put_int(p, (int) g->arg[k].typid);
@@ -494,11 +503,17 @@ put_gen(Pack *p, const SiftAggGen *g)
 		for (int l = 0; l < g->arg[k].nleaves; l++)
 			put_int(p, g->arg[k].leaf[l]);
 		put_node(p, g->arg[k].expr);
+		put_int(p, g->arg[k].mapped);
+		put_int(p, g->arg[k].combo);
+		put_int(p, g->arg[k].slot);
 	}
 	put_node(p, g->direct);
 	put_int(p, g->distinct);
 	put_int(p, g->darg);
 	put_int(p, g->ordered);
+	put_int(p, g->sorted);
+	put_int(p, g->hyp);
+	put_int(p, g->parallel);
 }
 
 static void
@@ -771,6 +786,7 @@ get_gen(Unpack *u)
 	g = palloc0(sizeof(SiftAggGen));
 	g->aggref = get_node(u);
 	g->nargs = get_int(u);
+	g->ntrans = get_int(u);
 	for (int k = 0; k < g->nargs; k++)
 	{
 		g->arg[k].typid = (Oid) get_int(u);
@@ -778,11 +794,17 @@ get_gen(Unpack *u)
 		for (int l = 0; l < g->arg[k].nleaves; l++)
 			g->arg[k].leaf[l] = get_int(u);
 		g->arg[k].expr = get_node(u);
+		g->arg[k].mapped = get_int(u);
+		g->arg[k].combo = get_int(u);
+		g->arg[k].slot = get_int(u);
 	}
 	g->direct = get_node(u);
 	g->distinct = get_int(u);
 	g->darg = get_int(u);
 	g->ordered = get_int(u);
+	g->sorted = get_int(u);
+	g->hyp = get_int(u);
+	g->parallel = get_int(u);
 	return g;
 }
 
