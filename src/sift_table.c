@@ -73,6 +73,10 @@ sift_tbl_define_gucs(void)
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
+							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 16, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
+#endif
 	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
 							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
 							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_MERGE_DEAD_PCT, 1, 100,
