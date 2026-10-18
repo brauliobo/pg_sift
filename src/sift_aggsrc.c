@@ -174,3 +174,27 @@ sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c)
 {
 	src->prov->counters(src->impl, c);
 }
+
+uint64
+sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf)
+{
+	return src->prov->set_filters ? src->prov->set_filters(src->impl, f, nf) : 0;
+}
+
+bool
+sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits)
+{
+	return src->prov->filter(src->impl, unit, bits);
+}
+
+bool
+sift_colsrc_can_read_sel(const SiftSrcSource *src)
+{
+	return src->prov->read_sel != NULL;
+}
+
+void
+sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
+{
+	src->prov->read_sel(src->impl, unit, leaf, bits, vec);
+}

@@ -1889,6 +1889,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	p->expr = r;
 	p->argtype = rt;
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, r));
+	p->sel = clause_selectivity(c->root, (Node *) sa, c->relid, JOIN_INNER, NULL);
 	return p;
 }
 
