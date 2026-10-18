@@ -264,6 +264,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch; speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `final.sh`, `gap.sh`, `gap.py` |  |
 | `store.sh`, `store.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
@@ -342,6 +343,11 @@ ClickHouse. It extends this harness rather than replacing it: `bench` is the ent
 
 ```sh
 bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
+bench/analytics                         # the quick run: 1M orders, 3 runs, the same equality checks, about 2 minutes (bench/out/latest/store.json)
+bench/bench store compare A.json B.json # two runs side by side: every warm median and the ratio (changes above 10% marked)
+bench/bench store all --sizes 1000000 --compression --docs   # the pg_sift `compression` variants as lanes and every system's size with its other codec settings
+bench/steps/gap.sh                      # the pg_sift profile (planning, instructions, symbols) on a private cluster under a memory cap
+bench/analytics --final --dry-run       # the plan, time, disk and memory of the one command that regenerates every published analytics number (without --dry-run: runs it)
 bench/bench store clean                 # containers, volumes, the image, the CSV
 ```
 
