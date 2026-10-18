@@ -39,6 +39,12 @@ extern void sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask);
  */
 extern int	sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask);
 
+/* The offset loop of a page filter: test says whether the tuple at tid is visible (the heap checks its HOT chain, a sift_table its row version) */
+typedef bool (*SiftTidTest) (void *arg, ItemPointer tid);
+
+/* Clears the bits of offmask (bit i: offset i + 1 of blk, SIFT_OFFMASK_WORDS words of 64) whose tid test rejects; returns the bits left */
+extern int	sift_vis_filter_mask(BlockNumber blk, uint64 *offmask, SiftTidTest test, void *arg);
+
 /* Fetches the visible version of tid into slot (tid becomes that version's, it differs along a HOT chain); false if none */
 extern bool sift_vis_fetch(SiftVis *v, ItemPointer tid, TupleTableSlot *slot);
 

@@ -27,6 +27,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_table.h"
+#include "sift_visibility.h"
 
 /* ---------- parallel scans ---------- */
 
@@ -426,43 +427,47 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead);
 }
 
+typedef struct VblockTest
+{
+	Relation	rel;
+	SiftTblRel *st;
+	Snapshot	snapshot;
+	Page		copy;			/* the delta page, NULL when the vblock is in a column group */
+	uint64		gen;
+} VblockTest;
+
+static bool
+vblock_tid_visible(void *arg, ItemPointer tid)
+{
+	VblockTest *t = arg;
+	SiftTblRowVer rv;
+	const SiftTblRec *rec;
+	bool		ok;
+
+	if (t->copy)
+	{
+		if ((rec = sift_tbl_page_rec(t->copy, t->gen, ItemPointerGetOffsetNumber(tid))) == NULL)
+			return false;
+		sift_tbl_rowver(&rv, tid, rec);
+		return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
+	}
+	if (!sift_tbl_fetch_row(t->rel, t->st, tid, &rv))
+		return false;
+	ok = sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
+	heap_freetuple(rv.tuple);
+	return ok;
+}
+
 /* Keeps the offsets of vblock whose row is visible to snapshot; the delta page is read once (the BM25 index's heap check) */
 int
 sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
 	PGAlignedBlock copy;
-	uint64		gen = 0;
-	bool		delta = sift_tbl_load_vblock(rel, st, vblock, copy.data, &gen);
-	int			left = 0;
+	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data};
 
-	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
-		for (uint64 m = offmask[wd]; m; m &= m - 1)
-		{
-			ItemPointerData tid;
-			SiftTblRowVer rv;
-			const SiftTblRec *rec;
-			bool		ok = false;
-
-			ItemPointerSet(&tid, vblock, wd * 64 + __builtin_ctzll(m) + 1);
-			if (delta)
-			{
-				if ((rec = sift_tbl_page_rec(copy.data, gen, ItemPointerGetOffsetNumber(&tid))) != NULL)
-				{
-					sift_tbl_rowver(&rv, &tid, rec);
-					ok = sift_tbl_visible(rel, st, snapshot, &rv);
-				}
-			}
-			else if (sift_tbl_fetch_row(rel, st, &tid, &rv))
-			{
-				ok = sift_tbl_visible(rel, st, snapshot, &rv);
-				heap_freetuple(rv.tuple);
-			}
-			left += ok;
-			if (!ok)
-				offmask[wd] &= ~(m & -m);
-		}
-	return left;
+	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
+		t.copy = NULL;
+	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }
 
 bool
