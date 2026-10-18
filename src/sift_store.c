@@ -761,6 +761,8 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
+		else if (s->format > SIFT_FORMAT_MINOR)
+			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
 			if (dir->segs[j].gen == s->gen)
 				err = "duplicate segment generation";
@@ -826,6 +828,9 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
+		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is 0) */
+		for (int i = 0; i < DIR(dp)->nsegs; i++)
+			META(mp)->format_minor = Max(META(mp)->format_minor, DIR(dp)->segs[i].format);
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);

@@ -60,6 +60,8 @@ typedef struct SiftSegment
 	MemoryContext mcxt;
 	void	   *docmap;			/* private: SB directory and the loaded SB */
 	void	   *live;			/* private: dirty-SB bitmap */
+	void	   *l2;				/* private: format 2 liveness (header, rows of the SB read last) */
+	uint8		fmt;			/* segment format: SIFT_SEGFMT_* */
 } SiftSegment;
 
 /* Reads the header and the dictionary root; ERRCODE_INDEX_CORRUPTED on format errors */
@@ -116,8 +118,33 @@ extern void sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int pag
 /* Does the SB hold vacuumed docs, known without reading its docs (false when the segment has none there) */
 extern bool sift_seg_sb_dirty(SiftSegment *seg, uint32 sb);
 
-/* The live postings of the pages of group g (of the SB of dc, dirty) that pages, a subset of g's, selects */
-extern uint64 sift_seg_count_live(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g, const uint64 *pages);
+/*
+ * The docs and tokens of the segment that are live. The header's count of a segment of format 1 holds its vacuumed docs too; in
+ * format 2 the liveness header keeps the dead ones, so the totals are exact.
+ */
+extern void sift_seg_live_totals(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl);
+
+/*
+ * Do the dfs the segment's terms carry (info.ldf) count its live docs: its table of dead postings is the one of the liveness rows
+ * now and was when the segment was opened (a VACUUM changes the rows first, the table after). False for a vacuumed segment of format 1
+ */
+extern bool sift_seg_live_stable(SiftSegment *seg);
+
+/* Is the doc of the key live (true in a clean SB, and for a key the segment does not hold) */
+extern bool sift_seg_key_live(SiftSegment *seg, SiftKey key);
+
+/*
+ * Sets info->ldf, the df of the live docs, of a term the dictionary gave (format 2: its df less the dead postings of its slot,
+ * or the live ones of its inline keys). info->df, which sizes the posting lists, stays.
+ */
+extern void sift_seg_term_stats(SiftSegment *seg, SiftTermInfo *info);
+
+/*
+ * For a dirty SB (sift_seg_sb_dirty): the live postings of the pages of group g that pages, a subset of g's, selects, and the live offsets
+ * of one page among a mask's. They read the SB's docs only in format 1; format 2 keeps the live offsets of the SB's pages in its liveness run
+ */
+extern uint64 sift_seg_live_count(SiftSegment *seg, const sift_grp *g, const uint64 *pages);
+extern int	sift_seg_live_mask(SiftSegment *seg, uint32 sb, int page, uint64 *mask);
 
 /* Keeps in mask, a subset of the present offsets of a page of a dirty SB (dc->dirty), the live ones; returns how many are left */
 extern int	sift_seg_page_mask_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *mask);

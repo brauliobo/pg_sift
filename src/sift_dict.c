@@ -32,6 +32,7 @@ struct SiftDictWriter
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
 	uint64		nterms;
+	uint32		nslots;			/* terms that are not inline */
 	BufFile    *idx;			/* DICTIDX bytes: one entry per block */
 	uint64		nidx;
 	uint64	   *root;			/* the first prefix of every SIFT_DICT_ROOT_FANOUT entries */
@@ -59,6 +60,7 @@ typedef struct BlockIter
 	const uint8 *end;
 	int			left;
 	uint64		post;
+	uint32		slot;			/* of the next term without inline postings */
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			len;
 } BlockIter;
@@ -143,7 +145,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			 (unsigned long long) info->post_off, (unsigned long long) ALIGN4(w->post_end));
 	if (w->nblk == 0)
 	{
-		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, 0};
+		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, w->nslots};
 
 		if (w->dict_len > SIFT_DICT_MAX)
 			ereport(ERROR,
@@ -202,8 +204,15 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	memcpy(w->prev, term, len);
 	w->prevlen = len;
 	w->nterms++;
+	w->nslots += !inl;
 	if (++w->nblk == SIFT_DICT_BLOCK)
 		flush_block(w);
+}
+
+uint32
+sift_dict_writer_nslots(const SiftDictWriter *w)
+{
+	return w->nslots;
 }
 
 void
@@ -272,9 +281,9 @@ read_idx(SiftDict *d, uint64 b)
 	return e;
 }
 
-/* Copies the block at offset off of DICT into buf (UINT16_MAX + 1 bytes) and starts decoding it */
+/* Copies the block at offset off of DICT into buf (UINT16_MAX + 1 bytes) and starts decoding it; slot_base: its DICTIDX entry's */
 static void
-block_begin(SiftDict *d, uint64 off, uint8 *buf, BlockIter *it)
+block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it)
 {
 	const uint8 *src;
 	uint32		len;
@@ -294,6 +303,7 @@ block_begin(SiftDict *d, uint64 off, uint8 *buf, BlockIter *it)
 	it->left = buf[2];
 	it->p = get_varint(buf + 3, it->end, &post);
 	it->post = post;
+	it->slot = slot_base;
 	it->len = 0;
 	if (it->left < 1 || it->left > SIFT_DICT_BLOCK)
 		corrupt("Block at %llu holds %d terms.", (unsigned long long) off, it->left);
@@ -327,11 +337,12 @@ block_next(BlockIter *it, SiftTermInfo *info)
 	it->p += suffix;
 	memset(info, 0, sizeof(SiftTermInfo));
 	it->p = get_varint(it->p, it->end, &v);
-	info->df = v;
+	info->df = info->ldf = v;
 	if (it->end - it->p < 2)
 		corrupt("Truncated dictionary entry.");
 	info->flags = *it->p++;
 	info->max_bound = *it->p++;
+	info->slot = (info->flags & SIFT_TERM_INLINE) ? -1 : it->slot++;
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
@@ -464,7 +475,7 @@ find_block(SiftDict *d, const char *term, int len)
 		BlockIter	it;
 		SiftTermInfo info;
 
-		block_begin(d, read_idx(d, mid).block_off, d->blk, &it);
+		block_begin(d, read_idx(d, mid).block_off, 0, d->blk, &it);
 #ifdef SIFT_TESTING
 		sift_dict_probes++;
 #endif
@@ -486,10 +497,12 @@ sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info)
 {
 	int64		b = d->nblocks ? find_block(d, term, len) : -1;
 	BlockIter	it;
+	SiftDictIdx e;
 
 	if (b < 0)
 		return false;
-	block_begin(d, read_idx(d, b).block_off, d->blk, &it);
+	e = read_idx(d, b);
+	block_begin(d, e.block_off, e.slot_base, d->blk, &it);
 	while (block_next(&it, info))
 	{
 		int			c = term_cmp(it.term, it.len, term, len);
@@ -507,18 +520,20 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 	int64		b = lo && d->nblocks ? Max(find_block(d, lo, lolen), 0) : 0;
 	uint8	   *buf;
 	bool		more = true;
-	uint32		nblk = 0;
+	uint32		nblk = 0,
+				slot;
 
 	if (d->nblocks == 0)
 		return;
 	/* own copy: fn may look terms up in this dictionary */
 	buf = palloc(UINT16_MAX + 1);
+	slot = read_idx(d, b).slot_base;
 	for (uint64 off = read_idx(d, b).block_off; more && off < d->dict_len;)
 	{
 		BlockIter	it;
 		SiftTermInfo info;
 
-		block_begin(d, off, buf, &it);
+		block_begin(d, off, slot, buf, &it);
 		off += it.end - buf;
 		while (more && block_next(&it, &info))
 		{
@@ -526,6 +541,7 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 				continue;
 			more = (!hi || term_cmp(it.term, it.len, hi, hilen) < 0) && fn(arg, it.term, it.len, &info);
 		}
+		slot = it.slot;
 		if ((++nblk & 15) == 0)
 		{
 			sift_sr_unlock(d->sr);	/* a buffer lock holds off interrupts */
