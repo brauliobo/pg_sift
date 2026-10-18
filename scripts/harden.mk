@@ -5,8 +5,9 @@
 #                            and the warnings that find overruns and misuse (-Wextra, -Wvla, -Warray-bounds=2, -Wstringop-overflow=4,
 #                            -Wformat=2; no warning at the current head, so a new one is a regression)
 #   make SIFT_HARDEN=init    pkg + -ftrivial-auto-var-init=zero (uninitialized locals read as 0, not as a previous frame)
-#   make SIFT_HARDEN=1       init + trap-mode UBSan (bounds, shift, nonnull, returns-nonnull, pointer-overflow, object-size, vla-bound):
+#   make SIFT_HARDEN=1       init + trap-mode UBSan (bounds, shift, nonnull, returns-nonnull, object-size, vla-bound):
 #                            a violation executes a trap instruction, no sanitizer runtime is linked, so it loads into any server
+#   make SIFT_HARDEN=1 SIFT_POINTER_OVERFLOW=1   also traps pointer wrap, +9 to +36% instructions: separate because it is rarely a bug on 64-bit
 #
 # A flag the compiler does not know is dropped (the probe compiles and links an empty program with it), so the same command line
 # works on every builder. SANITIZE=1 replaces the trap set (the ASan/UBSan runtime reports instead). Switching SIFT_HARDEN needs
@@ -36,7 +37,7 @@ ifneq ($(filter init 1,$(SIFT_HARDEN)),)
 SIFT_HARDEN_CFLAGS += $(call sift_cc_opts,-ftrivial-auto-var-init=zero)
 endif
 # the undefined-behavior checks of the trap set (SIFT_UBSAN_SET=bounds,shift,.. overrides the list: the cost of each is in docs/SAFETY.md)
-SIFT_UBSAN_WANT := $(or $(strip $(subst $(comma),$(space),$(SIFT_UBSAN_SET))),bounds shift nonnull-attribute returns-nonnull-attribute pointer-overflow object-size vla-bound)
+SIFT_UBSAN_WANT := $(or $(strip $(subst $(comma),$(space),$(SIFT_UBSAN_SET))),bounds shift nonnull-attribute returns-nonnull-attribute object-size vla-bound $(if $(SIFT_POINTER_OVERFLOW),pointer-overflow))
 ifeq ($(SIFT_HARDEN),1)
 ifndef SANITIZE
 SIFT_UBSAN_KINDS := $(patsubst -fsanitize=%,%,$(call sift_cc_opts,$(addprefix -fsanitize=,$(SIFT_UBSAN_WANT)),-fsanitize-undefined-trap-on-error))

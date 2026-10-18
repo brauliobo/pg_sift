@@ -25,7 +25,7 @@
 # functions; SIFT_TESTING= builds the production library.
 #
 # SANITIZE=1 install builds with ASan+UBSan; SIFT_HARDEN=pkg|init|1 builds with the hardening flags of scripts/harden.mk
-# (docs/SAFETY.md); install runs make clean whenever SANITIZE, SIFT_TESTING or SIFT_HARDEN changes. start then preloads the sanitizer runtimes
+# (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap); install runs make clean whenever SANITIZE, SIFT_TESTING or SIFT_HARDEN changes. start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
 # $SIFT_TMP/sanitizer/ (sanitizer-report). SIFT_INITDB_TEMPLATE, a data directory made by `initdb-template`, is copied
 # instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib.bash uses it too).
@@ -48,14 +48,14 @@ PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
-FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)"
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)"
 
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
 
 install() {
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	# on the make command line: sudo resets the environment, which would install another flavor
-	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"})
+	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1})
 	nice make -C "$REPO" -j4 "${flavor[@]}"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )); then
