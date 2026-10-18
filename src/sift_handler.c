@@ -26,6 +26,7 @@
 #include "sift_build.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
+#include "sift_merge.h"
 #include "sift_ops.h"
 #include "sift_posting.h"
 #include "sift_prefix.h"
@@ -173,6 +174,9 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "vacuum_segments",
 					  "Directory entries (segments, the mutable one included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
 					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "merge_fanin",
+					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
+					  SIFT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -267,6 +271,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
 		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
+		{"merge_fanin", RELOPT_TYPE_INT, offsetof(SiftOptions, merge_fanin)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
@@ -288,6 +293,7 @@ sift_index_options(Relation index)
 		.accent_folding = true,
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
+		.merge_fanin = SIFT_MERGE_FANIN,
 		.positions = true,
 	};
 

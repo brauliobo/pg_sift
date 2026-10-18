@@ -46,6 +46,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   loads on scores.
 - Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the release library
   (`SIFT_TESTING` off).
+- New: reloption `merge_fanin` (default 8, 2 to 32): the segments of one size tier that trigger a merge, so far the constant 8. It is read when
+  a merge is chosen: `ALTER INDEX ... SET` applies it with no `REINDEX`, and the default is today's behavior. The other limits follow it and
+  stay consistent for any value: the merge of the smallest segments starts above `greatest(32, 2 * merge_fanin)` directory entries (32 up to a fanin of 16, as
+  before), a merge takes at most twice the fanin of segments, and a build-time check proves that the largest fanin still merges before inserters must make room
+  (112 of 128 entries). Tests: `merge_fanin` (every fanin from 2 to 32) and the TAP test `maint_fanin` (inserts against the worker at 2 and 32).
 
 ## 1.4.0
 

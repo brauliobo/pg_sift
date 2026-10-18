@@ -62,7 +62,7 @@ sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapsho
 				sel[k++] = imm[j];
 			return k;
 		}
-	if (snap->nsegs > SIFT_MERGE_MAX_SEGMENTS && n >= 2)
+	if (snap->nsegs > SIFT_MERGE_ENTRIES(fanin) && n >= 2)
 	{
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
 		return Min(n, fanin);
