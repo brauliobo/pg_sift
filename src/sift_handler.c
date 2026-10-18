@@ -142,6 +142,9 @@ define_reloptions(void)
 	add_int_reloption(sift_relopt_kind, "mutable_limit",
 					  "Mutable segment size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_MUTABLE_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "vacuum_segments",
+					  "Directory entries (segments, the mutable one included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
+					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -235,6 +238,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
+		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
 		{"prefix_index", RELOPT_TYPE_INT, offsetof(SiftOptions, prefix_index)},
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
@@ -255,6 +259,7 @@ sift_index_options(Relation index)
 		.case_folding = true,
 		.accent_folding = true,
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
+		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
 		.positions = true,
 	};
 

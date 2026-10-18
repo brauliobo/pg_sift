@@ -419,7 +419,7 @@ word     := run of chars other than whitespace and ( ) { } " ^ ~ / ; backslash e
   - Generic WAL batches up to 4 changed pages per record.
 - **`amvacuumcleanup`:**
   1. promote sealed segments;
-  2. merge steps until the policy asks for none (a build with a small `maintenance_work_mem` leaves up to 128 segments, 8 fewer per step);
+  2. merge steps until the policy asks for none and the directory holds at most `vacuum_segments` entries (reloption, default 2, 1 to 128, `ShareUpdateExclusiveLock`; not part of the analyzer hash, so no REINDEX). The tiered policy alone stops at 32 or fewer; for the rest `pick_merge` caps a merge at `excess + 1` segments (`excess` = entries beyond the target) and, when the policy has nothing, takes the smallest immutable segments (each within the fan-in of the sum of the smaller ones, as the policy requires). Only goal `MERGE_VACUUM` does this: the background worker and the inserter's merge for room keep the tiered policy, so `vacuum_segments` costs the write path nothing. A target above the segment count is a no-op;
   3. recycle free extents whose `safexid` is past the horizon;
   4. orphan sweep;
   5. report `num_pages` and `num_index_tuples`.

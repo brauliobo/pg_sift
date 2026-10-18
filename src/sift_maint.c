@@ -69,6 +69,14 @@ typedef enum StepResult
 	STEP_FAILED					/* rolled back, its blocks returned, reported and counted */
 } StepResult;
 
+/* Who asks for a merge: any (explicit, or for room in a full directory), the background (worker), VACUUM */
+typedef enum MergeGoal
+{
+	MERGE_ANY,
+	MERGE_BACKGROUND,
+	MERGE_VACUUM
+} MergeGoal;
+
 /* ---------- locking and directory helpers ---------- */
 
 static bool
@@ -482,7 +490,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	MemoryContextDelete(cx);
 }
 
-static StepResult merge_next(Relation index, bool force, bool propagate, uint64 *busy);
+static StepResult merge_next(Relation index, bool force, MergeGoal goal, bool propagate, uint64 *busy);
 static bool make_room_locked(Relation index);
 
 /* Re-reads the directory, as the segments claimed from an older snapshot may have been replaced meanwhile */
@@ -599,13 +607,56 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *m
 	return n;
 }
 
+static int
+bytes_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
+}
+
+/*
+ * The smallest segments, up to want of them, that are worth merging for the count: each is at most SIFT_MERGE_FANIN times the
+ * size of the ones before it, so a segment past the tier of the others stays (its rewrite would cost more than the count gains).
+ */
+static int
+pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
+{
+	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+	uint64		sum = 0;
+	int			n = 0,
+				k = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !is_busy(sel, snap->segs[i].gen))
+			imm[n++] = snap->segs[i];
+	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
+	for (; k < Min(n, want) && (k < 2 || imm[k].bytes <= SIFT_MERGE_FANIN * sum); k++)
+	{
+		sel->seg[k] = imm[k];
+		sum += imm[k].bytes;
+	}
+	return k < 2 ? 0 : k;
+}
+
 /* The policy's choice (smallest first) cut to the smallest segments whose bytes fit one merge; a merge of fewer than two is none */
 static int
-pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *sel)
+pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeGoal goal, MergeSel *sel)
 {
 	int			n = pick_policy(index, snap, force, sel);
+	int			excess = snap->nsegs - sift_index_options(index)->vacuum_segments;
 	uint64		total = 0;
 	int			k = 0;
+
+	if (goal != MERGE_ANY && !force)
+	{
+		/* entries over vacuum_segments: a merge for the count is not needed below it (a lone segment's rewrite is not for the count) */
+		if (n > 1 && excess <= 0)
+			n = 0;
+		/* VACUUM merges down to the target and no further, and takes the smallest segments the policy left over */
+		if (goal == MERGE_VACUUM && n > 1)
+			n = Min(n, excess + 1);
+		if (goal == MERGE_VACUUM && n == 0 && excess > 0)
+			n = pick_smallest(snap, excess + 1, sel);
+	}
 
 	while (k < n && total + sel->seg[k].bytes <= merge_max_bytes())
 		total += sel->seg[k++].bytes;
@@ -698,7 +749,7 @@ all_there(Relation index, const MergeSel *sel)
 
 /* One merge of segments nobody else is at; busy: the generation of one that is, when that left nothing to merge */
 static StepResult
-merge_next(Relation index, bool force, bool propagate, uint64 *busy)
+merge_next(Relation index, bool force, MergeGoal goal, bool propagate, uint64 *busy)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MergeSel   *sel = palloc0(sizeof(MergeSel));
@@ -707,7 +758,7 @@ merge_next(Relation index, bool force, bool propagate, uint64 *busy)
 	for (int tries = 0; tries < CLAIM_TRIES && r == STEP_IDLE; tries++)
 	{
 		sift_dir_read(index, snap);
-		if ((sel->n = pick_merge(index, snap, force, sel)) == 0)
+		if ((sel->n = pick_merge(index, snap, force, goal, sel)) == 0)
 			break;
 		if (!claim_all(index, sel))
 			continue;
@@ -729,7 +780,7 @@ merge_to_fixed_point(Relation index)
 {
 	uint64		busy = 0;
 
-	while (merge_next(index, false, false, &busy) == STEP_DONE)
+	while (merge_next(index, false, MERGE_VACUUM, false, &busy) == STEP_DONE)
 		CHECK_FOR_INTERRUPTS();
 }
 
@@ -752,7 +803,7 @@ make_room_locked(Relation index)
 		if (snap->nsegs < room_segments())
 			break;
 		if ((r = promote_next(index, false, &busy)) == STEP_IDLE)
-			r = merge_next(index, false, false, &busy);
+			r = merge_next(index, false, MERGE_ANY, false, &busy);
 		if (r == STEP_IDLE && busy != 0)
 		{
 			/* what is left to merge is claimed by others: their step frees the entries */
@@ -796,7 +847,7 @@ sift_maint_merge_step(Relation index, bool wait)
 
 	if (!maint_lock_step(index, wait))
 		return false;
-	r = merge_next(index, false, false, &busy);
+	r = merge_next(index, false, MERGE_BACKGROUND, false, &busy);
 	maint_unlock_step(index);
 	return r == STEP_DONE;
 }
@@ -997,7 +1048,7 @@ worker_step(Oid indexoid)
 			uint64		busy = 0;
 
 			if ((r = promote_next(index, false, &busy)) == STEP_IDLE)
-				r = merge_next(index, false, false, &busy);
+				r = merge_next(index, false, MERGE_BACKGROUND, false, &busy);
 			maint_unlock_step(index);
 		}
 		index_close(index, RowExclusiveLock);
@@ -1059,7 +1110,7 @@ sift_merge(PG_FUNCTION_ARGS)
 
 	maint_lock(index);
 	promote_locked(index, false, true);
-	while (merge_next(index, force && n == 0, true, &busy) == STEP_DONE)
+	while (merge_next(index, force && n == 0, MERGE_ANY, true, &busy) == STEP_DONE)
 	{
 		n++;
 		CHECK_FOR_INTERRUPTS();
