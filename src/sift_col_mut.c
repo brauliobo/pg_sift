@@ -4,7 +4,7 @@
  * locking, growth, sealing, walks) is sift_lane.c's, shared with the BM25 doc records of sift_mutable.c; this file is the record.
  *
  * A record is SiftColRecHead and `len` payload bytes, 4-byte aligned. The payload of a row, for every top level leaf in id order, is a flag
- * byte (COLV_NULL, COLV_OVERFLOW) and, unless NULL, the value: INT a zigzag varint, F4 and F8 their raw bytes, STR a length byte and the
+ * byte (COLV_NULL, COLV_OVERFLOW) and, unless NULL, the value: INT a zigzag varint, F4 and F8 their raw bytes, STR a varint length and the
  * bytes, GROUP the varint element count. The elements of the children follow, child by child (id order), count values each, every
  * value with its own flag byte. A row that does not fit the tail page is split in pieces of its payload (first without
  * SIFT_COLR_CONT, the rest with it) written while the tail is held, lock coupling to the new page, so a row is always adjacent in one lane.
@@ -21,6 +21,7 @@
 #include "utils/rel.h"
 
 #include "sift_col_mut.h"
+#include "sift_col_pg.h"
 #include "sift_lane.h"
 #include "sift_varint.h"
 
@@ -125,12 +126,7 @@ put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 			appendBinaryStringInfo(buf, (char *) &v->v.f, sizeof(double));
 			break;
 		case SIFT_COLS_STR:
-			if (v->len > SIFT_COL_MAX_STR)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("sift_col value of %u bytes exceeds the maximum of %d bytes", v->len, SIFT_COL_MAX_STR),
-						 errhint("Index left(column, %d) or a hash of the column instead.", SIFT_COL_MAX_STR)));
-			appendStringInfoChar(buf, (char) v->len);
+			put_varint(buf, v->len);
 			appendBinaryStringInfo(buf, v->v.s, v->len);
 			break;
 	}
@@ -509,8 +505,11 @@ get_value(SiftCMutReader *r, const SiftColDef *def, const uint8 *p, const uint8 
 			p += sizeof(double);
 			break;
 		case SIFT_COLS_STR:
-			NEED(r, p, end, 1);
-			v->len = *p++;
+			p = get_varint(r, p, end, &x);
+			if (x > SIFT_COL_MAX_VALUE)
+				SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu holds a string of %llu bytes.", (unsigned long long) r->entry.gen,
+							 (unsigned long long) x);
+			v->len = x;
 			NEED(r, p, end, v->len);
 			v->v.s = (const char *) p;
 			p += v->len;

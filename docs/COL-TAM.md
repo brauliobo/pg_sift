@@ -303,8 +303,9 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   the sources are merged in ascending superblock. Aggregates therefore see exactly the rows a sequential scan sees
   (`tbl_agg` and the TAP test 008 compare the two plans in every state: delta, sealed, tombstones, own and other transactions' changes,
   rolled back, added columns). Leaves the executor does not read as values (numeric, `char(n)`, types the engine stores as exact images) are
-  marked lossy: no query uses them. A column group keeps a string over 255 bytes or a `-0` / odd NaN float apart as an exception: a query
-  that reads such a column of a unit holding one raises 0A000 with the hint to set `sift.enable_agg` off (the same as the index).
+  marked lossy: no query uses them. A column group keeps an odd NaN float apart as an exception: a query
+  that reads such a column of a unit holding one raises 0A000 with the hint to set `sift.enable_agg` off (the same as the index). A string of any length and
+  a float `-0` are stored exactly in their leaf (docs/COL.md 2.9).
 
 ---
 
@@ -321,8 +322,8 @@ the new table of a rewrite is private, so its extents are reusable at once). The
 
 *Layout of a group* (`SiftTblLayout`): one leaf per live column in column order (typed: integers and `numeric(p<=18, s>=0)` as INT with the
 scale, `float4/8` as F4/F8, text kinds as STR; any other type, including `jsonb`, `uuid`, arrays and `bytea`, as VAR holding the exact datum
-image) plus one `exceptions` VAR leaf. A value a typed leaf cannot hold exactly (numeric NaN/Infinity, a float `-0` or non-canonical NaN,
-a string over 255 bytes) is stored as NULL with the overflow flag in its leaf and its image in `exceptions`, so every value round-trips
+image) plus one `exceptions` VAR leaf. A value a typed leaf cannot hold exactly (numeric NaN/Infinity, a float non-canonical NaN)
+is stored as NULL with the overflow flag in its leaf and its image in `exceptions`, so every value round-trips
 exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by attribute number (missing: the default), segments of
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
 

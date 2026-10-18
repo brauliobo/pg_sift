@@ -1,10 +1,12 @@
 /*
  * sift_col_build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
- * and the segment writer encodes them (docs/COL.md 2.6). Serial; every segment holds its zones and dictionaries in memory until it is
- * finished, so a new one starts when they pass the budget.
+ * and the segment writer encodes them (docs/COL.md 2.6). Every segment holds its zones and dictionaries in memory until it is
+ * finished, so a new one starts when they pass the budget. A ColBuild is one participant: the whole build when serial, one of the
+ * processes of a parallel build (sift_col_build_par.c) otherwise.
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
@@ -13,15 +15,18 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift_col_am.h"
-#include "sift_col_seg.h"
+#include "sift_col_build.h"
 #include "sift_ops.h"
 
-#define PHASE_SCAN		2
-#define PHASE_WRITE		3
 #define PROGRESS_ROWS	1024
 
-typedef struct ColBuild
+#ifdef SIFT_TESTING
+int			sift_test_col_workers = 0;
+int			sift_test_col_fail_sb = 0;
+int			sift_test_col_segment_kb = 0;
+#endif
+
+struct ColBuild
 {
 	Relation	index;
 	SiftColRel *r;
@@ -36,11 +41,14 @@ typedef struct ColBuild
 	int			nrows;
 	int			maxrows;
 	BlockNumber page;
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *segs;
 	int			nsegs;
+	int			maxsegs;
+	pg_atomic_uint64 *done;		/* parallel: the rows of all the participants */
+	bool		leader;
 	double		indexed;
 	double		reported;
-} ColBuild;
+};
 
 char *
 sift_col_ambuildphasename(int64 phase)
@@ -49,9 +57,9 @@ sift_col_ambuildphasename(int64 phase)
 	{
 		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
 			return "initializing";
-		case PHASE_SCAN:
+		case SIFT_COL_PHASE_SCAN:
 			return "scanning table";
-		case PHASE_WRITE:
+		case SIFT_COL_PHASE_WRITE:
 			return "writing segments";
 		default:
 			return NULL;
@@ -63,10 +71,17 @@ end_segment(ColBuild *b)
 {
 	if (b->w == NULL)
 		return;
-	if (b->nsegs == SIFT_MAX_SEGMENTS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", SIFT_MAX_SEGMENTS)));
+	if (b->nsegs == b->maxsegs)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs)));
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	b->w = NULL;
+}
+
+/* A parallel build reserves the generation in the metapage, the serial one numbers its segments */
+static uint64
+next_gen(ColBuild *b)
+{
+	return b->done ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
 static void
@@ -75,9 +90,9 @@ flush_batch(ColBuild *b)
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
 	if (b->w == NULL)
-		b->w = sift_colw_begin(b->wt, b->nsegs + 1, b->r->schema, b->r->policy, b->cxt);
+		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, b->cxt);
 	sift_colw_add(b->w, b->batch);
-	if (sift_colw_memory(b->w) > b->budget && b->nsegs < SIFT_MAX_SEGMENTS - 8)
+	if (sift_colw_memory(b->w) > b->budget && b->nsegs + 1 < b->maxsegs)
 		end_segment(b);
 	sift_cbatch_reset(b->batch, 0);
 }
@@ -155,6 +170,19 @@ flush_page(ColBuild *b)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/* The rows indexed so far are added to the total of the participants; the serial build and the leader show it */
+static void
+report_rows(ColBuild *b)
+{
+	uint64		total = b->indexed;
+
+	if (b->done)
+		total = pg_atomic_add_fetch_u64(b->done, (uint64) (b->indexed - b->reported));
+	b->reported = b->indexed;
+	if (b->done == NULL || b->leader)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) total);
+}
+
 static void
 build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
 {
@@ -177,61 +205,166 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	MemoryContextReset(b->tmpcxt);
 	b->indexed++;
 	if (b->indexed - b->reported >= PROGRESS_ROWS)
-	{
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) b->indexed);
-		b->reported = b->indexed;
-	}
+		report_rows(b);
 }
+
+ColBuild *
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, pg_atomic_uint64 *done, bool leader)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
+	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
+
+	b->index = index;
+	b->r = sift_col_rel(index);
+	b->cxt = cxt;
+	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
+	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
+	b->wt = wt;
+	b->budget = budget;
+#ifdef SIFT_TESTING
+	if (sift_test_col_segment_kb > 0)
+		b->budget = (Size) sift_test_col_segment_kb * 1024;
+#endif
+	b->batch = sift_cbatch_create(cxt, b->r->schema);
+	b->maxrows = 512;
+	b->rows = MemoryContextAlloc(cxt, b->maxrows * sizeof(SiftColRow));
+	b->page = InvalidBlockNumber;
+	b->segs = segs;
+	b->maxsegs = maxsegs;
+	b->done = done;
+	b->leader = leader;
+	return b;
+}
+
+double
+sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
+{
+	MemoryContext old = MemoryContextSwitchTo(b->cxt);
+	double		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+
+	MemoryContextSwitchTo(old);
+	return tuples;
+}
+
+/*
+ * The scan of a whole superblock is the unit of the parallel build: the scan is made here, with the snapshot of the leader, because a
+ * worker cannot take one (table_index_build_range_scan does when it makes the scan). allow_sync is only the promise that the scan is
+ * not limited by the call, which it is by heap_setscanlimits; the scan itself does not synchronize with others.
+ */
+double
+sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot, uint32 sb, BlockNumber nblocks)
+{
+	MemoryContext old = MemoryContextSwitchTo(b->cxt);
+	BlockNumber start = (BlockNumber) sb << SIFT_SB_SHIFT;
+	TableScanDesc scan = table_beginscan_strat(heap, snapshot, 0, NULL, true, false);
+	double		tuples;
+
+	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
+	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
+	MemoryContextSwitchTo(old);
+	return tuples;
+}
+
+int
+sift_colb_end(ColBuild *b)
+{
+	flush_page(b);
+	flush_batch(b);
+	end_segment(b);
+	report_rows(b);
+	return b->nsegs;
+}
+
+double
+sift_colb_rows(const ColBuild *b)
+{
+	return b->indexed;
+}
+
+void
+sift_colb_free(ColBuild *b)
+{
+	MemoryContextDelete(b->cxt);
+}
+
+typedef struct ColPublish
+{
+	SiftSegEntry *segs;
+	int			nsegs;
+} ColPublish;
 
 static void
 publish(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
-	ColBuild   *b = arg;
+	ColPublish *p = arg;
 
-	meta->next_gen = b->nsegs + 1;
-	memcpy(dir->segs, b->segs, b->nsegs * sizeof(SiftSegEntry));
-	dir->nsegs = b->nsegs;
-	for (int i = 0; i < b->nsegs; i++)
-		meta->ndocs += b->segs[i].ndocs;
+	memcpy(dir->segs, p->segs, p->nsegs * sizeof(SiftSegEntry));
+	dir->nsegs = p->nsegs;
+	for (int i = 0; i < p->nsegs; i++)
+	{
+		meta->ndocs += p->segs[i].ndocs;
+		meta->next_gen = Max(meta->next_gen, p->segs[i].gen + 1);
+	}
+}
+
+static int
+seg_cmp(const void *a, const void *b)
+{
+	const SiftSegEntry *x = a,
+			   *y = b;
+
+	if (x->sb_lo != y->sb_lo)
+		return x->sb_lo < y->sb_lo ? -1 : 1;
+	return x->gen < y->gen ? -1 : x->gen > y->gen;
+}
+
+void
+sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs)
+{
+	ColPublish	p = {segs, nsegs};
+
+	if (nsegs == 0)
+		return;
+	qsort(segs, nsegs, sizeof(SiftSegEntry), seg_cmp);
+	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.extra = InvalidBuffer});
+}
+
+static IndexBuildResult *
+serial_build(Relation heap, Relation index, IndexInfo *info)
+{
+	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
+	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
+	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_BULK);
+	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, NULL, true);
+	int			nsegs;
+
+	if (heap->rd_rel->reltuples > 0)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
+	res->heap_tuples = sift_colb_scan(b, heap, info);
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
+	nsegs = sift_colb_end(b);
+	res->index_tuples = sift_colb_rows(b);
+	sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
+	sift_wt_finish(wt);
+	sift_colb_publish(index, segs, nsegs);
+	sift_colb_free(b);
+	return res;
 }
 
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
-	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
-	ColBuild   *b = palloc0(sizeof(ColBuild));
-	MemoryContext old;
+	IndexBuildResult *res = NULL;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table")));
-	b->index = index;
-	b->r = sift_col_rel(index);
-	b->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(b->cxt);
-	b->pagecxt = AllocSetContextCreate(b->cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
-	b->tmpcxt = AllocSetContextCreate(b->cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
-	b->budget = Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024);
-	b->batch = sift_cbatch_create(b->cxt, b->r->schema);
-	b->maxrows = 512;
-	b->rows = palloc(b->maxrows * sizeof(SiftColRow));
-	b->page = InvalidBlockNumber;
-	b->wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-	if (heap->rd_rel->reltuples > 0)
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PHASE_SCAN);
-	res->heap_tuples = table_index_build_scan(heap, index, info, false, true, build_cb, b, NULL);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PHASE_WRITE);
-	flush_page(b);
-	flush_batch(b);
-	end_segment(b);
-	res->index_tuples = b->indexed;
-	sift_store_init_meta_ex(b->wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
-	sift_wt_finish(b->wt);
-	if (b->nsegs > 0)
-		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = b,.extra = InvalidBuffer});
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(b->cxt);
-	return res;
+#ifdef SIFT_TESTING
+	sift_test_col_workers = 0;
+#endif
+	if (info->ii_ParallelWorkers > 0)
+		res = sift_colp_build(heap, index, info);
+	return res ? res : serial_build(heap, index, info);
 }
 
 void

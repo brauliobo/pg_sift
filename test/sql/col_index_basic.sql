@@ -58,12 +58,71 @@ SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 1000 - 500 END,
 FROM generate_series(1, 20000) i;
 ANALYZE orders;
 
--- 255 bytes are the limit of a text value
-CREATE INDEX o_note ON orders USING sift_col (note);
-DELETE FROM orders WHERE length(note) > 255;
+-- Text of any length (docs/COL.md 2.9): a unit that holds a string over 255 bytes stores its text inline
 CREATE INDEX o_note ON orders USING sift_col (note);
 SELECT sift.col_verify('o_note', true);
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('o_note');
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 299), 'note = ' || quote_literal(repeat('n', 299)));
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 255), 'note = ' || quote_literal(repeat('n', 255)));
+SELECT col_cmp('o_note', '0:eq:' || repeat('n', 300), 'note = ' || quote_literal(repeat('n', 300)));
+SELECT col_cmp('o_note', '0:prefix:' || repeat('n', 280), 'note LIKE ' || quote_literal(repeat('n', 280) || '%') || ' COLLATE "C"');
+SELECT col_cmp('o_note', '0:in:' || repeat('n', 10) || '|' || repeat('n', 290) || '|zz', format('note IN (%L, %L, ''zz'')', repeat('n', 10), repeat('n', 290)));
+SELECT col_cmp('o_note', '0:ne:' || repeat('n', 290), format('note <> %L', repeat('n', 290)));
+SELECT col_cmp('o_note', '0:notin:' || repeat('n', 5) || '|' || repeat('n', 270), format('note NOT IN (%L, %L)', repeat('n', 5), repeat('n', 270)));
+SELECT col_cmp('o_note', '0:gt:' || repeat('n', 200) || ';0:le:' || repeat('n', 280),
+			   format('note > %L COLLATE "C" AND note <= %L COLLATE "C"', repeat('n', 200), repeat('n', 280)));
+SELECT col_cmp('o_note', '0:null', 'note IS NULL');
 DROP INDEX o_note;
+
+CREATE TABLE longs (id int, s text);
+INSERT INTO longs
+SELECT i, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN '' WHEN i % 5 = 0 THEN repeat('é', 100 + i % 400) || i
+			   WHEN i % 3 = 0 THEN repeat('abc', 50 + i % 3000) ELSE 'short' || i % 40 END
+FROM generate_series(1, 6000) i;
+INSERT INTO longs VALUES (6001, repeat('x', 1000000)), (6002, repeat('x', 1000000)), (6003, repeat('x', 999999) || 'y');
+CREATE INDEX l_idx ON longs USING sift_col (s) WITH (mutable_limit = 64);
+SELECT sift.col_verify('l_idx', true);
+SELECT col_cmp('l_idx', '0:eq:' || s, 's = ' || quote_literal(s)) FROM longs WHERE id IN (5, 15, 25, 3, 9, 6, 8, 6001, 6003) ORDER BY id;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('x', 1000001), 's = ' || quote_literal(repeat('x', 1000001)));
+SELECT col_cmp('l_idx', '0:ne:' || repeat('x', 1000000), 's <> ' || quote_literal(repeat('x', 1000000)));
+SELECT col_cmp('l_idx', '0:prefix:' || repeat('abc', 40), 's LIKE ' || quote_literal(repeat('abc', 40) || '%') || ' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:prefix:' || repeat('é', 120), 's LIKE ' || quote_literal(repeat('é', 120) || '%') || ' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:in:short3|' || repeat('abc', 100) || '|' || repeat('x', 1000000), format('s IN (''short3'', %L, %L)', repeat('abc', 100), repeat('x', 1000000)));
+SELECT col_cmp('l_idx', '0:lt:abd;0:ge:abc', 's < ''abd'' COLLATE "C" AND s >= ''abc'' COLLATE "C"');
+SELECT col_cmp('l_idx', '0:ge:' || repeat('é', 200), format('s >= %L COLLATE "C"', repeat('é', 200)));
+SELECT col_cmp('l_idx', '0:eq:', 's = ''''');
+SELECT col_cmp('l_idx', '0:null', 's IS NULL');
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('l_idx');
+-- rows added to the mutable lane, then sealed and merged
+INSERT INTO longs SELECT 7000 + i, repeat('q', 300 + i) FROM generate_series(1, 50) i;
+INSERT INTO longs SELECT 8000 + i, 'short' || i FROM generate_series(1, 50) i;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
+SELECT col_cmp('l_idx', '0:prefix:qqq', 's LIKE ''qqq%'' COLLATE "C"');
+SELECT sift.col_promote('l_idx') >= 0 AS promoted;
+SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
+SELECT col_cmp('l_idx', '0:eq:short3', 's = ''short3''');
+SELECT sift.col_verify('l_idx', true);
+DELETE FROM longs WHERE id % 4 = 0;
+VACUUM longs;
+SELECT col_cmp('l_idx', '0:prefix:abc', 's LIKE ''abc%'' COLLATE "C"');
+SELECT sift.col_merge('l_idx', true) >= 0 AS merged;
+SELECT sift.col_verify('l_idx', true);
+SELECT col_cmp('l_idx', '0:eq:' || repeat('x', 1000000), 's = ' || quote_literal(repeat('x', 1000000)));
+SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('l_idx', 0, '') EXCEPT SELECT ctid, s FROM longs) z;
+SELECT count(*) AS missing FROM (SELECT ctid, s FROM longs EXCEPT SELECT tid, val FROM sift._test_col_read('l_idx', 0, '')) z;
+DROP TABLE longs;
+
+-- a shredded text member holds up to its declared length, however long; the longer one (row 3001) is an overflow, which a scan always returns for the heap to decide
+CREATE TABLE jl (id int, doc jsonb);
+INSERT INTO jl SELECT i, jsonb_build_object('t', repeat('é', 100 + i % 400), 'u', i) FROM generate_series(1, 3000) i;
+INSERT INTO jl VALUES (3001, jsonb_build_object('t', repeat('z', 2001), 'u', 3001));
+CREATE INDEX jl_idx ON jl USING sift_col (doc) WITH (paths = 'doc.t text(2000), doc.u int4');
+SELECT sift.col_verify('jl_idx', true);
+SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('jl_idx') WHERE leaf = 0;
+SELECT col_cmp('jl_idx', '0:eq:' || repeat('é', 350), format('doc->>''t'' = %L OR id = 3001', repeat('é', 350)));
+SELECT col_cmp('jl_idx', '0:prefix:' || repeat('é', 120) || ';1:gt:100', format('(doc->>''t'' LIKE %L COLLATE "C" AND (doc->>''u'')::int > 100) OR id = 3001', repeat('é', 120) || '%'));
+SELECT count(*) AS overflowed FROM sift._test_col_read('jl_idx', 0, '') WHERE val IS NULL;
+DROP TABLE jl;
 
 CREATE INDEX o_col ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty);
 SELECT leaves, segments, mutable_segments, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
@@ -93,6 +152,12 @@ INSERT INTO col_checks (preds, heapwhere) VALUES
 	('1:eq:new;0:eq:7', 'status = ''new'' AND store_id = 7'),
 	('2:gt:10', 'amount > 10'),
 	('2:eq:0', 'amount = 0'),
+	('2:eq:-0', 'amount = 0'),
+	('2:lt:-0', 'amount < 0'),
+	('2:gt:-0', 'amount > 0'),
+	('2:ge:-0', 'amount >= 0'),
+	('2:ne:0', 'amount <> 0'),
+	('2:notin:-0|1', 'amount NOT IN (0, 1)'),
 	('2:ge:1e308', 'amount >= 1e308'),
 	('2:eq:nan', 'amount = ''NaN'''),
 	('2:ge:inf', 'amount >= ''Infinity'''),
@@ -143,6 +208,8 @@ SELECT count(*) AS differing FROM (
 	EXCEPT SELECT r.tid, r.val FROM sift._test_col_read('o_col', 0, '') r) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 1, '') EXCEPT SELECT ctid, status FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 2, '') EXCEPT SELECT ctid, amount::text FROM orders) z;
+-- the sign of a zero survives the encoding
+SELECT (SELECT count(*) FROM sift._test_col_read('o_col', 2, '') WHERE val = '-0') = (SELECT count(*) FROM orders WHERE amount::text = '-0') AS negative_zeros_kept;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 3, '') EXCEPT SELECT ctid, discount::float8::text FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 4, '') EXCEPT SELECT ctid, (placed - date '2000-01-01')::text FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 6, '') EXCEPT SELECT ctid, express::int::text FROM orders) z;

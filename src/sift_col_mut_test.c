@@ -32,7 +32,7 @@
 PG_FUNCTION_INFO_V1(sift_test_col_mut_prepare);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_append);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_torn);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_toolong);
+PG_FUNCTION_INFO_V1(sift_test_col_mut_long);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_mut_delete);
@@ -57,18 +57,18 @@ test_schema(void)
 		int16		parent;
 		uint8		kind;
 		uint8		store;
-		Oid			typid;
+		uint8		type;
 	}			leaves[NCOLS] = {
-		{"order_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT8OID},
-		{"store_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT4OID},
-		{"status", -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"total", -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, FLOAT8OID},
-		{"weight", -1, SIFT_COLK_SCALAR, SIFT_COLS_F4, FLOAT4OID},
-		{"items", -1, SIFT_COLK_GROUP, SIFT_COLS_INT, INT4OID},
-		{"items[].category", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"items[].sku", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, TEXTOID},
-		{"items[].qty", 5, SIFT_COLK_SCALAR, SIFT_COLS_INT, INT4OID},
-		{"items[].price", 5, SIFT_COLK_SCALAR, SIFT_COLS_F8, FLOAT8OID},
+		{"order_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT8},
+		{"store_id", -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"status", -1, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"total", -1, SIFT_COLK_SCALAR, SIFT_COLS_F8, SIFT_COLT_FLOAT8},
+		{"weight", -1, SIFT_COLK_SCALAR, SIFT_COLS_F4, SIFT_COLT_FLOAT4},
+		{"items", -1, SIFT_COLK_GROUP, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"items[].category", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"items[].sku", 5, SIFT_COLK_SCALAR, SIFT_COLS_STR, SIFT_COLT_TEXT},
+		{"items[].qty", 5, SIFT_COLK_SCALAR, SIFT_COLS_INT, SIFT_COLT_INT4},
+		{"items[].price", 5, SIFT_COLK_SCALAR, SIFT_COLS_F8, SIFT_COLT_FLOAT8},
 	};
 
 	if (schema == NULL)
@@ -76,7 +76,7 @@ test_schema(void)
 		SiftColDef	defs[NCOLS] = {0};
 
 		for (int i = 0; i < NCOLS; i++)
-			defs[i] = (SiftColDef) {i, leaves[i].parent, leaves[i].kind, leaves[i].store, 0, i + 1, leaves[i].typid, leaves[i].path};
+			defs[i] = (SiftColDef) {i, leaves[i].parent, leaves[i].kind, leaves[i].store, 0, i + 1, leaves[i].type, leaves[i].path};
 		schema = sift_cschema_create(TopMemoryContext, defs, NCOLS);
 	}
 	return schema;
@@ -125,7 +125,7 @@ gen_str(pg_prng_state *st, SiftColValue *v, bool vocab)
 		v->len = strlen(w);
 		return;
 	}
-	v->len = r < 2 ? SIFT_COL_MAX_STR : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
+	v->len = r < 2 ? SIFT_COL_DICT_MAX_ENTRY : r < 4 ? pg_prng_uint64_range(st, 256, 20000) : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
 	v->v.s = palloc(v->len + 1);
 	for (uint32 i = 0; i < v->len; i++)
 		((char *) v->v.s)[i] = pg_prng_uint64_range(st, 0, 255);
@@ -436,16 +436,16 @@ sift_test_col_mut_torn(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* (index regclass): appends a row with a 256 byte string, which the engine refuses */
+/* (index regclass): appends a row with a 300 000 byte string: its record spans several pages */
 Datum
-sift_test_col_mut_toolong(PG_FUNCTION_ARGS)
+sift_test_col_mut_long(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	SiftCMutHint hint = {0};
 	TestRow    *t = palloc(sizeof(TestRow));
 
 	gen_row(1, 1, t);
-	t->val[2] = (SiftColValue) {.v.s = palloc0(SIFT_COL_MAX_STR + 1),.len = SIFT_COL_MAX_STR + 1};
+	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
 	sift_cmut_append(index, &hint, test_schema(), &t->row);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
