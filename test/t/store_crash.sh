@@ -40,15 +40,7 @@ VERIFY="SELECT sift._test_check('t_idx'),
 
 total_orphans=0
 for i in $(seq "$ITERS"); do
-	pgbench_bg crash 8 600 "${FILES[@]}"
-	sleep "$((RANDOM % 3)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
-	crash crash
-	wait "$PGBENCH_PID"
-	if ! node_start crash; then
-		not_ok "iteration $i: restart"
-		diag "$(tail -20 "$(dir crash)/postgres.log")"
-		break
-	fi
+	crash_cycle crash "iteration $i" 3 8 "${FILES[@]}" || break
 	out=$(sql crash "$VERIFY" 2>&1)
 	IFS='|' read -r orphans tsegs bsegs borphans unlogged swept after mb <<<"$out"
 	used=$(node_mb crash)
