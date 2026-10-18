@@ -17,7 +17,7 @@
 # Cells (write cells run on a fresh copy, read cells on states made once, queries per class from one seeded file):
 #   insert1 bulk copy update delete promote merge create    one-row INSERTs, INSERT .. SELECT, COPY, UPDATE of 10%, DELETE of 1/7,
 #                                                           sift.promote, 20 sift.merge steps of a 60-segment backlog, CREATE INDEX
-#   vacuum_backlog vacuum_dead vacuum_clean                 VACUUM of the backlog, after deleting 80%, with nothing to do
+#   vacuum_backlog vacuum_dead vacuum_clean vacuum_nofree   VACUUM of the backlog, after deleting 80%, with nothing to do, and the second VACUUM in a row (no free tail left to give back)
 #   idle60_C idle1_C vac_C                                  query class C (count rank and or phrase) on 61 segments, on one, and on
 #                                                           the index after VACUUM and more rows (what VACUUM leaves differs by design)
 # Per cell and round the builds run one after the other, the first of the round rotating (ABAB, BABA); the ratio of a build to the
@@ -192,7 +192,7 @@ run_cell() { # CELL LABEL
 		*)
 			case $c in
 				insert1 | bulk | copy | promote | create) newdb "$l" "$db" tpl_empty ;;
-				update | delete | vacuum_dead | vacuum_clean) newdb "$l" "$db" tpl_data ;;
+				update | delete | vacuum_dead | vacuum_clean | vacuum_nofree) newdb "$l" "$db" tpl_data ;;
 				*) newdb "$l" "$db" tpl_bk ;;
 			esac
 			case $c in
@@ -206,6 +206,9 @@ run_cell() { # CELL LABEL
 					measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "SELECT sift.promote('t_idx')" ;;
 				merge) measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "SELECT sift.merge('t_idx') FROM generate_series(1, 20)" ;;
 				create) measure "$c" "$l" "$db" s_idx Qn "$l" "$db" -c "$(create_index s_idx stage "$l")" ;;
+				vacuum_nofree)
+					Qn "$l" "$db" -c "VACUUM t"; settle "$l"
+					measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "VACUUM t" ;;
 				vacuum_backlog | vacuum_clean) measure "$c" "$l" "$db" t_idx Qn "$l" "$db" -c "VACUUM t" ;;
 				vacuum_dead)
 					Qn "$l" "$db" -c "DELETE FROM t WHERE id % 5 <> 0"
@@ -215,7 +218,7 @@ run_cell() { # CELL LABEL
 	esac
 }
 
-ALLCELLS=(session insert1 bulk copy update delete promote merge create vacuum_backlog vacuum_dead vacuum_clean)
+ALLCELLS=(session insert1 bulk copy update delete promote merge create vacuum_backlog vacuum_dead vacuum_clean vacuum_nofree)
 for st in idle60 idle1 vac; do for cls in count rank and or phrase; do ALLCELLS+=("${st}_$cls"); done; done
 
 # round WANTED...: the cells of the list that --cells selects, builds in an order that rotates with the round
@@ -240,7 +243,7 @@ stats() {
 	function human(x) { return x >= 1e9 ? sprintf("%.2fG", x / 1e9) : x >= 1e6 ? sprintf("%.2fM", x / 1e6) : x >= 1e3 ? sprintf("%.1fk", x / 1e3) : sprintf("%.0f", x) }
 	function net(c, b, r, m,   x) {
 		x = v[c, b, r, m]; if (x == "") return -1
-		if (c != "session") { if (v["session", b, r, m] == "") return -1; x -= v["session", b, r, m] }
+		if (c != "session" && c != "vacuum_nofree") { if (v["session", b, r, m] == "") return -1; x -= v["session", b, r, m] }
 		return x / v[c, b, r, "ops"]
 	}
 	# ratio of build b to the baseline over the rounds of cell c in metric m: sets n, ratio, se (of the ratio, in %), lo, hi
