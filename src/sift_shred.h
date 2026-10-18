@@ -198,7 +198,7 @@ extern void sift_shred_string(SiftShred *sh, const char *s, int len);
 extern void sift_shred_number(SiftShred *sh, const char *text, int len);
 extern void sift_shred_finish(SiftShred *sh);
 
-/* parent[i] for the n elements of group g (n = doc->grp[g].n): the ordinal of the parent element each belongs to */
+/* parent[i] for the n elements of group g (n = doc->grp[g].n): the ordinal of the parent element each belongs to (sift_colk->expand_parents) */
 extern void sift_shred_expand_parents(const SiftShredDoc *doc, int g, uint32 *parent);
 
 /* Elements [lo, hi) of group g that belong to element p of its parent group */
@@ -211,6 +211,11 @@ sift_shred_group_range(const SiftShredDoc *doc, int g, uint32 p, uint32 *lo, uin
 
 /* ---------- SIMD kernels ---------- */
 
+/*
+ * Kept apart from the column and aggregation kernels: these work on the shredder's state bytes with no bit vector and no padding of
+ * the value arrays, and the generic composition (sift_colk->range on the bytes, SiftAggKernels.minmax_* under its bitmap) is slower
+ * for float8, for the scalar level and for state_bits on AVX2 (measurements: docs/COL-SHRED.md)
+ */
 typedef struct SiftShredKernels
 {
 	/* counts[s] = number of bytes equal to s, s < 4; every byte of state is < 4 */
@@ -230,8 +235,6 @@ typedef struct SiftShredKernels
 	bool		(*minmax_i64) (const uint8 *state, const int64 *val, uint32 n, int64 *min, int64 *max);
 	bool		(*minmax_f64) (const uint8 *state, const double *val, uint32 n, double *min, double *max);
 
-	/* parent[i] = p for i in [end[p - 1], end[p]) (end[-1] = 0), end non-decreasing; parent needs end[np - 1] entries */
-	void		(*expand_parents) (const uint32 *end, uint32 np, uint32 *parent);
 } SiftShredKernels;
 
 extern PGDLLIMPORT const SiftShredKernels *sift_shred_kern;

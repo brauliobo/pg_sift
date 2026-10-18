@@ -97,27 +97,11 @@ minmax_f64_avx512(const uint8 *state, const double *val, uint32 n, double *min, 
 	return any != 0;
 }
 
-K5 void
-expand_parents_avx512(const uint32 *end, uint32 np, uint32 *parent)
-{
-	uint32		i = 0;
-
-	for (uint32 p = 0; p < np; p++)
-	{
-		__m512i		v = _mm512_set1_epi32((int) p);
-
-		for (; i < end[p]; i += 16)
-			_mm512_mask_storeu_epi32(parent + i, (__mmask16) LOWBITS(end[p] - i), v);
-		i = end[p];
-	}
-}
-
 const SiftShredKernels sift_shred_kernels_avx512 = {
 	.state_counts = state_counts_avx512,
 	.state_bits = state_bits_avx512,
 	.minmax_i64 = minmax_i64_avx512,
-	.minmax_f64 = minmax_f64_avx512,
-	.expand_parents = expand_parents_avx512
+	.minmax_f64 = minmax_f64_avx512
 };
 
 #endif

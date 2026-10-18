@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "sift_analyze.h"
+#include "sift_col_kern.h"
 #include "sift_shred.h"
 
 typedef enum NodeKind
@@ -1219,5 +1220,5 @@ sift_shred_finish(SiftShred *sh)
 void
 sift_shred_expand_parents(const SiftShredDoc *doc, int g, uint32 *parent)
 {
-	sift_shred_kern->expand_parents(doc->grp[g].end, doc->grp[g].pn, parent);
+	sift_colk->expand_parents(doc->grp[g].end, doc->grp[g].pn, parent);
 }
