@@ -15,7 +15,7 @@ cache off), es_cached (the same with the shard request cache on), ch (ClickHouse
 process to the server on 127.0.0.1 and back, one client, the response read to its end (psql / HTTP keep-alive connection). The first run of
 a query on an engine is not timed: its result is compared with the result of PostgreSQL (the reference) and the run stops on a difference.
 """
-import argparse, csv, hashlib, http.client, itertools, json, math, os, queue, re, subprocess, sys, threading, time, urllib.parse
+import argparse, csv, hashlib, http.client, itertools, json, math, os, queue, re, statistics, subprocess, sys, threading, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,6 +28,8 @@ NULL = '\\N'
 TOL = 1e-9                      # relative tolerance of numbers (sums of money are exact in all engines; averages differ in the last digits)
 CH_AUTH = {'X-ClickHouse-User': 'bench', 'X-ClickHouse-Key': 'bench'}
 
+COMPRESSION = {'sift_none': 'none', 'sift_enc': 'for+delta+rle+dict+scale+alp', 'sift_auto': 'auto', 'sift_lz4': 'lz4', 'sift_zstd': 'zstd:3'}   # the `compression` option of the sift_col index, one database each
+
 # id -> (label, container, port offset, database or kind)
 LANES = {
     'pg':         ('PostgreSQL', 'pg', 0, 'store'),
@@ -38,14 +40,15 @@ LANES = {
     'ch':         ('ClickHouse', 'ch', 3, None),
     'ch_mut':     ('ClickHouse, ALTER UPDATE', 'ch', 3, None),
     'ch_rmt':     ('ClickHouse, ReplacingMergeTree', 'ch', 3, None),
+    **{e: (f'pg_sift `sift_col`, compression `{p}`', 'sift', 1, 'store_col_' + e[5:]) for e, p in COMPRESSION.items()},
 }
 DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch']
-PG_ENGINES = ['pg', 'sift', 'sift_table']
+PG_ENGINES = ['pg', 'sift', 'sift_table', *COMPRESSION]
 UPDATE_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'ch', 'ch_mut', 'ch_rmt']
 CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
 is_ch = lambda eid: eid in CH_TABLE
 is_es = lambda eid: eid in ('es', 'es_cached')
-DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql'}
+DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', **{e: 'sift.sql' for e in COMPRESSION}}
 
 
 def die(msg):
@@ -102,7 +105,7 @@ class Query:
             tol = [float(l[4:]) for l in lines if l.startswith('tol:')]
             body = '\n'.join(l for l in lines[1:] if not l.startswith(('rows:', 'tol:'))).strip()
             return method, path, body.encode() if body else None, spec, tol[0] if tol else TOL
-        sql = sub(self.sec['ch' if is_ch(eid) else 'sift' if eid in ('sift', 'sift_table') and 'sift' in self.sec else 'pg'])
+        sql = sub(self.sec['ch' if is_ch(eid) else 'sift' if eid.startswith('sift') and 'sift' in self.sec else 'pg'])
         return sql.replace('store.orders', CH_TABLE[eid] + (' FINAL' if eid == 'ch_rmt' else '')) if is_ch(eid) else sql
 
 
@@ -354,6 +357,22 @@ def copy_chunks(eid, path):
         raise RuntimeError('psql: ' + err.strip()[:500])
 
 
+def build_indexes(eid, text, rows):
+    """each statement of the `indexes` section on its own, timed (`build NAME`, the seconds a user waits for that index); the `compression` option of the lane goes on the sift_col index"""
+    total = 0
+    for stmt in re.split(r';[ \t]*\n', re.sub(r'(?m)^--.*$', '', text)):
+        if not stmt.strip():
+            continue
+        if eid in COMPRESSION:
+            stmt = re.sub(r'(USING sift_col \(.*\))\s*$', rf"\1 WITH (compression = '{COMPRESSION[eid]}')", stmt.strip().rstrip(';'))
+        name = m[1] if (m := re.search(r'INDEX (\w+)', stmt)) else 'primary key'
+        t0 = time.time()
+        psql_file(eid, stmt + ';')
+        rows.add(eid, '-', 'build ' + name, 'build_s', 's', value=round(time.time() - t0, 1))
+        total += time.time() - t0
+    rows.add(eid, '-', 'indexes', 'load_s', 's', value=round(total, 1))
+
+
 def load_pg(eid, args, rows):
     sec = sections(read(DDL[eid]))
     db = LANES[eid][3]
@@ -370,13 +389,17 @@ def load_pg(eid, args, rows):
         fresh()
         timed(rows, eid, 'rows', lambda: copy_chunks(eid, csv_path(args)))
         rows.add(eid, '-', 'rows', 'chunk_rows', 'rows', value=CHUNK)
-    timed(rows, eid, 'indexes', lambda: psql_file(eid, sec['indexes']))
+    build_indexes(eid, sec['indexes'], rows)
     timed(rows, eid, 'vacuum', lambda: psql_file(eid, 'VACUUM (FREEZE, ANALYZE) orders'))
     psql_file(eid, 'CHECKPOINT')
     rows.add(eid, '-', '-', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_total_relation_size('orders')")))
     rows.add(eid, '-', 'table', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_table_size('orders')")))
     if eid == 'sift_table':   # blocks the table file holds and has free (the write pages of the load, sealed into columns): the file does not shrink
         rows.add(eid, '-', 'free', 'size_mib', 'MiB', value=mib(int(psql_value(eid, "SELECT free_blocks FROM sift.table_space('orders')")) * 8192))
+    if eid == 'sift' or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
+        rows.add(eid, '-', 'orders_col', 'reloptions', 'text', value=psql_value(eid, "SELECT coalesce(reloptions::text, '(not set)') FROM pg_class WHERE relname = 'orders_col'"))
+        rows.add(eid, '-', 'orders_col', 'col_leaves', 'json', value=psql_value(eid, "SELECT json_agg(json_build_object('leaf', path, 'type', type, 'const', const_chunks, 'for', for_chunks, "
+                                                                                 "'pack', pack_chunks, 'codec', codec_chunks, 'bytes', chunk_bytes, 'dict', dict_bytes) ORDER BY leaf) FROM sift.col_leaves('orders_col')"))
     for name, size in (l.split('|') for l in psql_value(eid, "SELECT indexrelid::regclass || '|' || pg_relation_size(indexrelid) FROM pg_index WHERE indrelid = 'orders'::regclass ORDER BY 1").split('\n')):
         rows.add(eid, '-', 'index ' + name, 'size_mib', 'MiB', value=mib(size))
 
@@ -450,22 +473,64 @@ def load_es(args, rows):
     h.close()
 
 
-def servers():
-    """the versions and settings of the servers, as the servers say them"""
+def servers(engines):
+    """the versions and settings of the servers that take part, as the servers say them"""
     v = {}
-    for eid in PG_ENGINES:
+    for eid in [e for e in ('pg', 'sift', 'sift_table') if e in engines]:
         v[eid] = psql_value(eid, 'SHOW server_version')
         v[eid + '_sift'] = psql_value(eid, "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
         v[eid + '_settings'] = psql_value(eid, "SELECT string_agg(name || '=' || current_setting(name), ', ' ORDER BY name) FROM pg_settings WHERE name IN "
                                               "('shared_buffers', 'work_mem', 'max_parallel_workers_per_gather', 'jit', 'effective_cache_size')")
-    es = json.loads(Http('es').request('GET', '/'))
-    v['es'] = es['version']['number']
-    v['es_lucene'] = es['version']['lucene_version']
-    v['es_heap'] = next(l.split('=')[1] for l in docker('inspect', '-f', '{{range .Config.Env}}{{println .}}{{end}}', container('es')).split('\n') if l.startswith('ES_JAVA_OPTS'))
-    ch = Http('ch', CH_AUTH)
-    v['ch'] = ch.request('POST', '/', b'SELECT version()').decode().strip()
-    v['ch_threads'] = ch.request('POST', '/', b"SELECT value FROM system.settings WHERE name = 'max_threads'").decode().strip()
+    if 'sift' in engines:
+        v['sift_libs'] = docker('exec', container('sift'), 'sh', '-c', 'ldd $(find /usr/lib/postgresql -name pg_sift.so | head -1) | grep -Eo "lib(lz4|zstd)[^ ]*" | sort -u | paste -sd" "').strip()
+        v['sift_table_compression'] = psql_value('sift', "LOAD 'pg_sift'; SELECT current_setting('sift.table_compression')") or "'' (unset)"
+    if any(is_es(e) for e in engines):
+        es = json.loads(Http('es').request('GET', '/'))
+        v['es'] = es['version']['number']
+        v['es_lucene'] = es['version']['lucene_version']
+        v['es_heap'] = next(l.split('=')[1] for l in docker('inspect', '-f', '{{range .Config.Env}}{{println .}}{{end}}', container('es')).split('\n') if l.startswith('ES_JAVA_OPTS'))
+    if any(is_ch(e) for e in engines):
+        ch = Http('ch', CH_AUTH)
+        v['ch'] = ch.request('POST', '/', b'SELECT version()').decode().strip()
+        v['ch_threads'] = ch.request('POST', '/', b"SELECT value FROM system.settings WHERE name = 'max_threads'").decode().strip()
     return v
+
+
+def size_variants(args, rows):
+    """the on-disk size of the systems with their other compression settings, the data copied inside each server: rows `codec NAME`"""
+    if 'sift_table' in args.engines:
+        for pol in ('none', 'auto', 'lz4', 'zstd:3'):
+            t = 'orders_' + pol.split(':')[0]
+            psql_file('sift_table', f"DROP TABLE IF EXISTS {t}; CREATE TABLE {t} (LIKE orders) USING sift_table; SET sift.table_compression = '{pol}'; INSERT INTO {t} SELECT * FROM orders; VACUUM {t}")
+            rows.add('sift_table', '-', 'codec ' + pol, 'size_mib', 'MiB', value=mib(psql_value('sift_table', f"SELECT pg_table_size('{t}')")))
+            rows.add('sift_table', '-', 'codec ' + pol + ' free', 'size_mib', 'MiB', value=mib(int(psql_value('sift_table', f"SELECT free_blocks FROM sift.table_space('{t}')")) * 8192))
+            psql_file('sift_table', f'DROP TABLE {t}')
+    if 'ch' in args.engines:
+        h = Http('ch', CH_AUTH)
+        ddl = lambda q: h.request('POST', '/', q.encode())
+        cols = ddl("SELECT name FROM system.columns WHERE database = 'store' AND table = 'orders' ORDER BY position").decode().split()
+        disk = lambda t: ddl(f"SELECT sum(bytes_on_disk) || ' ' || sum(data_uncompressed_bytes) FROM system.parts WHERE database = 'store' AND table = '{t}' AND active").decode().split()
+        rows.add('ch', '-', 'codec default (LZ4)', 'size_mib', 'MiB', value=mib(disk('orders')[0]))
+        rows.add('ch', '-', 'codec default (LZ4)', 'uncompressed_mib', 'MiB', value=mib(disk('orders')[1]))
+        ddl('DROP TABLE IF EXISTS store.orders_zstd')
+        ddl('CREATE TABLE store.orders_zstd AS store.orders')
+        for c in cols:
+            ddl(f'ALTER TABLE store.orders_zstd MODIFY COLUMN {c} CODEC(ZSTD(3))')
+        ddl('INSERT INTO store.orders_zstd SELECT * FROM store.orders')
+        ddl('OPTIMIZE TABLE store.orders_zstd FINAL')
+        rows.add('ch', '-', 'codec ZSTD(3)', 'size_mib', 'MiB', value=mib(disk('orders_zstd')[0]))
+        ddl('DROP TABLE store.orders_zstd')
+    if 'es' in args.engines:
+        h, js = Http('es'), {'Content-Type': 'application/json'}
+        idx = json.loads(read('es.json'))
+        idx['settings']['index']['codec'] = 'best_compression'
+        h.request('DELETE', '/orders_best?ignore_unavailable=true')
+        h.request('PUT', '/orders_best', json.dumps(idx).encode(), js)
+        h.request('POST', '/_reindex?wait_for_completion=true&refresh=true', json.dumps({'source': {'index': 'orders'}, 'dest': {'index': 'orders_best'}}).encode(), js)
+        h.request('POST', '/orders_best/_forcemerge?max_num_segments=1')
+        h.request('POST', '/orders_best/_flush')
+        rows.add('es', '-', 'codec best_compression', 'size_mib', 'MiB', value=mib(json.loads(h.request('GET', '/orders_best/_stats/store'))['_all']['primaries']['store']['size_in_bytes']))
+        h.request('DELETE', '/orders_best')
 
 
 def cmd_load(args):
@@ -486,6 +551,8 @@ def cmd_load(args):
         total = sum(r['value'] for r in rows.rows if r['engine'] == eid and r['metric'] == 'load_s')
         rows.add(eid, '-', '-', 'load_s', 's', value=round(total, 1))
         log(f'{eid}: loaded in {total:.0f} s, {next(r["value"] for r in rows.rows if r["engine"] == eid and r["metric"] == "size_mib" and r["variant"] == "-")} MiB')
+    if args.compression:
+        size_variants(args, rows)
     write(args, rows, 'load', {'data_sha256': open(csv_path(args) + '.stamp').read().split()[2]})
     return 0
 
@@ -595,7 +662,7 @@ def cmd_run(args):
     finally:
         for c in clients.values():
             c.close()
-        write(args, rows, 'warm', {'servers': servers(), 'runs': args.runs, 'warmups': args.warmups})
+        write(args, rows, 'warm', {'servers': servers(args.engines), 'runs': args.runs, 'warmups': args.warmups})
     for p in problems:
         print('DIFFERENT RESULT: ' + p, file=sys.stderr)
     return 3 if problems else 0
@@ -1152,7 +1219,7 @@ def benchmarks_block(R):
     out += ['### Configuration', '',
             f'- Host: {host.get("cpu", "?")}, {host.get("threads", "?")} hardware threads, {host.get("ram", "?")} of memory, {host.get("kernel", "?")}; docker {host.get("docker", "?")}. '
             f'Each server runs alone in a container with `--cpus {host.get("cpus", "?")} --memory {host.get("memory", "?")}`, no swap; the servers not under test sit idle.',
-            f'- PostgreSQL {s["pg"]} (the same image for both layouts, pg_sift {s["sift_sift"]} built from this checkout): {s["pg_settings"]}; `max_parallel_workers_per_gather` and the other settings are the same for both containers.',
+            f'- PostgreSQL {s["pg"]} (the same image for both layouts, pg_sift {s["sift_sift"]} built from this checkout' + (f', linked with `{s["sift_libs"]}`, `compression` unset on the index = `auto`, `sift.table_compression` {s["sift_table_compression"]}' if 'sift_libs' in s else '') + f'): {s["pg_settings"]}; `max_parallel_workers_per_gather` and the other settings are the same for both containers.',
             f'- Elasticsearch {s["es"]} (Lucene {s["es_lucene"]}): one node, one shard, no replica, JVM heap `{s["es_heap"]}`, security and machine learning off; `scaled_float` (factor 100) for the amount, `keyword` for country, category and status, `date` for the time, `text` for the title; '
             'merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.',
             f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; `max_threads` {s["ch_threads"]} (what the container limit gives it); optimized to one part per partition after the load.',
@@ -1349,6 +1416,55 @@ def updates_benchmarks(R):
 
 # --- the markers of README.md and docs/BENCHMARKS.md
 
+# --- compression (docs/results/store-compression.json)
+
+CZ_LANES = ['sift_none', 'sift_enc', 'sift_auto', 'sift', 'sift_lz4', 'sift_zstd']
+CZ_NAMES = {'sift_none': '`none`', 'sift_enc': 'encodings only', 'sift_auto': '`auto` (explicit)', 'sift': 'unset (the default)', 'sift_lz4': '`lz4`', 'sift_zstd': '`zstd:3`'}
+
+
+def compression_block(R):
+    tier = R.tiers[-1]
+    n = R.meta['tiers'][tier]['rows']
+    s = R.meta['tiers'][tier]['servers']
+    lanes = [e for e in CZ_LANES if R.engines(tier, [e])]
+    sz = lambda e, v='index orders_col': R.num(tier, e, variant=v, metric='size_mib')
+    leaves = {e: {l['leaf']: l for l in json.loads(R.get(tier, e, '-', 'orders_col', 'col_leaves')['value'])} for e in lanes}
+    out = [f'The same {n:,} orders; every line is read back from the server that ran it. pg_sift {s["sift_sift"]} in the container image is linked with `{s["sift_libs"]}` '
+           f'(the image installs the LZ4 and zstd development packages and the Makefile links each library it finds), `sift.table_compression` is `{s["sift_table_compression"]}`, and the `sift_col` index '
+           f'created without the `compression` option has `reloptions` {R.get(tier, "sift", "-", "orders_col", "reloptions")["value"]}. Index = the `sift_col` index alone; build = its `CREATE INDEX`.', '']
+    head = ['`compression` of the `sift_col` index', '`reloptions`', 'index size', 'build time', 'vs `none`']
+    body = [[CZ_NAMES[e], f'`{R.get(tier, e, "-", "orders_col", "reloptions")["value"]}`', f'{sz(e):,.1f} MiB', f'{R.num(tier, e, variant="build orders_col", metric="build_s"):.1f} s',
+             f'{sz(e) / sz("sift_none"):.2f}x'] for e in lanes]
+    out += md_table(head, body, ['---', '---', '---:', '---:', '---:']) + ['']
+    out += ['Chunk bytes per column of the index (`sift.col_leaves`; every chunk of every column is written by the column codec, none stayed in the older formats):', '']
+    names = [l['leaf'] for l in leaves[lanes[0]].values()]
+    body = [[nm] + [f'{next(l for l in leaves[e].values() if l["leaf"] == nm)["bytes"] / 1048576:.2f}' for e in lanes] for nm in names]
+    out += md_table(['column (MiB)'] + [CZ_NAMES[e] for e in lanes], body) + ['']
+    if 'sift_auto' in lanes and 'sift' in lanes:
+        same = all(leaves['sift'][k]['bytes'] == leaves['sift_auto'][k]['bytes'] for k in leaves['sift'])
+        enc = 'sift_enc' in lanes and all(leaves['sift'][k]['bytes'] == leaves['sift_enc'][k]['bytes'] for k in leaves['sift'])
+        lz = 'sift_lz4' in lanes and all(leaves['sift'][k]['bytes'] == leaves['sift_lz4'][k]['bytes'] for k in leaves['sift'])
+        out += [f'- The default is `auto`: the chunk bytes of every column are {"identical" if same else "NOT identical"} with an explicit `compression = \'auto\'`, and {sz("sift"):,.1f} MiB against {sz("sift_none"):,.1f} MiB for `none`. '
+                f'`auto` wrote the same bytes as the encodings alone ({"identical" if enc else "different"}) and as `lz4` ({"identical" if lz else "different"}) on every column here, so it layered no LZ4 or zstd over the encodings '
+                '(the cost rule of [docs/perf/COMPRESSION.md](perf/COMPRESSION.md) accepts a layer only when its decode time is worth the bytes); `zstd:3` shrinks the text and low-cardinality columns further. '
+                'No SQL function reports the general-purpose layer chunk by chunk (`sift.col_leaves` counts chunks by encoding class), so the layer is read from these byte counts.', '']
+    tbl = [(p, R.num(tier, 'sift_table', variant='codec ' + p, metric='size_mib'), R.num(tier, 'sift_table', variant='codec ' + p + ' free', metric='size_mib')) for p in ('none', 'auto', 'lz4', 'zstd:3')]
+    others = [['pg_sift `sift_table`, `sift.table_compression` = ' + p, size(v, f)] for p, v, f in tbl if v is not None]
+    others += [[f'ClickHouse, {k}', size(R.num(tier, 'ch', variant=f'codec {k}', metric='size_mib'))] for k in ('default (LZ4)', 'ZSTD(3)') if R.num(tier, 'ch', variant=f'codec {k}', metric='size_mib') is not None]
+    others += [[f'Elasticsearch, {k}', size(R.num(tier, 'es', variant=f'codec {k}', metric='size_mib') if k != 'default (LZ4)' else R.num(tier, 'es', metric='size_mib'))]
+               for k in ('default (LZ4)', 'best_compression') if R.engines(tier, ['es'])]
+    others += [['PostgreSQL (heap, btree, GIN)', size(R.num(tier, 'pg', metric='size_mib'))]] if R.engines(tier, ['pg']) else []
+    out += ['Size of the other layouts and systems with their own compression settings (table and indexes):', ''] + md_table(['system and setting', 'size on disk'], others, ['---', '---:']) + ['']
+    qs = R.queries(tier)
+    cols = [e for e in lanes] + [e for e in ('pg', 'ch', 'es') if R.engines(tier, [e])]
+    labels = {**{e: 'sift_col ' + CZ_NAMES[e] for e in lanes}, 'pg': 'PostgreSQL', 'ch': 'ClickHouse', 'es': 'Elasticsearch'}
+    body = [[QUERY_TITLES[q]] + best_bold([R.num(tier, e, q, 'warm', 'latency_ms') for e in cols], [ms(R.num(tier, e, q, 'warm', 'latency_ms')) for e in cols]) for q in qs]
+    spread = [max(v) / min(v) for q in qs if len(v := [R.num(tier, e, q, 'warm', 'latency_ms') for e in lanes]) and all(v)]
+    out += [f'Warm medians (ms) of the ten questions on each `compression` variant of the `sift_col` index, with the other systems of the same run (the slowest of the {len(lanes)} variants against the fastest, per question: '
+            f'{min(spread):.2f}x to {max(spread):.2f}x; the order of the variants changes from question to question, so differences of that size are run-to-run noise):', ''] + md_table(['question'] + [labels[e] for e in cols], body)
+    return out
+
+
 def replace_blocks(args):
     import readme  # steps/readme.py: replace_block
     R = Results(args.results)
@@ -1358,6 +1474,8 @@ def replace_blocks(args):
     if args.benchmarks:
         readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
         readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
+        if os.path.exists(args.compression):
+            readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
 
 
 def cmd_render(args):
@@ -1366,6 +1484,35 @@ def cmd_render(args):
         print('\n'.join(readme_block(R) + [''] + updates_readme(R) + [''] + benchmarks_block(R) + [''] + updates_benchmarks(R)))
     else:
         replace_blocks(args)
+    return 0
+
+
+def cmd_stats(args):
+    """what ClickHouse and Elasticsearch read and spend per question, from their own accounting (system.query_log, `took`) and clickhouse-client --time"""
+    ch, es = Http('ch', CH_AUTH), Http('es_cached')
+    out = dict(rows=args.rows, ch={}, es={})
+    for q in load_queries(args.queries):
+        sql, tag = q.statement('ch', args.rows), f'gap-{q.id}'
+        for _ in range(args.runs):
+            ch.request('POST', f'/?database=store&default_format=TSV&log_comment={tag}', sql.encode())
+        ch.request('POST', '/', b'SYSTEM FLUSH LOGS')
+        cols = ("read_rows, read_bytes, memory_usage, query_duration_ms, peak_threads_usage, ProfileEvents['RealTimeMicroseconds'] AS real_us, "
+                "ProfileEvents['UserTimeMicroseconds'] AS user_us, ProfileEvents['SelectedParts'] AS parts, ProfileEvents['SelectedMarks'] AS marks")
+        rows = [json.loads(l) for l in ch.request('POST', f"/?default_format=JSONEachRow&output_format_json_quote_64bit_integers=0", (
+            f"SELECT {cols} FROM system.query_log WHERE type = 'QueryFinish' AND log_comment = '{tag}' ORDER BY event_time_microseconds DESC LIMIT {args.runs}").encode()).decode().splitlines()]
+        cli = subprocess.run(['docker', 'exec', container('ch'), 'clickhouse-client', '--user', 'bench', '--password', 'bench', '--database', 'store', '--time', '--format', 'Null', '--query', sql],
+                             capture_output=True, text=True)
+        if cli.returncode:
+            raise RuntimeError('clickhouse-client: ' + cli.stderr.strip()[:300])
+        out['ch'][q.id] = dict(median={k: statistics.median(r[k] for r in rows) for k in rows[0]}, client_time_s=float(cli.stderr.strip().splitlines()[-1]))
+        method, path, body, _, _ = q.statement('es_cached', args.rows)
+        took = [json.loads(es.request(method, path.replace('request_cache=true', 'request_cache=false'), body))['took'] for _ in range(args.runs)]
+        out['es'][q.id] = dict(took_ms=statistics.median(took))
+        log(f'{q.id} {q.name}: clickhouse {out["ch"][q.id]["median"]}; elasticsearch took {out["es"][q.id]["took_ms"]} ms')
+    with open(args.o, 'w') as f:
+        json.dump(out, f, indent=1)
+        f.write('\n')
+    log(f'written: {args.o}')
     return 0
 
 
@@ -1439,6 +1586,7 @@ def main():
         p.add_argument('--cold-runs', type=int, default=3)
         p.add_argument('--load-seconds', type=int, default=int(os.environ.get('STORE_LOAD_SECONDS', 15)), help='updates: how long a query is timed under each update rate')
         p.add_argument('--probes', type=int, default=20, help='updates: single-row changes timed until a query sees them')
+        p.add_argument('--compression', action='store_true', help='load: also the size of each system with its other compression settings')
         p.add_argument('--keep-going', action='store_true', help='go on after a result that differs from PostgreSQL\'s (the exit status is still 3)')
     for name in ('gen', 'load', 'run', 'cold', 'updates'):
         common(sub.add_parser(name))
@@ -1449,9 +1597,15 @@ def main():
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
     r.add_argument('--readme')
     r.add_argument('--benchmarks')
+    r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store-compression.json'))
     r.add_argument('--stdout', action='store_true')
     for name in ('table', 'gap'):
         sub.add_parser(name).add_argument('file', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
+    t = sub.add_parser('stats')
+    t.add_argument('--rows', type=int, required=True)
+    t.add_argument('-o', required=True)
+    t.add_argument('--runs', type=int, default=3)
+    t.add_argument('--queries', type=lambda s: s.split(','), default=[])
     c = sub.add_parser('compare')
     c.add_argument('a')
     c.add_argument('b')
@@ -1461,7 +1615,7 @@ def main():
     if getattr(args, 'rows', None) and not args.tier:
         args.tier = f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k'
     try:
-        sys.exit({'gen': cmd_gen, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table, 'gap': cmd_gap, 'compare': cmd_compare}[args.cmd](args))
+        sys.exit({'gen': cmd_gen, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table, 'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare}[args.cmd](args))
     except RuntimeError as x:
         die(str(x))
 
