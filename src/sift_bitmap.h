@@ -40,6 +40,7 @@
 #define SIFT_GROUP_SHIFT 8
 #define SIFT_GROUP_PAGES 256
 #define SIFT_MAX_OFF     512
+#define SIFT_LIST_OB_MAX 9    /* bits of an offset in a LIST blob: log2(SIFT_MAX_OFF) */
 #define SIFT_MAX_W       64
 #define SIFT_LIST_BLOCK  256
 #define SIFT_GRP_BYTES   (SIFT_GROUP_PAGES * SIFT_MAX_W)

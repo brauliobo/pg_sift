@@ -360,27 +360,18 @@ seg_read(SiftSegment *seg, uint64 off, size_t len, void *scratch)
 	return scratch;
 }
 
-static DocMap *
-docmap(SiftSegment *seg)
+/* Reads and checks the SB directory (24 bytes per SB, sums the ranks) */
+static void
+docmap_read(SiftSegment *seg, DocMap *dm, void *handle)
 {
-	DocMap	   *dm = seg->docmap;
 	const SiftSectionRef *s = &seg->hdr->sections[SIFT_SEC_DOCMAP];
 	uint64		rank = 0;
-	uint32		nsb;
 
-	if (dm)
-		return dm;
-	dm = MemoryContextAllocZero(seg->mcxt, sizeof(DocMap));
-	seg_read(seg, s->off + s->len - sizeof(uint32), sizeof(uint32), &nsb);
-	if ((uint64) nsb * sizeof(SiftDocSBRef) + sizeof(uint32) > s->len || nsb == 0 ||
-		nsb > seg->hdr->sb_hi - seg->hdr->sb_lo + 1)
-		corrupt(seg, "DOCMAP of %llu bytes lists %u SBs.", ULL(s->len), nsb);
-	dm->nsb = nsb;
-	dm->dir_off = s->off + s->len - sizeof(uint32) - nsb * sizeof(SiftDocSBRef);
-	dm->dir = MemoryContextAllocHuge(seg->mcxt, nsb * sizeof(SiftDocSBRef));
-	dm->rank_base = MemoryContextAllocHuge(seg->mcxt, (nsb + 1) * sizeof(uint64));
-	seg_read(seg, dm->dir_off, nsb * sizeof(SiftDocSBRef), dm->dir);
-	for (uint32 i = 0; i < nsb; i++)
+	seg_read(seg, dm->dir_off, dm->nsb * sizeof(SiftDocSBRef), dm->dir);
+#ifdef SIFT_TESTING
+	sift_docdir_stats.bytes_read += dm->nsb * sizeof(SiftDocSBRef);
+#endif
+	for (uint32 i = 0; i < dm->nsb; i++)
 	{
 		const SiftDocSBRef *r = &dm->dir[i];
 
@@ -392,9 +383,31 @@ docmap(SiftSegment *seg)
 		dm->rank_base[i] = rank;
 		rank += r->ndocs;
 	}
-	dm->rank_base[nsb] = rank;
+	dm->rank_base[dm->nsb] = rank;
 	if (rank != seg->hdr->ndocs)
 		corrupt(seg, "DOCMAP lists %llu docs, the header %llu.", ULL(rank), ULL(seg->hdr->ndocs));
+	sift_docdir_ready(handle);
+}
+
+static DocMap *
+docmap(SiftSegment *seg)
+{
+	DocMap	   *dm = seg->docmap;
+	const SiftSectionRef *s = &seg->hdr->sections[SIFT_SEC_DOCMAP];
+	void	   *handle;
+	uint32		nsb;
+
+	if (dm)
+		return dm;
+	dm = MemoryContextAllocZero(seg->mcxt, sizeof(DocMap));
+	seg_read(seg, s->off + s->len - sizeof(uint32), sizeof(uint32), &nsb);
+	if ((uint64) nsb * sizeof(SiftDocSBRef) + sizeof(uint32) > s->len || nsb == 0 ||
+		nsb > seg->hdr->sb_hi - seg->hdr->sb_lo + 1)
+		corrupt(seg, "DOCMAP of %llu bytes lists %u SBs.", ULL(s->len), nsb);
+	dm->nsb = nsb;
+	dm->dir_off = s->off + s->len - sizeof(uint32) - nsb * sizeof(SiftDocSBRef);
+	if (!sift_docdir_get(seg, nsb, &dm->dir, &dm->rank_base, &handle))
+		docmap_read(seg, dm, handle);
 	dm->cur = -1;
 	dm->om = MemoryContextAllocAligned(seg->mcxt, SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64),
 									   SIFT_SIMD_ALIGN, 0);

@@ -1,10 +1,10 @@
 /*
- * sift_prefix.c - the documents of a prefix with more terms than sift.max_expansions.
+ * sift_prefix.c - the documents of a leaf with more terms than sift.max_expansions.
  *
- * Such a prefix cannot be an OR of cursors with one score weight per term, which is what a leaf with
+ * Such a leaf cannot be an OR of cursors with one score weight per term, which is what a leaf with
  * few expansions is (and why those are limited). It is read as the one term the index would hold
- * with prefix_index >= its length: the documents that have a word starting with it, tf the number of
- * those words (what an edge n-gram analyzer indexes). The postings of every expanded term are
+ * with prefix_index >= its length: the documents that have a word the leaf matches (starting with
+ * it, for a prefix), tf the number of those words (what an edge n-gram analyzer indexes). The postings of every expanded term are
  * gathered per superblock, merged in key order and encoded as the blob of a regular term, in memory,
  * so the cursors, bounds and scoring of the ranker need no special case. The cost is the postings of
  * the expansion, read once per segment and bind, unless a recent bind of this backend left the blob in
@@ -31,6 +31,12 @@ typedef struct SbPostings
 	uint32		cap;
 } SbPostings;
 
+/*
+ * One pass over the expansion's terms builds the superblocks [from, to]. A pass over the whole segment
+ * gathers what it finds until it holds sift_prefix_gather_kb, then counts the postings of every superblock
+ * instead, and the superblocks are built in windows that fit the budget; a window of one superblock
+ * (a dense one) sums the tf of its postings as they come, so a pass holds the budget at most.
+ */
 typedef struct Union
 {
 	SiftSegment *seg;
@@ -39,11 +45,30 @@ typedef struct Union
 	MemoryContext cx;			/* the gathered postings */
 	MemoryContext tcxt;			/* the cursor of one term */
 	SbPostings *sb;				/* [sb_lo .. sb_hi] of the segment */
-	uint64		total;
+	uint64		total;			/* postings of the pass */
+	bool		any;			/* some superblock was built */
+	SiftPostingWriter *w;		/* begun by the first one */
+	const SiftScoreRef *ref;
+	uint64		budget;			/* postings a pass may gather */
+	uint32		from;			/* the superblocks of the pass */
+	uint32		to;
+	uint64	   *count;			/* counting: postings of every superblock of the segment, else NULL */
 	uint8	   *acc;			/* tf of every slot of the superblock being merged */
 	sift_tid   *tids;
 	uint8	   *tf;
+	SiftKey    *keys;			/* the merged superblock: allocated by the first */
+	uint8	   *mtf;
+	uint16	   *dl;
 } Union;
+
+int			sift_prefix_gather_kb = 131072;
+
+#ifdef SIFT_TESTING
+SiftPrefixStats sift_prefix_stats;
+#define UNION_STAT(cond, f, v)	do { if (cond) sift_prefix_stats.f = (v); } while (0)
+#else
+#define UNION_STAT(cond, f, v)	((void) 0)
+#endif
 
 static void
 corrupt_union(const SiftSegment *seg, const char *what)
@@ -54,22 +79,79 @@ corrupt_union(const SiftSegment *seg, const char *what)
 					(unsigned long long) seg->entry.gen, what)));
 }
 
-static void
-union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
+static inline void
+union_check(const Union *u, uint32 gid, SiftKey key)
 {
 	const SiftSegHeaderData *h = u->seg->hdr;
-	SbPostings *b;
 
 	if (gid < h->sb_lo || gid > h->sb_hi || (key & 0xFFFF) == 0 || (key & 0xFFFF) > SLOT_OFFS)
 		corrupt_union(u->seg, "a posting lies outside the segment's superblocks or has no offset");
-	b = &u->sb[gid - h->sb_lo];
+}
+
+static inline bool
+union_direct(const Union *u)
+{
+	return u->from == u->to;
+}
+
+static inline void
+union_sum(const Union *u, uint32 slot, uint8 tf)
+{
+	u->acc[slot] = u->scoring ? Min(u->acc[slot] + tf, SIFT_MAX_TF) : 1;
+}
+
+/* Gathers a posting of the window (its tf is summed on the spot in a window of one superblock) */
+static void
+union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
+{
+	SbPostings *b;
+
+	union_check(u, gid, key);
+	if (gid < u->from || gid > u->to)
+		return;
+	u->total++;
+	if (union_direct(u))
+		return union_sum(u, SLOT(key), tf);
+	b = &u->sb[gid - u->seg->hdr->sb_lo];
 	if (b->n == b->cap)
 	{
 		b->cap = Max(64, 2 * b->cap);
 		b->e = b->e ? repalloc_huge(b->e, b->cap * sizeof(uint32)) : MemoryContextAllocHuge(u->cx, b->cap * sizeof(uint32));
 	}
 	b->e[b->n++] = SLOT(key) << 8 | tf;
-	u->total++;
+}
+
+/* Over budget: forgets what was gathered and counts the postings of every superblock from here on */
+static void
+union_count_from_here(Union *u)
+{
+	uint32		nsb = u->seg->hdr->sb_hi - u->seg->hdr->sb_lo + 1;
+
+	u->count = MemoryContextAllocZero(u->cx, nsb * sizeof(uint64));
+	for (uint32 i = 0; i < nsb; i++)
+	{
+		u->count[i] = u->sb[i].n;
+		if (u->sb[i].e)
+			pfree(u->sb[i].e);
+		u->sb[i] = (SbPostings) {0};
+	}
+	UNION_STAT(u->total > sift_prefix_stats.peak, peak, u->total);
+	u->total = 0;
+}
+
+/* A window of several superblocks holds what fits the budget; the pass over all of them counts what exceeds it */
+static void
+union_over_budget(Union *u, uint64 more)
+{
+	if (u->count == NULL && !union_direct(u) && (u->total + more) * sizeof(uint32) > u->budget)
+		union_count_from_here(u);
+}
+
+static void
+union_count(Union *u, uint32 gid, uint64 n)
+{
+	union_check(u, gid, 1);
+	u->count[gid - u->seg->hdr->sb_lo] += n;
 }
 
 static bool
@@ -84,15 +166,29 @@ union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		for (uint32 i = 0; i < info->df; i++)
-			union_add(u, SIFT_GID(info->inline_keys[i]), info->inline_keys[i], info->inline_tf[i]);
+			if (u->count)
+				union_count(u, SIFT_GID(info->inline_keys[i]), 1);
+			else
+				union_add(u, SIFT_GID(info->inline_keys[i]), info->inline_keys[i], info->inline_tf[i]);
+		union_over_budget(u, 0);
 		return true;
 	}
 	c = sift_post_open(&u->seg->sr, info, u->tcxt);
+	sift_sr_unlock(&u->seg->sr);
 	cur = sift_post_cursor(c);
-	for (const sift_grp *g = sift_next(cur); g; g = sift_next(cur))
+	for (const sift_grp *g = sift_seek(cur, u->from); g && g->gid <= u->to; g = sift_next(cur))
 	{
-		uint32		k = sift_grp_tids(g, NULL, u->tids);
+		uint64		n = sift_grp_count(g);
+		uint32		k;
 
+		CHECK_FOR_INTERRUPTS();
+		union_over_budget(u, n);
+		if (u->count)
+		{
+			union_count(u, g->gid, n);
+			continue;
+		}
+		k = sift_grp_tids(g, NULL, u->tids);
 		if (u->scoring)
 			sift_post_group_tf(c, u->tf);
 		for (uint32 j = 0; j < k; j++)
@@ -133,18 +229,31 @@ union_dl(Union *u, uint32 gid, const SiftKey *keys, int n, uint16 *dl)
  * sums their tf. The slots are summed in a dense array, which the scan also clears.
  */
 static void
-union_emit(Union *u, SiftPostingWriter *w, uint32 gid, SiftKey *keys, uint8 *tf, uint16 *dl)
+union_emit(Union *u, uint32 gid)
 {
 	SbPostings *b = &u->sb[gid - u->seg->hdr->sb_lo];
 	uint64	   *acc = (uint64 *) u->acc;
 	int			n = 0;
 
-	if (b->n == 0)
+	SiftKey    *keys;
+	uint8	   *tf;
+
+	if (b->n == 0 && !union_direct(u))
 		return;
+	if (u->keys == NULL)
+	{
+		u->keys = MemoryContextAlloc(u->cx, SIFT_GRP_MAXTIDS * sizeof(SiftKey));
+		u->mtf = MemoryContextAlloc(u->cx, SIFT_GRP_MAXTIDS);
+		u->dl = MemoryContextAllocZero(u->cx, SIFT_GRP_MAXTIDS * sizeof(uint16));	/* without scoring no bound is read: one dl for all */
+	}
+	keys = u->keys;
+	tf = u->mtf;
 	for (uint32 j = 0; j < b->n; j++)
-		u->acc[b->e[j] >> 8] = u->scoring ? Min(u->acc[b->e[j] >> 8] + (b->e[j] & 0xFF), SIFT_MAX_TF) : 1;
-	pfree(b->e);
+		union_sum(u, b->e[j] >> 8, b->e[j] & 0xFF);
+	if (b->e)
+		pfree(b->e);
 	b->e = NULL;
+	b->n = 0;
 	for (uint32 wd = 0; wd < (1 << SLOT_BITS) / 8; wd++)
 	{
 		if (acc[wd] == 0)
@@ -160,9 +269,77 @@ union_emit(Union *u, SiftPostingWriter *w, uint32 gid, SiftKey *keys, uint8 *tf,
 			u->acc[slot] = 0;
 		}
 	}
+	if (n == 0)
+		return;
 	if (u->scoring)
-		union_dl(u, gid, keys, n, dl);
-	sift_postw_add(w, keys, tf, dl, n, NULL, NULL);
+		union_dl(u, gid, keys, n, u->dl);
+	if (u->w == NULL)
+		u->w = sift_postw_begin(NULL, u->ref, u->cx);
+	sift_postw_add(u->w, keys, tf, u->dl, n, NULL, NULL);
+	u->any = true;
+}
+
+static void
+union_scan(Union *u, uint32 from, uint32 to)
+{
+	const char *lo,
+			   *hi;
+	int			lolen,
+				hilen;
+
+	u->from = from;
+	u->to = to;
+	u->total = 0;
+	UNION_STAT(true, passes, sift_prefix_stats.passes + 1);
+	UNION_STAT(from != u->seg->hdr->sb_lo || to != u->seg->hdr->sb_hi, windows, sift_prefix_stats.windows + 1);
+	UNION_STAT(from == to && u->count == NULL && u->seg->hdr->sb_lo != u->seg->hdr->sb_hi, direct, sift_prefix_stats.direct + 1);
+	sift_matcher_bounds(u->m, &lo, &lolen, &hi, &hilen);
+	sift_dict_scan(u->seg->dict, lo, lolen, hi, hilen, union_term, u);
+	sift_sr_release(&u->seg->sr);
+	UNION_STAT(!union_direct(u) && u->total > sift_prefix_stats.peak, peak, u->total);
+}
+
+/* The windows [from, to] of consecutive superblocks, each gathering at most the budget (a dense superblock alone is one) */
+static uint32
+union_window_end(const Union *u, uint32 from)
+{
+	uint64		sum = 0;
+	uint32		to = from;
+
+	for (uint32 sb = from; sb <= u->seg->hdr->sb_hi; sb++)
+	{
+		sum += u->count[sb - u->seg->hdr->sb_lo];
+		if (sb > from && sum * sizeof(uint32) > u->budget)
+			break;
+		to = sb;
+	}
+	return to;
+}
+
+/* The superblocks of the segment, in windows, once a pass found that all of them do not fit the budget */
+static void
+union_windows(Union *u)
+{
+	const SiftSegHeaderData *h = u->seg->hdr;
+	uint64	   *count = u->count;
+
+	for (uint32 sb = h->sb_lo; sb <= h->sb_hi;)
+	{
+		uint32		to;
+
+		if (count[sb - h->sb_lo] == 0)
+		{
+			sb++;
+			continue;
+		}
+		to = union_window_end(u, sb);
+		u->count = NULL;
+		union_scan(u, sb, to);
+		for (uint32 i = sb; i <= to; i++)
+			union_emit(u, i);
+		u->count = count;
+		sb = to + 1;
+	}
 }
 
 static const uint8 *
@@ -171,34 +348,24 @@ union_build(SiftSegment *seg, const SiftTermMatcher *m, const SiftScoreRef *ref,
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift prefix union", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Union		u = {.seg = seg,.m = m,.scoring = scoring,.cx = cx};
-	uint32		nsb = seg->hdr->sb_hi - seg->hdr->sb_lo + 1;
-	const char *lo,
-			   *hi;
-	int			lolen,
-				hilen;
+	Union		u = {.seg = seg,.m = m,.scoring = scoring,.cx = cx,.ref = ref,.budget = (uint64) Max(sift_prefix_gather_kb, 1) * 1024};
+	const SiftSegHeaderData *h = seg->hdr;
 	const uint8 *blob = NULL;
 
 	u.tcxt = AllocSetContextCreate(cx, "sift prefix term", ALLOCSET_DEFAULT_SIZES);
-	u.sb = palloc0(nsb * sizeof(SbPostings));
+	u.sb = palloc0((h->sb_hi - h->sb_lo + 1) * sizeof(SbPostings));
 	u.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	u.tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	u.acc = palloc0(1 << SLOT_BITS);
-	sift_matcher_bounds(m, &lo, &lolen, &hi, &hilen);
-	sift_dict_scan(seg->dict, lo, lolen, hi, hilen, union_term, &u);
-	sift_sr_release(&seg->sr);
 	memset(info, 0, sizeof(SiftTermInfo));
-	if (u.total > 0)
-	{
-		SiftPostingWriter *w = sift_postw_begin(NULL, ref, cx);
-		SiftKey    *keys = palloc(SIFT_GRP_MAXTIDS * sizeof(SiftKey));
-		uint8	   *tf = palloc(SIFT_GRP_MAXTIDS);
-		uint16	   *dl = palloc0(SIFT_GRP_MAXTIDS * sizeof(uint16));	/* without scoring no bound is read: one dl for all */
-
-		for (uint32 i = 0; i < nsb; i++)
-			union_emit(&u, w, seg->hdr->sb_lo + i, keys, tf, dl);
-		blob = sift_postw_end_term_mem(w, info, mcxt);
-	}
+	union_scan(&u, h->sb_lo, h->sb_hi);
+	if (u.count)
+		union_windows(&u);
+	else
+		for (uint32 sb = h->sb_lo; sb <= h->sb_hi; sb++)
+			union_emit(&u, sb);
+	if (u.any)
+		blob = sift_postw_end_term_mem(u.w, info, mcxt);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return blob;
@@ -325,7 +492,8 @@ const uint8 *
 sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
 				  bool scoring, MemoryContext mcxt, SiftTermInfo *info)
 {
-	CacheEnt   *e = sift_prefix_cache_size > 0 ? cache_find(seg, key, keylen, scoring) : NULL;
+	bool		cached = key != NULL && sift_prefix_cache_size > 0;
+	CacheEnt   *e = cached ? cache_find(seg, key, keylen, scoring) : NULL;
 	const uint8 *blob;
 	CacheKey	k;
 
@@ -335,7 +503,7 @@ sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, i
 		return blob_copy(mcxt, e->blob, info);
 	}
 	blob = union_build(seg, m, ref, scoring, mcxt, info);
-	if (sift_prefix_cache_size > 0)
+	if (cached)
 	{
 		cache_key(seg, key, keylen, scoring, &k);
 		cache_put(&k, info, blob);

@@ -454,15 +454,6 @@ leaf_term_cmp(const void *a, const void *b)
 	return c ? c : x->len - y->len;
 }
 
-static void
-limit_error(const SiftQNode *leaf)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-			 errmsg("sift: the leaf at position %d expands to more than %d terms", leaf->loc, sift_max_expansions),
-			 errhint("Narrow the pattern or raise sift.max_expansions.")));
-}
-
 /* Terms across segments are distinct only once */
 static int
 distinct_terms(const SiftPlan *p, const EvalLeaf *l)
@@ -540,32 +531,53 @@ expand_live(SiftPlan *p, EvalLeaf *l)
 	return any;
 }
 
-/* The term that indexed_leaf makes of a prefix of the leaf's field */
-static int
-prefix_term(const SiftQNode *n, char *term)
+/*
+ * The term that indexed_leaf makes of a prefix of the leaf's field; the name of any other wide leaf is one
+ * byte no word starts with, and its cache key (NULL when too long to be one) tells it from the others
+ */
+static void
+wide_names(SiftPlan *p, EvalLeaf *l, char **ckey, int *cklen)
 {
+	const SiftQNode *n = l->node;
 	int			len = 0;
 
-	if (n->field)
-		term[len++] = SIFT_FIELD_BYTE(n->field);
-	term[len++] = SIFT_PREFIX_SEP;
-	memcpy(term + len, n->text, n->textlen);
-	return len + n->textlen;
+	*ckey = MemoryContextAlloc(p->mcxt, n->textlen + 4);
+	if (n->kind == SQ_PREFIX)
+	{
+		if (n->field)
+			(*ckey)[len++] = SIFT_FIELD_BYTE(n->field);
+		(*ckey)[len++] = SIFT_PREFIX_SEP;
+		memcpy(*ckey + len, n->text, n->textlen);
+		l->wide = *ckey;
+		l->widelen = *cklen = len + n->textlen;
+		return;
+	}
+	l->wide = pstrdup("\xFF");
+	l->widelen = 1;
+	(*ckey)[len++] = 0xFF;
+	(*ckey)[len++] = n->kind;
+	(*ckey)[len++] = n->fuzzy;
+	(*ckey)[len++] = n->field;
+	memcpy(*ckey + len, n->text, n->textlen);
+	*cklen = len + n->textlen;
+	if (*cklen > SIFT_MAX_TERM_BYTES + 2)
+		*ckey = NULL;
 }
 
 /*
- * A prefix with more terms than the limit is not an OR of its terms, one weight each: it reads as the
- * one term prefix_index would have indexed for it (sift_prefix.c), in every segment, so that the
+ * A leaf with more terms than the limit is not an OR of its terms, one weight each: it reads as the one
+ * term that holds the documents with a word the leaf matches, tf the number of those words (for a prefix
+ * the one term prefix_index would have indexed for it, sift_prefix.c), in every segment, so that the
  * leaf is weighed alike everywhere.
  */
 static void
 widen_leaf(SiftPlan *p, EvalLeaf *l)
 {
-	const SiftQNode *node = l->node;
 	SiftScoreRef ref = {(float4) p->st->dir.meta.k1, (float4) p->st->dir.meta.b, 0};
+	char	   *ckey;
+	int			cklen;
 
-	l->wide = MemoryContextAlloc(p->mcxt, node->textlen + 2);
-	l->widelen = prefix_term(node, l->wide);
+	wide_names(p, l, &ckey, &cklen);
 	for (int s = 0; s < p->nsegs; s++)
 	{
 		LeafTerm   *t = MemoryContextAllocZero(p->mcxt, sizeof(LeafTerm));
@@ -575,7 +587,7 @@ widen_leaf(SiftPlan *p, EvalLeaf *l)
 		if (l->terms[s])
 			pfree(l->terms[s]);
 		ref.avgdl = p->seg[s]->hdr->avgdl_ref;
-		t->blob = sift_prefix_union(p->seg[s], l->m, l->wide, l->widelen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
+		t->blob = sift_prefix_union(p->seg[s], l->m, ckey, cklen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
 		t->term = l->wide;
 		t->len = l->widelen;
 		l->nterms[s] = t->info.df > 0;
@@ -587,8 +599,8 @@ widen_leaf(SiftPlan *p, EvalLeaf *l)
  * A dictionary keeps the terms of vacuumed docs until its segment is
  * rewritten. They match nothing, so the limit applies to the terms with a
  * live posting; they are only told apart once the limit is reached, which
- * keeps the common expansion free of posting reads. A prefix over the limit
- * is wide, any other leaf is an error.
+ * keeps the common expansion free of posting reads. A leaf over the limit is
+ * wide.
  */
 static void
 resolve_leaf(SiftPlan *p, EvalLeaf *l)
@@ -606,11 +618,8 @@ resolve_leaf(SiftPlan *p, EvalLeaf *l)
 		over = expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true));
 	over |= !p->capped && distinct_terms(p, l) > sift_max_expansions &&
 		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions);
-	if (!over)
-		return;
-	if (node->kind != SQ_PREFIX)
-		limit_error(node);
-	widen_leaf(p, l);
+	if (over)
+		widen_leaf(p, l);
 }
 
 /* ---------- mutable segments ---------- */
@@ -826,10 +835,13 @@ bind_mutable(SiftPlan *p)
 										 p->scoring ? mut_leaf_ok : mut_page_ok, p);
 		SiftMutDoc	doc;
 		uint64		n,
-					sum;
+					sum,
+					seen = 0;
 
 		while (sift_mut_next(r, &doc))
 		{
+			if ((++seen & 1023) == 0)
+				CHECK_FOR_INTERRUPTS();
 			if (p->scoring)
 				doc_count_terms(p, &doc);
 			if (doc.deleted || !doc_matches(p, p->root, &doc))
@@ -2015,7 +2027,8 @@ struct SiftRanker
 	int64		K;					/* hits kept by the current search */
 	SiftHit    *hit;				/* keyed by the visible tuple's ctid */
 	HTAB	   *hot;				/* visible ctid -> index entry, where they differ */
-	int			nhit;
+	int64		nhit;
+	int64		hitcap;				/* slots of hit */
 	int64		pos;
 	bool		searched;
 	bool		complete;
@@ -2077,7 +2090,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	{
 		int			n;
 		const SiftGroupBounds *gb = sift_post_bounds(rs->cs.leafpc[leaf][i], &n);
-		float4		w = sift_kern_ub_weight(l->terms[rs->s][i].w, p->stats.avgdl, ref);
+		float4		w = sift_kern_ub_weight(l->terms[rs->s][i].w, p->stats.avgdl, ref, p->nleaves);
 
 		for (int j = 0; j < n; j++, total++)
 		{
@@ -2210,7 +2223,7 @@ term_bounds(SiftPlan *p, RankSeg *rs, int leaf)
 		t->gb = sift_post_bounds(t->pc, &t->ngb);
 		for (int k = 0; k < t->ngb; k++)
 			top = Max(top, t->gb[k].bound);
-		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref);
+		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref, p->nleaves);
 		t->tub = t->ubw * (float4) top;
 		rs->lmax[leaf] = Max(rs->lmax[leaf], t->tub);
 	}
@@ -2748,6 +2761,8 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	vis = sift_key_from_tid(&tid);
 	if (!sift_kern_topk_admits(tk, score, vis))
 		return;
+	if (tk->n == tk->cap && tk->n < tk->k)
+		tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
 	sift_kern_topk_push(tk, score, vis);
 	if (vis != key)
 		hot_remember(r, vis, key);
@@ -3002,11 +3017,11 @@ par_hit_cmp(const void *a, const void *b)
 static void
 rank_merge_shared(SiftRanker *r)
 {
-	SiftParHit *mine = palloc(Max(r->nhit, 1) * sizeof(SiftParHit)),
+	SiftParHit *mine = palloc_extended(Max(r->nhit, 1) * sizeof(SiftParHit), MCXT_ALLOC_HUGE),
 			   *all;
 	int64		n;
 
-	for (int i = 0; i < r->nhit; i++)
+	for (int64 i = 0; i < r->nhit; i++)
 	{
 		HotEnt	   *e = r->hot ? hash_search(r->hot, &r->hit[i].key, HASH_FIND, NULL) : NULL;
 
@@ -3023,7 +3038,9 @@ rank_merge_shared(SiftRanker *r)
 	hot_forget(r);
 	r->nhit = Min(n, r->K);
 	r->complete = n < r->K;
-	for (int i = 0; i < r->nhit; i++)
+	if (r->nhit > r->hitcap)
+		r->hit = repalloc_huge(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
+	for (int64 i = 0; i < r->nhit; i++)
 	{
 		r->hit[i] = (SiftHit) {all[i].key, all[i].score};
 		if (all[i].root != all[i].key)
@@ -3033,19 +3050,22 @@ rank_merge_shared(SiftRanker *r)
 	pfree(all);
 }
 
-/* Searches the K best verified hits from scratch */
+#define RANK_INITIAL_K	1024
+
+/* Searches the K best verified hits from scratch; the heap grows with the hits found, not with K */
 static void
 rank_search(SiftRanker *r)
 {
 	SiftPlan   *p = r->plan;
 	SiftTopK	tk;
+	int64		cap;
 	bool		shared = r->par && !r->searched;
 
 	hot_forget(r);
 	if (r->hit)
 		pfree(r->hit);
-	r->hit = MemoryContextAlloc(p->mcxt, r->K * sizeof(SiftHit));
-	sift_kern_topk_init(&tk, r->hit, r->K);
+	cap = Min(r->K, RANK_INITIAL_K);
+	sift_kern_topk_init(&tk, MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
 	if (shared)
 		rank_units_shared(r, &tk);
@@ -3054,12 +3074,12 @@ rank_search(SiftRanker *r)
 	p->stats.theta = sift_kern_topk_theta(&tk);
 	r->complete = tk.n < r->K;
 	r->nhit = sift_kern_topk_sort(&tk);
+	r->hit = tk.hit;
+	r->hitcap = tk.cap;
 	r->searched = true;
 	if (shared)
 		rank_merge_shared(r);
 }
-
-#define RANK_INITIAL_K	1024
 
 static void
 rank_ensure(SiftRanker *r)
@@ -3067,7 +3087,7 @@ rank_ensure(SiftRanker *r)
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : RANK_INITIAL_K;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K = Min(r->K * 4, INT_MAX / 2);
+		r->K *= 4;
 	else
 		return;
 	rank_search(r);

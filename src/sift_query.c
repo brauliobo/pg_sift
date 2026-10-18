@@ -845,6 +845,8 @@ compile_regex(const char *pat, int len, int loc)
 		pg_regerror(rc, re, msg, sizeof(msg));
 		SYNTAX(loc, "invalid regular expression: %s", msg);
 	}
+	if (re->re_info & REG_UBACKREF)
+		SYNTAX(loc, "back-references are not supported in a regular expression");
 	pfree(w);
 	return re;
 }

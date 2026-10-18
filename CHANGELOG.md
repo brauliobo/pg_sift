@@ -4,6 +4,45 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fix: a ranked scan with `LIMIT` plus `OFFSET` of 67,108,864 or more failed with `invalid memory alloc request size` (so did
+  `LIMIT 2147483647` meaning "all"), and so did a ranked scan drained without a limit once it had more than 16.7 million matches. The
+  top-k heap now grows with the hits found, in huge allocations, and counts in 64 bits: a huge limit costs what the matches take.
+
+- Fix: the score upper bounds that prune ranked scans were derived for up to 256 scored terms, but a plan has a term for every distinct
+  term of its phrases (up to 256 phrases of 128 terms). Their slack now grows with the number of terms above 256 (nothing changes below
+  it: same bounds, same pruning), so a document matching thousands of terms can no longer score above its block's bound and be pruned.
+  No wrong result was found at 300 terms (`rank_leaves` compares the top k with an exact reference).
+
+- Fix: a wildcard, regex or fuzzy leaf that expands to more than `sift.max_expansions` (512) terms failed with `the leaf at position N
+  expands to more than 512 terms` in execution (`*ing`, `/.*tion/` or `~2` on a natural vocabulary; `EXPLAIN` worked). Like a prefix, it
+  now matches every word it matches and scores as one term (the documents with such a word, tf the number of those words); a leaf with
+  512 terms or fewer is unchanged. Cost on 100,000 articles (456,027 terms): `*ing` (72,478 documents) 90-170 ms, 42 ms with the blob in
+  the backend's cache; `/.*tion/` 320 ms. `sift.max_expansions` is now the number of terms a leaf scores individually, for every kind.
+- Changed: `sift.max_expansions` and `sift.prefix_cache_size` are superuser settings (`PGC_SUSET`) instead of settable by any role: with
+  up to 1,000,000 expansions and 1 GB of cache per backend they let any role exhaust the server's memory. Set them in `postgresql.conf`,
+  `ALTER SYSTEM`, `ALTER DATABASE ... SET` or `ALTER ROLE ... SET`; a role that sets them in a session gets `permission denied to set parameter`.
+- Fix: a wide prefix gathered four bytes of memory per posting of every term it expands to, without bound (`t*` on a billion postings is
+  4 GB). A pass now gathers at most 128 MB, then counts the postings of every superblock and builds the superblocks in windows that fit
+  it (a superblock that alone does not fit sums the term frequencies as they come, 128 kB); the result is the same blob, bit for bit. A
+  prefix that fits the budget (every one before) takes the same single pass as before. The scan of the dictionary and of the postings
+  of the expansion serves cancel and `statement_timeout` every 16 dictionary blocks and at every group (a buffer lock held during the scan held them off).
+- Changed: a regular expression leaf cannot have back-references (`/(a+)\1/`): they make a match exponential in the length of the term.
+  The query fails at parse time like any invalid expression.
+
+- Fix: a cursor over a sparse term (fewer than 8192 postings, or inline in the dictionary) allocated the 32 kB buffer a group of a frequent
+  term needs; it now allocates one the size of its rows (at most one per posting, 64 bytes each). A 200-term `OR` over six segments
+  allocated 39 MB for its cursors, now 1.1 MB. Frequent terms are unchanged. The copy of a frequent term's whole blob (a term in every
+  row of a billion-row index is hundreds of MB per segment and query) is not windowed yet.
+
+- Fix: a term lookup in a dictionary whose terms share their first 8 bytes (fixed-width ids such as `ord-0000` plus digits, order
+  numbers, hashes with a common prefix) read every block of the run of terms with that prefix, linearly: 625 blocks per lookup in 40,000
+  ids. It finds the block by bisection (10 blocks); other dictionaries read the same blocks as before.
+
+- Fix: every query that reads the documents of a segment (ranked scans, filters) read and summed the whole SB directory of its docmap,
+  24 bytes per superblock: more than 300 kB per segment and query on a billion-row index. A backend now keeps the directories of
+  segments of 128 superblocks or more (16 MB, least recently used out; a segment never changes, so its generation names the directory
+  for good) and a repeated query reads none of it. Smaller segments are read each time, as before.
+
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
@@ -43,7 +82,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   `sift.highlight` no longer parses its query for every row.
 - Docs: [docs/SIZING.md](docs/SIZING.md) (disk, memory and time of large indexes, dead documents in BM25 statistics, `SERIALIZABLE`, row-level
   security, updates). `bench/ab-query.sh` times one statement on two builds, `bench/sql/dead_docs.sql` measures the effect of rolled-back
-  loads on scores.
+  loads on scores. `bench/cpu-query.sh` counts the instructions and CPU time of a backend per transaction on two builds, which a loaded host
+  does not change.
 - Tests: `scripts/ci.sh quick` also runs the regression tests that need no test-only function against the production library
   (`SIFT_TESTING` off).
 

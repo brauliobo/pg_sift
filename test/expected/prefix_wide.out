@@ -180,17 +180,41 @@ SELECT cnt('pw', 'w*'), cnt('pw', 'hot*'), cnt('pw', 'hotel*'), cnt('pw', 'tkaa*
 (1 row)
 
 RESET sift.max_expansions;
--- the limit applies to prefixes alone (through the index: a seq scan evaluates documents and has no expansion)
+-- wildcards, regexes and fuzzy terms above the limit are wide too (through the index: a seq scan evaluates documents and has
+-- no expansion): they match what document evaluation matches, and score as one term like a prefix does
 SET enable_seqscan = off;
 SELECT count(*) FROM pw WHERE body @@> 't?*';
-ERROR:  sift: the leaf at position 1 expands to more than 512 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+  6002
+(1 row)
+
 SELECT count(*) FROM pw WHERE body @@> '/tk.*/';
-ERROR:  sift: the leaf at position 1 expands to more than 512 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+  6002
+(1 row)
+
 SELECT count(*) FROM pw WHERE body @@> 'tk* OR /tk.*/';
-ERROR:  sift: the leaf at position 8 expands to more than 512 terms
-HINT:  Narrow the pattern or raise sift.max_expansions.
+ count 
+-------
+  6002
+(1 row)
+
+SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3']) q
+WHERE cnt('pw', q) <> oracle('pw', q);
+ q 
+---
+(0 rows)
+
+SET sift.max_expansions = 2;
+SELECT q FROM unnest(ARRAY['t?*', '/tk.*/', '*0001', '*k0*', '/.*(0|1)$/', 'tk0001~2', 'tk* OR /tk.*/', '*0 AND NOT w3', 'hot?l', 'hotl~1']) q
+WHERE cnt('pw', q) <> oracle('pw', q);
+ q 
+---
+(0 rows)
+
+RESET sift.max_expansions;
 SET sift.max_expansions = 5000;
 SELECT count(*) FROM pw WHERE body @@> '/tk.*/';
  count 

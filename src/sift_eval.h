@@ -54,8 +54,8 @@ typedef struct SiftPlan SiftPlan;
 /*
  * ANDs all queries (several @@> quals on one index) and resolves terms per
  * segment. The queries must outlive the plan. Wildcard, prefix, regex and
- * fuzzy leaves expand to the union of the segments' dictionary terms;
- * ERRCODE_PROGRAM_LIMIT_EXCEEDED above sift.max_expansions.
+ * fuzzy leaves expand to the union of the segments' dictionary terms; above
+ * sift.max_expansions a leaf is wide (one term, see sift_prefix.h).
  */
 extern SiftPlan *sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags);
 
