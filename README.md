@@ -113,7 +113,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `sift.log_min_duration` | 1s | log promotions, merges and worker runs at least this long (`-1` none) |
 
 Merging is automatic: sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
-8 smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
+`merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
 down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
 it anyway). `mutable_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
 Full reference, inspection functions and replication: [docs/USAGE.md](docs/USAGE.md).
