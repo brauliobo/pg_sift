@@ -6,8 +6,8 @@
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
 #   production library, without the test-only functions: scripts/production-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
-#   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), a 30 s soak and a
-#   20 s fuzz budget.
+#   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
+#   the coverage table (scripts/coverage.sh, docs/COVERAGE.md: about 10 s), a 30 s soak and a 20 s fuzz budget.
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
 #   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
 #   and sift soaks (600 s) and the server sanitizer report.
@@ -130,6 +130,7 @@ if [[ $MODE == full ]]; then
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 20000 --rows 200000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
+	job coverage coverage 1 "$S/coverage.sh" --check
 	job fuzz fuzz 1 "$S/fuzz.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
@@ -158,6 +159,7 @@ else
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios insert,update,delete,abort,vacuum,held
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
+	job coverage coverage 1 "$S/coverage.sh" --check
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
