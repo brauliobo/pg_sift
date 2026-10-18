@@ -27,6 +27,7 @@
 
 #include "sift.h"
 #include "sift_col_am.h"
+#include "sift_col_build.h"
 #include "sift_col_seg.h"
 #include "sift_cpu.h"
 
@@ -60,6 +61,17 @@ sift_col_init(void)
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_workers",
+							"Testing: parallel workers the last sift_col build of this session launched.",
+							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_fail_sb",
+							"Testing: the participant of a sift_col build that takes this superblock (1 = the first) fails (0 = none).",
+							NULL, &sift_test_col_fail_sb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_segment_kb",
+							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem).",
+							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+#endif
 	col_relopt_kind = add_reloption_kind();
 	add_int_reloption(col_relopt_kind, "mutable_limit",
 					  "Mutable segment size in kB before it is sealed for promotion",
@@ -360,11 +372,11 @@ sift_col_index_meta(Relation index)
 			m->stats.nrows += e->ndocs;
 			m->stats.bytes += e->bytes;
 			m->stats.nsegments++;
-			m->stats.nunits += e->sb_hi - e->sb_lo + 1;
 		}
 		else
 			m->stats.nmutable++;
 	}
+	m->stats.nunits = sift_cseg_dir_units(snap);
 	heap = table_open(d->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	visibilitymap_count(heap, &allvis, NULL);
@@ -583,7 +595,7 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->amclusterable = false;
 	am->ampredlocks = false;
 	am->amcanparallel = false;
-	am->amcanbuildparallel = false;
+	am->amcanbuildparallel = true;
 	am->amcaninclude = false;
 	am->amusemaintenanceworkmem = true;
 	am->amsummarizing = false;
