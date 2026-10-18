@@ -764,7 +764,7 @@ sift_test_sweep(PG_FUNCTION_ARGS)
 Datum
 sift_test_maint_failures(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot snap;
 
 	sift_dir_read(index, &snap);
