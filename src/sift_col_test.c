@@ -305,6 +305,26 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			continue;
 		tids = palloc(sel.count * sizeof(ItemPointerData));
 		sift_col_tids(&unit, &sel, tids);
+		/*
+		 * The selection's positions are cached for the leaves read through it: every other leaf is read first (the group offsets are
+		 * built by a sibling), then a selection with one row less (which replaces the cache), then this one again, which must read as if
+		 * it were the first.
+		 */
+		for (int c = 0; c < sift_col_ncols(ts.src); c++)
+			if (c != leaf)
+				sift_col_read(&unit, c, &sel, &vec);
+		if (sel.count > 1)
+		{
+			SiftColSel	less = sel;
+			uint32	   *first = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+
+			less.bits = palloc(sel.nwords * sizeof(uint64));
+			memcpy(less.bits, sel.bits, sel.nwords * sizeof(uint64));
+			sift_col_sel_idx(&sel, first);
+			sift_col_bit_clear(less.bits, first[0]);
+			sift_col_sel_count(&less);
+			sift_col_read(&unit, leaf, &less, &vec);
+		}
 		sift_col_read(&unit, leaf, &sel, &vec);
 		for (uint32 r = 0; r < sel.count; r++)
 		{

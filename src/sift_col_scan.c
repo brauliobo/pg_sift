@@ -53,7 +53,25 @@ typedef struct ColGroup
 	uint32	   *parent;			/* nelems, on demand */
 	const uint64 *nulls;		/* rows without an array */
 	const uint64 *ovf;			/* rows whose whole array overflowed */
+	uint32		selgen;			/* the ColSelCache generation selpos / seloff belong to (0: none) */
+	uint32		selne;
+	uint32	   *selpos;			/* the elements of the cached selection's rows */
+	uint32	   *seloff;			/* per selected row, its first element in selpos (+ the end) */
 } ColGroup;
+
+/*
+ * The positions of the last selection a unit was read through: the leaves read through one selection (the usual scan step) share its
+ * row positions and, per group, the element positions and offsets of those rows. Keyed by the selection's bits, so a different
+ * selection (even at the same address) replaces it; owned by the unit and gone with it.
+ */
+typedef struct ColSelCache
+{
+	uint32		gen;			/* bumped for each new selection */
+	uint32		n;
+	uint32		count;
+	uint64	   *bits;			/* copy of the selection */
+	uint32	   *idx;			/* its row positions */
+} ColSelCache;
 
 /* An inline STR chunk of the unit as the codes of a dictionary of its own (the form every reader and test works on), built on first use */
 typedef struct ColInline
@@ -80,6 +98,7 @@ typedef struct ColUnit
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	ColGroup   *grp;
+	ColSelCache selc;
 } ColUnit;
 
 struct SiftColSource
@@ -970,21 +989,63 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 	}
 }
 
+/* The row positions of sel, decoded once for the leaves read through it (a new selection replaces the cache) */
+static const uint32 *
+sel_positions(ColUnit *cu, const SiftColSel *sel)
+{
+	ColSelCache *sc = &cu->selc;
+
+	if (sc->idx == NULL || sc->n != sel->n || sc->count != sel->count || memcmp(sc->bits, sel->bits, sel->nwords * sizeof(uint64)) != 0)
+	{
+		MemoryContext arena = cu->src->arena;
+
+		sc->gen++;
+		sc->n = sel->n;
+		sc->count = sel->count;
+		sc->bits = MemoryContextAlloc(arena, sel->nwords * sizeof(uint64));
+		memcpy(sc->bits, sel->bits, sel->nwords * sizeof(uint64));
+		sc->idx = MemoryContextAlloc(arena, (sel->count + SIFT_COL_IDXPAD) * sizeof(uint32));
+		sift_col_sel_idx(sel, sc->idx);
+	}
+	return sc->idx;
+}
+
+/* The element positions and per-row offsets of the cached selection's rows in a group, built once per group */
+static void
+group_sel_elems(ColUnit *cu, ColGroup *g, const uint32 *idx, uint32 m)
+{
+	MemoryContext arena = cu->src->arena;
+	uint32		ne = 0;
+
+	if (g->selgen == cu->selc.gen)
+		return;
+	for (uint32 k = 0; k < m; k++)
+		ne += g->counts[idx[k]];
+	g->seloff = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
+	g->selpos = MemoryContextAlloc(arena, (ne + 1) * sizeof(uint32));
+	ne = 0;
+	for (uint32 k = 0; k < m; k++)
+	{
+		g->seloff[k] = ne;
+		for (uint32 e = g->eoff[idx[k]]; e < g->eoff[idx[k] + 1]; e++)
+			g->selpos[ne++] = e;
+	}
+	g->seloff[m] = ne;
+	g->selne = ne;
+	g->selgen = cu->selc.gen;
+}
+
 void
 sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
 {
 	ColUnit    *cu = unit->priv;
 	const SiftColDef *def = &cu->src->schema->cols[col];
-	MemoryContext arena = cu->src->arena;
-	uint32	   *idx = NULL;
+	const uint32 *idx = NULL;
 	uint32		m = sel ? sel->count : cu->v.nrows;
 
 	memset(vec, 0, sizeof(SiftColVec));
 	if (sel)
-	{
-		idx = MemoryContextAlloc(arena, (m + SIFT_COL_IDXPAD) * sizeof(uint32));
-		sift_col_sel_idx(sel, idx);
-	}
+		idx = sel_positions(cu, sel);
 	if (def->parent < 0)
 	{
 		read_positions(cu, col, idx, m, cu->v.nrows, vec);
@@ -992,33 +1053,18 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 	}
 	{
 		ColGroup   *g = unit_group(cu, def->parent);
-		uint32	   *offsets,
-				   *pos;
-		uint32		nrows = m,
-					ne = 0;
 
 		if (idx == NULL)
 		{
 			read_positions(cu, col, NULL, g->nelems, g->nelems, vec);
 			vec->offsets = g->eoff;
-			vec->nrows = nrows;
+			vec->nrows = m;
 			return;
 		}
-		for (uint32 k = 0; k < m; k++)
-			ne += g->counts[idx[k]];
-		offsets = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
-		pos = MemoryContextAlloc(arena, (ne + 1) * sizeof(uint32));
-		ne = 0;
-		for (uint32 k = 0; k < m; k++)
-		{
-			offsets[k] = ne;
-			for (uint32 e = g->eoff[idx[k]]; e < g->eoff[idx[k] + 1]; e++)
-				pos[ne++] = e;
-		}
-		offsets[m] = ne;
-		read_positions(cu, col, pos, ne, g->nelems, vec);
-		vec->offsets = offsets;
-		vec->nrows = nrows;
+		group_sel_elems(cu, g, idx, m);
+		read_positions(cu, col, g->selpos, g->selne, g->nelems, vec);
+		vec->offsets = g->seloff;
+		vec->nrows = m;
 	}
 }
 
