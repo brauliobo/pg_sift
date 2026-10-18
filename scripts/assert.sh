@@ -45,7 +45,8 @@ cleanup() {
 trap cleanup EXIT
 scripts/pgtest.sh start
 scripts/pgtest.sh regress "${TESTS[@]}" || rc=1
-if (( ! rc && ${#TAPS[@]} )); then scripts/tap.sh "${TAPS[@]}" || rc=1; fi
+# the quick tier of the TAP tests: sift only (the GIN control needs the gin_index_check of amcheck on PostgreSQL 18) and fewer crash iterations
+if (( ! rc && ${#TAPS[@]} )); then SIFT_QUICK=1 scripts/tap.sh "${TAPS[@]}" || rc=1; fi
 if grep -rEl "$BAD" "$SIFT_TMP" --include='*.log' 2>/dev/null | head -n 5 | grep .; then
 	grep -rEh "$BAD" "$SIFT_TMP" --include='*.log' | head -n 10
 	echo "assert: a server log has an assertion failure or a memory-context warning (files above)" >&2
