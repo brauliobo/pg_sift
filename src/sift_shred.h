@@ -213,8 +213,9 @@ sift_shred_group_range(const SiftShredDoc *doc, int g, uint32 p, uint32 *lo, uin
 
 /*
  * Kept apart from the column and aggregation kernels: these work on the shredder's state bytes with no bit vector and no padding of
- * the value arrays, and the generic composition (sift_colk->range on the bytes, SiftAggKernels.minmax_* under its bitmap) is slower
- * for float8, for the scalar level and for state_bits on AVX2 (measurements: docs/COL-SHRED.md)
+ * the value arrays, and the generic composition (sift_colk->range on the bytes, SiftAggKernels.minmax_* under its bitmap) is more than
+ * 3 percent slower at the scalar level for every kernel and at AVX2 for state_bits, state_counts and minmax_f64 (tools/kernels
+ * make bench-shred, docs/KERNELS.md "Overlaps between the kernel families")
  */
 typedef struct SiftShredKernels
 {
