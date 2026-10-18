@@ -205,7 +205,7 @@ Question 06 (`count(DISTINCT customer_id)` per month, 10M orders, 2M customers),
 | ms, no workers | 10M | 971 | 314 - 348 | 2.9x |
 | ms, 3 workers | 10M | 777 | 255 - 307 | 2.8x |
 
-The cycles of the 10M run fall from 3.77 G to 1.41 G. Before, 79% of them were `dset_add` and `dset_grow`; after, 81% are the random bit sets of `dist_update` into 36 bitmaps of 2M bits (9 MB, past the L2). Wall times were taken with the host busy (cpu PSI avg10 23% to 40%, io under 1%), so they carry that noise; the instruction counts do not.
+The cycles of the 10M run fall from 3.77 G to 1.41 G. Before, 79% of them were `dset_add` and `dset_grow`; after, 81% are the random bit sets of `dist_update` into 36 bitmaps of 2M bits (9 MB, past the L2). Wall times were taken above the 10% PSI limit for benchmarks (cpu PSI avg10 23% to 40%, io under 1%), so the ms figures are noisy and to be repeated on an idle host; the instruction counts and the memory figures do not carry that noise.
 
 ## Parallel scan
 
