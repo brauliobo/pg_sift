@@ -1,14 +1,14 @@
 /*
- * sift_aggkern_avx2.c - AVX2 aggregation operators. Predicates compare 8 (int32), 4 (int64, double) or 32 (bytes) rows per
- * instruction and take the bits with MOVMSK; lookups use VPGATHER (masked where a lane may not be touched); selection vectors
- * expand a byte of the mask through a 256 x 8 position table; reductions keep several independent accumulators. Results are
- * bit-identical to the scalar table (sift_aggkern.c): float compares are mapped to unordered predicates so that NaN is greater
- * than everything, and the float sum keeps the eight accumulators of the specification (two ymm). Slots that gathers or a
- * per-group scatter do not speed up (gather_u32, gather_u64, gid_code, gid_i32, count_gid, sum_gid_*) are the scalar functions.
+ * sift_aggkern_avx2.c - AVX2 aggregation operators. Predicates compare 4 rows per instruction (doubles) and take the bits with
+ * MOVMSK; lookups use VPGATHER (masked where a lane may not be touched); reductions keep several independent accumulators.
+ * Results are bit-identical to the scalar table (sift_aggkern.c): float compares are mapped to unordered predicates so that
+ * NaN is greater than everything, and the float sum keeps the eight accumulators of the specification (two ymm). Slots that
+ * a per-group scatter or a gather does not speed up (gid_code, gid_i32, count_gid, sum_gid_*) are the scalar functions.
  */
 #include "sift_host.h"
 
 #include "sift_aggkern_int.h"
+#include "sift_col_kern_int.h"
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -23,28 +23,13 @@
 #define BYTE(mask, i)	((uint32) ((mask)[(i) >> 6] >> ((i) & 63)) & 0xFF)
 #define NIBBLE(mask, i)	((uint32) ((mask)[(i) >> 6] >> ((i) & 63)) & 0xF)
 
-/* Position of the j-th set bit of m (0 past the last), lane j of row m */
 #define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
 #define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
-#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
-#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
-#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
-#define POS(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
-#define LANE(m, j)	(POS(m, j, 0) + POS(m, j, 1) + POS(m, j, 2) + POS(m, j, 3) + \
-					 POS(m, j, 4) + POS(m, j, 5) + POS(m, j, 6) + POS(m, j, 7))
-#define POSROW(m)	{LANE(m, 0), LANE(m, 1), LANE(m, 2), LANE(m, 3), LANE(m, 4), LANE(m, 5), LANE(m, 6), LANE(m, 7)}
-static const uint8 lut_pos[256][8] = {R256(POSROW)};
 
 K2 uint32
 ms32(__m256i x)
 {
 	return _mm256_movemask_ps(_mm256_castsi256_ps(x));
-}
-
-K2 uint32
-ms64(__m256i x)
-{
-	return _mm256_movemask_pd(_mm256_castsi256_pd(x));
 }
 
 /* All-ones 32-bit lanes for the set bits of k (8 bits) */
@@ -83,62 +68,6 @@ hsum64(__m256i x)
 
 /* ---- predicates ---- */
 
-F2 void
-cmp_i32_avx2(uint64 *out, const int32 *v, int n, SiftCmpOp op, int32 c)
-{
-	const __m256i vc = _mm256_set1_epi32(c);
-
-	switch (op)
-	{
-		case SCMP_EQ:
-			AGK_BITS(out, n, 8, 0, i, ms32(_mm256_cmpeq_epi32(LD(v + i), vc)));
-			break;
-		case SCMP_NE:
-			AGK_BITS(out, n, 8, ALL1, i, ms32(_mm256_cmpeq_epi32(LD(v + i), vc)));
-			break;
-		case SCMP_LT:
-			AGK_BITS(out, n, 8, 0, i, ms32(_mm256_cmpgt_epi32(vc, LD(v + i))));
-			break;
-		case SCMP_LE:
-			AGK_BITS(out, n, 8, ALL1, i, ms32(_mm256_cmpgt_epi32(LD(v + i), vc)));
-			break;
-		case SCMP_GT:
-			AGK_BITS(out, n, 8, 0, i, ms32(_mm256_cmpgt_epi32(LD(v + i), vc)));
-			break;
-		default:
-			AGK_BITS(out, n, 8, ALL1, i, ms32(_mm256_cmpgt_epi32(vc, LD(v + i))));
-			break;
-	}
-}
-
-F2 void
-cmp_i64_avx2(uint64 *out, const int64 *v, int n, SiftCmpOp op, int64 c)
-{
-	const __m256i vc = _mm256_set1_epi64x(c);
-
-	switch (op)
-	{
-		case SCMP_EQ:
-			AGK_BITS(out, n, 4, 0, i, ms64(_mm256_cmpeq_epi64(LD(v + i), vc)));
-			break;
-		case SCMP_NE:
-			AGK_BITS(out, n, 4, ALL1, i, ms64(_mm256_cmpeq_epi64(LD(v + i), vc)));
-			break;
-		case SCMP_LT:
-			AGK_BITS(out, n, 4, 0, i, ms64(_mm256_cmpgt_epi64(vc, LD(v + i))));
-			break;
-		case SCMP_LE:
-			AGK_BITS(out, n, 4, ALL1, i, ms64(_mm256_cmpgt_epi64(LD(v + i), vc)));
-			break;
-		case SCMP_GT:
-			AGK_BITS(out, n, 4, 0, i, ms64(_mm256_cmpgt_epi64(LD(v + i), vc)));
-			break;
-		default:
-			AGK_BITS(out, n, 4, ALL1, i, ms64(_mm256_cmpgt_epi64(vc, LD(v + i))));
-			break;
-	}
-}
-
 /*
  * PostgreSQL float8 order against a constant that is not NaN: ordered predicates are false for a NaN row, the "not <=" and
  * "not <" ones are true for it (NaN is greater than everything). A NaN constant (rare) is the scalar function's.
@@ -176,46 +105,6 @@ cmp_f64_avx2(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 	}
 }
 
-/* lo <= v <= hi as one unsigned compare: (uint32) (v - lo) <= hi - lo */
-K2 uint32
-in_range32(__m256i x, __m256i vlo, __m256i d)
-{
-	__m256i		t = _mm256_sub_epi32(x, vlo);
-
-	return ms32(_mm256_cmpeq_epi32(_mm256_min_epu32(t, d), t));
-}
-
-F2 void
-between_i32_avx2(uint64 *out, const int32 *v, int n, int32 lo, int32 hi)
-{
-	const __m256i vlo = _mm256_set1_epi32(lo),
-				d = _mm256_set1_epi32((uint32) hi - (uint32) lo);
-
-	if (lo > hi)
-	{
-		memset(out, 0, AGK_NW(n) * 8);
-		return;
-	}
-	AGK_BITS(out, n, 8, 0, i, in_range32(LD(v + i), vlo, d));
-}
-
-/* AVX2 has no unsigned 64-bit compare: flip the sign bit of both sides, then signed "greater" is the complement */
-F2 void
-between_i64_avx2(uint64 *out, const int64 *v, int n, int64 lo, int64 hi)
-{
-	const __m256i vlo = _mm256_set1_epi64x(lo),
-				sign = _mm256_set1_epi64x(INT64_MIN),
-				d = _mm256_xor_si256(_mm256_set1_epi64x((uint64) hi - (uint64) lo), sign);
-
-	if (lo > hi)
-	{
-		memset(out, 0, AGK_NW(n) * 8);
-		return;
-	}
-	AGK_BITS(out, n, 4, ALL1, i,
-			 ms64(_mm256_cmpgt_epi64(_mm256_xor_si256(_mm256_sub_epi64(LD(v + i), vlo), sign), d)));
-}
-
 F2 void
 between_f64_avx2(uint64 *out, const double *v, int n, double lo, double hi)
 {
@@ -237,13 +126,6 @@ K2 uint32
 nonzero_byte(__m256i g)
 {
 	return ms32(_mm256_cmpeq_epi32(_mm256_and_si256(g, _mm256_set1_epi32(0xFF)), _mm256_setzero_si256()));
-}
-
-F2 void
-lut_code_avx2(uint64 *out, const uint32 *code, int n, const uint8 *lut)
-{
-	AGK_BITS2(out, n, 8, ALL1, i, nonzero_byte(_mm256_i32gather_epi32((const int *) lut, LD(code + i), 1)),
-			  nonzero_byte(_mm256_i32gather_epi32((const int *) lut, ld_n32(code + i, n - i), 1)));
 }
 
 /* Lanes outside the table are masked out of the gather (zero, so they read as "not set") */
@@ -270,75 +152,6 @@ lut_i32_avx2(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const 
 	AGK_BITS(out, n, 8, ALL1, i, lut_i32_step(lut, LD(v + i), vb, lim));
 }
 
-F2 void
-bytes_mask_avx2(uint64 *out, const uint8 *b, int n)
-{
-	const __m256i z = _mm256_setzero_si256();
-
-	AGK_BITS(out, n, 32, ALL1, i, _mm256_movemask_epi8(_mm256_cmpeq_epi8(LD(b + i), z)));
-}
-
-/* ---- bitmaps ---- */
-
-F2 void
-and_w_avx2(uint64 *dst, const uint64 *a, int nw)
-{
-	int			i = 0;
-
-	for (; i + 4 <= nw; i += 4)
-		ST(dst + i, _mm256_and_si256(LD(dst + i), LD(a + i)));
-	for (; i < nw; i++)
-		dst[i] &= a[i];
-}
-
-F2 void
-or_w_avx2(uint64 *dst, const uint64 *a, int nw)
-{
-	int			i = 0;
-
-	for (; i + 4 <= nw; i += 4)
-		ST(dst + i, _mm256_or_si256(LD(dst + i), LD(a + i)));
-	for (; i < nw; i++)
-		dst[i] |= a[i];
-}
-
-F2 void
-andnot_w_avx2(uint64 *dst, const uint64 *a, int nw)
-{
-	int			i = 0;
-
-	for (; i + 4 <= nw; i += 4)
-		ST(dst + i, _mm256_andnot_si256(LD(a + i), LD(dst + i)));
-	for (; i < nw; i++)
-		dst[i] &= ~a[i];
-}
-
-/* Nibble lookup popcount, bytes summed with PSADBW */
-F2 int64
-popcount_w_avx2(const uint64 *a, int nw)
-{
-	const __m256i tbl = _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-										 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4),
-				low = _mm256_set1_epi8(0x0F),
-				z = _mm256_setzero_si256();
-	__m256i		acc = z;
-	int64		c;
-	int			i = 0;
-
-	for (; i + 4 <= nw; i += 4)
-	{
-		__m256i		x = LD(a + i),
-					cnt = _mm256_add_epi8(_mm256_shuffle_epi8(tbl, _mm256_and_si256(x, low)),
-										  _mm256_shuffle_epi8(tbl, _mm256_and_si256(_mm256_srli_epi16(x, 4), low)));
-
-		acc = _mm256_add_epi64(acc, _mm256_sad_epu8(cnt, z));
-	}
-	c = hsum64(acc);
-	for (; i < nw; i++)
-		c += __builtin_popcountll(a[i]);
-	return c;
-}
-
 /* bit e = bit parent[e] of rowmask: gather the dword that holds it, shift it down */
 K2 uint32
 row_bits(const uint64 *rowmask, __m256i p)
@@ -353,36 +166,6 @@ F2 void
 gather_bits_avx2(uint64 *out, const uint64 *rowmask, const uint32 *parent, int m)
 {
 	AGK_BITS2(out, m, 8, 0, e, row_bits(rowmask, LD(parent + e)), row_bits(rowmask, ld_n32(parent + e, m - e)));
-}
-
-/* ---- selection vectors ---- */
-
-F2 int
-mask_sel_avx2(uint32 *sel, const uint64 *mask, int nw)
-{
-	int			cnt = 0;
-
-	for (int w = 0; w < nw; w++)
-	{
-		uint64		m = mask[w];
-
-		if (__builtin_popcountll(m) <= AGK_SEL_SPARSE)
-		{
-			for (; m; m &= m - 1)
-				sel[cnt++] = w * 64 + __builtin_ctzll(m);
-			continue;
-		}
-		AGK_UNROLL(8)
-		for (int j = 0; j < 8; j++)
-		{
-			const uint32 b = (m >> (8 * j)) & 0xFF;
-
-			ST(sel + cnt, _mm256_add_epi32(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) lut_pos[b])),
-										   _mm256_set1_epi32(w * 64 + 8 * j)));
-			cnt += __builtin_popcount(b);
-		}
-	}
-	return cnt;
 }
 
 /* ---- reductions ---- */
@@ -666,7 +449,7 @@ count_changes_avx2(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
 	{
 		const uint32 b = BYTE(mask, i);
 
-		ST(buf + 1 + c, _mm256_permutevar8x32_epi32(LD(v + i), _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) lut_pos[b]))));
+		ST(buf + 1 + c, _mm256_permutevar8x32_epi32(LD(v + i), _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) sift_colk_lut_pos[b]))));
 		c += __builtin_popcount(b);
 	}
 	ST(buf + 1 + c, _mm256_setzero_si256());
@@ -679,14 +462,8 @@ count_changes_avx2(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
 #define AGK_INIT2(s)	.s = s##_avx2,
 
 const SiftAggKernels sift_aggkern_avx2 = {
-	AGK_INIT2(cmp_i32) AGK_INIT2(cmp_i64) AGK_INIT2(cmp_f64)
-	AGK_INIT2(between_i32) AGK_INIT2(between_i64) AGK_INIT2(between_f64)
-	AGK_INIT2(lut_code) AGK_INIT2(lut_i32) AGK_INIT2(bytes_mask)
-	AGK_INIT2(and_w) AGK_INIT2(or_w) AGK_INIT2(andnot_w) AGK_INIT2(popcount_w) AGK_INIT2(gather_bits)
-	AGK_INIT2(mask_sel)
+	AGK_INIT2(cmp_f64) AGK_INIT2(between_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
 	AGK_INIT2(sum_i32) AGK_INIT2(sum_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
-	.gather_u32 = agk_gather_u32_scalar,
-	.gather_u64 = agk_gather_u64_scalar,
 	.gid_code = agk_gid_code_scalar,
 	.gid_i32 = agk_gid_i32_scalar,
 	.count_gid = agk_count_gid_scalar,

@@ -7,17 +7,24 @@
  * replica with another CPU answers the same) and the slots they leave unchanged. sift_aggkern_for(level) returns a
  * level's table for tests (never NULL: a level the CPU lacks falls back downwards).
  *
+ * Only what is specific to the aggregation executor lives here. Every generic operation on bit vectors, selections and
+ * integer columns is a slot of the column kernel table (sift_col_kern.h, sift_colk): range tests (the integer comparisons
+ * and BETWEEN, the null flags: b != 0 is the u8 range [1, 255]), dictionary code lookups (lut), and / or / andnot / count,
+ * bits_to_idx (the selection vector of a mask) and gather_u32 (and the 8-byte gather, for_i64_sel[SIFT_COLW_64] with base 0).
+ *
  * Data model of the executor: a vector is at most SIFT_AGG_VEC rows (or array elements) of one column, decoded to one
  * of four element types: int32 (int2, int4, date, bool), int64 (int8, timestamp, timestamptz), double (float4 widened,
  * float8) and uint32 (dictionary code). Row sets are bitmaps of uint64 words, bit i of word i / 64 = row i; every
- * kernel that writes a bitmap writes ceil(n / 64) whole words and leaves the bits >= n zero; every kernel that reads one
- * expects the bits >= n to be zero. NULLs are handled by the caller (a predicate result is ANDed with the not-null
- * bitmap, NULL rows are cleared from the mask before a reduction), so kernels never see them.
+ * kernel of this table that writes a bitmap writes ceil(n / 64) whole words and leaves the bits >= n zero; every
+ * kernel that reads one expects the bits >= n to be zero. The column kernels write whole SIFT_COL_SELWORDS groups of
+ * words (SIFT_COL_NWORDS(n), the bits >= n zero too): the executor's bitmaps have SIFT_AGG_PADW words of slack for it.
+ * NULLs are handled by the caller (a predicate result is ANDed with the not-null bitmap, NULL rows are cleared from the
+ * mask before a reduction), so kernels never see them.
  *
  * Padding: input arrays are SIFT_SIMD_ALIGN aligned and the caller guarantees SIFT_AGG_PAD readable bytes after the last
  * element (contents irrelevant), so a level may load whole registers at the tail. This holds for every input array,
  * lookup tables (lut, map) and bitmaps included: a gather of a byte-indexed LUT reads a dword. Outputs are written exactly
- * (no overrun) except where a comment says "n + SIFT_AGG_PAD / element size entries".
+ * (no overrun).
  *
  * No allocation, no ereport, no state; the only globals are the dispatch pointers and const tables. Portable file rules
  * (sift_host.h only) apply to the kernel files.
@@ -33,6 +40,7 @@
 #define SIFT_AGG_VEC		4096
 #define SIFT_AGG_VECW		(SIFT_AGG_VEC / 64)
 #define SIFT_AGG_PAD		64
+#define SIFT_AGG_PADW		8		/* words of slack after a vector's bitmap: SIFT_COL_SELWORDS */
 
 typedef enum SiftCmpOp
 {
@@ -54,34 +62,15 @@ typedef enum SiftCmpOp
 typedef struct SiftAggKernels
 {
 	/* ---- predicates: bit i of out = (v[i] op c) ---- */
-	void		(*cmp_i32) (uint64 *out, const int32 *v, int n, SiftCmpOp op, int32 c);
-	void		(*cmp_i64) (uint64 *out, const int64 *v, int n, SiftCmpOp op, int64 c);
+	/* doubles in PostgreSQL's order, not the integer keys of the column kernels */
 	void		(*cmp_f64) (uint64 *out, const double *v, int n, SiftCmpOp op, double c);
 	/* bit i = (lo <= v[i] <= hi); lo > hi selects nothing */
-	void		(*between_i32) (uint64 *out, const int32 *v, int n, int32 lo, int32 hi);
-	void		(*between_i64) (uint64 *out, const int64 *v, int n, int64 lo, int64 hi);
 	void		(*between_f64) (uint64 *out, const double *v, int n, double lo, double hi);
-	/* bit i = lut[code[i]] != 0; every code is below the LUT's size (the caller's contract) */
-	void		(*lut_code) (uint64 *out, const uint32 *code, int n, const uint8 *lut);
-	/* bit i = (uint32) (v[i] - base) < nlut && lut[v[i] - base] != 0 (wrapping subtraction in uint32) */
+	/* bit i = (uint32) (v[i] - base) < nlut && lut[v[i] - base] != 0 (wrapping subtraction in uint32); a bound check fused with a byte LUT */
 	void		(*lut_i32) (uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut);
-	/* bit i = b[i] != 0 (a null-flag array to a bitmap) */
-	void		(*bytes_mask) (uint64 *out, const uint8 *b, int n);
 
-	/* ---- bitmaps, nw words ---- */
-	void		(*and_w) (uint64 *dst, const uint64 *a, int nw);		/* dst &= a */
-	void		(*or_w) (uint64 *dst, const uint64 *a, int nw);			/* dst |= a */
-	void		(*andnot_w) (uint64 *dst, const uint64 *a, int nw);		/* dst &= ~a */
-	int64		(*popcount_w) (const uint64 *a, int nw);
-	/* bit e of out (m bits) = bit parent[e] of rowmask: the row mask of the elements of an array column */
+	/* bit e of out (m bits) = bit parent[e] of rowmask: the row mask of the elements of an array column (executor specific) */
 	void		(*gather_bits) (uint64 *out, const uint64 *rowmask, const uint32 *parent, int m);
-
-	/* ---- selection vectors ---- */
-	/* sel[] = the indices of the set bits, ascending; returns their number; sel has 64 * nw + SIFT_AGG_PAD / 4 entries */
-	int			(*mask_sel) (uint32 *sel, const uint64 *mask, int nw);
-	/* dst[j] = src[sel[j]], j < nsel; the 8-byte one serves int64 and double */
-	void		(*gather_u32) (uint32 *dst, const uint32 *src, const uint32 *sel, int nsel);
-	void		(*gather_u64) (uint64 *dst, const uint64 *src, const uint32 *sel, int nsel);
 
 	/* ---- group ids (dense mixed radix): gid[i] += map[key(i)] * mult ---- */
 	void		(*gid_code) (uint32 *gid, const uint32 *code, const uint32 *map, int n, uint32 mult);

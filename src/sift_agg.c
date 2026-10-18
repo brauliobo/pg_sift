@@ -55,6 +55,7 @@
 #include "sift_agg.h"
 #include "sift_aggkern.h"
 #include "sift_aggspec.h"
+#include "sift_col_kern.h"
 #include "sift_colsrc.h"
 
 bool		sift_enable_agg = true;
@@ -246,7 +247,7 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 typedef struct DictSlot
 {
 	const void *id;
-	uint8	  **lut;			/* per predicate id: n + 1 bytes (slot n: the NULL input) */
+	uint64	  **lut;			/* per predicate id: bit set of n + 1 entries (bit n: the NULL input) */
 	uint32	  **kmap;			/* per key: n + 1 key ids */
 } DictSlot;
 
@@ -690,7 +691,7 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 	ex->dnext = (ex->dnext + 1) % NDICT_SLOTS;
 	if (s->lut == NULL)
 	{
-		s->lut = MemoryContextAllocZero(ex->cxt, np * sizeof(uint8 *));
+		s->lut = MemoryContextAllocZero(ex->cxt, np * sizeof(uint64 *));
 		s->kmap = MemoryContextAllocZero(ex->cxt, nk * sizeof(uint32 *));
 	}
 	else
@@ -701,32 +702,38 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 		for (int i = 0; i < nk; i++)
 			if (s->kmap[i])
 				pfree(s->kmap[i]);
-		memset(s->lut, 0, np * sizeof(uint8 *));
+		memset(s->lut, 0, np * sizeof(uint64 *));
 		memset(s->kmap, 0, nk * sizeof(uint32 *));
 	}
 	s->id = d->id;
 	return s;
 }
 
-static uint8 *
+static void
+lut_put(uint64 *lut, uint32 code, bool v)
+{
+	lut[code >> 6] |= (uint64) v << (code & 63);
+}
+
+static uint64 *
 dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
 {
-	uint8	   *lut = s->lut[p->id];
+	uint64	   *lut = s->lut[p->id];
 	PredState  *st = &ex->ps[p->id];
 	MemoryContext old;
 
 	if (lut)
 		return lut;
-	lut = MemoryContextAlloc(ex->cxt, d->n + 1 + SIFT_AGG_PAD);
+	lut = MemoryContextAllocZero(ex->cxt, ((d->n + 64) / 64) * sizeof(uint64));
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	for (uint32 c = 0; c < d->n; c++)
 	{
 		Datum		v = text_datum(st->param->paramtype, st->param->paramtypmod, d->bytes + d->off[c],
 								   d->off[c + 1] - d->off[c]);
 
-		lut[c] = eval_bool(ex, st->expr, v, false);
+		lut_put(lut, c, eval_bool(ex, st->expr, v, false));
 	}
-	lut[d->n] = eval_bool(ex, st->expr, (Datum) 0, true);
+	lut_put(lut, d->n, eval_bool(ex, st->expr, (Datum) 0, true));
 	MemoryContextSwitchTo(old);
 	s->lut[p->id] = lut;
 	return lut;
@@ -1264,9 +1271,53 @@ clear_nulls(AggExec *ex, const SiftSrcVec *v, int start, int n, uint64 *out)
 {
 	if (v->isnull)
 	{
-		sift_aggk->bytes_mask(ex->tmpm, v->isnull + start, n);
-		sift_aggk->andnot_w(out, ex->tmpm, (n + 63) / 64);
+		sift_colk_nonzero(v->isnull + start, n, ex->tmpm);
+		sift_colk->bits_andnot(out, ex->tmpm, (n + 63) / 64);
 	}
+}
+
+/*
+ * bit i of out = (v[i] op c) for an int4 or int8 column (slot SIFT_COLW_32 / SIFT_COLW_64), c within the type: the values the
+ * comparison keeps are one range, [lo, hi] wrapping (x <> c is [c + 1, c - 1]), which is what the column kernels test
+ */
+static void
+cmp_int(uint64 *out, const void *v, int slot, int n, SiftCmpOp op, int64 c)
+{
+	const uint64 wmax = slot == SIFT_COLW_32 ? PG_UINT32_MAX : PG_UINT64_MAX;
+	const int64 tmin = slot == SIFT_COLW_32 ? PG_INT32_MIN : PG_INT64_MIN,
+				tmax = slot == SIFT_COLW_32 ? PG_INT32_MAX : PG_INT64_MAX;
+	uint64		lo,
+				hi;
+
+	switch (op)
+	{
+		case SCMP_EQ:
+			lo = hi = c;
+			break;
+		case SCMP_NE:
+			lo = (uint64) c + 1;
+			hi = (uint64) c - 1;
+			break;
+		case SCMP_LT:
+			lo = tmin;
+			hi = (uint64) c - 1;
+			break;
+		case SCMP_LE:
+			lo = tmin;
+			hi = c;
+			break;
+		case SCMP_GT:
+			lo = (uint64) c + 1;
+			hi = tmax;
+			break;
+		default:
+			lo = c;
+			hi = tmax;
+	}
+	if ((op == SCMP_LT && c == tmin) || (op == SCMP_GT && c == tmax))
+		clear_words(out, n);
+	else
+		sift_colk->range[slot](v, n, lo & wmax, (hi - lo) & wmax, out);
 }
 
 static void
@@ -1314,12 +1365,12 @@ eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 						clear_words(out, n);
 				}
 				else
-					sift_aggk->cmp_i32(out, (const int32 *) v->data + start, n, op, (int32) c);
+					cmp_int(out, (const int32 *) v->data + start, SIFT_COLW_32, n, op, c);
 			}
 			break;
 		case SCV_I64:
 			if (lf->typid != NUMERICOID)
-				sift_aggk->cmp_i64(out, (const int64 *) v->data + start, n, op, st->ci);
+				cmp_int(out, (const int64 *) v->data + start, SIFT_COLW_64, n, op, st->ci);
 			else if (st->konst >= 0)
 			{
 				if (st->konst)
@@ -1328,7 +1379,7 @@ eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 					clear_words(out, n);
 			}
 			else
-				sift_aggk->cmp_i64(out, (const int64 *) v->data + start, n, (SiftCmpOp) st->nop, (int64) st->cn);
+				cmp_int(out, (const int64 *) v->data + start, SIFT_COLW_64, n, (SiftCmpOp) st->nop, (int64) st->cn);
 			break;
 		case SCV_F64:
 			sift_aggk->cmp_f64(out, (const double *) v->data + start, n, op, st->cd);
@@ -1366,7 +1417,7 @@ negate(AggExec *ex, uint64 *out, int n)
 	uint64	   *all = ex->tmpm2;
 
 	fill_ones(all, n);
-	sift_aggk->andnot_w(all, out, (n + 63) / 64);
+	sift_colk->bits_andnot(all, out, (n + 63) / 64);
 	memcpy(out, all, ((n + 63) / 64) * sizeof(uint64));
 }
 
@@ -1409,7 +1460,7 @@ eval_null(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 			clear_words(out, n);
 		return;
 	}
-	sift_aggk->bytes_mask(out, v->isnull + start, n);
+	sift_colk_nonzero(v->isnull + start, n, out);
 	if (p->op)
 		negate(ex, out, n);
 }
@@ -1892,7 +1943,7 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 	if (lf->vtype == SCV_CODE)
 	{
 		DictSlot   *s = dict_slot(ex, v->dict);
-		uint8	   *lut = dict_lut(ex, s, v->dict, p);
+		uint64	   *lut = dict_lut(ex, s, v->dict, p);
 		const uint32 *codes = (const uint32 *) v->data + start;
 
 		if (v->isnull)
@@ -1901,7 +1952,7 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 				ex->tmpu32[i] = v->isnull[start + i] ? v->dict->n : codes[i];
 			codes = ex->tmpu32;
 		}
-		sift_aggk->lut_code(out, codes, n, lut);
+		sift_colk->lut[SIFT_COLW_32](codes, n, lut, out);
 	}
 	else
 	{
@@ -1914,8 +1965,8 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 		fill_ones(ex->tmpm, n);
 		if (v->isnull)
 		{
-			sift_aggk->bytes_mask(ex->tmpm2, v->isnull + start, n);
-			sift_aggk->andnot_w(ex->tmpm, ex->tmpm2, nw);
+			sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
+			sift_colk->bits_andnot(ex->tmpm, ex->tmpm2, nw);
 		}
 		if (sift_aggk->minmax_i32(&mn, &mx, vals, ex->tmpm, n))
 		{
@@ -1930,10 +1981,10 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 			clear_words(out, n);
 		if (v->isnull)
 		{
-			sift_aggk->bytes_mask(ex->tmpm2, v->isnull + start, n);
-			sift_aggk->andnot_w(out, ex->tmpm2, nw);
+			sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
+			sift_colk->bits_andnot(out, ex->tmpm2, nw);
 			if (st->null_result)
-				sift_aggk->or_w(out, ex->tmpm2, nw);
+				sift_colk->bits_or(out, ex->tmpm2, nw);
 		}
 	}
 }
@@ -2047,9 +2098,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 				{
 					eval_pred(ex, p->child[i], qlevel, start, n, tmp);
 					if (p->kind == SAP_AND)
-						sift_aggk->and_w(out, tmp, nw);
+						sift_colk->bits_and(out, tmp, nw);
 					else
-						sift_aggk->or_w(out, tmp, nw);
+						sift_colk->bits_or(out, tmp, nw);
 				}
 			}
 			break;
@@ -2560,7 +2611,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 			vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, float_key(((const double *) v->data)[idx[i]]));
 		return;
 	}
-	sift_aggk->gather_u32(vals_out, (const uint32 *) v->data, idx, nsel);
+	sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, vals_out);
 	if (lf->vtype == SCV_CODE)
 	{
 		DictSlot   *s = dict_slot(ex, v->dict);
@@ -2586,8 +2637,8 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		{
 			for (int i = 0; i < nsel; i++)
 				ex->nb[i] = v->isnull[idx[i]];
-			sift_aggk->bytes_mask(ex->tmpm2, ex->nb, nsel);
-			sift_aggk->andnot_w(ex->tmpm, ex->tmpm2, nw);
+			sift_colk_nonzero(ex->nb, nsel, ex->tmpm2);
+			sift_colk->bits_andnot(ex->tmpm, ex->tmpm2, nw);
 		}
 		bool		any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) vals_out, ex->tmpm, nsel);
 
@@ -2815,7 +2866,7 @@ agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all)
 			any |= clear_null_rows(ex, a->num.step[k].leaf, nsel);
 	*all = !any;
 	if (any)
-		sift_aggk->bytes_mask(ex->okm, ex->okb, nsel);
+		sift_colk_nonzero(ex->okb, nsel, ex->okm);
 }
 
 /* The value of the float8 argument program of aggregate a for the nsel tuples (in double, NULL operands are not looked at) */
@@ -3056,10 +3107,10 @@ osa_values(AggExec *ex, SiftAggAgg *a, const uint32 *idx, int nsel)
 	v = get_vec(ex, a->leaf);
 	if (ex->lay->leaf[a->leaf].vtype == SCV_F64)
 	{
-		sift_aggk->gather_u64(ex->c64, (const uint64 *) v->data, idx, nsel);
+		sift_colk->for_i64_sel[SIFT_COLW_64](v->data, idx, nsel, 0, (int64 *) ex->c64);
 		return (const double *) ex->c64;
 	}
-	sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
+	sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
 	for (int j = 0; j < nsel; j++)
 		ex->vstk[j] = ((const int32 *) ex->cu32)[j];
 	return ex->vstk;
@@ -3412,7 +3463,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			break;
 		case SAA_SUM_INT:
 		case SAA_AVG_INT:
-			sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
+			sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
 			sift_aggk->sum_gid_i32(acc->i, ex->gid, (const int32 *) ex->cu32, ok, nsel);
 			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
 			break;
@@ -3422,7 +3473,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 				x = eval_vx(ex, a, nsel);
 			else
 			{
-				sift_aggk->gather_u64(ex->c64, (const uint64 *) v->data, idx, nsel);
+				sift_colk->for_i64_sel[SIFT_COLW_64](v->data, idx, nsel, 0, (int64 *) ex->c64);
 				x = (const double *) ex->c64;
 			}
 			float_guard(ex, ai, x, nsel);
@@ -3450,9 +3501,9 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 					break;
 				}
 				if (lf->vtype == SCV_I32)
-					sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
+					sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
 				else
-					sift_aggk->gather_u64(ex->c64, (const uint64 *) v->data, idx, nsel);
+					sift_colk->for_i64_sel[SIFT_COLW_64](v->data, idx, nsel, 0, (int64 *) ex->c64);
 				for (int j = 0; j < nsel; j++)
 				{
 					uint32		g = ex->gid[j];
@@ -3517,7 +3568,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 						acc->n[ex->gid[j]]++;
 				break;
 			}
-			sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
+			sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
 			if (lf->vtype == SCV_CODE)
 			{
 				const uint32 *map = dict_amap(ex, dict_slot(ex, v->dict), v->dict, ai);
@@ -3682,7 +3733,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	Tup		   *t = &ex->t0;
 	int			nw = (n + 63) / 64;
 
-	t->n = sift_aggk->mask_sel(t->sel, mask, nw);
+	t->n = sift_colk->bits_to_idx(mask, nw, 0, t->sel);
 	if (t->n == 0)
 		return;
 	ex->cstart = start;
@@ -4079,12 +4130,8 @@ build_parents(AggExec *ex)
 
 	ex->offs = elem_offs(ex, ex->spec->group);
 	ex->nelem = m = ex->offs[u->nrow];
-	ex->parent = MemoryContextAllocZero(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
-	/* the row is written at the offset of its first element (an empty row is overwritten by the next one that has any), then carried forward */
-	for (int r = 0; r < u->nrow; r++)
-		ex->parent[ex->offs[r]] = r;
-	for (uint32 e = 1, p = ex->parent[0]; e < m; e++)
-		ex->parent[e] = p = Max(p, ex->parent[e]);
+	ex->parent = MemoryContextAlloc(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
+	sift_colk->expand_parents(ex->offs + 1, u->nrow, ex->parent);
 }
 
 static void
@@ -4111,7 +4158,7 @@ process_unit(AggExec *ex)
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->level == 0)
-			sift_aggk->and_w(rmask, row_bitmap(ex, s->pred[i]), nrw);
+			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
 	ex->qlevel = elem;
 	if (!elem)
 	{
@@ -4140,7 +4187,7 @@ process_unit(AggExec *ex)
 					uint64		t[VECW + PADW];
 
 					eval_pred(ex, s->pred[i], 1, st, n, t);
-					sift_aggk->and_w(cm, t, nw);
+					sift_colk->bits_and(cm, t, nw);
 				}
 			memcpy(em + st / 64, cm, nw * sizeof(uint64));
 		}
@@ -4162,7 +4209,7 @@ process_unit(AggExec *ex)
 							nw = (n + 63) / 64;
 
 				sift_aggk->gather_bits(cm, rv, ex->parent + st, n);
-				sift_aggk->and_w(em + st / 64, cm, nw);
+				sift_colk->bits_and(em + st / 64, cm, nw);
 			}
 		}
 		for (int st = 0; st < m; st += VEC)

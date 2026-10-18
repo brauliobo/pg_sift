@@ -7,7 +7,7 @@
 #include <math.h>
 
 #include "sift_aggkern.h"
-#include "sift_popcount.h"
+#include "sift_col_kern_int.h"
 
 extern const SiftAggKernels sift_aggkern_avx2;
 extern const SiftAggKernels sift_aggkern_avx512;
@@ -16,10 +16,7 @@ extern const SiftAggKernels sift_aggkern_avx512;
 
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
-	X(cmp_i32) X(cmp_i64) X(cmp_f64) X(between_i32) X(between_i64) X(between_f64) \
-	X(lut_code) X(lut_i32) X(bytes_mask) \
-	X(and_w) X(or_w) X(andnot_w) X(popcount_w) X(gather_bits) \
-	X(mask_sel) X(gather_u32) X(gather_u64) X(gid_code) X(gid_i32) \
+	X(cmp_f64) X(between_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
 	X(sum_i32) X(sum_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
 	X(count_gid) X(sum_gid_i32) X(sum_gid_f64) X(count_changes)
 
@@ -40,16 +37,7 @@ agk_canon_minmax(double x)
 	return x != x ? __builtin_nan("") : x == 0 ? 0.0 : x;
 }
 
-/* Fully unrolled loop of a constant trip count (a vector step per iteration), whichever compiler builds the file */
-#if defined(__clang__)
-#define AGK_UNROLL(n)	_Pragma("clang loop unroll(full)")
-#else
-#define AGK_UNROLL(n)	AGK_PRAGMA(GCC unroll n)
-#define AGK_PRAGMA(x)	_Pragma(#x)
-#endif
-
-/* mask_sel: a word with at most this many bits is walked bit by bit, the vector expansion costs more */
-#define AGK_SEL_SPARSE	8
+#define AGK_UNROLL(n)	SIFT_COLK_UNROLL(n)
 
 #define AGK_LOW(k)		((UINT64CONST(1) << (k)) - 1)
 

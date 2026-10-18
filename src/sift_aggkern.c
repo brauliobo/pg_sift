@@ -54,38 +54,20 @@ f8_cmp(double a, double b)
 		} \
 	} while (0)
 
-#define CMP_INT(a, OP, b)	((a) OP (b))
 #define CMP_F8(a, OP, b)	(f8_cmp(a, b) OP 0)
 
-#define DEF_CMP(fn, T, CMP) \
-void \
-fn(uint64 *out, const T *v, int n, SiftCmpOp op, T c) \
-{ \
-	switch (op) \
-	{ \
-		case SCMP_EQ: PRED_BITS(out, n, i, CMP(v[i], ==, c)); break; \
-		case SCMP_NE: PRED_BITS(out, n, i, CMP(v[i], !=, c)); break; \
-		case SCMP_LT: PRED_BITS(out, n, i, CMP(v[i], <, c)); break; \
-		case SCMP_LE: PRED_BITS(out, n, i, CMP(v[i], <=, c)); break; \
-		case SCMP_GT: PRED_BITS(out, n, i, CMP(v[i], >, c)); break; \
-		case SCMP_GE: PRED_BITS(out, n, i, CMP(v[i], >=, c)); break; \
-	} \
-}
-
-DEF_CMP(agk_cmp_i32_scalar, int32, CMP_INT)
-DEF_CMP(agk_cmp_i64_scalar, int64, CMP_INT)
-DEF_CMP(agk_cmp_f64_scalar, double, CMP_F8)
-
 void
-agk_between_i32_scalar(uint64 *out, const int32 *v, int n, int32 lo, int32 hi)
+agk_cmp_f64_scalar(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 {
-	PRED_BITS(out, n, i, lo <= v[i] && v[i] <= hi);
-}
-
-void
-agk_between_i64_scalar(uint64 *out, const int64 *v, int n, int64 lo, int64 hi)
-{
-	PRED_BITS(out, n, i, lo <= v[i] && v[i] <= hi);
+	switch (op)
+	{
+		case SCMP_EQ: PRED_BITS(out, n, i, CMP_F8(v[i], ==, c)); break;
+		case SCMP_NE: PRED_BITS(out, n, i, CMP_F8(v[i], !=, c)); break;
+		case SCMP_LT: PRED_BITS(out, n, i, CMP_F8(v[i], <, c)); break;
+		case SCMP_LE: PRED_BITS(out, n, i, CMP_F8(v[i], <=, c)); break;
+		case SCMP_GT: PRED_BITS(out, n, i, CMP_F8(v[i], >, c)); break;
+		case SCMP_GE: PRED_BITS(out, n, i, CMP_F8(v[i], >=, c)); break;
+	}
 }
 
 void
@@ -95,83 +77,15 @@ agk_between_f64_scalar(uint64 *out, const double *v, int n, double lo, double hi
 }
 
 void
-agk_lut_code_scalar(uint64 *out, const uint32 *code, int n, const uint8 *lut)
-{
-	PRED_BITS(out, n, i, lut[code[i]] != 0);
-}
-
-void
 agk_lut_i32_scalar(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut)
 {
 	PRED_BITS(out, n, i, (uint32) v[i] - (uint32) base < nlut && lut[(uint32) v[i] - (uint32) base] != 0);
 }
 
 void
-agk_bytes_mask_scalar(uint64 *out, const uint8 *b, int n)
-{
-	PRED_BITS(out, n, i, b[i] != 0);
-}
-
-void
-agk_and_w_scalar(uint64 *dst, const uint64 *a, int nw)
-{
-	for (int i = 0; i < nw; i++)
-		dst[i] &= a[i];
-}
-
-void
-agk_or_w_scalar(uint64 *dst, const uint64 *a, int nw)
-{
-	for (int i = 0; i < nw; i++)
-		dst[i] |= a[i];
-}
-
-void
-agk_andnot_w_scalar(uint64 *dst, const uint64 *a, int nw)
-{
-	for (int i = 0; i < nw; i++)
-		dst[i] &= ~a[i];
-}
-
-int64
-agk_popcount_w_scalar(const uint64 *a, int nw)
-{
-	int64		c = 0;
-
-	for (int i = 0; i < nw; i++)
-		c += sift_pc64(a[i]);
-	return c;
-}
-
-void
 agk_gather_bits_scalar(uint64 *out, const uint64 *rowmask, const uint32 *parent, int m)
 {
 	PRED_BITS(out, m, e, rowmask[parent[e] >> 6] >> (parent[e] & 63) & 1);
-}
-
-int
-agk_mask_sel_scalar(uint32 *sel, const uint64 *mask, int nw)
-{
-	int			cnt = 0;
-
-	for (int w = 0; w < nw; w++)
-		for (uint64 m = mask[w]; m; m &= m - 1)
-			sel[cnt++] = w * 64 + __builtin_ctzll(m);
-	return cnt;
-}
-
-void
-agk_gather_u32_scalar(uint32 *dst, const uint32 *src, const uint32 *sel, int nsel)
-{
-	for (int j = 0; j < nsel; j++)
-		dst[j] = src[sel[j]];
-}
-
-void
-agk_gather_u64_scalar(uint64 *dst, const uint64 *src, const uint32 *sel, int nsel)
-{
-	for (int j = 0; j < nsel; j++)
-		dst[j] = src[sel[j]];
 }
 
 void
