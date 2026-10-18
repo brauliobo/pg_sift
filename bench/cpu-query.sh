@@ -12,6 +12,7 @@
 # ratio NEW/REF of both (below 1 is cheaper).
 set -euo pipefail
 export LC_ALL=C
+. "$(dirname "$0")/steps/perf.sh"
 
 txns=2000 rounds=5 mode=simple
 while getopts n:r:M: o; do
@@ -31,9 +32,8 @@ run() { # SIDE -> "instructions-per-transaction cpu-us-per-transaction"
 	[[ $rest == */* ]] && db=${rest#*/}
 	local pm
 	pm=$(head -1 "$(psql -X -At -h "$host" -p "$port" -U postgres -d "$db" -c 'SHOW data_directory')/postmaster.pid")
-	perf stat -x, -e instructions:u -e task-clock -p "$pm" -o "$work/perf" -- \
-		pgbench -n --random-seed=7 "${args[@]}" -M "$mode" -c 1 -j 1 -t "$txns" -h "$host" -p "$port" -U postgres "$db" >/dev/null
-	awk -F, -v n="$txns" '/instructions/ { i = $1 / n } /task-clock/ { c = $1 * 1000 / n } END { printf "%.0f %.2f\n", i, c }' "$work/perf"
+	read -r _ ins cpu < <(perf_counts "$pm" -- pgbench -n --random-seed=7 "${args[@]}" -M "$mode" -c 1 -j 1 -t "$txns" -h "$host" -p "$port" -U postgres "$db")
+	awk -v n="$txns" -v i="$ins" -v c="$cpu" 'BEGIN { printf "%.0f %.2f\n", i / n, c * 1000 / n }'
 }
 
 for ((r = 0; r < rounds; r++)); do

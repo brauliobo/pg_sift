@@ -14,8 +14,8 @@ Engines (the server is the one named by PGHOST / PGPORT / PGDATABASE, never a de
   ch    the tuned ClickHouse layout of a throwaway server (--ch-port, --ch-pid), single thread (--clickhouse)
 
 A measurement is one backend running with max_parallel_workers_per_gather = 0: the CPU time is the on-CPU time of the backend from
-/proc/PID/schedstat around the statement (load independent), the instructions are user-space ones counted by `perf stat -p PID` (NA when
-perf may not count them). Per query and store set: one warm-up run, whose result is checked against the heap engine's, then RUNS
+/proc/PID/schedstat around the statement (load independent), the instructions are user-space ones counted by `perf stat -p PID` (steps/perf.sh;
+NA when perf may not count them). Per query and store set: one warm-up run, whose result is checked against the heap engine's, then RUNS
 measured runs with the engines interleaved (the first one rotates every run). ClickHouse is measured the same way: its single query
 thread's CPU time from system.query_log and perf stat on the server process.
 
@@ -23,10 +23,13 @@ Results go to DIR/analytics.json in the layout of bench/results (one row per mea
 min max unit stderr n values) and are printed as a table. A result differs from the reference when a string or integer differs, or a
 number by more than the tolerance (--tol, or the `tol:` line of the query), after sorting the rows by the `key:` columns of the query.
 """
-import argparse, glob, json, math, os, re, shutil, signal, statistics, subprocess, sys, tempfile, time
+import argparse, glob, json, math, os, re, signal, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from stats import number, summary  # noqa: E402  (steps/stats.py)
 SQL = os.path.join(HERE, '..', 'sql', 'analytics')
+PERF = os.path.join(HERE, 'perf.sh')
 CURRENT = ('2024-11-01', '2025-10-31')
 PREVIOUS = ('2023-11-01', '2024-10-31')
 SECTIONS = {'heap': 'pg', 'col': 'pg', 'flat': 'flat', 'ch': 'ch'}
@@ -99,13 +102,6 @@ def cells(text, key):
     return sorted(rows, key=lambda r: [r[k] for k in key] if key else r)
 
 
-def number(x):
-    try:
-        return float(x)
-    except ValueError:
-        return None
-
-
 def difference(want, got, key, tol):
     """None when equal, else what differs first"""
     a, b = cells(want, key), cells(got, key)
@@ -130,34 +126,23 @@ def cpu_ns(pid):
 
 
 class Perf:
-    """instructions:u of a process between start() and stop(); unavailable (None) when perf may not count them"""
-    def __init__(self, tmp):
-        self.tmp = tmp
-        self.ok = subprocess.run(['perf', 'stat', '-e', 'instructions:u', '-x,', '-o', os.devnull, 'true'], capture_output=True).returncode == 0
+    """instructions:u of a process between start() and stop(), counted by steps/perf.sh; unavailable (None) when perf may not count them"""
+    def __init__(self):
+        self.ok = subprocess.run(['bash', PERF, str(os.getpid()), '--', 'true'], capture_output=True).returncode == 0
 
     def start(self, pid):
         if not self.ok:
             return None
-        fd, name = tempfile.mkstemp(dir=self.tmp)
-        os.close(fd)
-        p = subprocess.Popen(['perf', 'stat', '-e', 'instructions:u', '-x,', '-p', str(pid), '-o', name], stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(['bash', PERF, str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         time.sleep(0.15)
-        return p, name
+        return p
 
-    def stop(self, h):
-        if h is None:
+    def stop(self, p):
+        if p is None:
             return None
-        p, name = h
-        p.send_signal(signal.SIGINT)
-        p.wait()
-        with open(name) as f:
-            for line in f:
-                a = line.split(',')
-                if len(a) > 3 and 'instructions' in a[2] and a[0].isdigit():
-                    os.unlink(name)
-                    return int(a[0])
-        os.unlink(name)
-        return None
+        p.send_signal(signal.SIGTERM)   # perf.sh ends the count and prints "cycles instructions task-clock-ms"
+        fields = p.communicate()[0].split()
+        return int(fields[1]) if len(fields) == 3 and fields[1].isdigit() else None
 
 
 class Postgres:
@@ -239,15 +224,7 @@ class ClickHouse:
         return {l.split('\t')[0]: float(l.split('\t')[1]) / 1e3 for l in rows.strip().split('\n') if l}
 
 
-# --- statistics and rows
-
-def stats(xs):
-    xs = [x for x in xs if x is not None]
-    if not xs:
-        return None
-    se = statistics.stdev(xs) / math.sqrt(len(xs)) if len(xs) > 1 else None
-    return dict(value=statistics.median(xs), min=min(xs), max=max(xs), stderr=se, n=len(xs), values=xs)
-
+# --- rows
 
 class Rows:
     def __init__(self, dataset, tier, path):
@@ -368,10 +345,10 @@ def measure_task(q, set_name, tenants, sources, args, engines, pg, ch, perf, kno
     for e in engines:
         if e in fail:
             continue
-        rows.add(e, q.id, variant, 'cpu_ms', 'ms', st=stats(runs[e]['cpu']))
-        rows.add(e, q.id, variant, 'wall_ms', 'ms', st=stats(runs[e]['wall']))
+        rows.add(e, q.id, variant, 'cpu_ms', 'ms', st=summary(runs[e]['cpu']))
+        rows.add(e, q.id, variant, 'wall_ms', 'ms', st=summary(runs[e]['wall']))
         if any(x is not None for x in runs[e]['instr']):
-            rows.add(e, q.id, variant, 'instr_m', 'M instructions', st=stats(runs[e]['instr']))
+            rows.add(e, q.id, variant, 'instr_m', 'M instructions', st=summary(runs[e]['instr']))
         if e == 'heap':
             verdict = 'reference'
         elif 'heap' not in out:
@@ -412,13 +389,11 @@ def sizes(pg, rows, args):
 
 def cmd_run(args):
     os.makedirs(args.out, exist_ok=True)
-    tmp = os.path.join(args.out, 'tmp')
-    os.makedirs(tmp, exist_ok=True)
     queries = [q for q in load_corpus(args.corpus, args.queries_file) if wanted(q, args.queries)]
     if not queries:
         die('no query selected')
     pg = Postgres(args.timeout)
-    perf = Perf(tmp)
+    perf = Perf()
     if not perf.ok:
         log('perf cannot count instructions here (perf_event_paranoid?): instructions are not measured')
     rows = Rows('analytics' if args.corpus == 'orders' else 'clickbench', args.tier, os.path.join(args.out, 'rows.jsonl'))
@@ -442,7 +417,6 @@ def cmd_run(args):
             log(f'{q.id} {set_name or "-"}')
             measure_task(q, set_name, sets.get(set_name, ''), sources, args, engines, pg, ch, perf, known, rows)
     pg.close()
-    shutil.rmtree(tmp)
     meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), engines=engines, runs=args.runs, tier=args.tier, base_gucs=args.base_gucs, col_gucs=args.col_gucs,
                 perf=perf.ok, method='single backend, max_parallel_workers_per_gather = 0, CPU time from /proc/PID/schedstat')
     with open(os.path.join(args.out, 'analytics.json'), 'w') as f:   # one line per row
