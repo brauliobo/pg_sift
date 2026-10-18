@@ -13,7 +13,7 @@ RANDOM=$SEED
 diag "seed $SEED, $ROUNDS rounds"
 plan $((ROUNDS + 1))
 
-node_init rk 5
+node_init rk 5 "$WAL_CONF"
 node_start rk || bail "start failed"
 SETUP=$(cat <<'SQL'
 CREATE EXTENSION pg_sift;

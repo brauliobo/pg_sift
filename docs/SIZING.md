@@ -65,10 +65,14 @@ page it reads. With 200,000 documents and a quarter of the rows deleted and vacu
 | ranked AND, top 10 | 0.26 | 1.36 | 0.26 |
 | ranked OR of three terms, top 10 | 0.64 | 2.39 | 0.70 |
 | unranked scan with a filter | 0.57 | 2.11 | 0.65 |
-| `count(*)` of a term | 0.019 | 1.82 | 0.17 |
+| `count(*)` of a term | 0.019 | 1.82 | 0.06 |
 
-A `count(*)` over dirty superblocks decodes every page it counts, where a clean superblock adds chunk counts, so it stays about 9 times
-slower than clean until the segment is rewritten. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
+A `count(*)` over dirty superblocks cuts a group out of the liveness bits in one pass, where a clean superblock adds chunk counts without
+decoding a page. Measured in user instructions per query against the same live rows rebuilt (200,000 documents, 10, 25 and 45% deleted
+and vacuumed), until the segment is rewritten the count of a term costs 6.6 to 6.7 times the clean index's (18.5 to 18.6 times with 2.0.0), the
+count of two terms 1.7 to 2.3 times (3.5 to 4.4) and of three with OR 1.5 to 2.1 times (4.5 to 6.2). That gap remains: closing it needs
+a change of the on-disk format, which is not part of this release. Superblocks without vacuumed
+documents inside a dirty segment cost nothing extra. Dead rows of transactions that were rolled back (not yet vacuumed) are not in the
 liveness bits: they cost a heap check each, as many as the dead rows among the candidates (`bench/dirty-query.sh -m rollback`).
 
 ## Updates
@@ -98,10 +102,12 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   serializable transaction fail with `40001` that a btree-indexed query would not. Finer locks would need one per term searched (a new
   document conflicts only if it has that term) and one for the vocabulary range of every wildcard, prefix or regex; a lock per page
   does not work because a document is appended to the mutable segment, not to the page where its terms are read. Retry on `40001`.
-- **Row-level security and security barrier views.** A ranked scan and the cost estimates read the statistics of the whole index (document
-  count, document frequencies, expansion limits), including rows the role cannot see: a score and a `EXPLAIN` estimate can depend on
-  hidden rows (a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000
-  rows a policy hid). Do not expose ranked search to roles that must not learn the size or vocabulary of the hidden rows.
+- **Row-level security and security barrier views.** A role under a policy (or reading a security barrier view) gets no ranked scan, no
+  `count(*)` pushdown and no estimate from the index: the match is not leakproof and the index statistics (document count, document
+  frequencies, expansion limits) include rows the role cannot see, so a score and an `EXPLAIN` estimate would depend on hidden rows (before
+  2.0.1 a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000 rows a policy hid).
+  Its matches come from a sequential scan, which is slower on a large table, and `sift.score()` raises an error. The table owner, who
+  bypasses the policy, keeps the scan.
 - **`ALTER INDEX ... SET/RESET`** of `k1`, `b` or an analyzer option (`stemmer`, `fields`, `analyzer`, `prefix_index`, folding)
   needs a `REINDEX`. Until then queries and inserts on the table fail ("built with other analyzer options"), and the statement warns about
   it. To change them without downtime build the new index with `CREATE INDEX CONCURRENTLY` and drop the old one.

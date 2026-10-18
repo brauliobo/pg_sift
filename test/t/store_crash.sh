@@ -11,7 +11,8 @@
 ITERS=$(knob SIFT_CRASH_ITERS 100 10)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
 plan $((ITERS + 1))
-node_init crash 1 "checkpoint_timeout = 30s
+node_init crash 1 "$WAL_CONF
+checkpoint_timeout = 30s
 max_wal_size = 256MB"
 node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
@@ -21,7 +22,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE UNLOGGED TABLE u (v int)" "INSERT INTO u VALUES (70000)" \
 	"CREATE INDEX u_idx ON u USING sift_store_test (v)" >/dev/null || bail "setup failed"
 ok "setup"
-read -ra FILES <<<"$(churn crash t_idx 2000000 \
+read -ra FILES <<<"$(churn crash t_idx "$CHURN_BYTES" \
 	"reindex:2:REINDEX INDEX b_idx;" \
 	"unlogged:3:SELECT sift._test_seg_write('u_idx', 50000, 7);")"
 

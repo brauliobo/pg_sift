@@ -13,11 +13,11 @@ CREATE TABLE docs2 (id int, body text, published date)
 ALTER TABLE docs2 REPLICA IDENTITY FULL
 CREATE INDEX docs_published ON docs (published)
 CREATE INDEX docs2_published ON docs2 (published)"
-LOAD="INSERT INTO @T@ SELECT i, 'friendly staff pool ' || i % 7 || ' breakfast ' || CASE WHEN i % 3 = 0 THEN 'noisy' ELSE 'quiet' END || ' w' || i, date '2026-01-01' + i % 300 FROM generate_series(1, $ROWS) i"
+LOAD="INSERT INTO @T@ SELECT i, 'friendly support case ' || i % 7 || ' battery ' || CASE WHEN i % 3 = 0 THEN 'squeaky' ELSE 'sturdy' END || ' w' || i, date '2026-01-01' + i % 300 FROM generate_series(1, $ROWS) i"
 # change FIRST_ID UPDATE_MOD DELETE_MOD: insert new rows from FIRST_ID, rewrite and delete others
 change() {
-	echo "INSERT INTO @T@ SELECT i, 'friendly extra pool noisy w' || i, '2026-06-01' FROM generate_series($1, $(($1 + ROWS / 2))) i
-UPDATE @T@ SET body = 'updated quiet pool w5 ' || id WHERE id % $2 = 0
+	echo "INSERT INTO @T@ SELECT i, 'friendly extra case squeaky w' || i, '2026-06-01' FROM generate_series($1, $(($1 + ROWS / 2))) i
+UPDATE @T@ SET body = 'updated sturdy case w5 ' || id WHERE id % $2 = 0
 DELETE FROM @T@ WHERE id % $3 = 0"
 }
 
@@ -36,11 +36,11 @@ ddl() { sqls "$1" "$DDL"; }
 # five lines: matches, phrase, count(*), the score of every match, a pushed-down filter
 digest() {
 	sql "$1" "SET enable_seqscan = off" "SET sift.filter_pushdown = force" \
-		"SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id)) FROM $2 WHERE body @@> '(pool OR w5) AND friendly NOT noisy'" \
-		"SELECT count(*) FROM $2 WHERE body @@> '\"friendly staff\"'" \
+		"SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id)) FROM $2 WHERE body @@> '(case OR w5) AND friendly NOT squeaky'" \
+		"SELECT count(*) FROM $2 WHERE body @@> '\"friendly support\"'" \
 		"SELECT count(*) FROM $2 WHERE body @@> 'friendly'" \
 		"SELECT md5(string_agg(id || ':' || round(s::numeric, 6), ',' ORDER BY id)) FROM
-			(SELECT id, sift.score(ctid) s FROM $2 WHERE body @@> 'pool OR noisy' ORDER BY sift.score(ctid) DESC LIMIT 1000000) t" \
+			(SELECT id, sift.score(ctid) s FROM $2 WHERE body @@> 'case OR squeaky' ORDER BY sift.score(ctid) DESC LIMIT 1000000) t" \
 		"SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id)) FROM $2 WHERE body @@> 'friendly' AND published >= '2026-03-01'" ||
 		bail "digest on $1 failed"
 }
@@ -69,7 +69,8 @@ sub_catchup() {
 }
 
 # ---- physical: primary, hot standby
-node_init primary 0 "wal_level = logical
+node_init primary 0 "$WAL_CONF
+wal_level = logical
 max_wal_senders = 10
 max_replication_slots = 10
 wal_keep_size = 256MB"
@@ -86,8 +87,8 @@ catchup primary standby || bail "standby did not catch up"
 check "standby is in recovery and replayed CREATE EXTENSION" test "$(in_recovery standby)$(sql standby "SELECT extname FROM pg_extension WHERE extname = 'pg_sift'")" == tpg_sift
 same "standby answers like the primary (matches, phrase, count, metrics_a, filter pushdown)" primary standby docs
 check "standby plans SiftScan and SiftCount" test "$(sql standby "SET enable_seqscan = off" \
-	"EXPLAIN (costs off) SELECT id FROM docs WHERE body @@> 'pool' ORDER BY sift.score(ctid) DESC LIMIT 5" \
-	"EXPLAIN (costs off) SELECT count(*) FROM docs WHERE body @@> 'pool'" | grep -c -E 'SiftScan|SiftCount')" == 2
+	"EXPLAIN (costs off) SELECT id FROM docs WHERE body @@> 'case' ORDER BY sift.score(ctid) DESC LIMIT 5" \
+	"EXPLAIN (costs off) SELECT count(*) FROM docs WHERE body @@> 'case'" | grep -c -E 'SiftScan|SiftCount')" == 2
 check "the standby is read-only" fails sql standby "INSERT INTO docs VALUES (-1, 'x', null)"
 
 sqls primary "$(change $((ROWS + 1)) 13 11)" docs >/dev/null && catchup primary standby
@@ -96,7 +97,7 @@ sql primary "VACUUM docs" >/dev/null && catchup primary standby
 same "standby after VACUUM" primary standby docs
 sql primary "CREATE INDEX CONCURRENTLY docs_lower ON docs USING sift (lower(body))" >/dev/null && catchup primary standby
 check "standby after CREATE INDEX CONCURRENTLY (valid index, same count)" test "$(sql standby "SELECT indisvalid FROM pg_index WHERE indexrelid = 'docs_lower'::regclass" \
-	"SELECT count(*) FROM docs WHERE lower(body) @@> 'pool noisy'")" == "$(sql primary "SELECT 't'" "SELECT count(*) FROM docs WHERE lower(body) @@> 'pool noisy'")"
+	"SELECT count(*) FROM docs WHERE lower(body) @@> 'case squeaky'")" == "$(sql primary "SELECT 't'" "SELECT count(*) FROM docs WHERE lower(body) @@> 'case squeaky'")"
 sql primary "REINDEX INDEX docs_body" >/dev/null && catchup primary standby
 same "standby after REINDEX" primary standby docs
 sql primary "REINDEX INDEX CONCURRENTLY docs_body" >/dev/null && catchup primary standby

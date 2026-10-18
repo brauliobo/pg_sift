@@ -809,6 +809,7 @@ size_t sift_tids(sift_cur *c, sift_tid *out)
 
 size_t sift_chunk_bound(uint32_t npages) { return 4 + 32 + (size_t)npages * SIFT_MAX_W; }
 uint32_t sift_chunk_count(const uint8_t *chunk) { return ld32(chunk) >> 8; }
+uint32_t sift_chunk_width(const uint8_t *chunk) { return ld32(chunk) & 0x7f; }
 
 size_t sift_chunk_encode(const uint64_t pm[4], const uint64_t *om, int ctype, uint8_t *out)
 {

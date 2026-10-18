@@ -56,11 +56,12 @@ typedef struct SiftTfPos
 typedef struct SiftKernels
 {
 	/*
-	 * Rank -> offset space: out = pdep(rankbits, base) over nwords words;
-	 * rankbits holds one bit per set bit of base, in order. Returns
-	 * popcount(base), i.e. the number of rank bits consumed.
+	 * Rank -> offset space: out = mask & pdep(rankbits, base) over nwords words;
+	 * rankbits (a word array, read from bit pos) holds one bit per set bit of
+	 * base, in order. out may be mask or base. Returns popcount(out).
 	 */
-	int			(*expand) (uint64 *out, const uint64 *base, const uint64 *rankbits, int nwords);
+	int			(*expand) (uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits,
+						   uint32 pos, int nwords);
 
 	/*
 	 * Decodes count postings of a term's tf stream into
