@@ -16,6 +16,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_col_am.h"
+#include "sift_col_pagg.h"
 #include "sift_col_seg.h"
 #include "sift_visibility.h"
 
@@ -1107,5 +1108,20 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	for (uint32 p = 0; p < cu->v.npages; p++)
 		if (!sift_col_bit_test(av, sift_cunit_page_block(&cu->v, cu->sb, p) & (SIFT_SB_PAGES - 1)))
 			return false;
+	return true;
+}
+
+/* ---------- pre-aggregates (sift_col_pagg.c, docs/COL-PREAGG.md) ---------- */
+
+/* The stored unit behind a source unit; false for an in-memory one (mutable lane, delta batch), which has no sidecar */
+bool
+sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->seg == NULL)
+		return false;
+	*seg = cu->seg;
+	*u = cu->u;
 	return true;
 }

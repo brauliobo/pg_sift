@@ -138,9 +138,23 @@ CREATE FUNCTION sift.col_index_info(index regclass,
 									OUT reusable_blocks int8, OUT free_extents int8, OUT segments int4,
 									OUT max_segments int4, OUT rows int8, OUT bytes int8, OUT units int8,
 									OUT mutable_segments int4, OUT leaves int4, OUT maintenance_busy bool,
-									OUT simd text)
+									OUT simd text, OUT preagg_bytes int8, OUT preagg_units int8)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_index_info' LANGUAGE C STRICT VOLATILE;
+
+-- The pre-aggregates of every stored unit (docs/COL-PREAGG.md): the aggregate of a leaf, and for a dimension the histogram of its groups with the
+-- count and sum of one measure. exact: the unit may answer from them (clean, every page all-visible). Debug and test hooks.
+CREATE FUNCTION sift.col_unit_agg(index regclass, leaf text,
+								  OUT segment int8, OUT sb int4, OUT rows int4, OUT exact bool, OUT nvals int8, OUT nnull int8,
+								  OUT min text, OUT max text, OUT sum numeric, OUT sumsq numeric, OUT sum_float float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_col_unit_aggs_sql' LANGUAGE C VOLATILE;
+
+CREATE FUNCTION sift.col_unit_hist(index regclass, dim text, measure text DEFAULT NULL,
+								   OUT segment int8, OUT sb int4, OUT exact bool, OUT key text, OUT n int8,
+								   OUT nn int8, OUT sum numeric, OUT sum_float float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_col_unit_hists_sql' LANGUAGE C VOLATILE;
 
 -- One row per segment; the immutable-only columns are NULL for mutable segments.
 CREATE FUNCTION sift.col_segments(index regclass,
