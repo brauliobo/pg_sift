@@ -16,8 +16,8 @@
 #   --bench [--runs N]  only the corpus, with the median of N runs (default 5) of the reference and of "on"; prints the go/no-go lines:
 #                       the K4000 queries of the shapes that must push down at least 20 times faster, K10 and K400 not slower (0.95)
 #   --bench-workers N   the "on" runs of --bench use max_parallel_workers_per_gather N with the real parallel costs (default 0; the reference stays serial)
-#   --strict-shape      a query whose plan does not meet its `-- expect:` tag (agg: SiftAgg; plain: no SiftAgg), and a bench target
-#                       missed, fail (default: reported as NOTE, so that the harness ships before the planner)
+#                       A query whose plan does not meet its `-- expect:` tag (agg: SiftAgg; plain: no SiftAgg) fails.
+#   --strict-shape      a bench target missed fails too (default: reported)
 #   --rel X --abs X     tolerance of float columns: |x - y| <= abs + rel * max(|x|, |y|) (defaults 1e-9 and 1e-12)
 #   --no-index          without the column index: plain against plain (the self-check of the harness); without the flag a missing
 #                       access method or a failing CREATE INDEX skips the suite with a message
@@ -146,8 +146,8 @@ run_corpus() {
 
 # failures SCEN: the number of results that fail (and the shape expectations that are not met, with --strict-shape)
 failures() {
-	sql -v scen="$1" -v strict="${STRICT:+1}" <<-'SQL'
-		SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND (NOT ok OR (:'strict' = '1' AND shape_ok = false))
+	sql -v scen="$1" <<-'SQL'
+		SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND (NOT ok OR shape_ok = false)
 	SQL
 }
 
@@ -161,19 +161,19 @@ report() {
 				   CASE WHEN count(*) FILTER (WHERE variant = 'on') = 0 THEN '-' WHEN bool_or(used) FILTER (WHERE variant = 'on') THEN 'yes' ELSE 'no' END AS siftagg,
 				   round(max(ref_ms)::numeric, 1) AS off_ms, round(max(ms) FILTER (WHERE variant = 'on')::numeric, 1) AS on_ms,
 				   round((max(ref_ms) / nullif(max(ms) FILTER (WHERE variant = 'on'), 0))::numeric, 1) AS speedup,
-				   CASE WHEN bool_or(shape_ok = false) THEN 'NOTE: expect ' || max(expect) ELSE '' END AS shape_note
+				   CASE WHEN bool_or(shape_ok = false) THEN 'FAIL: expect ' || max(expect) ELSE '' END AS shape_note
 			FROM coldiff.results WHERE scenario = :'scen' GROUP BY name ORDER BY name
 		SQL
 	fi
 	(( $(sql -v scen="$scen" <<<"SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND NOT ok") == 0 )) || table -v scen="$scen" <<-'SQL'
 		SELECT name AS "FAIL", variant, detail FROM coldiff.results WHERE scenario = :'scen' AND NOT ok ORDER BY id LIMIT 40
 	SQL
-	sql -v scen="$scen" -v strict="${STRICT:+1}" <<-'SQL'
-		SELECT format('coldiff[%s]: %s queries, %s runs: %s equal, %s DIFFER, %s requires unmet; SiftAgg used by %s of %s; shape notes %s%s',
+	sql -v scen="$scen" <<-'SQL'
+		SELECT format('coldiff[%s]: %s queries, %s runs: %s equal, %s DIFFER, %s requires unmet; SiftAgg used by %s of %s; plans against their expect tag %s',
 			:'scen', count(DISTINCT name), count(*) FILTER (WHERE variant <> 'skip'), count(*) FILTER (WHERE ok AND variant <> 'skip'), count(*) FILTER (WHERE NOT ok),
 			count(DISTINCT name) FILTER (WHERE variant = 'skip'),
 			count(DISTINCT name) FILTER (WHERE variant = 'on' AND used), count(DISTINCT name) FILTER (WHERE variant = 'on'),
-			count(DISTINCT name) FILTER (WHERE shape_ok = false), CASE WHEN :'strict' = '1' THEN ' (strict)' ELSE ' (NOTE only)' END)
+			count(DISTINCT name) FILTER (WHERE shape_ok = false))
 		FROM coldiff.results WHERE scenario = :'scen'
 	SQL
 	(( $(failures "$scen") == 0 )) || FAILED=1
@@ -215,7 +215,7 @@ col_index() {
 	local ddl
 	case $1 in
 		orders|orders_odd|orders_part)
-			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, tenant_id, source, placed_at, country_code, lang, status, total, discount, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
+			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, tenant_id, customer_id, source, placed_at, country_code, lang, status, total, discount, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
 		t_int) ddl="CREATE INDEX t_int_col ON t_int USING $AM (id, grp, i4, i8)" ;;
 		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
 		t_float) ddl="CREATE INDEX t_float_col ON t_float USING $AM (id, grp, f4, f8)" ;;
