@@ -55,7 +55,7 @@ leaf_vtype(const SiftColDef *def)
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID) ? SCV_I64 : SCV_I32;
+			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID || def->typid == NUMERICOID) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -142,6 +142,7 @@ col_layout(Relation index)
 		l->attno = def->attno;
 		l->parent = def->parent;
 		l->typid = def->typid;
+		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		if (def->kind == SIFT_COLK_GROUP)
 		{

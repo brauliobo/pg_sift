@@ -21,6 +21,7 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
@@ -41,6 +42,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/tuplesort.h"
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
@@ -62,6 +64,7 @@ sift_agg_init(void)
 {
 	sift_aggkern_init();
 	sift_aggcol_register();
+	sift_aggcte_init();
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
@@ -267,10 +270,37 @@ typedef struct DSet
 	uint64		cap;
 } DSet;
 
+/*
+ * The values of an ordered-set aggregate, kept exactly (the multiset PostgreSQL sorts): a histogram of the distinct (group,
+ * value) pairs while it fits work_mem, and every value in a tuplesort (work_mem, spilling to disk as the normal plan's sort)
+ * once it does not. A value is its order key (float8 in the order of float8_cmp: -0 = 0, NaN last), a group the id of its
+ * sorted values (in order of appearance; acc->i of the aggregate that owns the values, which the group renumbering carries).
+ */
+typedef struct OsaSlot
+{
+	uint64		key;
+	uint32		sid1;			/* sorted-values id + 1, 0: free */
+	uint32		cnt;
+} OsaSlot;
+
+typedef struct Osa
+{
+	OsaSlot    *slot;			/* histogram; NULL once spilled */
+	uint64		cap;
+	uint64		n;
+	uint64		maxn;
+	uint32		nsid;
+	uint64		next;			/* read position in the compacted histogram */
+	Tuplesortstate *sort;
+	TupleTableSlot *put;
+	TupleTableSlot *get;
+} Osa;
+
 typedef struct AggAcc
 {
 	int64	   *n;				/* tuples / non-null values */
 	int64	   *i;
+	__int128   *w;				/* numeric sums: the exact sum of the scaled values */
 	double	   *d;
 	uint64	   *last;			/* count distinct of the rows: the last row counted */
 	uint8	   *nf;				/* float sums: a non-finite input was added */
@@ -415,6 +445,9 @@ typedef struct AggExec
 	DSet	   *dset;			/* count distinct: per aggregate, the (group, value) pairs seen */
 	OutTable   *aot;			/* count distinct of a dictionary leaf: the distinct values over all dictionaries */
 	double	   *amax;			/* avg(float8): the largest absolute input */
+	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
+	double	  **oval;			/* ... and their results by sorted-values id */
+	int			n_osa_spilled;
 	/* output */
 	uint32	   *glist;
 	uint32		nglist;
@@ -1702,7 +1735,13 @@ acc_alloc(AggExec *ex, uint32 cap)
 		{
 			case SAA_SUM_INT:
 			case SAA_AVG_INT:
+			case SAA_PCT_CONT:
+			case SAA_PCT_DISC:
 				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+				break;
+			case SAA_SUM_NUM:
+			case SAA_AVG_NUM:
+				a[i].w = MemoryContextAllocZero(ex->cxt, cap * sizeof(__int128));
 				break;
 			case SAA_MIN:
 			case SAA_MAX:
@@ -1755,6 +1794,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 			n->n[t] = o->n[g];
 			if (o->i)
 				n->i[t] = o->i[g];
+			if (o->w)
+				n->w[t] = o->w[g];
 			if (o->d)
 				n->d[t] = o->d[g];
 			if (o->last)
@@ -2366,6 +2407,355 @@ float_guard(AggExec *ex, int ai, const double *x, int nsel)
 		float_overflow_error();
 }
 
+/* ---------- ordered-set aggregates ---------- */
+
+#define OSA_SIGN	(UINT64CONST(1) << 63)
+
+/* the key of a float8 that sorts as float8_cmp does: unsigned order, -0 and 0 one key, every NaN the last */
+static inline uint64
+f8_key(double x)
+{
+	uint64		b;
+
+	if (isnan(x))
+		return UINT64_MAX;
+	x += 0.0;					/* -0 -> 0 */
+	memcpy(&b, &x, sizeof(b));
+	return (b & OSA_SIGN) ? ~b : (b | OSA_SIGN);
+}
+
+static inline double
+key_f8(uint64 k)
+{
+	uint64		b = (k & OSA_SIGN) ? (k & ~OSA_SIGN) : ~k;
+	double		x;
+
+	if (k == UINT64_MAX)
+		return get_float8_nan();
+	memcpy(&x, &b, sizeof(x));
+	return x;
+}
+
+static inline uint64
+osa_hash(uint32 sid, uint64 key)
+{
+	return dset_hash(key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F)));
+}
+
+static Osa *
+osa_new(AggExec *ex)
+{
+	Osa		   *o = MemoryContextAllocZero(ex->cxt, sizeof(Osa));
+
+	o->cap = 1024;
+	o->slot = MemoryContextAllocZero(ex->cxt, o->cap * sizeof(OsaSlot));
+	o->maxn = Max((uint64) work_mem * 1024 / (4 * sizeof(OsaSlot)), 256);	/* the table has at most 4 slots per pair */
+	return o;
+}
+
+static void
+osa_put(Osa *o, uint32 sid, uint64 key, uint64 cnt)
+{
+	TupleTableSlot *t = o->put;
+
+	for (; cnt > 0; cnt--)
+	{
+		ExecClearTuple(t);
+		t->tts_values[0] = Int32GetDatum((int32) sid);
+		t->tts_values[1] = Int64GetDatum((int64) (key ^ OSA_SIGN));
+		t->tts_isnull[0] = t->tts_isnull[1] = false;
+		ExecStoreVirtualTuple(t);
+		tuplesort_puttupleslot(o->sort, t);
+	}
+}
+
+/* the histogram does not fit work_mem: its pairs, and from now on every value, go through a tuplesort */
+static void
+osa_spill(AggExec *ex, Osa *o)
+{
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	TupleDesc	desc = CreateTemplateTupleDesc(2);
+	AttrNumber	att[2] = {1, 2};
+	Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
+				coll[2] = {InvalidOid, InvalidOid};
+	bool		nulls[2] = {false, false};
+
+	TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
+	TupleDescInitEntry(desc, 2, "key", INT8OID, -1, 0);
+	o->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	o->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	o->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_NONE);
+	MemoryContextSwitchTo(old);
+	for (uint64 i = 0; i < o->cap; i++)
+		if (o->slot[i].sid1)
+			osa_put(o, o->slot[i].sid1 - 1, o->slot[i].key, o->slot[i].cnt);
+	pfree(o->slot);
+	o->slot = NULL;
+	ex->n_osa_spilled++;
+}
+
+static void
+osa_grow(AggExec *ex, Osa *o)
+{
+	OsaSlot    *old = o->slot;
+	uint64		ocap = o->cap;
+
+	o->cap *= 2;
+	o->slot = MemoryContextAllocZero(ex->cxt, o->cap * sizeof(OsaSlot));
+	for (uint64 i = 0; i < ocap; i++)
+		if (old[i].sid1)
+		{
+			uint64		h = osa_hash(old[i].sid1 - 1, old[i].key) & (o->cap - 1);
+
+			while (o->slot[h].sid1)
+				h = (h + 1) & (o->cap - 1);
+			o->slot[h] = old[i];
+		}
+	pfree(old);
+}
+
+static void
+osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key)
+{
+	uint64		h;
+
+	if (o->sort)
+	{
+		osa_put(o, sid, key, 1);
+		return;
+	}
+	h = osa_hash(sid, key) & (o->cap - 1);
+	for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
+		if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
+		{
+			o->slot[h].cnt++;
+			return;
+		}
+	if (o->n >= o->maxn)
+	{
+		osa_spill(ex, o);
+		osa_put(o, sid, key, 1);
+		return;
+	}
+	o->slot[h] = (OsaSlot) {key, sid + 1, 1};
+	if (++o->n * 2 > o->cap)
+		osa_grow(ex, o);
+}
+
+/* the argument of ordered-set aggregate ai for the nsel tuples, in double */
+static const double *
+osa_values(AggExec *ex, SiftAggAgg *a, const uint32 *idx, int nsel)
+{
+	const SiftSrcVec *v;
+
+	if (a->nvx)
+		return eval_vx(ex, a, nsel);
+	v = get_vec(ex, a->leaf);
+	if (ex->lay->leaf[a->leaf].vtype == SCV_F64)
+	{
+		sift_aggk->gather_u64(ex->c64, (const uint64 *) v->data, idx, nsel);
+		return (const double *) ex->c64;
+	}
+	sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
+	for (int j = 0; j < nsel; j++)
+		ex->vstk[j] = ((const int32 *) ex->cu32)[j];
+	return ex->vstk;
+}
+
+/* adds the selected values to the values of the aggregate, which owns them (the other aggregates on the argument share them) */
+static void
+osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *own = &ex->acc[ai];
+	Osa		   *o = ex->osa[ai];
+	const uint32 *idx = NULL;
+	const double *x;
+
+	if (a->leaf >= 0)
+		gather_idx(ex, a->leaf, nsel, &idx);
+	x = osa_values(ex, a, idx, nsel);
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		g = ex->gid[j];
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if (own->i[g] == 0)
+			own->i[g] = ++o->nsid;
+		osa_add(ex, o, own->i[g] - 1, f8_key(x[j]));
+	}
+}
+
+typedef struct OsaRun
+{
+	uint32		sid;
+	uint64		key;
+	uint64		cnt;
+} OsaRun;
+
+static int
+osa_cmp(const void *pa, const void *pb)
+{
+	const OsaSlot *a = pa,
+			   *b = pb;
+
+	if (a->sid1 != b->sid1)
+		return a->sid1 < b->sid1 ? -1 : 1;
+	return a->key < b->key ? -1 : a->key > b->key;
+}
+
+/* the runs of equal values, by group id then value */
+static void
+osa_sort(Osa *o)
+{
+	uint64		w = 0;
+
+	if (o->sort)
+	{
+		tuplesort_performsort(o->sort);
+		return;
+	}
+	for (uint64 i = 0; i < o->cap; i++)
+		if (o->slot[i].sid1)
+			o->slot[w++] = o->slot[i];
+	qsort(o->slot, w, sizeof(OsaSlot), osa_cmp);
+	o->n = w;
+	o->next = 0;
+}
+
+static bool
+osa_next(Osa *o, OsaRun *r)
+{
+	bool		isnull;
+
+	if (o->sort)
+	{
+		if (!tuplesort_gettupleslot(o->sort, true, false, o->get, NULL))
+			return false;
+		r->sid = DatumGetInt32(slot_getattr(o->get, 1, &isnull));
+		r->key = (uint64) DatumGetInt64(slot_getattr(o->get, 2, &isnull)) ^ OSA_SIGN;
+		r->cnt = 1;
+		return true;
+	}
+	if (o->next >= o->n)
+		return false;
+	r->sid = o->slot[o->next].sid1 - 1;
+	r->key = o->slot[o->next].key;
+	r->cnt = o->slot[o->next].cnt;
+	o->next++;
+	return true;
+}
+
+/* where an aggregate's one or two values sit in the ascending values of a group of n, as the final functions of PostgreSQL pick them */
+typedef struct OsaPick
+{
+	int64		pos[2];
+	uint64		key[2];
+	double		prop;
+} OsaPick;
+
+static void
+osa_pick(const SiftAggAgg *a, int64 n, OsaPick *p)
+{
+	int64		lo,
+				hi;
+
+	if (a->kind == SAA_PCT_DISC)
+	{
+		lo = hi = Max((int64) ceil(a->frac * n), 1) - 1;
+		p->prop = 0;
+		if (a->desc_order)
+			lo = hi = n - 1 - lo;
+	}
+	else
+	{
+		double		at = a->frac * (n - 1);
+
+		lo = (int64) floor(at);
+		hi = (int64) ceil(at);
+		p->prop = at - lo;
+		if (a->desc_order)
+		{
+			lo = n - 1 - lo;
+			hi = n - 1 - hi;
+		}
+	}
+	p->pos[0] = lo;
+	p->pos[1] = hi;
+}
+
+static double
+osa_result(const SiftAggAgg *a, const OsaPick *p)
+{
+	double		first = key_f8(p->key[0]),
+				second = key_f8(p->key[1]);
+
+	if (a->kind == SAA_PCT_DISC || p->pos[0] == p->pos[1])
+		return first;
+	return first + (p->prop * (second - first));
+}
+
+/* walks the sorted values of the aggregate that owns them once, taking the values of every aggregate on them */
+static void
+osa_finish(AggExec *ex, int owner)
+{
+	SiftAggSpec *s = ex->spec;
+	Osa		   *o = ex->osa[owner];
+	AggAcc	   *own = &ex->acc[owner];
+	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap,
+				cur = UINT32_MAX;
+	int64	   *nrows = palloc0(Max(o->nsid, 1) * sizeof(int64));
+	OsaPick    *pick = palloc0(s->naggs * sizeof(OsaPick));
+	OsaRun		r;
+	int64		pos = 0;
+
+	for (uint32 g = 0; g < ngr; g++)
+		if (own->i[g])
+			nrows[own->i[g] - 1] = own->n[g];
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+			ex->oval[ai] = MemoryContextAlloc(ex->cxt, Max(o->nsid, 1) * sizeof(double));
+	osa_sort(o);
+	for (bool more = osa_next(o, &r);; more = osa_next(o, &r))
+	{
+		if (!more || r.sid != cur)
+		{
+			for (int ai = 0; cur != UINT32_MAX && ai < s->naggs; ai++)
+				if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+					ex->oval[ai][cur] = osa_result(&s->agg[ai], &pick[ai]);
+			if (cur != UINT32_MAX && pos != nrows[cur])
+				elog(ERROR, "sift: ordered-set values of a group are %lld, expected %lld", (long long) pos, (long long) nrows[cur]);
+			if (!more)
+				break;
+			cur = r.sid;
+			pos = 0;
+			for (int ai = 0; ai < s->naggs; ai++)
+				if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+					osa_pick(&s->agg[ai], nrows[cur], &pick[ai]);
+		}
+		for (int ai = 0; ai < s->naggs; ai++)
+			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+				for (int k = 0; k < 2; k++)
+					if (pick[ai].pos[k] >= pos && pick[ai].pos[k] < pos + (int64) r.cnt)
+						pick[ai].key[k] = r.key;
+		pos += r.cnt;
+	}
+	if (o->sort)
+	{
+		tuplesort_end(o->sort);
+		o->sort = NULL;
+	}
+}
+
+static void
+osa_finish_all(AggExec *ex)
+{
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+		if (is_ordered_agg(&ex->spec->agg[ai]) && ex->spec->agg[ai].share == ai)
+			osa_finish(ex, ai);
+}
+
 static void
 agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 {
@@ -2458,6 +2848,22 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 					acc->n[g]++;
 				}
 			}
+			break;
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			sift_aggk->gather_u64(ex->c64, (const uint64 *) v->data, idx, nsel);
+			for (int j = 0; j < nsel; j++)
+				if (!ok || sift_colsrc_bit(ok, j))
+				{
+					acc->w[ex->gid[j]] += ((const int64 *) ex->c64)[j];
+					acc->n[ex->gid[j]]++;
+				}
+			break;
+		case SAA_PCT_CONT:
+		case SAA_PCT_DISC:
+			if (a->share == ai)
+				osa_update(ex, ai, ok, nsel);
+			sift_aggk->count_gid(acc->n, ex->gid, ok, nsel);
 			break;
 		case SAA_COUNT_DISTINCT:
 			sift_aggk->gather_u32(ex->cu32, (const uint32 *) v->data, idx, nsel);
@@ -3193,11 +3599,15 @@ register_aggs(AggExec *ex)
 	ex->dset = palloc0(Max(s->naggs, 1) * sizeof(DSet));
 	ex->aot = palloc0(Max(s->naggs, 1) * sizeof(OutTable));
 	ex->amax = palloc0(Max(s->naggs, 1) * sizeof(double));
+	ex->osa = palloc0(Max(s->naggs, 1) * sizeof(Osa *));
+	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(double *));
 	for (int i = 0; i < s->naggs; i++)
 	{
 		SiftAggAgg *a = &s->agg[i];
 		TypeCacheEntry *tc;
 
+		if (is_ordered_agg(a))
+			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
 		if (a->kind != SAA_COUNT_DISTINCT || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
 			continue;
 		tc = lookup_type_cache(a->argtype, TYPECACHE_EQ_OPR);
@@ -3264,6 +3674,7 @@ start_scan(AggExec *ex)
 	while (sift_colsrc_next(ex->src, &ex->unit))
 		process_unit(ex);
 	arms_flush(ex);
+	osa_finish_all(ex);
 }
 
 /* the groups that exist, in index order */
@@ -3295,6 +3706,33 @@ key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 	if (k->ident)
 		return leaf_datum(ex->spec->key[j].typid, k->idval[id - 1]);
 	return k->ot.val[id - 1];
+}
+
+/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale */
+static Datum
+scaled_numeric(__int128 v, int scale)
+{
+	char		tmp[48],
+				buf[64];
+	char	   *o = buf;
+	int			n = 0;
+	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
+
+	do
+	{
+		tmp[n++] = '0' + (int) (u % 10);
+		u /= 10;
+	} while (u > 0 || n <= scale);
+	if (v < 0)
+		*o++ = '-';
+	for (int i = n - 1; i >= 0; i--)
+	{
+		*o++ = tmp[i];
+		if (i == scale && scale > 0)
+			*o++ = '.';
+	}
+	*o = '\0';
+	return DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 
 static Datum
@@ -3343,11 +3781,35 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_AVG_F64:
 			*isnull = acc->n[g] == 0;
 			return Float8GetDatum(acc->d[g] / (double) acc->n[g]);
+		case SAA_SUM_NUM:
+			*isnull = acc->n[g] == 0;
+			return *isnull ? (Datum) 0 : scaled_numeric(acc->w[g], ex->lay->leaf[a->leaf].scale);
+		case SAA_AVG_NUM:
+			*isnull = acc->n[g] == 0;
+			if (*isnull)
+				return (Datum) 0;
+			return DirectFunctionCall2(numeric_div, scaled_numeric(acc->w[g], ex->lay->leaf[a->leaf].scale),
+									   DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
+		case SAA_PCT_CONT:
+		case SAA_PCT_DISC:
+			{
+				double		v;
+
+				*isnull = acc->n[g] == 0;
+				if (*isnull)
+					return (Datum) 0;
+				v = ex->oval[ai][ex->acc[a->share].i[g] - 1];
+				if (a->restype == FLOAT4OID)
+					return Float4GetDatum((float4) v);
+				return a->restype == FLOAT8OID ? Float8GetDatum(v) : leaf_datum(a->restype, (int64) v);
+			}
 		case SAA_MIN:
 		case SAA_MAX:
 			*isnull = acc->n[g] == 0;
 			if (ex->lay->leaf[a->leaf].vtype == SCV_F64)
 				return a->restype == FLOAT4OID ? Float4GetDatum((float4) acc->d[g]) : Float8GetDatum(acc->d[g]);
+			if (a->restype == NUMERICOID)
+				return scaled_numeric(acc->i[g], ex->lay->leaf[a->leaf].scale);
 			return leaf_datum(a->restype, acc->i[g]);
 	}
 	return (Datum) 0;
@@ -3434,6 +3896,9 @@ agg_end(CustomScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
 
+	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
+		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
+			tuplesort_end(ex->osa[i]->sort);
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
@@ -3497,6 +3962,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
 		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+		if (ex->n_osa_spilled)
+			ExplainPropertyInteger("Ordered Sets Spilled", NULL, ex->n_osa_spilled, es);
 	}
 }
 

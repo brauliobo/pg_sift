@@ -145,6 +145,16 @@ INSERT INTO t_float VALUES
 	(15, 4, 'Infinity', 'Infinity'), (16, 4, 3, 3), (17, 5, 0, 0), (18, 5, '-0', '-0'), (19, 5, 0, 0), (20, 5, '-0', '-0'),
 	(21, 6, 1e30, 1e300), (22, 6, 1e30, 1e300), (23, 6, -1e30, -1e300), (24, 6, 3.4e38, 1.7e308), (25, 6, 3.4e38, 1.7e308);
 INSERT INTO t_float SELECT 100 + i, 7, (0.1 * (i % 10))::float4, 0.1 * (i % 10) + 1e-9 * i FROM generate_series(1, 300) i;
+CREATE TABLE t_num (id integer PRIMARY KEY, grp integer NOT NULL, n2 numeric(12,2), n0 numeric(18,0), n6 numeric(18,6));
+INSERT INTO t_num VALUES
+	(1, 1, 10.50, 1, 0.000001), (2, 1, 0.05, 2, -0.5), (3, 1, -3.25, 3, 123456789012.123456), (4, 1, NULL, NULL, NULL), (5, 1, 7.00, 4, 0.1),
+	(6, 2, NULL, NULL, NULL), (7, 2, NULL, NULL, NULL),
+	(8, 3, 9999999999.99, 999999999999999999, 999999999999.999999), (9, 3, 9999999999.99, 999999999999999999, 999999999999.999999),
+	(10, 3, 9999999999.99, 999999999999999999, -999999999999.999999),
+	(11, 4, -9999999999.99, -999999999999999999, 0), (12, 4, -9999999999.99, -999999999999999999, 0.000001),
+	(13, 5, 0.00, 0, 0.000000), (14, 5, 0.00, 0, 0.000000), (15, 5, 1.00, 1, 1.000000);
+INSERT INTO t_num SELECT 100 + i, 7, round((i * 13.37 - 400)::numeric, 2), (i * 1000003) % 1000, round((i * 0.123457)::numeric, 6) FROM generate_series(1, 300) i;
+INSERT INTO t_num SELECT 1000 + i, 3, 0.01, 999999999999999999, 0 FROM generate_series(1, 12) i;
 CREATE TABLE t_text (id integer PRIMARY KEY, grp integer NOT NULL, t text, vc varchar(3));
 INSERT INTO t_text SELECT i, 1 + i % 3, v, left(v, 3)
 FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','','  ']) WITH ORDINALITY u(v, i);

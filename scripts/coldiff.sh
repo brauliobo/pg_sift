@@ -213,8 +213,9 @@ col_index() {
 	local ddl
 	case $1 in
 		orders|orders_odd|orders_part)
-			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, tenant_id, source, placed_at, country_code, lang, status, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
+			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, tenant_id, source, placed_at, country_code, lang, status, total, discount, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
 		t_int) ddl="CREATE INDEX t_int_col ON t_int USING $AM (id, grp, i4, i8)" ;;
+		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
 		t_float) ddl="CREATE INDEX t_float_col ON t_float USING $AM (id, grp, f4, f8)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 	esac
@@ -224,7 +225,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_text orders_odd orders_part; do
+	for t in t_int t_float t_num t_text orders_odd orders_part; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }

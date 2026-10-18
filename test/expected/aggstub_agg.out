@@ -155,3 +155,68 @@ SELECT same($$SELECT b, count(*) AS n FROM w WHERE a NOT IN (1000003, 2000006, 3
  t
 (1 row)
 
+-- ordered-set aggregates: the plan, and the rows of the normal plan with the histogram and, at the smallest work_mem, with the sort
+EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: o_col
+   Group Keys: kind
+   Pushed Aggregates: percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.5]) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
+        QUERY PLAN         
+---------------------------
+ GroupAggregate
+   Group Key: kind
+   ->  Sort
+         Sort Key: kind
+         ->  Seq Scan on o
+(5 rows)
+
+SELECT same($$SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS c, percentile_cont(0.9) WITHIN GROUP (ORDER BY amount DESC) AS cd,
+			  percentile_disc(0.3) WITHIN GROUP (ORDER BY qty) AS dq, percentile_disc(0.7) WITHIN GROUP (ORDER BY placed DESC) AS dp FROM o GROUP BY kind$$) AS percentiles;
+ percentiles 
+-------------
+ t
+(1 row)
+
+SET work_mem = '64kB';
+SELECT same($$SELECT i.category, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price * 1.1 + o.id) AS c, percentile_disc(0.05) WITHIN GROUP (ORDER BY i.price * 1.1 + o.id) AS d
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS spilled;
+ spilled 
+---------
+ t
+(1 row)
+
+RESET work_mem;
+-- a CTE that several arms read is planned inline when the arms run on the index; the rows are those of the materialized CTE
+EXPLAIN (COSTS OFF) WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
+			  SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
+			  UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2;
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Append
+   ->  Custom Scan (SiftAgg)
+         Index: o_col
+         Filters: store < 6
+         Group Keys: placed
+         Pushed Aggregates: count, sum(items[].qty), sum(((i.qty)::double precision * i.price))
+         Unnests: yes
+   ->  Custom Scan (SiftAgg)
+         Index: o_col
+         Filters: store < 6
+         Group Keys: placed: (date_trunc('month'::text, (o.placed)::timestamp with time zone))::date
+         Pushed Aggregates: count, sum(items[].qty), sum(((i.qty)::double precision * i.price))
+         Unnests: yes
+(13 rows)
+
+SELECT same($$WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
+			  SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
+			  UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2$$) AS shared_cte;
+ shared_cte 
+------------
+ t
+(1 row)
+

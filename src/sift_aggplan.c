@@ -43,6 +43,7 @@
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
+#include "utils/typcache.h"
 
 #include "sift_agg.h"
 #include "sift_aggspec.h"
@@ -102,6 +103,7 @@ typedef struct AggCtx
 	Bitmapset  *used;			/* leaves the spec reads */
 	List	   *dpctx;			/* deparse context of expr_text */
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
+	bool		numeric_ok;		/* the aggregate being compiled may read a numeric leaf (others never do) */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	List	   *combos;			/* ComboCtx */
@@ -124,12 +126,23 @@ leaf_level(AggCtx *c, int id)
 	return leaf_of(c, id)->parent >= 0;
 }
 
+static char *expr_text(AggCtx *c, Node *n);
+
+/* the name of an index attribute: its heap column, or the index expression */
+static const char *
+att_name(AggCtx *c, int attno)
+{
+	Node	   *x = list_nth(c->attexpr, attno - 1);
+
+	return x == NULL ? "?" : IsA(x, Var) ? get_attname(c->heapoid, ((Var *) x)->varattno, false) : expr_text(c, x);
+}
+
 static const char *
 leaf_name(AggCtx *c, int id)
 {
 	StringInfoData s;
 	SiftSrcLeaf *l = leaf_of(c, id);
-	char	   *att = get_attname(OidIsValid(c->indexoid) ? c->indexoid : c->heapoid, l->attno, true);
+	const char *att = att_name(c, l->attno);
 
 	initStringInfo(&s);
 	if (l->parent >= 0)
@@ -139,7 +152,7 @@ leaf_name(AggCtx *c, int id)
 		appendStringInfo(&s, leaf_of(c, l->parent)->kind == SCL_OBJECT ? "%s.*.%s" : "%s[].%s", p, l->name);
 		return s.data;
 	}
-	appendStringInfoString(&s, att ? att : "?");
+	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
 	return s.data;
@@ -226,7 +239,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 		SiftSrcLeaf *l = leaf_of(c, i);
 
 		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, path) &&
-			l->typid == typid)
+			l->typid == typid && (typid != NUMERICOID || c->numeric_ok))
 			return i;
 	}
 	return -1;
@@ -1509,15 +1522,100 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 	return false;
 }
 
+/*
+ * percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
+ * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4 or date leaf: the
+ * executor keeps the values of a group exactly and picks the ranks as PostgreSQL's final functions do.
+ */
+static bool
+compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
+{
+	bool		is_cont = a->aggfnoid == F_PERCENTILE_CONT_FLOAT8_FLOAT8;
+	Const	   *frac;
+	Node	   *arg;
+	TypeCacheEntry *tc;
+	SortGroupClause *sgc;
+	int			leaf;
+
+	if ((!is_cont && a->aggfnoid != F_PERCENTILE_DISC_FLOAT8_ANYELEMENT) || list_length(a->aggdirectargs) != 1 ||
+		list_length(a->args) != 1 || list_length(a->aggorder) != 1 || a->aggdistinct != NIL)
+		return false;
+	frac = (Const *) strip_relabel(linitial(a->aggdirectargs));
+	if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
+		return false;
+	out->frac = DatumGetFloat8(frac->constvalue);
+	if (!(out->frac >= 0 && out->frac <= 1))
+		return false;
+	arg = strip_relabel((Node *) linitial_node(TargetEntry, a->args)->expr);
+	sgc = linitial_node(SortGroupClause, a->aggorder);
+	tc = lookup_type_cache(exprType(arg), TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
+	if (sgc->sortop != tc->lt_opr && sgc->sortop != tc->gt_opr)
+		return false;
+	out->desc_order = sgc->sortop == tc->gt_opr;
+	out->kind = is_cont ? SAA_PCT_CONT : SAA_PCT_DISC;
+	out->argtype = exprType(arg);
+	if ((leaf = match_leaf(c, arg)) >= 0)
+	{
+		SiftSrcLeaf *l = leaf_of(c, leaf);
+
+		if (l->kind != SCL_SCALAR ||
+			!((l->vtype == SCV_F64 && (l->typid == FLOAT8OID || l->typid == FLOAT4OID)) ||
+			  (l->vtype == SCV_I32 && (l->typid == INT4OID || l->typid == INT2OID || l->typid == DATEOID))))
+			return false;
+		out->leaf = leaf;
+		use_leaf(c, leaf);
+	}
+	else
+	{
+		out->vx = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggVx));
+		if (out->argtype != FLOAT8OID || !compile_vx(c, arg, out))
+			return false;
+	}
+	out->share = -1;
+	out->desc = psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg),
+						 out->desc_order ? " DESC" : "");
+	return true;
+}
+
+/* the aggregates on the same argument sort it once: share = the first of them (no FILTER on either) */
+static bool
+same_sorted_input(const SiftAggAgg *a, const SiftAggAgg *b)
+{
+	if (a->filter || b->filter || a->leaf != b->leaf || a->nvx != b->nvx)
+		return false;
+	for (int k = 0; k < a->nvx; k++)
+		if (a->vx[k].op != b->vx[k].op || a->vx[k].leaf != b->vx[k].leaf || a->vx[k].c != b->vx[k].c)
+			return false;
+	return true;
+}
+
+static void
+share_ordered(SiftAggSpec *s)
+{
+	for (int i = 0; i < s->naggs; i++)
+	{
+		if (!is_ordered_agg(&s->agg[i]))
+			continue;
+		s->agg[i].share = i;
+		for (int j = 0; j < i; j++)
+			if (is_ordered_agg(&s->agg[j]) && s->agg[j].share == j && same_sorted_input(&s->agg[j], &s->agg[i]))
+			{
+				s->agg[i].share = j;
+				break;
+			}
+	}
+}
+
 static bool
 compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 {
 	int			leaf = -1;
 	Node	   *arg = NULL;
 	Oid			fid = a->aggfnoid;
+	bool		ordered = a->aggkind == AGGKIND_ORDERED_SET;
 
-	if (a->aggkind != AGGKIND_NORMAL || a->aggorder != NIL || a->agglevelsup != 0 || a->aggvariadic ||
-		contain_volatile_functions((Node *) a))
+	if ((a->aggkind != AGGKIND_NORMAL && !ordered) || (a->aggorder != NIL && !ordered) || a->agglevelsup != 0 ||
+		a->aggvariadic || contain_volatile_functions((Node *) a))
 		return false;
 	if (a->aggdistinct != NIL && fid != F_COUNT_ANY)
 		return false;
@@ -1529,6 +1627,8 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		if ((out->filter = compile_pred(c, normalize_expr(c, (Node *) a->aggfilter))) == NULL || out->filter->level > 1)
 			return false;
 	}
+	if (ordered)
+		return compile_ordered(c, a, out);
 	if (fid == F_COUNT_)
 		out->kind = SAA_COUNT_STAR;
 	else
@@ -1553,7 +1653,10 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		}
 		else
 		{
+			c->numeric_ok = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC || fid == F_MAX_NUMERIC ||
+							(fid == F_COUNT_ANY && a->aggdistinct == NIL);
 			leaf = match_leaf(c, arg);
+			c->numeric_ok = false;
 			if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
 				return false;
 			out->leaf = leaf;
@@ -1594,6 +1697,14 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 						return false;
 					out->kind = SAA_AVG_F64;
 					break;
+				case F_SUM_NUMERIC:
+				case F_AVG_NUMERIC:
+					if (!leaf_numeric(c, leaf, SCV_I64, NUMERICOID, InvalidOid))
+						return false;
+					out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : SAA_AVG_NUM;
+					break;
+				case F_MIN_NUMERIC:
+				case F_MAX_NUMERIC:
 				case F_MIN_INT2:
 				case F_MIN_INT4:
 				case F_MIN_INT8:
@@ -1613,7 +1724,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out)
 					if (leaf_of(c, leaf)->vtype == SCV_CODE || leaf_of(c, leaf)->kind != SCL_SCALAR ||
 						leaf_of(c, leaf)->typid != a->aggtype)
 						return false;
-					out->kind = (fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
+					out->kind = (fid == F_MIN_NUMERIC || fid == F_MIN_INT2 || fid == F_MIN_INT4 || fid == F_MIN_INT8 || fid == F_MIN_DATE ||
 								 fid == F_MIN_TIMESTAMP || fid == F_MIN_TIMESTAMPTZ || fid == F_MIN_FLOAT4 ||
 								 fid == F_MIN_FLOAT8) ? SAA_MIN : SAA_MAX;
 					break;
@@ -1811,6 +1922,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_KEY_ROW			1.0		/* a group key id */
 #define AGG_COMBO_ROW		3.0		/* a tuple's entry in a combo: gathers and a hash probe */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		400.0
 #define AGG_DEFAULT_ELEMS	3.0
@@ -1841,6 +1953,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += agg_rows * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW;
+	for (int i = 0; i < s->naggs; i++)
+		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
+			scan_cost += agg_rows * AGG_ORDERED_ROW;
 	scan_cost *= cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
 	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
@@ -2131,6 +2246,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 
 	if (c->other_group)
 		return;
+	share_ordered(s);
 	if (c->group < 0)
 		for (int i = 0; i < c->lay->nleaves; i++)
 			if (bms_is_member(i, c->used) && leaf_of(c, i)->parent >= 0)
