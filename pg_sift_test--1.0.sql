@@ -32,6 +32,9 @@ CREATE FUNCTION sift._test_check(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_check' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_sweep(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_sweep' LANGUAGE C STRICT;
+-- blocks given back by VACUUM's truncation of the free blocks at the end of the file (NOTICE says what it did)
+CREATE FUNCTION sift._test_truncate(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_truncate' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_info(index regclass, OUT key text, OUT value int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_info' LANGUAGE C STRICT;

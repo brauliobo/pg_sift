@@ -189,6 +189,9 @@ define_reloptions(void)
 					   "Analyzer: text, or keyword to index each whole value as one term (facets, REINDEX to apply)",
 					   analyzer_names, SIFT_ANALYZER_TEXT,
 					   "Valid values are \"text\" and \"keyword\".", AccessExclusiveLock);
+	add_bool_reloption(sift_relopt_kind, "vacuum_truncate",
+					   "VACUUM gives the free blocks at the end of the index file back to the operating system (takes a brief exclusive lock when it can)",
+					   true, ShareUpdateExclusiveLock);
 }
 
 /* Binds the codec's own ISA dispatch to the sift.simd level */
@@ -272,6 +275,7 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"fields", RELOPT_TYPE_STRING, offsetof(SiftOptions, fields)},
 		{"analyzer", RELOPT_TYPE_ENUM, offsetof(SiftOptions, analyzer)},
 		{"positions", RELOPT_TYPE_BOOL, offsetof(SiftOptions, positions)},
+		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
@@ -289,6 +293,7 @@ sift_index_options(Relation index)
 		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
 		.positions = true,
+		.vacuum_truncate = true,
 	};
 
 	return index->rd_options ? (const SiftOptions *) index->rd_options : &defaults;

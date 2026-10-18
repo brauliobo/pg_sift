@@ -1,0 +1,73 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2v s2m s2rec s3read s2v s2size s3c s2v s2size s2check
+step s2v: VACUUM iso_tr;
+step s2m: SELECT sift.merge('iso_tr_idx', true) > 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s2rec: CREATE TABLE iso_tr_size AS SELECT relation_blocks AS blocks FROM sift.index_info('iso_tr_idx');
+step s3read: BEGIN; SELECT count(*) AS hits FROM iso_tr WHERE body @@> 'common';
+hits
+----
+3000
+(1 row)
+
+step s2v: VACUUM iso_tr;
+step s2size: SELECT i.relation_blocks = s.blocks AS unchanged, i.relation_blocks < s.blocks AS shrunk, i.relation_blocks = i.high_water AS sized
+			  FROM sift.index_info('iso_tr_idx') i, iso_tr_size s;
+unchanged|shrunk|sized
+---------+------+-----
+t        |f     |t    
+(1 row)
+
+step s3c: COMMIT;
+step s2v: VACUUM iso_tr;
+step s2size: SELECT i.relation_blocks = s.blocks AS unchanged, i.relation_blocks < s.blocks AS shrunk, i.relation_blocks = i.high_water AS sized
+			  FROM sift.index_info('iso_tr_idx') i, iso_tr_size s;
+unchanged|shrunk|sized
+---------+------+-----
+f        |t     |t    
+(1 row)
+
+step s2check: SELECT iso_agree('iso_tr', 'common') AS agree, iso_agree('iso_tr', 'appended') AS agree_appended, iso_verify('iso_tr_idx') AS verified;
+agree|agree_appended|verified
+-----+--------------+--------
+t    |t             |t       
+(1 row)
+
+
+starting permutation: s3snap s2v s1i s3c s2p s2rec s2v s2size s1j s2check
+step s3snap: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_tr;
+snapshot
+--------
+t       
+(1 row)
+
+step s2v: VACUUM iso_tr;
+step s1i: INSERT INTO iso_tr SELECT g, 'common appended ' || g FROM generate_series(100001, 140000) g;
+step s3c: COMMIT;
+step s2p: SELECT sift.promote('iso_tr_idx') > 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2rec: CREATE TABLE iso_tr_size AS SELECT relation_blocks AS blocks FROM sift.index_info('iso_tr_idx');
+step s2v: VACUUM iso_tr;
+step s2size: SELECT i.relation_blocks = s.blocks AS unchanged, i.relation_blocks < s.blocks AS shrunk, i.relation_blocks = i.high_water AS sized
+			  FROM sift.index_info('iso_tr_idx') i, iso_tr_size s;
+unchanged|shrunk|sized
+---------+------+-----
+f        |t     |t    
+(1 row)
+
+step s1j: INSERT INTO iso_tr SELECT g, 'common again ' || g FROM generate_series(150001, 150100) g;
+step s2check: SELECT iso_agree('iso_tr', 'common') AS agree, iso_agree('iso_tr', 'appended') AS agree_appended, iso_verify('iso_tr_idx') AS verified;
+agree|agree_appended|verified
+-----+--------------+--------
+t    |t             |t       
+(1 row)
+

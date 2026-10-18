@@ -168,6 +168,18 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
 
+`VACUUM` also gives the free blocks at the end of the index file back to the operating system, as it does for a heap (`sift.index_info(index)`:
+`relation_blocks` falls to `high_water`). It tries when they are 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` on the
+index only if that is free right now, and lets go of it as soon as the file is cut; if any query, insert or maintenance step holds the index it
+does nothing, and the next `VACUUM` tries again (it says so at `DEBUG2`; `VACUUM VERBOSE` shows the new size of the index). A hot standby
+cancels the queries that hold the index when it replays that lock (or delays replay up to `max_standby_streaming_delay`), as for a heap
+(`hot_standby_feedback` does not prevent it; `vacuum_truncate = false` does). A
+`VACUUM` that runs with parallel workers (it vacuums several large indexes at once) cannot take the lock, which needs a transaction id, and
+leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate. Only space that is free and past the point where an old
+snapshot could still read it goes, so the end of the file is what the merges released, once the snapshots older than them are gone.
+Freed space in the middle of the file is not moved, it is reused by the next merge or promotion. `ALTER INDEX ... SET (vacuum_truncate = false)`
+turns the truncation off for an index (no `REINDEX`), like `vacuum_truncate` of a heap table.
+
 ## Replication
 
 **Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,
