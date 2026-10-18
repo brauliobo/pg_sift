@@ -3580,6 +3580,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
+#define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNIT_COST		200.0
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
@@ -3875,7 +3876,7 @@ leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
 
 /* The average width of the heap column a plain text leaf is read from (0: unknown, or the leaf is a jsonb path or an expression) */
 static int
-leaf_width(AggCtx *c, int leaf)
+leaf_heap_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -3896,10 +3897,34 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	{
 		const SiftSrcLeaf *lf = &c->lay->leaf[s->leaves[i]];
 
-		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
+		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_heap_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
 			cost += leaf_read_whole(c, s, s->leaves[i]) ? AGG_INLINE_ROW : AGG_INLINE_TEST;
 	}
 	return cost;
+}
+
+/* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
+static double
+leaf_width(const SiftSrcLeaf *lf)
+{
+	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64 ? 8.0 : 4.0;
+}
+
+/*
+ * The stored bytes the scan reads: the leaves it reads take their share (by value width) of the compressed bytes of the source; a
+ * source that does not know them (a table, a sample) is taken to compress its values by half.
+ */
+static double
+scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
+{
+	double		all = 0,
+				used = 0;
+
+	for (int i = 0; i < c->lay->nleaves; i++)
+		all += leaf_width(&c->lay->leaf[i]);
+	for (int i = 0; i < s->nleaves; i++)
+		used += leaf_width(leaf_of(c, s->leaves[i]));
+	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
 }
 
 static void
@@ -3946,6 +3971,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
+	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
