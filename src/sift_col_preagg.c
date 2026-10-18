@@ -2,9 +2,9 @@
  * sift_col_preagg.c - pre-aggregates of a unit: exact integer sums, the mini cube (GROUP BY dim -> count, per measure non-NULL count and sum),
  * its byte format, its option and its verification. Design and the rules of use: docs/COL-PREAGG.md. Portable (sift_host.h only).
  *
- * Cube blob of a unit (all integers LEB128 varints unless said):
- *   u8 ndims, then per dim:
- *     leaf, u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group), nmeas x measure leaf,
+ * Cube blob of a unit (all integers LEB128 varints unless said): u8 ndims, a directory of ndims x (leaf, bytes of its body) so that one dim is
+ * found without reading the others, then the bodies:
+ *     u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group), nmeas x measure leaf,
  *     keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
  *     counts[ngroups],
  *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits)
@@ -322,7 +322,27 @@ static SiftCI128
 get_zz128(Rd *r)
 {
 	unsigned __int128 u = 0;
+	uint64		w = 0;
+	const uint8 *p = r->p;
 
+	/* nearly every sum fits 63 bits: no 128-bit shifts for those */
+	for (int sh = 0; sh < 63; sh += 7)
+	{
+		uint8		b;
+
+		if (p >= r->end)
+		{
+			r->bad = true;
+			return 0;
+		}
+		b = *p++;
+		w |= (uint64) (b & 0x7F) << sh;
+		if (!(b & 0x80))
+		{
+			r->p = p;
+			return (SiftCI128) ((int64) (w >> 1) ^ -(int64) (w & 1));
+		}
+	}
 	for (int sh = 0; sh < 133; sh += 7)
 	{
 		uint8		b;
@@ -481,7 +501,6 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	for (int i = 0; i < sd->nmeas; i++)
 		if (sd->meas[i] != sd->leaf && col_usable(&cols[sd->meas[i]], nrows))
 			mm[nm++] = sd->meas[i];
-	put_u(out, sd->leaf);
 	appendStringInfoChar(out, (char) nm);
 	put_u(out, ng);
 	appendStringInfoChar(out, nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP);
@@ -605,6 +624,12 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 		appendStringInfoChar(out, (char) kept);
 		for (int d = 0; d < nd; d++)
 			if (keep[d])
+			{
+				put_u(out, spec->dim[db[d].spec].leaf);
+				put_u(out, db[d].blob.len);
+			}
+		for (int d = 0; d < nd; d++)
+			if (keep[d])
 				appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
 	}
 	for (int d = 0; d < nd; d++)
@@ -622,87 +647,145 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 
 /* ---------- reading ---------- */
 
+/* One dim's body (cube blob format above, after the directory): false when it is not consistent with the schema */
+static bool
+decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
+{
+	uint32		ng,
+				nk;
+
+	memset(hd, 0, sizeof(*hd));
+	hd->leaf = leaf;
+	if (r->p + 2 > r->end)
+		return false;
+	hd->nmeas = *r->p++;
+	ng = (uint32) get_u(r);
+	if (r->p >= r->end || hd->nmeas > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
+		return false;
+	hd->ngroups = ng;
+	hd->has_null = (*r->p++ & PAGG_NULLGROUP) != 0;
+	for (int m = 0; m < hd->nmeas; m++)
+	{
+		uint64		ml = get_u(r);
+
+		if (ml >= (uint64) s->ncols)
+			return false;
+		hd->meas[m] = (int16) ml;
+	}
+	hd->key = palloc0(ng * sizeof(int64));
+	hd->count = palloc(ng * sizeof(uint32));
+	nk = ng - (hd->has_null ? 1 : 0);
+	for (uint32 i = 0; i < nk; i++)
+		hd->key[i] = i == 0 ? get_zz(r) : (int64) ((uint64) hd->key[i - 1] + get_u(r));
+	for (uint32 i = 0; i < ng; i++)
+		hd->count[i] = (uint32) get_u(r);
+	for (int m = 0; m < hd->nmeas; m++)
+	{
+		const SiftColDef *md = &s->cols[hd->meas[m]];
+
+		hd->nn[m] = palloc(ng * sizeof(uint32));
+		for (uint32 i = 0; i < ng; i++)
+			hd->nn[m][i] = (uint32) get_u(r);
+		if (md->store == SIFT_COLS_F4 || md->store == SIFT_COLS_F8)
+		{
+			if ((Size) (r->end - r->p) < (Size) ng * sizeof(double))
+				return false;
+			hd->sumf[m] = palloc(ng * sizeof(double));
+			memcpy(hd->sumf[m], r->p, ng * sizeof(double));
+			r->p += ng * sizeof(double);
+		}
+		else
+		{
+			hd->sum[m] = palloc(ng * sizeof(SiftCI128));
+			for (uint32 i = 0; i < ng; i++)
+				hd->sum[m][i] = get_zz128(r);
+		}
+	}
+	return !r->bad;
+}
+
+/* The directory of a blob: leaf and body bytes of each dim; body points at the first dim's body. false when inconsistent */
+static bool
+read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int *nd, int *leaf, uint32 *blen, const uint8 **body)
+{
+	Rd			r = {blob, blob + len, false};
+	uint64		total = 0;
+
+	if (len == 0)
+		return false;
+	*nd = *r.p++;
+	if (*nd == 0 || *nd > SIFT_PAGG_MAX_DIMS)
+		return false;
+	for (int d = 0; d < *nd; d++)
+	{
+		uint64		l = get_u(&r),
+					n = get_u(&r);
+
+		if (r.bad || l >= (uint64) s->ncols || n == 0 || n > len)
+			return false;
+		leaf[d] = (int) l;
+		blen[d] = (uint32) n;
+		total += n;
+	}
+	*body = r.p;
+	return (uint64) (r.end - r.p) == total;
+}
+
 bool
 sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCHist *h)
 {
-	Rd			r = {blob, blob + len, false};
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
-	int			nd;
+	int			nd,
+				leaf[SIFT_PAGG_MAX_DIMS];
+	uint32		blen[SIFT_PAGG_MAX_DIMS];
+	const uint8 *p;
 	bool		ok = false;
 
 	memset(h, 0, sizeof(*h));
-	if (len == 0)
-		goto done;
-	nd = *r.p++;
-	if (nd > SIFT_PAGG_MAX_DIMS)
+	if (!read_dir(s, blob, len, &nd, leaf, blen, &p))
 		goto done;
 	for (int d = 0; d < nd; d++)
 	{
-		SiftCHistDim *hd = &h->dim[d];
-		uint64		leaf = get_u(&r);
-		uint32		ng,
-					nk;
+		Rd			r = {p, p + blen[d], false};
 
-		if (r.p >= r.end || leaf >= (uint64) s->ncols)
+		if (!decode_dim(s, &r, leaf[d], &h->dim[d]) || r.p != r.end)
 			goto done;
-		hd->leaf = (int) leaf;
-		hd->nmeas = *r.p++;
-		ng = (uint32) get_u(&r);
-		if (r.p >= r.end || hd->nmeas > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
-			goto done;
-		hd->ngroups = ng;
-		hd->has_null = (*r.p++ & PAGG_NULLGROUP) != 0;
-		for (int m = 0; m < hd->nmeas; m++)
-		{
-			uint64		ml = get_u(&r);
-
-			if (ml >= (uint64) s->ncols)
-				goto done;
-			hd->meas[m] = (int16) ml;
-		}
-		hd->key = palloc0(ng * sizeof(int64));
-		hd->count = palloc(ng * sizeof(uint32));
-		nk = ng - (hd->has_null ? 1 : 0);
-		for (uint32 i = 0; i < nk; i++)
-		{
-			if (i == 0)
-				hd->key[i] = get_zz(&r);
-			else
-				hd->key[i] = (int64) ((uint64) hd->key[i - 1] + get_u(&r));
-		}
-		for (uint32 i = 0; i < ng; i++)
-			hd->count[i] = (uint32) get_u(&r);
-		for (int m = 0; m < hd->nmeas; m++)
-		{
-			const SiftColDef *md = &s->cols[hd->meas[m]];
-			bool		fl = md->store == SIFT_COLS_F4 || md->store == SIFT_COLS_F8;
-
-			hd->nn[m] = palloc(ng * sizeof(uint32));
-			for (uint32 i = 0; i < ng; i++)
-				hd->nn[m][i] = (uint32) get_u(&r);
-			if (fl)
-			{
-				hd->sumf[m] = palloc(ng * sizeof(double));
-				if ((Size) (r.end - r.p) < (Size) ng * sizeof(double))
-					goto done;
-				memcpy(hd->sumf[m], r.p, ng * sizeof(double));
-				r.p += ng * sizeof(double);
-			}
-			else
-			{
-				hd->sum[m] = palloc(ng * sizeof(SiftCI128));
-				for (uint32 i = 0; i < ng; i++)
-					hd->sum[m][i] = get_zz128(&r);
-			}
-		}
-		if (r.bad)
-			goto done;
+		p += blen[d];
 	}
 	h->ndims = nd;
-	ok = !r.bad && r.p == r.end;
+	ok = true;
 done:
 	MemoryContextSwitchTo(old);
 	return ok;
+}
+
+int
+sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	int			nd,
+				lf[SIFT_PAGG_MAX_DIMS],
+				res = -1;
+	uint32		blen[SIFT_PAGG_MAX_DIMS];
+	const uint8 *p;
+
+	if (!read_dir(s, blob, len, &nd, lf, blen, &p))
+		goto done;
+	res = 0;
+	for (int d = 0; d < nd; d++)
+	{
+		if (lf[d] == leaf)
+		{
+			Rd			r = {p, p + blen[d], false};
+
+			res = decode_dim(s, &r, leaf, out) && r.p == r.end ? 1 : -1;
+			break;
+		}
+		p += blen[d];
+	}
+done:
+	MemoryContextSwitchTo(old);
+	return res;
 }
 
 const SiftCHistDim *

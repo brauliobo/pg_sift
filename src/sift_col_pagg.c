@@ -53,8 +53,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	uint32		u,
 				len;
 	const uint8 *blob;
-	SiftCHist	h;
-	const SiftCHistDim *d;
+	int			found;
 
 	if (!sift_col_unit_preagg_ok(unit))
 		return false;
@@ -62,15 +61,14 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	blob = sift_cseg_cube(seg, u, &len);
 	if (blob == NULL)
 		return false;
-	if (!sift_cpagg_decode(seg->schema, blob, len, mcxt, &h))
+	found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out);
+	if (found < 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
 						(unsigned long long) seg->entry.gen, u)));
-	d = sift_cpagg_find(&h, dim);
-	if (d == NULL)
+	if (found == 0)
 		return false;
-	*out = *d;
 	if (dict && seg->schema->cols[dim].store == SIFT_COLS_STR)
 		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
 	return true;

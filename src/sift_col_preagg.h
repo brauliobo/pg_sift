@@ -127,6 +127,8 @@ typedef struct SiftCHist
 
 /* false when the bytes are not a cube of this schema; the arrays are palloc'd in mcxt */
 extern bool sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCHist *h);
+/* Decodes only the dim of this leaf: 1 found (out set), 0 the unit has none (the cap, the byte budget, an overflow), -1 the bytes are not a cube of this schema */
+extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out);
 /* The dim with this leaf, NULL if the unit has none (the cap, the budget, an overflow) */
 extern const SiftCHistDim *sift_cpagg_find(const SiftCHist *h, int leaf);
 /* The measure slot of leaf m in the dim, -1 if it is not stored */

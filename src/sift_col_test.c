@@ -21,11 +21,13 @@
 #include "utils/tuplestore.h"
 
 #include "sift_col_am.h"
+#include "sift_col_pagg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
+PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
 
 #define TEST_NOMUTABLE	1
 #define TEST_NOVET		2
@@ -404,6 +406,86 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	v[7] = Int64GetDatum(c->heap_pages);
 	v[8] = CStringGetTextDatum(sift_simd_level_name(c->simd));
 	scan_close(&ts);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * What a consumer of the unit histograms does (docs/COL-PREAGG.md section 4): for every unit that may answer, fold its groups of dimension
+ * dim into one table keyed by value (a text group by its bytes, so units of different dictionaries meet), counts and the sum of measure meas
+ * (-1: none); the others are counted as scanned. Returns the units, those that answered, the groups of the result, the rows they cover and
+ * the sum of the measure over them (numeric): the benchmark of the metadata path without any SQL tuple per group.
+ */
+Datum
+sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
+{
+	int			dim = PG_GETARG_INT32(1),
+				meas = PG_GETARG_INT32(2);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	MemoryContext unitcx = AllocSetContextCreate(CurrentMemoryContext, "pagg fold", ALLOCSET_DEFAULT_SIZES);
+	struct
+	{
+		uint64		id;
+		int64		count;
+		SiftCI128	sum;
+	}		   *grp = palloc(SIFT_PAGG_CUBE_GROUPS * sizeof(*grp));
+	int			ng = 0;
+	int64		units = 0,
+				answered = 0,
+				rows = 0;
+	SiftCI128	total = 0;
+	Datum		v[5];
+	bool		nulls[5] = {false};
+	char		buf[64];
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOMUTABLE);
+	while (test_next(&ts, &unit))
+	{
+		SiftCHistDim d;
+		SiftColDict dict;
+		int			slot;
+
+		units++;
+		MemoryContextReset(unitcx);
+		if (!sift_col_unit_hist(&unit, dim, unitcx, &d, &dict))
+			continue;
+		answered++;
+		slot = meas >= 0 ? sift_cpagg_meas_slot(&d, meas) : -1;
+		for (uint32 g = 0; g < d.ngroups; g++)
+		{
+			uint64		id = (d.has_null && g == d.ngroups - 1) ? PG_UINT64_MAX :
+				sift_col_rel(ts.index)->schema->cols[dim].store == SIFT_COLS_STR ?
+				hash_bytes_extended((const unsigned char *) SIFT_COL_DICT_STR(&dict, (uint32) d.key[g]), SIFT_COL_DICT_LEN(&dict, (uint32) d.key[g]), 0) :
+				(uint64) d.key[g];
+			int			k = 0;
+
+			while (k < ng && grp[k].id != id)
+				k++;
+			if (k == ng)
+			{
+				grp[ng].id = id;
+				grp[ng].count = 0;
+				grp[ng++].sum = 0;
+			}
+			grp[k].count += d.count[g];
+			rows += d.count[g];
+			if (slot >= 0 && d.sum[slot])
+			{
+				grp[k].sum += d.sum[slot][g];
+				total += d.sum[slot][g];
+			}
+		}
+	}
+	scan_close(&ts);
+	snprintf(buf, sizeof(buf), "%lld", (long long) total);
+	v[0] = Int64GetDatum(units);
+	v[1] = Int64GetDatum(answered);
+	v[2] = Int32GetDatum(ng);
+	v[3] = Int64GetDatum(rows);
+	v[4] = DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 

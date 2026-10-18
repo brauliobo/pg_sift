@@ -163,6 +163,9 @@ CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', f
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,
 										OUT heap_pages int8, OUT simd text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_counters' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
+										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
 
 -- Shredder (src/sift_shred_test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
