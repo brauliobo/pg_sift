@@ -195,9 +195,8 @@ sift_col_shred_create(MemoryContext mcxt, Relation index)
 			add_column(a, &a->attr[attr_of(a, spec->cols[c].name)], c, -1, LEAF_ROOT_COL, 0);
 	for (int g = 1; g < spec->ngroups; g++)
 		add_group(a, &a->attr[attr_of(a, spec->groups[g].name)], g);
-	a->sh = sift_shred_create(spec, NULL);
 	/* lives as long as the relcache entry, like the other backend caches (scripts/leakcheck.sh exempts "sift cache" contexts) */
-	a->sh->mcxt->name = "sift cache shred";
+	a->sh = sift_shred_create(spec, NULL, true);
 	MemoryContextSwitchTo(old);
 	return a;
 }
