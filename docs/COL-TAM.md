@@ -142,7 +142,7 @@ progress: `TM_BeingModified` (`wait = false`) or release the tuple lock, `XactLo
 see the same results and the executor raises the serialization failure, as for heap. `tuple_lock` with `TUPLE_LOCK_FLAG_FIND_LAST_VERSION`
 follows `succ` while the entry is a committed UPDATE, fetching the latest version into the slot (so READ COMMITTED's EvalPlanQual, the
 logical-replication apply worker and `ON CONFLICT DO UPDATE` work). `ctid` and `tableoid` work (`slot->tts_tid`); `xmin`, `xmax`, `cmin`,
-`cmax` are not system columns of this AM and raise `ERRCODE_FEATURE_NOT_SUPPORTED`.
+`cmax` read zero (the transaction ids of a row are not kept as a heap keeps them; the logical-replication apply worker reads `xmin` for its conflict report).
 
 **Speculative insertion** (`INSERT ... ON CONFLICT`): the record carries the token; `tuple_complete_speculative(succeeded = false)` sets
 its `DEAD` flag, so a killed insertion is never visible to anyone and other inserters waiting on the token proceed.
@@ -268,7 +268,7 @@ docs "Generic WAL Records" and "Custom WAL Resource Managers"):
 | UNLOGGED, TEMP | works | the init fork holds the empty layout; temp tables use local buffers. |
 | logical decoding of the table by a *plugin* (test_decoding, wal2json) | works with the record, same preload requirement | a plugin sees ordinary changes. |
 
-**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); system columns `xmin/xmax/cmin/cmax` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
+**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
 
 **Blocker check (honest).** No decisive blocker for logical replication: it works through the hybrid record, with the stated cost
 (preload everywhere the logical record is replayed, double WAL for published tables). The cheapest way out for a deployment that
@@ -393,7 +393,7 @@ and the free list.
 
 BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or seal fails with the same error until a column is dropped); 128 directory entries; rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
-`xmin/xmax/cmin/cmax`, multixact-based shared row locks (they degrade to exclusive), HOT, speculative
+`xmin/xmax/cmin/cmax` (they read zero), multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
 
 ## 10. Tests
