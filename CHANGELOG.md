@@ -86,6 +86,11 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   segments of 50,000 documents): deliberate maintenance work, which leaves 2 segments instead of 46 and makes the queries after it faster
   (`count(*)` 1.20 ms to 0.68 ms, ranked 2.16 ms to 1.95 ms). Queries that run while `VACUUM` merges are 6 to 7% slower, from the
   extra merging itself: the same queries with the same segments and no merge running, and the same maintenance on the old build, measure the same.
+- Fix: with the default `vacuum_segments = 2`, adding a small segment to a large index made every `VACUUM` rewrite the whole index (a 0.1 MB
+  segment next to 11 MB: 0.8 to 0.97 s and 11 MB of WAL at each, against 5 ms with `vacuum_segments = 3`), because the two smallest segments
+  were merged whatever their sizes. A segment more than 8 times the size of the ones before it now stays, so an index may keep more than
+  the target when sizes differ that much (`sift.merge(index, true)` merges them). The rewrite of a mostly dead segment was also never reached at
+  a large `vacuum_segments`: the merges the target discarded hid it; it is now chosen alone.
 - New: reloption `vacuum_segments` (default 2, 1 to 128): the number of segments `VACUUM` leaves an index with. A higher value is shorter
   `VACUUM` and more segments to query (60 segments of 50,000 documents: 0.19, 0.15, 0.12 and 0.10 s at 2, 4, 8 and 16, `count(*)` 0.08, 0.14,
   0.22 and 0.35 ms). `ALTER INDEX ... SET` applies it with no `REINDEX`; the worker's and the inserters' merges are unchanged.

@@ -587,9 +587,12 @@ is_busy(const MergeSel *sel, uint64 gen)
 	return false;
 }
 
-/* The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit */
+/*
+ * The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit.
+ * dead_only: just a segment mostly dead, as an index with no entries over vacuum_segments has no merge for the count to make.
+ */
 static int
-pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *msel)
+pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_only, MergeSel *msel)
 {
 	SiftMergePolicy pol = {(uint64) sift_index_options(index)->mutable_limit * 1024, SIFT_MERGE_FANIN};
 	SiftDirSnapshot *view = NULL;
@@ -604,7 +607,10 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, MergeSel *m
 			if (is_busy(msel, view->segs[i].gen))
 				view->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
 	}
-	n = sift_merge_pick(index, &pol, view ? view : snap, force, msel->seg);
+	if (dead_only)
+		n = sift_merge_pick_dead(index, view ? view : snap, msel->seg);
+	else
+		n = sift_merge_pick(index, &pol, view ? view : snap, force, msel->seg);
 	if (view)
 		pfree(view);
 	return n;
@@ -617,8 +623,9 @@ bytes_cmp(const void *a, const void *b)
 }
 
 /*
- * The smallest segments, up to want of them, that are worth merging for the count: each is at most SIFT_MERGE_FANIN times the
- * size of the ones before it, so a segment past the tier of the others stays (its rewrite would cost more than the count gains).
+ * The smallest segments, up to want of them, that are worth merging for the count: each after the first is at most
+ * SIFT_MERGE_FANIN times the size of the ones before it, so a segment past the tier of the others stays (its rewrite would
+ * cost more than the count gains: a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every VACUUM).
  */
 static int
 pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
@@ -632,7 +639,7 @@ pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !is_busy(sel, snap->segs[i].gen))
 			imm[n++] = snap->segs[i];
 	qsort(imm, n, sizeof(SiftSegEntry), bytes_cmp);
-	for (; k < Min(n, want) && (k < 2 || imm[k].bytes <= SIFT_MERGE_FANIN * sum); k++)
+	for (; k < Min(n, want) && (k < 1 || imm[k].bytes <= SIFT_MERGE_FANIN * sum); k++)
 	{
 		sel->seg[k] = imm[k];
 		sum += imm[k].bytes;
@@ -644,16 +651,14 @@ pick_smallest(const SiftDirSnapshot *snap, int want, MergeSel *sel)
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, MergeGoal goal, MergeSel *sel)
 {
-	int			n = pick_policy(index, snap, force, sel);
 	int			excess = snap->nsegs - sift_index_options(index)->vacuum_segments;
 	uint64		total = 0;
+	bool		counted = goal != MERGE_ANY && !force;
+	int			n = pick_policy(index, snap, force, counted && excess <= 0, sel);
 	int			k = 0;
 
-	if (goal != MERGE_ANY && !force)
+	if (counted)
 	{
-		/* entries over vacuum_segments: a merge for the count is not needed below it (a lone segment's rewrite is not for the count) */
-		if (n > 1 && excess <= 0)
-			n = 0;
 		/* VACUUM merges down to the target and no further, and takes the smallest segments the policy left over */
 		if (goal == MERGE_VACUUM && n > 1)
 			n = Min(n, excess + 1);
