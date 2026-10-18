@@ -100,7 +100,7 @@ docs() {
   cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
   report
 }
-report() { py render --benchmarks "$REPO/docs/BENCHMARKS.md"; }
+report() { py render --readme "$REPO/README.md" --benchmarks "$REPO/docs/BENCHMARKS.md"; }
 
 all() {
   local s
