@@ -57,7 +57,7 @@ typedef enum SiftColStore
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
 
-#define SIFT_COLD_LOSSY		0x0001	/* shredded path whose values may not fit the declared type: predicates on it must not be pushed down */
+#define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
  * Logical type of a leaf, part of the stored schema and of its hash. It is a tag of the format, not of any host: a host maps its own types
