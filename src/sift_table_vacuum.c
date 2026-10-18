@@ -31,6 +31,7 @@
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "utils/tuplesort.h"
 
 #include "sift_col_seg.h"
@@ -361,17 +362,16 @@ vacuum_report(Relation rel, const VacState *v, const struct VacuumCutoffs *cutof
 
 #if PG_VERSION_NUM >= 180000
 	vac_update_relstats(rel, nblocks, v->live, 0, 0, hasindex, v->newest_kept, cutoffs->OldestMxact, &fz, &mz, false);
-	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v->live, (PgStat_Counter) v->dead, start);
 #else
 	vac_update_relstats(rel, nblocks, v->live, 0, hasindex, v->newest_kept, cutoffs->OldestMxact, &fz, &mz, false);
-	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v->live, (PgStat_Counter) v->dead);
 #endif
+	sift_pgstat_report_vacuum(rel, (PgStat_Counter) v->live, (PgStat_Counter) v->dead, start);
 	ereport(elevel, (errmsg("table \"%s\": rows: %llu removed, %.0f remain, %.0f are dead but not yet removable",
 							RelationGetRelationName(rel), (unsigned long long) v->dead_tids.n, v->live, v->dead)));
 }
 
 void
-sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy)
+sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy)
 {
 	VacState	v = {0};
 	struct VacuumCutoffs cutoffs;
@@ -433,11 +433,7 @@ copy_keep(const SiftTblRowVer *rv, void *arg)
 static void
 copy_index_order(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *c)
 {
-#if PG_VERSION_NUM >= 180000
-	IndexScanDesc iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, NULL, 0, 0);
-#else
-	IndexScanDesc iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, 0, 0);
-#endif
+	IndexScanDesc iscan = sift_index_beginscan(OldTable, OldIndex, SnapshotAny, 0);
 	ItemPointer tid;
 	SiftTblRowVer rv;
 
@@ -458,7 +454,7 @@ copy_index_order(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopySt
 static void
 copy_scan(Relation OldTable, SiftTblBulk *bulk, Tuplesortstate *sort, CopyState *c)
 {
-	TableScanDesc scan = table_beginscan(OldTable, SnapshotAny, 0, NULL);
+	TableScanDesc scan = sift_table_beginscan(OldTable, SnapshotAny, 0, NULL);
 	SiftTblRowVer rv;
 
 	while (sift_tbl_scan_next_stored(scan, &rv))
@@ -501,7 +497,7 @@ copy_sorted(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *
  */
 void
 sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
-								   TransactionId OldestXmin, TransactionId *xid_cutoff, MultiXactId *multi_cutoff,
+								   TransactionId OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff,
 								   double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
 {
 	SiftTblRel *new_st = sift_tbl_rel(NewTable);
@@ -549,7 +545,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 		itemptr_decode(tid_push(&have), DatumGetInt64(ts_val));
 		state->itups += 1;
 	}
-	scan = table_beginscan(table_rel, snapshot, 0, NULL);
+	scan = sift_table_beginscan(table_rel, snapshot, 0, NULL);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		ItemPointerData tid = slot->tts_tid;

@@ -1635,7 +1635,7 @@ map_load(AggExec *ex, const SiftAggJoin *j)
 {
 	MapTab	   *m;
 	Relation	rel = table_open(j->relid, AccessShareLock);
-	TableScanDesc scan = table_beginscan(rel, ex->css.ss.ps.state->es_snapshot, 0, NULL);
+	TableScanDesc scan = sift_table_beginscan(rel, ex->css.ss.ps.state->es_snapshot, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
@@ -3036,6 +3036,7 @@ osa_spill(AggExec *ex, Osa *o)
 
 	TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
 	TupleDescInitEntry(desc, 2, "key", INT8OID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	o->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	o->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 	o->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_NONE);
@@ -5124,6 +5125,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	char	   *params = shm_toc_lookup(toc, KEY_PARAMS, false);
 	shm_mq	   *mq = (shm_mq *) ((char *) shm_toc_lookup(toc, KEY_MQ, false) + (Size) ParallelWorkerNumber * MQ_SIZE);
 	AggExec    *ex = palloc0(sizeof(AggExec));
+	Snapshot	snap = RegisterSnapshot(RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)));
 	WorkerDone	done = {DONE_MAGIC};
 
 	shm_mq_set_sender(mq, MyProc);
@@ -5131,7 +5133,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
-	engine_open(ex, RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)), RestoreParamList(&params));
+	engine_open(ex, snap, RestoreParamList(&params));
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	scan_buffers(ex);
@@ -5152,6 +5154,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	send_blob(ex->mqh, &done, sizeof(done));
 	shm_mq_detach(ex->mqh);
 	engine_close(ex);
+	UnregisterSnapshot(snap);
 }
 
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
