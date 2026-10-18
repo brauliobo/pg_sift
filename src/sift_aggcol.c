@@ -479,6 +479,7 @@ col_preagg(Relation index, SiftSrcPreagg *pa)
 {
 	SiftCPaggSpec spec;
 
+	pa->aggs = true;
 	sift_col_pagg_spec(index, &spec);
 	if (spec.off)
 		return;
