@@ -35,11 +35,7 @@
 #define FL_USED(n)	(offsetof(SiftFreeListData, ext) + (n) * sizeof(SiftFreeExtent))
 #define ULL(x)		((unsigned long long) (x))
 
-#define corrupt(index, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt SIFT_CORRUPT
 
 struct SiftWriteTarget
 {
@@ -811,7 +807,7 @@ sift_wt_begin(Relation index, SiftWriteMode mode)
 }
 
 void
-sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash)
+sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyzer_hash, uint32 flags)
 {
 	SiftMetaPageData *meta = &wt->meta;
 
@@ -821,12 +817,19 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;
 	meta->format_minor = SIFT_FORMAT_MINOR;
-	meta->k1 = (float4) opts->k1;
-	meta->b = (float4) opts->b;
+	meta->k1 = k1;
+	meta->b = b;
 	meta->analyzer_hash = analyzer_hash;
+	meta->flags = flags;
 	meta->next_gen = 1;
 	meta->freelist_head = InvalidBlockNumber;
 	wt->have_meta = true;
+}
+
+void
+sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash)
+{
+	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
 }
 
 /* Takes want blocks (at least min): spare runs first, then fresh ones */

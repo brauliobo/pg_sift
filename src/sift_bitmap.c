@@ -1,6 +1,7 @@
 /* sift_bitmap: posting formats, cursors and operator trees.  See sift_bitmap.h. */
 #include <stdlib.h>
 #include "sift_bitmap_kern.h"
+#include "sift_varint.h"
 
 const sift_kernels *sift_k = &sift_kern_scalar;
 static int cur_isa;
@@ -59,7 +60,6 @@ uint32_t sift_grp_ranks(const sift_grp *src, const sift_grp *sub, uint32_t *rank
 
 /* ---- encoding ---- */
 
-static const uint8_t *get_varint(const uint8_t *p, uint64_t *x);
 static inline uint32_t ld32(const uint8_t *p) { uint32_t x; memcpy(&x, p, 4); return x; }
 static inline void st32(uint8_t *p, uint32_t x) { memcpy(p, &x, 4); }
 static inline uint64_t ld64(const uint8_t *p) { uint64_t x; memcpy(&x, p, 8); return x; }
@@ -83,7 +83,7 @@ uint32_t sift_blob_n(const uint8_t *blob)
 {
 	uint64_t n;
 	if (sift_blob_kind(blob) == SIFT_GROUPED) return ld32(blob + 4);
-	get_varint(blob + 2, &n);
+	sift_get_varint(blob + 2, &n);
 	return (uint32_t)n;
 }
 
@@ -117,22 +117,6 @@ static inline size_t ef_lows(uint32_t cnt, uint32_t l) { return ((size_t)cnt * l
 static inline size_t ef_highs(uint64_t u, uint32_t cnt, uint32_t l) { return (cnt + ((u - 1) >> l) + 7) / 8; }
 static inline uint32_t vlen(uint64_t x) { uint32_t n = 1; while (x >>= 7) n++; return n; }
 
-static uint8_t *put_varint(uint8_t *p, uint64_t x)
-{
-	for (; x >= 0x80; x >>= 7) *p++ = (uint8_t)(x | 0x80);
-	*p++ = (uint8_t)x;
-	return p;
-}
-
-static const uint8_t *get_varint(const uint8_t *p, uint64_t *x)
-{
-	*x = 0;
-	for (int s = 0;; s += 7) {
-		*x |= (uint64_t)(*p & 0x7f) << s;
-		if (!(*p++ & 0x80)) return p;
-	}
-}
-
 static uint32_t list_ob(const sift_tid *t, uint32_t n)
 {
 	uint32_t m = 1;
@@ -141,17 +125,6 @@ static uint32_t list_ob(const sift_tid *t, uint32_t n)
 }
 
 static inline uint32_t blk_cnt(uint32_t n, uint32_t i) { return n - i < SIFT_LIST_BLOCK ? n - i : SIFT_LIST_BLOCK; }
-
-/* varint at p, NULL when it runs past end or past 63 bits */
-static const uint8_t *get_varint_n(const uint8_t *p, const uint8_t *end, uint64_t *x)
-{
-	*x = 0;
-	for (int s = 0; p < end && s < 63; s += 7) {
-		*x |= (uint64_t)(*p & 0x7f) << s;
-		if (!(*p++ & 0x80)) return p;
-	}
-	return NULL;
-}
 
 static uint64_t popcount_n(const uint8_t *p, size_t n)
 {
@@ -183,11 +156,11 @@ static const char *check_list(const uint8_t *blob, size_t len)
 	int wtf = blob[0] >> 4 & SIFT_F_TF;
 	if (blob[1] > SIFT_LIST_OB_MAX) return "LIST offset bits out of range";
 	lim = 1ull << (32 + blob[1]);
-	if (!(p = get_varint_n(p, end, &n)) || n == 0 || n > UINT32_MAX || (wtf && p++ >= end)) return "LIST header overruns the blob";
+	if (!(p = sift_get_varint_n(p, end, &n)) || n == 0 || n > UINT32_MAX || (wtf && p++ >= end)) return "LIST header overruns the blob";
 	for (uint64_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 		uint64_t d, u1;
 		uint32_t cnt = blk_cnt((uint32_t)n, (uint32_t)i), l;
-		if (!(p = get_varint_n(p, end, &d)) || !(p = get_varint_n(p, end, &u1))) return "LIST block header overruns the blob";
+		if (!(p = sift_get_varint_n(p, end, &d)) || !(p = sift_get_varint_n(p, end, &u1))) return "LIST block header overruns the blob";
 		if (d >= lim || u1 >= lim || u1 + 1 < cnt || prev + d + u1 >= lim || (i && d == 0)) return "LIST block range is out of bounds";
 		l = ef_l(u1 + 1, cnt);
 		size_t lows = ef_lows(cnt, l), highs = ef_highs(u1 + 1, cnt, l);
@@ -276,7 +249,7 @@ static uint8_t *write_list(const sift_tid *t, uint32_t n, uint32_t ob, uint8_t *
 		uint32_t cnt = blk_cnt(n, i);
 		uint64_t x0 = key_of(t[i], ob), u = key_of(t[i + cnt - 1], ob) - x0 + 1, acc = 0;
 		uint32_t l = ef_l(u, cnt), nb = 0;
-		p = put_varint(put_varint(p, x0 - prev), u - 1);
+		p = sift_put_varint(sift_put_varint(p, x0 - prev), u - 1);
 		uint8_t *highs = p + ef_lows(cnt, l);
 		memset(highs, 0, ef_highs(u, cnt, l));
 		for (uint32_t k = 0; k < cnt; k++) {
@@ -352,7 +325,7 @@ size_t sift_encode(const sift_tid *t, const uint8_t *tf, const uint8_t *ub, uint
 	if (kind == SIFT_LIST) {
 		uint32_t ob = list_ob(t, n);
 		out[1] = (uint8_t)ob;
-		p = put_varint(out + 2, n);
+		p = sift_put_varint(out + 2, n);
 		if (wtf) {
 			uint32_t m = 0;
 			for (uint32_t i = 0; i < n; i++) m = (ub ? ub[i] : 255u) > m ? (ub ? ub[i] : 255u) : m;
@@ -494,7 +467,7 @@ static inline uint64_t ld_upto8(const uint8_t *p, const uint8_t *end)
 static void ef_hdr(const uint8_t *p, uint64_t prev, uint32_t cnt, ef_blk *b)
 {
 	uint64_t d, u1;
-	p = get_varint(get_varint(p, &d), &u1);
+	p = sift_get_varint(sift_get_varint(p, &d), &u1);
 	b->x0 = prev + d, b->u = u1 + 1, b->cnt = cnt, b->l = ef_l(b->u, cnt);
 	b->lows = p, b->highs = p + ef_lows(cnt, b->l), b->end = b->highs + ef_highs(b->u, cnt, b->l);
 }
@@ -528,7 +501,7 @@ static inline sift_tid ls_at(sift_cur *c, uint32_t *i, uint32_t target)
 		ef_hdr(c->ls.p, c->ls.prev, cnt, &b);
 		uint64_t last = b.x0 + b.u - 1, d;
 		c->ls.p = b.end, c->ls.prev = last;
-		if (*i <= start && start + cnt < c->ls.n && ((last + (get_varint(b.end, &d), d)) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
+		if (*i <= start && start + cnt < c->ls.n && ((last + (sift_get_varint(b.end, &d), d)) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
 			c->ls.bi = start + cnt, c->ls.bn = 0, *i = start + cnt;
 			continue;
 		}
@@ -632,7 +605,7 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, uint8_t *buf)
 	if (sift_blob_kind(blob) == SIFT_LIST) {
 		cur_init(c, ls_seek, buf);
 		uint64_t nn;
-		c->ls.t = NULL, c->ls.p = get_varint(blob + 2, &nn), c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
+		c->ls.t = NULL, c->ls.p = sift_get_varint(blob + 2, &nn), c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
 		if (wtf) c->ub1 = *c->ls.p++;
 		c->ls.ob = blob[1], c->ls.w = sift_w_for(1u << blob[1]), c->ls.prev = 0;
 		if (wtf) {
@@ -933,7 +906,7 @@ size_t sift_keylist_encode(const sift_tid *t, uint32_t n, uint8_t *out)
 uint32_t sift_keylist_decode(const uint8_t *blob, sift_tid *out)
 {
 	uint64_t n, prev = 0;
-	const uint8_t *p = get_varint(blob + 2, &n) + (blob[0] >> 4 & SIFT_F_TF);
+	const uint8_t *p = sift_get_varint(blob + 2, &n) + (blob[0] >> 4 & SIFT_F_TF);
 	for (uint32_t i = 0; i < n; i += SIFT_LIST_BLOCK) {
 		ef_blk b;
 		ef_hdr(p, prev, blk_cnt((uint32_t)n, i), &b);

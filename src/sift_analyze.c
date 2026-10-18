@@ -14,6 +14,7 @@
 
 #include "sift_analyze.h"
 #include "sift_analyze_tables.h"
+#include "sift_varint.h"
 
 /* Code point classes (sift_analyze_tables.h entries >> 13) */
 enum
@@ -954,15 +955,6 @@ group_positions(SiftAnalyzer *a, int ntok, int nbag)
 		a->plist[a->pstart[a->tokidx[t]]++] = t;
 }
 
-static inline uint8 *
-put_varint(uint8 *p, uint32 x)
-{
-	for (; x >= 0x80; x >>= 7)
-		*p++ = (uint8) (x | 0x80);
-	*p++ = (uint8) x;
-	return p;
-}
-
 /* Appends the record of bag term b (occurrences in plist) to pbuf at *used; returns its length */
 static uint32
 put_positions(SiftAnalyzer *a, int b, size_t *used)
@@ -973,11 +965,11 @@ put_positions(SiftAnalyzer *a, int b, size_t *used)
 
 	ENSURE(a, pbuf, pbufcap, *used + 5 * (size_t) n + 10);
 	p = a->pbuf + *used;
-	p = put_varint(p, v[0] << 1 | (n > 1));
+	p = sift_put_varint(p, v[0] << 1 | (n > 1));
 	if (n > 1)
-		p = put_varint(p, n - 2);
+		p = sift_put_varint(p, n - 2);
 	for (uint32 i = 1; i < n; i++)
-		p = put_varint(p, v[i] - v[i - 1] - 1);
+		p = sift_put_varint(p, v[i] - v[i - 1] - 1);
 	n = p - (a->pbuf + *used);
 	*used += n;
 	return n;

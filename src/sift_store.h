@@ -56,6 +56,13 @@
 
 #include "sift_page.h"
 
+/* ERRCODE_INDEX_CORRUPTED: a page, record or directory of the index that the format does not allow (index: the Relation) */
+#define SIFT_CORRUPT(index, ...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_INDEX_CORRUPTED), \
+			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
+			 errdetail(__VA_ARGS__)))
+
 /* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
@@ -117,6 +124,8 @@ extern bool sift_store_removable(Relation index, FullTransactionId xid);
  */
 typedef struct SiftWriteTarget SiftWriteTarget;
 extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash);
+/* The same with the scoring constants and the metapage flags given (a column index: k1 = b = 0, schema hash, SIFT_COL_META_FLAG) */
+extern void sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyzer_hash, uint32 flags);
 
 /*
  * Allocation. Extents are runs of contiguous blocks; reused from the free
@@ -339,5 +348,10 @@ extern struct Bitmapset *sift_store_orphans(Relation index);
  * conflicts) and that the relation covers high_water. ERRCODE_INDEX_CORRUPTED.
  */
 extern void sift_store_verify(Relation index);
+
+#ifdef SIFT_TESTING
+/* The index of a test function's argument, opened with mode; ERRCODE_WRONG_OBJECT_TYPE for another relation */
+extern Relation sift_test_open_index(Oid relid, LOCKMODE mode);
+#endif
 
 #endif							/* SIFT_STORE_H */
