@@ -123,9 +123,10 @@ same "subscriber applies insert, update and delete (primary key)" primary subscr
 same "subscriber applies insert, update and delete (replica identity full)" primary subscriber docs2
 check "a sift index cannot be the replica identity" fails sql primary "ALTER TABLE docs REPLICA IDENTITY USING INDEX docs_body"
 check "sift.verify passes on the subscriber" quiet sql subscriber "SELECT sift.verify('docs_body', true)" "SELECT sift.verify('docs2_body', true)"
-# BM25 counts postings that are not yet vacuumed (DESIGN.md (a)): an index rebuilt on one side only scores differently
+# BM25 counts the documents VACUUM has not marked dead (DESIGN.md (a)): a table vacuumed or an index rebuilt on one side only scores differently
 sql subscriber "VACUUM docs" "REINDEX INDEX docs2_body" >/dev/null
-same "subscriber after its own VACUUM: same scores" primary subscriber docs
+sql primary "VACUUM docs" >/dev/null
+same "same scores once both sides vacuumed" primary subscriber docs
 same "subscriber after its own REINDEX: same matches" primary subscriber docs2 4d
 sql primary "REINDEX INDEX docs2_body" >/dev/null
 same "same scores again once both sides rebuilt the index" primary subscriber docs2
