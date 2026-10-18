@@ -198,12 +198,12 @@ PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece o
 | `index_validate_scan` | the second pass of `CREATE INDEX CONCURRENTLY`: merge-join of the sorted index TIDs (`tuplesort`, `ValidateIndexState`) with a scan of the table at the validation snapshot, inserting the missing visible rows. | done |
 | `relation_size` | physical size of the main fork (`RelationGetNumberOfBlocks * BLCKSZ`). | done |
 | `relation_needs_toast_table` / `relation_toast_am` / `relation_fetch_toast_slice` | false / unused / unused (no TOAST table is ever created, so these are never called). | done |
-| `relation_estimate_size` | pages = physical blocks, tuples = group rows - tombstoned + delta rows, from the meta counters (not `reltuples`, which ANALYZE of a sampled table only estimates), `allvisfrac` = 0 (no VM). Widths as the heap rule. | done |
+| `relation_estimate_size` | pages = the larger of the physical blocks and twice the pages the rows take in a heap (a scan builds every row: 1.7 times the instructions of a heap scan, whatever the size of the compressed file), tuples = group rows - tombstoned + delta rows, from the meta counters (not `reltuples`, which ANALYZE of a sampled table only estimates), `allvisfrac` = 0 (no VM). Widths as the heap rule. | done |
 | `scan_bitmap_next_block` (17) / `scan_bitmap_next_tuple` (17, 18) | the TID bitmap is walked here (18: iterator inside the scan): for a page `(vblock, offsets...)` rows are fetched in TID order, exact pages recheck-free, lossy pages test every row of the vblock; `exact_pages`/`lossy_pages` counted for EXPLAIN. Serves btree, BM25 `sift`, GIN, BRIN indexes unchanged. | done |
 | `scan_sample_next_block` / `_next_tuple` | `TABLESAMPLE SYSTEM` picks vblocks, `BERNOULLI` walks them; the visible rows of a vblock are read at once and the method's offsets pick among them. | done |
 
 Planner-side: no custom path is needed for a plain scan (the AM's costs through `relation_estimate_size` and the scan cost model
-are enough: a sequential scan of a columnar table reads bytes of the whole row, so the estimate uses the compressed size). SiftAgg
+are enough once the page estimate stands for the work of building the rows, not for the compressed size, which a VACUUM that gives the free space back makes a tenth of it). SiftAgg
 and SiftScan paths (col-plan) are offered by their own hooks and take the table through the engine source of section 6.
 
 ---
