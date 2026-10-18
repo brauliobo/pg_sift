@@ -84,7 +84,7 @@ leaf_vtype(const SiftColDef *def)
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID) ? SCV_I64 : SCV_I32;
+			return (def->typid == INT8OID || def->typid == TIMESTAMPOID || def->typid == TIMESTAMPTZOID || def->typid == NUMERICOID) ? SCV_I64 : SCV_I32;
 		case SIFT_COLS_F4:
 		case SIFT_COLS_F8:
 			return SCV_F64;
@@ -95,7 +95,7 @@ leaf_vtype(const SiftColDef *def)
 	}
 }
 
-/* The planner's view of the table: a scalar leaf per column, and no query may use the ones the executor does not read as values */
+/* The planner's view of the table: a scalar leaf per column; the exact datum images (SIFT_COLS_VAR) are not values the executor reads */
 static SiftSrcLayout *
 tbl_layout(Relation rel)
 {
@@ -118,10 +118,9 @@ tbl_layout(Relation rel)
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftColDef *def = &cur->cols[i];
-		SiftColStore store;
 
 		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),.typid = def->typid,
-		.lossy = def->typid == NUMERICOID || !sift_col_leaf_store(def->typid, &store)};
+		.scale = def->scale,.lossy = def->store == SIFT_COLS_VAR};
 	}
 	return lay;
 }
@@ -386,6 +385,9 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 			case TIMESTAMPOID:
 			case TIMESTAMPTZOID:
 				((int64 *) b->data)[i] = DatumGetInt64(d);
+				break;
+			case NUMERICOID:
+				((int64 *) b->data)[i] = sift_col_numeric_key(l->scale, d, SIFT_COL_ROUND_NEAREST);
 				break;
 			case FLOAT4OID:
 				((double *) b->data)[i] = DatumGetFloat4(d);
