@@ -34,7 +34,7 @@ piece it calls is a stub, section 12), **no** (unsupported, with the error given
 | Isolation | READ COMMITTED, REPEATABLE READ, SERIALIZABLE (relation-level SIREAD lock, conflict-in on every write, conflict-out on invisible concurrent versions: conservative, more false positives than heap). |
 | Parallel | parallel sequential scan over delta pages and (engine) SB morsels, one frozen directory copy shared by all workers. Parallel DML is not offered by PostgreSQL for any AM. |
 | Aggregates | the SiftAgg pushdown of col-plan runs over the table through the engine's `SiftColVisibility` hook: `sift_col_open_table` (section 12) opens a `SiftColSource` over the column groups with the table's visibility (a unit of a superblock without tombstones is entirely visible; others are filtered per row); delta rows are fed as in-memory batches (section 6). |
-| Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_delta_limit` (kB), `sift.table_inline_seal`, `sift.table_compression`, `sift.table_dead_rewrite_pct` (README, Configuration). Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
+| Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_delta_limit` (kB), `sift.table_inline_seal`, `sift.table_compression`, `sift.table_dead_rewrite_pct` (README, Configuration); the heap reloptions PostgreSQL parses for every table (`autovacuum_*`, `vacuum_truncate`) apply. Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
 | Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, seal, merge, stats); autovacuum triggers through the `pgstat` counters the AM maintains (inserts alone trigger it: `autovacuum_vacuum_insert_threshold`). Inline sealing when a delta segment fills (`sift.table_inline_seal`). There is no background worker for tables. |
 
 ---
@@ -339,11 +339,21 @@ input so that free space left by earlier merges is reused instead of extending t
 3. `index_bulk_delete` on every index with the dead set (rounds bounded by `maintenance_work_mem`), then `index_vacuum_cleanup`. TIDs are
    never reused, so an interrupted VACUUM cannot expose a recycled TID; only index bloat stays until the next one.
 4. Close the active delta (8 pages or more), seal, merge (the mostly dead segments included).
-5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in.
-6. `vac_update_relstats` (relpages, reltuples = live rows, `relfrozenxid`), `pgstat_report_vacuum` (live rows; dead rows = deleted by a
+5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in (skipped when
+   no entry would go).
+6. Space: `sift_recycle` clears the free-list records whose releasing transaction no snapshot can see any more, the orphan sweep
+   releases what a crash left, then the reusable free run at the end of the file is cut (`sift_store_truncate`, `sift_store.h` P7) as for
+   a heap: when it is 1000 blocks or a 16th of the file, `vacuum_truncate` is on (the heap reloption, or `VACUUM (TRUNCATE)`), and
+   `AccessExclusiveLock` on the table is free right now (`ConditionalLockRelation`, released as soon as the file is cut). Under that lock no
+   backend holds a scan, a directory copy or a target page; the store sends a relcache invalidation of the table before the lock goes, which
+   marks every backend's `SiftTblRel` invalid (its target page, delta page tables and fetch scan are rebuilt on next use), and a standby
+   replays the lock first, cancelling the queries that hold the table there. A lazy VACUUM is in no snapshot or horizon, so its own releases
+   carry the next xid (`xid_safexid`): what it frees becomes reusable, and can be cut, once another transaction has ended, by the next VACUUM.
+   Live segments in the middle of the file stop the cut, as live rows do for a heap; their space is reused by later writes.
+7. `vac_update_relstats` (relpages, reltuples = live rows, `relfrozenxid`), `pgstat_report_vacuum` (live rows; dead rows = deleted by a
    committed transaction but not removable yet), counted as a heap does: an in-progress insertion is not live yet, an in-progress deletion
    still is; group rows from the liveness bits less the recently deleted ones. `VACUUM VERBOSE` reports the rows removed, the rows that
-   remain and the dead rows not yet removable. The counters of insert/update/delete that the AM reports keep
+   remain and the dead rows not yet removable, and the truncation. The counters of insert/update/delete that the AM reports keep
    autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
 
 `VACUUM FULL` and `CLUSTER` are `relation_copy_for_cluster`: the kept versions are written straight into frozen column segments of the
@@ -352,9 +362,8 @@ new table with dense TIDs (`sift_tbl_bulk_*`: no row-format pages, no seal). VAC
 the scan's tuples. CLUSTER sorts the scan's tuples by a btree index whatever the planner's `use_sort` says (a TID fetch decodes the unit of
 its superblock, so an index scan in random order would decode a unit per row) and fetches by index scan only for an index that cannot
 order a sort. A version deleted or updated by the rewriting transaction itself is dropped (the rewrite commits or aborts with it).
-`VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). Truncation of empty tail space is not done: freed extents go to
-the free list and are reused by later writes (`sift.table_space(tbl)` shows the file, the high-water mark and the free list; the
-file of a table that was filled once and emptied stays at its high-water mark until `VACUUM FULL`).
+`VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). `sift.table_space(tbl)` shows the file, the high-water mark
+and the free list.
 
 **ANALYZE** (section 4): statistics columns as PostgreSQL computes them from the sample; jsonb shredded paths are not statistics targets.
 
@@ -396,7 +405,8 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
   MERGE, INSERT SELECT, aggregates, windows, FOR UPDATE, VACUUM [FULL], REINDEX, CLUSTER, rewrite to heap and back, TRUNCATE).
 - Regression `tbl_seal` (a heap twin through bulk load, VACUUM sealing, point/index/bitmap reads, updates and deletes of sealed rows, aborts, dead-row
   clearing, merges, special values (`-0`, NaN, long text, huge numerics), VACUUM FULL, CLUSTER, ADD/DROP COLUMN, a type change, TRUNCATE),
-  `tbl_space` (released blocks are reused: an emptied and refilled table keeps its size),
+  `tbl_space` (released blocks are reused: an emptied and refilled table keeps its size; the free end of the file is cut one VACUUM after
+  it is freed, not with `vacuum_truncate` off),
   `tbl_dead` (live and dead row counts, the rewrite of mostly dead segments under `sift.table_dead_rewrite_pct`),
   `tbl_rewrite` (CLUSTER by a btree sort and a GiST index scan, CLUSTER after deletions of its own transaction, VACUUM FULL over two
   column layouts), `tbl_sample` (TABLESAMPLE over delta rows and groups).
