@@ -11,9 +11,6 @@ sift_bitmap_avx512.c
 sift_kernels.c
 sift_kernels_avx2.c
 sift_kernels_avx512.c
-sift_col_kern.c
-sift_col_kern_avx2.c
-sift_col_kern_avx512.c
 sift_analyze.c
 sift_analyze_stem.c
 sift_query.c
@@ -34,8 +31,6 @@ sift_analyze.h
 sift_analyze_tables.h
 sift_bitmap.h
 sift_bitmap_kern.h
-sift_col_kern.h
-sift_col_kern_int.h
 sift_cpu.h
 sift_dict.h
 sift_eval.h
