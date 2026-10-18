@@ -117,13 +117,13 @@ form_mtuple(Relation rel, TupleTableSlot *slot)
 }
 
 static TransactionId
-insert_xmin(int options)
+insert_xmin(SiftTamOptions options)
 {
 	return (options & TABLE_INSERT_FROZEN) ? FrozenTransactionId : GetCurrentTransactionId();
 }
 
 static void
-insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, int options, uint32 token)
+insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, uint32 token)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	MinimalTuple mtup;
@@ -143,13 +143,13 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, int options, uint3
 }
 
 static void
-tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, int options, BulkInsertState bistate)
+tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	insert_one(rel, slot, cid, options, 0);
 }
 
 static void
-tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, int options, BulkInsertState bistate,
+tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate,
 							 uint32 specToken)
 {
 	insert_one(rel, slot, cid, options, specToken);
@@ -174,7 +174,7 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 }
 
 static void
-tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, int options, BulkInsertState bistate)
+tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	for (int i = 0; i < nslots; i++)
 		insert_one(rel, slots[i], cid, options, 0);
@@ -352,6 +352,9 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	return result;
 }
 
+SIFT_TAM_DELETE_ADAPTER(tbl_tuple_delete)
+SIFT_TAM_UPDATE_ADAPTER(tbl_tuple_update)
+
 static TM_Result
 tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid,
 			   LockTupleMode mode, LockWaitPolicy wait_policy, uint8 flags, TM_FailureData *tmfd)
@@ -392,7 +395,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 }
 
 static void
-tbl_finish_bulk_insert(Relation rel, int options)
+tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
 }
 
@@ -497,8 +500,8 @@ static const TableAmRoutine sift_tbl_methods = {
 	.tuple_insert_speculative = tbl_tuple_insert_speculative,
 	.tuple_complete_speculative = tbl_tuple_complete_speculative,
 	.multi_insert = tbl_multi_insert,
-	.tuple_delete = tbl_tuple_delete,
-	.tuple_update = tbl_tuple_update,
+	.tuple_delete = SIFT_TAM(tbl_tuple_delete),
+	.tuple_update = SIFT_TAM(tbl_tuple_update),
 	.tuple_lock = tbl_tuple_lock,
 	.finish_bulk_insert = tbl_finish_bulk_insert,
 	.relation_set_new_filelocator = tbl_relation_set_new_filelocator,

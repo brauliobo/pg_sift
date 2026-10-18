@@ -620,7 +620,7 @@ typedef struct SiftTblFetch
 } SiftTblFetch;
 
 IndexFetchTableData *
-sift_tbl_index_fetch_begin(Relation rel)
+sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 {
 	SiftTblFetch *f = palloc0(sizeof(SiftTblFetch));
 
@@ -793,6 +793,7 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TransactionId horizon = InvalidTransactionId;
+	int			final = 0;
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
@@ -804,20 +805,24 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 		SiftTblDel del;
 
 		if (!sift_tbl_fetch_lazy(rel, st, &d->tid, &rv))
-		{
 			status->knowndeletable = true;
-			continue;
-		}
-		sift_tbl_free_row(&rv);
-		sift_tbl_del_state(st, rv.key, &del);
-		if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) &&
-			GlobalVisCheckRemovableXid(rel, del.xid))
+		else
 		{
-			status->knowndeletable = true;
-			if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
-				horizon = del.xid;
+			sift_tbl_free_row(&rv);
+			sift_tbl_del_state(st, rv.key, &del);
+			if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) &&
+				GlobalVisCheckRemovableXid(rel, del.xid))
+			{
+				status->knowndeletable = true;
+				if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
+					horizon = del.xid;
+			}
 		}
+		if (status->knowndeletable)
+			final = i + 1;
 	}
+	/* the array ends at its last deletable entry (none left: a bottom-up pass found nothing) */
+	delstate->ndeltids = final;
 	return horizon;
 }
 
@@ -1142,7 +1147,7 @@ sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 }
 
 bool
-sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows, double *deadrows,
+sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows,
 								 TupleTableSlot *slot)
 {
 	SiftTblScan *s = (SiftTblScan *) scan;

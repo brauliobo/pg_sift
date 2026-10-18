@@ -113,23 +113,23 @@ uses_sift_agg(Plan *plan)
 }
 
 static PlannedStmt *
-sift_planner_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+sift_planner_cte(SIFT_PLANNER_PARAMS)
 {
 	Query	   *inline_parse;
 	PlannedStmt *plain,
 			   *inlined;
 
 	if (!sift_enable_agg || !has_shared_cte(parse))
-		return prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
-			standard_planner(parse, query_string, cursorOptions, boundParams);
+		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
+			standard_planner(SIFT_PLANNER_ARGS(parse));
 	inline_parse = copyObject(parse);
 	foreach_node(CommonTableExpr, cte, inline_parse->cteList)
 		if (shared_cte_over_column_index(cte))
 			cte->ctematerialized = CTEMaterializeNever;
-	plain = prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
-		standard_planner(parse, query_string, cursorOptions, boundParams);
-	inlined = prev_planner_hook ? prev_planner_hook(inline_parse, query_string, cursorOptions, boundParams) :
-		standard_planner(inline_parse, query_string, cursorOptions, boundParams);
+	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(parse));
+	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
+		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plain->planTree->total_cost, inlined->planTree->total_cost);
 	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plain->planTree->total_cost &&
 		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))

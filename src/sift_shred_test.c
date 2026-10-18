@@ -9,6 +9,7 @@
 #include "common/pg_prng.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "portability/instr_time.h"
 #include "utils/jsonb.h"
 
 #include "sift_col_kern.h"
