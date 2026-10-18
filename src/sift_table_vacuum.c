@@ -28,7 +28,10 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
 
+#include "sift_maint.h"
 #include "sift_table.h"
+
+#define MAX_MERGE_STEPS	16
 
 /* A growable array of TIDs: the dead rows VACUUM found, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up) */
 typedef struct TidList
@@ -72,13 +75,6 @@ tid_has(ItemPointer itemptr, void *state)
 	return d->n > 0 && bsearch(itemptr, d->tid, d->n, sizeof(ItemPointerData), cmp_tid) != NULL;
 }
 
-/* Is xid's transaction over and aborted */
-static bool
-xid_aborted(TransactionId xid)
-{
-	return !TransactionIdIsCurrentTransactionId(xid) && !TransactionIdIsInProgress(xid) && !TransactionIdDidCommit(xid);
-}
-
 typedef struct VacState
 {
 	TransactionId oldest;
@@ -101,7 +97,7 @@ tomb_keep(const SiftTblTomb *e, void *arg)
 {
 	VacState   *v = arg;
 
-	if (xid_aborted(e->xid))
+	if (sift_tbl_xid_aborted(e->xid))
 		return false;
 	if (e->kind == SIFT_TBL_TOMB_LOCK)
 	{
@@ -141,7 +137,7 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 			rec = (SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
 			if (rec->flags & SIFT_TBL_REC_DEAD)
 				continue;
-			if (TransactionIdIsNormal(rec->xmin) && xid_aborted(rec->xmin))
+			if (TransactionIdIsNormal(rec->xmin) && sift_tbl_xid_aborted(rec->xmin))
 				dead = true;
 			else
 			{
@@ -176,6 +172,37 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 	UnlockReleaseBuffer(buf);
 }
 
+/* Is the vblock in a delta segment (whose rows vacuum_page judges) */
+static bool
+in_delta(const SiftTblRel *st, uint64 vblock)
+{
+	for (int i = 0; i < st->ndelta; i++)
+		if (vblock >= st->delta[i].vbase && vblock < st->delta[i].vbase + st->delta[i].vcap)
+			return true;
+	return false;
+}
+
+/* The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their superblocks */
+static void
+group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, uint32 *lo, uint32 *hi)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		const SiftTblTomb *e = &a[i];
+		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
+
+		if (e->kind == SIFT_TBL_TOMB_LOCK || !TransactionIdDidCommit(e->xid) || !TransactionIdPrecedes(e->xid, v->oldest) ||
+			in_delta(st, e->key >> 16))
+			continue;
+		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
+		*lo = Min(*lo, sb);
+		*hi = Max(*hi, sb);
+	}
+}
+
+/* Closes the active delta segment once it is worth a column segment (pages) */
+#define VACUUM_CLOSE_PAGES	8
+
 void
 sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy)
 {
@@ -189,11 +216,14 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 	int			nindexes;
 	BlockNumber nblocks;
 	uint64		kept = 0;
+	uint32		sb_lo = PG_UINT32_MAX,
+				sb_hi = 0;
 
 	(void) vacuum_get_cutoffs(rel, params, &cutoffs);
 	v.oldest = cutoffs.OldestXmin;
 	v.newest_kept = cutoffs.OldestXmin;
 	sift_tbl_refresh(rel, st);
+	sift_maint_lock(rel, true);
 	if (st->initialized)
 	{
 		sift_tbl_tomb_sync(rel, st);
@@ -208,7 +238,11 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 				vacuum_page(rel, st, &seg, p, &v);
 			}
 		}
+		group_dead(st, &v, st->ents, st->nents, &sb_lo, &sb_hi);
+		group_dead(st, &v, st->recent, st->nrecent, &sb_lo, &sb_hi);
 		tid_sort(&v.dead_tids);
+		if (sb_lo <= sb_hi)
+			(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v.dead_tids, sb_lo, sb_hi);
 	}
 	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
 	for (int i = 0; i < nindexes; i++)
@@ -225,8 +259,17 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 	}
 	vac_close_indexes(nindexes, irel, NoLock);
 	if (st->initialized)
+	{
+		sift_tbl_close_delta(rel, st, VACUUM_CLOSE_PAGES);
+		(void) sift_tbl_seal(rel, st, v.oldest, true);
+		for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
+			CHECK_FOR_INTERRUPTS();
 		kept = sift_tbl_tomb_rewrite(rel, st, tomb_keep, &v);
+		(void) sift_recycle(rel);
+		(void) sift_maint_orphan_sweep(rel);
+	}
 	(void) kept;
+	sift_maint_unlock(rel);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	{
 		bool		fz,
@@ -248,83 +291,81 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 
 /* ---------- rewrite: VACUUM FULL, CLUSTER, ALTER TABLE ---------- */
 
+/* Copies one stored version into the new table unless it is dead; rv->tuple is freed */
+static void
+copy_version(SiftTblRel *old_st, Relation NewTable, SiftTblRel *new_st, TransactionId OldestXmin, SiftTblRowVer *rv, double *num_tuples,
+			 double *tups_vacuumed, double *tups_recently_dead)
+{
+	SiftTblDel	del;
+	MinimalTuple mt;
+	ItemPointerData tid;
+
+	if ((rv->flags & SIFT_TBL_REC_DEAD) || (TransactionIdIsNormal(rv->xmin) && sift_tbl_xid_aborted(rv->xmin)))
+		*tups_vacuumed += 1;
+	else if (sift_tbl_del_state(old_st, rv->key, &del), del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED)
+	{
+		if (TransactionIdPrecedes(del.xid, OldestXmin))
+			*tups_vacuumed += 1;
+		else
+			*tups_recently_dead += 1;
+	}
+	else
+	{
+		mt = sift_tbl_minimal_from_heap_tuple(rv->tuple);
+		sift_tbl_append(NewTable, new_st, mt, TransactionIdIsCurrentTransactionId(rv->xmin) ? rv->xmin : FrozenTransactionId,
+						rv->cmin, 0, &tid);
+		pfree(mt);
+		*num_tuples += 1;
+	}
+	heap_freetuple(rv->tuple);
+}
+
 void
 sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
 								   TransactionId OldestXmin, TransactionId *xid_cutoff, MultiXactId *multi_cutoff,
 								   double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
 {
-	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
-	TupleDesc	desc = RelationGetDescr(OldTable);
 	SiftTblRel *old_st = sift_tbl_rel(OldTable),
 			   *new_st = sift_tbl_rel(NewTable);
-	Snapshot	snap = SnapshotAny;
-	TableScanDesc scan = NULL;
-	IndexScanDesc iscan = NULL;
-	Datum	   *values = palloc(desc->natts * sizeof(Datum));
-	bool	   *isnull = palloc(desc->natts * sizeof(bool));
+	SiftTblRowVer rv;
 
 	*num_tuples = *tups_vacuumed = *tups_recently_dead = 0;
 	sift_tbl_ensure_init(NewTable);
-	if (OldIndex != NULL)
-	{
-#if PG_VERSION_NUM >= 180000
-		iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, NULL, 0, 0);
-#else
-		iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, 0, 0);
-#endif
-		index_rescan(iscan, NULL, 0, NULL, 0);
-	}
-	else
-		scan = table_beginscan(OldTable, snap, 0, NULL);
 	sift_tbl_refresh(OldTable, old_st);
 	sift_tbl_tomb_sync(OldTable, old_st);
-	for (;;)
+	if (OldIndex != NULL)
 	{
-		SiftTblRowVer rv;
-		SiftTblDel	del;
-		HeapTuple	tup;
-		MinimalTuple mt;
+		TupleTableSlot *slot = table_slot_create(OldTable, NULL);
+#if PG_VERSION_NUM >= 180000
+		IndexScanDesc iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, NULL, 0, 0);
+#else
+		IndexScanDesc iscan = index_beginscan(OldTable, OldIndex, SnapshotAny, 0, 0);
+#endif
 
-		if (iscan ? !index_getnext_slot(iscan, ForwardScanDirection, slot) : !table_scan_getnextslot(scan, ForwardScanDirection, slot))
-			break;
-		CHECK_FOR_INTERRUPTS();
-		if (!sift_tbl_fetch_row(OldTable, old_st, &slot->tts_tid, &rv))
-			continue;
-		heap_freetuple(rv.tuple);
-		if ((rv.flags & SIFT_TBL_REC_DEAD) || (TransactionIdIsNormal(rv.xmin) && xid_aborted(rv.xmin)))
+		index_rescan(iscan, NULL, 0, NULL, 0);
+		while (index_getnext_slot(iscan, ForwardScanDirection, slot))
 		{
-			*tups_vacuumed += 1;
-			continue;
+			CHECK_FOR_INTERRUPTS();
+			if (sift_tbl_fetch_row(OldTable, old_st, &slot->tts_tid, &rv))
+				copy_version(old_st, NewTable, new_st, OldestXmin, &rv, num_tuples, tups_vacuumed, tups_recently_dead);
 		}
-		sift_tbl_del_state(old_st, rv.key, &del);
-		if (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED)
-		{
-			if (TransactionIdPrecedes(del.xid, OldestXmin))
-				*tups_vacuumed += 1;
-			else
-				*tups_recently_dead += 1;
-			continue;
-		}
-		slot_getallattrs(slot);
-		memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
-		memcpy(isnull, slot->tts_isnull, desc->natts * sizeof(bool));
-		tup = heap_form_tuple(desc, values, isnull);
-		mt = sift_tbl_minimal_from_heap_tuple(tup);
-		{
-			ItemPointerData tid;
-
-			sift_tbl_append(NewTable, new_st, mt, TransactionIdIsCurrentTransactionId(rv.xmin) ? rv.xmin : FrozenTransactionId,
-							rv.cmin, 0, &tid);
-		}
-		pfree(mt);
-		heap_freetuple(tup);
-		*num_tuples += 1;
-	}
-	if (iscan)
 		index_endscan(iscan);
+		ExecDropSingleTupleTableSlot(slot);
+	}
 	else
+	{
+		TableScanDesc scan = table_beginscan(OldTable, SnapshotAny, 0, NULL);
+
+		while (sift_tbl_scan_next_stored(scan, &rv))
+		{
+			CHECK_FOR_INTERRUPTS();
+			copy_version(old_st, NewTable, new_st, OldestXmin, &rv, num_tuples, tups_vacuumed, tups_recently_dead);
+		}
 		table_endscan(scan);
-	ExecDropSingleTupleTableSlot(slot);
+	}
+	/* the copy is final: its rows become columns now */
+	sift_tbl_close_delta(NewTable, new_st, 1);
+	(void) sift_tbl_seal(NewTable, new_st, OldestXmin, true);
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();
 }

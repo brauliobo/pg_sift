@@ -15,6 +15,7 @@
 #include "access/htup_details.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/procarray.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -377,7 +378,29 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 	if (old.gen)
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
+	if (old.gen && sift_tbl_inline_seal)
+		(void) sift_tbl_seal(rel, st, GetOldestNonRemovableTransactionId(rel), false);
 	return first;
+}
+
+void
+sift_tbl_close_delta(Relation rel, SiftTblRel *st, uint32 minpages)
+{
+	const SiftSegEntry *act;
+	uint32		vblock;
+	uint64		gen;
+
+	sift_tbl_refresh(rel, st);
+	if (!st->initialized || (act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE)) == NULL)
+		return;
+	for (int i = 0; i < st->ndelta; i++)
+		if (st->delta[i].gen == act->gen)
+		{
+			sift_tbl_seg_load(rel, &st->delta[i]);
+			if (st->delta[i].npages < minpages)
+				return;
+		}
+	(void) create_delta(rel, st, act->gen, 0, &vblock, &gen);
 }
 
 /* The page of delta segment seg for vblock vbase + idx (the table is extended from the header when it is behind) */
@@ -672,8 +695,8 @@ sift_tbl_store(TupleTableSlot *slot, HeapTuple tup)
 	heap_freetuple(tup);
 }
 
-bool
-sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
+static bool
+fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 	OffsetNumber off = ItemPointerGetOffsetNumberNoCheck(tid);
@@ -712,7 +735,27 @@ sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer 
 		else
 			break;
 	}
-	return sift_tbl_group_fetch(rel, st, tid, rv);
+	return sift_tbl_group_fetch(rel, st, tid, rv, lazy);
+}
+
+bool
+sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
+{
+	return fetch_row(rel, st, tid, rv, false);
+}
+
+bool
+sift_tbl_fetch_lazy(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
+{
+	return fetch_row(rel, st, tid, rv, true);
+}
+
+void
+sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
+{
+	if (rv->tuple == NULL && !fetch_row(rel, st, tid, rv, false))
+		elog(ERROR, "could not read the row (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
+			 ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
 }
 
 void
@@ -899,6 +942,25 @@ find_run(const SiftTblTomb *a, uint32 na, uint64 key, uint32 *n)
 	for (; lo + *n < na && a[lo + *n].key == key; (*n)++)
 		;
 	return a + lo;
+}
+
+/* Does the sorted array a hold an entry with lo <= key <= hi (find_run's start is the lower bound of lo whether or not lo is present) */
+static bool
+tomb_run_in(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi)
+{
+	uint32		n;
+	const SiftTblTomb *f;
+
+	if (na == 0)
+		return false;
+	f = find_run(a, na, lo, &n);
+	return f < a + na && f->key <= hi;
+}
+
+bool
+sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi)
+{
+	return tomb_run_in(st->ents, st->nents, lo, hi) || tomb_run_in(st->recent, st->nrecent, lo, hi);
 }
 
 const SiftTblTomb *

@@ -178,6 +178,9 @@ typedef struct SiftTblRel
 	/* the page this backend appends to */
 	uint64		tgt_gen;
 	BlockNumber tgt_blk;
+	/* column groups (sift_table_seg.c) */
+	struct SiftTblLayout *layout;
+	struct SiftTblGroupCache *gcache;
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
@@ -216,6 +219,19 @@ extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTbl
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
 extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+/* As sift_tbl_fetch_row, but a row of a column group comes without its tuple (rv->tuple NULL) and costs no decoding: for callers that
+ * need the version, not the values; sift_tbl_fetch_tuple completes it */
+extern bool sift_tbl_fetch_lazy(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+static inline void
+sift_tbl_free_row(SiftTblRowVer *rv)
+{
+	if (rv->tuple)
+		heap_freetuple(rv->tuple);
+}
+extern void sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+
+/* Stops the active delta segment taking rows if it has at least minpages pages (a fresh one takes over): it can then be sealed */
+extern void sift_tbl_close_delta(Relation rel, SiftTblRel *st, uint32 minpages);
 
 /* Appends a row (a MinimalTuple) to the active delta segment; sets *tid. spec_token != 0: speculative insertion */
 extern void sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId xmin, CommandId cmin,
@@ -275,6 +291,8 @@ extern void sift_tbl_scan_end(TableScanDesc scan);
 extern void sift_tbl_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_params, bool allow_strat,
 								 bool allow_sync, bool allow_pagemode);
 extern bool sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
+/* The next stored row version of a scan, visible to its snapshot or not (VACUUM FULL): rv->tuple is palloc'd, rv->xmin unset for a row of a column group */
+extern bool sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv);
 extern void sift_tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid);
 extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
 extern Size sift_tbl_parallelscan_estimate(Relation rel);
@@ -335,9 +353,49 @@ extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow,
 
 /* ---------- column groups: the engine glue (sift_table_seg.c) ---------- */
 
-/* Does a column group hold key? On true *rv is filled (tuple palloc'd). STUB(col-core): there are no groups yet. */
-extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
+typedef struct SiftTblLayout SiftTblLayout;
+typedef struct SiftTblGroupScan SiftTblGroupScan;
+
+/* ERROR when the table has more columns than a column segment holds (called at CREATE TABLE) */
+extern void sift_tbl_layout_check(Relation rel);
+/* Is there a tombstone entry for a key between lo and hi? */
+extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
+/* Is xid's transaction over and aborted */
+extern bool sift_tbl_xid_aborted(TransactionId xid);
+
+/* Does a column group hold the row of tid (live)? On true *rv is filled, rv->tuple palloc'd. */
+extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy);
+
+/*
+ * The rows of the column groups of a directory copy, a unit at a time (the directory copy must stay protected by a snapshot of the caller).
+ * next: the next live row of the groups in the range of superblocks, rv->key and rv->xmin (always unset: frozen) only; plain: no tombstone
+ * can concern the rows of its unit (every snapshot sees them); tuple: the row as a HeapTuple (t_self set), palloc'd.
+ */
+extern SiftTblGroupScan *sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDirSnapshot *dir, Snapshot snapshot);
+extern void sift_tbl_gscan_end(SiftTblGroupScan *g);
+extern void sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi);	/* [sb_lo, sb_hi), restarts */
+extern bool sift_tbl_gscan_next(SiftTblGroupScan *g, SiftTblRowVer *rv);
+extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
+extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
+/* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF); their number */
+extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out);
+
+/*
+ * Seals the delta segments that stopped taking rows and whose rows are all final (decided, and older than oldest) into column
+ * segments; returns the number sealed. vacuum: rows flagged DEAD by this VACUUM are dropped, otherwise a segment with one waits for it.
+ * Takes the maintenance lock (not waiting unless vacuum).
+ */
+extern int	sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
+/* One merge step over the column segments (the maintenance lock held); true when it merged. Segments of another column layout are left alone. */
+extern bool sift_tbl_merge(Relation rel, SiftTblRel *st);
+/* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
+extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 
 extern PGDLLIMPORT int sift_tbl_delta_limit;
+extern PGDLLIMPORT bool sift_tbl_inline_seal;
+extern PGDLLIMPORT char *sift_tbl_compression_spec;
+
+/* Registers sift.table_delta_limit, sift.table_inline_seal and sift.table_compression (from sift_tbl_init) */
+extern void sift_tbl_define_gucs(void);
 
 #endif							/* SIFT_TABLE_H */
