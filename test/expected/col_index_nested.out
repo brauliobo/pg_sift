@@ -1,0 +1,310 @@
+-- Nested columns of the sift_col index: arrays of objects inside jsonb keep their parent counts, so a predicate on several fields holds for one
+-- element (the same element), exactly as EXISTS over jsonb_array_elements. Maps (key.*) have the member name as a text column. Values that the
+-- declared type cannot hold overflow: the row stays a candidate and the heap decides.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE tbl regclass; a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT indrelid::regclass INTO tbl FROM pg_index WHERE indexrelid = idx;
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM %s WHERE %s) z', idx, preds, tbl, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM %s WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', tbl, heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+CREATE FUNCTION jarr(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]' END $$;
+CREATE FUNCTION items_has(doc jsonb, cat text, kind text, minqty int) RETURNS bool LANGUAGE sql IMMUTABLE AS $$
+	SELECT EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> 'items')) e
+				   WHERE (cat IS NULL OR e ->> 'category' = cat) AND (kind IS NULL OR e ->> 'kind' = kind) AND (minqty IS NULL OR (e ->> 'qty')::int >= minqty))
+$$;
+CREATE TABLE orders (id serial PRIMARY KEY, store_id int, status text, metrics jsonb, doc jsonb);
+INSERT INTO orders (store_id, status, metrics, doc)
+SELECT i % 20, (ARRAY['new', 'paid', 'void'])[1 + i % 3],
+	   CASE WHEN i % 13 = 0 THEN NULL
+			ELSE (SELECT coalesce(jsonb_object_agg(k, (i * length(k) % 17) / 2.0), '{}') FROM unnest(ARRAY['a', 'b', 'cc', 'ddd', 'e']) WITH ORDINALITY u(k, o) WHERE (i + o) % 3 <> 0) END,
+	   CASE WHEN i % 29 = 0 THEN NULL
+			WHEN i % 31 = 0 THEN '{}'::jsonb
+			WHEN i % 37 = 0 THEN '{"items": null, "notes": []}'::jsonb
+			ELSE jsonb_build_object(
+				'items', (SELECT coalesce(jsonb_agg(CASE WHEN (i + k) % 11 = 0 THEN jsonb_build_object('category', (ARRAY['x', 'y', 'z'])[1 + (i + k) % 3])
+														 ELSE jsonb_build_object('category', (ARRAY['x', 'y', 'z'])[1 + (i + k) % 3], 'kind', (ARRAY['p', 'q'])[1 + (i * k) % 2],
+																				'qty', (i + k) % 9, 'price', ((i + k) % 40) * 1.5) END), '[]')
+						  FROM generate_series(1, i % 6) k),
+				'notes', (SELECT coalesce(jsonb_agg('n' || (i + k) % 5), '[]') FROM generate_series(1, i % 4) k)) END
+FROM generate_series(1, 5000) i;
+CREATE INDEX o_col ON orders USING sift_col (store_id, status, metrics, doc)
+	WITH (paths = 'metrics.* float8, doc.items[]{category text, kind text, qty int4, price float4}, doc.notes[] text', mutable_limit = 64);
+-- leaves: 0 store_id, 1 status, 2 metrics.* (group), 3 its member name, 4 its value, 5 doc.items[] (group), 6 category, 7 kind, 8 qty, 9 price,
+-- 10 doc.notes[] (group), 11 its value
+SELECT leaves, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
+ leaves | rows_match 
+--------+------------
+     12 | t
+(1 row)
+
+SELECT sift.col_verify('o_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE TABLE col_checks (n serial, preds text, heapwhere text);
+INSERT INTO col_checks (preds, heapwhere) VALUES
+	('g5:6:eq:x', 'items_has(doc, ''x'', NULL, NULL)'),
+	('g5:6:eq:x;g5:7:eq:p', 'items_has(doc, ''x'', ''p'', NULL)'),
+	('g5:6:eq:x;g5:7:eq:p;g5:8:ge:3', 'items_has(doc, ''x'', ''p'', 3)'),
+	('g5:6:in:x|y;g5:8:lt:2', 'EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> ''items'')) e WHERE e ->> ''category'' IN (''x'', ''y'') AND (e ->> ''qty'')::int < 2)'),
+	('g5:9:gt:30', 'EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> ''items'')) e WHERE (e ->> ''price'')::float4 > 30)'),
+	('g5:6:eq:x;g5:7:null', 'EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> ''items'')) e WHERE e ->> ''category'' = ''x'' AND e ->> ''kind'' IS NULL)'),
+	('g5:6:eq:nothere', 'items_has(doc, ''nothere'', NULL, NULL)'),
+	('g5!:6:eq:x', 'NOT items_has(doc, ''x'', NULL, NULL)'),
+	('g5!:6:eq:x;g5!:7:eq:p', 'NOT items_has(doc, ''x'', ''p'', NULL)'),
+	('g5:6:eq:x;g5!:7:eq:p', 'items_has(doc, ''x'', NULL, NULL) AND NOT items_has(doc, NULL, ''p'', NULL)'),
+	('g5:6:prefix:x', 'EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> ''items'')) e WHERE e ->> ''category'' LIKE ''x%'')'),
+	('5:eq:3', 'jsonb_typeof(doc -> ''items'') = ''array'' AND jsonb_array_length(jarr(doc -> ''items'')) = 3'),
+	('5:ge:1;5:le:2', 'jsonb_typeof(doc -> ''items'') = ''array'' AND jsonb_array_length(jarr(doc -> ''items'')) BETWEEN 1 AND 2'),
+	('5:eq:0', 'jsonb_typeof(doc -> ''items'') = ''array'' AND jsonb_array_length(jarr(doc -> ''items'')) = 0'),
+	('5:null', '(doc -> ''items'') IS NULL OR jsonb_typeof(doc -> ''items'') = ''null'''),
+	('10:eq:2', 'jsonb_typeof(doc -> ''notes'') = ''array'' AND jsonb_array_length(jarr(doc -> ''notes'')) = 2'),
+	('g10:11:eq:n1', 'doc -> ''notes'' ? ''n1'''),
+	('g10:11:prefix:n;g10:11:ne:n1', 'EXISTS (SELECT 1 FROM jsonb_array_elements_text(jarr(doc -> ''notes'')) e WHERE e LIKE ''n%'' AND e <> ''n1'')'),
+	('g2:3:eq:a', 'metrics ? ''a'''),
+	('g2:3:eq:a;g2:4:gt:2', 'EXISTS (SELECT 1 FROM jsonb_each(metrics) e WHERE e.key = ''a'' AND (e.value)::text::float8 > 2)'),
+	('g2:3:in:a|cc;g2:4:le:1', 'EXISTS (SELECT 1 FROM jsonb_each(metrics) e WHERE e.key IN (''a'', ''cc'') AND (e.value)::text::float8 <= 1)'),
+	('g2!:3:eq:ddd', 'NOT coalesce(metrics ? ''ddd'', false)'),
+	('2:eq:3', 'jsonb_typeof(metrics) = ''object'' AND (SELECT count(*) FROM jsonb_object_keys(metrics)) = 3'),
+	('2:null', 'metrics IS NULL'),
+	('0:eq:7;1:eq:paid;g5:6:eq:x;g5:7:eq:q', 'store_id = 7 AND status = ''paid'' AND items_has(doc, ''x'', ''q'', NULL)'),
+	('0:lt:5;g5:8:ge:5;g10:11:eq:n2', 'store_id < 5 AND items_has(doc, NULL, NULL, 5) AND doc -> ''notes'' ? ''n2''');
+SELECT n, preds, col_cmp('o_col', preds, heapwhere) FROM col_checks ORDER BY n;
+ n  |                preds                 | col_cmp 
+----+--------------------------------------+---------
+  1 | g5:6:eq:x                            | ok
+  2 | g5:6:eq:x;g5:7:eq:p                  | ok
+  3 | g5:6:eq:x;g5:7:eq:p;g5:8:ge:3        | ok
+  4 | g5:6:in:x|y;g5:8:lt:2                | ok
+  5 | g5:9:gt:30                           | ok
+  6 | g5:6:eq:x;g5:7:null                  | ok
+  7 | g5:6:eq:nothere                      | ok
+  8 | g5!:6:eq:x                           | ok
+  9 | g5!:6:eq:x;g5!:7:eq:p                | ok
+ 10 | g5:6:eq:x;g5!:7:eq:p                 | ok
+ 11 | g5:6:prefix:x                        | ok
+ 12 | 5:eq:3                               | ok
+ 13 | 5:ge:1;5:le:2                        | ok
+ 14 | 5:eq:0                               | ok
+ 15 | 5:null                               | ok
+ 16 | 10:eq:2                              | ok
+ 17 | g10:11:eq:n1                         | ok
+ 18 | g10:11:prefix:n;g10:11:ne:n1         | ok
+ 19 | g2:3:eq:a                            | ok
+ 20 | g2:3:eq:a;g2:4:gt:2                  | ok
+ 21 | g2:3:in:a|cc;g2:4:le:1               | ok
+ 22 | g2!:3:eq:ddd                         | ok
+ 23 | 2:eq:3                               | ok
+ 24 | 2:null                               | ok
+ 25 | 0:eq:7;1:eq:paid;g5:6:eq:x;g5:7:eq:q | ok
+ 26 | 0:lt:5;g5:8:ge:5;g10:11:eq:n2        | ok
+(26 rows)
+
+-- the same element, not the same row: one row can hold category x in one element and kind p in another
+SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', 'g5:6:eq:x;g5:7:eq:p')) AS same_element,
+	   (SELECT count(*) FROM orders WHERE items_has(doc, 'x', NULL, NULL) AND items_has(doc, NULL, 'p', NULL)) AS two_elements;
+ same_element | two_elements 
+--------------+--------------
+         2064 |         2960
+(1 row)
+
+-- values read back: the elements of each row in array order, the member names of the maps in jsonb order
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 6, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(e ->> 'category', ',' ORDER BY o) FROM jsonb_array_elements(jarr(doc -> 'items')) WITH ORDINALITY a(e, o)), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 8, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(coalesce(e ->> 'qty', 'NULL'), ',' ORDER BY o) FROM jsonb_array_elements(jarr(doc -> 'items')) WITH ORDINALITY a(e, o)), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 9, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(coalesce((e ->> 'price')::float4::float8::text, 'NULL'), ',' ORDER BY o) FROM jsonb_array_elements(jarr(doc -> 'items')) WITH ORDINALITY a(e, o)), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 11, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(e, ',' ORDER BY o) FROM jsonb_array_elements_text(jarr(doc -> 'notes')) WITH ORDINALITY a(e, o)), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 3, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(k, ',' ORDER BY length(k), k COLLATE "C") FROM jsonb_object_keys(metrics) k), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 4, '')
+	EXCEPT SELECT ctid, '{' || coalesce((SELECT string_agg(e.value::text::float8::text, ',' ORDER BY length(e.key), e.key COLLATE "C") FROM jsonb_each(metrics) e), '') || '}' FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS differing FROM (
+	SELECT tid, val FROM sift._test_col_read('o_col', 5, '')
+	EXCEPT SELECT ctid, CASE WHEN jsonb_typeof(doc -> 'items') = 'array' THEN jsonb_array_length(doc -> 'items')::text END FROM orders) z;
+ differing 
+-----------
+         0
+(1 row)
+
+-- writes: new rows in the mutable segment, updates, deletes, aborts, VACUUM, promotion, merge
+SELECT leaves FROM sift.col_index_info('o_col');
+ leaves 
+--------
+     12
+(1 row)
+
+INSERT INTO orders (store_id, status, metrics, doc)
+SELECT i % 20, 'paid', jsonb_build_object('a', i % 5, 'zz', 1.5), jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'x', 'kind', 'p', 'qty', i % 9, 'price', 1.5),
+	jsonb_build_object('category', 'y', 'kind', 'q', 'qty', 3)), 'notes', jsonb_build_array('n1'))
+FROM generate_series(1, 3000) i;
+SELECT 'insert', string_agg(CASE WHEN r = 'ok' THEN '.' ELSE r END, '' ORDER BY n) FROM (SELECT n, col_cmp('o_col', preds, heapwhere) r FROM col_checks) s;
+ ?column? |         string_agg         
+----------+----------------------------
+ insert   | ..........................
+(1 row)
+
+UPDATE orders SET doc = jsonb_set(doc, '{items,0,category}', '"z"') WHERE id % 10 = 0 AND jsonb_array_length(jarr(doc -> 'items')) > 0;
+DELETE FROM orders WHERE id % 13 = 1;
+BEGIN;
+INSERT INTO orders (store_id, status, doc) SELECT 1, 'new', '{"items": [{"category": "x", "kind": "p", "qty": 1}]}' FROM generate_series(1, 200);
+ROLLBACK;
+SELECT 'write', string_agg(CASE WHEN r = 'ok' THEN '.' ELSE r END, '' ORDER BY n) FROM (SELECT n, col_cmp('o_col', preds, heapwhere) r FROM col_checks) s;
+ ?column? |         string_agg         
+----------+----------------------------
+ write    | ..........................
+(1 row)
+
+SELECT sift.col_verify('o_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+VACUUM orders;
+SELECT 'vacuum', string_agg(CASE WHEN r = 'ok' THEN '.' ELSE r END, '' ORDER BY n) FROM (SELECT n, col_cmp('o_col', preds, heapwhere) r FROM col_checks) s;
+ ?column? |         string_agg         
+----------+----------------------------
+ vacuum   | ..........................
+(1 row)
+
+SELECT sift.col_promote('o_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('o_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT 'merge', string_agg(CASE WHEN r = 'ok' THEN '.' ELSE r END, '' ORDER BY n) FROM (SELECT n, col_cmp('o_col', preds, heapwhere) r FROM col_checks) s;
+ ?column? |         string_agg         
+----------+----------------------------
+ merge    | ..........................
+(1 row)
+
+SELECT sift.col_verify('o_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind = 'immutable') AS immutable FROM sift.col_segments('o_col');
+ immutable 
+-----------
+         1
+(1 row)
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Overflow: shapes and values the declared types cannot hold. The row is still a candidate for every predicate on the affected columns.
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE odd (id serial PRIMARY KEY, doc jsonb);
+INSERT INTO odd (doc) VALUES
+	('{"items": [{"category": "x", "qty": 1}]}'),
+	('{"items": [{"category": "x", "qty": 1.5}]}'),
+	('{"items": [{"category": "x", "qty": "7"}]}'),
+	('{"items": [{"category": "x", "qty": 99999999999}]}'),
+	('{"items": [{"category": 5, "qty": 2}]}'),
+	('{"items": [{"category": "x", "qty": [1]}]}'),
+	('{"items": {"category": "x", "qty": 1}}'),
+	('{"items": 3}'),
+	('{"items": [1, "a", null, {"category": "x", "qty": 1}]}'),
+	('{"items": [[{"category": "x"}]]}'),
+	('{"items": []}'),
+	(NULL),
+	(jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', repeat('c', 300), 'qty', 1))));
+CREATE INDEX odd_col ON odd USING sift_col (doc) WITH (paths = 'doc.items[]{category text, qty int4}');
+SELECT sift.col_verify('odd_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- leaves: 0 doc.items[] (group), 1 category, 2 qty
+SELECT string_agg(o.id::text, ',' ORDER BY o.id) AS candidates_qty_eq_1
+FROM odd o WHERE o.ctid IN (SELECT tid FROM sift._test_col_tids('odd_col', 'g0:2:eq:1'));
+  candidates_qty_eq_1  
+-----------------------
+ 1,2,3,4,6,7,8,9,10,13
+(1 row)
+
+SELECT string_agg(o.id::text, ',' ORDER BY o.id) AS exact_qty_eq_1
+FROM odd o WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.doc -> 'items') = 'array' THEN o.doc -> 'items' ELSE '[]' END) e
+						 WHERE jsonb_typeof(e) = 'object' AND e -> 'qty' = '1');
+ exact_qty_eq_1 
+----------------
+ 1,9,13
+(1 row)
+
+SELECT string_agg(o.id::text, ',' ORDER BY o.id) AS candidates_category_x
+FROM odd o WHERE o.ctid IN (SELECT tid FROM sift._test_col_tids('odd_col', 'g0:1:eq:x'));
+  candidates_category_x  
+-------------------------
+ 1,2,3,4,5,6,7,8,9,10,13
+(1 row)
+
+SELECT string_agg(o.id::text, ',' ORDER BY o.id) AS candidates_no_x
+FROM odd o WHERE o.ctid IN (SELECT tid FROM sift._test_col_tids('odd_col', 'g0!:1:eq:x'));
+  candidates_no_x  
+-------------------
+ 5,7,8,10,11,12,13
+(1 row)
+
+DROP TABLE odd;
+DROP TABLE col_checks;
+DROP TABLE orders;
+DROP FUNCTION items_has(jsonb, text, text, int);
+DROP FUNCTION jarr(jsonb);
+DROP FUNCTION col_cmp(regclass, text, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

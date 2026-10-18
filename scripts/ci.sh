@@ -117,9 +117,9 @@ installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 # by measured time, the long jobs of each kind first
 SLOW_REGRESS="facets index_build_postings filter_pushdown parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
-	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd parallel_build"
+	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"
 SLOW_PERL="001_crash 004_wal_consistency"
-SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency"
+SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_mut_crash"
 # shellcheck disable=SC2046,SC2086  # the names are words
 if [[ $MODE == full ]]; then
 	job soak soak 1 "$S/soak.sh" --duration 600 --check-every 30
