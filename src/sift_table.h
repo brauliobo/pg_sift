@@ -404,6 +404,9 @@ extern SiftTblGroupScan *sift_tbl_gscan_begin(Relation rel, TupleDesc desc, Sift
 extern void sift_tbl_gscan_end(SiftTblGroupScan *g);
 extern void sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi);	/* [sb_lo, sb_hi), restarts */
 extern bool sift_tbl_gscan_next(SiftTblGroupScan *g, SiftTblRowVer *rv);
+/* Backward: the row before the one last returned, in the order sift_tbl_gscan_next goes; seek_end first starts from the last row */
+extern bool sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv);
+extern void sift_tbl_gscan_seek_end(SiftTblGroupScan *g);
 extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF); their number */
