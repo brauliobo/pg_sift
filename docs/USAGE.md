@@ -207,7 +207,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `fields` | | | columns weighted as separate fields ([several columns](#analyzers-phrases-several-columns)) |
 | `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
 | `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
-| `dead_rewrite_pct` | 50 | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
+| `dead_rewrite_pct` | 50 (`sift_col`: 10) | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
 | `vacuum_truncate` | true | | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
@@ -242,7 +242,7 @@ are the worker's promotions of mutable segments, which the writers wait for.
 
 `dead_rewrite_pct` is the share of dead documents above which maintenance rewrites a lone segment to drop them and their terms (a segment
 that no merge picks; the dead postings are cleared by `VACUUM` either way). `ALTER INDEX ... SET (dead_rewrite_pct = N)` applies to the next
-`VACUUM` or worker step, with no `REINDEX`; 100 never rewrites a segment on its own. The default 50 was measured against 5 on 400,000
+`VACUUM` or worker step, with no `REINDEX`; 100 never rewrites a segment on its own. A `sift_col` index has the same option with the default 10: a unit with a dead row answers from its rows, not from its pre-aggregates ([docs/COL-PREAGG.md](COL-PREAGG.md)), so a lone segment is rewritten sooner. The BM25 default 50 was measured against 5 on 400,000
 documents of 40 words, 10 rounds of updating or deleting 6% of the rows, each followed by `VACUUM` (mean of 5 runs); 5 rewrites the segment
 at every round and costs more everywhere except the queries after the deletes:
 
