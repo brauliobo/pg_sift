@@ -6,6 +6,14 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
 ## Unreleased
 
+## 2.0.1
+
+- No change to the storage format (2) or the SQL interface: tables of 2.0.0 open as they are. The extension is rebuilt on the shared core of
+  the PostgreSQL extension 2.0.1, which changes how the shared engine counts documents of segments with vacuumed (deleted) documents: the
+  same results. No SQLite speed-up is claimed: the measurements (user instructions per `count(*)` over vacuumed documents, 0.21x for a
+  term) are the PostgreSQL extension's. The row-level security fix of the PostgreSQL extension does not apply
+  (SQLite has no row-level security).
+
 ## 2.0.0
 
 - No change to the storage format (2) or the SQL interface: tables of 1.4.0 open as they are, nothing to rebuild. The extension is rebuilt on the
