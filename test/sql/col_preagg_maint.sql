@@ -6,10 +6,10 @@ SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE pm (id int, grp text, amt numeric(10,2), qty int);
-ALTER TABLE pm SET (autovacuum_enabled = false, fillfactor = 40);
-INSERT INTO pm SELECT g, 'g' || g % 20, g % 997, g % 9 FROM generate_series(1, 300000) g;
+ALTER TABLE pm SET (autovacuum_enabled = false, fillfactor = 10);
+INSERT INTO pm SELECT g, 'g' || g % 20, g % 997, g % 9 FROM generate_series(1, 50000) g;
 CREATE TABLE pm_off (LIKE pm);
-ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 40);
+ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 10);
 INSERT INTO pm_off SELECT * FROM pm;
 CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096);
 CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096, dead_rewrite_pct = 100);
