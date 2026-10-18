@@ -117,7 +117,7 @@ typedef struct SiftTblScan
 	SiftTblRel *st;
 	BlockNumber sample_blk;		/* TABLESAMPLE: the vblock being sampled, its rows (sorted by offset) in brows, the last offset */
 	OffsetNumber sample_max;
-	MemoryContext rowcxt;		/* the row handed to the slot by the last getnextslot: valid until the next one, as a buffer slot's */
+	MemoryContext rowcxt;		/* the rows of the TABLESAMPLE block, until the next one */
 	TupleDesc	desc;			/* of the rows returned: the slot's, which is the old one while ALTER TABLE rewrites */
 	bool		snap_registered;
 	int			nseg;
@@ -440,16 +440,35 @@ scan_version_tuple(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 	return rv->tuple;
 }
 
-/* The next visible row, as a HeapTuple (palloc'd, t_self set); NULL at the end */
-static HeapTuple
-scan_next_row(Relation rel, SiftTblScan *s)
+/* Hands the version scan_next_version returned last to slot: a row of a column group is decoded when the slot is read */
+static void
+scan_store(Relation rel, SiftTblScan *s, SiftTblRowVer *rv, TupleTableSlot *slot)
+{
+	if (s->in_groups && sift_tbl_slot_is_lazy(slot))
+	{
+		ItemPointerData tid;
+		uint32		pos;
+		uint32		token = sift_tbl_gscan_cursor(s->g, &tid, &pos);
+
+		sift_tbl_slot_store_group(slot, rel, &tid, s->g, token, pos);
+	}
+	else
+		sift_tbl_store(slot, scan_version_tuple(rel, s, rv));
+}
+
+/* The next visible row into slot; false at the end */
+static bool
+scan_next_slot(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 {
 	SiftTblRowVer rv;
 
 	while (scan_next_version(rel, s, &rv))
 		if ((s->in_groups && sift_tbl_gscan_plain(s->g)) || sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
-			return scan_version_tuple(rel, s, &rv);
-	return NULL;
+		{
+			scan_store(rel, s, &rv, slot);
+			return true;
+		}
+	return false;
 }
 
 bool
@@ -467,25 +486,16 @@ bool
 sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
-	HeapTuple	tup;
-	MemoryContext old;
 
 	if (!ScanDirectionIsForward(direction))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift_table tables do not support backward scans")));
 	s->desc = slot->tts_tupleDescriptor;
-	MemoryContextReset(s->rowcxt);
-	old = MemoryContextSwitchTo(s->rowcxt);
-	tup = scan_next_row(scan->rs_rd, s);
-	MemoryContextSwitchTo(old);
-	if (tup == NULL)
-	{
-		ExecClearTuple(slot);
-		return false;
-	}
-	ExecForceStoreHeapTuple(tup, slot, false);
-	return true;
+	if (scan_next_slot(scan->rs_rd, s, slot))
+		return true;
+	ExecClearTuple(slot);
+	return false;
 }
 
 void
@@ -561,6 +571,8 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 		sift_tbl_free_row(&rv);
 		return false;
 	}
+	if (rv.tuple == NULL && sift_tbl_slot_is_lazy(slot) && sift_tbl_slot_locate(slot, rel, st, tid))
+		return true;
 	sift_tbl_fetch_tuple(rel, st, tid, &rv);
 	sift_tbl_store(slot, rv.tuple);
 	return true;
@@ -841,7 +853,7 @@ sift_tbl_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate, 
 			s->bri++;
 		if (s->bri < s->nbrows && ItemPointerGetOffsetNumberNoCheck(&s->brows[s->bri]->t_self) == off)
 		{
-			ExecForceStoreHeapTuple(s->brows[s->bri++], slot, false);
+			sift_tbl_slot_store_tuple(slot, s->brows[s->bri++]);
 			return true;
 		}
 	}
@@ -1153,7 +1165,6 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 	bool		mvcc,
 				temp_snap = false;
 	TransactionId oldest = InvalidTransactionId;
-	HeapTuple	tup;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	ItemPointerData tid;
@@ -1194,8 +1205,7 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 		CHECK_FOR_INTERRUPTS();
 		if ((v = build_verdict(table_rel, s->st, &rv, oldest, anyvisible, mvcc, snapshot)) == BUILD_SKIP)
 			continue;
-		tup = scan_version_tuple(table_rel, s, &rv);
-		sift_tbl_store(slot, tup);
+		scan_store(table_rel, s, &rv, slot);
 		reltuples += 1;
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 		if (indexInfo->ii_PredicateState != NULL && !ExecQual(indexInfo->ii_PredicateState, econtext))
