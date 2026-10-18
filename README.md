@@ -78,7 +78,7 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 ## What is covered
 
-[docs/COVERAGE.md](docs/COVERAGE.md) lists 167 query shapes with a sample each (97 Yes, 16 Partly, 43 No, 11 Error), checked on a test cluster by `scripts/coverage.sh --check`.
+[docs/COVERAGE.md](docs/COVERAGE.md) lists 173 query shapes with a sample each (101 Yes, 18 Partly, 43 No, 11 Error), checked on a test cluster by `scripts/coverage.sh --check`.
 
 - Search: `@@> 'a b'`, `"a b"`, `batt*`, `sq?eaky`, `/re/`, `frendly~1`, `ORDER BY score LIMIT k`, `count(*)` and `AND` filters run on the `sift` index.
 - Analytics: `count`, `count(DISTINCT x)`, `sum`, `avg`, `min`, `max`, `stddev`, `corr` ... `WHERE ... GROUP BY ...`, with joins, run as `Custom Scan (SiftAgg)`.
