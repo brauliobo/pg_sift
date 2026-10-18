@@ -166,6 +166,37 @@ col_layout(Relation index)
 	return lay;
 }
 
+/*
+ * The per-leaf numbers of SiftSrcStats from the zones and dictionaries, counted over the non-NULL values
+ * of the leaf (elements for a child). ndistinct: a text leaf with no inline unit is its largest segment dictionary, exact for one segment
+ * and a lower bound for several that hold different values; an integer leaf is bounded by its range (max - min + 1); any leaf by its
+ * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
+ */
+static void
+leaf_stats(const SiftColIndexMeta *meta, const SiftColLeafStats *ls, SiftSrcStats *st)
+{
+	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+	{
+		const SiftColDef *def = &meta->cols[i];
+		double		nonnull = ls[i].nvals - ls[i].nnull;
+
+		if (def->kind == SIFT_COLK_GROUP)
+		{
+			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
+			continue;
+		}
+		st->ndistinct[i] = nonnull;
+		if (def->store == SIFT_COLS_STR && !ls[i].inl)
+			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);
+		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0)
+		{
+			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
+			st->min[i] = (double) ls[i].min;
+			st->max[i] = (double) ls[i].max;
+		}
+	}
+}
+
 static void
 col_stats(Relation index, SiftSrcStats *st)
 {
@@ -175,6 +206,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->nrows = meta->stats.nrows;
 	st->nunits = meta->stats.nunits;
 	st->allvisible_frac = meta->stats.allvisible_frac;
+	leaf_stats(meta, sift_col_leaf_stats(index), st);
 }
 
 static void *
