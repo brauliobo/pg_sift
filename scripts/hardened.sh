@@ -17,6 +17,8 @@ TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(colcodec_basic colcodec_simd col_enc col_kernels_simd kernels_simd kernels_filter shred_values shred_kernels shred_diff
 	verify_corrupt store_corrupt query_errors phrase_positions index_build_postings tbl_basic tbl_agg)
 export SIFT_HARDEN=${SIFT_HARDEN:-1}
+# the trap flavor, not the ASan flavor scripts/ci.sh full exports
+unset SANITIZE
 
 rm -rf "$WORK" && mkdir -p "$WORK/tree"
 # a private copy: the build writes into the tree and the flavor must not disturb the checkout's own build
