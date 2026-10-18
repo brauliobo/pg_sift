@@ -1,5 +1,6 @@
 -- How many different customers ordered each month
 -- key: 1
+-- label: `count(DISTINCT customer_id) GROUP BY month`
 --@ pg
 SELECT date_trunc('month', created_at)::date AS month, count(DISTINCT customer_id) FROM orders GROUP BY 1
 --@ ch
