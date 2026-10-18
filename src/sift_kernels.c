@@ -13,9 +13,9 @@
 const SiftKernels *sift_kern = &sift_kernels_scalar;
 
 int
-sift_kern_expand_scalar(uint64 *out, const uint64 *base, const uint64 *rankbits, int nwords)
+sift_kern_expand_scalar(uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits, uint32 pos, int nwords)
 {
-	uint32		pos = 0;
+	int			left = 0;
 
 	for (int i = 0; i < nwords; i++)
 	{
@@ -26,9 +26,10 @@ sift_kern_expand_scalar(uint64 *out, const uint64 *base, const uint64 *rankbits,
 		pos += sift_pc64(m);
 		for (; m; m &= m - 1, src >>= 1)
 			r |= (src & 1) ? m & -m : 0;
-		out[i] = r;
+		out[i] = r & mask[i];
+		left += sift_pc64(out[i]);
 	}
-	return pos;
+	return left;
 }
 
 static void

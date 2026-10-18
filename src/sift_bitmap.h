@@ -166,6 +166,7 @@ static inline float sift_blk_ub(const sift_cur *c, int b)
 size_t sift_chunk_bound(uint32_t npages);   /* for SIFT_CT_AUTO / SIFT_CT_BITMAP */
 size_t sift_chunk_encode(const uint64_t pagemask[4], const uint64_t *offmasks, int ctype, uint8_t *out);
 uint32_t sift_chunk_count(const uint8_t *chunk);
+uint32_t sift_chunk_width(const uint8_t *chunk);   /* bytes of offsets of a page, the same for every page */
 void sift_chunk_pagemask(const uint8_t *chunk, uint64_t pagemask[4]);
 uint32_t sift_chunk_offsets(const uint8_t *chunk, const uint64_t pagesel[4], uint64_t *offmasks);  /* returns pages written */
 void sift_chunk_grp(const uint8_t *chunk, uint32_t gid, sift_grp *g, uint8_t *buf);              /* zero-copy for bitmaps */
