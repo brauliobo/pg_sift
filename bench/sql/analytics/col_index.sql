@@ -1,5 +1,5 @@
--- The sift_col index of the analytics corpus: the default of `bench/bench analytics --col-index`, which takes a statement or @FILE
--- instead. Lines starting with -- are dropped; a build of pg_sift without the sift_col access method skips the index and measures the
--- baseline plan alone. PLACEHOLDER: the columns, paths and options are the ones of the sift_col branch (docs/COL.md) once it lands;
--- edit this file (or pass --col-index) when its DDL differs.
-CREATE INDEX orders_sift_col ON orders USING sift_col (store_id, placed_at, source, deleted_at, country_code, lang, attributes, metrics, items, notes);
+-- The sift_col index of the analytics corpus: the default of `bench/bench analytics --col-index` and of `scripts/coldiff.sh --suite analytics`
+-- (a statement or @FILE instead with --col-index). Lines starting with -- are dropped; a build of pg_sift without the sift_col access
+-- method skips the index and measures the baseline plan alone. The paths grammar is docs/COL.md section 6.
+CREATE INDEX orders_sift_col ON orders USING sift_col (id, store_id, placed_at, status, source, country_code, lang, deleted_at, attributes, metrics, items, notes)
+	WITH (paths = 'attributes->channel text, attributes->device text, attributes->locale text, attributes->normalized bool, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_role text, text text}');
