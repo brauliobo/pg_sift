@@ -13,6 +13,16 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   (documented in DESIGN.md and docs/SIZING.md: the live df costs a posting walk per query and nothing stores it).
   `bench/dirty-query.sh` measures latency and score drift against the dead fraction (deleted and vacuumed, deleted from the oldest rows,
   or rolled back).
+- Performance: `count(*)` over vacuumed documents costs a fifth to a half of what it did (user instructions per query, interleaved A/B,
+  200,000 documents with 10, 25 and 45% deleted and vacuumed, 95% intervals under 1%): a term 0.21x, two terms 0.51x, three terms with OR
+  0.31x, the parallel count 0.77x, ranked AND 0.91x, ranked OR 0.86x, the filtered scan 0.94x. Against the same live rows rebuilt, the count
+  of a term went from 19.7 to 7.7 times the clean index's, at every dead fraction. A dirty superblock now cuts a group out of its liveness
+  bits in one pass instead of one expansion per page; a clean superblock of a segment that has dirty ones is counted without decoding its
+  documents; and the page index of a superblock is built only by what reads a page's rows. Clean indexes are no slower: a group counted in
+  bulk no longer walks its pages, so the clean count of a term takes 0.53x and the other clean counts 0.87x to 0.97x. No change of the
+  format; counts, rows and scores are the same. The `expand` kernel takes the mask and the start bit and returns the popcount (the digest
+  pinned by `kernels_simd` changes; every level stays bit-identical). `bench/dirty-query.sh` also times the count of two terms, of three
+  with OR and the parallel count.
 - Fix: the memory of `CREATE INDEX` grows no more with the table at a small `maintenance_work_mem`. The runs a term in most rows makes were
   merged level after level into runs that held the term whole when written as a segment (1MB budget, a term in 9 of 10 rows: 6.4 to 31.5MB
   from 0.4M to 6.4M rows). Runs now stop merging where a segment's largest term fits the budget, and the build writes the table as more,
