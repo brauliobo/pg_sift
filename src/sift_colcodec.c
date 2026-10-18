@@ -1611,6 +1611,10 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 				pfree(codes);
 				break;
 			}
+		case SIFT_CCN_SCALE:
+			nd_u32(nd->a, 0, dst);
+			sift_cck->scale32(dst, n, (uint32) ((uint64) nd->base - (uint64) sub), (uint32) nd->mind);
+			break;
 		case SIFT_CCN_WRAP:
 			nd_u32(nd->a, sub, dst);
 			break;
@@ -1697,8 +1701,7 @@ nd_i64(const CcNode *nd, int64 *dst)
 			}
 		case SIFT_CCN_SCALE:
 			nd_i64(nd->a, dst);
-			for (uint32 i = 0; i < n; i++)
-				dst[i] = (int64) ((uint64) nd->base + (uint64) nd->mind * (uint64) dst[i]);
+			sift_cck->scale64(dst, n, nd->base, nd->mind);
 			break;
 		case SIFT_CCN_WRAP:
 			nd_i64(nd->a, dst);
@@ -1711,6 +1714,48 @@ sift_cc_decode(const SiftCc *c, int64 *dst)
 {
 	if (c->n)
 		nd_i64(c->root, dst);
+}
+
+/* The doubles of the keys: an ALP node is divided straight into doubles (its exceptions are keys), any other node decodes the keys and turns them in place */
+static void
+nd_f8(const CcNode *nd, double *dst)
+{
+	uint32		n = nd->n;
+
+	if (nd->tag == SIFT_CCN_WRAP)
+		nd_f8(nd->a, dst);
+	else if (nd->tag == SIFT_CCN_ALP)
+	{
+		uint32	   *dg = palloc(sizeof(uint32) * CC_CAP32(n));
+
+		nd_u32(nd->a, nd->dmin, dg);
+		if (nd->kind == SIFT_CC_F8)
+			sift_cck->alp_f8(dst, dg, n, nd->dmin, sift_cc_p10[nd->e]);
+		else
+			sift_cck->alp_f4(dst, dg, n, nd->dmin, sift_cc_p10f[nd->e]);
+		for (uint32 k = 0; k < nd->nexc; k++)
+			dst[nd->pos[k]] = sift_col_f8_from_key((int64) get64(nd->ekeys + 8 * (size_t) k));
+		pfree(dg);
+	}
+	else
+	{
+		nd_i64(nd, (int64 *) dst);
+		sift_colk->f8_from_keys((int64 *) dst, n);
+	}
+}
+
+void
+sift_cc_decode_f8(const SiftCc *c, double *dst)
+{
+	if (c->n)
+		nd_f8(c->root, dst);
+}
+
+void
+sift_cc_decode_u32(const SiftCc *c, uint32 *dst)
+{
+	if (c->n)
+		nd_u32(c->root, 0, dst);
 }
 
 bool

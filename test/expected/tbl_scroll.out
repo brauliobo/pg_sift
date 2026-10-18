@@ -4,6 +4,8 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE sc (id int, v text) USING sift_table;
 -- Runs the walk on a SCROLL cursor over "SELECT id FROM tbl WHERE pred" and compares every fetch with the model: the cursor is on row pos
 -- (0 before the first, n + 1 after the last); NEXT moves down and PRIOR up, and a row is returned only when the move lands on one.
+-- the model is the forward order of a sequential scan: an aggregate scan returns array_agg in the order of its units
+SET sift.enable_agg = off;
 CREATE FUNCTION scroll_walk(tbl regclass, pred text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	cur refcursor;

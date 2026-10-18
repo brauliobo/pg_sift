@@ -58,11 +58,11 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
  SELECT count(*) FROM ag WHERE s IN (repeat('é', 160) || '3', 'short7', 'absent')                           | t      | t
  SELECT count(*), count(s), count(DISTINCT s) FROM ag                                                       | t      | t
  SELECT count(*), max(n) FROM ag WHERE s LIKE repeat('é', 50) || '%' COLLATE "C"                            | t      | t
- SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | f      | t
+ SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | t      | t
  SELECT count(*), sum(n) FROM ag WHERE s = repeat('é', 160) || '3'                                          | t      | t
  SELECT f, count(*) FROM ag WHERE s IS NULL AND f IS NOT NULL GROUP BY f                                    | t      | t
  SELECT g, count(*) FROM ag WHERE s NOT IN ('short7', 'short8') GROUP BY g                                  | t      | t
- SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | f      | t
+ SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | t      | t
  SELECT s, count(*) FROM ag WHERE s IS NOT NULL GROUP BY s HAVING count(*) > 1                              | t      | t
 (10 rows)
 
@@ -75,11 +75,11 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
  SELECT count(*) FROM ag WHERE s IN (repeat('é', 160) || '3', 'short7', 'absent')                           | t      | t
  SELECT count(*), count(s), count(DISTINCT s) FROM ag                                                       | t      | t
  SELECT count(*), max(n) FROM ag WHERE s LIKE repeat('é', 50) || '%' COLLATE "C"                            | t      | t
- SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | f      | t
+ SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | t      | t
  SELECT count(*), sum(n) FROM ag WHERE s = repeat('é', 160) || '3'                                          | t      | t
  SELECT f, count(*) FROM ag WHERE s IS NULL AND f IS NOT NULL GROUP BY f                                    | t      | t
  SELECT g, count(*) FROM ag WHERE s NOT IN ('short7', 'short8') GROUP BY g                                  | t      | t
- SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | f      | t
+ SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | t      | t
  SELECT s, count(*) FROM ag WHERE s IS NOT NULL GROUP BY s HAVING count(*) > 1                              | t      | t
 (10 rows)
 
@@ -96,11 +96,11 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
  SELECT count(*) FROM ag WHERE s IN (repeat('é', 160) || '3', 'short7', 'absent')                           | t      | t
  SELECT count(*), count(s), count(DISTINCT s) FROM ag                                                       | t      | t
  SELECT count(*), max(n) FROM ag WHERE s LIKE repeat('é', 50) || '%' COLLATE "C"                            | t      | t
- SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | f      | t
+ SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | t      | t
  SELECT count(*), sum(n) FROM ag WHERE s = repeat('é', 160) || '3'                                          | t      | t
  SELECT f, count(*) FROM ag WHERE s IS NULL AND f IS NOT NULL GROUP BY f                                    | t      | t
  SELECT g, count(*) FROM ag WHERE s NOT IN ('short7', 'short8') GROUP BY g                                  | t      | t
- SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | f      | t
+ SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | t      | t
  SELECT s, count(*) FROM ag WHERE s IS NOT NULL GROUP BY s HAVING count(*) > 1                              | t      | t
 (10 rows)
 
@@ -125,11 +125,11 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
  SELECT count(*) FROM ag WHERE s IN (repeat('é', 160) || '3', 'short7', 'absent')                           | t      | t
  SELECT count(*), count(s), count(DISTINCT s) FROM ag                                                       | t      | t
  SELECT count(*), max(n) FROM ag WHERE s LIKE repeat('é', 50) || '%' COLLATE "C"                            | t      | t
- SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | f      | t
+ SELECT count(*), sum(length(s)) FROM ag WHERE g = 2                                                        | t      | t
  SELECT count(*), sum(n) FROM ag WHERE s = repeat('é', 160) || '3'                                          | t      | t
  SELECT f, count(*) FROM ag WHERE s IS NULL AND f IS NOT NULL GROUP BY f                                    | t      | t
  SELECT g, count(*) FROM ag WHERE s NOT IN ('short7', 'short8') GROUP BY g                                  | t      | t
- SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | f      | t
+ SELECT g, count(*), count(s), count(DISTINCT s), min(s COLLATE "C"), max(s COLLATE "C") FROM ag GROUP BY g | t      | t
  SELECT s, count(*) FROM ag WHERE s IS NOT NULL GROUP BY s HAVING count(*) > 1                              | t      | t
 (10 rows)
 

@@ -197,7 +197,7 @@ A header page holds the extent table and the sections table. Its data is a logic
 - **Promotion** turns a sealed segment into an immutable one.
   1. Read its records and sort them by key, in a tuplesort: each live record is packed into a bytea (key and arrival number big-endian, so byte order is key order and the first record of a repeated tid comes first), which keeps the promotion within `maintenance_work_mem` whatever the size of the segment (`mutable_limit` goes up to 1 GB); the excess spills to temporary files. It used to copy every record to memory, about six times the size of the segment: 800 MB at a 16 MB budget for a segment of 138 MB. The inverted buffer then gets what the sort left of the budget when the sort stayed in memory, so a segment that fits promotes as before.
   2. Build with `SiftInvBuf` and write new extents through shared buffers, logged with `log_newpage_range`.
-  3. In a single directory record: replace the sealed entry with the new immutable entry, update metapage totals, and free the old pages with `safexid = ReadNextFullTransactionId()`.
+  3. In a single directory record: replace the sealed entry with the new immutable entry, update metapage totals, andfree the old pages with `safexid = ReadNextFullTransactionId()` (a lazy VACUUM, which is left out of snapshots and of the horizon, its xid included, releases with the next xid whatever step it runs; its own truncation under `AccessExclusiveLock` counts every released extent as reusable).
 
   Records flagged deleted are dropped. A crash before the switch leaves orphan pages, which the sweep reclaims (§i).
 - **Who promotes, in this order:**

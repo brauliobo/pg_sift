@@ -98,14 +98,14 @@ One query per file, as in `bench/sql/analytics/queries`: header lines, then the 
 The sections `--@ pg`, `--@ flat`, `--@ ch` of an analytics file are cut: only `pg` is run. `-- tol:` is ignored: the contract above is the
 tolerance.
 
-The fixture corpus (60 files) has the shapes of the report queries (S1 summary of an object with dynamic keys by key, mapped key and period;
+The fixture corpus (about 180 files; lookup joins `j_*` with semi, anti, key expressions and ON filters, per-order arms with sets, gates and general HAVING `s2_per_order_*` / `t_two_level_*`, mapped aggregates `t_mapped_agg_*`) has the shapes of the report queries (S1 summary of an object with dynamic keys by key, mapped key and period;
 S2 summary of an array of objects with per-order pre-aggregation, the three rollup levels as `UNION ALL` and as `GROUPING SETS`; S4 time
 series at day, week, month and quarter, with a date spine; S5 per-store rows and top-N; S6 `jsonb_path_exists` on an array of objects; S7 the
 same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates and quals (`IN`, `NOT IN`, `BETWEEN`, `LIKE`, `OR`, `NOT`,
 `CASE`, `IS [NOT] NULL`, `FILTER`, `HAVING`, grouping by expressions), NULL-heavy documents and empty sets, a BM25 match with an aggregate,
-a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
+a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), generic aggregates (`g_*`: the variance family, `DISTINCT` forms over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine) with their traps (a volatile transition function, a float read into text with `-0`), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
-that are not numbers, `ORDER BY` in an aggregate, window functions, `DISTINCT ON`, outer joins, a set-returning function in the select
+that are not numbers, window functions, `DISTINCT ON`, outer joins, a set-returning function in the select
 list, `TABLESAMPLE`, `FOR UPDATE`, a partitioned table and `SERIALIZABLE`.
 
 ### Scenarios

@@ -4,7 +4,13 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/nodeFuncs.h"
+#include "utils/array.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "utils/date.h"
 #include "nodes/value.h"
 
@@ -105,10 +111,173 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 	return out;
 }
 
+/* ---------- text tests on the encoded form ---------- */
+
+static Node *
+strip_relabel(Node *n)
+{
+	while (n && IsA(n, RelabelType))
+		n = (Node *) ((RelabelType *) n)->arg;
+	return n;
+}
+
+static bool
+text_type(Oid t)
+{
+	return t == TEXTOID || t == VARCHAROID;
+}
+
+/* a text constant that is not NULL */
+static bool
+str_const(Node *n, const char **s, uint32 *len)
+{
+	Const	   *k = (Const *) strip_relabel(n);
+	text	   *t;
+
+	if (!IsA(k, Const) || k->constisnull || !text_type(k->consttype))
+		return false;
+	t = DatumGetTextPP(k->constvalue);
+	*s = VARDATA_ANY(t);
+	*len = VARSIZE_ANY_EXHDR(t);
+	return true;
+}
+
+static SiftSrcStrOp
+str_commute(SiftSrcStrOp op)
+{
+	return op == SSTR_LT ? SSTR_GT : op == SSTR_LE ? SSTR_GE : op == SSTR_GT ? SSTR_LT : op == SSTR_GE ? SSTR_LE : op;
+}
+
+/* the comparison a text function is, or 0; the range operators and LIKE only compare bytes in the C collation or for a prefix */
+static SiftSrcStrOp
+str_func_op(Oid funcid)
+{
+	switch (funcid)
+	{
+		case F_TEXTEQ:
+			return SSTR_EQ;
+		case F_TEXTNE:
+			return SSTR_NE;
+		case F_TEXT_LT:
+			return SSTR_LT;
+		case F_TEXT_LE:
+			return SSTR_LE;
+		case F_TEXT_GT:
+			return SSTR_GT;
+		case F_TEXT_GE:
+			return SSTR_GE;
+		case F_TEXTLIKE:
+			return SSTR_PREFIX;
+	}
+	return 0;
+}
+
+/* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' */
+static bool
+str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
+{
+	Node	   *a,
+			   *b;
+	SiftSrcStrOp sop;
+	const char *s;
+	uint32		len;
+
+	set_opfuncid(op);
+	if (list_length(op->args) != 2 || (sop = str_func_op(op->opfuncid)) == 0)
+		return false;
+	a = strip_relabel(linitial(op->args));
+	b = strip_relabel(lsecond(op->args));
+	if (IsA(b, Param) && sop != SSTR_PREFIX)
+	{
+		Node	   *t = a;
+
+		a = b;
+		b = t;
+		sop = str_commute(sop);
+	}
+	if (!IsA(a, Param) || !str_const(b, &s, &len))
+		return false;
+	if (sop == SSTR_PREFIX)
+	{
+		/* 'abc%': a LIKE with no other wildcard is bytewise for every deterministic collation */
+		if (len < 2 || s[len - 1] != '%' || memchr(s, '%', len - 1) || memchr(s, '_', len - 1) || memchr(s, '\\', len - 1))
+			return false;
+		len--;
+	}
+	if (sop >= SSTR_LT && sop <= SSTR_GE ? op->inputcollid != C_COLLATION_OID : !get_collation_isdeterministic(op->inputcollid))
+		return false;
+	out->op = sop;
+	out->nvals = 1;
+	out->vals = palloc(sizeof(char *));
+	out->lens = palloc(sizeof(uint32));
+	((const char **) out->vals)[0] = s;
+	((uint32 *) out->lens)[0] = len;
+	return true;
+}
+
+/* leaf = ANY (constants), leaf <> ALL (constants); a NULL among the constants never matches, and makes NOT IN false for every row */
+static bool
+str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
+{
+	Const	   *k;
+	Datum	   *el;
+	bool	   *nl;
+	int			ne,
+				n = 0;
+	const char **vals;
+	uint32	   *lens;
+
+	set_sa_opfuncid(sa);
+	if (list_length(sa->args) != 2 || !IsA(strip_relabel(linitial(sa->args)), Param) ||
+		!((sa->useOr && sa->opfuncid == F_TEXTEQ) || (!sa->useOr && sa->opfuncid == F_TEXTNE)) ||
+		!get_collation_isdeterministic(sa->inputcollid))
+		return false;
+	k = (Const *) lsecond(sa->args);
+	if (!IsA(k, Const) || k->constisnull || !text_type(get_element_type(k->consttype)))
+		return false;
+	deconstruct_array(DatumGetArrayTypeP(k->constvalue), get_element_type(k->consttype), -1, false, TYPALIGN_INT, &el, &nl, &ne);
+	vals = palloc(Max(ne, 1) * sizeof(char *));
+	lens = palloc(Max(ne, 1) * sizeof(uint32));
+	for (int i = 0; i < ne; i++)
+	{
+		if (nl[i])
+		{
+			if (sa->useOr)
+				continue;
+			return false;
+		}
+		vals[n] = VARDATA_ANY(DatumGetPointer(el[i]));
+		lens[n++] = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]));
+	}
+	if (n == 0)
+		return false;
+	out->op = sa->useOr ? SSTR_IN : SSTR_NOTIN;
+	out->nvals = n;
+	out->vals = vals;
+	out->lens = lens;
+	return true;
+}
+
+bool
+sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out)
+{
+	const SiftSrcLeaf *lf;
+	Node	   *e;
+
+	if (p->kind != SAP_LUT || p->level != 0)
+		return false;
+	lf = &lay->leaf[p->leaf];
+	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
+		return false;
+	out->leaf = p->leaf;
+	e = strip_relabel(p->expr);
+	return IsA(e, OpExpr) ? str_cmp_test((OpExpr *) e, out) : IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
+}
+
 static bool
 plain_key(const SiftAggKey *k)
 {
-	return (k->kind == SAK_LEAF && k->typid != FLOAT4OID && k->typid != FLOAT8OID) || k->kind == SAK_LUT;
+	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO;
 }
 
 static bool
@@ -123,11 +292,20 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_AVG_INT:
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+		case SAA_PCT_CONT:
+		case SAA_PCT_DISC:
+		case SAA_GROUPING:
 			return true;
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			return !a->distinct;
 		case SAA_COUNT_DISTINCT:
+			return a->num.n == 0;
 		case SAA_MIN:
 		case SAA_MAX:
-			return a->num.n == 0;
+			return true;
+		case SAA_GEN:
+			return a->gen->parallel;
 		default:
 			return false;
 	}
@@ -136,7 +314,7 @@ plain_agg(const SiftAggAgg *a)
 bool
 sift_aggspec_parallel_ok(const SiftAggSpec *s)
 {
-	if (s->ncombo || s->njoin || s->nvleaf || s->narms || s->nsets)
+	if (s->narms)
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
@@ -144,7 +322,76 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 	for (int i = 0; i < s->naggs; i++)
 		if (!plain_agg(&s->agg[i]))
 			return false;
+	/* the float sums of the scan are merged in lane order, the generic states as the workers finish: not in one scan */
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_GEN)
+			for (int j = 0; j < s->naggs; j++)
+				if (s->agg[j].kind == SAA_SUM_F64 || s->agg[j].kind == SAA_AVG_F64)
+					return false;
 	return true;
+}
+
+/*
+ * The arms of one query that scan the same rows for the same aggregates and differ in their group keys (a time series at four
+ * granularities) run in one pass as the grouping sets of one spec: the keys of the arms one after the other, then the number of the set.
+ */
+static bool
+fuse_candidate(const SiftAggSpec *s)
+{
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_GEN)
+			return false;
+	return s->nkeys > 0 && s->narms == 0 && s->nsets == 0 && s->ncombo == 0 && s->njoin == 0 && s->npost == 0 && s->nvleaf == 0;
+}
+
+static List *
+pack_without_keys(const SiftAggSpec *s)
+{
+	SiftAggSpec t = *s;
+
+	t.nkeys = 0;
+	t.key = NULL;
+	t.nworkers = 0;
+	t.est_groups = 0;
+	return sift_aggspec_pack(&t);
+}
+
+bool
+sift_aggspec_fusable(const SiftAggSpec *a, const SiftAggSpec *b)
+{
+	return fuse_candidate(a) && fuse_candidate(b) && equal(pack_without_keys(a), pack_without_keys(b));
+}
+
+SiftAggSpec *
+sift_aggspec_fuse(SiftAggSpec *const *m, int n, int *keyoff)
+{
+	SiftAggSpec *f = palloc(sizeof(SiftAggSpec));
+	int			nk = 0;
+
+	*f = *m[0];
+	for (int i = 0; i < n; i++)
+		nk += m[i]->nkeys;
+	Assert(nk < SIFT_AGG_MAX_KEYS && n <= 32);
+	f->key = palloc0((nk + 1) * sizeof(SiftAggKey));
+	f->setmask = palloc0(n * sizeof(uint32));
+	f->nsets = n;
+	f->est_groups = 0;
+	nk = 0;
+	for (int i = 0; i < n; i++)
+	{
+		keyoff[i] = nk;
+		memcpy(&f->key[nk], m[i]->key, m[i]->nkeys * sizeof(SiftAggKey));
+		for (int j = 0; j < m[i]->nkeys; j++)
+			f->setmask[i] |= (uint32) 1 << (nk + j);
+		nk += m[i]->nkeys;
+		f->nworkers = Max(f->nworkers, m[i]->nworkers);
+		f->est_groups += m[i]->est_groups;
+	}
+	f->key[nk] = (SiftAggKey) {.kind = SAK_SET, .leaf = -1, .typid = INT4OID, .typmod = -1, .eqop = Int4EqualOperator, .desc = "grouping set"};
+	for (int i = 0; i < n; i++)
+		f->setmask[i] |= (uint32) 1 << nk;
+	f->nkeys = nk + 1;
+	return f;
 }
 
 typedef struct Pack
@@ -222,6 +469,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->op);
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
+	put_int(p, pr->late);
 	put_node(p, pr->expr);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
@@ -238,6 +486,35 @@ put_cond(Pack *p, const SiftAggCond *c)
 	put_int(p, c->isint);
 	put_str(p, psprintf(INT64_FORMAT, c->ci));
 	put_dbl(p, c->cd);
+}
+
+static void
+put_gen(Pack *p, const SiftAggGen *g)
+{
+	put_int(p, g != NULL);
+	if (g == NULL)
+		return;
+	put_node(p, g->aggref);
+	put_int(p, g->nargs);
+	put_int(p, g->ntrans);
+	for (int k = 0; k < g->nargs; k++)
+	{
+		put_int(p, (int) g->arg[k].typid);
+		put_int(p, g->arg[k].nleaves);
+		for (int l = 0; l < g->arg[k].nleaves; l++)
+			put_int(p, g->arg[k].leaf[l]);
+		put_node(p, g->arg[k].expr);
+		put_int(p, g->arg[k].mapped);
+		put_int(p, g->arg[k].combo);
+		put_int(p, g->arg[k].slot);
+	}
+	put_node(p, g->direct);
+	put_int(p, g->distinct);
+	put_int(p, g->darg);
+	put_int(p, g->ordered);
+	put_int(p, g->sorted);
+	put_int(p, g->hyp);
+	put_int(p, g->parallel);
 }
 
 static void
@@ -271,6 +548,8 @@ put_agg(Pack *p, const SiftAggAgg *a)
 	put_dbl(p, a->frac);
 	put_int(p, a->desc_order);
 	put_int(p, a->share);
+	put_gen(p, a->gen);
+	put_int(p, (int) a->aggfn);
 }
 
 static void
@@ -291,6 +570,10 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		put_int(p, a->nhaving);
 		for (int j = 0; j < a->nhaving; j++)
 			put_cond(p, &a->having[j]);
+		put_node(p, a->hexpr);
+		put_int(p, a->nhp);
+		for (int j = 0; j < a->nhp; j++)
+			put_int(p, a->hsrc[j]);
 		put_int(p, a->ncol);
 		for (int j = 0; j < a->ncol; j++)
 			put_int(p, a->colsrc[j]);
@@ -306,13 +589,15 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		const SiftAggJoin *j = &s->join[i];
 
 		put_int(p, (int) j->relid);
-		put_int(p, j->left);
+		put_int(p, j->kind);
+		put_int(p, j->fslot);
 		put_int(p, j->nkey);
 		for (int k = 0; k < j->nkey; k++)
 		{
 			put_int(p, j->keyatt[k]);
 			put_int(p, (int) j->keytype[k]);
 			put_int(p, j->keypos[k]);
+			put_node(p, j->keyexpr[k]);
 		}
 		put_int(p, j->ncol);
 		for (int k = 0; k < j->ncol; k++)
@@ -346,6 +631,7 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, c->slot[k].key);
 			put_int(p, c->slot[k].agg);
 			put_node(p, c->slot[k].expr);
+			put_int(p, c->slot[k].direct);
 		}
 	}
 }
@@ -472,6 +758,7 @@ get_pred(Unpack *u)
 	pr->op = get_int(u);
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
+	pr->late = get_int(u);
 	pr->expr = get_node(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
@@ -490,6 +777,38 @@ get_cond(Unpack *u, SiftAggCond *c)
 	c->isint = get_int(u);
 	c->ci = strtoll(get_str(u), NULL, 10);
 	c->cd = strtod(get_str(u), NULL);
+}
+
+static SiftAggGen *
+get_gen(Unpack *u)
+{
+	SiftAggGen *g;
+
+	if (!get_int(u))
+		return NULL;
+	g = palloc0(sizeof(SiftAggGen));
+	g->aggref = get_node(u);
+	g->nargs = get_int(u);
+	g->ntrans = get_int(u);
+	for (int k = 0; k < g->nargs; k++)
+	{
+		g->arg[k].typid = (Oid) get_int(u);
+		g->arg[k].nleaves = get_int(u);
+		for (int l = 0; l < g->arg[k].nleaves; l++)
+			g->arg[k].leaf[l] = get_int(u);
+		g->arg[k].expr = get_node(u);
+		g->arg[k].mapped = get_int(u);
+		g->arg[k].combo = get_int(u);
+		g->arg[k].slot = get_int(u);
+	}
+	g->direct = get_node(u);
+	g->distinct = get_int(u);
+	g->darg = get_int(u);
+	g->ordered = get_int(u);
+	g->sorted = get_int(u);
+	g->hyp = get_int(u);
+	g->parallel = get_int(u);
+	return g;
 }
 
 static void
@@ -526,6 +845,8 @@ get_agg(Unpack *u, SiftAggAgg *a)
 	a->frac = strtod(get_str(u), NULL);
 	a->desc_order = get_int(u);
 	a->share = get_int(u);
+	a->gen = get_gen(u);
+	a->aggfn = (Oid) get_int(u);
 }
 
 static void
@@ -550,6 +871,11 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		a->having = palloc0(Max(a->nhaving, 1) * sizeof(SiftAggCond));
 		for (int j = 0; j < a->nhaving; j++)
 			get_cond(u, &a->having[j]);
+		a->hexpr = get_node(u);
+		a->nhp = get_int(u);
+		a->hsrc = palloc(Max(a->nhp, 1) * sizeof(int));
+		for (int j = 0; j < a->nhp; j++)
+			a->hsrc[j] = get_int(u);
 		a->ncol = get_int(u);
 		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
 		for (int j = 0; j < a->ncol; j++)
@@ -567,13 +893,15 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		SiftAggJoin *j = &s->join[i];
 
 		j->relid = (Oid) get_int(u);
-		j->left = get_int(u);
+		j->kind = get_int(u);
+		j->fslot = get_int(u);
 		j->nkey = get_int(u);
 		for (int k = 0; k < j->nkey; k++)
 		{
 			j->keyatt[k] = get_int(u);
 			j->keytype[k] = (Oid) get_int(u);
 			j->keypos[k] = get_int(u);
+			j->keyexpr[k] = get_node(u);
 		}
 		j->ncol = get_int(u);
 		for (int k = 0; k < j->ncol; k++)
@@ -609,6 +937,7 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			c->slot[k].key = get_int(u);
 			c->slot[k].agg = get_int(u);
 			c->slot[k].expr = get_node(u);
+			c->slot[k].direct = get_int(u);
 		}
 	}
 }

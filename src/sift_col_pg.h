@@ -14,6 +14,8 @@
 
 /* The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map) */
 extern SiftColIndexMeta *sift_col_index_meta(Relation index);
+/* Per leaf (ncols entries, memoized per backend, valid until a call for a ninth index): what the zones and dictionaries of the immutable segments say, no chunk read */
+extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 
 /* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
 extern const SiftColIndexMeta *sift_col_index_defs(Relation index);

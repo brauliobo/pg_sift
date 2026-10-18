@@ -165,6 +165,12 @@ extern bool sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c);
  * n + SIFT_COL_PAD/8 slots.
  */
 extern void sift_cchunk_decode(const SiftCChunk *c, int64 *dst);
+/*
+ * The same into the consumer's lane, without the int64 pass: _u32 the low 32 bits of the keys (an int4 or date, a dictionary code; dst needs
+ * SIFT_CC_CAP32(n) slots), _f8 the doubles of a float chunk (dst needs n + SIFT_COL_PAD/8 slots). NULL slots 0.
+ */
+extern void sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst);
+extern void sift_cchunk_decode_f8(const SiftCChunk *c, double *dst);
 /* VAR and inline STR chunks (enc STRS, ISTR): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
 extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);
@@ -254,12 +260,15 @@ typedef struct SiftCUnitView
 	uint32		nrows;
 	uint32		npages;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
+	uint8		page[SIFT_SB_PAGES];	/* page within the superblock of the p-th page of the unit: the set bits of pagemask, in order */
 	const uint32 *rowstart;		/* npages + 1 (unaligned access is avoided by the parser copying when needed) */
 	const uint16 *maxoff;
 	const uint8 *sparse;
 	const uint32 *chunk_off;
 	const uint32 *chunk_len;
 } SiftCUnitView;
+
+_Static_assert(SIFT_SB_PAGES <= 256, "SiftCUnitView.page holds page numbers in a byte");
 
 /* false when inconsistent (the caller raises ERRCODE_INDEX_CORRUPTED); rec must stay valid and be 8-byte aligned */
 extern bool sift_cunit_parse(const uint8 *rec, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);

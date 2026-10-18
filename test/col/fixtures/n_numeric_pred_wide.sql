@@ -1,8 +1,6 @@
 -- numeric predicates on numeric(18, 0) and numeric(18, 6): constants at the edges of int64 and of the scaled range, half a unit, and trailing zeros
 -- shape: S6
 -- expect: agg
--- guc: seq_page_cost = 10000
--- guc: random_page_cost = 10000
 -- key: -
 SELECT
        count(*) FILTER (WHERE n0 = 2.5::numeric) AS eq_n0_0,

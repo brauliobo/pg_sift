@@ -1,5 +1,6 @@
 -- Aggregates over numeric(p, s) columns on a sift_col index: predicates, group keys, expressions and count(DISTINCT) run in
--- Custom Scan (SiftAgg) with the rows of the normal plan (sift.enable_agg off); what is not proven exact keeps the normal plan.
+-- Custom Scan (SiftAgg) with the rows of the normal plan (sift.enable_agg off). Expressions without a kernel (division, modulo,
+-- float8 comparisons, functions) are evaluated by PostgreSQL over the decoded values, also past the 38 digits of the integer programs; what PostgreSQL types as an integer sum runs as a generic aggregate.
 CREATE EXTENSION pg_sift;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
@@ -22,10 +23,14 @@ EXPLAIN (COSTS OFF) SELECT price, count(*) FROM items GROUP BY price;
 EXPLAIN (COSTS OFF) SELECT store, sum(price * qty), max(round(rate, 2) - price) FROM items WHERE price * 2 <= rate GROUP BY store;
 EXPLAIN (COSTS OFF) SELECT store, count(DISTINCT price), count(DISTINCT round(price, 0)) FROM items GROUP BY store;
 
--- not exact in 128 bits, or not the stored value: the normal plan
+-- evaluated by PostgreSQL over the decoded values
 EXPLAIN (COSTS OFF) SELECT store, sum(price / 3) FROM items GROUP BY store;
-EXPLAIN (COSTS OFF) SELECT store, sum(price * rate) FROM items GROUP BY store;
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 1.5::float8 GROUP BY store;
+EXPLAIN (COSTS OFF) SELECT price % 7 AS k, max(sqrt(abs(rate))) FROM items GROUP BY 1;
+
+-- more digits than the 128-bit programs hold: PostgreSQL adds the products; the integer sum of an expression PostgreSQL evaluates: a generic aggregate
+EXPLAIN (COSTS OFF) SELECT store, sum(price * rate * rate) FROM items GROUP BY store;
+EXPLAIN (COSTS OFF) SELECT store, sum(qty / 2) FROM items GROUP BY store;
 
 -- the rows of the two plans
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -52,7 +57,32 @@ SELECT same($$SELECT store, sum(price * qty) AS a, avg(price + rate) AS b, min(p
 SELECT same($$SELECT store, count(*) FILTER (WHERE price * 2 > 20) AS a, count(*) FILTER (WHERE price > rate) AS b, count(*) FILTER (WHERE round(price) = 11) AS c
 			  FROM items GROUP BY store$$) AS expression_predicates;
 SELECT same($$SELECT store, count(DISTINCT price) AS a, count(DISTINCT rate) AS b, count(DISTINCT price + 0.10) AS c, count(DISTINCT price * qty) AS d FROM items GROUP BY store$$) AS distincts;
-SELECT same($$SELECT sum(price / 3) AS a, sum(price * rate) AS b, count(*) FILTER (WHERE price > 1.5::float8) AS c FROM items$$) AS plain_kept;
+SELECT same($$SELECT store, sum(price / 3) AS a, avg(rate / 7) AS b, max(price % 3) AS c, min(round(price / 7, 3)) AS d, count(price / 5) AS e FROM items GROUP BY store$$) AS pg_arguments;
+SELECT same($$SELECT price % 7 AS k, round(rate / 9, 1) AS r, count(*) AS n, max(sqrt(abs(rate))) AS s FROM items GROUP BY 1, 2$$) AS pg_keys;
+SELECT same($$SELECT store, count(*) FILTER (WHERE price > 1.5::float8) AS a, count(*) FILTER (WHERE rate / 3 < price) AS b, count(*) FILTER (WHERE price = ANY (ARRAY[1.5, 2.5, 0.05]::float8[])) AS c FROM items GROUP BY store$$) AS pg_filters;
+SELECT same($$SELECT store, sum(price * rate * rate) AS a, avg(price * rate * rate) AS b FROM items GROUP BY store$$) AS wide_products;
+-- sums of values of many scales, past 38 digits (the sum leaves its integer form), with a NaN and an infinity in one group
+SELECT same($$SELECT store, sum(price * rate * rate * 100000000000000000000) AS a, avg(rate / 7 + price / 3) AS b, sum(price / (qty + 1)) AS c FROM items GROUP BY store$$) AS mixed_scales;
+SELECT same($$SELECT store % 2 AS g, sum(CASE WHEN id % 997 = 0 THEN 'NaN'::numeric / 1 ELSE price / 3 END) AS a, sum(CASE WHEN id % 1999 = 0 THEN 'Infinity'::numeric + price / 3 ELSE price / 7 END) AS b FROM items GROUP BY 1$$) AS special_sums;
+SELECT same($$SELECT store, sum(qty / 2) AS a, avg(qty % 4) AS b FROM items GROUP BY store$$) AS int_sums;
+
+-- a division the normal plan never reaches (qual order, FILTER, CASE) must not raise in the aggregate scan
+SELECT same($$SELECT store, sum(rate / weight) FILTER (WHERE weight <> 0) AS a, count(*) FILTER (WHERE weight <> 0 AND price / weight > 1) AS b,
+			  sum(CASE WHEN weight = 0 THEN 0 ELSE price / weight END) AS c FROM items GROUP BY store$$) AS guarded_division;
+SELECT same($$SELECT count(*) FROM items WHERE weight <> 0 AND price / weight > 1$$) AS guarded_where;
+
+-- a combo cache of 64 entries resets many times over thousands of distinct values
+SET sift.agg_combo_cache = 64;
+SELECT same($$SELECT store, sum(price / 3) AS a, max(price % 5 + rate / 2) AS b FROM items GROUP BY store$$) AS combo_cache;
+RESET sift.agg_combo_cache;
+
+-- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL, the kernels refuse them
+CREATE TABLE nans (id int PRIMARY KEY, g int, n numeric(12,2));
+INSERT INTO nans VALUES (1, 1, 1.5), (2, 1, 'NaN'), (3, 1, NULL), (4, 2, 'NaN'), (5, 2, -7.25), (6, 3, 2);
+CREATE INDEX nans_col ON nans USING sift_col (id, g, n);
+SELECT same($$SELECT g, n % 3 AS k, sum(n / 3) AS s, count(*) FILTER (WHERE n > 1.5::float8) AS c FROM nans GROUP BY 1, 2$$) AS nan_rows;
+SELECT g, max(n + 1) FROM nans GROUP BY g;
+DROP TABLE nans;
 DROP FUNCTION same(text);
 DROP TABLE items;
 DROP EXTENSION pg_sift;

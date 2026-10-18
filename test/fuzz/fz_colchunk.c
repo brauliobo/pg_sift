@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+
 #include "sift_col.h"
 #include "sift_col_enc.h"
 #include "sift_colcodec.h"
