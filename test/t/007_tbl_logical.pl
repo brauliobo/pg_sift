@@ -64,6 +64,7 @@ $sub->wait_for_subscription_sync($pub, 'sub');
 sub same
 {
 	my ($what) = @_;
+	$sub->wait_for_subscription_sync($pub, 'sub');
 	$pub->wait_for_catchup('sub');
 	my $q = "SELECT count(*) || ':' || coalesce(md5(string_agg(id || '/' || store || '/' || total || '/' || coalesce(note, '-'), ',' ORDER BY id)), '') FROM orders";
 	is($sub->safe_psql('postgres', $q), $pub->safe_psql('postgres', $q), "$what: the subscriber has the publisher's rows");
