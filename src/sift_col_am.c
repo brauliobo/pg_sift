@@ -369,9 +369,7 @@ sift_col_numeric_key(int scale, Datum value, SiftColRound round)
 Datum
 sift_col_key_numeric(int scale, int64 key)
 {
-	Datum		n = NumericGetDatum(int64_to_numeric(key));
-
-	return DirectFunctionCall2(numeric_trunc, DirectFunctionCall2(numeric_div, n, numeric_pow10(scale)), Int32GetDatum(scale));
+	return NumericGetDatum(int64_div_fast_to_numeric(key, scale));
 }
 
 /* ---------- tuple to row ---------- */
