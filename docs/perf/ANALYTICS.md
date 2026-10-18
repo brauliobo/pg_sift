@@ -93,7 +93,7 @@ One psql backend per run with `max_parallel_workers_per_gather = 0`. For each qu
 with the `heap` result), then `--runs` (5) measured runs, the engines interleaved with the first one rotating, so a drift of the machine load hits all of
 them. A run's **CPU time** is the on-CPU time of the backend read from `/proc/PID/schedstat` before and after the statement (planning included; it does
 not depend on the load of the machine, which is shared and busy); **instructions** are the user-space instructions of that process from `perf stat -p`
-(not measured, with a message, when `perf_event_paranoid` forbids it); the wall time is kept for reference. ClickHouse runs with one thread
+(`bench/steps/perf.sh`, the count of `bench/steps/ab.sh` and `bench/cpu-query.sh` too; not measured, with a message, when `perf_event_paranoid` forbids it); the wall time is kept for reference. ClickHouse runs with one thread
 (`max_threads = 1`): the CPU time is user plus system time of the query from `system.query_log`, the instructions are those of the server process
 during the query. The value of a cell is the median of the runs, with minimum, maximum and standard error.
 

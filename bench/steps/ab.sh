@@ -20,6 +20,7 @@
 # /tmp/sift-ab), BENCH_STORE (the data directory holds articles.tsv), PORT (default 56110, within 56100-56169), PGB (extra pgbench options).
 export BENCH_WORK=${BENCH_WORK:-/tmp/sift-ab} PORT=${PORT:-56110} TIER=Q Q_DOCS=${Q_DOCS:-50000}
 . "$(dirname "$0")/lib.sh"
+. "$STEPS/perf.sh"
 AB=$ROOT/ab
 ABDB=${ABDB:-ab}
 
@@ -159,16 +160,10 @@ run() { # CLASS REPS SECS|Nt LABEL...
       out=$(mktemp)
       PGAPPNAME=ab PGOPTIONS=$(options "$l") pgbench -n -c 1 -j 1 $dur --random-seed=7 $(protocol "$c") ${PGB:-} -f "$c" "$ABDB" >"$out" 2>&1 &
       pid=$(backend ab)
-      if [[ -n ${txns:-} ]]; then
-        read -r cyc ins < <(perf stat -x, -e cycles:u,instructions:u -p "$pid" 2>&1 | awk -F, '/cycles/ {c = $1} /instructions/ {i = $1} END {print c, i}')
-        per=$txns
-      else
-        read -r cyc ins < <(perf stat -x, -e cycles:u,instructions:u -p "$pid" -- sleep "$secs" 2>&1 | awk -F, '/cycles/ {c = $1} /instructions/ {i = $1} END {print c, i}')
-        per=$(grep -oP 'tps = \K[0-9.]+(?= \(without)' "$out" | awk -v s="$secs" '{printf "%.6f", $1 * s}')
-      fi
+      if [[ -n ${txns:-} ]]; then read -r cyc ins _ < <(perf_counts "$pid"); else read -r cyc ins _ < <(perf_counts "$pid" -- sleep "$secs"); fi
       wait
       tps=$(grep -oP 'tps = \K[0-9.]+(?= \(without)' "$out"); rm -f "$out"
-      [[ -n ${txns:-} ]] || per=$(awk -v t="$tps" -v s="$secs" 'BEGIN {printf "%.6f", t * s}')
+      per=${txns:-$(awk -v t="$tps" -v s="$secs" 'BEGIN {printf "%.6f", t * s}')}
       cy[$l]+="$(awk -v c="$cyc" -v n="$per" 'BEGIN {printf "%.0f", c / n}') "
       in[$l]+="$(awk -v c="$ins" -v n="$per" 'BEGIN {printf "%.0f", c / n}') "
       tp[$l]+="$tps "
