@@ -30,15 +30,17 @@
 
 #include "sift_table.h"
 
-typedef struct DeadTids
+/* A growable array of TIDs: the dead rows VACUUM found, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up) */
+typedef struct TidList
 {
 	ItemPointerData *tid;
 	uint64		n;
 	uint64		cap;
-} DeadTids;
+} TidList;
 
-static void
-dead_add(DeadTids *d, BlockNumber vblock, OffsetNumber off)
+/* The next free slot */
+static ItemPointer
+tid_push(TidList *d)
 {
 	if (d->n == d->cap)
 	{
@@ -46,7 +48,7 @@ dead_add(DeadTids *d, BlockNumber vblock, OffsetNumber off)
 		d->tid = d->tid ? repalloc_huge(d->tid, d->cap * sizeof(ItemPointerData)) :
 			palloc_extended(d->cap * sizeof(ItemPointerData), MCXT_ALLOC_HUGE);
 	}
-	ItemPointerSet(&d->tid[d->n++], vblock, off);
+	return &d->tid[d->n++];
 }
 
 static int
@@ -55,12 +57,19 @@ cmp_tid(const void *a, const void *b)
 	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
 }
 
-static bool
-dead_reaped(ItemPointer itemptr, void *state)
+static void
+tid_sort(TidList *d)
 {
-	DeadTids   *d = state;
+	qsort(d->tid, d->n, sizeof(ItemPointerData), cmp_tid);
+}
 
-	return bsearch(itemptr, d->tid, d->n, sizeof(ItemPointerData), cmp_tid) != NULL;
+/* In the sorted list? */
+static bool
+tid_has(ItemPointer itemptr, void *state)
+{
+	TidList    *d = state;
+
+	return d->n > 0 && bsearch(itemptr, d->tid, d->n, sizeof(ItemPointerData), cmp_tid) != NULL;
 }
 
 /* Is xid's transaction over and aborted */
@@ -76,7 +85,7 @@ typedef struct VacState
 	TransactionId newest_kept;	/* oldest xid still stored: relfrozenxid */
 	double		live;
 	double		dead;			/* recently dead: deleter committed but not removable yet */
-	DeadTids	dead_tids;
+	TidList	dead_tids;
 } VacState;
 
 static void
@@ -149,7 +158,7 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 			{
 				rec->flags |= SIFT_TBL_REC_DEAD;
 				changed = true;
-				dead_add(&v->dead_tids, ph->vblock, off);
+				ItemPointerSet(tid_push(&v->dead_tids), ph->vblock, off);
 				continue;
 			}
 			if (TransactionIdIsNormal(rec->xmin) && !TransactionIdIsCurrentTransactionId(rec->xmin) &&
@@ -199,7 +208,7 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 				vacuum_page(rel, st, &seg, p, &v);
 			}
 		}
-		qsort(v.dead_tids.tid, v.dead_tids.n, sizeof(ItemPointerData), cmp_tid);
+		tid_sort(&v.dead_tids);
 	}
 	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
 	for (int i = 0; i < nindexes; i++)
@@ -209,7 +218,7 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 		IndexBulkDeleteResult *res = NULL;
 
 		if (v.dead_tids.n > 0)
-			res = index_bulk_delete(&ivinfo, NULL, dead_reaped, &v.dead_tids);
+			res = index_bulk_delete(&ivinfo, NULL, tid_has, &v.dead_tids);
 		res = index_vacuum_cleanup(&ivinfo, res);
 		if (res)
 			pfree(res);
@@ -332,9 +341,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	TableScanDesc scan;
 	Datum		ts_val;
 	bool		ts_isnull;
-	ItemPointerData *have = NULL;
-	uint64		nhave = 0,
-				cap = 0;
+	TidList		have = {0};
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 
@@ -343,13 +350,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	/* the TIDs the first pass found in the index, sorted (every one of them is looked up below) */
 	while (tuplesort_getdatum(state->tuplesort, true, false, &ts_val, &ts_isnull, NULL))
 	{
-		if (nhave == cap)
-		{
-			cap = Max(1024, cap * 2);
-			have = have ? repalloc_huge(have, cap * sizeof(ItemPointerData)) :
-				palloc_extended(cap * sizeof(ItemPointerData), MCXT_ALLOC_HUGE);
-		}
-		itemptr_decode(&have[nhave++], DatumGetInt64(ts_val));
+		itemptr_decode(tid_push(&have), DatumGetInt64(ts_val));
 		state->itups += 1;
 	}
 	scan = table_beginscan(table_rel, snapshot, 0, NULL);
@@ -359,7 +360,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 
 		CHECK_FOR_INTERRUPTS();
 		state->htups += 1;
-		if (nhave > 0 && bsearch(&tid, have, nhave, sizeof(ItemPointerData), cmp_tid) != NULL)
+		if (tid_has(&tid, &have))
 			continue;
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 		if (indexInfo->ii_PredicateState != NULL && !ExecQual(indexInfo->ii_PredicateState, econtext))
@@ -373,8 +374,8 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
 	indexInfo->ii_PredicateState = NULL;
-	if (have)
-		pfree(have);
+	if (have.tid)
+		pfree(have.tid);
 }
 
 /* ---------- TABLESAMPLE ---------- */
