@@ -6039,19 +6039,26 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 	}
 }
 
-/* the group of cell g of arm k in grouping set `set`: the keys the arm and the set share, and the set's number */
+/*
+ * The group that cell g of arm k belongs to (in grouping set `set`): the outer keys the arm (and the set) have, and the set's number.
+ * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps.
+ */
 static uint32
-cell_set_gid(AggExec *ex, int k, uint32 g, int set)
+cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
 {
 	SiftAggSpec *s = ex->spec;
-	uint32		mask = s->setmask[set] & s->arm[k].keymask,
+	uint32		mask = s->arm[k].keymask,
 				ids[SIFT_AGG_MAX_KEYS] = {0},
 				gid = 0;
 
-	for (int j = 0; j < s->nkeys - 1; j++)
+	if (s->nsets)
+	{
+		mask &= s->setmask[set];
+		ids[s->nkeys - 1] = set + 1;
+	}
+	for (int j = 0; j < s->nkeys; j++)
 		if (mask >> j & 1)
 			ids[j] = key_id(ex, j, g);
-	ids[s->nkeys - 1] = set + 1;
 	if (ex->hash)
 		return hash_group(ex, ids);
 	for (int j = 0; j < s->nkeys; j++)
@@ -6081,17 +6088,17 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	}
 	if (a->hstate && !cell_having(ex, k, g))
 		return;
-	if (s->nsets == 0)
+	if (s->nsets == 0 && sa->hmask == 0)
 	{
 		ex->seen[g]++;
 		cell_into(ex, k, g, g, row);
 		return;
 	}
-	for (int set = 0; set < s->nsets; set++)
-		ex->setg[set] = cell_set_gid(ex, k, g, set);
+	for (int set = 0; set < Max(s->nsets, 1); set++)
+		ex->setg[set] = cell_outer_gid(ex, k, g, set);
 	if (ex->hash && ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
-	for (int set = 0; set < s->nsets; set++)
+	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		ex->seen[ex->setg[set]]++;
 		cell_into(ex, k, g, ex->setg[set], row);
@@ -6122,7 +6129,7 @@ arm_chunk(AggExec *ex, Tup *t)
 		{
 			ArmSt	   *a = &ex->arm[k];
 
-			ex->arm_mask = s->arm[k].keymask;
+			ex->arm_mask = s->arm[k].keymask | s->arm[k].hmask;
 			compute_gids(ex, n);
 			memcpy(a->gid, ex->gid, n * sizeof(uint32));
 		}
@@ -7681,7 +7688,7 @@ list_groups(AggExec *ex)
 	for (uint32 g = 0; g < n; g++)
 		if (ex->seen[g] > 0)
 			ex->glist[k++] = g;
-	if (ex->spec->nkeys == 0 && k == 0)
+	if (ex->spec->nkeys == ex->spec->nhidden && k == 0)
 		ex->glist[k++] = 0;
 	ex->nglist = k;
 	ex->n_groups = k;
@@ -8167,15 +8174,23 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	AggExec    *ex = (AggExec *) node;
 	SiftAggSpec *s = ex->spec;
 	StringInfoData buf;
+	int			h1 = s->nkeys - (s->nsets > 0),	/* the hidden keys are between the outer ones and the set's */
+				h0 = h1 - s->nhidden;
 
 	ExplainPropertyText("Index", s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
 	if (s->desc_quals && s->desc_quals[0])
 		ExplainPropertyText("Filters", s->desc_quals, es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
-		appendStringInfo(&buf, "%s%s", j ? ", " : "", s->key[j].desc);
-	if (s->nkeys)
+		if (j < h0 || j >= h1)
+			appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", s->key[j].desc);
+	if (buf.len)
 		ExplainPropertyText("Group Keys", buf.data, es);
+	resetStringInfo(&buf);
+	for (int j = h0; j < h1; j++)
+		appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", s->key[j].desc);
+	if (s->nhidden)
+		ExplainPropertyText("Cell Keys", buf.data, es);
 	resetStringInfo(&buf);
 	for (int i = 0; i < s->naggs; i++)
 		appendStringInfo(&buf, "%s%s", i ? ", " : "", s->agg[i].desc);
