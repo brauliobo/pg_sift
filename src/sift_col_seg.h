@@ -65,6 +65,9 @@ typedef struct SiftColSegment
 extern SiftColSegment *sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
 extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 
+/* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
+extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
+
 /* Index of the first unit whose sb >= sb, nsb if none */
 extern uint32 sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb);
 

@@ -219,19 +219,38 @@ full when no active segment exists is `sift_col_maint_make_room`'s (the AM's mai
 
 All three use one writer: `sift_colw_*` takes **batches** (`SiftColBatch`: the decoded rows of one SB, keys ascending, typed vectors
 per leaf, group offsets) in strictly ascending SB order and writes the unit records, dictionaries, zones and the header. A batch for an
-SB that several inputs hold (a promotion of mutable rows next to old rows, a merge of segments with overlapping SB ranges, the worker
-chunks of a parallel build that split an SB) is made by the **batch merge**: decode every input unit's live rows, merge them by key, re-encode.
+SB that several inputs hold (a promotion of mutable rows next to old rows, a merge of segments with overlapping SB ranges) is made by
+the **batch merge**: decode every input unit's live rows, merge them by key, re-encode.
 (An SB held by a single input segment is rewritten from its batch too: chunks are cheap to decode, and dead rows are dropped.)
 
 - **Serial build**: `table_index_build_scan` -> row -> `SiftColBatch` of the current SB -> `sift_colw_add`; the writer targets a BULK
   `SiftWriteTarget`; one segment per `maintenance_work_mem` of buffered *encoded* bytes (rows are encoded SB by SB, so the buffer is the
   encoded size, a fraction of the heap).
-- **Parallel build**: every participant scans its chunks of blocks, forms batches per SB and spills each as an encoded partial unit to
-  a file of the leader's `SharedFileSet`; the leader k-way merges the files by SB (batch merge when an SB is split between workers) into the
-  segments a serial build would write.
+- **Parallel build** (`amcanbuildparallel`, with the workers PostgreSQL plans for `CREATE INDEX` and `REINDEX`, `CONCURRENTLY` too:
+  `max_parallel_maintenance_workers`, `min_parallel_table_scan_size`, the table's `parallel_workers`, 32 MB of `maintenance_work_mem` per
+  participant; none launched = the serial build): the leader writes the metapage, then every participant (the workers and the leader)
+  **claims whole superblocks** from a shared counter, the first one by its slot so that each has a share whatever the speed of the workers'
+  start. It scans the 256 heap pages of the SB (`table_index_build_range_scan` on the block range, with the leader's snapshot when concurrent), forms the batch and
+  encodes the unit into segments **of its own** through a SHARED write target (extents taken under the metapage lock, pages logged one by one,
+  generations from `sift_store_new_gen`). A participant cuts a segment at its share of the serial budget (at least 16 MB) and writes at most
+  `(SIFT_MAX_SEGMENTS - 7) / participants` segments (16 participants at most), so the directory limit holds as in the serial build; the
+  leader publishes all of them in one `sift_dir_update`, ordered by first SB.
 - **Promotion** of a sealed mutable segment: read records, drop deleted, sort by key, group per SB, write one immutable segment.
 - **Merge**: the tiered policy of `sift_merge_pick` (fan-in 8, tier base `mutable_limit`), plus "mostly dead" through a policy callback.
   Dead rows (cleared liveness bits) are dropped; one segment results. Memory: one SB per input in flight.
+
+Why this model: the serial build spends about a third of its CPU encoding and writing, a fifth shredding and forming rows and the rest scanning the
+heap and parsing jsonb (`perf`, 3 million order lines), so workers that send rows or batches to the leader would leave it a third of the work (a
+speedup of 3 at most) plus the cost of moving the rows, while a participant that runs the whole pipeline on whole superblocks scales with the
+participants, merges nothing and writes no temporary file; the chunks of PostgreSQL's parallel heap scan are not superblock aligned, so a unit
+would be split between workers, encoded twice and merged again. A superblock is in exactly one segment, so segments never share a unit, but their SB
+ranges interleave; the scan (a merge of the segments' unit cursors by SB), `col_merge`, promotion and VACUUM take segments with overlapping ranges
+as they take them next to mutable rows, and `sift.col_index_info.units` counts the SBs the ranges cover once. What differs from a serial build is the bytes,
+never the rows read: dictionaries are per segment, so a parallel-built index has one segment per participant, a dictionary for each and slightly
+more chunk bytes (32.3 MB of segments serial, 32.7 MB with 2 workers, 33.1 MB with 4), and its file is longer by the unused end of
+each participant's last run (50 MB and 41 MB: free blocks, reusable by the next writes; those at the end are cut by the truncation of VACUUM, a BULK write
+trims them all). Measured on 3 million lines (616 MB of heap, 7 columns, 5 shredded paths), on a loaded host (load average 9 of 16 cores), median of 3
+builds: serial 2.6 s, 2 workers 0.9 s (2.9x), 4 workers 0.8 s (3.2x).
 
 ### 2.7 Liveness and VACUUM
 
@@ -533,7 +552,7 @@ A stored unit is read as its head (row directory and chunk table) and then only 
 ## 11. Tests
 
 Regression (`test/sql/col_*.sql`): DDL/options/refusals, build equivalence (every filter shape against the heap), insert/update/delete/
-rollback/VACUUM vs the heap in every state of the VM, nested same-element predicates against `jsonb_array_elements`, verify, kernels at every
+rollback/VACUUM vs the heap in every state of the VM, parallel build (`col_index_parallel`: workers, segments, REINDEX [CONCURRENTLY], a failing participant, against a serial build), nested same-element predicates against `jsonb_array_elements`, verify, kernels at every
 SIMD level. TAP: `kill -9` in build/insert/promotion/merge/vacuum then verify + equivalence; physical standby. Differential: random
 tables and predicates, col read vs SQL. `sift._test_col_*` exposes the read API for these.
 

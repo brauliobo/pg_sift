@@ -1,0 +1,323 @@
+-- Parallel CREATE INDEX / REINDEX of a sift_col index (docs/COL.md 2.6): the participants claim whole superblocks and write segments of
+-- their own, so the column data must equal the serial build's whatever the segment boundaries. sift.test_col_workers is the number of
+-- workers the last build launched.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+-- Every leaf of two indexes: the same rows with the same values
+CREATE FUNCTION col_same(a regclass, b regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l int; bad text := '';
+BEGIN
+	FOR l IN SELECT leaf FROM sift.col_leaves(a) ORDER BY 1 LOOP
+		IF (SELECT count(*) FROM (SELECT * FROM sift._test_col_read(a, l) EXCEPT ALL SELECT * FROM sift._test_col_read(b, l)) z) +
+		   (SELECT count(*) FROM (SELECT * FROM sift._test_col_read(b, l) EXCEPT ALL SELECT * FROM sift._test_col_read(a, l)) z) > 0
+		THEN bad := bad || ' ' || l; END IF;
+	END LOOP;
+	RETURN CASE WHEN bad = '' THEN 'ok' ELSE 'differs in leaves' || bad END;
+END $$;
+-- The rows of a scan (TIDs of the index) against the visible heap tuples; no HOT chains in the table at the time
+CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
+	EXECUTE format('SELECT count(*) FROM li WHERE %s', heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM li WHERE %s) z', idx, preds, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM li WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+-- sift.col_verify returns void: this one says ok
+CREATE FUNCTION col_verified(idx regclass) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN PERFORM sift.col_verify(idx, true); RETURN 'ok'; END $$;
+-- 12 000 rows, 3 per page: 4 000 pages, 16 superblocks of 256 pages
+CREATE TABLE li (id int, store_id int, qty int, price float8, sku text, attrs jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = off);
+INSERT INTO li
+SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 500 END, 1 + i % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 1000) / 8.0 END,
+	   CASE WHEN i % 17 = 0 THEN NULL ELSE 'sku-' || (i % 300) END,
+	   jsonb_build_object('channel', (ARRAY['web', 'app', 'pos'])[1 + i % 3], 'weight', (i % 50) / 4.0,
+						  'tags', jsonb_build_array('a' || (i % 7), 'b' || (i % 5))),
+	   repeat('x', 100)
+FROM generate_series(1, 12000) i;
+SELECT pg_relation_size('li') / 8192 >= 3 * 256 AS three_superblocks;
+ three_superblocks 
+-------------------
+ t
+(1 row)
+
+-- What the build wrote: the participants, the segments, whether every superblock is in one segment only and whether the units add up
+CREATE FUNCTION col_shape(idx regclass) RETURNS TABLE (workers int, segments bigint, all_have_units bool, one_segment_each bool, units_ok bool, rows_ok bool, verified text)
+LANGUAGE sql AS $$
+	SELECT current_setting('sift.test_col_workers')::int, count(*), bool_and(s.units > 0), sum(s.units) = (SELECT count(DISTINCT sb) FROM sift._test_col_tids(idx, '', 2)),
+		   (SELECT units FROM sift.col_index_info(idx)) = (SELECT count(DISTINCT sb) FROM sift._test_col_tids(idx, '', 2)),
+		   sum(s.rows) = (SELECT count(*) FROM li), col_verified(idx)
+	FROM sift.col_segments(idx) s $$;
+SET maintenance_work_mem = '128MB';
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+-- The serial reference
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX li_ser ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SELECT * FROM col_shape('li_ser');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       0 |        1 | t              | t                | t        | t       | ok
+(1 row)
+
+SET max_parallel_maintenance_workers = 2;
+-- Two workers and the leader: a segment each, the same column data
+CREATE INDEX li_par ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SELECT * FROM col_shape('li_par');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |        3 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT col_cmp('li_par', '', 'true'), col_cmp('li_par', '1:ge:30;0:lt:100', 'qty >= 30 AND store_id < 100'), col_cmp('li_par', '3:eq:sku-7', 'sku = ''sku-7''');
+ col_cmp | col_cmp | col_cmp 
+---------+---------+---------
+ ok      | ok      | ok
+(1 row)
+
+-- Updated (HOT and not), deleted and dead rows of the table: only the live ones enter, and as they do in a serial build
+UPDATE li SET pad = repeat('y', 100) WHERE id % 10 = 1;
+UPDATE li SET qty = qty + 100 WHERE id % 10 = 2;
+UPDATE li SET store_id = NULL WHERE id % 10 = 3;
+DELETE FROM li WHERE id % 10 = 4;
+DROP INDEX li_ser, li_par;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX li_ser ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX li_par ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SELECT * FROM col_shape('li_par');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |        3 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT (SELECT count(*) FROM sift._test_col_tids('li_par', '', 2)) = (SELECT count(*) FROM li) AS only_live_rows,
+	   (SELECT count(*) FROM sift._test_col_tids('li_par', '1:ge:100', 0)) = (SELECT count(*) FROM li WHERE qty >= 100) AS updated_rows;
+ only_live_rows | updated_rows 
+----------------+--------------
+ t              | t
+(1 row)
+
+-- No worker granted: the leader builds alone, as a serial build
+SET max_parallel_workers = 0;
+DROP INDEX li_par;
+CREATE INDEX li_par ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SELECT workers, segments, one_segment_each, rows_ok, verified FROM col_shape('li_par');
+ workers | segments | one_segment_each | rows_ok | verified 
+---------+----------+------------------+---------+----------
+       0 |        1 | t                | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+RESET max_parallel_workers;
+-- Segments cut after every unit: the 16 superblocks are 16 segments of three participants, with generations of their own
+SET sift.test_col_segment_kb = 1;
+CREATE INDEX li_cut ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+RESET sift.test_col_segment_kb;
+SELECT * FROM col_shape('li_cut');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |       16 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT count(*) = 16 AS one_per_superblock, count(DISTINCT gen) = 16 AS own_generations, bool_and(sb_lo = sb_hi) AS single_unit FROM sift.col_segments('li_cut');
+ one_per_superblock | own_generations | single_unit 
+--------------------+-----------------+-------------
+ t                  | t               | t
+(1 row)
+
+SELECT col_same('li_cut', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT sift.col_merge('li_cut', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT segments FROM sift.col_index_info('li_cut');
+ segments 
+----------
+        1
+(1 row)
+
+SELECT col_same('li_cut', 'li_ser'), col_verified('li_cut');
+ col_same | col_verified 
+----------+--------------
+ ok       | ok
+(1 row)
+
+DROP INDEX li_cut;
+-- REINDEX, REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY (the snapshot of the leader is the workers')
+REINDEX INDEX li_par;
+SELECT * FROM col_shape('li_par');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |        3 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+REINDEX INDEX CONCURRENTLY li_par;
+SELECT * FROM col_shape('li_par');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |        3 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+DROP INDEX li_par;
+CREATE INDEX CONCURRENTLY li_par ON li USING sift_col (store_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
+SELECT * FROM col_shape('li_par');
+ workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
+---------+----------+----------------+------------------+----------+---------+----------
+       2 |        3 | t              | t                | t        | t       | ok
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT indisvalid, indisready FROM pg_index WHERE indexrelid = 'li_par'::regclass;
+ indisvalid | indisready 
+------------+------------
+ t          | t
+(1 row)
+
+-- Writes on top of the build, the promotion of the mutable segment and the merge of the interleaved segments
+INSERT INTO li SELECT 20000 + i, i % 500, 1 + i % 40, i / 8.0, 'sku-' || (i % 300), '{"channel": "web", "weight": 1.5, "tags": ["z"]}', 'p'
+FROM generate_series(1, 1500) i;
+DELETE FROM li WHERE id % 10 = 5;
+UPDATE li SET qty = 7 WHERE id % 10 = 6;
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT sift.col_promote('li_par') >= 0 AS promoted, sift.col_promote('li_ser') >= 0 AS promoted;
+ promoted | promoted 
+----------+----------
+ t        | t
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT sift.col_merge('li_par', true) >= 0 AS merged, sift.col_merge('li_ser', true) >= 0 AS merged;
+ merged | merged 
+--------+--------
+ t      | t
+(1 row)
+
+SELECT segments, mutable_segments FROM sift.col_index_info('li_par');
+ segments | mutable_segments 
+----------+------------------
+        2 |                1
+(1 row)
+
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT col_verified('li_par') AS verified;
+ verified 
+----------
+ ok
+(1 row)
+
+VACUUM li;
+SELECT col_same('li_par', 'li_ser');
+ col_same 
+----------
+ ok
+(1 row)
+
+SELECT col_verified('li_par') AS verified;
+ verified 
+----------
+ ok
+(1 row)
+
+-- A failure of a worker (superblock 1 is the first of worker 0) and of the leader (superblock 3 is its first) ends the build
+SET sift.test_col_fail_sb = 1;
+CREATE INDEX li_fail ON li USING sift_col (store_id, qty, price, sku);
+ERROR:  sift test: the participant of superblock 0 fails
+CONTEXT:  parallel worker
+SET sift.test_col_fail_sb = 3;
+CREATE INDEX li_fail ON li USING sift_col (store_id, qty, price, sku);
+ERROR:  sift test: the participant of superblock 2 fails
+SET sift.test_col_fail_sb = 0;
+SELECT count(*) AS left_behind FROM pg_class WHERE relname = 'li_fail';
+ left_behind 
+-------------
+           0
+(1 row)
+
+CREATE INDEX li_fail ON li USING sift_col (store_id, qty, price, sku);
+SELECT current_setting('sift.test_col_workers') AS workers, col_verified('li_fail') AS verified;
+ workers | verified 
+---------+----------
+ 2       | ok
+(1 row)
+
+-- Too small a table is built serially, and the parallel_workers option of the table forces the workers
+CREATE TABLE li_small (id int, qty int) WITH (autovacuum_enabled = off);
+INSERT INTO li_small SELECT i, i FROM generate_series(1, 1000) i;
+RESET min_parallel_table_scan_size;
+CREATE INDEX li_small_serial ON li_small USING sift_col (qty);
+SELECT current_setting('sift.test_col_workers') AS workers;
+ workers 
+---------
+ 0
+(1 row)
+
+ALTER TABLE li_small SET (parallel_workers = 1);
+CREATE INDEX li_small_forced ON li_small USING sift_col (qty);
+SELECT current_setting('sift.test_col_workers') AS workers, (SELECT count(*) FROM sift._test_col_tids('li_small_forced', '')) AS rows;
+ workers | rows 
+---------+------
+ 1       | 1000
+(1 row)
+
+DROP TABLE li, li_small;
+DROP FUNCTION col_same(regclass, regclass), col_cmp(regclass, text, text), col_verified(regclass), col_shape(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
