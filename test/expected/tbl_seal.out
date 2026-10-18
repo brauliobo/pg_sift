@@ -6,7 +6,7 @@ CREATE TABLE s (id int PRIMARY KEY, i2 int2, i8 int8, n numeric(12,3), nu numeri
 CREATE TABLE h (LIKE s INCLUDING ALL) USING heap;
 CREATE INDEX s_i2 ON s (i2, i8);
 CREATE INDEX h_i2 ON h (i2, i8);
-CREATE FUNCTION fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
+CREATE FUNCTION seal_fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 	INSERT INTO s SELECT g, CASE WHEN g % 17 = 0 THEN NULL ELSE (g % 300)::int2 END, g * 1000003::int8 % 99991, (g % 977) / 8.0,
 		CASE WHEN g % 31 = 0 THEN NULL WHEN g % 29 = 0 THEN 'NaN' WHEN g % 23 = 0 THEN 'Infinity' ELSE g::numeric / 7 * 1e10 END,
 		CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 100) / 4.0 END, CASE g % 41 WHEN 0 THEN '-0' WHEN 1 THEN 'NaN' WHEN 2 THEN '-Infinity' ELSE g / 3.0 END,
@@ -17,7 +17,7 @@ CREATE FUNCTION fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 	FROM generate_series(lo, hi) g;
 	INSERT INTO h SELECT * FROM s WHERE id BETWEEN lo AND hi;
 $$;
-CREATE FUNCTION compare(what text) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION seal_compare(what text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	a bigint; b bigint; ia text; ib text; ba text; bb text;
 BEGIN
@@ -33,24 +33,24 @@ BEGIN
 	SELECT count(*) || ':' || coalesce(sum(i8), 0) INTO bb FROM h WHERE i2 BETWEEN 100 AND 140 AND i8 > 5000;
 	RETURN what || ': ' || CASE WHEN a = 0 AND b = 0 AND ia = ib AND ba = bb THEN 'same' ELSE format('DIFFERENT s-h=%s h-s=%s index %s vs %s bitmap %s vs %s', a, b, ia, ib, ba, bb) END;
 END $$;
-CREATE FUNCTION layout() RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION seal_layout() RETURNS text LANGUAGE sql AS $$
 	SELECT string_agg(kind || ' x' || n, ', ' ORDER BY kind) FROM (SELECT kind, count(*) n FROM sift.table_segments('s') GROUP BY kind) x
 $$;
-SELECT fill(1, 3000);
- fill 
-------
+SELECT seal_fill(1, 3000);
+ seal_fill 
+-----------
  
 (1 row)
 
-SELECT compare('bulk insert'), layout();
-      compare      |                  layout                  
+SELECT seal_compare('bulk insert'), seal_layout();
+   seal_compare    |               seal_layout                
 -------------------+------------------------------------------
  bulk insert: same | delta x1, sealed delta x1, tombstones x1
 (1 row)
 
 VACUUM s;
-SELECT compare('sealed by VACUUM'), layout();
-        compare         |               layout                
+SELECT seal_compare('sealed by VACUUM'), seal_layout();
+      seal_compare      |             seal_layout             
 ------------------------+-------------------------------------
  sealed by VACUUM: same | columns x2, delta x1, tombstones x1
 (1 row)
@@ -84,8 +84,8 @@ UPDATE s SET w = 'upd', i8 = i8 + 1 WHERE id % 7 = 0;
 UPDATE h SET w = 'upd', i8 = i8 + 1 WHERE id % 7 = 0;
 DELETE FROM s WHERE id % 5 = 0;
 DELETE FROM h WHERE id % 5 = 0;
-SELECT compare('update and delete of sealed rows'), layout();
-                compare                 |               layout                
+SELECT seal_compare('update and delete of sealed rows'), seal_layout();
+              seal_compare              |             seal_layout             
 ----------------------------------------+-------------------------------------
  update and delete of sealed rows: same | columns x2, delta x1, tombstones x1
 (1 row)
@@ -93,15 +93,15 @@ SELECT compare('update and delete of sealed rows'), layout();
 -- an aborted change and a savepoint
 BEGIN; DELETE FROM s WHERE id < 100; ROLLBACK;
 BEGIN; SAVEPOINT a; UPDATE s SET i8 = 0 WHERE id BETWEEN 10 AND 20; ROLLBACK TO a; COMMIT;
-SELECT compare('aborted changes');
-        compare        
+SELECT seal_compare('aborted changes');
+     seal_compare      
 -----------------------
  aborted changes: same
 (1 row)
 
 VACUUM s;
-SELECT compare('VACUUM clears the dead rows'), layout();
-              compare              |               layout                
+SELECT seal_compare('VACUUM clears the dead rows'), seal_layout();
+           seal_compare            |             seal_layout             
 -----------------------------------+-------------------------------------
  VACUUM clears the dead rows: same | columns x3, delta x1, tombstones x1
 (1 row)
@@ -121,31 +121,31 @@ SELECT reltuples::int = (SELECT count(*) FROM s) AS reltuples_exact FROM pg_clas
 (1 row)
 
 -- more rows, more segments, merged
-SELECT fill(3001, 4000);
- fill 
-------
+SELECT seal_fill(3001, 4000);
+ seal_fill 
+-----------
  
 (1 row)
 
 UPDATE s SET vc = 'again' WHERE id > 3500;
 UPDATE h SET vc = 'again' WHERE id > 3500;
 VACUUM s;
-SELECT fill(4001, 4500);
- fill 
-------
+SELECT seal_fill(4001, 4500);
+ seal_fill 
+-----------
  
 (1 row)
 
 VACUUM s;
-SELECT fill(4501, 5000);
- fill 
-------
+SELECT seal_fill(4501, 5000);
+ seal_fill 
+-----------
  
 (1 row)
 
 VACUUM s;
-SELECT compare('segments added'), layout();
-       compare        |               layout                
+SELECT seal_compare('segments added'), seal_layout();
+     seal_compare     |             seal_layout             
 ----------------------+-------------------------------------
  segments added: same | columns x6, delta x1, tombstones x1
 (1 row)
@@ -154,8 +154,8 @@ SELECT compare('segments added'), layout();
 DELETE FROM s WHERE id % 10 <> 0 AND id > 1000;
 DELETE FROM h WHERE id % 10 <> 0 AND id > 1000;
 VACUUM s;
-SELECT compare('mostly dead segments merged'), layout();
-              compare              |               layout                
+SELECT seal_compare('mostly dead segments merged'), seal_layout();
+           seal_compare            |             seal_layout             
 -----------------------------------+-------------------------------------
  mostly dead segments merged: same | columns x5, delta x1, tombstones x1
 (1 row)
@@ -181,16 +181,16 @@ SELECT id, r8::text, r4::text, nu::text, length(w), t IS NULL AS tnull FROM s WH
 -- rewrites
 VACUUM FULL s;
 VACUUM FULL h;
-SELECT compare('VACUUM FULL'), layout();
-      compare      |               layout                
+SELECT seal_compare('VACUUM FULL'), seal_layout();
+   seal_compare    |             seal_layout             
 -------------------+-------------------------------------
  VACUUM FULL: same | columns x1, delta x1, tombstones x1
 (1 row)
 
 CLUSTER s USING s_i2;
 CLUSTER h USING h_i2;
-SELECT compare('CLUSTER'), layout();
-    compare    |               layout                
+SELECT seal_compare('CLUSTER'), seal_layout();
+ seal_compare  |             seal_layout             
 ---------------+-------------------------------------
  CLUSTER: same | columns x1, delta x1, tombstones x1
 (1 row)
@@ -199,16 +199,16 @@ SELECT compare('CLUSTER'), layout();
 VACUUM s;
 ALTER TABLE s ADD COLUMN extra int DEFAULT 7;
 ALTER TABLE h ADD COLUMN extra int DEFAULT 7;
-SELECT compare('add column'), (SELECT count(*) FROM s WHERE extra = 7) AS defaulted;
-     compare      | defaulted 
+SELECT seal_compare('add column'), (SELECT count(*) FROM s WHERE extra = 7) AS defaulted;
+   seal_compare   | defaulted 
 ------------------+-----------
  add column: same |      1000
 (1 row)
 
 ALTER TABLE s DROP COLUMN w;
 ALTER TABLE h DROP COLUMN w;
-SELECT compare('drop column');
-      compare      
+SELECT seal_compare('drop column');
+   seal_compare    
 -------------------
  drop column: same
 (1 row)
@@ -216,27 +216,27 @@ SELECT compare('drop column');
 INSERT INTO s SELECT id + 100000, i2, i8, n, nu, r4, r8, d, ts, b, t, vc, c, y, u, j, a, iv, o, 9 FROM s WHERE id < 50;
 INSERT INTO h SELECT id + 100000, i2, i8, n, nu, r4, r8, d, ts, b, t, vc, c, y, u, j, a, iv, o, 9 FROM h WHERE id < 50;
 VACUUM s;
-SELECT compare('new layout beside the old one'), layout();
-               compare               |               layout                
+SELECT seal_compare('new layout beside the old one'), seal_layout();
+            seal_compare             |             seal_layout             
 -------------------------------------+-------------------------------------
  new layout beside the old one: same | columns x1, delta x1, tombstones x1
 (1 row)
 
 ALTER TABLE s ALTER COLUMN i8 TYPE numeric;
 ALTER TABLE h ALTER COLUMN i8 TYPE numeric;
-SELECT compare('type change rewrites');
-          compare           
+SELECT seal_compare('type change rewrites');
+        seal_compare        
 ----------------------------
  type change rewrites: same
 (1 row)
 
 TRUNCATE s;
-SELECT count(*), layout() FROM s;
- count | layout 
--------+--------
+SELECT count(*), seal_layout() FROM s;
+ count | seal_layout 
+-------+-------------
      0 | 
 (1 row)
 
 DROP TABLE s, h;
-DROP FUNCTION fill(int, int), compare(text), layout();
+DROP FUNCTION seal_fill(int, int), seal_compare(text), seal_layout();
 DROP EXTENSION pg_sift;
