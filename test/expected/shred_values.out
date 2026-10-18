@@ -511,6 +511,20 @@ SELECT kind, path, state, val FROM sh(jsonb_build_object('a', (SELECT jsonb_agg(
  ovf  | a[]  | overflow | 16
 (2 rows)
 
+-- zero-length copies: an empty text and an empty member name as the first of their kind
+SELECT * FROM sh('{"s":""}', 's text') WHERE kind = 'col';
+ kind | path | parent | ord | key | state | val 
+------+------+--------+-----+-----+-------+-----
+ col  | s    |        |   0 |     | value | 
+(1 row)
+
+SELECT * FROM sh('{"m":{"":1,"a":2}}', 'm.* int4') WHERE kind = 'col';
+ kind | path | parent | ord | key | state | val 
+------+------+--------+-----+-----+-------+-----
+ col  | m.*  |      0 |   0 |     | value | 1
+ col  | m.*  |      0 |   1 | a   | value | 2
+(2 rows)
+
 -- the shredder is kept between documents: nothing of the previous one remains
 SELECT id, sift._test_shred_count(doc, 'items[]{category text, qty int4}, tags[] text, m.* int4')
 FROM (VALUES (1, '{"items":[{"category":"x","qty":1},{"category":"y","qty":2},{"category":"z"}],"tags":["a","b"],"m":{"a":1,"b":2}}'::jsonb),

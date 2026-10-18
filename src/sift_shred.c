@@ -500,7 +500,8 @@ parse_items(Parser *P, const Step *prefix, int nprefix)
 		Step		st[SIFT_SHRED_MAX_STEPS];
 		int			n = nprefix;
 
-		memcpy(st, prefix, nprefix * sizeof(Step));
+		if (nprefix > 0)
+			memcpy(st, prefix, nprefix * sizeof(Step));
 		n = parse_path(P, st, n, nprefix > 0);
 		if (P->tok == T_LBRACE)
 		{
@@ -532,7 +533,6 @@ sift_shred_spec_parse(const char *text)
 {
 	Parser		P;
 	SiftShredSpec *spec;
-	Step		none[1];
 
 	if (strlen(text) > SIFT_SHRED_MAX_SPEC_BYTES)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -547,7 +547,7 @@ sift_shred_spec_parse(const char *text)
 	P.groups[0].name = "";
 	P.ngroups = 1;
 	lex(&P);
-	parse_items(&P, none, 0);
+	parse_items(&P, NULL, 0);
 	if (P.tok != T_END)
 		SPEC_SYNTAX(P.loc, "expected \",\" or the end of the paths");
 
@@ -686,7 +686,7 @@ sift_shred_dict_intern(SiftShredDict *d, const char *key, uint32 len)
 		d->off = d->off ? repalloc(d->off, d->idcap * sizeof(uint32)) : MemoryContextAlloc(d->mcxt, d->idcap * sizeof(uint32));
 		d->len = d->len ? repalloc(d->len, d->idcap * sizeof(uint32)) : MemoryContextAlloc(d->mcxt, d->idcap * sizeof(uint32));
 	}
-	if (d->nbytes + len > d->bytescap)
+	if (d->bytes == NULL || d->nbytes + len > d->bytescap)
 	{
 		d->bytescap = Max(d->bytescap * 2, Max(1024, d->nbytes + len));
 		d->bytes = d->bytes ? repalloc(d->bytes, d->bytescap) : MemoryContextAlloc(d->mcxt, d->bytescap);
