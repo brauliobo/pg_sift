@@ -181,6 +181,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	memset(st, 0, sizeof(*st));
 	st->nrows = meta->stats.nrows;
 	st->nunits = meta->stats.nunits;
+	st->bytes = meta->stats.bytes;
 	st->allvisible_frac = meta->stats.allvisible_frac;
 }
 
