@@ -60,11 +60,13 @@ typedef struct SiftColOptions
 	int			mutable_limit;	/* kB */
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string, 0 = auto */
+	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
 } SiftColOptions;
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
 extern const char *sift_col_options_compression(Relation index);	/* "" when none (auto) */
+extern const char *sift_col_options_preagg(Relation index);	/* "" when none (default) */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */

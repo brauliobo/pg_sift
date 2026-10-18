@@ -17,6 +17,7 @@
 
 #include "sift_col_am.h"
 #include "sift_popcount.h"
+#include "sift_col_pagg.h"
 #include "sift_col_seg.h"
 #include "sift_visibility.h"
 
@@ -1360,4 +1361,19 @@ bool
 sift_col_unit_exact(const SiftColUnit *unit)
 {
 	return ((ColUnit *) unit->priv)->clean && sift_col_unit_allvisible(unit);
+}
+
+/* ---------- pre-aggregates (sift_col_pagg.c, docs/COL-PREAGG.md) ---------- */
+
+/* The stored unit behind a source unit; false for an in-memory one (mutable lane, delta batch), which has no sidecar */
+bool
+sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->seg == NULL)
+		return false;
+	*seg = cu->seg;
+	*u = cu->u;
+	return true;
 }

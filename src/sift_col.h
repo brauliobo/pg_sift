@@ -18,7 +18,7 @@
 #include "sift_col_kern.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	1			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0) */
+#define SIFT_COL_FORMAT_MINOR	2			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0 or 1): minor 2 adds the pre-aggregates (docs/COL-PREAGG.md) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
