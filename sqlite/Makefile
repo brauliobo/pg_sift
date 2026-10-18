@@ -25,12 +25,11 @@ else
 SIMD := none
 CPUPROBE := '-D__builtin_cpu_init()=' '-D__builtin_cpu_supports(x)=0'
 endif
-SIMD_SRC := sift_bitmap_avx2 sift_bitmap_avx512 sift_kernels_avx2 sift_kernels_avx512 sift_col_kern_avx2 sift_col_kern_avx512
+SIMD_SRC := sift_bitmap_avx2 sift_bitmap_avx512 sift_kernels_avx2 sift_kernels_avx512
 ifeq ($(SIMD),none)
 EXTRA += -DSQ_SIMD_NONE
 ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar -Dsift_kernels_avx2=sift_kernels_scalar \
-	-Dsift_kernels_avx2_nopdep=sift_kernels_scalar -Dsift_kernels_avx512=sift_kernels_scalar \
-	-Dsift_col_kernels_avx2=sift_col_kernels_scalar -Dsift_col_kernels_avx512=sift_col_kernels_scalar $(CPUPROBE)
+	-Dsift_kernels_avx2_nopdep=sift_kernels_scalar -Dsift_kernels_avx512=sift_kernels_scalar $(CPUPROBE)
 endif
 CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -Wno-misleading-indentation \
 	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(EXTRA) -DSIFT_HOST_SQLITE -Ihost -I$(SRC) -I.
@@ -59,7 +58,7 @@ $(B)/sift_prefix.o: $(SRC)/sift_prefix.c | $(B)
 	$(CC) $(CFLAGS) -Dsift_prefix_union=sq_real_sift_prefix_union -c -o $@ $<
 
 # SIMD=none: the dispatch tables of the vector levels are the scalar ones (the vector files are not built)
-$(B)/sift_kernels.o $(B)/sift_col_kern.o: $(B)/%.o: $(SRC)/%.c | $(B)
+$(B)/sift_kernels.o: $(SRC)/sift_kernels.c | $(B)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
 $(B)/%.o: $(SRC)/%.c | $(B)
