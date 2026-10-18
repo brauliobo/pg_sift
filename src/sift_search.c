@@ -134,18 +134,27 @@ sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexo
 	return NULL;
 }
 
+/* The cost of opening the match set, whatever part of the table the scan reads: the iterator takes the posting lists of the terms whole */
+double
+sift_search_open_cost(const SiftSearchPlan *sp, double nrows)
+{
+	double		docs = Min(sp->docs, nrows),
+				postings = sp->postings > 0 ? sp->postings : docs * 2;
+
+	return SEARCH_BIND + sp->terms * SEARCH_TERM + postings * SEARCH_POSTING;
+}
+
 double
 sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *rows, double *units)
 {
 	double		docs = Min(sp->docs, nrows),
-				postings = sp->postings > 0 ? sp->postings : docs * 2,
 				pages = Min(docs, Max(nrows / 100.0, 1.0));
 
 	/* the units with a match: all of them but for a rare query */
 	*units = Max(nunits * (1.0 - exp(-docs / Max(nunits, 1.0))), Min(docs, 1.0));
 	/* the rows read: the matches by position, or the whole unit when they are many */
 	*rows = Min(nrows * (*units / Max(nunits, 1.0)), docs * SEARCH_SPARSE);
-	return SEARCH_BIND + sp->terms * SEARCH_TERM + postings * SEARCH_POSTING + pages * SEARCH_PAGE;
+	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE;
 }
 
 /* "orders_title @@> 'a' AND ..." */

@@ -4,10 +4,11 @@
 #
 #   bench/col-build.sh [--rows N] [--workers "0 2 4"] [--runs N] [--mem MB]
 #
-# The workers are interleaved in rounds (--runs of them, default 3) so that host load hits every cell alike; prints the load average
-# before and after, every time and the median per cell with the speedup over 0 workers. maintenance_work_mem must give each participant
+# The workers are interleaved in rounds (--runs of them, default 3) so that host noise hits every cell alike; prints the pressure (PSI, scripts/quiet.sh)
+# before and after, every time (marked NOISY when the host did not get quiet within SIFT_QUIET_TIMEOUT before it) and the median per cell with the speedup over 0 workers. maintenance_work_mem must give each participant
 # 32 MB for PostgreSQL to plan the workers (--mem, default 1024). The table is dropped at the end.
 set -euo pipefail
+. "$(dirname "$0")/../scripts/quiet.sh"
 
 ROWS=3000000 WORKERS="0 2 4" RUNS=3 MEM=1024
 while (( $# )); do
@@ -29,11 +30,12 @@ sql -c "DROP TABLE IF EXISTS col_build_bench" -c "CREATE TABLE col_build_bench (
 		jsonb_build_object('channel', (ARRAY['web','app','pos','phone'])[1 + i % 4], 'weight', (i % 500) / 10.0, 'tags', jsonb_build_array('a' || (i % 7), 'b' || (i % 13)),
 		'addr', jsonb_build_object('zip', (i % 9000)::text, 'country', (ARRAY['BR','US','DE','FR'])[1 + i % 4])) FROM generate_series(1::bigint, $ROWS) i" \
 	-c "VACUUM (ANALYZE, FREEZE) col_build_bench"
-echo "table: $(sql -c "SELECT pg_size_pretty(pg_relation_size('col_build_bench')) || ', ' || pg_relation_size('col_build_bench') / 8192 || ' pages'"); load before: $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "table: $(sql -c "SELECT pg_size_pretty(pg_relation_size('col_build_bench')) || ', ' || pg_relation_size('col_build_bench') / 8192 || ' pages'"); $(quiet_report 2>&1) before"
 
 declare -A T
 for ((r = 1; r <= RUNS; r++)); do
 	for w in $WORKERS; do
+		quiet_batch
 		t0=$(now)
 		sql -c "SET maintenance_work_mem = '${MEM}MB'" -c "SET max_parallel_maintenance_workers = $w" -c "SET min_parallel_table_scan_size = 0" \
 			-c "CREATE INDEX col_build_bench_idx ON col_build_bench USING sift_col (tenant_id, qty, placed, price, sku, note, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.addr.country text, attrs.addr.zip text, attrs.tags[] text')" >/dev/null
@@ -41,10 +43,10 @@ for ((r = 1; r <= RUNS; r++)); do
 		T[$w]+="$t "
 		info=$(sql -c "SELECT segments || ' segments, ' || pg_size_pretty(pg_relation_size('col_build_bench_idx')) FROM sift.col_index_info('col_build_bench_idx')")
 		sql -c "DROP INDEX col_build_bench_idx" >/dev/null
-		echo "run $r workers $w: $t s  ($info)"
+		echo "run $r workers $w: $t s  ($info)$QUIET_MARK"
 	done
 done
-echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "$(quiet_summary 2>&1) after"
 base=
 for w in $WORKERS; do
 	med=$(printf '%s\n' ${T[$w]} | sort -n | awk '{ v[NR] = $1 } END { print v[int((NR + 1) / 2)] }')

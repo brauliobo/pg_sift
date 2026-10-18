@@ -114,6 +114,33 @@ sift_colsrc_can_select(Oid relam, bool index)
 	return prov != NULL && prov->select != NULL;
 }
 
+bool
+sift_colsrc_can_tids(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->tids != NULL && prov->zone != NULL && prov->read_rows != NULL;
+}
+
+void
+sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	src->prov->tids(src->impl, unit, rows, n, tids);
+}
+
+void
+sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	src->prov->zone(src->impl, unit, leaf, z);
+}
+
+void
+sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	vec->ovf = NULL;
+	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
+}
+
 void
 sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
 {
@@ -192,4 +219,28 @@ void
 sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c)
 {
 	src->prov->counters(src->impl, c);
+}
+
+uint64
+sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf)
+{
+	return src->prov->set_filters ? src->prov->set_filters(src->impl, f, nf) : 0;
+}
+
+bool
+sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits)
+{
+	return src->prov->filter(src->impl, unit, bits);
+}
+
+bool
+sift_colsrc_can_read_sel(const SiftSrcSource *src)
+{
+	return src->prov->read_sel != NULL;
+}
+
+void
+sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
+{
+	src->prov->read_sel(src->impl, unit, leaf, bits, vec);
 }

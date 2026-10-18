@@ -174,6 +174,15 @@ typedef struct SiftSrcStrTest
 	const uint32 *lens;
 } SiftSrcStrTest;
 
+/* The zone of a scalar leaf in a unit: min and max of the integer-typed (SCV_I32/SCV_I64) values, dead rows included (docs/COL-SEARCH.md, top-N) */
+typedef struct SiftSrcZone
+{
+	int64		min;			/* meaningless when nnull == nvals */
+	int64		max;
+	uint32		nvals;
+	uint32		nnull;
+	bool		inexact;		/* some value is outside what min/max describe (overflow): no bound */
+} SiftSrcZone;
 /*
  * Pre-aggregates (docs/COL-PREAGG.md), optional provider callbacks: what a unit knows about its rows without reading a chunk. A unit may answer
  * only when it is fully visible and clean (unit_exact: no dead row, every page it has rows on all-visible to the snapshot; a unit of the write
@@ -231,6 +240,36 @@ typedef struct SiftSrcPreagg
 		int			meas[SIFT_SRC_MAX_MEAS];
 	}			dim[SIFT_SRC_MAX_DIMS];
 } SiftSrcPreagg;
+
+/*
+ * A conjunct the source may evaluate on its stored (encoded) values instead of the executor on decoded ones: `leaf op constant` on an
+ * integer-valued scalar leaf of rows (int, date, timestamp, numeric as its scaled integer), with the SQL meaning (a NULL value never
+ * passes). A source that accepts it (set_filters) applies it exactly: the executor does not test the rows again, and the source may use
+ * it to skip units (docs/COL-PLAN.md, "Filters in the source"). The text tests are SiftSrcStrTest above.
+ */
+typedef enum SiftSrcFilterOp
+{
+	SSF_EQ,
+	SSF_NE,
+	SSF_LT,
+	SSF_LE,
+	SSF_GT,
+	SSF_GE,
+	SSF_IN,
+	SSF_NOTIN,
+	SSF_NOTNULL					/* a value is present */
+} SiftSrcFilterOp;
+
+typedef struct SiftSrcFilter
+{
+	int			leaf;
+	SiftSrcFilterOp op;
+	int64		val;			/* a comparison */
+	int			nset;			/* IN, NOTIN: the members */
+	const int64 *set;
+} SiftSrcFilter;
+
+#define SIFT_COLSRC_MAX_FILTERS		64
 
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
@@ -292,6 +331,20 @@ typedef struct SiftSrcProvider
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+	/*
+	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows
+	 * `rows` (ascending, in the numbering `read` and `live` use) of the unit the source is at. zone: the zone of an integer-typed leaf
+	 * of the unit the source is at, over the unit as stored.
+	 */
+	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+	void		(*zone) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
+	/* read for the rows `rows` (ascending) only, valid until the next read of the leaf: vec->n == n, element k is row rows[k] */
+	void		(*read_rows) (void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
+	/* optional: the int filters above. set_filters (before begin) returns the bits of those it will apply, filter narrows the rows of a unit by them */
+	uint64		(*set_filters) (void *impl, const SiftSrcFilter *f, int nf);
+	bool		(*filter) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
+	/* optional: read only the rows of bits (the other rows of the vector are zero; a source restricted to a match set may read the whole leaf) */
+	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -347,6 +400,12 @@ sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 /* Can the source of this access method be restricted to a match set (SiftSrcProvider.select)? */
 extern bool sift_colsrc_can_select(Oid relam, bool index);
 
+/* Can the source of this access method give the TIDs of its rows and the zones of its units (SiftSrcProvider.tids, zone)? */
+extern bool sift_colsrc_can_tids(Oid relam, bool index);
+extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
+extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
+
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
 extern void sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep);
 
@@ -399,5 +458,17 @@ extern void sift_colsrc_live(SiftSrcSource *src, const SiftSrcUnit *unit, uint64
 extern void sift_colsrc_vet(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
 
 extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
+
+/*
+ * Offers the conjuncts (at most SIFT_COLSRC_MAX_FILTERS, the constants outlive the scan) to the source before sift_colsrc_begin; returns the
+ * bits of those it applies (0: none, or the source has no filters). sift_colsrc_filter then clears the rows of `bits` that fail any of them
+ * (all of them: the order is the source's) and says whether any row is left. A raise of the value-overflow error is the same as a read of the leaf.
+ */
+extern uint64 sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf);
+extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
+
+/* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */
+extern bool sift_colsrc_can_read_sel(const SiftSrcSource *src);
+extern void sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 
 #endif							/* SIFT_COLSRC_H */

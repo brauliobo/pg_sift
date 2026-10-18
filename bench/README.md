@@ -176,8 +176,14 @@ and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, 
 
 The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
 `--workers` caps both), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
-recorded with every cell. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
+recorded with every cell, for the older runs. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
 session with each other, not with another session or machine.
+
+(`/proc/pressure/cpu` and `io`, the `some` line). Before each timed batch (a class of cells, a pgbench round, a timed query, a build) `quiet_wait` blocks until both resources are below 10% in the
+10 s average (`avg10`) for two samples 2 s apart; after `SIFT_QUIET_TIMEOUT` seconds (default 60) the batch runs anyway and is marked **NOISY** (in the log, in `noisy.txt` of the table directory, in the table or the footer of the
+step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Instruction-count steps (`cpu_gate.sh`, the cycles of `ab.sh run`) print it and never wait. Override with the environment:
+`SIFT_QUIET_MAX` (percent, default 10), `SIFT_QUIET_TIMEOUT` (seconds), `SIFT_QUIET_WINDOW` (`avg10` or `avg60`); the same options exist on the command (`scripts/quiet.sh wait --max 20 --timeout 300`, `report`). On a kernel without PSI it says
+that it cannot measure (exit status 3) and every batch is NOISY.
 
 ### Standard error
 
@@ -207,6 +213,7 @@ Per-tier cluster, port and dump:
 
 ### Gate on a busy host (`steps/cpu_gate.sh`)
 
+Throughput and latency say nothing on a host whose cpu pressure stays above the 10% of `scripts/quiet.sh`, so this gate compares builds by what the server executes: user-space instructions (and cycles, as secondary
 evidence, because the other load contends for the caches) that `perf stat -e instructions:u,cycles:u -p POSTMASTER` counts for the processes the postmaster forks during one operation. That is the
 backend plus the maintenance worker and parallel workers, summed; a write's window ends when the worker has gone. It is standalone, never part of `make check` or `scripts/ci.sh`, needs `perf`
 (`perf_event_paranoid` <= 2) and one checkout per build with `scripts/pgtest.sh` (`git worktree add --detach /tmp/x REF`; build everything the same way, the Makefile links without LTO by default):

@@ -106,6 +106,11 @@ BEGIN
 	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg)%' AND p ~ 'Workers Planned: [1-9]';
 END $$;
 
+-- the control query has a SiftAgg plan and none of the queries qs has one: the shape of qs, not the table, keeps the normal plan
+CREATE FUNCTION coverage.keeps_normal(control text, qs text[]) RETURNS boolean LANGUAGE sql AS $$
+	SELECT coverage.plan_of(control) LIKE '%Custom Scan (SiftAgg)%'
+		AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.plan_of(q) LIKE '%Custom Scan (SiftAgg)%') $$;
+
 -- a SCROLL cursor over the table: FETCH LAST and five FETCH PRIOR return the last rows of the forward scan, in reverse
 CREATE FUNCTION coverage.scroll_back(tbl text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE c refcursor; fwd int[]; back int[] := '{}'; r record; i int;

@@ -161,6 +161,53 @@ SELECT same($$SELECT b, count(*) AS n FROM w WHERE a NOT IN (1000003, 2000006, 3
  t
 (1 row)
 
+-- count(DISTINCT): the same rows as the normal plan, and at the smallest work_mem the sets spill to a sort instead of growing
+SELECT same($$SELECT b, count(DISTINCT a) AS da, count(DISTINCT c) AS dc, count(DISTINCT id) AS di FROM w GROUP BY b$$) AS distinct_groups;
+ distinct_groups 
+-----------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(DISTINCT a) AS da, count(DISTINCT c) AS dc FROM w$$) AS distinct_global;
+ distinct_global 
+-----------------
+ t
+(1 row)
+
+CREATE FUNCTION spilled(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE p text;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q INTO p;
+	RETURN p LIKE '%Distinct Sets Spilled%';
+END $$;
+SELECT spilled($$SELECT b, count(DISTINCT a) FROM w GROUP BY b$$) AS roomy;
+ roomy 
+-------
+ f
+(1 row)
+
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT spilled($$SELECT b, count(DISTINCT a) FROM w GROUP BY b$$) AS tiny;
+ tiny 
+------
+ t
+(1 row)
+
+SELECT same($$SELECT b, count(DISTINCT a) AS da, count(DISTINCT c) AS dc, count(DISTINCT id) AS di FROM w GROUP BY b$$) AS distinct_spilled;
+ distinct_spilled 
+------------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(DISTINCT a) AS da, count(DISTINCT id) AS di FROM w$$) AS distinct_global_spilled;
+ distinct_global_spilled 
+-------------------------
+ t
+(1 row)
+
+RESET hash_mem_multiplier;
+RESET work_mem;
 -- ordered-set aggregates: the plan, and the rows of the normal plan with the histogram and, at the smallest work_mem, with the sort
 EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
                                  QUERY PLAN                                 
