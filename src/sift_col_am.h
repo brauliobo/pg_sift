@@ -82,4 +82,15 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 
+/* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
+ * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
+ * before the heap checks. Widens the races deterministically in place of host load. */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_col_jitter_us;
+extern void sift_col_jitter(void);
+#define SIFT_COL_JITTER()	sift_col_jitter()
+#else
+#define SIFT_COL_JITTER()	((void) 0)
+#endif
+
 #endif							/* SIFT_COL_AM_H */

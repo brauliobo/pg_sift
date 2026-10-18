@@ -259,8 +259,9 @@ builds: serial 2.6 s, 2 workers 0.9 s (2.9x), 4 workers 0.8 s (3.2x).
 LIVE pages as in sift (`SiftLiveHeaderData`, a dirty-SB bitmap then one bit per row in rank order, rank = `rank_base` of the unit + row
 ordinal). `ambulkdelete` walks every row of every immutable segment of the SBs, calls the callback with its TID and clears the bit of the
 dead ones (a unit's TIDs come from its row directory; chunks are not read), marks the SB dirty; mutable records get the deleted flag.
-A scan ANDs the liveness bits only in dirty SBs. Dead rows are removed from the segment by the next merge, which a segment with more
-than half of its rows dead triggers.
+A scan ANDs the liveness bits only in dirty SBs; whether an SB is dirty is read from the LIVE page every time (not from the directory
+snapshot or an earlier read), see section 3, "Order of reads". Dead rows are removed from the segment by the next merge, which a segment
+with more than half of its rows dead triggers.
 
 ### 2.8 Shared with the table AM: VAR leaves, the segment tag, the next vblock, delta batches
 
@@ -335,6 +336,16 @@ version, whatever the snapshot, and the only question is visibility:
    (`sift_vis_filter_page`: one heap page read, `heap_hot_search_buffer` per candidate offset under the scan snapshot; a HOT chain answers
    for its root TID, whose indexed values are still the visible version's).
 4. Rows are vetted **after** the value filters, so the heap is touched only for rows that matter (`sift_col_vet`).
+
+**Order of reads.** Step 2 trusts two facts, "live" and "all-visible", that VACUUM changes in a fixed order: `ambulkdelete` first (the
+index entries of the dead tuples go), the heap pass and the VM bit after. A scan can use the pair only in that order's reading direction:
+the all-visible mask first, the liveness of the unit after (`unit_clean` in `sift_col_scan.c`; `sift_cseg_dirty` reads the LIVE page each
+time). A mask that says "all-visible" was set after the index pass, so liveness read later shows the removals; liveness read first (a
+directory snapshot taken when the scan opened, a cached dirty bit) and the mask later counts rows of tuples that VACUUM removed after the
+scan's snapshot, on pages it made all-visible. The mutable lane has no such order, since its batch is a copy made when the source begins:
+no page of a lane batch counts as all-visible, its rows are always checked against the heap (`ColUnit.lane`). Tests: `col_vacuum_scan`
+(a VACUUM between the open and the reads of a scan, stored units, a dirty unit, the lane), `scripts/colsoak.sh` (checkers in REPEATABLE READ
+against writers, VACUUM and maintenance).
 
 Corollaries: rolled-back inserts fail step 3 until VACUUM, whose `ambulkdelete` clears their bits before the heap page can become
 all-visible; a TID reused after VACUUM gets a new row record (I1: a TID is live in at most one segment, as in sift). Write-hot SB ranges
