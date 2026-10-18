@@ -50,9 +50,9 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 
 | Query / feature | Covered by sift? | Index or engine | Example |
 |---|---|---|---|
-| sift_table: numeric, char(n), uuid, interval, bytea, money, enum, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT n2, count(*) FROM t GROUP BY n2` |
+| sift_table: numeric(p > 18) and unconstrained numeric, uuid, interval, bytea, money, time, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT u, count(*) FROM t GROUP BY u` |
 | Aggregates over a sift_table: count, sum, avg, min, max, distinct, filters, grouping | Yes | sift_table | `SELECT grp, count(*), sum(i4) FROM t WHERE i4 > 100 GROUP BY grp` |
-| Backward scan: a SCROLL cursor fetching backward, FETCH PRIOR / LAST | Error (0A000; FETCH ABSOLUTE over a NO SCROLL cursor, or materialize the rows) | sift_table | `DECLARE c SCROLL CURSOR FOR SELECT * FROM t; FETCH LAST FROM c; FETCH PRIOR FROM c` |
+| Backward scan: a SCROLL cursor fetching backward, FETCH PRIOR / LAST | Yes | sift_table | `DECLARE c SCROLL CURSOR FOR SELECT * FROM t; FETCH LAST FROM c; FETCH PRIOR FROM c` |
 | More than 127 columns | Error (54000 at CREATE TABLE; at most 127 columns) | sift_table | `CREATE TABLE t (c1 int, ..., c128 int) USING sift_table` |
 
 <!-- coverage:end -->
