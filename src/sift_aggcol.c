@@ -378,6 +378,34 @@ col_select(void *impl, const SiftFilter *keep)
 	((ColSource *) impl)->sel.keep = keep;
 }
 
+/* rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
+static void
+col_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep && src->sel.compact)
+	{
+		uint32	   *ords = palloc(Max(n, 1) * sizeof(uint32));
+
+		for (int i = 0; i < n; i++)
+			ords[i] = src->sel.idx[rows[i]];
+		sift_col_row_tids(&src->unit, ords, n, tids);
+		pfree(ords);
+	}
+	else
+		sift_col_row_tids(&src->unit, rows, n, tids);
+}
+
+static void
+col_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	SiftColZone cz;
+
+	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
+	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
+}
+
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
@@ -404,34 +432,31 @@ overflow_error(void)
 			 errhint("Set sift.enable_agg to off for this query.")));
 }
 
-/* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
+/* The values of a read of the engine into the caller's storage, in the vector type of the leaf */
 static void
-col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcVec *vec)
 {
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	SiftColVec	v;
-	size_t		n;
+	size_t		n = v->n;
 
-	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
-	n = v.n;
 	vec->ovf = NULL;
-	if (v.ovf && !(buf->ovf && nan_leaf(l)))
+	if (v->ovf && !(buf->ovf && nan_leaf(l)))
 		overflow_error();
 	switch (l->vtype)
 	{
 		case SCV_I32:
 			for (size_t i = 0; i < n; i++)
-				((int32 *) buf->data)[i] = (int32) v.i[i];
+				((int32 *) buf->data)[i] = (int32) v->i[i];
 			break;
 		case SCV_I64:
-			memcpy(buf->data, v.i, n * sizeof(int64));
+			memcpy(buf->data, v->i, n * sizeof(int64));
 			break;
 		case SCV_F64:
-			memcpy(buf->data, v.f, n * sizeof(double));
+			memcpy(buf->data, v->f, n * sizeof(double));
 			break;
 		case SCV_CODE:
-			memcpy(buf->data, v.codes, n * sizeof(uint32));
-			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes};
+			memcpy(buf->data, v->codes, n * sizeof(uint32));
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
 			break;
 	}
 	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
@@ -439,17 +464,27 @@ col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *v
 	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
 	vec->n = n;
 	vec->isnull = NULL;
-	if (v.ovf)
+	if (v->ovf)
 	{
-		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		memcpy(buf->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
 		vec->ovf = buf->ovf;
 	}
-	if (v.nulls)
+	if (v->nulls)
 	{
 		for (size_t i = 0; i < n; i++)
-			buf->isnull[i] = sift_colsrc_bit(v.nulls, i);
+			buf->isnull[i] = sift_colsrc_bit(v->nulls, i);
 		vec->isnull = buf->isnull;
 	}
+}
+
+/* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
+static void
+col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	SiftColVec	v;
+
+	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
+	col_fill(src, leaf, &v, buf, vec);
 }
 
 /* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
@@ -604,6 +639,24 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 	sift_col_read(&src->unit, leaf, &sel, &v);
 	col_scatter(src, leaf, &v, idx, unit->nrow, vec);
 	pfree(idx);
+}
+
+/* the rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
+static void
+col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	uint32	   *ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
+	SiftColVec	v;
+	ColLeafBuf *b;
+
+	for (int i = 0; i < n; i++)
+		ords[i] = src->sel.keep && src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
+	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
+	sift_col_read_idx(&src->unit, leaf, ords, n, &v);
+	b = leaf_buf(src, leaf, n);
+	col_fill(src, leaf, &v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
+	pfree(ords);
 }
 
 static void
@@ -886,6 +939,9 @@ static const SiftSrcProvider col_provider = {
 	.leaf_n = col_leaf_n,
 	.read_into = col_read_into,
 	.select = col_select,
+	.tids = col_tids,
+	.zone = col_zone,
+	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
 	.read_sel = col_read_sel,
