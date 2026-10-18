@@ -44,6 +44,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
   min/max, per-group accumulation and adjacent-distinct counting, as one scalar, AVX2 and AVX-512 table chosen at run time by `sift.simd`.
   Every level returns bit-identical results (doubles follow PostgreSQL's float8 order, the float sum has one fixed accumulation order).
+  The generic operations (integer comparisons, null flags, dictionary lookups, bitmap algebra, selection vectors, gathers, parent
+  ordinals) are slots of the column kernels, one implementation each (`docs/COL.md` section 8).
   The `aggkern_simd` regression test and `tools/aggkern` (`make test`, `make bench`) check every operator at every level against scalar.
 
 - Fix: a ranked scan with `LIMIT` plus `OFFSET` of 67,108,864 or more failed with `invalid memory alloc request size` (so did

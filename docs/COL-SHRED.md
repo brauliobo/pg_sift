@@ -154,8 +154,10 @@ trailing fraction zeros) only when the target is a numeric column (`wants_number
 `sift_shred_create` or `sift_shred_init()`), `sift_shred_kernels_for(level)` for tests. Detection is at run time; the same library runs on
 any x86-64 and on other architectures the scalar table is used. Kernels: `state_counts` (histogram of the four states of a column),
 `state_bits` (the NULL and the overflow bitmaps of a column, for the engine's chunk header),
-`minmax_i64` / `minmax_f64` (zone map over the `VALUE` slots), `expand_parents` (offsets to per-element parent ordinals). The
-parsing of a number is not dispatched: the digit runs are a few bytes, shorter than the cost of an indirect call.
+`minmax_i64` / `minmax_f64` (zone map over the `VALUE` slots). The offsets to per-element parent ordinals (`sift_shred_expand_parents`)
+are the column table's `expand_parents` (`SiftColKernels`, docs/COL.md section 8): one implementation for the shredder, the column scan
+and the aggregation executor. The parsing of a number is not dispatched: the digit runs are a few bytes, shorter than the cost of an
+indirect call.
 
 ## Measured
 
@@ -176,16 +178,29 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 | `state_bits` | 0.95 / 34.4 / 57.7 | 0.81 / 35.1 / 36.4 |
 | `minmax_i64` | 0.93 / 4.3 / 10.2 | 0.50 / 2.0 / 1.1 |
 | `minmax_f64` | 0.66 / 6.5 / 8.3 | 0.55 / 2.0 / 1.1 |
-| `expand_parents` (runs of 4) | 2.46 / 2.24 / 3.04 | 2.37 / 2.27 / 1.32 |
+| `expand_parents` (runs of 4; now `SiftColKernels.expand_parents`) | 2.46 / 2.24 / 3.04 | 2.37 / 2.27 / 1.32 |
 
 `expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast
 or faster than AVX-512 (memory bound on this host).
 
 ## Integration notes
 
-- `state_counts`, `minmax_*` and `expand_parents` overlap with the aggregation kernels of the plan track (`SiftAggKernels`:
-  `bytes_mask`, `popcount_w`, min/max reductions, `gather_bits`); they work on the shredder's `state` bytes before the engine has
-  bitmaps, so they stay until the adapter feeds the engine's kernels with `state_bits`.
+- `expand_parents` is the column table's. `state_counts`, `state_bits` and `minmax_*` overlap with the engine's kernels only in what
+  they compute: they work on the shredder's `state` bytes before the engine has bitmaps. The composition from the generic kernels was
+  measured (4096 elements, ns per call, best of 300, Zen 5, heavy host load) as `sift_colk->range[SIFT_COLW_8]` on the bytes
+  (`state_bits`: `range(state, VALUE + 1, 254)` for the NULL bitmap, `range(state, OVERFLOW, 0)` for the overflow one) and
+  `SiftAggKernels.minmax_*` under the bitmap of the `VALUE` slots:
+
+  | kernel | scalar | AVX2 | AVX-512 |
+  |---|---|---|---|
+  | `minmax_i64` fused / composed | 2701 / 4193 | 845 / 476 | 301 / 315 |
+  | `minmax_f64` fused / composed | 2401 / 4866 | 452 / 535 | 304 / 403 |
+  | `state_bits` fused / two ranges | 3117 / 3424 | 53 / 77 | 54 / 40 |
+
+  The composed kernels are slower for float8 at every level (1.2x to 2x), for the scalar level and for `state_bits` on AVX2 (1.5x), and
+  they need the value arrays to have `SIFT_AGG_PAD` readable bytes behind them (the shredder's arrays do not promise it), so the fused kernels
+  stay. When the adapter has bitmaps anyway (`state_bits`), the engine's `minmax_*` apply as they are. The AVX2 `minmax_i64` here is
+  the weak one (a single dependency chain): the aggregation kernel's four accumulator pairs would make it 1.8x faster.
 - Each module that owns a dispatch table registers one rebind with `sift_cpu_register` (`SIFT_MAX_REBINDS` is 8).
 
 ## Tests

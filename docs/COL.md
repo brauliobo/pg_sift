@@ -356,8 +356,37 @@ Every hot loop over column data (filters, selection vectors, null bitmaps, zone-
    compares against scalar bit for bit; ranges exercise all widths, thresholds at the boundaries and unaligned lengths.
 
 Tables of the track: `SiftColKernels` (`src/sift_col_kern.h`, core: filters, selection, zone, LUT, null ops, unpack/decode), and the
-tables of col-plan (aggregation operators: `SiftAggKernels`, their own header and rebind) and col-compress (additional decode/encode
-slots go into `SiftColKernels.decode` through that header, owner announced in its comments). `sift.simd` level info: `sift.col_index_info`
+tables of col-plan (the aggregation executor's own operators: `SiftAggKernels`, their own header and rebind), col-json (the shredder's
+state byte kernels: `SiftShredKernels`) and col-compress (additional decode/encode slots go into `SiftColKernels.decode` through that
+header, owner announced in its comments).
+
+**One implementation per operation.** A generic operation on bit vectors, selections or integer columns is a slot of `SiftColKernels`
+and nobody else keeps a copy: the aggregation executor's integer comparisons and `BETWEEN` are `range[SIFT_COLW_32 / SIFT_COLW_64]`
+(`x op c` is one wrapping range `[lo, hi]`, `x <> c` is `[c + 1, c - 1]`), a null flag array to a bitmap is the u8 range `[1, 255]`
+(`sift_colk_nonzero`), dictionary predicates are `lut[SIFT_COLW_32]` over a bit set, `and` / `or` / `andnot` / popcount are `bits_*`, the
+selection vector of a bitmap is `bits_to_idx` (its output has `SIFT_COL_IDXPAD` entries of room after the last position), gathers are
+`gather_u32` and `for_i64_sel[SIFT_COLW_64]` with base 0, and the owner of each element of a list column is `expand_parents`. A table
+other than this one keeps an operation only when it is different in kind, and says why at the declaration: the aggregation table
+keeps what is specific to the executor (float8 order comparisons, a byte LUT fused with a bound check, the row mask of array elements,
+group ids, reductions, `count_changes`), the shredder table keeps its histogram, state bitmaps and min / max over *state bytes*
+(no bit vector, no padded value arrays; the composition `range` + `SiftAggKernels.minmax_*` was measured and is slower for float8
+and at the scalar level).
+
+Measured (Zen 5, one pinned core, GCC 16, `-O2 -march=x86-64`, best of 300 batches under heavy unrelated host load: read ±15 % as
+noise), ns per call over a vector of 4096 elements (a bit vector of 64 words) as the aggregation executor calls them:
+
+| slot | scalar | avx2 | avx512 |
+|---|---|---|---|
+| `bits_to_idx` 1 % / 10 % / 50 % / 100 % set | 33 / 145 / 784 / 1690 | 41 / 156 / 219 / 216 | 42 / 74 / 94 / 256 |
+| `bits_and` (64 words) | 15 | 6 | 4 |
+| `bits_count` (64 words) | 57 | 8 | 3 |
+| `gather_u32` (2048 of 4096) | 447 | 448 | 538 |
+| `range[SIFT_COLW_8]` non-zero test | 1802 | 40 | 21 |
+| `range[SIFT_COLW_32]` `<` / `=` / between | 1782 / 1779 / 1776 | 112 / 113 / 113 | 64 / 64 / 64 |
+| `range[SIFT_COLW_64]` `<` | 1788 | 224 | 137 |
+| `lut[SIFT_COLW_32]` (1024 codes) | 1642 | 1056 | 932 |
+
+(`gather_u32` is a masked `VPGATHERDD` at AVX-512, the aggregation executor's kernel, moved here unchanged; the scalar and AVX2 rows are the same loop and show the noise. Against scalar the AVX-512 gather measured 0.8x to 1.7x over six runs, depending on what the sibling thread did.) `sift.simd` level info: `sift.col_index_info`
 returns `simd` (the active level name), and the column scan's EXPLAIN prints `SIMD: avx512` (the level in effect, from
 `sift_simd_level_name(sift_cpu.active)`).
 
