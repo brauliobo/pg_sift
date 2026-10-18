@@ -72,6 +72,7 @@ extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
 extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_verify(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);

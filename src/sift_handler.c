@@ -65,6 +65,7 @@ PG_FUNCTION_INFO_V1(sift_col_handler);
 PG_FUNCTION_INFO_V1(sift_col_index_info);
 PG_FUNCTION_INFO_V1(sift_col_segments);
 PG_FUNCTION_INFO_V1(sift_col_leaves);
+PG_FUNCTION_INFO_V1(sift_col_sections);
 PG_FUNCTION_INFO_V1(sift_col_verify);
 PG_FUNCTION_INFO_V1(sift_col_promote);
 PG_FUNCTION_INFO_V1(sift_col_merge);

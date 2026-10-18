@@ -11,7 +11,7 @@ interface) the other agents build against, `src/sift_col_kern.h` the kernel tabl
 this file in the same commit.
 
 User-facing names: index access method `sift_col` (`pg_am.amname` is unique across index and table AMs; the table AM is `sift_table`), operator
-class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`,
+class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`, `col_leaves`, `col_sections`,
 `col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. Code: the engine is `sift_col*.c` (and `sift_col_kern*`), the index AM glue `sift_col_am*.c`.
 
 ---
@@ -326,6 +326,14 @@ group-by, distinct and LUT filters need no change. Row-level code (`sift_cunit_d
 mutable lane stores a string as a varint length and the bytes (a row may span pages as before); a mutable batch keeps any length in its dictionary,
 and its in-memory unit uses that dictionary directly.
 
+### 2.10 Where the bytes go
+
+`sift.col_sections(rel)` (a sift_col index or a sift_table; `src/sift_col_acct.c`) returns `(section, leaf, bytes)` summed over the immutable segments,
+and the rows add up to `pg_relation_size(rel)`: `chunks` and `dict` per leaf (the dictionary as stored, section 2.3), `unit_dir` (the unit records less
+their chunks: page directory, offsets, alignment), `dict_other`, `zones`, `preagg` (the sidecar, section 2.1), `sbdir_schema`, `page_overhead` (page headers and the
+unused end of each stream's last page), `headers` (SEGHEADER and LIVE pages), `free` (blocks on the free list) and `other` (the metapage, directory, free list pages,
+the mutable lane, tombstones). `sift.col_leaves` counts the chunks of a leaf by encoding, `sift.col_index_info` the pre-aggregate bytes.
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -597,7 +605,7 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
-- 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy. A minor 2 segment is refused with a REINDEX hint.
+- 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy, `sift_cseg_dict_stored`, `sift.col_sections` (section 2.10). A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
 - 2026-10 (decode): `sift_col_read_lane`, `sift_col_lane_n`, `SiftColLane`, `SiftColLaneInfo`; `sift_colsrc_leaf_n`, `sift_colsrc_read_into`, `SiftSrcBuf` and the provider slots `leaf_n`, `read_into`; `SiftColKernels.f8_from_keys`, `bits_to_flags`; `SiftCcKernels.scale32`, `scale64`, `alp_f8`, `alp_f4`, `sift_cc_decode_u32`, `sift_cc_decode_f8`, `sift_cchunk_decode_u32`, `sift_cchunk_decode_f8`; **`SiftColKernels.expand_parents` writes up to `SIFT_COL_PAD` bytes past `end[np - 1]`**: allocate the room; `SiftCUnitView.page`; `SiftColLeafStats`, `sift_cseg_leaf_stats`, `sift_col_leaf_stats`; `SiftSrcStats.ndistinct`, `min`, `max` and `elems_per_row` are filled (section 5).
 - 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`
