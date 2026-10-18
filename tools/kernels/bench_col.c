@@ -6,6 +6,7 @@
 #include "harness.h"
 
 #include "sift_col_kern_int.h"
+#include "sift_colcodec_int.h"
 
 #define N			4096			/* rows of a filter call */
 #define NW			1152			/* words of a selection of a full unit (73728 rows) */
@@ -225,6 +226,75 @@ bench_decode(void)
 	free(src), free(dst), free(ref), free(idx), free(d64), free(r64), free(a);
 }
 
+/* The consumer's lanes: float keys back to doubles in place, a NULL bitmap as 0/1 flags */
+static void
+bench_lanes(void)
+{
+	int64	   *keys = rand_array(N * 8),
+			   *want = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *work = kt_alloc(N * 8 + SIFT_COL_PAD);
+	uint64	   *bits = rand_bits(SIFT_COL_NWORDS(N), 2);
+	uint8	   *ref = kt_alloc(N + SIFT_COL_PAD),
+			   *flags = kt_alloc(N + SIFT_COL_PAD);
+
+	memcpy(want, keys, N * 8);
+	levels[0]->f8_from_keys(want, N);
+	levels[0]->bits_to_flags(bits, N, ref);
+	for (int l = 0; l < nlevels; l++)
+	{
+		memcpy(work, keys, N * 8);
+		levels[l]->f8_from_keys(work, N);
+		same("f8_from_keys", l, work, want, N * 8);
+		levels[l]->bits_to_flags(bits, N, flags);
+		same("bits_to_flags", l, flags, ref, N);
+		row("f8_from_keys", "n=4096, in place", kt_level_name[l], BENCH(levels[l]->f8_from_keys(work, N)), N, 8);
+		row("bits_to_flags", "n=4096", kt_level_name[l], BENCH(levels[l]->bits_to_flags(bits, N, flags)), N, 1.0 / 8);
+	}
+	free(keys), free(want), free(work), free(bits), free(ref), free(flags);
+}
+
+/* The SCALE node's multiply and the ALP node's division into doubles (SiftCcKernels), each level against the scalar one; alp_f8 against the keys and the pass that turns them */
+static void
+bench_cc(void)
+{
+	uint32	   *u = rand_array(N * 4),
+			   *a32 = rand_array(N * 4),
+			   *w32 = kt_alloc(N * 4 + SIFT_COL_PAD),
+			   *r32 = kt_alloc(N * 4 + SIFT_COL_PAD);
+	int64	   *a64 = rand_array(N * 8),
+			   *w64 = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *r64 = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *keys = kt_alloc(N * 8 + SIFT_COL_PAD);
+	double	   *d = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *rd = kt_alloc(N * 8 + SIFT_COL_PAD);
+	const SiftCcKernels *s = sift_cc_kernels_for(SIFT_SIMD_SCALAR);
+
+	memcpy(r32, a32, N * 4);
+	s->scale32(r32, N, 7, 1000);
+	memcpy(r64, a64, N * 8);
+	s->scale64(r64, N, 7, 1000003);
+	s->alp_f8(rd, u, N, -50000, 100.0);
+	for (int l = 0; l < nlevels; l++)
+	{
+		const SiftCcKernels *k = sift_cc_kernels_for(SIFT_SIMD_SCALAR + l);
+
+		memcpy(w32, a32, N * 4);
+		k->scale32(w32, N, 7, 1000);
+		same("scale32", l, w32, r32, N * 4);
+		memcpy(w64, a64, N * 8);
+		k->scale64(w64, N, 7, 1000003);
+		same("scale64", l, w64, r64, N * 8);
+		k->alp_f8(d, u, N, -50000, 100.0);
+		same("alp_f8", l, d, rd, N * 8);
+		row("scale32", "n=4096, in place", kt_level_name[l], BENCH(k->scale32(w32, N, 7, 1000)), N, 4);
+		row("scale64", "n=4096, in place", kt_level_name[l], BENCH(k->scale64(w64, N, 7, 1000003)), N, 8);
+		row("alp_f8", "n=4096, to doubles", kt_level_name[l], BENCH(k->alp_f8(d, u, N, -50000, 100.0)), N, 4);
+		row("alp_keys_f8+f8_from_keys", "n=4096, the old two passes", kt_level_name[l],
+			BENCH(k->alp_keys_f8(keys, u, N, -50000, 100.0); levels[l]->f8_from_keys(keys, N)), N, 4);
+	}
+	free(u), free(a32), free(w32), free(r32), free(a64), free(w64), free(r64), free(keys), free(d), free(rd);
+}
+
 void
 bench_col(void)
 {
@@ -236,4 +306,6 @@ bench_col(void)
 	bench_bits();
 	bench_zone();
 	bench_decode();
+	bench_lanes();
+	bench_cc();
 }

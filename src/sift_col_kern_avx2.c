@@ -488,7 +488,41 @@ for_i64_u64_avx2(const void *a, uint32 n, int64 base, int64 *dst)
 	sift_colk_for_i64_u64_scalar(p + i, n - i, base, dst + i);
 }
 
-/* A run of 8 or more elements of one parent is stored a register at a time */
+/* key ^ (the low 63 bits when the key is negative): the IEEE bits of the double a float key stands for */
+F2 void
+f8_from_keys_avx2(int64 *a, uint32 n)
+{
+	const __m256i zero = _mm256_setzero_si256();
+	uint32		i = 0;
+
+	for (; i + 4 <= n; i += 4)
+	{
+		__m256i		k = ld(a + i);
+
+		st(a + i, _mm256_xor_si256(k, _mm256_srli_epi64(_mm256_cmpgt_epi64(zero, k), 1)));
+	}
+	sift_colk_f8_from_keys_scalar(a + i, n - i);
+}
+
+/* 32 flags a step: the four bytes of the mask each replicated over eight lanes, one bit kept per lane */
+F2 void
+bits_to_flags_avx2(const uint64 *bits, uint32 n, uint8 *flags)
+{
+	const __m256i pick = _mm256_set_epi64x(UINT64CONST(0x0303030303030303), UINT64CONST(0x0202020202020202),
+										   UINT64CONST(0x0101010101010101), 0),
+				  bit = _mm256_set1_epi64x(UINT64CONST(0x8040201008040201)),
+				  one = _mm256_set1_epi8(1);
+
+	for (uint32 i = 0; i < n; i += 32)
+	{
+		uint32		m = (uint32) (bits[i / 64] >> (i % 64));
+		__m256i		x = _mm256_and_si256(_mm256_shuffle_epi8(_mm256_set1_epi32((int) m), pick), bit);
+
+		st(flags + i, _mm256_and_si256(_mm256_cmpeq_epi8(x, bit), one));
+	}
+}
+
+/* A parent's run is stored a register at a time, past its end too (the next run, or the padding, takes the tail): one store for a run of up to 8 */
 F2 void
 expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 {
@@ -496,17 +530,11 @@ expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 
 	for (uint32 p = 0; p < np; p++)
 	{
-		uint32		e = end[p];
+		__m256i		v = _mm256_set1_epi32((int) p);
 
-		if (e - i >= 8)
-		{
-			__m256i		v = _mm256_set1_epi32((int) p);
-
-			for (; i + 8 <= e; i += 8)
-				st(parent + i, v);
-		}
-		for (; i < e; i++)
-			parent[i] = p;
+		for (; i < end[p]; i += 8)
+			st(parent + i, v);
+		i = end[p];
 	}
 }
 
@@ -526,6 +554,8 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.for_i64 = {for_i64_u8_avx2, for_i64_u16_avx2, for_i64_u32_avx2, for_i64_u64_avx2},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
+	.f8_from_keys = f8_from_keys_avx2,
+	.bits_to_flags = bits_to_flags_avx2,
 	.expand_parents = expand_parents_avx2,
 };
 

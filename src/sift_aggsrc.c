@@ -6,6 +6,7 @@
 
 #include "utils/rel.h"
 
+#include "sift_aggkern.h"
 #include "sift_colsrc.h"
 
 #define MAX_PROVIDERS	4
@@ -111,6 +112,41 @@ void
 sift_colsrc_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
 	src->prov->read(src->impl, unit, leaf, vec);
+}
+
+int64
+sift_colsrc_leaf_n(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
+{
+	SiftSrcVec	vec;
+
+	if (src->prov->leaf_n)
+		return src->prov->leaf_n(src->impl, unit, leaf);
+	src->prov->read(src->impl, unit, leaf, &vec);
+	return vec.n;
+}
+
+static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+
+void
+sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+{
+	size_t		sz;
+
+	if (src->prov->read_into)
+	{
+		src->prov->read_into(src->impl, unit, leaf, buf, vec);
+		return;
+	}
+	src->prov->read(src->impl, unit, leaf, vec);
+	sz = vtype_size[src->prov->source_layout(src->impl)->leaf[leaf].vtype];
+	memcpy(buf->data, vec->data, vec->n * sz);
+	memset((char *) buf->data + vec->n * sz, 0, SIFT_AGG_PAD * sz);
+	vec->data = buf->data;
+	if (vec->isnull)
+	{
+		memcpy(buf->isnull, vec->isnull, vec->n);
+		vec->isnull = buf->isnull;
+	}
 }
 
 void

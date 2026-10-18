@@ -154,6 +154,8 @@ CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags
 CREATE FUNCTION sift._test_col_read(index regclass, leaf int4, preds text DEFAULT '', flags int4 DEFAULT 0,
 									OUT tid tid, OUT val text) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_read' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_leaf_stats(index regclass, OUT leaf int4, OUT ndistinct float8, OUT min float8, OUT max float8, OUT elems_per_row float8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_leaf_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_zones(index regclass, leaf int4, preds text DEFAULT '',
 									 OUT sb int4, OUT in_mutable bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
 									 OUT min int8, OUT max int8, OUT sum_i int8, OUT exact bool) RETURNS SETOF record

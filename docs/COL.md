@@ -366,9 +366,21 @@ checked by the normal permission check of the query.
 
 `sift_col_index_meta(index)` returns the leaf list (id, kind, store, logical type tag and the type OID it yields to SQL, index attribute number, parent group, path text),
 the attribute expressions (`sift_col_att_expr`), whether the index is partial and whether it is valid for scans, and
-`SiftColIndexStats` (rows, segments, bytes, per-leaf distinct counts from the dictionaries, zone-based min/max per leaf, share of
-all-visible pages). `amcostestimate` prices the index out of every ordinary plan: the operator class has no operators, so
+`SiftColIndexStats` (rows, segments, bytes, share of all-visible pages). `amcostestimate` prices the index out of every ordinary plan: the operator class has no operators, so
 the planner never forms an index path; only the custom scan of the plan track uses it, through this API.
+
+### Statistics of a leaf
+
+`SiftSrcStats` (`sift_colsrc.h`, what `provider->stats` fills) carries, per leaf, `ndistinct`, `min`, `max` and, for a group leaf, `elems_per_row`; 0 means unknown. The `sift_col` provider derives them from what the immutable segments hold without reading a chunk: the unit zones (`nvals`, `nnull`, `min`, `max`, the integer sum) and the first word of each dictionary (its entry count). The counts are over the non-NULL values of the leaf (the elements, for a child), and include rows deleted since the build; rows still in a mutable segment are not counted until they are promoted.
+
+| Leaf | `ndistinct` | `min`, `max` | `elems_per_row` |
+|---|---|---|---|
+| text, no inline unit | the largest segment dictionary, capped by the non-NULL values: exact for one segment, a lower bound when segments hold different values (a merge makes it exact) | 0 | |
+| text with an inline unit, float | the non-NULL values (an upper bound) | 0 | |
+| integer, date, timestamp, bool, numeric (scaled) | the smaller of the non-NULL values and `max - min + 1`: exact for a dense column, an upper bound otherwise | the smallest and largest value of any unit (numeric: the scaled integer) | |
+| group | 0 | 0 | the sum of the counts over the rows, when no unit's sum overflowed |
+
+`sift_col_leaf_stats(index)` (`sift_col_pg.h`) is the per-leaf accumulation; it is memoized per backend (8 indexes) under a key made of the generations of the immutable segments, so a build, promotion, merge or VACUUM rewrite refreshes it on the next plan and nothing else reads the zones again. This is the statistics hook: it runs when the directory changes, not per query, and no ANALYZE is needed for an index. A `sift_table` table has no dictionary or zone per column in the layout the planner sees; its provider reports the `n_distinct` that ANALYZE of the table stored in `pg_statistic` (a negative value is a share of the rows) and 0 before the first ANALYZE. `sift._test_col_leaf_stats(rel)` returns the six numbers per leaf of an index or a table (test extension); `col_index_stats` is its test.
 
 ## 6. Shredding jsonb (col-json's `sift_shred.h`, through the adapter `sift_col_shred.c`)
 
@@ -422,6 +434,10 @@ Parallelism: a worker takes **SB-range morsels** `[m*K, (m+1)*K)` from a shared 
 directory copy; any consistent directory covers every live row, section 3 makes the answer independent of which one). `sift_col_heap_sbs`
 gives the number of SBs to split. EXPLAIN data: `sift_col_counters(src)` (units seen, pruned by zones, rows scanned, rows vetted by the
 heap, heap pages, bytes decoded, `simd` level name).
+
+`sift_col_read_lane(unit, col, lane, dst, isnull, &info)` is the form the aggregation scan uses: the whole leaf decoded straight into the caller's int32, int64, double or dictionary-code array (the codec's 32-bit domain for int4, date and codes, `sift_cc_decode_f8` for floats, which divides an ALP chunk into doubles without forming float keys), NULL slots 0, the NULL bitmap expanded to 0/1 flags (`bits_to_flags`). `dst` has room for `sift_col_lane_n()` values and `SIFT_COL_PAD` bytes more. `sift_col_read` stays for selections. Reads through one selection share its positions: the unit keeps the row positions of the last selection (keyed by its bits, so another selection replaces it) and, per group, the element positions and offsets of those rows. A unit's page table (the page of the p-th page of the unit) is filled when it is parsed.
+
+The source seam (`sift_colsrc.h`) adds `sift_colsrc_leaf_n` and `sift_colsrc_read_into(src, unit, leaf, &SiftSrcBuf, &vec)` for storage the caller owns (room for `leaf_n + SIFT_AGG_PAD` values, the pad zero on return); `sift_colsrc_read` is the same over the provider's own buffers, and a provider without `read_into` is served by a copy.
 
 Memory: vectors returned by `sift_col_read` live in the source's scan arena and stay valid until the next read of the same leaf or the
 next `sift_col_next`; a selection is allocated by the caller or the source arena (`sift_col_sel_alloc`).
@@ -574,6 +590,8 @@ glue answers with the VM mask plus heap checks (section 3), a table AM with its 
 the nested column model, the dictionaries, the kernels and the mutable-lane record format are independent of the heap.
 
 ## Changes (contract log, newest first; rebase on these)
+
+- 2026-10 (decode): `sift_col_read_lane`, `sift_col_lane_n`, `SiftColLane`, `SiftColLaneInfo`; `sift_colsrc_leaf_n`, `sift_colsrc_read_into`, `SiftSrcBuf` and the provider slots `leaf_n`, `read_into`; `SiftColKernels.f8_from_keys`, `bits_to_flags`; `SiftCcKernels.scale32`, `scale64`, `alp_f8`, `alp_f4`, `sift_cc_decode_u32`, `sift_cc_decode_f8`, `sift_cchunk_decode_u32`, `sift_cchunk_decode_f8`; **`SiftColKernels.expand_parents` writes up to `SIFT_COL_PAD` bytes past `end[np - 1]`**: allocate the room; `SiftCUnitView.page`; `SiftColLeafStats`, `sift_cseg_leaf_stats`, `sift_col_leaf_stats`; `SiftSrcStats.ndistinct`, `min`, `max` and `elems_per_row` are filled (section 5).
 
 - 2026-10 (col minor 1): `SiftColDef.typid` (Oid) is `SiftColDef.type`, the `SiftColType` tag (section 2.1); chunk encoding 6 `ISTR`, zone flag `SIFT_COLZ_INLINE`
   (section 2.9); `SIFT_COL_MAX_STR` is gone (`SIFT_COL_MAX_VALUE`, `SIFT_COL_DICT_MAX_ENTRY`, `SIFT_COL_DICT_MAX_BYTES`); `sift_cunit_encode` takes `inl[]`

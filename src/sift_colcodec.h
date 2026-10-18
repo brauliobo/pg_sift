@@ -132,6 +132,10 @@ extern uint8 sift_cc_tag(const SiftCc *c);		/* tag of the root node under any wr
 
 /* dst[0..n) = the keys; dst needs n + SIFT_COL_PAD/8 slots */
 extern void sift_cc_decode(const SiftCc *c, int64 *dst);
+/* dst[i] = the low 32 bits of key i (the keys of an int4, a date, a dictionary code); dst needs SIFT_CC_CAP32(n) slots */
+extern void sift_cc_decode_u32(const SiftCc *c, uint32 *dst);
+/* dst[i] = the double whose key (sift_col_f8_key) is key i, of a F4 or F8 chunk; an ALP chunk never forms the keys; dst needs n + SIFT_COL_PAD/8 slots */
+extern void sift_cc_decode_f8(const SiftCc *c, double *dst);
 /* dst[k] = key of row idx[k], k < m (idx ascending or not, all < n) */
 extern void sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
 extern int64 sift_cc_get(const SiftCc *c, uint32 row);
@@ -183,6 +187,12 @@ typedef struct SiftCcKernels
 	void		(*alp_keys_f4) (int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div);
 	/* dst = the runs expanded: lens[r] copies of vals[r]; the total is exactly the caller's n (checked) */
 	void		(*rle_expand32) (const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst);
+	/* a[i] = base + mul * a[i], i < n, wrapping: the SCALE node on the 32-bit and the 64-bit domain */
+	void		(*scale32) (uint32 *a, uint32 n, uint32 base, uint32 mul);
+	void		(*scale64) (int64 *a, uint32 n, int64 base, int64 mul);
+	/* the doubles alp_keys_f8 / alp_keys_f4 give the keys of: dst[i] = ((double) (dbase + u[i])) / div, resp. the float4 division promoted */
+	void		(*alp_f8) (double *dst, const uint32 *u, uint32 n, int64 dbase, double div);
+	void		(*alp_f4) (double *dst, const uint32 *u, uint32 n, int64 dbase, float div);
 } SiftCcKernels;
 
 extern PGDLLIMPORT const SiftCcKernels *sift_cck;

@@ -187,6 +187,23 @@ typedef struct SiftColIndexStats
 	BlockNumber heap_pages;
 } SiftColIndexStats;
 
+/*
+ * What the immutable segments know about a leaf without reading a chunk: the unit zones (counts, min and max, the integer sum) and the
+ * size of the segment dictionary (docs/COL.md "Statistics of a leaf"). All counts include rows that were deleted since the build.
+ */
+typedef struct SiftColLeafStats
+{
+	double		nvals;			/* values the leaf holds: rows, or elements for a child */
+	double		nnull;
+	double		sum;			/* total of a GROUP leaf's counts (its elements), when has_sum */
+	int64		min;			/* INT leaves, when has_range: the smallest and largest value of any unit */
+	int64		max;
+	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
+	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
+	bool		has_sum;
+	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
+} SiftColLeafStats;
+
 typedef struct SiftColIndexMeta
 {
 	Oid			indexoid;
@@ -414,6 +431,34 @@ extern bool sift_col_vet(const SiftColUnit *unit, SiftColSel *sel);
  */
 extern void sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec);
 extern void sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel, SiftColVec *vec);
+
+/*
+ * The whole leaf straight into the consumer's lane, with no intermediate int64 vector: I32 the int4/date/bool keys (and a group's element
+ * counts per row), I64 the int8/timestamp/numeric keys, F64 the doubles of a float4 or float8 leaf, CODE the dictionary codes (info->dict is
+ * their dictionary). The values are those of sift_col_read with NULL slots 0. dst has room for sift_col_lane_n() values of the lane's size
+ * and SIFT_COL_PAD bytes more (decoders store whole vectors; what they write past the values is undefined); isnull, when given, receives n
+ * 0/1 flags (and the same room), info->nulls says whether any is set (NULL isnull: not asked, the flags are not written). A leaf whose
+ * chunk is absent reads as all NULL. info->ovf: some value overflowed the index, the lane holds filler there.
+ */
+typedef enum SiftColLane
+{
+	SIFT_COLL_I32,
+	SIFT_COLL_I64,
+	SIFT_COLL_F64,
+	SIFT_COLL_CODE
+} SiftColLane;
+
+typedef struct SiftColLaneInfo
+{
+	uint32		n;
+	bool		nulls;
+	bool		ovf;
+	SiftColDict	dict;			/* CODE */
+} SiftColLaneInfo;
+
+/* Values of leaf col in the unit: its rows, or for a child leaf the elements of the whole unit */
+extern uint32 sift_col_lane_n(const SiftColUnit *unit, int col);
+extern void sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info);
 
 /* Per element of the unit's group: the ordinal of its row (nelems entries) and the element count of every row (nrows entries, NULL array = 0) */
 extern uint32 sift_col_group_elems(const SiftColUnit *unit, int group);
