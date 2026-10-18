@@ -959,7 +959,8 @@ sift_seg_lookup(SiftSegment *seg, const char *term, int len, SiftTermInfo *info)
 {
 	if (!sift_dict_lookup(seg->dict, term, len, info))
 		return false;
-	sift_seg_term_stats(seg, info);
+	if (seg->entry.flags & SIFT_SEG_DIRTY)
+		sift_seg_term_stats(seg, info);
 	return true;
 }
 
@@ -1392,21 +1393,24 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 	MemoryContextDelete(cx);
 }
 
-/* After the docs were cleared, or when a crash left the table short: counts the table again and stores it */
-static void
-refresh_dead(SiftSegment *seg, int64 removed)
+/* When the docs were cleared since the table was counted (VACUUM, or a crash that left it short): counts the table again and stores it */
+void
+sift_seg_refresh_dead(SiftSegment *seg)
 {
 	SiftLive	l = seg_live(seg);
 	SiftLive2HeaderData h;
 	uint32	   *dead;
 
+	if (seg->fmt < SIFT_SEGFMT_LIVEROWS)
+		return;
 	sift_live2_header(&l, &h);
-	if (removed == 0 && h.tbl_ndead == h.ndead)
+	if (h.tbl_ndead == h.ndead)
 		return;
 	dead = MemoryContextAllocHuge(CurrentMemoryContext, Max(h.nslots, 1) * sizeof(uint32));
 	count_dead(seg, &h, dead);
 	sift_live2_set_dead(&l, &h, dead);
 	pfree(dead);
+	sift_sr_release(&seg->sr);
 }
 
 int64
@@ -1431,8 +1435,6 @@ sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
-	if (rows && (removed > 0 || (seg->entry.flags & SIFT_SEG_DIRTY)))
-		refresh_dead(seg, removed);
 	sift_sr_release(&seg->sr);
 	pfree(dead);
 	stats->tuples_removed += removed;

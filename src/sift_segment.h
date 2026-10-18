@@ -168,6 +168,12 @@ extern uint64 sift_seg_live_docs(SiftSegment *seg);
  */
 extern int64 sift_seg_live_rank(SiftSegment *seg, SiftKey key);
 extern bool sift_seg_delete_key(SiftSegment *seg, SiftKey key);
+/*
+ * Counts the vacuumed postings of each term again, when docs were cleared since they were counted. VACUUM does it after the merges,
+ * so a segment it rewrites does not pay for a table that is dropped; until then the old table stands (see sift_seg_live_stable)
+ */
+extern void sift_seg_refresh_dead(SiftSegment *seg);
+
 extern int64 sift_seg_bulkdelete(SiftSegment *seg, IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
 
