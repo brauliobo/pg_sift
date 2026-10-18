@@ -93,6 +93,12 @@ INSERT INTO col_checks (preds, heapwhere) VALUES
 	('1:eq:new;0:eq:7', 'status = ''new'' AND store_id = 7'),
 	('2:gt:10', 'amount > 10'),
 	('2:eq:0', 'amount = 0'),
+	('2:eq:-0', 'amount = 0'),
+	('2:lt:-0', 'amount < 0'),
+	('2:gt:-0', 'amount > 0'),
+	('2:ge:-0', 'amount >= 0'),
+	('2:ne:0', 'amount <> 0'),
+	('2:notin:-0|1', 'amount NOT IN (0, 1)'),
 	('2:ge:1e308', 'amount >= 1e308'),
 	('2:eq:nan', 'amount = ''NaN'''),
 	('2:ge:inf', 'amount >= ''Infinity'''),
@@ -143,6 +149,8 @@ SELECT count(*) AS differing FROM (
 	EXCEPT SELECT r.tid, r.val FROM sift._test_col_read('o_col', 0, '') r) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 1, '') EXCEPT SELECT ctid, status FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 2, '') EXCEPT SELECT ctid, amount::text FROM orders) z;
+-- the sign of a zero survives the encoding
+SELECT (SELECT count(*) FROM sift._test_col_read('o_col', 2, '') WHERE val = '-0') = (SELECT count(*) FROM orders WHERE amount::text = '-0') AS negative_zeros_kept;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 3, '') EXCEPT SELECT ctid, discount::float8::text FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 4, '') EXCEPT SELECT ctid, (placed - date '2000-01-01')::text FROM orders) z;
 SELECT count(*) AS differing FROM (SELECT tid, val FROM sift._test_col_read('o_col', 6, '') EXCEPT SELECT ctid, express::int::text FROM orders) z;

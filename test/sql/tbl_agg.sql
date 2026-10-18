@@ -89,7 +89,7 @@ SELECT * FROM agg_compare();
 VACUUM agg_t;
 SELECT * FROM agg_compare();
 
--- values a column group keeps apart (a string over 255 bytes, -0): the queries that read them refuse, the others work
+-- values a column group keeps apart (a string over 255 bytes; -0 is stored exactly): the queries that read them refuse, the others work
 INSERT INTO agg_t (id, g, k, c, f) VALUES (500000, 1, 'long', repeat('y', 1000), '-0'::float8);
 SELECT count(*) FROM agg_t WHERE g = 1 AND k = 'long';
 SELECT count(c) FROM agg_t;

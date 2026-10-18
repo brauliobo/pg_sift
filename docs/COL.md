@@ -26,7 +26,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
   error at CREATE INDEX and INSERT, as btree rejects a too large row: index `left(col, 255)` or a hash instead). The
   other types are refused at CREATE INDEX in this version.
 - **Key domain.** Every chunk holds integers: an `INT` value as it is, a float as its **order key** (the IEEE bits turned into a signed
-  int64 that sorts like the float; -0 is stored as +0 and every NaN as one NaN, sorted after +Inf as PostgreSQL does), a `STR` value as a
+  int64 that sorts like the float; the sign of zero is kept: -0 is the key just below +0, so a float comes back with its bits; every NaN is one NaN, sorted after +Inf as PostgreSQL does. PostgreSQL compares -0 and +0 equal, so a predicate constant of zero spans both keys (`sift_ctest_make`)), a `STR` value as a
   dictionary code. All filters are unsigned range tests on `value - base` (section 2.4), whatever the type.
 - **Row.** A row is a heap tuple (`SiftKey = blk << 16 | off`, as in sift). The rows of a segment inside one superblock (SB, 256 heap
   pages) form a **unit** `(segment, sb)`. Rows of a unit are numbered 0..n-1 in key order (the **row ordinal**); that number indexes every

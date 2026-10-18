@@ -350,7 +350,7 @@ batch_of(const Case *c, const SiftColRow *rows, uint32 n)
  * Comparing rows
  * ------------------------------------------------------------------------- */
 
-/* Two stored values are equal: the same NULL/overflow state, the same key (floats: -0 and NaN are one value) or bytes */
+/* Two stored values are equal: the same NULL/overflow state, the same key (floats: the bits, but every NaN is one value) or bytes */
 static bool
 value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 {
