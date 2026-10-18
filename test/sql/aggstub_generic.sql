@@ -40,7 +40,7 @@ CREATE AGGREGATE sum_sq(float8) (sfunc = sq_add, stype = float8, initcond = '0')
 CREATE FUNCTION vol_add(acc float8, x float8) RETURNS float8 LANGUAGE sql VOLATILE AS $$ SELECT acc + x + 0 * random() $$;
 CREATE AGGREGATE sum_vol(float8) (sfunc = vol_add, stype = float8, initcond = '0');
 
--- the plans: the aggregates are pushed with their arguments; a volatile transition function, an ORDER BY in the call and a hypothetical-set aggregate keep the plan
+-- the plans: the aggregates are pushed with their arguments (ORDER BY in the call, hypothetical-set aggregates and floats shown as arrays too); a volatile transition function keeps the plan
 EXPLAIN (COSTS OFF) SELECT kind, stddev_samp(price), sum(f4), min(tag), bool_and(day > '2024-01-10') FROM o GROUP BY kind;
 EXPLAIN (COSTS OFF) SELECT kind, string_agg(DISTINCT tag, ','), array_agg(DISTINCT day), count(DISTINCT f8) FROM o GROUP BY kind;
 EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.25, 0.75]) WITHIN GROUP (ORDER BY price::float8 / 100), mode() WITHIN GROUP (ORDER BY tag) FROM o GROUP BY kind;
@@ -81,6 +81,15 @@ SELECT same($$SELECT stddev_samp(price) AS sd, string_agg(tag, ',') AS s, mode()
 
 -- user aggregates
 SELECT same($$SELECT kind, round(sum_sq(f8)::numeric, 6) AS q, sum_sq(store) FILTER (WHERE tag IS NULL) AS n FROM o GROUP BY kind$$) AS user_aggregate;
+
+-- memory: DISTINCT, ORDER BY and WITHIN GROUP inputs go through a tuplesort bounded by work_mem; a DISTINCT hash set that outgrows it moves there
+SET work_mem = 64;
+SET client_min_messages = debug1;
+SELECT kind, cardinality(array_agg(DISTINCT id)) AS ids, sum(DISTINCT id % 100) AS s FROM o GROUP BY kind ORDER BY kind;
+RESET client_min_messages;
+SELECT same($$SELECT kind, array_agg(DISTINCT id) AS ids, sum(DISTINCT id % 100) AS s, string_agg(DISTINCT tag, ',') AS tags FROM o GROUP BY kind$$) AS distinct_spill;
+SELECT same($$SELECT kind, array_agg(id ORDER BY price, id) AS ids, regr_count(DISTINCT f8, price) AS pairs, percentile_disc(0.5) WITHIN GROUP (ORDER BY id) AS med FROM o GROUP BY kind$$) AS sorted_small_work_mem;
+RESET work_mem;
 
 -- errors are the aggregate's own: float4 overflow in the transition function, and the same row order
 SELECT kind, sum(f4 * 1e38::float4) FROM o GROUP BY kind;

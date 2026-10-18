@@ -1,6 +1,7 @@
 -- trap: sum and avg of float4 (PostgreSQL adds in float4 for sum and in float8 for avg): float4_pl over the decoded values (generic aggregate), in heap order
 -- shape: trap
 -- expect: agg
+-- guc: max_parallel_workers_per_gather = 0
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: -
