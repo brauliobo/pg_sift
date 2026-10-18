@@ -11,6 +11,20 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Security: a damaged index whose term blob ends between its codec and the next 4-byte boundary, with a large group count, could make a query
   read far past the blob (a crash). The length left after the codec wrapped around when the codec length was not a multiple of 4; the term now
   raises the corruption error.
+- Fixed: `count(*)` through the index (and `sift.facets`, and an unordered scan that returns no column) could count rows its snapshot does
+  not see while a `VACUUM` ran. A `VACUUM` clears the index entries of the tuples it removes and only then marks their pages
+  all-visible; a scan reads the liveness of a segment (the directory's dirty flag, the dirty-SB bitmap, the live bits, the mutable
+  segments' records) before it reads the visibility-map bit of the pages, so when the `VACUUM` finished in between it took the page as
+  all-visible, took the liveness as read before the removals, and counted the dead documents (rows deleted before the query began and not
+  yet vacuumed: the index count was higher than the sequential count of the same snapshot, by up to the rows deleted). A merge or a promotion that
+  replaced the segments under the scan did the same, because the `VACUUM` after it clears the bits of the new segments and the scan
+  still read the old ones. The heap decides every row this can touch: a `VACUUM` that removed rows now ends with a directory update, and a scan
+  that finds the directory changed since it read it (after the map, per superblock) does not take any page as all-visible for the rest of the scan.
+  Rows returned by a search (`SELECT ... WHERE body @@> ...`) were never affected: the heap checks them. No change to the on-disk format or the SQL.
+  Found while fixing the same race in the column engine; seen on 2.0.2 and every earlier release as an index count above the sequential
+  count (96 differing counts in a 90 s run with 6 readers, deleters, updaters, inserters and a `VACUUM`/`sift.merge` loop; none without the `VACUUM`).
+  Tests: `vacuum_count_snapshot` (the scan waits before the map read while the `VACUUM`, merge or promotion runs: clean segment, dirty segment
+  whose second superblock turns dirty, merge, mutable segment, page-by-page scan) and `vacuum_count_stress` (the run above, 40 s).
 
 ## 2.0.2
 
