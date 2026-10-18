@@ -165,7 +165,8 @@ if [[ $MODE == full ]]; then
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 5000 --queries 150 --rounds 4
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 20000 --rows 200000
+	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
+	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job fuzz fuzz 1 "$S/fuzz.sh"
