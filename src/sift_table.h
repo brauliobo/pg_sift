@@ -181,6 +181,7 @@ typedef struct SiftTblRel
 	/* column groups (sift_table_seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
+	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */

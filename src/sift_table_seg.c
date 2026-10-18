@@ -33,6 +33,7 @@
 #include "sift_lane.h"
 #include "sift_maint.h"
 #include "sift_merge.h"
+#include "sift_ops.h"
 #include "sift_table.h"
 
 #define SB_KEYS		(((uint64) SIFT_SB_PAGES) << 16)	/* keys of a superblock: (vblock << 16) | offset */
@@ -386,8 +387,7 @@ typedef struct UnitTids
 	int			src;
 	uint32		ordinal;
 	uint32		n;				/* live rows */
-	ItemPointerData *tid;		/* of the live rows, ascending */
-	uint32	   *row;			/* their row ordinals in the unit (the positions of a selection) */
+	ItemPointerData *tid;		/* of the live rows, ascending: the position of a row in the vectors of sift_col_sel_all */
 } UnitTids;
 
 typedef struct VisArg
@@ -426,6 +426,10 @@ struct SiftTblGroupScan
 	uint32		cache_sb;
 	UnitTids   *cu;
 	int			ncu;
+	/* the unit of cu whose rows are read into vec (all of them: the next fetches of its rows decode nothing), valid for one cu */
+	int			rd_unit;
+	uint64		serial;			/* of cu */
+	uint64		rd_serial;
 };
 
 static SiftColSchema *
@@ -513,6 +517,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	g->isnull = palloc(g->desc->natts * sizeof(bool));
 	g->vec = palloc(SIFT_COL_MAX_COLS * sizeof(SiftColVec));
 	g->cache_sb = PG_UINT32_MAX;
+	g->rd_unit = -1;
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftColSchema *schema;
@@ -562,6 +567,7 @@ sift_tbl_gscan_range(SiftTblGroupScan *g, uint32 sb_lo, uint32 sb_hi)
 	g->cur = 0;
 	g->begun = false;
 	g->in_unit = false;
+	g->rd_unit = -1;
 }
 
 static void
@@ -570,6 +576,7 @@ unit_start(SiftTblGroupScan *g)
 	uint64		lo = (uint64) g->unit.sb * SB_KEYS;
 	MemoryContext old;
 
+	g->rd_unit = -1;
 	MemoryContextReset(g->unitcxt);
 	old = MemoryContextSwitchTo(g->unitcxt);
 	sift_col_sel_all(&g->unit, &g->sel);
@@ -701,7 +708,6 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 		for (int k = 0; k < g->ncu; k++)
 		{
 			pfree(g->cu[k].tid);
-			pfree(g->cu[k].row);
 		}
 		pfree(g->cu);
 	}
@@ -724,13 +730,12 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 				g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));
 			u = &g->cu[g->ncu++];
 			sift_col_sel_all(&unit, &sel);
-			*u = (UnitTids) {s, ordinal++, sel.count, palloc(Max(sel.count, 1) * sizeof(ItemPointerData)),
-				palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32))};
+			*u = (UnitTids) {s, ordinal++, sel.count, palloc(Max(sel.count, 1) * sizeof(ItemPointerData))};
 			sift_col_tids(&unit, &sel, u->tid);
-			sift_col_sel_idx(&sel, u->row);
 		}
 	}
 	g->cache_sb = sb;
+	g->serial++;
 	MemoryContextSwitchTo(old);
 }
 
@@ -753,12 +758,36 @@ block_start(const UnitTids *u, BlockNumber vblock)
 	return lo;
 }
 
+/* Makes unit k of the cached superblock the current one with every row read: its rows are fetched without decoding again */
+static void
+unit_load(SiftTblGroupScan *g, int k, uint32 sb)
+{
+	const UnitTids *u = &g->cu[k];
+	SiftColSource *src = g->s[u->src].src;
+	MemoryContext old;
+
+	if (g->rd_unit == k && g->rd_serial == g->serial)
+		return;
+	g->rd_unit = -1;
+	g->cur = u->src;
+	sift_col_begin(src, NULL, 0, sb, sb + 1);
+	for (uint32 j = 0; j <= u->ordinal; j++)
+		if (!sift_col_next(src, &g->unit))
+			elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, sb);
+	MemoryContextReset(g->unitcxt);
+	old = MemoryContextSwitchTo(g->unitcxt);
+	sift_col_sel_all(&g->unit, &g->sel);
+	MemoryContextSwitchTo(old);
+	unit_read(g, &g->sel);
+	g->rd_unit = k;
+	g->rd_serial = g->serial;
+}
+
 int
 sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out)
 {
 	uint32		sb = vblock / SIFT_SB_PAGES;
 	int			nout = 0;
-	MemoryContext old;
 
 	cache_superblock(g, sb);
 	for (int k = 0; k < g->ncu; k++)
@@ -766,38 +795,15 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 		const UnitTids *u = &g->cu[k];
 		uint32		first = block_start(u, vblock),
 					last = first;
-		SiftColSource *src = g->s[u->src].src;
-		SiftColUnit unit;
-		SiftColSel sel;
-		uint32		n = 0;
 
 		while (last < u->n && ItemPointerGetBlockNumberNoCheck(&u->tid[last]) == vblock)
 			last++;
-		if (first == last)
-			continue;
-		g->cur = u->src;
-		sift_col_begin(src, NULL, 0, sb, sb + 1);
-		for (uint32 j = 0; j <= u->ordinal; j++)
-			if (!sift_col_next(src, &unit))
-				elog(ERROR, "sift_table: the unit %u of superblock %u is gone", u->ordinal, sb);
-		MemoryContextReset(g->unitcxt);
-		old = MemoryContextSwitchTo(g->unitcxt);
-		sift_col_sel_alloc(src, unit.nrows, &sel);
-		MemoryContextSwitchTo(old);
 		for (uint32 j = first; j < last; j++)
 			if (offmask == NULL || sift_col_bit_test(offmask, ItemPointerGetOffsetNumberNoCheck(&u->tid[j]) - 1))
 			{
-				sift_col_bit_set(sel.bits, u->row[j]);
-				n++;
+				unit_load(g, k, sb);
+				out[nout++] = row_tuple(g, j, &u->tid[j]);
 			}
-		if (n == 0)
-			continue;
-		sel.count = n;
-		g->unit = unit;
-		unit_read(g, &sel);
-		for (uint32 j = first, p = 0; j < last; j++)
-			if (sift_col_bit_test(sel.bits, u->row[j]))
-				out[nout++] = row_tuple(g, p++, &u->tid[j]);
 	}
 	return nout;
 }
@@ -931,6 +937,7 @@ typedef struct SealWriter
 	SiftColBatch *batch;
 	SiftWriteTarget *wt;
 	SiftColSegWriter *w;
+	uint64		expect;			/* bytes the segment will take at most (the delta pages): free runs shorter than a 256th are reused */
 } SealWriter;
 
 static void
@@ -943,6 +950,7 @@ seal_flush(SealWriter *sw)
 		if (sw->w == NULL)
 		{
 			sw->wt = sift_wt_begin(sw->rel, SIFT_WRITE_SHARED);
+			sift_wt_expect(sw->wt, sw->expect);
 			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, sw->cxt);
 		}
 		sift_colw_add(sw->w, sw->batch);
@@ -959,7 +967,7 @@ seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *se
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table seal", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table seal row", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema)};
+	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, (uint64) seg->npages * BLCKSZ};
 	PGAlignedBlock copy;
 	Datum	   *values = palloc(desc->natts * sizeof(Datum));
 	bool	   *isnull = palloc(desc->natts * sizeof(bool));
@@ -1010,7 +1018,7 @@ seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *se
 	}
 	ext = sift_lane_extents(rel, e, &next);
 	sift_dir_update(rel, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = ext,.nrelease = next,
-			.extra = InvalidBuffer});
+			.extra = InvalidBuffer,.immediate = st->fresh});
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -1088,6 +1096,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st)
 /* ---------- sift.table_segments ---------- */
 
 PG_FUNCTION_INFO_V1(sift_table_segments);
+PG_FUNCTION_INFO_V1(sift_table_space);
 
 /* One row per segment of the table: delta (row format write buffers), sealed delta (waiting for sealing), columns, tombstones */
 Datum
@@ -1143,4 +1152,30 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	UnregisterSnapshot(snap);
 	table_close(rel, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* The space of a table as one row: the file, the blocks ever used, and the free list (reusable: no snapshot can read them) */
+Datum
+sift_table_space(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	TupleDesc	tupdesc;
+	SiftFreeStats fs;
+	Datum		v[5];
+	bool		nulls[5] = {0};
+
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_tbl_refresh(rel, st);
+	fs = sift_free_stats(rel);
+	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
+	v[1] = Int64GetDatum(st->dir.meta.high_water);
+	v[2] = Int64GetDatum(fs.blocks);
+	v[3] = Int64GetDatum(fs.reusable);
+	v[4] = Int64GetDatum(fs.records);
+	table_close(rel, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
