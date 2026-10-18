@@ -5,12 +5,51 @@
 
 #include "sift_live.h"
 
-#define corrupt(l, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift index \"%s\" segment %llu is corrupted", \
-					RelationGetRelationName((l)->index), (unsigned long long) (l)->gen), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(l, ...) SIFT_SEG_CORRUPT((l)->index, (l)->gen, __VA_ARGS__)
+
+SiftSegHeaderData *
+sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+{
+	Buffer		buf = ReadBuffer(index, entry->header_blk);
+	Page		page;
+	SiftSegHeaderData *h,
+			   *copy;
+	uint32		used;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	sift_store_check_page(index, buf, SIFT_PT_SEGHEADER, entry->gen);
+	page = BufferGetPage(buf);
+	h = (SiftSegHeaderData *) SiftPageGetData(page);
+	used = SiftPageGetUsed(page);
+	if (used < offsetof(SiftSegHeaderData, extents) || h->nextents > SIFT_MAX_EXTENTS ||
+		used < offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent))
+	{
+		UnlockReleaseBuffer(buf);
+		SIFT_SEG_CORRUPT(index, entry->gen, "Header block %u holds %u bytes.", entry->header_blk, used);
+	}
+	copy = palloc(used);
+	memcpy(copy, h, used);
+	UnlockReleaseBuffer(buf);
+	return copy;
+}
+
+static void
+set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == *(uint64 *) arg)
+			dir->segs[i].flags |= SIFT_SEG_DIRTY;
+}
+
+/* The directory flag goes first: bits cleared under a clean flag would be ignored by readers */
+void
+sift_seg_mark_dirty(Relation index, SiftSegEntry *entry)
+{
+	if (entry->flags & SIFT_SEG_DIRTY)
+		return;
+	sift_dir_update(index, &(SiftDirChange) {.fn = set_dirty,.arg = &entry->gen,.extra = InvalidBuffer});
+	entry->flags |= SIFT_SEG_DIRTY;
+}
 
 void
 sift_live_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint64 nbits, BlockNumber *first, uint32 *npages)
