@@ -500,6 +500,44 @@ Warm medians (ms) of the ten questions on each `compression` variant of the `sif
 | Search "wireless headphones", shipped orders: the 10 newest | 6.41 | 6.43 | 6.31 | 6.58 | 6.51 | 6.63 | **4.38** |
 <!-- bench:store-compression:end -->
 
+## Size against ClickHouse (1,000,000 orders)
+
+Byte counts only (they do not depend on the host): the store dataset of 1,000,000 orders, `sift.col_sections` for pg_sift (section 2.10 of [docs/COL.md](COL.md)), `system.columns.data_compressed_bytes` for ClickHouse
+(default `LZ4`, `ZSTD(3)` per column, and a hand-tuned schema: `Delta`/`DoubleDelta` codecs, `LowCardinality` text, all in insertion order). pg_sift is at column format 1.3, with the default `compression = auto`; "heap" is `pg_column_size` of the values.
+
+| column (MiB) | values in a heap row | sift_table | ClickHouse LZ4 | ClickHouse ZSTD(3) | ClickHouse tuned | sift_table / LZ4 |
+|---|---:|---:|---:|---:|---:|---:|
+| id | 7.63 | 0.01 | 3.82 | 0.98 | 0.01 | 0.00x |
+| customer_id | 3.81 | 2.15 | 3.77 | 2.59 | 2.15 | 0.57x |
+| country | 2.86 | 0.61 | 0.96 | 0.55 | 0.55 | 0.63x |
+| category | 7.26 | 0.73 | 0.96 | 0.62 | 0.62 | 0.76x |
+| status | 7.91 | 0.36 | 0.52 | 0.29 | 0.29 | 0.70x |
+| amount | 6.63 | 2.15 | 3.87 | 2.48 | 2.01 | 0.56x |
+| quantity | 1.91 | 0.36 | 0.65 | 0.33 | 0.34 | 0.56x |
+| created_at | 7.63 | 3.23 | 3.83 | 3.55 | 3.34 | 0.84x |
+| title | 22.80 | 2.99 | 11.07 | 5.51 | 5.59 | 0.27x |
+| columns | 68.45 | 12.60 | 29.46 | 16.90 | 14.90 | 0.43x |
+
+The columns of the table are 12.6 MiB (0.43x of ClickHouse LZ4, 0.75x of `ZSTD(3)`, 0.85x of the tuned schema); the title dictionary (947,520 bytes as a codec string list, 4.4 MB plain) is in the `title` row. What is left of the 13.2 MiB file is the pre-aggregates
+(0.12 MiB), the unit directories (0.10), the zones (0.03), page headers and the unused end of each stream (0.07), the segment headers and liveness pages (0.13) and the metapage, directory and write segment (0.05).
+The `sift_col` index over seven of the columns and the month (the lines of the compression table above) is 10.9 MiB: its seven columns take 9.6 MiB against 10.4 MiB for ClickHouse `ZSTD(3)` and 9.3 MiB for the tuned schema,
+and the month leaf, the pre-aggregates and the overhead are the rest. The entropy of the low-cardinality code columns (`status`, `quantity`, `category`) is where the tuned schema is ahead (about 3 percent of the total): the
+codec packs codes at a fixed width and has no entropy coder; a `zstd` layer on them (`compression = zstd:3`) recovers part of it at a decode cost the default does not pay.
+
+Before and after this change (same data, same build otherwise):
+
+| | before | after |
+|---|---:|---:|
+| `sift_col` index file (parallel build, 1M orders) | 15.5 MiB (605 of 1,987 blocks free) | 10.9 MiB (11 of 1,394 blocks free) |
+| `sift_table` columns segment | 16.5 MiB | 13.2 MiB (title dictionary 4.4 MiB to 0.9 MiB) |
+| `sift_table` file after load and `VACUUM` | 187 MiB (170 free) | 13.2 MiB (VACUUM writes the segment again below the write segments it replaced) |
+| PostgreSQL primary key btree (not pg_sift's) | 21 MiB | 21 MiB |
+
+Speed, instructions of one backend per statement (`bench/cpu-query.sh`, 1M orders, the same index built with the same settings on both sides, so independent of the host load): the store questions 2 to 5 on the `sift_col` index
+1.000, 1.000, 1.000 and 1.001 of the build before; on the `sift_table` 1.000, 1.000, 1.000 and 1.000 (the planner prices a scan of a compact table by the work of building its rows; without that the file at its new size
+made question 2 take 163 ms instead of 10 ms). The text dictionaries cost more to open (docs/COL.md section 2.3): a `sift_table` point lookup of one order, which reads the 58,000-entry title dictionary, is 760,000 to 800,000 instructions against 257,000
+(203 against 163 microseconds of CPU), and a grouped scan on the title 17 percent more instructions; a `sift_col` index does not hold the title, and its point lookup is 1.002.
+
 ## Full tier: the session of October 2026 (history, sift `cc30fc2b299d`, not regenerated)
 
 > **History, measured with an earlier method of the harness.** Everything from here to "Method of the harness" (the full-tier tables of the articles and the places, the earlier smaller

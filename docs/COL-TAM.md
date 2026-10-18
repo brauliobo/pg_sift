@@ -348,7 +348,10 @@ input so that free space left by earlier merges is reused instead of extending t
    no entry would go).
 6. Space: `sift_recycle` clears the free-list records whose releasing transaction no snapshot can see any more, the orphan sweep
    releases what a crash left, then the reusable free run at the end of the file is cut (`sift_store_truncate`, `sift_store.h` P7) as for
-   a heap: when it is 1000 blocks or a 16th of the file, `vacuum_truncate` is on (the heap reloption, or `VACUUM (TRUNCATE)`), and
+   a heap. Before the cut, the segment (column segment, tombstones, or the write segment, which is closed and sealed) whose blocks end last in the file is
+   written again into the reusable free runs below it while they hold it (`compact_tail`, at most 16 steps; only with the cut enabled, and a column segment
+   of an older layout stays): a load seals its column segment above the write segments it replaces, and without this the file stays the size of the load
+   (1M orders: 163 MB to 14 MB; the dead rows of a rewritten segment go with it). The cut itself is done when it is 1000 blocks or a 16th of the file, `vacuum_truncate` is on (the heap reloption, or `VACUUM (TRUNCATE)`), and
    `AccessExclusiveLock` on the table is free right now (`ConditionalLockRelation`, released as soon as the file is cut). Under that lock no
    backend holds a scan, a directory copy or a target page; the store sends a relcache invalidation of the table before the lock goes, which
    marks every backend's `SiftTblRel` invalid (its target page, delta page tables and fetch scan are rebuilt on next use), and a standby
