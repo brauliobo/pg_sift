@@ -10,8 +10,6 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-sub install_sift { $_[0]->safe_psql('postgres', 'CREATE EXTENSION IF NOT EXISTS pg_sift') }
-
 my $tbl = 'CREATE TABLE orders (id int PRIMARY KEY, store text, total numeric, note text)';
 
 # ---------- no preload ----------
@@ -54,12 +52,10 @@ my $pub = sift_node('publisher', allows_streaming => 'logical');
 $pub->append_conf('postgresql.conf', "shared_preload_libraries = 'pg_sift'");
 $pub->start;
 install_sift($pub);
-install_sift($pub);
 $pub->safe_psql('postgres', "$tbl USING sift_table; CREATE PUBLICATION pub FOR TABLE orders");
 
 my $sub = sift_node('subscriber');
 $sub->start;
-install_sift($sub);
 install_sift($sub);
 $sub->safe_psql('postgres', $tbl);
 $sub->safe_psql('postgres', "CREATE SUBSCRIPTION sub CONNECTION \$\$" . $pub->connstr('postgres') . "\$\$ PUBLICATION pub");
