@@ -17,6 +17,7 @@ PG_FUNCTION_INFO_V1(sift_test_shred_spec);
 PG_FUNCTION_INFO_V1(sift_test_shred);
 PG_FUNCTION_INFO_V1(sift_test_shred_count);
 PG_FUNCTION_INFO_V1(sift_test_shred_summary);
+PG_FUNCTION_INFO_V1(sift_test_shred_kern_level);
 PG_FUNCTION_INFO_V1(sift_test_shred_kern_digest);
 PG_FUNCTION_INFO_V1(sift_test_shred_kern_equiv);
 PG_FUNCTION_INFO_V1(sift_test_shred_kern_rate);
@@ -281,6 +282,8 @@ typedef struct KOut
 	bool		ifound,
 				ffound;
 	uint32		parent[KN_MAX + 64];
+	uint64		nulls[KN_MAX / 64 + 2];
+	uint64		ovf[KN_MAX / 64 + 2];
 } KOut;
 
 static void
@@ -328,6 +331,7 @@ run_kcase(const SiftShredKernels *k, const KCase *c, KOut *o)
 	o->ffound = k->minmax_f64(c->state, c->fval, c->n, &o->fmin, &o->fmax);
 	if (c->np > 0)
 		k->expand_parents(c->end, c->np, o->parent);
+	k->state_bits(c->state, c->n, o->nulls, o->ovf);
 }
 
 /* Only what the kernels promise to write is compared: the parents up to the last end */
@@ -339,7 +343,8 @@ kout_equal(const KCase *c, const KOut *a, const KOut *b)
 	return memcmp(a->counts, b->counts, sizeof(a->counts)) == 0 && a->ifound == b->ifound && a->ffound == b->ffound &&
 		(!a->ifound || (a->imin == b->imin && a->imax == b->imax)) &&
 		(!a->ffound || (memcmp(&a->fmin, &b->fmin, 8) == 0 && memcmp(&a->fmax, &b->fmax, 8) == 0)) &&
-		memcmp(a->parent, b->parent, np * sizeof(uint32)) == 0;
+		memcmp(a->parent, b->parent, np * sizeof(uint32)) == 0 &&
+		memcmp(a->nulls, b->nulls, (c->n + 63) / 64 * sizeof(uint64)) == 0 && memcmp(a->ovf, b->ovf, (c->n + 63) / 64 * sizeof(uint64)) == 0;
 }
 
 static uint64
@@ -347,13 +352,25 @@ kout_hash(const KCase *c, const KOut *o, uint64 h)
 {
 	uint32		np = c->np > 0 ? c->end[c->np - 1] : 0;
 	const uint8 *p[] = {(const uint8 *) o->counts, (const uint8 *) &o->imin, (const uint8 *) &o->imax,
-	(const uint8 *) &o->fmin, (const uint8 *) &o->fmax, (const uint8 *) o->parent};
-	size_t		len[] = {sizeof(o->counts), 8 * o->ifound, 8 * o->ifound, 8 * o->ffound, 8 * o->ffound, np * sizeof(uint32)};
+	(const uint8 *) &o->fmin, (const uint8 *) &o->fmax, (const uint8 *) o->parent, (const uint8 *) o->nulls, (const uint8 *) o->ovf};
+	size_t		len[] = {sizeof(o->counts), 8 * o->ifound, 8 * o->ifound, 8 * o->ffound, 8 * o->ffound, np * sizeof(uint32),
+	(c->n + 63) / 64 * sizeof(uint64), (c->n + 63) / 64 * sizeof(uint64)};
 
-	for (int k = 0; k < 6; k++)
+	for (int k = 0; k < 8; k++)
 		for (size_t j = 0; j < len[k]; j++)
 			h = (h ^ p[k][j]) * UINT64CONST(0x100000001B3);
 	return (h ^ o->ifound ^ (o->ffound << 1)) * UINT64CONST(0x100000001B3);
+}
+
+/* The level of the kernels in use: it follows sift.simd (capped by the CPU) */
+Datum
+sift_test_shred_kern_level(PG_FUNCTION_ARGS)
+{
+	sift_shred_init();
+	for (int level = SIFT_SIMD_AVX512; level >= SIFT_SIMD_SCALAR; level--)
+		if (sift_shred_kernels_for((SiftSimdLevel) level) == sift_shred_kern)
+			PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name((SiftSimdLevel) level)));
+	elog(ERROR, "sift shred: the active kernel table is none of the levels");
 }
 
 /* A digest of the kernels of the active level (sift.simd) over random cases: equal at every level */
@@ -365,6 +382,7 @@ sift_test_shred_kern_digest(PG_FUNCTION_ARGS)
 	KOut	   *o = palloc(sizeof(KOut));
 	uint64		h = UINT64CONST(0xCBF29CE484222325);
 
+	sift_shred_init();
 	pg_prng_seed(&rs, PG_GETARG_INT64(0));
 	for (int i = 0; i < PG_GETARG_INT32(1); i++)
 	{
@@ -402,7 +420,7 @@ sift_test_shred_kern_equiv(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(bad);
 }
 
-/* Elements per second of one kernel (state_counts, minmax_i64, minmax_f64, expand_parents) at the active level over n-element columns */
+/* Elements per second of one kernel (state_counts, state_bits, minmax_i64, minmax_f64, expand_parents) at the active level over n-element columns */
 Datum
 sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 {
@@ -413,6 +431,8 @@ sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 	int64	   *val = palloc(n * 8 + 64);
 	uint32	   *end = palloc((n / 4 + 1) * 4),
 			   *parent = palloc(n * 4 + 64);
+	uint64	   *nulls = palloc(n / 8 + 16),
+			   *ovf = palloc(n / 8 + 16);
 	pg_prng_state rs;
 	instr_time	t0,
 				t1;
@@ -422,6 +442,7 @@ sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 				mx,
 				sink = 0;
 
+	sift_shred_init();
 	pg_prng_seed(&rs, 7);
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -435,6 +456,8 @@ sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 	{
 		if (strcmp(name, "state_counts") == 0)
 			sift_shred_kern->state_counts(state, n, counts), sink += counts[2];
+		else if (strcmp(name, "state_bits") == 0)
+			sift_shred_kern->state_bits(state, n, nulls, ovf), sink += nulls[0] & 1;
 		else if (strcmp(name, "minmax_i64") == 0)
 			sink += sift_shred_kern->minmax_i64(state, val, n, &mn, &mx);
 		else if (strcmp(name, "minmax_f64") == 0)

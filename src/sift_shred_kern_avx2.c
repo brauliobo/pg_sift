@@ -44,6 +44,39 @@ state_counts_avx2(const uint8 *state, uint32 n, uint32 counts[4])
 	counts[3] = c3;
 }
 
+K2 void
+state_bits_avx2(const uint8 *state, uint32 n, uint64 *nulls, uint64 *ovf)
+{
+	const __m256i s2 = _mm256_set1_epi8(SIFT_SHRED_VALUE),
+				s3 = _mm256_set1_epi8(SIFT_SHRED_OVERFLOW);
+	uint32		i = 0;
+
+	for (; i + 64 <= n; i += 64)
+	{
+		__m256i		a = _mm256_loadu_si256((const __m256i *) (state + i)),
+					b = _mm256_loadu_si256((const __m256i *) (state + i + 32));
+		uint64		value = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s2)) |
+		(uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s2)) << 32;
+
+		nulls[i / 64] = ~value;
+		ovf[i / 64] = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s3)) |
+			(uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s3)) << 32;
+	}
+	if (i < n)
+	{
+		uint64		nw = 0,
+					ow = 0;
+
+		for (uint32 j = 0; i + j < n; j++)
+		{
+			nw |= (uint64) (state[i + j] != SIFT_SHRED_VALUE) << j;
+			ow |= (uint64) (state[i + j] == SIFT_SHRED_OVERFLOW) << j;
+		}
+		nulls[i / 64] = nw;
+		ovf[i / 64] = ow;
+	}
+}
+
 /* The four state bytes at p as four 64-bit lanes that are all ones where the state is VALUE */
 K2 __m256i
 value_lanes(const uint8 *p)
@@ -172,6 +205,7 @@ expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 
 const SiftShredKernels sift_shred_kernels_avx2 = {
 	.state_counts = state_counts_avx2,
+	.state_bits = state_bits_avx2,
 	.minmax_i64 = minmax_i64_avx2,
 	.minmax_f64 = minmax_f64_avx2,
 	.expand_parents = expand_parents_avx2

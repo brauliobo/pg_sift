@@ -166,6 +166,8 @@ CREATE FUNCTION sift._test_shred_count(doc jsonb, spec text) RETURNS int8
 CREATE FUNCTION sift._test_shred_summary(doc jsonb, spec text, OUT path text, OUT absent int4, OUT nulls int4,
 										 OUT vals int4, OUT overflow int4, OUT min text, OUT max text) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_shred_summary' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shred_kern_level() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_level' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shred_kern_digest(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_digest' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shred_kern_equiv(seed int8, iters int4) RETURNS int8

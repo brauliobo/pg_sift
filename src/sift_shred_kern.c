@@ -14,6 +14,18 @@ state_counts_scalar(const uint8 *state, uint32 n, uint32 counts[4])
 		counts[state[i]]++;
 }
 
+static void
+state_bits_scalar(const uint8 *state, uint32 n, uint64 *nulls, uint64 *ovf)
+{
+	memset(nulls, 0, (n + 63) / 64 * sizeof(uint64));
+	memset(ovf, 0, (n + 63) / 64 * sizeof(uint64));
+	for (uint32 i = 0; i < n; i++)
+	{
+		nulls[i / 64] |= (uint64) (state[i] != SIFT_SHRED_VALUE) << (i % 64);
+		ovf[i / 64] |= (uint64) (state[i] == SIFT_SHRED_OVERFLOW) << (i % 64);
+	}
+}
+
 static bool
 minmax_i64_scalar(const uint8 *state, const int64 *val, uint32 n, int64 *min, int64 *max)
 {
@@ -76,6 +88,7 @@ expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
 
 const SiftShredKernels sift_shred_kernels_scalar = {
 	.state_counts = state_counts_scalar,
+	.state_bits = state_bits_scalar,
 	.minmax_i64 = minmax_i64_scalar,
 	.minmax_f64 = minmax_f64_scalar,
 	.expand_parents = expand_parents_scalar

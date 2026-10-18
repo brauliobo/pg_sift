@@ -196,6 +196,10 @@ extern SiftShredKey sift_shred_key(SiftShred *sh, const char *key, int len);
 extern bool sift_shred_enter(SiftShred *sh, bool is_array);
 extern void sift_shred_leave(SiftShred *sh);
 extern bool sift_shred_full(const SiftShred *sh);
+/* The keys the object being shredded declares, in jsonb order (none for a map): a driver whose objects are indexed looks them up
+ * instead of walking every member, and then calls sift_shred_key for each one it found */
+extern int	sift_shred_object_keys(const SiftShred *sh);
+extern const char *sift_shred_object_key(const SiftShred *sh, int i, int *len);
 extern bool sift_shred_wants_number(const SiftShred *sh);
 extern void sift_shred_null(SiftShred *sh);
 extern void sift_shred_bool(SiftShred *sh, bool b);
@@ -220,6 +224,13 @@ typedef struct SiftShredKernels
 {
 	/* counts[s] = number of bytes equal to s, s < 4; every byte of state is < 4 */
 	void		(*state_counts) (const uint8 *state, uint32 n, uint32 counts[4]);
+
+	/*
+	 * Bitmaps of a column for the engine: bit i of nulls is set unless state[i] is VALUE (absent, null and overflow are NULL of
+	 * the typed array), bit i of ovf if state[i] is OVERFLOW; ceil(n / 64) words each, the bits past n clear. The typed values of
+	 * a slot that is not VALUE are zero and carry no meaning: NULL is never a sentinel value.
+	 */
+	void		(*state_bits) (const uint8 *state, uint32 n, uint64 *nulls, uint64 *ovf);
 
 	/*
 	 * Minimum and maximum of val[i] over the i < n with state[i] == SIFT_SHRED_VALUE; false (outputs untouched) if there is
