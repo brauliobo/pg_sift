@@ -19,6 +19,7 @@
 
 #include "sift_aggkern.h"
 #include "sift_col.h"
+#include "sift_col_pagg.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
 
@@ -37,6 +38,8 @@ typedef struct ColSource
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
+	MemoryContext pcx;			/* the histogram of the last unit_hist */
+	SiftSrcDict hdict;			/* its dictionary */
 } ColSource;
 
 static bool
@@ -350,6 +353,101 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->heap_pages = cc->heap_pages;
 }
 
+/* ---- pre-aggregates (src/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
+
+static void
+col_preagg(Relation index, SiftSrcPreagg *pa)
+{
+	SiftCPaggSpec spec;
+
+	sift_col_pagg_spec(index, &spec);
+	if (spec.off)
+		return;
+	for (int d = 0; d < spec.ndims; d++)
+	{
+		pa->dim[pa->ndims].leaf = spec.dim[d].leaf;
+		pa->dim[pa->ndims].nmeas = spec.dim[d].nmeas;
+		for (int m = 0; m < spec.dim[d].nmeas; m++)
+			pa->dim[pa->ndims].meas[m] = spec.dim[d].meas[m];
+		pa->ndims++;
+	}
+}
+
+static bool
+col_unit_exact(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
+}
+
+static bool
+col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	ColSource  *src = impl;
+	const SiftColDef *def = sift_col_def(src->cs, leaf);
+	SiftCAgg	a;
+
+	if (!sift_col_unit_agg(&src->unit, leaf, &a))
+		return false;
+	memset(agg, 0, sizeof(*agg));
+	agg->nvals = a.nvals;
+	agg->nnull = a.nnull;
+	agg->has_nan = (a.zflags & SIFT_COLZ_NAN) != 0;
+	agg->is_const = (a.zflags & SIFT_COLZ_CONST) != 0;
+	agg->has_minmax = a.nnull < a.nvals && def->store != SIFT_COLS_STR && !(a.zflags & SIFT_COLZ_INLINE);
+	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)
+	{
+		agg->min_f = sift_col_f8_from_key(a.min);
+		agg->max_f = sift_col_f8_from_key(a.max);
+		agg->sum_f = a.sum_f;
+	}
+	else
+	{
+		agg->min = a.min;
+		agg->max = a.max;
+	}
+	if (a.has_sums)
+	{
+		agg->has_sums = !(a.zflags & SIFT_COLZ_OVERFLOW);
+		agg->has_sumsq = !(a.flags & SIFT_CAGG_SUMSQ_OVF);
+		agg->sum = a.sum;
+		agg->sumsq = a.sumsq;
+	}
+	return true;
+}
+
+static bool
+col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	ColSource  *src = impl;
+	SiftCHistDim d;
+	SiftColDict dict;
+
+	if (src->pcx == NULL)
+		src->pcx = AllocSetContextCreate(src->cxt, "sift_aggcol histogram", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextReset(src->pcx);
+	if (!sift_col_unit_hist(&src->unit, dim, src->pcx, &d, &dict))
+		return false;
+	memset(h, 0, sizeof(*h));
+	h->ngroups = d.ngroups;
+	h->has_null = d.has_null;
+	h->key = d.key;
+	h->count = d.count;
+	h->nmeas = d.nmeas;
+	for (int m = 0; m < d.nmeas; m++)
+	{
+		h->meas[m] = d.meas[m];
+		h->nn[m] = d.nn[m];
+		h->sum[m] = d.sum[m];
+		h->sumf[m] = d.sumf[m];
+	}
+	if (sift_col_def(src->cs, dim)->store == SIFT_COLS_STR)
+	{
+		src->hdict = (SiftSrcDict) {(const void *) (uintptr_t) dict.id, dict.n, dict.off, dict.bytes};
+		h->dict = &src->hdict;
+	}
+	return true;
+}
+
 static const SiftSrcProvider col_provider = {
 	.owns_index = col_owns_index,
 	.owns_table = col_owns_table,
@@ -365,6 +463,10 @@ static const SiftSrcProvider col_provider = {
 	.live = col_live,
 	.vet = col_vet,
 	.counters = col_counters,
+	.preagg = col_preagg,
+	.unit_exact = col_unit_exact,
+	.unit_agg = col_unit_agg,
+	.unit_hist = col_unit_hist,
 };
 
 void

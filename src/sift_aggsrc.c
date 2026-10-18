@@ -66,6 +66,16 @@ sift_colsrc_stats(Relation rel, SiftSrcStats *st)
 	provider_of_rel(rel)->stats(rel, st);
 }
 
+void
+sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa)
+{
+	const SiftSrcProvider *prov = provider_of_rel(rel);
+
+	memset(pa, 0, sizeof(*pa));
+	if (prov->preagg)
+		prov->preagg(rel, pa);
+}
+
 SiftSrcSource *
 sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
