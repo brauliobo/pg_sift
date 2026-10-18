@@ -177,8 +177,9 @@ common_args() { # the arguments of analytics.py that every corpus takes
 A_COL_PLAN=${A_COL_PLAN:-} A_BASE_GUCS=${A_BASE_GUCS:-} A_COL_GUCS=${A_COL_GUCS:-}
 
 describe() { # machine.txt of the result directory, with what the corpus is
-  "$STEPS/machine.sh" >"$OUT/machine.txt"
-  { echo "analytics corpus: $1"
+  "$STEPS/machine.sh" | grep -vE '^(method|engines|elasticsearch):' >"$OUT/machine.txt"   # the lines about the search engines do not apply
+  { echo "method: one backend with max_parallel_workers_per_gather = 0, CPU time of the backend, engines interleaved"
+    echo "analytics corpus: $1"
     echo "clickhouse: $(if [[ -x $CH_BIN ]]; then "$CH_BIN" local --version 2>/dev/null | head -1; else echo not installed; fi)"
     echo "data directory: $(stat -f -c %T "$PGDATA") $(du -sh "$PGDATA" | cut -f1)"; } >>"$OUT/machine.txt"
 }
