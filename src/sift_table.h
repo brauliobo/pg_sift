@@ -172,8 +172,10 @@ typedef struct SiftTblRel
 	uint32		tomb_lastcnt;
 	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
 	uint32		nents;
+	uint32		capents;
 	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
+	uint32		caprecent;
 	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;
 	/* the page this backend appends to */
