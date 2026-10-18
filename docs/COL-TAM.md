@@ -171,7 +171,7 @@ PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece o
 |---|---|---|
 | `slot_callbacks` | `TTSOpsHeapTuple`: every row is built as a HeapTuple (`t_self` = its TID) and handed to the slot with `sift_tbl_store`, which moves it into the slot's own memory context (a scan runs in a per-tuple context that is reset under it; the heap's buffer slots never allocate there). `ctid`/`tableoid` work, other system columns error. | done |
 | `scan_begin` / `scan_end` / `scan_rescan` | walks, in order: delta segments (page by page, rows in slot order), groups (engine units, in SB order). Snapshot registered, directory copied once. `SO_TYPE_SEQSCAN`, `SO_TYPE_ANALYZE`, `SO_TYPE_BITMAPSCAN`, `SO_TYPE_TIDRANGESCAN` honored; scan keys unsupported (the planner never passes them for a non-heap AM). | done |
-| `scan_getnextslot` | forward only (`ScanDirectionIsBackward` raises `0A000`: a backward scan needs a scrollable cursor, which the executor materializes first for a non-heap AM via `EXEC_FLAG_BACKWARD`; the AM advertises no backward support through its planner-visible costs). | done |
+| `scan_getnextslot` | both directions, as a heap: the cursor is on the row last returned, so a backward step gives the one before it, an end resets the position (a forward step then starts at the first row, a backward one at the last). Backward goes over the column groups from their last unit, then the delta pages from the last. The units of the range are listed on the first backward step and found again by superblock and place in it; no unit is decoded twice per step. | done |
 | `scan_set_tidrange` / `scan_getnextslot_tidrange` | by SB/vblock range on the directory, then the filter `mintid <= tid <= maxtid`. | done |
 | `parallelscan_estimate` / `_initialize` / `_reinitialize` | `ParallelBlockTableScanDescData`-like header + a frozen copy of the directory + an atomic unit counter (a delta page, then one superblock of the column groups per unit). | done (`t/008_tbl_seal.pl`) |
 | `index_fetch_begin/reset/end` | per-fetch state caches the directory copy, the open segment readers, the last decoded unit and the tombstone cache; no buffer is held between calls. | done |
@@ -268,8 +268,7 @@ docs "Generic WAL Records" and "Custom WAL Resource Managers"):
 | UNLOGGED, TEMP | works | the init fork holds the empty layout; temp tables use local buffers. |
 | logical decoding of the table by a *plugin* (test_decoding, wal2json) | works with the record, same preload requirement | a plugin sees ordinary changes. |
 
-**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); backward scans
-(`0A000`); system columns `xmin/xmax/cmin/cmax` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
+**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); system columns `xmin/xmax/cmin/cmax` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
 
 **Blocker check (honest).** No decisive blocker for logical replication: it works through the hybrid record, with the stated cost
 (preload everywhere the logical record is replayed, double WAL for published tables). The cheapest way out for a deployment that
@@ -389,8 +388,7 @@ and the free list.
 
 BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or seal fails with the same error until a column is dropped); 128 directory entries; rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
-backward scans (a `SCROLL` cursor fetching backward raises `0A000`: reading a unit backward would decode it for every row; use `FETCH ABSOLUTE` over a
-`NO SCROLL` cursor or materialize), `xmin/xmax/cmin/cmax`, multixact-based shared row locks (they degrade to exclusive), HOT, speculative
+`xmin/xmax/cmin/cmax`, multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
 
 ## 10. Tests
