@@ -126,8 +126,8 @@ CREATE FUNCTION sift._test_col_mut_append(index regclass, seed int8, first int4,
 -- a big row (id % 1000 = 999) whose append fails after fail_after page links, leaving it torn
 CREATE FUNCTION sift._test_col_mut_torn(index regclass, seed int8, id int4, fail_after int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_mut_torn' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_mut_toolong(index regclass) RETURNS void
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_toolong' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_mut_long(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_mut_long' LANGUAGE C STRICT;
 -- every record of the mutable segments through the reader, each checked against its generator
 CREATE FUNCTION sift._test_col_mut_rows(index regclass, seed int8, OUT gen int8, OUT id int8, OUT deleted bool)
 	RETURNS SETOF record

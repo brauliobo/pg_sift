@@ -27,6 +27,7 @@
 
 #include "sift.h"
 #include "sift_col_am.h"
+#include "sift_col_build.h"
 #include "sift_col_seg.h"
 #include "sift_cpu.h"
 
@@ -60,6 +61,17 @@ sift_col_init(void)
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_workers",
+							"Testing: parallel workers the last sift_col build of this session launched.",
+							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_fail_sb",
+							"Testing: the participant of a sift_col build that takes this superblock (1 = the first) fails (0 = none).",
+							NULL, &sift_test_col_fail_sb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_segment_kb",
+							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem).",
+							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+#endif
 	col_relopt_kind = add_reloption_kind();
 	add_int_reloption(col_relopt_kind, "mutable_limit",
 					  "Mutable segment size in kB before it is sealed for promotion",
@@ -141,6 +153,64 @@ sift_col_leaf_store(Oid typid, SiftColStore *store)
 	return false;
 }
 
+/* The format's tag of a PostgreSQL type, and the type a tag stands for: the one place the engine's logical types meet type OIDs */
+uint8
+sift_col_type_of_oid(Oid typid)
+{
+	switch (typid)
+	{
+		case BOOLOID:
+			return SIFT_COLT_BOOL;
+		case INT2OID:
+			return SIFT_COLT_INT2;
+		case INT4OID:
+			return SIFT_COLT_INT4;
+		case INT8OID:
+			return SIFT_COLT_INT8;
+		case FLOAT4OID:
+			return SIFT_COLT_FLOAT4;
+		case FLOAT8OID:
+			return SIFT_COLT_FLOAT8;
+		case NUMERICOID:
+			return SIFT_COLT_NUMERIC;
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+		case NAMEOID:
+			return SIFT_COLT_TEXT;
+		case BYTEAOID:
+			return SIFT_COLT_BYTEA;
+		case DATEOID:
+			return SIFT_COLT_DATE;
+		case TIMESTAMPOID:
+			return SIFT_COLT_TIMESTAMP;
+		case TIMESTAMPTZOID:
+			return SIFT_COLT_TIMESTAMPTZ;
+		case UUIDOID:
+			return SIFT_COLT_UUID;
+		case JSONBOID:
+			return SIFT_COLT_JSONB;
+		default:
+			return SIFT_COLT_OTHER;
+	}
+}
+
+static const Oid type_oids[SIFT_COLT_END] = {
+	[SIFT_COLT_BOOL] = BOOLOID, [SIFT_COLT_INT2] = INT2OID, [SIFT_COLT_INT4] = INT4OID, [SIFT_COLT_INT8] = INT8OID,
+	[SIFT_COLT_FLOAT4] = FLOAT4OID, [SIFT_COLT_FLOAT8] = FLOAT8OID, [SIFT_COLT_NUMERIC] = NUMERICOID, [SIFT_COLT_TEXT] = TEXTOID,
+	[SIFT_COLT_BYTEA] = BYTEAOID, [SIFT_COLT_DATE] = DATEOID, [SIFT_COLT_TIMESTAMP] = TIMESTAMPOID, [SIFT_COLT_TIMESTAMPTZ] = TIMESTAMPTZOID,
+	[SIFT_COLT_UUID] = UUIDOID, [SIFT_COLT_JSONB] = JSONBOID
+};
+
+/* A leaf of a plain attribute yields exactly the type of the attribute in desc (varchar stays varchar); any other one the tag's type */
+Oid
+sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
+{
+	if (def->attno > 0 && def->path[0] == '\0')
+		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
+	return type_oids[def->type];
+}
+
 /* The scale of numeric(p, s); the INT class holds the number times 10^s exactly while p <= 18 */
 bool
 sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
@@ -210,7 +280,7 @@ build_rel(Relation index)
 		r->json[a] = typid == JSONBOID;
 		r->nleaves[a] = k;
 		if (typid != JSONBOID)
-			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .typid = typid, .path = "", .scale = scale};
+			defs[n] = (SiftColDef) {.id = n, .parent = -1, .kind = SIFT_COLK_SCALAR, .store = store, .attno = a, .type = sift_col_type_of_oid(typid), .path = "", .scale = scale};
 		else
 			for (int i = 0; i < k; i++)
 			{
@@ -302,11 +372,11 @@ sift_col_index_meta(Relation index)
 			m->stats.nrows += e->ndocs;
 			m->stats.bytes += e->bytes;
 			m->stats.nsegments++;
-			m->stats.nunits += e->sb_hi - e->sb_lo + 1;
 		}
 		else
 			m->stats.nmutable++;
 	}
+	m->stats.nunits = sift_cseg_dir_units(snap);
 	heap = table_open(d->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	visibilitymap_count(heap, &allvis, NULL);
@@ -379,33 +449,33 @@ datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
 {
 	v->isnull = v->overflow = false;
 	v->len = 0;
-	switch (def->typid)
+	switch (def->type)
 	{
-		case INT2OID:
+		case SIFT_COLT_INT2:
 			v->v.i = DatumGetInt16(d);
 			break;
-		case INT4OID:
-		case DATEOID:
+		case SIFT_COLT_INT4:
+		case SIFT_COLT_DATE:
 			v->v.i = DatumGetInt32(d);
 			break;
-		case INT8OID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
+		case SIFT_COLT_INT8:
+		case SIFT_COLT_TIMESTAMP:
+		case SIFT_COLT_TIMESTAMPTZ:
 			v->v.i = DatumGetInt64(d);
 			break;
-		case BOOLOID:
+		case SIFT_COLT_BOOL:
 			v->v.i = DatumGetBool(d);
 			break;
-		case NUMERICOID:
+		case SIFT_COLT_NUMERIC:
 			if (numeric_is_nan(DatumGetNumeric(d)))
 				v->isnull = v->overflow = true;
 			else
 				v->v.i = sift_col_numeric_key(def->scale, d, SIFT_COL_ROUND_NEAREST);
 			break;
-		case FLOAT4OID:
+		case SIFT_COLT_FLOAT4:
 			v->v.f = DatumGetFloat4(d);
 			break;
-		case FLOAT8OID:
+		case SIFT_COLT_FLOAT8:
 			v->v.f = DatumGetFloat8(d);
 			break;
 		default:
@@ -414,11 +484,6 @@ datum_value(const SiftColDef *def, Datum d, SiftColValue *v)
 
 				v->v.s = VARDATA_ANY(t);
 				v->len = VARSIZE_ANY_EXHDR(t);
-				if (v->len > SIFT_COL_MAX_STR)
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("value of %u bytes is too long for a sift_col index (at most %d bytes)", v->len, SIFT_COL_MAX_STR),
-							 errhint("Index left(column, %d) or a hash of it instead.", SIFT_COL_MAX_STR)));
 			}
 	}
 }
@@ -530,7 +595,7 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->amclusterable = false;
 	am->ampredlocks = false;
 	am->amcanparallel = false;
-	am->amcanbuildparallel = false;
+	am->amcanbuildparallel = true;
 	am->amcaninclude = false;
 	am->amusemaintenanceworkmem = true;
 	am->amsummarizing = false;

@@ -81,8 +81,9 @@ SELECT count(*) AS batched, count(*) FILTER (WHERE id % 5 = 0) AS dead_batched F
 SELECT kind, nrows, live FROM sift._test_col_mut_segments('t_idx') ORDER BY gen;
 SELECT sift._test_check('t_idx') AS orphans;
 
--- strings of 256 bytes do not fit the dictionaries
-SELECT expect($$ SELECT sift._test_col_mut_toolong('t_idx') $$);
+-- a string of any length is held: a record of 300 000 bytes spans pages
+SELECT sift._test_col_mut_long('t_idx');
+SELECT sift._test_check('t_idx') AS orphans;
 
 -- corruption is found: a page header count, a flag byte, the length of a record
 CREATE TABLE t2 (doc text);

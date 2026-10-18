@@ -17,7 +17,7 @@
 #define SIFT_SHRED_MAX_COLS			256
 #define SIFT_SHRED_MAX_GROUPS		64
 #define SIFT_SHRED_MAX_STEPS		16
-#define SIFT_SHRED_DEFAULT_TEXT		SIFT_MAX_TERM_BYTES	/* what a text dictionary of sift_col holds */
+#define SIFT_SHRED_DEFAULT_TEXT		SIFT_MAX_TERM_BYTES	/* a text(N) column holds this many bytes unless declared longer */
 #define SIFT_SHRED_MAX_TEXT			(1024 * 1024)
 #define SIFT_SHRED_DEFAULT_ELEMS	(1 << 20)
 #define SIFT_SHRED_DEFAULT_BYTES	(16 << 20)
@@ -213,8 +213,8 @@ sift_shred_group_range(const SiftShredDoc *doc, int g, uint32 p, uint32 *lo, uin
 
 /*
  * Kept apart from the column and aggregation kernels: these work on the shredder's state bytes with no bit vector and no padding of
- * the value arrays, and the generic composition (sift_colk->range on the bytes, SiftAggKernels.minmax_* under its bitmap) is slower
- * for float8, for the scalar level and for state_bits on AVX2 (measurements: docs/COL-SHRED.md)
+ * the value arrays, and the generic composition (sift_colk->range on the bytes, SiftAggKernels.minmax_* under its bitmap) is more than
+ * 3 percent slower at the scalar level for every kernel and at AVX2 for state_bits, state_counts and minmax_f64
  */
 typedef struct SiftShredKernels
 {

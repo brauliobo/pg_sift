@@ -1,6 +1,7 @@
 /*
- * sift_colz.c - the PostgreSQL build's implementation of sift_colz.h: liblz4 and libzstd, each optional (the Makefile defines SIFT_HAVE_LZ4 and
- * SIFT_HAVE_ZSTD from what the build machine provides; SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 leave one out). Not part of the portable core.
+ * sift_colz.c - the implementation of sift_colz.h for every host: liblz4 and libzstd, each optional (a build defines SIFT_HAVE_LZ4 and
+ * SIFT_HAVE_ZSTD from what the build machine provides; the PostgreSQL Makefile probes them, SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 leave one out).
+ * Without either it answers "not available" and the codec writes no wrapped chunk.
  */
 #include "sift_host.h"
 
