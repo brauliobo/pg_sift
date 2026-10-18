@@ -48,7 +48,7 @@ now_ns(void)
 	} \
 	best_; })
 
-static AgkRng rng;
+static SiftRng rng;
 static int	nbatch = 200;
 static const SiftAggKernels *levels[3];
 static const char *lname[3];
@@ -61,7 +61,7 @@ arr(size_t bytes)
 	uint8	   *p = AGK_ALLOC(bytes + SIFT_AGG_PAD);
 
 	for (size_t i = 0; i < bytes + SIFT_AGG_PAD; i++)
-		p[i] = (uint8) agk_next(&rng);
+		p[i] = (uint8) sift_rng_next(&rng);
 	return p;
 }
 
@@ -72,7 +72,7 @@ make_mask(double dens)
 
 	memset(m, 0, NW * 8);
 	for (int i = 0; i < N; i++)
-		if (agk_unit(&rng) < dens)
+		if (sift_rng_unit(&rng) < dens)
 			m[i >> 6] |= UINT64CONST(1) << (i & 63);
 	return m;
 }
@@ -124,7 +124,7 @@ main(void)
 	sched_setaffinity(0, sizeof(set), &set);
 	ak_cpu_init();
 	nbatch = getenv("AK_BATCHES") ? atoi(getenv("AK_BATCHES")) : nbatch;
-	agk_seed(&rng, 42);
+	sift_rng_seed(&rng, 42);
 	i32 = arr(N * 4);
 	v2 = arr(N * 4);
 	k32 = arr(N * 4);
@@ -154,26 +154,26 @@ main(void)
 
 	for (int i = 0; i < N; i++)
 	{
-		i32[i] = agk_below(&rng, 1000000);
-		i64[i] = (int64) (agk_next(&rng) >> 24);
-		f64[i] = agk_unit(&rng) * 1000;
-		code[i] = agk_below(&rng, 1024);
-		runs[i] = i > 0 && agk_below(&rng, 10) ? runs[i - 1] : agk_below(&rng, 1024);
-		v2[i] = 7 + agk_below(&rng, 1200);
-		k32[i] = -5 + agk_below(&rng, 1000);
-		gid[i] = agk_below(&rng, 64);
-		gid0[i] = agk_below(&rng, 100);
+		i32[i] = sift_rng_below(&rng, 1000000);
+		i64[i] = (int64) (sift_rng_next(&rng) >> 24);
+		f64[i] = sift_rng_unit(&rng) * 1000;
+		code[i] = sift_rng_below(&rng, 1024);
+		runs[i] = i > 0 && sift_rng_below(&rng, 10) ? runs[i - 1] : sift_rng_below(&rng, 1024);
+		v2[i] = 7 + sift_rng_below(&rng, 1200);
+		k32[i] = -5 + sift_rng_below(&rng, 1000);
+		gid[i] = sift_rng_below(&rng, 64);
+		gid0[i] = sift_rng_below(&rng, 100);
 		parent[i] = i / 4;
 	}
 	for (int i = 0; i < 1024; i++)
-		map[i] = agk_below(&rng, 16);
+		map[i] = sift_rng_below(&rng, 16);
 	for (int i = 0; i < 1000; i++)
 	{
-		lut2[i] = agk_below(&rng, 2);
-		map2[i] = agk_below(&rng, 16);
+		lut2[i] = sift_rng_below(&rng, 2);
+		map2[i] = sift_rng_below(&rng, 16);
 	}
 	for (int i = 0; i < NW; i++)
-		rowmask[i] = agk_next(&rng);
+		rowmask[i] = sift_rng_next(&rng);
 	for (int i = 0; i < 64; i++)
 		facc[i] = 0, iacc[i] = 0, cnt[i] = 0;
 

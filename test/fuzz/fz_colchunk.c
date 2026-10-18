@@ -28,23 +28,16 @@
 #include "sift_col_enc.h"
 #include "sift_colcodec.h"
 #include "fz_shim.h"
+#include "sift_testrng.h"
 
-typedef struct Rng
-{
-	uint64		s;
-} Rng;
+typedef uint64 CcgRng;
 
 static inline uint64
-ccg_next(Rng *r)
+ccg_next(CcgRng *r)
 {
-	uint64		z = (r->s += UINT64CONST(0x9E3779B97F4A7C15));
-
-	z = (z ^ (z >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
-	z = (z ^ (z >> 27)) * UINT64CONST(0x94D049BB133111EB);
-	return z ^ (z >> 31);
+	return sift_splitmix_next(r);
 }
 
-#define CcgRng Rng
 #include "sift_colcodec_gen.h"
 
 #define MAX_ROWS (1u << 20)		/* what a harness decodes: beyond it only the parse is exercised */
@@ -408,7 +401,7 @@ static const char *const seed_policies[] = {
 static void
 gen_codec(const char *dir)
 {
-	Rng			r = {42};
+	CcgRng		r = 42;
 	static const uint32 sizes[] = {1, 31, 32, 33, 1000, 1056, 5000};
 
 	for (int g = 0; g < CCG_NGEN; g++)
@@ -464,7 +457,7 @@ gen_codec(const char *dir)
 static void
 gen_units(const char *dir)
 {
-	Rng			r = {7};
+	CcgRng		r = 7;
 
 	for (int k = 0; k < 8; k++)
 	{

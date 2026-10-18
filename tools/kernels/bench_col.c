@@ -11,7 +11,7 @@
 #define NW			1152			/* words of a selection of a full unit (73728 rows) */
 #define NZ			1024			/* units of a segment */
 
-static Rng	rng;
+static SiftRng	rng;
 static const SiftColKernels *levels[3];
 static int	nlevels;
 
@@ -21,7 +21,7 @@ rand_array(size_t bytes)
 	uint64	   *p = kt_alloc(bytes + SIFT_COL_PAD);
 
 	for (size_t i = 0; i < (bytes + SIFT_COL_PAD) / 8; i++)
-		p[i] = rng_next(&rng);
+		p[i] = sift_rng_next(&rng);
 	return p;
 }
 
@@ -34,9 +34,9 @@ rand_bits(uint32 nwords, int density)
 	memset(p, 0, (size_t) nwords * 8 + SIFT_COL_PAD);
 	for (uint32 i = 0; i < nwords; i++)
 	{
-		p[i] = rng_next(&rng);
+		p[i] = sift_rng_next(&rng);
 		for (int j = 1; j < density; j++)
-			p[i] &= rng_next(&rng);
+			p[i] &= sift_rng_next(&rng);
 	}
 	return p;
 }
@@ -59,7 +59,7 @@ bench_range(void)
 	{
 		void	   *a = rand_array((size_t) N << w);
 		uint64		max = w == SIFT_COLW_64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (8 << w)) - 1,
-					lo = rng_next(&rng) & max,
+					lo = sift_rng_next(&rng) & max,
 					span = max / 4;
 
 		sift_col_kernels_for(SIFT_SIMD_SCALAR)->range[w] (a, N, lo, span, want);
@@ -89,7 +89,7 @@ bench_lut(void)
 
 		for (uint32 i = 0; i < N; i++)
 		{
-			uint32		c = rng_below(&rng, ncodes);
+			uint32		c = sift_rng_below(&rng, ncodes);
 
 			memcpy((uint8 *) a + ((size_t) i << w), &c, 1 << w);
 		}
@@ -155,10 +155,10 @@ bench_zone(void)
 
 	for (uint32 i = 0; i < NZ; i++)
 	{
-		mn[i] = (int64) (rng_next(&rng) >> 40);
-		mx[i] = mn[i] + (int64) (rng_next(&rng) >> 44);
-		nvals[i] = rng_below(&rng, 4);
-		nnull[i] = rng_below(&rng, 4);
+		mn[i] = (int64) (sift_rng_next(&rng) >> 40);
+		mx[i] = mn[i] + (int64) (sift_rng_next(&rng) >> 44);
+		nvals[i] = sift_rng_below(&rng, 4);
+		nnull[i] = sift_rng_below(&rng, 4);
 	}
 	memset(keep0, 0xFF, sizeof(keep0));
 	s->zone_range(mn, mx, NZ, 1 << 22, 3 << 22, want);
@@ -190,7 +190,7 @@ bench_decode(void)
 	static const char *const scen[] = {"7 bits, n=4096", "13 bits, n=4096", "20 bits, n=4096", "29 bits, n=4096"};
 
 	for (uint32 i = 0; i < N; i++)
-		idx[i] = rng_below(&rng, N);
+		idx[i] = sift_rng_below(&rng, N);
 	for (int wi = 0; wi < lengthof(widths); wi++)
 	{
 		s->unpack(src, widths[wi], N, ref);
@@ -228,7 +228,7 @@ bench_decode(void)
 void
 bench_col(void)
 {
-	rng_seed(&rng, 42);
+	sift_rng_seed(&rng, 42);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512 && l <= sift_cpu.detected; l++)
 		levels[nlevels++] = sift_col_kernels_for(l);
 	bench_range();
