@@ -125,6 +125,7 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, int options, uint3
 	bool		logical;
 
 	sift_tbl_ensure_init(rel);
+	sift_tbl_layout_ready(rel, st);
 	logical = sift_tbl_check_publication(rel);
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	mtup = form_mtuple(rel, slot);

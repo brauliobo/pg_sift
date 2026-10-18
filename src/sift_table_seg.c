@@ -128,6 +128,12 @@ layout_of(Relation rel, SiftTblRel *st)
 }
 
 void
+sift_tbl_layout_ready(Relation rel, SiftTblRel *st)
+{
+	(void) layout_of(rel, st);
+}
+
+void
 sift_tbl_layout_check(Relation rel)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table layout check", ALLOCSET_SMALL_SIZES);
