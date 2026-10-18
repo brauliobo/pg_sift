@@ -231,7 +231,6 @@ SELECT rows_vetted > 0 AS vetted, heap_pages > 0 AS heap_read FROM sift._test_co
 SELECT col_cmp('o_col', '0:ge:700', 'store_id >= 700');
 SELECT col_cmp('o_col', '', 'true');
 VACUUM orders;
--- the heap is read only for the rows of the mutable lane (a batch copied when the scan began: its pages never count as all-visible)
 SELECT rows_vetted, heap_pages FROM sift._test_col_counters('o_col', '0:ge:0');
 SELECT col_cmp('o_col', '0:ge:700', 'store_id >= 700');
 
