@@ -456,6 +456,15 @@ What the profiles of the decode-bound shapes (S3, S4, S6, S7 at K4000, flat othe
 
 - **`char(n)` and `name` columns**: `CREATE INDEX ... USING sift_col` refuses them (the `sift_table` provider reads `char(n)`), while `docs/COL.md` lists them among the text types. Either the index takes them (the dictionary of the padded or `name` bytes, comparisons with the `bpchar` and `name` operators, which the text tests of `sift_aggspec_str_test` (text and varchar only) keep out) or the document says they are refused; today no query over such a column reaches this planner from a `sift_col` index.
 
+### Source filters
+
+What is left of the filtered counts (Q05, Q07; "Filters in the source") is unit page vetting and chunk reads:
+
+- **Skip the visibility vet of an all-visible unit**: when the page mask of a unit is inside `allvisible`, `sift_colsrc_vet` has nothing to check and the `unit_page` walk and buffer pin release can go.
+- **Copy-free chunk reads**: `col_read` copies the decoded chunk; a read that hands out the chunk in place for the filter pass would drop the copy.
+- **Two-sided range operator in `sift_col_filter`**: one pass for `a <= x < b` (two passes today).
+- **Filters aware of the narrowed selection**: a filter that decodes only the rows the previous one kept, not the whole chunk.
+
 ### Joins and arms
 
 1. **Lookup read through the seam.** `map_load` reads the joined table from the heap with the query's snapshot at executor start (a `sift_table` or `sift_col` table is read through the heap AM). A `sift_colsrc` call that returns the rows of a table with an index as dictionary codes and integers (`sift_colsrc_lookup`) would give the same snapshot rules without the tuple deforming, and let the same keys be hashed once for the parallel kinds.
