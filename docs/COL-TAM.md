@@ -280,12 +280,17 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
 ## 6. Reading: scans, indexes, the engine, SiftAgg
 
 - **Sequential/bitmap/TID/index scans** are the AM callbacks above. A scan owns a `SiftTblScan` (directory copy, delta page cursor,
-  group reader, tombstone cache). A unit of a group (engine) is decoded into per-column vectors, every row of it, once; each row becomes a
-  HeapTuple of the scan's row context (`sift_table_seg.c`: `row_tuple`). A table AM is not told which columns the query needs, so a unit is
-  decoded in full; the column-projecting reads belong to the SiftAgg path, which knows its columns. TID fetches (index scans, bitmap, UPDATE)
-  keep the last decoded unit of a backend-wide fetch scan (valid while the directory and the backend's xmin stay), and a caller that needs
-  the version of a row, not its values (row locks, uniqueness checks, `index_delete_tuples`), asks for it without decoding
-  (`sift_tbl_fetch_lazy`: the live-row list of the unit answers).
+  group reader, tombstone cache). The slot of a `sift_table` (`sift_table_slot.c`, a virtual slot) is given a row of a column group
+  as a reference only: the group reader, the unit it was in (a token that changes with every unit) and the position of the row in the
+  unit's vectors. `slot_getsomeattrs` reaches the AM with the number of leading columns the query reads, and only those leaf columns
+  are decoded, one vector per column and unit on the first row that needs it (`fill_attr`); `count(*)` decodes nothing. The decoded
+  by-reference values belong to the slot (allocated in its memory context, freed when it is cleared, no context of its own); a
+  slot whose unit is no longer the reader's current one (another row was fetched meanwhile, a cursor moved on) finds its row again
+  by TID through the table's fetch scan. Rows of the row-format segments are copied into the slot as heap tuples. TID fetches
+  (index scans, bitmap, UPDATE) keep the last decoded unit of a backend-wide fetch scan (valid while the directory and the
+  backend's xmin stay; its pages are unpinned after every fill), and a caller that needs the version of a row, not its values (row
+  locks, uniqueness checks, `index_delete_tuples`), asks for it without decoding (`sift_tbl_fetch_lazy`: the live-row list of the
+  unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` read zero.
 - **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the
   synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
   `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/sift_visibility.c) which today reads the heap's
