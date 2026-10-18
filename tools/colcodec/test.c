@@ -38,7 +38,7 @@ xalloc(size_t n)
 enum
 {
 	G_CONST, G_RAMP, G_BITS, G_FULL64, G_EXTREME, G_RUNS, G_LOWCARD, G_SORTED, G_OUTLIER, G_DECIMAL, G_DECIMAL_EXC, G_FLOAT4,
-	G_RANDOM_F8, G_NEGATIVE, G_EDGE32, G_JITTER, G_ARITH, G_MICROS, G_MICROS_SORTED, G_STEP40, G_NGEN
+	G_RANDOM_F8, G_NEGATIVE, G_EDGE32, G_JITTER, G_ARITH, G_MICROS, G_MICROS_SORTED, G_STEP40, G_ALT, G_NGEN
 };
 
 static const uint32 sizes[] = {0, 1, 2, 3, 31, 32, 33, 63, 64, 65, 1023, 1024, 1025, 1056, 2047, 2048, 2049, 5000, 33000, 70001};
@@ -185,6 +185,10 @@ gen(Rng *r, int g, uint32 n, int64 *v, SiftCcKind *kind)
 		case G_JITTER:
 			for (uint32 i = 0; i < n; i++)
 				v[i] = base + (int64) i * 1000 + (int64) rng_below(r, 900);
+			break;
+		case G_ALT:				/* a flag alternating with rare repeats, then one long run: run values and lengths are runs themselves */
+			for (uint32 i = 0, head = n / 4 + rng_below(r, n / 2 + 1); i < n; i++)
+				v[i] = !i ? 0 : i >= head || !rng_below(r, 16) ? v[i - 1] : 1 - v[i - 1];
 			break;
 	}
 }
@@ -465,6 +469,28 @@ test_roundtrip(Rng *r, int scale)
 				}
 				free(c.v);
 			}
+}
+
+/* Chunks of 1000 to 4000 values of the flag generator, whose run values and lengths are themselves runs */
+static void
+test_alternating(Rng *r, int scale)
+{
+	for (int rep = 0; rep < 8 * scale; rep++)
+	{
+		Chunk		c;
+
+		c.n = 1000 + rng_below(r, 3001);
+		c.v = xalloc(sizeof(int64) * c.n);
+		gen(r, G_ALT, c.n, c.v, &c.kind);
+		c.nulls = NULL;
+		test_chunk(r, &c, G_ALT);
+		c.nulls = xalloc(sizeof(uint64) * ((c.n + 63) / 64));
+		for (uint32 w = 0; w < (c.n + 63) / 64; w++)
+			c.nulls[w] = rng_next(r) & rng_next(r);
+		test_chunk(r, &c, G_ALT);
+		free(c.nulls);
+		free(c.v);
+	}
 }
 
 /* ---------- kernels ---------- */
@@ -931,6 +957,7 @@ main(int argc, char **argv)
 	for (int l = 1; l < nlevels; l++)
 		test_kernels_level(&r, levels[l], kt_level_name[l], 3000 * scale);
 	test_roundtrip(&r, scale);
+	test_alternating(&r, scale);
 	test_strs(&r, scale);
 	test_bits(&r, scale);
 	test_fuzz(&r, scale);
