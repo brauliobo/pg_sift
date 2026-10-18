@@ -10,6 +10,7 @@
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
 #define ULL(x)			((unsigned long long) (x))
 #define MAXOFF			SIFT_MAX_OFFSET
+#define PAGE_RANK_WORDS	((MAXOFF + 63) / 64)	/* words of rank bits of a page of docs */
 #define LIVE_START(nsb)	TYPEALIGN(8, sizeof(SiftLiveHeaderData) + ((nsb) + 7) / 8)
 
 #define corrupt(seg, ...) \
@@ -69,6 +70,10 @@ typedef struct DocMap
 	uint8		maskidx[SIFT_SB_PAGES]; /* present-page index (present pages) */
 	const uint16 *rows[SIFT_SB_PAGES];
 	uint16		rowlen[SIFT_SB_PAGES];
+	bool		live_ok;		/* live_bits holds the bits of SB live_sb */
+	uint32		live_sb;
+	uint8	   *live_bits;		/* the SB's docs, bit i for rank rank_base + i, from bit rank_base % 8 */
+	Size		live_cap;
 } DocMap;
 
 static void
@@ -564,41 +569,103 @@ live_byte(SiftSegment *seg, uint64 b, Buffer *buf)
 	return SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD];
 }
 
+/* Copies len bytes of the LIVE run from logical byte b, a page at a time */
+static void
+live_copy(SiftSegment *seg, uint64 b, uint64 len, uint8 *out)
+{
+	while (len > 0)
+	{
+		uint64		off = b % SIFT_PAGE_PAYLOAD,
+					n = Min(len, SIFT_PAGE_PAYLOAD - off);
+		Buffer		buf = InvalidBuffer;
+		Page		page;
+
+		live_byte(seg, b, &buf);
+		page = BufferGetPage(buf);
+		if (off + n > SiftPageGetUsed(page))
+			corrupt(seg, "Liveness bytes %llu..%llu lie past the written bytes of block %u.",
+					ULL(b), ULL(b + n), BufferGetBlockNumber(buf));
+		memcpy(out, SiftPageGetData(page) + off, n);
+		UnlockReleaseBuffer(buf);
+		b += n;
+		out += n;
+		len -= n;
+	}
+}
+
 static void
 load_live_header(SiftSegment *seg)
 {
 	uint32		nsb = seg->hdr->sb_hi - seg->hdr->sb_lo + 1;
-	Buffer		buf = InvalidBuffer;
 	uint8	   *bits;
 
 	if (seg->live || !(seg->entry.flags & SIFT_SEG_DIRTY))
 		return;
 	bits = MemoryContextAlloc(seg->mcxt, (nsb + 7) / 8);
-	for (uint32 i = 0; i < (nsb + 7) / 8; i++)
-		bits[i] = live_byte(seg, sizeof(SiftLiveHeaderData) + i, &buf);
-	UnlockReleaseBuffer(buf);
+	live_copy(seg, sizeof(SiftLiveHeaderData), (nsb + 7) / 8, bits);
 	seg->live = bits;
 }
 
+/*
+ * The liveness bits of the docs of the SB, read once for all its pages: the bit of rank rank_base + i is bit
+ * rank_base % 8 + i of the result, followed by zeros for the word loads past a last page. A reader keeps the bits it
+ * first read until it asks for another SB, like it keeps the dirty-SB bitmap: a doc vacuumed meanwhile is dead to
+ * every snapshot, so the heap check refuses it all the same. A writer that changes the bits drops them (clear_live).
+ */
+static const uint8 *
+live_sb_bits(SiftSegment *seg, DocMap *dm, const SiftDocChunk *dc)
+{
+	if (!dm->live_ok || dm->live_sb != dc->sb)
+	{
+		uint64		first = LIVE_START(seg->hdr->sb_hi - seg->hdr->sb_lo + 1) + dc->rank_base / 8,
+					len = (dc->rank_base % 8 + dc->ndocs + 7) / 8;
+		Size		pad = (PAGE_RANK_WORDS + 1) * sizeof(uint64);
+
+		dm->live_ok = false;
+		if (dm->live_cap < len + pad)
+		{
+			dm->live_cap = Max(len + pad, 1024);
+			if (dm->live_bits)
+				pfree(dm->live_bits);
+			dm->live_bits = MemoryContextAlloc(seg->mcxt, dm->live_cap);
+		}
+		live_copy(seg, first, len, dm->live_bits);
+		memset(dm->live_bits + len, 0, pad);
+		dm->live_sb = dc->sb;
+		dm->live_ok = true;
+	}
+	return dm->live_bits;
+}
+
+/* The 64 bits of a bit string from bit pos */
+static uint64
+bits_at(const uint8 *p, uint64 pos)
+{
+	uint64		v;
+	int			s = pos & 7;
+
+	memcpy(&v, p + pos / 8, sizeof(v));
+	return s ? v >> s | (uint64) p[pos / 8 + 8] << (64 - s) : v;
+}
+
+/* The live offsets of a page: the bits of its docs, taken in rank order, spread over the present offsets */
 void
 sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *live)
 {
 	DocMap	   *dm = loaded(seg, dc);
 	const uint16 *dl;
-	uint64		r,
-				start = LIVE_START(seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
-	Buffer		buf = InvalidBuffer;
+	uint64		rank[PAGE_RANK_WORDS + 1] = {0};
+	const uint8 *bits;
+	uint64		pos;
 
 	sift_seg_page(seg, dc, page, live, &dl);
 	if (!dc->dirty || dl == NULL)
 		return;
-	r = dc->rank_base + dm->before[page];
-	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
-		for (uint64 m = live[wd]; m; m &= m - 1, r++)
-			if (!((live_byte(seg, start + r / 8, &buf) >> (r % 8)) & 1))
-				live[wd] &= ~(m & -m);
-	if (BufferIsValid(buf))
-		UnlockReleaseBuffer(buf);
+	bits = live_sb_bits(seg, dm, dc);
+	pos = dc->rank_base % 8 + dm->before[page];
+	for (int j = 0; j < PAGE_RANK_WORDS; j++)
+		rank[j] = bits_at(bits, pos + j * 64);
+	sift_kern->expand(live, live, rank, PAGE_RANK_WORDS);
 }
 
 bool
@@ -708,6 +775,7 @@ clear_live(SiftSegment *seg, uint32 sb, const uint64 *dead, int nd)
 	SiftPageGetData(page[0])[sizeof(SiftLiveHeaderData) + (sb - seg->hdr->sb_lo) / 8] |=
 		1 << ((sb - seg->hdr->sb_lo) % 8);
 	GenericXLogFinish(state);
+	docmap(seg)->live_ok = false;
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(buf[i]);
 }
@@ -823,13 +891,10 @@ uint64
 sift_seg_live_docs(SiftSegment *seg)
 {
 	SiftLiveHeaderData lh;
-	Buffer		buf = InvalidBuffer;
 
 	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
 		return seg->hdr->ndocs;
-	for (int i = 0; i < (int) sizeof(lh); i++)
-		((uint8 *) &lh)[i] = live_byte(seg, i, &buf);
-	UnlockReleaseBuffer(buf);
+	live_copy(seg, 0, sizeof(lh), (uint8 *) &lh);
 	if (lh.ndead > seg->hdr->ndocs)
 		corrupt(seg, "Liveness header counts %u dead of %llu docs.", lh.ndead, ULL(seg->hdr->ndocs));
 	return seg->hdr->ndocs - lh.ndead;
