@@ -338,6 +338,34 @@ col_select(void *impl, const SiftFilter *keep)
 	((ColSource *) impl)->sel.keep = keep;
 }
 
+/* rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
+static void
+col_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep && src->sel.compact)
+	{
+		uint32	   *ords = palloc(Max(n, 1) * sizeof(uint32));
+
+		for (int i = 0; i < n; i++)
+			ords[i] = src->sel.idx[rows[i]];
+		sift_col_row_tids(&src->unit, ords, n, tids);
+		pfree(ords);
+	}
+	else
+		sift_col_row_tids(&src->unit, rows, n, tids);
+}
+
+static void
+col_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	SiftColZone cz;
+
+	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
+	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
+}
+
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 
 /* the leaf's buffers for n elements; the tail up to SIFT_AGG_PAD elements is zero */
@@ -464,6 +492,8 @@ static const SiftSrcProvider col_provider = {
 	.vet = col_vet,
 	.counters = col_counters,
 	.select = col_select,
+	.tids = col_tids,
+	.zone = col_zone,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 };

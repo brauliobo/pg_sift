@@ -162,6 +162,16 @@ typedef struct SiftSrcStrTest
 	const uint32 *lens;
 } SiftSrcStrTest;
 
+/* The zone of a scalar leaf in a unit: min and max of the integer-typed (SCV_I32/SCV_I64) values, dead rows included (docs/COL-SEARCH.md, top-N) */
+typedef struct SiftSrcZone
+{
+	int64		min;			/* meaningless when nnull == nvals */
+	int64		max;
+	uint32		nvals;
+	uint32		nnull;
+	bool		inexact;		/* some value is outside what min/max describe (overflow): no bound */
+} SiftSrcZone;
+
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -210,6 +220,13 @@ typedef struct SiftSrcProvider
 	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/sift_aggsel.h).
 	 */
 	void		(*select) (void *impl, const SiftFilter *keep);
+	/*
+	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows
+	 * `rows` (ascending, in the numbering `read` and `live` use) of the unit the source is at. zone: the zone of an integer-typed leaf
+	 * of the unit the source is at, over the unit as stored.
+	 */
+	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+	void		(*zone) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -264,6 +281,11 @@ sift_colsrc_filter_str(SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 
 /* Can the source of this access method be restricted to a match set (SiftSrcProvider.select)? */
 extern bool sift_colsrc_can_select(Oid relam, bool index);
+
+/* Can the source of this access method give the TIDs of its rows and the zones of its units (SiftSrcProvider.tids, zone)? */
+extern bool sift_colsrc_can_tids(Oid relam, bool index);
+extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
 extern void sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep);
