@@ -11,6 +11,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   indexes, with `SiftAgg` aggregate pushdown over its column segments; its limits and the one case that needs `shared_preload_libraries` (publishing it) are in `docs/USAGE.md`. The scripts are
   `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql` (no second extension). Settings: `sift.enable_col`, `sift.enable_agg`, `sift.simd`
   (all kernels). The library reports 3.0.
+  `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel on large tables (`max_parallel_maintenance_workers`): each process writes the segments of the superblocks it claims.
 
 For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float

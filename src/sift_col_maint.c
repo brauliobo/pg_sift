@@ -484,10 +484,10 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 		{
 			rows += snap->segs[i].ndocs;
 			bytes += snap->segs[i].bytes;
-			units += snap->segs[i].sb_hi - snap->segs[i].sb_lo + 1;
 		}
 		else
 			nmut++;
+	units = sift_cseg_dir_units(snap);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);
