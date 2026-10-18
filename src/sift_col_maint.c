@@ -126,8 +126,8 @@ sift_col_maint_promote(Relation index, bool wait)
 
 /* ---------- merge ---------- */
 
-static bool
-mostly_dead(Relation index, const SiftSegEntry *e)
+bool
+sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 {
 	SiftColSegment *seg;
 	bool		dead;
@@ -143,17 +143,16 @@ mostly_dead(Relation index, const SiftSegEntry *e)
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->mutable_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = mostly_dead};
+	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->mutable_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
 
 	return sift_merge_pick(index, &pol, snap, force, sel);
 }
 
-static void
-merge_segments(Relation index, const SiftSegEntry *in, int n)
+void
+sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftSegEntry *in, int n)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	const SiftColSchema *schema = sift_col_rel(index)->schema;
 	SiftColSegment **seg = palloc(n * sizeof(SiftColSegment *));
 	SiftColBatch **part = palloc(n * sizeof(SiftColBatch *));
 	SiftColBatch **use = palloc(n * sizeof(SiftColBatch *));
@@ -207,7 +206,7 @@ merge_segments(Relation index, const SiftSegEntry *in, int n)
 		if (w == NULL)
 		{
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, cx);
+			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, cx);
 		}
 		sift_colw_add(w, out);
 		CHECK_FOR_INTERRUPTS();
@@ -238,7 +237,7 @@ merge_locked(Relation index, bool force)
 	n = pick_merge(index, snap, force, sel);
 	pfree(snap);
 	if (n > 0)
-		merge_segments(index, sel, n);
+		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, sel, n);
 	return n > 0;
 }
 
