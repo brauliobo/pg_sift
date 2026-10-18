@@ -20,13 +20,7 @@
 #include "utils/wait_event.h"
 
 #include "sift_col_build.h"
-
-#define KEY_SHARED		UINT64CONST(0x5300000000000001)
-#define KEY_PARTS		UINT64CONST(0x5300000000000002)
-#define KEY_SNAPSHOT	UINT64CONST(0x5300000000000003)
-#define KEY_QUERY_TEXT	UINT64CONST(0x5300000000000004)
-#define KEY_WAL_USAGE	UINT64CONST(0x5300000000000005)
-#define KEY_BUFFER_USAGE UINT64CONST(0x5300000000000006)
+#include "sift_parbuild.h"
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15
@@ -34,9 +28,7 @@
 
 typedef struct ColShared
 {
-	Oid			heaprelid;
-	Oid			indexrelid;
-	bool		isconcurrent;
+	SiftParCommon common;
 	BlockNumber nblocks;		/* of the heap when the build started */
 	uint32		nsbs;			/* superblocks of those */
 	Size		budget;			/* of the segment writer of a participant */
@@ -59,16 +51,6 @@ typedef struct ColPart
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } ColPart;
 
-typedef struct ColLeader
-{
-	ParallelContext *pcxt;
-	ColShared  *shared;
-	char	   *parts;
-	Snapshot	snapshot;
-	WalUsage   *walusage;
-	BufferUsage *bufferusage;
-} ColLeader;
-
 static Size
 part_size(int maxsegs)
 {
@@ -79,15 +61,6 @@ static ColPart *
 part_of(const ColShared *sh, char *parts, int slot)
 {
 	return (ColPart *) (parts + slot * part_size(sh->maxsegs));
-}
-
-static void
-end_parallel(ColLeader *ldr)
-{
-	DestroyParallelContext(ldr->pcxt);
-	ExitParallelMode();
-	if (IsMVCCSnapshot(ldr->snapshot))
-		UnregisterSnapshot(ldr->snapshot);
 }
 
 static void
@@ -151,7 +124,7 @@ await_gate(ColShared *sh)
 static void
 init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int nslots)
 {
-	*sh = (ColShared) {.heaprelid = RelationGetRelid(heap), .indexrelid = RelationGetRelid(index), .isconcurrent = info->ii_Concurrent,
+	*sh = (ColShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent},
 		.nblocks = RelationGetNumberOfBlocks(heap), .nslots = nslots,
 		.budget = Max((Size) maintenance_work_mem * 1024 / 2 / nslots, MIN_BUDGET), .maxsegs = SIFT_COL_BUILD_SEGMENTS / nslots};
 	sh->nsbs = ((uint64) sh->nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
@@ -163,79 +136,27 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 }
 
 /* NULL when no worker could be launched: nothing is written and the caller builds alone */
-static ColLeader *
+static SiftParLeader *
 begin_parallel(Relation heap, Relation index, IndexInfo *info)
 {
 	int			nworkers = Min(info->ii_ParallelWorkers, MAX_WORKERS);
-	ColLeader  *ldr = palloc0(sizeof(ColLeader));
-	ParallelContext *pcxt;
+	SiftParLeader *ldr = sift_par_enter(info->ii_Concurrent);
 	ColShared  *sh;
-	Size		snaplen = 0;
-	int			nkeys = 5;
 
-	ldr->snapshot = info->ii_Concurrent ? RegisterSnapshot(GetTransactionSnapshot()) : SnapshotAny;
-	EnterParallelMode();
-	ldr->pcxt = pcxt = CreateParallelContext("pg_sift", "sift_col_build_worker", nworkers);
-	shm_toc_estimate_chunk(&pcxt->estimator, sizeof(ColShared));
-	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1));
-	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(sizeof(WalUsage), nworkers));
-	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(sizeof(BufferUsage), nworkers));
-	if (info->ii_Concurrent)
-	{
-		shm_toc_estimate_chunk(&pcxt->estimator, snaplen = EstimateSnapshotSpace(ldr->snapshot));
-		nkeys++;
-	}
-	if (debug_query_string)
-	{
-		shm_toc_estimate_chunk(&pcxt->estimator, strlen(debug_query_string) + 1);
-		nkeys++;
-	}
-	shm_toc_estimate_keys(&pcxt->estimator, nkeys);
-	InitializeParallelDSM(pcxt);
-	if (pcxt->seg == NULL)
-	{
-		end_parallel(ldr);
+	if (!sift_par_setup(ldr, "sift_col_build_worker", nworkers, sizeof(ColShared),
+						mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
 		return NULL;
-	}
-	ldr->shared = sh = shm_toc_allocate(pcxt->toc, sizeof(ColShared));
+	sh = ldr->shared;
 	init_shared(sh, heap, index, info, nworkers + 1);
-	ldr->parts = shm_toc_allocate(pcxt->toc, mul_size(part_size(sh->maxsegs), nworkers + 1));
-	ldr->walusage = shm_toc_allocate(pcxt->toc, mul_size(sizeof(WalUsage), nworkers));
-	ldr->bufferusage = shm_toc_allocate(pcxt->toc, mul_size(sizeof(BufferUsage), nworkers));
-	shm_toc_insert(pcxt->toc, KEY_SHARED, sh);
-	shm_toc_insert(pcxt->toc, KEY_PARTS, ldr->parts);
-	shm_toc_insert(pcxt->toc, KEY_WAL_USAGE, ldr->walusage);
-	shm_toc_insert(pcxt->toc, KEY_BUFFER_USAGE, ldr->bufferusage);
-	if (info->ii_Concurrent)
-	{
-		char	   *snap = shm_toc_allocate(pcxt->toc, snaplen);
-
-		SerializeSnapshot(ldr->snapshot, snap);
-		shm_toc_insert(pcxt->toc, KEY_SNAPSHOT, snap);
-	}
-	if (debug_query_string)
-	{
-		char	   *query = shm_toc_allocate(pcxt->toc, strlen(debug_query_string) + 1);
-
-		strcpy(query, debug_query_string);
-		shm_toc_insert(pcxt->toc, KEY_QUERY_TEXT, query);
-	}
-	LaunchParallelWorkers(pcxt);
-	if (pcxt->nworkers_launched == 0)
-	{
-		ereport(DEBUG1, errmsg("building sift_col index \"%s\" without parallel workers: none could be launched", RelationGetRelationName(index)));
-		end_parallel(ldr);
+	if (!sift_par_launch(ldr, "sift_col", index, nworkers))
 		return NULL;
-	}
-	WaitForParallelWorkersToAttach(pcxt);
-	ereport(DEBUG1, errmsg("building sift_col index \"%s\" with %d parallel workers", RelationGetRelationName(index), pcxt->nworkers_launched));
-	open_gate(sh, index, pcxt->nworkers_launched);
+	open_gate(sh, index, ldr->pcxt->nworkers_launched);
 	return ldr;
 }
 
 /* The segments of every participant that wrote one */
 static SiftSegEntry *
-collect_segments(const ColLeader *ldr, int *nsegs)
+collect_segments(const SiftParLeader *ldr, int *nsegs)
 {
 	const ColShared *sh = ldr->shared;
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
@@ -255,7 +176,7 @@ IndexBuildResult *
 sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res;
-	ColLeader  *ldr = begin_parallel(heap, index, info);
+	SiftParLeader *ldr = begin_parallel(heap, index, info);
 	ColShared  *sh;
 	SiftSegEntry *segs;
 	int			nsegs;
@@ -268,9 +189,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
 	participate(sh, ldr->parts, sh->nlaunched, heap, index, info, ldr->snapshot);
-	WaitForParallelWorkersToFinish(ldr->pcxt);
-	for (int w = 0; w < sh->nlaunched; w++)
-		InstrAccumParallelQuery(&ldr->bufferusage[w], &ldr->walusage[w]);
+	sift_par_wait(ldr);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
 	res->heap_tuples = sh->reltuples;
 	res->index_tuples = sh->indexed;
@@ -278,7 +197,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	sift_test_col_workers = sh->nlaunched;
 #endif
 	segs = collect_segments(ldr, &nsegs);
-	end_parallel(ldr);
+	sift_par_end(ldr);
 	sift_colb_publish(index, segs, nsegs);
 	return res;
 }
@@ -288,30 +207,10 @@ PGDLLEXPORT void sift_col_build_worker(dsm_segment *seg, shm_toc *toc);
 void
 sift_col_build_worker(dsm_segment *seg, shm_toc *toc)
 {
-	ColShared  *sh = shm_toc_lookup(toc, KEY_SHARED, false);
-	char	   *parts = shm_toc_lookup(toc, KEY_PARTS, false);
-	char	   *snap = shm_toc_lookup(toc, KEY_SNAPSHOT, true);
-	LOCKMODE	heaplock = sh->isconcurrent ? ShareUpdateExclusiveLock : ShareLock;
-	LOCKMODE	indexlock = sh->isconcurrent ? RowExclusiveLock : AccessExclusiveLock;
-	Snapshot	snapshot;
-	Relation	heap,
-				index;
-	IndexInfo  *info;
+	SiftParWorker w;
 
-	debug_query_string = shm_toc_lookup(toc, KEY_QUERY_TEXT, true);
-	pgstat_report_activity(STATE_RUNNING, debug_query_string);
-	heap = table_open(sh->heaprelid, heaplock);
-	index = index_open(sh->indexrelid, indexlock);
-	info = BuildIndexInfo(index);
-	info->ii_Concurrent = sh->isconcurrent;
-	snapshot = snap ? RegisterSnapshot(RestoreSnapshot(snap)) : SnapshotAny;
-	InstrStartParallelQuery();
-	await_gate(sh);
-	participate(sh, parts, ParallelWorkerNumber, heap, index, info, snapshot);
-	InstrEndParallelQuery(&((BufferUsage *) shm_toc_lookup(toc, KEY_BUFFER_USAGE, false))[ParallelWorkerNumber],
-						  &((WalUsage *) shm_toc_lookup(toc, KEY_WAL_USAGE, false))[ParallelWorkerNumber]);
-	if (snap)
-		UnregisterSnapshot(snapshot);
-	index_close(index, indexlock);
-	table_close(heap, heaplock);
+	sift_par_worker_begin(&w, toc);
+	await_gate(w.shared);
+	participate(w.shared, w.parts, ParallelWorkerNumber, w.heap, w.index, w.info, w.snapshot);
+	sift_par_worker_end(&w);
 }

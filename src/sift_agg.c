@@ -32,6 +32,7 @@
 #include "common/int.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
+#include "executor/nodeHash.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
@@ -67,6 +68,7 @@
 #include "sift_aggspec.h"
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
+#include "sift_search.h"
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
@@ -88,6 +90,7 @@ sift_agg_init(void)
 	sift_aggkern_init();
 	sift_aggcol_register();
 	sift_aggcte_init();
+	sift_search_init();
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
@@ -361,6 +364,8 @@ typedef struct KeyState
 } KeyState;
 
 /* open addressing set of (group, value id) pairs; a slot holds the pair with bit 63 set, 0 is empty */
+typedef struct Dist Dist;
+
 typedef struct DSet
 {
 	uint64	   *slot;
@@ -565,6 +570,7 @@ typedef struct AggExec
 	bool		heap_opened;
 	Relation	index;
 	SiftSrcSource *src;
+	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
 	const SiftSrcLayout *lay;
 	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
 	struct
@@ -617,7 +623,8 @@ typedef struct AggExec
 	uint32		hkcap;
 	uint32	   *hslot;
 	uint32		nhslot;
-	DSet	   *dset;			/* count distinct: per aggregate, the (group, value) pairs seen */
+	DSet	   *dset;			/* aggregates over distinct values (SAA_M_*, sum(DISTINCT numeric)): per aggregate, the (group, value) pairs seen */
+	Dist	  **dist;			/* count(DISTINCT x): per aggregate, the values seen of each group */
 	OutTable   *aot;			/* count distinct of a dictionary leaf: the distinct values over all dictionaries */
 	double	   *amax;			/* avg(float8): the largest absolute input */
 	IdMap	   *amap;			/* count(DISTINCT numeric): the ids of the values */
@@ -627,6 +634,7 @@ typedef struct AggExec
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
+	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
 	/* output */
 	uint32	   *glist;
 	uint32		nglist;
@@ -2842,6 +2850,625 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 	return true;
 }
 
+/* ---------- count(DISTINCT x) of a 32 bit value: bitmaps, a bounded set, a sort ---------- */
+
+/*
+ * The distinct values of count(DISTINCT x) per group, x an integer, or the id (dense, from 0) of a dictionary or numeric value. Three
+ * structures, each bounded by hash_mem (work_mem times hash_mem_multiplier); the aggregate moves to the next one when its structure
+ * would outgrow that, and nothing is lost on the way:
+ *
+ *   DD_BITS  a bitmap per group, in chunks of 4096 bits allocated when a value falls in them, under a directory of chunk pointers that
+ *            covers the range of values seen so far (the same for every group). A value costs one bit when the domain is dense (customer
+ *            ids 1 to 2 million by 36 months is 9 MB); a test-and-set tells whether it is new. The range is limited to 2^28 values.
+ *   DD_HASH  an open addressing set of (group, value) pairs, sized to hash_mem; values are inserted a batch at a time, the slots
+ *            prefetched first.
+ *   DD_SORT  every (group, value) pair goes through a tuplesort (work_mem, spilling to disk as the normal plan's sort does), and the
+ *            groups' counts are taken from the sorted runs when the scan ends. A group is named by its sort id (the groups are
+ *            renumbered while the scan runs), the number of its first value.
+ *
+ * dist_add() returns true when the pair is new and the count of the group is to be incremented at once; in DD_SORT it cannot know and
+ * returns false, and dist_finish() sets the counts of all the groups.
+ */
+#define DB_SHIFT		12
+#define DB_WORDS		(1 << (DB_SHIFT - 6))
+#define DB_NCD_MIN		64
+#define DB_NCD_MAX		65536
+#define DB_ARENA		255				/* chunks per arena block; the first chunk of a block links to the previous block */
+
+typedef enum DistMode
+{
+	DD_BITS,
+	DD_HASH,
+	DD_SORT
+} DistMode;
+
+typedef uint64 *DistChunk;
+
+struct Dist
+{
+	DistMode	mode;
+	bool		sgn;			/* the values are int32 */
+	bool		done;			/* DD_SORT: sorted and counted */
+	uint64		budget;			/* bytes the bitmaps or the set may take */
+	/* DD_BITS */
+	int64		cbase;			/* chunk number of directory entry 0 */
+	uint32		ncd;			/* entries of a directory (0: nothing yet) */
+	uint32		ngd;			/* groups with room in gd */
+	DistChunk **gd;				/* per group: its directory */
+	uint64		bytes;
+	uint64	   *arena;
+	uint32		arena_left;
+	/* DD_HASH */
+	DSet		ds;
+	uint64		maxn;
+	/* DD_SORT */
+	Tuplesortstate *sort;
+	TupleTableSlot *put;
+	TupleTableSlot *get;
+	uint32		nsid;
+	uint32		nsidcap;
+	uint32	   *sid;			/* per group: its sort id + 1 */
+	uint32		sidgroups;
+	uint64	   *cnt;			/* per sort id: distinct values, once sorted */
+};
+
+static Dist *
+dist_new(AggExec *ex, bool sgn)
+{
+	Dist	   *d = MemoryContextAllocZero(ex->tcxt, sizeof(Dist));
+
+	d->mode = DD_BITS;
+	d->sgn = sgn;
+	d->budget = get_hash_memory_limit();
+	return d;
+}
+
+static inline int64
+dist_x(const Dist *d, uint32 v)
+{
+	return d->sgn ? (int64) (int32) v : (int64) v;
+}
+
+typedef void (*DistFn) (void *arg, uint32 g, uint32 v);
+
+/* every pair of a bitmap or hash structure (not a sort), through fn */
+static void
+dist_walk(const Dist *d, DistFn fn, void *arg)
+{
+	if (d->mode == DD_BITS)
+	{
+		for (uint32 g = 0; g < d->ngd; g++)
+		{
+			DistChunk  *dir = d->gd[g];
+
+			for (uint32 c = 0; dir && c < d->ncd; c++)
+			{
+				if (!dir[c])
+					continue;
+				for (int w = 0; w < DB_WORDS; w++)
+					for (uint64 m = dir[c][w]; m; m &= m - 1)
+					{
+						int64		x = (d->cbase + c) * (1 << DB_SHIFT) + w * 64 + pg_rightmost_one_pos64(m);
+
+						fn(arg, g, (uint32) x);
+					}
+			}
+		}
+	}
+	else if (d->mode == DD_HASH)
+	{
+		for (uint64 i = 0; i < d->ds.cap; i++)
+			if (d->ds.slot[i])
+				fn(arg, (d->ds.slot[i] >> 32) & 0x7fffffff, (uint32) d->ds.slot[i]);
+	}
+}
+
+typedef struct DistMove
+{
+	AggExec    *ex;
+	Dist	   *to;
+} DistMove;
+
+static bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
+
+static void
+dist_free_bits(Dist *d)
+{
+	for (uint32 g = 0; g < d->ngd; g++)
+		if (d->gd[g])
+			pfree(d->gd[g]);
+	if (d->gd)
+		pfree(d->gd);
+	while (d->arena)
+	{
+		uint64	   *prev = (uint64 *) d->arena[0];
+
+		pfree(d->arena);
+		d->arena = prev;
+	}
+}
+
+static void
+dist_move(void *arg, uint32 g, uint32 v)
+{
+	DistMove   *mv = arg;
+
+	(void) dist_add(mv->ex, mv->to, g, v);
+}
+
+/* the structure of d moves to mode `to`, its pairs added to the new one */
+static void
+dist_convert(AggExec *ex, Dist *d, DistMode to)
+{
+	Dist		old = *d;
+	DistMove	mv = {ex, d};
+
+	if (to == DD_SORT)
+	{
+		MemoryContext mc = MemoryContextSwitchTo(ex->cxt);
+		TupleDesc	desc = CreateTemplateTupleDesc(2);
+		AttrNumber	att[2] = {1, 2};
+		Oid			ops[2] = {Int4LessOperator, Int8LessOperator},
+					coll[2] = {InvalidOid, InvalidOid};
+		bool		nulls[2] = {false, false};
+
+		TupleDescInitEntry(desc, 1, "sid", INT4OID, -1, 0);
+		TupleDescInitEntry(desc, 2, "val", INT8OID, -1, 0);
+		d->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+		d->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+		d->sort = tuplesort_begin_heap(desc, 2, att, ops, coll, nulls, work_mem, NULL, TUPLESORT_RANDOMACCESS);
+		MemoryContextSwitchTo(mc);
+		d->nsid = d->nsidcap = d->sidgroups = 0;
+		d->sid = NULL;
+		ex->n_dist_spilled++;
+	}
+	memset(&d->ds, 0, sizeof(DSet));
+	d->mode = to;
+	d->gd = NULL;
+	d->ngd = d->ncd = 0;
+	d->arena = NULL;
+	d->arena_left = 0;
+	d->bytes = 0;
+	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);	/* the table is at most half full, and a power of 2 */
+	dist_walk(&old, dist_move, &mv);
+	if (old.mode == DD_BITS)
+		dist_free_bits(&old);
+	else if (old.ds.slot)
+		pfree(old.ds.slot);
+}
+
+static void
+dist_put_sort(Dist *d, uint32 g, uint32 v)
+{
+	TupleTableSlot *t = d->put;
+
+	if (g >= d->sidgroups)
+	{
+		uint32		n = Max(Max(g + 1, d->sidgroups * 2), 64);
+		uint32	   *ns = MemoryContextAllocZero(GetMemoryChunkContext(d), n * sizeof(uint32));
+
+		if (d->sid)
+		{
+			memcpy(ns, d->sid, d->sidgroups * sizeof(uint32));
+			pfree(d->sid);
+		}
+		d->sid = ns;
+		d->sidgroups = n;
+	}
+	if (d->sid[g] == 0)
+		d->sid[g] = ++d->nsid;
+	ExecClearTuple(t);
+	t->tts_values[0] = Int32GetDatum((int32) (d->sid[g] - 1));
+	t->tts_values[1] = Int64GetDatum((int64) v);
+	t->tts_isnull[0] = t->tts_isnull[1] = false;
+	ExecStoreVirtualTuple(t);
+	tuplesort_puttupleslot(d->sort, t);
+}
+
+/* a bitmap chunk of 4096 zero bits */
+static uint64 *
+dist_chunk(AggExec *ex, Dist *d)
+{
+	if (d->arena_left == 0)
+	{
+		uint64	   *blk = MemoryContextAllocZero(ex->tcxt, (DB_ARENA + 1) * DB_WORDS * sizeof(uint64));
+
+		blk[0] = (uint64) d->arena;
+		d->arena = blk;
+		d->arena_left = DB_ARENA;
+	}
+	return d->arena + (size_t) (DB_ARENA - --d->arena_left) * DB_WORDS;
+}
+
+/* the directories cover the chunk xc; false if they cannot (the set is no longer a bitmap) */
+static bool
+dist_cover(AggExec *ex, Dist *d, int64 xc)
+{
+	int64		lo,
+				hi;
+	uint32		nn;
+	int64		shift;
+	uint64		touched = 0;
+
+	if (d->ncd == 0)
+	{
+		d->cbase = xc & ~(int64) (DB_NCD_MIN / 2 - 1);
+		d->ncd = DB_NCD_MIN;
+		return true;
+	}
+	if (xc >= d->cbase && xc < d->cbase + d->ncd)
+		return true;
+	lo = Min(d->cbase, xc) & ~(int64) (DB_NCD_MIN / 2 - 1);
+	hi = Max(d->cbase + d->ncd - 1, xc);
+	if (hi - lo + 1 > DB_NCD_MAX)
+		return false;
+	nn = pg_nextpower2_32((uint32) (hi - lo + 1));
+	for (uint32 g = 0; g < d->ngd; g++)
+		touched += d->gd[g] != NULL;
+	if (d->bytes + touched * (nn - d->ncd) * sizeof(DistChunk) > d->budget)
+		return false;
+	shift = d->cbase - lo;
+	for (uint32 g = 0; g < d->ngd; g++)
+		if (d->gd[g])
+		{
+			DistChunk  *nd = MemoryContextAllocZero(ex->tcxt, nn * sizeof(DistChunk));
+
+			memcpy(nd + shift, d->gd[g], d->ncd * sizeof(DistChunk));
+			pfree(d->gd[g]);
+			d->gd[g] = nd;
+		}
+	d->bytes += touched * (nn - d->ncd) * sizeof(DistChunk);
+	d->cbase = lo;
+	d->ncd = nn;
+	return true;
+}
+
+/*
+ * The bit of x in group g, when the fast path of the caller did not find its chunk: 1 if it was not set, 0 if it was, -1 when the
+ * set stopped being a bitmap (and the pair is not added: the caller goes on with dist_add).
+ */
+static int
+dist_bits_slow(AggExec *ex, Dist *d, uint32 g, int64 x)
+{
+	int64		c;
+	DistChunk  *dir;
+	uint64	   *ch,
+			   *w;
+	uint64		m = UINT64CONST(1) << (x & 63);
+
+	if (!dist_cover(ex, d, x >> DB_SHIFT))
+	{
+		dist_convert(ex, d, DD_HASH);
+		return -1;
+	}
+	if (g >= d->ngd)
+	{
+		uint32		n = Max(Max(g + 1, d->ngd * 2), 64);
+		DistChunk **ng = MemoryContextAllocZero(ex->tcxt, n * sizeof(DistChunk *));
+
+		if (d->gd)
+		{
+			memcpy(ng, d->gd, d->ngd * sizeof(DistChunk *));
+			pfree(d->gd);
+		}
+		d->gd = ng;
+		d->ngd = n;
+	}
+	if (d->gd[g] == NULL)
+	{
+		if (d->bytes + d->ncd * sizeof(DistChunk) > d->budget)
+		{
+			dist_convert(ex, d, DD_HASH);
+			return -1;
+		}
+		d->gd[g] = MemoryContextAllocZero(ex->tcxt, d->ncd * sizeof(DistChunk));
+		d->bytes += d->ncd * sizeof(DistChunk);
+	}
+	dir = d->gd[g];
+	c = (x >> DB_SHIFT) - d->cbase;
+	if (dir[c] == NULL)
+	{
+		if (d->bytes + DB_WORDS * sizeof(uint64) > d->budget)
+		{
+			dist_convert(ex, d, DD_HASH);
+			return -1;
+		}
+		dir[c] = dist_chunk(ex, d);
+		d->bytes += DB_WORDS * sizeof(uint64);
+	}
+	ch = dir[c];
+	w = &ch[(x >> 6) & (DB_WORDS - 1)];
+	if (*w & m)
+		return 0;
+	*w |= m;
+	return 1;
+}
+
+static bool
+dist_hash_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
+{
+	DSet	   *s = &d->ds;
+	uint64		pair = DSET_PAIR(g, v),
+				h;
+
+	if (s->cap == 0)
+		dset_grow(ex, s, NULL);
+	h = dset_hash(pair) & (s->cap - 1);
+	while (s->slot[h] && s->slot[h] != pair)
+		h = (h + 1) & (s->cap - 1);
+	if (s->slot[h])
+		return false;
+	if (s->n >= d->maxn)
+	{
+		dist_convert(ex, d, DD_SORT);
+		dist_put_sort(d, g, v);
+		return false;
+	}
+	s->slot[h] = pair;
+	if (++s->n * 2 >= s->cap)
+		dset_grow(ex, s, NULL);
+	return true;
+}
+
+static bool
+dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
+{
+	if (d->mode == DD_BITS)
+	{
+		int			r = dist_bits_slow(ex, d, g, dist_x(d, v));
+
+		if (r >= 0)
+			return r == 1;
+	}
+	if (d->mode == DD_HASH)
+		return dist_hash_add(ex, d, g, v);
+	dist_put_sort(d, g, v);
+	return false;
+}
+
+/* the groups renumbered through remap (UINT32_MAX: dropped) while the scan runs; newcap is their new capacity */
+static void
+dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 newcap)
+{
+	if (d->mode == DD_HASH)
+	{
+		if (d->ds.slot)
+			dset_grow(ex, &d->ds, remap);
+		return;
+	}
+	if (d->mode == DD_BITS && d->gd)
+	{
+		DistChunk **ng = MemoryContextAllocZero(ex->tcxt, Max(newcap, 1) * sizeof(DistChunk *));
+
+		for (uint32 g = 0; g < Min(oldcap, d->ngd); g++)
+			if (d->gd[g] && remap[g] != UINT32_MAX)
+				ng[remap[g]] = d->gd[g];
+			else if (d->gd[g])
+				pfree(d->gd[g]);
+		pfree(d->gd);
+		d->gd = ng;
+		d->ngd = Max(newcap, 1);
+	}
+	if (d->mode == DD_SORT && d->sid)
+	{
+		uint32	   *ns = MemoryContextAllocZero(GetMemoryChunkContext(d), Max(newcap, 1) * sizeof(uint32));
+
+		for (uint32 g = 0; g < Min(oldcap, d->sidgroups); g++)
+			if (d->sid[g] && remap[g] != UINT32_MAX)
+				ns[remap[g]] = d->sid[g];
+		pfree(d->sid);
+		d->sid = ns;
+		d->sidgroups = Max(newcap, 1);
+	}
+}
+
+/* adds the selected values (v[j] of tuple j, in the group ex->gid[j]); the count of a group goes up for each new one */
+static void
+dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
+{
+	Dist	   *d = ex->dist[ai];
+	int64	   *cnt = ex->acc[ai].n;
+	int			j = 0;
+
+	if (d->mode == DD_BITS)
+		for (; j < nsel; j++)
+		{
+			uint32		g = ex->gid[j];
+			int64		x,
+						c;
+			DistChunk  *dir;
+			uint64	   *w,
+						m;
+
+			if (ok && !sift_colsrc_bit(ok, j))
+				continue;
+			x = dist_x(d, v[j]);
+			c = (x >> DB_SHIFT) - d->cbase;
+			m = UINT64CONST(1) << (x & 63);
+			if (likely((uint64) c < d->ncd && g < d->ngd && (dir = d->gd[g]) != NULL && dir[c] != NULL))
+			{
+				w = &dir[c][(x >> 6) & (DB_WORDS - 1)];
+				cnt[g] += !(*w & m);
+				*w |= m;
+			}
+			else
+			{
+				int			r = dist_bits_slow(ex, d, g, x);
+
+				if (r < 0)
+					break;
+				cnt[g] += r;
+			}
+		}
+	if (j < nsel && d->mode == DD_HASH && d->ds.n + (uint64) (nsel - j) < d->maxn)
+	{
+		DSet	   *s = &d->ds;
+		uint64		pair[32],
+					h[32];
+
+		while ((s->n + (nsel - j)) * 2 >= s->cap)
+			dset_grow(ex, s, NULL);
+		while (j < nsel)
+		{
+			int			m = 0,
+						jj[32];
+
+			for (; j < nsel && m < 32; j++)
+				if (!ok || sift_colsrc_bit(ok, j))
+				{
+					pair[m] = DSET_PAIR(ex->gid[j], v[j]);
+					h[m] = dset_hash(pair[m]) & (s->cap - 1);
+					__builtin_prefetch(&s->slot[h[m]]);
+					jj[m++] = j;
+				}
+			for (int k = 0; k < m; k++)
+			{
+				uint64		p = h[k];
+
+				while (s->slot[p] && s->slot[p] != pair[k])
+					p = (p + 1) & (s->cap - 1);
+				if (!s->slot[p])
+				{
+					s->slot[p] = pair[k];
+					s->n++;
+					cnt[ex->gid[jj[k]]]++;
+				}
+			}
+		}
+	}
+	for (; j < nsel; j++)
+		if ((!ok || sift_colsrc_bit(ok, j)) && dist_add(ex, d, ex->gid[j], v[j]))
+			cnt[ex->gid[j]]++;
+}
+
+/* DD_SORT: sorts the pairs and sets the count of each group */
+static void
+dist_finish(AggExec *ex, int ai)
+{
+	Dist	   *d = ex->dist[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	TupleTableSlot *t;
+	bool		isnull;
+	int32		prev_sid = -1;
+	int64		prev_val = 0;
+	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap;
+
+	if (d == NULL || d->mode != DD_SORT || d->done)
+		return;
+	tuplesort_performsort(d->sort);
+	d->cnt = MemoryContextAllocZero(ex->tcxt, Max(d->nsid, 1) * sizeof(uint64));
+	t = d->get;
+	while (tuplesort_gettupleslot(d->sort, true, false, t, NULL))
+	{
+		int32		sid = DatumGetInt32(slot_getattr(t, 1, &isnull));
+		int64		val = DatumGetInt64(slot_getattr(t, 2, &isnull));
+
+		if (sid != prev_sid || val != prev_val)
+			d->cnt[sid]++;
+		prev_sid = sid;
+		prev_val = val;
+	}
+	for (uint32 g = 0; g < Min(ngr, d->sidgroups); g++)
+		if (d->sid[g])
+			acc->n[g] = d->cnt[d->sid[g] - 1];
+	d->done = true;
+}
+
+static void
+dist_finish_all(AggExec *ex)
+{
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+		dist_finish(ex, ai);
+}
+
+/* the sorts of the tables about to be forgotten */
+static void
+dist_end_all(AggExec *ex)
+{
+	if (ex->dist == NULL)
+		return;
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+		if (ex->dist[ai] && ex->dist[ai]->sort)
+		{
+			tuplesort_end(ex->dist[ai]->sort);
+			ex->dist[ai]->sort = NULL;
+		}
+}
+
+typedef struct DistPairs
+{
+	const uint32 *cidx;
+	uint32	   *pg;
+	uint32	   *pv;
+	uint32		np;
+} DistPairs;
+
+static void
+dist_collect(void *arg, uint32 g, uint32 v)
+{
+	DistPairs  *dp = arg;
+
+	if (dp->cidx[g] == UINT32_MAX)
+		return;
+	dp->pg[dp->np] = dp->cidx[g];
+	dp->pv[dp->np++] = v;
+}
+
+/* the pairs of aggregate ai in the groups of cidx (blob numbering): the arrays pg and pv, np of them */
+static void
+dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out)
+{
+	Dist	   *d = ex->dist[ai];
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+				np = 0;
+	uint64		total = 0;
+	uint32	   *pg,
+			   *pv;
+
+	dist_finish(ex, ai);
+	for (uint32 g = 0; g < n; g++)
+		if (cidx[g] != UINT32_MAX)
+			total += ex->acc[ai].n[g];
+	pg = palloc(Max(total, 1) * sizeof(uint32));
+	pv = palloc(Max(total, 1) * sizeof(uint32));
+	if (d->mode == DD_SORT)
+	{
+		uint32	   *sg = palloc0(Max(d->nsid, 1) * sizeof(uint32));
+		bool		isnull;
+		int32		prev_sid = -1;
+		int64		prev_val = 0;
+
+		for (uint32 g = 0; g < Min(n, d->sidgroups); g++)
+			if (d->sid[g])
+				sg[d->sid[g] - 1] = g;
+		tuplesort_rescan(d->sort);
+		while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
+		{
+			int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
+			int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
+
+			if ((sid != prev_sid || val != prev_val) && cidx[sg[sid]] != UINT32_MAX)
+			{
+				pg[np] = cidx[sg[sid]];
+				pv[np++] = (uint32) val;
+			}
+			prev_sid = sid;
+			prev_val = val;
+		}
+		pfree(sg);
+	}
+	else
+	{
+		DistPairs	dp = {cidx, pg, pv, 0};
+
+		dist_walk(d, dist_collect, &dp);
+		np = dp.np;
+	}
+	*pg_out = pg;
+	*pv_out = pv;
+	*np_out = np;
+}
+
 /* ---------- groups ---------- */
 
 static AggAcc *
@@ -2985,8 +3612,12 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	}
 	if (remap)
 		for (int i = 0; i < ex->spec->naggs; i++)
+		{
 			if (ex->dset[i].slot)
 				dset_grow(ex, &ex->dset[i], remap);
+			if (ex->dist && ex->dist[i])
+				dist_regroup(ex, ex->dist[i], remap, oldcap, newcap);
+		}
 	arms_resize(ex, newcap, remap, oldcap);
 	acc_free(ex->acc, ex->spec->naggs);
 	pfree(ex->seen);
@@ -5548,8 +6179,9 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			{
 				nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL);
 				for (int j = 0; j < nsel; j++)
-					if ((!ok || sift_colsrc_bit(ok, j)) && num_first(ex, ai, ex->gid[j], nx[j]))
-						acc->n[ex->gid[j]]++;
+					if (!ok || sift_colsrc_bit(ok, j))
+						ex->cu32[j] = idmap_id(&ex->amap[ai], nx[j]);
+				dist_update(ex, ai, ok, nsel, ex->cu32);
 				break;
 			}
 			sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
@@ -5560,9 +6192,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 				for (int j = 0; j < nsel; j++)
 					ex->cu32[j] = map[v->isnull && v->isnull[idx[j]] ? v->dict->n : ex->cu32[j]];
 			}
-			for (int j = 0; j < nsel; j++)
-				if ((!ok || sift_colsrc_bit(ok, j)) && dset_add(ex, &ex->dset[ai], ex->gid[j], ex->cu32[j]))
-					acc->n[ex->gid[j]]++;
+			dist_update(ex, ai, ok, nsel, ex->cu32);
 			break;
 		case SAA_GROUPING:
 			break;
@@ -6052,19 +6682,26 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 	}
 }
 
-/* the group of cell g of arm k in grouping set `set`: the keys the arm and the set share, and the set's number */
+/*
+ * The group that cell g of arm k belongs to (in grouping set `set`): the outer keys the arm (and the set) have, and the set's number.
+ * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps.
+ */
 static uint32
-cell_set_gid(AggExec *ex, int k, uint32 g, int set)
+cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
 {
 	SiftAggSpec *s = ex->spec;
-	uint32		mask = s->setmask[set] & s->arm[k].keymask,
+	uint32		mask = s->arm[k].keymask,
 				ids[SIFT_AGG_MAX_KEYS] = {0},
 				gid = 0;
 
-	for (int j = 0; j < s->nkeys - 1; j++)
+	if (s->nsets)
+	{
+		mask &= s->setmask[set];
+		ids[s->nkeys - 1] = set + 1;
+	}
+	for (int j = 0; j < s->nkeys; j++)
 		if (mask >> j & 1)
 			ids[j] = key_id(ex, j, g);
-	ids[s->nkeys - 1] = set + 1;
 	if (ex->hash)
 		return hash_group(ex, ids);
 	for (int j = 0; j < s->nkeys; j++)
@@ -6094,17 +6731,17 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	}
 	if (a->hstate && !cell_having(ex, k, g))
 		return;
-	if (s->nsets == 0)
+	if (s->nsets == 0 && sa->hmask == 0)
 	{
 		ex->seen[g]++;
 		cell_into(ex, k, g, g, row);
 		return;
 	}
-	for (int set = 0; set < s->nsets; set++)
-		ex->setg[set] = cell_set_gid(ex, k, g, set);
+	for (int set = 0; set < Max(s->nsets, 1); set++)
+		ex->setg[set] = cell_outer_gid(ex, k, g, set);
 	if (ex->hash && ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
-	for (int set = 0; set < s->nsets; set++)
+	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		ex->seen[ex->setg[set]]++;
 		cell_into(ex, k, g, ex->setg[set], row);
@@ -6135,7 +6772,7 @@ arm_chunk(AggExec *ex, Tup *t)
 		{
 			ArmSt	   *a = &ex->arm[k];
 
-			ex->arm_mask = s->arm[k].keymask;
+			ex->arm_mask = s->arm[k].keymask | s->arm[k].hmask;
 			compute_gids(ex, n);
 			memcpy(a->gid, ex->gid, n * sizeof(uint32));
 		}
@@ -6846,6 +7483,7 @@ table_init(AggExec *ex)
 	ex->acc = acc_alloc(ex, total);
 	arms_resize(ex, total, NULL, 0);
 	ex->dset = palloc0(Max(s->naggs, 1) * sizeof(DSet));
+	ex->dist = palloc0(Max(s->naggs, 1) * sizeof(Dist *));
 	ex->aot = palloc0(Max(s->naggs, 1) * sizeof(OutTable));
 	ex->amax = palloc0(Max(s->naggs, 1) * sizeof(double));
 	ex->amap = palloc0(Max(s->naggs, 1) * sizeof(IdMap));
@@ -6878,6 +7516,8 @@ table_init(AggExec *ex)
 				ot_init_image(&ex->aot[i], a->gen->arg[a->gen->darg].typid);
 			continue;
 		}
+		if (a->kind == SAA_COUNT_DISTINCT)
+			ex->dist[i] = dist_new(ex, !a->num.n && a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype != SCV_CODE);
 		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
 			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG || a->kind == SAA_M_PG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
@@ -6897,6 +7537,7 @@ table_reset(AggExec *ex)
 	for (int i = 0; i < NDICT_SLOTS; i++)
 		if (ex->dslot[i].kmap)
 			memset(ex->dslot[i].kmap, 0, nk * sizeof(uint32 *));
+	dist_end_all(ex);
 	MemoryContextReset(ex->tcxt);
 	/* the output rows of a combo hold ids of the key tables just forgotten */
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
@@ -7100,21 +7741,15 @@ blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
 static void
 blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 {
-	DSet	   *ds = &ex->dset[ai];
 	bool		dict = ex->lay->leaf[ex->spec->agg[ai].leaf].vtype == SCV_CODE;
-	uint32		np = 0,
-			   *pg = palloc(Max(ds->n, 1) * sizeof(uint32)),
-			   *pv = palloc(Max(ds->n, 1) * sizeof(uint32)),
+	uint32		np,
+			   *pg,
+			   *pv,
 				hd[2],
 			   *old = NULL,
 				nused = 0;
 
-	for (uint64 i = 0; i < ds->cap; i++)
-		if (ds->slot[i])
-		{
-			pg[np] = cidx[(ds->slot[i] >> 32) & 0x7fffffff];
-			pv[np++] = (uint32) ds->slot[i];
-		}
+	dist_pairs(ex, ai, cidx, &pg, &pv, &np);
 	if (dict)
 		old = renumber(pv, np, ex->aot[ai].n, &nused);
 	hd[0] = np;
@@ -7207,6 +7842,7 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
 	BlobHdr		h = {BLOB_MAGIC, lane, 0, 0};
 
+	dist_finish_all(ex);
 	for (uint32 g = 0; g < n; g++)
 	{
 		cidx[g] = UINT32_MAX;
@@ -7236,6 +7872,7 @@ blob_dump(AggExec *ex, int lane, StringInfo b)
 			blob_gen(ex, i, gl, ng, b);
 	}
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
+	dist_end_all(ex);
 	pfree(gl);
 	pfree(cidx);
 }
@@ -7440,7 +8077,7 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 	{
 		uint32		t = gids[ba->pg[i]];
 
-		if (dset_add(g, &g->dset[ai], t, ba->xv ? ba->xv[ba->pv[i]] : ba->pv[i]))
+		if (dist_add(g, g->dist[ai], t, ba->xv ? ba->xv[ba->pv[i]] : ba->pv[i]))
 			g->acc[ai].n[t]++;
 	}
 }
@@ -7583,11 +8220,27 @@ shared_init(ScanShared *sh, AggExec *ex)
 }
 
 static void
-scan_range(AggExec *ex, uint32 lo, uint32 hi)
+scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 		process_unit(ex);
+}
+
+/* With a match set, the source keeps the matching rows of the units of the range only (sift_search.h) */
+static void
+scan_range(AggExec *ex, uint32 lo, uint32 hi)
+{
+	if (ex->search == NULL)
+	{
+		scan_units(ex, lo, hi);
+		return;
+	}
+	for (uint32 a = lo; a < hi; a += sift_search_chunk_sbs)
+	{
+		sift_colsrc_select(ex->src, sift_search_range(ex->search, a, Min(a + sift_search_chunk_sbs, hi)));
+		scan_units(ex, a, Min(a + sift_search_chunk_sbs, hi));
+	}
 }
 
 /* a grouping set without columns has its group even when no row reached it, as the plain aggregate has its row */
@@ -7690,6 +8343,7 @@ typedef struct WorkerDone
 	int64		n_pre_units;
 	int64		n_rows;
 	int64		n_tuples;
+	int64		n_matches;
 	SiftSrcCounters cc;
 } WorkerDone;
 
@@ -7701,6 +8355,7 @@ typedef struct AggPar
 	shm_mq_handle **mqh;
 	bool	   *done;
 	SiftSrcCounters cc;			/* of the workers, added */
+	int64		matches;		/* BM25 matches the workers found, added */
 } AggPar;
 
 static void
@@ -7802,6 +8457,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_pre_units = ex->n_pre_units;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
+	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
 	shm_mq_detach(ex->mqh);
@@ -7889,6 +8545,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_pre_units += d->n_pre_units;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
+		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
@@ -8006,7 +8663,7 @@ list_groups(AggExec *ex)
 	for (uint32 g = 0; g < n; g++)
 		if (ex->seen[g] > 0)
 			ex->glist[k++] = g;
-	if (ex->spec->nkeys == 0 && k == 0)
+	if (ex->spec->nkeys == ex->spec->nhidden && k == 0)
 		ex->glist[k++] = 0;
 	ex->nglist = k;
 	ex->n_groups = k;
@@ -8342,6 +8999,8 @@ agg_next(ScanState *node)
 	{
 		run_scan(ex);
 		empty_set_groups(ex->gtab);
+		dist_finish_all(ex->gtab);
+		dist_end_all(ex->gtab);
 		mapped_finish(ex->gtab);
 		list_groups(ex->gtab);
 		gen_finish(ex->gtab);
@@ -8405,6 +9064,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->lutcx = CreateStandaloneExprContext();
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
+	if (ex->spec->search)
+		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
 		register_pred(ex, ex->spec->pred[i]);
@@ -8424,6 +9085,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 static void
 engine_close(AggExec *ex)
 {
+	if (ex->search)
+		sift_search_close(ex->search);
 	if (ex->src)
 		sift_colsrc_close(ex->src);
 	if (ex->lutcx)
@@ -8473,6 +9136,9 @@ agg_end(CustomScanState *node)
 		fuse_unregister(ex);
 	if (ex->fuse && --ex->fuse->refs == 0)
 		engine_close(ex->fuse->F);
+	dist_end_all(ex);
+	if (ex->gtab)
+		dist_end_all(ex->gtab);
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
@@ -8493,15 +9159,25 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	AggExec    *ex = (AggExec *) node;
 	SiftAggSpec *s = ex->spec;
 	StringInfoData buf;
+	int			h1 = s->nkeys - (s->nsets > 0),	/* the hidden keys are between the outer ones and the set's */
+				h0 = h1 - s->nhidden;
 
 	ExplainPropertyText("Index", s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
 	if (s->desc_quals && s->desc_quals[0])
 		ExplainPropertyText("Filters", s->desc_quals, es);
+	if (s->search)
+		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	initStringInfo(&buf);
 	for (int j = 0; j < s->nkeys; j++)
-		appendStringInfo(&buf, "%s%s", j ? ", " : "", s->key[j].desc);
-	if (s->nkeys)
+		if (j < h0 || j >= h1)
+			appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", s->key[j].desc);
+	if (buf.len)
 		ExplainPropertyText("Group Keys", buf.data, es);
+	resetStringInfo(&buf);
+	for (int j = h0; j < h1; j++)
+		appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", s->key[j].desc);
+	if (s->nhidden)
+		ExplainPropertyText("Cell Keys", buf.data, es);
 	resetStringInfo(&buf);
 	for (int i = 0; i < s->naggs; i++)
 		appendStringInfo(&buf, "%s%s", i ? ", " : "", s->agg[i].desc);
@@ -8535,6 +9211,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			cc.rows_vetted += c->par->cc.rows_vetted;
 			cc.heap_pages += c->par->cc.heap_pages;
 		}
+		if (s->search)
+			ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)
 			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
@@ -8546,6 +9224,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 		if (c->n_osa_spilled)
 			ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
+		if (c->n_dist_spilled)
+			ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
 	}
 }
 

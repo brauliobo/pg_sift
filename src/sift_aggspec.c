@@ -226,7 +226,7 @@ sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, c
 	int			dim = -1,
 				d = -1;
 
-	if (s->group >= 0 || s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0)
+	if (s->group >= 0 || s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0 || s->search)
 		return false;
 	if (s->nkeys == 1)
 	{
@@ -715,6 +715,7 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		const SiftAggArm *a = &s->arm[i];
 
 		put_int(p, (int) a->keymask);
+		put_int(p, (int) a->hmask);
 		put_int(p, a->nfilter);
 		for (int j = 0; j < a->nfilter; j++)
 			put_pred(p, a->filter[j]);
@@ -838,10 +839,12 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nsets);
 	for (int i = 0; i < s->nsets; i++)
 		put_int(p, (int) s->setmask[i]);
+	put_int(p, s->nhidden);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
 	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
+	put_node(p, s->search);
 	return pk.items;
 }
 
@@ -1013,6 +1016,7 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		SiftAggArm *a = &s->arm[i];
 
 		a->keymask = (uint32) get_int(u);
+		a->hmask = (uint32) get_int(u);
 		a->nfilter = get_int(u);
 		a->filter = palloc(Max(a->nfilter, 1) * sizeof(SiftAggPred *));
 		for (int j = 0; j < a->nfilter; j++)
@@ -1151,9 +1155,11 @@ sift_aggspec_unpack(const List *items)
 	s->setmask = palloc(Max(s->nsets, 1) * sizeof(uint32));
 	for (int i = 0; i < s->nsets; i++)
 		s->setmask[i] = (uint32) get_int(u);
+	s->nhidden = get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
+	s->search = get_node(u);
 	return s;
 }

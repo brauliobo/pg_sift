@@ -19,6 +19,7 @@
 
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
+#include "sift_cmp.h"
 #include "sift_eval.h"
 #include "sift_kernels.h"
 #include "sift_runs.h"
@@ -83,15 +84,6 @@ cmp_group(const void *a, const void *b)
 	if (x->pk != y->pk)
 		return x->pk < y->pk ? -1 : 1;
 	return (x->seq > y->seq) - (x->seq < y->seq);
-}
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
 }
 
 /* One entry per key with the last of its rows: what the queue says the row is now */
@@ -176,7 +168,7 @@ typedef struct DocRef
 static int
 cmp_doc(const void *a, const void *b)
 {
-	return cmp_i64(&((const DocRef *) a)->did, &((const DocRef *) b)->did);
+	return sift_cmp_i64(&((const DocRef *) a)->did, &((const DocRef *) b)->did);
 }
 
 /* The documents the queue rows add (those whose row has text) in ascending docids, and the segment documents they retire */
@@ -196,7 +188,7 @@ delta_fill(SiftIdx *ix, Delta *d, const LastRow *g, size_t ng, size_t nc, SxRow 
 		if (g[i].op == 'I' && rows[next++].text)
 			docs[d->nd++] = (DocRef) {g[i].seq + ix->man.docbase, g[i].pk, rows[next - 1].text, rows[next - 1].len};
 	}
-	qsort(d->dead, d->ndead, sizeof(int64), cmp_i64);
+	qsort(d->dead, d->ndead, sizeof(int64), sift_cmp_i64);
 	qsort(docs, d->nd, sizeof(DocRef), cmp_doc);
 	d->dids = malloc((d->nd + 1) * sizeof(int64));
 	d->dpks = malloc((d->nd + 1) * sizeof(int64));
@@ -328,7 +320,7 @@ live_pk(Qry *q, int64 docid)
 {
 	if (docid > q->dlfrom)
 	{
-		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), cmp_i64);
+		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), sift_cmp_i64);
 
 		if (at == NULL)
 			fail("sift: document %lld is not in the live segment", (long long) docid);
@@ -355,7 +347,7 @@ build_filter(Qry *q)
 	for (size_t i = 0; q->dl && i < q->dl->nd; i++)
 		if (in_sorted(f->ids, f->n, q->dl->dpks[i]))
 			docs[nd++] = q->dl->dids[i];
-	qsort(docs, nd, sizeof(int64), cmp_i64);
+	qsort(docs, nd, sizeof(int64), sift_cmp_i64);
 	q->fdocs = docs;
 	q->nfdocs = nd;
 	q->filter = sift_filter_from_docids(q->sr, docs, nd, CurrentMemoryContext);
@@ -427,7 +419,7 @@ load_doc(Qry *q, int64 docid, text **doc)
 
 	if (docid > q->dlfrom)
 	{
-		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), cmp_i64);
+		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), sift_cmp_i64);
 
 		t = q->dl->text[at - q->dl->dids];
 		len = q->dl->tlen[at - q->dl->dids];

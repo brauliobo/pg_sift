@@ -1,0 +1,6 @@
+-- a phrase: the rows the index leaves undecided are rechecked on their text
+-- shape: search
+-- expect: any
+-- key: -
+-- scenario: yes
+SELECT lang, count(*) AS n, sum(store_id) AS s FROM orders WHERE memo @@> '"clean wifi"' GROUP BY lang ORDER BY lang

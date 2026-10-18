@@ -427,7 +427,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 	fz_init();
 	fz_try(shred_run, &job);
-	fz_reset();
+	pgshim_reset();
 	return 0;
 }
 
@@ -460,7 +460,7 @@ LLVMFuzzerInitialize(int *argc, char ***argv)
 	const char *dir = getenv("FZ_GEN");
 
 	fz_init();
-	fz_keep();
+	pgshim_keep();
 	if (dir)
 	{
 		mkdir(dir, 0755);

@@ -28,6 +28,7 @@
 
 #include "sift_aggkern.h"
 #include "sift_aggstub.h"
+#include "sift_cmp.h"
 #include "sift_visibility.h"
 
 /* ---------------------------------------------------------------------------
@@ -930,24 +931,6 @@ typedef struct StubSample
 	SiftSrcStats st;			/* ndistinct of the sample (not yet scaled), min, max, elems_per_row */
 } StubSample;
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a;
-	int64		y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
-
-static int
-cmp_f64(const void *a, const void *b)
-{
-	double		x = *(const double *) a;
-	double		y = *(const double *) b;
-
-	return (x > y) - (x < y);
-}
-
 /* Distinct non-null values of the vector, and the smallest and largest as doubles (finite numbers only) */
 static double
 vec_summary(SiftSrcVecType vt, const SiftSrcVec *v, double *mn, double *mx, bool *any)
@@ -971,9 +954,9 @@ vec_summary(SiftSrcVecType vt, const SiftSrcVec *v, double *mn, double *mx, bool
 			i[n++] = vt == SCV_I32 ? ((const int32 *) v->data)[k] : ((const int64 *) v->data)[k];
 	}
 	if (vt == SCV_F64)
-		qsort(f, n, sizeof(double), cmp_f64);
+		qsort(f, n, sizeof(double), sift_cmp_f64);
 	else
-		qsort(i, n, sizeof(int64), cmp_i64);
+		qsort(i, n, sizeof(int64), sift_cmp_i64);
 	for (int64 k = 0; k < n; k++)
 	{
 		double		x = vt == SCV_F64 ? f[k] : (double) i[k];

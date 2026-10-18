@@ -12,6 +12,7 @@
 #include <math.h>
 
 #include "sift_analyze.h"
+#include "sift_cmp.h"
 #include "sift_colcodec_int.h"
 #include "sift_colz.h"
 #include "sift_popcount.h"
@@ -478,15 +479,6 @@ emit_delta(StringInfo out, const int64 *v, uint32 n, const CcStats *st, uint32 W
 	pfree(tmp);
 }
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /* Distinct values ascending (palloc'd) when there are at most limit of them, else NULL; *d is their number */
 static int64 *
 distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
@@ -523,7 +515,7 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
 			out[cnt++] = v[i];
 		}
 	}
-	qsort(out, cnt, sizeof(int64), cmp_i64);
+	qsort(out, cnt, sizeof(int64), sift_cmp_i64);
 	pfree(tab);
 	pfree(used);
 	*d = cnt;

@@ -36,13 +36,13 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 | FILTER (WHERE ...) on any aggregate | Yes | sift_col | `SELECT count(*) FILTER (WHERE status = 'paid'), sum(total) FILTER (WHERE total > 100) FROM orders` |
 | numeric(p > 18), unconstrained numeric, negative scale | No (the index refuses the column, so no query reads it from the index) | sift_col | `SELECT grp, sum(n38) FROM t GROUP BY grp` |
 | GROUP BY an expression of one column: lower(), CASE, date_trunc of a date, x % 7, extract() | Yes | sift_col | `SELECT date_trunc('month', placed_at::timestamp)::date, count(*) FROM orders GROUP BY 1` |
-| GROUP BY date_trunc, extract of a timestamp or timestamptz, or CASE over numeric | Yes (in v3, pending merge) | sift_col | `SELECT date_trunc('month', ts), count(*) FROM t GROUP BY 1` |
+| GROUP BY date_trunc, extract of a timestamp or timestamptz, or CASE over numeric | Yes | sift_col | `SELECT date_trunc('month', ts), count(*) FROM t GROUP BY 1` |
 | GROUPING SETS, ROLLUP, CUBE, GROUPING() | Yes | sift_col | `SELECT store_id, status, count(*) FROM orders GROUP BY CUBE (store_id, status)` |
 | LIKE, ILIKE, prefix, regex (~), any boolean function of one text or integer column | Yes | sift_col | `SELECT count(*) FROM orders WHERE source LIKE 'market%'` |
 | INNER JOIN to a small table on equality (lookup join, up to 4 tables, up to 3 key columns) | Yes | sift_col | `SELECT s.kind, count(*), sum(o.total) FROM orders o JOIN stores s ON s.id = o.store_id GROUP BY s.kind` |
 | EXISTS (...) and IN (SELECT ...) (semi join) | Yes | sift_col | `SELECT count(*) FROM orders o WHERE EXISTS (SELECT 1 FROM stores s WHERE s.id = o.store_id AND s.kind = 'outlet')` |
 | NOT IN (SELECT ...) | No (a hashed SubPlan with the NULL rule of NOT IN, no anti join) | sift_col | `SELECT count(*) FROM orders WHERE store_id NOT IN (SELECT id FROM stores WHERE kind = 'outlet')` |
-| Per-order aggregates with the outer aggregate in the same scan: UNION ALL arms (up to 4), HAVING or WHERE on the inner aggregates, gates, ROLLUP / GROUPING SETS, count(DISTINCT id) | Yes (in v3, pending merge) | sift_col | `SELECT category, kind, avg(avg_price), count(DISTINCT order_id) FROM (... GROUP BY order_id, ...) x GROUP BY ROLLUP (category, kind)` |
+| Per-order aggregates with the outer aggregate in the same scan: UNION ALL arms (up to 4), HAVING or WHERE on the inner aggregates, gates, ROLLUP / GROUPING SETS, count(DISTINCT id) | Yes | sift_col | `SELECT category, kind, avg(avg_price), count(DISTINCT order_id) FROM (... GROUP BY order_id, ...) x GROUP BY ROLLUP (category, kind)` |
 | Parallel scan of the aggregate (count, sum, avg, min, max, count(DISTINCT), percentiles, keys of any kind, lookup joins, grouping sets) | Yes | sift_col | `SELECT store_id, count(*), sum(total) FROM orders GROUP BY store_id` |
 | Rows inserted after the index was built, not yet vacuumed (pages not all-visible) | Yes | sift_col, sift_table | `SELECT grp, count(*), sum(v) FROM t GROUP BY grp` |
 
@@ -50,9 +50,9 @@ the normal plan, and `SET sift.enable_agg = off` gives the plan PostgreSQL has w
 
 | Query / feature | Covered by sift? | Index or engine | Example |
 |---|---|---|---|
-| sift_table: numeric, char(n), uuid, interval, bytea, money, enum, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT n2, count(*) FROM t GROUP BY n2` |
+| sift_table: numeric(p > 18) and unconstrained numeric, uuid, interval, bytea, money, time, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT u, count(*) FROM t GROUP BY u` |
 | Aggregates over a sift_table: count, sum, avg, min, max, distinct, filters, grouping | Yes | sift_table | `SELECT grp, count(*), sum(i4) FROM t WHERE i4 > 100 GROUP BY grp` |
-| Backward scan: a SCROLL cursor fetching backward, FETCH PRIOR / LAST | Error (0A000; FETCH ABSOLUTE over a NO SCROLL cursor, or materialize the rows) | sift_table | `DECLARE c SCROLL CURSOR FOR SELECT * FROM t; FETCH LAST FROM c; FETCH PRIOR FROM c` |
+| Backward scan: a SCROLL cursor fetching backward, FETCH PRIOR / LAST | Yes | sift_table | `DECLARE c SCROLL CURSOR FOR SELECT * FROM t; FETCH LAST FROM c; FETCH PRIOR FROM c` |
 | More than 127 columns | Error (54000 at CREATE TABLE; at most 127 columns) | sift_table | `CREATE TABLE t (c1 int, ..., c128 int) USING sift_table` |
 
 <!-- coverage:end -->

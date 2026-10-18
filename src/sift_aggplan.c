@@ -60,6 +60,7 @@
 #include "sift_agg.h"
 #include "sift_aggspec.h"
 #include "sift_colsrc.h"
+#include "sift_search.h"
 
 typedef enum FuncKind
 {
@@ -129,6 +130,7 @@ typedef struct AggCtx
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
+	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (sift_search.h) */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -3581,6 +3583,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
+#define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNIT_COST		200.0
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
@@ -3878,7 +3881,7 @@ leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
 
 /* The average width of the heap column a plain text leaf is read from (0: unknown, or the leaf is a jsonb path or an expression) */
 static int
-leaf_width(AggCtx *c, int leaf)
+leaf_heap_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -3899,7 +3902,7 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	{
 		const SiftSrcLeaf *lf = &c->lay->leaf[s->leaves[i]];
 
-		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
+		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_heap_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
 			cost += leaf_read_whole(c, s, s->leaves[i]) ? AGG_INLINE_ROW : AGG_INLINE_TEST;
 	}
 	return cost;
@@ -3914,6 +3917,30 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
 		return 0.0;
 	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
+}
+
+/* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
+static double
+leaf_width(const SiftSrcLeaf *lf)
+{
+	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64 ? 8.0 : 4.0;
+}
+
+/*
+ * The stored bytes the scan reads: the leaves it reads take their share (by value width) of the compressed bytes of the source; a
+ * source that does not know them (a table, a sample) is taken to compress its values by half.
+ */
+static double
+scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
+{
+	double		all = 0,
+				used = 0;
+
+	for (int i = 0; i < c->lay->nleaves; i++)
+		all += leaf_width(&c->lay->leaf[i]);
+	for (int i = 0; i < s->nleaves; i++)
+		used += leaf_width(leaf_of(c, s->leaves[i]));
+	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
 }
 
 static void
@@ -3932,7 +3959,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 	if (s->group >= 0)
 		elems = elems_of(c, s->group);
-	scan_cost = 0;
+	scan_cost = c->search ? sift_search_cost(c->search, rows, units, &rows, &units) : 0;
 	for (int i = 0; i < s->nleaves; i++)
 		scan_cost += rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF;
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
@@ -3961,6 +3988,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		scan_cost += rows * pred_num_cost(s->pred[i]);
 	scan_cost = Max(scan_cost - plain_credit(c, s, agg_rows), scan_cost * 0.1);
+	scan_cost += scan_bytes(c, s, rows) * AGG_BYTE * Max(zone_kept(c, s), 1.0 / units);
 	scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,
@@ -4283,6 +4311,8 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 static void
 spec_deps(PlannerInfo *root, SiftAggSpec *s)
 {
+	if (s->search)
+		record_deps(root, s->search);
 	for (int i = 0; i < s->npred; i++)
 		pred_deps(root, s->pred[i]);
 	for (int i = 0; i < s->nkeys; i++)
@@ -4379,6 +4409,8 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	finish_leaves(c, s);
 	finish_combos(c, s);
 	s->est_groups = set_groups(root, s, keys, input_rel->rows);
+	if (c->search)
+		s->search = c->search->spec;
 
 	spec_deps(root, s);
 	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
@@ -4474,6 +4506,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
+	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
 	if (!agg_quals(c, s, &fs))
 		return;
 
@@ -4544,6 +4577,8 @@ typedef struct ArmIn
 	CteSub		sub;
 	List	   *cols;			/* the expressions of its output columns */
 	List	   *group;			/* its group expressions */
+	List	   *gsgc;			/* their SortGroupClauses */
+	List	   *used;			/* the group expressions that are an outer key */
 	List	   *quals;			/* its WHERE, when it reads a common table expression */
 	Node	   *id;				/* the group expression that is unique per row */
 	SiftAggArm *out;
@@ -4897,6 +4932,51 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 }
 
 /*
+ * A cell is an inner group, the share of one row in one group of an arm. When an arm groups by more than the outer keys and its id, one
+ * row has several cells in an outer group, so the group expressions that are no outer key are keys of the cells: one key each, shared by
+ * the arms that have an equal expression, after the outer keys and before the number of the set. They name no group (a group has id 0
+ * for them, and the scan emits NULL).
+ */
+static bool
+hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist, bool sets)
+{
+	int			nouter = s->nkeys;
+	List	   *defs = NIL;
+
+	for (int k = 0; k < narms; k++)
+		for (int i = 0; i < list_length(arms[k].group); i++)
+		{
+			Node	   *g = list_nth(arms[k].group, i);
+			SortGroupClause *sgc = list_nth_node(SortGroupClause, arms[k].gsgc, i);
+			int			pos;
+			SiftAggKey *key;
+
+			if (equal(g, arms[k].id) || list_member(arms[k].used, g))
+				continue;
+			pos = -1;
+			foreach_ptr(Node, d, defs)
+				if (equal(d, g))
+					pos = foreach_current_index(d);
+			if (pos < 0)
+			{
+				if (s->nkeys + sets >= SIFT_AGG_MAX_KEYS)
+					return false;
+				key = &s->key[s->nkeys];
+				if (!compile_key(c, sgc, g, key))
+					return false;
+				combo_set_key(c, key, s->nkeys);
+				*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) makeNullConst(key->typid, key->typmod, key->collid),
+																   list_length(*scan_tlist) + 1, NULL, false));
+				defs = lappend(defs, g);
+				pos = s->nkeys++ - nouter;
+			}
+			arms[k].out->hmask |= (uint32) 1 << (nouter + pos);
+		}
+	s->nhidden = s->nkeys - nouter;
+	return true;
+}
+
+/*
  * The outer query aggregates the rows of its FROM item, the arms: a UNION ALL of aggregates (or one) of the same scan, each grouped by
  * a unique row id and by outer keys (a NULL constant where an arm has none of them): see SiftAggArm. The arms are read from their
  * planned roots, so that group expressions and constants are in the planner's final form; an arm that reads a common table
@@ -4920,6 +5000,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	int			okey[SIFT_AGG_MAX_KEYS];
 	int			ncols = 0;
 	List	   *gates = NIL;
+	int			nkeyslots = list_length(parse->groupClause) + 1;
 
 	if (list_length(parse->groupClause) > SIFT_AGG_MAX_KEYS - 1)
 		return;
@@ -4963,6 +5044,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			Node	   *g = normalize_expr(c, cte_sub_mutator((Node *) get_sortgroupclause_expr(sgc, aq->targetList), &in->sub));
 
 			in->group = lappend(in->group, g);
+			in->gsgc = lappend(in->gsgc, sgc);
 			if (unique_row_column(c, g))
 			{
 				in->id = g;
@@ -5005,7 +5087,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	}
 
 	/* the outer keys: columns that every arm groups by or has as NULL */
-	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
+	for (int k = 0; k < narms; k++)
+		nkeyslots += list_length(arms[k].group);
+	s->key = palloc0(nkeyslots * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
@@ -5023,6 +5107,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 			if (!list_member(arms[k].group, x) || equal(x, arms[k].id) || (def != NULL && !equal(x, def)))
 				return;
 			def = x;
+			arms[k].used = lappend(arms[k].used, x);
 			arms[k].out->keymask |= 1 << s->nkeys;
 		}
 		if (def == NULL || !compile_key(c, sgc, def, &s->key[s->nkeys]))
@@ -5032,10 +5117,8 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
 		s->nkeys++;
 	}
-	/* an inner group is the share of one row in an outer group: every group expression is an outer key (but the id) */
-	for (int k = 0; k < narms; k++)
-		if (list_length(arms[k].group) != 1 + pg_popcount32(arms[k].out->keymask))
-			return;
+	if (!hidden_keys(c, s, arms, narms, &scan_tlist, parse->groupingSets != NIL))
+		return;
 	if (parse->groupingSets != NIL)
 		add_sets(parse, s, &scan_tlist);
 

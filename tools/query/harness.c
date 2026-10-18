@@ -1,12 +1,11 @@
 /*
  * harness.c - standalone ASan/UBSan fuzz harness for sift_query.c.
  *
- * Links src/sift_query.c with frontend libpgcommon and small shims for the
- * backend services it uses: palloc is plain malloc per chunk (so ASan sees
- * every overflow, tools/pgarena.h), ereport longjmps back here, the analyzer is an ASCII test
- * double, and regexes compile to "never matches" (regex paths are covered by
- * the SQL tests). Reads COPY-escaped queries (tools/query/gen.py) and checks
- * for each one:
+ * Links src/sift_query.c with frontend libpgcommon, tools/pgshim.c (palloc is plain malloc per chunk
+ * so that ASan sees every overflow, ereport longjmps back to pgshim_try) and small shims for the
+ * rest of the backend services it uses: the analyzer is an ASCII test double, and regexes compile
+ * to "never matches" (regex paths are covered by the SQL tests). Reads COPY-escaped queries
+ * (tools/query/gen.py) and checks for each one:
  *   - errors are 42601, 54000 or 22021 (invalid encoding) only;
  *   - the canonical form is a fixpoint: deparse(analyze(parse(d))) == d;
  *   - q and its canonical form match the same documents;
@@ -22,145 +21,11 @@
 #include "regex/regex.h"
 
 #include "sift_query.h"
-#include "../pgarena.h"
-
-/* ------------------------------------------------ memory: one malloc per chunk (tools/pgarena.h) */
-
-void *
-palloc(Size size)
-{
-	arena_atexit();
-	return arena_alloc(size);
-}
-
-void *
-palloc0(Size size)
-{
-	return memset(palloc(size), 0, size);
-}
-
-void *
-palloc_extended(Size size, int flags)
-{
-	return (flags & MCXT_ALLOC_ZERO) ? palloc0(size) : palloc(size);
-}
-
-void
-pfree(void *p)
-{
-	arena_free(p);
-}
-
-void *
-repalloc(void *p, Size size)
-{
-	return arena_realloc(p, size);
-}
-
-char *
-pstrdup(const char *s)
-{
-	return strcpy(palloc(strlen(s) + 1), s);
-}
-
-char *
-pnstrdup(const char *s, Size len)
-{
-	char	   *d;
-
-	len = strnlen(s, len);
-	d = palloc(len + 1);
-	memcpy(d, s, len);
-	d[len] = '\0';
-	return d;
-}
-
-/* ------------------------------------------------ errors: longjmp to the driver */
-
-static sigjmp_buf *err_jmp;
-static int	err_code;
-static char err_msg[512];
-
-bool
-errstart(int elevel, const char *domain)
-{
-	return elevel >= ERROR;
-}
-
-bool
-errstart_cold(int elevel, const char *domain)
-{
-	return errstart(elevel, domain);
-}
-
-int
-errcode(int sqlerrcode)
-{
-	err_code = sqlerrcode;
-	return 0;
-}
-
-int
-errmsg(const char *fmt,...)
-{
-	va_list		ap;
-
-	va_start(ap, fmt);
-	vsnprintf(err_msg, sizeof(err_msg), fmt, ap);
-	va_end(ap);
-	return 0;
-}
-
-int
-errmsg_internal(const char *fmt,...)
-{
-	va_list		ap;
-
-	va_start(ap, fmt);
-	vsnprintf(err_msg, sizeof(err_msg), fmt, ap);
-	va_end(ap);
-	return 0;
-}
-
-int
-errdetail(const char *fmt,...)
-{
-	return 0;
-}
-
-int
-errhint(const char *fmt,...)
-{
-	return 0;
-}
-
-void
-errfinish(const char *filename, int lineno, const char *funcname)
-{
-	siglongjmp(*err_jmp, 1);
-}
+#include "../pgshim.h"
 
 void
 check_stack_depth(void)
 {
-}
-
-/* Assert() in the headers of a cassert server */
-#ifdef USE_ASSERT_CHECKING
-void
-ExceptionalCondition(const char *conditionName, const char *fileName, int lineNumber)
-{
-	fprintf(stderr, "TRAP: failed Assert(\"%s\"), File: \"%s\", Line: %d\n", conditionName, fileName, lineNumber);
-	abort();
-}
-#endif
-
-/* ------------------------------------------------ encoding (UTF-8 database) */
-
-int
-GetDatabaseEncoding(void)
-{
-	return PG_UTF8;
 }
 
 bool
@@ -401,29 +266,23 @@ static long n_ok,
 			n_bad,
 			n_relaxed;
 
-static void
-check(const char *q, int len)
+typedef struct CheckArg
 {
-	sigjmp_buf	jb;
+	const char *q;
+	int			len;
+} CheckArg;
+
+static void
+check_run(void *arg)
+{
+	const char *q = ((CheckArg *) arg)->q;
+	int			len = ((CheckArg *) arg)->len;
 	SiftAnalyzer an = {0};
 	SiftQuery  *q1,
 			   *q2;
 	char	   *d1,
 			   *d2;
 
-	err_jmp = &jb;
-	if (sigsetjmp(jb, 0))
-	{
-		if (err_code == ERRCODE_SYNTAX_ERROR || err_code == ERRCODE_PROGRAM_LIMIT_EXCEEDED ||
-			err_code == ERRCODE_CHARACTER_NOT_IN_REPERTOIRE)
-			n_rej++;
-		else
-		{
-			n_bad++;
-			fprintf(stderr, "unexpected error %s: %.*s\n", err_msg, Min(len, 200), q);
-		}
-		return;
-	}
 	q1 = sift_query_analyze(sift_query_parse(q, len), &an);
 	d1 = sift_query_deparse(q1);
 	q2 = sift_query_analyze(sift_query_parse(d1, strlen(d1)), &an);
@@ -460,6 +319,23 @@ check(const char *q, int len)
 	n_ok++;
 }
 
+static void
+check(const char *q, int len)
+{
+	CheckArg	a = {q, len};
+
+	if (pgshim_try(check_run, &a))
+		return;
+	if (pgshim_sqlstate == ERRCODE_SYNTAX_ERROR || pgshim_sqlstate == ERRCODE_PROGRAM_LIMIT_EXCEEDED ||
+		pgshim_sqlstate == ERRCODE_CHARACTER_NOT_IN_REPERTOIRE)
+		n_rej++;
+	else
+	{
+		n_bad++;
+		fprintf(stderr, "unexpected error %s: %.*s\n", pgshim_errmsg, Min(len, 200), q);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -481,14 +357,14 @@ main(int argc, char **argv)
 			int			len = unescape(line);
 
 			check(line, len);
-			arena_reset();
+			pgshim_reset();
 			/* the same query with one damaged byte: invalid UTF-8, NUL, cut sequence */
 			if (len > 0)
 			{
 				seed = seed * 1103515245 + 12345;
 				line[(seed >> 8) % len] = "\xff\x80\xc3\x00\xe2"[(seed >> 4) % 5];
 				check(line, len);
-				arena_reset();
+				pgshim_reset();
 			}
 		}
 		fclose(in);

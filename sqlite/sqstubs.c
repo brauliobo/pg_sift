@@ -1,13 +1,12 @@
 /*
  * sqstubs.c - the PostgreSQL-only collaborators of src/sift_eval.c, as a single-writer embedded database sees them:
- * no heap (every document is visible, no recheck against a snapshot), no mutable segments (documents are
- * buffered in memory by sqbuild.c and written as an immutable segment before they are searched), no parallel scan,
- * no TID bitmap filter. The index options are those of the virtual table.
+ * no heap (every document is visible, no recheck against a snapshot), no TID bitmap filter. The index options are those of
+ * the virtual table. No mutable segments (documents are buffered in memory by sqbuild.c and written as an immutable segment
+ * before they are searched) and no kept docmap directories: host/host_stubs.c.
  */
 #include "sqapi.h"
 
 #include "sift_eval.h"
-#include "sift_mutable.h"
 
 /* ---------- options (sift_handler.c) ---------- */
 
@@ -29,22 +28,6 @@ sift_options_fields(const SiftOptions *opts)
 	return ((const SqOptions *) opts)->fields;
 }
 
-/* ---------- docmap directories (sift_docdir.c): not kept between queries ---------- */
-
-bool
-sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
-{
-	*dir = MemoryContextAllocHuge(seg->mcxt, nsb * sizeof(SiftDocSBRef));
-	*rank_base = MemoryContextAllocHuge(seg->mcxt, (nsb + 1) * sizeof(uint64));
-	*handle = NULL;
-	return false;
-}
-
-void
-sift_docdir_ready(void *handle)
-{
-}
-
 /* ---------- visibility (sift_visibility.c): everything the index holds is visible ---------- */
 
 void
@@ -61,43 +44,6 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	for (int i = 0; i < SIFT_OFFMASK_WORDS; i++)
 		n += pg_popcount64(offmask[i]);
 	return n;
-}
-
-/* ---------- mutable segments (sift_mutable.c): the directory never lists one ---------- */
-
-#define NO_MUTABLE() elog(ERROR, "sift: this build has no mutable segments")
-
-bool
-sift_mut_bloom_has(const uint64 *bloom, uint32 hash)
-{
-	NO_MUTABLE();
-	return false;
-}
-
-SiftMutReader *
-sift_mut_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, SiftMutPageFilter filter, void *filter_arg)
-{
-	NO_MUTABLE();
-	return NULL;
-}
-
-bool
-sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
-{
-	NO_MUTABLE();
-	return false;
-}
-
-void
-sift_mut_totals(const SiftMutReader *r, uint64 *ndocs, uint64 *sum_dl)
-{
-	NO_MUTABLE();
-}
-
-void
-sift_mut_close(SiftMutReader *r)
-{
-	NO_MUTABLE();
 }
 
 /* ---------- TID bitmap filters (src/sift_compat.h): only the PostgreSQL planner builds them ---------- */

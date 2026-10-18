@@ -114,6 +114,7 @@ run_corpus() {
 		echo "LOAD 'pg_sift';"
 		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
 		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
+		echo "SET coldiff.no_index = ${NOINDEX:+1};"
 		echo "\\o /dev/null"
 		[[ -z ${HELD:-} ]] || {
 			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"
@@ -227,6 +228,7 @@ col_index() {
 		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
 		t_nan) ddl="CREATE INDEX t_nan_col ON t_nan USING $AM (id, grp, n2, n6)" ;;
 		t_float) ddl="CREATE INDEX t_float_col ON t_float USING $AM (id, grp, f4, f8)" ;;
+		t_dist) ddl="CREATE INDEX t_dist_col ON t_dist USING $AM (id, grp, v, w, x)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
 	esac
 	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
@@ -235,7 +237,7 @@ col_index() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_nan t_text orders_odd orders_part; do
+	for t in t_int t_float t_num t_nan t_text t_dist orders_odd orders_part; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }

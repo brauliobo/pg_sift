@@ -1,16 +1,10 @@
-/* The error capture of shim.c, shared by the standalone test and benchmark. */
+/* The dispatch of the chunk codec, shared by the standalone test and benchmark (the backend symbols are tools/pgshim.c). */
 #ifndef CC_CCSHIM_H
 #define CC_CCSHIM_H
 
 #include "sift_colcodec.h"
 
-extern int	cc_sqlstate;
-extern char cc_errmsg[256];
-
-/* Runs fn(arg): true when it returned, false when it raised an error (cc_sqlstate and cc_errmsg tell which) */
-extern bool cc_try(void (*fn) (void *), void *arg);
-
-extern void cc_arena_reset(void);
+#include "../pgshim.h"
 
 /* The cpu module stand-in and the dispatch tables of the codec and of the column engine it runs on */
 extern void cc_init(void);
