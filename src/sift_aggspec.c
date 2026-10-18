@@ -91,6 +91,9 @@ put_agg(Pack *p, const SiftAggAgg *a)
 		put_dbl(p, a->cond[j].cd);
 	}
 	put_str(p, a->desc);
+	put_dbl(p, a->frac);
+	put_int(p, a->desc_order);
+	put_int(p, a->share);
 }
 
 static void
@@ -301,6 +304,9 @@ get_agg(Unpack *u, SiftAggAgg *a)
 		a->cond[j].cd = strtod(get_str(u), NULL);
 	}
 	a->desc = get_str(u);
+	a->frac = strtod(get_str(u), NULL);
+	a->desc_order = get_int(u);
+	a->share = get_int(u);
 }
 
 static void

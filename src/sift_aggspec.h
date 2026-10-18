@@ -88,6 +88,10 @@ typedef enum SiftAggKind
 	SAA_AVG_F64,				/* avg of a F64 leaf: float8 */
 	SAA_MIN,
 	SAA_MAX,
+	SAA_SUM_NUM,				/* sum of a numeric leaf: numeric, added exactly in 128 bits */
+	SAA_AVG_NUM,				/* avg of a numeric leaf: the numeric division of the exact sum and count */
+	SAA_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 argument): float8 */
+	SAA_PCT_DISC,				/* percentile_disc(frac) WITHIN GROUP (ORDER BY leaf or float8 argument): the argument's type */
 	/* the aggregates of the outer query over the groups of per-row aggregates (SiftAggArm): they read the arm's inner aggregates */
 	SAA_O_COUNT_STAR,			/* count(*): the inner groups */
 	SAA_O_COUNT_ROWS,			/* count(DISTINCT id): the rows that have an inner group */
@@ -138,6 +142,9 @@ typedef struct SiftAggAgg
 	int			ncond;			/* SAA_O_*: the FILTER */
 	SiftAggCond *cond;
 	char	   *desc;
+	double		frac;			/* SAA_PCT_*: the fraction (a constant in [0, 1]) */
+	bool		desc_order;		/* SAA_PCT_*: ORDER BY ... DESC */
+	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
 } SiftAggAgg;
 
 /*
@@ -209,6 +216,12 @@ typedef struct SiftAggCombo
 	int			nslots;
 	SiftAggSlot *slot;
 } SiftAggCombo;
+
+static inline bool
+is_ordered_agg(const SiftAggAgg *a)
+{
+	return a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC;
+}
 
 typedef struct SiftAggSpec
 {

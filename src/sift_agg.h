@@ -15,6 +15,7 @@ extern PGDLLIMPORT bool sift_enable_agg;
 
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
+extern void sift_aggcte_init(void);
 
 /* sift_aggplan.c: called by the upper path hook of sift_planner.c */
 extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,

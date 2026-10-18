@@ -64,3 +64,21 @@ SELECT same($$SELECT a, count(*) AS n, sum(b) AS s FROM w GROUP BY a$$) AS wide_
 SELECT same($$SELECT a, c, count(*) AS n FROM w GROUP BY a, c$$) AS wide_key_and_null;
 SELECT same($$SELECT b, count(*) AS n FROM w WHERE a IN (1000003, 2000006, 3000009, 1999999000, 5, -2000000000) GROUP BY b$$) AS wide_in;
 SELECT same($$SELECT b, count(*) AS n FROM w WHERE a NOT IN (1000003, 2000006, 3000009, 1999999000, 5, -2000000000) GROUP BY b$$) AS wide_not_in;
+
+-- ordered-set aggregates: the plan, and the rows of the normal plan with the histogram and, at the smallest work_mem, with the sort
+EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
+EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.5]) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
+SELECT same($$SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS c, percentile_cont(0.9) WITHIN GROUP (ORDER BY amount DESC) AS cd,
+			  percentile_disc(0.3) WITHIN GROUP (ORDER BY qty) AS dq, percentile_disc(0.7) WITHIN GROUP (ORDER BY placed DESC) AS dp FROM o GROUP BY kind$$) AS percentiles;
+SET work_mem = '64kB';
+SELECT same($$SELECT i.category, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price * 1.1 + o.id) AS c, percentile_disc(0.05) WITHIN GROUP (ORDER BY i.price * 1.1 + o.id) AS d
+			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS spilled;
+RESET work_mem;
+
+-- a CTE that several arms read is planned inline when the arms run on the index; the rows are those of the materialized CTE
+EXPLAIN (COSTS OFF) WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
+			  SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
+			  UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2;
+SELECT same($$WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
+			  SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
+			  UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2$$) AS shared_cte;

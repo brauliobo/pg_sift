@@ -1,0 +1,145 @@
+/*
+ * sift_aggcte.c - a CTE that several aggregates read, planned inline when that lets them run on the column index.
+ *
+ * PostgreSQL computes a CTE that the query names more than once exactly once and hands its rows to every reference, so the
+ * aggregates over it (a time series at four granularities, each arm a GROUP BY of the same CTE) read a materialized copy and
+ * never the index. The same query with the CTE written NOT MATERIALIZED is the same query: PostgreSQL itself inlines a CTE
+ * with no side effects and no volatile function whenever the user says so, and refuses otherwise. This hook plans the query
+ * both ways when a CTE over a table with a column index is referenced more than once, and keeps the inline plan if it has
+ * a Custom Scan (SiftAgg) and costs less. Both plans are plans of the same query, so the rows are the same.
+ */
+#include "postgres.h"
+
+#include "access/genam.h"
+#include "access/relation.h"
+#include "catalog/pg_class.h"
+#include "nodes/extensible.h"
+#include "nodes/nodeFuncs.h"
+#include "nodes/plannodes.h"
+#include "optimizer/planner.h"
+#include "parser/parsetree.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
+
+#include "sift_agg.h"
+#include "sift_colsrc.h"
+
+/*
+ * The inline plan must cost this many times less. The plain plan is priced with the 100 rows per call that PostgreSQL assumes
+ * for jsonb_to_recordset (the data has a handful), so its estimate is several times too high; the margin is where the
+ * measured times of the analytics corpus (S4 on 300000 orders) cross.
+ */
+#define CTE_INLINE_MARGIN	6.0
+
+static planner_hook_type prev_planner_hook;
+
+static bool
+has_column_index(Oid relid)
+{
+	Relation	rel = relation_open(relid, AccessShareLock);
+	bool		found = false;
+
+	foreach_oid(ix, RelationGetIndexList(rel))
+		found |= sift_colsrc_is_index(get_rel_relam(ix));
+	relation_close(rel, AccessShareLock);
+	return found;
+}
+
+/* a CTE that is read twice or more and selects from a table that has a column index */
+static bool
+shared_cte_over_column_index(CommonTableExpr *cte)
+{
+	Query	   *q = castNode(Query, cte->ctequery);
+
+	if (cte->cterecursive || cte->cterefcount < 2 || cte->ctematerialized != CTEMaterializeDefault || q->commandType != CMD_SELECT)
+		return false;
+	foreach_node(RangeTblEntry, rte, q->rtable)
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+			return true;
+	return false;
+}
+
+static bool
+has_shared_cte(Query *parse)
+{
+	if (parse->commandType != CMD_SELECT || parse->rowMarks != NIL)
+		return false;
+	foreach_node(CommonTableExpr, cte, parse->cteList)
+		if (shared_cte_over_column_index(cte))
+			return true;
+	return false;
+}
+
+static bool uses_sift_agg(Plan *plan);
+
+static bool
+any_sift_agg(List *plans)
+{
+	foreach_ptr(Plan, p, plans)
+		if (uses_sift_agg(p))
+			return true;
+	return false;
+}
+
+static bool
+uses_sift_agg(Plan *plan)
+{
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+		return true;
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			if (any_sift_agg(((Append *) plan)->appendplans))
+				return true;
+			break;
+		case T_MergeAppend:
+			if (any_sift_agg(((MergeAppend *) plan)->mergeplans))
+				return true;
+			break;
+		case T_SubqueryScan:
+			if (uses_sift_agg(((SubqueryScan *) plan)->subplan))
+				return true;
+			break;
+		case T_CustomScan:
+			if (any_sift_agg(((CustomScan *) plan)->custom_plans))
+				return true;
+			break;
+		default:
+			break;
+	}
+	return uses_sift_agg(plan->lefttree) || uses_sift_agg(plan->righttree);
+}
+
+static PlannedStmt *
+sift_planner_cte(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+{
+	Query	   *inline_parse;
+	PlannedStmt *plain,
+			   *inlined;
+
+	if (!sift_enable_agg || !has_shared_cte(parse))
+		return prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
+			standard_planner(parse, query_string, cursorOptions, boundParams);
+	inline_parse = copyObject(parse);
+	foreach_node(CommonTableExpr, cte, inline_parse->cteList)
+		if (shared_cte_over_column_index(cte))
+			cte->ctematerialized = CTEMaterializeNever;
+	plain = prev_planner_hook ? prev_planner_hook(parse, query_string, cursorOptions, boundParams) :
+		standard_planner(parse, query_string, cursorOptions, boundParams);
+	inlined = prev_planner_hook ? prev_planner_hook(inline_parse, query_string, cursorOptions, boundParams) :
+		standard_planner(inline_parse, query_string, cursorOptions, boundParams);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plain->planTree->total_cost, inlined->planTree->total_cost);
+	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plain->planTree->total_cost &&
+		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
+		return inlined;
+	return plain;
+}
+
+void
+sift_aggcte_init(void)
+{
+	prev_planner_hook = planner_hook;
+	planner_hook = sift_planner_cte;
+}
