@@ -34,6 +34,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   installed (`liblz4-dev`, `libzstd-dev`; the packages depend on them); `make SIFT_NO_LZ4=1` / `SIFT_NO_ZSTD=1` build without one. Tests: `colcodec_basic`,
   `colcodec_simd` and `make -C tools/colcodec test`.
 
+- Added (column format 1.2, clean break from the pre-release 1.1): pre-aggregates of every unit, written with it by every path that writes a unit: exact 128-bit sums and sums of squares of the integer columns and, per low-cardinality column (dictionary text, integers, dates, `numeric(p, s)`), a histogram with the row count and the non-NULL count and sum of up to three measures per group, so counts and sums per country, category or month need no scan of the units that are clean and all-visible. Reloption `preagg` (`default`, `off`, `cube(dim: measure, ...; ...)`); about 1% of the index on the store benchmark. `sift.col_unit_agg`, `sift.col_unit_hist` and the columns `preagg_bytes` and `preagg_units` of `sift.col_index_info` show them (`docs/COL-PREAGG.md`). Segments written by a build before this one are refused with a REINDEX hint.
+
 - Changed (column format 1.1, clean break from the pre-release 1.0): the leaf type in the stored schema is a host-independent tag
   (`SiftColType`: bool, int2/4/8, float4/8, numeric, text, bytea, date, timestamp(tz), uuid, jsonb, other) instead of a PostgreSQL type OID, so
   the format and its schema hash port to other hosts; the OIDs are mapped at the PostgreSQL boundary only (`sift_col_type_of_oid`,
