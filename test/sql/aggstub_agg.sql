@@ -69,6 +69,24 @@ SELECT same($$SELECT a, c, count(*) AS n FROM w GROUP BY a, c$$) AS wide_key_and
 SELECT same($$SELECT b, count(*) AS n FROM w WHERE a IN (1000003, 2000006, 3000009, 1999999000, 5, -2000000000) GROUP BY b$$) AS wide_in;
 SELECT same($$SELECT b, count(*) AS n FROM w WHERE a NOT IN (1000003, 2000006, 3000009, 1999999000, 5, -2000000000) GROUP BY b$$) AS wide_not_in;
 
+-- count(DISTINCT): the same rows as the normal plan, and at the smallest work_mem the sets spill to a sort instead of growing
+SELECT same($$SELECT b, count(DISTINCT a) AS da, count(DISTINCT c) AS dc, count(DISTINCT id) AS di FROM w GROUP BY b$$) AS distinct_groups;
+SELECT same($$SELECT count(DISTINCT a) AS da, count(DISTINCT c) AS dc FROM w$$) AS distinct_global;
+CREATE FUNCTION spilled(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE p text;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q INTO p;
+	RETURN p LIKE '%Distinct Sets Spilled%';
+END $$;
+SELECT spilled($$SELECT b, count(DISTINCT a) FROM w GROUP BY b$$) AS roomy;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT spilled($$SELECT b, count(DISTINCT a) FROM w GROUP BY b$$) AS tiny;
+SELECT same($$SELECT b, count(DISTINCT a) AS da, count(DISTINCT c) AS dc, count(DISTINCT id) AS di FROM w GROUP BY b$$) AS distinct_spilled;
+SELECT same($$SELECT count(DISTINCT a) AS da, count(DISTINCT id) AS di FROM w$$) AS distinct_global_spilled;
+RESET hash_mem_multiplier;
+RESET work_mem;
+
 -- ordered-set aggregates: the plan, and the rows of the normal plan with the histogram and, at the smallest work_mem, with the sort
 EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
 EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.5]) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
