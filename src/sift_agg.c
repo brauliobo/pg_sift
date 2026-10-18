@@ -52,6 +52,7 @@
 #include "utils/guc.h"
 #include "utils/numeric.h"
 #include "utils/lsyscache.h"
+#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -68,6 +69,7 @@
 #include "sift_popcount.h"
 
 bool		sift_enable_agg = true;
+static int	sift_agg_combo_cache = 1 << 20;
 
 #define VEC			SIFT_AGG_VEC
 #define VECW		SIFT_AGG_VECW
@@ -88,6 +90,10 @@ sift_agg_init(void)
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_combo_cache",
+							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
+							NULL, &sift_agg_combo_cache, 1 << 20, 16, 1 << 24,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 }
 
 /* ---------- distinct output values of a key ---------- */
@@ -454,12 +460,53 @@ typedef struct ComboEnt
 	uint32		base;			/* first output row */
 } ComboEnt;
 
+/* the ids (1..) of the distinct values of a 64-bit leaf of a combo: one table of (value, id), so a probe is one cache line */
+typedef struct Id64Ent
+{
+	int64		key;
+	uint32		id;				/* 0: free */
+} Id64Ent;
+
+typedef struct Id64
+{
+	MemoryContext cxt;
+	Id64Ent    *tab;
+	uint32		nslot;
+	uint32		n;
+	uint32		cap;
+	int64	   *val;			/* the value of an id */
+	uint32		nan_id;			/* the id of the NaN of a numeric leaf (not in tab), 0 until one is seen */
+} Id64;
+
+/* a numeric value as an integer times 10^-scale (ok: it is a finite number of at most 38 digits) */
+typedef struct DNum
+{
+	sift_i128	m;
+	int16		scale;
+	bool		ok;
+} DNum;
+
 typedef struct ComboSt
 {
 	Intern		in[SIFT_AGG_MAX_CLEAVES];
+	Id64		id64[SIFT_AGG_MAX_CLEAVES];	/* 64-bit leaves (numeric, int8, timestamps, floats): the ids of their distinct values */
+	Datum		unit[SIFT_AGG_MAX_CLEAVES];	/* numeric leaves: 10^-scale with that many digits, a stored value is the integer times it */
+	MemoryContext cxt;			/* the cache: entries, outputs, values and ids of the leaves; reset when it passes sift.agg_combo_cache */
+	bool		resettable;		/* no join, no dictionary leaf: nothing outside the cache holds its ids */
+	bool		by_id;			/* one 64-bit leaf, no join: the entry of a tuple is the id of its value, there is no table of entries */
 	MapTab	   *map;
 	ExprState **slot;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* the join keys that are expressions */
+	int16	   *tlen;			/* per slot: the length and pass-by-value of its result, for the direct slots */
+	bool	   *tbyval;
+	Datum	   *dat;			/* the values of the direct slots, a slot's output is the number + 1 of one */
+	DNum	   *dnum;			/* per value of dat, for the slots of numeric sums: the exact integer and scale it stands for */
+	uint32		ndat;
+	uint32		datcap;
+	char	   *arena;			/* the by-reference values of dat are copied here, in blocks of the cache */
+	Size		arena_left;
+	bool	   *decode;			/* per slot: the argument of a numeric sum or average, whose values dnum holds */
+	uint32		nevals;
 	uint32		nent;
 	uint32		entcap;
 	uint64	   *vid;			/* [ent * SIFT_AGG_MAX_CLEAVES]: 0 NULL, else the value's id in `in` / the integer + 1 */
@@ -529,6 +576,11 @@ typedef struct AggExec
 	AggState   *pgstate;		/* the context the transition functions see, their states live in pgstate->curaggcontext's memory */
 	ParamExecData lutparams[SIFT_AGG_MAX_PARAMS];
 	ComboSt    *cs;
+	const uint64 *alive;		/* the items of the batch a predicate is evaluated on whose expressions PostgreSQL may evaluate (NULL: all) */
+	uint32	   *calive;			/* output rows of the combo for the tuples an aggregate with a FILTER takes */
+	FmgrInfo  **xcmp;			/* SAA_X_MIN, SAA_X_MAX: the comparison of the type, and the length and pass-by-value of the aggregate's type */
+	int16	   *xlen;
+	bool	   *xbyval;
 	int			clbase[SIFT_AGG_MAX_COMBOS];	/* per combo: its first dictionary map slot (after the keys and aggregates) */
 	int			ncl;
 	int			nj;				/* join combos, in the order the stages apply them */
@@ -889,6 +941,7 @@ dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 /* ---------- unit data ---------- */
 
 static const SiftSrcVec *get_vec(AggExec *ex, int leaf);
+static const SiftSrcVec *get_vec_raw(AggExec *ex, int leaf);
 
 static void
 extend_layout(AggExec *ex)
@@ -1005,7 +1058,7 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 }
 
 static const SiftSrcVec *
-get_vec(AggExec *ex, int leaf)
+get_vec_raw(AggExec *ex, int leaf)
 {
 	if (!ex->uvec_ok[leaf])
 	{
@@ -1016,6 +1069,20 @@ get_vec(AggExec *ex, int leaf)
 		ex->uvec_ok[leaf] = true;
 	}
 	return &ex->uvec[leaf];
+}
+
+/* The kernels do not know the NaNs a numeric leaf holds; only the expressions PostgreSQL evaluates (get_vec_raw) do. */
+static const SiftSrcVec *
+get_vec(AggExec *ex, int leaf)
+{
+	const SiftSrcVec *v = get_vec_raw(ex, leaf);
+
+	if (v->ovf)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
+				 errhint("Set sift.enable_agg to off for this query.")));
+	return v;
 }
 
 static int
@@ -1054,6 +1121,7 @@ static void
 idmap_init(IdMap *m)
 {
 	m->cxt = CurrentMemoryContext;
+	m->n = 0;
 	m->cap = 64;
 	m->nslot = 128;
 	m->val = palloc(m->cap * sizeof(sift_i128));
@@ -1790,6 +1858,100 @@ bind_param(AggExec *ex, int i, Datum d, bool isnull)
 	ex->lutparams[i].isnull = isnull;
 }
 
+static void
+id64_init(Id64 *m)
+{
+	m->cxt = CurrentMemoryContext;
+	m->nslot = 4096;
+	m->n = 0;
+	m->cap = 2048;
+	m->nan_id = 0;
+	m->tab = palloc0(m->nslot * sizeof(Id64Ent));
+	m->val = palloc(m->cap * sizeof(int64));
+}
+
+static inline uint32
+id64_hash(int64 k)
+{
+	uint64		x = (uint64) k * UINT64CONST(0x9E3779B97F4A7C15);
+
+	return (uint32) ((x ^ (x >> 29)) * UINT64CONST(0xD6E8FEB86659FD93) >> 32);
+}
+
+static uint32
+id64_new(Id64 *m, int64 k)
+{
+	if (m->n == m->cap)
+	{
+		m->cap *= 2;
+		m->val = repalloc(m->val, m->cap * sizeof(int64));
+	}
+	m->val[m->n] = k;
+	return ++m->n;
+}
+
+static uint32
+id64_id(Id64 *m, int64 k)
+{
+	uint32		mask = m->nslot - 1,
+				h = id64_hash(k) & mask;
+
+	for (; m->tab[h].id; h = (h + 1) & mask)
+		if (m->tab[h].key == k)
+			return m->tab[h].id;
+	m->tab[h] = (Id64Ent) {k, id64_new(m, k)};
+	if (m->n * 2 > m->nslot)
+	{
+		Id64Ent    *old = m->tab;
+
+		m->nslot *= 4;
+		m->tab = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(Id64Ent));
+		mask = m->nslot - 1;
+		for (uint32 id = 1; id <= m->n; id++)
+		{
+			if (id == m->nan_id)
+				continue;
+			for (h = id64_hash(m->val[id - 1]) & mask; m->tab[h].id; h = (h + 1) & mask)
+				;
+			m->tab[h] = (Id64Ent) {m->val[id - 1], id};
+		}
+		pfree(old);
+		return m->n;
+	}
+	return m->tab[h].id;
+}
+
+#define WIDE_AHEAD	12
+
+static uint32
+id64_nan(Id64 *m)
+{
+	if (m->nan_id == 0)
+		m->nan_id = id64_new(m, 0);
+	return m->nan_id;
+}
+
+static bool
+leaf_wide(const SiftSrcLeaf *lf)
+{
+	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64;
+}
+
+/* a stored value of a 64-bit leaf (a float: its bits) as the Datum of the leaf's type; a numeric is the integer times 10^-scale, with that many digits */
+static Datum
+leaf64_datum(const Id64 *m, const SiftSrcLeaf *lf, uint32 id)
+{
+	int64		v = m->val[id - 1];
+
+	if (lf->vtype == SCV_F64)
+		return lf->typid == FLOAT4OID ? Float4GetDatum((float4) float_from_key(v)) : Float8GetDatum(float_from_key(v));
+	if (lf->typid != NUMERICOID)
+		return Int64GetDatum(v);
+	if (id == m->nan_id)
+		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	return NumericGetDatum(lf->scale > 0 ? int64_div_fast_to_numeric(v, lf->scale) : int64_to_numeric(v));
+}
+
 /* the leaf values of an entry (v: ids) as the Params of the combo's expressions */
 static void
 combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
@@ -1799,10 +1961,14 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
+		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
+
 		if (v[p] == 0)
 			bind_param(ex, p, (Datum) 0, true);
-		else if (ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
+		else if (lf->vtype == SCV_CODE)
 			bind_param(ex, p, text_datum(cb->ptype[p], cb->ptypmod[p], cs->in[p].ptr[v[p] - 1], cs->in[p].len[v[p] - 1]), false);
+		else if (leaf_wide(lf))
+			bind_param(ex, p, leaf64_datum(&cs->id64[p], lf, (uint32) v[p]), false);
 		else
 			bind_param(ex, p, leaf_datum(cb->ptype[p], (int32) (v[p] - 1)), false);
 	}
@@ -1902,7 +2068,7 @@ combo_grow_out(AggExec *ex, ComboSt *cs, int nslots, uint32 add)
 	{
 		cs->outcap = Max(Max(cs->outcap * 2, cs->nout + add), 64);
 		cs->val = cs->val ? repalloc(cs->val, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32)) :
-			MemoryContextAlloc(ex->cxt, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
+			MemoryContextAlloc(cs->cxt, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
 	}
 }
 
@@ -1913,7 +2079,174 @@ slot_ot(AggExec *ex, const SiftAggSlot *sl)
 	return sl->agg >= 0 ? &ex->aot[sl->agg] : &ex->ks[sl->key].ot;
 }
 
-/* evaluates the slots of a new entry for every output row */
+#define COMBO_UNEVAL	UINT32_MAX
+#define COMBO_NONE		UINT32_MAX
+
+static Datum scaled_numeric(__int128 v, int scale);
+
+static const sift_i128 *
+pow10_tab(void)
+{
+	static sift_i128 tab[39];
+
+	if (tab[1] == 0)
+	{
+		tab[0] = 1;
+		for (int i = 1; i < 39; i++)
+			tab[i] = tab[i - 1] * 10;
+	}
+	return tab;
+}
+
+/*
+ * A finite numeric as the integer times 10^-dscale. This reads the stored form of the type (a short or long header, base 10000
+ * digits, the weight of the first one), which is what pg_upgrade keeps stable; NaN, the infinities and what does not fit 38 digits
+ * are not ok and stay numerics (the sums add them with numeric_add).
+ */
+static void
+numeric_decode(Datum d, DNum *out)
+{
+	const char *data = VARDATA_ANY(DatumGetPointer(d));
+	Size		len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+	const sift_i128 *p10 = pow10_tab();
+	uint16		hdr;
+	int			hsz,
+				weight,
+				dscale;
+	bool		neg;
+	sift_i128	m = 0;
+
+	out->ok = false;
+	memcpy(&hdr, data, sizeof(hdr));
+	if ((hdr & 0xC000) == 0xC000)
+		return;
+	if (hdr & 0x8000)
+	{
+		hsz = 2;
+		dscale = (hdr & 0x1F80) >> 7;
+		weight = (hdr & 0x0040) ? (int) (~0x003F | (hdr & 0x003F)) : (int) (hdr & 0x003F);
+		neg = (hdr & 0x2000) != 0;
+	}
+	else
+	{
+		int16		w;
+
+		hsz = 4;
+		memcpy(&w, data + 2, sizeof(w));
+		dscale = hdr & 0x3FFF;
+		weight = w;
+		neg = (hdr & 0xC000) == 0x4000;
+	}
+	for (int i = 0; i < (int) ((len - hsz) / 2); i++)
+	{
+		int16		dg;
+		int			e = 4 * (weight - i) + dscale;
+		sift_i128	t;
+
+		memcpy(&dg, data + hsz + 2 * i, sizeof(dg));
+		if (dg == 0)
+			continue;
+		if (e < 0)
+		{
+			if (e < -3 || dg % (int) p10[-e] != 0)
+				return;
+			t = dg / (int) p10[-e];
+		}
+		else if (e > 38 || __builtin_mul_overflow((sift_i128) dg, p10[e], &t))
+			return;
+		if (__builtin_add_overflow(m, t, &m))
+			return;
+	}
+	out->m = neg ? -m : m;
+	out->scale = (int16) dscale;
+	out->ok = dscale <= 38;
+}
+
+/* a new value of a direct slot, kept in the cache; the number (from 1) it goes by */
+static uint32
+dat_put(AggExec *ex, ComboSt *cs, int sl, Datum d)
+{
+	Datum		v = d;
+
+	if (cs->ndat == cs->datcap)
+	{
+		MemoryContext old = MemoryContextSwitchTo(cs->cxt);
+
+		cs->datcap = Max(cs->datcap * 2, 64);
+		cs->dat = cs->dat ? repalloc(cs->dat, cs->datcap * sizeof(Datum)) : palloc(cs->datcap * sizeof(Datum));
+		if (cs->decode)
+			cs->dnum = cs->dnum ? repalloc(cs->dnum, cs->datcap * sizeof(DNum)) : palloc(cs->datcap * sizeof(DNum));
+		MemoryContextSwitchTo(old);
+	}
+	if (!cs->tbyval[sl])
+	{
+		Size		sz = cs->tlen[sl] == -1 ? VARSIZE_ANY(DatumGetPointer(d)) : cs->tlen[sl];
+
+		if (cs->arena_left < sz)
+		{
+			cs->arena_left = Max(sz, 65536);
+			cs->arena = MemoryContextAlloc(cs->cxt, cs->arena_left);
+		}
+		memcpy(cs->arena, DatumGetPointer(d), sz);
+		v = PointerGetDatum(cs->arena);
+		sz = MAXALIGN(sz);
+		cs->arena += Min(sz, cs->arena_left);
+		cs->arena_left -= Min(sz, cs->arena_left);
+	}
+	if (cs->decode && cs->decode[sl])
+		numeric_decode(v, &cs->dnum[cs->ndat]);
+	cs->dat[cs->ndat++] = v;
+	return cs->ndat;
+}
+
+/*
+ * The value of slot sl in the output row `row` of a combo without a join (its entry is the row), evaluated by PostgreSQL when the first
+ * tuple that needs it comes: an expression may raise an error (a division by zero) that the normal plan raises only for the rows that
+ * reach the expression, and a slot is read only for the tuples that do.
+ */
+static uint32
+combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	ComboSt    *cs = &ex->cs[ci];
+	MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
+	bool		isnull;
+	Datum		d;
+	uint32		r;
+
+	combo_bind_leaves(ex, ci, &cs->vid[(size_t) row * SIFT_AGG_MAX_CLEAVES]);
+	d = ExecEvalExprSwitchContext(cs->slot[sl], ex->lutcx, &isnull);
+	if (isnull)
+		r = 0;
+	else if (cb->slot[sl].direct)
+		r = dat_put(ex, cs, sl, d);
+	else if (!cb->slot[sl].is_key)
+		r = DatumGetBool(d);
+	else
+	{
+		MemoryContextSwitchTo(ex->cxt);
+		r = ot_id(slot_ot(ex, &cb->slot[sl]), d);
+	}
+	MemoryContextSwitchTo(old);
+	/* the datums of the leaves and the temporaries of the expression are dropped every few evaluations, not after each */
+	if ((++cs->nevals & 63) == 0)
+	{
+		ResetExprContext(ex->lutcx);
+		MemoryContextReset(ex->comcxt);
+	}
+	cs->val[(size_t) row * cb->nslots + sl] = r;
+	return r;
+}
+
+static inline uint32
+combo_val(AggExec *ex, int ci, uint32 row, int sl)
+{
+	uint32		r = ex->cs[ci].val[(size_t) row * ex->spec->combo[ci].nslots + sl];
+
+	return r != COMBO_UNEVAL ? r : combo_eval_slot(ex, ci, row, sl);
+}
+
+/* the output rows of a new entry: with a join its matches, every slot evaluated; without, one row whose slots wait for the tuples that need them */
 static void
 combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 {
@@ -1921,11 +2254,22 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 	const SiftAggJoin *j = cb->join >= 0 ? &ex->spec->join[cb->join] : NULL;
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
+	MemoryContext old;
 	uint32	   *rows = NULL;
 	int			nm = 0;
 	uint32		nout;
 
+	if (j == NULL)
+	{
+		combo_grow_out(ex, cs, cb->nslots, 1);
+		ent->nout = 1;
+		ent->base = cs->nout;
+		for (int sl = 0; sl < cb->nslots; sl++)
+			cs->val[(size_t) cs->nout * cb->nslots + sl] = COMBO_UNEVAL;
+		cs->nout++;
+		return;
+	}
+	old = MemoryContextSwitchTo(ex->comcxt);
 	combo_bind_leaves(ex, ci, v);
 	if (j)
 	{
@@ -1974,25 +2318,59 @@ combo_hash(const uint64 *v)
 	return (uint32) (h ^ (h >> 29));
 }
 
+/* room for one more entry */
+static void
+combo_grow_ent(ComboSt *cs)
+{
+	if (cs->nent < cs->entcap)
+		return;
+	cs->entcap = Max(cs->entcap * 2, 64);
+	cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) :
+		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+	cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
+		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
+}
+
+/* the entry of a value id of a by_id combo: the entries up to it exist (ids come in order from 1, 0 is the NULL) */
+static uint32
+combo_ent_by_id(AggExec *ex, int ci, uint32 id)
+{
+	ComboSt    *cs = &ex->cs[ci];
+
+	if (id >= (uint32) 1 << 24)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
+				 errhint("Set sift.enable_agg to off for this query.")));
+	while (cs->nent <= id)
+	{
+		uint64	   *v;
+
+		combo_grow_ent(cs);
+		v = &cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES];
+		v[0] = cs->nent;
+		v[1] = v[2] = 0;
+		combo_make(ex, ci, v, &cs->ent[cs->nent]);
+		cs->nent++;
+	}
+	return id;
+}
+
 /* the entry of a tuple of leaf values, made on its first sight */
 static uint32
 combo_ent(AggExec *ex, int ci, const uint64 *v)
 {
 	ComboSt    *cs = &ex->cs[ci];
-	uint32		h = combo_hash(v) & (cs->nht - 1),
+	uint32		h,
 				e;
 
+	if (cs->by_id)
+		return combo_ent_by_id(ex, ci, (uint32) v[0]);
+	h = combo_hash(v) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
 		if (memcmp(&cs->vid[(size_t) (e - 1) * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) == 0)
 			return e - 1;
-	if (cs->nent == cs->entcap)
-	{
-		cs->entcap = Max(cs->entcap * 2, 64);
-		cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) :
-			MemoryContextAlloc(ex->cxt, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
-		cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
-			MemoryContextAlloc(ex->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
-	}
+	combo_grow_ent(cs);
 	if (cs->nent >= (uint32) 1 << 24)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -2005,7 +2383,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	{
 		pfree(cs->ht);
 		cs->nht *= 2;
-		cs->ht = MemoryContextAllocZero(ex->cxt, cs->nht * sizeof(uint32));
+		cs->ht = MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32));
 		for (uint32 x = 0; x < cs->nent; x++)
 		{
 			h = combo_hash(&cs->vid[(size_t) x * SIFT_AGG_MAX_CLEAVES]) & (cs->nht - 1);
@@ -2017,12 +2395,61 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	return cs->nent - 1;
 }
 
-/* eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx */
+/* the cache starts again: the entries, the outputs of the slots, the values and the ids of the leaves (nothing else holds them) */
 static void
-combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid)
+combo_reset(AggExec *ex, int ci)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	MemoryContext old;
+
+	MemoryContextReset(cs->cxt);
+	cs->nent = cs->entcap = cs->nout = cs->outcap = cs->ndat = cs->datcap = 0;
+	cs->vid = NULL;
+	cs->ent = NULL;
+	cs->val = NULL;
+	cs->dat = NULL;
+	cs->dnum = NULL;
+	cs->arena = NULL;
+	cs->arena_left = 0;
+	cs->nht = 64;
+	old = MemoryContextSwitchTo(cs->cxt);
+	cs->ht = palloc0(cs->nht * sizeof(uint32));
+	for (int p = 0; p < cb->nleaves; p++)
+		if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
+			id64_init(&cs->id64[p]);
+	MemoryContextSwitchTo(old);
+}
+
+/* the id (1..) of the value of a 64-bit leaf at index i of the vector, 0 for NULL; a NaN of a numeric leaf is a value */
+static uint64
+wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 i)
+{
+	int64		bits;
+
+	if (v->ovf && sift_colsrc_bit(v->ovf, i))
+		return id64_nan(&cs->id64[p]);
+	if (v->isnull && v->isnull[i])
+		return 0;
+	if (lf->vtype == SCV_F64)
+		memcpy(&bits, &((const double *) v->data)[i], sizeof(bits));
+	else
+		bits = ((const int64 *) v->data)[i];
+	return id64_id(&cs->id64[p], bits);
+}
+
+/*
+ * eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx. A tuple that is not
+ * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
+ */
+static void
+combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive)
 {
 	SiftAggCombo *cb = &ex->spec->combo[ci];
+	ComboSt    *cs = &ex->cs[ci];
 
+	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
+		combo_reset(ex, ci);
 	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
 	{
 		uint64	   *vid = ex->cvid[p];
@@ -2034,15 +2461,23 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		}
 		else
 		{
-			const SiftSrcVec *v = get_vec(ex, cb->leaf[p]);
+			const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
+			const SiftSrcVec *v = get_vec_raw(ex, cb->leaf[p]);
 			const uint32 *idx = leaf_lvl(ex, cb->leaf[p]) == qlevel ? tidx : ridx;
 			const uint32 *map = NULL;
 
-			if (ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
+			if (lf->vtype == SCV_CODE)
 				map = dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, p);
 			for (int i = 0; i < n; i++)
 			{
-				if (v->isnull && v->isnull[idx[i]])
+				/* the table of a column with many values does not fit the cache: ask for the line a few values ahead */
+				if (i + WIDE_AHEAD < n && leaf_wide(lf) && cs->id64[p].nslot > 4096)
+					__builtin_prefetch(&cs->id64[p].tab[id64_hash(((const int64 *) v->data)[idx[i + WIDE_AHEAD]]) & (cs->id64[p].nslot - 1)]);
+				if (alive && !sift_colsrc_bit(alive, i))
+					vid[i] = 0;
+				else if (leaf_wide(lf))
+					vid[i] = wide_vid(cs, p, lf, v, idx[i]);
+				else if (v->isnull && v->isnull[idx[i]])
 					vid[i] = 0;
 				else if (map)
 					vid[i] = map[((const uint32 *) v->data)[idx[i]]];
@@ -2055,45 +2490,53 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 	{
 		uint64		v[SIFT_AGG_MAX_CLEAVES] = {ex->cvid[0][i], ex->cvid[1][i], ex->cvid[2][i]};
 
-		eid[i] = combo_ent(ex, ci, v);
+		eid[i] = alive && !sift_colsrc_bit(alive, i) ? COMBO_NONE : combo_ent(ex, ci, v);
 	}
+}
+
+/* the output rows of the combo for the current tuples that are alive in `alive` (bit j of tuple j; NULL: all), COMBO_NONE for the others; into o */
+static void
+combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o)
+{
+	ComboSt    *cs = &ex->cs[ci];
+
+	combo_resolve(ex, ci, ex->qlevel, ex->cur->n, ex->tidx, ex->ridx, o, alive);
+	for (int i = 0; i < ex->cur->n; i++)
+		if (o[i] != COMBO_NONE)
+			o[i] = cs->ent[o[i]].base;
 }
 
 /* the output row of the combo for each of the current tuples */
 static const uint32 *
 combo_outs(AggExec *ex, int ci)
 {
-	ComboSt    *cs = &ex->cs[ci];
 	uint32	   *o = ex->cfree[ci];
 
 	if (ex->spec->combo[ci].join >= 0)
 		return ex->cur->cout[ci];
 	if (!ex->cfree_ok[ci])
 	{
-		combo_resolve(ex, ci, ex->qlevel, ex->cur->n, ex->tidx, ex->ridx, o);
-		for (int i = 0; i < ex->cur->n; i++)
-			o[i] = cs->ent[o[i]].base;
+		combo_rows(ex, ci, NULL, o);
 		ex->cfree_ok[ci] = true;
 	}
 	return o;
 }
 
-/* boolean slot p->op of a combo without a join, over [start, start + n) of the elements (qlevel 1) or rows */
+/* boolean slot p->op of a combo without a join, over [start, start + n) of the elements (qlevel 1) or rows; only the items alive in ex->alive are evaluated */
 static void
 eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out)
 {
 	ComboSt    *cs = &ex->cs[p->leaf];
-	int			ns = ex->spec->combo[p->leaf].nslots;
 
 	for (int i = 0; i < n; i++)
 	{
 		ex->pti[i] = start + i;
 		ex->pri[i] = qlevel ? ex->parent[start + i] : start + i;
 	}
-	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid);
+	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive);
 	clear_words(out, n);
 	for (int i = 0; i < n; i++)
-		if (cs->val[(size_t) cs->ent[ex->peid[i]].base * ns + p->op])
+		if (ex->peid[i] != COMBO_NONE && combo_val(ex, p->leaf, cs->ent[ex->peid[i]].base, p->op))
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
@@ -2237,7 +2680,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 	PredState  *st = &ex->ps[p->id];
 	int			nw = (n + 63) / 64;
 
-	if (p->level < qlevel && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
+	if (p->level < qlevel && !p->late && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
 	{
 		/* a row level predicate seen from the elements */
 		sift_aggk->gather_bits(out, row_bitmap(ex, p), ex->parent + start, n);
@@ -2262,12 +2705,28 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_AND:
 		case SAP_OR:
 			{
-				uint64		tmp[VECW + PADW];
+				uint64		tmp[VECW + PADW],
+							live[VECW + PADW];
+				const uint64 *alive0 = ex->alive;
 
 				eval_pred(ex, p->child[0], qlevel, start, n, out);
 				for (int i = 1; i < p->nchild; i++)
 				{
+					/* AND takes the next argument only for the items still true, OR for the items still false (an argument may raise an error) */
+					if (p->late)
+					{
+						if (alive0)
+							memcpy(live, alive0, nw * sizeof(uint64));
+						else
+							fill_ones(live, n);
+						if (p->kind == SAP_AND)
+							sift_colk->bits_and(live, out, nw);
+						else
+							sift_colk->bits_andnot(live, out, nw);
+						ex->alive = live;
+					}
 					eval_pred(ex, p->child[i], qlevel, start, n, tmp);
+					ex->alive = alive0;
 					if (p->kind == SAP_AND)
 						sift_colk->bits_and(out, tmp, nw);
 					else
@@ -2419,6 +2878,14 @@ acc_alloc(AggExec *ex, uint32 cap)
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
 				break;
+			case SAA_X_SUM:
+			case SAA_X_AVG:
+				if (ex->spec->agg[i].restype == NUMERICOID)
+				{
+					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
+					a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+				}
+				/* fall through */
 			case SAA_M_SUM:
 			case SAA_M_AVG:
 				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
@@ -2426,6 +2893,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 				/* fall through */
 			case SAA_M_MIN:
 			case SAA_M_MAX:
+			case SAA_X_MIN:
+			case SAA_X_MAX:
 				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
 				break;
 			case SAA_O_COUNT_ROWS:
@@ -2500,6 +2969,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 				n->last[t] = o->last[g];
 			if (o->nf)
 				n->nf[t] = o->nf[g];
+			if (o->v)
+				n->v[t] = o->v[g];
 		}
 	}
 	if (remap)
@@ -2780,11 +3251,9 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	if (sk->kind == SAK_COMBO)
 	{
 		const uint32 *out = combo_outs(ex, sk->leaf);
-		const uint32 *val = ex->cs[sk->leaf].val;
-		int			ns = ex->spec->combo[sk->leaf].nslots;
 
 		for (int i = 0; i < nsel; i++)
-			vals_out[i] = val[(size_t) out[i] * ns + sk->slot];
+			vals_out[i] = combo_val(ex, sk->leaf, out[i], sk->slot);
 		return;
 	}
 	if (sk->kind == SAK_NUM)
@@ -3049,9 +3518,19 @@ agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all)
 	memset(ex->okb, 1, nsel);
 	if (a->filter)
 	{
-		uint64		fm[VECW + PADW];
+		uint64		fm[VECW + PADW],
+					al[VECW + PADW];
 
+		/* the FILTER is evaluated for the tuples of the chunk only: it may raise an error for a row the query does not reach */
+		if (a->filter->late)
+		{
+			clear_words(al, n);
+			for (int j = 0; j < nsel; j++)
+				al[ex->sel[j] >> 6] |= UINT64CONST(1) << (ex->sel[j] & 63);
+			ex->alive = al;
+		}
 		eval_pred(ex, a->filter, ex->qlevel, start, n, fm);
+		ex->alive = NULL;
 		for (int j = 0; j < nsel; j++)
 			ex->okb[j] = sift_colsrc_bit(fm, ex->sel[j]);
 		any = true;
@@ -3573,13 +4052,11 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 {
 	SiftAggAgg *a = &ex->spec->agg[ai];
 	AggAcc	   *acc = &ex->acc[ai];
-	const uint32 *out = combo_outs(ex, a->combo),
-			   *val = ex->cs[a->combo].val;
-	int			ns = ex->spec->combo[a->combo].nslots;
+	const uint32 *out = combo_outs(ex, a->combo);
 
 	for (int j = 0; j < nsel; j++)
 	{
-		uint32		id = val[(size_t) out[j] * ns + a->slot];
+		uint32		id = combo_val(ex, a->combo, out[j], a->slot);
 
 		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
 			continue;
@@ -3792,15 +4269,15 @@ mapped_finish(AggExec *ex)
 		const SiftAggAgg *a = &ex->spec->agg[ai];
 		const DSet *d = &ex->dset[ai];
 
-		if ((a->kind < SAA_M_MIN || a->kind > SAA_M_AVG) && a->kind != SAA_M_PG)
-			continue;
-		for (uint64 i = 0; i < d->cap; i++)
-			if (d->slot[i])
-				mapped_add(ex, ai, (d->slot[i] >> 32) & 0x7fffffff, (uint32) d->slot[i], d->counted ? d->cnt[i] : 1);
+		if ((a->kind >= SAA_M_MIN && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
+			for (uint64 i = 0; i < d->cap; i++)
+				if (d->slot[i])
+					mapped_add(ex, ai, (d->slot[i] >> 32) & 0x7fffffff, (uint32) d->slot[i], d->counted ? d->cnt[i] : 1);
 		for (uint32 g = 0; a->kind == SAA_M_PG && g < (ex->hash ? ex->ngroups : ex->gcap); g++)
 			if (ex->acc[ai].n[g] > 0)
 				pgagg_final(ex, ai, g);
-		if (a->kind == SAA_M_AVG && a->restype == FLOAT8OID && 8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
+		if ((a->kind == SAA_M_AVG || a->kind == SAA_X_AVG) && a->restype == FLOAT8OID &&
+			8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
 			float_overflow_error();
 	}
 	MemoryContextSwitchTo(old);
@@ -3810,16 +4287,147 @@ static Datum
 mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull)
 {
 	AggAcc	   *acc = &ex->acc[ai];
+	bool		sum = a->kind == SAA_M_SUM || a->kind == SAA_X_SUM;
 
 	*isnull = acc->n[g] == 0;
 	if (*isnull)
 		return (Datum) 0;
 	if (a->restype == NUMERICOID)
-		return a->kind == SAA_M_SUM ? acc->v[g] :
-			DirectFunctionCall2(numeric_div, acc->v[g], DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
+	{
+		Datum		tot = acc->nf[g] || a->kind == SAA_M_SUM || a->kind == SAA_M_AVG ? acc->v[g] : scaled_numeric(acc->w[g], (int) acc->i[g]);
+
+		return sum ? tot : DirectFunctionCall2(numeric_div, tot, DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
+	}
 	if (isinf(acc->d[g]) && !acc->nf[g])
 		float_overflow_error();
-	return Float8GetDatum(a->kind == SAA_M_SUM ? acc->d[g] : acc->d[g] / (double) acc->n[g]);
+	return Float8GetDatum(sum ? acc->d[g] : acc->d[g] / (double) acc->n[g]);
+}
+
+/*
+ * x (m: its integer and scale) added to the sum of group g. The sum is an integer at the largest scale seen (the dscale PostgreSQL
+ * gives a sum of numerics) until a value or a sum does not fit 38 digits, or is NaN or infinite: from then on it is a numeric
+ * (acc->nf) and numeric_add does the rest.
+ */
+static void
+numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
+{
+	const sift_i128 *p10 = pow10_tab();
+	sift_i128	w = acc->w[g],
+				v = m->m;
+	int			sc = (int) acc->i[g];
+
+	if (!acc->nf[g] && m->ok)
+	{
+		bool		bad = false;
+
+		if (acc->n[g] == 0)
+		{
+			w = 0;
+			sc = m->scale;
+		}
+		else if (m->scale > sc)
+		{
+			bad = __builtin_mul_overflow(w, p10[m->scale - sc], &w);
+			sc = m->scale;
+		}
+		else if (m->scale < sc)
+			bad = __builtin_mul_overflow(v, p10[sc - m->scale], &v);
+		if (!bad && !__builtin_add_overflow(w, v, &w))
+		{
+			acc->w[g] = w;
+			acc->i[g] = sc;
+			return;
+		}
+	}
+	if (!acc->nf[g])
+	{
+		/* leaves the integer form */
+		acc->nf[g] = 1;
+		if (acc->n[g] > 0)
+			acc->v[g] = scaled_numeric(acc->w[g], (int) acc->i[g]);
+	}
+	if (acc->n[g] == 0)
+		acc->v[g] = datumCopy(x, false, -1);
+	else
+	{
+		Datum		sum = DirectFunctionCall2(numeric_add, acc->v[g], x);
+
+		pfree(DatumGetPointer(acc->v[g]));
+		acc->v[g] = sum;
+	}
+}
+
+/* the value x of aggregate ai (an SAA_X_*) for a tuple of group g, added with the aggregate's own arithmetic in tuple order, as the normal plan's transition functions are */
+static void
+direct_add(AggExec *ex, int ai, uint32 g, uint32 id)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const ComboSt *cs = &ex->cs[a->combo];
+	Datum		x = cs->dat[id - 1];
+	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+
+	switch (a->kind)
+	{
+		case SAA_X_MIN:
+		case SAA_X_MAX:
+			{
+				/* numeric_smaller and its kin keep the new value when it ties */
+				int32		c = acc->n[g] ? DatumGetInt32(FunctionCall2Coll(ex->xcmp[ai], a->collid, x, acc->v[g])) : 0;
+
+				if (acc->n[g] == 0 || (a->kind == SAA_X_MIN ? c <= 0 : c >= 0))
+				{
+					if (acc->n[g] && !ex->xbyval[ai])
+						pfree(DatumGetPointer(acc->v[g]));
+					acc->v[g] = datumCopy(x, ex->xbyval[ai], ex->xlen[ai]);
+				}
+			}
+			break;
+		default:
+			if (a->restype == NUMERICOID)
+				numeric_sum_add(acc, g, x, &cs->dnum[id - 1]);
+			else
+			{
+				double		d = DatumGetFloat8(x);
+
+				acc->d[g] = acc->n[g] ? acc->d[g] + d : d;
+				if (!isfinite(d))
+					acc->nf[g] = 1;
+				else
+					ex->amax[ai] = Max(ex->amax[ai], fabs(d));
+			}
+	}
+	acc->n[g]++;
+	MemoryContextSwitchTo(old);
+}
+
+/* count, min, max, sum and avg of an expression PostgreSQL evaluates (a direct slot of a combo): its value for each tuple the aggregate takes */
+static void
+direct_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const uint32 *out;
+
+	/* a FILTER keeps the expression off the tuples it takes out */
+	if (ok)
+	{
+		combo_rows(ex, a->combo, ok, ex->calive);
+		out = ex->calive;
+	}
+	else
+		out = combo_outs(ex, a->combo);
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		id;
+
+		if (out[j] == COMBO_NONE || (id = combo_val(ex, a->combo, out[j], a->slot)) == 0)
+			continue;
+		if (a->kind == SAA_X_COUNT)
+			acc->n[ex->gid[j]]++;
+		else
+			direct_add(ex, ai, ex->gid[j], id);
+	}
 }
 
 /* GROUPING(args) in a group of grouping set s: bit i (the first argument is the highest) is 1 when argument i is not grouped by the set */
@@ -4957,6 +5565,13 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_GEN:
 			gen_update(ex, ai, ok, nsel);
 			break;
+		case SAA_X_COUNT:
+		case SAA_X_MIN:
+		case SAA_X_MAX:
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			direct_update(ex, ai, ok, nsel);
+			break;
 		default:
 			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
 	}
@@ -5045,7 +5660,7 @@ join_stage(AggExec *ex, int s, Tup *in)
 	cs = &ex->cs[ci];
 	own = &ex->stage[s];
 	eid = ex->peid;
-	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid);
+	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL);
 	for (int i = 0; i < n; i++)
 		plain &= cs->ent[eid[i]].nout == 1;
 	if (plain)
@@ -5523,11 +6138,9 @@ arm_chunk(AggExec *ex, Tup *t)
 		{
 			const SiftAggPred *p = sa->filter[f];
 			const uint32 *out = combo_outs(ex, p->leaf);
-			const uint32 *val = ex->cs[p->leaf].val;
-			int			ns = s->combo[p->leaf].nslots;
 
 			for (int j = 0; j < n; j++)
-				a->ok[j] &= val[(size_t) out[j] * ns + p->op] != 0;
+				a->ok[j] &= combo_val(ex, p->leaf, out[j], p->op) != 0;
 		}
 		for (int ai = 0; ai < sa->ninner; ai++)
 			arm_inner_prepare(ex, a, &sa->inner[ai], ai, n);
@@ -5579,6 +6192,33 @@ build_parents(AggExec *ex)
 	sift_colk->expand_parents(ex->offs + 1, u->nrow, ex->parent);
 }
 
+/*
+ * The conjuncts that evaluate an expression PostgreSQL may fail on (SiftAggPred.late) are applied to the items that passed every other
+ * conjunct and the snapshot check, in the order of the query, each to the survivors of the ones before it: the normal plan never
+ * evaluates an expression for a row that an earlier condition (a guard against a zero divisor) or its snapshot leaves out.
+ */
+static void
+apply_late(AggExec *ex, uint64 *mask, int total)
+{
+	for (int i = 0; i < ex->spec->npred; i++)
+	{
+		SiftAggPred *p = ex->spec->pred[i];
+
+		if (!p->late)
+			continue;
+		for (int st = 0; st < total; st += VEC)
+		{
+			int			n = Min(VEC, total - st);
+			uint64		t[VECW + PADW];
+
+			ex->alive = mask + st / 64;
+			eval_pred(ex, p, ex->qlevel, st, n, t);
+			ex->alive = NULL;
+			sift_colk->bits_and(mask + st / 64, t, (n + 63) / 64);
+		}
+	}
+}
+
 static void
 process_unit(AggExec *ex)
 {
@@ -5605,13 +6245,14 @@ process_unit(AggExec *ex)
 	{
 		SiftSrcStrTest *str = ex->ps[s->pred[i]->id].str;
 
-		if (s->pred[i]->level == 0 && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
+		if (s->pred[i]->level == 0 && !s->pred[i]->late && !(str && sift_colsrc_filter_str(ex->src, u, str, rmask)))
 			sift_colk->bits_and(rmask, row_bitmap(ex, s->pred[i]), nrw);
 	}
 	ex->qlevel = elem;
 	if (!elem)
 	{
 		sift_colsrc_vet(ex->src, u, rmask);
+		apply_late(ex, rmask, nrow);
 		for (int st = 0; st < nrow; st += VEC)
 			agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
 	}
@@ -5631,7 +6272,7 @@ process_unit(AggExec *ex)
 
 			sift_aggk->gather_bits(cm, rmask, ex->parent + st, n);
 			for (int i = 0; i < s->npred; i++)
-				if (s->pred[i]->level == 1)
+				if (s->pred[i]->level == 1 && !s->pred[i]->late)
 				{
 					uint64		t[VECW + PADW];
 
@@ -5661,6 +6302,7 @@ process_unit(AggExec *ex)
 				sift_colk->bits_and(em + st / 64, cm, nw);
 			}
 		}
+		apply_late(ex, em, m);
 		for (int st = 0; st < m; st += VEC)
 			agg_chunk(ex, st, Min(VEC, m - st), em + st / 64);
 	}
@@ -5798,11 +6440,34 @@ register_combos(AggExec *ex)
 		SiftAggCombo *cb = &s->combo[ci];
 		ComboSt    *cs = &ex->cs[ci];
 
-		cs->nht = 64;
-		cs->ht = palloc0(cs->nht * sizeof(uint32));
+		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
+		cs->resettable = cb->join < 0;
+		cs->by_id = cb->join < 0 && cb->nleaves == 1 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
+		cs->tlen = palloc0(Max(cb->nslots, 1) * sizeof(int16));
+		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));
 		for (int sl = 0; sl < cb->nslots; sl++)
+		{
 			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, EXPR_PARENT(ex));
+			get_typlenbyval(exprType(cb->slot[sl].expr), &cs->tlen[sl], &cs->tbyval[sl]);
+		}
+		for (int p = 0; p < cb->nleaves; p++)
+		{
+			const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
+
+			cs->resettable &= lf->vtype != SCV_CODE;
+			if (lf->typid == NUMERICOID && lf->vtype == SCV_I64 && lf->scale > 0)
+				cs->unit[p] = DirectFunctionCall3(numeric_in, CStringGetDatum(psprintf("0.%0*d", lf->scale, 1)), ObjectIdGetDatum(InvalidOid),
+												  Int32GetDatum(-1));
+		}
+		for (int ai = 0; ai < s->naggs; ai++)
+			if ((s->agg[ai].kind == SAA_X_SUM || s->agg[ai].kind == SAA_X_AVG) && s->agg[ai].restype == NUMERICOID && s->agg[ai].combo == ci)
+			{
+				if (!cs->decode)
+					cs->decode = palloc0(Max(cb->nslots, 1) * sizeof(bool));
+				cs->decode[s->agg[ai].slot] = true;
+			}
+		combo_reset(ex, ci);
 		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
 			if (s->join[cb->join].keyexpr[k])
 				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
@@ -5864,11 +6529,19 @@ table_init(AggExec *ex)
 	ex->amap = palloc0(Max(s->naggs, 1) * sizeof(IdMap));
 	ex->osa = palloc0(Max(s->naggs, 1) * sizeof(Osa *));
 	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(double *));
+	ex->xcmp = palloc0(Max(s->naggs, 1) * sizeof(FmgrInfo *));
+	ex->xlen = palloc0(Max(s->naggs, 1) * sizeof(int16));
+	ex->xbyval = palloc0(Max(s->naggs, 1) * sizeof(bool));
 	for (int i = 0; i < s->naggs; i++)
 	{
 		SiftAggAgg *a = &s->agg[i];
 		TypeCacheEntry *tc;
 
+		if (a->kind == SAA_X_MIN || a->kind == SAA_X_MAX)
+		{
+			ex->xcmp[i] = &lookup_type_cache(a->argtype, TYPECACHE_CMP_PROC_FINFO)->cmp_proc_finfo;
+			get_typlenbyval(a->argtype, &ex->xlen[i], &ex->xbyval[i]);
+		}
 		if (is_ordered_agg(a))
 			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
 		if (a->num.n && (a->kind == SAA_COUNT_DISTINCT || a->distinct))
@@ -5942,6 +6615,7 @@ scan_buffers(AggExec *ex)
 		if (s->combo[ci].join >= 0)
 			ex->cs[ci].map = map_load(ex, &s->join[s->combo[ci].join]);
 	}
+	ex->calive = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->peid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->pti = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->pri = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -7077,15 +7751,20 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_O_COUNT_ROWS:
 		case SAA_M_COUNT:
 		case SAA_M_DISTINCT:
+		case SAA_X_COUNT:
 			return Int64GetDatum(acc->n[g]);
 		case SAA_GROUPING:
 			return Int32GetDatum(grouping_bits(ex, a, g));
 		case SAA_M_MIN:
 		case SAA_M_MAX:
+		case SAA_X_MIN:
+		case SAA_X_MAX:
 			*isnull = acc->n[g] == 0;
 			return acc->v[g];
 		case SAA_M_SUM:
 		case SAA_M_AVG:
+		case SAA_X_SUM:
+		case SAA_X_AVG:
 			return mapped_sum_datum(ex, a, ai, g, isnull);
 		case SAA_GEN:
 			*isnull = (acc->nf[g] & GEN_RNULL) != 0;

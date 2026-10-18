@@ -96,6 +96,7 @@ typedef struct SiftAggPred
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
+	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */
 	int			nchild;
 	struct SiftAggPred **child;
 	char	   *desc;			/* EXPLAIN */
@@ -158,7 +159,13 @@ typedef enum SiftAggKind
 	/* PostgreSQL's own aggregate (aggfn: sum, avg of int2, int4, int8, interval, avg of float4) of a column of a joined table: its transition function runs on the distinct values, each as many times as it occurred, then its final function */
 	SAA_M_PG,
 	/* kinds are added at the end */
-	SAA_GEN						/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
+	SAA_GEN,					/* any other aggregate: PostgreSQL's own transition and final functions on the decoded values (SiftAggGen) */
+	/* aggregates of an expression that PostgreSQL evaluates (a combo slot with `direct`): the value of each tuple, added one at a time with the aggregate's own arithmetic */
+	SAA_X_COUNT,				/* count(x) */
+	SAA_X_MIN,					/* min(x), max(x): the type's btree comparison, a tie takes the later value as PostgreSQL's larger / smaller do */
+	SAA_X_MAX,
+	SAA_X_SUM,					/* sum(x), avg(x) of numeric (numeric_add) and float8 (float8pl) */
+	SAA_X_AVG
 } SiftAggKind;
 
 /* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
@@ -319,6 +326,7 @@ typedef struct SiftAggSlot
 	int			key;
 	int			agg;
 	Node	   *expr;			/* over Params 0..nleaves-1 (the leaves), then the join columns */
+	bool		direct;			/* a combo without a join: the value itself (a number into the combo's values, 0 NULL), for the aggregates SAA_X_* */
 } SiftAggSlot;
 
 /*
