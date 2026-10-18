@@ -23,10 +23,29 @@ from stats import number, summary  # noqa: E402  (steps/stats.py)
 SQL = os.path.join(HERE, '..', 'sql', 'store')
 NAME = os.environ.get('STORE_NAME', 'sift-store')
 PORT = int(os.environ.get('STORE_PORT', 56280))
-START_LOAD = open('/proc/loadavg').read().split()[:3]     # the load average when this command started
+START_LOAD = open('/proc/loadavg').read().split()[:3]     # the load average when this command started: only recorded, for the older tables
+QUIET = os.path.join(HERE, '..', '..', 'scripts', 'quiet.sh')
 NULL = '\\N'
 TOL = 1e-9                      # relative tolerance of numbers (sums of money are exact in all engines; averages differ in the last digits)
 CH_AUTH = {'X-ClickHouse-User': 'bench', 'X-ClickHouse-Key': 'bench'}
+
+
+def quiet(*args):
+    """scripts/quiet.sh COMMAND: its stdout, stripped; the exit status is the helper's (0 quiet, 1 timeout, 3 no PSI)"""
+    p = subprocess.run(['bash', QUIET, *args], capture_output=True, text=True)
+    return p.returncode, p.stdout.strip() or p.stderr.strip()
+
+
+def quiet_batch(what):
+    """before a timed batch: wait for a quiet host; a batch that runs anyway is logged as NOISY and kept in the meta of the results"""
+    rc, msg = quiet('wait')
+    if rc:
+        NOISY.append(what)
+        log(f'{what}: NOISY, {msg} ({quiet("report")[1]})')
+
+
+START_PRESSURE = quiet('report')[1]                       # the pressure when this command started
+NOISY = []                                                # the batches that ran after SIFT_QUIET_TIMEOUT without a quiet host
 
 COMPRESSION = {'sift_none': 'none', 'sift_enc': 'for+delta+rle+dict+scale+alp', 'sift_auto': 'auto', 'sift_lz4': 'lz4', 'sift_zstd': 'zstd:3'}   # the `compression` option of the sift_col index, one database each
 
@@ -560,7 +579,7 @@ def cmd_load(args):
 def write(args, rows, part, extra=None):
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, f'store-{args.tier}-{part}.json')
-    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), tier=args.tier, rows=args.rows, loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], **(extra or {}))
+    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), tier=args.tier, rows=args.rows, loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
     with open(path, 'w') as f:
         f.write('{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     log(f'written: {path}')
@@ -608,6 +627,7 @@ def tolerance(eid, st):
 
 
 def measure_query(q, clients, args, rows, cold_times=None):
+    quiet_batch(q.id)
     stmts = {e: q.statement(e, args.rows, e == 'es_cached') for e in clients}
     out, bad = {}, {}
     for e, c in clients.items():   # the first run of each engine: its result is checked, the plan is read
@@ -674,6 +694,7 @@ def cmd_cold(args):
     stmts = {(q.id, e): q.statement(e, args.rows) for q in queries for e in args.engines if e != 'es_cached'}
     for e in [e for e in args.engines if e != 'es_cached']:
         for q in queries:
+            quiet_batch(f'cold {e} {q.id}')
             ts = []
             for _ in range(args.cold_runs):
                 restart(e)
@@ -969,6 +990,7 @@ def cmd_updates(args):
     try:
         for eid in [e for e in UPDATE_ENGINES if e in args.engines]:
             log(f'updates on {eid}')
+            quiet_batch(f'updates {eid}')
             try:
                 update_engine(eid, args, rows, ref)
             except Exception as x:   # recorded, and the other engines still run
@@ -995,8 +1017,8 @@ def cmd_merge(args):
     for path in args.files:
         d = json.load(open(path))
         tier = d['meta']['tier']
-        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'loadavg', 'loadavg_end')})
-        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'))
+        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'loadavg', 'loadavg_end', 'pressure', 'noisy')})
+        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'), pressure=d['meta'].get('pressure'), noisy=d['meta'].get('noisy', []))
         metas[tier].pop('loadavg_end', None)
         rows += d['rows']
     with open(args.o, 'w') as f:
@@ -1172,6 +1194,12 @@ def readme_block(R):
     return out
 
 
+def host_noise(part):
+    """how busy the host was at the start of a part: its pressure (scripts/quiet.sh), the load average for results made before; the NOISY batches"""
+    out = part['pressure'] if part.get('pressure') else 'load average ' + ' '.join(part['loadavg'])
+    return out + (f' (NOISY: {", ".join(part["noisy"])})' if part.get('noisy') else '')
+
+
 def benchmarks_block(R):
     labels = {e: LANES[e][0] for e in LANES}
     host = R.meta.get('host', {})
@@ -1183,7 +1211,7 @@ def benchmarks_block(R):
         engines = R.engines(tier, allq)
         shown = [e for e in engines if e != 'es_cached']
         out += [f'### {t["rows"]:,} orders', '']
-        out += [f'Seeded data (sha256 `{t["data_sha256"][:16]}`), measured {t["parts"]["warm"]["date"]}, load average at the start of the runs {" ".join(t["parts"]["warm"]["loadavg"])} (the host is shared). '
+        out += [f'Seeded data (sha256 `{t["data_sha256"][:16]}`), measured {t["parts"]["warm"]["date"]}, {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared). '
                 f'Median of {t["runs"]} warm runs, minimum and maximum in parentheses, milliseconds; the fastest of a row and anything within 5% of it in bold.', '']
         head, body = bench_table(R, tier, shown, labels, detail=True)
         out += md_table(head, body) + ['']
@@ -1388,7 +1416,7 @@ def updates_benchmarks(R):
     engines = upd_engines(R, tier)
     t = R.meta['tiers'][tier]
     part = t['parts']['updates']
-    out = [f'Measured on the {t["rows"]:,}-order table of the section above, {part["date"]}, load average at the start {" ".join(part["loadavg"])}, after the read tests (the data is changed from here on). '
+    out = [f'Measured on the {t["rows"]:,}-order table of the section above, {part["date"]}, {host_noise(part)} at the start, after the read tests (the data is changed from here on). '
            f'Same containers, same limits. Each system changes rows through the path its documentation recommends for the job:', '']
     out += md_table(['system', 'how the rows are changed'], [[UPD_LABELS[e], UPD_PATH[e]] for e in engines], ['---', '---']) + ['']
     out += ['Steps, in order: update 1% of the rows (`id % 100 = 0`: status becomes `refunded`, amount drops by 1), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`), '

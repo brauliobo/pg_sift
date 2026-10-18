@@ -13,7 +13,8 @@
 #   segs      segments of the index                     index MB  size of the index
 # Corpora (scripts/build-bench.sql): articles (--rows documents of 300 words), hot (10 x --rows documents of 8 words, one term in
 # 9 of 10), unique (10 x --rows documents of 5 words, 2 of them unique to the document: a dictionary of 2 terms a document).
-# The same documents for the same --rows, whatever the build. A failed build shows its error.
+# The same documents for the same --rows, whatever the build. A failed build shows its error. Every build waits for a quiet host
+# first (scripts/quiet.sh); a row with builds that ran anyway after SIFT_QUIET_TIMEOUT ends in NOISY.
 # Ports SIFT_PORT (default 56150) and up. The clusters and their directories are removed at the end.
 set -euo pipefail
 export LC_ALL=C
@@ -28,12 +29,13 @@ while (( $# )); do
 		--corpus) CORPORA=$2; shift ;;
 		--runs) RUNS=$2; shift ;;
 		--build) BUILDS+=("$2"); shift ;;
-		*) sed -n '2,15p' "$0"; exit 1 ;;
+		*) sed -n '2,17p' "$0"; exit 1 ;;
 	esac
 	shift
 done
 (( ${#BUILDS[@]} )) || BUILDS=("new=$REPO")
 . "$REPO/scripts/multibuild.sh"
+. "$REPO/scripts/quiet.sh"
 MB_TESTING=
 mb_begin sift-build-bench
 
@@ -96,14 +98,17 @@ for l in "${LABELS[@]}"; do
 	pg "$l" psql -q -v rows="$ROWS" -f "$REPO/scripts/build-bench.sql" >/dev/null
 done
 declare -A TABLE=([articles]=art [hot]=hotc [unique]=uniq)
-echo "load average $(cut -d' ' -f1-3 /proc/loadavg), $ROWS rows, $RUNS builds per row"
+echo "$(quiet_report 2>&1), $ROWS rows, $RUNS builds per row"
 for corpus in $CORPORA; do
 printf '%s\n%-6s %-7s %3s  %-14s %7s %7s %5s %5s %8s\n' "corpus $corpus" build mem wrk seconds 'peak MB' 'temp MB' runs segs 'index MB'
 for mem in $MEM; do
 	for w in $WORKERS; do
-		declare -A res=()
+		declare -A res=() nz=()
 		for r in $(seq "$RUNS"); do
-			for b in "${BUILDS[@]}"; do res[${b%%=*}]+="$(cell "${b%%=*}" "$mem" "$w" "${TABLE[$corpus]}")"$'\n'; done
+			for b in "${BUILDS[@]}"; do
+				quiet_batch; [[ -z $QUIET_MARK ]] || nz[${b%%=*}]=$(( ${nz[${b%%=*}]:-0} + 1 ))
+				res[${b%%=*}]+="$(cell "${b%%=*}" "$mem" "$w" "${TABLE[$corpus]}")"$'\n'
+			done
 		done
 		for b in "${BUILDS[@]}"; do
 			l=${b%%=*}
@@ -111,10 +116,12 @@ for mem in $MEM; do
 				printf '%-6s %-7s %3s  %s\n' "$l" "$mem" "$w" "$(grep -m1 FAIL <<<"${res[$l]}")"
 				continue
 			fi
-			awk -v l="$l" -v m="$mem" -v w="$w" 'NF {n++; s += $1; q += $1 * $1; for (i = 2; i <= 6; i++) last[i] = $i; if ($2 > pk) pk = $2}
+			line=$(awk -v l="$l" -v m="$mem" -v w="$w" 'NF {n++; s += $1; q += $1 * $1; for (i = 2; i <= 6; i++) last[i] = $i; if ($2 > pk) pk = $2}
 				END {mean = s / n; se = n > 1 ? sqrt((q / n - mean * mean) * n / (n - 1) / n) : 0
-				printf "%-6s %-7s %3s  %6.2f +- %-5.2f %7d %7d %5d %5d %8d\n", l, m, w, mean, se, pk, last[3], last[4], last[5], last[6]}' <<<"${res[$l]}"
+				printf "%-6s %-7s %3s  %6.2f +- %-5.2f %7d %7d %5d %5d %8d\n", l, m, w, mean, se, pk, last[3], last[4], last[5], last[6]}' <<<"${res[$l]}")
+			echo "$line${nz[$l]:+ NOISY (${nz[$l]} of $RUNS builds)}"
 		done
 	done
 done
 done
+echo "$(quiet_report 2>&1) at the end"
