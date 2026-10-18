@@ -522,7 +522,7 @@ bits_to_flags_avx2(const uint64 *bits, uint32 n, uint8 *flags)
 	}
 }
 
-/* A run of 8 or more elements of one parent is stored a register at a time */
+/* A parent's run is stored a register at a time, past its end too (the next run, or the padding, takes the tail): one store for a run of up to 8 */
 F2 void
 expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 {
@@ -530,17 +530,11 @@ expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 
 	for (uint32 p = 0; p < np; p++)
 	{
-		uint32		e = end[p];
+		__m256i		v = _mm256_set1_epi32((int) p);
 
-		if (e - i >= 8)
-		{
-			__m256i		v = _mm256_set1_epi32((int) p);
-
-			for (; i + 8 <= e; i += 8)
-				st(parent + i, v);
-		}
-		for (; i < e; i++)
-			parent[i] = p;
+		for (; i < end[p]; i += 8)
+			st(parent + i, v);
+		i = end[p];
 	}
 }
 
