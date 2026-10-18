@@ -393,17 +393,15 @@ leaf_buf(ColSource *src, int leaf, SiftSrcVecType vt, size_t n)
 	return b;
 }
 
+/* the decoded leaf v as the executor's vector, in the buffers of the leaf */
 static void
-col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+col_fill(ColSource *src, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 {
-	ColSource  *src = impl;
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	SiftColVec	v;
+	SiftColVec	v = *vp;
 	ColLeafBuf *b;
-	size_t		n;
+	size_t		n = v.n;
 
-	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
-	n = v.n;
 	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
 	if (v.ovf && !(l->typid == NUMERICOID && l->kind == SCL_SCALAR))
 		ereport(ERROR,
@@ -446,6 +444,32 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 			b->isnull[i] = sift_colsrc_bit(v.nulls, i);
 		vec->isnull = b->isnull;
 	}
+}
+
+static void
+col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	SiftColVec	v;
+
+	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
+	col_fill(src, leaf, &v, vec);
+}
+
+/* the rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
+static void
+col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	uint32	   *ords = palloc((n + SIFT_COL_IDXPAD) * sizeof(uint32));
+	SiftColVec	v;
+
+	for (int i = 0; i < n; i++)
+		ords[i] = src->sel.keep && src->sel.compact ? src->sel.idx[rows[i]] : rows[i];
+	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
+	sift_col_read_idx(&src->unit, leaf, ords, n, &v);
+	col_fill(src, leaf, &v, vec);
+	pfree(ords);
 }
 
 static void
@@ -495,6 +519,7 @@ static const SiftSrcProvider col_provider = {
 	.select = col_select,
 	.tids = col_tids,
 	.zone = col_zone,
+	.read_rows = col_read_rows,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 };

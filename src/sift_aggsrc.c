@@ -108,7 +108,7 @@ sift_colsrc_can_tids(Oid relam, bool index)
 {
 	const SiftSrcProvider *prov = provider_of(relam, index);
 
-	return prov != NULL && prov->tids != NULL && prov->zone != NULL;
+	return prov != NULL && prov->tids != NULL && prov->zone != NULL && prov->read_rows != NULL;
 }
 
 void
@@ -121,6 +121,13 @@ void
 sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 {
 	src->prov->zone(src->impl, unit, leaf, z);
+}
+
+void
+sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	vec->ovf = NULL;
+	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
 }
 
 void
