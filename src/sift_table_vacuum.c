@@ -3,7 +3,8 @@
  *
  * VACUUM: delta rows whose insertion aborted, or whose deleter is committed and older than OldestXmin, are flagged DEAD (and are
  * the dead TIDs the indexes drop); committed old insertions are frozen; then the tombstone segment is rewritten without the
- * entries that no longer matter. TIDs are never reused, so no ordering between these steps is needed for safety.
+ * entries that no longer matter. TIDs are never reused, so no ordering between these steps is needed for safety. Column segments
+ * left mostly dead are rewritten.
  *
  * VACUUM FULL / CLUSTER write the kept versions straight into column segments of the new table (sift_tbl_bulk_*).
  */
@@ -83,8 +84,9 @@ typedef struct VacState
 {
 	TransactionId oldest;
 	TransactionId newest_kept;	/* oldest xid still stored: relfrozenxid */
-	double		live;
+	double		live;			/* as a heap counts them: in-progress insertions left out, in-progress deletions in */
 	double		dead;			/* recently dead: deleter committed but not removable yet */
+	double		group_dead;		/* of those, rows of the column groups (their liveness bit is still set) */
 	TidList	dead_tids;
 } VacState;
 
@@ -151,7 +153,7 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 					dead = true;
 				else if (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED)
 					v->dead += 1;
-				else
+				else if (!TransactionIdIsNormal(rec->xmin) || !TransactionIdIsInProgress(rec->xmin))
 					v->live += 1;
 			}
 			if (dead)
@@ -203,7 +205,10 @@ group_live_rows(Relation rel, const SiftTblRel *st)
 	return n;
 }
 
-/* The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their superblocks */
+/*
+ * The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their
+ * superblocks. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
+ */
 static void
 group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, uint32 *lo, uint32 *hi)
 {
@@ -212,17 +217,107 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 		const SiftTblTomb *e = &a[i];
 		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
 
-		if (e->kind == SIFT_TBL_TOMB_LOCK || !TransactionIdDidCommit(e->xid) || !TransactionIdPrecedes(e->xid, v->oldest) ||
-			in_delta(st, e->key >> 16))
+		if (e->kind == SIFT_TBL_TOMB_LOCK || in_delta(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
 			continue;
+		if (!TransactionIdPrecedes(e->xid, v->oldest))
+		{
+			v->dead += 1;
+			v->group_dead += 1;
+			continue;
+		}
 		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
 		*lo = Min(*lo, sb);
 		*hi = Max(*hi, sb);
 	}
 }
 
+/* Steps 1 and 2: flags the dead delta rows, clears the liveness of the dead group rows, counts the rows */
+static void
+vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
+{
+	uint32		sb_lo = PG_UINT32_MAX,
+				sb_hi = 0;
+
+	sift_tbl_tomb_sync(rel, st);
+	for (int i = 0; i < st->ndelta; i++)
+	{
+		SiftTblSeg	seg = st->delta[i];
+
+		sift_tbl_seg_load(rel, &seg);
+		for (uint32 p = 0; p < seg.npages; p++)
+		{
+			CHECK_FOR_INTERRUPTS();
+			vacuum_page(rel, st, &seg, p, v);
+		}
+	}
+	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
+	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
+	tid_sort(&v->dead_tids);
+	if (sb_lo <= sb_hi)
+		(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v->dead_tids, sb_lo, sb_hi);
+	/* the bulk delete flagged the segments dirty: their liveness is read from entries that say so */
+	sift_tbl_refresh(rel, st);
+	v->live += group_live_rows(rel, st) - v->group_dead;
+}
+
+/* Step 3; returns the number of indexes */
+static int
+vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
+{
+	Relation   *irel;
+	int			nindexes;
+
+	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
+	for (int i = 0; i < nindexes; i++)
+	{
+		IndexVacuumInfo ivinfo = {.index = irel[i],.heaprel = rel,.analyze_only = false,.report_progress = false,
+		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v->live + v->dead,.strategy = bstrategy};
+		IndexBulkDeleteResult *res = NULL;
+
+		if (v->dead_tids.n > 0)
+			res = index_bulk_delete(&ivinfo, NULL, tid_has, &v->dead_tids);
+		res = index_vacuum_cleanup(&ivinfo, res);
+		if (res)
+			pfree(res);
+	}
+	vac_close_indexes(nindexes, irel, NoLock);
+	return nindexes;
+}
+
 /* Closes the active delta segment once it is worth a column segment (pages) */
 #define VACUUM_CLOSE_PAGES	8
+
+/* Steps 4 and 5, then the blocks released before are recycled */
+static void
+vacuum_space(Relation rel, SiftTblRel *st, VacState *v)
+{
+	sift_tbl_close_delta(rel, st, VACUUM_CLOSE_PAGES);
+	(void) sift_tbl_seal(rel, st, v->oldest, true);
+	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
+		CHECK_FOR_INTERRUPTS();
+	(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
+	(void) sift_recycle(rel);
+	(void) sift_maint_orphan_sweep(rel);
+}
+
+/* Step 6, with the counts of a heap: reltuples and the live rows, the recently dead ones for autovacuum */
+static void
+vacuum_report(Relation rel, const VacState *v, const struct VacuumCutoffs *cutoffs, bool hasindex, TimestampTz start, int elevel)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
+	bool		fz,
+				mz;
+
+#if PG_VERSION_NUM >= 180000
+	vac_update_relstats(rel, nblocks, v->live, 0, 0, hasindex, v->newest_kept, cutoffs->OldestMxact, &fz, &mz, false);
+	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v->live, (PgStat_Counter) v->dead, start);
+#else
+	vac_update_relstats(rel, nblocks, v->live, 0, hasindex, v->newest_kept, cutoffs->OldestMxact, &fz, &mz, false);
+	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v->live, (PgStat_Counter) v->dead);
+#endif
+	ereport(elevel, (errmsg("table \"%s\": rows: %llu removed, %.0f remain, %.0f are dead but not yet removable",
+							RelationGetRelationName(rel), (unsigned long long) v->dead_tids.n, v->live, v->dead)));
+}
 
 void
 sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy)
@@ -230,15 +325,9 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 	VacState	v = {0};
 	struct VacuumCutoffs cutoffs;
 	SiftTblRel *st = sift_tbl_rel(rel);
-#if PG_VERSION_NUM >= 180000
 	TimestampTz start = GetCurrentTimestamp();
-#endif
-	Relation   *irel;
+	int			elevel = (params->options & VACOPT_VERBOSE) ? INFO : DEBUG2;
 	int			nindexes;
-	BlockNumber nblocks;
-	uint64		kept = 0;
-	uint32		sb_lo = PG_UINT32_MAX,
-				sb_hi = 0;
 
 	(void) vacuum_get_cutoffs(rel, params, &cutoffs);
 	v.oldest = cutoffs.OldestXmin;
@@ -246,69 +335,12 @@ sift_tbl_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccess
 	sift_tbl_refresh(rel, st);
 	sift_maint_lock(rel, true);
 	if (st->initialized)
-	{
-		sift_tbl_tomb_sync(rel, st);
-		for (int i = 0; i < st->ndelta; i++)
-		{
-			SiftTblSeg seg = st->delta[i];
-
-			sift_tbl_seg_load(rel, &seg);
-			for (uint32 p = 0; p < seg.npages; p++)
-			{
-				CHECK_FOR_INTERRUPTS();
-				vacuum_page(rel, st, &seg, p, &v);
-			}
-		}
-		group_dead(st, &v, st->ents, st->nents, &sb_lo, &sb_hi);
-		group_dead(st, &v, st->recent, st->nrecent, &sb_lo, &sb_hi);
-		tid_sort(&v.dead_tids);
-		if (sb_lo <= sb_hi)
-			(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v.dead_tids, sb_lo, sb_hi);
-		v.live += group_live_rows(rel, st);
-	}
-	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
-	for (int i = 0; i < nindexes; i++)
-	{
-		IndexVacuumInfo ivinfo = {.index = irel[i],.heaprel = rel,.analyze_only = false,.report_progress = false,
-		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v.live,.strategy = bstrategy};
-		IndexBulkDeleteResult *res = NULL;
-
-		if (v.dead_tids.n > 0)
-			res = index_bulk_delete(&ivinfo, NULL, tid_has, &v.dead_tids);
-		res = index_vacuum_cleanup(&ivinfo, res);
-		if (res)
-			pfree(res);
-	}
-	vac_close_indexes(nindexes, irel, NoLock);
+		vacuum_rows(rel, st, &v);
+	nindexes = vacuum_indexes(rel, &v, bstrategy);
 	if (st->initialized)
-	{
-		sift_tbl_close_delta(rel, st, VACUUM_CLOSE_PAGES);
-		(void) sift_tbl_seal(rel, st, v.oldest, true);
-		for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
-			CHECK_FOR_INTERRUPTS();
-		kept = sift_tbl_tomb_rewrite(rel, st, tomb_keep, &v);
-		(void) sift_recycle(rel);
-		(void) sift_maint_orphan_sweep(rel);
-	}
-	(void) kept;
+		vacuum_space(rel, st, &v);
 	sift_maint_unlock(rel);
-	nblocks = RelationGetNumberOfBlocks(rel);
-	{
-		bool		fz,
-					mz;
-
-#if PG_VERSION_NUM >= 180000
-		vac_update_relstats(rel, nblocks, v.live, 0, 0, nindexes > 0, v.newest_kept, cutoffs.OldestMxact, &fz, &mz, false);
-#else
-		vac_update_relstats(rel, nblocks, v.live, 0, nindexes > 0, v.newest_kept, cutoffs.OldestMxact, &fz, &mz, false);
-#endif
-	}
-#if PG_VERSION_NUM >= 180000
-	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v.live,
-						 (PgStat_Counter) v.dead, start);
-#else
-	pgstat_report_vacuum(RelationGetRelid(rel), rel->rd_rel->relisshared, (PgStat_Counter) v.live, (PgStat_Counter) v.dead);
-#endif
+	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
 
 /* ---------- rewrite: VACUUM FULL, CLUSTER ---------- */

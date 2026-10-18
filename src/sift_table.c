@@ -36,6 +36,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_col_am.h"
+#include "sift_merge.h"
 #include "sift_table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
@@ -72,6 +73,10 @@ sift_tbl_define_gucs(void)
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
+	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
+							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
+							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_MERGE_DEAD_PCT, 1, 100,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
 static const TableAmRoutine sift_tbl_methods;

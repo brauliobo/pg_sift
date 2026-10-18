@@ -34,7 +34,7 @@ piece it calls is a stub, section 12), **no** (unsupported, with the error given
 | Isolation | READ COMMITTED, REPEATABLE READ, SERIALIZABLE (relation-level SIREAD lock, conflict-in on every write, conflict-out on invisible concurrent versions: conservative, more false positives than heap). |
 | Parallel | parallel sequential scan over delta pages and (engine) SB morsels, one frozen directory copy shared by all workers. Parallel DML is not offered by PostgreSQL for any AM. |
 | Aggregates | the SiftAgg pushdown of col-plan runs over the table through the engine's `SiftColVisibility` hook: `sift_col_open_table` (section 12) opens a `SiftColSource` over the column groups with the table's visibility (a unit of a superblock without tombstones is entirely visible; others are filtered per row); delta rows are fed as in-memory batches (section 6). |
-| Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_delta_limit` (kB), `sift.table_inline_seal`, `sift.table_compression` (README, Configuration). Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
+| Options | **settings, not reloptions** (PostgreSQL has no extensible table access method options: `CREATE TABLE ... WITH (...)` of an unknown option is an error): `sift.table_delta_limit` (kB), `sift.table_inline_seal`, `sift.table_compression`, `sift.table_dead_rewrite_pct` (README, Configuration). Per-column compression is the `column=policy` form of `sift.table_compression`. `sift_group_rows` and `sift_paths` do not exist: jsonb is stored as exact bytes (section 8). Kernels follow `sift.simd`. |
 | Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, seal, merge, stats); autovacuum triggers through the `pgstat` counters the AM maintains (inserts alone trigger it: `autovacuum_vacuum_insert_threshold`). Inline sealing when a delta segment fills (`sift.table_inline_seal`). There is no background worker for tables. |
 
 ---
@@ -327,8 +327,9 @@ exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
 
 **Merge** (`sift_tbl_merge`, VACUUM: up to 16 steps): the tiered policy of `sift_merge_pick` over the segments of the current layout (fan-in 8)
-plus "mostly dead" (`sift_col_mostly_dead`); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
-input so that free space left by earlier merges is reused instead of extending the file.
+plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 50 as for `sift_col`,
+is rewritten alone; 100 never); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
+input so that free space left by earlier merges is reused instead of extending the file. A segment of an older layout is not rewritten.
 
 **VACUUM (`relation_vacuum`)**, one pass, restartable:
 
@@ -337,10 +338,13 @@ input so that free space left by earlier merges is reused instead of extending t
    (`sift_cseg_bulkdelete` with a "TID in dead set" callback, WAL logged). Aborted delta inserts and the rows of aborted bulk segments are dead too.
 3. `index_bulk_delete` on every index with the dead set (rounds bounded by `maintenance_work_mem`), then `index_vacuum_cleanup`. TIDs are
    never reused, so an interrupted VACUUM cannot expose a recycled TID; only index bloat stays until the next one.
-4. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in.
-5. Close the active delta (8 pages or more), seal, merge.
-6. `vac_update_relstats` (relpages, reltuples, `relfrozenxid`), `pgstat_report_vacuum`; the counters of insert/update/delete that
-   the AM reports keep autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
+4. Close the active delta (8 pages or more), seal, merge (the mostly dead segments included).
+5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in.
+6. `vac_update_relstats` (relpages, reltuples = live rows, `relfrozenxid`), `pgstat_report_vacuum` (live rows; dead rows = deleted by a
+   committed transaction but not removable yet), counted as a heap does: an in-progress insertion is not live yet, an in-progress deletion
+   still is; group rows from the liveness bits less the recently deleted ones. `VACUUM VERBOSE` reports the rows removed, the rows that
+   remain and the dead rows not yet removable. The counters of insert/update/delete that the AM reports keep
+   autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
 
 `VACUUM FULL` and `CLUSTER` are `relation_copy_for_cluster`: the kept versions are written straight into frozen column segments of the
 new table with dense TIDs (`sift_tbl_bulk_*`: no row-format pages, no seal). VACUUM FULL re-keys the rows of the old units as they decode
@@ -363,7 +367,8 @@ file of a table that was filled once and emptied stays at its high-water mark un
 - Settings (GUCs; a table access method cannot have reloptions): `sift.table_delta_limit` (kB, 2048-8192, default 4096: size of a write
   segment, whole superblocks of 2 MB, so 2 MB is the effective minimum; a row has to fit one segment), `sift.table_inline_seal` (default on),
   `sift.table_compression` (the `compression` grammar of `sift_col`: `auto`, `none`, `lz4[:N]`, `zstd[:N]`, encodings; `'auto; col=zstd:9'` per column;
-  taken from the session that seals, autovacuum uses the server setting). Segments are self-describing, so changing a setting affects only
+  taken from the session that seals, autovacuum uses the server setting), `sift.table_dead_rewrite_pct` (1-100, default 50: section 7,
+  merge). Segments are self-describing, so changing a setting affects only
   the segments written afterwards. `sift_group_rows` (rows per unit: one superblock) and `sift_paths` (jsonb shredding) are not provided.
 - `ALTER TABLE ... SET ACCESS METHOD sift_table` rewrites the table through `relation_copy_for_cluster`-style bulk writes.
 - Types: every type, exactly (section 7, layout of a group): typed leaves for what the engine stores natively, opaque `SIFT_COLS_VAR` leaves
@@ -392,6 +397,7 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
 - Regression `tbl_seal` (a heap twin through bulk load, VACUUM sealing, point/index/bitmap reads, updates and deletes of sealed rows, aborts, dead-row
   clearing, merges, special values (`-0`, NaN, long text, huge numerics), VACUUM FULL, CLUSTER, ADD/DROP COLUMN, a type change, TRUNCATE),
   `tbl_space` (released blocks are reused: an emptied and refilled table keeps its size),
+  `tbl_dead` (live and dead row counts, the rewrite of mostly dead segments under `sift.table_dead_rewrite_pct`),
   `tbl_rewrite` (CLUSTER by a btree sort and a GiST index scan, CLUSTER after deletions of its own transaction, VACUUM FULL over two
   column layouts), `tbl_sample` (TABLESAMPLE over delta rows and groups).
 - Isolation `test/isolation/specs/tbl_concurrency.spec`: update/update, update/delete, delete/update at READ COMMITTED (the waiter
