@@ -60,32 +60,34 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 - **Small:** 31 MiB for those articles with phrase support, 1.6x smaller than pg_search; 13 MiB without word positions.
 <!-- bench:summary:end -->
 
-| search, 50,000 articles (queries/s) | sift | pg_search | Elasticsearch |
+| 50,000 articles (queries/s) | sift | pg_search | Elasticsearch |
 |---|---:|---:|---:|
-| `and` / `phrase` | 19,300 / 17,300 | 2,310 / 1,920 | 10,800 / 11,700 |
-| `count(*)` | 22,700 | 1,740 | 25,000 |
+| `@@> 'a b' ORDER BY score LIMIT 10` | 19,300 | 2,310 | 10,800 |
+| `@@> '"a b"' ORDER BY score LIMIT 10` | 17,300 | 1,920 | 11,700 |
+| `count(*) WHERE @@> '...'` | 22,700 | 1,740 | 25,000 |
 | index size | 31 MiB | 50 MiB | 70 MiB |
 
-| analytics, 10,000,000 orders (ms, lower is better) | PostgreSQL | sift_col | Elasticsearch | ClickHouse |
+| 10,000,000 orders (ms, lower is better) | PostgreSQL | sift_col | Elasticsearch | ClickHouse |
 |---|---:|---:|---:|---:|
-| revenue per month | 1,901 | 51.1 | 225 | 64.3 |
-| orders per country | 178 | 13.5 | 5.65 | 13.2 |
-| distinct customers per month | 7,630 | 600 | 484 | 151 |
+| `count(*) GROUP BY country` | 178 | 13.5 | 5.65 | 13.2 |
+| `sum(amount) GROUP BY month` | 1,901 | 51.1 | 225 | 64.3 |
+| `count(DISTINCT customer_id) GROUP BY month` | 7,630 | 600 | 484 | 151 |
+| `count(*) WHERE title @@> 'a b'` | 96.9 | 3.48 | 3.27 | 4.53 |
 
-Elasticsearch and ClickHouse win some questions, and `sift_table` is slower than the heap on others; every table, the losses and the method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Reproduce: `bench/bench all` and `bench/bench store all` ([bench/README.md](bench/README.md)).
+`month` is `date_trunc('month', created_at)`. Elasticsearch and ClickHouse win some queries, and `sift_table` is slower than the heap on others; every table, the losses and the method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Reproduce: `bench/bench all` and `bench/bench store all` ([bench/README.md](bench/README.md)).
 
 ## What is covered
 
 [docs/COVERAGE.md](docs/COVERAGE.md) lists 157 query shapes with a sample each (94 Yes, 14 Partly, 38 No, 11 Error), checked on a test cluster by `scripts/coverage.sh --check`.
 
-- Search: terms, phrases, prefix, wildcard, regex, fuzzy, ranked top-k, `count(*)` and filters run on the `sift` index.
-- Analytics: the aggregates above plus `stddev`, `corr` and more, with filters and joins, run as `Custom Scan (SiftAgg)`.
+- Search: `@@> 'a b'`, `"a b"`, `batt*`, `sq?eaky`, `/re/`, `frendly~1`, `ORDER BY score LIMIT k`, `count(*)` and `AND` filters run on the `sift` index.
+- Analytics: `count`, `count(DISTINCT x)`, `sum`, `avg`, `min`, `max`, `stddev`, `corr` ... `WHERE ... GROUP BY ...`, with joins, run as `Custom Scan (SiftAgg)`.
 - Everything else keeps the normal plan (correct, only not accelerated), and a few cases raise an error that names the rewrite.
 
 ## SQLite
 
 The search engine as a loadable extension (Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: exact BM25, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets, facets.
-89x, 242x and 10x the throughput of FTS5 on AND, OR and phrase top-10 (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
+89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
 
 ```sql
 .load ./sift
@@ -96,7 +98,7 @@ SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT
 ## MariaDB
 
 `libsift_udf.so` and two SQL files bring the engine to MariaDB 10.5 to 13.x with no storage engine and no server patch; results are identical to pg_sift.
-183x to 794x faster than InnoDB FULLTEXT on AND, OR and phrase top-10 (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
 
 ```sql
 CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
