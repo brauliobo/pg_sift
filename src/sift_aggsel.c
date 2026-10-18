@@ -72,15 +72,13 @@ sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
 	memcpy(bits, all.bits, all.nwords * sizeof(uint64));
 }
 
-/* The rows of a compacted unit that the snapshot sees: vetted in the unit's own numbering, which idx translates */
+/* Runs op on the unit as stored: a compacted unit's rows are expanded to their stored ordinals, op restricts them, and the survivors are compressed back into bits */
 void
-sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits)
+sift_aggsel_stored(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits, SiftAggSelOp op, void *arg)
 {
 	SiftColSel	vs;
 	const uint32 *idx = a->idx;
 
-	if (sift_col_unit_allvisible(cu))
-		return;
 	if (a->keep && a->compact)
 	{
 		sift_col_sel_alloc(src, a->nrow, &vs);
@@ -88,7 +86,7 @@ sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64
 			if (bits[i >> 6] >> (i & 63) & 1)
 				vs.bits[idx[i] >> 6] |= UINT64CONST(1) << (idx[i] & 63);
 		sift_col_sel_count(&vs);
-		sift_col_vet(cu, &vs);
+		op(cu, &vs, arg);
 		for (uint32 i = 0; i < a->sel.count; i++)
 			if (!(vs.bits[idx[i] >> 6] >> (idx[i] & 63) & 1))
 				bits[i >> 6] &= ~(UINT64CONST(1) << (i & 63));
@@ -97,6 +95,19 @@ sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64
 	sift_col_sel_alloc(src, a->keep ? a->nrow : cu->nrows, &vs);
 	memcpy(vs.bits, bits, vs.nwords * sizeof(uint64));
 	sift_col_sel_count(&vs);
-	sift_col_vet(cu, &vs);
+	op(cu, &vs, arg);
 	memcpy(bits, vs.bits, vs.nwords * sizeof(uint64));
+}
+
+static void
+vet_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
+{
+	sift_col_vet(cu, vs);
+}
+
+void
+sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits)
+{
+	if (!sift_col_unit_allvisible(cu))
+		sift_aggsel_stored(a, src, cu, bits, vet_op, NULL);
 }

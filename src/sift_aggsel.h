@@ -37,4 +37,8 @@ extern void sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, Sift
 extern void sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits);
 extern void sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits);
 
+/* op restricts the rows (bits, in the executor's numbering) in the unit as stored */
+typedef void (*SiftAggSelOp) (const SiftColUnit *cu, SiftColSel *sel, void *arg);
+extern void sift_aggsel_stored(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits, SiftAggSelOp op, void *arg);
+
 #endif							/* SIFT_AGGSEL_H */

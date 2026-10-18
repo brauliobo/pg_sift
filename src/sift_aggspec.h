@@ -195,13 +195,16 @@ typedef struct SiftAggVx
  * source (decoded to a Datum of its type), an expression of up to SIFT_AGG_MAX_GLEAVES leaves evaluated by PostgreSQL's evaluator
  * with the leaves' values as Params, or a constant. The aggregate is serial: its state is a Datum per group, with no merge.
  */
-#define SIFT_AGG_MAX_GARGS		4		/* aggregated arguments of a generic aggregate */
+#define SIFT_AGG_MAX_GARGS		FUNC_MAX_ARGS	/* arguments of a generic aggregate: as many as PostgreSQL allows */
 #define SIFT_AGG_MAX_GLEAVES	4		/* leaves one argument expression reads */
 
 typedef struct SiftAggGenArg
 {
 	Oid			typid;
-	int			nleaves;		/* 0: a constant; 1 with expr NULL: the leaf itself */
+	int			nleaves;		/* 0: a constant (or mapped); 1 with expr NULL: the leaf itself */
+	bool		mapped;			/* an expression of the columns of a joined table: the value of slot `slot` of combo `combo` for the row */
+	int			combo;
+	int			slot;
 	int			leaf[SIFT_AGG_MAX_GLEAVES];
 	Node	   *expr;			/* a constant, or an expression of Params (PARAM_EXEC) 0..nleaves-1, one per leaf */
 } SiftAggGenArg;
@@ -209,12 +212,16 @@ typedef struct SiftAggGenArg
 typedef struct SiftAggGen
 {
 	Node	   *aggref;			/* the planner's Aggref (what AggGetAggref gives the aggregate's functions) */
-	int			nargs;
+	int			nargs;			/* the Aggref's args, ORDER BY-only (resjunk) ones included */
+	int			ntrans;			/* ... the ones the transition function takes: the first ntrans */
 	SiftAggGenArg arg[SIFT_AGG_MAX_GARGS];
 	Node	   *direct;			/* ordered-set aggregates: the List of direct arguments (constant expressions) */
 	bool		distinct;		/* DISTINCT: the distinct values of a group, in btree order, go through the transition function */
 	int			darg;			/* DISTINCT: the argument that varies (the others are constants) */
 	bool		ordered;		/* WITHIN GROUP: the values of a group go through a tuplesort, then through the transition function */
+	bool		parallel;		/* workers keep partial states that the leader merges with the aggregate's combine function (through its serial and deserial functions when the state is internal) */
+	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
+	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
 } SiftAggGen;
 
@@ -402,6 +409,9 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
+
+/* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
+extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out);
 
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 

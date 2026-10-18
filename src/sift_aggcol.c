@@ -38,7 +38,13 @@ typedef struct ColSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
+	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
+	int			nspred;
+	SiftColValue *fvals;		/* the constants of one filter_str call */
+	int			fcap;
 } ColSource;
+
+#define COL_MAX_STR_PRUNE	16
 
 static bool
 col_owns_index(Oid indexrelam)
@@ -216,8 +222,9 @@ col_nsb(void *impl)
 static void
 col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
+	ColSource  *src = impl;
 	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
-	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES];
+	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE];
 
 	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
 	for (int k = 0; k < nprune; k++)
@@ -227,7 +234,82 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 		preds[2 * k] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_GE, 1, &vals[2 * k]};
 		preds[2 * k + 1] = (SiftColPred) {prune[k].leaf, SIFT_COLOP_LE, 1, &vals[2 * k + 1]};
 	}
-	sift_col_begin(((ColSource *) impl)->cs, preds, 2 * nprune, sb_lo, sb_hi);
+	for (int i = 0; i < src->nspred; i++)
+		preds[2 * nprune + i] = src->spred[i];
+	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred, sb_lo, sb_hi);
+}
+
+static SiftColOp
+str_op(SiftSrcStrOp op)
+{
+	switch (op)
+	{
+		case SSTR_EQ:
+			return SIFT_COLOP_EQ;
+		case SSTR_NE:
+			return SIFT_COLOP_NE;
+		case SSTR_LT:
+			return SIFT_COLOP_LT;
+		case SSTR_LE:
+			return SIFT_COLOP_LE;
+		case SSTR_GT:
+			return SIFT_COLOP_GT;
+		case SSTR_GE:
+			return SIFT_COLOP_GE;
+		case SSTR_IN:
+			return SIFT_COLOP_IN;
+		case SSTR_NOTIN:
+			return SIFT_COLOP_NOTIN;
+		case SSTR_PREFIX:
+			return SIFT_COLOP_PREFIX;
+	}
+	elog(ERROR, "sift: unknown text test %d", (int) op);
+}
+
+/* a text test as a column predicate over the constants in vals (room for t->nvals) */
+static SiftColPred
+str_pred(const SiftSrcStrTest *t, SiftColValue *vals)
+{
+	for (int i = 0; i < t->nvals; i++)
+		vals[i] = (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
+	return (SiftColPred) {t->leaf, str_op(t->op), t->nvals, vals};
+}
+
+/* the tests join the zone pruning of every begin: the segment dictionary's, or the prefix zone of an inline unit */
+static void
+col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
+{
+	ColSource  *src = impl;
+
+	src->spred = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
+	for (int i = 0; i < nt && src->nspred < COL_MAX_STR_PRUNE; i++)
+		if (!src->lay->leaf[t[i].leaf].lossy)
+			src->spred[src->nspred++] = str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)));
+}
+
+static void
+filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
+{
+	sift_col_filter(cu, pred, 1, sel);
+}
+
+/* the rows whose value passes, on the encoded form of the unit: the strings are not decoded unless the prefixes cannot decide */
+static bool
+col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
+{
+	ColSource  *src = impl;
+	SiftColPred pred;
+
+	if (src->lay->leaf[t->leaf].lossy)
+		return false;
+	if (t->nvals > src->fcap)
+	{
+		src->fcap = Max(t->nvals, 2 * src->fcap);
+		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
+	}
+	pred = str_pred(t, src->fvals);
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
+	return true;
 }
 
 static bool
@@ -372,6 +454,8 @@ static const SiftSrcProvider col_provider = {
 	.vet = col_vet,
 	.counters = col_counters,
 	.select = col_select,
+	.prune_str = col_prune_str,
+	.filter_str = col_filter_str,
 };
 
 void

@@ -2163,6 +2163,8 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 
 #define AGG_GEN_ROW			12.0	/* a transition function call through fmgr, and the Datum of a leaf (the function's own procost comes on top) */
 #define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
+#define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */
+#define AGG_GEN_HYP			200.0	/* a row of a hypothetical-set aggregate: sorted by the scan for its groups, then again by the aggregate (no gain over the normal plan) */
 #define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
 #define AGG_GEN_GROUP		150.0	/* a group's final function and state, or the sort of an ordered-set group */
 
@@ -2272,9 +2274,19 @@ gen_sub_mutator(Node *n, GenWalk *w)
 	return expression_tree_mutator(n, gen_sub_mutator, w);
 }
 
-/* an argument of a generic aggregate: a leaf, an expression of up to SIFT_AGG_MAX_GLEAVES leaves, or a constant */
+/* does the expression read a column of a joined table */
 static bool
-compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost)
+arg_joined(AggCtx *c, Node *arg)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (bms_is_member(jc->rti, pull_varnos(c->root, arg)))
+			return true;
+	return false;
+}
+
+/* an argument of a generic aggregate: a leaf, an expression of up to SIFT_AGG_MAX_GLEAVES leaves, a constant, or an expression of a joined table's columns */
+static bool
+compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *mapped, int ai)
 {
 	GenWalk		w = {c};
 	int			leaf;
@@ -2282,6 +2294,20 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost)
 
 	arg = normalize_expr(c, arg);
 	out->typid = exprType(arg);
+	if (arg_joined(c, arg))
+	{
+		TypeCacheEntry *tc = lookup_type_cache(out->typid, TYPECACHE_EQ_OPR);
+		RegProcedure lhs,
+					rhs;
+
+		/* the value of each joined row is the combo's: one table of values per aggregate */
+		if (ai < 0 || *mapped || !OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs) ||
+			!combo_slot(c, arg, true, &out->combo, &out->slot))
+			return false;
+		out->mapped = *mapped = true;
+		*cost = 4.0;
+		return true;
+	}
 	if ((leaf = match_leaf(c, strip_relabel(arg))) >= 0)
 	{
 		if (!gen_leaf_ok(c, leaf))
@@ -2309,23 +2335,6 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost)
 	return true;
 }
 
-/* does a float leaf feed an argument: the index holds -0 as 0, so a result that shows the sign of a zero (text, arrays) is not exact */
-static bool
-gen_reads_float(AggCtx *c, const SiftAggGen *g)
-{
-	for (int k = 0; k < g->nargs; k++)
-		for (int l = 0; l < g->arg[k].nleaves; l++)
-			if (leaf_of(c, g->arg[k].leaf[l])->vtype == SCV_F64)
-				return true;
-	return false;
-}
-
-static bool
-gen_result_ignores_zero_sign(Oid t)
-{
-	return t == INT2OID || t == INT4OID || t == INT8OID || t == FLOAT4OID || t == FLOAT8OID || t == NUMERICOID || t == BOOLOID;
-}
-
 /* the function's own cost in operator costs (its procost, or the planner support function's estimate) */
 static double
 fn_cost(AggCtx *c, Oid fn)
@@ -2342,20 +2351,46 @@ fn_cost(AggCtx *c, Oid fn)
  * order of the input is the scan's (heap order of a fresh index), which is what the normal plan's sequential scan gives; an
  * ORDER BY in the call, a variadic aggregate, a hypothetical-set aggregate and an aggregate of another table's column keep the plan.
  */
+/* a partial state per worker, merged by the combine function: the functions are parallel safe, the state is a plain type or comes with its serial and deserial functions */
 static bool
-compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out)
+gen_parallel_ok(Oid agg, Oid transfn, Oid combfn, Oid serfn, Oid deserfn, Oid transtype)
+{
+	if (!OidIsValid(combfn) || IsPolymorphicType(transtype) || func_volatile(combfn) == PROVOLATILE_VOLATILE)
+		return false;
+	if (transtype == INTERNALOID && (!OidIsValid(serfn) || !OidIsValid(deserfn)))
+		return false;
+	for (int i = 0; i < 5; i++)
+	{
+		Oid			fn = i == 0 ? agg : i == 1 ? transfn : i == 2 ? combfn : i == 3 ? serfn : deserfn;
+
+		if (OidIsValid(fn) && func_parallel(fn) != PROPARALLEL_SAFE)
+			return false;
+	}
+	return true;
+}
+
+static bool
+compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	HeapTuple	tup;
 	Form_pg_aggregate ag;
-	bool		ordered = a->aggkind == AGGKIND_ORDERED_SET,
+	bool		hyp = a->aggkind == AGGKIND_HYPOTHETICAL,
+				ordered = a->aggkind == AGGKIND_ORDERED_SET || hyp,
+				hash = false,
 				volatile_fn;
-	Oid			transfn;
+	Oid			transfn,
+				combfn,
+				serfn,
+				deserfn,
+				transtype;
 	SiftAggGen *g;
 	double		cost = 0;
+	bool		mapped = false;
 	StringInfoData txt;
 
 	if ((a->aggkind != AGGKIND_NORMAL && !ordered) || a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > SIFT_AGG_MAX_GARGS ||
-		(a->aggorder != NIL && !ordered) || (ordered && (list_length(a->aggorder) != 1 || list_length(a->args) != 1)) ||
+		(ordered && !hyp && (list_length(a->aggorder) != 1 || list_length(a->args) != 1)) ||
+		(hyp && list_length(a->aggorder) != list_length(a->args)) ||
 		(a->aggdistinct != NIL && ordered))
 		return false;
 	foreach_ptr(Node, d, a->aggdirectargs)
@@ -2370,6 +2405,10 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out)
 	volatile_fn = func_volatile(ag->aggtransfn) == PROVOLATILE_VOLATILE ||
 		(OidIsValid(ag->aggfinalfn) && func_volatile(ag->aggfinalfn) == PROVOLATILE_VOLATILE);
 	transfn = ag->aggtransfn;
+	combfn = ag->aggcombinefn;
+	serfn = ag->aggserialfn;
+	deserfn = ag->aggdeserialfn;
+	transtype = ag->aggtranstype;
 	ReleaseSysCache(tup);
 	if (volatile_fn)
 		return false;
@@ -2379,29 +2418,30 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out)
 	{
 		double		k;
 
-		if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k))
+		if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k, &mapped, ai))
 			return false;
 		cost += k;
-		appendStringInfo(&txt, "%s%s", g->nargs ? ", " : "", expr_text(c, (Node *) te->expr));
+		if (!te->resjunk)
+		{
+			appendStringInfo(&txt, "%s%s", g->ntrans ? ", " : "", expr_text(c, (Node *) te->expr));
+			g->ntrans++;
+		}
 		g->nargs++;
 	}
-	if (gen_reads_float(c, g) && !gen_result_ignores_zero_sign(a->aggtype))
-		return false;
 	if (a->aggdistinct != NIL)
 	{
-		/* the distinct values of the one argument that varies (string_agg(DISTINCT x, ',')): the others are constants */
+		/* the distinct values of the one argument that varies (string_agg(DISTINCT x, ',')) are a hash set; any other DISTINCT is sorted */
 		int			nvar = 0;
 
 		for (int k = 0; k < g->nargs; k++)
-			if (g->arg[k].nleaves > 0)
+			if (g->arg[k].nleaves > 0 || g->arg[k].mapped)
 			{
 				g->darg = k;
 				nvar++;
 			}
-		if (nvar != 1)
-			return false;
+		hash = nvar == 1 && a->aggorder == NIL && !mapped;
 	}
-	if (a->aggdistinct != NIL || ordered)
+	if (hash || (ordered && !hyp))
 	{
 		Oid			t = g->arg[g->darg].typid;
 		TypeCacheEntry *tc = lookup_type_cache(t, TYPECACHE_CMP_PROC_FINFO | TYPECACHE_EQ_OPR_FINFO);
@@ -2411,12 +2451,19 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		if (ordered && !OidIsValid(linitial_node(SortGroupClause, a->aggorder)->sortop))
 			return false;
 	}
+	for (int k = 0; k < g->nargs; k++)
+		if (g->arg[k].mapped)
+			slot_req(c, g->arg[k].combo, g->arg[k].slot)->agg = ai;
 	g->aggref = (Node *) copyObject(a);
 	((Aggref *) g->aggref)->aggfilter = NULL;
 	g->direct = (Node *) a->aggdirectargs;
 	g->distinct = a->aggdistinct != NIL;
 	g->ordered = ordered;
-	g->cost = AGG_GEN_ROW + fn_cost(c, transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0);
+	g->hyp = hyp;
+	g->parallel = !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, transfn, combfn, serfn, deserfn, transtype);
+	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
+	g->cost = AGG_GEN_ROW + fn_cost(c, transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
+		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
 	out->kind = SAA_GEN;
 	out->gen = g;
 	out->restype = a->aggtype;
@@ -2431,7 +2478,21 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		out->desc = psprintf("%s(%s) WITHIN GROUP (ORDER BY %s)", get_func_name(a->aggfnoid), d.data, txt.data);
 	}
 	else
-		out->desc = psprintf("%s(%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt.data);
+	{
+		StringInfoData ord;
+
+		initStringInfo(&ord);
+		foreach_node(SortGroupClause, sc, a->aggorder)
+		{
+			bool		rev;
+			TargetEntry *te = get_sortgroupref_tle(sc->tleSortGroupRef, a->args);
+
+			get_equality_op_for_ordering_op(sc->sortop, &rev);
+			appendStringInfo(&ord, "%s%s%s%s", ord.len ? ", " : " ORDER BY ", expr_text(c, (Node *) te->expr), rev ? " DESC" : "",
+							 sc->nulls_first == rev ? "" : sc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
+		}
+		out->desc = psprintf("%s(%s%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt.data, ord.data);
+	}
 	record_plan_function_dependency(c->root, a->aggfnoid);
 	foreach_node(TargetEntry, te, a->args)
 		record_deps(c->root, (Node *) te->expr);
@@ -2577,7 +2638,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	Bitmapset  *used;
 	bool		other;
 
-	if (a->agglevelsup != 0 || a->aggvariadic || contain_volatile_functions((Node *) a))
+	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
 	out->leaf = -1;
 	out->restype = a->aggtype;
@@ -2595,7 +2656,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	*out = fresh;
 	c->used = used;
 	c->other_group = other;
-	return compile_gen(c, a, out);
+	return compile_gen(c, a, out, ai);
 }
 
 /* ---------- the query ---------- */
@@ -3291,6 +3352,9 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_SETUP_FACTOR	110.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.1 us there, the unnest excess below included) is 110 times the default 1000 */
 #define AGG_DEFAULT_ELEMS	3.0
+#define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
+#define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
+#define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
 
 static double
 elems_of(AggCtx *c, int grp)
@@ -3376,6 +3440,69 @@ zone_kept(AggCtx *c, SiftAggSpec *s)
 	return kept;
 }
 
+static bool
+pred_uses_leaf(const SiftAggPred *p, int leaf)
+{
+	if (p == NULL)
+		return false;
+	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf == leaf)
+		return true;
+	for (int i = 0; i < p->nchild; i++)
+		if (pred_uses_leaf(p->child[i], leaf))
+			return true;
+	return false;
+}
+
+/* is the leaf read by something besides the text tests that run on the encoded strings? */
+static bool
+leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
+{
+	SiftSrcStrTest t;
+
+	/* combos and joins read leaves in ways not followed here */
+	if (s->ncombo > 0 || c->joins != NIL)
+		return true;
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].leaf == leaf && s->key[i].kind != SAK_NUM && s->key[i].kind != SAK_SET)
+			return true;
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].leaf == leaf || pred_uses_leaf(s->agg[i].filter, leaf))
+			return true;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s->pred[i], leaf) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, &t)))
+			return true;
+	return false;
+}
+
+/* The average width of the heap column a plain text leaf is read from (0: unknown, or the leaf is a jsonb path or an expression) */
+static int
+leaf_width(AggCtx *c, int leaf)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+
+	return e && IsA(e, Var) ? get_attavgwidth(planner_rt_fetch(c->relid, c->root)->relid, ((Var *) e)->varattno) : 0;
+}
+
+/*
+ * Text leaves of long strings: a unit stores the strings inline, and reading the leaf as codes builds a dictionary of the unit
+ * (measured 0.5 us a row, which the heap scan beats when few rows pass); a test on the encoded strings costs a few ns a row.
+ */
+static double
+inline_text_cost(AggCtx *c, SiftAggSpec *s)
+{
+	double		cost = 0;
+
+	for (int i = 0; i < s->nleaves; i++)
+	{
+		const SiftSrcLeaf *lf = &c->lay->leaf[s->leaves[i]];
+
+		if (lf->vtype == SCV_CODE && lf->kind == SCL_SCALAR && lf->parent < 0 && leaf_width(c, s->leaves[i]) >= AGG_INLINE_WIDTH)
+			cost += leaf_read_whole(c, s, s->leaves[i]) ? AGG_INLINE_ROW : AGG_INLINE_TEST;
+	}
+	return cost;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -3398,6 +3525,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
 		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */

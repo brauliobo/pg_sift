@@ -168,3 +168,15 @@ DELETE FROM cs_t WHERE id % 11 = 0;
 SELECT cs_check('SELECT status, count(*) AS n, sum(amount) AS s FROM cs_t WHERE memo @@> ''clean wire'' GROUP BY status ORDER BY status') AS tbl_and;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_t WHERE memo @@> ''damaged OR broken'' AND amount > 50 GROUP BY store ORDER BY store') AS tbl_or;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs_t WHERE memo @@> ''"clean wire"'' GROUP BY status ORDER BY status') AS tbl_phrase;
+
+-- long strings (300 bytes) as the values of text tests under a match set
+CREATE TABLE cs_l (id serial PRIMARY KEY, store int, note text, memo text);
+INSERT INTO cs_l (store, note, memo)
+SELECT 1 + i % 20, repeat(chr(97 + i % 4), 300) || (i % 7), cs_words(i) FROM generate_series(1, 6000) i;
+CREATE INDEX cs_l_bm ON cs_l USING sift (memo);
+CREATE INDEX cs_l_col ON cs_l USING sift_col (store, note);
+VACUUM (ANALYZE) cs_l;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''clean wire'' AND note <> repeat(''a'', 300) || ''1'' GROUP BY store ORDER BY store') AS long_ne;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''gift'' AND note = repeat(''b'', 300) || ''2'' GROUP BY store ORDER BY store') AS long_eq;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''fast OR late'' AND note LIKE ''cccc%'' GROUP BY store ORDER BY store') AS long_prefix;
+SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect'' AND note IN (repeat(''a'', 300) || ''0'', repeat(''d'', 300) || ''3'') GROUP BY note ORDER BY note') AS long_in;
