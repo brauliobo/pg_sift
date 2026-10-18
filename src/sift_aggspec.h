@@ -385,6 +385,8 @@ typedef struct SiftAggSpec
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
+	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (sift_topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */
+	char	   *desc_topn;		/* EXPLAIN: the sort columns */
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */
