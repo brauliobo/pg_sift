@@ -37,7 +37,7 @@ INSERT INTO agg_q VALUES
 
 CREATE FUNCTION agg_compare(OUT query text, OUT pushed bool, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
-	FOR query IN SELECT q FROM agg_q ORDER BY q LOOP
+	FOR query IN SELECT q FROM agg_q ORDER BY q COLLATE "C" LOOP
 		pushed := agg_pushed(query);
 		same := agg_rows(query, true) IS NOT DISTINCT FROM agg_rows(query, false);
 		RETURN NEXT;
