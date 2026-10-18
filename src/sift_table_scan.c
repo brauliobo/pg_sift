@@ -113,6 +113,7 @@ typedef struct SiftTblScan
 {
 	TableScanDescData base;
 	SiftTblRel *st;
+	MemoryContext rowcxt;		/* the row handed to the slot by the last getnextslot: valid until the next one, as a buffer slot's */
 	TupleDesc	desc;			/* of the rows returned: the slot's, which is the old one while ALTER TABLE rewrites */
 	bool		snap_registered;
 	int			nseg;
@@ -244,6 +245,7 @@ sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyDa
 	}
 	s->st = sift_tbl_rel(rel);
 	s->copy = palloc(BLCKSZ);
+	s->rowcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_table scan row", ALLOCSET_DEFAULT_SIZES);
 	scan_open_state(rel, s);
 	return &s->base;
 }
@@ -260,6 +262,7 @@ sift_tbl_scan_end(TableScanDesc scan)
 		UnregisterSnapshot(scan->rs_snapshot);
 	scan_close_state(s);
 	pfree(s->copy);
+	MemoryContextDelete(s->rowcxt);
 	pfree(s);
 }
 
@@ -459,18 +462,23 @@ sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTabl
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
 	HeapTuple	tup;
+	MemoryContext old;
 
 	if (!ScanDirectionIsForward(direction))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift_table tables do not support backward scans")));
 	s->desc = slot->tts_tupleDescriptor;
-	if ((tup = scan_next_row(scan->rs_rd, s)) == NULL)
+	MemoryContextReset(s->rowcxt);
+	old = MemoryContextSwitchTo(s->rowcxt);
+	tup = scan_next_row(scan->rs_rd, s);
+	MemoryContextSwitchTo(old);
+	if (tup == NULL)
 	{
 		ExecClearTuple(slot);
 		return false;
 	}
-	sift_tbl_store(slot, tup);
+	ExecForceStoreHeapTuple(tup, slot, false);
 	return true;
 }
 

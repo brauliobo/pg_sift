@@ -418,6 +418,7 @@ struct SiftTblGroupScan
 	SiftColUnit unit;
 	SiftColSel	sel;
 	ItemPointerData *tids;
+	uint32	   *ord;			/* the row ordinals of tids: the position of a row in the vectors, which hold every row of the unit */
 	uint32		n;
 	uint32		i;
 	bool		in_unit;
@@ -583,6 +584,8 @@ unit_start(SiftTblGroupScan *g)
 	g->n = g->sel.count;
 	g->tids = palloc(Max(g->n, 1) * sizeof(ItemPointerData));
 	sift_col_tids(&g->unit, &g->sel, g->tids);
+	g->ord = palloc((g->n + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_sel_idx(&g->sel, g->ord);
 	MemoryContextSwitchTo(old);
 	g->i = 0;
 	g->in_unit = true;
@@ -632,14 +635,14 @@ sift_tbl_gscan_plain(const SiftTblGroupScan *g)
 	return g->plain;
 }
 
-/* The leaves of selection sel of the current unit, once */
+/* Every row of the current unit, in its own order: cheaper to decode than a selection that leaves a few dead rows out */
 static void
-unit_read(SiftTblGroupScan *g, const SiftColSel *sel)
+unit_read(SiftTblGroupScan *g)
 {
 	MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
 
 	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
-		sift_col_read(&g->unit, c, sel, &g->vec[c]);
+		sift_col_read(&g->unit, c, NULL, &g->vec[c]);
 	MemoryContextSwitchTo(old);
 }
 
@@ -688,8 +691,8 @@ HeapTuple
 sift_tbl_gscan_tuple(SiftTblGroupScan *g)
 {
 	if (g->vec[0].n == PG_UINT32_MAX)
-		unit_read(g, &g->sel);
-	return row_tuple(g, g->i - 1, &g->tids[g->i - 1]);
+		unit_read(g);
+	return row_tuple(g, g->ord[g->i - 1], &g->tids[g->i - 1]);
 }
 
 /* ---------- the rows of one vblock ---------- */
@@ -777,8 +780,10 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 	MemoryContextReset(g->unitcxt);
 	old = MemoryContextSwitchTo(g->unitcxt);
 	sift_col_sel_all(&g->unit, &g->sel);
+	g->ord = palloc((g->sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_sel_idx(&g->sel, g->ord);
 	MemoryContextSwitchTo(old);
-	unit_read(g, &g->sel);
+	unit_read(g);
 	g->rd_unit = k;
 	g->rd_serial = g->serial;
 }
@@ -802,7 +807,7 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 			if (offmask == NULL || sift_col_bit_test(offmask, ItemPointerGetOffsetNumberNoCheck(&u->tid[j]) - 1))
 			{
 				unit_load(g, k, sb);
-				out[nout++] = row_tuple(g, j, &u->tid[j]);
+				out[nout++] = row_tuple(g, g->ord[j], &u->tid[j]);
 			}
 	}
 	return nout;
