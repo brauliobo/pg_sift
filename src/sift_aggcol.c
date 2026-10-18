@@ -19,6 +19,7 @@
 
 #include "sift_aggkern.h"
 #include "sift_aggsel.h"
+#include "sift_popcount.h"
 #include "sift_col.h"
 #include "sift_col_pagg.h"
 #include "sift_col_pg.h"
@@ -41,6 +42,8 @@ typedef struct ColSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
+	int			nflt;			/* the filters set_filters accepted, as engine predicates */
+	SiftColPred *fpred;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
@@ -262,7 +265,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 {
 	ColSource  *src = impl;
 	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
-	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE];
+	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
 
 	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
 	for (int k = 0; k < nprune; k++)
@@ -274,7 +277,8 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	}
 	for (int i = 0; i < src->nspred; i++)
 		preds[2 * nprune + i] = src->spred[i];
-	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred, sb_lo, sb_hi);
+	memcpy(preds + 2 * nprune + src->nspred, src->fpred, src->nflt * sizeof(SiftColPred));
+	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred + src->nflt, sb_lo, sb_hi);
 }
 
 static SiftColOp
@@ -384,6 +388,22 @@ col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
 }
 
+/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+static bool
+nan_leaf(const SiftSrcLeaf *l)
+{
+	return l->typid == NUMERICOID && l->kind == SCL_SCALAR;
+}
+
+static void
+overflow_error(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
+			 errhint("Set sift.enable_agg to off for this query.")));
+}
+
 /* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
 static void
 col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
@@ -395,12 +415,8 @@ col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *v
 	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
 	n = v.n;
 	vec->ovf = NULL;
-	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
-	if (v.ovf && !(buf->ovf && l->typid == NUMERICOID && l->kind == SCL_SCALAR))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-				 errhint("Set sift.enable_agg to off for this query.")));
+	if (v.ovf && !(buf->ovf && nan_leaf(l)))
+		overflow_error();
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -451,8 +467,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	}
 	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
 	vec->ovf = NULL;
-	/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
-	if (info.ovf && buf->ovf && l->typid == NUMERICOID && l->kind == SCL_SCALAR)
+	if (info.ovf && buf->ovf && nan_leaf(l))
 	{
 		SiftColVec	v;
 
@@ -461,10 +476,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 		vec->ovf = buf->ovf;
 	}
 	else if (info.ovf)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-				 errhint("Set sift.enable_agg to off for this query.")));
+		overflow_error();
 	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->n = info.n;
@@ -510,6 +522,90 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
 }
 
+/* The values of a read of the rows idx[0..m) of a unit of nrow rows, at their rows in the leaf's buffer; the other rows are zero */
+static void
+col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
+{
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	size_t		m = v->n;
+	ColLeafBuf *b;
+
+	if (v->ovf && !nan_leaf(l))
+		overflow_error();
+	b = leaf_buf(src, leaf, nrow);
+	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
+	switch (l->vtype)
+	{
+		case SCV_I32:
+			for (size_t k = 0; k < m; k++)
+				((int32 *) b->data)[idx[k]] = (int32) v->i[k];
+			break;
+		case SCV_I64:
+			for (size_t k = 0; k < m; k++)
+				((int64 *) b->data)[idx[k]] = v->i[k];
+			break;
+		case SCV_F64:
+			for (size_t k = 0; k < m; k++)
+				((double *) b->data)[idx[k]] = v->f[k];
+			break;
+		case SCV_CODE:
+			for (size_t k = 0; k < m; k++)
+				((uint32 *) b->data)[idx[k]] = v->codes[k];
+			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes};
+			break;
+	}
+	vec->data = b->data;
+	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
+	vec->n = nrow;
+	vec->isnull = NULL;
+	vec->ovf = NULL;
+	if (v->ovf)
+	{
+		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+		for (size_t k = 0; k < m; k++)
+			if (sift_colsrc_bit(v->ovf, k))
+				b->ovf[idx[k] >> 6] |= UINT64CONST(1) << (idx[k] & 63);
+		vec->ovf = b->ovf;
+	}
+	if (v->nulls)
+	{
+		memset(b->isnull, 0, nrow);
+		for (size_t k = 0; k < m; k++)
+			b->isnull[idx[k]] = sift_colsrc_bit(v->nulls, k);
+		vec->isnull = b->isnull;
+	}
+}
+
+/* A selection of the unit's rows, of the bits of the executor */
+static void
+col_sel(ColSource *src, const SiftSrcUnit *unit, const uint64 *bits, SiftColSel *sel)
+{
+	sift_col_sel_alloc(src->cs, unit->nrow, sel);
+	memcpy(sel->bits, bits, sel->nwords * sizeof(uint64));
+	sift_col_sel_count(sel);
+}
+
+static void
+col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
+{
+	ColSource  *src = impl;
+	SiftColSel	sel;
+	SiftColVec	v;
+	uint32	   *idx;
+
+	if (src->sel.keep && src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
+	{
+		col_read(impl, unit, leaf, vec);
+		return;
+	}
+	col_sel(src, unit, bits, &sel);
+	idx = MemoryContextAlloc(src->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_sel_idx(&sel, idx);
+	sift_col_read(&src->unit, leaf, &sel, &v);
+	col_scatter(src, leaf, &v, idx, unit->nrow, vec);
+	pfree(idx);
+}
+
 static void
 col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
@@ -524,6 +620,144 @@ col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	ColSource  *src = impl;
 
 	sift_aggsel_vet(&src->sel, src->cs, &src->unit, bits);
+}
+
+/* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
+
+static const SiftColOp filter_ops[] = {
+	[SSF_EQ] = SIFT_COLOP_EQ, [SSF_NE] = SIFT_COLOP_NE, [SSF_LT] = SIFT_COLOP_LT, [SSF_LE] = SIFT_COLOP_LE, [SSF_GT] = SIFT_COLOP_GT,
+	[SSF_GE] = SIFT_COLOP_GE, [SSF_IN] = SIFT_COLOP_IN, [SSF_NOTIN] = SIFT_COLOP_NOTIN, [SSF_NOTNULL] = SIFT_COLOP_NOTNULL
+};
+
+/* the engine predicate of a filter; false when the leaf is not one the engine tests as integers on its chunks */
+static bool
+filter_pred(ColSource *src, const SiftSrcFilter *f, SiftColPred *p)
+{
+	const SiftColDef *def = sift_col_def(src->cs, f->leaf);
+	bool		set = f->op == SSF_IN || f->op == SSF_NOTIN;
+	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
+	SiftColValue *vals;
+
+	if (def->parent >= 0 || def->store != SIFT_COLS_INT)
+		return false;
+	vals = MemoryContextAllocZero(src->cxt, Max(nvals, 1) * sizeof(SiftColValue));
+	for (int i = 0; i < nvals; i++)
+		vals[i].v.i = set ? f->set[i] : f->val;
+	*p = (SiftColPred) {f->leaf, filter_ops[f->op], nvals, vals};
+	return true;
+}
+
+static uint64
+col_set_filters(void *impl, const SiftSrcFilter *f, int nf)
+{
+	ColSource  *src = impl;
+	uint64		ok = 0;
+
+	src->fpred = MemoryContextAlloc(src->cxt, Max(nf, 1) * sizeof(SiftColPred));
+	src->nflt = 0;
+	for (int i = 0; i < nf; i++)
+		if (filter_pred(src, &f[i], &src->fpred[src->nflt]))
+		{
+			src->nflt++;
+			ok |= UINT64CONST(1) << i;
+		}
+	return ok;
+}
+
+/*
+ * The share of the unit's rows the predicate keeps, from the zone of its leaf (the values spread evenly between min and max): what orders
+ * the filters of a unit, the most selective first, and tells nothing else
+ */
+static double
+filter_share(ColSource *src, const SiftColPred *p)
+{
+	SiftColZone z;
+	double		span,
+				live,
+				c = p->nvals > 0 ? (double) p->vals[0].v.i : 0.0;
+
+	sift_col_zone(&src->unit, p->col, &z);
+	live = z.nvals > 0 ? (double) (z.nvals - z.nnull) / z.nvals : 0.0;
+	if (p->op == SIFT_COLOP_NOTNULL || z.nnull == z.nvals || z.has_ovf)
+		return live;
+	span = (double) z.max - (double) z.min + 1.0;
+	switch (p->op)
+	{
+		case SIFT_COLOP_EQ:
+			return live / span;
+		case SIFT_COLOP_NE:
+			return live * (1.0 - 1.0 / span);
+		case SIFT_COLOP_IN:
+			return live * Min(1.0, p->nvals / span);
+		case SIFT_COLOP_NOTIN:
+			return live * Max(0.0, 1.0 - p->nvals / span);
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			return live * Min(1.0, Max(0.0, (c - z.min + (p->op == SIFT_COLOP_LE)) / span));
+		default:
+			return live * Min(1.0, Max(0.0, (z.max - c + (p->op == SIFT_COLOP_GE)) / span));
+	}
+}
+
+/*
+ * The engine keeps the rows whose value overflowed (stored as NULL, flagged): for a numeric leaf those are the NaNs, which pass the
+ * comparisons that a number greater than all others passes (> >= <> and "not null") and no other. The others are cleared from sel.
+ */
+static void
+clear_nan_rows(ColSource *src, const SiftColPred *p, SiftColSel *sel)
+{
+	SiftColVec	v;
+
+	if (p->op == SIFT_COLOP_GT || p->op == SIFT_COLOP_GE || p->op == SIFT_COLOP_NE || p->op == SIFT_COLOP_NOTNULL || p->op == SIFT_COLOP_NOTIN)
+		return;
+	sift_col_read(&src->unit, p->col, NULL, &v);
+	for (uint32 w = 0; v.ovf && w < sel->nwords; w++)
+		sel->bits[w] &= ~v.ovf[w];
+	sift_col_sel_count(sel);
+}
+
+/* the filters of the source on the unit as stored, the most selective first */
+static void
+filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
+{
+	ColSource  *src = arg;
+	double		share[SIFT_COLSRC_MAX_FILTERS];
+	int			order[SIFT_COLSRC_MAX_FILTERS];
+
+	for (int i = 0; i < src->nflt; i++)
+	{
+		int			j = i;
+
+		share[i] = filter_share(src, &src->fpred[i]);
+		for (; j > 0 && share[order[j - 1]] > share[i]; j--)
+			order[j] = order[j - 1];
+		order[j] = i;
+	}
+	for (int i = 0; i < src->nflt; i++)
+	{
+		const SiftColPred *p = &src->fpred[order[i]];
+		SiftColZone z;
+
+		sift_col_zone(cu, p->col, &z);
+		if (z.has_ovf && !nan_leaf(&src->lay->leaf[p->col]))
+			overflow_error();
+		if (!sift_col_filter(cu, p, 1, sel))
+			break;
+		if (z.has_ovf)
+			clear_nan_rows(src, p, sel);
+	}
+}
+
+static bool
+col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	ColSource  *src = impl;
+	uint64		left = 0;
+
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, filter_op, src);
+	for (int w = 0; w < (unit->nrow + 63) / 64; w++)
+		left += sift_pc64(bits[w]);
+	return left > 0;
 }
 
 static void
@@ -652,6 +886,9 @@ static const SiftSrcProvider col_provider = {
 	.leaf_n = col_leaf_n,
 	.read_into = col_read_into,
 	.select = col_select,
+	.set_filters = col_set_filters,
+	.filter = col_filter,
+	.read_sel = col_read_sel,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 	.preagg = col_preagg,
