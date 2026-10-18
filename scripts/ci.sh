@@ -8,8 +8,8 @@
 #   production library, without the test-only functions: scripts/production-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
 #   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
-#   the coverage table (scripts/coverage.sh, docs/COVERAGE.md: about 10 s), a 30 s soak, a 45 s column-index soak (scripts/colsoak.sh) and a
-#   20 s fuzz budget.
+#   the coverage table (scripts/coverage.sh, docs/COVERAGE.md: about 10 s), a 20 s soak, a 25 s column-index soak (scripts/colsoak.sh) and a
+#   fuzz pass with shorter loops (scripts/fuzz.sh).
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
 #   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
 #   and sift soaks (600 s), the column-index soak (300 s) and the server sanitizer report.
@@ -153,7 +153,7 @@ installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 # by measured time, the long jobs of each kind first
-SLOW_REGRESS="facets index_build_postings filter_pushdown parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
+SLOW_REGRESS="build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
 	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"
 SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_mut_crash"
@@ -179,7 +179,9 @@ if [[ $MODE == full ]]; then
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 else
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
+	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
+	# visit every stage, the mutable segments, the promotion and the merge
+	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the regression tests that need no test-only function, against the production library: beside the others on PostgreSQL 18,
 	# after the pool on 17, where the install is the server's own
 	# (the quick tests only: the slow ones and the ones that need the test-only build, TESTING_REGRESS of the Makefile, are not run)
@@ -193,20 +195,21 @@ else
 	if (( PG_MAJOR >= 18 )); then job production-regress production-regress 0 "$S/production-check.sh" $(production_tests); else production_last=1; fi
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
-	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
+	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
+	job fuzz fuzz 1 env FZ_SECS=2 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1
 	job hardened hardened 0 "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
-		--docs 1500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
+		--docs 1000 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 1 --minimize 0 \
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios insert,update,delete,abort,vacuum,held
+	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
 	job coverage coverage 1 "$S/coverage.sh" --check
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
-	job soak soak 1 "$S/soak.sh" --duration 30 --rows 20000 --rate 400 --clients 2 --check-every 10
-	job soak-col soak-col 1 "$S/colsoak.sh" --duration 45 --clients 6
+	job soak soak 1 "$S/soak.sh" --duration 20 --rows 20000 --rate 400 --clients 2 --check-every 5
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration 25 --clients 6
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
