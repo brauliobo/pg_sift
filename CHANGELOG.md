@@ -25,7 +25,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   4 GB). A pass now gathers at most 128 MB, then counts the postings of every superblock and builds the superblocks in windows that fit
   it (a superblock that alone does not fit sums the term frequencies as they come, 128 kB); the result is the same blob, bit for bit. A
   prefix that fits the budget (every one before) takes the same single pass as before. The scan of the dictionary and of the postings
-  of the expansion serves cancel and `statement_timeout` at every block and group (a buffer lock held during the scan held them off).
+  of the expansion serves cancel and `statement_timeout` every 16 dictionary blocks and at every group (a buffer lock held during the scan held them off).
 - Changed: a regular expression leaf cannot have back-references (`/(a+)\1/`): they make a match exponential in the length of the term.
   The query fails at parse time like any invalid expression.
 
