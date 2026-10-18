@@ -140,6 +140,7 @@ SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = '64MB';
 REINDEX INDEX pa_col;
+SELECT segments > 1 AS workers_wrote_segments FROM sift.col_index_info('pa_col');
 SELECT sift.col_verify('pa_col');
 SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col');
 RESET max_parallel_maintenance_workers;
