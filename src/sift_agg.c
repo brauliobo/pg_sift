@@ -20,8 +20,10 @@
 
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
@@ -274,6 +276,93 @@ typedef struct AggAcc
 	uint8	   *nf;				/* float sums: a non-finite input was added */
 } AggAcc;
 
+/* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
+
+/* the distinct values of a dictionary leaf over all the dictionaries of the scan: ids 1.. */
+typedef struct Intern
+{
+	uint32		n;
+	uint32		cap;
+	uint32		nslot;
+	const char **ptr;
+	uint32	   *len;
+	uint32	   *hv;
+	uint32	   *slot;
+} Intern;
+
+/* the rows of a joined table, hashed by their key columns; the columns the expressions read are kept as Datums */
+typedef struct MapTab
+{
+	int			nkey;
+	int			ncol;
+	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	uint32		nrow;
+	uint32		cap;
+	const char **kptr;			/* [row * nkey + k] text keys */
+	uint32	   *klen;
+	int64	   *kint;			/* integer keys */
+	Datum	   *col;			/* [row * ncol + c] */
+	bool	   *cnull;
+	uint32	   *hv;
+	uint32	   *next;			/* row + 1 of the next row of the bucket */
+	uint32		nslot;
+	uint32	   *head;
+} MapTab;
+
+typedef struct ComboEnt
+{
+	uint32		nout;			/* output rows of the tuple: its matches, one row of NULLs (LEFT JOIN) or none (INNER) */
+	uint32		base;			/* first output row */
+} ComboEnt;
+
+typedef struct ComboSt
+{
+	Intern		in[SIFT_AGG_MAX_CLEAVES];
+	MapTab	   *map;
+	ExprState **slot;
+	uint32		nent;
+	uint32		entcap;
+	uint64	   *vid;			/* [ent * SIFT_AGG_MAX_CLEAVES]: 0 NULL, else the value's id in `in` / the integer + 1 */
+	ComboEnt   *ent;
+	uint32		nht;
+	uint32	   *ht;				/* ent + 1 */
+	uint32		nout;
+	uint32		outcap;
+	uint32	   *val;			/* [out * nslots + slot]: key id (0 NULL) or boolean */
+} ComboSt;
+
+/* the tuples of a chunk that reach the aggregates: positions in the chunk, element and row ordinals, and the output row of every join combo */
+typedef struct Tup
+{
+	int			n;
+	uint32	   *sel;
+	uint32	   *tidx;
+	uint32	   *ridx;
+	uint32	   *cout[SIFT_AGG_MAX_COMBOS];
+} Tup;
+
+/* the state of one arm of a two level query (SiftAggArm): per tuple of the chunk, and per outer group the inner aggregates of the current row */
+typedef struct ArmSt
+{
+	uint32	   *gid;
+	uint8	   *ok;				/* the arm's filters hold */
+	uint8	  **iok;			/* per inner aggregate: it takes the tuple */
+	double	  **dx;				/* its float8 value */
+	int64	  **ix;				/* its integer value */
+	uint64	   *ord;			/* per outer group: the row its cell holds, UINT64_MAX none */
+	int64	  **n;				/* per inner aggregate and group */
+	int64	  **i;
+	double	  **d;
+	uint8	  **nf;
+	double	   *amax;			/* per inner aggregate: the largest absolute float input */
+} ArmSt;
+
+typedef struct Touch
+{
+	uint32		arm;
+	uint32		g;
+} Touch;
+
 typedef struct AggExec
 {
 	CustomScanState css;
@@ -283,10 +372,31 @@ typedef struct AggExec
 	Relation	index;
 	SiftSrcSource *src;
 	const SiftSrcLayout *lay;
+	int			nbase;			/* leaves of the source: the ones after are SiftAggSpec.vleaf */
+	struct
+	{
+		int			key;		/* leaves of the object: its "key" and "value" */
+		int			val;
+		const void *dict;		/* the dictionary of the last unit and the code of the key in it */
+		uint32		code;
+	}			vl[SIFT_AGG_MAX_VLEAVES];
 	MemoryContext cxt;			/* the scan */
 	MemoryContext ucxt;			/* one unit */
 	ExprContext *lutcx;
-	ParamExecData lutparam;
+	ParamExecData lutparams[SIFT_AGG_MAX_PARAMS];
+	ComboSt    *cs;
+	int			clbase[SIFT_AGG_MAX_COMBOS];	/* per combo: its first dictionary map slot (after the keys and aggregates) */
+	int			ncl;
+	int			nj;				/* join combos, in the order the stages apply them */
+	int			jcombo[SIFT_AGG_MAX_JOINS];
+	MemoryContext tcxt;			/* temporaries of one combo entry */
+	ArmSt	   *arm;
+	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's */
+	uint32		gen;			/* changes when the group indexes are renumbered */
+	Touch	   *touched;		/* the cells of the current row */
+	uint32		ntouch;
+	uint32		captouch;
+	uint64		cur_order;
 	PredState  *ps;
 	KeyState   *ks;
 	DictSlot	dslot[NDICT_SLOTS];
@@ -318,10 +428,23 @@ typedef struct AggExec
 	uint32	   *offs;
 	int			nelem;
 	uint64		row_base;		/* unique number of the unit's first row */
-	/* scratch */
+	/* the tuples being aggregated (the arrays of cur) */
+	Tup			t0;				/* the chunk's selection */
+	Tup			stage[SIFT_AGG_MAX_JOINS];	/* the output of each join stage that repeats or drops tuples */
+	Tup		   *cur;
+	int			cstart;			/* the chunk: [cstart, cstart + cn) of the unit's rows / elements */
+	int			cn;
 	uint32	   *sel;
 	uint32	   *tidx;
 	uint32	   *ridx;
+	uint32	   *seid[SIFT_AGG_MAX_JOINS];	/* the entries of the tuples a stage that repeats them is working on */
+	/* scratch of combos */
+	uint64	   *cvid[SIFT_AGG_MAX_CLEAVES];
+	uint32	   *cfree[SIFT_AGG_MAX_COMBOS];	/* output row per tuple of a combo without a join */
+	bool		cfree_ok[SIFT_AGG_MAX_COMBOS];
+	uint32	   *peid;
+	uint32	   *pti;
+	uint32	   *pri;
 	uint32	   *gid;
 	uint32	   *kids;			/* hash mode: ids per key, SIFT_AGG_MAX_KEYS * VEC */
 	uint32	   *cu32;
@@ -410,8 +533,8 @@ find_param(Node *expr)
 static Datum
 eval_with(AggExec *ex, ExprState *e, Datum in, bool in_null, bool *isnull)
 {
-	ex->lutparam.value = in;
-	ex->lutparam.isnull = in_null;
+	ex->lutparams[0].value = in;
+	ex->lutparams[0].isnull = in_null;
 	return ExecEvalExprSwitchContext(e, ex->lutcx, isnull);
 }
 
@@ -433,7 +556,7 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 {
 	DictSlot   *s;
 	int			np = Max(ex->spec->npreds_total, 1),
-				nk = Max(ex->spec->nkeys + ex->spec->naggs, 1);
+				nk = Max(ex->spec->nkeys + ex->spec->naggs + ex->ncl, 1);
 
 	for (int i = 0; i < NDICT_SLOTS; i++)
 		if (ex->dslot[i].id == d->id && d->id != NULL)
@@ -557,12 +680,93 @@ dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 
 /* ---------- unit data ---------- */
 
+static const SiftSrcVec *get_vec(AggExec *ex, int leaf);
+
+static void
+extend_layout(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcLayout *lay = MemoryContextAlloc(ex->cxt, sizeof(SiftSrcLayout));
+
+	ex->nbase = ex->lay->nleaves;
+	if (s->nvleaf == 0)
+		return;
+	*lay = *ex->lay;
+	lay->leaf = MemoryContextAllocZero(ex->cxt, (ex->nbase + s->nvleaf) * sizeof(SiftSrcLeaf));
+	memcpy(lay->leaf, ex->lay->leaf, ex->nbase * sizeof(SiftSrcLeaf));
+	for (int j = 0; j < s->nvleaf; j++)
+	{
+		SiftSrcLeaf *v = &lay->leaf[ex->nbase + j];
+
+		for (int i = 0; i < ex->nbase; i++)
+			if (lay->leaf[i].parent == s->vleaf[j].obj)
+				*(strcmp(lay->leaf[i].name, "key") == 0 ? &ex->vl[j].key : &ex->vl[j].val) = i;
+		v->id = ex->nbase + j;
+		v->attno = lay->leaf[s->vleaf[j].obj].attno;
+		v->parent = -1;
+		v->kind = SCL_SCALAR;
+		v->vtype = lay->leaf[ex->vl[j].val].vtype;
+		v->typid = lay->leaf[ex->vl[j].val].typid;
+	}
+	lay->nleaves += s->nvleaf;
+	ex->lay = lay;
+}
+
+static uint32
+dict_code(const SiftSrcDict *d, const char *key)
+{
+	size_t		len = strlen(key);
+
+	for (uint32 c = 0; c < d->n; c++)
+		if (d->off[c + 1] - d->off[c] == len && memcmp(d->bytes + d->off[c], key, len) == 0)
+			return c;
+	return PG_UINT32_MAX;
+}
+
+/* the leaf of a SiftAggVLeaf: per row the value of its element with the key, NULL where it has none */
+static void
+read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
+{
+	int			j = leaf - ex->nbase,
+				nrow = ex->unit.nrow;
+	const SiftSrcVec *cnt = get_vec(ex, ex->spec->vleaf[j].obj),
+			   *key = get_vec(ex, ex->vl[j].key),
+			   *val = get_vec(ex, ex->vl[j].val);
+	size_t		esz = ex->lay->leaf[leaf].vtype == SCV_I64 || ex->lay->leaf[leaf].vtype == SCV_F64 ? 8 : 4;
+	const int32 *c = cnt->data;
+	const uint32 *kc = key->data;
+	char	   *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, nrow * esz + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+	uint8	   *isnull = MemoryContextAlloc(ex->ucxt, nrow + SIFT_AGG_PAD);
+	uint32		e = 0;
+
+	if (ex->vl[j].dict != key->dict->id)
+	{
+		ex->vl[j].dict = key->dict->id;
+		ex->vl[j].code = dict_code(key->dict, ex->spec->vleaf[j].key);
+	}
+	memset(isnull, 1, nrow);
+	for (int r = 0; r < nrow; r++)
+		for (int n = (cnt->isnull && cnt->isnull[r]) ? 0 : Max(c[r], 0); n > 0; n--, e++)
+			if (kc[e] == ex->vl[j].code)
+			{
+				memcpy(data + r * esz, (const char *) val->data + e * esz, esz);
+				isnull[r] = val->isnull ? val->isnull[e] : 0;
+			}
+	out->data = data;
+	out->isnull = isnull;
+	out->dict = val->dict;
+	out->n = nrow;
+}
+
 static const SiftSrcVec *
 get_vec(AggExec *ex, int leaf)
 {
 	if (!ex->uvec_ok[leaf])
 	{
-		sift_colsrc_read(ex->src, &ex->unit, leaf, &ex->uvec[leaf]);
+		if (leaf >= ex->nbase)
+			read_vleaf(ex, leaf, &ex->uvec[leaf]);
+		else
+			sift_colsrc_read(ex->src, &ex->unit, leaf, &ex->uvec[leaf]);
 		ex->uvec_ok[leaf] = true;
 	}
 	return &ex->uvec[leaf];
@@ -831,6 +1035,453 @@ eval_null(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 		negate(ex, out, n);
 }
 
+/* ---------- combos and lookup joins ---------- */
+
+#define CHUNK_PAD	(VEC + PADW)
+
+/* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
+static uint32
+intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
+{
+	uint32		hv = hash_bytes((const unsigned char *) b, len),
+				h;
+	char	   *cp;
+
+	if (t->nslot == 0)
+	{
+		t->nslot = 64;
+		t->cap = 16;
+		t->slot = MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32));
+		t->ptr = MemoryContextAlloc(ex->cxt, t->cap * sizeof(char *));
+		t->len = MemoryContextAlloc(ex->cxt, t->cap * sizeof(uint32));
+		t->hv = MemoryContextAlloc(ex->cxt, t->cap * sizeof(uint32));
+	}
+	h = hv & (t->nslot - 1);
+	for (uint32 id; (id = t->slot[h]) != 0; h = (h + 1) & (t->nslot - 1))
+		if (t->hv[id - 1] == hv && t->len[id - 1] == len && memcmp(t->ptr[id - 1], b, len) == 0)
+			return id;
+	if (t->n == t->cap)
+	{
+		t->cap *= 2;
+		t->ptr = repalloc(t->ptr, t->cap * sizeof(char *));
+		t->len = repalloc(t->len, t->cap * sizeof(uint32));
+		t->hv = repalloc(t->hv, t->cap * sizeof(uint32));
+	}
+	cp = MemoryContextAlloc(ex->cxt, len + 1);
+	memcpy(cp, b, len);
+	cp[len] = '\0';
+	t->ptr[t->n] = cp;
+	t->len[t->n] = len;
+	t->hv[t->n] = hv;
+	t->slot[h] = ++t->n;
+	if (t->n * 2 > t->nslot)
+	{
+		pfree(t->slot);
+		t->nslot *= 2;
+		t->slot = MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32));
+		for (uint32 id = 1; id <= t->n; id++)
+		{
+			h = t->hv[id - 1] & (t->nslot - 1);
+			while (t->slot[h])
+				h = (h + 1) & (t->nslot - 1);
+			t->slot[h] = id;
+		}
+	}
+	return t->n;
+}
+
+/* the ids over all dictionaries of the entries of d, for dictionary leaf p of combo ci */
+static uint32 *
+dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
+{
+	int			slot = ex->spec->nkeys + ex->spec->naggs + ex->clbase[ci] + p;
+	uint32	   *map = s->kmap[slot];
+
+	if (map)
+		return map;
+	map = MemoryContextAlloc(ex->cxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
+	for (uint32 c = 0; c < d->n; c++)
+		map[c] = intern_id(ex, &ex->cs[ci].in[p], d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	map[d->n] = 0;
+	s->kmap[slot] = map;
+	return map;
+}
+
+static uint32
+map_hash(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv)
+{
+	uint32		h = 0x9E3779B9;
+
+	for (int k = 0; k < m->nkey; k++)
+		h = hash_combine(h, m->ktext[k] ? hash_bytes((const unsigned char *) ptr[k], len[k]) :
+						 murmurhash32((uint32) (iv[k] ^ (iv[k] >> 32))));
+	return h;
+}
+
+static bool
+map_key_eq(const MapTab *m, uint32 row, const char **ptr, const uint32 *len, const int64 *iv)
+{
+	for (int k = 0; k < m->nkey; k++)
+	{
+		size_t		i = (size_t) row * m->nkey + k;
+
+		if (m->ktext[k] ? (m->klen[i] != len[k] || memcmp(m->kptr[i], ptr[k], len[k]) != 0) : m->kint[i] != iv[k])
+			return false;
+	}
+	return true;
+}
+
+/* the rows whose key equals the one given; palloc'd in the current context */
+static int
+map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
+{
+	uint32		h = map_hash(m, ptr, len, iv);
+	int			n = 0;
+
+	*rows = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	for (uint32 r = m->head[h & (m->nslot - 1)]; r != 0; r = m->next[r - 1])
+		if (m->hv[r - 1] == h && map_key_eq(m, r - 1, ptr, len, iv))
+			(*rows)[n++] = r - 1;
+	return n;
+}
+
+static void
+map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
+{
+	size_t		kb = (size_t) m->nrow * m->nkey,
+				cb = (size_t) m->nrow * m->ncol;
+	Datum		kd[SIFT_AGG_MAX_JKEYS];
+
+	for (int k = 0; k < m->nkey; k++)
+	{
+		bool		isnull;
+
+		kd[k] = slot_getattr(slot, j->keyatt[k], &isnull);
+		if (isnull)
+			return;				/* NULL equals nothing */
+	}
+	if (m->nrow == m->cap)
+	{
+		m->cap = Max(m->cap * 2, 256);
+		m->kptr = m->kptr ? repalloc(m->kptr, (size_t) m->cap * m->nkey * sizeof(char *)) :
+			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(char *));
+		m->klen = m->klen ? repalloc(m->klen, (size_t) m->cap * m->nkey * sizeof(uint32)) :
+			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(uint32));
+		m->kint = m->kint ? repalloc(m->kint, (size_t) m->cap * m->nkey * sizeof(int64)) :
+			MemoryContextAlloc(ex->cxt, (size_t) m->cap * m->nkey * sizeof(int64));
+		m->col = m->col ? repalloc(m->col, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum)) :
+			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1) * sizeof(Datum));
+		m->cnull = m->cnull ? repalloc(m->cnull, (size_t) m->cap * Max(m->ncol, 1)) :
+			MemoryContextAlloc(ex->cxt, (size_t) m->cap * Max(m->ncol, 1));
+	}
+	for (int k = 0; k < m->nkey; k++)
+	{
+		if (m->ktext[k])
+		{
+			struct varlena *v = PG_DETOAST_DATUM_COPY(kd[k]);
+
+			m->kptr[kb + k] = VARDATA_ANY(v);
+			m->klen[kb + k] = VARSIZE_ANY_EXHDR(v);
+		}
+		else
+			m->kint[kb + k] = operand_int(j->keytype[k], kd[k]);
+	}
+	for (int c = 0; c < m->ncol; c++)
+	{
+		int16		len;
+		bool		byval;
+		Datum		d = slot_getattr(slot, j->colatt[c], &m->cnull[cb + c]);
+
+		get_typlenbyval(j->coltype[c], &len, &byval);
+		m->col[cb + c] = m->cnull[cb + c] ? (Datum) 0 : byval ? d : len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) :
+			datumCopy(d, byval, len);
+	}
+	m->nrow++;
+}
+
+/* the rows of the joined table, visible to the scan's snapshot, hashed by key */
+static MapTab *
+map_load(AggExec *ex, const SiftAggJoin *j)
+{
+	MapTab	   *m;
+	Relation	rel = table_open(j->relid, AccessShareLock);
+	TableScanDesc scan = table_beginscan(rel, ex->css.ss.ps.state->es_snapshot, 0, NULL);
+	TupleTableSlot *slot = table_slot_create(rel, NULL);
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	m = palloc0(sizeof(MapTab));
+	m->nkey = j->nkey;
+	m->ncol = j->ncol;
+	for (int k = 0; k < j->nkey; k++)
+		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		map_add(ex, m, slot, j);
+	m->nslot = 64;
+	while (m->nslot < 2 * m->nrow)
+		m->nslot *= 2;
+	m->head = palloc0(m->nslot * sizeof(uint32));
+	m->next = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	m->hv = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	for (uint32 r = m->nrow; r-- > 0;)
+	{
+		uint32		h = map_hash(m, m->kptr + (size_t) r * m->nkey, m->klen + (size_t) r * m->nkey, m->kint + (size_t) r * m->nkey);
+
+		m->hv[r] = h;
+		m->next[r] = m->head[h & (m->nslot - 1)];
+		m->head[h & (m->nslot - 1)] = r + 1;
+	}
+	MemoryContextSwitchTo(old);
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+	table_close(rel, NoLock);
+	return m;
+}
+
+static void
+bind_param(AggExec *ex, int i, Datum d, bool isnull)
+{
+	ex->lutparams[i].value = d;
+	ex->lutparams[i].isnull = isnull;
+}
+
+/* the leaf values of an entry (v: ids) as the Params of the combo's expressions */
+static void
+combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	ComboSt    *cs = &ex->cs[ci];
+
+	for (int p = 0; p < cb->nleaves; p++)
+	{
+		if (v[p] == 0)
+			bind_param(ex, p, (Datum) 0, true);
+		else if (ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
+			bind_param(ex, p, text_datum(cb->ptype[p], cb->ptypmod[p], cs->in[p].ptr[v[p] - 1], cs->in[p].len[v[p] - 1]), false);
+		else
+			bind_param(ex, p, leaf_datum(cb->ptype[p], (int32) (v[p] - 1)), false);
+	}
+}
+
+/* the matching rows of the entry's key (none when a key leaf is NULL) */
+static int
+combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ComboSt    *cs = &ex->cs[ci];
+	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
+	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
+	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+
+	*rows = NULL;
+	for (int k = 0; k < j->nkey; k++)
+	{
+		int			p = j->keypos[k];
+
+		if (v[p] == 0)
+			return 0;
+		if (cs->map->ktext[k])
+		{
+			ptr[k] = cs->in[p].ptr[v[p] - 1];
+			len[k] = cs->in[p].len[v[p] - 1];
+		}
+		else
+			iv[k] = (int32) (v[p] - 1);
+	}
+	return map_find(cs->map, ptr, len, iv, rows);
+}
+
+static void
+combo_grow_out(AggExec *ex, ComboSt *cs, int nslots, uint32 add)
+{
+	if (cs->nout + add > cs->outcap)
+	{
+		cs->outcap = Max(Max(cs->outcap * 2, cs->nout + add), 64);
+		cs->val = cs->val ? repalloc(cs->val, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32)) :
+			MemoryContextAlloc(ex->cxt, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
+	}
+}
+
+/* evaluates the slots of a new entry for every output row */
+static void
+combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = cb->join >= 0 ? &ex->spec->join[cb->join] : NULL;
+	ComboSt    *cs = &ex->cs[ci];
+	MapTab	   *m = cs->map;
+	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+	uint32	   *rows = NULL;
+	int			nm = 0;
+	uint32		nout;
+
+	combo_bind_leaves(ex, ci, v);
+	if (j)
+		nm = combo_matches(ex, ci, v, &rows);
+	nout = j == NULL ? 1 : nm > 0 ? nm : j->left ? 1 : 0;
+	combo_grow_out(ex, cs, cb->nslots, nout);
+	ent->nout = nout;
+	ent->base = cs->nout;
+	for (uint32 o = 0; o < nout; o++)
+	{
+		for (int c = 0; j && c < j->ncol; c++)
+			bind_param(ex, cb->nleaves + c, nm > 0 ? m->col[(size_t) rows[o] * m->ncol + c] : (Datum) 0, nm == 0 || m->cnull[(size_t) rows[o] * m->ncol + c]);
+		for (int sl = 0; sl < cb->nslots; sl++)
+		{
+			bool		isnull;
+			Datum		d = ExecEvalExprSwitchContext(cs->slot[sl], ex->lutcx, &isnull);
+			uint32		r;
+
+			if (!cb->slot[sl].is_key)
+				r = !isnull && DatumGetBool(d);
+			else if (isnull)
+				r = 0;
+			else
+			{
+				MemoryContextSwitchTo(ex->cxt);
+				r = ot_id(&ex->ks[cb->slot[sl].key].ot, d);
+				MemoryContextSwitchTo(ex->tcxt);
+			}
+			cs->val[(size_t) cs->nout * cb->nslots + sl] = r;
+		}
+		cs->nout++;
+		ResetExprContext(ex->lutcx);
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(ex->tcxt);
+}
+
+static inline uint32
+combo_hash(const uint64 *v)
+{
+	uint64		h = (v[0] * UINT64CONST(0x9E3779B97F4A7C15)) ^ (v[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (v[2] * UINT64CONST(0x165667B19E3779F9));
+
+	return (uint32) (h ^ (h >> 29));
+}
+
+/* the entry of a tuple of leaf values, made on its first sight */
+static uint32
+combo_ent(AggExec *ex, int ci, const uint64 *v)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	uint32		h = combo_hash(v) & (cs->nht - 1),
+				e;
+
+	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
+		if (memcmp(&cs->vid[(size_t) (e - 1) * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) == 0)
+			return e - 1;
+	if (cs->nent == cs->entcap)
+	{
+		cs->entcap = Max(cs->entcap * 2, 64);
+		cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) :
+			MemoryContextAlloc(ex->cxt, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+		cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
+			MemoryContextAlloc(ex->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
+	}
+	if (cs->nent >= (uint32) 1 << 24)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
+				 errhint("Set sift.enable_agg to off for this query.")));
+	memcpy(&cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+	combo_make(ex, ci, v, &cs->ent[cs->nent]);
+	cs->ht[h] = ++cs->nent;
+	if (cs->nent * 2 > cs->nht)
+	{
+		pfree(cs->ht);
+		cs->nht *= 2;
+		cs->ht = MemoryContextAllocZero(ex->cxt, cs->nht * sizeof(uint32));
+		for (uint32 x = 0; x < cs->nent; x++)
+		{
+			h = combo_hash(&cs->vid[(size_t) x * SIFT_AGG_MAX_CLEAVES]) & (cs->nht - 1);
+			while (cs->ht[h])
+				h = (h + 1) & (cs->nht - 1);
+			cs->ht[h] = x + 1;
+		}
+	}
+	return cs->nent - 1;
+}
+
+/* eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx */
+static void
+combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+
+	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
+	{
+		uint64	   *vid = ex->cvid[p];
+
+		if (p >= cb->nleaves)
+		{
+			memset(vid, 0, n * sizeof(uint64));
+			continue;
+		}
+		else
+		{
+			const SiftSrcVec *v = get_vec(ex, cb->leaf[p]);
+			const uint32 *idx = leaf_lvl(ex, cb->leaf[p]) == qlevel ? tidx : ridx;
+			const uint32 *map = NULL;
+
+			if (ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
+				map = dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, p);
+			for (int i = 0; i < n; i++)
+			{
+				if (v->isnull && v->isnull[idx[i]])
+					vid[i] = 0;
+				else if (map)
+					vid[i] = map[((const uint32 *) v->data)[idx[i]]];
+				else
+					vid[i] = (uint64) (uint32) ((const int32 *) v->data)[idx[i]] + 1;
+			}
+		}
+	}
+	for (int i = 0; i < n; i++)
+	{
+		uint64		v[SIFT_AGG_MAX_CLEAVES] = {ex->cvid[0][i], ex->cvid[1][i], ex->cvid[2][i]};
+
+		eid[i] = combo_ent(ex, ci, v);
+	}
+}
+
+/* the output row of the combo for each of the current tuples */
+static const uint32 *
+combo_outs(AggExec *ex, int ci)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	uint32	   *o = ex->cfree[ci];
+
+	if (ex->spec->combo[ci].join >= 0)
+		return ex->cur->cout[ci];
+	if (!ex->cfree_ok[ci])
+	{
+		combo_resolve(ex, ci, ex->qlevel, ex->cur->n, ex->tidx, ex->ridx, o);
+		for (int i = 0; i < ex->cur->n; i++)
+			o[i] = cs->ent[o[i]].base;
+		ex->cfree_ok[ci] = true;
+	}
+	return o;
+}
+
+/* boolean slot p->op of a combo without a join, over [start, start + n) of the elements (qlevel 1) or rows */
+static void
+eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out)
+{
+	ComboSt    *cs = &ex->cs[p->leaf];
+	int			ns = ex->spec->combo[p->leaf].nslots;
+
+	for (int i = 0; i < n; i++)
+	{
+		ex->pti[i] = start + i;
+		ex->pri[i] = qlevel ? ex->parent[start + i] : start + i;
+	}
+	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid);
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+		if (cs->val[(size_t) cs->ent[ex->peid[i]].base * ns + p->op])
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
 typedef struct LutFill
 {
 	AggExec    *ex;
@@ -971,6 +1622,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_LUT:
 			eval_lut(ex, p, st, start, n, out);
 			break;
+		case SAP_COMBO:
+			eval_combo(ex, p, qlevel, start, n, out);
+			break;
 	}
 }
 
@@ -1057,9 +1711,15 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_SUM_F64:
 			case SAA_AVG_F64:
+			case SAA_O_SUM_F64:
+			case SAA_O_AVG_F64:
 				a[i].d = MemoryContextAllocZero(ex->cxt, cap * sizeof(double));
 				a[i].nf = MemoryContextAllocZero(ex->cxt, cap);
 				break;
+			case SAA_O_SUM_I64:
+				a[i].i = MemoryContextAllocZero(ex->cxt, cap * sizeof(int64));
+				break;
+			case SAA_O_COUNT_ROWS:
 			case SAA_COUNT_ROWS:
 				a[i].last = MemoryContextAlloc(ex->cxt, cap * sizeof(uint64));
 				memset(a[i].last, 0xff, cap * sizeof(uint64));
@@ -1070,6 +1730,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 	}
 	return a;
 }
+
+static void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 
 /* every per-group array to newcap groups; remap[old] = new index (UINT32_MAX: drop), NULL: identity */
 static void
@@ -1105,6 +1767,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 		for (int i = 0; i < ex->spec->naggs; i++)
 			if (ex->dset[i].slot)
 				dset_grow(ex, &ex->dset[i], remap);
+	arms_resize(ex, newcap, remap, oldcap);
+	ex->gen++;
 	ex->seen = nseen;
 	ex->acc = na;
 	ex->gcap = newcap;
@@ -1343,9 +2007,30 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 {
 	SiftAggKey *sk = &ex->spec->key[ki];
 	KeyState   *k = &ex->ks[ki];
-	const SiftSrcVec *v = get_vec(ex, sk->leaf);
-	const SiftSrcLeaf *lf = &ex->lay->leaf[sk->leaf];
+	const SiftSrcVec *v;
+	const SiftSrcLeaf *lf;
 
+	if (!(ex->arm_mask >> ki & 1))
+	{
+		memset(vals_out, 0, nsel * sizeof(uint32));	/* NULL in this arm */
+		*map_out = NULL;
+		*base_out = 0;
+		return;
+	}
+	if (sk->kind == SAK_COMBO)
+	{
+		const uint32 *out = combo_outs(ex, sk->leaf);
+		const uint32 *val = ex->cs[sk->leaf].val;
+		int			ns = ex->spec->combo[sk->leaf].nslots;
+
+		for (int i = 0; i < nsel; i++)
+			vals_out[i] = val[(size_t) out[i] * ns + sk->slot];
+		*map_out = NULL;			/* the values are the ids */
+		*base_out = 0;
+		return;
+	}
+	v = get_vec(ex, sk->leaf);
+	lf = &ex->lay->leaf[sk->leaf];
 	sift_aggk->gather_u32(vals_out, (const uint32 *) v->data, idx, nsel);
 	if (lf->vtype == SCV_CODE)
 	{
@@ -1473,9 +2158,10 @@ compute_gids(AggExec *ex, int nsel)
 		/* make every id first: capacity checks need the final counts */
 		for (int j = 0; j < nk; j++)
 		{
-			const uint32 *idx;
+			const uint32 *idx = NULL;
 
-			gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
+			if (ex->spec->key[j].kind != SAK_COMBO)
+				gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 			vals[j] = ex->kids + (Size) j * (VEC + PADW);
 			key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals[j]);
 			if (key_used(&ex->ks[j]) > ex->ks[j].cap)
@@ -1488,10 +2174,11 @@ compute_gids(AggExec *ex, int nsel)
 			memset(ex->gid, 0, nsel * sizeof(uint32));
 			for (int j = 0; j < nk; j++)
 			{
-				const uint32 *idx;
-				const SiftSrcLeaf *lf = &ex->lay->leaf[ex->spec->key[j].leaf];
+				const uint32 *idx = NULL;
+				const SiftSrcLeaf *lf = ex->spec->key[j].kind == SAK_COMBO ? NULL : &ex->lay->leaf[ex->spec->key[j].leaf];
 
-				gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
+				if (lf)
+					gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 				if (maps[j] == NULL)
 					for (int i = 0; i < nsel; i++)
 						ex->gid[i] += vals[j][i] * ex->ks[j].mult;
@@ -1513,11 +2200,12 @@ compute_gids(AggExec *ex, int nsel)
 
 		for (int j = 0; j < nk; j++)
 		{
-			const uint32 *idx;
-			const SiftSrcLeaf *lf = &ex->lay->leaf[ex->spec->key[j].leaf];
+			const uint32 *idx = NULL;
+			const SiftSrcLeaf *lf = ex->spec->key[j].kind == SAK_COMBO ? NULL : &ex->lay->leaf[ex->spec->key[j].leaf];
 			uint32	   *vals = ex->kids + (Size) j * (VEC + PADW);
 
-			gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
+			if (lf)
+				gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 			key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals);
 			/* the ids themselves: gid = 0 + map[..] * 1 into a per key array */
 			{
@@ -1784,6 +2472,133 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 				if ((!ok || sift_colsrc_bit(ok, j)) && dset_add(ex, &ex->dset[ai], ex->gid[j], ex->cu32[j]))
 					acc->n[ex->gid[j]]++;
 			break;
+		default:
+			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
+	}
+}
+
+/* the conjuncts over the joined rows (boolean slots of the join combos): the tuples that pass, moved to the front; the new count */
+static int
+post_filter(AggExec *ex, Tup *t)
+{
+	int			k = 0;
+
+	for (int j = 0; j < t->n; j++)
+	{
+		bool		keep = true;
+
+		for (int i = 0; keep && i < ex->spec->npost; i++)
+		{
+			const SiftAggPred *p = ex->spec->post[i];
+
+			keep = ex->cs[p->leaf].val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
+		}
+		if (!keep)
+			continue;
+		t->sel[k] = t->sel[j];
+		t->tidx[k] = t->tidx[j];
+		t->ridx[k] = t->ridx[j];
+		for (int x = 0; x < ex->nj; x++)
+			t->cout[ex->jcombo[x]][k] = t->cout[ex->jcombo[x]][j];
+		k++;
+	}
+	return k;
+}
+
+static void arm_chunk(AggExec *ex, Tup *t);
+
+/* the tuples that passed the joins and the filters over the joined rows: their groups and aggregates */
+static void
+agg_tuples(AggExec *ex, Tup *t)
+{
+	SiftAggSpec *s = ex->spec;
+
+	ex->cur = t;
+	ex->sel = t->sel;
+	ex->tidx = t->tidx;
+	ex->ridx = t->ridx;
+	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	if (s->npost > 0)
+		t->n = post_filter(ex, t);
+	if (t->n == 0)
+		return;
+	if (s->narms > 0)
+	{
+		arm_chunk(ex, t);
+		return;
+	}
+	ex->n_tuples += t->n;
+	compute_gids(ex, t->n);
+	sift_aggk->count_gid(ex->seen, ex->gid, NULL, t->n);
+	for (int i = 0; i < s->naggs; i++)
+		agg_update(ex, i, ex->cstart, ex->cn, t->n);
+}
+
+/* applies the lookup joins one at a time: a tuple is repeated per match of its key, and dropped (INNER) or kept once (LEFT) without one */
+static void
+join_stage(AggExec *ex, int s, Tup *in)
+{
+	int			ci,
+				n = in->n;
+	ComboSt    *cs;
+	Tup		   *own;
+	uint32	   *eid;
+	bool		plain = true;
+
+	if (s == ex->nj)
+	{
+		agg_tuples(ex, in);
+		return;
+	}
+	ci = ex->jcombo[s];
+	cs = &ex->cs[ci];
+	own = &ex->stage[s];
+	eid = ex->peid;
+	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid);
+	for (int i = 0; i < n; i++)
+		plain &= cs->ent[eid[i]].nout == 1;
+	if (plain)
+	{
+		Tup			al = *in;
+
+		for (int i = 0; i < n; i++)
+			own->cout[ci][i] = cs->ent[eid[i]].base;
+		al.cout[ci] = own->cout[ci];
+		join_stage(ex, s + 1, &al);
+		return;
+	}
+	/* the entries of this stage's tuples stay in eid only until the next stage resolves its own: keep a copy */
+	eid = memcpy(ex->seid[s], eid, n * sizeof(uint32));
+	for (int j = 0, e = 0; j < n;)
+	{
+		int			k = 0;
+
+		for (; j < n && k < VEC; k++)
+		{
+			const ComboEnt *en = &cs->ent[eid[j]];
+
+			if (e >= en->nout)
+			{
+				j++;
+				e = 0;
+				k--;
+				continue;
+			}
+			own->sel[k] = in->sel[j];
+			own->tidx[k] = in->tidx[j];
+			own->ridx[k] = in->ridx[j];
+			for (int x = 0; x < s; x++)
+				own->cout[ex->jcombo[x]][k] = in->cout[ex->jcombo[x]][j];
+			own->cout[ci][k] = en->base + e;
+			if (++e >= en->nout)
+			{
+				j++;
+				e = 0;
+			}
+		}
+		own->n = k;
+		if (k > 0)
+			join_stage(ex, s + 1, own);
 	}
 }
 
@@ -1791,23 +2606,381 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 static void
 agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 {
-	int			nw = (n + 63) / 64,
-				nsel = sift_aggk->mask_sel(ex->sel, mask, nw);
+	Tup		   *t = &ex->t0;
+	int			nw = (n + 63) / 64;
 
-	if (nsel == 0)
+	t->n = sift_aggk->mask_sel(t->sel, mask, nw);
+	if (t->n == 0)
 		return;
-	ex->n_tuples += nsel;
-	for (int j = 0; j < nsel; j++)
-		ex->tidx[j] = start + ex->sel[j];
+	ex->cstart = start;
+	ex->cn = n;
+	for (int j = 0; j < t->n; j++)
+		t->tidx[j] = start + t->sel[j];
 	if (ex->spec->group >= 0)
-		for (int j = 0; j < nsel; j++)
-			ex->ridx[j] = ex->parent[ex->tidx[j]];
+		for (int j = 0; j < t->n; j++)
+			t->ridx[j] = ex->parent[t->tidx[j]];
 	else
-		memcpy(ex->ridx, ex->tidx, nsel * sizeof(uint32));
-	compute_gids(ex, nsel);
-	sift_aggk->count_gid(ex->seen, ex->gid, NULL, nsel);
-	for (int i = 0; i < ex->spec->naggs; i++)
-		agg_update(ex, i, start, n, nsel);
+		memcpy(t->ridx, t->tidx, t->n * sizeof(uint32));
+	join_stage(ex, 0, t);
+}
+
+/* ---------- two level: per-row aggregates under an outer aggregate ---------- */
+
+/* the cells of every arm to newcap groups, renumbered through remap (NULL: as they are); the touched list follows */
+static void
+arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
+{
+	SiftAggSpec *s = ex->spec;
+
+	for (int k = 0; k < s->narms; k++)
+	{
+		ArmSt	   *a = &ex->arm[k];
+		SiftAggArm *sa = &s->arm[k];
+		uint64	   *nord = MemoryContextAlloc(ex->cxt, newcap * sizeof(uint64));
+
+		memset(nord, 0xff, newcap * sizeof(uint64));
+		for (int ai = 0; ai < sa->ninner; ai++)
+		{
+			int64	   *nn = MemoryContextAllocZero(ex->cxt, newcap * sizeof(int64)),
+					   *ni = MemoryContextAllocZero(ex->cxt, newcap * sizeof(int64));
+			double	   *nd = MemoryContextAllocZero(ex->cxt, newcap * sizeof(double));
+			uint8	   *nnf = MemoryContextAllocZero(ex->cxt, newcap);
+
+			for (uint32 g = 0; g < oldcap && a->ord; g++)
+			{
+				uint32		t = remap ? remap[g] : g;
+
+				if (t == UINT32_MAX || a->ord[g] == UINT64_MAX)
+					continue;
+				nn[t] = a->n[ai][g];
+				ni[t] = a->i[ai][g];
+				nd[t] = a->d[ai][g];
+				nnf[t] = a->nf[ai][g];
+			}
+			a->n[ai] = nn;
+			a->i[ai] = ni;
+			a->d[ai] = nd;
+			a->nf[ai] = nnf;
+		}
+		for (uint32 g = 0; g < oldcap && a->ord; g++)
+		{
+			uint32		t = remap ? remap[g] : g;
+
+			if (t != UINT32_MAX && a->ord[g] != UINT64_MAX)
+				nord[t] = a->ord[g];
+		}
+		a->ord = nord;
+	}
+	if (remap)
+		for (uint32 t = 0; t < ex->ntouch; t++)
+			ex->touched[t].g = remap[ex->touched[t].g];
+}
+
+static void
+arms_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	int			maxv = VEC + PADW;
+
+	ex->arm = MemoryContextAllocZero(ex->cxt, Max(s->narms, 1) * sizeof(ArmSt));
+	ex->arm_mask = ~(uint32) 0;
+	ex->cur_order = UINT64_MAX;
+	for (int k = 0; k < s->narms; k++)
+	{
+		ArmSt	   *a = &ex->arm[k];
+		int			ni = s->arm[k].ninner;
+
+		a->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		a->ok = MemoryContextAlloc(ex->cxt, maxv);
+		a->iok = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(uint8 *));
+		a->dx = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(double *));
+		a->ix = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(int64 *));
+		a->n = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(int64 *));
+		a->i = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(int64 *));
+		a->d = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(double *));
+		a->nf = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(uint8 *));
+		a->amax = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(double));
+		for (int ai = 0; ai < ni; ai++)
+		{
+			a->iok[ai] = MemoryContextAlloc(ex->cxt, maxv);
+			a->dx[ai] = MemoryContextAlloc(ex->cxt, maxv * sizeof(double));
+			a->ix[ai] = MemoryContextAlloc(ex->cxt, maxv * sizeof(int64));
+		}
+	}
+	ex->captouch = 1024;
+	ex->touched = MemoryContextAlloc(ex->cxt, ex->captouch * sizeof(Touch));
+}
+
+/* the inner aggregate ai of arm k for the tuples of the chunk: the ones it takes and their values */
+static void
+arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
+{
+	bool		all;
+	const uint32 *idx;
+	const SiftSrcVec *v;
+
+	agg_selection(ex, ia, ex->cstart, ex->cn, n, &all);
+	for (int j = 0; j < n; j++)
+		a->iok[ai][j] = all || sift_colsrc_bit(ex->okm, j);
+	switch (ia->kind)
+	{
+		case SAA_SUM_INT:
+			v = get_vec(ex, ia->leaf);
+			gather_idx(ex, ia->leaf, n, &idx);
+			for (int j = 0; j < n; j++)
+				a->ix[ai][j] = ((const int32 *) v->data)[idx[j]];
+			break;
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			if (ia->nvx)
+				memcpy(a->dx[ai], eval_vx(ex, ia, n), n * sizeof(double));
+			else
+			{
+				v = get_vec(ex, ia->leaf);
+				gather_idx(ex, ia->leaf, n, &idx);
+				for (int j = 0; j < n; j++)
+					a->dx[ai][j] = ((const double *) v->data)[idx[j]];
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+static void
+cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
+{
+	a->ord[g] = row;
+	for (int ai = 0; ai < ex->spec->arm[k].ninner; ai++)
+	{
+		a->n[ai][g] = 0;
+		a->i[ai][g] = 0;
+		a->d[ai][g] = 0;
+		a->nf[ai][g] = 0;
+	}
+	if (ex->ntouch == ex->captouch)
+	{
+		ex->captouch *= 2;
+		ex->touched = repalloc(ex->touched, ex->captouch * sizeof(Touch));
+	}
+	ex->touched[ex->ntouch].arm = k;
+	ex->touched[ex->ntouch++].g = g;
+	ex->seen[g]++;
+}
+
+static void
+cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
+{
+	switch (ia->kind)
+	{
+		case SAA_SUM_INT:
+			a->i[ai][g] += a->ix[ai][j];
+			break;
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			{
+				double		x = a->dx[ai][j];
+
+				a->d[ai][g] += x;
+				if (!isfinite(x))
+					a->nf[ai][g] = 1;
+				else
+					a->amax[ai] = Max(a->amax[ai], fabs(x));
+			}
+			break;
+		default:
+			break;
+	}
+	a->n[ai][g]++;
+}
+
+/* the value of inner aggregate ai in a cell: false for NULL */
+static bool
+cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
+{
+	switch (ia->kind)
+	{
+		case SAA_COUNT_STAR:
+		case SAA_COUNT:
+			*iv = a->n[ai][g];
+			return true;
+		case SAA_SUM_INT:
+			*iv = a->i[ai][g];
+			return a->n[ai][g] > 0;
+		case SAA_SUM_F64:
+			if (isinf(a->d[ai][g]) && !a->nf[ai][g])
+				float_overflow_error();
+			*dv = a->d[ai][g];
+			return a->n[ai][g] > 0;
+		case SAA_AVG_F64:
+			if (a->n[ai][g] == 0)
+				return false;
+			*dv = a->d[ai][g] / (double) a->n[ai][g];
+			return true;
+		default:
+			elog(ERROR, "sift: unexpected inner aggregate");
+	}
+	return false;
+}
+
+static bool
+cond_holds(const SiftAggCond *c, double dv, int64 iv)
+{
+	int			cmp = c->isint ? pg_cmp_s64(iv, c->ci) : float8_cmp_internal(dv, c->cd);
+
+	switch ((SiftCmpOp) c->op)
+	{
+		case SCMP_EQ:
+			return cmp == 0;
+		case SCMP_NE:
+			return cmp != 0;
+		case SCMP_LT:
+			return cmp < 0;
+		case SCMP_LE:
+			return cmp <= 0;
+		case SCMP_GT:
+			return cmp > 0;
+		case SCMP_GE:
+			return cmp >= 0;
+	}
+	return false;
+}
+
+/* the cell (arm k, group g) of the row `row` into the outer aggregates */
+static void
+flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
+{
+	SiftAggArm *sa = &ex->spec->arm[k];
+	ArmSt	   *a = &ex->arm[k];
+
+	for (int oi = 0; oi < ex->spec->naggs; oi++)
+	{
+		SiftAggAgg *o = &ex->spec->agg[oi];
+		AggAcc	   *acc = &ex->acc[oi];
+		bool		pass = true;
+		double		dv = 0;
+		int64		iv = 0;
+
+		for (int c = 0; pass && c < o->ncond; c++)
+		{
+			int			src = sa->colsrc[o->cond[c].col];
+
+			pass = cell_value(a, &sa->inner[src], src, g, &dv, &iv) && cond_holds(&o->cond[c], dv, iv);
+		}
+		if (!pass)
+			continue;
+		if (o->kind == SAA_O_COUNT_STAR)
+		{
+			acc->n[g]++;
+			continue;
+		}
+		if (o->kind == SAA_O_COUNT_ROWS)
+		{
+			if (acc->last[g] != row)
+			{
+				acc->last[g] = row;
+				acc->n[g]++;
+			}
+			continue;
+		}
+		if (!cell_value(a, &sa->inner[sa->colsrc[o->col]], sa->colsrc[o->col], g, &dv, &iv))
+			continue;
+		acc->n[g]++;
+		if (o->kind == SAA_O_SUM_I64)
+		{
+			if (pg_add_s64_overflow(acc->i[g], iv, &acc->i[g]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
+						 errhint("Set sift.enable_agg to off for this query.")));
+		}
+		else
+		{
+			acc->d[g] += dv;
+			if (!isfinite(dv))
+				acc->nf[g] = 1;
+		}
+	}
+}
+
+static void
+arms_flush(AggExec *ex)
+{
+	for (uint32 t = 0; t < ex->ntouch; t++)
+		flush_cell(ex, ex->touched[t].arm, ex->touched[t].g, ex->cur_order);
+	ex->ntouch = 0;
+}
+
+/* the tuples of the chunk through every arm: the tuples of a row come together, so a cell lives for one row */
+static void
+arm_chunk(AggExec *ex, Tup *t)
+{
+	SiftAggSpec *s = ex->spec;
+	int			n = t->n;
+	uint32		gen;
+
+	ex->n_tuples += n;
+	do
+	{
+		gen = ex->gen;
+		for (int k = 0; k < s->narms && gen == ex->gen; k++)
+		{
+			ArmSt	   *a = &ex->arm[k];
+
+			ex->arm_mask = s->arm[k].keymask;
+			compute_gids(ex, n);
+			memcpy(a->gid, ex->gid, n * sizeof(uint32));
+		}
+	} while (gen != ex->gen);
+	ex->arm_mask = ~(uint32) 0;
+	for (int k = 0; k < s->narms; k++)
+	{
+		SiftAggArm *sa = &s->arm[k];
+		ArmSt	   *a = &ex->arm[k];
+
+		memset(a->ok, 1, n);
+		for (int f = 0; f < sa->nfilter; f++)
+		{
+			const SiftAggPred *p = sa->filter[f];
+			const uint32 *out = combo_outs(ex, p->leaf);
+			const uint32 *val = ex->cs[p->leaf].val;
+			int			ns = s->combo[p->leaf].nslots;
+
+			for (int j = 0; j < n; j++)
+				a->ok[j] &= val[(size_t) out[j] * ns + p->op] != 0;
+		}
+		for (int ai = 0; ai < sa->ninner; ai++)
+			arm_inner_prepare(ex, a, &sa->inner[ai], ai, n);
+	}
+	for (int j = 0; j < n; j++)
+	{
+		uint64		row = ex->row_base + ex->ridx[j];
+
+		if (row != ex->cur_order)
+		{
+			arms_flush(ex);
+			ex->cur_order = row;
+		}
+		for (int k = 0; k < s->narms; k++)
+		{
+			ArmSt	   *a = &ex->arm[k];
+			SiftAggArm *sa = &s->arm[k];
+			uint32		g = a->gid[j];
+
+			if (!a->ok[j])
+				continue;
+			if (a->ord[g] != row)
+				cell_start(ex, k, a, g, row);
+			for (int ai = 0; ai < sa->ninner; ai++)
+				if (a->iok[ai][j])
+					cell_add(a, &sa->inner[ai], ai, g, j);
+		}
+	}
+	for (int k = 0; k < s->narms; k++)
+		for (int ai = 0; ai < s->arm[k].ninner; ai++)
+			if (s->arm[k].inner[ai].kind == SAA_AVG_F64 &&
+				8.0 * ex->n_tuples * ex->arm[k].amax[ai] * ex->arm[k].amax[ai] >= DBL_MAX)
+				float_overflow_error();
 }
 
 /* ---------- visibility ---------- */
@@ -1960,7 +3133,7 @@ register_key(AggExec *ex, int ki)
 {
 	SiftAggKey *sk = &ex->spec->key[ki];
 	KeyState   *k = &ex->ks[ki];
-	SiftSrcLeaf *lf = &ex->lay->leaf[sk->leaf];
+	SiftSrcLeaf *lf = sk->kind == SAK_COMBO ? NULL : &ex->lay->leaf[sk->leaf];
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
 	ot_init(&k->ot, sk->eqop, sk->typid, sk->collid);
@@ -1972,7 +3145,7 @@ register_key(AggExec *ex, int ki)
 		k->expr = ExecInitExpr((Expr *) sk->expr, &ex->css.ss.ps);
 		k->param = find_param(sk->expr);
 	}
-	else
+	else if (sk->kind != SAK_COMBO)
 	{
 		/* the leaf itself: the placeholder has the key's type */
 		k->param = makeNode(Param);
@@ -1981,6 +3154,32 @@ register_key(AggExec *ex, int ki)
 		k->param->paramtypmod = sk->typmod;
 		k->param->paramcollid = sk->collid;
 		k->ident = lf->vtype == SCV_I32;
+	}
+	MemoryContextSwitchTo(old);
+}
+
+static void
+register_combos(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	ex->tcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
+	ex->cs = palloc0(Max(s->ncombo, 1) * sizeof(ComboSt));
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		SiftAggCombo *cb = &s->combo[ci];
+		ComboSt    *cs = &ex->cs[ci];
+
+		cs->nht = 64;
+		cs->ht = palloc0(cs->nht * sizeof(uint32));
+		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
+		for (int sl = 0; sl < cb->nslots; sl++)
+			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, &ex->css.ss.ps);
+		ex->clbase[ci] = ex->ncl;
+		ex->ncl += cb->nleaves;
+		if (cb->join >= 0)
+			ex->jcombo[ex->nj++] = ci;
 	}
 	MemoryContextSwitchTo(old);
 }
@@ -2023,9 +3222,33 @@ start_scan(AggExec *ex)
 	ex->gcap = total;
 	ex->seen = MemoryContextAllocZero(ex->cxt, total * sizeof(int64));
 	ex->acc = acc_alloc(ex, total);
-	ex->sel = MemoryContextAlloc(ex->cxt, (maxv + 16) * sizeof(uint32));
-	ex->tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
-	ex->ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	arms_init(ex);
+	arms_resize(ex, total, NULL, 0);
+	ex->t0.sel = MemoryContextAlloc(ex->cxt, (maxv + 16) * sizeof(uint32));
+	ex->t0.tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	ex->t0.ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	for (int x = 0; x < ex->nj; x++)
+	{
+		Tup		   *st = &ex->stage[x];
+
+		st->sel = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		st->tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		st->ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		for (int y = 0; y <= x; y++)
+			st->cout[ex->jcombo[y]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		ex->seid[x] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	}
+	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
+		ex->cvid[p] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
+	for (int ci = 0; ci < s->ncombo; ci++)
+	{
+		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		if (s->combo[ci].join >= 0)
+			ex->cs[ci].map = map_load(ex, &s->join[s->combo[ci].join]);
+	}
+	ex->peid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	ex->pti = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+	ex->pri = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->kids = MemoryContextAlloc(ex->cxt, (Size) maxv * SIFT_AGG_MAX_KEYS * sizeof(uint32));
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -2040,6 +3263,7 @@ start_scan(AggExec *ex)
 	sift_colsrc_begin(ex->src, 0, sift_colsrc_nsb(ex->src), NULL, 0);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 		process_unit(ex);
+	arms_flush(ex);
 }
 
 /* the groups that exist, in index order */
@@ -2082,11 +3306,24 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 	*isnull = false;
 	switch (a->kind)
 	{
-		case SAA_COUNT_STAR:
+			case SAA_COUNT_STAR:
 		case SAA_COUNT:
 		case SAA_COUNT_ROWS:
 		case SAA_COUNT_DISTINCT:
+		case SAA_O_COUNT_STAR:
+		case SAA_O_COUNT_ROWS:
 			return Int64GetDatum(acc->n[g]);
+		case SAA_O_SUM_I64:
+			*isnull = acc->n[g] == 0;
+			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
+		case SAA_O_SUM_F64:
+			*isnull = acc->n[g] == 0;
+			if (isinf(acc->d[g]) && !acc->nf[g])
+				float_overflow_error();
+			return Float8GetDatum(acc->d[g]);
+		case SAA_O_AVG_F64:
+			*isnull = acc->n[g] == 0;
+			return Float8GetDatum(acc->d[g] / (double) acc->n[g]);
 		case SAA_SUM_INT:
 			*isnull = acc->n[g] == 0;
 			return Int64GetDatum(acc->i[g]);
@@ -2168,11 +3405,12 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	ex->heap_opened = true;
 	ex->src = sift_colsrc_open(ex->heap, ex->index, estate->es_snapshot, ex->cxt);
 	ex->lay = sift_colsrc_source_layout(ex->src);
+	extend_layout(ex);
 	ex->uvec = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(SiftSrcVec));
 	ex->uvec_ok = MemoryContextAllocZero(ex->cxt, ex->lay->nleaves * sizeof(bool));
 	ex->lutcx = CreateStandaloneExprContext();
 	ex->lutcx->ecxt_param_list_info = estate->es_param_list_info;
-	ex->lutcx->ecxt_param_exec_vals = &ex->lutparam;
+	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	init_states(ex);
 	for (int i = 0; i < ex->spec->npred; i++)
 		register_pred(ex, ex->spec->pred[i]);
@@ -2180,6 +3418,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 		register_pred(ex, ex->spec->agg[i].filter);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
+	register_combos(ex);
 	register_aggs(ex);
 	PredicateLockRelation(ex->heap, estate->es_snapshot);
 }
@@ -2238,6 +3477,13 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Pushed Aggregates", buf.data, es);
 	if (s->group >= 0)
 		ExplainPropertyText("Unnests", "yes", es);
+	if (s->njoin)
+	{
+		resetStringInfo(&buf);
+		for (int i = 0; i < s->njoin; i++)
+			appendStringInfo(&buf, "%s%s", i ? ", " : "", s->join[i].desc);
+		ExplainPropertyText("Lookup Joins", buf.data, es);
+	}
 	if (es->analyze && ex->started)
 	{
 		ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
