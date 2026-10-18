@@ -268,6 +268,25 @@ chunk_digest(const Chunk *c, const SiftCcPolicy *pol, uint64 *bad)
 		*bad += sift_cc_get(cc, i) != dec[i];
 	}
 	h = hash_bytes_extended((unsigned char *) dec, sizeof(int64) * n, h);
+	/* the lanes: the low 32 bits of the keys, and the doubles of the keys (bitwise) */
+	{
+		uint32	   *d32 = palloc(sizeof(uint32) * SIFT_CC_CAP32(n));
+		double	   *df = palloc(sizeof(double) * (n + SIFT_COL_PAD / 8));
+
+		sift_cc_decode_u32(cc, d32);
+		sift_cc_decode_f8(cc, df);
+		for (uint32 i = 0; i < n; i++)
+		{
+			double		want = sift_col_f8_from_key(dec[i]);
+
+			*bad += d32[i] != (uint32) dec[i];
+			*bad += memcmp(&df[i], &want, sizeof(want)) != 0;
+		}
+		h = hash_bytes_extended((unsigned char *) d32, sizeof(uint32) * n, h);
+		h = hash_bytes_extended((unsigned char *) df, sizeof(double) * n, h);
+		pfree(d32);
+		pfree(df);
+	}
 	for (int q = 0; q < 4 && n; q++)
 	{
 		int64		lo = q == 0 ? mn : dec[(n / 4) * q],

@@ -210,6 +210,71 @@ alp_keys_f4_avx2(int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div)
 }
 
 static void
+alp_f8_avx2(double *dst, const uint32 *u, uint32 n, int64 dbase, double div)
+{
+	__m256d		off = _mm256_set1_pd(2147483648.0 + (double) dbase),
+				vd = _mm256_set1_pd(div);
+	__m128i		flip = _mm_set1_epi32((int) 0x80000000u);
+	uint32		i = 0;
+
+	for (; i + 4 <= n; i += 4)
+	{
+		__m128i		x = _mm_xor_si128(_mm_loadu_si128((const __m128i *) (u + i)), flip);
+
+		_mm256_storeu_pd(dst + i, _mm256_div_pd(_mm256_add_pd(_mm256_cvtepi32_pd(x), off), vd));
+	}
+	sift_cc_kernels_scalar.alp_f8(dst + i, u + i, n - i, dbase, div);
+}
+
+static void
+alp_f4_avx2(double *dst, const uint32 *u, uint32 n, int64 dbase, float div)
+{
+	__m256i		vb = _mm256_set1_epi32((int) (uint32) dbase);
+	__m256		vd = _mm256_set1_ps(div);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+	{
+		__m256		x = _mm256_div_ps(_mm256_cvtepi32_ps(_mm256_add_epi32(LD256(u + i), vb)), vd);
+
+		_mm256_storeu_pd(dst + i, _mm256_cvtps_pd(_mm256_castps256_ps128(x)));
+		_mm256_storeu_pd(dst + i + 4, _mm256_cvtps_pd(_mm256_extractf128_ps(x, 1)));
+	}
+	sift_cc_kernels_scalar.alp_f4(dst + i, u + i, n - i, dbase, div);
+}
+
+static void
+scale32_avx2(uint32 *a, uint32 n, uint32 base, uint32 mul)
+{
+	__m256i		vb = _mm256_set1_epi32((int) base),
+				vm = _mm256_set1_epi32((int) mul);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+		ST256(a + i, _mm256_add_epi32(_mm256_mullo_epi32(LD256(a + i), vm), vb));
+	sift_cc_kernels_scalar.scale32(a + i, n - i, base, mul);
+}
+
+/* The low 64 bits of x * mul from 32 x 32 products: lo * lo + ((lo * hi + hi * lo) << 32) */
+static void
+scale64_avx2(int64 *a, uint32 n, int64 base, int64 mul)
+{
+	__m256i		vb = _mm256_set1_epi64x(base),
+				vm = _mm256_set1_epi64x(mul),
+				vmh = _mm256_srli_epi64(vm, 32);
+	uint32		i = 0;
+
+	for (; i + 4 <= n; i += 4)
+	{
+		__m256i		x = LD256(a + i),
+					cross = _mm256_add_epi64(_mm256_mul_epu32(x, vmh), _mm256_mul_epu32(_mm256_srli_epi64(x, 32), vm));
+
+		ST256(a + i, _mm256_add_epi64(_mm256_add_epi64(_mm256_mul_epu32(x, vm), _mm256_slli_epi64(cross, 32)), vb));
+	}
+	sift_cc_kernels_scalar.scale64(a + i, n - i, base, mul);
+}
+
+static void
 rle_expand32_avx2(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst)
 {
 	for (uint32 r = 0; r < nruns; r++)
@@ -232,6 +297,10 @@ const SiftCcKernels sift_cc_kernels_avx2 = {
 	.alp_keys_f8 = alp_keys_f8_avx2,
 	.alp_keys_f4 = alp_keys_f4_avx2,
 	.rle_expand32 = rle_expand32_avx2,
+	.scale32 = scale32_avx2,
+	.scale64 = scale64_avx2,
+	.alp_f8 = alp_f8_avx2,
+	.alp_f4 = alp_f4_avx2,
 };
 
 #if defined(__clang__)

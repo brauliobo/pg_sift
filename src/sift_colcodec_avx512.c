@@ -194,6 +194,64 @@ alp_keys_f4_avx512(int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div
 }
 
 static void
+alp_f8_avx512(double *dst, const uint32 *u, uint32 n, int64 dbase, double div)
+{
+	__m512d		off = _mm512_set1_pd(2147483648.0 + (double) dbase),
+				vd = _mm512_set1_pd(div);
+	__m256i		flip = _mm256_set1_epi32((int) 0x80000000u);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+	{
+		__m256i		x = _mm256_xor_si256(_mm256_loadu_si256((const __m256i *) (u + i)), flip);
+
+		_mm512_storeu_pd(dst + i, _mm512_div_pd(_mm512_add_pd(_mm512_cvtepi32_pd(x), off), vd));
+	}
+	sift_cc_kernels_scalar.alp_f8(dst + i, u + i, n - i, dbase, div);
+}
+
+static void
+alp_f4_avx512(double *dst, const uint32 *u, uint32 n, int64 dbase, float div)
+{
+	__m512i		vb = _mm512_set1_epi32((int) (uint32) dbase);
+	__m512		vd = _mm512_set1_ps(div);
+	uint32		i = 0;
+
+	for (; i + 16 <= n; i += 16)
+	{
+		__m512		x = _mm512_div_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(LD512(u + i), vb)), vd);
+
+		_mm512_storeu_pd(dst + i, _mm512_cvtps_pd(_mm512_castps512_ps256(x)));
+		_mm512_storeu_pd(dst + i + 8, _mm512_cvtps_pd(_mm512_extractf32x8_ps(x, 1)));
+	}
+	sift_cc_kernels_scalar.alp_f4(dst + i, u + i, n - i, dbase, div);
+}
+
+static void
+scale32_avx512(uint32 *a, uint32 n, uint32 base, uint32 mul)
+{
+	__m512i		vb = _mm512_set1_epi32((int) base),
+				vm = _mm512_set1_epi32((int) mul);
+	uint32		i = 0;
+
+	for (; i + 16 <= n; i += 16)
+		ST512(a + i, _mm512_add_epi32(_mm512_mullo_epi32(LD512(a + i), vm), vb));
+	sift_cc_kernels_scalar.scale32(a + i, n - i, base, mul);
+}
+
+static void
+scale64_avx512(int64 *a, uint32 n, int64 base, int64 mul)
+{
+	__m512i		vb = _mm512_set1_epi64(base),
+				vm = _mm512_set1_epi64(mul);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+		ST512(a + i, _mm512_add_epi64(_mm512_mullo_epi64(LD512(a + i), vm), vb));
+	sift_cc_kernels_scalar.scale64(a + i, n - i, base, mul);
+}
+
+static void
 rle_expand32_avx512(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst)
 {
 	for (uint32 r = 0; r < nruns; r++)
@@ -216,6 +274,10 @@ const SiftCcKernels sift_cc_kernels_avx512 = {
 	.alp_keys_f8 = alp_keys_f8_avx512,
 	.alp_keys_f4 = alp_keys_f4_avx512,
 	.rle_expand32 = rle_expand32_avx512,
+	.scale32 = scale32_avx512,
+	.scale64 = scale64_avx512,
+	.alp_f8 = alp_f8_avx512,
+	.alp_f4 = alp_f4_avx512,
 };
 
 #if defined(__clang__)
