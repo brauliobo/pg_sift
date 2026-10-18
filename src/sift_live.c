@@ -74,25 +74,40 @@ sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf)
 }
 
 void
+sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out)
+{
+	while (len > 0)
+	{
+		uint64		off = b % SIFT_PAGE_PAYLOAD,
+					n = Min(len, SIFT_PAGE_PAYLOAD - off);
+		Buffer		buf = InvalidBuffer;
+		Page		page;
+
+		sift_live_byte(l, b, &buf);
+		page = BufferGetPage(buf);
+		if (off + n > SiftPageGetUsed(page))
+			corrupt(l, "Liveness bytes %llu..%llu lie past the written bytes of block %u.",
+					(unsigned long long) b, (unsigned long long) (b + n), BufferGetBlockNumber(buf));
+		memcpy(out, SiftPageGetData(page) + off, n);
+		UnlockReleaseBuffer(buf);
+		b += n;
+		out += n;
+		len -= n;
+	}
+}
+
+void
 sift_live_dirty(const SiftLive *l, uint8 *out)
 {
-	Buffer		buf = InvalidBuffer;
-
-	for (uint32 i = 0; i < (l->nsb + 7) / 8; i++)
-		out[i] = sift_live_byte(l, sizeof(SiftLiveHeaderData) + i, &buf);
-	if (BufferIsValid(buf))
-		UnlockReleaseBuffer(buf);
+	sift_live_copy(l, sizeof(SiftLiveHeaderData), (l->nsb + 7) / 8, out);
 }
 
 uint32
 sift_live_ndead(const SiftLive *l)
 {
 	SiftLiveHeaderData lh;
-	Buffer		buf = InvalidBuffer;
 
-	for (int i = 0; i < (int) sizeof(lh); i++)
-		((uint8 *) &lh)[i] = sift_live_byte(l, i, &buf);
-	UnlockReleaseBuffer(buf);
+	sift_live_copy(l, 0, sizeof(lh), (uint8 *) &lh);
 	if (lh.ndead > l->nbits)
 		corrupt(l, "Liveness header counts %u dead of %llu rows.", lh.ndead, (unsigned long long) l->nbits);
 	return lh.ndead;

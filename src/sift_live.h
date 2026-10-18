@@ -32,6 +32,9 @@ extern void sift_live_check(const SiftLive *l);
 /* Byte b of the run (logical offset over the page payloads); *buf is the share-locked page kept between calls (release it with UnlockReleaseBuffer when valid) */
 extern uint8 sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf);
 
+/* len bytes of the run from logical byte b, a page at a time */
+extern void sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out);
+
 /* The dirty bitmap, (nsb + 7) / 8 bytes, bit sb - sb_lo */
 extern void sift_live_dirty(const SiftLive *l, uint8 *out);
 
