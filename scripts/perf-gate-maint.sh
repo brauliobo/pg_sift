@@ -43,24 +43,9 @@ while (( $# )); do
 	shift
 done
 (( ${#BUILDS[@]} )) || BUILDS=("new=$REPO")
-BASE=$(mktemp -d /tmp/sift-perf-gate.XXXXXX)
-PORT0=${SIFT_PORT:-56150}
-declare -A DIR TMP PORT
-
-pg() { # LABEL pgtest-args...
-	local l=$1; shift
-	( cd "${DIR[$l]}" && SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING= scripts/pgtest.sh "$@" )
-}
-q() { # LABEL sql...: one psql session, one -c per statement
-	local l=$1 a=(); shift
-	for s in "$@"; do a+=(-c "$s"); done
-	pg "$l" psql -q -At -v ON_ERROR_STOP=1 "${a[@]}"
-}
-cleanup() {
-	for l in "${!DIR[@]}"; do pg "$l" destroy >/dev/null 2>&1 || true; done
-	rm -rf "$BASE"
-}
-trap cleanup EXIT
+. "$REPO/scripts/multibuild.sh"
+MB_TESTING=
+mb_begin sift-perf-gate
 
 now() { date +%s.%N; }
 elapsed() { bc <<<"$(now) - $1"; }
@@ -318,13 +303,8 @@ g_mergebig() {
 }
 GROUPS_ALL+=(mergebig)
 
-i=0
-for b in "${BUILDS[@]}"; do
-	l=${b%%=*}
-	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=$BASE/$l PORT[$l]=$((PORT0 + i++))
-	mkdir -p "${TMP[$l]}"
-	pg "$l" install >/dev/null
-	pg "$l" start >/dev/null
+mb_start
+for l in "${LABELS[@]}"; do
 	q "$l" "CREATE EXTENSION pg_sift" >/dev/null
 	q "$l" "ALTER SYSTEM SET autovacuum = off" "SELECT pg_reload_conf()" >/dev/null
 done
