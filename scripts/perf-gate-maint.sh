@@ -10,6 +10,10 @@
 #   bulk_rows_s / copy_rows_s       INSERT .. SELECT and COPY FROM of --rows rows
 #   merge_insert_tps / _p99_ms      the same inserts while the worker merges a backlog of 60 segments
 #   merge_count_ms / merge_rank_ms  mean latency of a count and of a ranked query (4 clients) during VACUUM and merges
+#   idle60_*_ms / idle1_*_ms        the same queries with no maintenance running, on 61 segments and on one
+#   same_count_ms / same_rank_ms    the same queries while inserts, promotions and forced merges of the SQL functions run on both builds
+#   vacseg<N>_s / _segs / _count_ms / _rank_ms  VACUUM time, segments and query latency after it at vacuum_segments N = 2, 4, 8, 16
+#                                   (group vacseg, not in the default selection of a baseline without the option)
 #   promote_s                       20 promotions of a mutable segment of 3000 documents of 40 words (about 4 MB)
 #   vacuum_s / vacuum_segs          VACUUM of that backlog (it merges to a fixed point) and the segments it leaves;
 #   after_vacuum_count_ms / _rank_ms  the two queries on the index after that VACUUM and 20000 more rows
@@ -17,7 +21,7 @@
 #                                   merge; most anonymous memory the cluster's processes took above what they took before
 #   churn_index_mb                  size of the index after the backlog is merged
 #   create_s / create64_s           CREATE INDEX at the server defaults / at 64MB without workers
-# --cells selects groups by name (insert, bulk, merge_insert, queries, promote, vacuum, merge, create), e.g. --cells "^(merge_insert|queries)$".
+# --cells selects groups by name (insert, bulk, merge_insert, queries, idle, same, vacseg, promote, vacuum, merge, create), e.g. --cells "^(merge_insert|queries)$".
 # The table ends with new/old per cell and marks, with "<<", a cell more than 2% worse (the *_tps and *_rows_s
 # cells are better higher, the others lower); re-measure those with more --runs.
 # Ports SIFT_PORT (default 56150) and up. The clusters and their directories are removed at the end.
@@ -130,6 +134,38 @@ g_queries() {
 	bench "$1" merge_rank 4 "$BASE/rank.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
 	wait
 }
+# The read path on its own: the same query latency with no maintenance running, on the same 60 segments, and on one
+g_idle() {
+	fresh "$1"; backlog "$1"; q "$1" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 1000) i" "SELECT sift.promote('t_idx')" >/dev/null
+	q "$1" "SELECT 'idle_segs ' || count(*) FROM sift.segments('t_idx')"
+	bench "$1" idle60_count 4 "$BASE/count.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$1" idle60_rank 4 "$BASE/rank.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	q "$1" "SELECT sift.merge('t_idx', true)" >/dev/null
+	bench "$1" idle1_count 4 "$BASE/count.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$1" idle1_rank 4 "$BASE/rank.sql" 5 | grep lat_ms | sed 's/_lat_ms/_ms/'
+}
+# The queries while the same maintenance runs on both builds (inserts, promotions and forced merges by the SQL functions)
+g_same() {
+	fresh "$1"; backlog "$1"; settle "$1"
+	( for _ in $(seq 4); do q "$1" "SET sift.async_maintenance = off" "INSERT INTO t (body) SELECT $(words 40 i) FROM generate_series(1, 5000) i" \
+		"SELECT sift.promote('t_idx')" "SELECT sift.merge('t_idx', true)" >/dev/null 2>&1 || true; done ) &
+	bench "$1" same_count 4 "$BASE/count.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	bench "$1" same_rank 4 "$BASE/rank.sql" 8 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	wait
+}
+# VACUUM of the 60-segment backlog and the queries on what it leaves, at vacuum_segments 2, 4, 8 and 16 (builds that have the option)
+g_vacseg() {
+	local n t0
+	for n in 2 4 8 16; do
+		fresh "$1"; backlog "$1"
+		q "$1" "ALTER INDEX t_idx SET (vacuum_segments = $n)" >/dev/null
+		t0=$(now); q "$1" "VACUUM t" >/dev/null
+		echo "vacseg${n}_s $(elapsed "$t0")"
+		echo "vacseg${n}_segs $(q "$1" "SELECT count(*) FROM sift.segments('t_idx')")"
+		bench "$1" vacseg${n}_count 4 "$BASE/count.sql" 4 | grep lat_ms | sed 's/_lat_ms/_ms/'
+		bench "$1" vacseg${n}_rank 4 "$BASE/rank.sql" 4 | grep lat_ms | sed 's/_lat_ms/_ms/'
+	done
+}
 g_promote() {
 	fresh "$1"
 	q "$1" "SET sift.async_maintenance = off" "DROP TABLE IF EXISTS acc" "CREATE TABLE acc (s float8)" \
@@ -173,10 +209,10 @@ g_create() {
 	t0=$(now); q "$1" "SET maintenance_work_mem = '64MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create64_s $(elapsed "$t0")"
 }
-GROUPS_ALL=(insert bulk merge_insert queries promote vacuum merge create)
+GROUPS_ALL=(insert bulk merge_insert queries idle same promote vacuum vacseg merge create)
 cell() { # LABEL: the selected groups
 	for g in "${GROUPS_ALL[@]}"; do
-		[[ $g =~ $CELLS ]] && "g_$g" "$1"
+		[[ $g =~ $CELLS && ( $g != vacseg || $CELLS == *vacseg* ) ]] && "g_$g" "$1"
 	done
 	return 0
 }
