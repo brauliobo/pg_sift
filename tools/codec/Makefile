@@ -6,13 +6,17 @@ SRC      = ../../src
 LIB      = $(SRC)/sift_bitmap.c $(SRC)/sift_bitmap_scalar.c $(SRC)/sift_bitmap_avx2.c $(SRC)/sift_bitmap_avx512.c
 HDR      = $(SRC)/sift_bitmap.h $(SRC)/sift_bitmap_kern.h
 OUT     ?= /tmp/sift-codec
-OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB))
+OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o
 
 all: $(OUT)/test $(OUT)/bench $(OUT)/corpus $(OUT)/stats
 
 $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 	@mkdir -p $(OUT)/obj
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OUT)/obj/stub.o: stub.c $(HDR)
+	@mkdir -p $(OUT)/obj
+	$(CC) $(CFLAGS) -I$(SRC) -c -o $@ $<
 
 $(OUT)/test: test.c $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) -lm

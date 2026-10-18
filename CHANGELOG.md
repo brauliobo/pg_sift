@@ -88,6 +88,44 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
   clickbench` runs the 43 ClickBench queries. See [docs/perf/ANALYTICS.md](docs/perf/ANALYTICS.md).
 
+## 2.0.2
+
+No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. Two fixes (the first is a security hardening, the second a correctness fix) and no new behavior.
+
+- Security: a query that read a damaged index could read outside the term it was decoding, write to the stack, or never end. The query path
+  follows the lengths, counts and offsets that a term blob stores (the sizes of its blocks and groups, its Rice parameter, the extents of
+  its bitmap and array containers, the nibbles and escape bytes of its tf stream) without the exhaustive checks of `sift.verify`, and used them
+  unchecked. Bytes of the index that are not what the writer wrote (a bad disk or controller, a torn page, a file edited with the server
+  stopped, a physical copy from a damaged or hostile source) could therefore make a backend read past the blob (an out-of-bounds read, or a
+  `memcpy` with a negative length), write past a stack array, or return one group without end. Fuzzing the
+  decoder (libFuzzer with ASan and UBSan) found 35 distinct crash inputs on 2.0.1 in five minutes; the decoder is now clean on all of them
+  and on about 4 million further executions, and on the six reproductions of the audit. **There is no remote vector**: no SQL role can write
+  index pages, so this needs damage on disk or write access to the data directory. What to do: install 2.0.2. A damaged index now fails the
+  query with `ERRCODE_DATA_CORRUPTED` (`XX001`, `sift: corrupt posting data: ...`, naming what is wrong) instead; it still has to be
+  rebuilt (`REINDEX`), which is needed only for an index that is actually damaged, and `sift.verify` reports it. Checks are made once per blob
+  header, per group and per block, not per posting. Also fixed: `sift.verify` read one nibble past the tf stream of a term whose L1 bits
+  counted more nibbles than the stream holds, and a varint of any length was accepted by the decoder (it ended on the zero bytes after the
+  blob). Test: `read_corrupt` (every byte of ten term blobs, LIST and GROUPED, with and without tf, set to five values, and every length of the
+  dictionary entry changed: the read finds the blob intact or raises `XX001`/`XX002`, and one case per kind of damage with its message), run
+  under `SANITIZE=1` in CI. Cost, user instructions per operation against 2.0.1 (`bench/steps/cpu_gate.sh`, interleaved, 7 rounds): the
+  queries 0.995x to 1.006x (the cells with a tight interval 1.000x to 1.003x), `VACUUM` after deleting 80% of the rows 1.007x (it opens
+  every term blob of the segment it rewrites), `CREATE INDEX` 1.004x, `COPY`/inserts/`sift.merge`/`sift.promote` 1.000x to 1.003x.
+- Fixed: a lazy `VACUUM` running next to queries could reuse the index blocks of a segment while a query was still reading them. A
+  `VACUUM` (manual or autovacuum) is left out of snapshots and of the xid horizon, its own xid included, so a query that began after the
+  `VACUUM` had taken its xid saw that xid as passed, and the blocks the `VACUUM` released with it (the segments it merged or rewrote) became
+  reusable while the query still held the directory that listed them. The query then failed with `sift index "t" is corrupted`
+  (`Block 23: expected page type 4 generation 107, found type 8 generation 0`): the page checks every read makes turn the reuse into an error;
+  no wrong result was seen. Reproduced on 2.0.1 within seconds by 24 pgbench clients (inserts, deletes, and searches of 3,000 stable
+  rows with a content check) with `VACUUM` in a loop, and not without the `VACUUM` loop; with the fix the same run passes (three runs). **Who is
+  affected:** indexes that are searched while `VACUUM` or autovacuum runs on their table and the segments get rewritten (dead documents,
+  merges by the `VACUUM`); only the reuse of released blocks changes, never the contents of a segment. What to do: install 2.0.2; the
+  error is transient (retry), nothing is stored wrong, no `REINDEX`. A `VACUUM` now releases with the next xid, so the blocks it frees are
+  reusable once a later transaction has started (its own truncation of the free end of the file, which holds an exclusive lock that keeps
+  every query out, counts them as reusable at once, so the file still shrinks in the `VACUUM` that freed the space). Test:
+  `test/t/maint_readers.sh` (inserters, deleters, searches of fixed rows with a content check, and `VACUUM` in a loop); `vacuum_truncate` takes
+  a transaction between the `VACUUM` and the merge that reuses its space.
+- Docs: sample queries and documents in the documentation and tests use neutral wording; no change for users.
+
 ## 2.0.1
 
 No change to the extension SQL (it stays 1.2: no `ALTER EXTENSION pg_sift UPDATE` step), to the on-disk format or to the results: install the new files, no `REINDEX`. One behavior changes for roles under row-level security (first entry).

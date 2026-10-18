@@ -43,9 +43,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](packaging/)).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_2.0.1-1_amd64.deb`.
+  and `sudo apt install ./postgresql-18-pg-sift_2.0.2-1_amd64.deb`.
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v2.0.1/pg_sift_18-2.0.1-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v2.0.2/pg_sift_18-2.0.2-1.el9.x86_64.rpm`.
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`):
 
@@ -313,7 +313,7 @@ SQLite host; a SQLite column virtual table is planned as an opt-in preview after
 [docs/COL-PORTS.md](docs/COL-PORTS.md).
 
 ```sh
-V=2.0.1   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
+V=2.0.2   # or: git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite   (builds sqlite/build/sift.so)
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz     # sift.so, load it with .load ./sift
