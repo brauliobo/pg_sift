@@ -1240,6 +1240,14 @@ sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 }
 
 void
+sift_sr_unlock(SiftStreamReader *sr)
+{
+	if (sr->locked)
+		LockBuffer(sr->buf, BUFFER_LOCK_UNLOCK);
+	sr->locked = false;
+}
+
+void
 sift_sr_release(SiftStreamReader *sr)
 {
 	sr_unpin(sr);

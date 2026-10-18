@@ -1,0 +1,250 @@
+-- A wildcard, regex or fuzzy leaf with more terms than sift.max_expansions reads as one term (the documents
+-- that have a word it matches, tf the number of those words) like a wide prefix, instead of failing: the
+-- top k equals the exact reference's, scores and ties included, with the limit at 1 (every multi-term leaf is
+-- wide), at 4 (some are) and at its default (none is).
+CREATE EXTENSION pg_sift;
+\set sift_ref_lib 1
+\ir test/sql/reference.sql
+-- Pure-SQL reference implementation of sift semantics: the correctness oracle.
+--
+-- Library use (other tests, test/diff): \set sift_ref_lib 1 then \ir reference.sql
+-- (definitions only, no output). Run alone it also executes its self-tests.
+--
+--   sift_ref.tokens(doc, idx)       analyzer: sift.tokenize when available, else the
+--                                   built-in regexp fallback (exact for ASCII)
+--   sift_ref.parse(q) / render(ast) SiftQL -> raw AST (jsonb) -> SiftQL
+--   sift_ref.analyze(ast, idx)      raw AST -> analyzed AST
+--   sift_ref.match(doc, q, idx)     per-document evaluation (seq-scan semantics)
+--   sift_ref.load(tbl, key, ...)    snapshot a corpus into session temp tables
+--   sift_ref.load_index(idx)        same, taking table, key, predicate, k1, b from an index
+--   sift_ref.search(q)              every match with its exact float4 BM25 score
+--   sift_ref.topk(q, k)             ranked: score DESC, ctid ASC
+--   sift_ref.count(q)               count(*) semantics
+--
+-- Statistics (N, avgdl, df) are those of the loaded rows, which equal sift's only
+-- when no indexed-but-unvacuumed versions exist (fresh build, REINDEX).
+--
+-- Canonical float4 evaluation (sift_kernels.h); every step is
+-- rounded to float4 exactly as C float arithmetic with -ffp-contract=off:
+--   idf   = (float4) log(1.0 + (N - df + 0.5) / (df + 0.5))          [double]
+--   avgdl = (float4) ((double) sum_dl / N)
+--   k1, b = (float4) reloption doubles
+--   w     = (boost * idf) * (k1 + 1)
+--   knorm = (k1 * (1 - b)) + ((k1 * b) / avgdl) * dl       [sift_kern_bm25_init, knorm]
+--   s     = w * (tf / (tf + knorm))       tf <= 255, dl <= 65535
+--   score = ((0 + s_1) + s_2) + ...  over scoring units in the pre-order of the
+--           normalized query (sift.parse_query: duplicate leaves merged, positives
+--           first), the order sift sums in: a
+--           term is one unit, a phrase one unit per distinct term (first
+--           occurrence order), an expansion leaf one unit = max over its
+--           expansions. A unit counts when the document matches the query and
+--           the unit's leaf matches the document; NOT subtrees never count.
+--           Group boosts multiply into leaves, root first.
+--
+-- sift_ref.mutant (GUC) injects known bugs for mutation testing of the harness.
+\set sift_ref_echo :ECHO
+\set ECHO none
+\if :{?sift_ref_lib}
+\else
+-- Self-tests (built-in analyzer, so the output does not depend on sift.tokenize)
+SET sift_ref.tokenizer = builtin;
+SELECT sift_ref.tokens('Héllo, WORLD! e-mail 🍕pizza 42abc Straße ÇA ﬁne');
+SELECT sift_ref.tokens(''), sift_ref.tokens('  !! ... '), sift_ref.tokens(NULL);
+SELECT octet_length(t[1]) AS long_token_bytes FROM sift_ref.tokens(repeat('ж', 200)) t;
+-- parse -> render round trip and the analyzed form
+SELECT q, sift_ref.render(sift_ref.parse(q)) AS rendered, sift_ref.analyze_query(q) AS analyzed
+FROM unnest(ARRAY[
+	'foo', 'foo bar', 'foo AND bar OR baz', 'a OR b c', 'NOT x foo', 'foo -bar',
+	'"Quick Brown" fox^2', '(a OR b)^1.5 c', '{red green blue}', 'pre* wi?d*c', '/col(o|ou)r/',
+	'fuzzy~ fuzzy~2 ab~', 'e-mail', 'foo\(bar', '\AND and', '+++ foo', '"" foo', 'a NOT +++',
+	'Ünïcödé CAFÉ', 'foo^0']) q;
+-- syntax and limit errors carry SQLSTATE and position
+DO $$
+DECLARE
+	q text;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['', '   ', 'foo AND', 'OR foo', '(foo', 'foo)', 'NOT foo', 'a OR NOT b',
+		'{}', '"open', '/open', 'foo^', 'foo^10001', 'a;b', 'NOT (a b)', 'foo bar\', 'a (NOT b)', '{a "b"}'] LOOP
+		BEGIN
+			PERFORM sift_ref.parse(q);
+			RAISE NOTICE '% -> ok', q;
+		EXCEPTION WHEN OTHERS THEN
+			RAISE NOTICE '% -> % %', q, SQLSTATE, SQLERRM;
+		END;
+	END LOOP;
+END $$;
+-- BM25: float4 result vs the float8 formula, and pinned bit patterns
+SELECT tf, dl, df, float4send(s) AS bits, s, abs(s - f8) / f8 < 1e-6 AS close
+FROM (VALUES (1, 10, 1), (3, 100, 50), (255, 65535, 999), (300, 70000, 1000), (2, 0, 7)) v(tf, dl, df),
+	LATERAL (SELECT sift_ref.bm25(tf, dl, df, 1000, 12.5::real, 1.2::float8::real, 0.75::float8::real, 1.5::real) AS s,
+		1.5 * ln(1 + (1000 - df + 0.5) / (df + 0.5)) * 2.2 * least(tf, 255)
+			/ (least(tf, 255) + 1.2 * (0.25 + 0.75 * least(dl, 65535) / 12.5)) AS f8) x;
+-- corpus: ranked search, counts, ties by ctid, and per-document agreement
+CREATE TABLE ref_docs (id int, body text);
+INSERT INTO ref_docs VALUES
+	(1, 'the quick brown fox'), (2, 'Quick quick QUICK brown dogs'), (3, 'lazy dog sleeps'),
+	(4, 'brown fox, brown fox!'), (5, ''), (6, NULL), (7, 'quick brown'), (8, 'quick brown'),
+	(9, 'colour color colr'), (10, 'café CAFE cafe'), (11, repeat('spam ', 20) || 'cat cats catalog');
+SELECT sift_ref.load('ref_docs', 'body');
+SELECT * FROM sift_ref.stats();
+SELECT q, sift_ref.count(q) AS n, (SELECT string_agg(format('%s:%s', id, score), ' ' ORDER BY rank)
+	FROM sift_ref.topk(q, 4) t JOIN ref_docs d ON d.ctid = t.ctid) AS top4, sift_ref.selfcheck(q) AS self
+FROM unnest(ARRAY['quick', 'quick OR fox', 'quick brown', '"brown fox"', '"fox brown"', 'brown NOT quick',
+	'qu*', 'col*r', '/colou?r/', 'colr~1', 'cafe', '{dog dogs}^2 OR lazy', 'quick^0', '+++', 'zzz OR quick']) q;
+SELECT d.id FROM ref_docs d WHERE sift_ref.match(d.body, 'brown NOT (dogs OR lazy)') ORDER BY 1;
+-- every mutant changes some answer on this corpus
+CREATE FUNCTION pg_temp.answers(m text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	PERFORM set_config('sift_ref.mutant', m, false);
+	SELECT string_agg(format('%s %s %s', q, sift_ref.count(q), (SELECT array_agg(t) FROM sift_ref.topk(q, 2) t)), ';')
+	INTO r FROM unnest(ARRAY['brown NOT quick', '"fox brown"', 'quick OR fox', 'quick brown', 'col* OR colr~1',
+		'{dog dogs}^2 OR lazy', 'Cafe', 'quick', 'c*', 'kolor~1', 'spam OR cat']) q;
+	PERFORM set_config('sift_ref.mutant', '', false);
+	RETURN r;
+END $$;
+SELECT m, pg_temp.answers(m) <> pg_temp.answers('') AS detected
+FROM unnest(ARRAY['not_ignored', 'phrase_as_and', 'float8_score', 'idf_df_plus1', 'tie_ctid_desc', 'boost_ignored',
+	'dismax_sum', 'topk_short', 'count_plus', 'nofold_query', 'tf_cap15', 'prefix_trunc', 'fuzzy_no_firstchar']) m;
+DROP TABLE ref_docs;
+RESET sift_ref.tokenizer;
+\endif
+CREATE TABLE rw (id int PRIMARY KEY, body text);
+INSERT INTO rw
+SELECT i, 'tok' || lpad((i % 90)::text, 3, '0') || ' ing' || (i % 11) || ' walking' || (i % 5) || ' fil' || (i % 6) || 'tion' ||
+	' venue' || (i % 4) || repeat(' pad', i % 6) || CASE WHEN i % 7 = 0 THEN ' tok005 walking' ELSE '' END
+FROM generate_series(1, 400) i;
+CREATE INDEX rw_idx ON rw USING sift (body);
+ANALYZE rw;
+SELECT sift_ref.load_index('rw_idx') > 0 AS loaded;
+ loaded 
+--------
+ t
+(1 row)
+
+CREATE TEMP TABLE rw_q (q text);
+INSERT INTO rw_q VALUES ('*ing*'), ('*tion'), ('/.*ing[0-9]+/'), ('/walk(ing|ed)[0-9]/'), ('venue~1'), ('tok05~2'), ('t?k00?'),
+	('*tion AND NOT hotel1'), ('*ing* OR hotel3^2'), ('/.*k0[0-4].*/ walking'), ('tok1* OR *tion'), ('"tok005 walking"'), ('walking^3 *ing*');
+CREATE FUNCTION rw_diff(q text, k int) RETURNS bigint LANGUAGE sql AS $$
+	WITH got AS (SELECT row_number() OVER (ORDER BY score DESC, tid) AS rank, tid, score FROM
+			(SELECT ctid AS tid, sift.score(ctid) AS score FROM rw WHERE body @@> q ORDER BY sift.score(ctid) DESC LIMIT k) g),
+		want AS (SELECT rank, ctid AS tid, score FROM sift_ref.topk(q, k))
+	SELECT count(*) FROM got FULL JOIN want USING (rank) WHERE got.tid IS DISTINCT FROM want.tid OR got.score IS DISTINCT FROM want.score
+$$;
+CREATE FUNCTION rw_count(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE 'SELECT count(*) FROM rw WHERE body @@> $1' INTO n USING q;
+	RETURN n;
+END $$;
+SELECT count(*) AS queries, min(rw_count(q)) > 0 AS all_match FROM rw_q;
+ queries | all_match 
+---------+-----------
+      13 | t
+(1 row)
+
+SELECT q FROM rw_q WHERE rw_count(q) <> sift_ref.count(q);
+ q 
+---
+(0 rows)
+
+SET sift.max_expansions = 4;
+SELECT q FROM rw_q WHERE rw_count(q) <> sift_ref.count(q);
+ q 
+---
+(0 rows)
+
+SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
+  k  | mismatches 
+-----+------------
+   1 |          0
+   5 |          0
+  25 |          0
+ 400 |          0
+(4 rows)
+
+SET sift.max_expansions = 1;
+SELECT q FROM rw_q WHERE rw_count(q) <> sift_ref.count(q);
+ q 
+---
+(0 rows)
+
+SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
+  k  | mismatches 
+-----+------------
+   1 |          0
+   5 |          0
+  25 |          0
+ 400 |          0
+(4 rows)
+
+SET sift.prefix_cache_size = 0;
+SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[5, 400]) k, rw_q GROUP BY k ORDER BY k;
+  k  | mismatches 
+-----+------------
+   5 |          0
+ 400 |          0
+(2 rows)
+
+RESET sift.prefix_cache_size;
+RESET sift.max_expansions;
+SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
+  k  | mismatches 
+-----+------------
+   1 |          0
+   5 |          0
+  25 |          0
+ 400 |          0
+(4 rows)
+
+DROP FUNCTION rw_diff(text, int), rw_count(text);
+DROP TABLE rw;
+DROP SCHEMA sift_ref CASCADE;
+NOTICE:  drop cascades to 45 other objects
+DETAIL:  drop cascades to function sift_ref.mutant(text)
+drop cascades to function sift_ref.syntax_error(integer,text)
+drop cascades to function sift_ref.limit_error(integer,text)
+drop cascades to function sift_ref.opt(regclass,text)
+drop cascades to function sift_ref.tokenizer()
+drop cascades to function sift_ref.casefold(text)
+drop cascades to function sift_ref.fold(text,regclass)
+drop cascades to function sift_ref.trunc_term(text)
+drop cascades to function sift_ref.tokens(text,regclass,boolean)
+drop cascades to function sift_ref.lex(text)
+drop cascades to function sift_ref.p_atom(jsonb,integer)
+drop cascades to function sift_ref.p_or(jsonb,integer,integer)
+drop cascades to function sift_ref.p_and(jsonb,integer,integer)
+drop cascades to function sift_ref.p_unary(jsonb,integer,integer)
+drop cascades to function sift_ref.flatten(jsonb)
+drop cascades to function sift_ref.check_not(jsonb,boolean)
+drop cascades to function sift_ref.parse(text)
+drop cascades to function sift_ref.quote(text,text)
+drop cascades to function sift_ref.render(jsonb,boolean)
+drop cascades to function sift_ref.re_escape(text)
+drop cascades to function sift_ref.a_text(text,integer,real,regclass)
+drop cascades to function sift_ref."analyze"(jsonb,regclass,real)
+drop cascades to function sift_ref.analyze_query(text,regclass)
+drop cascades to function sift_ref.lev_le(text,text,integer)
+drop cascades to function sift_ref.exp_match(jsonb,text)
+drop cascades to function sift_ref.has_phrase(text[],text[])
+drop cascades to function sift_ref.eval_doc(jsonb,text[])
+drop cascades to function sift_ref.analyzed(text,regclass)
+drop cascades to function sift_ref.match(text,text,regclass)
+drop cascades to function sift_ref.load(regclass,text,regclass,text,double precision,double precision)
+drop cascades to function sift_ref.load_index(regclass)
+drop cascades to function sift_ref.avgdl(bigint,bigint)
+drop cascades to function sift_ref.stats()
+drop cascades to function sift_ref.idf(bigint,bigint)
+drop cascades to function sift_ref.bm25(integer,integer,bigint,bigint,real,real,real,real)
+drop cascades to function sift_ref.expand(jsonb)
+drop cascades to function sift_ref.is_wide(jsonb)
+drop cascades to function sift_ref.canonical(text,regclass)
+drop cascades to function sift_ref.compile(jsonb)
+drop cascades to function sift_ref.units(jsonb,text)
+drop cascades to function sift_ref.dropped(tid)
+drop cascades to function sift_ref.search(text)
+drop cascades to function sift_ref.topk(text,integer)
+drop cascades to function sift_ref.count(text)
+drop cascades to function sift_ref.selfcheck(text)
+DROP EXTENSION pg_sift;

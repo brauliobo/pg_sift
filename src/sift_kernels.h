@@ -154,12 +154,15 @@ sift_kern_bm25(float4 w, uint8 tf, float4 knorm)
  * clamped to [1, 255]. sift_kern_ub_weight scales a term weight w for
  * ub_accum: w * c / 255, c = max(1, avgdl_now / avgdl_ref), raised by
  * SIFT_KERN_UB_SLACK and rounded up, so the float32 block UB is >= every
- * float32 score it covers for up to SIFT_MAX_LEAVES terms.
+ * float32 score it covers for up to SIFT_MAX_LEAVES terms; beyond
+ * them the slack grows by SIFT_KERN_UB_SLACK_TERM per term (a plan has a leaf for every
+ * distinct term of its phrases, so more than SIFT_MAX_LEAVES).
  */
 #define SIFT_KERN_UB_SLACK	(1.0 / 4096)
+#define SIFT_KERN_UB_SLACK_TERM	(1.0 / 1048576)
 
 extern uint8 sift_kern_bound_u8(const SiftBm25 *ref, uint32 tf, uint32 dl);
-extern float4 sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref);
+extern float4 sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref, int nterms);
 
 /*
  * Writes count tf values (1..255) at pos into a term's tf stream; l1 and
@@ -170,7 +173,8 @@ extern void sift_kern_tf_encode(uint8 *l1, uint8 *nib, uint8 *esc, SiftTfPos *po
 
 /*
  * Top-k by score descending, ties by ascending key: a min-heap whose root is
- * the worst kept hit. Caller-owned storage of k hits.
+ * the worst kept hit. Caller-owned storage of cap hits: a caller with a huge k grows it as hits arrive,
+ * before a push that finds n == cap < k.
  */
 typedef struct SiftHit
 {
@@ -181,8 +185,9 @@ typedef struct SiftHit
 typedef struct SiftTopK
 {
 	SiftHit    *hit;
-	int			k;
-	int			n;
+	int64		k;
+	int64		n;
+	int64		cap;			/* slots of hit, at least k or n + 1 */
 } SiftTopK;
 
 static inline bool
@@ -191,7 +196,7 @@ sift_hit_better(float4 s, SiftKey key, const SiftHit *h)
 	return s > h->score || (s == h->score && key < h->key);
 }
 
-extern void sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int k);
+extern void sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int64 cap, int64 k);
 
 /*
  * select_gt threshold: exactly the scores >= the worst kept hit pass (equal
@@ -205,10 +210,10 @@ sift_kern_topk_admits(const SiftTopK *t, float4 s, SiftKey key)
 	return t->n < t->k || sift_hit_better(s, key, &t->hit[0]);
 }
 
-/* Inserts a hit; it must be admitted */
+/* Inserts a hit; it must be admitted, and n < cap or n == k */
 extern void sift_kern_topk_push(SiftTopK *t, float4 s, SiftKey key);
 
 /* Sorts the kept hits best first, in place (the heap is consumed); returns n */
-extern int	sift_kern_topk_sort(SiftTopK *t);
+extern int64 sift_kern_topk_sort(SiftTopK *t);
 
 #endif							/* SIFT_KERNELS_H */

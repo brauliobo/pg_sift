@@ -4,6 +4,12 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## Unreleased
+
+- Queries: a wildcard, regex or fuzzy leaf that expands to more than 512 terms matches every word it matches and scores as one term, like a
+  prefix, instead of failing (the shared engine, as in the PostgreSQL extension); a regular expression cannot have back-references;
+  `ORDER BY rank LIMIT` above 67 million rows works.
+
 ## 1.4.0
 
 - No change to the storage format (2), the SQL interface or the results: tables of 1.3.x open as they are. The extension now runs on the portable core

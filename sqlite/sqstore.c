@@ -1172,6 +1172,11 @@ sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 }
 
 void
+sift_sr_unlock(SiftStreamReader *sr)
+{
+}
+
+void
 sift_sr_release(SiftStreamReader *sr)
 {
 	sq_unpin(sr->buf);
