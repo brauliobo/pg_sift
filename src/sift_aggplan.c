@@ -128,6 +128,7 @@ typedef struct AggCtx
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
+	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 } AggCtx;
 
 /* ---------- small helpers ---------- */
@@ -3581,6 +3582,8 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_UNIT_COST		200.0
+#define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
+#define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 #define AGG_START_COST		140000.0	/* opening the source, the lookup tables and the first units: about 0.4 ms, which a selective btree plan does not pay */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
@@ -3902,6 +3905,17 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	return cost;
 }
 
+/* The share of the units the pre-aggregates answer: the pages of the heap that are all-visible (a unit is exact when its pages are); 0 when the spec cannot use them */
+static double
+preagg_share(AggCtx *c, SiftAggSpec *s)
+{
+	int			dim;
+
+	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
+		return 0.0;
+	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -3912,6 +3926,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				vis = 1.0 - Min(Max(c->stats.allvisible_frac, 0.0), 1.0),
 				scan_cost,
 				gen_cost = 0,
+				exact,
 				agg_rows;
 	Cost		startup;
 
@@ -3960,6 +3975,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
 	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25;
+	/* the exact units cost their groups, not their rows */
+	exact = preagg_share(c, s);
+	if (exact > 0)
+		scan_cost += exact * (units * (AGG_UNIT_COST + Min(rows_out, 256.0) * AGG_PREAGG_GROUP) * cpu_operator_cost - scan_cost);
 	startup = AGG_START_COST * cpu_operator_cost;
 	if (s->nworkers > 0)
 	{
@@ -4094,6 +4113,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		rel = index_open(ii->indexoid, AccessShareLock);
 		c->lay = sift_colsrc_layout(rel);
 		sift_colsrc_stats(rel, &c->stats);
+		sift_colsrc_preagg(rel, &c->pa);
 		index_close(rel, AccessShareLock);
 		c->indexoid = ii->indexoid;
 		*ixout = ii;
@@ -4362,7 +4382,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 
 	spec_deps(root, s);
 	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
-	nworkers = parallel_workers(c, s, input_rel);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, scan_tlist, nworkers);
 }

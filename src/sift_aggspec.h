@@ -417,6 +417,18 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
 
+/*
+ * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, sift_colsrc.h SiftSrcUnitAgg)? A row level scan of one
+ * source without joins, combos or sets, with at most one group key, that is a column of a histogram, and aggregates of the
+ * stored measures: count(*), count(m), sum and avg of an integer or numeric m, and min and max when there is no key. Conjuncts on
+ * other leaves must be zone comparisons (a unit answers when its zone lies inside them), the rest must test the key's leaf (or,
+ * without a key, one leaf: dim). dim: that leaf, -1 when the unit's sums answer (no key, no such conjunct).
+ */
+extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int *dim);
+
+/* The one leaf a row level predicate reads (-1: none), -2 if it is not a test of a plain leaf of the source (a combo, an element, a late expression) */
+extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out);
 
