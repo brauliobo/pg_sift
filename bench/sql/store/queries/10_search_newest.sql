@@ -1,4 +1,5 @@
 -- Search "wireless headphones", shipped orders: the 10 newest
+-- label: `title @@> 'a b', ... ORDER BY created_at DESC LIMIT 10`
 --@ pg
 SELECT id, created_at, title FROM orders WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', 'wireless headphones') AND status = 'shipped' ORDER BY created_at DESC, id DESC LIMIT 10
 --@ sift

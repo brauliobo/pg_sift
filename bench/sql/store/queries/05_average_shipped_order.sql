@@ -1,4 +1,5 @@
 -- Average value of the shipped orders of one country in one year
+-- label: `avg(amount) WHERE status='shipped', ...`
 --@ pg
 SELECT avg(amount) FROM orders WHERE status = 'shipped' AND country = 'DE' AND created_at >= '2025-01-01' AND created_at < '2026-01-01'
 --@ ch
