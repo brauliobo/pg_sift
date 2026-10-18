@@ -340,7 +340,6 @@ typedef struct ZoneArrays
 typedef struct SegPriv
 {
 	SiftLive	live;
-	uint8	   *dirty;			/* dirty-SB bitmap, loaded when the entry is flagged dirty */
 	SiftCDict **dict;
 	ZoneArrays **zones;
 	uint8	   *unitbuf;
@@ -737,20 +736,17 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 
 /* ---------- liveness ---------- */
 
+/* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
+ * a scan must read liveness after it reads the all-visible mask */
 static bool
 unit_dirty(SiftColSegment *seg, uint32 u)
 {
-	SegPriv    *pv = PRIV(seg);
 	uint32		i = seg->sbdir[u].sb - seg->hdr->sb_lo;
+	Buffer		buf = InvalidBuffer;
+	uint8		b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
 
-	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
-		return false;
-	if (pv->dirty == NULL)
-	{
-		pv->dirty = MemoryContextAlloc(seg->mcxt, (pv->live.nsb + 7) / 8);
-		sift_live_dirty(&pv->live, pv->dirty);
-	}
-	return (pv->dirty[i / 8] >> (i % 8)) & 1;
+	UnlockReleaseBuffer(buf);
+	return (b >> (i % 8)) & 1;
 }
 
 bool
@@ -859,8 +855,6 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 			seg->entry.flags |= SIFT_SEG_DIRTY;
 		}
 		sift_live_clear(&pv->live, r->sb - seg->hdr->sb_lo, dead, nd);
-		if (pv->dirty)
-			pv->dirty[(r->sb - seg->hdr->sb_lo) / 8] |= 1 << ((r->sb - seg->hdr->sb_lo) % 8);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}

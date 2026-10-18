@@ -326,7 +326,6 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_mutable;		/* rows of a mutable segment (chunks encoded in memory) */
-	bool		clean;			/* no dead rows (the SB is not dirty) */
 	void	   *priv;
 } SiftColUnit;
 
