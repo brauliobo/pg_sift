@@ -14,7 +14,7 @@
 
 #include "sift_topn.h"
 
-/* Superblocks per window of the visit order: the zones are looked at again, and the match set is asked for, once per window */
+/* Superblocks per window of the visit order at most: the zones are looked at again, and the match set is asked for, once per window */
 #define TOPN_WINDOW		8
 /* Superblocks whose zones tell whether the sort column follows the table */
 #define TOPN_PROBES		6
@@ -107,7 +107,8 @@ struct SiftTopN
 	uint32		nsb;
 	bool		reverse;			/* the superblocks are visited from the last */
 	bool		follows;			/* the first sort column follows the superblocks: the windows farther from its best end are worse */
-	uint32		win;				/* windows left, counting in visit order */
+	uint32		left;				/* superblocks not yet in a window */
+	uint32		size;				/* superblocks of the next window */
 	uint32		nprobe;
 	struct
 	{
@@ -549,7 +550,9 @@ sift_topn_start(SiftTopN *t, uint32 nsb)
 		/* best values at the high end of the table: desc and growing, or asc and shrinking */
 		t->reverse = (ups > 0) == t->key[0].desc;
 	}
-	t->win = (nsb + TOPN_WINDOW - 1) / TOPN_WINDOW;
+	t->left = nsb;
+	/* a column that follows the table starts with one superblock, the one the best values are in, and grows to TOPN_WINDOW */
+	t->size = t->follows ? 1 : TOPN_WINDOW;
 }
 
 bool
@@ -558,19 +561,25 @@ sift_topn_follows(const SiftTopN *t)
 	return t->follows;
 }
 
+bool
+sift_topn_reverse(const SiftTopN *t)
+{
+	return t->reverse;
+}
+
 /* The next window of superblocks in the visit order, [*lo, *hi); *best: its superblock nearest to the best values */
 bool
 sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best)
 {
-	uint32		w;
+	uint32		n = Min(t->size, t->left);
 
-	if (t->win == 0)
+	if (n == 0)
 		return false;
-	t->win--;
-	w = t->reverse ? t->win : (t->nsb + TOPN_WINDOW - 1) / TOPN_WINDOW - 1 - t->win;
-	*lo = w * TOPN_WINDOW;
-	*hi = Min(*lo + TOPN_WINDOW, t->nsb);
+	*lo = t->reverse ? t->left - n : t->nsb - t->left;
+	*hi = *lo + n;
 	*best = t->reverse ? *hi - 1 : *lo;
+	t->left -= n;
+	t->size = Min(t->size * 2, TOPN_WINDOW);
 	return true;
 }
 
@@ -578,9 +587,8 @@ sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best)
 void
 sift_topn_stop(SiftTopN *t)
 {
-	for (uint32 w = 0; w < t->win; w++)
-		t->skipped += TOPN_WINDOW;
-	t->win = 0;
+	t->skipped += t->left;
+	t->left = 0;
 }
 
 void

@@ -53,6 +53,7 @@ extern uint32 sift_topn_probe_sb(const SiftTopN *t, int i, uint32 nsb);
 extern void sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z);
 extern void sift_topn_start(SiftTopN *t, uint32 nsb);
 extern bool sift_topn_follows(const SiftTopN *t);
+extern bool sift_topn_reverse(const SiftTopN *t);	/* the superblocks are visited from the last */
 extern bool sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best);
 extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
 extern void sift_topn_stop(SiftTopN *t);
