@@ -1,0 +1,425 @@
+# sift_table: a columnar table access method on the sift_col engine
+
+`CREATE TABLE orders (...) USING sift_table` keeps the rows of the table in compressed column groups (the engine of docs/COL.md) with
+**native MVCC**: no heap copy, no heap visibility map, no heap checks. The table is a normal PostgreSQL table: `INSERT`, `COPY`, `UPDATE`,
+`DELETE`, `SELECT ... FOR UPDATE`, `TRUNCATE`, `VACUUM [FULL]`, `ANALYZE`, `CLUSTER`, `ALTER TABLE` rewrites, btree and BM25 (`sift`)
+indexes, unique constraints, foreign keys, triggers, `pg_dump`, `pg_basebackup`, `pg_upgrade`, physical replication and (with one
+requirement, section 5) logical replication.
+
+Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
+index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `sql/col_tam.sql`. C identifiers `sift_tbl_*`, files
+`src/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
+the table AM track; where it and the code disagree, fix one in the same commit.
+
+Running example (used in tests too): `orders(id bigint, store_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb,
+metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `metrics` an object of floats, and `stores(id int, name text)`.
+
+Status legend in the tables below: **done** (in the branch and tested), **todo** (designed, planned), **stub** (the glue exists, the engine
+piece it calls is a stub, section 12), **no** (unsupported, with the error given).
+
+---
+
+## 1. Decisions in one page
+
+| topic | decision |
+|---|---|
+| Storage | the page store of `sift_store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
+| TIDs | **synthetic and never reused**: a TID is `(vblock, offset)` with `offset` in 1..`MaxHeapTuplesPerPage` (291) so every index AM, TID bitmaps and GIN accept it. `vblock` comes from a counter in the metapage and never decreases; it is *not* a physical block number. A superblock (SB, 256 vblocks, 74,496 TIDs) is the engine's unit, so the engine's row directory returns the table's own TIDs (docs/COL.md section 12). |
+| Row versions | **delta + groups.** New rows go to a row-format *delta segment* (mutable lane family: pages of `SIFT_PT_MUTDATA`, directory kind `SIFT_SEG_MUTABLE_*`) with `xmin`/`cmin` per row. Maintenance seals delta segments whose rows are all final into **column groups** (engine immutable segments; rows frozen: no per-row xmin). A bulk load (COPY, rewrite) writes a column segment directly with **segment-level xmin** in `SiftSegEntry.reserved`. |
+| Deletes, updates, locks | **tombstones**: one 32-byte entry (`tid`, deleter `xid`, `cid`, kind, successor TID) appended to one per-relation **tombstone segment** (same lane page family). A row version is visible iff its insert is visible and no non-aborted DELETE/UPDATE tombstone of it is visible. UPDATE = new row in the delta + UPDATE tombstone carrying the successor TID (this is the update chain `FIND_LAST_VERSION` and EvalPlanQual follow). HOT does not exist (`TU_All`). |
+| Why tombstones | the deleter's `xid`/`cid` in an append-only log gives MVCC for every snapshot type with the PostgreSQL transaction machinery (subtransactions, savepoints, own-command visibility, aborts) and never rewrites a sealed group. |
+| Lock modes | all four `FOR ...` modes are supported and behave as one exclusive row lock between different transactions (no MultiXact): `FOR SHARE`/`KEY SHARE` of two transactions on the same row serialize. Foreign keys to a `sift_table` parent therefore serialize concurrent children of the same parent row; correct, not fast. |
+| TOAST | none (`relation_needs_toast_table` false). Values are stored inline, external TOAST pointers of the source are expanded at insert. A row larger than a delta page continues in overflow pages of its delta segment. In a group a value is a leaf of the engine (compressed with the column, section 8); jsonb keeps its exact original bytes next to the shredded paths of col-json. |
+| WAL | **hybrid**: generic WAL for every page change (no `shared_preload_libraries` needed, physical replication, PITR, `pg_basebackup`, `pg_rewind` work), plus one custom-rmgr *logical change record* emitted only when the relation is published and `wal_level = logical` (needs `pg_sift` in `shared_preload_libraries` on the primary and every standby; without it a DML on a published table fails with a clear error, never a silent gap). Section 5. |
+| Isolation | READ COMMITTED, REPEATABLE READ, SERIALIZABLE (relation-level SIREAD lock, conflict-in on every write, conflict-out on invisible concurrent versions: conservative, more false positives than heap). |
+| Parallel | parallel sequential scan over delta pages and (engine) SB morsels, one frozen directory copy shared by all workers. Parallel DML is not offered by PostgreSQL for any AM. |
+| Aggregates | the SiftAgg pushdown of col-plan runs over the table through the `SiftColVisibility` hook of the engine installed by the table AM: a unit of a frozen segment without tombstones is entirely visible (no per-row work); other units are filtered by tombstone. No heap involved. Delta rows are fed as in-memory units (request to col-core, section 12). |
+| Options | `ALTER TABLE ... SET (sift_delta_limit=..., sift_group_rows=..., sift_compression=..., sift_paths=...)` (reloptions of the heap kind registered in `_PG_init`, accepted by `CREATE TABLE ... WITH` only when `pg_sift` is preloaded) and per column `ALTER COLUMN ... SET (compression=...)` through col-compress. Compression is on by default; kernels follow `sift.simd`. |
+| Maintenance | VACUUM does everything (tombstone sweep, dead-row liveness, index cleanup, seal, merge, stats, `relfrozenxid`); autovacuum triggers through `pgstat` counters the AM maintains. Inline sealing when a delta segment fills; an async worker (the index worker's entry point, a table variant) for the rest. |
+
+---
+
+## 2. Layout
+
+### 2.1 Relation, directory, metapage
+
+Main fork only (no FSM, no VM: `pg_visibility` and index-only scans see a table without a VM, which is correct: they take the AM
+path). Blocks 0 (meta) and 1 (directory) as in `sift_store.h`; everything else is allocated from the free list / high-water mark by
+`sift_alloc_*`. The metapage carries `flags & SIFT_TBL_META_FLAG` (0x00020000) and reuses fields that a table has no use for:
+
+| field | in a table |
+|---|---|
+| `sum_dl` | **next vblock** (the TID block counter). Reserving a range is part of the directory change that creates the segment, so a crash never hands out a range twice. |
+| `ndocs` | rows of the immutable segments (statistics) |
+| `k1`, `b`, `analyzer_hash` | 0 |
+
+(Request to the store owners, section 12: name the field. Until then `sift_table.h` has the one accessor.)
+
+Directory entries (`SiftSegEntry`):
+
+| kind | entry | meaning |
+|---|---|---|
+| `SIFT_SEG_IMMUTABLE` | `reserved` = xmin (0 = frozen), `sb_lo..sb_hi` = SBs with rows, `ndocs` = rows | an engine column segment (docs/COL.md 2.1), schema = table columns + shredded leaves |
+| `SIFT_SEG_MUTABLE_ACTIVE` / `_SEALED` | `flags & SIFT_TBL_SEG_DELTA`, `sb_lo..sb_hi` = SBs of its vblock range | a delta segment; at most one active, sealed ones wait for maintenance |
+| `SIFT_SEG_MUTABLE_ACTIVE` | `flags & SIFT_TBL_SEG_TOMB` | the one tombstone segment (swapped for a rewritten one by VACUUM) |
+
+At most `SIFT_MAX_SEGMENTS` (128) entries: the policy keeps 1 active delta, 1 tombstone segment, a few sealed deltas and the tiered
+immutable segments; an insert that cannot open a new delta segment because 112 entries are in use runs maintenance and, if a long
+transaction holds the horizon so nothing can be sealed, fails with `ERRCODE_PROGRAM_LIMIT_EXCEEDED` ("too many unsealed delta
+segments, a long-running transaction prevents compaction"). With the default 4 MB delta limit that is more than 400 MB of unsealed rows.
+
+Because the store walks mutable lane chains to mark referenced blocks, delta and tombstone segments use the lane header
+(`SiftMutHeaderData`, lane 0 only) and the chain `next` pointer at the start of every data page; the orphan sweep, `sift_store_verify`
+and the free-list protocol serve a table unchanged.
+
+### 2.2 TIDs
+
+`TID = (vblock, off)`, `off` in 1..291; `key = vblock << 16 | off` is the engine's `SiftKey`; SB = `vblock >> 8`. A delta segment owns
+the vblock range `[vbase, vbase + vcap)` (one vblock per page of the segment, in the order the pages were added). A bulk segment is
+numbered densely (vblock `base + i / 291`, offset `i % 291 + 1`), which is the engine's dense-page case. A vblock is never reused, so an
+index entry never has to be removed before a TID is recycled: a dangling index entry resolves to "no such row" (the fetch returns
+false), and VACUUM removes index entries only to keep indexes small, not for correctness. TIDs beyond `RelationGetNumberOfBlocks` are
+normal (PostgreSQL asks the AM; `PrefetchBuffer` past EOF is harmless); `pg_relation_size` is the physical size.
+
+`TID -> storage`: directory (binary search by SB range, then the unit) for groups; for a delta segment the header page holds
+`page[i]` (physical block of vblock `vbase + i`).
+
+### 2.3 Delta segment (row format, the write buffer)
+
+Header page (`SIFT_PT_MUTHEADER`): `SiftMutHeaderData` (lane 0 = the chain) then `SiftTblDeltaHdr { magic, flags, vbase, vcap, npages,
+nrows, page[vcap] }` (`vcap` <= 1024, set by `sift_delta_limit`, default 4 MB = 512). Data page (`SIFT_PT_MUTDATA`): `SiftTblPageHdr {
+next, nrows, flags (SEALED, OVERFLOW), vblock, ovf_next, slot[291] u16 }` then records forward; a record is `{u32 len; xmin; cmin;
+u16 flags; u16 natts-hint}` plus a MinimalTuple (the row as `heap_form_minimal_tuple` makes it, so `ALTER TABLE ADD COLUMN` with a
+default is handled by `heap_deform_tuple`'s missing-attribute rule). TID offset = slot number + 1; slots never move.
+
+Appending: a backend keeps a *target page* (a vblock it owns for appends) in `rd_amcache`, locks it exclusively, appends and logs the
+page delta (generic WAL), at most one WAL record per call, or per page for `multi_insert`. When the page is full it claims the next page
+under the header page lock (header, then chain tail: never the reverse), checking `SEALED`. Rows in different pages interleave only by
+vblock, so concurrent inserters never share a page. Overflow records (a row over ~7.5 kB) take consecutive pages of the segment marked
+`OVERFLOW`, linked by `ovf_next`; the TID's slot holds the head and the total length.
+
+### 2.4 Tombstone segment
+
+Header page as above (`SiftTblTombHdr { magic, nentries, tail }`), chain of data pages of `SiftTblTomb[]` (32 bytes: `u64 key`, `u32 xid`,
+`u32 cid`, `u64 succ`, `u16 kind` (DELETE, UPDATE, LOCK), `u16 flags`, `u32 pad`). Entries are written once and never edited; whether an
+entry counts is decided by the status of its `xid` at read time. A backend caches the entries as a sorted array and extends the cache
+incrementally from `nentries` (append-only), so a lookup is a binary search; with no entry at all (`nentries = 0`, the case of an
+insert-only table) a row check costs one comparison. VACUUM writes a new tombstone segment without the entries that no longer matter
+(section 7) and switches it in with `sift_dir_update` (the old pages are released with a `safexid`, so readers of the old copy keep
+valid pages: P4).
+
+Row-level mutual exclusion for DELETE/UPDATE/LOCK of one TID is a heavyweight `LockTuple(rel, tid, ExclusiveLock)` held while the
+caller checks the cache against the log and appends: the same protocol as `heap_delete`, so deadlock detection and `XactLockTableWait`
+work as for any heap table.
+
+---
+
+## 3. MVCC
+
+A row version has (insert state, delete state):
+
+- **insert state**: delta row: `(xmin, cmin)` of the record, plus the `DEAD` record flag (aborted speculative insertion, or removed by
+  VACUUM); group row: the segment's `xmin` (0: frozen, always inserted).
+- **delete state**: the non-LOCK tombstone entries for its TID, in the order of the log; a row can have several (aborted ones, then a
+  committed or in-progress one). LOCK entries never delete.
+
+Visibility per snapshot type (`sift_tbl_visible`, one function for every caller: scan, fetch, bitmap, tuple_satisfies_snapshot,
+index_delete_tuples, analyze, index build, SiftAgg's hook):
+
+| snapshot | row is visible when |
+|---|---|
+| MVCC | inserted: `xmin` is the current transaction with `cmin < curcid`, or not in the snapshot and committed (`XidInMVCCSnapshot`, `TransactionIdDidCommit`; a hint on the record flags it so a committed record costs no clog lookup) **and** no tombstone is *deleted-visible*: same rule on the tombstone's `xid`/`cid` (`cid < curcid` for the current transaction). |
+| Self | as MVCC with every command of the current transaction counted as done |
+| Any | always (aborted rows included, as `SnapshotAny` on a heap; deleted rows included) |
+| Dirty | inserter in progress (not me): visible, `snapshot->xmin = xmin`, and for a speculative record `snapshot->speculativeToken`; aborted inserter: no. A tombstone of an in-progress transaction (not me): row visible, `snapshot->xmax = xid`; of me or committed: row deleted. The btree uniqueness check, `INSERT ... ON CONFLICT` and the foreign key checks rely on exactly this. |
+| NonVacuumable | not deleted, or the deleter is not yet removable (`GlobalVisTestIsRemovableXid`); used by the planner's `get_actual_variable_range` |
+| historic MVCC, toast | not used on this AM |
+
+**Updates and chains.** `tuple_update`: lock the TID (`LockTuple`), sync the cache, evaluate the tombstones of the TID: none live
+and the row visible to `snapshot`: insert the new version (delta, `xmin = me`), append `UPDATE{succ = new}`; a live tombstone of a transaction in
+progress: `TM_BeingModified` (`wait = false`) or release the tuple lock, `XactLockTableWait`, retry; committed UPDATE: `TM_Updated` with
+`tmfd->ctid = succ`, `xmax`, `cmax`; committed DELETE: `TM_Deleted`; by me with `cmax >= cid`: `TM_SelfModified`; REPEATABLE READ and above
+see the same results and the executor raises the serialization failure, as for heap. `tuple_lock` with `TUPLE_LOCK_FLAG_FIND_LAST_VERSION`
+follows `succ` while the entry is a committed UPDATE, fetching the latest version into the slot (so READ COMMITTED's EvalPlanQual, the
+logical-replication apply worker and `ON CONFLICT DO UPDATE` work). `ctid` and `tableoid` work (`slot->tts_tid`); `xmin`, `xmax`, `cmin`,
+`cmax` are not system columns of this AM and raise `ERRCODE_FEATURE_NOT_SUPPORTED`.
+
+**Speculative insertion** (`INSERT ... ON CONFLICT`): the record carries the token; `tuple_complete_speculative(succeeded = false)` sets
+its `DEAD` flag, so a killed insertion is never visible to anyone and other inserters waiting on the token proceed.
+
+**SERIALIZABLE.** Scans and fetches take `PredicateLockRelation`; every write calls `CheckForSerializableConflictIn(rel, NULL,
+InvalidBlockNumber)`; an invisible row or tombstone of a concurrent transaction calls `CheckForSerializableConflictOut`. Relation granularity is the
+price of not having heap pages; it is correct and has more false positives than heap.
+
+**Freezing and wraparound.** Group rows have no xid. Delta rows older than the horizon are sealed into groups (frozen); tombstones
+and bulk-segment `xmin`s are removed or reset to 0 by VACUUM. `relation_vacuum` computes the oldest xid still stored (delta,
+tombstones, segment xmins, the `xmin`s of in-flight work) and passes it to `vac_update_relstats` as `relfrozenxid`; MultiXacts are
+not used, `relminmxid` follows the cutoff. So anti-wraparound autovacuum works and ends.
+
+**Rows and the snapshot of the scan.** A scan registers its snapshot (`MyProc->xmin`, so P4 protects the extents), copies the
+directory once and reads delta pages as it goes: a row appended after the scan began has a later `xmin` (or a later `cmin` in this
+transaction) and is invisible, a seal that replaces a delta segment with a group publishes the same TIDs and rows: the scan keeps its
+old copy, whose pages are not reused until the scan's snapshot is gone.
+
+---
+
+## 4. TableAmRoutine: every callback
+
+PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece of section 12.
+
+| callback | decision | status |
+|---|---|---|
+| `slot_callbacks` | `TTSOpsHeapTuple`: every row is built as a HeapTuple (`t_self` = its TID) and handed to the slot with `sift_tbl_store`, which moves it into the slot's own memory context (a scan runs in a per-tuple context that is reset under it; the heap's buffer slots never allocate there). `ctid`/`tableoid` work, other system columns error. | done |
+| `scan_begin` / `scan_end` / `scan_rescan` | walks, in order: delta segments (page by page, rows in slot order), groups (engine units, in SB order). Snapshot registered, directory copied once. `SO_TYPE_SEQSCAN`, `SO_TYPE_ANALYZE`, `SO_TYPE_BITMAPSCAN`, `SO_TYPE_TIDRANGESCAN` honored; scan keys unsupported (the planner never passes them for a non-heap AM). | done |
+| `scan_getnextslot` | forward only (`ScanDirectionIsBackward` raises `0A000`: a backward scan needs a scrollable cursor, which the executor materializes first for a non-heap AM via `EXEC_FLAG_BACKWARD`; the AM advertises no backward support through its planner-visible costs). | done |
+| `scan_set_tidrange` / `scan_getnextslot_tidrange` | by SB/vblock range on the directory, then the filter `mintid <= tid <= maxtid`. | done |
+| `parallelscan_estimate` / `_initialize` / `_reinitialize` | `ParallelBlockTableScanDescData`-like header + a frozen copy of the directory + an atomic unit counter (delta page or engine SB morsel). | implemented, not yet exercised by a test |
+| `index_fetch_begin/reset/end` | per-fetch state caches the directory copy, the open segment readers, the last decoded unit and the tombstone cache; no buffer is held between calls. | done |
+| `index_fetch_tuple` | TID -> storage (2.2), visibility (3), materialize into a virtual slot. `call_again` always false (no HOT chains); `all_dead` true when the row is dead for every snapshot (no such row, final tombstone, aborted insert) so btree can kill the index entry. Honors Dirty, Self, Any, NonVacuumable. | done |
+| `tuple_fetch_row_version` | same as above with `slot->tts_tid`; used by triggers, RETURNING of old rows, MERGE, `WHERE CURRENT OF`. | done |
+| `tuple_tid_valid` | `off` in 1..291 and `vblock < next_vblock`. | done |
+| `tuple_get_latest_tid` | follows `succ` of committed UPDATE tombstones visible to the snapshot. | done |
+| `tuple_satisfies_snapshot` | `sift_tbl_visible` on the slot's TID. | done |
+| `index_delete_tuples` | for each TID: no such row, or a deleter removable now: `knowndeletable`; conflict horizon = the largest deleter xid among them (else `InvalidTransactionId`, nothing deletable). | done |
+| `tuple_insert` | delta append (2.3), `slot->tts_tid` set, `xmin = GetCurrentTransactionId()`, `cmin = cid`; `pgstat_count_heap_insert`; conflict-in; logical record (5). `options` `TABLE_INSERT_SKIP_FSM`/`FROZEN`/`NO_LOGICAL` accepted (FROZEN is only valid in a rewrite and writes a frozen row). | done |
+| `tuple_insert_speculative` / `tuple_complete_speculative` | record with `SPEC` flag and token; completion kills or confirms (3). | done |
+| `multi_insert` | one delta page fill per WAL record; above `sift_group_rows` rows (or a COPY of that size) writes a column segment directly with segment-level xmin (bulk path). | done (row at a time through the delta; the bulk column path is a stub) |
+| `tuple_delete` | tombstone (3); `wait`, `crosscheck`, `changingPart` honored (a partition move records `tmfd->ctid` = the "moved partition" TID like heap: `ItemPointerSetMovedPartitions`). | done |
+| `tuple_update` | new version + UPDATE tombstone (3); `*update_indexes = TU_All`, `*lockmode = LockTupleExclusive`. | done |
+| `tuple_lock` | LOCK tombstone unless the transaction already holds one or deleted the row; `LockWaitPolicy` block/skip/error; `FIND_LAST_VERSION`; `TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS`; fills the slot with the locked version. | done |
+| `finish_bulk_insert` | seals the delta segment if the bulk filled it and nothing else is pending; flushes a partial bulk segment; nothing to `fsync` (the store handles `wal_level = minimal`, as for heap through `smgrDoPendingSyncs`). | done |
+| `relation_set_new_filelocator` | creates the fork, writes meta + directory + the empty tombstone segment (init fork for UNLOGGED, as `ambuildempty`), returns `*freezeXid = RecentXmin`, `*minmulti = GetOldestMultiXactId()`. | done |
+| `relation_nontransactional_truncate` | rewrites meta/directory empty (new relfilenode is created by TRUNCATE itself in the same transaction; this callback is the `TRUNCATE` of a relation created in the transaction and of temp tables). | done |
+| `relation_copy_data` | `ALTER TABLE SET TABLESPACE`, `SET LOGGED/UNLOGGED`: block-for-block copy of the fork (`RelationCopyStorage` through smgr, WAL-logged per page); the store is position independent, so the copy is exact. | done |
+| `relation_copy_for_cluster` | `CLUSTER`, `VACUUM FULL`, rewriting `ALTER TABLE`: scans the old table with a fresh MVCC-for-vacuum rule (live rows plus rows a snapshot older than `OldestXmin` can still see are kept; recently dead rows are counted in `tups_recently_dead` and dropped as heap's rewrite does not keep them for new snapshots), writes frozen groups in `OldIndex` order or by sorting (`use_sort`) into the new table's bulk segments, new dense TIDs; reports `num_tuples`, `tups_vacuumed`, `*xid_cutoff = OldestXmin`. | done |
+| `relation_vacuum` | section 7. | done |
+| `scan_analyze_next_block` / `_next_tuple` | PG 17+: the `ReadStream` is only a budget (its buffers are released unread); the AM walks sampling units (delta pages, engine units chosen at random up to `300 * max statistics target` rows) and reports `liverows` so that `totalrows` equals the exact live count. | done |
+| `index_build_range_scan` | `CREATE INDEX [CONCURRENTLY]`, `REINDEX`: iterates the SB range `[start_blockno, start_blockno + numblocks)` in vblock space (the parallel btree build splits it), `SnapshotAny` + own visibility for the concurrent build (the same rules as `heapam_index_build_range_scan`: in-progress inserters and deleters are waited for with `XactLockTableWait` when the build is not concurrent, indexed anyway when concurrent), partial index predicates, expression indexes, `anyvisible`, progress reporting. | done |
+| `index_validate_scan` | the second pass of `CREATE INDEX CONCURRENTLY`: merge-join of the sorted index TIDs (`tuplesort`, `ValidateIndexState`) with a scan of the table at the validation snapshot, inserting the missing visible rows. | done |
+| `relation_size` | physical size of the main fork (`RelationGetNumberOfBlocks * BLCKSZ`). | done |
+| `relation_needs_toast_table` / `relation_toast_am` / `relation_fetch_toast_slice` | false / unused / unused (no TOAST table is ever created, so these are never called). | done |
+| `relation_estimate_size` | pages = physical blocks, tuples = group rows - tombstoned + delta rows, from the meta counters (not `reltuples`, which ANALYZE of a sampled table only estimates), `allvisfrac` = 0 (no VM). Widths as the heap rule. | done |
+| `scan_bitmap_next_block` (17) / `scan_bitmap_next_tuple` (17, 18) | the TID bitmap is walked here (18: iterator inside the scan): for a page `(vblock, offsets...)` rows are fetched in TID order, exact pages recheck-free, lossy pages test every row of the vblock; `exact_pages`/`lossy_pages` counted for EXPLAIN. Serves btree, BM25 `sift`, GIN, BRIN indexes unchanged. | done |
+| `scan_sample_next_block` / `_next_tuple` | `TABLESAMPLE` unsupported: `ERRCODE_FEATURE_NOT_SUPPORTED` ("TABLESAMPLE is not supported for sift_table tables"). | no |
+
+Planner-side: no custom path is needed for a plain scan (the AM's costs through `relation_estimate_size` and the scan cost model
+are enough: a sequential scan of a columnar table reads bytes of the whole row, so the estimate uses the compressed size). SiftAgg
+and SiftScan paths (col-plan) are offered by their own hooks and take the table through the engine source of section 6.
+
+---
+
+## 5. WAL, replication and what works where (the decisive part)
+
+**PostgreSQL facts this rests on** (PostgreSQL 17 and 18 sources: `access/xlog_internal.h`, `replication/logical/decode.c`,
+docs "Generic WAL Records" and "Custom WAL Resource Managers"):
+
+1. Generic WAL records (`RM_GENERIC_ID`) are replayed by every server (the rmgr is built in) and are *not* decoded: logical decoding of
+   an `RM_GENERIC_ID` record queues nothing. Rows written only through generic WAL are invisible to logical replication.
+2. A custom resource manager (`RegisterCustomRmgr`, id 128..255 reserved for development or registered on the PostgreSQL wiki) must be
+   registered from `_PG_init` during `shared_preload_libraries` processing, on the primary **and on every server that replays its WAL**
+   (a standby without it stops recovery with "resource manager not registered"). `RmgrData.rm_decode` (present in 17 and 18)
+   is called by `LogicalDecodingProcessRecord` for the rmgr's records and may call `ReorderBufferQueueChange` with
+   `REORDER_BUFFER_CHANGE_INSERT/UPDATE/DELETE`, a `RelFileLocator` and a heap-format tuple: the built-in `pgoutput` then publishes it like
+   a heap change (it maps the locator to the relation, reads the tuple with `heap_deform_tuple`, applies the publication's row filter
+   and column list).
+3. `pgoutput` takes UPDATE/DELETE keys from the old-tuple image; the replica identity is checked by the executor (`CheckCmdReplicaIdentity`)
+   for every AM, so a published `sift_table` table needs one for UPDATE/DELETE exactly like a heap table.
+
+**Options compared.**
+
+| | generic WAL only | custom rmgr for everything | **hybrid (chosen)** |
+|---|---|---|---|
+| `shared_preload_libraries` | no | **yes, always, everywhere** | only to publish the table |
+| physical standby, PITR, `pg_basebackup`, `pg_rewind` | yes | yes (all nodes preload) | yes (all nodes preload only if the logical record is ever emitted) |
+| logical decoding / publications | **no, silently nothing** | yes | yes |
+| `wal_consistency_checking` | masks as for sift today | needs `rm_mask` | as generic |
+| WAL volume | page deltas (generic computes a diff against a copy: about 2 pages copied per write) | logical records, smallest | generic + one logical record per row change when published |
+| code | small | redo for every page operation: large | small + decode + record writer |
+| silent data loss risk | **yes** (a publication is accepted and delivers no rows) | none | none: the AM refuses DML on a published table when the logical record cannot be written |
+
+**Decision: hybrid.**
+
+- Every page change is a generic WAL record (the existing store protocol P1-P6, so crash recovery needs nothing new).
+- When `RelationBuildPublicationDesc` says the relation publishes an action and `XLogLogicalInfoActive()`, the DML also writes **one custom-rmgr
+  record per change** (`RM_SIFT_TBL`, a *development* rmgr id until one is registered): `{op, relfilelocator, tuple image (heap tuple format,
+  every TOAST value expanded), old key image for UPDATE/DELETE}`. `rm_redo` is a no-op (the page changes are in the generic records, so
+  a standby needs the rmgr only to *skip* the record), `rm_decode` turns it into a reorder-buffer change, subtransaction and
+  transaction ordering come from the record's xid. Old key image: the replica identity columns (`RelationGetIndexAttrBitmap`), all
+  columns for `REPLICA IDENTITY FULL`; building it costs fetching the old row of a DELETE/UPDATE only when published.
+- If the relation is published and the rmgr is not registered (`pg_sift` not preloaded) the DML raises `ERRCODE_FEATURE_NOT_SUPPORTED`:
+  "sift_table tables can only be published when pg_sift is in shared_preload_libraries". The check is cached per relation (the
+  publication descriptor is in the relcache and invalidated by publication DDL).
+- `TRUNCATE` is decoded by the core (`XLOG_HEAP_TRUNCATE` is written by `ExecuteTruncateGuts` for any AM).
+- Initial table synchronization (`COPY` of the table) uses the AM's scan; the subscriber applies with `table_tuple_insert/update/delete/lock`
+  of its own `sift_table` or heap table.
+
+**What works where.**
+
+| | status | notes |
+|---|---|---|
+| crash recovery | works | generic WAL replays pages; a half-written segment is an orphan swept by VACUUM, never referenced (P1, P3); the directory switch is atomic (P2). TAP test: `kill -9` during insert, seal, vacuum, bulk load, then `sift.tbl_verify` and a result comparison with a heap table. |
+| physical standby (hot standby reads) | works | the same snapshot rules (`XidInMVCCSnapshot` with the standby's snapshot), `sift_store_check_page` turns a page recycled under a standby query into a serialization failure to retry (P5; `hot_standby_feedback` avoids it). No recovery conflicts are raised by generic WAL. |
+| `pg_basebackup`, PITR, `pg_rewind` | works | block-level WAL, no extra requirement unless the logical record is on (then every node preloads). |
+| `pg_upgrade` | works | files copied; BLCKSZ 8192; the format major/minor in the metapage is checked on open (a newer minor asks for `VACUUM FULL`). |
+| `pg_dump` / restore | works | `COPY` of the live rows through the scan, `CREATE TABLE ... USING sift_table`, indexes and constraints recreated; `ALTER TABLE ... SET (...)` options dumped as reloptions. `pg_dump --no-table-access-method` restores into heap. |
+| logical replication, publisher | works with the hybrid record | requires preload; UPDATE/DELETE need a replica identity; partitioned tables and `publish_via_partition_root` as for heap. |
+| logical replication, subscriber | works | the apply worker uses the AM callbacks. |
+| `wal_level = minimal` | works | new relfilenodes skip WAL and are synced at commit by the core (`RelationNeedsWAL`). |
+| UNLOGGED, TEMP | works | the init fork holds the empty layout; temp tables use local buffers. |
+| logical decoding of the table by a *plugin* (test_decoding, wal2json) | works with the record, same preload requirement | a plugin sees ordinary changes. |
+
+**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); backward scans
+(`0A000`); system columns `xmin/xmax/cmin/cmax` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
+
+**Blocker check (honest).** No decisive blocker for logical replication: it works through the hybrid record, with the stated cost
+(preload everywhere the logical record is replayed, double WAL for published tables). The cheapest way out for a deployment that
+cannot preload is to publish a *heap* table (or a view over it) that is kept in sync by `INSERT INTO ... SELECT` or a trigger, or to
+replicate the heap staging table of an ingest pipeline; the AM refuses to publish silently-incomplete data.
+
+---
+
+## 6. Reading: scans, indexes, the engine, SiftAgg
+
+- **Sequential/bitmap/TID/index scans** are the AM callbacks above. A scan owns a `SiftTblScan` (directory copy, delta page cursor,
+  segment readers, tombstone cache, decoded unit). A unit of a group (engine) is decoded into per-column buffers; the virtual slot's
+  values point into them. A table AM is not told which columns the query needs (a virtual slot cannot decode lazily), so a unit is
+  decoded in full, once per unit; the column-projecting reads belong to the SiftAgg path, which knows its columns.
+- **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the
+  synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
+  `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/sift_visibility.c) which today reads the heap's
+  visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
+  candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM. This is a
+  small patch to a file this track does not own, kept in its own commit (section 12).
+- **SiftAgg over the table** (col-plan): the planner hook asks `sift_tbl_col_source(rel, snapshot)` for an engine `SiftColSource`
+  whose visibility hook (`SiftColVisibility`, docs/COL.md section 12) is the table AM's: `sb_mask` returns all-ones for a unit of a
+  frozen segment when the tombstone cache has no entry in that SB (then zone-map answers `count/sum/min/max` need no row work), else
+  zero; `filter_page(blk, offmask)` clears the offsets whose row is not visible (insert state of the segment, tombstones).
+  Delta rows are presented as in-memory units. Aggregates therefore see exactly the rows a sequential scan sees (differential
+  tests compare them).
+
+---
+
+## 7. Maintenance
+
+**Sealing** (`sift_tbl_seal`): a delta segment is sealed to stop appends (page `SEALED` flags under page locks, directory kind
+`SEALED`), and becomes a column segment when every row is *final*: `xmin` aborted (dropped), or committed and older than the
+horizon (kept, frozen), or deleted by a committed tombstone older than the horizon (dropped). A row with a recent
+tombstone is sealed as a normal row (its tombstone applies by TID wherever the row lives). Not-final rows keep the segment as it is
+(retried by later maintenance). The segment is written with the engine writer in SB order (one unit per SB of the vblock range),
+published with `sift_dir_update` replacing the delta entry (the old pages released with a `safexid`).
+
+**Merge**: the tiered policy of `sift_merge_pick` over immutable segments (fan-in 8) plus "mostly dead"; frozen segments only
+(segment `xmin = 0`); dead rows dropped. One segment per merge, one SB of every input in flight.
+
+**VACUUM (`relation_vacuum`)**, one pass, restartable:
+
+1. Classify tombstone entries against `OldestXmin`: aborted -> drop; committed and removable -> its TID is **dead**; others kept.
+2. Dead TIDs of delta rows get the `DEAD` record flag; dead TIDs of group rows clear the engine's liveness bit
+   (`sift_cseg_bulkdelete` with a "TID in dead set" callback, WAL logged). Aborted delta inserts and the rows of aborted bulk segments are dead too.
+3. `index_bulk_delete` on every index with the dead set (rounds bounded by `maintenance_work_mem`), then `index_vacuum_cleanup`. TIDs are
+   never reused, so an interrupted VACUUM cannot expose a recycled TID; only index bloat stays until the next one.
+4. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in.
+5. Seal, merge, drop segments whose rows are all dead or whose bulk `xmin` aborted, freeze segment `xmin`s.
+6. `vac_update_relstats` (relpages, reltuples, `relfrozenxid`), `pgstat_report_vacuum`; the counters of insert/update/delete that
+   the AM reports keep autovacuum's thresholds meaningful (`pgstat_count_heap_insert/update/delete`).
+
+`VACUUM FULL` is `relation_copy_for_cluster`; `VACUUM (INDEX_CLEANUP off)` skips step 3 (indexes keep dangling entries). Truncation
+of empty tail space is not done: freed extents go to the free list and are reused.
+
+**ANALYZE** (section 4): statistics columns as PostgreSQL computes them from the sample; jsonb shredded paths are not statistics targets.
+
+---
+
+## 8. Compression, options, defaults
+
+- Compression is on by default (col-compress: algorithm per leaf, `auto` picks per chunk from FOR/PACK/dictionary and zstd/lz4 when the
+  library is present); SIMD kernels are chosen at runtime from `sift.simd` (`SET sift.simd = 'scalar'` for the specification).
+- Table options: `sift_delta_limit` (kB, default 4096), `sift_group_rows` (rows per unit target, default 74,496 = one SB), `sift_compression`
+  (`auto`, `none`, `zstd`, `lz4`), `sift_paths` (col-json path list for jsonb columns, table-level form `items:items[]{sku text,qty int4,price float4}`; the
+  per-column form is `ALTER COLUMN items SET (paths = '...')`). Changing `sift_paths` affects segments written afterwards; old ones are
+  read with the shredded leaves they have (absent leaves are NULL and the planner pushes down only when every segment has the leaf).
+- `ALTER TABLE ... SET ACCESS METHOD sift_table` rewrites the table through `relation_copy_for_cluster`-style bulk writes.
+- Types: every type. A column of a type the engine stores natively (integers, floats, bool, date/timestamps, short text) is a typed
+  leaf; any other value (numeric, uuid, arrays, long text, jsonb, bytea, composite) is an opaque leaf (`SIFT_COLS_VAR`, section 12) holding the
+  value's bytes exactly as `datum` memory (varlena with its header), so a round trip is exact.
+
+---
+
+## 9. Limits
+
+BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 128 leaves per segment schema (wider tables: columns beyond the limit are stored in
+the delta only and the table refuses to seal: error at `CREATE TABLE`); 128 directory entries; rows up to 1 GB (varlena limit); vblocks
+2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
+`TABLESAMPLE`, backward scans, `xmin/xmax/cmin/cmax`, multixact-based shared row locks (they degrade to exclusive), HOT, speculative
+insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
+
+## 10. Tests
+
+All in the branch, run by `scripts/ci.sh` like the BM25 tests:
+
+- Regression `test/sql/tbl_basic` (DDL, DML, rollback, savepoints, row locks, btree, unique and `ON CONFLICT`, VACUUM/ANALYZE, wide rows,
+  TRUNCATE and its rollback, CTAS, partitions, temp tables, `ALTER ... SET ACCESS METHOD` both ways, `ADD/DROP COLUMN`), `tbl_bm25`
+  (BM25 `sift` index on a `sift_table`: agreement with the sequential scan through DML, rollback, VACUUM, REINDEX [CONCURRENTLY], CIC) and the
+  **differential suite** `tbl_diff` (the same statements on a heap table and on a sift_table, EXCEPT ALL both ways and index scans, after bulk
+  load, updates of key and non-key columns, deletes, wide rows, NULLs, savepoint loops, rollbacks, UPDATE FROM, DELETE USING, data-modifying CTE,
+  MERGE, INSERT SELECT, aggregates, windows, FOR UPDATE, VACUUM [FULL], REINDEX, CLUSTER, rewrite to heap and back, TRUNCATE).
+- Isolation `test/isolation/specs/tbl_concurrency.spec`: update/update, update/delete, delete/update at READ COMMITTED (the waiter
+  re-evaluates), key update, REPEATABLE READ first-updater-wins, SERIALIZABLE write skew, FOR UPDATE / SHARE / NOWAIT / SKIP LOCKED, uncommitted
+  rows, unique wait on the inserter (commit and abort), `ON CONFLICT` against an in-progress insert.
+- TAP `test/t/006_tbl.pl`: crash recovery (committed, aborted and in-flight work, checkpoint in the middle, BM25 index, VACUUM FULL), hot standby
+  (every write kind, stable repeatable-read snapshot under primary VACUUM, promotion), `wal_level = minimal` (both `wal_skip_threshold`
+  settings), `pg_dump` / `pg_restore` round trip in plain and custom format. `test/t/007_tbl_logical.pl`: unpublished table without preload, 0A000
+  with the hint for a published table without preload, replication of insert / update / delete / TRUNCATE / subtransactions / `ON CONFLICT` to a
+  heap and to a sift_table subscriber with preload, and a physical standby of the publisher.
+- `SANITIZE=1` (ASan + UBSan) runs the same jobs through `scripts/ci.sh`. BM25 A/B: `bench/ab-query.sh` before and after the branch on a heap
+  table (the BM25 paths changed only by `sift_vis_nblocks` and the non-heap branch of the page filter).
+
+## 11. Open decisions and risks
+
+- Tombstone cache memory is O(live tombstones) per backend; the upgrade path is a per-SB tombstone index (pointer pages) so only the SBs a
+  query touches are loaded. Mass deletes should be VACUUMed (autovacuum does) or avoided (TRUNCATE, partition drop).
+- Shared row locks degrade to exclusive; implementing MultiXact would need a lock-owner set per row.
+- Relation-level SSI locks; a per-SB granularity is possible once the engine reports the SBs a scan touched.
+- The logical record doubles WAL for published tables; a custom rmgr for all page changes would remove the double write but demands
+  preload everywhere.
+
+## 12. Interfaces to the engine and the other tracks: stubs and requests
+
+The table AM is written against `src/sift_col.h`, `sift_col_enc.h`, `sift_col_seg.h` of the column track. Until their `.c` files land the glue
+runs with the pieces below stubbed in `src/sift_table_seg.c`, each marked `STUB(col-core)`; a stub never fakes a result: the group
+operations raise `ERRCODE_FEATURE_NOT_SUPPORTED` or do nothing observable (no sealing: delta segments stay row format and every other
+code path of this document works on them).
+
+| piece | contract used | status |
+|---|---|---|
+| segment writer `sift_colw_*` with `SiftSegEntry.reserved` preserved | seal, bulk insert, copy_for_cluster, merge | stub |
+| segment reader `sift_cseg_*`, `SiftColSource`, unit decode | scan, fetch, analyze, SiftAgg | stub |
+| liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 | stub |
+| `SiftColVisibility` hook | SiftAgg, section 6 | stub |
+
+**Answers from col-core** to the four requests below: `SIFT_COLS_VAR` (opaque value storage class), `sift_colw_set_tag` (the segment owner tag in
+`SiftSegEntry.reserved`, kept on rewrite, never merged across tags), `sift_col_add_batches` (extra in-memory units of a `SiftColSource`) and
+`SIFT_COL_META_NEXT_VBLOCK` (the vblock counter; `SIFT_TBL_NEXT_VBLOCK` aliases `sum_dl` until it lands).
+
+**Files outside this track changed in this branch, each in its own small commit** (owner in brackets):
+
+| file | change |
+|---|---|
+| `src/sift_store.c` [store; also edited by the m2-truncate branch] | `sift_store_removable` takes a table relation (horizon of the table itself) |
+| `src/sift_visibility.c/.h` [BM25 core] | `sift_vis_nblocks` (virtual blocks for a sift_table), page filter delegated to `sift_tbl_filter_page` for a sift_table |
+| `src/sift_build.c`, `src/sift_cscan.c` [BM25 core] | the `sift` index accepts a sift_table; block counts through `sift_vis_nblocks` |
+| `src/sift_handler.c` [BM25 core] | `_PG_init` calls `sift_tbl_init` (registers the change-record resource manager when preloaded) |
+| `scripts/isolation.sh` [test tooling] | `# requires: tam` (the spec is skipped when `pg_sift_tam` cannot be created) |
+| `Makefile`, `pg_sift_tam.control`, `.gitignore` [build] | the generated `pg_sift_tam--1.0.sql` (`DATA_built`) and the second extension; to be folded into the pg_sift version script at merge time |
+
+**Requests (for the owners, as notes; nothing here edits their files):**
+
+- col-core: (1) a storage class `SIFT_COLS_VAR` (opaque value bytes with exact round trip, no 255-byte limit, dictionary or plain, compressible)
+  and the table-schema -> leaf mapping for every type: a table cannot refuse `numeric`, `uuid`, `jsonb`, long text. (2) `SiftSegEntry.reserved`
+  documented as the segment xmin of a table AM (the engine must copy it on rewrite and never merge segments with different non-zero xmin).
+  (3) an API to add in-memory batches (`SiftColBatch`) as extra units of a `SiftColSource` (the delta rows). (4) a named metapage field for
+  the next vblock (table AM) instead of reusing `sum_dl`. (5) the maintenance worker entry point generalized over index and table.
+- store owners: `sift_store_removable` must accept a table relation (`index->rd_index->indrelid` is NULL for a table): a one-line change made
+  in this branch in its own commit; and the generic WAL record count limits for the tombstone append (header + tail page).
+- sift_visibility.c: the non-heap branch of section 6 (own commit).
+- col-compress: the per-column option interface (`compression=`); col-json: `paths` grammar for the table-level option.
