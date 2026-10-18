@@ -445,8 +445,8 @@ def cmd_run(args):
     shutil.rmtree(tmp)
     meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), engines=engines, runs=args.runs, tier=args.tier, base_gucs=args.base_gucs, col_gucs=args.col_gucs,
                 perf=perf.ok, method='single backend, max_parallel_workers_per_gather = 0, CPU time from /proc/PID/schedstat')
-    with open(os.path.join(args.out, 'analytics.json'), 'w') as f:
-        json.dump(dict(meta=meta, rows=rows.rows), f, indent=1)
+    with open(os.path.join(args.out, 'analytics.json'), 'w') as f:   # one line per row
+        f.write('{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     report(rows.rows)
     print(f'results: {os.path.join(args.out, "analytics.json")}')
     return 1 if any(r['metric'] == 'result' and str(r['value']).startswith(('DIFF', 'error')) for r in rows.rows) else 0
