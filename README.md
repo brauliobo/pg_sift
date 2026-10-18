@@ -35,14 +35,6 @@ Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_s
 CREATE EXTENSION pg_sift;
 ```
 
-## Configuration
-
-pg_sift needs no `shared_preload_libraries` entry, for the `sift` BM25 index and for the `sift_table` table access method alike. The one
-exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
-`shared_preload_libraries` on the publisher and on every standby that replays its WAL (a custom WAL resource manager registers only at
-preload time). Without it, a DML on a published `sift_table` table fails with `0A000` and a hint instead of leaving a gap in the stream;
-publish a heap staging table instead if preloading is not possible. Unpublished tables, physical standbys, PITR and `pg_dump` are unaffected.
-
 ## Quick start
 
 ```sql
@@ -115,6 +107,22 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit` and `vacuum_
 | `sift.max_expansions` | 512 | superuser: terms a wildcard, regex, fuzzy or prefix leaf scores individually |
 | `sift.prefix_cache_size` | 8MB | superuser: per-backend memory for the postings of broad leaves |
 | `sift.log_min_duration` | 1s | log promotions, merges and worker runs at least this long (`-1` none) |
+| `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel; results are bit-identical at every level |
+| `sift.enable_col` | on | allow column scans over `sift_col` indexes |
+| `sift.enable_agg` | on | push `GROUP BY` aggregates down to `sift_col` indexes (`Custom Scan (SiftAgg)`); `off` gives the plan PostgreSQL has without sift |
+
+`sift_col` indexes (`CREATE INDEX ... USING sift_col (col, ..., (expr))`, [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table)) take their own options:
+
+| `sift_col` option | default | range | meaning |
+|---|---|---|---|
+| `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed; `ALTER INDEX ... SET` works |
+| `paths` |  |  | jsonb paths shredded into typed columns, e.g. `'metrics.* float4, items[]{sku text, qty int4}'`; needs `REINDEX` |
+
+pg_sift needs no `shared_preload_libraries` entry, for the `sift` index, the `sift_col` index and the `sift_table` table access method alike. The one
+exception is **sift_table and logical replication**: publishing a `sift_table` table with `wal_level = logical` needs `pg_sift` in
+`shared_preload_libraries` on the publisher and on every standby that replays its WAL (a custom WAL resource manager registers only at
+preload time). Without it, a DML on a published `sift_table` table fails with `0A000` and a hint instead of leaving a gap in the stream;
+publish a heap staging table instead if preloading is not possible. Unpublished tables, physical standbys, PITR and `pg_dump` are unaffected.
 
 Merging is automatic: sealed segments are merged 8 at a time per size tier, the directory (128 entries) is kept under 32 by merging the
 8 smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
