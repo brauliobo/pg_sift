@@ -22,7 +22,7 @@ stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds o
 | # | Measure | Gain | Cost | Where |
 |---|---|---|---|---|
 | 1 | `SiftSpan` for every stored offset/length; validate before allocate | closes the P1/P2 class of the audits | ~0 on parse paths, to be measured per converted decoder | src/core/sift_span.h, phase 2 |
-| 2 | Fuzz every decoder, corpus from tests, differential vs scalar | 8 findings, 3 high | CI minutes | test/fuzz, scripts/fuzz.sh |
+| 2 | Fuzz every decoder, corpus from tests, differential vs scalar | 8 findings, 3 high (7 fixed in 3.0.0, docs/SAFETY-FINDINGS.md) | CI minutes | test/fuzz, scripts/fuzz.sh |
 | 3 | `SIFT_HARDEN=pkg`: stack protector strong, stack clash, CET/branch protection, strict-flex-arrays=3, FORTIFY_SOURCE=3, relro/now | stack smash, libc misuse, ROP | 0.0 to +0.3% | pkg |
 | 4 | `-ftrivial-auto-var-init=zero` (`SIFT_HARDEN=init`) | uninitialized stack and padding leaks | +0.1 to +1.9% | CI hardened; pkg optional |
 | 5 | Trap UBSan `bounds,shift,nonnull,returns-nonnull,vla-bound` | flexible/array overruns, bad shifts | +1 to +5% (bounds), +2 to +4% (shift set) | CI hardened |
@@ -99,7 +99,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 
 | Id | File:function | Gap and replacement |
 |---|---|---|
-| P1-1 | sift_bitmap.c:sift_cur_blob, gr_seek, ls_seek, ef_hdr, ef_decode, ls_at | query path decodes unchecked blobs (F-BM25-2/3/4): cursor over a Span, per-group sub-span, lazy check_grouped rules |
+| P1-1 | sift_bitmap.c:sift_cur_blob, gr_seek, ls_seek, ef_hdr, ef_decode, ls_at | query path decodes unchecked blobs (F-BM25-2/3/4, fixed by explicit checks in 2.0.2, 463951f; the Span conversion is open): cursor over a Span, per-group sub-span, lazy check_grouped rules |
 | P1-2 | sift_bitmap.c:sift_chunk_pagemask/offsets/count (called by sift_segment.c:load_sb) | no length argument; pass `sift_span_sub(rec,8,h[1])`, require w in {1,2,4,8..64}, pg<256 |
 | P1-3 | sift_segment.c:load_sb, walk_docs, live_sb_bits | ndocs from mask popcounts never compared with the header; `keys[]` overflow |
 | P1-4 | sift_col_scan.c:unit_group, sift_col_read; sift_col_enc.c:sift_cunit_decode | uint32 group-count sum wraps, `expand_parents` writes far past `parent`: uint64 sum, reject outside [0,n], total equals child n |
@@ -108,7 +108,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P1-7 | sift_table_store.c:sift_tbl_delta_page, link_delta_page | disk `npages` copied into a 1024 array |
 | P1-8 | sift_table_store.c:sift_tbl_page_rec and callers (scan, seg, vacuum) | slot offsets unchecked, VACUUM writes there: return a record Span |
 | P1-9 | sift_table_store.c:sift_tbl_rec_tuple | `rec->len` unchecked vs page, `t_len`; overflow chain without hop limit |
-| P2-1 | sift_posting.c:post_attach, sift_post_group_tf, list_tf_pos | nnib/df/ng/esc length raw (F-BM25-5): carve sidecar Spans at attach |
+| P2-1 | sift_posting.c:post_attach, sift_post_group_tf, list_tf_pos | nnib/df/ng/esc length raw (F-BM25-5, fixed by explicit checks in 3.0.0, 7f59d1a; the Span conversion is open): carve sidecar Spans at attach |
 | P2-2 | sift_posting.c:post_open; sift_dict.c:sift_dict_open; sift_segment.c:docmap, load_sb, walk_docs | allocation before validation (up to 32 GB) |
 | P2-3 | sift_eval.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
 | P2-4 | sift_segment.c:sift_seg_open; sift_dict.c:sift_dict_open; sift_col_seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream |
@@ -127,7 +127,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P3-6 | sift_dict.c:block_begin, block_next, find_block | correct; `pos_len` points into the shared buffer: take/read_varint |
 | P3-7 | sift_posting.c:pos_next, pos_window, pos_ckpt, BLOB_NG/BLOB_KEYS; sift_segment.c:docmap; sift_store.c:check_dir; sift_wbuf.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
-| P4-1 | sift_varint.h:sift_get_varint (sift_bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): Span `read_varint` |
+| P4-1 | sift_varint.h:sift_get_varint (sift_bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
 | P4-2 | sift_varint.h:sift_get_varint64_n, sift_posting.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
 | P4-3 | sift_col_enc.c:sift_cunit_chunk; sift_col_seg.c:sift_cseg_unit_fill; sift_col_scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
@@ -136,9 +136,8 @@ dictionary blocks. Not audited: sift_docdir.c, sift_lane.c, rest of sift_wbuf.c,
 
 ## Decisions for the coordinator
 
-Decided: assert and valgrind lanes, Coverity Scan, `pointer-overflow` out of `1`. Open:
-1. F-BM25-2/3 and F-COL-1 are reachable from a corrupt page on the query path: fix ahead of the full conversion?
-2. Accept up to 1% instructions on column-scan and BM25 cells per converted decoder?
+Decided: assert and valgrind lanes, Coverity Scan, `pointer-overflow` out of `1`, and the fix of F-BM25-2/3 and F-COL-1 (reachable from a corrupt page on the query path) ahead of the full conversion (done: F-BM25-2/3 in 2.0.2, F-COL-1 in 3.0.0). Open:
+1. Accept up to 1% instructions on column-scan and BM25 cells per converted decoder?
 
 ## Sources
 

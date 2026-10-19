@@ -46,7 +46,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4). A reader refuses a minor it does not know; a 3.1 library reads minors 3 and 4 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.1 library reads minors 3 and 4 in one index
   as written and rewrites them as minor 4 by merge (docs/COL-JSONB-31.md 5.2). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -190,13 +190,13 @@ values (`SiftColDict`), and the filter translates constants to codes per segment
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
 at most 256 codes, else a bloom of `code & 255`.
 
-**Reading text from SiftAgg (ready to apply; `sift_agg*.c` and the providers are not this track's files).** Nothing needs to change for
+**Reading text from SiftAgg (applied for the `sift_col` provider: `col_prune_str` and `col_filter_str` in `sift_aggcol.c`, the calls in `sift_agg.c`, docs/COL-PLAN.md "Filters in the source"; the `sift_table` provider has neither callback).** Nothing needs to change for
 correctness: an inline unit reaches the executor as a `SiftSrcDict` of its own with its own `id`. What it costs is that the executor
 evaluates a text predicate by building a LUT over the unit's dictionary, which for an inline unit means decoding and interning every
 string of the unit (measured: 300 000 distinct strings of 290 bytes, `s = const` through SiftAgg 80 ms, a heap scan 26 ms, `sift_col_filter`
 on the encoded form 2.5 ms). `src/agg/sift_colsrc.h` therefore carries two optional provider callbacks, `prune_str` and `filter_str`, with the
 tests `SiftSrcStrTest` (EQ, NE, IN, NOT IN for any deterministic collation; the range operators and PREFIX only where the comparison is
-bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. To apply:
+bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. As applied:
 
 1. Providers (the index in `sift_aggcol.c`, the table in `sift_table_src.c`) are the same, over `sift_col_begin` / `sift_col_filter`:
    `col_prune_str` converts each test to a `SiftColPred` (`SSTR_EQ` -> `SIFT_COLOP_EQ`, ... `SSTR_PREFIX` -> `SIFT_COLOP_PREFIX`, `vals[i]` ->
@@ -423,8 +423,8 @@ checked by the normal permission check of the query.
   works with the standby's snapshot and VM.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
-- **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element cubes of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
+- **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element cubes of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata

@@ -67,8 +67,8 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Releasing
 
-1. Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, retitle `## Unreleased` in `CHANGELOG.md` and `sqlite/CHANGELOG.md`, and
-   set `pkgver` in `packaging/PKGBUILD`, the install lines of the README and `sqlite/VERSION`.
+1. Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, retitle `## Unreleased` in `CHANGELOG.md`, `sqlite/CHANGELOG.md` and `mariadb/CHANGELOG.md`, and
+   set `pkgver` in `packaging/PKGBUILD`, `sqlite/VERSION` and `mariadb/VERSION` (both must equal the tag), the release badge of the README, the install lines of `docs/USAGE.md` and the `V=` of `sqlite/README.md`.
 2. `scripts/ci.sh release` passes on the head (the gate of [docs/RELEASE.md](docs/RELEASE.md); a tree with a stamp is not gated again); push `main` and wait for CI.
 3. Tag `vX.Y.Z` and push the tag: the `release` workflow builds the `.deb`, `.rpm` and SQLite tarball and publishes them with the notes.
 4. `scripts/release-aur.sh` publishes the PKGBUILD to the AUR (the AUR account's SSH key must be loaded in your ssh-agent, or set

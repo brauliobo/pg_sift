@@ -2,7 +2,10 @@
 
 What an index costs in disk, memory and time beyond its steady-state size, and which settings matter. Numbers are measured on 1.3.1 code
 (PostgreSQL 18, a shared host) unless a sentence says otherwise; they show the size of an effect, not a guarantee. Statements marked
-*(changes)* describe behavior that the maintenance, build and read changes in progress alter; this page is updated as they land.
+*(changes)* describe 1.3.1 behavior that the maintenance and build changes of 2.0.0 altered, and their figures are the 1.3.1 baseline: the memory of a merge no longer grows with the
+segments (4 segments of 3M documents, 690 MB, at 16MB of `maintenance_work_mem`: 140 MB of anonymous memory and 17.4 s before, 16 MB and 8.3 s after), the worker runs each step in a transaction of
+its own and reuses what the previous step freed (60 small segments merged by the worker: the file was 2.6 times the live segments, now 1.6), and a merge stages only the dictionary index and the postings of large terms in temporary
+files ([CHANGELOG.md](../CHANGELOG.md), 2.0.0).
 
 ## Disk
 
@@ -22,7 +25,7 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
   temporary files (about 1.9x), and `CREATE INDEX` writes its sorted runs there too, so `temp_file_limit` and the free space of the
   `temp_tablespaces` must cover them. With `maintenance_work_mem` of 64MB a build of the test corpus wrote 206 MB, with 1MB 1127 MB (and
   left 11 segments instead of 1). *(changes: the streaming merge stages nothing.)*
-- **`positions = on`** (the default) makes the index about 2.6x larger than `positions = off` ([USAGE.md](USAGE.md#limits)).
+- **`positions = on`** (the default) makes the index about 2.5x larger than `positions = off` ([USAGE.md](USAGE.md#limits)): 130.9 against 52.5 MiB on the 218,058 articles (2.49x; an earlier build of 2026-10-16 measured 126 against 48 MB, 2.6x), 31.1 against 12.9 MiB on the 50,000 of the slim tier (2.4x).
 
 ## Memory
 
@@ -60,9 +63,9 @@ often should have a low `autovacuum_vacuum_scale_factor` (or a manual `VACUUM` a
 
 Vacuumed documents also cost query time until their segment is rewritten: a query that walks postings drops the dead ones through the
 liveness rows of every page it reads. Measured in user instructions per query (`bench/dirty-query.sh` data, 200,000 documents, 10 to 45%
-deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`), the dirty segment costs:
+deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`; these three columns are not 1.3.1 code: the 2.0.0 and 2.0.1 builds and 3.0, where segments are written in format 2), the dirty segment costs:
 
-| query | 2.0.0 | 2.0.1 | now |
+| query | 2.0.0 | 2.0.1 | 3.0 |
 |---|---|---|---|
 | `count(*)` of a term | 18.5 to 18.6x | 6.6 to 6.7x | 1.16 to 1.28x |
 | `count(*)` of two terms | 3.5 to 4.4x | 1.7 to 2.3x | 1.0 to 1.25x |

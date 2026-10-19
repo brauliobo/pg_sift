@@ -44,7 +44,7 @@ sift_cc_encode(&out, SIFT_CC_INT|F4|F8, keys, n, nulls, &pol, &info);    /* appe
 
 - `keys[i]` for a NULL slot is irrelevant (the writer replaces it by the previous non-NULL key, a leading run by the first). Decode returns that filler:
   **the value of a NULL slot is unspecified**; the engine masks with its NULL bitmap (filters return bits for the filler too, the engine ANDs the non-NULL bits).
-- `info.min`/`info.max` feed the zone; `info.bytes`, `info.tag`/`info.inner` feed `sift.col_index_info` (encodings per column) and EXPLAIN.
+- `info.min`/`info.max` feed the zone; `info.bytes`, `info.tag`/`info.inner` feed `sift.col_leaves` (chunks per encoding and column) and EXPLAIN.
 - The policy string is the engine's reloption `compression` (one value for the index/table, or `default; col=policy; ...`, see section 6). `none` gives
   frame-of-reference arrays at 1, 2, 4 or 8 bytes: the engine's own `range[]` kernels filter them in place after subtracting the base.
 - The result is a pure function of (kind, keys, nulls, policy) and of the compression library versions; it does not depend on the SIMD level or on
@@ -115,7 +115,7 @@ and the codec's `unpack32` (vertical layout, bits 0..32) are different layouts o
    writer creation (`SiftColDef` path or attribute name is the key); a change of the option applies to chunks written afterwards (merge rewrites).
 5. Dictionaries: `sift_cdict_serialize` output goes through `sift_cc_encode_strs` when the dictionary exceeds a few hundred bytes; the DICTS section
    records which form.
-6. `sift.col_index_info` reports the encodings per leaf from `SiftCcInfo.tag`. (`sift_cc_kernels_init()` is already called from `_PG_init` by this branch.)
+6. `sift.col_leaves` reports the chunks per encoding of each leaf from `SiftCcInfo.tag`. (`sift_cc_kernels_init()` is already called from `_PG_init` by this branch.)
 7. Portable hosts: list the codec in `portable.list` and add the `colz.c` stubs (header of this file).
 
 This branch depends on nothing of the engine. The shared files it touches are `Makefile` (library probes), `src/core/sift_handler.c` (one line in `_PG_init`),

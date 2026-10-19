@@ -1,6 +1,8 @@
 # Where pg_sift is behind Elasticsearch, and what to do about it (October 2026)
 
-Branch `perf/research`, based on release 1.3.0. Nothing here is merged; the two prototypes are commits on the branch.
+Branch `perf/research`, based on release 1.3.0. The branch is merged: the two prototypes (`rank: overpull:`, `plan: estimate:`) and the prepared-statement gate of section 10 are in release 2.0.0.
+Written on 2026-10-17: "the committed session" below is the slim tier of 2026-10-17 (`90faba5`: 50,000 articles, 34,165 places, every engine alone on the whole host of 16 threads, load average 7-18),
+which `docs/results` has since replaced by the 3-CPU run of 2026-10-19 ([BENCHMARKS.md](../BENCHMARKS.md)); its numbers (sift or 6,210 / Elasticsearch 7,600 queries per second, for one) are a historical baseline and do not compare with the current tables.
 Every number is labelled **measured** (this branch, this host), **cited** (a paper or a benchmark of someone else, with its reference in section 9) or **estimated**
 (arithmetic from measured numbers, not run).
 

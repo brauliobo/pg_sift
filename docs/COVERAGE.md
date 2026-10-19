@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-191 rows: 121 Yes, 17 Partly, 43 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+191 rows: 122 Yes, 17 Partly, 42 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -66,9 +66,9 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | T02 | Types | float4, float8 (keys, filters, aggregates) | Yes | sift_col, sift_table | `SELECT f8, count(*) FROM t GROUP BY f8` | A float key is one group per value as float8_eq has it: -0 and 0 together, every NaN together. Proof: fixture `t_float_keys`, fixture `t_float8_group_values`, fixture `t_float8_nan_inf`. |
 | T03 | Types | numeric(p, s) with p <= 18 | Yes | sift_col | `SELECT n2, count(*), sum(n2) FROM t GROUP BY n2` | Stored as integers scaled by 10^s: keys, predicates, sums, averages, min, max, distinct counts, expressions (+ - *, round, floor, casts to integer) are exact. numeric(p<=15) cast to float8 also feeds sum, avg and percentile_cont. Proof: fixture `n_numeric_key`, fixture `n_numeric_pred`, fixture `n_numeric_float`, test `agg_numeric`. |
 | T04 | Types | numeric(p > 18), unconstrained numeric, negative scale | No (the index refuses the column, so no query reads it from the index) | sift_col | `SELECT grp, sum(n38) FROM t GROUP BY grp` | The table and the query work as usual; leave the column out of the index. Proof: fixture `n_numeric_trap_wide`. |
-| T05 | Types | CREATE INDEX ... USING sift_col on a numeric(p > 18), char(n), bytea, time, interval, uuid, money, enum, array or range column | Error (0A000 at CREATE INDEX; leave the column out of the index) | sift_col | `CREATE INDEX ON t USING sift_col (uuid_col)` | The hint lists the types: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p <= 18, s), real, double precision, text, varchar and jsonb with paths. Proof: test `col_index_basic`. |
+| T05 | Types | CREATE INDEX ... USING sift_col on a numeric(p > 18), bytea, time, interval, uuid, money, enum, array or range column | Error (0A000 at CREATE INDEX; leave the column out of the index) | sift_col | `CREATE INDEX ON t USING sift_col (uuid_col)` | The hint lists the types: smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric(p <= 18, s), real, double precision, text, varchar and jsonb with paths. Proof: test `col_index_basic`. |
 | T06 | Types | text, varchar (keys, filters, min/max, distinct; strings of any length) | Yes | sift_col, sift_table | `SELECT vc, count(*), min(tx) FROM t GROUP BY vc` | A dictionary per segment; strings over 255 bytes are stored inline per unit. Filters on the encoded form. Proof: fixture `t_text_long`, fixture `t_text_long_filter`, test `col_agg_text`. |
-| T07 | Types | char(n), name | No (not a leaf type of the column index) | sift_col | `SELECT ch, count(*) FROM t GROUP BY ch` | Cast to text in a view or an expression index to use it. A sift_table reads char(n) keys (T24). |
+| T07 | Types | char(n), name | Yes (a bpchar without a length is accepted but no predicate or group is pushed on it) | sift_col | `SELECT ch, count(*) FROM t GROUP BY ch` | Proof: test `col_index_chars`. |
 | T08 | Types | bytea | No (not a leaf type of the column index) | sift_col, sift_table | `SELECT ba, count(*) FROM t GROUP BY ba` |  |
 | T09 | Types | boolean | Yes | sift_col, sift_table | `SELECT b, count(*) FROM t GROUP BY b` | Proof: fixture `g_stats_numeric`. |
 | T10 | Types | date, timestamp, timestamptz (keys, filters, min/max, date_trunc of a date) | Yes | sift_col, sift_table | `SELECT d, count(*), min(ts), max(tstz) FROM t GROUP BY d` | date_trunc of a timestamp or timestamptz as a key: see the group keys. Proof: fixture `z_zone_ranges`, fixture `s4_month_series`. |

@@ -5,8 +5,13 @@ online-store benchmark ([BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)
 single change that would move each question the most. The tables below are generated; the text under "Findings" was written from the first
 profile (below) and has to be re-read after every regeneration.
 
-Status: the pg_sift profile is measured; the ClickHouse and Elasticsearch columns of the gap tables come from the preliminary runs of
-`docs/results/store.json` and the engines' own accounting (rows and bytes read, memory, threads) is still to be measured: the owner asked for
+Status: **a snapshot of 2026-10-18 (historical baseline), taken on a 3.0 development build.** The per-unit pre-aggregates (`6681929`), the BM25 match
+sets as the row selection of the aggregate pushdown (`74f771e`), the scan priced by stored bytes (`25e5075`) and the `count(DISTINCT)` bitmaps (`92cf75a`)
+were merged after it, and the 3.0 final pass (2026-10-19, `sift_col`, 3 CPUs, [BENCHMARKS.md](BENCHMARKS.md#analytics-an-online-store)) measured questions 02 to 04 at
+1,000,000 orders in 0.793, 0.816 and 0.841 ms against the 5.64, 4.69 and 4.45 ms of the first gap table below. The pg_sift profile is measured; the ClickHouse and
+Elasticsearch columns of the gap tables are those of the preliminary run of 2026-10-18 (7 warm runs, 4 CPUs per container, 1,000,000 and 10,000,000 orders: `docs/results/store.json` of
+commit `2699fb1`), which `docs/results/store.json` no longer holds: it now has the final pass of 3.0 at 1,000,000 orders (1 and 3 CPUs), so `bench/bench store gap` on it prints other tables than
+the generated ones below. The engines' own accounting (rows and bytes read, memory, threads) is still to be measured: the owner asked for
 ClickHouse and Elasticsearch to run only once v3 is final (`bench/analytics --final`, which fills this file in).
 
 ## Re-measuring
@@ -138,7 +143,7 @@ A `SiftAgg` that reads nothing (every unit pruned by its zone map) takes 6.50 ms
 
 ## Findings (from the profile above; re-read after a new run)
 
-Sources: the gap tables (store.json, 7 warm runs, 4 CPUs per container), the profile tables (private cluster, pg_sift 3.0 built from this checkout, `-O3`, AVX-512 host, the
+Sources: the gap tables (store.json of 2026-10-18, commit `2699fb1`, 7 warm runs, 4 CPUs per container), the profile tables (private cluster, pg_sift 3.0 built from this checkout, `-O3`, AVX-512 host, the
 store.json settings), `EXPLAIN` plans in `docs/results/store-gap-*.json`. "Estimate" marks a number projected from a measurement, not measured.
 
 ### Planning is not the lever

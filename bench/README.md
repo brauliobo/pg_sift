@@ -19,7 +19,7 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report on the slim tier (the default): about 9 minutes of builds and measurements once set up
+bench/bench all                    # setup + run + report on the slim tier (the default): about 10 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench all --docs             # the slim tier plus the cold-cache tables, then docs/results, docs/img and the generated blocks of README.md and docs/BENCHMARKS.md
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
@@ -50,8 +50,8 @@ Two engines are system packages that `setup` does not build: Elasticsearch (`pac
 `setup` fails with that install hint when one of them is selected and missing, nothing is downloaded for them; on a host without the pgx-bm25 package `BM25_PKG=/path/to/pgx-bm25-<version>.pkg.tar.zst`
 (unpacked into the work directory) or `BM25_SRC=/path/to/source.tar.gz` (built with PGXS) are the fallbacks. `machine.txt` says whether an extension is the system's or the work directory's.
 Elasticsearch is started as an ordinary process of the user, not as the package's service: no sudo, nothing written to `/etc` or `/usr`, with a configuration directory of its own
-(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$BENCH_WORK/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard, no replica
-and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), with every CPU of the host like the Postgres servers. The
+(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$BENCH_WORK/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard (`ES_SHARDS`; the final pass of 3.0 used 3), no replica
+and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), with every CPU of the host like the Postgres servers (`ES_PROCESSORS` and `SERVER_BUDGET` cap it; the final pass of 3.0 used 3). The
 packaged version is recorded in the machine description of the results. The run stops the node and removes its data directory when it ends. `--engines elasticsearch` runs it alone.
 
 `all` is three commands that can be run on their own (with `--docs`, and for the `ab` and `full` tiers, it also runs `cold`; with `--docs` it writes `docs/results`, `docs/img` and the generated
@@ -75,7 +75,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 
 | tier | articles | places | rounds | run time of `all` |
 |---|---|---|---|---|
-| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 measured with the seven default engines on a host with a load average of 7-18, setup done: 551 s (9 min) for both datasets, of which 144 s restore and build (the lanes are built one after the other), 398 s cells; 769 s (13 min) with `--docs` (the cold-cache tables, 218 s more). The first setup also downloads and converts the datasets and builds the engines (about 3-5 min) |
+| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 measured with the seven default engines on a host with a load average of 5.7-8.6, setup done (session of 2026-10-19, 3-CPU budget for the servers): 575 s (10 min) for both datasets, of which 143 s restore and build (the lanes are built one after the other), 432 s cells; 783 s (13 min) with `--docs` (the cold-cache tables, 208 s more). The first setup also downloads and converts the datasets and builds the engines (about 3-5 min) |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | about an hour, projected: the engines are measured one at a time, so the cells take the sum of the engines' times (the earlier method, all engines at once on shares of the CPUs, took 51 min for six engines with fixed-length cells, 18 min of cells that stop on their standard error) |
 
@@ -187,13 +187,13 @@ and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, 
 
 ### Host and CPUs
 
-The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
+By default the suite leaves the CPUs alone (the published slim tables use the equal budget described under Reproduce). An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
 `--workers` caps both), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
-What the method relies on is the one-at-a-time order above, the rotation of the order, the repetition (2-3 rounds with a standard error per cell) and the check of the host's pressure before every timed batch (below); the load average is still printed with every table and
+What the method relies on is the one-at-a-time order above, the rotation of the order, the repetition (2-3 rounds with a standard error per cell) and the check of every timed batch against the host's other work (below); the load average is still printed with every table and
 recorded with every cell, for the older runs. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
 session with each other, not with another session or machine.
 
-**Quiet host (`scripts/quiet.sh`).** The load average counts runnable tasks, not the time anything waited, so a timed step does not use it to judge the host; it uses Linux pressure stall information instead
+**Quiet host (`scripts/quiet.sh`).** The articles and places runs (`steps/lib.sh`) do not wait for a quiet host: they judge each timed batch by the work of others in its window (`sentinel_*`: NOISY above `SIFT_NOISE_CPU`, 0.25 cores, over the idle host's, listed in `noisy.txt`) and print the pressure for information. The other timed steps (`ab.sh`, `facets.sh`, `parallel.sh`, `col-build.sh`) wait as follows. The load average counts runnable tasks, not the time anything waited, so a timed step does not use it to judge the host; it uses Linux pressure stall information instead
 (`/proc/pressure/cpu` and `io`, the `some` line). Before each timed batch (a class of cells, a pgbench round, a timed query, a build) `quiet_wait` blocks until both resources are below 10% in the
 10 s average (`avg10`) for two samples 2 s apart; after `SIFT_QUIET_TIMEOUT` seconds (default 60) the batch runs anyway and is marked **NOISY** (in the log, in `noisy.txt` of the table directory, in the table or the footer of the
 step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Instruction-count steps (`cpu_gate.sh`, the cycles of `ab.sh run`) print it and never wait. Override with the environment:
