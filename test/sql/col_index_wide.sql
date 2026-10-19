@@ -281,3 +281,8 @@ VACUUM wt;
 SELECT count(*), sum(a), sum(f), max(d)::numeric AS max_d, max(e), count(*) FILTER (WHERE c = 'NaN') FROM wt;
 SELECT count(*) FROM wt WHERE a > 1e28 AND e >= interval '1 month' AND d < '100.00';
 DROP TABLE wt;
+
+DROP TABLE w;
+DROP FUNCTION col_cmp(regclass, text, text, int), col_back(regclass, int, text, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
