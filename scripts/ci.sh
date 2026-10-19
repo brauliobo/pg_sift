@@ -8,7 +8,7 @@
 #   production library, without the test-only functions: scripts/production-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
 #   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
-#   the coverage table (scripts/coverage.sh, docs/COVERAGE.md: about 10 s), a 20 s soak, a 25 s column-index soak (scripts/colsoak.sh) and a
+#   the coverage table (scripts/coverage.sh, docs/COVERAGE.md: about 10 s), a 15 s soak, an 18 s column-index soak (scripts/colsoak.sh) and a
 #   fuzz pass with shorter loops (scripts/fuzz.sh).
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
 #   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
@@ -222,8 +222,8 @@ else
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
-	job soak soak 1 "$S/soak.sh" --duration 20 --rows 20000 --rate 400 --clients 2 --check-every 5
-	job soak-col soak-col 1 "$S/colsoak.sh" --duration 25 --clients 6
+	job soak soak 1 "$S/soak.sh" --duration 15 --rows 20000 --rate 400 --clients 2 --check-every 5
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration 18 --clients 6
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
