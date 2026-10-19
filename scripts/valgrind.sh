@@ -10,21 +10,71 @@
 # backend run under valgrind with --error-exitcode=99 (a backend with an error exits 99 and the postmaster restarts: the test fails) and
 # the logs ($WORK/vg/PID.log) are scanned for error markers, so that an error in a process that did not affect a test still fails the lane.
 # SIFT_VALGRIND_ORIGINS=1 adds --track-origins=yes (two times slower, tells where an uninitialized value came from). sift.simd is capped to
-# avx2 (SIFT_VALGRIND_SIMD): memcheck has no AVX-512. Without a working valgrind the lane says so and exits 0 (skipped); SIFT_VALGRIND_DEBUGPATH is
-# valgrind's --extra-debuginfo-path for the glibc symbols. KEEP=1 keeps the
-# scratch directory. In scripts/ci.sh it is opt-in: `SIFT_CI_JOBS=valgrind scripts/ci.sh quick`.
+# avx2 (SIFT_VALGRIND_SIMD): memcheck has no AVX-512. KEEP=1 keeps the scratch directory.
+# In scripts/ci.sh it is opt-in: `SIFT_CI_JOBS=valgrind scripts/ci.sh quick`.
+#
+# Native or container. Valgrind needs the debug symbols of the dynamic linker (libc6-dbg, glibc-debuginfo); a host whose glibc is a rebuild
+# that no debuginfod serves cannot run it. Then the lane runs in a container (SIFT_VALGRIND_CONTAINER=1 forces it, 0 forbids it; by default it
+# is chosen when the host probe fails and docker works): a Debian bookworm image (pinned by digest) with valgrind, libc6-dbg and the build
+# dependencies; the PostgreSQL is built inside it, with the same flags, into the cache $SIFT_VALGRIND_CACHE (default
+# ${XDG_CACHE_HOME:-~/.cache}/sift/pg-valgrind-bookworm, a host binary would not run against the container's glibc); the tests run in it
+# as the invoking user's uid on a private copy of the checkout mounted read-only (the checkout itself is never mounted), writing only to the
+# scratch directory (SIFT_VALGRIND_CPUS, SIFT_VALGRIND_MEMORY bound the container: 4, 16g), without network. The image sift-valgrind:bookworm-UID is part of the cache (docker rmi to drop it). Without a working
+# valgrind and without docker the lane says so and exits 0 (skipped); SIFT_VALGRIND_DEBUGPATH is valgrind's --extra-debuginfo-path.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-command -v valgrind >/dev/null || { echo "valgrind: skipped, valgrind is not installed"; exit 0; }
-DBG=(${SIFT_VALGRIND_DEBUGPATH:+--extra-debuginfo-path="$SIFT_VALGRIND_DEBUGPATH"})
-# an installed valgrind that cannot start any program (it needs the debug symbols of the dynamic linker: libc6-dbg, glibc-debuginfo) is a skip, too
-valgrind --quiet "${DBG[@]}" /bin/true >/dev/null 2>&1 ||
-	{ echo "valgrind: skipped, $(valgrind --version) cannot run here (glibc debug symbols missing: install libc6-dbg or glibc-debuginfo, or set SIFT_VALGRIND_DEBUGPATH)"; exit 0; }
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(store_basic col_enc col_index_basic tbl_basic shred_values)
+
+BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
+
+# the image: the build dependencies of PostgreSQL and sift, valgrind with the symbols of the dynamic linker, the invoking user's uid
+image() {
+	docker image inspect "$1" >/dev/null 2>&1 && return
+	docker build -q -t "$1" --build-arg UID="$(id -u)" - <<DOCKERFILE >/dev/null
+FROM $BASE_IMAGE
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential bison flex curl ca-certificates bzip2 perl libipc-run-perl \\
+	liblz4-dev libzstd-dev valgrind libc6-dbg git util-linux procps && rm -rf /var/lib/apt/lists/*
+ARG UID
+RUN useradd -m -u \$UID sift
+DOCKERFILE
+}
+
+# container [TEST...]: the lane in the image; the checkout is copied (git's tracked and untracked files) to a read-only tree
+container() {
+	tmp=${SIFT_TMP:-/tmp/sift-valgrind-$$}/container name=sift-valgrind-$$-$RANDOM rc=0
+	local uid image
+	local cache=${SIFT_VALGRIND_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/pg-valgrind-bookworm}
+	uid=$(id -u) image=sift-valgrind:bookworm-$uid
+	image "$image"
+	rm -rf "$tmp" && mkdir -p "$tmp/export" "$tmp/scratch" "$cache"
+	trap 'docker rm -f "$name" >/dev/null 2>&1 || true; (( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$tmp"' EXIT
+	( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$tmp/export" -xf -
+	local run=(docker run --rm --init --name "$name" --user "$uid" --cpus "${SIFT_VALGRIND_CPUS:-4}" --memory "${SIFT_VALGRIND_MEMORY:-16g}" -e HOME=/tmp -e SIFT_PG_CACHE=/cache
+		-v "$tmp/export:/src:ro" -v "$cache:/cache")
+	# the server build needs the network the first time (the tarball), the tests do not
+	"${run[@]}" "$image" /src/scripts/pg-assert.sh --valgrind "${PGA[@]}" >/dev/null || { rc=1; echo "valgrind: the PostgreSQL build in the container failed"; return 1; }
+	"${run[@]}" --network none -v "$tmp/scratch:/scratch" -e SIFT_TMP=/scratch -e SIFT_VALGRIND_INSIDE=1 -e KEEP="${KEEP:-}" \
+		${SIFT_VALGRIND_ORIGINS:+-e SIFT_VALGRIND_ORIGINS=1} ${SIFT_VALGRIND_SIMD:+-e SIFT_VALGRIND_SIMD="$SIFT_VALGRIND_SIMD"} \
+		${SIFT_VALGRIND_TIMEOUT:+-e SIFT_VALGRIND_TIMEOUT="$SIFT_VALGRIND_TIMEOUT"} "$image" /src/scripts/valgrind.sh "${PGA[@]}" "${TESTS[@]}" || rc=$?
+	(( rc == 0 )) || echo "valgrind: FAILED in the container (scratch directory kept: $tmp/scratch)"
+	return $rc
+}
+
+DBG=(${SIFT_VALGRIND_DEBUGPATH:+--extra-debuginfo-path="$SIFT_VALGRIND_DEBUGPATH"})
+# an installed valgrind that cannot start any program is not usable on this host
+host_valgrind() { command -v valgrind >/dev/null && valgrind --quiet "${DBG[@]}" /bin/true >/dev/null 2>&1; }
+
+if [[ -z ${SIFT_VALGRIND_INSIDE:-} && ${SIFT_VALGRIND_CONTAINER:-auto} != 0 ]]; then
+	if [[ ${SIFT_VALGRIND_CONTAINER:-auto} == 1 ]] || ! host_valgrind; then
+		if command -v docker >/dev/null && docker info >/dev/null 2>&1; then container; exit $?; fi
+		[[ ${SIFT_VALGRIND_CONTAINER:-auto} != 1 ]] || { echo "valgrind: SIFT_VALGRIND_CONTAINER=1 but docker does not work" >&2; exit 1; }
+	fi
+fi
+host_valgrind || { echo "valgrind: skipped, valgrind is missing or cannot run here (glibc debug symbols: libc6-dbg, glibc-debuginfo, SIFT_VALGRIND_DEBUGPATH; or docker for the container)"; exit 0; }
 
 PREFIX=$("$REPO/scripts/pg-assert.sh" --valgrind "${PGA[@]}")
 export PATH=$PREFIX/bin:$PATH
@@ -32,7 +82,9 @@ TMP=${SIFT_TMP:-/tmp/sift-valgrind-$$}
 WORK=$TMP/valgrind
 unset SIFT_INITDB_TEMPLATE INITDB_TEMPLATE SANITIZE
 rm -rf "$WORK" && mkdir -p "$WORK/tree" "$WORK/vg"
-( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$WORK/tree" -xf -
+# a private copy; in the container the checkout is already an export without .git
+if [[ -e $REPO/.git ]]; then ( cd "$REPO" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - ) | tar -C "$WORK/tree" -xf -
+else tar -C "$REPO" -cf - . | tar -C "$WORK/tree" -xf -; fi
 cd "$WORK/tree"
 export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_SUDO=
 PORT=${SIFT_PORT:-56100}
