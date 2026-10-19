@@ -56,6 +56,7 @@ render_value(StringInfo out, const SiftShred *sh, const SiftShredColDef *cd, con
 			appendStringInfoString(out, buf);
 			break;
 		case SIFT_SHRED_TEXT:
+		case SIFT_SHRED_ASTEXT:
 			appendBinaryStringInfo(out, sh->doc.text + v->s.off, v->s.len);
 			break;
 		default:
@@ -233,7 +234,7 @@ sift_test_shred_summary(PG_FUNCTION_ARGS)
 				double_to_shortest_decimal_buf(mx, hi);
 			}
 		}
-		else if (cd->type != SIFT_SHRED_TEXT)
+		else if (!SIFT_SHRED_IS_TEXTUAL(cd->type))
 		{
 			int64		mn,
 						mx;

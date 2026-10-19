@@ -1,0 +1,106 @@
+-- Scalar arrays and array lengths of a jsonb column in the aggregate pushdown: jsonb_array_elements_text of an array of strings, the
+-- existence and containment tests (?, ?|, ?&, @>, <@) on it, and jsonb_array_length as a key, a filter and an argument. Every query runs
+-- with and without the pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+
+CREATE TABLE j_t (id int, grp int, attrs jsonb, items jsonb);
+-- attrs: SQL NULL, no tags key, an empty array, 1 to 4 tags (repeats, a JSON null element, an empty string, a long one); items: SQL NULL or 0 to 5 objects
+INSERT INTO j_t
+SELECT i, i % 7,
+       CASE WHEN i % 10 = 0 THEN NULL
+            WHEN i % 10 = 1 THEN '{}'
+            WHEN i % 10 = 2 THEN '{"tags": []}'
+            ELSE jsonb_build_object('tags', (SELECT jsonb_agg(CASE WHEN k = 1 AND i % 13 = 0 THEN 'null'::jsonb
+                                                                    WHEN i % 17 = 0 AND k = 2 THEN to_jsonb(''::text)
+                                                                    WHEN i % 19 = 0 AND k = 1 THEN to_jsonb(repeat('long', 100) || k)
+                                                                    ELSE to_jsonb('t' || ((i * k * 7 + k) % 12)) END ORDER BY k)
+                                             FROM generate_series(1, 1 + (i * 3) % 4) k)) END,
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE (SELECT coalesce(jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 5), 'n', (i * k) % 9) ORDER BY k), '[]')
+                  FROM generate_series(1, (i * 5) % 6) k) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX j_col ON j_t USING sift_col (id, grp, attrs, items) WITH (paths = 'attrs.tags[] text(1024), items[]{kind text, n int4}');
+VACUUM ANALYZE j_t;
+
+CREATE FUNCTION j_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION j_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE j_q (q text);
+INSERT INTO j_q VALUES
+	-- jsonb_array_elements_text of an array of strings
+	('SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t GROUP BY 1'),
+	('SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t WHERE d.grp < 3 GROUP BY 1'),
+	('SELECT t, count(DISTINCT d.id) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t GROUP BY 1'),
+	('SELECT d.grp, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t WHERE t = ''t3'' GROUP BY 1'),
+	('SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t WHERE t LIKE ''t1%'' GROUP BY 1'),
+	('SELECT count(*), count(t), count(DISTINCT t) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t'),
+	('SELECT length(t) AS len, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t GROUP BY 1'),
+	('SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->''tags'') AS t(v) WHERE t.v <> ''t1'' GROUP BY 1, 2'),
+	-- existence and containment on an array of strings
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'''),
+	('SELECT d.grp, count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1'),
+	('SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->''tags'' ? ''t3'') GROUP BY 1'),
+	('SELECT d.grp, count(*) FILTER (WHERE d.attrs->''tags'' ? ''t3''), count(*) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? '''''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ?| ARRAY[''t3'', ''t4'']'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ?& ARRAY[''t3'', ''t4'']'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3"]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", "t5"]'''),
+	('SELECT count(*) FROM j_t d WHERE ''["t3"]''::jsonb <@ (d.attrs->''tags'')'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''[null]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", 5]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2'),
+	-- the length of an array
+	('SELECT jsonb_array_length(d.items) AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, count(*), avg(d.grp) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FROM j_t d WHERE jsonb_array_length(d.items) > 2'),
+	('SELECT d.grp, sum(jsonb_array_length(d.items)), max(jsonb_array_length(d.items)), min(jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FILTER (WHERE jsonb_array_length(d.attrs->''tags'') = 0) FROM j_t d'),
+	('SELECT jsonb_array_length(d.attrs->''tags'') AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) % 2 AS k, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT e.kind, count(*) FILTER (WHERE jsonb_array_length(d.items) = 1) FROM j_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1'),
+	('SELECT d.grp, count(jsonb_array_length(d.items)), count(DISTINCT jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, d.grp, count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1, 2');
+
+CREATE FUNCTION j_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM j_q ORDER BY ctid LOOP
+		pushed := j_pushed(query);
+		same := j_rows(query, true) IS NOT DISTINCT FROM j_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+SELECT query, same, pushed FROM j_compare();
+
+-- a value the index cannot hold in an array of strings (a number, a string, an object) keeps the normal plan, which answers
+CREATE TABLE j_bad (id int, attrs jsonb);
+INSERT INTO j_bad SELECT i, CASE i % 4 WHEN 0 THEN '{"tags": ["a", "b"]}' WHEN 1 THEN '{"tags": ["a", 5]}' WHEN 2 THEN '{"tags": "a"}' ELSE '{"tags": {"a": 1}}' END::jsonb
+FROM generate_series(1, 200) i;
+CREATE INDEX j_bad_col ON j_bad USING sift_col (id, attrs) WITH (paths = 'attrs.tags[] text');
+VACUUM j_bad;
+SET sift.enable_agg = on;
+SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';
+SET sift.enable_agg = off;
+SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';
+
+DROP TABLE j_t, j_q, j_bad;
+DROP FUNCTION j_rows(text, bool), j_pushed(text), j_compare();
+DROP EXTENSION pg_sift;

@@ -12,7 +12,7 @@ this file in the same commit.
 
 User-facing names: index access method `sift_col` (`pg_am.amname` is unique across index and table AMs; the table AM is `sift_table`), operator
 class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`, `col_leaves`, `col_sections`,
-`col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. Code: the engine is `sift_col*.c` (and `sift_col_kern*`), the index AM glue `sift_col_am*.c`.
+`col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. `col_segments` and `sift.table_segments` list the column format minor of each segment (`format`, 3.1) and `col_segments` the bytes of its pre-aggregates (`preagg_bytes`). Code: the engine is `sift_col*.c` (and `sift_col_kern*`), the index AM glue `sift_col_am*.c`.
 
 ---
 
@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 3)
+## 2. Format (format major 1, col minor 4; minor 3 is read side by side)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -46,8 +46,8 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (2 now). A reader refuses a minor it does not know; older minors are
-  read as written and rewritten by merge. `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
+- Every `SiftSegEntry` carries `format` = the col segment minor (3 or 4). A reader refuses a minor it does not know; a 3.1 library reads minors 3 and 4 in one index
+  as written and rewrites them as minor 4 by merge (docs/COL-JSONB-31.md 5.2). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
 
@@ -93,7 +93,7 @@ is outside int64 (exactly: not merely an intermediate overflow; `sum` is then 0)
 at least one value is not NULL and all non-NULL values are equal, `SIFT_COLZ_OVERFLOW` some value overflowed). Zone checks never read a unit.
 `sum`/`nnull`/`nvals` also answer `count(col)`, `sum(col)`, `min`, `max` of a unit that is entirely visible without reading its chunks.
 
-**PAGG** (minor 2): the pre-aggregates of every unit, written at the end of the ZONES section (header `COLP`): the exact int128 `sum` and `sum of squares` of the INT leaves, and per unit the cube of low-cardinality dimensions (`GROUP BY dim` -> count, per measure non-NULL count and sum). Computed wherever a unit is written (build, parallel build, promotion, merge), never updated; format, option `preagg`, the rule for using it and the `SiftAgg` consumption: docs/COL-PREAGG.md.
+**PAGG** (minor 2): the pre-aggregates of every unit, written at the end of the ZONES section (header `COLP`): the exact int128 `sum` and `sum of squares` of the INT leaves, and per unit the cube of low-cardinality dimensions (`GROUP BY dim` -> count, per measure non-NULL count and sum). Computed wherever a unit is written (build, parallel build, promotion, merge), never updated; minor 4 adds the element cubes (directory version 2: one cube per list, whose rows are the elements); format, option `preagg`, the rule for using it and the `SiftAgg` consumption: docs/COL-PREAGG.md.
 
 **Unit record** (UNITS, at `SiftColSBRef.off`), 8-byte aligned fields:
 
@@ -122,8 +122,18 @@ u8 enc, u8 bits, u8 flags, u8 pad, u32 n          n values (rows, or elements)
 i64 base                                          frame of reference (the smallest non-NULL key value)
 [u64 nullbits[(n+63)/64]]                          when flags & SIFT_COLC_NULLS; bit set = NULL; tail bits zero
 [u64 ovfbits[(n+63)/64]]                           when flags & SIFT_COLC_OVF: the values the leaf could not hold (shredder OVERFLOW); also set in nullbits
+[u8 tags[8 * ceil(novf / 16)]]                     when flags & SIFT_COLC_TAGS (minor 4, only with OVF): one nibble per set bit of ovfbits, in slot order
 payload
 ```
+
+`flags`: `NULLS` (0x1), `OVF` (0x2), `TAGS` (0x4). **The type of an overflowing value** (minor 4): the nibble of an overflow slot is the JSON type of
+the value the leaf could not hold: 0 unknown (a writer that did not know it, a unit merged from a minor 3 segment), 1 string, 2 number, 3
+boolean, 4 object, 5 array, 6 none (the leaf lies below an array where its path declares an object: the slot overflows because a lax jsonpath would unwrap the
+array, but the path of `->` leads to no value and `jsonb_typeof` of it is NULL). The nibbles are LSB first (the even slot in the low nibble), the unused ones and the padding to 8 bytes are zero, and a chunk
+without overflow has no flag and no bytes, so a clean index costs nothing. The segment's minor decides: every chunk of a minor 4 segment that has
+overflow has `TAGS`, none of a minor 3 segment does. A stored value has no nibble, its type is the type of its leaf (bool boolean, integers,
+floats and numeric number, text string). The write buffer keeps the type in the high nibble of the flag byte of an overflowing value. Readers:
+`sift_col_filter_types` (the rows of a unit whose value has a type of a mask), `sift_col_ovf_bits`, the tag of `SiftColValue.tag` in a merge.
 
 `enc`:
 
@@ -402,7 +412,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads: segments
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element cubes of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
@@ -634,6 +644,7 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (col minor 4, element cubes): the `COLP` directory is version 2 in a minor 4 segment (`ecubedir_off`, `ecube_bytes`; the cube blob of each list follows the cubes of the columns), `sift_cpagg_cube(..., StringInfo out, StringInfo eout)`, `sift_cpagg_elem_cube`, `sift_cseg_ecube`, `sift_cseg_dim_cube`, `SIFT_PAGG_SPEC_DIMS` 32 and `SIFT_SRC_MAX_DIMS` 32; `sift_aggspec_pred_leaf` takes the `group` whose elements the predicate tests (-1: the rows); `sift_aggspec_preagg` accepts the unnest of an array leaf with one element-level key; `preagg_hist` folds the float8 sums of a group (`PaVal.sumf`). The writer remembers the minor it began under (`SiftColSegWriter.minor`), so `sift.col_format_minor` is read once per segment.
 - 2026-10 (preagg2 maint): `SiftColOptions.dead_rewrite_pct` (reloption `dead_rewrite_pct`, default `SIFT_COL_DEAD_PCT` 10, maintenance only: no format change); `sift_col_mostly_dead` uses it instead of a fixed half.
 - 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy, `sift_cseg_dict_stored`, `sift.col_sections` (section 2.10). A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (preagg2): `SiftSrcPreagg.aggs`; `sift_aggspec_preagg`, `sift_aggspec_pred_leaf` (sift_aggspec.h); SiftAgg answers the units that are exact from `unit_agg` / `unit_hist` (`sift_agg.c` `preagg_unit`), `sift.agg_preagg` (GUC, on), the cost of the exact share of the units and no workers from 98% exact (`sift_aggplan.c`), `Units From Pre-aggregates` in EXPLAIN ANALYZE. A provider that has `unit_exact`, `unit_agg`, `unit_hist` and `preagg` gets all of it; the others scan.

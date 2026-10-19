@@ -209,13 +209,14 @@ static const struct
 	{"float4", SIFT_SHRED_FLOAT4}, {"real", SIFT_SHRED_FLOAT4},
 	{"float8", SIFT_SHRED_FLOAT8}, {"double", SIFT_SHRED_FLOAT8},
 	{"text", SIFT_SHRED_TEXT},
+	{"astext", SIFT_SHRED_ASTEXT},
 	{NULL, 0}
 };
 
 const char *
 sift_shred_type_name(SiftShredType t)
 {
-	static const char *const names[] = {"bool", "int2", "int4", "int8", "float4", "float8", "text"};
+	static const char *const names[] = {"bool", "int2", "int4", "int8", "float4", "float8", "text", "astext"};
 
 	return names[t];
 }
@@ -453,21 +454,21 @@ parse_type(Parser *P, Add *a)
 {
 	int			i;
 
-	expect_word(P, "a type after the path (bool, int2, int4, int8, float4, float8 or text)");
+	expect_word(P, "a type after the path (bool, int2, int4, int8, float4, float8, text or astext)");
 	if (P->quoted)
 		SPEC_SYNTAX(P->loc, "expected a type after the path");
 	for (i = 0; type_names[i].name; i++)
 		if (pg_strcasecmp(P->word, type_names[i].name) == 0)
 			break;
 	if (!type_names[i].name)
-		SPEC_SYNTAX(P->loc, "unknown type \"%s\" (bool, int2, int4, int8, float4, float8 or text)", P->word);
+		SPEC_SYNTAX(P->loc, "unknown type \"%s\" (bool, int2, int4, int8, float4, float8, text or astext)", P->word);
 	a->type = type_names[i].type;
-	a->maxlen = a->type == SIFT_SHRED_TEXT ? SIFT_SHRED_DEFAULT_TEXT : 0;
+	a->maxlen = SIFT_SHRED_IS_TEXTUAL(a->type) ? SIFT_SHRED_DEFAULT_TEXT : 0;
 	a->explicit_len = false;
 	lex(P);
 	if (pg_strcasecmp(type_names[i].name, "double") == 0 && P->tok == T_WORD && pg_strcasecmp(P->word, "precision") == 0)
 		lex(P);
-	if (a->type == SIFT_SHRED_TEXT && P->tok == T_LPAREN)
+	if (SIFT_SHRED_IS_TEXTUAL(a->type) && P->tok == T_LPAREN)
 	{
 		uint64		v = 0;
 		int			loc;
@@ -800,6 +801,7 @@ reserve_elems(SiftShred *sh, int g, uint32 need)
 		SiftShredCol *col = &sh->doc.col[gd->cols[i]];
 
 		col->state = regrow(sh, col->state, cap);
+		col->tag = regrow(sh, col->tag, cap);
 		col->val = regrow(sh, col->val, cap * sizeof(SiftShredVal));
 	}
 	if (gd->kind == SIFT_SHRED_MAP)
@@ -866,8 +868,10 @@ release_large(SiftShred *sh)
 			for (int i = 0; i < gd->ncols; i++)
 			{
 				pfree(sh->doc.col[gd->cols[i]].state);
+				pfree(sh->doc.col[gd->cols[i]].tag);
 				pfree(sh->doc.col[gd->cols[i]].val);
 				sh->doc.col[gd->cols[i]].state = NULL;
+				sh->doc.col[gd->cols[i]].tag = NULL;
 				sh->doc.col[gd->cols[i]].val = NULL;
 			}
 			if (gr->keyid)
@@ -937,6 +941,14 @@ leaf_set(SiftShred *sh, NodeP n, SiftShredState st, uint32 reason)
 	sh->doc.col[n->col].ovf |= reason;
 }
 
+/* A leaf whose value the declared type cannot hold: the slot is OVERFLOW and keeps the JSON type of the value (SIFT_COLTAG_NONE when the leaf is below the array the event delivered: its path leads to no value) */
+static void
+leaf_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
+{
+	sh->doc.col[n->col].tag[sh->doc.grp[n->group].n - 1] = tag;
+	leaf_set(sh, n, SIFT_SHRED_OVERFLOW, reason);
+}
+
 static void
 flag_leaves(SiftShred *sh, NodeP n, uint32 reason)
 {
@@ -954,18 +966,18 @@ flag_leaves(SiftShred *sh, NodeP n, uint32 reason)
 	}
 }
 
-/* Everything the node declares in the current element cannot be represented */
+/* Everything the node declares in the current element cannot be represented; tag: the type of the value, which only a leaf that is the target itself holds */
 static void
-mark_overflow(SiftShred *sh, NodeP n, uint32 reason)
+mark_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
 {
 	switch (n->kind)
 	{
 		case N_LEAF:
-			leaf_set(sh, n, SIFT_SHRED_OVERFLOW, reason);
+			leaf_overflow(sh, n, reason, tag);
 			break;
 		case N_OBJ:
 			for (int i = 0; i < n->nmembers; i++)
-				mark_overflow(sh, n->members[i].node, reason);
+				mark_overflow(sh, n->members[i].node, reason, SIFT_COLTAG_NONE);
 			break;
 		default:
 			list_set(sh, n, SIFT_SHRED_OVERFLOW);
@@ -1009,7 +1021,7 @@ take_target(SiftShred *sh)
 	open_element(sh, n->group, f->keyid);
 	if (f->keyid == SIFT_SHRED_NO_KEY)
 	{
-		mark_overflow(sh, n->elem, SIFT_SHRED_OVF_KEYS);
+		mark_overflow(sh, n->elem, SIFT_SHRED_OVF_KEYS, sh->evtag);
 		return NULL;
 	}
 	return n->elem;
@@ -1038,14 +1050,15 @@ sift_shred_key(SiftShred *sh, const char *key, int len)
 bool
 sift_shred_enter(SiftShred *sh, bool is_array)
 {
-	NodeP		t = take_target(sh);
+	NodeP		t;
 	SiftShredFrame *f;
 
-	if (t == NULL)
+	sh->evtag = is_array ? SIFT_COLTAG_ARRAY : SIFT_COLTAG_OBJECT;
+	if ((t = take_target(sh)) == NULL)
 		return false;
 	if (t->kind == N_LEAF || (t->kind == N_LIST) != is_array)
 	{
-		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE);
+		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 		return false;
 	}
 	if (t->kind != N_OBJ)
@@ -1101,6 +1114,14 @@ sift_shred_wants_number(const SiftShred *sh)
 	return t && t->kind == N_LEAF && IS_NUMERIC(t->type);
 }
 
+bool
+sift_shred_wants_number_text(const SiftShred *sh)
+{
+	NodeP		t = peek_target(sh);
+
+	return t && t->kind == N_LEAF && t->type == SIFT_SHRED_ASTEXT;
+}
+
 /* A scalar where a list or map is declared: null is its null, anything else cannot be a list */
 static void
 scalar_in_container(SiftShred *sh, NodeP t, bool is_null)
@@ -1108,13 +1129,16 @@ scalar_in_container(SiftShred *sh, NodeP t, bool is_null)
 	if (is_null)
 		list_set(sh, t, SIFT_SHRED_NULL);
 	else
-		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE);
+		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 }
 
 void
 sift_shred_null(SiftShred *sh)
 {
-	NodeP		t = take_target(sh);
+	NodeP		t;
+
+	sh->evtag = SIFT_COLTAG_UNKNOWN;
+	t = take_target(sh);
 
 	if (t == NULL || t->kind == N_OBJ)
 		return;
@@ -1124,17 +1148,24 @@ sift_shred_null(SiftShred *sh)
 		scalar_in_container(sh, t, true);
 }
 
+static void leaf_text(SiftShred *sh, NodeP t, const char *s, int len);
+
 void
 sift_shred_bool(SiftShred *sh, bool b)
 {
-	NodeP		t = take_target(sh);
+	NodeP		t;
+
+	sh->evtag = SIFT_COLTAG_BOOLEAN;
+	t = take_target(sh);
 
 	if (t == NULL || t->kind == N_OBJ)
 		return;
 	if (t->kind != N_LEAF)
 		scalar_in_container(sh, t, false);
+	else if (t->type == SIFT_SHRED_ASTEXT)
+		leaf_text(sh, t, b ? "true" : "false", b ? 4 : 5);
 	else if (t->type != SIFT_SHRED_BOOL)
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_TYPE, sh->evtag);
 	else
 	{
 		sh->doc.col[t->col].val[sh->doc.grp[t->group].n - 1].i = b;
@@ -1148,12 +1179,12 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 	SiftShredDoc *doc = &sh->doc;
 	SiftShredVal *v = &doc->col[t->col].val[doc->grp[t->group].n - 1];
 
-	if (t->type != SIFT_SHRED_TEXT)
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
+	if (!SIFT_SHRED_IS_TEXTUAL(t->type))
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_TYPE, sh->evtag);
 	else if ((uint32) len > t->maxlen)
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_LENGTH);
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_LENGTH, sh->evtag);
 	else if ((uint64) doc->ntext + len > sh->limits.max_bytes)
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TRUNC);
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_TRUNC, sh->evtag);
 	else
 	{
 		if (doc->text == NULL || doc->ntext + len > doc->textcap)
@@ -1172,7 +1203,10 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 void
 sift_shred_string(SiftShred *sh, const char *s, int len)
 {
-	NodeP		t = take_target(sh);
+	NodeP		t;
+
+	sh->evtag = SIFT_COLTAG_STRING;
+	t = take_target(sh);
 
 	if (t == NULL || t->kind == N_OBJ)
 		return;
@@ -1189,11 +1223,13 @@ leaf_number(SiftShred *sh, NodeP t, const char *text, int len)
 	Dec			d;
 	uint64		mag;
 
-	if (!IS_NUMERIC(t->type) || text == NULL || !dec_parse(text, len, &d))
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
+	if (t->type == SIFT_SHRED_ASTEXT && text != NULL)
+		leaf_text(sh, t, text, len);
+	else if (!IS_NUMERIC(t->type) || text == NULL || !dec_parse(text, len, &d))
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_TYPE, sh->evtag);
 	else if (t->type <= SIFT_SHRED_INT8 ? !(dec_integral(&d, &mag) && int_fits(t->type, d.neg, mag, &v->i))
 			 : !dec_float(&d, text, len, t->type == SIFT_SHRED_FLOAT4, &v->f))
-		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_RANGE);
+		leaf_overflow(sh, t, SIFT_SHRED_OVF_RANGE, sh->evtag);
 	else
 		leaf_set(sh, t, SIFT_SHRED_VALUE, 0);
 }
@@ -1201,7 +1237,10 @@ leaf_number(SiftShred *sh, NodeP t, const char *text, int len)
 void
 sift_shred_number(SiftShred *sh, const char *text, int len)
 {
-	NodeP		t = take_target(sh);
+	NodeP		t;
+
+	sh->evtag = SIFT_COLTAG_NUMBER;
+	t = take_target(sh);
 
 	if (t == NULL || t->kind == N_OBJ)
 		return;

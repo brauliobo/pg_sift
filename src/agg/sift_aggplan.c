@@ -69,6 +69,7 @@ typedef enum FuncKind
 	FK_NONE,
 	FK_RECORDSET,				/* jsonb_to_recordset(array) AS t(f type, ...) */
 	FK_ELEMENTS,				/* jsonb_array_elements(array) */
+	FK_ELEMENTS_TEXT,			/* jsonb_array_elements_text(array of strings): one text column, the element */
 	FK_EACH,					/* jsonb_each(object) */
 	FK_EACH_TEXT				/* jsonb_each_text(object) */
 } FuncKind;
@@ -176,9 +177,13 @@ leaf_name(AggCtx *c, int id)
 		appendStringInfo(&s, leaf_of(c, l->parent)->kind == SCL_OBJECT ? "%s.*.%s" : "%s[].%s", p, l->name);
 		return s.data;
 	}
+	if (l->name[0] == '#')
+		appendStringInfoString(&s, "jsonb_array_length(");
 	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
+	if (l->name[0] == '#')
+		appendStringInfoChar(&s, ')');
 	return s.data;
 }
 
@@ -267,7 +272,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, path) &&
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) &&
 			l->typid == typid)
 			return i;
 	}
@@ -291,13 +296,34 @@ child_leaf(AggCtx *c, int group, const char *name, Oid typid)
  * `(x->>'k')::float8` of an object leaf with free keys (`metrics.*`) at the row level: a scalar leaf after the source's, which the
  * executor builds from the "value" of the element of each row whose "key" is k.
  */
+static SiftSrcLeaf *
+vleaf_add(AggCtx *c, int att, List *path, SiftSrcVecType vtype, Oid typid)
+{
+	SiftSrcLayout *lay = palloc(sizeof(SiftSrcLayout));
+	SiftSrcLeaf *v;
+
+	*lay = *c->lay;
+	lay->leaf = palloc((lay->nleaves + 1) * sizeof(SiftSrcLeaf));
+	memcpy(lay->leaf, c->lay->leaf, lay->nleaves * sizeof(SiftSrcLeaf));
+	v = &lay->leaf[lay->nleaves];
+	memset(v, 0, sizeof(SiftSrcLeaf));
+	v->id = lay->nleaves++;
+	v->attno = att;
+	v->parent = -1;
+	v->kind = SCL_SCALAR;
+	v->vtype = vtype;
+	v->typid = typid;
+	v->path = path;
+	c->lay = lay;
+	return v;
+}
+
 static int
 key_leaf(AggCtx *c, int att, List *path, Oid typid)
 {
 	int			n = list_length(path),
 				obj = -1,
 				val;
-	SiftSrcLayout *lay;
 	SiftSrcLeaf *v;
 
 	if (n == 0 || c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
@@ -312,22 +338,30 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	}
 	if (obj < 0 || (val = child_leaf(c, obj, "value", typid)) < 0)
 		return -1;
-	lay = palloc(sizeof(SiftSrcLayout));
-	*lay = *c->lay;
-	lay->leaf = palloc((lay->nleaves + 1) * sizeof(SiftSrcLeaf));
-	memcpy(lay->leaf, c->lay->leaf, lay->nleaves * sizeof(SiftSrcLeaf));
-	v = &lay->leaf[lay->nleaves];
-	memset(v, 0, sizeof(SiftSrcLeaf));
-	v->id = lay->nleaves++;
-	v->attno = att;
-	v->parent = -1;
-	v->kind = SCL_SCALAR;
-	v->vtype = leaf_of(c, val)->vtype;
-	v->typid = typid;
-	v->path = path;
-	c->lay = lay;
+	v = vleaf_add(c, att, path, leaf_of(c, val)->vtype, typid);
 	c->vleaf[c->nvleaf].obj = obj;
+	c->vleaf[c->nvleaf].count = false;
 	c->vleaf[c->nvleaf++].key = pstrdup(strVal(llast(path)));
+	return v->id;
+}
+
+/* `jsonb_array_length(x->'k')` of an array leaf: a scalar leaf after the source's, whose values the executor takes from the element counts of the array */
+static int
+count_leaf(AggCtx *c, int grp)
+{
+	SiftSrcLeaf *v;
+	int			nbase = c->lay->nleaves - c->nvleaf;
+
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].count && c->vleaf[j].obj == grp)
+			return nbase + j;
+	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+		return -1;
+	v = vleaf_add(c, leaf_of(c, grp)->attno, leaf_of(c, grp)->path, SCV_I32, INT4OID);
+	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
+	c->vleaf[c->nvleaf].obj = grp;
+	c->vleaf[c->nvleaf].count = true;
+	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
 
@@ -477,7 +511,12 @@ func_var_leaf(AggCtx *c, Var *v)
 		case FK_EACH_TEXT:
 			if (v->varattno == 1)
 				return child_leaf(c, c->group, "key", TEXTOID);
+			/* jsonb_each_text: the text of the value is the text of the member; a number has none in a text leaf, only in an astext one */
+			if (c->func_kind == FK_EACH_TEXT && v->varattno == 2 && v->vartype == TEXTOID)
+				return child_leaf(c, c->group, "value", TEXTOID);
 			return -1;
+		case FK_ELEMENTS_TEXT:		/* the element of an array of strings is the one unnamed child of the array */
+			return v->varattno == 1 && v->vartype == TEXTOID ? child_leaf(c, c->group, "", TEXTOID) : -1;
 		default:
 			return -1;
 	}
@@ -512,8 +551,8 @@ match_leaf(AggCtx *c, Node *e)
 		{
 			SiftSrcLeaf *l = leaf_of(c, i);
 
-			if (l->kind == SCL_ARRAY && l->attno == a.att && paths_equal(l->path, a.path))
-				return i;
+			if (l->kind == SCL_ARRAY && l->attno == a.att && l->parent < 0 && !l->lossy && paths_equal(l->path, a.path))
+				return count_leaf(c, i);
 		}
 		return -1;
 	}
@@ -792,24 +831,24 @@ raising_walker(Node *n, void *context)
 	return expression_tree_walker(n, raising_walker, context);
 }
 
-/* the values of an integer leaf the lookup table covers: the span of the column's statistics (histogram, most common values) fits, or there are none */
+/* the span of the values the statistics of an integer column (histogram, most common values) have seen; false: none, or the leaf is not a plain column */
 static bool
-lut_range_ok(AggCtx *c, int leaf)
+leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
 	Node	   *e = l->path == NIL && l->parent < 0 ? list_nth(c->attexpr, l->attno - 1) : NULL;
 	HeapTuple	tp;
 	AttStatsSlot sslot;
-	int64		lo = PG_INT64_MAX,
-				hi = PG_INT64_MIN;
 	bool		known = false;
 
+	*lo = PG_INT64_MAX;
+	*hi = PG_INT64_MIN;
 	if (e == NULL || !IsA(e, Var))
-		return true;
+		return false;
 	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
 						 Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tp))
-		return true;
+		return false;
 	for (int k = 0; k < 2; k++)
 		if (get_attstatsslot(&sslot, tp, k == 0 ? STATISTIC_KIND_HISTOGRAM : STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_VALUES))
 		{
@@ -817,14 +856,24 @@ lut_range_ok(AggCtx *c, int leaf)
 			{
 				int64		v = sift_aggspec_operand_int(l->typid, sslot.values[i]);
 
-				lo = Min(lo, v);
-				hi = Max(hi, v);
+				*lo = Min(*lo, v);
+				*hi = Max(*hi, v);
 				known = true;
 			}
 			free_attstatsslot(&sslot);
 		}
 	ReleaseSysCache(tp);
-	return !known || (double) hi - (double) lo < (double) (1 << 22);
+	return known;
+}
+
+/* the values of an integer leaf the lookup table covers: the span of the column's statistics fits, or there are none */
+static bool
+lut_range_ok(AggCtx *c, int leaf)
+{
+	int64		lo,
+				hi;
+
+	return !leaf_stats_range(c, leaf, &lo, &hi) || (double) hi - (double) lo < (double) (1 << 22);
 }
 
 /* is an expression of one dictionary or integer leaf evaluated by a lookup table (once per value of the dictionary or of the range of the leaf)? */
@@ -832,6 +881,151 @@ static bool
 lut_expr_ok(AggCtx *c, int leaf, Node *expr)
 {
 	return lut_leaf_ok(c, leaf) && !raising_walker(expr, NULL) && (leaf_of(c, leaf)->vtype == SCV_CODE || lut_range_ok(c, leaf));
+}
+
+/*
+ * Calendar keys of a timestamp leaf. date_trunc, ::date and extract of a timestamp change value only on a second, minute, hour or
+ * day boundary, so the executor evaluates them once per such step of the data instead of once per distinct timestamp (which is
+ * once per row): the key id of a row is a lookup of its step.
+ */
+typedef struct BucketUnit
+{
+	const char *name;
+	int			secs;			/* the step the result changes on */
+	double		len;			/* average seconds of a unit */
+	int			cycle;			/* extract: the values it repeats after, 0: it does not */
+} BucketUnit;
+
+#define DAY_SECS		86400
+#define MONTH_SECS		2629800
+#define YEAR_SECS		31557600.0
+
+/* date_trunc units (a week, month and longer ones change on a day) */
+static const BucketUnit trunc_units[] = {{"second", 1, 1, 0}, {"minute", 60, 60, 0}, {"hour", 3600, 3600, 0}, {"day", DAY_SECS, DAY_SECS, 0},
+	{"week", DAY_SECS, 7 * DAY_SECS, 0}, {"month", DAY_SECS, MONTH_SECS, 0}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 0},
+	{"year", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+
+/* extract fields that are whole numbers of a step (second, epoch and julian have fractions of a second) */
+static const BucketUnit field_units[] = {{"minute", 60, 60, 60}, {"hour", 3600, 3600, 24}, {"day", DAY_SECS, DAY_SECS, 31},
+	{"dow", DAY_SECS, DAY_SECS, 7}, {"isodow", DAY_SECS, DAY_SECS, 7}, {"doy", DAY_SECS, DAY_SECS, 366}, {"week", DAY_SECS, 7 * DAY_SECS, 53},
+	{"month", DAY_SECS, MONTH_SECS, 12}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 4}, {"year", DAY_SECS, YEAR_SECS, 0},
+	{"isoyear", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+
+/* the unit of a date_trunc, date_part or extract of a timestamp; NULL for another call, or a unit this does not know */
+static const BucketUnit *
+bucket_unit(Node *e)
+{
+	FuncExpr   *f;
+	Const	   *k;
+	char	   *name;
+
+	if (!IsA(e, FuncExpr))
+		return NULL;
+	f = (FuncExpr *) e;
+	if (f->funcid != F_DATE_TRUNC_TEXT_TIMESTAMP && f->funcid != F_DATE_PART_TEXT_TIMESTAMP && f->funcid != F_EXTRACT_TEXT_TIMESTAMP)
+		return NULL;
+	k = linitial(f->args);
+	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID)
+		return NULL;
+	name = TextDatumGetCString(k->constvalue);
+	for (const BucketUnit *u = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP ? trunc_units : field_units; u->name; u++)
+		if (pg_strcasecmp(u->name, name) == 0)
+			return u;
+	return NULL;
+}
+
+/* the leaf of the expression of a key: a reference, or Param 0 once the key is compiled */
+static bool
+bucket_leaf(AggCtx *c, Node *e)
+{
+	return IsA(e, Param) || match_leaf(c, e) >= 0;
+}
+
+/*
+ * The seconds an expression of the timestamp leaf keeps its value for: the leaf itself 1 (every function below has a step of a
+ * second or more), a calendar function the coarser of its own step and the one of its argument. 0: the expression is something
+ * else, and the key is a combo.
+ */
+static int
+bucket_step(AggCtx *c, Node *e)
+{
+	const BucketUnit *u;
+	int			arg;
+
+	if (bucket_leaf(c, e))
+		return 1;
+	if (IsA(e, RelabelType))
+		return bucket_step(c, (Node *) ((RelabelType *) e)->arg);
+	if (!IsA(e, FuncExpr))
+		return 0;
+	if ((u = bucket_unit(e)) != NULL)
+	{
+		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args));
+		return arg ? Max(arg, u->secs) : 0;
+	}
+	switch (((FuncExpr *) e)->funcid)
+	{
+		case F_DATE_TIMESTAMP:
+			arg = bucket_step(c, linitial(((FuncExpr *) e)->args));
+			return arg ? Max(arg, DAY_SECS) : 0;
+		case F_TIMESTAMP_DATE:
+			return bucket_step(c, linitial(((FuncExpr *) e)->args));
+		default:
+			return 0;
+	}
+}
+
+/* the distinct values an expression that bucket_step accepts takes over a stretch of `span` seconds of the leaf */
+static double
+bucket_groups(AggCtx *c, Node *e, double span)
+{
+	const BucketUnit *u;
+	double		n;
+
+	if (bucket_leaf(c, e))
+		return span + 1;
+	if (IsA(e, RelabelType))
+		return bucket_groups(c, (Node *) ((RelabelType *) e)->arg, span);
+	if ((u = bucket_unit(e)) != NULL)
+	{
+		n = Min(bucket_groups(c, lsecond(((FuncExpr *) e)->args), span), span / u->len + 1);
+		return u->cycle ? Min(n, u->cycle) : n;
+	}
+	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP)
+		return Min(bucket_groups(c, linitial(((FuncExpr *) e)->args), span), span / DAY_SECS + 1);
+	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
+}
+
+/* the groups of a bucket key from the statistics of its column; 0: unknown */
+static double
+bucket_key_groups(AggCtx *c, const SiftAggKey *k)
+{
+	int64		lo,
+				hi;
+
+	if (!leaf_stats_range(c, k->leaf, &lo, &hi))
+		return 0;
+	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
+}
+
+/* EXPLAIN: the step a key on a timestamp is evaluated for */
+static const char *
+bucket_text(int secs)
+{
+	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : " (per day)";
+}
+
+/* the seconds a key on the timestamp leaf is evaluated once for, 0 when it is not a calendar expression */
+static int
+bucket_key_secs(AggCtx *c, int leaf, Node *expr)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+
+	if (l->kind != SCL_SCALAR || l->vtype != SCV_I64 || l->typid != TIMESTAMPOID || contain_volatile_functions(expr))
+		return 0;
+	return bucket_step(c, expr);
 }
 
 /* ---------- predicates ---------- */
@@ -1997,6 +2191,113 @@ is_gate(Node *n)
 	return exprType(n) == BOOLOID && pseudo_const(n);
 }
 
+/* the SIFT_SRC_JT_* bits of the type names (the strings jsonb_typeof gives, but 'null': the rows of a JSON null are NULL); 0 when one is another string or none */
+static uint32
+jtype_bits(List *names)
+{
+	static const struct
+	{
+		const char *name;
+		uint32		bit;
+	}			known[] = {
+		{"string", SIFT_SRC_JT_STRING}, {"number", SIFT_SRC_JT_NUMBER}, {"boolean", SIFT_SRC_JT_BOOLEAN},
+		{"object", SIFT_SRC_JT_OBJECT}, {"array", SIFT_SRC_JT_ARRAY}
+	};
+	uint32		bits = 0;
+
+	foreach_ptr(String, s, names)
+	{
+		int			t = 0;
+
+		while (t < lengthof(known) && strcmp(strVal(s), known[t].name) != 0)
+			t++;
+		if (t == lengthof(known))
+			return 0;
+		bits |= known[t].bit;
+	}
+	return bits;
+}
+
+static bool
+typeof_type(Oid typid)
+{
+	return typid == BOOLOID || typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == FLOAT4OID || typid == FLOAT8OID ||
+		typid == NUMERICOID || typid == TEXTOID;
+}
+
+/* the leaf of the jsonb value `x->'k'` that keeps the other JSON types of a path out of its values: a scalar of a type a JSON value of one type fills, not the text of any */
+static int
+typeof_leaf(AggCtx *c, Node *e)
+{
+	JsonRef		r = {0};
+
+	if (!json_access(c, e, &r) || r.as_text || r.att == 0 || r.path == NIL)
+		return -1;
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && !l->astext && l->name[0] != '#' &&
+			paths_equal(l->path, r.path) && typeof_type(l->typid))
+			return i;
+	}
+	return -1;
+}
+
+static bool
+source_can_types(AggCtx *c)
+{
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_types(get_rel_relam(c->indexoid), true) : sift_colsrc_can_types(get_rel_relam(c->heapoid), false);
+}
+
+/*
+ * `jsonb_typeof(x->'k') = 'number'` or `IN ('string', 'number')` as a conjunct of the query: the source keeps the rows whose value of the leaf
+ * of `x->'k'` has one of the types, the stored values by the type of the leaf and the values it could not hold by the type the chunk kept for
+ * them (SAP_TYPE). Not <>, NOT IN, 'null', and not as a branch of OR: the reads of the leaf give the values of the other rows as NULL, which
+ * only a conjunct that drops those rows makes safe.
+ */
+static SiftAggPred *
+compile_typeof(AggCtx *c, Node *n)
+{
+	Node	   *call,
+			   *rhs;
+	List	   *names = NIL,
+			   *args;
+	uint32		types;
+	int			leaf;
+	SiftAggPred *p;
+
+	n = strip_relabel(n);
+	args = IsA(n, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) n)->args : func_args(n);
+	if (list_length(args) != 2)
+		return NULL;
+	call = strip_relabel(linitial(args));
+	rhs = strip_relabel(lsecond(args));
+	if (IsA(n, OpExpr) && ((OpExpr *) n)->opno == TextEqualOperator)
+	{
+		if (func_of(call) != F_JSONB_TYPEOF)
+		{
+			Node	   *t = call;
+
+			call = rhs;
+			rhs = t;
+		}
+		if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull)
+			return NULL;
+		names = list_make1(makeString(TextDatumGetCString(((Const *) rhs)->constvalue)));
+	}
+	else if (!(IsA(n, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) n)->opno == TextEqualOperator && ((ScalarArrayOpExpr *) n)->useOr &&
+			   path_keys(rhs, &names)))
+		return NULL;
+	if (func_of(call) != F_JSONB_TYPEOF || (types = jtype_bits(names)) == 0 || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
+		!source_can_types(c))
+		return NULL;
+	p = make_leaf_pred(c, SAP_TYPE, leaf);
+	p->op = types;
+	p->desc = expr_text(c, n);
+	return p;
+}
+
 static SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
@@ -2093,12 +2394,13 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 		k->leaf = leaf;
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
-	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_expr_ok(c, leaf, expr))
+	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) &&
+			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr)) > 0))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;
 		k->expr = substitute_leaf(c, expr, ptype, ptypmod, pcoll);
-		k->desc = psprintf("%s: %s", leaf_name(c, leaf), expr_text(c, expr));
+		k->desc = psprintf("%s: %s%s", leaf_name(c, leaf), expr_text(c, expr), k->bucket > 0 ? bucket_text(k->bucket) : "");
 	}
 	else if ((k->typid == NUMERICOID || k->typid == INT2OID || k->typid == INT4OID || k->typid == INT8OID) &&
 			 compile_nx(c, expr, SIFT_NUM_MAX_DIGITS, &k->num))
@@ -2989,6 +3291,8 @@ func_kind_of(RangeTblFunction *f)
 			return FK_RECORDSET;
 		case F_JSONB_ARRAY_ELEMENTS:
 			return FK_ELEMENTS;
+		case F_JSONB_ARRAY_ELEMENTS_TEXT:
+			return FK_ELEMENTS_TEXT;
 		case F_JSONB_EACH:
 			return FK_EACH;
 		case F_JSONB_EACH_TEXT:
@@ -3095,7 +3399,7 @@ child_named(AggCtx *c, int group, const char *name)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->parent == group && !l->lossy && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
+		if (l->parent == group && !l->lossy && !l->astext && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
 			return i;
 	}
 	return -1;
@@ -3385,6 +3689,28 @@ compile_path_exists(AggCtx *c, Node *n)
 
 /* ---- col @> '[{"k": v, ...}, ...]': every object of the right side is contained by some element ---- */
 
+/* a JSON string, number or boolean as a literal an element leaf is compared with; a JSON null equals an absent member in the index but only a JSON null contains it */
+static bool
+jsonb_lit(const JsonbValue *v, Lit *lit)
+{
+	if (v->type == jbvString)
+		*lit = (Lit) {'s', v->val.string.val, v->val.string.len};
+	else if (v->type == jbvNumeric)
+		*lit = (Lit) {'n', NULL, 0, v->val.numeric};
+	else if (v->type == jbvBool)
+		*lit = (Lit) {'b', NULL, 0, NULL, v->val.boolean};
+	else
+		return false;
+	return true;
+}
+
+/* an element of an array of scalars (the unnamed child of the array leaf) equals the literal */
+static SiftAggPred *
+build_elem_lit(AggCtx *c, int grp, void *arg)
+{
+	return lit_cmp(c, grp, "", SCMP_EQ, arg);
+}
+
 static SiftAggPred *
 build_contains(AggCtx *c, int grp, void *arg)
 {
@@ -3405,14 +3731,7 @@ build_contains(AggCtx *c, int grp, void *arg)
 
 		(void) JsonbIteratorNext(&it, &k, true);
 		(void) JsonbIteratorNext(&it, &v, true);
-		/* a JSON null equals an absent member in the index but only a JSON null contains it */
-		if (v.type == jbvString)
-			lit = (Lit) {'s', v.val.string.val, v.val.string.len};
-		else if (v.type == jbvNumeric)
-			lit = (Lit) {'n', NULL, 0, v.val.numeric};
-		else if (v.type == jbvBool)
-			lit = (Lit) {'b', NULL, 0, NULL, v.val.boolean};
-		else
+		if (!jsonb_lit(&v, &lit))
 			return NULL;
 		if ((e = lit_cmp(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit)) == NULL)
 			return NULL;
@@ -3449,10 +3768,59 @@ compile_contains(AggCtx *c, Node *target, Node *rhs)
 	for (int i = 0; i < n; i++)
 	{
 		SiftAggPred *e;
+		Lit			lit;
 
 		(void) JsonbIteratorNext(&it, &v, true);
-		if (v.type != jbvBinary || !JsonContainerIsObject(v.val.binary.data) ||
-			(e = any_elem(c, grp, build_contains, v.val.binary.data)) == NULL)
+		if (v.type == jbvBinary && JsonContainerIsObject(v.val.binary.data))
+			e = any_elem(c, grp, build_contains, v.val.binary.data);
+		else if (jsonb_lit(&v, &lit))
+			e = any_elem(c, grp, build_elem_lit, &lit);
+		else
+			return NULL;
+		if (e == NULL)
+			return NULL;
+		if (p)
+			p->child[i] = e;
+		else
+			p = e;
+	}
+	if (n > 1)
+		junction_done(p);
+	return p;
+}
+
+/*
+ * x ? 'k', x ?| array['k', ..], x ?& array['k', ..] on an array of strings: an element is the string; for any (?|) or each (?&) of the
+ * strings. The same test on an object (its keys) or a string is the other shapes of the value, which the index holds as an overflow.
+ */
+static SiftAggPred *
+compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
+{
+	List	   *keys = NIL;
+	SiftAggPred *p;
+	int			grp,
+				n;
+
+	keys_arg = strip_relabel(keys_arg);
+	if (fid == F_JSONB_EXISTS)
+	{
+		if (!IsA(keys_arg, Const) || ((Const *) keys_arg)->constisnull)
+			return NULL;
+		keys = list_make1(makeString(TextDatumGetCString(((Const *) keys_arg)->constvalue)));
+	}
+	else if (!path_keys(keys_arg, &keys) || keys == NIL)
+		return NULL;
+	if ((grp = group_leaf_of(c, target, SCL_ARRAY)) < 0)
+		return NULL;
+	n = list_length(keys);
+	p = n > 1 ? new_junction(c, fid == F_JSONB_EXISTS_ALL ? SAP_AND : SAP_OR, n) : NULL;
+	for (int i = 0; i < n; i++)
+	{
+		const char *key = strVal(list_nth(keys, i));
+		Lit			lit = {'s', key, strlen(key)};
+		SiftAggPred *e = any_elem(c, grp, build_elem_lit, &lit);
+
+		if (e == NULL)
 			return NULL;
 		if (p)
 			p->child[i] = e;
@@ -3482,6 +3850,11 @@ compile_existential(AggCtx *c, Node *n, Node **target)
 	{
 		*target = linitial(func_args(n));
 		return compile_path_exists(c, n);
+	}
+	if (fid == F_JSONB_EXISTS || fid == F_JSONB_EXISTS_ANY || fid == F_JSONB_EXISTS_ALL)
+	{
+		*target = linitial(func_args(n));
+		return compile_has_keys(c, fid, *target, lsecond(func_args(n)));
 	}
 	if (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED)
 	{
@@ -3709,6 +4082,31 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
 		tuples = filter ? rows : agg_rows;
 		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
 	}
+	return cost;
+}
+
+/* a tuple of a bucket key: the number of its step, the lookup of the id */
+#define AGG_BUCKET_ROW		3.0
+
+/* the buckets of a stretch of the leaf of a key, by the statistics: the tuples when there are none */
+static double
+bucket_count(AggCtx *c, const SiftAggKey *k, double tuples)
+{
+	int64		lo,
+				hi;
+
+	return leaf_stats_range(c, k->leaf, &lo, &hi) ? Min(tuples, (double) (hi - lo) / USECS_PER_SEC / k->bucket + 1) : tuples;
+}
+
+/* a lookup per tuple of a bucket key, and PostgreSQL evaluating the expression once per bucket */
+static double
+bucket_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows)
+{
+	double		cost = 0;
+
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].bucket > 0)
+			cost += rows * AGG_BUCKET_ROW + bucket_count(c, &s->key[i], rows) * AGG_EVAL_SLOT;
 	return cost;
 }
 
@@ -3983,7 +4381,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
-		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+		scan_cost += s->vleaf[i].count ? 0 : rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
 	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
@@ -4000,7 +4398,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		if (s->agg[i].kind == SAA_GEN)
 			gen_cost += agg_rows * s->agg[i].gen->cost + rows_out * AGG_GEN_GROUP;
 	}
-	scan_cost += combo_eval_cost(c, s, rows, agg_rows);
+	scan_cost += combo_eval_cost(c, s, rows, agg_rows) + bucket_eval_cost(c, s, agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		scan_cost += agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
@@ -4309,8 +4707,11 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	initStringInfo(&txt);
 	foreach_ptr(Node, q, quals)
 	{
-		SiftAggPred *p = compile_pred(c, normalize_expr(c, q));
+		Node	   *e = normalize_expr(c, q);
+		SiftAggPred *p = compile_typeof(c, e);
 
+		if (p == NULL)
+			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(q))
 			return false;
 		if (p->level > 1)
@@ -4360,18 +4761,27 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 
 /* the groups the scan makes: those of the keys, or of each grouping set */
 static double
-set_groups(PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
+set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 {
 	double		n = 0;
 
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		List	   *sub = NIL;
+		double		bucketed = 1.0;
 
 		for (int j = 0; j < list_length(keys); j++)
-			if (s->nsets == 0 || (s->setmask[set] >> j & 1))
+		{
+			double		b = s->key[j].bucket > 0 ? bucket_key_groups(c, &s->key[j]) : 0;
+
+			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
+				continue;
+			if (b > 0)
+				bucketed *= b;
+			else
 				sub = lappend(sub, list_nth(keys, j));
-		n += sub == NIL ? 1.0 : Max(estimate_num_groups(root, sub, rows, NULL, NULL), 1.0);
+		}
+		n += Min(rows, (sub == NIL ? 1.0 : Max(estimate_num_groups(c->root, sub, rows, NULL, NULL), 1.0)) * bucketed);
 	}
 	return n;
 }
@@ -4412,15 +4822,20 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 /*
  * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when a row of its snapshot has one
  * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. A numeric leaf is not one: its only such value
- * is NaN, which the scan evaluates (SiftSrcVec.ovf).
+ * is NaN, which the scan evaluates (SiftSrcVec.ovf). Nor is the leaf of a jsonb_typeof conjunct (SAP_TYPE): the source keeps the rows of
+ * the types and tells the type of each value it cannot store.
  */
 static bool
-reads_overflow(AggCtx *c)
+reads_overflow(AggCtx *c, const SiftAggSpec *s)
 {
+	Bitmapset  *typed = NULL;
 	int			m = -1;
 
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_TYPE)
+			typed = bms_add_member(typed, s->pred[i]->leaf);
 	while ((m = bms_next_member(c->used, m)) >= 0)
-		if (c->stats.ovf[m])
+		if (c->stats.ovf[m] && !bms_is_member(m, typed))
 			return true;
 	return false;
 }
@@ -4444,11 +4859,11 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);
-	if (reads_overflow(c))
+	if (reads_overflow(c, s))
 		return false;
 	finish_leaves(c, s);
 	finish_combos(c, s);
-	s->est_groups = set_groups(root, s, keys, input_rel->rows);
+	s->est_groups = set_groups(c, s, keys, input_rel->rows);
 	if (c->search)
 		s->search = c->search->spec;
 

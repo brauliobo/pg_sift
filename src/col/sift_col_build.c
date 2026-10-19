@@ -91,7 +91,7 @@ flush_batch(ColBuild *b)
 		return;
 	if (b->w == NULL)
 	{
-		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, b->cxt);
+		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->cxt);
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
