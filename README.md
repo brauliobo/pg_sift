@@ -5,7 +5,7 @@
 pg_sift adds fast full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`. No external search
 server, no separate analytics database, no `shared_preload_libraries`. The search engine also runs as a SQLite extension and a MariaDB library.
 
-[Features](#features) · [Install](#install) · [Search](#search) · [Analytics](#analytics) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Docs](#docs)
+[Features](#features) · [Install](#install) · [Search](#search) · [Analytics](#analytics) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Limits](#limits) · [Docs](#docs)
 
 ## Features
 
@@ -95,8 +95,12 @@ pg_sift is weaker in text analysis (English stemming only, one key per index) an
 
 ## SQLite
 
-The search engine as a loadable extension (Linux x86-64, SQLite 3.38 or newer) for apps that want search without a server: exact BM25, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets, facets.
-89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
+The search engine as a loadable extension, for apps that want search without a server.
+
+- **Needs:** Linux x86-64, SQLite 3.38 or newer.
+- **Queries:** exact BM25, phrase, prefix, wildcard, regex and fuzzy; highlights, snippets, facets.
+- **Speed:** 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles).
+- **Install, options and numbers:** [sqlite/README.md](sqlite/README.md).
 
 ```sql
 .load ./sift
@@ -106,8 +110,11 @@ SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT
 
 ## MariaDB
 
-`libsift_udf.so` and two SQL files bring the engine to MariaDB 10.5 to 13.x with no storage engine and no server patch; results are identical to pg_sift.
-183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md). The column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+`libsift_udf.so` and two SQL files bring the engine to MariaDB, with no storage engine and no server patch.
+
+- **Needs:** MariaDB 10.5 to 13.x; results are identical to pg_sift.
+- **Speed:** 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller.
+- **Install and guide:** [mariadb/README.md](mariadb/README.md).
 
 ```sql
 CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
@@ -116,11 +123,24 @@ SELECT sift_count('news', 'power AND plant');
 
 ## Operations
 
-- Index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
-- A background worker (`sift.async_maintenance`) promotes write buffers and merges segments, VACUUM clears dead rows; `sift.index_info`, `sift.segments` and `sift.verify` inspect an index.
-- Physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
-- Cost of one library (3.0): the BM25 index and the column engine share one library, about twice the size of 2.0's. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells stay above 1.02: the first query of a session (about 1.04 to 1.05), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03); every other cell is within 1.02. Connection pooling amortizes the session cost.
-- Settings, options, maintenance, replication and limits: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
+- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- **Maintenance:** a background worker (`sift.async_maintenance`) promotes write buffers and merges segments; VACUUM clears dead rows.
+- **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
+- **Replication:** physical replicas work through generic WAL.
+- **Cost of one library (3.0):** the BM25 index and the column engine share one library, about twice the size of 2.0's. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells:
+  - the first query of a session: about 1.04 to 1.05 (connection pooling amortizes it);
+  - a `VACUUM` with nothing to free: about 1.04, on 3.9M instructions;
+  - a ranked query on a one-segment index: 1.02 to 1.03.
+- **More:** settings, options, maintenance, replication and limits in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index in [docs/SIZING.md](docs/SIZING.md).
+
+## Limits
+
+- **Platforms:** PostgreSQL 17 or 18 (x86-64 tested); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
+- **Ports:** search only; the column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+- **Replication:** publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
+- **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
+- **Weaker than other systems:** text analysis and the narrow parts of the column engine ([Compared with](#compared-with)).
+- **Types, options and limits of the column engine:** [docs/USAGE.md](docs/USAGE.md#limits).
 
 ## Docs
 
