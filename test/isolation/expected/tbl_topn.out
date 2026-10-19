@@ -1,0 +1,167 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1rr s2del s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_tn;
+count
+-----
+30000
+(1 row)
+
+step s2del: DELETE FROM iso_tn WHERE id > 29000 OR id < 1000;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+28001|t   |top-n
+(1 row)
+
+
+starting permutation: s1rr s2ins s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_tn;
+count
+-----
+30000
+(1 row)
+
+step s2ins: INSERT INTO iso_tn (id, g, seq) SELECT 40000 + i, i % 7, 40000 + i FROM generate_series(1, 3000) i;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+33000|t   |top-n
+(1 row)
+
+
+starting permutation: s1rr s2upd s2low s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_tn;
+count
+-----
+30000
+(1 row)
+
+step s2upd: UPDATE iso_tn SET seq = seq + 1000000 WHERE id % 1500 = 0;
+step s2low: UPDATE iso_tn SET seq = -seq WHERE id % 1500 = 1;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+
+starting permutation: s2upd s2low s1q s3v s1q
+step s2upd: UPDATE iso_tn SET seq = seq + 1000000 WHERE id % 1500 = 0;
+step s2low: UPDATE iso_tn SET seq = -seq WHERE id % 1500 = 1;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+
+starting permutation: s2b s2del s3v s1q s2c s1q
+step s2b: BEGIN;
+step s2del: DELETE FROM iso_tn WHERE id > 29000 OR id < 1000;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+28001|t   |top-n
+(1 row)
+
+
+starting permutation: s2b s2upd s2low s3v s1q s2c s1q
+step s2b: BEGIN;
+step s2upd: UPDATE iso_tn SET seq = seq + 1000000 WHERE id % 1500 = 0;
+step s2low: UPDATE iso_tn SET seq = -seq WHERE id % 1500 = 1;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+
+starting permutation: s2b s2ins s3v s1q s2c s1q
+step s2b: BEGIN;
+step s2ins: INSERT INTO iso_tn (id, g, seq) SELECT 40000 + i, i % 7, 40000 + i FROM generate_series(1, 3000) i;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+33000|t   |top-n
+(1 row)
+
+
+starting permutation: s2b s2del s2a s3v s1q
+step s2b: BEGIN;
+step s2del: DELETE FROM iso_tn WHERE id > 29000 OR id < 1000;
+step s2a: ROLLBACK;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+
+
+starting permutation: s2b s2upd s2a s3v s1q
+step s2b: BEGIN;
+step s2upd: UPDATE iso_tn SET seq = seq + 1000000 WHERE id % 1500 = 0;
+step s2a: ROLLBACK;
+step s3v: VACUUM iso_tn;
+step s1q: SELECT * FROM iso_tn_check();
+    n|same|plan 
+-----+----+-----
+30000|t   |top-n
+(1 row)
+

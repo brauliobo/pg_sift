@@ -9329,6 +9329,33 @@ topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
 	return true;
 }
 
+/*
+ * Does a unit of the superblocks [lo, hi) have a zone that can hold a better row than the n-th so far? A table appends the new version of a
+ * row to its write buffer whatever the value of the sort column, so the superblocks do not follow the column and no superblock can be
+ * taken for the last that matters: every window is decided by the zones of its own units, and the match set is built only for a window
+ * that has one.
+ */
+static bool
+topn_window_viable(AggExec *ex, uint32 lo, uint32 hi)
+{
+	SiftSrcZone z;
+	int			n = 0;
+
+	if (ex->search)
+		sift_colsrc_select(ex->src, NULL);
+	sift_colsrc_begin(ex->src, lo, hi, NULL, 0);
+	while (sift_colsrc_next(ex->src, &ex->unit))
+	{
+		sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), &z);
+		if (sift_topn_zone_viable(ex->topn, &z))
+			return true;
+		n++;
+	}
+	while (n-- > 0)
+		sift_topn_skip(ex->topn);
+	return false;
+}
+
 /* Windows of superblocks from the end the best values are at (sift_topn.h) */
 
 /*
@@ -9398,7 +9425,12 @@ topn_run(AggExec *ex)
 	sift_topn_start(t, nsb);
 	while (sift_topn_next_window(t, &lo, &hi, &best))
 	{
-		if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
+		if (ex->lay->is_table && sift_topn_wants_zones(t))
+		{
+			if (!topn_window_viable(ex, lo, hi))
+				continue;
+		}
+		else if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
 		{
 			sift_topn_stop(t);
 			break;
