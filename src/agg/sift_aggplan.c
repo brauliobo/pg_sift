@@ -3534,6 +3534,28 @@ compile_path_exists(AggCtx *c, Node *n)
 
 /* ---- col @> '[{"k": v, ...}, ...]': every object of the right side is contained by some element ---- */
 
+/* a JSON string, number or boolean as a literal an element leaf is compared with; a JSON null equals an absent member in the index but only a JSON null contains it */
+static bool
+jsonb_lit(const JsonbValue *v, Lit *lit)
+{
+	if (v->type == jbvString)
+		*lit = (Lit) {'s', v->val.string.val, v->val.string.len};
+	else if (v->type == jbvNumeric)
+		*lit = (Lit) {'n', NULL, 0, v->val.numeric};
+	else if (v->type == jbvBool)
+		*lit = (Lit) {'b', NULL, 0, NULL, v->val.boolean};
+	else
+		return false;
+	return true;
+}
+
+/* an element of an array of scalars (the unnamed child of the array leaf) equals the literal */
+static SiftAggPred *
+build_elem_lit(AggCtx *c, int grp, void *arg)
+{
+	return lit_cmp(c, grp, "", SCMP_EQ, arg);
+}
+
 static SiftAggPred *
 build_contains(AggCtx *c, int grp, void *arg)
 {
@@ -3554,14 +3576,7 @@ build_contains(AggCtx *c, int grp, void *arg)
 
 		(void) JsonbIteratorNext(&it, &k, true);
 		(void) JsonbIteratorNext(&it, &v, true);
-		/* a JSON null equals an absent member in the index but only a JSON null contains it */
-		if (v.type == jbvString)
-			lit = (Lit) {'s', v.val.string.val, v.val.string.len};
-		else if (v.type == jbvNumeric)
-			lit = (Lit) {'n', NULL, 0, v.val.numeric};
-		else if (v.type == jbvBool)
-			lit = (Lit) {'b', NULL, 0, NULL, v.val.boolean};
-		else
+		if (!jsonb_lit(&v, &lit))
 			return NULL;
 		if ((e = lit_cmp(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit)) == NULL)
 			return NULL;
@@ -3598,10 +3613,59 @@ compile_contains(AggCtx *c, Node *target, Node *rhs)
 	for (int i = 0; i < n; i++)
 	{
 		SiftAggPred *e;
+		Lit			lit;
 
 		(void) JsonbIteratorNext(&it, &v, true);
-		if (v.type != jbvBinary || !JsonContainerIsObject(v.val.binary.data) ||
-			(e = any_elem(c, grp, build_contains, v.val.binary.data)) == NULL)
+		if (v.type == jbvBinary && JsonContainerIsObject(v.val.binary.data))
+			e = any_elem(c, grp, build_contains, v.val.binary.data);
+		else if (jsonb_lit(&v, &lit))
+			e = any_elem(c, grp, build_elem_lit, &lit);
+		else
+			return NULL;
+		if (e == NULL)
+			return NULL;
+		if (p)
+			p->child[i] = e;
+		else
+			p = e;
+	}
+	if (n > 1)
+		junction_done(p);
+	return p;
+}
+
+/*
+ * x ? 'k', x ?| array['k', ..], x ?& array['k', ..] on an array of strings: an element is the string; for any (?|) or each (?&) of the
+ * strings. The same test on an object (its keys) or a string is the other shapes of the value, which the index holds as an overflow.
+ */
+static SiftAggPred *
+compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
+{
+	List	   *keys = NIL;
+	SiftAggPred *p;
+	int			grp,
+				n;
+
+	keys_arg = strip_relabel(keys_arg);
+	if (fid == F_JSONB_EXISTS)
+	{
+		if (!IsA(keys_arg, Const) || ((Const *) keys_arg)->constisnull)
+			return NULL;
+		keys = list_make1(makeString(TextDatumGetCString(((Const *) keys_arg)->constvalue)));
+	}
+	else if (!path_keys(keys_arg, &keys) || keys == NIL)
+		return NULL;
+	if ((grp = group_leaf_of(c, target, SCL_ARRAY)) < 0)
+		return NULL;
+	n = list_length(keys);
+	p = n > 1 ? new_junction(c, fid == F_JSONB_EXISTS_ALL ? SAP_AND : SAP_OR, n) : NULL;
+	for (int i = 0; i < n; i++)
+	{
+		const char *key = strVal(list_nth(keys, i));
+		Lit			lit = {'s', key, strlen(key)};
+		SiftAggPred *e = any_elem(c, grp, build_elem_lit, &lit);
+
+		if (e == NULL)
 			return NULL;
 		if (p)
 			p->child[i] = e;
@@ -3631,6 +3695,11 @@ compile_existential(AggCtx *c, Node *n, Node **target)
 	{
 		*target = linitial(func_args(n));
 		return compile_path_exists(c, n);
+	}
+	if (fid == F_JSONB_EXISTS || fid == F_JSONB_EXISTS_ANY || fid == F_JSONB_EXISTS_ALL)
+	{
+		*target = linitial(func_args(n));
+		return compile_has_keys(c, fid, *target, lsecond(func_args(n)));
 	}
 	if (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED)
 	{

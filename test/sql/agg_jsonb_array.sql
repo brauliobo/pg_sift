@@ -1,5 +1,6 @@
--- jsonb_array_elements_text of an array of strings in the aggregate pushdown. Every query runs with and without the pushdown, the rows
--- must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
+-- Arrays of strings of a jsonb column in the aggregate pushdown: jsonb_array_elements_text, and the existence and containment tests
+-- (?, ?|, ?&, @>, <@) on them. Every query runs with and without the pushdown, the rows must be the same, and `pushed` says whether the plan
+-- is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -51,7 +52,21 @@ INSERT INTO j_q VALUES
 	('SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t WHERE t LIKE ''t1%'' GROUP BY 1'),
 	('SELECT count(*), count(t), count(DISTINCT t) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t'),
 	('SELECT length(t) AS len, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t GROUP BY 1'),
-	('SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->''tags'') AS t(v) WHERE t.v <> ''t1'' GROUP BY 1, 2');
+	('SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->''tags'') AS t(v) WHERE t.v <> ''t1'' GROUP BY 1, 2'),
+	-- existence and containment on an array of strings
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'''),
+	('SELECT d.grp, count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1'),
+	('SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->''tags'' ? ''t3'') GROUP BY 1'),
+	('SELECT d.grp, count(*) FILTER (WHERE d.attrs->''tags'' ? ''t3''), count(*) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? '''''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ?| ARRAY[''t3'', ''t4'']'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ?& ARRAY[''t3'', ''t4'']'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3"]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", "t5"]'''),
+	('SELECT count(*) FROM j_t d WHERE ''["t3"]''::jsonb <@ (d.attrs->''tags'')'),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''[null]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", 5]'''),
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2');
 
 CREATE FUNCTION j_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
@@ -64,7 +79,17 @@ END $$;
 
 SELECT query, same, pushed FROM j_compare();
 
+-- a value the index cannot hold in an array of strings (a number, a string, an object) raises the error of the pushdown, and the normal plan answers
+CREATE TABLE j_bad (id int, attrs jsonb);
+INSERT INTO j_bad SELECT i, CASE i % 4 WHEN 0 THEN '{"tags": ["a", "b"]}' WHEN 1 THEN '{"tags": ["a", 5]}' WHEN 2 THEN '{"tags": "a"}' ELSE '{"tags": {"a": 1}}' END::jsonb
+FROM generate_series(1, 200) i;
+CREATE INDEX j_bad_col ON j_bad USING sift_col (id, attrs) WITH (paths = 'attrs.tags[] text');
+VACUUM j_bad;
+SET sift.enable_agg = on;
+SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';
+SET sift.enable_agg = off;
+SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';
 
-DROP TABLE j_t, j_q;
+DROP TABLE j_t, j_q, j_bad;
 DROP FUNCTION j_rows(text, bool), j_pushed(text), j_compare();
 DROP EXTENSION pg_sift;
