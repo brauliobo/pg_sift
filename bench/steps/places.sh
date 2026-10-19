@@ -228,7 +228,7 @@ round() {
   for id in "${cells[@]}"; do
     IFS=. read -r wl c e <<<"$id"
     if [[ -n ${EXT[$e]:-} ]]; then v=$(ext_cell "$wl" "$c" "$e")
-    else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; if ($7 == 1) noisy = 1} END {exit !noisy}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
+    else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; if ($7 == 1) noisy = 1} END {exit noisy ? 1 : 0}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$v" >>"$DEST/cells.tsv"
   done
 }
