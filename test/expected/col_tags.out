@@ -247,9 +247,9 @@ SELECT sift._test_poke('w_idx', 1, 41, 3, 1);
 (1 row)
 
 SELECT expect($$ SELECT sift.col_verify('w_idx', false) $$);
-                                                                            expect                                                                             
----------------------------------------------------------------------------------------------------------------------------------------------------------------
- XXN: sift index "w_idx" segment N is corrupted | The chunk of leaf N in the unit of SB N has the types of its overflow values (segment of column format N.N).
+                                                                               expect                                                                                
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "w_idx" segment N is corrupted | The pre-aggregates start with NxNcNfN, version N, N leaves, N units; a segment of column format N.N has version N.
 (1 row)
 
 SELECT sift._test_poke('w_idx', 1, 41, 4, 1);
@@ -274,9 +274,9 @@ SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
 (1 row)
 
 SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);
-                                                                              expect                                                                              
-------------------------------------------------------------------------------------------------------------------------------------------------------------------
- XXN: sift index "wN_idx" segment N is corrupted | The chunk of leaf N in the unit of SB N lacks the types of its overflow values (segment of column format N.N).
+                                                           expect                                                           
+----------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "wN_idx" segment N is corrupted | The ZONES section holds N bytes, no room for the pre-aggregates after N.
 (1 row)
 
 DROP TABLE d, w, pages;

@@ -1,7 +1,8 @@
 -- The jsonb shapes of the aggregate pushdown (arrays of strings and their lengths, existence tests, the text of any scalar) under forced
 -- parallel plans: each query must plan as a Gather over a partial Custom Scan (SiftAgg) with two workers, and its rows must be the rows of the
--- normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). A query whose units all answer from the
--- pre-aggregates (query 11, no filter) is serial on purpose: starting workers costs more than the answer.
+-- normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). The pre-aggregates are off: with them a
+-- query whose units all answer from them is serial on purpose (starting workers costs more than the answer), and the scan path is what runs
+-- in the workers here (agg_preagg_elem_parallel covers the units that answer from the element cubes).
 CREATE EXTENSION pg_sift;
 CREATE TABLE p_t (id int, grp int, attrs jsonb, scores jsonb, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_t
@@ -28,6 +29,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
+SET sift.agg_preagg = off;
 CREATE FUNCTION p_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -86,7 +88,7 @@ SELECT n, mode, same FROM p_compare();
   8 | parallel | t
   9 | parallel | t
  10 | parallel | t
- 11 | serial   | t
+ 11 | parallel | t
  12 | parallel | t
  13 | parallel | t
  14 | parallel | t
