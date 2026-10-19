@@ -1654,6 +1654,12 @@ sift_doc_term_tf(SiftDoc *d, const char *term, int len)
 	return doc_count_tokens(d, field, &(SiftQNode) {.kind = SQ_TERM, .text = (char *) term, .textlen = len}, NULL, 0);
 }
 
+int
+sift_doc_leaf_tf(SiftDoc *d, const SiftQNode *leaf)
+{
+	return doc_count_tokens(d, leaf->field, leaf, NULL, 0);
+}
+
 bool
 sift_doc_match(SiftDoc *d, const SiftQNode *n)
 {
