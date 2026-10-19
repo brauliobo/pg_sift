@@ -28,8 +28,9 @@ while (( $# )); do
 	esac
 	shift
 done
-[[ -n $MAJOR ]] || MAJOR=$(pg_config --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
-[[ -n ${VERSION[$MAJOR]:-} ]] || MAJOR=18
+# the major of the server on PATH, if any (a builder without one gets 18)
+[[ -n $MAJOR ]] || MAJOR=$( { pg_config --version 2>/dev/null || true; } | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+[[ -n ${VERSION[${MAJOR:-0}]:-} ]] || MAJOR=18
 V=${PG_ASSERT_VERSION:-${VERSION[$MAJOR]}}
 SUM=${PG_ASSERT_SHA256:-${SHA256[$V]:-}}
 [[ -n $SUM ]] || { echo "pg-assert: no sha256 for PostgreSQL $V (PG_ASSERT_SHA256)" >&2; exit 1; }
