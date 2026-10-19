@@ -86,6 +86,11 @@ typedef struct SiftAggKernels
 	 */
 	int64		(*sum_i32) (const int32 *v, const uint64 *mask, int n);
 	double		(*sum_f64) (const double *v, const uint64 *mask, int n);
+	/*
+	 * The largest absolute value of the selected rows, 0 when none is: true with *mx set, or false (*mx untouched) when a selected
+	 * row is not finite (NaN, +-Inf). The float guard of a sum: only a finite input may overflow it.
+	 */
+	bool		(*absmax_f64) (const double *v, const uint64 *mask, int n, double *mx);
 	/* false (outputs untouched) when no row is selected */
 	bool		(*minmax_i32) (int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n);
 	bool		(*minmax_i64) (int64 *mn, int64 *mx, const int64 *v, const uint64 *mask, int n);

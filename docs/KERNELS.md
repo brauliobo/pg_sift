@@ -121,6 +121,7 @@ The operators work on decoded vectors (at most `SIFT_AGG_VEC` = 4096 rows or arr
 | `gid_code`, `gid_i32` | `gid[i] += map[key] * mult` in `uint32` arithmetic; `key` = `code[i]`, or `(uint32) (v[i] - base)` |
 | `sum_i32` | exact `int64` sum of the selected rows |
 | `sum_f64` | eight accumulators, see below |
+| `absmax_f64` | the largest absolute value of the selected rows (0 when none is), or false with the output untouched when a selected row is NaN or infinite: the guard of a float sum, which only a finite input can overflow |
 | `minmax_*` | minimum and maximum of the selected rows; false (outputs untouched) when none is selected |
 | `count_gid`, `sum_gid_*` | `cnt[gid[i]] += 1`, `acc[gid[i]] += v[i]` over the selected rows in row order |
 | `count_changes` | the number of selected rows whose value differs from the previous selected row's (the one before the first is `*prev`); `*prev` ends at the last selected value |

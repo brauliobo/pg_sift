@@ -508,6 +508,14 @@ tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	sift_aggsel_vet(&((TblSource *) impl)->sel, p->src, &p->unit, bits);
 }
 
+static bool
+tbl_vet_needed(void *impl, const SiftSrcUnit *unit)
+{
+	TblPart    *p = unit->priv;
+
+	return sift_aggsel_vet_needed(&p->unit);
+}
+
 static void
 tbl_counters(const void *impl, SiftSrcCounters *c)
 {
@@ -542,6 +550,7 @@ static const SiftSrcProvider tbl_provider = {
 	.read = tbl_read,
 	.live = tbl_live,
 	.vet = tbl_vet,
+	.vet_needed = tbl_vet_needed,
 	.counters = tbl_counters,
 	.select = tbl_select,
 };

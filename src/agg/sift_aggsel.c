@@ -105,9 +105,15 @@ vet_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	sift_col_vet(cu, vs);
 }
 
+bool
+sift_aggsel_vet_needed(const SiftColUnit *cu)
+{
+	return !sift_col_unit_allvisible(cu);
+}
+
 void
 sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits)
 {
-	if (!sift_col_unit_allvisible(cu))
+	if (sift_aggsel_vet_needed(cu))
 		sift_aggsel_stored(a, src, cu, bits, vet_op, NULL);
 }

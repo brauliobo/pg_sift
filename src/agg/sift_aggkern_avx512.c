@@ -216,6 +216,36 @@ sum_f64_avx512(const double *v, const uint64 *mask, int n)
 	return mask ? sum_f64_t(v, mask, n, true) : sum_f64_t(v, mask, n, false);
 }
 
+/* Unselected lanes are loaded as +0.0; VFPCLASS 0x99 is QNaN, SNaN, +Inf, -Inf */
+K5 bool
+absmax_f64_t(const double *v, const uint64 *mask, int n, double *mx, const bool masked)
+{
+	__m512d		m0 = _mm512_setzero_pd(),
+				m1 = m0;
+	uint32		bad = 0;
+
+	for (int i = 0; i < n; i += 16)
+	{
+		const uint32 k = masked ? SEL16(mask, i) : (uint32) AGK_LANES(n - i, 16);
+		const __m512d x0 = _mm512_maskz_loadu_pd((__mmask8) k, v + i),
+					x1 = _mm512_maskz_loadu_pd((__mmask8) (k >> 8), v + i + 8);
+
+		bad |= _mm512_fpclass_pd_mask(x0, 0x99) | _mm512_fpclass_pd_mask(x1, 0x99);
+		m0 = _mm512_max_pd(m0, _mm512_abs_pd(x0));
+		m1 = _mm512_max_pd(m1, _mm512_abs_pd(x1));
+	}
+	if (bad)
+		return false;
+	*mx = _mm512_reduce_max_pd(_mm512_max_pd(m0, m1));
+	return true;
+}
+
+F5 bool
+absmax_f64_avx512(const double *v, const uint64 *mask, int n, double *mx)
+{
+	return mask ? absmax_f64_t(v, mask, n, mx, true) : absmax_f64_t(v, mask, n, mx, false);
+}
+
 K5 bool
 minmax_i32_t(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n, const bool masked)
 {
@@ -403,7 +433,7 @@ count_changes_avx512(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
 const SiftAggKernels sift_aggkern_avx512 = {
 	AGK_INIT5(cmp_f64) AGK_INIT5(between_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
 	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
-	AGK_INIT5(sum_i32) AGK_INIT5(sum_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(sum_i32) AGK_INIT5(sum_f64) AGK_INIT5(absmax_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
