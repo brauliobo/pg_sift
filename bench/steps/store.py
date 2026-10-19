@@ -491,14 +491,27 @@ def quiet_gate(what):
 
 
 def gate(what, engines):
-    """quiet_gate, the containers of the engines done merging, and the other work the idle host has (BASE: 10 s of the window's own measurement, nothing of the run in it)"""
+    """quiet_gate, the containers of the engines done merging, and the other work the idle host has (BASE: the window's own measurement with nothing of the run in it, STORE_BASELINE_SEC seconds,
+    10 by default; one measured less than 15 minutes ago in this pass (STORE_BASELINE, a file) is used again: a job that started since shows as NOISY against it, never as quiet)"""
     quiet_gate(what)
     busy = wait_idle(engines)
     if busy:
         log(f'{what}: still busy: {busy}')
+    path = os.environ.get('STORE_BASELINE')
+    try:
+        with open(path) as f:
+            old = json.load(f)
+        if time.time() - old['time'] < 900:
+            BASE.update(cpu=old['cpu'], io=old['io'])
+            log(f'{what}: the idle host has {BASE["cpu"]} cores and {BASE["io"]} MiB/s of other work (measured {int(time.time() - old["time"])} s ago)')
+            return
+    except (TypeError, OSError, ValueError, KeyError):
+        pass
     with Window() as w:
-        time.sleep(10)
+        time.sleep(float(os.environ.get('STORE_BASELINE_SEC', 10)))
     BASE.update(cpu=round(w.ext_cpu / w.s, 3), io=round(w.ext_io / w.s, 2))
+    if path:
+        benchlib.write_json(path, dict(BASE, time=time.time()))
     log(f'{what}: the idle host has {BASE["cpu"]} cores and {BASE["io"]} MiB/s of other work (the cells are judged by what they add to it)')
 
 
