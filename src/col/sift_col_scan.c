@@ -815,6 +815,53 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 	return sel->count > 0;
 }
 
+bool
+sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, bool stored, SiftColSel *sel, bool *known)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCChunk	c;
+	uint64	   *keep = palloc0(sel->nwords * sizeof(uint64)),
+			   *tagged = palloc(sel->nwords * sizeof(uint64));
+
+	if (cu->src->schema->cols[col].parent >= 0)
+		elog(ERROR, "sift_col: leaf %d is an element column, its types are not read per row", col);
+	*known = true;
+	if (unit_chunk(cu, col, &c))
+	{
+		if (c.n != sel->n)
+			corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, sel->n);
+		for (uint32 w = 0; stored && w < (c.n + 63) / 64; w++)
+			keep[w] = c.nulls ? ~c.nulls[w] : ~UINT64CONST(0);
+		for (uint8 tag = SIFT_COLTAG_STRING; tag <= SIFT_COLTAG_MAX; tag++)
+		{
+			sift_cchunk_tag_bits(&c, tag, tagged);
+			for (uint32 w = 0; (tagmask >> tag & 1) && w < (c.n + 63) / 64; w++)
+				keep[w] |= tagged[w];
+		}
+		sift_cchunk_tag_bits(&c, SIFT_COLTAG_UNKNOWN, tagged);
+		for (uint32 w = 0; w < (c.n + 63) / 64; w++)
+			*known &= (tagged[w] & sel->bits[w]) == 0;
+	}
+	for (uint32 w = 0; w < sel->nwords; w++)
+		sel->bits[w] &= keep[w];
+	return sift_col_sel_count(sel) > 0;
+}
+
+bool
+sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCChunk	c;
+
+	memset(bits, 0, SIFT_COL_NWORDS(unit->nrows) * sizeof(uint64));
+	if (!unit_chunk(cu, col, &c) || c.ovf == NULL)
+		return false;
+	if (c.n != unit->nrows)
+		corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, unit->nrows);
+	memcpy(bits, c.ovf, (c.n + 63) / 64 * sizeof(uint64));
+	return true;
+}
+
 /* The elements of the group whose children satisfy every predicate, or may (overflow); *unknown gets the overflow bits of the predicates' leaves */
 static void
 group_elems_sel(ColUnit *cu, const SiftColGroupPred *gp, SiftColSel *el, uint64 **unknown)

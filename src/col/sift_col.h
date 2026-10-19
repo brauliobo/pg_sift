@@ -418,6 +418,17 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 /* Top level predicates (leaf ids of scalar leaves); a predicate on a child leaf is an error (use the group forms) */
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
 
+/*
+ * Narrows sel (rows of the unit) to those whose value of the top level leaf col has a JSON type in tagmask (bit t for SIFT_COLTAG_t):
+ * a stored value has the type of the leaf (`stored`: that type is in the mask), an overflow value its tag.
+ * *known is false when a row of sel overflowed without a tag, a value of a unit written before column format minor 4 (or by a writer
+ * that did not know its type): its type is not known and sel is not a proper answer. Returns whether any row is left.
+ */
+extern bool sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, bool stored, SiftColSel *sel, bool *known);
+
+/* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
+extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
+
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);
 

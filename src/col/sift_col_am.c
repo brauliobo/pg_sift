@@ -572,6 +572,7 @@ static void
 datum_value(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
 {
 	v->isnull = v->overflow = false;
+	v->tag = SIFT_COLTAG_UNKNOWN;
 	v->len = 0;
 	switch (def->type)
 	{
