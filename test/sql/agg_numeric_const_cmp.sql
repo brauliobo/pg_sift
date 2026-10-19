@@ -1,0 +1,85 @@
+-- A numeric(p, s) leaf compared with a constant that no stored value can equal or that lies outside every value (5.555 in a column of two
+-- decimals, 1e20, Infinity, NaN): the comparison has one result for every number, and NaN, which the index keeps apart, has its own. Every
+-- statement runs with and without the pushdown and the rows must be the same, also when the units answer from their pre-aggregates
+-- (an ungrouped aggregate, or grouped by one column) and when they are read.
+CREATE EXTENSION pg_sift;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE nc (id int PRIMARY KEY, g int, n numeric(12,2), m numeric(10,3)) WITH (autovacuum_enabled = false);
+INSERT INTO nc
+SELECT i, i % 7,
+	   CASE WHEN i % 97 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE round(((i * 37) % 4001 - 2000) / 7.0, 2) END,
+	   CASE WHEN i % 89 = 0 THEN 'NaN' WHEN i % 13 = 0 THEN NULL ELSE round(((i * 53) % 3001 - 1500) / 11.0, 3) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX nc_col ON nc USING sift_col (id, g, n, m);
+VACUUM (FREEZE, ANALYZE) nc;
+
+-- the same rows without a NaN, so that every unit is exact
+CREATE TABLE nf (id int PRIMARY KEY, g int, n numeric(12,2)) WITH (autovacuum_enabled = false);
+INSERT INTO nf SELECT i, i % 7, round(((i * 37) % 4001 - 2000) / 7.0, 2) FROM generate_series(1, 20000) i;
+CREATE INDEX nf_col ON nf USING sift_col (id, g, n);
+VACUUM (FREEZE, ANALYZE) nf;
+
+CREATE TABLE shapes (id serial PRIMARY KEY, shape text, q text);
+INSERT INTO shapes (shape, q)
+SELECT t || ' ' || op || ' ' || c, format('SELECT count(*), sum(g), max(id) FROM %s WHERE n %s %s', t, op, c)
+FROM unnest(ARRAY['nc', 'nf']) t, unnest(ARRAY['=', '<>', '<', '<=', '>', '>=']) op,
+	 unnest(ARRAY['5.555', '-0.001', '1e20', '-1e20', '''NaN''', '''Infinity''', '''-Infinity''', '5.5', '1e12']) c;
+INSERT INTO shapes (shape, q)
+SELECT 'grouped ' || t || ' ' || op || ' ' || c, format('SELECT g, count(*), sum(id) FROM %s WHERE n %s %s GROUP BY g', t, op, c)
+FROM unnest(ARRAY['nc', 'nf']) t, unnest(ARRAY['=', '<', '>=']) op, unnest(ARRAY['5.555', '1e20', '''NaN''', '''Infinity''']) c;
+INSERT INTO shapes (shape, q) VALUES
+	('in unrepresentable', 'SELECT count(*), sum(g) FROM nf WHERE n IN (5.555, 1e20)'),
+	('in nan', 'SELECT count(*), sum(g) FROM nc WHERE n IN (5.555, ''NaN'')'),
+	('between', 'SELECT count(*), sum(g) FROM nc WHERE n BETWEEN -1e20 AND 1e20'),
+	('two bounds', 'SELECT count(*), sum(g) FROM nf WHERE n > 5.555 AND n < 1e20'),
+	('contradiction', 'SELECT count(*), sum(g) FROM nf WHERE n = 5.555 AND n > 0'),
+	('avg', 'SELECT avg(n), min(n), max(n) FROM nf WHERE n < 1e20'),
+	('not', 'SELECT count(*) FROM nc WHERE NOT (n = 5.555)'),
+	('or', 'SELECT count(*) FROM nc WHERE n = 5.555 OR g = 3');
+
+-- the statement has the scan
+CREATE FUNCTION pushed(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the rows with and without the scan are the same
+CREATE FUNCTION same_rows(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	SET LOCAL sift.enable_agg = on;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0;
+END $$;
+
+-- every statement that differs, with and without the pre-aggregates
+SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
+SET sift.agg_preagg = off;
+SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
+RESET sift.agg_preagg;
+
+-- most of them are the scan's: the test is not about the normal plan
+SELECT count(*) > 60 AS mostly_pushed FROM shapes WHERE pushed(q);
+
+-- the rows written after the build, in the write buffer, and after a promotion
+INSERT INTO nf SELECT i, i % 7, round(((i * 37) % 4001 - 2000) / 7.0, 2) FROM generate_series(20001, 20500) i;
+SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
+SELECT sift.col_promote('nf_col') >= 0 AS promoted;
+SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
+
+DROP TABLE nc, nf, shapes;
+DROP FUNCTION pushed(text), same_rows(text);
+DROP EXTENSION pg_sift;
