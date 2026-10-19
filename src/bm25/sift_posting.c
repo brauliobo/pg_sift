@@ -861,6 +861,15 @@ sift_post_cursor(SiftPostingCursor *c)
 }
 
 void
+sift_post_group_stats(const SiftPostingCursor *c, uint32 *ng, uint32 *nrows)
+{
+	*ng = c->gs ? c->ng : 0;
+	*nrows = 0;
+	for (uint32 i = 0; c->gs && i < c->ng; i++)
+		*nrows += (c->gs[i].flags & SIFT_GS_BLKBOUND) != 0;
+}
+
+void
 sift_post_rewind(SiftPostingCursor *c)
 {
 	if (c->blob)
