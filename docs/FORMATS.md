@@ -47,8 +47,9 @@ A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.
 |---|---|---|
 | 3 | 3.0 layout (dictionaries as codec string lists) | 3.0, and 3.1 with `sift.col_format_minor = 3` (a `sift_table` group without a version section) |
 | 4 | 3.1: type tags (`SIFT_COLC_TAGS`) and kinds (`SIFT_COLC_KINDS`) of overflowing values, element rollups (`COLP` directory v2), optional version section | 3.1 default |
+| 5 | 3.2: a schema with wide leaves (`SiftColDef.lanes`: numeric of any precision as lanes or an image, `money`, `interval`; docs/COL-LEAFTYPES-32.md); written only for such an index | 3.2 |
 
-`SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. A `sift_table` follows `sift.col_format_minor` too,
+`SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. 3.2 also reads 5 (`SIFT_COL_FORMAT_MAX_READ`), which a 3.1 library refuses. A `sift_table` follows `sift.col_format_minor` too,
 except that a group with a version section (unfrozen rows) is always `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. The chunk
 flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIFT_COLC_KINDS` 0x8 (`src/col/sift_col_enc.h`).
 
@@ -72,4 +73,5 @@ A group written by 3.0.1 under pressure with a tag but no version section is rea
 | BM25 files of 2.x and 3.0 read and maintained by 3.1 | `test/t/compat_2x_fixture.sh`, `test/t/compat_30_fixture.sh` |
 | every 3.1 object after `CREATE EXTENSION` and after `ALTER EXTENSION .. UPDATE` from 3.0; a `sift_col` index and a `sift_table` written by 3.0 (column minor 3) read across the update | `test/t/extension_lifecycle.sh` |
 | an older library refuses what it cannot read, with the REINDEX or VACUUM FULL hint | `test/t/old_lib_refusal.sh` |
+| a 3.2 index with wide leaves (minor 5) beside the older minors, merges and `REINDEX` | `test/sql/col_format5.sql` |
 | standby and crash recovery of the new structures | `test/t/col_index_replica.sh`, `col_index_crash.sh`, `store_replica.sh`, `store_crash.sh`, `014_tbl_writepath.pl` |

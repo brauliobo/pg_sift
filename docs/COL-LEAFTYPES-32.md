@@ -167,8 +167,8 @@ function tables. A wide column in the index never stops the pushdown of the othe
   limits), decode of arbitrary bytes, built sanitized (`scripts/fuzz.sh colwide`, also in `scripts/ci.sh quick`).
 - `test/sql/col_index_wide.sql`: the column source against the heap for every operator on every type, NULL and NaN rows, constants beyond the
   range, zone pruning of the lane pair, the values read back, the write buffer, promotion, merge, VACUUM, `REINDEX`, `sift.col_verify`.
-- `test/sql/col_format6.sql`: an index of the old types still writes minor 3 or 4 whatever the type of its table's other columns; an index with a
-  wide leaf writes minor 6 (and refuses `sift.col_format_minor = 6`); minors side by side, merge, REINDEX.
+- `test/sql/col_format5.sql`: an index of the old types still writes minor 3 or 4 whatever the type of its table's other columns; an index with a
+  wide leaf writes minor 5 (and refuses `sift.col_format_minor = 5`); minors side by side, merge, REINDEX.
 - `test/sql/col_agg_wide.sql`: SiftAgg with and without the pushdown for every shape of section 8: constants of other scales, beyond the range,
   NaN and the infinities, NULL and empty lists, parameters of a generic plan, the write buffer, updates, merge, parallel workers; and the shapes
   that must keep the normal plan.
@@ -179,17 +179,16 @@ function tables. A wide column in the index never stops the pushdown of the othe
 
 ## 10. Format ids
 
-- Column segment minor **6** (`SIFT_COL_FORMAT_WIDE`), claimed on `feat/v32-leaftypes`. 3.1 uses 4 on `origin/main` (the type of an overflowing
-  value and the element cubes) and `feat/v31-writepath` also writes a 4 (version vectors) which the integration must renumber to 5, so 6 is the
-  next free one; if 3.1 leaves 5 unused, only this constant changes. Minor 5 is not claimed here.
-- A segment is written as minor 6 only when its schema has a leaf of the new kind (a lane, `MONEY` or `INTERVAL`). Every other segment is
+- Column segment minor **5** (`SIFT_COL_FORMAT_WIDE`), the next free number after the 3.1 final (which uses 4 only), claimed in `docs/FORMATS.md`
+  section 4.
+- A segment is written as minor 5 only when its schema has a leaf of the new kind (a lane, `MONEY` or `INTERVAL`). Every other segment is
   written as before (minor 3 or 4 by `sift.col_format_minor`), so an index of old types stays readable by 3.1. `sift.col_format_minor` keeps its
   range 3 to 4; it does not apply to a wide schema, which has no older form.
-- Readers: this build reads minors 3, 4 and 6 (and 5 where 3.1 defines it). A 3.1 library refuses a minor 6 segment (`format > SIFT_COL_FORMAT_MINOR`,
+- Readers: this build reads minors 3, 4 and 5. A 3.1 library refuses a minor 5 segment (`format > SIFT_COL_FORMAT_MINOR`,
   hint "Use a newer pg_sift, or REINDEX") and cannot open the index of a wide column at all (its column mapper refuses the type): downgrade means
   dropping that index.
 - `SiftColType` tags 15 (`MONEY`) and 16 (`INTERVAL`); `SiftColDefDisk` bytes 14 and 15 are `lanes` and `lane`. The schema hash is over that
   serialization, so an old leaf list hashes as before.
 - The metapage and the BM25 minor do not change.
-- Upgrade tests: `test/sql/col_format6.sql` (side by side, merge, REINDEX). The extension script does not change (the access method and operator
+- Upgrade tests: `test/sql/col_format5.sql` (side by side, merge, REINDEX). The extension script does not change (the access method and operator
   class are the 3.1 ones), so `ALTER EXTENSION ... UPDATE` needs no step; an index of the old types built before is read as before.
