@@ -130,6 +130,9 @@ extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 extern Buffer sift_dir_pin(Relation index);
 extern uint32 sift_dir_version_peek(Buffer dirbuf);
 
+/* The directory's version alone, read under its share lock: bumped by every directory update */
+extern uint32 sift_dir_version(Relation index);
+
 /*
  * Atomic directory update: locks metapage and directory exclusively, lets fn
  * edit working copies (fn must not ereport or allocate), records extents
