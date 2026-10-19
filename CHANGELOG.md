@@ -83,7 +83,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   of one backend, the baseline plan against the sift_col plan, optionally against flat tables and a throwaway ClickHouse; `analytics
   clickbench` runs the 43 ClickBench queries. See [docs/perf/ANALYTICS.md](docs/perf/ANALYTICS.md).
 
-- Fixed: `count(*)` through the index (and `sift.facets`, and an unordered scan that returns no column) could count rows its snapshot does
+- Fixed: `count(*)` through the index (and `sift.facets`, an unordered scan that returns no column, and the aggregate pushdown with a text search or a `sift_col` index) could count rows its snapshot does
   not see while a `VACUUM` ran. A `VACUUM` clears the index entries of the tuples it removes and only then marks their pages
   all-visible; a scan reads the liveness of a segment (the directory's dirty flag, the dirty-SB bitmap, the live bits, the mutable
   segments' records) before it reads the visibility-map bit of the pages, so when the `VACUUM` finished in between it took the page as
@@ -95,7 +95,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   Rows returned by a search (`SELECT ... WHERE body @@> ...`) were never affected: the heap checks them. No change to the on-disk format or the SQL.
   Found while fixing the same race in the column engine; seen on 2.0.2 and every earlier release as an index count above the sequential
   count (96 differing counts in a 90 s run with 6 readers, deleters, updaters, inserters and a `VACUUM`/`sift.merge` loop; none without the `VACUUM`).
-  Tests: `vacuum_count_snapshot` (the scan waits before the map read while the `VACUUM`, merge or promotion runs: clean segment, dirty segment
+  Tests: `vacuum_agg_snapshot`, `vacuum_agg_stress` and `vacuum_count_snapshot` (the scan waits before the map read while the `VACUUM`, merge or promotion runs: clean segment, dirty segment
   whose second superblock turns dirty, merge, mutable segment, page-by-page scan) and `vacuum_count_stress` (the run above, 40 s).
 
 ## 2.0.2

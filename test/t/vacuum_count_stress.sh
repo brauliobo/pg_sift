@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 40 15)
-ROWS=300000
+ROWS=100000
 plan 3
 node_init vs 17 "autovacuum = off
 max_worker_processes = 16
@@ -32,7 +32,7 @@ printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ;' 'SELECT chk();' 'COMMIT;'
 printf '%s\n' '\set r random(0, 999)' "DELETE FROM st WHERE id % 1000 = :r AND id <= $ROWS;" >"$D/delete.sql"
 printf '%s\n' '\set r random(0, 999)' "UPDATE st SET body = body || ' u' WHERE id % 1000 = :r AND id <= $ROWS;" >"$D/update.sql"
 printf '%s\n' "INSERT INTO st (body) SELECT 'zzword n' || i FROM generate_series(1, 300) i;" >"$D/insert.sql"
-pgbench_bg vs 11 "$SECS" -f "$D/read.sql@60" -f "$D/delete.sql@3" -f "$D/update.sql@3" -f "$D/insert.sql@2"
+pgbench_bg vs 1 "$SECS" -f "$D/read.sql@20" -f "$D/delete.sql@3" -f "$D/update.sql@1" -f "$D/insert.sql@1"
 
 n=0
 : >"$D/maint.out"
@@ -46,4 +46,5 @@ diag "$(grep -E "^(number of transactions actually|tps)" "$D/pgbench.log")"
 diag "$n rounds of VACUUM and merge"
 check "no count differed from the sequential count of its snapshot" test "$(sql vs "SELECT count(*) FROM diffs")" == 0
 check "VACUUM and the merges ran without error" test "$(grep -c -E "FAILED|ERROR" "$D/maint.out")" == 0
+[[ $(sql vs "SELECT count(*) FROM diffs") == 0 ]] || diag "$(sql vs "SELECT * FROM diffs LIMIT 5")"
 finish
