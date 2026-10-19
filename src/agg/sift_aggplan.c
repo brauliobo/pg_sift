@@ -4521,14 +4521,16 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		return;
 	}
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause || parse->groupingSets) ||
-		parse->commandType != CMD_SELECT || parse->hasWindowFuncs || parse->hasTargetSRFs || parse->hasDistinctOn ||
+		parse->commandType != CMD_SELECT || parse->hasTargetSRFs || parse->hasDistinctOn ||
 		root->rowMarks != NIL || parse->hasRecursive)
 		return;
+	/* a window function is planned above the grouping stage: this stage is the same with or without one */
 	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
 		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
 		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
 	{
-		sift_agg_two_level(root, input_rel, output_rel, gextra);
+		if (!parse->hasWindowFuncs)
+			sift_agg_two_level(root, input_rel, output_rel, gextra);
 		return;
 	}
 	if (!agg_base(c, root, input_rel, &fs))
