@@ -124,7 +124,7 @@ rest() {
 }
 # The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (SIFT_CI_STATS=1 lists it per job). The
 # jobs below grow the store (the churn of the store tests, WAL of the WAL tests, spill of a large build) and are the only ones above JOB_MB.
-declare -A EST_MB=([tap-013_tbl_bigtx]=820 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=400 [tap-002_standby]=380 [installcheck-index_build_postings]=230
+declare -A EST_MB=([tap-013_tbl_bigtx]=820 [installcheck-tbl_bigtx]=700 [installcheck-tbl_writepath]=500 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=400 [tap-002_standby]=380 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180 [tap-shell-extension_lifecycle]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140)
 JOB_MB=70
@@ -150,7 +150,7 @@ installcheck_batches() {
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 # by measured time, the long jobs of each kind first
-SLOW_REGRESS="tbl_bigtx build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
+SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
 	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"
 SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
