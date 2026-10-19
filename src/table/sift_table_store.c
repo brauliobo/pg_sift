@@ -337,7 +337,9 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 	const SiftSegEntry *act;
 	BlockNumber first = InvalidBlockNumber;
 	SiftSegEntry old = {0};
+	bool		waited = false;
 
+again:
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(rel, &st->dir);
 	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
@@ -353,6 +355,14 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 		Page		hp,
 					dp;
 
+		/* the directory is full: whoever promotes and merges holds the maintenance lock, which is waited for (not under the active lock: that one is taken inside it) before this is an error */
+		if (st->dir.nsegs >= sift_tbl_max_segments - 2 && !waited)
+		{
+			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+			waited = true;
+			sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true);
+			goto again;
+		}
 		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -399,7 +409,7 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote)
-		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel));
+		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false);
 	return first;
 }
 

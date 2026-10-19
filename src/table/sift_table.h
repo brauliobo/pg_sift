@@ -485,7 +485,7 @@ extern void sift_tbl_src_register(void);
  */
 extern int	sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
 /* A writer closed a write buffer: promotes, freezes the groups whose rows are final and merges while the directory is more than half full */
-extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest);
+extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait);
 /* Clears the unfrozen flag of the groups whose live rows all committed before oldest; the maintenance lock held. The groups changed. */
 extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
 
