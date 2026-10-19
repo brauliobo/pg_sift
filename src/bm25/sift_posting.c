@@ -64,6 +64,7 @@ struct SiftPostingWriter
 	uint32		cap;
 	uint32		grouped_min;	/* df from which the term is GROUPED */
 	uint32		spool_min;		/* GROUPED terms of this many postings or more are staged (0 = never) */
+	int			ctype;			/* container choice of GROUPED terms (SIFT_CT_*) */
 	uint32		open_start;		/* first posting of the last group in keys (staging keeps it) */
 	TermSpool  *sp;				/* the staging of the current term, once it reached spool_min */
 	uint8	   *out;
@@ -124,6 +125,7 @@ sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref, MemoryContext mc
 	w->ref.b = ref->b;
 	w->ref.avgdl = ref->avgdl;
 	w->grouped_min = (uint32) sift_grouped_min_df;
+	w->ctype = SIFT_CT_AUTO;
 	return w;
 }
 
@@ -370,6 +372,7 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 		return NULL;
 	}
 	opts.kind = n >= w->grouped_min ? SIFT_GROUPED : SIFT_LIST;
+	opts.ctype = w->ctype;
 	if (opts.kind == SIFT_LIST)
 		info->flags |= SIFT_TERM_SPARSE;
 	else
@@ -438,6 +441,13 @@ blob_too_big(void)
 			 errmsg("sift: postings of one term exceed 4 GB")));
 }
 
+/* The containers of the GROUPED terms may be PACKED (segment format 3) */
+void
+sift_postw_pack(SiftPostingWriter *w)
+{
+	w->ctype = SIFT_CT_PACKED;
+}
+
 void
 sift_postw_spool(SiftPostingWriter *w, uint64 min_postings)
 {
@@ -502,7 +512,7 @@ static void
 spool_group(SiftPostingWriter *w, uint32 i, uint32 j)
 {
 	TermSpool  *sp = w->sp;
-	sift_enc_opts opts = {.kind = SIFT_GROUPED};
+	sift_enc_opts opts = {.kind = SIFT_GROUPED,.ctype = w->ctype};
 	size_t		size = sift_encode(w->keys + i, NULL, NULL, j - i, &opts, NULL);
 	uint8	   *blob = out_buf(w, size);
 	uint32		plen;
@@ -858,6 +868,15 @@ sift_cur *
 sift_post_cursor(SiftPostingCursor *c)
 {
 	return &c->cur;
+}
+
+void
+sift_post_group_stats(const SiftPostingCursor *c, uint32 *ng, uint32 *nrows)
+{
+	*ng = c->gs ? c->ng : 0;
+	*nrows = 0;
+	for (uint32 i = 0; c->gs && i < c->ng; i++)
+		*nrows += (c->gs[i].flags & SIFT_GS_BLKBOUND) != 0;
 }
 
 void

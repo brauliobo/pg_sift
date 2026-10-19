@@ -879,9 +879,10 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
-		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is 0) */
-		for (int i = 0; i < DIR(dp)->nsegs; i++)
-			META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));	/* a column segment's format is its own (sift_col.h) */
+		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is its own, sift_col.h) */
+		if (index->rd_rel->relam == sift_catalog()->am)
+			for (int i = 0; i < DIR(dp)->nsegs; i++)
+				META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
@@ -1169,7 +1170,7 @@ sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyze
 	memset(meta, 0, sizeof(SiftMetaPageData));
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;
-	meta->format_minor = SIFT_FORMAT_MINOR;
+	meta->format_minor = SIFT_FORMAT_MINOR_BASE;
 	meta->k1 = k1;
 	meta->b = b;
 	meta->analyzer_hash = analyzer_hash;

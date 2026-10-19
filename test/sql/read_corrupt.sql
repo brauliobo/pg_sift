@@ -15,15 +15,20 @@ SELECT 'dense' || CASE WHEN i % 4 = 0 THEN ' quarter' ELSE '' END
 	|| CASE WHEN i % 5 = 0 THEN ' dense2' ELSE '' END
 	|| CASE WHEN i % 7 = 0 THEN repeat(' dense2', 22) ELSE '' END
 FROM generate_series(1, 20000) i;
--- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too
+-- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too, with ARRAY containers (format 2), the
+-- third with PACKED ones (format 3)
 CREATE INDEX rc_list ON rc USING sift (body);
 SET sift.grouped_min_df = 10;
+SET sift.test_segfmt = 2;
 CREATE INDEX rc_grp ON rc USING sift (body);
+SET sift.test_segfmt = 3;
+CREATE INDEX rc_pk ON rc USING sift (body);
 RESET sift.grouped_min_df;
+RESET sift.test_segfmt;
 
 SELECT idx, term, CASE WHEN flags & 4 = 0 THEN 'tf' ELSE 'all tf 1' END AS tfs, CASE WHEN flags & 1 = 1 THEN 'LIST' ELSE 'GROUPED' END AS kind
 FROM (VALUES ('rc_list', 'quarter'), ('rc_list', 'q1'), ('rc_list', 'heavy'), ('rc_list', 'few'), ('rc_list', 'dense'), ('rc_list', 'dense2'),
-			 ('rc_grp', 'quarter'), ('rc_grp', 'q1'), ('rc_grp', 'heavy'), ('rc_grp', 'lst')) v(idx, term),
+			 ('rc_grp', 'quarter'), ('rc_grp', 'q1'), ('rc_grp', 'heavy'), ('rc_grp', 'lst'), ('rc_pk', 'quarter'), ('rc_pk', 'heavy')) v(idx, term),
 	LATERAL sift._test_term_blob(idx::regclass, term)
 ORDER BY 1, 2;
 
@@ -64,10 +69,28 @@ FROM (VALUES
 	('GROUPED array size', 'rc_grp', 'heavy', 20, 1, 0),
 	('GROUPED array entry', 'rc_grp', 'heavy', 32, 1, 128),
 	('GROUPED array page order', 'rc_grp', 'heavy', 33, 1, 255),
+	('intact GROUPED packed', 'rc_pk', 'heavy', 0, 0, 0),
+	('GROUPED packed offset bits', 'rc_pk', 'heavy', 32, 1, 6),
+	('GROUPED packed offset bits too wide', 'rc_pk', 'heavy', 32, 1, 200),
+	('GROUPED packed page mask', 'rc_pk', 'heavy', 33, 1, 0),
+	('GROUPED packed page ends', 'rc_pk', 'heavy', 668, 1, 255),
+	('GROUPED packed type', 'rc_pk', 'heavy', 12, 1, 255),
 	('tf nibbles', 'rc_list', 'dense2', 3120, 1, 1),
 	('tf group start', 'rc_list', 'dense2', 3121, 1, 127),
 	('tf escape bytes', 'rc_list', 'dense2', 3124, 1, 127)
 ) v(what, idx, term, off, len, val);
+
+-- the exhaustive check of sift.verify on a PACKED group: sound, then the byte damaged (offset bits, page mask, page ends, offsets out of order on a page)
+SELECT what, (SELECT sift._test_blob_check(string_agg(set_byte('\x00'::bytea, 0, CASE WHEN i >= off AND i < off + len THEN val ELSE get_byte(blob, i) END), ''::bytea))
+			  FROM sift._test_term_blob('rc_pk', 'heavy'), generate_series(0, length(blob) - 1) i) AS verdict
+FROM (VALUES
+	('sound', 0, 0, 0),
+	('offset bits', 32, 1, 6),
+	('page mask', 33, 1, 0),
+	('page ends', 668, 1, 255),
+	('last page end', 754, 1, 0),
+	('offsets out of order', 65, 1, 255)
+) v(what, off, len, val);
 
 -- the dictionary's count of the term's nibbles: fewer than the L1 bits count, none, and 2^32 - 1 (its byte count wraps in 32 bits)
 SELECT n.nnib, rc_read(t.blob, t.flags, t.df, t.codec_len, n.nnib) AS verdict
@@ -113,6 +136,8 @@ SELECT rc_sweep('rc_grp', 'quarter');
 SELECT rc_sweep('rc_grp', 'q1');
 SELECT rc_sweep('rc_grp', 'heavy');
 SELECT rc_sweep('rc_grp', 'lst');
+SELECT rc_sweep('rc_pk', 'quarter');
+SELECT rc_sweep('rc_pk', 'heavy');
 
 DROP TABLE rc;
 DROP EXTENSION pg_sift_test;

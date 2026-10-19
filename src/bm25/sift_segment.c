@@ -4,6 +4,9 @@
  */
 #include "sift_host.h"
 
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
 #include "sift_kernels.h"
 #include "sift_live.h"
 #include "sift_popcount.h"
@@ -23,6 +26,18 @@ seg_live(const SiftSegment *seg)
 	return (SiftLive) {seg->index, seg->entry.gen, seg->hdr->live_first, seg->hdr->live_npages,
 		seg->hdr->sb_hi - seg->hdr->sb_lo + 1, seg->hdr->ndocs};
 }
+
+#ifdef SIFT_TESTING
+int			sift_test_segfmt = 0;
+#endif
+
+/*
+ * The dl rows of a DOCMAP record are 16 bits per slot, or in format 3 8 or 4 bits where the largest dl of the SB allows. The width is
+ * kept in bits 30-31 of the record's document count (SIFT_DL_CODE_SHIFT), so a record of format 2 and one of format 3 read alike.
+ */
+#define SIFT_DL_CODE_SHIFT	30
+#define SIFT_DL_CODE_BITS(code)	(16 >> (code))
+#define SIFT_DL_ROW_BYTES(code, n)	(((n) * SIFT_DL_CODE_BITS(code) + 7) / 8)
 
 const uint32 sift_df_class_lo[SIFT_DF_CLASSES] = {1, 2, 3, 16, 128, 1024, 8192, 65536, 524288};
 const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
@@ -45,6 +60,7 @@ struct SiftSegmentWriter
 	/* SB being accumulated */
 	uint32		sb;
 	uint32		sb_ndocs;
+	uint16		sb_maxdl;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
 	uint16		maxoff[SIFT_SB_PAGES];
 	uint64	   *offmask;		/* [page][SIFT_OFFMASK_WORDS] */
@@ -80,12 +96,18 @@ typedef struct DocMap
 	int			np;				/* present pages */
 	int			nwmax;			/* words of offsets of the fullest page */
 	uint64	   *om;				/* canonical offset masks of present pages */
-	const uint16 *row0;			/* the dl rows of the pages, after the chunk */
+	const uint8 *row0;			/* the dl rows of the pages, after the chunk */
+	int			dlcode;			/* width of the dl rows (SIFT_DL_CODE_BITS) */
 	bool		indexed;		/* before, maskidx, rows and rowlen are set */
 	uint32		before[SIFT_SB_PAGES];	/* docs on earlier pages (present pages) */
 	uint8		maskidx[SIFT_SB_PAGES]; /* present-page index (present pages) */
-	const uint16 *rows[SIFT_SB_PAGES];
-	uint16		rowlen[SIFT_SB_PAGES];
+	const uint8 *rows[SIFT_SB_PAGES];	/* the stored dl row of each present page, NULL for the others */
+	uint16		rowlen[SIFT_SB_PAGES];	/* slots of the row: its page's highest present offset */
+	MemoryContext mcxt;
+	uint16	   *xdl;			/* narrow rows expanded to 16 bits, one after the other, for the pages in xdone */
+	Size		xcap;
+	uint32		xoff[SIFT_SB_PAGES];	/* where the row of the page starts in xdl */
+	uint64		xdone[SIFT_PAGEMASK_WORDS];
 	bool		live_ok;		/* live_bits holds the bits of SB live_sb */
 	uint32		live_sb;
 	uint8	   *live_bits;		/* the SB's docs, bit i for rank rank_base + i, from bit rank_base % 8 */
@@ -111,6 +133,10 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->wt = wt;
 	w->gen = gen;
 	w->fmt = SIFT_WRITE_SEGFMT;
+#ifdef SIFT_TESTING
+	if (sift_test_segfmt > 0)
+		w->fmt = Min(sift_test_segfmt, SIFT_WRITE_SEGFMT);
+#endif
 	w->mcxt = mcxt;
 	w->ref = *ref;
 	w->positions = positions;
@@ -169,13 +195,41 @@ write_region(SiftSegmentWriter *w, const uint64 *om, int np)
 		BufFileWrite(w->liverows, om + SIFT_OFFMASK_WORDS * k, r.w);
 }
 
+static int
+dl_code(const SiftSegmentWriter *w)
+{
+	if (w->fmt < SIFT_SEGFMT_PACKED || w->sb_maxdl > 255)
+		return 0;
+	return w->sb_maxdl > 15 ? 1 : 2;
+}
+
+/* The row of n slots in the width of code, little endian, a byte at least */
+static void
+write_dl_row(SiftStreamWriter *sw, const uint16 *dl, int n, int code)
+{
+	uint8		buf[SIFT_MAX_OFFSET];
+	int			bits = SIFT_DL_CODE_BITS(code);
+	int			len = SIFT_DL_ROW_BYTES(code, n);
+
+	if (code == 0)
+	{
+		sift_sw_write(sw, dl, n * sizeof(uint16));
+		return;
+	}
+	memset(buf, 0, len);
+	for (int i = 0; i < n; i++)
+		buf[i * bits / 8] |= dl[i] << (i * bits % 8);
+	sift_sw_write(sw, buf, len);
+}
+
 static void
 flush_sb(SiftSegmentWriter *w)
 {
 	uint64	   *om = palloc(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
 	uint8	   *chunk;
 	uint32		hdr[2];
-	int			np = 0;
+	int			np = 0,
+				code = dl_code(w);
 
 	if (w->sb_ndocs == 0)
 		return;
@@ -185,7 +239,7 @@ flush_sb(SiftSegmentWriter *w)
 				   SIFT_OFFMASK_WORDS * sizeof(uint64));
 	if (w->liverows)
 		write_region(w, om, np);
-	hdr[0] = w->sb_ndocs;
+	hdr[0] = w->sb_ndocs | (uint32) code << SIFT_DL_CODE_SHIFT;
 	hdr[1] = sift_chunk_encode(w->pagemask, om, SIFT_CT_AUTO, NULL);
 	chunk = palloc(hdr[1]);
 	sift_chunk_encode(w->pagemask, om, SIFT_CT_AUTO, chunk);
@@ -203,13 +257,14 @@ flush_sb(SiftSegmentWriter *w)
 	{
 		if (!(w->pagemask[p / 64] & (1ULL << (p % 64))))
 			continue;
-		sift_sw_write(w->sw, w->dl + p * MAXOFF, w->maxoff[p] * sizeof(uint16));
+		write_dl_row(w->sw, w->dl + p * MAXOFF, w->maxoff[p], code);
 		memset(w->dl + p * MAXOFF, 0, w->maxoff[p] * sizeof(uint16));
 		memset(w->offmask + p * SIFT_OFFMASK_WORDS, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 		w->maxoff[p] = 0;
 	}
 	memset(w->pagemask, 0, sizeof(w->pagemask));
 	w->sb_ndocs = 0;
+	w->sb_maxdl = 0;
 	pfree(om);
 	pfree(chunk);
 }
@@ -238,6 +293,7 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 		w->offmask[page * SIFT_OFFMASK_WORDS + (off - 1) / 64] |= 1ULL << ((off - 1) % 64);
 		w->dl[page * MAXOFF + off - 1] = dl[i];
 		w->maxoff[page] = Max(w->maxoff[page], off);
+		w->sb_maxdl = Max(w->sb_maxdl, dl[i]);
 		w->sb_ndocs++;
 		w->ndocs++;
 		w->sum_dl += dl[i];
@@ -264,7 +320,9 @@ start_terms(SiftSegmentWriter *w)
 	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
 	if (w->spool_min)
 		sift_postw_spool(w->pw, w->spool_min);
-	w->dw = sift_dict_writer_begin(w->sw);
+	if (w->fmt >= SIFT_SEGFMT_PACKED)
+		sift_postw_pack(w->pw);
+	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED);
 	pfree(w->offmask);
 	pfree(w->dl);
 	MemoryContextSwitchTo(old);
@@ -439,6 +497,7 @@ docmap(SiftSegment *seg)
 	if (dm)
 		return dm;
 	dm = MemoryContextAllocZero(seg->mcxt, sizeof(DocMap));
+	dm->mcxt = seg->mcxt;
 	seg_read(seg, s->off + s->len - sizeof(uint32), sizeof(uint32), &nsb);
 	if ((uint64) nsb * sizeof(SiftDocSBRef) + sizeof(uint32) > s->len || nsb == 0 ||
 		nsb > seg->hdr->sb_hi - seg->hdr->sb_lo + 1)
@@ -461,10 +520,11 @@ docmap(SiftSegment *seg)
 static void
 index_sb(SiftSegment *seg, DocMap *dm)
 {
-	const uint16 *row = dm->row0;
+	const uint8 *row = dm->row0;
 	uint32		sb = dm->dir[dm->cur].sb,
 				k = 0,
-				ndocs = 0;
+				ndocs = 0,
+				nslots = 0;
 
 	if (dm->indexed)
 		return;
@@ -487,13 +547,22 @@ index_sb(SiftSegment *seg, DocMap *dm)
 		dm->maskidx[p] = k++;
 		dm->rows[p] = row;
 		dm->rowlen[p] = maxoff;
-		row += maxoff;
+		dm->xoff[p] = nslots;
+		nslots += (maxoff + 15) & ~15;
+		row += SIFT_DL_ROW_BYTES(dm->dlcode, maxoff);
 		for (int j = 0; j <= wd; j++)
 			ndocs += sift_pc64(om[j]);
 	}
-	if ((const uint8 *) row > (const uint8 *) dm->rec + dm->reclen || ALIGN4((const uint8 *) row - dm->rec) != dm->reclen)
-		corrupt(seg, "DOCMAP record of SB %u spans %llu bytes, its rows %llu.",
-				sb, ULL(dm->reclen), ULL((const uint8 *) row - dm->rec));
+	if (row > dm->rec + dm->reclen || ALIGN4(row - dm->rec) != dm->reclen)
+		corrupt(seg, "DOCMAP record of SB %u spans %llu bytes, its rows %llu.", sb, ULL(dm->reclen), ULL(row - dm->rec));
+	if (dm->dlcode != 0 && nslots > dm->xcap)
+	{
+		if (dm->xdl)
+			pfree(dm->xdl);
+		dm->xcap = Max(nslots, 4096);
+		dm->xdl = MemoryContextAlloc(dm->mcxt, dm->xcap * sizeof(uint16));
+	}
+	memset(dm->xdone, 0, sizeof(dm->xdone));
 	dm->indexed = true;
 }
 
@@ -514,12 +583,16 @@ load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 		dm->reccap = Max(len, 4096);
 		if (dm->rec)
 			pfree(dm->rec);
-		dm->rec = MemoryContextAllocAligned(seg->mcxt, dm->reccap, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+		dm->rec = MemoryContextAllocAligned(seg->mcxt, dm->reccap + 16, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 	}
 	seg_read(seg, r->off, len, dm->rec);
 	h = (uint32 *) dm->rec;
+	dm->dlcode = h[0] >> SIFT_DL_CODE_SHIFT;
+	h[0] &= (1U << SIFT_DL_CODE_SHIFT) - 1;
 	if (h[0] != r->ndocs || 8 + (uint64) h[1] > len || h[1] < 4 || sift_chunk_count(dm->rec + 8) != h[0])
 		corrupt(seg, "DOCMAP record of SB %u has %u docs and a chunk of %u bytes.", r->sb, h[0], h[1]);
+	if (dm->dlcode > 2)
+		corrupt(seg, "DOCMAP record of SB %u has dl rows of width code %d.", r->sb, dm->dlcode);
 	sift_chunk_pagemask(dm->rec + 8, dm->pagemask);
 	dm->np = 0;
 	for (int j = 0; j < SIFT_PAGEMASK_WORDS; j++)
@@ -527,7 +600,7 @@ load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 	if (sift_chunk_offsets(dm->rec + 8, all, dm->om) != dm->np)
 		corrupt(seg, "DOCMAP record of SB %u has offsets for another number of pages than the %d it lists.", r->sb, dm->np);
 	dm->nwmax = (sift_chunk_width(dm->rec + 8) + 7) / 8;
-	dm->row0 = (const uint16 *) (dm->rec + ALIGN4(8 + h[1]));
+	dm->row0 = dm->rec + ALIGN4(8 + h[1]);
 	dm->reclen = len;
 	dm->cur = i;
 }
@@ -622,19 +695,89 @@ indexed(SiftSegment *seg, const SiftDocChunk *dc)
 	return dm;
 }
 
-void
+/*
+ * A row of n slots of 8 or 4 bits (low nibble first) as 16 bits per slot, 16 slots at a time: it reads up to 15 bytes and writes
+ * up to 15 slots past the row (the record is allocated with that slack, and the rows of dm->xdl are 16 slots apart).
+ */
+static void
+expand_dl(uint16 *dst, const uint8 *src, int n, int bits)
+{
+#ifdef __SSE2__
+	const __m128i zero = _mm_setzero_si128(),
+				nib = _mm_set1_epi8(15);
+
+	for (int i = 0; i < n; i += 16)
+	{
+		__m128i		v;
+
+		if (bits == 8)
+			v = _mm_loadu_si128((const __m128i *) (src + i));
+		else
+		{
+			__m128i		b = _mm_loadl_epi64((const __m128i *) (src + i / 2));
+
+			v = _mm_unpacklo_epi8(_mm_and_si128(b, nib), _mm_and_si128(_mm_srli_epi16(b, 4), nib));
+		}
+		_mm_storeu_si128((__m128i *) (dst + i), _mm_unpacklo_epi8(v, zero));
+		_mm_storeu_si128((__m128i *) (dst + i + 8), _mm_unpackhi_epi8(v, zero));
+	}
+#else
+	for (int i = 0; i < n; i++)
+		dst[i] = bits == 8 ? src[i] : src[i / 2] >> (i % 2 * 4) & 15;
+#endif
+}
+
+/* Expands the dl row of a present page of the indexed SB (narrow records only) */
+static pg_noinline void
+expand_row(DocMap *dm, int page)
+{
+	expand_dl(dm->xdl + dm->xoff[page], dm->rows[page], dm->rowlen[page], SIFT_DL_CODE_BITS(dm->dlcode));
+	dm->xdone[page / 64] |= 1ULL << (page % 64);
+}
+
+/* The dl row of a present page of the indexed SB as 16 bits per slot: narrow rows are expanded on the first use */
+static inline const uint16 *
+dl_row(DocMap *dm, int page)
+{
+	if (dm->dlcode == 0)
+		return (const uint16 *) dm->rows[page];
+	if (!(dm->xdone[page / 64] >> (page % 64) & 1))
+		expand_row(dm, page);
+	return dm->xdl + dm->xoff[page];
+}
+
+bool
 sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *present, const uint16 **dl)
 {
 	DocMap	   *dm = indexed(seg, dc);
 
 	if (!(dm->pagemask[page / 64] & (1ULL << (page % 64))))
 	{
-		memset(present, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
-		*dl = NULL;
-		return;
+		if (present)
+			memset(present, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
+		if (dl)
+			*dl = NULL;
+		return false;
 	}
-	memcpy(present, dm->om + dm->maskidx[page] * SIFT_OFFMASK_WORDS, SIFT_OFFMASK_WORDS * sizeof(uint64));
-	*dl = dm->rows[page];
+	if (present)
+		memcpy(present, dm->om + dm->maskidx[page] * SIFT_OFFMASK_WORDS, SIFT_OFFMASK_WORDS * sizeof(uint64));
+	if (dl)
+		*dl = dl_row(dm, page);
+	return true;
+}
+
+/* The dl rows of the pages of a block (SIFT_BLK_PAGES pages) that are set in want and have docs, NULL for the others */
+void
+sift_seg_block_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, const uint16 **rows)
+{
+	DocMap	   *dm = indexed(seg, dc);
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		int			page = block * SIFT_BLK_PAGES + pg;
+
+		rows[pg] = (want >> pg & 1) && (dm->pagemask[page / 64] & (1ULL << (page % 64))) ? dl_row(dm, page) : NULL;
+	}
 }
 
 /* ---------- liveness, format 2 ---------- */
@@ -927,10 +1070,7 @@ sift_seg_live_mask(SiftSegment *seg, uint32 sb, int page, uint64 *mask)
 void
 sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *live)
 {
-	const uint16 *dl;
-
-	sift_seg_page(seg, dc, page, live, &dl);
-	if (dc->dirty && dl != NULL)
+	if (sift_seg_page(seg, dc, page, live, NULL) && dc->dirty)
 		sift_seg_page_mask_live(seg, dc, page, live);
 }
 
@@ -1110,11 +1250,10 @@ sift_seg_live_rank(SiftSegment *seg, SiftKey key)
 	uint64		present[SIFT_OFFMASK_WORDS],
 				live[SIFT_OFFMASK_WORDS],
 				rank;
-	const uint16 *dl;
 
 	if (!sift_seg_docs(seg, sift_block_sb(blk), &dc) || !(dc.pagemask[page / 64] >> (page % 64) & 1))
 		return -1;
-	sift_seg_page(seg, &dc, page, present, &dl);
+	sift_seg_page(seg, &dc, page, present, NULL);
 	sift_seg_page_live(seg, &dc, page, live);
 	if (!(live[off / 64] >> (off % 64) & 1))
 		return -1;
@@ -1180,11 +1319,10 @@ sb_dead(SiftSegment *seg, const SiftDocChunk *dc, IndexBulkDeleteCallback cb, vo
 		uint64		present[SIFT_OFFMASK_WORDS],
 					live[SIFT_OFFMASK_WORDS],
 					r;
-		const uint16 *dl;
 
 		if (!(dc->pagemask[p / 64] & (1ULL << (p % 64))))
 			continue;
-		sift_seg_page(seg, dc, p, present, &dl);
+		sift_seg_page(seg, dc, p, present, NULL);
 		sift_seg_page_live(seg, dc, p, live);
 		r = dc->rank_base + dm->before[p];
 		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
@@ -1457,14 +1595,21 @@ walk_docs(Walk *w)
 	{
 		load_sb(seg, dm, i);
 		index_sb(seg, dm);
+		w->st->parts.docmap_presence += dm->reclen;
 		for (int p = 0; p < SIFT_SB_PAGES; p++)
 		{
 			const uint64 *om = dm->om + dm->maskidx[p] * SIFT_OFFMASK_WORDS;
 			BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;
+			const uint16 *row = dm->rows[p] ? dl_row(dm, p) : NULL;
 
-			for (int o = 0; dm->rows[p] && o < dm->rowlen[p]; o++)
+			if (row)
 			{
-				uint16		v = dm->rows[p][o];
+				w->st->parts.docmap_dl += SIFT_DL_ROW_BYTES(dm->dlcode, dm->rowlen[p]);
+				w->st->parts.docmap_presence -= SIFT_DL_ROW_BYTES(dm->dlcode, dm->rowlen[p]);
+			}
+			for (int o = 0; row && o < dm->rowlen[p]; o++)
+			{
+				uint16		v = row[o];
 
 				if (!((om[o / 64] >> (o % 64)) & 1))
 				{
@@ -1555,9 +1700,11 @@ verify_live2(Walk *w)
 		{
 			const uint64 *om = dm->om + dm->maskidx[p] * SIFT_OFFMASK_WORDS,
 					   *live = (const uint64 *) (rows->off + (Size) k * rows->w);
+			const uint16 *dl;
 
 			if (!dm->rows[p])
 				continue;
+			dl = dl_row(dm, p);
 			for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 			{
 				uint64		lv = wd < (int) (rows->w / 8) ? live[wd] : 0;
@@ -1565,7 +1712,7 @@ verify_live2(Walk *w)
 				if ((lv & ~om[wd]) || (wd >= (int) (rows->w / 8) && om[wd]))
 					corrupt(seg, "The live row of page %d of SB %u holds offsets the docmap does not (word %d).", p, sb, wd);
 				for (uint64 m = om[wd] & ~lv; m; m &= m - 1, sbdead++)
-					dead_dl += dm->rows[p][wd * 64 + __builtin_ctzll(m)];
+					dead_dl += dl[wd * 64 + __builtin_ctzll(m)];
 			}
 			k++;
 		}
@@ -1684,6 +1831,82 @@ term_positions(Walk *w, SiftPostingCursor *c, const char *term, int len, const S
 	w->tprec = rec;
 }
 
+static int
+varint_len(uint64 x)
+{
+	int			n = 1;
+
+	for (; x >= 0x80; x >>= 7)
+		n++;
+	return n;
+}
+
+/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (sift_dict.h, sift_posting.h) */
+static void
+account_term(SiftPartStats *ps, bool packed, int shared, int len, const SiftTermInfo *info, const SiftPostingCursor *c)
+{
+	uint64		df = info->df;
+	bool		pos = (info->flags & SIFT_TERM_POS) != 0;
+	bool		tf1 = (info->flags & SIFT_TERM_ALL_TF1) != 0;
+
+	if (packed)
+	{
+		ps->dict_terms += 1 + (shared >= 15) + (len - shared - 1 >= 15) + len - shared;
+		ps->dict_entries += 2 + (df >= 15 ? varint_len(df - 15) : 0);
+	}
+	else
+	{
+		ps->dict_terms += 2 + len - shared;
+		ps->dict_entries += varint_len(df) + 2;
+	}
+	if (info->flags & SIFT_TERM_INLINE)
+	{
+		ps->inline_terms++;
+		ps->dict_inline_keys += (packed ? varint_len(sift_dict_pack_key(info->inline_keys[0])) : varint_len(info->inline_keys[0])) +
+			(df > 1 ? (packed ? varint_len(sift_dict_pack_key(info->inline_keys[1]) - sift_dict_pack_key(info->inline_keys[0])) :
+					   varint_len(info->inline_keys[1] - info->inline_keys[0])) : 0) + (tf1 ? 0 : df);
+		if (pos)
+			ps->dict_inline_pos += varint_len(info->pos_len) + info->pos_len;
+	}
+	else
+	{
+		uint64		side = info->post_len - info->codec_len - (pos ? info->pos_len : 0);
+		uint32		ng,
+					nrows;
+
+		ps->blob_terms++;
+		ps->dict_entries += varint_len(info->post_len) + varint_len(info->post_len - info->codec_len) +
+			(tf1 ? 0 : varint_len(info->nnib)) + (pos ? varint_len(info->pos_len) : 0);
+		sift_post_group_stats(c, &ng, &nrows);
+		if (info->flags & SIFT_TERM_SPARSE)
+			ps->list_codec += info->codec_len;
+		else
+		{
+			ps->grouped_dir += 20 + 12 * (uint64) ng;
+			ps->grouped_payload += info->codec_len - 20 - 12 * (uint64) ng;
+		}
+		if (side > 0)
+		{
+			ps->align_pad += ALIGN4(info->codec_len) - info->codec_len;
+			side -= ALIGN4(info->codec_len) - info->codec_len;
+			ps->gscore += (uint64) ng * sizeof(SiftGroupScore);
+			ps->blkbound += (uint64) nrows * SIFT_BLKS_PER_SB;
+			side -= (uint64) ng * sizeof(SiftGroupScore) + (uint64) nrows * SIFT_BLKS_PER_SB;
+			if (!tf1)
+			{
+				ps->tf_l1 += (df + 7) / 8;
+				ps->tf_nib += ((uint64) info->nnib + 1) / 2;
+				ps->tf_esc += side - (df + 7) / 8 - ((uint64) info->nnib + 1) / 2;
+			}
+		}
+		if (pos)
+		{
+			ps->pos_ckpt += (df + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY * sizeof(uint32);
+			ps->pos_records += info->pos_len - (df + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY * sizeof(uint32);
+		}
+	}
+}
+
 static bool
 walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
@@ -1693,7 +1916,8 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	SiftPostingCursor *c;
 	const SiftGroupBounds *b;
 	int			nb,
-				bi = 0;
+				bi = 0,
+				shared = 0;
 	uint32		n = 0;
 	uint64		pos = 0;
 	SiftDfClassStats *cls = &w->st->cls[df_class(Max(info->df, 1))];
@@ -1702,6 +1926,10 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		(memcmp(w->prev, term, Min(len, w->prevlen)) > 0 ||
 		 (memcmp(w->prev, term, Min(len, w->prevlen)) == 0 && w->prevlen >= len)))
 		corrupt(seg, "Dictionary term \"%.*s\" follows \"%.*s\".", len, term, w->prevlen, w->prev);
+	/* a block's first term is not front coded */
+	if (w->st->nterms % SIFT_DICT_BLOCK != 0)
+		while (shared < Min(len, w->prevlen) && term[shared] == w->prev[shared])
+			shared++;
 	memcpy(w->prev, term, len);
 	w->prevlen = len;
 	if (info->df > w->ndocs)
@@ -1727,6 +1955,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (w->verify)
 		sift_post_check(c);
 	b = sift_post_bounds(c, &nb);
+	account_term(&w->st->parts, seg->fmt >= SIFT_SEGFMT_PACKED, shared, len, info, c);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
 		uint32		k = sift_grp_tids(g, NULL, w->tids);
@@ -1810,6 +2039,10 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
+	st->parts.docmap_dir = (uint64) docmap(seg)->nsb * sizeof(SiftDocSBRef) + sizeof(uint32);
+	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
+	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -
+		st->parts.dict_inline_pos;
 	if (verify && !w.stopped && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
 		verify_dead2(&w);
 	MemoryContextDelete(w.tcxt);

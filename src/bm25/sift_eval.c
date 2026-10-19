@@ -2644,6 +2644,7 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	RankWork   *wk = r->wk;
 	SiftSegment *seg = p->seg[rs->s];
 	bool		any = false;
+	uint32		want = 0;
 	int			n;
 
 	if (!term_mask(g, b, wk->res))
@@ -2652,14 +2653,21 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 		return 0;
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
-		uint64		present[SIFT_OFFMASK_WORDS];
 		uint64		cand = 0;
 
-		sift_seg_page(seg, dc, b * SIFT_BLK_PAGES + pg, present, &wk->dl[pg]);
-		if (wk->dl[pg] == NULL)
-			wk->dl[pg] = wk->zero;
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 			cand |= wk->res[pg][k];
+		want |= (uint32) (cand != 0) << pg;
+	}
+	if (!want)
+		return 0;
+	sift_seg_block_dl(seg, dc, b, want, wk->dl);
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		uint64		cand = want >> pg & 1;
+
+		if (wk->dl[pg] == NULL)
+			wk->dl[pg] = wk->zero;
 		if (dc->dirty && cand)
 			cand = sift_seg_page_mask_live(seg, dc, b * SIFT_BLK_PAGES + pg, wk->res[pg]);
 		any |= cand != 0;

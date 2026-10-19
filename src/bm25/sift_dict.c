@@ -24,6 +24,7 @@ int			sift_test_dict_max = 0;
 struct SiftDictWriter
 {
 	SiftStreamWriter *sw;
+	bool		packed;			/* blocks of segment format 3 (sift_dict.h) */
 	BufFile    *spool;			/* DICT bytes */
 	uint64		dict_len;
 	StringInfoData blk;			/* entries of the open block */
@@ -61,6 +62,7 @@ typedef struct BlockIter
 	const uint8 *p;
 	const uint8 *end;
 	int			left;
+	bool		packed;			/* the block is of segment format 3 */
 	uint64		post;
 	uint32		slot;			/* of the next term without inline postings */
 	char		term[SIFT_MAX_TERM_BYTES];
@@ -88,11 +90,12 @@ prefix8(const char *s, int len)
 /* ---------- writer ---------- */
 
 SiftDictWriter *
-sift_dict_writer_begin(SiftStreamWriter *sw)
+sift_dict_writer_begin(SiftStreamWriter *sw, bool packed)
 {
 	SiftDictWriter *w = palloc0(sizeof(SiftDictWriter));
 
 	w->sw = sw;
+	w->packed = packed;
 	w->spool = BufFileCreateTemp(false);
 	w->post_end = sift_sw_tell(sw);
 	w->prevlen = -1;
@@ -114,7 +117,7 @@ flush_block(SiftDictWriter *w)
 		return;
 	hdr[0] = len & 0xff;
 	hdr[1] = len >> 8;
-	hdr[2] = w->nblk;
+	hdr[2] = w->nblk | (w->packed ? SIFT_DICT_PACKED : 0);
 	BufFileWrite(w->spool, hdr, p - hdr);
 	BufFileWrite(w->spool, w->blk.data, w->blk.len);
 	w->dict_len += len;
@@ -122,11 +125,86 @@ flush_block(SiftDictWriter *w)
 	w->nblk = 0;
 }
 
+/*
+ * One entry of a block, appended to b. Format 2 and before: u8 shared, u8 suffix length, suffix, varint df, u8 flags, u8 max_bound.
+ * Packed (segment format 3): u8 shared | (suffix length - 1) << 4 (a nibble of 15 says a byte follows with the value), suffix,
+ * u8 flags | min(df, 15) << 4 (15: varint df - 15 follows), u8 max_bound; the inline keys as packed_key
+ */
+static void
+put_entry(StringInfo b, const char *term, int len, int shared, const SiftTermInfo *info, bool packed)
+{
+	uint8		e[4 + SIFT_MAX_TERM_BYTES + 64];
+	uint8	   *p = e;
+	bool		inl = (info->flags & SIFT_TERM_INLINE) != 0;
+	int			suffix = len - shared;
+
+	if (packed)
+	{
+		*p++ = Min(shared, 15) | Min(suffix - 1, 15) << 4;
+		if (shared >= 15)
+			*p++ = shared;
+		if (suffix - 1 >= 15)
+			*p++ = suffix - 1;
+		memcpy(p, term + shared, suffix);
+		p += suffix;
+		*p++ = info->flags | Min(info->df, 15) << 4;
+		if (info->df >= 15)
+			p = sift_put_varint(p, info->df - 15);
+		*p++ = info->max_bound;
+	}
+	else
+	{
+		*p++ = shared;
+		*p++ = suffix;
+		memcpy(p, term + shared, suffix);
+		p += suffix;
+		p = sift_put_varint(p, info->df);
+		*p++ = info->flags;
+		*p++ = info->max_bound;
+	}
+	if (inl)
+	{
+		SiftKey		k0 = info->inline_keys[0],
+					k1 = info->inline_keys[1];
+
+		if (packed)
+		{
+			p = sift_put_varint(p, sift_dict_pack_key(k0));
+			if (info->df > 1)
+				p = sift_put_varint(p, sift_dict_pack_key(k1) - sift_dict_pack_key(k0));
+		}
+		else
+		{
+			p = sift_put_varint(p, k0);
+			if (info->df > 1)
+				p = sift_put_varint(p, k1 - k0);
+		}
+		if (!(info->flags & SIFT_TERM_ALL_TF1))
+			for (uint32 i = 0; i < info->df; i++)
+				*p++ = info->inline_tf[i];
+		if (info->flags & SIFT_TERM_POS)
+		{
+			p = sift_put_varint(p, info->pos_len);
+			appendBinaryStringInfo(b, (const char *) e, p - e);
+			p = e;
+			appendBinaryStringInfo(b, (const char *) info->inline_pos, info->pos_len);
+		}
+	}
+	else
+	{
+		p = sift_put_varint(p, info->post_len);
+		p = sift_put_varint(p, info->post_len - info->codec_len);
+		if (!(info->flags & SIFT_TERM_ALL_TF1))
+			p = sift_put_varint(p, info->nnib);
+		if (info->flags & SIFT_TERM_POS)
+			p = sift_put_varint(p, info->pos_len);
+	}
+	appendBinaryStringInfo(b, (const char *) e, p - e);
+}
+
 void
 sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *info)
 {
-	uint8		e[2 + SIFT_MAX_TERM_BYTES + 64];
-	uint8	   *p = e;
 	int			shared = 0;
 	bool		inl = (info->flags & SIFT_TERM_INLINE) != 0;
 
@@ -161,40 +239,9 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	else
 		while (shared < Min(len, w->prevlen) && term[shared] == w->prev[shared])
 			shared++;
-	*p++ = shared;
-	*p++ = len - shared;
-	memcpy(p, term + shared, len - shared);
-	p += len - shared;
-	p = sift_put_varint(p, info->df);
-	*p++ = info->flags;
-	*p++ = info->max_bound;
-	if (inl)
-	{
-		p = sift_put_varint(p, info->inline_keys[0]);
-		if (info->df > 1)
-			p = sift_put_varint(p, info->inline_keys[1] - info->inline_keys[0]);
-		if (!(info->flags & SIFT_TERM_ALL_TF1))
-			for (uint32 i = 0; i < info->df; i++)
-				*p++ = info->inline_tf[i];
-		if (info->flags & SIFT_TERM_POS)
-		{
-			p = sift_put_varint(p, info->pos_len);
-			appendBinaryStringInfo(&w->blk, (const char *) e, p - e);
-			p = e;
-			appendBinaryStringInfo(&w->blk, (const char *) info->inline_pos, info->pos_len);
-		}
-	}
-	else
-	{
-		p = sift_put_varint(p, info->post_len);
-		p = sift_put_varint(p, info->post_len - info->codec_len);
-		if (!(info->flags & SIFT_TERM_ALL_TF1))
-			p = sift_put_varint(p, info->nnib);
-		if (info->flags & SIFT_TERM_POS)
-			p = sift_put_varint(p, info->pos_len);
+	put_entry(&w->blk, term, len, shared, info, w->packed);
+	if (!inl)
 		w->post_end = info->post_off + info->post_len;
-	}
-	appendBinaryStringInfo(&w->blk, e, p - e);
 	memcpy(w->prev, term, len);
 	w->prevlen = len;
 	w->nterms++;
@@ -294,7 +341,8 @@ block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it
 	if (src != buf)
 		memcpy(buf, src, len);
 	it->end = buf + len;
-	it->left = buf[2];
+	it->left = buf[2] & ~SIFT_DICT_PACKED;
+	it->packed = (buf[2] & SIFT_DICT_PACKED) != 0;
 	it->p = get_varint(buf + 3, it->end, &post);
 	it->post = post;
 	it->slot = slot_base;
@@ -306,7 +354,8 @@ block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it
 static pg_attribute_always_inline bool
 block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 {
-	uint64		v;
+	uint64		v,
+				first;
 	int			shared,
 				suffix;
 
@@ -319,9 +368,21 @@ block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 	it->left--;
 	if (it->end - it->p < 2)
 		corrupt("Truncated dictionary entry.");
-	shared = it->p[0];
-	suffix = it->p[1];
-	it->p += 2;
+	if (it->packed)
+	{
+		shared = *it->p & 15;
+		suffix = (*it->p++ >> 4) + 1;
+		if (shared == 15 && it->p < it->end)
+			shared = *it->p++;
+		if (suffix == 16 && it->p < it->end)
+			suffix = *it->p++ + 1;
+	}
+	else
+	{
+		shared = it->p[0];
+		suffix = it->p[1];
+		it->p += 2;
+	}
 	if (shared > it->len || shared + suffix > SIFT_MAX_TERM_BYTES || suffix == 0 ||
 		it->end - it->p < suffix + 2)
 		corrupt("Dictionary entry with prefix %d and suffix %d after a term of %d bytes.",
@@ -330,22 +391,38 @@ block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 	it->len = shared + suffix;
 	it->p += suffix;
 	memset(info, 0, sizeof(SiftTermInfo));
-	it->p = get_varint(it->p, it->end, &v);
-	info->df = v;
-	if (it->end - it->p < 2)
-		corrupt("Truncated dictionary entry.");
-	info->flags = *it->p++;
-	info->max_bound = *it->p++;
+	if (it->packed)
+	{
+		info->flags = *it->p & 15;
+		info->df = *it->p++ >> 4;
+		if (info->df == 15)
+		{
+			it->p = get_varint(it->p, it->end, &v);
+			info->df += v;
+		}
+		if (info->df == 0 || it->p >= it->end)
+			corrupt("Truncated dictionary entry.");
+		info->max_bound = *it->p++;
+	}
+	else
+	{
+		it->p = get_varint(it->p, it->end, &v);
+		info->df = v;
+		if (it->end - it->p < 2)
+			corrupt("Truncated dictionary entry.");
+		info->flags = *it->p++;
+		info->max_bound = *it->p++;
+	}
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		if (info->df < 1 || info->df > SIFT_INLINE_MAX)
 			corrupt("Inline term with df %u and flags %u.", info->df, info->flags);
-		it->p = get_varint(it->p, it->end, &v);
-		info->inline_keys[0] = v;
+		it->p = get_varint(it->p, it->end, &first);
+		info->inline_keys[0] = it->packed ? sift_dict_unpack_key(first) : first;
 		if (info->df > 1)
 		{
 			it->p = get_varint(it->p, it->end, &v);
-			info->inline_keys[1] = info->inline_keys[0] + v;
+			info->inline_keys[1] = it->packed ? sift_dict_unpack_key(first + v) : info->inline_keys[0] + v;
 		}
 		if (info->flags & SIFT_TERM_ALL_TF1)
 			memset(info->inline_tf, 1, info->df);
