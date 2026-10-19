@@ -65,6 +65,15 @@ Each result is materialized in a temporary table and compared by `coldiff.compar
 - a query that raises an error (a cast, an integer or float overflow) must raise an error with the **same SQLSTATE** in every variant (the
   message may name another row's value); such a file says `-- error: yes`, and a reference run that fails otherwise is a failure.
 
+A per-order aggregate (`avg(x)`, `sum(x)` of a float under an outer aggregate) adds the elements of one order from the first to the last, in
+double, and divides by their number: the value PostgreSQL gets when its plan feeds the rows of an order in the order of the array (a hash
+aggregate over the unnest). PostgreSQL's own plans do not agree among themselves on the last digits: a plan that sorts by the order and the key
+adds equal keys in the order of its sort, which is not stable. A condition on the average (`avg >= 9`) that holds exactly for a sum of decimals
+(8.7 + 9.0 + 9.3 over three) can then count a few more or fewer orders in one plan than in another (three of 100 000 orders, between the two
+arms of one query on the normal plan), whatever the scan does: the scan's count is the one of the first-to-last order. A threshold that must
+be reproducible does not rest on the last digit of a float sum: the values are integers (their sums are exact) or the condition
+leaves a margin.
+
 A result that differs always fails (exit 1) and prints the first differing rows of both. Nothing is silenced: a query without a result
 (an error the runner did not expect) fails too.
 
