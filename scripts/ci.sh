@@ -214,7 +214,7 @@ else
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
-	job fuzz fuzz 1 env FZ_SECS=2 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1
+	job fuzz fuzz 1 env FZ_SECS=2 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1 ${SIFT_FUZZ_TARGETS:-}
 	job hardened hardened 0 "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
 		--docs 1000 --queries 12 --rounds 2 --minimize 1 --min-trials 10

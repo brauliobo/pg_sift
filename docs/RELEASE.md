@@ -22,7 +22,7 @@ scripts/ci.sh release --keep          keep the scratch directory of every job
 | 1 | `ci-quick` | `scripts/ci.sh quick`, the shrunk suites, on the normal build |
 | 1 | `coverage` | every row of the coverage table holds (`scripts/coverage.sh --check`) |
 | 2 | `ci-sanitize` | `scripts/ci.sh quick` on the ASan+UBSan build |
-| 2 | `pg17` | `scripts/ci.sh quick` on PostgreSQL 17, in a container |
+| 2 | `pg17` | `scripts/ci.sh quick` on PostgreSQL 17, in a container (the fuzz part only the targets that run in the server, `query` and `sql`: the standalone harnesses do not depend on the server and are the `fuzz` job's, on the host compiler) |
 | 2 | `race` | `vacuum_count_stress`, `vacuum_count_dead`, `vacuum_count_snapshot`, `vacuum_agg_stress`, `col_vacuum_scan`, `topn_vacuum_scan` |
 | 2 | `gate-bm25` | user instructions per BM25 operation against `RELEASE_BM25_BASE` (`bench/steps/cpu_gate.sh`); a cell above 1.02 fails unless it is in `RELEASE_BM25_ACCEPT` (`session`, `vacuum_nofree`, `idle1_rank`, documented in the README) |
 | 2 | `gate-col` | user instructions per question of the store (`bench/cpu-query.sh`, 100 000 rows) on a `sift_col` index against `RELEASE_COL_REF` (`baab1a2` for 3.0); above `RELEASE_COL_MAX` (1.15) fails, between 1.02 and 1.15 is printed as `accepted: size work`. The `sift_table` ratios are printed, not judged (the grouped scan on `title` is 1.209 on purpose) |
