@@ -107,7 +107,7 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_cseg_open(index, e, CurrentMemoryContext);
-	dead = sift_cseg_live_rows(seg) * 2 < e->ndocs;
+	dead = sift_cseg_live_rows(seg) * 100 < e->ndocs * (100 - sift_col_options(index)->dead_rewrite_pct);
 	sift_cseg_close(seg);
 	return dead;
 }

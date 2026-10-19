@@ -8,7 +8,7 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py cold  --rows N --out DIR             latency of the first run after a restart of the server
     store.py updates --rows N --out DIR           updates, deletes, read-after-write, reads under an update load, space (changes the data: runs last)
     store.py merge OUT... -o bench/results/store.json
-    store.py render [--results FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers of docs/BENCHMARKS.md
+    store.py render [--results FILE] [--readme FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
 cache off), es_cached (the same with the shard request cache on), ch (ClickHouse). A latency is the wall time of one request from this
@@ -112,6 +112,7 @@ class Query:
         self.sec = sections(text)
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
+        self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.title)
         self.key = next(([int(k) - 1 for k in m[8:].split()] for m in head if m.startswith('-- key: ')), [])
 
     def statement(self, eid, n, cache=False):
@@ -283,6 +284,53 @@ def wait_ready(eid, timeout=300):
 def restart(eid):
     docker('restart', '-t', '30', container(eid))
     wait_ready(eid)
+
+
+# --- one engine at a time, idle background work before timing
+
+IDLE_CPU = float(os.environ.get('SIFT_IDLE_CPU', 2))   # percent of one CPU, docker stats: a container below it is idle
+
+
+def ask(eid, method, path, body=None):
+    h = Http(eid, CH_AUTH if is_ch(eid) else {'Content-Type': 'application/json'})
+    try:
+        return h.request(method, path, body).decode()
+    finally:
+        h.close()
+
+
+def merging(eid):
+    """how many merges (ClickHouse: and mutations; Elasticsearch: segment merges; PostgreSQL: autovacuum workers) the server of the engine is running"""
+    if is_ch(eid):
+        return int(ask('ch', 'POST', '/', b'SELECT (SELECT count() FROM system.merges) + (SELECT count() FROM system.mutations WHERE NOT is_done)'))
+    if is_es(eid):
+        return sum(n['indices']['merges']['current'] for n in json.loads(ask('es', 'GET', '/_nodes/stats/indices/merge?filter_path=nodes.*.indices.merges.current'))['nodes'].values())
+    return int(psql_value(eid, "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'autovacuum worker'"))
+
+
+def wait_idle(engines, skip=()):
+    """wait (SIFT_QUIET_TIMEOUT s, default 60) until every container of the engines but those of skip is under IDLE_CPU percent of a CPU (docker stats) and done merging;
+    what was still running when the time ran out ('' when all were idle)"""
+    reps = {container(e): e for e in reversed(engines) if container(e) not in skip}
+    if not reps:
+        return ''
+    deadline = time.time() + float(os.environ.get('SIFT_QUIET_TIMEOUT', 60))
+    while True:
+        cpu = {n: float(c.rstrip('%')) for n, c in map(str.split, docker('stats', '--no-stream', '--format', '{{.Name}} {{.CPUPerc}}', *reps).splitlines())}
+        busy = [f'{n} {c:.0f}% cpu' for n, c in cpu.items() if c >= IDLE_CPU] + [f'{n} merging' for n, e in reps.items() if merging(e)]
+        if not busy or time.time() > deadline:
+            return ', '.join(busy)
+        time.sleep(2)
+
+
+def batch(what, engines, skip=()):
+    """before a timed batch: the other containers idle and their merges done (wait_idle), then the host quiet (scripts/quiet.sh); a batch that runs anyway is NOISY"""
+    busy = wait_idle(engines, skip)
+    quiet_batch(what)
+    if busy:
+        log(f'{what}: NOISY, still busy: {busy}')
+        if what not in NOISY:
+            NOISY.append(what)
 
 
 # --- data
@@ -499,7 +547,7 @@ def servers(engines):
         v[eid] = psql_value(eid, 'SHOW server_version')
         v[eid + '_sift'] = psql_value(eid, "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
         v[eid + '_settings'] = psql_value(eid, "SELECT string_agg(name || '=' || current_setting(name), ', ' ORDER BY name) FROM pg_settings WHERE name IN "
-                                              "('shared_buffers', 'work_mem', 'max_parallel_workers_per_gather', 'jit', 'effective_cache_size')")
+                                              "('shared_buffers', 'work_mem', 'jit', 'effective_cache_size')")
     if 'sift' in engines:
         v['sift_libs'] = docker('exec', container('sift'), 'sh', '-c', 'ldd $(find /usr/lib/postgresql -name pg_sift.so | head -1) | grep -Eo "lib(lz4|zstd)[^ ]*" | sort -u | paste -sd" "').strip()
         v['sift_table_compression'] = psql_value('sift', "LOAD 'pg_sift'; SELECT current_setting('sift.table_compression')") or "'' (unset)"
@@ -507,12 +555,62 @@ def servers(engines):
         es = json.loads(Http('es').request('GET', '/'))
         v['es'] = es['version']['number']
         v['es_lucene'] = es['version']['lucene_version']
-        v['es_heap'] = next(l.split('=')[1] for l in docker('inspect', '-f', '{{range .Config.Env}}{{println .}}{{end}}', container('es')).split('\n') if l.startswith('ES_JAVA_OPTS'))
+        opts = next(l.split('=', 1)[1] for l in docker('inspect', '-f', '{{range .Config.Env}}{{println .}}{{end}}', container('es')).split('\n') if l.startswith('ES_JAVA_OPTS'))
+        v['es_heap'] = ' '.join(a for a in opts.split() if a.startswith('-Xm'))
     if any(is_ch(e) for e in engines):
         ch = Http('ch', CH_AUTH)
         v['ch'] = ch.request('POST', '/', b'SELECT version()').decode().strip()
         v['ch_threads'] = ch.request('POST', '/', b"SELECT value FROM system.settings WHERE name = 'max_threads'").decode().strip()
     return v
+
+
+PG_THREADS = ('max_parallel_workers_per_gather', 'max_parallel_maintenance_workers', 'max_parallel_workers', 'max_worker_processes', 'parallel_setup_cost', 'parallel_tuple_cost',
+              'min_parallel_table_scan_size', 'min_parallel_index_scan_size')
+
+
+def effective(args, plan=True):
+    """the thread settings of every server of the engines, as the servers report them, checked against the budget N (--cpus): PostgreSQL and pg_sift a leader plus N - 1 parallel
+    workers, ClickHouse and Elasticsearch N threads / processors, the container a quota of N CPUs and no pinning. Dies on a difference; plan: also how many workers a count(*) plans"""
+    n, out, wrong = args.cpus, {}, []
+
+    def check(who, name, got, want):
+        if str(got) != str(want):
+            wrong.append(f'{who} {name} is {got}, expected {want}')
+
+    for eid in {LANES[e][1]: e for e in reversed(args.engines)}.values():
+        c = who = LANES[eid][1]
+        inspect = lambda f: docker('inspect', '-f', '{{.HostConfig.' + f + '}}', container(eid)).strip()
+        out[c] = dict(quota_cpus=int(inspect('NanoCpus')) / 1e9, cpuset=inspect('CpusetCpus'))
+        check(who, 'container quota (--cpus)', out[c]['quota_cpus'], float(n))
+        check(who, 'cpuset (the CPUs are not pinned)', out[c]['cpuset'] or 'none', 'none')
+        if eid in PG_ENGINES:
+            names = ', '.join(f"'{k}'" for k in PG_THREADS)
+            got = dict(l.split('=') for l in psql_value(eid, f"SELECT string_agg(name || '=' || current_setting(name), E'\n') FROM pg_settings WHERE name IN ({names})", 'postgres').split('\n'))
+            out[c].update(got)
+            check(who, 'max_parallel_workers_per_gather', got['max_parallel_workers_per_gather'], n - 1)
+            check(who, 'max_parallel_maintenance_workers', got['max_parallel_maintenance_workers'], n - 1)
+            if int(got['max_parallel_workers']) < n - 1 or int(got['max_worker_processes']) < int(got['max_parallel_workers']):
+                wrong.append(f'{who} max_parallel_workers {got["max_parallel_workers"]} / max_worker_processes {got["max_worker_processes"]} would cap the workers')
+            if plan:   # the planner's own answer on a scan of the table: Workers Planned (absent: no Gather, the plan is not parallel)
+                m = re.search(r'Workers Planned: (\d+)', psql_value(eid, 'EXPLAIN SELECT count(*) FROM orders'))
+                out[c]['count_workers_planned'] = int(m[1]) if m else 0
+        elif is_ch(eid):
+            q = lambda t, ns: dict(l.split('\t') for l in ask('ch', 'POST', '/', f"SELECT name, value FROM system.{t} WHERE name IN ({ns}) FORMAT TSV".encode()).splitlines())
+            out[c].update(q('settings', "'max_threads', 'max_insert_threads', 'max_final_threads'"))
+            out[c].update(q('server_settings', "'background_pool_size', 'background_merges_mutations_concurrency_ratio'"))
+            for k in ('max_threads', 'max_insert_threads', 'max_final_threads', 'background_pool_size'):
+                check(who, k, out[c][k], n)
+            check(who, 'background_merges_mutations_concurrency_ratio', out[c]['background_merges_mutations_concurrency_ratio'], 1)
+        else:
+            node = next(iter(json.loads(ask('es', 'GET', '/_nodes/os?filter_path=**.allocated_processors,**.available_processors'))['nodes'].values()))['os']
+            jvm = next(iter(json.loads(ask('es', 'GET', '/_nodes/jvm?filter_path=**.input_arguments'))['nodes'].values()))['jvm']['input_arguments']
+            pools = {r['name']: int(r['size']) for r in json.loads(ask('es', 'GET', '/_cat/thread_pool/search,write?format=json&h=name,size'))}
+            out[c].update(node, jvm_processor_count=next((a.split('=')[1] for a in jvm if a.startswith('-XX:ActiveProcessorCount')), None), thread_pools=pools)
+            check(who, 'allocated_processors (node.processors)', node['allocated_processors'], n)
+            check(who, '-XX:ActiveProcessorCount', out[c]['jvm_processor_count'], n)
+    if wrong:
+        die('the thread budget is not in effect: ' + '; '.join(wrong))
+    return out
 
 
 def size_variants(args, rows):
@@ -557,6 +655,7 @@ def cmd_load(args):
     if not os.path.exists(csv_path(args)):
         die(f'{csv_path(args)} not found: run gen first')
     rows.add('-', '-', '-', 'orders', 'rows', value=args.rows)
+    effective(args, plan=False)
     for eid in args.engines:
         if eid == 'es_cached':
             continue
@@ -572,14 +671,17 @@ def cmd_load(args):
         log(f'{eid}: loaded in {total:.0f} s, {next(r["value"] for r in rows.rows if r["engine"] == eid and r["metric"] == "size_mib" and r["variant"] == "-")} MiB')
     if args.compression:
         size_variants(args, rows)
-    write(args, rows, 'load', {'data_sha256': open(csv_path(args) + '.stamp').read().split()[2]})
+    busy = wait_idle(args.engines)
+    log(f'the servers are idle after the load' if not busy else f'still busy after the load (the timed batches wait again): {busy}')
+    args.threads = effective(args)
+    write(args, rows, 'load')
     return 0
 
 
 def write(args, rows, part, extra=None):
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, f'store-{args.tier}-{part}.json')
-    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), tier=args.tier, rows=args.rows, loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
+    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
     with open(path, 'w') as f:
         f.write('{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     log(f'written: {path}')
@@ -627,7 +729,7 @@ def tolerance(eid, st):
 
 
 def measure_query(q, clients, args, rows, cold_times=None):
-    quiet_batch(q.id)
+    batch(q.id, list(clients))
     stmts = {e: q.statement(e, args.rows, e == 'es_cached') for e in clients}
     out, bad = {}, {}
     for e, c in clients.items():   # the first run of each engine: its result is checked, the plan is read
@@ -671,9 +773,10 @@ def measure_query(q, clients, args, rows, cold_times=None):
 def cmd_run(args):
     rows = Rows(args.tier)
     queries = load_queries(args.queries)
+    args.threads = effective(args)
     clients = {e: Client(e) for e in args.engines}
     problems = []
-    log(f'{len(queries)} queries, engines {" ".join(args.engines)}, {args.runs} runs after {args.warmups} warm-up(s)')
+    log(f'{len(queries)} queries, engines {" ".join(args.engines)}, {args.runs} runs after {args.warmups} warm-up(s), thread budget {args.cpus}')
     try:
         for q in queries:
             problems += measure_query(q, clients, args, rows)
@@ -692,9 +795,10 @@ def cmd_cold(args):
     rows = Rows(args.tier)
     queries = load_queries(args.queries)
     stmts = {(q.id, e): q.statement(e, args.rows) for q in queries for e in args.engines if e != 'es_cached'}
+    effective(args)
     for e in [e for e in args.engines if e != 'es_cached']:
         for q in queries:
-            quiet_batch(f'cold {e} {q.id}')
+            batch(f'cold {e} {q.id}', args.engines, [container(e)])
             ts = []
             for _ in range(args.cold_runs):
                 restart(e)
@@ -710,6 +814,7 @@ def cmd_cold(args):
                 continue
             rows.add(e, q.id, 'cold', 'latency_ms', 'ms', st=summary(ts))
             log(f'cold {e} {q.id} {q.name}: {sorted(ts)[len(ts) // 2]:.3g} ms')
+    args.threads = effective(args)   # after the restarts: the settings are the container's, not the process's
     write(args, rows, 'cold', {'cold_runs': args.cold_runs})
     return 0
 
@@ -986,11 +1091,12 @@ def update_engine(eid, args, rows, ref):
 def cmd_updates(args):
     rows, ref = Rows(args.tier), {}
     problems = []
+    args.threads = effective(args)
     prepare_copies(args.engines)
     try:
         for eid in [e for e in UPDATE_ENGINES if e in args.engines]:
             log(f'updates on {eid}')
-            quiet_batch(f'updates {eid}')
+            batch(f'updates {eid}', args.engines, [container(eid)])
             try:
                 update_engine(eid, args, rows, ref)
             except Exception as x:   # recorded, and the other engines still run
@@ -1005,11 +1111,18 @@ def cmd_updates(args):
     return 3 if problems else 0
 
 
+def cmd_verify(args):
+    """the thread budget of every server, before anything is loaded or timed (store.sh, after the containers start or change budget)"""
+    th = effective(args, plan=False)
+    log(f'thread budget {args.cpus} in effect: ' + json.dumps(th))
+    return 0
+
+
 def host():
     cpu = next(l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name'))
     ram = next(int(l.split()[1]) for l in open('/proc/meminfo') if l.startswith('MemTotal')) / 1048576
     return dict(cpu=cpu, threads=os.cpu_count(), ram=f'{ram:.0f} GiB', kernel=os.uname().release, docker=docker('version', '-f', '{{.Server.Version}}').strip(),
-                cpus=os.environ.get('STORE_CPUS', '?'), memory=os.environ.get('STORE_MEMORY', '?'))
+                cpus=os.environ.get('STORE_CPUS', '?'), cpus_list=os.environ.get('STORE_CPUS_LIST', '?'), memory=os.environ.get('STORE_MEMORY', '?'))
 
 
 def cmd_merge(args):
@@ -1033,7 +1146,14 @@ class Results:
     def __init__(self, path):
         d = json.load(open(path))
         self.meta, self.rows = d['meta'], d['rows']
-        self.tiers = sorted(self.meta['tiers'], key=lambda t: self.meta['tiers'][t]['rows'])
+        tm = self.meta['tiers']
+        self.all_tiers = sorted(tm, key=lambda t: (tm[t]['rows'], self.cpus(t)))   # a result set per size and thread budget (`1M-c3`; older results: one per size)
+        self.tiers = [t for t in self.all_tiers if 'load' in tm[t]['parts']]       # one per size: the set that holds the load, the plans and the updates
+        self.sets = {t: [x for x in self.all_tiers if tm[x]['rows'] == tm[t]['rows']] for t in self.tiers}   # all the sets of that size, the smallest budget first
+
+    def cpus(self, tier):
+        old = str(self.meta.get('host', {}).get('cpus', ''))   # results made before the thread budget: the one quota of the host record
+        return self.meta['tiers'][tier].get('cpus') or (int(old) if old.isdigit() else 0)
 
     def get(self, tier, engine, cls='-', variant='-', metric=None):
         for r in self.rows:
@@ -1090,10 +1210,10 @@ def best_bold(values, cells):
 
 
 def bench_table(R, tier, engines, labels, detail=False, variant='warm'):
-    head = ['question'] + [labels[e] for e in engines]
+    head = ['question' if detail else 'query'] + [labels[e] for e in engines]
     body = []
     for qid in R.queries(tier):
-        title = QUERY_TITLES[qid]
+        title = (QUERY_TITLES if detail else QUERY_LABELS)[qid]
         rs = [R.get(tier, e, qid, variant, 'latency_ms') for e in engines]
         vals = [r['value'] if r else None for r in rs]
         cells = [spread(r) if detail else ms(r['value'] if r else None) for r in rs]
@@ -1110,6 +1230,7 @@ def load_rows(R, tier, engines):
 
 
 QUERY_TITLES = {q.id: q.title for q in load_queries()}
+QUERY_LABELS = {q.id: q.label for q in load_queries()}
 
 
 def losses(R, tier, engines, labels):
@@ -1158,21 +1279,47 @@ def error_notes(R, tier):
     return out
 
 
+def cpu_name(n):
+    return f'{n} CPU' + 's' * (n != 1)
+
+
+def thread_line(R, tier):
+    """what the servers of a result set reported for its thread budget (steps/store.py effective)"""
+    th = R.meta['tiers'][tier].get('threads', {})
+    pg = th.get('pg') or th.get('sift')
+    out = [f'PostgreSQL and pg_sift: a leader and {pg["max_parallel_workers_per_gather"]} parallel worker{"s" * (pg["max_parallel_workers_per_gather"] != "1")}'] * bool(pg)
+    out += [f'Elasticsearch: `node.processors` {th["es"]["allocated_processors"]}'] * ('es' in th)
+    out += [f'ClickHouse: `max_threads` {th["ch"]["max_threads"]}'] * ('ch' in th)
+    return '; '.join(out)
+
+
+def set_heading(R, tier):
+    """the line above a table of one thread budget"""
+    return f'{cpu_name(R.cpus(tier))} per container' + (f' ({thread_line(R, tier)})' if R.meta['tiers'][tier].get('threads') else '')
+
+
 def readme_block(R):
     tier = R.tiers[-1]
     t = R.meta['tiers'][tier]
     s = t['servers']
     labels = {e: LANES[e][0] for e in LANES}
     engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'es', 'ch'])
-    head, body = bench_table(R, tier, engines, labels)
-    body += load_rows(R, tier, engines)
+    sets = R.sets[tier]
     host = R.meta.get('host', {})
     n = f'{t["rows"]:,}'
+    quota = ' and '.join(str(R.cpus(x)) for x in sets)
+    fair = ' and the same thread budget for every engine (a [fair comparison](docs/BENCHMARKS.md#fair-comparison-the-same-threads-for-every-engine)' + (f', one table for each of {quota} CPUs' if len(sets) > 1 else '') + ')'
     out = [f'An online store: a table of {n} orders (country, category, status, amount, date, a product title) and ten questions anyone can ask of it. Every system holds the same seeded rows, '
-           f'runs one node in a docker container limited to {host.get("cpus", "?")} CPUs and {host.get("memory", "?")} of memory, and answers over a local connection from one client. '
+           f'runs one node in a docker container limited to {quota} CPUs (a quota, no pinning) and {host.get("memory", "?")} of memory{fair}, and answers over a local connection from one client. '
            f'Cells are the median of {t["runs"]} warm runs in milliseconds (lower is better; the fastest of a row, and anything within 5% of it, in bold). '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}.', '']
-    out += md_table(head, body) + ['']
+    for x in sets:
+        head, body = bench_table(R, x, R.engines(x, ['pg', 'sift', 'sift_table', 'es', 'ch']), labels)
+        if x == tier:
+            body += load_rows(R, tier, engines)
+        out += ([f'**{set_heading(R, x)}**', ''] if len(sets) > 1 else []) + md_table(head, body) + ['']
+    if len(sets) > 1:
+        out += [f'Load time and size on disk are those of the load at {cpu_name(R.cpus(tier))}; the updates ran at that budget too.', '']
     rd = R.get(tier, 'es', '06', '-', 'rel_diff')
     approx = f' (HyperLogLog++: its monthly counts were off by at most {rd["value"]:.2%} here)' if rd else ''
     out += [f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',
@@ -1184,13 +1331,15 @@ def readme_block(R):
         ratios = [R.num(tier, 'sift_table', q, 'warm', 'latency_ms') / R.num(tier, 'pg', q, 'warm', 'latency_ms') for q in plain]
         out += [f'- `sift_table` ran {len(plain)} of the {len(R.queries(tier))} questions with a plain `Seq Scan` plan (no aggregate pushdown: [docs/USAGE.md](docs/USAGE.md#limits) lists what `SiftAgg` does not read) and took '
                 f'{ratio(min(ratios), 1)} to {ratio(max(ratios), 1)} the time of PostgreSQL\'s heap on those; the other layout, `sift_col`, is an index over the ordinary table.']
-    lo = losses(R, tier, engines, labels)
-    if lo:
-        out += ['- **Where pg_sift is not the fastest:** ' + '; '.join(f'{title.lower()}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for _, title, lb, v1, lb2, v2 in lo) + '.']
-    else:
-        out += ['- pg_sift was the fastest system, or within 5% of it, on every question.']
+    for x in sets:
+        lo = losses(R, x, R.engines(x, ['pg', 'sift', 'sift_table', 'es', 'ch']), labels)
+        at = f' at {cpu_name(R.cpus(x))}' if len(sets) > 1 else ''
+        if lo:
+            out += [f'- **Where pg_sift is not the fastest{at}:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.']
+        else:
+            out += [f'- pg_sift was the fastest system, or within 5% of it, on every question{at}.']
     out += [f'- The same questions at {R.meta["tiers"][x]["rows"]:,} orders, cold runs after a restart, load times and plans: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).' for x in R.tiers[:-1]]
-    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
+    out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites this section and docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
     return out
 
 
@@ -1198,6 +1347,42 @@ def host_noise(part):
     """how busy the host was at the start of a part: its pressure (scripts/quiet.sh), the load average for results made before; the NOISY batches"""
     out = part['pressure'] if part.get('pressure') else 'load average ' + ' '.join(part['loadavg'])
     return out + (f' (NOISY: {", ".join(part["noisy"])})' if part.get('noisy') else '')
+
+
+def thread_table(R, tiers):
+    """the settings each server reported for each result set (steps/store.py effective), one row per set"""
+    head = ['result set', 'container `--cpus`', 'PostgreSQL, pg_sift: workers per gather (maintenance)', 'ClickHouse: `max_threads` (background pool)', 'Elasticsearch: `node.processors`, JVM processors (search / write threads)']
+    body = []
+    for x in tiers:
+        th = R.meta['tiers'][x].get('threads')
+        if not th:
+            continue
+        pg, ch, es = th.get('pg') or th.get('sift'), th.get('ch'), th.get('es')
+        quota = next(iter(th.values()))['quota_cpus']
+        body.append([f'{R.meta["tiers"][x]["rows"]:,} orders, {cpu_name(R.cpus(x))}', f'{quota:g}',
+                     f'{pg["max_parallel_workers_per_gather"]} ({pg["max_parallel_maintenance_workers"]})' if pg else 'n/a',
+                     f'{ch["max_threads"]} ({ch["background_pool_size"]})' if ch else 'n/a',
+                     f'{es["allocated_processors"]}, {es["jvm_processor_count"]} ({es["thread_pools"]["search"]} / {es["thread_pools"]["write"]})' if es else 'n/a'])
+    return md_table(head, body, ['---'] + ['---:'] * 4) if body else []
+
+
+def latency_tables(R, tier, shown, labels, heading):
+    """the warm, request-cache-on and first-run tables of one result set (a size at one thread budget)"""
+    t = R.meta['tiers'][tier]
+    out = (heading + ['']) if heading else []
+    out += [f'Seeded data (sha256 `{t["data_sha256"][:16]}`), measured {t["parts"]["warm"]["date"]}, {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared). '
+            f'Median of {t["runs"]} warm runs, minimum and maximum in parentheses, milliseconds; the fastest of a row and anything within 5% of it in bold.', '']
+    head, body = bench_table(R, tier, shown, labels, detail=True)
+    out += md_table(head, body) + ['']
+    out += ['Elasticsearch with the shard request cache on (the same request repeated is answered from the cache; the numbers above are with it off):', '']
+    head, body = bench_table(R, tier, ['es', 'es_cached'], labels, detail=True)
+    out += md_table(head, body) + ['']
+    if any(R.get(tier, e, variant='cold', cls=q, metric='latency_ms') for e in shown for q in R.queries(tier)):
+        out += ['First run after a restart of the server (process caches empty; the operating system\'s page cache is not dropped, which needs root): median of '
+                f'{t.get("cold_runs", "?")} restarts, minimum and maximum in parentheses.', '']
+        head, body = bench_table(R, tier, shown, labels, detail=True, variant='cold')
+        out += md_table(head, body) + ['']
+    return out
 
 
 def benchmarks_block(R):
@@ -1211,18 +1396,11 @@ def benchmarks_block(R):
         engines = R.engines(tier, allq)
         shown = [e for e in engines if e != 'es_cached']
         out += [f'### {t["rows"]:,} orders', '']
-        out += [f'Seeded data (sha256 `{t["data_sha256"][:16]}`), measured {t["parts"]["warm"]["date"]}, {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared). '
-                f'Median of {t["runs"]} warm runs, minimum and maximum in parentheses, milliseconds; the fastest of a row and anything within 5% of it in bold.', '']
-        head, body = bench_table(R, tier, shown, labels, detail=True)
-        out += md_table(head, body) + ['']
-        out += ['Elasticsearch with the shard request cache on (the same request repeated is answered from the cache; the numbers above are with it off):', '']
-        head, body = bench_table(R, tier, ['es', 'es_cached'], labels, detail=True)
-        out += md_table(head, body) + ['']
-        if any(R.get(tier, e, variant='cold', cls=q, metric='latency_ms') for e in shown for q in R.queries(tier)):
-            out += ['First run after a restart of the server (process caches empty; the operating system\'s page cache is not dropped, which needs root): median of '
-                    f'{t.get("cold_runs", "?")} restarts, minimum and maximum in parentheses.', '']
-            head, body = bench_table(R, tier, shown, labels, detail=True, variant='cold')
-            out += md_table(head, body) + ['']
+        sets = R.sets[tier]
+        for x in sets:   # the questions at each thread budget, the smallest first
+            out += latency_tables(R, x, [e for e in R.engines(x, allq) if e != 'es_cached'], labels, [f'#### {set_heading(R, x)}'] if len(sets) > 1 else [])
+        if len(sets) > 1:
+            out += [f'The load, the sizes, the plans and the updates are those of the load at {cpu_name(R.cpus(tier))}.', '']
         phases = [('rows', 'data'), ('indexes', 'indexes'), ('vacuum', 'vacuum, analyze'), ('merge', 'merge to one segment')]
         body = []
         for key, label in phases:
@@ -1242,15 +1420,26 @@ def benchmarks_block(R):
             out += ['Indexes of the PostgreSQL layouts:', ''] + md_table(['layout', 'index', 'size'], parts, ['---', '---', '---:']) + ['']
         plans = [[QUERY_TITLES[q]] + [(R.get(tier, e, q, '-', 'plan') or {}).get('value', 'n/a') for e in PG_ENGINES if e in engines] for q in R.queries(tier)]
         out += ['Scan nodes of the PostgreSQL plans (`EXPLAIN`):', ''] + md_table(['question'] + [labels[e] for e in PG_ENGINES if e in engines], plans, ['---'] * (1 + len([e for e in PG_ENGINES if e in engines]))) + ['']
-    t = R.meta['tiers'][R.tiers[-1]]
+    last = R.tiers[-1]
+    t = R.meta['tiers'][last]
     s = t['servers']
+    quota = ' and '.join(str(R.cpus(x)) for x in R.sets[last])
+    th = t.get('threads')
+    pg = (th.get('pg') or th.get('sift')) if th else None
+    pg_text = (f'`max_parallel_workers_per_gather` N - 1 (a leader and N - 1 workers are N processes; `max_parallel_maintenance_workers` the same), `max_worker_processes` {pg["max_worker_processes"]} and `max_parallel_workers` '
+               f'{pg["max_parallel_workers"]} (far above the budget), `parallel_setup_cost` {pg["parallel_setup_cost"]}, `parallel_tuple_cost` {pg["parallel_tuple_cost"]}, `min_parallel_table_scan_size` {pg["min_parallel_table_scan_size"]}, '
+               'the same flags for both containers') if pg else '`max_parallel_workers_per_gather` and the other settings are the same for both containers'
     out += ['### Configuration', '',
             f'- Host: {host.get("cpu", "?")}, {host.get("threads", "?")} hardware threads, {host.get("ram", "?")} of memory, {host.get("kernel", "?")}; docker {host.get("docker", "?")}. '
-            f'Each server runs alone in a container with `--cpus {host.get("cpus", "?")} --memory {host.get("memory", "?")}`, no swap; the servers not under test sit idle.',
-            f'- PostgreSQL {s["pg"]} (the same image for both layouts, pg_sift {s["sift_sift"]} built from this checkout' + (f', linked with `{s["sift_libs"]}`, `compression` unset on the index = `auto`, `sift.table_compression` {s["sift_table_compression"]}' if 'sift_libs' in s else '') + f'): {s["pg_settings"]}; `max_parallel_workers_per_gather` and the other settings are the same for both containers.',
-            f'- Elasticsearch {s["es"]} (Lucene {s["es_lucene"]}): one node, one shard, no replica, JVM heap `{s["es_heap"]}`, security and machine learning off; `scaled_float` (factor 100) for the amount, `keyword` for country, category and status, `date` for the time, `text` for the title; '
+            f'Each server runs alone in a container with `--cpus N --memory {host.get("memory", "?")}` (N = {quota}: a CPU quota, the CPUs are not pinned), no swap; the servers not under test sit idle.',
+            ]
+    if th:
+        out += ['- Thread budget: every engine is told the same N as the quota, because they start different numbers of threads on their own. What each server reported after it started (checked against N before anything is timed):', '']
+        out += thread_table(R, [x for tier in R.tiers for x in R.sets[tier]]) + ['']
+    out += [f'- PostgreSQL {s["pg"]} (the same image for both layouts, pg_sift {s["sift_sift"]} built from this checkout' + (f', linked with `{s["sift_libs"]}`, `compression` unset on the index = `auto`, `sift.table_compression` {s["sift_table_compression"]}' if 'sift_libs' in s else '') + f'): {s["pg_settings"]}; {pg_text}.',
+            f'- Elasticsearch {s["es"]} (Lucene {s["es_lucene"]}): one node, one shard, no replica, JVM heap `{s["es_heap"]}`, {"`node.processors` and `-XX:ActiveProcessorCount` set to N, " if th else ""}security and machine learning off; `scaled_float` (factor 100) for the amount, `keyword` for country, category and status, `date` for the time, `text` for the title; '
             'merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.',
-            f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; `max_threads` {s["ch_threads"]} (what the container limit gives it); optimized to one part per partition after the load.',
+            f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; {"`max_threads`, `max_insert_threads`, `max_final_threads` and `background_pool_size` set to N" if th else f"`max_threads` {s['ch_threads']} (what the container limit gives it)"}; optimized to one part per partition after the load.',
             '- pg_sift: `sift_col` over the columns the reports read plus the month of the order, a `sift` BM25 index on the title; `sift_table` is the table itself in column format with a `sift` index on the title and the primary key. PostgreSQL: primary key, btree on the date and on country and status, GIN on `to_tsvector(\'simple\', title)`.',
             '- Method: one client, one request at a time, wall time from this process to the end of the response over a persistent local connection; the engines are timed in turn within each run so a drift of the host load hits all of them; one untimed run per engine first (its result is checked against PostgreSQL\'s), then the timed runs. The numbers of one table are comparable with each other, not with another host.']
     return out
@@ -1267,7 +1456,7 @@ UPD_PATH = {'pg': '`UPDATE` / `DELETE` ... `WHERE id IN (...)`, 1,000 ids per st
             'ch_rmt': '`INSERT ... SELECT` of a new version of the rows, 1,000 ids per statement; reads use `FINAL`'}
 UPD_DOCS = [
     ('PostgreSQL', [('Routine vacuuming', 'https://www.postgresql.org/docs/18/routine-vacuuming.html'), ('UPDATE', 'https://www.postgresql.org/docs/18/sql-update.html')]),
-    ('pg_sift', [('Column indexes, aggregates and sift_table', 'docs/USAGE.md#column-indexes-aggregates-and-sift_table')]),
+    ('pg_sift', [('Column indexes, aggregates and sift_table', 'USAGE.md#column-indexes-aggregates-and-sift_table')]),
     ('Elasticsearch', [('Update API', 'https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-update'),
                        ('Bulk API', 'https://www.elastic.co/guide/en/elasticsearch/reference/8.19/docs-bulk.html'),
                        ('The refresh parameter', 'https://www.elastic.co/docs/reference/elasticsearch/rest-apis/refresh-parameter'),
@@ -1496,11 +1685,12 @@ def compression_block(R):
 def replace_blocks(args):
     import readme  # steps/readme.py: replace_block
     R = Results(args.results)
+    if args.readme:
+        readme.replace_block(args.readme, 'store', readme_block(R))
+        readme.replace_block(args.readme, 'store-updates', updates_readme(R))
     if args.benchmarks:
-        readme.replace_block(args.benchmarks, 'store-brief', readme.for_docs(readme_block(R)))
-        readme.replace_block(args.benchmarks, 'store-updates-brief', readme.for_docs(updates_readme(R)))
-        readme.replace_block(args.benchmarks, 'store', readme.for_docs(benchmarks_block(R)))
-        readme.replace_block(args.benchmarks, 'store-updates', readme.for_docs(updates_benchmarks(R)))
+        readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
+        readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
         if os.path.exists(args.compression):
             readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
 
@@ -1547,28 +1737,32 @@ def all_lanes(R, tier):
     return R.engines(tier, list(LANES))
 
 
+def set_title(R, tier):
+    return f'{R.meta["tiers"][tier]["rows"]:,} orders' + (f', {cpu_name(R.cpus(tier))}' if R.cpus(tier) else '')
+
+
 def cmd_table(args):
-    """the warm medians of every tier, as a Markdown table (stdout)"""
+    """the warm medians of every result set (size and thread budget), as a Markdown table (stdout)"""
     R = Results(args.file)
-    for tier in R.tiers:
+    for tier in R.all_tiers:
         engines = all_lanes(R, tier)
         head, body = bench_table(R, tier, engines, {e: LANES[e][0] for e in LANES})
-        print(f'\n{R.meta["tiers"][tier]["rows"]:,} orders, warm median ms\n')
+        print(f'\n{set_title(R, tier)}, warm median ms\n')
         print('\n'.join(md_table(head, body)))
     return 0
 
 
 def cmd_compare(args):
-    """two result files side by side: the warm median of every question and system, and the ratio B / A (below 1: B is faster)"""
+    """two result files side by side: the warm median of every question and system in each result set both have, and the ratio B / A (below 1: B is faster)"""
     A, B = Results(args.a), Results(args.b)
     body = []
-    for tier in [t for t in A.tiers if t in B.tiers]:
+    for tier in [t for t in A.all_tiers if t in B.all_tiers]:
         for q in A.queries(tier):
             for e in all_lanes(A, tier):
                 a, b = (X.num(tier, e, q, 'warm', 'latency_ms') for X in (A, B))
                 if a and b:
                     body.append([tier, q, QUERY_TITLES[q][:44], LANES[e][0], ms(a), ms(b), f'{b / a:.2f}' + (' *' if abs(b / a - 1) > 0.1 else '')])
-    print('\n'.join(md_table(['size', 'q', 'question', 'system', 'A ms', 'B ms', 'B / A'], body, ['---'] * 4 + ['---:'] * 3)))
+    print('\n'.join(md_table(['set', 'q', 'question', 'system', 'A ms', 'B ms', 'B / A'], body, ['---'] * 4 + ['---:'] * 3)))
     print('\n* changed by more than 10%')
     return 0
 
@@ -1586,8 +1780,8 @@ def gap_rows(R, tier):
 def gap_table(R):
     head = ['q', 'question', 'sift_col', 'sift_table', 'PostgreSQL', 'ClickHouse', 'Elasticsearch', 'ES, cache on', 'sift_col / ClickHouse', 'sift_col / ES', 'sift_col / ES cache on']
     out = []
-    for tier in R.tiers:
-        out += [f'#### {R.meta["tiers"][tier]["rows"]:,} orders (warm median, ms; a ratio above 1, in bold, means pg_sift is slower)', '']
+    for tier in R.all_tiers:
+        out += [f'#### {set_title(R, tier)} (warm median, ms; a ratio above 1, in bold, means pg_sift is slower)', '']
         out += md_table(head, gap_rows(R, tier), ['---:', '---'] + ['---:'] * 9) + ['']
     return out
 
@@ -1604,6 +1798,7 @@ def main():
     def common(p):
         p.add_argument('--rows', type=int)
         p.add_argument('--tier', default='')
+        p.add_argument('--cpus', type=int, default=int(os.environ.get('STORE_CPUS', 3)), help='the thread budget N of every engine and the CPU quota of the containers; the result set of a size is `<size>-c<N>`')
         p.add_argument('--data', default=os.environ.get('STORE_DATA', '/tmp/sift-store-data'))
         p.add_argument('--out', default='.')
         p.add_argument('--engines', type=lambda s: s.split(','))
@@ -1615,13 +1810,14 @@ def main():
         p.add_argument('--probes', type=int, default=20, help='updates: single-row changes timed until a query sees them')
         p.add_argument('--compression', action='store_true', help='load: also the size of each system with its other compression settings')
         p.add_argument('--keep-going', action='store_true', help='go on after a result that differs from PostgreSQL\'s (the exit status is still 3)')
-    for name in ('gen', 'load', 'run', 'cold', 'updates'):
+    for name in ('gen', 'load', 'run', 'cold', 'updates', 'verify'):
         common(sub.add_parser(name))
     m = sub.add_parser('merge')
     m.add_argument('files', nargs='+')
     m.add_argument('-o', required=True)
     r = sub.add_parser('render')
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
+    r.add_argument('--readme')
     r.add_argument('--benchmarks')
     r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store-compression.json'))
     r.add_argument('--stdout', action='store_true')
@@ -1636,12 +1832,12 @@ def main():
     c.add_argument('a')
     c.add_argument('b')
     args = ap.parse_args()
-    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates') and not args.engines:
+    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'verify') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
     if getattr(args, 'rows', None) and not args.tier:
-        args.tier = f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k'
+        args.tier = (f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k') + f'-c{args.cpus}'
     try:
-        sys.exit({'gen': cmd_gen, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table, 'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare}[args.cmd](args))
+        sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table, 'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare}[args.cmd](args))
     except RuntimeError as x:
         die(str(x))
 
