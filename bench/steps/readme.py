@@ -123,8 +123,12 @@ class Tier:
         return sum(float(r[6]) for r in self.rows if r[1] == (tier or self.tier) and r[5] == 'wall_s')
 
     def load(self):
-        rows = [r for r in self.rows if r[1] == self.tier and r[5] == 'load_1m']
+        rows = [r for r in self.rows if r[1] == self.tier and r[5] == 'load_1m' and r[4] == '-']
         return (min(float(r[7]) for r in rows), max(float(r[8]) for r in rows), sorted(float(r[6]) for r in rows)[len(rows) // 2]) if rows else None
+
+    def late_loads(self):
+        """[(classes, min, max, median)] of the cells measured in a later run merged into the tier (tables.py --merge)"""
+        return [(r[4].replace(',', ', '), r[7], r[8], r[6]) for r in self.rows if r[1] == self.tier and r[5] == 'load_1m' and r[4] != '-']
 
     def qps(self, e, c):
         return self.get('articles', self.tier, e, c, '-', 'qps')
@@ -226,7 +230,7 @@ def benchmarks_block(t, timing):
     out += [b for b in (positions_bullet(t),) if b]
     out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).']
     out += ['- The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable; every cell with its standard error, the cold-cache tables and the method are in '
-            '[docs/BENCHMARKS.md](docs/BENCHMARKS.md).' % (' (load average %.0f-%.0f during the cells, median %.0f)' % p if p else ''), '']
+            '[docs/BENCHMARKS.md](docs/BENCHMARKS.md).' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else ''), '']
     out += ['![Throughput by workload](docs/img/articles-throughput.svg)', '![Index size](docs/img/index-size.svg)', '![Autocomplete latency](docs/img/places-latency.svg)', '']
     out += ['Reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); %s of builds and measurements for the slim tier, '
             '%s with the cold-cache tables of `--docs`); `bench/bench all --docs` rewrites this section from a new session. `--full` runs the full-size tier (every article of the dump, GeoNames cities500, '
