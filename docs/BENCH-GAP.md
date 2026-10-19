@@ -12,17 +12,17 @@ were merged after it, and the 3.0 final pass (2026-10-19, `sift_col`, 3 CPUs, [B
 Elasticsearch columns of the gap tables are those of the preliminary run of 2026-10-18 (7 warm runs, 4 CPUs per container, 1,000,000 and 10,000,000 orders: `docs/results/store.json` of
 commit `2699fb1`), which `docs/results/store.json` no longer holds: it now has the final pass of 3.0 at 1,000,000 orders (1 and 3 CPUs), so `bench/bench store gap` on it prints other tables than
 the generated ones below. The engines' own accounting (rows and bytes read, memory, threads) is still to be measured: the owner asked for
-ClickHouse and Elasticsearch to run only once v3 is final (`bench/analytics --final`, which fills this file in).
+ClickHouse and Elasticsearch to run only once v3 is final (`bench/bench final --docs`, which fills this file in).
 
 ## Re-measuring
 
 | what | command |
 |---|---|
-| the quick run (1M orders, 3 runs, the same equality checks, about 2 minutes) | `bench/analytics` (results in `bench/out/latest/store.json`) |
+| the quick run (200,000 orders, the same equality checks, a few minutes) | `bench/bench store all --size quick` (results in `bench/out/latest/store.json`) |
 | two runs side by side, ratio of every warm median | `bench/bench store compare A.json B.json` |
 | the gap tables of a results file | `bench/bench store gap [docs/results/store.json]` |
 | the pg_sift profile (private cluster under a memory cap) | `S_SIZES=1000000,10000000 bench/steps/gap.sh` |
-| everything, once the code is final | `bench/analytics --final` (`--dry-run` prints the plan, time, disk and memory) |
+| everything, once the code is final | `bench/bench final --docs` (`--dry-run` prints the plan, time and preconditions) |
 
 The results JSON has one format (`meta` and `rows` with `dataset, tier, engine, class, variant, metric, unit, value, min, max, stderr, n, values`); runs are diffed with `compare`.
 
@@ -174,4 +174,4 @@ Most of the 4 to 6 ms medians of `sift_col` at 1M in the benchmark are this floo
 ### Reading order for the fixes
 
 By the size of the gap at 10M: question 04 (planner cost, the largest and the smallest change), 09 and 10 (BM25 match set into the column scan), 06 (distinct set), 07 and 05 (predicate order), 02 (count kernel); and, at 1M, the number of workers chosen from the estimated units.
-After each change `bench/analytics` re-measures 1M in about two minutes and `bench/bench store compare` diffs it against a saved run; `bench/steps/gap.sh` re-profiles.
+After each change `bench/bench store all --size quick` re-measures in a few minutes and `bench/bench store compare` diffs it against a saved run; `bench/steps/gap.sh` re-profiles.

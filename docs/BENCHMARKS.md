@@ -1027,6 +1027,11 @@ The cell method below (stop at a relative standard error, batch means) is also n
   no other warm-up (the relations are prewarmed after the build), and the statements are seeded alike for every engine (chunk k uses `--random-seed=7+k`). When fewer than `1 / rse^2` = 400 queries fit in the maximum
   (the batch means below need that many for 5% on a trace of unit coefficient of variation) the cell is measured for the whole maximum in one chunk: no precision is within reach, so the time is not split into chunks that
   each end with idle clients waiting for the slowest statement. What remains of a slow cell is the statements still running when the time is up (several seconds for the engines with seconds per query).
+- **Single-client cells (places) in one process.** `steps/cell.py batch` times every Postgres cell of a round in one process on connections it keeps open (libpq through ctypes; simple protocol, the same script
+  as pgbench: the lookup of the query text, then the statement, the latency from the first statement sent to the last result, seeded alike for every engine), checking the stop rule every ~20 ms of work. A cell no longer
+  pays a process start, a connect, a log file and a quiet wait (they were 0.5 s of every 0.9 s of the places rounds of the 3.0 pass). The noise check is the host's CPU and IO stall time (`/proc/pressure`, `some`) over the
+  cell's own window, above `SIFT_QUIET_MAX` (10%) the cell is measured again after the batch and is listed in `noisy.txt` only if it is noisy twice. Outliers are not removed: p50 and p95 are order statistics. The throughput
+  cells (articles, 8 clients) still use pgbench, whose spawn is a small part of a cell of a second or more.
 - **Standard error.** Within a round: queries per second by batch means (the transactions of each client are cut into consecutive batches of at least 5; the rate of a batch is the clients' transactions over their
   pooled seconds, so a few slow statements weigh what they last; the error is the standard deviation of the batch rates over the square root of their number, with at least 4 batches, or, with fewer, the standard error
   of the mean latency, sd / (mean sqrt(n)), whichever is larger); the p50 by order statistics, distribution free: half the distance between the n/2 - sqrt(n)/2 and n/2 + sqrt(n)/2 ranked latencies (the 68% interval
@@ -1046,6 +1051,36 @@ The cell method below (stop at a relative standard error, batch means) is also n
 - **Visibility map.** Every places database is a copy of a vacuumed template (`VACUUM (FREEZE, ANALYZE)` once, before the copies). Before this session only the per-engine `VACUUM` ran, and in a freshly loaded cluster its first run left 13-56% of the pages
   not all-visible, so `count(*)` of the first engine read the heap (sift measured 0.22-0.52 ms for a one-letter prefix next to 0.12 ms for the same index in the next database, cold 10 ms against 0.13 ms). The articles database is copied from a vacuumed template and was not affected (21,456 of 21,456 pages all-visible in every engine's database).
 
+
+### Sizes, cached cells and the release pass
+
+`bench/bench --size smoke|quick|standard|full` sets how much a pass measures (`bench/presets.env`; `bench/bench --list` prints the table): 50,000 / 200,000 / 1,000,000 / 10,000,000 orders and 10,000 / 25,000 / 50,000 / 218,058
+articles, with runs, warm-ups, cold runs, update windows and rounds that shrink with the size. **The release pass is `standard`, `full` is opt-in.** Why: the same ten questions on the same systems at 1M and at 10M orders
+(`docs/results/store.json`, 92 pairs of systems): 15 pairs change order between the two sizes and the ratio of a pair moves by a median of 1.2x to 5x per question (largest 21x), so a smaller size is not a faster `full`.
+1M keeps the published ordering of the headline pairs (pg_sift against PostgreSQL, Citus, Elasticsearch and ClickHouse); `quick` and `smoke` are for the development loop and are never published (`--docs` is refused). `bench/bench store stable A.json B.json`
+compares two sizes: exit status 1 when a headline pair flips by more than 1.5x or its ratio moves by more than 2x.
+
+**Cached cells.** The cells of the engines that are not under test (Elasticsearch, ClickHouse, Citus) are kept in `$BENCH_STORE/store-cache` under a key made of the engine image, its settings and statements, the dataset hash, the thread
+budgets, the runs and the host fingerprint (CPU, threads, memory, kernel, docker, governor). A pass measures only the pg_sift engines (and keeps PostgreSQL as the unmeasured reference of the result checks) unless `--remeasure-all`, `--remeasure E,E`,
+`--no-cache`, or a key changed. A published table marks a cell read from the cache with its date and key; cells of another host fingerprint are refused, entries older than 30 days (`--cache-max-age`) and cells that were NOISY are never used.
+The pg_sift lanes are never cached. Loaded data is kept in docker volumes named by the content key (rows, image, table definitions, load code), so a pass loads only what changed. The cold method is `--cold-runs N` (evict the server's memory,
+the default) or `--restart-runs N` (restart the container, ClickHouse and Elasticsearch ~20 s each); the restart-against-evict check (`--cold-check`) is off unless asked and stored once per engine image.
+
+**Engines at the same time.** `--parallel-engines N` runs the timed windows of independent engines concurrently, each in a docker cpuset of equal size on disjoint physical cores (the SMT sibling of a core is never given to another engine), the sets
+rotating across runs so that no engine always gets the same cores; the external-noise sentinel and the equal-budget rules are unchanged. `bench/bench store interference` measures the same cell alone and while the others run: see the result below.
+
+**Utilization.** Every part of the store pass reports the wall time against the sum of its timed windows and the share of the time fewer than `--busy-cores` cores were busy; a part whose timed windows are below 70% of its wall prints `WARN`.
+The 3.0 pass was mostly idle for reasons that are now removed or measured: a process, connection and log file per cell, a 2 s quiet wait per group, a restart of Elasticsearch (~18 s) per cold run, ClickHouse mutations waited for serially,
+sleeps of 1 s in polls.
+
+`bench/bench final [--size P] [--docs] [--dry-run]` is the release pass: the stages store, compression, stats, gap and search with a printed budget each, the total checked first (default 25 min), a finished stage skipped when its key
+(code, host, settings) is unchanged, and the per-stage times at the end.
+
+**Practice this follows.** Closed-loop single-client cells measure service time and are labelled as such; a throughput cell at a fixed arrival rate (open loop, latency from the intended send time) avoids coordinated omission
+([Tene](https://groups.google.com/g/mechanical-sympathy/c/icNZJejUHfE/m/BfDekfBEs_sJ), [wrk2](https://github.com/giltene/wrk2)); the update tables already run at fixed rates. Cold and hot runs follow
+[ClickBench](https://github.com/ClickHouse/ClickBench) (hot runs after a cache-populating run; a cold run after clearing the OS page cache and, in the current rules, restarting the server); the disclosure (hardware, versions, settings, dataset hash) is in
+each result file's `meta`. Changes between two result files are reported with the bootstrap interval of the ratio of the medians and a Mann-Whitney test (`bench/bench compare A.json B.json`), the rank test being the most efficient at finding true
+performance changes in [the comparison of change-detection methods](https://arxiv.org/pdf/2303.14256).
 
 ### Run time
 
@@ -1076,14 +1111,7 @@ The regression check (`bench/bench regress`) runs sift and sift_ref one at a tim
 (`--ref` of the commit itself) gave 0 regressions in 18 cells, the run with `sift.simd = 'scalar'` applied to the new sift only (a deliberate slowdown) reported five regressions (0.68x-0.94x of the reference) and exit status 1
 (both measured with the earlier method). The full-scale check against v1.1.0 is its own section above.
 
-### Run time of the full-tier session (history, earlier method)
-
-`bench/bench all --full` (host load as above), 3069 s in all: articles (the `articles-full` phases: 1 s dump, 79 s corpus restore and the index builds one after the other, 842 s of cells, 923 s together), cold-cache tables
-437 s (articles 183 s, places 254 s), places 2630 s of cells in that first session (it contained the 24 failing pgx-bm25 cells). The places tiers published here are from a second session after the two harness fixes:
-1639 s of cells (27 min; restore and the builds of the engines and two emulations 55 s) and 260 s of cold-cache cells, plus three rounds of the one cell that a stray `pkill` of another job damaged. The published tiers together took
-about 51 minutes of wall time (articles 923 s and cold 183 s, places 1,695 s and cold 260 s), against about 2 hours for the earlier published session on a smaller share of the machine. The earlier method of lanes at the same time was not run at full scale (it ran at the quick tier, 124 s, and in the regression check at the full tier, 355 s of cells for the 112 cells of the check).
-
-#### Cutting the cells of the full tier
+### Cutting the cells of the full tier (history, earlier method)
 
 this was the method of the published numbers (one cluster, the engines interleaved cell by cell), so its cells could not overlap; the time was cut by measuring each cell only as long as it needs and by not building again. Measured on this host at
 load average 8-14 from other sessions, on 2 server and 2 load generator threads, the same engines (six, with pgx-bm25), the same classes, variants and rounds. The reference is the earlier run of the old method, `-T 3` per articles cell and `-T 2` per places cell, 1 warm-up round,
@@ -1116,7 +1144,7 @@ truth), the new values of pg_textsearch `and` / `phrase` / `count` / `filter` we
 | whole cluster of the serial session in the cache | **taken.** The cold session and a rerun do not build again. |
 | stopping pgbench early (SIGINT, SIGTERM, `pg_cancel_backend`) | **rejected.** SIGINT is ignored until the transaction ends, a kill loses the log, a cancel drops the longest statements and so biases the mean. |
 | `-T` / `-P` with fractions of a second | **rejected.** pgbench takes whole seconds; short chunks use `-t`. |
-| a load generator of my own (Python or psql) | **rejected.** It would distort the throughput of the fast engines. |
+| a load generator of my own (Python or psql) | **rejected for the throughput cells** (it would distort the fast engines at 8 clients); **taken for the single-client latency cells** (`cell.py batch`, above), which pgbench spent most of its time starting. |
 | cold cache in the session of the warm cells | **rejected** (the evictions would perturb the cells), the cache of the cluster made it unnecessary. |
 
 `bench/bench all --docs` writes `docs/results/*.tsv`, redraws `docs/img` and rewrites the generated slim section above and the README block in one command; the history sections of this file are not generated. Results are kept as small tables per run (`cells.tsv`, `builds.tsv`, `summary.tsv`,

@@ -123,13 +123,17 @@ Options (not every option applies to every command)
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
                     sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
                     to docs/results); SIFT_TMP, SIFT_PORT
-  store options     --sizes N,N (orders, default 1000000,10000000), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the
-                    updates, default 3), --cpus-list N,N (the budgets the questions are timed at, each a result set; default 1,3, or just N when --cpus is given),
-                    --memory SIZE (limit of every container, default 8g), --runs N (7),
-                    --cold-runs N (3, 0 = no cold runs), --engines pg,sift,sift_table,es,es_cached,ch,citus, --queries IDS (01..10 or names), --docs, --out DIR,
-                    --quick (1M orders, 3 runs, no cold runs, no updates: bench/analytics, a few minutes), --compression (the pg_sift compression
-                    variants none, encodings only, auto, lz4, zstd:3 as extra lanes and the size of every system with its other settings; docs/results/store-compression.json);
+  --size P          the size of a pass for every command: smoke | quick | standard (default, the release size) | full (bench/presets.env, `bench/bench --list`); it sets
+                    the orders and articles, runs, cold runs, update windows and rounds, and --docs is refused below standard
+  store options     --sizes N,N (orders, default the size's), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the updates, default 3),
+                    --cpus-list N,N (the budgets the questions are timed at, each a result set; default 1,3), --memory SIZE (limit of every container, default 8g), --runs N, --warmups N,
+                    --cold-runs N (0 = none, the server's memory emptied between runs), --restart-runs N (container restarted between runs), --cold-check Q,Q (restart against emptied, off), --rates R,R
+                    (update rates), --update-paths E,E (engines of the update table), --load-seconds N, --probes N, --engines pg,sift,sift_table,citus,es,es_cached,ch, --queries IDS (01..10 or names),
+                    --remeasure-all, --remeasure E,E, --no-cache, --cache-dir D, --cache-max-age DAYS (cells of Elasticsearch, ClickHouse and Citus come from the cache of cells unless one of these or a
+                    changed key), --parallel-engines N (independent engines at once on disjoint cpusets), --max-rerun N (NOISY cells measured again), --docs, --out DIR,
+                    --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; docs/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
+  final options     --stages store,compression,stats,gap,search, --budget MIN (default 25; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   -h, --help        this text
@@ -178,7 +182,8 @@ Examples
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
   bench/bench store all --docs                         the store benchmark at 1M and 10M orders, then docs/results/store.json, README.md and docs/BENCHMARKS.md
   bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
-  bench/analytics                                      the quick store run (the same as store all --quick); `store compare A.json B.json` diffs two runs, `store gap` prints the gap tables
+  bench/bench store all --size quick                  the development loop; `compare A.json B.json` diffs two runs, `store gap` prints the gap tables
+  bench/bench final --dry-run                         the release pass: stages, budgets, total against 25 min
 EOF
 }
 
