@@ -11,7 +11,7 @@ SRC      = ../../src
 include $(SRC)/areas.mk
 KT       = ../../tools/kernels
 PGINC   := $(shell pg_config --includedir-server)
-PGLIB   := -L$(shell pg_config --libdir)
+PGLIB   := -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
 
 ifndef FZ_DRIVER
 FZ_CC   := $(shell command -v clang 2>/dev/null)
