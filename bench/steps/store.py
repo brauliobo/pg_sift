@@ -2088,13 +2088,8 @@ def readme_block(R):
            f'runs one node in a docker container limited to {cpu_name(R.cpus(tier))} (a quota, no pinning), the same {cpu_name(R.cpus(tier))} per server as the search tables, and {host.get("memory", "?")} of memory{fair}, and answers over a local connection from one client. '
            f'Cells are the median of {t["runs"]} warm runs in milliseconds (lower is better; the fastest of a row, and anything within 5% of it, in bold). '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}.', '']
-    for x in sets:
-        head, body = bench_table(R, x, R.engines(x, SHOWN), dagger(R, x, labels))
-        if x == tier:
-            body += load_rows(R, tier, engines)
-        out += ([f'**{set_heading(R, x)}**', ''] if len(sets) > 1 else []) + md_table(head, body) + ['']
-    if len(sets) > 1:
-        out += [f'Load time and size on disk are those of the load at {cpu_name(R.cpus(tier))}; the updates ran at that budget too.', '']
+    head, body = bench_table(R, tier, engines, dagger(R, tier, labels))
+    out += [f'**{set_heading(R, tier)}**', ''] + md_table(head, body + load_rows(R, tier, engines)) + ['']
     rd = R.get(tier, 'es', '06', '-', 'rel_diff')
     approx = f' (HyperLogLog++: its monthly counts were off by at most {rd["value"]:.2%} here)' if rd else ''
     out += [size_note(R, tier, engines), f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',

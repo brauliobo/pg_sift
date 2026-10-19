@@ -555,7 +555,7 @@ cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh;
          S_PARALLEL=$s_parallel S_REMEASURE_ALL=$s_remeasure_all S_REMEASURE=$s_remeasure S_NO_CACHE=$s_no_cache S_CACHE_DIR=$s_cache_dir S_CACHE_MAX_AGE=$s_cache_age S_MAX_RERUN=$s_max_rerun \
          S_LOAD_SEC=$s_load_sec S_PROBES=$s_probes
   for c in S_SIZES S_CPUS S_CPUS_LIST S_MEMORY S_RUNS S_WARMUPS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME S_RESTARTS S_CHECK S_RATES S_UPDATE_PATHS S_PARALLEL S_REMEASURE_ALL S_REMEASURE \
-           S_NO_CACHE S_CACHE_DIR S_CACHE_MAX_AGE S_MAX_RERUN S_LOAD_SEC S_PROBES; do [[ -n ${!c} ]] || unset "$c"; done
+           S_NO_CACHE S_CACHE_DIR S_CACHE_MAX_AGE S_MAX_RERUN S_LOAD_SEC S_PROBES; do [[ -n ${!c:-} ]] || unset "$c"; done
   case $sub in all|plan|setup|run|cold|updates|interference|stats) new_out; export OUT ;; esac
   "$STEPS/store.sh" "$sub" "${rest[@]:1}" ${ix[@]+"${ix[@]}"}
 }
