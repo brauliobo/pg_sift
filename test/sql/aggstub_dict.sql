@@ -76,10 +76,11 @@ SELECT :units_one = 1 AS one_unit, :units_all = :units_total AS all_units, :peak
 -- statistics of the planner: pg_class plus a sample of two units
 SELECT leaf, nrows::int AS nrows, nunits::int AS nunits, allvisible_frac, ndistinct::int AS ndistinct, min::numeric(30, 0) AS min, max::numeric(30, 0) AS max
 FROM sift._test_aggstub_stats('u_col') ORDER BY leaf;
--- before ANALYZE there is no reltuples: estimated from the sample
+-- before ANALYZE there is no reltuples: estimated from the sample (CREATE INDEX leaves it unknown on 18, and sets it on 17)
 CREATE TABLE u2 (id int, seg text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO u2 SELECT i, 'x' || i % 3 FROM generate_series(1, 4000) i;
 CREATE INDEX u2_col ON u2 USING sift_colstub (id, seg);
+UPDATE pg_class SET reltuples = -1 WHERE oid = 'u2'::regclass;
 SELECT (SELECT reltuples FROM pg_class WHERE relname = 'u2') AS reltuples;
 SELECT leaf, abs(nrows - 4000) < 400 AS nrows_close, nunits::int, ndistinct::int, min, max FROM sift._test_aggstub_stats('u2_col') ORDER BY leaf;
 VACUUM u2;
