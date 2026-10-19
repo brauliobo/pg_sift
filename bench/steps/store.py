@@ -958,14 +958,32 @@ def cmd_run(args):
     return 3 if problems else 0
 
 
-def cold_cell(e, q, stmt, args):
-    """the first run of a question after a restart of the engine's server, `--cold-runs` times: (the times, the windows of the runs added up); no times when the engine fails"""
+COLD_HOW = {'es': 'restart'}   # emptying the memory of Elasticsearch is not as cold as a restart, so its cold cells restart the container
+
+
+def evict(e):
+    """what a restart empties, without one: the memory the server keeps its data and caches in. The operating system's page cache stays, as after a restart (dropping it needs root)"""
+    if e in PG_ENGINES:   # every shared buffer, from the maintenance database (a new backend starts each cell: no relation, catalog or plan caches)
+        psql_value('pg' if e == 'pg' else e, 'SELECT pg_buffercache_evict_all()', 'postgres')
+    elif is_ch(e):        # the mark, uncompressed-block, primary-key and skipping-index caches; the parts stay attached, as after a restart they are loaded again
+        for what in ('MARK CACHE', 'UNCOMPRESSED CACHE', 'PRIMARY INDEX CACHE', 'INDEX MARK CACHE', 'INDEX UNCOMPRESSED CACHE', 'QUERY CACHE'):
+            ask('ch', 'POST', '/', f'SYSTEM DROP {what}'.encode())
+    else:                 # the node's caches, and the shards' readers (terms dictionaries, doc value and points structures) closed and opened again
+        ask('es', 'POST', '/orders/_cache/clear')
+        ask('es', 'POST', '/orders/_close')
+        ask('es', 'POST', '/orders/_open?wait_for_active_shards=all')
+        ask('es', 'GET', '/_cluster/health/orders?wait_for_status=green&timeout=60s')
+
+
+def cold_cell(e, q, stmt, args, how='evict'):
+    """the first run of a question after the server's memory was emptied (`evict`: its caches and buffers; `restart`: the container), `--cold-runs` times, each on a new
+    connection: (the times, the windows of the runs added up); no times when the engine fails"""
     ts, w = [], Window()
     for _ in range(args.cold_runs):
         c = None
         try:
-            with Window() as x:   # the restart and the first run: the request alone is a few milliseconds, too short for the host's counters
-                restart(e)
+            with Window() as x:   # the emptying and the first run: the request alone is a few milliseconds, too short for the host's counters
+                restart(e) if how == 'restart' else evict(e)
                 c = Client(e)
                 ts.append(c.run(stmt)[0])
             w.add(x)
@@ -981,20 +999,30 @@ def cold_cell(e, q, stmt, args):
 def cmd_cold(args):
     rows = Rows(args.tier)
     queries = load_queries(args.queries)
-    stmts = {(q.id, e): q.statement(e, args.rows) for q in queries for e in args.engines if e != 'es_cached'}
+    engines = [e for e in args.engines if e != 'es_cached']
+    stmts = {(q.id, e): q.statement(e, args.rows) for q in queries for e in engines}
     effective(args)
+    for e in engines:   # one restart of each server, then every cell empties its memory without one
+        restart(e)
+    if any(e in PG_ENGINES for e in engines):
+        for e in engines:
+            if e in PG_ENGINES:
+                psql_value(e, 'CREATE EXTENSION IF NOT EXISTS pg_buffercache', 'postgres')
     gate('cold', args.engines)
-    cells = [(e, q) for e in args.engines if e != 'es_cached' for q in queries]
+    cells = [(e, q) for e in engines for q in queries]
     got, again = {}, []
+    how = {e: COLD_HOW.get(e, 'evict') for e in engines}
+    for e in engines:
+        rows.add(e, '-', 'cold', 'cold_how', 'text', value=how[e])
     for e, q in cells:
-        got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args)
+        got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args, how[e])
         if got[e, q.id][0]:
             log(f'cold {e} {q.id} {q.name}: {sorted(got[e, q.id][0])[args.cold_runs // 2]:.3g} ms')
     for e, q in cells:   # a NOISY cell is measured again once, at the end of the stage, not waited on
         why = got[e, q.id][1].judge({container(e)})
         if got[e, q.id][0] and why:
             log(f'cold {e} {q.id}: NOISY ({why}), measured again')
-            got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args)
+            got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args, how[e])
             again.append(f'{e} {q.id}')
     for e, q in cells:
         ts, w = got[e, q.id]
@@ -1004,8 +1032,15 @@ def cmd_cold(args):
         if why:
             NOISY.append(f'cold {e} {q.id}: {why}')
         rows.add(e, q.id, 'cold', 'latency_ms', 'ms', st=summary(ts))
+    for q in [q for q in queries if q.id in args.cold_check]:   # the check that emptying the memory is the cold of a restart: the same question the other way
+        for e in engines:
+            other = 'restart' if how[e] == 'evict' else 'evict'
+            ts, _ = cold_cell(e, q, stmts[q.id, e], args, other)
+            if ts:
+                rows.add(e, q.id, 'cold-alt', 'latency_ms', 'ms', st=summary(ts))
+                log(f'cold check {e} {q.id}: {sorted(ts)[args.cold_runs // 2]:.3g} ms ({other}), {sorted(got[e, q.id][0])[args.cold_runs // 2]:.3g} ms ({how[e]})')
     args.threads = effective(args)   # after the restarts: the settings are the container's, not the process's
-    write(args, rows, 'cold', {'cold_runs': args.cold_runs, 'rerun': again})
+    write(args, rows, 'cold', {'cold_runs': args.cold_runs, 'rerun': again, 'cold_check': args.cold_check})
     return 0
 
 
@@ -1593,10 +1628,18 @@ def latency_tables(R, tier, shown, labels, heading):
     head, body = bench_table(R, tier, ['es', 'es_cached'], labels, detail=True)
     out += md_table(head, body) + ['']
     if any(R.get(tier, e, variant='cold', cls=q, metric='latency_ms') for e in shown for q in R.queries(tier)):
-        out += ['First run after a restart of the server (process caches empty; the operating system\'s page cache is not dropped, which needs root): median of '
-                f'{t.get("cold_runs", "?")} restarts, minimum and maximum in parentheses.', '']
+        out += ['First run after the server\'s memory was emptied (one restart of each server, then before every run: PostgreSQL and Citus every shared buffer, ClickHouse its mark, uncompressed-block, primary-key and index caches, '
+                'Elasticsearch: a restart of the container, because emptying its memory was not as cold; every run on a new connection; the operating system\'s page cache is not dropped, which needs root, as after a restart): median of '
+                f'{t.get("cold_runs", "?")} runs, minimum and maximum in parentheses.', '']
         head, body = bench_table(R, tier, shown, labels, detail=True, variant='cold')
         out += md_table(head, body) + ['']
+        chk = [(q, e) for q in R.queries(tier) for e in shown if R.get(tier, e, variant='cold-alt', cls=q, metric='latency_ms')]
+        if chk:
+            how = lambda e: (R.get(tier, e, '-', 'cold', 'cold_how') or {}).get('value', 'evict')
+            pair = lambda q, e: tuple(R.num(tier, e, q, v, 'latency_ms') for v in (('cold', 'cold-alt') if how(e) == 'evict' else ('cold-alt', 'cold')))   # (emptied, restarted)
+            out += ['Emptying the memory against real restarts, the check that the first is as cold as the second (milliseconds, median of the same number of runs; a system whose ratio is beyond 20% is published with restarts: '
+                    + (', '.join(labels[e] for e in shown if how(e) == 'restart') or 'none') + '):', '']
+            out += md_table(['question', 'system', 'after emptying the memory', 'after a restart', 'ratio'], [[QUERY_TITLES[q], labels[e], ms(pair(q, e)[0]), ms(pair(q, e)[1]), f'{pair(q, e)[0] / pair(q, e)[1]:.2f}x'] for q, e in chk]) + ['']
     return out
 
 
@@ -2034,6 +2077,7 @@ def main():
         p.add_argument('--runs', type=int, default=7)
         p.add_argument('--warmups', type=int, default=3, help='untimed runs per query and engine before the timed ones (the first one is the checked result)')
         p.add_argument('--cold-runs', type=int, default=3)
+        p.add_argument('--cold-check', type=lambda s: s.split(','), default=['06'], help='cold: questions also timed after real restarts, to check that emptying the memory is as cold')
         p.add_argument('--load-seconds', type=int, default=int(os.environ.get('STORE_LOAD_SECONDS', 15)), help='updates: how long a query is timed under each update rate')
         p.add_argument('--probes', type=int, default=20, help='updates: single-row changes timed until a query sees them')
         p.add_argument('--compression', action='store_true', help='load: also the size of each system with its other compression settings')
