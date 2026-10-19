@@ -15,7 +15,7 @@
  *            key), varint (u - 1), cnt * l low bits, high-bits bitmap of
  *            cnt + ((u - 1) >> l) bits; l = floor(log2(u / cnt))
  *   GROUPED: u8 0[3], u32 n, u32 ng, u32 key[ng] (gid << 8 | ctype), u32 poff[ng + 1],
- *            u32 base[ng + 1], payload; ctype = w | 0x80 if ARRAY
+ *            u32 base[ng + 1], payload; ctype = w | 0x80 if ARRAY, 0xE0 | index of w if PACKED
  *            BITMAP payload: u64 pages[4], popcount(pages) * w bytes
  *            ARRAY payload:  u16 (page << 8 | off - 1) if w <= 32, else
  *                            u32 (page << 16 | off - 1)
@@ -56,7 +56,8 @@ typedef uint64_t sift_tid;
 enum { SIFT_LIST = 1, SIFT_GROUPED = 2 };
 enum { SIFT_F_TF = 1 };
 enum { SIFT_ISA_SCALAR, SIFT_ISA_AVX2, SIFT_ISA_AVX512, SIFT_NISA };
-enum { SIFT_CT_AUTO, SIFT_CT_BITMAP, SIFT_CT_ARRAY };
+/* SIFT_CT_PACKED: as AUTO, but a group that would be an ARRAY is PACKED when that is smaller (segment format 3) */
+enum { SIFT_CT_AUTO, SIFT_CT_BITMAP, SIFT_CT_ARRAY, SIFT_CT_PACKED };
 
 typedef struct {
 	uint32_t gid;

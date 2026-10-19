@@ -102,6 +102,8 @@ CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kin
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,
 									 OUT codec_len int4, OUT nnib int4)
 	AS 'MODULE_PATHNAME', 'sift_test_term_blob' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_blob_check(blob bytea) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_blob_check' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_blob_read(blob bytea, flags int4, df int4, codec_len int4, nnib int4,
 									 OUT postings int8, OUT tf_sum int8)
 	AS 'MODULE_PATHNAME', 'sift_test_blob_read' LANGUAGE C STRICT;

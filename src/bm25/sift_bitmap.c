@@ -100,24 +100,49 @@ uint32_t sift_blob_n(const uint8_t *blob)
 
 size_t sift_encode_bound(uint32_t n) { return 40 + (size_t)n * 112; }
 
-typedef struct { uint32_t i, j, npages, w; int array; } grp_info;
+typedef struct { uint32_t i, j, npages, w, ob; int array, packed; } grp_info;
+
+/*
+ * PACKED container (type byte 0xE0 | index of w in packed_w), for a group of n postings: u8 ob, u8 pages[32] (the pages that have
+ * postings), n offsets (off - 1) of ob bits each in posting order, then n bits, bit k set when posting k is the last of its page
+ * (a page of c postings is c - 1 zeros and a one). 33 + ceil(n * ob / 8) + ceil(n / 8) bytes: about 9 bits per posting where an
+ * ARRAY takes 16.
+ */
+static const uint8_t packed_w[] = { 1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64 };
+#define PACKED_TYPE 0xE0
+
+static inline uint32_t packed_w_of(uint32_t type) { return (type & 0x1f) < sizeof packed_w ? packed_w[type & 0x1f] : 0; }
+
+static inline uint32_t packed_type(uint32_t w)
+{
+	uint32_t i = 0;
+	while (packed_w[i] != w) i++;
+	return PACKED_TYPE | i;
+}
+
+static inline size_t packed_bytes(uint32_t n, uint32_t ob) { return 33 + ((size_t)n * ob + 7) / 8 + (n + 7) / 8; }
 
 /* group [i, j) of tids: same gid */
 static grp_info grp_scan(const sift_tid *t, uint32_t i, uint32_t n, int ctype)
 {
-	grp_info g = { i, i, 0, 0, 0 };
+	grp_info g = { i, i, 0, 0, 0, 0, 0 };
 	uint32_t gid = SIFT_GID(t[i]), maxoff = 0, last = UINT32_MAX;
 	for (; g.j < n && SIFT_GID(t[g.j]) == gid; g.j++) {
 		if ((SIFT_BLK(t[g.j]) & (SIFT_GROUP_PAGES - 1)) != last) g.npages++, last = SIFT_BLK(t[g.j]) & (SIFT_GROUP_PAGES - 1);
 		if (SIFT_OFF(t[g.j]) > maxoff) maxoff = SIFT_OFF(t[g.j]);
 	}
 	g.w = sift_w_for(maxoff);
+	g.ob = nbits(maxoff - 1) ? nbits(maxoff - 1) : 1;
 	size_t bm = 32 + (size_t)g.npages * g.w, ar = (size_t)(g.j - g.i) * (g.w <= 32 ? 2 : 4);
-	g.array = ctype == SIFT_CT_ARRAY || (ctype == SIFT_CT_AUTO && ar < bm);
+	g.array = ctype == SIFT_CT_ARRAY || ((ctype == SIFT_CT_AUTO || ctype == SIFT_CT_PACKED) && ar < bm);
+	if (ctype == SIFT_CT_PACKED && g.array && packed_bytes(g.j - g.i, g.ob) < ar) g.array = 0, g.packed = 1;
 	return g;
 }
 
-static size_t grp_bytes(const grp_info *g) { return g->array ? (size_t)(g->j - g->i) * (g->w <= 32 ? 2 : 4) : 32 + (size_t)g->npages * g->w; }
+static size_t grp_bytes(const grp_info *g)
+{
+	return g->packed ? packed_bytes(g->j - g->i, g->ob) : g->array ? (size_t)(g->j - g->i) * (g->w <= 32 ? 2 : 4) : 32 + (size_t)g->npages * g->w;
+}
 
 /* LIST: Elias-Fano blocks over key = blk << ob | (off - 1) */
 typedef struct { uint64_t x0, u; uint32_t cnt, l; const uint8_t *lows, *highs, *end; } ef_blk;
@@ -189,6 +214,27 @@ static uint32_t ld_e(const uint8_t *p, uint32_t es, uint32_t i)
 	return es == 2 ? (uint32_t)p[2 * i] | (uint32_t)p[2 * i + 1] << 8 : ld32(p + 4 * i);
 }
 
+/* a PACKED group of n postings in len bytes: its sizes, offsets inside the width, ascending offsets on a page, the pages of its mask */
+static const char *check_packed(const uint8_t *p, size_t len, uint32_t n, uint32_t w)
+{
+	uint32_t ob = len ? p[0] : 0, np = 0, k = 0, pages;
+	const uint8_t *offs = p + 33, *last;
+	if (len < 33 || ob == 0 || ob > 8 * w || ob > 16 || len != packed_bytes(n, ob)) return "GROUPED packed group has the wrong size";
+	last = offs + ((uint64_t)n * ob + 7) / 8;
+	pages = (uint32_t)popcount_n(p + 1, 32);
+	if (!(last[(n - 1) >> 3] >> ((n - 1) & 7) & 1)) return "GROUPED packed group does not end a page with its last posting";
+	for (uint32_t i = 0; i < n; i++) np += last[i >> 3] >> (i & 7) & 1;
+	if (np != pages) return "GROUPED packed group does not match its page mask";
+	for (uint32_t i = 0, prev = 0; i < n; i++) {
+		uint64_t bit = (uint64_t)i * ob, v = 0;
+		for (uint32_t b = 0; b < ob; b++, bit++) v |= (uint64_t)(offs[bit >> 3] >> (bit & 7) & 1) << b;
+		if (v >= 8 * (uint64_t)w || (k && v <= prev)) return "GROUPED packed offsets are outside their page bitmap or not ascending";
+		prev = (uint32_t)v;
+		k = !(last[i >> 3] >> (i & 7) & 1);
+	}
+	return NULL;
+}
+
 static const char *check_grouped(const uint8_t *blob, size_t len)
 {
 	uint64_t n, ng, tables, plen;
@@ -203,13 +249,17 @@ static const char *check_grouped(const uint8_t *blob, size_t len)
 	if (plen > len - tables || (wtf && len - tables - plen < 9 * ng + (n + 1) / 2)) return "GROUPED payload overruns the blob";
 	if (ld32(poff) != 0 || ld32(base) != 0 || ld32(base + 4 * ng) != n) return "GROUPED offsets do not start at zero and end at the count";
 	for (uint64_t g = 0; g < ng; g++) {
-		uint32_t k = ld32(key + 4 * g), w = k & 0x7f, lo = ld32(poff + 4 * g), hi = ld32(poff + 4 * (g + 1));
+		uint32_t k = ld32(key + 4 * g), packed = (k & 0xff) >= PACKED_TYPE, w = packed ? packed_w_of(k) : k & 0x7f,
+			lo = ld32(poff + 4 * g), hi = ld32(poff + 4 * (g + 1));
 		uint32_t cnt = ld32(base + 4 * (g + 1)) - ld32(base + 4 * g);
 		if (g > 0 && k >> 8 <= ld32(key + 4 * (g - 1)) >> 8) return "GROUPED groups are out of order";
 		if (!(w == 1 || w == 2 || w == 4 || (w % 8 == 0 && w > 0 && w <= SIFT_MAX_W))) return "GROUPED group width is invalid";
 		if (lo > hi || hi > plen || cnt == 0 || cnt > n || ld32(base + 4 * (g + 1)) > n || ld32(base + 4 * (g + 1)) < ld32(base + 4 * g))
 			return "GROUPED group extents are out of order";
-		if (k & 0x80) {
+		if (packed) {
+			const char *bad = check_packed(payload + lo, hi - lo, cnt, w);
+			if (bad) return bad;
+		} else if (k & 0x80) {
 			uint32_t es = w <= 32 ? 2 : 4;
 			if (hi - lo != (uint64_t)cnt * es) return "GROUPED array group has the wrong size";
 			for (uint32_t i = 0; i < cnt; i++) {
@@ -289,8 +339,28 @@ static size_t grouped_size(const sift_tid *t, uint32_t n, int ctype, uint32_t *n
 	return s;
 }
 
+static uint8_t *write_packed(const sift_tid *t, const grp_info *g, uint8_t *p)
+{
+	uint32_t n = g->j - g->i;
+	uint64_t pages[4] = { 0 };
+	uint8_t *offs = p + 33, *last = offs + (size_t)(((uint64_t)n * g->ob + 7) / 8), *end = last + (n + 7) / 8;
+	memset(offs, 0, (size_t)(end - offs));
+	p[0] = (uint8_t)g->ob;
+	for (uint32_t k = 0; k < n; k++) {
+		sift_tid x = t[g->i + k];
+		uint32_t pg = SIFT_BLK(x) & (SIFT_GROUP_PAGES - 1), o = SIFT_OFF(x) - 1;
+		uint64_t bit = (uint64_t)k * g->ob;
+		pages[pg >> 6] |= 1ull << (pg & 63);
+		for (uint32_t b = 0; b < g->ob; b++, bit++) offs[bit >> 3] |= (uint8_t)((o >> b & 1) << (bit & 7));
+		if (k + 1 == n || (SIFT_BLK(t[g->i + k + 1]) & (SIFT_GROUP_PAGES - 1)) != pg) last[k >> 3] |= (uint8_t)(1u << (k & 7));
+	}
+	memcpy(p + 1, pages, 32);
+	return end;
+}
+
 static uint8_t *write_group(const sift_tid *t, const grp_info *g, uint8_t *p)
 {
+	if (g->packed) return write_packed(t, g, p);
 	if (g->array) {
 		for (uint32_t k = g->i; k < g->j; k++) {
 			uint32_t pg = SIFT_BLK(t[k]) & (SIFT_GROUP_PAGES - 1), o = SIFT_OFF(t[k]) - 1;
@@ -353,7 +423,7 @@ size_t sift_encode(const sift_tid *t, const uint8_t *tf, const uint8_t *ub, uint
 		p = payload;
 		for (uint32_t i = 0; i < n; gi++) {
 			grp_info g = grp_scan(t, i, n, o->ctype);
-			st32(key + 4 * gi, SIFT_GID(t[i]) << 8 | g.w | (g.array ? 0x80 : 0));
+			st32(key + 4 * gi, SIFT_GID(t[i]) << 8 | (g.packed ? packed_type(g.w) : g.w | (g.array ? 0x80 : 0)));
 			st32(poff + 4 * gi, (uint32_t)(p - payload));
 			st32(base + 4 * gi, i);
 			p = write_group(t, &g, p);
@@ -445,6 +515,56 @@ static const sift_grp *ended(sift_cur *c)
 	return NULL;
 }
 
+/* the first index >= from of a set bit in the n bits at bits, n if there is none (the blob is followed by SIFT_KERN_PAD zero bytes) */
+static uint32_t next_set(const uint8_t *bits, uint32_t from, uint32_t n)
+{
+	while (from < n) {
+		uint64_t x = ld64(bits + (from >> 3)) >> (from & 7);
+		if (x) return from + (uint32_t)__builtin_ctzll(x) < n ? from + (uint32_t)__builtin_ctzll(x) : n;
+		from += 64 - (from & 7);
+	}
+	return n;
+}
+
+/*
+ * A PACKED group (see grp_info): each page of the mask in turn takes its postings, up to the next set bit of the page-end bits, and their
+ * offsets are read ob bits at a time from a 64-bit window into the page's bitmap row. The group is checked as it is read (sizes, the
+ * page ends, offsets inside the width), so a damaged group raises before it indexes outside the rows.
+ */
+static const sift_grp *packed_seek(sift_cur *c, uint32_t gid, uint32_t w, const uint8_t *p, uint32_t len, uint32_t base, uint32_t n)
+{
+	uint32_t ob = len ? p[0] : 0, k = 0, bad = 0, olim = 8 * w;
+	uint64_t pages[4], bit = 0, omask;
+	if (len < 33 || ob == 0 || ob > 8 * w || ob > 16 || len != packed_bytes(n, ob)) sift_codec_corrupt("GROUPED packed group has the wrong size");
+	const uint8_t *offs = p + 33, *last = offs + (((uint64_t)n * ob + 7) >> 3);
+	uint8_t *row = c->buf;
+	memcpy(pages, p + 1, 32);
+	omask = (1ull << ob) - 1;
+	for (uint32_t wi = 0; wi < 4; wi++)
+		for (uint64_t m = pages[wi]; m; m &= m - 1, row += w) {
+			uint32_t e = next_set(last, k, n);
+			if (k >= n) sift_codec_corrupt("GROUPED packed group has more pages than postings");
+			if (w <= 8) {
+				uint64_t cur = 0;
+				for (; k <= e && k < n; k++, bit += ob) {
+					uint32_t o = (uint32_t)(ld64(offs + (bit >> 3)) >> (bit & 7) & omask);
+					bad |= o >= olim;
+					cur |= 1ull << (o & 63);
+				}
+				sift_stn(row, w, cur);
+			} else {
+				memset(row, 0, w);
+				for (; k <= e && k < n; k++, bit += ob) {
+					uint32_t o = (uint32_t)(ld64(offs + (bit >> 3)) >> (bit & 7) & omask);
+					bad |= o >= olim;
+					row[(o & 511) >> 3] |= (uint8_t)(1u << (o & 7));
+				}
+			}
+		}
+	if (bad || k != n) sift_codec_corrupt("GROUPED packed group does not match its page mask");
+	return found(c, gid, w, pages, c->buf, base, n);
+}
+
 static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 {
 	if (c->state == 2) return NULL;
@@ -452,7 +572,8 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	uint32_t i = gallop32(c->gr.key, c->gr.ng, c->state ? c->gr.i + 1 : 0, (uint64_t)target << 8);
 	if (i == c->gr.ng) return ended(c);
 	c->gr.i = i;
-	uint32_t key = c->gr.key[i], w = key & 0x7f, base = c->gr.base[i], n = c->gr.base[i + 1] - base;
+	uint32_t key = c->gr.key[i], packed = (key & 0xff) >= PACKED_TYPE, w = packed ? packed_w_of(key) : key & 0x7f;
+	uint32_t base = c->gr.base[i], n = c->gr.base[i + 1] - base;
 	uint32_t lo = c->gr.poff[i], hi = c->gr.poff[i + 1], plen = c->gr.plen;
 	const uint8_t *p = c->gr.payload + lo;
 	/* the group lies inside the payload and its width and posting count are possible: what follows reads only [p, p + hi - lo) */
@@ -462,6 +583,7 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	/* software prefetch 4 groups ahead: groups are small and visited in order */
 	if (i + 4 < c->gr.ng)
 		for (uint32_t q = c->gr.poff[i + 4], e = c->gr.poff[i + 5] < plen ? c->gr.poff[i + 5] : plen; q < e; q += 64) __builtin_prefetch(c->gr.payload + q);
+	if (packed) return packed_seek(c, key >> 8, w, p, hi - lo, base, n);
 	if (!(key & 0x80)) {
 		uint64_t pages[4];
 		if (hi - lo < 32) sift_codec_corrupt("GROUPED bitmap group is shorter than its page mask");

@@ -10,6 +10,8 @@ CREATE TABLE src AS
 SELECT g AS id, concat_ws(' ', 'common', 'w' || g % 97, 'mid' || g % 11, CASE WHEN g % 5 = 0 THEN 'five' END,
        CASE WHEN g % 7 = 0 THEN 'seven seven seven' END, 'u' || g, 'p' || g / 2, repeat('filler ', g % 40)) AS body
 FROM generate_series(1, 30000) g;
+-- terms of 200 postings and more are GROUPED: the rare ones as containers of 150 postings on 256 pages, the mid-sized ones with 7 on a page, 'common' dense
+SET sift.grouped_min_df = 200;
 CREATE TABLE t2 AS SELECT * FROM src ORDER BY id;
 CREATE TABLE t3 AS SELECT * FROM src ORDER BY id;
 SET sift.test_segfmt = 2;
@@ -25,6 +27,8 @@ UNION ALL SELECT 't2_idx metapage minor', true, format FROM sift._test_segment_f
 UNION ALL SELECT 't3_idx metapage minor', true, format FROM sift._test_segment_formats('t3_idx') WHERE kind = 'metapage minor';
 
 SELECT sift.verify('t2_idx', true), sift.verify('t3_idx', true), sift.verify('t2_off', true), sift.verify('t3_off', true);
+SELECT (SELECT bytes FROM sift._test_segment_parts('t3_idx') WHERE part = 'postings: GROUPED containers')
+       < (SELECT bytes FROM sift._test_segment_parts('t2_idx') WHERE part = 'postings: GROUPED containers') AS packed_containers_smaller;
 
 -- the postings of an index by document id (the tids of two tables differ when their rows were not placed alike), the rows that are gone left out
 CREATE FUNCTION posts(idx regclass, tbl regclass) RETURNS TABLE (term text, id int, tf int, dl int) LANGUAGE plpgsql AS $f$
