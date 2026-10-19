@@ -1,0 +1,303 @@
+-- sift.gpu = on against the CPU: every aggregate the Vulkan path may take (docs/GPU.md) must give the rows the CPU gives, and so must the shapes it
+-- leaves to the CPU. The test prints only whether the two agree, so it has the same output on a build without the backend, on one without a device, and
+-- on one with a device. NOTICEs (no backend, no device, a device that failed) are not shown.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE gx (id int, g int, c text, w int, q int, a bigint, n int, f float8, wide int, tz int, p numeric(12,2)) WITH (autovacuum_enabled = false);
+INSERT INTO gx
+SELECT i, i % 40, (ARRAY['north', 'south', 'east', 'west', 'centre'])[1 + i % 5], (i * 7919) % 100003 - 50000, (i * 31) % 1000,
+       (i::bigint * 1000003) % 5000000000 - 2500000000, CASE WHEN i % 1000 = 0 THEN NULL ELSE i % 9 END, (i % 100) / 8.0,
+       i % 100, 7, (((i::bigint * 37) % 1000000) - 500000)::numeric / 100
+FROM generate_series(1, 250000) i;
+CREATE INDEX gx_col ON gx USING sift_col (id, g, c, w, q, a, n, f, wide, tz, p);
+VACUUM (FREEZE, ANALYZE) gx;
+-- the same rows with the device on and off, in both directions
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET sift.gpu = on;
+	SET sift.gpu_min_rows = 1;
+	EXECUTE format('CREATE TEMP TABLE r_on AS SELECT x::text AS r FROM (%s) x', q);
+	SET sift.gpu = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS SELECT x::text AS r FROM (%s) x', q);
+	RESET sift.gpu;
+	RESET sift.gpu_min_rows;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	d := d + abs((SELECT count(*) FROM r_on) - (SELECT count(*) FROM r_off));
+	DROP TABLE r_on, r_off;
+	RETURN d = 0;
+END $$;
+SHOW sift.gpu;
+ sift.gpu 
+----------
+ off
+(1 row)
+
+SHOW sift.gpu_min_rows;
+ sift.gpu_min_rows 
+-------------------
+ 5000000
+(1 row)
+
+SHOW sift.gpu_cache_mb;
+ sift.gpu_cache_mb 
+-------------------
+ 256MB
+(1 row)
+
+SHOW sift.gpu_device;
+ sift.gpu_device 
+-----------------
+ 
+(1 row)
+
+-- grouped count and sum of an integer key
+SELECT same($$SELECT g, count(*), sum(w), sum(q) FROM gx GROUP BY g$$) AS int_key;
+ int_key 
+---------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(w), sum(q) FROM gx WHERE q < 900 GROUP BY g$$) AS int_key_filtered;
+ int_key_filtered 
+------------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(a) FROM gx GROUP BY g$$) AS bigint_sum;
+ bigint_sum 
+------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, avg(w), avg(q), count(*) FROM gx WHERE q > 10 GROUP BY g$$) AS avg_int;
+ avg_int 
+---------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(n), sum(n), count(*) FROM gx GROUP BY g$$) AS null_leaf_on_cpu;
+ null_leaf_on_cpu 
+------------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(p), avg(p) FROM gx GROUP BY g$$) AS numeric_sum;
+ numeric_sum 
+-------------
+ t
+(1 row)
+
+-- a dictionary-coded key
+SELECT same($$SELECT c, count(*), sum(w), sum(q) FROM gx WHERE w < 20000 GROUP BY c$$) AS dictionary_key;
+ dictionary_key 
+----------------
+ t
+(1 row)
+
+SELECT same($$SELECT c, count(*), sum(q) FROM gx WHERE c <> 'west' AND q < 700 GROUP BY c$$) AS dictionary_key_filtered;
+ dictionary_key_filtered 
+-------------------------
+ t
+(1 row)
+
+-- filtered, ungrouped
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE q >= 100 AND q < 600$$) AS range;
+ range 
+-------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w), sum(q) FROM gx WHERE g = 7 AND w > 0$$) AS equality_and_sign;
+ equality_and_sign 
+-------------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(a) FROM gx WHERE g = 7 AND w > 0$$) AS bigint_filtered;
+ bigint_filtered 
+-----------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE g <> 7 AND q <= 900 AND w >= -20000 AND id > 1000$$) AS four_predicates;
+ four_predicates 
+-----------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(p), sum(w) FROM gx WHERE p > 100.5 AND p <= 4000.25$$) AS numeric_range;
+ numeric_range 
+---------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(p) FROM gx WHERE p <> 0 AND q >= 10 GROUP BY g$$) AS numeric_ne_grouped;
+ numeric_ne_grouped 
+--------------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE p > -100000 AND q < 500$$) AS numeric_always_true;
+ numeric_always_true 
+---------------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(q) FROM gx WHERE n IS NOT NULL AND q < 500$$) AS not_null_with_nulls;
+ not_null_with_nulls 
+---------------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(q) FROM gx WHERE n IS NOT NULL AND w < 20000 GROUP BY g$$) AS not_null_grouped;
+ not_null_grouped 
+------------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE q > 100000$$) AS none_pass;
+ none_pass 
+-----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE q > -1$$) AS all_pass;
+ all_pass 
+----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w), sum(q) FROM gx$$) AS no_filter;
+ no_filter 
+-----------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(tz), sum(w) FROM gx WHERE tz = 7$$) AS constant_leaf;
+ constant_leaf 
+---------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(tz) FROM gx WHERE w < 0 GROUP BY g$$) AS grouped_filtered;
+ grouped_filtered 
+------------------
+ t
+(1 row)
+
+-- one group key of more than 64 values, and shapes the device does not take (the CPU answers, units or the whole query)
+SELECT same($$SELECT wide, count(*), sum(w) FROM gx GROUP BY wide$$) AS key_over_64;
+ key_over_64 
+-------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, sum(f), avg(f) FROM gx GROUP BY g$$) AS float_sum;
+ float_sum 
+-----------
+ t
+(1 row)
+
+SELECT same($$SELECT g, min(w), max(a), count(*) FROM gx GROUP BY g$$) AS min_max;
+ min_max 
+---------
+ t
+(1 row)
+
+SELECT same($$SELECT g, c, count(*), sum(w) FROM gx GROUP BY g, c$$) AS two_keys;
+ two_keys 
+----------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(DISTINCT q), sum(w) FROM gx GROUP BY g$$) AS distinct_agg;
+ distinct_agg 
+--------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(w) FILTER (WHERE q > 500) FROM gx GROUP BY g$$) AS filtered_agg;
+ filtered_agg 
+--------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE g IN (1, 2, 3) OR q = 5$$) AS or_predicate;
+ or_predicate 
+--------------
+ t
+(1 row)
+
+SELECT same($$SELECT g, count(*), sum(w + q) FROM gx GROUP BY g$$) AS expression_sum;
+ expression_sum 
+----------------
+ t
+(1 row)
+
+-- units with dead rows or pages that are not all-visible are read by the CPU in the same query
+UPDATE gx SET w = w + 1, a = a - 5 WHERE id % 97 = 0;
+DELETE FROM gx WHERE id % 1013 = 0;
+SELECT same($$SELECT g, count(*), sum(w), sum(q) FROM gx WHERE w < 20000 GROUP BY g$$) AS dirty_grouped;
+ dirty_grouped 
+---------------
+ t
+(1 row)
+
+SELECT same($$SELECT count(*), sum(w) FROM gx WHERE q < 500$$) AS dirty_ungrouped;
+ dirty_ungrouped 
+-----------------
+ t
+(1 row)
+
+VACUUM gx;
+SELECT same($$SELECT c, count(*), sum(w), sum(q) FROM gx WHERE w < 20000 GROUP BY c$$) AS vacuumed_dictionary;
+ vacuumed_dictionary 
+---------------------
+ t
+(1 row)
+
+INSERT INTO gx SELECT 300000 + i, i % 40, 'north', i, i % 1000, i, 1, 1.0, i % 100, 7, i / 4.0 FROM generate_series(1, 5000) i;
+SELECT same($$SELECT g, count(*), sum(w) FROM gx WHERE q < 900 GROUP BY g$$) AS write_buffer;
+ write_buffer 
+--------------
+ t
+(1 row)
+
+-- the settings
+SET sift.gpu = auto;
+SELECT count(*), sum(w) = (SELECT sum(w) FROM gx) AS auto_equal FROM gx;
+ count  | auto_equal 
+--------+------------
+ 254754 | t
+(1 row)
+
+SET sift.gpu = on;
+SET sift.gpu_device = 'no such device';
+SELECT same($$SELECT g, count(*), sum(w) FROM gx WHERE q < 900 GROUP BY g$$) AS unknown_device;
+ unknown_device 
+----------------
+ t
+(1 row)
+
+RESET sift.gpu_device;
+SET sift.gpu_cache_mb = 16;
+SELECT same($$SELECT g, count(*), sum(w), sum(q), sum(p) FROM gx WHERE w < 20000 GROUP BY g$$) AS small_cache;
+ small_cache 
+-------------
+ t
+(1 row)
+
+RESET sift.gpu_cache_mb;
+SET sift.gpu = bogus;
+ERROR:  invalid value for parameter "sift.gpu": "bogus"
+HINT:  Available values: off, auto, on.
+RESET sift.gpu;
+-- EXPLAIN works whatever the backend
+DO $$ BEGIN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT g, count(*) FROM gx GROUP BY g'; END $$;
+DROP FUNCTION same(text);
+DROP TABLE gx;
+DROP EXTENSION pg_sift;
