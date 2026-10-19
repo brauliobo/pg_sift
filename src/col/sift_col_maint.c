@@ -391,8 +391,8 @@ sift_col_segments(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
-		Datum		v[10];
-		bool		nulls[10] = {0};
+		Datum		v[12];
+		bool		nulls[12] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
 		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" :
@@ -409,6 +409,8 @@ sift_col_segments(PG_FUNCTION_ARGS)
 			v[7] = BoolGetDatum((e->flags & SIFT_SEG_DIRTY) != 0);
 			v[8] = Int64GetDatum(e->ndocs - sift_cseg_live_rows(seg));
 			v[9] = Int32GetDatum(seg->hdr->nextents);
+			v[10] = Int32GetDatum(e->format);
+			v[11] = Int64GetDatum(sift_cseg_preagg_bytes(seg));
 			sift_cseg_close(seg);
 		}
 		else
@@ -419,7 +421,7 @@ sift_col_segments(PG_FUNCTION_ARGS)
 			sift_cwbuf_summary(index, e, &nrows, &npages);
 			v[2] = Int64GetDatum(nrows);
 			v[3] = Int64GetDatum(npages * BLCKSZ);
-			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = true;
+			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[10] = nulls[11] = true;
 		}
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}

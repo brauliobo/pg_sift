@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 
 CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift.col_segments(idx) WHERE kind = 'immutable' $$;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -53,7 +53,21 @@ REINDEX INDEX f_col;
 SELECT fmt('f_col');
 SELECT same('SELECT grp, count(*), sum(v) FROM f GROUP BY grp') AS reindexed_agg;
 
-DROP TABLE f;
+-- the same column on the other views: the test hook agrees, the write buffer has none, a sift_table lists it too
+SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('f_col')) = fmt('f_col') AS hook_agrees;
+INSERT INTO f SELECT g, g % 9, 1 FROM generate_series(90001, 90010) g;
+SELECT kind, format FROM sift.col_segments('f_col') WHERE kind <> 'immutable';
+SELECT preagg_bytes > 0 AS has_sidecar FROM sift.col_segments('f_col') WHERE kind = 'immutable';
+CREATE TABLE ft (id int, grp int) USING sift_table;
+SET sift.col_format_minor = 3;
+INSERT INTO ft SELECT g, g % 9 FROM generate_series(1, 20000) g;
+VACUUM ft;
+RESET sift.col_format_minor;
+INSERT INTO ft SELECT g, g % 9 FROM generate_series(20001, 40000) g;
+VACUUM ft;
+SELECT kind, format, count(*) FROM sift.table_segments('ft') GROUP BY 1, 2 ORDER BY 1, 2;
+
+DROP TABLE f, ft;
 DROP FUNCTION fmt(regclass), same(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

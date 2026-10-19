@@ -156,11 +156,12 @@ CREATE FUNCTION sift.col_unit_hist(index regclass, dim text, measure text DEFAUL
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_unit_hists_sql' LANGUAGE C VOLATILE;
 
--- One row per segment; the immutable-only columns are NULL for write buffers.
+-- One row per segment; the immutable-only columns are NULL for write buffers. format: the column format minor of the segment (3 as
+-- pg_sift 3.0 writes it, 4 with the type tag and the element cubes; docs/COL.md 2), preagg_bytes: the bytes of its pre-aggregates.
 CREATE FUNCTION sift.col_segments(index regclass,
 								  OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8,
 								  OUT sb_lo int4, OUT sb_hi int4, OUT units int4, OUT dirty bool,
-								  OUT dead_rows int8, OUT extents int4)
+								  OUT dead_rows int8, OUT extents int4, OUT format int4, OUT preagg_bytes int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_segments' LANGUAGE C STRICT VOLATILE;
 
@@ -195,10 +196,11 @@ CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler
 CREATE ACCESS METHOD sift_table TYPE TABLE HANDLER sift.table_handler;
 
 -- One row per segment of a sift_table: kind buffer (the row format write buffer; bytes = its pages), sealed buffer (no more rows,
--- waiting to become columns), columns (a column segment: rows including dead ones, units, dead rows) or tombstones.
+-- waiting to become columns), columns (a column segment: rows including dead ones, units, dead rows, format = its column format
+-- minor, as sift.col_segments) or tombstones.
 CREATE FUNCTION sift.table_segments(tbl regclass,
 									OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8,
-									OUT sb_lo int4, OUT sb_hi int4, OUT units int4, OUT dead_rows int8)
+									OUT sb_lo int4, OUT sb_hi int4, OUT units int4, OUT dead_rows int8, OUT format int4)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_table_segments' LANGUAGE C STRICT VOLATILE;
 

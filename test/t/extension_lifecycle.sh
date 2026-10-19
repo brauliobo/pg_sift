@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((29 + $(wc -w <<<"$DBS")))
+plan $((30 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -139,6 +139,8 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE fresh31" >/dev/null
 	q life fresh31 "CREATE EXTENSION pg_sift" >/dev/null
 	check "3.0 updated to 3.1 has the objects of a fresh 3.1 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh31 "$MEMBERS")"
+	check "the segment views list the format of the 3.0 segments and of the new ones" test "$(q life upg \
+		"SELECT (SELECT string_agg(DISTINCT format::text, ',') FROM sift.col_segments('colt_col') WHERE kind = 'immutable') || ' ' || (SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl') WHERE kind = 'columns')")" == "3 3"
 	check "the sift_table written by 3.0 answers the same after the update" test "$(q life upg "$TBLQ" | tail -n 1)" == "$TBL0"
 	check "the index built before the update still verifies and answers the same" \
 		test "$(vq life upg "SELECT fp() = seq() AND fp() || ranked() = '$(sed "s/'/''/g" <<<"$before")'")" == t
@@ -157,7 +159,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "the mixed column index survives the crash" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 else
-	skip 17 "extension_control_path needs PostgreSQL 18"
+	skip 18 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
