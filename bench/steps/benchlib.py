@@ -8,7 +8,7 @@ files, the replacement of re-measured rows and the comparison of two result sets
 Honesty rules of the cell cache: an entry is found only by a key that holds the engine's image, settings and statements, the dataset hash, the thread
 budgets, the number of runs and the fingerprint of the host that measured it; one that was measured on another host is never used (`ForeignHost`), one older than the maximum age is
 measured again, and what is read from the cache is labelled with its date, its key and its fingerprint wherever the numbers are published."""
-import hashlib, json, os, sys, tempfile, time
+import hashlib, json, math, os, random, statistics, sys, tempfile, time
 
 EPOCH = 1    # bumped when the way a cell is measured changes so that older entries no longer describe what is measured now
 
@@ -214,6 +214,37 @@ def stable(a, b, tol=1.0, sep=1.5, pairs=None):
                     bad.append((q, x, y, ra, rb, 'order'))
         out[q] = info
     return dict(queries=out, violations=bad, ok=not bad)
+
+
+def bootstrap_ratio(a, b, n=2000, level=0.95, seed=1):
+    """(median b / median a, lo, hi): the percentile bootstrap interval of the ratio of the medians of two samples (the runs of a cell in two result files), resampled with a fixed
+    seed so that the same files give the same interval"""
+    rng, med = random.Random(seed), statistics.median
+    ratios = sorted(med(rng.choices(b, k=len(b))) / med(rng.choices(a, k=len(a))) for _ in range(n))
+    return med(b) / med(a), ratios[int(n * (1 - level) / 2)], ratios[int(n * (1 + level) / 2) - 1]
+
+
+def mann_whitney_p(a, b):
+    """two-sided p of the Mann-Whitney U test (normal approximation with the tie correction): small when the two samples do not come from one distribution"""
+    ranked = sorted([(v, 0) for v in a] + [(v, 1) for v in b])
+    ranks, ties, i = [0.0] * len(ranked), 0.0, 0
+    while i < len(ranked):
+        j = i
+        while j < len(ranked) and ranked[j][0] == ranked[i][0]:
+            j += 1
+        ranks[i:j], ties, i = [(i + j + 1) / 2] * (j - i), ties + (j - i) ** 3 - (j - i), j
+    n1, n2 = len(a), len(b)
+    u = sum(r for r, (_, g) in zip(ranks, ranked) if g == 0) - n1 * (n1 + 1) / 2
+    sd = math.sqrt(n1 * n2 / 12 * (n1 + n2 + 1 - ties / ((n1 + n2) * (n1 + n2 - 1))))
+    return 1.0 if sd == 0 else math.erfc(max(abs(u - n1 * n2 / 2) - 0.5, 0) / sd / math.sqrt(2))
+
+
+def changed(a, b, alpha=0.05):
+    """whether two samples of one cell differ: the interval of the ratio of the medians excludes 1 and the Mann-Whitney test rejects equality at `alpha` (both: a bootstrap of a handful of
+    runs is wide, a rank test of a handful is weak). Returns (ratio, lo, hi, p, changed)"""
+    ratio, lo, hi = bootstrap_ratio(a, b)
+    p = mann_whitney_p(a, b)
+    return ratio, lo, hi, p, (lo > 1 or hi < 1) and p < alpha
 
 
 def main(argv):

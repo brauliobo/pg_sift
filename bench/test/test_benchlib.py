@@ -190,5 +190,23 @@ class StoreHelpers(unittest.TestCase):
         self.assertEqual(got['meta']['noisy'], ['06: noisy too'])
 
 
+class Compare(unittest.TestCase):
+    def test_same_runs_are_not_a_change(self):
+        a = [1.00, 1.02, 0.98, 1.01, 0.99]
+        self.assertFalse(benchlib.changed(a, [1.01, 0.99, 1.00, 1.02, 0.98])[4])
+
+    def test_a_clear_slowdown_is_a_change(self):
+        ratio, lo, hi, p, diff = benchlib.changed([1.00, 1.02, 0.98, 1.01, 0.99], [1.5, 1.52, 1.48, 1.51, 1.49])
+        self.assertTrue(diff and lo > 1.3 and hi < 1.7 and p < 0.05)
+
+    def test_interval_is_reproducible(self):
+        a, b = [1.0, 1.1, 0.9, 1.0], [2.0, 2.2, 1.8, 2.1]
+        self.assertEqual(benchlib.bootstrap_ratio(a, b), benchlib.bootstrap_ratio(a, b))
+
+    def test_rank_test_with_ties(self):
+        self.assertEqual(benchlib.mann_whitney_p([1, 1, 1], [1, 1, 1]), 1.0)
+        self.assertLess(benchlib.mann_whitney_p([1, 1, 1, 1, 1], [2, 2, 2, 2, 2]), 0.05)
+
+
 if __name__ == '__main__':
     unittest.main(warnings='ignore')

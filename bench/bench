@@ -54,6 +54,8 @@ Commands
   store      the store benchmark, for everyone: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift,
              Citus (columnar, one node), Elasticsearch and ClickHouse in docker containers with equal limits (the same memory cap, the same CPU quota and the same thread budget for every engine,
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
+  compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
+  final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
 
@@ -594,7 +596,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store final clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store compare final clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -633,5 +635,6 @@ case $cmd in
   readme) cmd_readme ;;
   analytics) cmd_analytics ;;
   store) cmd_store ;;
+  compare) rest=(compare "${rest[@]}"); cmd_store ;;   # compare A.json B.json: the per-cell deltas with their intervals
   *) echo "bench: unknown command $cmd" >&2; usage; exit 1 ;;
 esac
