@@ -43,15 +43,35 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd:)
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
 loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the result tables, kept for the older runs; noise is judged by quiet_report
-# batch WHAT: before a timed batch, wait for a quiet host (quiet_batch); one that runs anyway after the timeout is logged as NOISY
-# and listed in $DEST/noisy.txt
-batch() {
-  local r; quiet_batch
-  [[ -n $QUIET_MARK ]] || return 0
-  r=$(quiet_report 2>&1 || true)
-  log "$*:$QUIET_MARK, $r"; printf '%s\t%s\n' "$*" "$r" >>"${DEST:-$OUT}/noisy.txt"
+# The noise of a timed batch is judged by what others did in its window, not by waiting for a quiet host: the pressure stall information cannot tell the
+# run's own servers and clients from other users, and waiting for it idled the run. A window is the time from one `batch` call to the next: the CPU the host
+# spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody
+# else; a window is NOISY when it is above SIFT_NOISE_CPU (0.25) cores over the idle host's, measured once, 10 s, at the first batch. Recorded in noisy.txt.
+sentinel_now() { # host busy seconds, own cgroup CPU seconds, uptime seconds
+  awk -v hz="$(getconf CLK_TCK)" '/^cpu / {printf "%s ", ($2 + $3 + $4 + $7 + $8 + $9) / hz}' /proc/stat
+  awk '/^usage_usec/ {printf "%s ", $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || printf '0 '
+  cut -d' ' -f1 /proc/uptime
+}
+sentinel_rate() { awk -v a="$1" -v b="$2" 'BEGIN {split(a, x, " "); split(b, y, " "); dt = y[3] - x[3]; printf "%.3f", dt > 0 ? ((y[1] - x[1]) - (y[2] - x[2])) / dt : 0}'; }
+batch_close() { # judge the window that is open (the one since the last batch call)
+  [[ -n ${SENT_AT:-} ]] || return 0
+  local now rate; now=$(sentinel_now); rate=$(sentinel_rate "$SENT_AT" "$now")
+  if awk -v r="$rate" -v b="$SENT_BASE" -v m="${SIFT_NOISE_CPU:-0.25}" 'BEGIN {exit !(r - b > m)}'; then
+    log "$SENT_WHAT: NOISY, $rate cores of other work over the $SENT_BASE of the idle host ($(quiet_report 2>&1), for information)"
+    printf '%s\t%s cores of other work over the %s of the idle host\n' "$SENT_WHAT" "$rate" "$SENT_BASE" >>"${DEST:-$OUT}/noisy.txt"
+  fi
+  SENT_AT=
+}
+batch() { # WHAT: opens the window of a timed batch (and judges the one before it)
+  batch_close
+  if [[ -z ${SENT_BASE:-} ]]; then
+    local a b; a=$(sentinel_now); sleep 10; b=$(sentinel_now); SENT_BASE=$(sentinel_rate "$a" "$b")
+    log "the idle host has $SENT_BASE cores of other work (a batch is NOISY above ${SIFT_NOISE_CPU:-0.25} over it)"
+  fi
+  SENT_WHAT=$*; SENT_AT=$(sentinel_now)
 }
 noisy_report() { # the pressure now and the number of batches that ran NOISY
+  batch_close
   local n=0; [[ ! -f ${DEST:-$OUT}/noisy.txt ]] || n=$(wc -l <"${DEST:-$OUT}/noisy.txt")
   echo "$(quiet_report 2>&1), $n NOISY batches"
 }

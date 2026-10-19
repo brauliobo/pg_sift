@@ -53,7 +53,7 @@ es_description() { # the Elasticsearch of the run, when it is installed: the sys
   [[ -x $es/bin/elasticsearch ]] || return 0
   ver=$(pacman -Q elasticsearch 2>/dev/null | cut -d' ' -f2)
   jvm=$("$es/jdk/bin/java" -version 2>&1 | sed -n '2p' | sed 's/^OpenJDK Runtime Environment //')
-  echo "elasticsearch: ${ver:-unknown} (system package at $es, bundled JDK link $jvm, heap ${ES_HEAP:-${TIER_SHBUF[$TIER]%B}}, 1 shard, no replica, security off)"
+  echo "elasticsearch: ${ver:-unknown} (system package at $es, bundled JDK link $jvm, heap ${ES_HEAP:-${TIER_SHBUF[$TIER]%B}}, ${ES_SHARDS:-1} shard(s), ${ES_PROCESSORS:-all} processors, no replica, security off)"
 }
 es_description
 echo "sift commit: $(sift_commit)"
