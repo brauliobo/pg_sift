@@ -2,8 +2,8 @@
 
 What the shredder (`docs/COL-SHRED.md`) gives today on arrays of objects, objects with dynamic keys, nested objects, arrays of scalars and
 mixed types, measured against plain PostgreSQL jsonb, GIN and ClickHouse arrays; the three shapes added in 3.1 and why three others stay
-in the normal plan; and proposals that need a decision (`sift_table` paths, column format minor 4). Nothing in sections 4 and 5 is
-implemented.
+in the normal plan; and proposals that need a decision (`sift_table` paths, column format minor 4). Section 4 is not implemented; of
+section 5 the type of an overflowing value (j16) is, the element cubes are not.
 
 ## 1. Method
 
@@ -51,7 +51,7 @@ section 2 come from the same documents).
 | j18 | element keys joined to a lookup table | 317 | 9.1 | |
 | j09 | `jsonb_each_text(scores)` with a regex on the value | 229 | 254 | not pushed (2) |
 | j14 | `(e->>'score')::float8` of `jsonb_array_elements(items)` with a regex on `e->>'score'` | 257 | 263 | not pushed (2) |
-| j16 | `jsonb_typeof(attrs->'mixed') = 'number'` | 46 | 44 | not pushed (3) |
+| j16 | `jsonb_typeof(attrs->'mixed') = 'number'` | 100 | 2.1 | 3.1, column format minor 4: the type of an overflowing value (below, section 5.1) |
 
 (1) Coverage gap J13 of `docs/coverage.tsv`. With strings among the numbers (`strs = 0.05`) the aggregates that read a numeric path raise
 `a column of the aggregate scan holds values its index cannot store`: the fix is on the 3.0.1 branch (`fix/v301-agg`), not here.
@@ -102,14 +102,24 @@ not done here.
   (`astext` paths): j09 417 to 7.0 ms, j14 408 to 6.6 ms. Rows and counts equal the normal plan; the sums and averages of floats differ in
   the last digits (the order of the additions, as for every pushed `sum(float8)`). The index of the variant is 2.4 MB, built in 215 ms.
 
-### Why the others stay in the normal plan
+### The type of a value, `jsonb_typeof` (j16; tests `col_tags`, `agg_jsonb_typeof`, `agg_jsonb_typeof_parallel`, column format minor 4)
 
-- **j16, `jsonb_typeof(x) = 'number'`.** The JSON type of a value is not in the index: a string in a number path is an `OVERFLOW` slot
-  (NULL with the overflow bit), and the bit does not say whether the value is a string, a boolean, an object or a number out of range.
-  Without the type the filter cannot tell the rows it must keep; the rows would need the heap, and the aggregate scan has no recheck of an
-  overflow row (the 3.0.1 branch adds one for float8 paths: the rows of a `float8` path with strings are rechecked, which is the same
-  gap seen from the aggregate). The type tag of a slot (two bits per value of a path: string, number, boolean, null, object, array) is a
-  column format change (section 5) and is not done.
+- **Why it needed the format.** A string in a number path is an `OVERFLOW` slot (NULL with the overflow bit), and the bit did not say whether
+  the value was a string, a boolean, an object or a number out of range, so a filter on the type could not tell the rows it must keep.
+  Minor 4 keeps the type of every overflowing value in its chunk (section 5.1); the filter is then answered by the source (`SAP_TYPE`,
+  docs/COL-PLAN.md, "The JSON type of a path") and drops the rows of the other types without reading, and without the error, of their values.
+- **Numbers.** 100,000 documents, `index_typeof.sql` (`attrs.mixed float8`: 70% numbers, 20% strings, 10% JSON nulls), one backend, best of 5,
+  warm, on a busy host: the normal plan 100 to 126 ms and `SiftAgg` 2.1 to 2.6 ms (about 45 times) on `strs = 0` and on `strs = 0.05`; 1,000,000
+  documents (`strs = 0.05`, best of 3): 396 and 11.9 ms (33 times). The rows equal the normal plan's (69,843 numbers, sum 314,656).
+- **Cost of the tags.** Half a byte per overflowing value (the nibble), nothing for a chunk without overflow. `strs = 0` with the index of
+  section 1 (no overflow): 2,408,448 bytes with minor 3 and with minor 4, build 320 to 377 ms against 326 to 335 ms. With `index_typeof.sql` and
+  `strs = 0.05` (59,988 overflowing values in `attrs.mixed`, `scores.*` and the item scores): the three leaves grow by 10,144, 10,248 and
+  9,936 bytes (0.506 bytes per value), the index from 2,588,672 to 2,621,440 bytes (+1.3%, four pages), build 388 to 465 ms against 357
+  to 371 ms (within the noise of the host).
+- **What stays out.** `<>`, `NOT IN`, `'null'`, `IS NULL` and a group key of `jsonb_typeof`, an `OR` branch, `astext` leaves, a path of a list
+  element. A filter that selects a row whose value the leaf cannot hold raises the error of the pushdown (`count(*) WHERE jsonb_typeof(m) =
+  'string'` on a number leaf, a number out of range, a non-integer for `int4`), as does an overflow value with no type in a unit written by
+  minor 3 (hint `REINDEX`).
 
 ## 4. Proposal: paths for `sift_table` (no format change)
 
@@ -156,13 +166,18 @@ predicate) scans every element.
 - **A type tag for the overflowing values** (j16, `jsonb_typeof`). The chunk keeps a NULL bitmap and an overflow bitmap; a value the
   declared type cannot hold (a string in a number path, an object where a scalar is declared, a number out of range) is a set bit in both and says
   nothing about what the value was. Minor 4 adds the chunk flag `SIFT_COLC_TAGS` (0x4, only with `SIFT_COLC_OVF`): after the overflow
-  bitmap, one nibble per set overflow bit in slot order, padded to 8 bytes: 0 unknown, 1 string, 2 number, 3 boolean, 4 object, 5 array.
-  Cost: half a byte per overflowing value, nothing for a chunk without overflow. The type of a value that is stored is the type of its
+  bitmap, one nibble per set overflow bit in slot order, padded to 8 bytes: 0 unknown, 1 string, 2 number, 3 boolean, 4 object, 5 array,
+  6 none. The sixth is not in the first design: a leaf below an array that sits at an object position (`nest.v` of `{"nest": [1]}`) overflows
+  because a lax jsonpath would unwrap the array, but the `->` path leads to no value and `jsonb_typeof` of it is NULL, so the slot must neither
+  match a type nor look like a value written before the types were kept (tag 0, which raises). Cost: half a byte per overflowing value
+  (measured 0.506), nothing for a chunk without overflow. The type of a value that is stored is the type of its
   leaf (bool is boolean, integers, floats and numeric are number, text is string); an `astext` leaf mixes the three, so `jsonb_typeof`
   is not answered from it. A JSON null is a NULL slot, and so is an absent key: the tag does not tell them apart, so the pushdown answers
   the tests that treat both alike, `jsonb_typeof(p) = 'number'` (and `IN` over the five types other than `'null'`) and leaves group keys, `= 'null'`, `<>` and `IS NULL` of `jsonb_typeof` to the normal plan. Rows whose tag is not the asked type
   are not read, so a string among numbers no longer raises the overflow error when the filter drops it; a value that is of the asked type but
-  does not fit (a number out of the float range) still raises it. An overflow slot with tag 0 (written before minor 4 and carried by a merge)
+  does not fit (a number out of the float range) still raises it, and so does a string asked for on a number leaf, since the leaf holds none of
+  its values: the filter keeps the rows of a type and cannot give their values. The error is raised for the rows the filter keeps that a
+  snapshot sees, before the other conjuncts of the source run. An overflow slot with tag 0 (written before minor 4 and carried by a merge)
   raises the error with the hint `REINDEX`, since the type of that value is not known.
 - **Element cubes** (j02, j17): the sidecar's histograms for a dimension that is a leaf of a list group (section above). The `COLP`
   directory moves to version 2: per unit, after the top-level cube, a second blob with the element cubes, each naming its group; a
@@ -195,14 +210,17 @@ predicate) scans every element.
   SQL objects changes: `ALTER EXTENSION pg_sift UPDATE` from 3.0 runs a script with no objects of this change, and a `sift_col` index built by
   3.0 keeps working across it. BM25 indexes (`SIFT_FORMAT_MINOR` 2) are not touched.
 - **Verification.** `sift.col_verify` checks the segment minor against 3 and 4; for minor 4 that the flag `SIFT_COLC_TAGS` is present exactly
-  when a chunk has overflow bits, that every nibble is 0 to 5 and the padding is zero, that the `COLP` directory version matches the
+  when a chunk has overflow bits, that every nibble is 0 to 6 and the padding is zero, that the `COLP` directory version matches the
   segment's minor (a minor 3 segment has version 1 and no tags), and recomputes the element histograms from the chunks with the other
   sidecar checks; with `heapallindexed` the tag of an overflow value is compared with the type of the heap value (a tag 0 matches any).
   `sift.col_sections` lists the new blob; `sift.col_index_info` counts it in `preagg_bytes`.
-- **Tests.** Regress `col_format4` (the tag, `jsonb_typeof` and element-cube answers equal the normal plan on minor 3, minor 4 and mixed
-  indexes, `sift.col_format_minor` switched between inserts, merge and VACUUM), the coldiff fixtures, the crash and replica TAPs on a mixed
-  index (`test/t/col_index_crash.sh`, `col_index_replica.sh`), and the extension lifecycle test: a `sift_col` index with minor 3 segments built
-  before `ALTER EXTENSION UPDATE`, read after it, then extended with minor 4 segments in the same index.
+- **Tests.** Regress `col_format4` (minor 3, minor 4 and mixed indexes, `sift.col_format_minor` switched between inserts, merge and VACUUM),
+  `col_tags` (the types of the overflow values of every unit against the heap, on minor 3, minor 4, the write buffer, a merge and `REINDEX`, and
+  the corruptions `sift.col_verify` finds), `agg_jsonb_typeof` and `agg_jsonb_typeof_parallel` (the answers equal the normal plan on minor 3,
+  minor 4 and mixed indexes, with DML, VACUUM and under parallel workers), the coldiff fixtures `k_typeof_*`, the crash and replica TAPs
+  (`test/t/col_index_crash.sh`, `col_index_replica.sh`: an index with overflow values, filtered by type after recovery and on a standby), and the
+  extension lifecycle test: a `sift_col` index with minor 3 segments built before `ALTER EXTENSION UPDATE`, read after it, then extended
+  with minor 4 segments in the same index.
 
 ## 6. Reproducing
 
@@ -210,4 +228,5 @@ predicate) scans every element.
 createdb jb && psql jb -c 'CREATE EXTENSION pg_sift'
 psql jb -v n=100000 -v strs=0 -f bench/sql/jsonb/gen.sql -f bench/sql/jsonb/index.sql
 # each bench/sql/jsonb/queries/*.sql with sift.enable_agg on and off, max_parallel_workers_per_gather = 0
+# j16 needs the mixed key as a leaf: bench/sql/jsonb/index_typeof.sql instead of index.sql (the same, plus attrs.mixed float8)
 ```

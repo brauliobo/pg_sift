@@ -941,7 +941,7 @@ leaf_set(SiftShred *sh, NodeP n, SiftShredState st, uint32 reason)
 	sh->doc.col[n->col].ovf |= reason;
 }
 
-/* A leaf whose value the declared type cannot hold: the slot is OVERFLOW and keeps the JSON type of the value (SIFT_COLTAG_NONE when the leaf is below the node the event delivered: its path leads to no value) */
+/* A leaf whose value the declared type cannot hold: the slot is OVERFLOW and keeps the JSON type of the value (SIFT_COLTAG_NONE when the leaf is below the array the event delivered: its path leads to no value) */
 static void
 leaf_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
 {
