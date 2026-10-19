@@ -2,8 +2,8 @@
  * sift_aggvk.h - the Vulkan compute device of the aggregate scan (docs/GPU.md): one device per backend, a cache of column chunks that stay on
  * it, and one kernel (sift_aggvk.comp) that counts and sums integer columns of those chunks, filtered and grouped by a low cardinality key.
  *
- * Plain C, no PostgreSQL headers. Built only with `make VULKAN=1` (SIFT_VULKAN): otherwise sift_vk_built() is false and sift_vk_open() says
- * why it returns NULL; the other functions are never reached. libvulkan.so.1 is opened with dlopen at the first sift_vk_open, never earlier,
+ * Plain C, no PostgreSQL headers. Compiled only with `make VULKAN=1` (SIFT_VULKAN); the default build does not have sift_aggvk.c at all (the backend,
+ * sift_agggpu.c, uses this header only under SIFT_VULKAN). libvulkan.so.1 is opened with dlopen at the first sift_vk_open, never earlier,
  * and the Vulkan declarations are the vendored subset of sift_aggvk_min.h: a build needs neither the SDK nor its headers.
  *
  * Memory model. A chunk is the 32-bit words of one column chunk as the codec stores them. The cache is one device buffer cut in slabs; a chunk lives inside one slab and is addressed by its word offset. A slab is
@@ -72,8 +72,6 @@ typedef struct SiftVkJob
 	const uint32_t *desc;		/* nunits * (npred + 1 + nsum) * 4 words */
 	const uint32_t *wg;			/* nwg * 4 words: unit, first tile, tiles, rows of the unit */
 } SiftVkJob;
-
-extern bool sift_vk_built(void);
 
 /*
  * Opens the device named by `device` ("" the best one, a number its index, else a substring of its name) and a cache of cache_bytes (less if
