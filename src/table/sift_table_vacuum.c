@@ -91,6 +91,10 @@ typedef struct VacState
 	double		dead;			/* recently dead: deleter committed but not removable yet */
 	double		group_dead;		/* of those, rows of the column groups (their liveness bit is still set) */
 	TidList	dead_tids;
+	uint32	   *dead_sb;		/* sorted: the superblocks of the groups of aborted transactions, every row of which is dead */
+	int			ndead_sb;
+	uint64		aborted[SIFT_MAX_SEGMENTS];	/* the generations of those groups: dropped once the indexes forgot their rows */
+	int			naborted;
 } VacState;
 
 static void
@@ -191,14 +195,17 @@ in_wbuf(const SiftTblRel *st, uint64 vblock)
 	return false;
 }
 
-/* The live rows of the column segments: with the write buffer rows, the tuples of the table (promotion moves rows from one to the other) */
+/*
+ * The live rows of the column segments: with the write buffer rows, the tuples of the table (promotion moves rows from one to the other).
+ * The rows of a group whose writer has not committed are not live, as a write buffer row of it is not.
+ */
 static double
 group_live_rows(Relation rel, const SiftTblRel *st)
 {
 	double		n = 0;
 
 	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && (!sift_tbl_seg_tagged(&st->dir.segs[i]) || TransactionIdDidCommit(st->dir.segs[i].reserved)))
 		{
 			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
 
@@ -234,6 +241,52 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 	}
 }
 
+static int
+cmp_sb(const void *a, const void *b)
+{
+	return pg_cmp_u32(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/* Is the row dead for the indexes: a dead TID, or any row of a group of an aborted transaction */
+static bool
+dead_has(ItemPointer itemptr, void *state)
+{
+	VacState   *v = state;
+	uint32		sb = ItemPointerGetBlockNumberNoCheck(itemptr) / SIFT_SB_PAGES;
+
+	return tid_has(itemptr, &v->dead_tids) || (v->ndead_sb > 0 && bsearch(&sb, v->dead_sb, v->ndead_sb, sizeof(uint32), cmp_sb) != NULL);
+}
+
+/* The groups of aborted transactions: their rows are dead, the groups go (sift_tbl_drop_aborted_groups) after the indexes dropped the entries */
+static void
+aborted_groups(Relation rel, SiftTblRel *st, VacState *v)
+{
+	SiftTblTags *tags = sift_tbl_tags_build(rel, st, &st->dir, CurrentMemoryContext);
+
+	for (int i = 0; i < tags->n; i++)
+	{
+		const SiftTblTag *t = &tags->ent[i];
+
+		if (!sift_tbl_xid_aborted(t->xid))
+			continue;
+		v->aborted[v->naborted++] = t->gen;
+		v->dead_sb = v->dead_sb ? repalloc(v->dead_sb, (v->ndead_sb + t->nsb) * sizeof(uint32)) : palloc(t->nsb * sizeof(uint32));
+		memcpy(v->dead_sb + v->ndead_sb, t->sb, t->nsb * sizeof(uint32));
+		v->ndead_sb += t->nsb;
+	}
+	if (v->ndead_sb > 0)
+		qsort(v->dead_sb, v->ndead_sb, sizeof(uint32), cmp_sb);
+}
+
+/* The writers of the groups that are still not final hold the oldest xid back */
+static void
+note_groups(const SiftTblRel *st, VacState *v)
+{
+	for (int i = 0; i < st->dir.nsegs; i++)
+		if (sift_tbl_seg_tagged(&st->dir.segs[i]))
+			note_xid(v, st->dir.segs[i].reserved);
+}
+
 /* Steps 1 and 2: flags the dead write buffer rows, clears the liveness of the dead group rows, counts the rows */
 static void
 vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
@@ -255,6 +308,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	}
 	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
 	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
+	aborted_groups(rel, st, v);
 	tid_sort(&v->dead_tids);
 	if (sb_lo <= sb_hi)
 		(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v->dead_tids, sb_lo, sb_hi);
@@ -277,8 +331,8 @@ vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
 		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v->live + v->dead,.strategy = bstrategy};
 		IndexBulkDeleteResult *res = NULL;
 
-		if (v->dead_tids.n > 0)
-			res = index_bulk_delete(&ivinfo, NULL, tid_has, &v->dead_tids);
+		if (v->dead_tids.n > 0 || v->ndead_sb > 0)
+			res = index_bulk_delete(&ivinfo, NULL, dead_has, v);
 		res = index_vacuum_cleanup(&ivinfo, res);
 		if (res)
 			pfree(res);
@@ -433,8 +487,10 @@ compact_tail(Relation rel, SiftTblRel *st, VacState *v)
 static void
 vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
 {
+	(void) sift_tbl_drop_aborted_groups(rel, st, v->aborted, v->naborted);
 	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
+	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
 	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
 		CHECK_FOR_INTERRUPTS();
 	if (tomb_drops(st, v))
@@ -485,7 +541,10 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 		vacuum_rows(rel, st, &v);
 	nindexes = vacuum_indexes(rel, &v, bstrategy);
 	if (st->initialized)
+	{
 		vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, elevel);
+		note_groups(st, &v);
+	}
 	sift_maint_unlock(rel);
 	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
 }
