@@ -13,7 +13,7 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 
 ## Build and test
 
-- `make`, `make check` (quick tier), `make check-full` (ASan, soak, fuzz); `nice make -j4` on a shared host. Details: CONTRIBUTING.md.
+- `make`, `make check` (quick tier), `make check-full` (ASan, soak, fuzz); `nice make -j4` on a shared host. Before a push run `scripts/ci.sh affected`, not `make check`: GitHub CI picks jobs by the same map (`scripts/areas.tsv`; a new test or file goes into it, `scripts/ci.sh --selftest` fails otherwise). Release: `scripts/release.sh X.Y.Z --dry-run`, no local gate (docs/RELEASE.md). Details: CONTRIBUTING.md.
 - `scripts/pgtest.sh install|start|psql|regress [test]|tap [test]|destroy` is the throwaway cluster; `scripts/ci.sh` runs every suite.
 - `scripts/coverage.sh --gen` writes `docs/COVERAGE.md` and the README coverage block from `docs/coverage.tsv`; `--check` proves them.
 - Benchmark tables are generated: `bench/bench all --docs` (`bench/steps/readme.py`, `tables.py`, `store.py`).
