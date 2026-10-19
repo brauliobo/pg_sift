@@ -2,6 +2,8 @@
  * regex_test.c - drives mariadb/host/host_regex.c the way src/bm25/sift_query.c does (see regex_check.sh).
  *
  *   regex_test match nosub|sub     stdin: PATTERN<TAB>WORD per line; prints 1, 0 or error per line
+ *   regex_test info                stdin: PATTERN per line; prints 1 when re_info says the pattern has a back-reference, else 0 (error
+ *                                  when it does not compile), on a regex_t that held garbage before the compile (palloc is not zeroed)
  *   regex_test prefix WORDS        stdin: PATTERN per line; prints none, P:prefix or E:prefix per line and fails when
  *                                  a word the pattern matches does not start with its prefix (or is not equal to it)
  * A byte 0x01 in a pattern or word stands for a newline. Memory is plain malloc, the matcher needs nothing else.
@@ -212,13 +214,39 @@ do_prefix(const char *wordsfile)
 	return bad != 0;
 }
 
+static int
+do_info(void)
+{
+	char	   *line = NULL;
+	size_t		cap = 0;
+	ssize_t		len;
+	regex_t		re;
+
+	while ((len = getline(&line, &cap, stdin)) > 0)
+	{
+		if (line[len - 1] == '\n')
+			line[--len] = 0;
+		memset(&re, 0xA5, sizeof(re));
+		if (!compile(&re, line, REG_ADVANCED | REG_NOSUB))
+			puts("error");
+		else
+		{
+			puts((re.re_info & REG_UBACKREF) ? "1" : "0");
+			pg_regfree(&re);
+		}
+	}
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
+	if (argc == 2 && strcmp(argv[1], "info") == 0)
+		return do_info();
 	if (argc == 3 && strcmp(argv[1], "match") == 0)
 		return do_match(REG_ADVANCED | (strcmp(argv[2], "nosub") == 0 ? REG_NOSUB : 0));
 	if (argc == 3 && strcmp(argv[1], "prefix") == 0)
 		return do_prefix(argv[2]);
-	fprintf(stderr, "usage: regex_test match nosub|sub | regex_test prefix WORDS\n");
+	fprintf(stderr, "usage: regex_test match nosub|sub | regex_test info | regex_test prefix WORDS\n");
 	return 2;
 }
