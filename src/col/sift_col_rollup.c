@@ -87,8 +87,14 @@ typedef struct RollupShared
 
 static RollupShared *rollup_shared;
 
+/* PostgreSQL 19 passes the argument of GetNamedDSMSegment to the init callback */
+#if PG_VERSION_NUM >= 190000
+static void
+rollup_init(void *ptr, void *arg)
+#else
 static void
 rollup_init(void *ptr)
+#endif
 {
 	RollupShared *sh = ptr;
 
@@ -102,7 +108,11 @@ shared(void)
 	bool		found;
 
 	if (rollup_shared == NULL)
+#if PG_VERSION_NUM >= 190000
+		rollup_shared = GetNamedDSMSegment("pg_sift_col_rollup", sizeof(RollupShared), rollup_init, &found, NULL);
+#else
 		rollup_shared = GetNamedDSMSegment("pg_sift_col_rollup", sizeof(RollupShared), rollup_init, &found);
+#endif
 	return rollup_shared;
 }
 
