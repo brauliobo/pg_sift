@@ -75,6 +75,7 @@
 bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
 bool		sift_enable_topn = true;
+static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
 
 #define VEC			SIFT_AGG_VEC
@@ -105,6 +106,10 @@ sift_agg_init(void)
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_wait",
+							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
+							 NULL, &sift_test_agg_wait, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
 							NULL, &sift_agg_combo_cache, 1 << 20, 16, 1 << 24,
@@ -643,6 +648,7 @@ typedef struct AggExec
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
 	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
+	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
 	uint32	   *glist;
 	uint32		nglist;
@@ -2886,6 +2892,9 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 #define DB_WORDS		(1 << (DB_SHIFT - 6))
 #define DB_NCD_MIN		64
 #define DB_NCD_MAX		65536
+#define DB_DENSE		32				/* bits from which a chunk goes to the leader as it is rather than as pairs */
+#define DB_PREFETCH		(2 << 20)		/* bytes of bitmaps from which the cache no longer holds them */
+#define DB_BATCH		32				/* values whose bits are prefetched together */
 #define DB_ARENA		255				/* chunks per arena block; the first chunk of a block links to the previous block */
 
 typedef enum DistMode
@@ -3137,23 +3146,16 @@ dist_cover(AggExec *ex, Dist *d, int64 xc)
 }
 
 /*
- * The bit of x in group g, when the fast path of the caller did not find its chunk: 1 if it was not set, 0 if it was, -1 when the
- * set stopped being a bitmap (and the pair is not added: the caller goes on with dist_add).
+ * The chunk of 4096 bits that holds chunk number xc of group g, allocated if it is not there yet; NULL when the set stopped being a
+ * bitmap (it has moved to a hash set and nothing was added).
  */
-static int
-dist_bits_slow(AggExec *ex, Dist *d, uint32 g, int64 x)
+static uint64 *
+dist_chunk_for(AggExec *ex, Dist *d, uint32 g, int64 xc)
 {
-	int64		c;
 	DistChunk  *dir;
-	uint64	   *ch,
-			   *w;
-	uint64		m = UINT64CONST(1) << (x & 63);
 
-	if (!dist_cover(ex, d, x >> DB_SHIFT))
-	{
-		dist_convert(ex, d, DD_HASH);
-		return -1;
-	}
+	if (!dist_cover(ex, d, xc))
+		goto convert;
 	if (g >= d->ngd)
 	{
 		uint32		n = Max(Max(g + 1, d->ngd * 2), 64);
@@ -3170,26 +3172,37 @@ dist_bits_slow(AggExec *ex, Dist *d, uint32 g, int64 x)
 	if (d->gd[g] == NULL)
 	{
 		if (d->bytes + d->ncd * sizeof(DistChunk) > d->budget)
-		{
-			dist_convert(ex, d, DD_HASH);
-			return -1;
-		}
+			goto convert;
 		d->gd[g] = MemoryContextAllocZero(ex->tcxt, d->ncd * sizeof(DistChunk));
 		d->bytes += d->ncd * sizeof(DistChunk);
 	}
 	dir = d->gd[g];
-	c = (x >> DB_SHIFT) - d->cbase;
-	if (dir[c] == NULL)
+	if (dir[xc - d->cbase] == NULL)
 	{
 		if (d->bytes + DB_WORDS * sizeof(uint64) > d->budget)
-		{
-			dist_convert(ex, d, DD_HASH);
-			return -1;
-		}
-		dir[c] = dist_chunk(ex, d);
+			goto convert;
+		dir[xc - d->cbase] = dist_chunk(ex, d);
 		d->bytes += DB_WORDS * sizeof(uint64);
 	}
-	ch = dir[c];
+	return dir[xc - d->cbase];
+convert:
+	dist_convert(ex, d, DD_HASH);
+	return NULL;
+}
+
+/*
+ * The bit of x in group g, when the fast path of the caller did not find its chunk: 1 if it was not set, 0 if it was, -1 when the
+ * set stopped being a bitmap (and the pair is not added: the caller goes on with dist_add).
+ */
+static int
+dist_bits_slow(AggExec *ex, Dist *d, uint32 g, int64 x)
+{
+	uint64	   *ch = dist_chunk_for(ex, d, g, x >> DB_SHIFT);
+	uint64	   *w;
+	uint64		m = UINT64CONST(1) << (x & 63);
+
+	if (ch == NULL)
+		return -1;
 	w = &ch[(x >> 6) & (DB_WORDS - 1)];
 	if (*w & m)
 		return 0;
@@ -3239,6 +3252,27 @@ dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v)
 	return false;
 }
 
+/* the bits of a chunk of another bitmap (chunk number xc of group g) added to the set; how many were new */
+static uint64
+dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits)
+{
+	uint64	   *ch = d->mode == DD_BITS ? dist_chunk_for(ex, d, g, xc) : NULL;
+	uint64		n = 0;
+
+	for (int w = 0; w < DB_WORDS; w++)
+	{
+		if (ch)
+		{
+			n += pg_popcount64(bits[w] & ~ch[w]);
+			ch[w] |= bits[w];
+			continue;
+		}
+		for (uint64 m = bits[w]; m; m &= m - 1)
+			n += dist_add(ex, d, g, (uint32) (xc * (1 << DB_SHIFT) + w * 64 + pg_rightmost_one_pos64(m)));
+	}
+	return n;
+}
+
 /* the groups renumbered through remap (UINT32_MAX: dropped) while the scan runs; newcap is their new capacity */
 static void
 dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 newcap)
@@ -3275,44 +3309,115 @@ dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 ne
 	}
 }
 
+/* the fields of a bitmap set the loops of dist_update read, in registers: the stores to the bits would make the compiler reload them */
+typedef struct DistView
+{
+	int64		cbase;
+	uint32		ncd;
+	uint32		ngd;
+	DistChunk **gd;
+	bool		sgn;
+} DistView;
+
+static inline DistView
+dist_view(const Dist *d)
+{
+	DistView	vw = {d->cbase, d->ncd, d->ngd, d->gd, d->sgn};
+
+	return vw;
+}
+
+static inline int64
+dist_vx(const DistView *vw, uint32 v)
+{
+	return vw->sgn ? (int64) (int32) v : (int64) v;
+}
+
+/* the word of the bit of x in group g and its mask, when the chunk is there; NULL when it is not */
+static inline uint64 *
+dist_word(const DistView *vw, uint32 g, int64 x, uint64 *m)
+{
+	int64		c = (x >> DB_SHIFT) - vw->cbase;
+	DistChunk  *dir;
+
+	if (unlikely((uint64) c >= vw->ncd || g >= vw->ngd || (dir = vw->gd[g]) == NULL || dir[c] == NULL))
+		return NULL;
+	*m = UINT64CONST(1) << (x & 63);
+	return &dir[c][(x >> 6) & (DB_WORDS - 1)];
+}
+
 /* adds the selected values (v[j] of tuple j, in the group ex->gid[j]); the count of a group goes up for each new one */
 static void
 dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 {
 	Dist	   *d = ex->dist[ai];
 	int64	   *cnt = ex->acc[ai].n;
+	const uint32 *gid = ex->gid;
+	DistView	vw = dist_view(d);
 	int			j = 0;
 
-	if (d->mode == DD_BITS)
-		for (; j < nsel; j++)
-		{
-			uint32		g = ex->gid[j];
-			int64		x,
-						c;
-			DistChunk  *dir;
-			uint64	   *w,
-						m;
+	/* bits that fit the cache are set one by one; past that, a batch at a time: the words are found and prefetched first, since each is a miss */
+	for (; j < nsel && d->mode == DD_BITS && d->bytes < DB_PREFETCH; j++)
+	{
+		uint32		g = gid[j];
+		uint64		m;
+		uint64	   *w;
 
-			if (ok && !sift_colsrc_bit(ok, j))
-				continue;
-			x = dist_x(d, v[j]);
-			c = (x >> DB_SHIFT) - d->cbase;
-			m = UINT64CONST(1) << (x & 63);
-			if (likely((uint64) c < d->ncd && g < d->ngd && (dir = d->gd[g]) != NULL && dir[c] != NULL))
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if ((w = dist_word(&vw, g, dist_vx(&vw, v[j]), &m)) != NULL)
+		{
+			cnt[g] += !(*w & m);
+			*w |= m;
+		}
+		else
+		{
+			int			r = dist_bits_slow(ex, d, g, dist_x(d, v[j]));
+
+			if (r < 0)
+				break;
+			cnt[g] += r;
+			vw = dist_view(d);
+		}
+	}
+	while (j < nsel && d->mode == DD_BITS)
+	{
+		int			nb = Min(DB_BATCH, nsel - j);
+		uint64	   *wp[DB_BATCH];
+		uint64		mk[DB_BATCH];
+		bool		take[DB_BATCH];
+		int			k;
+
+		for (k = 0; k < nb; k++)
+		{
+			take[k] = !ok || sift_colsrc_bit(ok, j + k);
+			wp[k] = take[k] ? dist_word(&vw, gid[j + k], dist_vx(&vw, v[j + k]), &mk[k]) : NULL;
+			if (wp[k])
+				__builtin_prefetch(wp[k], 1);
+		}
+		for (k = 0; k < nb; k++)
+		{
+			uint32		g = gid[j + k];
+
+			if (wp[k])
 			{
-				w = &dir[c][(x >> 6) & (DB_WORDS - 1)];
-				cnt[g] += !(*w & m);
-				*w |= m;
+				cnt[g] += !(*wp[k] & mk[k]);
+				*wp[k] |= mk[k];
 			}
-			else
+			else if (take[k])
 			{
-				int			r = dist_bits_slow(ex, d, g, x);
+				int			r = dist_bits_slow(ex, d, g, dist_x(d, v[j + k]));
 
 				if (r < 0)
 					break;
 				cnt[g] += r;
 			}
 		}
+		j += k;
+		if (k < nb)
+			break;
+		vw = dist_view(d);
+	}
 	if (j < nsel && d->mode == DD_HASH && d->ds.n + (uint64) (nsel - j) < d->maxn)
 	{
 		DSet	   *s = &d->ds;
@@ -7891,26 +7996,79 @@ blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
 	bw_put(b, ids, (Size) ng * sizeof(uint32));
 }
 
-/* the (group, value) pairs of a count(DISTINCT): values of a dictionary leaf by value, the others as they are */
+/*
+ * The set of a count(DISTINCT) of aggregate ai in the groups of cidx (blob numbering), header {pairs, chunks}: the (group, value)
+ * pairs, then the (group, chunk number) of each bitmap chunk and its bits. A set that is still a bitmap of raw values sends the chunks
+ * with DB_DENSE bits or more as they are, so that the leader ORs them and counts by popcount, and the bits of the others as pairs;
+ * what it sends is bounded by the memory of the bitmap, hash_mem. The values of a dictionary leaf go by value.
+ */
 static void
 blob_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 {
+	Dist	   *d = ex->dist[ai];
 	bool		dict = ex->lay->leaf[ex->spec->agg[ai].leaf].vtype == SCV_CODE;
 	uint32		np,
 			   *pg,
 			   *pv,
 				hd[2],
 			   *old = NULL,
-				nused = 0;
+				nused = 0,
+				nc = 0,
+				none[1] = {0},
+			   *cg = none,
+			   *cc = none;
+	const uint64 **bits = NULL;
 
-	dist_pairs(ex, ai, cidx, &pg, &pv, &np);
+	if (d->mode == DD_BITS && d->sgn)
+	{
+		uint32		n = Min(ex->hash ? ex->ngroups : ex->gcap, d->ngd);
+		uint64		total = 0;
+
+		for (uint32 g = 0; g < n; g++)
+			if (cidx[g] != UINT32_MAX)
+				total += ex->acc[ai].n[g];
+		pg = palloc(Max(total, 1) * sizeof(uint32));
+		pv = palloc(Max(total, 1) * sizeof(uint32));
+		cg = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		cc = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		bits = palloc(Max(total / DB_DENSE, 1) * sizeof(uint64 *));
+		np = 0;
+		for (uint32 g = 0; g < n; g++)
+			for (uint32 c = 0; d->gd[g] && cidx[g] != UINT32_MAX && c < d->ncd; c++)
+			{
+				const uint64 *ch = d->gd[g][c];
+				int			pop = 0;
+
+				for (int w = 0; ch && w < DB_WORDS; w++)
+					pop += pg_popcount64(ch[w]);
+				if (pop >= DB_DENSE)
+				{
+					cg[nc] = cidx[g];
+					cc[nc] = (uint32) (d->cbase + c);
+					bits[nc++] = ch;
+				}
+				else if (pop > 0)
+					for (int w = 0; w < DB_WORDS; w++)
+						for (uint64 m = ch[w]; m; m &= m - 1)
+						{
+							pg[np] = cidx[g];
+							pv[np++] = (uint32) ((d->cbase + c) * (1 << DB_SHIFT) + w * 64 + pg_rightmost_one_pos64(m));
+						}
+			}
+	}
+	else
+		dist_pairs(ex, ai, cidx, &pg, &pv, &np);
 	if (dict)
 		old = renumber(pv, np, ex->aot[ai].n, &nused);
 	hd[0] = np;
-	hd[1] = 0;
+	hd[1] = nc;
 	bw_put(b, hd, sizeof(hd));
 	bw_put(b, pg, (Size) np * sizeof(uint32));
 	bw_put(b, pv, (Size) np * sizeof(uint32));
+	bw_put(b, cg, (Size) nc * sizeof(uint32));
+	bw_put(b, cc, (Size) nc * sizeof(uint32));
+	for (uint32 i = 0; i < nc; i++)
+		appendBinaryStringInfo(b, (const char *) bits[i], DB_WORDS * sizeof(uint64));
 	if (dict)
 		bw_values(b, &ex->aot[ai], old, nused);
 }
@@ -8090,6 +8248,10 @@ typedef struct BlobAgg
 	uint32		npairs;
 	const uint32 *pg;
 	const uint32 *pv;
+	uint32		nchunks;		/* count(DISTINCT) bitmap chunks: group and number of each, then their bits */
+	const uint32 *cg;
+	const uint32 *cc;
+	const uint64 *bits;
 	uint32	   *xv;				/* dictionary values: the ids in the table */
 	uint32		nrec;			/* ordered sets: the runs of the values */
 	const OsaRec *rec;
@@ -8200,8 +8362,12 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		const uint32 *hd = br_get(p, 8);
 
 		ba->npairs = hd[0];
-		ba->pg = br_get(p, (Size) ba->npairs * 4);
-		ba->pv = br_get(p, (Size) ba->npairs * 4);
+		ba->nchunks = hd[1];
+		ba->pg = br_get(p, (Size) hd[0] * 4);
+		ba->pv = br_get(p, (Size) hd[0] * 4);
+		ba->cg = br_get(p, (Size) hd[1] * 4);
+		ba->cc = br_get(p, (Size) hd[1] * 4);
+		ba->bits = br_get(p, (Size) hd[1] * DB_WORDS * sizeof(uint64));
 		if (g->lay->leaf[g->spec->agg[ai].leaf].vtype == SCV_CODE)
 		{
 			const uint32 *vh = (const uint32 *) *p;
@@ -8227,6 +8393,13 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 static void
 merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 {
+	for (uint32 i = 0; i < ba->nchunks; i++)
+	{
+		uint32		t = gids[ba->cg[i]];
+
+		g->acc[ai].n[t] += dist_or_chunk(g, g->dist[ai], t, (int32) ba->cc[i], ba->bits + (Size) i * DB_WORDS);
+		g->n_dist_chunks++;
+	}
 	for (uint32 i = 0; i < ba->npairs; i++)
 	{
 		uint32		t = gids[ba->pg[i]];
@@ -9187,6 +9360,19 @@ topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
 	}
 	scan_units(ex, lo, hi);
 }
+
+/* Testing (sift.test_agg_wait): lets a test run VACUUM or DML after the scan has opened its source (test/t/topn_vacuum_scan.sh) */
+static void
+agg_test_wait(void)
+{
+	LOCKTAG		tag;
+
+	if (!sift_test_agg_wait)
+		return;
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, 1, 2);
+	(void) LockAcquire(&tag, ShareLock, false, false);
+	LockRelease(&tag, ShareLock, false);
+}
 static void
 topn_run(AggExec *ex)
 {
@@ -9200,6 +9386,7 @@ topn_run(AggExec *ex)
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
+	agg_test_wait();
 	scan_buffers(ex);
 	table_init(ex);
 	t = ex->topn;
@@ -9487,6 +9674,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
 		if (c->n_dist_spilled)
 			ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
+		if (c->n_dist_chunks)
+			ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
 	}
 }
 

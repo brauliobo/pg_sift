@@ -123,6 +123,14 @@ typedef struct SiftDirSnapshot
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 
 /*
+ * The directory's version through a pinned directory buffer, without its content lock: for a reader that compares it with a version it
+ * read before (sift_vis_sb_mask), once per superblock. The version is one aligned word that a directory update stores under the exclusive
+ * lock, and the read follows the caller's earlier read with a read barrier, so a store that preceded what the caller saw is seen.
+ */
+extern Buffer sift_dir_pin(Relation index);
+extern uint32 sift_dir_version_peek(Buffer dirbuf);
+
+/*
  * Atomic directory update: locks metapage and directory exclusively, lets fn
  * edit working copies (fn must not ereport or allocate), records extents
  * released by the change in the free list with safexid = the caller's top

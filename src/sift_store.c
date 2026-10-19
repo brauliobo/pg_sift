@@ -282,6 +282,19 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
+Buffer
+sift_dir_pin(Relation index)
+{
+	return ReadBufferExtended(index, MAIN_FORKNUM, SIFT_DIRECTORY_BLKNO, RBM_NORMAL, NULL);
+}
+
+uint32
+sift_dir_version_peek(Buffer dirbuf)
+{
+	pg_read_barrier();
+	return *(volatile uint32 *) &DIR(BufferGetPage(dirbuf))->version;
+}
+
 uint32
 sift_dir_version(Relation index)
 {

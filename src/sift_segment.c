@@ -998,11 +998,13 @@ live2_key(SiftSegment *seg, SiftKey key)
 	return row && off / 64 < (int) (g->w / 8) && (row[off / 64] >> (off % 64) & 1);
 }
 
+/* The header the segment kept when it read its first dfs (live2) is the one they count: its table was complete and no doc has been cleared since */
 bool
 sift_seg_live_stable(SiftSegment *seg)
 {
 	SiftLive	l;
 	SiftLive2HeaderData h;
+	const SiftLive2HeaderData *kept;
 
 	if (!(seg->entry.flags & SIFT_SEG_DIRTY))
 		return true;
@@ -1010,7 +1012,8 @@ sift_seg_live_stable(SiftSegment *seg)
 		return false;
 	l = seg_live(seg);
 	sift_live2_header(&l, &h);
-	return h.tbl_ndead == h.ndead && h.ndead == live2(seg)->h.ndead;
+	kept = &live2(seg)->h;
+	return kept->tbl_ndead == kept->ndead && h.ndead == kept->ndead;
 }
 
 bool

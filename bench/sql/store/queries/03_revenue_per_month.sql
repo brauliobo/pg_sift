@@ -1,5 +1,6 @@
 -- Revenue per month
 -- key: 1
+-- label: `sum(amount) GROUP BY month`
 --@ pg
 SELECT date_trunc('month', created_at)::date AS month, sum(amount) FROM orders GROUP BY 1
 --@ ch

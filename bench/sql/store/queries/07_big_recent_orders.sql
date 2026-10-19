@@ -1,4 +1,5 @@
 -- How many orders over $100 in the last 30 days
+-- label: `count(*) WHERE amount > 100, created_at >= ...`
 --@ pg
 SELECT count(*) FROM orders WHERE amount > 100 AND created_at >= '2025-12-02'
 --@ ch

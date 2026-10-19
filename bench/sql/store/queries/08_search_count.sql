@@ -1,4 +1,5 @@
 -- Search "wireless headphones": how many orders match
+-- label: `count(*) WHERE title @@> 'a b'`
 --@ pg
 SELECT count(*) FROM orders WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', 'wireless headphones')
 --@ sift

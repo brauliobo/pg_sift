@@ -242,7 +242,7 @@ the **batch merge**: decode every input unit's live rows, merge them by key, re-
   `(SIFT_MAX_SEGMENTS - 7) / participants` segments (16 participants at most), so the directory limit holds as in the serial build; the
   leader publishes all of them in one `sift_dir_update`, ordered by first SB.
 - **Promotion** of a sealed mutable segment: read records, drop deleted, sort by key, group per SB, write one immutable segment.
-- **Merge**: the tiered policy of `sift_merge_pick` (fan-in 8, tier base `mutable_limit`), plus "mostly dead" through a policy callback.
+- **Merge**: the tiered policy of `sift_merge_pick` (fan-in 8, tier base `mutable_limit`), plus "mostly dead" through a policy callback: a lone segment more than the `dead_rewrite_pct` option (default 10) dead is rewritten, so that its units carry exact pre-aggregates again.
   Dead rows (cleared liveness bits) are dropped; one segment results. Memory: one SB per input in flight.
 
 Why this model: the serial build spends about a third of its CPU encoding and writing, a fifth shredding and forming rows and the rest scanning the
@@ -628,6 +628,7 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
 
 ## Changes (contract log, newest first; rebase on these)
 
+- 2026-10 (preagg2 maint): `SiftColOptions.dead_rewrite_pct` (reloption `dead_rewrite_pct`, default `SIFT_COL_DEAD_PCT` 10, maintenance only: no format change); `sift_col_mostly_dead` uses it instead of a fixed half.
 - 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy, `sift_cseg_dict_stored`, `sift.col_sections` (section 2.10). A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (preagg2): `SiftSrcPreagg.aggs`; `sift_aggspec_preagg`, `sift_aggspec_pred_leaf` (sift_aggspec.h); SiftAgg answers the units that are exact from `unit_agg` / `unit_hist` (`sift_agg.c` `preagg_unit`), `sift.agg_preagg` (GUC, on), the cost of the exact share of the units and no workers from 98% exact (`sift_aggplan.c`), `Units From Pre-aggregates` in EXPLAIN ANALYZE. A provider that has `unit_exact`, `unit_agg`, `unit_hist` and `preagg` gets all of it; the others scan.
 - 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
