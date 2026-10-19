@@ -1692,7 +1692,7 @@ def latency_tables(R, tier, shown, labels, heading):
 
 
 NOT_REMEASURED = ('- **10,000,000 orders were not measured for the final 3.0 pass** (only this size was: the pass had to fit an hour). The last 10,000,000 run, on 2026-10-18 with a 3.0 development build, is in the git history of `bench/results/store.json`: '
-                  'there the data no longer fit the cache, ClickHouse was faster than pg_sift `sift_col` on 7 of the 10 questions (one of them a tie; the top 10 categories 17x, the distinct customers per month 4.0x) and `sift_table` failed on the two search questions with facets and the newest orders. '
+                  'there the data no longer fit the cache, ClickHouse was faster than pg_sift `sift_col` on 7 of the 10 questions (one of them a tie; the top 10 categories 17x, the distinct customers per month 4.0x) and `sift_table` failed on the two search questions with facets and the newest orders (a later check of the 3.0 build at 10,000,000 orders loaded in 1,000,000-row transactions answered all ten questions as PostgreSQL does). '
                   'Do not read the 1,000,000-order ranking above as the ranking at ten times the size.')
 
 
