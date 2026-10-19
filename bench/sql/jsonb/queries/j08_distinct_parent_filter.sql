@@ -1,0 +1,1 @@
+SELECT e.kind, count(DISTINCT d.id) FILTER (WHERE e.score >= 8) AS hi, count(DISTINCT d.id) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(kind text, sub text, flag text, score float8) GROUP BY 1 ORDER BY 1
