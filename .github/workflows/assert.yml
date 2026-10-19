@@ -68,6 +68,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     continue-on-error: true
+    env:
+      # the runner has libc6-dbg: valgrind runs natively (scripts/valgrind.sh uses a container only where the host's glibc has no symbols)
+      SIFT_VALGRIND_CONTAINER: '0'
     steps:
       - name: Scratch directory
         run: echo "SIFT_CI_TMP=$RUNNER_TEMP/sift-ci" >> "$GITHUB_ENV"
