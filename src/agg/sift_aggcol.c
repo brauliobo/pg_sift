@@ -22,6 +22,7 @@
 #include "sift_aggsel.h"
 #include "sift_popcount.h"
 #include "sift_col.h"
+#include "sift_col_gpu.h"
 #include "sift_col_pagg.h"
 #include "sift_col_pg.h"
 #include "sift_colsrc.h"
@@ -982,6 +983,46 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim), NULL, h);
 }
 
+/* ---- the Vulkan path (src/col/sift_col_gpu.h, docs/GPU.md) ---- */
+
+static bool
+col_gpu_unit(void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
+{
+	SiftColGpuUnit cg;
+
+	if (((ColSource *) impl)->sel.keep || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
+		return false;
+	*g = (SiftSrcGpuUnit) {cg.store, cg.gen, cg.unit, cg.nrows};
+	return true;
+}
+
+static bool
+col_gpu_dense(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_col_unit_gpu_dense(&((ColSource *) impl)->unit, leaf);
+}
+
+static bool
+col_gpu_chunk(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c)
+{
+	SiftColGpuChunk cg;
+
+	if (!sift_col_unit_gpu_chunk(&((ColSource *) impl)->unit, leaf, &cg))
+		return false;
+	*c = (SiftSrcGpuChunk) {cg.blob, cg.len, cg.n, cg.is_const, cg.cval};
+	return true;
+}
+
+static void
+col_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
+{
+	ColSource  *src = impl;
+	SiftColDict d;
+
+	sift_col_unit_gpu_dict(&src->unit, leaf, &d);
+	*dict = (SiftSrcDict) {(const void *) (uintptr_t) d.id, d.n, d.off, d.bytes};
+}
+
 static const SiftSrcProvider col_provider = {
 	.owns_index = col_owns_index,
 	.owns_table = col_owns_table,
@@ -1018,6 +1059,10 @@ static const SiftSrcProvider col_provider = {
 	.unit_exact = col_unit_exact,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
+	.gpu_unit = col_gpu_unit,
+	.gpu_dense = col_gpu_dense,
+	.gpu_chunk = col_gpu_chunk,
+	.gpu_dict = col_gpu_dict,
 };
 
 void

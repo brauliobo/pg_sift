@@ -1,7 +1,7 @@
 /*
  * sift_aggvk.c - the Vulkan compute device of the aggregate scan (sift_aggvk.h, docs/GPU.md).
  *
- * Without SIFT_VULKAN (the default build) only the stubs are compiled. With it, libvulkan.so.1 is opened by dlopen at the first
+ * Compiled only with SIFT_VULKAN (make VULKAN=1); the default build has none of it. libvulkan.so.1 is opened by dlopen at the first
  * sift_vk_open and the declarations are the vendored subset of sift_aggvk_min.h. Plain C, no PostgreSQL headers: the caller decides
  * what a failure means (the executor runs the query on the CPU and stops using the device for the session).
  */
@@ -9,90 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <strings.h>
 
 #include "sift_aggvk.h"
 
-#ifndef SIFT_VULKAN
-
-bool
-sift_vk_built(void)
-{
-	return false;
-}
-
-SiftVk *
-sift_vk_open(const char *device, bool allow_software, uint64_t cache_bytes, char *err, size_t errlen)
-{
-	snprintf(err, errlen, "this build has no Vulkan support (build with VULKAN=1)");
-	return NULL;
-}
-
-void
-sift_vk_close(SiftVk *vk)
-{
-}
-
-const char *
-sift_vk_device_name(const SiftVk *vk)
-{
-	return "";
-}
-
-bool
-sift_vk_is_software(const SiftVk *vk)
-{
-	return false;
-}
-
-uint64_t
-sift_vk_cache_bytes(const SiftVk *vk)
-{
-	return 0;
-}
-
-bool
-sift_vk_set_cache(SiftVk *vk, uint64_t bytes)
-{
-	return false;
-}
-
-uint32_t
-sift_vk_max_wg(const SiftVk *vk, uint32_t groups, uint32_t nsum)
-{
-	return 0;
-}
-
-bool
-sift_vk_lookup(SiftVk *vk, const SiftVkKey *k, uint32_t *woff)
-{
-	return false;
-}
-
-bool
-sift_vk_stage(SiftVk *vk, const SiftVkKey *k, const void *words, uint32_t nwords, uint32_t *woff)
-{
-	return false;
-}
-
-void
-sift_vk_abandon(SiftVk *vk)
-{
-}
-
-SiftVkStatus
-sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), const uint32_t **results, SiftVkTimes *times)
-{
-	return SIFT_VK_FAIL;
-}
-
-const char *
-sift_vk_error(const SiftVk *vk)
-{
-	return "this build has no Vulkan support";
-}
-
-#else							/* SIFT_VULKAN */
+#ifdef SIFT_VULKAN
 
 #include <ctype.h>
 #include <dlfcn.h>
@@ -245,12 +165,6 @@ static void
 sigs_restore(const sigset_t *old)
 {
 	pthread_sigmask(SIG_SETMASK, old, NULL);
-}
-
-bool
-sift_vk_built(void)
-{
-	return true;
 }
 
 const char *

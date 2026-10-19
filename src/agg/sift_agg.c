@@ -64,6 +64,7 @@
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
+#include "sift_aggback.h"
 #include "sift_aggkern.h"
 #include "sift_aggspec.h"
 #include "sift_col_kern.h"
@@ -115,6 +116,7 @@ sift_agg_init(void)
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	sift_aggbe_init();
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
 							NULL, &sift_agg_combo_cache, 1 << 20, 16, 1 << 24,
@@ -672,6 +674,7 @@ typedef struct AggExec
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts */
 	int			nprune;
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
+	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
@@ -736,6 +739,8 @@ typedef struct AggExec
 	int64		n_tuples;
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
 	int64		n_groups;
+	const SiftAggBackend *be;	/* the backend that answers units of the scan besides the kernels below, and its state (sift_aggback.h) */
+	void	   *be_state;
 	/* arms that share one pass (fuse_start) */
 	struct FuseSt *fuse;
 	int			fuse_set;		/* this node's set in the fused spec */
@@ -8058,6 +8063,12 @@ process_unit(AggExec *ex)
 	ex->n_rows += nrow;
 	if (nrow == 0)
 		return;
+	if (sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
+	{
+		ex->row_base += nrow;
+		CHECK_FOR_INTERRUPTS();
+		return;
+	}
 	if (ex->topn && !topn_viable(ex))
 		return;
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
@@ -8328,6 +8339,7 @@ filter_init(AggExec *ex)
 	uint64		ok;
 
 	ex->pushed = MemoryContextAllocZero(ex->cxt, Max(s->npred, 1) * sizeof(bool));
+	ex->pflt = MemoryContextAllocZero(ex->cxt, Max(s->npred, 1) * sizeof(SiftSrcFilter));
 	for (int i = 0; i < s->npred && n < SIFT_COLSRC_MAX_FILTERS; i++)
 	{
 		SiftAggPred *p = s->pred[i];
@@ -8344,6 +8356,7 @@ filter_init(AggExec *ex)
 		if (ok >> k & 1)
 		{
 			ex->pushed[at[k]] = true;
+			ex->pflt[at[k]] = f[k];
 			ex->nfilter++;
 		}
 }
@@ -9308,7 +9321,11 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nprune);
 	while (sift_colsrc_next(ex->src, &ex->unit))
+	{
 		process_unit(ex);
+		if (sift_aggbe_stopped(ex->be, ex->be_state))
+			break;				/* the scan is run again without the backend (backend_finish) */
+	}
 }
 
 /* With a match set, the source keeps the matching rows of the units of the range only (sift_search.h) */
@@ -9496,7 +9513,7 @@ scan_items(AggExec *ex)
 {
 	uint32		item;
 
-	while (take_item(ex, &item))
+	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_item(ex, &item))
 	{
 		scan_item(ex, item);
 		if (ex->lane_serial)
@@ -9704,6 +9721,8 @@ par_finish(AggExec *ex)
 	ExitParallelMode();
 }
 
+#include "sift_agghost.h"
+
 static void
 run_scan(AggExec *ex)
 {
@@ -9713,7 +9732,8 @@ run_scan(AggExec *ex)
 	ex->glist = NULL;
 	engine_open(ex, ex->snap, ex->params);
 	scan_buffers(ex);
-	par_launch(ex);
+	if (!backend_begin(ex))
+		par_launch(ex);
 	if (ex->shared == NULL)
 	{
 		ex->shared = MemoryContextAlloc(ex->cxt, sizeof(ScanShared));
@@ -9726,6 +9746,7 @@ run_scan(AggExec *ex)
 	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
 	if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
+	backend_finish(ex);
 	arms_flush(ex);
 	if (ex->par)
 		par_finish(ex);
@@ -10441,6 +10462,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
 		if (c->ntype > 0)
 			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
+		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)
 			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);

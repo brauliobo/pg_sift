@@ -276,6 +276,28 @@ typedef struct SiftSrcFilter
 
 #define SIFT_COLSRC_MAX_FILTERS		64
 
+/*
+ * The Vulkan path (docs/GPU.md, optional provider callbacks gpu_*): the identity of a unit whose stored chunks stand for the rows a query
+ * sees, and a leaf's codec blob (docs/COL-CODEC.md). The chunk cache of the device is keyed by (store, gen, unit, leaf): a segment is
+ * immutable, a new generation is new storage.
+ */
+typedef struct SiftSrcGpuUnit
+{
+	uint64		store;			/* database and relation file of the index */
+	uint64		gen;			/* the segment generation */
+	uint32		unit;			/* the unit's number in the segment */
+	uint32		nrows;
+} SiftSrcGpuUnit;
+
+typedef struct SiftSrcGpuChunk
+{
+	const uint8 *blob;			/* valid until the next gpu_chunk of the source; NULL for a constant chunk */
+	uint32		len;
+	uint32		n;
+	bool		is_const;		/* no bytes: every row has cval */
+	int64		cval;
+} SiftSrcGpuChunk;
+
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -373,6 +395,16 @@ typedef struct SiftSrcProvider
 	 * the index did not store the type of some row (as filter_types does).
 	 */
 	void		(*read_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
+	/*
+	 * Optional (NULL: the Vulkan path does not run on this source). gpu_unit: the unit just returned by `next` is stored, has no dead row and
+	 * every page it has rows on is all-visible, so its chunks are the rows a query sees. gpu_dense: the leaf has no NULL and no overflowed
+	 * value in the unit (from its zone). gpu_chunk: the leaf's codec blob; false when the leaf has none (a NULL, an inline text value).
+	 * gpu_dict: the dictionary of a text leaf (the one its codes are of).
+	 */
+	bool		(*gpu_unit) (void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g);
+	bool		(*gpu_dense) (void *impl, const SiftSrcUnit *unit, int leaf);
+	bool		(*gpu_chunk) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c);
+	void		(*gpu_dict) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -472,6 +504,30 @@ static inline bool
 sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, h);
+}
+
+static inline bool
+sift_colsrc_gpu_unit(SiftSrcSource *src, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
+{
+	return src->prov->gpu_unit != NULL && src->prov->gpu_unit(src->impl, unit, g);
+}
+
+static inline bool
+sift_colsrc_gpu_dense(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
+{
+	return src->prov->gpu_dense != NULL && src->prov->gpu_dense(src->impl, unit, leaf);
+}
+
+static inline bool
+sift_colsrc_gpu_chunk(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c)
+{
+	return src->prov->gpu_chunk != NULL && src->prov->gpu_chunk(src->impl, unit, leaf, c);
+}
+
+static inline void
+sift_colsrc_gpu_dict(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
+{
+	src->prov->gpu_dict(src->impl, unit, leaf, dict);
 }
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */
