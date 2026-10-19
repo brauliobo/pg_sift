@@ -1,11 +1,11 @@
--- Compaction at VACUUM writes the segment that ends the file again below, into the free blocks of the write segments it replaced. A segment
+-- Compaction at VACUUM writes the segment that ends the file again below, into the free blocks of the write buffers it replaced. A segment
 -- written for the column layout before an ALTER TABLE cannot be written again by the new layout: it stays where it is and VACUUM goes on.
 CREATE EXTENSION pg_sift;
 CREATE TABLE cp (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TEMP TABLE sz (round int, blocks bigint);
 \set fill 'INSERT INTO cp SELECT g, g * 3, ''text '' || md5(g::text) FROM generate_series(1, 30000) g'
 
--- the segment sealed from the load lies above the write segment it replaced; with its layout current the next VACUUM moves it down
+-- the segment sealed from the load lies above the write buffer it replaced; with its layout current the next VACUUM moves it down
 :fill;
 VACUUM cp;
 INSERT INTO sz SELECT 1, relation_blocks FROM sift.table_space('cp');

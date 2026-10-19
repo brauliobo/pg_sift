@@ -95,7 +95,7 @@ add_segment(Relation rel, SiftColSegment *seg, const SiftColSchema *sc, int64 *c
 /*
  * sift.col_sections(rel regclass): (section, leaf, bytes) for a sift_col index or a sift_table. Sections: chunks and dict (per leaf),
  * unit_dir, dict_other, zones, preagg, sbdir_schema, page_overhead, headers, free, other (the metapage, directory, free list pages and the
- * segments that are not column segments: the write lane, tombstones). The bytes of all rows add up to pg_relation_size(rel).
+ * segments that are not column segments: the write buffer, tombstones). The bytes of all rows add up to pg_relation_size(rel).
  */
 Datum
 sift_col_sections(PG_FUNCTION_ARGS)

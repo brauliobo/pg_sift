@@ -530,7 +530,7 @@ Byte counts only (they do not depend on the host): the store dataset of 1,000,00
 | columns | 68.45 | 12.60 | 29.46 | 16.90 | 14.90 | 0.43x |
 
 The columns of the table are 12.6 MiB (0.43x of ClickHouse LZ4, 0.75x of `ZSTD(3)`, 0.85x of the tuned schema); the title dictionary (947,520 bytes as a codec string list, 4.4 MB plain) is in the `title` row. What is left of the 13.2 MiB file is the pre-aggregates
-(0.12 MiB), the unit directories (0.10), the zones (0.03), page headers and the unused end of each stream (0.07), the segment headers and liveness pages (0.13) and the metapage, directory and write segment (0.05).
+(0.12 MiB), the unit directories (0.10), the zones (0.03), page headers and the unused end of each stream (0.07), the segment headers and liveness pages (0.13) and the metapage, directory and write buffer (0.05).
 The `sift_col` index over seven of the columns and the month (the lines of the compression table above) is 10.9 MiB: its seven columns take 9.6 MiB against 10.4 MiB for ClickHouse `ZSTD(3)` and 9.3 MiB for the tuned schema,
 and the month leaf, the pre-aggregates and the overhead are the rest. The entropy of the low-cardinality code columns (`status`, `quantity`, `category`) is where the tuned schema is ahead (about 3 percent of the total): the
 codec packs codes at a fixed width and has no entropy coder; a `zstd` layer on them (`compression = zstd:3`) recovers part of it at a decode cost the default does not pay.
@@ -541,7 +541,7 @@ Before and after this change (same data, same build otherwise):
 |---|---:|---:|
 | `sift_col` index file (parallel build, 1M orders) | 15.5 MiB (605 of 1,987 blocks free) | 10.9 MiB (11 of 1,394 blocks free) |
 | `sift_table` columns segment | 16.5 MiB | 13.2 MiB (title dictionary 4.4 MiB to 0.9 MiB) |
-| `sift_table` file after load and `VACUUM` | 187 MiB (170 free) | 13.2 MiB (VACUUM writes the segment again below the write segments it replaced) |
+| `sift_table` file after load and `VACUUM` | 187 MiB (170 free) | 13.2 MiB (VACUUM writes the segment again below the write buffers it replaced) |
 | PostgreSQL primary key btree (not pg_sift's) | 21 MiB | 21 MiB |
 
 Speed, instructions of one backend per statement (`bench/cpu-query.sh`, 1M orders, the same index built with the same settings on both sides, so independent of the host load): the store questions 2 to 5 on the `sift_col` index

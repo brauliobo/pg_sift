@@ -329,11 +329,11 @@ and its in-memory unit uses that dictionary directly.
 
 ### 2.10 Where the bytes go
 
-`sift.col_sections(rel)` (a sift_col index or a sift_table; `src/sift_col_acct.c`) returns `(section, leaf, bytes)` summed over the immutable segments,
+`sift.col_sections(rel)` (a sift_col index or a sift_table; `src/col/sift_col_acct.c`) returns `(section, leaf, bytes)` summed over the immutable segments,
 and the rows add up to `pg_relation_size(rel)`: `chunks` and `dict` per leaf (the dictionary as stored, section 2.3), `unit_dir` (the unit records less
 their chunks: page directory, offsets, alignment), `dict_other`, `zones`, `preagg` (the sidecar, section 2.1), `sbdir_schema`, `page_overhead` (page headers and the
 unused end of each stream's last page), `headers` (SEGHEADER and LIVE pages), `free` (blocks on the free list) and `other` (the metapage, directory, free list pages,
-the mutable lane, tombstones). `sift.col_leaves` counts the chunks of a leaf by encoding, `sift.col_index_info` the pre-aggregate bytes.
+the write buffer, tombstones). `sift.col_leaves` counts the chunks of a leaf by encoding, `sift.col_index_info` the pre-aggregate bytes.
 
 ## 3. MVCC: when a row may be read from the index
 

@@ -81,7 +81,7 @@ sub background
 	my @as = $owner ? (extra_params => [ '-U', $owner ]) : ();
 	$node->safe_psql('postgres', $keep . ($load_prefix // '') . create($t) . load($t, $settled), @as);
 	# a VACUUM seals only the rows older than every snapshot: the ANALYZE of the worker that sealed the previous table still holds one, and the
-	# only autovacuum of this table would find its rows unsettled and leave them in the write segment for good
+	# only autovacuum of this table would find its rows unsettled and leave them in the write buffer for good
 	$node->poll_query_until('postgres', "SELECT count(*) = 0 FROM pg_stat_activity WHERE backend_type = 'autovacuum worker'");
 	$node->safe_psql('postgres', "ALTER TABLE $t SET (autovacuum_enabled = true)");
 	ok(promoted($t), "autovacuum promoted $t") or diag($node->safe_psql('postgres', "SELECT row_to_json(s) FROM pg_stat_user_tables s WHERE relname = '$t'") . ' ' .
