@@ -106,7 +106,8 @@ typedef struct SiftColDef
 #define SIFT_COLTAG_BOOLEAN		3
 #define SIFT_COLTAG_OBJECT		4
 #define SIFT_COLTAG_ARRAY		5
-#define SIFT_COLTAG_MAX			5
+#define SIFT_COLTAG_NONE		6		/* the leaf's path leads to no value: a node on it is not the object it declares (jsonb_typeof is NULL) */
+#define SIFT_COLTAG_MAX			6
 
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
