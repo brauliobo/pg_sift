@@ -307,6 +307,7 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 		const char *p = image_of(att, d, &v->len);
 
 		v->isnull = v->overflow = true;
+		v->tag = SIFT_COLTAG_UNKNOWN;
 		exc_add(exc, att->attnum, p, v->len);
 	}
 }

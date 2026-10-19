@@ -99,6 +99,16 @@ typedef struct SiftColDef
 	uint8		scale;			/* numeric(p <= 18, s): digits after the decimal point; the INT value is the number times 10^scale. 0 otherwise */
 } SiftColDef;
 
+/* The JSON type of an overflowing value; the numbers are on disk */
+#define SIFT_COLTAG_UNKNOWN		0
+#define SIFT_COLTAG_STRING		1
+#define SIFT_COLTAG_NUMBER		2
+#define SIFT_COLTAG_BOOLEAN		3
+#define SIFT_COLTAG_OBJECT		4
+#define SIFT_COLTAG_ARRAY		5
+#define SIFT_COLTAG_NONE		6		/* the leaf's path leads to no value: an array sits where the path declares an object (jsonb_typeof of the path is NULL) */
+#define SIFT_COLTAG_MAX			6
+
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
 {
@@ -111,6 +121,7 @@ typedef struct SiftColValue
 	uint32		len;
 	bool		isnull;
 	bool		overflow;		/* the value exists but the leaf cannot hold it (the shredder's OVERFLOW): stored as NULL and flagged; isnull is also set */
+	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it */
 } SiftColValue;
 
 /*
@@ -407,6 +418,17 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 
 /* Top level predicates (leaf ids of scalar leaves); a predicate on a child leaf is an error (use the group forms) */
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
+
+/*
+ * Narrows sel (rows of the unit) to those whose value of the top level leaf col has a JSON type in tagmask (bit t for SIFT_COLTAG_t):
+ * a stored value has the type of the leaf (`stored`: that type is in the mask), an overflow value its tag.
+ * *known is false when a row of sel overflowed without a tag, a value of a unit written before column format minor 4 (or by a writer
+ * that did not know its type): its type is not known and sel is not a proper answer. Returns whether any row is left.
+ */
+extern bool sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, bool stored, SiftColSel *sel, bool *known);
+
+/* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
+extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
 
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);
