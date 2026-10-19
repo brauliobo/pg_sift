@@ -3912,7 +3912,7 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	return cost;
 }
 
-/* The share of the units the pre-aggregates answer: the pages of the heap that are all-visible (a unit is exact when its pages are); 0 when the spec cannot use them */
+/* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 static double
 preagg_share(AggCtx *c, SiftAggSpec *s)
 {
@@ -3920,7 +3920,7 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
 		return 0.0;
-	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
+	return Min(Max(c->stats.exact_frac, 0.0), 1.0);
 }
 
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
@@ -4142,6 +4142,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		rel = table_open(rte->relid, NoLock);
 		c->lay = sift_colsrc_layout(rel);
 		sift_colsrc_stats(rel, &c->stats);
+		sift_colsrc_preagg(rel, &c->pa);
 		table_close(rel, NoLock);
 		c->indexoid = InvalidOid;
 		return true;

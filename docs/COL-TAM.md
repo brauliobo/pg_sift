@@ -331,7 +331,7 @@ exactly. A segment carries its own schema; after `ADD/DROP COLUMN` it is read by
 another layout are read side by side and are not merged with the current ones. At most 127 columns (`CREATE TABLE` fails otherwise).
 
 **Merge** (`sift_tbl_merge`, VACUUM: up to 16 steps): the tiered policy of `sift_merge_pick` over the segments of the current layout (fan-in 8)
-plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 50 (a `sift_col` index has 10: its units carry pre-aggregates, a table's do not yet),
+plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 50 (a `sift_col` index has 10: a unit with dead rows is scanned instead of answered from its pre-aggregates, and a table keeps its segments until half is dead),
 is rewritten alone; 100 never); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
 input so that free space left by earlier merges is reused instead of extending the file. A segment of an older layout is not rewritten.
 

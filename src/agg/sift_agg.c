@@ -7280,9 +7280,9 @@ preagg_init(AggExec *ex)
 	SiftSrcPreagg pa;
 
 	ex->pa_on = false;
-	if (!sift_agg_preagg || ex->index == NULL)
+	if (!sift_agg_preagg)
 		return;
-	sift_colsrc_preagg(ex->index, &pa);
+	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa_dim);
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
