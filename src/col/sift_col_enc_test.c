@@ -13,6 +13,7 @@
 #include "funcapi.h"
 
 #include "sift_col_enc.h"
+#include "sift_col_ver.h"
 #include "sift_colz.h"
 #include "sift_popcount.h"
 
@@ -1440,6 +1441,105 @@ check_merge(TCtx *t, const Case *c, const SiftKey *keys, uint32 n)
 	check_batch_rows(t, "merge", c, dst, want, n);
 }
 
+/* The vectors of the versions of n rows: all frozen, one writer, a run of single row inserts, a few writers, any values at the edges */
+static void
+gen_vers(TCtx *t, uint32 n, uint32 *xm, uint32 *cm)
+{
+	uint32		shape = RAND(t, 5),
+				x = 3 + RAND(t, 1000000);
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		switch (shape)
+		{
+			case 0:
+				xm[i] = cm[i] = 0;
+				break;
+			case 1:
+				xm[i] = x;
+				cm[i] = 7;
+				break;
+			case 2:
+				xm[i] = x;
+				cm[i] = 1 + i;
+				break;
+			case 3:
+				xm[i] = i == 0 ? x : xm[i - 1] + (CHANCE(t, 0.01) ? 1 + RAND(t, 5) : 0);
+				cm[i] = xm[i] == x ? 1 + i : 1 + RAND(t, 4);
+				break;
+			default:
+				xm[i] = CHANCE(t, 0.3) ? 0 : (CHANCE(t, 0.5) ? PG_UINT32_MAX - RAND(t, 3) : RAND(t, 4));
+				cm[i] = xm[i] == 0 ? 0 : (CHANCE(t, 0.5) ? PG_UINT32_MAX : RAND(t, 1000));
+		}
+		if (xm[i] == 0)
+			cm[i] = 0;
+	}
+}
+
+static void
+check_vec(TCtx *t, const uint32 *v, uint32 n)
+{
+	StringInfoData buf;
+	uint32	   *out = palloc(n * sizeof(uint32));
+	uint8	   *bad;
+
+	initStringInfo(&buf);
+	sift_cver_encode(v, n, &buf);
+	CHECK(t, sift_cver_decode((uint8 *) buf.data, buf.len, n, out) && memcmp(out, v, n * sizeof(uint32)) == 0, "a version vector of %u rows does not round trip", n);
+	CHECK(t, !sift_cver_decode((uint8 *) buf.data, buf.len - 1, n, out), "a vector one byte short decoded");
+	bad = palloc(buf.len);
+	for (int k = 0; k < 20; k++)
+	{
+		memcpy(bad, buf.data, buf.len);
+		bad[RAND(t, buf.len)] ^= 1 << RAND(t, 8);
+		(void) sift_cver_decode(bad, buf.len, n, out);	/* any answer, no read outside the bytes */
+	}
+	pfree(out);
+	pfree(bad);
+	pfree(buf.data);
+}
+
+/* The versions of the rows are kept by the vector codec, and by copies and merges of batches */
+static void
+check_vers(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
+{
+	uint32	   *xm = palloc(n * sizeof(uint32)),
+			   *cm = palloc(n * sizeof(uint32));
+	SiftColBatch *b = sift_cbatch_create(CurrentMemoryContext, c->schema),
+			   *copy = sift_cbatch_create(CurrentMemoryContext, c->schema),
+			   *odd = sift_cbatch_create(CurrentMemoryContext, c->schema),
+			   *even = sift_cbatch_create(CurrentMemoryContext, c->schema),
+			   *merged = sift_cbatch_create(CurrentMemoryContext, c->schema),
+			   *src[2];
+	bool		any = false;
+
+	gen_vers(t, n, xm, cm);
+	check_vec(t, xm, n);
+	check_vec(t, cm, n);
+	sift_cbatch_reset(b, c->sb);
+	sift_cbatch_reset(copy, c->sb);
+	sift_cbatch_reset(odd, c->sb);
+	sift_cbatch_reset(even, c->sb);
+	sift_cbatch_reset(merged, c->sb);
+	for (uint32 i = 0; i < n; i++)
+	{
+		any |= xm[i] != 0;
+		sift_cbatch_add_ver(b, &rows[i], xm[i], cm[i]);
+		sift_cbatch_add_ver(i % 2 ? odd : even, &rows[i], xm[i], cm[i]);
+	}
+	CHECK(t, b->hasver == any, "the batch says versions %d for rows with versions %d", b->hasver, any);
+	for (uint32 r = 0; r < n; r++)
+		sift_cbatch_add_from(copy, b, r);
+	src[0] = odd;
+	src[1] = even;
+	sift_cbatch_merge(merged, src, 2);
+	for (uint32 r = 0; r < n && any; r++)
+		CHECK(t, b->xmin[r] == xm[r] && b->cmin[r] == cm[r] && copy->xmin[r] == xm[r] && copy->cmin[r] == cm[r] && merged->xmin[r] == xm[r] &&
+			  merged->cmin[r] == cm[r], "row %u lost its version (%u, %u) in a batch, a copy or a merge", r, xm[r], cm[r]);
+	sift_cbatch_reset(b, c->sb);
+	CHECK(t, !b->hasver, "reset leaves versions");
+}
+
 /* Rows out of order, outside the superblock or with a bad offset are refused; a string over the dictionary limit is not */
 static void
 check_errors(TCtx *t, const Case *c, const SiftColRow *rows, uint32 n)
@@ -1502,6 +1602,7 @@ run_round(TCtx *t, uint32 nrows)
 	CHECK(t, b->nrows == 0 && b->col[0].n == 0, "reset leaves rows");
 	check_merge(t, c, keys, n);
 	check_errors(t, c, rows, n);
+	check_vers(t, c, rows, n);
 }
 
 Datum

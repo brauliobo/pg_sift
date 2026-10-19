@@ -1,7 +1,7 @@
 /*
  * sift_table_mvcc.c - visibility of a row version of a sift_table under every snapshot type (docs/COL-TAM.md section 3).
  *
- * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the tag of its group) and no
+ * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the xmin/cmin its unit keeps for the row) and no
  * DELETE or UPDATE tombstone of it counts as a deletion for the snapshot. LOCK tombstones never delete.
  */
 #include "postgres.h"
@@ -113,25 +113,23 @@ tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 	return false;
 }
 
-bool
-sift_tbl_tag_visible(Relation rel, Snapshot snapshot, const SiftTblTag *tag)
+SiftTblVerState
+sift_tbl_ver_state(Relation rel, Snapshot snapshot, const SiftColVerSum *sum)
 {
-	SiftTblRowVer rv = {.xmin = tag->xid,.cmin = tag->cid};
+	SiftTblRowVer rv = {.xmin = sum->xmin_lo};
 	bool		dead;
 
+	if (!sum->any)
+		return SIFT_TBL_VER_ALL;
+	if (snapshot == NULL || snapshot->snapshot_type != SNAPSHOT_MVCC || sum->frozen_rows || sum->xmin_lo != sum->xmin_hi)
+		return SIFT_TBL_VER_ROWS;
+	if (TransactionIdIsCurrentTransactionId(sum->xmin_lo))
+		return sum->cmin_hi < snapshot->curcid ? SIFT_TBL_VER_ALL : SIFT_TBL_VER_ROWS;
 	if (sift_tbl_inserted_visible(snapshot, &rv, &dead))
-		return true;
-	if (!dead && snapshot->snapshot_type == SNAPSHOT_MVCC)
-		CheckForSerializableConflictOut(rel, tag->xid, snapshot);
-	return false;
-}
-
-bool
-sift_tbl_sb_inserted(Relation rel, Snapshot snapshot, const SiftTblTags *tags, uint32 sb)
-{
-	const SiftTblTag *tag = sift_tbl_tag_of_sb(tags, sb);
-
-	return tag == NULL || (snapshot != NULL && snapshot->snapshot_type == SNAPSHOT_MVCC && sift_tbl_tag_visible(rel, snapshot, tag));
+		return SIFT_TBL_VER_ALL;
+	if (!dead)
+		CheckForSerializableConflictOut(rel, sum->xmin_lo, snapshot);
+	return SIFT_TBL_VER_NONE;
 }
 
 bool

@@ -154,6 +154,8 @@ typedef struct SiftTblScan
 	int			an_nranges;
 	uint64		an_v;			/* vblocks of the groups */
 	HeapTuple	arows[SIFT_TBL_MAX_OFF];	/* the rows of the group vblock read, with the weight of each in the estimate */
+	TransactionId axmin[SIFT_TBL_MAX_OFF];	/* and the version of each */
+	CommandId	acmin[SIFT_TBL_MAX_OFF];
 	uint64		an_cur;			/* next vblock of the chunk (of the groups) to read */
 	uint64		an_end;
 	int			narows;
@@ -690,9 +692,9 @@ typedef struct VblockTest
 	Relation	rel;
 	SiftTblRel *st;
 	Snapshot	snapshot;
-	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (the tombstones decide, and tag: the insertion) */
+	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (the tombstones decide, and the insertion of a row with a version) */
 	uint64		gen;
-	const SiftTblTag *tag;		/* of the group that holds the vblock, if it has one */
+	SiftTblVerPage vp;			/* the versions of the rows of the page of a unit with unfrozen rows */
 } VblockTest;
 
 static bool
@@ -709,26 +711,30 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 		sift_tbl_rowver(&rv, tid, rec);
 		return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 	}
-	sift_tbl_group_rowver(&rv, sift_key_from_tid(tid), t->tag);
+	rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false};
+	sift_tbl_vers_rowver(&t->vp, ItemPointerGetOffsetNumber(tid), &rv.xmin, &rv.cmin);
 	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once; a group the snapshot does not see is no row at all */
+/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once; a unit the snapshot sees no insertion of is no row at all */
 int
-sift_tbl_filter_page_tags(Relation rel, Snapshot snapshot, const SiftTblTags *tags, BlockNumber vblock, uint64 *offmask)
+sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask)
 {
 	PGAlignedBlock copy;
 	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data};
 
 	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
 	{
+		SiftTblVerState state = sift_tbl_vers_sb(rel, snapshot, vers, vblock / SIFT_SB_PAGES);
+
 		t.copy = NULL;
-		t.tag = sift_tbl_tag_of_sb(tags, vblock / SIFT_SB_PAGES);
-		if (t.tag != NULL && snapshot->snapshot_type == SNAPSHOT_MVCC && !sift_tbl_tag_visible(rel, snapshot, t.tag))
+		if (state == SIFT_TBL_VER_NONE)
 		{
 			memset(offmask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 			return 0;
 		}
+		if (state == SIFT_TBL_VER_ROWS)
+			sift_tbl_vers_page(vers, vblock, &t.vp);
 	}
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }
@@ -739,14 +745,16 @@ sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
-	if (st->curtags == NULL || st->curtags_version != st->dir.version)
+	if (st->curvers == NULL || st->curvers_version != st->dir.version || st->curvers_rel != rel)
 	{
-		if (st->curtags)
-			pfree(st->curtags);
-		st->curtags = sift_tbl_tags_build(rel, st, &st->dir, st->cxt);
-		st->curtags_version = st->dir.version;
+		if (st->curvers_cxt)
+			MemoryContextDelete(st->curvers_cxt);
+		st->curvers_cxt = AllocSetContextCreate(st->cxt, "sift_table versions of the directory", ALLOCSET_SMALL_SIZES);
+		st->curvers = sift_tbl_vers_build(rel, st, &st->dir, st->curvers_cxt);
+		st->curvers_version = st->dir.version;
+		st->curvers_rel = rel;
 	}
-	return sift_tbl_filter_page_tags(rel, snapshot, st->curtags, vblock, offmask);
+	return sift_tbl_filter_page_vers(rel, snapshot, st->curvers, vblock, offmask);
 }
 
 bool
@@ -871,6 +879,8 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 {
 	uint64		mask[SIFT_OFFMASK_WORDS] = {0};
 	HeapTuple	row[SIFT_TBL_MAX_OFF];
+	TransactionId xmin[SIFT_TBL_MAX_OFF];
+	CommandId	cmin[SIFT_TBL_MAX_OFF];
 	int			cnt;
 
 	if (vblock >= SIFT_TBL_NEXT_VBLOCK(&s->dir->meta))
@@ -879,12 +889,11 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 		s->g = scan_gscan(s, s->base.rs_snapshot);
 	for (int i = 0; i < n; i++)
 		sift_col_bit_set(mask, offsets[i] - 1);
-	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row);
+	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row, xmin, cmin);
 	for (int i = 0; i < cnt; i++)
 	{
-		SiftTblRowVer rv;
+		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = xmin[i],.cmin = cmin[i]};
 
-		sift_tbl_group_rowver(&rv, sift_key_from_tid(&row[i]->t_self), sift_tbl_gscan_tag(s->g, vblock));
 		if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			bitmap_add(s, row[i]);
 		else
@@ -1127,7 +1136,7 @@ analyze_load_vblock(SiftTblScan *s)
 	if (s->g == NULL)
 		s->g = scan_gscan(s, SnapshotSelf);
 	s->ari = 0;
-	s->narows = sift_tbl_gscan_block(s->g, analyze_group_vblock(s, s->an_cur++), NULL, s->arows);
+	s->narows = sift_tbl_gscan_block(s->g, analyze_group_vblock(s, s->an_cur++), NULL, s->arows, s->axmin, s->acmin);
 }
 
 bool
@@ -1209,8 +1218,9 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 			analyze_load_vblock(s);
 			continue;
 		}
-		tup = s->arows[s->ari++];
-		sift_tbl_group_rowver(&rv, sift_key_from_tid(&tup->t_self), sift_tbl_gscan_tag(s->g, ItemPointerGetBlockNumberNoCheck(&tup->t_self)));
+		tup = s->arows[s->ari];
+		rv = (SiftTblRowVer) {.key = sift_key_from_tid(&tup->t_self),.wbuf = false,.xmin = s->axmin[s->ari],.cmin = s->acmin[s->ari]};
+		s->ari++;
 		if (!sift_tbl_visible(rel, s->st, SnapshotSelf, &rv))
 		{
 			*deadrows += s->aweight;

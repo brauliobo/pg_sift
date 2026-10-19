@@ -37,10 +37,11 @@ typedef struct SiftColSegWriter SiftColSegWriter;
 extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol,
 										 int format, MemoryContext mcxt);
 /*
- * The owner's tag of the segment: SiftSegEntry.reserved (the table AM's xmin, 0 = none) and, in the segment header, aux (its cmin). sift_colw_finish
- * stores both; a merge or a rewrite of tagged segments sets them again. The owner clears the tag in the entry when the rows are final.
+ * Rows that are not final (a sift_table group written while its transactions run, docs/COL-TAM.md section 7): a batch whose rows carry a
+ * version (sift_cbatch_add_ver) is written with a version section and the entry flag SIFT_SEG_VERS; entry->reserved is the
+ * smallest xmin (the largest is in the version section: sum_dl of a directory entry is the owner's, as the metapage totals it). The owner
+ * clears the flag in the directory when the rows are final.
  */
-extern void sift_colw_set_tag(SiftColSegWriter *w, uint32 tag, uint32 aux);
 /*
  * The pre-aggregates the writer computes for every unit (docs/COL-PREAGG.md): the default spec unless the owner sets one (the reloption
  * `preagg`). Set before the first sift_colw_add.
@@ -72,8 +73,35 @@ typedef struct SiftColSegment
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */
 extern SiftColSegment *sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
-/* The aux half of the tag the segment was written with (sift_colw_set_tag) */
-#define SIFT_CSEG_TAG_AUX(seg)	((uint32) (seg)->hdr->sum_dl)
+
+/*
+ * Versions of the rows (the rows of a sift_table group that are not final; frozen = xmin 0). A segment has them while its directory entry
+ * says SIFT_SEG_VERS (format 1.4), or, for a group of 3.0.1 (format 1.3), while entry.reserved holds the xid of the one command that wrote all
+ * of it (cmin in the header): the reader returns that as constant vectors, so the owner has one case.
+ */
+extern bool sift_cseg_vers(const SiftColSegment *seg);
+/* The range of the xmins (in the order of xids) of a segment that has versions */
+extern void sift_cseg_ver_range(SiftColSegment *seg, uint32 *xmin_lo, uint32 *xmin_hi);
+
+typedef struct SiftColVerSum
+{
+	bool		any;			/* some row of the unit is not frozen */
+	bool		frozen_rows;	/* some row is frozen */
+	uint32		xmin_lo;		/* over the unfrozen rows (the order of xids) */
+	uint32		xmin_hi;
+	uint32		cmin_hi;
+} SiftColVerSum;
+
+/* What the unit's versions are without decoding them */
+extern void sift_cseg_ver_sum(SiftColSegment *seg, uint32 u, SiftColVerSum *sum);
+/* The xmin and cmin of every row of unit u in key order (nrows entries each); frozen rows are 0 */
+extern void sift_cseg_ver_unit(SiftColSegment *seg, uint32 u, uint32 *xmin, uint32 *cmin);
+/* The rows of the page blk inside unit u: the ordinal of the first one and the bit mask (SIFT_OFFMASK_WORDS words) of their offsets; false when the unit has no row on the page */
+extern bool sift_cseg_page_rows(SiftColSegment *seg, uint32 u, BlockNumber blk, uint32 *first, uint64 *offmask);
+/* The stored segment and unit a unit of a source is read from (a table source: a column group); false for an in-memory unit */
+extern bool sift_col_unit_ref(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
+/* The keys (blk << 16 | off) of the rows of unit u in order, nrows entries */
+extern void sift_cseg_unit_keys(SiftColSegment *seg, uint32 u, SiftKey *keys);
 extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
@@ -129,8 +157,14 @@ extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
 
-/* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema) */
+/* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema); the rows keep their versions */
 extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst);
+/*
+ * The same, and a row that is not frozen becomes frozen when freeze(arg, xmin, cmin) says so: the owner knows it committed before every snapshot.
+ * Rows are never dropped by it: a row of an aborted writer stays until the owner's VACUUM cleared its liveness (the indexes forgot it first).
+ */
+typedef bool (*SiftColFreezeFn) (void *arg, uint32 xmin, uint32 cmin);
+extern void sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg);
 
 /*
  * Does a unit flag the overflow of a leaf while no live row holds an overflow value in it (the rows that did are dead)? The flag stays with the

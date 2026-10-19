@@ -285,7 +285,7 @@ refresh_segment(Relation index, const RollupReq *r)
 #ifdef SIFT_TESTING
 			sift_test_col_rollup_panic_armed = sift_test_col_rollup_panic;
 #endif
-			sift_col_merge_segments(index, rel->schema, rel->policy, &rel->pagg, &e, 1);
+			sift_col_merge_segments(index, rel->schema, rel->policy, &rel->pagg, &e, 1, sift_col_format_minor, NULL, NULL);
 			gen = new_gen(index, snap);
 			break;
 		}
