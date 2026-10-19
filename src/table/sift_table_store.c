@@ -357,9 +357,9 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-					 errdetail("Too many write buffers waiting for promotion: a write buffer whose rows are not final is promoted only when one command of one transaction wrote all of it, and about %d MB of rows are in write buffers that several wrote.",
+					 errdetail("Too many write buffers waiting for promotion: a write buffer that holds a deleted row VACUUM has not seen, or a speculative insertion, is promoted only after that is settled, and about %d MB of rows are in write buffers like that.",
 							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_write_buffer_limit / 1024)),
-					 errhint("Load with COPY or INSERT ... SELECT, or in several transactions, or run VACUUM on the table once the old transactions end.")));
+					 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
 		if (act)
 			old = *act;
 		if (vbase + vcap > (uint64) MaxBlockNumber)

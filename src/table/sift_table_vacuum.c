@@ -91,10 +91,7 @@ typedef struct VacState
 	double		dead;			/* recently dead: deleter committed but not removable yet */
 	double		group_dead;		/* of those, rows of the column groups (their liveness bit is still set) */
 	TidList	dead_tids;
-	uint32	   *dead_sb;		/* sorted: the superblocks of the groups of aborted transactions, every row of which is dead */
-	int			ndead_sb;
-	uint64		aborted[SIFT_MAX_SEGMENTS];	/* the generations of those groups: dropped once the indexes forgot their rows */
-	int			naborted;
+	SiftTblKeyRuns dead_runs;	/* sorted: the rows of the groups with unfrozen rows whose inserter aborted */
 } VacState;
 
 static void
@@ -196,26 +193,6 @@ in_wbuf(const SiftTblRel *st, uint64 vblock)
 }
 
 /*
- * The live rows of the column segments: with the write buffer rows, the tuples of the table (promotion moves rows from one to the other).
- * The rows of a group whose writer has not committed are not live, as a write buffer row of it is not.
- */
-static double
-group_live_rows(Relation rel, const SiftTblRel *st)
-{
-	double		n = 0;
-
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && (!sift_tbl_seg_tagged(&st->dir.segs[i]) || TransactionIdDidCommit(st->dir.segs[i].reserved)))
-		{
-			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
-
-			n += sift_cseg_live_rows(seg);
-			sift_cseg_close(seg);
-		}
-	return n;
-}
-
-/*
  * The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their
  * superblocks. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
  */
@@ -242,48 +219,43 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 }
 
 static int
-cmp_sb(const void *a, const void *b)
+cmp_run(const void *a, const void *b)
 {
-	return pg_cmp_u32(*(const uint32 *) a, *(const uint32 *) b);
+	SiftKey		x = ((const SiftKey *) a)[0],
+				y = ((const SiftKey *) b)[0];
+
+	return x < y ? -1 : x > y;
 }
 
-/* Is the row dead for the indexes: a dead TID, or any row of a group of an aborted transaction */
+/* Is the row dead for the indexes: a dead TID, or a row of an aborted writer in a group (a key in one of the runs) */
 static bool
 dead_has(ItemPointer itemptr, void *state)
 {
 	VacState   *v = state;
-	uint32		sb = ItemPointerGetBlockNumberNoCheck(itemptr) / SIFT_SB_PAGES;
+	SiftKey		key = sift_key_from_tid(itemptr);
+	int			lo = 0,
+				hi = v->dead_runs.n;
 
-	return tid_has(itemptr, &v->dead_tids) || (v->ndead_sb > 0 && bsearch(&sb, v->dead_sb, v->ndead_sb, sizeof(uint32), cmp_sb) != NULL);
-}
-
-/* The groups of aborted transactions: their rows are dead, the groups go (sift_tbl_drop_aborted_groups) after the indexes dropped the entries */
-static void
-aborted_groups(Relation rel, SiftTblRel *st, VacState *v)
-{
-	SiftTblTags *tags = sift_tbl_tags_build(rel, st, &st->dir, CurrentMemoryContext);
-
-	for (int i = 0; i < tags->n; i++)
+	if (tid_has(itemptr, &v->dead_tids))
+		return true;
+	while (lo < hi)
 	{
-		const SiftTblTag *t = &tags->ent[i];
+		int			mid = (lo + hi) / 2;
 
-		if (!sift_tbl_xid_aborted(t->xid))
-			continue;
-		v->aborted[v->naborted++] = t->gen;
-		v->dead_sb = v->dead_sb ? repalloc(v->dead_sb, (v->ndead_sb + t->nsb) * sizeof(uint32)) : palloc(t->nsb * sizeof(uint32));
-		memcpy(v->dead_sb + v->ndead_sb, t->sb, t->nsb * sizeof(uint32));
-		v->ndead_sb += t->nsb;
+		if (v->dead_runs.run[mid][0] <= key)
+			lo = mid + 1;
+		else
+			hi = mid;
 	}
-	if (v->ndead_sb > 0)
-		qsort(v->dead_sb, v->ndead_sb, sizeof(uint32), cmp_sb);
+	return lo > 0 && key <= v->dead_runs.run[lo - 1][1];
 }
 
-/* The writers of the groups that are still not final hold the oldest xid back */
+/* The writers of the groups with unfrozen rows hold the oldest xid back */
 static void
 note_groups(const SiftTblRel *st, VacState *v)
 {
 	for (int i = 0; i < st->dir.nsegs; i++)
-		if (sift_tbl_seg_tagged(&st->dir.segs[i]))
+		if (sift_tbl_seg_unfrozen(&st->dir.segs[i]))
 			note_xid(v, st->dir.segs[i].reserved);
 }
 
@@ -308,13 +280,16 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	}
 	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
 	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
-	aborted_groups(rel, st, v);
+	v->dead_runs.mcxt = CurrentMemoryContext;
+	sift_tbl_aborted_runs(rel, st, &v->dead_runs, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);
+	if (v->dead_runs.n > 0)
+		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), cmp_run);
 	if (sb_lo <= sb_hi)
-		(void) sift_tbl_group_bulkdelete(rel, st, tid_has, &v->dead_tids, sb_lo, sb_hi);
+		(void) sift_tbl_group_bulkdelete(rel, st, dead_has, v, sb_lo, sb_hi);
 	/* the bulk delete flagged the segments dirty: their liveness is read from entries that say so */
 	sift_tbl_refresh(rel, st);
-	v->live += group_live_rows(rel, st) - v->group_dead;
+	v->live += sift_tbl_group_live_rows(rel, st) - v->group_dead;
 }
 
 /* Step 3; returns the number of indexes */
@@ -331,7 +306,7 @@ vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
 		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v->live + v->dead,.strategy = bstrategy};
 		IndexBulkDeleteResult *res = NULL;
 
-		if (v->dead_tids.n > 0 || v->ndead_sb > 0)
+		if (v->dead_tids.n > 0 || v->dead_runs.n > 0)
 			res = index_bulk_delete(&ivinfo, NULL, dead_has, v);
 		res = index_vacuum_cleanup(&ivinfo, res);
 		if (res)
@@ -487,11 +462,11 @@ compact_tail(Relation rel, SiftTblRel *st, VacState *v)
 static void
 vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
 {
-	(void) sift_tbl_drop_aborted_groups(rel, st, v->aborted, v->naborted);
+	(void) sift_tbl_drop_dead_groups(rel, st);
 	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
-	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
+	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st, v->oldest); i++)
 		CHECK_FOR_INTERRUPTS();
 	if (tomb_drops(st, v))
 		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
