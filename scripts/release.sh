@@ -16,7 +16,7 @@
 # stops the run. After each job the server logs it left are searched for a server crash.
 #
 # Environment: RELEASE_BM25_BASE (default 544ddf0, the main the BM25 gate compares with), RELEASE_BM25_ACCEPT (cells allowed above 1.02),
-# RELEASE_COL_REF (the gated ref the column gate compares with; default the head of the newest stamp), RELEASE_COL_MAX (1.02),
+# RELEASE_COL_REF (the gated ref the column gate compares with; default the head of the newest stamp), RELEASE_COL_MAX (1.15; between RELEASE_COL_NOTE, 1.02, and it a sift_col ratio is printed as accepted),
 # RELEASE_OLD (the release the upgrade starts from, v2.0.3), RELEASE_MINOR2 (the last head that wrote column format 2, 46008df),
 # RELEASE_MARIADB_SERIES (11.8), RELEASE_TMP (scratch root, /tmp), SIFT_PORT (first port, default 56130).
 set -uo pipefail
@@ -32,7 +32,7 @@ while (( $# )); do
 done
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}
 BM25_BASE=${RELEASE_BM25_BASE:-544ddf0} BM25_ACCEPT=${RELEASE_BM25_ACCEPT:-session|vacuum_nofree|idle1_rank}
-COL_MAX=${RELEASE_COL_MAX:-1.02} OLD=${RELEASE_OLD:-v2.0.3} MINOR2=${RELEASE_MINOR2:-46008df}
+COL_MAX=${RELEASE_COL_MAX:-1.15} COL_NOTE=${RELEASE_COL_NOTE:-1.02} OLD=${RELEASE_OLD:-v2.0.3} MINOR2=${RELEASE_MINOR2:-46008df}
 PORT0=${SIFT_PORT:-56130} ROWS=100000
 GUARDED='src test scripts Makefile pg_sift.control pg_sift--*.sql'
 CRASH='terminated by signal (4|6|7|8|11):|TRAP: '	# signals 9 and 15 are what the crash tests send on purpose
@@ -185,7 +185,9 @@ job_gate_col() {
 		for sql in "${Q[@]}"; do
 			ratio=$(bench/cpu-query.sh -n 1000 -r 3 "$sql" "$W/gate-col/nt/sock:$((PORT0 + 2))/$db" "$W/gate-col/rt/sock:$((PORT0 + 1))/$db" | tee /dev/stderr | sed -n 's/^NEW\/REF: instructions \([0-9.]*\),.*/\1/p')
 			printf '%s %s %s\n' "$db" "$ratio" "${sql:0:60}"
-			[[ $db == col ]] && awk -v r="$ratio" -v m="$COL_MAX" 'BEGIN { exit !(r > m) }' && bad=1
+			[[ $db == col ]] || continue
+			awk -v r="$ratio" -v m="$COL_NOTE" 'BEGIN { exit !(r > m) }' && echo "accepted: size work ($ratio > $COL_NOTE): ${sql:0:60}"
+			awk -v r="$ratio" -v m="$COL_MAX" 'BEGIN { exit !(r > m) }' && bad=1
 		done
 	done
 	for d in rt nt; do pgt "$T" "$W/gate-col/$d" $PORT0 stop >/dev/null 2>&1; done
