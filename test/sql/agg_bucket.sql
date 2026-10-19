@@ -110,3 +110,7 @@ UPDATE b_t SET ts = ts + interval '40 days' WHERE id % 11 = 0;
 DELETE FROM b_t WHERE id % 13 = 0;
 INSERT INTO b_t SELECT 20000 + i, timestamp '2026-06-01' + i * interval '1 hour', NULL, NULL, i % 5, i FROM generate_series(1, 500) i;
 SELECT query, same FROM b_compare();
+
+DROP TABLE b_t, b_h, b_q;
+DROP FUNCTION b_rows(text, bool), b_keys(text), b_compare();
+DROP EXTENSION pg_sift;
