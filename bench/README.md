@@ -442,7 +442,7 @@ Why 1 and 3: at 1 CPU every engine runs on one thread of work, so the table comp
 leader and zero workers, one search thread and one write thread, `max_threads` 1). At 3 CPUs each engine can use the parallelism it has (a leader and two workers,
 three ClickHouse threads, three Elasticsearch processors) on a host that stays quiet enough to time, and 3 is less than a quarter of the host's hardware threads, so
 three engines' background work cannot starve the one under test. The two result sets are separate (`1M-c1`, `1M-c3` in `store.json`); the load, the sizes, the plans and
-the updates are those of the load at the larger budget.
+the updates are those of the load at the larger budget. Only the 3-CPU set is rendered into README.md and docs/BENCHMARKS.md (the budget of the search tables); the 1-CPU cells stay in `store.json`.
 
 The same data (the seeded CSV, its sha256 in the results), the same memory cap (`--memory`, `--memory-swap`) and the same warm-cache policy (untimed runs first, then the
 timed ones; the cold runs restart the container; the operating system's page cache is never dropped) apply to every engine and every budget.
