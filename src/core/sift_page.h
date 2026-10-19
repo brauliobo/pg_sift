@@ -92,7 +92,7 @@ typedef struct SiftSegEntry
 	BlockNumber header_blk;		/* SEGHEADER or WBUFHEADER */
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
-	uint32		reserved;
+	uint32		reserved;		/* immutable: the owner's tag (docs/COL.md 2.8); write buffer of sift_col: the leaves that hold an overflow value (sift_col_wbuf.h) */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;

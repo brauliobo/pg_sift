@@ -431,6 +431,7 @@ sift_col_index_meta(Relation index)
 			m->stats.nwbuf++;
 	}
 	m->stats.nunits = sift_cseg_dir_units(snap);
+	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
 	heap = table_open(d->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	visibilitymap_count(heap, &allvis, NULL);

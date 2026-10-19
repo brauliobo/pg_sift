@@ -17,6 +17,8 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/sinval.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -139,20 +141,30 @@ elem_count(const SiftColValue *v)
 	return v->isnull ? 0 : v->v.i;
 }
 
-static void
+/* Appends the row's payload; returns the leaves (SIFT_COL_OVF_BIT) it holds an overflow value of */
+static uint32
 encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row)
 {
+	uint32		ovf = 0;
+
 	for (int id = 0; id < schema->ncols; id++)
 		if (schema->cols[id].parent < 0)
+		{
 			put_value(buf, &schema->cols[id], &row->val[id]);
+			ovf |= row->val[id].overflow ? SIFT_COL_OVF_BIT(id) : 0;
+		}
 	for (int id = 0; id < schema->ncols; id++)
 	{
 		const SiftColDef *def = &schema->cols[id];
 
 		if (def->parent >= 0)
 			for (uint64 j = 0, n = elem_count(&row->val[def->parent]); j < n; j++)
+			{
 				put_value(buf, def, &row->elem[id][j]);
+				ovf |= row->elem[id][j].overflow ? SIFT_COL_OVF_BIT(id) : 0;
+			}
 	}
+	return ovf;
 }
 
 /* ---------- pages ---------- */
@@ -246,6 +258,73 @@ write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPoin
 	return crossed;
 }
 
+typedef struct OvfArg
+{
+	uint64		gen;
+	uint32		mask;
+} OvfArg;
+
+static void
+or_overflow(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	const OvfArg *a = arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == a->gen)
+			dir->segs[i].reserved |= a->mask;
+}
+
+uint32
+sift_cwbuf_overflow(const SiftDirSnapshot *dir)
+{
+	uint32		mask = 0;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			mask |= dir->segs[i].reserved;
+	return mask;
+}
+
+/*
+ * The plans of the table are invalid, in every session, whether or not the transaction that wrote the value commits: the mask is in the
+ * directory for good. The queued invalidation reaches this session at the end of the statement (a transaction that goes on to use a
+ * prepared statement), the immediate one the others now.
+ */
+static void
+invalidate_plans(Relation index)
+{
+	SharedInvalidationMessage msg = {.rc = {.id = SHAREDINVALRELCACHE_ID,.dbId = MyDatabaseId,.relId = index->rd_index->indrelid}};
+
+	CacheInvalidateRelcacheByRelid(msg.rc.relId);
+	SendSharedInvalidMessages(&msg, 1);
+}
+
+/* Adds the leaves of a row that overflow to the entry of the write buffer it goes to; the plans of the table are invalid when that changes it */
+static void
+flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask)
+{
+	SiftDirSnapshot *snap;
+
+	if (h->ovf_gen != h->gen)
+		h->ovf_known = 0;
+	h->ovf_gen = h->gen;
+	if ((mask & ~h->ovf_known) == 0)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == h->gen)
+		{
+			if (mask & ~snap->segs[i].reserved)
+			{
+				sift_dir_update(index, &(SiftDirChange) {.fn = or_overflow,.arg = &(OvfArg) {h->gen, mask},.extra = InvalidBuffer});
+				invalidate_plans(index);
+			}
+			h->ovf_known = snap->segs[i].reserved | mask;
+		}
+	pfree(snap);
+}
+
 bool
 sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row)
 {
@@ -254,13 +333,15 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	int			lane;
 	BlockNumber tail;
 	bool		crossed;
+	uint32		ovf;
 
 	initStringInfo(&buf);
-	encode_row(&buf, schema, row);
+	ovf = encode_row(&buf, schema, row);
 	for (;;)
 	{
 		if (h->gen == 0)
 			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+		flag_overflow(index, h, ovf);
 		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
 		h->gen = 0;

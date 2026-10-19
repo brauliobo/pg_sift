@@ -221,6 +221,12 @@ order) and presenting each batch as a unit whose chunks are encoded in memory by
 (`SIFT_COLO_NOWBUF` skips them: build and verification paths). The deleted flag is set by VACUUM on the first piece. The directory being
 full when no active segment exists is `sift_col_maint_make_room`'s (the AM's maintenance), as `sift_maint_make_room` is for sift.
 
+The directory entry of a write buffer carries, in `SiftSegEntry.reserved` (the segment tag of an immutable entry), the leaves it holds an overflow value of
+(`SIFT_COL_OVF_BIT`: bit i for leaf i, bit 31 for every leaf from 31 on): an appender ORs the leaves its row overflows in before the row goes in
+(`sift_col_wbuf.c`, one directory update when that changes the entry) and then invalidates the relcache entry of the table, so that the plans made
+before the value was written are made again, by a planner that reads the mask (`SiftColIndexStats.wbuf_ovf`, docs/COL-PLAN.md). The mask goes with the
+buffer: a promotion writes the rows into a segment whose zones flag the overflow.
+
 ### 2.6 Build, promotion, merge
 
 All three use one writer: `sift_colw_*` takes **batches** (`SiftColBatch`: the decoded rows of one SB, keys ascending, typed vectors
