@@ -4,6 +4,10 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 3.0.1
+
+- No change to the index format (2) or the SQL files: an index of 3.0.0 opens as it is. The library is rebuilt with the PostgreSQL release 3.0.1; no file of the shared core (`src/portable.list`) changed, so nothing in the MariaDB extension differs from 3.0.0 except the version `sift_version()` reports. The fixes of 3.0.1 (the column scans, the aggregate pushdown, `sift_table`) are PostgreSQL features and are not in this extension.
+
 ## 3.0.0
 
 - No change to the index format (2) or the SQL files: an index of 2.0.x opens as it is (the host keeps writing segment format 1). The library is
