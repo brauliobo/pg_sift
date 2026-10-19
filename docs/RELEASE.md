@@ -33,7 +33,7 @@ scripts/ci.sh release --keep          keep the scratch directory of every job
 | 3 | `package` | `make install DESTDIR=...`, then `CREATE EXTENSION` and both index types in a fresh cluster that sees only the installed files |
 
 After every job the logs it left are searched for a server crash (`terminated by signal` 4, 6, 7, 8 or 11, and `TRAP:`); signals 9 and 15 are what
-the crash tests send on purpose. A crash fails the job.
+the crash tests send on purpose, and the fuzz job aborts one backend on purpose (`sift_asan_canary`) to see ASan report. A crash fails the job.
 
 ## Why these jobs
 

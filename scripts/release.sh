@@ -266,7 +266,8 @@ known_flake() { # NAME FAILED-PARTS: every part matches a line of scripts/releas
 		printf '%s ' "$cause"
 	done
 }
-crash_scan() { grep -rIEH "$CRASH" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | head -3; }
+# the canary of scripts/fuzz.sh aborts a backend on purpose (it proves ASan reports an overflow): its postmaster line is no crash
+crash_scan() { grep -rIPzoH "(?m)^[^\n]*(?:$CRASH)(?![^\n]*\n[^\n]*sift_asan_canary)[^\n]*\n" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | tr '\0' '\n' | head -3; }
 run_once() { # NAME -> rc; log LOGS/NAME.log
 	local n=$1 rc c
 	( set -e; "job_${n//-/_}" ) >"$LOGS/$n.log" 2>&1
