@@ -24,7 +24,8 @@
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (twice the budget; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
-# (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those. Logs:
+# (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
+# SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
@@ -149,6 +150,17 @@ JOB_MB=70
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
 installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1 "$S/pgtest.sh" regress "$t"; done; }
+# installcheck_batches N TEST...: the short tests, N to a pg_regress run in one database like make installcheck runs them: a run costs 0.3 s of
+# CPU and lane time before its first statement, which is more than most of these tests need
+installcheck_batches() {
+	local n=$1 i=0 b=() t
+	shift
+	for t in "$@"; do
+		b+=("$t")
+		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
+	done
+	(( ${#b[@]} == 0 )) || job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"
+}
 
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
@@ -174,7 +186,8 @@ if [[ $MODE == full ]]; then
 	job static static 0 "$S/static.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
-	installcheck $(named $SLOW_REGRESS) $(rest sql .sql $SLOW_REGRESS)
+	installcheck $(named $SLOW_REGRESS)
+	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
@@ -216,7 +229,7 @@ else
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
 	tap_shell $(rest t .sh $SLOW_SHELL)
-	installcheck $(rest sql .sql $SLOW_REGRESS)
+	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
@@ -326,6 +339,8 @@ for s in "${ORDER[@]}" leakcheck; do
 	# the log of a split suite: the logs of its jobs, in order
 	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
+	# a batch of regression tests names the tests that failed
+	for id in ${bad:-}; do [[ $id != installcheck-batch* ]] || grep -h '^not ok' "$LOG/$id.log" | sed "s/^/$red    /; s/\$/$off/"; done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
 [[ -z ${STATS:-} ]] || { kill "$STATS"; wait "$STATS"; cat "$LOG/stats.txt"; }
