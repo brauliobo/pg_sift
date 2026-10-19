@@ -1,4 +1,4 @@
--- jsonb_typeof(path) = 'type' (and <>, NOT IN, IS [NOT] NULL) pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
+-- jsonb_typeof(path) = 'type' (and <>, NOT IN, IS [NOT] NULL, a group key, in OR, FILTER and CASE) pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
 -- Scan (SiftAgg) with two workers, and its rows must be the rows of the normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone),
 -- none (the normal plan). The workers filter their units by type as the leader does; a value a selected row holds that the leaf cannot store
 -- raises in a worker as it does in the leader.
@@ -65,6 +65,12 @@ INSERT INTO p_q (q) VALUES
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''n'') = ''null'''),
 	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') IS NULL GROUP BY grp'),
 	('SELECT count(*), sum((attrs->>''m'')::float8) FROM p_t WHERE jsonb_typeof(attrs->''m'') IN (''number'', ''null'') AND jsonb_typeof(attrs->''s'') IS NOT NULL'),
+	-- the type as a key, in a FILTER, in an OR and a CASE (the workers read the types of their units)
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM p_t GROUP BY 1'),
+	('SELECT grp, jsonb_typeof(attrs->''n'') AS ty, count(*), sum(id) FROM p_t GROUP BY 1, 2'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''s'') = ''string'') AS s, count(*) FILTER (WHERE jsonb_typeof(attrs->''s'') IS NULL OR id < 100) AS o FROM p_t'),
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') = ''null'' OR (jsonb_typeof(attrs->''b'') <> ''boolean'' AND id > 8000) GROUP BY grp'),
+	('SELECT CASE jsonb_typeof(attrs->''b'') WHEN ''boolean'' THEN ''b'' ELSE ''x'' END AS k, count(*) FROM p_t GROUP BY 1'),
 	-- selects values the leaf cannot hold: the error is the same in every process
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') = ''string'''),
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') = ''number''');

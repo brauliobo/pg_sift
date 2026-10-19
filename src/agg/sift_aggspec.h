@@ -27,7 +27,7 @@
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_MAX_COMBOS	8
 #define SIFT_AGG_MAX_JOINS	4
-#define SIFT_AGG_MAX_VLEAVES	4
+#define SIFT_AGG_MAX_VLEAVES	8
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
 /* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */
@@ -269,10 +269,18 @@ typedef struct SiftAggAgg
  */
 typedef struct SiftAggVLeaf
 {
-	int			obj;			/* the object leaf (free keys: children "key" and "value"), or the array leaf of a length */
+	int			obj;			/* the object leaf (free keys: children "key" and "value"), the array leaf of a length, or the scalar leaf of a type */
 	char	   *key;			/* the value of its element with this key, NULL when the row has none: leaf nleaves + index */
 	bool		count;			/* the number of elements of the array leaf obj (jsonb_array_length), NULL where it has none; key is unused */
+	bool		types;			/* the JSON type of the value of the scalar leaf obj (jsonb_typeof), as the name text, NULL where the path has no value; key is unused */
 } SiftAggVLeaf;
+
+/* a leaf of a member of an object by key: its element columns are its object's children "key" and "value" */
+static inline bool
+sift_aggvleaf_member(const SiftAggVLeaf *v)
+{
+	return !v->count && !v->types;
+}
 
 typedef struct SiftAggArm
 {
