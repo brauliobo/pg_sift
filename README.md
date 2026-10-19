@@ -5,12 +5,13 @@
 pg_sift adds fast full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`. No external search
 server, no separate analytics database, no `shared_preload_libraries`. The search engine also runs as a SQLite extension and a MariaDB library.
 
-[Features](#features) · [Install](#install) · [Search](#search) · [Analytics](#analytics) · [Benchmarks](#benchmarks) · [Compared with](#compared-with) · [What is covered](#what-is-covered) · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Limits](#limits) · [Docs](#docs)
+[Features](#features) · [Install](#install) · [Search](#search) · [Analytics](#analytics) · [Benchmarks](#benchmarks) · [Compared with](#compared-with) · [What is covered](#what-is-covered) · [SQLite](#sqlite) · [MariaDB](#mariadb) · [Operations](#operations) · [Limits](#limits) · [Vulkan (experimental)](#vulkan-experimental) · [Docs](#docs)
 
 ## Features
 
 - **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan, counts from the index, facets, autocomplete.
 - **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` run on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
+- **Vulkan (experimental, opt-in, 3.2):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU; off by default, the CPU path unchanged ([Vulkan](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
 
@@ -291,6 +292,27 @@ SELECT sift_count('news', 'power AND plant');
 - **Weaker than other systems:** text analysis and the narrow parts of the column engine ([Compared with](#compared-with)).
 - **Types, options and limits of the column engine:** [docs/USAGE.md](docs/USAGE.md#limits).
 
+## Vulkan (experimental)
+
+Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|on` (`auto`: grouped aggregates on indexes of at least `sift.gpu_min_rows`, 5,000,000 rows; `on`: also ungrouped). It runs grouped and filtered integer and `numeric` counts and sums of a `sift_col` index on a Vulkan device, clean all-visible units on the device and the rest on the CPU in the same query; a missing or failed device falls back to the CPU. The compressed chunks stay on the device, so use it from persistent connections (each backend pays about 0.2 s to open it). Not eligible: floats, `min`/`max`, `count(DISTINCT)`, text filters, more than one key, `sift_table`. Details and limits: [docs/GPU.md](docs/GPU.md).
+
+Online-store table, one backend, one CPU core, NVIDIA GeForce RTX 3090, measured once on 2026-10-19 (ms; CPU cells: first query / median of 9; cold: first query after the device is open; resident: median of 9). The 3.1 dense path is a 3.1 development build; the device binary predates three small fixes that do not touch the kernels. Data: [docs/results/gpu.tsv](docs/results/gpu.tsv); reproduce with `bench/gpu/bench-pg.sh 10000000 9` on a `VULKAN=1` build.
+
+| rows | query | CPU, one core | CPU, 3.1 dense path | device, cold | device, resident | resident vs dense path |
+|---|---|---|---|---|---|---|
+| 1M | q7 `count(*)`, 2 filters | 3.9 / 0.7 | 4.5 / 0.6 | 4.2 | 0.51 | 1.2x |
+| 1M | q8 `count(*)`, 2 filters | 1.9 / 0.4 | 1.7 / 0.5 | 3.6 | 0.55 | 0.9x |
+| 1M | q9 `count, sum, sum`, 2 filters | 4.5 / 2.3 | 4.3 / 2.7 | 3.3 | 0.51 | 5.4x |
+| 1M | g1 `GROUP BY country` (30 groups), `count, sum` | 4.4 / 3.0 | 5.0 / 2.7 | 3.7 | 0.44 | 6.2x |
+| 1M | g2 `GROUP BY category` (40), `count, sum` | 4.0 / 2.8 | 3.1 / 1.8 | 5.4 | 0.55 | 3.4x |
+| 1M | g3 `GROUP BY month` (36), `sum` | 5.2 / 3.9 | 4.0 / 2.8 | 3.7 | 0.48 | 5.9x |
+| 10M | q7 `count(*)`, 2 filters | 23.4 / 23.6 | 26.8 / 24.1 | 45.0 | 3.26 | 7.4x |
+| 10M | q8 `count(*)`, 2 filters | 16.1 / 13.0 | 14.1 / 8.7 | 16.0 | 2.78 | 3.1x |
+| 10M | q9 `count, sum, sum`, 2 filters | 37.0 / 32.0 | 30.1 / 24.8 | 15.7 | 3.02 | 8.2x |
+| 10M | g1 `GROUP BY country` (30 groups), `count, sum` | 31.9 / 28.3 | 34.3 / 27.3 | 17.8 | 2.32 | 11.8x |
+| 10M | g2 `GROUP BY category` (40), `count, sum` | 27.4 / 23.8 | 23.8 / 20.4 | 25.2 | 3.67 | 5.6x |
+| 10M | g3 `GROUP BY month` (36), `sum` | 47.5 / 37.9 | 36.3 / 30.0 | 21.1 | 2.42 | 12.4x |
+
 ## Docs
 
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
@@ -299,6 +321,7 @@ SELECT sift_count('news', 'power AND plant');
 - [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
 - [docs/COL.md](docs/COL.md): the column engine; [docs/COL-PLAN.md](docs/COL-PLAN.md) and [docs/AGG.md](docs/AGG.md): aggregate pushdown and its test suite.
 - [docs/COL-TAM.md](docs/COL-TAM.md): `sift_table`; [docs/COL-SHRED.md](docs/COL-SHRED.md): `jsonb` paths; [docs/COL-CODEC.md](docs/COL-CODEC.md): chunk compression.
+- [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.
 - [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
 - [DESIGN.md](DESIGN.md): design and on-disk format; [CHANGELOG.md](CHANGELOG.md): changes per release.
 
