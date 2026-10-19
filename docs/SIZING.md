@@ -22,7 +22,7 @@ What an index costs in disk, memory and time beyond its steady-state size, and w
   temporary files (about 1.9x), and `CREATE INDEX` writes its sorted runs there too, so `temp_file_limit` and the free space of the
   `temp_tablespaces` must cover them. With `maintenance_work_mem` of 64MB a build of the test corpus wrote 206 MB, with 1MB 1127 MB (and
   left 11 segments instead of 1). *(changes: the streaming merge stages nothing.)*
-- **`positions = on`** (the default) makes the index about 2.6x larger than `positions = off` ([USAGE.md](USAGE.md#limits)).
+- **`positions = on`** (the default) makes the index about 2.5x larger than `positions = off` ([USAGE.md](USAGE.md#limits)): 130.9 against 52.5 MiB on the 218,058 articles (2.49x; an earlier build of 2026-10-16 measured 126 against 48 MB, 2.6x), 31.1 against 12.9 MiB on the 50,000 of the slim tier (2.4x).
 
 ## Memory
 
@@ -60,9 +60,9 @@ often should have a low `autovacuum_vacuum_scale_factor` (or a manual `VACUUM` a
 
 Vacuumed documents also cost query time until their segment is rewritten: a query that walks postings drops the dead ones through the
 liveness rows of every page it reads. Measured in user instructions per query (`bench/dirty-query.sh` data, 200,000 documents, 10 to 45%
-deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`), the dirty segment costs:
+deleted and vacuumed; "clean" is the same live rows rebuilt by `REINDEX`; these three columns are not 1.3.1 code: the 2.0.0 and 2.0.1 builds and 3.0, where segments are written in format 2), the dirty segment costs:
 
-| query | 2.0.0 | 2.0.1 | now |
+| query | 2.0.0 | 2.0.1 | 3.0 |
 |---|---|---|---|
 | `count(*)` of a term | 18.5 to 18.6x | 6.6 to 6.7x | 1.16 to 1.28x |
 | `count(*)` of two terms | 3.5 to 4.4x | 1.7 to 2.3x | 1.0 to 1.25x |

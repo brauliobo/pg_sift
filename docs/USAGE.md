@@ -379,7 +379,7 @@ its own docker container.
 - `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
 - Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
-- `positions = on` is the default and makes the index about 2.6x larger (`positions = off` restores the small index). Phrases are
+- `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are
   rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
   inserted since the build, and phrases under `NOT`.
 - `sift.score()` cannot be used in `WHERE`; read it from a subquery to filter on it. It is not available with `@@> ANY (array)` (write
