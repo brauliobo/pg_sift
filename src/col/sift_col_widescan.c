@@ -5,6 +5,10 @@
  */
 #include "postgres.h"
 
+#include "utils/builtins.h"
+#include "utils/numeric.h"
+#include "utils/timestamp.h"
+
 #include "sift_col_am.h"
 #include "sift_col_seg.h"
 
@@ -202,4 +206,236 @@ sift_col_read_lanes(const SiftColUnit *unit, int col, const SiftColSel *sel, Sif
 
 	for (int k = 0; k < Max(d->lanes, 1); k++)
 		sift_col_read(unit, col + k, sel, &vecs[k]);
+}
+
+/* ---------- the conjunct of a query on a wide leaf ---------- */
+
+static bool
+is_numeric_wide(const SiftColDef *d)
+{
+	return d->type == SIFT_COLT_NUMERIC && d->store == SIFT_COLS_INT && d->lanes == 2;
+}
+
+typedef enum NumClass
+{
+	NC_FINITE,
+	NC_NAN,
+	NC_PINF,
+	NC_NINF
+} NumClass;
+
+static NumClass
+num_class(Datum d)
+{
+	Numeric		n = DatumGetNumeric(d);
+
+	if (numeric_is_nan(n))
+		return NC_NAN;
+	if (!numeric_is_inf(n))
+		return NC_FINITE;
+	return DatumGetCString(DirectFunctionCall1(numeric_out, d))[0] == '-' ? NC_NINF : NC_PINF;
+}
+
+/* the verdict of a comparison with NaN, +Infinity, -Infinity: PostgreSQL orders NaN above everything, itself equal */
+static const SiftColWVerdict special_verdict[3][6] = {
+	/* =                  <>                            <                             <=                            >                  >= */
+	{SIFT_COLW_NAN, SIFT_COLW_NONNULL_NONAN, SIFT_COLW_NONNULL_NONAN, SIFT_COLW_NONNULL, SIFT_COLW_NONE, SIFT_COLW_NAN},
+	{SIFT_COLW_NONE, SIFT_COLW_NONNULL, SIFT_COLW_NONNULL_NONAN, SIFT_COLW_NONNULL_NONAN, SIFT_COLW_NAN, SIFT_COLW_NAN},
+	{SIFT_COLW_NONE, SIFT_COLW_NONNULL, SIFT_COLW_NONE, SIFT_COLW_NONE, SIFT_COLW_NONNULL, SIFT_COLW_NONNULL}
+};
+
+/* the two lane keys of a finite operand rounded as round asks; the status of sift_col_numeric_wide_key */
+static int
+wide_key(const SiftColDef *def, Datum d, SiftColRound round, SiftColValue *v)
+{
+	return sift_col_numeric_wide_key(def->scale, d, round, &v->v.i, &v->lo);
+}
+
+/* the key of an operand that some value of the leaf may equal; false when none does (a NaN or infinity of a lane pair, a number between two scaled integers or beyond them) */
+static bool
+exact_key(const SiftColDef *def, Datum d, SiftColValue *v)
+{
+	SiftColValue up = {{0}};
+	int32		dscale;
+	int64		md;
+
+	memset(v, 0, sizeof(*v));
+	if (def->type == SIFT_COLT_MONEY)
+		v->v.i = DatumGetInt64(d);
+	else if (def->type == SIFT_COLT_INTERVAL)
+		sift_col_interval_lanes(DatumGetIntervalP(d), &v->v.i, &v->lo, &md);
+	else if (def->store == SIFT_COLS_STR)
+		v->v.s = (const char *) sift_col_numeric_image(d, &v->len, &dscale);
+	else
+		return num_class(d) == NC_FINITE && wide_key(def, d, SIFT_COL_ROUND_DOWN, v) == 0 && wide_key(def, d, SIFT_COL_ROUND_UP, &up) == 0 &&
+			v->v.i == up.v.i && v->lo == up.lo;
+	return true;
+}
+
+static SiftColPred
+pred_of(const SiftColDef *def, SiftColOp op, int nvals, SiftColValue *vals)
+{
+	return (SiftColPred) {def->id, op, nvals, vals};
+}
+
+static void
+test_pred(SiftColWTest *t, const SiftColDef *def, SiftColOp op, int nvals, SiftColValue *vals, bool nan_passes)
+{
+	t->verdict = SIFT_COLW_PRED;
+	t->pred = pred_of(def, op, nvals, vals);
+	t->nan_passes = nan_passes;
+}
+
+/* leaf op d for a numeric of two lanes: the comparison on the scaled integers that holds for the same values (x = c needs c a multiple of the unit, x < c is x < ceil(c), x <= c is x <= floor(c), ...) */
+static void
+numeric_cmp_test(SiftColWTest *t, const SiftColDef *def, int op, Datum d, MemoryContext mcxt)
+{
+	NumClass	cls = num_class(d);
+	SiftColValue *v = MemoryContextAllocZero(mcxt, sizeof(SiftColValue)),
+				fl = {{0}},
+				ce = {{0}};
+	int			sf,
+				sc,
+				side;
+
+	if (cls != NC_FINITE)
+	{
+		t->verdict = special_verdict[cls - NC_NAN][op];
+		return;
+	}
+	sf = wide_key(def, d, SIFT_COL_ROUND_DOWN, &fl);
+	sc = wide_key(def, d, SIFT_COL_ROUND_UP, &ce);
+	if (op == 0 || op == 1)
+	{
+		*v = fl;
+		if (sf == 0 && sc == 0 && fl.v.i == ce.v.i && fl.lo == ce.lo)
+			test_pred(t, def, SIFT_COLOP_EQ + op, 1, v, op == 1);
+		else
+			t->verdict = op == 0 ? SIFT_COLW_NONE : SIFT_COLW_NONNULL;
+		return;
+	}
+	side = (op == 2 || op == 5) ? sc : sf;
+	if (side != 0)
+		t->verdict = (op == 2 || op == 3) ? (side > 0 ? SIFT_COLW_NONNULL_NONAN : SIFT_COLW_NONE) : (side < 0 ? SIFT_COLW_NONNULL : SIFT_COLW_NAN);
+	else
+	{
+		*v = (op == 2 || op == 5) ? ce : fl;
+		test_pred(t, def, SIFT_COLOP_EQ + op, 1, v, op >= 4);
+	}
+}
+
+static void
+cmp_test(SiftColWTest *t, const SiftColDef *def, int op, Datum d, MemoryContext mcxt)
+{
+	SiftColValue *v;
+
+	if (is_numeric_wide(def))
+		return numeric_cmp_test(t, def, op, d, mcxt);
+	v = MemoryContextAllocZero(mcxt, sizeof(SiftColValue));
+	exact_key(def, d, v);
+	test_pred(t, def, SIFT_COLOP_EQ + op, 1, v, false);
+}
+
+/* leaf IN (list) and NOT IN (list): a NULL among them removes no row from IN, and from NOT IN every row (never true); a NaN of a lane pair leaf is the NaN rows */
+static void
+list_test(SiftColWTest *t, const SiftColDef *def, bool notin, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt)
+{
+	SiftColValue *keys = MemoryContextAllocZero(mcxt, Max(nvals, 1) * sizeof(SiftColValue));
+	int			n = 0;
+	bool		nan = false;
+
+	if (nvals == 0)
+	{
+		t->verdict = notin ? SIFT_COLW_ALL : SIFT_COLW_NONE;
+		return;
+	}
+	for (int i = 0; i < nvals; i++)
+	{
+		if (isnull[i])
+		{
+			if (notin)
+			{
+				t->verdict = SIFT_COLW_NONE;
+				return;
+			}
+			continue;
+		}
+		nan |= is_numeric_wide(def) && num_class(vals[i]) == NC_NAN;
+		if (exact_key(def, vals[i], &keys[n]))
+			n++;
+	}
+	if (n == 0)
+		t->verdict = notin ? (nan ? SIFT_COLW_NONNULL_NONAN : SIFT_COLW_NONNULL) : (nan ? SIFT_COLW_NAN : SIFT_COLW_NONE);
+	else
+		test_pred(t, def, notin ? SIFT_COLOP_NOTIN : SIFT_COLOP_IN, n, keys, notin ? !nan : nan);
+}
+
+void
+sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t)
+{
+	memset(t, 0, sizeof(*t));
+	t->pred.col = def->id;
+	if (op == SIFT_COLW_ISNULL || op == SIFT_COLW_NOTNULL)
+		test_pred(t, def, op == SIFT_COLW_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL, op == SIFT_COLW_NOTNULL);
+	else if (op == SIFT_COLW_IN || op == SIFT_COLW_NOTIN)
+		list_test(t, def, op == SIFT_COLW_NOTIN, nvals, vals, isnull, mcxt);
+	else if (isnull[0])
+		t->verdict = SIFT_COLW_NONE;
+	else
+		cmp_test(t, def, op, vals[0], mcxt);
+}
+
+/* the rows of sel whose value is a NaN of a numeric of two lanes (stored as NULL with the overflow flag of its lanes) */
+static void
+nan_rows(const SiftColUnit *unit, int col, const SiftColSel *sel, uint64 *out)
+{
+	SiftColZone z;
+	SiftColVec	v;
+
+	memset(out, 0, sel->nwords * sizeof(uint64));
+	sift_col_zone(unit, col, &z);
+	if (!z.has_ovf)
+		return;
+	sift_col_read(unit, col, NULL, &v);
+	for (uint32 w = 0; v.ovf && w < sel->nwords; w++)
+		out[w] = sel->bits[w] & v.ovf[w];
+}
+
+bool
+sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel)
+{
+	int			col = t->pred.col;
+	bool		numw = is_numeric_wide(sift_col_def(unit->src, col)),
+				nanp = t->nan_passes;
+	uint64	   *nan = palloc(Max(sel->nwords, 1) * sizeof(uint64));
+	SiftColPred nn = {col, SIFT_COLOP_NOTNULL, 0, NULL};
+	const SiftColPred *p = &t->pred;
+
+	memset(nan, 0, Max(sel->nwords, 1) * sizeof(uint64));
+	if (numw)
+		nan_rows(unit, col, sel, nan);
+	switch (t->verdict)
+	{
+		case SIFT_COLW_NONE:
+			memset(sel->bits, 0, sel->nwords * sizeof(uint64));
+			sel->count = 0;
+			return false;
+		case SIFT_COLW_ALL:
+			return sel->count > 0;
+		case SIFT_COLW_NAN:
+			memcpy(sel->bits, nan, sel->nwords * sizeof(uint64));
+			return sift_col_sel_count(sel) > 0;
+		case SIFT_COLW_NONNULL:
+		case SIFT_COLW_NONNULL_NONAN:
+			p = &nn;
+			nanp = t->verdict == SIFT_COLW_NONNULL;
+			break;
+		case SIFT_COLW_PRED:
+			break;
+	}
+	if (!sift_col_filter(unit, p, 1, sel))
+		memset(sel->bits, 0, sel->nwords * sizeof(uint64));
+	for (uint32 w = 0; w < sel->nwords; w++)
+		sel->bits[w] = nanp ? (sel->bits[w] | nan[w]) : (sel->bits[w] & ~nan[w]);
+	return sift_col_sel_count(sel) > 0;
 }

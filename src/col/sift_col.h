@@ -481,6 +481,38 @@ extern bool sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, 
 extern void sift_col_read_lanes(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vecs);
 
 /*
+ * The conjunct of a query on a wide leaf as what the engine tests:
+ * the operands are Datums of the leaf's type. op is 0..5 for = <> < <= > >= (the order of SiftCmpOp), SIFT_COLW_IN, SIFT_COLW_NOTIN, SIFT_COLW_ISNULL,
+ * SIFT_COLW_NOTNULL. The verdict of the constants is NONE (no row passes), ALL (every row), NONNULL (every non-NULL row), NONNULL_NONAN (the same but the NaNs of
+ * a numeric), NAN (the NaNs only) or PRED: the engine predicate `pred`, whose result for the NaNs (rows stored as overflow, which the engine
+ * keeps as candidates of every predicate) is replaced by nan_passes. sift_colw_apply narrows sel by it and says whether any row is left.
+ */
+#define SIFT_COLW_IN		6
+#define SIFT_COLW_NOTIN		7
+#define SIFT_COLW_ISNULL	8
+#define SIFT_COLW_NOTNULL	9
+
+typedef enum SiftColWVerdict
+{
+	SIFT_COLW_NONE,
+	SIFT_COLW_ALL,				/* every row, NULL ones too (x <> ALL of an empty list) */
+	SIFT_COLW_NONNULL,
+	SIFT_COLW_NONNULL_NONAN,
+	SIFT_COLW_NAN,
+	SIFT_COLW_PRED
+} SiftColWVerdict;
+
+typedef struct SiftColWTest
+{
+	SiftColWVerdict verdict;
+	SiftColPred pred;
+	bool		nan_passes;
+} SiftColWTest;
+
+extern void sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t);
+extern bool sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
+
+/*
  * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path: a stored value has
  * the leaf's own type deftag (an astext leaf, mixed, holds the text of a string, a number or a boolean: STRING unless its chunk says
  * otherwise), an overflow value the tag the chunk kept for it, a NULL slot SIFT_COLTAG_JNULL for a JSON null and SIFT_COLTAG_NONE
