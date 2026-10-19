@@ -1501,6 +1501,45 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 	zone->has_ovf = (z.flags & SIFT_COLZ_OVERFLOW) != 0;
 }
 
+uint32
+sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	uint32		units = 0;
+
+	memset(zone, 0, sizeof(*zone));
+	zone->min = PG_INT64_MAX;
+	zone->max = PG_INT64_MIN;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *seg = src->seg[i].seg;
+		uint32		end = sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi);
+
+		for (uint32 u = sift_cseg_find_unit(seg, sb_lo); u < end; u++, units++)
+		{
+			SiftCZone	z;
+
+			sift_cseg_zone(seg, col, u, &z);
+			zone->nvals += z.nvals;
+			zone->nnull += z.nnull;
+			zone->has_ovf |= (z.flags & SIFT_COLZ_OVERFLOW) != 0;
+			if (z.nnull == z.nvals)
+				continue;
+			zone->min = Min(zone->min, z.flags & SIFT_COLZ_INLINE ? 0 : z.min);
+			zone->max = Max(zone->max, z.flags & SIFT_COLZ_INLINE ? PG_INT64_MAX : z.max);
+		}
+	}
+	/* the units of the write buffers are encoded when read, and not loaded before a begin: they are read */
+	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
+		zone->has_ovf = true;
+	for (int i = 0; i < src->nmem; i++)
+		if (src->mem[i].b->nrows > 0 && src->mem[i].b->sb >= sb_lo && src->mem[i].b->sb < sb_hi)
+		{
+			zone->has_ovf = true;
+			units++;
+		}
+	return units;
+}
+
 bool
 sift_col_unit_allvisible(const SiftColUnit *unit)
 {
