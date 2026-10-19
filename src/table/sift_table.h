@@ -292,7 +292,7 @@ extern void sift_tbl_close_wbuf(Relation rel, SiftTblRel *st, uint32 minpages);
 extern void sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId xmin, CommandId cmin,
 							uint32 spec_token, ItemPointer tid);
 /* Sets flag bits of the record of tid (killed speculative insertion) */
-extern void sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set);
+extern void sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uint16 clear);
 /* A write buffer page, exclusively locked, for VACUUM: the caller edits records through a GenericXLog copy */
 extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx);
 

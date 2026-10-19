@@ -778,7 +778,7 @@ sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 }
 
 void
-sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
+sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uint16 clear)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 
@@ -789,6 +789,7 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 		Buffer		buf;
 		GenericXLogState *state;
 		Page		page;
+		SiftTblRec *rec;
 
 		if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
 			continue;
@@ -801,7 +802,8 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 		{
 			state = GenericXLogStart(rel);
 			page = GenericXLogRegisterBuffer(state, buf, 0);
-			((SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]))->flags |= set;
+			rec = (SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]);
+			rec->flags = (rec->flags | set) & ~clear;
 			GenericXLogFinish(state);
 		}
 		UnlockReleaseBuffer(buf);

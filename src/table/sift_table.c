@@ -170,8 +170,8 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
-	/* a confirmed insertion just stops being speculative; a killed one must never be seen by anyone */
-	sift_tbl_rec_flag(rel, st, &slot->tts_tid, succeeded ? 0 : SIFT_TBL_REC_DEAD);
+	/* a confirmed insertion just stops being speculative (a row that stays flagged would keep its write buffer from being promoted); a killed one must never be seen by anyone */
+	sift_tbl_rec_flag(rel, st, &slot->tts_tid, succeeded ? 0 : SIFT_TBL_REC_DEAD, succeeded ? SIFT_TBL_REC_SPEC : 0);
 	if (!succeeded)
 		pgstat_count_heap_delete(rel);
 	else if (sift_tbl_check_publication(rel))
