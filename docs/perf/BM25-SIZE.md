@@ -148,10 +148,10 @@ The full tables with every part, B/posting and B/term are produced by `scripts/b
 |---|---|---|---|---|---|
 | 1 | padding, page fill, merge policy | no | 0 | 0 | nothing to take (3.4) |
 | 2 | GROUPED threshold / kind by size | no | -2.4 MiB, queries 1.3x to 15x | 0 | rejected (3.3) |
-| 3 | dictionary entries (1 byte of lengths, df with the flags, inline keys by block and offset) | yes (dictionary block flag) | 0 | -1.1 MB (-3.4% default, -8.5% off) | **adopt (5.2)** |
-| 4 | dl rows of 4 or 8 bits where the largest dl of the SB allows | yes (docmap record flag) | -1.5 MB (-12.7%) | 0 | **adopt (5.1)** |
-| 5 | packed array container for GROUPED (bit-packed offsets, unary page gaps) | yes (container type) | -1.5 to -2.2 MB (est.) | -0.1 MB | **adopt (5.3)** |
-| 6 | positions in blocks of 32: bit-packed first positions, bit-packed counts and gaps | yes (term flag) | -1.9 MB (-16%) | -0.4 to -2.5 MB | **adopt the first part (5.4)** |
+| 3 | dictionary entries (1 byte of lengths, df with the flags, inline keys by block and offset) | yes (dictionary block flag) | 0 | -0.93 MB (-2.9% default, -6.9% off) | **done (5.2)** |
+| 4 | dl rows of 4 or 8 bits where the largest dl of the SB allows | yes (docmap record flag) | -1.50 MB (-12.7%) | 0 | **done (5.1)** |
+| 5 | packed container for GROUPED (bit-packed offsets, page mask, end-of-page bits) | yes (container type) | -1.99 MB (-16.9%) | -0.02 MB | **done (5.3)** |
+| 6 | positions in blocks of 32: bit-packed first positions, bit-packed counts and gaps | yes (term flag) | -1.9 MB (-23% of the new default, est.) | -0.4 to -2.5 MB (est.) | designed (5.4), **not done** |
 | 7 | tf stream: L1 bits only for groups with a tf above 1 | yes | -0.2 MB | -0.2 MB (est.) | not done (entropy of 20% ones is 0.72 bit: 28% of 0.67 MB) |
 | 8 | dead-postings table allocated at the first VACUUM | yes (liveness run) | -0.2 MB | -0.3 MB (-2.3% off) | not done (5.6) |
 | 9 | LIST blocks: no `u - 1` varint in single-block lists | yes | 0 | -0.3 MB (est.) | not done |
@@ -185,7 +185,7 @@ the record: 0 = 16 bits (as before), 1 = 8 bits, 2 = 4 bits (low nibble first). 
 (255 and 15). Rows stay one per present page and as long as the page's highest present offset; a 4-bit row is `ceil(maxoff / 2)` bytes, a record is padded to 4 as before.
 The reader expands the row of a page to `uint16` (16 slots per SSE2 step) the first time `sift_seg_page` is asked for it in the loaded SB, so every kernel sees the rows it saw;
 a 16-bit record is used where it is, copy free. `sift_seg_page` takes the row as optional (callers that only want the present offsets pass NULL) and the ranker asks for
-the rows of the pages that have result documents only. Titles: 76 rows of 4 bits are 38 bytes against 152; articles are 16-bit throughout.
+the rows of the pages that have result documents only, one call per block (`sift_seg_block_dl`). Titles: 76 rows of 4 bits are 38 bytes against 152; articles are 16-bit throughout.
 
 ### 5.2 Dictionary blocks (`SIFT_SEGFMT_PACKED`)
 
@@ -239,7 +239,10 @@ writer, so no other module changes. Terms of at most two postings keep their rec
 
 ### 5.5 Not in this change
 
-Items 7 to 9 of section 4 (a few tenths of a megabyte each) and the SQLite/MariaDB writers (they stay in format 1: a host that deletes one document at a time, and whose segments are written by the portable core, would need its own gate).
+- Position blocks (5.4): designed, not implemented. They would take the titles' positions from 3.54 MB to about 1.6 MB, but only 2% of the articles' (the first positions of a posting are 47% of that stream and are close to random: a fixed width per block saves about 0.4 MB of 18.9 MB;
+  a Rice code on the gaps and a gamma code on the counts would take 14% of the stream, 7.7% of the index, and cost a decode on every phrase). ClickHouse's positions are 10 times larger than sift's, so the target of the work (an index as small as ClickHouse's for the same information) does not need them.
+- Items 7 to 9 of section 4 (a few tenths of a megabyte each).
+- The SQLite and MariaDB writers: they stay in format 1 (a host that deletes one document at a time, and whose segments are written by the portable core, would need its own gate). They read format 3.
 
 ### 5.6 Test plan
 
@@ -251,7 +254,163 @@ Items 7 to 9 of section 4 (a few tenths of a megabyte each) and the SQLite/Maria
 
 ## 6. Results
 
-(Filled in as the changes land: section 7 of the same file keeps the table of every step.)
+Segment format 3 (sections 5.1 to 5.3) on the data of section 3, one segment per index, `pg_relation_size`; before is origin/main (3.0).
+
+### 6.1 Bytes and the comparison with ClickHouse
+
+| index | titles before | titles after | articles before | articles after | holds |
+|---|---:|---:|---:|---:|---|
+| sift, default (MiB) | 11.27 | **7.93** (-29.6%) | 31.13 | **30.21** (-3.0%) | postings, tf, dl, bounds, liveness, positions |
+| sift, `positions = off` (MiB) | 7.88 | **4.54** (-42.4%) | 12.95 | **12.02** (-7.2%) | the same without positions |
+| bytes per posting, default | 3.86 | 2.71 | 5.88 | 5.70 | |
+| bytes per posting, `positions = off` | 2.70 | 1.55 | 2.44 | 2.27 | |
+| ClickHouse `text`, default (MiB) | 5.74 | | 12.84 (11.94 lowercased) | | token to row ids |
+| ClickHouse `text`, bitpacking (MiB) | 3.15 | | 9.34 lowercased | | the same |
+| ClickHouse `text`, `support_phrase_search` (MiB) | 40.77 | | 122.58 lowercased | | + positions |
+
+- With positions, sift holds what ClickHouse's phrase index holds and more (tf, dl, bounds, liveness) in 19% (titles) and 25% (articles) of its bytes.
+- Without positions the titles are 21% smaller than ClickHouse's default index and 44% larger than its bitpacked one, the articles 6% smaller than the raw-token default and 0.7% larger than the lowercased one.
+  ClickHouse's index has no tf, dl, score bounds or liveness: it answers `hasAllTokens` and nothing that ranks. The data a boolean match needs from sift (dictionary, posting containers, present documents) is 3.2 MiB on the titles
+  and about 9.8 MiB on the articles, against 5.74 / 3.15 and 11.94 / 9.34 for ClickHouse's default / bitpacked index.
+- Where sift stays larger and why: the posting lists keep the ctid of a document (heap page and offset) as their key, about 1 to 1.2 bits per posting of key-space slack that a dense document id does not have (docs/CODEC.md section 1, item 7);
+  the score data (tf 0.7 bit per posting on the titles, 1.8 on the articles, bounds) is the price of ranking and early termination; the positions (8 to 25 bits per posting) are what a phrase needs. ClickHouse's own positions cost 10 times more.
+
+### 6.2 Parts, before and after
+
+Bytes of each part of the segment, bits per posting before and after (`scripts/bm25-size.sh`). A posting is a (term, document) pair, inline ones included (titles 3,057,633, articles 5,551,834).
+
+#### orders.title, default
+
+| part | before | after | bits/posting before | after |
+|---|---:|---:|---:|---:|
+| dict: block headers | 42 | 40 | 0.00 | 0.00 |
+| dict: entries | 2,024 | 2,024 | 0.01 | 0.01 |
+| dict: index and root | 104 | 104 | 0.00 | 0.00 |
+| dict: term suffixes | 1,098 | 928 | 0.00 | 0.00 |
+| docmap: SB directory | 836 | 836 | 0.00 | 0.00 |
+| docmap: dl rows | 2,000,000 | 502,892 | 5.23 | 1.32 |
+| docmap: present docs | 211,688 | 211,724 | 0.55 | 0.55 |
+| live pages | 221,184 | 221,184 | 0.58 | 0.58 |
+| postings: GROUPED containers | 4,654,650 | 2,666,649 | 12.18 | 6.98 |
+| postings: GROUPED directory | 48,300 | 48,300 | 0.13 | 0.13 |
+| postings: LIST codec | 674,864 | 674,864 | 1.77 | 1.77 |
+| postings: alignment | 86 | 111 | 0.00 | 0.00 |
+| postings: block bounds | 62,032 | 62,032 | 0.16 | 0.16 |
+| postings: group scores | 46,800 | 46,800 | 0.12 | 0.12 |
+| postings: position checkpoints | 382,540 | 382,540 | 1.00 | 1.00 |
+| postings: position records | 3,154,415 | 3,154,415 | 8.25 | 8.25 |
+| postings: tf L1 bits | 243,970 | 243,970 | 0.64 | 0.64 |
+| postings: tf nibbles | 24,204 | 24,204 | 0.06 | 0.06 |
+| other (page headers, segment header, unused end) | 67,643 | 54,879 | 0.18 | 0.14 |
+| **segment total** | **11,796,480** | **8,298,496** (-29.7%) | 30.86 | 21.71 |
+
+#### orders.title, positions = off
+
+| part | before | after | bits/posting before | after |
+|---|---:|---:|---:|---:|
+| dict: block headers | 42 | 39 | 0.00 | 0.00 |
+| dict: entries | 1,472 | 1,452 | 0.00 | 0.00 |
+| dict: index and root | 104 | 104 | 0.00 | 0.00 |
+| dict: term suffixes | 1,098 | 928 | 0.00 | 0.00 |
+| docmap: SB directory | 836 | 836 | 0.00 | 0.00 |
+| docmap: dl rows | 2,000,000 | 502,892 | 5.23 | 1.32 |
+| docmap: present docs | 211,688 | 211,724 | 0.55 | 0.55 |
+| live pages | 221,184 | 221,184 | 0.58 | 0.58 |
+| postings: GROUPED containers | 4,654,650 | 2,666,649 | 12.18 | 6.98 |
+| postings: GROUPED directory | 48,300 | 48,300 | 0.13 | 0.13 |
+| postings: LIST codec | 674,864 | 674,864 | 1.77 | 1.77 |
+| postings: alignment | 86 | 111 | 0.00 | 0.00 |
+| postings: block bounds | 62,032 | 62,032 | 0.16 | 0.16 |
+| postings: group scores | 46,800 | 46,800 | 0.12 | 0.12 |
+| postings: tf L1 bits | 243,970 | 243,970 | 0.64 | 0.64 |
+| postings: tf nibbles | 24,204 | 24,204 | 0.06 | 0.06 |
+| other (page headers, segment header, unused end) | 49,822 | 37,079 | 0.13 | 0.10 |
+| **segment total** | **8,241,152** | **4,743,168** (-42.4%) | 21.56 | 12.41 |
+
+#### docs.body, default
+
+| part | before | after | bits/posting before | after |
+|---|---:|---:|---:|---:|
+| dict: block headers | 71,667 | 71,666 | 0.10 | 0.10 |
+| dict: entries | 1,339,606 | 1,030,183 | 1.93 | 1.48 |
+| dict: index and root | 166,984 | 166,984 | 0.24 | 0.24 |
+| dict: inline keys and tf | 1,262,396 | 969,183 | 1.82 | 1.40 |
+| dict: inline positions | 977,078 | 977,078 | 1.41 | 1.41 |
+| dict: term suffixes | 1,578,275 | 1,245,931 | 2.27 | 1.80 |
+| docmap: SB directory | 324 | 324 | 0.00 | 0.00 |
+| docmap: dl rows | 100,000 | 100,000 | 0.14 | 0.14 |
+| docmap: present docs | 16,340 | 16,340 | 0.02 | 0.02 |
+| live pages | 352,256 | 352,256 | 0.51 | 0.51 |
+| postings: GROUPED containers | 659,522 | 634,997 | 0.95 | 0.92 |
+| postings: GROUPED directory | 13,000 | 13,000 | 0.02 | 0.02 |
+| postings: LIST codec | 6,278,632 | 6,278,632 | 9.05 | 9.05 |
+| postings: alignment | 85,635 | 85,648 | 0.12 | 0.12 |
+| postings: block bounds | 16,000 | 16,000 | 0.02 | 0.02 |
+| postings: group scores | 12,000 | 12,000 | 0.02 | 0.02 |
+| postings: position checkpoints | 875,112 | 875,112 | 1.26 | 1.26 |
+| postings: position records | 17,021,259 | 17,021,259 | 24.53 | 24.53 |
+| postings: tf L1 bits | 670,491 | 670,491 | 0.97 | 0.97 |
+| postings: tf escapes | 48,855 | 48,855 | 0.07 | 0.07 |
+| postings: tf nibbles | 800,989 | 800,989 | 1.15 | 1.15 |
+| other (page headers, segment header, unused end) | 282,315 | 275,152 | 0.41 | 0.40 |
+| **segment total** | **32,628,736** | **31,662,080** (-3.0%) | 47.02 | 45.62 |
+
+#### docs.body, nopos (positions = off)
+
+| part | before | after | bits/posting before | after |
+|---|---:|---:|---:|---:|
+| dict: block headers | 70,098 | 70,088 | 0.10 | 0.10 |
+| dict: entries | 1,230,802 | 921,376 | 1.77 | 1.33 |
+| dict: index and root | 166,984 | 166,984 | 0.24 | 0.24 |
+| dict: inline keys and tf | 1,262,396 | 969,183 | 1.82 | 1.40 |
+| dict: term suffixes | 1,578,275 | 1,245,931 | 2.27 | 1.80 |
+| docmap: SB directory | 324 | 324 | 0.00 | 0.00 |
+| docmap: dl rows | 100,000 | 100,000 | 0.14 | 0.14 |
+| docmap: present docs | 16,340 | 16,340 | 0.02 | 0.02 |
+| live pages | 352,256 | 352,256 | 0.51 | 0.51 |
+| postings: GROUPED containers | 659,522 | 634,997 | 0.95 | 0.92 |
+| postings: GROUPED directory | 13,000 | 13,000 | 0.02 | 0.02 |
+| postings: LIST codec | 6,278,632 | 6,278,632 | 9.05 | 9.05 |
+| postings: alignment | 85,635 | 85,648 | 0.12 | 0.12 |
+| postings: block bounds | 16,000 | 16,000 | 0.02 | 0.02 |
+| postings: group scores | 12,000 | 12,000 | 0.02 | 0.02 |
+| postings: tf L1 bits | 670,491 | 670,491 | 0.97 | 0.97 |
+| postings: tf escapes | 48,855 | 48,855 | 0.07 | 0.07 |
+| postings: tf nibbles | 800,989 | 800,989 | 1.15 | 1.15 |
+| other (page headers, segment header, unused end) | 195,161 | 188,010 | 0.28 | 0.27 |
+| **segment total** | **13,557,760** | **12,591,104** (-7.1%) | 19.54 | 18.14 |
+
+What changed, by part:
+
+- `docmap: dl rows` (5.1): 5.23 to 1.32 bits per posting on the titles (4 bits per slot where the largest length of the superblock is at most 15); the articles have lengths above 255 and keep 16 bits.
+- `postings: GROUPED containers` (5.3): 12.18 to 6.98 bits per posting on the titles (-2.0 MB), 0.95 to 0.92 on the articles (their groups are mostly dense bitmaps, 10 documents per page).
+- `dict` (5.2): the articles' 4.2 MB of dictionary entries, terms and inline keys lose 0.93 MB (suffixes 3.74 instead of 4.73 B per term, entries 3.09 instead of 4.02, inline keys 2.91 instead of 3.79).
+- Unchanged: LIST codec (Elias-Fano, 9.05 bits per posting on the articles), tf, bounds, scores, liveness, positions (5.4, below).
+
+### 6.3 What it costs
+
+User-space instructions per execution (`perf stat`, backend of a started cluster, 100 runs, parallel workers off), titles, origin/main against format 3 (both indexes in the cluster built from the same data):
+
+| query | before kinstr | after kinstr | ratio |
+|---|---:|---:|---:|
+| count, 2 terms (AND) | 1,628 | 1,539 | 0.945 |
+| count, `smart AND premium AND black` | 8,048 | 6,705 | 0.833 |
+| count, `smart OR premium` | 6,886 | 5,663 | 0.822 |
+| top-10, 3 terms OR | 30,444 | 30,584 | 1.005 |
+| top-10, `smart AND premium` | 18,521 | 17,072 | 0.922 |
+| top-10, `wireless AND headphones` | 13,820 | 13,914 | 1.007 |
+| top-10, phrase | 13,882 | 13,977 | 1.007 |
+
+Counts get faster (the packed container decodes page by page straight into the bitmap rows, which is cheaper than the array decode it replaces). The ranked cells stay within +0.7%: the narrow docmap rows
+are expanded only for the pages that hold candidates, with one call per block.
+
+`bench/steps/cpu_gate.sh` against origin/main (7 rounds, geometric mean, 95% interval): every rank, and and or cell is at or below 1.017 (`idle1_or` 1.017 [1.016, 1.018]; `idle60_*` and `vac_*` 0.988 to 1.000).
+Maintenance: `create` 1.006, `merge` 1.003, `promote` 1.012, `vacuum_*` 0.992 to 1.005, insert/bulk/copy/update/delete 0.996 to 1.006. No cell has an interval entirely above 1.02; `session` (1.016 [0.994, 1.039]) is uncertain by noise.
+
+Build time (`CREATE INDEX`, serial, median of 5, two rounds, titles): default 509 / 471 ms before, 506 / 469 ms after; `positions = off` 433 / 429 ms before, 465 / 410 ms after: no measurable change.
+Articles, default: 1.98 / 1.83 s after (the cost gate's `create` cell, 873 M instructions, is 1.006 of origin/main).
+
+Not fixed in this change: a ranked difftest case that fails in the same way on origin/main (a fuzzy or regular-expression term whose score differs by a few percent from the SQL reference); it reproduces with the unchanged library.
 
 ## 7. Baseline part tables (origin/main, before 3.1)
 
