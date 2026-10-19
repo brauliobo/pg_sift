@@ -22,6 +22,7 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+ARGS=("$@")
 LIST='' FORCE='' KEEP='' ONLY=.
 while (( $# )); do
 	case $1 in
@@ -80,7 +81,7 @@ fi
 # the whole run in 2 cores and 12 GB, whatever the caller did
 if [[ -z ${SIFT_RELEASE_SCOPED:-} ]] && command -v systemd-run >/dev/null; then
 	exec systemd-run --user --scope -q -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue -p CPUQuota=200% \
-		env SIFT_RELEASE_SCOPED=1 "$0" "$@"
+		env SIFT_RELEASE_SCOPED=1 "$0" "${ARGS[@]}"
 fi
 
 W=$(mktemp -d "${RELEASE_TMP:-/tmp}/sift-release.XXXXXX")
