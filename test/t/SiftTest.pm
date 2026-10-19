@@ -176,7 +176,7 @@ sub crash_during
 sub kill9_wait
 {
 	my ($node) = @_;
-	my @children = split ' ', `pgrep -P $node->{_pid}`;
+	my @children = grep { ppid($_) == $node->{_pid} } map { m{(\d+)$} } glob('/proc/[0-9]*');
 	$node->kill9;
 	for (1 .. 1200)
 	{
@@ -184,6 +184,14 @@ sub kill9_wait
 		usleep(100_000);
 	}
 	die "children of the killed postmaster still run: @children";
+}
+
+# the parent of a process (a process that is gone has none); no pgrep, which a minimal container lacks and whose failed exec in a
+# forked test would run the END block of the test
+sub ppid
+{
+	open(my $stat, '<', "/proc/$_[0]/stat") or return 0;
+	return (<$stat> =~ /\) \S (\d+)/)[0] // 0;
 }
 
 sub running
