@@ -105,6 +105,7 @@ SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC;
 CREATE TABLE s (id int, body text);
 INSERT INTO s VALUES (1, 'Running dogs'), (2, 'a dog runs'), (3, 'cats run');
 CREATE INDEX s_idx ON s USING sift (body) WITH (stemmer = 'english');
+ANALYZE s;	-- CREATE INDEX gives the table its size only when the cluster runs an autovacuum, and the plan below follows it
 SET enable_seqscan = off;
 SELECT id, sift.score(ctid) FROM s WHERE body @@> 'dog running' ORDER BY sift.score(ctid) DESC LIMIT 5;
 SELECT id FROM s WHERE body @@> 'runs' ORDER BY id;

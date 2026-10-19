@@ -26,12 +26,23 @@ SELECT sift.parse_query('/(a|b)c\2/');
 SELECT sift.parse_query('/(a+)b\\1/') IS NOT NULL AS escaped_backslash_is_not_a_backreference;
 SELECT count(*) FROM dos WHERE body @@> '/(x[0-9a-f]{3}).*\1/';
 
--- a scan of the whole dictionary stops at the timeout, in the expansion of a pattern that matches nothing
-SET statement_timeout = 1;
+-- a scan of the whole dictionary stops at the timeout, in the expansion of a pattern that matches nothing. The timeout is the role's and each
+-- question has a session of its own, so that no other statement runs with the 1 ms timer armed: when the process is stopped for a millisecond,
+-- a RESET statement_timeout is cancelled (and the statement after it). The question reports the SQLSTATE of the cancel, 57014: the message is
+-- 'canceling statement due to statement timeout', or 'due to user request' when the timer fired before the statement started to run
+ALTER ROLE sift_dos_user LOGIN;
+ALTER ROLE sift_dos_user SET statement_timeout = 1;
+GRANT SELECT ON dos TO sift_dos_user;
+\set admin :USER
+\set VERBOSITY sqlstate
+\c - sift_dos_user
 SELECT count(*) FROM dos WHERE body @@> '*q*';
+\c - sift_dos_user
 SELECT count(*) FROM dos WHERE body @@> '/.*q.*q.*/';
+\c - sift_dos_user
 SELECT count(*) FROM dos WHERE body @@> '*q*' OR id < 10;
-RESET statement_timeout;
+\c - :admin
+\set VERBOSITY default
 SELECT count(*) FROM dos WHERE body @@> '*q*';
 
 DROP TABLE dos;

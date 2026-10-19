@@ -13,7 +13,7 @@ ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 10);
 INSERT INTO pm_off SELECT * FROM pm;
 CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096);
 CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 100);
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) pm, pm_off;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pm, pm_off;
 
 -- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
 CREATE FUNCTION pm_state(tbl text) RETURNS TABLE (all_units bool, some_exact bool, same bool) LANGUAGE plpgsql AS $$
@@ -42,10 +42,10 @@ UPDATE pm_off SET qty = qty + 1 WHERE id % 10 = 1;
 SELECT 'dml' AS step, * FROM pm_state('pm');
 
 -- VACUUM and the promotion of the write buffer, as the maintenance worker does: nothing else
-VACUUM (index_cleanup on, disable_page_skipping) pm, pm_off;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'vacuumed' AS step, * FROM pm_state('pm');
 SELECT sift.col_promote('pm_col') > 0 AS promoted, sift.col_promote('pm_off_col') > 0 AS promoted_off;
-VACUUM (index_cleanup on, disable_page_skipping) pm, pm_off;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'maintained' AS step, * FROM pm_state('pm');
 SELECT sum(dead_rows) AS dead_rows, count(*) FILTER (WHERE dirty) AS dirty_segments FROM sift.col_segments('pm_col');
 SELECT sum(dead_rows) > 0 AS dead_rows_kept FROM sift.col_segments('pm_off_col');
