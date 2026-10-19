@@ -124,7 +124,7 @@ rest() {
 }
 # The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (SIFT_CI_STATS=1 lists it per job). The
 # jobs below grow the store (the churn of the store tests, WAL of the WAL tests, spill of a large build) and are the only ones above JOB_MB.
-declare -A EST_MB=([tap-013_tbl_bigtx]=820 [installcheck-tbl_bigtx]=700 [installcheck-tbl_writepath]=500 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=400 [tap-002_standby]=380 [installcheck-index_build_postings]=230
+declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=950 [installcheck-tbl_bigtx]=700 [installcheck-tbl_writepath]=500 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=400 [tap-002_standby]=380 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180 [tap-shell-extension_lifecycle]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140)
 JOB_MB=70
