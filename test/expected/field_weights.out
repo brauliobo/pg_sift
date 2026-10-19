@@ -216,3 +216,7 @@ SELECT sift.verify('fw_idx', true);
  
 (1 row)
 
+DROP TABLE fw, fw_tok, fw_dl, fw_df;
+DROP FUNCTION fw_words(int, int), fw_ref(text[], text[], float8[], bool), fw_sift(text), fw_diff(text, text[], text[], float8[], bool),
+	fw_cnt(text), fw_seq(text), fw_topk(text, int);
+DROP EXTENSION pg_sift;

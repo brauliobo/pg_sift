@@ -613,3 +613,6 @@ SELECT * FROM fc_stage('parallel');
           | week_ts=same/same 2 SiftAgg, 2 searching, 79 rows
 (1 row)
 
+DROP FUNCTION fc_mode(bool), fc_terms(text, text, text, int, bool), fc_check(regclass, text, jsonb, text, text, text), fc_stage(text, regclass);
+DROP TABLE fc, fc_q, fcn, fct;
+DROP EXTENSION pg_sift;

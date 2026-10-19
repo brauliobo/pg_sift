@@ -126,3 +126,7 @@ SELECT fw_topk(sift.field_query('alpha beta', 'title^3, body, tags^0.5'), 10) AS
 	   fw_cnt(sift.field_query('alpha', 'title, body, tags')) = fw_cnt('alpha') AS same_matches,
 	   fw_seq(sift.field_query('alpha', 'title^3, body')) = fw_cnt(sift.field_query('alpha', 'title^3, body')) AS seq_agrees;
 SELECT sift.verify('fw_idx', true);
+DROP TABLE fw, fw_tok, fw_dl, fw_df;
+DROP FUNCTION fw_words(int, int), fw_ref(text[], text[], float8[], bool), fw_sift(text), fw_diff(text, text[], text[], float8[], bool),
+	fw_cnt(text), fw_seq(text), fw_topk(text, int);
+DROP EXTENSION pg_sift;
