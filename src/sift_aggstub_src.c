@@ -7,6 +7,10 @@
  * line pointers are not rows. The index datums of each row are kept (detoasted copies) in the unit's memory context and
  * every leaf is decoded from them when read, into aligned arrays with SIFT_AGG_PAD readable bytes behind. Everything a
  * unit owns lives in one context that is reset by the next stub_next, so memory is bounded by one superblock.
+ *
+ * A testing build only (SIFT_TESTING): the stand-in for the column index that the aggregate tests run on. It copies a heap page before it
+ * reads the visibility map, so a VACUUM running under a scan could leave a pruned tuple in its rows (no guard, sift_vis_guard, is set); no
+ * shipped build has the source, and no test runs a VACUUM under it.
  */
 #include "postgres.h"
 
