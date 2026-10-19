@@ -46,7 +46,7 @@ sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef
 
 /* ---------- the option ---------- */
 
-/* The default measures of a dim: the measures of its list, in order of usefulness: decimals and floats (money, ratings), then the integers */
+/* The default measures of a dim: the measures of its list, in order of usefulness: decimals and floats (money, scores), then the integers */
 static int
 default_meas(const SiftColSchema *s, int dim, int16 *meas)
 {
