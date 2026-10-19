@@ -57,6 +57,40 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 | src/col/sift_colcodec.c `parse_node` / `sift_cc_open` | 40-byte tree of CONST children, n=16M | 64-128 MB allocations before the row count is compared |
 | src/col/sift_col_seg.c `sift_cseg_unit` | last chunk PACK | `unpack` reads up to 31 bytes past `unitbuf` (no `SIFT_COL_PAD`) |
 
+## Found by the PostgreSQL 17 container of the 3.0 release gate (for 3.0.1)
+
+Both came from `scripts/fuzz.sh` run in the `postgres:17-bookworm` container (gcc 12.2 and clang 14) while the release gate was being
+brought up. The gate's `pg17` job no longer runs the standalone harnesses (they do not touch the server); the `fuzz` job runs them with the
+host compiler (clang 23, gcc 16), where neither finding appears.
+
+- **Pointer rebased below its array, src/bm25/sift_bitmap.c:570** (`c->ls.blk - c->ls.bi`, the window of a decoded block indexed with
+  absolute positions). clang 14's UBSan reports `index 18446744073709551360 out of bounds for type 'sift_tid[256]'` in the `bm25` target.
+  It is undefined behavior in C (a pointer outside its array), benign with today's compilers because `t[i]` is only read for
+  `i >= bi`. Replay: in the container with `clang libclang-rt-14-dev` installed, `scripts/fuzz.sh bm25` (seed 1) fails. Fix test-first in
+  3.0.1: index the window with `i - bi` instead of rebasing the pointer.
+- **AVX-512 `range_u32` returns set bits for values outside the range under gcc 12 -O1 with UBSan `pointer-overflow`**
+  (theory: a toolchain problem, not proven). The `colchunk` target reports `FINDING: mode 0: SIMD level 2 decodes differently from
+  scalar`; the input is `docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin` (26909 bytes, sha1 26292c50...). Replay, in the
+  container with `build-essential postgresql-server-dev-17 liblz4-dev libzstd-dev`:
+
+      make -s -C test/fuzz OUT=/tmp/o /tmp/o/colchunk
+      /tmp/o/colchunk docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin      # FINDING (gcc 12.2, the sanitizers of test/fuzz/Makefile at -O1)
+      make -s -C test/fuzz OUT=/tmp/p "SAN=-fsanitize=address,undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" /tmp/p/colchunk
+      /tmp/p/colchunk docs/safety/colchunk-gcc12-ubsan-pointer-overflow.bin      # clean
+
+  What was seen (on the first artifact of this kind, `FZ_TRACE=1` and prints in `nd_filter`): decode and `decode_off32` agree at every
+  level, the `filter` step differs; the column is a DELTA node (n = 5000, W = 19, off32), filtered by decoding to a `uint32` array
+  and calling `sift_colk->range[2]` (`range_u32_avx512`). The kernel marked values far outside [lo, lo + span] as matches, and
+  calling it again on the same array gave a different answer (the first call correct, the next three wrong, 312 bits set), so it reads
+  something that is not in its arguments. It happens at -O1 with UBSan or with `pointer-overflow` alone; not at -O0 or -O2, without
+  sanitizers, with ASan alone, or with `-fno-sanitize=pointer-overflow`. A 20-line copy of the masked-load pattern
+  (`_mm512_maskz_loadu_epi32` + `_mm512_mask_cmple_epu32_mask` in the `BITS512` shape) did not reproduce it. The installcheck SIMD tests
+  (`col_kernels_simd`, `col_enc`) pass in that container. The host compiler replays this file clean (clang 23 libFuzzer with ASan and
+  UBSan, -O1; ran by hand: the gate's `fuzz` job does not replay it, the file is not in `test/fuzz/regress`). For 3.0.1: run
+  the replay under valgrind and MSan on the masked-load path of `range32v` / `BITS512` (an over-read of the array tail, or an uninitialised
+  lane), decide whether it is a gcc 12 miscompile (then `-fno-sanitize=pointer-overflow` for gcc < 13 in test/fuzz/Makefile) or a
+  kernel bug, and move the file to `test/fuzz/regress/colchunk-*` so the fuzz job replays it first.
+
 ## Other tools
 
 - MSan (clang 23, `make -C test/fuzz CC=clang SAN='-fsanitize=memory ...' DEFS= COLZ=`): `shred` reports inside libpgcommon's `snprintf`
