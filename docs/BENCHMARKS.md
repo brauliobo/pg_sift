@@ -1031,7 +1031,10 @@ The cell method below (stop at a relative standard error, batch means) is also n
   as pgbench: the lookup of the query text, then the statement, the latency from the first statement sent to the last result, seeded alike for every engine), checking the stop rule every ~20 ms of work. A cell no longer
   pays a process start, a connect, a log file and a quiet wait (they were 0.5 s of every 0.9 s of the places rounds of the 3.0 pass). The noise check is the host's CPU and IO stall time (`/proc/pressure`, `some`) over the
   cell's own window, above `SIFT_QUIET_MAX` (10%) the cell is measured again after the batch and is listed in `noisy.txt` only if it is noisy twice. Outliers are not removed: p50 and p95 are order statistics. The throughput
-  cells (articles, 8 clients) still use pgbench, whose spawn is a small part of a cell of a second or more.
+  cells (articles, 8 clients) still use pgbench, whose spawn is a small part of a cell of a second or more. Validated against pgbench on one cluster, three statements of 0.03, 0.1 and 0.75 ms, five alternating
+  repetitions each: the p50 of the batch driver is a constant 5-8 us above pgbench's (the ctypes calls of two statements per transaction), the same for every engine: 25% of a 0.03 ms statement, 6% of 0.1 ms, 1% of 0.75 ms. The
+  fastest cell of the slim places tables is 0.096 ms (1% of the 168 cells below 0.1 ms, 13% below 0.2 ms), so the ratios between engines move by 6% at most and only for the fastest cells; numbers of the two drivers are not mixed
+  in one table.
 - **Standard error.** Within a round: queries per second by batch means (the transactions of each client are cut into consecutive batches of at least 5; the rate of a batch is the clients' transactions over their
   pooled seconds, so a few slow statements weigh what they last; the error is the standard deviation of the batch rates over the square root of their number, with at least 4 batches, or, with fewer, the standard error
   of the mean latency, sd / (mean sqrt(n)), whichever is larger); the p50 by order statistics, distribution free: half the distance between the n/2 - sqrt(n)/2 and n/2 + sqrt(n)/2 ranked latencies (the 68% interval
@@ -1067,7 +1070,10 @@ The pg_sift lanes are never cached. Loaded data is kept in docker volumes named 
 the default) or `--restart-runs N` (restart the container, ClickHouse and Elasticsearch ~20 s each); the restart-against-evict check (`--cold-check`) is off unless asked and stored once per engine image.
 
 **Engines at the same time.** `--parallel-engines N` runs the timed windows of independent engines concurrently, each in a docker cpuset of equal size on disjoint physical cores (the SMT sibling of a core is never given to another engine), the sets
-rotating across runs so that no engine always gets the same cores; the external-noise sentinel and the equal-budget rules are unchanged. `bench/bench store interference` measures the same cell alone and while the others run: see the result below.
+rotating across runs so that no engine always gets the same cores; the external-noise sentinel and the equal-budget rules are unchanged. `bench/bench store interference` measures the same cell alone and while the others run. Result on this host (Ryzen 7 9700X, 8 cores, pg_sift `sift_col` as the target, ten questions, 41 timed requests each,
+neighbours looping the same question on cores of their own): with three neighbours at 1 CPU each the median of a question changed by +2% to +113% (the middle question +18%, 9 of 10 above 5%) and the p95 by +11% to +84%; with one neighbour
+at 3 CPUs the median changed by -5% to +50% (middle +8%, 9 of 10 above 5%) and the p95 by -9% to +108%. Pinning alone moves a median by -28% to +18% (middle about -1% to -4%). The neighbours' memory bandwidth and L3 traffic cost
+more than the 5% that was the condition, so **the release pass keeps one engine at a time** (`--parallel-engines` defaults to 1); the option stays for development runs, whose numbers are not comparable with the published ones.
 
 **Resume.** Every run has an id and a manifest (`bench/out/run-ID/.run`: command line, pid, state, per-stage state); `bench/bench resume [ID]` runs the unfinished run again and keeps everything that finished
 with the same key: stages, store parts (`store-<set>-<part>.json`, key = code, host fingerprint, data hash and every setting of the command), search rounds (`round-N.done`, the rows of a round that was cut off are dropped) and the cached

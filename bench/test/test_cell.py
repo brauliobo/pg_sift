@@ -21,16 +21,17 @@ class Script(unittest.TestCase):
         self.assertEqual(steps[0], ('set', 'i', 1, 300))
         self.assertEqual([s[0] for s in steps], ['set', 'sql', 'sql'])
         self.assertTrue(steps[1][2] and not steps[2][2])
-        self.assertFalse(steps[2][1].endswith(';'))
-        self.assertIn('LIMIT 10', steps[2][1])
+        self.assertFalse(cell.expand(steps[2][1], {'q': b"'a'"}).endswith(b';'))
+        self.assertIn(b'LIMIT 10', cell.expand(steps[2][1], {'q': b"'a'"}))
 
     def test_unterminated(self):
         with self.assertRaises(ValueError):
             cell.parse_script('SELECT 1')
 
     def test_expand(self):
-        self.assertEqual(cell.expand("x = :q::text AND y = :missing AND z = :i", {'q': "'a'", 'i': '7'}), "x = 'a'::text AND y = :missing AND z = 7")
-        self.assertEqual(cell.expand("a::int :: text", {'int': 'no'}), "a::int :: text")
+        parts = lambda sql: cell.parse_script(sql + ' \\gset')[0][1]
+        self.assertEqual(cell.expand(parts("SELECT x = :q::text AND y = :missing AND z = :i"), {'q': b"'a'", 'i': b'7'}), b"SELECT x = 'a'::text AND y = :missing AND z = 7")
+        self.assertEqual(cell.expand(parts("SELECT a::int :: text"), {'int': b'no'}), b"SELECT a::int :: text")
 
 
 class Noise(unittest.TestCase):
