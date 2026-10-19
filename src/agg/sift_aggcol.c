@@ -41,6 +41,7 @@ typedef struct ColSource
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	ColLeafBuf *buf;			/* per leaf */
+	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
 	int			nflt;			/* the filters set_filters accepted, as engine predicates */
 	SiftColPred *fpred;
@@ -238,6 +239,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
+	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
 	sift_aggsel_init(&src->sel, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
@@ -442,7 +444,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 	size_t		n = v->n;
 
 	vec->ovf = NULL;
-	if (v->ovf && !(buf->ovf && nan_leaf(l)))
+	if (v->ovf && !src->tol[leaf] && !(buf->ovf && nan_leaf(l)))
 		overflow_error();
 	switch (l->vtype)
 	{
@@ -466,7 +468,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
 	vec->n = n;
 	vec->isnull = NULL;
-	if (v->ovf)
+	if (v->ovf && !src->tol[leaf])
 	{
 		memcpy(buf->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
 		vec->ovf = buf->ovf;
@@ -504,6 +506,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	}
 	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
 	vec->ovf = NULL;
+	info.ovf &= !src->tol[leaf];
 	if (info.ovf && buf->ovf && nan_leaf(l))
 	{
 		SiftColVec	v;
@@ -567,7 +570,7 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 	size_t		m = v->n;
 	ColLeafBuf *b;
 
-	if (v->ovf && !nan_leaf(l))
+	if (v->ovf && !src->tol[leaf] && !nan_leaf(l))
 		overflow_error();
 	b = leaf_buf(src, leaf, nrow);
 	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
@@ -596,7 +599,7 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 	vec->n = nrow;
 	vec->isnull = NULL;
 	vec->ovf = NULL;
-	if (v->ovf)
+	if (v->ovf && !src->tol[leaf])
 	{
 		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
 		for (size_t k = 0; k < m; k++)
@@ -794,6 +797,7 @@ filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 		SiftColZone z;
 
 		sift_col_zone(cu, p->col, &z);
+		z.has_ovf &= !src->tol[p->col];
 		if (z.has_ovf && !nan_leaf(&src->lay->leaf[p->col]))
 			overflow_error();
 		if (!sift_col_filter(cu, p, 1, sel))
@@ -804,15 +808,82 @@ filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 }
 
 static bool
-col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+rows_left(const SiftSrcUnit *unit, const uint64 *bits)
 {
-	ColSource  *src = impl;
 	uint64		left = 0;
 
-	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, filter_op, src);
 	for (int w = 0; w < (unit->nrow + 63) / 64; w++)
 		left += sift_pc64(bits[w]);
 	return left > 0;
+}
+
+static bool
+col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	ColSource  *src = impl;
+
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, filter_op, src);
+	return rows_left(unit, bits);
+}
+
+/* ---- the JSON type of the values of a leaf (docs/COL-JSONB-31.md 5.1): the tags of the overflow values of the chunks ---- */
+
+StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_ARRAY == 5, "SIFT_SRC_JT_* are the chunk tags shifted by one");
+
+static void
+col_tolerate_ovf(void *impl, int leaf)
+{
+	((ColSource *) impl)->tol[leaf] = true;
+}
+
+/* the tag of the values a leaf of this type stores */
+static uint8
+stored_tag(Oid typid)
+{
+	return typid == BOOLOID ? SIFT_COLTAG_BOOLEAN : typid == TEXTOID ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
+}
+
+typedef struct TypesTest
+{
+	ColSource  *src;
+	int			leaf;
+	uint32		mask;			/* bit t: the type of tag t */
+} TypesTest;
+
+/* the rows of the unit as stored with a value of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it */
+static void
+types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
+{
+	TypesTest  *t = arg;
+	bool		known,
+				left;
+	uint64	   *ovf;
+	SiftColSel	bad;
+
+	left = sift_col_filter_types(cu, t->leaf, t->mask, t->mask >> stored_tag(t->src->lay->leaf[t->leaf].typid) & 1, vs, &known);
+	if (!known)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
+				 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
+	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
+	if (!left || !sift_col_ovf_bits(cu, t->leaf, ovf))
+		return;
+	sift_col_sel_alloc(t->src->cs, cu->nrows, &bad);
+	for (uint32 w = 0; w < bad.nwords; w++)
+		bad.bits[w] = vs->bits[w] & ovf[w];
+	if (sift_col_sel_count(&bad) > 0 && sift_col_vet(cu, &bad))
+		overflow_error();
+}
+
+static bool
+col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+{
+	ColSource  *src = impl;
+	TypesTest	t = {src, leaf, types << 1};
+
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, types_op, &t);
+	return rows_left(unit, bits);
 }
 
 static void
@@ -948,6 +1019,8 @@ static const SiftSrcProvider col_provider = {
 	.set_filters = col_set_filters,
 	.filter = col_filter,
 	.read_sel = col_read_sel,
+	.filter_types = col_filter_types,
+	.tolerate_ovf = col_tolerate_ovf,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 	.preagg = col_preagg,
