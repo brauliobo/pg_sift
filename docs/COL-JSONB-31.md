@@ -86,15 +86,24 @@ not done here.
 - **A value the text leaf cannot hold** (a number or a boolean among the strings, an object where the array is) raises the error of the
   pushdown, whose hint turns it off; the normal plan answers (the last statements of the test show both).
 
+### The text path type `astext` (j09, j14; test `agg_jsonb_astext`, no segment change)
+
+- **What it is.** A path declared `astext` (`scores.* astext`, `items[]{score astext}`, `doc->label astext(1024)`) holds the text `->>` gives
+  for any scalar: a string as it is, a number as `numeric_out` prints it (`1.50` stays `1.50`, jsonb keeps the scale; `1e2` is `100`),
+  `true`, `false`. It is an ordinary dictionary string leaf in the segment; the index definition carries a flag (`SIFT_COLD_ASTEXT`) and
+  nothing else changes, so the format stays minor 3 and a 3.0 library reads such an index (it sees a text leaf).
+- **Where the planner uses it.** `->>` of the path, `jsonb_each_text` (`key`, `value`), `jsonb_to_recordset` columns declared `text`: text
+  equality, `IN`, `LIKE`, regular expressions, `length`, `count(DISTINCT)`, group keys, and any expression over the text (the cast
+  `::float8` is evaluated by PostgreSQL once per distinct text). It never answers `@>`, `?`, jsonpath or `jsonb_each` (`"12"` and `12`
+  differ there): those keep the normal plan.
+- **What it cannot hold.** An object or array at the path, or a text over its `(N)`, is an overflow and raises the pushdown's error; a
+  JSON null is NULL, like `->>`.
+- **Numbers.** 100,000 documents, one backend, before (`float8` paths, normal plan 377 to 391 ms, `SiftAgg` 408 to 417 ms) and after
+  (`astext` paths): j09 417 to 7.0 ms, j14 408 to 6.6 ms. Rows and counts equal the normal plan; the sums and averages of floats differ in
+  the last digits (the order of the additions, as for every pushed `sum(float8)`). The index of the variant is 2.4 MB, built in 215 ms.
+
 ### Why the others stay in the normal plan
 
-- **j09, j14: a regular expression (or any text function) on the text of a number.** `jsonb_each_text(scores)` and `e->>'score'` give the
-  text of the jsonb numeric (`7.50` is `7.5`, `1e2` is `100`); the leaf declared `float8` holds the double, from which that text cannot
-  be rebuilt (a number of more than 15 digits, `0.1 + 0.2`, an integer over 10^15 print differently), and the shredder refuses to store a
-  number in a text leaf (`OVERFLOW TYPE`) because `"12"` and `12` differ for `=`, `@>` and jsonpath. A rule that only looks at the
-  digits (`'^[0-9.]+$'`, which only a non-negative number matches) could be answered from the double, but a planner that recognizes
-  patterns would be a guess, not a proof. The cast `s.value::float8` alone is pushed already (the `value` leaf), and so is a text
-  comparison on a leaf declared `text`. Proposal below (a path type that keeps the `->>` text of any scalar).
 - **j16, `jsonb_typeof(x) = 'number'`.** The JSON type of a value is not in the index: a string in a number path is an `OVERFLOW` slot
   (NULL with the overflow bit), and the bit does not say whether the value is a string, a boolean, an object or a number out of range.
   Without the type the filter cannot tell the rows it must keep; the rows would need the heap, and the aggregate scan has no recheck of an
@@ -142,16 +151,8 @@ predicate) scans every element.
   aggregates (`count(*)`, `sum(e.score)`, `avg(e.score)` with no filter) from metadata; the executor's pre-aggregate shape rules today
   exclude an unnest. That is a coverage change on the engine side and is left to that track.
 
-### Also needing a decision: the text of any scalar (j09, j14) and the type of a value (j16)
+### Decided for 3.1: the type of a value (j16)
 
-- **A path type that keeps the `->>` text of any scalar** (name open; today `text` holds strings only, and a number there is an
-  `OVERFLOW`). No new storage class: the leaf is a dictionary string column like `text`, written with the text a number or a boolean has in
-  `->>` (`numeric_normalize`, `true`, `false`); what changes is the meaning, so the index definition gets a flag (`SiftColDef.flags`, not
-  the segment) that tells the planner such a leaf answers `->>` and `jsonb_each_text` (text equality across types) and never a jsonpath, `@>` or
-  `?` string test, where `"12"` and `12` differ. With it `s.value ~ '^[0-9.]+$'` and `e->>'score' ~ ...` become a lookup table over the
-  dictionary, evaluated by PostgreSQL once per distinct text, and the cast to `float8` is evaluated per distinct text as any expression.
-  Expected: j09 and j14 from 229 / 257 ms to the 5 to 10 ms of the other grouped shapes. Cost: the dictionary of the numbers' text, which
-  is large for numbers with many distinct decimals.
 - **A type tag per slot** (column format minor 4): two bits per value of a path (string, number, boolean, null, object or array, missing)
   stored with the overflow bitmap. `jsonb_typeof(path)` and the strings among the numbers of a path become exact (j16, and the 3.0.1
   recheck would not be needed). Cost: about 3 bits per overflowing value, nothing for a path without overflow.
