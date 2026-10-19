@@ -249,7 +249,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
-		sift_cdict_serialize(w->dict[c], &blob);
+		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, &blob);
 	}
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
@@ -667,36 +667,58 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off + off, len, pv->unitbuf + off);
 }
 
+/* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
+static void
+dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len)
+{
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
+	uint32		hdr[2];
+	uint64		next = s->len,
+				tab[SIFT_COL_MAX_COLS];
+
+	seg_read(seg, s->off, sizeof(hdr), hdr);
+	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
+		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
+	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+	*off = tab[col];
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (tab[c] > *off && tab[c] < next)
+			next = tab[c];
+	if (*off == 0 || *off >= s->len)
+		corrupt(seg, "Leaf %d has no dictionary.", col);
+	*len = next - *off;
+}
+
+uint64
+sift_cseg_dict_stored(SiftColSegment *seg, int col)
+{
+	uint64		off,
+				len;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return 0;
+	dict_region(seg, col, &off, &len);
+	return len;
+}
+
 SiftCDict *
 sift_cseg_dict(SiftColSegment *seg, int col)
 {
 	SegPriv    *pv = PRIV(seg);
-	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
 
 	if (seg->schema->cols[col].store != SIFT_COLS_STR)
 		return NULL;
 	if (pv->dict[col] == NULL)
 	{
-		uint64		off;
-		uint32		hdr[2];
-		uint64		next = s->len,
-					tab[SIFT_COL_MAX_COLS];
+		uint64		off,
+					len;
 		char	   *data;
 		Size		used;
 
-		seg_read(seg, s->off, sizeof(hdr), hdr);
-		if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
-			corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-		seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
-		off = tab[col];
-		for (int c = 0; c < seg->schema->ncols; c++)
-			if (tab[c] > off && tab[c] < next)
-				next = tab[c];
-		if (off == 0 || off >= s->len)
-			corrupt(seg, "Leaf %d has no dictionary.", col);
-		data = palloc(next - off);
-		seg_read(seg, s->off + off, next - off, data);
-		pv->dict[col] = sift_cdict_parse(seg->mcxt, data, next - off, &used);
+		dict_region(seg, col, &off, &len);
+		data = palloc(len);
+		seg_read(seg, sec(seg, SIFT_SEC_DICT)->off + off, len, data);
+		pv->dict[col] = sift_cdict_parse(seg->mcxt, data, len, &used);
 		if (pv->dict[col] == NULL)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		pfree(data);
@@ -764,7 +786,7 @@ sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *out)
 		memcpy(out->set, z->set[u], 4 * sizeof(uint64));
 }
 
-/* The entries of the segment's dictionary of leaf col: the count that starts it, without parsing the dictionary */
+/* The entries of the segment's dictionary of leaf col: the count in its header (after the form), without parsing the dictionary */
 static uint32
 dict_count(SiftColSegment *seg, int col)
 {
@@ -777,9 +799,9 @@ dict_count(SiftColSegment *seg, int col)
 	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
 		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
 	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
-	if (tab[col] == 0 || tab[col] + sizeof(n) > s->len)
+	if (tab[col] == 0 || tab[col] + 2 * sizeof(n) > s->len)
 		corrupt(seg, "Leaf %d has no dictionary.", col);
-	seg_read(seg, s->off + tab[col], sizeof(n), &n);
+	seg_read(seg, s->off + tab[col] + sizeof(n), sizeof(n), &n);
 	return n;
 }
 
