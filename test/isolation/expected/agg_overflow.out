@@ -1,0 +1,87 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1pushed s1decl s2ins s1same s1end
+step s1pushed: SELECT iso_ovf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_ovf t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2ins: INSERT INTO iso_ovf VALUES (100001, jsonb_build_object('lines', jsonb_build_array(
+		  jsonb_build_object('k', 'a', 'n', '7'), jsonb_build_object('k', 'b', 'n', 1))));
+step s1same: SELECT iso_ovf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2ins s1same s2commit s1end
+step s1pushed: SELECT iso_ovf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_ovf t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_ovf VALUES (100001, jsonb_build_object('lines', jsonb_build_array(
+		  jsonb_build_object('k', 'a', 'n', '7'), jsonb_build_object('k', 'b', 'n', 1))));
+step s1same: SELECT iso_ovf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2begin s2ins s2abort s1same s1end
+step s1pushed: SELECT iso_ovf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_ovf t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_ovf VALUES (100001, jsonb_build_object('lines', jsonb_build_array(
+		  jsonb_build_object('k', 'a', 'n', '7'), jsonb_build_object('k', 'b', 'n', 1))));
+step s2abort: ROLLBACK;
+step s1same: SELECT iso_ovf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
+
+starting permutation: s1pushed s1decl s2ins s2promote s1same s1end
+step s1pushed: SELECT iso_ovf_pushed() AS pushed;
+pushed
+------
+t     
+(1 row)
+
+step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
+		  DECLARE c CURSOR FOR SELECT l.k, avg(l.n), count(*) FROM iso_ovf t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k;
+step s2ins: INSERT INTO iso_ovf VALUES (100001, jsonb_build_object('lines', jsonb_build_array(
+		  jsonb_build_object('k', 'a', 'n', '7'), jsonb_build_object('k', 'b', 'n', 1))));
+step s2promote: SELECT sift.col_promote('iso_ovf_col') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s1same: SELECT iso_ovf_same('c') AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;

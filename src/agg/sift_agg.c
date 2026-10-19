@@ -1108,17 +1108,23 @@ get_vec_raw(AggExec *ex, int leaf)
 	return &ex->uvec[leaf];
 }
 
+static void
+overflow_error(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
+			 errhint("Set sift.enable_agg to off for this query.")));
+}
+
 /* The kernels do not know the NaNs a numeric leaf holds; only the expressions PostgreSQL evaluates (get_vec_raw) do. */
 static const SiftSrcVec *
 get_vec(AggExec *ex, int leaf)
 {
 	const SiftSrcVec *v = get_vec_raw(ex, leaf);
 
-	if (v->ovf)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-				 errhint("Set sift.enable_agg to off for this query.")));
+	if (v->ovf && ex->lay->leaf[leaf].typid == NUMERICOID)
+		overflow_error();
 	return v;
 }
 
@@ -7310,6 +7316,59 @@ topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec_raw(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
 }
 
+/*
+ * The rows of the unit that hold a value the index cannot store in a leaf the scan reads (numeric NaNs aside: the readers evaluate those),
+ * NULL when there is none. An element of a child leaf counts for its row.
+ */
+static uint64 *
+overflow_rows(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	uint64	   *rows = NULL;
+
+	for (int i = 0; i < s->nleaves; i++)
+	{
+		int			leaf = s->leaves[i];
+		const SiftSrcLeaf *l = &ex->lay->leaf[leaf];
+		const SiftSrcVec *v;
+
+		if (leaf >= ex->nbase || l->typid == NUMERICOID)
+			continue;
+		if (!sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec_raw(ex, leaf))->ovf)
+			continue;
+		if (!rows)
+			rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
+		if (l->parent >= 0)
+			build_parents(ex);
+		for (int64 e = 0; e < v->n; e++)
+			if (sift_colsrc_bit(v->ovf, e))
+			{
+				uint32		r = l->parent >= 0 ? ex->parent[e] : e;
+
+				rows[r >> 6] |= UINT64CONST(1) << (r & 63);
+			}
+	}
+	return rows;
+}
+
+/*
+ * A unit may hold values the index cannot store (the writer's committed after the plan was made, in flight or rolled back, as the plan could
+ * not know); the rows of another snapshot or none are not the scan's, a row it sees is: the normal plan reads it from the heap.
+ */
+static void
+check_overflow(AggExec *ex, const uint64 *live)
+{
+	int			nrw = (ex->unit.nrow + 63) / 64;
+	uint64	   *rows = overflow_rows(ex);
+
+	if (!rows)
+		return;
+	sift_colk->bits_and(rows, live, nrw);
+	sift_colsrc_vet(ex->src, &ex->unit, rows);
+	if (sift_colk->bits_count(rows, nrw) > 0)
+		overflow_error();
+}
+
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
 #define SPARSE_RATIO	8
 
@@ -7344,6 +7403,7 @@ process_unit(AggExec *ex)
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
+	check_overflow(ex, rmask);
 	if (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask))
 	{
 		ex->row_base += nrow;

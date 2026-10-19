@@ -109,9 +109,9 @@ typedef struct SiftSrcVec
 	const SiftSrcDict *dict;	/* SCV_CODE leaves */
 	int64		n;
 	/*
-	 * numeric leaves (the only values a numeric(p <= 18, s) column cannot hold are its NaNs): NULL when none of the values is one,
-	 * else bit i set = value i is a NaN of the heap (isnull is set too, the data slot is undefined). Zeroed by sift_colsrc_read,
-	 * set by the provider. The executor refuses a vector that has it unless the reader evaluates the value with PostgreSQL.
+	 * NULL when no value is one the index cannot store, else bit i set = value i is (isnull is set too, the data slot is undefined): for a
+	 * numeric(p <= 18, s) leaf its NaNs, for the others what the shredder flags as overflow. Zeroed by sift_colsrc_read, set by the
+	 * provider. A row of the snapshot that has one in a leaf the scan reads is an error (process_unit); the others never reach a result.
 	 */
 	const uint64 *ovf;
 } SiftSrcVec;
@@ -125,7 +125,7 @@ typedef struct SiftSrcBuf
 {
 	void	   *data;
 	uint8	   *isnull;
-	uint64	   *ovf;			/* optional, bits for the values of the leaf the index cannot hold (a numeric NaN): NULL, such a value is an error */
+	uint64	   *ovf;			/* optional, bits for the values of the leaf the index cannot hold (SiftSrcVec.ovf): NULL, such a value is an error */
 } SiftSrcBuf;
 
 typedef struct SiftSrcUnit
@@ -341,6 +341,8 @@ typedef struct SiftSrcProvider
 	void		(*zone) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 	/* zone_range: the zone of a leaf over all the units of the superblocks [lo, hi) together, without opening them; returns how many units it counts (required with tids) */
 	uint32		(*zone_range) (void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+	/* optional (NULL: none does): can the unit the source is at hold, in `leaf`, a value the source cannot store (SiftSrcVec.ovf)? */
+	bool		(*overflow) (void *impl, const SiftSrcUnit *unit, int leaf);
 	/* read for the rows `rows` (ascending) only, valid until the next read of the leaf: vec->n == n, element k is row rows[k] */
 	void		(*read_rows) (void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 	/* optional: the int filters above. set_filters (before begin) returns the bits of those it will apply, filter narrows the rows of a unit by them */
@@ -408,6 +410,7 @@ extern bool sift_colsrc_can_tids(Oid relam, bool index);
 extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 extern uint32 sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+extern bool sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
 extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */
