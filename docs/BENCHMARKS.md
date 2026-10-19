@@ -530,7 +530,7 @@ chart, are listed in `bench/engines.tsv`. The numbers of every table below are a
 
 Host: AMD Ryzen 7 9700X (8 cores, 16 hardware threads), 188 GB RAM, Linux 7.2, PostgreSQL 18.6, scratch data on tmpfs. sift is built from
 `cc30fc2b299d` (main when the session ran), pg_search from the ParadeDB 0.26.1 package, pg_textsearch 1.5.1 from the v1.5.1 tag (commit
-`fa142d049d08`), rum 1.3.15 and pgx-bm25 1.0 with PGXS (tarball and commit checksums: `bench/versions.env`).
+`fa142d049d08`), rum 1.3.15 and pgx-bm25 1.0 with PGXS (the tarball checksums of rum and pg_textsearch and the commit of pg_textsearch: `bench/versions.env`; pgx-bm25 has no pin there, `bench/README.md` says where it comes from).
 
 **Every table in this document was measured with the same share of the machine: one cluster, the engines interleaved cell by cell with the order rotated every round,
 on 8 server threads (the 8 least busy at the start: 4 whole cores) and 4 load generator threads, disjoint, 8 clients in the articles
