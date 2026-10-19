@@ -5,7 +5,7 @@
 # SIFT_SUDO (e.g. sudo) when those are not writable.
 #
 #   scripts/pgtest.sh install    build + install into $SIFT_TMP/root
-#   scripts/pgtest.sh start      initdb (first time) + start
+#   scripts/pgtest.sh start      initdb (first time) + start, without autovacuum (see start)
 #   scripts/pgtest.sh psql [...] psql into the test database
 #   scripts/pgtest.sh env        print exports for libpq clients (eval "$(...)")
 #   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
@@ -93,6 +93,9 @@ new_data() {
 	if [[ -n ${SIFT_INITDB_TEMPLATE:-} && ${2:-} != wal ]]; then cp -a "$SIFT_INITDB_TEMPLATE" "$1"; else initdb_template "$1" "${2:-}"; fi
 }
 
+# No autovacuum in the cluster: a worker holds a snapshot while it analyzes a table, a catalog too, and VACUUM removes only the rows older
+# than every snapshot of the database, so the rows a test deleted stay and its plan or its dead-document count differs now and then (the
+# reloption autovacuum_enabled cannot switch off the workers' catalogs). The one job that needs it (scripts/soak.sh) turns it on for its run.
 start() {
 	mkdir -p "$SOCK"
 	if [[ ! -f $DATA/PG_VERSION ]]; then
@@ -108,6 +111,7 @@ start() {
 			wal_recycle = off
 			shared_buffers = 64MB
 			max_worker_processes = 16
+			autovacuum = off
 		EOF
 	fi
 	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
