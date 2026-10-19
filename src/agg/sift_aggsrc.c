@@ -122,6 +122,26 @@ sift_colsrc_can_tids(Oid relam, bool index)
 	return prov != NULL && prov->tids != NULL && prov->zone != NULL && prov->read_rows != NULL;
 }
 
+bool
+sift_colsrc_can_types(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->filter_types != NULL && prov->tolerate_ovf != NULL;
+}
+
+bool
+sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+{
+	return src->prov->filter_types(src->impl, unit, leaf, types, bits);
+}
+
+void
+sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf)
+{
+	src->prov->tolerate_ovf(src->impl, leaf);
+}
+
 void
 sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {
