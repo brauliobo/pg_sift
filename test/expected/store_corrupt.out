@@ -153,7 +153,7 @@ SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                    expect                                                   
 ------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 2.2, this build reads formats 1.0 to 1.2 | REINDEX the index.
+ 55000: sift index "t_idx" has on-disk format 2.2, this build reads formats 1.0 to 1.3 | REINDEX the index.
 (1 row)
 
 SELECT fresh();
@@ -162,7 +162,7 @@ SELECT fresh();
  
 (1 row)
 
-SELECT sift._test_poke('t_idx', 0, 30, 3, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 4, 2);
  _test_poke 
 ------------
  
@@ -171,7 +171,7 @@ SELECT sift._test_poke('t_idx', 0, 30, 3, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                    expect                                                   
 ------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 1.3, this build reads formats 1.0 to 1.2 | REINDEX the index.
+ 55000: sift index "t_idx" has on-disk format 1.4, this build reads formats 1.0 to 1.3 | REINDEX the index.
 (1 row)
 
 SELECT fresh();
@@ -206,6 +206,24 @@ SELECT sift._test_poke('t_idx', 0, 30, 1, 2);
 
 SELECT sift._test_check('t_idx') >= 0 AS format_1_1_is_read;
  format_1_1_is_read 
+--------------------
+ t
+(1 row)
+
+SELECT fresh();
+ fresh 
+-------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 0, 30, 3, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_check('t_idx') >= 0 AS format_1_3_is_read;
+ format_1_3_is_read 
 --------------------
  t
 (1 row)

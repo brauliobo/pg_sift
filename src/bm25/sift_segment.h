@@ -110,10 +110,12 @@ extern bool sift_seg_docs_next(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
 /*
  * Present offsets of page (sb*256 + page) and their dl row (dl[off-1]);
- * present is zero and dl NULL for pages without docs. dl valid until the
- * next docmap call on seg.
+ * present is zero and dl NULL for pages without docs (false). dl may be NULL
+ * when the caller wants no row: the rows of format 3 are narrower than 16
+ * bits on disk and expanded on request. dl valid until the next docmap call
+ * on seg.
  */
-extern void sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
+extern bool sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
 						  uint64 *present, const uint16 **dl);
 
 /* Live offsets of a page (== present unless dc->dirty) */

@@ -84,6 +84,46 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS s
       11 |           11
 (1 row)
 
+-- the dl rows of format 3 are 4, 8 or 16 bits by superblock: five rows per heap page (a pad of a fixed size) in three runs of 1300 rows, whose
+-- documents hold 5, 62 and 302 tokens (page 256 of the table starts the second superblock)
+CREATE TABLE wd AS
+SELECT g AS id, b AS body, repeat('x', 1500 - length(b)) AS pad
+FROM (SELECT g, concat_ws(' ', 'common', 'w' || g % 97, repeat('t ', CASE WHEN g <= 1300 THEN 3 WHEN g <= 2600 THEN 60 ELSE 300 END)) AS b
+      FROM generate_series(1, 3900) g) x;
+CREATE TABLE wd2 AS SELECT * FROM wd ORDER BY id;
+SET sift.test_segfmt = 2;
+CREATE INDEX wd2_idx ON wd2 USING sift (body);
+SET sift.test_segfmt = 3;
+CREATE INDEX wd3_idx ON wd USING sift (body);
+SELECT sift.verify('wd2_idx', true), sift.verify('wd3_idx', true);
+ verify | verify 
+--------+--------
+        | 
+(1 row)
+
+SELECT (SELECT bytes FROM sift._test_segment_parts('wd3_idx') WHERE part = 'docmap: dl rows')
+       < (SELECT bytes FROM sift._test_segment_parts('wd2_idx') WHERE part = 'docmap: dl rows') AS narrower_rows,
+       (SELECT bytes FROM sift._test_segment_parts('wd3_idx') WHERE part = 'docmap: dl rows') > 0 AS has_rows;
+ narrower_rows | has_rows 
+---------------+----------
+ t             | t
+(1 row)
+
+SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('wd2_idx', 'wd2') EXCEPT SELECT term, id, tf, dl FROM posts('wd3_idx', 'wd')) x) AS only_2,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('wd3_idx', 'wd') EXCEPT SELECT term, id, tf, dl FROM posts('wd2_idx', 'wd2')) x) AS only_3,
+       (SELECT count(DISTINCT dl) FROM posts('wd3_idx', 'wd')) AS dls;
+ only_2 | only_3 | dls 
+--------+--------+-----
+      0 |      0 |   3
+(1 row)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h IS NOT DISTINCT FROM b.h) AS same_wd FROM answers('wd2') a JOIN answers('wd') b USING (q);
+ queries | same_wd 
+---------+---------
+      22 |      22
+(1 row)
+
+DROP TABLE wd, wd2;
 -- mixed: format 2 for the first half, format 3 for the second (a promoted write buffer), then deletes, VACUUM and a merge
 CREATE TABLE tm AS SELECT * FROM src WHERE id <= 15000 ORDER BY id;
 SET sift.test_segfmt = 2;
