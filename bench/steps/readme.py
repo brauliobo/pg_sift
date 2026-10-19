@@ -190,7 +190,7 @@ def places_bullet(t):
     classes = list(dict.fromkeys(r[3] for r in p50 if r[2] == 'sift'))
     span = lambda e: '%s-%s ms' % tuple('%.2g' % f(number(t.p50(e, c, 'top')) for c in classes) for f in (min, max))
     text = '- Autocomplete on %s places: sift answers the top 20 in %s in every query class' % (format(t.corpus('places'), ','), span('sift'))
-    text += ''.join(', %s in %s' % (tables.NAME[e], span(e)) for e in ('pg_search', 'elasticsearch') if e in t.places)
+    text += ''.join(', %s in %s' % (tables.NAME[e], span(e)) for e in ('elasticsearch', 'pg_search') if e in t.places)
     if 'pg_search' in t.places:
         cells = [ratio(t.p50('pg_search', c, wl), t.p50('sift', c, wl))[0] for wl in dict.fromkeys(r[4] for r in p50 if r[2] == 'sift') for c in classes]
         cells = [v for v in cells if v is not None]

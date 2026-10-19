@@ -64,7 +64,7 @@ The other commands: `charts`, `readme`, `du` (disk footprint), `clean [--cache|-
 oracle / pgx-bm25, every engine of `--engines` when none is named, pgx-bm25 included; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `shred` (documents per second of the sift_col jsonb shredder and elements per second of its SIMD kernels, docs/COL-SHRED.md), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
-`--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25,elasticsearch`, `--classes LIST` and `--workloads LIST` (restrict a run to some
+`--dataset articles|places|all`, `--engines sift,sift_nopos,elasticsearch,pg_search,pg_textsearch,rum,bm25`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
 the server's parallel workers; default 4 pgbench threads, one parallel worker per hardware thread and, for an index build, one fewer than the physical cores), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
 (the fewest transactions), `--rse X` (the relative standard error a cell is measured to, and below which it is not measured again, default 0.05), `--rounds MIN-MAX` (default 2-3, regress 3-3;
@@ -102,7 +102,7 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 |---|---|
 | `dataset` | `articles`, `places` |
 | `tier` | `slim`, `ab`, `full`, `slim-cold`, `ab-cold`, `full-cold` (rows of the earlier sessions say `quick`) |
-| `engine` | `sift`, `sift_nopos` (`positions = off`), `pg_search`, `pg_textsearch`, `rum`, `bm25` (pgx-bm25), `elasticsearch`; `-` for host rows |
+| `engine` | `sift`, `sift_nopos` (`positions = off`), `elasticsearch`, `pg_search`, `pg_textsearch`, `rum`, `bm25` (pgx-bm25); `-` for host rows |
 | `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
 | `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `forcemerge` on the Elasticsearch build rows of its force-merge (`build_s` the merge time, `index_mib` the size before it; the unmarked row is the bulk load and refresh and the size after the merge); `-` otherwise |
 | `metric` | `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX; Elasticsearch: bulk load and refresh), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m`; host rows (`engine` `-`): `corpus` (documents of the tier), `wall_s` (seconds of a phase of the session: `variant` dump, build, cells, ...), `session` (the whole session) |
