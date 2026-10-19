@@ -106,7 +106,7 @@ struct SiftTopN
 	/* the visit order */
 	uint32		nsb;
 	bool		reverse;			/* the superblocks are visited from the last */
-	bool		follows;			/* the first sort column follows the superblocks: the windows farther from its best end are worse */
+	bool		follows;			/* the first sort column follows the superblocks (as far as the probes say): the visit starts at its best end */
 	uint32		left;				/* superblocks not yet in a window */
 	uint32		size;				/* superblocks of the next window */
 	uint32		nprobe;
@@ -556,12 +556,6 @@ sift_topn_start(SiftTopN *t, uint32 nsb)
 }
 
 bool
-sift_topn_follows(const SiftTopN *t)
-{
-	return t->follows;
-}
-
-bool
 sift_topn_reverse(const SiftTopN *t)
 {
 	return t->reverse;
@@ -581,14 +575,6 @@ sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best)
 	t->left -= n;
 	t->size = Min(t->size * 2, TOPN_WINDOW);
 	return true;
-}
-
-/* The scan stops: the superblocks that are left are not read */
-void
-sift_topn_stop(SiftTopN *t)
-{
-	t->skipped += t->left;
-	t->left = 0;
 }
 
 void
