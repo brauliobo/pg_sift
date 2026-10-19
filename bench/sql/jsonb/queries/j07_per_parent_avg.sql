@@ -1,0 +1,1 @@
+SELECT kind, round(avg(a)::numeric, 6) AS avg_of_avg, count(DISTINCT id) AS docs FROM (SELECT d.id, e.kind, avg(e.score) AS a FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(kind text, sub text, flag text, score float8) GROUP BY d.id, e.kind) x GROUP BY 1 ORDER BY 1
