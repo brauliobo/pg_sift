@@ -224,7 +224,7 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
  units_desc | units_asc 
 ------------+-----------
-          4 |         1
+          4 |         2
 (1 row)
 
 -- the GUC
