@@ -71,23 +71,23 @@ Simple English Wikipedia (50,000 articles, 8 clients) and GeoNames cities15000 (
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **sift** (default) | 31 MiB | 0.6 s | **12,100** | **3,860** | **10,600** | **6,990** | **14,200** | **5,850** | 2,740 |
 | sift `positions = off` | 13 MiB | 0.5 s | **12,200** | 3,710 | 2,660 | 4,420 | 3,220 | 4,960 | 1,760 |
+| Elasticsearch | 72 MiB | 4.3 s | 4,960 ± 2,000 | 2,890 ± 770 | 5,680 ± 2,100 | 4,450 ± 1,200 | 8,140 ± 2,000 | 3,700 ± 1,000 | **5,020** |
 | pg_search 0.26.1 | 41 MiB | 1.2 s | 2,190 | 1,580 | 2,100 | 1,930 | 2,080 | 1,820 | 366 |
 | pg_textsearch 1.5.1 | 40 MiB | 4.8 s | 74.6 ± 9.7 | **3,980** | 92 ± 15 | 87.5 ± 16 | 121 ± 46 | 86.8 ± 17 | 80 ± 22 |
 | rum 1.3.15 | 86 MiB | 3.0 s | 2,270 | 23.6 ± 2.9 | 68.3 | 41 ± 4.7 | 82.9 | 47.5 ± 5 | 43.3 ± 5 |
 | pgx-bm25 | 54 MiB | 2.8 s | 75.7 | 59.5 | 42.3 ± 4.5 | 49.6 | 47.6 | 50.8 | 47.4 |
-| Elasticsearch | 72 MiB | 4.3 s | 4,960 ± 2,000 | 2,890 ± 770 | 5,680 ± 2,100 | 4,450 ± 1,200 | 8,140 ± 2,000 | 3,700 ± 1,000 | **5,020** |
 
 | places (p50 ms, top 20) | p1 | p3 | w1 | a2 | a3 | x2 |
 |---|---:|---:|---:|---:|---:|---:|
 | **sift** | **0.188** | 0.176 | 0.15 | 0.172 | 0.182 | 0.197 |
 | sift `positions = off` | **0.188** | **0.172** | **0.142** | **0.163** | **0.178** | **0.187** |
+| Elasticsearch | 0.334 | 0.286 | 0.204 | 0.209 | 0.266 | 0.276 |
 | pg_search 0.26.1 | 0.549 | 0.644 | 0.767 | 0.866 | 1.31 | 1.05 |
 | pg_textsearch 1.5.1 | 551 | 10.1 ± 1.9 | 2.82 | 2.85 | 2.91 | 2.98 |
 | rum 1.3.15 | 22.8 ± 2.9 | 2.75 ± 0.3 | 0.238 | 4.57 | 4.8 | 4.04 |
 | pgx-bm25 | 5.04 | 27.9 ± 4.6 | 1.61 | 2.84 | 5.92 | 3.85 |
-| Elasticsearch | 0.334 | 0.286 | 0.204 | 0.209 | 0.266 | 0.276 |
 
-- Autocomplete on 34,165 places: sift answers the top 20 in 0.15-0.2 ms in every query class, pg_search in 0.55-1.3 ms, Elasticsearch in 0.2-0.33 ms; sift is ahead of pg_search in 24 of 24 warm cells (2.4x to 12x).
+- Autocomplete on 34,165 places: sift answers the top 20 in 0.15-0.2 ms in every query class, Elasticsearch in 0.2-0.33 ms, pg_search in 0.55-1.3 ms; sift is ahead of pg_search in 24 of 24 warm cells (2.4x to 12x).
 - `positions = off` shrinks the index to 13 MiB (3.2x smaller than pg_search's 41 MiB, the default sift index is 31 MiB); phrase runs at 2,660 queries/s and `count(*)` at 3,220 (pg_search: 2,100 and 2,080), against 10,600 and 14,200 with positions.
 - Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search's does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).
 - The host was shared (load average 6-9 during the cells, median 7), so absolute numbers are noisy and ratios close to each other are not distinguishable; every cell with its standard error, the cold-cache tables and the method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
