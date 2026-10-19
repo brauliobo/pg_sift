@@ -284,7 +284,11 @@ Load time (from the same CSV file, one client) and size:
 | vacuum, analyze | 0.2 s | 0.2 s | 1.6 s | 0.2 s | n/a | n/a |
 | merge to one segment | n/a | n/a | n/a | n/a | 3.0 s | 0.2 s |
 | **total** | 2.0 s | 1.4 s | 4.0 s | 1.4 s | 12 s | 0.7 s |
-| **size on disk** | 159 MiB | 146 MiB | 196 MiB (150 free) | 46 MiB | 111 MiB | 38 MiB |
+| size: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | 21.4 MiB | n/a | n/a |
+| size: index or columnar data (without heap and primary key) | 34.6 MiB (6.8 + 21.3 + 6.5) | **22.2 MiB (10.9 + 11.3)** | 24.1 MiB (13.2 + 10.9) | 24.7 MiB | 111.4 MiB | 37.6 MiB |
+| size on disk, total (free blocks inside the file in parentheses) | 159 MiB | 146 MiB | 196 MiB (150 free, 46 live) | 46 MiB | 111 MiB | **38 MiB** |
+
+- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; 34.6 MiB); `sift_col` the column index and the BM25 title index (10.9 + 11.3 MiB); `sift_table` the live bytes of its columns plus the title index (13.2 + 10.9 MiB); Citus the columnar table; Elasticsearch the index; ClickHouse the table with its text index. pg_sift `sift_table`, Citus columnar, Elasticsearch and ClickHouse store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. Like for like, the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema (`system.columns`, measured on 2026-10-18; per column in [Size against ClickHouse](#size-against-clickhouse-1000000-orders)).
 
 Indexes of the PostgreSQL layouts:
 
@@ -473,7 +477,7 @@ Byte counts only (they do not depend on the host; measured on 2026-10-18 and not
 
 The columns of the table are 12.6 MiB (0.43x of ClickHouse LZ4, 0.75x of `ZSTD(3)`, 0.85x of the tuned schema); the title dictionary (947,520 bytes as a codec string list, 4.4 MB plain) is in the `title` row. What is left of the 13.2 MiB file is the pre-aggregates
 (0.12 MiB), the unit directories (0.10), the zones (0.03), page headers and the unused end of each stream (0.07), the segment headers and liveness pages (0.13) and the metapage, directory and write buffer (0.05).
-The `sift_col` index over seven of the columns and the month (the lines of the compression table above) is 10.9 MiB: its seven columns take 9.6 MiB against 10.4 MiB for ClickHouse `ZSTD(3)` and 9.3 MiB for the tuned schema,
+The `sift_col` index over seven of the columns and the month (the lines of the compression table above) is 10.9 MiB: its seven columns take 9.6 MiB against 14.6 MiB for ClickHouse `LZ4` (its default), 10.4 MiB for `ZSTD(3)` and 9.3 MiB for the tuned schema,
 and the month leaf, the pre-aggregates and the overhead are the rest. The entropy of the low-cardinality code columns (`status`, `quantity`, `category`) is where the tuned schema is ahead (about 3 percent of the total): the
 codec packs codes at a fixed width and has no entropy coder; a `zstd` layer on them (`compression = zstd:3`) recovers part of it at a decode cost the default does not pay.
 
