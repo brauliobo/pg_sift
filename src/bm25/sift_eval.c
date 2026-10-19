@@ -2677,6 +2677,28 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	return sift_kern->select_gt(wk->slot, wk->vals, wk->scores, wk->res[0], SIFT_BLK_PAGES, theta);
 }
 
+/* Best term of the leaf in a document's text, weighed like the others; a wide leaf has one term, with the tf of all its words */
+static float4
+doc_leaf_score(const EvalLeaf *l, SiftDoc *d, float4 kn)
+{
+	float4		best = 0;
+
+	if (l->wide)
+	{
+		int			tf = sift_doc_leaf_tf(d, l->node);
+
+		return tf > 0 ? sift_kern_bm25(leaf_weighed(l, l->wide, l->widelen)->w, Min(tf, SIFT_MAX_TF), kn) : 0;
+	}
+	for (int j = 0; j < l->nuniq; j++)
+	{
+		int			tf = sift_doc_term_tf(d, l->uniq[j]->term, l->uniq[j]->len);
+
+		if (tf > 0)
+			best = Max(best, sift_kern_bm25(l->uniq[j]->w, Min(tf, SIFT_MAX_TF), kn));
+	}
+	return best;
+}
+
 /* The exact score of a document from its text, for plans whose phrases are optional */
 static float4
 doc_score(SiftPlan *p, SiftDoc *d)
@@ -2687,18 +2709,9 @@ doc_score(SiftPlan *p, SiftDoc *d)
 	for (int i = 0; i < p->nleaves; i++)
 	{
 		const EvalLeaf *l = &p->leaves[i];
-		float4		best = 0;
 
-		if (!l->scoring || (l->phrase && !sift_doc_match(d, l->phrase)))
-			continue;
-		for (int j = 0; j < l->nuniq; j++)
-		{
-			int			tf = sift_doc_term_tf(d, l->uniq[j]->term, l->uniq[j]->len);
-
-			if (tf > 0)
-				best = Max(best, sift_kern_bm25(l->uniq[j]->w, Min(tf, SIFT_MAX_TF), kn));
-		}
-		score += best;
+		if (l->scoring && !(l->phrase && !sift_doc_match(d, l->phrase)))
+			score += doc_leaf_score(l, d, kn);
 	}
 	return score;
 }

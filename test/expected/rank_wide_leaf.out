@@ -1,7 +1,8 @@
 -- A wildcard, regex or fuzzy leaf with more terms than sift.max_expansions reads as one term (the documents
 -- that have a word it matches, tf the number of those words) like a wide prefix, instead of failing: the
 -- top k equals the exact reference's, scores and ties included, with the limit at 1 (every multi-term leaf is
--- wide), at 4 (some are) and at its default (none is).
+-- wide), at 4 (some are) and at its default (none is). That holds for a wide leaf next to an optional phrase,
+-- whose documents are scored again from their text.
 CREATE EXTENSION pg_sift;
 \set sift_ref_lib 1
 \ir test/sql/reference.sql
@@ -125,7 +126,9 @@ SELECT sift_ref.load_index('rw_idx') > 0 AS loaded;
 
 CREATE TEMP TABLE rw_q (q text);
 INSERT INTO rw_q VALUES ('*ing*'), ('*tion'), ('/.*ing[0-9]+/'), ('/walk(ing|ed)[0-9]/'), ('honey~1'), ('tok05~2'), ('t?k00?'),
-	('*tion AND NOT honey1'), ('*ing* OR honey3^2'), ('/.*k0[0-4].*/ walking'), ('tok1* OR *tion'), ('"tok005 walking"'), ('walking^3 *ing*');
+	('*tion AND NOT honey1'), ('*ing* OR honey3^2'), ('/.*k0[0-4].*/ walking'), ('tok1* OR *tion'), ('"tok005 walking"'), ('walking^3 *ing*'),
+	('*tion OR "tok005 walking"'), ('/.*ing[0-9]+/ OR "tok005 walking"'), ('honey~1 OR "tok005 walking"'), ('t?k00? OR "tok005 walking"'),
+	('"tok005 walking" OR /walk(ing|ed)[0-9]/^2'), ('/.*k0[0-4].*/ OR "ing3 walking3"');
 CREATE FUNCTION rw_diff(q text, k int) RETURNS bigint LANGUAGE sql AS $$
 	WITH got AS (SELECT row_number() OVER (ORDER BY score DESC, tid) AS rank, tid, score FROM
 			(SELECT ctid AS tid, sift.score(ctid) AS score FROM rw WHERE body @@> q ORDER BY sift.score(ctid) DESC LIMIT k) g),
@@ -141,7 +144,7 @@ END $$;
 SELECT count(*) AS queries, min(rw_count(q)) > 0 AS all_match FROM rw_q;
  queries | all_match 
 ---------+-----------
-      13 | t
+      19 | t
 (1 row)
 
 SELECT q FROM rw_q WHERE rw_count(q) <> sift_ref.count(q);
