@@ -452,6 +452,19 @@ json_access(AggCtx *c, Node *e, JsonRef *r)
 	Node	   *a1;
 
 	e = strip_relabel(e);
+	if (IsA(e, SubscriptingRef))
+	{
+		/* x['k']: the same as x -> 'k' */
+		SubscriptingRef *sr = (SubscriptingRef *) e;
+
+		a1 = sr->refupperindexpr == NIL ? NULL : strip_relabel(linitial(sr->refupperindexpr));
+		if (sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL ||
+			list_length(sr->refupperindexpr) != 1 || !IsA(a1, Const) || ((Const *) a1)->constisnull || exprType(a1) != TEXTOID ||
+			!json_access(c, (Node *) sr->refexpr, r) || r->as_text)
+			return false;
+		r->path = lappend(r->path, makeString(TextDatumGetCString(((Const *) a1)->constvalue)));
+		return true;
+	}
 	fid = func_of(e);
 	args = func_args(e);
 	if (fid == F_JSONB_OBJECT_FIELD || fid == F_JSONB_OBJECT_FIELD_TEXT || fid == F_JSONB_EXTRACT_PATH ||
@@ -607,7 +620,13 @@ match_leaf(AggCtx *c, Node *e)
 	if (!json_access(c, inner, &r))
 		return -1;
 	if (IsA(inner, Var) || attr_of_expr(c, inner) > 0)
-		return -1;				/* the jsonb value itself */
+	{
+		/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
+		if (cast_to != InvalidOid && json_cast_target(fid) != InvalidOid && cast_to == exprType(e) && r.att == 0 && c->func_kind == FK_EACH &&
+			r.fcol == 2 && c->group >= 0)
+			return child_leaf(c, c->group, "value", cast_to);
+		return -1;
+	}
 	{
 		Oid			want = cast_to != InvalidOid ? cast_to : r.as_text ? TEXTOID : InvalidOid;
 
@@ -4426,7 +4445,7 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 	return cost;
 }
 
-/* The share of the units the pre-aggregates answer: the pages of the heap that are all-visible (a unit is exact when its pages are); 0 when the spec cannot use them */
+/* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 static double
 preagg_share(AggCtx *c, SiftAggSpec *s)
 {
@@ -4434,7 +4453,7 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
 		return 0.0;
-	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
+	return Min(Max(c->stats.exact_frac, 0.0), 1.0);
 }
 
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */
@@ -4459,6 +4478,26 @@ scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
 	for (int i = 0; i < s->nleaves; i++)
 		used += leaf_width(leaf_of(c, s->leaves[i]));
 	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
+}
+
+static bool
+extern_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXTERN)
+		return true;
+	return expression_tree_walker(node, extern_param_walker, context);
+}
+
+/* Does a qual of the table compare with a bound parameter? Its selectivity is a default guess of the planner, not the data's. */
+static bool
+rel_has_param_qual(RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (extern_param_walker((Node *) ri->clause, NULL))
+			return true;
+	return false;
 }
 
 static void
@@ -4518,9 +4557,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * jsonb_each) minus its filters, and prices its sort, join and aggregate with them, though the data has a handful per row: when it
 	 * expects more unnested rows than the selected orders hold elements, this path is charged the square root of the excess. The
 	 * estimates of the two plans then cross where the times do: a selective store set keeps the btree plan, a whole table or a
-	 * filter on the elements (which cuts the expected rows) keeps its price.
+	 * filter on the elements (which cuts the expected rows) keeps its price. A qual with a bound parameter has no such estimate (a generic
+	 * plan guesses its selectivity; the values are known at execution): no charge.
 	 */
-	if (s->group >= 0)
+	if (s->group >= 0 && !rel_has_param_qual(c->rel))
 		scan_cost *= Max(sqrt(input_rel->rows / (sel_rows * elems)), 1.0);
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	scan_cost += gen_cost * cpu_operator_cost;
@@ -4636,7 +4676,7 @@ setup_joins(AggCtx *c, List **quals, List **post)
 		foreach_ptr(Node, q, jc->clauses)
 			if (!join_clause(c, jc, q) && !join_expr_clause(c, jc, q))
 				conds = lappend(conds, q);
-		if (jc->j.nkey == 0 || (conds != NIL && !join_filter(c, jc, conds)))
+		if ((jc->j.nkey == 0 && conds == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
 			return false;
 	}
 	*quals = rest;
@@ -4656,6 +4696,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		rel = table_open(rte->relid, NoLock);
 		c->lay = sift_colsrc_layout(rel);
 		sift_colsrc_stats(rel, &c->stats);
+		sift_colsrc_preagg(rel, &c->pa);
 		table_close(rel, NoLock);
 		c->indexoid = InvalidOid;
 		return true;
@@ -4892,14 +4933,14 @@ set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 static void
-add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int nworkers)
+add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers)
 {
 	CustomPath *cp = makeNode(CustomPath);
 
 	s->nworkers = nworkers;
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
-	cp->path.pathtarget = output_rel->reltarget;
+	cp->path.pathtarget = target;
 	cp->path.parallel_safe = false;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
@@ -4978,16 +5019,16 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 
 /* the cost; adds the paths to output_rel */
 static void
-agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
+agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
 	int			nworkers;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
-	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
+	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
 	if (nworkers > 0)
-		add_agg_path(c, s, input_rel, output_rel, scan_tlist, nworkers);
+		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
 }
 
 /* the index among the group columns of the one with the sortgroupref ref */
@@ -5052,12 +5093,24 @@ static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 
 static void topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
-void
-sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
-					 void *extra)
+/* Does the grouping have a key that is not a constant? */
+static bool
+groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
+{
+	foreach_node(SortGroupClause, sgc, groupClause)
+		if (!IsA(get_sortgroupclause_expr(sgc, root->processed_tlist), Const))
+			return true;
+	return false;
+}
+
+/*
+ * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
+ * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
+ */
+static void
+group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
 {
 	Query	   *parse = root->parse;
-	GroupPathExtraData *gextra = (GroupPathExtraData *) extra;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
 	FromScan	fs = {NIL, NIL, NIL, true};
@@ -5065,22 +5118,6 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL;
 
-	if (stage == UPPERREL_ORDERED)
-	{
-		topn_paths(root, input_rel, output_rel);
-		return;
-	}
-	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause || parse->groupingSets) ||
-		parse->commandType != CMD_SELECT || parse->hasWindowFuncs || parse->hasTargetSRFs || parse->hasDistinctOn ||
-		root->rowMarks != NIL || parse->hasRecursive)
-		return;
-	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
-		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
-		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
-	{
-		sift_agg_two_level(root, input_rel, output_rel, gextra);
-		return;
-	}
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
@@ -5089,13 +5126,16 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		return;
 
 	/* keys */
-	if (list_length(parse->groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
+	if (list_length(groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
 		return;
-	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
-	foreach_node(SortGroupClause, sgc, parse->groupClause)
+	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
+	foreach_node(SortGroupClause, sgc, groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
 
+		/* a constant adds no group: the output keeps it as the constant it is (not with grouping sets, whose empty set has no key, and not alone: an empty input has no group) */
+		if (IsA(e, Const) && parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause))
+			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
 			return;
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
@@ -5107,7 +5147,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		add_sets(parse, s, &scan_tlist);
 
 	/* aggregates, in the output and the HAVING clause */
-	foreach_ptr(Node, e, output_rel->reltarget->exprs)
+	foreach_ptr(Node, e, target->exprs)
 		out_walker(e, &ow);
 	if (gextra && gextra->havingQual)
 		out_walker((Node *) gextra->havingQual, &ow);
@@ -5122,7 +5162,43 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
-	agg_finish(c, s, root, input_rel, output_rel, ow.keys, scan_tlist);
+	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
+}
+
+void
+sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
+					 void *extra)
+{
+	Query	   *parse = root->parse;
+
+	if (stage == UPPERREL_ORDERED)
+	{
+		topn_paths(root, input_rel, output_rel);
+		return;
+	}
+	if (!sift_enable_agg || parse->commandType != CMD_SELECT || parse->hasTargetSRFs || parse->hasDistinctOn || root->rowMarks != NIL ||
+		parse->hasRecursive)
+		return;
+	/* SELECT DISTINCT of a plain scan is a group-by with no aggregate; over a grouped or windowed query it is not the scan's */
+	if (stage == UPPERREL_DISTINCT)
+	{
+		if (parse->distinctClause != NIL && root->upper_targets[UPPERREL_DISTINCT] != NULL &&
+			!(parse->hasAggs || parse->groupClause || parse->groupingSets || parse->hasWindowFuncs || parse->havingQual))
+			group_paths(root, input_rel, output_rel, root->upper_targets[UPPERREL_DISTINCT], NULL, parse->distinctClause);
+		return;
+	}
+	if (stage != UPPERREL_GROUP_AGG || !(parse->hasAggs || parse->groupClause || parse->groupingSets))
+		return;
+	/* a window function is planned above the grouping stage: this stage is the same with or without one */
+	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
+		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
+		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
+	{
+		if (!parse->hasWindowFuncs)
+			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+		return;
+	}
+	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
 }
 
 /* ---------- top-N: ORDER BY <columns> LIMIT n ---------- */
@@ -5249,8 +5325,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
-	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL || !OidIsValid(c->indexoid) ||
-		!sift_colsrc_can_tids(get_rel_relam(c->indexoid), true))
+	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;
 	s = agg_spec_new(c);
 	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
@@ -5348,6 +5424,34 @@ cte_root(PlannerInfo *root, RangeTblEntry *rte)
 	return list_nth(root->glob->subroots, list_nth_int(cteroot->cte_plan_ids, ndx) - 1);
 }
 
+/* the subqueries of a UNION ALL: a member that is itself a UNION ALL (a subquery of arms in an arm's place) gives its own */
+static bool
+append_arms(PlannerInfo *root, Index parent, List **arms)
+{
+	foreach_node(AppendRelInfo, ai, root->append_rel_list)
+	{
+		RelOptInfo *rel;
+		int			i = 0;
+
+		if (ai->parent_relid != parent)
+			continue;
+		rel = root->simple_rel_array[ai->child_relid];
+		if (rel == NULL)
+			return false;
+		foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+			if (!rinfo->pseudoconstant)
+				return false;
+		foreach_node(Var, v, ai->translated_vars)
+			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
+				return false;
+		if (rel->subroot != NULL)
+			*arms = lappend(*arms, rel->subroot);
+		else if (!rt_fetch(ai->child_relid, root->parse->rtable)->inh || !append_arms(root, ai->child_relid, arms))
+			return false;
+	}
+	return true;
+}
+
 /*
  * The arms of the outer query's one FROM item: the subqueries of a UNION ALL (appendrel) or the subquery itself. The quals of the
  * outer query that PostgreSQL pushed into the arms (to their WHERE, or HAVING) are theirs now: an arm whose rel still has a qual
@@ -5369,28 +5473,14 @@ outer_arms(PlannerInfo *root, Index srti, List **gates)
 			return NIL;
 	if (!rt_fetch(srti, root->parse->rtable)->inh)
 		return parent->subroot ? list_make1(parent->subroot) : NIL;
-	foreach_node(AppendRelInfo, ai, root->append_rel_list)
-	{
-		RelOptInfo *rel;
-		int			i = 0;
-
-		if (ai->parent_relid != srti)
-			continue;
-		rel = root->simple_rel_array[ai->child_relid];
-		if (rel == NULL || rel->subroot == NULL)
-			return NIL;
-		foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-			if (!rinfo->pseudoconstant)
-				return NIL;
-		foreach_node(Var, v, ai->translated_vars)
-			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
-				return NIL;
-		arms = lappend(arms, rel->subroot);
-	}
-	return arms;
+	return append_arms(root, srti, &arms) ? arms : NIL;
 }
 
-/* the table an arm reads: through its CTE scan to the common table expression's root, or the arm's own root; NULL if the arm is not a simple aggregate */
+/*
+ * The table an arm reads: through its CTE scan to the common table expression's root, or the arm's own root (its FROM is the scan itself:
+ * a table with its unnests and lookups, which is what an arm over a common table expression that PostgreSQL inlined looks like); NULL if
+ * the arm is not a simple aggregate
+ */
 static PlannerInfo *
 arm_base(PlannerInfo *arm, ArmIn *in)
 {
@@ -5399,15 +5489,40 @@ arm_base(PlannerInfo *arm, ArmIn *in)
 
 	if (!q->hasAggs || q->groupClause == NIL || q->groupingSets || q->hasWindowFuncs || q->hasTargetSRFs ||
 		q->distinctClause || q->sortClause || q->limitCount || q->limitOffset || q->groupDistinct || q->hasForUpdate ||
-		q->setOperations || q->cteList != NIL || list_length(q->jointree->fromlist) != 1 ||
-		!IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		q->setOperations || q->cteList != NIL)
 		return NULL;
-	rte = rt_fetch(((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex, q->rtable);
 	in->sub.rti = 0;
+	if (list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		return arm;
+	rte = rt_fetch(((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex, q->rtable);
 	if (rte->rtekind != RTE_CTE)
 		return arm;
 	in->sub.rti = ((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex;
 	return cte_root(arm, rte);
+}
+
+/*
+ * Two arms that read their own copy of one scan (a common table expression that PostgreSQL inlined into each): the same tables and the same
+ * WHERE. The entries of pulled up subqueries and of the grouping belong to their arm, and the column names a plan prunes differ: none counts.
+ */
+static bool
+same_scan(PlannerInfo *a, PlannerInfo *b)
+{
+	ListCell   *la,
+			   *lb;
+
+	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree, b->parse->jointree))
+		return false;
+	forboth(la, a->parse->rtable, lb, b->parse->rtable)
+	{
+		RangeTblEntry same = *(RangeTblEntry *) lfirst(la),
+				   *rb = lfirst(lb);
+
+		same.eref = rb->eref;
+		if (same.rtekind != rb->rtekind || (same.rtekind != RTE_SUBQUERY && same.rtekind != RTE_GROUP && !equal(&same, rb)))
+			return false;
+	}
+	return true;
 }
 
 static bool
@@ -5749,9 +5864,10 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	{
 		PlannerInfo *b = arm_base(ar, &arms[narms]);
 
-		if (b == NULL || (base != NULL && b != base) || (b == ar && list_length(roots) != 1))
+		if (b == NULL || (base != NULL && b != base && !(b == ar && same_scan(base, b))))
 			return;
-		base = b;
+		if (base == NULL)
+			base = b;
 		arms[narms].sub.tlist = b->parse->targetList;
 		narms++;
 	}
@@ -5883,7 +5999,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		s->arm[k] = *arms[k].out;
 		s->arm[k].ncol = ncols;
 	}
-	agg_finish(c, s, root, input_rel, output_rel, ow.keys, scan_tlist);
+	agg_finish(c, s, root, input_rel, output_rel, output_rel->reltarget, ow.keys, scan_tlist);
 }
 
 /* ---------- plan ---------- */

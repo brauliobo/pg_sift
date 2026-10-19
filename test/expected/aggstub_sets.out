@@ -207,11 +207,7 @@ FROM (SELECT id, category, kind, count(*) AS n FROM base GROUP BY id, category, 
    Cell Keys: items[].category, items[].kind
    Pushed Aggregates: count(DISTINCT row), sum(inner int8), count(*)
    Unnests: yes
-   CTE base
-     ->  Nested Loop
-           ->  Seq Scan on o
-           ->  Function Scan on jsonb_to_recordset i
-(9 rows)
+(5 rows)
 
 SELECT same($$WITH base AS (SELECT o.id, i.category, i.kind, i.qty, i.price FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8))
 			  SELECT count(DISTINCT id) AS orders, sum(n) AS items, count(*) AS cells, avg(p) AS a

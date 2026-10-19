@@ -593,14 +593,14 @@ SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY ts DESC L
  btree     | btree     | top-n   | top-n
 (1 row)
 
--- a table in column format has no TIDs to give: the normal plan
+-- a sift_table gives the TIDs of its rows itself: the same top-N (test tbl_topn)
 CREATE TABLE ct_t (id serial, store int, ts timestamp, memo text) USING sift_table;
 INSERT INTO ct_t (store, ts, memo) SELECT store, ts, memo FROM ct ORDER BY id;
 CREATE INDEX ct_t_bm ON ct_t USING sift (memo);
 SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') AS tbl;
-   tbl   
----------
- same 10
+     tbl      
+--------------
+ same+topn 10
 (1 row)
 
 -- The top-N opens the match set whole (the posting lists of the words), whatever part of the table it reads: on a table of 41 superblocks

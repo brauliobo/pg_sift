@@ -185,7 +185,7 @@ SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY ts DESC L
 	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift AND wifi AND label'' ORDER BY ts DESC LIMIT 10') AS rare_ts,
 	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift AND wifi AND label'' ORDER BY id DESC LIMIT 10') AS rare_id;
 
--- a table in column format has no TIDs to give: the normal plan
+-- a sift_table gives the TIDs of its rows itself: the same top-N (test tbl_topn)
 CREATE TABLE ct_t (id serial, store int, ts timestamp, memo text) USING sift_table;
 INSERT INTO ct_t (store, ts, memo) SELECT store, ts, memo FROM ct ORDER BY id;
 CREATE INDEX ct_t_bm ON ct_t USING sift (memo);

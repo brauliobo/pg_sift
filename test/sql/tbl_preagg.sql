@@ -1,0 +1,143 @@
+-- SiftAgg answers the units of a sift_table that are exact from the pre-aggregates the segments stored with them (docs/COL-PREAGG.md section 6):
+-- a unit whose superblock has no write buffer row and no tombstone. Every query runs three ways, which must give the same rows: from the
+-- pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
+-- answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use, '-': no SiftAgg).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+
+CREATE TABLE tp (id int, g int, k text, cat int, d date, amt numeric(10,2), qty int, f float8, big bigint) USING sift_table;
+
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg)
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_preagg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+	END LOOP;
+END $$;
+
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'key int, nulls',    'SELECT g, count(*), sum(amt) FROM %s GROUP BY g'),
+	(2, 'key int, numeric',  'SELECT cat, count(*), sum(amt), avg(amt) FROM %s GROUP BY cat'),
+	(3, 'key text',          'SELECT k, count(*), sum(amt), count(amt) FROM %s GROUP BY k'),
+	(4, 'key date',          'SELECT d, count(*), sum(amt) FROM %s GROUP BY d'),
+	(5, 'whole table',       'SELECT count(*), count(k), sum(amt), min(qty), max(qty), avg(qty), min(d), max(d), count(amt) FROM %s'),
+	(6, 'test of dim',       'SELECT count(*), sum(amt) FROM %s WHERE k = ''k3'''),
+	(7, 'null group',        'SELECT count(*), sum(amt) FROM %s WHERE g IS NULL'),
+	(8, 'key in list',       'SELECT k, count(*) FROM %s WHERE k IN (''k1'', ''k2'') GROUP BY k'),
+	(9, 'zone covers some',  'SELECT count(*), sum(qty) FROM %s WHERE id < 90000'),
+	(10, 'other test: scan', 'SELECT cat, sum(amt) FROM %s WHERE qty = 3 GROUP BY cat'),
+	(11, 'no rows',          'SELECT count(*), sum(amt), min(qty) FROM %s WHERE id > 100000000'),
+	(12, 'having, limit',    'SELECT k, count(*) FROM %s GROUP BY k HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(13, 'float: scan',      'SELECT cat, sum(f), count(*) FROM %s GROUP BY cat'),
+	(14, 'added column',     'SELECT count(*), count(z), sum(z), min(z), max(z) FROM %s'),
+	(15, 'added default',    'SELECT w, count(*) FROM %s GROUP BY w'),
+	(16, 'default measure',  'SELECT count(*), sum(w), min(w), max(w) FROM %s');
+
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 13) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+
+-- the same, summed up
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 13) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
+$$;
+
+INSERT INTO tp SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 9 END, CASE WHEN i % 19 = 0 THEN NULL ELSE 'k' || i % 6 END, i % 10,
+	date '2024-01-01' + i % 30, CASE WHEN i % 31 = 0 THEN NULL ELSE ((i::bigint * 37) % 100000)::numeric / 100 END, i % 7, i / 8.0, i
+FROM generate_series(1, 200000) i;
+VACUUM ANALYZE tp;
+SELECT count(*) > 2 AS units FROM sift.table_segments('tp') WHERE kind = 'columns';
+
+-- 1. promoted, no write buffer row, no tombstone
+SELECT * FROM pa_check('tp');
+
+-- 2. rows in the write buffer: their superblocks are scanned, the others answer
+INSERT INTO tp SELECT 300000 + i, i % 9, 'k' || i % 6, i % 10, date '2025-01-01' + i % 50, i % 997, i % 7, i, i FROM generate_series(1, 3000) i;
+SELECT * FROM pa_check('tp');
+
+-- 3. promoted again
+VACUUM tp;
+SELECT * FROM pa_check('tp');
+
+-- 4. committed deletes and updates: the superblocks with a tombstone are scanned
+DELETE FROM tp WHERE id BETWEEN 1000 AND 1100;
+UPDATE tp SET qty = qty + 1, k = 'k9', amt = NULL WHERE id BETWEEN 120000 AND 120100;
+SELECT * FROM pa_check('tp');
+
+-- 5. vacuumed: the units that lost rows stay scanned until a rewrite
+VACUUM tp;
+SELECT * FROM pa_check('tp');
+
+-- 6. the transaction's own changes, a rolled back one, a savepoint
+BEGIN;
+DELETE FROM tp WHERE id % 1000 = 0;
+INSERT INTO tp SELECT 500000 + i, i % 9, 'new', i % 10, current_date, i, i % 7, i, i FROM generate_series(1, 500) i;
+SELECT * FROM pa_check('tp');
+SAVEPOINT s1;
+UPDATE tp SET g = 1, qty = qty + 5 WHERE id % 777 = 0;
+SELECT * FROM pa_check('tp');
+ROLLBACK TO s1;
+SELECT * FROM pa_check('tp');
+ROLLBACK;
+SELECT * FROM pa_check('tp');
+
+-- 7. a rolled back delete and update leave their tombstones aborted
+BEGIN;
+DELETE FROM tp WHERE id BETWEEN 60000 AND 60500;
+UPDATE tp SET qty = 0 WHERE id BETWEEN 150000 AND 150500;
+ROLLBACK;
+SELECT * FROM pa_check('tp');
+VACUUM tp;
+SELECT * FROM pa_check('tp');
+
+-- 8. a column added later (null in the older segments), with rows of both layouts, then promoted
+ALTER TABLE tp ADD COLUMN z int;
+ALTER TABLE tp ADD COLUMN w int DEFAULT 5;
+INSERT INTO tp (id, g, k, cat, d, amt, qty, z, w) SELECT 700000 + i, i % 9, 'z' || i % 3, i % 10, current_date, i, i % 7, i, i % 4 FROM generate_series(1, 5000) i;
+SELECT * FROM pa_check('tp', 14, 16);
+VACUUM tp;
+SELECT * FROM pa_check('tp');
+SELECT * FROM pa_check('tp', 14, 16);
+SELECT count(DISTINCT gen) > 1 AS layouts FROM sift.table_segments('tp') WHERE kind = 'columns';
+
+-- 9. a table of a single column layout and no pre-aggregates to speak of: whole-table counts
+CREATE TABLE tq (id int, g int) USING sift_table;
+INSERT INTO tq SELECT i, i % 5 FROM generate_series(1, 120000) i;
+VACUUM tq;
+INSERT INTO pa_q VALUES (20, 'count', 'SELECT g, count(*) FROM %s GROUP BY g'), (21, 'sum', 'SELECT sum(id), count(*) FROM %s');
+SELECT * FROM pa_check('tq', 20, 21);
+DELETE FROM tq WHERE id % 10 = 0;
+SELECT * FROM pa_check('tq', 20, 21);
+
+-- 10. a dropped column: the histograms of the older segments carry it as a measure, those units are scanned
+CREATE TABLE tr (id int, g int, amt numeric(10,2)) USING sift_table;
+INSERT INTO tr SELECT i, i % 5, i % 100 FROM generate_series(1, 120000) i;
+VACUUM tr;
+ALTER TABLE tr DROP COLUMN amt;
+INSERT INTO tr SELECT i, i % 5 FROM generate_series(120001, 180000) i;
+SELECT * FROM pa_check('tr', 20, 21);
+VACUUM tr;
+SELECT * FROM pa_check('tr', 20, 21);
+
+DROP TABLE tp, tq, tr, pa_q;
+DROP FUNCTION pa_rows, pa_units, pa_check, pa_sum;
+DROP EXTENSION pg_sift;
