@@ -828,7 +828,7 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 
 /* ---- the JSON type of the values of a leaf (docs/COL-JSONB-31.md 5.1): the tags of the overflow values of the chunks ---- */
 
-StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_ARRAY == 5, "SIFT_SRC_JT_* are the chunk tags shifted by one");
+StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_JNULL == 7, "SIFT_SRC_JT_* are the chunk tags shifted by one");
 
 static void
 col_tolerate_ovf(void *impl, int leaf)
@@ -848,9 +848,10 @@ typedef struct TypesTest
 	ColSource  *src;
 	int			leaf;
 	uint32		mask;			/* bit t: the type of tag t */
+	bool		read;			/* the query reads the leaf elsewhere */
 } TypesTest;
 
-/* the rows of the unit as stored with a value of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it */
+/* the rows of the unit whose value has one of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it and the query reads the leaf */
 static void
 types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 {
@@ -867,7 +868,7 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 				 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
 				 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
 	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
-	if (!left || !sift_col_ovf_bits(cu, t->leaf, ovf))
+	if (!left || !t->read || !sift_col_ovf_bits(cu, t->leaf, ovf))
 		return;
 	sift_col_sel_alloc(t->src->cs, cu->nrows, &bad);
 	for (uint32 w = 0; w < bad.nwords; w++)
@@ -880,7 +881,7 @@ static bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	ColSource  *src = impl;
-	TypesTest	t = {src, leaf, types << 1};
+	TypesTest	t = {src, leaf, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
 
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, types_op, &t);
 	return rows_left(unit, bits);
