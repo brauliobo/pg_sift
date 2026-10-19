@@ -19,7 +19,7 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report on the slim tier (the default): about 9 minutes of builds and measurements once set up
+bench/bench all                    # setup + run + report on the slim tier (the default): about 10 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench all --docs             # the slim tier plus the cold-cache tables, then docs/results, docs/img and the generated blocks of README.md and docs/BENCHMARKS.md
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
@@ -75,7 +75,7 @@ more than 3 runs with a warning), `--ref REF` and `--run` (`regress`), `--out DI
 
 | tier | articles | places | rounds | run time of `all` |
 |---|---|---|---|---|
-| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 measured with the seven default engines on a host with a load average of 7-18, setup done: 551 s (9 min) for both datasets, of which 144 s restore and build (the lanes are built one after the other), 398 s cells; 769 s (13 min) with `--docs` (the cold-cache tables, 218 s more). The first setup also downloads and converts the datasets and builds the engines (about 3-5 min) |
+| `slim` (default) | 50,000 | 34,165 (cities15000) | 2-3 measured with the seven default engines on a host with a load average of 5.7-8.6, setup done (session of 2026-10-19, 3-CPU budget for the servers): 575 s (10 min) for both datasets, of which 143 s restore and build (the lanes are built one after the other), 432 s cells; 783 s (13 min) with `--docs` (the cold-cache tables, 208 s more). The first setup also downloads and converts the datasets and builds the engines (about 3-5 min) |
 | `ab` | 150,000 | 34,165 | 2-3 | projected from the measured phases: about 4 min (articles build 33 s for six engines, cells 1.5 min; places 1.5 min), about 6 min with the cold-cache tables |
 | `full` (`--full`) | 218,058 | 236,262 (cities500) | 2-3 | about an hour, projected: the engines are measured one at a time, so the cells take the sum of the engines' times (the earlier method, all engines at once on shares of the CPUs, took 51 min for six engines with fixed-length cells, 18 min of cells that stop on their standard error) |
 
