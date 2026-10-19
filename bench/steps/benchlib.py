@@ -62,14 +62,34 @@ def parse_iso(s):
     return time.mktime(time.strptime(s, '%Y-%m-%dT%H:%M:%SZ')) - time.timezone
 
 
+def write_text(path, text):
+    """atomically and durably: written beside the file, flushed to disk, renamed over it (a reader, a crash or a kill never sees half a file)"""
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.tmp-', suffix='.part')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
 def write_json(path, obj):
-    """atomically: a reader (or a crash) never sees half a file"""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix='.tmp-', suffix='.json')
-    with os.fdopen(fd, 'w') as f:
-        json.dump(obj, f, indent=1, sort_keys=True)
-        f.write('\n')
-    os.replace(tmp, path)
+    write_text(path, json.dumps(obj, indent=1, sort_keys=True) + '\n')
+
+
+def resumable():
+    """a SIGTERM (kill, a stage runner stopping the run) unwinds like Ctrl-C and exits with 75, EX_TEMPFAIL: the run is not finished and `bench resume` continues it"""
+    import signal
+
+    def stop(signum, _):
+        raise SystemExit(75)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
 
 
 class Cache:

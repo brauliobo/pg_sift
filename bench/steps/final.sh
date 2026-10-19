@@ -15,10 +15,15 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=final
 
-FWD=() DRY='' STAGES='' BUDGET='' DOCS='' SIZE=$DEFAULT_PRESET
+ORIG=("$@")
+FWD=() DRY='' STAGES='' BUDGET='' DOCS='' SIZE=$DEFAULT_PRESET ONLY='' KEEP_GOING=1
 while (( $# )); do
   case $1 in
     --dry-run) DRY=1 ;;
+    --stage-only) ONLY=$2; shift ;;   # internal: the stage in a process of its own
+    --fail-fast) KEEP_GOING='' ;;
+    --keep-going) KEEP_GOING=1 ;;
+    --run-id) shift ;;                # the runs of the stages are named after the stage
     --stages) STAGES=${2//,/ }; shift ;;
     --budget) BUDGET=$2; shift ;;
     --no-resume) export NO_RESUME=1 ;;
@@ -33,23 +38,22 @@ preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 FWD+=(--size "$SIZE")
 [[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || BUDGET=25; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-GAPOUT=$BENCH/out/final-$STAMP
+OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
 ALL_STAGES="store compression stats gap search"
 [[ -n $STAGES ]] || STAGES=$ALL_STAGES
 [[ $SIZE == standard || $SIZE == full || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
 
 bench() { "$BENCH/bench" "$@"; }
-s_store() { bench store all "${FWD[@]}" --sizes "$SIZES" ${DOCS:+--docs}; }
-s_compression() { bench store all "${FWD[@]}" --compression --sizes 1000000 --cold-runs 0 --update-sizes none ${DOCS:+--docs}; }
-s_stats() { bench store stats "${FWD[@]}" --sizes "$SIZES" --engines pg,sift,sift_table,es,es_cached,ch; [[ -z $DOCS ]] || cp "$BENCH"/out/latest/store-stats-*.json "$REPO/bench/results/"; }
+s_store() { bench store all "${FWD[@]}" --run-id "final-$SIZE-store" --sizes "$SIZES" ${DOCS:+--docs}; }
+s_compression() { bench store all "${FWD[@]}" --run-id "final-$SIZE-compression" --compression --sizes 1000000 --cold-runs 0 --update-sizes none ${DOCS:+--docs}; }
+s_stats() { bench store stats "${FWD[@]}" --run-id "final-$SIZE-stats" --sizes "$SIZES" --engines pg,sift,sift_table,es,es_cached,ch; [[ -z $DOCS ]] || cp "$BENCH"/out/latest/store-stats-*.json "$REPO/bench/results/"; }
 s_gap() {
   S_SIZES=$SIZES OUT=$GAPOUT "$STEPS/gap.sh"
   [[ -z $DOCS ]] || { for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/bench/results/store-${f##*/}"; done
                       python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
 }
-s_search() { bench all "${FWD[@]}" ${DOCS:+--docs}; }
+s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 minutes() { # STAGE: the minutes it takes when everything is measured
   case $1 in
     store) echo $(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES )) ;;
@@ -60,14 +64,13 @@ minutes() { # STAGE: the minutes it takes when everything is measured
   esac
 }
 key() { python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$1" "$SIZE" "${FWD[*]}" "$DOCS" "$SIZES"; }
-resumed() { [[ -z ${NO_RESUME:-} && -s $STAGE_STATE/$1.done && $(cut -d' ' -f1 "$STAGE_STATE/$1.done") == "$(key "$1")" ]]; }
 
 plan() { # the stages that will run, their minutes, the total against the budget
   local total=0 s m
   printf 'Release pass, size %s (bench/presets.env), stages one after another:\n' "$SIZE"
   for s in $STAGES; do
     m=$(minutes "$s")
-    if resumed "$s"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -d' ' -f2- "$STAGE_STATE/$s.done")"
+    if stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
     else printf '  %-12s about %2d min\n' "$s" "$m"; total=$(( total + m )); fi
   done
   printf 'Total about %d min, budget %s min.\n' "$total" "$BUDGET"
@@ -89,6 +92,13 @@ preconditions() {
   return $fail
 }
 
+if [[ -n $ONLY ]]; then   # one stage, in this process (the pass starts one per stage)
+  mkdir -p "$GAPOUT" "$STAGE_STATE"
+  trap 'run_exit $?' EXIT
+  stage_run "$ONLY" "$(key "$ONLY")" "$(minutes "$ONLY")" "s_$ONLY"
+  exit 0
+fi
+run_reclaim
 plan
 preconditions || { [[ -n $DRY ]] || die 'preconditions missing (bench/bench final --dry-run)'; }
 [[ -z $DRY ]] || { echo 'Dry run: nothing was started.'; exit 0; }
@@ -96,11 +106,25 @@ preconditions || { [[ -n $DRY ]] || die 'preconditions missing (bench/bench fina
 
 mkdir -p "$GAPOUT" "$STAGE_STATE"
 perf_hold
-T0=$SECONDS
+RUN_DIR=$GAPOUT/.run
+run_begin final "${ORIG[@]}"
+STAGE_STATE=$STORE/final-state/$SIZE   # finished stages are remembered across runs: a stage whose key is unchanged is not measured again
+T0=$SECONDS FAILED=()
 for s in $STAGES; do
-  stage_run "$s" "$(key "$s")" "$(minutes "$s")" "s_$s"
+  rc=0
+  if ! stage_done "$s" "$(key "$s")"; then
+    "$0" --stage-only "$s" "${ORIG[@]}" &
+    STAGE_PID=$!
+    wait "$STAGE_PID" || rc=$?
+    STAGE_PID=''
+  else log "stage $s: finished before ($(cut -f3 "$STAGE_STATE/$s.state")), resumed"; fi
+  (( rc )) || continue
+  (( rc != EX_RESUMABLE )) || exit "$rc"
+  FAILED+=("$s"); log "stage $s FAILED (exit $rc); its error is above, \`bench/bench resume\` runs it again"
+  [[ -n $KEEP_GOING ]] || break
 done
 bench store clean >/dev/null 2>&1 || true
-log "final: done in $(( (SECONDS - T0 + 30) / 60 )) min (budget $BUDGET); stages:"
-awk -F'\t' '{printf "  %-12s %5.1f min (budget %s)\n", $1, $2 / 60, $3}' "$STAGE_LOG" >&2
+log "final: $(( (SECONDS - T0 + 30) / 60 )) min (budget $BUDGET); stages:"
+[[ ! -s $STAGE_LOG ]] || awk -F'\t' '{printf "  %-12s %5.1f min (budget %s)\n", $1, $2 / 60, $3}' "$STAGE_LOG" >&2
+(( ${#FAILED[@]} == 0 )) || { log "FAILED stages: ${FAILED[*]}"; exit 1; }
 [[ -z $DOCS ]] || log "review git diff for README.md, docs/BENCH-GAP.md and bench/results/"

@@ -206,7 +206,7 @@ cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR 
   if (( $1 <= MINR )); then rotated "$1" $ENGINES
   else rse_cells "$DEST/cells.tsv" 3,4,5 6 8 | awk -F'\t' -v w="$2" -v c="$3" '$1 == w && $2 == c {print $3}'; fi
 }
-printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
+cells_begin $'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs'
 stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
 # a round: the Postgres cells of every group go to one plan that steps/cell.py batch runs in one process on connections kept open (no process, connection or log file per cell); the
 # cells of the engines outside Postgres follow. A cell that ran in a window the host stalled in is measured again by the batch (its noise sentinel), not waited for beforehand.

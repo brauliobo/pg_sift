@@ -54,6 +54,7 @@ Commands
   store      the store benchmark, for everyone: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift,
              Citus (columnar, one node), Elasticsearch and ClickHouse in docker containers with equal limits (the same memory cap, the same CPU quota and the same thread budget for every engine,
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
+  resume     `resume [ID]`: continue the unfinished run (the latest, or ID) from what is done: results of the same key are kept, the rest is measured; exit status 75 means a run was interrupted
   compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
@@ -193,7 +194,7 @@ trap '[[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true' EXIT   # t
 # --- options
 SLIM_DOCS=50000   # articles of the slim tier (the places are cities15000): bench/README.md says why this size
 a_scale='' a_orders='' a_stores='' a_cluster='' a_flat='' a_ch='' a_runs='' a_sets='' a_queries='' a_col_index='' a_base_gucs='' a_col_gucs='' a_col_plan='' a_timeout='' a_rows=''
-s_warmups='' s_sizes='' s_cpus='' s_cpus_list='' s_memory='' s_cold='' s_update_sizes='' s_compression='' size='' dry='' list='' stages='' budget=''
+s_warmups='' s_sizes='' s_cpus='' s_cpus_list='' s_memory='' s_cold='' s_update_sizes='' s_compression='' size='' dry='' list='' stages='' budget='' run_id='' keep_going=''
 s_restarts='' s_check='' s_rates='' s_paths='' s_parallel='' s_remeasure_all='' s_remeasure='' s_no_cache='' s_cache_dir='' s_cache_age='' s_max_rerun='' s_load_sec='' s_probes=''
 tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' merge='' build=1 fetch_data=1 all_clean='' ref='' run='' keep='' clean_cache='' clean_build=''
 rest=()
@@ -262,6 +263,9 @@ parse() {
       --max-rerun) s_max_rerun=$2; shift ;;
       --load-seconds) s_load_sec=$2; shift ;;
       --probes) s_probes=$2; shift ;;
+      --run-id) run_id=$2; shift ;;
+      --fail-fast) keep_going=0 ;;
+      --keep-going) keep_going=1 ;;
       --dry-run) dry=1 ;;
       --list) list=1 ;;
       --stages) stages=$2; shift ;;
@@ -396,25 +400,57 @@ ready() { # the datasets are present
   done
 }
 
-new_out() {
-  OUT=${out:-$HERE/out/run-$(date -u +%Y%m%dT%H%M%SZ)}
+new_out() { # the run directory (--run-id ID or --out DIR names it, else a new one) and its manifest; a directory that has one is the run that `resume` continues
+  declare -F run_begin >/dev/null || load_lib
+  OUT=${out:-$HERE/out/run-${run_id:-$(date -u +%Y%m%dT%H%M%SZ)}}
   mkdir -p "$OUT" "$HERE/out"
   OUT=$(cd "$OUT" && pwd)
+  export BENCH_RUN_ID=${OUT##*/run-}
   ln -sfn "$OUT" "$HERE/out/latest"
   exec > >(tee -a "$OUT/bench.log") 2>&1
+  [[ ! -s $OUT/.run/argv ]] || echo "run $BENCH_RUN_ID: continuing (state $(cut -f1 "$OUT/.run/state" 2>/dev/null || echo unknown)), what finished with the same key is kept"
+  run_reclaim
+  local args=("${ARGV[@]}"); [[ " ${ARGV[*]} " == *" --run-id "* ]] || args+=(--run-id "$BENCH_RUN_ID")
+  run_begin "${args[@]}"
+}
+
+latest_unfinished() { # the manifest directory of the newest run that is not done
+  local x
+  # shellcheck disable=SC2045  # run directory names have no spaces; newest first
+  for x in $(ls -dt "$HERE"/out/run-*/.run 2>/dev/null); do [[ $(cut -f1 "$x/state" 2>/dev/null) != 'done' ]] && { echo "$x"; return; }; done
+}
+cmd_resume() { # [ID]: the unfinished run (the latest, or ID) with the command line it started with
+  local d argv
+  d=$HERE/out/run-${rest[0]#run-}/.run
+  [[ -n ${rest[0]:-} ]] || d=$(latest_unfinished)
+  [[ -n $d && -s $d/argv ]] || die "no run to resume (bench/out/run-*/.run holds the unfinished ones)"
+  [[ $(cut -f1 "$d/state") != 'done' ]] || die "the run $(basename "$(dirname "$d")") is finished"
+  eval "argv=($(<"$d/argv"))"
+  echo "resuming ${argv[*]}"
+  exec "$HERE/bench" "${argv[@]}"
+}
+
+cmd_clean_run() { # --run-id ID: what that run started and nothing else: its process if it is still there, its containers and its run directory
+  local d=$HERE/out/run-$run_id pid
+  [[ -d $d ]] || die "no run $run_id (bench/out/run-*)"
+  if [[ -s $d/.run/pid ]]; then pid=$(<"$d/.run/pid"); [[ ! -d /proc/$pid ]] || [[ $(tr '\0' ' ' <"/proc/$pid/cmdline") != *bench* ]] || { kill_tree "$pid"; echo "stopped $pid"; }; fi
+  run_containers "$run_id" | xargs -r docker rm -fv >/dev/null
+  rm -rf "$d"
+  echo "removed the run $run_id (its containers and $d); datasets, data volumes and the caches stay (clean --all)"
 }
 
 measure() { # [cold]: every selected dataset at the tier into $OUT, after the machine description
-  local d t0=$SECONDS suffix=${1:+-cold} e
+  local d t0=$SECONDS suffix=${1:+-cold} e key
   perf_hold
   [[ -n ${PEAK_PID:-} ]] || peak_start
   [[ -n ${1:-} && -s $OUT/machine.txt ]] || "$STEPS/machine.sh" >"$OUT/machine.txt"
   e=$(selected)
   for d in $datasets; do
     echo; echo "=== $d, tier $tier${1:+, cold cache} ($(( SECONDS - t0 )) s)"
+    key=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$d $tier ${1:-} $e $(class_set "$d") ${WLS:-} ${Q_DOCS:-} ${MINR:-} ${MAXR:-} ${SECS:-} ${RSE:-} ${MIN_TIME:-} ${MIN_N:-} ${CLIENTS:-}")
     case $d in
-      articles) ENGINES=$e CLASSES=$(class_set articles) DEST=$OUT/articles-$tier$suffix "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
-      places)   ENGINES=$e CLASSES=$(class_set places) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
+      articles) stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set articles)" DEST="$OUT/articles-$tier$suffix" "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
+      places)   stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set places)" DEST="$OUT/places-$tier$suffix" "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
   echo "wall time of the measurements $(( SECONDS - t0 )) s, at end $(cat "$OUT"/*/noisy.txt 2>/dev/null | wc -l) NOISY batches (noisy.txt of each table directory), $(quiet_report 2>&1)" | tee -a "$OUT/machine.txt"
@@ -601,7 +637,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store compare final clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store compare final resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -611,6 +647,7 @@ cmd_list() { # the commands, the sizes of a pass and the stages of the release p
   printf 'default size: %s; final stages: store compression stats gap search (bench/bench final --dry-run)\n' "$DEFAULT_PRESET"
 }
 
+ARGV=("$@")
 cmd=${1:-}
 [[ -n $cmd ]] || { usage; exit 1; }
 [[ $cmd != --list ]] || { cmd_list; exit 0; }
@@ -635,7 +672,8 @@ case $cmd in
   shred) cmd_shred ;;
   remote) "$STEPS/remote.sh" "${rest[@]}" ;;
   machine) "$STEPS/machine.sh" ;;
-  clean) load_lib; cmd_clean ;;
+  clean) load_lib; if [[ -n $run_id ]]; then cmd_clean_run; else cmd_clean; fi ;;
+  resume) cmd_resume ;;
   du) load_lib; cmd_du ;;
   readme) cmd_readme ;;
   analytics) cmd_analytics ;;

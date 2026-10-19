@@ -96,7 +96,7 @@ want() { # SERVER: it starts only when an engine of it is selected (the plan's l
   [[ -z $w || $w == *,$1* ]]
 }
 cfg() { echo "$DATA/threads-$NAME"; }   # the ClickHouse thread settings of the current budget, mounted into its container
-run_args() { printf '%s\n' run -d --label "sift-store=$NAME"; docker_caps "$1" "$MEMORY"; }   # N: the quota, never a pinning
+run_args() { printf '%s\n' run -d --label "sift-store=$NAME" ${BENCH_RUN_ID:+--label "sift-run=$BENCH_RUN_ID"}; docker_caps "$1" "$MEMORY"; }   # N: the quota, never a pinning
 pull_missing() { docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1" >/dev/null; }
 pg_mount() { # IMAGE: the directory the image declares for its data (the official image: /var/lib/postgresql, PGDATA below it)
   local d; d=$(docker image inspect -f '{{range $k, $_ := .Config.Volumes}}{{println $k}}{{end}}' "$1" | head -1)
@@ -187,7 +187,9 @@ budget() { # N
   done
 }
 up() { # SIZE
-  [[ -z $(containers) ]] || { echo "store: containers of '$NAME' exist (bench/bench store clean)" >&2; return 1; }
+  local stale; stale=$(docker ps -aq --filter "label=sift-store=$NAME" ${BENCH_RUN_ID:+--filter "label=sift-run=$BENCH_RUN_ID"})
+  [[ -z $stale ]] || { log "removing the containers an earlier attempt of this run left"; xargs -r docker rm -fv <<<"$stale" >/dev/null; }
+  [[ -z $(containers) ]] || { echo "store: containers of '$NAME' that belong to another run exist (bench/bench clean --run ID, or store clean)" >&2; return 1; }
   ports_free "$PORT" 4 && { ! want citus || port_free "$CITUS_PORT"; } || return 1
   build_image
   pull_missing "$STORE_PG_IMAGE"
@@ -233,19 +235,22 @@ parts() { # SIZE: the parts of the pass at that size
   if [[ ,$UPDATE_SIZES, == *,"$1",* ]]; then p+=,updates; fi
   echo "$p"
 }
+szdir() { echo "$OUT/$1"; }   # SIZE: where the plan and the part files of a size are; they go together, so that a changed plan drops its parts
 load_plan() { # SIZE: the lanes of the plan of that size, when there is one (written by `plan`)
-  local f=$OUT/plan-$1.json
+  local f; f=$(szdir "$1")/plan.json
   [[ -s $f ]] || return 0
   RUN_ENGINES=$(py planget "$f" run) UPD_ENGINES=$(py planget "$f" update) UNTIMED=$(py planget "$f" untimed) PLANNED=1
   WANT=",$RUN_ENGINES,$UPD_ENGINES,"
 }
-plan() { # SIZE
-  local extra=()
-  mkdir -p "$OUT"
+plan() { # SIZE: the plan of that size; a plan that differs from the one a resumed run made drops the parts measured under it
+  local extra=() d; d=$(szdir "$1")
+  mkdir -p "$d"
   mapfile -t extra < <(flags)
   [[ -z ${S_ENGINES:-} ]] || extra+=(--engines "$S_ENGINES")
-  py plan --rows "$1" --out "$OUT" --plan "$OUT/plan-$1.json" --cpus "$CPUS" --points "${POINTS// /,}" --parts "$(parts "$1")" --update-engines "${UPD_PATHS// /,}" \
+  py plan --rows "$1" --out "$d" --plan "$d/plan.new" --cpus "$CPUS" --points "${POINTS// /,}" --parts "$(parts "$1")" --update-engines "${UPD_PATHS// /,}" \
     ${S_COMPRESSION:+--compression} ${S_REMEASURE_ALL:+--remeasure-all} ${S_REMEASURE:+--remeasure "$S_REMEASURE"} "${extra[@]}"
+  if ! cmp -s "$d/plan.new" "$d/plan.json"; then rm -f "$d"/store-*.json; fi
+  mv -f "$d/plan.new" "$d/plan.json"
   load_plan "$1"
 }
 
@@ -255,7 +260,7 @@ setup() { # SIZE: containers up (they stay), the CSV generated, the data loaded 
   mapfile -t extra < <(engine_args; flags)
   py gen --rows "$1"
   for c in $(wanted); do keys+=("$c=${KEY[$c]}"); [[ ${REUSE[$c]} != reuse ]] || reuse+=("$c"); done
-  py load --rows "$1" --out "$OUT" --cpus "$CPUS" --keys "$(IFS=,; echo "${keys[*]}")" --reuse "$(IFS=,; echo "${reuse[*]:-}")" ${S_COMPRESSION:+--compression} "${extra[@]}"
+  py load --rows "$1" --out "$(szdir "$1")" --cpus "$CPUS" --keys "$(IFS=,; echo "${keys[*]}")" --reuse "$(IFS=,; echo "${reuse[*]:-}")" ${S_COMPRESSION:+--compression} "${extra[@]}"
 }
 ensure() { # SIZE: the containers are up and hold the data (the steps after the setup need that); they are started when they are not
   load_plan "$1"
@@ -267,12 +272,12 @@ ensure() { # SIZE: the containers are up and hold the data (the steps after the 
 run_at() { # SIZE CPUS
   local extra=()
   mapfile -t extra < <(engine_args; flags)
-  locked py run --rows "$1" --out "$OUT" --cpus "$2" "${extra[@]}"
+  locked py run --rows "$1" --out "$(szdir "$1")" --cpus "$2" "${extra[@]}"
 }
 cold_at() { # SIZE CPUS
   local extra=()
   mapfile -t extra < <(engine_args; flags)
-  locked py cold --rows "$1" --out "$OUT" --cpus "$2" "${extra[@]}"
+  locked py cold --rows "$1" --out "$(szdir "$1")" --cpus "$2" "${extra[@]}"
 }
 each_point() { local c; for c in $POINTS; do point "$c"; "$@" "$c"; done; }   # CMD ARGS...: CMD ARGS... CPUS at every budget of the list, smallest first
 at_point() { run_at "$1" "$2"; }
@@ -286,28 +291,28 @@ updates() { # SIZE: last, it changes the data; at the budget of the load
   local extra=()
   mapfile -t extra < <(engine_args "${UPD_ENGINES:-}"; flags)
   point "$CPUS"
-  locked py updates --rows "$1" --out "$OUT" --cpus "$CPUS" "${extra[@]}"
+  locked py updates --rows "$1" --out "$(szdir "$1")" --cpus "$CPUS" "${extra[@]}"
 }
 interference() { # SIZE [store.py interference options]
   local extra=()
   mapfile -t extra < <(engine_args; flags)
   ensure "$1"; point "$CPUS"
-  locked py interference --rows "$1" --out "$OUT" --cpus "$CPUS" "${extra[@]}" "${@:2}"
+  locked py interference --rows "$1" --out "$(szdir "$1")" --cpus "$CPUS" "${extra[@]}" "${@:2}"
 }
 
 # --- the results
-plan_args() { local f; for f in "$OUT"/plan-*.json; do [[ ! -e $f ]] || printf '%s\n' --plan "$f"; done; }
+plan_args() { local f; for f in "$OUT"/*/plan.json; do [[ ! -e $f ]] || printf '%s\n' --plan "$f"; done; }
 merge() {
   local extra=()
   mapfile -t extra < <(plan_args)
   [[ -z ${S_DOCS:-} || -n ${S_COMPRESSION:-} || ! -s $REPO/bench/results/store.json ]] || extra+=(--keep "$REPO/bench/results/store.json")   # the sizes this pass did not measure stay in the published file
   [[ -z ${S_KEEP:-} ]] || extra+=(--keep "$S_KEEP")
-  py merge "$OUT"/store-*.json -o "$OUT/store.json" "${extra[@]}"
+  py merge "$OUT"/*/store-*.json -o "$OUT/store.json" "${extra[@]}"
 }
 cache_save() { # the cells of the servers this pass measured go to the cache (a compression run measures other things)
   local f
   [[ -z ${S_COMPRESSION:-} && -z ${S_NO_CACHE:-} ]] || return 0
-  for f in "$OUT"/plan-*.json; do [[ ! -e $f ]] || py cache-save --plan "$f" --results "$OUT/store.json" --cache-dir "$CACHE_DIR"; done
+  for f in "$OUT"/*/plan.json; do [[ ! -e $f ]] || py cache-save --plan "$f" --results "$OUT/store.json" --cache-dir "$CACHE_DIR"; done
 }
 docs() {
   cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
@@ -321,10 +326,15 @@ finish() {
   [[ -z ${S_DOCS:-} ]] || docs
 }
 
+fresh_pass() { # a pass started again into the same directory keeps what it measured when the code, host and settings are the same (resume), else starts over
+  local key; key=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$(env | grep -E '^(S_|STORE_)' | sort)")
+  [[ $(cat "$OUT/pass.key" 2>/dev/null) == "$key" && -z ${NO_RESUME:-} ]] || { rm -rf "${OUT:?}"/[0-9]*; log "new pass (nothing to resume in $OUT)"; }
+  echo "$key" | atomic_write "$OUT/pass.key"
+}
 all() {
   local s
   mkdir -p "$OUT"
-  rm -f "$OUT"/store-*.json "$OUT"/plan-*.json
+  fresh_pass
   trap 'down' EXIT
   log "budget (minutes, when every server is measured): setup $P_MIN_SETUP, warm $P_MIN_WARM, cold $P_MIN_COLD, updates $P_MIN_UPDATES per size, preset $P_NAME"
   for s in ${SIZES//,/ }; do
