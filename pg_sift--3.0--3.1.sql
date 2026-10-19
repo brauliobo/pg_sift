@@ -1,9 +1,10 @@
 \echo Use "ALTER EXTENSION pg_sift UPDATE TO '3.1'" to load this file. \quit
 
 -- Facet counts over a search (docs/FIELDS-FACETS.md): terms, range, histogram and date_histogram facets of any column type, several in one
--- statement, with the facets of a multi-select (drill-sideways) and a top N with an "other" count. sift.facet_sql builds one SQL statement
--- (GROUPING SETS over the table, the search as one `key @@> query` conjunct) that sift.facet_counts runs: with a sift_col index on the
--- columns it runs as Custom Scan (SiftAgg) with the search as the row selection, without one it is an ordinary plan and still exact.
+-- statement, with the facets of a multi-select (drill-sideways) and a top N with an "other" count. sift.facet_sql builds the SQL statement
+-- (one `GROUP BY` scan per facet, the search as one `key @@> query` conjunct of each; the ranges of a facet list share one scan of
+-- FILTER aggregates) that sift.facet_counts runs: with a sift_col index on the columns each scan runs as Custom Scan (SiftAgg) with the
+-- search as the row selection, without one it is an ordinary plan and still exact.
 
 -- Raises when a gap-filled histogram would return more than 10000 buckets; returns its argument otherwise.
 CREATE FUNCTION sift.facet_cap(buckets int8) RETURNS int8
@@ -16,11 +17,11 @@ BEGIN
 	RETURN buckets;
 END $fn$;
 
--- One facet of sift.facet_sql: its name, the group key, its own filter (the "selected" values and "filter" of the spec, NULL if none), whether
--- the array its key comes from unnesting (NULL: none; the facet then has a scan of its own) and the SQL that shapes the rows of its scan into
--- (facet_no, seq, facet, kind, value, lo, hi, count); {cte}, {g} and {k} stand for the scan, its GROUPING() column and its key column.
+-- One facet of sift.facet_sql: its name, the group key (NULL for a range: its buckets are the FILTER aggregates faggs), its own filter (the
+-- "selected" values and "filter" of the spec, NULL if none), the array its key comes from unnesting (NULL: none) and the SQL that shapes the
+-- rows of its scan into (facet_no, seq, facet, kind, value, lo, hi, count); {cte} and {k} stand for the scan and its key column.
 CREATE FUNCTION sift.facet_part(spec jsonb, no int,
-								OUT fname text, OUT fkey text, OUT fown text, OUT fsrc text, OUT fshape text)
+								OUT fname text, OUT fkey text, OUT fown text, OUT fsrc text, OUT faggs text, OUT fshape text)
 	LANGUAGE plpgsql STABLE AS $fn$
 DECLARE
 	s		jsonb := CASE WHEN jsonb_typeof(spec) = 'string' THEN jsonb_build_object('expr', spec #>> '{}') ELSE spec END;
@@ -38,14 +39,14 @@ DECLARE
 	unit	text;
 	step	text;
 	edges	text[];
+	n		int;
+	conds	text[];
 	lo		text;
 	hi		text;
 	k		text := '{k}';
-	g		text := '{g}';
 	c		text := '{cte}';
-	hd		text;
 	miss	text := '';
-	no_s	text := no::text;
+	arr		text[];
 BEGIN
 	IF jsonb_typeof(s) IS DISTINCT FROM 'object' THEN
 		RAISE EXCEPTION 'facet %: a facet is a column expression or an object', no USING ERRCODE = 'invalid_parameter_value';
@@ -64,10 +65,9 @@ BEGIN
 		RAISE EXCEPTION 'facet %: "array" is for terms facets', no USING ERRCODE = 'invalid_parameter_value';
 	END IF;
 	lits := (SELECT string_agg(quote_literal(v), ', ') FROM jsonb_array_elements_text(coalesce(s->'selected', '[]')) v);
-	hd := format('SELECT %s, ', no_s);
-	IF coalesce((s->>'missing')::bool, false) THEN
-		miss := format(' UNION ALL SELECT %s, 4611686018427387905, %L, ''missing'', NULL::text, NULL::text, NULL::text, c FROM %s WHERE %s = 0 AND %s IS NULL',
-					   no, fname, c, g, k);
+	IF coalesce((s->>'missing')::bool, false) AND t <> 'range' THEN
+		miss := format(' UNION ALL SELECT %s, 4611686018427387905, %L, ''missing'', NULL::text, NULL::text, NULL::text, c FROM %s WHERE %s IS NULL',
+					   no, fname, c, k);
 	END IF;
 
 	IF t = 'terms' THEN
@@ -83,7 +83,7 @@ BEGIN
 		IF ord IS NULL THEN
 			RAISE EXCEPTION 'facet %: "order" is count, count asc, value or value desc', no USING ERRCODE = 'invalid_parameter_value';
 		END IF;
-		ranked := format('(SELECT %s k, c, row_number() OVER (ORDER BY %s) rn FROM %s WHERE %s = 0 AND %s IS NOT NULL) t', k, ord, c, g, k);
+		ranked := format('(SELECT %s k, c, row_number() OVER (ORDER BY %s) rn FROM %s WHERE %s IS NOT NULL) t', k, ord, c, k);
 		fshape := format('SELECT %s, rn, %L, ''value'', k::text, NULL::text, NULL::text, c FROM %s%s', no, fname, ranked,
 						 CASE WHEN sz IS NULL THEN '' ELSE format(' WHERE rn <= %s', sz) END);
 		IF sz IS NOT NULL THEN
@@ -92,26 +92,32 @@ BEGIN
 		END IF;
 	ELSIF t = 'range' THEN
 		edges := ARRAY(SELECT quote_literal(v) FROM jsonb_array_elements_text(s->'edges') v);
-		IF coalesce(array_length(edges, 1), 0) = 0 THEN
+		n := coalesce(array_length(edges, 1), 0);
+		IF n = 0 THEN
 			RAISE EXCEPTION 'facet %: "edges" must list at least one bound', no USING ERRCODE = 'invalid_parameter_value';
 		END IF;
-		fkey := '(CASE WHEN (' || ex || ') IS NULL THEN NULL ' ||
-				(SELECT string_agg(format('WHEN (%s) < %s THEN %s', ex, e, i - 1), ' ' ORDER BY i) FROM unnest(edges) WITH ORDINALITY u(e, i)) ||
-				format(' ELSE %s END)', array_length(edges, 1));
-		-- bucket i is [edges[i], edges[i + 1]); the first and the last are open
+		-- bucket i is [edges[i], edges[i + 1]); the first and the last are open: the buckets are FILTER aggregates of one scan without keys
+		conds := ARRAY(SELECT concat_ws(' AND ', CASE WHEN i > 1 THEN format('(%s) >= %s', ex, edges[i - 1]) END,
+												 CASE WHEN i <= n THEN format('(%s) < %s', ex, edges[i]) END) FROM generate_series(1, n + 1) i);
+		faggs := (SELECT string_agg(format('count(*) FILTER (WHERE %s) a%s_%s', conds[i], no, i - 1), ', ' ORDER BY i) FROM generate_series(1, n + 1) i);
+		IF coalesce((s->>'missing')::bool, false) THEN
+			faggs := faggs || format(', count(*) FILTER (WHERE (%s) IS NULL) a%s_m', ex, no);
+			miss := format(' UNION ALL SELECT %s, 4611686018427387905, %L, ''missing'', NULL::text, NULL::text, NULL::text, a%s_m FROM %s WHERE a%s_m > 0',
+						   no, fname, no, c, no);
+		END IF;
+		arr := ARRAY(SELECT format('a%s_%s', no, i - 1) FROM generate_series(1, n + 1) i);
 		rng := (SELECT string_agg(format('(%s, %L, %s, %s)', i - 1,
 							'[' || CASE WHEN i = 1 THEN '' ELSE trim(both '''' from edges[i - 1]) END || ',' ||
-								   CASE WHEN i = array_length(edges, 1) + 1 THEN '' ELSE trim(both '''' from edges[i]) END || ')',
+								   CASE WHEN i = n + 1 THEN '' ELSE trim(both '''' from edges[i]) END || ')',
 							CASE WHEN i = 1 THEN 'NULL::text' ELSE edges[i - 1] || '::text' END,
-							CASE WHEN i = array_length(edges, 1) + 1 THEN 'NULL::text' ELSE edges[i] || '::text' END), ', ' ORDER BY i)
-				FROM generate_series(1, array_length(edges, 1) + 1) i);
-		fshape := format('SELECT %s, b.i, %L, ''bucket'', b.label, b.lo, b.hi, coalesce(r.c, 0) FROM (VALUES %s) b(i, label, lo, hi) '
-						 'LEFT JOIN (SELECT %s k, c FROM %s WHERE %s = 0) r ON r.k = b.i', no, fname, rng, k, c, g);
+							CASE WHEN i = n + 1 THEN 'NULL::text' ELSE edges[i] || '::text' END), ', ' ORDER BY i)
+				FROM generate_series(1, n + 1) i);
+		fshape := format('SELECT %s, b.i, %L, ''bucket'', b.label, b.lo, b.hi, (ARRAY[%s])[b.i + 1] FROM (VALUES %s) b(i, label, lo, hi) CROSS JOIN %s',
+						 no, fname, array_to_string(arr, ', '), rng, c);
 		-- the buckets of the selection as comparisons the column scan can take
 		sel := CASE WHEN lits IS NULL THEN NULL ELSE
-			(SELECT '(' || string_agg(format('(%s%s)', CASE WHEN i = 1 THEN 'TRUE' ELSE format('(%s) >= %s', ex, edges[i - 1]) END,
-											 CASE WHEN i = array_length(edges, 1) + 1 THEN '' ELSE format(' AND (%s) < %s', ex, edges[i]) END), ' OR ') || ')'
-			 FROM generate_series(1, array_length(edges, 1) + 1) i WHERE (i - 1)::text IN (SELECT jsonb_array_elements_text(s->'selected'))) END;
+			(SELECT '(' || string_agg('(' || conds[i] || ')', ' OR ') || ')' FROM generate_series(1, n + 1) i
+			 WHERE (i - 1)::text IN (SELECT jsonb_array_elements_text(s->'selected'))) END;
 	ELSIF t = 'histogram' THEN
 		itv := (s->>'interval')::numeric;
 		off := coalesce((s->>'offset')::numeric, 0);
@@ -125,10 +131,10 @@ BEGIN
 		hi := format('(k + 1) * %s + %s', itv, off);
 		IF coalesce((s->>'fill')::bool, false) THEN
 			mx := format('(SELECT s.k, coalesce(r.c, 0) c FROM (SELECT generate_series(a.mn, a.mn + sift.facet_cap((a.mx - a.mn)::int8)) k '
-						 'FROM (SELECT min(%s) mn, max(%s) mx FROM %s WHERE %s = 0 AND %s IS NOT NULL) a WHERE a.mn IS NOT NULL) s '
-						 'LEFT JOIN (SELECT %s k, c FROM %s WHERE %s = 0) r ON r.k = s.k) d', k, k, c, g, k, k, c, g);
+						 'FROM (SELECT min(%s) mn, max(%s) mx FROM %s WHERE %s IS NOT NULL) a WHERE a.mn IS NOT NULL) s '
+						 'LEFT JOIN (SELECT %s k, c FROM %s) r ON r.k = s.k) d', k, k, c, k, k, c);
 		ELSE
-			mx := format('(SELECT %s k, c FROM %s WHERE %s = 0 AND %s IS NOT NULL) d', k, c, g, k);
+			mx := format('(SELECT %s k, c FROM %s WHERE %s IS NOT NULL) d', k, c, k);
 		END IF;
 		fshape := format('SELECT %s, row_number() OVER (ORDER BY k), %L, ''bucket'', (%s)::text, (%s)::text, (%s)::text, c FROM %s',
 						 no, fname, lo, lo, hi, mx);
@@ -144,10 +150,10 @@ BEGIN
 													ex, v, ex, v, step), ' OR ') || ')' FROM jsonb_array_elements_text(s->'selected') v) END;
 		IF coalesce((s->>'fill')::bool, false) THEN
 			mx := format('(SELECT s.k, coalesce(r.c, 0) c FROM (SELECT a.k, sift.facet_cap(count(*) OVER ()) FROM (SELECT generate_series(a.mn, a.mx, interval %L) k '
-						 'FROM (SELECT min(%s) mn, max(%s) mx FROM %s WHERE %s = 0 AND %s IS NOT NULL) a WHERE a.mn IS NOT NULL LIMIT 10001) a) s '
-						 'LEFT JOIN (SELECT %s k, c FROM %s WHERE %s = 0) r ON r.k = s.k) d', step, k, k, c, g, k, k, c, g);
+						 'FROM (SELECT min(%s) mn, max(%s) mx FROM %s WHERE %s IS NOT NULL) a WHERE a.mn IS NOT NULL LIMIT 10001) a) s '
+						 'LEFT JOIN (SELECT %s k, c FROM %s) r ON r.k = s.k) d', step, k, k, c, k, k, c);
 		ELSE
-			mx := format('(SELECT %s k, c FROM %s WHERE %s = 0 AND %s IS NOT NULL) d', k, c, g, k);
+			mx := format('(SELECT %s k, c FROM %s WHERE %s IS NOT NULL) d', k, c, k);
 		END IF;
 		fshape := format('SELECT %s, row_number() OVER (ORDER BY k), %L, ''bucket'', k::text, k::text, (k + interval %L)::text, c FROM %s',
 						 no, fname, step, mx);
@@ -171,19 +177,15 @@ DECLARE
 	fkey	text[] := '{}';
 	fown	text[] := '{}';
 	fsrc	text[] := '{}';
+	faggs	text[] := '{}';
 	fshape	text[] := '{}';
-	gid		int[] := '{}';
 	common	text[] := '{}';
 	w		text;
-	gw		text[] := '{}';
-	garr	bool[] := '{}';
-	gcnt	int[] := '{}';
-	ng		int := 0;
+	rw		text[] := '{}';
+	ra		text[] := '{}';
 	ctes	text[] := '{}';
 	shapes	text[] := '{}';
-	sel		text;
-	sets	text;
-	src		text;
+	scan	int[] := '{}';
 BEGIN
 	IF jsonb_typeof(facets) IS DISTINCT FROM 'array' OR jsonb_array_length(facets) = 0 THEN
 		RAISE EXCEPTION 'facets must be a non-empty JSON array' USING ERRCODE = 'invalid_parameter_value';
@@ -191,7 +193,8 @@ BEGIN
 	n := jsonb_array_length(facets);
 	FOR i IN 1..n LOOP
 		SELECT * INTO p FROM sift.facet_part(facets -> (i - 1), i);
-		fkey := fkey || p.fkey; fown := fown || coalesce(p.fown, ''); fsrc := fsrc || coalesce(p.fsrc, ''); fshape := fshape || p.fshape;
+		fkey := fkey || coalesce(p.fkey, ''); fown := fown || coalesce(p.fown, ''); fsrc := fsrc || coalesce(p.fsrc, '');
+		faggs := faggs || coalesce(p.faggs, ''); fshape := fshape || p.fshape;
 	END LOOP;
 	IF query IS NOT NULL THEN
 		IF key IS NULL THEN
@@ -201,36 +204,28 @@ BEGIN
 	END IF;
 	IF filter IS NOT NULL THEN common := common || ('(' || filter || ')'); END IF;
 
-	-- a facet counts what every other facet has selected but not its own selection: one scan per distinct WHERE, at most 4 keys of
-	-- GROUPING SETS to a scan (the limit of the column scan), and a scan of its own for a facet that unnests an array
+	-- a facet counts what every other facet has selected but not its own selection: its WHERE is the search and the filter with the
+	-- selections of the others. One scan per facet; the ranges with the same WHERE are the aggregates of one scan
 	FOR i IN 1..n LOOP
 		w := coalesce(nullif(array_to_string(common || ARRAY(SELECT o FROM unnest(fown) WITH ORDINALITY u(o, k) WHERE k <> i AND o <> ''), ' AND '), ''), 'true');
-		j := NULL;
-		IF fsrc[i] = '' THEN
-			SELECT x INTO j FROM generate_series(1, ng) x WHERE gw[x] = w AND NOT garr[x] AND gcnt[x] < 4 LIMIT 1;
+		IF fkey[i] <> '' THEN
+			ctes := ctes || format('s%s AS MATERIALIZED (SELECT %s k%s, count(*) c FROM %s%s WHERE %s GROUP BY %s)', i, fkey[i], i, tbl,
+				CASE WHEN fsrc[i] <> '' THEN format(' CROSS JOIN LATERAL (SELECT DISTINCT e AS sift_facet_k FROM unnest(%s) e) sift_facet_u', fsrc[i]) ELSE '' END,
+				w, fkey[i]);
+			scan := scan || i;
+		ELSE
+			j := NULL;
+			SELECT x INTO j FROM generate_series(1, coalesce(array_length(rw, 1), 0)) x WHERE rw[x] = w;
+			IF j IS NULL THEN rw := rw || w; ra := ra || ''::text; j := array_length(rw, 1); END IF;
+			ra[j] := concat_ws(', ', nullif(ra[j], ''), faggs[i]);
+			scan := scan || -j;
 		END IF;
-		IF j IS NULL THEN
-			ng := ng + 1; j := ng; gw := gw || w; garr := garr || (fsrc[i] <> ''); gcnt := gcnt || 0;
-		END IF;
-		gid := gid || j; gcnt[j] := gcnt[j] + 1;
 	END LOOP;
-
-	-- a scan of one key is a plain GROUP BY (the column scan takes GROUPING SETS only from two keys on)
-	FOR j IN 1..ng LOOP
-		sets := NULL; sel := ''; src := '';
-		FOR i IN 1..n LOOP
-			CONTINUE WHEN gid[i] <> j;
-			sel := sel || format('%s g%s, %s k%s, ', CASE WHEN gcnt[j] = 1 THEN '0' ELSE 'GROUPING(' || fkey[i] || ')' END, i, fkey[i], i);
-			sets := concat_ws(', ', sets, CASE WHEN gcnt[j] = 1 THEN fkey[i] ELSE '(' || fkey[i] || ')' END);
-			IF garr[j] THEN
-				src := format(' CROSS JOIN LATERAL (SELECT DISTINCT e AS sift_facet_k FROM unnest(%s) e) sift_facet_u', fsrc[i]);
-			END IF;
-		END LOOP;
-		ctes := ctes || format('s%s AS MATERIALIZED (SELECT %scount(*) c FROM %s%s WHERE %s GROUP BY %s)', j, sel, tbl, src, gw[j],
-							   CASE WHEN gcnt[j] = 1 THEN sets ELSE 'GROUPING SETS (' || sets || ')' END);
+	FOR j IN 1..coalesce(array_length(rw, 1), 0) LOOP
+		ctes := ctes || format('r%s AS MATERIALIZED (SELECT %s FROM %s WHERE %s)', j, ra[j], tbl, rw[j]);
 	END LOOP;
 	FOR i IN 1..n LOOP
-		shapes := shapes || replace(replace(replace(fshape[i], '{cte}', 's' || gid[i]), '{g}', 'g' || i), '{k}', 'k' || i);
+		shapes := shapes || replace(replace(fshape[i], '{cte}', CASE WHEN scan[i] > 0 THEN 's' || scan[i] ELSE 'r' || -scan[i] END), '{k}', 'k' || i);
 	END LOOP;
 	IF hits THEN
 		shapes := shapes || format('SELECT 0, 0::int8, NULL::text, ''hits'', NULL::text, NULL::text, NULL::text, count(*) FROM %s WHERE %s',
