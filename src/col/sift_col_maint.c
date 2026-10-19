@@ -558,7 +558,8 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 		v[0] = Int32GetDatum(c);
 		v[1] = CStringGetTextDatum(sc->cols[c].path[0] ? sc->cols[c].path : NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[c].attno - 1)->attname));
 		v[2] = CStringGetTextDatum(sc->cols[c].kind == SIFT_COLK_GROUP ? "group" : "scalar");
-		v[3] = CStringGetTextDatum(format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])));
+		v[3] = CStringGetTextDatum(sc->cols[c].lane > 0 ? psprintf("%s (lane %d)", format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])), sc->cols[c].lane) :
+								   format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])));
 		for (int e = 0; e < 5; e++)
 			v[4 + e] = Int64GetDatum(chunks[c * 5 + e]);
 		v[9] = Int64GetDatum(bytes[c]);

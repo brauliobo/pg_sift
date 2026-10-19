@@ -86,6 +86,16 @@ leaf_vtype(const SiftColDef *def)
 	return SCV_I32;
 }
 
+/*
+ * A leaf the aggregate scan does not read: a lane of a wide value and the wide types themselves; with no SQL type no
+ * expression matches it, so those queries keep the normal plan
+ */
+static bool
+leaf_hidden(const SiftColDef *def)
+{
+	return sift_col_def_needs_wide(def);
+}
+
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
 static List *
 path_below(const char *path, const char *att)
@@ -160,7 +170,7 @@ col_layout(Relation index)
 		l->id = def->id;
 		l->attno = def->attno;
 		l->parent = def->parent;
-		l->typid = sift_col_def_typid(tupdesc, def);
+		l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(tupdesc, def);
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;

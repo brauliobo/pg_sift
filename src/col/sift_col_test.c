@@ -15,6 +15,8 @@
 #include "storage/lock.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
+#include "utils/numeric.h"
+#include "utils/timestamp.h"
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -71,6 +73,31 @@ parse_value(const SiftColDef *def, char *s)
 {
 	SiftColValue v = {0};
 
+	/* the head of a wide value: the text of the type, as a constant of the predicate */
+	if (def->lanes > 1)
+	{
+		if (def->type == SIFT_COLT_INTERVAL)
+		{
+			Interval   *iv = DatumGetIntervalP(DirectFunctionCall3(interval_in, CStringGetDatum(s), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)));
+			int64		md;
+
+			sift_col_interval_lanes(iv, &v.v.i, &v.lo, &md);
+		}
+		else
+		{
+			Datum		d = DirectFunctionCall3(numeric_in, CStringGetDatum(s), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+
+			if (def->store == SIFT_COLS_STR)
+			{
+				int32		dscale;
+
+				v.v.s = (const char *) sift_col_numeric_image(d, &v.len, &dscale);
+			}
+			else if (sift_col_numeric_wide_key(def->scale, d, SIFT_COL_ROUND_NEAREST, &v.v.i, &v.lo) == 2)
+				elog(ERROR, "sift test: \"%s\" is not a number of a wide numeric leaf", s);
+		}
+		return v;
+	}
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
@@ -278,6 +305,22 @@ sift_test_col_tids(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/* A wide value from its lanes (vecs[0] is the head), as the text PostgreSQL prints for it */
+static void
+append_wide(StringInfo buf, const SiftColDef *def, const SiftColVec *vecs, uint32 k)
+{
+	Datum		out;
+
+	if (def->type == SIFT_COLT_INTERVAL)
+		out = DirectFunctionCall1(interval_out, IntervalPGetDatum(sift_col_lanes_interval(vecs[0].i[k], vecs[1].i[k], vecs[2].i[k])));
+	else if (def->store == SIFT_COLS_STR)
+		out = DirectFunctionCall1(numeric_out, sift_col_image_numeric((const uint8 *) SIFT_COL_DICT_STR(vecs[0].dict, vecs[0].codes[k]),
+																	  SIFT_COL_DICT_LEN(vecs[0].dict, vecs[0].codes[k]), (int32) vecs[1].i[k]));
+	else
+		out = DirectFunctionCall1(numeric_out, sift_col_wide_numeric(def->scale, vecs[0].i[k], vecs[1].i[k]));
+	appendStringInfoString(buf, DatumGetCString(out));
+}
+
 static void
 append_value(StringInfo buf, const SiftColVec *vec, uint32 k)
 {
@@ -316,6 +359,8 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 	{
 		SiftColSel	sel;
 		SiftColVec	vec;
+		SiftColVec	lanes[SIFT_COL_MAX_LANES];
+		const SiftColDef *def = sift_col_def(ts.src, leaf);
 		ItemPointerData *tids;
 
 		if (!unit_select(&ts, &unit, flags, &sel))
@@ -343,6 +388,8 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			sift_col_read(&unit, leaf, &less, &vec);
 		}
 		sift_col_read(&unit, leaf, &sel, &vec);
+		if (def->lanes > 1)
+			sift_col_read_lanes(&unit, leaf, &sel, lanes);
 		for (uint32 r = 0; r < sel.count; r++)
 		{
 			Datum		v[2];
@@ -350,7 +397,9 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			StringInfoData buf;
 
 			initStringInfo(&buf);
-			if (vec.offsets)
+			if (def->lanes > 1 && !(vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1)))
+				append_wide(&buf, def, lanes, r);
+			else if (vec.offsets)
 			{
 				appendStringInfoChar(&buf, '{');
 				for (uint32 e = vec.offsets[r]; e < vec.offsets[r + 1]; e++)
