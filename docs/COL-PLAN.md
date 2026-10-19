@@ -480,7 +480,7 @@ What the profiles of the decode-bound shapes (S3, S4, S6, S7 at K4000, flat othe
 - `expand_parents` (kernel, 4 percent of S3, 6 of S4) stores one entry per element; one store of the row ordinal per row (the next row overwrites the tail) is a pass over the rows, not the elements.
 - `nd_i64` / `nd_u32` (the null expansion of a decoded leaf: 6 to 8 percent in S3, S4, S7) and `unit_page` (3 to 5 percent in S4 and S6, the page of a row in the unit) are called per leaf and per row batch; a page table built once per unit would serve every leaf.
 
-- **`char(n)` and `name` columns**: `CREATE INDEX ... USING sift_col` refuses them (the `sift_table` provider reads `char(n)`), while `docs/COL.md` lists them among the text types. Either the index takes them (the dictionary of the padded or `name` bytes, comparisons with the `bpchar` and `name` operators, which the text tests of `sift_aggspec_str_test` (text and varchar only) keep out) or the document says they are refused; today no query over such a column reaches this planner from a `sift_col` index.
+- **`char(n)` and `name` columns**: `CREATE INDEX ... USING sift_col` takes them since 3.0.0 (a dictionary leaf of the padded or `name` bytes, `docs/COL.md` 1; a `bpchar` without a length is accepted but flagged lossy, so no predicate or group is pushed on it; test `col_index_chars`), and the `sift_table` provider reads `char(n)` too.
 
 ### Source filters
 
