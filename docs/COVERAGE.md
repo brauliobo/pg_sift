@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-184 rows: 110 Yes, 19 Partly, 44 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+185 rows: 110 Yes, 19 Partly, 45 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -96,6 +96,7 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | JT02 | Types | jsonb_typeof(path) <> 'type', NOT IN a list of types, NOT of an equality | Yes | sift_col | `SELECT count(*) FROM cv_typeof WHERE jsonb_typeof(doc->'m') <> 'number'` | The other types, but not a path with no value: PostgreSQL gives NULL for a missing key, which no comparison keeps. Counting the rows by their types reads no value, so the strings of a number leaf do not raise. Proof: fixture `k_typeof_complement`, fixture `k_typeof_not_in`, test `agg_jsonb_typeof`. |
 | JT03 | Types | jsonb_typeof(path) = 'null' (a JSON null) | Yes | sift_col | `SELECT count(*) FROM cv_typeof WHERE jsonb_typeof(doc->'m') = 'null'` | A JSON null is not a missing key: the chunk keeps which of the two a NULL slot is (column format minor 4). A segment of minor 3 cannot say and raises 0A000 with a REINDEX hint. Proof: fixture `k_typeof_json_null`, test `agg_jsonb_typeof`, test `col_tags`. |
 | JT04 | Types | jsonb_typeof(path) IS NULL and IS NOT NULL | Yes | sift_col | `SELECT count(*) FROM cv_typeof WHERE jsonb_typeof(doc->'m') IS NULL` | IS NULL is a path with no value (a missing key, a NULL document), not a JSON null. Proof: fixture `k_typeof_is_null`, fixture `k_typeof_is_not_null`, test `agg_jsonb_typeof`. |
+| JT10 | Types | jsonb_typeof(path) on a sift_table | No (a sift_table keeps a jsonb column as one opaque leaf, so there is no leaf of the path to give the types; needs declared paths for sift_table (COL-JSONB-31 section 4)) | sift_table | `SELECT count(*) FROM cv_tt WHERE jsonb_typeof(j->'k') = 'number'` | The normal plan, the same result. Proof: test `agg_jsonb_typeof`. |
 | K01 | Group keys | GROUP BY a column (dictionary, integer, date, boolean, float, numeric(p<=18)) | Yes | sift_col, sift_table | `SELECT status, count(*) FROM orders GROUP BY status` | Up to 5 group columns; 4 with grouping sets. Proof: fixture `f_group_source`. |
 | K02 | Group keys | GROUP BY an expression of one column: lower(), CASE, date_trunc of a date, x % 7, extract() | Yes | sift_col | `SELECT date_trunc('month', placed_at::timestamp)::date, count(*) FROM orders GROUP BY 1` | Evaluated by PostgreSQL once per distinct value of the column. Proof: fixture `f_group_exprs`. |
 | K03 | Group keys | GROUP BY an expression of two or three columns | Yes | sift_col | `SELECT CASE WHEN lang = 'en' THEN source ELSE status END, count(*) FROM orders GROUP BY 1` | Evaluated once per distinct tuple of the values, cached across units. Proof: fixture `f_multi_leaf_keys`. |
