@@ -58,6 +58,10 @@ INSERT INTO a_q VALUES
 	('SELECT length(d.doc->>''label'') AS len, count(*) FROM a_t d GROUP BY 1'),
 	('SELECT d.scores->>''k1'' AS v, count(*) FROM a_t d GROUP BY 1'),
 	('SELECT d.grp, count(*) FROM a_t d WHERE d.scores->>''k2'' ~ ''^[0-9]'' GROUP BY 1'),
+	-- tests of a member of a free-key object that the source can run on the encoded text
+	('SELECT d.grp, count(*) FROM a_t d WHERE d.scores->>''k1'' = ''7'' GROUP BY 1'),
+	('SELECT count(*) FROM a_t d WHERE d.scores->>''k1'' IN (''7'', ''true'', ''1.50'')'),
+	('SELECT count(*) FROM a_t d WHERE d.scores->>''k2'' LIKE ''1%'''),
 	-- the tests of JSON values keep the normal plan: "12" and 12 are different there
 	('SELECT count(*) FROM a_t d WHERE d.items @> ''[{"score": "7.5"}]'''),
 	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "12")'')'),
@@ -91,10 +95,13 @@ SELECT query, same, pushed FROM a_compare();
  SELECT length(d.doc->>'label') AS len, count(*) FROM a_t d GROUP BY 1                                                                                                                          | t    | t
  SELECT d.scores->>'k1' AS v, count(*) FROM a_t d GROUP BY 1                                                                                                                                    | t    | t
  SELECT d.grp, count(*) FROM a_t d WHERE d.scores->>'k2' ~ '^[0-9]' GROUP BY 1                                                                                                                  | t    | t
+ SELECT d.grp, count(*) FROM a_t d WHERE d.scores->>'k1' = '7' GROUP BY 1                                                                                                                       | t    | t
+ SELECT count(*) FROM a_t d WHERE d.scores->>'k1' IN ('7', 'true', '1.50')                                                                                                                      | t    | t
+ SELECT count(*) FROM a_t d WHERE d.scores->>'k2' LIKE '1%'                                                                                                                                     | t    | t
  SELECT count(*) FROM a_t d WHERE d.items @> '[{"score": "7.5"}]'                                                                                                                               | t    | f
  SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, '$[*] ? (@.score == "12")')                                                                                                        | t    | f
  SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>'score' = '12')                                                                          | t    | t
-(21 rows)
+(24 rows)
 
 -- a container where the text of a scalar is declared is a value the index cannot hold
 CREATE TABLE a_bad (id int, doc jsonb);

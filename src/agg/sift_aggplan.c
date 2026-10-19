@@ -4169,7 +4169,7 @@ leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
 		if (s->agg[i].leaf == leaf || pred_uses_leaf(s->agg[i].filter, leaf))
 			return true;
 	for (int i = 0; i < s->npred; i++)
-		if (pred_uses_leaf(s->pred[i], leaf) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, &t)))
+		if (pred_uses_leaf(s->pred[i], leaf) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, c->lay->nleaves - c->nvleaf, &t)))
 			return true;
 	return false;
 }

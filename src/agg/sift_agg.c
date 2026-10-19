@@ -7679,7 +7679,7 @@ str_init(AggExec *ex)
 	int			n = 0;
 
 	for (int i = 0; i < ex->spec->npred; i++)
-		if (sift_aggspec_str_test(ex->spec->pred[i], ex->lay, &all[n]))
+		if (sift_aggspec_str_test(ex->spec->pred[i], ex->lay, ex->nbase, &all[n]))
 			ex->ps[ex->spec->pred[i]->id].str = &all[n++];
 	if (n > 0)
 		sift_colsrc_prune_str(ex->src, all, n);
