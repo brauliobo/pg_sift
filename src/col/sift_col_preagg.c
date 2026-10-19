@@ -139,16 +139,6 @@ is_word(const char *p, const char *w)
 	return has_prefix(p, w) && rest_blank(p + strlen(w));
 }
 
-static const char *
-msg(const char *fmt, const char *a)
-{
-	StringInfoData b;
-
-	initStringInfo(&b);
-	appendStringInfo(&b, fmt, a);
-	return b.data;
-}
-
 /*
  * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
  */
@@ -173,7 +163,7 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 	}
 	skip_ws(c);
 	if (!has_prefix(c->p, "cube"))
-		return msg("expected default, off or cube(...), got \"%s\"", opt);
+		return psprintf("expected default, off or cube(...), got \"%s\"", opt);
 	c->p += 4;
 	if (!eat(c, '('))
 		return "expected ( after cube";
@@ -197,9 +187,9 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 				if (names[i] && strcmp(names[i], dn) == 0)
 					leaf = i;
 			if (leaf < 0)
-				return msg("cube dimension \"%s\" is not a column of the index", dn);
+				return psprintf("cube dimension \"%s\" is not a column of the index", dn);
 			if (!sift_cpagg_dim_ok(&s->cols[leaf]))
-				return msg("cube dimension \"%s\" must be a scalar integer, date, numeric or text column", dn);
+				return psprintf("cube dimension \"%s\" must be a scalar integer, date, numeric or text column", dn);
 			if (spec->ndims == SIFT_PAGG_MAX_DIMS)
 				return "a cube holds at most 16 dimensions";
 			sd = &spec->dim[spec->ndims++];
@@ -220,9 +210,9 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 					if (names[i] && strcmp(names[i], mn) == 0)
 						m = i;
 				if (m < 0)
-					return msg("cube measure \"%s\" is not a column of the index", mn);
+					return psprintf("cube measure \"%s\" is not a column of the index", mn);
 				if (!sift_cpagg_meas_ok(&s->cols[m]))
-					return msg("cube measure \"%s\" must be a smallint, integer, bigint, numeric, real or double precision column", mn);
+					return psprintf("cube measure \"%s\" must be a smallint, integer, bigint, numeric, real or double precision column", mn);
 				if (sd->nmeas == SIFT_PAGG_MAX_MEAS)
 					return "a cube dimension holds at most 8 measures";
 				sd->meas[sd->nmeas++] = m;
@@ -232,7 +222,7 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 	if (!eat(c, ')'))
 		return "expected ) at the end of cube(...)";
 	if (!rest_blank(c->p))
-		return msg("unexpected text after cube(...): \"%s\"", c->p);
+		return psprintf("unexpected text after cube(...): \"%s\"", c->p);
 	return NULL;
 }
 
