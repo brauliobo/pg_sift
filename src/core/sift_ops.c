@@ -118,20 +118,24 @@ analyzer_changed(Relation index)
 	return snap->meta.analyzer_hash != cfg.hash;
 }
 
-static void
-warn_analyzer_options(AlterTableStmt *stmt)
+/* The index an ALTER INDEX ... SET / RESET (options) changed, InvalidOid for any other command */
+static Oid
+altered_options_index(AlterTableStmt *stmt)
 {
-	Oid			relid;
-	Relation	index;
 	bool		set = false;
 
 	if (stmt->objtype != OBJECT_INDEX)
-		return;
+		return InvalidOid;
 	foreach_node(AlterTableCmd, cmd, stmt->cmds)
 		set |= cmd->subtype == AT_SetRelOptions || cmd->subtype == AT_ResetRelOptions;
-	if (!set || (relid = RangeVarGetRelid(stmt->relation, NoLock, true)) == InvalidOid)
-		return;
-	index = relation_open(relid, NoLock);
+	return set ? RangeVarGetRelid(stmt->relation, NoLock, true) : InvalidOid;
+}
+
+static void
+warn_analyzer_options(Oid relid)
+{
+	Relation	index = relation_open(relid, NoLock);
+
 	if (index->rd_rel->relam == sift_catalog()->am && analyzer_changed(index))
 		ereport(WARNING,
 				(errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
@@ -150,8 +154,21 @@ sift_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pro
 		prev_utility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
 	else
 		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-	if (IsA(stmt, AlterTableStmt) && sift_catalog()->am != InvalidOid)
-		warn_analyzer_options((AlterTableStmt *) stmt);
+	if (IsA(stmt, AlterTableStmt))
+	{
+		Oid			relid = altered_options_index((AlterTableStmt *) stmt);
+
+		if (relid != InvalidOid)
+		{
+			Relation	index = relation_open(relid, NoLock);
+
+			/* an option that does not fit the index (a name that is not a leaf) fails the ALTER, not the next use of the index */
+			sift_col_alter_check(index);
+			relation_close(index, NoLock);
+			if (sift_catalog()->am != InvalidOid)
+				warn_analyzer_options(relid);
+		}
+	}
 }
 
 void

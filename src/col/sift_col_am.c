@@ -31,6 +31,7 @@
 #include "sift_col_build.h"
 #include "sift_col_seg.h"
 #include "sift_cpu.h"
+#include "sift_ops.h"
 
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
@@ -66,18 +67,38 @@ sift_col_validate_preagg(const char *value)
 }
 
 void
+sift_col_validate_rollup(const char *value)
+{
+	const char *err = sift_cpagg_rollup_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_rollup_on_demand",
+							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
+							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",
+							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_rollup_worker",
+							 "A request for a rollup refresh starts the background worker that makes it.",
+							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
+							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written: 4, or 3 to keep them readable by pg_sift 3.0.",
 							"Segments already written keep their minor; a 3.1 library reads both.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
+	DefineCustomIntVariable("sift.test_col_rollup_panic",
+							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
+							NULL, &sift_test_col_rollup_panic, 0, 0, 1, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -110,6 +131,12 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "preagg",
 						 "pre-aggregates of every unit: default, off, or cube(dim: measure, ...; dim2: ...)",
 						 "", sift_col_validate_preagg, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
+					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
+					   true, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup",
+						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
+						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
 }
 
 /* ---------- options ---------- */
@@ -123,6 +150,8 @@ col_amoptions(Datum reloptions, bool validate)
 		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
 		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
+		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
+		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
@@ -131,7 +160,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -158,6 +187,21 @@ sift_col_options_preagg(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->preagg ? (const char *) o + o->preagg : "";
+}
+
+void
+sift_col_alter_check(Relation index)
+{
+	if (sift_col_is_index(index))
+		(void) sift_col_rel(index);
+}
+
+const char *
+sift_col_options_rollup(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->rollup ? (const char *) o + o->rollup : "";
 }
 
 /* ---------- the leaves of an index ---------- */
@@ -362,6 +406,8 @@ build_rel(Relation index)
 
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
+		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

@@ -30,7 +30,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"INSERT INTO orders (tenant_id, status, qty, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of(i)) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
-	preagg = 'cube(tenant_id: qty; status: qty; doc.items[].category: doc.items[].qty)')" \
+	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)')" \
 	>/dev/null || bail "setup failed"
 
 node_clone primary standby 3 "hot_standby_feedback = on

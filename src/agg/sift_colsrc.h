@@ -188,13 +188,15 @@ typedef struct SiftSrcZone
  * Pre-aggregates (docs/COL-PREAGG.md), optional provider callbacks: what a unit knows about its rows without reading a chunk. A unit may answer
  * only when it is fully visible and clean (unit_exact: no dead row, every page it has rows on all-visible to the snapshot; a unit of the write
  * buffer never is); the consumer applies its predicate on top (a unit whose zone lies inside the predicate answers whole, any other is scanned).
- * unit_agg / unit_hist return false when the unit cannot answer (not exact, an overflow value, no histogram for that dim in that unit).
- * Memory of a result is valid until the next unit_hist call of the source.
+ * unit_agg / unit_hist / unit_rollup return false when the unit cannot answer (not exact, an overflow value, no histogram for that dim in that unit).
+ * Memory of a result is valid until the next unit_hist or unit_rollup call of the source.
  */
 typedef __int128 SiftSrcI128 __attribute__((aligned(8)));
 
 #define SIFT_SRC_MAX_DIMS		32
 #define SIFT_SRC_MAX_MEAS		8
+#define SIFT_SRC_MAX_RDIMS		6
+#define SIFT_SRC_MAX_ROLLUPS	8
 
 typedef struct SiftSrcUnitAgg
 {
@@ -229,7 +231,36 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 } SiftSrcHist;
 
-/* Planner: the histograms the index writes (a unit may still lack one); ndims 0 when none. aggs: units have unit_agg sums (always, even with ndims 0) */
+/*
+ * The rollup of the elements of one list (an array of objects, an array of scalars, a map) in one unit: the distinct tuples of the values of its dims
+ * (low-cardinality leaves of the elements) that the unit holds, each with the elements it stands for and, per measure, the non-NULL count, the sum, the
+ * smallest and the largest value. Tuples are in ascending order of the dims (the first dim first, a dim's NULL after its values). A GROUP BY over
+ * any subset of the dims, a filter on them and these aggregates are answered by adding the tuples up. Memory valid until the next unit_rollup call.
+ */
+typedef struct SiftSrcRollup
+{
+	uint32		ntuples;
+	int			ndims;
+	int			dim[SIFT_SRC_MAX_RDIMS];	/* leaf ids */
+	const int64 *key[SIFT_SRC_MAX_RDIMS];	/* [ntuples] as stored; SCV_CODE dims: a code of dict[j] (the executor translates by value) */
+	const uint8 *isnull[SIFT_SRC_MAX_RDIMS];	/* [ntuples], NULL: no tuple has a NULL there */
+	const SiftSrcDict *dict[SIFT_SRC_MAX_RDIMS];	/* SCV_CODE dims, else NULL */
+	const uint32 *count;
+	int			nmeas;
+	int			meas[SIFT_SRC_MAX_MEAS];	/* leaf ids */
+	const uint32 *nn[SIFT_SRC_MAX_MEAS];
+	const SiftSrcI128 *sum[SIFT_SRC_MAX_MEAS];	/* integer measure (numeric: times 10^scale), else NULL */
+	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
+	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure; meaningless where nn is 0 */
+	const int64 *max[SIFT_SRC_MAX_MEAS];
+	const double *minf[SIFT_SRC_MAX_MEAS];		/* float measure */
+	const double *maxf[SIFT_SRC_MAX_MEAS];
+} SiftSrcRollup;
+
+/*
+ * Planner: the histograms and rollups the index writes (a unit may still lack one, or hold fewer dims of a rollup); ndims 0 when none.
+ * aggs: units have unit_agg sums (always, even with ndims 0)
+ */
 typedef struct SiftSrcPreagg
 {
 	bool		aggs;
@@ -240,6 +271,15 @@ typedef struct SiftSrcPreagg
 		int			nmeas;
 		int			meas[SIFT_SRC_MAX_MEAS];
 	}			dim[SIFT_SRC_MAX_DIMS];
+	int			nrollups;
+	struct
+	{
+		int			list;			/* the SCL_ARRAY / SCL_OBJECT leaf */
+		int			ndims;
+		int			dim[SIFT_SRC_MAX_RDIMS];
+		int			nmeas;
+		int			meas[SIFT_SRC_MAX_MEAS];
+	}			rollup[SIFT_SRC_MAX_ROLLUPS];
 } SiftSrcPreagg;
 
 /*
@@ -332,6 +372,9 @@ typedef struct SiftSrcProvider
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, SiftSrcRollup *r);
+	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
+	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
 	/*
 	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows
 	 * `rows` (ascending, in the numbering `read` and `live` use) of the unit the source is at. zone: the zone of an integer-typed leaf
@@ -439,6 +482,18 @@ static inline bool
 sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, h);
+}
+
+static inline bool
+sift_colsrc_unit_rollup(SiftSrcSource *src, const SiftSrcUnit *unit, int list, SiftSrcRollup *r)
+{
+	return src->prov->unit_rollup != NULL && src->prov->unit_rollup(src->impl, unit, list, r);
+}
+
+static inline bool
+sift_colsrc_unit_rollup_miss(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->unit_rollup_miss != NULL && src->prov->unit_rollup_miss(src->impl, unit);
 }
 
 /* Units of the superblocks [sb_lo, sb_hi), ascending sb, in the source's order within an sb */

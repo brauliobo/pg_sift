@@ -32,7 +32,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of(i)) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, price, doc)
 		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
-			preagg = 'cube(tenant_id: qty, price; status: qty; doc.items[].category: doc.items[].qty)')" >/dev/null || bail "setup failed"
+			preagg = 'cube(tenant_id: qty, price; status: qty) rollup(doc.items[].category: doc.items[].qty)')" >/dev/null || bail "setup failed"
 ok "setup"
 check "the type filter plans as an aggregate scan" test "$(sql crash "SET seq_page_cost = 10000" "EXPLAIN (COSTS OFF) SELECT count(*) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'" | grep -c SiftAgg)" == 1
 
