@@ -4,6 +4,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: a backend crash (SIGSEGV) in `Custom Scan (SiftAgg)` for per-item aggregates under an outer aggregate (the arms of a `UNION ALL` over a shared CTE) when an inner aggregate has a `FILTER` on a text leaf (`count(*) FILTER (WHERE p = 'x')`). The scan did not register the predicates of the inner aggregates' `FILTER`. Test `col_agg_arms`.
+- Fixed: a query that reads a `sift_col` leaf a unit flags with an overflow value (a JSON string in a `float8` path, a text over its declared length) raised "a column of the aggregate scan holds values its index cannot store" where the normal plan reads the value from the heap. The planner now keeps the normal plan for such a query, so the rows are the normal plan's; the queries that read other leaves are still pushed down. The write buffer (until `sift.col_promote`) and a cached generic plan made before the value was written still raise the error. Test `col_agg_overflow`.
+- Fixed: the overflow flag of a unit stayed after the rows that held the value were repaired and vacuumed, until `REINDEX`. `VACUUM` now rewrites a lone segment that flags the overflow of a leaf only in dead rows, whatever its share of dead rows.
+
 ## 3.0.0 - 2026-10-19
 
 The column track joins the BM25 index in one extension. Install the new files, then run `ALTER EXTENSION pg_sift UPDATE TO '3.0'` in every database (the extension SQL goes from 1.2 to 3.0; `pg_sift--1.2--3.0.sql`). Existing BM25 indexes keep working with no `REINDEX`.
