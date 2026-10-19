@@ -1,5 +1,5 @@
 /*
- * Column kernel throughput per level (src/sift_col_kern*.c, docs/COL.md section 8): "bench col". Same method and table as the
+ * Column kernel throughput per level (src/col/sift_col_kern*.c, docs/COL.md section 8): "bench col". Same method and table as the
  * scoring kernels (bench.c): best of 300 batches, ns per call, rows per call, G rows/s and input GB/s ("L1 GB/s" counts the input
  * bytes per row; the arrays fit the L1/L2 cache). Every level's output is compared with the scalar one first.
  */

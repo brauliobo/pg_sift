@@ -1,6 +1,6 @@
 /*
  * sift_col_pagg.h - the pre-aggregates of a unit through the column source (docs/COL-PREAGG.md): what a consumer may ask of the unit it
- * holds from sift_col_next, with the visibility rule built in. PostgreSQL side of src/sift_col_preagg.h (the formats, portable).
+ * holds from sift_col_next, with the visibility rule built in. PostgreSQL side of src/col/sift_col_preagg.h (the formats, portable).
  */
 #ifndef SIFT_COL_PAGG_H
 #define SIFT_COL_PAGG_H

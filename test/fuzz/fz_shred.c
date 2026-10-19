@@ -1,5 +1,5 @@
 /*
- * fz_shred.c - fuzz target for the JSON shredder (src/sift_shred.c, docs/COL-SHRED.md) through its event interface, the one every
+ * fz_shred.c - fuzz target for the JSON shredder (src/col/sift_shred.c, docs/COL-SHRED.md) through its event interface, the one every
  * driver uses: sift_shred_pg.c walks a jsonb into exactly these calls, in this order. The input is
  *
  *   u8 flags (bit 0: search wide objects by key, as the jsonb driver does; bits 1-3: small limits; bit 7: spec only)

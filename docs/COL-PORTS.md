@@ -6,7 +6,7 @@ Verdict and phases: section 5. Status: research, 2026-10; nothing here changes w
 
 ## 1. What is host independent
 
-`src/portable-col.list` names the files that reach their host only through `src/sift_host.h` (`scripts/check-portable.sh` enforces
+`src/portable-col.list` names the files that reach their host only through `src/core/sift_host.h` (`scripts/check-portable.sh` enforces
 the includes). Checked by building them, not only by reading includes (`make -C sqlite col-smoke`, tests/col_smoke.c):
 
 | Part | Files | Lines | On the SQLite host |
@@ -138,6 +138,5 @@ phase 2 shows demand and legal has answered; 3a is optional and only worth it if
      blocks, which the format handles. The mapping is a host policy, not format: it is recorded in the table's `_config` (`keymap=8`),
      so a unit size of another host (PostgreSQL's depends on tuples per page) and a later change by rebuild need no format change.
      The BM25 virtual table keeps `>> 5`.
-6. **File naming**: a later restructure moves `src/` files into subfolders (`col/`, `agg/`, `table/`) instead of `sift_col_*`
-   prefixes; this work adds no new prefixed names (`sift_col_pg.h` is the one exception and moves with its siblings), and the file names
-   quoted above are those of today.
+6. **File naming**: `src/` is split into one folder per area (`core/`, `bm25/`, `col/`, `agg/`, `table/`, DESIGN.md "Source layout"); the files keep their
+   names, which the text above quotes, so a file is named by its bare name in the docs.

@@ -1,5 +1,5 @@
 /*
- * regex_test.c - drives mariadb/host/host_regex.c the way src/sift_query.c does (see regex_check.sh).
+ * regex_test.c - drives mariadb/host/host_regex.c the way src/bm25/sift_query.c does (see regex_check.sh).
  *
  *   regex_test match nosub|sub     stdin: PATTERN<TAB>WORD per line; prints 1, 0 or error per line
  *   regex_test prefix WORDS        stdin: PATTERN per line; prints none, P:prefix or E:prefix per line and fails when
@@ -82,7 +82,7 @@ compile(regex_t *re, const char *pat, int flags)
 	return rc == REG_OKAY;
 }
 
-/* the two compiles of analyze_regex in src/sift_query.c; false when either fails */
+/* the two compiles of analyze_regex in src/bm25/sift_query.c; false when either fails */
 static bool
 compile_sift(regex_t *re, const char *pat, int flags)
 {

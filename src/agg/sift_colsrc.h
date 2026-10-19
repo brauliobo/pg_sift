@@ -8,8 +8,8 @@
  *   - a `sift_table` TABLE (table access method): the table is the columns, its scan is MVCC by itself (sift_colsrc_vet has
  *     nothing to check).
  * Everything above this header is the same for both. The implementations are providers (SiftSrcProvider) registered by their
- * module: the sift_col index (src/sift_aggcol.c, over the column engine of docs/COL.md), the sift_table table, and the test
- * stub (src/sift_aggstub*.c, the `sift_colstub` index AM, SIFT_TESTING builds only), which reads the heap pages raw and builds
+ * module: the sift_col index (src/agg/sift_aggcol.c, over the column engine of docs/COL.md), the sift_table table, and the test
+ * stub (src/agg/sift_aggstub*.c, the `sift_colstub` index AM, SIFT_TESTING builds only), which reads the heap pages raw and builds
  * the same units. The functions below dispatch on the access method of the relation. Keep this header small: it is the seam.
  *
  * Model (docs/COL.md section 1): a source has leaves (ids 0..nleaves-1). A scalar leaf is one value per row; a GROUP
@@ -323,7 +323,7 @@ typedef struct SiftSrcProvider
 	 * Optional (NULL: the source cannot be restricted to a match set, sift_colsrc_can_select says so to the planner). select, called before
 	 * `begin`, restricts the units `begin` starts to the rows whose key (blk << 16 | off) the filter has (NULL: all rows again): a unit
 	 * without such a row is not returned (it counts in units_pruned), and in the others `nrow`, `read`, `live` and `vet` are about the kept
-	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/sift_aggsel.h).
+	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/agg/sift_aggsel.h).
 	 */
 	void		(*select) (void *impl, const SiftFilter *keep);
 	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */

@@ -1,4 +1,4 @@
-# Chunk codec interface (`src/sift_colcodec.[ch]`)
+# Chunk codec interface (`src/col/sift_colcodec.[ch]`)
 
 The codec compresses and reads **one column chunk**: the values of one leaf for the rows (or, for a child of a group, the elements) of one unit
 (`docs/COL.md` 2.2). It serves both users of the column engine, the index AM `sift_col` and the table AM `sift_table`: it sees keys and bytes, never
@@ -118,7 +118,7 @@ and the codec's `unpack32` (vertical layout, bits 0..32) are different layouts o
 6. `sift.col_index_info` reports the encodings per leaf from `SiftCcInfo.tag`. (`sift_cc_kernels_init()` is already called from `_PG_init` by this branch.)
 7. Portable hosts: list the codec in `portable.list` and add the `colz.c` stubs (header of this file).
 
-This branch depends on nothing of the engine. The shared files it touches are `Makefile` (library probes), `src/sift_handler.c` (one line in `_PG_init`),
+This branch depends on nothing of the engine. The shared files it touches are `Makefile` (library probes), `src/core/sift_handler.c` (one line in `_PG_init`),
 `pg_sift_test--1.0.sql`, `CHANGELOG.md` and the packaging recipes (build dependencies on the LZ4 and zstd development packages).
 
 ## 6. The `compression` option

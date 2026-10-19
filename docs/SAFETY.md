@@ -1,7 +1,7 @@
 # Memory safety in C for pg_sift
 
 The column engine and the BM25 readers decode bytes from disk. Rust-style safety in C means: every byte read goes through a length-carrying
-type (`SiftSpan`, src/sift_span.h), arithmetic on stored sizes is checked, the compiler inserts what it can, and tools find the rest.
+type (`SiftSpan`, src/core/sift_span.h), arithmetic on stored sizes is checked, the compiler inserts what it can, and tools find the rest.
 Findings so far: docs/SAFETY-FINDINGS.md.
 
 ## Threat model
@@ -21,7 +21,7 @@ stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds o
 
 | # | Measure | Gain | Cost | Where |
 |---|---|---|---|---|
-| 1 | `SiftSpan` for every stored offset/length; validate before allocate | closes the P1/P2 class of the audits | ~0 on parse paths, to be measured per converted decoder | src/sift_span.h, phase 2 |
+| 1 | `SiftSpan` for every stored offset/length; validate before allocate | closes the P1/P2 class of the audits | ~0 on parse paths, to be measured per converted decoder | src/core/sift_span.h, phase 2 |
 | 2 | Fuzz every decoder, corpus from tests, differential vs scalar | 8 findings, 3 high | CI minutes | test/fuzz, scripts/fuzz.sh |
 | 3 | `SIFT_HARDEN=pkg`: stack protector strong, stack clash, CET/branch protection, strict-flex-arrays=3, FORTIFY_SOURCE=3, relro/now | stack smash, libc misuse, ROP | 0.0 to +0.3% | pkg |
 | 4 | `-ftrivial-auto-var-init=zero` (`SIFT_HARDEN=init`) | uninitialized stack and padding leaks | +0.1 to +1.9% | CI hardened; pkg optional |
@@ -73,7 +73,7 @@ Installed: clang-tidy, scan-build, gcc -fanalyzer, libFuzzer, MSan and UBSan-min
 - clang `-fbounds-safety` (`__counted_by`, `__sized_by`, `__indexable`): clang 23 here only has `-Xclang -fexperimental-bounds-safety`, no
   `<ptrcheck.h>`, and a one-function probe did not build; Apple's clang ships it. Not usable on the Debian/RPM/AUR toolchains.
 - `counted_by` on flexible array members: gcc 15+ and clang 18+; with `-fsanitize=bounds` the access traps (verified with gcc 16). Applies to 5
-  sites only (src/sift_page.h x3, src/sift_parallel.h, src/sift_col_enc.c); the pgsql-hackers thread "Add counted_by attribute" is the
+  sites only (src/core/sift_page.h x3, src/bm25/sift_parallel.h, src/col/sift_col_enc.c); the pgsql-hackers thread "Add counted_by attribute" is the
   PostgreSQL-side attempt (it found write-order problems under bounds checking). Low value for sift: decoders mostly walk byte buffers.
 - PostgreSQL aids: `--enable-cassert` implies MEMORY_CONTEXT_CHECKING and CLOBBER_FREED_MEMORY (they catch palloc overruns ASan cannot); the
   `assert` and `valgrind` lanes above use them. amcheck is the model for sift.verify.
@@ -131,7 +131,7 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P4-2 | sift_varint.h:sift_get_varint64_n, sift_posting.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
 | P4-3 | sift_col_enc.c:sift_cunit_chunk; sift_col_seg.c:sift_cseg_unit_fill; sift_col_scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
-Also: extend sift.verify (src/sift_segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
+Also: extend sift.verify (src/bm25/sift_segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: sift_docdir.c, sift_lane.c, rest of sift_wbuf.c, sift_cscan.c, sift_cscan consumers.
 
 ## Decisions for the coordinator

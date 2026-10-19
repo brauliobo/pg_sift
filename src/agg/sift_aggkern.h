@@ -2,7 +2,7 @@
  * sift_aggkern.h - the vectorized operators of SiftAgg (docs/KERNELS.md pattern).
  *
  * One dispatch table per SIMD level, selected through sift_cpu_register() at run time from the CPU and the sift.simd
- * setting, never at build time. The scalar table (src/sift_aggkern.c) is the specification: every other level must
+ * setting, never at build time. The scalar table (src/agg/sift_aggkern.c) is the specification: every other level must
  * return bit-identical results, including the float sums (their order is fixed below, independent of the level, so a
  * replica with another CPU answers the same) and the slots they leave unchanged. sift_aggkern_for(level) returns a
  * level's table for tests (never NULL: a level the CPU lacks falls back downwards).

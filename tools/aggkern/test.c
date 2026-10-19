@@ -3,7 +3,7 @@
  *
  *   test [thousands]   random cases per level and thread (default 20), plus the length grid 0..4096
  *
- * Every SIMD table is compared bit for bit with the scalar table over all operators (src/sift_aggkern_cases.h: lengths including
+ * Every SIMD table is compared bit for bit with the scalar table over all operators (src/agg/sift_aggkern_cases.h: lengths including
  * multiples of 64 +- 1, thresholds at the boundaries, empty / full / sparse masks, NaN / Inf / -0 doubles, INT_MIN / INT_MAX, codes at
  * the LUT bounds, garbage in the padding). The scalar table itself is checked against a few values written out by hand.
  * KT_THREADS sets the number of threads (default 8).

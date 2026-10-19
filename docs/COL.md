@@ -6,8 +6,8 @@ heap stays the only copy that is authoritative, and the index is reached through
 the `sift` (BM25) access method, whose store, directory, write buffer lanes, tiered merge and maintenance it reuses. The BM25 paths are not
 touched.
 
-Status of this document: the contract of the column track (index AM `sift_col`; the table AM `sift_table` of col-tam reuses the engine, section 12). `src/sift_col.h` is the C interface (column source, metadata, shred
-interface) the other agents build against, `src/sift_col_kern.h` the kernel table. Where this file and the code disagree, fix the code or
+Status of this document: the contract of the column track (index AM `sift_col`; the table AM `sift_table` of col-tam reuses the engine, section 12). `src/col/sift_col.h` is the C interface (column source, metadata, shred
+interface) the other agents build against, `src/col/sift_col_kern.h` the kernel table. Where this file and the code disagree, fix the code or
 this file in the same commit.
 
 User-facing names: index access method `sift_col` (`pg_am.amname` is unique across index and table AMs; the table AM is `sift_table`), operator
@@ -133,7 +133,7 @@ payload
 | `FOR` (1) | `n` unsigned values `key - base` of `bits` = 8, 16, 32 or 64 bits, plain little endian array. NULL slots hold 0. |
 | `PACK` (2) | `n` unsigned values of `bits` = 1..31 bits (not 8 or 16), LSB first, in blocks of 64 values of `8 * bits` bytes (the last block padded) |
 | `RLE` (3) | reserved, not written |
-| `CC` (4) | the payload is one self-describing blob of the chunk codec (`src/sift_colcodec.h`, docs/COL-CODEC.md): `bits` and `base` are 0, the blob holds its own frame of reference, `min` and `max`. Readers dispatch to `sift_cc_open` + `sift_cc_filter` / `sift_cc_decode(_sel)` (a LUT test takes the codes with `sift_cc_decode_off32`). The blob starts 8-aligned and ends on a multiple of 8, so the payload is the rest of the chunk. Written by every segment writer (`sift_colw_begin` takes the policy of each leaf); an in-memory unit that is only scanned, a constant chunk and a unit built with no policy keep `CONST`/`FOR`/`PACK`, which stay readable. The reloption `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, encodings joined by `+`; per column `'auto; col=zstd:9'`, the column being the attribute name or the shredder path) sets the policy; a change applies to the chunks written afterwards (merge rewrites). `sift.col_leaves` counts the blobs in `codec_chunks`. |
+| `CC` (4) | the payload is one self-describing blob of the chunk codec (`src/col/sift_colcodec.h`, docs/COL-CODEC.md): `bits` and `base` are 0, the blob holds its own frame of reference, `min` and `max`. Readers dispatch to `sift_cc_open` + `sift_cc_filter` / `sift_cc_decode(_sel)` (a LUT test takes the codes with `sift_cc_decode_off32`). The blob starts 8-aligned and ends on a multiple of 8, so the payload is the rest of the chunk. Written by every segment writer (`sift_colw_begin` takes the policy of each leaf); an in-memory unit that is only scanned, a constant chunk and a unit built with no policy keep `CONST`/`FOR`/`PACK`, which stay readable. The reloption `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, encodings joined by `+`; per column `'auto; col=zstd:9'`, the column being the attribute name or the shredder path) sets the policy; a change applies to the chunks written afterwards (merge rewrites). `sift.col_leaves` counts the blobs in `codec_chunks`. |
 | `STRS` (5) | VAR leaves: the codec's string list (section 2.8); `bits` and `base` 0 |
 | `ISTR` (6) | STR leaves stored inline: prefix blob and string list (section 2.9); `bits` and `base` 0; `sift.col_leaves` counts them in `inline_chunks` |
 
@@ -168,7 +168,7 @@ at most 256 codes, else a bloom of `code & 255`.
 correctness: an inline unit reaches the executor as a `SiftSrcDict` of its own with its own `id`. What it costs is that the executor
 evaluates a text predicate by building a LUT over the unit's dictionary, which for an inline unit means decoding and interning every
 string of the unit (measured: 300 000 distinct strings of 290 bytes, `s = const` through SiftAgg 80 ms, a heap scan 26 ms, `sift_col_filter`
-on the encoded form 2.5 ms). `src/sift_colsrc.h` therefore carries two optional provider callbacks, `prune_str` and `filter_str`, with the
+on the encoded form 2.5 ms). `src/agg/sift_colsrc.h` therefore carries two optional provider callbacks, `prune_str` and `filter_str`, with the
 tests `SiftSrcStrTest` (EQ, NE, IN, NOT IN for any deterministic collation; the range operators and PREFIX only where the comparison is
 bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. To apply:
 
@@ -409,7 +409,7 @@ the planner never forms an index path; only the custom scan of the plan track us
 
 ## 6. Shredding jsonb (col-json's `sift_shred.h`, through the adapter `sift_col_shred.c`)
 
-The core never parses jsonb. col-json's shredder (`docs/COL-SHRED.md`, `src/sift_shred.[ch]`) turns a document into typed slots
+The core never parses jsonb. col-json's shredder (`docs/COL-SHRED.md`, `src/col/sift_shred.[ch]`) turns a document into typed slots
 (`SiftShredDoc`: per column a state ABSENT / NULL / VALUE / OVERFLOW and a value per group element, per group the `end[]` ranges of its
 elements under every parent element, maps with a key id). The **adapter** (`sift_col_shred.c`, section 4 of `sift_col.h`, owned by the core)
 is the only code that sees both models:
@@ -441,7 +441,7 @@ children.
 
 ## 7. The column source API
 
-`src/sift_col.h` is normative. In outline (the executor owns control flow, the core owns data):
+`src/col/sift_col.h` is normative. In outline (the executor owns control flow, the core owns data):
 
 ```
 src = sift_col_open(heap, index, snapshot, mcxt, flags)       directory snapshot, VM/visibility state, privilege/RLS/SSI checks
@@ -489,7 +489,7 @@ Every hot loop over column data (filters, selection vectors, null bitmaps, zone-
 5. A test (`sift._test_col_kernels(level)`, regression `col_kernels_simd`) runs random inputs through every level the CPU supports and
    compares against scalar bit for bit; ranges exercise all widths, thresholds at the boundaries and unaligned lengths.
 
-Tables of the track: `SiftColKernels` (`src/sift_col_kern.h`, core: filters, selection, zone, LUT, null ops, unpack/decode), and the
+Tables of the track: `SiftColKernels` (`src/col/sift_col_kern.h`, core: filters, selection, zone, LUT, null ops, unpack/decode), and the
 tables of col-plan (the aggregation executor's own operators: `SiftAggKernels`, their own header and rebind), col-json (the shredder's
 state byte kernels: `SiftShredKernels`) and col-compress (additional decode/encode slots go into `SiftColKernels.decode` through that
 header, owner announced in its comments).

@@ -1,6 +1,6 @@
 /*
  * sift_aggcol.c - the column source of the aggregate scan over a sift_col index (sift_colsrc.h over the column engine of
- * docs/COL.md, src/sift_col.h): the leaf list becomes the layout, a unit's selection-based reads become whole-unit vectors of the
+ * docs/COL.md, src/col/sift_col.h): the leaf list becomes the layout, a unit's selection-based reads become whole-unit vectors of the
  * types the kernels take (the engine decodes a chunk straight into the lane of the leaf's vector type, NULL bitmaps expanded to flags),
  * liveness and MVCC vetting are the engine's. Compiled only when the engine is part of the build.
  */
@@ -827,7 +827,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->heap_pages = cc->heap_pages;
 }
 
-/* ---- pre-aggregates (src/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
+/* ---- pre-aggregates (src/col/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
 
 static void
 col_preagg(Relation index, SiftSrcPreagg *pa)

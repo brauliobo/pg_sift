@@ -1,7 +1,7 @@
 # Pre-aggregates of a unit (metadata-only and low-cardinality aggregation)
 
-Status: the writer, the format, the provider callbacks and the SQL hooks are implemented (column format 1.2); the `SiftAgg` consumption (section 6) is designed here and not yet coded: `src/sift_agg*.c` belong to the planner track.
-Files: `src/sift_col_preagg.[ch]` (formats, option, compute, verify; portable), `src/sift_col_seg.c` (written with the unit, read per segment), `src/sift_col_pagg.[ch]` (through the column source), `src/sift_colsrc.h` (`unit_exact`, `unit_agg`, `unit_hist`, `preagg`), test `col_preagg`.
+Status: the writer, the format, the provider callbacks and the SQL hooks are implemented (column format 1.2); the `SiftAgg` consumption (section 6) is designed here and not yet coded: `src/agg/sift_agg*.c` belong to the planner track.
+Files: `src/col/sift_col_preagg.[ch]` (formats, option, compute, verify; portable), `src/col/sift_col_seg.c` (written with the unit, read per segment), `src/col/sift_col_pagg.[ch]` (through the column source), `src/agg/sift_colsrc.h` (`unit_exact`, `unit_agg`, `unit_hist`, `preagg`), test `col_preagg`.
 
 ## 1. What other engines precompute, and what is taken
 

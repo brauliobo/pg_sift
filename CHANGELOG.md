@@ -34,7 +34,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   Queries that read postings (OR, rare terms, scans) still pay for the dead ones until the merge (up to 2 times at 45% dead).
   Stored 2.0.0 files are the fixture of the `compat_2x_fixture` test. See DESIGN.md (Liveness) and docs/SIZING.md.
 
-- Column chunk codec (`src/sift_colcodec.c`, interface in [docs/COL-CODEC.md](docs/COL-CODEC.md), research and measurements in
+- Column chunk codec (`src/col/sift_colcodec.c`, interface in [docs/COL-CODEC.md](docs/COL-CODEC.md), research and measurements in
   [docs/perf/COMPRESSION.md](docs/perf/COMPRESSION.md)): the compression of the column engine's chunks. For each chunk it picks, from exact sizes, the
   smallest cascade of constant, frame of reference (vertical bit-packing or plain bytes), delta, run-length, sorted dictionary, decimal-float
   (ALP-style) and common-divisor (timestamps of whole seconds, amounts in cents) encodings, and layers LZ4 or zstd on a stream only where the cost rule says the saved bytes are worth the decode time. Filters run on the
@@ -55,7 +55,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   stored inline in its chunk with a sortable 8-byte prefix, so there is no length limit below 1 GB per unit and the `0A000` that `SiftAgg` raised
   for long strings is gone. Equality, `IN`, comparisons, prefix and length tests run on the encoded form (prefix zone maps prune units; the
   prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
-  callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
+  callbacks of `src/agg/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
   Details and the glue `SiftAgg` still has to apply: `docs/COL.md` section 2.9.
 
 - Added: `CREATE INDEX ... USING sift_col` accepts `char(n)` and `name` columns, as `docs/COL.md` already said (it refused them). `char(n)` and
@@ -95,7 +95,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   arguments, keys and filters, with the scales PostgreSQL gives and exact int128 arithmetic; whatever is not proven exact (division, other
   functions, more than 38 digits) keeps the plan. `GROUP BY` an `int8` column is pushed down too (`docs/COL-PLAN.md`, Numeric).
 
-- Added: the vectorized operators of the aggregate pushdown (`src/sift_aggkern*.c`, `docs/KERNELS.md`): comparisons and range tests on
+- Added: the vectorized operators of the aggregate pushdown (`src/agg/sift_aggkern*.c`, `docs/KERNELS.md`): comparisons and range tests on
   int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
   min/max, per-group accumulation and adjacent-distinct counting, as one scalar, AVX2 and AVX-512 table chosen at run time by `sift.simd`.
   Every level returns bit-identical results (doubles follow PostgreSQL's float8 order, the float sum has one fixed accumulation order).

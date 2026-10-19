@@ -2,7 +2,7 @@
 
 Plain SQL over a table with a `sift_col` index (or a `sift_table` table) runs on the column data when the planner can prove the result is the one of the normal plan; everything else keeps the normal plan. `sift.enable_agg` (default on) switches the matcher. The result of a pushed query is the one of the plain plan, row for row: `scripts/coldiff.sh` runs every query both ways and compares (docs/AGG.md).
 
-Files: `src/sift_aggplan.c` (shape matcher, cost), `src/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/sift_agg.c` (executor, EXPLAIN), `src/sift_aggkern*.c` (vectorized operators, `docs/KERNELS.md`), `src/sift_colsrc.h` and `src/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/sift_aggcol.c` (provider over the `sift_col` index), `src/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
+Files: `src/agg/sift_aggplan.c` (shape matcher, cost), `src/agg/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/sift_agg.c` (executor, EXPLAIN), `src/agg/sift_aggkern*.c` (vectorized operators, `docs/KERNELS.md`), `src/agg/sift_colsrc.h` and `src/agg/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/agg/sift_aggcol.c` (provider over the `sift_col` index), `src/table/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
 
 ## What matches
 
@@ -175,7 +175,7 @@ Listed once, with the reason:
 
 ## Executor
 
-One unit at a time (the rows of a segment inside one superblock), through the seam of `src/sift_colsrc.h`:
+One unit at a time (the rows of a segment inside one superblock), through the seam of `src/agg/sift_colsrc.h`:
 
 1. row predicates to a bitmap with the kernel tables (integer comparisons are `range` and dictionary lookups `lut` of the column table, `cmp_f64` / `between_f64` / `lut_i32` of the aggregation table; bitmap operations are the column table's `bits_*`); dictionary predicates are evaluated once per distinct value of the unit's dictionary;
 2. with an unnest, element predicates in vectors of 4096 elements, the row bitmap lifted to the elements through their parent ordinals;
@@ -332,7 +332,7 @@ A path with workers pays `AGG_SETUP_FACTOR` (110) times `parallel_setup_cost`: s
 
 The rows the node returns are bounded by the groups its tuples can make (`rows_out` in `agg_cost`: the sets times the unnested rows it expects to aggregate). PostgreSQL's group estimate of an unnest is its default 200 distinct values times the 100 rows it assumes per call, 768500 groups for S5 (20334 exist), and the sort and window above the node were priced for them: the node's plan was estimated above the plain parallel plan (261889 against 252983) though it runs five times faster, and the plain plan is cheaper by its pathkeys. With the bound the plan above the node is priced for the groups that can exist (S5: 117883 against 350917 plain at every worker count).
 
-A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/sift_aggcte.c`): its cost, which stands for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of the nodes above (a window, a union) took 3.5 to 5 ms of those queries (S3 -17 percent, S5 -14, S4 -13).
+A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/sift_aggcte.c`): its cost, which stands for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of the nodes above (a window, a union) took 3.5 to 5 ms of those queries (S3 -17 percent, S5 -14, S4 -13).
 
 ## Results
 
@@ -502,7 +502,7 @@ What is left of the filtered counts (Q05, Q07; "Filters in the source") is unit 
 
 ### Generic aggregates
 
-What the generic aggregates would gain from the engine (`src/sift_col*`, not changed here), in the order of what they save:
+What the generic aggregates would gain from the engine (`src/col/`, not changed here), in the order of what they save:
 
 - **Datum-ready text and numeric reads**: `sift_colsrc_read` gives codes into a per-unit dictionary and scaled int64; every generic aggregate over text builds a `text` Datum per row from the dictionary bytes, and over a numeric builds a `numeric` from the integer (`int64_to_numeric`). A read that returns the varlena of each distinct code once per unit (a `Datum[]` over the dictionary, built lazily) and a `numeric` Datum per distinct scaled value would take that out of the per-row path for text keys and for low-cardinality numbers.
 - **More scalar leaf types**: the generic aggregates read bool, int2/4/8, date, timestamp(tz), float4/8, text, varchar and numeric(p <= 18). `bytea` and `char(n)` columns are refused at `CREATE INDEX` or by the planner, so `array_agg(bytea)` and the like keep the plan (`uuid`, `interval` and `numeric(p > 18)` are being added to the engine).
@@ -513,5 +513,5 @@ What the generic aggregates would gain from the engine (`src/sift_col*`, not cha
 ### Expressions PostgreSQL evaluates
 
 - **`numeric(p > 18)` storage**: a leaf class of two int64 words (or an int128) with the scale, so that a column such as `numeric(30, 6)` is indexable. `CREATE INDEX` refuses it today, so it never reaches the planner; with the class the leaf would be a combo input (`leaf_wide` already rebuilds the numeric from an int64 and a scale, a second word is the only change) and the kernels would refuse it.
-- **NaN in `sift_table`**: `tbl_read` in `src/sift_table_src.c` raises `0A000` when `sift_col_read` returns `ovf`; it should copy the bitmap to `SiftSrcVec.ovf` as `src/sift_aggcol.c` does (`col_read`), then a table with a NaN in a numeric column answers the PostgreSQL-evaluated shapes too.
+- **NaN in `sift_table`**: `tbl_read` in `src/table/sift_table_src.c` raises `0A000` when `sift_col_read` returns `ovf`; it should copy the bitmap to `SiftSrcVec.ovf` as `src/agg/sift_aggcol.c` does (`col_read`), then a table with a NaN in a numeric column answers the PostgreSQL-evaluated shapes too.
 - **A flag that a numeric column holds a NaN**: with it per unit (or per column in the catalog, set at build and by `ANALYZE`) the planner could send a kernel shape (`sum(n + 1)`) of such a column to a combo instead of letting the scan raise. Today the planner cannot know, and the scan raises at the first unit with a NaN.

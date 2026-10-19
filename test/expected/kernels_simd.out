@@ -1,4 +1,4 @@
--- Scoring kernels (src/sift_kernels*.c): every SIMD level is bit-identical to
+-- Scoring kernels (src/bm25/sift_kernels*.c): every SIMD level is bit-identical to
 -- the scalar specification. Levels above what the CPU supports fall back to
 -- the best supported one, so the output does not depend on the host.
 CREATE EXTENSION pg_sift;

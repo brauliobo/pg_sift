@@ -8,7 +8,7 @@ requirement, section 5) logical replication.
 
 Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
 index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `pg_sift--3.0.sql` and `pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
-`src/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
+`src/table/sift_table*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
 the table AM track; where it and the code disagree, fix one in the same commit.
 
 Running example (used in tests too): `orders(id bigint, store_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb,
@@ -292,11 +292,11 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` read zero.
 - **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the
   synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
-  `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/sift_visibility.c) which today reads the heap's
+  `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/sift_visibility.c) which today reads the heap's
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
   candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM. This is a
   small patch to a file this track does not own, kept in its own commit (section 12).
-- **SiftAgg over the table** (`src/sift_table_src.c`, the table provider of the seam `src/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
+- **SiftAgg over the table** (`src/table/sift_table_src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
   columns of the table, in the order of its column layout. The groups are read by the engine, one `sift_col_open_table` source per column layout
   the segments were written for (the leaves of an older layout are matched by attribute number; a column the segment lacks reads as the
   catalog's default for rows that lack it, null or the constant of `ADD COLUMN .. DEFAULT`), with the table's visibility as the engine's
@@ -314,7 +314,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
 
 ## 7. Maintenance
 
-**Promotion** (`sift_tbl_promote`, `src/sift_table_seg.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
+**Promotion** (`sift_tbl_promote`, `src/table/sift_table_seg.c`): a write buffer is sealed, closed to appends (page `SEALED` flags under page locks, directory
 kind `SEALED`; `create_wbuf` does it when the segment fills, VACUUM closes the active one once it has 8 pages), and becomes a column
 segment when every row is *final* (`row_fate`): `xmin` committed and older than the horizon (kept, frozen), or flagged `DEAD` by VACUUM
 (dropped); a row whose insert is aborted or not yet old enough keeps the segment as it is (retried by the next promotion). A row with a
@@ -438,7 +438,7 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
 
 ## 12. Interfaces to the engine and the other tracks: stubs and requests
 
-The table AM is written against `src/sift_col.h`, `sift_col_enc.h`, `sift_col_seg.h` of the column track and has no second implementation of
+The table AM is written against `src/col/sift_col.h`, `sift_col_enc.h`, `sift_col_seg.h` of the column track and has no second implementation of
 anything the engine does: group segments are written by `sift_colw_*` (and `sift_col_merge_segments`), read by `sift_col_open_table` /
 `sift_col_begin/next/read`, cleared by `sift_cseg_bulkdelete`, with the table's visibility as the engine's `SiftColVisibility` hook.
 
@@ -455,10 +455,10 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 
 | file | change |
 |---|---|
-| `src/sift_store.c` [store; also edited by the m2-truncate branch] | `sift_store_removable` takes a table relation (horizon of the table itself) |
-| `src/sift_visibility.c/.h` [BM25 core] | `sift_vis_nblocks` (virtual blocks for a sift_table), page filter delegated to `sift_tbl_filter_page` for a sift_table |
-| `src/sift_build.c`, `src/sift_cscan.c` [BM25 core] | the `sift` index accepts a sift_table; block counts through `sift_vis_nblocks` |
-| `src/sift_handler.c` [BM25 core] | `_PG_init` calls `sift_tbl_init` (registers the change-record resource manager when preloaded) |
+| `src/core/sift_store.c` [store; also edited by the m2-truncate branch] | `sift_store_removable` takes a table relation (horizon of the table itself) |
+| `src/core/sift_visibility.c/.h` [BM25 core] | `sift_vis_nblocks` (virtual blocks for a sift_table), page filter delegated to `sift_tbl_filter_page` for a sift_table |
+| `src/bm25/sift_build.c`, `src/bm25/sift_cscan.c` [BM25 core] | the `sift` index accepts a sift_table; block counts through `sift_vis_nblocks` |
+| `src/core/sift_handler.c` [BM25 core] | `_PG_init` calls `sift_tbl_init` (registers the change-record resource manager when preloaded) |
 | `scripts/isolation.sh` [test tooling] | `# requires: tam` (the spec is skipped when the installed pg_sift has no `sift_table` access method) |
 
 **Requests (for the owners, as notes; nothing here edits their files):**

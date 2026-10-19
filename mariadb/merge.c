@@ -1,7 +1,7 @@
 /*
  * merge.c - tiered merge of segments and the background thread that runs it.
  *
- * Policy. The shared one (sift_merge_pick, src/sift_merge.c): segments of similar size, tiers from 1 MiB, merge when `merge_fanin`
+ * Policy. The shared one (sift_merge_pick, src/bm25/sift_merge.c): segments of similar size, tiers from 1 MiB, merge when `merge_fanin`
  * of a tier have piled up (every drain adds a small one), so a document is rewritten once per tier and the number of segments stays
  * logarithmic in the size of the index. This host adds its own dead documents (they are not in the liveness bits): an index whose
  * dead documents exceed a quarter of its documents is merged whole, sx_merge(full) always.

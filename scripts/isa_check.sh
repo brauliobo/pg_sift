@@ -8,7 +8,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 bad=0 checked=0 skipped=0
-for o in src/*.o; do
+for o in src/*/*.o; do
 	case $o in *_avx2.o | *_avx512.o) skipped=$((skipped + 1)); continue ;; esac
 	checked=$((checked + 1))
 	insns=$(objdump -d "$o" | grep -cw popcnt || true)

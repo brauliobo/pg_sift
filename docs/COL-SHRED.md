@@ -1,7 +1,7 @@
 # sift_col shredder: jsonb to typed columns
 
-`src/sift_shred.[ch]` (portable, `src/portable-col.list`) turns one JSON document into typed column values for a list of declared
-paths. `src/sift_shred_pg.[ch]` drives it from a `JsonbContainer`. The shredder is the only code that knows JSON; the storage
+`src/col/sift_shred.[ch]` (portable, `src/portable-col.list`) turns one JSON document into typed column values for a list of declared
+paths. `src/col/sift_shred_pg.[ch]` drives it from a `JsonbContainer`. The shredder is the only code that knows JSON; the storage
 (`sift_col`, docs/COL.md) and the planner see typed arrays, element offsets and per-value states.
 
 ## Declaring paths (reloption `paths`)

@@ -1,5 +1,5 @@
 /*
- * host_stubs.c - the collaborators of src/sift_eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
+ * host_stubs.c - the collaborators of src/bm25/sift_eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
  * need, the same on both: docmap directories are not kept between queries and there are no write buffers (the live
  * segment of a query is an immutable one built from the queue). Options, visibility and the TID bitmap are the host's own.
  */
