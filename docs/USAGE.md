@@ -41,6 +41,9 @@ SELECT id FROM docs WHERE body @@> ANY (ARRAY['case', 'clip']);       -- OR of s
 `ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid.
 `sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table, not in `WHERE`
 (filter on a score from a subquery). A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant one, also in a generic plan.
+`ORDER BY name, sift.score(ctid) DESC LIMIT k` (columns of the scanned table first, then the score) scores only the rows tied with the
+k-th best `name` instead of every match, and gives the answer of ranking every match and sorting after; `EXPLAIN` shows
+`Order: name, score DESC` and `Key Passes`. A query with no `LIMIT` ranks every match in one search.
 It works on materialized views too. It is not available in `UPDATE`, `DELETE`, `MERGE` or `FOR UPDATE` (error when planned): rank in a
 `SELECT` and change or lock the rows by key.
 
