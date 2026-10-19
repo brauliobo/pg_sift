@@ -1,0 +1,183 @@
+-- Segment formats 2 and 3 side by side (docs/perf/BM25-SIZE.md 5.0): the same corpus indexed in each format holds the same postings and answers
+-- every query alike, an index of format 2 only keeps the metapage at 1.2 (the 3.0 library reads it), a format 3 segment raises it to 1.3, and an index
+-- of both is verified, queried, vacuumed and merged into one segment of format 3.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+-- 30000 rows on about 300 heap pages: a term in every row (GROUPED), mid-sized lists, a term twice in some rows, terms in one row (inline), in two rows (inline),
+-- rows of 5 to 45 tokens
+CREATE TABLE src AS
+SELECT g AS id, concat_ws(' ', 'common', 'w' || g % 97, 'mid' || g % 11, CASE WHEN g % 5 = 0 THEN 'five' END,
+       CASE WHEN g % 7 = 0 THEN 'seven seven seven' END, 'u' || g, 'p' || g / 2, repeat('filler ', g % 40)) AS body
+FROM generate_series(1, 30000) g;
+CREATE TABLE t2 AS SELECT * FROM src ORDER BY id;
+CREATE TABLE t3 AS SELECT * FROM src ORDER BY id;
+SET sift.test_segfmt = 2;
+CREATE INDEX t2_idx ON t2 USING sift (body);
+CREATE INDEX t2_off ON t2 USING sift (body) WITH (positions = off);
+SET sift.test_segfmt = 3;
+CREATE INDEX t3_idx ON t3 USING sift (body);
+CREATE INDEX t3_off ON t3 USING sift (body) WITH (positions = off);
+SELECT 't2_idx' AS idx, gen > 0 AS built, format FROM sift._test_segment_formats('t2_idx') WHERE kind = 'immutable'
+UNION ALL SELECT 't3_idx', gen > 0, format FROM sift._test_segment_formats('t3_idx') WHERE kind = 'immutable'
+UNION ALL SELECT 't2_idx metapage minor', true, format FROM sift._test_segment_formats('t2_idx') WHERE kind = 'metapage minor'
+UNION ALL SELECT 't3_idx metapage minor', true, format FROM sift._test_segment_formats('t3_idx') WHERE kind = 'metapage minor';
+          idx          | built | format 
+-----------------------+-------+--------
+ t2_idx                | t     |      2
+ t3_idx                | t     |      3
+ t2_idx metapage minor | t     |      2
+ t3_idx metapage minor | t     |      3
+(4 rows)
+
+SELECT sift.verify('t2_idx', true), sift.verify('t3_idx', true), sift.verify('t2_off', true), sift.verify('t3_off', true);
+ verify | verify | verify | verify 
+--------+--------+--------+--------
+        |        |        | 
+(1 row)
+
+-- the postings of an index by document id (the tids of two tables differ when their rows were not placed alike), the rows that are gone left out
+CREATE FUNCTION posts(idx regclass, tbl regclass) RETURNS TABLE (term text, id int, tf int, dl int) LANGUAGE plpgsql AS $f$
+BEGIN
+	RETURN QUERY EXECUTE format('SELECT p.term, t.id, p.tf, p.dl FROM sift._test_postings(%L) p JOIN %s t ON t.ctid = p.tid', idx, tbl);
+END $f$;
+-- the same postings, positions on and off, term by term and document by document
+SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t2_idx', 't2') EXCEPT SELECT term, id, tf, dl FROM posts('t3_idx', 't3')) x) AS only_2,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_idx', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('t2_idx', 't2')) x) AS only_3,
+       (SELECT count(*) FROM posts('t3_idx', 't3')) AS postings,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t2_off', 't2') EXCEPT SELECT term, id, tf, dl FROM posts('t3_off', 't3')) x) AS off_only_2,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_off', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('t2_off', 't2')) x) AS off_only_3;
+ only_2 | only_3 | postings | off_only_2 | off_only_3 
+--------+--------+----------+------------+------------
+      0 |      0 |   189535 |          0 |          0
+(1 row)
+
+-- the same answers: counts, a phrase (positions or heap recheck), prefix and fuzzy leaves, and ranked scores to the bit
+CREATE FUNCTION answers(tbl regclass, heap bool DEFAULT false) RETURNS TABLE (q text, n bigint, h text) LANGUAGE plpgsql AS $f$
+DECLARE
+	qs text[] := ARRAY['common', 'common AND w7', 'mid3 OR mid5', 'five AND NOT seven', '"common w7"', '"seven seven"', 'u1234', 'p77 OR p78', 'p77', 'w1*', 'filler~1'];
+	i int;
+BEGIN
+	PERFORM set_config('enable_indexscan', CASE WHEN heap THEN 'off' ELSE 'on' END, true), set_config('enable_bitmapscan', CASE WHEN heap THEN 'off' ELSE 'on' END, true),
+		set_config('sift.enable_scan', CASE WHEN heap THEN 'off' ELSE 'on' END, true), set_config('sift.enable_count', CASE WHEN heap THEN 'off' ELSE 'on' END, true);
+	FOR i IN 1..array_length(qs, 1) LOOP
+		q := qs[i];
+		EXECUTE format('SELECT count(*), coalesce(md5(string_agg(id::text, '','' ORDER BY id)), '''') FROM %s WHERE body @@> %L', tbl, qs[i]) INTO n, h;
+		RETURN NEXT;
+	END LOOP;
+	FOR i IN 1..array_length(qs, 1) LOOP
+		EXIT WHEN heap;
+		q := 'ranked ' || qs[i];
+		EXECUTE format('SELECT count(*), md5(string_agg(id || '':'' || round(s::numeric, 6), '','' ORDER BY s DESC, id)) FROM
+			(SELECT id, sift.score(ctid) AS s FROM %s WHERE body @@> %L ORDER BY sift.score(ctid) DESC, id LIMIT 25) r', tbl, qs[i]) INTO n, h;
+		RETURN NEXT;
+	END LOOP;
+END $f$;
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_t2_t3 FROM answers('t2') a JOIN answers('t3') b USING (q);
+ queries | same_t2_t3 
+---------+------------
+      22 |         22
+(1 row)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_t3_heap FROM answers('t3') a JOIN answers('t3', true) b USING (q);
+ queries | same_t3_heap 
+---------+--------------
+      11 |           11
+(1 row)
+
+-- mixed: format 2 for the first half, format 3 for the second (a promoted write buffer), then deletes, VACUUM and a merge
+CREATE TABLE tm AS SELECT * FROM src WHERE id <= 15000 ORDER BY id;
+SET sift.test_segfmt = 2;
+CREATE INDEX tm_idx ON tm USING sift (body) WITH (vacuum_segments = 8, dead_rewrite_pct = 100);
+SET sift.test_segfmt = 3;
+SET sift.async_maintenance = off;
+INSERT INTO tm SELECT * FROM src WHERE id > 15000 ORDER BY id;
+SELECT sift.promote('tm_idx') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT format, count(*) AS segments FROM sift._test_segment_formats('tm_idx') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+ format | segments 
+--------+----------
+      2 |        1
+      3 |        1
+(2 rows)
+
+SELECT format FROM sift._test_segment_formats('tm_idx') WHERE kind = 'metapage minor';
+ format 
+--------
+      3
+(1 row)
+
+SELECT sift.verify('tm_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('tm_idx', 'tm') EXCEPT SELECT term, id, tf, dl FROM posts('t3_idx', 't3')) x) AS only_mixed,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_idx', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('tm_idx', 'tm')) x) AS only_t3;
+ only_mixed | only_t3 
+------------+---------
+          0 |       0
+(1 row)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_mixed_t3 FROM answers('tm') a JOIN answers('t3') b USING (q);
+ queries | same_mixed_t3 
+---------+---------------
+      22 |            22
+(1 row)
+
+DELETE FROM tm WHERE id % 4 = 1;
+DELETE FROM t3 WHERE id % 4 = 1;
+VACUUM tm;
+VACUUM t3;
+SELECT sift.verify('tm_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_after_vacuum FROM answers('tm') a JOIN answers('t3') b USING (q);
+ queries | same_after_vacuum 
+---------+-------------------
+      22 |                22
+(1 row)
+
+SELECT sift.merge('tm_idx', true) > 0 AS merged, sift.merge('t3_idx', true) > 0 AS merged_t3;
+ merged | merged_t3 
+--------+-----------
+ t      | t
+(1 row)
+
+SELECT format, count(*) AS segments FROM sift._test_segment_formats('tm_idx') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+ format | segments 
+--------+----------
+      3 |        1
+(1 row)
+
+SELECT sift.verify('tm_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_after_merge FROM answers('tm') a JOIN answers('t3') b USING (q);
+ queries | same_after_merge 
+---------+------------------
+      22 |               22
+(1 row)
+
+SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('tm_idx', 'tm') EXCEPT SELECT term, id, tf, dl FROM posts('t3_idx', 't3')) x) AS only_merged,
+       (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_idx', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('tm_idx', 'tm')) x) AS only_t3;
+ only_merged | only_t3 
+-------------+---------
+           0 |       0
+(1 row)
+
+DROP FUNCTION answers(regclass, bool);
+DROP FUNCTION posts(regclass, regclass);
+DROP TABLE src, t2, t3, tm;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

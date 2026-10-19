@@ -34,3 +34,7 @@ SELECT (SELECT bytes FROM sift._test_segment_parts('d_pos') WHERE part = 'segmen
  t
 (1 row)
 
+DROP TABLE d;
+DROP FUNCTION part(regclass, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

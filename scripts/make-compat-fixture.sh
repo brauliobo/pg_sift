@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates test/fixtures/compat2x: the relation files of a small table and of the sift index on it, written
+# Regenerates test/fixtures/compat2x (SIFT_FIXTURE_OUT=test/fixtures/compat30 for a checkout of 3.0, whose directory entry
+# kind is named buffer where 2.x says mutable): the relation files of a small table and of the sift index on it, written
 # by the 2.x library, which test/t/compat_2x_fixture.sh puts under the build being tested to prove that it still
 # reads (and maintains) indexes written by 2.x. Run it only to change the fixture; the files are committed.
 #
@@ -69,7 +70,7 @@ SQL
 
 # the layout the header promises
 layout=$(q -c "SELECT string_agg(gen || ' ' || kind || ' ' || ndocs || ' ' || dirty || ' ' || coalesce(dead_docs::text, ''), ' | ' ORDER BY gen) FROM sift.segments('docs_idx')")
-[[ $layout == "1 immutable 1500 true 150 | 3 mutable 100 false  | 4 immutable 1400 false 0" ]] || { echo "unexpected segments: $layout" >&2; exit 1; }
+[[ ${layout// mutable / buffer } == "1 immutable 1500 true 150 | 3 buffer 100 false  | 4 immutable 1400 false 0" ]] || { echo "unexpected segments: $layout" >&2; exit 1; }
 
 heap=$(q -c "SELECT pg_relation_filepath('docs')")
 index=$(q -c "SELECT pg_relation_filepath('docs_idx')")

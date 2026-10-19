@@ -627,6 +627,37 @@ sift_test_segment_parts(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+PG_FUNCTION_INFO_V1(sift_test_segment_formats);
+
+/* sift._test_segment_formats(index) returns (gen int8, kind text, format int4): the segment format of every directory entry, and the metapage's minor version */
+Datum
+sift_test_segment_formats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	index = open_sift(PG_GETARG_OID(0));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		Datum		v[3] = {Int64GetDatum(snap->segs[i].gen), CStringGetTextDatum(kind_name(snap->segs[i].kind)),
+		Int32GetDatum(snap->segs[i].format)};
+		bool		nulls[3] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, nulls);
+	}
+	{
+		Datum		v[3] = {Int64GetDatum(0), CStringGetTextDatum("metapage minor"), Int32GetDatum(snap->meta.format_minor)};
+		bool		nulls[3] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
 PG_FUNCTION_INFO_V1(sift_test_term_blob);
 PG_FUNCTION_INFO_V1(sift_test_blob_read);
 

@@ -24,6 +24,10 @@ seg_live(const SiftSegment *seg)
 		seg->hdr->sb_hi - seg->hdr->sb_lo + 1, seg->hdr->ndocs};
 }
 
+#ifdef SIFT_TESTING
+int			sift_test_segfmt = 0;
+#endif
+
 const uint32 sift_df_class_lo[SIFT_DF_CLASSES] = {1, 2, 3, 16, 128, 1024, 8192, 65536, 524288};
 const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
 	"1", "2", "3-15", "16-127", "128-1K", "1K-8K", "8K-64K", "64K-512K", "512K+"
@@ -111,6 +115,10 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->wt = wt;
 	w->gen = gen;
 	w->fmt = SIFT_WRITE_SEGFMT;
+#ifdef SIFT_TESTING
+	if (sift_test_segfmt > 0)
+		w->fmt = Min(sift_test_segfmt, SIFT_WRITE_SEGFMT);
+#endif
 	w->mcxt = mcxt;
 	w->ref = *ref;
 	w->positions = positions;
@@ -264,7 +272,7 @@ start_terms(SiftSegmentWriter *w)
 	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
 	if (w->spool_min)
 		sift_postw_spool(w->pw, w->spool_min);
-	w->dw = sift_dict_writer_begin(w->sw);
+	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED);
 	pfree(w->offmask);
 	pfree(w->dl);
 	MemoryContextSwitchTo(old);
@@ -1700,21 +1708,30 @@ varint_len(uint64 x)
 	return n;
 }
 
-/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (sift_dict_add, sift_posting.h) */
+/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (sift_dict.h, sift_posting.h) */
 static void
-account_term(SiftPartStats *ps, int shared, int len, const SiftTermInfo *info, const SiftPostingCursor *c)
+account_term(SiftPartStats *ps, bool packed, int shared, int len, const SiftTermInfo *info, const SiftPostingCursor *c)
 {
 	uint64		df = info->df;
 	bool		pos = (info->flags & SIFT_TERM_POS) != 0;
 	bool		tf1 = (info->flags & SIFT_TERM_ALL_TF1) != 0;
 
-	ps->dict_terms += 2 + len - shared;
-	ps->dict_entries += varint_len(df) + 2;
+	if (packed)
+	{
+		ps->dict_terms += 1 + (shared >= 15) + (len - shared - 1 >= 15) + len - shared;
+		ps->dict_entries += 2 + (df >= 15 ? varint_len(df - 15) : 0);
+	}
+	else
+	{
+		ps->dict_terms += 2 + len - shared;
+		ps->dict_entries += varint_len(df) + 2;
+	}
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		ps->inline_terms++;
-		ps->dict_inline_keys += varint_len(info->inline_keys[0]) + (df > 1 ? varint_len(info->inline_keys[1] - info->inline_keys[0]) : 0) +
-			(tf1 ? 0 : df);
+		ps->dict_inline_keys += (packed ? varint_len(sift_dict_pack_key(info->inline_keys[0])) : varint_len(info->inline_keys[0])) +
+			(df > 1 ? (packed ? varint_len(sift_dict_pack_key(info->inline_keys[1]) - sift_dict_pack_key(info->inline_keys[0])) :
+					   varint_len(info->inline_keys[1] - info->inline_keys[0])) : 0) + (tf1 ? 0 : df);
 		if (pos)
 			ps->dict_inline_pos += varint_len(info->pos_len) + info->pos_len;
 	}
@@ -1805,7 +1822,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (w->verify)
 		sift_post_check(c);
 	b = sift_post_bounds(c, &nb);
-	account_term(&w->st->parts, shared, len, info, c);
+	account_term(&w->st->parts, seg->fmt >= SIFT_SEGFMT_PACKED, shared, len, info, c);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
 		uint32		k = sift_grp_tids(g, NULL, w->tids);

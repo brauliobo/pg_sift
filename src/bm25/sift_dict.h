@@ -2,7 +2,7 @@
  * sift_dict.h - per-segment term dictionary (DESIGN.md (b), (h)).
  *
  * DICT: front-coded blocks of SIFT_DICT_BLOCK terms in byte order. Block:
- *   u16 block bytes, u8 nterms, varint post_base (offset of the block's first
+ *   u16 block bytes, u8 nterms (| SIFT_DICT_PACKED in segment format 3), varint post_base (offset of the block's first
  *   term blob), then per term: u8 shared prefix, u8 suffix length, suffix,
  *   varint df, u8 flags, u8 max_bound, and either the inline postings
  *   (varint key0 [, varint key1 - key0], tf bytes unless SIFT_TERM_ALL_TF1,
@@ -10,6 +10,9 @@
  *   or varint post_len, varint post_len - codec_len, [varint nnib unless
  *   SIFT_TERM_ALL_TF1] [varint pos_len if SIFT_TERM_POS]. Term blobs follow each other in term
  *   order, each at the next 4-byte aligned offset, so post_off is implied.
+ *   A PACKED block's head is u8 shared | (suffix length - 1) << 4 (a nibble of 15: a byte with the value follows), suffix,
+ *   u8 flags | min(df, 15) << 4 (15: varint df - 15 follows), u8 max_bound, and the inline keys are
+ *   (blk << 9 | off - 1) in the two varints; the rest is as above (docs/perf/BM25-SIZE.md 5.2).
  * DICTIDX: SiftDictIdx per block (slot_base: the number of terms with a counter slot before the block, see SiftTermInfo.slot; 0 in
  * segments written before format 2, whose terms have no slot); every 256th prefix forms the root array
  * (u64[dictroot_n]) kept in memory with the opened dictionary. A lookup
@@ -27,6 +30,8 @@
 #define SIFT_INLINE_MAX			2	/* df <= this: postings inline in the entry */
 #define SIFT_INLINE_POS_MAX		256	/* longer position records are dropped: a dictionary block stays under 64 KB */
 
+#define SIFT_DICT_PACKED		0x80	/* in the term count byte of a block: entries of segment format 3 */
+
 #define SIFT_TERM_SPARSE		0x01	/* LIST codec blob (no group scores) */
 #define SIFT_TERM_INLINE		0x02	/* postings in inline_keys/inline_tf */
 #define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
@@ -39,6 +44,19 @@ extern PGDLLIMPORT int sift_test_dict_max;
 #else
 #define SIFT_DICT_MAX	((uint64) PG_UINT32_MAX)
 #endif
+
+/* The key of an inline posting in a PACKED block: blk << 9 | off - 1 (offsets are at most 291), 2 bytes fewer as a varint once the table has 4,096 blocks */
+static inline uint64
+sift_dict_pack_key(SiftKey k)
+{
+	return (k >> 16) << 9 | ((k & 0xFFFF) - 1);
+}
+
+static inline SiftKey
+sift_dict_unpack_key(uint64 v)
+{
+	return (v >> 9) << 16 | ((v & 511) + 1);
+}
 
 typedef struct SiftTermInfo
 {
@@ -73,7 +91,7 @@ typedef struct SiftDictIdx
  */
 typedef struct SiftDictWriter SiftDictWriter;
 
-extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw);
+extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw, bool packed);
 extern void sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *info);
 
 /* Terms added so far that are not inline: each has a slot (0, 1, ...) in dictionary order */

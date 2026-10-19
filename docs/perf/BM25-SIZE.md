@@ -192,7 +192,7 @@ A DICT block is `u16 block bytes, u8 nterms, varint post_base, entries`. In form
 and the root array are unchanged):
 
 ```
-u8 hdr                low nibble: shared prefix (15: u8 follows), high nibble: suffix length - 1 (15: u8 follows, suffix length - 15 - 1... (see sift_dict.h))
+u8 hdr                low nibble: shared prefix length (15: u8 shared follows), high nibble: suffix length - 1 (15: u8 suffix length - 1 follows)
 suffix
 u8 fl                 low nibble: flags (SPARSE, INLINE, ALL_TF1, POS), high nibble: df (1..14; 15: varint df - 15 follows)
 u8 max_bound

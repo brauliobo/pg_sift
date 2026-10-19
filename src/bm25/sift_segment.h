@@ -35,6 +35,11 @@ typedef struct SiftDocSBRef
  */
 typedef struct SiftSegmentWriter SiftSegmentWriter;
 
+#ifdef SIFT_TESTING
+/* sift.test_segfmt: the segment format a build, promotion or merge writes (0 = the build's own, SIFT_WRITE_SEGFMT) */
+extern PGDLLIMPORT int sift_test_segfmt;
+#endif
+
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
