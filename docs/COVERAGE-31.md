@@ -67,15 +67,25 @@ moved by `scripts/coverage.sh --gen`, instruction counts before and after (`benc
 ## Standard analytics shapes (from an application trial)
 
 Shapes an application's ordinary SQL datasets produce, ranked by how often analytics queries have them. Done: a constant in `GROUP BY` (K15), a
-per-item aggregate under an outer aggregate with one arm, or with the common table expression `NOT MATERIALIZED` (J13). Not done:
+per-item aggregate under an outer aggregate with one arm, with the common table expression `NOT MATERIALIZED`, or with one union inside another
+(J13, J14), the generic plan of a prepared statement (P16), a range lookup (`date <@ range`, or the bounds of the lookup row) with no equality
+(J22), the value of `jsonb_each` cast to a number (T31) and the subscript `x['k']` of a jsonb column (T32). Not done:
 
 | shape | why |
 |---|---|
 | `lower(col) IN (...)` is slow to choose, not unsupported | the filter is pushed; PostgreSQL's default 1% estimate for an expression makes the normal plan look cheap. `CREATE STATISTICS s (mcv) ON lower(col) FROM t; ANALYZE t` gives the planner the real share and the scan is chosen |
-| lookup join keyed from a column of another joined lookup (`maps` on `g.type`) | the join code keys a lookup by the scan's own columns or literals; a lookup of a lookup is a second join level: high effort for a rare shape |
-| `FILTER` or `CASE` over a text leaf as an inner aggregate of per-item arms | the arms are pushed one by one, the outer aggregate runs in PostgreSQL (one row per item and key comes back). The fused form with a text leaf is the 3.0 crash fixed in 3.0.1: the extension waits for that fix to merge |
-| `count(DISTINCT x) FILTER` in `GROUPING SETS`, bound parameters (generic and custom plan), top-N per group, period keys (`date_trunc` to quarter or year, `to_char`, `CASE` over `extract`), dimension joins on the scan's columns | already pushed: the aggregate runs in the scan (a window over its few rows runs in PostgreSQL); no change needed |
-| jsonb shapes (scalar-array unnest, `?`, `jsonb_array_length`, `jsonb_typeof`, `->>` casts, regex on `jsonb_each_text`) | owned by the `sift_table` branch |
+| the spine of periods `LEFT JOIN` above the aggregate (`spine s LEFT JOIN items t ON t.d <@ (SELECT range ...)`) | the scanned table is on the nullable side of a join to the table that is kept whole: the scan would have to return a group for every row of the other table (a RIGHT JOIN, J06), and the range is a sub-select per row. The form with the aggregate first and the spine joined above it is pushed |
+| lookup keyed from a column of another joined lookup (`maps` on `g.type`) | the keys of a lookup are leaves, literals or expressions of leaves; a key read from a second lookup is a second join level (one combo that holds two tables): high effort for a rare shape. A literal or a `CASE` in the query, or a join of `maps` to the scan's own column, is pushed |
+| a correlated `LEFT JOIN LATERAL (SELECT ... LIMIT 1)` lookup | the first row of the table is the one a scan of it finds first: PostgreSQL's choice with duplicate keys depends on its plan, so the scan cannot be exact unless the key is unique; the join to the table with the key written as a join is pushed |
+| a non-null constant as the key of an arm (`SELECT id, 'z', avg(x) ... GROUP BY id` in the place of `NULL`) | the arms are the cells of one outer key; a constant is a value no arm's group expression has, so the key's value table would take it from the arm: an executor change for a labelled-block shape. `NULL` is pushed |
+| `max`/`min` as the inner aggregate of a per-item arm, `FILTER` or `CASE` over a text leaf in one | the inner aggregates are count, sum and avg; the arms are pushed one by one and the outer aggregate runs in PostgreSQL. The fused form with a text leaf is the 3.0 crash fixed in 3.0.1: it waits for that fix to merge |
+| `jsonb_exists(x, 'k')` (`x ? 'k'`), `x['k'] = '"v"'` (a comparison of jsonb values), `x['k'] IS NOT NULL`, `(x->'a')::int` over a `float8` leaf | a leaf stores NULL for a missing key and for a JSON null alike, and a jsonb comparison tells a string from a number: they are not a function of the stored values. `x ->> 'k'` and the cast to the leaf's own type are pushed. Declare the path with the type the query casts to (`int4`) for the last one |
+| filters on columns or jsonb that the index does not hold (a timestamp, a jsonpath on another jsonb, `IS NOT NULL`, `EXISTS` with a lookup) | not a pushdown: the plan stays the normal one. Checked with the filter in a flat query and in per-item arms, with the common table expression materialized and not: the normal plan is chosen every time and no scan was slower than it on the data of the trial files (the slower runs were the per-item arms that returned a row per item, now fused) |
+| `count(DISTINCT x) FILTER` in `GROUPING SETS`, bound parameters with custom plans, top-N per group, period keys (`date_trunc` to quarter or year, `to_char`, `CASE` over `extract`), dimension joins on the scan's columns | already pushed: the aggregate runs in the scan (a window over its few rows runs in PostgreSQL); no change needed |
+| jsonb shapes (scalar-array unnest, `?` on scalar arrays, `jsonb_array_length`, `jsonb_typeof`, `->>` casts, regex on `jsonb_each_text`) | owned by the `sift_table` branch |
+
+Float accumulation: the per-item `avg` and `sum` add the elements of an item from the first to the last in double (`docs/AGG.md`, "The comparison contract").
+The three-row differences between plans of the normal executor itself on thresholds at a tie are shown there.
 
 ## Correctness risks seen
 
@@ -104,9 +114,13 @@ Instructions per transaction (`bench/cpu-query.sh`, 100 000 rows of the store da
 | constant `GROUP BY` key | K15 | `k_group_const*` | `SELECT 'cur', k, count(*) ... GROUP BY 1, 2` | 0.027 |
 | per-item aggregate, one arm | J13 | `s2_per_order_one_arm` | `avg` per item and key, then `avg`, `count(DISTINCT item)` per key | 0.037 |
 | per-item aggregate, two arms, `NOT MATERIALIZED` | J13 | `s2_per_order_inlined` | the same with a second per-item arm | 0.048 |
+| generic plan, a date range of bound parameters over the unnested items | P16 | `col_agg_generic` | `created >= $1 AND created <= $2`, `force_generic_plan`, `sift_col` | 0.009 |
+| range lookup grouped by the lookup column | J22 | `k_range_lookup*` | `JOIN periods p ON created <@ p.range` over the unnested items | 0.024 |
+| value of `jsonb_each` cast to a number | T31 | `j_jsonb_value_cast` | `avg(kv.value::float8)` per key | 0.051 |
+| nested per-item unions (three arms, one inside another) | J14 | `s2_per_order_nested_union` | `avg` and `count(DISTINCT id)` per key | 0.025 |
 
-Gate on the six store questions (existing cells, `sift_col` and `sift_table`, 1000 transactions, 3 rounds): `sift_col` 0.999 to 1.001; `sift_table`
-0.999, 0.998, 0.999 and 1.016 (the highest, below 1.02), and 0.175 and 0.128 for the two questions AP07 now answers from the sidecar. The month questions
+Gate on the six store questions (existing cells, `sift_col` and `sift_table`, 1000 transactions, 3 rounds, measured again after the last item): `sift_col` 1.000 to 1.002; `sift_table`
+0.997, 1.000, 1.000 and 1.016 (the highest, below 1.02), and 0.175 and 0.128 for the two questions AP07 now answers from the sidecar. The month questions
 of `sift_table` stay at 1.0 (362M instructions for the month sum against 0.7M on `sift_col`): the key is evaluated per distinct timestamp, which
 needs a day leaf, a format decision. The BM25 gate (`bench/steps/cpu_gate.sh`) was not run: no BM25 code changed.
 
