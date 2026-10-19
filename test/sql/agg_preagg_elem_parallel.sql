@@ -1,4 +1,4 @@
--- The element cubes of the units (docs/COL-PREAGG.md sections 2 and 6) under forced parallel plans: a query over the elements of an array must plan as a Gather
+-- The element rollups of the units (docs/COL-PREAGG.md sections 2 and 6) under forced parallel plans: a query over the elements of an array must plan as a Gather
 -- over a partial Custom Scan (SiftAgg) with two workers, answer the exact units from their cubes and scan the units that are not, and give the rows of the
 -- normal plan (sift.enable_agg off) and of the scan of every unit (sift.agg_preagg off).
 -- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: units answered from the cubes (a partial scan counts its own).
@@ -21,9 +21,9 @@ INSERT INTO p_t SELECT g, g % 7, mk_items(g), mk_tags(g) FROM generate_series(1,
 CREATE TABLE p_d (LIKE p_t) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_d SELECT * FROM p_t;
 CREATE INDEX p_col ON p_t USING sift_col (id, grp, items, tags)
-	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'cube(items[].kind: items[].n, items[].score; items[].n: items[].score; tags[])');
+	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
 CREATE INDEX p_dcol ON p_d USING sift_col (id, grp, items, tags)
-	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'cube(items[].kind: items[].n, items[].score; items[].n: items[].score; tags[])');
+	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) p_t;
 ANALYZE p_d;
 SELECT units > 8 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('p_col');
@@ -70,7 +70,7 @@ INSERT INTO p_q (q) VALUES
 	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 9000 GROUP BY 1'),
 	('SELECT e.v->>''kind'' AS kind, count(*), sum((e.v->>''n'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
 	('SELECT t, count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t GROUP BY 1'),
-	-- not answered from the cubes: the scan of the units, in parallel too
+	-- two keys and min, max are rollup shapes; the filter on a row leaf is the scan of the units, in parallel too
 	('SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
 	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.grp = 3 GROUP BY 1'),
 	('SELECT e.kind, min(e.n), max(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1');

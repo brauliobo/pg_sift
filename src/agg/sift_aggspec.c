@@ -179,19 +179,22 @@ pa_dim(const SiftSrcPreagg *pa, int dim)
 	return -1;
 }
 
-/* can the unit's pre-aggregates give aggregate a (histogram d of pa, or the sums of the leaves when d < 0)? group: the array leaf of an element level scan, else -1 */
+/* The leaf aggregate a reads (-1: count(*)) when pre-aggregates can give it at all; group: the list leaf of an element level scan, else -1 */
 static bool
-preagg_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int d, int group)
+preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int group, int *leaf_out)
 {
 	int			leaf = a->leaf;
 	bool		sums = false,
-				flt = false;
+				flt = false,
+				mm = false;
+	SiftSrcVecType vt;
 
 	if (a->filter || a->distinct)
 		return false;
 	switch (a->kind)
 	{
 		case SAA_COUNT_STAR:
+			*leaf_out = -1;
 			return true;
 		case SAA_COUNT:
 			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
@@ -214,29 +217,44 @@ preagg_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Si
 			break;
 		case SAA_MIN:
 		case SAA_MAX:
-			if (d >= 0)
-				return false;
 			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
-			sums = true;
+			mm = true;
 			break;
 		default:
 			return false;
 	}
 	if (!plain_leaf(lay, nbase, group, leaf))
 		return false;
-	if (flt ? lay->leaf[leaf].vtype != SCV_F64 : sums && lay->leaf[leaf].vtype != SCV_I32 && lay->leaf[leaf].vtype != SCV_I64)
+	vt = lay->leaf[leaf].vtype;
+	if (flt ? vt != SCV_F64 : mm ? (vt != SCV_I32 && vt != SCV_I64 && !(group >= 0 && !a->num.n && vt == SCV_F64)) : sums && vt != SCV_I32 && vt != SCV_I64)
 		return false;
-	if (d >= 0 && leaf == pa->dim[d].leaf)
+	*leaf_out = leaf;
+	return true;
+}
+
+/* can the unit's histogram d of pa (or the sums of the leaves when d < 0) give aggregate a? */
+static bool
+cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int d)
+{
+	int			leaf;
+
+	if (!preagg_agg_leaf(a, lay, nbase, -1, &leaf))
+		return false;
+	if (leaf < 0 || d < 0)
+		return true;
+	if (a->kind == SAA_MIN || a->kind == SAA_MAX)
+		return false;
+	if (leaf == pa->dim[d].leaf)
 		return a->kind == SAA_COUNT;			/* the rows of the groups that are not NULL */
-	for (int m = 0; d >= 0 && m < pa->dim[d].nmeas; m++)
+	for (int m = 0; m < pa->dim[d].nmeas; m++)
 		if (pa->dim[d].meas[m] == leaf)
 			return true;
-	return d < 0;
+	return false;
 }
 
 /*
- * The leaf the conjuncts test besides the zone comparisons (-1: none), or -2 when they cannot be answered from a histogram. At element
- * level the conjuncts of the rows must be zone comparisons and the others test one scalar of the elements.
+ * The leaf the conjuncts test besides the zone comparisons (-1: none), or -2 when they cannot be answered from a histogram. The conjuncts must be
+ * zone comparisons, or test one scalar leaf.
  */
 static int
 preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim)
@@ -246,31 +264,142 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 	for (int i = 0; i < s->npred; i++)
 	{
 		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
-		bool		row = l != -2;
 
-		if (!row && s->group >= 0)
-			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, s->group);
 		if (l == -2)
 			return -2;
 		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension */
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
 			continue;
-		if ((row && s->group >= 0) || (dim >= 0 && dim != l))
+		if (dim >= 0 && dim != l)
 			return -2;
 		dim = l;
 	}
 	return dim;
 }
 
+static bool
+add_leaf(int *arr, int *n, int max, int leaf)
+{
+	for (int i = 0; i < *n; i++)
+		if (arr[i] == leaf)
+			return true;
+	if (*n == max)
+		return false;
+	arr[(*n)++] = leaf;
+	return true;
+}
+
+static bool
+dim_leaf(const SiftSrcLayout *lay, int nbase, int group, int leaf)
+{
+	return plain_leaf(lay, nbase, group, leaf) && (lay->leaf[leaf].vtype == SCV_I32 || lay->leaf[leaf].vtype == SCV_CODE);
+}
+
+/* Adds the leaves a predicate of the elements of group tests to dims; false when it tests more than plain dim leaves (a combo, a late expression) */
+static bool
+pred_dims(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group, int *dims, int *nd)
+{
+	if (p->late || p->level != 1)
+		return false;
+	switch (p->kind)
+	{
+		case SAP_TRUE:
+			return true;
+		case SAP_AND:
+		case SAP_OR:
+			for (int i = 0; i < p->nchild; i++)
+				if (!pred_dims(p->child[i], lay, nbase, group, dims, nd))
+					return false;
+			return true;
+		case SAP_CMP:
+		case SAP_IN:
+		case SAP_NULL:
+		case SAP_LUT:
+			return dim_leaf(lay, nbase, group, p->leaf) && add_leaf(dims, nd, SIFT_SRC_MAX_RDIMS, p->leaf);
+		default:
+			return false;
+	}
+}
+
+static bool
+in_leaves(const int *arr, int n, int leaf)
+{
+	for (int i = 0; i < n; i++)
+		if (arr[i] == leaf)
+			return true;
+	return false;
+}
+
+/*
+ * The rollup of the list that answers a scan of its elements: the dims are the group keys, the leaves the element conjuncts test and the leaves
+ * count(leaf) reads; the measures the other aggregates read. Conjuncts of the rows must be zone comparisons.
+ */
+static bool
+preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+{
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	int			group = s->group,
+				nd = 0,
+				nm = 0,
+				r = 0,
+				dims[SIFT_SRC_MAX_RDIMS],
+				meas[SIFT_SRC_MAX_MEAS];
+
+	while (r < pa->nrollups && pa->rollup[r].list != group)
+		r++;
+	if (r == pa->nrollups)
+		return false;
+	for (int k = 0; k < s->nkeys; k++)
+		if (s->key[k].kind != SAK_LEAF || !dim_leaf(lay, nbase, group, s->key[k].leaf) || !add_leaf(dims, &nd, SIFT_SRC_MAX_RDIMS, s->key[k].leaf))
+			return false;
+	for (int i = 0; i < s->npred; i++)
+	{
+		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
+
+		if (l != -2 ? (l >= 0 && !list_member_ptr(cmps, s->pred[i])) : !pred_dims(s->pred[i], lay, nbase, group, dims, &nd))
+			return false;
+	}
+	for (int i = 0; i < s->naggs; i++)
+	{
+		const SiftAggAgg *a = &s->agg[i];
+		int			leaf;
+
+		if (!preagg_agg_leaf(a, lay, nbase, group, &leaf))
+			return false;
+		if (leaf < 0)
+			continue;
+		/* count(leaf) is the count of the dim's tuples that are not NULL, or the count of the measure */
+		if (a->kind == SAA_COUNT)
+		{
+			if (!in_leaves(pa->rollup[r].dim, pa->rollup[r].ndims, leaf) && !in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, leaf))
+				return false;
+		}
+		else if (!add_leaf(meas, &nm, SIFT_SRC_MAX_MEAS, leaf))
+			return false;
+	}
+	for (int i = 0; i < nd; i++)
+		if (!in_leaves(pa->rollup[r].dim, pa->rollup[r].ndims, dims[i]))
+			return false;
+	for (int i = 0; i < nm; i++)
+		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
+			return false;
+	*out = (SiftAggPaShape) {.dim = -1, .list = group, .ndims = nd, .nmeas = nm};
+	memcpy(out->rdim, dims, nd * sizeof(int));
+	memcpy(out->rmeas, meas, nm * sizeof(int));
+	return true;
+}
+
 bool
-sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int *dim_out)
+sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
 	int			dim = -1,
 				d = -1;
 
-	if (s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0 || s->search || s->topn)
+	if (s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->naggs == 0 || s->search || s->topn)
 		return false;
-	if (s->group >= 0 && lay->leaf[s->group].kind != SCL_ARRAY)
+	if (s->group >= 0)
+		return (lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT) && preagg_rollup(s, lay, nbase, pa, out);
+	if (s->nkeys > 1)
 		return false;
 	if (s->nkeys == 1)
 	{
@@ -279,11 +408,11 @@ sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, c
 		dim = s->key[0].leaf;
 	}
 	dim = preagg_conj_dim(s, lay, nbase, dim);
-	if (dim == -2 || (dim < 0 && s->group >= 0))
+	if (dim == -2)
 		return false;
 	if (dim >= 0)
 	{
-		SiftSrcVecType vt = plain_leaf(lay, nbase, s->group, dim) ? lay->leaf[dim].vtype : SCV_F64;
+		SiftSrcVecType vt = plain_leaf(lay, nbase, -1, dim) ? lay->leaf[dim].vtype : SCV_F64;
 
 		d = pa_dim(pa, dim);
 		if (d < 0 || (vt != SCV_I32 && vt != SCV_CODE))
@@ -292,9 +421,9 @@ sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, c
 	else if (!pa->aggs)
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (!preagg_agg_ok(&s->agg[i], lay, nbase, pa, d, s->group))
+		if (!cube_agg_ok(&s->agg[i], lay, nbase, pa, d))
 			return false;
-	*dim_out = dim;
+	*out = (SiftAggPaShape) {.dim = dim, .list = -1};
 	return true;
 }
 

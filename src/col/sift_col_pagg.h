@@ -29,6 +29,15 @@ extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
  */
 extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHistDim *out, SiftColDict *dict);
 
+/*
+ * The rollup of a list in the unit (SiftCRollup, docs/COL-PREAGG.md): its tuples of the dims it holds. Arrays palloc'd in mcxt; dict[j] is the dictionary of a
+ * STR dim j (set; zeroed for the other dims). false when the unit may not answer or has no rollup of the list.
+ */
+extern bool sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, SiftCRollup *r, SiftColDict *dict);
+
+/* A scan reads the unit for lack of its rollup (missing, other dims, a measure it lacks): asks for the segment to be rewritten (sift_col_rollup_request) */
+extern bool sift_col_unit_rollup_miss(const SiftColUnit *unit);
+
 /* Per leaf of the index definition: the dims and measures a default or configured spec asks for (planner side, docs/COL-PREAGG.md section 3) */
 struct RelationData;
 extern void sift_col_pagg_spec(struct RelationData *index, SiftCPaggSpec *spec);

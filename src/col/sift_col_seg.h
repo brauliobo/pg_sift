@@ -116,6 +116,8 @@ extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
+/* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
+extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
 extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 

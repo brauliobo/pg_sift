@@ -29,8 +29,21 @@ typedef struct SiftColRel
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
+/*
+ * The on-demand refresh of the rollups (sift_col_rollup.c): a scan asks for the segment gen of index to be rewritten with the rollups the index writes now.
+ * Writes no page; false when the request was not taken (switched off, a standby). The GUC sift.col_rollup_on_demand.
+ */
+extern bool sift_col_rollup_on_demand;
+extern bool sift_col_rollup_worker;
+extern bool sift_col_rollup_request(Relation index, uint64 gen);
+#ifdef SIFT_TESTING
+extern int	sift_test_col_rollup_panic;
+extern int	sift_test_col_rollup_panic_armed;
+#endif
+
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */
 extern void sift_col_validate_preagg(const char *value);
+extern void sift_col_validate_rollup(const char *value);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the engine holds natively (false: not natively); the scale of a numeric(p, s) leaf (false: not representable) */

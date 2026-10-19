@@ -1,6 +1,7 @@
 /*
  * sift_col_preagg.c - pre-aggregates of a unit: exact integer sums, the mini cube (GROUP BY dim -> count, per measure non-NULL count and sum),
- * its byte format, its option and its verification. Design and the rules of use: docs/COL-PREAGG.md. Portable (sift_host.h only).
+ * the rollups of the lists, their byte formats, their option and their verification. Design and the rules of use: docs/COL-PREAGG.md.
+ * Portable (sift_host.h only).
  *
  * Cube blob of a unit (all integers LEB128 varints unless said): u8 ndims, a directory of ndims x (leaf, bytes of its body) so that one dim is
  * found without reading the others, then the bodies:
@@ -9,8 +10,13 @@
  *     counts[ngroups],
  *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits)
  *
- * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its cube) as varints, then the cubes in that
- * order, each in the format above with the leaves of the list as dims and measures; their rows are the elements of the list.
+ * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its rollup) as varints, then the rollups in that
+ * order. Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
+ *     per dim: u8 anynull, (anynull: a bitmap of the tuples that have a NULL there, bit i of byte i / 8), then for the tuples with a value
+ *     the key as the zigzag difference to the previous one (the tuples are in ascending order of their keys, dim 0 first, a NULL after the values),
+ *     counts[ntuples] (elements of the tuple),
+ *     per measure: nn[ntuples], sum[ntuples] (as in the cube), then the smallest value of each tuple that has one and the largest
+ *     (INT measure: zigzag of the key; float measure: 8 bytes each)
  */
 #include "sift_host.h"
 
@@ -33,15 +39,29 @@ sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 	return depth1(s, d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
-bool
-sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim)
+/* a scalar INT or float leaf, not a date/time/bool, of the top level (parent < 0) or of the elements of the list parent */
+static bool
+meas_in(const SiftColSchema *s, const SiftColDef *m, int parent)
 {
-	if (m->parent != dim->parent || !depth1(s, m))
+	if (m->parent != parent || !depth1(s, m))
 		return false;
 	if (m->store == SIFT_COLS_F4 || m->store == SIFT_COLS_F8)
 		return true;
 	return m->store == SIFT_COLS_INT &&
 		(m->type == SIFT_COLT_INT2 || m->type == SIFT_COLT_INT4 || m->type == SIFT_COLT_INT8 || m->type == SIFT_COLT_NUMERIC);
+}
+
+bool
+sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim)
+{
+	return meas_in(s, m, dim->parent);
+}
+
+/* a list of the top level: an array of objects, an array of scalars or a map */
+static bool
+is_list(const SiftColSchema *s, int c)
+{
+	return s->cols[c].kind == SIFT_COLK_GROUP && s->cols[c].parent < 0;
 }
 
 /* ---------- the option ---------- */
@@ -64,15 +84,31 @@ default_meas(const SiftColSchema *s, int dim, int16 *meas)
 	return nm;
 }
 
-/* The dims of the spec in the top level (list < 0) or in one list */
-static int
-dims_in(const SiftCPaggSpec *spec, const SiftColSchema *s, int list)
+/* The measures of the rollup of a list: its numeric leaves (floats and decimals first) */
+static void
+rollup_measures(const SiftColSchema *s, int list, SiftCPaggRollup *ru)
 {
-	int			n = 0;
+	for (int pass = 0; pass < 2; pass++)
+		for (int c = 0; c < s->ncols && ru->nmeas < SIFT_PAGG_MAX_MEAS; c++)
+		{
+			const SiftColDef *d = &s->cols[c];
+			bool		first = d->type == SIFT_COLT_NUMERIC || d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
 
-	for (int i = 0; i < spec->ndims; i++)
-		n += s->cols[spec->dim[i].leaf].parent == list;
-	return n;
+			if (meas_in(s, d, list) && first == (pass == 0))
+				ru->meas[ru->nmeas++] = c;
+		}
+}
+
+/* The rollup of a list by default: every dim candidate among its leaves (up to SIFT_PAGG_MAX_RDIMS) and its measures */
+static void
+rollup_default(const SiftColSchema *s, int list, SiftCPaggRollup *ru)
+{
+	memset(ru, 0, sizeof(*ru));
+	ru->list = list;
+	for (int c = 0; c < s->ncols; c++)
+		if (s->cols[c].parent == list && sift_cpagg_dim_ok(s, &s->cols[c]) && ru->ndims < SIFT_PAGG_MAX_RDIMS)
+			ru->dim[ru->ndims++] = c;
+	rollup_measures(s, list, ru);
 }
 
 void
@@ -81,18 +117,21 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 	memset(spec, 0, sizeof(*spec));
 	spec->max_groups = SIFT_PAGG_DEF_GROUPS;
 	spec->permille = SIFT_PAGG_DEF_PERMILLE;
-	/* the top level first, so that the dims of a table without lists are those of 3.0 */
-	for (int lists = 0; lists < 2; lists++)
-		for (int c = 0; c < s->ncols; c++)
-		{
-			SiftCPaggDim *sd;
+	for (int c = 0; c < s->ncols; c++)
+	{
+		SiftCPaggDim *sd;
 
-			if (!sift_cpagg_dim_ok(s, &s->cols[c]) || (s->cols[c].parent >= 0) != lists || spec->ndims == SIFT_PAGG_SPEC_DIMS ||
-				dims_in(spec, s, s->cols[c].parent) == SIFT_PAGG_MAX_DIMS)
-				continue;
-			sd = &spec->dim[spec->ndims++];
-			sd->leaf = c;
-			sd->nmeas = default_meas(s, c, sd->meas);
+		if (!sift_cpagg_dim_ok(s, &s->cols[c]) || s->cols[c].parent >= 0 || spec->ndims == SIFT_PAGG_MAX_DIMS)
+			continue;
+		sd = &spec->dim[spec->ndims++];
+		sd->leaf = c;
+		sd->nmeas = default_meas(s, c, sd->meas);
+	}
+	for (int c = 0; c < s->ncols && spec->nrollups < SIFT_PAGG_MAX_ROLLUPS; c++)
+		if (is_list(s, c))
+		{
+			rollup_default(s, c, &spec->rollup[spec->nrollups]);
+			spec->nrollups += spec->rollup[spec->nrollups].ndims > 0;
 		}
 }
 
@@ -176,40 +215,93 @@ find_scalar(const SiftColSchema *s, const char *const *names, const char *name)
 	return -1;
 }
 
-/*
- * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
- */
-static const char *
-parse_option(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+/* The rollup of the list `list` in the spec, created when there is none */
+static SiftCPaggRollup *
+rollup_of(SiftCPaggSpec *spec, int list)
 {
-	OptCur		cur = {opt};
-	OptCur	   *c = &cur;
+	for (int i = 0; i < spec->nrollups; i++)
+		if (spec->rollup[i].list == list)
+			return &spec->rollup[i];
+	if (spec->nrollups == SIFT_PAGG_MAX_ROLLUPS)
+		return NULL;
+	spec->rollup[spec->nrollups] = (SiftCPaggRollup) {.list = list};
+	return &spec->rollup[spec->nrollups++];
+}
 
-	if (s)
-		sift_cpagg_spec_default(s, spec);
-	if (opt == NULL || rest_blank(opt) || is_word(opt, "default"))
-		return NULL;
-	if (is_word(opt, "off"))
+static int
+cmp_rollup_list(const void *a, const void *b)
+{
+	return ((const SiftCPaggRollup *) a)->list - ((const SiftCPaggRollup *) b)->list;
+}
+
+/* "rollup(" was read: entries "d1, d2: m1, m2" of the leaves of one list each, separated by ; */
+static const char *
+parse_rollup(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	do
 	{
-		if (s)
+		SiftCPaggRollup *ru = NULL;
+		char	   *first = NULL;
+
+		do
 		{
-			memset(spec, 0, sizeof(*spec));
-			spec->off = true;
+			char	   *dn = take_name(c);
+			int			leaf = -1;
+
+			if (*dn == '\0')
+				return "a rollup entry needs a dimension name";
+			if (!s)
+				continue;
+			leaf = find_scalar(s, names, dn);
+			if (leaf < 0)
+				return psprintf("rollup dimension \"%s\" is not a column of the index", dn);
+			if (s->cols[leaf].parent < 0 || !sift_cpagg_dim_ok(s, &s->cols[leaf]))
+				return psprintf("rollup dimension \"%s\" must be an integer, date, numeric or text leaf of a list", dn);
+			if (ru == NULL)
+			{
+				if ((ru = rollup_of(spec, s->cols[leaf].parent)) == NULL)
+					return "a rollup option holds at most 8 lists";
+				if (ru->ndims > 0)
+					return psprintf("the list of \"%s\" has a rollup already", dn);
+				first = dn;
+			}
+			else if (ru->list != s->cols[leaf].parent)
+				return psprintf("rollup dimension \"%s\" is not a column of the same list as \"%s\"", dn, first);
+			if (ru->ndims == SIFT_PAGG_MAX_RDIMS)
+				return "a rollup holds at most 6 dimensions";
+			ru->dim[ru->ndims++] = leaf;
+		} while (eat(c, ','));
+		if (eat(c, ':'))
+		{
+			do
+			{
+				char	   *mn = take_name(c);
+				int			m = -1;
+
+				if (*mn == '\0')
+					return "a measure name is missing";
+				if (!s)
+					continue;
+				m = find_scalar(s, names, mn);
+				if (m < 0)
+					return psprintf("rollup measure \"%s\" is not a column of the index", mn);
+				if (s->cols[m].parent != ru->list)
+					return psprintf("rollup measure \"%s\" is not a column of the same list as the dimension \"%s\"", mn, first);
+				if (!meas_in(s, &s->cols[m], ru->list))
+					return psprintf("rollup measure \"%s\" must be a smallint, integer, bigint, numeric, real or double precision column", mn);
+				if (ru->nmeas == SIFT_PAGG_MAX_MEAS)
+					return "a rollup holds at most 8 measures";
+				ru->meas[ru->nmeas++] = m;
+			} while (eat(c, ','));
 		}
-		return NULL;
-	}
-	skip_ws(c);
-	if (!has_prefix(c->p, "cube"))
-		return psprintf("expected default, off or cube(...), got \"%s\"", opt);
-	c->p += 4;
-	if (!eat(c, '('))
-		return "expected ( after cube";
-	if (s)
-	{
-		memset(spec, 0, sizeof(*spec));
-		spec->fixed = true;
-		spec->max_groups = SIFT_PAGG_CUBE_GROUPS;
-	}
+	} while (eat(c, ';'));
+	return NULL;
+}
+
+/* "cube(" was read: entries "dim: m1, m2" of top level leaves separated by ; */
+static const char *
+parse_cube(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
 	do
 	{
 		char	   *dn = take_name(c);
@@ -223,14 +315,14 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 			leaf = find_scalar(s, names, dn);
 			if (leaf < 0)
 				return psprintf("cube dimension \"%s\" is not a column of the index", dn);
+			if (s->cols[leaf].parent >= 0)
+				return psprintf("cube dimension \"%s\" is a leaf of a list: name it in rollup(...)", dn);
 			if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
 				return psprintf("cube dimension \"%s\" must be a scalar integer, date, numeric or text column", dn);
-			if (dims_in(spec, s, s->cols[leaf].parent) == SIFT_PAGG_MAX_DIMS)
+			if (spec->ndims == SIFT_PAGG_MAX_DIMS)
 				return "a cube holds at most 16 dimensions";
-			if (spec->ndims == SIFT_PAGG_SPEC_DIMS)
-				return "a cube option holds at most 32 dimensions";
 			sd = &spec->dim[spec->ndims++];
-			sd->leaf = leaf;
+			*sd = (SiftCPaggDim) {.leaf = leaf};
 		}
 		if (eat(c, ':'))
 		{
@@ -256,11 +348,132 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 			} while (eat(c, ','));
 		}
 	} while (eat(c, ';'));
-	if (!eat(c, ')'))
-		return "expected ) at the end of cube(...)";
-	if (!rest_blank(c->p))
-		return psprintf("unexpected text after cube(...): \"%s\"", c->p);
 	return NULL;
+}
+
+/*
+ * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
+ */
+static const char *
+parse_option(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+
+	if (s)
+		sift_cpagg_spec_default(s, spec);
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "default"))
+		return NULL;
+	if (is_word(opt, "off"))
+	{
+		if (s)
+		{
+			memset(spec, 0, sizeof(*spec));
+			spec->off = true;
+		}
+		return NULL;
+	}
+	skip_ws(c);
+	do
+	{
+		const char *err;
+		bool		cube = has_prefix(c->p, "cube"),
+					rollup = !cube && has_prefix(c->p, "rollup");
+
+		if (!cube && !rollup)
+			return psprintf("expected default, off, cube(...) or rollup(...), got \"%s\"", c->p);
+		c->p += cube ? 4 : 6;
+		if (!eat(c, '('))
+			return cube ? "expected ( after cube" : "expected ( after rollup";
+		/* a clause replaces the default of its kind, the other kind keeps the default */
+		if (s && cube && !spec->fixed)
+		{
+			spec->ndims = 0;
+			spec->fixed = true;
+			spec->max_groups = SIFT_PAGG_CUBE_GROUPS;
+			spec->permille = 0;
+		}
+		if (s && rollup && !spec->rfixed)
+		{
+			spec->nrollups = 0;
+			spec->rfixed = true;
+		}
+		if ((err = cube ? parse_cube(c, s, names, spec) : parse_rollup(c, s, names, spec)) != NULL)
+			return err;
+		if (!eat(c, ')'))
+			return cube ? "expected ) at the end of cube(...)" : "expected ) at the end of rollup(...)";
+		eat(c, ',');
+		skip_ws(c);
+	} while (*c->p);
+	if (s && spec->nrollups > 1)
+		qsort(spec->rollup, spec->nrollups, sizeof(SiftCPaggRollup), cmp_rollup_list);
+	return NULL;
+}
+
+/* "off", or the dims "name, name, ..." (the measures are the numeric leaves of their lists) */
+static const char *
+parse_rollup_dims(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+
+	if (is_word(opt, "off"))
+	{
+		if (s)
+			spec->nrollups = 0;
+		return NULL;
+	}
+	if (s)
+		spec->nrollups = 0;
+	do
+	{
+		char	   *dn = take_name(c);
+		SiftCPaggRollup *ru;
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a leaf name is missing";
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a leaf declared in paths", dn);
+		if (s->cols[leaf].parent < 0)
+			return psprintf("\"%s\" is not a leaf of an array element or a map value", dn);
+		if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
+			return psprintf("\"%s\" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf", dn);
+		if ((ru = rollup_of(spec, s->cols[leaf].parent)) == NULL)
+			return "a rollup holds at most 8 lists";
+		if (ru->ndims == SIFT_PAGG_MAX_RDIMS)
+			return psprintf("the list of \"%s\" has more than %d rollup leaves", dn, SIFT_PAGG_MAX_RDIMS);
+		for (int j = 0; j < ru->ndims; j++)
+			if (ru->dim[j] == leaf)
+				return psprintf("\"%s\" is named twice", dn);
+		ru->dim[ru->ndims++] = leaf;
+	} while (eat(c, ','));
+	if (*c->p)
+		return psprintf("unexpected \"%s\"", c->p);
+	if (s)
+	{
+		for (int i = 0; i < spec->nrollups; i++)
+			rollup_measures(s, spec->rollup[i].list, &spec->rollup[i]);
+		qsort(spec->rollup, spec->nrollups, sizeof(SiftCPaggRollup), cmp_rollup_list);
+	}
+	return NULL;
+}
+
+const char *
+sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	if (opt == NULL || rest_blank(opt))
+		return NULL;
+	spec->rfixed = true;
+	return parse_rollup_dims(opt, s, names, spec);
+}
+
+const char *
+sift_cpagg_rollup_syntax(const char *opt)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
 }
 
 const char *
@@ -440,7 +653,6 @@ typedef struct Scratch
 typedef struct DimBuild
 {
 	int			spec;				/* index into spec->dim */
-	int			list;				/* the list the dim is a leaf of, -1: the top level */
 	StringInfoData blob;
 	Size		bytes;
 	bool		ok;
@@ -607,51 +819,497 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	return true;
 }
 
-static int
-kept_in(const DimBuild *db, int nd, int list)
+/* The kept dims as a cube blob: the directory of (leaf, bytes), then the bodies; nothing when none is kept */
+static void
+emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 {
 	int			kept = 0;
 
 	for (int d = 0; d < nd; d++)
-		kept += db[d].keep && db[d].list == list;
-	return kept;
-}
-
-/* The kept dims of one list (-1: the top level) as a cube blob: the directory of (leaf, bytes), then the bodies; nothing when none is kept */
-static void
-emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, int list, StringInfo out)
-{
-	int			kept = kept_in(db, nd, list);
-
+		kept += db[d].keep;
 	if (kept == 0)
 		return;
 	appendStringInfoChar(out, (char) kept);
 	for (int d = 0; d < nd; d++)
-		if (db[d].keep && db[d].list == list)
+		if (db[d].keep)
 		{
 			put_u(out, spec->dim[db[d].spec].leaf);
 			put_u(out, db[d].blob.len);
 		}
 	for (int d = 0; d < nd; d++)
-		if (db[d].keep && db[d].list == list)
+		if (db[d].keep)
 			appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
 }
 
-/* The element blob: the cube of every list that has a kept dim, in ascending list order */
+/* The histogram of every dim of the spec */
 static void
-emit_elems(const SiftColSchema *s, const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
+build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, DimBuild *db)
 {
-	StringInfoData body[SIFT_PAGG_SPEC_DIMS];
-	int			list[SIFT_PAGG_SPEC_DIMS],
+	uint32		hsize = 16;
+	Scratch		sc;
+
+	while (hsize < 2 * (maxg + 1))
+		hsize *= 2;
+	sc.hsize = hsize;
+	sc.gid = palloc(nrows * sizeof(uint32));
+	sc.hk = palloc(hsize * sizeof(int64));
+	sc.hg = palloc(hsize * sizeof(int32));
+	sc.gkey = palloc((maxg + 1) * sizeof(int64));
+	sc.cnt = palloc((maxg + 1) * sizeof(uint32));
+	sc.nn = palloc((maxg + 1) * sizeof(uint32));
+	sc.ord = palloc((maxg + 1) * sizeof(GroupKey));
+	sc.sf = palloc((maxg + 1) * sizeof(double));
+	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
+	for (int d = 0; d < spec->ndims; d++)
+	{
+		db[d] = (DimBuild) {.spec = d};
+		initStringInfo(&db[d].blob);
+		db[d].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[d].blob);
+		db[d].bytes = db[d].blob.len;
+	}
+	pfree(sc.gid);
+	pfree(sc.hk);
+	pfree(sc.hg);
+	pfree(sc.gkey);
+	pfree(sc.cnt);
+	pfree(sc.nn);
+	pfree(sc.ord);
+	pfree(sc.sf);
+	pfree(sc.si);
+}
+
+/* ---------- the rollup of a list ---------- */
+
+typedef struct RuBuild
+{
+	int			nd,
+				nm;
+	const SiftCPaggCol *dc[SIFT_PAGG_MAX_RDIMS],
+			   *mc[SIFT_PAGG_MAX_MEAS];
+	int16		dleaf[SIFT_PAGG_MAX_RDIMS],
+				mleaf[SIFT_PAGG_MAX_MEAS];
+	bool		mfl[SIFT_PAGG_MAX_MEAS];
+	uint32		n,					/* elements */
+				cap,				/* the most tuples */
+				nt,
+				hsize;
+	uint32	   *gid,				/* [n] the tuple of each element */
+			   *cnt;				/* [cap] */
+	int64	   *tkey;				/* [cap * nd] */
+	uint8	   *tnull;				/* [cap] bit j: dim j is NULL */
+	int32	   *hslot;				/* [hsize] */
+} RuBuild;
+
+/* the order of the tuples: dim 0 first, the NULL of a dim after its values; the sort callback has no argument, the backend is one thread */
+typedef struct RuOrder
+{
+	int			nd;
+	const int64 *key;
+	const uint8 *null;
+} RuOrder;
+
+static const RuOrder *ru_order;
+
+static int
+cmp_tuple(const void *a, const void *b)
+{
+	uint32		x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+
+	for (int j = 0; j < ru_order->nd; j++)
+	{
+		bool		nx = ru_order->null[x] >> j & 1,
+					ny = ru_order->null[y] >> j & 1;
+		int64		kx = ru_order->key[(Size) x * ru_order->nd + j],
+					ky = ru_order->key[(Size) y * ru_order->nd + j];
+
+		if (nx != ny)
+			return nx ? 1 : -1;
+		if (kx != ky)
+			return kx < ky ? -1 : 1;
+	}
+	return x < y ? -1 : x > y;
+}
+
+/* The distinct tuples of the dims over the elements, with the elements of each; false past the cap */
+static bool
+ru_tuples(RuBuild *b)
+{
+	uint32		mask = b->hsize - 1;
+
+	memset(b->hslot, 0xFF, b->hsize * sizeof(int32));
+	b->nt = 0;
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		int64		k[SIFT_PAGG_MAX_RDIMS];
+		uint8		nm = 0;
+		uint64		h = 0;
+		uint32		pos,
+					t;
+
+		for (int j = 0; j < b->nd; j++)
+		{
+			if (is_null(b->dc[j]->nulls, i))
+			{
+				nm |= 1 << j;
+				k[j] = 0;
+			}
+			else
+				k[j] = b->dc[j]->key[i];
+			h = (h ^ (uint64) k[j]) * UINT64CONST(0x9E3779B97F4A7C15);
+			h ^= h >> 31;
+		}
+		h = (h ^ nm) * UINT64CONST(0x9E3779B97F4A7C15);
+		pos = (uint32) (h >> 24) & mask;
+		for (;;)
+		{
+			int32		sl = b->hslot[pos];
+
+			if (sl < 0)
+			{
+				if (b->nt == b->cap)
+					return false;
+				t = b->nt++;
+				memcpy(b->tkey + (Size) t * b->nd, k, b->nd * sizeof(int64));
+				b->tnull[t] = nm;
+				b->cnt[t] = 0;
+				b->hslot[pos] = t;
+				break;
+			}
+			if (b->tnull[sl] == nm && memcmp(b->tkey + (Size) sl * b->nd, k, b->nd * sizeof(int64)) == 0)
+			{
+				t = sl;
+				break;
+			}
+			pos = (pos + 1) & mask;
+		}
+		b->gid[i] = t;
+		b->cnt[t]++;
+	}
+	return true;
+}
+
+/* The blob of the tuples found by ru_tuples (format at the top of the file) */
+static void
+ru_encode(const RuBuild *b, StringInfo out)
+{
+	uint32		nt = b->nt,
+			   *ord = palloc(nt * sizeof(uint32)),
+			   *nn = palloc(nt * sizeof(uint32));
+	RuOrder		od = {b->nd, b->tkey, b->tnull};
+	SiftCI128  *si = palloc(nt * sizeof(SiftCI128));
+	int64	   *mn = palloc(nt * sizeof(int64)),
+			   *mx = palloc(nt * sizeof(int64));
+	double	   *sf = palloc(nt * sizeof(double)),
+			   *fmn = palloc(nt * sizeof(double)),
+			   *fmx = palloc(nt * sizeof(double));
+
+	for (uint32 t = 0; t < nt; t++)
+		ord[t] = t;
+	ru_order = &od;
+	qsort(ord, nt, sizeof(uint32), cmp_tuple);
+	appendStringInfoChar(out, (char) b->nd);
+	appendStringInfoChar(out, (char) b->nm);
+	put_u(out, nt);
+	for (int j = 0; j < b->nd; j++)
+		put_u(out, b->dleaf[j]);
+	for (int m = 0; m < b->nm; m++)
+		put_u(out, b->mleaf[m]);
+	for (int j = 0; j < b->nd; j++)
+	{
+		bool		any = false;
+		int64		prev = 0;
+
+		for (uint32 t = 0; t < nt; t++)
+			any |= (b->tnull[t] >> j & 1) != 0;
+		appendStringInfoChar(out, any);
+		if (any)
+		{
+			uint32		nb = (nt + 7) / 8,
+						at = out->len;
+
+			for (uint32 i = 0; i < nb; i++)
+				appendStringInfoChar(out, 0);
+			for (uint32 i = 0; i < nt; i++)
+				if (b->tnull[ord[i]] >> j & 1)
+					out->data[at + i / 8] |= (char) (1 << (i % 8));
+		}
+		for (uint32 i = 0; i < nt; i++)
+		{
+			int64		k;
+
+			if (b->tnull[ord[i]] >> j & 1)
+				continue;
+			k = b->tkey[(Size) ord[i] * b->nd + j];
+			put_zz(out, (int64) ((uint64) k - (uint64) prev));
+			prev = k;
+		}
+	}
+	for (uint32 i = 0; i < nt; i++)
+		put_u(out, b->cnt[ord[i]]);
+	for (int m = 0; m < b->nm; m++)
+	{
+		const SiftCPaggCol *mc = b->mc[m];
+
+		memset(nn, 0, nt * sizeof(uint32));
+		for (uint32 i = 0; i < b->n; i++)
+		{
+			uint32		g = b->gid[i];
+
+			if (is_null(mc->nulls, i))
+				continue;
+			if (b->mfl[m])
+			{
+				double		v = sift_col_f8_from_key(mc->key[i]);
+
+				if (nn[g]++ == 0)
+					sf[g] = fmn[g] = fmx[g] = v;
+				else
+				{
+					sf[g] += v;
+					fmn[g] = v < fmn[g] ? v : fmn[g];
+					fmx[g] = v > fmx[g] ? v : fmx[g];
+				}
+			}
+			else
+			{
+				int64		v = mc->key[i];
+
+				if (nn[g]++ == 0)
+				{
+					si[g] = 0;
+					mn[g] = mx[g] = v;
+				}
+				si[g] += v;
+				mn[g] = Min(mn[g], v);
+				mx[g] = Max(mx[g], v);
+			}
+		}
+		for (uint32 i = 0; i < nt; i++)
+			put_u(out, nn[ord[i]]);
+		for (uint32 i = 0; i < nt; i++)
+		{
+			uint32		g = ord[i];
+
+			if (b->mfl[m])
+			{
+				double		v = nn[g] ? sf[g] : 0;
+
+				appendBinaryStringInfo(out, (const char *) &v, sizeof(double));
+			}
+			else
+				put_zz128(out, nn[g] ? si[g] : 0);
+		}
+		for (int pass = 0; pass < 2; pass++)
+			for (uint32 i = 0; i < nt; i++)
+			{
+				uint32		g = ord[i];
+
+				if (nn[g] == 0)
+					continue;
+				if (b->mfl[m])
+					appendBinaryStringInfo(out, (const char *) (pass ? &fmx[g] : &fmn[g]), sizeof(double));
+				else
+					put_zz(out, pass ? mx[g] : mn[g]);
+			}
+	}
+	pfree(ord);
+	pfree(nn);
+	pfree(si);
+	pfree(mn);
+	pfree(mx);
+	pfree(sf);
+	pfree(fmn);
+	pfree(fmx);
+}
+
+/* The distinct values (a NULL one more) of an element column, or limit + 1 when there are more than limit */
+static uint32
+ru_distinct(const SiftCPaggCol *c, uint32 n, uint32 limit, int64 *hk, uint8 *hu, uint32 hsize)
+{
+	uint32		mask = hsize - 1,
+				nd = 0;
+	bool		nullseen = false;
+
+	memset(hu, 0, hsize);
+	for (uint32 i = 0; i < n; i++)
+	{
+		int64		k;
+		uint32		h;
+
+		if (is_null(c->nulls, i))
+		{
+			if (!nullseen && ++nd > limit)
+				return limit + 1;
+			nullseen = true;
+			continue;
+		}
+		k = c->key[i];
+		h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+		while (hu[h] && hk[h] != k)
+			h = (h + 1) & mask;
+		if (!hu[h])
+		{
+			if (++nd > limit)
+				return limit + 1;
+			hu[h] = 1;
+			hk[h] = k;
+		}
+	}
+	return nd;
+}
+
+static int
+cmp_i16(const void *a, const void *b)
+{
+	return *(const int16 *) a - *(const int16 *) b;
+}
+
+/*
+ * Builds the rollup of one list over the unit. fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
+ * the check of a stored one); else the dims go from the most distinct values down until the tuples are at most a 32nd of the elements, and
+ * the blob fits room (limited: the budget of the list). false when no rollup fits or the list cannot be used.
+ */
+static bool
+build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggCol *cols, uint32 nrows, bool fixed, bool limited, Size room, StringInfo out)
+{
+	RuBuild		b;
+	int			cand[SIFT_PAGG_MAX_RDIMS],
+				nc = 0,
+				nmeas = 0;
+	uint32		dist[SIFT_PAGG_MAX_RDIMS],
+				n = 0,
+				hs = 16,
+				mhs = 16;
+	int64	   *hk;
+	uint8	   *hu;
+	bool		done = false;
+	StringInfoData tmp;
+
+	if (!col_usable(&cols[ru->list], nrows) || (limited && room == 0))
+		return false;
+	for (int j = 0; j < ru->ndims; j++)
+	{
+		const SiftCPaggCol *c = &cols[ru->dim[j]];
+
+		if (!c->ready || has_ovf(c) || (nc > 0 && c->n != n))
+			continue;
+		n = c->n;
+		cand[nc++] = j;
+	}
+	if (n == 0 || nc == 0)
+		return false;
+	b.n = n;
+	b.cap = fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
+	while (mhs < 2 * (b.cap + 2))
+		mhs *= 2;
+	hk = palloc(mhs * sizeof(int64));
+	hu = palloc(mhs);
+	for (int i = 0; i < nc; i++)
+		dist[i] = ru_distinct(&cols[ru->dim[cand[i]]], n, b.cap, hk, hu, mhs);
+	pfree(hk);
+	pfree(hu);
+	for (int m = 0; m < ru->nmeas && nmeas < SIFT_PAGG_MAX_MEAS; m++)
+	{
+		const SiftCPaggCol *c = &cols[ru->meas[m]];
+
+		if (c->ready && !has_ovf(c) && c->n == n)
+		{
+			b.mc[nmeas] = c;
+			b.mleaf[nmeas] = ru->meas[m];
+			b.mfl[nmeas++] = s->cols[ru->meas[m]].store == SIFT_COLS_F4 || s->cols[ru->meas[m]].store == SIFT_COLS_F8;
+		}
+	}
+	b.nm = nmeas;
+	/* the order of the attempts: the dims of fewer distinct values first (the position in ru breaks a tie); the stored order is by leaf */
+	for (int i = 1; i < nc; i++)
+		for (int j = i; j > 0 && dist[j] < dist[j - 1]; j--)
+		{
+			uint32		d = dist[j];
+			int			c = cand[j];
+
+			dist[j] = dist[j - 1];
+			cand[j] = cand[j - 1];
+			dist[j - 1] = d;
+			cand[j - 1] = c;
+		}
+	{
+		uint64		prod = 1;
+		int			k = 0;
+
+		if (fixed)
+			k = nc;
+		else
+		{
+			while (k < nc && dist[k] <= b.cap && prod * dist[k] <= (uint64) b.cap * 8)
+				prod *= dist[k++];
+			k = Max(k, 1);
+		}
+		while (hs < 2 * (b.cap + 1))
+			hs *= 2;
+		b.hsize = hs;
+		b.gid = palloc(n * sizeof(uint32));
+		b.cnt = palloc((b.cap + 1) * sizeof(uint32));
+		b.tkey = palloc((Size) (b.cap + 1) * SIFT_PAGG_MAX_RDIMS * sizeof(int64));
+		b.tnull = palloc(b.cap + 1);
+		b.hslot = palloc(hs * sizeof(int32));
+		initStringInfo(&tmp);
+		for (; k >= 1 && !done; k--)
+		{
+			int16		leaves[SIFT_PAGG_MAX_RDIMS];
+
+			if (!fixed && dist[k - 1] > b.cap)
+				continue;
+			for (int i = 0; i < k; i++)
+				leaves[i] = ru->dim[cand[i]];
+			qsort(leaves, k, sizeof(int16), cmp_i16);
+			b.nd = k;
+			for (int i = 0; i < k; i++)
+			{
+				b.dleaf[i] = leaves[i];
+				b.dc[i] = &cols[leaves[i]];
+			}
+			if (ru_tuples(&b))
+			{
+				resetStringInfo(&tmp);
+				ru_encode(&b, &tmp);
+				if (!limited || tmp.len <= room)
+				{
+					appendBinaryStringInfo(out, tmp.data, tmp.len);
+					done = true;
+				}
+			}
+			if (fixed)
+				break;
+		}
+	}
+	pfree(b.gid);
+	pfree(b.cnt);
+	pfree(b.tkey);
+	pfree(b.tnull);
+	pfree(b.hslot);
+	pfree(tmp.data);
+	return done;
+}
+
+/* The element blob: the rollups of the spec's lists that a unit can hold, in ascending list order; limited: each within room bytes (a list's own budget, the cube's is not shared) */
+static void
+emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, bool limited, Size room, StringInfo out)
+{
+	StringInfoData body[SIFT_PAGG_MAX_ROLLUPS];
+	int			list[SIFT_PAGG_MAX_ROLLUPS],
 				nl = 0;
 
-	for (int l = 0; l < s->ncols; l++)
-		if (kept_in(db, nd, l) > 0)
+	for (int i = 0; i < spec->nrollups; i++)
+	{
+		initStringInfo(&body[nl]);
+		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed, limited, room, &body[nl]))
 		{
-			initStringInfo(&body[nl]);
-			emit_cube(spec, db, nd, l, &body[nl]);
-			list[nl++] = l;
+			list[nl++] = spec->rollup[i].list;
 		}
+		else
+			pfree(body[nl].data);
+	}
 	if (nl == 0)
 		return;
 	appendStringInfoChar(out, (char) nl);
@@ -667,84 +1325,42 @@ emit_elems(const SiftColSchema *s, const SiftCPaggSpec *spec, const DimBuild *db
 	}
 }
 
-/* The histogram of every dim of the spec; the dims of the lists only when elements are wanted (eout) and the list has no overflow value */
-static void
-build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, bool elems, DimBuild *db)
-{
-	uint32		hsize = 16,
-				maxn = nrows;
-	Scratch		sc;
-
-	for (int d = 0; d < spec->ndims; d++)
-		maxn = Max(maxn, cols[spec->dim[d].leaf].n);
-	while (hsize < 2 * (maxg + 1))
-		hsize *= 2;
-	sc.hsize = hsize;
-	sc.gid = palloc(maxn * sizeof(uint32));
-	sc.hk = palloc(hsize * sizeof(int64));
-	sc.hg = palloc(hsize * sizeof(int32));
-	sc.gkey = palloc((maxg + 1) * sizeof(int64));
-	sc.cnt = palloc((maxg + 1) * sizeof(uint32));
-	sc.nn = palloc((maxg + 1) * sizeof(uint32));
-	sc.ord = palloc((maxg + 1) * sizeof(GroupKey));
-	sc.sf = palloc((maxg + 1) * sizeof(double));
-	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
-	for (int d = 0; d < spec->ndims; d++)
-	{
-		const SiftCPaggDim *sd = &spec->dim[d];
-		int			list = s->cols[sd->leaf].parent;
-		uint32		n = list < 0 ? nrows : cols[sd->leaf].n;
-
-		db[d] = (DimBuild) {.spec = d, .list = list};
-		initStringInfo(&db[d].blob);
-		/* an overflow value in the list's counts: the elements are not all there */
-		if (list < 0 || (elems && col_usable(&cols[list], nrows)))
-			db[d].ok = build_dim(s, sd, cols, n, maxg, &sc, &db[d].blob);
-		db[d].bytes = db[d].blob.len;
-	}
-	pfree(sc.gid);
-	pfree(sc.hk);
-	pfree(sc.hg);
-	pfree(sc.gkey);
-	pfree(sc.cnt);
-	pfree(sc.nn);
-	pfree(sc.ord);
-	pfree(sc.sf);
-	pfree(sc.si);
-}
-
 void
 sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 				StringInfo out, StringInfo eout)
 {
-	DimBuild	db[SIFT_PAGG_SPEC_DIMS];
+	DimBuild	db[SIFT_PAGG_MAX_DIMS];
 	Size		budget = 0,
 				used = 0;
 
-	if (spec->off || spec->ndims == 0 || nrows == 0)
+	if (spec->off || nrows == 0 || (spec->ndims == 0 && (eout == NULL || spec->nrollups == 0)))
 		return;
-	build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), eout != NULL, db);
 	if (spec->permille > 0)
 		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
-	/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
-	for (int round = 0; round < spec->ndims; round++)
+	if (spec->ndims > 0)
 	{
-		int			best = -1;
+		build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), db);
+		/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
+		for (int round = 0; round < spec->ndims; round++)
+		{
+			int			best = -1;
 
+			for (int d = 0; d < spec->ndims; d++)
+				if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
+					best = d;
+			if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
+				break;
+			db[best].keep = true;
+			used += db[best].bytes;
+		}
+		emit_cube(spec, db, spec->ndims, out);
 		for (int d = 0; d < spec->ndims; d++)
-			if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
-				best = d;
-		if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
-			break;
-		db[best].keep = true;
-		used += db[best].bytes;
+			pfree(db[d].blob.data);
 	}
-	emit_cube(spec, db, spec->ndims, -1, out);
-	if (eout)
-		emit_elems(s, spec, db, spec->ndims, eout);
-	for (int d = 0; d < spec->ndims; d++)
-		pfree(db[d].blob.data);
+	if (eout && spec->nrollups > 0)
+		emit_rollups(s, spec, cols, nrows, !spec->rfixed, Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * SIFT_PAGG_DEF_PERMILLE), eout);
 }
+
 
 /* ---------- reading ---------- */
 
@@ -933,77 +1549,303 @@ sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 	return -1;
 }
 
-/* Calls fn for the cube of the unit and the cube of each list of its element blob; false when a blob does not decode or fn says so */
-typedef bool (*CubeFn) (const SiftColSchema *s, const SiftCHist *h, void *arg);
+/* ---------- the rollup, read ---------- */
 
-static bool
-each_cube(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, MemoryContext cx, CubeFn fn, void *arg)
+bool
+sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r)
 {
-	SiftCHist	h;
-	int			nl,
-				list[SIFT_PAGG_SPEC_DIMS];
-	uint32		blen[SIFT_PAGG_SPEC_DIMS];
-	const uint8 *p;
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	Rd			rd = {blob, blob + len, false};
+	uint32		nt;
+	bool		ok = false;
 
-	if (len > 0 && (!sift_cpagg_decode(s, blob, len, cx, &h) || !fn(s, &h, arg)))
-		return false;
-	if (elen == 0)
-		return true;
-	if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nl, list, blen, &p))
-		return false;
-	for (int i = 0; i < nl; p += blen[i++])
-		if (!sift_cpagg_decode(s, p, blen[i], cx, &h) || !fn(s, &h, arg))
-			return false;
-	return true;
-}
-
-static bool
-mark_leaves(const SiftColSchema *s, const SiftCHist *h, void *arg)
-{
-	bool	   *need = arg;
-
-	for (int d = 0; d < h->ndims; d++)
+	memset(r, 0, sizeof(*r));
+	r->list = -1;
+	if (len < 3)
+		goto done;
+	r->ndims = *rd.p++;
+	r->nmeas = *rd.p++;
+	nt = (uint32) get_u(&rd);
+	if (r->ndims == 0 || r->ndims > SIFT_PAGG_MAX_RDIMS || r->nmeas > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > SIFT_PAGG_ROLLUP_TUPLES)
+		goto done;
+	r->ntuples = nt;
+	for (int j = 0; j < r->ndims; j++)
 	{
-		need[h->dim[d].leaf] = true;
-		if (s->cols[h->dim[d].leaf].parent >= 0)
-			need[s->cols[h->dim[d].leaf].parent] = true;
-		for (int m = 0; m < h->dim[d].nmeas; m++)
-			need[h->dim[d].meas[m]] = true;
+		uint64		l = get_u(&rd);
+
+		if (rd.bad || l >= (uint64) s->ncols || s->cols[l].parent < 0 || (r->list >= 0 && r->list != s->cols[l].parent))
+			goto done;
+		r->dim[j] = (int16) l;
+		r->list = s->cols[l].parent;
 	}
+	for (int m = 0; m < r->nmeas; m++)
+	{
+		uint64		l = get_u(&rd);
+
+		if (rd.bad || l >= (uint64) s->ncols || s->cols[l].parent != r->list)
+			goto done;
+		r->meas[m] = (int16) l;
+	}
+	for (int j = 0; j < r->ndims; j++)
+	{
+		int64		prev = 0;
+
+		r->key[j] = palloc0(nt * sizeof(int64));
+		if (rd.p >= rd.end || *rd.p > 1)
+			goto done;
+		if (*rd.p++)
+		{
+			uint32		nb = (nt + 7) / 8;
+
+			if ((uint32) (rd.end - rd.p) < nb)
+				goto done;
+			r->isnull[j] = palloc0(nt);
+			for (uint32 t = 0; t < nt; t++)
+				r->isnull[j][t] = rd.p[t / 8] >> (t % 8) & 1;
+			rd.p += nb;
+		}
+		for (uint32 t = 0; t < nt; t++)
+		{
+			if (r->isnull[j] && r->isnull[j][t])
+				continue;
+			prev = (int64) ((uint64) prev + (uint64) get_zz(&rd));
+			r->key[j][t] = prev;
+		}
+	}
+	r->count = palloc(nt * sizeof(uint32));
+	for (uint32 t = 0; t < nt; t++)
+		r->count[t] = (uint32) get_u(&rd);
+	for (int m = 0; m < r->nmeas; m++)
+	{
+		bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
+
+		r->nn[m] = palloc(nt * sizeof(uint32));
+		for (uint32 t = 0; t < nt; t++)
+			r->nn[m][t] = (uint32) get_u(&rd);
+		if (fl)
+		{
+			if ((Size) (rd.end - rd.p) < (Size) nt * sizeof(double))
+				goto done;
+			r->sumf[m] = palloc(nt * sizeof(double));
+			memcpy(r->sumf[m], rd.p, nt * sizeof(double));
+			rd.p += nt * sizeof(double);
+			r->minf[m] = palloc0(nt * sizeof(double));
+			r->maxf[m] = palloc0(nt * sizeof(double));
+		}
+		else
+		{
+			r->sum[m] = palloc(nt * sizeof(SiftCI128));
+			for (uint32 t = 0; t < nt; t++)
+				r->sum[m][t] = get_zz128(&rd);
+			r->min[m] = palloc0(nt * sizeof(int64));
+			r->max[m] = palloc0(nt * sizeof(int64));
+		}
+		for (int pass = 0; pass < 2; pass++)
+			for (uint32 t = 0; t < nt; t++)
+			{
+				if (r->nn[m][t] == 0)
+					continue;
+				if (fl)
+				{
+					double		v;
+
+					if (rd.end - rd.p < (long) sizeof(double))
+						goto done;
+					memcpy(&v, rd.p, sizeof(double));
+					rd.p += sizeof(double);
+					(pass ? r->maxf[m] : r->minf[m])[t] = v;
+				}
+				else
+					(pass ? r->max[m] : r->min[m])[t] = get_zz(&rd);
+			}
+	}
+	ok = !rd.bad && rd.p == rd.end;
+done:
+	MemoryContextSwitchTo(old);
+	return ok;
+}
+
+/* the order of the tuples by one dim, ties by position (so that the sums of a group add in the order of the tuples) */
+static const SiftCRollup *proj_r;
+static int	proj_j;
+
+static int
+cmp_proj(const void *a, const void *b)
+{
+	uint32		x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+	bool		nx = proj_r->isnull[proj_j] && proj_r->isnull[proj_j][x],
+				ny = proj_r->isnull[proj_j] && proj_r->isnull[proj_j][y];
+
+	if (nx != ny)
+		return nx ? 1 : -1;
+	if (!nx && proj_r->key[proj_j][x] != proj_r->key[proj_j][y])
+		return proj_r->key[proj_j][x] < proj_r->key[proj_j][y] ? -1 : 1;
+	return x < y ? -1 : x > y;
+}
+
+bool
+sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, int leaf, MemoryContext mcxt, SiftCHistDim *out)
+{
+	MemoryContext old;
+	int			j = -1;
+	uint32	   *ord,
+				ng = 0;
+	bool		isnull_group;
+
+	for (int i = 0; i < r->ndims; i++)
+		if (r->dim[i] == leaf)
+			j = i;
+	if (j < 0)
+		return false;
+	old = MemoryContextSwitchTo(mcxt);
+	memset(out, 0, sizeof(*out));
+	out->leaf = leaf;
+	out->nmeas = r->nmeas;
+	ord = palloc(r->ntuples * sizeof(uint32));
+	for (uint32 t = 0; t < r->ntuples; t++)
+		ord[t] = t;
+	proj_r = r;
+	proj_j = j;
+	qsort(ord, r->ntuples, sizeof(uint32), cmp_proj);
+	out->key = palloc0(r->ntuples * sizeof(int64));
+	out->count = palloc0(r->ntuples * sizeof(uint32));
+	for (int m = 0; m < r->nmeas; m++)
+	{
+		out->meas[m] = r->meas[m];
+		out->nn[m] = palloc0(r->ntuples * sizeof(uint32));
+		if (r->sum[m])
+			out->sum[m] = palloc0(r->ntuples * sizeof(SiftCI128));
+		else
+			out->sumf[m] = palloc0(r->ntuples * sizeof(double));
+	}
+	for (uint32 i = 0; i < r->ntuples; i++)
+	{
+		uint32		t = ord[i];
+		bool		nul = r->isnull[j] && r->isnull[j][t];
+
+		if (i == 0 || nul != (r->isnull[j] && r->isnull[j][ord[i - 1]]) || (!nul && r->key[j][t] != r->key[j][ord[i - 1]]))
+			ng++;
+		out->key[ng - 1] = r->key[j][t];
+		out->count[ng - 1] += r->count[t];
+		for (int m = 0; m < r->nmeas; m++)
+		{
+			if (r->nn[m][t] > 0 && out->nn[m][ng - 1] == 0 && out->sumf[m])
+				out->sumf[m][ng - 1] = r->sumf[m][t];
+			else if (out->sumf[m])
+				out->sumf[m][ng - 1] += r->sumf[m][t];
+			if (out->sum[m])
+				out->sum[m][ng - 1] += r->sum[m][t];
+			out->nn[m][ng - 1] += r->nn[m][t];
+		}
+	}
+	isnull_group = ng > 0 && r->isnull[j] && r->isnull[j][ord[r->ntuples - 1]];
+	out->ngroups = ng;
+	out->has_null = isnull_group;
+	pfree(ord);
+	MemoryContextSwitchTo(old);
+	(void) s;
 	return true;
 }
 
+/* ---------- verification ---------- */
+
+/* Marks the leaves the cube and the rollups read; false when a blob does not decode */
 bool
 sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg leaves", ALLOCSET_SMALL_SIZES);
-	bool		ok = each_cube(s, blob, len, eblob, elen, cx, mark_leaves, need);
+	SiftCHist	h;
+	bool		ok = true;
 
+	if (len > 0 && sift_cpagg_decode(s, blob, len, cx, &h))
+	{
+		for (int d = 0; d < h.ndims; d++)
+		{
+			need[h.dim[d].leaf] = true;
+			for (int m = 0; m < h.dim[d].nmeas; m++)
+				need[h.dim[d].meas[m]] = true;
+		}
+	}
+	else if (len > 0)
+		ok = false;
+	if (ok && elen > 0)
+	{
+		int			nl,
+					list[SIFT_PAGG_MAX_ROLLUPS];
+		uint32		blen[SIFT_PAGG_MAX_ROLLUPS];
+		const uint8 *p;
+
+		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, &nl, list, blen, &p))
+			ok = false;
+		for (int i = 0; ok && i < nl; p += blen[i++])
+		{
+			SiftCRollup r;
+
+			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r) || r.list != list[i])
+			{
+				ok = false;
+				break;
+			}
+			need[r.list] = true;
+			for (int j = 0; j < r.ndims; j++)
+				need[r.dim[j]] = true;
+			for (int m = 0; m < r.nmeas; m++)
+				need[r.meas[m]] = true;
+		}
+	}
 	MemoryContextDelete(cx);
 	return ok;
-}
-
-/* The dims and measures of a stored cube, appended to the spec that recomputes it */
-static bool
-add_to_spec(const SiftColSchema *s, const SiftCHist *h, void *arg)
-{
-	SiftCPaggSpec *spec = arg;
-
-	if (spec->ndims + h->ndims > SIFT_PAGG_SPEC_DIMS)
-		return false;
-	for (int d = 0; d < h->ndims; d++, spec->ndims++)
-	{
-		spec->dim[spec->ndims].leaf = h->dim[d].leaf;
-		spec->dim[spec->ndims].nmeas = h->dim[d].nmeas;
-		memcpy(spec->dim[spec->ndims].meas, h->dim[d].meas, sizeof(spec->dim[0].meas));
-	}
-	return true;
 }
 
 static bool
 same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)
 {
 	return a->len == (int) len && (len == 0 || memcmp(a->data, b, len) == 0);
+}
+
+/* The spec that recomputes a stored cube and element blob: the dims, rollups and measures they hold, exactly */
+static bool
+spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, MemoryContext cx, SiftCPaggSpec *spec)
+{
+	memset(spec, 0, sizeof(*spec));
+	spec->fixed = spec->rfixed = true;
+	spec->max_groups = SIFT_PAGG_CUBE_GROUPS;
+	if (len > 0)
+	{
+		SiftCHist	h;
+
+		if (!sift_cpagg_decode(s, blob, len, cx, &h))
+			return false;
+		for (int d = 0; d < h.ndims; d++, spec->ndims++)
+		{
+			spec->dim[spec->ndims].leaf = h.dim[d].leaf;
+			spec->dim[spec->ndims].nmeas = h.dim[d].nmeas;
+			memcpy(spec->dim[spec->ndims].meas, h.dim[d].meas, sizeof(spec->dim[0].meas));
+		}
+	}
+	if (elen > 0)
+	{
+		int			nl,
+					list[SIFT_PAGG_MAX_ROLLUPS];
+		uint32		blen[SIFT_PAGG_MAX_ROLLUPS];
+		const uint8 *p;
+
+		if (!read_dir(s, eblob, elen, SIFT_PAGG_MAX_ROLLUPS, &nl, list, blen, &p))
+			return false;
+		for (int i = 0; i < nl; p += blen[i++])
+		{
+			SiftCRollup r;
+			SiftCPaggRollup *ru = &spec->rollup[spec->nrollups++];
+
+			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r))
+				return false;
+			*ru = (SiftCPaggRollup) {.list = r.list, .ndims = r.ndims, .nmeas = r.nmeas};
+			memcpy(ru->dim, r.dim, sizeof(ru->dim));
+			memcpy(ru->meas, r.meas, sizeof(ru->meas));
+		}
+	}
+	return true;
 }
 
 bool
@@ -1013,12 +1855,8 @@ sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows,
 	StringInfoData again,
 				eagain;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
-	bool		ok;
+	bool		ok = spec_of(s, blob, len, eblob, elen, cx, &spec);
 
-	memset(&spec, 0, sizeof(spec));
-	spec.fixed = true;
-	spec.max_groups = SIFT_PAGG_CUBE_GROUPS;
-	ok = each_cube(s, blob, len, eblob, elen, cx, add_to_spec, &spec);
 	MemoryContextDelete(cx);
 	if (!ok)
 		return false;
