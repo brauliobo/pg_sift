@@ -3121,8 +3121,8 @@ rank_search(SiftRanker *r)
  */
 #define RANK_FAST_GROWTH_K	4096
 
-static int64
-rank_next_k(int64 k)
+int64
+sift_rank_next_k(int64 k)
 {
 	return k * (k < RANK_FAST_GROWTH_K ? 16 : 4);
 }
@@ -3133,7 +3133,7 @@ rank_ensure(SiftRanker *r)
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : PG_INT64_MAX;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K = rank_next_k(r->K);
+		r->K = sift_rank_next_k(r->K);
 	else
 		return;
 	rank_search(r);

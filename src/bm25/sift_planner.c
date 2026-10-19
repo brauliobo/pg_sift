@@ -265,16 +265,26 @@ score_walker(Node *node, ScoreRefs *refs)
 	return expression_tree_walker(node, score_walker, refs);
 }
 
-/* The expressions of the sort key's class that are about rel: its own, and for a partition the ones derived from its parent's */
+/* The members of the sort key's class that are about rel: its own, and for a partition the ones derived from its parent's */
 static List *
-pathkey_exprs(PathKey *pk, RelOptInfo *rel)
+pathkey_members(PathKey *pk, RelOptInfo *rel)
 {
 	EquivalenceMemberIterator it;
 	EquivalenceMember *em;
-	List	   *exprs = NIL;
+	List	   *members = NIL;
 
 	setup_eclass_member_iterator(&it, pk->pk_eclass, rel->relids);
 	while ((em = eclass_member_iterator_next(&it)) != NULL)
+		members = lappend(members, em);
+	return members;
+}
+
+static List *
+pathkey_exprs(PathKey *pk, RelOptInfo *rel)
+{
+	List	   *exprs = NIL;
+
+	foreach_ptr(EquivalenceMember, em, pathkey_members(pk, rel))
 		exprs = lappend(exprs, em->em_expr);
 	return exprs;
 }
@@ -302,21 +312,35 @@ score_exprs(PlannerInfo *root, RelOptInfo *rel)
 	return refs.found;
 }
 
+/* Is the sort key sift.score(rel.ctid) DESC? */
+static bool
+is_score_key(PathKey *pk, RelOptInfo *rel)
+{
+	bool		is_max;
+
+	if (!sift_pathkey_descending(pk))
+		return false;
+	foreach_ptr(Expr, e, pathkey_exprs(pk, rel))
+		if (sift_is_score_expr((Node *) e, rel->relid, &is_max) && !is_max)
+			return true;
+	return false;
+}
+
 /* Is the first sort key sift.score(rel.ctid) DESC? */
 static bool
 sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk)
 {
-	bool		is_max;
-
 	if (root->query_pathkeys == NIL)
 		return false;
 	*pk = linitial_node(PathKey, root->query_pathkeys);
-	if (!sift_pathkey_descending(*pk))
-		return false;
-	foreach_ptr(Expr, e, pathkey_exprs(*pk, rel))
-		if (sift_is_score_expr((Node *) e, rel->relid, &is_max) && !is_max)
-			return true;
-	return false;
+	return is_score_key(*pk, rel);
+}
+
+/* The rows of the query's LIMIT and OFFSET, 0 when it has none the planner can read */
+static int64
+query_limit(PlannerInfo *root)
+{
+	return root->limit_tuples > 0 ? (int64) ceil(root->limit_tuples) : 0;
 }
 
 /*
@@ -326,7 +350,105 @@ sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk)
 static int64
 scan_limit(PlannerInfo *root, bool ranked)
 {
-	return root->limit_tuples > 0 && (ranked || root->query_pathkeys == NIL) ? (int64) ceil(root->limit_tuples) : 0;
+	return ranked || root->query_pathkeys == NIL ? query_limit(root) : 0;
+}
+
+/*
+ * The LIMIT (OFFSET) of a generic plan, which cannot be costed: the Params of a plain ungrouped, non-WITH TIES
+ * query (the scan reads them when it starts), NIL for any other
+ */
+static List *
+param_limits(PlannerInfo *root)
+{
+	Query	   *q = root->parse;
+
+	if (q->limitCount == NULL || q->limitOption != LIMIT_OPTION_COUNT || q->groupClause || q->groupingSets ||
+		q->distinctClause || q->hasAggs || q->hasWindowFuncs || q->havingQual || q->hasTargetSRFs)
+		return NIL;
+	if (!IsA(q->limitCount, Param) || ((Param *) q->limitCount)->paramkind != PARAM_EXTERN)
+		return NIL;
+	if (q->limitOffset == NULL)
+		return list_make1(q->limitCount);
+	if (IsA(q->limitOffset, Const) || (IsA(q->limitOffset, Param) && ((Param *) q->limitOffset)->paramkind == PARAM_EXTERN))
+		return list_make2(q->limitCount, q->limitOffset);
+	return NIL;
+}
+
+/*
+ * The query's leading sort keys that its rel can sort by, and the order a scan that sorts by them delivers:
+ * the keys, then the score that breaks their ties when it is the next sort key. keyops are what the executor
+ * sorts with (operator, collation, NULLS FIRST of each key); exprs read the rel's columns.
+ */
+typedef struct KeyedOrder
+{
+	List	   *pathkeys;
+	List	   *exprs;
+	List	   *keyops;
+} KeyedOrder;
+
+/* The member of the sort key's class that reads this rel only, from its columns: not a score, not volatile, no sub-plan */
+static EquivalenceMember *
+pathkey_rel_member(PlannerInfo *root, RelOptInfo *rel, PathKey *pk)
+{
+	foreach_ptr(EquivalenceMember, em, pathkey_members(pk, rel))
+	{
+		Relids		varnos = pull_varnos(root, (Node *) em->em_expr);
+		ScoreRefs	refs = {rel->relid, NIL};
+
+		score_walker((Node *) em->em_expr, &refs);
+		if (!bms_is_empty(varnos) && bms_is_subset(varnos, rel->relids) && refs.found == NIL &&
+			!contain_volatile_functions((Node *) em->em_expr) && !contain_subplans((Node *) em->em_expr))
+			return em;
+	}
+	return NULL;
+}
+
+static void
+add_key(KeyedOrder *ko, PathKey *pk, EquivalenceMember *em)
+{
+	Oid			sortop = sift_pathkey_sortop(pk, em->em_datatype);
+
+	if (!OidIsValid(sortop))
+		elog(ERROR, "sift: missing ordering operator for type %u in operator family %u", em->em_datatype, pk->pk_opfamily);
+	ko->exprs = lappend(ko->exprs, em->em_expr);
+	ko->keyops = list_concat(ko->keyops,
+							 list_make3(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(sortop), false, true),
+										makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(pk->pk_eclass->ec_collation), false, true),
+										makeConst(BOOLOID, -1, InvalidOid, sizeof(bool), BoolGetDatum(pk->pk_nulls_first), false, true)));
+}
+
+/* False when the first sort key is not one of the rel's columns */
+static bool
+keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko)
+{
+	*ko = (KeyedOrder) {NIL, NIL, NIL};
+	foreach_node(PathKey, pk, root->query_pathkeys)
+	{
+		EquivalenceMember *em;
+
+		if (is_score_key(pk, rel))
+		{
+			ko->pathkeys = lappend(ko->pathkeys, pk);
+			break;
+		}
+		if ((em = pathkey_rel_member(root, rel, pk)) == NULL)
+			break;
+		ko->pathkeys = lappend(ko->pathkeys, pk);
+		add_key(ko, pk, em);
+	}
+	return ko->exprs != NIL;
+}
+
+/* Does the query read sift.max_score of the rel, the best score of all its matches (a keyed scan scores few of them)? */
+static bool
+reads_max_score(RelOptInfo *rel, List *scores)
+{
+	bool		is_max;
+
+	foreach_ptr(Node, e, scores)
+		if (sift_is_score_expr(e, rel->relid, &is_max) && is_max)
+			return true;
+	return false;
 }
 
 /* Matching documents, the index work, and what verifying a candidate costs per heap tuple */
@@ -377,9 +499,10 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost
 	sc->pass = sc->idx.known || !ranked ? Min(rel->rows / sc->docs, 1.0) : clauselist_selectivity(root, c->residual, rel->relid, JOIN_INNER, NULL);
 }
 
+/* ko: the leading sort keys the scan sorts by, NULL for none; the path's private list is SIFT_NPRIV fields, then the queries, then the keys' expressions */
 static CustomPath *
 make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64 k, uint32 flags,
-		  const CustomPathMethods *methods)
+		  const CustomPathMethods *methods, const KeyedOrder *ko)
 {
 	CustomPath *cp = makeNode(CustomPath);
 
@@ -394,7 +517,9 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 									makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(heapoid), false, true),
 									makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(0), false, FLOAT8PASSBYVAL));
 	cp->custom_private = lappend(cp->custom_private, makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(get_float8_infinity()), false, FLOAT8PASSBYVAL));
+	cp->custom_private = lappend(cp->custom_private, ko ? ko->keyops : NIL);
 	cp->custom_private = lappend(cp->custom_private, c->queries);
+	cp->custom_private = lappend(cp->custom_private, ko ? ko->exprs : NIL);
 	return cp;
 }
 
@@ -545,7 +670,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 		  BitmapHeapPath *filter, bool push, int nworkers)
 {
 	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
-							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods);
+							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, NULL);
 	ScanCost	sc = est->sc;
 	SiftFilterEst fe = est->fe;
 	double		divisor = parallel_divisor(nworkers),
@@ -647,6 +772,51 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *e
 		if (!only_best)
 			add_partial_path(rel, &cp->path);
 	}
+}
+
+/* Rows a round of a keyed scan keeps: the k of the limit, or what the planner assumes of the limit of a generic plan */
+static double
+keyed_rows(PlannerInfo *root, const ScanCost *sc, int64 k)
+{
+	double		fraction = root->tuple_fraction;
+
+	return Min(k > 0 ? k : Max(fraction >= 1 ? fraction : fraction * sc->docs, 1), sc->docs);
+}
+
+/* Growth of the rows a keyed scan keeps in its next round, as the ranker grows its search (sift_rank_next_k) */
+#define KEYED_GROWTH	16
+
+/* What ranking `rows` of the matches costs a keyed scan: their blocks, a verification and a fetch each, and the sort of them */
+static Cost
+keyed_rank_cost(RelOptInfo *rel, const ScanCost *sc, int nkeys, double rows)
+{
+	return blocks_with_match(rel, rows, 1) * SCORE_BLOCK_COST +
+		rows * (2 * sc->tuple + cpu_tuple_cost + log2(rows + 2) * nkeys * cpu_operator_cost);
+}
+
+/*
+ * ORDER BY keys, score DESC LIMIT k: a pass over the matches in heap order keeps the rows of the k best keys and
+ * those tied with the k-th, and the ranker scores only them. A consumer that drops rows and asks for more makes
+ * it pass again for 16 times as many (the total cost, which a consumer that stops early interpolates away).
+ */
+static CustomPath *
+keyed_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, const KeyedOrder *ko, int64 k)
+{
+	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, SIFT_MODE_RANKED, k,
+							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, ko);
+	const ScanCost *sc = &est->sc;
+	int			nkeys = list_length(ko->exprs);
+	double		held = keyed_rows(root, sc, k),
+				rounds = 1 + ceil(log(Max(sc->docs / held, 1)) / log(KEYED_GROWTH));
+	Cost		pass = sc->idx.cost + sc->docs * (sc->tuple + nkeys * cpu_operator_cost) +
+		held * log(sc->docs / held + 1) * log2(held + 2) * nkeys * cpu_operator_cost;
+
+	cp->path.pathkeys = ko->pathkeys;
+	cp->path.rows = rel->rows;
+	cp->path.parallel_safe = false;
+	cp->path.startup_cost = pass + keyed_rank_cost(rel, sc, nkeys, held);
+	cp->path.total_cost = rounds * pass + keyed_rank_cost(rel, sc, nkeys, sc->docs);
+	return cp;
 }
 
 /*
@@ -947,12 +1117,15 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	ScanEst		est;
 	PathKey    *pk = NULL;
 	List	   *scores;
+	KeyedOrder	ko;
 	bool		ranked,
 				only_best,
+				keyed,
 				filter_looked = false;
 	BitmapHeapPath *filter = NULL;
 	CustomPath *best = NULL,
-			   *best_partial = NULL;
+			   *best_partial = NULL,
+			   *best_keyed = NULL;
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
@@ -978,6 +1151,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		check_partition_scores(rel, scores);
 	ranked = sorted_by_score(root, rel, &pk);
 	only_best = ranked || scores != NIL;
+	/* the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score */
+	keyed = only_best && !ranked && !is_partition(rel) && !reads_max_score(rel, scores) &&
+		(query_limit(root) > 0 || param_limits(root) != NIL) && keyed_order(root, rel, &ko);
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 	{
 		ScoreRefs	refs = {rti, NIL};
@@ -1007,6 +1183,13 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter_looked = true;
 		}
 		scan_est(root, rel, &c, mode, k, filter, &est);
+		if (keyed)
+		{
+			CustomPath *cp = keyed_path(root, rel, &c, &est, &ko, query_limit(root));
+
+			if (cheaper(cp, best_keyed))
+				best_keyed = cp;
+		}
 		if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
 		{
 			unknown_query_path(root, rel, &c, &est, k, pathkeys, filter, parallel, &best, &best_partial);
@@ -1020,6 +1203,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	if (best && only_best)
 	{
 		rel->pathlist = list_make1(best);
+		if (best_keyed)
+			rel->pathlist = lappend(rel->pathlist, best_keyed);
 		rel->partial_pathlist = best_partial ? list_make1(best_partial) : NIL;
 	}
 	else if (only_best && rte->securityQuals != NIL)
@@ -1068,7 +1253,7 @@ count_cand(RelOptInfo *rel, ScanCand *c)
 static CustomPath *
 count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, ScanCand *c, Oid heapoid, int nworkers)
 {
-	CustomPath *cp = make_path(heapoid, output_rel, c, SIFT_MODE_COUNT, 0, 0, &sift_count_path_methods);
+	CustomPath *cp = make_path(heapoid, output_rel, c, SIFT_MODE_COUNT, 0, 0, &sift_count_path_methods, NULL);
 	ScanCost	sc;
 	double		divisor = parallel_divisor(nworkers);
 	Cost		dict,
@@ -1189,11 +1374,11 @@ rel_index(RelOptInfo *rel, Oid indexoid)
 	return NULL;
 }
 
-/* Vars of the rel the scan hands to its parent or its own quals, then the sift.score expressions */
+/* Vars of the rel the scan hands to its parent, its own quals and sort keys, then the sift.score expressions */
 static List *
-scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual)
+scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual, List *keys)
 {
-	List	   *vars = pull_var_clause((Node *) list_concat_copy(rel->reltarget->exprs, residual),
+	List	   *vars = pull_var_clause((Node *) list_concat(list_concat_copy(rel->reltarget->exprs, residual), list_copy(keys)),
 									   PVC_RECURSE_PLACEHOLDERS),
 			   *exprs = NIL,
 			   *tlist = NIL;
@@ -1228,21 +1413,11 @@ score_outputs(PlannerInfo *root, RelOptInfo *rel, List *tlist)
 static List *
 limit_params(PlannerInfo *root, CustomPath *best)
 {
-	Query	   *q = root->parse;
-
 	if (DatumGetInt64(list_nth_node(Const, best->custom_private, SIFT_PRIV_K)->constvalue) > 0 ||
 		DatumGetInt32(list_nth_node(Const, best->custom_private, SIFT_PRIV_MODE)->constvalue) != SIFT_MODE_RANKED ||
-		(best->path.pathkeys == NIL && root->query_pathkeys != NIL) ||
-		q->limitCount == NULL || q->limitOption != LIMIT_OPTION_COUNT || q->groupClause || q->groupingSets ||
-		q->distinctClause || q->hasAggs || q->hasWindowFuncs || q->havingQual || q->hasTargetSRFs)
+		(best->path.pathkeys == NIL && root->query_pathkeys != NIL))
 		return NIL;
-	if (!IsA(q->limitCount, Param) || ((Param *) q->limitCount)->paramkind != PARAM_EXTERN)
-		return NIL;
-	if (q->limitOffset == NULL)
-		return list_make1(q->limitCount);
-	if (IsA(q->limitOffset, Const) || (IsA(q->limitOffset, Param) && ((Param *) q->limitOffset)->paramkind == PARAM_EXTERN))
-		return list_make2(q->limitCount, q->limitOffset);
-	return NIL;
+	return param_limits(root);
 }
 
 static Plan *
@@ -1251,7 +1426,8 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 {
 	CustomScan *cs = makeNode(CustomScan);
 	IndexOptInfo *ii = rel_index(rel, DatumGetObjectId(((Const *) linitial(best->custom_private))->constvalue));
-	List	   *residual = NIL;
+	List	   *keys = list_nth_node(List, best->custom_private, SIFT_NPRIV + 1),
+			   *residual = NIL;
 
 	foreach_node(RestrictInfo, rinfo, clauses)
 	{
@@ -1264,10 +1440,10 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->scan.plan.targetlist = score_outputs(root, rel, tlist);
 	cs->scan.scanrelid = rel->relid;
 	cs->flags = best->flags;
-	cs->custom_scan_tlist = scan_tlist(root, rel, residual);
+	cs->custom_scan_tlist = scan_tlist(root, rel, residual, keys);
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make3(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
-								  limit_params(root, best));
+	cs->custom_exprs = list_make4(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
+								  limit_params(root, best), copyObject(keys));
 	cs->methods = &sift_scan_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, ii->indexoid);
 	if (custom_plans != NIL)
@@ -1290,7 +1466,7 @@ sift_plan_count(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlis
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = tlist;
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
-	cs->custom_exprs = list_make3(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL, NIL);
+	cs->custom_exprs = list_make4(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), NIL, NIL, NIL);
 	cs->methods = &sift_count_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids,
 										   DatumGetObjectId(((Const *) linitial(best->custom_private))->constvalue));
