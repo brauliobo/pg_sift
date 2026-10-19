@@ -64,7 +64,7 @@ Directory entries (`SiftSegEntry`):
 | `SIFT_SEG_WBUF_OPEN` | `flags & SIFT_TBL_SEG_TOMB` | the one tombstone segment (swapped for a rewritten one by VACUUM) |
 
 At most `SIFT_MAX_SEGMENTS` (128) entries: the policy keeps 1 open write buffer, 1 tombstone segment, a few sealed write buffers and the tiered
-immutable segments; an insert that cannot open a new write buffer because 112 entries are in use runs maintenance and, if the write buffers cannot be promoted, fails with `ERRCODE_PROGRAM_LIMIT_EXCEEDED` (detail "Too many write buffers waiting for promotion"). The write buffers of one transaction that one command wrote become tagged groups once the directory is half full (section 7), so a single COPY or INSERT ... SELECT of any size does not reach the limit; what does is a transaction that writes its rows with many commands (a loop of single-row INSERTs: their rows share write buffers with other commands' and cannot be promoted before the transaction ends) or several concurrent writers filling the same write buffers: with the default 4 MB write buffer limit that is more than 400 MB of rows. The limit is the testing setting `sift.table_max_segments` (default and maximum 128), which the regression tests lower.
+immutable segments; an insert that cannot open a new write buffer because 112 entries are in use runs maintenance and, if the write buffers cannot be promoted, fails with `ERRCODE_PROGRAM_LIMIT_EXCEEDED` (detail "Too many write buffers waiting for promotion"). The write buffers of one transaction that one command wrote become tagged groups once the directory is half full (section 7), so a single COPY or INSERT ... SELECT of any size does not reach the limit; what does is a transaction that writes its rows with many commands (a loop of single-row INSERTs: their rows share write buffers with other commands' and cannot be promoted before the transaction ends) or several concurrent writers filling the same write buffers: with the default 4 MB write buffer limit that is about 504 MB of rows (126 write buffers: the error computes `(sift.table_max_segments - 2) * sift.table_write_buffer_limit`). The limit is the testing setting `sift.table_max_segments` (default and maximum 128), which the regression tests lower.
 
 Because the store walks write buffer lane chains to mark referenced blocks, write buffers and tombstone segments use the lane header
 (`SiftWbufHeaderData`, lane 0 only) and the chain `next` pointer at the start of every data page; the orphan sweep, `sift_store_verify`
@@ -276,7 +276,7 @@ docs "Generic WAL Records" and "Custom WAL Resource Managers"):
 | UNLOGGED, TEMP | works | the init fork holds the empty layout; temp tables use local buffers. |
 | logical decoding of the table by a *plugin* (test_decoding, wal2json) | works with the record, same preload requirement | a plugin sees ordinary changes. |
 
-**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `TABLESAMPLE` (`0A000`); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
+**Unsupported, with the error**: logical decoding of an unpreloaded published table (`0A000`, above); `BLCKSZ` other than 8192 (`ERRCODE_FEATURE_NOT_SUPPORTED` at table creation).
 
 **Blocker check (honest).** No decisive blocker for logical replication: it works through the hybrid record, with the stated cost
 (preload everywhere the logical record is replayed, double WAL for published tables). The cheapest way out for a deployment that
@@ -417,7 +417,7 @@ and the free list.
 
 ## 9. Limits
 
-BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or promotion fails with the same error until a column is dropped); 128 directory entries (the write buffers of one command of one transaction become tagged groups, so one COPY or INSERT ... SELECT of any size is not bounded by them; a transaction that writes through many commands, or concurrent writers into the same write buffers, still is, at about 400 MB: the error is reworded to say so); rows up to 1 GB (varlena limit); vblocks
+BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or promotion fails with the same error until a column is dropped); 128 directory entries (the write buffers of one command of one transaction become tagged groups, so one COPY or INSERT ... SELECT of any size is not bounded by them; a transaction that writes through many commands, or concurrent writers into the same write buffers, still is, at about 504 MB with the default write buffer limit: the error is reworded to say so); rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
 `xmin/xmax/cmin/cmax` (they read zero), multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
