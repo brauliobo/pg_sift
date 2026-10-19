@@ -76,12 +76,13 @@ SET sift.agg_combo_cache = 64;
 SELECT same($$SELECT store, sum(price / 3) AS a, max(price % 5 + rate / 2) AS b FROM items GROUP BY store$$) AS combo_cache;
 RESET sift.agg_combo_cache;
 
--- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL, the kernels refuse them
+-- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL or as it orders them (agg_numeric_nan)
 CREATE TABLE nans (id int PRIMARY KEY, g int, n numeric(12,2));
 INSERT INTO nans VALUES (1, 1, 1.5), (2, 1, 'NaN'), (3, 1, NULL), (4, 2, 'NaN'), (5, 2, -7.25), (6, 3, 2);
 CREATE INDEX nans_col ON nans USING sift_col (id, g, n);
 SELECT same($$SELECT g, n % 3 AS k, sum(n / 3) AS s, count(*) FILTER (WHERE n > 1.5::float8) AS c FROM nans GROUP BY 1, 2$$) AS nan_rows;
-SELECT g, max(n + 1) FROM nans GROUP BY g;
+SELECT g, max(n + 1) AS m, sum(n) AS s FROM nans GROUP BY g ORDER BY g;
+SELECT same($$SELECT g, max(n + 1) AS m, sum(n) AS s FROM nans GROUP BY g$$) AS nan_kernels;
 DROP TABLE nans;
 DROP FUNCTION same(text);
 DROP TABLE items;

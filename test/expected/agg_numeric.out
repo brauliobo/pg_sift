@@ -223,7 +223,7 @@ SELECT same($$SELECT store, sum(price / 3) AS a, max(price % 5 + rate / 2) AS b 
 (1 row)
 
 RESET sift.agg_combo_cache;
--- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL, the kernels refuse them
+-- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL or as it orders them (agg_numeric_nan)
 CREATE TABLE nans (id int PRIMARY KEY, g int, n numeric(12,2));
 INSERT INTO nans VALUES (1, 1, 1.5), (2, 1, 'NaN'), (3, 1, NULL), (4, 2, 'NaN'), (5, 2, -7.25), (6, 3, 2);
 CREATE INDEX nans_col ON nans USING sift_col (id, g, n);
@@ -233,9 +233,20 @@ SELECT same($$SELECT g, n % 3 AS k, sum(n / 3) AS s, count(*) FILTER (WHERE n > 
  t
 (1 row)
 
-SELECT g, max(n + 1) FROM nans GROUP BY g;
-ERROR:  sift: a column of the aggregate scan holds values its index cannot store
-HINT:  Set sift.enable_agg to off for this query.
+SELECT g, max(n + 1) AS m, sum(n) AS s FROM nans GROUP BY g ORDER BY g;
+ g |  m   |  s   
+---+------+------
+ 1 |  NaN |  NaN
+ 2 |  NaN |  NaN
+ 3 | 3.00 | 2.00
+(3 rows)
+
+SELECT same($$SELECT g, max(n + 1) AS m, sum(n) AS s FROM nans GROUP BY g$$) AS nan_kernels;
+ nan_kernels 
+-------------
+ t
+(1 row)
+
 DROP TABLE nans;
 DROP FUNCTION same(text);
 DROP TABLE items;

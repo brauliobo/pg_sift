@@ -109,9 +109,11 @@ typedef struct SiftSrcVec
 	const SiftSrcDict *dict;	/* SCV_CODE leaves */
 	int64		n;
 	/*
-	 * NULL when no value is one the index cannot store, else bit i set = value i is (isnull is set too, the data slot is undefined): for a
-	 * numeric(p <= 18, s) leaf its NaNs, for the others what the shredder flags as overflow. Zeroed by sift_colsrc_read, set by the
-	 * provider. A row of the snapshot that has one in a leaf the scan reads is an error (process_unit); the others never reach a result.
+	 * NULL when no value is one the index cannot store, else bit i set = value i is: for a numeric(p <= 18, s) leaf a NaN, which the
+	 * provider presents as a value (PG_INT64_MAX, not NULL: it is greater than every number of the leaf, and equal to itself, as
+	 * PostgreSQL orders it; the bit tells the code that adds or compares); for the others what the shredder flags as overflow (isnull is
+	 * set, the data slot is undefined), which is an error for a row of the snapshot (process_unit). Zeroed by sift_colsrc_read, set by
+	 * the provider.
 	 */
 	const uint64 *ovf;
 } SiftSrcVec;

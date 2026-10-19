@@ -395,13 +395,13 @@ INSERT INTO an SELECT g, 'g' || g % 5, CASE WHEN g % 1000 = 0 THEN 'NaN'::numeri
 CREATE INDEX an_col ON an USING sift_col (id, grp, amt, qty) WITH (preagg = 'cube(grp: amt, qty; qty: amt)');
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) an;
 SELECT * FROM pa_check('an', 22, 26);
- n  |     shape      | pre | same 
-----+----------------+-----+------
- 22 | nan: count     | all | t
- 23 | nan: sum       | -   | t
- 24 | nan: other sum | all | t
- 25 | nan: whole     | -   | t
- 26 | nan: whole sum | -   | t
+ n  |     shape      | pre  | same 
+----+----------------+------+------
+ 22 | nan: count     | all  | t
+ 23 | nan: sum       | none | t
+ 24 | nan: other sum | all  | t
+ 25 | nan: whole     | none | t
+ 26 | nan: whole sum | none | t
 (5 rows)
 
 -- the switches

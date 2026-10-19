@@ -51,8 +51,13 @@ typedef enum SiftAggNxOp
 	SNX_ROUND,					/* x / 10^a rounded (half away from zero), times 10^b */
 	SNX_TRUNC,					/* toward zero */
 	SNX_FLOOR,
-	SNX_CEIL
+	SNX_CEIL,
+	SNX_CMP3,					/* left <=> right as -1, 0 or 1 (a, b as SNX_ADD align the scales); NaN equals NaN and is greater than every number */
+	SNX_INTCAST					/* numeric to an integer of a bytes (2, 4, 8): a NaN raises PostgreSQL's error; the value is the one rounded before */
 } SiftAggNxOp;
+
+/* the value of a NaN in a program (numeric(p <= 18, s) columns hold it as a flag): greater than every number a program has */
+#define SIFT_NX_NAN	((sift_i128) (~(unsigned __int128) 0 >> 1))
 
 typedef struct SiftAggNx
 {
