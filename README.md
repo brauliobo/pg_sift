@@ -235,7 +235,8 @@ pg_sift is weaker in text analysis (English stemming only, one key per index) an
 | `WHERE ... ORDER BY x LIMIT n` of rows | Partly | sift_col |
 | pre-aggregated `count`, `sum`, `avg`, `min`, `max` | Yes | sift_col |
 | `jsonb` paths: `col->>'k'`, `jsonb_to_recordset(col)` | Yes | sift_col |
-| `numeric(p>18)`, `uuid`, `interval`, `bytea`, arrays | No | sift_col |
+| `numeric(p>18)`, `money`, `interval` | Partly | sift_col |
+| `uuid`, `bytea`, arrays | No | sift_col |
 | `RIGHT JOIN`, `NOT IN (SELECT ...)`, `SELECT DISTINCT`, volatile functions | Partly | sift_col |
 
 <!-- coverage:end -->
