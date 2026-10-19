@@ -78,7 +78,8 @@ node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift" >/dev/null || bail "create extension failed"
 ddl primary >/dev/null || bail "schema failed"
 sqls primary "$LOAD" docs docs2 >/dev/null || bail "load failed"
-sql primary "CREATE INDEX docs_body ON docs USING sift (body)" "CREATE INDEX docs2_body ON docs2 USING sift (body)" >/dev/null ||
+# docs2_body is built in segment format 2, as the 3.0 library wrote it
+sql primary "CREATE INDEX docs_body ON docs USING sift (body)" "SET sift.test_segfmt = 2" "CREATE INDEX docs2_body ON docs2 USING sift (body)" >/dev/null ||
 	bail "create index failed"
 
 node_clone primary standby 1 "hot_standby_feedback = off"
@@ -103,6 +104,16 @@ same "standby after REINDEX" primary standby docs
 sql primary "REINDEX INDEX CONCURRENTLY docs_body" >/dev/null && catchup primary standby
 same "standby after REINDEX CONCURRENTLY" primary standby docs
 check "sift.verify passes on the standby" quiet sql standby "SELECT sift.verify('docs_body', true)" "SELECT sift.verify('docs_lower', true)"
+
+# the format 2 index takes a segment of format 3 next to its own (a mixed index): the standby replays both and answers alike
+formats() { sql "$1" "SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_segment_formats('docs2_body') WHERE kind = 'immutable'"; }
+sql primary "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null && catchup primary standby
+check "the index built in format 2 has format 2 segments on the standby" test "$(formats standby)" == 2
+sql primary "INSERT INTO docs2 SELECT i, 'friendly mixed case ' || i % 7 || ' w' || i, null FROM generate_series($((ROWS * 3)), $((ROWS * 3 + 999))) i" \
+	"SELECT sift.promote('docs2_body')" >/dev/null && catchup primary standby
+check "a promotion adds a segment of format 3 next to the format 2 one, on the standby too" test "$(formats standby)" == 2,3
+same "standby answers like the primary on the mixed index" primary standby docs2
+check "sift.verify passes on the standby on the mixed index" quiet sql standby "SELECT sift.verify('docs2_body', true)"
 
 # ---- logical: publisher is the primary, the subscriber is a separate cluster
 sql primary "CREATE PUBLICATION pub FOR TABLE docs, docs2" >/dev/null || bail "publication failed"

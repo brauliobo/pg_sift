@@ -88,11 +88,22 @@ CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
 
+-- Where the bytes of the immutable segments go, by part (docs/perf/BM25-SIZE.md)
+CREATE FUNCTION sift._test_segment_parts(index regclass, OUT gen int8, OUT part text, OUT bytes int8, OUT items int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_segment_parts' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kind text, OUT format int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_segment_formats' LANGUAGE C STRICT;
+
 -- Term blobs (src/bm25/sift_segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
 -- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,
 									 OUT codec_len int4, OUT nnib int4)
 	AS 'MODULE_PATHNAME', 'sift_test_term_blob' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_blob_check(blob bytea) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_blob_check' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_blob_read(blob bytea, flags int4, df int4, codec_len int4, nnib int4,
 									 OUT postings int8, OUT tf_sum int8)
 	AS 'MODULE_PATHNAME', 'sift_test_blob_read' LANGUAGE C STRICT;

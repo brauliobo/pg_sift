@@ -532,8 +532,151 @@ sift_test_postings(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+PG_FUNCTION_INFO_V1(sift_test_segment_parts);
+
+typedef struct PartRow
+{
+	const char *name;
+	uint64		bytes;
+	uint64		items;			/* 0: not a count of something */
+} PartRow;
+
+static void
+put_part(ReturnSetInfo *rsinfo, uint64 gen, const char *name, uint64 bytes, uint64 items)
+{
+	Datum		v[4] = {Int64GetDatum(gen), CStringGetTextDatum(name), Int64GetDatum(bytes), Int64GetDatum(items)};
+	bool		nulls[4] = {0, 0, 0, items == 0};
+
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, nulls);
+}
+
+/*
+ * sift._test_segment_parts(index) returns (gen int8, part text, bytes int8, items int8): where the bytes of every immutable
+ * segment go (decodes every term, like sift.segment_postings). items is the number the part is spent on: documents or terms.
+ * docs/perf/BM25-SIZE.md explains the parts; the last rows are the pages of the liveness run, what none of the parts accounts
+ * for (the page headers of the stream, the segment header, the unused end of the last page) and the bytes of the segment.
+ */
+Datum
+sift_test_segment_parts(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test parts", ALLOCSET_DEFAULT_SIZES);
+
+	InitMaterializedSRF(fcinfo, 0);
+	index = open_sift(PG_GETARG_OID(0));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftScoreRef ref = meta_ref(snap);
+		SiftSegStats st;
+		SiftSegment *seg;
+		MemoryContext old;
+		uint64		gen = snap->segs[i].gen,
+					ndocs = snap->segs[i].ndocs,
+					live,
+					known;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		old = MemoryContextSwitchTo(cxt);
+		seg = sift_seg_open(index, &snap->segs[i], cxt);
+		sift_seg_walk(seg, &ref, false, &st, NULL, NULL);
+		live = (uint64) seg->hdr->live_npages * BLCKSZ;
+		sift_seg_close(seg);
+		MemoryContextSwitchTo(old);
+		{
+			const SiftPartStats *p = &st.parts;
+			const PartRow rows[] = {
+				{"docmap: dl rows", p->docmap_dl, ndocs},
+				{"docmap: present docs", p->docmap_presence, ndocs},
+				{"docmap: SB directory", p->docmap_dir, 0},
+				{"postings: LIST codec", p->list_codec, 0},
+				{"postings: GROUPED directory", p->grouped_dir, 0},
+				{"postings: GROUPED containers", p->grouped_payload, 0},
+				{"postings: group scores", p->gscore, 0},
+				{"postings: block bounds", p->blkbound, 0},
+				{"postings: tf L1 bits", p->tf_l1, 0},
+				{"postings: tf nibbles", p->tf_nib, 0},
+				{"postings: tf escapes", p->tf_esc, 0},
+				{"postings: alignment", p->align_pad, 0},
+				{"postings: position checkpoints", p->pos_ckpt, 0},
+				{"postings: position records", p->pos_records, 0},
+				{"dict: term suffixes", p->dict_terms, st.nterms},
+				{"dict: entries", p->dict_entries, st.nterms},
+				{"dict: inline keys and tf", p->dict_inline_keys, p->inline_terms},
+				{"dict: inline positions", p->dict_inline_pos, 0},
+				{"dict: block headers", p->dict_blocks, 0},
+				{"dict: index and root", p->dictidx, 0},
+			};
+
+			known = live;
+			for (int r = 0; r < lengthof(rows); r++)
+			{
+				known += rows[r].bytes;
+				put_part(rsinfo, gen, rows[r].name, rows[r].bytes, rows[r].items);
+			}
+		}
+		put_part(rsinfo, gen, "live pages", live, 0);
+		put_part(rsinfo, gen, "other (page headers, segment header, unused end)", snap->segs[i].bytes - known, 0);
+		put_part(rsinfo, gen, "segment total", snap->segs[i].bytes, 0);
+		MemoryContextReset(cxt);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_segment_formats);
+
+/* sift._test_segment_formats(index) returns (gen int8, kind text, format int4): the segment format of every directory entry, and the metapage's minor version */
+Datum
+sift_test_segment_formats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	index = open_sift(PG_GETARG_OID(0));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		Datum		v[3] = {Int64GetDatum(snap->segs[i].gen), CStringGetTextDatum(kind_name(snap->segs[i].kind)),
+		Int32GetDatum(snap->segs[i].format)};
+		bool		nulls[3] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, nulls);
+	}
+	{
+		Datum		v[3] = {Int64GetDatum(0), CStringGetTextDatum("metapage minor"), Int32GetDatum(snap->meta.format_minor)};
+		bool		nulls[3] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
 PG_FUNCTION_INFO_V1(sift_test_term_blob);
 PG_FUNCTION_INFO_V1(sift_test_blob_read);
+PG_FUNCTION_INFO_V1(sift_test_blob_check);
+
+/* sift._test_blob_check(blob) returns the verdict of the exhaustive blob check of sift.verify: NULL for a sound blob */
+Datum
+sift_test_blob_check(PG_FUNCTION_ARGS)
+{
+	bytea	   *b = PG_GETARG_BYTEA_PP(0);
+	Size		len = VARSIZE_ANY_EXHDR(b);
+	uint8	   *blob = MemoryContextAllocAligned(CurrentMemoryContext, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	const char *detail;
+
+	memcpy(blob, VARDATA_ANY(b), len);
+	detail = sift_blob_check(blob, len);
+	if (detail == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(detail));
+}
 
 /*
  * sift._test_term_blob(index, term) returns (blob bytea, flags int4, df int4, codec_len int4, nnib int4): the term blob of the first

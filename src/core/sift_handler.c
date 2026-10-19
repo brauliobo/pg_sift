@@ -134,6 +134,9 @@ define_gucs(void)
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_segfmt",
+							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
+							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_PACKED, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_prefix_gather",
 							"Testing: kB of postings one pass of a wide prefix gathers (the rest is built in windows).",
 							NULL, &sift_prefix_gather_kb, 131072, 1, INT_MAX, PGC_USERSET, GUC_UNIT_KB | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

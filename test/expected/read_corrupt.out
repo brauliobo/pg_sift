@@ -16,14 +16,19 @@ SELECT 'dense' || CASE WHEN i % 4 = 0 THEN ' quarter' ELSE '' END
 	|| CASE WHEN i % 5 = 0 THEN ' dense2' ELSE '' END
 	|| CASE WHEN i % 7 = 0 THEN repeat(' dense2', 22) ELSE '' END
 FROM generate_series(1, 20000) i;
--- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too
+-- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too, with ARRAY containers (format 2), the
+-- third with PACKED ones (format 3)
 CREATE INDEX rc_list ON rc USING sift (body);
 SET sift.grouped_min_df = 10;
+SET sift.test_segfmt = 2;
 CREATE INDEX rc_grp ON rc USING sift (body);
+SET sift.test_segfmt = 3;
+CREATE INDEX rc_pk ON rc USING sift (body);
 RESET sift.grouped_min_df;
+RESET sift.test_segfmt;
 SELECT idx, term, CASE WHEN flags & 4 = 0 THEN 'tf' ELSE 'all tf 1' END AS tfs, CASE WHEN flags & 1 = 1 THEN 'LIST' ELSE 'GROUPED' END AS kind
 FROM (VALUES ('rc_list', 'quarter'), ('rc_list', 'q1'), ('rc_list', 'heavy'), ('rc_list', 'few'), ('rc_list', 'dense'), ('rc_list', 'dense2'),
-			 ('rc_grp', 'quarter'), ('rc_grp', 'q1'), ('rc_grp', 'heavy'), ('rc_grp', 'lst')) v(idx, term),
+			 ('rc_grp', 'quarter'), ('rc_grp', 'q1'), ('rc_grp', 'heavy'), ('rc_grp', 'lst'), ('rc_pk', 'quarter'), ('rc_pk', 'heavy')) v(idx, term),
 	LATERAL sift._test_term_blob(idx::regclass, term)
 ORDER BY 1, 2;
    idx   |  term   |   tfs    |  kind   
@@ -38,7 +43,9 @@ ORDER BY 1, 2;
  rc_list | heavy   | tf       | LIST
  rc_list | q1      | tf       | LIST
  rc_list | quarter | all tf 1 | LIST
-(10 rows)
+ rc_pk   | heavy   | tf       | GROUPED
+ rc_pk   | quarter | all tf 1 | GROUPED
+(12 rows)
 
 -- the verdict of one read: the postings and their tf sum, or the error
 CREATE FUNCTION rc_read(blob bytea, flags int4, df int4, codec_len int4, nnib int4) RETURNS text LANGUAGE plpgsql AS $$
@@ -75,34 +82,67 @@ FROM (VALUES
 	('GROUPED array size', 'rc_grp', 'heavy', 20, 1, 0),
 	('GROUPED array entry', 'rc_grp', 'heavy', 32, 1, 128),
 	('GROUPED array page order', 'rc_grp', 'heavy', 33, 1, 255),
+	('intact GROUPED packed', 'rc_pk', 'heavy', 0, 0, 0),
+	('GROUPED packed offset bits', 'rc_pk', 'heavy', 32, 1, 6),
+	('GROUPED packed offset bits too wide', 'rc_pk', 'heavy', 32, 1, 200),
+	('GROUPED packed page mask', 'rc_pk', 'heavy', 33, 1, 0),
+	('GROUPED packed page ends', 'rc_pk', 'heavy', 668, 1, 255),
+	('GROUPED packed type', 'rc_pk', 'heavy', 12, 1, 255),
 	('tf nibbles', 'rc_list', 'dense2', 3120, 1, 1),
 	('tf group start', 'rc_list', 'dense2', 3121, 1, 127),
 	('tf escape bytes', 'rc_list', 'dense2', 3124, 1, 127)
 ) v(what, idx, term, off, len, val);
-             what             |   idx   |  term   |                                              verdict                                               
-------------------------------+---------+---------+----------------------------------------------------------------------------------------------------
- intact LIST                  | rc_list | quarter | 5000 postings, tf sum 5000
- intact GROUPED with tf       | rc_grp  | heavy   | 689 postings, tf sum 13780
- varint without an end        | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
- block range                  | rc_list | quarter | XX001 sift: corrupt posting data: LIST block header is out of bounds
- block high bits              | rc_list | quarter | XX001 sift: corrupt posting data: LIST block high bits do not count its postings
- block header past the blob   | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
- page order                   | rc_list | quarter | XX001 sift: corrupt posting data: postings of a group are not in page order
- block past the blob          | rc_list | quarter | XX001 sift: corrupt posting data: LIST block overruns the blob
- LIST escape bytes            | rc_list | q1      | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
- LIST keys past the limit     | rc_list | q1      | XX001 sift: corrupt posting data: LIST block header is out of bounds
- GROUPED offsets              | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED offsets do not start at zero and end at the count
- GROUPED group extents        | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED group extents are out of order
- GROUPED bitmap and page mask | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group does not match its page mask
- GROUPED payload              | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED payload overruns the blob
- GROUPED short bitmap         | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group is shorter than its page mask
- GROUPED array size           | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array group has the wrong size
- GROUPED array entry          | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array entry lies outside its page bitmap
- GROUPED array page order     | rc_grp  | heavy   | XX001 sift: corrupt posting data: postings of a group are not in page order
- tf nibbles                   | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
- tf group start               | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: a group starts past the nibbles
- tf escape bytes              | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
-(21 rows)
+                what                 |   idx   |  term   |                                              verdict                                               
+-------------------------------------+---------+---------+----------------------------------------------------------------------------------------------------
+ intact LIST                         | rc_list | quarter | 5000 postings, tf sum 5000
+ intact GROUPED with tf              | rc_grp  | heavy   | 689 postings, tf sum 13780
+ varint without an end               | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
+ block range                         | rc_list | quarter | XX001 sift: corrupt posting data: LIST block header is out of bounds
+ block high bits                     | rc_list | quarter | XX001 sift: corrupt posting data: LIST block high bits do not count its postings
+ block header past the blob          | rc_list | quarter | XX001 sift: corrupt posting data: varint longer than 56 bits
+ page order                          | rc_list | quarter | XX001 sift: corrupt posting data: postings of a group are not in page order
+ block past the blob                 | rc_list | quarter | XX001 sift: corrupt posting data: LIST block overruns the blob
+ LIST escape bytes                   | rc_list | q1      | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
+ LIST keys past the limit            | rc_list | q1      | XX001 sift: corrupt posting data: LIST block header is out of bounds
+ GROUPED offsets                     | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED offsets do not start at zero and end at the count
+ GROUPED group extents               | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED group extents are out of order
+ GROUPED bitmap and page mask        | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group does not match its page mask
+ GROUPED payload                     | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED payload overruns the blob
+ GROUPED short bitmap                | rc_list | dense   | XX001 sift: corrupt posting data: GROUPED bitmap group is shorter than its page mask
+ GROUPED array size                  | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array group has the wrong size
+ GROUPED array entry                 | rc_grp  | heavy   | XX001 sift: corrupt posting data: GROUPED array entry lies outside its page bitmap
+ GROUPED array page order            | rc_grp  | heavy   | XX001 sift: corrupt posting data: postings of a group are not in page order
+ intact GROUPED packed               | rc_pk   | heavy   | 689 postings, tf sum 13780
+ GROUPED packed offset bits          | rc_pk   | heavy   | XX001 sift: corrupt posting data: GROUPED packed group has the wrong size
+ GROUPED packed offset bits too wide | rc_pk   | heavy   | XX001 sift: corrupt posting data: GROUPED packed group has the wrong size
+ GROUPED packed page mask            | rc_pk   | heavy   | XX001 sift: corrupt posting data: GROUPED packed group does not match its page mask
+ GROUPED packed page ends            | rc_pk   | heavy   | XX001 sift: corrupt posting data: GROUPED packed group does not match its page mask
+ GROUPED packed type                 | rc_pk   | heavy   | XX001 sift: corrupt posting data: GROUPED group extents are out of order
+ tf nibbles                          | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
+ tf group start                      | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: a group starts past the nibbles
+ tf escape bytes                     | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
+(27 rows)
+
+-- the exhaustive check of sift.verify on a PACKED group: sound, then the byte damaged (offset bits, page mask, page ends, offsets out of order on a page)
+SELECT what, (SELECT sift._test_blob_check(string_agg(set_byte('\x00'::bytea, 0, CASE WHEN i >= off AND i < off + len THEN val ELSE get_byte(blob, i) END), ''::bytea))
+			  FROM sift._test_term_blob('rc_pk', 'heavy'), generate_series(0, length(blob) - 1) i) AS verdict
+FROM (VALUES
+	('sound', 0, 0, 0),
+	('offset bits', 32, 1, 6),
+	('page mask', 33, 1, 0),
+	('page ends', 668, 1, 255),
+	('last page end', 754, 1, 0),
+	('offsets out of order', 65, 1, 255)
+) v(what, off, len, val);
+         what         |                                verdict                                
+----------------------+-----------------------------------------------------------------------
+ sound                | 
+ offset bits          | GROUPED packed group has the wrong size
+ page mask            | GROUPED packed group does not match its page mask
+ page ends            | GROUPED packed group does not match its page mask
+ last page end        | GROUPED packed group does not end a page with its last posting
+ offsets out of order | GROUPED packed offsets are outside their page bitmap or not ascending
+(6 rows)
 
 -- the dictionary's count of the term's nibbles: fewer than the L1 bits count, none, and 2^32 - 1 (its byte count wraps in 32 bits)
 SELECT n.nnib, rc_read(t.blob, t.flags, t.df, t.codec_len, n.nnib) AS verdict
@@ -208,6 +248,18 @@ SELECT rc_sweep('rc_grp', 'lst');
                 rc_sweep                 
 -----------------------------------------
  rc_grp lst: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_pk', 'quarter');
+                  rc_sweep                  
+--------------------------------------------
+ rc_pk quarter: every read is ok or corrupt
+(1 row)
+
+SELECT rc_sweep('rc_pk', 'heavy');
+                 rc_sweep                 
+------------------------------------------
+ rc_pk heavy: every read is ok or corrupt
 (1 row)
 
 DROP TABLE rc;

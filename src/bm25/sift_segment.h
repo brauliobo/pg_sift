@@ -35,6 +35,11 @@ typedef struct SiftDocSBRef
  */
 typedef struct SiftSegmentWriter SiftSegmentWriter;
 
+#ifdef SIFT_TESTING
+/* sift.test_segfmt: the segment format a build, promotion or merge writes (0 = the build's own, SIFT_WRITE_SEGFMT) */
+extern PGDLLIMPORT int sift_test_segfmt;
+#endif
+
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
@@ -105,11 +110,19 @@ extern bool sift_seg_docs_next(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
 /*
  * Present offsets of page (sb*256 + page) and their dl row (dl[off-1]);
- * present is zero and dl NULL for pages without docs. dl valid until the
- * next docmap call on seg.
+ * present is zero and dl NULL for pages without docs (false). present and dl
+ * may be NULL when the caller wants neither: the rows of format 3 are narrower than 16
+ * bits on disk and expanded on request. dl valid until the next docmap call
+ * on seg.
  */
-extern void sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
+extern bool sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page,
 						  uint64 *present, const uint16 **dl);
+
+/*
+ * The dl rows of the pages of block (SIFT_BLK_PAGES pages) of the SB in dc whose bit is set in want, NULL for the pages that have no docs
+ * or are not wanted; valid until the next docmap call on seg
+ */
+extern void sift_seg_block_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, const uint16 **rows);
 
 /* Live offsets of a page (== present unless dc->dirty) */
 extern void sift_seg_page_live(SiftSegment *seg, const SiftDocChunk *dc, int page,
@@ -193,12 +206,40 @@ typedef struct SiftDfClassStats
 	uint64		sidecar_bytes;	/* group scores, block bounds, tf stream, padding */
 } SiftDfClassStats;
 
+/* Where the bytes of a segment go (sift._test_segment_parts): the DOCMAP, the blobs of the terms with postings and the DICT */
+typedef struct SiftPartStats
+{
+	uint64		docmap_dl;		/* dl rows */
+	uint64		docmap_presence;	/* the codec chunk of each SB's present docs, its headers and padding */
+	uint64		docmap_dir;		/* SB directory */
+	uint64		list_codec;		/* LIST blobs */
+	uint64		grouped_dir;	/* GROUPED blobs: header, key/poff/base */
+	uint64		grouped_payload;	/* ... the containers */
+	uint64		gscore;			/* SiftGroupScore */
+	uint64		blkbound;		/* block bound rows */
+	uint64		tf_l1;
+	uint64		tf_nib;
+	uint64		tf_esc;
+	uint64		align_pad;		/* between the codec blob and its sidecar */
+	uint64		pos_ckpt;		/* positions of the blobs: checkpoints */
+	uint64		pos_records;	/* ... and records */
+	uint64		dict_terms;		/* front-coded suffixes and their two length bytes */
+	uint64		dict_entries;	/* df, flags, bound and, for a blob, its lengths */
+	uint64		dict_inline_keys;	/* inline keys and tf bytes */
+	uint64		dict_inline_pos;	/* inline position records and their length */
+	uint64		dict_blocks;	/* block headers */
+	uint64		dictidx;		/* DICTIDX and root array */
+	uint64		inline_terms;
+	uint64		blob_terms;
+} SiftPartStats;
+
 typedef struct SiftSegStats
 {
 	uint64		nterms;
 	uint64		postings;
 	uint64		dict_bytes;		/* DICT + DICTIDX + root */
 	SiftDfClassStats cls[SIFT_DF_CLASSES];
+	SiftPartStats parts;
 } SiftSegStats;
 
 /* df class bounds: class i holds lo[i] <= df < lo[i + 1] */

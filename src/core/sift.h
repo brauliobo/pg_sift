@@ -14,21 +14,28 @@
 /*
  * 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before
  * 1.2: segments of segment format 2 (below); segments of 1.0 and 1.1 are read as before
+ * 1.3: segments of segment format 3 (below); all older ones are read as before
+ * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE and is raised to 1.3 when a BM25 segment of
+ * format 3 is published, so that an index with none is still read by the 3.0 library (a column or table index never is raised)
  */
-#define SIFT_FORMAT_MINOR		2
+#define SIFT_FORMAT_MINOR		3
+#define SIFT_FORMAT_MINOR_BASE	2
 
 /*
  * Segment formats (SiftSegEntry.format). 1: one liveness bit per doc in rank order, a segment's df, N and avgdl count
  * its vacuumed docs. 2: the liveness bits are rows of live offsets per superblock, and the header and a table of dead
  * postings per term keep the statistics of the live docs (DESIGN.md (b)). The SQLite and MariaDB hosts delete one doc
- * at a time, which cannot keep that table, so they keep writing format 1 (and read both).
+ * at a time, which cannot keep that table, so they keep writing format 1 (and read both). 3: format 2 with the narrower parts of
+ * docs/perf/BM25-SIZE.md section 5 (dictionary blocks, dl rows, packed containers, position blocks), each announced where it
+ * starts, so that a segment of format 3 is read by the code that reads 1 and 2 and the other way round.
  */
 #define SIFT_SEGFMT_RANKBITS	1
 #define SIFT_SEGFMT_LIVEROWS	2
+#define SIFT_SEGFMT_PACKED		3
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 #define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_RANKBITS
 #else
-#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_LIVEROWS
+#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_PACKED
 #endif
 
 /* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
