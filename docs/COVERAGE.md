@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-175 rows: 105 Yes, 18 Partly, 41 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+176 rows: 106 Yes, 18 Partly, 41 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -101,6 +101,7 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | K12 | Group keys | SELECT DISTINCT of columns or expressions the index holds | Yes | sift_col | `SELECT DISTINCT status FROM orders` | A group-by with no aggregate: the distinct stage of the planner takes the scan; ORDER BY and LIMIT stay above it. Not for a SELECT DISTINCT over a grouped or windowed query. Proof: fixture `k_select_distinct_one`, fixture `k_select_distinct_multi`, test `agg_distinct`. |
 | K13 | Group keys | Key or filter expression over an integer column with a wide range of values (x % 7 of an int8) | Yes | sift_col | `SELECT i8 % 7, count(*) FROM t GROUP BY 1` | Evaluated by PostgreSQL per distinct value that occurs, not per value of the range. Proof: fixture `e_int8_expr`. |
 | K14 | Group keys | DISTINCT ON (columns) | No (picks one row per group by the ORDER BY: not an aggregate) | sift_col | `SELECT DISTINCT ON (store_id) store_id, id, placed_at FROM orders ORDER BY store_id, placed_at DESC, id` | Use GROUP BY with max()/min() to get the aggregate scan. Proof: fixture `t_distinct_on`. |
+| K15 | Group keys | Constant in the GROUP BY list (GROUP BY 1, 2 over a literal and a key) | Yes | sift_col | `SELECT 'cur'::text AS label, country_code, count(*) FROM orders GROUP BY 1, 2` | A constant adds no group: it is dropped from the keys and output as it is. Proof: fixture `k_group_const`. |
 | P01 | Predicates | Equality, range, BETWEEN, <> on integers, dates, text, numeric(p<=18) | Yes | sift_col, sift_table | `SELECT count(*) FROM orders WHERE store_id BETWEEN 5 AND 50 AND placed_at >= DATE '2024-01-01'` | Range tests on the encoded values; zone maps skip whole units on a clustered column. Proof: fixture `q_in_between`, fixture `z_zone_ranges`. |
 | P02 | Predicates | IN and = ANY lists (up to 64 constants for numeric, any length for the others) | Yes | sift_col | `SELECT count(*) FROM orders WHERE store_id IN (1, 2, 3)` | A parameter array or a numeric list over 64 constants: see the next rows. Proof: fixture `q_in_between`. |
 | P03 | Predicates | IN list of more than 64 numeric constants, numeric compared with float8, numeric division in a filter | Yes | sift_col | `SELECT count(*) FROM t WHERE n2 / (i2 + 1) > 20` | Evaluated by PostgreSQL per distinct tuple of values. Proof: fixture `n_numeric_pg_filters`. |

@@ -4503,6 +4503,16 @@ static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 
 static void topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
+/* Does the grouping have a key that is not a constant? */
+static bool
+groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
+{
+	foreach_node(SortGroupClause, sgc, groupClause)
+		if (!IsA(get_sortgroupclause_expr(sgc, root->processed_tlist), Const))
+			return true;
+	return false;
+}
+
 /*
  * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
  * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
@@ -4533,6 +4543,9 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
 
+		/* a constant adds no group: the output keeps it as the constant it is (not with grouping sets, whose empty set has no key, and not alone: an empty input has no group) */
+		if (IsA(e, Const) && parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause))
+			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
 			return;
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
