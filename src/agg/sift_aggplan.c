@@ -5509,6 +5509,16 @@ arm_base(PlannerInfo *arm, ArmIn *in)
  * WHERE. The entries of pulled up subqueries and of the grouping belong to their arm, and the column names a plan prunes differ: none counts.
  */
 static bool
+arm_private_rte(RTEKind kind)
+{
+#if PG_VERSION_NUM >= 180000
+	if (kind == RTE_GROUP)
+		return true;
+#endif
+	return kind == RTE_SUBQUERY;
+}
+
+static bool
 same_scan(PlannerInfo *a, PlannerInfo *b)
 {
 	ListCell   *la,
@@ -5522,7 +5532,7 @@ same_scan(PlannerInfo *a, PlannerInfo *b)
 				   *rb = lfirst(lb);
 
 		same.eref = rb->eref;
-		if (same.rtekind != rb->rtekind || (same.rtekind != RTE_SUBQUERY && same.rtekind != RTE_GROUP && !equal(&same, rb)))
+		if (same.rtekind != rb->rtekind || (!arm_private_rte(same.rtekind) && !equal(&same, rb)))
 			return false;
 	}
 	return true;
