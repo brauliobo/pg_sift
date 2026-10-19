@@ -2867,6 +2867,7 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 #define DB_NCD_MIN		64
 #define DB_NCD_MAX		65536
 #define DB_DENSE		32				/* bits from which a chunk goes to the leader as it is rather than as pairs */
+#define DB_PREFETCH		(2 << 20)		/* bytes of bitmaps from which the cache no longer holds them */
 #define DB_BATCH		32				/* values whose bits are prefetched together */
 #define DB_ARENA		255				/* chunks per arena block; the first chunk of a block links to the previous block */
 
@@ -3282,48 +3283,102 @@ dist_regroup(AggExec *ex, Dist *d, const uint32 *remap, uint32 oldcap, uint32 ne
 	}
 }
 
+/* the fields of a bitmap set the loops of dist_update read, in registers: the stores to the bits would make the compiler reload them */
+typedef struct DistView
+{
+	int64		cbase;
+	uint32		ncd;
+	uint32		ngd;
+	DistChunk **gd;
+	bool		sgn;
+} DistView;
+
+static inline DistView
+dist_view(const Dist *d)
+{
+	DistView	vw = {d->cbase, d->ncd, d->ngd, d->gd, d->sgn};
+
+	return vw;
+}
+
+static inline int64
+dist_vx(const DistView *vw, uint32 v)
+{
+	return vw->sgn ? (int64) (int32) v : (int64) v;
+}
+
+/* the word of the bit of x in group g and its mask, when the chunk is there; NULL when it is not */
+static inline uint64 *
+dist_word(const DistView *vw, uint32 g, int64 x, uint64 *m)
+{
+	int64		c = (x >> DB_SHIFT) - vw->cbase;
+	DistChunk  *dir;
+
+	if (unlikely((uint64) c >= vw->ncd || g >= vw->ngd || (dir = vw->gd[g]) == NULL || dir[c] == NULL))
+		return NULL;
+	*m = UINT64CONST(1) << (x & 63);
+	return &dir[c][(x >> 6) & (DB_WORDS - 1)];
+}
+
 /* adds the selected values (v[j] of tuple j, in the group ex->gid[j]); the count of a group goes up for each new one */
 static void
 dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 {
 	Dist	   *d = ex->dist[ai];
 	int64	   *cnt = ex->acc[ai].n;
+	const uint32 *gid = ex->gid;
+	DistView	vw = dist_view(d);
 	int			j = 0;
 
-	/* a batch at a time: the words of the bits are found and prefetched first, then set, since each is a miss of its own */
+	/* bits that fit the cache are set one by one; past that, a batch at a time: the words are found and prefetched first, since each is a miss */
+	for (; j < nsel && d->mode == DD_BITS && d->bytes < DB_PREFETCH; j++)
+	{
+		uint32		g = gid[j];
+		uint64		m;
+		uint64	   *w;
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if ((w = dist_word(&vw, g, dist_vx(&vw, v[j]), &m)) != NULL)
+		{
+			cnt[g] += !(*w & m);
+			*w |= m;
+		}
+		else
+		{
+			int			r = dist_bits_slow(ex, d, g, dist_x(d, v[j]));
+
+			if (r < 0)
+				break;
+			cnt[g] += r;
+			vw = dist_view(d);
+		}
+	}
 	while (j < nsel && d->mode == DD_BITS)
 	{
 		int			nb = Min(DB_BATCH, nsel - j);
 		uint64	   *wp[DB_BATCH];
 		uint64		mk[DB_BATCH];
+		bool		take[DB_BATCH];
 		int			k;
 
 		for (k = 0; k < nb; k++)
 		{
-			uint32		g = ex->gid[j + k];
-			int64		x = dist_x(d, v[j + k]),
-						c = (x >> DB_SHIFT) - d->cbase;
-			DistChunk  *dir;
-
-			wp[k] = NULL;
-			mk[k] = !ok || sift_colsrc_bit(ok, j + k);
-			if (mk[k] && likely((uint64) c < d->ncd && g < d->ngd && (dir = d->gd[g]) != NULL && dir[c] != NULL))
-			{
-				wp[k] = &dir[c][(x >> 6) & (DB_WORDS - 1)];
-				mk[k] = UINT64CONST(1) << (x & 63);
+			take[k] = !ok || sift_colsrc_bit(ok, j + k);
+			wp[k] = take[k] ? dist_word(&vw, gid[j + k], dist_vx(&vw, v[j + k]), &mk[k]) : NULL;
+			if (wp[k])
 				__builtin_prefetch(wp[k], 1);
-			}
 		}
 		for (k = 0; k < nb; k++)
 		{
-			uint32		g = ex->gid[j + k];
+			uint32		g = gid[j + k];
 
 			if (wp[k])
 			{
 				cnt[g] += !(*wp[k] & mk[k]);
 				*wp[k] |= mk[k];
 			}
-			else if (mk[k])
+			else if (take[k])
 			{
 				int			r = dist_bits_slow(ex, d, g, dist_x(d, v[j + k]));
 
@@ -3335,6 +3390,7 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 		j += k;
 		if (k < nb)
 			break;
+		vw = dist_view(d);
 	}
 	if (j < nsel && d->mode == DD_HASH && d->ds.n + (uint64) (nsel - j) < d->maxn)
 	{
