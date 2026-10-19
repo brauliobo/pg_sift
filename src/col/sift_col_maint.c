@@ -278,7 +278,7 @@ reap_overflow(Relation index, Relation heap)
 	if (!flagged)
 		return;
 	snap = palloc(sizeof(SiftDirSnapshot));
-	h = (HeapDead) {.scan = table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
+	h = (HeapDead) {.scan = sift_table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
