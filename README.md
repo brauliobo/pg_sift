@@ -158,6 +158,44 @@ On the 1,000,000-order table, after the read tests, each system changes its rows
 
 Every table, the cold-cache runs, the losses and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+## Compared with
+
+Feature facts checked against each project's own documentation on 2026-10-18 (speed is in [Benchmarks](#benchmarks)); `?` is not verified. Full tables, a note per row, sources, and the inferred and unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
+
+| Search | pg_sift | PG FTS | pg_search | pg_textsearch | rum | pgx-bm25 | TIN | Elasticsearch |
+|---|---|---|---|---|---|---|---|---|
+| BM25 ranking | Yes | No | Yes | Yes | No | Yes | Yes | Yes |
+| Prefix, wildcard | Yes | Partly | Partly | Partly | Partly | Partly | Yes | Yes |
+| Regex, fuzzy | Yes | No | Yes | No | No | No | Yes | Yes |
+| Field weights | Partly | Yes | Partly | No | Partly | Yes | Partly | Yes |
+| Facets | Partly | No | Yes | No | No | No | No | Yes |
+| Filters inside the ranked scan | Yes | Partly | Yes | No | Partly | No | Partly | Yes |
+| Top-N with other filters | Yes | No | Yes | Partly | Yes | Partly | Yes | Yes |
+| `count(*)` from the index | Yes | No | Partly | No | No | No | Yes | Yes |
+| MVCC, same-transaction reads | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
+| Physical replication, hot standby | Yes | Yes | No | Yes | Yes | Yes | Yes | n/a |
+| Inside PostgreSQL, no extra service | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No |
+| Immutable segments, background merge | Yes | No | Yes | Partly | No | Partly | Yes | Yes |
+| Stemmer languages | 1 | 29 | 20 | PG configs | PG configs | PG dictionaries | 18 | 36 analyzers |
+| License | PostgreSQL | PostgreSQL | AGPL-3.0 | PostgreSQL | PostgreSQL | PostgreSQL | ? | AGPL-3.0, SSPL, ELv2 |
+
+| Analytics | pg_sift `sift_col` | pg_sift `sift_table` | PostgreSQL | Citus columnar | ClickHouse | Elasticsearch | DuckDB | TimescaleDB columnstore |
+|---|---|---|---|---|---|---|---|---|
+| Columnar storage | Partly | Yes | No | Yes | Yes | Yes | Yes | Partly |
+| Aggregates on column data | Yes | Partly | No | No | Yes | Yes | Yes | Yes |
+| `GROUP BY` expressions | Yes | Partly | Yes | Yes | Yes | Yes | ? | Yes |
+| Joins | Yes | Yes | Yes | Yes | Yes | Partly | Yes | Yes |
+| Pre-aggregates | Yes | No | Partly | Partly | Yes | Partly | ? | Yes |
+| MVCC, transactions | Yes | Yes | Yes | Partly | Partly | No | Yes | Yes |
+| `UPDATE`, `DELETE` | Yes | Partly | Yes | No | Partly | Yes | Yes | Yes |
+| On an existing heap table via an index | Yes | No | n/a | No | No | No | No | No |
+| Exact `count(DISTINCT)` | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
+| PostgreSQL SQL | Yes | Yes | Yes | Yes | No | No | Partly | Yes |
+| Inside PostgreSQL, no extra server | Yes | Yes | Yes | Yes | No | No | No | Yes |
+| License | PostgreSQL | PostgreSQL | PostgreSQL | AGPL-3.0 | Apache-2.0 | AGPL-3.0, SSPL, ELv2 | MIT | Apache-2.0; columnstore under the Timescale License |
+
+pg_sift is weaker in text analysis (English stemming only, one key per index) and where its column engine is narrow (joins are accelerated for small tables only, `sift_table` has no pre-aggregates): [docs/COMPARISON.md](docs/COMPARISON.md#where-pg_sift-is-weaker).
+
 ## What is covered
 
 [docs/COVERAGE.md](docs/COVERAGE.md) lists 173 query shapes with a sample each (101 Yes, 18 Partly, 43 No, 11 Error), checked on a test cluster by `scripts/coverage.sh --check`.
@@ -200,6 +238,7 @@ SELECT sift_count('news', 'power AND plant');
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
 - [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every benchmark table, the losses and the method; [docs/COVERAGE.md](docs/COVERAGE.md): what the engine accelerates.
+- [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
 - [docs/COL.md](docs/COL.md): the column engine; [docs/COL-PLAN.md](docs/COL-PLAN.md) and [docs/AGG.md](docs/AGG.md): aggregate pushdown and its test suite.
 - [docs/COL-TAM.md](docs/COL-TAM.md): `sift_table`; [docs/COL-SHRED.md](docs/COL-SHRED.md): `jsonb` paths; [docs/COL-CODEC.md](docs/COL-CODEC.md): chunk compression.
 - [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
