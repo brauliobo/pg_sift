@@ -43,20 +43,18 @@ extern int	sift_topn_leaf(const SiftTopN *t, int j);
 /*
  * The order the superblocks are visited in. Before the scan the zones of the sort column's first key in a few superblocks, spread over the
  * table (sift_topn_probe_sb), tell whether it follows the table (sift_topn_probe, sift_topn_start). The scan then takes windows of
- * superblocks from the end its best values are at (sift_topn_next_window); when the column follows the table and the best superblock of
- * a window cannot beat the n-th best so far, none of the rest can (sift_topn_zone_viable, sift_topn_stop); within a window each unit is
- * tested by its zone before it is read.
+ * superblocks from the end its best values are at (sift_topn_next_window). The probes only choose the order: a window is read when a zone of
+ * its units can beat the n-th best so far (sift_topn_zone_viable), whatever the windows before it were, because a moved row (the new version
+ * of an update) has a value that is not that of its neighbours; within a window each unit is tested by its zone before it is read.
  */
 extern bool sift_topn_wants_zones(const SiftTopN *t);
 extern int	sift_topn_nprobes(void);
 extern uint32 sift_topn_probe_sb(const SiftTopN *t, int i, uint32 nsb);
 extern void sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z);
 extern void sift_topn_start(SiftTopN *t, uint32 nsb);
-extern bool sift_topn_follows(const SiftTopN *t);
 extern bool sift_topn_reverse(const SiftTopN *t);	/* the superblocks are visited from the last */
 extern bool sift_topn_next_window(SiftTopN *t, uint32 *lo, uint32 *hi, uint32 *best);
 extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
-extern void sift_topn_stop(SiftTopN *t);
 extern void sift_topn_skip(SiftTopN *t);
 
 /* The rows of the unit in rmask (nrow bits); key0: the decoded first sort leaf, in the numbering of the rows; the others are read for the few rows that need them */

@@ -476,6 +476,8 @@ extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint3
  * see, i.e. the unit is clean and every row is on an all-visible page: then count(col), sum, min and max need no chunk.
  */
 extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
+/* The zone of leaf col over every unit of the superblocks [sb_lo, sb_hi) as stored (a write buffer unit in the range makes it unbounded), from the segment headers: no unit is opened. Returns the units counted */
+extern uint32 sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 /* Is every page of the unit all-visible: sift_col_vet has nothing to check */
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);
