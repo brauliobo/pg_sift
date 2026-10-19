@@ -1,0 +1,97 @@
+-- The jsonb shapes of the aggregate pushdown (arrays of strings and their lengths, existence tests, the text of any scalar) under forced
+-- parallel plans: each query must plan as a Gather over a partial Custom Scan (SiftAgg) with two workers, and its rows must be the rows of the
+-- normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). A query whose units all answer from the
+-- pre-aggregates (query 11, no filter) is serial on purpose: starting workers costs more than the answer.
+CREATE EXTENSION pg_sift;
+CREATE TABLE p_t (id int, grp int, attrs jsonb, metrics_a jsonb, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO p_t
+SELECT i, i % 7,
+       CASE WHEN i % 10 = 0 THEN NULL
+            WHEN i % 10 = 1 THEN '{}'
+            WHEN i % 10 = 2 THEN '{"tags": [], "label": 1.50}'
+            ELSE jsonb_build_object('tags', (SELECT jsonb_agg(CASE WHEN k = 1 AND i % 13 = 0 THEN 'null'::jsonb ELSE to_jsonb('t' || ((i * k * 7 + k) % 12)) END ORDER BY k)
+                                             FROM generate_series(1, 1 + (i * 3) % 4) k),
+                                    'label', (ARRAY['"a"', '12', 'true', '1e2', '"1.50"'])[1 + i % 5]::jsonb) END,
+       (SELECT coalesce(jsonb_object_agg('k' || k, (ARRAY['1.50', '7', '"12"', '"x"', 'true', '-3', '100'])[1 + (i * k + k * k) % 7]::jsonb), '{}')
+        FROM generate_series(1, 1 + i % 4) k),
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE (SELECT coalesce(jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 5), 'n', (i * k) % 9,
+                        'score', (ARRAY['1.50', '7', '"x"', '2.25', 'true', '100'])[1 + (i * k + k) % 6]::jsonb) ORDER BY k), '[]')
+                  FROM generate_series(1, (i * 5) % 6) k) END
+FROM generate_series(1, 12000) i;
+CREATE INDEX p_col ON p_t USING sift_col (id, grp, attrs, metrics_a, items)
+	WITH (paths = 'attrs.tags[] text(1024), attrs->label astext, metrics_a.* astext, items[]{kind text, n int4, score astext}');
+VACUUM ANALYZE p_t;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 10000;
+CREATE FUNCTION p_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; gather bool := false; agg bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		gather := gather OR l LIKE '%Gather%Workers Planned: 2%' OR l LIKE '%Workers Planned: 2%';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN CASE WHEN agg AND gather THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
+END $$;
+CREATE TABLE p_q (n serial, q text);
+INSERT INTO p_q (q) VALUES
+	-- scalar arrays and lengths
+	('SELECT t, count(*) FROM p_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t GROUP BY 1'),
+	('SELECT d.grp, count(DISTINCT t) FROM p_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->''tags'') t WHERE t LIKE ''t1%'' GROUP BY 1'),
+	('SELECT d.grp, count(*) FROM p_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1'),
+	('SELECT count(*) FROM p_t d WHERE d.attrs->''tags'' ?| ARRAY[''t1'', ''t5'']'),
+	('SELECT count(*) FROM p_t d WHERE d.attrs->''tags'' ?& ARRAY[''t1'', ''t2'']'),
+	('SELECT count(*) FROM p_t d WHERE d.attrs->''tags'' @> ''["t4"]'''),
+	('SELECT jsonb_array_length(d.attrs->''tags'') AS len, count(*) FROM p_t d GROUP BY 1'),
+	('SELECT d.grp, sum(jsonb_array_length(d.items)), max(jsonb_array_length(d.items)) FROM p_t d GROUP BY 1'),
+	-- the text of any scalar
+	('SELECT s.key, count(*), count(s.value) FROM p_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s WHERE s.value ~ ''^[0-9.]+$'' GROUP BY 1'),
+	('SELECT e.v->>''kind'' AS kind, count(*) FROM p_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' ~ ''^[0-9]'' GROUP BY 1'),
+	('SELECT d.attrs->>''label'' AS label, count(*) FROM p_t d GROUP BY 1'),
+	('SELECT d.attrs->>''label'' AS label, count(*) FROM p_t d WHERE d.grp <> 3 GROUP BY 1'),
+	('SELECT count(*) FROM p_t d WHERE d.metrics_a->>''k1'' IN (''7'', ''true'', ''1.50'')'),
+	-- elements of an array of objects
+	('SELECT e.kind, count(*), sum(e.n) FROM p_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1');
+CREATE FUNCTION p_compare(OUT n int, OUT mode text, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE q text;
+BEGIN
+	FOR n, q IN SELECT p_q.n, p_q.q FROM p_q ORDER BY p_q.n LOOP
+		mode := p_mode(q);
+		same := p_rows(q, true) IS NOT DISTINCT FROM p_rows(q, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT n, mode, same FROM p_compare();
+ n  |   mode   | same 
+----+----------+------
+  1 | parallel | t
+  2 | parallel | t
+  3 | parallel | t
+  4 | parallel | t
+  5 | parallel | t
+  6 | parallel | t
+  7 | parallel | t
+  8 | parallel | t
+  9 | parallel | t
+ 10 | parallel | t
+ 11 | serial   | t
+ 12 | parallel | t
+ 13 | parallel | t
+ 14 | parallel | t
+(14 rows)
+
+DROP TABLE p_t, p_q;
+DROP FUNCTION p_rows(text, bool), p_mode(text), p_compare();
+DROP EXTENSION pg_sift;
