@@ -14,7 +14,7 @@
 # `external:` proof on a second cluster). --check exits 1 when a claim is wrong, a sample query returns another result than the normal plan, the
 # table is malformed, or docs/COVERAGE.md and the coverage block of README.md are not the ones --gen writes (the docs would drift).
 #
-# A row with a `since` feature is the claim of a v3 branch that is not merged yet. The file declares the feature in a line
+# A row with a `since` feature is the claim of a branch that is not merged yet. The file declares the feature in a line
 # `#feature<TAB>id<TAB>branch<TAB>marker file[<TAB>regex]`; the feature is in the build when the marker file (a fixture the branch adds, or one
 # whose `-- expect:` it changes: the regex) is in the tree. Until
 # then the table says "pending merge" and --check expects the claim NOT to hold (the result must still equal the normal plan); once the marker
@@ -101,7 +101,7 @@ STATUS_AWK='
 	function md(s) { gsub(/\|/, "\\|", s); return s }
 	function pend(f) { return f != "" && index(P, " " f " ") }
 	function status(st, cond, since) {
-		if (pend(since)) cond = (cond == "" ? "" : cond "; ") "in v3, pending merge"
+		if (pend(since)) cond = (cond == "" ? "" : cond "; ") "in a branch, pending merge"
 		return st (cond == "" ? "" : " (" md(cond) ")")
 	}
 	function code(s) { return s == "" ? "" : "`" md(s) "`" }
@@ -130,7 +130,7 @@ never this file.
   `SET sift.enable_agg = off` shows that plan for any query.
 - **Error (setting)**: sift raises an error (SQLSTATE `0A000` unless the row says so) instead of a result; the row names the setting or the
   rewrite that avoids it.
-- **in v3, pending merge**: the feature is on a v3 branch that is not in this tree yet; the build of this tree falls back to the normal plan
+- **in a branch, pending merge**: the feature is on a branch that is not in this tree yet; the build of this tree falls back to the normal plan
   for it, and the check fails when that stops being true. The check finds the feature by a file the branch adds (the `#feature` lines of
   the `.tsv`), so after the merge the same row is checked as a plain Yes and only `scripts/coverage.sh --gen` is left to run.
 - Every row has a sample query. A `true` query is a self-check (same result as the normal plan inside a transaction, with a second
