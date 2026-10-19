@@ -1354,6 +1354,31 @@ def host():
                 cpus=os.environ.get('STORE_CPUS', '?'), cpus_list=os.environ.get('STORE_CPUS_LIST', '?'), memory=os.environ.get('STORE_MEMORY', '?'))
 
 
+def restart_cold(args, metas, rows):
+    """cold cells of some engines taken from another results file, whose cells restarted the server for every run: for the engines where emptying the memory is not as cold
+    (the check of `cold`), the numbers of this run's emptied cells stay as the check (`cold-alt`) of the questions it was made for"""
+    d = json.load(open(args.restart_cold))
+    engines = args.restart_engines
+    for tier in {r['tier'] for r in d['rows'] if r['variant'] == 'cold'} & {t for t, m in metas.items() if 'cold' in m['parts']}:   # the sets this run has cold cells for
+        part = d['meta']['tiers'][tier]['parts']['cold']
+        src = [r for r in d['rows'] if r['tier'] == tier and r['engine'] in engines and r['variant'] == 'cold' and r['metric'] == 'latency_ms']
+        keep = []
+        for r in rows:
+            if r['tier'] == tier and r['engine'] in engines and r['variant'] == 'cold' and r['metric'] == 'latency_ms':
+                if r['class'] in metas[tier].get('cold_check', []):
+                    r = dict(r, variant='cold-alt')
+                else:
+                    continue
+            if r['tier'] == tier and r['engine'] == '-' and r['variant'].startswith('cold-') and r['variant'][5:] in engines:
+                continue
+            if r['tier'] == tier and r['metric'] == 'cold_how' and r['engine'] in engines:
+                continue
+            keep.append(r)
+        rows = keep + src + [dict(dataset='store', tier=tier, engine=e, **{'class': '-'}, variant='cold', metric='cold_how', unit='text', value='restart', min='restart', max='restart', stderr=None, n=1, values=['restart']) for e in engines]
+        metas[tier]['restart_cold'] = dict(engines=engines, date=part['date'], runs=d['meta']['tiers'][tier]['cold_runs'], noisy=[n for n in part['noisy'] if n.split()[1] in engines])
+    return rows
+
+
 def cmd_merge(args):
     metas, rows = {}, []
     for path in args.files:
@@ -1363,6 +1388,8 @@ def cmd_merge(args):
         metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'), pressure=d['meta'].get('pressure'), noisy=d['meta'].get('noisy', []), baseline=d['meta'].get('baseline'), rerun=d['meta'].get('rerun', []))
         metas[tier].pop('loadavg_end', None)
         rows += d['rows']
+    if args.restart_cold:
+        rows = restart_cold(args, metas, rows)
     with open(args.o, 'w') as f:
         f.write('{"meta": ' + json.dumps(dict(tiers=metas, host=host())) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows) + '\n]}\n')
     log(f'written: {args.o}')
@@ -1633,6 +1660,10 @@ def latency_tables(R, tier, shown, labels, heading):
                 f'{t.get("cold_runs", "?")} runs, minimum and maximum in parentheses.', '']
         head, body = bench_table(R, tier, shown, labels, detail=True, variant='cold')
         out += md_table(head, body) + ['']
+        rc = t.get('restart_cold')
+        if rc:
+            out += [f'{", ".join(labels[e] for e in rc["engines"])}: restart of the container for every run (median of {rc["runs"]}), measured by an earlier pass of the same session on {rc["date"][:10]} (the same build, data and thread budget, before the harness emptied the memory instead of restarting)'
+                    + (f'; NOISY: {", ".join(rc["noisy"])}' if rc['noisy'] else '') + '.', '']
         chk = [(q, e) for q in R.queries(tier) for e in shown if R.get(tier, e, variant='cold-alt', cls=q, metric='latency_ms')]
         if chk:
             how = lambda e: (R.get(tier, e, '-', 'cold', 'cold_how') or {}).get('value', 'evict')
@@ -2087,6 +2118,8 @@ def main():
     m = sub.add_parser('merge')
     m.add_argument('files', nargs='+')
     m.add_argument('-o', required=True)
+    m.add_argument('--restart-cold', help='results file whose cold cells restarted the server for every run: take its cold cells of --restart-engines')
+    m.add_argument('--restart-engines', type=lambda s: s.split(','), default=[])
     r = sub.add_parser('render')
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
     r.add_argument('--readme')
