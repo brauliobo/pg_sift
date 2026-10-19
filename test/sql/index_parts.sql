@@ -25,3 +25,8 @@ SELECT idx,
        part(idx, 'dict: inline positions') > 0 AS pos_inline
 FROM (VALUES ('d_pos'::regclass), ('d_off'::regclass)) v(idx) ORDER BY 1::text;
 SELECT (SELECT bytes FROM sift._test_segment_parts('d_pos') WHERE part = 'segment total') > (SELECT bytes FROM sift._test_segment_parts('d_off') WHERE part = 'segment total') AS positions_cost_bytes;
+
+DROP TABLE d;
+DROP FUNCTION part(regclass, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

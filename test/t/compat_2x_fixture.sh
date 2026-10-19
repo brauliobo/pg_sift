@@ -5,9 +5,12 @@
 # the files of an empty table and index created by the build under test. Then: sift.verify, the results the 2.x build
 # gave (counts, sums, ranked ids, segments), the same counts from the heap, and further DML that works on the 2.x
 # segments: more deletes with VACUUM, inserts with a promotion, a forced merge of everything into a new segment.
+# COMPAT_FIXTURE names another fixture directory (compat_30_fixture.sh runs this test on the files of 3.0). The segments of the
+# fixture are older than segment format 3: they are read as they are, a promotion writes a segment of format 3 next to them (and
+# raises the metapage to 1.3), and a merge or VACUUM-driven rewrite leaves nothing but format 3.
 . "$(dirname "$0")/lib.bash"
 
-FIX=$(cd "$(dirname "$0")/../fixtures/compat2x" && pwd)
+FIX=$(cd "$(dirname "$0")/../fixtures/${COMPAT_FIXTURE:-compat2x}" && pwd)
 SEGMENTS="SELECT gen, kind, ndocs, dirty, dead_docs FROM sift.segments('docs_idx') ORDER BY gen"
 fill() {
 	sql fx "INSERT INTO docs SELECT g, concat_ws(' ', 'alpha' || g % 7, 'beta' || g % 13, 'w' || g % 50,
@@ -32,6 +35,10 @@ agree() {
 	(( ${#bad[@]} == 0 )) || { diag "${bad[*]}"; return 1; }
 }
 verify() { sql fx "SELECT sift.verify('docs_idx', true)" >/dev/null; }
+# formats: the segment formats and the metapage minor of the index, e.g. "2,2/2"
+formats_match() { [[ $(formats) =~ $1 ]]; }
+formats() { sql fx "SELECT coalesce(string_agg(format::text, ',' ORDER BY gen) FILTER (WHERE kind = 'immutable'), '') || '/' ||
+	coalesce(max(format) FILTER (WHERE kind = 'metapage minor'), 0) FROM sift._test_segment_formats('docs_idx')"; }
 
 # same_results ACTUAL EXPECTED: equal files, except that the scores of the ranked lines (id|score) may differ by 0.01
 same_results() {
@@ -42,11 +49,11 @@ same_results() {
 		print "got " $1 " expected " $2; bad = 1 } END { exit bad }'
 }
 
-plan 10
+plan 11
 node_init fx 3 "autovacuum = off
 sift.async_maintenance = off"
 node_start fx || bail "start failed"
-sql fx "CREATE EXTENSION pg_sift" "CREATE TABLE docs (id int, body text)" \
+sql fx "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE docs (id int, body text)" \
 	"CREATE INDEX docs_idx ON docs USING sift (body) WITH (vacuum_segments = 8, dead_rewrite_pct = 100)" >/dev/null || bail "setup failed"
 # The pages of the fixture carry WAL positions of the 2.x cluster, and a checkpoint refuses to write a page (a free space map
 # page, written without WAL) whose position this cluster has not reached yet: move the WAL past the fixture's.
@@ -65,11 +72,12 @@ cp "$FIX/index" "$data/$index"
 node_start fx || bail "start with the fixture failed"
 
 check "the sift index of the 2.x files is verified" verify
+check "the old segments are of a format before 3 and the metapage was not raised" formats_match '^[12,]*/[12]$'
 check "queries use the index" grep -q -i sift <(sql fx "SET enable_seqscan = off" "EXPLAIN SELECT count(*) FROM docs WHERE body @@> 'alpha3'")
 sql fx "$SEGMENTS" >"$(dir fx)/segments.txt"
 check "the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)" \
 	diff <(sed -n '2,4p' "$FIX/expected.txt") "$(dir fx)/segments.txt"
-sql fx <"$FIX/queries.sql" >"$(dir fx)/results.txt" 2>"$(dir fx)/results.err"
+sql fx <"$FIX/../compat2x/queries.sql" >"$(dir fx)/results.txt" 2>"$(dir fx)/results.err"
 check "the counts, sums, ranked ids and verify equal the 2.x results" same_results "$(dir fx)/results.txt" "$FIX/expected.txt"
 check "the counts equal the heap's, the dead documents of the dirty segment stay out" agree
 
@@ -86,13 +94,14 @@ segments_are() {
 }
 # a promotion seals the 2.x write buffer together with the new rows into a segment of this build
 promoted() {
-	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && verify && agree
+	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && formats_match '^[12](,[12])*(,3)+/3$' && verify && agree
 }
 # the 2.x segments, dirty ones included, were merged into one segment written by this build
 merged() {
 	local rows
 	rows=$(sql fx "SELECT count(*) FROM docs")
-	test "$(grep -c immutable "$(dir fx)/segments.txt")" -eq 1 && grep -q "^[0-9]*|immutable|$rows|f|0$" "$(dir fx)/segments.txt" && verify && agree
+	test "$(grep -c immutable "$(dir fx)/segments.txt")" -eq 1 && grep -q "^[0-9]*|immutable|$rows|f|0$" "$(dir fx)/segments.txt" \
+		&& formats_match '^3/3$' && verify && agree
 }
 
 sql fx "DELETE FROM docs WHERE id <= 1500 AND id % 10 = 7" "DELETE FROM docs WHERE id BETWEEN 1501 AND 2900 AND id % 10 = 9" \

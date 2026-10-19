@@ -93,6 +93,10 @@ CREATE FUNCTION sift._test_segment_parts(index regclass, OUT gen int8, OUT part 
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_parts' LANGUAGE C STRICT;
 
+CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kind text, OUT format int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_segment_formats' LANGUAGE C STRICT;
+
 -- Term blobs (src/bm25/sift_segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
 -- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,

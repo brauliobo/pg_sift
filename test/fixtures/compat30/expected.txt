@@ -1,0 +1,47 @@
+segments (gen kind ndocs dirty dead_docs)
+1|immutable|1500|t|150
+3|buffer|100|f|
+4|immutable|1400|f|0
+rows
+2850|4389300
+count and sum(id) per query
+alpha3|407|627693
+beta5 gamma|73|112308
+alpha3 NOT beta5|376|579958
+gamma OR rareterm|958|1476600
+w1*|630|960120
+phrase|31|47735
+filler|2250|3487800
+rareterm|12|19500
+dead rows of the dirty segment (id % 10 = 3, id <= 1500)|0
+live rows of the dirty segment|1350
+write buffer rows (id > 2900)|2|5864
+ranked (id score), ties broken by id
+2250|8.665
+500|8.190
+750|6.675
+1500|6.675
+3000|6.675
+250|6.029
+1000|6.029
+1250|6.029
+1750|6.029
+2000|6.029
+2500|6.029
+2750|6.029
+31|3.105
+161|3.105
+226|3.105
+356|3.105
+421|3.105
+551|3.105
+616|3.105
+746|3.105
+811|3.105
+941|3.105
+1006|3.105
+1136|3.105
+verify
+
+
+verified

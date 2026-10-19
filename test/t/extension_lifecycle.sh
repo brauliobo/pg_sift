@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((23 + $(wc -w <<<"$DBS")))
+plan $((26 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -102,7 +102,11 @@ if (( PG_MAJOR >= 18 )); then
 	PATHSET="SET extension_control_path = '$UPD:\$system'"
 	q life postgres "CREATE DATABASE upg" >/dev/null
 	q life upg "$PATHSET" "CREATE EXTENSION pg_sift VERSION '1.0'" >/dev/null
-	q life upg "${SETUP#*CREATE EXTENSION pg_sift;}" >/dev/null || bail "upgrade setup failed"
+	# the index of the upgraded database is built as a 3.0 library built it (segment format 2): the update has to leave it alone
+	q life upg "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
+	q life upg "SET sift.test_segfmt = 2" "${SETUP#*CREATE EXTENSION pg_sift;}" >/dev/null || bail "upgrade setup failed"
+	formats() { q life upg "SELECT coalesce(string_agg(format::text, ',' ORDER BY gen) FILTER (WHERE kind = 'immutable'), '') FROM sift._test_segment_formats('docs_idx')"; }
+	check "the index built before the update has a segment of format 2" test "$(formats)" == 2
 	before=$(q life upg "SELECT fp() || ranked()")
 	check "the update path chains the four steps" test "$(q life upg "$PATHSET" \
 		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '3.1'")" == "1.0--1.1--1.2--3.0--3.1"
@@ -127,12 +131,18 @@ if (( PG_MAJOR >= 18 )); then
 	check "the index built before the update still verifies and answers the same" \
 		test "$(vq life upg "SELECT fp() = seq() AND fp() || ranked() = '$(sed "s/'/''/g" <<<"$before")'")" == t
 	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
+	check "the updated library writes segments of format 3 next to the format 2 one (a mixed index, verified and equal to a scan)" \
+		test "$(formats | grep -c '^2,3$')$(vq life upg "SELECT fp() = seq()")" == 1t
 	crash life
 	node_start life || bail "restart failed"
 	check "inserts after the update survive a crash" test "$(vq life upg \
 		"SELECT fp() = seq() AND (SELECT count(*) FROM docs WHERE body @@> 'afterupdate') = 1")" == t
+	q life upg "SELECT sift.merge('docs_idx', true)" >/dev/null
+	check "a merge rewrites the mixed index in format 3 (verified, results equal to a scan)" \
+		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
+	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 11 "extension_control_path needs PostgreSQL 18"
+	skip 14 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
