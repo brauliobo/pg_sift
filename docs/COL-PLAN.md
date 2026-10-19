@@ -2,7 +2,7 @@
 
 Plain SQL over a table with a `sift_col` index (or a `sift_table` table) runs on the column data when the planner can prove the result is the one of the normal plan; everything else keeps the normal plan. `sift.enable_agg` (default on) switches the matcher. The result of a pushed query is the one of the plain plan, row for row: `scripts/coldiff.sh` runs every query both ways and compares (docs/AGG.md).
 
-Files: `src/agg/sift_aggplan.c` (shape matcher, cost), `src/agg/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/sift_agg.c` (executor, EXPLAIN), `src/agg/sift_aggkern*.c` (vectorized operators, `docs/KERNELS.md`), `src/agg/sift_colsrc.h` and `src/agg/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/agg/sift_aggcol.c` (provider over the `sift_col` index), `src/table/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
+Files: `src/agg/sift_aggplan.c` (shape matcher, cost), `src/agg/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/sift_agg.c` (executor, EXPLAIN), `src/agg/sift_aggkern*.c` (vectorized operators, `docs/KERNELS.md`), `src/agg/sift_colsrc.h` and `src/agg/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/agg/sift_aggcol.c` (provider over the `sift_col` index), `src/agg/sift_aggpre.[ch]` (the pre-aggregates of a unit as the seam's records, shared by both providers), `src/table/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
 
 ## What matches
 

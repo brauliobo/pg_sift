@@ -81,6 +81,7 @@ typedef struct SiftSrcStats
 	double		nunits;			/* units */
 	double		bytes;			/* stored (compressed) bytes of the leaves together, 0 when unknown */
 	double		allvisible_frac;	/* share of the heap pages that are all-visible (1 for a table) */
+	double		exact_frac;		/* share of the units whose pre-aggregates may answer: those on all-visible pages of a heap, the plain superblocks of a table */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
