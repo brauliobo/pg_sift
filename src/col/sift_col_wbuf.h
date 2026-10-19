@@ -17,7 +17,17 @@ typedef struct SiftCWbufHint
 	uint64		gen;			/* 0: unknown */
 	BlockNumber hdr;
 	BlockNumber tail[SIFT_LANES];
+	uint64		ovf_gen;		/* the write buffer whose overflow leaves ovf_known describes */
+	uint32		ovf_known;
 } SiftCWbufHint;
+
+/*
+ * The leaves a write buffer holds an overflow value of (a value the leaf cannot store, SiftColValue.overflow): a bit mask in the reserved word
+ * of the buffer's directory entry, bit i for leaf i and bit 31 for every leaf from 31 on. An appender sets the bits of its row before the row
+ * goes in and, when that changes the entry, invalidates the plans of the table: a plan made before the value was written must not read it with
+ * the scan, and the planner of a later one sees the mask (docs/COL-PLAN.md). The mask stays until the buffer is promoted, whose zones then say it.
+ */
+extern uint32 sift_cwbuf_overflow(const SiftDirSnapshot *dir);
 
 /*
  * Appends the row to the open write buffer (creating it when none; lane MyProcNumber % SIFT_LANES, other lanes when the tail is

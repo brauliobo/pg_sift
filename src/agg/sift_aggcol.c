@@ -195,7 +195,7 @@ leaf_stats(const SiftColIndexMeta *meta, const SiftColLeafStats *ls, SiftSrcStat
 		const SiftColDef *def = &meta->cols[i];
 		double		nonnull = ls[i].nvals - ls[i].nnull;
 
-		st->ovf[i] = ls[i].has_ovf && def->type != SIFT_COLT_NUMERIC;
+		st->ovf[i] = (ls[i].has_ovf || (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i))) && def->type != SIFT_COLT_NUMERIC;
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;

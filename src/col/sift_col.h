@@ -176,11 +176,15 @@ sift_col_f4_key(float4 f)
  * 2. Metadata (planner)
  * ------------------------------------------------------------------------- */
 
+/* Bit i of a mask of leaves for leaf i, bit 31 for every leaf from 31 on (the overflow leaves of a write buffer, SiftColIndexStats.wbuf_ovf) */
+#define SIFT_COL_OVF_BIT(leaf)	((uint32) 1 << ((leaf) < 31 ? (leaf) : 31))
+
 typedef struct SiftColIndexStats
 {
 	uint64		nrows;			/* rows of the immutable segments + write buffer records (dead ones included) */
 	uint32		nsegments;		/* immutable */
 	uint32		nwbuf;		/* write buffers */
+	uint32		wbuf_ovf;		/* the leaves a write buffer holds an overflow value of (SIFT_COL_OVF_BIT) */
 	uint64		bytes;			/* of the immutable segments */
 	uint32		nunits;			/* (segment, sb) units */
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */

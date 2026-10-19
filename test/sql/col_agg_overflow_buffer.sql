@@ -1,0 +1,82 @@
+-- SiftAgg when a value the index cannot store (a JSON string in a float8 path, a text over its declared length) is written after the query was
+-- planned, or is still in the write buffer: the rows are the normal plan's, for a prepared statement with a generic plan too. A query that
+-- reads other leaves stays on the scan. Every query runs with and without the pushdown; the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE b_t (id int PRIMARY KEY, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO b_t
+SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3], 'n', to_jsonb(j % 10), 's', 'abc'))
+                                       FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 5000) i;
+CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
+VACUUM (FREEZE, ANALYZE) b_t;
+
+-- the plan of a statement (a prepared one: its cached plan) has the scan
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the rows of on_q with the pushdown and of off_q without it are the same (and not empty)
+CREATE FUNCTION same(on_q text, off_q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', on_q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', off_q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0;
+END $$;
+
+CREATE FUNCTION unnest_q(sel text, grp text) RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT ' || sel || ' FROM b_t t, jsonb_to_recordset(t.doc -> ''lines'') AS l(k text, n float8, s text) GROUP BY ' || grp
+$$;
+
+-- generic plans made while no value overflows: all three have the scan
+SET plan_cache_mode = force_generic_plan;
+PREPARE agg_n AS SELECT l.k, avg(l.n) FROM b_t t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8, s text) GROUP BY l.k;
+PREPARE agg_s AS SELECT l.s, count(*) FROM b_t t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8, s text) GROUP BY l.s;
+PREPARE agg_k AS SELECT l.k, count(*) FROM b_t t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8, s text) GROUP BY l.k;
+SELECT pushed('EXECUTE agg_n') AS n_pushed, pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
+SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same,
+       same('EXECUTE agg_k', unnest_q('l.k, count(*)', 'l.k')) AS k_same;
+
+-- a JSON string in the float8 path, written after the plans were made: it stays in the write buffer
+INSERT INTO b_t VALUES (100001, '{"lines": [{"k": "a", "n": "7", "s": "abc"}, {"k": "b", "n": 1, "s": "abc"}]}');
+SELECT pushed('EXECUTE agg_n') AS n_pushed, pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
+SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same,
+       same('EXECUTE agg_k', unnest_q('l.k, count(*)', 'l.k')) AS k_same;
+-- a query planned now (no cached plan) reads the write buffer the same way
+SELECT pushed(unnest_q('l.k, avg(l.n)', 'l.k')) AS n_pushed, pushed(unnest_q('l.k, count(*)', 'l.k')) AS k_pushed;
+SELECT same(unnest_q('l.k, avg(l.n)', 'l.k'), unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same(unnest_q('l.k, count(*)', 'l.k'), unnest_q('l.k, count(*)', 'l.k')) AS k_same;
+
+-- a text over its declared length, written after a plan that reads it was made
+INSERT INTO b_t VALUES (100002, '{"lines": [{"k": "c", "n": 2, "s": "longer than four"}]}');
+SELECT pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
+SELECT same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same, same('EXECUTE agg_k', unnest_q('l.k, count(*)', 'l.k')) AS k_same;
+
+-- promoted into a segment, whose zones flag the values: the same
+SELECT sift.col_promote('b_t_col') >= 0 AS promoted;
+SELECT pushed('EXECUTE agg_n') AS n_pushed, pushed('EXECUTE agg_s') AS s_pushed, pushed('EXECUTE agg_k') AS k_pushed;
+SELECT same('EXECUTE agg_n', unnest_q('l.k, avg(l.n)', 'l.k')) AS n_same, same('EXECUTE agg_s', unnest_q('l.s, count(*)', 'l.s')) AS s_same,
+       same('EXECUTE agg_k', unnest_q('l.k, count(*)', 'l.k')) AS k_same;
+RESET plan_cache_mode;
+
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;
