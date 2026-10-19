@@ -14,7 +14,7 @@ All numbers below were measured on a 3.04 M-row English text corpus (title plus 
    - Singletons (df = 1) stay inline in the dictionary. Keep df ≤ 2 inline too, as DESIGN.md says: a LIST blob for df = 2 costs about 13 B, the same as two raw keys.
    - On our data, EF lists are smaller than two-level bitmaps in **every** df class: 10.0 against 57 bits per posting overall (§5.1).
    - Bitmaps pay for themselves only through speed, and only on frequent terms: 5 to 65× faster AND/count than lists (§5.3).
-   - The `df ≥ 64K → GROUPED` policy costs +20 % size over all-LIST: 201 MB against 167 MB. It covers 326 terms that hold 51 % of all postings.
+   - Size of the policies in the analysis (§5.1, 3.04 M-row corpus): all-LIST 167 MB; `df ≥ 64K → GROUPED` (pol64K, the first policy) 201 MB (+20 %), 326 terms that hold 51 % of all postings; `df ≥ 8K → GROUPED` (pol8K, shipped since the threshold moved to 8K) 244 MB (+46 %), 1,939 terms that hold 75.7 % of all postings. On the 218K-article corpus the move from 64K to 8K made the index 9.6 % larger (§4).
 2. **Offset bitmaps must be variable width.** Use `w ∈ {1, 2, 4, 8, 16, 24, …, 64}` bytes per group, from the largest offset in that group.
    - A literal fixed 512-bit mask per page costs 412 bits per posting on our data, against 57 at tight width. We have 8.8 tuples per page, so w is 1 B for 58 % of groups and 2 B for 40 %.
    - The decoded *working* form should stay packed (w bytes per page), not canonical 512-bit masks. AND-count on canonical masks is 21.6× slower at w = 2 and 8× slower at w = 16 (§5.4).
@@ -110,7 +110,7 @@ GROUPED  u8 0[3], u32 n, u32 ng
   `first` and the gaps are token ordinals of the term in the document, `n` is the true occurrence count (tf saturates at 255). A posting of rank r is found through `ckpt[r / 32]` and a skip over at most 31 records; the groups of a GROUPED term and the blocks of a LIST term are not touched, so queries without a phrase read no position bytes.
 - **Container choice:** ARRAY when `entries * (2 or 4) < 32 + npages * w`, else BITMAP.
 - **Term kind choice:**
-  - `sift_encode` picks the smaller of LIST and GROUPED, with a `bias` factor, by default. Shipped policy: `kind = df >= 8192 ? GROUPED : LIST` (65536 in the first analysis), see §4.
+  - `sift_encode` picks the smaller of LIST and GROUPED, with a `bias` factor, by default. Shipped policy: `kind = df >= 8192 ? GROUPED : LIST` (`SIFT_GROUPED_MIN_DF`; it was 65536 before 1.2.0), see §4.
   - The encoder reports exact sizes when `out == NULL`, so pages can be planned.
 
 ### 3.2 Chunk (DESIGN.md contract 6)
@@ -138,7 +138,7 @@ One term × one 256-page group, standalone: `u32 (count << 8 | ctype)` followed 
 | Decision | Rule | Evidence |
 |---|---|---|
 | inline | df ≤ 2 in the dictionary entry (raw keys) | LIST blob for df 2–3 ≈ 53 bits/posting incl. header |
-| LIST vs GROUPED | GROUPED iff df ≥ 8K (64K in the analysis below; measured on 218K Wikipedia articles: +10 % index, ranked AND 22 % and count of ORs 27 % faster) | §5.1 policies; §5.3 speed |
+| LIST vs GROUPED | GROUPED iff df ≥ 8192 (`SIFT_GROUPED_MIN_DF`). Moving it from 64K to 8K on 218K Wikipedia articles (one core, mean statement latency): index 50.2 to 55.1 MB (+9.6 %), ranked AND 0.85 to 0.66 ms, count of ORs 0.72 to 0.52 ms (commit b642eb3, 1.2.0) | §5.1 policies (pol8K, pol64K); §5.3 speed |
 | container | ARRAY iff `2·n < 32 + npages·w` (u16 entries) | auto: 7,598 array / 3,478 bitmap groups on real |
 | bitmap width | `w = sift_w_for(max off in group)` | real: w1 58 %, w2 40 %, w4 2 % |
 | bounds | u8 per chunk + a nibble per block, only for chunks with ≥ 32 postings; block = `clamp(256/tpp,1,16)` pages (the codec implements fixed 16-page blocks) | §5.7 |
@@ -157,7 +157,8 @@ Singletons are excluded: they cost 6 B inline. Columns:
 - **bitmap**: two-level bitmaps at tight width.
 - **tin512**: page mask plus fixed 64 B offset mask per page.
 - **ef-docid**: Elias-Fano over dense doc ordinals with no headers, the lower reference for doc-id-mapped engines.
-- **pol64K**: GROUPED for df ≥ 64K, else LIST.
+- **pol8K**: GROUPED for df ≥ 8K, else LIST (the shipped policy).
+- **pol64K**: GROUPED for df ≥ 64K, else LIST (the first policy).
 
 **Real data (8.8 tuples/page)**
 
@@ -207,9 +208,9 @@ Under dense100 ctid EF is only 5 % above doc-id EF (8.62 against 8.17). In dense
 - *Rare* (16–127): EF costs 19.5 to 20.4 bits, the same order as the published ~25.
 - Those figures are plausible for long documents (Stack Exchange, many terms per row) on dense tables. They are not a property of the format.
 
-### 5.2 Representation of the frequent terms (pol64K)
+### 5.2 Representation of the frequent terms (pol64K, pol8K)
 
-On real data, auto picked GROUPED for only 0–19 % of terms per class, because LIST is smaller everywhere. The pol64K policy forces GROUPED on 326 terms. Those terms hold 51 % of postings and dominate query time, so the speed is spent where it matters.
+On real data, auto picked GROUPED for only 0–19 % of terms per class, because LIST is smaller everywhere. The pol64K policy forces GROUPED on 326 terms, pol8K (shipped) on 1,939. Those terms hold 51 % and 75.7 % of postings and dominate query time, so the speed is spent where it matters.
 
 ### 5.3 Operation throughput
 
@@ -285,7 +286,7 @@ OR-count and ANDNOT-count use `|a|+|b|−|a∧b|` from stored counts (all engine
 | andnot-cnt | hi&rare | 460 | 2030 | 55388 | 30010 | 53627 | 1.79 | 6949 | 3256 | 3616 | 10567 |
 
 Reading the tables:
-- **Bitmaps against EF lists:** bitmaps are 5 to 65× faster on every AND/count. They are 2 to 3× faster on materialized OR, which is output-bound (writing ctids). This is the reason for the df ≥ 64K GROUPED policy.
+- **Bitmaps against EF lists:** bitmaps are 5 to 65× faster on every AND/count. They are 2 to 3× faster on materialized OR, which is output-bound (writing ctids). This is the reason for the GROUPED policy on frequent terms (first df ≥ 64K, now df ≥ 8K).
 - **Against doc-id Roaring, dense100:** sift bitmaps win almost every row:
   - AND-count 1.7 to 2.9×, and 3-term AND 3.3×;
   - OR-count 1.6 to 2.8×;
