@@ -4,6 +4,10 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: a value a `sift_col` leaf cannot store that was still in the write buffer, or written after a prepared statement's generic plan was made, still raised "a column of the aggregate scan holds values its index cannot store". The directory entry of a write buffer now records the leaves it holds such a value of: the appender sets them before its row goes in and invalidates the table's plans in every session at once (committed or not), and the planner reads the mask with the segment zones, so the query keeps the normal plan and the rows are the normal plan's (a prepared statement plans again on its next use). Queries that read other leaves stay on the scan. A scan that is already running when another session writes such a value can still raise the error. Test `col_agg_overflow_buffer`.
+- Fixed: after the rows that held a value a `sift_col` leaf cannot store were repaired, the queries that read the leaf kept the normal plan until `REINDEX` when the `VACUUM` skipped the vacuuming of the indexes (dead rows on under 2% of the heap pages: `ambulkdelete` is never called). The `VACUUM` of the index now looks up the heap row of each row that holds such a value, clears the liveness of those that are dead to every snapshot (HOT chains followed, live rows kept) and the merge rewrites the segment. Test `col_agg_overflow_vacuum`.
+- Test `col_agg_overflow_range`: a JSON number out of the range of its `int2`, `int4`, `int8`, `float4` or `float8` path keeps the normal plan (its rows, or its error) in every aggregate shape.
+
 ## 3.0.1 - 2026-10-19
 
 Bug fixes for 3.0.0: a `COPY` or `INSERT ... SELECT` of any size into a `sift_table` in one transaction, four aggregate pushdown fixes (a crash, a wrong refusal, a stale overflow flag and a missed row) and the CI test harness. Install the new files; the extension SQL does not change (it stays 3.0), so there is no `ALTER EXTENSION pg_sift UPDATE` step, and no index or table is rebuilt.
