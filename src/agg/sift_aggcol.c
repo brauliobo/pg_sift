@@ -418,6 +418,15 @@ col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 	return n;
 }
 
+static bool
+col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	SiftColZone cz;
+
+	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
+	return cz.has_ovf;
+}
+
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
@@ -452,7 +461,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 	size_t		n = v->n;
 
 	vec->ovf = NULL;
-	if (v->ovf && !(buf->ovf && nan_leaf(l)))
+	if (v->ovf && !buf->ovf)
 		overflow_error();
 	switch (l->vtype)
 	{
@@ -514,7 +523,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	}
 	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
 	vec->ovf = NULL;
-	if (info.ovf && buf->ovf && nan_leaf(l))
+	if (info.ovf && buf->ovf)
 	{
 		SiftColVec	v;
 
@@ -575,11 +584,8 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 {
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 	size_t		m = v->n;
-	ColLeafBuf *b;
+	ColLeafBuf *b = leaf_buf(src, leaf, nrow);
 
-	if (v->ovf && !nan_leaf(l))
-		overflow_error();
-	b = leaf_buf(src, leaf, nrow);
 	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
 	switch (l->vtype)
 	{
@@ -804,11 +810,9 @@ filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 		SiftColZone z;
 
 		sift_col_zone(cu, p->col, &z);
-		if (z.has_ovf && !nan_leaf(&src->lay->leaf[p->col]))
-			overflow_error();
 		if (!sift_col_filter(cu, p, 1, sel))
 			break;
-		if (z.has_ovf)
+		if (z.has_ovf && nan_leaf(&src->lay->leaf[p->col]))
 			clear_nan_rows(src, p, sel);
 	}
 }
@@ -955,6 +959,7 @@ static const SiftSrcProvider col_provider = {
 	.tids = col_tids,
 	.zone = col_zone,
 	.zone_range = col_zone_range,
+	.overflow = col_overflow,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
