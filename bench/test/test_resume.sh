@@ -15,13 +15,14 @@ cat >"$T/work.sh" <<'WORK'
 set -euo pipefail
 . "$LIBSH"
 OUT=$1 KEY=$2 RUNS_DIR=$(dirname "$1")
+export BENCH_RUN_ID=${OUT##*/run-}
 mkdir -p "$OUT"
 log() { :; }
 run_begin work "$@"
 cell() { # STAGE N: its result is kept once written; a cell that exists with this key is not measured again
   local f=$OUT/$1-$2.json
   [[ $(cat "$f" 2>/dev/null) == "{\"key\": \"$KEY\", \"cell\": \"$1-$2\"}" ]] && return 0
-  sleep 0.03
+  sleep "${CELL_SLEEP:-0.03}"
   printf '{"key": "%s", "cell": "%s-%s"}' "$KEY" "$1" "$2" | atomic_write "$f"
 }
 st() { local n; for n in 1 2 3 4 5; do cell "$1" "$n"; done; }
@@ -65,7 +66,15 @@ grep -q '"key": "k2"' "$T/runs/run-kill1/a-1.json" || fail "a result of another 
 (( $(grep -c . "$T/runs/run-kill1/table/cells.tsv") == 10 )) || fail "the table of another key was not started over"
 echo "ok: a run with another key measures again"
 
-# a killed run is found out as crashed; SIGTERM is resumable
+# a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
+d=$T/runs/run-orphan
+CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
+sleep 0.6; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+( . "$LIBSH"; run_procs orphan ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
+( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
+( . "$LIBSH"; run_procs orphan ) | grep -q . && fail "the orphan of the killed run is still running" || true
+echo "ok: the processes a killed run left are stopped"
+
 d=$T/runs/run-crash
 "$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!
 sleep 0.15; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
