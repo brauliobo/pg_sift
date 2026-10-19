@@ -23,7 +23,7 @@ CREATE TABLE p (id int, body text) PARTITION BY RANGE (id);
 CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (1000);
 CREATE TABLE p2 PARTITION OF p FOR VALUES FROM (1000) TO (2000);
 INSERT INTO p SELECT i, 'doc' || i % 10 || ' common' FROM generate_series(0, 1999) i;
-CREATE INDEX p_idx ON p USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX p_idx ON p USING sift (body) WITH (write_buffer_limit = 64);
 CREATE TABLE p3 PARTITION OF p FOR VALUES FROM (2000) TO (3000);
 INSERT INTO p3 SELECT i, 'doc3 common' FROM generate_series(2000, 2100) i;
 CREATE TABLE p4 (id int, body text);
@@ -85,7 +85,7 @@ CREATE INDEX a_bad ON a USING sift (id);
 CREATE INDEX a_bad ON a USING sift (body) INCLUDE (id);
 CREATE UNIQUE INDEX a_bad ON a USING sift (body);
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
-CREATE INDEX a_bad ON a USING sift (body) WITH (mutable_limit = 0);
+CREATE INDEX a_bad ON a USING sift (body) WITH (write_buffer_limit = 0);
 
 -- partial and expression indexes
 CREATE INDEX a_part ON a USING sift (body) WHERE id < 50;

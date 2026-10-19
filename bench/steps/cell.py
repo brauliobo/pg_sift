@@ -28,6 +28,9 @@ prints 0 (qps) or nan (latency) like before, its error on stderr.
 """
 import argparse, math, os, shutil, subprocess, sys, tempfile, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stats import mean, sem  # noqa: E402  (steps/stats.py)
+
 FEW = 10          # transactions per client that make a chunk worth a dropped first transaction and a count instead of seconds
 MAX_CHUNKS = 12
 BATCH = 5         # transactions of a client in a batch, at least
@@ -67,15 +70,6 @@ def run_chunk(argv, tmp, flag, amount, seed, xbench=False):
         return {c: [(t, lat) for _, t, lat in sorted(rows)] for c, rows in clients.items()}
     finally:
         shutil.rmtree(log, ignore_errors=True)
-
-
-def mean(v):
-    return sum(v) / len(v)
-
-
-def stdev(v):
-    m = mean(v)
-    return math.sqrt(sum((x - m) ** 2 for x in v) / (len(v) - 1))
 
 
 def batches(clients):
@@ -126,7 +120,7 @@ class Cell:
         return math.sqrt(sum((s * (self.clients * n / s - rate)) ** 2 for n, s in self.batches) / total ** 2 * k / (k - 1)) / rate if rate else math.inf
 
     def rel_se_mean_latency(self):
-        return stdev(self.lat) / (mean(self.lat) * math.sqrt(self.n)) if self.n > 1 else math.inf
+        return sem(self.lat) / mean(self.lat) if self.n > 1 else math.inf
 
     def p50(self):
         v = sorted(self.lat)

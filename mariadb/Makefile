@@ -7,6 +7,7 @@
 # same library.
 ROOT    := $(abspath ..)
 SRC     := $(ROOT)/src
+include $(SRC)/areas.mk
 SQHOST  := $(ROOT)/sqlite/host
 HERE    := $(abspath .)
 OUT     ?= /tmp/sift-mariadb-build
@@ -20,35 +21,39 @@ CC      ?= gcc
 # -Dsift_count/-Dsift_topk: the codec's names are those of two UDFs
 CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -MMD -MP -Wall \
           -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation -march=x86-64 -mtune=generic \
-          -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) -I$(SRC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
+          -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) $(SIFT_INC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
           -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
           -Dsift_count=codec_count -Dsift_topk=codec_topk
 LIBS    = -lm -lpthread -ldl
 
 # the portable core, one list for every host and for scripts/check-portable.sh
-PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host
+PORTABLE := $(notdir $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
+HOSTC    := host host_stubs
 OWN      := host_regex store stubs
 GLUE     := engine query feed merge
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
 
-$(OUT)/%.o: $(SRC)/%.c | $(OUT)
+PORTOBJS := $(filter-out $(OUT)/sift_bitmap.o,$(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE))))
+$(PORTOBJS): $(OUT)/%.o: %.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the memory, error and string vocabulary of the SQLite host, as it is (its host_regex.c, a POSIX ERE, is not used: host/host_regex.c is)
+# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/host_regex.c is)
 $(OUT)/host.o: $(SQHOST)/host.c | $(OUT)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OUT)/host_stubs.o: $(SQHOST)/host_stubs.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the seek limit of the bitmap cursors is a global of src/sift_bitmap.c that a query sets while it seeks: per thread here
-$(OUT)/gen/sift_bitmap.c: $(SRC)/sift_bitmap.c | $(OUT)/gen
+# the seek limit of the bitmap cursors is a global of src/bm25/sift_bitmap.c that a query sets while it seeks: per thread here
+$(OUT)/gen/sift_bitmap.c: $(SRC)/bm25/sift_bitmap.c | $(OUT)/gen
 	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< >$@
 	grep -q '_Thread_local uint32_t seek_limit' $@
 $(OUT)/sift_bitmap.o: $(OUT)/gen/sift_bitmap.c | $(OUT)

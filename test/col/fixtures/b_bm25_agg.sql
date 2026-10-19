@@ -1,0 +1,10 @@
+-- BM25 and an aggregate in one query: the full-text match is a filter of the aggregation
+-- shape: bm25
+-- expect: any
+-- key: -
+-- scenario: yes
+SELECT source, count(*) AS n, count(DISTINCT store_id) AS stores, min(placed_at) AS first_day
+FROM orders
+WHERE memo @@> 'clean wifi' AND deleted_at IS NULL
+GROUP BY source
+ORDER BY source

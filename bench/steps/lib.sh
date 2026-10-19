@@ -11,6 +11,7 @@ REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.t
 PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
 SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
 REPO=$(dirname "$BENCH")
+. "$REPO/scripts/quiet.sh"                   # quiet_wait, quiet_batch, quiet_report: host noise by pressure stall information
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
 ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
@@ -41,7 +42,49 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd:)
 
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
-loadavg() { cut -d' ' -f1 /proc/loadavg; }
+loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the result tables, kept for the older runs; noise is judged by quiet_report
+# The noise of a timed batch is judged by what others did in its window, not by waiting for a quiet host: the pressure stall information cannot tell the
+# run's own servers and clients from other users, and waiting for it idled the run. A window is the time from one `batch` call to the next: the CPU the host
+# spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody
+# else; a window is NOISY when it is above SIFT_NOISE_CPU (0.25) cores over the idle host's, measured once, 10 s, at the first batch. Recorded in noisy.txt.
+# server_run CMD...: CMD as a server of the run. With SERVER_BUDGET=N (CPUs) it is a systemd scope of the slice sift-bench with CPUQuota N00% on the cores
+# SERVER_CPUS, so that the servers have the same budget while the clients (the harness, pgbench, the load generator) run outside the cap on other cores
+server_run() {
+  if [[ -n ${SERVER_BUDGET:-} ]]; then
+    systemd-run --user --scope -q --slice=sift-bench -p CPUQuota=$(( SERVER_BUDGET * 100 ))% -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue taskset -c "${SERVER_CPUS:?SERVER_CPUS}" "$@"
+  else "$@"; fi
+}
+sentinel_now() { # host busy seconds, CPU seconds of this run (the harness' cgroup and the servers' slice), uptime seconds
+  awk -v hz="$(getconf CLK_TCK)" '/^cpu / {printf "%.3f ", ($2 + $3 + $4 + $7 + $8 + $9) / hz}' /proc/stat
+  local own srv
+  own=$(awk '/^usage_usec/ {print $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || echo 0)
+  srv=$(awk '/^usage_usec/ {print $2 / 1e6}' "/sys/fs/cgroup$(systemctl --user show -p ControlGroup --value sift-bench.slice 2>/dev/null)/cpu.stat" 2>/dev/null || echo 0)
+  awk -v a="${own:-0}" -v b="${srv:-0}" 'BEGIN {printf "%.3f ", a + b}'
+  cut -d" " -f1 /proc/uptime
+}
+sentinel_rate() { awk -v a="$1" -v b="$2" 'BEGIN {split(a, x, " "); split(b, y, " "); dt = y[3] - x[3]; printf "%.3f", (dt > 0) ? ((y[1] - x[1]) - (y[2] - x[2])) / dt : 0}'; }
+batch_close() { # judge the window that is open (the one since the last batch call)
+  [[ -n ${SENT_AT:-} ]] || return 0
+  local now rate; now=$(sentinel_now); rate=$(sentinel_rate "$SENT_AT" "$now")
+  if awk -v r="$rate" -v b="$SENT_BASE" -v m="${SIFT_NOISE_CPU:-0.25}" 'BEGIN {exit !(r - b > m)}'; then
+    log "$SENT_WHAT: NOISY, $rate cores of other work over the $SENT_BASE of the idle host ($(quiet_report 2>&1), for information)"
+    printf '%s\t%s cores of other work over the %s of the idle host\n' "$SENT_WHAT" "$rate" "$SENT_BASE" >>"${DEST:-$OUT}/noisy.txt"
+  fi
+  SENT_AT=
+}
+batch() { # WHAT: opens the window of a timed batch (and judges the one before it)
+  batch_close
+  if [[ -z ${SENT_BASE:-} ]]; then
+    local a b; a=$(sentinel_now); sleep 10; b=$(sentinel_now); SENT_BASE=$(sentinel_rate "$a" "$b")
+    log "the idle host has $SENT_BASE cores of other work (a batch is NOISY above ${SIFT_NOISE_CPU:-0.25} over it)"
+  fi
+  SENT_WHAT=$*; SENT_AT=$(sentinel_now)
+}
+noisy_report() { # the pressure now and the number of batches that ran NOISY
+  batch_close
+  local n=0; [[ ! -f ${DEST:-$OUT}/noisy.txt ]] || n=$(wc -l <"${DEST:-$OUT}/noisy.txt")
+  echo "$(quiet_report 2>&1), $n NOISY batches"
+}
 # Timed sections must not overlap with other agents' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD).
 locked() { if [[ -n ${PERF_LOCK_HELD:-} ]]; then "$@"; else ( flock 9; "$@" ) 9>>"$LOCK"; fi; }
 now_ms() { date +%s%3N; }
@@ -122,7 +165,7 @@ rounds() {
   (( MAXR <= 3 )) || log "warning: MAXR=$MAXR: more than 3 rounds (the most that a run takes by default), the run takes that much longer"
   for r in $(seq "$MAXR"); do
     "$1" "$r"
-    log "round $r done, load $(loadavg)"
+    log "round $r done, $(quiet_report 2>&1)"
     (( r >= MINR )) && stable && break
   done
   return 0

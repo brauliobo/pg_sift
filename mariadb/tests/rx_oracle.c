@@ -1,6 +1,6 @@
 /*
  * rx_oracle.c - a throwaway PostgreSQL extension for regex_check.sh: runs the patterns of SiftQL through the real
- * pg_regcomp/pg_regexec/pg_regprefix exactly as src/sift_query.c does (REG_ADVANCED, the C collation, the bare
+ * pg_regcomp/pg_regexec/pg_regprefix exactly as src/bm25/sift_query.c does (REG_ADVANCED, the C collation, the bare
  * pattern compiled once to validate it, then "(?flags)^(?:PATTERN)$").
  */
 #include "postgres.h"

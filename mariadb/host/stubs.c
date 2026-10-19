@@ -1,14 +1,12 @@
 /*
- * stubs.c - the collaborators of src/sift_eval.c that the PostgreSQL side provides, as this host sees them: the options of
- * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot), no mutable segments
- * (the live segment of a query is an immutable one built from the queue) and the filter of a list of documents as the
- * TID bitmap the shared filter builder reads.
+ * stubs.c - the collaborators of src/bm25/sift_eval.c that the PostgreSQL side provides, as this host sees them: the options of
+ * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot) and the filter of a
+ * list of documents as the TID bitmap the shared filter builder reads. No write buffers and no kept docmap directories:
+ * sqlite/host/host_stubs.c.
  */
 #include "store.h"
 
 #include "sift_eval.h"
-#include "sift_mutable.h"
-#include "sift_segment.h"
 
 int			sift_max_expansions = 512;
 
@@ -30,22 +28,6 @@ const char *
 sift_options_fields(const SiftOptions *opts)
 {
 	return opts->fields ? (const char *) opts + opts->fields : "";
-}
-
-/* ---------- docmap directories (sift_docdir.c): not kept between queries ---------- */
-
-bool
-sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
-{
-	*dir = MemoryContextAllocHuge(seg->mcxt, nsb * sizeof(SiftDocSBRef));
-	*rank_base = MemoryContextAllocHuge(seg->mcxt, (nsb + 1) * sizeof(uint64));
-	*handle = NULL;
-	return false;
-}
-
-void
-sift_docdir_ready(void *handle)
-{
 }
 
 /* ---------- visibility (sift_visibility.c): the engine's dead documents ---------- */
@@ -76,40 +58,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ---------- mutable segments (sift_mutable.c): the directory never lists one ---------- */
-
-#define NO_MUTABLE() elog(ERROR, "sift: this build has no mutable segments")
-
-bool
-sift_mut_bloom_has(const uint64 *bloom, uint32 hash)
-{
-	return false;
-}
-
-SiftMutReader *
-sift_mut_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, SiftMutPageFilter filter, void *filter_arg)
-{
-	NO_MUTABLE();
-	return NULL;
-}
-
-bool
-sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
-{
-	return false;
-}
-
-void
-sift_mut_totals(const SiftMutReader *r, uint64 *ndocs, uint64 *sum_dl)
-{
-}
-
-void
-sift_mut_close(SiftMutReader *r)
-{
-}
-
-/* ---------- the TID bitmap of a list of documents (src/sift_compat.h) ---------- */
+/* ---------- the TID bitmap of a list of documents (src/core/sift_compat.h) ---------- */
 
 struct TIDBitmap
 {

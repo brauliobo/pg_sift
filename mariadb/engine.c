@@ -22,6 +22,7 @@
 
 #include "sift_analyze.h"
 #include "sift_bitmap.h"
+#include "sift_cmp.h"
 #include "sift_cpu.h"
 #include "sift_kernels.h"
 #include "sift_prefix.h"
@@ -35,7 +36,7 @@ static char base_dir[400] = ".";
 static char tmp_dir[400] = "/tmp";
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
-#define SIFT_FORMAT_ID		((uint32) SIFT_FORMAT_MAJOR << 16 | SIFT_FORMAT_MINOR)
+#define SIFT_FORMAT_ID		((uint32) SIFT_FORMAT_MAJOR << 16 | SIFT_WRITE_SEGFMT)
 #define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
 /* ------------------------------------------------ small helpers */
@@ -180,15 +181,6 @@ is_dead(const SiftIdx *ix, int64 docid)
 	return in_sorted(ix->dead, ix->ndead, docid);
 }
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
-
 static size_t
 slot_hash(int64 pk)
 {
@@ -274,7 +266,7 @@ apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op)
 void
 finish_events(SiftIdx *ix)
 {
-	qsort(ix->dead, ix->ndead, sizeof(int64), cmp_i64);
+	qsort(ix->dead, ix->ndead, sizeof(int64), sift_cmp_i64);
 	ix->sr->any_dead = ix->ndead > 0;
 }
 

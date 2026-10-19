@@ -217,9 +217,9 @@ def benchmarks_block(t, timing):
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
     out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client): the slim tier of the suite, the default of '
            '`bench/bench all`, with the engines, query classes and workloads of the full tier on a smaller corpus and cells that stop at a 5%% relative standard error (at most 1 s). '
-           'Same data, queries and clients for every engine, one engine at a time on every CPU of the host, median of %s interleaved rounds%s. Cells are queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
+           'Same data, queries and clients for every engine, one engine at a time on %s, median of %s interleaved rounds%s. Cells are queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
            'the fastest engines of a column (all within one standard error of the best) are in bold%s.' %
-           (articles, places, '2-%d' % rounds if rounds > 2 else '2', ', measured %s on %s (%s threads), PostgreSQL %s' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))
+           (articles, places, tables.cpus_text(s.get('quota', '')), '2-%d' % rounds if rounds > 2 else '2', ', measured %s on %s (%s threads), PostgreSQL %s' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))
             if s else '', '; a `±` is one standard error where it exceeds 10% of the value'), '']
     out += table(t) + [''] + places_table(t) + ['']
     out += [places_bullet(t)]
@@ -312,7 +312,7 @@ def slim_section(t, rows):
         if not any(r[:2] == (dataset, t.tier) and r[5] in ('qps', 'p50_ms') for r in rows):
             continue
         load = tables.get(rows, dataset, t.tier, '-', '-', '-', 'load_1m')
-        out += ['### %s' % title, '', tables.METHOD]
+        out += ['### %s' % title, '', tables.method(t.session.get('quota', ''))]
         if load:
             out += ['Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6])]
         out += [''] + md(rows, t.tier) + ['']

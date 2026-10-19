@@ -1080,6 +1080,7 @@ pg_regcomp(regex_t *re, const pg_wchar *string, size_t len, int flags, Oid colla
 	x = finish(c, root);
 	re->magic = REMAGIC;
 	re->posix = x;
+	re->re_info = c->backref ? REG_UBACKREF : 0;
 	release(c);
 	return REG_OKAY;
 }

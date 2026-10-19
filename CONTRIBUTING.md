@@ -13,6 +13,8 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
 `make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
 runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
+`scripts/coldiff.sh` is the differential test of the aggregate pushdown, plain SQL aggregates with `sift.enable_agg` off and on, the results compared,
+with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
 The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB, at the price of about a quarter more time, as the two big WAL tests then run one after the other): a lane starts a job when
 the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci.sh`), and a job's data goes when it passes.
 `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
@@ -44,7 +46,7 @@ builds and tests the release tarball in containers. It compiles the portable cor
 unmodified against the host implementation in `sqlite/host/`.
 
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
-`src/sift_host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `sift_host.h` (documented at the top of that file) and, when
+`src/core/sift_host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `sift_host.h` (documented at the top of that file) and, when
 it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
 a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
 that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch
@@ -52,10 +54,12 @@ them. Code shared by two hosts goes into the portable core (see "Shared core and
 build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
 release tag.
 
+`src/` has one folder per area (`core/`, `bm25/`, `col/`, `agg/`, `table/`; DESIGN.md "Source layout"). A source includes another by its bare name, and a new file goes to the folder its name selects (`scripts/restructure-src.sh --check` fails for a name no rule places: add the pattern to its MAP).
+
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
-  (`test/t/`) for a fix or a new behavior;
+  (`test/t/`) for a fix or a new behavior. For a bug, write the test first and see it fail before you fix it;
 - keep the build free of compiler warnings;
 - start the commit subject with the module or feature it changes: `query: parse fuzzy terms with a distance above 2`.
 
@@ -65,7 +69,7 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 1. Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, retitle `## Unreleased` in `CHANGELOG.md` and `sqlite/CHANGELOG.md`, and
    set `pkgver` in `packaging/PKGBUILD`, the install lines of the README and `sqlite/VERSION`.
-2. `scripts/ci.sh quick` and `SANITIZE=1 scripts/ci.sh quick` pass; push `main` and wait for CI.
+2. `scripts/ci.sh release` passes on the head (the gate of [docs/RELEASE.md](docs/RELEASE.md); a tree with a stamp is not gated again); push `main` and wait for CI.
 3. Tag `vX.Y.Z` and push the tag: the `release` workflow builds the `.deb`, `.rpm` and SQLite tarball and publishes them with the notes.
 4. `scripts/release-aur.sh` publishes the PKGBUILD to the AUR (the AUR account's SSH key must be loaded in your ssh-agent, or set
    `AUR_SSH_KEY`). Every release goes to the AUR.

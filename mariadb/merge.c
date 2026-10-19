@@ -1,7 +1,7 @@
 /*
  * merge.c - tiered merge of segments and the background thread that runs it.
  *
- * Policy. The shared one (sift_merge_pick, src/sift_merge.c): segments of similar size, tiers from 1 MiB, merge when `merge_fanin`
+ * Policy. The shared one (sift_merge_pick, src/bm25/sift_merge.c): segments of similar size, tiers from 1 MiB, merge when `merge_fanin`
  * of a tier have piled up (every drain adds a small one), so a document is rewritten once per tier and the number of segments stays
  * logarithmic in the size of the index. This host adds its own dead documents (they are not in the liveness bits): an index whose
  * dead documents exceed a quarter of its documents is merged whole, sx_merge(full) always.
@@ -17,6 +17,7 @@
 
 #include <unistd.h>
 
+#include "sift_cmp.h"
 #include "sift_merge.h"
 #include "sift_runs.h"
 
@@ -59,15 +60,6 @@ pick(SiftIdx *ix, bool full, Plan *plan)
 			if (ix->segs[j].e.gen == sel[i].gen)
 				plan->src[plan->n++] = ix->segs[j];
 	RD_UNLOCK(ix);
-}
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
 }
 
 typedef struct Merged
@@ -134,7 +126,7 @@ merge_write(SiftIdx *ix, const Plan *plan, Relation mrel, const int64 *dead, siz
 		sift_wt_finish(wt);
 		rename_segment(ix, wt, gen, &out->ms, &out->g, &out->blocks);
 	}
-	qsort(out->dropped, out->ndropped, sizeof(int64), cmp_i64);
+	qsort(out->dropped, out->ndropped, sizeof(int64), sift_cmp_i64);
 }
 
 static bool
@@ -157,13 +149,13 @@ filter_docs(const SiftIdx *ix, const Merged *mg, int64 **ids, int64 **pks, int64
 	*pks = malloc((ix->ndoc + 1) * sizeof(int64));
 	*dead = malloc((ix->ndead + 1) * sizeof(int64));
 	for (size_t i = 0; i < ix->ndoc; i++)
-		if (!bsearch(&ix->ids[i], mg->dropped, mg->ndropped, sizeof(int64), cmp_i64))
+		if (!bsearch(&ix->ids[i], mg->dropped, mg->ndropped, sizeof(int64), sift_cmp_i64))
 		{
 			(*ids)[n] = ix->ids[i];
 			(*pks)[n++] = ix->pks[i];
 		}
 	for (size_t i = 0; i < ix->ndead; i++)
-		if (!bsearch(&ix->dead[i], mg->dropped, mg->ndropped, sizeof(int64), cmp_i64))
+		if (!bsearch(&ix->dead[i], mg->dropped, mg->ndropped, sizeof(int64), sift_cmp_i64))
 			(*dead)[nd++] = ix->dead[i];
 	*ndead = nd;
 	return n;

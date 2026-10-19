@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tail of a bulk load: the seals that fall inside the sift.maintenance_naptime window of the request that started the
-# background worker get no worker of their own, so the worker stays and promotes them; they are not left as sealed (mutable)
-# segments until the next seal or a VACUUM. Runs on the production build too (no test functions).
+# background worker get no worker of their own, so the worker stays and promotes them; they are not left as sealed write buffers
+# until the next seal or a VACUUM. Runs on the production build too (no test functions).
 . "$(dirname "$0")/lib.bash"
 
 plan 5
@@ -9,9 +9,9 @@ node_init tail 12 "autovacuum = off
 max_worker_processes = 16"
 node_start tail || bail "start failed"
 sql tail "CREATE EXTENSION pg_sift" "CREATE TABLE t (id serial, body text) WITH (autovacuum_enabled = off)" \
-	"CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 64)" >/dev/null || bail "setup failed"
+	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null || bail "setup failed"
 
-sealed() { sql tail "SELECT count(*) FROM sift.segments('t_idx') WHERE kind = 'sealed'"; }
+sealed() { sql tail "SELECT count(*) FROM sift.segments('t_idx') WHERE kind = 'sealed buffer'"; }
 
 # loads of a few seconds, one after the other: each ends with seals inside the window of the last request
 for round in 1 2 3; do

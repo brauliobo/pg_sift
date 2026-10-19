@@ -1,22 +1,23 @@
 # Standalone codec harness.  Build: nice make -j4; tests: make test; data: make data
 CC      ?= gcc
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function
+CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function $(SIFT_INC)
 SRC      = ../../src
-LIB      = $(SRC)/sift_bitmap.c $(SRC)/sift_bitmap_scalar.c $(SRC)/sift_bitmap_avx2.c $(SRC)/sift_bitmap_avx512.c
-HDR      = $(SRC)/sift_bitmap.h $(SRC)/sift_bitmap_kern.h
+include $(SRC)/areas.mk
+LIB      = $(SRC)/bm25/sift_bitmap.c $(SRC)/bm25/sift_bitmap_scalar.c $(SRC)/bm25/sift_bitmap_avx2.c $(SRC)/bm25/sift_bitmap_avx512.c
+HDR      = $(SRC)/bm25/sift_bitmap.h $(SRC)/bm25/sift_bitmap_kern.h
 OUT     ?= /tmp/sift-codec
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o
 
 all: $(OUT)/test $(OUT)/bench $(OUT)/corpus $(OUT)/stats
 
 $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
-	@mkdir -p $(OUT)/obj
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/obj/stub.o: stub.c $(HDR)
-	@mkdir -p $(OUT)/obj
-	$(CC) $(CFLAGS) -I$(SRC) -c -o $@ $<
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(SIFT_INC) -c -o $@ $<
 
 $(OUT)/test: test.c $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) -lm
@@ -27,7 +28,7 @@ ifneq ($(wildcard $(ROARING)/roaring.c),)
 ROAR_CFLAGS = -DHAVE_ROARING -I$(ROARING)
 ROAR_OBJ    = $(OUT)/obj/roaring.o
 $(ROAR_OBJ): $(ROARING)/roaring.c
-	@mkdir -p $(OUT)/obj
+	@mkdir -p $(@D)
 	$(CC) -O2 -g -c -o $@ $<
 endif
 

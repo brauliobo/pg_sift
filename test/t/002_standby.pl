@@ -49,7 +49,7 @@ for my $am (ams())
 subtest 'sift: standby scan across merge and segment recycling' => sub {
 	my ($t, $idx) = ('recycle', 'recycle_idx');
 	load_corpus($primary, $t, 20000);
-	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
+	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (write_buffer_limit = 64)");
 	$primary->wait_for_catchup($standby);
 
 	my $bg = $standby->background_psql('postgres', on_error_stop => 0);
@@ -91,7 +91,7 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and recycling' => sub {
 	my ($t, $idx) = ('feedback', 'feedback_idx');
 	load_corpus($primary, $t, 20000);
-	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64, vacuum_truncate = false)");
+	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (write_buffer_limit = 64, vacuum_truncate = false)");
 	$primary->backup('feedback_base');
 	my $fb = PostgreSQL::Test::Cluster->new('standby_feedback');
 	$fb->init_from_backup($primary, 'feedback_base', has_streaming => 1);

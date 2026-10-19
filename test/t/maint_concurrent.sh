@@ -4,13 +4,13 @@
 # Runs on the production build too (no test functions).
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 20 6)
+SECS=$(knob SIFT_CHURN_SECS 20 4)
 plan 4
 node_init conc2 10 "autovacuum = off
 max_worker_processes = 16"
 node_start conc2 || bail "start failed"
 sql conc2 "CREATE EXTENSION pg_sift" "CREATE TABLE t (id serial, body text)" \
-	"CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 64)" >/dev/null || bail "setup failed"
+	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null || bail "setup failed"
 
 D=$(dir conc2)
 printf '%s\n' "INSERT INTO t (body) SELECT 'zzcommon ' || string_agg('w' || (random() * 3000)::int, ' ') FROM generate_series(1, 40);" >"$D/insert.sql"

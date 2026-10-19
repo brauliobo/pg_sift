@@ -21,7 +21,7 @@ SELECT kind, ndocs, dead_docs FROM sift.segments('oi_idx');
 SELECT free_blocks > 0 AS blocks_freed, reusable_blocks <= free_blocks AS reusable_within_free, ndocs
 FROM sift.index_info('oi_idx');
 
--- a mutable segment has no extents and no dead documents to report
+-- a write buffer has no extents and no dead documents to report
 INSERT INTO oi VALUES (5000, 'gamma');
 SELECT kind, extents IS NULL AS no_extents, dead_docs IS NULL AS no_dead FROM sift.segments('oi_idx') ORDER BY gen;
 

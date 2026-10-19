@@ -26,7 +26,7 @@ CREATE TABLE pp (id int PRIMARY KEY, tenant int, body text, pad text) WITH (auto
 ALTER TABLE pp ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO pp SELECT i, (i * 7919) % 500, 'common w' || i % 40 || ' x' || i % 7 || repeat(' filler', i % 4)
 	|| CASE WHEN i % 11 = 0 THEN ' quick brown fox' ELSE '' END, repeat('x', 1500) FROM generate_series(1, 6000) i;
-CREATE INDEX pp_body ON pp USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX pp_body ON pp USING sift (body) WITH (write_buffer_limit = 64);
 CREATE INDEX pp_tenant ON pp (tenant);
 INSERT INTO pp SELECT i, (i * 7919) % 500, 'common w' || i % 40 || ' x' || i % 7 || ' late', repeat('x', 1500) FROM generate_series(6001, 7000) i;
 DELETE FROM pp WHERE id % 10 = 3;

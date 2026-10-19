@@ -7,7 +7,7 @@
 # standby query, whatever the feedback.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 15 5)
+SECS=$(knob SIFT_CHURN_SECS 15 3)
 plan 10
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4

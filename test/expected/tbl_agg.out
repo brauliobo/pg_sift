@@ -1,0 +1,319 @@
+-- SiftAgg over a sift_table: the column groups through the engine, the write buffer rows as batches, the visibility of the table.
+-- Every query runs with and without the pushdown; the results must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE agg_t (id int, g int, k text, v bigint, f float8, t timestamptz, d date, b bool, n numeric(10,2), c text, ch char(6), w8 numeric) USING sift_table;
+-- the rows of the query's result as text, in a fixed order, and whether the plan is a SiftAgg
+CREATE FUNCTION agg_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION agg_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE agg_q (q text);
+INSERT INTO agg_q VALUES
+	('SELECT count(*), count(c), count(f) FROM agg_t'),
+	('SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g'),
+	('SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k'),
+	('SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k'),
+	('SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b'),
+	('SELECT count(*) FROM agg_t WHERE k = ''k1'' OR c IS NULL'),
+	('SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)'),
+	('SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g'),
+	('SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20'),
+	('SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch'),
+	('SELECT count(*), count(ch) FROM agg_t WHERE ch = ''c1'' OR ch = ''zz'''),
+	('SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g');
+CREATE FUNCTION agg_compare(OUT query text, OUT pushed bool, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM agg_q ORDER BY q COLLATE "C" LOOP
+		pushed := agg_pushed(query);
+		same := agg_rows(query, true) IS NOT DISTINCT FROM agg_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+INSERT INTO agg_t SELECT i, i % 7, 'k' || (i % 5), i * 3, i / 4.0, '2024-01-01'::timestamptz + (i || ' min')::interval, '2024-01-01'::date + i % 90,
+	i % 3 = 0, i / 3.0, CASE WHEN i % 10 = 0 THEN NULL ELSE repeat('x', i % 40) END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE 'c' || (i % 4) END, i / 7.0 FROM generate_series(1, 20000) i;
+ANALYZE agg_t;
+-- rows in the write buffers
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(12 rows)
+
+SELECT count(*) > 0 AS has_wbuf FROM sift.table_segments('agg_t') WHERE kind = 'buffer';
+ has_wbuf 
+----------
+ t
+(1 row)
+
+-- promoted into column groups
+VACUUM agg_t;
+SELECT count(*) = 0 AS no_wbuf_rows FROM sift.table_segments('agg_t') WHERE kind = 'buffer' AND rows > 0;
+ no_wbuf_rows 
+--------------
+ t
+(1 row)
+
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(12 rows)
+
+-- tombstones of committed deletes and updates, new versions in the write buffer
+DELETE FROM agg_t WHERE id % 11 = 0;
+UPDATE agg_t SET g = 3, v = v + 1, f = f + 0.5 WHERE id % 13 = 0;
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(12 rows)
+
+-- the transaction's own changes, and a rolled back one
+BEGIN;
+DELETE FROM agg_t WHERE id % 5 = 0;
+INSERT INTO agg_t SELECT 100000 + i, i % 7, 'new', i, i, now(), current_date, true, i, 'n', 'zz', i FROM generate_series(1, 500) i;
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(12 rows)
+
+ROLLBACK;
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(12 rows)
+
+-- a column added later (null in the older segments), with rows of both layouts, and after promoting the new ones
+ALTER TABLE agg_t ADD COLUMN z int;
+INSERT INTO agg_t SELECT 200000 + i, i % 7, 'z' || (i % 3), i, i, now(), current_date, false, i, NULL, 'c0', i, i FROM generate_series(1, 3000) i;
+INSERT INTO agg_q VALUES ('SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k'), ('SELECT count(*) FROM agg_t WHERE z > 100');
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(14 rows)
+
+VACUUM agg_t;
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                     | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+(14 rows)
+
+SELECT count(DISTINCT gen) > 1 AS segments FROM sift.table_segments('agg_t') WHERE kind <> 'buffer';
+ segments 
+----------
+ t
+(1 row)
+
+-- columns added with a default: the older segments give every row the constant
+ALTER TABLE agg_t ADD COLUMN w int DEFAULT 5;
+ALTER TABLE agg_t ADD COLUMN s text DEFAULT 'dflt';
+INSERT INTO agg_t (id, g, k, w, s) SELECT 400000 + i, i % 7, 'w', i % 4, 's' || (i % 2) FROM generate_series(1, 2000) i;
+INSERT INTO agg_q VALUES ('SELECT w, count(*) FROM agg_t GROUP BY w'), ('SELECT s, count(*), min(w) FROM agg_t GROUP BY s'),
+	('SELECT count(*) FROM agg_t WHERE w = 5 AND s = ''dflt''');
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                        | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                     | t      | t
+ SELECT s, count(*), min(w) FROM agg_t GROUP BY s                             | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+ SELECT w, count(*) FROM agg_t GROUP BY w                                     | t      | t
+(17 rows)
+
+VACUUM agg_t;
+SELECT * FROM agg_compare();
+                                    query                                     | pushed | same 
+------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                     | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                           | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                       | t      | t
+ SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                        | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                     | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                               | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'           | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g            | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g     | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                             | f      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                     | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                     | t      | t
+ SELECT s, count(*), min(w) FROM agg_t GROUP BY s                             | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                          | t      | t
+ SELECT w, count(*) FROM agg_t GROUP BY w                                     | t      | t
+(17 rows)
+
+-- a string over 255 bytes and -0 are stored exactly: the queries that read them are pushed down and agree with the plain plan
+INSERT INTO agg_t (id, g, k, c, f) VALUES (500000, 1, 'long', repeat('y', 1000), '-0'::float8);
+INSERT INTO agg_q VALUES ('SELECT count(DISTINCT c) FROM agg_t'),
+	('SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c'),
+	('SELECT k, count(*), count(DISTINCT c) FROM agg_t WHERE c LIKE ''y%'' COLLATE "C" GROUP BY k'),
+	('SELECT count(*) FROM agg_t WHERE c = repeat(''y'', 1000)');
+SELECT * FROM agg_compare();
+                                           query                                           | pushed | same 
+-------------------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                                  | t      | t
+ SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c                              | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | t      | t
+ SELECT count(*) FROM agg_t WHERE c = repeat('y', 1000)                                    | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                                    | t      | t
+ SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                                     | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                                  | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                                            | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'                        | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                             | t      | t
+ SELECT count(DISTINCT c) FROM agg_t                                                       | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g                         | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k              | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g                  | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                                          | f      | t
+ SELECT k, count(*), count(DISTINCT c) FROM agg_t WHERE c LIKE 'y%' COLLATE "C" GROUP BY k | t      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                                  | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                                  | t      | t
+ SELECT s, count(*), min(w) FROM agg_t GROUP BY s                                          | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                                       | t      | t
+ SELECT w, count(*) FROM agg_t GROUP BY w                                                  | t      | t
+(21 rows)
+
+VACUUM agg_t;
+SELECT * FROM agg_compare();
+                                           query                                           | pushed | same 
+-------------------------------------------------------------------------------------------+--------+------
+ SELECT b, count(*), min(d), max(d) FROM agg_t GROUP BY b                                  | t      | t
+ SELECT c, count(*) FROM agg_t WHERE c IS NOT NULL GROUP BY c                              | t      | t
+ SELECT ch, count(*), sum(v) FROM agg_t GROUP BY ch                                        | t      | t
+ SELECT count(*) FROM agg_t WHERE c = repeat('y', 1000)                                    | t      | t
+ SELECT count(*) FROM agg_t WHERE k = 'k1' OR c IS NULL                                    | t      | t
+ SELECT count(*) FROM agg_t WHERE w = 5 AND s = 'dflt'                                     | t      | t
+ SELECT count(*) FROM agg_t WHERE z > 100                                                  | t      | t
+ SELECT count(*), count(c), count(f) FROM agg_t                                            | t      | t
+ SELECT count(*), count(ch) FROM agg_t WHERE ch = 'c1' OR ch = 'zz'                        | t      | t
+ SELECT count(*), sum(n) FROM agg_t WHERE n > 10.5 AND n <> 20                             | t      | t
+ SELECT count(DISTINCT c) FROM agg_t                                                       | t      | t
+ SELECT g, count(*), sum(id), min(f), max(f) FROM agg_t GROUP BY g                         | t      | t
+ SELECT g, k, count(*) FROM agg_t WHERE v > 3000 AND id % 3 = 0 GROUP BY g, k              | t      | t
+ SELECT g, sum(n), avg(n), min(n), max(n), count(n) FROM agg_t GROUP BY g                  | t      | t
+ SELECT g, sum(w8), min(w8) FROM agg_t GROUP BY g                                          | f      | t
+ SELECT k, count(*), count(DISTINCT c) FROM agg_t WHERE c LIKE 'y%' COLLATE "C" GROUP BY k | t      | t
+ SELECT k, count(*), min(t), max(t) FROM agg_t GROUP BY k                                  | t      | t
+ SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k                                  | t      | t
+ SELECT s, count(*), min(w) FROM agg_t GROUP BY s                                          | t      | t
+ SELECT sum(id), avg(f) FROM agg_t WHERE g IN (1, 3)                                       | t      | t
+ SELECT w, count(*) FROM agg_t GROUP BY w                                                  | t      | t
+(21 rows)
+
+DROP TABLE agg_t, agg_q;
+DROP FUNCTION agg_rows, agg_pushed, agg_compare;
+DROP EXTENSION pg_sift;

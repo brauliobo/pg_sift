@@ -8,8 +8,8 @@ SET client_min_messages = warning;
 
 CREATE TABLE mf (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO mf (body) SELECT 'seed word' || (i % 50) || ' common' FROM generate_series(1, 2000) i;
-CREATE INDEX mf_idx ON mf USING sift (body) WITH (mutable_limit = 64);
--- one document is about a segment of its own: 12000 distinct terms fill 128 kB of mutable pages
+CREATE INDEX mf_idx ON mf USING sift (body) WITH (write_buffer_limit = 64);
+-- one document is about a segment of its own: 12000 distinct terms fill 128 kB of write buffer pages
 CREATE FUNCTION big(n int) RETURNS text LANGUAGE sql AS
 	$$ SELECT string_agg('t' || n || 'x' || g, ' ') FROM generate_series(1, 12000) g $$;
 
@@ -50,7 +50,7 @@ SELECT sift.verify('mf_idx', true);
 -- inserts reach the point where they would merge for room (112 of 128 entries) with every step
 -- failing: they go on, and the failing step is tried once, not at every seal
 CREATE TABLE mr (id serial, body text) WITH (autovacuum_enabled = off);
-CREATE INDEX mr_idx ON mr USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX mr_idx ON mr USING sift (body) WITH (write_buffer_limit = 64);
 SET sift.test_fail_pages = 1;
 SET client_min_messages = error;
 DO $$

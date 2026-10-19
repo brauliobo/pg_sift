@@ -1,0 +1,108 @@
+-- Dead rows of the column groups: VACUUM counts live and dead rows as it does for a heap (reltuples, pg_stat_user_tables), rewrites
+-- a column segment alone once more than sift.table_dead_rewrite_pct percent of it is dead.
+CREATE EXTENSION pg_sift;
+-- (vacuum_truncate off: moving a segment down for the cut would also drop its dead rows)
+CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
+CREATE VIEW dseg AS SELECT rows, dead_rows FROM sift.table_segments('d') WHERE kind = 'columns';
+CREATE VIEW dstat AS SELECT c.reltuples, s.n_live_tup, s.n_dead_tup FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid WHERE c.relname = 'd';
+INSERT INTO d SELECT g, 'v' || g FROM generate_series(1, 20000) g;
+VACUUM d;
+SELECT * FROM dseg;
+ rows  | dead_rows 
+-------+-----------
+ 20000 |         0
+(1 row)
+
+SELECT * FROM dstat;
+ reltuples | n_live_tup | n_dead_tup 
+-----------+------------+------------
+     20000 |      20000 |          0
+(1 row)
+
+-- 30 percent dead: under the default threshold (50) the segment stays, its dead rows are counted out
+DELETE FROM d WHERE id % 10 < 3;
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+VACUUM d;
+SELECT * FROM dseg;
+ rows  | dead_rows 
+-------+-----------
+ 20000 |      6000
+(1 row)
+
+SELECT * FROM dstat;
+ reltuples | n_live_tup | n_dead_tup 
+-----------+------------+------------
+     14000 |      14000 |          0
+(1 row)
+
+-- a lower threshold rewrites it alone, without its dead rows
+SET sift.table_dead_rewrite_pct = 20;
+VACUUM d;
+SELECT * FROM dseg;
+ rows  | dead_rows 
+-------+-----------
+ 14000 |         0
+(1 row)
+
+RESET sift.table_dead_rewrite_pct;
+-- 100 never rewrites; the default then does
+SET sift.table_dead_rewrite_pct = 100;
+DELETE FROM d WHERE id % 10 < 9;
+VACUUM d;
+SELECT * FROM dseg;
+ rows  | dead_rows 
+-------+-----------
+ 14000 |     12000
+(1 row)
+
+RESET sift.table_dead_rewrite_pct;
+VACUUM d;
+SELECT * FROM dseg;
+ rows | dead_rows 
+------+-----------
+ 2000 |         0
+(1 row)
+
+SELECT * FROM dstat;
+ reltuples | n_live_tup | n_dead_tup 
+-----------+------------+------------
+      2000 |       2000 |          0
+(1 row)
+
+SELECT count(*), sum(id) FROM d;
+ count |   sum    
+-------+----------
+  2000 | 20008000
+(1 row)
+
+-- every row deleted: the segment goes
+DELETE FROM d;
+VACUUM d;
+SELECT count(*) AS segments FROM dseg;
+ segments 
+----------
+        0
+(1 row)
+
+SELECT * FROM dstat;
+ reltuples | n_live_tup | n_dead_tup 
+-----------+------------+------------
+         0 |          0 |          0
+(1 row)
+
+SHOW sift.table_dead_rewrite_pct;
+ sift.table_dead_rewrite_pct 
+-----------------------------
+ 50
+(1 row)
+
+SET sift.table_dead_rewrite_pct = 0;
+ERROR:  0 is outside the valid range for parameter "sift.table_dead_rewrite_pct" (1 .. 100)
+DROP VIEW dseg, dstat;
+DROP TABLE d;
+DROP EXTENSION pg_sift;

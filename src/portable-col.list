@@ -1,0 +1,39 @@
+# The portable files of the sift_col track (the column kernels, the shredder, docs/COL-SHRED.md; the aggregation operators, docs/KERNELS.md; the chunk and unit encoding, docs/COL.md; the chunk codec, docs/COL-CODEC.md; the segment writer and reader of units, sift_col_seg.c): the same rule as portable.list (C library, intrinsics,
+# sift_host.h and files of the lists; scripts/check-portable.sh enforces it) but not part of the SQLite and MariaDB extensions yet (they build portable.list only; `make -C sqlite col-smoke` compiles
+# and runs this list on the SQLite host, docs/COL-PORTS.md). Move a file to portable.list when a host ships the column engine.
+#
+# sources
+col/sift_col_kern.c
+col/sift_col_kern_avx2.c
+col/sift_col_kern_avx512.c
+col/sift_col_enc.c
+col/sift_colcodec.c
+col/sift_colcodec_kern.c
+col/sift_colcodec_avx2.c
+col/sift_colcodec_avx512.c
+col/sift_colz.c
+col/sift_col_seg.c
+col/sift_col_preagg.c
+col/sift_shred.c
+col/sift_shred_kern.c
+col/sift_shred_kern_avx2.c
+col/sift_shred_kern_avx512.c
+agg/sift_aggkern.c
+agg/sift_aggkern_avx2.c
+agg/sift_aggkern_avx512.c
+# headers
+col/sift_shred.h
+col/sift_col.h
+col/sift_col_kern.h
+col/sift_col_kern_int.h
+col/sift_col_enc.h
+col/sift_col_seg.h
+col/sift_col_preagg.h
+col/sift_colcodec.h
+col/sift_colcodec_int.h
+col/sift_colcodec_vec.h
+col/sift_colz.h
+agg/sift_aggkern.h
+agg/sift_aggkern_int.h
+agg/sift_aggkern_cases.h
+core/sift_testrng.h

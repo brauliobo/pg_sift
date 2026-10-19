@@ -12,8 +12,8 @@ License:        PostgreSQL
 URL:            https://github.com/brauliobo/pg_sift
 Source0:        pg_sift-%{version}.tar.gz
 ExclusiveArch:  x86_64
-BuildRequires:  gcc, make, redhat-rpm-config, postgresql%{pgmajor}-devel
-Requires:       postgresql%{pgmajor}-server
+BuildRequires:  gcc, make, redhat-rpm-config, postgresql%{pgmajor}-devel, lz4-devel, libzstd-devel
+Requires:       postgresql%{pgmajor}-server, lz4-libs, libzstd
 
 %description
 pg_sift adds the sift index access method (CREATE INDEX ... USING sift) with boolean, phrase, prefix, wildcard, regex and fuzzy

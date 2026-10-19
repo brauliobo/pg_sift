@@ -26,6 +26,8 @@ bench/bench regress --run          # sift against a build of an older release (s
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
+**An equal CPU budget for every server** (the final pass of 3.0): `SERVER_BUDGET=3 SERVER_CPUS=0-3,8-11 ES_SHARDS=3 ES_PROCESSORS=3 taskset -c 4-7,12-15 bench/bench all --docs --workers 2`. Every server the harness starts (a PostgreSQL lane, the Elasticsearch process) runs through `server_run` (`steps/lib.sh`): a systemd scope of the slice `sift-bench` with `CPUQuota=300%` pinned to `SERVER_CPUS` (four physical cores and their siblings), while the harness, `pgbench`, `cell.py` and the load generator run outside the cap on the cores of the outer `taskset`; `--workers 2` gives PostgreSQL 2 parallel and 2 build workers and `pgbench` 2 threads, `ES_PROCESSORS` sets `node.processors` and the JVM's processor count, `ES_SHARDS` the shards (each merged to one segment). Without `SERVER_BUDGET` nothing is capped, as before. The noise of a batch is the host's other work in its window (`sentinel_*` in `steps/lib.sh`), flagged in `noisy.txt`, never waited for.
+
 Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It keeps the ordering of the engines and
 most of the ratios of the full tier (the table in docs/BENCHMARKS.md, generated, says which ones move and by how much) at a fraction of the time and disk. `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
@@ -64,7 +66,7 @@ blocks of the docs):
 The other commands: `charts` (redraw the SVGs of `docs/img` from the committed `docs/results`), `readme` (rewrite the generated blocks of README.md and docs/BENCHMARKS.md from them), `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
 oracle / pgx-bm25, every engine of `--engines` when none is named, pgx-bm25 included; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
-parallel worker count), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
+parallel worker count), `shred` (documents per second of the sift_col jsonb shredder and elements per second of its SIMD kernels, docs/COL-SHRED.md), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
 `--dataset articles|places|all`, `--engines sift,sift_nopos,pg_search,pg_textsearch,rum,bm25,elasticsearch`, `--classes LIST` and `--workloads LIST` (restrict a run to some
 query classes / places workloads), `--rebuild` (ignore the cache of built clusters), `--sample N` (statements per articles class; default 0 = the whole trace), `--clients N`, `--workers N` (pgbench threads and
 the server's parallel workers; default 4 pgbench threads, one parallel worker per hardware thread and, for an index build, one fewer than the physical cores), `--max-time S` (the longest a cell is measured in a round, seconds; `--duration` is the same), `--min-time S` (the shortest, default 0.25), `--min-samples N`
@@ -94,7 +96,7 @@ Result directory (default `bench/out/run-<UTC time>`, gitignored; `bench/out/lat
 | `articles-<tier>/`, `places-<tier>/` | the raw tables of the run: `cells.tsv` (every cell of every round with the load average at that moment), `builds.tsv`, `summary.tsv`, `machine.txt`; `*-cold` for `cold` (`summary.tsv` / `cold.tsv`) |
 
 Read the numbers within one table of one run: the engines were measured one after another in the same session, so
-the ratios are meaningful when the load average (`cells.tsv`, `tables.md`) was steady; absolute values depend on the CPU
+the ratios are meaningful when the host stayed quiet (no `noisy.txt`, pressure in `machine.txt` and the log) and the load average (`cells.tsv`, `tables.md`) was steady; absolute values depend on the CPU
 and on whatever else the host runs. A cell the engine cannot run is `NA`, one whose statement failed or timed out is
 `error`. The committed results of the final session are in [docs/results/](../docs/results/), the discussion in
 [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
@@ -164,7 +166,7 @@ wall times each result directory keeps in `phases.txt`:
    removes the cache). After a successful session the cache is removed, since the next build changes the extension and so every key, unless `--keep` is given: then the least recently used lanes
    beyond `BENCH_CACHE_MAX` MiB (default 4096) go.
 3. **Rounds.** Round r runs every class on every engine, **one engine at a time**: for a class, each engine in turn runs its cell alone (the others are idle), and the order of the engines
-   rotates every round (engine k goes first in round k), so no engine always runs first or last, and a drift of the host load (the rest of the machine is not controlled and the load average is
+   rotates every round (engine k goes first in round k), so no engine always runs first or last, and a drift of the host load (the rest of the machine is not controlled; each batch waits for a quiet host, see below, and the load average is
    recorded with every cell) hits the engines alike over the rounds. Every engine has the same client counts (articles 8, places 1) and every statement trace is the same (pgbench `--random-seed=7`).
    The relations are prewarmed after the build; a cell has no warm-up of its own, except for the engines outside Postgres, whose JVM and caches are warmed for a few seconds per class (`XWARM`) in the
    build phase and again before the first round. Why one engine at a time: engines that run side by side without CPU shares compete for cores, memory bandwidth and the turbo budget, so the
@@ -187,9 +189,16 @@ and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, 
 
 The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
 `--workers` caps both), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
-What the method relies on is the one-at-a-time order above, the rotation of the order, the repetition (2-3 rounds with a standard error per cell) and the host load average, which is printed with every table and
-recorded with every cell. A busy host (a load average above the number of cores) shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
+What the method relies on is the one-at-a-time order above, the rotation of the order, the repetition (2-3 rounds with a standard error per cell) and the check of the host's pressure before every timed batch (below); the load average is still printed with every table and
+recorded with every cell, for the older runs. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
 session with each other, not with another session or machine.
+
+**Quiet host (`scripts/quiet.sh`).** The load average counts runnable tasks, not the time anything waited, so a timed step does not use it to judge the host; it uses Linux pressure stall information instead
+(`/proc/pressure/cpu` and `io`, the `some` line). Before each timed batch (a class of cells, a pgbench round, a timed query, a build) `quiet_wait` blocks until both resources are below 10% in the
+10 s average (`avg10`) for two samples 2 s apart; after `SIFT_QUIET_TIMEOUT` seconds (default 60) the batch runs anyway and is marked **NOISY** (in the log, in `noisy.txt` of the table directory, in the table or the footer of the
+step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Instruction-count steps (`cpu_gate.sh`, the cycles of `ab.sh run`) print it and never wait. Override with the environment:
+`SIFT_QUIET_MAX` (percent, default 10), `SIFT_QUIET_TIMEOUT` (seconds), `SIFT_QUIET_WINDOW` (`avg10` or `avg60`); the same options exist on the command (`scripts/quiet.sh wait --max 20 --timeout 300`, `report`). On a kernel without PSI it says
+that it cannot measure (exit status 3) and every batch is NOISY.
 
 ### Standard error
 
@@ -219,7 +228,7 @@ Per-tier cluster, port and dump:
 
 ### Gate on a busy host (`steps/cpu_gate.sh`)
 
-Throughput and latency say nothing on a host with a load average above its cores, so this gate compares builds by what the server executes: user-space instructions (and cycles, as secondary
+Throughput and latency say nothing on a host whose cpu pressure stays above the 10% of `scripts/quiet.sh`, so this gate compares builds by what the server executes: user-space instructions (and cycles, as secondary
 evidence, because the other load contends for the caches) that `perf stat -e instructions:u,cycles:u -p POSTMASTER` counts for the processes the postmaster forks during one operation. That is the
 backend plus the maintenance worker and parallel workers, summed; a write's window ends when the worker has gone. It is standalone, never part of `make check` or `scripts/ci.sh`, needs `perf`
 (`perf_event_paranoid` <= 2) and one checkout per build with `scripts/pgtest.sh` (`git worktree add --detach /tmp/x REF`; build everything the same way, the Makefile links without LTO by default):
@@ -250,7 +259,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
-| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema |
+| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries); `sql/store/`: the online-store data generator, the layout of each system and the ten queries |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
 
 | `steps/` | role |
@@ -261,6 +270,8 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `readme.py` | the generated blocks of README.md and docs/BENCHMARKS.md (`readme`) |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
+| `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |
+| `perf.sh` | `perf_counts PID [-- CMD]`: user-space cycles, instructions and CPU time of a process by `perf stat`, one line; sourced by `ab.sh` and `bench/cpu-query.sh`, run by `analytics.py` |
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
 | `regress.py` | the regression check of `results.tsv` files (`regress`) |
@@ -271,9 +282,13 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
 | `ab.sh` | standalone, run directly: interleaved A/B of sift builds (git refs or the working tree) on the slim corpus, one backend's user cycles and instructions per transaction (or qps at N clients), mean and standard error; `prepare`, `prepare_places` (adapter index plus a btree on `country_code`), `shapes` (`sql/ab_shapes.sql`, the filter shapes of the plan-choice tests), `build`, `run`, `clients` (header of the script; `run bench/sql/ab_and_filter_prep.pgb ...` is a prepared rare AND query with a selective filter, the shape a generic plan with the pushdown serves worse than main's post-filter plan) |
 | `cpu_gate.sh` | standalone, run directly: gate of two or more sift builds by user instructions and cycles per operation of the server processes (backend plus maintenance worker), per cell ratio to the baseline with a 95% interval, interleaved rounds extended until the standard error is small; holds up on a busy host (section Gate on a busy host) |
+| `shred.sh` | the shredder's throughput on a throwaway cluster of `scripts/pgtest.sh` (`shred`; `sql/shred.sql`; `SHRED_DOCS`, `SHRED_ROUNDS`) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `final.sh`, `gap.sh`, `gap.py` | `bench/analytics --final` (the one command for the published analytics numbers, with `--dry-run`); the pg_sift profile behind docs/BENCH-GAP.md |
+| `store.sh`, `store.py` | the online-store benchmark against Citus (columnar), Elasticsearch and ClickHouse (`store`): docker containers, seeded data, load, warm and cold runs, updates, the Markdown tables of README.md and docs/BENCHMARKS.md |
+| `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
 the join workload, `params` (tier constants) and `queries`: 1000 substrings of 2-15 consecutive plain
@@ -334,6 +349,111 @@ Places classes are what a user has typed: `p1`-`p4` a name's first word cut to 1
 word, `a2`/`a2s` two words (last cut to 2 / 1 letters), `a3` name, region and country word, `x2` name word
 plus country word; workloads `top` (top-20), `boost` (name matches x3), `filter` (`country_code = 'US'`),
 `count`, `scan` (unordered, `population >= 100000`).
+
+## Analytics (sift_col)
+
+`bench/bench analytics run` measures aggregate queries over jsonb (objects with dynamic keys, arrays of objects) instead of text search:
+a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), the queries S1-S7 on the store sets K10, K400 and K4000 and the
+whole-table scans G1-G8, as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
+against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 43 queries of ClickBench. It uses a cluster of its own
+under `SIFT_TMP` (port `SIFT_PORT`) and does not touch the tiers above. docs/perf/ANALYTICS.md has the method, the options and the numbers.
+
+## Analytics for everyone: the online store (`bench/bench store`)
+
+The simple case behind the Analytics sections of README.md and docs/BENCHMARKS.md: a table of orders (`id, customer_id, country, category, status,
+amount, quantity, created_at, title`), ten questions anyone can ask of it (an order by id, orders per country, revenue per month, the top 10 categories,
+an average, distinct customers per month, a filtered count, and three after a full-text search: a count, counts per category, the 10 newest), and five
+servers: PostgreSQL (heap, btree and GIN indexes: what most teams run), PostgreSQL with pg_sift (`sift_col` + `sift`, and `sift_table`), Citus (its `columnar` table
+access method, single node), Elasticsearch and ClickHouse. It extends this harness rather than replacing it: `bench` is the entry point and holds the perf lock for the timed runs, `steps/lib.sh` gives the
+helpers, `steps/stats.py` the median and spread, and `docs/results/store.json` is in the layout of `docs/results/analytics.json`.
+
+Citus is measured columnar-only and on a single node: the table is `USING columnar` (extension `citus_columnar`, `sql/store/citus.sql`) with the default columnar settings, no distributed tables and no workers; it has no `UPDATE` or `DELETE`, so it is not in the update tables.
+Citus is AGPL-licensed: the benchmark only runs its docker image (`STORE_CITUS_IMAGE` in `versions.env`) in a container and downloads nothing of it into this repository.
+
+```sh
+bench/bench store all --docs            # 1M and 10M orders: containers, data, load, warm and cold runs, updates; then docs/results/store.json, README.md, docs/BENCHMARKS.md
+bench/bench store all --sizes 1000000 --cpus-list 1,3 --runs 5 --warmups 2 --cold-runs 2 --docs   # the final pass of 3.0: one size, about 25 minutes (cold: `store merge --restart-cold FILE --restart-engines pg,ch` takes those engines' restart-based cells from another results file)
+bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
+bench/bench store report                # the tables again from docs/results/store.json, without measuring
+bench/analytics                         # the quick run: 1M orders, 3 runs, the same equality checks, about 2 minutes (bench/out/latest/store.json)
+bench/bench store compare A.json B.json # two runs side by side: every warm median and the ratio (changes above 10% marked)
+bench/bench store gap                   # pg_sift against ClickHouse and Elasticsearch per question, with the ratios (docs/BENCH-GAP.md)
+bench/bench store all --sizes 1000000 --compression --docs   # the pg_sift `compression` variants as lanes and every system's size with its other codec settings
+bench/steps/gap.sh                      # the pg_sift profile (planning, instructions, symbols) on a private cluster under a memory cap
+bench/analytics --final --dry-run       # the plan, time, disk and memory of the one command that regenerates every published analytics number (without --dry-run: runs it)
+bench/bench store clean                 # containers, volumes, the image, the CSV
+```
+
+Needs docker (it pulls the images pinned in `versions.env` and builds the PostgreSQL image from this checkout's tracked files, as `scripts/replication.sh --container`
+does), `psql`, `python3`; nothing is installed on the host and every container and anonymous volume is removed at the end (`store all` removes them on any exit).
+What it does, in order, for each size:
+
+1. Five containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (3) and `--memory` (8g) with no swap, on
+   ports `STORE_PORT_BASE` to `+4` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers (PostgreSQL, pg_sift, Citus) have the same flags
+   (`shared_buffers` 2GB, `jit` off, the parallel settings of [Fair comparison](#fair-comparison-the-same-threads-for-every-engine)); PostgreSQL and pg_sift are one image (PostgreSQL 18 with pg_sift built
+   from this checkout), Citus is its own image (`citusdata/citus`, PostgreSQL 18 of the same major version, a different minor release); Elasticsearch has a heap of half the memory;
+   Elasticsearch and ClickHouse are told the thread budget too.
+2. The data: `sql/store/gen.sql` writes the rows with hashes of (id, draw number), so a size gives the same CSV every run (its sha256 is in the results); the same
+   file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `citus.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
+   are recorded. Elasticsearch has one shard per CPU of the budget of the load, each merged to one segment, and ClickHouse is optimized after the load, PostgreSQL vacuumed and analyzed. Citus holds the table `USING columnar` (extension
+   `citus_columnar`) with a primary key and no other index; its size counts the columnar metadata tables as well.
+3. Warm runs (`steps/store.py run`), once for each budget of `--cpus-list` (1 and 3 by default; the containers are reconfigured between them): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
+   relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3; a question a system answers with an error is a result, its cell is `n/a` and the
+   generated text says which question failed and the message), two more untimed runs, then `--runs` (7) timed runs
+   with the engines interleaved and the first rotating each run. A timing is the wall time of one request over a persistent local connection, one client, until the
+   last byte; Elasticsearch is timed with its request cache off and, as a separate engine, on. The plan nodes of the PostgreSQL engines are recorded.
+4. Cold runs (`cold`, at the budget of the load only): one restart of each server, then for each engine and query `--cold-runs` (3; the final pass 2) times: empty the server's memory (PostgreSQL and Citus `pg_buffercache_evict_all`, ClickHouse `SYSTEM DROP ... CACHE`), open a new connection and time the first run. Elasticsearch restarts its container for every run (`COLD_HOW` in `steps/store.py`: emptied memory was less cold than a restart, 208 against 469 ms). `--cold-check` (default question 06) also times the other way for every engine and prints both, so the equivalence is measured in every run. The operating system's page cache is not dropped (that needs root), so this is "first run after the server's memory was emptied", not a cold disk.
+5. Updates (`updates`, the first size only; `--update-sizes`; at the budget of the load, `--cpus`): update 1% and 10% of the rows and delete 5% by primary key, in batches of 1,000, each system by the path its
+   documentation recommends (listed in docs/BENCHMARKS.md with the official pages), the state compared with PostgreSQL's after each step; single-row changes timed until
+   a query sees them; the revenue-per-month query timed under 0, 1,000 and 10,000 updated rows per second (a second connection, batches of 100 rows); sizes before,
+   after the changes and after a maintenance step (`VACUUM`, `OPTIMIZE ... FINAL`, `_forcemerge`). A system that fails is a row of the results, not a gap.
+
+The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. A stage starts with one wait for a quiet host (`scripts/quiet.sh`, the containers idle and merged out) and nothing is waited for between cells; every timed window is judged by the work of others in it (`Window` in `steps/store.py`: `/proc/stat` and the docker volume's `/proc/diskstats` less the containers' cgroups, this process tree and the docker daemon, over the idle host's baseline: NOISY above 0.25 core or 2 MiB/s), recorded per cell (`window_s`, `external_cpu`, `external_io`, `cpu_cores` of each engine's own requests) and re-measured once at the end of the stage. `bench/bench store` logs each stage's time against its budget and flags OVER BUDGET beyond 1.3x (`S_BUDGET_STRICT=1` stops). `--warmups N` sets the untimed runs before the timed ones. Options: `--sizes`, `--cpus` (the quota and thread budget of the load and the updates, 3), `--cpus-list` (the budgets timed, 1,3), `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
+`--engines pg,sift,sift_table,citus,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`: a columnar table has no `UPDATE` or `DELETE`, so Citus is not part of it), `--queries 01,03,search_count`, `--docs`, `--out`;
+`STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `verify`, `run`, `cold`, `updates`, `merge`,
+`render`); `store.sh setup|run|cold|updates` keep the containers up for development.
+
+### Fair comparison: the same threads for every engine
+
+The five servers do not start the same number of threads on their own: PostgreSQL (and Citus, which is PostgreSQL) uses a process per connection and parallel workers only when the planner asks
+for them, ClickHouse one thread per CPU it sees and a background pool for merges, Elasticsearch thread pools sized from the processors it sees and a JVM with its
+own GC and JIT threads. Letting each engine size itself from a container limit would measure the engines' defaults, not the engines. So one number, `--cpus N`,
+drives everything, and the comparison is made at two values of it, `--cpus-list 1,3` (the default of `bench/bench store`; `--quick` runs both too):
+
+| engine | what N sets | where |
+|---|---|---|
+| every container | `--cpus N` (the CFS quota: N CPUs of time per period, on any of the host's CPUs), `--memory` and `--memory-swap` the same for every container | `docker run`, `docker update --cpus` |
+| PostgreSQL, pg_sift, Citus | `max_parallel_workers_per_gather = N - 1` (a leader and N - 1 workers are N processes) and `max_parallel_maintenance_workers = N - 1`; `max_worker_processes` and `max_parallel_workers` are 16 and `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, `min_parallel_index_scan_size` 64kB, so that nothing else keeps a scan serial; the same flags for all three servers; nothing forces a parallel plan. Citus: the columnar settings (`columnar.chunk_group_row_limit` 10,000, `columnar.stripe_row_limit` 150,000, `columnar.compression` zstd at level 3) are left at their defaults and the image's `citus` preload as it ships; the columnar scan is a custom scan, so whether a plan uses the workers is the planner's answer (`Workers Planned` of a `count(*)` is recorded) | `ALTER SYSTEM` + reload |
+| ClickHouse | `max_threads`, `max_insert_threads` and `max_final_threads` = N in the default profile; `background_pool_size` = N with `background_merges_mutations_concurrency_ratio` 1, so merges and mutations use at most N threads (the thresholds `number_of_free_entries_in_pool_to_*` are 1: with their defaults a pool this small refuses to start) | `config.d` and `users.d` files mounted into the container |
+| Elasticsearch | `node.processors = N` (search and write thread pools) and `-XX:ActiveProcessorCount=N` in `ES_JAVA_OPTS` (GC and JIT threads), next to the heap | environment of the container |
+
+The CPUs are not pinned (no `--cpuset-cpus`, no `taskset`, no `AllowedCPUs`): the quota only limits how much CPU time the container gets, which is what a hosted
+container gets too, and pinning would change which cache and memory the engines see. The price is that the scheduler is free to move the threads, which the quiet
+host rules below keep out of the numbers. Elasticsearch and ClickHouse must be recreated to change their settings (they are read at start), so their data lives in
+named volumes that outlive the container; PostgreSQL changes budget without a restart.
+
+How it is verified: after every start or change of budget, and again when each part is written, `steps/store.py` asks the servers what they run with and stops on a
+difference: `SHOW max_parallel_workers_per_gather` (and the others of `pg_settings`; on the Citus server too), `SELECT name, value FROM system.settings WHERE name = 'max_threads'` (and
+`system.server_settings` for the background pool), `GET _nodes/os?filter_path=**.allocated_processors` (and the JVM's `-XX:ActiveProcessorCount` from `GET _nodes/jvm`, the
+`search` and `write` pools from `_cat/thread_pool`), and `docker inspect` for the quota and an empty cpuset. The values are in the results (`threads` of each result
+set) and in the Configuration table of docs/BENCHMARKS.md. A PostgreSQL `count(*)` is also planned and the workers it plans are recorded.
+
+Why 1 and 3: at 1 CPU every engine runs on one thread of work, so the table compares the engines' single-thread efficiency (no parallelism to credit to either side; a
+leader and zero workers, one search thread and one write thread, `max_threads` 1). At 3 CPUs each engine can use the parallelism it has (a leader and two workers,
+three ClickHouse threads, three Elasticsearch processors) on a host that stays quiet enough to time, and 3 is less than a quarter of the host's hardware threads, so
+three engines' background work cannot starve the one under test. The two result sets are separate (`1M-c1`, `1M-c3` in `store.json`); the load, the sizes, the plans and
+the updates are those of the load at the larger budget.
+
+The same data (the seeded CSV, its sha256 in the results), the same memory cap (`--memory`, `--memory-swap`) and the same warm-cache policy (untimed runs first, then the
+timed ones; the cold runs restart the container; the operating system's page cache is never dropped) apply to every engine and every budget.
+
+One engine is timed at a time and the others are idle: one client sends one request at a time (the engines of a question are timed in turn, each run starting with
+another engine). Before each timed batch (a question for all the engines; each engine and question of the cold runs; each engine of the updates) `steps/store.py` waits,
+for at most `SIFT_QUIET_TIMEOUT` seconds (60), until every other container uses less than `SIFT_IDLE_CPU` percent of a CPU (2; `docker stats --no-stream`) and has no merge
+running (ClickHouse `system.merges` and unfinished mutations, Elasticsearch `_nodes/stats/indices/merge` current merges, PostgreSQL autovacuum workers), then for a quiet host
+with `scripts/quiet.sh` (pressure stall information below 10% for CPU and I/O). A batch that runs anyway is marked NOISY in the results. After the load the same wait
+runs, so the merges that follow the load (ClickHouse `OPTIMIZE`, Elasticsearch force-merge) are over before anything is timed. The ClickHouse container turns off the logs of
+its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) because an idle server writing them uses 3-7% of a CPU.
 
 ## Remote host
 

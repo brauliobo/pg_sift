@@ -6,7 +6,7 @@ setup
 {
 	CREATE TABLE iso_merge (id int, body text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_merge SELECT g, 'merge base ' || g FROM generate_series(1, 1000) g;
-	CREATE INDEX iso_merge_idx ON iso_merge USING sift (body) WITH (mutable_limit = 64);
+	CREATE INDEX iso_merge_idx ON iso_merge USING sift (body) WITH (write_buffer_limit = 64);
 	INSERT INTO iso_merge SELECT g, 'merge base second ' || g FROM generate_series(1001, 2000) g;
 	SELECT sift.promote('iso_merge_idx') >= 0 AS promoted;
 	INSERT INTO iso_merge SELECT g, 'merge base third base ' || g FROM generate_series(2001, 3000) g;

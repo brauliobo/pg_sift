@@ -1,4 +1,4 @@
-# The blocks a session cached for appending to the mutable segment (the tails of its lanes) can lie in the part of the file a
+# The blocks a session cached for appending to the write buffer (the tails of its lanes) can lie in the part of the file a
 # truncation cuts: the session appends again afterwards. Nothing but the truncation invalidates what it cached here (VACUUM
 # updates the statistics of the index at its commit, which would), so the truncation is the test function's and not VACUUM's.
 # requires: build insert promote verify index_info gates
