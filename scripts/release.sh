@@ -124,15 +124,16 @@ job_coverage() {
 	scripts/pgtest.sh stop >/dev/null
 }
 job_pg17() {
-	local out=$W/pg17; mkdir -p "$out"; cp -r "$T" "$out/src"; chmod -R a+rwX "$out"
-	docker run --rm --cpus 2 --memory 12g -v "$out/src:/src" -e HOME=/tmp/h -e CRASH="$CRASH" postgres:17-bookworm bash -c '
+	local out=$W/pg17; mkdir -p "$out/ci"; cp -r "$T" "$out/src"; chmod -R a+rwX "$out"
+	docker run --rm --cpus 2 --memory 12g -v "$out/src:/src" -v "$out/ci:/tmp/ci" -e HOME=/tmp/h -e CRASH="$CRASH" postgres:17-bookworm bash -c '
 		set -e
 		mkdir -p /tmp/h; chown postgres /tmp/h
 		apt-get update -qq >/dev/null
-		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential postgresql-server-dev-17 liblz4-dev libzstd-dev perl libipc-run-perl python3 >/dev/null
-		chown -R postgres /src /usr/lib/postgresql/17 /usr/share/postgresql/17; mkdir -p /tmp/ci && chown postgres /tmp/ci
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential postgresql-server-dev-17 liblz4-dev libzstd-dev perl libipc-run-perl python3 git procps >/dev/null
+		chown -R postgres /src /usr/lib/postgresql/17 /usr/share/postgresql/17; chown postgres /tmp/ci
 		rc=0; su postgres -c "cd /src && KEEP=1 SIFT_CI_TMP=/tmp/ci/work SIFT_TMP=/tmp/ci/home SIFT_LANES=2 scripts/ci.sh quick" || rc=$?
-		grep -rIEh "$CRASH" /tmp/ci | head -3 | sed "s/^/CRASH: /"
+		grep -rIEh --include=*.log "$CRASH" /tmp/ci | head -3 | sed "s/^/CRASH: /"
+		chmod -R a+rX /tmp/ci
 		exit $rc'
 }
 job_race() {
@@ -267,7 +268,7 @@ known_flake() { # NAME FAILED-PARTS: every part matches a line of scripts/releas
 	done
 }
 # the canary of scripts/fuzz.sh aborts a backend on purpose (it proves ASan reports an overflow): its postmaster line is no crash
-crash_scan() { grep -rIPzoH "(?m)^[^\n]*(?:$CRASH)(?![^\n]*\n[^\n]*sift_asan_canary)[^\n]*\n" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | tr '\0' '\n' | head -3; }
+crash_scan() { grep -rIPzoH --include=*.log "(?m)^[^\n]*(?:$CRASH)(?![^\n]*\n[^\n]*sift_asan_canary)[^\n]*\n" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | tr '\0' '\n' | head -3; }
 run_once() { # NAME -> rc; log LOGS/NAME.log
 	local n=$1 rc c
 	( set -e; "job_${n//-/_}" ) >"$LOGS/$n.log" 2>&1
