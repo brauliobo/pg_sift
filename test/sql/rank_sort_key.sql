@@ -59,3 +59,7 @@ SELECT shape, answer(q) = answer(oracle) AS same_answer FROM shapes ORDER BY sha
 
 -- scoring the rows tied with the n-th by the leading key is a few hundred rows of the 8000 matches; ranking them all is not
 SELECT shape, scored_rows(q) <= 500 AS scores_few_rows FROM shapes ORDER BY shape;
+
+DROP FUNCTION scored_rows(text), answer(text);
+DROP TABLE shapes, group_items, items;
+DROP EXTENSION pg_sift;
