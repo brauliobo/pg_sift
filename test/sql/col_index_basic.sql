@@ -32,9 +32,9 @@ CREATE UNIQUE INDEX o_unique ON orders USING sift_col (store_id);
 CREATE INDEX o_paths ON orders USING sift_col (store_id) WITH (paths = 'store_id int4');
 CREATE INDEX o_paths2 ON orders USING sift_col (payload) WITH (paths = 'other.x int4');
 CREATE INDEX o_paths3 ON orders USING sift_col (payload) WITH (paths = 'payload.a[].b[].c int4');
-CREATE INDEX o_limit ON orders USING sift_col (store_id) WITH (mutable_limit = 1);
+CREATE INDEX o_limit ON orders USING sift_col (store_id) WITH (write_buffer_limit = 1);
 CREATE INDEX o_empty ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty);
-SELECT relation_blocks, high_water, free_blocks, segments, max_segments, rows, bytes, units, mutable_segments, leaves, maintenance_busy
+SELECT relation_blocks, high_water, free_blocks, segments, max_segments, rows, bytes, units, buffers, leaves, maintenance_busy
 FROM sift.col_index_info('o_empty') \gx
 SELECT count(*) FROM sift._test_col_tids('o_empty', '');
 SELECT sift.col_verify('o_empty', true);
@@ -80,7 +80,7 @@ SELECT i, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN '' WHEN i % 5 = 0 T
 			   WHEN i % 3 = 0 THEN repeat('abc', 50 + i % 3000) ELSE 'short' || i % 40 END
 FROM generate_series(1, 6000) i;
 INSERT INTO longs VALUES (6001, repeat('x', 1000000)), (6002, repeat('x', 1000000)), (6003, repeat('x', 999999) || 'y');
-CREATE INDEX l_idx ON longs USING sift_col (s) WITH (mutable_limit = 64);
+CREATE INDEX l_idx ON longs USING sift_col (s) WITH (write_buffer_limit = 64);
 SELECT sift.col_verify('l_idx', true);
 SELECT col_cmp('l_idx', '0:eq:' || s, 's = ' || quote_literal(s)) FROM longs WHERE id IN (5, 15, 25, 3, 9, 6, 8, 6001, 6003) ORDER BY id;
 SELECT col_cmp('l_idx', '0:eq:' || repeat('x', 1000001), 's = ' || quote_literal(repeat('x', 1000001)));
@@ -93,7 +93,7 @@ SELECT col_cmp('l_idx', '0:ge:' || repeat('é', 200), format('s >= %L COLLATE "C
 SELECT col_cmp('l_idx', '0:eq:', 's = ''''');
 SELECT col_cmp('l_idx', '0:null', 's IS NULL');
 SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('l_idx');
--- rows added to the mutable lane, then sealed and merged
+-- rows added to the write buffer, then sealed and merged
 INSERT INTO longs SELECT 7000 + i, repeat('q', 300 + i) FROM generate_series(1, 50) i;
 INSERT INTO longs SELECT 8000 + i, 'short' || i FROM generate_series(1, 50) i;
 SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
@@ -125,7 +125,7 @@ SELECT count(*) AS overflowed FROM sift._test_col_read('jl_idx', 0, '') WHERE va
 DROP TABLE jl;
 
 CREATE INDEX o_col ON orders USING sift_col (store_id, status, amount, discount, placed, paid_at, express, qty);
-SELECT leaves, segments, mutable_segments, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
+SELECT leaves, segments, buffers, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
 SELECT sift.col_verify('o_col', true);
 
 CREATE TABLE col_checks (n serial, preds text, heapwhere text);
@@ -181,8 +181,8 @@ INSERT INTO col_checks (preds, heapwhere) VALUES
 	('0:eq:7;1:eq:paid;2:gt:0;3:lt:100;6:eq:1;7:gt:0', 'store_id = 7 AND status = ''paid'' AND amount > 0 AND discount < 100 AND express AND qty > 0');
 SELECT n, preds, col_cmp('o_col', preds, heapwhere) FROM col_checks ORDER BY n;
 
--- Without the mutable segments the result is the same (nothing is there yet), with the visibility check skipped it can only grow
-SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_mutable_same FROM col_checks;
+-- Without the write buffers the result is the same (nothing is there yet), with the visibility check skipped it can only grow
+SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_wbuf_same FROM col_checks;
 
 -- compression policies (docs/COL-CODEC.md 6): other policies give other bytes and the same answers
 CREATE INDEX o_bad ON orders USING sift_col (store_id) WITH (compression = 'bogus');
@@ -231,7 +231,7 @@ SELECT rows_vetted > 0 AS vetted, heap_pages > 0 AS heap_read FROM sift._test_co
 SELECT col_cmp('o_col', '0:ge:700', 'store_id >= 700');
 SELECT col_cmp('o_col', '', 'true');
 VACUUM orders;
--- the heap is read only for the rows of the mutable lane (a batch copied when the scan began: its pages never count as all-visible)
+-- the heap is read only for the rows of the write buffer (a batch copied when the scan began: its pages never count as all-visible)
 SELECT rows_vetted, heap_pages FROM sift._test_col_counters('o_col', '0:ge:0');
 SELECT col_cmp('o_col', '0:ge:700', 'store_id >= 700');
 

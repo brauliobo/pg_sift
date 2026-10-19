@@ -61,8 +61,8 @@ The shared core and the host interface are described in [../DESIGN.md](../DESIGN
   (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
   atomics/spin locks/dsa for `sift_parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
   `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/sift_store.h` (extent index, padding and
-  extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (mutable segments, visibility).
-- **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `mutable_limit` there), the run merge
+  extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (write buffers, visibility).
+- **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `write_buffer_limit` there), the run merge
   (`sift_run_from_segment`, `sift_runs_write`), the deletion
   of one document (`sift_seg_delete_key`, the code of VACUUM's `sift_seg_bulkdelete`), the live-term dump of facets (`sift_seg_dump`, the code of the
   PostgreSQL merge's input), option validation of the analyzer (`sift_analyze_validate_*`).
@@ -177,4 +177,4 @@ the likeness is in the idea. The merge is now one implementation; what is left:
 |---|---|---|---|
 | `sqbuild.c` `SqInv` (malloc buffer, key-hash `dmap`, per-term posting arrays, `sq_inv_write`) | `sift_runs.c` `SiftInvBuf` (delta-packed slices within a budget, spill to a sorted run) | SqInv takes documents in any order, deletes a buffered document and has no budget; SiftInvBuf requires strictly ascending keys (its postings are deltas of document ordinals) and spills | keep separate for now. To share: SQLite would keep the pending documents as (key, dl, terms) like PostgreSQL's promotion (`sift_maint.c` `read_docs`), sort them at flush and feed `SiftInvBuf` (spilling to runs over the `pending_postings` budget); deletes of pending documents drop them from the list. Costs memory per pending document (a term list instead of 16-byte postings), so the default threshold must come down; decide on `bench/dml.py` and `bench/build.py` peak RSS |
 | `sqaux.c` highlight/snippet | `sift_funcs.c` `sift.highlight` | different results by design: SQLite marks a phrase occurrence as one span and snippets windows; PostgreSQL wraps every matching token | none: a shared helper would change one of the two outputs |
-| `sqaux.c` facets | `sift_facet.c` | PostgreSQL counts on bitmaps with the visibility map and the mutable segments; SQLite on the matches of the evaluator (the terms come from the shared `sift_seg_dump`) | none |
+| `sqaux.c` facets | `sift_facet.c` | PostgreSQL counts on bitmaps with the visibility map and the write buffers; SQLite on the matches of the evaluator (the terms come from the shared `sift_seg_dump`) | none |

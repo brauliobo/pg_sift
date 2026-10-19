@@ -1,7 +1,7 @@
 /*
  * stubs.c - the collaborators of src/sift_eval.c that the PostgreSQL side provides, as this host sees them: the options of
  * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot) and the filter of a
- * list of documents as the TID bitmap the shared filter builder reads. No mutable segments and no kept docmap directories:
+ * list of documents as the TID bitmap the shared filter builder reads. No write buffers and no kept docmap directories:
  * sqlite/host/host_stubs.c.
  */
 #include "store.h"

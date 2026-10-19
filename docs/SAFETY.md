@@ -125,14 +125,14 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P3-4 | sift_colz.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
 | P3-5 | sift_store.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |
 | P3-6 | sift_dict.c:block_begin, block_next, find_block | correct; `pos_len` points into the shared buffer: take/read_varint |
-| P3-7 | sift_posting.c:pos_next, pos_window, pos_ckpt, BLOB_NG/BLOB_KEYS; sift_segment.c:docmap; sift_store.c:check_dir; sift_mutable.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
+| P3-7 | sift_posting.c:pos_next, pos_window, pos_ckpt, BLOB_NG/BLOB_KEYS; sift_segment.c:docmap; sift_store.c:check_dir; sift_wbuf.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
 | P4-1 | sift_varint.h:sift_get_varint (sift_bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): Span `read_varint` |
 | P4-2 | sift_varint.h:sift_get_varint64_n, sift_posting.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
 | P4-3 | sift_col_enc.c:sift_cunit_chunk; sift_col_seg.c:sift_cseg_unit_fill; sift_col_scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
 Also: extend sift.verify (src/sift_segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
-dictionary blocks. Not audited: sift_docdir.c, sift_lane.c, rest of sift_mutable.c, sift_cscan.c, sift_cscan consumers.
+dictionary blocks. Not audited: sift_docdir.c, sift_lane.c, rest of sift_wbuf.c, sift_cscan.c, sift_cscan consumers.
 
 ## Decisions for the coordinator
 

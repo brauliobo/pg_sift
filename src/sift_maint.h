@@ -101,16 +101,16 @@ typedef struct SiftMaintOps
 	SiftStepResult (*promote_next) (Relation index, bool propagate, uint64 *busy);
 	SiftStepResult (*merge_next) (Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 	void		(*bulkdelete_immutable) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
-	void		(*bulkdelete_mutable) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
+	void		(*bulkdelete_wbuf) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	bool		(*vacuum_truncate) (Relation index);	/* NULL: the file is not truncated by VACUUM */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 } SiftMaintOps;
 
-/* Called by aminsert after an append crossed mutable_limit */
+/* Called by aminsert after an append crossed write_buffer_limit */
 extern void sift_mops_after_seal(const SiftMaintOps *ops, Relation index);
 extern void sift_maint_after_seal(Relation index);
 
-/* Promote every sealed mutable segment; returns the number promoted */
+/* Promote every sealed write buffer; returns the number promoted */
 extern int	sift_mops_promote(const SiftMaintOps *ops, Relation index, bool wait);
 extern int	sift_maint_promote(Relation index, bool wait);
 

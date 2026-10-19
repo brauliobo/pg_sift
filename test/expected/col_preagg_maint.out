@@ -10,8 +10,8 @@ INSERT INTO pm SELECT g, 'g' || g % 20, g % 997, g % 9 FROM generate_series(1, 5
 CREATE TABLE pm_off (LIKE pm);
 ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 10);
 INSERT INTO pm_off SELECT * FROM pm;
-CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096);
-CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (mutable_limit = 4096, dead_rewrite_pct = 100);
+CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096);
+CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 100);
 VACUUM ANALYZE pm, pm_off;
 -- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
 CREATE FUNCTION pm_state(tbl text) RETURNS TABLE (all_units bool, some_exact bool, same bool) LANGUAGE plpgsql AS $$

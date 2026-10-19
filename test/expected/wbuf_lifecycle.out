@@ -1,9 +1,9 @@
--- Inserts land in mutable segments, promotion and merge turn them into immutable ones,
+-- Inserts land in write buffers, promotion and merge turn them into immutable ones,
 -- VACUUM clears liveness bits; verify checks every stage. The maintenance worker may promote
 -- on its own, so segment counts are only checked after merge.
 CREATE EXTENSION pg_sift;
 CREATE TABLE ml (id serial PRIMARY KEY, body text);
-CREATE INDEX ml_idx ON ml USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX ml_idx ON ml USING sift (body) WITH (write_buffer_limit = 64);
 CREATE FUNCTION ml_state() RETURNS TABLE (alpha bigint, late bigint, huge bigint, extra bigint) LANGUAGE sql AS $$
 	SELECT count(*) FILTER (WHERE body @@> 'alpha'), count(*) FILTER (WHERE body @@> 'late'),
 		   count(*) FILTER (WHERE body @@> 'bigword2999'), count(*) FILTER (WHERE body @@> 'extra')
@@ -11,7 +11,7 @@ CREATE FUNCTION ml_state() RETURNS TABLE (alpha bigint, late bigint, huge bigint
 $$;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
--- the large doc spans many mutable pages
+-- the large doc spans many write buffer pages
 INSERT INTO ml (body) SELECT 'alpha beta word' || (i % 50) || ' gamma' FROM generate_series(1, 2000) i;
 INSERT INTO ml (body) SELECT string_agg('bigword' || g, ' ') FROM generate_series(1, 3000) g;
 SELECT * FROM ml_state();

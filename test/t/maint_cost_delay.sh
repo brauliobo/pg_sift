@@ -17,12 +17,12 @@ now_ms() { echo $(($(date +%s%N) / 1000000)); }
 
 # load TABLE: 24 promoted segments, no merge (the worker is off for the session)
 load() {
-	sql delay "CREATE TABLE $1 (id serial, body text)" "CREATE INDEX ${1}_idx ON $1 USING sift (body) WITH (mutable_limit = 1024)" >/dev/null || bail "setup $1 failed"
+	sql delay "CREATE TABLE $1 (id serial, body text)" "CREATE INDEX ${1}_idx ON $1 USING sift (body) WITH (write_buffer_limit = 1024)" >/dev/null || bail "setup $1 failed"
 	sql delay "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..24 LOOP
 		$(printf "$BATCH" "$1" "(1000 + i * 7)"); PERFORM sift.promote('${1}_idx'); COMMIT; END LOOP; END \$\$" >/dev/null || bail "load $1 failed"
 }
 
-# merged_ms TABLE: seals the mutable segment with short statements, which starts the worker, and waits until it merged the backlog
+# merged_ms TABLE: seals the write buffer with short statements, which starts the worker, and waits until it merged the backlog
 merged_ms() {
 	local t0 segs
 	t0=$(now_ms)

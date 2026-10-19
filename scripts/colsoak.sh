@@ -35,7 +35,7 @@ q <<-'SQL'
 	CREATE TABLE s (id bigserial, g int, n int, f float8, t text) WITH (autovacuum_enabled = off);
 	CREATE TABLE bad (what text);
 	INSERT INTO s (g, n, f, t) SELECT i % 7, i % 100, i / 8.0, 'tag' || i % 40 FROM generate_series(1, 60000) i;
-	CREATE INDEX s_col ON s USING sift_col (id, g, n, f, t) WITH (mutable_limit = 2048);
+	CREATE INDEX s_col ON s USING sift_col (id, g, n, f, t) WITH (write_buffer_limit = 2048);
 	VACUUM ANALYZE s;
 	CREATE FUNCTION chk(q text) RETURNS void LANGUAGE plpgsql AS $f$
 	DECLARE a text; b text; c text;

@@ -109,7 +109,7 @@ FROM unnest(ARRAY['gamma', 'name:gamma^3 OR gamma', 'city:gamma^3 OR gamma', 'na
                   'gamma AND (name:gamma^3 OR gamma)', 'name:{gamma x}^2']) q;
 DROP TABLE fr;
 
--- mutable segments, updates, deletes, promotion, VACUUM, merge keep indexes and columns in step
+-- write buffers, updates, deletes, promotion, VACUUM, merge keep indexes and columns in step
 INSERT INTO ft VALUES (800, 'gamma', 'x', 'y'), (801, 'x', 'gamma', 'y'), (802, 'x', 'y', 'gamma');
 INSERT INTO fg SELECT * FROM ft WHERE id >= 800;
 INSERT INTO fn SELECT * FROM ft WHERE id >= 800;

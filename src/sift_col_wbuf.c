@@ -1,7 +1,7 @@
 /*
- * sift_col_mut.c - mutable segments of a column index (docs/COL.md 2.5, DESIGN.md (c)): aminsert appends one row record to one of
+ * sift_col_wbuf.c - write buffers of a column index (docs/COL.md 2.5, DESIGN.md (c)): aminsert appends one row record to one of
  * SIFT_LANES lane chains of the active segment, each append one generic WAL record per page touched. The lane machinery (creation, tail
- * locking, growth, sealing, walks) is sift_lane.c's, shared with the BM25 doc records of sift_mutable.c; this file is the record.
+ * locking, growth, sealing, walks) is sift_lane.c's, shared with the BM25 doc records of sift_wbuf.c; this file is the record.
  *
  * A record is SiftColRecHead and `len` payload bytes, 4-byte aligned. The payload of a row, for every top level leaf in id order, is a flag
  * byte (COLV_NULL, COLV_OVERFLOW) and, unless NULL, the value: INT a zigzag varint, F4 and F8 their raw bytes, STR a varint length and the
@@ -20,7 +20,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift_col_mut.h"
+#include "sift_col_wbuf.h"
 #include "sift_col_pg.h"
 #include "sift_lane.h"
 #include "sift_varint.h"
@@ -45,13 +45,13 @@ StaticAssertDecl(sizeof(SiftColRecHead) == 12, "the record head is 12 bytes");
 #define EMPTY_ROOM		(SIFT_PAGE_PAYLOAD - HDRSIZE)
 
 #ifdef SIFT_TESTING
-int			sift_cmut_fail_grow = 0;
+int			sift_cwbuf_fail_grow = 0;
 #endif
 
 static uint32
 limit_pages(Relation index)
 {
-	return Max(2 * SIFT_LANES, (uint64) sift_col_options(index)->mutable_limit * 1024 / BLCKSZ);
+	return Max(2 * SIFT_LANES, (uint64) sift_col_options(index)->write_buffer_limit * 1024 / BLCKSZ);
 }
 
 /* ---------- records ---------- */
@@ -80,10 +80,10 @@ rec_at(PageCursor *c, Size *size)
 	const SiftColRecHead *h = (const SiftColRecHead *) (SiftLaneRecs(c->page, HDRSIZE) + c->pos);
 
 	if (c->pos + sizeof(SiftColRecHead) > c->used)
-		SIFT_CORRUPT(c->index, "A record header at byte %zu overruns the %zu used bytes of a mutable page.", c->pos, c->used);
+		SIFT_CORRUPT(c->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", c->pos, c->used);
 	*size = RECSIZE(h->len);
 	if (c->pos + *size > c->used)
-		SIFT_CORRUPT(c->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a mutable page.",
+		SIFT_CORRUPT(c->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a write buffer page.",
 				*size, c->pos, c->used);
 	return h;
 }
@@ -199,12 +199,12 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 
 	put_piece(cp, a->tid, a->cont, a->payload, a->len);
 	if (a->spans)
-		SiftLaneHead(cp)->flags |= SIFT_MUTPAGE_SPANS;
+		SiftLaneHead(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 }
 
-/* Writes the row starting at the locked tail cur; returns whether the segment reached mutable_limit. Leaves the final tail block in *tail. */
+/* Writes the row starting at the locked tail cur; returns whether the segment reached write_buffer_limit. Leaves the final tail block in *tail. */
 static bool
-write_row(Relation index, SiftCMutHint *h, int lane, Buffer cur, const ItemPointerData *tid, const char *payload, Size len,
+write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, const char *payload, Size len,
 		  BlockNumber *tail)
 {
 	bool		crossed = false,
@@ -232,8 +232,8 @@ write_row(Relation index, SiftCMutHint *h, int lane, Buffer cur, const ItemPoint
 		pa = (PieceArg) {tid, !first, payload + done, n, done + n < len};
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, HDRSIZE, limit, place ? fill_piece : NULL, &pa, &crossed);
 #ifdef SIFT_TESTING
-		if (sift_cmut_fail_grow > 0 && --sift_cmut_fail_grow == 0)
-			elog(ERROR, "sift_col mutable: injected failure after a page link");
+		if (sift_cwbuf_fail_grow > 0 && --sift_cwbuf_fail_grow == 0)
+			elog(ERROR, "sift_col write buffer: injected failure after a page link");
 #endif
 		if (place)
 		{
@@ -247,7 +247,7 @@ write_row(Relation index, SiftCMutHint *h, int lane, Buffer cur, const ItemPoint
 }
 
 bool
-sift_cmut_append(Relation index, SiftCMutHint *h, const SiftColSchema *schema, const SiftColRow *row)
+sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row)
 {
 	StringInfoData buf;
 	Buffer		tailbuf;
@@ -294,20 +294,20 @@ has_rows(Relation index, const SiftSegEntry *entry)
 }
 
 uint64
-sift_cmut_seal(Relation index, bool force)
+sift_cwbuf_seal(Relation index, bool force)
 {
 	return sift_lane_seal(index, force, HDRSIZE, limit_pages(index), has_rows);
 }
 
 void
-sift_cmut_flag_sealed(Relation index, const SiftSegEntry *entry)
+sift_cwbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 {
 	sift_lane_flag_sealed(index, entry);
 }
 
 /* ---------- reading ---------- */
 
-struct SiftCMutReader
+struct SiftCWbufReader
 {
 	SiftSegEntry entry;
 	const SiftColSchema *schema;
@@ -336,10 +336,10 @@ typedef struct RawRec
 	Size		len;
 } RawRec;
 
-SiftCMutReader *
-sift_cmut_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
+SiftCWbufReader *
+sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
 {
-	SiftCMutReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftCMutReader));
+	SiftCWbufReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftCWbufReader));
 
 	r->entry = *entry;
 	r->schema = schema;
@@ -354,7 +354,7 @@ sift_cmut_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *s
 }
 
 void
-sift_cmut_close(SiftCMutReader *r)
+sift_cwbuf_close(SiftCWbufReader *r)
 {
 	if (r->joined)
 		pfree(r->joined);
@@ -367,7 +367,7 @@ sift_cmut_close(SiftCMutReader *r)
 }
 
 static bool
-advance_page(SiftCMutReader *r)
+advance_page(SiftCWbufReader *r)
 {
 	if (!sift_lane_iter_next(&r->it, r->page, HDRSIZE))
 		return false;
@@ -377,7 +377,7 @@ advance_page(SiftCMutReader *r)
 }
 
 static void
-join_append(SiftCMutReader *r, const uint8 *payload, Size len)
+join_append(SiftCWbufReader *r, const uint8 *payload, Size len)
 {
 	if (r->joinedlen + len > r->joinedcap)
 	{
@@ -393,15 +393,15 @@ join_append(SiftCMutReader *r, const uint8 *payload, Size len)
  * before its last piece): the continuation is missing or what follows the pieces is a row of its own, left to be read next.
  */
 static bool
-join_pieces(SiftCMutReader *r)
+join_pieces(SiftCWbufReader *r)
 {
-	while (r->cur.pos >= r->cur.used && (r->pflags & SIFT_MUTPAGE_SPANS))
+	while (r->cur.pos >= r->cur.used && (r->pflags & SIFT_WBUFPAGE_SPANS))
 	{
 		const SiftColRecHead *h;
 		Size		size;
 
 		if (!BlockNumberIsValid(r->it.nextblk))
-			SIFT_CORRUPT(r->cur.index, "A page of mutable segment %llu spans past the end of its lane.", (unsigned long long) r->entry.gen);
+			SIFT_CORRUPT(r->cur.index, "A page of write buffer %llu spans past the end of its lane.", (unsigned long long) r->entry.gen);
 		advance_page(r);
 		if (r->cur.pos >= r->cur.used)
 			return false;
@@ -416,7 +416,7 @@ join_pieces(SiftCMutReader *r)
 
 /* The next row's record, pieces joined; false at the end of the segment */
 static bool
-next_rec(SiftCMutReader *r, RawRec *rec)
+next_rec(SiftCWbufReader *r, RawRec *rec)
 {
 	for (;;)
 	{
@@ -437,7 +437,7 @@ next_rec(SiftCMutReader *r, RawRec *rec)
 		rec->deleted = (h->flags & SIFT_COLR_DELETED) != 0;
 		rec->payload = (const uint8 *) (h + 1);
 		rec->len = h->len;
-		if (r->cur.pos < r->cur.used || !(r->pflags & SIFT_MUTPAGE_SPANS))
+		if (r->cur.pos < r->cur.used || !(r->pflags & SIFT_WBUFPAGE_SPANS))
 			return true;
 		r->joinedlen = 0;
 		join_append(r, rec->payload, rec->len);
@@ -453,19 +453,19 @@ next_rec(SiftCMutReader *r, RawRec *rec)
 #define NEED(r, p, end, n) \
 	do { \
 		if ((Size) ((end) - (p)) < (Size) (n)) \
-			SIFT_CORRUPT((r)->cur.index, "A record of mutable segment %llu ends inside a value.", (unsigned long long) (r)->entry.gen); \
+			SIFT_CORRUPT((r)->cur.index, "A record of write buffer %llu ends inside a value.", (unsigned long long) (r)->entry.gen); \
 	} while (0)
 
 static const uint8 *
-get_varint(SiftCMutReader *r, const uint8 *p, const uint8 *end, uint64 *x)
+get_varint(SiftCWbufReader *r, const uint8 *p, const uint8 *end, uint64 *x)
 {
 	if ((p = sift_get_varint64_n(p, end, x)) == NULL)
-		SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu ends inside a varint.", (unsigned long long) r->entry.gen);
+		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu ends inside a varint.", (unsigned long long) r->entry.gen);
 	return p;
 }
 
 static const uint8 *
-get_value(SiftCMutReader *r, const SiftColDef *def, const uint8 *p, const uint8 *end, SiftColValue *v)
+get_value(SiftCWbufReader *r, const SiftColDef *def, const uint8 *p, const uint8 *end, SiftColValue *v)
 {
 	uint64		x;
 	uint8		flag;
@@ -507,7 +507,7 @@ get_value(SiftCMutReader *r, const SiftColDef *def, const uint8 *p, const uint8 
 		case SIFT_COLS_STR:
 			p = get_varint(r, p, end, &x);
 			if (x > SIFT_COL_MAX_VALUE)
-				SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu holds a string of %llu bytes.", (unsigned long long) r->entry.gen,
+				SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu holds a string of %llu bytes.", (unsigned long long) r->entry.gen,
 							 (unsigned long long) x);
 			v->len = x;
 			NEED(r, p, end, v->len);
@@ -520,7 +520,7 @@ get_value(SiftCMutReader *r, const SiftColDef *def, const uint8 *p, const uint8 
 
 /* Room for n element values; the decoded row is rebuilt on every call, so nothing is kept */
 static void
-evals_reserve(SiftCMutReader *r, Size n)
+evals_reserve(SiftCWbufReader *r, Size n)
 {
 	if (n <= r->evalcap)
 		return;
@@ -530,7 +530,7 @@ evals_reserve(SiftCMutReader *r, Size n)
 }
 
 static void
-decode_row(SiftCMutReader *r, const RawRec *rec, SiftColRow *row)
+decode_row(SiftCWbufReader *r, const RawRec *rec, SiftColRow *row)
 {
 	const SiftColSchema *s = r->schema;
 	const uint8 *p = rec->payload,
@@ -551,12 +551,12 @@ decode_row(SiftCMutReader *r, const RawRec *rec, SiftColRow *row)
 			uint64		n = elem_count(&r->val[s->cols[id].parent]);
 
 			if (n > (uint64) (end - p))
-				SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu counts %llu elements in %zu bytes.",
+				SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu counts %llu elements in %zu bytes.",
 						(unsigned long long) r->entry.gen, (unsigned long long) n, (Size) (end - p));
 			total += n;
 		}
 	if (total > (uint64) (end - p))
-		SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu counts %llu elements in %zu bytes.",
+		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu counts %llu elements in %zu bytes.",
 				(unsigned long long) r->entry.gen, (unsigned long long) total, (Size) (end - p));
 	evals_reserve(r, Max(total, 1));
 	for (int id = 0; id < s->ncols; id++)
@@ -570,7 +570,7 @@ decode_row(SiftCMutReader *r, const RawRec *rec, SiftColRow *row)
 			off += n;
 		}
 	if (p != end)
-		SIFT_CORRUPT(r->cur.index, "A record of mutable segment %llu has %zu bytes past its last value.",
+		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu has %zu bytes past its last value.",
 				(unsigned long long) r->entry.gen, (Size) (end - p));
 	row->tid = rec->tid;
 	row->ncols = s->ncols;
@@ -579,7 +579,7 @@ decode_row(SiftCMutReader *r, const RawRec *rec, SiftColRow *row)
 }
 
 bool
-sift_cmut_next(SiftCMutReader *r, SiftColRow *row, bool *deleted)
+sift_cwbuf_next(SiftCWbufReader *r, SiftColRow *row, bool *deleted)
 {
 	RawRec		rec;
 
@@ -612,11 +612,11 @@ held_cmp(const void *a, const void *b)
 }
 
 SiftColBatch **
-sift_cmut_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n)
+sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n)
 {
-	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col mutable batches", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
-	SiftCMutReader *r = sift_cmut_open(index, entry, schema, tmp);
+	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
 	StringInfoData arena;
 	Held	   *held = palloc(256 * sizeof(Held));
 	int			nheld = 0,
@@ -695,7 +695,7 @@ flag_row(Page page, Size off)
 }
 
 int64
-sift_cmut_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, IndexBulkDeleteCallback cb,
+sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, IndexBulkDeleteCallback cb,
 					 void *cbstate, IndexBulkDeleteResult *stats)
 {
 	Page		page = palloc(BLCKSZ);
@@ -709,15 +709,15 @@ sift_cmut_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSch
 /* ---------- pages, summary, verification ---------- */
 
 SiftExtent *
-sift_cmut_pages(Relation index, const SiftSegEntry *entry, int *n)
+sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n)
 {
 	return sift_lane_extents(index, entry, n);
 }
 
 void
-sift_cmut_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uint64 *npages)
+sift_cwbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uint64 *npages)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 
 	*nrows = count_rows(index, entry, false);
 	sift_lane_read_header(index, entry, &hdr);
@@ -738,28 +738,28 @@ verify_page(void *arg, Page page, BlockNumber blk)
 		const SiftColRecHead *h = rec_at(&c, &size);
 
 		if (!ItemPointerIsValid(&h->tid) || (h->flags & ~(SIFT_COLR_DELETED | SIFT_COLR_CONT)))
-			SIFT_CORRUPT(index, "A mutable record has tid (%u,%u) and flags %x.", ItemPointerGetBlockNumberNoCheck(&h->tid),
+			SIFT_CORRUPT(index, "A write buffer record has tid (%u,%u) and flags %x.", ItemPointerGetBlockNumberNoCheck(&h->tid),
 					ItemPointerGetOffsetNumberNoCheck(&h->tid), h->flags);
 		nrecs += !(h->flags & SIFT_COLR_CONT);
 		c.pos += size;
 	}
 	if (nrecs != SiftLaneHead(page)->nrecs)
-		SIFT_CORRUPT(index, "Mutable block %u holds %llu rows, its header %u.", blk, (unsigned long long) nrecs,
+		SIFT_CORRUPT(index, "Write buffer block %u holds %llu rows, its header %u.", blk, (unsigned long long) nrecs,
 				SiftLaneHead(page)->nrecs);
 }
 
 uint64
-sift_cmut_verify(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema)
+sift_cwbuf_verify(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema)
 {
-	SiftCMutReader *r;
+	SiftCWbufReader *r;
 	SiftColRow	row;
 	bool		deleted;
 	uint64		live = 0;
 
 	sift_lane_verify(index, entry, HDRSIZE, verify_page, index);
-	r = sift_cmut_open(index, entry, schema, CurrentMemoryContext);
-	while (sift_cmut_next(r, &row, &deleted))
+	r = sift_cwbuf_open(index, entry, schema, CurrentMemoryContext);
+	while (sift_cwbuf_next(r, &row, &deleted))
 		live += !deleted;
-	sift_cmut_close(r);
+	sift_cwbuf_close(r);
 	return live;
 }

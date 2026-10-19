@@ -55,8 +55,8 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
 
-	sift_cmut_flag_sealed(index, sealed);
-	batches = sift_cmut_batches(index, sealed, schema, cx, &nb);
+	sift_cwbuf_flag_sealed(index, sealed);
+	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb);
 	if (nb > 0)
 	{
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
@@ -68,7 +68,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		sift_colw_finish(w, &neu);
 		sift_wt_finish(wt);
 	}
-	pages = sift_cmut_pages(index, sealed, &npages);
+	pages = sift_cwbuf_pages(index, sealed, &npages);
 	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -78,7 +78,7 @@ static const SiftSegEntry *
 first_sealed(const SiftDirSnapshot *snap)
 {
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_SEALED)
 			return &snap->segs[i];
 	return NULL;
 }
@@ -115,7 +115,7 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->mutable_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
+	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
 
 	return sift_merge_pick(index, &pol, snap, force, sel);
 }
@@ -222,9 +222,9 @@ bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallb
 }
 
 static void
-bulkdelete_mutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	sift_cmut_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
+	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
 }
 
 static const SiftMaintOps col_ops = {
@@ -232,11 +232,11 @@ static const SiftMaintOps col_ops = {
 	.worker = "sift_col_maint_worker_main",
 	.step_lock = ExclusiveLock,
 	.is_index = is_col,
-	.seal = sift_cmut_seal,
+	.seal = sift_cwbuf_seal,
 	.promote_next = promote_next,
 	.merge_next = merge_next,
 	.bulkdelete_immutable = bulkdelete_immutable,
-	.bulkdelete_mutable = bulkdelete_mutable,
+	.bulkdelete_wbuf = bulkdelete_wbuf,
 };
 
 void
@@ -338,7 +338,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				units = 0,
 				pagg_bytes = 0,
 				pagg_units = 0;
-	int			nmut = 0;
+	int			nwbuf = 0;
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -356,7 +356,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 			sift_cseg_close(seg);
 		}
 		else
-			nmut++;
+			nwbuf++;
 	units = sift_cseg_dir_units(snap);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
@@ -368,7 +368,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	v[7] = Int64GetDatum(rows);
 	v[8] = Int64GetDatum(bytes);
 	v[9] = Int64GetDatum(units);
-	v[10] = Int32GetDatum(nmut);
+	v[10] = Int32GetDatum(nwbuf);
 	v[11] = Int32GetDatum(defs->ncols);
 	nulls[12] = RecoveryInProgress();
 	v[12] = BoolGetDatum(!nulls[12] && sift_maintenance_busy(index));
@@ -396,7 +396,7 @@ sift_col_segments(PG_FUNCTION_ARGS)
 
 		v[0] = Int64GetDatum(e->gen);
 		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" :
-								   e->kind == SIFT_SEG_MUTABLE_ACTIVE ? "mutable" : "sealed");
+								   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
 		if (e->kind == SIFT_SEG_IMMUTABLE)
 		{
 			SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
@@ -416,7 +416,7 @@ sift_col_segments(PG_FUNCTION_ARGS)
 			uint64		nrows,
 						npages;
 
-			sift_cmut_summary(index, e, &nrows, &npages);
+			sift_cwbuf_summary(index, e, &nrows, &npages);
 			v[2] = Int64GetDatum(nrows);
 			v[3] = Int64GetDatum(npages * BLCKSZ);
 			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = true;

@@ -9,7 +9,7 @@ node_init space 7 "autovacuum = off"
 node_start space || bail "start failed"
 sql space "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE t (id serial, body text)" \
-	"CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 1024)" >/dev/null || bail "setup failed"
+	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 1024)" >/dev/null || bail "setup failed"
 
 BATCH="INSERT INTO t (body) SELECT string_agg(md5((g * %s + j)::text), ' ') FROM generate_series(1, 1500) g, generate_series(1, 6) j GROUP BY g"
 
@@ -18,7 +18,7 @@ sql space "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..60 LOOP
 	$(printf "$BATCH" "(1000 + i * 7)"); PERFORM sift.promote('t_idx'); COMMIT; END LOOP; END \$\$" >/dev/null || bail "load failed"
 check "60 segments before the worker" test "$(sql space "SELECT count(*) FROM sift.segments('t_idx')")" -ge 60
 
-# a few short statements seal the mutable segment: the sealing one starts the worker, which merges
+# a few short statements seal the write buffer: the sealing one starts the worker, which merges
 for k in $(seq 8); do sql space "$(printf "$BATCH" "$((5000 + k))")" >/dev/null || bail "insert failed"; done
 for _ in $(seq 600); do
 	[[ $(sql space "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]] && break

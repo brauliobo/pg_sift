@@ -23,7 +23,7 @@ $primary->append_conf('postgresql.conf', "wal_consistency_checking = 'generic'\n
 $primary->start;
 install_sift($primary);
 load_corpus($primary, $t, 20000);
-$primary->safe_psql('postgres', "CREATE SEQUENCE wc_ids START 100001; CREATE INDEX $idx ON $t USING sift (body) WITH (mutable_limit = 64)");
+$primary->safe_psql('postgres', "CREATE SEQUENCE wc_ids START 100001; CREATE INDEX $idx ON $t USING sift (body) WITH (write_buffer_limit = 64)");
 
 my $dir = $primary->basedir;
 my %scripts = (

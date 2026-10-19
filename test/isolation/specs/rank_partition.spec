@@ -9,10 +9,10 @@ setup
 	CREATE TABLE iso_part2 PARTITION OF iso_part FOR VALUES FROM (1000) TO (2000) WITH (autovacuum_enabled = off);
 	CREATE TABLE iso_part3 PARTITION OF iso_part FOR VALUES FROM (2000) TO (3000) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_part SELECT g, 'part base ' || repeat('more ', g % 5) || g FROM generate_series(1, 2400) g;
-	CREATE INDEX iso_part1_idx ON iso_part1 USING sift (body) WITH (mutable_limit = 64);
-	CREATE INDEX iso_part2_idx ON iso_part2 USING sift (body) WITH (mutable_limit = 64);
-	CREATE INDEX iso_part3_idx ON iso_part3 USING sift (body) WITH (mutable_limit = 64);
-	CREATE INDEX iso_part_idx ON iso_part USING sift (body) WITH (mutable_limit = 64);
+	CREATE INDEX iso_part1_idx ON iso_part1 USING sift (body) WITH (write_buffer_limit = 64);
+	CREATE INDEX iso_part2_idx ON iso_part2 USING sift (body) WITH (write_buffer_limit = 64);
+	CREATE INDEX iso_part3_idx ON iso_part3 USING sift (body) WITH (write_buffer_limit = 64);
+	CREATE INDEX iso_part_idx ON iso_part USING sift (body) WITH (write_buffer_limit = 64);
 	INSERT INTO iso_part SELECT g, 'part base second ' || g FROM generate_series(2401, 2800) g;
 	SELECT sift.promote('iso_part3_idx') >= 0 AS promoted;
 }

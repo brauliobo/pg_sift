@@ -2,10 +2,10 @@
  * sift_table.h - the table access method sift_table (docs/COL-TAM.md): formats and the interfaces between its modules.
  *
  *   sift_table.c         handler, the TableAmRoutine callbacks, DML
- *   sift_table_store.c   layout, per-relation cache, delta segments (row format), tombstone segment
+ *   sift_table_store.c   layout, per-relation cache, write buffers (row format), tombstone segment
  *   sift_table_mvcc.c    visibility of a row version under every snapshot type
  *   sift_table_scan.c    scans, TID fetches, bitmap, analyze, index build
- *   sift_table_vacuum.c  VACUUM, sealing, rewrites
+ *   sift_table_vacuum.c  VACUUM, promotion, rewrites
  *   sift_table_seg.c     the column groups: the engine glue (stubs until the column engine lands)
  *
  * A TID is (vblock, offset), offset 1..SIFT_TBL_MAX_OFF, vblock from the metapage counter, never reused.
@@ -32,12 +32,12 @@
 #endif
 
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
-#define SIFT_TBL_SEG_DELTA		0x0100		/* SiftSegEntry.flags of a delta segment */
+#define SIFT_TBL_SEG_WBUF		0x0100		/* SiftSegEntry.flags of a write buffer */
 #define SIFT_TBL_SEG_TOMB		0x0200		/* ... of the tombstone segment */
-#define SIFT_TBL_DELTA_MAGIC	0x444C5441	/* "DLTA" */
+#define SIFT_TBL_WBUF_MAGIC	0x444C5441	/* "DLTA" */
 #define SIFT_TBL_TOMB_MAGIC		0x544F4D42	/* "TOMB" */
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage
-#define SIFT_TBL_MAX_DELTA_PAGES 1024
+#define SIFT_TBL_MAX_WBUF_PAGES 1024
 #define SIFT_TBL_VBLOCKS_SB		SIFT_SB_PAGES
 #define SIFT_TBL_TOMB_LOCK_BLKNO 3	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them */
 #define SIFT_TBL_ROW_MAX_INLINE	(BLCKSZ / 2)	/* a row above this goes to overflow pages */
@@ -45,24 +45,24 @@
 /* The next vblock to hand out: the field a table has no other use for (col-core: SIFT_COL_META_NEXT_VBLOCK) */
 #define SIFT_TBL_NEXT_VBLOCK(meta)	((meta)->sum_dl)
 
-/* Delta segment header page: SiftMutHeaderData (lane 0 is the page chain) then this */
-typedef struct SiftTblDeltaHdr
+/* Write buffer header page: SiftWbufHeaderData (lane 0 is the page chain) then this */
+typedef struct SiftTblWbufHdr
 {
 	uint32		magic;
 	uint32		flags;			/* reserved (was a sealed flag: a sealed segment is told by the flags of its pages) */
 	uint64		vbase;			/* first vblock; page i is vblock vbase + i */
 	uint32		vcap;			/* vblocks reserved (>= the pages the segment may take) */
 	uint32		npages;
-	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
-} SiftTblDeltaHdr;
+	BlockNumber page[SIFT_TBL_MAX_WBUF_PAGES];
+} SiftTblWbufHdr;
 
-#define TBL_DELTA_HDR(page) \
-	((SiftTblDeltaHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
-#define TBL_DELTA_HDR_USED	(MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblDeltaHdr))
+#define TBL_WBUF_HDR(page) \
+	((SiftTblWbufHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftWbufHeaderData))))
+#define TBL_WBUF_HDR_USED	(MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTblWbufHdr))
 
 /*
- * Delta data page: SiftTblPageHdr (next first: the store walks the chain to mark referenced blocks, flags at the offset of
- * SIFT_MUTPAGE_SEALED), then records forward. slot[k] is the offset (from the page data start) of the record of TID offset k + 1, 0 = none.
+ * Write buffer data page: SiftTblPageHdr (next first: the store walks the chain to mark referenced blocks, flags at the offset of
+ * SIFT_WBUFPAGE_SEALED), then records forward. slot[k] is the offset (from the page data start) of the record of TID offset k + 1, 0 = none.
  */
 typedef struct SiftTblPageHdr
 {
@@ -74,7 +74,7 @@ typedef struct SiftTblPageHdr
 	uint16		slot[SIFT_TBL_MAX_OFF];
 } SiftTblPageHdr;
 
-#define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_MUTPAGE_SEALED: set on every page when the segment is sealed (sift_lane_flag_sealed_pages) */
+#define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_WBUFPAGE_SEALED: set on every page when the segment is sealed (sift_lane_flag_sealed_pages) */
 #define SIFT_TBL_PAGE_OVFDATA	0x0100	/* continuation bytes of an overflow row, no slots */
 
 #define TBL_PAGE(page)	((SiftTblPageHdr *) SiftPageGetData(page))
@@ -97,7 +97,7 @@ typedef struct SiftTblRec
 #define SIFT_TBL_REC_OVF		0x0004	/* the row continues in overflow pages */
 #define TBL_REC_SIZE(inline_len)	MAXALIGN(sizeof(SiftTblRec) + (inline_len))
 
-/* Tombstone segment header page: SiftMutHeaderData then this; data pages: SiftTblTombPage then SiftTblTomb[] */
+/* Tombstone segment header page: SiftWbufHeaderData then this; data pages: SiftTblTombPage then SiftTblTomb[] */
 typedef struct SiftTblTombHdr
 {
 	uint32		magic;
@@ -113,7 +113,7 @@ typedef struct SiftTblTombPage
 } SiftTblTombPage;
 
 #define TBL_TOMB_HDR(page) \
-	((SiftTblTombHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftMutHeaderData))))
+	((SiftTblTombHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftWbufHeaderData))))
 #define TBL_TOMB_PAGE(page)	((SiftTblTombPage *) SiftPageGetData(page))
 #define TBL_TOMB_PAGE_INIT	MAXALIGN(sizeof(SiftTblTombPage))
 #define TBL_TOMB_ENTS(page)	((SiftTblTomb *) (SiftPageGetData(page) + TBL_TOMB_PAGE_INIT))
@@ -140,7 +140,7 @@ typedef struct SiftTblTomb
 
 StaticAssertDecl(sizeof(SiftTblTomb) == 32, "tombstone entries are 32 bytes");
 StaticAssertDecl(sizeof(SiftTblPageHdr) + 16 < BLCKSZ / 4, "page header leaves room for rows");
-StaticAssertDecl(TBL_DELTA_HDR_USED <= SIFT_PAGE_PAYLOAD, "delta header fits a page");
+StaticAssertDecl(TBL_WBUF_HDR_USED <= SIFT_PAGE_PAYLOAD, "write buffer header fits a page");
 
 /* ---------- per relation backend cache (sift_table_store.c) ---------- */
 
@@ -151,7 +151,7 @@ typedef struct SiftTblSeg
 	uint64		vbase;
 	uint32		vcap;
 	uint32		npages;			/* pages known */
-	BlockNumber page[SIFT_TBL_MAX_DELTA_PAGES];
+	BlockNumber page[SIFT_TBL_MAX_WBUF_PAGES];
 } SiftTblSeg;
 
 typedef struct SiftTblRel
@@ -162,8 +162,8 @@ typedef struct SiftTblRel
 	bool		initialized;	/* blocks exist and carry the table layout */
 	bool		invalid;		/* relcache invalidation: replaced by the next sift_tbl_rel */
 	SiftDirSnapshot dir;
-	int			ndelta;
-	SiftTblSeg *delta;			/* [ndelta], directory order = ascending vbase */
+	int			nwbuf;
+	SiftTblSeg *wbuf;			/* [nwbuf], directory order = ascending vbase */
 	/* tombstones, sorted by (key, seq) */
 	uint64		tomb_gen;
 	BlockNumber tomb_hdr;
@@ -189,7 +189,7 @@ typedef struct SiftTblRel
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
 extern SiftTblRel *sift_tbl_rel(Relation rel);
-/* Re-reads the directory; delta page tables are extended lazily by sift_tbl_delta_page */
+/* Re-reads the directory; write buffer page tables are extended lazily by sift_tbl_wbuf_page */
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
@@ -201,7 +201,7 @@ extern uint64 sift_tbl_nvblocks(Relation rel);
 typedef struct SiftTblRowVer
 {
 	SiftKey		key;
-	bool		delta;			/* delta row: xmin/cmin/flags valid, else a column group row (frozen unless segxmin) */
+	bool		wbuf;			/* write buffer row: xmin/cmin/flags valid, else a column group row (frozen unless segxmin) */
 	TransactionId xmin;
 	CommandId	cmin;
 	uint16		flags;
@@ -209,14 +209,14 @@ typedef struct SiftTblRowVer
 	HeapTuple	tuple;			/* the row, palloc'd (HeapTuple format, t_self set) */
 } SiftTblRowVer;
 
-/* The record of TID offset off in a delta page (locked or a copy); NULL when there is none */
+/* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
 extern const SiftTblRec *sift_tbl_page_rec(Page page, uint64 gen, uint32 off);
 /* The row of a record as a HeapTuple (an overflow row is read from its pages); t_self/t_tableOid are the caller's */
 extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key);
-extern BlockNumber sift_tbl_delta_page(Relation rel, SiftTblSeg *seg, uint32 idx);
+extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
 extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
 extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
-/* The version header of a delta record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
+/* The version header of a write buffer record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
 /* Clears the bits of offmask (bit i: offset i + 1, SIFT_OFFMASK_WORDS words of 64) whose row is not visible to snapshot; returns the bits left */
@@ -234,15 +234,15 @@ sift_tbl_free_row(SiftTblRowVer *rv)
 }
 extern void sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
 
-/* Stops the active delta segment taking rows if it has at least minpages pages (a fresh one takes over): it can then be sealed */
-extern void sift_tbl_close_delta(Relation rel, SiftTblRel *st, uint32 minpages);
+/* Stops the open write buffer segment taking rows if it has at least minpages pages (a fresh one takes over): it can then be promoted */
+extern void sift_tbl_close_wbuf(Relation rel, SiftTblRel *st, uint32 minpages);
 
-/* Appends a row (a MinimalTuple) to the active delta segment; sets *tid. spec_token != 0: speculative insertion */
+/* Appends a row (a MinimalTuple) to the open write buffer segment; sets *tid. spec_token != 0: speculative insertion */
 extern void sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId xmin, CommandId cmin,
 							uint32 spec_token, ItemPointer tid);
 /* Sets flag bits of the record of tid (killed speculative insertion) */
 extern void sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set);
-/* A delta page, exclusively locked, for VACUUM: the caller edits records through a GenericXLog copy */
+/* A write buffer page, exclusively locked, for VACUUM: the caller edits records through a GenericXLog copy */
 extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx);
 
 /* Tombstones */
@@ -417,31 +417,31 @@ extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const u
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
 extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
-/* The rows of superblock sb in the delta segments seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
+/* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */
-extern SiftColBatch *sift_tbl_delta_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt);
+extern SiftColBatch *sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt);
 /* Registers the table as a column source of SiftAgg (from sift_tbl_init) */
 extern void sift_tbl_src_register(void);
 
 /*
- * Seals the delta segments that stopped taking rows and whose rows are all final (decided, and older than oldest) into column
- * segments; returns the number sealed. vacuum: rows flagged DEAD by this VACUUM are dropped, otherwise a segment with one waits for it.
+ * Promotes the write buffers that stopped taking rows and whose rows are all final (decided, and older than oldest) into column
+ * segments; returns the number promoted. vacuum: rows flagged DEAD by this VACUUM are dropped, otherwise a segment with one waits for it.
  * Takes the maintenance lock (not waiting unless vacuum).
  */
-extern int	sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
+extern int	sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
 extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest);
 /* One merge step over the column segments (the maintenance lock held); true when it merged. Segments of another column layout are left alone. */
 extern bool sift_tbl_merge(Relation rel, SiftTblRel *st);
 /* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
 extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 
-extern PGDLLIMPORT int sift_tbl_delta_limit;
+extern PGDLLIMPORT int sift_tbl_write_buffer_limit;
 extern PGDLLIMPORT int sift_tbl_max_segments;
 extern PGDLLIMPORT int sift_tbl_vblock_floor;
-extern PGDLLIMPORT bool sift_tbl_inline_seal;
+extern PGDLLIMPORT bool sift_tbl_inline_promote;
 extern PGDLLIMPORT char *sift_tbl_compression_spec;
 
-/* Registers sift.table_delta_limit, sift.table_inline_seal and sift.table_compression (from sift_tbl_init) */
+/* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
 
 /* ---------- rewrites and dead rows (sift_table_seg.c) ---------- */

@@ -51,13 +51,13 @@ FROM sift.index_info('oi_idx');
  t            | t                    |  2700
 (1 row)
 
--- a mutable segment has no extents and no dead documents to report
+-- a write buffer has no extents and no dead documents to report
 INSERT INTO oi VALUES (5000, 'gamma');
 SELECT kind, extents IS NULL AS no_extents, dead_docs IS NULL AS no_dead FROM sift.segments('oi_idx') ORDER BY gen;
    kind    | no_extents | no_dead 
 -----------+------------+---------
  immutable | f          | f
- mutable   | t          | t
+ buffer    | t          | t
 (2 rows)
 
 DROP TABLE oi;

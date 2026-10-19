@@ -1,4 +1,4 @@
-# Inserts (sealing the mutable segment), promotion, deletes and VACUUM while a parallel scan is
+# Inserts (sealing the write buffer), promotion, deletes and VACUUM while a parallel scan is
 # running. The scan's workers wait in a residual qual on a lock another session holds, after they
 # bound the index; the result must be the reference matches of the scan's snapshot.
 # requires: build insert vacuum scan promote verify score
@@ -9,7 +9,7 @@ setup
 	ALTER TABLE iso_par ALTER COLUMN pad SET STORAGE PLAIN;
 	INSERT INTO iso_par SELECT g, CASE WHEN g % 3 = 0 THEN 'common rare' ELSE 'common' END || ' text ' || g, repeat('x', 1500)
 		FROM generate_series(1, 3000) g;
-	CREATE INDEX iso_par_idx ON iso_par USING sift (body) WITH (mutable_limit = 64);
+	CREATE INDEX iso_par_idx ON iso_par USING sift (body) WITH (write_buffer_limit = 64);
 	CREATE TABLE iso_gate ();
 	CREATE FUNCTION iso_gate(i int) RETURNS bool LANGUAGE plpgsql STABLE PARALLEL SAFE
 		AS $$ BEGIN PERFORM 1 FROM iso_gate; RETURN true; END $$;

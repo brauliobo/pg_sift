@@ -3,8 +3,8 @@
  *
  * The leaves are the columns of the table (the layout of the column groups, sift_table_seg.c). The groups are read by the engine, one
  * source per column layout the segments were written for (a segment keeps its own after ALTER TABLE; its leaves are matched by attribute
- * number), the rows of the delta segments are fed to the source of the table's layout as in-memory batches, one per superblock, and the
- * rows the snapshot sees are the table's: a superblock without tombstones or delta rows is entirely visible, the others are filtered by
+ * number), the rows of the write buffers are fed to the source of the table's layout as in-memory batches, one per superblock, and the
+ * rows the snapshot sees are the table's: a superblock without tombstones or write buffer rows is entirely visible, the others are filtered by
  * sift_tbl_filter_page like every other reader of the table does.
  */
 #include "postgres.h"
@@ -53,11 +53,11 @@ typedef struct TblSource
 	Snapshot	snapshot;
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
-	SiftTblSeg *delta;			/* private copies of the delta segments */
-	int			ndelta;
-	uint32		delta_lo;		/* the superblocks that hold delta rows: [delta_lo, delta_hi] */
-	uint32		delta_hi;
-	Bitmapset  *batched;		/* the superblocks whose delta rows are in the sources already */
+	SiftTblSeg *wbuf;			/* private copies of the write buffers */
+	int			nwbuf;
+	uint32		wbuf_lo;		/* the superblocks that hold write buffer rows: [wbuf_lo, wbuf_hi] */
+	uint32		wbuf_hi;
+	Bitmapset  *batched;		/* the superblocks whose write buffer rows are in the sources already */
 	SiftSrcLayout *lay;
 	TblPart    *part;
 	int			nparts;
@@ -154,7 +154,7 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 }
 
 /*
- * The table's own mask, not the heap's map: an SB is plain when it holds no delta row and no tombstone among those synced when the source
+ * The table's own mask, not the heap's map: an SB is plain when it holds no write buffer row and no tombstone among those synced when the source
  * opened (tbl_open), before it read any row. A VACUUM of the table clears the liveness of rows behind tombstones, and a scan that holds
  * those tombstones sends their SBs to the filter whatever liveness it reads later, so no read of the mask follows a liveness it should have
  * preceded and the source needs no directory guard (sift_vis_guard).
@@ -163,7 +163,7 @@ static void
 tbl_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
 	TblSource  *t = arg;
-	bool		plain = (sb < t->delta_lo || sb > t->delta_hi) &&
+	bool		plain = (sb < t->wbuf_lo || sb > t->wbuf_hi) &&
 		!sift_tbl_tomb_any(t->st, (uint64) sb * (SIFT_SB_PAGES << 16), (uint64) (sb + 1) * (SIFT_SB_PAGES << 16) - 1);
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
@@ -221,17 +221,17 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
 	*t->dir = st->dir;
-	t->ndelta = st->ndelta;
-	t->delta = t->ndelta ? palloc(t->ndelta * sizeof(SiftTblSeg)) : NULL;
-	t->delta_lo = PG_UINT32_MAX;
-	for (int i = 0; i < t->ndelta; i++)
+	t->nwbuf = st->nwbuf;
+	t->wbuf = t->nwbuf ? palloc(t->nwbuf * sizeof(SiftTblSeg)) : NULL;
+	t->wbuf_lo = PG_UINT32_MAX;
+	for (int i = 0; i < t->nwbuf; i++)
 	{
-		t->delta[i] = st->delta[i];
-		sift_tbl_seg_load(heap, &t->delta[i]);
-		if (t->delta[i].npages == 0)
+		t->wbuf[i] = st->wbuf[i];
+		sift_tbl_seg_load(heap, &t->wbuf[i]);
+		if (t->wbuf[i].npages == 0)
 			continue;
-		t->delta_lo = Min(t->delta_lo, t->delta[i].vbase / SIFT_SB_PAGES);
-		t->delta_hi = Max(t->delta_hi, (t->delta[i].vbase + t->delta[i].npages - 1) / SIFT_SB_PAGES);
+		t->wbuf_lo = Min(t->wbuf_lo, t->wbuf[i].vbase / SIFT_SB_PAGES);
+		t->wbuf_hi = Max(t->wbuf_hi, (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES);
 	}
 	t->lay = tbl_layout(heap);
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
@@ -280,17 +280,17 @@ tbl_nsb(void *impl)
 	return sift_col_heap_sbs(((TblSource *) impl)->part[0].src);
 }
 
-/* The delta rows of the superblocks [sb_lo, sb_hi) that no begin has fed to the source of the table's layout yet */
+/* The write buffer rows of the superblocks [sb_lo, sb_hi) that no begin has fed to the source of the table's layout yet */
 static void
-add_delta(TblSource *t, uint32 sb_lo, uint32 sb_hi)
+add_wbuf(TblSource *t, uint32 sb_lo, uint32 sb_hi)
 {
 	MemoryContext old = MemoryContextSwitchTo(t->cxt);
-	uint32		hi = Min(sb_hi, t->delta_hi + 1);
+	uint32		hi = Min(sb_hi, t->wbuf_hi + 1);
 
-	for (uint32 sb = Max(sb_lo, t->delta_lo); sb < hi; sb++)
+	for (uint32 sb = Max(sb_lo, t->wbuf_lo); sb < hi; sb++)
 		if (!bms_is_member(sb, t->batched))
 		{
-			SiftColBatch *b = sift_tbl_delta_batch(t->rel, t->st, t->delta, t->ndelta, sb, t->cxt);
+			SiftColBatch *b = sift_tbl_wbuf_batch(t->rel, t->st, t->wbuf, t->nwbuf, sb, t->cxt);
 
 			sift_col_add_batches(t->part[0].src, &b, 1);
 			t->batched = bms_add_member(t->batched, sb);
@@ -303,7 +303,7 @@ tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 {
 	TblSource  *t = impl;
 
-	add_delta(t, sb_lo, sb_hi);
+	add_wbuf(t, sb_lo, sb_hi);
 	for (int k = 0; k < t->nparts; k++)
 	{
 		sift_col_begin(t->part[k].src, NULL, 0, sb_lo, sb_hi);

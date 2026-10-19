@@ -17,7 +17,7 @@
 #define SIFT_COL_PHASE_SCAN		2
 #define SIFT_COL_PHASE_WRITE	3
 
-/* The segments a build may write: the directory keeps room for the mutable ones and a merge */
+/* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
 
 typedef struct ColBuild ColBuild;

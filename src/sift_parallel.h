@@ -43,7 +43,7 @@ typedef struct SiftParShared
 	int			nattached;
 	int			nfinished;
 	bool		emitter_taken;
-	bool		mutable_taken;
+	bool		wbuf_taken;
 	bool		units_set;
 	uint64		units_sig;
 	int64		units_n;
@@ -86,8 +86,8 @@ extern bool sift_par_next_units(SiftPar *par, int64 nunit, int64 *lo, int64 *hi)
 /* Ranked: units claimed so far, at most nunit */
 extern int64 sift_par_units_claimed(const SiftPar *par, int64 nunit);
 
-/* Ranked: true for the one participant that scores the mutable segments' matches */
-extern bool sift_par_claim_mutable(SiftPar *par);
+/* Ranked: true for the one participant that scores the write buffers' matches */
+extern bool sift_par_claim_wbuf(SiftPar *par);
 
 extern float4 sift_par_theta(const SiftPar *par);
 extern void sift_par_raise_theta(SiftPar *par, float4 theta);

@@ -11,7 +11,7 @@ INSERT INTO ch SELECT i, i % 4,
 	CASE i % 7 WHEN 0 THEN NULL WHEN 1 THEN 'plain' WHEN 2 THEN repeat('n', 63) WHEN 3 THEN 'ÀB' ELSE 'k' || i % 11 END,
 	'v' || i % 3
 FROM generate_series(1, 3000) i;
-CREATE INDEX ch_col ON ch USING sift_col (id, g, c5, cu, nm, t) WITH (mutable_limit = 1024);
+CREATE INDEX ch_col ON ch USING sift_col (id, g, c5, cu, nm, t) WITH (write_buffer_limit = 1024);
 -- the values of every leaf against the heap, as the bytes the heap holds (char(n) keeps its blank padding, bpchar its blanks as given)
 SELECT count(*) AS c5_differing FROM (SELECT tid, val FROM sift._test_col_read('ch_col', 2, '') EXCEPT SELECT ctid, convert_from(bpcharsend(c5), 'UTF8') FROM ch) z;
  c5_differing 
@@ -108,7 +108,7 @@ SELECT n, chars_rows(q, true) = chars_rows(q, false) AS same FROM ch_q ORDER BY 
  10 | t
 (10 rows)
 
--- rows written after the build (the mutable lane), changed, deleted and vacuumed
+-- rows written after the build (the write buffer), changed, deleted and vacuumed
 INSERT INTO ch SELECT 3000 + i, i % 4, 'z' || i % 3, 'q', 'late' || i % 5, 't' FROM generate_series(1, 200) i;
 UPDATE ch SET c5 = 'upd', nm = 'upd' WHERE id % 10 = 0;
 DELETE FROM ch WHERE id % 13 = 0;

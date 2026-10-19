@@ -1,6 +1,6 @@
-# sift_table: several writers insert and update rows that span 2 to 5 pages (overflow pages) while VACUUM runs, so that the delta segments
+# sift_table: several writers insert and update rows that span 2 to 5 pages (overflow pages) while VACUUM runs, so that the write buffers
 # fill up and are replaced in the middle of rows. Every row must come back byte for byte (the overflow pages of a row once landed in
-# another delta segment than its record under concurrent inserts and the read failed).
+# another write buffer than its record under concurrent inserts and the read failed).
 use strict;
 use warnings FATAL => 'all';
 use FindBin;

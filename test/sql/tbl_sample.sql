@@ -1,4 +1,4 @@
--- TABLESAMPLE over delta rows and column groups, and the rows that deletes and updates leave behind.
+-- TABLESAMPLE over write buffer rows and column groups, and the rows that deletes and updates leave behind.
 CREATE EXTENSION pg_sift;
 CREATE TABLE sm (id int PRIMARY KEY, v text) USING sift_table;
 INSERT INTO sm SELECT g, 'row ' || g FROM generate_series(1, 20000) g;

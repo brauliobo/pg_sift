@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Indexes written by the 2.x library stay readable and maintainable: the stored relation files of a small table and of
 # its sift index (test/fixtures/compat2x, made by scripts/make-compat-fixture.sh with pg_sift 2.0.0: two immutable
-# segments, one of them dirty with 150 dead documents, and 100 documents in the mutable segment) are put in place of
+# segments, one of them dirty with 150 dead documents, and 100 documents in the write buffer) are put in place of
 # the files of an empty table and index created by the build under test. Then: sift.verify, the results the 2.x build
 # gave (counts, sums, ranked ids, segments), the same counts from the heap, and further DML that works on the 2.x
 # segments: more deletes with VACUUM, inserts with a promotion, a forced merge of everything into a new segment.
@@ -67,7 +67,7 @@ node_start fx || bail "start with the fixture failed"
 check "the sift index of the 2.x files is verified" verify
 check "queries use the index" grep -q -i sift <(sql fx "SET enable_seqscan = off" "EXPLAIN SELECT count(*) FROM docs WHERE body @@> 'alpha3'")
 sql fx "$SEGMENTS" >"$(dir fx)/segments.txt"
-check "the segments are the ones of the 2.x build (two immutable, one dirty, and the mutable one)" \
+check "the segments are the ones of the 2.x build (two immutable, one dirty, and the write buffer)" \
 	diff <(sed -n '2,4p' "$FIX/expected.txt") "$(dir fx)/segments.txt"
 sql fx <"$FIX/queries.sql" >"$(dir fx)/results.txt" 2>"$(dir fx)/results.err"
 check "the counts, sums, ranked ids and verify equal the 2.x results" same_results "$(dir fx)/results.txt" "$FIX/expected.txt"
@@ -75,7 +75,7 @@ check "the counts equal the heap's, the dead documents of the dirty segment stay
 
 restarted() { verify && agree; }
 
-# VACUUM marks documents dead in the dirty 2.x segment (150 more), in the clean one (140) and in the mutable one
+# VACUUM marks documents dead in the dirty 2.x segment (150 more), in the clean one (140) and in the write buffer
 vacuumed() {
 	segments_are "1|immutable|1500|t|300" "4|immutable|1400|t|140" && verify && agree
 }
@@ -84,7 +84,7 @@ segments_are() {
 	local s
 	for s in "$@"; do grep -q -F "$s" "$(dir fx)/segments.txt" || { diag "no segment $s in $(tr '\n' ' ' <"$(dir fx)/segments.txt")"; return 1; }; done
 }
-# a promotion seals the 2.x mutable segment together with the new rows into a segment of this build
+# a promotion seals the 2.x write buffer together with the new rows into a segment of this build
 promoted() {
 	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && verify && agree
 }

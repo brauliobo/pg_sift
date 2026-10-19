@@ -1,4 +1,4 @@
--- SiftAgg over a sift_table: the column groups through the engine, the delta rows as batches, the visibility of the table.
+-- SiftAgg over a sift_table: the column groups through the engine, the write buffer rows as batches, the visibility of the table.
 -- Every query runs with and without the pushdown; the results must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -54,16 +54,16 @@ INSERT INTO agg_t SELECT i, i % 7, 'k' || (i % 5), i * 3, i / 4.0, '2024-01-01':
 	CASE WHEN i % 17 = 0 THEN NULL ELSE 'c' || (i % 4) END, i / 7.0 FROM generate_series(1, 20000) i;
 ANALYZE agg_t;
 
--- rows in the delta segments
+-- rows in the write buffers
 SELECT * FROM agg_compare();
-SELECT count(*) > 0 AS has_delta FROM sift.table_segments('agg_t') WHERE kind = 'delta';
+SELECT count(*) > 0 AS has_wbuf FROM sift.table_segments('agg_t') WHERE kind = 'buffer';
 
--- sealed into column groups
+-- promoted into column groups
 VACUUM agg_t;
-SELECT count(*) = 0 AS no_delta_rows FROM sift.table_segments('agg_t') WHERE kind = 'delta' AND rows > 0;
+SELECT count(*) = 0 AS no_wbuf_rows FROM sift.table_segments('agg_t') WHERE kind = 'buffer' AND rows > 0;
 SELECT * FROM agg_compare();
 
--- tombstones of committed deletes and updates, new versions in the delta
+-- tombstones of committed deletes and updates, new versions in the write buffer
 DELETE FROM agg_t WHERE id % 11 = 0;
 UPDATE agg_t SET g = 3, v = v + 1, f = f + 0.5 WHERE id % 13 = 0;
 SELECT * FROM agg_compare();
@@ -76,14 +76,14 @@ SELECT * FROM agg_compare();
 ROLLBACK;
 SELECT * FROM agg_compare();
 
--- a column added later (null in the older segments), with rows of both layouts, and after sealing the new ones
+-- a column added later (null in the older segments), with rows of both layouts, and after promoting the new ones
 ALTER TABLE agg_t ADD COLUMN z int;
 INSERT INTO agg_t SELECT 200000 + i, i % 7, 'z' || (i % 3), i, i, now(), current_date, false, i, NULL, 'c0', i, i FROM generate_series(1, 3000) i;
 INSERT INTO agg_q VALUES ('SELECT k, count(z), sum(z), min(z) FROM agg_t GROUP BY k'), ('SELECT count(*) FROM agg_t WHERE z > 100');
 SELECT * FROM agg_compare();
 VACUUM agg_t;
 SELECT * FROM agg_compare();
-SELECT count(DISTINCT gen) > 1 AS segments FROM sift.table_segments('agg_t') WHERE kind <> 'delta';
+SELECT count(DISTINCT gen) > 1 AS segments FROM sift.table_segments('agg_t') WHERE kind <> 'buffer';
 
 -- columns added with a default: the older segments give every row the constant
 ALTER TABLE agg_t ADD COLUMN w int DEFAULT 5;

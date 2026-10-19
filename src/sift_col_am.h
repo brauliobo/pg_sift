@@ -10,7 +10,7 @@
 #include "sift_col_pg.h"
 #include "sift_col_enc.h"
 #include "sift_col_preagg.h"
-#include "sift_col_mut.h"
+#include "sift_col_wbuf.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
 typedef struct SiftColRel
@@ -25,7 +25,7 @@ typedef struct SiftColRel
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
-	SiftCMutHint hint;
+	SiftCWbufHint hint;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 

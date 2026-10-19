@@ -74,10 +74,10 @@ extern double sift_plan_docs(const SiftPlan *plan);
 extern uint32 sift_plan_dir_version(const SiftPlan *plan);
 
 /*
- * Parallel scoring. Scores depend on the directory and on the mutable
- * segments, which move under concurrent writers, so one participant binds,
+ * Parallel scoring. Scores depend on the directory and on the write
+ * buffers, which move under concurrent writers, so one participant binds,
  * exports what the others cannot recompute (the directory snapshot, the
- * mutable segments' statistics and matches) and everyone, the exporter
+ * write buffers' statistics and matches) and everyone, the exporter
  * included, binds from that. The export is palloc'd in the current context.
  */
 extern void *sift_plan_export(const SiftPlan *plan, Size *len);
@@ -91,7 +91,7 @@ typedef struct SiftPlanStats
 	double		ndocs;
 	double		avgdl;
 	int			nsegments;
-	int			nmutable;
+	int			nwbuf;
 	int64		sb_scanned;
 	int64		blocks_scored;
 	int64		blocks_skipped;
@@ -109,7 +109,7 @@ extern bool sift_plan_recheck_needed(const SiftPlan *plan);
 /*
  * Unordered matches in heap order, one page per call: offmask holds matched
  * live offsets (bit off-1); recheck when some of them need the text (a phrase
- * the stored positions do not decide: segments without them, mutable matches,
+ * the stored positions do not decide: segments without them, write buffer matches,
  * a negated phrase), all but those in sure, which the index decides alone. Pages of different segments sharing a block are
  * merged (disjoint by invariant I1). Holds no buffer between calls.
  */

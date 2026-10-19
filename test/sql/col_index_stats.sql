@@ -15,7 +15,7 @@ CREATE INDEX s_col ON s USING sift_col (id, k, flag, t, f, items) WITH (paths = 
 SELECT l.leaf, l.path, round(st.ndistinct) AS ndistinct, st.min, st.max, st.elems_per_row
 FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING (leaf) ORDER BY leaf;
 
--- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a mutable segment are not counted)
+-- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a write buffer are not counted)
 INSERT INTO s SELECT 5000 + i, 100 + i % 3, true, 'w' || (i % 40), 1.5, '[]'::jsonb FROM generate_series(1, 2000) i;
 SELECT sift.col_promote('s_col') > 0 AS promoted;
 SELECT sift.col_merge('s_col', true) >= 0 AS merged;

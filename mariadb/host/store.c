@@ -180,7 +180,7 @@ sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out)
 	snprintf(sr->dir, sizeof(sr->dir), "%s", dir);
 	sr->dpp = dpp;
 	sr->opts = (SiftOptions) {.k1 = SIFT_DEFAULT_K1,.b = SIFT_DEFAULT_B,.case_folding = true,.accent_folding = true,
-	.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,.positions = true};
+	.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT,.positions = true};
 	memset(sr->gslot, -1, sizeof(sr->gslot));
 	*out = sr;
 	return &sr->rel;

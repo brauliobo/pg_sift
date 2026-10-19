@@ -3,7 +3,7 @@
 `CREATE INDEX ... USING sift_col (col, ..., (expression), ...)` stores the values of its columns once more, column by column, per
 superblock of the heap, with zone maps. An analytic query reads those columns instead of the heap rows. There is no second table: the
 heap stays the only copy that is authoritative, and the index is reached through the same TID space, visibility map and generic WAL as
-the `sift` (BM25) access method, whose store, directory, mutable lanes, tiered merge and maintenance it reuses. The BM25 paths are not
+the `sift` (BM25) access method, whose store, directory, write buffer lanes, tiered merge and maintenance it reuses. The BM25 paths are not
 touched.
 
 Status of this document: the contract of the column track (index AM `sift_col`; the table AM `sift_table` of col-tam reuses the engine, section 12). `src/sift_col.h` is the C interface (column source, metadata, shred
@@ -192,12 +192,12 @@ bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `
 (`SiftColKernels.zone_range`: `min > hi || max < lo` clears the unit; `nnull == nvals` clears every non-null predicate; the set test for
 STR `EQ`/`IN`). Units that pass are the **candidate units**. Pruning is conservative: the filters then run on the chunks.
 
-### 2.5 Mutable segments (the write lane)
+### 2.5 Write buffers (the write buffer)
 
-`aminsert` appends one **row record** to one of `SIFT_LANES` lane chains of the active mutable segment: the structure of `sift_mutable.c`
-(lane header page with the heads and tails, `SIFT_PT_MUTDATA` pages, tail-lock ordering, sealing under `SIFT_ACTIVE_LOCK_BLKNO`,
+`aminsert` appends one **row record** to one of `SIFT_LANES` lane chains of the open write buffer: the structure of `sift_wbuf.c`
+(lane header page with the heads and tails, `SIFT_PT_WBUFDATA` pages, tail-lock ordering, sealing under `SIFT_ACTIVE_LOCK_BLKNO`,
 back-pressure at the same thresholds, one generic WAL record per append). The lane machinery is one module, `sift_lane.c`, used by the BM25
-doc records and by the row records; the record and its page header are `sift_col_mut.c`'s. The data page header is `SiftLanePageHead`
+doc records and by the row records; the record and its page header are `sift_col_wbuf.c`'s. The data page header is `SiftLanePageHead`
 (`next`, `nrecs`, `flags`: no term bloom), which starts with the `next` the store's walkers (`sift_store_referenced_blocks`,
 `sift_store_orphans`, `sift_store_verify`) follow in either kind of lane. A record is
 
@@ -209,19 +209,19 @@ payload: for every top level leaf in id order: u8 flag (bit0 NULL, bit1 OVERFLOW
 ```
 
 A record that does not fit the tail page is split in pieces of its payload (first piece without CONT, the rest with it) written while the
-tail is held, as in sift; a row that fits an empty page moves there whole. A piece's page has `SIFT_MUTPAGE_SPANS` set. A writer that dies
+tail is held, as in sift; a row that fits an empty page moves there whole. A piece's page has `SIFT_WBUFPAGE_SPANS` set. A writer that dies
 between two pieces (crash, error) leaves a **torn** row: it never committed, and a reader skips it (the pieces end where the next record is not a
 continuation). A string is a varint length and its bytes, up to `SIFT_COL_MAX_VALUE`. A repeated TID keeps its
-first live record in the batches (a crashed insert is not repeated). A mutable segment is read by decoding its records into per-SB batches (key
+first live record in the batches (a crashed insert is not repeated). A write buffer is read by decoding its records into per-SB batches (key
 order) and presenting each batch as a unit whose chunks are encoded in memory by the chunk writer with a throwaway dictionary
-(`SIFT_COLO_NOMUTABLE` skips them: build and verification paths). The deleted flag is set by VACUUM on the first piece. The directory being
+(`SIFT_COLO_NOWBUF` skips them: build and verification paths). The deleted flag is set by VACUUM on the first piece. The directory being
 full when no active segment exists is `sift_col_maint_make_room`'s (the AM's maintenance), as `sift_maint_make_room` is for sift.
 
 ### 2.6 Build, promotion, merge
 
 All three use one writer: `sift_colw_*` takes **batches** (`SiftColBatch`: the decoded rows of one SB, keys ascending, typed vectors
 per leaf, group offsets) in strictly ascending SB order and writes the unit records, dictionaries, zones and the header. A batch for an
-SB that several inputs hold (a promotion of mutable rows next to old rows, a merge of segments with overlapping SB ranges) is made by
+SB that several inputs hold (a promotion of write buffer rows next to old rows, a merge of segments with overlapping SB ranges) is made by
 the **batch merge**: decode every input unit's live rows, merge them by key, re-encode.
 (An SB held by a single input segment is rewritten from its batch too: chunks are cheap to decode, and dead rows are dropped.)
 
@@ -237,8 +237,8 @@ the **batch merge**: decode every input unit's live rows, merge them by key, re-
   generations from `sift_store_new_gen`). A participant cuts a segment at its share of the serial budget (at least 16 MB) and writes at most
   `(SIFT_MAX_SEGMENTS - 7) / participants` segments (16 participants at most), so the directory limit holds as in the serial build; the
   leader publishes all of them in one `sift_dir_update`, ordered by first SB.
-- **Promotion** of a sealed mutable segment: read records, drop deleted, sort by key, group per SB, write one immutable segment.
-- **Merge**: the tiered policy of `sift_merge_pick` (fan-in 8, tier base `mutable_limit`), plus "mostly dead" through a policy callback: a lone segment more than the `dead_rewrite_pct` option (default 10) dead is rewritten, so that its units carry exact pre-aggregates again.
+- **Promotion** of a sealed write buffer: read records, drop deleted, sort by key, group per SB, write one immutable segment.
+- **Merge**: the tiered policy of `sift_merge_pick` (fan-in 8, tier base `write_buffer_limit`), plus "mostly dead" through a policy callback: a lone segment more than the `dead_rewrite_pct` option (default 10) dead is rewritten, so that its units carry exact pre-aggregates again.
   Dead rows (cleared liveness bits) are dropped; one segment results. Memory: one SB per input in flight.
 
 Why this model: the serial build spends about a third of its CPU encoding and writing, a fifth shredding and forming rows and the rest scanning the
@@ -247,7 +247,7 @@ speedup of 3 at most) plus the cost of moving the rows, while a participant that
 participants, merges nothing and writes no temporary file; the chunks of PostgreSQL's parallel heap scan are not superblock aligned, so a unit
 would be split between workers, encoded twice and merged again. A superblock is in exactly one segment, so segments never share a unit, but their SB
 ranges interleave; the scan (a merge of the segments' unit cursors by SB), `col_merge`, promotion and VACUUM take segments with overlapping ranges
-as they take them next to mutable rows, and `sift.col_index_info.units` counts the SBs the ranges cover once. What differs from a serial build is the bytes,
+as they take them next to write buffer rows, and `sift.col_index_info.units` counts the SBs the ranges cover once. What differs from a serial build is the bytes,
 never the rows read: dictionaries are per segment, so a parallel-built index has one segment per participant, a dictionary for each and slightly
 more chunk bytes (32.3 MB of segments serial, 32.7 MB with 2 workers, 33.1 MB with 4), and its file is longer by the unused end of
 each participant's last run (50 MB and 41 MB: free blocks, reusable by the next writes; those at the end are cut by the truncation of VACUUM, a BULK write
@@ -258,7 +258,7 @@ builds: serial 2.6 s, 2 workers 0.9 s (2.9x), 4 workers 0.8 s (3.2x).
 
 LIVE pages as in sift (`SiftLiveHeaderData`, a dirty-SB bitmap then one bit per row in rank order, rank = `rank_base` of the unit + row
 ordinal). `ambulkdelete` walks every row of every immutable segment of the SBs, calls the callback with its TID and clears the bit of the
-dead ones (a unit's TIDs come from its row directory; chunks are not read), marks the SB dirty; mutable records get the deleted flag.
+dead ones (a unit's TIDs come from its row directory; chunks are not read), marks the SB dirty; write buffer records get the deleted flag.
 A scan ANDs the liveness bits only in dirty SBs; whether an SB is dirty is read from the LIVE page every time (not from the directory
 snapshot or an earlier read), see section 3, "Order of reads". Dead rows are removed from the segment by the next merge, which a segment
 with more than half of its rows dead triggers.
@@ -278,7 +278,7 @@ with more than half of its rows dead triggers.
 - **Next vblock**: `SIFT_COL_META_NEXT_VBLOCK(meta)` names the metapage field (`sum_dl`) the table AM uses for its TID block counter.
   Col segments always have `sum_dl` 0, so the generic directory switch never changes it.
 - **Delta batches**: `sift_col_add_batches` gives a source in-memory units (one SB each, rows in key order, all live) that are read
-  with the stored units of the same SB as `in_mutable` units; the installed `SiftColVisibility` decides their visibility.
+  with the stored units of the same SB as `in_wbuf` units; the installed `SiftColVisibility` decides their visibility.
 
 ### 2.9 Text of any length: inline STR chunks
 
@@ -320,7 +320,7 @@ Reading: the scan turns an inline chunk into the form every consumer knows (`sif
 from the chunk's strings in first-seen order, and a chunk of its codes; the source reports it as a `SiftColDict` with a **unique `id`**
 (a fresh one per chunk read, so a consumer that caches work per dictionary id, as SiftAgg does, never mixes it with another unit's), so
 group-by, distinct and LUT filters need no change. Row-level code (`sift_cunit_decode`, merges, verify) interns the strings into the destination's dictionary. The
-mutable lane stores a string as a varint length and the bytes (a row may span pages as before); a mutable batch keeps any length in its dictionary,
+write buffer stores a string as a varint length and the bytes (a row may span pages as before); a write buffer batch keeps any length in its dictionary,
 and its in-memory unit uses that dictionary directly.
 
 ## 3. MVCC: when a row may be read from the index
@@ -350,7 +350,7 @@ scan's snapshot, on pages it made all-visible. Two more rules complete it:
   only when the version moved); if one is gone, no page of the scan counts as all-visible and its rows are checked against the heap. A
   pass and a merge exclude each other by the maintenance lock, so while the segments are current every pass that finished before the mask
   was read ran on them.
-- **The mutable lane has no such order**, since its batch is a copy made when the source begins: no page of a lane batch counts as
+- **The write buffer has no such order**, since its batch is a copy made when the source begins: no page of a lane batch counts as
   all-visible, its rows are always checked against the heap (`ColUnit.lane`; measured with 400 000 rows in the lane: 41 to 50 ms for a
   grouped sum either way, the batch decode dominates).
 
@@ -396,7 +396,7 @@ the planner never forms an index path; only the custom scan of the plan track us
 
 ### Statistics of a leaf
 
-`SiftSrcStats` (`sift_colsrc.h`, what `provider->stats` fills) carries, per leaf, `ndistinct`, `min`, `max` and, for a group leaf, `elems_per_row`; 0 means unknown. The `sift_col` provider derives them from what the immutable segments hold without reading a chunk: the unit zones (`nvals`, `nnull`, `min`, `max`, the integer sum) and the first word of each dictionary (its entry count). The counts are over the non-NULL values of the leaf (the elements, for a child), and include rows deleted since the build; rows still in a mutable segment are not counted until they are promoted.
+`SiftSrcStats` (`sift_colsrc.h`, what `provider->stats` fills) carries, per leaf, `ndistinct`, `min`, `max` and, for a group leaf, `elems_per_row`; 0 means unknown. The `sift_col` provider derives them from what the immutable segments hold without reading a chunk: the unit zones (`nvals`, `nnull`, `min`, `max`, the integer sum) and the first word of each dictionary (its entry count). The counts are over the non-NULL values of the leaf (the elements, for a child), and include rows deleted since the build; rows still in a write buffer are not counted until they are promoted.
 
 | Leaf | `ndistinct` | `min`, `max` | `elems_per_row` |
 |---|---|---|---|
@@ -446,7 +446,7 @@ children.
 ```
 src = sift_col_open(heap, index, snapshot, mcxt, flags)       directory snapshot, VM/visibility state, privilege/RLS/SSI checks
 sift_col_begin(src, preds, npreds, sb_lo, sb_hi)              candidate units of the SB range [sb_lo, sb_hi) after zone pruning
-while (sift_col_next(src, &unit))                             ascending SB, segments in directory order, mutable units last
+while (sift_col_next(src, &unit))                             ascending SB, segments in directory order, write buffer units last
     sel = all live rows of the unit                           sift_col_sel_all
     sift_col_filter(unit, preds, n, &sel)                     scalar predicates, AND
     sift_col_filter_group(unit, gp, &sel)                     array-element predicates, same-element semantics
@@ -606,13 +606,13 @@ The storage engine is separate from the index AM so that the table AM `sift_tabl
 | L0 kernels | `sift_col_kern*.c/.h` (portable) | arrays and bit vectors | yes |
 | L1 chunks, batches, dictionaries, zones | `sift_col_enc.c/.h` (portable): `SiftColBatch`, chunk encode/decode, predicate -> key range / LUT, zone computation, batch merge | values, not pages | yes |
 | L2 segment | `sift_col_seg.c/.h`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `sift_store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
-| L3 mutable lane | `sift_col_mut.c/.h` (lanes: `sift_lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
+| L3 write buffer | `sift_col_wbuf.c/.h` (lanes: `sift_lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
 | L4 source | `sift_col_scan.c`: `SiftColSource`, units, filters, reads, selections (`sift_col.h` section 3) | a visibility callback | yes: it asks `SiftColVisibility` (below) which rows are visible |
 | L5 index glue | `sift_col_am*.c`: `ambuild`, `aminsert`, `ambulkdelete`, handler, options, the heap/VM visibility (`sift_col_vet`), SQL | the heap table | no |
 
 The one hook between L4 and L5 is the visibility rule: L4 asks the `SiftColVisibility` callbacks (`sift_col_set_visibility`, `sift_col.h`) which rows of a unit are visible; the index
 glue answers with the VM mask plus heap checks (section 3), a table AM with its own row versions / delete vectors. Chunks, zone maps,
-the nested column model, the dictionaries, the kernels and the mutable-lane record format are independent of the heap.
+the nested column model, the dictionaries, the kernels and the write buffer record format are independent of the heap.
 
 ## Changes (contract log, newest first; rebase on these)
 
@@ -632,6 +632,6 @@ the nested column model, the dictionaries, the kernels and the mutable-lane reco
   `sift_colw_set_tag` (`SiftSegEntry.reserved`), `SIFT_COL_META_NEXT_VBLOCK`, `sift_col_add_batches`.
 - 2026-10: the shredder interface is col-json's `sift_shred.h` (section 6); the core adapts it (`sift_col_shred_*` in `sift_col.h` section 4).
   `SiftColValue.overflow`, `SiftColVec.ovf`, `SiftColZone.has_ovf`, chunk flag `SIFT_COLC_OVF`, zone flag `SIFT_COLZ_OVERFLOW` added.
-- 2026-10: the index AM is `sift_col`, the table AM `sift_table`; engine headers `sift_col_enc.h` (L1), `sift_col_seg.h` (L2), `sift_col_mut.h` (L3).
+- 2026-10: the index AM is `sift_col`, the table AM `sift_table`; engine headers `sift_col_enc.h` (L1), `sift_col_seg.h` (L2), `sift_col_wbuf.h` (L3).
 - 2026-10: first contract: `sift_col.h`, `sift_col_kern.h`, kernel dispatch pattern (section 8), `SIFT_MAX_REBINDS` 16.
 - 2026-10: `SIFT_COLS_VAR` is written and read: chunk encoding 5 (`STRS`, the codec's string list), `SiftColVec.voff/vbytes`, `sift_cchunk_strs`.

@@ -53,7 +53,7 @@ sift_par_init(SiftParShared *sh, int nworkers, uint32 nsb)
 	pg_atomic_init_u32(&sh->theta, float_bits(-INFINITY));
 	SpinLockInit(&sh->mutex);
 	sh->nattached = sh->nfinished = 0;
-	sh->emitter_taken = sh->mutable_taken = sh->units_set = false;
+	sh->emitter_taken = sh->wbuf_taken = sh->units_set = false;
 	sh->units_sig = 0;
 	sh->units_n = 0;
 	sh->bind = InvalidDsaPointer;
@@ -153,14 +153,14 @@ sift_par_units_claimed(const SiftPar *par, int64 nunit)
 }
 
 bool
-sift_par_claim_mutable(SiftPar *par)
+sift_par_claim_wbuf(SiftPar *par)
 {
 	SiftParShared *sh = par->sh;
 	bool		mine;
 
 	SpinLockAcquire(&sh->mutex);
-	mine = !sh->mutable_taken;
-	sh->mutable_taken = true;
+	mine = !sh->wbuf_taken;
+	sh->wbuf_taken = true;
 	SpinLockRelease(&sh->mutex);
 	return mine;
 }

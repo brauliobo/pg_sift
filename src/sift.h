@@ -93,7 +93,8 @@ typedef struct SiftOptions
 	int			stemmer;		/* text search dictionary name, "" = none */
 	bool		case_folding;
 	bool		accent_folding;
-	int			mutable_limit;	/* kB; seal the active mutable segment above it */
+	int			write_buffer_limit;	/* kB; seal the open write buffer above it */
+	int			mutable_limit;	/* DEPRECATED ALIAS of write_buffer_limit: the 2.0.0 spelling, read by sift_amoptions only */
 	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */
 	int			merge_fanin;	/* segments of a tier that trigger a merge (read at merge time, not part of the format) */
 	int			build_segments; /* 0 = one per build participant */
@@ -136,7 +137,7 @@ typedef struct SiftOptions
 
 #define SIFT_DEFAULT_K1				1.2
 #define SIFT_DEFAULT_B				0.75
-#define SIFT_DEFAULT_MUTABLE_LIMIT	4096
+#define SIFT_DEFAULT_WRITE_BUFFER_LIMIT	4096
 #define SIFT_DEFAULT_VACUUM_SEGMENTS	2
 
 /* Returns the index options with defaults filled in; never NULL */

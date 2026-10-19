@@ -1,5 +1,5 @@
 /*
- * sift_lane.c - the lane chains of a mutable segment (DESIGN.md (c)); see sift_lane.h. The code of sift_mutable.c that does not depend on
+ * sift_lane.c - the lane chains of a write buffer (DESIGN.md (c)); see sift_lane.h. The code of sift_wbuf.c that does not depend on
  * what the records are: the active segment is created and sealed under SIFT_ACTIVE_LOCK_BLKNO, appends take the tail of a lane, then the
  * newly allocated page, then the header page; sealing takes lane tails one at a time and never the header.
  */
@@ -27,16 +27,16 @@ sift_lane_init_page(Page page, Size hdrsize)
 void
 sift_lane_init_header(Page page, uint64 gen, BlockNumber first, int nlanes)
 {
-	SiftMutHeaderData *hdr = SiftLaneHdr(page);
+	SiftWbufHeaderData *hdr = SiftLaneHdr(page);
 
 	hdr->gen = gen;
 	for (int l = 0; l < SIFT_LANES; l++)
 		hdr->lanes[l] = l < nlanes ? (SiftLaneData) {first + l, first + l, 1} : (SiftLaneData) {InvalidBlockNumber, InvalidBlockNumber, 0};
-	SiftPageSetUsed(page, sizeof(SiftMutHeaderData));
+	SiftPageSetUsed(page, sizeof(SiftWbufHeaderData));
 }
 
 uint32
-sift_lane_npages(const SiftMutHeaderData *hdr)
+sift_lane_npages(const SiftWbufHeaderData *hdr)
 {
 	uint32		n = 0;
 
@@ -55,11 +55,11 @@ sift_lane_read_locked(Relation index, BlockNumber blk, int mode)
 }
 
 void
-sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftMutHeaderData *hdr)
+sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbufHeaderData *hdr)
 {
 	Buffer		buf = sift_lane_read_locked(index, e->header_blk, BUFFER_LOCK_SHARE);
 
-	sift_store_check_page(index, buf, SIFT_PT_MUTHEADER, e->gen);
+	sift_store_check_page(index, buf, SIFT_PT_WBUFHEADER, e->gen);
 	*hdr = *SiftLaneHdr(BufferGetPage(buf));
 	UnlockReleaseBuffer(buf);
 }
@@ -82,10 +82,10 @@ new_segment(Relation index, Size hdrsize)
 	uint64		gen = sift_store_new_gen(index);
 	Buffer		bufs[SIFT_LANES + 1];
 	BlockNumber first;
-	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_MUTABLE_ACTIVE};
+	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_WBUF_OPEN};
 
-	bufs[0] = sift_alloc_page(index, SIFT_PT_MUTHEADER, gen);
-	first = sift_alloc_extent(index, SIFT_LANES, SIFT_PT_MUTDATA, gen, bufs + 1);
+	bufs[0] = sift_alloc_page(index, SIFT_PT_WBUFHEADER, gen);
+	first = sift_alloc_extent(index, SIFT_LANES, SIFT_PT_WBUFDATA, gen, bufs + 1);
 	e.header_blk = BufferGetBlockNumber(bufs[0]);
 	for (int i = 0; i <= SIFT_LANES; i += MAX_GENERIC_XLOG_PAGES)
 	{
@@ -119,7 +119,7 @@ sift_lane_swap_active(SiftDirectoryData *dir, uint64 sealed, const SiftSegEntry 
 {
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].gen == sealed)
-			dir->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
+			dir->segs[i].kind = SIFT_SEG_WBUF_SEALED;
 	dir->segs[dir->nsegs++] = *fresh;
 }
 
@@ -150,7 +150,7 @@ create_active(Relation index, Size hdrsize)
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(index, snap);
-	if (find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE) == NULL && (room = snap->nsegs < SIFT_MAX_SEGMENTS))
+	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < SIFT_MAX_SEGMENTS))
 	{
 		SwapArg		arg = {0};
 
@@ -167,7 +167,7 @@ create_active(Relation index, Size hdrsize)
 static void
 flag_chains(Relation index, const SiftSegEntry *entry, bool whole)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 
 	sift_lane_read_header(index, entry, &hdr);
 	for (int l = 0; l < SIFT_LANES; l++)
@@ -179,14 +179,14 @@ flag_chains(Relation index, const SiftSegEntry *entry, bool whole)
 			Buffer		buf = sift_lane_read_locked(index, blk, BUFFER_LOCK_EXCLUSIVE);
 			Page		page;
 
-			sift_store_check_page(index, buf, SIFT_PT_MUTDATA, entry->gen);
+			sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, entry->gen);
 			page = BufferGetPage(buf);
 			blk = SiftLaneHead(page)->next;
-			if ((whole || !BlockNumberIsValid(blk)) && !(SiftLaneHead(page)->flags & SIFT_MUTPAGE_SEALED))
+			if ((whole || !BlockNumberIsValid(blk)) && !(SiftLaneHead(page)->flags & SIFT_WBUFPAGE_SEALED))
 			{
 				GenericXLogState *state = GenericXLogStart(index);
 
-				SiftLaneHead(GenericXLogRegisterBuffer(state, buf, 0))->flags |= SIFT_MUTPAGE_SEALED;
+				SiftLaneHead(GenericXLogRegisterBuffer(state, buf, 0))->flags |= SIFT_WBUFPAGE_SEALED;
 				GenericXLogFinish(state);
 			}
 			UnlockReleaseBuffer(buf);
@@ -216,10 +216,10 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint32 limit, bool (*ha
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(index, snap);
-	act = find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE);
+	act = find_kind(snap, SIFT_SEG_WBUF_OPEN);
 	if (act != NULL)
 	{
-		SiftMutHeaderData hdr;
+		SiftWbufHeaderData hdr;
 
 		sift_lane_read_header(index, act, &hdr);
 		if (force ? has_records(index, act) : sift_lane_npages(&hdr) >= limit)
@@ -249,7 +249,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, b
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *act;
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 
 	for (;;)
 	{
@@ -259,7 +259,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, b
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("index \"%s\" was built with other %s", RelationGetRelationName(index), what),
 					 errhint("Use REINDEX to apply the new options.")));
-		if ((act = find_kind(snap, SIFT_SEG_MUTABLE_ACTIVE)) != NULL)
+		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
 			break;
 		if (!create_active(index, hdrsize) && !make_room(index))
 			ereport(ERROR,
@@ -279,8 +279,8 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, b
 static bool
 open_tail(Page page, uint64 gen)
 {
-	return !PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_MUTDATA &&
-		SiftPageGetOpaque(page)->gen == gen && !(SiftLaneHead(page)->flags & SIFT_MUTPAGE_SEALED);
+	return !PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_WBUFDATA &&
+		SiftPageGetOpaque(page)->gen == gen && !(SiftLaneHead(page)->flags & SIFT_WBUFPAGE_SEALED);
 }
 
 Buffer
@@ -322,13 +322,13 @@ Buffer
 sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Size hdrsize, uint32 limit,
 			   SiftLaneFill fill, void *arg, bool *crossed)
 {
-	Buffer		nb = sift_alloc_page(index, SIFT_PT_MUTDATA, gen);
+	Buffer		nb = sift_alloc_page(index, SIFT_PT_WBUFDATA, gen);
 	Buffer		hb = sift_lane_read_locked(index, hdr_blk, BUFFER_LOCK_EXCLUSIVE);
 	GenericXLogState *state = GenericXLogStart(index);
 	Page		cp = GenericXLogRegisterBuffer(state, cur, 0);
 	Page		np = GenericXLogRegisterBuffer(state, nb, 0);
 	Page		hp = GenericXLogRegisterBuffer(state, hb, 0);
-	SiftMutHeaderData *hd = SiftLaneHdr(hp);
+	SiftWbufHeaderData *hd = SiftLaneHdr(hp);
 
 	SiftLaneHead(cp)->next = BufferGetBlockNumber(nb);
 	sift_lane_init_page(np, hdrsize);
@@ -350,17 +350,17 @@ sift_lane_copy_page(Relation index, const SiftSegEntry *e, BlockNumber blk, Page
 {
 	Buffer		buf = sift_lane_read_locked(index, blk, BUFFER_LOCK_SHARE);
 
-	sift_store_check_page(index, buf, SIFT_PT_MUTDATA, e->gen);
+	sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, e->gen);
 	memcpy(dst, BufferGetPage(buf), BLCKSZ);
 	UnlockReleaseBuffer(buf);
 	if (SiftPageGetUsed(dst) < hdrsize)
-		SIFT_CORRUPT(index, "Mutable block %u of segment %llu is truncated.", blk, (unsigned long long) e->gen);
+		SIFT_CORRUPT(index, "Write buffer block %u of segment %llu is truncated.", blk, (unsigned long long) e->gen);
 }
 
 void
 sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 
 	it->index = index;
 	it->entry = entry;
@@ -434,7 +434,7 @@ sift_lane_bulkdelete(Relation index, const SiftSegEntry *entry, Size hdrsize, Si
 BlockNumber *
 sift_lane_blocks(Relation index, const SiftSegEntry *entry, int *n)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 	int			cap = 64;
 	BlockNumber *blks = palloc(cap * sizeof(BlockNumber));
 
@@ -445,7 +445,7 @@ sift_lane_blocks(Relation index, const SiftSegEntry *entry, int *n)
 		{
 			Buffer		buf = sift_lane_read_locked(index, blk, BUFFER_LOCK_SHARE);
 
-			sift_store_check_page(index, buf, SIFT_PT_MUTDATA, entry->gen);
+			sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, entry->gen);
 			if (*n == cap)
 				blks = repalloc(blks, (cap *= 2) * sizeof(BlockNumber));
 			blks[(*n)++] = blk;
@@ -485,31 +485,31 @@ void
 sift_lane_verify(Relation index, const SiftSegEntry *entry, Size hdrsize,
 				 void (*check) (void *arg, Page page, BlockNumber blk), void *arg)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 	uint64		gen = entry->gen;
 	Page		page = palloc(BLCKSZ);
 
 	sift_lane_read_header(index, entry, &hdr);
 	if (hdr.gen != gen)
-		SIFT_CORRUPT(index, "Mutable header of segment %llu carries generation %llu.", (unsigned long long) gen, (unsigned long long) hdr.gen);
+		SIFT_CORRUPT(index, "Write buffer header of segment %llu carries generation %llu.", (unsigned long long) gen, (unsigned long long) hdr.gen);
 	for (int l = 0; l < SIFT_LANES; l++)
 	{
 		BlockNumber blk = hdr.lanes[l].head;
 		uint32		npages = 0;
 
 		if (!BlockNumberIsValid(blk))
-			SIFT_CORRUPT(index, "Lane %d of mutable segment %llu has no pages.", l, (unsigned long long) gen);
+			SIFT_CORRUPT(index, "Lane %d of write buffer %llu has no pages.", l, (unsigned long long) gen);
 		for (; BlockNumberIsValid(blk); npages++)
 		{
 			if (npages > RelationGetNumberOfBlocks(index))
-				SIFT_CORRUPT(index, "Lane %d of mutable segment %llu is a cycle.", l, (unsigned long long) gen);
+				SIFT_CORRUPT(index, "Lane %d of write buffer %llu is a cycle.", l, (unsigned long long) gen);
 			sift_lane_copy_page(index, entry, blk, page, hdrsize);
 			check(arg, page, blk);
 			blk = SiftLaneHead(page)->next;
 		}
 		/* appenders may have added pages since the header was read */
 		if (npages < hdr.lanes[l].npages)
-			SIFT_CORRUPT(index, "Lane %d of mutable segment %llu has %u pages, its header %u.",
+			SIFT_CORRUPT(index, "Lane %d of write buffer %llu has %u pages, its header %u.",
 					l, (unsigned long long) gen, npages, hdr.lanes[l].npages);
 	}
 	pfree(page);

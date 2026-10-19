@@ -39,7 +39,7 @@ CREATE INDEX cv_types_col ON cv_types USING sift_col (id, grp, i2, i4, i8, f4, f
 -- the same rows in a sift_table (every type is kept exactly), sealed into column groups
 CREATE TABLE cv_tt USING sift_table AS SELECT * FROM cv_types;
 VACUUM cv_tt;
--- rows in the write segment and tombstones next to the sealed groups, and a BM25 index on a sift_table
+-- rows in the write buffer and tombstones next to the sealed groups, and a BM25 index on a sift_table
 INSERT INTO cv_tt SELECT 3000 + i, i % 7, (i % 100)::int2, i, i, i / 4.0, i / 4.0, i / 7.0, i / 3.0, i / 11.0, i, i, 'tx' || (i % 40), 'vc' || (i % 12), 'c' || (i % 9),
 	decode(md5(i::text), 'hex'), true, date '2024-06-01', timestamp '2024-06-01', timestamptz '2024-06-01+00', time '12:00', interval '1 day',
 	md5(i::text)::uuid, 1::money, 'red', ARRAY[i], '{}' FROM generate_series(1, 200) i;

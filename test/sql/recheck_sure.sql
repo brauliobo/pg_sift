@@ -2,7 +2,7 @@
 -- phrase, a NOT of a superset) are not rechecked against the text, the others are, and every path
 -- (SiftCount, SiftScan, Bitmap Heap Scan) returns what a sequential evaluation does. Run without word
 -- positions (the heap decides every phrase) and with them (the heap decides only the documents the
--- positions do not cover: mutable and promoted segments, a negated phrase)
+-- positions do not cover: write buffers and promoted segments, a negated phrase)
 CREATE EXTENSION pg_sift;
 
 CREATE TABLE s (id int PRIMARY KEY, body text, grp int);
@@ -67,11 +67,11 @@ SELECT * FROM report();
 DELETE FROM s WHERE id % 7 = 0;
 SELECT * FROM report();
 
--- inserts after the build live in the mutable segment, whose matches are all rechecked
+-- inserts after the build live in the write buffer, whose matches are all rechecked
 INSERT INTO s SELECT 2000 + i, (ARRAY['quick fox', 'fox quick', 'dog'])[1 + i % 3], 0 FROM generate_series(1, 90) i;
 SELECT * FROM report();
 
--- vacuum clears the dead documents' bits (dirty superblocks), merge folds the mutable segment in
+-- vacuum clears the dead documents' bits (dirty superblocks), merge folds the write buffer in
 VACUUM s;
 SELECT * FROM report();
 SELECT sift.promote('s_idx') IS NOT NULL AS promoted, sift.merge('s_idx') IS NOT NULL AS merged;
@@ -96,7 +96,7 @@ SELECT * FROM report();
 DELETE FROM s WHERE id % 11 = 0;
 SELECT * FROM report();
 
--- the mutable segment has no positions, nor does the segment promoted from it: the index mixes both
+-- the write buffer has no positions, nor does the segment promoted from it: the index mixes both
 INSERT INTO s SELECT 3000 + i, (ARRAY['quick fox', 'fox quick', 'dog'])[1 + i % 3], 0 FROM generate_series(1, 90) i;
 SELECT * FROM report();
 VACUUM s;

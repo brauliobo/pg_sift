@@ -1,7 +1,7 @@
 /*
- * sift_col_mut_test.c - test-only SQL functions sift._test_col_mut_* for the mutable lanes of the column engine (sift_col_mut.c),
+ * sift_col_wbuf_test.c - test-only SQL functions sift._test_col_wbuf_* for the write buffer lanes of the column engine (sift_col_wbuf.c),
  * compiled only with SIFT_TESTING and registered by pg_sift_test. They run on an index of the BM25 access method created on an empty
- * table, which has the metapage, directory and free list the store layer needs and no segments; sift._test_col_mut_prepare gives it
+ * table, which has the metapage, directory and free list the store layer needs and no segments; sift._test_col_wbuf_prepare gives it
  * the schema hash of the test schema, then rows are appended, sealed, read back, deleted from and verified without the index AM.
  *
  * The test schema is an order with its line items (leaf, parent group):
@@ -26,18 +26,18 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift_col_mut.h"
+#include "sift_col_wbuf.h"
 #include "sift_lane.h"
 
-PG_FUNCTION_INFO_V1(sift_test_col_mut_prepare);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_append);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_torn);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_long);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_rows);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_batches);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_delete);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_seal);
-PG_FUNCTION_INFO_V1(sift_test_col_mut_segments);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_append);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_torn);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_long);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 
 #define NCOLS		10
 #define ID_BITS		24
@@ -306,10 +306,10 @@ check_row(uint64 seed, const SiftColRow *got, bool exact)
 static const char *
 kind_name(SiftSegKind kind)
 {
-	return kind == SIFT_SEG_MUTABLE_ACTIVE ? "active" : kind == SIFT_SEG_MUTABLE_SEALED ? "sealed" : "immutable";
+	return kind == SIFT_SEG_WBUF_OPEN ? "active" : kind == SIFT_SEG_WBUF_SEALED ? "sealed" : "immutable";
 }
 
-/* The mutable segments of the directory now, in directory order */
+/* The write buffers of the directory now, in directory order */
 static SiftDirSnapshot *
 read_dir(Relation index)
 {
@@ -320,9 +320,9 @@ read_dir(Relation index)
 }
 
 static bool
-is_mutable(const SiftSegEntry *e)
+is_wbuf(const SiftSegEntry *e)
 {
-	return e->kind == SIFT_SEG_MUTABLE_ACTIVE || e->kind == SIFT_SEG_MUTABLE_SEALED;
+	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
 }
 
 static void
@@ -335,7 +335,7 @@ set_hash(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 
 /* (index regclass, hash_xor int4 DEFAULT 0): the index now carries the test schema's hash (xor hash_xor: a stale definition) */
 Datum
-sift_test_col_mut_prepare(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_prepare(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	uint32		hash = test_schema()->hash ^ (uint32) PG_GETARG_INT32(1);
@@ -345,22 +345,22 @@ sift_test_col_mut_prepare(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(test_schema()->hash);
 }
 
-/* (kb int4): the mutable limit the appends use */
+/* (kb int4): the write buffer limit the appends use */
 /*
  * Locks the tails of up to six lanes from this backend's own, so that the next append has to take another lane; refreshes the hint's tails.
  * Sessions doing this at once would wait for each other's tails.
  */
 static int
-lock_busy(Relation index, SiftCMutHint *hint, uint64 rnd, Buffer *bufs)
+lock_busy(Relation index, SiftCWbufHint *hint, uint64 rnd, Buffer *bufs)
 {
 	SiftDirSnapshot *snap = read_dir(index);
 	int			n = 0;
 
 	for (int i = 0; i < snap->nsegs; i++)
 	{
-		SiftMutHeaderData hdr;
+		SiftWbufHeaderData hdr;
 
-		if (snap->segs[i].kind != SIFT_SEG_MUTABLE_ACTIVE)
+		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
 			continue;
 		sift_lane_read_header(index, &snap->segs[i], &hdr);
 		if (hint->gen != snap->segs[i].gen)
@@ -382,14 +382,14 @@ lock_busy(Relation index, SiftCMutHint *hint, uint64 rnd, Buffer *bufs)
  * across them; busy makes most appends meet locked lane tails. Returns how many appends reported the segment as full.
  */
 Datum
-sift_test_col_mut_append(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_append(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	uint64		seed = PG_GETARG_INT64(1);
 	int64		first = PG_GETARG_INT32(2),
 				n = PG_GETARG_INT32(3);
 	bool		busy = PG_GETARG_BOOL(4);
-	SiftCMutHint hint = {0};
+	SiftCWbufHint hint = {0};
 	MemoryContext old = CurrentMemoryContext,
 				rowcxt = AllocSetContextCreate(CurrentMemoryContext, "test row", ALLOCSET_DEFAULT_SIZES);
 	int64		crossed = 0;
@@ -406,7 +406,7 @@ sift_test_col_mut_append(PG_FUNCTION_ARGS)
 		gen_row(seed, id, t);
 		if (busy)
 			nbusy = lock_busy(index, &hint, pg_prng_uint64(&pg_global_prng_state), bufs);
-		crossed += sift_cmut_append(index, &hint, test_schema(), &t->row);
+		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row);
 		for (int k = 0; k < nbusy; k++)
 			UnlockReleaseBuffer(bufs[k]);
 		MemoryContextSwitchTo(old);
@@ -419,34 +419,34 @@ sift_test_col_mut_append(PG_FUNCTION_ARGS)
 
 /* (index regclass, seed int8, id int4, fail_after int4): a big row whose append fails after fail_after page links, leaving it torn */
 Datum
-sift_test_col_mut_torn(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_torn(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
-	SiftCMutHint hint = {0};
+	SiftCWbufHint hint = {0};
 	TestRow    *t = palloc(sizeof(TestRow));
 	int64		id = PG_GETARG_INT32(2);
 
 	if (id % 1000 != 999)
 		elog(ERROR, "only the rows with id %% 1000 = 999 are big enough to be torn");
 	gen_row(PG_GETARG_INT64(1), id, t);
-	sift_cmut_fail_grow = PG_GETARG_INT32(3);
-	sift_cmut_append(index, &hint, test_schema(), &t->row);
-	sift_cmut_fail_grow = 0;
+	sift_cwbuf_fail_grow = PG_GETARG_INT32(3);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_fail_grow = 0;
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }
 
 /* (index regclass): appends a row with a 300 000 byte string: its record spans several pages */
 Datum
-sift_test_col_mut_long(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_long(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
-	SiftCMutHint hint = {0};
+	SiftCWbufHint hint = {0};
 	TestRow    *t = palloc(sizeof(TestRow));
 
 	gen_row(1, 1, t);
 	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
-	sift_cmut_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }
@@ -460,9 +460,9 @@ put3(ReturnSetInfo *rsinfo, Datum a, Datum b, Datum c)
 	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 }
 
-/* (index regclass, seed int8) -> (gen int8, id int8, deleted bool): every record of the mutable segments through the reader, each checked against its generator */
+/* (index regclass, seed int8) -> (gen int8, id int8, deleted bool): every record of the write buffers through the reader, each checked against its generator */
 Datum
-sift_test_col_mut_rows(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_rows(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
@@ -473,27 +473,27 @@ sift_test_col_mut_rows(PG_FUNCTION_ARGS)
 	snap = read_dir(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
-		SiftCMutReader *r;
+		SiftCWbufReader *r;
 		SiftColRow	row;
 		bool		deleted;
 
-		if (!is_mutable(&snap->segs[i]))
+		if (!is_wbuf(&snap->segs[i]))
 			continue;
-		r = sift_cmut_open(index, &snap->segs[i], test_schema(), CurrentMemoryContext);
-		while (sift_cmut_next(r, &row, &deleted))
+		r = sift_cwbuf_open(index, &snap->segs[i], test_schema(), CurrentMemoryContext);
+		while (sift_cwbuf_next(r, &row, &deleted))
 			put3(rsinfo, Int64GetDatum(snap->segs[i].gen), Int64GetDatum(check_row(seed, &row, true)), BoolGetDatum(deleted));
-		sift_cmut_close(r);
+		sift_cwbuf_close(r);
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
 }
 
 /*
- * (index regclass, seed int8) -> (gen int8, sb int8, id int8): the live rows of every mutable segment as batches. The batches ascend by
+ * (index regclass, seed int8) -> (gen int8, sb int8, id int8): the live rows of every write buffer as batches. The batches ascend by
  * superblock, their keys ascend and belong to it, and every row is checked against its generator.
  */
 Datum
-sift_test_col_mut_batches(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
@@ -508,9 +508,9 @@ sift_test_col_mut_batches(PG_FUNCTION_ARGS)
 		SiftColBatch **batches;
 		SiftColRow	row = {0};
 
-		if (!is_mutable(&snap->segs[i]))
+		if (!is_wbuf(&snap->segs[i]))
 			continue;
-		batches = sift_cmut_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
+		batches = sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
 		for (int k = 0; k < nb; k++)
 		{
 			SiftColBatch *b = batches[k];
@@ -543,9 +543,9 @@ dead_every(ItemPointer tid, void *state)
 	return id_of(tid) % ((DeleteState *) state)->modulus == 0;
 }
 
-/* (index regclass, modulus int4): VACUUM's pass over the mutable segments; the rows with id % modulus = 0 are dead. Returns the rows flagged. */
+/* (index regclass, modulus int4): VACUUM's pass over the write buffers; the rows with id % modulus = 0 are dead. Returns the rows flagged. */
 Datum
-sift_test_col_mut_delete(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	DeleteState state = {PG_GETARG_INT32(1)};
@@ -556,19 +556,19 @@ sift_test_col_mut_delete(PG_FUNCTION_ARGS)
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	snap = read_dir(index);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (is_mutable(&snap->segs[i]))
-			removed += sift_cmut_bulkdelete(index, &snap->segs[i], test_schema(), dead_every, &state, &stats);
+		if (is_wbuf(&snap->segs[i]))
+			removed += sift_cwbuf_bulkdelete(index, &snap->segs[i], test_schema(), dead_every, &state, &stats);
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(removed);
 }
 
-/* (index regclass, force bool): sift_cmut_seal; the sealed generation or 0 */
+/* (index regclass, force bool): sift_cwbuf_seal; the sealed generation or 0 */
 Datum
-sift_test_col_mut_seal(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_seal(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
-	uint64		gen = sift_cmut_seal(index, PG_GETARG_BOOL(1));
+	uint64		gen = sift_cwbuf_seal(index, PG_GETARG_BOOL(1));
 
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(gen);
@@ -578,7 +578,7 @@ sift_test_col_mut_seal(PG_FUNCTION_ARGS)
 static int
 lanes_used(Relation index, const SiftSegEntry *e)
 {
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 	int			used = 0;
 
 	sift_lane_read_header(index, e, &hdr);
@@ -600,11 +600,11 @@ lanes_used(Relation index, const SiftSegEntry *e)
 }
 
 /*
- * (index regclass) -> (gen, kind, nrows, npages, live, extents, lanes): the mutable segments; live is sift_cmut_verify's, extents the blocks
- * sift_cmut_pages reports, lanes the lanes holding records
+ * (index regclass) -> (gen, kind, nrows, npages, live, extents, lanes): the write buffers; live is sift_cwbuf_verify's, extents the blocks
+ * sift_cwbuf_pages reports, lanes the lanes holding records
  */
 Datum
-sift_test_col_mut_segments(PG_FUNCTION_ARGS)
+sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
@@ -623,17 +623,17 @@ sift_test_col_mut_segments(PG_FUNCTION_ARGS)
 		Datum		values[7];
 		bool		nulls[7] = {0};
 
-		if (!is_mutable(e))
+		if (!is_wbuf(e))
 			continue;
-		sift_cmut_summary(index, e, &nrows, &npages);
-		ext = sift_cmut_pages(index, e, &next);
+		sift_cwbuf_summary(index, e, &nrows, &npages);
+		ext = sift_cwbuf_pages(index, e, &next);
 		for (int k = 0; k < next; k++)
 			blocks += ext[k].nblocks;
 		values[0] = Int64GetDatum(e->gen);
 		values[1] = CStringGetTextDatum(kind_name(e->kind));
 		values[2] = Int64GetDatum(nrows);
 		values[3] = Int64GetDatum(npages);
-		values[4] = Int64GetDatum(sift_cmut_verify(index, e, test_schema()));
+		values[4] = Int64GetDatum(sift_cwbuf_verify(index, e, test_schema()));
 		values[5] = Int64GetDatum(blocks);
 		values[6] = Int32GetDatum(lanes_used(index, e));
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);

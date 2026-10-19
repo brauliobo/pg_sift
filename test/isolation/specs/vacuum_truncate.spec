@@ -1,6 +1,6 @@
 # VACUUM giving the free blocks at the end of the index file back to the operating system (DESIGN.md (i)), against the
 # sessions that use the index: a session holding any lock on it keeps VACUUM from truncating (it never waits), and a session
-# that appended to the mutable segment before the truncation appends after it, although the blocks its lane tails name are gone.
+# that appended to the write buffer before the truncation appends after it, although the blocks its lane tails name are gone.
 # requires: build insert vacuum scan promote merge verify index_info
 
 setup
@@ -17,7 +17,7 @@ teardown
 	DROP TABLE IF EXISTS iso_tr_size;
 }
 
-# appends to the mutable segment of the index, for good
+# appends to the write buffer of the index, for good
 session s1
 setup		{ SET sift.async_maintenance = off; }
 step s1i	{ INSERT INTO iso_tr SELECT g, 'common appended ' || g FROM generate_series(100001, 140000) g; }

@@ -1,7 +1,7 @@
 /*
  * sift_estimate.c - the planner asks for the same estimate several times per statement (the selectivity of the clause, the
  * cost of each path, the index path), and a bind per question is most of what planning a query costs. An estimate reads the
- * dictionaries of the immutable segments only (never the mutable ones), so the index file, the version of its directory
+ * dictionaries of the immutable segments only (never the write buffer), so the index file, the version of its directory
  * (every change of a segment goes through it) and the expansion cap decide it with the query: the last few answers are kept.
  */
 #include "postgres.h"

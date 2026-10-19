@@ -1,6 +1,6 @@
 # Naming: the write buffer
 
-Decision for 3.0. The one-pass rename is `scripts/rename-write-buffer.sh` (not run yet; the coordinator runs it with the folder restructure).
+Decision for 3.0. The one-pass rename is `scripts/rename-write-buffer.sh`: run once on the 3.0 branch before the `src/` restructure (`scripts/restructure-src.sh`); run it again, then `--check`, on a branch that was open during it.
 
 ## Decision: one term, "write buffer"
 

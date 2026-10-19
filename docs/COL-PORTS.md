@@ -24,7 +24,7 @@ no vector files (the dispatchers are `__x86_64__`-guarded); nothing was linked o
 
 PostgreSQL-bound, and staying so: the page/buffer store behind `sift_store.h` (PG: `sift_store.c`, buffer manager, generic WAL; SQLite
 already implements the same interface in `sqlite/sqstore.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
-`sift_col_scan.c`, the `SiftColVisibility` callbacks), mutable lanes and WAL (`sift_col_mut.c`), index AM/build/maintenance/verify
+`sift_col_scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`sift_col_wbuf.c`), index AM/build/maintenance/verify
 (`sift_col_am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`sift_shred_pg.c`), planner and custom scan
 (`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`sift_table*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
 interface (docs/COL.md): the segment's liveness bits and an atomically published manifest give a single-writer host a snapshot by
@@ -78,7 +78,7 @@ and S3) is the standard shape and the only one that matches "highest industry st
 Fixed on `feat/v3-ports` (pure refactors, PostgreSQL behaviour unchanged):
 
 1. `sift_col.h` declared PostgreSQL-only items (`Node`, `PG_FUNCTION_ARGS` entry points, reloptions struct, relcache accessors,
-   shredder adapter on `Relation`): moved to the new `sift_col_pg.h`; includes added to `sift_col_am.h`, `sift_col_mut.c`, `sift_aggcol.c`.
+   shredder adapter on `Relation`): moved to the new `sift_col_pg.h`; includes added to `sift_col_am.h`, `sift_col_wbuf.c`, `sift_aggcol.c`.
 2. `sqlite/host/host.h` lacked `PG_INT16_MAX/MIN`, `PG_INT64_MAX/MIN` (used by `sift_col_enc.c`, `sift_shred.c`, `sift_shred_kern_avx2.c`).
 3. `sift_colz.h` promised `sqlite/host/colz.c`, which did not exist: four unresolved `sift_colz_*` symbols at link. `sift_colz.c`
    includes only `sift_host.h`, so it joined the list; `check-portable.sh` allows the optional `lz4.h`/`lz4hc.h`/`zstd.h`.

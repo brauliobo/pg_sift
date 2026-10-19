@@ -21,7 +21,7 @@ SELECT 'filler', count(*), sum(id) FROM docs WHERE body @@> 'filler';
 SELECT 'rareterm', count(*), sum(id) FROM docs WHERE body @@> 'rareterm';
 SELECT 'dead rows of the dirty segment (id % 10 = 3, id <= 1500)', count(*) FROM docs WHERE id <= 1500 AND id % 10 = 3;
 SELECT 'live rows of the dirty segment', count(*) FROM docs WHERE body @@> 'alpha0 OR alpha1 OR alpha2 OR alpha3 OR alpha4 OR alpha5 OR alpha6' AND id <= 1500;
-SELECT 'mutable rows (id > 2900)', count(*), sum(id) FROM docs WHERE body @@> 'w7' AND id > 2900;
+SELECT 'write buffer rows (id > 2900)', count(*), sum(id) FROM docs WHERE body @@> 'w7' AND id > 2900;
 
 \echo ranked (id score), ties broken by id
 SELECT id, round(sift.score(ctid)::numeric, 3) FROM docs WHERE body @@> 'gamma OR rareterm OR alpha3'

@@ -2,7 +2,7 @@
  * sift_table_scan.c - sequential, TID range, parallel, bitmap and index scans of a sift_table, TID fetches, ANALYZE sampling
  * and CREATE INDEX (docs/COL-TAM.md section 4). Every row returned goes through sift_tbl_visible.
  *
- * A scan reads, in order, the delta segments (a page copy at a time, rows in slot order) and the column groups (a unit of the
+ * A scan reads, in order, the write buffers (a page copy at a time, rows in slot order) and the column groups (a unit of the
  * engine at a time, sift_table_seg.c). It works on a private copy of the directory taken at begin, protected by its registered
  * snapshot (P4 of sift_store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
  * (visibility, index build verdict) is the caller's.
@@ -39,9 +39,9 @@
 typedef struct SiftTblParallel
 {
 	ParallelTableScanDescData base;
-	pg_atomic_uint64 next;		/* next unit to hand out: the delta pages, then the superblocks of the column groups */
+	pg_atomic_uint64 next;		/* next unit to hand out: the write buffer pages, then the superblocks of the column groups */
 	uint64		nunits;
-	uint64		ndelta;			/* units that are delta pages */
+	uint64		nwbuf;			/* units that are write buffer pages */
 	SiftDirSnapshot dir;		/* the directory every participant reads */
 	int			nsegs;
 	struct
@@ -60,11 +60,11 @@ par_fill(Relation rel, SiftTblParallel *par)
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tbl_refresh(rel, st);
-	par->nsegs = st->ndelta;
+	par->nsegs = st->nwbuf;
 	par->nunits = 0;
-	for (int i = 0; i < st->ndelta; i++)
+	for (int i = 0; i < st->nwbuf; i++)
 	{
-		SiftTblSeg *seg = &st->delta[i];
+		SiftTblSeg *seg = &st->wbuf[i];
 
 		sift_tbl_seg_load(rel, seg);
 		par->seg[i].gen = seg->gen;
@@ -74,7 +74,7 @@ par_fill(Relation rel, SiftTblParallel *par)
 		par->seg[i].npages = seg->npages;
 		par->nunits += seg->npages;
 	}
-	par->ndelta = par->nunits;
+	par->nwbuf = par->nunits;
 	par->dir = st->dir;
 	par->nunits += SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) / SIFT_SB_PAGES + 1;
 	pg_atomic_write_u64(&par->next, 0);
@@ -121,8 +121,8 @@ typedef struct SiftTblScan
 	TupleDesc	desc;			/* of the rows returned: the slot's, which is the old one while ALTER TABLE rewrites */
 	bool		snap_registered;
 	int			nseg;
-	SiftTblSeg *seg;			/* private copy of the delta segments (page tables complete) */
-	uint32		dpos;			/* delta pages passed, in the segments' order: the page in the copy is number dpos - 1 */
+	SiftTblSeg *seg;			/* private copy of the write buffers (page tables complete) */
+	uint32		dpos;			/* write buffer pages passed, in the segments' order: the page in the copy is number dpos - 1 */
 	uint32		ndpages;
 	bool		fresh;			/* at the start or at the end: a forward scan goes on from the first row, a backward one from the last */
 	SiftTblSeg *cur;			/* segment of the page copy */
@@ -130,7 +130,7 @@ typedef struct SiftTblScan
 	Page		copy;
 	uint32		nrows;
 	uint32		ri;
-	const SiftTblRec *rec;		/* the delta record of the version last returned */
+	const SiftTblRec *rec;		/* the write buffer record of the version last returned */
 	SiftDirSnapshot *dir;		/* the directory the scan reads (its own copy, or the leader's) */
 	SiftTblGroupScan *g;
 	bool		in_groups;		/* the versions come from g */
@@ -149,7 +149,7 @@ typedef struct SiftTblScan
 	uint64		an_next;		/* visits so far */
 	uint64		an_p;			/* physical blocks of the table */
 	uint64		an_m;			/* visits the sampler will make at most */
-	uint64		an_delta;		/* delta pages */
+	uint64		an_wbuf;		/* write buffer pages */
 	uint64	   *an_ranges;		/* [an_nranges][2] vblocks [from, to) of the groups */
 	int			an_nranges;
 	uint64		an_v;			/* vblocks of the groups */
@@ -186,7 +186,7 @@ scan_open_state(Relation rel, SiftTblScan *s)
 		s->dir = palloc(sizeof(SiftDirSnapshot));
 		*s->dir = st->dir;
 	}
-	s->nseg = s->par ? s->par->nsegs : st->ndelta;
+	s->nseg = s->par ? s->par->nsegs : st->nwbuf;
 	s->seg = s->nseg ? palloc0(s->nseg * sizeof(SiftTblSeg)) : NULL;
 	for (int i = 0; i < s->nseg; i++)
 	{
@@ -199,7 +199,7 @@ scan_open_state(Relation rel, SiftTblScan *s)
 			s->seg[i].vcap = s->par->seg[i].vcap;
 		}
 		else
-			s->seg[i] = st->delta[i];
+			s->seg[i] = st->wbuf[i];
 		sift_tbl_seg_load(rel, &s->seg[i]);
 		if (s->par)
 			s->seg[i].npages = Min(s->seg[i].npages, s->par->seg[i].npages);
@@ -309,7 +309,7 @@ scan_gscan(SiftTblScan *s, Snapshot snapshot)
 typedef enum ScanUnit
 {
 	UNIT_NONE,
-	UNIT_DELTA_PAGE,			/* a delta page copy is in s->copy */
+	UNIT_WBUF_PAGE,			/* a write buffer page copy is in s->copy */
 	UNIT_GROUPS					/* s->g reads a range of superblocks of the column groups */
 } ScanUnit;
 
@@ -331,9 +331,9 @@ scan_groups(Relation rel, SiftTblScan *s, uint32 lo, uint32 hi)
 	return true;
 }
 
-/* The segment of the delta page number lin (of all the pages in the segments' order) and its page index there */
+/* The segment of the write buffer page number lin (of all the pages in the segments' order) and its page index there */
 static SiftTblSeg *
-delta_page(SiftTblScan *s, uint32 lin, uint32 *idx)
+wbuf_page(SiftTblScan *s, uint32 lin, uint32 *idx)
 {
 	SiftTblSeg *seg = s->seg;
 
@@ -355,7 +355,7 @@ load_page(Relation rel, SiftTblScan *s, SiftTblSeg *seg, uint32 idx)
 		return false;
 	buf = ReadBuffer(rel, seg->page[idx]);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 	page = BufferGetPage(buf);
 	if (TBL_PAGE(page)->flags & SIFT_TBL_PAGE_OVFDATA)
 	{
@@ -371,7 +371,7 @@ load_page(Relation rel, SiftTblScan *s, SiftTblSeg *seg, uint32 idx)
 	return true;
 }
 
-/* The next unit of work: a delta page with rows (into s->copy) or the column groups */
+/* The next unit of work: a write buffer page with rows (into s->copy) or the column groups */
 static ScanUnit
 scan_next_unit(Relation rel, SiftTblScan *s)
 {
@@ -388,9 +388,9 @@ scan_next_unit(Relation rel, SiftTblScan *s)
 
 			if (u >= s->par->nunits)
 				return UNIT_NONE;
-			if (u >= s->par->ndelta)
+			if (u >= s->par->nwbuf)
 			{
-				if (scan_groups(rel, s, u - s->par->ndelta, u - s->par->ndelta + 1))
+				if (scan_groups(rel, s, u - s->par->nwbuf, u - s->par->nwbuf + 1))
 					return UNIT_GROUPS;
 				continue;
 			}
@@ -408,26 +408,26 @@ scan_next_unit(Relation rel, SiftTblScan *s)
 				s->groups_done = true;
 				return scan_groups(rel, s, 0, PG_UINT32_MAX) ? UNIT_GROUPS : UNIT_NONE;
 			}
-			seg = delta_page(s, s->dpos++, &idx);
+			seg = wbuf_page(s, s->dpos++, &idx);
 		}
 		if (load_page(rel, s, seg, idx))
-			return UNIT_DELTA_PAGE;
+			return UNIT_WBUF_PAGE;
 	}
 }
 
-/* The delta page before the one in the copy, backward; UNIT_NONE before the first */
+/* The write buffer page before the one in the copy, backward; UNIT_NONE before the first */
 static ScanUnit
 scan_prev_unit(Relation rel, SiftTblScan *s)
 {
 	while (s->dpos > 1)
 	{
 		uint32		idx;
-		SiftTblSeg *seg = delta_page(s, --s->dpos - 1, &idx);
+		SiftTblSeg *seg = wbuf_page(s, --s->dpos - 1, &idx);
 
 		if (load_page(rel, s, seg, idx))
 		{
 			s->ri = s->nrows + 1;
-			return UNIT_DELTA_PAGE;
+			return UNIT_WBUF_PAGE;
 		}
 	}
 	return UNIT_NONE;
@@ -439,7 +439,7 @@ scan_in_range(SiftTblScan *s, ItemPointer tid)
 	return !s->range || (ItemPointerCompare(tid, &s->mintid) >= 0 && ItemPointerCompare(tid, &s->maxtid) <= 0);
 }
 
-/* The next stored row version, visible or not: a delta record or a row of a column group (rv->xmin unset). rv->tuple is not set. */
+/* The next stored row version, visible or not: a write buffer record or a row of a column group (rv->xmin unset). rv->tuple is not set. */
 static bool
 scan_next_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 {
@@ -474,7 +474,7 @@ scan_next_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 	}
 }
 
-/* Backward from the row last returned: the same versions in the opposite order (the column groups from their last row, then the delta pages) */
+/* Backward from the row last returned: the same versions in the opposite order (the column groups from their last row, then the write buffer pages) */
 static bool
 scan_prev_version(Relation rel, SiftTblScan *s, SiftTblRowVer *rv)
 {
@@ -690,7 +690,7 @@ typedef struct VblockTest
 	Relation	rel;
 	SiftTblRel *st;
 	Snapshot	snapshot;
-	Page		copy;			/* the delta page, NULL when the vblock is in a column group (frozen rows: the tombstones decide) */
+	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (frozen rows: the tombstones decide) */
 	uint64		gen;
 } VblockTest;
 
@@ -708,11 +708,11 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 		sift_tbl_rowver(&rv, tid, rec);
 		return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 	}
-	rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.delta = false,.xmin = InvalidTransactionId};
+	rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false,.xmin = InvalidTransactionId};
 	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot; the delta page is read once (the BM25 index's heap check) */
+/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once (the BM25 index's heap check) */
 int
 sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
 {
@@ -857,7 +857,7 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row);
 	for (int i = 0; i < cnt; i++)
 	{
-		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.delta = false,.xmin = InvalidTransactionId};
+		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = InvalidTransactionId};
 
 		if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			bitmap_add(s, row[i]);
@@ -1020,9 +1020,9 @@ sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, Tu
 
 /*
  * The ReadStream only says how many blocks the relation is worth (the buffers are released unread, the number of calls is what the
- * sampler counts); the block space of the table is its P physical blocks: the first ones stand for the delta pages, the rest for
- * chunks of the vblocks of the column groups (the vblocks outside the delta segments). The j-th visit of M reads the block
- * floor(j * P / M): a delta page, or the vblocks of its chunk. When M < P a random vblock of the chunk stands for its w vblocks
+ * sampler counts); the block space of the table is its P physical blocks: the first ones stand for the write buffer pages, the rest for
+ * chunks of the vblocks of the column groups (the vblocks outside the write buffers). The j-th visit of M reads the block
+ * floor(j * P / M): a write buffer page, or the vblocks of its chunk. When M < P a random vblock of the chunk stands for its w vblocks
  * (liverows and deadrows are weighted); when M = P, every vblock is read: the counts are exact, as a heap's. Either way
  * liverows / M * P estimates the rows of the table whatever the layout.
  */
@@ -1037,8 +1037,8 @@ analyze_start(SiftTblScan *s)
 	s->an_p = RelationGetNumberOfBlocks(rel);
 	s->an_m = Min(s->an_p, 300 * (uint64) default_statistics_target);
 	for (int i = 0; i < s->nseg; i++)
-		s->an_delta += s->seg[i].npages;
-	/* the vblocks of the groups: [0, next) without the ranges of the delta segments, which the directory lists in ascending order */
+		s->an_wbuf += s->seg[i].npages;
+	/* the vblocks of the groups: [0, next) without the ranges of the write buffers, which the directory lists in ascending order */
 	s->an_ranges = palloc((s->nseg + 1) * 2 * sizeof(uint64));
 	for (int i = 0; i <= s->nseg; i++)
 	{
@@ -1076,7 +1076,7 @@ analyze_group_vblock(const SiftTblScan *s, uint64 n)
 static void
 analyze_group_block(SiftTblScan *s, uint64 c)
 {
-	uint64		g = Max(s->an_p - s->an_delta, 1),
+	uint64		g = Max(s->an_p - s->an_wbuf, 1),
 				from = c * s->an_v / g,
 				to = (c + 1) * s->an_v / g;
 
@@ -1124,9 +1124,9 @@ sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 	s->an_cur = s->an_end = 0;
 	s->aweight = 1;
 	b = s->an_next++ * s->an_p / s->an_m;
-	if (b >= s->an_delta)
+	if (b >= s->an_wbuf)
 	{
-		analyze_group_block(s, b - s->an_delta);
+		analyze_group_block(s, b - s->an_wbuf);
 		return true;
 	}
 	for (i = 0; b >= base + s->seg[i].npages; i++)
@@ -1134,7 +1134,7 @@ sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 	seg = &s->seg[i];
 	buf = ReadBuffer(scan->rs_rd, seg->page[b - base]);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	sift_store_check_page(scan->rs_rd, buf, SIFT_PT_MUTDATA, seg->gen);
+	sift_store_check_page(scan->rs_rd, buf, SIFT_PT_WBUFDATA, seg->gen);
 	if (!(TBL_PAGE(BufferGetPage(buf))->flags & SIFT_TBL_PAGE_OVFDATA))
 	{
 		memcpy(s->copy, BufferGetPage(buf), BLCKSZ);
@@ -1184,7 +1184,7 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 			continue;
 		}
 		tup = s->arows[s->ari++];
-		rv = (SiftTblRowVer) {.key = sift_key_from_tid(&tup->t_self),.delta = false,.xmin = InvalidTransactionId};
+		rv = (SiftTblRowVer) {.key = sift_key_from_tid(&tup->t_self),.wbuf = false,.xmin = InvalidTransactionId};
 		if (!sift_tbl_visible(rel, s->st, SnapshotSelf, &rv))
 		{
 			*deadrows += s->aweight;

@@ -102,7 +102,7 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   this for every index access method that does not implement predicate locks), so a concurrent write to the table can make a
   serializable transaction fail with `40001` that a btree-indexed query would not. Finer locks would need one per term searched (a new
   document conflicts only if it has that term) and one for the vocabulary range of every wildcard, prefix or regex; a lock per page
-  does not work because a document is appended to the mutable segment, not to the page where its terms are read. Retry on `40001`.
+  does not work because a document is appended to the write buffer, not to the page where its terms are read. Retry on `40001`.
 - **Row-level security and security barrier views.** A role under a policy (or reading a security barrier view) gets no ranked scan, no
   `count(*)` pushdown and no estimate from the index: the match is not leakproof and the index statistics (document count, document
   frequencies, expansion limits) include rows the role cannot see, so a score and an `EXPLAIN` estimate would depend on hidden rows (before

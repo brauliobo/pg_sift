@@ -45,7 +45,7 @@ shape() { sql va "SET enable_seqscan = off" "SET sift.enable_scan = off" "EXPLAI
 mk() { # TABLE ROWS: the BM25 index after the column index, so that a VACUUM cleans the column index first
 	sql va "CREATE TABLE $1 (id int, body text, cat text, n int)" \
 		"INSERT INTO $1 SELECT i, 'zzword w' || i || ' x' || (i % 97), 'c' || (i % 7), i % 100 FROM generate_series(1, $2) i" \
-		"CREATE INDEX $1_col ON $1 USING sift_col (cat, n)" "CREATE INDEX $1_idx ON $1 USING sift (body) WITH (mutable_limit = 64)" \
+		"CREATE INDEX $1_col ON $1 USING sift_col (cat, n)" "CREATE INDEX $1_idx ON $1 USING sift (body) WITH (write_buffer_limit = 64)" \
 		"VACUUM ANALYZE $1" >/dev/null || bail "setup $1 failed"
 }
 

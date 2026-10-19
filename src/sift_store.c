@@ -771,7 +771,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 	{
 		const SiftSegEntry *s = &dir->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_MUTABLE_SEALED)
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED)
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
@@ -1095,8 +1095,8 @@ sift_store_truncate(Relation index)
 		return 0;
 	RelationTruncate(index, newhwm);
 	/*
-	 * A backend appending to the mutable segment keeps the blocks of its lane tails in the relcache
-	 * entry (sift_mut_append), validated by reading them, and a block past the new end cannot be
+	 * A backend appending to the write buffer keeps the blocks of its lane tails in the relcache
+	 * entry (sift_wbuf_append), validated by reading them, and a block past the new end cannot be
 	 * read. Their next lock on the index happens after ours is released, and takes this message first.
 	 */
 	msg = (SharedInvalidationMessage) {.rc = {SHAREDINVALRELCACHE_ID, MyDatabaseId, RelationGetRelid(index)}};
@@ -1812,17 +1812,17 @@ sift_store_immutable_extents(Relation index, const SiftSegEntry *s, int *nextent
 }
 
 static void
-mark_mutable(BlockMap *m, const SiftSegEntry *s)
+mark_wbuf(BlockMap *m, const SiftSegEntry *s)
 {
 	Buffer		buf;
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 
-	mark(m, s->header_blk, 1, "mutable header", s->gen);
+	mark(m, s->header_blk, 1, "write buffer header", s->gen);
 	buf = read_locked(m->index, s->header_blk, BUFFER_LOCK_SHARE);
-	sift_store_check_page(m->index, buf, SIFT_PT_MUTHEADER, s->gen);
-	if (SiftPageGetUsed(BufferGetPage(buf)) < sizeof(SiftMutHeaderData))
-		corrupt(m->index, "Mutable header block %u is truncated.", s->header_blk);
-	hdr = *(SiftMutHeaderData *) SiftPageGetData(BufferGetPage(buf));
+	sift_store_check_page(m->index, buf, SIFT_PT_WBUFHEADER, s->gen);
+	if (SiftPageGetUsed(BufferGetPage(buf)) < sizeof(SiftWbufHeaderData))
+		corrupt(m->index, "Write buffer header block %u is truncated.", s->header_blk);
+	hdr = *(SiftWbufHeaderData *) SiftPageGetData(BufferGetPage(buf));
 	UnlockReleaseBuffer(buf);
 	for (int l = 0; l < SIFT_LANES; l++)
 	{
@@ -1833,10 +1833,10 @@ mark_mutable(BlockMap *m, const SiftSegEntry *s)
 			/* mark() rejects a revisit, which also ends a cycle */
 			if (blk >= m->hwm)
 				m->hwm = high_water(m->index);
-			mark(m, blk, 1, "mutable page", s->gen);
+			mark(m, blk, 1, "write buffer page", s->gen);
 			buf = read_locked(m->index, blk, BUFFER_LOCK_SHARE);
-			sift_store_check_page(m->index, buf, SIFT_PT_MUTDATA, s->gen);
-			blk = ((SiftMutPageHeaderData *) SiftPageGetData(BufferGetPage(buf)))->next;
+			sift_store_check_page(m->index, buf, SIFT_PT_WBUFDATA, s->gen);
+			blk = ((SiftWbufPageHeaderData *) SiftPageGetData(BufferGetPage(buf)))->next;
 			UnlockReleaseBuffer(buf);
 		}
 	}
@@ -1853,9 +1853,9 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			mark_immutable(&m, &snap->segs[i]);
 		else
-			mark_mutable(&m, &snap->segs[i]);
+			mark_wbuf(&m, &snap->segs[i]);
 	}
-	/* Appenders take pages off the free list while a mutable chain grows, so it is read last */
+	/* Appenders take pages off the free list while a write buffer chain grows, so it is read last */
 	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	m.hwm = META(BufferGetPage(metabuf))->high_water;
 	mark(&m, SIFT_METAPAGE_BLKNO, 2, "metapage and directory", 0);
@@ -1872,7 +1872,7 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 	if (!layout_ok(page))
 		return false;
 	op = SiftPageGetOpaque(page);
-	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_MUTDATA)
+	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_WBUFDATA)
 		return false;
 	if (op->gen >= snap->meta.next_gen)
 		return true;
@@ -1921,7 +1921,7 @@ sift_store_verify(Relation index)
 	{
 		const SiftSegEntry *s = &snap->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_MUTABLE_SEALED || s->gen == 0 ||
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED || s->gen == 0 ||
 			s->gen >= snap->meta.next_gen)
 			corrupt(index, "Directory entry %d has kind %u generation %llu (next %llu).",
 					i, s->kind, ULL(s->gen), ULL(snap->meta.next_gen));

@@ -1,5 +1,5 @@
-# sift_table sealing: autovacuum turns settled rows into column segments, parallel workers read delta pages and column groups
-# together, readers of old snapshots survive a seal, and a standby reads the sealed table.
+# sift_table promotion: autovacuum turns settled rows into column segments, parallel workers read write buffer pages and column groups
+# together, readers of old snapshots survive a promotion, and a standby reads the promoted table.
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
@@ -23,11 +23,11 @@ my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
 $standby->start;
 
-subtest 'autovacuum seals the rows of an insert-only table' => sub {
+subtest 'autovacuum promotes the rows of an insert-only table' => sub {
 	$primary->safe_psql('postgres', "CREATE TABLE a (id int PRIMARY KEY, note text) USING sift_table; INSERT INTO a SELECT g, 'row ' || g FROM generate_series(1, $rows) g");
 	my $before = $primary->safe_psql('postgres', sprintf($sum, 'a'));
 	ok($primary->poll_query_until('postgres', "SELECT count(*) > 0 FROM sift.table_segments('a') WHERE kind = 'columns'"), 'a column segment appears');
-	is($primary->safe_psql('postgres', sprintf($sum, 'a')), $before, 'the same rows after sealing');
+	is($primary->safe_psql('postgres', sprintf($sum, 'a')), $before, 'the same rows after promotion');
 	like($primary->safe_psql('postgres', sprintf($kinds, 'a')), qr/columns x\d+/, 'segments: ' . $primary->safe_psql('postgres', sprintf($kinds, 'a')));
 };
 
@@ -39,7 +39,7 @@ subtest 'autovacuum reclaims what updates and deletes leave' => sub {
 	is($primary->safe_psql('postgres', sprintf($sum, 'a')), $before, 'the same rows after the vacuum');
 };
 
-subtest 'parallel workers read the delta pages and the column groups' => sub {
+subtest 'parallel workers read the write buffer pages and the column groups' => sub {
 	my $set = 'SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 3; SET sift.enable_agg = off;';
 	$primary->safe_psql('postgres', "INSERT INTO a SELECT g, 'late ' || g FROM generate_series($rows + 1, $rows + 3000) g");
 	my $plan = $primary->safe_psql('postgres', "$set EXPLAIN (COSTS OFF) SELECT count(*) FROM a");
@@ -50,7 +50,7 @@ subtest 'parallel workers read the delta pages and the column groups' => sub {
 		$primary->safe_psql('postgres', 'SET max_parallel_workers_per_gather = 0; SELECT count(*) FROM a WHERE note = $$u$$'), 'with a filter');
 };
 
-subtest 'a reader that began before a seal keeps its rows' => sub {
+subtest 'a reader that began before a promotion keeps its rows' => sub {
 	$primary->safe_psql('postgres', 'CREATE TABLE r (id int, note text) USING sift_table; INSERT INTO r SELECT g, $$x$$ FROM generate_series(1, 4000) g');
 	my $bg = $primary->background_psql('postgres');
 	$bg->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
@@ -63,7 +63,7 @@ subtest 'a reader that began before a seal keeps its rows' => sub {
 	is($primary->safe_psql('postgres', 'SELECT count(*) FROM r'), 3000, 'a new snapshot sees the delete');
 };
 
-subtest 'the aggregate scan sees what the snapshot sees across a seal and an open transaction' => sub {
+subtest 'the aggregate scan sees what the snapshot sees across a promotion and an open transaction' => sub {
 	my $agg = 'SET cpu_tuple_cost = 0.5; SELECT count(*) || $$:$$ || sum(id) || $$:$$ || count(note) FROM g';
 	my $off = 'SET sift.enable_agg = off; ' . $agg;
 	$primary->safe_psql('postgres', 'CREATE TABLE g (id int, note text) USING sift_table; INSERT INTO g SELECT x, $$n$$ FROM generate_series(1, 5000) x');
@@ -93,7 +93,7 @@ subtest 'VACUUM cuts the free end of the file under a writer that cached a page 
 	# the writer's pages are taken at the end of the file, since what the VACUUM released is not reusable yet
 	my $w = $primary->background_psql('postgres');
 	$w->query_safe('INSERT INTO t SELECT g, repeat($$w$$, 60) FROM generate_series(20001, 21500) g');
-	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 7'), 't' x 60, 'the writer fetches a sealed row');
+	is($w->query_safe('SET enable_seqscan = off; SELECT note FROM t WHERE id = 7'), 't' x 60, 'the writer fetches a promoted row');
 	my $full = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
 	$primary->safe_psql('postgres', "DELETE FROM t WHERE id <= 20000; VACUUM t; $xid; VACUUM t");
 	my $cut = $primary->safe_psql('postgres', 'SELECT relation_blocks FROM sift.table_space($$t$$)');
@@ -109,7 +109,7 @@ subtest 'VACUUM cuts the free end of the file under a writer that cached a page 
 		'and the same file');
 };
 
-subtest 'a standby reads the sealed tables' => sub {
+subtest 'a standby reads the promoted tables' => sub {
 	$primary->safe_psql('postgres', 'VACUUM a');
 	$primary->wait_for_catchup($standby);
 	is($standby->safe_psql('postgres', sprintf($sum, 'a')), $primary->safe_psql('postgres', sprintf($sum, 'a')), 'same rows');

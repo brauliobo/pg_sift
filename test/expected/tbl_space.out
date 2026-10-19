@@ -1,4 +1,4 @@
--- Space: the blocks of the delta segments that sealing and merging release are reused, so a table that is emptied and refilled
+-- Space: the blocks of the write buffers that promotion and merging release are reused, so a table that is emptied and refilled
 -- stays the size it had, and VACUUM FULL does not grow it. A VACUUM's own xid is not in the snapshots of the readers that began after it,
 -- so what it releases is reusable once another transaction has passed: the second VACUUM of each pair clears it for reuse. The free run
 -- at the end of the file is given back at once, under the lock that keeps every reader out (unless vacuum_truncate is off).
@@ -17,10 +17,10 @@ SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
 
 VACUUM sp;
 INSERT INTO hw SELECT 1, high_water FROM sift.table_space('sp');
-SELECT count(*) FILTER (WHERE kind = 'columns') > 0 AS sealed, count(*) FILTER (WHERE kind = 'sealed delta') AS waiting FROM sift.table_segments('sp');
- sealed | waiting 
---------+---------
- t      |       0
+SELECT count(*) FILTER (WHERE kind = 'columns') > 0 AS promoted, count(*) FILTER (WHERE kind = 'sealed buffer') AS waiting FROM sift.table_segments('sp');
+ promoted | waiting 
+----------+---------
+ t        |       0
 (1 row)
 
 DELETE FROM sp;
@@ -54,9 +54,9 @@ SELECT high_water <= 1.2 * (SELECT blocks FROM hw WHERE round = 1) AS reused FRO
 (1 row)
 
 VACUUM FULL sp;
-SELECT relation_blocks <= (SELECT blocks FROM hw WHERE round = 1) AS no_larger, (SELECT count(*) FROM sift.table_segments('sp') WHERE kind = 'columns') > 0 AS sealed FROM sift.table_space('sp');
- no_larger | sealed 
------------+--------
+SELECT relation_blocks <= (SELECT blocks FROM hw WHERE round = 1) AS no_larger, (SELECT count(*) FROM sift.table_segments('sp') WHERE kind = 'columns') > 0 AS promoted FROM sift.table_space('sp');
+ no_larger | promoted 
+-----------+----------
  t         | t
 (1 row)
 

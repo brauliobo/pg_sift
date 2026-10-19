@@ -40,7 +40,7 @@ sift_eval.h
 sift_filter.h
 sift_kernels.h
 sift_kernels_int.h
-sift_mutable.h
+sift_wbuf.h
 sift_page.h
 sift_parallel.h
 sift_popcount.h
