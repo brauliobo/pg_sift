@@ -60,7 +60,6 @@ FORMS="SELECT q, sq, format('(%s) AND (name:{%s}^3 OR (%s))', sq, sq, sq) AS sqb
                     (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('simple', q))) AS tq FROM pq"
 base() { awk -F'\t' -v c="$1" '$2 == c && (m == "" || $1 < m) {m = $1} END {print m - 1}' "$DATADIR/queries.tsv"; }   # the id before the first query of a class
 
-phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }
 T0=$SECONDS; : >"$DEST/phases.txt"
 ENGINES=$(lanes_available places "$ENGINES" | tr '\n' ' ')
 [[ -n $ENGINES ]] || { echo "no engine to run: bench/bench setup" >&2; exit 1; }

@@ -250,6 +250,8 @@ code_key() { # what a result depends on besides the host: the pg_sift sources un
     git -C "$REPO" ls-files -z --cached --others --exclude-standard -- bench ':(exclude)*.md' ':(exclude)bench/out' | (cd "$REPO" && xargs -0 sha256sum); } | sha256sum | cut -c1-16
 }
 
+phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }   # NAME: seconds since the last phase, to $DEST/phases.txt (articles, places)
+
 # --- stages with a time budget, and resumable ones (bench/bench final, steps/store.sh)
 # stage NAME MINUTES CMD...: runs CMD and logs the time against its budget; over 1.3x of it is logged OVER BUDGET (BUDGET_STRICT=1: and stops). STAGE_LOG: a file the
 # stage appends `name<TAB>seconds<TAB>budget minutes` to

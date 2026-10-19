@@ -171,8 +171,8 @@ wait_up() {
         && { ! want citus || pg_isready -q -h 127.0.0.1 -p "$CITUS_PORT"; } \
         && { ! want es || curl -fs "http://127.0.0.1:$((PORT + 2))/_cluster/health?wait_for_status=green&timeout=5s" >/dev/null; } \
         && { ! want ch || curl -fs "http://127.0.0.1:$((PORT + 3))/ping" >/dev/null; }; do
-    (( ++t < 300 )) || { echo "store: the servers did not start; docker logs $NAME-*" >&2; return 1; }
-    sleep 1
+    (( ++t < 1500 )) || { echo "store: the servers did not start within 5 min; docker logs $NAME-*" >&2; return 1; }
+    sleep 0.2
   done
 }
 # PostgreSQL, pg_sift and Citus: a leader plus N - 1 parallel workers = N processes; ALTER SYSTEM so that the same container can change budget

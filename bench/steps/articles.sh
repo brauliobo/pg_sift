@@ -172,7 +172,6 @@ group() { # CLASS SECONDS WARM ENGINES...: the cell of every engine, one after t
 }
 
 # --- run
-phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }
 T0=$SECONDS; : >"$DEST/phases.txt"
 ENGINES=$(lanes_available articles "$ENGINES" | tr '\n' ' ')
 [[ -n $ENGINES ]] || { echo "no engine to run: bench/bench setup" >&2; exit 1; }
