@@ -197,7 +197,7 @@ job_gate_col() {
 			awk -v r="$ratio" -v m="$COL_MAX" 'BEGIN { exit !(r > m) }' && bad=1
 		done
 	done
-	for d in rt nt; do pgt "$T" "$W/gate-col/$d" $PORT0 stop >/dev/null 2>&1; done
+	pgt "$T" "$W/gate-col/rt" $((PORT0 + 1)) stop >/dev/null && pgt "$T" "$W/gate-col/nt" $((PORT0 + 2)) stop >/dev/null || return 1
 	[[ -z $bad ]] || { echo "a sift_col question is above $COL_MAX of the reference"; return 1; }
 }
 job_fuzz() { SIFT_TMP=$W/fuzz FZ_SECS=60 scripts/fuzz.sh colchunk bm25; }
