@@ -1,6 +1,6 @@
--- Arrays of strings of a jsonb column in the aggregate pushdown: jsonb_array_elements_text, and the existence and containment tests
--- (?, ?|, ?&, @>, <@) on them. Every query runs with and without the pushdown, the rows must be the same, and `pushed` says whether the plan
--- is a Custom Scan (SiftAgg).
+-- Scalar arrays and array lengths of a jsonb column in the aggregate pushdown: jsonb_array_elements_text of an array of strings, the
+-- existence and containment tests (?, ?|, ?&, @>, <@) on it, and jsonb_array_length as a key, a filter and an argument. Every query runs
+-- with and without the pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -66,7 +66,18 @@ INSERT INTO j_q VALUES
 	('SELECT count(*) FROM j_t d WHERE ''["t3"]''::jsonb <@ (d.attrs->''tags'')'),
 	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''[null]'''),
 	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", 5]'''),
-	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2');
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2'),
+	-- the length of an array
+	('SELECT jsonb_array_length(d.items) AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, count(*), avg(d.grp) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FROM j_t d WHERE jsonb_array_length(d.items) > 2'),
+	('SELECT d.grp, sum(jsonb_array_length(d.items)), max(jsonb_array_length(d.items)), min(jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FILTER (WHERE jsonb_array_length(d.attrs->''tags'') = 0) FROM j_t d'),
+	('SELECT jsonb_array_length(d.attrs->''tags'') AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) % 2 AS k, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT e.kind, count(*) FILTER (WHERE jsonb_array_length(d.items) = 1) FROM j_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1'),
+	('SELECT d.grp, count(jsonb_array_length(d.items)), count(DISTINCT jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, d.grp, count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1, 2');
 
 CREATE FUNCTION j_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN

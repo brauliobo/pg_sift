@@ -1,6 +1,6 @@
--- Arrays of strings of a jsonb column in the aggregate pushdown: jsonb_array_elements_text, and the existence and containment tests
--- (?, ?|, ?&, @>, <@) on them. Every query runs with and without the pushdown, the rows must be the same, and `pushed` says whether the plan
--- is a Custom Scan (SiftAgg).
+-- Scalar arrays and array lengths of a jsonb column in the aggregate pushdown: jsonb_array_elements_text of an array of strings, the
+-- existence and containment tests (?, ?|, ?&, @>, <@) on it, and jsonb_array_length as a key, a filter and an argument. Every query runs
+-- with and without the pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -62,7 +62,18 @@ INSERT INTO j_q VALUES
 	('SELECT count(*) FROM j_t d WHERE ''["t3"]''::jsonb <@ (d.attrs->''tags'')'),
 	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''[null]'''),
 	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' @> ''["t3", 5]'''),
-	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2');
+	('SELECT count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' OR d.grp = 2'),
+	-- the length of an array
+	('SELECT jsonb_array_length(d.items) AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, count(*), avg(d.grp) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FROM j_t d WHERE jsonb_array_length(d.items) > 2'),
+	('SELECT d.grp, sum(jsonb_array_length(d.items)), max(jsonb_array_length(d.items)), min(jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT count(*) FILTER (WHERE jsonb_array_length(d.attrs->''tags'') = 0) FROM j_t d'),
+	('SELECT jsonb_array_length(d.attrs->''tags'') AS n, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) % 2 AS k, count(*) FROM j_t d GROUP BY 1'),
+	('SELECT e.kind, count(*) FILTER (WHERE jsonb_array_length(d.items) = 1) FROM j_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1'),
+	('SELECT d.grp, count(jsonb_array_length(d.items)), count(DISTINCT jsonb_array_length(d.items)) FROM j_t d GROUP BY 1'),
+	('SELECT jsonb_array_length(d.items) AS n, d.grp, count(*) FROM j_t d WHERE d.attrs->''tags'' ? ''t3'' GROUP BY 1, 2');
 CREATE FUNCTION j_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
 	FOR query IN SELECT q FROM j_q ORDER BY ctid LOOP
@@ -72,30 +83,40 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT query, same, pushed FROM j_compare();
-                                                            query                                                            | same | pushed 
------------------------------------------------------------------------------------------------------------------------------+------+--------
- SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1                    | t    | t
- SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE d.grp < 3 GROUP BY 1    | t    | t
- SELECT t, count(DISTINCT d.id) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1        | t    | t
- SELECT d.grp, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE t = 't3' GROUP BY 1 | t    | t
- SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE t LIKE 't1%' GROUP BY 1 | t    | t
- SELECT count(*), count(t), count(DISTINCT t) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t     | t    | t
- SELECT length(t) AS len, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1     | t    | t
- SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->'tags') AS t(v) WHERE t.v <> 't1' GROUP BY 1, 2  | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3'                                                                     | t    | t
- SELECT d.grp, count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' GROUP BY 1                                                   | t    | t
- SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->'tags' ? 't3') GROUP BY 1                                             | t    | f
- SELECT d.grp, count(*) FILTER (WHERE d.attrs->'tags' ? 't3'), count(*) FROM j_t d GROUP BY 1                                | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? ''                                                                       | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ?| ARRAY['t3', 't4']                                                       | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ?& ARRAY['t3', 't4']                                                       | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3"]'                                                                | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3", "t5"]'                                                          | t    | t
- SELECT count(*) FROM j_t d WHERE '["t3"]'::jsonb <@ (d.attrs->'tags')                                                       | t    | t
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '[null]'                                                                | t    | f
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3", 5]'                                                             | t    | f
- SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' OR d.grp = 2                                                        | t    | t
-(21 rows)
+                                                                              query                                                                              | same | pushed 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------+------+--------
+ SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1                                                        | t    | t
+ SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE d.grp < 3 GROUP BY 1                                        | t    | t
+ SELECT t, count(DISTINCT d.id) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1                                            | t    | t
+ SELECT d.grp, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE t = 't3' GROUP BY 1                                     | t    | t
+ SELECT t, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t WHERE t LIKE 't1%' GROUP BY 1                                     | t    | t
+ SELECT count(*), count(t), count(DISTINCT t) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t                                         | t    | t
+ SELECT length(t) AS len, count(*) FROM j_t d CROSS JOIN LATERAL jsonb_array_elements_text(d.attrs->'tags') t GROUP BY 1                                         | t    | t
+ SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->'tags') AS t(v) WHERE t.v <> 't1' GROUP BY 1, 2                                      | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3'                                                                                                         | t    | t
+ SELECT d.grp, count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' GROUP BY 1                                                                                       | t    | t
+ SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->'tags' ? 't3') GROUP BY 1                                                                                 | t    | f
+ SELECT d.grp, count(*) FILTER (WHERE d.attrs->'tags' ? 't3'), count(*) FROM j_t d GROUP BY 1                                                                    | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? ''                                                                                                           | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ?| ARRAY['t3', 't4']                                                                                           | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ?& ARRAY['t3', 't4']                                                                                           | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3"]'                                                                                                    | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3", "t5"]'                                                                                              | t    | t
+ SELECT count(*) FROM j_t d WHERE '["t3"]'::jsonb <@ (d.attrs->'tags')                                                                                           | t    | t
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '[null]'                                                                                                    | t    | f
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' @> '["t3", 5]'                                                                                                 | t    | f
+ SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' OR d.grp = 2                                                                                            | t    | t
+ SELECT jsonb_array_length(d.items) AS n, count(*) FROM j_t d GROUP BY 1                                                                                         | t    | t
+ SELECT jsonb_array_length(d.items) AS n, count(*), avg(d.grp) FROM j_t d GROUP BY 1                                                                             | t    | t
+ SELECT count(*) FROM j_t d WHERE jsonb_array_length(d.items) > 2                                                                                                | t    | t
+ SELECT d.grp, sum(jsonb_array_length(d.items)), max(jsonb_array_length(d.items)), min(jsonb_array_length(d.items)) FROM j_t d GROUP BY 1                        | t    | t
+ SELECT count(*) FILTER (WHERE jsonb_array_length(d.attrs->'tags') = 0) FROM j_t d                                                                               | t    | t
+ SELECT jsonb_array_length(d.attrs->'tags') AS n, count(*) FROM j_t d GROUP BY 1                                                                                 | t    | t
+ SELECT jsonb_array_length(d.items) % 2 AS k, count(*) FROM j_t d GROUP BY 1                                                                                     | t    | t
+ SELECT e.kind, count(*) FILTER (WHERE jsonb_array_length(d.items) = 1) FROM j_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1 | t    | t
+ SELECT d.grp, count(jsonb_array_length(d.items)), count(DISTINCT jsonb_array_length(d.items)) FROM j_t d GROUP BY 1                                             | t    | t
+ SELECT jsonb_array_length(d.items) AS n, d.grp, count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' GROUP BY 1, 2                                                  | t    | t
+(31 rows)
 
 -- a value the index cannot hold in an array of strings (a number, a string, an object) raises the error of the pushdown, and the normal plan answers
 CREATE TABLE j_bad (id int, attrs jsonb);

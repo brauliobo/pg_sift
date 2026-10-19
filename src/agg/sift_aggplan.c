@@ -177,9 +177,13 @@ leaf_name(AggCtx *c, int id)
 		appendStringInfo(&s, leaf_of(c, l->parent)->kind == SCL_OBJECT ? "%s.*.%s" : "%s[].%s", p, l->name);
 		return s.data;
 	}
+	if (l->name[0] == '#')
+		appendStringInfoString(&s, "jsonb_array_length(");
 	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
+	if (l->name[0] == '#')
+		appendStringInfoChar(&s, ')');
 	return s.data;
 }
 
@@ -268,7 +272,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, path) &&
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) &&
 			l->typid == typid)
 			return i;
 	}
@@ -292,13 +296,34 @@ child_leaf(AggCtx *c, int group, const char *name, Oid typid)
  * `(x->>'k')::float8` of an object leaf with free keys (`metrics.*`) at the row level: a scalar leaf after the source's, which the
  * executor builds from the "value" of the element of each row whose "key" is k.
  */
+static SiftSrcLeaf *
+vleaf_add(AggCtx *c, int att, List *path, SiftSrcVecType vtype, Oid typid)
+{
+	SiftSrcLayout *lay = palloc(sizeof(SiftSrcLayout));
+	SiftSrcLeaf *v;
+
+	*lay = *c->lay;
+	lay->leaf = palloc((lay->nleaves + 1) * sizeof(SiftSrcLeaf));
+	memcpy(lay->leaf, c->lay->leaf, lay->nleaves * sizeof(SiftSrcLeaf));
+	v = &lay->leaf[lay->nleaves];
+	memset(v, 0, sizeof(SiftSrcLeaf));
+	v->id = lay->nleaves++;
+	v->attno = att;
+	v->parent = -1;
+	v->kind = SCL_SCALAR;
+	v->vtype = vtype;
+	v->typid = typid;
+	v->path = path;
+	c->lay = lay;
+	return v;
+}
+
 static int
 key_leaf(AggCtx *c, int att, List *path, Oid typid)
 {
 	int			n = list_length(path),
 				obj = -1,
 				val;
-	SiftSrcLayout *lay;
 	SiftSrcLeaf *v;
 
 	if (n == 0 || c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
@@ -313,22 +338,30 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	}
 	if (obj < 0 || (val = child_leaf(c, obj, "value", typid)) < 0)
 		return -1;
-	lay = palloc(sizeof(SiftSrcLayout));
-	*lay = *c->lay;
-	lay->leaf = palloc((lay->nleaves + 1) * sizeof(SiftSrcLeaf));
-	memcpy(lay->leaf, c->lay->leaf, lay->nleaves * sizeof(SiftSrcLeaf));
-	v = &lay->leaf[lay->nleaves];
-	memset(v, 0, sizeof(SiftSrcLeaf));
-	v->id = lay->nleaves++;
-	v->attno = att;
-	v->parent = -1;
-	v->kind = SCL_SCALAR;
-	v->vtype = leaf_of(c, val)->vtype;
-	v->typid = typid;
-	v->path = path;
-	c->lay = lay;
+	v = vleaf_add(c, att, path, leaf_of(c, val)->vtype, typid);
 	c->vleaf[c->nvleaf].obj = obj;
+	c->vleaf[c->nvleaf].count = false;
 	c->vleaf[c->nvleaf++].key = pstrdup(strVal(llast(path)));
+	return v->id;
+}
+
+/* `jsonb_array_length(x->'k')` of an array leaf: a scalar leaf after the source's, whose values the executor takes from the element counts of the array */
+static int
+count_leaf(AggCtx *c, int grp)
+{
+	SiftSrcLeaf *v;
+	int			nbase = c->lay->nleaves - c->nvleaf;
+
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].count && c->vleaf[j].obj == grp)
+			return nbase + j;
+	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+		return -1;
+	v = vleaf_add(c, leaf_of(c, grp)->attno, leaf_of(c, grp)->path, SCV_I32, INT4OID);
+	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
+	c->vleaf[c->nvleaf].obj = grp;
+	c->vleaf[c->nvleaf].count = true;
+	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
 
@@ -515,8 +548,8 @@ match_leaf(AggCtx *c, Node *e)
 		{
 			SiftSrcLeaf *l = leaf_of(c, i);
 
-			if (l->kind == SCL_ARRAY && l->attno == a.att && paths_equal(l->path, a.path))
-				return i;
+			if (l->kind == SCL_ARRAY && l->attno == a.att && l->parent < 0 && !l->lossy && paths_equal(l->path, a.path))
+				return count_leaf(c, i);
 		}
 		return -1;
 	}
@@ -4226,7 +4259,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
-		scan_cost += rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+		scan_cost += s->vleaf[i].count ? 0 : rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
 	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);

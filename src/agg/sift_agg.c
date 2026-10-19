@@ -996,15 +996,15 @@ extend_layout(AggExec *ex)
 	{
 		SiftSrcLeaf *v = &lay->leaf[ex->nbase + j];
 
-		for (int i = 0; i < ex->nbase; i++)
+		for (int i = 0; i < ex->nbase && !s->vleaf[j].count; i++)
 			if (lay->leaf[i].parent == s->vleaf[j].obj)
 				*(strcmp(lay->leaf[i].name, "key") == 0 ? &ex->vl[j].key : &ex->vl[j].val) = i;
 		v->id = ex->nbase + j;
 		v->attno = lay->leaf[s->vleaf[j].obj].attno;
 		v->parent = -1;
 		v->kind = SCL_SCALAR;
-		v->vtype = lay->leaf[ex->vl[j].val].vtype;
-		v->typid = lay->leaf[ex->vl[j].val].typid;
+		v->vtype = s->vleaf[j].count ? SCV_I32 : lay->leaf[ex->vl[j].val].vtype;
+		v->typid = s->vleaf[j].count ? INT4OID : lay->leaf[ex->vl[j].val].typid;
 	}
 	lay->nleaves += s->nvleaf;
 	ex->lay = lay;
@@ -1061,9 +1061,9 @@ vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, c
 	}
 }
 
-/* the leaf of a SiftAggVLeaf: per row the value of its element with the key, NULL where it has none */
+/* the leaf of a SiftAggVLeaf with a key: per row the value of its element with the key, NULL where it has none */
 static void
-read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
+read_member_leaf(AggExec *ex, int leaf, SiftSrcVec *out)
 {
 	int			j = leaf - ex->nbase,
 				nrow = ex->unit.nrow;
@@ -1092,6 +1092,18 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 	out->isnull = isnull;
 	out->dict = val->dict;
 	out->n = nrow;
+}
+
+/* a leaf after the source's: the member of an object by key, or the length of an array (the element counts of its leaf are the values) */
+static void
+read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
+{
+	const SiftAggVLeaf *vl = &ex->spec->vleaf[leaf - ex->nbase];
+
+	if (vl->count)
+		*out = *get_vec(ex, vl->obj);
+	else
+		read_member_leaf(ex, leaf, out);
 }
 
 static const SiftSrcVec *

@@ -268,8 +268,9 @@ typedef struct SiftAggAgg
  */
 typedef struct SiftAggVLeaf
 {
-	int			obj;			/* the object leaf (free keys: children "key" and "value") */
+	int			obj;			/* the object leaf (free keys: children "key" and "value"), or the array leaf of a length */
 	char	   *key;			/* the value of its element with this key, NULL when the row has none: leaf nleaves + index */
+	bool		count;			/* the number of elements of the array leaf obj (jsonb_array_length), NULL where it has none; key is unused */
 } SiftAggVLeaf;
 
 typedef struct SiftAggArm
