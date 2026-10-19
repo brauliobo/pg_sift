@@ -108,24 +108,24 @@ An online store: a table of 1,000,000 orders (country, category, status, amount,
 
 **3 CPUs per container (PostgreSQL and pg_sift: a leader and 2 parallel workers; Elasticsearch: `node.processors` 3; ClickHouse: `max_threads` 3)**
 
-| query | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Citus columnar | Elasticsearch | ClickHouse |
+| query | PostgreSQL | pg_sift `sift_col` | pg_sift `sift_table` | Elasticsearch | ClickHouse | Citus columnar |
 |---|---:|---:|---:|---:|---:|---:|
-| `* WHERE id = 42` | 0.241 | **0.195** | **0.189** | 1.79 | 1.4 | 2.92 |
-| `count(*) GROUP BY country` | 25.2 | **0.793** | 2.86 | 79.8 | 4.5 | 6.07 |
-| `sum(amount) GROUP BY month` | 180 | **0.816** | 53.1 | 128 | 12.6 | 7.44 |
-| `sum(amount) GROUP BY category` top 10 | 42.6 | **0.841** | 4.1 | 104 | 11.4 | 5.76 |
-| `avg(amount) WHERE status='shipped', ...` | 12.7 | **2.08** | 3.81 | 66.3 | 4.09 | 6.97 |
-| `count(DISTINCT customer_id) GROUP BY month` | 247 | **5.84** | 273 | 565 | 43 | 11.6 |
-| `count(*) WHERE amount > 100, created_at >= ...` | 12.4 | **1.43** | 1.82 | 40.9 | 3.24 | 3.4 |
-| `count(*) WHERE title @@> 'a b'` | 9.12 | **0.658** | 1.18 | 909 | 3.35 | 3.4 |
-| `count(*) WHERE title @@> 'a b', ... GROUP BY category` | 9.88 | 2.39 | **2.08** | 429 | 4.41 | 11.4 |
-| `title @@> 'a b', ... ORDER BY created_at DESC LIMIT 10` | 81.7 | **5.05** | 9.44 | 571 | 6.8 | 9.36 |
-| load time (data, indexes, merge) | 2.0 s | 1.4 s | 4.0 s | 1.4 s | 12 s | **0.7 s** |
-| size: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | 21.4 MiB | n/a | n/a |
-| size: index or columnar data (without heap and primary key) | 34.6 MiB (6.8 + 21.3 + 6.5) | **22.2 MiB (10.9 + 11.3)** | 24.1 MiB (13.2 + 10.9) | 24.7 MiB | 111.4 MiB | 37.6 MiB |
-| size on disk, total (free blocks inside the file in parentheses) | 159 MiB | 146 MiB | 196 MiB (150 free, 46 live) | 46 MiB | 111 MiB | **38 MiB** |
+| `* WHERE id = 42` | 0.241 | **0.195** | **0.189** | 1.4 | 2.92 | 1.79 |
+| `count(*) GROUP BY country` | 25.2 | **0.793** | 2.86 | 4.5 | 6.07 | 79.8 |
+| `sum(amount) GROUP BY month` | 180 | **0.816** | 53.1 | 12.6 | 7.44 | 128 |
+| `sum(amount) GROUP BY category` top 10 | 42.6 | **0.841** | 4.1 | 11.4 | 5.76 | 104 |
+| `avg(amount) WHERE status='shipped', ...` | 12.7 | **2.08** | 3.81 | 4.09 | 6.97 | 66.3 |
+| `count(DISTINCT customer_id) GROUP BY month` | 247 | **5.84** | 273 | 43 | 11.6 | 565 |
+| `count(*) WHERE amount > 100, created_at >= ...` | 12.4 | **1.43** | 1.82 | 3.24 | 3.4 | 40.9 |
+| `count(*) WHERE title @@> 'a b'` | 9.12 | **0.658** | 1.18 | 3.35 | 3.4 | 909 |
+| `count(*) WHERE title @@> 'a b', ... GROUP BY category` | 9.88 | 2.39 | **2.08** | 4.41 | 11.4 | 429 |
+| `title @@> 'a b', ... ORDER BY created_at DESC LIMIT 10` | 81.7 | **5.05** | 9.44 | 6.8 | 9.36 | 571 |
+| load time (data, indexes, merge) | 2.0 s | 1.4 s | 4.0 s | 12 s | **0.7 s** | 1.4 s |
+| size: heap and primary key | 124.2 MiB | 124.2 MiB | 21.4 MiB | n/a | n/a | 21.4 MiB |
+| size: index or columnar data (without heap and primary key) | 34.6 MiB (6.8 + 21.3 + 6.5) | **22.2 MiB (10.9 + 11.3)** | 24.1 MiB (13.2 + 10.9) | 111.4 MiB | 37.6 MiB | 24.7 MiB |
+| size on disk, total (free blocks inside the file in parentheses) | 159 MiB | 146 MiB | 196 MiB (150 free, 46 live) | 111 MiB | **38 MiB** | 46 MiB |
 
-- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; 34.6 MiB); `sift_col` the column index and the BM25 title index (10.9 + 11.3 MiB); `sift_table` the live bytes of its columns plus the title index (13.2 + 10.9 MiB); Citus the columnar table; Elasticsearch the index; ClickHouse the table with its text index. pg_sift `sift_table`, Citus columnar, Elasticsearch and ClickHouse store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. Like for like, the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema (`system.columns`, measured on 2026-10-18; per column in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#size-against-clickhouse-1000000-orders)).
+- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; 34.6 MiB); `sift_col` the column index and the BM25 title index (10.9 + 11.3 MiB); `sift_table` the live bytes of its columns plus the title index (13.2 + 10.9 MiB); Elasticsearch the index; ClickHouse the table with its text index; Citus the columnar table. pg_sift `sift_table`, Elasticsearch, ClickHouse and Citus columnar store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. Like for like, the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema (`system.columns`, measured on 2026-10-18; per column in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#size-against-clickhouse-1000000-orders)).
 - Every result is compared with PostgreSQL's before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately (HyperLogLog++: its monthly counts were off by at most 0.02% here); every other result matched exactly or within rounding.
 - Elasticsearch runs with its request cache off (a repeated aggregation would otherwise be answered from memory); with it on, the medians are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).
 - ClickHouse is a column store built for exactly these aggregations and Elasticsearch for exactly this search; PostgreSQL (heap, btree and GIN indexes) is what most teams run today.
