@@ -20,7 +20,7 @@ BUILD=$ROOT/build
 dl() { # engine url [sha256]: downloads once into engines/<engine>/dl, prints the path
   local f=$ENG/$1/dl/${2##*/}
   mkdir -p "$ENG/$1/dl"
-  [[ -s $f ]] || curl -fsSL -o "$f" "$2"
+  download "$2" "$f"
   [[ -z ${3:-} ]] || echo "$3  $f" | sha256sum -c --quiet - >&2
   echo "$f"
 }

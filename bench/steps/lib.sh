@@ -274,6 +274,12 @@ code_key() { # what a result depends on besides the host: the pg_sift sources un
 
 phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }   # NAME: seconds since the last phase, to $DEST/phases.txt (articles, places)
 
+download() { # URL FILE: skipped when FILE is there; a partial download (FILE.part) is continued with a range request and FILE appears only when it is complete
+  [[ -s $2 ]] && return 0
+  curl -fsSL -C - -m "${DL_TIMEOUT:-3600}" -o "$2.part" "$1" || { rm -f "$2.part"; curl -fsSL -m "${DL_TIMEOUT:-3600}" -o "$2.part" "$1"; }
+  mv -f "$2.part" "$2"
+}
+
 # --- runs that can be resumed (bench/bench resume, final, steps/store.sh)
 # A run has an id (bench/out/run-ID) and a manifest in $OUT/.run: argv (the command line to run again), pid, state (running | done | failed | interrupted | crashed) and, per stage, the state
 # file stages/NAME.state `state<TAB>key<TAB>date<TAB>note`. The key is the code, host fingerprint and settings the stage's results depend on: a stage that is `done` with the same key is skipped,
