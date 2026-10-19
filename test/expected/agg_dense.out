@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
+-- the element cubes of the pre-aggregates answer the grouped element queries without a scan; the chunks are the point here
+SET sift.agg_preagg = off;
 -- 9000 rows (three chunks of 4096 and a tail): NULLs in the key, the filter column and the arguments
 CREATE TABLE d_t (id int, grp int, kind text, flag text, qty int4, amt float8);
 INSERT INTO d_t
@@ -144,7 +146,7 @@ END $$;
 SELECT n, same, pushed, dense, without_dense FROM d_compare();
  n  | same | pushed | dense | without_dense 
 ----+------+--------+-------+---------------
-  1 | t    | t      | f     | f
+  1 | t    | t      | t     | f
   2 | t    | t      | t     | f
   3 | t    | t      | t     | f
   4 | t    | t      | f     | f
@@ -164,7 +166,7 @@ SELECT n, same, pushed, dense, without_dense FROM d_compare();
  18 | t    | t      | f     | f
  19 | t    | t      | f     | f
  20 | t    | t      | f     | f
- 21 | t    | t      | f     | f
+ 21 | t    | t      | t     | f
  22 | t    | t      | t     | f
  23 | t    | t      | t     | f
  24 | t    | t      | t     | f

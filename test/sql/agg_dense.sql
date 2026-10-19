@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
+-- the element cubes of the pre-aggregates answer the grouped element queries without a scan; the chunks are the point here
+SET sift.agg_preagg = off;
 
 -- 9000 rows (three chunks of 4096 and a tail): NULLs in the key, the filter column and the arguments
 CREATE TABLE d_t (id int, grp int, kind text, flag text, qty int4, amt float8);
