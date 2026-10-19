@@ -57,7 +57,7 @@ release tag.
 Before sending a change:
 
 - run `make check` and add a regression test (`test/sql/NAME.sql` plus `test/expected/NAME.out`) or a TAP test
-  (`test/t/`) for a fix or a new behavior;
+  (`test/t/`) for a fix or a new behavior. For a bug, write the test first and see it fail before you fix it;
 - keep the build free of compiler warnings;
 - start the commit subject with the module or feature it changes: `query: parse fuzzy terms with a distance above 2`.
 

@@ -57,7 +57,7 @@ typedef enum SiftColStore
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
 
-#define SIFT_COLD_LOSSY		0x0001	/* shredded path whose values may not fit the declared type: predicates on it must not be pushed down */
+#define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
  * Logical type of a leaf, part of the stored schema and of its hash. It is a tag of the format, not of any host: a host maps its own types
@@ -343,7 +343,6 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_mutable;		/* rows of a mutable segment (chunks encoded in memory) */
-	bool		clean;			/* no dead rows (the SB is not dirty) */
 	void	   *priv;
 } SiftColUnit;
 
@@ -468,6 +467,8 @@ extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uin
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */
 extern void sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids);
+/* The same for the rows ords (ascending ordinals of the unit), n of them: without decoding the keys of the other rows */
+extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint32 n, ItemPointerData *tids);
 
 /*
  * The zone of a leaf in the unit (no chunk read). sift_col_unit_exact: the zone describes exactly the rows a query without filters would

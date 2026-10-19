@@ -167,6 +167,7 @@ cell() { # ENGINE CLASS SECONDS [warm]: only the external engines are warmed up,
 group() { # CLASS SECONDS WARM ENGINES...: the cell of every engine, one after the other
   local c=$1 secs=$2 warm=$3 e; shift 3
   rm -f "$OUT"/*/update.wps "$OUT"/*/update.wal
+  batch "articles $c"
   for e in "$@"; do cell "$e" "$c" "$secs" "$warm" >"$OUT/$e/val"; done
 }
 
@@ -247,6 +248,8 @@ round() {
     done
   done
 }
+log "start: $(quiet_report 2>&1)"
 rounds round
 phase 'measure'
+log "end: $(noisy_report)"
 log "results in $DEST ($(tr '\n\t' ' ;' <"$DEST/phases.txt"))"

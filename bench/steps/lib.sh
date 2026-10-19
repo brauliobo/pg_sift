@@ -11,6 +11,7 @@ REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.t
 PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
 SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
 REPO=$(dirname "$BENCH")
+. "$REPO/scripts/quiet.sh"                   # quiet_wait, quiet_batch, quiet_report: host noise by pressure stall information
 . "$BENCH/versions.env"
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
 ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
@@ -41,7 +42,19 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd:)
 
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
-loadavg() { cut -d' ' -f1 /proc/loadavg; }
+loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the result tables, kept for the older runs; noise is judged by quiet_report
+# batch WHAT: before a timed batch, wait for a quiet host (quiet_batch); one that runs anyway after the timeout is logged as NOISY
+# and listed in $DEST/noisy.txt
+batch() {
+  local r; quiet_batch
+  [[ -n $QUIET_MARK ]] || return 0
+  r=$(quiet_report 2>&1 || true)
+  log "$*:$QUIET_MARK, $r"; printf '%s\t%s\n' "$*" "$r" >>"${DEST:-$OUT}/noisy.txt"
+}
+noisy_report() { # the pressure now and the number of batches that ran NOISY
+  local n=0; [[ ! -f ${DEST:-$OUT}/noisy.txt ]] || n=$(wc -l <"${DEST:-$OUT}/noisy.txt")
+  echo "$(quiet_report 2>&1), $n NOISY batches"
+}
 # Timed sections must not overlap with other jobs' timings. `bench` holds the lock for a whole run (PERF_LOCK_HELD).
 locked() { if [[ -n ${PERF_LOCK_HELD:-} ]]; then "$@"; else ( flock 9; "$@" ) 9>>"$LOCK"; fi; }
 now_ms() { date +%s%3N; }
@@ -122,7 +135,7 @@ rounds() {
   (( MAXR <= 3 )) || log "warning: MAXR=$MAXR: more than 3 rounds (the most that a run takes by default), the run takes that much longer"
   for r in $(seq "$MAXR"); do
     "$1" "$r"
-    log "round $r done, load $(loadavg)"
+    log "round $r done, $(quiet_report 2>&1)"
     (( r >= MINR )) && stable && break
   done
   return 0

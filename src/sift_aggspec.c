@@ -87,18 +87,23 @@ integer_type(Oid t)
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID || t == BOOLOID;
 }
 
+/* the conjuncts a unit's zone can refuse: a comparison (not <>) of an integer-valued leaf with a constant, a numeric leaf as its scaled integer, an IN list */
 static List *
 zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 {
 	const SiftSrcLeaf *lf;
+	bool		num;
 
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
 			out = zone_cmps(out, p->child[i], lay, nbase);
-	if (p->kind != SAP_CMP || p->op == SCMP_NE || !integer_type(p->argtype) || p->leaf >= nbase)
+	if ((p->kind != SAP_CMP && p->kind != SAP_IN) || p->leaf >= nbase || (p->kind == SAP_CMP && p->op == SCMP_NE) || (p->kind == SAP_IN && p->op))
 		return out;
 	lf = &lay->leaf[p->leaf];
-	return lf->parent < 0 && !lf->lossy && integer_type(lf->typid) ? lappend(out, (void *) p) : out;
+	num = lf->typid == NUMERICOID && lf->vtype == SCV_I64 && p->argtype == NUMERICOID;
+	if (lf->parent >= 0 || lf->lossy || !(num || (integer_type(p->argtype) && integer_type(lf->typid))))
+		return out;
+	return lappend(out, (void *) p);
 }
 
 List *
@@ -109,6 +114,160 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 	for (int i = 0; i < s->npred; i++)
 		out = zone_cmps(out, s->pred[i], lay, nbase);
 	return out;
+}
+
+/* ---------- pre-aggregates ---------- */
+
+/* a leaf of the source's rows that a unit's pre-aggregates describe: a scalar, not lossy */
+static bool
+plain_leaf(const SiftSrcLayout *lay, int nbase, int leaf)
+{
+	const SiftSrcLeaf *lf;
+
+	if (leaf < 0 || leaf >= nbase)
+		return false;
+	lf = &lay->leaf[leaf];
+	return lf->kind == SCL_SCALAR && lf->parent < 0 && !lf->lossy;
+}
+
+int
+sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	int			leaf = -1;
+
+	if (p->late || p->level != 0)
+		return -2;
+	switch (p->kind)
+	{
+		case SAP_TRUE:
+			return -1;
+		case SAP_AND:
+		case SAP_OR:
+			for (int i = 0; i < p->nchild; i++)
+			{
+				int			l = sift_aggspec_pred_leaf(p->child[i], lay, nbase);
+
+				if (l == -2 || (l >= 0 && leaf >= 0 && l != leaf))
+					return -2;
+				leaf = l >= 0 ? l : leaf;
+			}
+			return leaf;
+		case SAP_CMP:
+		case SAP_IN:
+		case SAP_NULL:
+		case SAP_LUT:
+			return plain_leaf(lay, nbase, p->leaf) ? p->leaf : -2;
+		default:
+			return -2;
+	}
+}
+
+/* the leaf of a numeric program that is only that leaf, -1 if it is more */
+static int
+num_leaf(const SiftAggNum *n)
+{
+	return n->n == 1 && n->step[0].op == SNX_LEAF ? n->step[0].leaf : -1;
+}
+
+/* the leaf of the histogram `dim` in pa, -1 if the index writes none */
+static int
+pa_dim(const SiftSrcPreagg *pa, int dim)
+{
+	for (int d = 0; d < pa->ndims; d++)
+		if (pa->dim[d].leaf == dim)
+			return d;
+	return -1;
+}
+
+/* can the unit's pre-aggregates give aggregate a (histogram d of pa, or the sums of the leaves when d < 0)? */
+static bool
+preagg_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int d)
+{
+	int			leaf = a->leaf;
+	bool		sums = false;
+
+	if (a->filter || a->distinct)
+		return false;
+	switch (a->kind)
+	{
+		case SAA_COUNT_STAR:
+			return true;
+		case SAA_COUNT:
+			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
+			break;
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+			sums = true;
+			break;
+		case SAA_SUM_NUM:
+		case SAA_AVG_NUM:
+			leaf = num_leaf(&a->num);
+			sums = true;
+			break;
+		case SAA_MIN:
+		case SAA_MAX:
+			if (d >= 0)
+				return false;
+			leaf = a->num.n ? num_leaf(&a->num) : a->leaf;
+			sums = true;
+			break;
+		default:
+			return false;
+	}
+	if (!plain_leaf(lay, nbase, leaf) || (sums && lay->leaf[leaf].vtype != SCV_I32 && lay->leaf[leaf].vtype != SCV_I64))
+		return false;
+	if (d >= 0 && leaf == pa->dim[d].leaf)
+		return a->kind == SAA_COUNT;			/* the rows of the groups that are not NULL */
+	for (int m = 0; d >= 0 && m < pa->dim[d].nmeas; m++)
+		if (pa->dim[d].meas[m] == leaf)
+			return true;
+	return d < 0;
+}
+
+bool
+sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int *dim_out)
+{
+	List	   *cmps;
+	int			dim = -1,
+				d = -1;
+
+	if (s->group >= 0 || s->narms || s->nsets || s->njoin || s->ncombo || s->npost || s->nvleaf || s->nkeys > 1 || s->naggs == 0 || s->search || s->topn)
+		return false;
+	if (s->nkeys == 1)
+	{
+		if (s->key[0].kind != SAK_LEAF)
+			return false;
+		dim = s->key[0].leaf;
+	}
+	cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension */
+	for (int i = 0; i < s->npred; i++)
+	{
+		int			l = sift_aggspec_pred_leaf(s->pred[i], lay, nbase);
+
+		if (l == -2)
+			return false;
+		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
+			continue;
+		if (dim >= 0 && dim != l)
+			return false;
+		dim = l;
+	}
+	if (dim >= 0)
+	{
+		SiftSrcVecType vt = plain_leaf(lay, nbase, dim) ? lay->leaf[dim].vtype : SCV_F64;
+
+		d = pa_dim(pa, dim);
+		if (d < 0 || (vt != SCV_I32 && vt != SCV_CODE))
+			return false;
+	}
+	else if (!pa->aggs)
+		return false;
+	for (int i = 0; i < s->naggs; i++)
+		if (!preagg_agg_ok(&s->agg[i], lay, nbase, pa, d))
+			return false;
+	*dim_out = dim;
+	return true;
 }
 
 /* ---------- text tests on the encoded form ---------- */
@@ -691,6 +850,8 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
 	put_node(p, s->search);
+	put_node(p, s->topn);
+	put_str(p, s->desc_topn ? s->desc_topn : "");
 	return pk.items;
 }
 
@@ -1007,5 +1168,7 @@ sift_aggspec_unpack(const List *items)
 	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
 	s->search = get_node(u);
+	s->topn = get_node(u);
+	s->desc_topn = get_str(u);
 	return s;
 }
