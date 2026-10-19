@@ -1,0 +1,36 @@
+-- The byte accounting of sift._test_segment_parts: the parts add up to the bytes of the segment, nothing
+-- is left unexplained but the page headers, and the positions, tf and bound parts are where the options put them.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE d (id int, body text);
+INSERT INTO d SELECT g, concat_ws(' ', 'common', 'w' || g % 50, CASE WHEN g % 3 = 0 THEN 'common' END, 'u' || g) FROM generate_series(1, 20000) g;
+CREATE INDEX d_pos ON d USING sift (body);
+CREATE INDEX d_off ON d USING sift (body) WITH (positions = off);
+CREATE FUNCTION part(idx regclass, p text) RETURNS bigint LANGUAGE sql AS
+$$ SELECT coalesce(sum(bytes), 0) FROM sift._test_segment_parts(idx) WHERE part = p $$;
+SELECT idx,
+       (SELECT sum(bytes) FROM sift._test_segment_parts(idx) WHERE part <> 'segment total') = part(idx, 'segment total') AS adds_up,
+       part(idx, 'other (page headers, segment header, unused end)') < 0.10 * part(idx, 'segment total') AS headers_only,
+       part(idx, 'docmap: dl rows') BETWEEN 1 AND 2 * 20000 AS dl_rows,
+       part(idx, 'dict: term suffixes') > 0 AS has_terms,
+       part(idx, 'dict: inline keys and tf') > 0 AS has_inline,
+       part(idx, 'postings: tf L1 bits') > 0 AS has_tf,
+       part(idx, 'postings: GROUPED containers') > 0 AS has_grouped,
+       part(idx, 'postings: LIST codec') > 0 AS has_list,
+       part(idx, 'live pages') > 0 AS has_live,
+       part(idx, 'postings: position records') > 0 AS pos_records,
+       part(idx, 'postings: position checkpoints') > 0 AS pos_ckpt,
+       part(idx, 'dict: inline positions') > 0 AS pos_inline
+FROM (VALUES ('d_pos'::regclass), ('d_off'::regclass)) v(idx) ORDER BY 1::text;
+  idx  | adds_up | headers_only | dl_rows | has_terms | has_inline | has_tf | has_grouped | has_list | has_live | pos_records | pos_ckpt | pos_inline 
+-------+---------+--------------+---------+-----------+------------+--------+-------------+----------+----------+-------------+----------+------------
+ d_pos | t       | t            | t       | t         | t          | t      | t           | t        | t        | t           | t        | t
+ d_off | t       | t            | t       | t         | t          | t      | t           | t        | t        | f           | f        | f
+(2 rows)
+
+SELECT (SELECT bytes FROM sift._test_segment_parts('d_pos') WHERE part = 'segment total') > (SELECT bytes FROM sift._test_segment_parts('d_off') WHERE part = 'segment total') AS positions_cost_bytes;
+ positions_cost_bytes 
+----------------------
+ t
+(1 row)
+

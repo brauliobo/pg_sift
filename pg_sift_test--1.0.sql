@@ -88,6 +88,11 @@ CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
 
+-- Where the bytes of the immutable segments go, by part
+CREATE FUNCTION sift._test_segment_parts(index regclass, OUT gen int8, OUT part text, OUT bytes int8, OUT items int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_segment_parts' LANGUAGE C STRICT;
+
 -- Term blobs (src/bm25/sift_segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
 -- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,

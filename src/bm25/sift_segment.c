@@ -1457,11 +1457,17 @@ walk_docs(Walk *w)
 	{
 		load_sb(seg, dm, i);
 		index_sb(seg, dm);
+		w->st->parts.docmap_presence += dm->reclen;
 		for (int p = 0; p < SIFT_SB_PAGES; p++)
 		{
 			const uint64 *om = dm->om + dm->maskidx[p] * SIFT_OFFMASK_WORDS;
 			BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;
 
+			if (dm->rows[p])
+			{
+				w->st->parts.docmap_dl += dm->rowlen[p] * sizeof(uint16);
+				w->st->parts.docmap_presence -= dm->rowlen[p] * sizeof(uint16);
+			}
 			for (int o = 0; dm->rows[p] && o < dm->rowlen[p]; o++)
 			{
 				uint16		v = dm->rows[p][o];
@@ -1684,6 +1690,73 @@ term_positions(Walk *w, SiftPostingCursor *c, const char *term, int len, const S
 	w->tprec = rec;
 }
 
+static int
+varint_len(uint64 x)
+{
+	int			n = 1;
+
+	for (; x >= 0x80; x >>= 7)
+		n++;
+	return n;
+}
+
+/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (sift_dict_add, sift_posting.h) */
+static void
+account_term(SiftPartStats *ps, int shared, int len, const SiftTermInfo *info, const SiftPostingCursor *c)
+{
+	uint64		df = info->df;
+	bool		pos = (info->flags & SIFT_TERM_POS) != 0;
+	bool		tf1 = (info->flags & SIFT_TERM_ALL_TF1) != 0;
+
+	ps->dict_terms += 2 + len - shared;
+	ps->dict_entries += varint_len(df) + 2;
+	if (info->flags & SIFT_TERM_INLINE)
+	{
+		ps->inline_terms++;
+		ps->dict_inline_keys += varint_len(info->inline_keys[0]) + (df > 1 ? varint_len(info->inline_keys[1] - info->inline_keys[0]) : 0) +
+			(tf1 ? 0 : df);
+		if (pos)
+			ps->dict_inline_pos += varint_len(info->pos_len) + info->pos_len;
+	}
+	else
+	{
+		uint64		side = info->post_len - info->codec_len - (pos ? info->pos_len : 0);
+		uint32		ng,
+					nrows;
+
+		ps->blob_terms++;
+		ps->dict_entries += varint_len(info->post_len) + varint_len(info->post_len - info->codec_len) +
+			(tf1 ? 0 : varint_len(info->nnib)) + (pos ? varint_len(info->pos_len) : 0);
+		sift_post_group_stats(c, &ng, &nrows);
+		if (info->flags & SIFT_TERM_SPARSE)
+			ps->list_codec += info->codec_len;
+		else
+		{
+			ps->grouped_dir += 20 + 12 * (uint64) ng;
+			ps->grouped_payload += info->codec_len - 20 - 12 * (uint64) ng;
+		}
+		if (side > 0)
+		{
+			ps->align_pad += ALIGN4(info->codec_len) - info->codec_len;
+			side -= ALIGN4(info->codec_len) - info->codec_len;
+			ps->gscore += (uint64) ng * sizeof(SiftGroupScore);
+			ps->blkbound += (uint64) nrows * SIFT_BLKS_PER_SB;
+			side -= (uint64) ng * sizeof(SiftGroupScore) + (uint64) nrows * SIFT_BLKS_PER_SB;
+			if (!tf1)
+			{
+				ps->tf_l1 += (df + 7) / 8;
+				ps->tf_nib += ((uint64) info->nnib + 1) / 2;
+				ps->tf_esc += side - (df + 7) / 8 - ((uint64) info->nnib + 1) / 2;
+			}
+		}
+		if (pos)
+		{
+			ps->pos_ckpt += (df + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY * sizeof(uint32);
+			ps->pos_records += info->pos_len - (df + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY * sizeof(uint32);
+		}
+	}
+}
+
 static bool
 walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
@@ -1693,7 +1766,8 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	SiftPostingCursor *c;
 	const SiftGroupBounds *b;
 	int			nb,
-				bi = 0;
+				bi = 0,
+				shared = 0;
 	uint32		n = 0;
 	uint64		pos = 0;
 	SiftDfClassStats *cls = &w->st->cls[df_class(Max(info->df, 1))];
@@ -1702,6 +1776,10 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		(memcmp(w->prev, term, Min(len, w->prevlen)) > 0 ||
 		 (memcmp(w->prev, term, Min(len, w->prevlen)) == 0 && w->prevlen >= len)))
 		corrupt(seg, "Dictionary term \"%.*s\" follows \"%.*s\".", len, term, w->prevlen, w->prev);
+	/* a block's first term is not front coded */
+	if (w->st->nterms % SIFT_DICT_BLOCK != 0)
+		while (shared < Min(len, w->prevlen) && term[shared] == w->prev[shared])
+			shared++;
 	memcpy(w->prev, term, len);
 	w->prevlen = len;
 	if (info->df > w->ndocs)
@@ -1727,6 +1805,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (w->verify)
 		sift_post_check(c);
 	b = sift_post_bounds(c, &nb);
+	account_term(&w->st->parts, shared, len, info, c);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
 		uint32		k = sift_grp_tids(g, NULL, w->tids);
@@ -1810,6 +1889,10 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
+	st->parts.docmap_dir = (uint64) docmap(seg)->nsb * sizeof(SiftDocSBRef) + sizeof(uint32);
+	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
+	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -
+		st->parts.dict_inline_pos;
 	if (verify && !w.stopped && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
 		verify_dead2(&w);
 	MemoryContextDelete(w.tcxt);

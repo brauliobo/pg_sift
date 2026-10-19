@@ -161,6 +161,9 @@ extern sift_cur *sift_post_cursor(SiftPostingCursor *c);
 /* Repositions the codec cursor before the first group */
 extern void sift_post_rewind(SiftPostingCursor *c);
 
+/* Groups of a GROUPED term and how many of them carry a block bound row (0, 0 for the others): the byte accounting of sift_seg_walk */
+extern void sift_post_group_stats(const SiftPostingCursor *c, uint32 *ng, uint32 *nrows);
+
 /* Scoring view of a group (bound, blk bounds) */
 typedef struct SiftGroupBounds
 {
