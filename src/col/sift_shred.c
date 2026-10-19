@@ -839,6 +839,7 @@ open_element(SiftShred *sh, int g, uint32 keyid)
 		SiftShredCol *col = &sh->doc.col[gd->cols[k]];
 
 		col->state[i] = SIFT_SHRED_ABSENT;
+		col->tag[i] = SIFT_COLTAG_UNKNOWN;
 		col->val[i].i = 0;
 	}
 	if (gd->kind == SIFT_SHRED_MAP)
@@ -935,18 +936,28 @@ list_set(SiftShred *sh, NodeP n, SiftShredState st)
 }
 
 static void
-leaf_set(SiftShred *sh, NodeP n, SiftShredState st, uint32 reason)
+leaf_set(SiftShred *sh, NodeP n, SiftShredState st, uint32 reason, uint8 tag)
 {
-	sh->doc.col[n->col].state[sh->doc.grp[n->group].n - 1] = st;
-	sh->doc.col[n->col].ovf |= reason;
+	SiftShredCol *col = &sh->doc.col[n->col];
+	uint32		i = sh->doc.grp[n->group].n - 1;
+
+	col->state[i] = st;
+	col->tag[i] = tag;
+	col->ovf |= reason;
 }
 
 /* A leaf whose value the declared type cannot hold: the slot is OVERFLOW and keeps the JSON type of the value (SIFT_COLTAG_NONE when the leaf is below the array the event delivered: its path leads to no value) */
 static void
 leaf_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
 {
-	sh->doc.col[n->col].tag[sh->doc.grp[n->group].n - 1] = tag;
-	leaf_set(sh, n, SIFT_SHRED_OVERFLOW, reason);
+	leaf_set(sh, n, SIFT_SHRED_OVERFLOW, reason, tag);
+}
+
+/* The kind of the value an ASTEXT leaf holds: its text does not say whether it was a string, a number or a boolean (a string is the leaf's own) */
+static uint8
+text_kind(const SiftShred *sh, NodeP t)
+{
+	return t->type == SIFT_SHRED_ASTEXT && sh->evtag != SIFT_COLTAG_STRING ? sh->evtag : SIFT_COLTAG_UNKNOWN;
 }
 
 static void
@@ -1143,7 +1154,7 @@ sift_shred_null(SiftShred *sh)
 	if (t == NULL || t->kind == N_OBJ)
 		return;
 	if (t->kind == N_LEAF)
-		leaf_set(sh, t, SIFT_SHRED_NULL, 0);
+		leaf_set(sh, t, SIFT_SHRED_NULL, 0, SIFT_COLTAG_JNULL);
 	else
 		scalar_in_container(sh, t, true);
 }
@@ -1169,7 +1180,7 @@ sift_shred_bool(SiftShred *sh, bool b)
 	else
 	{
 		sh->doc.col[t->col].val[sh->doc.grp[t->group].n - 1].i = b;
-		leaf_set(sh, t, SIFT_SHRED_VALUE, 0);
+		leaf_set(sh, t, SIFT_SHRED_VALUE, 0, SIFT_COLTAG_UNKNOWN);
 	}
 }
 
@@ -1196,7 +1207,7 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 		v->s.off = doc->ntext;
 		v->s.len = len;
 		doc->ntext += len;
-		leaf_set(sh, t, SIFT_SHRED_VALUE, 0);
+		leaf_set(sh, t, SIFT_SHRED_VALUE, 0, text_kind(sh, t));
 	}
 }
 
@@ -1231,7 +1242,7 @@ leaf_number(SiftShred *sh, NodeP t, const char *text, int len)
 			 : !dec_float(&d, text, len, t->type == SIFT_SHRED_FLOAT4, &v->f))
 		leaf_overflow(sh, t, SIFT_SHRED_OVF_RANGE, sh->evtag);
 	else
-		leaf_set(sh, t, SIFT_SHRED_VALUE, 0);
+		leaf_set(sh, t, SIFT_SHRED_VALUE, 0, SIFT_COLTAG_UNKNOWN);
 }
 
 void

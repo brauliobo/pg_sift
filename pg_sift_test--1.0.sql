@@ -169,7 +169,7 @@ CREATE FUNCTION sift._test_col_zones(index regclass, leaf int4, preds text DEFAU
 									 OUT sb int4, OUT in_wbuf bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
 									 OUT min int8, OUT max int8, OUT sum_i int8, OUT exact bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_zones' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, stored bool,
+CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, deftag int4, mixed bool DEFAULT false,
 									 OUT sb int4, OUT in_wbuf bool, OUT nrows int4, OUT matched int8, OUT known bool, OUT novf int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_types' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4) RETURNS SETOF record

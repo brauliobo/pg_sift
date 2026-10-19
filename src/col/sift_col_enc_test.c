@@ -257,7 +257,16 @@ gen_float(TCtx *t, const LeafProf *p, bool f4)
 static uint8
 tag_of(uint32 seq)
 {
-	return (uint8) ((seq * 2654435761U >> 9) % (SIFT_COLTAG_MAX + 1));
+	return (uint8) ((seq * 2654435761U >> 9) % (SIFT_COLTAG_OVF_MAX + 1));
+}
+
+/* The kind of a slot that does not overflow: a JSON null in a NULL slot, the number or the boolean type of a value (an astext leaf's), mostly none */
+static uint8
+kind_of(uint32 seq, bool isnull)
+{
+	uint32		h = seq * 2246822519U >> 11;
+
+	return h % 3 ? SIFT_COLTAG_UNKNOWN : isnull ? SIFT_COLTAG_JNULL : (uint8) (SIFT_COLTAG_NUMBER + h / 3 % 2);
 }
 
 static void
@@ -267,6 +276,7 @@ gen_value(TCtx *t, const LeafProf *p, SiftColStore store, uint32 seq, SiftColVal
 	if (CHANCE(t, p->pnull))
 	{
 		v->isnull = true;
+		v->tag = kind_of(seq, true);
 		return;
 	}
 	if (CHANCE(t, p->povf))
@@ -275,6 +285,7 @@ gen_value(TCtx *t, const LeafProf *p, SiftColStore store, uint32 seq, SiftColVal
 		v->tag = tag_of(seq);
 		return;
 	}
+	v->tag = kind_of(seq, false);
 	switch (store)
 	{
 		case SIFT_COLS_INT:
@@ -366,7 +377,7 @@ batch_of(const Case *c, const SiftColRow *rows, uint32 n)
 static bool
 value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 {
-	if ((a->isnull || a->overflow) != (b->isnull || b->overflow) || (a->overflow != b->overflow) || (a->overflow && a->tag != b->tag))
+	if ((a->isnull || a->overflow) != (b->isnull || b->overflow) || (a->overflow != b->overflow) || a->tag != b->tag)
 		return false;
 	if (a->isnull || a->overflow)
 		return true;
@@ -1120,7 +1131,7 @@ check_inline_rule(TCtx *t, const SiftColBatch *b, int col, SiftCDict *seg)
 	CHECK(t, sift_cbatch_str_inline(b, col, seg, limit) == want, "leaf %d: inline rule for a limit of %zu (dictionary %zu, adds %zu)", col, limit, seg->nbytes, add);
 }
 
-/* The rows as a unit written without tags (column format minor 3) returns them: an overflow value has no type */
+/* The rows as a unit written without tags (column format minor 3) returns them: an overflow value has no type, a slot no kind */
 static SiftColRow *
 rows_untagged(const Case *c, const SiftColRow *rows, uint32 n)
 {
@@ -1150,7 +1161,7 @@ rows_untagged(const Case *c, const SiftColRow *rows, uint32 n)
 	return out;
 }
 
-/* The tags of a chunk: the flag exactly when the unit was written with tags and the chunk has overflow values, and every accessor gives the type of the value */
+/* The tags of a chunk: the flags exactly when the unit was written with tags and the chunk has overflow values (TAGS) or kinds, and every accessor gives the tag of the slot */
 static void
 check_tags(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch, bool tags)
 {
@@ -1158,23 +1169,76 @@ check_tags(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch, bool
 	uint64	   *bits = palloc((SIFT_COL_NWORDS(ch->n) + 1) * sizeof(uint64));
 	uint32		bad = 0,
 				badbits = 0;
+	bool		kinds = false;
 
+	for (uint32 i = 0; i < ch->n; i++)
+		kinds |= tags && !ref->v[i].overflow && ref->v[i].tag != SIFT_COLTAG_UNKNOWN;
 	CHECK(t, ((ch->flags & SIFT_COLC_TAGS) != 0) == (tags && ch->ovf != NULL), "%s: tags flag %d, tags %d, overflow %d", what,
 		  (ch->flags & SIFT_COLC_TAGS) != 0, tags, ch->ovf != NULL);
-	CHECK(t, sift_cchunk_tags(ch, all) == (ch->tags != NULL), "%s: tags expanded for a chunk without them", what);
+	CHECK(t, ((ch->flags & SIFT_COLC_KINDS) != 0) == kinds, "%s: kinds flag %d, kinds %d", what, (ch->flags & SIFT_COLC_KINDS) != 0, kinds);
+	CHECK(t, sift_cchunk_tags(ch, all) == (ch->tags != NULL || kinds), "%s: tags expanded for a chunk without them", what);
 	for (uint32 i = 0; i < ch->n; i++)
 	{
-		uint8		want = ref->v[i].overflow && tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN;
+		uint8		want = tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN;
 
-		bad += sift_cchunk_ovf_tag(ch, i) != want || (ch->tags != NULL && all[i] != want);
+		bad += sift_cchunk_ovf_tag(ch, i) != (ref->v[i].overflow ? want : SIFT_COLTAG_UNKNOWN) || ((ch->tags != NULL || kinds) && all[i] != want);
 	}
 	for (uint8 tag = 0; tag <= SIFT_COLTAG_MAX; tag++)
 	{
 		sift_cchunk_tag_bits(ch, tag, bits);
 		for (uint32 i = 0; i < ch->n; i++)
-			badbits += sift_col_bit_test(bits, i) != (ref->v[i].overflow && (tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN) == tag);
+		{
+			uint8		have = tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN;
+
+			badbits += sift_col_bit_test(bits, i) != (tag == SIFT_COLTAG_UNKNOWN ? ref->v[i].overflow && have == tag : have == tag);
+		}
 	}
 	CHECK(t, bad == 0 && badbits == 0, "%s: %u slots with a wrong tag, %u wrong in the tag bitmaps", what, bad, badbits);
+}
+
+/* A chunk with bad kinds does not parse: a tag that is no kind, a bit past the end, a slot of two kinds, a JSON null in a slot with a value; copy is the chunk, restored */
+static void
+check_kinds_corrupt(TCtx *t, const char *what, const uint8 *chunk, uint8 *copy, uint32 len)
+{
+	SiftCChunk	ch;
+	Size		off[SIFT_COLTAG_MAX + 1] = {0},
+				bytes,
+				head;
+	uint8		first = 0,
+				other = 0;
+	uint32		n;
+
+	if (!sift_cchunk_parse(copy, len, &ch))
+		return;
+	n = ch.n;
+	bytes = (Size) ((n + 63) / 64) * 8;
+	for (uint8 tag = 1; tag <= SIFT_COLTAG_MAX; tag++)
+		if (ch.kind[tag])
+		{
+			off[tag] = (const uint8 *) ch.kind[tag] - copy;
+			if (first == 0)
+				first = tag;
+			else if (other == 0)
+				other = tag;
+		}
+	head = off[first] - 8;
+	copy[head] |= 1 << SIFT_COLTAG_OBJECT;
+	CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a kind of objects parsed", what);
+	copy[head] = chunk[head];
+	if (n % 64 != 0)
+	{
+		Size		at = off[first] + (n / 64) * 8 + 7;
+
+		copy[at] |= 0x80;
+		CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a kind past the last slot parsed", what);
+		copy[at] = chunk[at];
+	}
+	if (other)
+	{
+		memcpy(copy + off[other], chunk + off[first], bytes);
+		CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a slot of two kinds parsed", what);
+		memcpy(copy + off[other], chunk + off[other], bytes);
+	}
 }
 
 /* A chunk with a bad tag does not parse: a nibble past 5, a set padding bit, the flag without an overflow bitmap */
@@ -1188,6 +1252,10 @@ check_tags_corrupt(TCtx *t, const char *what, const uint8 *chunk, uint32 len)
 
 	memcpy(copy, chunk, len);
 	memset(copy + len, 0, SIFT_COL_PAD);
+	if (!sift_cchunk_parse(copy, len, &ch))
+		return;
+	if (ch.kmask)
+		check_kinds_corrupt(t, what, chunk, copy, len);
 	if (!sift_cchunk_parse(copy, len, &ch))
 		return;
 	if (ch.tags == NULL)

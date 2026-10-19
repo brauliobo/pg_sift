@@ -486,7 +486,7 @@ bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i)
 	(*bits)[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
-/* Appends one slot of a leaf: the key (0 for a NULL), whether it is NULL, whether it overflowed (then also NULL) and the JSON type of the value then (0: not known) */
+/* Appends one slot of a leaf: the key (0 for a NULL), whether it is NULL, whether it overflowed (then also NULL) and its tag: the JSON type of an overflow value (0: not known), else its kind (0: the leaf's own) */
 static void
 vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag)
 {
@@ -517,7 +517,7 @@ vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uin
 		bitmap_set(mcxt, &v->nulls, v->cap, v->n);
 	if (ovf)
 		bitmap_set(mcxt, &v->ovf, v->cap, v->n);
-	if (ovf && tag != SIFT_COLTAG_UNKNOWN)
+	if (tag != SIFT_COLTAG_UNKNOWN)
 	{
 		if (v->otag == NULL)
 			v->otag = MemoryContextAllocZero(mcxt, v->cap);
@@ -648,7 +648,7 @@ sift_cbatch_value(const SiftColBatch *b, int col, uint32 slot, SiftColValue *v)
 	memset(v, 0, sizeof(*v));
 	v->isnull = sift_col_bit_test(vals->nulls, slot);
 	v->overflow = sift_col_bit_test(vals->ovf, slot);
-	v->tag = v->overflow && vals->otag ? vals->otag[slot] : SIFT_COLTAG_UNKNOWN;
+	v->tag = vals->otag ? vals->otag[slot] : SIFT_COLTAG_UNKNOWN;
 	if (v->isnull)
 		return;
 	switch (b->schema->cols[col].store)
@@ -1175,13 +1175,46 @@ put_tags(StringInfo out, const SiftCVals *vals)
 				out->data[at + k / 2] |= (char) (vals->otag[w * 64 + pg_rightmost_one_pos64(m)] << (k % 2 * 4));
 }
 
-/* The flags of a chunk of the leaf: NULLs and overflow follow the zone, and the overflow comes with its tags when the unit is written with them */
+/* The kinds of the leaf: bit t set when some slot that does not overflow has tag t */
+static uint32
+kinds_mask(const SiftCVals *vals)
+{
+	uint32		mask = 0;
+
+	for (uint32 i = 0; vals->otag != NULL && i < vals->n; i++)
+		if (!sift_col_bit_test(vals->ovf, i))
+			mask |= 1U << vals->otag[i];
+	return mask & ~1U;
+}
+
+/* Appends the kinds (SIFT_COLC_KINDS): the word of the tags that have a bitmap and the bitmaps */
+static void
+put_kinds(StringInfo out, const SiftCVals *vals, uint32 mask)
+{
+	uint64		head = mask;
+	uint64	   *bits = palloc(words_of(vals->n) * sizeof(uint64));
+
+	put_bytes(out, &head, sizeof(head));
+	for (uint8 tag = 1; tag <= SIFT_COLTAG_MAX; tag++)
+	{
+		if (!(mask >> tag & 1))
+			continue;
+		memset(bits, 0, words_of(vals->n) * sizeof(uint64));
+		for (uint32 i = 0; i < vals->n; i++)
+			if (vals->otag[i] == tag && !sift_col_bit_test(vals->ovf, i))
+				bits[i / 64] |= UINT64CONST(1) << (i % 64);
+		put_bitmap(out, bits, vals->n);
+	}
+	pfree(bits);
+}
+
+/* The flags of a chunk of the leaf: NULLs and overflow follow the zone, and the overflow comes with its tags and the kinds (kmask) when the unit is written with them */
 static uint8
-chunk_flags(const SiftCZone *z, bool tags)
+chunk_flags(const SiftCZone *z, bool tags, uint32 kmask)
 {
 	bool		ovf = (z->flags & SIFT_COLZ_OVERFLOW) != 0;
 
-	return (z->nnull > 0 ? SIFT_COLC_NULLS : 0) | (ovf ? SIFT_COLC_OVF : 0) | (ovf && tags ? SIFT_COLC_TAGS : 0);
+	return (z->nnull > 0 ? SIFT_COLC_NULLS : 0) | (ovf ? SIFT_COLC_OVF : 0) | (ovf && tags ? SIFT_COLC_TAGS : 0) | (kmask ? SIFT_COLC_KINDS : 0);
 }
 
 /* Appends the chunk of n keys (NULL slots hold 0) and returns its zone; pol: the codec's policy of the leaf, NULL for the plain form */
@@ -1194,13 +1227,14 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 	uint8		enc,
 				bits,
 				flags;
+	uint32		kmask = tags ? kinds_mask(vals) : 0;
 	uint64		span,
 			   *u;
 	int64		base;
 	uint8		head[8];
 
 	zone_of_keys(key, nulls, ovf, n, store, z);
-	flags = chunk_flags(z, tags);
+	flags = chunk_flags(z, tags, kmask);
 	span = (uint64) z->max - (uint64) z->min;
 	codec_choose(span, n, &enc, &bits);
 	if (pol != NULL && enc != SIFT_COLENC_CONST)
@@ -1221,6 +1255,8 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 		put_bitmap(out, ovf, n);
 	if (flags & SIFT_COLC_TAGS)
 		put_tags(out, vals);
+	if (flags & SIFT_COLC_KINDS)
+		put_kinds(out, vals, kmask);
 	if (enc == SIFT_COLENC_STRS)
 	{
 		SiftCcPolicy dp;
@@ -1284,6 +1320,7 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 	StringInfoData bytes;
 	SiftCcPolicy dp;
 	uint8		head[8] = {SIFT_COLENC_ISTR, 0, 0, 0};
+	uint32		kmask = tags ? kinds_mask(v) : 0;
 
 	initStringInfo(&bytes);
 	off[0] = 0;
@@ -1299,7 +1336,7 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 		off[i + 1] = (uint32) bytes.len;
 	}
 	istr_zone(v->nulls, v->ovf, n, off, bytes.data, z);
-	head[2] = chunk_flags(z, tags);
+	head[2] = chunk_flags(z, tags, kmask);
 	memcpy(head + 4, &n, sizeof(n));
 	put_bytes(out, head, sizeof(head));
 	put_zero(out, sizeof(int64));		/* base */
@@ -1309,6 +1346,8 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 		put_bitmap(out, v->ovf, n);
 	if (head[2] & SIFT_COLC_TAGS)
 		put_tags(out, v);
+	if (head[2] & SIFT_COLC_KINDS)
+		put_kinds(out, v, kmask);
 	if (pol == NULL)
 		sift_cc_policy_default(&dp);
 	{
@@ -1380,6 +1419,8 @@ sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict
 }
 
 static bool tags_valid(const SiftCChunk *c);
+static bool kinds_parse(const uint8 *p, uint32 len, uint64 *pos, SiftCChunk *c);
+static bool kinds_valid(const SiftCChunk *c);
 
 bool
 sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
@@ -1396,7 +1437,7 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 	c->flags = p[2];
 	memcpy(&c->n, p + 4, sizeof(c->n));
 	memcpy(&c->base, p + 8, sizeof(c->base));
-	if ((c->flags & ~(SIFT_COLC_NULLS | SIFT_COLC_OVF | SIFT_COLC_TAGS)) != 0 || ((c->flags & SIFT_COLC_OVF) && !(c->flags & SIFT_COLC_NULLS)) ||
+	if ((c->flags & ~(SIFT_COLC_NULLS | SIFT_COLC_OVF | SIFT_COLC_TAGS | SIFT_COLC_KINDS)) != 0 || ((c->flags & SIFT_COLC_OVF) && !(c->flags & SIFT_COLC_NULLS)) ||
 		((c->flags & SIFT_COLC_TAGS) && !(c->flags & SIFT_COLC_OVF)) || !codec_valid(c->enc, c->bits) || c->n > CHUNK_MAX_N)
 		return false;
 	words = words_of(c->n);
@@ -1417,6 +1458,8 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 		c->tags = p + pos;
 		pos += tags_bytes(bitmap_count(c->ovf, c->n));
 	}
+	if ((c->flags & SIFT_COLC_KINDS) && !kinds_parse(p, len, &pos, c))
+		return false;
 	whole = c->enc == SIFT_COLENC_CC || c->enc == SIFT_COLENC_STRS || c->enc == SIFT_COLENC_ISTR;
 	c->paylen = whole ? (pos <= len ? (uint32) (len - pos) : 0) : (uint32) codec_paylen(c->enc, c->bits, c->n);
 	if (pos + c->paylen > len || (whole && (c->paylen == 0 || c->paylen % 8 != 0 || c->n == 0)))
@@ -1442,7 +1485,7 @@ sift_cchunk_parse(const uint8 *p, uint32 len, SiftCChunk *c)
 	for (uint64 w = 0; c->ovf != NULL && w < words; w++)
 		if (c->ovf[w] & ~c->nulls[w])
 			return false;
-	return c->tags == NULL || tags_valid(c);
+	return (c->tags == NULL || tags_valid(c)) && kinds_valid(c);
 }
 
 static inline uint8
@@ -1458,11 +1501,68 @@ tags_valid(const SiftCChunk *c)
 	uint32		nov = bitmap_count(c->ovf, c->n);
 
 	for (uint32 k = 0; k < nov; k++)
-		if (tag_nibble(c->tags, k) > SIFT_COLTAG_MAX)
+		if (tag_nibble(c->tags, k) > SIFT_COLTAG_OVF_MAX)
 			return false;
 	for (uint32 k = nov; k < tags_bytes(nov) * 2; k++)
 		if (tag_nibble(c->tags, k) != 0)
 			return false;
+	return true;
+}
+
+/* the tags a kind can have: the type of an astext leaf's number, boolean (or string) and JSON null */
+#define KINDS_ALLOWED	(1U << SIFT_COLTAG_STRING | 1U << SIFT_COLTAG_NUMBER | 1U << SIFT_COLTAG_BOOLEAN | 1U << SIFT_COLTAG_JNULL)
+
+/* The kinds word and bitmaps at *pos: the word has only the bits of tags 1..MAX and every bitmap is there */
+static bool
+kinds_parse(const uint8 *p, uint32 len, uint64 *pos, SiftCChunk *c)
+{
+	uint64		head;
+	Size		bytes = words_of(c->n) * 8;
+
+	if (*pos + 8 > len)
+		return false;
+	memcpy(&head, p + *pos, sizeof(head));
+	*pos += 8;
+	c->kmask = (uint8) head;
+	if (head != c->kmask || head == 0 || (head & ~KINDS_ALLOWED))
+		return false;
+	for (uint8 tag = 1; tag <= SIFT_COLTAG_MAX; tag++)
+		if (c->kmask >> tag & 1)
+		{
+			if (*pos + bytes > len)
+				return false;
+			c->kind[tag] = (const uint64 *) (p + *pos);
+			*pos += bytes;
+		}
+	return true;
+}
+
+/* A kind is a slot that does not overflow: JSON null is a NULL slot, the others hold a value, no slot has two, and none is empty */
+static bool
+kinds_valid(const SiftCChunk *c)
+{
+	for (uint8 tag = 1; tag <= SIFT_COLTAG_MAX; tag++)
+	{
+		uint64		any = 0;
+
+		if (c->kind[tag] == NULL)
+			continue;
+		for (uint32 w = 0; w < words_of(c->n); w++)
+		{
+			uint64		m = c->kind[tag][w],
+						nul = c->nulls ? c->nulls[w] : 0;
+
+			if ((w == c->n / 64 && c->n % 64 != 0 && (m >> (c->n % 64)) != 0) || (c->ovf && (m & c->ovf[w])) ||
+				(tag == SIFT_COLTAG_JNULL ? (m & ~nul) : (m & nul)))
+				return false;
+			for (uint8 o = 1; o < tag; o++)
+				if (c->kind[o] && (m & c->kind[o][w]))
+					return false;
+			any |= m;
+		}
+		if (any == 0)
+			return false;
+	}
 	return true;
 }
 
@@ -1484,12 +1584,16 @@ sift_cchunk_tags(const SiftCChunk *c, uint8 *dst)
 {
 	uint32		k = 0;
 
-	if (c->tags == NULL)
+	if (c->tags == NULL && c->kmask == 0)
 		return false;
 	memset(dst, 0, c->n);
-	for (uint32 w = 0; w < words_of(c->n); w++)
+	for (uint32 w = 0; c->tags != NULL && w < words_of(c->n); w++)
 		for (uint64 m = c->ovf[w]; m; m &= m - 1)
 			dst[w * 64 + pg_rightmost_one_pos64(m)] = tag_nibble(c->tags, k++);
+	for (uint8 tag = 1; tag <= SIFT_COLTAG_MAX; tag++)
+		for (uint32 w = 0; c->kind[tag] != NULL && w < words_of(c->n); w++)
+			for (uint64 m = c->kind[tag][w]; m; m &= m - 1)
+				dst[w * 64 + pg_rightmost_one_pos64(m)] = tag;
 	return true;
 }
 
@@ -1503,6 +1607,8 @@ sift_cchunk_tag_bits(const SiftCChunk *c, uint8 tag, uint64 *bits)
 		for (uint64 m = c->ovf[w]; m; m &= m - 1, k++)
 			if ((c->tags ? tag_nibble(c->tags, k) : SIFT_COLTAG_UNKNOWN) == tag)
 				bits[w] |= m & -m;
+	for (uint32 w = 0; tag != SIFT_COLTAG_UNKNOWN && c->kind[tag] != NULL && w < words_of(c->n); w++)
+		bits[w] |= c->kind[tag][w];
 }
 
 /* The NULL slots of a decoded lane (any element type) are 0 */
@@ -2693,7 +2799,7 @@ typedef struct UnitLeaf
 	uint32	   *eoff;			/* GROUP: element offset of each row, nrows + 1 */
 	uint32	   *voff;			/* VAR and inline STR: start of each string, n + 1 */
 	char	   *vb;
-	uint8	   *tag;			/* the chunk's overflow tags per slot; NULL without SIFT_COLC_TAGS (minor 3: the types are not known) */
+	uint8	   *tag;			/* the chunk's tags per slot (overflow types, kinds); NULL without SIFT_COLC_TAGS and SIFT_COLC_KINDS (minor 3: not known) */
 	bool		inl;			/* STR stored inline: the strings are interned into the destination's dictionary */
 } UnitLeaf;
 
@@ -2703,7 +2809,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 {
 	bool		isnull = !lf->present || sift_col_bit_test(lf->c.nulls, slot);
 	bool		ovf = lf->present && sift_col_bit_test(lf->c.ovf, slot);
-	uint8		tag = ovf && lf->tag ? lf->tag[slot] : SIFT_COLTAG_UNKNOWN;
+	uint8		tag = lf->present && lf->tag ? lf->tag[slot] : SIFT_COLTAG_UNKNOWN;
 	int64		key = isnull ? 0 : lf->key[slot];
 
 	if (lf->inl)
@@ -2750,11 +2856,9 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		l->key = palloc((l->c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 		sift_cchunk_decode(&l->c, l->key);
 		l->inl = l->c.enc == SIFT_COLENC_ISTR;
-		if (l->c.tags != NULL)
-		{
-			l->tag = palloc(Max(l->c.n, 1));
-			sift_cchunk_tags(&l->c, l->tag);
-		}
+		l->tag = palloc(Max(l->c.n, 1));
+		if (!sift_cchunk_tags(&l->c, l->tag))
+			l->tag = NULL;
 		if (s->cols[col].store == SIFT_COLS_VAR || l->inl)
 			sift_cchunk_strs(&l->c, CurrentMemoryContext, &l->voff, &l->vb);
 		if (leaf_is_str(&s->cols[col]) && !l->inl)

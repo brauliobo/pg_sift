@@ -222,6 +222,7 @@ static void
 set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, SiftShredType type, uint32 i)
 {
 	memset(v, 0, sizeof(*v));
+	v->tag = col->tag[i];
 	switch (col->state[i])
 	{
 		case SIFT_SHRED_ABSENT:
@@ -230,7 +231,6 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			return;
 		case SIFT_SHRED_OVERFLOW:
 			v->isnull = v->overflow = true;
-			v->tag = col->tag[i];
 			return;
 		default:
 			break;

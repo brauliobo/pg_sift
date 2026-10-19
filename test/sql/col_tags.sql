@@ -6,45 +6,50 @@ SET client_min_messages = warning;
 
 CREATE TABLE d (id int, doc jsonb);
 -- every path: a number, a string, a boolean, an object, an array, a JSON null, a missing key, and values out of range; o.v lies below a node
--- that is not always an object (its value is then no value at all)
+-- that is not always an object (its value is then no value at all); a takes every kind of scalar, a string that looks like a number too
 CREATE FUNCTION doc(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS
 $$ SELECT CASE g % 12
-	WHEN 0 THEN '{"m": 1.5, "n": 3, "s": "x", "b": true, "o": {"v": 1}}'
-	WHEN 1 THEN '{"m": "str", "n": "a", "s": 5, "b": "no", "o": "x"}'
-	WHEN 2 THEN '{"m": true, "n": 1.5, "s": true, "b": 3, "o": [1]}'
-	WHEN 3 THEN '{"m": {"a": 1}, "n": {}, "s": {"x": 1}, "b": {}, "o": {"v": "s"}}'
-	WHEN 4 THEN '{"m": [1], "n": [], "s": [], "b": [], "o": {"v": 1.5}}'
-	WHEN 5 THEN '{"m": null, "n": null, "s": null, "b": null, "o": null}'
+	WHEN 0 THEN '{"m": 1.5, "n": 3, "s": "x", "b": true, "o": {"v": 1}, "a": "str"}'
+	WHEN 1 THEN '{"m": "str", "n": "a", "s": 5, "b": "no", "o": "x", "a": 12}'
+	WHEN 2 THEN '{"m": true, "n": 1.5, "s": true, "b": 3, "o": [1], "a": true}'
+	WHEN 3 THEN '{"m": {"a": 1}, "n": {}, "s": {"x": 1}, "b": {}, "o": {"v": "s"}, "a": {"x": 1}}'
+	WHEN 4 THEN '{"m": [1], "n": [], "s": [], "b": [], "o": {"v": 1.5}, "a": [1]}'
+	WHEN 5 THEN '{"m": null, "n": null, "s": null, "b": null, "o": null, "a": null}'
 	WHEN 6 THEN '{}'
-	WHEN 7 THEN '{"m": 1e999, "n": 99999999999, "s": "y", "b": false, "o": {"v": null}}'
-	WHEN 8 THEN '{"m": 2, "n": 4, "s": 1.5, "b": true, "o": 7}'
-	ELSE '{"m": 2, "n": 4, "s": "z", "b": true, "o": {"v": 3}}' END::jsonb $$;
+	WHEN 7 THEN '{"m": 1e999, "n": 99999999999, "s": "y", "b": false, "o": {"v": null}, "a": 1.50}'
+	WHEN 8 THEN '{"m": 2, "n": 4, "s": 1.5, "b": true, "o": 7, "a": "12"}'
+	WHEN 9 THEN '{"m": 2, "n": 4, "s": "z", "b": true, "o": {"v": 3}, "a": false}'
+	ELSE '{"m": 2, "n": 4, "s": "z", "b": true, "o": {"v": 3}, "a": "z"}' END::jsonb $$;
 INSERT INTO d SELECT g, doc(g) FROM generate_series(1, 30000) g;
+-- a document that is NULL has no value at any path
+INSERT INTO d VALUES (-1, NULL);
 
 CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
 $$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
 
--- the rows the index counts as of a JSON type at a leaf (the stored values when the leaf has that type) and the rows the heap has,
--- over every unit; allknown: no overflow value of any unit lacks its tag
-CREATE FUNCTION types(idx regclass, leaf int, path text[], own text)
+-- the rows the index counts as of each JSON type at a leaf (own: the tag of the type its stored values have; mixed: an astext leaf) and the
+-- rows the heap has, over every unit; none: the path has no value (jsonb_typeof is NULL); allknown: every unit knows the type of every row
+CREATE FUNCTION types(idx regclass, leaf int, path text[], own int, mixed bool DEFAULT false)
 RETURNS TABLE (type text, idx_rows int8, heap_rows int8, allknown bool) LANGUAGE sql AS
 $$ SELECT t.name, sum(u.matched)::int8,
-	(SELECT count(*) FROM d WHERE jsonb_typeof(doc #> path) = t.name), bool_and(u.known)
-	FROM (VALUES ('string', 1), ('number', 2), ('boolean', 3), ('object', 4), ('array', 5)) t(name, tag),
-	LATERAL sift._test_col_types(idx, leaf, 1 << t.tag, t.name = own) u
+	(SELECT count(*) FROM d WHERE CASE t.name WHEN 'none' THEN jsonb_typeof(doc #> path) IS NULL ELSE jsonb_typeof(doc #> path) = t.name END),
+	bool_and(u.known)
+	FROM (VALUES ('string', 1), ('number', 2), ('boolean', 3), ('object', 4), ('array', 5), ('none', 6), ('null', 7)) t(name, tag),
+	LATERAL sift._test_col_types(idx, leaf, 1 << t.tag, own, mixed) u
 	GROUP BY t.name, t.tag ORDER BY t.tag $$;
 CREATE FUNCTION all_types(idx regclass) RETURNS TABLE (leaf text, type text, same bool, allknown bool) LANGUAGE sql AS
 $$ SELECT k.key, r.type, r.idx_rows = r.heap_rows, r.allknown
-	FROM (VALUES ('m', 1, 'number'), ('n', 2, 'number'), ('s', 3, 'string'), ('b', 4, 'boolean'), ('o.v', 5, 'number')) k(key, leaf, own),
-	LATERAL types(idx, k.leaf, string_to_array(k.key, '.'), k.own) r ORDER BY k.leaf, r.type COLLATE "C" $$;
+	FROM (VALUES ('m', 1, 2, false), ('n', 2, 2, false), ('s', 3, 1, false), ('b', 4, 3, false), ('o.v', 5, 2, false), ('a', 6, 1, true))
+		k(key, leaf, own, mixed),
+	LATERAL types(idx, k.leaf, string_to_array(k.key, '.'), k.own, k.mixed) r ORDER BY k.leaf, r.type COLLATE "C" $$;
 
 -- the units that overflow at leaf 1 (doc.m): a unit of the write buffer or of a segment whose overflow values all have their type, and a unit of a segment where some have none
 CREATE FUNCTION unit_kinds(idx regclass, OUT buffered_known bool, OUT segment_known bool, OUT segment_unknown bool) LANGUAGE sql AS
 $$ SELECT coalesce(bool_or(in_wbuf AND novf > 0 AND known), false), coalesce(bool_or(NOT in_wbuf AND novf > 0 AND known), false),
-	coalesce(bool_or(NOT in_wbuf AND NOT known), false) FROM sift._test_col_types(idx, 1, 62, true) $$;
+	coalesce(bool_or(NOT in_wbuf AND NOT known), false) FROM sift._test_col_types(idx, 1, 62, 2) $$;
 
--- minor 4: the leaves id (0), doc.m float8 (1), doc.n int4 (2), doc.s text (3), doc.b bool (4), doc.o.v int4 (5)
-CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4');
+-- minor 4: the leaves id (0), doc.m float8 (1), doc.n int4 (2), doc.s text (3), doc.b bool (4), doc.o.v int4 (5), doc.a astext (6)
+CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext');
 SELECT fmt('d_col');
 SELECT * FROM all_types('d_col');
 SELECT sift.col_verify('d_col', true);
@@ -52,10 +57,10 @@ SELECT sift.col_verify('d_col', true);
 -- minor 3 writes no tags: the stored values still count, an overflow value has no type
 DROP INDEX d_col;
 SET sift.col_format_minor = 3;
-CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4');
+CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext');
 SELECT fmt('d_col');
-SELECT leaf, type, idx_rows, heap_rows, allknown FROM (VALUES ('m', 1), ('b', 4)) k(leaf, n),
-	LATERAL types('d_col', k.n, ARRAY[k.leaf], CASE k.leaf WHEN 'm' THEN 'number' ELSE 'boolean' END) r
+SELECT leaf, type, idx_rows, heap_rows, allknown FROM (VALUES ('m', 1, 2), ('b', 4, 3)) k(leaf, n, own),
+	LATERAL types('d_col', k.n, ARRAY[k.leaf], k.own) r
 	WHERE type IN ('number', 'boolean') ORDER BY leaf, type;
 SELECT sift.col_verify('d_col', true);
 
@@ -77,6 +82,20 @@ REINDEX INDEX d_col;
 SELECT fmt('d_col');
 SELECT * FROM all_types('d_col') WHERE NOT same OR NOT allknown;
 SELECT count(*) AS rows_checked FROM all_types('d_col');
+
+-- without an overflow value a minor 4 unit still tells a JSON null from a missing key; a minor 3 one cannot, but it knows the types that do not need it
+CREATE TABLE z (id int, doc jsonb);
+INSERT INTO z SELECT g, CASE g % 3 WHEN 0 THEN '{"m": 1}' WHEN 1 THEN '{"m": null}' ELSE '{}' END::jsonb FROM generate_series(1, 3000) g;
+CREATE FUNCTION z_types(idx regclass) RETURNS TABLE (type text, idx_rows int8, known bool) LANGUAGE sql AS
+$$ SELECT t.name, sum(u.matched)::int8, bool_and(u.known)
+	FROM (VALUES ('number', 2), ('none', 6), ('null', 7)) t(name, tag), LATERAL sift._test_col_types(idx, 0, 1 << t.tag, 2) u
+	GROUP BY t.name, t.tag ORDER BY t.tag $$;
+SET sift.col_format_minor = 3;
+CREATE INDEX z3_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4');
+RESET sift.col_format_minor;
+CREATE INDEX z4_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4');
+SELECT * FROM z_types('z3_col');
+SELECT * FROM z_types('z4_col');
 
 -- verification: the type of a buffered overflow value is a tag, and it is the type of the heap value; the flag of a segment follows its minor
 CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -113,8 +132,8 @@ RESET sift.col_format_minor;
 SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);
 
-DROP TABLE d, w, pages;
+DROP TABLE d, w, z, pages;
 DROP FUNCTION expect(text);
-DROP FUNCTION doc(int), fmt(regclass), types(regclass, int, text[], text), all_types(regclass), unit_kinds(regclass);
+DROP FUNCTION doc(int), fmt(regclass), types(regclass, int, text[], int, bool), all_types(regclass), unit_kinds(regclass), z_types(regclass);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
