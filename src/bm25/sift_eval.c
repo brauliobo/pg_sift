@@ -3085,7 +3085,7 @@ rank_merge_shared(SiftRanker *r)
 
 #define RANK_INITIAL_K	1024
 
-/* Searches the K best verified hits from scratch; the heap grows with the hits found, not with K */
+/* Searches the K best verified hits from scratch; the heap grows with the hits found, not with K (K is unbounded without a hint: one search holds every match) */
 static void
 rank_search(SiftRanker *r)
 {
@@ -3131,7 +3131,7 @@ static void
 rank_ensure(SiftRanker *r)
 {
 	if (!r->searched)
-		r->K = r->k > 0 ? r->k : RANK_INITIAL_K;
+		r->K = r->k > 0 ? r->k : PG_INT64_MAX;
 	else if (r->pos >= r->nhit && !r->complete)
 		r->K = rank_next_k(r->K);
 	else
