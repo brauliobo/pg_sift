@@ -172,7 +172,6 @@ group() { # CLASS SECONDS WARM ENGINES...: the cell of every engine, one after t
 }
 
 # --- run
-phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }
 T0=$SECONDS; : >"$DEST/phases.txt"
 ENGINES=$(lanes_available articles "$ENGINES" | tr '\n' ' ')
 [[ -n $ENGINES ]] || { echo "no engine to run: bench/bench setup" >&2; exit 1; }
@@ -222,7 +221,7 @@ if [[ $cold ]]; then
   exit 0
 fi
 
-printf 'round\tload\tclass\tengine\tmetric\tvalue\tse\tn\tsecs\n' >"$DEST/cells.tsv"
+cells_begin $'round\tload\tclass\tengine\tmetric\tvalue\tse\tn\tsecs'
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$2" "$3" "$4" "$5" "${6:-NA}" "${7:-NA}" "${8:-NA}" >>"$DEST/cells.tsv"; }   # round class engine metric value [stderr n seconds]
 qps_cells() { awk -F'\t' 'NR == 1 || $5 == "qps"' "$DEST/cells.tsv"; }
 stable() { [[ -z $(rse_cells <(qps_cells) 3,4 6 7) ]]; }   # no cell needs another round

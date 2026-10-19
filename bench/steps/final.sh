@@ -1,86 +1,131 @@
 #!/usr/bin/env bash
-# Usage: bench/analytics --final [--dry-run]   (bench/steps/final.sh, called by bench/analytics)
-# The one command behind the published analytics numbers, once the code is final: for PostgreSQL, pg_sift (`sift_col`, `sift_table`),
-# Citus (columnar), Elasticsearch and ClickHouse it starts the containers, loads 1M and 10M orders, runs the warm, cold and update measurements, the pg_sift
-# compression variants, the engines' own accounting and the pg_sift profile (private cluster under a memory cap), writes the results JSON
-# into bench/results/, the tables of README.md and docs/BENCHMARKS.md and the gap report docs/BENCH-GAP.md, and removes every container.
-# --dry-run prints the plan, the estimated time, disk and memory and the state of the preconditions, and starts nothing.
-# Memory: every container runs with --memory (S_MEMORY, default 8g) and no swap; the pg_sift profile cluster runs under
-# `systemd-run --user --scope -p MemoryMax=$GAP_MEM -p MemorySwapMax=0`. The steps run one after another.
+# Usage: bench/bench final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run] [--no-resume] [OPTION...]   (bench/steps/final.sh, called by bench/bench)
+# The release pass: every published number, in stages, each with a time budget (bench/presets.env), within a total budget (default 25 min at --size standard).
+#   store        the store benchmark: PostgreSQL, pg_sift (sift_col, sift_table), Citus (columnar), Elasticsearch, ClickHouse; warm, cold and update tables
+#   compression  the pg_sift compression variants of the column index and the codecs' sizes in every system (1M orders)
+#   stats        what ClickHouse and Elasticsearch read per question
+#   gap          the pg_sift profile (private cluster under a memory cap) and docs/BENCH-GAP.md
+#   search       articles and places, every engine: warm and cold tables, charts, README.md and docs/BENCHMARKS.md
+# The total budget is checked first (the sum of the stages that will run; exit 4 over it, --budget 0 skips the check); a stage that finished before with the same code, settings and
+# host is skipped (its key is in $STORE/final-state; --no-resume runs everything). Every other option is passed on to the stages (bench/bench --help). --docs also writes bench/results,
+# the charts, README.md and docs/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
+# Competitor cells (Elasticsearch, ClickHouse, Citus) come from the cache of cells unless --remeasure-all or their key changed: the stage minutes are
+# those of a pass that measures everything, a pass with a warm cache takes less.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+DIE_TAG=final
 
-DRY=''
-[[ ${1:-} != --dry-run ]] || DRY=1
-SIZES=${S_SIZES:-1000000,10000000}
-GAP_MEM=${GAP_MEM:-12G}
-MEMORY=${S_MEMORY:-8g}
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-GAPOUT=$BENCH/out/final-$STAMP
-export GAP_MEM
+ORIG=("$@")
+FWD=() DRY='' STAGES='' BUDGET='' DOCS='' SIZE=$DEFAULT_PRESET ONLY='' KEEP_GOING=1
+while (( $# )); do
+  case $1 in
+    --dry-run) DRY=1 ;;
+    --stage-only) ONLY=$2; shift ;;   # internal: the stage in a process of its own
+    --fail-fast) KEEP_GOING='' ;;
+    --keep-going) KEEP_GOING=1 ;;
+    --run-id) shift ;;                # the runs of the stages are named after the stage
+    --stages) STAGES=${2//,/ }; shift ;;
+    --budget) BUDGET=$2; shift ;;
+    --no-resume) export NO_RESUME=1 ;;
+    --docs) DOCS=1 ;;
+    --size) SIZE=$2; shift ;;
+    *) FWD+=("$1") ;;
+  esac
+  shift
+done
+preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
+[[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
+FWD+=(--size "$SIZE")
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || BUDGET=25; }
+SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
+OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
+export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
+ALL_STAGES="store compression stats gap search"
+[[ -n $STAGES ]] || STAGES=$ALL_STAGES
+[[ $SIZE == standard || $SIZE == full || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
 
-# step: name | command | minutes (measured on this host in the preliminary runs, 16 threads, 4 CPUs per container; the default now times two budgets, 1 and 3 CPUs, so the store step is estimated at 100, not yet measured)
-STEPS_LIST=(
-  "store: warm, cold and update tables, $SIZES orders, every system|$BENCH/bench store all --sizes $SIZES --docs|100"
-  "store: compression variants of the pg_sift column index, the codecs' sizes in every system, 1000000 orders|$BENCH/bench store all --sizes 1000000 --compression --cold-runs 0 --update-sizes none --docs|8"
-  "store: what ClickHouse and Elasticsearch read per question|$BENCH/bench store stats --sizes $SIZES --engines pg,sift,sift_table,es,es_cached,ch|14"
-  "pg_sift profile: planning, instructions, symbols, $SIZES orders (private cluster)|S_SIZES=$SIZES OUT=$GAPOUT $STEPS/gap.sh|8"
-  "gap report: docs/BENCH-GAP.md|python3 -I $STEPS/gap.py render --profile $REPO/bench/results/store-gap-*.json --stats $REPO/bench/results/store-stats-*.json|1"
-)
-
-plan() {
-  local total=0 i=1 line
-  printf 'Plan (steps run one after another; every container is removed at the end of its step):\n'
-  for line in "${STEPS_LIST[@]}"; do
-    IFS='|' read -r name cmd min <<<"$line"
-    printf '  %d. %s\n       %s\n       about %d min\n' "$i" "$name" "$cmd" "$min"
-    total=$((total + min)); i=$((i + 1))
-  done
-  printf 'Estimated time: about %d min (a loaded host takes longer: the timed parts wait for the perf lock, %s).\n' "$total" "$LOCK"
-  printf 'Estimated disk: about 30 GB in %s (the 10M CSV is 0.9 GB; the servers keep tables, indexes and up to 8 GB of WAL each) and the same in the docker root; removed afterwards.\n' "$STORE"
-  printf 'Memory: 5 containers of at most %s each (no swap) = %d GiB at most, plus a cluster capped at %s for the profile; resident use measured in the preliminary runs was well below the caps.\n' \
-    "$MEMORY" "$((5 * $(numfmt --from=iec "${MEMORY^^}") / 1073741824))" "$GAP_MEM"
+bench() { "$BENCH/bench" "$@"; }
+s_store() { bench store all "${FWD[@]}" --run-id "final-$SIZE-store" --sizes "$SIZES" ${DOCS:+--docs}; }
+s_compression() { bench store all "${FWD[@]}" --run-id "final-$SIZE-compression" --compression --sizes 1000000 --cold-runs 0 --update-sizes none ${DOCS:+--docs}; }
+s_stats() { bench store stats "${FWD[@]}" --run-id "final-$SIZE-stats" --sizes "$SIZES" --engines pg,sift,sift_table,es,es_cached,ch; [[ -z $DOCS ]] || cp "$BENCH"/out/latest/store-stats-*.json "$REPO/bench/results/"; }
+s_gap() {
+  S_SIZES=$SIZES OUT=$GAPOUT "$STEPS/gap.sh"
+  [[ -z $DOCS ]] || { for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/bench/results/store-${f##*/}"; done
+                      python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
 }
+s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
+minutes() { # STAGE: the minutes it takes when everything is measured
+  case $1 in
+    store) if [[ " ${FWD[*]} " != *" --remeasure-all "* ]] && compgen -G "${S_CACHE_DIR:-$STORE/store-cache}/cells/*/*.json" >/dev/null; then echo "$P_MIN_STORE_CACHED"   # competitor cells are in the cache
+           else echo $(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES )); fi ;;
+    compression) echo "${P_MIN_COMPRESSION:-6}" ;;
+    stats) echo "${P_MIN_STATS:-3}" ;;
+    gap) echo "${P_MIN_GAP:-4}" ;;
+    search) echo "$P_MIN_SEARCH" ;;
+  esac
+}
+key() { python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$1" "$SIZE" "${FWD[*]}" "$DOCS" "$SIZES"; }
 
+plan() { # the stages that will run, their minutes, the total against the budget
+  local total=0 s m
+  printf 'Release pass, size %s (bench/presets.env), stages one after another:\n' "$SIZE"
+  for s in $STAGES; do
+    m=$(minutes "$s")
+    if stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
+    else printf '  %-12s about %2d min\n' "$s" "$m"; total=$(( total + m )); fi
+  done
+  printf 'Total about %d min, budget %s min.\n' "$total" "$BUDGET"
+  TOTAL=$total
+}
 check() { # DESCRIPTION COMMAND...
   local what=$1; shift
   if "$@" >/dev/null 2>&1; then printf '  ok       %s\n' "$what"; else printf '  MISSING  %s\n' "$what"; fail=1; fi
 }
-free_gb() { df --output=avail -BG "$1" | tail -1 | tr -dc 0-9; }
-
 preconditions() {
   fail=0
   printf 'Preconditions:\n'
   check "docker works" docker info
-  check "systemd-run --user scope works (the memory cap of the profile cluster)" systemd-run --user --scope -q -p MemoryMax=1G true
+  check "systemd-run --user scope works (the memory cap of the pg_sift profile)" systemd-run --user --scope -q -p MemoryMax=1G true
   check "psql, python3, flock, ss, perf, pgbench, pg_config" bash -c 'for c in psql python3 flock ss perf pgbench pg_config; do command -v $c || exit 1; done'
-  check "pg_config is PostgreSQL 18 (the profile cluster is built for it)" bash -c 'pg_config --version | grep -q "PostgreSQL 18"'
-  check "ports $((${STORE_PORT_BASE:-56280})) .. $((${STORE_PORT_BASE:-56280} + 4)) are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
+  check "ports 56280 .. 56284 are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
   check "no containers of a store run exist (bench/bench store clean)" bash -c '[[ -z $(docker ps -a -q --filter label=sift-store) ]]'
-  printf '  %s GB free in %s, %s GB in /tmp, %s GB of memory available (about 30 GB of disk are needed)\n' "$(free_gb "$STORE")" "$STORE" "$(free_gb /tmp)" "$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)"
-  (( $(free_gb /tmp) >= 30 )) || { echo '  MISSING  30 GB of free disk in /tmp'; fail=1; }
-  for img in "$STORE_PG_IMAGE" "$STORE_ES_IMAGE" "$STORE_CH_IMAGE" "$STORE_CITUS_IMAGE"; do
-    if docker image inspect "$img" >/dev/null 2>&1; then printf '  ok       image %s is present\n' "$img"; else printf '  pull     image %s will be pulled\n' "$img"; fi
-  done
-  for n in $(tr , ' ' <<<"$SIZES"); do
-    if [[ -f $STORE/store/orders-$n.csv ]]; then printf '  ok       seeded data for %s orders is present (generated again when its stamp differs)\n' "$n"; else printf '  generate the seeded data for %s orders (a minute or two)\n' "$n"; fi
-  done
+  printf '  %s GB free in %s, %s GB in /tmp, %s GB of memory available\n' "$(df --output=avail -BG "$STORE" | tail -1 | tr -dc 0-9)" "$STORE" "$(df --output=avail -BG /tmp | tail -1 | tr -dc 0-9)" "$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)"
   return $fail
 }
 
+if [[ -n $ONLY ]]; then   # one stage, in this process (the pass starts one per stage)
+  mkdir -p "$GAPOUT" "$STAGE_STATE"
+  trap 'run_exit $?' EXIT
+  stage_run "$ONLY" "$(key "$ONLY")" "$(minutes "$ONLY")" "s_$ONLY"
+  exit 0
+fi
+run_reclaim
 plan
-preconditions || { [[ -n $DRY ]] || die 'preconditions missing (bench/analytics --final --dry-run)'; }
+preconditions || { [[ -n $DRY ]] || die 'preconditions missing (bench/bench final --dry-run)'; }
 [[ -z $DRY ]] || { echo 'Dry run: nothing was started.'; exit 0; }
+(( BUDGET == 0 || TOTAL <= BUDGET )) || die "the stages take about $TOTAL min, over the budget of $BUDGET min: --budget MIN, --stages LIST or a smaller --size"
 
-mkdir -p "$GAPOUT"
-for line in "${STEPS_LIST[@]}"; do
-  IFS='|' read -r name cmd _ <<<"$line"
-  log "final: $name"
-  eval "$cmd"
-  case $name in
-    "store: what ClickHouse"*) cp "$BENCH"/out/latest/store-stats-*.json "$REPO/bench/results/" ;;
-    "pg_sift profile"*) for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/bench/results/store-${f##*/}"; done ;;
-  esac
+mkdir -p "$GAPOUT" "$STAGE_STATE"
+perf_hold
+RUN_DIR=$GAPOUT/.run
+run_begin final "${ORIG[@]}"
+STAGE_STATE=$STORE/final-state/$SIZE   # finished stages are remembered across runs: a stage whose key is unchanged is not measured again
+T0=$SECONDS FAILED=()
+for s in $STAGES; do
+  rc=0
+  if ! stage_done "$s" "$(key "$s")"; then
+    "$0" --stage-only "$s" "${ORIG[@]}" &
+    STAGE_PID=$!
+    wait "$STAGE_PID" || rc=$?
+    STAGE_PID=''
+  else log "stage $s: finished before ($(cut -f3 "$STAGE_STATE/$s.state")), resumed"; fi
+  (( rc )) || continue
+  (( rc != EX_RESUMABLE )) || exit "$rc"
+  FAILED+=("$s"); log "stage $s FAILED (exit $rc); its error is above, \`bench/bench resume\` runs it again"
+  [[ -n $KEEP_GOING ]] || break
 done
-"$BENCH/bench" store clean
-log "final: done; review git diff for README.md, docs/BENCH-GAP.md and bench/results/"
+bench store clean >/dev/null 2>&1 || true
+log "final: $(( (SECONDS - T0 + 30) / 60 )) min (budget $BUDGET); stages:"
+[[ ! -s $STAGE_LOG ]] || awk -F'\t' '{printf "  %-12s %5.1f min (budget %s)\n", $1, $2 / 60, $3}' "$STAGE_LOG" >&2
+(( ${#FAILED[@]} == 0 )) || { log "FAILED stages: ${FAILED[*]}"; exit 1; }
+[[ -z $DOCS ]] || log "review git diff for README.md, docs/BENCH-GAP.md and bench/results/"

@@ -7,7 +7,7 @@
 #                           --build LABEL=DIR --build LABEL=DIR ...
 #
 # Every --build is a checkout with scripts/pgtest.sh (git worktree add --detach DIR REF); the first is the baseline and the others are
-# compared with it. Each build gets its own release cluster (SIFT_TMP /tmp/sift-gate-LABEL, ports SIFT_PORT=56120 and up).
+# compared with it. Each build gets its own release cluster (SIFT_TMP ${SIFT_GATE_TMP:-/tmp}/sift-gate-LABEL (SIFT_GATE_TMP moves the root), ports SIFT_PORT=56120 and up).
 # What is counted: perf stat -e instructions:u,cycles:u on the postmaster of the build, which follows the processes it forks while the
 # operation runs, so it sums the backend, the maintenance worker and parallel workers, and leaves out what the host does for others.
 # The window of a write ends when the maintenance worker has gone. The cost of a session (connect, load sift, one query on an empty
@@ -57,7 +57,7 @@ while (( $# )); do
 	shift
 done
 (( ${#BUILDS[@]} >= 2 )) || { sed -n '2,28p' "$0"; exit 1; }
-BASE=$(mktemp -d /tmp/sift-gate-run.XXXXXX)
+BASE=$(mktemp -d ${SIFT_GATE_TMP:-/tmp}/sift-gate-run.XXXXXX)
 PORT0=${SIFT_PORT:-56120}
 START=$SECONDS
 LABELS=()
@@ -318,7 +318,7 @@ i=0
 for b in "${BUILDS[@]}"; do
 	l=${b%%=*}
 	LABELS+=("$l")
-	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=/tmp/sift-gate-$l PORT[$l]=$((PORT0 + i++))
+	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=${SIFT_GATE_TMP:-/tmp}/sift-gate-$l PORT[$l]=$((PORT0 + i++))
 	pg "$l" install >/dev/null
 	pg "$l" start >/dev/null
 	PM[$l]=$(head -1 "${TMP[$l]}/data/postmaster.pid")

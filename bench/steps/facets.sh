@@ -192,14 +192,14 @@ elasticsearch() {
 	q -F $'\t' -c "SELECT wl, n, mode, words FROM qs ORDER BY wl, n" >"$d/queries.tsv"
 	q -v FETCH_COUNT=20000 -c "SELECT json_build_object('id', id::text, 'body', body, 'lo', lo, 'hi', hi) FROM docs ORDER BY id" >"$d/docs.ndjson"
 	ES_PATH_CONF=$d/conf ES_TMPDIR=$d/tmp nice /usr/share/elasticsearch/bin/elasticsearch -d -p "$d/pid" >"$d/start.log" 2>&1
-	until curl -fs "$url/_cluster/health?wait_for_status=yellow" >/dev/null; do sleep 1; done
+	until curl -fs "$url/_cluster/health?wait_for_status=yellow" >/dev/null; do sleep 0.2; done
 	log "elasticsearch up"
 	gate elasticsearch
 	python3 -I "$STEPS/facets_es.py" "$url" "$d/docs.ndjson" "$d/queries.tsv" "$SECS" "$ROUNDS" >"$d/es.out"
 	awk -F'\t' '$1 == "check"' "$d/es.out" | sed 's/^/  /' >&2
 	awk -F'\t' '$1 != "check" {print $1 "\t" $2 "\t" $3}' "$d/es.out" | awk -F'\t' '{r[$1 FS $2]++; print r[$1 FS $2] "\t" $0}' |
 		while IFS=$'\t' read -r r col wl qps; do q -c "INSERT INTO res VALUES ($r, '$col', '$wl', 'es', $qps)"; done
-	kill "$(cat "$d/pid")"; while [[ -e $d/pid ]]; do sleep 1; done
+	kill "$(cat "$d/pid")"; while [[ -e $d/pid ]]; do sleep 0.2; done
 }
 
 summary() {

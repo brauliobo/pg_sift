@@ -355,13 +355,19 @@ Citus is measured columnar-only and on a single node: the table is `USING column
 Citus is AGPL-licensed: the benchmark only runs its docker image (`STORE_CITUS_IMAGE` in `versions.env`) in a container and downloads nothing of it into this repository.
 
 ```sh
-bench/bench store all --sizes 1000000 --cpus-list 1,3 --runs 5 --warmups 2 --cold-runs 2 --docs   # the final pass of 3.0: one size, about 25 minutes (cold: `store merge --restart-cold FILE --restart-engines pg,ch` takes those engines' restart-based cells from another results file)
+bench/bench --list                      # the sizes of a pass (smoke, quick, standard = default, full) and what they set (bench/presets.env)
+bench/bench store all --size quick      # the development loop: 200,000 orders, a few minutes, never published
+bench/bench store all --size full --docs   # 10M orders (opt-in)
+bench/bench store all --remeasure-all   # measure Elasticsearch, ClickHouse and Citus again instead of reading their cells from the cache (--no-cache: and do not write it)
+bench/bench store all --parallel-engines 3  # independent engines at the same time on disjoint cpusets of equal size
+bench/bench store interference          # does one engine's cell change while the others run on their own cpusets
+bench/bench store merge --restart-cold FILE --restart-engines pg,ch -o OUT   # take those engines' restart-based cold cells from another results file
 bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
-bench/analytics                         # the quick run: 1M orders, 3 runs, the same equality checks, about 2 minutes (bench/out/latest/store.json)
-bench/bench store compare A.json B.json # two runs side by side: every warm median and the ratio (changes above 10% marked)
+bench/bench compare A.json B.json       # two runs: the ratio of every warm median with its 95% interval, * where it changed (bootstrap + Mann-Whitney)
 bench/bench store all --sizes 1000000 --compression --docs   # the pg_sift `compression` variants as lanes and every system's size with its other codec settings
 bench/steps/gap.sh                      # the pg_sift profile (planning, instructions, symbols) on a private cluster under a memory cap
-bench/analytics --final --dry-run       # the plan, time, disk and memory of the one command that regenerates every published analytics number (without --dry-run: runs it)
+bench/bench resume                      # continue the unfinished run from what is done (exit status 75 = interrupted, resumable); bench/test/test_resume.sh kills a run at random points and checks it
+bench/bench final --dry-run             # the release pass: stages, budgets, total against 25 min, preconditions (without --dry-run: runs it; --docs publishes)
 bench/bench store clean                 # containers, volumes, the image, the CSV
 ```
 
@@ -399,7 +405,7 @@ The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads 
 The five servers do not start the same number of threads on their own: PostgreSQL (and Citus, which is PostgreSQL) uses a process per connection and parallel workers only when the planner asks
 for them, ClickHouse one thread per CPU it sees and a background pool for merges, Elasticsearch thread pools sized from the processors it sees and a JVM with its
 own GC and JIT threads. Letting each engine size itself from a container limit would measure the engines' defaults, not the engines. So one number, `--cpus N`,
-drives everything, and the comparison is made at two values of it, `--cpus-list 1,3` (the default of `bench/bench store`; `--quick` runs both too):
+drives everything, and the comparison is made at two values of it, `--cpus-list 1,3` (the default of `bench/bench store`; `--size quick` runs both too):
 
 | engine | what N sets | where |
 |---|---|---|
