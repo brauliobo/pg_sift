@@ -1493,12 +1493,57 @@ def bench_table(R, tier, engines, labels, detail=False, variant='warm'):
     return head, body
 
 
-def load_rows(R, tier, engines):
-    load = [R.num(tier, e, metric='load_s') for e in engines]
+HEAP = ('pg', 'sift')   # the systems whose table is a heap; the others hold the rows in their own format
+
+
+def size_split(R, tier, e):
+    """MiB of a system: (heap and primary key, [the parts of the index or columnar data]); None for the first where there is no such part (the system holds everything itself)"""
+    idx = {r['variant'][6:]: r['value'] for r in R.rows if (r['tier'], r['engine'], r['metric']) == (tier, e, 'size_mib') and r['variant'].startswith('index ')}
+    table, free = R.num(tier, e, variant='table', metric='size_mib'), R.num(tier, e, variant='free', metric='size_mib') or 0
+    if table is None:
+        return None, [R.num(tier, e, metric='size_mib')]
+    pk = idx.pop('orders_pkey')
+    return (table + pk, list(idx.values())) if e in HEAP else (pk, [table - free, *idx.values()])
+
+
+def parts_cell(parts):
+    return f'{sum(parts):.1f} MiB' + (' (' + ' + '.join(f'{p:.1f}' for p in parts) + ')') * (len(parts) > 1)
+
+
+def size_rows(R, tier, engines):
+    """the three size rows: heap and primary key, index or columnar data, total on disk (the free blocks inside the file and what is live)"""
+    split = [size_split(R, tier, e) for e in engines]
     disk = [R.num(tier, e, metric='size_mib') for e in engines]
     free = [R.num(tier, e, variant='free', metric='size_mib') for e in engines]
-    return [['load time (data, indexes, merge)'] + best_bold(load, [seconds(v) for v in load]),
-            ['size on disk (data and indexes; free blocks inside the file in parentheses)'] + best_bold(disk, [size(v, f) for v, f in zip(disk, free)])]
+    total = [size(v) + (f' ({f:,.0f} free, {v - f:,.0f} live)' if f else '') for v, f in zip(disk, free)]
+    return [['size: heap and primary key'] + [f'{h:.1f} MiB' if h else 'n/a' for h, _ in split],
+            ['size: index or columnar data (without heap and primary key)'] + best_bold([sum(p) for _, p in split], [parts_cell(p) for _, p in split]),
+            ['size on disk, total (free blocks inside the file in parentheses)'] + best_bold(disk, total)]
+
+
+LIKE_FOR_LIKE = ('the seven columns of the `sift_col` index (the table without the title) take 9.6 MiB against 14.6 MiB for ClickHouse with its default `LZ4`, 10.4 MiB with `ZSTD(3)` and 9.3 MiB with a hand-tuned schema '
+                 '(`system.columns`, measured on 2026-10-18; per column in [{where}]({page}#size-against-clickhouse-1000000-orders))')
+
+
+def size_note(R, tier, engines, page='docs/BENCHMARKS.md'):
+    """what the size rows add up (the parts are read from the rows of the tier); page: where the link to the per-column table starts from"""
+    sp = {e: size_split(R, tier, e) for e in engines}
+    mib = lambda e: f'{sum(sp[e][1]):.1f} MiB'
+    plus = lambda e: ' + '.join(f'{p:.1f}' for p in sp[e][1])
+    own = [LANES[e][0] for e in ('sift_table', 'citus', 'es', 'ch') if e in engines]
+    return ('- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, '
+            'and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: ' + '; '.join(
+                ([f'PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; {mib("pg")})'] * ('pg' in engines)
+                 + [f'`sift_col` the column index and the BM25 title index ({plus("sift")} MiB)'] * ('sift' in engines)
+                 + [f'`sift_table` the live bytes of its columns plus the title index ({plus("sift_table")} MiB)'] * ('sift_table' in engines)
+                 + ['Citus the columnar table'] * ('citus' in engines) + ['Elasticsearch the index'] * ('es' in engines) + ['ClickHouse the table with its text index'] * ('ch' in engines)))
+            + f'. {join_and(own)} store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. '
+            f'Like for like, {LIKE_FOR_LIKE.format(page=page, where='docs/BENCHMARKS.md' if page else 'Size against ClickHouse')}.')
+
+
+def load_rows(R, tier, engines):
+    load = [R.num(tier, e, metric='load_s') for e in engines]
+    return [['load time (data, indexes, merge)'] + best_bold(load, [seconds(v) for v in load]), *size_rows(R, tier, engines)]
 
 
 QUERY_TITLES = {q.id: q.title for q in load_queries()}
@@ -1607,7 +1652,7 @@ def readme_block(R):
     out += [f'**{set_heading(R, tier)}**', ''] + md_table(head, body + load_rows(R, tier, engines)) + ['']
     rd =R.get(tier, 'es', '06', '-', 'rel_diff')
     approx = f' (HyperLogLog++: its monthly counts were off by at most {rd["value"]:.2%} here)' if rd else ''
-    out += [f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',
+    out += [size_note(R, tier, engines), f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',
             f'- Elasticsearch runs with its request cache off (a repeated aggregation would otherwise be answered from memory); with it on, the medians are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).',
             '- ClickHouse is a column store built for exactly these aggregations and Elasticsearch for exactly this search; PostgreSQL (heap, btree and GIN indexes) is what most teams run today.']
     out += ['- ' + n for n in citus_notes(R, tier)] + ['- ' + n for n in load_notes(R, tier)]
@@ -1717,8 +1762,8 @@ def benchmarks_block(R):
             if any(v is not None for v in vals):
                 body.append([label] + [seconds(v) for v in vals])
         body.append(['**total**'] + [seconds(R.num(tier, e, metric='load_s')) for e in shown])
-        body.append(['**size on disk**'] + [size(R.num(tier, e, metric='size_mib'), R.num(tier, e, variant='free', metric='size_mib')) for e in shown])
-        out += ['Load time (from the same CSV file, one client) and size:', ''] + md_table(['phase'] + [labels[e] for e in shown], body) + ['']
+        body += size_rows(R, tier, shown)
+        out += ['Load time (from the same CSV file, one client) and size:', ''] + md_table(['phase'] + [labels[e] for e in shown], body) + ['', size_note(R, tier, shown, ''), '']
         out += [n for n in load_notes(R, tier)] + [''] * bool(load_notes(R, tier))
         parts = []
         for e in PG_ENGINES:
