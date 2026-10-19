@@ -3355,10 +3355,13 @@ count_visible(SiftPlan *plan, SiftVis *vis, SiftNextRangeFn next, void *next_arg
 {
 	CountCtx	cc = {.plan = plan,.vis = vis,.sb = UINT32_MAX};
 	SiftMatchIter *it;
-	int64		n = next ? -1 : count_by_df(plan);
-	bool		delta = n >= 0;
+	int64		n;
+	bool		delta;
 	uint32		sb;
 
+	SIFT_TEST_GATE(sift_test_count_gate, 1);
+	n = next ? -1 : count_by_df(plan);
+	delta = n >= 0;
 retry:
 	it = sift_iter_begin(plan);
 	n = delta ? n : 0;

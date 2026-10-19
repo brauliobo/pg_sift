@@ -152,6 +152,12 @@ define_gucs(void)
 	DefineCustomIntVariable("sift.test_vis_pause",
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_count_gate",
+							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
+							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_cleanup_gate",
+							 "Testing: a VACUUM waits for advisory lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables.",
+							 NULL, &sift_test_cleanup_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_vis_jitter_us",
 							"Testing: a scan sleeps up to this many microseconds before each visibility-map read (0 = no).",
 							NULL, &sift_test_vis_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

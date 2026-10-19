@@ -50,6 +50,13 @@ extern void sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask);
 /* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */
 extern PGDLLIMPORT int sift_test_vis_pause;
 extern PGDLLIMPORT int sift_test_vis_jitter_us;
+/* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables */
+extern PGDLLIMPORT bool sift_test_count_gate;
+extern PGDLLIMPORT bool sift_test_cleanup_gate;
+extern void sift_test_wait(int key);
+#define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
+#else
+#define SIFT_TEST_GATE(flag, key) ((void) 0)
 #endif
 
 /*
