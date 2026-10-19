@@ -33,6 +33,7 @@
 #include "sift_cpu.h"
 
 bool		sift_enable_col = true;
+int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 
 static relopt_kind col_relopt_kind;
 
@@ -71,6 +72,11 @@ sift_col_init(void)
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_format_minor",
+							"Column format minor of the segments written: 4, or 3 to keep them readable by pg_sift 3.0.",
+							"Segments already written keep their minor; a 3.1 library reads both.",
+							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
+							PGC_SUSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
