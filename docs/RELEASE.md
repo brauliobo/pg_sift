@@ -59,7 +59,7 @@ fails first, or explained in that file; it is not skipped.
 The key is the hash of the committed `src/` (all of it, whatever its layout), `test/`, `scripts/`, `Makefile`, `pg_sift.control` and the
 `pg_sift--*.sql` scripts. A head with a stamp (`$RELEASE_STATE`, default `~/.local/state/pg_sift-release/KEY`) is reported as gated. A commit
 that touches only docs, bench or packaging keeps the key; any change under the paths above gives a new key and a new gate. Uncommitted changes
-in those paths stop the run (the gate runs on `git archive HEAD`).
+in those paths stop the run (the gate runs on a clone of HEAD).
 
 ## Cost and limits
 
