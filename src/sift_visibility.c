@@ -23,20 +23,27 @@
 
 int			sift_test_vis_pause = 0;
 int			sift_test_vis_jitter_us = 0;
+bool		sift_test_count_gate = false;
+bool		sift_test_cleanup_gate = false;
 static int	test_masks = 0;
+
+/* Waits until the test lets go of advisory lock (0x51F7, key) */
+void
+sift_test_wait(int key)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, key, 2);
+	(void) LockAcquire(&tag, ShareLock, false, false);
+	LockRelease(&tag, ShareLock, false);
+}
 
 /* Widens the window between the liveness a scan has read and the map it reads: a test holds the lock, runs the VACUUM, and lets go */
 static void
 test_pause(void)
 {
 	if (sift_test_vis_pause > 0 && ++test_masks == sift_test_vis_pause)
-	{
-		LOCKTAG		tag;
-
-		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, 1, 2);
-		(void) LockAcquire(&tag, ShareLock, false, false);
-		LockRelease(&tag, ShareLock, false);
-	}
+		sift_test_wait(1);
 	if (sift_test_vis_jitter_us > 0)
 		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_vis_jitter_us));
 }
