@@ -1,4 +1,4 @@
--- SiftAgg answers the units that are exact from the element cubes the sift_col index stored with them (docs/COL-PREAGG.md section 7): the groups of
+-- SiftAgg answers the units that are exact from the element cubes the sift_col index stored with them (docs/COL-PREAGG.md sections 2 and 6): the groups of
 -- the elements of an array of objects (jsonb_to_recordset, jsonb_array_elements) or of scalars, counted and summed per value of one of their leaves.
 -- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain
 -- plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata: all, some, none ('-': no SiftAgg).

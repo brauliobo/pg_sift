@@ -1,4 +1,4 @@
--- The element cubes of the units (docs/COL-PREAGG.md section 7) under forced parallel plans: a query over the elements of an array must plan as a Gather
+-- The element cubes of the units (docs/COL-PREAGG.md sections 2 and 6) under forced parallel plans: a query over the elements of an array must plan as a Gather
 -- over a partial Custom Scan (SiftAgg) with two workers, answer the exact units from their cubes and scan the units that are not, and give the rows of the
 -- normal plan (sift.enable_agg off) and of the scan of every unit (sift.agg_preagg off).
 -- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: units answered from the cubes (a partial scan counts its own).
