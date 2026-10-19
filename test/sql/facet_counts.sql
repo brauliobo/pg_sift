@@ -247,3 +247,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SELECT * FROM fc_stage('parallel');
+DROP FUNCTION fc_mode(bool), fc_terms(text, text, text, int, bool), fc_check(regclass, text, jsonb, text, text, text), fc_stage(text, regclass);
+DROP TABLE fc, fc_q, fcn, fct;
+DROP EXTENSION pg_sift;
