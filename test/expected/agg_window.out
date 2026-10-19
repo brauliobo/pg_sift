@@ -24,6 +24,15 @@ BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
+-- the plan without the line that names the window, which PostgreSQL 18 prints and 17 does not
+CREATE FUNCTION agg_plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l NOT LIKE '%Window: %' THEN RETURN NEXT l; END IF;
+	END LOOP;
+END $$;
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES
 	('SELECT g, count(*), rank() OVER (ORDER BY count(*) DESC, g) FROM wn GROUP BY g'),
@@ -65,21 +74,20 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
 
 -- the window stays above the scan, and a query without a window keeps its plan
 SET sift.enable_agg = on;
-EXPLAIN (COSTS OFF) SELECT g, count(*), rank() OVER (ORDER BY count(*) DESC, g) FROM wn GROUP BY g;
-                            QUERY PLAN                             
--------------------------------------------------------------------
+SELECT * FROM agg_plan('SELECT g, count(*), rank() OVER (ORDER BY count(*) DESC, g) FROM wn GROUP BY g');
+                 agg_plan                  
+-------------------------------------------
  WindowAgg
-   Window: w1 AS (ORDER BY (count(*)), g ROWS UNBOUNDED PRECEDING)
    ->  Sort
          Sort Key: (count(*)) DESC, g
          ->  Custom Scan (SiftAgg)
                Index: wn_col
                Group Keys: g
                Pushed Aggregates: count(*)
-(8 rows)
+(7 rows)
 
-EXPLAIN (COSTS OFF) SELECT g, count(*) FROM wn GROUP BY g;
-          QUERY PLAN           
+SELECT * FROM agg_plan('SELECT g, count(*) FROM wn GROUP BY g');
+           agg_plan            
 -------------------------------
  Custom Scan (SiftAgg)
    Index: wn_col
@@ -88,5 +96,5 @@ EXPLAIN (COSTS OFF) SELECT g, count(*) FROM wn GROUP BY g;
 (4 rows)
 
 DROP TABLE wn, agg_q;
-DROP FUNCTION agg_rows, agg_pushed;
+DROP FUNCTION agg_rows, agg_pushed, agg_plan;
 DROP EXTENSION pg_sift;
