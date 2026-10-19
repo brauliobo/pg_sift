@@ -31,7 +31,7 @@ local_nodes() {
 container_nodes() {
 	local ctx=$TMP/image major
 	mkdir "$ctx"
-	(cd "$REPO" && git ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src | tar --null -T - -cf -) | tar -xf - -C "$ctx"
+	(cd "$REPO" && git ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src scripts/harden.mk | tar --null -T - -cf -) | tar -xf - -C "$ctx"
 	cat >"$ctx/Dockerfile" <<-EOF
 		FROM ${PG_IMAGE:-postgres:18}
 		RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential liblz4-dev libzstd-dev postgresql-server-dev-\$PG_MAJOR

@@ -147,6 +147,35 @@ SELECT same($$SELECT i.category, i.kind, grouping(i.category, i.kind) AS g, coun
 			  GROUP BY GROUPING SETS ((i.category, i.kind), (i.category), ())$$) AS unnest_sets_workers;
 SELECT same($$SELECT f8, count(*) AS n, sum(id) AS s FROM o GROUP BY f8$$) AS float8_key_workers;
 SELECT same($$SELECT f8, kind, count(*) AS n FROM o GROUP BY ROLLUP (f8, kind)$$) AS float_key_sets_workers;
+-- count(DISTINCT) of an integer column: the workers send the chunks of 4096 bits of their bitmaps that have 32 bits or more and the leader
+-- ORs them in, the other bits go as pairs, and so do the sets that left the bitmaps (a sparse range, a tiny work_mem); the rows are the
+-- ones of the normal plan either way
+CREATE TABLE dd AS SELECT i AS id, i % 3 AS grp, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 3000 - 1000 END AS dense,
+	   CASE WHEN i % 13 = 0 THEN NULL ELSE ((i::bigint * 100003) % 2000000011 - 1000000000)::int END AS wide, (i * 31) % 20 AS few
+FROM generate_series(1, 6000) i;
+CREATE INDEX dd_col ON dd USING sift_colstub (id, grp, dense, wide, few);
+VACUUM ANALYZE dd;
+CREATE FUNCTION chunks_merged(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Workers Launched: [1-9]' THEN n := n + 1; END IF;
+		IF l ~ 'Distinct Chunks Merged: [1-9]' THEN n := n + 100; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SET parallel_leader_participation = off;
+SELECT chunks_merged($$SELECT grp, count(DISTINCT dense) AS dd FROM dd GROUP BY grp$$) AS bitmaps_merged_by_or;
+SELECT chunks_merged($$SELECT grp, count(DISTINCT few) AS df FROM dd GROUP BY grp$$) AS sparse_chunks_as_pairs;
+SELECT same($$SELECT grp, count(DISTINCT dense) AS dd, count(DISTINCT wide) AS dw, count(DISTINCT few) AS df, count(DISTINCT id) AS di FROM dd GROUP BY grp$$) AS distinct_bitmaps_workers;
+SELECT same($$SELECT count(DISTINCT dense) AS dd, count(DISTINCT wide) AS dw, count(DISTINCT few) AS df FROM dd$$) AS distinct_global_workers;
+SELECT same($$SELECT grp, count(DISTINCT dense * 100003) AS de FROM dd GROUP BY grp$$) AS distinct_expr_workers;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT same($$SELECT grp, count(DISTINCT dense) AS dd, count(DISTINCT wide) AS dw FROM dd GROUP BY grp$$) AS distinct_spilled_workers;
+RESET hash_mem_multiplier;
+RESET work_mem;
+RESET parallel_leader_participation;
 RESET max_parallel_workers_per_gather;
 -- arms of one UNION ALL that scan the same rows for the same aggregates share one pass; the rows are the ones of the arms alone
 CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$

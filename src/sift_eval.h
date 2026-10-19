@@ -70,6 +70,9 @@ extern void sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter);
 /* The documents the bound query is expected to match (the estimate of sift_eval_estimate, from the bound dictionaries) */
 extern double sift_plan_docs(const SiftPlan *plan);
 
+/* The version of the directory the plan read (sift_vis_begin) */
+extern uint32 sift_plan_dir_version(const SiftPlan *plan);
+
 /*
  * Parallel scoring. Scores depend on the directory and on the mutable
  * segments, which move under concurrent writers, so one participant binds,

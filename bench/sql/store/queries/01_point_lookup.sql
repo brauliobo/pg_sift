@@ -1,5 +1,6 @@
 -- Find one order by its id
 -- key: 1
+-- label: `* WHERE id = 42`
 --@ pg
 SELECT id, customer_id, country, category, status, amount, quantity, created_at, title FROM orders WHERE id = {point_id}
 --@ ch

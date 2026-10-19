@@ -1,5 +1,6 @@
 -- How many orders per country
 -- key: 1
+-- label: `count(*) GROUP BY country`
 --@ pg
 SELECT country, count(*) FROM orders GROUP BY country
 --@ ch

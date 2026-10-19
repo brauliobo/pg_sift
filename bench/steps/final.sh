@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bench/analytics --final [--dry-run]   (bench/steps/final.sh, called by bench/analytics)
 # The one command behind the published analytics numbers, once the code is final: for PostgreSQL, pg_sift (`sift_col`, `sift_table`),
-# Elasticsearch and ClickHouse it starts the containers, loads 1M and 10M orders, runs the warm, cold and update measurements, the pg_sift
+# Citus (columnar), Elasticsearch and ClickHouse it starts the containers, loads 1M and 10M orders, runs the warm, cold and update measurements, the pg_sift
 # compression variants, the engines' own accounting and the pg_sift profile (private cluster under a memory cap), writes the results JSON
 # into bench/results/, the tables of README.md and docs/BENCHMARKS.md and the gap report docs/BENCH-GAP.md, and removes every container.
 # --dry-run prints the plan, the estimated time, disk and memory and the state of the preconditions, and starts nothing.
@@ -19,11 +19,11 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 GAPOUT=$BENCH/out/final-$STAMP
 export GAP_MEM
 
-# step: name | command | minutes (measured on this host in the preliminary runs, 16 threads, 4 CPUs per container)
+# step: name | command | minutes (measured on this host in the preliminary runs, 16 threads, 4 CPUs per container; the default now times two budgets, 1 and 3 CPUs, so the store step is estimated at 100, not yet measured)
 STEPS_LIST=(
-  "store: warm, cold and update tables, $SIZES orders, every system|$BENCH/bench store all --sizes $SIZES --docs|70"
+  "store: warm, cold and update tables, $SIZES orders, every system|$BENCH/bench store all --sizes $SIZES --docs|100"
   "store: compression variants of the pg_sift column index, the codecs' sizes in every system, 1000000 orders|$BENCH/bench store all --sizes 1000000 --compression --cold-runs 0 --update-sizes none --docs|8"
-  "store: what ClickHouse and Elasticsearch read per question|$BENCH/bench store stats --sizes $SIZES|14"
+  "store: what ClickHouse and Elasticsearch read per question|$BENCH/bench store stats --sizes $SIZES --engines pg,sift,sift_table,es,es_cached,ch|14"
   "pg_sift profile: planning, instructions, symbols, $SIZES orders (private cluster)|S_SIZES=$SIZES OUT=$GAPOUT $STEPS/gap.sh|8"
   "gap report: docs/BENCH-GAP.md|python3 -I $STEPS/gap.py render --profile $REPO/bench/results/store-gap-*.json --stats $REPO/bench/results/store-stats-*.json|1"
 )
@@ -38,8 +38,8 @@ plan() {
   done
   printf 'Estimated time: about %d min (a loaded host takes longer: the timed parts wait for the perf lock, %s).\n' "$total" "$LOCK"
   printf 'Estimated disk: about 30 GB in %s (the 10M CSV is 0.9 GB; the servers keep tables, indexes and up to 8 GB of WAL each) and the same in the docker root; removed afterwards.\n' "$STORE"
-  printf 'Memory: 4 containers of at most %s each (no swap) = %d GiB at most, plus a cluster capped at %s for the profile; resident use measured in the preliminary runs was well below the caps.\n' \
-    "$MEMORY" "$((4 * $(numfmt --from=iec "${MEMORY^^}") / 1073741824))" "$GAP_MEM"
+  printf 'Memory: 5 containers of at most %s each (no swap) = %d GiB at most, plus a cluster capped at %s for the profile; resident use measured in the preliminary runs was well below the caps.\n' \
+    "$MEMORY" "$((5 * $(numfmt --from=iec "${MEMORY^^}") / 1073741824))" "$GAP_MEM"
 }
 
 check() { # DESCRIPTION COMMAND...
@@ -55,11 +55,11 @@ preconditions() {
   check "systemd-run --user scope works (the memory cap of the profile cluster)" systemd-run --user --scope -q -p MemoryMax=1G true
   check "psql, python3, flock, ss, perf, pgbench, pg_config" bash -c 'for c in psql python3 flock ss perf pgbench pg_config; do command -v $c || exit 1; done'
   check "pg_config is PostgreSQL 18 (the profile cluster is built for it)" bash -c 'pg_config --version | grep -q "PostgreSQL 18"'
-  check "ports $((${STORE_PORT_BASE:-56280})) .. $((${STORE_PORT_BASE:-56280} + 3)) are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-3])\b'"
+  check "ports $((${STORE_PORT_BASE:-56280})) .. $((${STORE_PORT_BASE:-56280} + 4)) are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
   check "no containers of a store run exist (bench/bench store clean)" bash -c '[[ -z $(docker ps -a -q --filter label=sift-store) ]]'
   printf '  %s GB free in %s, %s GB in /tmp, %s GB of memory available (about 30 GB of disk are needed)\n' "$(free_gb "$STORE")" "$STORE" "$(free_gb /tmp)" "$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)"
   (( $(free_gb /tmp) >= 30 )) || { echo '  MISSING  30 GB of free disk in /tmp'; fail=1; }
-  for img in "$STORE_PG_IMAGE" "$STORE_ES_IMAGE" "$STORE_CH_IMAGE"; do
+  for img in "$STORE_PG_IMAGE" "$STORE_ES_IMAGE" "$STORE_CH_IMAGE" "$STORE_CITUS_IMAGE"; do
     if docker image inspect "$img" >/dev/null 2>&1; then printf '  ok       image %s is present\n' "$img"; else printf '  pull     image %s will be pulled\n' "$img"; fi
   done
   for n in $(tr , ' ' <<<"$SIZES"); do

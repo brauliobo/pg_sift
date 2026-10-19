@@ -98,7 +98,7 @@ INSERT INTO ct_q VALUES
 	('in_or',      $q$SELECT id, ts FROM ct WHERE memo @@> 'wire' OR status = 'paid' ORDER BY ts, id LIMIT 10$q$);
 
 CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
-	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag) FROM ct_q $$;
+	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;
 
 SELECT * FROM ct_stage('build');
 SET sift.test_search_chunk_sbs = 1;
@@ -118,6 +118,17 @@ FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq LIMI
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') = 0 AS none_skipped_when_random
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
 
+-- a sort column that grows with the table is read from its best end: the newest superblock holds the 10 rows, and the units before it are
+-- not opened (one unit; a visit in table order opened every unit of its window)
+SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT 10', 'Units') AS units_desc,
+	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
+
+CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' WHEN plan ~ 'Index Scan' THEN 'btree' ELSE 'other' END;
+END $$;
 -- the GUC
 SET sift.enable_topn = off;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
@@ -169,12 +180,6 @@ RESET min_parallel_table_scan_size;
 -- against an ordered btree on the sort column the planner keeps the cheaper plan: a common word is found in a few rows of the index, a rare
 -- combination of words is not (the cost of the top-N is its units and its match set, whatever the table order)
 CREATE INDEX ct_ts_idx ON ct (ts);
-CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE plan text := ''; line text;
-BEGIN
-	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
-	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' WHEN plan ~ 'Index Scan' THEN 'btree' ELSE 'other' END;
-END $$;
 SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY ts DESC LIMIT 10') AS common_ts,
 	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT 10') AS common_id,
 	   ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift AND wire AND label'' ORDER BY ts DESC LIMIT 10') AS rare_ts,
@@ -185,6 +190,27 @@ CREATE TABLE ct_t (id serial, store int, ts timestamp, memo text) USING sift_tab
 INSERT INTO ct_t (store, ts, memo) SELECT store, ts, memo FROM ct ORDER BY id;
 CREATE INDEX ct_t_bm ON ct_t USING sift (memo);
 SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') AS tbl;
+
+-- The top-N opens the match set whole (the posting lists of the words), whatever part of the table it reads: on a table of 41 superblocks
+-- (rows of one page in six) a search for any of the 20 words costs the top-N about 910 and the btree plan, which the declared cost of the
+-- match function sets (COST: what a row costs to test), 25 + COST / 40. The btree plan is the cheaper one up to a COST of about 36000; if
+-- the opening were scaled by the fraction read (0.2) the top-N would cost 630 and win from 25000. COST 3000 and 300000 are far on either side.
+CREATE TABLE cb (id serial PRIMARY KEY, ts timestamp, memo text) WITH (fillfactor = 10);
+INSERT INTO cb (ts, memo) SELECT timestamp '2024-01-01' + (hashint4(i + 11) & 2147483647) % 60000000 * interval '1 second', ct_words(i)
+FROM generate_series(1, 100000) i;
+CREATE INDEX cb_bm ON cb USING sift (memo);
+CREATE INDEX cb_col ON cb USING sift_col (id, ts);
+VACUUM (ANALYZE) cb;
+SELECT $q$SELECT id, ts FROM cb WHERE memo @@> 'fast OR late OR damaged OR refund OR gift OR invoice OR exchange OR missing OR perfect OR broken OR express OR pickup OR thanks OR wrong OR size OR color OR clean OR wire OR box OR label' ORDER BY id DESC LIMIT 10$q$ AS q \gset
+BEGIN;
+ALTER FUNCTION sift.match(text, text) COST 3000;
+SELECT ct_plan(:'q') AS cost_3000;
+ALTER FUNCTION sift.match(text, text) COST 30000;
+SELECT ct_plan(:'q') AS cost_30000;
+ALTER FUNCTION sift.match(text, text) COST 300000;
+SELECT ct_plan(:'q') AS cost_300000;
+ROLLBACK;
+DROP TABLE cb;
 
 DROP TABLE ct_q, ct_t, ct;
 DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
