@@ -10,7 +10,7 @@
 #
 # The tree key is the hash of the committed src/ (all of it), test/, scripts/, Makefile, pg_sift.control and the pg_sift--*.sql scripts: a
 # head whose key has a stamp ($RELEASE_STATE, default ~/.local/state/pg_sift-release/KEY) is not gated again; a commit that touches only
-# docs, bench or packaging keeps the key. The jobs run one at a time, in a fixed order, on a copy of HEAD (git archive), inside a scope of
+# docs, bench or packaging keeps the key. The jobs run one at a time, in a fixed order, on a clone of HEAD (the hardened job copies the tree with git ls-files), inside a scope of
 # 2 cores and 12 GB (CPUQuota=200%), at most 100000 rows. A job that fails is run once more alone (a CI job: only its failed parts): it
 # passes the gate only when it passes then and every failed part matches scripts/release.flakes (regex, tab, cause); a second failure
 # stops the run. After each job the server logs it left are searched for a server crash.
@@ -87,7 +87,7 @@ W=$(mktemp -d "${RELEASE_TMP:-/tmp}/sift-release.XXXXXX")
 LOGS=$W/logs T=$W/tree
 mkdir -p "$LOGS" "$T"
 trap '[[ -n $KEEP ]] || find "$W" -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} +' EXIT
-git -C "$REPO" archive HEAD | tar -x -C "$T"
+git clone -q "$REPO" "$T" && git -C "$T" checkout -q "$HEAD_SHA"
 cd "$T" || exit 1
 export SIFT_PORT=$PORT0 LC_ALL=C
 
