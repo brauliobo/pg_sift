@@ -109,7 +109,7 @@ job_build() {
 		make USE_PGXS=1 clean >/dev/null; rm -f .build-flavor
 	done
 }
-werror() { make USE_PGXS=1 clean >/dev/null; rm -f .build-flavor; nice make -j2 USE_PGXS=1 CC="$1" COPT="-Werror $2" SIFT_TESTING=1; }
+werror() { make USE_PGXS=1 clean >/dev/null; rm -f .build-flavor; nice make -j2 USE_PGXS=1 CC="$1" COPT="-Werror ${2:-}" SIFT_TESTING=1; }
 job_werror_gcc() { werror gcc; }
 # clang: PostgreSQL's CFLAGS name gcc-only warnings; its walker callbacks are cast as PostgreSQL's own macros do (it builds with
 # -Wno-cast-function-type-strict); a header with a flexible array member inside a struct is the segment writer's since 2.0 (GNU extension)
