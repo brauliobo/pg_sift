@@ -1,4 +1,4 @@
--- jsonb_typeof(path) = 'type' pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
+-- jsonb_typeof(path) = 'type' (and <>, NOT IN, IS [NOT] NULL) pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
 -- Scan (SiftAgg) with two workers, and its rows must be the rows of the normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone),
 -- none (the normal plan). The workers filter their units by type as the leader does; a value a selected row holds that the leaf cannot store
 -- raises in a worker as it does in the leader.
@@ -59,6 +59,12 @@ INSERT INTO p_q (q) VALUES
 	('SELECT count(*), count(DISTINCT attrs->>''s'') FROM p_t WHERE jsonb_typeof(attrs->''s'') = ''string'''),
 	('SELECT grp, count(*) FILTER (WHERE (attrs->>''b'')::bool) FROM p_t WHERE jsonb_typeof(attrs->''b'') = ''boolean'' GROUP BY grp'),
 	('SELECT count(*), sum((attrs->>''m'')::float8) FROM p_t WHERE jsonb_typeof(attrs->''m'') IN (''number'') AND jsonb_typeof(attrs->''n'') = ''number'' AND id > 4000'),
+	-- the complement, the JSON null and the path with no value
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') <> ''number'' GROUP BY grp'),
+	('SELECT count(*), sum(id) FROM p_t WHERE jsonb_typeof(attrs->''n'') NOT IN (''number'', ''string'')'),
+	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''n'') = ''null'''),
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') IS NULL GROUP BY grp'),
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM p_t WHERE jsonb_typeof(attrs->''m'') IN (''number'', ''null'') AND jsonb_typeof(attrs->''s'') IS NOT NULL'),
 	-- selects values the leaf cannot hold: the error is the same in every process
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') = ''string'''),
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') = ''number''');

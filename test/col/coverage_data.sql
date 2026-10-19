@@ -104,4 +104,12 @@ CREATE INDEX cv_hot_col ON cv_hot USING sift_col (id, grp, v);
 CREATE TABLE cv_maint (id int PRIMARY KEY, grp int, v int);
 INSERT INTO cv_maint SELECT i, i % 5, i FROM generate_series(1, 3000) i;
 CREATE INDEX cv_maint_col ON cv_maint USING sift_col (id, grp, v);
+-- a jsonb column whose paths hold every JSON type, a JSON null and a missing key (the jsonb_typeof rows of coverage.tsv)
+CREATE TABLE cv_typeof (id int PRIMARY KEY, grp int NOT NULL, doc jsonb);
+INSERT INTO cv_typeof
+SELECT i, i % 7, CASE i % 8 WHEN 0 THEN '{"m": "s", "a": "x"}' WHEN 1 THEN '{"m": true, "a": 12}' WHEN 2 THEN '{"m": {"x": 1}, "a": true}'
+	WHEN 3 THEN '{"m": [1], "a": 1.50}' WHEN 4 THEN '{"m": null, "a": null}' WHEN 5 THEN '{}'
+	ELSE jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX cv_typeof_col ON cv_typeof USING sift_col (id, grp, doc) WITH (paths = 'doc->m float8, doc->a astext');
 ANALYZE;
