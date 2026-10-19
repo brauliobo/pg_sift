@@ -70,8 +70,12 @@ my $no_inconsistency = qr/inconsistent page found|FATAL:\s+inconsistent/;
 
 # phase 1: primary and hot standby under load with page consistency checking
 $primary->backup('base');
+# a slot keeps the WAL the standby has not replayed: with consistency checking it replays slower than the primary writes, and after the
+# primary's crash recovery its checkpoint removed the segment the standby needed ("requested WAL segment has already been removed")
+$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('wc_standby')");
 my $standby = PostgreSQL::Test::Cluster->new('wc_standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
+$standby->append_conf('postgresql.conf', "primary_slot_name = 'wc_standby'");
 $standby->start;
 
 my $start_lsn = $primary->lsn('insert');
@@ -101,6 +105,7 @@ ok(!$standby->log_contains($no_inconsistency), 'the standby found no inconsisten
 healthy($standby, 'standby after the primary crashed');
 is(rows($standby), rows($primary), 'standby follows the recovered primary');
 $standby->stop;
+$primary->safe_psql('postgres', "SELECT pg_drop_replication_slot('wc_standby')");
 
 # phase 3: a base backup taken while the workload runs; a slot keeps the WAL the copy needs after the backup
 $primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('copy_slot', true)");
