@@ -33,6 +33,18 @@ CREATE TABLE orders (
 	deleted_at timestamp
 ) WITH (fillfactor = 80);
 
+-- the keys of the attributes with a value of any JSON type (jsonb_typeof): weight, a float8 leaf with numbers (one decimal) among strings, booleans, objects,
+-- arrays, JSON nulls and missing keys, and tier, a text leaf with strings among numbers, booleans, objects, arrays, JSON nulls and missing keys
+CREATE FUNCTION coldiff.fx_mixed(id bigint, seed int DEFAULT 0) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+	SELECT CASE WHEN coldiff.u(id, 30, seed) < 0.05 THEN '{}'::jsonb
+				ELSE jsonb_build_object('weight', CASE floor(coldiff.u(id, 31, seed) * 20)::int
+					WHEN 0 THEN to_jsonb('heavy'::text) WHEN 1 THEN 'true'::jsonb WHEN 2 THEN '{"kg": 2}'::jsonb WHEN 3 THEN '[1, 2]'::jsonb WHEN 4 THEN 'null'::jsonb
+					ELSE to_jsonb(round((coldiff.u(id, 32, seed) * 80)::numeric, 1)::float8) END) END
+		|| CASE WHEN coldiff.u(id, 33, seed) < 0.05 THEN '{}'::jsonb
+				ELSE jsonb_build_object('tier', CASE floor(coldiff.u(id, 34, seed) * 20)::int
+					WHEN 0 THEN to_jsonb(floor(coldiff.u(id, 35, seed) * 100)::int) WHEN 1 THEN 'false'::jsonb WHEN 2 THEN '{"level": 1}'::jsonb WHEN 3 THEN '[]'::jsonb
+					WHEN 4 THEN 'null'::jsonb ELSE to_jsonb((ARRAY['gold', 'silver', 'bronze', 'basic'])[1 + floor(coldiff.u(id, 36, seed) * 4)::int]) END) END $$;
+
 -- orders first_id .. last_id: store ~ u^2 over 400, source ~ u^2 over 30, dates 2022-01-01 .. 2025-10-31, 12 languages, 60 countries,
 -- 0..8 items (mean 3.2), 1..6 metrics, 0..3 notes, 2% soft-deleted, 70% with normalized items; NULLs in customer, status, country, in
 -- the kind of the items (JSON null, or the key absent in 10% of the orders) and 3% of the orders have no metric at all
@@ -48,7 +60,7 @@ CREATE FUNCTION coldiff.fx_orders(first_id int, last_id int, seed int DEFAULT 0)
 			   round((10 + 490 * power(coldiff.u(g.id, 18, seed), 2) * coldiff.u(g.id, 19, seed) * 0.2)::numeric, 2),
 			   jsonb_build_object('channel', (ARRAY['web','mobile','pos','marketplace'])[1 + floor(coldiff.u(g.id, 20, seed) * 4)::int],
 								  'device', (ARRAY['desktop','phone','tablet','kiosk'])[1 + floor(coldiff.u(g.id, 21, seed) * 4)::int], 'locale', p.lang)
-				 || CASE WHEN p.normalized THEN '{"normalized": true}'::jsonb ELSE '{}'::jsonb END,
+				 || CASE WHEN p.normalized THEN '{"normalized": true}'::jsonb ELSE '{}'::jsonb END || coldiff.fx_mixed(g.id, seed),
 			   CASE WHEN coldiff.u(g.id, 22, seed) < 0.03 THEN '{}'::jsonb ELSE
 				   (SELECT jsonb_object_agg((ARRAY['overall','delivery_speed','packaging','support','value','quality','size_fit','accuracy',
 												   'returns_ease','checkout','communication','freshness'])[1 + (p.rs + i) % 12],

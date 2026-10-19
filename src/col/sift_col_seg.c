@@ -46,6 +46,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint32		tag;			/* SiftSegEntry.reserved */
+	uint8		format;			/* SiftSegEntry.format: sift.col_format_minor when the writer began; 4 writes the tags of overflow values */
 	StringInfoData buf;
 };
 
@@ -68,6 +69,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->schema = schema;
 	w->pol = pol;
 	w->mcxt = mcxt;
+	w->format = sift_col_format_minor;
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
@@ -174,7 +176,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->inl[c] = w->dict[c] != NULL && sift_cbatch_str_inline(b, c, w->dict[c], SIFT_COL_DICT_MAX_BYTES);
 	map_dicts(w, b, w->inl);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
@@ -458,7 +460,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	memset(entry, 0, sizeof(SiftSegEntry));
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
-	entry->format = sift_col_format_minor;
+	entry->format = w->format;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
@@ -1270,7 +1272,10 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 
 		if (!sift_cunit_chunk(&v, c, &ch))
 			corrupt(seg, "Unit %u has no chunk for leaf %d.", u, c);
-		if (ch.n != (def->parent < 0 ? r->nrows : group_elems[def->parent]))
+		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= 4 && ch.ovf != NULL))
+			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->sb,
+					ch.flags & SIFT_COLC_TAGS ? "has" : "lacks", seg->entry.format);
+		if (ch.n !=(def->parent < 0 ? r->nrows : group_elems[def->parent]))
 			corrupt(seg, "Chunk of leaf %d in the unit of SB %u holds %u values, expected %llu.", c, r->sb, ch.n,
 					ULL(def->parent < 0 ? r->nrows : group_elems[def->parent]));
 		vals = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);

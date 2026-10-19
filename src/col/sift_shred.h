@@ -120,6 +120,7 @@ typedef struct SiftShredCol
 {
 	uint8	   *state;			/* [group n] SiftShredState */
 	SiftShredVal *val;			/* [group n] */
+	uint8	   *tag;			/* [group n] SIFT_COLTAG_*, the JSON type of the value of an OVERFLOW slot (0: not known); meaningless in the other states */
 	uint32		ovf;			/* SIFT_SHRED_OVF_* seen in this document, also by lists below that overflowed */
 } SiftShredCol;
 
@@ -180,6 +181,7 @@ typedef struct SiftShred
 	int			nframes;
 	int			maxframes;
 	bool		root_done;
+	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 } SiftShred;
 
 extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached);

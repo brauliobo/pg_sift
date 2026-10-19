@@ -122,8 +122,18 @@ u8 enc, u8 bits, u8 flags, u8 pad, u32 n          n values (rows, or elements)
 i64 base                                          frame of reference (the smallest non-NULL key value)
 [u64 nullbits[(n+63)/64]]                          when flags & SIFT_COLC_NULLS; bit set = NULL; tail bits zero
 [u64 ovfbits[(n+63)/64]]                           when flags & SIFT_COLC_OVF: the values the leaf could not hold (shredder OVERFLOW); also set in nullbits
+[u8 tags[8 * ceil(novf / 16)]]                     when flags & SIFT_COLC_TAGS (minor 4, only with OVF): one nibble per set bit of ovfbits, in slot order
 payload
 ```
+
+`flags`: `NULLS` (0x1), `OVF` (0x2), `TAGS` (0x4). **The type of an overflowing value** (minor 4): the nibble of an overflow slot is the JSON type of
+the value the leaf could not hold: 0 unknown (a writer that did not know it, a unit merged from a minor 3 segment), 1 string, 2 number, 3
+boolean, 4 object, 5 array, 6 none (the leaf lies below an array where its path declares an object: the slot overflows because a lax jsonpath would unwrap the
+array, but the path of `->` leads to no value and `jsonb_typeof` of it is NULL). The nibbles are LSB first (the even slot in the low nibble), the unused ones and the padding to 8 bytes are zero, and a chunk
+without overflow has no flag and no bytes, so a clean index costs nothing. The segment's minor decides: every chunk of a minor 4 segment that has
+overflow has `TAGS`, none of a minor 3 segment does. A stored value has no nibble, its type is the type of its leaf (bool boolean, integers,
+floats and numeric number, text string). The write buffer keeps the type in the high nibble of the flag byte of an overflowing value. Readers:
+`sift_col_filter_types` (the rows of a unit whose value has a type of a mask), `sift_col_ovf_bits`, the tag of `SiftColValue.tag` in a merge.
 
 `enc`:
 
@@ -396,7 +406,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, the element cubes of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element cubes of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, `sift.col_format_minor = 3` keeps writing minor 3: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata

@@ -667,6 +667,7 @@ typedef struct AggExec
 	int			nprune;
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	int			nfilter;		/* how many */
+	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
@@ -2806,6 +2807,8 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_ANY_ELEM:
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
 			break;
+		case SAP_TYPE:
+			elog(ERROR, "sift: the types of a leaf are tested by the source");
 	}
 }
 
@@ -7474,6 +7477,20 @@ topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
 #define SPARSE_RATIO	8
 
+/* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
+static bool
+type_filters(AggExec *ex, uint64 *rmask)
+{
+	for (int i = 0; i < ex->spec->npred; i++)
+	{
+		SiftAggPred *p = ex->spec->pred[i];
+
+		if (p->kind == SAP_TYPE && !sift_colsrc_filter_types(ex->src, &ex->unit, p->leaf, p->op, rmask))
+			return false;
+	}
+	return true;
+}
+
 static void
 process_unit(AggExec *ex)
 {
@@ -7505,13 +7522,13 @@ process_unit(AggExec *ex)
 	rmask = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
-	if (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask))
+	if ((ex->ntype > 0 && !type_filters(ex, rmask)) || (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask)))
 	{
 		ex->row_base += nrow;
 		return;
 	}
 	/* a few rows left: the leaves are decoded for them only */
-	if (ex->nfilter > 0 && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
+	if ((ex->nfilter > 0 || ex->ntype > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
 		ex->rsel = rmask;
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
@@ -7767,6 +7784,22 @@ filter_init(AggExec *ex)
 		{
 			ex->pushed[at[k]] = true;
 			ex->nfilter++;
+		}
+}
+
+/*
+ * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
+ * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
+ */
+static void
+type_init(AggExec *ex)
+{
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (ex->spec->pred[i]->kind == SAP_TYPE)
+		{
+			sift_colsrc_tolerate_ovf(ex->src, ex->spec->pred[i]->leaf);
+			ex->pushed[i] = true;
+			ex->ntype++;
 		}
 }
 
@@ -9675,6 +9708,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	pgagg_init(ex);
 	prune_init(ex);
 	filter_init(ex);
+	type_init(ex);
 	str_init(ex);
 	preagg_init(ex);
 	gen_open(ex);
@@ -9823,6 +9857,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		}
 		if (c->nfilter > 0)
 			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
+		if (c->ntype > 0)
+			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)
 			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
