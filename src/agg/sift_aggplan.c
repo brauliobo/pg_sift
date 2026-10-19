@@ -4874,6 +4874,34 @@ cte_root(PlannerInfo *root, RangeTblEntry *rte)
 	return list_nth(root->glob->subroots, list_nth_int(cteroot->cte_plan_ids, ndx) - 1);
 }
 
+/* the subqueries of a UNION ALL: a member that is itself a UNION ALL (a subquery of arms in an arm's place) gives its own */
+static bool
+append_arms(PlannerInfo *root, Index parent, List **arms)
+{
+	foreach_node(AppendRelInfo, ai, root->append_rel_list)
+	{
+		RelOptInfo *rel;
+		int			i = 0;
+
+		if (ai->parent_relid != parent)
+			continue;
+		rel = root->simple_rel_array[ai->child_relid];
+		if (rel == NULL)
+			return false;
+		foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+			if (!rinfo->pseudoconstant)
+				return false;
+		foreach_node(Var, v, ai->translated_vars)
+			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
+				return false;
+		if (rel->subroot != NULL)
+			*arms = lappend(*arms, rel->subroot);
+		else if (!rt_fetch(ai->child_relid, root->parse->rtable)->inh || !append_arms(root, ai->child_relid, arms))
+			return false;
+	}
+	return true;
+}
+
 /*
  * The arms of the outer query's one FROM item: the subqueries of a UNION ALL (appendrel) or the subquery itself. The quals of the
  * outer query that PostgreSQL pushed into the arms (to their WHERE, or HAVING) are theirs now: an arm whose rel still has a qual
@@ -4895,25 +4923,7 @@ outer_arms(PlannerInfo *root, Index srti, List **gates)
 			return NIL;
 	if (!rt_fetch(srti, root->parse->rtable)->inh)
 		return parent->subroot ? list_make1(parent->subroot) : NIL;
-	foreach_node(AppendRelInfo, ai, root->append_rel_list)
-	{
-		RelOptInfo *rel;
-		int			i = 0;
-
-		if (ai->parent_relid != srti)
-			continue;
-		rel = root->simple_rel_array[ai->child_relid];
-		if (rel == NULL || rel->subroot == NULL)
-			return NIL;
-		foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-			if (!rinfo->pseudoconstant)
-				return NIL;
-		foreach_node(Var, v, ai->translated_vars)
-			if (!IsA(v, Var) || v->varno != ai->child_relid || v->varattno != ++i)
-				return NIL;
-		arms = lappend(arms, rel->subroot);
-	}
-	return arms;
+	return append_arms(root, srti, &arms) ? arms : NIL;
 }
 
 /*
