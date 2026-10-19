@@ -8240,11 +8240,21 @@ prune_init(AggExec *ex)
 			int64		c = num ? (int64) st->cn : st->ci;
 
 			if (num && st->konst >= 0)
-				continue;
-			if (op != SCMP_GT && op != SCMP_GE)
-				hi = op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c;
-			if (op != SCMP_LT && op != SCMP_LE)
-				lo = op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c;
+			{
+				/* one result for every number (a constant no scaled integer equals, or beyond all of them): the whole range passes, or no value does */
+				if (st->konst == 0)
+				{
+					lo = PG_INT64_MAX;
+					hi = PG_INT64_MIN;
+				}
+			}
+			else
+			{
+				if (op != SCMP_GT && op != SCMP_GE)
+					hi = op == SCMP_LT && c > PG_INT64_MIN ? c - 1 : c;
+				if (op != SCMP_LT && op != SCMP_LE)
+					lo = op == SCMP_GT && c < PG_INT64_MAX ? c + 1 : c;
+			}
 		}
 		for (int k = 0; k < ex->nprune; k++)
 			if (ex->prune[k].leaf == p->leaf)
