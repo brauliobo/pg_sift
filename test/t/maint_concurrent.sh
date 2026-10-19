@@ -4,7 +4,7 @@
 # Runs on the production build too (no test functions).
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 20 6)
+SECS=$(knob SIFT_CHURN_SECS 20 4)
 plan 4
 node_init conc2 10 "autovacuum = off
 max_worker_processes = 16"

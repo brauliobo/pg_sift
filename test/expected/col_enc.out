@@ -23,7 +23,7 @@ SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary 
  t   |        0 | t
 (1 row)
 
-SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(12, 74496, 1);
+SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(14, 74496, 1);
  ran | failures | wide_dictionary 
 -----+----------+-----------------
  t   |        0 | t

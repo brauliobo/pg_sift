@@ -37,7 +37,7 @@ build() { # build REF OUTDIR
 	src=$(mktemp -d -p "$TMP"); work=$(mktemp -d -p "$TMP")
 	git -C "$REPO" archive "$ref" mariadb src sqlite/host LICENSE NOTICE | tar x -C "$src"
 	for s in $SERIES; do
-		docker run --rm --cpus 4 --entrypoint bash -e SERIES="$s" -e VER="$ver" -e HOST_UID="$(id -u)" \
+		docker run --rm --cpus "${DOCKER_CPUS:-4}" --entrypoint bash -e SERIES="$s" -e VER="$ver" -e HOST_UID="$(id -u)" \
 			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$src:/src:ro" -v "$work:/out" "mariadb:$s" /pkg/container.sh build
 	done
 	mkdir -p "$work/$name/sql" && cp -r "$work/lib" "$work/$name/lib"

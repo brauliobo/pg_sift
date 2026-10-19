@@ -13,6 +13,7 @@
 #include "funcapi.h"
 
 #include "sift_col_enc.h"
+#include "sift_colz.h"
 #include "sift_popcount.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_enc_roundtrip);
@@ -486,6 +487,54 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, ERRCODE_OF(sift_cschema_create(CurrentMemoryContext, defs, 0)) == ERRCODE_INVALID_PARAMETER_VALUE, "empty schema accepted");
 }
 
+/*
+ * The string list form of a dictionary (policies auto, none, lz4, zstd): the same codes come back, and damaged bytes are refused or read
+ * as a valid dictionary, never read past their end. Draws from a generator of its own: the rounds that follow keep theirs.
+ */
+static void
+check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, const StringInfoData *plain)
+{
+	static const char *const specs[] = {"auto", "none", "lz4", "zstd"};
+	pg_prng_state rng;
+
+	pg_prng_seed(&rng, n);
+	/* the plain form: every truncation is refused */
+	for (Size cut = 0; cut + 1 < (Size) plain->len; cut += 1 + pg_prng_uint64_range(&rng, 0, Max(49, plain->len / 32)))
+		CHECK(t, sift_cdict_parse(CurrentMemoryContext, plain->data, cut, &(Size) {0}) == NULL, "truncated dictionary (%zu bytes) parsed", cut);
+	for (int k = 0; k < 4; k++)
+	{
+		SiftCcPolicy pol;
+		StringInfoData buf;
+		SiftCDict  *p;
+		Size		used = 0;
+
+		CHECK(t, sift_cc_policy_parse(specs[k], &pol) == NULL, "policy %s", specs[k]);
+		if (pol.mode == SIFT_CCM_LAYER && !sift_colz_available(pol.alg))
+			continue;
+		initStringInfo(&buf);
+		sift_cdict_serialize(d, &pol, &buf);
+		CHECK(t, buf.len <= plain->len, "dictionary (%s) of %d bytes is larger than the plain form of %d", specs[k], buf.len, plain->len);
+		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
+		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes, "dictionary (%s) parse", specs[k]);
+		for (uint32 i = 0; p != NULL && i < n; i += 1 + (uint32) pg_prng_uint64_range(&rng, 0, 4))
+			CHECK(t, sift_cdict_find(p, str[i], len[i]) == sift_cdict_find(d, str[i], len[i]), "dictionary (%s) code", specs[k]);
+		for (int rounds = 0; rounds < 10; rounds++)
+		{
+			SiftCDict  *q = NULL;
+			char	   *bad = memcpy(palloc(buf.len), buf.data, buf.len);
+			Size		cut = buf.len;
+
+			if (pg_prng_bool(&rng))
+				bad[pg_prng_uint64_range(&rng, 0, buf.len - 1)] ^= (char) (1 << pg_prng_uint64_range(&rng, 0, 7));
+			else
+				cut = pg_prng_uint64_range(&rng, 0, buf.len - 1);
+			(void) ERRCODE_OF(q = sift_cdict_parse(CurrentMemoryContext, bad, cut, &used));
+			CHECK(t, q == NULL || used <= cut, "damaged dictionary consumed %zu of %zu bytes", used, cut);
+			pfree(bad);
+		}
+	}
+}
+
 static void
 check_dict(TCtx *t)
 {
@@ -531,7 +580,7 @@ check_dict(TCtx *t)
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "pad");
 	resetStringInfo(&buf);
-	sift_cdict_serialize(d, &buf);
+	sift_cdict_serialize(d, NULL, &buf);
 	p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 	CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n, "dictionary parse");
 	for (uint32 i = 0; p != NULL && i < n; i += 1 + RAND(t, 5))
@@ -543,8 +592,7 @@ check_dict(TCtx *t)
 		/* a parsed dictionary keeps interning */
 		CHECK(t, sift_cdict_intern(p, str[0], len[0]) == sift_cdict_find(d, str[0], len[0]), "intern into a parsed dictionary");
 	}
-	for (Size cut = 0; cut + 1 < (Size) buf.len; cut += 1 + RAND(t, 50))
-		CHECK(t, sift_cdict_parse(CurrentMemoryContext, buf.data, cut, &used) == NULL, "truncated dictionary (%zu bytes) parsed", cut);
+	check_dict_strs(t, d, str, len, n, &buf);
 }
 
 /* ---------------------------------------------------------------------------

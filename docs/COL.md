@@ -11,7 +11,7 @@ interface) the other agents build against, `src/col/sift_col_kern.h` the kernel 
 this file in the same commit.
 
 User-facing names: index access method `sift_col` (`pg_am.amname` is unique across index and table AMs; the table AM is `sift_table`), operator
-class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`,
+class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, functions `sift.col_index_info`, `col_segments`, `col_leaves`, `col_sections`,
 `col_verify`, `col_promote`, `col_merge`, test functions `sift._test_col_*`. Code: the engine is `sift_col*.c` (and `sift_col_kern*`), the index AM glue `sift_col_am*.c`.
 
 ---
@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 2)
+## 2. Format (format major 1, col minor 3)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
@@ -157,8 +157,12 @@ rows are then filtered by `lut_u8/u16/u32`. Range operators on text are only mea
 
 ### 2.3 Dictionaries
 
-Per segment and STR leaf, in the order the values were first seen (code = first-seen order): `u32 n`, `u32 off[n + 1]`, bytes (no padding;
-`sift_cdict_parse` reports the bytes used, and refuses an entry over 255 bytes: longer strings are never entries, section 2.9). Codes are
+Per segment and STR leaf, in the order the values were first seen (code = first-seen order), starting 8-aligned: `u32 form`, `u32 n`, then for form 0 (plain)
+`u32 off[n + 1]` and the bytes (no padding), for form 1 the codec's string list (`sift_cc_encode_strs`: the lengths as an integer cascade, the bytes
+under the cold wrapper rule of docs/perf/COMPRESSION.md 5.4: LZ4 or zstd where they save a share worth the unwrap). The writer takes form 1 when the leaf's
+`compression` is not `none` and the list is smaller than the plain form (a dictionary of 30 countries stays plain, one of 150,000 titles is 4.4 MB plain
+and 0.95 MB as a list); `sift_cdict_parse` reports the bytes used and refuses an entry over 255 bytes: longer strings are never entries, section 2.9.
+The dictionary is read whole by the first scan that needs a code of the leaf, once per segment and statement (per worker for a parallel one). Form 1 costs about 9 more instructions per entry than form 0 (the lengths cascade, the running sum, the unwrap): a point lookup of a `sift_table` row with a 58,000-entry title dictionary takes about 3 times the instructions, 760,000 to 800,000 against 257,000 (203 against 163 microseconds of CPU, 1M orders), and a grouped scan on the title 17 percent more instructions (349 million against 298 million); no other query of the store suite reads that dictionary, and a dictionary of a few dozen entries stays plain. The price is paid for 3.4 MB of 17 per million orders. Codes are
 dense 0..n-1 inside the segment and are **not comparable across segments or ordered**; a query that groups across segments maps codes to
 values (`SiftColDict`), and the filter translates constants to codes per segment. A merge rebuilds the dictionary (kept in first-seen order
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
@@ -323,6 +327,14 @@ group-by, distinct and LUT filters need no change. Row-level code (`sift_cunit_d
 write buffer stores a string as a varint length and the bytes (a row may span pages as before); a write buffer batch keeps any length in its dictionary,
 and its in-memory unit uses that dictionary directly.
 
+### 2.10 Where the bytes go
+
+`sift.col_sections(rel)` (a sift_col index or a sift_table; `src/sift_col_acct.c`) returns `(section, leaf, bytes)` summed over the immutable segments,
+and the rows add up to `pg_relation_size(rel)`: `chunks` and `dict` per leaf (the dictionary as stored, section 2.3), `unit_dir` (the unit records less
+their chunks: page directory, offsets, alignment), `dict_other`, `zones`, `preagg` (the sidecar, section 2.1), `sbdir_schema`, `page_overhead` (page headers and the
+unused end of each stream's last page), `headers` (SEGHEADER and LIVE pages), `free` (blocks on the free list) and `other` (the metapage, directory, free list pages,
+the mutable lane, tombstones). `sift.col_leaves` counts the chunks of a leaf by encoding, `sift.col_index_info` the pre-aggregate bytes.
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -384,8 +396,8 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 2 is the first a release reads: segments
-  of the pre-release minors 0 (leaf types as PostgreSQL OIDs) and 1 (no pre-aggregates) are not read.
+  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads: segments
+  of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
 
@@ -617,6 +629,7 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 ## Changes (contract log, newest first; rebase on these)
 
 - 2026-10 (preagg2 maint): `SiftColOptions.dead_rewrite_pct` (reloption `dead_rewrite_pct`, default `SIFT_COL_DEAD_PCT` 10, maintenance only: no format change); `sift_col_mostly_dead` uses it instead of a fixed half.
+- 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy, `sift_cseg_dict_stored`, `sift.col_sections` (section 2.10). A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (preagg2): `SiftSrcPreagg.aggs`; `sift_aggspec_preagg`, `sift_aggspec_pred_leaf` (sift_aggspec.h); SiftAgg answers the units that are exact from `unit_agg` / `unit_hist` (`sift_agg.c` `preagg_unit`), `sift.agg_preagg` (GUC, on), the cost of the exact share of the units and no workers from 98% exact (`sift_aggplan.c`), `Units From Pre-aggregates` in EXPLAIN ANALYZE. A provider that has `unit_exact`, `unit_agg`, `unit_hist` and `preagg` gets all of it; the others scan.
 - 2026-10 (col minor 2): the pre-aggregates (docs/COL-PREAGG.md): the PAGG block at the end of the ZONES section, writer `sift_colw_set_preagg` (default spec unless the owner sets one; the index passes the `preagg` reloption), reader `sift_cseg_agg` / `sift_cseg_cube`; `sift_col_pagg.h` (`sift_col_unit_preagg_ok`, `sift_col_unit_agg`, `sift_col_unit_hist`); source callbacks `unit_exact`, `unit_agg`, `unit_hist`, `preagg` in `sift_colsrc.h`; `sift.col_unit_agg`, `sift.col_unit_hist`, `col_index_info` columns `preagg_bytes`, `preagg_units`. `sift_col_unit_exact` tests the page mask word wise. Segments of the minors 0 and 1 are not read.
 - 2026-10 (decode): `sift_col_read_lane`, `sift_col_lane_n`, `SiftColLane`, `SiftColLaneInfo`; `sift_colsrc_leaf_n`, `sift_colsrc_read_into`, `SiftSrcBuf` and the provider slots `leaf_n`, `read_into`; `SiftColKernels.f8_from_keys`, `bits_to_flags`; `SiftCcKernels.scale32`, `scale64`, `alp_f8`, `alp_f4`, `sift_cc_decode_u32`, `sift_cc_decode_f8`, `sift_cchunk_decode_u32`, `sift_cchunk_decode_f8`; **`SiftColKernels.expand_parents` writes up to `SIFT_COL_PAD` bytes past `end[np - 1]`**: allocate the room; `SiftCUnitView.page`; `SiftColLeafStats`, `sift_cseg_leaf_stats`, `sift_col_leaf_stats`; `SiftSrcStats.ndistinct`, `min`, `max` and `elems_per_row` are filled (section 5).

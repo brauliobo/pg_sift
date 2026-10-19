@@ -29,6 +29,7 @@
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
+#include "sift_col.h"
 #include "sift_estimate.h"
 #include "sift_store.h"
 
@@ -394,6 +395,38 @@ sift_store_free_stats(Relation index)
 	sift_freelist_walk(index, metabuf, count_free, &c);
 	UnlockReleaseBuffer(metabuf);
 	return c.fs;
+}
+
+typedef struct FreeBelow
+{
+	Relation	index;
+	BlockNumber limit;
+	uint32		min_run;
+	int64		blocks;
+} FreeBelow;
+
+static bool
+count_below(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeBelow  *c = arg;
+
+	for (uint32 i = 0; i < fl->n; i++)
+		if (fl->ext[i].start + fl->ext[i].nblocks <= c->limit && fl->ext[i].nblocks >= c->min_run &&
+			(!FullTransactionIdIsValid(fl->ext[i].safexid) || sift_store_removable(c->index, fl->ext[i].safexid)))
+			c->blocks += fl->ext[i].nblocks;
+	return true;
+}
+
+/* The reusable free blocks in runs of at least min_run that end before limit: what a segment above limit can be rewritten into */
+int64
+sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run)
+{
+	FreeBelow	c = {index, limit, min_run, 0};
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+
+	sift_freelist_walk(index, metabuf, count_below, &c);
+	UnlockReleaseBuffer(metabuf);
+	return c.blocks;
 }
 
 /* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
@@ -775,7 +808,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
-		else if (s->format > SIFT_FORMAT_MINOR)
+		else if (s->format > Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MINOR))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
 			if (dir->segs[j].gen == s->gen)
@@ -848,7 +881,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is 0) */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
-			META(mp)->format_minor = Max(META(mp)->format_minor, DIR(dp)->segs[i].format);
+			META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));	/* a column segment's format is its own (sift_col.h) */
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
@@ -1469,7 +1502,15 @@ sw_flush(SiftStreamWriter *sw)
 static uint32
 run_cap(const SiftStreamWriter *sw)
 {
-	return Max(RUN_MAX, Min(RUN_BIG, sw->pos / SIFT_PAGE_PAYLOAD / 16));
+	uint32		share = sw->pos / SIFT_PAGE_PAYLOAD / 16;
+
+	/*
+	 * A shared stream of unknown size (a parallel build's) gives back the unused end of its last run as a hole in the file, and
+	 * the other streams are written next to it: the run is a 16th of what the stream has written, so the hole is at most that.
+	 */
+	if (sw->wt->expect == 0 && sw->wt->bulk == NULL)
+		return Min(RUN_BIG, Max(RUN_MIN, share));
+	return Max(RUN_MAX, Min(RUN_BIG, share));
 }
 
 /*
