@@ -112,6 +112,9 @@ data_keys() { # SIZE: key and volume of every container the pass uses (steps/sto
   mapfile -t extra < <(engine_args)
   while read -r c k v s; do KEY[$c]=$k VOL[$c]=$v REUSE[$c]=$s; done < <(py datakey --rows "$1" --cpus "$CPUS" --containers "$(wanted | paste -sd,)" ${S_COMPRESSION:+--compression} "${extra[@]}")
 }
+vols() { # the volumes of the containers of this pass: `up` runs in a stage (a child process) and leaves them in a file
+  [[ -n ${VOLS_LOADED:-} ]] || { . "$DATA/vols-$NAME.env"; VOLS_LOADED=1; }
+}
 data_volume() { # CONTAINER: the volume of its key (a fresh one unless the load that filled it finished), the volumes of other keys removed
   local c=$1 v
   [[ ${REUSE[$c]} == reuse ]] || docker volume rm "${VOL[$c]}" >/dev/null 2>&1 || true
@@ -132,6 +135,7 @@ loaded() { # every container the pass uses holds the data of its key
 
 # Elasticsearch with N processors: the node setting (thread pools) and the JVM's count (GC, JIT); its data is in a volume, so that a new container can take over
 es_up() { # N
+  vols
   local run; mapfile -t run < <(run_args "$1")
   docker "${run[@]}" --name "$NAME-es" -p "127.0.0.1:$((PORT + 2)):9200" -v "${VOL[es]}:/usr/share/elasticsearch/data" \
     -e discovery.type=single-node -e xpack.security.enabled=false -e xpack.ml.enabled=false -e node.processors="$1" \
@@ -141,6 +145,7 @@ es_up() { # N
 # (one task per pool thread; its defaults want 20 or more free entries to run a mutation and refuse to start with a pool this small, so the thresholds are 1).
 # The logs of the server's own activity are off (query_log stays): an idle ClickHouse otherwise burns 3-7% of a CPU, which the idle check before a timed batch would count.
 ch_up() { # N
+  vols
   local run dir; mapfile -t run < <(run_args "$1"); dir=$(cfg)
   mkdir -p "$dir"
   cat >"$dir/server.xml" <<EOF
@@ -162,6 +167,7 @@ EOF
 # (no workers are added), and the columnar settings (chunk group and stripe row limits, compression) stay at their defaults. The image preloads `citus`,
 # which is left as shipped; the extension is only created in the `store` database as citus_columnar.
 citus_up() { # N
+  vols
   local run; mapfile -t run < <(run_args "$1")
   docker "${run[@]}" --name "$NAME-citus" -p "127.0.0.1:$CITUS_PORT:5432" --shm-size 1g -v "${VOL[citus]}:$(pg_mount "$STORE_CITUS_IMAGE")" -e POSTGRES_HOST_AUTH_METHOD=trust "$STORE_CITUS_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
 }
@@ -197,6 +203,7 @@ up() { # SIZE
   ! want ch || pull_missing "$STORE_CH_IMAGE"
   ! want citus || pull_missing "$STORE_CITUS_IMAGE"
   local c run; data_keys "$1"
+  mkdir -p "$DATA"; declare -p VOL | sed 's/^declare -A/declare -gA/' >"$DATA/vols-$NAME.env"
   for c in $(wanted); do data_volume "$c"; done
   mapfile -t run < <(run_args "$CPUS")
   docker "${run[@]}" --name "$NAME-pg" -p "127.0.0.1:$PORT:5432" --shm-size 1g -v "${VOL[pg]}:$(pg_mount "$PG_IMAGE")" -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null

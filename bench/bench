@@ -648,7 +648,7 @@ cmd_list() { # the commands, the sizes of a pass and the stages of the release p
   for n in $PRESETS; do
     preset "$n"
     printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' "$n" "$P_ROWS" "$P_DOCS" "$P_RUNS" "$P_COLD" "$P_RATES" "$(wc -w <<<"$P_UPDATE_ENGINES")" \
-      "$(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES + P_MIN_SEARCH ))" "$(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES ))" "$P_MIN_SEARCH"
+      "$(( P_MIN_STORE_CACHED + ${P_MIN_COMPRESSION:-0} + ${P_MIN_STATS:-0} + ${P_MIN_GAP:-0} + P_MIN_SEARCH ))" "$(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES ))" "$P_MIN_SEARCH"
   done
   printf 'default size: %s; final stages: store compression stats gap search (bench/bench final --dry-run)\n' "$DEFAULT_PRESET"
 }
