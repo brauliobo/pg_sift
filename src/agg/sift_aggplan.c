@@ -4913,7 +4913,8 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		List	   *sub = NIL;
-		double		bucketed = 1.0;
+		double		bucketed = 1.0,
+					g;
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
@@ -4926,7 +4927,9 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 			else
 				sub = lappend(sub, list_nth(keys, j));
 		}
-		n += Min(rows, (sub == NIL ? 1.0 : Max(estimate_num_groups(root, sub, rows, NULL, NULL), 1.0)) * bucketed);
+		/* Min and Max evaluate their arguments more than once: the estimate is made once */
+		g = sub == NIL ? 1.0 : estimate_num_groups(root, sub, rows, NULL, NULL);
+		n += Min(rows, Max(g, 1.0) * bucketed);
 	}
 	return n;
 }
