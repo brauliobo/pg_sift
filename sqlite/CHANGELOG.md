@@ -6,6 +6,10 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
 ## Unreleased
 
+## 3.0.1
+
+- No change to the storage format (2) or the SQL interface: tables of 3.0.0 open as they are. The extension is rebuilt with the PostgreSQL release 3.0.1; no file of the shared core (`src/portable.list`) changed, so nothing in the SQLite extension differs from 3.0.0 except the version `sift_version()` reports. The fixes of 3.0.1 (the column scans, the aggregate pushdown, `sift_table`) are PostgreSQL features and are not in this extension.
+
 ## 3.0.0
 
 - No change to the storage format (2) or the SQL interface: tables of 2.0.x open as they are (the host keeps writing segment format 1). The extension is
