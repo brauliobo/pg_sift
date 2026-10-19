@@ -17,7 +17,7 @@ item  := path ( type | '{' item { ',' item } '}' )     -- a group is relative to
 path  := step { sep step }        sep := '.' | '->'    -- the two separators are the same
 step  := key | key '[]' { '[]' } | '*'
 key   := bare ([A-Za-z0-9_$] and bytes >= 0x80) | "quoted" ("" is a double quote)
-type  := bool | int2 | int4 | int8 | float4 | float8 | text [ '(' N ')' ]
+type  := bool | int2 | int4 | int8 | float4 | float8 | text [ '(' N ')' ] | astext [ '(' N ')' ]
 ```
 
 Aliases: `boolean`, `smallint`, `int`, `integer`, `bigint`, `real`, `double [precision]`. A path starts with a key. `key[]` is an array
@@ -83,8 +83,10 @@ incomplete or unrepresentable.
 | bool | `true` / `false` | `VALUE` |
 | text | string, at most `N` bytes | `VALUE` |
 |  | longer | `OVERFLOW` `LENGTH` |
+| astext | a string (as it is), a number (the text `numeric_out` prints, which is what `->>` gives: `1.50` stays `1.50`, `1e2` is `100`), `true`, `false`; at most `N` bytes like `text` | `VALUE` |
+|  | an object or array, longer | `OVERFLOW` `SHAPE`, `LENGTH` |
 | any | JSON null | `NULL` |
-| any scalar type | a different JSON scalar (string in a number column, number in a text column, ...) | `OVERFLOW` `TYPE` (no coercion: `->>` would give `'12'` for the number 12) |
+| any scalar type but astext | a different JSON scalar (string in a number column, number in a text column, ...) | `OVERFLOW` `TYPE` (no coercion: `->>` would give `'12'` for the number 12) |
 | any scalar type | an object or array | `OVERFLOW` `SHAPE` |
 | object position | array | all columns below `OVERFLOW` `SHAPE` (lax jsonpath would unwrap it) |
 | object position | scalar, null | columns below `ABSENT` |

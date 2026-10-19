@@ -112,6 +112,7 @@ leaf_type(SiftShredType t, uint8 *store, uint8 *type)
 			*store = SIFT_COLS_F8, *type = SIFT_COLT_FLOAT8;
 			break;
 		case SIFT_SHRED_TEXT:
+		case SIFT_SHRED_ASTEXT:
 			*store = SIFT_COLS_STR, *type = SIFT_COLT_TEXT;
 			break;
 	}
@@ -137,6 +138,8 @@ add_column(const SiftColShredAdapter *a, ShredAttr *at, int c, int parent, LeafK
 	ShredLeaf  *l = add_leaf(at, kind, parent, SIFT_COLK_SCALAR, pstrdup(cd->name), c, group);
 
 	leaf_type(cd->type, &l->def.store, &l->def.type);
+	if (cd->type == SIFT_SHRED_ASTEXT)
+		l->def.flags |= SIFT_COLD_ASTEXT;
 }
 
 static void
@@ -238,6 +241,7 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			v->v.f = col->val[i].f;
 			break;
 		case SIFT_SHRED_TEXT:
+		case SIFT_SHRED_ASTEXT:
 			v->v.s = doc->text + col->val[i].s.off;
 			v->len = col->val[i].s.len;
 			break;
