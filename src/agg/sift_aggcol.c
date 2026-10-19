@@ -441,13 +441,6 @@ col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
 }
 
-/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
-static bool
-nan_leaf(const SiftSrcLeaf *l)
-{
-	return l->typid == NUMERICOID && l->kind == SCL_SCALAR;
-}
-
 static void
 overflow_error(void)
 {
@@ -455,25 +448,6 @@ overflow_error(void)
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
 			 errhint("Set sift.enable_agg to off for this query.")));
-}
-
-/*
- * A NaN of a numeric leaf is a value to the executor, the greatest of the leaf: PG_INT64_MAX (no scaled number reaches it), not NULL, and
- * its bit in vec->ovf for the code that evaluates it as PostgreSQL does. The engine stores it as NULL with the flag.
- */
-static void
-nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec)
-{
-	if (!vec->ovf || !nan_leaf(l))
-		return;
-	for (size_t w = 0; w * 64 < vec->n; w++)
-		for (uint64 b = vec->ovf[w]; b; b &= b - 1)
-		{
-			size_t		i = w * 64 + pg_rightmost_one_pos64(b);
-
-			((int64 *) data)[i] = PG_INT64_MAX;
-			isnull[i] = 0;
-		}
 }
 
 /* The values of a read of the engine into the caller's storage, in the vector type of the leaf */
@@ -519,7 +493,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 			buf->isnull[i] = sift_colsrc_bit(v->nulls, i);
 		vec->isnull = buf->isnull;
 	}
-	nan_values(l, buf->data, buf->isnull, vec);
+	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
 }
 
 /* A compacted unit of a match set (sift_aggsel.h): the kept rows only, which the engine reads by their positions, not by lane */
@@ -563,7 +537,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	vec->n = info.n;
 	vec->isnull = info.nulls ? buf->isnull : NULL;
 	vec->dict = NULL;
-	nan_values(l, buf->data, buf->isnull, vec);
+	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
 	if (l->vtype == SCV_CODE)
 	{
 		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes};
@@ -653,7 +627,7 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 			b->isnull[idx[k]] = sift_colsrc_bit(v->nulls, k);
 		vec->isnull = b->isnull;
 	}
-	nan_values(l, b->data, b->isnull, vec);
+	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
 /* A selection of the unit's rows, of the bits of the executor */
@@ -848,7 +822,7 @@ filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 		z.has_ovf &= !src->tol[p->col];
 		if (!sift_col_filter(cu, p, 1, sel))
 			break;
-		if (z.has_ovf && nan_leaf(&src->lay->leaf[p->col]))
+		if (z.has_ovf && sift_colsrc_nan_leaf(&src->lay->leaf[p->col]))
 			clear_nan_rows(src, p, sel);
 	}
 }

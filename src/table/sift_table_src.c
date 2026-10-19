@@ -524,6 +524,7 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 			b->isnull[i] = sift_colsrc_bit(v.nulls, i);
 		vec->isnull = b->isnull;
 	}
+	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
 static void
