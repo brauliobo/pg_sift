@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: a single `COPY` or `INSERT ... SELECT` into a `sift_table` is no longer limited to about 500 MB (about 4 million rows of the orders layout): it failed with `Too many write buffers waiting for promotion` because the rows of a running transaction cannot be promoted into columns. Once the directory is half full, the write buffers that one command of one transaction wrote become column groups that carry the writer's transaction and command, are invisible to everybody else until it commits (at every isolation level, through scans, indexes, bitmap scans, parallel plans and `SiftAgg`), and are dropped by `VACUUM` if it aborts (a rollback, a savepoint rolled back, a crash) or frozen once it is committed. A 5,000,000-row `COPY` into a table with a primary key, in one transaction, loads in 18 s with a backend peak of 182 MB; 10,000,000 rows take 32 s and 180 MB; the load speed of a 1,000,000-row `COPY` is unchanged. A transaction that writes through many commands (a loop of single-row `INSERT`s) or concurrent writers into the same write buffers are still limited by the directory, and the error now says so. Upgrade note: a library of 3.0.0 reads a group that still carries a writer (not yet frozen by `VACUUM`) as frozen, so run `VACUUM` on the tables loaded by this version before going back to 3.0.0. See `docs/COL-TAM.md`, sections 3 and 7.
+
 ## 3.0.0 - 2026-10-19
 
 The column track joins the BM25 index in one extension. Install the new files, then run `ALTER EXTENSION pg_sift UPDATE TO '3.0'` in every database (the extension SQL goes from 1.2 to 3.0; `pg_sift--1.2--3.0.sql`). Existing BM25 indexes keep working with no `REINDEX`.
