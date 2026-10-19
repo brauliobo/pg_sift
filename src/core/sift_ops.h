@@ -10,7 +10,7 @@
 #include "utils/rel.h"
 
 /* The extension version this library implements (the control file's default_version) */
-#define SIFT_MODULE_VERSION		"3.0"
+#define SIFT_MODULE_VERSION		"3.1"
 
 extern int	sift_log_min_duration;
 
