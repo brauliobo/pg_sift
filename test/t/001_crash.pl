@@ -11,7 +11,7 @@ use Test::More;
 my $rows = knob('SIFT_ROWS', 60000, 20000);
 my $torn = knob('SIFT_TORN_ROWS', 300000, 40000);	# an insert still running 150 ms in, at any speed
 my $late = knob('SIFT_LATE_ROWS', 15000, 6000);	# rows the maintenance step has to promote or merge
-my $batch = knob('SIFT_BATCH_ROWS', 40000, 15000);	# rows of a merge batch: dozens of segments at the 64 kB mutable_limit
+my $batch = knob('SIFT_BATCH_ROWS', 40000, 15000);	# rows of a merge batch: dozens of segments at the 64 kB write_buffer_limit
 my $node = sift_node('crash');
 $node->start;
 install_sift($node);

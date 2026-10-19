@@ -2,8 +2,8 @@
 -- stays the size it had, and VACUUM FULL does not grow it. A VACUUM's own xid is not in the snapshots of the readers that began after it,
 -- so what it releases is reusable once another transaction has passed: the second VACUUM of each pair clears it for reuse. The free run
 -- at the end of the file is given back at once, under the lock that keeps every reader out (unless vacuum_truncate is off). The column
--- segment sealed from a load lies above the write segment it replaces: the VACUUM that can reuse that space writes it again below, so
--- the cut finds the end free (the active write segment, which does not move, is the least the file keeps).
+-- segment sealed from a load lies above the write buffer it replaces: the VACUUM that can reuse that space writes it again below, so
+-- the cut finds the end free (the active write buffer, which does not move, is the least the file keeps).
 CREATE EXTENSION pg_sift;
 CREATE TABLE sp (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TEMP TABLE hw (round int, blocks bigint);

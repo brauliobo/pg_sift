@@ -55,7 +55,7 @@ CREATE FUNCTION sift.col_leaves(index regclass,
 	AS 'MODULE_PATHNAME', 'sift_col_leaves' LANGUAGE C STRICT VOLATILE;
 
 -- Where the bytes of a sift_col index or a sift_table go, one row per kind: chunks and dict per leaf; unit_dir, dict_other, zones, preagg,
--- sbdir_schema, page_overhead, headers (segment structure), free (blocks on the free list) and other (metapage, directory, write lane, tombstones).
+-- sbdir_schema, page_overhead, headers (segment structure), free (blocks on the free list) and other (metapage, directory, write buffer, tombstones).
 -- The bytes add up to pg_relation_size.
 CREATE FUNCTION sift.col_sections(rel regclass, OUT section text, OUT leaf text, OUT bytes int8)
 	RETURNS SETOF record

@@ -198,7 +198,7 @@ if [[ $MODE == full ]]; then
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 else
 	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
-	# visit every stage, the mutable segments, the promotion and the merge
+	# visit every stage, the write buffers, the promotion and the merge
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the regression tests that need no test-only function, against the release library: beside the others on PostgreSQL 18,
 	# after the pool on 17, where the install is the server's own
