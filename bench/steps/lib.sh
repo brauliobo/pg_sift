@@ -48,11 +48,11 @@ loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the res
 # spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody
 # else; a window is NOISY when it is above SIFT_NOISE_CPU (0.25) cores over the idle host's, measured once, 10 s, at the first batch. Recorded in noisy.txt.
 sentinel_now() { # host busy seconds, own cgroup CPU seconds, uptime seconds
-  awk -v hz="$(getconf CLK_TCK)" '/^cpu / {printf "%s ", ($2 + $3 + $4 + $7 + $8 + $9) / hz}' /proc/stat
-  awk '/^usage_usec/ {printf "%s ", $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || printf '0 '
-  cut -d' ' -f1 /proc/uptime
+  awk -v hz="$(getconf CLK_TCK)" '/^cpu / {printf "%.3f ", ($2 + $3 + $4 + $7 + $8 + $9) / hz}' /proc/stat
+  awk '/^usage_usec/ {printf "%.3f ", $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || printf '0 '
+  cut -d" " -f1 /proc/uptime
 }
-sentinel_rate() { awk -v a="$1" -v b="$2" 'BEGIN {split(a, x, " "); split(b, y, " "); dt = y[3] - x[3]; printf "%.3f", dt > 0 ? ((y[1] - x[1]) - (y[2] - x[2])) / dt : 0}'; }
+sentinel_rate() { awk -v a="$1" -v b="$2" 'BEGIN {split(a, x, " "); split(b, y, " "); dt = y[3] - x[3]; printf "%.3f", (dt > 0) ? ((y[1] - x[1]) - (y[2] - x[2])) / dt : 0}'; }
 batch_close() { # judge the window that is open (the one since the last batch call)
   [[ -n ${SENT_AT:-} ]] || return 0
   local now rate; now=$(sentinel_now); rate=$(sentinel_rate "$SENT_AT" "$now")
