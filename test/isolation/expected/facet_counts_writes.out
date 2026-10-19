@@ -1,0 +1,118 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2b s2i s3check s2a s3check s2b s2i s2c s3check
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_fcw SELECT g, 'common w' || g % 5, 'n' || g % 3, g % 500, repeat('p', 1000) FROM generate_series(4000, 4999) g;
+step s3check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s2a: ROLLBACK;
+step s3check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_fcw SELECT g, 'common w' || g % 5, 'n' || g % 3, g % 500, repeat('p', 1000) FROM generate_series(4000, 4999) g;
+step s2c: COMMIT;
+step s3check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+
+starting permutation: s1b s2d s2u s1check s2v s1check s1c s2v s3check s3verify
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows FROM iso_fcw;
+rows
+----
+3000
+(1 row)
+
+step s2d: DELETE FROM iso_fcw WHERE id % 3 = 0;
+step s2u: UPDATE iso_fcw SET cat = 'moved', price = price + 250 WHERE id % 4 = 0;
+step s1check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s2v: VACUUM iso_fcw;
+step s1check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s1c: COMMIT;
+step s2v: VACUUM iso_fcw;
+step s3check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s3verify: SELECT iso_verify('iso_fcw_body') AS verified_body, iso_fcw_colverify() AS verified_col;
+verified_body|verified_col
+-------------+------------
+t            |t           
+(1 row)
+
+
+starting permutation: s2d s2v s1b s2r s1check s2p s1check s2m s1check s1c s3check s3verify
+step s2d: DELETE FROM iso_fcw WHERE id % 3 = 0;
+step s2v: VACUUM iso_fcw;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows FROM iso_fcw;
+rows
+----
+2000
+(1 row)
+
+step s2r: INSERT INTO iso_fcw SELECT g, 'common w' || g % 5, 'r' || g % 2, g % 700, repeat('p', 1000) FROM generate_series(5000, 5999) g;
+step s1check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s2p: SELECT sift.promote('iso_fcw_body') >= 0 AS promoted_body, sift.col_promote('iso_fcw_col') >= 0 AS promoted_col;
+promoted_body|promoted_col
+-------------+------------
+t            |t           
+(1 row)
+
+step s1check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s2m: SELECT sift.merge('iso_fcw_body', true) >= 0 AS merged_body, sift.col_merge('iso_fcw_col', true) >= 0 AS merged_col;
+merged_body|merged_col
+-----------+----------
+t          |t         
+(1 row)
+
+step s1check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s1c: COMMIT;
+step s3check: SELECT iso_fcw_ok('common') AS ok_common, iso_fcw_ok('w1 OR w2') AS ok_or, iso_fcw_ok('w3 AND NOT w4') AS ok_not;
+ok_common|ok_or|ok_not
+---------+-----+------
+t        |t    |t     
+(1 row)
+
+step s3verify: SELECT iso_verify('iso_fcw_body') AS verified_body, iso_fcw_colverify() AS verified_col;
+verified_body|verified_col
+-------------+------------
+t            |t           
+(1 row)
+
