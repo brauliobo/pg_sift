@@ -126,6 +126,16 @@ sql() {
 		-p "$(port "$name")" -U postgres -d postgres "${@/#/--command=}"
 }
 
+# The groups of the elements of orders.doc->'items' (the table of the sift_col tests) per category: from the column source and its
+# pre-aggregates ($2 = on) or from the normal plan ($2 = off), as one string; $3 = explain: the units the pre-aggregates answered
+ELEM_QUERY="SELECT e.category, count(*), sum(e.qty) FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.doc->'items') e(category text, qty int) GROUP BY 1"
+elem_groups() {
+	local run="SELECT coalesce(string_agg(x::text, ',' ORDER BY x::text), '') FROM ($ELEM_QUERY) x"
+	[[ ${3:-} == explain ]] && run="EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $ELEM_QUERY"
+	sql "$1" "LOAD 'pg_sift'" "SET sift.enable_agg = $2" "SET sift.agg_preagg = $2" "SET max_parallel_workers_per_gather = 0" \
+		"SET seq_page_cost = 10000" "$run" | tail -n +1 | grep -v '^$' | { [[ ${3:-} == explain ]] && grep -o 'Units From Pre-aggregates: [0-9]*' || cat; }
+}
+
 # kill -9 the postmaster and every child at once, as a power loss would; the postmaster is stopped
 # first so that it cannot fork a parallel worker that would outlive the list of children
 crash() {
