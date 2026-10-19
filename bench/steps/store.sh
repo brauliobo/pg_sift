@@ -25,6 +25,7 @@ PORT=${S_PORT:-56280}                 # PostgreSQL, the pg_sift server, Elastics
 CPU_LIST=${S_CPUS_LIST:-${S_CPUS:-${S_COMPRESSION:+3}}}      # the thread budgets that are timed; the compression run is one point
 CPU_LIST=${CPU_LIST:-1,3}
 POINTS=$(tr ',' '\n' <<<"$CPU_LIST" | sort -nu | paste -sd' ')
+NPOINTS=$(wc -w <<<"$POINTS")
 CPUS=${S_CPUS:-${POINTS##* }} MEMORY=${S_MEMORY:-8g}          # the budget the containers start with and the load runs at: the largest point
 for c in $POINTS $CPUS; do [[ $c =~ ^[1-9][0-9]*$ ]] && (( c <= 16 )) || { echo "store: --cpus and --cpus-list take whole numbers from 1 to 16, not '$c'" >&2; exit 1; }; done
 SIZES=${S_SIZES:-1000000,10000000}
@@ -175,10 +176,22 @@ setup() { # SIZE
   py gen --rows "$1"
   py load --rows "$1" --out "$OUT" --cpus "$CPUS" ${S_COMPRESSION:+--compression} "${extra[@]}"
 }
+# stage NAME MINUTES CMD...: runs CMD and logs the time against its budget; over 1.3x of it is logged OVER BUDGET (S_BUDGET_STRICT=1: and stops)
+stage() {
+  local name=$1 budget=$2 t0=$SECONDS took
+  shift 2
+  "$@"
+  took=$(( (SECONDS - t0 + 30) / 60 ))
+  log "stage $name: $took min (budget $budget)"
+  if (( (SECONDS - t0) * 10 > budget * 60 * 13 )); then
+    log "OVER BUDGET: stage $name took $took min, budget $budget (1.3x = $((budget * 13 / 10)))"
+    [[ -z ${S_BUDGET_STRICT:-} ]] || exit 4
+  fi
+}
 run_at() { # SIZE CPUS
   local extra=()
   mapfile -t extra < <(engine_args)
-  locked py run --rows "$1" --out "$OUT" --runs "$RUNS" --cpus "$2" "${extra[@]}"
+  locked py run --rows "$1" --out "$OUT" --runs "$RUNS" ${S_WARMUPS:+--warmups "$S_WARMUPS"} --cpus "$2" "${extra[@]}"
 }
 cold_at() { # SIZE CPUS
   local extra=()
@@ -186,10 +199,11 @@ cold_at() { # SIZE CPUS
   locked py cold --rows "$1" --out "$OUT" --cold-runs "$COLD" --cpus "$2" "${extra[@]}"
 }
 each_point() { local c; for c in $POINTS; do point "$c"; "$@" "$c"; done; }   # CMD ARGS...: CMD ARGS... CPUS at every budget of the list, smallest first
-at_point() { run_at "$1" "$2"; (( COLD == 0 )) || cold_at "$1" "$2"; }
-measure() { # SIZE
-  each_point at_point "$1"
-  [[ ,$UPDATE_SIZES, == *,"$1",* ]] && updates "$1" || true
+at_point() { run_at "$1" "$2"; }
+measure() { # SIZE: warm at every budget, cold and the updates at the budget of the load (the cold runs empty the memory of one container per cell: see store.py cold)
+  stage "warm $1 orders" "$((NPOINTS * 2))" each_point at_point "$1"
+  if (( COLD > 0 )); then point "$CPUS"; stage "cold $1 orders" 10 cold_at "$1" "$CPUS"; fi
+  if [[ ,$UPDATE_SIZES, == *,"$1",* ]]; then stage "updates $1 orders" 9 updates "$1"; fi
 }
 updates() { # SIZE: last, it changes the data; at the budget of the load
   local extra=()
@@ -209,8 +223,9 @@ all() {
   mkdir -p "$OUT"
   rm -f "$OUT"/store-*.json
   trap 'down' EXIT
+  log "budget: setup 3 min, warm $((NPOINTS * 2)) min, cold 10 min, updates 9 min per size (the first size: $((3 + NPOINTS * 2 + 19)) min)"
   for s in ${SIZES//,/ }; do
-    setup "$s"
+    stage "setup $s orders" 3 setup "$s"
     measure "$s"
     down
   done
@@ -240,7 +255,7 @@ case ${1:-all} in
   all) all ;;
   setup) setup "${SIZES%%,*}" ;;
   run) mkdir -p "$OUT"; each_point run_at "${SIZES%%,*}" ;;
-  cold) mkdir -p "$OUT"; each_point cold_at "${SIZES%%,*}" ;;
+  cold) mkdir -p "$OUT"; point "$CPUS"; cold_at "${SIZES%%,*}" "$CPUS" ;;
   updates) mkdir -p "$OUT"; updates "${SIZES%%,*}" ;;
   report) report ;;
   stats) mkdir -p "$OUT"; stats ;;
