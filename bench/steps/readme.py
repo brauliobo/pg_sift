@@ -219,23 +219,28 @@ def benchmarks_block(t, timing):
     s, p = t.session, t.load()
     articles, places = format(t.corpus('articles'), ','), format(t.corpus('places'), ',')
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
-    out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client): the slim tier of the suite, the default of '
-           '`bench/bench all`, with the engines, query classes and workloads of the full tier on a smaller corpus and cells that stop at a 5%% relative standard error (at most 1 s). '
-           'Same data, queries and clients for every engine, one engine at a time on %s, median of %s interleaved rounds%s. Cells are queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
-           'the fastest engines of a column (all within one standard error of the best) are in bold%s.' %
-           (articles, places, tables.cpus_text(s.get('quota', '')), '2-%d' % rounds if rounds > 2 else '2', ', measured %s on %s (%s threads), PostgreSQL %s' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))
-            if s else '', '; a `±` is one standard error where it exceeds 10% of the value'), '']
+    budget, details = tables.cpus_parts(s.get('quota', ''))
+    out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client): the slim tier of the suite, the default of `bench/bench all`.' % (articles, places), '',
+           '- **Scope:** the engines, query classes and workloads of the full tier on a smaller corpus; cells stop at a 5% relative standard error (at most 1 s).',
+           '- **Method:** same data, queries and clients for every engine, one engine at a time, median of %s interleaved rounds.' % ('2-%d' % rounds if rounds > 2 else '2'),
+           '- **CPUs:** ' + budget + (':' if details else '.')]
+    out += ['  - ' + d for d in details]
+    if s:
+        out += ['- **Host:** measured %s on %s (%s threads), PostgreSQL %s.' % (s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))]
+    out += ['- **Cells:** queries per second (higher is better) and, for the places, the p50 latency of the top-20 workload in milliseconds (lower is better); '
+            'the fastest engines of a column (all within one standard error of the best) are in bold; a `±` is one standard error where it exceeds 10% of the value.', '']
     out += table(t) + [''] + places_table(t) + ['']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
     out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift scores a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).']
-    out += ['- The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable; every cell with its standard error, the cold-cache tables and the method are in '
-            '[docs/BENCHMARKS.md](docs/BENCHMARKS.md).' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else ''), '']
+    out += ['- The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable.' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else '')]
+    out += ['- Every cell with its standard error, the cold-cache tables and the method: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).', '']
     out += ['![Throughput by workload](docs/img/articles-throughput.svg)', '![Index size](docs/img/index-size.svg)', '![Autocomplete latency](docs/img/places-latency.svg)', '']
-    out += ['Reproduce with `bench/bench all` (see [bench/README.md](bench/README.md); %s of builds and measurements for the slim tier, '
-            '%s with the cold-cache tables of `--docs`); `bench/bench all --docs` rewrites this section from a new session. `--full` runs the full-size tier (every article of the dump, GeoNames cities500, '
-            'about an hour); its last numbers are kept in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as history. `bench/bench regress --run` compares this checkout with an earlier release '
-            'and exits non-zero on a regression.' % (timing[0], timing[1])]
+    out += ['Reproduce:', '',
+            '- `bench/bench all` (see [bench/README.md](bench/README.md)): %s of builds and measurements for the slim tier, %s with the cold-cache tables of `--docs`.' % (timing[0], timing[1]),
+            '- `bench/bench all --docs` rewrites this section from a new session.',
+            '- `--full` runs the full-size tier (every article of the dump, GeoNames cities500, about an hour); its last numbers are kept in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as history.',
+            '- `bench/bench regress --run` compares this checkout with an earlier release and exits non-zero on a regression.']
     return out
 
 
