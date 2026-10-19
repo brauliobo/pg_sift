@@ -104,6 +104,7 @@ typedef struct SiftMaintOps
 	void		(*bulkdelete_wbuf) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	bool		(*vacuum_truncate) (Relation index);	/* NULL: the file is not truncated by VACUUM */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
+	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 } SiftMaintOps;
 
 /* Called by aminsert after an append crossed write_buffer_limit */

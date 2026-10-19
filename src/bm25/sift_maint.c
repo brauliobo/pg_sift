@@ -925,6 +925,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		skipped = stats == NULL;
 
 	if (info->analyze_only)
 		return stats;
@@ -932,6 +933,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_maint_lock(index, true);
 	promote_locked(ops, index, false, false);
+	if (skipped && ops->vacuum_skipped)
+		ops->vacuum_skipped(index, info->heaprel);
 	vacuum_merge(ops, index);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
