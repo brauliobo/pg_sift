@@ -20,6 +20,7 @@
 
 #include "sift_col_am.h"
 #include "sift_popcount.h"
+#include "sift_col_gpu.h"
 #include "sift_col_pagg.h"
 #include "sift_estimate.h"
 #include "sift_col_seg.h"
@@ -1696,4 +1697,58 @@ sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 	*seg = cu->seg;
 	*u = cu->u;
 	return true;
+}
+
+/* ---------- the Vulkan path (sift_col_gpu.h, docs/GPU.md) ---------- */
+
+bool
+sift_col_unit_gpu(const SiftColUnit *unit, SiftColGpuUnit *g)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->seg == NULL || !sift_col_unit_exact(unit))
+		return false;
+	g->store = (uint64) cu->seg->index->rd_locator.dbOid << 32 | cu->seg->index->rd_locator.relNumber;
+	g->gen = cu->seg->entry.gen;
+	g->unit = cu->u;
+	g->nrows = cu->v.nrows;
+	return true;
+}
+
+bool
+sift_col_unit_gpu_dense(const SiftColUnit *unit, int col)
+{
+	SiftColZone z;
+
+	sift_col_zone(unit, col, &z);
+	return !z.has_ovf && z.nnull == 0 && z.nvals == unit->nrows;
+}
+
+bool
+sift_col_unit_gpu_chunk(const SiftColUnit *unit, int col, SiftColGpuChunk *c)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCChunk	ch;
+
+	if (cu->seg == NULL || !sift_col_unit_gpu_dense(unit, col) || !unit_chunk_raw(cu, col, &ch))
+		return false;
+	if (ch.nulls != NULL || ch.ovf != NULL || ch.n != cu->v.nrows)
+		return false;
+	if (ch.enc == SIFT_COLENC_CONST)
+	{
+		*c = (SiftColGpuChunk) {.n = ch.n, .is_const = true, .cval = ch.base};
+		return true;
+	}
+	if (ch.enc != SIFT_COLENC_CC)
+		return false;
+	*c = (SiftColGpuChunk) {.blob = ch.payload, .len = ch.paylen, .n = ch.n};
+	return true;
+}
+
+void
+sift_col_unit_gpu_dict(const SiftColUnit *unit, int col, SiftColDict *dict)
+{
+	ColUnit    *cu = unit->priv;
+
+	sift_cdict_view(sift_cseg_dict(cu->seg, col), dict_id(cu, col), dict);
 }
