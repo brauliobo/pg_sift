@@ -109,7 +109,7 @@ SELECT query, same, keys FROM b_compare();
  SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                             | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
  SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
  SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | 
+ SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
  SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
  SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                          | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
  SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                      | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
@@ -156,7 +156,7 @@ SELECT query, same, keys FROM b_compare();
  SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                             | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
  SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
  SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | 
+ SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
  SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
  SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                          | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
  SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                      | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
