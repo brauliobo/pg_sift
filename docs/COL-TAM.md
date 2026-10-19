@@ -25,7 +25,7 @@ piece it calls is a stub, section 12), **no** (unsupported, with the error given
 |---|---|
 | Storage | the page store of `sift_store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
 | TIDs | **synthetic and never reused**: a TID is `(vblock, offset)` with `offset` in 1..`MaxHeapTuplesPerPage` (291) so every index AM, TID bitmaps and GIN accept it. `vblock` comes from a counter in the metapage and never decreases; it is *not* a physical block number. A superblock (SB, 256 vblocks, 74,496 TIDs) is the engine's unit, so the engine's row directory returns the table's own TIDs. |
-| Row versions | **write buffer + groups.** New rows go to a row-format *write buffer* (write buffer family: pages of `SIFT_PT_WBUFDATA`, directory kind `SIFT_SEG_WBUF_*`) with `xmin`/`cmin` per row. Promotion (section 7) turns a write buffer whose rows are all final into a **column group** (an engine immutable segment with the same TIDs; rows frozen: no per-row xmin). COPY goes through the write buffer (there is no segment-level xmin); the write buffer is sealed as soon as it fills. A rewrite (VACUUM FULL, CLUSTER) writes frozen column segments directly. |
+| Row versions | **write buffer + groups.** New rows go to a row-format *write buffer* (write buffer family: pages of `SIFT_PT_WBUFDATA`, directory kind `SIFT_SEG_WBUF_*`) with `xmin`/`cmin` per row. Promotion (section 7) turns a write buffer whose rows are all final into a **column group** (an engine immutable segment with the same TIDs; rows frozen: no per-row xmin), and, under directory pressure, a write buffer that one command of one transaction wrote into a **tagged group** (the same, carrying the writer's `xid` and `cid` for all its rows). COPY goes through the write buffer (there is no segment-level xmin); the write buffer is sealed as soon as it fills. A rewrite (VACUUM FULL, CLUSTER) writes frozen column segments directly. |
 | Deletes, updates, locks | **tombstones**: one 32-byte entry (`tid`, deleter `xid`, `cid`, kind, successor TID) appended to one per-relation **tombstone segment** (same lane page family). A row version is visible iff its insert is visible and no non-aborted DELETE/UPDATE tombstone of it is visible. UPDATE = new row in the write buffer + UPDATE tombstone carrying the successor TID (this is the update chain `FIND_LAST_VERSION` and EvalPlanQual follow). HOT does not exist (`TU_All`). |
 | Why tombstones | the deleter's `xid`/`cid` in an append-only log gives MVCC for every snapshot type with the PostgreSQL transaction machinery (subtransactions, savepoints, own-command visibility, aborts) and never rewrites a column group. |
 | Lock modes | all four `FOR ...` modes are supported and behave as one exclusive row lock between different transactions (no MultiXact): `FOR SHARE`/`KEY SHARE` of two transactions on the same row serialize. Foreign keys to a `sift_table` parent therefore serialize concurrent children of the same parent row; correct, not fast. |
@@ -59,13 +59,12 @@ Directory entries (`SiftSegEntry`):
 
 | kind | entry | meaning |
 |---|---|---|
-| `SIFT_SEG_IMMUTABLE` | `reserved` = xmin (0 = frozen), `sb_lo..sb_hi` = SBs with rows, `ndocs` = rows | an engine column segment, schema = table columns + shredded leaves |
+| `SIFT_SEG_IMMUTABLE` | `reserved` = xid of the writer (0 = frozen: a **tagged group** while it is not), `sb_lo..sb_hi` = SBs with rows, `ndocs` = rows | an engine column segment, schema = table columns + shredded leaves; a tagged group keeps the writer's `cid` in its segment header (`SIFT_CSEG_TAG_AUX`, the header's `sum_dl`: the directory entry's own `sum_dl` is the engine's running vblock counter) |
 | `SIFT_SEG_WBUF_OPEN` / `_SEALED` | `flags & SIFT_TBL_SEG_WBUF`, `sb_lo..sb_hi` = SBs of its vblock range | a write buffer; at most one active, sealed ones wait for maintenance |
 | `SIFT_SEG_WBUF_OPEN` | `flags & SIFT_TBL_SEG_TOMB` | the one tombstone segment (swapped for a rewritten one by VACUUM) |
 
 At most `SIFT_MAX_SEGMENTS` (128) entries: the policy keeps 1 open write buffer, 1 tombstone segment, a few sealed write buffers and the tiered
-immutable segments; an insert that cannot open a new write buffer because 112 entries are in use runs maintenance and, if a long
-transaction holds the horizon so nothing can be promoted, fails with `ERRCODE_PROGRAM_LIMIT_EXCEEDED` (detail "Too many write buffers waiting for promotion: the rows of running transactions cannot be promoted"). With the default 4 MB write buffer limit that is more than 400 MB of rows waiting for promotion.
+immutable segments; an insert that cannot open a new write buffer because 112 entries are in use runs maintenance and, if the write buffers cannot be promoted, fails with `ERRCODE_PROGRAM_LIMIT_EXCEEDED` (detail "Too many write buffers waiting for promotion"). The write buffers of one transaction that one command wrote become tagged groups once the directory is half full (section 7), so a single COPY or INSERT ... SELECT of any size does not reach the limit; what does is a transaction that writes its rows with many commands (a loop of single-row INSERTs: their rows share write buffers with other commands' and cannot be promoted before the transaction ends) or several concurrent writers filling the same write buffers: with the default 4 MB write buffer limit that is more than 400 MB of rows. The limit is the testing setting `sift.table_max_segments` (default and maximum 128), which the regression tests lower.
 
 Because the store walks write buffer lane chains to mark referenced blocks, write buffers and tombstone segments use the lane header
 (`SiftWbufHeaderData`, lane 0 only) and the chain `next` pointer at the start of every data page; the orphan sweep, `sift_store_verify`
@@ -118,7 +117,8 @@ work as for any heap table.
 A row version has (insert state, delete state):
 
 - **insert state**: write buffer row: `(xmin, cmin)` of the record, plus the `DEAD` record flag (aborted speculative insertion, or removed by
-  VACUUM); group row: the segment's `xmin` (0: frozen, always inserted).
+  VACUUM); group row: the group's `xid` and `cid` when it is tagged (the same rule as a write buffer row's `xmin`/`cmin`, applied to the whole
+  group: `sift_tbl_tag_visible`), else always inserted (frozen).
 - **delete state**: the non-LOCK tombstone entries for its TID, in the order of the log; a row can have several (aborted ones, then a
   committed or in-progress one). LOCK entries never delete.
 
@@ -150,7 +150,16 @@ its `DEAD` flag, so a killed insertion is never visible to anyone and other inse
 InvalidBlockNumber)`; an invisible row or tombstone of a concurrent transaction calls `CheckForSerializableConflictOut`. Relation granularity is the
 price of not having heap pages; it is correct and has more false positives than heap.
 
-**Freezing and wraparound.** Group rows have no xid. Write buffer rows older than the horizon are promoted into groups (frozen); tombstones
+**Tagged groups.** A tagged group is as invisible as the rows it replaced until its writer's snapshot rule says otherwise: the scan skips a
+group the snapshot does not see (calling `CheckForSerializableConflictOut` as for an invisible row), the index scan, bitmap scan, `tuple_fetch`, SiftAgg's
+hook and the analyze and index build paths ask the same question per group, and the row's own `cid` makes a command not see the rows an earlier
+statement of the same transaction wrote after it began. The group of a row is found from its superblock (`SiftTblTags`, built per directory snapshot,
+cached by generation): a tagged group's superblocks belong to it alone, which holds because a write buffer is given whole superblocks of vblocks (`create_wbuf`). A tagged group stays a tagged group (the merge never mixes tags: section 7) until its writer is committed and older than the horizon, when
+VACUUM clears the tag (`sift_tbl_freeze_groups`, the entry's `reserved` becomes 0: the group is a frozen one and its header's aux is ignored); if the writer
+aborted (a rollback, a savepoint rolled back, a crash) VACUUM drops the group after index cleanup (`sift_tbl_drop_aborted_groups`), like the rows of an
+aborted write buffer, so the space comes back and no TID of the group survives in an index.
+
+**Freezing and wraparound.** Frozen group rows have no xid. Write buffer rows older than the horizon are promoted into groups (frozen); a tagged group's xid is frozen with it; tombstones
 and bulk-segment `xmin`s are removed or reset to 0 by VACUUM. `relation_vacuum` computes the oldest xid still stored (write buffer rows,
 tombstones, segment xmins, the `xmin`s of in-flight work) and passes it to `vac_update_relstats` as `relfrozenxid`; MultiXacts are
 not used, `relminmxid` follows the cutoff. So anti-wraparound autovacuum works and ends.
@@ -323,6 +332,15 @@ tombstone is promoted as a normal row (its tombstone applies by TID wherever the
 pages are released with a `safexid` (reusable once no snapshot can read them: the second VACUUM, or the next allocation, recycles them;
 the new table of a rewrite is private, so its extents are reusable at once). The inline promotion takes the maintenance lock only if it is free.
 
+*Rows of a running transaction* cannot be final, and used to be the limit of one transaction (the error of section 2.1 at about 500 MB). While the
+directory is more than half full (`nsegs > sift.table_max_segments / 2`) a sealed write buffer that is *uniform*, that is, whose rows have one
+`(xmin, cmin)` (one command of one transaction), no `DEAD` or speculative record, and no row that is final already, is promoted into a **tagged group**:
+the same segment, with the writer's `xid` in the directory entry and its `cid` in the segment header (section 3). A write buffer that is not uniform
+(the pages of several writers or commands share it) waits as before. The promotion is part of `sift_tbl_settle`, which an insert runs when it needs a
+new write buffer and which takes the maintenance lock only if it is free; it also freezes the tags whose writers are committed and old, and under
+pressure merges the groups with the smallest fan-in so the directory keeps shrinking while the load goes on. A 10M-row COPY in one transaction holds
+about 180 MB in the backend whatever its size, and ends with a handful of tagged groups.
+
 *Layout of a group* (`SiftTblLayout`): one leaf per live column in column order (typed: integers and `numeric(p<=18, s>=0)` as INT with the
 scale, `float4/8` as F4/F8, text kinds as STR; any other type, including `jsonb`, `uuid`, arrays and `bytea`, as VAR holding the exact datum
 image) plus one `exceptions` VAR leaf. A value a typed leaf cannot hold exactly (numeric NaN/Infinity, a float non-canonical NaN)
@@ -334,6 +352,8 @@ another layout are read side by side and are not merged with the current ones. A
 plus "mostly dead" (`sift_tbl_mostly_dead`: a segment more than `sift.table_dead_rewrite_pct` percent dead, default 50 (a `sift_col` index has 10: its units carry pre-aggregates, a table's do not yet),
 is rewritten alone; 100 never); dead rows dropped by the engine's `sift_col_merge_segments`, which sizes its output runs to its
 input so that free space left by earlier merges is reused instead of extending the file. A segment of an older layout is not rewritten.
+Tagged groups merge only with groups of the same tag (the merge output carries that tag and its `cid`, and a merge of two tags is a corruption error),
+after the frozen segments of the same layout, which are merged first (the frozen merge view leaves the tagged groups out, each tag has a view of its own).
 
 **VACUUM (`relation_vacuum`)**, one pass, restartable:
 
@@ -342,7 +362,9 @@ input so that free space left by earlier merges is reused instead of extending t
    (`sift_cseg_bulkdelete` with a "TID in dead set" callback, WAL logged). Aborted write buffer inserts and the rows of aborted bulk segments are dead too.
 3. `index_bulk_delete` on every index with the dead set (rounds bounded by `maintenance_work_mem`), then `index_vacuum_cleanup`. TIDs are
    never reused, so an interrupted VACUUM cannot expose a recycled TID; only index bloat stays until the next one.
-4. Close the open write buffer (8 pages or more), promote, merge (the mostly dead segments included).
+   The groups of an aborted writer are dropped here, after the index cleanup (an index entry of the group is gone before its space is), and only those found when the dead
+   set was built; their superblocks are part of the dead set the index callback receives (`dead_has`).
+4. Close the open write buffer (8 pages or more), promote, freeze the tags of the committed writers older than the horizon, merge (the mostly dead segments included).
 5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in (skipped when
    no entry would go).
 6. Space: `sift_recycle` clears the free-list records whose releasing transaction no snapshot can see any more, the orphan sweep
@@ -395,7 +417,7 @@ and the free list.
 
 ## 9. Limits
 
-BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or promotion fails with the same error until a column is dropped); 128 directory entries; rows up to 1 GB (varlena limit); vblocks
+BLCKSZ 8192; PostgreSQL 17, 18 (19 experimental); at most 127 columns (`CREATE TABLE` fails past it, error code `54000`; `ALTER TABLE ADD COLUMN` past it succeeds and the next `INSERT` or promotion fails with the same error until a column is dropped); 128 directory entries (the write buffers of one command of one transaction become tagged groups, so one COPY or INSERT ... SELECT of any size is not bounded by them; a transaction that writes through many commands, or concurrent writers into the same write buffers, still is, at about 400 MB: the error is reworded to say so); rows up to 1 GB (varlena limit); vblocks
 2^32 (about 1.2 x 10^12 rows ever written, counting dead ones: a table that exhausts them is rewritten by `VACUUM FULL`). Unsupported:
 `xmin/xmax/cmin/cmax` (they read zero), multixact-based shared row locks (they degrade to exclusive), HOT, speculative
 insertion through foreign tables (n/a), rewrite of a table with RLS-bypassing rewrites (n/a).
@@ -417,6 +439,15 @@ All in the branch, run by `scripts/ci.sh` like the BM25 tests:
   `tbl_dead` (live and dead row counts, the rewrite of mostly dead segments under `sift.table_dead_rewrite_pct`),
   `tbl_rewrite` (CLUSTER by a btree sort and a GiST index scan, CLUSTER after deletions of its own transaction, VACUUM FULL over two
   column layouts), `tbl_sample` (TABLESAMPLE over write buffer rows and groups).
+- Regression `tbl_cap` (the directory limit, lowered by `sift.table_max_segments`: a transaction of many commands ends with the limit error and its size, one command goes through) and `tbl_bigtx`
+  (one transaction with more write buffers than the directory has entries for, at a limit of 16: INSERT ... SELECT, COPY, ROLLBACK and the
+  space VACUUM returns, a savepoint rolled back in the middle and one released, UPDATE and DELETE of the rows of the same transaction and a statement
+  that reads what it writes through an index, parallel plans before and after the freeze; a heap twin must agree). Isolation
+  `tbl_bigtx`: the rows are not seen by a scan, an index, a bitmap or an aggregate scan at READ COMMITTED, REPEATABLE READ and SERIALIZABLE while the transaction runs, all of them after
+  the commit, none after a rollback, with VACUUM running meanwhile. TAP `test/t/013_tbl_bigtx.pl`: a standby replays the groups (WAL consistency checking on) and sees
+  the rows at the commit only, rollback and VACUUM, a crash of the backend in the middle of the transaction (the rows are not there, VACUUM sweeps the
+  groups, a new load goes through), a commit across an immediate stop, promotion, a plain `pg_dump` restored in one transaction. `bench/tbl-bigcopy.sh`: once, under the perf lock, a COPY of 5M rows (or more) in
+  one transaction with a primary key: time, peak memory of the backend, count and sums, an aggregate scan against the plain scan before and after VACUUM.
 - Isolation `test/isolation/specs/tbl_concurrency.spec`: update/update, update/delete, delete/update at READ COMMITTED (the waiter
   re-evaluates), key update, REPEATABLE READ first-updater-wins, SERIALIZABLE write skew, FOR UPDATE / SHARE / NOWAIT / SKIP LOCKED, uncommitted
   rows, unique wait on the inserter (commit and abort), `ON CONFLICT` against an in-progress insert.

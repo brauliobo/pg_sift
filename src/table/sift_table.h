@@ -184,6 +184,8 @@ typedef struct SiftTblRel
 	/* column groups (sift_table_seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
+	struct SiftTblTags *curtags;	/* the tagged groups of dir, for readers that go by the directory the cache holds (sift_tbl_filter_page) */
+	uint32		curtags_version;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 } SiftTblRel;
 
@@ -209,6 +211,45 @@ typedef struct SiftTblRowVer
 	HeapTuple	tuple;			/* the row, palloc'd (HeapTuple format, t_self set) */
 } SiftTblRowVer;
 
+/*
+ * Column groups of a transaction that is still running (docs/COL-TAM.md section 7). A group promoted while its rows are not final
+ * carries its writer: SiftSegEntry.reserved is the xid, the segment keeps the cmin (sift_colw_set_tag); every row of the group was
+ * inserted by that xid in that command. A tag is a record's xmin/cmin kept once for the group: the visibility is sift_tbl_visible's,
+ * and the tag goes (the entry is cleared) when the writer is committed before every snapshot; an aborted writer's group is dropped by VACUUM.
+ * The superblocks of a tagged group belong to it alone, so a row's tag is found by its superblock.
+ */
+typedef struct SiftTblTag
+{
+	TransactionId xid;
+	CommandId	cid;
+	uint64		gen;
+	uint32		nsb;
+	uint32	   *sb;				/* the superblocks of the group's units, ascending */
+} SiftTblTag;
+
+typedef struct SiftTblTags
+{
+	int			n;
+	SiftTblTag	ent[FLEXIBLE_ARRAY_MEMBER];
+} SiftTblTags;
+
+static inline bool
+sift_tbl_seg_tagged(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_IMMUTABLE && TransactionIdIsNormal(e->reserved);
+}
+
+/* The tagged groups of a directory copy */
+extern SiftTblTags *sift_tbl_tags_build(Relation rel, SiftTblRel *st, const SiftDirSnapshot *dir, MemoryContext cxt);
+/* The tag of the group that holds superblock sb; NULL for a frozen group or none */
+extern const SiftTblTag *sift_tbl_tag_of_sb(const SiftTblTags *tags, uint32 sb);
+/* The version of a group row: xmin/cmin from its tag (frozen without) */
+extern void sift_tbl_group_rowver(SiftTblRowVer *rv, SiftKey key, const SiftTblTag *tag);
+/* Is the insertion of the rows of tag visible to the snapshot (a serializable conflict-out when a live writer's is not) */
+extern bool sift_tbl_tag_visible(Relation rel, Snapshot snapshot, const SiftTblTag *tag);
+/* No tag, or one an MVCC snapshot sees: the rows of the superblock need no check of their insertion */
+extern bool sift_tbl_sb_inserted(Relation rel, Snapshot snapshot, const SiftTblTags *tags, uint32 sb);
+
 /* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
 extern const SiftTblRec *sift_tbl_page_rec(Page page, uint64 gen, uint32 off);
 /* The row of a record as a HeapTuple (an overflow row is read from its pages); t_self/t_tableOid are the caller's */
@@ -221,6 +262,8 @@ extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
 /* Clears the bits of offmask (bit i: offset i + 1, SIFT_OFFMASK_WORDS words of 64) whose row is not visible to snapshot; returns the bits left */
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
+/* The same for a reader that has its own copy of the directory: tags are the tagged groups of that copy */
+extern int	sift_tbl_filter_page_tags(Relation rel, Snapshot snapshot, const SiftTblTags *tags, BlockNumber vblock, uint64 *offmask);
 extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
 extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
 /* As sift_tbl_fetch_row, but a row of a column group comes without its tuple (rv->tuple NULL) and costs no decoding: for callers that
@@ -391,8 +434,9 @@ extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, 
 
 /*
  * The rows of the column groups of a directory copy, a unit at a time (the directory copy must stay protected by a snapshot of the caller).
- * next: the next live row of the groups in the range of superblocks, rv->key and rv->xmin (always unset: frozen) only; plain: no tombstone
- * can concern the rows of its unit (every snapshot sees them); tuple: the row as a HeapTuple (t_self set), palloc'd.
+ * next: the next live row of the groups in the range of superblocks, rv->key and the tag of its group (xmin unset: frozen) only; the units of a
+ * tagged group that an MVCC snapshot does not see are skipped; plain: no tombstone and no tag can concern the rows of its unit (every snapshot
+ * sees them); tuple: the row as a HeapTuple (t_self set), palloc'd.
  */
 extern bool sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull);
 extern uint32 sift_tbl_gscan_cursor(const SiftTblGroupScan *g, ItemPointer tid, uint32 *pos);
@@ -408,6 +452,8 @@ extern bool sift_tbl_gscan_next(SiftTblGroupScan *g, SiftTblRowVer *rv);
 extern bool sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv);
 extern void sift_tbl_gscan_seek_end(SiftTblGroupScan *g);
 extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
+/* The tag of the group that holds vblock (the directory copy the scan was begun with); NULL when frozen */
+extern const SiftTblTag *sift_tbl_gscan_tag(const SiftTblGroupScan *g, BlockNumber vblock);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF); their number */
 extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out);
@@ -426,10 +472,16 @@ extern void sift_tbl_src_register(void);
 /*
  * Promotes the write buffers that stopped taking rows and whose rows are all final (decided, and older than oldest) into column
  * segments; returns the number promoted. vacuum: rows flagged DEAD by this VACUUM are dropped, otherwise a segment with one waits for it.
- * Takes the maintenance lock (not waiting unless vacuum).
+ * While the directory is more than half full a write buffer whose rows one command of one running transaction wrote is promoted too, as a
+ * tagged group. Takes the maintenance lock (not waiting unless vacuum).
  */
 extern int	sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
+/* A writer closed a write buffer: promotes, freezes the tagged groups that are final and merges while the directory is more than half full */
 extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* Clears the tag of the groups whose writer committed before oldest (their rows are final); the maintenance lock held. The groups changed. */
+extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* Drops the tagged groups gens[n] when their writers aborted (VACUUM, once the indexes forgot their rows); the maintenance lock held. The groups dropped. */
+extern int	sift_tbl_drop_aborted_groups(Relation rel, SiftTblRel *st, const uint64 *gens, int n);
 /* One merge step over the column segments (the maintenance lock held); true when it merged. Segments of another column layout are left alone. */
 extern bool sift_tbl_merge(Relation rel, SiftTblRel *st);
 extern bool sift_tbl_rewrite(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
