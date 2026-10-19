@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-196 rows: 126 Yes, 17 Partly, 42 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+197 rows: 126 Yes, 20 Partly, 40 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
