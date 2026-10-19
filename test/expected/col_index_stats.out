@@ -24,7 +24,7 @@ FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING
     7 | items[].q |        12 |   0 |   11 |             0
 (8 rows)
 
--- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a mutable segment are not counted)
+-- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a write buffer are not counted)
 INSERT INTO s SELECT 5000 + i, 100 + i % 3, true, 'w' || (i % 40), 1.5, '[]'::jsonb FROM generate_series(1, 2000) i;
 SELECT sift.col_promote('s_col') > 0 AS promoted;
  promoted 

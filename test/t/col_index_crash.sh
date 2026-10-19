@@ -17,7 +17,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"INSERT INTO orders (tenant_id, status, qty, price, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, i / 4.0,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, price, doc)
-		WITH (mutable_limit = 64, paths = 'doc.items[]{category text, qty int4}')" >/dev/null || bail "setup failed"
+		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}')" >/dev/null || bail "setup failed"
 ok "setup"
 
 D=$(dir crash)

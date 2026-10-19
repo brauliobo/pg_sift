@@ -9,7 +9,7 @@
 #include "sift_col_preagg.h"
 #include "sift_col_seg.h"
 
-/* The stored unit behind a source unit; false for an in-memory one (mutable lane, delta batch), which has no sidecar (sift_col_scan.c) */
+/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (sift_col_scan.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
 
 /*

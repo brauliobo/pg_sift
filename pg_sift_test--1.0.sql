@@ -123,41 +123,41 @@ CREATE FUNCTION sift._test_col_enc_roundtrip(seed int4, nrows int4, rounds int4 
 CREATE FUNCTION sift._test_col_enc_sizes(OUT shape text, OUT rows int8, OUT bytes int8, OUT bytes_per_row float8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_enc_sizes' LANGUAGE C STRICT;
 
--- Mutable lanes of the column engine (src/sift_col_mut_test.c), on an index of the BM25 access method created on an empty table.
+-- Write buffer lanes of the column engine (src/sift_col_wbuf_test.c), on an index of the BM25 access method created on an empty table.
 -- Rows are generated from (seed, id) over a schema of orders with line items; prepare gives the index that schema's hash
--- (xor hash_xor: a stale definition), limit sets the mutable limit in kB.
-CREATE FUNCTION sift._test_col_mut_prepare(index regclass, hash_xor int4 DEFAULT 0) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_prepare' LANGUAGE C STRICT;
+-- (xor hash_xor: a stale definition), limit sets the write buffer limit in kB.
+CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_prepare' LANGUAGE C STRICT;
 -- appends rows first .. first + n - 1; returns how many appends found the segment full. busy holds up to six lane tails while appending, so that
 -- the rows go to other lanes: for one session at a time (two of them would wait for each other's tails)
-CREATE FUNCTION sift._test_col_mut_append(index regclass, seed int8, first int4, n int4, busy bool DEFAULT false) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_append' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_wbuf_append(index regclass, seed int8, first int4, n int4, busy bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_append' LANGUAGE C STRICT;
 -- a big row (id % 1000 = 999) whose append fails after fail_after page links, leaving it torn
-CREATE FUNCTION sift._test_col_mut_torn(index regclass, seed int8, id int4, fail_after int4) RETURNS void
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_torn' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_mut_long(index regclass) RETURNS void
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_long' LANGUAGE C STRICT;
--- every record of the mutable segments through the reader, each checked against its generator
-CREATE FUNCTION sift._test_col_mut_rows(index regclass, seed int8, OUT gen int8, OUT id int8, OUT deleted bool)
+CREATE FUNCTION sift._test_col_wbuf_torn(index regclass, seed int8, id int4, fail_after int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_torn' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_wbuf_long(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_long' LANGUAGE C STRICT;
+-- every record of the write buffers through the reader, each checked against its generator
+CREATE FUNCTION sift._test_col_wbuf_rows(index regclass, seed int8, OUT gen int8, OUT id int8, OUT deleted bool)
 	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_rows' LANGUAGE C STRICT;
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_rows' LANGUAGE C STRICT;
 -- the live rows as batches (superblock, id), checked against the generator
-CREATE FUNCTION sift._test_col_mut_batches(index regclass, seed int8, OUT gen int8, OUT sb int8, OUT id int8)
+CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, OUT gen int8, OUT sb int8, OUT id int8)
 	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_batches' LANGUAGE C STRICT;
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_batches' LANGUAGE C STRICT;
 -- VACUUM's pass: flags the rows with id % modulus = 0; returns how many
-CREATE FUNCTION sift._test_col_mut_delete(index regclass, modulus int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_delete' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_mut_seal(index regclass, force bool DEFAULT false) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_seal' LANGUAGE C STRICT;
--- live: the rows sift_cmut_verify counts; extents: the blocks sift_cmut_pages reports (header included); lanes: lanes holding records
-CREATE FUNCTION sift._test_col_mut_segments(index regclass, OUT gen int8, OUT kind text, OUT nrows int8, OUT npages int8,
+CREATE FUNCTION sift._test_col_wbuf_delete(index regclass, modulus int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_delete' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_wbuf_seal(index regclass, force bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_seal' LANGUAGE C STRICT;
+-- live: the rows sift_cwbuf_verify counts; extents: the blocks sift_cwbuf_pages reports (header included); lanes: lanes holding records
+CREATE FUNCTION sift._test_col_wbuf_segments(index regclass, OUT gen int8, OUT kind text, OUT nrows int8, OUT npages int8,
 											OUT live int8, OUT extents int8, OUT lanes int4)
 	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_col_mut_segments' LANGUAGE C STRICT;
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_segments' LANGUAGE C STRICT;
 
 -- Column source (src/sift_col_test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
--- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the mutable segments, 2 skip the visibility check.
+-- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the write buffers, 2 skip the visibility check.
 CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0, OUT tid tid, OUT sb int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_tids' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_read(index regclass, leaf int4, preds text DEFAULT '', flags int4 DEFAULT 0,
@@ -166,11 +166,11 @@ CREATE FUNCTION sift._test_col_read(index regclass, leaf int4, preds text DEFAUL
 CREATE FUNCTION sift._test_col_leaf_stats(index regclass, OUT leaf int4, OUT ndistinct float8, OUT min float8, OUT max float8, OUT elems_per_row float8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_leaf_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_zones(index regclass, leaf int4, preds text DEFAULT '',
-									 OUT sb int4, OUT in_mutable bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
+									 OUT sb int4, OUT in_wbuf bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
 									 OUT min int8, OUT max int8, OUT sum_i int8, OUT exact bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_zones' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0,
-										OUT rows int8, OUT segments int8, OUT mutable_rows int8, OUT units int8,
+										OUT rows int8, OUT segments int8, OUT wbuf_rows int8, OUT units int8,
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,
 										OUT heap_pages int8, OUT simd text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_counters' LANGUAGE C STRICT;

@@ -158,7 +158,7 @@ RESET sift.parallel_scan;
 
 ## Maintenance and operations
 
-Writes go to small mutable segments through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
+Writes go to small write buffers through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
 and merges; VACUUM promotes, merges and clears dead postings.
 `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index. `sift.index_info(index)` shows its size, high-water mark,
 free and reusable blocks, directory entries and whether a maintenance run holds the lock; `sift.version()` is the version of the loaded
@@ -179,7 +179,7 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.filter_pushdown` | on | `off`, `on`, `force`: give a ranked scan a bitmap of the other quals |
 | `sift.parallel_scan` | off | let the planner add parallel SiftScan / SiftCount plans |
 | `sift.async_maintenance` | on | promote and merge in a background worker; off leaves it to the inserts and `VACUUM` (superuser) |
-| `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the seals of a bulk load that fall in between are promoted too |
+| `sift.maintenance_naptime` | 2000 | ms (200 to 60000, `postgresql.conf` or `ALTER SYSTEM`): a background worker is started at most this often for an index, and stays that long after it started, so the write buffers a bulk load closes in between are promoted too |
 | `sift.log_min_duration` | 1s | log promotions, merges and maintenance worker runs of at least that long, and inserts that wait for the worker (`-1` none, superuser) |
 | `sift.simd` | auto | `auto`, `scalar`, `avx2`, `avx512`: caps the SIMD level of every kernel (BM25, column, aggregation, shredder, codec); every level returns the same results bit for bit |
 | `sift.enable_col` | on | use `sift_col` indexes for column scans |
@@ -188,12 +188,12 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
 | `sift.maintenance_cost_delay` | 0 | milliseconds (0 to 100) the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, like `vacuum_cost_delay`; `0` runs them at full speed (superuser) |
 | `sift.enable_scan`, `sift.enable_count` | on | allow the ranked `SiftScan` / `count(*)` `SiftCount` plans |
 | `sift.prefetch` | on | read ahead the heap pages an unordered scan will visit |
-| `sift.table_delta_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write segment of a `sift_table` before it is closed and sealed into columns; a row must fit one |
-| `sift.table_inline_seal` | on | a `sift_table` seals its closed write segments into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
+| `sift.table_write_buffer_limit` | 4096 kB | 2048-8192, rounded down to 2 MB: size of the row-format write buffer of a `sift_table` before it is closed and promoted into columns; a row must fit one |
+| `sift.table_inline_promote` | on | a `sift_table` promotes its closed write buffers into columns while rows are inserted; `off` leaves it to VACUUM and autovacuum |
 | `sift.table_compression` | empty = `auto` | chunk compression of the column segments a `sift_table` writes (the `sift_col` `compression` grammar: `auto`, `none`, `lz4[:N]`, `zstd[:N]`; `'auto; col=zstd:9'` per column); autovacuum uses the server and database settings ([Limits](#limits)) |
 | `sift.table_dead_rewrite_pct` | 50 | 1-100: percent of dead rows above which VACUUM rewrites a column segment of a `sift_table` alone, dropping them and giving their space back; 100 never rewrites |
 
-Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
+Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuum_segments`, `merge_fanin`, `dead_rewrite_pct` and `vacuum_truncate` can be changed afterwards (`ALTER INDEX ... SET (...)`), the rest need `REINDEX`.
 
 | Index option | default | range | meaning |
 |---|---|---|---|
@@ -205,14 +205,14 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `mutable_limit`, `vacuum_seg
 | `positions` | true |  | store positions (needed for phrase queries) |
 | `prefix_index` | 0 | 0-15 | prefix lengths indexed for fast autocomplete |
 | `fields` |  |  | columns weighted as separate fields ([several columns](#analyzers-phrases-several-columns)) |
-| `mutable_limit` | 4096 | 64-1048576 kB | size of the write lane before it is sealed into a segment; also the base size of the merge tiers |
+| `write_buffer_limit` | 4096 | 64-1048576 kB | size of the write buffer before it is sealed into a segment; also the base size of the merge tiers; `mutable_limit`, the name of 1.x and 2.0, is a deprecated alias that is still accepted |
 | `merge_fanin` | 8 | 2-32 | segments of one size tier that trigger a merge; a lower value merges sooner and keeps fewer segments, a higher one merges less |
 | `dead_rewrite_pct` | 50 (`sift_col`: 10) | 1-100 | percent of dead documents above which maintenance rewrites a lone segment to drop them; 100 never rewrites |
 | `vacuum_truncate` | true |  | VACUUM gives the free blocks at the end of the index file back to the operating system (takes an exclusive lock on the index only if it is free right away) |
 | `build_segments` | 0 | 0-64 | force N segments at build and disable the parallel build |
 | `vacuum_segments` | 2 | 1-128 | segments VACUUM leaves the index with; more keeps VACUUM cheaper and queries slightly slower |
 
-`vacuum_segments` is the number of directory entries (the mutable one included) that `VACUUM`, autovacuum and the maintenance worker's
+`vacuum_segments` is the number of directory entries (the write buffer included) that `VACUUM`, autovacuum and the maintenance worker's
 merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
 before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
 A segment more than `merge_fanin` times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than `dead_rewrite_pct` percent of the documents are dead is rewritten at any N.
@@ -225,7 +225,7 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
 
-`merge_fanin` is the number of segments of one size tier (a tier is a factor of `merge_fanin` in size, starting at `mutable_limit`) that
+`merge_fanin` is the number of segments of one size tier (a tier is a factor of `merge_fanin` in size, starting at `write_buffer_limit`) that
 makes the background worker, the inserters that need room and `sift.merge()` merge them, and the most one merge takes is twice that. A
 lower value merges sooner and more often, which is more write work and fewer segments to query; a higher one merges less and keeps up to
 `merge_fanin` - 1 segments per tier. It is read when a merge is chosen: `ALTER INDEX ... SET (merge_fanin = N)` applies to the next one, with no
@@ -238,7 +238,7 @@ segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sq
 (128 kB) the merge reads (the segments it merges) or writes (the new segment) the worker sleeps that many milliseconds. A worker merge of a
 10 MB index took 0.27 s at the default 0 and 5.3 s at 20, at most 6.4 MB/s of I/O (128 kB per 20 ms); set it per database (`ALTER DATABASE ... SET`) or in `postgresql.conf`, as the worker reads the
 settings of its database. It applies to the worker only: `VACUUM`, `sift.merge()` and the merges inserters do for room are never delayed, and neither
-are the worker's promotions of mutable segments, which the writers wait for.
+are the worker's promotions of write buffers, which the writers wait for.
 
 `dead_rewrite_pct` is the share of dead documents above which maintenance rewrites a lone segment to drop them and their terms (a segment
 that no merge picks; the dead postings are cleared by `VACUUM` either way). `ALTER INDEX ... SET (dead_rewrite_pct = N)` applies to the next
@@ -253,12 +253,12 @@ at every round and costs more everywhere except the queries after the deletes:
 | delete | 50 (default) | 2.3 s | 86 MB | 67 MB | 3.5 ms | 4.1 ms |
 | delete | 5 | 15.8 s | 455 MB | 89 MB | 0.15 ms | 1.5 ms |
 
-`mutable_limit` (kB, 4096) is the size at which the active mutable segment is sealed for promotion; it is also where the merge tiers start.
-`ALTER INDEX ... SET (mutable_limit = N)` applies from the next seal. 1024 was measured against 4096 on
+`write_buffer_limit` (kB, 4096) is the size at which the open write buffer is sealed for promotion; it is also where the merge tiers start.
+`ALTER INDEX ... SET (write_buffer_limit = N)` applies from the next seal. 1024 was measured against 4096 on
 100,000 documents of 40 words (mean of 5 runs): it promotes and merges faster per step and leaves queries on the grown index faster, but it
 does that 3.7 times as often and the writers pay for it, so the default stays 4096:
 
-| `mutable_limit` | 16 clients, `INSERT` | `INSERT .. SELECT` | `COPY` | promotion / merge | index, segments | `count(*)` / top-10 OR / top-10 AND |
+| `write_buffer_limit` | 16 clients, `INSERT` | `INSERT .. SELECT` | `COPY` | promotion / merge | index, segments | `count(*)` / top-10 OR / top-10 AND |
 |---|---|---|---|---|---|---|
 | 4096 (default) | 107k rows/s, p99 0.69 ms | 113k rows/s | 261k rows/s | 37 ms / 1.4 s | 72 MB, 17 | 11.5 / 12.5 / 6.1 ms |
 | 1024 | 87k rows/s, p99 0.81 ms | 94k rows/s | 137k rows/s | 13 ms / 0.43 s | 98 MB, 78 | 10.6 / 4.1 / 2.6 ms |
@@ -278,7 +278,7 @@ turns the truncation off for an index (no `REINDEX`), like `vacuum_truncate` of 
 **Merging is automatic.** Sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
 `merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
 down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
-it anyway). `mutable_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
+it anyway). `write_buffer_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
 
 **Cost of one library (3.0).** `pg_sift` 3.0 carries the BM25 index and the column engine in one library, so the library is about twice the size of 2.0's and each new backend that loads it links more symbols. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells are accepted above 1.02: the first query of a session (`session`, about 1.04 to 1.05), a `VACUUM` with nothing to free (`vacuum_nofree`, about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (`idle1_rank`, 1.02 to 1.03). Every other cell (queries, inserts, `COPY`, `CREATE INDEX`, `sift.merge`, `sift.promote`, `VACUUM` with work) is within 1.02. Connection pooling amortizes the session cost; a deployment that needs neither `sift_col` nor `sift_table` pays it for nothing.
 
@@ -288,7 +288,7 @@ Three pieces share the column engine; none needs `shared_preload_libraries`, and
 
 - **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
-  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `mutable_limit` (kB, 4096, like the
+  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `write_buffer_limit` (kB, 4096, like the
   `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`).
   Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote` and
   `col_merge` inspect and drive one.
@@ -299,7 +299,7 @@ Three pieces share the column engine; none needs `shared_preload_libraries`, and
   `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps
   its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus.
 - **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump`
-  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write segment fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_delta_limit`, `sift.table_inline_seal`, `sift.table_compression`, `sift.table_dead_rewrite_pct`, in the settings table of [Maintenance and operations](#maintenance-and-operations)). VACUUM clears deleted rows out of the column segments, rewrites a segment once more than `sift.table_dead_rewrite_pct` percent of it is dead, and gives the free blocks at the end of the file back as for a heap (`vacuum_truncate`; what a VACUUM itself frees is given back by the next VACUUM after another transaction has ended); `VACUUM FULL` and `CLUSTER` write the table anew as column segments. Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
+  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write buffer fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them, `sift.table_space('t')` the file and its free blocks; settings: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct`, in the settings table of [Maintenance and operations](#maintenance-and-operations)). VACUUM clears deleted rows out of the column segments, rewrites a segment once more than `sift.table_dead_rewrite_pct` percent of it is dead, and gives the free blocks at the end of the file back as for a heap (`vacuum_truncate`; what a VACUUM itself frees is given back by the next VACUUM after another transaction has ended); `VACUUM FULL` and `CLUSTER` write the table anew as column segments. Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
 
 ```sql
 CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
@@ -316,13 +316,13 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way.
 
-PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background sealing by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](#limits).
+PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background promotion by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](#limits).
 
 | option | `sift_col` (per index) | `sift_table` (setting) |
 |---|---|---|
 | compression of the column chunks | `compression` (`auto` default, `none`, `lz4[:N]`, `zstd[:N]`, per column `'auto; col=zstd:9'`; needs `REINDEX`) | `sift.table_compression` (empty = `auto`; same grammar) |
-| size of the write segment before it is sealed | `mutable_limit` (kB, `ALTER INDEX ... SET`) | `sift.table_delta_limit` (kB) |
-| sealing while rows are inserted | not applicable (the index follows the heap) | `sift.table_inline_seal` (`on`; `off` leaves it to `VACUUM`) |
+| size of the write buffer before it is sealed | `write_buffer_limit` (kB, `ALTER INDEX ... SET`) | `sift.table_write_buffer_limit` (kB) |
+| promotion while rows are inserted | not applicable (the index follows the heap) | `sift.table_inline_promote` (`on`; `off` leaves it to `VACUUM`) |
 | dead rows | `dead_rewrite_pct` (per index) | `sift.table_dead_rewrite_pct` (percent of a segment) |
 
 A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks.
@@ -363,11 +363,11 @@ its own docker container.
 
 - PostgreSQL 17 and 18, 19 experimental; x86-64 tested (other architectures untested); heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
-  - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192; one transaction writes at most about 126 write segments of `sift.table_delta_limit` (504 MB of row format at the default, 1 GB at 8192 kB) because its rows are sealed into columns only once it has ended: a larger load runs in several transactions (the error says so), and writers merge the column segments as they go;
+  - at most 127 columns (`CREATE TABLE` fails with `54000`; an `ADD COLUMN` past it succeeds and the next write fails until a column is dropped), 128 directory entries, `BLCKSZ` 8192; one transaction writes at most about 126 write buffers of `sift.table_write_buffer_limit` (504 MB of row format at the default, 1 GB at 8192 kB) because its rows are promoted into columns only once it has ended: a larger load runs in several transactions (the error says so), and writers merge the column segments as they go;
   - `0A000` for `TABLESAMPLE`, a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
   - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
   - the system columns `xmin`, `xmax`, `cmin` and `cmax` read zero;
-  - no per-table options: `sift.table_delta_limit`, `sift.table_inline_seal`, `sift.table_compression` and `sift.table_dead_rewrite_pct` are ordinary settings that the backend doing the work reads when it does it (PostgreSQL 17 through 19 give a table access method no reloptions of its own: `WITH` knows heap's and TOAST's only and `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20). Inline sealing and the closing of write segments follow the settings of the inserting session (`SET`, `SET LOCAL`, the role's or the database's default); a manual `VACUUM`, those of the session that runs it; autovacuum has no session, so it applies the server settings (`postgresql.conf`, `ALTER SYSTEM`), `ALTER DATABASE ... SET`, and the `ALTER ROLE ... SET` defaults of the bootstrap superuser (the role autovacuum runs as), never the writer's session or the owner's role; the maintenance worker does not touch a `sift_table`. The settings of the session that wrote the rows are not kept for the VACUUM that seals them later. So set what background sealing should use at the server or database level; a `SET` in a session shapes only that session's inserts and its own VACUUM (the segments already written keep their codec until a merge or rewrite). `sift_col` indexes do have per-index options (`compression` and the rest, see above), so a column index on a table needs no setting for it. Tested by `test/t/010_tbl_settings.pl`;
+  - no per-table options: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression` and `sift.table_dead_rewrite_pct` are ordinary settings that the backend doing the work reads when it does it (PostgreSQL 17 through 19 give a table access method no reloptions of its own: `WITH` knows heap's and TOAST's only and `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20). Inline promotion and the closing of write buffers follow the settings of the inserting session (`SET`, `SET LOCAL`, the role's or the database's default); a manual `VACUUM`, those of the session that runs it; autovacuum has no session, so it applies the server settings (`postgresql.conf`, `ALTER SYSTEM`), `ALTER DATABASE ... SET`, and the `ALTER ROLE ... SET` defaults of the bootstrap superuser (the role autovacuum runs as), never the writer's session or the owner's role; the maintenance worker does not touch a `sift_table`. The settings of the session that wrote the rows are not kept for the VACUUM that promotes them later. So set what background promotion should use at the server or database level; a `SET` in a session shapes only that session's inserts and its own VACUUM (the segments already written keep their codec until a merge or rewrite). `sift_col` indexes do have per-index options (`compression` and the rest, see above), so a column index on a table needs no setting for it. Tested by `test/t/010_tbl_settings.pl`;
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).

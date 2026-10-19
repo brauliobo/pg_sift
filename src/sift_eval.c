@@ -16,7 +16,7 @@
 
 #include "sift_eval.h"
 #include "sift_kernels.h"
-#include "sift_mutable.h"
+#include "sift_wbuf.h"
 #include "sift_prefix.h"
 #include "sift_segment.h"
 
@@ -47,23 +47,23 @@ typedef struct EvalLeaf
 	LeafTerm  **terms;			/* [nsegs] */
 	int			nuniq;			/* distinct terms over all segments, ascending, with their weights */
 	LeafTerm  **uniq;
-	HTAB	   *mtab;			/* scoring: df of the leaf's terms in the mutable docs (MutTermEnt) */
+	HTAB	   *mtab;			/* scoring: df of the leaf's terms in the write buffer docs (WbufTermEnt) */
 } EvalLeaf;
 
-/* A term of a scoring leaf found in mutable docs, zero padded */
-typedef struct MutTermEnt
+/* A term of a scoring leaf found in write buffer docs, zero padded */
+typedef struct WbufTermEnt
 {
 	char		term[SIFT_MAX_TERM_BYTES + 1];
 	uint32		df;
-} MutTermEnt;
+} WbufTermEnt;
 
-/* A live matching doc of a mutable segment; scoring plans keep the doc to score it once the weights are known */
-typedef struct MutHit
+/* A live matching doc of a write buffer; scoring plans keep the doc to score it once the weights are known */
+typedef struct WbufHit
 {
 	SiftKey		key;
 	float4		score;
-	SiftMutDoc *doc;
-} MutHit;
+	SiftWbufDoc *doc;
+} WbufHit;
 
 typedef enum EvalKind
 {
@@ -104,14 +104,14 @@ struct SiftPlan
 	int			nsegs;
 	int		   *segno;			/* directory index of each immutable segment */
 	SiftSegment **seg;
-	int			nmut;
-	int		   *mutno;			/* directory index of each mutable segment */
-	MutHit	   *mhit;			/* live matches of the mutable segments, ascending */
+	int			nwbuf;
+	int		   *wbufno;			/* directory index of each write buffer */
+	WbufHit	   *mhit;			/* live matches of the write buffers, ascending */
 	int64		nmhit;
 	uint64		seg_ndocs;		/* live documents and tokens of the immutable segments */
 	uint64		seg_sum_dl;
-	uint64		mut_ndocs;		/* live documents and tokens of the mutable segments */
-	uint64		mut_sum_dl;
+	uint64		wbuf_ndocs;		/* live documents and tokens of the write buffers */
+	uint64		wbuf_sum_dl;
 	int			nleaves;
 	int			maxleaves;
 	EvalLeaf   *leaves;
@@ -627,10 +627,10 @@ resolve_leaf(SiftPlan *p, EvalLeaf *l)
 		widen_leaf(p, l);
 }
 
-/* ---------- mutable segments ---------- */
+/* ---------- write buffers ---------- */
 
 /*
- * Mutable segments are not indexed by term: their docs are matched one by
+ * Write buffers are not indexed by term: their docs are matched one by
  * one against the relaxed tree (pages whose bloom rules the tree out are
  * skipped) and the live matching tids join the iterator's output.
  */
@@ -645,7 +645,7 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 		case EN_NOTHING:
 			return false;
 		case EN_LEAF:
-			return p->leaves[n->leaf].m != NULL || sift_mut_bloom_has(bloom, p->leaves[n->leaf].hash);
+			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[n->leaf].hash);
 		case EN_NOT:
 			return true;
 		case EN_AND:
@@ -667,7 +667,7 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 }
 
 static bool
-mut_page_ok(void *arg, const uint64 *bloom)
+wbuf_page_ok(void *arg, const uint64 *bloom)
 {
 	SiftPlan   *p = arg;
 
@@ -676,12 +676,12 @@ mut_page_ok(void *arg, const uint64 *bloom)
 
 /* Pages with a term of a scoring leaf: every doc that has one counts in the document frequencies */
 static bool
-mut_leaf_ok(void *arg, const uint64 *bloom)
+wbuf_leaf_ok(void *arg, const uint64 *bloom)
 {
 	const SiftPlan *p = arg;
 
 	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_mut_bloom_has(bloom, p->leaves[i].hash)))
+		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[i].hash)))
 			return true;
 	return false;
 }
@@ -694,7 +694,7 @@ leaf_term_hit(const EvalLeaf *l, const char *t, int len, uint32 hash)
 }
 
 static bool
-leaf_hits(const EvalLeaf *l, const SiftMutDoc *d)
+leaf_hits(const EvalLeaf *l, const SiftWbufDoc *d)
 {
 	const char *t = d->terms;
 
@@ -705,7 +705,7 @@ leaf_hits(const EvalLeaf *l, const SiftMutDoc *d)
 }
 
 static bool
-doc_matches(const SiftPlan *p, const EvalNode *n, const SiftMutDoc *d)
+doc_matches(const SiftPlan *p, const EvalNode *n, const SiftWbufDoc *d)
 {
 	int			npos = 0;
 
@@ -737,21 +737,21 @@ doc_matches(const SiftPlan *p, const EvalNode *n, const SiftMutDoc *d)
 static int
 hit_cmp(const void *a, const void *b)
 {
-	return pg_cmp_u64(((const MutHit *) a)->key, ((const MutHit *) b)->key);
+	return pg_cmp_u64(((const WbufHit *) a)->key, ((const WbufHit *) b)->key);
 }
 
-/* The leaf's mutable term of the zero padded key, created with df 0 */
-static MutTermEnt *
-leaf_mut_term(SiftPlan *p, EvalLeaf *l, const char *key)
+/* The leaf's write buffer term of the zero padded key, created with df 0 */
+static WbufTermEnt *
+leaf_wbuf_term(SiftPlan *p, EvalLeaf *l, const char *key)
 {
 	bool		found;
-	MutTermEnt *e;
+	WbufTermEnt *e;
 
 	if (l->mtab == NULL)
 	{
-		HASHCTL		ctl = {.keysize = SIFT_MAX_TERM_BYTES + 1, .entrysize = sizeof(MutTermEnt), .hcxt = p->mcxt};
+		HASHCTL		ctl = {.keysize = SIFT_MAX_TERM_BYTES + 1, .entrysize = sizeof(WbufTermEnt), .hcxt = p->mcxt};
 
-		l->mtab = hash_create("sift mutable terms", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		l->mtab = hash_create("sift write buffer terms", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	e = hash_search(l->mtab, key, HASH_ENTER, &found);
 	if (!found)
@@ -760,12 +760,12 @@ leaf_mut_term(SiftPlan *p, EvalLeaf *l, const char *key)
 }
 
 static void
-leaf_mut_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
+leaf_wbuf_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 {
 	char		key[SIFT_MAX_TERM_BYTES + 1] = {0};
 
 	memcpy(key, t, len);
-	leaf_mut_term(p, l, key)->df++;
+	leaf_wbuf_term(p, l, key)->df++;
 }
 
 /*
@@ -773,7 +773,7 @@ leaf_mut_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
  * leaf if it has any word of it (deleted docs count like in the statistics)
  */
 static void
-doc_count_terms(SiftPlan *p, const SiftMutDoc *d)
+doc_count_terms(SiftPlan *p, const SiftWbufDoc *d)
 {
 	for (int i = 0; i < p->nleaves; i++)
 	{
@@ -786,26 +786,26 @@ doc_count_terms(SiftPlan *p, const SiftMutDoc *d)
 				continue;
 			if (l->wide)
 			{
-				leaf_mut_count(p, l, l->wide, l->widelen);
+				leaf_wbuf_count(p, l, l->wide, l->widelen);
 				break;
 			}
-			leaf_mut_count(p, l, t, d->len[j]);
+			leaf_wbuf_count(p, l, t, d->len[j]);
 		}
 	}
 }
 
-static SiftMutDoc *
-mutdoc_copy(MemoryContext cx, const SiftMutDoc *d)
+static SiftWbufDoc *
+wbufdoc_copy(MemoryContext cx, const SiftWbufDoc *d)
 {
 	size_t		tl = 0;
-	SiftMutDoc *c;
+	SiftWbufDoc *c;
 	uint32	   *hash;
 	uint8	   *tf,
 			   *len;
 
 	for (int i = 0; i < d->nterms; i++)
 		tl += d->len[i];
-	c = MemoryContextAlloc(cx, sizeof(SiftMutDoc) + d->nterms * (sizeof(uint32) + 2) + tl);
+	c = MemoryContextAlloc(cx, sizeof(SiftWbufDoc) + d->nterms * (sizeof(uint32) + 2) + tl);
 	hash = (uint32 *) (c + 1);
 	tf = (uint8 *) (hash + d->nterms);
 	len = tf + d->nterms;
@@ -817,18 +817,18 @@ mutdoc_copy(MemoryContext cx, const SiftMutDoc *d)
 	return c;
 }
 
-/* Statistics count the live docs of the mutable segments too: those of the immutable ones are in p->seg_ndocs and p->seg_sum_dl */
+/* Statistics count the live docs of the write buffers too: those of the immutable ones are in p->seg_ndocs and p->seg_sum_dl */
 static void
-bind_stats(SiftPlan *p, uint64 mut_ndocs, uint64 mut_sum_dl)
+bind_stats(SiftPlan *p, uint64 wbuf_ndocs, uint64 wbuf_sum_dl)
 {
-	double		sum = p->seg_sum_dl + mut_sum_dl;
+	double		sum = p->seg_sum_dl + wbuf_sum_dl;
 
-	p->stats.ndocs = p->seg_ndocs + mut_ndocs;
+	p->stats.ndocs = p->seg_ndocs + wbuf_ndocs;
 	p->stats.avgdl = p->stats.ndocs > 0 ? sum / p->stats.ndocs : 0;
 }
 
 static void
-bind_mutable(SiftPlan *p)
+bind_wbuf(SiftPlan *p)
 {
 	uint64		ndocs = 0,
 				sum_dl = 0,
@@ -836,16 +836,16 @@ bind_mutable(SiftPlan *p)
 				dead_dl = 0;
 	int64		cap = 0;
 
-	for (int i = 0; i < p->nmut && !p->capped; i++)
+	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
-		SiftMutReader *r = sift_mut_open(p->st->index, &p->st->dir.segs[p->mutno[i]], p->mcxt,
-										 p->scoring ? mut_leaf_ok : mut_page_ok, p);
-		SiftMutDoc	doc;
+		SiftWbufReader *r = sift_wbuf_open(p->st->index, &p->st->dir.segs[p->wbufno[i]], p->mcxt,
+										 p->scoring ? wbuf_leaf_ok : wbuf_page_ok, p);
+		SiftWbufDoc	doc;
 		uint64		n,
 					sum,
 					seen = 0;
 
-		while (sift_mut_next(r, &doc))
+		while (sift_wbuf_next(r, &doc))
 		{
 			if ((++seen & 1023) == 0)
 				CHECK_FOR_INTERRUPTS();
@@ -862,29 +862,29 @@ bind_mutable(SiftPlan *p)
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
-				p->mhit = p->mhit ? repalloc_huge(p->mhit, cap * sizeof(MutHit)) :
-					MemoryContextAllocHuge(p->mcxt, cap * sizeof(MutHit));
+				p->mhit = p->mhit ? repalloc_huge(p->mhit, cap * sizeof(WbufHit)) :
+					MemoryContextAllocHuge(p->mcxt, cap * sizeof(WbufHit));
 			}
-			p->mhit[p->nmhit++] = (MutHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? mutdoc_copy(p->mcxt, &doc) : NULL};
+			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
 		}
-		sift_mut_totals(r, &n, &sum);
+		sift_wbuf_totals(r, &n, &sum);
 		ndocs += n;
 		sum_dl += sum;
-		sift_mut_close(r);
+		sift_wbuf_close(r);
 	}
 	if (p->nmhit > 1)
 	{
 		int64		k = 1;
 
-		qsort(p->mhit, p->nmhit, sizeof(MutHit), hit_cmp);
+		qsort(p->mhit, p->nmhit, sizeof(WbufHit), hit_cmp);
 		for (int64 j = 1; j < p->nmhit; j++)
 			if (p->mhit[j].key != p->mhit[k - 1].key)
 				p->mhit[k++] = p->mhit[j];
 		p->nmhit = k;
 	}
-	p->mut_ndocs = ndocs - dead_docs;
-	p->mut_sum_dl = sum_dl - dead_dl;
-	bind_stats(p, p->mut_ndocs, p->mut_sum_dl);
+	p->wbuf_ndocs = ndocs - dead_docs;
+	p->wbuf_sum_dl = sum_dl - dead_dl;
+	bind_stats(p, p->wbuf_ndocs, p->wbuf_sum_dl);
 }
 
 /* ---------- parallel bind ---------- */
@@ -895,14 +895,14 @@ typedef struct SharedHit
 	float4		score;
 } SharedHit;
 
-/* What follows the header: nmhit SharedHit, then for every leaf a count and that many MutTermEnt */
+/* What follows the header: nmhit SharedHit, then for every leaf a count and that many WbufTermEnt */
 typedef struct SharedBind
 {
 	SiftDirSnapshot dir;
 	uint64		seg_ndocs;
 	uint64		seg_sum_dl;
-	uint64		mut_ndocs;
-	uint64		mut_sum_dl;
+	uint64		wbuf_ndocs;
+	uint64		wbuf_sum_dl;
 	int64		nmhit;
 	int			nleaves;
 } SharedBind;
@@ -940,7 +940,7 @@ sift_plan_export(const SiftPlan *p, Size *len)
 {
 	StringInfoData buf;
 	SharedBind	h = {.dir = p->st->dir,.seg_ndocs = p->seg_ndocs,.seg_sum_dl = p->seg_sum_dl,
-					 .mut_ndocs = p->mut_ndocs,.mut_sum_dl = p->mut_sum_dl,
+					 .wbuf_ndocs = p->wbuf_ndocs,.wbuf_sum_dl = p->wbuf_sum_dl,
 					 .nmhit = p->nmhit, .nleaves = p->nleaves};
 
 	initStringInfo(&buf);
@@ -956,14 +956,14 @@ sift_plan_export(const SiftPlan *p, Size *len)
 		const EvalLeaf *l = &p->leaves[i];
 		int32		n = l->mtab ? hash_get_num_entries(l->mtab) : 0;
 		HASH_SEQ_STATUS seq;
-		MutTermEnt *e;
+		WbufTermEnt *e;
 
 		appendBinaryStringInfo(&buf, &n, sizeof(n));
 		if (n > 0)
 		{
 			hash_seq_init(&seq, l->mtab);
 			while ((e = hash_seq_search(&seq)) != NULL)
-				appendBinaryStringInfo(&buf, e, sizeof(MutTermEnt));
+				appendBinaryStringInfo(&buf, e, sizeof(WbufTermEnt));
 		}
 	}
 	*len = buf.len;
@@ -976,24 +976,24 @@ sift_shared_dir(const void *shared)
 	return &((const SharedBind *) shared)->dir;
 }
 
-/* The mutable half of the bind as the exporting participant had it */
+/* The write buffer half of the bind as the exporting participant had it */
 static void
-import_mutable(SiftPlan *p, const SharedBind *h)
+import_wbuf(SiftPlan *p, const SharedBind *h)
 {
 	const char *at = (const char *) (h + 1);
 
 	if (h->nleaves != p->nleaves)
 		elog(ERROR, "sift: parallel participants bound different queries");
-	p->mut_ndocs = h->mut_ndocs;
-	p->mut_sum_dl = h->mut_sum_dl;
+	p->wbuf_ndocs = h->wbuf_ndocs;
+	p->wbuf_sum_dl = h->wbuf_sum_dl;
 	p->nmhit = h->nmhit;
-	p->mhit = MemoryContextAllocHuge(p->mcxt, Max(h->nmhit, 1) * sizeof(MutHit));
+	p->mhit = MemoryContextAllocHuge(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
 	for (int64 i = 0; i < h->nmhit; i++, at += sizeof(SharedHit))
 	{
 		SharedHit	sh;
 
 		memcpy(&sh, at, sizeof(sh));
-		p->mhit[i] = (MutHit) {sh.key, sh.score, NULL};
+		p->mhit[i] = (WbufHit) {sh.key, sh.score, NULL};
 	}
 	for (int i = 0; i < p->nleaves; i++)
 	{
@@ -1001,23 +1001,23 @@ import_mutable(SiftPlan *p, const SharedBind *h)
 
 		memcpy(&n, at, sizeof(n));
 		at += sizeof(n);
-		for (int32 j = 0; j < n; j++, at += sizeof(MutTermEnt))
+		for (int32 j = 0; j < n; j++, at += sizeof(WbufTermEnt))
 		{
-			MutTermEnt	e;
+			WbufTermEnt	e;
 
 			memcpy(&e, at, sizeof(e));
-			leaf_mut_term(p, &p->leaves[i], e.term)->df = e.df;
+			leaf_wbuf_term(p, &p->leaves[i], e.term)->df = e.df;
 		}
 	}
-	bind_stats(p, h->mut_ndocs, h->mut_sum_dl);
+	bind_stats(p, h->wbuf_ndocs, h->wbuf_sum_dl);
 }
 
-/* The terms of a scoring leaf that only mutable docs have weigh like the others: by df over the whole index */
+/* The terms of a scoring leaf that only write buffer docs have weigh like the others: by df over the whole index */
 static int
-leaf_mut_terms(EvalLeaf *l, LeafTerm **out)
+leaf_wbuf_terms(EvalLeaf *l, LeafTerm **out)
 {
 	HASH_SEQ_STATUS seq;
-	MutTermEnt *e;
+	WbufTermEnt *e;
 	int			n = 0;
 
 	if (l->mtab == NULL)
@@ -1049,7 +1049,7 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 	for (int s = 0; s < p->nsegs; s++)
 		for (int i = 0; i < l->nterms[s]; i++)
 			all[n++] = &l->terms[s][i];
-	n += leaf_mut_terms(l, all + n);
+	n += leaf_wbuf_terms(l, all + n);
 	qsort(all, n, sizeof(LeafTerm *), leaf_term_cmp);
 	l->uniq = all;
 	for (int i = 0, j; i < n; i = j)
@@ -1087,9 +1087,9 @@ leaf_weighed(const EvalLeaf *l, const char *term, int len)
 	return *(LeafTerm **) bsearch(&k, l->uniq, l->nuniq, sizeof(LeafTerm *), leaf_term_cmp);
 }
 
-/* Best term of the leaf in a mutable doc, weighed like the others; a wide leaf has one term, with the tf of all its words */
+/* Best term of the leaf in a write buffer doc, weighed like the others; a wide leaf has one term, with the tf of all its words */
 static float4
-mut_leaf_score(const EvalLeaf *l, const SiftMutDoc *d, float4 knorm)
+wbuf_leaf_score(const EvalLeaf *l, const SiftWbufDoc *d, float4 knorm)
 {
 	const char *t = d->terms;
 	float4		best = 0;
@@ -1107,21 +1107,21 @@ mut_leaf_score(const EvalLeaf *l, const SiftMutDoc *d, float4 knorm)
 }
 
 /*
- * Mutable matches score at bind from their records: the leaves in canonical order, a phrase as the AND
+ * Write buffer matches score at bind from their records: the leaves in canonical order, a phrase as the AND
  * of its terms (the text decides at verify, like for the immutable candidates).
  */
 static void
-score_mutable(SiftPlan *p)
+score_wbuf(SiftPlan *p)
 {
 	for (int64 i = 0; i < p->nmhit; i++)
 	{
-		MutHit	   *h = &p->mhit[i];
+		WbufHit	   *h = &p->mhit[i];
 		float4		knorm = sift_kern_knorm1(&p->bm, h->doc->dl),
 					score = 0;
 
 		for (int j = 0; j < p->nleaves; j++)
 			if (p->leaves[j].scoring)
-				score += mut_leaf_score(&p->leaves[j], h->doc, knorm);
+				score += wbuf_leaf_score(&p->leaves[j], h->doc, knorm);
 		h->score = score;
 	}
 }
@@ -1346,17 +1346,17 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	p->nqueries = nqueries;
 	p->mcxt = st->mcxt;
 	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
-	p->mutno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
+	p->wbufno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
 		{
-			p->mutno[p->nmut++] = i;
+			p->wbufno[p->nwbuf++] = i;
 			continue;
 		}
 		p->segno[p->nsegs++] = i;
 	}
-	p->stats.nmutable = p->nmut;
+	p->stats.nwbuf = p->nwbuf;
 	p->capped = (flags & SIFT_BIND_CAPPED) != 0;
 	p->scoring = (flags & SIFT_BIND_SCORE) != 0;
 	p->seg = MemoryContextAlloc(st->mcxt, Max(p->nsegs, 1) * sizeof(SiftSegment *));
@@ -1381,15 +1381,15 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	for (int i = 0; i < p->nleaves; i++)
 		resolve_leaf(p, &p->leaves[i]);
 	if (shared)
-		import_mutable(p, shared);
+		import_wbuf(p, shared);
 	else
-		bind_mutable(p);
+		bind_wbuf(p);
 	phrase_prepare(p);
 	if (p->scoring)
 	{
 		bind_scoring(p);
 		if (!shared)
-			score_mutable(p);
+			score_wbuf(p);
 	}
 	return p;
 }
@@ -1436,7 +1436,7 @@ struct SiftMatchIter
 	sift_cur  **root;			/* per segment, NULL: no matches */
 	sift_cur  **sure;			/* per segment: the matches that need no recheck, NULL: none (plan->sure) */
 	const sift_grp **grp;		/* scratch: current group per segment */
-	int64		mpos;			/* next mutable match */
+	int64		mpos;			/* next write buffer match */
 	uint32		next_sb;
 	uint32		sb_end;			/* the visited range ends before this superblock */
 	SiftNextRangeFn next_range;	/* parallel: where the next range comes from */
@@ -1811,9 +1811,9 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 	sift_sr_release(&seg->sr);
 }
 
-/* Sets the mutable matches of SB sb in the SB buffer */
+/* Sets the write buffer matches of SB sb in the SB buffer */
 static void
-iter_merge_mutable(SiftMatchIter *it, uint32 sb)
+iter_merge_wbuf(SiftMatchIter *it, uint32 sb)
 {
 	const SiftPlan *p = it->plan;
 
@@ -1835,7 +1835,7 @@ iter_merge_mutable(SiftMatchIter *it, uint32 sb)
 }
 
 /*
- * Seeks the segments' cursors to the next SB with matches in any of them or in the mutable segments
+ * Seeks the segments' cursors to the next SB with matches in any of them or in the write buffers
  * (it->grp[s] are their groups there); false at the end
  */
 static bool
@@ -1898,7 +1898,7 @@ iter_load_sb(SiftMatchIter *it)
 				if (sg)
 					iter_merge(it, s, sg, true);
 			}
-		iter_merge_mutable(it, sb);
+		iter_merge_wbuf(it, sb);
 		it->next_sb = sb + 1;
 		it->plan->stats.sb_scanned++;
 		if (it->pages[0] | it->pages[1] | it->pages[2] | it->pages[3])
@@ -2983,7 +2983,7 @@ rank_skip_units(SiftRanker *r, int64 from, int64 to)
 }
 
 static void
-rank_mutable(SiftRanker *r, SiftTopK *tk)
+rank_wbuf(SiftRanker *r, SiftTopK *tk)
 {
 	const SiftPlan *p = r->plan;
 
@@ -2997,7 +2997,7 @@ rank_units(SiftRanker *r, SiftTopK *tk)
 {
 	int			u;
 
-	rank_mutable(r, tk);
+	rank_wbuf(r, tk);
 	for (u = 0; u < r->nunit; u++)
 	{
 		if (!(r->unit[u].maxub > sift_kern_topk_theta(tk)))
@@ -3021,8 +3021,8 @@ rank_units_shared(SiftRanker *r, SiftTopK *tk)
 	bool		reachable = true;
 
 	r->par_active = true;
-	if (sift_par_claim_mutable(r->par))
-		rank_mutable(r, tk);
+	if (sift_par_claim_wbuf(r->par))
+		rank_wbuf(r, tk);
 	while (reachable && sift_par_next_units(r->par, r->nunit, &lo, &hi))
 		for (int64 u = lo; u < hi && reachable; u++)
 		{
@@ -3345,7 +3345,7 @@ count_by_df(const SiftPlan *plan)
 }
 
 /*
- * count(*) of a plan the bitmaps decide alone, without the mutable segments' matches: no page is copied. A plan that is one term
+ * count(*) of a plan the bitmaps decide alone, without the write buffers' matches: no page is copied. A plan that is one term
  * starts from the segments' counts of its live postings and corrects them for the pages the heap decides, so a superblock with
  * vacuumed docs and all-visible pages costs what a clean one does; a VACUUM that changed a segment meanwhile has the count redone
  * from the liveness rows

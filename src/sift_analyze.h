@@ -190,7 +190,7 @@ extern int	sift_analyze_doc(SiftAnalyzer *a, const char *text, int len,
 extern int	sift_analyze_fold(SiftAnalyzer *a, const char *s, int len, char **out);
 
 /*
- * Stable term hashes, part of the on-disk format (mutable records, blooms).
+ * Stable term hashes, part of the on-disk format (write buffer records, blooms).
  * sift_term_hash64: an xxh64-style single-lane hash. h = K3 ^ len * K1; each
  * 8-byte little-endian word w, then the zero-padded tail if any:
  * h = rotl64(h + w * K2, 31) * K1; result murmur3 fmix64(h), with

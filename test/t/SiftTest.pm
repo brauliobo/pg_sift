@@ -95,7 +95,7 @@ my @AMS = (
 	},
 	{
 		name => 'sift',
-		index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (mutable_limit = 64)" },
+		index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (write_buffer_limit = 64)" },
 		maint => sub { "SELECT sift.promote('$_[0]')" },
 		verify => sub { "SELECT sift.verify('$_[0]', true)" },
 		match => sub { "body @@> '$_[0]'" },

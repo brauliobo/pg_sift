@@ -211,11 +211,15 @@ define_reloptions(void)
 					   true, AccessExclusiveLock);
 	add_bool_reloption(sift_relopt_kind, "accent_folding", "Strip accents",
 					   true, AccessExclusiveLock);
-	add_int_reloption(sift_relopt_kind, "mutable_limit",
-					  "Mutable segment size in kB before it is sealed for promotion",
-					  SIFT_DEFAULT_MUTABLE_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(sift_relopt_kind, "write_buffer_limit",
+					  "Write buffer size in kB before it is sealed for promotion",
+					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	/* The 2.0.0 spelling of write_buffer_limit, accepted forever */
+	add_int_reloption(sift_relopt_kind, "mutable_limit",	/* DEPRECATED ALIAS */
+					  "Deprecated alias of write_buffer_limit",
+					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "vacuum_segments",
-					  "Directory entries (segments, the mutable one included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
+					  "Directory entries (segments, the write buffer included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
 					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "merge_fanin",
 					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
@@ -327,7 +331,8 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"stemmer", RELOPT_TYPE_STRING, offsetof(SiftOptions, stemmer)},
 		{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
 		{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
-		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},
+		{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, write_buffer_limit)},
+		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},	/* DEPRECATED ALIAS */
 		{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
 		{"merge_fanin", RELOPT_TYPE_INT, offsetof(SiftOptions, merge_fanin)},
 		{"build_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, build_segments)},
@@ -339,8 +344,13 @@ sift_amoptions(Datum reloptions, bool validate)
 		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 	};
 
-	return (bytea *) build_reloptions(reloptions, validate, sift_relopt_kind,
-									  sizeof(SiftOptions), tab, lengthof(tab));
+	SiftOptions *o = (SiftOptions *) build_reloptions(reloptions, validate, sift_relopt_kind,
+													  sizeof(SiftOptions), tab, lengthof(tab));
+
+	/* the alias counts when write_buffer_limit is left at its default */
+	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
+		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
+	return (bytea *) o;
 }
 
 const SiftOptions *
@@ -351,7 +361,7 @@ sift_index_options(Relation index)
 		.b = SIFT_DEFAULT_B,
 		.case_folding = true,
 		.accent_folding = true,
-		.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,
+		.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
 		.merge_fanin = SIFT_MERGE_FANIN,
 		.positions = true,

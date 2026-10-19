@@ -178,9 +178,9 @@ sift_col_f4_key(float4 f)
 
 typedef struct SiftColIndexStats
 {
-	uint64		nrows;			/* rows of the immutable segments + mutable records (dead ones included) */
+	uint64		nrows;			/* rows of the immutable segments + write buffer records (dead ones included) */
 	uint32		nsegments;		/* immutable */
-	uint32		nmutable;		/* mutable segments */
+	uint32		nwbuf;		/* write buffers */
 	uint64		bytes;			/* of the immutable segments */
 	uint32		nunits;			/* (segment, sb) units */
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */
@@ -315,14 +315,14 @@ typedef struct SiftColZone
 	bool		has_ovf;		/* some value overflowed: min/max/sum/nnull do not describe it; no pruning or metadata answer from this leaf and unit */
 } SiftColZone;
 
-#define SIFT_COLO_NOMUTABLE		0x0001	/* skip the mutable segments (verification, maintenance reading immutable data) */
+#define SIFT_COLO_NOWBUF		0x0001	/* skip the write buffers (verification, maintenance reading immutable data) */
 #define SIFT_COLO_NOCHECKS		0x0002	/* skip the privilege / RLS checks (internal callers that did them) */
 
 /* EXPLAIN and cost feedback of a source */
 typedef struct SiftColCounters
 {
 	int64		segments;		/* immutable segments in the directory snapshot */
-	int64		mutable_rows;	/* rows read from mutable segments */
+	int64		wbuf_rows;	/* rows read from write buffers */
 	int64		units;			/* candidate units visited */
 	int64		units_pruned;	/* skipped by their zone maps */
 	int64		rows_scanned;	/* rows of the units visited */
@@ -342,7 +342,7 @@ typedef struct SiftColUnit
 	SiftColSource *src;
 	uint32		sb;
 	uint32		nrows;
-	bool		in_mutable;		/* rows of a mutable segment (chunks encoded in memory) */
+	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
 	void	   *priv;
 } SiftColUnit;
 
@@ -384,14 +384,14 @@ extern uint32 sift_col_heap_sbs(const SiftColSource *src);
 extern void sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 sb_lo, uint32 sb_hi);
 
 /*
- * Adds in-memory units to the source before sift_col_begin: each batch (one SB, rows in key order, all live) is read like a unit of a mutable
- * segment (in_mutable), together with the stored units of the same SB. The rows' visibility is the installed SiftColVisibility's. The batches
+ * Adds in-memory units to the source before sift_col_begin: each batch (one SB, rows in key order, all live) is read like a unit of a write
+ * buffer (in_wbuf), together with the stored units of the same SB. The rows' visibility is the installed SiftColVisibility's. The batches
  * must outlive the source (the table AM adds the rows of its delta pages this way).
  */
 struct SiftColBatch;
 extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const *batches, int nbatches);
 
-/* The next candidate unit: ascending SB, immutable segments in directory order then the mutable ones; false at the end. Invalidates the vectors of the previous unit. */
+/* The next candidate unit: ascending SB, immutable segments in directory order then the write buffer; false at the end. Invalidates the vectors of the previous unit. */
 extern bool sift_col_next(SiftColSource *src, SiftColUnit *unit);
 
 /* ---- selections ---- */

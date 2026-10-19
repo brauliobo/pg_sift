@@ -49,7 +49,7 @@
  *    like VACUUM's truncation of a heap): no backend then has a scan, a
  *    directory copy or an open write target, a standby replays the lock before
  *    the truncation and cancels what holds the index there, and the relcache
- *    entries (the mutable appenders' cached lane tails) are invalidated before
+ *    entries (the write buffer appenders' cached lane tails) are invalidated before
  *    the lock is released.
  *
  * Store records are not transactional and nothing here flushes WAL: a change
@@ -252,7 +252,7 @@ extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 
 /*
  * SHARED targets: the bytes the streams written through wt will take about (upper bound of a merge,
- * a promotion's mutable pages). Streams then reuse free space in runs as short as a 256th of it
+ * a promotion's write buffer pages). Streams then reuse free space in runs as short as a 256th of it
  * rather than extending the file for long ones.
  */
 extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
@@ -439,10 +439,10 @@ extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEnt
 
 /*
  * Orphans: blocks below the high-water mark that nothing references and no
- * writer owns. A page whose gen is in the directory (an unlinked mutable
+ * writer owns. A page whose gen is in the directory (an unlinked write buffer
  * page) or >= next_gen (a segment being written) is in flight, never an
  * orphan. The caller holds the maintenance lock, so the only concurrent
- * writers are mutable appenders of published segments.
+ * writers are write buffer appenders of published segments.
  */
 extern struct Bitmapset *sift_store_orphans(Relation index);
 

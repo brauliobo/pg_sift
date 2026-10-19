@@ -122,7 +122,7 @@ run_engine() {
 			log "round $round: $(sql -c "SELECT sift_diff.mutate($(fseed $((SEED * 7 + round))), 0.05)")"
 			clean=false
 			(( round % 2 == 0 )) && sql -c "VACUUM diff_docs"
-			# odd rounds are checked with the mutations in mutable segments, even ones after promotion (and merge)
+			# odd rounds are checked with the mutations in write buffers, even ones after promotion (and merge)
 			[[ -n $idx ]] && (( round % 2 == 0 )) && sql -c "SELECT sift.promote('$idx')"
 			[[ -n $idx ]] && (( round % 4 == 0 )) && sql -c "SELECT sift.merge('$idx', true)"
 			if (( round == ROUNDS )); then

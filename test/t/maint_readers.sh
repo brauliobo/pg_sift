@@ -13,7 +13,7 @@ max_worker_processes = 16"
 node_start rd || bail "start failed"
 sql rd "CREATE EXTENSION pg_sift" "CREATE TABLE t (id serial, body text)" \
 	"INSERT INTO t (body) SELECT 'zzstable s' || i || ' ' || string_agg('w' || (random() * 2000)::int, ' ') FROM generate_series(1, $STABLE) i, generate_series(1, 20) GROUP BY i" \
-	"CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 64, build_segments = 8)" \
+	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64, build_segments = 8)" \
 	"CREATE FUNCTION chk(k int) RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN
 	IF (SELECT count(*) FROM t WHERE id <= $STABLE AND body @@> ('s' || k)) <> 1 THEN RAISE EXCEPTION 'search for s% wrong', k; END IF;
 	IF (SELECT count(*) FROM t WHERE id <= $STABLE AND body @@> 'zzstable') <> $STABLE THEN RAISE EXCEPTION 'zzstable wrong'; END IF;

@@ -28,8 +28,8 @@ typedef enum SiftPageType
 	SIFT_PT_SEGHEADER,			/* immutable segment header */
 	SIFT_PT_DATA,				/* immutable segment byte stream */
 	SIFT_PT_LIVE,				/* liveness bits / dirty-SB bitmap */
-	SIFT_PT_MUTHEADER,			/* mutable segment lane headers */
-	SIFT_PT_MUTDATA,			/* mutable doc records */
+	SIFT_PT_WBUFHEADER,			/* write buffer lane headers */
+	SIFT_PT_WBUFDATA,			/* write buffer doc records */
 	SIFT_PT_FREELIST,			/* free extent records */
 	SIFT_PT_FREE				/* unused, reclaimable */
 } SiftPageType;
@@ -76,8 +76,8 @@ typedef struct SiftMetaPageData
 typedef enum SiftSegKind
 {
 	SIFT_SEG_IMMUTABLE = 1,
-	SIFT_SEG_MUTABLE_ACTIVE,
-	SIFT_SEG_MUTABLE_SEALED
+	SIFT_SEG_WBUF_OPEN,
+	SIFT_SEG_WBUF_SEALED
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
@@ -89,7 +89,7 @@ typedef struct SiftSegEntry
 	uint8		kind;			/* SiftSegKind */
 	uint8		format;			/* segment format minor */
 	uint16		flags;
-	BlockNumber header_blk;		/* SEGHEADER or MUTHEADER */
+	BlockNumber header_blk;		/* SEGHEADER or WBUFHEADER */
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
 	uint32		reserved;
@@ -191,7 +191,7 @@ typedef struct SiftLive2RegionData
 } SiftLive2RegionData;
 
 /*
- * Mutable segment: one MUTHEADER page with SIFT_LANES lanes. A lane always has
+ * Write buffer: one WBUFHEADER page with SIFT_LANES lanes. A lane always has
  * a head page; tail is a hint (the true tail is found by following next) kept
  * with the page count when a page is added. The page after the last one has
  * next = InvalidBlockNumber (the store walks these chains for the orphan
@@ -204,41 +204,41 @@ typedef struct SiftLaneData
 	uint32		npages;
 } SiftLaneData;
 
-typedef struct SiftMutHeaderData
+typedef struct SiftWbufHeaderData
 {
 	uint64		gen;
 	SiftLaneData lanes[SIFT_LANES];
-} SiftMutHeaderData;
+} SiftWbufHeaderData;
 
 /*
- * Mutable data page: header, then doc records packed back to back. The
+ * Write buffer data page: header, then doc records packed back to back. The
  * SEALED flag is set under the page lock on the tail of every lane when the
  * segment is sealed; appenders re-check it under that lock. SPANS marks a
  * page whose last doc continues on the next page of the lane.
  */
-typedef struct SiftMutPageHeaderData
+typedef struct SiftWbufPageHeaderData
 {
 	BlockNumber next;
 	uint16		ndocs;			/* docs started on this page (deleted included) */
 	uint16		flags;
 	uint32		sum_dl;
 	uint64		bloom[4];		/* 256-bit bloom of term hashes, 2 probes */
-} SiftMutPageHeaderData;
+} SiftWbufPageHeaderData;
 
-#define SIFT_MUTPAGE_SEALED	0x0001
-#define SIFT_MUTPAGE_SPANS	0x0002
+#define SIFT_WBUFPAGE_SEALED	0x0001
+#define SIFT_WBUFPAGE_SPANS	0x0002
 
-#define SIFT_MUT_DELETED	0x0001
-#define SIFT_MUT_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */
+#define SIFT_WBUF_DELETED	0x0001
+#define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */
 
 /*
  * Doc record, 4-byte aligned:
- *   SiftMutDocData, uint32 hash[nterms], uint8 tf[nterms], uint8 len[nterms],
+ *   SiftWbufDocData, uint32 hash[nterms], uint8 tf[nterms], uint8 len[nterms],
  *   term bytes (concatenated, sum(len) = termbytes), zero pad to 4 bytes.
  * A doc that does not fit a page is split into pieces: the first carries
- * dl, the others SIFT_MUT_CONT. All pieces of a doc are adjacent in one lane.
+ * dl, the others SIFT_WBUF_CONT. All pieces of a doc are adjacent in one lane.
  */
-typedef struct SiftMutDocData
+typedef struct SiftWbufDocData
 {
 	ItemPointerData tid;
 	uint16		flags;
@@ -246,7 +246,7 @@ typedef struct SiftMutDocData
 	uint16		dl;
 	uint16		termbytes;
 	uint16		reserved;
-} SiftMutDocData;
+} SiftWbufDocData;
 
 /*
  * Free list: a chain of FREELIST pages (gen 0) from meta->freelist_head.

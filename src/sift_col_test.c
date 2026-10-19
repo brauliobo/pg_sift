@@ -32,7 +32,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
 
-#define TEST_NOMUTABLE	1
+#define TEST_NOWBUF	1
 #define TEST_NOVET		2
 #define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
 #define WAIT_KEY		0x51F7
@@ -196,7 +196,7 @@ scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							(flags & TEST_NOMUTABLE) ? SIFT_COLO_NOMUTABLE : 0);
+							(flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0);
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
@@ -391,7 +391,7 @@ sift_test_col_zones(PG_FUNCTION_ARGS)
 
 		sift_col_zone(&unit, leaf, &z);
 		v[0] = Int32GetDatum(unit.sb);
-		v[1] = BoolGetDatum(unit.in_mutable);
+		v[1] = BoolGetDatum(unit.in_wbuf);
 		v[2] = Int32GetDatum(unit.nrows);
 		v[3] = Int64GetDatum(z.nvals);
 		v[4] = Int64GetDatum(z.nnull);
@@ -431,7 +431,7 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	c = sift_col_counters(ts.src);
 	v[0] = Int64GetDatum(rows);
 	v[1] = Int64GetDatum(c->segments);
-	v[2] = Int64GetDatum(c->mutable_rows);
+	v[2] = Int64GetDatum(c->wbuf_rows);
 	v[3] = Int64GetDatum(c->units);
 	v[4] = Int64GetDatum(c->units_pruned);
 	v[5] = Int64GetDatum(c->rows_scanned);
@@ -497,7 +497,7 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
-	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOMUTABLE);
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (test_next(&ts, &unit))
 	{
 		SiftCHistDim d;

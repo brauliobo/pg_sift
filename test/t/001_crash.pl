@@ -49,7 +49,7 @@ for my $am (ams())
 		{
 			for my $batch (1 .. 3)
 			{
-				# a 64 kB mutable_limit seals dozens of segments per batch: keep room below the 128 segment cap
+				# a 64 kB write_buffer_limit seals dozens of segments per batch: keep room below the 128 segment cap
 				$node->safe_psql('postgres', "SELECT sift.merge('$idx')");
 				$node->safe_psql('postgres', "INSERT INTO $t SELECT g, 'w6 merge batch$batch ' || g"
 					. " FROM generate_series(1000000 + $batch * 100000, 1040000 + $batch * 100000) g;"

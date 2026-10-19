@@ -89,9 +89,9 @@ sift_col_init(void)
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 #endif
 	col_relopt_kind = add_reloption_kind();
-	add_int_reloption(col_relopt_kind, "mutable_limit",
-					  "Mutable segment size in kB before it is sealed for promotion",
-					  SIFT_DEFAULT_MUTABLE_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "write_buffer_limit",
+					  "Write buffer size in kB before it is sealed for promotion",
+					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
 					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (100 never)",
 					  SIFT_COL_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
@@ -112,7 +112,7 @@ static bytea *
 col_amoptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
-		{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, mutable_limit)},
+		{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
 		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
 		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
 		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
@@ -125,7 +125,7 @@ col_amoptions(Datum reloptions, bool validate)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -428,7 +428,7 @@ sift_col_index_meta(Relation index)
 			m->stats.nsegments++;
 		}
 		else
-			m->stats.nmutable++;
+			m->stats.nwbuf++;
 	}
 	m->stats.nunits = sift_cseg_dir_units(snap);
 	heap = table_open(d->heapoid, AccessShareLock);
@@ -653,7 +653,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	bool		crossed;
 
 	sift_col_make_row(r, heap_tid, values, isnull, &row, r->rowcxt);
-	crossed = sift_cmut_append(index, &r->hint, r->schema, &row);
+	crossed = sift_cwbuf_append(index, &r->hint, r->schema, &row);
 	MemoryContextReset(r->rowcxt);
 	if (crossed)
 		sift_col_maint_after_seal(index);

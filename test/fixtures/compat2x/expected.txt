@@ -1,6 +1,6 @@
 segments (gen kind ndocs dirty dead_docs)
 1|immutable|1500|t|150
-3|mutable|100|f|
+3|buffer|100|f|
 4|immutable|1400|f|0
 rows
 2850|4389300
@@ -15,7 +15,7 @@ filler|2250|3487800
 rareterm|12|19500
 dead rows of the dirty segment (id % 10 = 3, id <= 1500)|0
 live rows of the dirty segment|1350
-mutable rows (id > 2900)|2|5864
+write buffer rows (id > 2900)|2|5864
 ranked (id score), ties broken by id
 2250|8.750
 500|8.273

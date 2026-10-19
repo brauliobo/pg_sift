@@ -18,7 +18,7 @@ $node->safe_psql('postgres', qq{
 	ALTER TABLE par ALTER COLUMN pad SET STORAGE PLAIN;
 	INSERT INTO par SELECT g, concat_ws(' ', 'w' || g % 7, 'w' || g % 13, 'w' || g % 101,
 		CASE WHEN g % 5 = 0 THEN 'rare' END, 'doc' || g), repeat('x', 1500) FROM generate_series(1, $rows) g;
-	CREATE INDEX par_idx ON par USING sift (body) WITH (mutable_limit = 64);
+	CREATE INDEX par_idx ON par USING sift (body) WITH (write_buffer_limit = 64);
 	INSERT INTO par SELECT g, 'w1 rare late ' || g, repeat('x', 1500) FROM generate_series(100001, 100500) g;
 	CREATE FUNCTION slow(i int) RETURNS bool LANGUAGE sql STABLE PARALLEL SAFE AS 'SELECT pg_sleep(0.003) IS NOT NULL';
 });

@@ -242,14 +242,14 @@ SELECT q FROM wq() q WHERE top('pw', q, 25) IS DISTINCT FROM top('pg', q, 25);
 
 RESET sift.parallel_scan;
 RESET max_parallel_workers_per_gather;
--- mutable segments, deletes, updates, promotion, merge: counts agree with document evaluation and the ranking with the
--- indexed prefix term, whatever the layout (the new rows sit in a mutable segment until promoted)
+-- write buffers, deletes, updates, promotion, merge: counts agree with document evaluation and the ranking with the
+-- indexed prefix term, whatever the layout (the new rows sit in a write buffer until promoted)
 INSERT INTO pw SELECT i, pw_doc(i), i % 5 FROM generate_series(7001, 7300) i;
 INSERT INTO pg SELECT * FROM pw WHERE id >= 7001;
-SELECT count(*) FILTER (WHERE kind = 'mutable') AS mutable, count(*) FILTER (WHERE kind = 'immutable') AS immutable FROM sift.segments('pw_idx');
- mutable | immutable 
----------+-----------
-       1 |         1
+SELECT count(*) FILTER (WHERE kind = 'buffer') AS buffer, count(*) FILTER (WHERE kind = 'immutable') AS immutable FROM sift.segments('pw_idx');
+ buffer | immutable 
+--------+-----------
+      1 |         1
 (1 row)
 
 SELECT q FROM qs() q WHERE cnt('pw', q) <> oracle('pw', q);

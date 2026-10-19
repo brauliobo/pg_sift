@@ -57,7 +57,7 @@ extern void sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, cons
 typedef struct SiftColOptions
 {
 	int32		vl_len_;
-	int			mutable_limit;	/* kB */
+	int			write_buffer_limit;	/* kB */
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string, 0 = auto */
 	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */

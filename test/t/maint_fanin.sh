@@ -17,7 +17,7 @@ ENTRIES="SELECT count(*) FROM sift.segments('t_idx')"
 # fill FANIN: a fresh table with an index of that fanin, BATCHES sealing inserts; sets MAX (most entries seen)
 fill() {
 	local n
-	sql fanin "TRUNCATE t" "DROP INDEX IF EXISTS t_idx" "CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 64, merge_fanin = $1)" >/dev/null || bail "index failed"
+	sql fanin "TRUNCATE t" "DROP INDEX IF EXISTS t_idx" "CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64, merge_fanin = $1)" >/dev/null || bail "index failed"
 	MAX=0
 	for k in $(seq "$BATCHES"); do
 		sql fanin "$(printf "$DOCS" "$k")" >/dev/null || bail "insert failed"

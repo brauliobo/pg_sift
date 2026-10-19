@@ -41,7 +41,7 @@
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
-bool		sift_tbl_inline_seal = true;
+bool		sift_tbl_inline_promote = true;
 char	   *sift_tbl_compression_spec = NULL;
 
 static void
@@ -61,14 +61,14 @@ compression_check_hook(char **newval, void **extra, GucSource source)
 void
 sift_tbl_define_gucs(void)
 {
-	DefineCustomIntVariable("sift.table_delta_limit",
-							"Size of a sift_table write segment (row format) before it is closed, to be sealed into columns.",
+	DefineCustomIntVariable("sift.table_write_buffer_limit",
+							"Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns.",
 							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",
-							&sift_tbl_delta_limit, 4096, 2048, 8192,
+							&sift_tbl_write_buffer_limit, 4096, 2048, 8192,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_inline_seal",
-							 "Seals the closed write segments of a sift_table into columns while rows are inserted (VACUUM always does).",
-							 NULL, &sift_tbl_inline_seal, true,
+	DefineCustomBoolVariable("sift.table_inline_promote",
+							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
+							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
@@ -76,7 +76,7 @@ sift_tbl_define_gucs(void)
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
 							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 16, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write segment of a sift_table may take.", NULL,
+	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write buffer of a sift_table may take.", NULL,
 							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
 #endif
 	DefineCustomIntVariable("sift.table_dead_rewrite_pct",

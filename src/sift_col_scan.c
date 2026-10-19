@@ -1,7 +1,7 @@
 /*
  * sift_col_scan.c - L4 of the column engine: the column source. Iterates the (segment, superblock) units of a sift_col
  * index in ascending superblock order, filters and reads their chunks with the kernels and applies the MVCC rule of section 3 through the
- * SiftColVisibility hook. The mutable segments (and batches added by the table AM) are encoded in memory and read like stored units.
+ * SiftColVisibility hook. The write buffers (and batches added by the table AM) are encoded in memory and read like stored units.
  */
 #include "postgres.h"
 
@@ -59,7 +59,7 @@ typedef struct ColMem
 {
 	SiftColBatch *b;
 	uint32		id;
-	bool		lane;			/* read from the mutable lane when the source began */
+	bool		lane;			/* read from the write buffer when the source began */
 } ColMem;
 
 /* The element structure of one group leaf in the current unit */
@@ -112,7 +112,7 @@ typedef struct ColUnit
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
-	bool		lane;			/* a batch of the mutable lane: no all-visible page (unit_allvisible) */
+	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
 	SiftKey    *keys;
@@ -216,7 +216,7 @@ SiftColSource *
 sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnapshot *dir, const SiftColVisibility *vis, uint32 heap_sbs,
 					MemoryContext mcxt)
 {
-	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOMUTABLE | SIFT_COLO_NOCHECKS | COLO_TABLE);
+	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOWBUF | SIFT_COLO_NOCHECKS | COLO_TABLE);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 
 	src->dir = *dir;
@@ -330,7 +330,7 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 }
 
 static void
-load_mutable(SiftColSource *src)
+load_wbuf(SiftColSource *src)
 {
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
@@ -339,7 +339,7 @@ load_mutable(SiftColSource *src)
 
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			continue;
-		bs = sift_cmut_batches(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
+		bs = sift_cwbuf_batches(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
 		for (int j = 0; j < n; j++)
 			add_mem(src, bs[j], true);
 	}
@@ -391,8 +391,8 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 			elog(ERROR, "sift_col: predicate on leaf %d of %d", preds[i].col, src->schema->ncols);
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(&src->seg[i], preds, npreds, sb_lo, sb_hi);
-	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOMUTABLE))
-		load_mutable(src);
+	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
+		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
 	src->norder = 0;
 	for (int i = 0; i < src->nmem; i++)
@@ -516,7 +516,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	if (mem)
 	{
 		load_memory(cu, src->order[src->ocur++]);
-		src->cnt.mutable_rows += cu->v.nrows;
+		src->cnt.wbuf_rows += cu->v.nrows;
 	}
 	else
 		load_stored(cu, best->seg, best->cur++);
@@ -527,7 +527,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	unit->src = src;
 	unit->sb = bsb;
 	unit->nrows = cu->v.nrows;
-	unit->in_mutable = mem;
+	unit->in_wbuf = mem;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -1523,7 +1523,7 @@ sift_col_unit_exact(const SiftColUnit *unit)
 
 /* ---------- pre-aggregates (sift_col_pagg.c, docs/COL-PREAGG.md) ---------- */
 
-/* The stored unit behind a source unit; false for an in-memory one (mutable lane, delta batch), which has no sidecar */
+/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */
 bool
 sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 {

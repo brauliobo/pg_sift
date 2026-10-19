@@ -1,5 +1,5 @@
 # sift_table settings (sift.table_*) are plain server settings, read by the backend that does the work. Which setting a segment is written
-# under: the writer's session (SET, SET LOCAL, role or database default) for inline sealing, the session that runs VACUUM, and for
+# under: the writer's session (SET, SET LOCAL, role or database default) for inline promotion, the session that runs VACUUM, and for
 # autovacuum the server configuration and the database defaults, never the owner's role or the writer's session.
 # The compression written is read back from the size of the column segments (sift.table_segments): the rows are one compressible text.
 use strict;
@@ -11,10 +11,10 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $inline = 12000;		# rows that close several write segments, sealed while they are inserted
-my $settled = 6000;		# rows that stay in the write segment (sift.table_inline_seal = off) until a VACUUM
+my $inline = 12000;		# rows that close several write buffers, promoted while they are inserted
+my $settled = 6000;		# rows that stay in the write buffer (sift.table_inline_promote = off) until a VACUUM
 my $none = "SET sift.table_compression = 'none';";
-my $keep = 'SET sift.table_inline_seal = off;';
+my $keep = 'SET sift.table_inline_promote = off;';
 
 my $node = sift_node('scope');
 $node->append_conf('postgresql.conf', "autovacuum_naptime = 1s\nlog_autovacuum_min_duration = 0\nautovacuum_vacuum_insert_threshold = 500\nautovacuum_vacuum_insert_scale_factor = 0\n"
@@ -26,22 +26,22 @@ my $boot = $node->safe_psql('postgres', 'SELECT rolname FROM pg_roles WHERE oid 
 
 # autovacuum stays off for a table until a test hands it over (ALTER TABLE ... SET (autovacuum_enabled = true))
 sub create { my ($t) = @_; return "CREATE TABLE $t (id int, note text) USING sift_table WITH (autovacuum_enabled = false);\n" }
-# batches of 2000 rows, one transaction each: a write segment is sealed once its rows are settled, by the insert after them
+# batches of 2000 rows, one transaction each: a write buffer is promoted once its rows are settled, by the insert after them
 sub load { my ($t, $n) = @_; return join('', map { my $lo = $_ * 2000 + 1; "INSERT INTO $t SELECT g, repeat('compressible payload ', 30) || g FROM generate_series($lo, " . ($lo + 1999) . ") g;\n" } 0 .. $n / 2000 - 1) }
 sub bytes { my ($t) = @_; return $node->safe_psql('postgres', "SELECT coalesce(sum(bytes), 0) FROM sift.table_segments('$t') WHERE kind = 'columns'") }
-sub sealed { my ($t) = @_; return $node->poll_query_until('postgres', "SELECT count(*) > 0 FROM sift.table_segments('$t') WHERE kind = 'columns'") }
+sub promoted { my ($t) = @_; return $node->poll_query_until('postgres', "SELECT count(*) > 0 FROM sift.table_segments('$t') WHERE kind = 'columns'") }
 # 'plain' when written uncompressed, 'auto' when like the default policy
 sub policy { my ($t, $auto) = @_; my $b = bytes($t); return $b > 2 * $auto ? 'plain' : $b > $auto / 2 && $b < 1.5 * $auto ? 'auto' : "other ($b against $auto)" }
 
 # the default policy (auto), for the sizes below
 $node->safe_psql('postgres', create('base') . load('base', $inline));
 my $auto = bytes('base');
-cmp_ok($auto, '>', 0, 'inline sealing wrote column segments');
+cmp_ok($auto, '>', 0, 'inline promotion wrote column segments');
 
-subtest 'inline sealing in the writer: its own session settings, however set' => sub {
+subtest 'inline promotion in the writer: its own session settings, however set' => sub {
 	$node->safe_psql('postgres', $none . create('i_set') . load('i_set', $inline));
 	is(policy('i_set', $auto), 'plain', 'SET in the session');
-	# the rows are settled when the transaction that sets the value begins: it seals what earlier transactions closed
+	# the rows are settled when the transaction that sets the value begins: it promotes what earlier transactions closed
 	$node->safe_psql('postgres', $keep . create('i_local') . load('i_local', $inline - 2000));
 	$node->safe_psql('postgres', "BEGIN; SET LOCAL sift.table_compression = 'none';" . load('i_local', 2000) . 'COMMIT;');
 	is(policy('i_local', $auto), 'plain', 'SET LOCAL');
@@ -59,7 +59,7 @@ subtest 'inline sealing in the writer: its own session settings, however set' =>
 	is(policy('base', $auto), 'auto', 'the table written under the default');
 };
 
-subtest 'a manual VACUUM seals under the settings of the session that runs it' => sub {
+subtest 'a manual VACUUM promotes under the settings of the session that runs it' => sub {
 	$node->safe_psql('postgres', $keep . create('v_none') . load('v_none', $settled));
 	$node->safe_psql('postgres', $none . ' VACUUM v_none');
 	is(policy('v_none', $auto), 'plain', 'VACUUM under SET compression = none');
@@ -74,14 +74,14 @@ subtest 'a manual VACUUM seals under the settings of the session that runs it' =
 	$node->safe_psql('postgres', 'ALTER ROLE writer RESET sift.table_compression');
 };
 
-# autovacuum: a worker has no session of anyone's; each table below is loaded with sealing off and autovacuum off, then handed to autovacuum
+# autovacuum: a worker has no session of anyone's; each table below is loaded with promotion off and autovacuum off, then handed to autovacuum
 sub background
 {
 	my ($t, $load_prefix, $owner) = @_;
 	my @as = $owner ? (extra_params => [ '-U', $owner ]) : ();
 	$node->safe_psql('postgres', $keep . ($load_prefix // '') . create($t) . load($t, $settled), @as);
 	$node->safe_psql('postgres', "ALTER TABLE $t SET (autovacuum_enabled = true)");
-	ok(sealed($t), "autovacuum sealed $t") or diag($node->safe_psql('postgres', "SELECT row_to_json(s) FROM pg_stat_user_tables s WHERE relname = '$t'") . ' ' .
+	ok(promoted($t), "autovacuum promoted $t") or diag($node->safe_psql('postgres', "SELECT row_to_json(s) FROM pg_stat_user_tables s WHERE relname = '$t'") . ' ' .
 		$node->safe_psql('postgres', "SELECT string_agg(pid || ':' || coalesce(wait_event, '-') || ':' || state, ' ') FROM pg_stat_activity WHERE backend_type LIKE 'autovacuum%'"));
 	return policy($t, $auto);
 }

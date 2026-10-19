@@ -99,7 +99,7 @@ SELECT sift.verify('vs_idx');
 
 -- a segment far smaller than the rest stays above the target: merging it would rewrite the whole index at every VACUUM
 DROP INDEX vs_idx;
-CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 1, mutable_limit = 64);
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 1, write_buffer_limit = 64);
 INSERT INTO vs (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) FROM generate_series(1, 400) i;
 SELECT sift.promote('vs_idx');
  promote 

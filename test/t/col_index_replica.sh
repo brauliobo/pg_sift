@@ -15,7 +15,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, doc jsonb)" \
 	"INSERT INTO orders (tenant_id, status, qty, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (mutable_limit = 64, paths = 'doc.items[]{category text, qty int4}')" \
+	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}')" \
 	>/dev/null || bail "setup failed"
 
 node_clone primary standby 3 "hot_standby_feedback = on

@@ -45,7 +45,7 @@ SELECT dirty, dead_docs FROM sift.segments('ls_idx');
 SELECT ls_scores('merged');
 SELECT * FROM ls_compare('dirty', 'merged');
 
--- more rows, deleted ones in the mutable segment and in the vacuumed one, and a promoted segment beside them
+-- more rows, deleted ones in the write buffer and in the vacuumed one, and a promoted segment beside them
 INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
 	FROM generate_series(1, 3000) i;
 DELETE FROM ls WHERE id > 20000 AND id % 5 = 0;

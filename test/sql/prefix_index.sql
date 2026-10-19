@@ -1,6 +1,6 @@
 -- prefix_index = n: the first 1..n characters of every word are terms of their own, so prefix
 -- queries of up to n characters are one lookup instead of an expansion. Match sets equal the
--- plain index and sift.match; ranked scans, mutable segments, VACUUM, merge and verify agree.
+-- plain index and sift.match; ranked scans, write buffers, VACUUM, merge and verify agree.
 CREATE EXTENSION pg_sift;
 
 CREATE TABLE px (id int PRIMARY KEY, body text);
@@ -70,7 +70,7 @@ SELECT q FROM qs() q WHERE q !~ '[\^"~/?]' AND array(SELECT unnest(string_to_arr
 -- a prefix term scores like a term: more occurrences of the prefix rank first
 SELECT id FROM px WHERE body @@> 'alp*' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 
--- mutable segments, deletes, updates, promotion and merge keep the two indexes in step
+-- write buffers, deletes, updates, promotion and merge keep the two indexes in step
 INSERT INTO px VALUES (900, 'alphabet soup'), (901, 'beta bet bet'), (902, 'Ünïcode');
 INSERT INTO pn SELECT * FROM px WHERE id >= 900;
 SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);

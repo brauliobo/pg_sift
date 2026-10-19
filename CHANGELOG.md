@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed (3.0): the "mutable segment", "mutable lane", "write lane" and "delta segment" are one term, the **write buffer**. The reloption `mutable_limit` is now `write_buffer_limit` (kB, 64-1048576, default 4096); `mutable_limit` stays accepted as a deprecated alias with the same bounds, `ALTER INDEX .. SET / RESET` and a quiet restore of dumps of 1.x and 2.0 (`pg_class.reloptions` keeps what was typed; the new name wins when both are set). The `kind` of `sift.segments` is `buffer` and `sealed buffer` instead of `mutable` and `sealed` (`immutable` is unchanged), so a script that matches the old values has to change; the texts of corruption and verify messages say "Write buffer" where they said "Mutable". On-disk formats are unchanged. Only new in 3.0, so nothing released changes there: `sift_col`, the settings `sift.table_write_buffer_limit` and `sift.table_inline_promote`, the kinds of `sift.table_segments` and `sift.col_segments`, `sift.col_index_info.buffers`.
 - Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
   past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
   check that the stream is inside the blob; they are 64-bit now and the term raises the corruption error. Bytes that are not what the writer

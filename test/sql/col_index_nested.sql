@@ -39,7 +39,7 @@ SELECT i % 20, (ARRAY['new', 'paid', 'void'])[1 + i % 3],
 FROM generate_series(1, 5000) i;
 
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, metrics, doc)
-	WITH (paths = 'metrics.* float8, doc.items[]{category text, kind text, qty int4, price float4}, doc.notes[] text', mutable_limit = 64);
+	WITH (paths = 'metrics.* float8, doc.items[]{category text, kind text, qty int4, price float4}, doc.notes[] text', write_buffer_limit = 64);
 -- leaves: 0 tenant_id, 1 status, 2 metrics.* (group), 3 its member name, 4 its value, 5 doc.items[] (group), 6 category, 7 kind, 8 qty, 9 price,
 -- 10 doc.notes[] (group), 11 its value
 SELECT leaves, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
@@ -102,7 +102,7 @@ SELECT count(*) AS differing FROM (
 	SELECT tid, val FROM sift._test_col_read('o_col', 5, '')
 	EXCEPT SELECT ctid, CASE WHEN jsonb_typeof(doc -> 'items') = 'array' THEN jsonb_array_length(doc -> 'items')::text END FROM orders) z;
 
--- writes: new rows in the mutable segment, updates, deletes, aborts, VACUUM, promotion, merge
+-- writes: new rows in the write buffer, updates, deletes, aborts, VACUUM, promotion, merge
 SELECT leaves FROM sift.col_index_info('o_col');
 INSERT INTO orders (tenant_id, status, metrics, doc)
 SELECT i % 20, 'paid', jsonb_build_object('a', i % 5, 'zz', 1.5), jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'x', 'kind', 'p', 'qty', i % 9, 'price', 1.5),

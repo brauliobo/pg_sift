@@ -1,4 +1,4 @@
--- Parallel CREATE INDEX / REINDEX of a sift_col index: the participants claim whole superblocks and write segments of
+-- Parallel CREATE INDEX / REINDEX of a sift_col index: the participants claim whole superblocks and write buffers of
 -- their own, so the column data must equal the serial build's whatever the segment boundaries. sift.test_col_workers is the number of
 -- workers the last build launched.
 CREATE EXTENSION pg_sift;
@@ -114,7 +114,7 @@ SELECT * FROM col_shape('li_par');
 SELECT col_same('li_par', 'li_ser');
 SELECT indisvalid, indisready FROM pg_index WHERE indexrelid = 'li_par'::regclass;
 
--- Writes on top of the build, the promotion of the mutable segment and the merge of the interleaved segments
+-- Writes on top of the build, the promotion of the write buffer and the merge of the interleaved segments
 INSERT INTO li SELECT 20000 + i, i % 500, 1 + i % 40, i / 8.0, 'sku-' || (i % 300), '{"channel": "web", "weight": 1.5, "tags": ["z"]}', 'p'
 FROM generate_series(1, 1500) i;
 DELETE FROM li WHERE id % 10 = 5;
@@ -123,7 +123,7 @@ SELECT col_same('li_par', 'li_ser');
 SELECT sift.col_promote('li_par') >= 0 AS promoted, sift.col_promote('li_ser') >= 0 AS promoted;
 SELECT col_same('li_par', 'li_ser');
 SELECT sift.col_merge('li_par', true) >= 0 AS merged, sift.col_merge('li_ser', true) >= 0 AS merged;
-SELECT segments, mutable_segments FROM sift.col_index_info('li_par');
+SELECT segments, buffers FROM sift.col_index_info('li_par');
 SELECT col_same('li_par', 'li_ser');
 SELECT col_verified('li_par') AS verified;
 VACUUM li;

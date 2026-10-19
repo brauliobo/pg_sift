@@ -1,5 +1,5 @@
 /*
- * sift_maint.c - promotion of sealed mutable segments, tiered merge, VACUUM
+ * sift_maint.c - promotion of sealed write buffers, tiered merge, VACUUM
  * callbacks, the orphan sweep and the asynchronous maintenance worker
  *
  *
@@ -37,7 +37,7 @@
 #include "sift_build.h"
 #include "sift_maint.h"
 #include "sift_merge.h"
-#include "sift_mutable.h"
+#include "sift_wbuf.h"
 #include "sift_ops.h"
 #include "sift_sql.h"
 #include "sift_visibility.h"
@@ -300,7 +300,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 /* ---------- promotion ---------- */
 
 /*
- * The live docs of a mutable segment go through a tuplesort, so that promoting a segment of any size stays within
+ * The live docs of a write buffer go through a tuplesort, so that promoting a segment of any size stays within
  * maintenance_work_mem (the excess spills to temporary files). A doc is packed as a bytea: its key and arrival number
  * first, big-endian, so that byte order is key order and the first record of a repeated tid comes first, then its
  * length, its terms' lengths, frequencies and hashes, then the bytes of the terms.
@@ -315,7 +315,7 @@ typedef struct DocPacker
 } DocPacker;
 
 static bytea *
-pack_doc(DocPacker *pk, SiftMutDoc *d, uint32 seq)
+pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq)
 {
 	Size		bytes = 0,
 				size;
@@ -346,21 +346,21 @@ pack_doc(DocPacker *pk, SiftMutDoc *d, uint32 seq)
 	return (bytea *) pk->buf;
 }
 
-/* Sorts the live docs of a mutable segment by key */
+/* Sorts the live docs of a write buffer by key */
 static Tuplesortstate *
 sort_docs(Relation index, const SiftSegEntry *seg)
 {
-	SiftMutReader *r = sift_mut_open(index, seg, CurrentMemoryContext, NULL, NULL);
+	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
 	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem,
 												 NULL, TUPLESORT_NONE);
 	DocPacker	pk = {palloc(1024), 1024};
-	SiftMutDoc	d;
+	SiftWbufDoc	d;
 	uint32		seq = 0;
 
-	while (sift_mut_next(r, &d))
+	while (sift_wbuf_next(r, &d))
 		if (!d.deleted)
 			tuplesort_putdatum(sort, PointerGetDatum(pack_doc(&pk, &d, seq++)), false);
-	sift_mut_close(r);
+	sift_wbuf_close(r);
 	pfree(pk.buf);
 	tuplesort_performsort(sort);
 	return sort;
@@ -495,8 +495,8 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
 
-	sift_mut_flag_sealed(index, sealed);
-	pages = sift_mut_pages(index, sealed, &npages);
+	sift_wbuf_flag_sealed(index, sealed);
+	pages = sift_wbuf_pages(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed);
 	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
@@ -532,13 +532,13 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 	{
 		SiftSegEntry s = snap->segs[i];
 
-		if (s.kind != SIFT_SEG_MUTABLE_SEALED)
+		if (s.kind != SIFT_SEG_WBUF_SEALED)
 			continue;
 		if (!claim(index, s.gen, false))
 			*busy = s.gen;
 		else
 		{
-			if (still_there(index, s.gen, SIFT_SEG_MUTABLE_SEALED))
+			if (still_there(index, s.gen, SIFT_SEG_WBUF_SEALED))
 				r = run_step(index, propagate, promote_one, &s);
 			unclaim(index, s.gen);
 		}
@@ -567,13 +567,13 @@ is_busy(const MergeSel *sel, uint64 gen)
 }
 
 /*
- * The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the mutable limit.
+ * The segments to merge, by the policy shared with the other hosts (sift_merge.h); tiers start at the write buffer limit.
  * dead_only: just a segment mostly dead, as an index with no entries over vacuum_segments has no merge for the count to make.
  */
 static int
 pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_only, MergeSel *msel)
 {
-	SiftMergePolicy pol = {.tier_base = (uint64) sift_index_options(index)->mutable_limit * 1024, .fanin = sift_index_options(index)->merge_fanin,
+	SiftMergePolicy pol = {.tier_base = (uint64) sift_index_options(index)->write_buffer_limit * 1024, .fanin = sift_index_options(index)->merge_fanin,
 						   .dead_pct = sift_index_options(index)->dead_rewrite_pct};
 	SiftDirSnapshot *view = NULL;
 	int			n;
@@ -585,7 +585,7 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_o
 		*view = *snap;
 		for (int i = 0; i < view->nsegs; i++)
 			if (is_busy(msel, view->segs[i].gen))
-				view->segs[i].kind = SIFT_SEG_MUTABLE_SEALED;
+				view->segs[i].kind = SIFT_SEG_WBUF_SEALED;
 	}
 	if (dead_only)
 		n = sift_merge_pick_dead(index, &pol, view ? view : snap, msel->seg);
@@ -876,7 +876,7 @@ sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 		sift_maint_request_worker(index, ops->worker);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
-		nsealed += snap->segs[i].kind == SIFT_SEG_MUTABLE_SEALED;
+		nsealed += snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
 	if (nsealed >= SELF_PROMOTE_SEALED && !in_backoff(&snap->meta))
 		sift_mops_promote(ops, index, false);
 	pfree(snap);
@@ -901,7 +901,7 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
 		else
-			ops->bulkdelete_mutable(index, &snap->segs[i], callback, callback_state, stats);
+			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
@@ -1022,9 +1022,9 @@ bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallb
 }
 
 static void
-bulkdelete_mutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	sift_mut_bulkdelete(index, e, cb, cb_state, stats);
+	sift_wbuf_bulkdelete(index, e, cb, cb_state, stats);
 }
 
 static bool
@@ -1057,11 +1057,11 @@ static const SiftMaintOps bm25_ops = {
 	.step_lock = RowExclusiveLock,
 	.vacuum_to_fixed_point = true,
 	.is_index = is_sift,
-	.seal = sift_mut_seal,
+	.seal = sift_wbuf_seal,
 	.promote_next = promote_next,
 	.merge_next = merge_next,
 	.bulkdelete_immutable = bulkdelete_immutable,
-	.bulkdelete_mutable = bulkdelete_mutable,
+	.bulkdelete_wbuf = bulkdelete_wbuf,
 	.vacuum_truncate = vacuum_truncates,
 	.vacuum_refresh = refresh_dead_tables,
 };

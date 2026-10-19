@@ -1,5 +1,5 @@
 /*
- * sift_mutable.c - mutable segments: aminsert appends doc
+ * sift_wbuf.c - write buffers: aminsert appends doc
  * records to one of SIFT_LANES lane chains of the active segment, each append
  * one generic WAL record. A full active segment is sealed in one directory
  * record and promoted to an immutable one by maintenance.
@@ -23,15 +23,15 @@
 #include "sift_am.h"
 #include "sift_lane.h"
 #include "sift_maint.h"
-#include "sift_mutable.h"
+#include "sift_wbuf.h"
 
 #define corrupt SIFT_CORRUPT
 
-#define MUTPAGE(page)	((SiftMutPageHeaderData *) SiftPageGetData(page))
-#define RECS(page)		(SiftPageGetData(page) + sizeof(SiftMutPageHeaderData))
+#define WBUFPAGE(page)	((SiftWbufPageHeaderData *) SiftPageGetData(page))
+#define RECS(page)		(SiftPageGetData(page) + sizeof(SiftWbufPageHeaderData))
 #define ROOM(page)		(SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page))
 #define RECSIZE(nterms, termbytes) \
-	TYPEALIGN(4, sizeof(SiftMutDocData) + (Size) (nterms) * 6 + (termbytes))
+	TYPEALIGN(4, sizeof(SiftWbufDocData) + (Size) (nterms) * 6 + (termbytes))
 
 /* ---------- bloom ---------- */
 
@@ -46,7 +46,7 @@ bloom_add(uint64 *bloom, uint32 h)
 }
 
 bool
-sift_mut_bloom_has(const uint64 *bloom, uint32 h)
+sift_wbuf_bloom_has(const uint64 *bloom, uint32 h)
 {
 	uint32		a = h & 255,
 				b = (h >> 8) & 255;
@@ -59,45 +59,45 @@ sift_mut_bloom_has(const uint64 *bloom, uint32 h)
 static uint32
 limit_pages(Relation index)
 {
-	return Max(2 * SIFT_LANES, (uint64) sift_index_options(index)->mutable_limit * 1024 / BLCKSZ);
+	return Max(2 * SIFT_LANES, (uint64) sift_index_options(index)->write_buffer_limit * 1024 / BLCKSZ);
 }
 
 static bool has_docs(Relation index, const SiftSegEntry *entry);
 
 void
-sift_mut_flag_sealed(Relation index, const SiftSegEntry *entry)
+sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 {
 	sift_lane_flag_sealed(index, entry);
 }
 
 uint64
-sift_mut_seal(Relation index, bool force)
+sift_wbuf_seal(Relation index, bool force)
 {
-	return sift_lane_seal(index, force, sizeof(SiftMutPageHeaderData), limit_pages(index), has_docs);
+	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), limit_pages(index), has_docs);
 }
 
 /* ---------- append ---------- */
 
 /* Cached per relation: the active segment and the lane tails last seen */
-typedef struct MutHint
+typedef struct WbufHint
 {
 	uint64		gen;			/* 0: unknown */
 	BlockNumber hdr;
 	BlockNumber tail[SIFT_LANES];
-} MutHint;
+} WbufHint;
 
-static MutHint *
+static WbufHint *
 get_hint(Relation index)
 {
 	if (index->rd_amcache == NULL)
-		index->rd_amcache = MemoryContextAllocZero(index->rd_indexcxt, sizeof(MutHint));
+		index->rd_amcache = MemoryContextAllocZero(index->rd_indexcxt, sizeof(WbufHint));
 	return index->rd_amcache;
 }
 
 static void
-refresh_hint(Relation index, MutHint *h, uint32 analyzer_hash)
+refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 {
-	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftMutPageHeaderData), sift_maint_make_room,
+	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftWbufPageHeaderData), sift_maint_make_room,
 					  &h->gen, &h->hdr, h->tail);
 }
 
@@ -109,7 +109,7 @@ fit(Size room, const SiftTermFreq *t, int nterms, int *termbytes)
 				tb = 0;
 
 	*termbytes = 0;
-	if (sizeof(SiftMutDocData) > room)
+	if (sizeof(SiftWbufDocData) > room)
 		return -1;
 	while (n < nterms && RECSIZE(n + 1, tb + t[n].len) <= room)
 		tb += t[n++].len;
@@ -120,10 +120,10 @@ fit(Size room, const SiftTermFreq *t, int nterms, int *termbytes)
 static void
 put_piece(Page page, ItemPointer tid, uint32 dl, bool cont, const SiftTermFreq *t, int n, int termbytes)
 {
-	SiftMutPageHeaderData *ph = MUTPAGE(page);
+	SiftWbufPageHeaderData *ph = WBUFPAGE(page);
 	Size		used = SiftPageGetUsed(page),
 				size = RECSIZE(n, termbytes);
-	SiftMutDocData *d = (SiftMutDocData *) (SiftPageGetData(page) + used);
+	SiftWbufDocData *d = (SiftWbufDocData *) (SiftPageGetData(page) + used);
 	uint32	   *hash = (uint32 *) (d + 1);
 	uint8	   *tf = (uint8 *) (hash + n),
 			   *len = tf + n;
@@ -131,7 +131,7 @@ put_piece(Page page, ItemPointer tid, uint32 dl, bool cont, const SiftTermFreq *
 
 	memset(d, 0, size);
 	d->tid = *tid;
-	d->flags = cont ? SIFT_MUT_CONT : 0;
+	d->flags = cont ? SIFT_WBUF_CONT : 0;
 	d->nterms = n;
 	d->dl = cont ? 0 : dl;
 	d->termbytes = termbytes;
@@ -170,15 +170,15 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 
 	put_piece(cp, a->tid, a->dl, a->cont, a->t, a->n, a->termbytes);
 	if (a->spans)
-		MUTPAGE(cp)->flags |= SIFT_MUTPAGE_SPANS;
+		WBUFPAGE(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 }
 
 /*
  * Writes the doc starting at the locked tail cur; returns whether the segment
- * reached mutable_limit. Leaves the final tail block in *tail.
+ * reached write_buffer_limit. Leaves the final tail block in *tail.
  */
 static bool
-write_doc(Relation index, MutHint *h, int lane, Buffer cur, ItemPointer tid, const SiftTermFreq *t,
+write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, const SiftTermFreq *t,
 		  int nterms, uint32 dl, BlockNumber *tail)
 {
 	bool		crossed = false,
@@ -205,9 +205,9 @@ write_doc(Relation index, MutHint *h, int lane, Buffer cur, ItemPointer tid, con
 			break;
 		}
 		/* a doc that fits an empty page moves there whole rather than splitting */
-		place = n > 0 && !(first && RECSIZE(nterms, whole_bytes) <= SIFT_PAGE_PAYLOAD - sizeof(SiftMutPageHeaderData));
+		place = n > 0 && !(first && RECSIZE(nterms, whole_bytes) <= SIFT_PAGE_PAYLOAD - sizeof(SiftWbufPageHeaderData));
 		pa = (PieceArg) {tid, dl, !first, t + i, n, tb, i + n < nterms};
-		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, sizeof(SiftMutPageHeaderData), limit_pages(index),
+		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, sizeof(SiftWbufPageHeaderData), limit_pages(index),
 							 place ? fill_piece : NULL, &pa, &crossed);
 		if (place)
 		{
@@ -221,9 +221,9 @@ write_doc(Relation index, MutHint *h, int lane, Buffer cur, ItemPointer tid, con
 }
 
 bool
-sift_mut_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
+sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
 {
-	MutHint    *h = get_hint(index);
+	WbufHint    *h = get_hint(index);
 	SiftAnalyzerConfig cfg;
 	Buffer		buf;
 	int			lane;
@@ -267,7 +267,7 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	}
 	t = DatumGetTextPP(values[0]);
 	n = sift_analyze_doc(an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
-	if (sift_mut_append(index, heap_tid, terms, n, dl))
+	if (sift_wbuf_append(index, heap_tid, terms, n, dl))
 		sift_maint_after_seal(index);
 	sift_analyzer_reset(an);
 	return false;
@@ -275,12 +275,12 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 
 /* ---------- reading ---------- */
 
-struct SiftMutReader
+struct SiftWbufReader
 {
 	Relation	index;
 	SiftSegEntry entry;
 	MemoryContext mcxt;
-	SiftMutPageFilter filter;
+	SiftWbufPageFilter filter;
 	void	   *filter_arg;
 	SiftLaneIter it;
 	Page		page;			/* copy of the current page */
@@ -300,11 +300,11 @@ struct SiftMutReader
 	char	   *aterms;
 };
 
-SiftMutReader *
-sift_mut_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, SiftMutPageFilter filter,
+SiftWbufReader *
+sift_wbuf_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, SiftWbufPageFilter filter,
 			  void *filter_arg)
 {
-	SiftMutReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftMutReader));
+	SiftWbufReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftWbufReader));
 
 	r->index = index;
 	r->entry = *entry;
@@ -317,14 +317,14 @@ sift_mut_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, Sif
 }
 
 void
-sift_mut_close(SiftMutReader *r)
+sift_wbuf_close(SiftWbufReader *r)
 {
 	pfree(r->page);
 	pfree(r);
 }
 
 void
-sift_mut_totals(const SiftMutReader *r, uint64 *ndocs, uint64 *sum_dl)
+sift_wbuf_totals(const SiftWbufReader *r, uint64 *ndocs, uint64 *sum_dl)
 {
 	*ndocs = r->ndocs;
 	*sum_dl = r->sum_dl;
@@ -332,50 +332,50 @@ sift_mut_totals(const SiftMutReader *r, uint64 *ndocs, uint64 *sum_dl)
 
 /* Loads the next page of the segment; a page that may span is never filtered out unless force is false and the filter says so */
 static bool
-advance_page(SiftMutReader *r, bool force)
+advance_page(SiftWbufReader *r, bool force)
 {
 	for (;;)
 	{
-		SiftMutPageHeaderData *ph;
+		SiftWbufPageHeaderData *ph;
 
-		if (!sift_lane_iter_next(&r->it, r->page, sizeof(SiftMutPageHeaderData)))
+		if (!sift_lane_iter_next(&r->it, r->page, sizeof(SiftWbufPageHeaderData)))
 			return false;
-		ph = MUTPAGE(r->page);
+		ph = WBUFPAGE(r->page);
 		r->pos = 0;
-		r->used = SiftPageGetUsed(r->page) - sizeof(SiftMutPageHeaderData);
+		r->used = SiftPageGetUsed(r->page) - sizeof(SiftWbufPageHeaderData);
 		r->pflags = ph->flags;
 		r->ndocs += ph->ndocs;
 		r->sum_dl += ph->sum_dl;
-		if (force || !r->filter || (ph->flags & SIFT_MUTPAGE_SPANS) || r->filter(r->filter_arg, ph->bloom))
+		if (force || !r->filter || (ph->flags & SIFT_WBUFPAGE_SPANS) || r->filter(r->filter_arg, ph->bloom))
 			return true;
 		CHECK_FOR_INTERRUPTS();
 	}
 }
 
 /* The record at r->pos, checked; *size its length */
-static const SiftMutDocData *
-rec_at(SiftMutReader *r, Size *size)
+static const SiftWbufDocData *
+rec_at(SiftWbufReader *r, Size *size)
 {
-	const SiftMutDocData *d = (const SiftMutDocData *) (RECS(r->page) + r->pos);
+	const SiftWbufDocData *d = (const SiftWbufDocData *) (RECS(r->page) + r->pos);
 	const uint8 *len;
 	int			sum = 0;
 
-	if (r->pos + sizeof(SiftMutDocData) > r->used)
-		corrupt(r->index, "A record header at byte %zu overruns the %zu used bytes of a mutable page.", r->pos, r->used);
+	if (r->pos + sizeof(SiftWbufDocData) > r->used)
+		corrupt(r->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", r->pos, r->used);
 	*size = RECSIZE(d->nterms, d->termbytes);
 	if (r->pos + *size > r->used)
-		corrupt(r->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a mutable page.",
+		corrupt(r->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a write buffer page.",
 				*size, r->pos, r->used);
 	len = (const uint8 *) (d + 1) + d->nterms * 5;
 	for (int i = 0; i < d->nterms; i++)
 		sum += len[i];
 	if (sum != d->termbytes)
-		corrupt(r->index, "A mutable record lists %u term bytes but its terms add up to %d.", d->termbytes, sum);
+		corrupt(r->index, "A write buffer record lists %u term bytes but its terms add up to %d.", d->termbytes, sum);
 	return d;
 }
 
 static void
-asm_piece(SiftMutReader *r, const SiftMutDocData *d)
+asm_piece(SiftWbufReader *r, const SiftWbufDocData *d)
 {
 	const uint32 *hash = (const uint32 *) (d + 1);
 	const uint8 *tf = (const uint8 *) (hash + d->nterms),
@@ -405,11 +405,11 @@ asm_piece(SiftMutReader *r, const SiftMutDocData *d)
 }
 
 bool
-sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
+sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
 {
 	for (;;)
 	{
-		const SiftMutDocData *d;
+		const SiftWbufDocData *d;
 		Size		size;
 
 		if (r->pos >= r->used)
@@ -419,13 +419,13 @@ sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
 			continue;
 		}
 		d = rec_at(r, &size);
-		if (d->flags & SIFT_MUT_CONT)
+		if (d->flags & SIFT_WBUF_CONT)
 			corrupt(r->index, "A continuation record of segment %llu has no first piece.", (unsigned long long) r->entry.gen);
 		doc->tid = d->tid;
 		doc->dl = d->dl;
-		doc->deleted = (d->flags & SIFT_MUT_DELETED) != 0;
+		doc->deleted = (d->flags & SIFT_WBUF_DELETED) != 0;
 		r->pos += size;
-		if (r->pos < r->used || !(r->pflags & SIFT_MUTPAGE_SPANS) || !BlockNumberIsValid(r->it.nextblk))
+		if (r->pos < r->used || !(r->pflags & SIFT_WBUFPAGE_SPANS) || !BlockNumberIsValid(r->it.nextblk))
 		{
 			const uint32 *hash = (const uint32 *) (d + 1);
 
@@ -441,10 +441,10 @@ sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
 		for (;;)
 		{
 			asm_piece(r, d);
-			if (r->pos < r->used || !(r->pflags & SIFT_MUTPAGE_SPANS) || !advance_page(r, true) || r->pos >= r->used)
+			if (r->pos < r->used || !(r->pflags & SIFT_WBUFPAGE_SPANS) || !advance_page(r, true) || r->pos >= r->used)
 				break;
 			d = rec_at(r, &size);
-			if (!(d->flags & SIFT_MUT_CONT))
+			if (!(d->flags & SIFT_WBUF_CONT))
 				break;
 			r->pos += size;
 		}
@@ -460,18 +460,18 @@ sift_mut_next(SiftMutReader *r, SiftMutDoc *doc)
 static bool
 has_docs(Relation index, const SiftSegEntry *entry)
 {
-	SiftMutReader *r = sift_mut_open(index, entry, CurrentMemoryContext, NULL, NULL);
-	SiftMutDoc	doc;
-	bool		any = sift_mut_next(r, &doc);
+	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL);
+	SiftWbufDoc	doc;
+	bool		any = sift_wbuf_next(r, &doc);
 
-	sift_mut_close(r);
+	sift_wbuf_close(r);
 	return any;
 }
 
 /* ---------- pages ---------- */
 
 SiftExtent *
-sift_mut_pages(Relation index, const SiftSegEntry *entry, int *n)
+sift_wbuf_pages(Relation index, const SiftSegEntry *entry, int *n)
 {
 	return sift_lane_extents(index, entry, n);
 }
@@ -481,17 +481,17 @@ sift_mut_pages(Relation index, const SiftSegEntry *entry, int *n)
 static int
 collect_docs(void *arg, Page page, Size *offs, ItemPointerData *tids)
 {
-	SiftMutReader *r = arg;
+	SiftWbufReader *r = arg;
 	int			n = 0;
 
 	r->pos = 0;
-	r->used = SiftPageGetUsed(page) - sizeof(SiftMutPageHeaderData);
+	r->used = SiftPageGetUsed(page) - sizeof(SiftWbufPageHeaderData);
 	while (r->pos < r->used)
 	{
 		Size		size;
-		const SiftMutDocData *d = rec_at(r, &size);
+		const SiftWbufDocData *d = rec_at(r, &size);
 
-		if (!(d->flags & (SIFT_MUT_CONT | SIFT_MUT_DELETED)))
+		if (!(d->flags & (SIFT_WBUF_CONT | SIFT_WBUF_DELETED)))
 		{
 			offs[n] = r->pos;
 			tids[n++] = d->tid;
@@ -504,18 +504,18 @@ collect_docs(void *arg, Page page, Size *offs, ItemPointerData *tids)
 static void
 flag_doc(Page page, Size off)
 {
-	((SiftMutDocData *) (RECS(page) + off))->flags |= SIFT_MUT_DELETED;
+	((SiftWbufDocData *) (RECS(page) + off))->flags |= SIFT_WBUF_DELETED;
 }
 
 int64
-sift_mut_bulkdelete(Relation index, const SiftSegEntry *entry, IndexBulkDeleteCallback cb, void *cbstate,
+sift_wbuf_bulkdelete(Relation index, const SiftSegEntry *entry, IndexBulkDeleteCallback cb, void *cbstate,
 					IndexBulkDeleteResult *stats)
 {
-	SiftMutReader *r = sift_mut_open(index, entry, CurrentMemoryContext, NULL, NULL);
-	int64		removed = sift_lane_bulkdelete(index, entry, sizeof(SiftMutPageHeaderData), sizeof(SiftMutDocData), r->page,
+	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL);
+	int64		removed = sift_lane_bulkdelete(index, entry, sizeof(SiftWbufPageHeaderData), sizeof(SiftWbufDocData), r->page,
 											   collect_docs, flag_doc, r, cb, cbstate, stats);
 
-	sift_mut_close(r);
+	sift_wbuf_close(r);
 	return removed;
 }
 
@@ -523,7 +523,7 @@ sift_mut_bulkdelete(Relation index, const SiftSegEntry *entry, IndexBulkDeleteCa
 
 typedef struct VerifyState
 {
-	SiftMutReader *r;
+	SiftWbufReader *r;
 	uint64		gen;
 	uint64		live;
 } VerifyState;
@@ -532,50 +532,50 @@ static void
 verify_page(void *arg, Page page, BlockNumber blk)
 {
 	VerifyState *v = arg;
-	SiftMutReader *r = v->r;
-	SiftMutPageHeaderData *ph = MUTPAGE(page);
+	SiftWbufReader *r = v->r;
+	SiftWbufPageHeaderData *ph = WBUFPAGE(page);
 	uint64		ndocs = 0,
 				sum_dl = 0,
 				bloom[4] = {0};
 
 	memcpy(r->page, page, BLCKSZ);
 	r->pos = 0;
-	r->used = SiftPageGetUsed(page) - sizeof(SiftMutPageHeaderData);
+	r->used = SiftPageGetUsed(page) - sizeof(SiftWbufPageHeaderData);
 	while (r->pos < r->used)
 	{
 		Size		size;
-		const SiftMutDocData *d = rec_at(r, &size);
+		const SiftWbufDocData *d = rec_at(r, &size);
 		const uint32 *hash = (const uint32 *) (d + 1);
 
-		if (!ItemPointerIsValid(&d->tid) || (d->flags & ~(SIFT_MUT_DELETED | SIFT_MUT_CONT)))
-			corrupt(r->index, "A record of mutable segment %llu has tid (%u,%u) and flags %x.",
+		if (!ItemPointerIsValid(&d->tid) || (d->flags & ~(SIFT_WBUF_DELETED | SIFT_WBUF_CONT)))
+			corrupt(r->index, "A record of write buffer %llu has tid (%u,%u) and flags %x.",
 					(unsigned long long) v->gen, ItemPointerGetBlockNumberNoCheck(&d->tid),
 					ItemPointerGetOffsetNumberNoCheck(&d->tid), d->flags);
 		for (int i = 0; i < d->nterms; i++)
 			bloom_add(bloom, hash[i]);
-		if (!(d->flags & SIFT_MUT_CONT))
+		if (!(d->flags & SIFT_WBUF_CONT))
 		{
 			ndocs++;
 			sum_dl += d->dl;
-			v->live += !(d->flags & SIFT_MUT_DELETED);
+			v->live += !(d->flags & SIFT_WBUF_DELETED);
 		}
 		r->pos += size;
 	}
 	if (ndocs != ph->ndocs || sum_dl != ph->sum_dl)
-		corrupt(r->index, "Mutable block %u holds %llu docs and %llu tokens, its header %u and %u.", blk,
+		corrupt(r->index, "Write buffer block %u holds %llu docs and %llu tokens, its header %u and %u.", blk,
 				(unsigned long long) ndocs, (unsigned long long) sum_dl, ph->ndocs, ph->sum_dl);
 	for (int i = 0; i < 4; i++)
 		if (bloom[i] & ~ph->bloom[i])
-			corrupt(r->index, "The bloom filter of mutable block %u misses a term of its records.", blk);
+			corrupt(r->index, "The bloom filter of write buffer block %u misses a term of its records.", blk);
 }
 
 uint64
-sift_mut_verify(Relation index, const SiftSegEntry *entry)
+sift_wbuf_verify(Relation index, const SiftSegEntry *entry)
 {
-	VerifyState v = {sift_mut_open(index, entry, CurrentMemoryContext, NULL, NULL), entry->gen, 0};
+	VerifyState v = {sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL), entry->gen, 0};
 
-	sift_lane_verify(index, entry, sizeof(SiftMutPageHeaderData), verify_page, &v);
-	sift_mut_close(v.r);
+	sift_lane_verify(index, entry, sizeof(SiftWbufPageHeaderData), verify_page, &v);
+	sift_wbuf_close(v.r);
 	return v.live;
 }
 
@@ -586,16 +586,16 @@ no_page(void *arg, const uint64 *bloom)
 }
 
 void
-sift_mut_summary(Relation index, const SiftSegEntry *entry, uint64 *ndocs, uint64 *sum_dl, uint64 *npages)
+sift_wbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *ndocs, uint64 *sum_dl, uint64 *npages)
 {
-	SiftMutHeaderData hdr;
-	SiftMutReader *r = sift_mut_open(index, entry, CurrentMemoryContext, no_page, NULL);
-	SiftMutDoc	d;
+	SiftWbufHeaderData hdr;
+	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, no_page, NULL);
+	SiftWbufDoc	d;
 
-	while (sift_mut_next(r, &d))
+	while (sift_wbuf_next(r, &d))
 		;
-	sift_mut_totals(r, ndocs, sum_dl);
-	sift_mut_close(r);
+	sift_wbuf_totals(r, ndocs, sum_dl);
+	sift_wbuf_close(r);
 	sift_lane_read_header(index, entry, &hdr);
 	*npages = 1 + sift_lane_npages(&hdr);
 }

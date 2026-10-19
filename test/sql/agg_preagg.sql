@@ -87,10 +87,10 @@ CREATE TABLE ac (LIKE ap);
 CREATE TABLE ao (LIKE ap);
 INSERT INTO ac SELECT * FROM ap;
 INSERT INTO ao SELECT * FROM ap;
-CREATE INDEX ap_col ON ap USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (mutable_limit = 4096);
+CREATE INDEX ap_col ON ap USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096);
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts)
-	WITH (mutable_limit = 4096, preagg = 'cube(grp: amt, qty, huge; cat: amt; d: amt; qty: amt)');
-CREATE INDEX ao_col ON ao USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (mutable_limit = 4096, preagg = 'off');
+	WITH (write_buffer_limit = 4096, preagg = 'cube(grp: amt, qty, huge; cat: amt; d: amt; qty: amt)');
+CREATE INDEX ao_col ON ao USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096, preagg = 'off');
 VACUUM ANALYZE ap, ac, ao;
 SELECT sift.col_verify('ac_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');

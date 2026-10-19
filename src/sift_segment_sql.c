@@ -23,7 +23,7 @@
 
 #include "sift_analyze.h"
 #include "sift_kernels.h"
-#include "sift_mutable.h"
+#include "sift_wbuf.h"
 #include "sift_ops.h"
 #include "sift_segment.h"
 #include "sift_sql.h"
@@ -56,10 +56,10 @@ kind_name(uint8 kind)
 	{
 		case SIFT_SEG_IMMUTABLE:
 			return "immutable";
-		case SIFT_SEG_MUTABLE_ACTIVE:
-			return "mutable";
-		case SIFT_SEG_MUTABLE_SEALED:
-			return "sealed";
+		case SIFT_SEG_WBUF_OPEN:
+			return "buffer";
+		case SIFT_SEG_WBUF_SEALED:
+			return "sealed buffer";
 	}
 	return "unknown";
 }
@@ -102,7 +102,7 @@ sift_segments(PG_FUNCTION_ARGS)
 						sum_dl,
 						npages;
 
-			sift_mut_summary(index, e, &ndocs, &sum_dl, &npages);
+			sift_wbuf_summary(index, e, &ndocs, &sum_dl, &npages);
 			v[2] = Int64GetDatum(ndocs);
 			v[3] = Int64GetDatum(sum_dl);
 			v[4] = Float8GetDatum(ndocs ? (double) sum_dl / ndocs : 0);
@@ -304,12 +304,12 @@ dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const 
 }
 
 static void
-add_mutable(bloom_filter *bf, Relation index, const SiftSegEntry *e)
+add_wbuf(bloom_filter *bf, Relation index, const SiftSegEntry *e)
 {
-	SiftMutReader *r = sift_mut_open(index, e, CurrentMemoryContext, NULL, NULL);
-	SiftMutDoc	d;
+	SiftWbufReader *r = sift_wbuf_open(index, e, CurrentMemoryContext, NULL, NULL);
+	SiftWbufDoc	d;
 
-	while (sift_mut_next(r, &d))
+	while (sift_wbuf_next(r, &d))
 	{
 		SiftKey		key = sift_key_from_tid(&d.tid);
 		const char *t = d.terms;
@@ -320,7 +320,7 @@ add_mutable(bloom_filter *bf, Relation index, const SiftSegEntry *e)
 		for (int i = 0; i < d.nterms; t += d.len[i++])
 			fp_add(bf, sift_term_hash64(t, d.len[i]), key, d.tf[i]);
 	}
-	sift_mut_close(r);
+	sift_wbuf_close(r);
 }
 
 static void
@@ -381,7 +381,7 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 			sift_seg_close(seg);
 		}
 		else
-			add_mutable(hc.bf, index, &snap->segs[i]);
+			add_wbuf(hc.bf, index, &snap->segs[i]);
 	}
 	sift_analyzer_config_from_index(index, &cfg);
 	hc.an = sift_analyzer_create(&cfg, cxt);
@@ -435,7 +435,7 @@ sift_verify(PG_FUNCTION_ARGS)
 
 		if (e->kind != SIFT_SEG_IMMUTABLE)
 		{
-			nelems += sift_mut_verify(index, e);
+			nelems += sift_wbuf_verify(index, e);
 			continue;
 		}
 		ndocs += e->ndocs;

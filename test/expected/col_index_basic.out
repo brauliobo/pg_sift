@@ -40,11 +40,11 @@ ERROR:  the paths option names "other", which is not a jsonb column of the index
 HINT:  A path starts with the name of an indexed jsonb column.
 CREATE INDEX o_paths3 ON orders USING sift_col (payload) WITH (paths = 'payload.a[].b[].c int4');
 ERROR:  sift_col holds one level of arrays and objects: "payload.a[].b[]" is nested in another
-CREATE INDEX o_limit ON orders USING sift_col (tenant_id) WITH (mutable_limit = 1);
-ERROR:  value 1 out of bounds for option "mutable_limit"
+CREATE INDEX o_limit ON orders USING sift_col (tenant_id) WITH (write_buffer_limit = 1);
+ERROR:  value 1 out of bounds for option "write_buffer_limit"
 DETAIL:  Valid values are between "64" and "1048576".
 CREATE INDEX o_empty ON orders USING sift_col (tenant_id, status, amount, discount, placed, paid_at, express, qty);
-SELECT relation_blocks, high_water, free_blocks, segments, max_segments, rows, bytes, units, mutable_segments, leaves, maintenance_busy
+SELECT relation_blocks, high_water, free_blocks, segments, max_segments, rows, bytes, units, buffers, leaves, maintenance_busy
 FROM sift.col_index_info('o_empty') \gx
 -[ RECORD 1 ]----+----
 relation_blocks  | 2
@@ -55,7 +55,7 @@ max_segments     | 128
 rows             | 0
 bytes            | 0
 units            | 0
-mutable_segments | 0
+buffers          | 0
 leaves           | 8
 maintenance_busy | f
 
@@ -166,7 +166,7 @@ SELECT i, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN '' WHEN i % 5 = 0 T
 			   WHEN i % 3 = 0 THEN repeat('abc', 50 + i % 3000) ELSE 'short' || i % 40 END
 FROM generate_series(1, 6000) i;
 INSERT INTO longs VALUES (6001, repeat('x', 1000000)), (6002, repeat('x', 1000000)), (6003, repeat('x', 999999) || 'y');
-CREATE INDEX l_idx ON longs USING sift_col (s) WITH (mutable_limit = 64);
+CREATE INDEX l_idx ON longs USING sift_col (s) WITH (write_buffer_limit = 64);
 SELECT sift.col_verify('l_idx', true);
  col_verify 
 ------------
@@ -247,7 +247,7 @@ SELECT inline_chunks > 0 AS inline FROM sift.col_leaves('l_idx');
  t
 (1 row)
 
--- rows added to the mutable lane, then sealed and merged
+-- rows added to the write buffer, then sealed and merged
 INSERT INTO longs SELECT 7000 + i, repeat('q', 300 + i) FROM generate_series(1, 50) i;
 INSERT INTO longs SELECT 8000 + i, 'short' || i FROM generate_series(1, 50) i;
 SELECT col_cmp('l_idx', '0:eq:' || repeat('q', 320), 's = ' || quote_literal(repeat('q', 320)));
@@ -362,10 +362,10 @@ SELECT count(*) AS overflowed FROM sift._test_col_read('jl_idx', 0, '') WHERE va
 
 DROP TABLE jl;
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, amount, discount, placed, paid_at, express, qty);
-SELECT leaves, segments, mutable_segments, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
- leaves | segments | mutable_segments | rows_match 
---------+----------+------------------+------------
-      8 |        1 |                0 | t
+SELECT leaves, segments, buffers, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
+ leaves | segments | buffers | rows_match 
+--------+----------+---------+------------
+      8 |        1 |       0 | t
 (1 row)
 
 SELECT sift.col_verify('o_col', true);
@@ -479,10 +479,10 @@ SELECT n, preds, col_cmp('o_col', preds, heapwhere) FROM col_checks ORDER BY n;
  49 | 0:eq:7;1:eq:paid;2:gt:0;3:lt:100;6:eq:1;7:gt:0 | ok
 (49 rows)
 
--- Without the mutable segments the result is the same (nothing is there yet), with the visibility check skipped it can only grow
-SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_mutable_same FROM col_checks;
- no_mutable_same 
------------------
+-- Without the write buffers the result is the same (nothing is there yet), with the visibility check skipped it can only grow
+SELECT bool_and(col_cmp('o_col', preds, heapwhere, 1) = 'ok') AS no_wbuf_same FROM col_checks;
+ no_wbuf_same 
+--------------
  t
 (1 row)
 
@@ -622,7 +622,7 @@ SELECT col_cmp('o_col', '', 'true');
 (1 row)
 
 VACUUM orders;
--- the heap is read only for the rows of the mutable lane (a batch copied when the scan began: its pages never count as all-visible)
+-- the heap is read only for the rows of the write buffer (a batch copied when the scan began: its pages never count as all-visible)
 SELECT rows_vetted, heap_pages FROM sift._test_col_counters('o_col', '0:ge:0');
  rows_vetted | heap_pages 
 -------------+------------

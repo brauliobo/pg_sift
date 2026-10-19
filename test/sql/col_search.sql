@@ -20,7 +20,7 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 41 = 0 THEN NULL ELSE cs_words(i) END
 FROM generate_series(1, 24000) i;
 CREATE INDEX cs_bm ON cs USING sift (memo);
-CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (mutable_limit = 256);
+CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) cs;
 
 -- the plans that are not SiftAgg are disabled for the pushed run; the reference has the planner's own choice with sift.enable_agg off
@@ -118,7 +118,7 @@ SELECT cs_mode(true);
 EXPLAIN (COSTS OFF) SELECT status, count(*) FROM cs WHERE memo @@> 'clean wire' AND amount > 50 GROUP BY status;
 ROLLBACK;
 
--- inserts land in the mutable segments of both indexes, unvacuumed
+-- inserts land in the write buffers of both indexes, unvacuumed
 INSERT INTO cs (store, status, amount, placed, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40, (ARRAY['paid','shipped'])[1 + i % 2], 20 + i % 90, date '2025-06-01' + i % 20, cs_words(i + 100000)
 FROM generate_series(1, 2000) i;
@@ -144,7 +144,7 @@ SELECT * FROM cs_stage('rollback');
 VACUUM cs;
 SELECT * FROM cs_stage('vacuum');
 
--- and after the mutable segments become immutable ones
+-- and after the write buffers become immutable ones
 SELECT sift.col_promote('cs_col');
 SELECT * FROM cs_stage('promote');
 

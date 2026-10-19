@@ -1,5 +1,5 @@
 -- SiftAgg over a sift_col index whose text is longer than a dictionary entry: units that store it inline, mixed with units that use
--- the dictionary, the mutable lane, a merge. Every query runs with and without the pushdown; the results must be the same.
+-- the dictionary, the write buffer, a merge. Every query runs with and without the pushdown; the results must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
@@ -37,7 +37,7 @@ INSERT INTO ag SELECT i, i % 5,
 		 ELSE md5(i::text) || repeat('x', 200 + i % 100) END,
 	CASE i % 17 WHEN 0 THEN NULL WHEN 1 THEN -0.0 ELSE i / 8.0 END, i % 100
 FROM generate_series(1, 30000) i;
-CREATE INDEX ag_col ON ag USING sift_col (id, g, s, f, n) WITH (mutable_limit = 4096);
+CREATE INDEX ag_col ON ag USING sift_col (id, g, s, f, n) WITH (write_buffer_limit = 4096);
 VACUUM ANALYZE ag;
 SELECT sift.col_verify('ag_col', true);
  col_verify 
@@ -66,7 +66,7 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
  SELECT s, count(*) FROM ag WHERE s IS NOT NULL GROUP BY s HAVING count(*) > 1                              | t      | t
 (10 rows)
 
--- rows in the mutable lane, then sealed, then deleted and merged
+-- rows in the write buffer, then sealed, then deleted and merged
 INSERT INTO ag SELECT 40000 + i, i % 5, CASE WHEN i % 3 = 0 THEN repeat('é', 160) || '3' ELSE 'short' || i % 20 END, i, i % 100 FROM generate_series(1, 500) i;
 SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM agg_q) z ORDER BY query COLLATE "C";
                                                    query                                                    | pushed | same 

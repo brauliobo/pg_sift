@@ -1,4 +1,4 @@
--- The sift_col index under writes: inserts land in mutable segments, promotion and merge turn them into immutable ones, VACUUM clears the
+-- The sift_col index under writes: inserts land in write buffers, promotion and merge turn them into immutable ones, VACUUM clears the
 -- liveness bits, aborted work and HOT chains stay invisible or consistent. Every stage is compared with the heap and verified.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -36,7 +36,7 @@ END $$;
 CREATE FUNCTION kinds() RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	SELECT string_agg(kind || ':' || n, ' ' ORDER BY kind) INTO r FROM (SELECT CASE kind WHEN 'immutable' THEN 'immutable' ELSE 'mutable' END AS kind, count(*) AS n
+	SELECT string_agg(kind || ':' || n, ' ' ORDER BY kind) INTO r FROM (SELECT CASE kind WHEN 'immutable' THEN 'immutable' ELSE 'buffer' END AS kind, count(*) AS n
 	FROM sift.col_segments('o_col') GROUP BY 1) s;
 	RETURN r;
 END $$;
@@ -45,11 +45,11 @@ CREATE TABLE orders (id serial PRIMARY KEY, tenant_id int, status text, qty bigi
 INSERT INTO orders (tenant_id, status, qty, express)
 SELECT (i * 7919) % 1000 - 500, (ARRAY['new', 'paid', 'shipped'])[1 + i % 3], (i::bigint * 104729) % 100000, i % 2 = 0 FROM generate_series(1, 15000) i;
 UPDATE orders SET status = NULL WHERE id % 17 = 0;
-CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (mutable_limit = 64);
+CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (write_buffer_limit = 64);
 SELECT 'build', stage('o_col');
 SELECT kinds();
 
--- inserts go to the mutable segment, which is read together with the immutable ones
+-- inserts go to the write buffer, which is read together with the immutable ones
 INSERT INTO orders (tenant_id, status, qty, express) SELECT i % 100, 'paid', i, true FROM generate_series(1, 5000) i;
 SELECT 'insert', stage('o_col'), kinds();
 SELECT sift.col_verify('o_col', true);
@@ -80,7 +80,7 @@ ROLLBACK;
 SELECT 'aborted update', stage('o_col');
 SELECT sift.col_verify('o_col', true);
 
--- VACUUM clears the liveness bits of dead rows; the mutable records of dead rows are flagged
+-- VACUUM clears the liveness bits of dead rows; the write buffer records of dead rows are flagged
 VACUUM orders;
 SELECT 'vacuum', stage('o_col');
 SELECT sift.col_verify('o_col', true);
@@ -91,7 +91,7 @@ SELECT sift.col_promote('o_col') >= 0 AS promoted;
 SELECT 'promote', stage('o_col'), kinds();
 SELECT sift.col_verify('o_col', true);
 
--- a new batch in a fresh mutable segment, then a merge of everything into one segment without the dead rows
+-- a new batch in a fresh write buffer, then a merge of everything into one segment without the dead rows
 INSERT INTO orders (tenant_id, status, qty, express) SELECT i % 50, 'new', i, false FROM generate_series(1, 5000) i;
 SELECT 'insert 2', stage('o_col');
 SELECT sift.col_promote('o_col') >= 0 AS promoted;
@@ -102,7 +102,7 @@ SELECT count(*) FILTER (WHERE kind = 'immutable') AS immutable, sum(rows) FILTER
 FROM sift.col_segments('o_col');
 SELECT sift.col_verify('o_col', true);
 
--- a mutable limit this small seals the active segment while inserting
+-- a write buffer limit this small seals the active segment while inserting
 INSERT INTO orders (tenant_id, status, qty, express) SELECT i % 70, 'shipped', i, true FROM generate_series(1, 20000) i;
 SELECT 'bulk insert', stage('o_col');
 SELECT sift.col_verify('o_col', true);

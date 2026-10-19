@@ -19,7 +19,7 @@
 #   1. ids 1..1500, then CREATE INDEX      -> immutable segment gen 1
 #   2. ids 1501..2900, sift.promote        -> immutable segment gen 4
 #   3. DELETE id <= 1500 AND id % 10 = 3 (150 rows), VACUUM -> gen 1 is dirty with 150 dead documents
-#   4. ids 2901..3000                      -> 100 documents in the mutable segment gen 3
+#   4. ids 2901..3000                      -> 100 documents in the write buffer gen 3
 #   5. VACUUM FREEZE, CHECKPOINT, clean shutdown, copy of the files
 # sift.segments (gen kind ndocs dirty dead_docs): 1 immutable 1500 t 150 | 3 mutable 100 f | 4 immutable 1400 f 0.
 # 2850 rows are left (sum(id) 4389300). expected.txt is the output of queries.sql (counts and sum(id) of eight queries,

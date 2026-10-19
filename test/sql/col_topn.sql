@@ -23,7 +23,7 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 41 = 0 THEN NULL ELSE ct_words(i) END
 FROM generate_series(1, 24000) i;
 CREATE INDEX ct_bm ON ct USING sift (memo);
-CREATE INDEX ct_col ON ct USING sift_col (id, store, status, amount, placed, ts, seq, f) WITH (mutable_limit = 256);
+CREATE INDEX ct_col ON ct USING sift_col (id, store, status, amount, placed, ts, seq, f) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) ct;
 
 CREATE FUNCTION ct_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
@@ -134,7 +134,7 @@ SET sift.enable_topn = off;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
 RESET sift.enable_topn;
 
--- inserts land in the mutable segments of both indexes, unvacuumed
+-- inserts land in the write buffers of both indexes, unvacuumed
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40, (ARRAY['paid','shipped'])[1 + i % 2], 20 + i % 90, date '2025-06-01' + i % 20,
 	   timestamp '2025-01-01' + i * interval '1 minute', 100000 + i, i / 3.0, ct_words(i + 100000)
@@ -162,7 +162,7 @@ SELECT * FROM ct_stage('rollback');
 VACUUM ct;
 SELECT * FROM ct_stage('vacuum');
 
--- and after the mutable segments become immutable ones
+-- and after the write buffers become immutable ones
 SELECT sift.col_promote('ct_col');
 SELECT * FROM ct_stage('promote');
 

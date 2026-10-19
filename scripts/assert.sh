@@ -17,7 +17,7 @@ PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(store_basic store_corrupt index_build_postings phrase_positions verify_corrupt query_errors colcodec_basic col_enc
-	col_index_basic col_mut shred_values tbl_basic tbl_agg)
+	col_index_basic col_wbuf shred_values tbl_basic tbl_agg)
 TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
 # the logs of the servers (TAP nodes included) must be clean of what the tests do not check
 BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request'

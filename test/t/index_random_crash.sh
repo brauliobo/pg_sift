@@ -20,7 +20,7 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE rk (id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO rk SELECT g, concat_ws(' ', 'w' || g % 7, 'w' || g % 13, 'w' || g % 101, CASE WHEN g % 5 = 0 THEN 'rare' END, 'doc' || g)
 	FROM generate_series(1, @ROWS@) g;
-CREATE INDEX rk_idx ON rk USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX rk_idx ON rk USING sift (body) WITH (write_buffer_limit = 64);
 CREATE FUNCTION ids(q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
 DECLARE r text;
 BEGIN

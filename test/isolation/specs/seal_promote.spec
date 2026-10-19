@@ -1,4 +1,4 @@
-# Inserts racing the seal of the active mutable segment and its promotion,
+# Inserts racing the seal of the open write buffer and its promotion,
 # with the inserting transaction committed or rolled back afterwards.
 # requires: build insert scan promote verify
 
@@ -6,7 +6,7 @@ setup
 {
 	CREATE TABLE iso_seal (id int, body text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_seal SELECT g, 'seed doc ' || g FROM generate_series(1, 200) g;
-	CREATE INDEX iso_seal_idx ON iso_seal USING sift (body) WITH (mutable_limit = 64);
+	CREATE INDEX iso_seal_idx ON iso_seal USING sift (body) WITH (write_buffer_limit = 64);
 }
 
 teardown

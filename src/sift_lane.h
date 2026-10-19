@@ -1,8 +1,8 @@
 /*
- * sift_lane.h - the lane chains of a mutable segment, shared by the doc records of sift_mutable.c and the row records
- * of sift_col_mut.c: segment creation and sealing, the tail lock, page growth, page walks. What a record looks like is the caller's.
+ * sift_lane.h - the lane chains of a write buffer, shared by the doc records of sift_wbuf.c and the row records
+ * of sift_col_wbuf.c: segment creation and sealing, the tail lock, page growth, page walks. What a record looks like is the caller's.
  *
- * The data pages of both start with SiftLanePageHead, at the offsets of SiftMutPageHeaderData, so the store's walkers
+ * The data pages of both start with SiftLanePageHead, at the offsets of SiftWbufPageHeaderData, so the store's walkers
  * (sift_store_referenced_blocks, sift_store_orphans, sift_store_verify) follow `next` of either unchanged. The caller's page header
  * is `hdrsize` bytes and extends the head.
  */
@@ -17,15 +17,15 @@ typedef struct SiftLanePageHead
 {
 	BlockNumber next;
 	uint16		nrecs;			/* records started on this page (deleted included) */
-	uint16		flags;			/* SIFT_MUTPAGE_* */
+	uint16		flags;			/* SIFT_WBUFPAGE_* */
 } SiftLanePageHead;
 
-StaticAssertDecl(offsetof(SiftMutPageHeaderData, next) == offsetof(SiftLanePageHead, next) &&
-				 offsetof(SiftMutPageHeaderData, ndocs) == offsetof(SiftLanePageHead, nrecs) &&
-				 offsetof(SiftMutPageHeaderData, flags) == offsetof(SiftLanePageHead, flags),
-				 "lane page heads must agree with the store's view of a mutable page");
+StaticAssertDecl(offsetof(SiftWbufPageHeaderData, next) == offsetof(SiftLanePageHead, next) &&
+				 offsetof(SiftWbufPageHeaderData, ndocs) == offsetof(SiftLanePageHead, nrecs) &&
+				 offsetof(SiftWbufPageHeaderData, flags) == offsetof(SiftLanePageHead, flags),
+				 "lane page heads must agree with the store's view of a write buffer page");
 
-#define SiftLaneHdr(page)		((SiftMutHeaderData *) SiftPageGetData(page))
+#define SiftLaneHdr(page)		((SiftWbufHeaderData *) SiftPageGetData(page))
 #define SiftLaneHead(page)		((SiftLanePageHead *) SiftPageGetData(page))
 #define SiftLaneRecs(page, hdrsize)	(SiftPageGetData(page) + (hdrsize))
 #define SiftLaneRoom(page)		(SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page))
@@ -33,9 +33,9 @@ StaticAssertDecl(offsetof(SiftMutPageHeaderData, next) == offsetof(SiftLanePageH
 extern void sift_lane_init_page(Page page, Size hdrsize);
 /* The header page of a segment whose first nlanes lanes are the consecutive pages first.. (the other lanes are empty: no head) */
 extern void sift_lane_init_header(Page page, uint64 gen, BlockNumber first, int nlanes);
-extern uint32 sift_lane_npages(const SiftMutHeaderData *hdr);
+extern uint32 sift_lane_npages(const SiftWbufHeaderData *hdr);
 extern Buffer sift_lane_read_locked(Relation index, BlockNumber blk, int mode);
-extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftMutHeaderData *hdr);
+extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbufHeaderData *hdr);
 
 /* ---------- segments ---------- */
 

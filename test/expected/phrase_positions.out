@@ -1,6 +1,6 @@
 -- Word positions: a required phrase is decided by the index, which reads no heap text. Counts and
 -- ranked results with their scores equal positions = off (heap recheck) and sift.match, through
--- mutable segments, promotion, merge, deletes and VACUUM.
+-- write buffers, promotion, merge, deletes and VACUUM.
 CREATE EXTENSION pg_sift;
 CREATE TABLE po (id int PRIMARY KEY, body text);
 CREATE TABLE pf (id int PRIMARY KEY, body text);
@@ -140,7 +140,7 @@ SELECT heap_checks('pr', '"quux zork"') AS rare, heap_checks('pr', '"quux zork b
 (1 row)
 
 DROP TABLE pr;
--- documents in mutable segments have no positions: the heap decides them, the rest stays in the index
+-- documents in write buffers have no positions: the heap decides them, the rest stays in the index
 INSERT INTO po SELECT 1000 + i, 'fox red running ' || 'x' || i % 4 FROM generate_series(1, 40) i;
 INSERT INTO pf SELECT * FROM po WHERE id > 1000;
 SELECT * FROM diffs();
@@ -148,9 +148,9 @@ SELECT * FROM diffs();
 ---+-----------+-------+--------
 (0 rows)
 
-SELECT heap_checks('po', '"red running"') > 0 AS mutable_rechecked;
- mutable_rechecked 
--------------------
+SELECT heap_checks('po', '"red running"') > 0 AS wbuf_rechecked;
+ wbuf_rechecked 
+----------------
  t
 (1 row)
 

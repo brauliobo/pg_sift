@@ -3,7 +3,7 @@
 # units. The scan keeps the rows its snapshot sees and, at the end,
 # fetches the n winners from the heap by TID: a row of a tuple that VACUUM removed after the snapshot, on a page it made all-visible, would
 # be a winner that is not in the heap ("top-N row is not in the heap"). The scan (sift.test_agg_wait) waits for an advisory lock after it
-# opens, which the test holds until the statements are done: no timing involved. Stored units, a unit that was already dirty, the mutable lane.
+# opens, which the test holds until the statements are done: no timing involved. Stored units, a unit that was already dirty, the write buffer.
 . "$(dirname "$0")/lib.bash"
 
 plan 4
@@ -48,8 +48,8 @@ sql vs "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, 
 race dirty
 check "dirty units: the top-N returns the rows of its snapshot" test "$(differ dirty)" == 0
 
-# the mutable lane
-sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (mutable_limit = 65536)" \
+# the write buffer
+sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO lane SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM lane" "DELETE FROM lane WHERE id % 5 = 0" >/dev/null || bail "setup lane failed"
 race lane
 check "lane rows: the top-N returns the rows of its snapshot" test "$(differ lane)" == 0

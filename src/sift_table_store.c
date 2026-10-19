@@ -1,8 +1,8 @@
 /*
- * sift_table_store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, delta
- * segments (the row-format write buffer) and the tombstone segment. Pages and the directory are those of sift_store.h.
+ * sift_table_store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, write
+ * buffers (row format) and the tombstone segment. Pages and the directory are those of sift_store.h.
  *
- * The page chains (a delta segment's data pages, the tombstone log) are the lane 0 of the lane segments of sift_lane.h, which also
+ * The page chains (a write buffer's data pages, the tombstone log) are the lane 0 of the lane segments of sift_lane.h, which also
  * seals them and takes the segment directory swaps; what differs from the record segments of the BM25 and column indexes is the
  * page format (slots of rows, tombstone entries), the single lane (a row must keep its vblock = position in the chain) and that
  * rows go to any unsealed page a backend holds, not just the tail. Lock order as there: the chain tail, the newly allocated page,
@@ -33,8 +33,8 @@
 			 errmsg("sift_table relation \"%s\" is corrupted", RelationGetRelationName(rel)), \
 			 errdetail(__VA_ARGS__)))
 
-int			sift_tbl_delta_limit = 4096;	/* kB */
-int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write segment at least */
+int			sift_tbl_write_buffer_limit = 4096;	/* kB */
+int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 
 /* ---------- the per relation cache ---------- */
@@ -163,9 +163,9 @@ is_tomb(const SiftSegEntry *e)
 }
 
 static bool
-is_delta(const SiftSegEntry *e)
+is_wbuf(const SiftSegEntry *e)
 {
-	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_DELTA);
+	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_WBUF);
 }
 
 static const SiftSegEntry *
@@ -194,16 +194,16 @@ static SiftSegEntry
 new_tomb_segment(Relation rel)
 {
 	uint64		gen = sift_store_new_gen(rel);
-	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_MUTHEADER, gen);
-	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_MUTDATA, gen);
+	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
+	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 	GenericXLogState *state = GenericXLogStart(rel);
 	Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
 	Page		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
-	SiftSegEntry e = {.gen = gen,.kind = SIFT_SEG_MUTABLE_ACTIVE,.flags = SIFT_TBL_SEG_TOMB,.header_blk = BufferGetBlockNumber(hbuf)};
+	SiftSegEntry e = {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_TOMB,.header_blk = BufferGetBlockNumber(hbuf)};
 
 	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
 	TBL_TOMB_HDR(hp)->magic = SIFT_TBL_TOMB_MAGIC;
-	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblTombHdr));
+	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTblTombHdr));
 	sift_lane_init_page(dp, TBL_TOMB_PAGE_INIT);
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(hbuf);
@@ -252,15 +252,15 @@ sift_tbl_ensure_init(Relation rel)
 void
 sift_tbl_refresh(Relation rel, SiftTblRel *st)
 {
-	SiftTblSeg *old = st->delta;
-	int			nold = st->ndelta,
+	SiftTblSeg *old = st->wbuf;
+	int			nold = st->nwbuf,
 				n = 0;
 
 	if (RelationGetNumberOfBlocks(rel) == 0)
 	{
 		st->initialized = false;
 		st->dir.nsegs = 0;
-		st->ndelta = 0;
+		st->nwbuf = 0;
 		return;
 	}
 	sift_dir_read(rel, &st->dir);
@@ -268,17 +268,17 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 		corrupt(rel, "The metapage does not carry the sift_table flag (0x%x).", st->dir.meta.flags);
 	st->initialized = true;
 	for (int i = 0; i < st->dir.nsegs; i++)
-		n += is_delta(&st->dir.segs[i]);
-	st->delta = MemoryContextAllocZero(st->cxt, Max(n, 1) * sizeof(SiftTblSeg));
-	st->ndelta = 0;
+		n += is_wbuf(&st->dir.segs[i]);
+	st->wbuf = MemoryContextAllocZero(st->cxt, Max(n, 1) * sizeof(SiftTblSeg));
+	st->nwbuf = 0;
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		const SiftSegEntry *e = &st->dir.segs[i];
 		SiftTblSeg *s;
 
-		if (!is_delta(e))
+		if (!is_wbuf(e))
 			continue;
-		s = &st->delta[st->ndelta++];
+		s = &st->wbuf[st->nwbuf++];
 		for (int j = 0; j < nold; j++)
 			if (old[j].gen == e->gen)
 				*s = old[j];
@@ -300,17 +300,17 @@ sift_tbl_nvblocks(Relation rel)
 	return st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) : 0;
 }
 
-/* ---------- delta segments ---------- */
+/* ---------- write buffers ---------- */
 
 typedef struct SwapArg
 {
-	uint64		sealed;			/* gen of the active delta being replaced, 0 for none */
+	uint64		sealed;			/* gen of the open write buffer being replaced, 0 for none */
 	SiftSegEntry fresh;
 	uint64		next_vblock;
 } SwapArg;
 
 static void
-swap_delta(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+swap_wbuf(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
 	SwapArg    *a = arg;
 
@@ -319,20 +319,20 @@ swap_delta(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 }
 
 static uint32
-delta_vcap(void)
+wbuf_vcap(void)
 {
-	uint32		pages = Min((uint64) sift_tbl_delta_limit * 1024 / BLCKSZ, SIFT_TBL_MAX_DELTA_PAGES);
+	uint32		pages = Min((uint64) sift_tbl_write_buffer_limit * 1024 / BLCKSZ, SIFT_TBL_MAX_WBUF_PAGES);
 
 	return Max(1, pages / SIFT_TBL_VBLOCKS_SB) * SIFT_TBL_VBLOCKS_SB;
 }
 
 /*
- * Replaces the active delta segment (if any, and if it is still the one the caller saw: seen) with a fresh one. The first page of
+ * Replaces the open write buffer segment (if any, and if it is still the one the caller saw: seen) with a fresh one. The first page of
  * the fresh segment is returned for the caller's appends, flagged flags, its vblock in *vblock; InvalidBlockNumber when another
  * backend was first.
  */
 static BlockNumber
-create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vblock, uint64 *newgen)
+create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vblock, uint64 *newgen)
 {
 	const SiftSegEntry *act;
 	BlockNumber first = InvalidBlockNumber;
@@ -340,11 +340,11 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(rel, &st->dir);
-	act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
+	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
 	if ((act ? act->gen : 0) == seen)
 	{
 		SwapArg		arg = {0};
-		uint32		vcap = delta_vcap();
+		uint32		vcap = wbuf_vcap();
 		uint64		gen,
 					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
@@ -357,8 +357,8 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-					 errdetail("Too many unsealed delta segments: the rows of running transactions cannot be sealed, and one transaction can write about %d MB.",
-							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_delta_limit / 1024)),
+					 errdetail("Too many write buffers waiting for promotion: the rows of running transactions cannot be promoted, and one transaction can write about %d MB.",
+							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_write_buffer_limit / 1024)),
 					 errhint("Load in several transactions, or run VACUUM on the table once the old transactions end.")));
 		if (act)
 			old = *act;
@@ -368,72 +368,72 @@ create_delta(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vb
 					 errmsg("sift_table \"%s\" exhausted its TIDs", RelationGetRelationName(rel)),
 					 errhint("Run VACUUM FULL on the table.")));
 		gen = sift_store_new_gen(rel);
-		hbuf = sift_alloc_page(rel, SIFT_PT_MUTHEADER, gen);
-		dbuf = sift_alloc_page(rel, SIFT_PT_MUTDATA, gen);
+		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
+		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		first = BufferGetBlockNumber(dbuf);
 		state = GenericXLogStart(rel);
 		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
 		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
 		sift_lane_init_header(hp, gen, first, 1);
-		TBL_DELTA_HDR(hp)->magic = SIFT_TBL_DELTA_MAGIC;
-		TBL_DELTA_HDR(hp)->vbase = vbase;
-		TBL_DELTA_HDR(hp)->vcap = vcap;
-		TBL_DELTA_HDR(hp)->npages = 1;
-		TBL_DELTA_HDR(hp)->page[0] = first;
-		SiftPageSetUsed(hp, TBL_DELTA_HDR_USED);
+		TBL_WBUF_HDR(hp)->magic = SIFT_TBL_WBUF_MAGIC;
+		TBL_WBUF_HDR(hp)->vbase = vbase;
+		TBL_WBUF_HDR(hp)->vcap = vcap;
+		TBL_WBUF_HDR(hp)->npages = 1;
+		TBL_WBUF_HDR(hp)->page[0] = first;
+		SiftPageSetUsed(hp, TBL_WBUF_HDR_USED);
 		init_data_page(dp, vbase, flags);
 		*vblock = vbase;
 		*newgen = gen;
 		GenericXLogFinish(state);
 		arg.sealed = act ? act->gen : 0;
 		arg.next_vblock = vbase + vcap;
-		arg.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_MUTABLE_ACTIVE,.flags = SIFT_TBL_SEG_DELTA,
+		arg.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_WBUF,
 		.header_blk = BufferGetBlockNumber(hbuf),.sb_lo = vbase / SIFT_TBL_VBLOCKS_SB,
 		.sb_hi = (vbase + vcap) / SIFT_TBL_VBLOCKS_SB - 1};
 		UnlockReleaseBuffer(hbuf);
 		UnlockReleaseBuffer(dbuf);
-		sift_dir_update(rel, &(SiftDirChange) {.fn = swap_delta,.arg = &arg,.extra = InvalidBuffer});
+		sift_dir_update(rel, &(SiftDirChange) {.fn = swap_wbuf,.arg = &arg,.extra = InvalidBuffer});
 	}
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	if (old.gen)
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
-	if (old.gen && sift_tbl_inline_seal)
+	if (old.gen && sift_tbl_inline_promote)
 		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel));
 	return first;
 }
 
 void
-sift_tbl_close_delta(Relation rel, SiftTblRel *st, uint32 minpages)
+sift_tbl_close_wbuf(Relation rel, SiftTblRel *st, uint32 minpages)
 {
 	const SiftSegEntry *act;
 	uint32		vblock;
 	uint64		gen;
 
 	sift_tbl_refresh(rel, st);
-	if (!st->initialized || (act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE)) == NULL)
+	if (!st->initialized || (act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN)) == NULL)
 		return;
-	for (int i = 0; i < st->ndelta; i++)
-		if (st->delta[i].gen == act->gen)
+	for (int i = 0; i < st->nwbuf; i++)
+		if (st->wbuf[i].gen == act->gen)
 		{
-			sift_tbl_seg_load(rel, &st->delta[i]);
-			if (st->delta[i].npages < minpages)
+			sift_tbl_seg_load(rel, &st->wbuf[i]);
+			if (st->wbuf[i].npages < minpages)
 				return;
 		}
-	(void) create_delta(rel, st, act->gen, 0, &vblock, &gen);
+	(void) create_wbuf(rel, st, act->gen, 0, &vblock, &gen);
 }
 
-/* The page of delta segment seg for vblock vbase + idx (the table is extended from the header when it is behind) */
+/* The page of write buffer seg for vblock vbase + idx (the table is extended from the header when it is behind) */
 BlockNumber
-sift_tbl_delta_page(Relation rel, SiftTblSeg *seg, uint32 idx)
+sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx)
 {
 	if (idx >= seg->npages)
 	{
 		Buffer		buf = sift_lane_read_locked(rel, seg->hdr, BUFFER_LOCK_SHARE);
-		const SiftTblDeltaHdr *h;
+		const SiftTblWbufHdr *h;
 
-		sift_store_check_page(rel, buf, SIFT_PT_MUTHEADER, seg->gen);
-		h = TBL_DELTA_HDR(BufferGetPage(buf));
+		sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, seg->gen);
+		h = TBL_WBUF_HDR(BufferGetPage(buf));
 		seg->npages = h->npages;
 		memcpy(seg->page, h->page, h->npages * sizeof(BlockNumber));
 		UnlockReleaseBuffer(buf);
@@ -441,14 +441,14 @@ sift_tbl_delta_page(Relation rel, SiftTblSeg *seg, uint32 idx)
 	return idx < seg->npages ? seg->page[idx] : InvalidBlockNumber;
 }
 
-/* Is the delta segment act still open to new pages: its header is its own and the vblocks reserved are not all in use; *tail: its last page */
+/* Is the write buffer act still open to new pages: its header is its own and the vblocks reserved are not all in use; *tail: its last page */
 static bool
-delta_open(Relation rel, const SiftSegEntry *act, BlockNumber *tail)
+wbuf_open(Relation rel, const SiftSegEntry *act, BlockNumber *tail)
 {
 	Buffer		hbuf = sift_lane_read_locked(rel, act->header_blk, BUFFER_LOCK_SHARE);
 	Page		hp = BufferGetPage(hbuf);
-	bool		open = !PageIsNew(hp) && SiftPageGetOpaque(hp)->type == SIFT_PT_MUTHEADER && SiftPageGetOpaque(hp)->gen == act->gen &&
-		TBL_DELTA_HDR(hp)->npages < TBL_DELTA_HDR(hp)->vcap;
+	bool		open = !PageIsNew(hp) && SiftPageGetOpaque(hp)->type == SIFT_PT_WBUFHEADER && SiftPageGetOpaque(hp)->gen == act->gen &&
+		TBL_WBUF_HDR(hp)->npages < TBL_WBUF_HDR(hp)->vcap;
 
 	if (open)
 		*tail = SiftLaneHdr(hp)->lanes[0].tail;
@@ -456,18 +456,18 @@ delta_open(Relation rel, const SiftSegEntry *act, BlockNumber *tail)
 	return open;
 }
 
-typedef struct DeltaLink
+typedef struct WbufLink
 {
 	uint16		flags;
 	uint32		vblock;
-} DeltaLink;
+} WbufLink;
 
 /* sift_lane_grow's fill: the new page is the next vblock of the segment, and enters its page table */
 static void
-link_delta_page(Page cur, Page np, Page hp, void *arg)
+link_wbuf_page(Page cur, Page np, Page hp, void *arg)
 {
-	DeltaLink  *l = arg;
-	SiftTblDeltaHdr *h = TBL_DELTA_HDR(hp);
+	WbufLink  *l = arg;
+	SiftTblWbufHdr *h = TBL_WBUF_HDR(hp);
 
 	l->vblock = h->vbase + h->npages;
 	init_data_page(np, l->vblock, l->flags);
@@ -475,27 +475,27 @@ link_delta_page(Page cur, Page np, Page hp, void *arg)
 }
 
 /*
- * Links a page after the tail of the delta segment act, initialized, flagged flags, unlocked, its vblock in *vblock. InvalidBlockNumber
- * when the segment is sealed, full or gone. The segment is full when its vblocks are used up (delta_open under the tail lock, which
+ * Links a page after the tail of the write buffer act, initialized, flagged flags, unlocked, its vblock in *vblock. InvalidBlockNumber
+ * when the segment is sealed, full or gone. The segment is full when its vblocks are used up (wbuf_open under the tail lock, which
  * is what the growers of the chain hold).
  */
 static BlockNumber
-extend_delta(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock)
+extend_wbuf(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock)
 {
-	DeltaLink	link = {.flags = flags};
+	WbufLink	link = {.flags = flags};
 	BlockNumber tail;
 	Buffer		cur;
 	int			lane;
 	bool		crossed;
 
-	if (!delta_open(rel, act, &tail) || !BufferIsValid(cur = sift_lane_lock_tail(rel, act->gen, &tail, 1, &lane)))
+	if (!wbuf_open(rel, act, &tail) || !BufferIsValid(cur = sift_lane_lock_tail(rel, act->gen, &tail, 1, &lane)))
 		return InvalidBlockNumber;
-	if (!delta_open(rel, act, &tail))
+	if (!wbuf_open(rel, act, &tail))
 	{
 		UnlockReleaseBuffer(cur);
 		return InvalidBlockNumber;
 	}
-	cur = sift_lane_grow(rel, act->gen, act->header_blk, lane, cur, TBL_PAGE_INIT, PG_UINT32_MAX, link_delta_page, &link, &crossed);
+	cur = sift_lane_grow(rel, act->gen, act->header_blk, lane, cur, TBL_PAGE_INIT, PG_UINT32_MAX, link_wbuf_page, &link, &crossed);
 	tail = BufferGetBlockNumber(cur);
 	UnlockReleaseBuffer(cur);
 	*vblock = link.vblock;
@@ -503,7 +503,7 @@ extend_delta(Relation rel, const SiftSegEntry *act, uint16 flags, uint32 *vblock
 }
 
 /*
- * Adds a page to the active delta segment (creating the segment when needed) and returns it, initialized and unlocked,
+ * Adds a page to the open write buffer segment (creating the segment when needed) and returns it, initialized and unlocked,
  * its vblock in *vblock and its segment's generation in *gen.
  */
 static BlockNumber
@@ -515,18 +515,18 @@ claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock, uint64 *g
 		BlockNumber blk;
 
 		sift_tbl_refresh(rel, st);
-		act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
-		if (act && BlockNumberIsValid(blk = extend_delta(rel, act, flags, vblock)))
+		act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+		if (act && BlockNumberIsValid(blk = extend_wbuf(rel, act, flags, vblock)))
 		{
 			*gen = act->gen;
 			return blk;
 		}
-		if (BlockNumberIsValid(blk = create_delta(rel, st, act ? act->gen : 0, flags, vblock, gen)))
+		if (BlockNumberIsValid(blk = create_wbuf(rel, st, act ? act->gen : 0, flags, vblock, gen)))
 			return blk;
 	}
 }
 
-/* A page of the delta segment gen, which must still be the active one and have room; InvalidBlockNumber otherwise */
+/* A page of the write buffer gen, which must still be the active one and have room; InvalidBlockNumber otherwise */
 static BlockNumber
 claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags)
 {
@@ -534,24 +534,24 @@ claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags)
 	uint32		vb;
 
 	sift_tbl_refresh(rel, st);
-	act = find_seg(&st->dir, is_delta, SIFT_SEG_MUTABLE_ACTIVE);
-	return act && act->gen == gen ? extend_delta(rel, act, flags, &vb) : InvalidBlockNumber;
+	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+	return act && act->gen == gen ? extend_wbuf(rel, act, flags, &vb) : InvalidBlockNumber;
 }
 
-/* The record of TID offset off in a delta page (locked or a copy); NULL when there is none */
+/* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
 const SiftTblRec *
 sift_tbl_page_rec(Page page, uint64 gen, uint32 off)
 {
 	const SiftTblPageHdr *ph = TBL_PAGE(page);
 
-	if (PageIsNew(page) || SiftPageGetOpaque(page)->type != SIFT_PT_MUTDATA || SiftPageGetOpaque(page)->gen != gen ||
+	if (PageIsNew(page) || SiftPageGetOpaque(page)->type != SIFT_PT_WBUFDATA || SiftPageGetOpaque(page)->gen != gen ||
 		(ph->flags & SIFT_TBL_PAGE_OVFDATA) || off < 1 || off > ph->nrows || ph->slot[off - 1] == 0)
 		return NULL;
 	return (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
 }
 
 /*
- * Writes the bytes of a row that does not fit a page into overflow pages of the delta segment gen (chained front to back); returns the
+ * Writes the bytes of a row that does not fit a page into overflow pages of the write buffer gen (chained front to back); returns the
  * first block, InvalidBlockNumber when the segment cannot take them (sealed meanwhile, or full: the caller moves to the next segment).
  * They must share the segment of the row's record: the record's reader checks them against its generation, and reclaiming a segment
  * must take every byte of its rows.
@@ -563,11 +563,11 @@ write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 	BlockNumber *blks = palloc(npg * sizeof(BlockNumber));
 	BlockNumber first = InvalidBlockNumber;
 
-	if (npg >= delta_vcap())
+	if (npg >= wbuf_vcap())
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
-				 errdetail("A row has to fit one delta segment of %u kB.", sift_tbl_delta_limit)));
+				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit)));
 	for (uint32 i = 0; i < npg; i++)
 		if (!BlockNumberIsValid(blks[i] = claim_page_in(rel, st, gen, SIFT_TBL_PAGE_OVFDATA)))
 			goto done;
@@ -630,7 +630,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 		}
 		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
-		if (!PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_MUTDATA &&
+		if (!PageIsNew(page) && SiftPageGetOpaque(page)->type == SIFT_PT_WBUFDATA &&
 			!(TBL_PAGE(page)->flags & (SIFT_TBL_PAGE_SEALED | SIFT_TBL_PAGE_OVFDATA)) &&
 			TBL_PAGE(page)->nrows < SIFT_TBL_MAX_OFF && SiftPageGetUsed(page) + need <= SIFT_PAGE_PAYLOAD &&
 			SiftPageGetOpaque(page)->gen == st->tgt_gen)
@@ -676,7 +676,7 @@ sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key)
 			Page		p = BufferGetPage(buf);
 			uint32		n = Min(SiftPageGetUsed(p) - TBL_PAGE_INIT, rec->len - got);
 
-			sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, gen);
+			sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, gen);
 			memcpy((char *) mt + got, (char *) TBL_PAGE(p) + TBL_PAGE_INIT, n);
 			got += n;
 			blk = TBL_PAGE(p)->ovf_next;
@@ -693,7 +693,7 @@ sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key)
 void
 sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec)
 {
-	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.delta = true,.xmin = rec->xmin,.cmin = rec->cmin,.flags = rec->flags,
+	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = true,.xmin = rec->xmin,.cmin = rec->cmin,.flags = rec->flags,
 	.token = rec->token};
 }
 
@@ -724,20 +724,20 @@ fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool
 		return false;
 	for (int retry = 0; retry < 2; retry++)
 	{
-		for (int i = 0; i < st->ndelta; i++)
+		for (int i = 0; i < st->nwbuf; i++)
 		{
-			SiftTblSeg *seg = &st->delta[i];
+			SiftTblSeg *seg = &st->wbuf[i];
 			BlockNumber blk;
 			Buffer		buf;
 			const SiftTblRec *rec;
 
 			if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
 				continue;
-			blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
+			blk = sift_tbl_wbuf_page(rel, seg, vblock - seg->vbase);
 			if (!BlockNumberIsValid(blk))
 				return false;
 			buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
-			sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+			sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 			rec = sift_tbl_page_rec(BufferGetPage(buf), seg->gen, off);
 			if (rec == NULL)
 			{
@@ -782,9 +782,9 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 
-	for (int i = 0; i < st->ndelta; i++)
+	for (int i = 0; i < st->nwbuf; i++)
 	{
-		SiftTblSeg *seg = &st->delta[i];
+		SiftTblSeg *seg = &st->wbuf[i];
 		BlockNumber blk;
 		Buffer		buf;
 		GenericXLogState *state;
@@ -792,11 +792,11 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 
 		if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
 			continue;
-		blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
+		blk = sift_tbl_wbuf_page(rel, seg, vblock - seg->vbase);
 		if (!BlockNumberIsValid(blk))
 			break;
 		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_EXCLUSIVE);
-		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 		if (sift_tbl_page_rec(BufferGetPage(buf), seg->gen, ItemPointerGetOffsetNumberNoCheck(tid)) != NULL)
 		{
 			state = GenericXLogStart(rel);
@@ -891,7 +891,7 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 	if (e->gen != st->tomb_gen)
 		tomb_reset(st, e);
 	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
-	sift_store_check_page(rel, buf, SIFT_PT_MUTHEADER, e->gen);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
 	n = TBL_TOMB_HDR(BufferGetPage(buf))->nentries;
 	blk = BlockNumberIsValid(st->tomb_last) ? st->tomb_last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
 	UnlockReleaseBuffer(buf);
@@ -903,7 +903,7 @@ sift_tbl_tomb_sync(Relation rel, SiftTblRel *st)
 		uint32		from = blk == st->tomb_last ? st->tomb_lastcnt : 0;
 
 		buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
-		sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, e->gen);
+		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, e->gen);
 		tp = TBL_TOMB_PAGE(BufferGetPage(buf));
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
@@ -1001,7 +1001,7 @@ sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid
 {
 	const SiftSegEntry *e;
 	SiftTblTomb ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind};
-	SiftMutHeaderData hdr;
+	SiftWbufHeaderData hdr;
 	Buffer		cur,
 				hbuf;
 	GenericXLogState *state;
@@ -1038,28 +1038,28 @@ void
 sift_tbl_seg_load(Relation rel, SiftTblSeg *seg)
 {
 	seg->npages = 0;
-	(void) sift_tbl_delta_page(rel, seg, 0);
+	(void) sift_tbl_wbuf_page(rel, seg, 0);
 }
 
-/* Copies the delta page of vblock into copy (BLCKSZ bytes); false when no delta segment holds it. *gen: its segment's generation */
+/* Copies the write buffer page of vblock into copy (BLCKSZ bytes); false when no write buffer holds it. *gen: its segment's generation */
 bool
 sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen)
 {
 	for (int retry = 0; retry < 2; retry++)
 	{
-		for (int i = 0; i < st->ndelta; i++)
+		for (int i = 0; i < st->nwbuf; i++)
 		{
-			SiftTblSeg *seg = &st->delta[i];
+			SiftTblSeg *seg = &st->wbuf[i];
 			BlockNumber blk;
 			Buffer		buf;
 
 			if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
 				continue;
-			blk = sift_tbl_delta_page(rel, seg, vblock - seg->vbase);
+			blk = sift_tbl_wbuf_page(rel, seg, vblock - seg->vbase);
 			if (!BlockNumberIsValid(blk))
 				return false;
 			buf = sift_lane_read_locked(rel, blk, BUFFER_LOCK_SHARE);
-			sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+			sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 			memcpy(copy, BufferGetPage(buf), BLCKSZ);
 			UnlockReleaseBuffer(buf);
 			*gen = seg->gen;
@@ -1113,10 +1113,10 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 	sift_tbl_tomb_sync(rel, st);
 	tomb_flatten(st);
 	gen = sift_store_new_gen(rel);
-	hbuf = sift_alloc_page(rel, SIFT_PT_MUTHEADER, gen);
+	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	for (uint32 i = 0; i < st->nents;)
 	{
-		Buffer		nb = sift_alloc_page(rel, SIFT_PT_MUTDATA, gen);
+		Buffer		nb = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		GenericXLogState *state = GenericXLogStart(rel);
 		Page		np,
 					pp = NULL;
@@ -1146,7 +1146,7 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 	}
 	if (!BufferIsValid(prev))		/* nothing kept: one empty page, a lane always has a head */
 	{
-		prev = sift_alloc_page(rel, SIFT_PT_MUTDATA, gen);
+		prev = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		head = BufferGetBlockNumber(prev);
 		{
 			GenericXLogState *state = GenericXLogStart(rel);
@@ -1168,10 +1168,10 @@ sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *
 		SiftLaneHdr(hp)->lanes[0].npages = npages;
 		TBL_TOMB_HDR(hp)->magic = SIFT_TBL_TOMB_MAGIC;
 		TBL_TOMB_HDR(hp)->nentries = kept;
-		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftMutHeaderData)) + sizeof(SiftTblTombHdr));
+		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTblTombHdr));
 		GenericXLogFinish(state);
 	}
-	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_MUTABLE_ACTIVE,.flags = SIFT_TBL_SEG_TOMB,
+	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_TOMB,
 	.header_blk = BufferGetBlockNumber(hbuf)};
 	UnlockReleaseBuffer(hbuf);
 	rel_ext = sift_lane_extents(rel, old, &nrel);
@@ -1187,6 +1187,6 @@ sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx)
 {
 	Buffer		buf = sift_lane_read_locked(rel, seg->page[idx], BUFFER_LOCK_EXCLUSIVE);
 
-	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 	return buf;
 }

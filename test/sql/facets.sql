@@ -1,5 +1,5 @@
 -- Keyword facets: sift.facets() counts per value of a keyword index equal GROUP BY count(*) over the
--- rows the query matches, through updates, deletes, VACUUM, segment maintenance and mutable rows
+-- rows the query matches, through updates, deletes, VACUUM, segment maintenance and write buffer rows
 CREATE EXTENSION pg_sift;
 
 -- testing builds also exercise bitmap (GROUPED) postings for the larger values; the pad spreads the rows over several superblocks
@@ -13,7 +13,7 @@ SELECT i, 'w' || i % 10 || ' common x' || i % 7,
 	(ARRAY[NULL, '', 'Alpha', 'alpha', 'ALPHA', 'Café', 'cafe', 'CAFÉ', 'gamma delta', 'Beta', 'beta', 'Zeta'])[1 + i % 12],
 	't' || i % 5, 'k' || i % 2500, repeat('p', 1000)
 FROM generate_series(1, 6000) i;
-CREATE INDEX d_body ON d USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX d_body ON d USING sift (body) WITH (write_buffer_limit = 64);
 -- folded: case and accent folding on (the default); raw: values kept byte for byte
 CREATE INDEX d_cat ON d USING sift (cat) WITH (analyzer = keyword);
 CREATE INDEX d_raw ON d USING sift (cat) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 2);
@@ -85,11 +85,11 @@ SET sift.simd = 'scalar';
 SELECT * FROM fac_summary('scalar');
 RESET sift.simd;
 
--- mutable rows: inserts after the build, in the mutable segment of every index
+-- write buffer rows: inserts after the build, in the write buffer of every index
 INSERT INTO d SELECT i, 'w' || i % 10 || ' common x' || i % 7,
 	(ARRAY[NULL, '', 'Alpha', 'alpha', 'newcat', 'Café', 'cafe', 'CAFÉ', 'gamma delta', 'Beta', 'beta', 'Zeta'])[1 + i % 12],
 	't' || i % 5, 'k' || (i + 100) % 2600, repeat('p', 1000) FROM generate_series(6001, 7000) i;
-SELECT * FROM fac_summary('mutable');
+SELECT * FROM fac_summary('buffer');
 
 -- deleted rows, not vacuumed (dead tuples the index still holds)
 DELETE FROM d WHERE id % 9 = 0;

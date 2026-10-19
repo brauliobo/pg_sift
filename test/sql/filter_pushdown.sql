@@ -184,7 +184,7 @@ SELECT count(*) FROM (SELECT id FROM fd WHERE body @@> 'common' AND tenant = 7 O
 SELECT id FROM fd WHERE body @@> 'w3 OR x2' AND tenant = 7 ORDER BY sift.score(ctid) DESC, id LIMIT 3 OFFSET 2;
 RESET sift.filter_pushdown;
 
--- rows in every state: HOT and other updates, deletes, inserts (mutable segments), before and after VACUUM,
+-- rows in every state: HOT and other updates, deletes, inserts (write buffers), before and after VACUUM,
 -- promotion and merge
 UPDATE fd SET pad = pad || 'z' WHERE id % 50 = 0;
 UPDATE fd SET tenant = (tenant + 1) % 500 WHERE id % 97 = 0;

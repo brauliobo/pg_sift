@@ -15,7 +15,7 @@ node_start vg || bail "start failed"
 D=$(dir vg)
 sql vg "CREATE EXTENSION pg_sift" "CREATE TABLE st (id serial, body text, cat text, n int)" \
 	"INSERT INTO st (body, cat, n) SELECT 'zzword w' || i || ' x' || (i % 97), 'c' || (i % 7), i % 100 FROM generate_series(1, $ROWS) i" \
-	"CREATE INDEX st_col ON st USING sift_col (cat, n)" "CREATE INDEX st_idx ON st USING sift (body) WITH (mutable_limit = 4096, build_segments = 4)" "VACUUM ANALYZE st" \
+	"CREATE INDEX st_col ON st USING sift_col (cat, n)" "CREATE INDEX st_idx ON st USING sift (body) WITH (write_buffer_limit = 4096, build_segments = 4)" "VACUUM ANALYZE st" \
 	"CREATE TABLE diffs (agg text, heap text)" \
 	"CREATE FUNCTION chk() RETURNS void LANGUAGE plpgsql AS \$\$ DECLARE a text; b text; BEGIN
 	PERFORM set_config('enable_seqscan', 'off', true);

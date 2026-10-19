@@ -1,6 +1,6 @@
 /*
  * sift_varint.h - LEB128 varints and zigzag, the one codec of the byte formats (posting positions, term blocks, bitmap lists,
- * mutable row records). Portable (C library only).
+ * write buffer row records). Portable (C library only).
  */
 #ifndef SIFT_VARINT_H
 #define SIFT_VARINT_H

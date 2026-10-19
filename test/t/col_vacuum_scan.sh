@@ -2,7 +2,7 @@
 # A VACUUM that runs while a sift_col scan is open (after its snapshot and directory, before it reads the units). The scan must return exactly
 # the rows its snapshot sees: a tuple deleted before the snapshot and removed by that VACUUM is not one of them, however the VACUUM leaves
 # the heap pages (all-visible) and the liveness of the unit. Stored units, a unit that was already dirty,
-# segments that a merge replaced before the VACUUM, the mutable lane, and the lane next to stored units. The scan (sift._test_col_tids,
+# segments that a merge replaced before the VACUUM, the write buffer, and the lane next to stored units. The scan (sift._test_col_tids,
 # flag 4) waits for an advisory lock after it opens, which the test holds until the statements are done: no timing involved.
 . "$(dirname "$0")/lib.bash"
 
@@ -51,9 +51,9 @@ check "dirty units: the scan returns the rows of its snapshot" test "$(differ di
 check "dirty units: the index verifies" test "$(sql vs "SELECT sift.col_verify('dirty_idx', true)" 2>&1)" == ""
 
 # a merge replaces the segments of the scan's directory copy before the VACUUM: the VACUUM flags the merged segment, never the ones the scan reads
-# (the index is built empty, the inserts fill small mutable segments, which are promoted: several immutable segments)
+# (the index is built empty, the inserts fill small write buffers, which are promoted: several immutable segments)
 IMM="SELECT count(*) FROM sift.col_segments('merged_idx') WHERE kind = 'immutable'"
-sql vs "CREATE TABLE merged (id int, g int, n int)" "CREATE INDEX merged_idx ON merged USING sift_col (id, g, n) WITH (mutable_limit = 64)" \
+sql vs "CREATE TABLE merged (id int, g int, n int)" "CREATE INDEX merged_idx ON merged USING sift_col (id, g, n) WITH (write_buffer_limit = 64)" \
 	"INSERT INTO merged SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM merged" "DELETE FROM merged WHERE id % 5 = 0" >/dev/null || bail "setup merged failed"
 before=$(sql vs "$IMM")
 [[ $before -gt 1 ]] || bail "the index has $before immutable segments: nothing to merge"
@@ -62,20 +62,20 @@ check "merged segments: the merge replaced the segments under the scan" test "$(
 check "merged segments: the scan returns the rows of its snapshot" test "$(differ merged)" == 0
 check "merged segments: the index verifies" test "$(sql vs "SELECT sift.col_verify('merged_idx', true)" 2>&1)" == ""
 
-# the mutable lane, and the lane next to stored units
-sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (mutable_limit = 65536)" \
+# the write buffer, and the lane next to stored units
+sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO lane SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM lane" "DELETE FROM lane WHERE id % 5 = 0" >/dev/null || bail "setup lane failed"
 race lane
 check "lane rows: the scan returns the rows of its snapshot" test "$(differ lane)" == 0
 sql vs "CREATE TABLE mixed (id int, g int, n int)" "INSERT INTO mixed SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
-	"CREATE INDEX mixed_idx ON mixed USING sift_col (id, g, n) WITH (mutable_limit = 65536)" \
+	"CREATE INDEX mixed_idx ON mixed USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO mixed SELECT i, i % 7, i % 100 FROM generate_series(20001, 40000) i" "VACUUM mixed" "DELETE FROM mixed WHERE id % 5 = 0" >/dev/null || bail "setup mixed failed"
 race mixed
 check "stored units and lane rows: the scan returns the rows of its snapshot" test "$(differ mixed)" == 0
 
 # the rows of a snapshot survive DML, VACUUM, promotion and a merge that replace the segments under the open scan
 sql vs "CREATE TABLE churn (id int, g int, n int)" "INSERT INTO churn SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
-	"CREATE INDEX churn_idx ON churn USING sift_col (id, g, n) WITH (mutable_limit = 65536)" \
+	"CREATE INDEX churn_idx ON churn USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO churn SELECT i, i % 7, i % 100 FROM generate_series(20001, 30000) i" "DELETE FROM churn WHERE id % 5 = 0" "VACUUM churn" >/dev/null || bail "setup churn failed"
 race churn "UPDATE churn SET n = n + 1 WHERE id % 3 = 0" "DELETE FROM churn WHERE id % 11 = 0" "INSERT INTO churn SELECT i, 1, 1 FROM generate_series(30001, 33000) i" \
 	"VACUUM churn" "SELECT sift.col_promote('churn_idx')" "SELECT sift.col_merge('churn_idx', true)" "VACUUM churn"

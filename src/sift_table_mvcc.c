@@ -1,7 +1,7 @@
 /*
  * sift_table_mvcc.c - visibility of a row version of a sift_table under every snapshot type (docs/COL-TAM.md section 3).
  *
- * A version is visible when its insertion is (delta record: xmin/cmin; column group: frozen, or the segment's xmin) and no
+ * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the segment's xmin) and no
  * DELETE or UPDATE tombstone of it counts as a deletion for the snapshot. LOCK tombstones never delete.
  */
 #include "postgres.h"

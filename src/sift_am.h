@@ -16,7 +16,7 @@ extern IndexBuildResult *sift_ambuild(Relation heap, Relation index, struct Inde
 extern void sift_ambuildempty(Relation index);
 extern char *sift_ambuildphasename(int64 phase);
 
-/* sift_mutable.c */
+/* sift_wbuf.c */
 extern bool sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 						  Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged,
 						  struct IndexInfo *indexInfo);

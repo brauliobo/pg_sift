@@ -50,7 +50,7 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_enc.c|resu
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_kern_avx2.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_kern_avx512.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_maint.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_mut.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_seg.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_col_seg.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_docdir.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
@@ -61,8 +61,8 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_kernels_avx2.c
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_kernels_avx512.c|performing an implicit widening conversion to type 'long long' of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_kernels_avx512.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_kernels.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_mutable.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_mutable.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_wbuf.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_posting.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_posting.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/sift_posting.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'

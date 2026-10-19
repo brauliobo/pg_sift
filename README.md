@@ -116,8 +116,8 @@ SELECT sift_count('news', 'power AND plant');
 
 ## Operations
 
-- Index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `mutable_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
-- A background worker (`sift.async_maintenance`) seals and merges segments, VACUUM clears dead rows; `sift.index_info`, `sift.segments` and `sift.verify` inspect an index.
+- Index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- A background worker (`sift.async_maintenance`) promotes write buffers and merges segments, VACUUM clears dead rows; `sift.index_info`, `sift.segments` and `sift.verify` inspect an index.
 - Physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
 - Cost of one library (3.0): the BM25 index and the column engine share one library, about twice the size of 2.0's. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells stay above 1.02: the first query of a session (about 1.04 to 1.05), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03); every other cell is within 1.02. Connection pooling amortizes the session cost.
 - Settings, options, maintenance, replication and limits: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).

@@ -1,7 +1,7 @@
 /*
  * sift_table_seg.c - the column groups of a sift_table: the glue to the column engine (docs/COL-TAM.md sections 6, 7 and 12).
  *
- * A sealed delta segment becomes a column segment of the engine (sift_col_seg.h) with the same TIDs: one leaf per column (typed when
+ * A sealed write buffer becomes a column segment of the engine (sift_col_seg.h) with the same TIDs: one leaf per column (typed when
  * the engine stores the type natively, SIFT_COLS_VAR holding the exact datum image otherwise) and one VAR leaf of exceptions, the
  * exact images of the values a typed leaf cannot hold (a numeric NaN or infinity, a NaN payload of a float that the order
  * preserving key would alter). Rows of a group have no xmin: they are frozen; their deletion is the tombstone log's, by TID.
@@ -737,7 +737,7 @@ sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv)
 		if (g->in_unit && g->i > 1)
 		{
 			g->i--;
-			*rv = (SiftTblRowVer) {.key = sift_key_from_tid(&g->tids[g->i - 1]),.delta = false,.xmin = InvalidTransactionId};
+			*rv = (SiftTblRowVer) {.key = sift_key_from_tid(&g->tids[g->i - 1]),.wbuf = false,.xmin = InvalidTransactionId};
 			return true;
 		}
 		if (g->units == NULL)
@@ -761,7 +761,7 @@ sift_tbl_gscan_next(SiftTblGroupScan *g, SiftTblRowVer *rv)
 			g->in_unit = false;
 			return false;
 		}
-	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(&g->tids[g->i]),.delta = false,.xmin = InvalidTransactionId};
+	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(&g->tids[g->i]),.wbuf = false,.xmin = InvalidTransactionId};
 	g->i++;
 	return true;
 }
@@ -1065,7 +1065,7 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 		bool		has = gscan_has(g, tid);
 
 		gscan_park(g);
-		*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.delta = false,.xmin = InvalidTransactionId};
+		*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false,.xmin = InvalidTransactionId};
 		return has;
 	}
 	sift_col_bit_set(offmask, ItemPointerGetOffsetNumberNoCheck(tid) - 1);
@@ -1073,7 +1073,7 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 	gscan_park(g);
 	if (found == 0)
 		return false;
-	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.delta = false,.xmin = InvalidTransactionId,.tuple = row[0]};
+	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false,.xmin = InvalidTransactionId,.tuple = row[0]};
 	return true;
 }
 
@@ -1095,16 +1095,16 @@ sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 static bool
 seg_page(Relation rel, SiftTblSeg *seg, uint32 idx, Page copy)
 {
-	Buffer		buf = sift_lane_read_locked(rel, sift_tbl_delta_page(rel, seg, idx), BUFFER_LOCK_SHARE);
+	Buffer		buf = sift_lane_read_locked(rel, sift_tbl_wbuf_page(rel, seg, idx), BUFFER_LOCK_SHARE);
 
-	sift_store_check_page(rel, buf, SIFT_PT_MUTDATA, seg->gen);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 	memcpy(copy, BufferGetPage(buf), BLCKSZ);
 	UnlockReleaseBuffer(buf);
 	return !(TBL_PAGE(copy)->flags & SIFT_TBL_PAGE_OVFDATA);
 }
 
 SiftColBatch *
-sift_tbl_delta_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt)
+sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
 	TupleDesc	desc = RelationGetDescr(rel);
@@ -1148,7 +1148,7 @@ sift_tbl_delta_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, ui
 	return b;
 }
 
-/* ---------- sealing ---------- */
+/* ---------- promotion ---------- */
 
 typedef enum Fate
 {
@@ -1198,7 +1198,7 @@ typedef struct SealWriter
 	SiftColBatch *batch;
 	SiftWriteTarget *wt;
 	SiftColSegWriter *w;
-	uint64		expect;			/* bytes the segment will take at most (the delta pages): free runs shorter than a 256th are reused */
+	uint64		expect;			/* bytes the segment will take at most (the write buffer pages): free runs shorter than a 256th are reused */
 } SealWriter;
 
 static void
@@ -1219,14 +1219,14 @@ seal_flush(SealWriter *sw)
 	MemoryContextSwitchTo(old);
 }
 
-/* The rows of the final segment e as one column segment with the same TIDs; the delta pages are released with the switch */
+/* The rows of the final segment e as one column segment with the same TIDs; the write buffer pages are released with the switch */
 static void
 seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *seg, TransactionId oldest, bool vacuum)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
 	TupleDesc	desc = RelationGetDescr(rel);
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table seal", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table seal row", ALLOCSET_SMALL_SIZES);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table promote", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table promote row", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, (uint64) seg->npages * BLCKSZ};
 	PGAlignedBlock copy;
@@ -1285,9 +1285,9 @@ seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *se
 }
 
 int
-sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
+sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 {
-	int			sealed = 0;
+	int			promoted = 0;
 	SiftDirSnapshot *dir;
 
 	if (!sift_maint_lock(rel, vacuum))
@@ -1300,33 +1300,33 @@ sift_tbl_seal(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 		const SiftSegEntry *e = &dir->segs[i];
 		SiftTblSeg seg = {.gen = e->gen,.hdr = e->header_blk,.vbase = (uint64) e->sb_lo * SIFT_TBL_VBLOCKS_SB};
 
-		if (e->kind != SIFT_SEG_MUTABLE_SEALED || !(e->flags & SIFT_TBL_SEG_DELTA))
+		if (e->kind != SIFT_SEG_WBUF_SEALED || !(e->flags & SIFT_TBL_SEG_WBUF))
 			continue;
 		sift_tbl_seg_load(rel, &seg);
 		if (!seg_final(rel, &seg, oldest, vacuum))
 			continue;
 		seal_segment(rel, st, e, &seg, oldest, vacuum);
-		sealed++;
+		promoted++;
 	}
 	sift_maint_unlock(rel);
 	pfree(dir);
-	if (sealed > 0)
+	if (promoted > 0)
 		sift_tbl_refresh(rel, st);
-	return sealed;
+	return promoted;
 }
 
-/* Merge steps a writer takes when it closes a write segment: a load never waits long for it, the next close takes the next steps */
+/* Merge steps a writer takes when it closes a write buffer: a load never waits long for it, the next close takes the next steps */
 #define SETTLE_MERGE_STEPS	4
 
 /*
- * A writer closed a write segment: seal the segments whose rows have settled, then merge the column segments while the directory is more
- * than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed write segment and ran out of
+ * A writer closed a write buffer: promote the segments whose rows have settled, then merge the column segments while the directory is more
+ * than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed write buffer and ran out of
  * the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came.
  */
 void
 sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest)
 {
-	(void) sift_tbl_seal(rel, st, oldest, false);
+	(void) sift_tbl_promote(rel, st, oldest, false);
 	for (int i = 0; i < SETTLE_MERGE_STEPS && st->dir.nsegs > sift_tbl_max_segments / 2 && sift_tbl_merge(rel, st); i++)
 		CHECK_FOR_INTERRUPTS();
 }
@@ -1354,7 +1354,7 @@ bool
 sift_tbl_merge(Relation rel, SiftTblRel *st)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	SiftMergePolicy pol = {(uint64) sift_tbl_delta_limit * 1024, SIFT_MERGE_FANIN, sift_tbl_mostly_dead};
+	SiftMergePolicy pol = {(uint64) sift_tbl_write_buffer_limit * 1024, SIFT_MERGE_FANIN, sift_tbl_mostly_dead};
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	int			n;
 
@@ -1375,7 +1375,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st)
 PG_FUNCTION_INFO_V1(sift_table_segments);
 PG_FUNCTION_INFO_V1(sift_table_space);
 
-/* One row per segment of the table: delta (row format write buffers), sealed delta (waiting for sealing), columns, tombstones */
+/* One row per segment of the table: buffer (row format write buffers), sealed buffer (waiting for promotion), columns, tombstones */
 Datum
 sift_table_segments(PG_FUNCTION_ARGS)
 {
@@ -1413,9 +1413,9 @@ sift_table_segments(PG_FUNCTION_ARGS)
 			SiftTblSeg seg = {.gen = e->gen,.hdr = e->header_blk};
 
 			v[1] = CStringGetTextDatum(e->flags & SIFT_TBL_SEG_TOMB ? "tombstones" :
-									   e->kind == SIFT_SEG_MUTABLE_ACTIVE ? "delta" : "sealed delta");
+									   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
 			memset(nulls + 2, true, 6);
-			if (e->flags & SIFT_TBL_SEG_DELTA)
+			if (e->flags & SIFT_TBL_SEG_WBUF)
 			{
 				sift_tbl_seg_load(rel, &seg);
 				v[3] = Int64GetDatum((int64) seg.npages * BLCKSZ);
@@ -1603,7 +1603,7 @@ bulk_segment(SiftTblBulk *b, Relation old, const SiftSegEntry *e, SiftTblKeep ke
 		sift_cseg_decode_unit(seg, u, in);
 		for (uint32 r = 0; r < in->nrows; r++)
 		{
-			SiftTblRowVer rv = {.key = in->keys[r],.delta = false,.xmin = InvalidTransactionId};
+			SiftTblRowVer rv = {.key = in->keys[r],.wbuf = false,.xmin = InvalidTransactionId};
 
 			if (!keep(&rv, arg))
 				continue;
@@ -1617,9 +1617,9 @@ bulk_segment(SiftTblBulk *b, Relation old, const SiftSegEntry *e, SiftTblKeep ke
 	MemoryContextDelete(cx);
 }
 
-/* The rows of a delta segment of the old table that keep accepts */
+/* The rows of a write buffer of the old table that keep accepts */
 static void
-bulk_delta(SiftTblBulk *b, Relation old, SiftTblSeg *seg, SiftTblKeep keep, void *arg)
+bulk_wbuf(SiftTblBulk *b, Relation old, SiftTblSeg *seg, SiftTblKeep keep, void *arg)
 {
 	PGAlignedBlock copy;
 
@@ -1664,8 +1664,8 @@ sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep ke
 	qsort(segs, n, sizeof(SiftSegEntry), cmp_sb_lo);
 	for (int i = 0; i < n; i++)
 		bulk_segment(b, old, &segs[i], keep, arg);
-	for (int i = 0; i < ost->ndelta; i++)
-		bulk_delta(b, old, &ost->delta[i], keep, arg);
+	for (int i = 0; i < ost->nwbuf; i++)
+		bulk_wbuf(b, old, &ost->wbuf[i], keep, arg);
 	pfree(segs);
 	return true;
 }

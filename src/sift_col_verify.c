@@ -1,5 +1,5 @@
 /*
- * sift_col_verify.c - sift.col_verify(index, heapallindexed): the structural check of the store, every segment and mutable lane, the
+ * sift_col_verify.c - sift.col_verify(index, heapallindexed): the structural check of the store, every segment and write buffer, the
  * totals of the metapage, that no live row is in the index twice and, with heapallindexed, that every heap tuple visible to a snapshot is
  * in the index with the very values the index tuple forms.
  */
@@ -181,8 +181,8 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			int			n;
 			SiftColBatch **bs;
 
-			sift_cmut_verify(index, e, r->schema);
-			bs = sift_cmut_batches(index, e, r->schema, cxt, &n);
+			sift_cwbuf_verify(index, e, r->schema);
+			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n);
 			for (int j = 0; j < n; j++)
 				collect_batch(&cl, r->schema, bs[j]);
 		}

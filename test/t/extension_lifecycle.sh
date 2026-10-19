@@ -21,7 +21,7 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE docs (id int PRIMARY KEY, body text);
 INSERT INTO docs SELECT g, concat_ws(' ', 'alpha' || g % 7, 'beta' || g % 13, 'w' || g % 50, CASE WHEN g % 3 = 0 THEN 'gamma' END)
 	FROM generate_series(1, 4000) g;
-CREATE INDEX docs_idx ON docs USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX docs_idx ON docs USING sift (body) WITH (write_buffer_limit = 64);
 INSERT INTO docs SELECT g, concat_ws(' ', 'alpha' || g % 7, 'late', 'w' || g % 50) FROM generate_series(4001, 4600) g;
 UPDATE docs SET body = 'beta5 moved gamma' WHERE id % 97 = 0;
 DELETE FROM docs WHERE id % 89 = 0;
@@ -78,7 +78,7 @@ check "custom format pg_restore succeeds" test $? -eq 0
 check "the custom restore verifies and matches the source" test "$(vq life custom "SELECT fp() = '$FP'")" == t
 pgc life pg_dump --schema-only src | pgc life psql -X -q -v ON_ERROR_STOP=1 -d schemaonly >/dev/null
 check "the index definition and options survive a schema-only dump" test "$(q life schemaonly \
-	"SELECT indexdef FROM pg_indexes WHERE indexname = 'docs_idx'")" == "CREATE INDEX docs_idx ON public.docs USING sift (body) WITH (mutable_limit='64')"
+	"SELECT indexdef FROM pg_indexes WHERE indexname = 'docs_idx'")" == "CREATE INDEX docs_idx ON public.docs USING sift (body) WITH (write_buffer_limit='64')"
 q life schemaonly "INSERT INTO docs VALUES (1, 'alpha3 hello')" >/dev/null
 check "the empty restored index accepts new documents" test "$(vq life schemaonly "SELECT fp() = seq()")" == t
 check "pg_dump keeps the extension as one object" test "$(pgc life pg_dump src | grep -c 'CREATE EXTENSION IF NOT EXISTS pg_sift')" == 1

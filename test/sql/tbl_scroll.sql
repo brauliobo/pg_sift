@@ -1,4 +1,4 @@
--- Backward scans: a SCROLL cursor on a sift_table walks forward and backward over the delta pages and the column groups (several
+-- Backward scans: a SCROLL cursor on a sift_table walks forward and backward over the write buffer pages and the column groups (several
 -- superblocks and layouts), with dead rows, changes of direction, both ends and a TID range. The model is the rows in forward order.
 CREATE EXTENSION pg_sift;
 
@@ -48,7 +48,7 @@ BEGIN
 	RETURN format('%s rows, %s moves: same', n, moved);
 END $$;
 
--- rows in the delta only
+-- rows in the write buffer only
 INSERT INTO sc SELECT g, 'row ' || g FROM generate_series(1, 3000) g;
 SELECT scroll_walk('sc', 'true');
 SELECT scroll_walk('sc', 'id % 3 = 0');
@@ -56,18 +56,18 @@ SELECT scroll_walk('sc', 'false');
 
 -- the column groups only
 VACUUM sc;
-SELECT count(*) FILTER (WHERE kind = 'columns') AS columns, count(*) FILTER (WHERE kind = 'delta') AS delta FROM sift.table_segments('sc');
+SELECT count(*) FILTER (WHERE kind = 'columns') AS columns, count(*) FILTER (WHERE kind = 'buffer') AS wbuf FROM sift.table_segments('sc');
 SELECT scroll_walk('sc', 'true');
 SELECT scroll_walk('sc', 'id % 3 = 0');
 
--- dead rows in the groups, updated rows and new rows in the delta
+-- dead rows in the groups, updated rows and new rows in the write buffer
 DELETE FROM sc WHERE id % 7 = 0;
 UPDATE sc SET v = 'updated' WHERE id % 11 = 0;
 INSERT INTO sc SELECT g, 'row ' || g FROM generate_series(3001, 3200) g;
 SELECT scroll_walk('sc', 'true');
 SELECT scroll_walk('sc', 'v = $$updated$$');
 
--- the groups of several superblocks and two layouts, then the delta again
+-- the groups of several superblocks and two layouts, then the write buffer again
 INSERT INTO sc SELECT g, repeat('w', 3000) FROM generate_series(3201, 4000) g;
 VACUUM sc;
 ALTER TABLE sc ADD COLUMN w int DEFAULT 5;
@@ -75,7 +75,7 @@ INSERT INTO sc SELECT g, repeat('w', 3000), g FROM generate_series(4001, 4800) g
 VACUUM sc;
 INSERT INTO sc SELECT g, 'tail ' || g, g FROM generate_series(4801, 4900) g;
 DELETE FROM sc WHERE id BETWEEN 3500 AND 3600;
-SELECT count(*) FILTER (WHERE kind = 'columns') > 1 AS several_groups, count(*) FILTER (WHERE kind = 'delta') > 0 AS delta FROM sift.table_segments('sc');
+SELECT count(*) FILTER (WHERE kind = 'columns') > 1 AS several_groups, count(*) FILTER (WHERE kind = 'buffer') > 0 AS wbuf FROM sift.table_segments('sc');
 SELECT scroll_walk('sc', 'true');
 SELECT scroll_walk('sc', 'id % 5 = 1');
 SELECT scroll_walk('sc', 'w IS NOT NULL AND id > 4300');

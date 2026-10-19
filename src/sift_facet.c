@@ -6,7 +6,7 @@
  * map, heap checks of the other pages, phrase recheck), into superblock groups with a 64-byte offset
  * row per page. Every value of the keyword index is a term of its dictionary, so its count is the
  * popcount of the AND of its posting groups with those: the heap is not read for the values. Values
- * are tried in descending order of an upper bound of their count (their df plus the mutable
+ * are tried in descending order of an upper bound of their count (their df plus the write buffer
  * matches), which ends a top-k early; the NULL row (matches without a value) is the matches minus
  * the counted ones, so asking for it counts every value.
  */
@@ -35,7 +35,7 @@
 #include "utils/snapmgr.h"
 
 #include "sift_eval.h"
-#include "sift_mutable.h"
+#include "sift_wbuf.h"
 #include "sift_segment.h"
 #include "sift_sql.h"
 
@@ -51,7 +51,7 @@ typedef struct QSb
 	uint64		pages[SIFT_PAGEMASK_WORDS];
 } QSb;
 
-/* A value in one immutable segment, or (seg -1) in the mutable ones with info.df = its matches there */
+/* A value in one immutable segment, or (seg -1) in the write buffer with info.df = its matches there */
 typedef struct Entry
 {
 	uint64		off;			/* term bytes in Facets.terms */
@@ -74,11 +74,11 @@ typedef struct Res
 	int64		n;
 } Res;
 
-typedef struct MutCount
+typedef struct WbufCount
 {
 	char		term[SIFT_MAX_TERM_BYTES + 1];	/* zero padded */
 	int64		n;
-} MutCount;
+} WbufCount;
 
 /* An immutable segment of the keyword index and the query's groups as it holds them */
 typedef struct FacetSeg
@@ -334,18 +334,18 @@ dict_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 	return true;
 }
 
-/* Matches of the query by value among the docs of the mutable segments (their records carry the value) */
+/* Matches of the query by value among the docs of the write buffers (their records carry the value) */
 static void
-count_mutable(Facets *f, const SiftSegEntry *entry, HTAB *tab)
+count_wbuf(Facets *f, const SiftSegEntry *entry, HTAB *tab)
 {
-	SiftMutReader *r = sift_mut_open(f->findex, entry, f->mcxt, NULL, NULL);
-	SiftMutDoc	doc;
+	SiftWbufReader *r = sift_wbuf_open(f->findex, entry, f->mcxt, NULL, NULL);
+	SiftWbufDoc	doc;
 
-	while (sift_mut_next(r, &doc))
+	while (sift_wbuf_next(r, &doc))
 	{
 		SiftKey		key = sift_key_from_tid(&doc.tid);
 		int			i;
-		MutCount   *c;
+		WbufCount   *c;
 		char		term[SIFT_MAX_TERM_BYTES + 1] = {0};
 		bool		found;
 
@@ -359,15 +359,15 @@ count_mutable(Facets *f, const SiftSegEntry *entry, HTAB *tab)
 		c = hash_search(tab, term, HASH_ENTER, &found);
 		c->n = found ? c->n + 1 : 1;
 	}
-	sift_mut_close(r);
+	sift_wbuf_close(r);
 }
 
 static void
 collect_entries(Facets *f, SiftIndexState *st)
 {
-	HTAB	   *mut = NULL;
+	HTAB	   *wbuf = NULL;
 	HASH_SEQ_STATUS seq;
-	MutCount   *c;
+	WbufCount   *c;
 
 	f->fseg = MemoryContextAllocZero(f->mcxt, Max(st->dir.nsegs, 1) * sizeof(FacetSeg));
 	for (int i = 0; i < st->dir.nsegs; i++)
@@ -390,17 +390,17 @@ collect_entries(Facets *f, SiftIndexState *st)
 			sift_sr_release(&fs->seg->sr);
 			continue;
 		}
-		if (mut == NULL)
+		if (wbuf == NULL)
 		{
-			HASHCTL		ctl = {.keysize = SIFT_MAX_TERM_BYTES + 1,.entrysize = sizeof(MutCount),.hcxt = f->mcxt};
+			HASHCTL		ctl = {.keysize = SIFT_MAX_TERM_BYTES + 1,.entrysize = sizeof(WbufCount),.hcxt = f->mcxt};
 
-			mut = hash_create("sift facet mutable values", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			wbuf = hash_create("sift facet write buffer values", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		}
-		count_mutable(f, entry, mut);
+		count_wbuf(f, entry, wbuf);
 	}
-	if (mut == NULL)
+	if (wbuf == NULL)
 		return;
-	hash_seq_init(&seq, mut);
+	hash_seq_init(&seq, wbuf);
 	while ((c = hash_seq_search(&seq)) != NULL)
 	{
 		SiftTermInfo info = {.df = c->n};

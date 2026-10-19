@@ -11,7 +11,7 @@ node_start lock || bail "start failed"
 # per database, which the worker reads as well
 sql lock "CREATE EXTENSION pg_sift_test CASCADE" "ALTER DATABASE postgres SET sift.test_room_segments = 40" \
 	"ALTER DATABASE postgres SET sift.test_merge_sleep_ms = 20000" "CREATE TABLE t (id serial, body text)" \
-	"CREATE INDEX t_idx ON t USING sift (body) WITH (mutable_limit = 64)" >/dev/null || bail "setup failed"
+	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null || bail "setup failed"
 
 DOCS="INSERT INTO t (body) SELECT string_agg(md5(g::text || j::text), ' ') FROM generate_series(1, %s) g, generate_series(1, 30) j GROUP BY g"
 CLAIMS="SELECT count(*) FROM pg_locks WHERE locktype = 'object' AND classid = 't_idx'::regclass::oid AND granted"
