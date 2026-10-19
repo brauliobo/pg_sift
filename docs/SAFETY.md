@@ -64,7 +64,7 @@ CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SI
 `PG_ASSERT_MAJOR=17` for the 17 branch; scripts/pg-assert.sh pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, plus `-DUSE_VALGRIND` for
 the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`): `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh: 13 regression tests and
 2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11) and `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh: 5 tests under memcheck with the
-server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; skips when valgrind is missing or cannot start, as on this host: no glibc debug symbols). Weekly, non-blocking on GitHub: .github/workflows/assert.yml.
+server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has no debug symbols runs it in a pinned Debian bookworm container, see the header of the script; skips when neither works). Weekly, non-blocking on GitHub: .github/workflows/assert.yml.
 
 ## Tools on this host (gcc 16.2, clang 23.1)
 
