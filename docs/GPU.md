@@ -1,4 +1,4 @@
-# Vulkan compute for aggregates (opt-in, 3.2)
+# Vulkan compute for aggregates (experimental, opt-in, 3.1)
 
 `SiftAgg` can run grouped and filtered integer counts and sums of a `sift_col` index on a Vulkan compute device. It is **off by default** in two
 ways: the library is built without it unless you ask (`make VULKAN=1`), and a build that has it runs on the CPU unless `sift.gpu` says otherwise.
