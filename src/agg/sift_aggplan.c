@@ -792,24 +792,24 @@ raising_walker(Node *n, void *context)
 	return expression_tree_walker(n, raising_walker, context);
 }
 
-/* the values of an integer leaf the lookup table covers: the span of the column's statistics (histogram, most common values) fits, or there are none */
+/* the span of the values the statistics of an integer column (histogram, most common values) have seen; false: none, or the leaf is not a plain column */
 static bool
-lut_range_ok(AggCtx *c, int leaf)
+leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
 	Node	   *e = l->path == NIL && l->parent < 0 ? list_nth(c->attexpr, l->attno - 1) : NULL;
 	HeapTuple	tp;
 	AttStatsSlot sslot;
-	int64		lo = PG_INT64_MAX,
-				hi = PG_INT64_MIN;
 	bool		known = false;
 
+	*lo = PG_INT64_MAX;
+	*hi = PG_INT64_MIN;
 	if (e == NULL || !IsA(e, Var))
-		return true;
+		return false;
 	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(c->relid, c->root)->relid),
 						 Int16GetDatum(((Var *) e)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tp))
-		return true;
+		return false;
 	for (int k = 0; k < 2; k++)
 		if (get_attstatsslot(&sslot, tp, k == 0 ? STATISTIC_KIND_HISTOGRAM : STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_VALUES))
 		{
@@ -817,14 +817,24 @@ lut_range_ok(AggCtx *c, int leaf)
 			{
 				int64		v = sift_aggspec_operand_int(l->typid, sslot.values[i]);
 
-				lo = Min(lo, v);
-				hi = Max(hi, v);
+				*lo = Min(*lo, v);
+				*hi = Max(*hi, v);
 				known = true;
 			}
 			free_attstatsslot(&sslot);
 		}
 	ReleaseSysCache(tp);
-	return !known || (double) hi - (double) lo < (double) (1 << 22);
+	return known;
+}
+
+/* the values of an integer leaf the lookup table covers: the span of the column's statistics fits, or there are none */
+static bool
+lut_range_ok(AggCtx *c, int leaf)
+{
+	int64		lo,
+				hi;
+
+	return !leaf_stats_range(c, leaf, &lo, &hi) || (double) hi - (double) lo < (double) (1 << 22);
 }
 
 /* is an expression of one dictionary or integer leaf evaluated by a lookup table (once per value of the dictionary or of the range of the leaf)? */
@@ -832,6 +842,151 @@ static bool
 lut_expr_ok(AggCtx *c, int leaf, Node *expr)
 {
 	return lut_leaf_ok(c, leaf) && !raising_walker(expr, NULL) && (leaf_of(c, leaf)->vtype == SCV_CODE || lut_range_ok(c, leaf));
+}
+
+/*
+ * Calendar keys of a timestamp leaf. date_trunc, ::date and extract of a timestamp change value only on a second, minute, hour or
+ * day boundary, so the executor evaluates them once per such step of the data instead of once per distinct timestamp (which is
+ * once per row): the key id of a row is a lookup of its step.
+ */
+typedef struct BucketUnit
+{
+	const char *name;
+	int			secs;			/* the step the result changes on */
+	double		len;			/* average seconds of a unit */
+	int			cycle;			/* extract: the values it repeats after, 0: it does not */
+} BucketUnit;
+
+#define DAY_SECS		86400
+#define MONTH_SECS		2629800
+#define YEAR_SECS		31557600.0
+
+/* date_trunc units (a week, month and longer ones change on a day) */
+static const BucketUnit trunc_units[] = {{"second", 1, 1, 0}, {"minute", 60, 60, 0}, {"hour", 3600, 3600, 0}, {"day", DAY_SECS, DAY_SECS, 0},
+	{"week", DAY_SECS, 7 * DAY_SECS, 0}, {"month", DAY_SECS, MONTH_SECS, 0}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 0},
+	{"year", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+
+/* extract fields that are whole numbers of a step (second, epoch and julian have fractions of a second) */
+static const BucketUnit field_units[] = {{"minute", 60, 60, 60}, {"hour", 3600, 3600, 24}, {"day", DAY_SECS, DAY_SECS, 31},
+	{"dow", DAY_SECS, DAY_SECS, 7}, {"isodow", DAY_SECS, DAY_SECS, 7}, {"doy", DAY_SECS, DAY_SECS, 366}, {"week", DAY_SECS, 7 * DAY_SECS, 53},
+	{"month", DAY_SECS, MONTH_SECS, 12}, {"quarter", DAY_SECS, 3 * MONTH_SECS, 4}, {"year", DAY_SECS, YEAR_SECS, 0},
+	{"isoyear", DAY_SECS, YEAR_SECS, 0}, {"decade", DAY_SECS, 10 * YEAR_SECS, 0}, {"century", DAY_SECS, 100 * YEAR_SECS, 0},
+	{"millennium", DAY_SECS, 1000 * YEAR_SECS, 0}, {NULL, 0, 0, 0}};
+
+/* the unit of a date_trunc, date_part or extract of a timestamp; NULL for another call, or a unit this does not know */
+static const BucketUnit *
+bucket_unit(Node *e)
+{
+	FuncExpr   *f;
+	Const	   *k;
+	char	   *name;
+
+	if (!IsA(e, FuncExpr))
+		return NULL;
+	f = (FuncExpr *) e;
+	if (f->funcid != F_DATE_TRUNC_TEXT_TIMESTAMP && f->funcid != F_DATE_PART_TEXT_TIMESTAMP && f->funcid != F_EXTRACT_TEXT_TIMESTAMP)
+		return NULL;
+	k = linitial(f->args);
+	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID)
+		return NULL;
+	name = TextDatumGetCString(k->constvalue);
+	for (const BucketUnit *u = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP ? trunc_units : field_units; u->name; u++)
+		if (pg_strcasecmp(u->name, name) == 0)
+			return u;
+	return NULL;
+}
+
+/* the leaf of the expression of a key: a reference, or Param 0 once the key is compiled */
+static bool
+bucket_leaf(AggCtx *c, Node *e)
+{
+	return IsA(e, Param) || match_leaf(c, e) >= 0;
+}
+
+/*
+ * The seconds an expression of the timestamp leaf keeps its value for: the leaf itself 1 (every function below has a step of a
+ * second or more), a calendar function the coarser of its own step and the one of its argument. 0: the expression is something
+ * else, and the key is a combo.
+ */
+static int
+bucket_step(AggCtx *c, Node *e)
+{
+	const BucketUnit *u;
+	int			arg;
+
+	if (bucket_leaf(c, e))
+		return 1;
+	if (IsA(e, RelabelType))
+		return bucket_step(c, (Node *) ((RelabelType *) e)->arg);
+	if (!IsA(e, FuncExpr))
+		return 0;
+	if ((u = bucket_unit(e)) != NULL)
+	{
+		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args));
+		return arg ? Max(arg, u->secs) : 0;
+	}
+	switch (((FuncExpr *) e)->funcid)
+	{
+		case F_DATE_TIMESTAMP:
+			arg = bucket_step(c, linitial(((FuncExpr *) e)->args));
+			return arg ? Max(arg, DAY_SECS) : 0;
+		case F_TIMESTAMP_DATE:
+			return bucket_step(c, linitial(((FuncExpr *) e)->args));
+		default:
+			return 0;
+	}
+}
+
+/* the distinct values an expression that bucket_step accepts takes over a stretch of `span` seconds of the leaf */
+static double
+bucket_groups(AggCtx *c, Node *e, double span)
+{
+	const BucketUnit *u;
+	double		n;
+
+	if (bucket_leaf(c, e))
+		return span + 1;
+	if (IsA(e, RelabelType))
+		return bucket_groups(c, (Node *) ((RelabelType *) e)->arg, span);
+	if ((u = bucket_unit(e)) != NULL)
+	{
+		n = Min(bucket_groups(c, lsecond(((FuncExpr *) e)->args), span), span / u->len + 1);
+		return u->cycle ? Min(n, u->cycle) : n;
+	}
+	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP)
+		return Min(bucket_groups(c, linitial(((FuncExpr *) e)->args), span), span / DAY_SECS + 1);
+	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
+}
+
+/* the groups of a bucket key from the statistics of its column; 0: unknown */
+static double
+bucket_key_groups(AggCtx *c, const SiftAggKey *k)
+{
+	int64		lo,
+				hi;
+
+	if (!leaf_stats_range(c, k->leaf, &lo, &hi))
+		return 0;
+	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
+}
+
+/* EXPLAIN: the step a key on a timestamp is evaluated for */
+static const char *
+bucket_text(int secs)
+{
+	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : " (per day)";
+}
+
+/* the seconds a key on the timestamp leaf is evaluated once for, 0 when it is not a calendar expression */
+static int
+bucket_key_secs(AggCtx *c, int leaf, Node *expr)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+
+	if (l->kind != SCL_SCALAR || l->vtype != SCV_I64 || l->typid != TIMESTAMPOID || contain_volatile_functions(expr))
+		return 0;
+	return bucket_step(c, expr);
 }
 
 /* ---------- predicates ---------- */
@@ -2081,12 +2236,13 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 		k->leaf = leaf;
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
-	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) && lut_expr_ok(c, leaf, expr))
+	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) &&
+			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr)) > 0))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;
 		k->expr = substitute_leaf(c, expr, ptype, ptypmod, pcoll);
-		k->desc = psprintf("%s: %s", leaf_name(c, leaf), expr_text(c, expr));
+		k->desc = psprintf("%s: %s%s", leaf_name(c, leaf), expr_text(c, expr), k->bucket > 0 ? bucket_text(k->bucket) : "");
 	}
 	else if ((k->typid == NUMERICOID || k->typid == INT2OID || k->typid == INT4OID || k->typid == INT8OID) &&
 			 compile_nx(c, expr, SIFT_NUM_MAX_DIGITS, &k->num))
@@ -3700,6 +3856,31 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
 	return cost;
 }
 
+/* a tuple of a bucket key: the number of its step, the lookup of the id */
+#define AGG_BUCKET_ROW		3.0
+
+/* the buckets of a stretch of the leaf of a key, by the statistics: the tuples when there are none */
+static double
+bucket_count(AggCtx *c, const SiftAggKey *k, double tuples)
+{
+	int64		lo,
+				hi;
+
+	return leaf_stats_range(c, k->leaf, &lo, &hi) ? Min(tuples, (double) (hi - lo) / USECS_PER_SEC / k->bucket + 1) : tuples;
+}
+
+/* a lookup per tuple of a bucket key, and PostgreSQL evaluating the expression once per bucket */
+static double
+bucket_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows)
+{
+	double		cost = 0;
+
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].bucket > 0)
+			cost += rows * AGG_BUCKET_ROW + bucket_count(c, &s->key[i], rows) * AGG_EVAL_SLOT;
+	return cost;
+}
+
 /*
  * What the executor really spends on an expression, in operators (PostgreSQL prices a function at procost, 1 for almost all, while a
  * numeric one allocates and does digit arithmetic).
@@ -3988,7 +4169,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		if (s->agg[i].kind == SAA_GEN)
 			gen_cost += agg_rows * s->agg[i].gen->cost + rows_out * AGG_GEN_GROUP;
 	}
-	scan_cost += combo_eval_cost(c, s, rows, agg_rows);
+	scan_cost += combo_eval_cost(c, s, rows, agg_rows) + bucket_eval_cost(c, s, agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		scan_cost += agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
@@ -4348,18 +4529,27 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 
 /* the groups the scan makes: those of the keys, or of each grouping set */
 static double
-set_groups(PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
+set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 {
 	double		n = 0;
 
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		List	   *sub = NIL;
+		double		bucketed = 1.0;
 
 		for (int j = 0; j < list_length(keys); j++)
-			if (s->nsets == 0 || (s->setmask[set] >> j & 1))
+		{
+			double		b = s->key[j].bucket > 0 ? bucket_key_groups(c, &s->key[j]) : 0;
+
+			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
+				continue;
+			if (b > 0)
+				bucketed *= b;
+			else
 				sub = lappend(sub, list_nth(keys, j));
-		n += sub == NIL ? 1.0 : Max(estimate_num_groups(root, sub, rows, NULL, NULL), 1.0);
+		}
+		n += Min(rows, (sub == NIL ? 1.0 : Max(estimate_num_groups(c->root, sub, rows, NULL, NULL), 1.0)) * bucketed);
 	}
 	return n;
 }
@@ -4418,7 +4608,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	c->used = bms_union(c->used, c->elem_used);
 	finish_leaves(c, s);
 	finish_combos(c, s);
-	s->est_groups = set_groups(root, s, keys, input_rel->rows);
+	s->est_groups = set_groups(c, s, keys, input_rel->rows);
 	if (c->search)
 		s->search = c->search->spec;
 
