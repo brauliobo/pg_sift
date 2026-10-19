@@ -4143,7 +4143,7 @@ setup_joins(AggCtx *c, List **quals, List **post)
 		foreach_ptr(Node, q, jc->clauses)
 			if (!join_clause(c, jc, q) && !join_expr_clause(c, jc, q))
 				conds = lappend(conds, q);
-		if (jc->j.nkey == 0 || (conds != NIL && !join_filter(c, jc, conds)))
+		if ((jc->j.nkey == 0 && conds == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
 			return false;
 	}
 	*quals = rest;

@@ -127,6 +127,11 @@ CREATE TABLE map_vals (category text, label text, weight numeric(8,2), factor fl
 INSERT INTO map_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Apparel', 'a', 2.25, 1.5, 2, NULL), ('Shoes', 'S', NULL, NULL, 3, '2023-05-05'),
 	('Home', 'H', 3.10, 2.0, NULL, '2021-01-01'), ('Toys', 'T', 0.05, 0.25, 5, '2024-02-02'), ('Toys', NULL, 0.10, NULL, 4, '2020-03-03');
 
+-- ranges to place a date in (a date in several of them, in none; an empty, an open and a NULL range, a NULL label)
+CREATE TABLE periods (label text, range daterange);
+INSERT INTO periods VALUES ('cur', '[2024-06-01,2025-06-01)'), ('prev', '[2023-06-01,2024-06-01)'), ('wide', '[2023-01-01,2025-12-31]'),
+	('empty', 'empty'), (NULL, '[2022-01-01,2022-04-01)'), ('open', '[2025-01-01,)'), ('none', NULL);
+
 -- a joined column of every type PostgreSQL's own sum and average run on: a key with two rows, NULL values, a key without a row, big and negative values
 CREATE TABLE map_nums (category text, i2 int2, i4 int4, i8 int8, f4 float4, iv interval);
 INSERT INTO map_nums VALUES ('Apparel', 1, 10, 4000000000, 1.5, '1 day 02:00'), ('Apparel', 2, NULL, 5, 2.25, '2 mons'),
