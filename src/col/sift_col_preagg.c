@@ -8,6 +8,9 @@
  *     keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
  *     counts[ngroups],
  *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits)
+ *
+ * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its cube) as varints, then the cubes in that
+ * order, each in the format above with the leaves of the list as dims and measures; their rows are the elements of the list.
  */
 #include "sift_host.h"
 
@@ -17,56 +20,80 @@
 
 /* ---------- leaves that can be dims and measures ---------- */
 
-bool
-sift_cpagg_dim_ok(const SiftColDef *d)
+/* a scalar leaf of the top level, or of a list of the top level: a list inside a list has no cube */
+static bool
+depth1(const SiftColSchema *s, const SiftColDef *d)
 {
-	return d->parent < 0 && d->kind == SIFT_COLK_SCALAR && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
+	return d->kind == SIFT_COLK_SCALAR && (d->parent < 0 || s->cols[d->parent].parent < 0);
 }
 
 bool
-sift_cpagg_meas_ok(const SiftColDef *d)
+sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 {
-	if (d->parent >= 0 || d->kind != SIFT_COLK_SCALAR)
+	return depth1(s, d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
+}
+
+bool
+sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim)
+{
+	if (m->parent != dim->parent || !depth1(s, m))
 		return false;
-	if (d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8)
+	if (m->store == SIFT_COLS_F4 || m->store == SIFT_COLS_F8)
 		return true;
-	return d->store == SIFT_COLS_INT &&
-		(d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_INT8 || d->type == SIFT_COLT_NUMERIC);
+	return m->store == SIFT_COLS_INT &&
+		(m->type == SIFT_COLT_INT2 || m->type == SIFT_COLT_INT4 || m->type == SIFT_COLT_INT8 || m->type == SIFT_COLT_NUMERIC);
 }
 
 /* ---------- the option ---------- */
 
-void
-sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
+/* The default measures of a dim: the measures of its list, in order of usefulness: decimals and floats (money, ratings), then the integers */
+static int
+default_meas(const SiftColSchema *s, int dim, int16 *meas)
 {
-	int			meas[SIFT_COL_MAX_COLS],
-				nm = 0;
+	int			nm = 0;
 
-	memset(spec, 0, sizeof(*spec));
-	spec->max_groups = SIFT_PAGG_DEF_GROUPS;
-	spec->permille = SIFT_PAGG_DEF_PERMILLE;
-	/* measures in order of usefulness: decimals and floats (money, ratings), then the integers */
 	for (int pass = 0; pass < 2; pass++)
-		for (int c = 0; c < s->ncols; c++)
+		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_DEF_MEAS; c++)
 		{
 			const SiftColDef *d = &s->cols[c];
 			bool		first = d->type == SIFT_COLT_NUMERIC || d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
 
-			if (sift_cpagg_meas_ok(d) && first == (pass == 0))
+			if (c != dim && sift_cpagg_meas_ok(s, d, &s->cols[dim]) && first == (pass == 0))
 				meas[nm++] = c;
 		}
-	for (int c = 0; c < s->ncols && spec->ndims < SIFT_PAGG_MAX_DIMS; c++)
-	{
-		SiftCPaggDim *sd;
+	return nm;
+}
 
-		if (!sift_cpagg_dim_ok(&s->cols[c]))
-			continue;
-		sd = &spec->dim[spec->ndims++];
-		sd->leaf = c;
-		for (int i = 0; i < nm && sd->nmeas < SIFT_PAGG_DEF_MEAS; i++)
-			if (meas[i] != c)
-				sd->meas[sd->nmeas++] = meas[i];
-	}
+/* The dims of the spec in the top level (list < 0) or in one list */
+static int
+dims_in(const SiftCPaggSpec *spec, const SiftColSchema *s, int list)
+{
+	int			n = 0;
+
+	for (int i = 0; i < spec->ndims; i++)
+		n += s->cols[spec->dim[i].leaf].parent == list;
+	return n;
+}
+
+void
+sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
+{
+	memset(spec, 0, sizeof(*spec));
+	spec->max_groups = SIFT_PAGG_DEF_GROUPS;
+	spec->permille = SIFT_PAGG_DEF_PERMILLE;
+	/* the top level first, so that the dims of a table without lists are those of 3.0 */
+	for (int lists = 0; lists < 2; lists++)
+		for (int c = 0; c < s->ncols; c++)
+		{
+			SiftCPaggDim *sd;
+
+			if (!sift_cpagg_dim_ok(s, &s->cols[c]) || (s->cols[c].parent >= 0) != lists || spec->ndims == SIFT_PAGG_SPEC_DIMS ||
+				dims_in(spec, s, s->cols[c].parent) == SIFT_PAGG_MAX_DIMS)
+				continue;
+			sd = &spec->dim[spec->ndims++];
+			sd->leaf = c;
+			sd->nmeas = default_meas(s, c, sd->meas);
+		}
 }
 
 typedef struct OptCur
@@ -139,6 +166,16 @@ is_word(const char *p, const char *w)
 	return has_prefix(p, w) && rest_blank(p + strlen(w));
 }
 
+/* The scalar leaf of this name: a list of scalars or a map and its element leaf share a path, and only the element is a dim or a measure */
+static int
+find_scalar(const SiftColSchema *s, const char *const *names, const char *name)
+{
+	for (int i = 0; i < s->ncols; i++)
+		if (names[i] && s->cols[i].kind == SIFT_COLK_SCALAR && strcmp(names[i], name) == 0)
+			return i;
+	return -1;
+}
+
 /*
  * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
  */
@@ -183,15 +220,15 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 			return "a cube entry needs a dimension name";
 		if (s)
 		{
-			for (int i = 0; i < s->ncols && leaf < 0; i++)
-				if (names[i] && strcmp(names[i], dn) == 0)
-					leaf = i;
+			leaf = find_scalar(s, names, dn);
 			if (leaf < 0)
 				return psprintf("cube dimension \"%s\" is not a column of the index", dn);
-			if (!sift_cpagg_dim_ok(&s->cols[leaf]))
+			if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
 				return psprintf("cube dimension \"%s\" must be a scalar integer, date, numeric or text column", dn);
-			if (spec->ndims == SIFT_PAGG_MAX_DIMS)
+			if (dims_in(spec, s, s->cols[leaf].parent) == SIFT_PAGG_MAX_DIMS)
 				return "a cube holds at most 16 dimensions";
+			if (spec->ndims == SIFT_PAGG_SPEC_DIMS)
+				return "a cube option holds at most 32 dimensions";
 			sd = &spec->dim[spec->ndims++];
 			sd->leaf = leaf;
 		}
@@ -206,12 +243,12 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 					return "a measure name is missing";
 				if (!s)
 					continue;
-				for (int i = 0; i < s->ncols && m < 0; i++)
-					if (names[i] && strcmp(names[i], mn) == 0)
-						m = i;
+				m = find_scalar(s, names, mn);
 				if (m < 0)
 					return psprintf("cube measure \"%s\" is not a column of the index", mn);
-				if (!sift_cpagg_meas_ok(&s->cols[m]))
+				if (s->cols[m].parent != s->cols[sd->leaf].parent)
+					return psprintf("cube measure \"%s\" is not a column of the same list as the dimension \"%s\"", mn, dn);
+				if (!sift_cpagg_meas_ok(s, &s->cols[m], &s->cols[sd->leaf]))
 					return psprintf("cube measure \"%s\" must be a smallint, integer, bigint, numeric, real or double precision column", mn);
 				if (sd->nmeas == SIFT_PAGG_MAX_MEAS)
 					return "a cube dimension holds at most 8 measures";
@@ -403,9 +440,11 @@ typedef struct Scratch
 typedef struct DimBuild
 {
 	int			spec;				/* index into spec->dim */
+	int			list;				/* the list the dim is a leaf of, -1: the top level */
 	StringInfoData blob;
 	Size		bytes;
 	bool		ok;
+	bool		keep;
 } DimBuild;
 
 static int
@@ -419,10 +458,20 @@ cmp_group(const void *a, const void *b)
 	return x->key < y->key ? -1 : x->key > y->key;
 }
 
+/* The writer keeps the overflow bitmap of a leaf once a unit needed it, zeroed for the next ones: no bit set is no overflow value */
+static bool
+has_ovf(const SiftCPaggCol *c)
+{
+	for (uint32 w = 0; c->ovf != NULL && w < (c->n + 63) / 64; w++)
+		if (c->ovf[w])
+			return true;
+	return false;
+}
+
 static inline bool
 col_usable(const SiftCPaggCol *c, uint32 nrows)
 {
-	return c->ready && c->ovf == NULL && c->n == nrows;
+	return c->ready && c->n == nrows && !has_ovf(c);
 }
 
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
@@ -558,25 +607,80 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	return true;
 }
 
-void
-sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes, StringInfo out)
+static int
+kept_in(const DimBuild *db, int nd, int list)
 {
-	DimBuild	db[SIFT_PAGG_MAX_DIMS];
-	int			nd = 0,
-				kept = 0;
-	uint32		maxg = Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS),
-				hsize = 16;
-	Scratch		sc;
-	Size		budget = 0,
-				used = 0;
-	bool		keep[SIFT_PAGG_MAX_DIMS] = {false};
+	int			kept = 0;
 
-	if (spec->off || spec->ndims == 0 || nrows == 0)
+	for (int d = 0; d < nd; d++)
+		kept += db[d].keep && db[d].list == list;
+	return kept;
+}
+
+/* The kept dims of one list (-1: the top level) as a cube blob: the directory of (leaf, bytes), then the bodies; nothing when none is kept */
+static void
+emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, int list, StringInfo out)
+{
+	int			kept = kept_in(db, nd, list);
+
+	if (kept == 0)
 		return;
+	appendStringInfoChar(out, (char) kept);
+	for (int d = 0; d < nd; d++)
+		if (db[d].keep && db[d].list == list)
+		{
+			put_u(out, spec->dim[db[d].spec].leaf);
+			put_u(out, db[d].blob.len);
+		}
+	for (int d = 0; d < nd; d++)
+		if (db[d].keep && db[d].list == list)
+			appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
+}
+
+/* The element blob: the cube of every list that has a kept dim, in ascending list order */
+static void
+emit_elems(const SiftColSchema *s, const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
+{
+	StringInfoData body[SIFT_PAGG_SPEC_DIMS];
+	int			list[SIFT_PAGG_SPEC_DIMS],
+				nl = 0;
+
+	for (int l = 0; l < s->ncols; l++)
+		if (kept_in(db, nd, l) > 0)
+		{
+			initStringInfo(&body[nl]);
+			emit_cube(spec, db, nd, l, &body[nl]);
+			list[nl++] = l;
+		}
+	if (nl == 0)
+		return;
+	appendStringInfoChar(out, (char) nl);
+	for (int i = 0; i < nl; i++)
+	{
+		put_u(out, list[i]);
+		put_u(out, body[i].len);
+	}
+	for (int i = 0; i < nl; i++)
+	{
+		appendBinaryStringInfo(out, body[i].data, body[i].len);
+		pfree(body[i].data);
+	}
+}
+
+/* The histogram of every dim of the spec; the dims of the lists only when elements are wanted (eout) and the list has no overflow value */
+static void
+build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, bool elems, DimBuild *db)
+{
+	uint32		hsize = 16,
+				maxn = nrows;
+	Scratch		sc;
+
+	for (int d = 0; d < spec->ndims; d++)
+		maxn = Max(maxn, cols[spec->dim[d].leaf].n);
 	while (hsize < 2 * (maxg + 1))
 		hsize *= 2;
 	sc.hsize = hsize;
-	sc.gid = palloc(nrows * sizeof(uint32));
+	sc.gid = palloc(maxn * sizeof(uint32));
 	sc.hk = palloc(hsize * sizeof(int64));
 	sc.hg = palloc(hsize * sizeof(int32));
 	sc.gkey = palloc((maxg + 1) * sizeof(int64));
@@ -587,43 +691,17 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
 	for (int d = 0; d < spec->ndims; d++)
 	{
-		db[nd].spec = d;
-		initStringInfo(&db[nd].blob);
-		db[nd].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[nd].blob);
-		db[nd].bytes = db[nd].blob.len;
-		nd++;
-	}
-	if (spec->permille > 0)
-		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
-	/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
-	for (int round = 0; round < nd; round++)
-	{
-		int			best = -1;
+		const SiftCPaggDim *sd = &spec->dim[d];
+		int			list = s->cols[sd->leaf].parent;
+		uint32		n = list < 0 ? nrows : cols[sd->leaf].n;
 
-		for (int d = 0; d < nd; d++)
-			if (db[d].ok && !keep[d] && (best < 0 || db[d].bytes < db[best].bytes))
-				best = d;
-		if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
-			break;
-		keep[best] = true;
-		used += db[best].bytes;
-		kept++;
+		db[d] = (DimBuild) {.spec = d, .list = list};
+		initStringInfo(&db[d].blob);
+		/* an overflow value in the list's counts: the elements are not all there */
+		if (list < 0 || (elems && col_usable(&cols[list], nrows)))
+			db[d].ok = build_dim(s, sd, cols, n, maxg, &sc, &db[d].blob);
+		db[d].bytes = db[d].blob.len;
 	}
-	if (kept > 0)
-	{
-		appendStringInfoChar(out, (char) kept);
-		for (int d = 0; d < nd; d++)
-			if (keep[d])
-			{
-				put_u(out, spec->dim[db[d].spec].leaf);
-				put_u(out, db[d].blob.len);
-			}
-		for (int d = 0; d < nd; d++)
-			if (keep[d])
-				appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
-	}
-	for (int d = 0; d < nd; d++)
-		pfree(db[d].blob.data);
 	pfree(sc.gid);
 	pfree(sc.hk);
 	pfree(sc.hg);
@@ -633,6 +711,39 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 	pfree(sc.ord);
 	pfree(sc.sf);
 	pfree(sc.si);
+}
+
+void
+sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
+				StringInfo out, StringInfo eout)
+{
+	DimBuild	db[SIFT_PAGG_SPEC_DIMS];
+	Size		budget = 0,
+				used = 0;
+
+	if (spec->off || spec->ndims == 0 || nrows == 0)
+		return;
+	build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), eout != NULL, db);
+	if (spec->permille > 0)
+		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
+	/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
+	for (int round = 0; round < spec->ndims; round++)
+	{
+		int			best = -1;
+
+		for (int d = 0; d < spec->ndims; d++)
+			if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
+				best = d;
+		if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
+			break;
+		db[best].keep = true;
+		used += db[best].bytes;
+	}
+	emit_cube(spec, db, spec->ndims, -1, out);
+	if (eout)
+		emit_elems(s, spec, db, spec->ndims, eout);
+	for (int d = 0; d < spec->ndims; d++)
+		pfree(db[d].blob.data);
 }
 
 /* ---------- reading ---------- */
@@ -694,9 +805,12 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 	return !r->bad;
 }
 
-/* The directory of a blob: leaf and body bytes of each dim; body points at the first dim's body. false when inconsistent */
+/*
+ * The directory of a blob: leaf and body bytes of each entry (at most max of them; the dims of a cube, or the lists of an element blob); body
+ * points at the first body. false when inconsistent
+ */
 static bool
-read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int *nd, int *leaf, uint32 *blen, const uint8 **body)
+read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int max, int *nd, int *leaf, uint32 *blen, const uint8 **body)
 {
 	Rd			r = {blob, blob + len, false};
 	uint64		total = 0;
@@ -704,7 +818,7 @@ read_dir(const SiftColSchema *s, const uint8 *blob, uint32 len, int *nd, int *le
 	if (len == 0)
 		return false;
 	*nd = *r.p++;
-	if (*nd == 0 || *nd > SIFT_PAGG_MAX_DIMS)
+	if (*nd == 0 || *nd > max)
 		return false;
 	for (int d = 0; d < *nd; d++)
 	{
@@ -732,7 +846,7 @@ sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryC
 	bool		ok = false;
 
 	memset(h, 0, sizeof(*h));
-	if (!read_dir(s, blob, len, &nd, leaf, blen, &p))
+	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, leaf, blen, &p))
 		goto done;
 	for (int d = 0; d < nd; d++)
 	{
@@ -759,7 +873,7 @@ sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, Mem
 	uint32		blen[SIFT_PAGG_MAX_DIMS];
 	const uint8 *p;
 
-	if (!read_dir(s, blob, len, &nd, lf, blen, &p))
+	if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, &nd, lf, blen, &p))
 		goto done;
 	res = 0;
 	for (int d = 0; d < nd; d++)
@@ -776,6 +890,29 @@ sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, Mem
 done:
 	MemoryContextSwitchTo(old);
 	return res;
+}
+
+const uint8 *
+sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, int group, uint32 *len)
+{
+	int			nl,
+				list[SIFT_PAGG_SPEC_DIMS];
+	uint32		blen[SIFT_PAGG_SPEC_DIMS];
+	const uint8 *p;
+
+	*len = 0;
+	if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nl, list, blen, &p))
+	{
+		*len = UINT32_MAX;
+		return NULL;
+	}
+	for (int i = 0; i < nl; p += blen[i++])
+		if (list[i] == group)
+		{
+			*len = blen[i];
+			return p;
+		}
+	return NULL;
 }
 
 const SiftCHistDim *
@@ -796,36 +933,100 @@ sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 	return -1;
 }
 
-bool
-sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len)
+/* Calls fn for the cube of the unit and the cube of each list of its element blob; false when a blob does not decode or fn says so */
+typedef bool (*CubeFn) (const SiftColSchema *s, const SiftCHist *h, void *arg);
+
+static bool
+each_cube(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, MemoryContext cx, CubeFn fn, void *arg)
 {
 	SiftCHist	h;
+	int			nl,
+				list[SIFT_PAGG_SPEC_DIMS];
+	uint32		blen[SIFT_PAGG_SPEC_DIMS];
+	const uint8 *p;
+
+	if (len > 0 && (!sift_cpagg_decode(s, blob, len, cx, &h) || !fn(s, &h, arg)))
+		return false;
+	if (elen == 0)
+		return true;
+	if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, &nl, list, blen, &p))
+		return false;
+	for (int i = 0; i < nl; p += blen[i++])
+		if (!sift_cpagg_decode(s, p, blen[i], cx, &h) || !fn(s, &h, arg))
+			return false;
+	return true;
+}
+
+static bool
+mark_leaves(const SiftColSchema *s, const SiftCHist *h, void *arg)
+{
+	bool	   *need = arg;
+
+	for (int d = 0; d < h->ndims; d++)
+	{
+		need[h->dim[d].leaf] = true;
+		if (s->cols[h->dim[d].leaf].parent >= 0)
+			need[s->cols[h->dim[d].leaf].parent] = true;
+		for (int m = 0; m < h->dim[d].nmeas; m++)
+			need[h->dim[d].meas[m]] = true;
+	}
+	return true;
+}
+
+bool
+sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg leaves", ALLOCSET_SMALL_SIZES);
+	bool		ok = each_cube(s, blob, len, eblob, elen, cx, mark_leaves, need);
+
+	MemoryContextDelete(cx);
+	return ok;
+}
+
+/* The dims and measures of a stored cube, appended to the spec that recomputes it */
+static bool
+add_to_spec(const SiftColSchema *s, const SiftCHist *h, void *arg)
+{
+	SiftCPaggSpec *spec = arg;
+
+	if (spec->ndims + h->ndims > SIFT_PAGG_SPEC_DIMS)
+		return false;
+	for (int d = 0; d < h->ndims; d++, spec->ndims++)
+	{
+		spec->dim[spec->ndims].leaf = h->dim[d].leaf;
+		spec->dim[spec->ndims].nmeas = h->dim[d].nmeas;
+		memcpy(spec->dim[spec->ndims].meas, h->dim[d].meas, sizeof(spec->dim[0].meas));
+	}
+	return true;
+}
+
+static bool
+same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)
+{
+	return a->len == (int) len && (len == 0 || memcmp(a->data, b, len) == 0);
+}
+
+bool
+sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen)
+{
 	SiftCPaggSpec spec;
-	StringInfoData again;
+	StringInfoData again,
+				eagain;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
 	bool		ok;
 
-	if (len == 0)
-		return true;
-	if (!sift_cpagg_decode(s, blob, len, cx, &h))
-	{
-		MemoryContextDelete(cx);
-		return false;
-	}
 	memset(&spec, 0, sizeof(spec));
 	spec.fixed = true;
 	spec.max_groups = SIFT_PAGG_CUBE_GROUPS;
-	spec.ndims = h.ndims;
-	for (int d = 0; d < h.ndims; d++)
-	{
-		spec.dim[d].leaf = h.dim[d].leaf;
-		spec.dim[d].nmeas = h.dim[d].nmeas;
-		memcpy(spec.dim[d].meas, h.dim[d].meas, sizeof(spec.dim[d].meas));
-	}
-	initStringInfo(&again);
-	sift_cpagg_cube(s, &spec, cols, nrows, 0, &again);
-	ok = again.len == (int) len && memcmp(again.data, blob, len) == 0;
-	pfree(again.data);
+	ok = each_cube(s, blob, len, eblob, elen, cx, add_to_spec, &spec);
 	MemoryContextDelete(cx);
+	if (!ok)
+		return false;
+	initStringInfo(&again);
+	initStringInfo(&eagain);
+	sift_cpagg_cube(s, &spec, cols, nrows, 0, &again, elen > 0 ? &eagain : NULL);
+	ok = same_bytes(&again, blob, len) && same_bytes(&eagain, eblob, elen);
+	pfree(again.data);
+	pfree(eagain.data);
 	return ok;
 }
