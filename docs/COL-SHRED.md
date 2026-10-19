@@ -98,7 +98,8 @@ incomplete or unrepresentable.
 A leaf below the array that sits at an object position has `SIFT_COLTAG_NONE`: its path leads to no value, as for `->`. Where the leaf is not
 what the event delivered, and for what a writer cannot know (a heap column, a `sift_table` segment), the tag is `UNKNOWN` (0). The writers
 store the tags of the slots that overflow in the chunks of column format minor 4 (docs/COL.md section 2.2); `jsonb_typeof(path)` is
-answered from them (docs/COL-PLAN.md, "jsonb_typeof"). The other states have no tag.
+answered from them (docs/COL-PLAN.md, "jsonb_typeof"). A `NULL` slot has `SIFT_COLTAG_JNULL` (7), a JSON null as against a missing key; the `VALUE`
+of an `ASTEXT` leaf has the tag of the value it was (`NUMBER`, `BOOLEAN`; a string and the other leaf types have 0); `ABSENT` has none.
 
 A slot that is not `VALUE` has a zero value that means nothing: NULL is never a sentinel value, the states (or `state_bits`) say which
 slots are NULL, so a codec that takes the `int64` keys of a column plus a NULL bitmap needs nothing else from the shredder (integers

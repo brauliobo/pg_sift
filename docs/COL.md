@@ -123,17 +123,29 @@ i64 base                                          frame of reference (the smalle
 [u64 nullbits[(n+63)/64]]                          when flags & SIFT_COLC_NULLS; bit set = NULL; tail bits zero
 [u64 ovfbits[(n+63)/64]]                           when flags & SIFT_COLC_OVF: the values the leaf could not hold (shredder OVERFLOW); also set in nullbits
 [u8 tags[8 * ceil(novf / 16)]]                     when flags & SIFT_COLC_TAGS (minor 4, only with OVF): one nibble per set bit of ovfbits, in slot order
+[u64 kmask][u64 kind[t][(n+63)/64] per set bit t]  when flags & SIFT_COLC_KINDS (minor 4): the tags that have a bitmap, then those bitmaps in tag order
 payload
 ```
 
-`flags`: `NULLS` (0x1), `OVF` (0x2), `TAGS` (0x4). **The type of an overflowing value** (minor 4): the nibble of an overflow slot is the JSON type of
+`flags`: `NULLS` (0x1), `OVF` (0x2), `TAGS` (0x4), `KINDS` (0x8). **The type of an overflowing value** (minor 4): the nibble of an overflow slot is the JSON type of
 the value the leaf could not hold: 0 unknown (a writer that did not know it, a unit merged from a minor 3 segment), 1 string, 2 number, 3
 boolean, 4 object, 5 array, 6 none (the leaf lies below an array where its path declares an object: the slot overflows because a lax jsonpath would unwrap the
 array, but the path of `->` leads to no value and `jsonb_typeof` of it is NULL). The nibbles are LSB first (the even slot in the low nibble), the unused ones and the padding to 8 bytes are zero, and a chunk
 without overflow has no flag and no bytes, so a clean index costs nothing. The segment's minor decides: every chunk of a minor 4 segment that has
 overflow has `TAGS`, none of a minor 3 segment does. A stored value has no nibble, its type is the type of its leaf (bool boolean, integers,
 floats and numeric number, text string). The write buffer keeps the type in the high nibble of the flag byte of an overflowing value. Readers:
-`sift_col_filter_types` (the rows of a unit whose value has a type of a mask), `sift_col_ovf_bits`, the tag of `SiftColValue.tag` in a merge.
+`sift_col_filter_types` (the rows of a unit whose value has a type of a mask), `sift_col_row_types` (the type of every row), `sift_col_ovf_bits`,
+the tag of `SiftColValue.tag` in a merge.
+
+**Kinds** (minor 4). The slots that do not overflow can have a type their leaf does not say: a JSON null is a NULL slot like a missing key, and the
+text of an `astext` leaf is a string, a number or a boolean. `KINDS` is a word whose low byte has bit `t` set for each tag that has a bitmap (7
+JSON null, 1 to 3 the type of a value), then those bitmaps in tag order, `n` bits each, tail bits zero. A bitmap is never empty, no slot is in two,
+none is in `ovfbits`, JSON null (tag 7) is a subset of `nullbits` and the others are disjoint from it. A chunk without any has no flag and no bytes (a
+leaf of no JSON null and no astext value costs nothing); a string of an `astext` leaf is the leaf's own type and has no bit. The write buffer keeps a
+kind in the high nibble of the flag byte of the value, like the type of an overflow value. Together: the JSON type of a row of a leaf is its tag
+(overflow value, kind), else the leaf's own type for a value and none for a NULL slot (jsonb_typeof is NULL for a missing key and for a path that leads to no
+value). A segment of minor 3 has no kinds, so it cannot tell a JSON null from a missing key or the types of an astext leaf's values: its answer for a test that needs it
+is "not known" (`sift_col_filter_types` sets `*known` false), exactly as for an overflow value without a tag.
 
 `enc`:
 

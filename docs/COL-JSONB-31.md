@@ -179,9 +179,11 @@ predicate) scans every element.
   because a lax jsonpath would unwrap the array, but the `->` path leads to no value and `jsonb_typeof` of it is NULL, so the slot must neither
   match a type nor look like a value written before the types were kept (tag 0, which raises). Cost: half a byte per overflowing value
   (measured 0.506), nothing for a chunk without overflow. The type of a value that is stored is the type of its
-  leaf (bool is boolean, integers, floats and numeric are number, text is string); an `astext` leaf mixes the three, so `jsonb_typeof`
-  is not answered from it. A JSON null is a NULL slot, and so is an absent key: the tag does not tell them apart, so the pushdown answers
-  the tests that treat both alike, `jsonb_typeof(p) = 'number'` (and `IN` over the five types other than `'null'`) and leaves group keys, `= 'null'`, `<>` and `IS NULL` of `jsonb_typeof` to the normal plan. Rows whose tag is not the asked type
+  leaf (bool is boolean, integers, floats and numeric are number, text is string). An `astext` leaf mixes the three and a JSON null is a NULL slot
+  like an absent key, which the tag of an overflow value does not tell: the **kinds** (chunk flag `SIFT_COLC_KINDS`, 0x8, docs/COL.md 2.2) are one
+  bitmap per tag for the slots that do not overflow, JSON null (tag 7) in the NULL slots and number / boolean in the values of an `astext` leaf
+  (its string is the leaf's own type). They cost nothing in a chunk without a JSON null and without astext numbers or booleans, and a bitmap
+  of `n` bits otherwise. Rows whose tag is not the asked type
   are not read, so a string among numbers no longer raises the overflow error when the filter drops it; a value that is of the asked type but
   does not fit (a number out of the float range) still raises it, and so does a string asked for on a number leaf, since the leaf holds none of
   its values: the filter keeps the rows of a type and cannot give their values. The error is raised for the rows the filter keeps that a
@@ -226,7 +228,7 @@ predicate) scans every element.
   SQL objects changes: `ALTER EXTENSION pg_sift UPDATE` from 3.0 runs a script with no objects of this change, and a `sift_col` index built by
   3.0 keeps working across it. BM25 indexes (`SIFT_FORMAT_MINOR` 2) are not touched.
 - **Verification.** `sift.col_verify` checks the segment minor against 3 and 4; for minor 4 that the flag `SIFT_COLC_TAGS` is present exactly
-  when a chunk has overflow bits, that every nibble is 0 to 6 and the padding is zero, that the `COLP` directory version matches the
+  when a chunk has overflow bits, that every nibble is 0 to 6 and the padding is zero, that `SIFT_COLC_KINDS` is only in a minor 4 segment and its bitmaps are well formed, that the `COLP` directory version matches the
   segment's minor (a minor 3 segment has version 1 and no tags), and recomputes the element histograms from the chunks with the other
   sidecar checks; with `heapallindexed` the tag of an overflow value is compared with the type of the heap value (a tag 0 matches any).
   `sift.col_sections` lists the new blob; `sift.col_index_info` counts it in `preagg_bytes`.

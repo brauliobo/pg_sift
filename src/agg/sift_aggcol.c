@@ -860,7 +860,7 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	uint64	   *ovf;
 	SiftColSel	bad;
 
-	left = sift_col_filter_types(cu, t->leaf, t->mask, t->mask >> stored_tag(t->src->lay->leaf[t->leaf].typid) & 1, vs, &known);
+	left = sift_col_filter_types(cu, t->leaf, t->mask, stored_tag(t->src->lay->leaf[t->leaf].typid), false, vs, &known);
 	if (!known)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
