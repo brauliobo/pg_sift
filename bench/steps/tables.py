@@ -292,7 +292,7 @@ def md_cold(rows, dataset, tier):
     cell = lambda e, k: sel[(e,) + k + ('cold_p50_ms',)] + ' / ' + sel[(e,) + k + ('cold_max_ms',)] if (e,) + k + ('cold_p50_ms',) in sel else 'NA'
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); ' + METHOD, '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); ' + method(session_quota(rows, dataset, tier.replace('-cold', ''))), '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 

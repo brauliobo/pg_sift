@@ -25,6 +25,8 @@ bench/bench regress --run          # sift against a build of an older release (s
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
+**An equal CPU budget for every server** (the final pass of 3.0): `SERVER_BUDGET=3 SERVER_CPUS=0-3,8-11 ES_SHARDS=3 ES_PROCESSORS=3 taskset -c 4-7,12-15 bench/bench all --docs --workers 2`. Every server the harness starts (a PostgreSQL lane, the Elasticsearch process) runs through `server_run` (`steps/lib.sh`): a systemd scope of the slice `sift-bench` with `CPUQuota=300%` pinned to `SERVER_CPUS` (four physical cores and their siblings), while the harness, `pgbench`, `cell.py` and the load generator run outside the cap on the cores of the outer `taskset`; `--workers 2` gives PostgreSQL 2 parallel and 2 build workers and `pgbench` 2 threads, `ES_PROCESSORS` sets `node.processors` and the JVM's processor count, `ES_SHARDS` the shards (each merged to one segment). Without `SERVER_BUDGET` nothing is capped, as before. The noise of a batch is the host's other work in its window (`sentinel_*` in `steps/lib.sh`), flagged in `noisy.txt`, never waited for.
+
 Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It keeps the ordering of the engines and
 most of the ratios of the full tier at a fraction of the time and disk. `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
