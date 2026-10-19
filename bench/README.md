@@ -19,7 +19,7 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report on the slim tier (the default): about 9 minutes of builds and measurements once set up
+bench/bench all                    # setup + run + report on the slim tier (the default): about 10 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
@@ -48,8 +48,8 @@ Two engines are system packages that `setup` does not build: Elasticsearch (`pac
 `setup` fails with that install hint when one of them is selected and missing, nothing is downloaded for them; on a host without the pgx-bm25 package `BM25_PKG=/path/to/pgx-bm25-<version>.pkg.tar.zst`
 (unpacked into the work directory) or `BM25_SRC=/path/to/source.tar.gz` (built with PGXS) are the fallbacks. `machine.txt` says whether an extension is the system's or the work directory's.
 Elasticsearch is started as an ordinary process of the user, not as the package's service: no sudo, nothing written to `/etc` or `/usr`, with a configuration directory of its own
-(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$BENCH_WORK/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard, no replica
-and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), with every CPU of the host like the Postgres servers. The
+(`elasticsearch.yml`, `jvm.options`, `log4j2.properties`, generated into `$BENCH_WORK/engines/elasticsearch/<tier>/conf`). The node has security and machine learning off, one shard (`ES_SHARDS`; the final pass of 3.0 used 3), no replica
+and a heap of the size of the Postgres engines' `shared_buffers`, on a free port of the tier (`ES_PORT` overrides it), with every CPU of the host like the Postgres servers (`ES_PROCESSORS` and `SERVER_BUDGET` cap it; the final pass of 3.0 used 3). The
 packaged version is recorded in the machine description of the results. The run stops the node and removes its data directory when it ends. `--engines elasticsearch` runs it alone.
 
 blocks of the docs):
@@ -176,11 +176,12 @@ and the lane cache stay. `bench` holds `/tmp/sift-perf.lock` for the whole run, 
 
 ### Host and CPUs
 
-The suite leaves the CPUs alone. An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
+By default the suite leaves the CPUs alone (the published slim tables use the equal budget described under Reproduce). An engine under measurement can use all the hardware threads of the host (a Postgres server's parallel workers are one per hardware thread, an index build one fewer than the physical cores, so that the engines that cut the index into a segment per worker do not get 15 segments for a small table;
 `--workers` caps both), and the load generators (pgbench with 4 threads, `xbench`) run next to it on the same CPUs, as any client of the machine would, with the same client counts for every engine.
 recorded with every cell, for the older runs. A busy host shows up as wide standard errors and as a drift between rounds; the numbers of a session are for comparing the engines of that
 session with each other, not with another session or machine.
 
+**Quiet host (`scripts/quiet.sh`).** The articles and places runs (`steps/lib.sh`) do not wait for a quiet host: they judge each timed batch by the work of others in its window (`sentinel_*`: NOISY above `SIFT_NOISE_CPU`, 0.25 cores, over the idle host's, listed in `noisy.txt`) and print the pressure for information. The other timed steps (`ab.sh`, `facets.sh`, `parallel.sh`, `col-build.sh`) wait as follows.
 (`/proc/pressure/cpu` and `io`, the `some` line). Before each timed batch (a class of cells, a pgbench round, a timed query, a build) `quiet_wait` blocks until both resources are below 10% in the
 10 s average (`avg10`) for two samples 2 s apart; after `SIFT_QUIET_TIMEOUT` seconds (default 60) the batch runs anyway and is marked **NOISY** (in the log, in `noisy.txt` of the table directory, in the table or the footer of the
 step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Instruction-count steps (`cpu_gate.sh`, the cycles of `ab.sh run`) print it and never wait. Override with the environment:

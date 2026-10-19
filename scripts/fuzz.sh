@@ -16,7 +16,7 @@
 # under clang, else the portable driver): the decoders of the column chunks, of the term blobs and of the shredder, from seeds the
 # writers make, for 6 s per --scale step (60 s at the default), with the findings recorded in the design notes skipped by
 # FZ_SKIP / test/fuzz/ubsan.supp until they are fixed (FZ_SKIP= and FZ_NO_SUPP=1 run strict); bm25-raw is the query path on bytes
-# nobody verified, which fails today. FZ_SECS sets the seconds of each coverage-guided target, FZ_KERNELS_MILLIONS the millions of random calls of the kernels
+# nobody verified (clean since 2.0.2). FZ_SECS sets the seconds of each coverage-guided target, FZ_KERNELS_MILLIONS the millions of random calls of the kernels
 # target and FZ_GRID_STRIDE runs every Nth combination of its exhaustive BM25 grid, FZ_CODEC_ITERS and
 # FZ_ANALYZE_ITERS the iterations of those two (scripts/ci.sh quick: 2, 0.05, 7, 100 and 5000). Exit 1 on any finding.
 set -euo pipefail
