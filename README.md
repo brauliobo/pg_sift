@@ -66,7 +66,7 @@ Feature facts checked against each project's own documentation on 2026-10-18 (sp
 | Prefix, wildcard | Yes | Partly | Partly | Partly | Partly | Partly | Yes | Yes |
 | Regex, fuzzy | Yes | No | Yes | No | No | No | Yes | Yes |
 | Field weights | Partly | Yes | Partly | No | Partly | Yes | Partly | Yes |
-| Facets | Partly | No | Yes | No | No | No | No | Yes |
+| Facets | Yes | No | Yes | No | No | No | No | Yes |
 | Filters inside the ranked scan | Yes | Partly | Yes | No | Partly | No | Partly | Yes |
 | Top-N with other filters | Yes | No | Yes | Partly | Yes | Partly | Yes | Yes |
 | `count(*)` from the index | Yes | No | Partly | No | No | No | Yes | Yes |
