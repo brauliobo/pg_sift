@@ -153,6 +153,12 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 	}
 }
 
+/*
+ * The table's own mask, not the heap's map: an SB is plain when it holds no delta row and no tombstone among those synced when the source
+ * opened (tbl_open), before it read any row. A VACUUM of the table clears the liveness of rows behind tombstones, and a scan that holds
+ * those tombstones sends their SBs to the filter whatever liveness it reads later, so no read of the mask follows a liveness it should have
+ * preceded and the source needs no directory guard (sift_vis_guard).
+ */
 static void
 tbl_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
