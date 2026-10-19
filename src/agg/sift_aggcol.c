@@ -161,6 +161,7 @@ col_layout(Relation index)
 		l->typid = sift_col_def_typid(tupdesc, def);
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
+		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			l->kind = strstr(def->path, ".*") ? SCL_OBJECT : SCL_ARRAY;

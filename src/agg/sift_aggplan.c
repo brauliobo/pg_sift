@@ -511,6 +511,9 @@ func_var_leaf(AggCtx *c, Var *v)
 		case FK_EACH_TEXT:
 			if (v->varattno == 1)
 				return child_leaf(c, c->group, "key", TEXTOID);
+			/* jsonb_each_text: the text of the value is the text of the member; a number has none in a text leaf, only in an astext one */
+			if (c->func_kind == FK_EACH_TEXT && v->varattno == 2 && v->vartype == TEXTOID)
+				return child_leaf(c, c->group, "value", TEXTOID);
 			return -1;
 		case FK_ELEMENTS_TEXT:		/* the element of an array of strings is the one unnamed child of the array */
 			return v->varattno == 1 && v->vartype == TEXTOID ? child_leaf(c, c->group, "", TEXTOID) : -1;
@@ -3277,7 +3280,7 @@ child_named(AggCtx *c, int group, const char *name)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->parent == group && !l->lossy && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
+		if (l->parent == group && !l->lossy && !l->astext && l->kind == SCL_SCALAR && strcmp(l->name, name) == 0)
 			return i;
 	}
 	return -1;

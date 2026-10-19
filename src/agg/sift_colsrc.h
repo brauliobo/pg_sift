@@ -58,6 +58,7 @@ typedef struct SiftSrcLeaf
 	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match */
 	int			scale;			/* numeric leaf (typid NUMERICOID, SCV_I64): digits after the decimal point, the value is the number times 10^scale */
 	bool		lossy;			/* the shredder may have left values out of the leaf (overflow): no predicate may use it */
+	bool		astext;			/* a text leaf of the `->>` text of any scalar: not the strings a jsonpath, `@>` or `?` compares */
 	List	   *path;			/* jsonb path below the attribute, a list of String nodes; NIL for a plain attribute.
 								 * Array/object leaf: the path of the array; child: NIL and name set */
 	char		name[NAMEDATALEN];	/* child leaf of a group: the object field name ("key"/"value" for SCL_OBJECT) */
