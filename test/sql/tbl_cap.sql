@@ -22,7 +22,7 @@ SELECT count(*) AS wrong FROM cap WHERE v <> repeat('x', 1000) || id;
 CREATE TABLE cap_one (id int, v text) USING sift_table;
 INSERT INTO cap_one SELECT g, repeat('x', 1000) || g FROM generate_series(1, 60 * 2200) g;
 SELECT count(*), sum(length(v)) FROM cap_one;
--- but the rows of many commands in one write buffer wait for the transaction: it ends at the limit, with the size it could write
+-- the rows of many commands wait for the transaction in groups that carry the version of each row: the loop writes all of it
 CREATE TABLE cap_cmds (id int, v text) USING sift_table;
 DO $$
 BEGIN
@@ -30,7 +30,7 @@ BEGIN
 		INSERT INTO cap_cmds VALUES (i, repeat('x', 1000) || i);
 	END LOOP;
 END $$;
-SELECT count(*) FROM cap_cmds;
+SELECT count(*), sum(id) FROM cap_cmds;
 DROP TABLE cap, cap_one, cap_cmds;
 DROP PROCEDURE load_cap;
 DROP EXTENSION pg_sift;

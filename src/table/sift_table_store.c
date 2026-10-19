@@ -337,7 +337,9 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 	const SiftSegEntry *act;
 	BlockNumber first = InvalidBlockNumber;
 	SiftSegEntry old = {0};
+	bool		waited = false;
 
+again:
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(rel, &st->dir);
 	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
@@ -353,13 +355,21 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 		Page		hp,
 					dp;
 
+		/* the directory is full: whoever promotes and merges holds the maintenance lock, which is waited for (not under the active lock: that one is taken inside it) before this is an error */
+		if (st->dir.nsegs >= sift_tbl_max_segments - 2 && !waited)
+		{
+			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+			waited = true;
+			sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true);
+			goto again;
+		}
 		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-					 errdetail("Too many write buffers waiting for promotion: a write buffer whose rows are not final is promoted only when one command of one transaction wrote all of it, and about %d MB of rows are in write buffers that several wrote.",
+					 errdetail("Too many write buffers waiting for promotion: a write buffer that holds a deleted row VACUUM has not seen, or a speculative insertion, is promoted only after that is settled, and about %d MB of rows are in write buffers like that.",
 							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_write_buffer_limit / 1024)),
-					 errhint("Load with COPY or INSERT ... SELECT, or in several transactions, or run VACUUM on the table once the old transactions end.")));
+					 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
 		if (act)
 			old = *act;
 		if (vbase + vcap > (uint64) MaxBlockNumber)
@@ -399,7 +409,7 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 		sift_lane_flag_sealed_pages(rel, &old);
 	sift_tbl_refresh(rel, st);
 	if (old.gen && sift_tbl_inline_promote)
-		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel));
+		sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false);
 	return first;
 }
 
@@ -778,7 +788,7 @@ sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 }
 
 void
-sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
+sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uint16 clear)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 
@@ -789,6 +799,7 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 		Buffer		buf;
 		GenericXLogState *state;
 		Page		page;
+		SiftTblRec *rec;
 
 		if (vblock < seg->vbase || vblock >= seg->vbase + seg->vcap)
 			continue;
@@ -801,7 +812,8 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set)
 		{
 			state = GenericXLogStart(rel);
 			page = GenericXLogRegisterBuffer(state, buf, 0);
-			((SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]))->flags |= set;
+			rec = (SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]);
+			rec->flags = (rec->flags | set) & ~clear;
 			GenericXLogFinish(state);
 		}
 		UnlockReleaseBuffer(buf);

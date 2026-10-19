@@ -42,7 +42,7 @@ SELECT count(*), sum(length(v)) FROM cap_one;
  132000 | 132680895
 (1 row)
 
--- but the rows of many commands in one write buffer wait for the transaction: it ends at the limit, with the size it could write
+-- the rows of many commands wait for the transaction in groups that carry the version of each row: the loop writes all of it
 CREATE TABLE cap_cmds (id int, v text) USING sift_table;
 DO $$
 BEGIN
@@ -50,15 +50,10 @@ BEGIN
 		INSERT INTO cap_cmds VALUES (i, repeat('x', 1000) || i);
 	END LOOP;
 END $$;
-ERROR:  sift_table "cap_cmds" has 22 segments
-DETAIL:  Too many write buffers waiting for promotion: a write buffer whose rows are not final is promoted only when one command of one transaction wrote all of it, and about 44 MB of rows are in write buffers that several wrote.
-HINT:  Load with COPY or INSERT ... SELECT, or in several transactions, or run VACUUM on the table once the old transactions end.
-CONTEXT:  SQL statement "INSERT INTO cap_cmds VALUES (i, repeat('x', 1000) || i)"
-PL/pgSQL function inline_code_block line 4 at SQL statement
-SELECT count(*) FROM cap_cmds;
- count 
--------
-     0
+SELECT count(*), sum(id) FROM cap_cmds;
+ count  |    sum     
+--------+------------
+ 132000 | 8712066000
 (1 row)
 
 DROP TABLE cap, cap_one, cap_cmds;

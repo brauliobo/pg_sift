@@ -60,7 +60,7 @@ typedef struct TblSource
 	Snapshot	snapshot;
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
-	SiftTblTags *tags;			/* the tagged groups of dir */
+	SiftTblVers *vers;			/* the groups of dir with unfrozen rows */
 	SiftTblSeg *wbuf;			/* private copies of the write buffers */
 	int			nwbuf;
 	uint32		wbuf_lo;		/* the superblocks that hold write buffer rows: [wbuf_lo, wbuf_hi] */
@@ -192,7 +192,7 @@ tbl_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 	TblSource  *t = arg;
 	bool		plain = (sb < t->wbuf_lo || sb > t->wbuf_hi) &&
 		!sift_tbl_tomb_any(t->st, (uint64) sb * (SIFT_SB_PAGES << 16), (uint64) (sb + 1) * (SIFT_SB_PAGES << 16) - 1) &&
-		sift_tbl_sb_inserted(t->rel, t->snapshot, t->tags, sb);
+		sift_tbl_vers_sb(t->rel, t->snapshot, t->vers, sb) == SIFT_TBL_VER_ALL;
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
 }
@@ -202,7 +202,7 @@ tbl_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	TblSource  *t = arg;
 
-	return sift_tbl_filter_page_tags(t->rel, t->snapshot, t->tags, blk, offmask);
+	return sift_tbl_filter_page_vers(t->rel, t->snapshot, t->vers, blk, offmask);
 }
 
 /* The leaf of schema that holds the column of leaf i of the layout; a store of another kind is a column the table changed the type of */
@@ -256,7 +256,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
 	*t->dir = st->dir;
-	t->tags = sift_tbl_tags_build(heap, st, t->dir, mcxt);
+	t->vers = sift_tbl_vers_build(heap, st, t->dir, mcxt);
 	t->nwbuf = st->nwbuf;
 	t->wbuf = t->nwbuf ? palloc(t->nwbuf * sizeof(SiftTblSeg)) : NULL;
 	t->wbuf_lo = PG_UINT32_MAX;

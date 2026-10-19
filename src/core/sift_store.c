@@ -218,6 +218,18 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 
 /* ---------- metapage and directory ---------- */
 
+/*
+ * The metapage minor a build must read to understand the segment: the segment format of a BM25 segment, 1.3 for a column segment with unfrozen
+ * rows (which an older build would show as final); the other column segments need no more than the base, their format is the column engine's own
+ */
+static uint16
+seg_minor(Relation index, const SiftSegEntry *s)
+{
+	if (index->rd_rel->relam == sift_catalog()->am)
+		return Min(s->format, SIFT_FORMAT_MINOR);
+	return (s->flags & SIFT_SEG_VERS) ? SIFT_FORMAT_MINOR : SIFT_FORMAT_MINOR_BASE;
+}
+
 static void
 check_meta(Relation index, Buffer buf)
 {
@@ -879,10 +891,9 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
-		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is its own, sift_col.h) */
-		if (index->rd_rel->relam == sift_catalog()->am)
-			for (int i = 0; i < DIR(dp)->nsegs; i++)
-				META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));
+		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (sift_col.h), its unfrozen rows raise the minor */
+		for (int i = 0; i < DIR(dp)->nsegs; i++)
+			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);

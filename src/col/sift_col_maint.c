@@ -128,7 +128,8 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 }
 
 void
-sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n)
+sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
+						int format, SiftColFreezeFn freeze, void *freeze_arg)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -142,18 +143,12 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	SiftColSegWriter *w = NULL;
 	SiftSegEntry neu;
 	TimestampTz start = GetCurrentTimestamp();
-	uint32		tag = in[0].reserved,
-				aux = 0;
 
 	for (int i = 0; i < n; i++)
 	{
 		seg[i] = sift_cseg_open(index, &in[i], cx);
 		if (seg[i]->schema->hash != schema->hash)
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
-		if (i == 0 && tag)
-			aux = SIFT_CSEG_TAG_AUX(seg[0]);
-		if (in[i].reserved != tag || (tag && SIFT_CSEG_TAG_AUX(seg[i]) != aux))
-			corrupt(index, "Segment %llu has another owner tag than segment %llu.", (unsigned long long) in[i].gen, (unsigned long long) in[0].gen);
 		part[i] = sift_cbatch_create(cx, schema);
 	}
 	for (;;)
@@ -170,7 +165,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		{
 			if (cur[i] >= seg[i]->nsb || seg[i]->sbdir[cur[i]].sb != sb)
 				continue;
-			sift_cseg_decode_unit(seg[i], cur[i]++, part[i]);
+			sift_cseg_decode_unit_freeze(seg[i], cur[i]++, part[i], freeze, freeze_arg);
 			if (part[i]->nrows > 0)
 				use[nuse++] = part[i];
 		}
@@ -182,8 +177,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		{
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 			sift_wt_expect(wt, mi.bytes);
-			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, sift_col_format_minor, cx);
-			sift_colw_set_tag(w, tag, aux);
+			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, format, cx);
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
 		}
@@ -218,7 +212,7 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	n = pick_merge(index, snap, force, sel);
 	pfree(snap);
 	if (n > 0)
-		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n);
+		sift_col_merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n, sift_col_format_minor, NULL, NULL);
 	return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }
 

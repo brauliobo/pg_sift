@@ -8,6 +8,7 @@
 #include "access/amapi.h"
 
 #include "sift_col_pg.h"
+#include "sift_col_seg.h"
 #include "sift_col_enc.h"
 #include "sift_col_preagg.h"
 #include "sift_col_wbuf.h"
@@ -85,9 +86,12 @@ extern bool sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemP
 extern IndexBulkDeleteResult *sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 													IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
-/* Merges the segments in[0..n) (written for schema; all of the page store rel, an index or a table) into one, dropping their dead rows */
+/*
+ * Merges the segments in[0..n) (written for schema; all of the page store rel, an index or a table) into one, dropping their dead rows.
+ * format is the column format minor written (a sift_table writes SIFT_COL_FORMAT_VERS at least: its groups may carry versions). The rows of a table that are not final keep their versions, except those freeze (NULL: none) says are final now (sift_cseg_decode_unit_freeze).
+ */
 extern void sift_col_merge_segments(Relation rel, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg,
-									const SiftSegEntry *in, int n);
+									const SiftSegEntry *in, int n, int format, SiftColFreezeFn freeze, void *freeze_arg);
 /* Is more than half of the segment's rows dead (the merge policy's "mostly dead" test) */
 extern bool sift_col_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern void sift_col_maint_after_seal(Relation index);
