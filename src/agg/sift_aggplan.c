@@ -4366,14 +4366,14 @@ set_groups(PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 static void
-add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, int nworkers)
+add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers)
 {
 	CustomPath *cp = makeNode(CustomPath);
 
 	s->nworkers = nworkers;
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
-	cp->path.pathtarget = output_rel->reltarget;
+	cp->path.pathtarget = target;
 	cp->path.parallel_safe = false;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
@@ -4428,16 +4428,16 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 
 /* the cost; adds the paths to output_rel */
 static void
-agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *keys, List *scan_tlist)
+agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
 	int			nworkers;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
-	add_agg_path(c, s, input_rel, output_rel, scan_tlist, 0);
+	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel);
 	if (nworkers > 0)
-		add_agg_path(c, s, input_rel, output_rel, scan_tlist, nworkers);
+		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
 }
 
 /* the index among the group columns of the one with the sortgroupref ref */
@@ -4502,12 +4502,14 @@ static void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 
 static void topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
-void
-sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
-					 void *extra)
+/*
+ * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
+ * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
+ */
+static void
+group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
 {
 	Query	   *parse = root->parse;
-	GroupPathExtraData *gextra = (GroupPathExtraData *) extra;
 	AggCtx		ctx = {0},
 			   *c = &ctx;
 	FromScan	fs = {NIL, NIL, NIL, true};
@@ -4515,24 +4517,6 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	OutWalk		ow = {NIL, NIL, false};
 	List	   *scan_tlist = NIL;
 
-	if (stage == UPPERREL_ORDERED)
-	{
-		topn_paths(root, input_rel, output_rel);
-		return;
-	}
-	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || !(parse->hasAggs || parse->groupClause || parse->groupingSets) ||
-		parse->commandType != CMD_SELECT || parse->hasTargetSRFs || parse->hasDistinctOn ||
-		root->rowMarks != NIL || parse->hasRecursive)
-		return;
-	/* a window function is planned above the grouping stage: this stage is the same with or without one */
-	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
-		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
-		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
-	{
-		if (!parse->hasWindowFuncs)
-			sift_agg_two_level(root, input_rel, output_rel, gextra);
-		return;
-	}
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
@@ -4541,10 +4525,10 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		return;
 
 	/* keys */
-	if (list_length(parse->groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
+	if (list_length(groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
 		return;
-	s->key = palloc0((list_length(parse->groupClause) + 1) * sizeof(SiftAggKey));
-	foreach_node(SortGroupClause, sgc, parse->groupClause)
+	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
+	foreach_node(SortGroupClause, sgc, groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
 
@@ -4559,7 +4543,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		add_sets(parse, s, &scan_tlist);
 
 	/* aggregates, in the output and the HAVING clause */
-	foreach_ptr(Node, e, output_rel->reltarget->exprs)
+	foreach_ptr(Node, e, target->exprs)
 		out_walker(e, &ow);
 	if (gextra && gextra->havingQual)
 		out_walker((Node *) gextra->havingQual, &ow);
@@ -4574,7 +4558,43 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
-	agg_finish(c, s, root, input_rel, output_rel, ow.keys, scan_tlist);
+	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
+}
+
+void
+sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
+					 void *extra)
+{
+	Query	   *parse = root->parse;
+
+	if (stage == UPPERREL_ORDERED)
+	{
+		topn_paths(root, input_rel, output_rel);
+		return;
+	}
+	if (!sift_enable_agg || parse->commandType != CMD_SELECT || parse->hasTargetSRFs || parse->hasDistinctOn || root->rowMarks != NIL ||
+		parse->hasRecursive)
+		return;
+	/* SELECT DISTINCT of a plain scan is a group-by with no aggregate; over a grouped or windowed query it is not the scan's */
+	if (stage == UPPERREL_DISTINCT)
+	{
+		if (parse->distinctClause != NIL && root->upper_targets[UPPERREL_DISTINCT] != NULL &&
+			!(parse->hasAggs || parse->groupClause || parse->groupingSets || parse->hasWindowFuncs || parse->havingQual))
+			group_paths(root, input_rel, output_rel, root->upper_targets[UPPERREL_DISTINCT], NULL, parse->distinctClause);
+		return;
+	}
+	if (stage != UPPERREL_GROUP_AGG || !(parse->hasAggs || parse->groupClause || parse->groupingSets))
+		return;
+	/* a window function is planned above the grouping stage: this stage is the same with or without one */
+	if (list_length(parse->rtable) > 0 && parse->jointree->fromlist != NIL && list_length(parse->jointree->fromlist) == 1 &&
+		IsA(linitial(parse->jointree->fromlist), RangeTblRef) &&
+		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
+	{
+		if (!parse->hasWindowFuncs)
+			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+		return;
+	}
+	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
 }
 
 /* ---------- top-N: ORDER BY <columns> LIMIT n ---------- */
@@ -5335,7 +5355,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		s->arm[k] = *arms[k].out;
 		s->arm[k].ncol = ncols;
 	}
-	agg_finish(c, s, root, input_rel, output_rel, ow.keys, scan_tlist);
+	agg_finish(c, s, root, input_rel, output_rel, output_rel->reltarget, ow.keys, scan_tlist);
 }
 
 /* ---------- plan ---------- */

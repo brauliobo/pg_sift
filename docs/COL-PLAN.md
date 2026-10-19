@@ -6,7 +6,7 @@ Files: `src/agg/sift_aggplan.c` (shape matcher, cost), `src/agg/sift_aggspec.[ch
 
 ## What matches
 
-`create_upper_paths_hook`, stage `UPPERREL_GROUP_AGG`. Query shape: one relation (no inheritance, tablesample or row security) with an index of a provider, at most one lateral unnest of an indexed jsonb array or object (`jsonb_to_recordset`, `jsonb_array_elements`, `jsonb_each`, `jsonb_each_text`), inner joins in the FROM list flattened, no DISTINCT ON in the aggregating query. A window function of the same query level (`sum(sum(x)) OVER (ORDER BY month)`, `rank() OVER (ORDER BY count(*))`) is planned by PostgreSQL above the grouping stage, so the stage is the same with or without it.
+`create_upper_paths_hook`, stages `UPPERREL_GROUP_AGG` and `UPPERREL_DISTINCT` (a `SELECT DISTINCT` of a plain scan is a group-by with no aggregate: same keys, same scan, the distinct target as output; not over a grouped or windowed query). Query shape: one relation (no inheritance, tablesample or row security) with an index of a provider, at most one lateral unnest of an indexed jsonb array or object (`jsonb_to_recordset`, `jsonb_array_elements`, `jsonb_each`, `jsonb_each_text`), inner joins in the FROM list flattened, no DISTINCT ON in the aggregating query. A window function of the same query level (`sum(sum(x)) OVER (ORDER BY month)`, `rank() OVER (ORDER BY count(*))`) is planned by PostgreSQL above the grouping stage, so the stage is the same with or without it.
 
 | Part | Supported |
 |---|---|
