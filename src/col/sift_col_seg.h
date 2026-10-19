@@ -103,10 +103,14 @@ extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats 
 /*
  * Pre-aggregates of unit u (a segment of this format always has the sidecar). sift_cseg_agg: the zone and, for an INT leaf, the exact sum and
  * sum of squares. sift_cseg_cube: the unit's cube blob for sift_cpagg_decode (NULL: the unit has none), valid until the next call on seg.
- * Sizes of the whole sidecar and the units that have a cube, for sift.col_index_info.
+ * sift_cseg_ecube: the unit's element blob (column format minor 4; NULL: none, or a segment of minor 3), valid until the next call of it on seg.
+ * sift_cseg_dim_cube: the blob that holds the histogram of dim, the cube or the list's part of the element blob, for sift_cpagg_decode_dim.
+ * Sizes of the whole sidecar and the units that have a cube or element cubes, for sift.col_index_info.
  */
 extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
 extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 

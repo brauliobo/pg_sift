@@ -1,0 +1,145 @@
+-- The element cubes of the units (docs/COL-PREAGG.md sections 2 and 6) under forced parallel plans: a query over the elements of an array must plan as a Gather
+-- over a partial Custom Scan (SiftAgg) with two workers, answer the exact units from their cubes and scan the units that are not, and give the rows of the
+-- normal plan (sift.enable_agg off) and of the scan of every unit (sift.agg_preagg off).
+-- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: units answered from the cubes (a partial scan counts its own).
+-- A table whose units are all exact is serial on purpose (starting workers costs more than the answer), so the units that are not come from updates
+-- after the VACUUM; `dirty` is a table with no VACUUM at all: every unit is scanned.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE FUNCTION mk_items(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE WHEN g % 10 = 0 THEN NULL WHEN g % 10 = 1 THEN '[]' ELSE
+	       (SELECT jsonb_agg(jsonb_build_object('kind', CASE WHEN (g + e) % 11 = 0 THEN NULL ELSE 'k' || (g + e) % 5 END,
+	                                            'n', CASE WHEN (g * e) % 17 = 0 THEN NULL ELSE (g * e) % 9 END,
+	                                            'score', CASE WHEN (g + e) % 7 = 0 THEN NULL ELSE ((g * e) % 40) * 0.25 END) ORDER BY e)
+	        FROM generate_series(1, g % 4 + 1) e) END $$;
+CREATE FUNCTION mk_tags(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END $$;
+CREATE TABLE p_t (id int, grp int, items jsonb, tags jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO p_t SELECT g, g % 7, mk_items(g), mk_tags(g) FROM generate_series(1, 12000) g;
+CREATE TABLE p_d (LIKE p_t) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO p_d SELECT * FROM p_t;
+CREATE INDEX p_col ON p_t USING sift_col (id, grp, items, tags)
+	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'cube(items[].kind: items[].n, items[].score; items[].n: items[].score; tags[])');
+CREATE INDEX p_dcol ON p_d USING sift_col (id, grp, items, tags)
+	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'cube(items[].kind: items[].n, items[].score; items[].n: items[].score; tags[])');
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) p_t;
+ANALYZE p_d;
+SELECT units > 8 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('p_col');
+ units | all_with_cube 
+-------+---------------
+ t     | t
+(1 row)
+
+-- the first units change after the VACUUM: their pages are not all-visible, the cubes of the others stay exact
+UPDATE p_t SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id <= 2500;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 10000;
+CREATE FUNCTION p_rows(q text, push bool, pre bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION p_mode(q text, OUT mode text, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text; gather bool := false; agg bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_preagg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		gather := gather OR l LIKE '%Workers Planned: 2%';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
+		pre := coalesce(substring(l from '^\s*Units From Pre-aggregates: (\d+)')::int, pre);
+	END LOOP;
+	mode := CASE WHEN agg AND gather THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
+END $$;
+CREATE TABLE p_q (n serial, q text);
+INSERT INTO p_q (q) VALUES
+	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	('SELECT e.kind, count(*), sum(e.n), avg(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	('SELECT e.kind, count(e.n), count(e.score), round(sum(e.score)::numeric, 6), round(avg(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	('SELECT e.n, count(*), round(sum(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	('SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind = ''k1'''),
+	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind IN (''k1'', ''k2'', ''k9'') GROUP BY 1'),
+	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 9000 GROUP BY 1'),
+	('SELECT e.v->>''kind'' AS kind, count(*), sum((e.v->>''n'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
+	('SELECT t, count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t GROUP BY 1'),
+	-- not answered from the cubes: the scan of the units, in parallel too
+	('SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
+	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.grp = 3 GROUP BY 1'),
+	('SELECT e.kind, min(e.n), max(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1');
+-- per table and query: the plan, the units the cubes answered, and whether the rows are those of the normal plan and of the scan of every unit
+CREATE FUNCTION p_compare(tbl text, OUT n int, OUT mode text, OUT pre text, OUT same bool, OUT same_scan bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE q text; m record;
+BEGIN
+	FOR n, q IN SELECT p_q.n, format(p_q.q, tbl) FROM p_q ORDER BY p_q.n LOOP
+		SELECT * INTO m FROM p_mode(q);
+		mode := m.mode;
+		pre := CASE WHEN m.pre IS NULL THEN '-' WHEN m.pre = 0 THEN 'none' ELSE 'some' END;
+		same := p_rows(q, true, true) IS NOT DISTINCT FROM p_rows(q, false, true);
+		same_scan := p_rows(q, true, true) IS NOT DISTINCT FROM p_rows(q, true, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- a mixed index: units from the cubes and units scanned
+SELECT * FROM p_compare('p_t');
+ n  |   mode   | pre  | same | same_scan 
+----+----------+------+------+-----------
+  1 | parallel | some | t    | t
+  2 | parallel | some | t    | t
+  3 | parallel | some | t    | t
+  4 | parallel | some | t    | t
+  5 | parallel | some | t    | t
+  6 | parallel | some | t    | t
+  7 | parallel | some | t    | t
+  8 | parallel | some | t    | t
+  9 | parallel | some | t    | t
+ 10 | parallel | -    | t    | t
+ 11 | parallel | none | t    | t
+ 12 | parallel | -    | t    | t
+(12 rows)
+
+-- every unit scanned
+SELECT * FROM p_compare('p_d');
+ n  |   mode   | pre  | same | same_scan 
+----+----------+------+------+-----------
+  1 | parallel | none | t    | t
+  2 | parallel | none | t    | t
+  3 | parallel | none | t    | t
+  4 | parallel | none | t    | t
+  5 | parallel | none | t    | t
+  6 | parallel | none | t    | t
+  7 | parallel | none | t    | t
+  8 | parallel | none | t    | t
+  9 | parallel | none | t    | t
+ 10 | parallel | -    | t    | t
+ 11 | parallel | none | t    | t
+ 12 | parallel | -    | t    | t
+(12 rows)
+
+-- the same after the units that changed are merged away (every unit exact again: one process answers, no workers)
+RESET seq_page_cost;
+SELECT sift.col_merge('p_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (index_cleanup on, disable_page_skipping) p_t;
+SET seq_page_cost = 10000;
+SELECT n, mode, pre, same, same_scan FROM p_compare('p_t') WHERE n IN (1, 3, 9);
+ n |  mode  | pre  | same | same_scan 
+---+--------+------+------+-----------
+ 1 | serial | some | t    | t
+ 3 | serial | some | t    | t
+ 9 | serial | some | t    | t
+(3 rows)
+
+DROP TABLE p_t, p_d, p_q;
+DROP FUNCTION p_rows(text, bool, bool), p_mode(text), p_compare(text), mk_items(int), mk_tags(int);
+DROP EXTENSION pg_sift;

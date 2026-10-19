@@ -18,6 +18,8 @@
 #define DICTS_MAGIC		0x44444F43		/* "COLD" */
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
+#define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 
 #define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
 
@@ -39,6 +41,8 @@ struct SiftColSegWriter
 	SiftCLeafAgg *lagg;			/* [unit * ncols + col] exact sums of the INT leaves */
 	uint64	   *cubeoff;		/* [unit]: offset of the unit's cube blob in cube; [nsb] the end */
 	StringInfoData cube;		/* the cube blobs of all units */
+	uint64	   *ecubeoff;		/* the same for the element blobs (minor 4) */
+	StringInfoData ecube;
 	SiftColSBRef *sbdir;
 	uint32		nsb;
 	uint32		capsb;
@@ -81,8 +85,10 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->zones = palloc(w->capsb * schema->ncols * sizeof(SiftCZone));
 	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
 	initStringInfo(&w->cube);
+	initStringInfo(&w->ecube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
 	initStringInfo(&w->buf);
 	MemoryContextSwitchTo(old);
@@ -144,8 +150,10 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 			sift_cpagg_leaf(&cols[c], &la[c]);
 	}
 	w->cubeoff[w->nsb] = w->cube.len;
-	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube);
+	w->ecubeoff[w->nsb] = w->ecube.len;
+	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
+	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
 			pfree(tk[c]);
@@ -170,6 +178,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->zones = repalloc_huge(w->zones, (Size) w->capsb * ncols * sizeof(SiftCZone));
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->ecubeoff = repalloc_huge(w->ecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
 	}
 	for (int c = 0; c < ncols; c++)
@@ -210,7 +219,7 @@ sift_colw_bytes(const SiftColSegWriter *w)
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
-	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + sizeof(uint64)) + w->cube.len;
+	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + 2 * sizeof(uint64)) + w->cube.len + w->ecube.len;
 
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
@@ -273,6 +282,8 @@ zone_block_size(const SiftColDef *def, uint32 nsb)
  * The pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2): a header (magic, version, ncols, nsb, the offset of the
  * cube directory and its blob bytes, the offset of each INT leaf's sums), then per INT leaf the sums of all units as arrays, then the cube
  * directory (u64 offset of each unit's blob, nsb + 1 entries) and the blobs. Offsets are from the start of the header.
+ * Version 2 (column format minor 4) adds two entries after the offsets of the sums, the offset of the element directory and its blob bytes,
+ * and after the cubes that directory (8-aligned) and the element blobs, laid out like the cubes.
  */
 typedef struct PaggHeader
 {
@@ -285,7 +296,9 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + (ncols) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
+#define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 
 /* One INT leaf's sums: sum_lo, sum_hi, sumsq_lo, sumsq_hi (u64 each), flags (u32), all over the units */
 static Size
@@ -299,12 +312,13 @@ write_pagg(SiftColSegWriter *w)
 {
 	int			ncols = w->schema->ncols;
 	uint32		nsb = w->nsb;
-	Size		hsz = PAGG_HDR_SIZE(ncols),
+	int			ver = PAGG_VERSION(w->format);
+	Size		hsz = PAGG_HDR_SIZE(ver, ncols),
 				at = hsz;
 	PaggHeader *h = palloc0(hsz);
 
 	h->magic = PAGG_MAGIC;
-	h->version = 1;
+	h->version = ver;
 	h->ncols = ncols;
 	h->nsb = nsb;
 	for (int c = 0; c < ncols; c++)
@@ -317,6 +331,12 @@ write_pagg(SiftColSegWriter *w)
 	{
 		h->cubedir_off = at;
 		h->cube_bytes = w->cube.len;
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->cube.len);
+	}
+	if (w->ecube.len > 0)
+	{
+		PAGG_ECUBEDIR(h) = at;
+		PAGG_ECUBE_BYTES(h) = w->ecube.len;
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -353,6 +373,12 @@ write_pagg(SiftColSegWriter *w)
 	{
 		sift_sw_write(w->sw, w->cubeoff, (Size) (nsb + 1) * sizeof(uint64));
 		sift_sw_write(w->sw, w->cube.data, w->cube.len);
+	}
+	if (w->ecube.len > 0)
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, w->ecubeoff, (Size) (nsb + 1) * sizeof(uint64));
+		sift_sw_write(w->sw, w->ecube.data, w->ecube.len);
 	}
 	pfree(h);
 }
@@ -498,6 +524,9 @@ typedef struct SegPriv
 	uint64	   *cubedir;		/* nsb + 1 */
 	uint8	   *cubebuf;
 	Size		cubecap;
+	uint64	   *ecubedir;		/* the same for the element blobs */
+	uint8	   *ecubebuf;
+	Size		ecubecap;
 	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
 } SegPriv;
 
@@ -872,21 +901,26 @@ pagg_header(SiftColSegment *seg)
 	{
 		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
 		int			ncols = seg->schema->ncols;
+		int			ver = PAGG_VERSION(seg->entry.format);
 		Size		end = zones_end(seg),
-					hsz = PAGG_HDR_SIZE(ncols);
+					hsz = PAGG_HDR_SIZE(ver, ncols);
 		PaggHeader *h;
 
 		if (end + hsz > s->len)
 			corrupt(seg, "The ZONES section holds %llu bytes, no room for the pre-aggregates after %zu.", ULL(s->len), end);
 		h = MemoryContextAlloc(seg->mcxt, hsz);
 		seg_read(seg, s->off + end, hsz, h);
-		if (h->magic != PAGG_MAGIC || h->version != 1 || h->ncols != (uint32) ncols || h->nsb != seg->nsb)
-			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units.", h->magic, h->version, h->ncols, h->nsb);
+		if (h->magic != PAGG_MAGIC || h->version != ver || h->ncols != (uint32) ncols || h->nsb != seg->nsb)
+			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units; a segment of column format 1.%d has version %d.",
+					h->magic, h->version, h->ncols, h->nsb, seg->entry.format, ver);
 		for (int c = 0; c < ncols; c++)
 			if (h->lagg_off[c] % 8 != 0 || (h->lagg_off[c] && end + h->lagg_off[c] + lagg_block_size(seg->nsb) > s->len))
 				corrupt(seg, "The sums of leaf %d lie outside the section.", c);
 		if (h->cubedir_off && (h->cubedir_off % 8 != 0 || end + h->cubedir_off + (seg->nsb + 1) * sizeof(uint64) + h->cube_bytes > s->len))
 			corrupt(seg, "The cubes (%llu bytes at %llu) lie outside the section.", ULL(h->cube_bytes), ULL(h->cubedir_off));
+		if (ver > 1 && PAGG_ECUBEDIR(h) &&
+			(PAGG_ECUBEDIR(h) % 8 != 0 || end + PAGG_ECUBEDIR(h) + (seg->nsb + 1) * sizeof(uint64) + PAGG_ECUBE_BYTES(h) > s->len))
+			corrupt(seg, "The element cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_ECUBE_BYTES(h)), ULL(PAGG_ECUBEDIR(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -927,37 +961,81 @@ sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a)
 	}
 }
 
+/* The blob of unit u from the directory at dir_off (nsb + 1 offsets, then the blobs) of the sidecar; NULL when the unit has none */
+static const uint8 *
+unit_blob(SiftColSegment *seg, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len)
+{
+	uint64		at = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + dir_off,
+				b0,
+				b1;
+
+	*len = 0;
+	if (!dir_off)
+		return NULL;
+	if (*dir == NULL)
+	{
+		*dir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
+		seg_read(seg, at, (seg->nsb + 1) * sizeof(uint64), *dir);
+		for (uint32 i = 0; i < seg->nsb; i++)
+			if ((*dir)[i] > (*dir)[i + 1] || (*dir)[i + 1] > bytes)
+				corrupt(seg, "The cube directory is out of order at unit %u.", i);
+	}
+	b0 = (*dir)[u];
+	b1 = (*dir)[u + 1];
+	if (b1 == b0)
+		return NULL;
+	if (b1 - b0 > *cap)
+	{
+		*cap = Max(b1 - b0, 2 * *cap);
+		*buf = *buf ? repalloc(*buf, *cap) : MemoryContextAlloc(seg->mcxt, *cap);
+	}
+	seg_read(seg, at + (seg->nsb + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
+	*len = b1 - b0;
+	return *buf;
+}
+
 const uint8 *
 sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len)
 {
 	SegPriv    *pv = PRIV(seg);
 	const PaggHeader *h = pagg_header(seg);
-	uint64		b0,
-				b1;
 
-	*len = 0;
-	if (!h->cubedir_off)
-		return NULL;
-	if (pv->cubedir == NULL)
+	return unit_blob(seg, u, h->cubedir_off, h->cube_bytes, &pv->cubedir, &pv->cubebuf, &pv->cubecap, len);
+}
+
+const uint8 *
+sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h = pagg_header(seg);
+
+	if (h->version < 2)
 	{
-		pv->cubedir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
-		seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->cubedir_off, (seg->nsb + 1) * sizeof(uint64), pv->cubedir);
-		for (uint32 i = 0; i < seg->nsb; i++)
-			if (pv->cubedir[i] > pv->cubedir[i + 1] || pv->cubedir[i + 1] > h->cube_bytes)
-				corrupt(seg, "The cube directory is out of order at unit %u.", i);
-	}
-	b0 = pv->cubedir[u];
-	b1 = pv->cubedir[u + 1];
-	if (b1 == b0)
+		*len = 0;
 		return NULL;
-	if (b1 - b0 > pv->cubecap)
-	{
-		pv->cubecap = Max(b1 - b0, 2 * pv->cubecap);
-		pv->cubebuf = pv->cubebuf ? repalloc(pv->cubebuf, pv->cubecap) : MemoryContextAlloc(seg->mcxt, pv->cubecap);
 	}
-	seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->cubedir_off + (seg->nsb + 1) * sizeof(uint64) + b0, b1 - b0, pv->cubebuf);
-	*len = b1 - b0;
-	return pv->cubebuf;
+	return unit_blob(seg, u, PAGG_ECUBEDIR(h), PAGG_ECUBE_BYTES(h), &pv->ecubedir, &pv->ecubebuf, &pv->ecubecap, len);
+}
+
+const uint8 *
+sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
+{
+	int			list = seg->schema->cols[dim].parent;
+	const uint8 *e;
+	uint32		elen;
+
+	if (list < 0)
+		return sift_cseg_cube(seg, u, len);
+	e = sift_cseg_ecube(seg, u, &elen);
+	if (e == NULL)
+	{
+		*len = 0;
+		return NULL;
+	}
+	e = sift_cpagg_elem_cube(seg->schema, e, elen, list, len);
+	if (*len == UINT32_MAX)
+		corrupt(seg, "The element cubes of unit %u do not decode.", u);
+	return e;
 }
 
 uint64
@@ -974,8 +1052,11 @@ sift_cseg_preagg_units(SiftColSegment *seg)
 				len;
 
 	for (uint32 u = 0; u < seg->nsb; u++)
-		if (sift_cseg_cube(seg, u, &len) != NULL)
-			n++;
+	{
+		const uint8 *c = sift_cseg_cube(seg, u, &len);
+
+		n += c != NULL || sift_cseg_ecube(seg, u, &len) != NULL;
+	}
 	return n;
 }
 
@@ -1237,26 +1318,15 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 	SiftCPaggCol pcol[SIFT_COL_MAX_COLS];
 	int64	   *kept[SIFT_COL_MAX_COLS] = {NULL};
 	bool		need[SIFT_COL_MAX_COLS] = {false};
-	uint32		clen;
+	uint32		clen,
+				elen;
 	const uint8 *cube = sift_cseg_cube(seg, u, &clen);
+	const uint8 *ecube = sift_cseg_ecube(seg, u, &elen);
 
 	if (!sift_cunit_parse(rec, len, sc, &v) || v.nrows != r->nrows)
 		corrupt(seg, "Unit %u (SB %u) does not parse or lists another row count.", u, r->sb);
-	if (cube)
-	{
-		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift verify cube", ALLOCSET_SMALL_SIZES);
-		SiftCHist	hist;
-
-		if (!sift_cpagg_decode(sc, cube, clen, cx, &hist))
-			corrupt(seg, "The cube of the unit of SB %u does not decode.", r->sb);
-		for (int d = 0; d < hist.ndims; d++)
-		{
-			need[hist.dim[d].leaf] = true;
-			for (int m = 0; m < hist.dim[d].nmeas; m++)
-				need[hist.dim[d].meas[m]] = true;
-		}
-		MemoryContextDelete(cx);
-	}
+	if (!sift_cpagg_leaves(sc, cube, clen, ecube, elen, need))
+		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->sb);
 	sift_cunit_keys(&v, r->sb, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
 		if (sift_block_sb(sift_key_block(keys[i])) != r->sb || (i > 0 && keys[i] <= keys[i - 1]) ||
@@ -1311,8 +1381,8 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 		else
 			pfree(vals);
 	}
-	if (cube && !sift_cpagg_check(sc, pcol, r->nrows, cube, clen))
-		corrupt(seg, "The cube of the unit of SB %u differs from its chunks.", r->sb);
+	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen))
+		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])
 			pfree(kept[c]);

@@ -157,6 +157,14 @@ predicate) scans every element.
 - **Expected.** j02 and j17 at 100,000 documents from 5 ms to under 1 ms (28 units, a few microseconds each), and the cost grows with
   the units, not the elements: 10,000,000 documents read about 2,800 sidecars. Queries with a predicate on another leaf are scanned as
   now. The sidecar grows by at most the 2% budget (+1.2% measured for top-level cubes), the build by about 4%.
+- **Measured** (3.1, 100,000 documents, 28 units, all pages visible, one backend, `seq_page_cost = 10000`, best of 5, same rows from the
+  three plans): j02 324 ms (normal plan), 4.6 ms (`SiftAgg`, every unit scanned), **0.48 ms** from the element cubes (28 of 28 units, 9.5 times
+  faster than the scan). j17 groups by two leaves (`kind`, `flag`), which a depth-1 cube cannot answer: it stays at 4.3 to 4.8 ms
+  (the scan); the same question with the one key `kind` and the `HAVING` (`bench/sql/jsonb`, j17 with `GROUP BY 1`) goes from 4.2 to 0.60 ms.
+  A depth-2 cube (`kind, flag`) is the work that would answer j17; it is not in 3.1. The sidecar of the index goes from 37,984 to 41,872
+  bytes (+139 bytes per unit, 1.7% of the 2,456 kB index); `CREATE INDEX` (median of 5) takes 0.31 s serial and 0.20 s with two workers
+  without element cubes (`sift.col_format_minor = 3`) and 0.37 s and 0.20 s with them (+21% serial CPU on this tiny table, no difference
+  with workers).
 - **Without a format change.** The exact leaf sums the sidecar already stores for the children of lists answer the ungrouped element
   aggregates (`count(*)`, `sum(e.score)`, `avg(e.score)` with no filter) from metadata; the executor's pre-aggregate shape rules today
   exclude an unnest. That is a coverage change on the engine side and is left to that track.
@@ -184,8 +192,9 @@ predicate) scans every element.
   version 1 directory (minor 3) has none and its units scan as today. The default budget (2% of the unit's encoded bytes, at least 2 kB) is
   shared by both kinds, the smallest histograms first; `cube(items[].kind: items[].score)` names an element cube explicitly (no budget).
   The rows of an element histogram are the elements of the group (an element that is not an object is a row with NULL members, as the
-  unnest produces it), so `count(*)` of the unnest is the sum of the group counts. A unit with an overflow value in the group, the dimension
-  or a measure has no element histogram.
+  unnest produces it), so `count(*)` of the unnest is the sum of the group counts. A unit whose list overflowed (a value that is not an
+  array, a list cut by the shredder) has no element cubes of that list; a unit with an overflow value in the dimension has no histogram of
+  it; a measure that overflowed is left out of the histograms of its dimension and the others stay (a query that needs it scans that unit).
 
 ### 5.2 Compatibility
 
