@@ -1194,6 +1194,71 @@ sift_cseg_stale_ovf(SiftColSegment *seg)
 	return stale;
 }
 
+/* Does row r of the batch hold an overflow value in a leaf, or in an element of a group (the eoff of the group says which are the row's)? */
+static bool
+batch_row_ovf(const SiftColBatch *b, uint32 r)
+{
+	for (int c = 0; c < b->schema->ncols; c++)
+	{
+		const SiftCVals *v = &b->col[c];
+		int			parent = b->schema->cols[c].parent;
+		uint32		lo = parent < 0 ? r : b->col[parent].eoff[r],
+					hi = parent < 0 ? r + 1 : b->col[parent].eoff[r + 1];
+
+		for (uint32 i = lo; v->ovf != NULL && i < hi; i++)
+			if (sift_col_bit_test(v->ovf, i))
+				return true;
+	}
+	return false;
+}
+
+int64
+sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col reap overflow", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftColBatch *b = sift_cbatch_create(cx, seg->schema);
+	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+	uint64	   *gone = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint64));
+	int64		removed = 0;
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		const SiftColSBRef *r = &seg->sbdir[u];
+		uint32		j = 0;
+		int			nd = 0;
+		bool		flagged = false;
+
+		for (int c = 0; c < seg->schema->ncols; c++)
+			flagged |= zone_arrays(seg, c)->any_ovf && (zone_arrays(seg, c)->flags[u] & SIFT_COLZ_OVERFLOW);
+		if (!flagged)
+			continue;
+		sift_cseg_decode_unit(seg, u, b);
+		sift_cseg_live(seg, u, live);
+		for (uint32 i = 0; i < r->nrows; i++)
+		{
+			ItemPointerData tid;
+
+			if (!sift_col_bit_test(live, i))
+				continue;
+			sift_key_to_tid(b->keys[j], &tid);
+			if (batch_row_ovf(b, j) && dead(&tid, arg))
+				gone[nd++] = r->rank_base + i;
+			j++;
+		}
+		if (nd == 0)
+			continue;
+		sift_seg_mark_dirty(seg->index, &seg->entry);
+		sift_live_clear(&PRIV(seg)->live, r->sb - seg->hdr->sb_lo, gone, nd);
+		removed += nd;
+		CHECK_FOR_INTERRUPTS();
+	}
+	sift_sr_release(&seg->sr);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return removed;
+}
+
 /* ---------- VACUUM ---------- */
 
 int64

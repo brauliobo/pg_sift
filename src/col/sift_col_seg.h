@@ -133,6 +133,14 @@ extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *d
 extern bool sift_cseg_stale_ovf(SiftColSegment *seg);
 
 /*
+ * The rows of the units that flag an overflow value that hold one and that dead reports gone from the heap (dead to every snapshot) lose
+ * their liveness bit, as in a bulk delete: a VACUUM that skips the vacuuming of the indexes never tells the index which rows died, and the flag
+ * would stay with them. Caller holds the maintenance lock. Returns the rows cleared.
+ */
+typedef bool (*SiftCsegDead) (const ItemPointerData *tid, void *arg);
+extern int64 sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg);
+
+/*
  * VACUUM: calls cb for every live row (its TID from the row directory) and clears the liveness bits of the ones it reports dead
  * (dirty flag first, then the bits, generic WAL, at most 4 pages per record). Caller holds the maintenance lock. Returns rows removed,
  * adds to stats like sift_seg_bulkdelete.

@@ -14,8 +14,10 @@
 
 #include "access/genam.h"
 #include "access/relation.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "executor/tuptable.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
@@ -235,6 +237,62 @@ bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback c
 	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
 }
 
+typedef struct HeapDead
+{
+	IndexFetchTableData *scan;
+	TupleTableSlot *slot;
+	BlockNumber nblocks;
+} HeapDead;
+
+/* The heap row of a TID is dead to every snapshot (or its page is gone): what an index entry may be dropped for */
+static bool
+heap_row_dead(const ItemPointerData *tid, void *arg)
+{
+	HeapDead   *h = arg;
+	ItemPointerData t = *tid;
+	bool		again = false,
+				all_dead = false;
+
+	if (ItemPointerGetBlockNumber(tid) >= h->nblocks)
+		return true;
+	table_index_fetch_tuple(h->scan, &t, SnapshotAny, h->slot, &again, &all_dead);
+	return all_dead;
+}
+
+/*
+ * VACUUM that skipped the vacuuming of the indexes (dead rows on under 2% of the heap pages) never called ambulkdelete, so the rows it
+ * dropped are live in the index, and a unit that flags an overflow value keeps the flag after the rows that held it are repaired. The
+ * rows that hold such a value are the only ones looked up in the heap here; the merge that follows rewrites the segments the flag only
+ * dead rows account for (sift_cseg_stale_ovf).
+ */
+static void
+reap_overflow(Relation index, Relation heap)
+{
+	const SiftColLeafStats *ls = sift_col_leaf_stats(index);
+	SiftDirSnapshot *snap;
+	HeapDead	h;
+	bool		flagged = false;
+
+	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
+		flagged |= ls[c].has_ovf;
+	if (!flagged)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	h = (HeapDead) {.scan = table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+
+			sift_cseg_reap_overflow(seg, heap_row_dead, &h);
+			sift_cseg_close(seg);
+		}
+	ExecDropSingleTupleTableSlot(h.slot);
+	table_index_fetch_end(h.scan);
+	pfree(snap);
+}
+
 static const SiftMaintOps col_ops = {
 	.name = "sift_col",
 	.worker = "sift_col_maint_worker_main",
@@ -245,6 +303,7 @@ static const SiftMaintOps col_ops = {
 	.merge_next = merge_next,
 	.bulkdelete_immutable = bulkdelete_immutable,
 	.bulkdelete_wbuf = bulkdelete_wbuf,
+	.vacuum_skipped = reap_overflow,
 };
 
 void
