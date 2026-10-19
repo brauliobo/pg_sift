@@ -458,6 +458,7 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 {
 	b->sb = sb;
 	b->nrows = 0;
+	b->hasver = false;
 	for (int i = 0; i < b->schema->ncols; i++)
 	{
 		SiftCVals  *v = &b->col[i];
@@ -556,11 +557,36 @@ batch_row_begin(SiftColBatch *b, SiftKey key)
 	{
 		b->rowcap *= 2;
 		b->keys = repalloc(b->keys, b->rowcap * sizeof(SiftKey));
+		if (b->xmin)
+		{
+			b->xmin = repalloc(b->xmin, b->rowcap * sizeof(uint32));
+			b->cmin = repalloc(b->cmin, b->rowcap * sizeof(uint32));
+		}
 		for (int i = 0; i < b->schema->ncols; i++)
 			if (b->col[i].eoff)
 				b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
 	}
 	b->keys[b->nrows] = key;
+}
+
+void
+sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin)
+{
+	if (!b->hasver)
+	{
+		if (xmin == 0)
+			return;
+		if (b->xmin == NULL)
+		{
+			b->xmin = MemoryContextAlloc(b->mcxt, b->rowcap * sizeof(uint32));
+			b->cmin = MemoryContextAlloc(b->mcxt, b->rowcap * sizeof(uint32));
+		}
+		memset(b->xmin, 0, b->rowcap * sizeof(uint32));
+		memset(b->cmin, 0, b->rowcap * sizeof(uint32));
+		b->hasver = true;
+	}
+	b->xmin[r] = xmin;
+	b->cmin[r] = xmin ? cmin : 0;
 }
 
 static void
@@ -598,6 +624,12 @@ put_value(SiftColBatch *b, int id, const SiftColValue *v)
 void
 sift_cbatch_add(SiftColBatch *b, const SiftColRow *row)
 {
+	sift_cbatch_add_ver(b, row, 0, 0);
+}
+
+void
+sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 cmin)
+{
 	const SiftColSchema *s = b->schema;
 
 	batch_row_begin(b, sift_key_from_tid((ItemPointer) &row->tid));
@@ -623,6 +655,8 @@ sift_cbatch_add(SiftColBatch *b, const SiftColRow *row)
 				for (uint32 j = 0; j < count; j++)
 					put_value(b, c, &row->elem[c][j]);
 	}
+	if (b->hasver || xmin)
+		sift_cbatch_set_ver(b, b->nrows, xmin, cmin);
 	b->nrows++;
 }
 
@@ -738,7 +772,7 @@ static void
 batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, SiftColRow *scratch)
 {
 	sift_cbatch_row(src, r, scratch);
-	sift_cbatch_add(dst, scratch);
+	sift_cbatch_add_ver(dst, scratch, src->hasver ? src->xmin[r] : 0, src->hasver ? src->cmin[r] : 0);
 }
 
 void

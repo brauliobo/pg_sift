@@ -89,6 +89,9 @@ typedef struct SiftColBatch
 	uint32		nrows;
 	uint32		rowcap;
 	SiftKey    *keys;			/* ascending, all in superblock sb */
+	bool		hasver;			/* xmin and cmin are set for every row (0 = frozen); false: every row is frozen and the arrays mean nothing */
+	uint32	   *xmin;			/* [rowcap]: the transaction that inserted the row of a sift_table group (docs/COL-TAM.md section 7) */
+	uint32	   *cmin;
 	SiftCVals  *col;			/* [ncols] */
 	SiftCDict **dict;			/* [ncols]: batch dictionary of each STR leaf, NULL for the others */
 } SiftColBatch;
@@ -96,8 +99,12 @@ typedef struct SiftColBatch
 extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema *schema);
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
+/* Sets the version of row r (< nrows or the row being added), makes the batch versioned on the first nonzero xmin */
+extern void sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin);
 /* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */
 extern void sift_cbatch_add(SiftColBatch *b, const SiftColRow *row);
+/* The same for a row of a sift_table group that carries its version (xmin 0 = frozen); the copies and merges of batches keep it */
+extern void sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 cmin);
 /* Appends row r of src (same schema) re-interning its strings; same key rules */
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */

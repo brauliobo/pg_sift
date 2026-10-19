@@ -13,6 +13,7 @@ col/sift_colcodec_avx2.c
 col/sift_colcodec_avx512.c
 col/sift_colz.c
 col/sift_col_seg.c
+col/sift_col_ver.c
 col/sift_col_preagg.c
 col/sift_shred.c
 col/sift_shred_kern.c
@@ -28,6 +29,7 @@ col/sift_col_kern.h
 col/sift_col_kern_int.h
 col/sift_col_enc.h
 col/sift_col_seg.h
+col/sift_col_ver.h
 col/sift_col_preagg.h
 col/sift_colcodec.h
 col/sift_colcodec_int.h

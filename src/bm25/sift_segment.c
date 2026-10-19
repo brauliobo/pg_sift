@@ -355,9 +355,9 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->fmt = Max(entry->format, SIFT_SEGFMT_RANKBITS);
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format > SIFT_FORMAT_MINOR)
+	if (entry->format > SIFT_FORMAT_MINOR_SEGS)
 		elog(ERROR, "sift: segment %llu has format %u, this build reads up to %u", ULL(entry->gen), entry->format,
-			 SIFT_FORMAT_MINOR);
+			 SIFT_FORMAT_MINOR_SEGS);
 	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->sum_dl != entry->sum_dl ||
