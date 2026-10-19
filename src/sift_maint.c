@@ -40,6 +40,7 @@
 #include "sift_mutable.h"
 #include "sift_ops.h"
 #include "sift_sql.h"
+#include "sift_visibility.h"
 
 #define BACKOFF_MAX_MS		3600000
 /* inputs of one merge: its output (runs grow with a stream, sift_store.c) stays well within the extents a header page lists */
@@ -889,9 +890,11 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	int64		removed;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
+	removed = stats->tuples_removed;
 	sift_maint_lock(index, true);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -899,6 +902,9 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
 		else
 			ops->bulkdelete_mutable(index, &snap->segs[i], callback, callback_state, stats);
+	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
+	if (stats->tuples_removed > removed)
+		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	sift_maint_unlock(index);
 	pfree(snap);
 	return stats;
@@ -927,6 +933,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	sift_maint_lock(index, true);
 	promote_locked(ops, index, false, false);
 	vacuum_merge(ops, index);
+	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
 		ops->vacuum_refresh(index);
 	sift_recycle(index);

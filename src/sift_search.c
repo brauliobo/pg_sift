@@ -292,7 +292,7 @@ heap_setup(SiftSearch *s)
 {
 	MemoryContext old = MemoryContextSwitchTo(s->cxt);
 
-	sift_vis_begin(&s->vis, s->heap, s->snapshot);
+	sift_vis_begin(&s->vis, s->heap, s->snapshot, NULL, 0);
 	s->slot = table_slot_create(s->heap, NULL);
 	s->estate = CreateExecutorState();
 	s->iinfo = BuildIndexInfo(s->index);
