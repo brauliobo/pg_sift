@@ -1,5 +1,6 @@
 -- Search "wireless headphones", shipped orders of $50 or more: orders per category
 -- key: 1
+-- label: `count(*) WHERE title @@> 'a b', ... GROUP BY category`
 --@ pg
 SELECT category, count(*) AS n FROM orders WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', 'wireless headphones') AND status = 'shipped' AND amount >= 50 GROUP BY category ORDER BY n DESC, category LIMIT 10
 --@ sift

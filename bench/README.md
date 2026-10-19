@@ -382,28 +382,70 @@ Needs docker (it pulls the images pinned in `versions.env` and builds the Postgr
 does), `psql`, `python3`; nothing is installed on the host and every container and anonymous volume is removed at the end (`store all` removes them on any exit).
 What it does, in order, for each size:
 
-1. Four containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (4) and `--memory` (8g) with no swap, on
-   ports `STORE_PORT_BASE` to `+3` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers are the same image and settings
-   (`shared_buffers` 2GB, `max_parallel_workers_per_gather` as many as CPUs, `jit` off); Elasticsearch has a heap of half the memory; ClickHouse sizes itself from the
-   container limit.
+1. Four containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (3) and `--memory` (8g) with no swap, on
+   ports `STORE_PORT_BASE` to `+3` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers are the same image and flags
+   (`shared_buffers` 2GB, `jit` off, the parallel settings of [Fair comparison](#fair-comparison-the-same-threads-for-every-engine)); Elasticsearch has a heap of half the memory;
+   Elasticsearch and ClickHouse are told the thread budget too.
 2. The data: `sql/store/gen.sql` writes the rows with hashes of (id, draw number), so a size gives the same CSV every run (its sha256 is in the results); the same
    file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
    are recorded. Elasticsearch is merged to one segment and ClickHouse optimized after the load, PostgreSQL vacuumed and analyzed.
-3. Warm runs (`steps/store.py run`): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
+3. Warm runs (`steps/store.py run`), once for each budget of `--cpus-list` (1 and 3 by default; the containers are reconfigured between them): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
    relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3), two more untimed runs, then `--runs` (7) timed runs
    with the engines interleaved and the first rotating each run. A timing is the wall time of one request over a persistent local connection, one client, until the
    last byte; Elasticsearch is timed with its request cache off and, as a separate engine, on. The plan nodes of the PostgreSQL engines are recorded.
 4. Cold runs (`cold`): for each engine and query, restart the container, then time the first run (`--cold-runs`, 3); the operating system's page cache is not dropped
    (that needs root), so this is "first run after a restart", not a cold disk.
-5. Updates (`updates`, the first size only; `--update-sizes`): update 1% and 10% of the rows and delete 5% by primary key, in batches of 1,000, each system by the path its
+5. Updates (`updates`, the first size only; `--update-sizes`; at the budget of the load, `--cpus`): update 1% and 10% of the rows and delete 5% by primary key, in batches of 1,000, each system by the path its
    documentation recommends (listed in docs/BENCHMARKS.md with the official pages), the state compared with PostgreSQL's after each step; single-row changes timed until
    a query sees them; the revenue-per-month query timed under 0, 1,000 and 10,000 updated rows per second (a second connection, batches of 100 rows); sizes before,
    after the changes and after a maintenance step (`VACUUM`, `OPTIMIZE ... FINAL`, `_forcemerge`). A system that fails is a row of the results, not a gap.
 
-The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. Options: `--sizes`, `--cpus`, `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
+The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. Options: `--sizes`, `--cpus` (the quota and thread budget of the load and the updates, 3), `--cpus-list` (the budgets timed, 1,3), `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
 `--engines pg,sift,sift_table,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`), `--queries 01,03,search_count`, `--docs`, `--out`;
-`STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `run`, `cold`, `updates`, `merge`,
+`STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `verify`, `run`, `cold`, `updates`, `merge`,
 `render`); `store.sh setup|run|cold|updates` keep the containers up for development.
+
+### Fair comparison: the same threads for every engine
+
+The four servers do not start the same number of threads on their own: PostgreSQL uses a process per connection and parallel workers only when the planner asks
+for them, ClickHouse one thread per CPU it sees and a background pool for merges, Elasticsearch thread pools sized from the processors it sees and a JVM with its
+own GC and JIT threads. Letting each engine size itself from a container limit would measure the engines' defaults, not the engines. So one number, `--cpus N`,
+drives everything, and the comparison is made at two values of it, `--cpus-list 1,3` (the default of `bench/bench store`; `--quick` runs both too):
+
+| engine | what N sets | where |
+|---|---|---|
+| every container | `--cpus N` (the CFS quota: N CPUs of time per period, on any of the host's CPUs), `--memory` and `--memory-swap` the same for every container | `docker run`, `docker update --cpus` |
+| PostgreSQL, pg_sift | `max_parallel_workers_per_gather = N - 1` (a leader and N - 1 workers are N processes) and `max_parallel_maintenance_workers = N - 1`; `max_worker_processes` and `max_parallel_workers` are 16 and `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, `min_parallel_index_scan_size` 64kB, so that nothing else keeps a scan serial; the same flags for both servers; nothing forces a parallel plan | `ALTER SYSTEM` + reload |
+| ClickHouse | `max_threads`, `max_insert_threads` and `max_final_threads` = N in the default profile; `background_pool_size` = N with `background_merges_mutations_concurrency_ratio` 1, so merges and mutations use at most N threads (the thresholds `number_of_free_entries_in_pool_to_*` are 1: with their defaults a pool this small refuses to start) | `config.d` and `users.d` files mounted into the container |
+| Elasticsearch | `node.processors = N` (search and write thread pools) and `-XX:ActiveProcessorCount=N` in `ES_JAVA_OPTS` (GC and JIT threads), next to the heap | environment of the container |
+
+The CPUs are not pinned (no `--cpuset-cpus`, no `taskset`, no `AllowedCPUs`): the quota only limits how much CPU time the container gets, which is what a hosted
+container gets too, and pinning would change which cache and memory the engines see. The price is that the scheduler is free to move the threads, which the quiet
+host rules below keep out of the numbers. Elasticsearch and ClickHouse must be recreated to change their settings (they are read at start), so their data lives in
+named volumes that outlive the container; PostgreSQL changes budget without a restart.
+
+How it is verified: after every start or change of budget, and again when each part is written, `steps/store.py` asks the servers what they run with and stops on a
+difference: `SHOW max_parallel_workers_per_gather` (and the others of `pg_settings`), `SELECT name, value FROM system.settings WHERE name = 'max_threads'` (and
+`system.server_settings` for the background pool), `GET _nodes/os?filter_path=**.allocated_processors` (and the JVM's `-XX:ActiveProcessorCount` from `GET _nodes/jvm`, the
+`search` and `write` pools from `_cat/thread_pool`), and `docker inspect` for the quota and an empty cpuset. The values are in the results (`threads` of each result
+set) and in the Configuration table of docs/BENCHMARKS.md. A PostgreSQL `count(*)` is also planned and the workers it plans are recorded.
+
+Why 1 and 3: at 1 CPU every engine runs on one thread of work, so the table compares the engines' single-thread efficiency (no parallelism to credit to either side; a
+leader and zero workers, one search thread and one write thread, `max_threads` 1). At 3 CPUs each engine can use the parallelism it has (a leader and two workers,
+three ClickHouse threads, three Elasticsearch processors) on a host that stays quiet enough to time, and 3 is less than a quarter of the host's hardware threads, so
+three engines' background work cannot starve the one under test. The two result sets are separate (`1M-c1`, `1M-c3` in `store.json`); the load, the sizes, the plans and
+the updates are those of the load at the larger budget.
+
+The same data (the seeded CSV, its sha256 in the results), the same memory cap (`--memory`, `--memory-swap`) and the same warm-cache policy (untimed runs first, then the
+timed ones; the cold runs restart the container; the operating system's page cache is never dropped) apply to every engine and every budget.
+
+One engine is timed at a time and the others are idle: one client sends one request at a time (the engines of a question are timed in turn, each run starting with
+another engine). Before each timed batch (a question for all the engines; each engine and question of the cold runs; each engine of the updates) `steps/store.py` waits,
+for at most `SIFT_QUIET_TIMEOUT` seconds (60), until every other container uses less than `SIFT_IDLE_CPU` percent of a CPU (2; `docker stats --no-stream`) and has no merge
+running (ClickHouse `system.merges` and unfinished mutations, Elasticsearch `_nodes/stats/indices/merge` current merges, PostgreSQL autovacuum workers), then for a quiet host
+with `scripts/quiet.sh` (pressure stall information below 10% for CPU and I/O). A batch that runs anyway is marked NOISY in the results. After the load the same wait
+runs, so the merges that follow the load (ClickHouse `OPTIMIZE`, Elasticsearch force-merge) are over before anything is timed. The ClickHouse container turns off the logs of
+its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) because an idle server writing them uses 3-7% of a CPU.
 
 ## Remote host
 

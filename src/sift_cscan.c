@@ -358,7 +358,7 @@ start_scan(SiftScanState *ss)
 		build_filter(ss);
 	if (!ss->empty)
 	{
-		sift_vis_begin(&ss->vis, ss->heap, estate->es_snapshot);
+		sift_vis_begin(&ss->vis, ss->heap, estate->es_snapshot, ss->index, sift_plan_dir_version(ss->plan));
 		ss->vis_open = true;
 		ss->need_heap = ss->ncols > 0 || ss->quals != NULL || sift_plan_recheck_needed(ss->plan);
 		if (ss->mode == SIFT_MODE_RANKED)

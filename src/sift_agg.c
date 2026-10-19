@@ -75,6 +75,7 @@
 bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
 bool		sift_enable_topn = true;
+static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
 
 #define VEC			SIFT_AGG_VEC
@@ -105,6 +106,10 @@ sift_agg_init(void)
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_wait",
+							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
+							 NULL, &sift_test_agg_wait, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
 							NULL, &sift_agg_combo_cache, 1 << 20, 16, 1 << 24,
@@ -9187,6 +9192,19 @@ topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
 	}
 	scan_units(ex, lo, hi);
 }
+
+/* Testing (sift.test_agg_wait): lets a test run VACUUM or DML after the scan has opened its source (test/t/topn_vacuum_scan.sh) */
+static void
+agg_test_wait(void)
+{
+	LOCKTAG		tag;
+
+	if (!sift_test_agg_wait)
+		return;
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, 1, 2);
+	(void) LockAcquire(&tag, ShareLock, false, false);
+	LockRelease(&tag, ShareLock, false);
+}
 static void
 topn_run(AggExec *ex)
 {
@@ -9200,6 +9218,7 @@ topn_run(AggExec *ex)
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
+	agg_test_wait();
 	scan_buffers(ex);
 	table_init(ex);
 	t = ex->topn;

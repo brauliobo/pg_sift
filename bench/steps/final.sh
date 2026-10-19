@@ -19,9 +19,9 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 GAPOUT=$BENCH/out/final-$STAMP
 export GAP_MEM
 
-# step: name | command | minutes (measured on this host in the preliminary runs, 16 threads, 4 CPUs per container)
+# step: name | command | minutes (measured on this host in the preliminary runs, 16 threads, 4 CPUs per container; the default now times two budgets, 1 and 3 CPUs, so the store step is estimated at 100, not yet measured)
 STEPS_LIST=(
-  "store: warm, cold and update tables, $SIZES orders, every system|$BENCH/bench store all --sizes $SIZES --docs|70"
+  "store: warm, cold and update tables, $SIZES orders, every system|$BENCH/bench store all --sizes $SIZES --docs|100"
   "store: compression variants of the pg_sift column index, the codecs' sizes in every system, 1000000 orders|$BENCH/bench store all --sizes 1000000 --compression --cold-runs 0 --update-sizes none --docs|8"
   "store: what ClickHouse and Elasticsearch read per question|$BENCH/bench store stats --sizes $SIZES|14"
   "pg_sift profile: planning, instructions, symbols, $SIZES orders (private cluster)|S_SIZES=$SIZES OUT=$GAPOUT $STEPS/gap.sh|8"
