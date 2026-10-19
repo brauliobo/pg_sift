@@ -4906,7 +4906,7 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 
 /* the groups the scan makes: those of the keys, or of each grouping set */
 static double
-set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
+set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
 {
 	double		n = 0;
 
@@ -4926,7 +4926,7 @@ set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 			else
 				sub = lappend(sub, list_nth(keys, j));
 		}
-		n += Min(rows, (sub == NIL ? 1.0 : Max(estimate_num_groups(c->root, sub, rows, NULL, NULL), 1.0)) * bucketed);
+		n += Min(rows, (sub == NIL ? 1.0 : Max(estimate_num_groups(root, sub, rows, NULL, NULL), 1.0)) * bucketed);
 	}
 	return n;
 }
@@ -5009,7 +5009,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return false;
 	finish_leaves(c, s);
 	finish_combos(c, s);
-	s->est_groups = set_groups(c, s, keys, input_rel->rows);
+	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
 	if (c->search)
 		s->search = c->search->spec;
 
