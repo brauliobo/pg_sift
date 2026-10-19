@@ -15,7 +15,7 @@
 #include "nodes/value.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
-#include "utils/builtins.h"
+#include "utils/catcache.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
@@ -298,19 +298,21 @@ _PG_init(void)
 	CacheRegisterSyscacheCallback(OPEROID, catalog_invalidate, (Datum) 0);
 }
 
-/* By the catalog, not LookupFuncName: a qualified name checks USAGE on the schema, and a role without it (any writer of a sift_table) must still run */
+/* The candidates of the name, as LookupFuncName takes them, but without its USAGE check on the schema: a role without it (any writer of a sift_table) must still run */
 static Oid
 sift_func(Oid nsp, const char *name, int nargs, const Oid *argtypes)
 {
-	HeapTuple	tup = SearchSysCache3(PROCNAMEARGSNSP, CStringGetDatum(name), PointerGetDatum(buildoidvector(argtypes, nargs)),
-									  ObjectIdGetDatum(nsp));
+	CatCList   *cl = SearchSysCacheList1(PROCNAMEARGSNSP, CStringGetDatum(name));
 	Oid			oid = InvalidOid;
 
-	if (HeapTupleIsValid(tup))
+	for (int i = 0; i < cl->n_members && !OidIsValid(oid); i++)
 	{
-		oid = ((Form_pg_proc) GETSTRUCT(tup))->oid;
-		ReleaseSysCache(tup);
+		Form_pg_proc p = (Form_pg_proc) GETSTRUCT(&cl->members[i]->tuple);
+
+		if (p->pronamespace == nsp && p->pronargs == nargs && memcmp(p->proargtypes.values, argtypes, nargs * sizeof(Oid)) == 0)
+			oid = p->oid;
 	}
+	ReleaseSysCacheList(cl);
 	return oid;
 }
 
