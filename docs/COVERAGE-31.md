@@ -51,10 +51,48 @@ Value is the share of real analytics queries and benchmark cells the shape moves
 | - | aggregate over a ranked sub-select | C02 | 2 | 5 | 0.4 | the sub-select is a plan, not a table |
 | - | new leaf types, depth-2 cube, per-group min/max | T*, AP05 | 4 | 5 | - | format decisions: not implemented |
 
-Items 1 to 5 are done in this order of risk, not of rank: 1, 4, 2, 3, 5 (items that change the cost model or the table provider come after the
-planner-only ones). Item 6 and the rest stay No. Each item: a failing regress test and a coldiff scenario first, the change, the coverage row
-moved by `scripts/coverage.sh --gen`, instruction counts before and after (`bench/cpu-query.sh`, at most 100 000 rows).
+Done: 1 (W04), 4 (K12), 3 (AP07) and 5 (W13), in that order (planner-only items first, the table provider after). Not done: 2 (X02) and 6 (J05). Each item:
+a failing regress test first (and a coldiff scenario for the `sift_col` shapes, an isolation spec for the table ones), the change, the coverage row
+moved by `scripts/coverage.sh --gen`, instruction counts before and after (`bench/cpu-query.sh`, 100 000 rows).
+
+## Not done
+
+| item | why |
+|---|---|
+| X02 `count(DISTINCT)` worker choice | at 100 000 rows the default knobs already choose the serial plan; the 1.5x slowdown is measured at 1M rows with the benchmark's lowered `parallel_setup_cost`, which is past the 100 000-row cap of this task, and the cost term would change every parallel cell of the gate. The cost model charges the workers' start-up once; a per-worker term for the duplicated source opening needs a 1M-row calibration first |
+| J05 `NOT IN (SELECT ...)` | `NOT EXISTS` already runs on the scan; the NULL rule of `NOT IN` needs a second anti-join mode in the join code for a shape that dashboards rarely use |
+| months of a timestamp on `sift_table` | `date_trunc('month', ts)` is evaluated per distinct timestamp; a day-granularity leaf would fix it but adds a leaf to the column format: a format decision, left to the owner |
+| depth-2 cube, per-group `min/max`, float sums, new leaf types (`numeric(p>18)`, `uuid`, `interval`, arrays) | change the pre-aggregate sidecar or the column format: not implemented |
+
+## Correctness risks seen
+
+- The top-N scan of a `sift_col` index decides "the column follows the table" from four probes of the zones and then stops at the first window whose
+  zone has nothing better. That is exact for data appended in order, but a row moved by an update to a page in the middle of the table, with an old
+  value, can be missed by a probe. The table provider cannot use the shortcut (the new version of an updated row is in the write buffer whatever its
+  value; `tbl_topn` failed on it before the fix) and decides every window by the zones of its own units. The `sift_col` path is unchanged here.
+- After `UPDATE` or `DELETE` a `sift_table` superblock with a tombstone is scanned, not answered from its pre-aggregates, until VACUUM rewrites the
+  segment (`sift.table_dead_rewrite_pct`, default 50): the result is the same, only the speed. The planner prices the share of exact superblocks from
+  the write buffers and the dead tuples of the statistics, an estimate.
+- A numeric `NaN` in a `sift_table` column used to raise on every pushed shape; the source now hands the executor the overflow bitmap as the index
+  does, so only the shapes the executor cannot evaluate with PostgreSQL still raise.
 
 ## Results
 
-Filled in as the items land.
+Instructions per transaction (`bench/cpu-query.sh`, 100 000 rows of the store data, `sift_col` on a heap and `sift_table`, this branch against the
+3.0 build it branched from; below 1 is cheaper). Tests: regress `agg_window`, `agg_distinct`, `tbl_preagg`, `tbl_topn`, `col_topn_moved`, isolation
+`tbl_preagg`, `tbl_topn`, coldiff fixtures `w_window_*` and `k_select_*` in every scenario.
+
+| item | row | test | query | ratio |
+|---|---|---|---|---|
+| window over an aggregate | W04 | `agg_window`, `w_window_*` | running sum by month, `sift_col` / rank by country, `sift_col` / `sift_table` | 0.004 / 0.006 / 0.004 |
+| `SELECT DISTINCT` | K12 | `agg_distinct`, `k_select_*` | `DISTINCT country, category` `sift_col` / `sift_table`; `count(*)` of `DISTINCT customer_id` | 0.023 / 0.022; 0.096 |
+| pre-aggregates on `sift_table` | AP07 | `tbl_preagg`, isolation `tbl_preagg` | country count / category sum / whole table | 0.179 / 0.131 / 0.039 |
+| top-N on `sift_table` | W13 | `tbl_topn`, isolation `tbl_topn` | newest 10 / filtered / search | 0.042 / 0.101 / 0.069 |
+
+Gate on the six store questions (existing cells, `sift_col` and `sift_table`, 1000 transactions, 3 rounds): `sift_col` 0.999 to 1.001; `sift_table`
+0.999, 0.998, 0.999 and 1.016 (the highest, below 1.02), and 0.175 and 0.128 for the two questions AP07 now answers from the sidecar. The month questions
+of `sift_table` stay at 1.0 (362M instructions for the month sum against 0.7M on `sift_col`): the key is evaluated per distinct timestamp, which
+needs a day leaf, a format decision. The BM25 gate (`bench/steps/cpu_gate.sh`) was not run: no BM25 code changed.
+
+`sift_col` top-N fix for 3.0.1 (`col_topn_moved`, commit on `fix/topn-moved-rows`): 100 000 rows with a pad column (80 superblocks), `ORDER BY seq [DESC]
+LIMIT 10` 1.002 and 0.985, with a filter 0.995; a per-unit check of every window measured 2.8x and was dropped for the header-only zone range.
