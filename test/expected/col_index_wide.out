@@ -155,9 +155,9 @@ SELECT idx, string_agg(DISTINCT format::text, ',') AS format FROM (SELECT 'w_all
 	UNION ALL SELECT 'w_iv', format FROM sift._test_col_formats('w_iv') UNION ALL SELECT 'w_m', format FROM sift._test_col_formats('w_m')) f GROUP BY idx ORDER BY idx;
   idx  | format 
 -------+--------
- w_all | 6
- w_iv  | 6
- w_m   | 6
+ w_all | 5
+ w_iv  | 5
+ w_m   | 5
 (3 rows)
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -811,8 +811,8 @@ FROM (SELECT 'w_n38' AS idx, format FROM sift.col_segments('w_n38') WHERE kind =
 	  UNION ALL SELECT 'w_iv', format FROM sift.col_segments('w_iv') WHERE kind = 'immutable') f GROUP BY idx ORDER BY idx;
   idx  | segments | format 
 -------+----------+--------
- w_iv  |        2 | 6
- w_n38 |        2 | 6
+ w_iv  |        2 | 5
+ w_n38 |        2 | 5
 (2 rows)
 
 SELECT sift.col_merge('w_n38', true), sift.col_merge('w_img', true), sift.col_merge('w_iv', true), sift.col_merge('w_m', true), sift.col_merge('w_all', true);
@@ -932,3 +932,7 @@ SELECT count(*) FROM wt WHERE a > 1e28 AND e >= interval '1 month' AND d < '100.
 (1 row)
 
 DROP TABLE wt;
+DROP TABLE w;
+DROP FUNCTION col_cmp(regclass, text, text, int), col_back(regclass, int, text, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

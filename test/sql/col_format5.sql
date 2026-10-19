@@ -1,4 +1,4 @@
--- Column format minor 6 (docs/COL-LEAFTYPES-32.md 9): only a segment of an index with wide leaves (lanes, money, interval) is written as minor 6,
+-- Column format minor 5 (docs/COL-LEAFTYPES-32.md 9): only a segment of an index with wide leaves (lanes, money, interval) is written as minor 5,
 -- whatever sift.col_format_minor says; an index of the older types keeps writing the setting's minor, so 3.1 still opens it. fmt lists the
 -- minors of the segments, oldest first.
 CREATE EXTENSION pg_sift;
@@ -19,7 +19,7 @@ BEGIN
 END $$;
 
 -- the setting's range is the one of 3.1: the wide minor is a property of the schema
-SET sift.col_format_minor = 6;
+SET sift.col_format_minor = 5;
 
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
@@ -48,7 +48,7 @@ SELECT fmt('g_all');
 SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('g_all')) = fmt('g_all') AS hook_agrees;
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true), sift.col_verify('g_narrow4', true);
 
--- later segments of the wide index are minor 6 too: the write buffer promoted, then the merge
+-- later segments of the wide index are minor 5 too: the write buffer promoted, then the merge
 INSERT INTO g SELECT i, i % 9, 1, i, '1.00'::money, interval '1 day', 1 FROM generate_series(30001, 60000) i;
 SELECT sift.col_promote('g_all');
 SELECT sift.col_promote('g_narrow');

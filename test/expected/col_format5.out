@@ -1,4 +1,4 @@
--- Column format minor 6 (docs/COL-LEAFTYPES-32.md 9): only a segment of an index with wide leaves (lanes, money, interval) is written as minor 6,
+-- Column format minor 5 (docs/COL-LEAFTYPES-32.md 9): only a segment of an index with wide leaves (lanes, money, interval) is written as minor 5,
 -- whatever sift.col_format_minor says; an index of the older types keeps writing the setting's minor, so 3.1 still opens it. fmt lists the
 -- minors of the segments, oldest first.
 CREATE EXTENSION pg_sift;
@@ -17,8 +17,8 @@ BEGIN
 	RETURN a IS NOT DISTINCT FROM b;
 END $$;
 -- the setting's range is the one of 3.1: the wide minor is a property of the schema
-SET sift.col_format_minor = 6;
-ERROR:  6 is outside the valid range for parameter "sift.col_format_minor" (3 .. 4)
+SET sift.col_format_minor = 5;
+ERROR:  5 is outside the valid range for parameter "sift.col_format_minor" (3 .. 4)
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
 	   CASE WHEN i % 11 = 0 THEN 'NaN' ELSE i / 3.0 END FROM generate_series(1, 30000) i;
@@ -48,7 +48,7 @@ CREATE INDEX g_n ON g USING sift_col (any_n);
 SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
  fmt | fmt | fmt | fmt 
 -----+-----+-----+-----
- 6   | 6   | 6   | 6
+ 5   | 5   | 5   | 5
 (1 row)
 
 RESET sift.col_format_minor;
@@ -58,7 +58,7 @@ CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n);
 SELECT fmt('g_all');
  fmt 
 -----
- 6
+ 5
 (1 row)
 
 SELECT (SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats('g_all')) = fmt('g_all') AS hook_agrees;
@@ -73,7 +73,7 @@ SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true), sift.c
             |            | 
 (1 row)
 
--- later segments of the wide index are minor 6 too: the write buffer promoted, then the merge
+-- later segments of the wide index are minor 5 too: the write buffer promoted, then the merge
 INSERT INTO g SELECT i, i % 9, 1, i, '1.00'::money, interval '1 day', 1 FROM generate_series(30001, 60000) i;
 SELECT sift.col_promote('g_all');
  col_promote 
@@ -90,7 +90,7 @@ SELECT sift.col_promote('g_narrow');
 SELECT fmt('g_all'), fmt('g_narrow');
  fmt | fmt 
 -----+-----
- 6,6 | 3,4
+ 5,5 | 3,4
 (1 row)
 
 SELECT sift.col_merge('g_all', true);
@@ -102,7 +102,7 @@ SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
  fmt 
 -----
- 6
+ 5
 (1 row)
 
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true);
@@ -128,7 +128,7 @@ SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
  fmt 
 -----
- 6
+ 5
 (1 row)
 
 RESET sift.col_format_minor;
@@ -136,7 +136,7 @@ REINDEX INDEX g_all;
 SELECT fmt('g_all');
  fmt 
 -----
- 6
+ 5
 (1 row)
 
 SELECT sift.col_verify('g_all', true);
