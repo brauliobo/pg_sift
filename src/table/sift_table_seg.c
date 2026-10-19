@@ -2117,9 +2117,9 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		const SiftSegEntry *e = &st->dir.segs[i];
-		/* columns 9 to 11 (unfrozen, min_xid, max_xid) are there when the SQL function declares them (pg_sift--3.0--3.1.sql); more values than columns are ignored */
-		Datum		v[11] = {0};
-		bool		nulls[11] = {0};
+		/* columns 9 to 12 (format, unfrozen, min_xid, max_xid) are there when the SQL function declares them (pg_sift--3.0--3.1.sql); more values than columns are ignored */
+		Datum		v[12] = {0};
+		bool		nulls[12] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
 		if (e->kind == SIFT_SEG_IMMUTABLE)
@@ -2133,17 +2133,18 @@ sift_table_segments(PG_FUNCTION_ARGS)
 			v[5] = Int32GetDatum(e->sb_hi);
 			v[6] = Int32GetDatum(seg->nsb);
 			v[7] = Int64GetDatum(e->ndocs - sift_cseg_live_rows(seg));
-			v[8] = BoolGetDatum(sift_tbl_seg_unfrozen(e));
+			v[8] = Int32GetDatum(e->format);
+			v[9] = BoolGetDatum(sift_tbl_seg_unfrozen(e));
 			if (sift_tbl_seg_unfrozen(e))
 			{
 				uint32		lo,
 							hi;
 
 				sift_cseg_ver_range(seg, &lo, &hi);
-				v[9] = TransactionIdGetDatum(lo);
-				v[10] = TransactionIdGetDatum(hi);
+				v[10] = TransactionIdGetDatum(lo);
+				v[11] = TransactionIdGetDatum(hi);
 			}
-			nulls[9] = nulls[10] = !sift_tbl_seg_unfrozen(e);
+			nulls[10] = nulls[11] = !sift_tbl_seg_unfrozen(e);
 			sift_cseg_close(seg);
 		}
 		else
@@ -2152,7 +2153,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 
 			v[1] = CStringGetTextDatum(e->flags & SIFT_TBL_SEG_TOMB ? "tombstones" :
 									   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
-			memset(nulls + 2, true, 9);
+			memset(nulls + 2, true, 10);
 			if (e->flags & SIFT_TBL_SEG_WBUF)
 			{
 				sift_tbl_seg_load(rel, &seg);
