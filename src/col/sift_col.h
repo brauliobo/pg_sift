@@ -201,6 +201,7 @@ typedef struct SiftColLeafStats
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;
+	bool		has_ovf;		/* some unit's zone is flagged with an overflow value (a dead row's too, until the segment is rewritten) */
 	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
 } SiftColLeafStats;
 

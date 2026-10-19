@@ -4397,6 +4397,21 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 	return compute_parallel_worker(c->rel, c->rel->pages, -1, max_parallel_workers_per_gather);
 }
 
+/*
+ * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when it reads one (get_vec), the normal plan
+ * reads them from the heap: the query keeps its plan.
+ */
+static bool
+reads_overflow(AggCtx *c)
+{
+	int			m = -1;
+
+	while ((m = bms_next_member(c->used, m)) >= 0)
+		if (c->stats.ovf[m])
+			return true;
+	return false;
+}
+
 /* the leaves the spec reads and the combos; false when the spec cannot be run. keys: the group expressions of root's query */
 static bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
@@ -4416,6 +4431,8 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);
+	if (reads_overflow(c))
+		return false;
 	finish_leaves(c, s);
 	finish_combos(c, s);
 	s->est_groups = set_groups(root, s, keys, input_rel->rows);

@@ -122,6 +122,12 @@ extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
 extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst);
 
 /*
+ * Does a unit flag the overflow of a leaf while no live row holds an overflow value in it (the rows that did are dead)? The flag stays with the
+ * dead rows until the segment is rewritten, and a query that reads the leaf keeps the normal plan (docs/COL-PLAN.md): the rewrite is worth it
+ */
+extern bool sift_cseg_stale_ovf(SiftColSegment *seg);
+
+/*
  * VACUUM: calls cb for every live row (its TID from the row directory) and clears the liveness bits of the ones it reports dead
  * (dirty flag first, then the bits, generic WAL, at most 4 pages per record). Caller holds the maintenance lock. Returns rows removed,
  * adds to stats like sift_seg_bulkdelete.

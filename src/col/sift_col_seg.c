@@ -827,7 +827,10 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->nvals += z->nvals[u];
 		acc->nnull += z->nnull[u];
 		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
+		{
 			acc->has_range = acc->has_sum = false;
+			acc->has_ovf = true;
+		}
 		if (def->kind == SIFT_COLK_GROUP)
 			acc->has_sum &= !(z->flags[u] & SIFT_COLZ_NOSUM);
 		else if (def->store == SIFT_COLS_INT && any)
@@ -1148,6 +1151,44 @@ sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 	sift_cunit_decode(&v, r->sb, dicts, unit_dirty(seg, u) ? live : NULL, dst);
 	pfree(dicts);
 	pfree(live);
+}
+
+static bool
+vals_have_ovf(const SiftCVals *v)
+{
+	for (uint32 w = 0; v->ovf != NULL && w < SIFT_COL_NWORDS(v->n); w++)
+		if (v->ovf[w])
+			return true;
+	return false;
+}
+
+bool
+sift_cseg_stale_ovf(SiftColSegment *seg)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col stale overflow", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftColBatch *live = sift_cbatch_create(cx, seg->schema);
+	bool		stale = false;
+
+	for (uint32 u = 0; u < seg->nsb && !stale; u++)
+	{
+		bool		decoded = false;
+
+		for (int c = 0; c < seg->schema->ncols && !stale; c++)
+		{
+			const ZoneArrays *z = zone_arrays(seg, c);
+
+			if (!z->any_ovf || !(z->flags[u] & SIFT_COLZ_OVERFLOW) || !unit_dirty(seg, u))
+				continue;
+			if (!decoded)
+				sift_cseg_decode_unit(seg, u, live);
+			decoded = true;
+			stale = !vals_have_ovf(&live->col[c]);
+		}
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return stale;
 }
 
 /* ---------- VACUUM ---------- */
