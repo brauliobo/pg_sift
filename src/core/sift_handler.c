@@ -7,6 +7,7 @@
 #include "access/amapi.h"
 #include "access/reloptions.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
@@ -14,6 +15,7 @@
 #include "nodes/value.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
@@ -296,11 +298,20 @@ _PG_init(void)
 	CacheRegisterSyscacheCallback(OPEROID, catalog_invalidate, (Datum) 0);
 }
 
+/* By the catalog, not LookupFuncName: a qualified name checks USAGE on the schema, and a role without it (any writer of a sift_table) must still run */
 static Oid
-sift_func(const char *name, int nargs, const Oid *argtypes)
+sift_func(Oid nsp, const char *name, int nargs, const Oid *argtypes)
 {
-	return LookupFuncName(list_make2(makeString("sift"), makeString(pstrdup(name))),
-						  nargs, argtypes, true);
+	HeapTuple	tup = SearchSysCache3(PROCNAMEARGSNSP, CStringGetDatum(name), PointerGetDatum(buildoidvector(argtypes, nargs)),
+									  ObjectIdGetDatum(nsp));
+	Oid			oid = InvalidOid;
+
+	if (HeapTupleIsValid(tup))
+	{
+		oid = ((Form_pg_proc) GETSTRUCT(tup))->oid;
+		ReleaseSysCache(tup);
+	}
+	return oid;
 }
 
 const SiftCatalog *
@@ -309,19 +320,21 @@ sift_catalog(void)
 	static const Oid text2[] = {TEXTOID, TEXTOID};
 	static const Oid text2oid[] = {TEXTOID, TEXTOID, OIDOID};
 	static const Oid tid1[] = {TIDOID};
+	Oid			nsp;
 
 	if (catalog_valid)
 		return &catalog;
 	memset(&catalog, 0, sizeof(catalog));
-	if (OidIsValid(get_namespace_oid("sift", true)))
+	nsp = get_namespace_oid("sift", true);
+	if (OidIsValid(nsp))
 	{
 		catalog.am = get_index_am_oid("sift", true);
 		catalog.match_op = OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("@@>")),
 											TEXTOID, TEXTOID);
-		catalog.match_func = sift_func("match", 2, text2);
-		catalog.match_idx_func = sift_func("match_idx", 3, text2oid);
-		catalog.score_func = sift_func("score", 1, tid1);
-		catalog.max_score_func = sift_func("max_score", 1, tid1);
+		catalog.match_func = sift_func(nsp, "match", 2, text2);
+		catalog.match_idx_func = sift_func(nsp, "match_idx", 3, text2oid);
+		catalog.score_func = sift_func(nsp, "score", 1, tid1);
+		catalog.max_score_func = sift_func(nsp, "max_score", 1, tid1);
 	}
 	catalog_valid = true;
 	return &catalog;
