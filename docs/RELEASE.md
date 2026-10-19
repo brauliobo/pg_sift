@@ -65,7 +65,7 @@ in those paths stop the run (the gate runs on a clone of HEAD).
 
 The jobs run one at a time in a scope of 2 cores and 12 GB (`systemd-run`, `CPUQuota=200%`), at most 100 000 rows, with `nice`. The scratch is
 under `$RELEASE_TMP` (default `/tmp`) and removed at the end except the logs, which are in `sift-release.*/logs` (`NAME.log`, and
-`NAME.first.log` for a job that ran twice). Not in the gate: the full CI, the full differential test, PG18 full, the long soaks and fuzz
+`NAME.first.log` for a job that ran twice, and `NAME.scratch.N/` with the logs, diffs and findings of every failed attempt). Not in the gate: the full CI, the full differential test, PG18 full, the long soaks and fuzz
 runs, repeated runs of flaky tests, the full SQLite and MariaDB suites, and the timed benchmarks (`bench/analytics --final`).
 
 Environment: `RELEASE_BM25_BASE` (544ddf0, the main the 3.0 branch started from), `RELEASE_BM25_ACCEPT`, `RELEASE_COL_REF` (a gated ref;

@@ -266,7 +266,7 @@ known_flake() { # NAME FAILED-PARTS: every part matches a line of scripts/releas
 		printf '%s ' "$cause"
 	done
 }
-crash_scan() { grep -rIEh "$CRASH" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | head -3; }
+crash_scan() { grep -rIEH "$CRASH" "$W/$1" "$W/$1"-* "$LOGS/$1.log" 2>/dev/null | head -3; }
 run_once() { # NAME -> rc; log LOGS/NAME.log
 	local n=$1 rc c
 	( set -e; "job_${n//-/_}" ) >"$LOGS/$n.log" 2>&1
@@ -274,6 +274,11 @@ run_once() { # NAME -> rc; log LOGS/NAME.log
 	find "$W" -path '*/data/postmaster.pid' -printf '%h\n' | while read -r d; do pg_ctl -D "$d" stop -m immediate >/dev/null 2>&1; done
 	c=$(crash_scan "$n")
 	[[ -z $c ]] || { echo "server crash:"$'\n'"$c" >>"$LOGS/$n.log"; rc=99; }
+	if (( rc )); then	# the logs of a failed attempt stay
+		mkdir -p "$LOGS/$n.scratch.$SECONDS"
+		( cd "$W" && find . -path "./$n*" -type f \( -name '*.log' -o -name '*.diffs' -o -name '*.findings' \) -size -20M \
+			-exec cp --parents {} "$LOGS/$n.scratch.$SECONDS" \; )
+	fi
 	[[ -n $KEEP ]] || find "$W" -mindepth 1 -maxdepth 1 -name "$n*" -exec rm -rf {} +
 	return $rc
 }
