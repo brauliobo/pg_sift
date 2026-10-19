@@ -77,7 +77,43 @@ SELECT fmt('d_col');
 SELECT * FROM all_types('d_col') WHERE NOT same OR NOT allknown;
 SELECT count(*) AS rows_checked FROM all_types('d_col');
 
-DROP TABLE d;
+-- verification: the type of a buffered overflow value is a tag, and it is the type of the heap value; the flag of a segment follows its minor
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	d text;
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL;
+	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), ''), '[0-9]+', 'N', 'g');
+END $$;
+CREATE TABLE w (id int, doc jsonb);
+CREATE INDEX w_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8');
+INSERT INTO w VALUES (1, '{"m": "str"}');
+CREATE TABLE pages AS SELECT b AS blk, pg.type, pg.lower FROM generate_series(0, pg_relation_size('w_idx') / 8192 - 1) b, LATERAL sift._test_page('w_idx', b) pg;
+-- the first record of the buffer: its head follows the page head at 32, its first flag byte is at 44 (3: null and overflow, the type in the high nibble)
+SELECT min(blk) AS rec_page FROM pages WHERE type = 7 AND lower > 32 \gset
+SELECT sift._test_poke('w_idx', :rec_page, 44, 2 * 16 + 3, 1);
+SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
+SELECT sift._test_poke('w_idx', :rec_page, 44, 7 * 16 + 3, 1);
+SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
+SELECT sift._test_poke('w_idx', :rec_page, 44, 1 * 16 + 3, 1);
+SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
+SELECT sift.col_promote('w_idx');
+-- the directory entry of the segment says minor 3 or minor 4 (generation at 32, the minor 9 bytes after)
+SELECT sift._test_poke('w_idx', 1, 41, 3, 1);
+SELECT expect($$ SELECT sift.col_verify('w_idx', false) $$);
+SELECT sift._test_poke('w_idx', 1, 41, 4, 1);
+SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
+SET sift.col_format_minor = 3;
+CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8');
+RESET sift.col_format_minor;
+SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
+SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);
+
+DROP TABLE d, w, pages;
+DROP FUNCTION expect(text);
 DROP FUNCTION doc(int), fmt(regclass), types(regclass, int, text, text), all_types(regclass), unit_kinds(regclass);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
