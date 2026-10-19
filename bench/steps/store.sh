@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Usage: bench/bench store [all|setup|run|cold|report|clean]   (bench/steps/store.sh, called by bench/bench)
-# The store benchmark: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift, Elasticsearch and
-# ClickHouse (bench/sql/store/, bench/steps/store.py). Every server runs alone in a docker container with the same CPU and memory limits,
+# The store benchmark: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift, Citus (columnar, one node),
+# Elasticsearch and ClickHouse (bench/sql/store/, bench/steps/store.py). Every server runs alone in a docker container with the same CPU and memory limits,
 # one node, on a port of 127.0.0.1; the same seeded CSV is loaded into all of them; one client times every request.
 # A fair comparison when the engines start different numbers of threads: the container only has the `--cpus N` quota (no pinning) and every
-# engine is told the same thread budget N (PostgreSQL: a leader and N-1 parallel workers; ClickHouse max_threads and its background pool N;
+# engine is told the same thread budget N (PostgreSQL and Citus: a leader and N-1 parallel workers; ClickHouse max_threads and its background pool N;
 # Elasticsearch node.processors and the JVM's processor count N). The timed questions run at each point of --cpus-list (1 and 3), each a result set.
 #   all     for each size: containers, data, load, warm and cold runs, containers removed; then store.json (and, with --docs, bench/results,
 #           the generated blocks of README.md and docs/BENCHMARKS.md)
@@ -21,7 +21,7 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
 NAME=${S_NAME:-sift-store}
-PORT=${S_PORT:-56280}                 # PostgreSQL, the pg_sift server, Elasticsearch, ClickHouse: PORT .. PORT + 3
+PORT=${S_PORT:-56280}                 # PostgreSQL, the pg_sift server, Elasticsearch, ClickHouse, Citus: PORT .. PORT + 4
 CPU_LIST=${S_CPUS_LIST:-${S_CPUS:-${S_COMPRESSION:+3}}}      # the thread budgets that are timed; the compression run is one point
 CPU_LIST=${CPU_LIST:-1,3}
 POINTS=$(tr ',' '\n' <<<"$CPU_LIST" | sort -nu | paste -sd' ')
@@ -34,7 +34,8 @@ DATA=${S_DATA:-$STORE/store}
 OUT=${OUT:-$BENCH/out/store}
 export STORE_NAME=$NAME STORE_PORT=$PORT STORE_CPUS=$CPUS STORE_CPUS_LIST=${POINTS// /,} STORE_MEMORY=$MEMORY STORE_DATA=$DATA
 PG_IMAGE=$NAME-pg:latest
-# The same flags for both PostgreSQL containers. The parallel pool (max_worker_processes, max_parallel_workers) is far above the budget and the cost
+CITUS_PORT=$((PORT + 4))
+# The same flags for all the PostgreSQL containers (PostgreSQL, pg_sift, Citus). The parallel pool (max_worker_processes, max_parallel_workers) is far above the budget and the cost
 # knobs are low, so that nothing but max_parallel_workers_per_gather (N - 1, set by `budget`) decides how many processes a scan uses.
 PG_FLAGS=(-c shared_buffers=2GB -c effective_cache_size=6GB -c work_mem=64MB -c maintenance_work_mem=512MB -c max_wal_size=8GB -c jit=off
           -c max_worker_processes=16 -c max_parallel_workers=16 -c parallel_setup_cost=100 -c parallel_tuple_cost=0.01
@@ -100,20 +101,27 @@ EOF
     -v "$NAME-ch-data:/var/lib/clickhouse" -v "$dir/server.xml:/etc/clickhouse-server/config.d/threads.xml:ro" -v "$dir/users.xml:/etc/clickhouse-server/users.d/threads.xml:ro" \
     "$STORE_CH_IMAGE" >/dev/null
 }
+# Citus: its own image (the extension is a package of it), the same PostgreSQL flags; the table is in the `columnar` access method of citus_columnar, one node
+# (no workers are added), and the columnar settings (chunk group and stripe row limits, compression) stay at their defaults. The image preloads `citus`,
+# which is left as shipped; the extension is only created in the `store` database as citus_columnar.
+citus_up() { # N
+  local run; mapfile -t run < <(run_args "$1")
+  docker "${run[@]}" --name "$NAME-citus" -p "127.0.0.1:$CITUS_PORT:5432" --shm-size 1g -e POSTGRES_HOST_AUTH_METHOD=trust "$STORE_CITUS_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
+}
 wait_up() {
   local t=0
   until pg_isready -q -h 127.0.0.1 -p "$PORT" && pg_isready -q -h 127.0.0.1 -p $((PORT + 1)) \
+        && { ! want citus || pg_isready -q -h 127.0.0.1 -p "$CITUS_PORT"; } \
         && { ! want es || curl -fs "http://127.0.0.1:$((PORT + 2))/_cluster/health?wait_for_status=green&timeout=5s" >/dev/null; } \
         && { ! want ch || curl -fs "http://127.0.0.1:$((PORT + 3))/ping" >/dev/null; }; do
     (( ++t < 300 )) || { echo "store: the servers did not start; docker logs $NAME-*" >&2; return 1; }
     sleep 1
   done
 }
-# PostgreSQL and pg_sift: a leader plus N - 1 parallel workers = N processes; ALTER SYSTEM so that the same container can change budget
+# PostgreSQL, pg_sift and Citus: a leader plus N - 1 parallel workers = N processes; ALTER SYSTEM so that the same container can change budget
 budget() { # N
-  local i t=0 p
-  for i in 0 1; do
-    p=$((PORT + i))
+  local p t=0
+  for p in "$PORT" $((PORT + 1)) $(! want citus || echo "$CITUS_PORT"); do
     psql -X -qAt -h 127.0.0.1 -p "$p" -U postgres -d postgres -c "ALTER SYSTEM SET max_parallel_workers_per_gather = $(($1 - 1))" -c "ALTER SYSTEM SET max_parallel_maintenance_workers = $(($1 - 1))" -c "SELECT pg_reload_conf()" >/dev/null
     until [[ $(psql -X -qAt -h 127.0.0.1 -p "$p" -U postgres -d postgres -c "SHOW max_parallel_workers_per_gather") == $(($1 - 1)) ]]; do
       (( ++t < 100 )) || { echo "store: max_parallel_workers_per_gather did not change on port $p" >&2; return 1; }
@@ -124,15 +132,18 @@ budget() { # N
 up() {
   [[ -z $(containers) ]] || { echo "store: containers of '$NAME' exist (bench/bench store clean)" >&2; return 1; }
   for i in 0 1 2 3; do port_free $((PORT + i)); done
+  ! want citus || port_free "$CITUS_PORT"
   build_image
   if want es; then docker pull -q "$STORE_ES_IMAGE" >/dev/null; fi
   if want ch; then docker pull -q "$STORE_CH_IMAGE" >/dev/null; fi
+  if want citus; then docker pull -q "$STORE_CITUS_IMAGE" >/dev/null; fi
   volumes | xargs -r docker volume rm >/dev/null
   local run; mapfile -t run < <(run_args "$CPUS")
   docker "${run[@]}" --name "$NAME-pg" -p "127.0.0.1:$PORT:5432" --shm-size 1g -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
   docker "${run[@]}" --name "$NAME-sift" -p "127.0.0.1:$((PORT + 1)):5432" --shm-size 1g -e POSTGRES_HOST_AUTH_METHOD=trust "$PG_IMAGE" postgres "${PG_FLAGS[@]}" >/dev/null
   ! want es || es_up "$CPUS"
   ! want ch || ch_up "$CPUS"
+  ! want citus || citus_up "$CPUS"
   wait_up
   budget "$CPUS"
   verify "$CPUS"
@@ -140,9 +151,9 @@ up() {
 }
 # the budget of the containers now (docker's quota), so that a development step (store.sh run) finds out where it stands
 current() { echo $(( $(docker inspect -f '{{.HostConfig.NanoCpus}}' "$NAME-pg") / 1000000000 )); }
-# every engine gets the thread budget N: the quota of all containers, PostgreSQL's workers, new Elasticsearch and ClickHouse containers on their volumes (their settings are static)
+# every engine gets the thread budget N: the quota of all containers, the workers of PostgreSQL and Citus, new Elasticsearch and ClickHouse containers on their volumes (their settings are static)
 configure() { # N
-  log "thread budget $1: quota, PostgreSQL workers $(($1 - 1)), ClickHouse max_threads $1, Elasticsearch node.processors $1"
+  log "thread budget $1: quota, PostgreSQL and Citus workers $(($1 - 1)), ClickHouse max_threads $1, Elasticsearch node.processors $1"
   containers | xargs -r docker update --cpus "$1" >/dev/null
   budget "$1"
   if want es; then docker rm -f "$NAME-es" >/dev/null; es_up "$1"; fi

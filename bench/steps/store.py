@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The store benchmark: ten questions about an online store's orders on PostgreSQL, PostgreSQL with pg_sift, Elasticsearch and ClickHouse.
+"""The store benchmark: ten questions about an online store's orders on PostgreSQL, PostgreSQL with pg_sift, Citus columnar, Elasticsearch and ClickHouse.
 Called by steps/store.sh, which starts the containers (one per server, equal CPU and memory limits). stdlib only; `python3 -I`.
 
     store.py gen   --rows N --data DIR            the seeded CSV every system loads (bench/sql/store/gen.sql)
@@ -11,7 +11,8 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py render [--results FILE] [--readme FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
-cache off), es_cached (the same with the shard request cache on), ch (ClickHouse). A latency is the wall time of one request from this
+cache off), es_cached (the same with the shard request cache on), ch (ClickHouse), citus (Citus on one node, the table in the
+`columnar` access method: no UPDATE, DELETE or GIN, so it is not in the update tables). A latency is the wall time of one request from this
 process to the server on 127.0.0.1 and back, one client, the response read to its end (psql / HTTP keep-alive connection). The first run of
 a query on an engine is not timed: its result is compared with the result of PostgreSQL (the reference) and the run stops on a difference.
 """
@@ -54,6 +55,7 @@ LANES = {
     'pg':         ('PostgreSQL', 'pg', 0, 'store'),
     'sift':       ('pg_sift `sift_col`', 'sift', 1, 'store_col'),
     'sift_table': ('pg_sift `sift_table`', 'sift', 1, 'store_tbl'),
+    'citus':      ('Citus columnar', 'citus', 4, 'store'),
     'es':         ('Elasticsearch', 'es', 2, None),
     'es_cached':  ('Elasticsearch, request cache on', 'es', 2, None),
     'ch':         ('ClickHouse', 'ch', 3, None),
@@ -61,13 +63,13 @@ LANES = {
     'ch_rmt':     ('ClickHouse, ReplacingMergeTree', 'ch', 3, None),
     **{e: (f'pg_sift `sift_col`, compression `{p}`', 'sift', 1, 'store_col_' + e[5:]) for e, p in COMPRESSION.items()},
 }
-DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch']
-PG_ENGINES = ['pg', 'sift', 'sift_table', *COMPRESSION]
+DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'citus', 'es', 'es_cached', 'ch']
+PG_ENGINES = ['pg', 'sift', 'sift_table', 'citus', *COMPRESSION]
 UPDATE_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'ch', 'ch_mut', 'ch_rmt']
 CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
 is_ch = lambda eid: eid in CH_TABLE
 is_es = lambda eid: eid in ('es', 'es_cached')
-DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', **{e: 'sift.sql' for e in COMPRESSION}}
+DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
 
 
 def die(msg):
@@ -125,7 +127,8 @@ class Query:
             tol = [float(l[4:]) for l in lines if l.startswith('tol:')]
             body = '\n'.join(l for l in lines[1:] if not l.startswith(('rows:', 'tol:'))).strip()
             return method, path, body.encode() if body else None, spec, tol[0] if tol else TOL
-        sql = sub(self.sec['ch' if is_ch(eid) else 'sift' if eid.startswith('sift') and 'sift' in self.sec else 'pg'])
+        family = 'ch' if is_ch(eid) else 'sift' if eid.startswith('sift') else eid   # a `--@ sift` or `--@ citus` section replaces the PostgreSQL text for that system
+        sql = sub(self.sec[family if family in self.sec else 'pg'])
         return sql.replace('store.orders', CH_TABLE[eid] + (' FINAL' if eid == 'ch_rmt' else '')) if is_ch(eid) else sql
 
 
@@ -405,6 +408,8 @@ def timed(rows, eid, phase, fn):
 
 
 CHUNK = 1000000
+# Citus columnar keeps its stripe, chunk group and chunk metadata in tables of its own schema, shared by the columnar tables of the database (only `orders` here): on disk, so counted
+COLUMNAR_META = " + (SELECT coalesce(sum(pg_total_relation_size(oid)), 0) FROM pg_class WHERE relnamespace = 'columnar_internal'::regnamespace AND relkind = 'r')"
 
 
 def copy_chunks(eid, path):
@@ -459,8 +464,12 @@ def load_pg(eid, args, rows):
     build_indexes(eid, sec['indexes'], rows)
     timed(rows, eid, 'vacuum', lambda: psql_file(eid, 'VACUUM (FREEZE, ANALYZE) orders'))
     psql_file(eid, 'CHECKPOINT')
-    rows.add(eid, '-', '-', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_total_relation_size('orders')")))
-    rows.add(eid, '-', 'table', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_table_size('orders')")))
+    plus = COLUMNAR_META if eid == 'citus' else ''
+    rows.add(eid, '-', '-', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_total_relation_size('orders')" + plus)))
+    rows.add(eid, '-', 'table', 'size_mib', 'MiB', value=mib(psql_value(eid, "SELECT pg_table_size('orders')" + plus)))
+    if eid == 'citus':   # the settings the table was created with, read back from the server (the defaults of columnar.*)
+        rows.add(eid, '-', 'orders', 'columnar_options', 'text', value=psql_value(eid, "SELECT 'chunk_group_row_limit=' || chunk_group_row_limit || ', stripe_row_limit=' || stripe_row_limit || ', compression=' || "
+                                                                                       "compression || ', compression_level=' || compression_level FROM columnar.options WHERE relation = 'orders'::regclass"))
     if eid == 'sift_table':   # blocks the table file holds and has free (the write pages of the load, sealed into columns): the file does not shrink
         rows.add(eid, '-', 'free', 'size_mib', 'MiB', value=mib(int(psql_value(eid, "SELECT free_blocks FROM sift.table_space('orders')")) * 8192))
     if eid == 'sift' or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
@@ -543,11 +552,17 @@ def load_es(args, rows):
 def servers(engines):
     """the versions and settings of the servers that take part, as the servers say them"""
     v = {}
+    settings = lambda eid: psql_value(eid, "SELECT string_agg(name || '=' || current_setting(name), ', ' ORDER BY name) FROM pg_settings WHERE name IN "
+                                           "('shared_buffers', 'work_mem', 'jit', 'effective_cache_size')")
     for eid in [e for e in ('pg', 'sift', 'sift_table') if e in engines]:
         v[eid] = psql_value(eid, 'SHOW server_version')
         v[eid + '_sift'] = psql_value(eid, "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
-        v[eid + '_settings'] = psql_value(eid, "SELECT string_agg(name || '=' || current_setting(name), ', ' ORDER BY name) FROM pg_settings WHERE name IN "
-                                              "('shared_buffers', 'work_mem', 'jit', 'effective_cache_size')")
+        v[eid + '_settings'] = settings(eid)
+    if 'citus' in engines:
+        v['citus'] = psql_value('citus', 'SHOW server_version')
+        v['citus_columnar'] = psql_value('citus', "SELECT extversion FROM pg_extension WHERE extname = 'citus_columnar'")
+        v['citus_image'] = docker('inspect', '-f', '{{.Config.Image}}', container('citus')).strip()
+        v['citus_settings'] = settings('citus')
     if 'sift' in engines:
         v['sift_libs'] = docker('exec', container('sift'), 'sh', '-c', 'ldd $(find /usr/lib/postgresql -name pg_sift.so | head -1) | grep -Eo "lib(lz4|zstd)[^ ]*" | sort -u | paste -sd" "').strip()
         v['sift_table_compression'] = psql_value('sift', "LOAD 'pg_sift'; SELECT current_setting('sift.table_compression')") or "'' (unset)"
@@ -1231,6 +1246,7 @@ def load_rows(R, tier, engines):
 
 QUERY_TITLES = {q.id: q.title for q in load_queries()}
 QUERY_LABELS = {q.id: q.label for q in load_queries()}
+SHOWN = ['pg', 'sift', 'sift_table', 'citus', 'es', 'ch']   # the columns of the README table, in order; a system without rows in the results has no column
 
 
 def losses(R, tier, engines, labels):
@@ -1283,11 +1299,16 @@ def cpu_name(n):
     return f'{n} CPU' + 's' * (n != 1)
 
 
+def join_and(names):
+    return ', '.join(names[:-1]) + (' and ' if len(names) > 1 else '') + names[-1]
+
+
 def thread_line(R, tier):
     """what the servers of a result set reported for its thread budget (steps/store.py effective)"""
     th = R.meta['tiers'][tier].get('threads', {})
     pg = th.get('pg') or th.get('sift')
-    out = [f'PostgreSQL and pg_sift: a leader and {pg["max_parallel_workers_per_gather"]} parallel worker{"s" * (pg["max_parallel_workers_per_gather"] != "1")}'] * bool(pg)
+    who = [name for name, k in (('PostgreSQL', 'pg'), ('pg_sift', 'sift'), ('Citus', 'citus')) if k in th]
+    out = [f'{join_and(who)}: a leader and {pg["max_parallel_workers_per_gather"]} parallel worker{"s" * (pg["max_parallel_workers_per_gather"] != "1")}'] * bool(pg)
     out += [f'Elasticsearch: `node.processors` {th["es"]["allocated_processors"]}'] * ('es' in th)
     out += [f'ClickHouse: `max_threads` {th["ch"]["max_threads"]}'] * ('ch' in th)
     return '; '.join(out)
@@ -1298,12 +1319,26 @@ def set_heading(R, tier):
     return f'{cpu_name(R.cpus(tier))} per container' + (f' ({thread_line(R, tier)})' if R.meta['tiers'][tier].get('threads') else '')
 
 
+def citus_options(R, tier):
+    r = R.get(tier, 'citus', '-', 'orders', 'columnar_options')
+    return r['value'] if r else '?'
+
+
+def citus_notes(R, tier):
+    """what the Citus column is, from the rows of the tier: columnar only, one node, the settings it ran with"""
+    if not R.engines(tier, ['citus']):
+        return []
+    s = R.meta['tiers'][tier]['servers']
+    return [f'Citus {s["citus_columnar"]} (PostgreSQL {s["citus"].split()[0]}) is measured as one node with the table in its `columnar` access method and its default settings ({citus_options(R, tier)}), a primary key and no other index '
+            '(columnar tables take btree and hash indexes only, so the three searches scan the title column). Columnar tables are append-only, so Citus is not in the update table.']
+
+
 def readme_block(R):
     tier = R.tiers[-1]
     t = R.meta['tiers'][tier]
     s = t['servers']
     labels = {e: LANES[e][0] for e in LANES}
-    engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'es', 'ch'])
+    engines = R.engines(tier, SHOWN)
     sets = R.sets[tier]
     host = R.meta.get('host', {})
     n = f'{t["rows"]:,}'
@@ -1312,9 +1347,9 @@ def readme_block(R):
     out = [f'An online store: a table of {n} orders (country, category, status, amount, date, a product title) and ten questions anyone can ask of it. Every system holds the same seeded rows, '
            f'runs one node in a docker container limited to {quota} CPUs (a quota, no pinning) and {host.get("memory", "?")} of memory{fair}, and answers over a local connection from one client. '
            f'Cells are the median of {t["runs"]} warm runs in milliseconds (lower is better; the fastest of a row, and anything within 5% of it, in bold). '
-           f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}.', '']
+           f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}.', '']
     for x in sets:
-        head, body = bench_table(R, x, R.engines(x, ['pg', 'sift', 'sift_table', 'es', 'ch']), labels)
+        head, body = bench_table(R, x, R.engines(x, SHOWN), labels)
         if x == tier:
             body += load_rows(R, tier, engines)
         out += ([f'**{set_heading(R, x)}**', ''] if len(sets) > 1 else []) + md_table(head, body) + ['']
@@ -1325,14 +1360,14 @@ def readme_block(R):
     out += [f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',
             f'- Elasticsearch runs with its request cache off (a repeated aggregation would otherwise be answered from memory); with it on, the medians are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).',
             '- ClickHouse is a column store built for exactly these aggregations and Elasticsearch for exactly this search; PostgreSQL (heap, btree and GIN indexes) is what most teams run today.']
-    out += ['- ' + n for n in load_notes(R, tier)]
+    out += ['- ' + n for n in citus_notes(R, tier)] + ['- ' + n for n in load_notes(R, tier)]
     plain = [q for q in R.queries(tier) if 'Seq Scan' in (R.get(tier, 'sift_table', q, '-', 'plan') or {}).get('value', '') and R.num(tier, 'sift_table', q, 'warm', 'latency_ms') and R.num(tier, 'pg', q, 'warm', 'latency_ms')]
     if plain and 'sift_table' in engines:
         ratios = [R.num(tier, 'sift_table', q, 'warm', 'latency_ms') / R.num(tier, 'pg', q, 'warm', 'latency_ms') for q in plain]
         out += [f'- `sift_table` ran {len(plain)} of the {len(R.queries(tier))} questions with a plain `Seq Scan` plan (no aggregate pushdown: [docs/USAGE.md](docs/USAGE.md#limits) lists what `SiftAgg` does not read) and took '
                 f'{ratio(min(ratios), 1)} to {ratio(max(ratios), 1)} the time of PostgreSQL\'s heap on those; the other layout, `sift_col`, is an index over the ordinary table.']
     for x in sets:
-        lo = losses(R, x, R.engines(x, ['pg', 'sift', 'sift_table', 'es', 'ch']), labels)
+        lo = losses(R, x, R.engines(x, SHOWN), labels)
         at = f' at {cpu_name(R.cpus(x))}' if len(sets) > 1 else ''
         if lo:
             out += [f'- **Where pg_sift is not the fastest{at}:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.']
@@ -1351,7 +1386,8 @@ def host_noise(part):
 
 def thread_table(R, tiers):
     """the settings each server reported for each result set (steps/store.py effective), one row per set"""
-    head = ['result set', 'container `--cpus`', 'PostgreSQL, pg_sift: workers per gather (maintenance)', 'ClickHouse: `max_threads` (background pool)', 'Elasticsearch: `node.processors`, JVM processors (search / write threads)']
+    pg_names = 'PostgreSQL, pg_sift' + ', Citus' * any('citus' in R.meta['tiers'][x].get('threads', {}) for x in tiers)
+    head = ['result set', 'container `--cpus`', f'{pg_names}: workers per gather (maintenance)', 'ClickHouse: `max_threads` (background pool)', 'Elasticsearch: `node.processors`, JVM processors (search / write threads)']
     body = []
     for x in tiers:
         th = R.meta['tiers'][x].get('threads')
@@ -1385,6 +1421,17 @@ def latency_tables(R, tier, shown, labels, heading):
     return out
 
 
+def citus_config(R, tier):
+    """the Configuration bullet of the Citus column (nothing when the results have none): the image, the version, the table's settings as the server reports them"""
+    if not R.engines(tier, ['citus']):
+        return []
+    s = R.meta['tiers'][tier]['servers']
+    w = (R.meta['tiers'][tier].get('threads') or {}).get('citus', {}).get('count_workers_planned')
+    return [f'- Citus {s["citus_columnar"]} (image `{s["citus_image"]}`, PostgreSQL {s["citus"].split()[0]}): one node, no workers added, `citus` preloaded as the image ships it and only the `columnar` access method of `citus_columnar` used; '
+            f'the table `USING columnar` with the default settings ({citus_options(R, tier)}), a primary key and no other index (columnar tables take btree and hash indexes only: no GIN for the search, no `UPDATE` or `DELETE`, so it is not in the update tables). '
+            f'The same server flags as the other PostgreSQL containers: {s["citus_settings"]}; `max_parallel_workers_per_gather` N - 1' + (f', and the planner planned {w} workers for `count(*)` on the table' if w is not None else '') + '.']
+
+
 def benchmarks_block(R):
     labels = {e: LANES[e][0] for e in LANES}
     host = R.meta.get('host', {})
@@ -1392,7 +1439,7 @@ def benchmarks_block(R):
     for tier in reversed(R.tiers):
         t = R.meta['tiers'][tier]
         s = t['servers']
-        allq = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch']
+        allq = ['pg', 'sift', 'sift_table', 'citus', 'es', 'es_cached', 'ch']
         engines = R.engines(tier, allq)
         shown = [e for e in engines if e != 'es_cached']
         out += [f'### {t["rows"]:,} orders', '']
@@ -1437,6 +1484,7 @@ def benchmarks_block(R):
         out += ['- Thread budget: every engine is told the same N as the quota, because they start different numbers of threads on their own. What each server reported after it started (checked against N before anything is timed):', '']
         out += thread_table(R, [x for tier in R.tiers for x in R.sets[tier]]) + ['']
     out += [f'- PostgreSQL {s["pg"]} (the same image for both layouts, pg_sift {s["sift_sift"]} built from this checkout' + (f', linked with `{s["sift_libs"]}`, `compression` unset on the index = `auto`, `sift.table_compression` {s["sift_table_compression"]}' if 'sift_libs' in s else '') + f'): {s["pg_settings"]}; {pg_text}.',
+            *citus_config(R, last),
             f'- Elasticsearch {s["es"]} (Lucene {s["es_lucene"]}): one node, one shard, no replica, JVM heap `{s["es_heap"]}`, {"`node.processors` and `-XX:ActiveProcessorCount` set to N, " if th else ""}security and machine learning off; `scaled_float` (factor 100) for the amount, `keyword` for country, category and status, `date` for the time, `text` for the title; '
             'merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.',
             f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; {"`max_threads`, `max_insert_threads`, `max_final_threads` and `background_pool_size` set to N" if th else f"`max_threads` {s['ch_threads']} (what the container limit gives it)"}; optimized to one part per partition after the load.',
@@ -1671,10 +1719,11 @@ def compression_block(R):
     others += [[f'Elasticsearch, {k}', size(R.num(tier, 'es', variant=f'codec {k}', metric='size_mib') if k != 'default (LZ4)' else R.num(tier, 'es', metric='size_mib'))]
                for k in ('default (LZ4)', 'best_compression') if R.engines(tier, ['es'])]
     others += [['PostgreSQL (heap, btree, GIN)', size(R.num(tier, 'pg', metric='size_mib'))]] if R.engines(tier, ['pg']) else []
+    others += [[f'Citus columnar, default settings ({citus_options(R, tier)}), primary key', size(R.num(tier, 'citus', metric='size_mib'))]] if R.engines(tier, ['citus']) else []
     out += ['Size of the other layouts and systems with their own compression settings (table and indexes):', ''] + md_table(['system and setting', 'size on disk'], others, ['---', '---:']) + ['']
     qs = R.queries(tier)
-    cols = [e for e in lanes] + [e for e in ('pg', 'ch', 'es') if R.engines(tier, [e])]
-    labels = {**{e: 'sift_col ' + CZ_NAMES[e] for e in lanes}, 'pg': 'PostgreSQL', 'ch': 'ClickHouse', 'es': 'Elasticsearch'}
+    cols = [e for e in lanes] + [e for e in ('pg', 'citus', 'ch', 'es') if R.engines(tier, [e])]
+    labels = {**{e: 'sift_col ' + CZ_NAMES[e] for e in lanes}, 'pg': 'PostgreSQL', 'citus': 'Citus columnar', 'ch': 'ClickHouse', 'es': 'Elasticsearch'}
     body = [[QUERY_TITLES[q]] + best_bold([R.num(tier, e, q, 'warm', 'latency_ms') for e in cols], [ms(R.num(tier, e, q, 'warm', 'latency_ms')) for e in cols]) for q in qs]
     spread = [max(v) / min(v) for q in qs if len(v := [R.num(tier, e, q, 'warm', 'latency_ms') for e in lanes]) and all(v)]
     out += [f'Warm medians (ms) of the ten questions on each `compression` variant of the `sift_col` index, with the other systems of the same run (the slowest of the {len(lanes)} variants against the fastest, per question: '
