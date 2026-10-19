@@ -4,7 +4,26 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
-- Known issue (3.0, fixed in 3.0.1): a single transaction can write about 500 MB (about 4 million rows of the orders layout) into a `sift_table`; a larger `COPY` fails with `Too many write buffers waiting for promotion`. Load larger data in several transactions, for example 1,000,000 rows each (`docs/USAGE.md`, Limits).
+## 3.0.0 - 2026-10-19
+
+The column track joins the BM25 index in one extension. Install the new files, then run `ALTER EXTENSION pg_sift UPDATE TO '3.0'` in every database (the extension SQL goes from 1.2 to 3.0; `pg_sift--1.2--3.0.sql`). Existing BM25 indexes keep working with no `REINDEX`.
+
+Highlights:
+
+- **Column engine** (`docs/COL.md`): `sift_col`, an index access method that stores the columns of a heap table once more, in compressed columns with zone maps, and `sift_table` (`CREATE TABLE ... USING sift_table`), a table access method with native MVCC that also takes BM25 indexes. `GROUP BY` queries with `count`, `count(DISTINCT)`, `sum`, `avg`, `min` and `max`, filters, `GROUPING SETS`/`ROLLUP`/`CUBE` and text search as the row selection run as `Custom Scan (SiftAgg)` on the column data when the planner can prove the result is the plain plan's; anything else keeps its plan (`SET sift.enable_agg = off` turns the pushdown off). Every unit is written with its pre-aggregates (exact sums and histograms, `docs/COL-PREAGG.md`).
+- **Smaller and faster segments:** the chunk codec (`docs/COL-CODEC.md`) picks the smallest cascade of encodings per chunk, filters run on the encoded form with scalar, AVX2 and AVX-512 kernels that give identical results (`sift.simd`), and the dictionaries of a segment use it too (column format 1, minor 3). `CREATE INDEX` and `REINDEX` of a `sift_col` index are parallel.
+- **BM25:** a segment keeps its live documents, so a vacuumed-but-not-yet-merged index counts and scores as its live documents (`count(*)` costs 1.16 to 1.28 times the clean index's instructions at 10 to 45% deleted, was 6.6 to 6.7 times), and `sift.score()` before and after a merge are equal. `WHERE col @@> q ORDER BY <columns> LIMIT n` is answered from the column units.
+- **One term, the write buffer:** "mutable segment", "mutable lane" and "delta segment" are now the write buffer. The reloption `mutable_limit` is `write_buffer_limit`; `mutable_limit` stays accepted as a deprecated alias (`docs/NAMING.md`).
+- **Fixes carried from 2.0.3:** `count(*)` and `sift.facets` no longer count rows deleted before the query's snapshot when a `VACUUM` runs at the same time (the same race is fixed in the column scans), and two more corrupt-index hardenings (a damaged index raises a corruption error instead of reading past the data or crashing a backend). The `src/` tree is split into `core`, `bm25`, `col`, `agg` and `table`; the benchmarks of `docs/BENCHMARKS.md` are refreshed for 3.0.
+
+Upgrade notes:
+
+- **Extension SQL:** `ALTER EXTENSION pg_sift UPDATE TO '3.0'` in every database after installing the files.
+- **BM25 indexes:** no `REINDEX`. New segments are written in segment format 2 and the metapage becomes format 1.2 with the first one; **a 2.x library refuses such an index**, so going back to 2.x needs a `REINDEX` there. Older segments are read as they are and rewritten as format 2 when merged.
+- **Column indexes:** `sift_col` and `sift_table` are new in 3.0, so no 2.x index needs a rebuild. A `sift_col` index built by a pre-release build of 3.0 (column format minor below 3) is refused with the hint `REINDEX`.
+- **Renames:** `mutable_limit` is `write_buffer_limit`, with the old name accepted as an alias.
+- **Known issue (fixed in 3.0.1):** a single transaction can write about 500 MB (about 4 million rows of the orders layout) into a `sift_table`; a larger `COPY` fails with `Too many write buffers waiting for promotion`. Load larger data in several transactions, for example 1,000,000 rows each (`docs/USAGE.md`, Limits).
+
 - Changed (3.0): the "mutable segment", "mutable lane", "write lane" and "delta segment" are one term, the **write buffer** (`docs/NAMING.md`). The reloption `mutable_limit` is now `write_buffer_limit` (kB, 64-1048576, default 4096); `mutable_limit` stays accepted as a deprecated alias with the same bounds, `ALTER INDEX .. SET / RESET` and a quiet restore of dumps of 1.x and 2.0 (`pg_class.reloptions` keeps what was typed; the new name wins when both are set). The `kind` of `sift.segments` is `buffer` and `sealed buffer` instead of `mutable` and `sealed` (`immutable` is unchanged), so a script that matches the old values has to change; the texts of corruption and verify messages say "Write buffer" where they said "Mutable". On-disk formats are unchanged. Only new in 3.0, so nothing released changes there: `sift_col`, the settings `sift.table_write_buffer_limit` and `sift.table_inline_promote`, the kinds of `sift.table_segments` and `sift.col_segments`, `sift.col_index_info.buffers`.
 - Security: a damaged index whose dictionary entry stores 4294967295 as the count of a term's tf nibbles no longer makes a query read about 4 KB
   past the term's blob. The byte counts of the term's L1 bits and nibbles were summed in 32 bits, so that count wrapped to zero and passed the
@@ -72,8 +91,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
   page after it, the shortcut is dropped once a segment of the scan's copy has left the directory, and rows of the mutable lane are always
   checked against the heap (`docs/COL.md` 3, "Order of reads"). Tests: `col_vacuum_scan` (a VACUUM, a merge, DML and promotion between the
   open and the reads of a scan) and the `soak-col` job (`scripts/colsoak.sh`). Present in `v3` as well. The BM25 count path
-  (`sift_eval.c`: the dirty flags of a segment copied at its open, the all-visible mask read later) has a similar read order and is not
-  changed here; it needs the same check.
+  (`sift_eval.c`: the dirty flags of a segment copied at its open, the all-visible mask read later) had a similar read order; it is fixed
+  by the `count(*)` entry below.
 
 - Fixed: `-0.0` in a float column keeps its sign (the column engine stored it as `+0.0`, and a `sift_table` float column holding it raised
   `0A000` under `SiftAgg`); grouping and `DISTINCT` treat `-0` and `+0` as one value, as PostgreSQL does.

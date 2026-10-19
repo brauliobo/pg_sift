@@ -6,6 +6,14 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
 ## Unreleased
 
+## 3.0.0
+
+- No change to the storage format (2) or the SQL interface: tables of 2.0.x open as they are (the host keeps writing segment format 1). The extension is
+  rebuilt on the shared core of the PostgreSQL extension 3.0.0, which now lives under `src/core`, `src/bm25` and `src/col` (`src/portable.list`),
+  and the write buffer is named as in PostgreSQL (`docs/NAMING.md`). The release gate builds it, checks its instruction set and runs its smoke,
+  span and column smoke tests; the full test suite (`sqlite/test.sh`) was not rerun for this release. No speed change is claimed: the measurements are the
+  PostgreSQL extension's. The column engine and the aggregate pushdown are PostgreSQL features and are not in the SQLite extension.
+
 ## 2.0.2
 
 - No change to the storage format (2) or the SQL interface: tables of 2.0.1 open as they are. The extension is rebuilt on the shared core of
