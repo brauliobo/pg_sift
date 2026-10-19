@@ -9344,6 +9344,26 @@ topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
 	return true;
 }
 
+/*
+ * Does a unit of the superblocks [lo, hi) have a zone that can hold a better row than the n-th so far? The new version of an updated row is
+ * stored wherever there is room (a page with free space in a heap, the write buffer of a table) whatever the value of the sort column, so
+ * the superblocks do not follow the column even when the zones of a few of them say so, and no superblock can be taken for the last that
+ * matters: every window is decided by the zones of its own units (read together from the segment headers, no unit is opened), and the match
+ * set is built only for a window that has one.
+ */
+static bool
+topn_window_viable(AggExec *ex, uint32 lo, uint32 hi)
+{
+	SiftSrcZone z;
+	uint32		n = sift_colsrc_zone_range(ex->src, lo, hi, sift_topn_leaf(ex->topn, 0), &z);
+
+	if (sift_topn_zone_viable(ex->topn, &z))
+		return true;
+	while (n-- > 0)
+		sift_topn_skip(ex->topn);
+	return false;
+}
+
 /* Windows of superblocks from the end the best values are at (sift_topn.h) */
 
 /*
@@ -9413,11 +9433,8 @@ topn_run(AggExec *ex)
 	sift_topn_start(t, nsb);
 	while (sift_topn_next_window(t, &lo, &hi, &best))
 	{
-		if (sift_topn_follows(t) && topn_zone(ex, best, &z) && !sift_topn_zone_viable(t, &z))
-		{
-			sift_topn_stop(t);
-			break;
-		}
+		if (sift_topn_wants_zones(t) && !topn_window_viable(ex, lo, hi))
+			continue;
 		topn_scan(ex, lo, hi, nsb, &ch);
 	}
 	ex->topn_n = sift_topn_finish(t);
