@@ -411,6 +411,20 @@ sift_colsrc_bit(const uint64 *bits, size_t i)
 	return (bits[i >> 6] >> (i & 63)) & 1;
 }
 
+/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+static inline bool
+sift_colsrc_nan_leaf(const SiftSrcLeaf *l)
+{
+	return l->typid == NUMERICOID && l->kind == SCL_SCALAR;
+}
+
+/*
+ * A NaN of a numeric leaf is a value to the executor, the greatest of the leaf: PG_INT64_MAX (no scaled number reaches it), not NULL, and
+ * its bit in vec->ovf for the code that evaluates it as PostgreSQL does. The engine stores it as NULL with the flag; a source calls this
+ * after it filled data and isnull.
+ */
+extern void sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec);
+
 /* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
 static inline void
 sift_colsrc_prune_str(SiftSrcSource *src, const SiftSrcStrTest *t, int nt)
