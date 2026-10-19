@@ -2,6 +2,7 @@
 # Single entry point for the test suites, with a pass/fail/skip summary.
 #
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
+#   scripts/ci.sh release [OPTIONS]   the release gate, once per tree (scripts/release.sh, docs/RELEASE.md)
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first (docs/TEST-TIMES.md)
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
@@ -44,6 +45,7 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
+[[ $MODE == release ]] && exec "$REPO/scripts/release.sh" "${@:2}"
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status (docs/TEST-TIMES.md)
 if [[ $MODE == --times ]]; then
