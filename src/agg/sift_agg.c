@@ -7459,6 +7459,21 @@ register_pred(AggExec *ex, SiftAggPred *p)
 		register_pred(ex, p->child[i]);
 }
 
+/* every predicate the scan evaluates: the conjuncts of the rows, the FILTER of the aggregates and of the inner aggregates of the arms */
+static void
+register_preds(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+
+	for (int i = 0; i < s->npred; i++)
+		register_pred(ex, s->pred[i]);
+	for (int i = 0; i < s->naggs; i++)
+		register_pred(ex, s->agg[i].filter);
+	for (int k = 0; k < s->narms; k++)
+		for (int i = 0; i < s->arm[k].ninner; i++)
+			register_pred(ex, s->arm[k].inner[i].filter);
+}
+
 /* The interval each leaf's comparisons leave: a unit whose zone misses it holds no row that passes (docs/COL-PLAN.md, "Zone pruning") */
 static void
 prune_init(AggExec *ex)
@@ -9503,10 +9518,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->spec->topn)
 		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->cxt);
 	init_states(ex);
-	for (int i = 0; i < ex->spec->npred; i++)
-		register_pred(ex, ex->spec->pred[i]);
-	for (int i = 0; i < ex->spec->naggs; i++)
-		register_pred(ex, ex->spec->agg[i].filter);
+	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
 	register_combos(ex);

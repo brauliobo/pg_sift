@@ -1,0 +1,150 @@
+-- SiftAgg over a sift_col index whose leaves hold values the index cannot store (the shredder's overflow: a JSON string in a float8 path, a
+-- text over its declared length). The normal plan reads those values from the heap, the scan cannot, so a query that reads such a leaf
+-- keeps the normal plan and gives its rows; a query that reads other leaves is pushed down. A VACUUM rewrites the segment whose
+-- overflow values are all in dead rows, and the leaf is read by the scan again. Every query runs with and without the pushdown; the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE o_t (id int PRIMARY KEY, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO o_t
+SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                          'n', CASE WHEN (i * 7 + j) % 40 = 0 THEN to_jsonb((j % 10)::text) ELSE to_jsonb(j % 10) END,
+                                                                          's', CASE WHEN (i + j) % 50 = 0 THEN 'longer than four' ELSE 'abc' END))
+                                       FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 20000) i;
+CREATE INDEX o_t_col ON o_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
+VACUUM (FREEZE, ANALYZE) o_t;
+-- the strings, and the rows that hold one
+SELECT count(*) AS string_values, count(DISTINCT t.id) AS string_rows
+FROM o_t t, jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n') = 'string';
+ string_values | string_rows 
+---------------+-------------
+          1500 |        1500
+(1 row)
+
+-- the plan has the scan
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- the rows with and without the pushdown are the same (and not empty)
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0;
+END $$;
+CREATE FUNCTION unnest_q(sel text, grp text DEFAULT 'l.k') RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT ' || sel || ' FROM o_t t, jsonb_to_recordset(t.doc -> ''lines'') AS l(k text, n float8, s text) GROUP BY ' || grp
+$$;
+-- a leaf with a string in a float8 path, a leaf with a text over its length: the normal plan, the same rows
+SELECT pushed(unnest_q('l.k, avg(l.n)')) AS float_path_pushed, same(unnest_q('l.k, avg(l.n)')) AS float_path_same;
+ float_path_pushed | float_path_same 
+-------------------+-----------------
+ f                 | t
+(1 row)
+
+SELECT pushed(unnest_q('l.k, count(l.n), sum(l.n)')) AS float_count_pushed, same(unnest_q('l.k, count(l.n), sum(l.n)')) AS float_count_same;
+ float_count_pushed | float_count_same 
+--------------------+------------------
+ f                  | t
+(1 row)
+
+SELECT pushed(unnest_q('l.k, count(*) FILTER (WHERE l.n > 3)')) AS float_filter_pushed, same(unnest_q('l.k, count(*) FILTER (WHERE l.n > 3)')) AS float_filter_same;
+ float_filter_pushed | float_filter_same 
+---------------------+-------------------
+ f                   | t
+(1 row)
+
+SELECT pushed(unnest_q('l.s, count(*)', 'l.s')) AS text_path_pushed, same(unnest_q('l.s, count(*)', 'l.s')) AS text_path_same;
+ text_path_pushed | text_path_same 
+------------------+----------------
+ f                | t
+(1 row)
+
+SELECT pushed(unnest_q('l.k, count(*) FILTER (WHERE l.s = $$abc$$)')) AS text_filter_pushed, same(unnest_q('l.k, count(*) FILTER (WHERE l.s = $$abc$$)')) AS text_filter_same;
+ text_filter_pushed | text_filter_same 
+--------------------+------------------
+ f                  | t
+(1 row)
+
+-- the leaves without such values stay on the scan
+SELECT pushed(unnest_q('l.k, count(*)')) AS key_pushed, same(unnest_q('l.k, count(*)')) AS key_same;
+ key_pushed | key_same 
+------------+----------
+ t          | t
+(1 row)
+
+SELECT pushed('SELECT count(*), max(id) FROM o_t') AS rows_pushed, same('SELECT count(*), max(id) FROM o_t') AS rows_same;
+ rows_pushed | rows_same 
+-------------+-----------
+ t           | t
+(1 row)
+
+-- repair the rows that hold a string (7.5% of the rows, under dead_rewrite_pct = 10): the VACUUM rewrites the segment, the flag goes with the dead rows
+UPDATE o_t t SET doc = jsonb_set(doc, '{lines}', (SELECT jsonb_agg(CASE WHEN jsonb_typeof(l -> 'n') = 'string' THEN jsonb_set(l, '{n}', to_jsonb((l ->> 'n')::numeric)) ELSE l END ORDER BY o)
+                                                   FROM jsonb_array_elements(t.doc -> 'lines') WITH ORDINALITY x(l, o)))
+WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n') = 'string');
+VACUUM o_t;
+SELECT pushed(unnest_q('l.k, avg(l.n)')) AS repaired_float_pushed, same(unnest_q('l.k, avg(l.n)')) AS repaired_float_same;
+ repaired_float_pushed | repaired_float_same 
+-----------------------+---------------------
+ t                     | t
+(1 row)
+
+-- the long texts are still there: the text leaf keeps the normal plan
+SELECT pushed(unnest_q('l.s, count(*)', 'l.s')) AS still_text_pushed, same(unnest_q('l.s, count(*)', 'l.s')) AS still_text_same;
+ still_text_pushed | still_text_same 
+-------------------+-----------------
+ f                 | t
+(1 row)
+
+-- a string again, in a live row, promoted from the write buffer to a segment: the leaf is read by the normal plan until the row goes
+-- (INDEX_CLEANUP on: with a few dead rows VACUUM skips the index)
+UPDATE o_t SET doc = jsonb_set(doc, '{lines,0,n}', '"7"') WHERE id = 100;
+SELECT sift.col_promote('o_t_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (INDEX_CLEANUP on) o_t;
+SELECT pushed(unnest_q('l.k, avg(l.n)')) AS live_string_pushed, same(unnest_q('l.k, avg(l.n)')) AS live_string_same;
+ live_string_pushed | live_string_same 
+--------------------+------------------
+ f                  | t
+(1 row)
+
+UPDATE o_t SET doc = jsonb_set(doc, '{lines,0,n}', '7') WHERE id = 100;
+SELECT sift.col_promote('o_t_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (INDEX_CLEANUP on) o_t;
+SELECT pushed(unnest_q('l.k, avg(l.n)')) AS live_string_gone_pushed, same(unnest_q('l.k, avg(l.n)')) AS live_string_gone_same;
+ live_string_gone_pushed | live_string_gone_same 
+-------------------------+-----------------------
+ t                       | t
+(1 row)
+
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;
