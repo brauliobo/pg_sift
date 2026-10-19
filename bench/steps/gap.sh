@@ -12,7 +12,7 @@ SIZES=${S_SIZES:-1000000,10000000}
 export SIFT_TMP=${GAP_TMP:-/tmp/sift-gap} SIFT_PORT=${GAP_PORT:-56250} SIFT_TESTING=
 OUT=${OUT:-$BENCH/out/gap}
 PGTEST=$REPO/scripts/pgtest.sh
-capped() { systemd-run --user --scope -q -p MemoryMax="${GAP_MEM:-12G}" -p MemorySwapMax=0 -p OOMPolicy=continue "$@"; }
+CAP_MEM=${GAP_MEM:-12G}   # the memory cap of the profile cluster (capped, steps/lib.sh)
 py() { eval "$("$PGTEST" env)"; python3 -I "$STEPS/gap.py" "$@"; }
 SETTINGS=(shared_buffers=2GB effective_cache_size=6GB work_mem=64MB maintenance_work_mem=512MB max_wal_size=8GB jit=off max_worker_processes=16
           max_parallel_workers=8 max_parallel_workers_per_gather=4 max_parallel_maintenance_workers=4)
