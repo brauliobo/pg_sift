@@ -19,7 +19,7 @@ only when the registry says so, Elasticsearch is in the default run.
 ## Reproduce
 
 ```sh
-bench/bench all                    # setup + run + report on the slim tier (the default): about 9 minutes of builds and measurements once set up
+bench/bench all                    # setup + run + report on the slim tier (the default): about 10 minutes of builds and measurements once set up
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
