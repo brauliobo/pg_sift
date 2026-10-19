@@ -198,12 +198,12 @@ PostgreSQL 17 and 18; the differences are marked. "Engine" = the stubbed piece o
 | `index_validate_scan` | the second pass of `CREATE INDEX CONCURRENTLY`: merge-join of the sorted index TIDs (`tuplesort`, `ValidateIndexState`) with a scan of the table at the validation snapshot, inserting the missing visible rows. | done |
 | `relation_size` | physical size of the main fork (`RelationGetNumberOfBlocks * BLCKSZ`). | done |
 | `relation_needs_toast_table` / `relation_toast_am` / `relation_fetch_toast_slice` | false / unused / unused (no TOAST table is ever created, so these are never called). | done |
-| `relation_estimate_size` | pages = physical blocks, tuples = group rows - tombstoned + delta rows, from the meta counters (not `reltuples`, which ANALYZE of a sampled table only estimates), `allvisfrac` = 0 (no VM). Widths as the heap rule. | done |
+| `relation_estimate_size` | pages = the larger of the physical blocks and twice the pages the rows take in a heap (a scan builds every row: 1.7 times the instructions of a heap scan, whatever the size of the compressed file), tuples = group rows - tombstoned + delta rows, from the meta counters (not `reltuples`, which ANALYZE of a sampled table only estimates), `allvisfrac` = 0 (no VM). Widths as the heap rule. | done |
 | `scan_bitmap_next_block` (17) / `scan_bitmap_next_tuple` (17, 18) | the TID bitmap is walked here (18: iterator inside the scan): for a page `(vblock, offsets...)` rows are fetched in TID order, exact pages recheck-free, lossy pages test every row of the vblock; `exact_pages`/`lossy_pages` counted for EXPLAIN. Serves btree, BM25 `sift`, GIN, BRIN indexes unchanged. | done |
 | `scan_sample_next_block` / `_next_tuple` | `TABLESAMPLE SYSTEM` picks vblocks, `BERNOULLI` walks them; the visible rows of a vblock are read at once and the method's offsets pick among them. | done |
 
 Planner-side: no custom path is needed for a plain scan (the AM's costs through `relation_estimate_size` and the scan cost model
-are enough: a sequential scan of a columnar table reads bytes of the whole row, so the estimate uses the compressed size). SiftAgg
+are enough once the page estimate stands for the work of building the rows, not for the compressed size, which a VACUUM that gives the free space back makes a tenth of it). SiftAgg
 and SiftScan paths (col-plan) are offered by their own hooks and take the table through the engine source of section 6.
 
 ---
@@ -348,7 +348,10 @@ input so that free space left by earlier merges is reused instead of extending t
    no entry would go).
 6. Space: `sift_recycle` clears the free-list records whose releasing transaction no snapshot can see any more, the orphan sweep
    releases what a crash left, then the reusable free run at the end of the file is cut (`sift_store_truncate`, `sift_store.h` P7) as for
-   a heap: when it is 1000 blocks or a 16th of the file, `vacuum_truncate` is on (the heap reloption, or `VACUUM (TRUNCATE)`), and
+   a heap. Before the cut, the segment (column segment, tombstones, or the write segment, which is closed and sealed) whose blocks end last in the file is
+   written again into the reusable free runs below it while they hold it (`compact_tail`, at most 16 steps; only with the cut enabled, and a column segment
+   of an older layout stays): a load seals its column segment above the write segments it replaces, and without this the file stays the size of the load
+   (1M orders: 163 MB to 14 MB; the dead rows of a rewritten segment go with it). The cut itself is done when it is 1000 blocks or a 16th of the file, `vacuum_truncate` is on (the heap reloption, or `VACUUM (TRUNCATE)`), and
    `AccessExclusiveLock` on the table is free right now (`ConditionalLockRelation`, released as soon as the file is cut). Under that lock no
    backend holds a scan, a directory copy or a target page; the store sends a relcache invalidation of the table before the lock goes, which
    marks every backend's `SiftTblRel` invalid (its target page, delta page tables and fetch scan are rebuilt on next use), and a standby

@@ -90,6 +90,8 @@ extern void sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint3
 
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
+/* The bytes the dictionary of a STR leaf takes in the stream (0 for other leaves), as stored: smaller than its parsed size when it is compressed */
+extern uint64 sift_cseg_dict_stored(SiftColSegment *seg, int col);
 
 /* The zone of leaf col in unit u (the zone arrays of the leaf are read on first use) */
 extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z);
