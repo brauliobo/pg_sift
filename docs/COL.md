@@ -46,8 +46,7 @@ of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (2 now). A reader refuses a minor it does not know; older minors are
-  read as written and rewritten by merge. `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
+- Every `SiftSegEntry` carries `format` = the col segment minor (3 now). A reader refuses any other minor with a REINDEX hint (no release wrote minors 0 to 2: section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
 
