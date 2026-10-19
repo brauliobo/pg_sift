@@ -167,13 +167,13 @@ values (`SiftColDict`), and the filter translates constants to codes per segment
 of the merged rows). The zone `min/max` of a STR leaf are code bounds (equality pruning), the `set` is the exact set when the segment has
 at most 256 codes, else a bloom of `code & 255`.
 
-**Reading text from SiftAgg (ready to apply; `sift_agg*.c` and the providers are not this track's files).** Nothing needs to change for
+**Reading text from SiftAgg (applied for the `sift_col` provider: `col_prune_str` and `col_filter_str` in `sift_aggcol.c`, the calls in `sift_agg.c`, docs/COL-PLAN.md "Filters in the source"; the `sift_table` provider has neither callback).** Nothing needs to change for
 correctness: an inline unit reaches the executor as a `SiftSrcDict` of its own with its own `id`. What it costs is that the executor
 evaluates a text predicate by building a LUT over the unit's dictionary, which for an inline unit means decoding and interning every
 string of the unit (measured: 300 000 distinct strings of 290 bytes, `s = const` through SiftAgg 80 ms, a heap scan 26 ms, `sift_col_filter`
 on the encoded form 2.5 ms). `src/agg/sift_colsrc.h` therefore carries two optional provider callbacks, `prune_str` and `filter_str`, with the
 tests `SiftSrcStrTest` (EQ, NE, IN, NOT IN for any deterministic collation; the range operators and PREFIX only where the comparison is
-bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. To apply:
+bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `sift_colsrc_prune_str` / `sift_colsrc_filter_str`. As applied:
 
 1. Providers (the index in `sift_aggcol.c`, the table in `sift_table_src.c`) are the same, over `sift_col_begin` / `sift_col_filter`:
    `col_prune_str` converts each test to a `SiftColPred` (`SSTR_EQ` -> `SIFT_COLOP_EQ`, ... `SSTR_PREFIX` -> `SIFT_COLOP_PREFIX`, `vals[i]` ->
