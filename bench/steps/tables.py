@@ -34,7 +34,9 @@ engine ids. Writes to OUTDIR:
   tables.md     the same as Markdown tables, index size and build time next to the throughput / latency
 
 --per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (docs/results/); the rows of the
-dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay.
+dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay. With --merge only the cells of the
+directory (engine, class, variant, metric) replace the same cells of the file: every other row of the pair stays (the host, build and
+session rows too), the way to add classes measured in a later run of a tier.
 Engine ids, order and labels: bench/engines.tsv.
 """
 import collections, math, os, re, statistics as st, sys
@@ -256,10 +258,18 @@ def md_articles(rows, tier):
     return out
 
 
+PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']   # the order of the columns and rows, whatever the order the cells were measured and merged in
+
+
+def place_classes(rows):
+    """the classes of places rows, in the order of PLACE_CLASSES"""
+    return sorted(dict.fromkeys(r[3] for r in rows), key=PLACE_CLASSES.index)
+
+
 def md_places(rows, tier):
     engines = [e for e in ORDER if any(r[:3] == ('places', tier, e) and r[5] == 'p50_ms' for r in rows)]
     sel = [r for r in rows if r[:2] == ('places', tier) and r[5] == 'p50_ms']
-    classes = list(dict.fromkeys(r[3] for r in sel))
+    classes = place_classes(sel)
     first = sel[0][4]
     base = 'sift' if 'sift' in engines else engines[0]   # the engine the ratios are relative to
     p50 = lambda e, c, wl: next((r for r in sel if (r[2], r[3], r[4]) == (e, c, wl)), None)
@@ -297,13 +307,15 @@ def md_cold(rows, dataset, tier):
 
 
 def main(argv):
-    outdir, per, keep, specs = argv[0], None, None, []
+    outdir, per, keep, merge, specs = argv[0], None, None, False, []
     args = iter(argv[1:])
     for a in args:
         if a == '--per-dataset':
             per = next(args)
         elif a == '--engines':
             keep = [e for e in next(args).split(',')]
+        elif a == '--merge':
+            merge = True
         else:
             specs.append(a)
     rows, builds, loads, tiers = [], [], collections.defaultdict(list), []
@@ -331,8 +343,14 @@ def main(argv):
         os.makedirs(per, exist_ok=True)
         for d in dict.fromkeys(r[0] for r in rows):
             path = '%s/%s.tsv' % (per, d)
-            kept = [tuple(r) + ('NA',) * (WIDTH - len(r)) for r in rows_of(path, skip_header=False)[2:] if (r[0], r[1]) not in tiers] if os.path.exists(path) else []
-            write(path, [r for r in rows if r[0] == d] + [r for r in kept if r[0] == d])
+            old = [tuple(r) + ('NA',) * (WIDTH - len(r)) for r in rows_of(path, skip_header=False)[2:]] if os.path.exists(path) else []
+            if merge:   # the cells of the directory win, every other row stays
+                new = [r for r in rows if r[0] == d and r[3] != '-']
+                kept = [r for r in old if r[:6] not in {n[:6] for n in new}]
+                write(path, [r for r in kept + new if r[0] == d])
+            else:
+                kept = [r for r in old if (r[0], r[1]) not in tiers]
+                write(path, [r for r in rows if r[0] == d] + [r for r in kept if r[0] == d])
     with open(outdir + '/builds.tsv', 'w') as f:
         f.write('dataset\ttier\tengine\tsetup_s\tbuild_s\tindex_bytes\theap_growth_bytes\tvariant\n')
         for b in builds:

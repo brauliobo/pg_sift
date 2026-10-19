@@ -24,7 +24,7 @@
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
-  quick) export TIER=Q; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p3 w1 a2 a3 x2}; WLS=${WLS:-top boost filter count} ;;
+  quick) export TIER=Q; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count} ;;
   full)  export TIER=F; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
   *) sed -n '2,5p' "$0"; exit 1 ;;
 esac
