@@ -126,7 +126,7 @@ job_coverage() {
 }
 job_pg17() {
 	local out=$W/pg17; mkdir -p "$out/ci"; cp -r "$T" "$out/src"; chmod -R a+rwX "$out"
-	docker run --rm --cpus 2 --memory 12g -v "$out/src:/src" -v "$out/ci:/tmp/ci" -e HOME=/tmp/h -e CRASH="$CRASH" -e SIFT_FUZZ_TARGETS="query sql" postgres:17-bookworm bash -c '
+	docker run --rm --cpus 2 --memory 12g -v "$out/src:/src" -v "$out/ci:/tmp/ci" -e HOME=/tmp/h -e CRASH="$CRASH" -e SIFT_FUZZ_TARGETS="query sql" -e HOST_IDS="$(id -u):$(id -g)" postgres:17-bookworm bash -c '
 		set -e
 		mkdir -p /tmp/h; chown postgres /tmp/h
 		apt-get update -qq >/dev/null
@@ -134,7 +134,7 @@ job_pg17() {
 		chown -R postgres /src /usr/lib/postgresql/17 /usr/share/postgresql/17; chown postgres /tmp/ci
 		rc=0; su postgres -c "cd /src && KEEP=1 SIFT_CI_TMP=/tmp/ci/work SIFT_TMP=/tmp/ci/home SIFT_LANES=2 scripts/ci.sh quick" || rc=$?
 		grep -rIEh --include=*.log "$CRASH" /tmp/ci | head -3 | sed "s/^/CRASH: /"
-		chmod -R a+rX /tmp/ci
+		chown -R $HOST_IDS /tmp/ci /src	# the files go back to the host user: the logs are read and the scratch removed
 		exit $rc'
 }
 job_race() {
