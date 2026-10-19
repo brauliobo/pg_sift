@@ -215,6 +215,12 @@ sift_colsrc_vet(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits)
 	src->prov->vet(src->impl, unit, bits);
 }
 
+bool
+sift_colsrc_vet_needed(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->vet_needed == NULL || src->prov->vet_needed(src->impl, unit);
+}
+
 void
 sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c)
 {

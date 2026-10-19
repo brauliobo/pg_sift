@@ -1150,6 +1150,8 @@ leaf_lvl(AggExec *ex, int leaf)
 	return ex->lay->leaf[leaf].parent >= 0;
 }
 
+static const uint32 *unit_parent(AggExec *ex);
+
 /* row r of the unit owns the elements [offs[r], offs[r + 1]) of the children of the array leaf */
 static uint32 *
 elem_offs(AggExec *ex, int leaf)
@@ -2587,10 +2589,12 @@ eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *ou
 {
 	ComboSt    *cs = &ex->cs[p->leaf];
 
+	const uint32 *par = qlevel ? unit_parent(ex) : NULL;
+
 	for (int i = 0; i < n; i++)
 	{
 		ex->pti[i] = start + i;
-		ex->pri[i] = qlevel ? ex->parent[start + i] : start + i;
+		ex->pri[i] = qlevel ? par[start + i] : start + i;
 	}
 	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive);
 	clear_words(out, n);
@@ -2742,7 +2746,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 	if (p->level < qlevel && !p->late && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
 	{
 		/* a row level predicate seen from the elements */
-		sift_aggk->gather_bits(out, row_bitmap(ex, p), ex->parent + start, n);
+		sift_aggk->gather_bits(out, row_bitmap(ex, p), unit_parent(ex) + start, n);
 		return;
 	}
 	if (!st->ready && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NCMP || p->kind == SAP_GATE))
@@ -6698,7 +6702,7 @@ chunk_nulls(AggExec *ex, int leaf, int start, int n, uint64 *out)
 		uint64	   *rn = MemoryContextAlloc(ex->ucxt, (SIFT_COL_NWORDS(nrow) + PADW) * sizeof(uint64));
 
 		sift_colk_nonzero(v->isnull, nrow, rn);
-		sift_aggk->gather_bits(out, rn, ex->parent + start, n);
+		sift_aggk->gather_bits(out, rn, unit_parent(ex) + start, n);
 	}
 	return true;
 }
@@ -6712,9 +6716,9 @@ chunk_vals(AggExec *ex, int leaf, int start, int n, bool wide, void *tmp)
 	if (leaf_lvl(ex, leaf) == ex->qlevel)
 		return (const char *) v->data + (size_t) start * (wide ? 8 : 4);
 	if (wide)
-		sift_colk->for_i64_sel[SIFT_COLW_64](v->data, ex->parent + start, n, 0, tmp);
+		sift_colk->for_i64_sel[SIFT_COLW_64](v->data, unit_parent(ex) + start, n, 0, tmp);
 	else
-		sift_colk->gather_u32(v->data, ex->parent + start, n, tmp);
+		sift_colk->gather_u32(v->data, unit_parent(ex) + start, n, tmp);
 	return tmp;
 }
 
@@ -6736,10 +6740,12 @@ dense_gids(AggExec *ex, int start, int n)
 		codes[j] = chunk_vals(ex, s->key[j].leaf, start, n, false, own);
 		if (v->isnull)
 		{
+			const uint32 *par = same ? NULL : unit_parent(ex);
+
 			if (codes[j] != own)
 				memcpy(own, codes[j], n * sizeof(uint32));
 			for (int i = 0; i < n; i++)
-				if (v->isnull[same ? start + i : ex->parent[start + i]])
+				if (v->isnull[same ? start + i : par[start + i]])
 					own[i] = v->dict->n;
 			codes[j] = own;
 		}
@@ -6889,8 +6895,12 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	for (int j = 0; j < t->n; j++)
 		t->tidx[j] = start + t->sel[j];
 	if (ex->spec->group >= 0)
+	{
+		const uint32 *par = unit_parent(ex);
+
 		for (int j = 0; j < t->n; j++)
-			t->ridx[j] = ex->parent[t->tidx[j]];
+			t->ridx[j] = par[t->tidx[j]];
+	}
 	else
 		memcpy(t->ridx, t->tidx, t->n * sizeof(uint32));
 	join_stage(ex, 0, t);
@@ -7353,16 +7363,25 @@ arm_chunk(AggExec *ex, Tup *t)
 
 /* ---------- a unit ---------- */
 
+/* the element count of the unit and the offsets of its rows; the owner of every element is made when something reads it (unit_parent) */
 static void
 build_parents(AggExec *ex)
 {
-	SiftSrcUnit *u = &ex->unit;
-	uint32		m;
-
 	ex->offs = elem_offs(ex, ex->spec->group);
-	ex->nelem = m = ex->offs[u->nrow];
-	ex->parent = MemoryContextAlloc(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
-	sift_colk->expand_parents(ex->offs + 1, u->nrow, ex->parent);
+	ex->nelem = ex->offs[ex->unit.nrow];
+	ex->parent = NULL;
+}
+
+/* the row that owns each element of the unit */
+static const uint32 *
+unit_parent(AggExec *ex)
+{
+	if (ex->parent == NULL)
+	{
+		ex->parent = MemoryContextAlloc(ex->ucxt, (Size) ex->nelem * sizeof(uint32) + SIFT_AGG_PAD);
+		sift_colk->expand_parents(ex->offs + 1, ex->unit.nrow, ex->parent);
+	}
+	return ex->parent;
 }
 
 /*
@@ -7781,16 +7800,22 @@ process_unit(AggExec *ex)
 		uint64	   *em;
 		int			m;
 		uint64		cm[VECW + PADW];
+		bool		allrows;
 
 		build_parents(ex);
 		m = ex->nelem;
+		/* no row is out: so is no element, and the owners of the elements are not needed to tell */
+		allrows = sift_colk->bits_count(rmask, nrw) == nrow;
 		em = MemoryContextAlloc(ex->ucxt, ((m + 63) / 64 + PADW) * sizeof(uint64));
 		for (int st = 0; st < m; st += VEC)
 		{
 			int			n = Min(VEC, m - st),
 						nw = (n + 63) / 64;
 
-			sift_aggk->gather_bits(cm, rmask, ex->parent + st, n);
+			if (allrows)
+				fill_ones(cm, n);
+			else
+				sift_aggk->gather_bits(cm, rmask, unit_parent(ex) + st, n);
 			for (int i = 0; i < s->npred; i++)
 				if (s->pred[i]->level == 1 && !s->pred[i]->late)
 				{
@@ -7801,14 +7826,16 @@ process_unit(AggExec *ex)
 				}
 			memcpy(em + st / 64, cm, nw * sizeof(uint64));
 		}
+		/* the rows that keep an element, checked against the snapshot: nothing to check in a unit whose pages are all visible */
+		if (sift_colsrc_vet_needed(ex->src, u))
 		{
-			/* the rows that keep an element, checked against the snapshot */
 			uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+			const uint32 *par = unit_parent(ex);
 
 			for (int w = 0; w < (m + 63) / 64; w++)
 				for (uint64 b = em[w]; b; b &= b - 1)
 				{
-					uint32		r = ex->parent[w * 64 + pg_rightmost_one_pos64(b)];
+					uint32		r = par[w * 64 + pg_rightmost_one_pos64(b)];
 
 					rv[r >> 6] |= UINT64CONST(1) << (r & 63);
 				}
@@ -7818,7 +7845,7 @@ process_unit(AggExec *ex)
 				int			n = Min(VEC, m - st),
 							nw = (n + 63) / 64;
 
-				sift_aggk->gather_bits(cm, rv, ex->parent + st, n);
+				sift_aggk->gather_bits(cm, rv, par + st, n);
 				sift_colk->bits_and(em + st / 64, cm, nw);
 			}
 		}
