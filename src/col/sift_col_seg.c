@@ -8,6 +8,7 @@
  */
 #include "sift_host.h"
 
+#include "sift_col_pg.h"
 #include "sift_col_preagg.h"
 #include "sift_col_seg.h"
 #include "sift_live.h"
@@ -457,7 +458,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	memset(entry, 0, sizeof(SiftSegEntry));
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
-	entry->format = SIFT_COL_FORMAT_MINOR;
+	entry->format = sift_col_format_minor;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
@@ -545,11 +546,11 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format != SIFT_COL_FORMAT_MINOR)
+	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
-						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
+				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d to 1.%d",
+						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR),
 				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
 	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;

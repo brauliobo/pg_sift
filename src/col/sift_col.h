@@ -18,7 +18,8 @@
 #include "sift_col_kern.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	3			/* SiftSegEntry.format of a col segment; 3.0 reads only its own (no release wrote 0 to 2): minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3) */
+#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value and the element cubes (docs/COL-JSONB-31.md 5) */
+#define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

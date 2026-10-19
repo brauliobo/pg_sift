@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((23 + $(wc -w <<<"$DBS")))
+plan $((27 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -111,6 +111,14 @@ if (( PG_MAJOR >= 18 )); then
 		FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
 		AND refobjid = (SELECT oid FROM pg_extension WHERE extname = 'pg_sift') ORDER BY 1"
 	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE TO '3.0'" >/dev/null
+	# a column index written with the 3.0 segment format (minor 3), which the 3.1 library must keep reading across the update
+	q life upg "CREATE TABLE colt (id int, grp int, v numeric(10,2))" \
+		"INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX colt_col ON colt USING sift_col (id, grp, v)" >/dev/null
+	COLQ="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM colt GROUP BY grp) g"
+	COLON=$(q life upg "SET sift.enable_agg = on" "$COLQ" | tail -n 1)
+	COLOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$COLQ" | tail -n 1)
+	check "the minor 3 column index answers the same as the heap" test "$COLON" == "$COLOFF"
 	q life postgres "CREATE DATABASE fresh" "CREATE DATABASE upg12" >/dev/null
 	q life fresh "CREATE EXTENSION pg_sift VERSION '3.0'" >/dev/null
 	check "1.0 updated to 3.0 has the objects of a fresh 3.0 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh "$MEMBERS")"
@@ -126,13 +134,22 @@ if (( PG_MAJOR >= 18 )); then
 	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion || ' ' || sift.lifecycle_marker() FROM pg_extension WHERE extname = 'pg_sift'")" == "3.1 v3.1"
 	check "the index built before the update still verifies and answers the same" \
 		test "$(vq life upg "SELECT fp() = seq() AND fp() || ranked() = '$(sed "s/'/''/g" <<<"$before")'")" == t
+	check "the minor 3 column index verifies and answers the same after the update" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
+		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
+	# minor 4 segments join the same index: written after the update, beside the minor 3 ones
+	q life upg "INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "SELECT sift.col_promote('colt_col')" >/dev/null
+	COLOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$COLQ" | tail -n 1)
+	check "the index with minor 3 and minor 4 segments verifies and answers the same" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
+		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
 	crash life
 	node_start life || bail "restart failed"
 	check "inserts after the update survive a crash" test "$(vq life upg \
 		"SELECT fp() = seq() AND (SELECT count(*) FROM docs WHERE body @@> 'afterupdate') = 1")" == t
+	check "the mixed column index survives the crash" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
+		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 else
-	skip 11 "extension_control_path needs PostgreSQL 18"
+	skip 15 "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
