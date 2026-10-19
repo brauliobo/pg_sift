@@ -108,7 +108,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->schema = schema;
 	w->pol = pol;
 	w->mcxt = mcxt;
-	w->format = format;
+	w->format = schema->wide ? SIFT_COL_FORMAT_WIDE : format;	/* a wide schema has no older form */
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
@@ -679,12 +679,12 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MINOR)
+	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MAX_READ)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d to 1.%d",
-						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR),
-				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
+						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MAX_READ),
+				 errhint(entry->format > SIFT_COL_FORMAT_MAX_READ ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
 	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->ndocs == 0 || h->sb_lo != entry->sb_lo ||
@@ -706,6 +706,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->schema = sift_cschema_parse(mcxt, schema, h->dictroot_off);
 	if (seg->schema == NULL || seg->schema->ncols != (int) h->nterms)
 		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
+	if (seg->schema->wide && entry->format < SIFT_COL_FORMAT_WIDE)
+		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", entry->format);
 	pfree(schema);
 	seg->nsb = h->dictroot_n;
 	{

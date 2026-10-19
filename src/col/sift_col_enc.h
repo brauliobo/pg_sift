@@ -18,6 +18,7 @@ typedef struct SiftColSchema
 {
 	int			ncols;
 	int			ngroups;
+	bool		wide;			/* some leaf is a lane, money or interval (sift_col_def_needs_wide): a segment of this schema is column format minor 6 (docs/COL-LEAFTYPES-32.md) */
 	SiftColDef *cols;			/* [ncols], paths copied */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
