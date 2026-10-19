@@ -136,12 +136,18 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	SiftColSegWriter *w = NULL;
 	SiftSegEntry neu;
 	TimestampTz start = GetCurrentTimestamp();
+	uint32		tag = in[0].reserved,
+				aux = 0;
 
 	for (int i = 0; i < n; i++)
 	{
 		seg[i] = sift_cseg_open(index, &in[i], cx);
 		if (seg[i]->schema->hash != schema->hash)
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
+		if (i == 0 && tag)
+			aux = SIFT_CSEG_TAG_AUX(seg[0]);
+		if (in[i].reserved != tag || (tag && SIFT_CSEG_TAG_AUX(seg[i]) != aux))
+			corrupt(index, "Segment %llu has another owner tag than segment %llu.", (unsigned long long) in[i].gen, (unsigned long long) in[0].gen);
 		part[i] = sift_cbatch_create(cx, schema);
 	}
 	for (;;)
@@ -171,6 +177,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 			sift_wt_expect(wt, mi.bytes);
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, cx);
+			sift_colw_set_tag(w, tag, aux);
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
 		}

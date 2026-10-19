@@ -39,7 +39,7 @@ the ASan run went from 1656 s to 764 s.
 
 ## Not shrunk, on purpose
 
-The known-bug tests keep their sizes: `col_vacuum_scan`, `vacuum_count_snapshot`, `vacuum_count_stress`, `tbl_cap`, `tbl_vblocks`,
+The known-bug tests keep their sizes: `col_vacuum_scan`, `vacuum_count_snapshot`, `vacuum_count_stress`, `tbl_cap`, `tbl_vblocks`, `tbl_bigtx`, `t/013_tbl_bigtx`,
 `t/011_tbl_fetch_vacuum`, `read_corrupt`, the column-chunk seeds, `col_agg_nofilter` and `col_topn`. Their sizes are what makes the bug reach its
 code path.
 

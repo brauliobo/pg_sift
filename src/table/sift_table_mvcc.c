@@ -1,7 +1,7 @@
 /*
  * sift_table_mvcc.c - visibility of a row version of a sift_table under every snapshot type (docs/COL-TAM.md section 3).
  *
- * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the segment's xmin) and no
+ * A version is visible when its insertion is (write buffer record: xmin/cmin; column group: frozen, or the tag of its group) and no
  * DELETE or UPDATE tombstone of it counts as a deletion for the snapshot. LOCK tombstones never delete.
  */
 #include "postgres.h"
@@ -111,6 +111,27 @@ tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 			elog(ERROR, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}
 	return false;
+}
+
+bool
+sift_tbl_tag_visible(Relation rel, Snapshot snapshot, const SiftTblTag *tag)
+{
+	SiftTblRowVer rv = {.xmin = tag->xid,.cmin = tag->cid};
+	bool		dead;
+
+	if (sift_tbl_inserted_visible(snapshot, &rv, &dead))
+		return true;
+	if (!dead && snapshot->snapshot_type == SNAPSHOT_MVCC)
+		CheckForSerializableConflictOut(rel, tag->xid, snapshot);
+	return false;
+}
+
+bool
+sift_tbl_sb_inserted(Relation rel, Snapshot snapshot, const SiftTblTags *tags, uint32 sb)
+{
+	const SiftTblTag *tag = sift_tbl_tag_of_sb(tags, sb);
+
+	return tag == NULL || (snapshot != NULL && snapshot->snapshot_type == SNAPSHOT_MVCC && sift_tbl_tag_visible(rel, snapshot, tag));
 }
 
 bool
