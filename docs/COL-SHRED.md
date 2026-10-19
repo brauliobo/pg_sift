@@ -93,6 +93,13 @@ incomplete or unrepresentable.
 | list position | an object / scalar (lax jsonpath would wrap it) | list `OVERFLOW` `SHAPE`, columns below flagged |
 | list over `max_elems` / `max_bytes` |  | the rest of the list is dropped, list `OVERFLOW` `TRUNC`, columns below flagged |
 
+**The type of an overflow value.** An `OVERFLOW` slot also keeps the JSON type of the value in `tag[i]` (`SIFT_COLTAG_STRING`, `NUMBER`,
+`BOOLEAN`, `OBJECT`, `ARRAY`: the event that delivered it, so a number out of range is a number and a string in a number column is a string).
+A leaf below the array that sits at an object position has `SIFT_COLTAG_NONE`: its path leads to no value, as for `->`. Where the leaf is not
+what the event delivered, and for what a writer cannot know (a heap column, a `sift_table` segment), the tag is `UNKNOWN` (0). The writers
+store the tags of the slots that overflow in the chunks of column format minor 4; `jsonb_typeof(path)` is
+answered from them (docs/COL-PLAN.md, "jsonb_typeof"). The other states have no tag.
+
 A slot that is not `VALUE` has a zero value that means nothing: NULL is never a sentinel value, the states (or `state_bits`) say which
 slots are NULL, so a codec that takes the `int64` keys of a column plus a NULL bitmap needs nothing else from the shredder (integers
 are the keys as they are; floats are exact doubles for the engine's order keys; text is bytes for its dictionary; map key ids and

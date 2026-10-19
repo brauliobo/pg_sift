@@ -276,6 +276,35 @@ Against the c24702b head that has no text filter in the source: Q05 37.6 to 14.3
 
 At 10M the cycles per row fall less than the instructions (Q05 12.8 to 12.0, Q07 11.6 to 9.1) because what is left is the unit page vetting (`unit_page`, `LWLockRelease` of the buffer pins) and the chunk reads of the engine. These need the column engine (requests below): skip the visibility vet of a unit whose pages are all visible (its page mask inside `allvisible`), read a chunk without copying it, a two-sided range operator in `sift_col_filter` (one pass for `a <= x < b`, now two) and a filter that is aware of the selection already narrowed by a previous one.
 
+## The JSON type of a path (`jsonb_typeof`)
+
+`jsonb_typeof(x->'k') = 'number'`, also `'string'`, `'boolean'`, `'object'`, `'array'`, and `jsonb_typeof(..) IN ('string', 'number')` are a conjunct
+of the query that the source answers (`SAP_TYPE`, `compile_typeof`, `sift_colsrc_filter_types`; tests `agg_jsonb_typeof`,
+`agg_jsonb_typeof_parallel`, the `k_typeof_*` fixtures). The argument is a path of the jsonb value (`->`, `#>`, nested), not its text, and it
+names a scalar leaf of the index (`bool`, `int2`, `int4`, `int8`, `float4`, `float8`, `text`; not `astext`, whose values mix three types, not
+lossy, not a key of a map or a list element).
+
+- **What it keeps.** The rows whose value of the leaf has a type of the list: a stored value has the type of its leaf (a `float8` leaf holds
+  numbers), a value the leaf could not hold has the type its chunk kept. A JSON null, a missing key and
+  a path that leads to no value are NULL and never kept: `jsonb_typeof` of them is `'null'` or NULL, and the filter never asks for `'null'`.
+- **What it does not raise on.** The rows of any other type are dropped without reading their value: a string among the numbers of a `float8`
+  leaf does not raise the overflow error that every other read of that leaf raises, because the reads of a leaf with a type filter give such
+  a value as NULL (`tolerate_ovf`) and the filter has already dropped or refused every row that has one.
+- **What it raises on.** A kept row whose value the leaf cannot hold (a number out of the float range, a non-integer in an `int4` leaf, and any
+  string, boolean, object or array asked for on a leaf of another type) raises the error of the pushdown, as the read of that value does, unless
+  no snapshot sees the row (the unit's page is not all-visible: `sift_col_vet` runs on those rows only). So `count(*) WHERE jsonb_typeof(m) =
+  'string'` on a number leaf with strings raises, where the normal plan counts them, and so does an overflow value with no type (the unit was
+  written by minor 3 or merged from one: tag 0), with the hint to `REINDEX`. The filter runs first, on the live rows of the unit, before the other
+  integer filters of the source: an error is possible for a row that another conjunct would drop, never the contrary. A sum or any other read of
+  the same leaf that no type filter guards keeps raising for the strings, as today.
+- **Not taken.** `<>`, `NOT IN`, `'null'` and any name that is not a JSON type, `jsonb_typeof(..) IS NULL`, a group key or an expression on
+  the type, a branch of `OR` or `NOT`, an aggregate `FILTER`, a path of an element of a list or map, a leaf declared `astext`, a table with a
+  source that cannot answer it (`sift_table`, the stub). They keep the normal plan, which the differential fixture `k_typeof_not_pushed` checks.
+- **Where it runs.** `process_unit` calls the source before the integer filters (`type_filters`), the rows left are read as for those filters
+  (a sparse selection decodes the leaf at those rows only), a worker does the same on its units, and a match set from a BM25 conjunct is
+  expanded to the stored rows like the other filters. A unit's pre-aggregates do not answer a query with it. `EXPLAIN` shows the conjunct in
+  `Filters` and, with `ANALYZE`, `Type Filters In Source`.
+
 ## Zone pruning
 
 The row conjuncts of the query that compare an integer leaf of the rows (`int2`, `int4`, `int8`, `date`, `timestamp`, `timestamptz`, `bool`, and a `numeric(p <= 18, s)` leaf as its scaled integer; not a jsonb element, not a lossy leaf) with a constant or parameter by `=`, `<`, `<=`, `>`, `>=`, or by `IN` of a list that fits a table, become, per leaf, an interval `[lo, hi]` (`sift_aggspec_zone_cmps`, `prune_init`: the operand is evaluated once per scan, comparisons of one leaf are intersected; `<>`, `NOT IN`, `OR`, element conjuncts and float leaves are not used). A source that takes the conjunct as a filter (above) also gets it whole in `sift_col_begin`: an integer `IN` is tested against its members, so a unit that lacks the value is skipped too. The executor passes the intervals to `sift_colsrc_begin` as `SiftSrcPrune`; the `sift_col` provider turns each into two comparisons (`>= lo`, `<= hi`) for `sift_col_begin`, which skips the units whose min/max zone map excludes either, before any leaf is decoded, and counts them (`Units Pruned`). The test provider skips by the minimum and maximum of the unit's values. The executor still applies every conjunct to the rows of the units it reads, so pruning only removes work: a unit is skipped only when no row of it can pass. It applies to every spec, parallel or not.
