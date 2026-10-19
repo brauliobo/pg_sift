@@ -185,7 +185,7 @@ Cold cache (index, heap and TOAST evicted before every query), p50 / maximum exe
 
 ### Slim against full
 
-Throughput of each engine relative to pg_search, slim tier / full tier (the last session of full is kept above as history), and p50 latency of the top-20 workload relative to sift. `*` marks a pair that differs by more than 2 times; what it does not show is the noise of either session (their standard errors are in the tables).
+Throughput of each engine relative to pg_search, slim tier / full tier (the last session of full is kept below as history), and p50 latency of the top-20 workload relative to sift. `*` marks a pair that differs by more than 2 times; what it does not show is the noise of either session (their standard errors are in the tables).
 
 | articles | and | or | phrase | mixed | count | filter | join |
 |---|---:|---:|---:|---:|---:|---:|---:|

@@ -278,7 +278,7 @@ def fidelity(rows, t, other='full'):
     if not f.articles:
         return []
     out = ['### %s against %s' % (t.tier.capitalize(), other), '',
-           'Throughput of each engine relative to %s, %s tier / %s tier (the last session of %s is kept above as history), and p50 latency of the top-20 workload relative to sift. '
+           'Throughput of each engine relative to %s, %s tier / %s tier (the last session of %s is kept below as history), and p50 latency of the top-20 workload relative to sift. '
            '`*` marks a pair that differs by more than 2 times; what it does not show is the noise of either session (their standard errors are in the tables).' % (
                tables.NAME[t.ref], t.tier, other, other), '']
     classes = [c for c in t.classes if c in f.classes]
