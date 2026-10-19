@@ -133,7 +133,7 @@ flush_block(SiftDictWriter *w)
 static void
 put_entry(StringInfo b, const char *term, int len, int shared, const SiftTermInfo *info, bool packed)
 {
-	uint8		e[64];
+	uint8		e[4 + SIFT_MAX_TERM_BYTES + 64];
 	uint8	   *p = e;
 	bool		inl = (info->flags & SIFT_TERM_INLINE) != 0;
 	int			suffix = len - shared;
@@ -145,9 +145,8 @@ put_entry(StringInfo b, const char *term, int len, int shared, const SiftTermInf
 			*p++ = shared;
 		if (suffix - 1 >= 15)
 			*p++ = suffix - 1;
-		appendBinaryStringInfo(b, (const char *) e, p - e);
-		p = e;
-		appendBinaryStringInfo(b, term + shared, suffix);
+		memcpy(p, term + shared, suffix);
+		p += suffix;
 		*p++ = info->flags | Min(info->df, 15) << 4;
 		if (info->df >= 15)
 			p = sift_put_varint(p, info->df - 15);
@@ -157,9 +156,8 @@ put_entry(StringInfo b, const char *term, int len, int shared, const SiftTermInf
 	{
 		*p++ = shared;
 		*p++ = suffix;
-		appendBinaryStringInfo(b, (const char *) e, p - e);
-		p = e;
-		appendBinaryStringInfo(b, term + shared, suffix);
+		memcpy(p, term + shared, suffix);
+		p += suffix;
 		p = sift_put_varint(p, info->df);
 		*p++ = info->flags;
 		*p++ = info->max_bound;
