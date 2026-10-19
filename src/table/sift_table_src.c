@@ -577,6 +577,36 @@ tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 	*z = (SiftSrcZone) {.min = cz.min,.max = cz.max,.nvals = cz.nvals,.nnull = cz.nnull,.inexact = cz.has_ovf};
 }
 
+/*
+ * The zones of the stored units of the superblocks [lo, hi) together, from the segment headers of every column layout; a layout without the
+ * column, and the write buffer rows (read whole), have no bound.
+ */
+static uint32
+tbl_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	TblSource  *t = impl;
+	uint32		units = 0;
+
+	*z = (SiftSrcZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
+	for (int k = 0; k < t->nparts; k++)
+	{
+		const TblPart *p = &t->part[k];
+		SiftColZone cz;
+
+		units += sift_col_zone_range(p->src, Max(p->col[leaf], 0), lo, hi, &cz);
+		z->inexact |= cz.has_ovf || p->col[leaf] < 0;
+		z->nvals += cz.nvals;
+		z->nnull += cz.nnull;
+		if (cz.nnull < cz.nvals)
+		{
+			z->min = Min(z->min, cz.min);
+			z->max = Max(z->max, cz.max);
+		}
+	}
+	z->inexact |= hi > t->wbuf_lo && lo <= t->wbuf_hi;
+	return units;
+}
+
 static void
 tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
 {
@@ -686,6 +716,7 @@ static const SiftSrcProvider tbl_provider = {
 	.select = tbl_select,
 	.tids = tbl_tids,
 	.zone = tbl_zone,
+	.zone_range = tbl_zone_range,
 	.read_rows = tbl_read_rows,
 	.preagg = tbl_preagg,
 	.unit_exact = tbl_unit_exact,
