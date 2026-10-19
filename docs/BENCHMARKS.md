@@ -511,6 +511,8 @@ made question 2 take 163 ms instead of 10 ms). The text dictionaries cost more t
 
 ## Full tier: the session of October 2026 (history, sift `cc30fc2b299d`, not regenerated)
 
+Measured on 2026-10-16: the articles tables from 21:26 to 22:13, the places tables in a later session; the rows were committed in `fa07eed` (2026-10-17 00:04, host time).
+
 > **History, measured with an earlier method of the harness.** Everything from here to "Method of the harness" (the full-tier tables of the articles and the places, the earlier smaller
 > tiers, the regression check against v1.1.0 and the correctness numbers) was measured before the harness measured one engine at a time on the whole host: the engines then ran on a share of the
 > machine (one cluster on 8 server threads and 4 load generator threads, or lanes on smaller shares, depending on the section) and the commands quoted in these sections carry options that no longer exist.
@@ -860,10 +862,10 @@ Queries per second (minimum-maximum over the rounds); rum's column fills in 14.9
 | pg_textsearch / pg_search | 0.01 | 1.86 | 0.01 | 0.01 | 0.02 | 0.05 | 0.44 |
 | rum / pg_search | 0.47 | 0.01 | 0.02 | 0.01 | 0.02 | 0.01 | 0.09 |
 
-The 150k tier has the full tier's ordering for every class and the wider margins of a smaller corpus: the default index's `count(*)`
-(0.61x) and phrase (0.67x) are behind pg_search at both sizes. The heap recheck grows with the corpus, so the crossover depends on
+The 150k tier has the ordering that `positions = off` has at the full tier (the build of this session stored no positions) and the wider margins of a smaller corpus: the `count(*)`
+(0.61x) and phrase (0.67x) of this build are behind pg_search at both sizes (0.64x and 0.79x for `positions = off` at 218k). The heap recheck grows with the corpus, so the crossover depends on
 the size (with an earlier build and a 75,000 article tier the phrase and `count(*)` ratios were 1.22x and 1.35x). Judge the
-default index's phrase and `count(*)` on the full tier. The size ordering is the same as at 218k: the default index is 33.5 MiB against 112.0 MiB
+phrase and `count(*)` of the default index (positions on) on the full tier. The size ordering is the same as at 218k: the index of this build is 33.5 MiB against 112.0 MiB
 for pg_search.
 
 #### 25,000 articles (`quick` tier)
