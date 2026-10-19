@@ -401,8 +401,8 @@ checked by the normal permission check of the query.
   works with the standby's snapshot and VM.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
-- **Versioning**: metapage major/minor as sift's (1.0 for the BM25 minor bump rules does not apply: a col index has `meta->format_minor`
-  0 and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads: segments
+- **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
