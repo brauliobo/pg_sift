@@ -56,7 +56,8 @@ s_gap() {
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 minutes() { # STAGE: the minutes it takes when everything is measured
   case $1 in
-    store) echo $(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES )) ;;
+    store) if [[ " ${FWD[*]} " != *" --remeasure-all "* ]] && compgen -G "${S_CACHE_DIR:-$STORE/store-cache}/cells/*/*.json" >/dev/null; then echo "$P_MIN_STORE_CACHED"   # competitor cells are in the cache
+           else echo $(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES )); fi ;;
     compression) echo "${P_MIN_COMPRESSION:-6}" ;;
     stats) echo "${P_MIN_STATS:-3}" ;;
     gap) echo "${P_MIN_GAP:-4}" ;;

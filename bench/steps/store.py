@@ -936,7 +936,7 @@ def write(args, rows, part, extra=None):
     path = part_path(args, part)
     rows.rows = [r for r in rows.rows if r['engine'] not in args.untimed]   # the reference of the result checks is not a result of this pass
     util = UTIL.report() if UTIL else None
-    if util and part != 'load' and util['timed_pct'] < 70:
+    if util and part != 'load' and util['wall_s'] >= 60 and util['timed_pct'] < 70:
         log(f'WARN: {part}: timed windows are {util["timed_pct"]}% of the {util["wall_s"]} s of the command (below 70%): the rest was waiting for restarts, cache drops, gates; '
             f'{util["low_busy_pct"]}% of the time fewer than {util["low_busy_below"]} cores were busy')
     meta = dict(key=part_key(args, part), date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
@@ -2509,7 +2509,7 @@ def cmd_render(args):
 
 def cmd_stats(args):
     """what ClickHouse and Elasticsearch read and spend per question, from their own accounting (system.query_log, `took`) and clickhouse-client --time"""
-    ch, es = Http('ch', CH_AUTH), Http('es_cached')
+    ch, es = Http('ch', CH_AUTH), Http('es_cached', {'Content-Type': 'application/json'})
     out = dict(rows=args.rows, ch={}, es={})
     for q in load_queries(args.queries):
         sql, tag = q.statement('ch', args.rows), f'gap-{q.id}'
@@ -2526,6 +2526,8 @@ def cmd_stats(args):
             raise RuntimeError('clickhouse-client: ' + cli.stderr.strip()[:300])
         out['ch'][q.id] = dict(median={k: statistics.median(r[k] for r in rows) for k in rows[0]}, client_time_s=float(cli.stderr.strip().splitlines()[-1]))
         method, path, body, _, _ = q.statement('es_cached', args.rows)
+        if '/_doc/' in path:   # a real-time get reports no `took`: the same lookup as a search by id does
+            method, path, body = 'POST', '/orders/_search?request_cache=false', json.dumps({'query': {'ids': {'values': [path.rsplit('/', 1)[1]]}}}).encode()
         took = [json.loads(es.request(method, path.replace('request_cache=true', 'request_cache=false'), body))['took'] for _ in range(args.runs)]
         out['es'][q.id] = dict(took_ms=statistics.median(took))
         log(f'{q.id} {q.name}: clickhouse {out["ch"][q.id]["median"]}; elasticsearch took {out["es"][q.id]["took_ms"]} ms')
@@ -2700,7 +2702,7 @@ def main():
     args.cell = 0
     if args.cmd in ('load', 'run', 'cold', 'updates', 'interference'):
         UTIL = Utilization(args.busy_cores)
-    if getattr(args, 'rows', None) and not args.tier:
+    if getattr(args, 'rows', None) and not getattr(args, 'tier', 'x'):
         args.tier = (f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k') + f'-c{args.cpus}'
     if hasattr(args, 'restart_runs') and args.restart_runs is None:
         args.restart_runs = args.cold_runs
