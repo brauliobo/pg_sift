@@ -118,6 +118,20 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS s
 SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('tm_idx', 'tm') EXCEPT SELECT term, id, tf, dl FROM posts('t3_idx', 't3')) x) AS only_merged,
        (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_idx', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('tm_idx', 'tm')) x) AS only_t3;
 
+-- VACUUM rewrites a mostly dead segment of format 2 in format 3
+CREATE TABLE vr AS SELECT * FROM src WHERE id <= 6000 ORDER BY id;
+SET sift.test_segfmt = 2;
+CREATE INDEX vr_idx ON vr USING sift (body) WITH (build_segments = 1, dead_rewrite_pct = 50);
+SET sift.test_segfmt = 3;
+SELECT format, count(*) AS segments FROM sift._test_segment_formats('vr_idx') WHERE kind = 'immutable' GROUP BY 1;
+DELETE FROM vr WHERE id % 10 < 7;
+VACUUM vr;
+SELECT format, count(*) AS segments, sum(ndocs) AS docs
+FROM sift._test_segment_formats('vr_idx') f JOIN sift.segments('vr_idx') s USING (gen) WHERE f.kind = 'immutable' GROUP BY 1;
+SELECT sift.verify('vr_idx', true);
+SELECT count(*) AS hits FROM vr WHERE body @@> 'common';
+DROP TABLE vr;
+
 DROP FUNCTION answers(regclass, bool);
 DROP FUNCTION posts(regclass, regclass);
 DROP TABLE src, t2, t3, tm;

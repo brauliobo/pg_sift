@@ -727,24 +727,23 @@ expand_dl(uint16 *dst, const uint8 *src, int n, int bits)
 #endif
 }
 
+/* Expands the dl row of a present page of the indexed SB (narrow records only) */
+static pg_noinline void
+expand_row(DocMap *dm, int page)
+{
+	expand_dl(dm->xdl + dm->xoff[page], dm->rows[page], dm->rowlen[page], SIFT_DL_CODE_BITS(dm->dlcode));
+	dm->xdone[page / 64] |= 1ULL << (page % 64);
+}
+
 /* The dl row of a present page of the indexed SB as 16 bits per slot: narrow rows are expanded on the first use */
-static const uint16 *
+static inline const uint16 *
 dl_row(DocMap *dm, int page)
 {
-	const uint8 *src = dm->rows[page];
-	uint16	   *dst;
-	int			n = dm->rowlen[page],
-				bits = SIFT_DL_CODE_BITS(dm->dlcode);
-
-	if (bits == 16)
-		return (const uint16 *) src;
-	dst = dm->xdl + dm->xoff[page];
+	if (dm->dlcode == 0)
+		return (const uint16 *) dm->rows[page];
 	if (!(dm->xdone[page / 64] >> (page % 64) & 1))
-	{
-		expand_dl(dst, src, n, bits);
-		dm->xdone[page / 64] |= 1ULL << (page % 64);
-	}
-	return dst;
+		expand_row(dm, page);
+	return dm->xdl + dm->xoff[page];
 }
 
 bool
@@ -754,15 +753,31 @@ sift_seg_page(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *presen
 
 	if (!(dm->pagemask[page / 64] & (1ULL << (page % 64))))
 	{
-		memset(present, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
+		if (present)
+			memset(present, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 		if (dl)
 			*dl = NULL;
 		return false;
 	}
-	memcpy(present, dm->om + dm->maskidx[page] * SIFT_OFFMASK_WORDS, SIFT_OFFMASK_WORDS * sizeof(uint64));
+	if (present)
+		memcpy(present, dm->om + dm->maskidx[page] * SIFT_OFFMASK_WORDS, SIFT_OFFMASK_WORDS * sizeof(uint64));
 	if (dl)
 		*dl = dl_row(dm, page);
 	return true;
+}
+
+/* The dl rows of the pages of a block (SIFT_BLK_PAGES pages) that are set in want and have docs, NULL for the others */
+void
+sift_seg_block_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, const uint16 **rows)
+{
+	DocMap	   *dm = indexed(seg, dc);
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		int			page = block * SIFT_BLK_PAGES + pg;
+
+		rows[pg] = (want >> pg & 1) && (dm->pagemask[page / 64] & (1ULL << (page % 64))) ? dl_row(dm, page) : NULL;
+	}
 }
 
 /* ---------- liveness, format 2 ---------- */
