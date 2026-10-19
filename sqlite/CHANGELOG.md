@@ -4,6 +4,10 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## 3.0.2
+
+- No change to the storage format (2) or the SQL interface: tables of 3.0.1 open as they are. The extension is rebuilt with the PostgreSQL release 3.0.2. One file of the shared core (`src/portable.list`) changed: `bm25/sift_eval.c`, where a ranked query with no limit (`k` = 0 of `sift_rank_begin`) now ranks every match in one search instead of searching again for 1024 hits, then 16 times as many; the ranked rows and their scores are the same. No speed-up or slow-down is claimed for this extension. The other fixes of 3.0.2 (the column scans, the aggregate pushdown, the keyed ranked scan) are PostgreSQL features and are not in the SQLite extension.
+
 ## 3.0.1
 
 - No change to the storage format (2) or the SQL interface: tables of 3.0.0 open as they are. The extension is rebuilt with the PostgreSQL release 3.0.1; no file of the shared core (`src/portable.list`) changed, so nothing in the SQLite extension differs from 3.0.0 except the version `sift_version()` reports. The fixes of 3.0.1 (the column scans, the aggregate pushdown, `sift_table`) are PostgreSQL features and are not in this extension.
