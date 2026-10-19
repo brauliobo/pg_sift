@@ -4,6 +4,17 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+Changes:
+
+- Added: `sift.facet_counts(table, key, query, facets [, filter [, hits]])` returns the counts of several facets of one search in one call: terms facets with a top N, an exact count of the other values and a NULL bucket, range, histogram and date-histogram buckets (with gap filling, capped at 10000 buckets), arrays counted once per row, columns of any type, and the facets of a multi-select (a facet ignores its own `selected` values). Every count is exact. Each facet is its own `GROUP BY` scan (the ranges of a list share one scan of `FILTER` aggregates), a `Custom Scan (SiftAgg)` with the search as the row selection when the columns are in a `sift_col` index and the ordinary plan otherwise, so a table with no column index, a `sift_table` and a role under row-level security work. `sift.facet_sql(...)` returns the statement for `EXPLAIN`. `sift.facets` is unchanged. Tests `facet_counts`, the isolation spec `facet_counts_writes` and the column fixtures `h_search_facet_scans` and `h_search_facet_counts`.
+- Added: `sift.sections(a, b, ...)` builds the key of an index with `fields` without writing `chr(29)`, and `sift.field_query(query, 'title^3, body' [, index])` weighs the fields per query: each word, prefix, wildcard and fuzzy term is searched in every listed field with the weight times its boost, a row scores the sum of its fields' BM25, and the match set is that of the unweighted query. Phrases, regular expressions and `NOT` terms are not scoped to a field. Test `field_weights`: the scores equal a per-field SQL reference and the top-k equals the full ranking for 60 weight combinations.
+- Docs: [docs/FIELDS-FACETS.md](docs/FIELDS-FACETS.md) has the research, the gap analysis, the design and what is left out (BM25F, a multicolumn index, an analyzer, phrases and highlights per field). The comparison row S7 (Facets) is now `Yes`; S6 (Field weights) stays `Partly`.
+
+Upgrade notes:
+
+- **Extension SQL:** 3.1. Install the files, then `ALTER EXTENSION pg_sift UPDATE` in each database (the 3.0 to 3.1 script only adds the functions above). The library reports version 3.1.
+- **Formats:** no change. The BM25 segment and metapage formats and the column format are those of 3.0.x; nothing is rebuilt.
+
 ## 3.0.2 - 2026-10-19
 
 Bug fixes for 3.0.1: the aggregate pushdown for the values a `sift_col` index cannot store (the write buffer, prepared statements, a `VACUUM` that skips the indexes, a scan that is running when another session writes, numbers out of the range of their path, a NaN in a `numeric(p, s)` column), a text test on a member of a free-key object, and a much cheaper `ORDER BY <column>, sift.score(ctid) DESC LIMIT n`. Install the new files; the extension SQL does not change (it stays 3.0), so there is no `ALTER EXTENSION pg_sift UPDATE` step, and no index or table is rebuilt.
