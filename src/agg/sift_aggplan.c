@@ -4876,7 +4876,11 @@ outer_arms(PlannerInfo *root, Index srti, List **gates)
 	return arms;
 }
 
-/* the table an arm reads: through its CTE scan to the common table expression's root, or the arm's own root; NULL if the arm is not a simple aggregate */
+/*
+ * The table an arm reads: through its CTE scan to the common table expression's root, or the arm's own root (its FROM is the scan itself:
+ * a table with its unnests and lookups, which is what an arm over a common table expression that PostgreSQL inlined looks like); NULL if
+ * the arm is not a simple aggregate
+ */
 static PlannerInfo *
 arm_base(PlannerInfo *arm, ArmIn *in)
 {
@@ -4885,15 +4889,40 @@ arm_base(PlannerInfo *arm, ArmIn *in)
 
 	if (!q->hasAggs || q->groupClause == NIL || q->groupingSets || q->hasWindowFuncs || q->hasTargetSRFs ||
 		q->distinctClause || q->sortClause || q->limitCount || q->limitOffset || q->groupDistinct || q->hasForUpdate ||
-		q->setOperations || q->cteList != NIL || list_length(q->jointree->fromlist) != 1 ||
-		!IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		q->setOperations || q->cteList != NIL)
 		return NULL;
-	rte = rt_fetch(((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex, q->rtable);
 	in->sub.rti = 0;
+	if (list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		return arm;
+	rte = rt_fetch(((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex, q->rtable);
 	if (rte->rtekind != RTE_CTE)
 		return arm;
 	in->sub.rti = ((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex;
 	return cte_root(arm, rte);
+}
+
+/*
+ * Two arms that read their own copy of one scan (a common table expression that PostgreSQL inlined into each): the same tables and the same
+ * WHERE. The entries of pulled up subqueries and of the grouping belong to their arm, and the column names a plan prunes differ: none counts.
+ */
+static bool
+same_scan(PlannerInfo *a, PlannerInfo *b)
+{
+	ListCell   *la,
+			   *lb;
+
+	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree, b->parse->jointree))
+		return false;
+	forboth(la, a->parse->rtable, lb, b->parse->rtable)
+	{
+		RangeTblEntry same = *(RangeTblEntry *) lfirst(la),
+				   *rb = lfirst(lb);
+
+		same.eref = rb->eref;
+		if (same.rtekind != rb->rtekind || (same.rtekind != RTE_SUBQUERY && same.rtekind != RTE_GROUP && !equal(&same, rb)))
+			return false;
+	}
+	return true;
 }
 
 static bool
@@ -5235,9 +5264,10 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	{
 		PlannerInfo *b = arm_base(ar, &arms[narms]);
 
-		if (b == NULL || (base != NULL && b != base) || (b == ar && list_length(roots) != 1))
+		if (b == NULL || (base != NULL && b != base && !(b == ar && same_scan(base, b))))
 			return;
-		base = b;
+		if (base == NULL)
+			base = b;
 		arms[narms].sub.tlist = b->parse->targetList;
 		narms++;
 	}
