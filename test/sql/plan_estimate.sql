@@ -37,11 +37,17 @@ END $$;
 INSERT INTO em SELECT i, 'beta' FROM generate_series(2000, 2899) i;
 SELECT before_rows, after_rows > 900 AS after_promote FROM promote_between();
 
--- a new index file: the same query is estimated again from the rebuilt index
-SELECT plan_rows('SELECT id FROM em WHERE body @@> ''beta''') > 900 AS before_reindex;
-DELETE FROM em WHERE body @@> 'beta';
-REINDEX INDEX em_body;
-SELECT plan_rows('SELECT id FROM em WHERE body @@> ''beta''') < 100 AS after_reindex;
+-- a new index file: the same query is estimated again from the rebuilt index. A table of its own that TRUNCATE empties: after a DELETE,
+-- REINDEX indexes the deleted rows while a snapshot older than the DELETE exists in the database (autovacuum's ANALYZE is one)
+CREATE TABLE em2 (id int, body text);
+CREATE INDEX em2_body ON em2 USING sift (body);
+INSERT INTO em2 SELECT i, 'beta' FROM generate_series(1, 1000) i;
+SELECT sift.promote('em2_body');
+SELECT plan_rows('SELECT id FROM em2 WHERE body @@> ''beta''') > 900 AS before_reindex;
+TRUNCATE em2;
+REINDEX INDEX em2_body;
+SELECT plan_rows('SELECT id FROM em2 WHERE body @@> ''beta''') < 100 AS after_reindex;
+DROP TABLE em2;
 
 -- deleted documents count until VACUUM rewrites their segment: the estimate follows the directory, not the heap
 INSERT INTO em SELECT i, 'delta' FROM generate_series(5000, 7000) i;
