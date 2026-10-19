@@ -1,7 +1,13 @@
 Parsed test spec with 3 sessions
 
-starting permutation: s2v s2m s2rec s3read s2v s2size s3c s2v s2size s2check
+starting permutation: s2v s2x s2m s2rec s3read s2v s2size s3c s2v s2size s2check
 step s2v: VACUUM iso_tr;
+step s2x: SELECT txid_current() > 0 AS xid_used;
+xid_used
+--------
+t       
+(1 row)
+
 step s2m: SELECT sift.merge('iso_tr_idx', true) > 0 AS merged;
 merged
 ------
