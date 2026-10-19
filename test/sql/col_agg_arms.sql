@@ -1,0 +1,73 @@
+-- SiftAgg over a sift_col index, per-item aggregates under an outer aggregate (the arms of a UNION ALL over a shared CTE) with a FILTER on a
+-- text leaf: the predicate of an inner aggregate is evaluated through the dictionary of the leaf like the one of a top level aggregate.
+-- Every query runs with and without the pushdown; the plan has the scan and the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE a_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO a_t
+SELECT i, i % 7,
+       jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                        'p', (array['x', 'y', 'z'])[1 + (i * j) % 3],
+                                                                        'n', (i + j) % 10))
+                                    FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 20000) i;
+CREATE INDEX a_t_col ON a_t USING sift_col (id, grp, doc) WITH (paths = 'doc.lines[]{k text, p text, n int4}');
+VACUUM (FREEZE, ANALYZE) a_t;
+
+-- the two arms (per item and key, per item), the aggregate and the FILTER of each given
+CREATE FUNCTION arms(agg1 text, agg2 text) RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH base AS (SELECT t.id AS item_id, l.k, l.p, l.n
+	                                FROM a_t t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'lines') AS l(k text, p text, n int))
+	                 SELECT k, sum(c) FROM (SELECT item_id, k, %s AS c FROM base GROUP BY item_id, k
+	                                        UNION ALL
+	                                        SELECT item_id, NULL::text, %s FROM base GROUP BY item_id) q
+	                 GROUP BY k$q$, agg1, agg2)
+$$;
+
+-- the plan has the scan
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0 AND pushed(q);
+END $$;
+
+-- the FILTER of the inner aggregates: text equality, list, inequality, expression, in one arm or both, next to an integer FILTER
+SELECT same(arms($$count(*) FILTER (WHERE p = 'x')$$, $$count(*) FILTER (WHERE p = 'x')$$)) AS equality_both;
+SELECT same(arms($$count(*) FILTER (WHERE p = 'x')$$, $$count(*)$$)) AS equality_first;
+SELECT same(arms($$count(*)$$, $$count(*) FILTER (WHERE p = 'x')$$)) AS equality_second;
+SELECT same(arms($$count(*) FILTER (WHERE p = 'x')$$, $$count(*) FILTER (WHERE p = 'y')$$)) AS equality_other_constants;
+SELECT same(arms($$count(*) FILTER (WHERE p IN ('x', 'z'))$$, $$count(*) FILTER (WHERE p <> 'z')$$)) AS list_and_inequality;
+SELECT same(arms($$count(p) FILTER (WHERE upper(p) = 'X')$$, $$count(*) FILTER (WHERE lower(p) <> 'y')$$)) AS expressions;
+SELECT same(arms($$count(*) FILTER (WHERE p = 'x' OR k = 'a')$$, $$sum(n) FILTER (WHERE p = 'x' AND n > 3)$$)) AS combined;
+SELECT same(arms($$sum(n) FILTER (WHERE p = 'z')$$, $$sum(n) FILTER (WHERE p = 'z')$$)) AS integer_sums;
+SELECT same(arms($$avg(n::float8) FILTER (WHERE p = 'x')$$, $$count(*) FILTER (WHERE n > 3)$$)) AS float_average;
+SELECT same(arms($$count(*) FILTER (WHERE n > 3)$$, $$count(*) FILTER (WHERE n > 3)$$)) AS integer_filter;
+SELECT same(arms($$count(*) FILTER (WHERE p = 'none')$$, $$count(*) FILTER (WHERE p = 'none')$$)) AS no_match;
+
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;
