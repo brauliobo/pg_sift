@@ -252,6 +252,8 @@ CREATE INDEX ow_h_id ON ow_h (id);
 BEGIN;
 SELECT ins1('ow_t', 1, 20000);
 SELECT ins1('ow_h', 1, 20000);
+SELECT count(*), sum(id) FROM ow_t;
+SELECT agree('ow_t', 'ow_h') AS plans_agree_in_the_middle_of_the_loop;
 -- three cursors opened in the middle of the loop: they see the 20000 rows and nothing that comes after, whatever it does to them
 DECLARE c_seq CURSOR FOR SELECT id, v FROM ow_t;
 DECLARE c_seq_h CURSOR FOR SELECT id, v FROM ow_h;

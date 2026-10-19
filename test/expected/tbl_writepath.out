@@ -450,6 +450,18 @@ SELECT ins1('ow_h', 1, 20000);
  
 (1 row)
 
+SELECT count(*), sum(id) FROM ow_t;
+ count |    sum    
+-------+-----------
+ 20000 | 200010000
+(1 row)
+
+SELECT agree('ow_t', 'ow_h') AS plans_agree_in_the_middle_of_the_loop;
+ plans_agree_in_the_middle_of_the_loop 
+---------------------------------------
+ ok
+(1 row)
+
 -- three cursors opened in the middle of the loop: they see the 20000 rows and nothing that comes after, whatever it does to them
 DECLARE c_seq CURSOR FOR SELECT id, v FROM ow_t;
 DECLARE c_seq_h CURSOR FOR SELECT id, v FROM ow_h;
