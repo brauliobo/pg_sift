@@ -7,6 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 SET client_min_messages = warning;
+SET lc_monetary = 'C';
 
 CREATE TABLE wa (id int, grp int, qty int, n38 numeric(38, 10), n19 numeric(19, 2), img numeric, neg numeric(5, -2), m money, iv interval)
 	WITH (autovacuum_enabled = false);

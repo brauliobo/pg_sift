@@ -142,7 +142,12 @@ numeric_form(Form_pg_attribute att, uint8 *scale)
 bool
 sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
 {
-	return numeric_form(att, scale) == NUMERIC_NARROW;
+	uint8		s;
+
+	if (numeric_form(att, &s) != NUMERIC_NARROW)
+		return false;
+	*scale = s;
+	return true;
 }
 
 /* The types of a sift_col index: the table AM's set plus char(n) and name, which are strings too (the table AM keeps its narrower set) */

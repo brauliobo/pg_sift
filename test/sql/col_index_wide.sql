@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
+SET lc_monetary = 'C';
 
 -- The rows an index scan keeps (root TIDs) against the visible heap tuples
 CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text, flags int DEFAULT 0) RETURNS text LANGUAGE plpgsql SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_agg = off AS $$
@@ -271,3 +272,12 @@ SELECT col_back('w_all', 1, 'CASE WHEN n38 = ''NaN'' THEN NULL ELSE n38::text EN
 
 -- the sums of the lanes of a unit are the pre-aggregates of plain integers (no lane is a measure or a dimension of a cube)
 SELECT leaf, path FROM sift.col_leaves('w_all') ORDER BY leaf;
+
+-- sift_table keeps its own mapping: every one of these types is stored exactly as bytes (or the 3.1 integer for the narrow numeric)
+CREATE TABLE wt (id int, a numeric(38, 6), b numeric(5, 30), c numeric, d money, e interval, f numeric(10, 2)) USING sift_table;
+INSERT INTO wt SELECT i, i * 123456789012345678901234.123456, i / 7.0 / 1e30, CASE WHEN i % 5 = 0 THEN 'NaN' ELSE i / 3.0 END, (i || '.25')::money,
+	make_interval(months => i % 5, days => i % 31, secs => i), i / 8.0 FROM generate_series(1, 5000) i;
+VACUUM wt;
+SELECT count(*), sum(a), sum(f), max(d)::numeric AS max_d, max(e), count(*) FILTER (WHERE c = 'NaN') FROM wt;
+SELECT count(*) FROM wt WHERE a > 1e28 AND e >= interval '1 month' AND d < '100.00';
+DROP TABLE wt;
