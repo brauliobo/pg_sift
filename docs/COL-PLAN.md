@@ -192,21 +192,26 @@ The inlined arms of S4 scan the same rows for the same aggregates and differ in 
 
 A dictionary code, a dense id of a numeric expression or an integer column up to 32 bits is counted per group in one of three forms (`struct Dist`); NULLs never enter, and the count is exact.
 
-- **Bitmaps**: the values are dense (the range seen is covered by few enough 4096 bit chunks): each group has a directory over the shared range, its chunks are allocated when a value falls in one, and the count is a popcount. Parallel workers send their chunks and the leader ORs them.
+- **Bitmaps**: the values are dense (the range seen is covered by few enough 4096 bit chunks): each group has a directory over the shared range, its chunks are allocated when a value falls in one, and the count is a popcount. A set that fits the cache sets its bits one by one; a bigger one (2 MB and more) finds and prefetches the words of 32 values before it sets them, as each is a miss of its own.
 - **Bounded set**: sparse values go to an open addressing set of (group, value) pairs, inserted in batches with the slots prefetched.
 - **Sort**: past `get_hash_memory_limit()` (`work_mem` times `hash_mem_multiplier`, per aggregate) the pairs move to a tuplesort that spills to temp files, and the count of a group is read from the sorted runs. A bitmap or a set that outgrows the budget converts, so the memory never grows with the distinct values; EXPLAIN ANALYZE shows `Distinct Sets Spilled`.
 
-Question 06 (`count(DISTINCT customer_id)` per month, 10M orders, 2M customers), one backend, `work_mem` 4MB and 64MB, peak anonymous memory: 398 MB before (the hash set, whatever the `work_mem`), 16 MB and 14 MB after, with the same rows. Fixtures `d_*` and the `aggstub_agg` regress case cover the three forms, the spill (`work_mem` 64kB), NULLs and the global case.
+Workers send a set that is still a bitmap of raw 32 bit values as its chunks of 32 bits or more (group, chunk number, the 512 bytes) and the bits of the sparser chunks as pairs; the leader ORs a chunk into its own and counts the new bits by popcount (`Distinct Chunks Merged` in EXPLAIN ANALYZE). The blob of a worker is at most the memory of its bitmap, which `hash_mem` bounds. The values of a dictionary or of a numeric expression are ids local to a worker, so they go as pairs by value. Merging pairs one by one was 40% of the leader's cycles in Q06 at 3 workers.
 
-| Q06 (ms: median of the last 5 of 7 runs; instructions: mean of 20) | rows | before | after |  |
-|---|---|---|---|---|
-| instructions | 1M | 141.5 M | 89.3 M | 1.6x fewer |
-| instructions | 10M | 1626 M | 891 M | 1.8x fewer |
-| ms, no workers | 1M | 68.8 | 9.5 - 10.4 | 6.6x |
-| ms, no workers | 10M | 971 | 314 - 348 | 2.9x |
-| ms, 3 workers | 10M | 777 | 255 - 307 | 2.8x |
+A bitmap local to a unit (sized to the unit's range of values, merged per group at the end) was not built: a unit of 74 496 rows holds values from all over the domain whenever the heap order does not follow the value (Q06's customers and months are independent of the order of the rows), so its range is the whole domain and it shrinks nothing; when the order does follow the value, the shared bitmap is already local, as the active chunks are the same few. What the profile showed was a miss on the word of each bit, which the prefetch hides (15% to 40% fewer cycles of a backend at 10M, below).
 
-The cycles of the 10M run fall from 3.77 G to 1.41 G. Before, 79% of them were `dset_add` and `dset_grow`; after, 81% are the random bit sets of `dist_update` into 36 bitmaps of 2M bits (9 MB, past the L2).
+Question 06 (`count(DISTINCT customer_id)` per month, 10M orders, 2M customers), `work_mem` 4MB and 64MB, one backend without workers, peak anonymous memory (VmHWM less the file and shared pages; an idle backend is 3.7 MB): 398 MB with the hash set, 13.5 MB and 13.8 MB with the set above, the same rows; 3 workers: 51 MB and 40 MB at the leader (the workers have a budget each). Fixtures `d_*` and the `aggstub_agg` and `aggstub_sets` regress cases cover the three forms, the chunks and the pairs from workers, the spill (`work_mem` 64kB), NULLs and the global case.
+
+| Q06, ms (median of 7 EXPLAIN ANALYZE) | rows | workers | hash set | bitmaps, pairs merged | chunks ORed, prefetch |
+|---|---|---|---|---|---|
+|  | 1M | 0 | 43.0 | 7.1 | 6.6 - 7.4 |
+|  | 1M | 3 | 47.1 | 7.3 | 6.6 - 6.8 |
+|  | 10M | 0 | 704 | 120 (min 76) | 76 - 87 |
+|  | 10M | 3 | 509 | 153 | 68 - 70 |
+| instructions, M (one backend) | 1M | 0 | 141.3 | 89.3 | 93.3 |
+| instructions, M (one backend) | 10M | 0 | 1623 | 891 | 1015 |
+
+Taken with the host idle (cpu PSI avg10 7% to 8%, io under 1%) on the release build, the three libraries one after the other and the last one again (the two runs of the last column). The prefetch costs instructions (a pass to find the words, a pass to set them) and pays in cycles: 10M, one backend, 426 to 453 M cycles against 529 M without it (more when the host is busy, as the misses grow).
 
 ## Parallel scan
 
