@@ -98,7 +98,7 @@ Feature facts for search and for analytics, pg_sift against the PostgreSQL optio
 ## Where pg_sift is weaker
 
 - **Search:** one key per index (concatenate columns, no multicolumn, unique or `INCLUDE`); English stemming only, no stopword list, no n-gram, ICU or CJK tokenizer; analyzer fixed per index; field weights need the `fields` option and apply to the sections of one key (no BM25F); `sift.score()` cannot be used in `WHERE`; a role under row-level security gets no ranked scan; x86-64 only tested; prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search's.
-- **Analytics:** `sift_col` accelerates aggregates and top-N only (not row streams, `NOT IN`, right/full joins, partitioned-table parents, `numeric` wider than 18 digits, `uuid`, `interval`, arrays); `sift_table` is young (127 columns at most, no HOT, some shapes keep a `Seq Scan`, loads over one transaction's write-segment limit must be split). ClickHouse and Elasticsearch are faster on several of the benchmark's questions: the full list is in the [README](../README.md#analytics-1) ("Where pg_sift is not the fastest").
+- **Analytics:** `sift_col` accelerates aggregates and top-N only (not row streams, `NOT IN`, right/full joins, partitioned-table parents, a key, aggregate or expression of a `numeric` wider than 18 digits, `money` or `interval`, `uuid`, arrays); `sift_table` is young (127 columns at most, no HOT, some shapes keep a `Seq Scan`, loads over one transaction's write-segment limit must be split). ClickHouse and Elasticsearch are faster on several of the benchmark's questions: the full list is in the [README](../README.md#analytics-1) ("Where pg_sift is not the fastest").
 
 ## Sources
 
