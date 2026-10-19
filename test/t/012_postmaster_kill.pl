@@ -20,4 +20,25 @@ is($node->safe_psql('postgres', 'SELECT 1'), '1', 'the server restarts right aft
 eval { $bg->quit };
 $node->stop;
 
+# kill9_wait polls the children of a killed postmaster, which init reaps while it reads their /proc entries: reading the entry of a process
+# that is gone fails with ESRCH, which must be "not running" and not a fatal warning (tap-004 under ASan, whose processes exit slowly)
+for my $round (1 .. 150)
+{
+	pipe(my $r, my $w);
+	my $parent = fork();
+	if (!$parent)
+	{
+		my @kids = map { fork() || do { my $x = 0; $x += $_ for 1 .. 30000; exit 0 } } 1 .. 20;
+		print $w "@kids\n";
+		exit 0;
+	}
+	my @kids = split ' ', scalar <$r>;
+	waitpid($parent, 0);
+	while (@kids)
+	{
+		@kids = grep { SiftTest::running($_) } @kids;
+	}
+}
+pass('150 rounds of children reaped by init while their /proc entries are read');
+
 done_testing();

@@ -190,14 +190,19 @@ sub kill9_wait
 # forked test would run the END block of the test
 sub ppid
 {
-	open(my $stat, '<', "/proc/$_[0]/stat") or return 0;
-	return (<$stat> =~ /\) \S (\d+)/)[0] // 0;
+	return (proc_stat($_[0]) =~ /\) \S (\d+)/)[0] // 0;
 }
 
 sub running
 {
-	open(my $stat, '<', "/proc/$_[0]/stat") or return 0;
-	return <$stat> !~ /\) Z /;
+	return proc_stat($_[0]) =~ /^\d+ .*\) [^Z]/;
+}
+
+# /proc/PID/stat, empty when the process is gone: a process that init reaps between the open and the read fails the read with ESRCH
+sub proc_stat
+{
+	open(my $stat, '<', "/proc/$_[0]/stat") or return '';
+	return scalar(<$stat>) // '';
 }
 
 sub usleep { select(undef, undef, undef, $_[0] / 1e6) }
