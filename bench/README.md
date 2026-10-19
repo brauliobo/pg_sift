@@ -344,9 +344,12 @@ against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 
 ## Analytics for everyone: the online store (`bench/bench store`)
 
 amount, quantity, created_at, title`), ten questions anyone can ask of it (an order by id, orders per country, revenue per month, the top 10 categories,
-an average, distinct customers per month, a filtered count, and three after a full-text search: a count, counts per category, the 10 newest), and four
-servers: PostgreSQL (heap, btree and GIN indexes: what most teams run), PostgreSQL with pg_sift (`sift_col` + `sift`, and `sift_table`), Elasticsearch and
-ClickHouse. It extends this harness rather than replacing it: `bench` is the entry point and holds the perf lock for the timed runs, `steps/lib.sh` gives the
+an average, distinct customers per month, a filtered count, and three after a full-text search: a count, counts per category, the 10 newest), and five
+servers: PostgreSQL (heap, btree and GIN indexes: what most teams run), PostgreSQL with pg_sift (`sift_col` + `sift`, and `sift_table`), Citus (its `columnar` table
+access method, single node), Elasticsearch and ClickHouse. It extends this harness rather than replacing it: `bench` is the entry point and holds the perf lock for the timed runs, `steps/lib.sh` gives the
+
+Citus is measured columnar-only and on a single node: the table is `USING columnar` (extension `citus_columnar`, `sql/store/citus.sql`) with the default columnar settings, no distributed tables and no workers; it has no `UPDATE` or `DELETE`, so it is not in the update tables.
+Citus is AGPL-licensed: the benchmark only runs its docker image (`STORE_CITUS_IMAGE` in `versions.env`) in a container and downloads nothing of it into this repository.
 
 ```sh
 bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
@@ -362,15 +365,18 @@ Needs docker (it pulls the images pinned in `versions.env` and builds the Postgr
 does), `psql`, `python3`; nothing is installed on the host and every container and anonymous volume is removed at the end (`store all` removes them on any exit).
 What it does, in order, for each size:
 
-1. Four containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (3) and `--memory` (8g) with no swap, on
-   ports `STORE_PORT_BASE` to `+3` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers are the same image and flags
-   (`shared_buffers` 2GB, `jit` off, the parallel settings of [Fair comparison](#fair-comparison-the-same-threads-for-every-engine)); Elasticsearch has a heap of half the memory;
+1. Five containers, one per server (the two pg_sift layouts share one PostgreSQL container, in two databases), each `--cpus` (3) and `--memory` (8g) with no swap, on
+   ports `STORE_PORT_BASE` to `+4` of 127.0.0.1 (default 56280); the servers not under test sit idle. The PostgreSQL containers (PostgreSQL, pg_sift, Citus) have the same flags
+   (`shared_buffers` 2GB, `jit` off, the parallel settings of [Fair comparison](#fair-comparison-the-same-threads-for-every-engine)); PostgreSQL and pg_sift are one image (PostgreSQL 18 with pg_sift built
+   from this checkout), Citus is its own image (`citusdata/citus`, PostgreSQL 18 of the same major version, a different minor release); Elasticsearch has a heap of half the memory;
    Elasticsearch and ClickHouse are told the thread budget too.
 2. The data: `sql/store/gen.sql` writes the rows with hashes of (id, draw number), so a size gives the same CSV every run (its sha256 is in the results); the same
-   file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
-   are recorded. Elasticsearch is merged to one segment and ClickHouse optimized after the load, PostgreSQL vacuumed and analyzed.
+   file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `citus.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
+   are recorded. Elasticsearch is merged to one segment and ClickHouse optimized after the load, PostgreSQL vacuumed and analyzed. Citus holds the table `USING columnar` (extension
+   `citus_columnar`) with a primary key and no other index; its size counts the columnar metadata tables as well.
 3. Warm runs (`steps/store.py run`), once for each budget of `--cpus-list` (1 and 3 by default; the containers are reconfigured between them): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
-   relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3), two more untimed runs, then `--runs` (7) timed runs
+   relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3; a question a system answers with an error is a result, its cell is `n/a` and the
+   generated text says which question failed and the message), two more untimed runs, then `--runs` (7) timed runs
    with the engines interleaved and the first rotating each run. A timing is the wall time of one request over a persistent local connection, one client, until the
    last byte; Elasticsearch is timed with its request cache off and, as a separate engine, on. The plan nodes of the PostgreSQL engines are recorded.
 4. Cold runs (`cold`): for each engine and query, restart the container, then time the first run (`--cold-runs`, 3); the operating system's page cache is not dropped
@@ -381,13 +387,13 @@ What it does, in order, for each size:
    after the changes and after a maintenance step (`VACUUM`, `OPTIMIZE ... FINAL`, `_forcemerge`). A system that fails is a row of the results, not a gap.
 
 The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. Options: `--sizes`, `--cpus` (the quota and thread budget of the load and the updates, 3), `--cpus-list` (the budgets timed, 1,3), `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
-`--engines pg,sift,sift_table,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`), `--queries 01,03,search_count`, `--docs`, `--out`;
+`--engines pg,sift,sift_table,citus,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`: a columnar table has no `UPDATE` or `DELETE`, so Citus is not part of it), `--queries 01,03,search_count`, `--docs`, `--out`;
 `STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `verify`, `run`, `cold`, `updates`, `merge`,
 `render`); `store.sh setup|run|cold|updates` keep the containers up for development.
 
 ### Fair comparison: the same threads for every engine
 
-The four servers do not start the same number of threads on their own: PostgreSQL uses a process per connection and parallel workers only when the planner asks
+The five servers do not start the same number of threads on their own: PostgreSQL (and Citus, which is PostgreSQL) uses a process per connection and parallel workers only when the planner asks
 for them, ClickHouse one thread per CPU it sees and a background pool for merges, Elasticsearch thread pools sized from the processors it sees and a JVM with its
 own GC and JIT threads. Letting each engine size itself from a container limit would measure the engines' defaults, not the engines. So one number, `--cpus N`,
 drives everything, and the comparison is made at two values of it, `--cpus-list 1,3` (the default of `bench/bench store`; `--quick` runs both too):
@@ -395,7 +401,7 @@ drives everything, and the comparison is made at two values of it, `--cpus-list 
 | engine | what N sets | where |
 |---|---|---|
 | every container | `--cpus N` (the CFS quota: N CPUs of time per period, on any of the host's CPUs), `--memory` and `--memory-swap` the same for every container | `docker run`, `docker update --cpus` |
-| PostgreSQL, pg_sift | `max_parallel_workers_per_gather = N - 1` (a leader and N - 1 workers are N processes) and `max_parallel_maintenance_workers = N - 1`; `max_worker_processes` and `max_parallel_workers` are 16 and `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, `min_parallel_index_scan_size` 64kB, so that nothing else keeps a scan serial; the same flags for both servers; nothing forces a parallel plan | `ALTER SYSTEM` + reload |
+| PostgreSQL, pg_sift, Citus | `max_parallel_workers_per_gather = N - 1` (a leader and N - 1 workers are N processes) and `max_parallel_maintenance_workers = N - 1`; `max_worker_processes` and `max_parallel_workers` are 16 and `parallel_setup_cost` 100, `parallel_tuple_cost` 0.01, `min_parallel_table_scan_size` 1MB, `min_parallel_index_scan_size` 64kB, so that nothing else keeps a scan serial; the same flags for all three servers; nothing forces a parallel plan. Citus: the columnar settings (`columnar.chunk_group_row_limit` 10,000, `columnar.stripe_row_limit` 150,000, `columnar.compression` zstd at level 3) are left at their defaults and the image's `citus` preload as it ships; the columnar scan is a custom scan, so whether a plan uses the workers is the planner's answer (`Workers Planned` of a `count(*)` is recorded) | `ALTER SYSTEM` + reload |
 | ClickHouse | `max_threads`, `max_insert_threads` and `max_final_threads` = N in the default profile; `background_pool_size` = N with `background_merges_mutations_concurrency_ratio` 1, so merges and mutations use at most N threads (the thresholds `number_of_free_entries_in_pool_to_*` are 1: with their defaults a pool this small refuses to start) | `config.d` and `users.d` files mounted into the container |
 | Elasticsearch | `node.processors = N` (search and write thread pools) and `-XX:ActiveProcessorCount=N` in `ES_JAVA_OPTS` (GC and JIT threads), next to the heap | environment of the container |
 
@@ -405,7 +411,7 @@ host rules below keep out of the numbers. Elasticsearch and ClickHouse must be r
 named volumes that outlive the container; PostgreSQL changes budget without a restart.
 
 How it is verified: after every start or change of budget, and again when each part is written, `steps/store.py` asks the servers what they run with and stops on a
-difference: `SHOW max_parallel_workers_per_gather` (and the others of `pg_settings`), `SELECT name, value FROM system.settings WHERE name = 'max_threads'` (and
+difference: `SHOW max_parallel_workers_per_gather` (and the others of `pg_settings`; on the Citus server too), `SELECT name, value FROM system.settings WHERE name = 'max_threads'` (and
 `system.server_settings` for the background pool), `GET _nodes/os?filter_path=**.allocated_processors` (and the JVM's `-XX:ActiveProcessorCount` from `GET _nodes/jvm`, the
 `search` and `write` pools from `_cat/thread_pool`), and `docker inspect` for the quota and an empty cpuset. The values are in the results (`threads` of each result
 A PostgreSQL `count(*)` is also planned and the workers it plans are recorded.
