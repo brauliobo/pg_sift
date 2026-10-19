@@ -49,6 +49,11 @@ case $AM in
 esac
 
 rm -rf "$OUT" && mkdir -p "$OUT"
+# the cluster runs without autovacuum (scripts/pgtest.sh start): the soak needs the one its writers keep busy, and gives the cluster back as it was
+autovacuum() { psql -X -qAt -d postgres -c "$1" -c "SELECT pg_reload_conf()" >/dev/null; }
+restore() { autovacuum "ALTER SYSTEM RESET autovacuum"; }
+trap restore EXIT
+autovacuum "ALTER SYSTEM SET autovacuum = on"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_soak WITH (FORCE)" -c "CREATE DATABASE sift_soak"
 q -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION amcheck" -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql"
 q <<-SQL
@@ -89,7 +94,7 @@ pgbench -n -T "$DURATION" -c 1 -f "$OUT/read.sql" >"$OUT/readers.txt" 2>&1 &
 readers=$!
 soak_backends() { q -c "SELECT pid FROM pg_stat_activity WHERE backend_type = 'client backend' AND datname = 'sift_soak' AND pid <> pg_backend_pid()"; }
 leak_watch_start "$OUT/memory.tsv" soak_backends
-trap 'kill $writers $readers $LEAK_WATCH 2>/dev/null || true' EXIT
+trap 'kill $writers $readers $LEAK_WATCH 2>/dev/null || true; restore' EXIT
 
 checks=0 bad=0
 end=$((SECONDS + DURATION))
@@ -115,7 +120,7 @@ while (( SECONDS < end )); do
 	log "checks $checks, failures $bad"
 done
 wait $writers $readers || bad=$((bad + 1))
-trap - EXIT
+trap restore EXIT
 leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { bad=$((bad + 1)); log "MEMORY GROWTH"; }
 log "backend memory: $(grep -c . "$OUT/memory.txt") backends sampled, $(grep -c GROWING "$OUT/memory.txt" || true) growing (see memory.txt)"
 
