@@ -35,8 +35,11 @@ typedef enum SiftShredType
 	SIFT_SHRED_INT8,
 	SIFT_SHRED_FLOAT4,
 	SIFT_SHRED_FLOAT8,
-	SIFT_SHRED_TEXT
+	SIFT_SHRED_TEXT,
+	SIFT_SHRED_ASTEXT			/* the text `->>` gives for any scalar: a string as it is, a number as numeric_out prints it, true / false */
 } SiftShredType;
+
+#define SIFT_SHRED_IS_TEXTUAL(t)	((t) == SIFT_SHRED_TEXT || (t) == SIFT_SHRED_ASTEXT)
 
 /* State of a slot or of a list; the values index SiftShredCounts */
 typedef enum SiftShredState
@@ -117,6 +120,7 @@ typedef struct SiftShredCol
 {
 	uint8	   *state;			/* [group n] SiftShredState */
 	SiftShredVal *val;			/* [group n] */
+	uint8	   *tag;			/* [group n] SIFT_COLTAG_*, the JSON type of the value of an OVERFLOW slot (0: not known); meaningless in the other states */
 	uint32		ovf;			/* SIFT_SHRED_OVF_* seen in this document, also by lists below that overflowed */
 } SiftShredCol;
 
@@ -177,6 +181,7 @@ typedef struct SiftShred
 	int			nframes;
 	int			maxframes;
 	bool		root_done;
+	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 } SiftShred;
 
 extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached);
@@ -192,6 +197,8 @@ extern bool sift_shred_full(const SiftShred *sh);
 extern int	sift_shred_object_keys(const SiftShred *sh);
 extern const char *sift_shred_object_key(const SiftShred *sh, int i, int *len);
 extern bool sift_shred_wants_number(const SiftShred *sh);
+/* the target is an astext column: pass the number as `->>` prints it (numeric_out), not normalized */
+extern bool sift_shred_wants_number_text(const SiftShred *sh);
 extern void sift_shred_null(SiftShred *sh);
 extern void sift_shred_bool(SiftShred *sh, bool b);
 extern void sift_shred_string(SiftShred *sh, const char *s, int len);

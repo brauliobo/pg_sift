@@ -441,6 +441,45 @@ SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 256)), 's 
  value |    256
 (1 row)
 
+-- astext: the text `->>` gives for any scalar, a number as numeric_out prints it (not normalized), a container is a shape overflow
+SELECT * FROM sh('{"s":[1.50,-0.0,1e2,12345678901234567890,0.000001,"1.50","x",true,false,null,{"a":1},[1]]}', 's[] astext');
+ kind | path | parent | ord | key |  state   |         val          
+------+------+--------+-----+-----+----------+----------------------
+ col  | s[]  |      0 |   0 |     | value    | 1.50
+ col  | s[]  |      0 |   1 |     | value    | 0.0
+ col  | s[]  |      0 |   2 |     | value    | 100
+ col  | s[]  |      0 |   3 |     | value    | 12345678901234567890
+ col  | s[]  |      0 |   4 |     | value    | 0.000001
+ col  | s[]  |      0 |   5 |     | value    | 1.50
+ col  | s[]  |      0 |   6 |     | value    | x
+ col  | s[]  |      0 |   7 |     | value    | true
+ col  | s[]  |      0 |   8 |     | value    | false
+ col  | s[]  |      0 |   9 |     | null     | 
+ col  | s[]  |      0 |  10 |     | overflow | 
+ col  | s[]  |      0 |  11 |     | overflow | 
+ list | s[]  |      0 |   0 |     | value    | 12
+ ovf  | s[]  |        |     |     | overflow | 1
+(14 rows)
+
+SELECT * FROM sh('{"s":1.50}', 's astext');
+ kind | path | parent | ord | key | state | val  
+------+------+--------+-----+-----+-------+------
+ col  | s    |        |   0 |     | value | 1.50
+(1 row)
+
+SELECT * FROM sh('{"s":1.50}', 's text');
+ kind | path | parent | ord | key |  state   | val 
+------+------+--------+-----+-----+----------+-----
+ col  | s    |        |   0 |     | overflow | 
+ ovf  | s    |        |     |     | overflow | 2
+(2 rows)
+
+SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 256)), 's astext') WHERE kind = 'col';
+  state   | length 
+----------+--------
+ overflow |       
+(1 row)
+
 -- limits: lists are cut at max_elems and max_bytes, the overflow is flagged on every column below
 SELECT * FROM sh('{"a":[1,2,3,4,5,6]}', 'a[] int4', 4);
  kind | path | parent | ord | key |  state   | val 

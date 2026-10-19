@@ -378,7 +378,11 @@ after the frozen segments of the same layout, which are merged first (the frozen
    marks every backend's `SiftTblRel` invalid (its target page, write buffer page tables and fetch scan are rebuilt on next use), and a standby
    replays the lock first, cancelling the queries that hold the table there. A lazy VACUUM is in no snapshot or horizon, so its own releases
    carry the next xid (`xid_safexid`) and are reused once another transaction has ended; under the lock every record is reusable
-   (`sift_store_horizon`), so the cut takes the free run at the end whatever released it.
+   (`sift_store_horizon`), so the cut takes the free run at the end whatever released it. On an idle database nothing ends in between, so a
+   second VACUUM right after the first finds the same blocks not yet reusable (3.1 measurement, 300,000 narrow rows: 2,907 of 2,994 blocks
+   free after the first VACUUM, 16 reusable, and the same after the second); one transaction that takes an xid (`SELECT txid_current()`)
+   and a VACUUM cut the file to 103 blocks (824 kB). A load benchmark that reports the size after one VACUUM reports the free blocks too
+   (`sift.table_space`).
    Live segments in the middle of the file stop the cut, as live rows do for a heap; their space is reused by later writes.
 7. `vac_update_relstats` (relpages, reltuples = live rows, `relfrozenxid`), `pgstat_report_vacuum` (live rows; dead rows = deleted by a
    committed transaction but not removable yet), counted as a heap does: an in-progress insertion is not live yet, an in-progress deletion

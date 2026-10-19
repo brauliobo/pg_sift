@@ -1,0 +1,259 @@
+-- jsonb_typeof(path) = 'type' (or IN a list of types) pushed into the aggregate scan (docs/COL-PLAN.md): the source keeps the
+-- rows whose value has the type, the stored values by the type of the leaf and the values the leaf cannot hold by the type its chunk kept for them,
+-- and the rows of any other type are dropped without the error that a read of such a value raises. Every query runs with and without the
+-- pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+
+-- leaves: m float8, n int4, s text, b bool, d int8; the values of each cycle through every JSON type, a JSON null and a missing key, and four
+-- stretches of ids shape the numbers differently (constant, few distinct, scattered, ascending) so that the chunks differ in their encoding
+CREATE FUNCTION num(i int, salt int) RETURNS numeric LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE WHEN i <= 4000 THEN 3 WHEN i <= 8000 THEN i % 50 WHEN i <= 12000 THEN (i * 7919 + salt) % 8000 ELSE i END $$;
+CREATE FUNCTION doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE i % 23 WHEN 0 THEN jsonb_build_object('m', 's' || i) WHEN 1 THEN '{"m": true}' WHEN 2 THEN '{"m": {"x": 1}}'
+	WHEN 3 THEN '{"m": [1, 2]}' WHEN 4 THEN '{"m": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('m', num(i, 1) / 8) END::jsonb
+	|| CASE i % 29 WHEN 0 THEN jsonb_build_object('n', 'n' || i) WHEN 1 THEN '{"n": false}' WHEN 2 THEN '{"n": {}}' WHEN 3 THEN '{"n": []}'
+	WHEN 4 THEN '{"n": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('n', num(i, 2)) END::jsonb
+	|| CASE i % 31 WHEN 0 THEN jsonb_build_object('s', i) WHEN 1 THEN '{"s": true}' WHEN 2 THEN '{"s": {"y": [1]}}' WHEN 3 THEN '{"s": [null]}'
+	WHEN 4 THEN '{"s": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('s', 'v' || num(i, 3)) END::jsonb
+	|| CASE i % 37 WHEN 0 THEN jsonb_build_object('b', i) WHEN 1 THEN '{"b": "yes"}' WHEN 2 THEN '{"b": {"z": 0}}' WHEN 3 THEN '{"b": [true]}'
+	WHEN 4 THEN '{"b": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('b', i % 3 = 0) END::jsonb
+	|| CASE i % 41 WHEN 0 THEN jsonb_build_object('d', 'd' || i) WHEN 1 THEN '{"d": true}' WHEN 2 THEN '{"d": {}}' WHEN 3 THEN '{"d": [0.5]}'
+	WHEN 4 THEN '{"d": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('d', num(i, 4) * 10000000000) END::jsonb
+	|| jsonb_build_object('nest', CASE i % 11 WHEN 0 THEN to_jsonb('x'::text) WHEN 1 THEN '[1]' WHEN 2 THEN '{"v": "s"}' WHEN 3 THEN '{}'
+	ELSE jsonb_build_object('v', i % 100) END::jsonb)
+	|| jsonb_build_object('a', CASE WHEN i % 5 = 0 THEN to_jsonb(i) ELSE to_jsonb('t' || i % 10) END) $$;
+
+CREATE TABLE t (id int, grp int, attrs jsonb);
+INSERT INTO t SELECT i, i % 7, doc(i) FROM generate_series(1, 16000) i;
+CREATE INDEX t_col ON t USING sift_col (id, grp, attrs)
+	WITH (paths = 'attrs.m float8, attrs.n int4, attrs.s text, attrs.b bool, attrs.d int8, attrs.nest.v int4, attrs.a astext');
+VACUUM ANALYZE t;
+
+CREATE FUNCTION t_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION t_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- how a query ends: its rows (as a hash) or the error (the hint of the one of the pushdown)
+CREATE FUNCTION t_outcome(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE h text;
+BEGIN
+	RETURN 'rows ' || md5(t_rows(q, push));
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS h = PG_EXCEPTION_HINT;
+	RETURN 'error ' || SQLSTATE || CASE WHEN SQLSTATE = '0A000' THEN ' (' || h || ')' ELSE '' END;
+END $$;
+
+-- 'same' when the plan is pushed and ends as the normal plan does, 'not pushed', or the two outcomes
+CREATE FUNCTION t_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := t_outcome(q, true); b text := t_outcome(q, false);
+BEGIN
+	IF NOT t_pushed(q) THEN RETURN 'not pushed'; END IF;
+	RETURN CASE WHEN a = b THEN 'same' ELSE 'pushed: ' || a || '; normal: ' || b END;
+END $$;
+
+CREATE TABLE t_q (n serial, q text);
+INSERT INTO t_q (q) VALUES
+	-- a number among strings, booleans, objects, arrays, JSON nulls and missing keys: the sum of the numbers (j16)
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'''),
+	('SELECT count(*), sum((attrs->>''m'')::float8), min((attrs->>''m'')::float8), max((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'''),
+	('SELECT grp, count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' GROUP BY grp'),
+	('SELECT grp, avg((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND id > 5000 GROUP BY grp'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND (attrs->>''m'')::float8 > 100'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') IN (''number'')'),
+	('SELECT count(*), sum(id) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND grp = 3'),
+	('SELECT count(*) FROM t WHERE ''number'' = jsonb_typeof(attrs->''m'')'),
+	-- the integer leaves
+	('SELECT count(*), sum((attrs->>''n'')::int), max((attrs->>''n'')::int) FROM t WHERE jsonb_typeof(attrs->''n'') = ''number'''),
+	('SELECT grp, count(*), sum((attrs->>''n'')::int) FROM t WHERE jsonb_typeof(attrs->''n'') = ''number'' GROUP BY grp'),
+	('SELECT count(*), sum((attrs->>''d'')::int8), min((attrs->>''d'')::int8) FROM t WHERE jsonb_typeof(attrs->''d'') = ''number'''),
+	('SELECT grp, sum((attrs->>''d'')::int8) FROM t WHERE jsonb_typeof(attrs->''d'') = ''number'' GROUP BY grp'),
+	-- a string among numbers, booleans, objects and arrays; a boolean among the others
+	('SELECT count(*), count(DISTINCT attrs->>''s'') FROM t WHERE jsonb_typeof(attrs->''s'') = ''string'''),
+	('SELECT attrs->>''s'' AS s, count(*) FROM t WHERE jsonb_typeof(attrs->''s'') = ''string'' AND id <= 4000 GROUP BY 1'),
+	('SELECT grp, count(*) FROM t WHERE jsonb_typeof(attrs->''s'') = ''string'' GROUP BY grp'),
+	('SELECT count(*), count(*) FILTER (WHERE (attrs->>''b'')::bool) FROM t WHERE jsonb_typeof(attrs->''b'') = ''boolean'''),
+	('SELECT grp, count(*) FILTER (WHERE (attrs->>''b'')::bool) FROM t WHERE jsonb_typeof(attrs->''b'') = ''boolean'' GROUP BY grp'),
+	-- a nested path, as the operators give it
+	('SELECT count(*), sum((attrs->''nest''->>''v'')::int) FROM t WHERE jsonb_typeof(attrs->''nest''->''v'') = ''number'''),
+	('SELECT grp, count(*), max((attrs #>> ''{nest,v}'')::int) FROM t WHERE jsonb_typeof(attrs #> ''{nest,v}'') = ''number'' GROUP BY grp'),
+	-- IN: the types of the leaf with others that no row has
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') IN (''number'', ''number'')'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''b'') IN (''boolean'', ''boolean'')'),
+	-- together with other conjuncts, on two leaves, in a sparse selection
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND jsonb_typeof(attrs->''n'') = ''number'''),
+	('SELECT count(*), sum((attrs->>''m'')::float8), sum((attrs->>''n'')::int) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND jsonb_typeof(attrs->''n'') = ''number'' AND id BETWEEN 3990 AND 4010'),
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' AND id = 12345'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''s'') = ''string'' AND attrs->>''s'' = ''v3'''),
+	-- a path that is no leaf of the index: the normal plan
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nokey'') = ''number'''),
+	-- not pushed: a JSON null, an inequality, a NOT, an OR, an IS NULL, a group key
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''null'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') <> ''number'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') NOT IN (''string'', ''boolean'', ''object'', ''array'', ''null'')'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' OR id = 5'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') IS NULL'),
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''bogus'''),
+	-- not pushed: a leaf of the text of any scalar holds a number as its text, it has no type to filter by
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number''');
+
+CREATE FUNCTION t_compare(OUT n int, OUT same bool, OUT pushed bool, OUT result text) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE q text;
+BEGIN
+	FOR n, q IN SELECT t_q.n, t_q.q FROM t_q ORDER BY t_q.n LOOP
+		pushed := t_pushed(q);
+		result := t_rows(q, false);
+		same := t_rows(q, true) IS NOT DISTINCT FROM result;
+		result := CASE WHEN position(E'\n' IN result) = 0 THEN result END;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+SELECT * FROM t_compare();
+
+-- the shape of the plan
+SET sift.enable_agg = on;
+EXPLAIN (COSTS OFF) SELECT count(*), sum((attrs->>'m')::float8) FROM t WHERE jsonb_typeof(attrs->'m') = 'number';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'s') IN ('string');
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'m') <> 'number';
+RESET sift.enable_agg;
+
+-- a value the leaf cannot hold (a number out of the range of the type, a non-integer for an integer leaf, a string for a number) is an error
+-- when the filter selects its row, as the read of such a leaf is; the rows of the other types are dropped without one
+CREATE TABLE e (id int, grp int, attrs jsonb);
+INSERT INTO e SELECT i, i % 7, doc(i) FROM generate_series(1, 6000) i;
+INSERT INTO e VALUES (7001, 0, '{"m": 1e999, "n": 1.5, "s": "bad", "b": 1, "d": 2}'), (7002, 1, '{"m": 2.5, "n": 7, "s": "ok", "b": true, "d": 3}');
+CREATE INDEX e_col ON e USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.n int4, attrs.s text, attrs.b bool, attrs.d int8');
+VACUUM ANALYZE e;
+
+CREATE TABLE e_q (n serial, q text);
+INSERT INTO e_q (q) VALUES
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM e WHERE jsonb_typeof(attrs->''m'') = ''number'''),
+	('SELECT count(*), sum((attrs->>''n'')::int) FROM e WHERE jsonb_typeof(attrs->''n'') = ''number'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') = ''string'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') = ''boolean'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') = ''object'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') = ''array'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') IN (''number'', ''string'')'),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''s'') = ''number'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''string'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''number'''),
+	-- a leaf that another conjunct reads does not hide the error
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''m'') = ''number'' AND (attrs->>''m'')::float8 > 100'),
+	-- the types of the leaf itself are stored
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string'''),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'''),
+	('SELECT count(*), sum((attrs->>''d'')::int8) FROM e WHERE jsonb_typeof(attrs->''d'') = ''number''');
+SELECT n, t_check(q) FROM e_q ORDER BY n;
+
+-- a read of the leaf that no type filter guards keeps the normal plan
+SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS unguarded,
+       t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string''') AS other_leaf;
+
+-- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
+DELETE FROM e WHERE id = 7001;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 14) ORDER BY n;
+UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 14) ORDER BY n;
+INSERT INTO e VALUES (7003, 2, '{"m": 1e999}');
+SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
+DELETE FROM e WHERE id IN (7002, 7003);
+VACUUM e;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 14) ORDER BY n;
+
+-- the chunk encodings: a constant chunk and the codec's in the segments (the stretches of ids differ in how many values they hold), the plain
+-- encodings of the write buffer
+CREATE FUNCTION encodings(idx regclass) RETURNS text LANGUAGE sql AS
+$$ SELECT format('const %s codec %s', const_chunks > 0, codec_chunks > 0) FROM sift.col_leaves(idx) WHERE path = 'attrs.m' $$;
+CREATE TABLE u (id int, grp int, attrs jsonb) WITH (fillfactor = 10);
+INSERT INTO u SELECT i, i % 7, doc(i) FROM generate_series(1, 16000) i;
+CREATE INDEX u_col ON u USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.n int4, attrs.s text, attrs.b bool, attrs.d int8');
+CREATE TABLE u_q (n serial, q text);
+INSERT INTO u_q (q) VALUES
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM u WHERE jsonb_typeof(attrs->''m'') = ''number'''),
+	('SELECT grp, count(*), sum((attrs->>''n'')::int) FROM u WHERE jsonb_typeof(attrs->''n'') = ''number'' GROUP BY grp'),
+	('SELECT count(*), count(DISTINCT attrs->>''s'') FROM u WHERE jsonb_typeof(attrs->''s'') = ''string'''),
+	('SELECT count(*), count(*) FILTER (WHERE (attrs->>''b'')::bool) FROM u WHERE jsonb_typeof(attrs->''b'') = ''boolean'''),
+	('SELECT count(*), sum((attrs->>''d'')::int8) FROM u WHERE jsonb_typeof(attrs->''d'') = ''number'' AND id BETWEEN 3000 AND 9000');
+SELECT encodings('u_col');
+SELECT n, t_check(q) FROM u_q ORDER BY n;
+SELECT sift.col_verify('u_col', true);
+-- the rows of the write buffer beside the segments
+INSERT INTO u SELECT i, i % 7, doc(i) FROM generate_series(16001, 17000) i;
+SELECT n, t_check(q) FROM u_q ORDER BY n;
+SELECT sift.col_verify('u_col', true);
+DROP TABLE u, u_q;
+
+-- column format minor 3 keeps no type for a value its leaf cannot hold: a unit that has one cannot answer, and says to REINDEX; a unit with none is
+-- not in the way, and a merge of it with a minor 4 unit gives a unit that has types
+CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
+$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+CREATE TABLE g (id int, grp int, attrs jsonb);
+CREATE TABLE g_q (n serial, q text);
+INSERT INTO g_q (q) VALUES
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM g WHERE jsonb_typeof(attrs->''m'') = ''number'''),
+	('SELECT grp, count(*) FROM g WHERE jsonb_typeof(attrs->''s'') = ''string'' GROUP BY grp');
+-- numbers only
+INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 100) FROM generate_series(1, 6000) i;
+SET sift.col_format_minor = 3;
+CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
+RESET sift.col_format_minor;
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+-- strings among the numbers, written as minor 4 (the write buffer, a promoted segment, the merge of both with the minor 3 one)
+INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END, 's', CASE WHEN i % 6 = 0 THEN to_jsonb(i) ELSE to_jsonb('v' || i % 100) END)
+	FROM generate_series(6001, 9000) i;
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+SELECT sift.col_promote('g_col');
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+SELECT sift.col_merge('g_col', true);
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+SELECT sift.col_verify('g_col', true);
+-- strings among the numbers under minor 3, and the merge with a minor 4 unit
+INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END) FROM generate_series(9001, 12000) i;
+SET sift.col_format_minor = 3;
+SELECT sift.col_promote('g_col');
+RESET sift.col_format_minor;
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q WHERE n = 1;
+SELECT sift.col_merge('g_col', true);
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q WHERE n = 1;
+SELECT sift.col_verify('g_col', true);
+-- REINDEX writes the types
+REINDEX INDEX g_col;
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+-- a VACUUM that rewrites the units keeps them
+DELETE FROM g WHERE id % 3 = 0;
+VACUUM g;
+SELECT fmt('g_col');
+SELECT n, t_check(q) FROM g_q ORDER BY n;
+SELECT sift.col_verify('g_col', true);
+DROP TABLE g, g_q;
+DROP FUNCTION fmt(regclass), encodings(regclass);
+
+DROP TABLE t, t_q, e, e_q;
+DROP FUNCTION t_rows(text, bool), t_pushed(text), t_outcome(text, bool), t_check(text), t_compare(), doc(int), num(int, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

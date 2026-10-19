@@ -22,10 +22,13 @@
 
 #define corrupt SIFT_CORRUPT
 
+/* A row's values (hash), and the types of its overflow values apart (tags): a value stored under minor 3 has none, and then the row's types are not compared (known is false) */
 typedef struct RowHash
 {
 	SiftKey		key;
 	uint64		hash;
+	uint64		tags;
+	bool		known;
 } RowHash;
 
 typedef struct Collect
@@ -53,27 +56,38 @@ value_hash(uint64 h, const SiftColDef *def, const SiftColValue *v)
 	return hash_combine64(h, murmurhash64(x));
 }
 
-/* One hash for a row, whether it comes from the heap (the index tuple formed again) or from the index (decoded) */
-static uint64
-row_hash(const SiftColSchema *sc, const SiftColRow *row)
+static void
+value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 {
-	uint64		h = 0;
+	rh->hash = value_hash(rh->hash, def, v);
+	if (v->overflow)
+	{
+		rh->tags = hash_combine64(rh->tags, murmurhash64(v->tag));
+		rh->known &= v->tag != SIFT_COLTAG_UNKNOWN;
+	}
+}
+
+/* The hashes of a row, whether it comes from the heap (the index tuple formed again) or from the index (decoded) */
+static RowHash
+row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
+{
+	RowHash		rh = {key, 0, 0, true};
 
 	for (int c = 0; c < sc->ncols; c++)
 	{
 		const SiftColDef *def = &sc->cols[c];
 
 		if (def->parent < 0)
-			h = value_hash(h, def, &row->val[c]);
+			value_hashes(&rh, def, &row->val[c]);
 		else
 		{
 			int64		n = row->val[def->parent].isnull ? 0 : row->val[def->parent].v.i;
 
 			for (int64 i = 0; i < n; i++)
-				h = value_hash(h, def, &row->elem[c][i]);
+				value_hashes(&rh, def, &row->elem[c][i]);
 		}
 	}
-	return h;
+	return rh;
 }
 
 static void
@@ -89,7 +103,7 @@ collect_batch(Collect *cl, const SiftColSchema *sc, const SiftColBatch *b)
 			cl->rows = cl->rows ? repalloc(cl->rows, cl->cap * sizeof(RowHash)) : palloc(cl->cap * sizeof(RowHash));
 		}
 		sift_cbatch_row(b, r, &row);
-		cl->rows[cl->n++] = (RowHash) {b->keys[r], row_hash(sc, &row)};
+		cl->rows[cl->n++] = row_hash(sc, &row, b->keys[r]);
 	}
 }
 
@@ -116,7 +130,8 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 {
 	HeapCheck  *hc = state;
 	SiftColRow	row;
-	RowHash		key = {sift_key_from_tid(tid), 0};
+	RowHash		key = {sift_key_from_tid(tid)},
+				heap;
 	const RowHash *found;
 
 	if (!alive)
@@ -125,8 +140,12 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 	if (found == NULL)
 		corrupt(hc->index, "Heap tuple (%u,%u) is not in the index.", ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
 	sift_col_make_row(hc->r, tid, values, isnull, &row, hc->tmp);
-	if (found->hash != row_hash(hc->r->schema, &row))
+	heap = row_hash(hc->r->schema, &row, key.key);
+	if (found->hash != heap.hash)
 		corrupt(hc->index, "The values of heap tuple (%u,%u) differ from the index's.", ItemPointerGetBlockNumber(tid),
+				ItemPointerGetOffsetNumber(tid));
+	if (found->known && found->tags != heap.tags)
+		corrupt(hc->index, "The types of the overflow values of heap tuple (%u,%u) differ from the index's.", ItemPointerGetBlockNumber(tid),
 				ItemPointerGetOffsetNumber(tid));
 	hc->checked++;
 	MemoryContextReset(hc->tmp);

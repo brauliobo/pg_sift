@@ -75,6 +75,12 @@ SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 255)), 's 
 SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 256)), 's text') WHERE kind = 'col';
 SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 256)), 's text(256)') WHERE kind = 'col';
 
+-- astext: the text `->>` gives for any scalar, a number as numeric_out prints it (not normalized), a container is a shape overflow
+SELECT * FROM sh('{"s":[1.50,-0.0,1e2,12345678901234567890,0.000001,"1.50","x",true,false,null,{"a":1},[1]]}', 's[] astext');
+SELECT * FROM sh('{"s":1.50}', 's astext');
+SELECT * FROM sh('{"s":1.50}', 's text');
+SELECT state, length(val) FROM sh(jsonb_build_object('s', repeat('z', 256)), 's astext') WHERE kind = 'col';
+
 -- limits: lists are cut at max_elems and max_bytes, the overflow is flagged on every column below
 SELECT * FROM sh('{"a":[1,2,3,4,5,6]}', 'a[] int4', 4);
 SELECT * FROM sh('{"a":[{"x":1,"y":"p"},{"x":2,"y":"q"},{"x":3,"y":"r"}],"b":[1]}', 'a[]{x int4, y text}, b[] int4', 2);

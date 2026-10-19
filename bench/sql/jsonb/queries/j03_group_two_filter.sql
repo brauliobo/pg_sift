@@ -1,0 +1,1 @@
+SELECT e.kind, e.sub, count(*), round(avg(e.score)::numeric, 6) FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(kind text, sub text, flag text, score float8) WHERE d.day >= '2024-01-01' AND d.grp < 100 AND e.flag = 'fa' GROUP BY 1, 2 ORDER BY 1, 2

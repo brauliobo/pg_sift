@@ -88,15 +88,16 @@ typedef enum SiftAggPredKind
 	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
 	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
 	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
-	SAP_GATE					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
+	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
+	SAP_TYPE					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
 {
 	SiftAggPredKind kind;
 	int			id;				/* preorder number, the index of the node's executor state */
-	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT; SAP_ANY_ELEM: the array leaf */
-	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT */
+	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE; SAP_ANY_ELEM: the array leaf */
+	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
 	SiftAggNum	num;			/* SAP_NCMP */
@@ -123,6 +124,7 @@ typedef struct SiftAggKey
 	int			leaf;			/* SAK_COMBO: the combo */
 	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
+	int			bucket;			/* SAK_LUT of a timestamp leaf: the expression is the same within this many seconds, so it is evaluated once per bucket of rows */
 	SiftAggNum	num;			/* SAK_NUM */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;
@@ -272,8 +274,9 @@ typedef struct SiftAggAgg
  */
 typedef struct SiftAggVLeaf
 {
-	int			obj;			/* the object leaf (free keys: children "key" and "value") */
+	int			obj;			/* the object leaf (free keys: children "key" and "value"), or the array leaf of a length */
 	char	   *key;			/* the value of its element with this key, NULL when the row has none: leaf nleaves + index */
+	bool		count;			/* the number of elements of the array leaf obj (jsonb_array_length), NULL where it has none; key is unused */
 } SiftAggVLeaf;
 
 typedef struct SiftAggArm
@@ -428,16 +431,18 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
 
 /*
- * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, sift_colsrc.h SiftSrcUnitAgg)? A row level scan of one
- * source without joins, combos or sets, with at most one group key, that is a column of a histogram, and aggregates of the
+ * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, sift_colsrc.h SiftSrcUnitAgg)? A scan of one source
+ * without joins, combos or sets, with at most one group key, that is a column of a histogram, and aggregates of the
  * stored measures: count(*), count(m), sum and avg of an integer or numeric m, and min and max when there is no key. Conjuncts on
  * other leaves must be zone comparisons (a unit answers when its zone lies inside them), the rest must test the key's leaf (or,
  * without a key, one leaf: dim). dim: that leaf, -1 when the unit's sums answer (no key, no such conjunct).
+ * At element level (the elements of an array leaf) the key or the tested leaf is a scalar of the elements, the histogram is the
+ * unit's element cube of that array (one count per element), and sum and avg of a float8 measure are answered too.
  */
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int *dim);
 
-/* The one leaf a row level predicate reads (-1: none), -2 if it is not a test of a plain leaf of the source (a combo, an element, a late expression) */
-extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+/* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
+extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);
 
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);

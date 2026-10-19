@@ -1,0 +1,131 @@
+-- The astext path type: a leaf that holds the text `->>` gives for any scalar (a string as it is, a number as numeric_out prints it, true and
+-- false), so a regular expression or any text function on the text of a number runs on the column. Every query runs with and without the
+-- pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+CREATE TABLE a_t (id int, grp int, doc jsonb, metrics_a jsonb, items jsonb);
+-- numbers with trailing zeros, exponents, negatives and 20 digits, strings that look like numbers, booleans, JSON nulls and absent keys
+INSERT INTO a_t
+SELECT i, i % 7,
+       CASE i % 9 WHEN 0 THEN '{}' WHEN 1 THEN '{"label": 1.50}' WHEN 2 THEN '{"label": "1.50"}' WHEN 3 THEN '{"label": true}' WHEN 4 THEN '{"label": null}'
+                  WHEN 5 THEN '{"label": 12}' WHEN 6 THEN '{"label": -0.0}' WHEN 7 THEN '{"label": 1e2}' ELSE '{"label": "x"}' END::jsonb,
+       (SELECT coalesce(jsonb_object_agg('k' || k, (ARRAY['1.50', '7', '0.1', '-3', '100', '1e2', '12345678901234567890', '0.000001', '"12"', '"x"', 'true', 'null', '"7.5"'])[1 + (i * k + k * k) % 13]::jsonb), '{}')
+        FROM generate_series(1, 1 + i % 6) k),
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE (SELECT coalesce(jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 4),
+                        'score', (ARRAY['1.50', '7', '0.125', '-3', '100', '1e2', '"12"', '"x"', 'true', 'null', '"7.5"', '2.25'])[1 + (i * k + k) % 12]::jsonb) ORDER BY k), '[]')
+                  FROM generate_series(1, (i * 5) % 6) k) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX a_col ON a_t USING sift_col (id, grp, doc, metrics_a, items) WITH (paths = 'doc->label astext, metrics_a.* astext, items[]{kind text, score astext}');
+VACUUM ANALYZE a_t;
+CREATE FUNCTION a_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION a_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE a_q (q text);
+INSERT INTO a_q VALUES
+	-- jsonb_each_text: the text of the value
+	('SELECT s.key, count(*), count(s.value) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1'),
+	('SELECT s.value, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1'),
+	('SELECT s.key, avg(s.value::float8), count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s WHERE s.value ~ ''^[0-9.]+$'' GROUP BY 1'),
+	('SELECT s.key, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s WHERE s.value ~ ''^-?[0-9]+$'' OR s.value IN (''true'', ''x'') GROUP BY 1'),
+	('SELECT length(s.value) AS len, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1'),
+	('SELECT d.grp, count(DISTINCT s.value) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1'),
+	-- jsonb_array_elements and ->>
+	('SELECT e.v->>''kind'' AS kind, sum((e.v->>''score'')::float8), count(*) FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' ~ ''^[0-9.]+$'' GROUP BY 1'),
+	('SELECT e.v->>''score'' AS score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
+	('SELECT count(DISTINCT e.v->>''score'') FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v)'),
+	('SELECT e.score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1'),
+	('SELECT e.kind, count(*) FILTER (WHERE e.score = ''1.50''), count(*) FILTER (WHERE e.score IS NULL) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1'),
+	('SELECT e.kind, avg(e.score::float8) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) WHERE e.score ~ ''^[0-9.]+$'' GROUP BY 1'),
+	-- the text of a path of the document
+	('SELECT d.doc->>''label'' AS label, count(*) FROM a_t d GROUP BY 1'),
+	('SELECT count(*) FROM a_t d WHERE d.doc->>''label'' = ''1.50'''),
+	('SELECT count(*) FROM a_t d WHERE d.doc->>''label'' IN (''true'', ''12'', ''100'')'),
+	('SELECT length(d.doc->>''label'') AS len, count(*) FROM a_t d GROUP BY 1'),
+	('SELECT d.metrics_a->>''k1'' AS v, count(*) FROM a_t d GROUP BY 1'),
+	('SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>''k2'' ~ ''^[0-9]'' GROUP BY 1'),
+	-- tests of a member of a free-key object that the source can run on the encoded text
+	('SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>''k1'' = ''7'' GROUP BY 1'),
+	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k1'' IN (''7'', ''true'', ''1.50'')'),
+	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k2'' LIKE ''1%'''),
+	-- the tests of JSON values keep the normal plan: "12" and 12 are different there
+	('SELECT count(*) FROM a_t d WHERE d.items @> ''[{"score": "7.5"}]'''),
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "12")'')'),
+	('SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' = ''12'')');
+CREATE FUNCTION a_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM a_q ORDER BY ctid LOOP
+		pushed := a_pushed(query);
+		same := a_rows(query, true) IS NOT DISTINCT FROM a_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT query, same, pushed FROM a_compare();
+                                                                                             query                                                                                              | same | pushed 
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------+--------
+ SELECT s.key, count(*), count(s.value) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1                                                                                 | t    | t
+ SELECT s.value, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1                                                                                               | t    | t
+ SELECT s.key, avg(s.value::float8), count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s WHERE s.value ~ '^[0-9.]+$' GROUP BY 1                                               | t    | t
+ SELECT s.key, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s WHERE s.value ~ '^-?[0-9]+$' OR s.value IN ('true', 'x') GROUP BY 1                                        | t    | t
+ SELECT length(s.value) AS len, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1                                                                                | t    | t
+ SELECT d.grp, count(DISTINCT s.value) FROM a_t d CROSS JOIN LATERAL jsonb_each_text(d.metrics_a) s GROUP BY 1                                                                                  | t    | t
+ SELECT e.v->>'kind' AS kind, sum((e.v->>'score')::float8), count(*) FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) WHERE e.v->>'score' ~ '^[0-9.]+$' GROUP BY 1              | t    | t
+ SELECT e.v->>'score' AS score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1                                                                            | t    | t
+ SELECT count(DISTINCT e.v->>'score') FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v)                                                                                          | t    | t
+ SELECT e.score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1                                                                         | t    | t
+ SELECT e.kind, count(*) FILTER (WHERE e.score = '1.50'), count(*) FILTER (WHERE e.score IS NULL) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1 | t    | t
+ SELECT e.kind, avg(e.score::float8) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) WHERE e.score ~ '^[0-9.]+$' GROUP BY 1                                  | t    | t
+ SELECT d.doc->>'label' AS label, count(*) FROM a_t d GROUP BY 1                                                                                                                                | t    | t
+ SELECT count(*) FROM a_t d WHERE d.doc->>'label' = '1.50'                                                                                                                                      | t    | t
+ SELECT count(*) FROM a_t d WHERE d.doc->>'label' IN ('true', '12', '100')                                                                                                                      | t    | t
+ SELECT length(d.doc->>'label') AS len, count(*) FROM a_t d GROUP BY 1                                                                                                                          | t    | t
+ SELECT d.metrics_a->>'k1' AS v, count(*) FROM a_t d GROUP BY 1                                                                                                                                 | t    | t
+ SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k2' ~ '^[0-9]' GROUP BY 1                                                                                                               | t    | t
+ SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k1' = '7' GROUP BY 1                                                                                                                    | t    | t
+ SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k1' IN ('7', 'true', '1.50')                                                                                                                   | t    | t
+ SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k2' LIKE '1%'                                                                                                                                  | t    | t
+ SELECT count(*) FROM a_t d WHERE d.items @> '[{"score": "7.5"}]'                                                                                                                               | t    | f
+ SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, '$[*] ? (@.score == "12")')                                                                                                        | t    | f
+ SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>'score' = '12')                                                                          | t    | t
+(24 rows)
+
+-- a container where the text of a scalar is declared is a value the index cannot hold: the query keeps the normal plan
+CREATE TABLE a_bad (id int, doc jsonb);
+INSERT INTO a_bad SELECT i, CASE i % 3 WHEN 0 THEN '{"label": 1}' WHEN 1 THEN '{"label": "a"}' ELSE '{"label": [1]}' END::jsonb FROM generate_series(1, 90) i;
+CREATE INDEX a_bad_col ON a_bad USING sift_col (id, doc) WITH (paths = 'doc->label astext');
+VACUUM a_bad;
+SET sift.enable_agg = on;
+SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1;
+ ?column? | count 
+----------+-------
+ 1        |    30
+ [1]      |    30
+ a        |    30
+(3 rows)
+
+SET sift.enable_agg = off;
+SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1 ORDER BY 1;
+ ?column? | count 
+----------+-------
+ 1        |    30
+ [1]      |    30
+ a        |    30
+(3 rows)
+
+DROP TABLE a_t, a_q, a_bad;
+DROP FUNCTION a_rows(text, bool), a_pushed(text), a_compare();
+DROP EXTENSION pg_sift;

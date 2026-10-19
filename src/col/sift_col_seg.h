@@ -33,9 +33,9 @@ typedef struct SiftColSBRef
 typedef struct SiftColSegWriter SiftColSegWriter;
 
 /* Allocates in mcxt. schema must outlive the writer. */
-/* pol[ncols]: the compression policy of each leaf (NULL: plain FOR/PACK chunks), valid until sift_colw_finish */
+/* pol[ncols]: the compression policy of each leaf (NULL: plain FOR/PACK chunks), valid until sift_colw_finish; format: the column format minor written (sift.col_format_minor) */
 extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol,
-										 MemoryContext mcxt);
+										 int format, MemoryContext mcxt);
 /*
  * The owner's tag of the segment: SiftSegEntry.reserved (the table AM's xmin, 0 = none) and, in the segment header, aux (its cmin). sift_colw_finish
  * stores both; a merge or a rewrite of tagged segments sets them again. The owner clears the tag in the entry when the rows are final.
@@ -108,10 +108,14 @@ extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats 
 /*
  * Pre-aggregates of unit u (a segment of this format always has the sidecar). sift_cseg_agg: the zone and, for an INT leaf, the exact sum and
  * sum of squares. sift_cseg_cube: the unit's cube blob for sift_cpagg_decode (NULL: the unit has none), valid until the next call on seg.
- * Sizes of the whole sidecar and the units that have a cube, for sift.col_index_info.
+ * sift_cseg_ecube: the unit's element blob (column format minor 4; NULL: none, or a segment of minor 3), valid until the next call of it on seg.
+ * sift_cseg_dim_cube: the blob that holds the histogram of dim, the cube or the list's part of the element blob, for sift_cpagg_decode_dim.
+ * Sizes of the whole sidecar and the units that have a cube or element cubes, for sift.col_index_info.
  */
 extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
 extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 

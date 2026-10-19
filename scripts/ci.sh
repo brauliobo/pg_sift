@@ -185,7 +185,7 @@ else
 	release_library_tests() {
 		local t p
 		for t in $(rest sql .sql $SLOW_REGRESS); do
-			for p in $(sed -n 's/^TESTING_REGRESS = //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
+			for p in $(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
 			echo "$t"
 		done
 	}

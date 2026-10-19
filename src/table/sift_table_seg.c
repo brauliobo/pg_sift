@@ -307,6 +307,7 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 		const char *p = image_of(att, d, &v->len);
 
 		v->isnull = v->overflow = true;
+		v->tag = SIFT_COLTAG_UNKNOWN;
 		exc_add(exc, att->attnum, p, v->len);
 	}
 }
@@ -1118,13 +1119,32 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 	return nout;
 }
 
-/* A fetch scan serving the TID fetches while the directory and the xmin of the backend (which keeps the segments from being recycled) stay */
+/*
+ * Do the segments of the fetch scan stay readable? The xmin it was begun with keeps them from being recycled. A newer xmin (every
+ * transaction that wrote moves it) keeps them only if the directory has not changed since: a segment leaves the directory before it
+ * is recycled, and what a later change removes cannot be recycled before this xmin goes.
+ */
+static bool
+fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
+{
+	if (!TransactionIdIsValid(TransactionXmin) || c->fetch_version != st->dir.version)
+		return false;
+	if (c->fetch_xmin != TransactionXmin)
+	{
+		if (c->fetch_version != sift_dir_version(rel))
+			return false;
+		c->fetch_xmin = TransactionXmin;
+	}
+	return true;
+}
+
+/* A fetch scan serving the TID fetches while the directory stays, and the xmin of the backend keeps the segments from being recycled */
 static SiftTblGroupScan *
 fetch_scan(Relation rel, SiftTblRel *st)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
 
-	if (c->fetch && (c->fetch_version != st->dir.version || c->fetch_xmin != TransactionXmin || !TransactionIdIsValid(TransactionXmin)))
+	if (c->fetch && !fetch_kept(rel, st, c))
 	{
 		sift_tbl_gscan_end(c->fetch);
 		c->fetch = NULL;
@@ -1402,7 +1422,7 @@ seal_flush(SealWriter *sw)
 		{
 			sw->wt = sift_wt_begin(sw->rel, SIFT_WRITE_SHARED);
 			sift_wt_expect(sw->wt, sw->expect);
-			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, sw->cxt);
+			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, sift_col_format_minor, sw->cxt);
 			if (sw->tag)
 				sift_colw_set_tag(sw->w, sw->tag->xid, sw->tag->cid);
 		}
@@ -1762,8 +1782,8 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		const SiftSegEntry *e = &st->dir.segs[i];
-		Datum		v[8];
-		bool		nulls[8] = {0};
+		Datum		v[9];
+		bool		nulls[9] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
 		if (e->kind == SIFT_SEG_IMMUTABLE)
@@ -1777,6 +1797,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 			v[5] = Int32GetDatum(e->sb_hi);
 			v[6] = Int32GetDatum(seg->nsb);
 			v[7] = Int64GetDatum(e->ndocs - sift_cseg_live_rows(seg));
+			v[8] = Int32GetDatum(e->format);
 			sift_cseg_close(seg);
 		}
 		else
@@ -1785,7 +1806,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 
 			v[1] = CStringGetTextDatum(e->flags & SIFT_TBL_SEG_TOMB ? "tombstones" :
 									   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
-			memset(nulls + 2, true, 6);
+			memset(nulls + 2, true, 7);
 			if (e->flags & SIFT_TBL_SEG_WBUF)
 			{
 				sift_tbl_seg_load(rel, &seg);

@@ -1,0 +1,1 @@
+SELECT count(*) FILTER (WHERE e.flag = 'fa') AS n_a, count(*) FILTER (WHERE e.flag = 'fb') AS n_b, count(*) AS n FROM docs d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(kind text, sub text, flag text, score float8)

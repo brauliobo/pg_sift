@@ -10,7 +10,4 @@
 /* sift_eval_estimate, with the last few answers of the backend kept */
 extern void sift_estimate_cached(Relation index, text **queries, int nqueries, SiftEstimate *est);
 
-/* The directory's version alone: bumped by every directory update (sift_store.c) */
-extern uint32 sift_dir_version(Relation index);
-
 #endif							/* SIFT_ESTIMATE_H */

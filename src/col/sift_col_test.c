@@ -28,6 +28,8 @@
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
+PG_FUNCTION_INFO_V1(sift_test_col_types);
+PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
@@ -405,6 +407,48 @@ sift_test_col_zones(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/*
+ * One row per candidate unit: the rows whose value of the leaf has a JSON type in tagmask (bit t for SIFT_COLTAG_t; `stored` adds the stored
+ * values), whether every overflow value of the unit has a tag, and how many values of the leaf overflowed
+ */
+Datum
+sift_test_col_types(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	int			leaf = PG_GETARG_INT32(1);
+	uint32		tagmask = PG_GETARG_INT32(2);
+	bool		stored = PG_GETARG_BOOL(3);
+	TestScan	ts;
+	SiftColUnit unit;
+
+	InitMaterializedSRF(fcinfo, 0);
+	scan_open(&ts, PG_GETARG_OID(0), "", 0);
+	while (test_next(&ts, &unit))
+	{
+		SiftColSel	sel;
+		uint64	   *ovf = palloc(SIFT_COL_NWORDS(unit.nrows) * sizeof(uint64));
+		bool		known;
+		Datum		v[6];
+		bool		nulls[6] = {false};
+		int64		novf = 0;
+
+		sift_col_sel_all(&unit, &sel);
+		sift_col_filter_types(&unit, leaf, tagmask, stored, &sel, &known);
+		sift_col_ovf_bits(&unit, leaf, ovf);
+		for (uint32 w = 0; w < SIFT_COL_NWORDS(unit.nrows); w++)
+			novf += pg_popcount64(ovf[w]);
+		v[0] = Int32GetDatum(unit.sb);
+		v[1] = BoolGetDatum(unit.in_wbuf);
+		v[2] = Int32GetDatum(unit.nrows);
+		v[3] = Int64GetDatum(sel.count);
+		v[4] = BoolGetDatum(known);
+		v[5] = Int64GetDatum(novf);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	scan_close(&ts);
+	return (Datum) 0;
+}
+
 /* The counters of a scan that selects the rows of the query */
 Datum
 sift_test_col_counters(PG_FUNCTION_ARGS)
@@ -543,6 +587,28 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	v[3] = Int64GetDatum(rows);
 	v[4] = DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
+Datum
+sift_test_col_formats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		Datum		v[2] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format)};
+		bool		nulls[2] = {false};
+
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */

@@ -58,6 +58,7 @@ typedef struct SiftSrcLeaf
 	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match */
 	int			scale;			/* numeric leaf (typid NUMERICOID, SCV_I64): digits after the decimal point, the value is the number times 10^scale */
 	bool		lossy;			/* the shredder may have left values out of the leaf (overflow): no predicate may use it */
+	bool		astext;			/* a text leaf of the `->>` text of any scalar: not the strings a jsonpath, `@>` or `?` compares */
 	List	   *path;			/* jsonb path below the attribute, a list of String nodes; NIL for a plain attribute.
 								 * Array/object leaf: the path of the array; child: NIL and name set */
 	char		name[NAMEDATALEN];	/* child leaf of a group: the object field name ("key"/"value" for SCL_OBJECT) */
@@ -195,7 +196,7 @@ typedef struct SiftSrcZone
  */
 typedef __int128 SiftSrcI128 __attribute__((aligned(8)));
 
-#define SIFT_SRC_MAX_DIMS		16
+#define SIFT_SRC_MAX_DIMS		32
 #define SIFT_SRC_MAX_MEAS		8
 
 typedef struct SiftSrcUnitAgg
@@ -352,6 +353,16 @@ typedef struct SiftSrcProvider
 	bool		(*filter) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	/* optional: read only the rows of bits (the other rows of the vector are zero; a source restricted to a match set may read the whole leaf) */
 	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
+	/*
+	 * Optional, both or neither (sift_colsrc_can_types): the JSON types of the values of a leaf (SIFT_SRC_JT_*), for a leaf that holds the
+	 * values of one type and sets aside the others (overflow). filter_types clears the rows of bits whose value is not of one of the types
+	 * (a NULL never is) and says whether any row is left; it raises the value-overflow error when a row of one of the types has a value the
+	 * leaf cannot hold, unless no snapshot sees the row, and when the type of such a value is not known (an index written before the types
+	 * were kept). tolerate_ovf, called before `begin`, makes the reads of the leaf give a value it cannot hold as NULL instead of raising
+	 * that error: the executor has filter_types drop or refuse every row that has one.
+	 */
+	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
+	void		(*tolerate_ovf) (void *impl, int leaf);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -475,6 +486,18 @@ extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
  */
 extern uint64 sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf);
 extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
+
+/* The JSON types of a value (jsonb_typeof), as the bits of the types a filter keeps; null is not one of them (its rows are NULL) */
+#define SIFT_SRC_JT_STRING		0x01
+#define SIFT_SRC_JT_NUMBER		0x02
+#define SIFT_SRC_JT_BOOLEAN		0x04
+#define SIFT_SRC_JT_OBJECT		0x08
+#define SIFT_SRC_JT_ARRAY		0x10
+
+/* Can the source of this access method filter by the JSON type of a leaf (SiftSrcProvider.filter_types)? */
+extern bool sift_colsrc_can_types(Oid relam, bool index);
+extern bool sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
+extern void sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf);
 
 /* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */
 extern bool sift_colsrc_can_read_sel(const SiftSrcSource *src);

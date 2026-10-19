@@ -35,6 +35,7 @@ extern bool sift_col_is_index(Relation index);
 extern Oid	sift_col_am_oid(void);
 
 extern PGDLLIMPORT bool sift_enable_col;
+extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */
 
 /* ---------------------------------------------------------------------------
  * 4. Shred adapter (sift_col_shred.c): the index's jsonb attributes, shredded by col-json's sift_shred.h
