@@ -21,10 +21,12 @@ race() {
 	rm -f "$D/locked" "$D/release"
 	{ echo "SELECT pg_advisory_lock(20983, 1);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vc >/dev/null &
 	hp=$!
-	until [[ -e $D/locked ]]; do sleep 0.05; done
+	for _ in $(seq 400); do [[ -e $D/locked ]] && break; sleep 0.05; done
+	[[ -e $D/locked ]] || bail "the lock was not taken"
 	sql vc "LOAD 'pg_sift'" "SET sift.test_vis_pause = $n" "SET enable_seqscan = off" "$reader" >"$D/got" 2>&1 &
 	rp=$!
-	until [[ $(sql vc "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; do sleep 0.05; done
+	for _ in $(seq 400); do [[ $(sql vc "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]] && break; sleep 0.05; done
+	[[ $(sql vc "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]] || { touch "$D/release"; bail "the scan did not wait for the map: $(cat "$D/got")"; }
 	local s
 	for s in "$@"; do sql vc "$s" >/dev/null; done
 	touch "$D/release"
