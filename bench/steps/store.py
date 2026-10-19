@@ -1421,7 +1421,7 @@ class Results:
         tm = self.meta['tiers']
         self.all_tiers = sorted(tm, key=lambda t: (tm[t]['rows'], self.cpus(t)))   # a result set per size and thread budget (`1M-c3`; older results: one per size)
         self.tiers = [t for t in self.all_tiers if 'load' in tm[t]['parts']]       # one per size: the set that holds the load, the plans and the updates
-        self.sets = {t: [x for x in self.all_tiers if tm[x]['rows'] == tm[t]['rows']] for t in self.tiers}   # all the sets of that size, the smallest budget first
+        self.sets = {t: [t] for t in self.tiers}   # published: the set of the load (3 CPUs, the budget of the search tables); the other budgets stay in the results file (`all_tiers`)
 
     def cpus(self, tier):
         old = str(self.meta.get('host', {}).get('cpus', ''))   # results made before the thread budget: the one quota of the host record
@@ -1596,23 +1596,16 @@ def readme_block(R):
     s = t['servers']
     labels = {e: LANES[e][0] for e in LANES}
     engines = R.engines(tier, SHOWN)
-    sets = R.sets[tier]
     host = R.meta.get('host', {})
     n = f'{t["rows"]:,}'
-    quota = ' and '.join(str(R.cpus(x)) for x in sets)
-    fair = ' and the same thread budget for every engine (a [fair comparison](docs/BENCHMARKS.md#fair-comparison-the-same-threads-for-every-engine)' + (f', one table for each of {quota} CPUs' if len(sets) > 1 else '') + ')'
+    fair = ' and the same thread budget for every engine (a [fair comparison](docs/BENCHMARKS.md#fair-comparison-the-same-threads-for-every-engine))'
     out = [f'An online store: a table of {n} orders (country, category, status, amount, date, a product title) and ten questions anyone can ask of it. Every system holds the same seeded rows, '
-           f'runs one node in a docker container limited to {quota} CPUs (a quota, no pinning) and {host.get("memory", "?")} of memory{fair}, and answers over a local connection from one client. '
+           f'runs one node in a docker container limited to {cpu_name(R.cpus(tier))} (a quota, no pinning), the same {cpu_name(R.cpus(tier))} per server as the search tables, and {host.get("memory", "?")} of memory{fair}, and answers over a local connection from one client. '
            f'Cells are the median of {t["runs"]} warm runs in milliseconds (lower is better; the fastest of a row, and anything within 5% of it, in bold). '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), PostgreSQL {s["pg"]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}.', '']
-    for x in sets:
-        head, body = bench_table(R, x, R.engines(x, SHOWN), labels)
-        if x == tier:
-            body += load_rows(R, tier, engines)
-        out += ([f'**{set_heading(R, x)}**', ''] if len(sets) > 1 else []) + md_table(head, body) + ['']
-    if len(sets) > 1:
-        out += [f'Load time and size on disk are those of the load at {cpu_name(R.cpus(tier))}; the updates ran at that budget too.', '']
-    rd = R.get(tier, 'es', '06', '-', 'rel_diff')
+    head, body = bench_table(R, tier, engines, labels)
+    out += [f'**{set_heading(R, tier)}**', ''] + md_table(head, body + load_rows(R, tier, engines)) + ['']
+    rd =R.get(tier, 'es', '06', '-', 'rel_diff')
     approx = f' (HyperLogLog++: its monthly counts were off by at most {rd["value"]:.2%} here)' if rd else ''
     out += [f'- Every result is compared with PostgreSQL\'s before it is timed, and the run stops on a difference. Elasticsearch counts distinct customers approximately{approx}; every other result matched exactly or within rounding.',
             f'- Elasticsearch runs with its request cache off (a repeated aggregation would otherwise be answered from memory); with it on, the medians are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).',
@@ -1622,14 +1615,12 @@ def readme_block(R):
     if plain and 'sift_table' in engines:
         ratios = [R.num(tier, 'sift_table', q, 'warm', 'latency_ms') / R.num(tier, 'pg', q, 'warm', 'latency_ms') for q in plain]
         out += [f'- `sift_table` ran {len(plain)} of the {len(R.queries(tier))} questions with a plain `Seq Scan` plan (no aggregate pushdown: [docs/USAGE.md](docs/USAGE.md#limits) lists what `SiftAgg` does not read) and took '
-                f'{ratio(min(ratios), 1)} to {ratio(max(ratios), 1)} the time of PostgreSQL\'s heap on those; the other layout, `sift_col`, is an index over the ordinary table.']
-    for x in sets:
-        lo = losses(R, x, R.engines(x, SHOWN), labels)
-        at = f' at {cpu_name(R.cpus(x))}' if len(sets) > 1 else ''
-        if lo:
-            out += [f'- **Where pg_sift is not the fastest{at}:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.']
-        else:
-            out += [f'- pg_sift was the fastest system, or within 5% of it, on every question{at}.']
+                f'{" to ".join(dict.fromkeys([ratio(min(ratios), 1), ratio(max(ratios), 1)]))} the time of PostgreSQL\'s heap on those; the other layout, `sift_col`, is an index over the ordinary table.']
+    lo = losses(R, tier, engines, labels)
+    if lo:
+        out += ['- **Where pg_sift is not the fastest:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb} {ratio(v1, v2)} slower than {lb2} ({ms(v1)} ms against {ms(v2)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.']
+    else:
+        out += ['- pg_sift was the fastest system, or within 5% of it, on every question.']
     out += [f'- The same questions at {R.meta["tiers"][x]["rows"]:,} orders, cold runs after a restart, load times and plans: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).' for x in R.tiers[:-1]]
     out += [NOT_REMEASURED] if R.meta['tiers'][R.tiers[-1]]['rows'] < 10_000_000 else []
     out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites this section and docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
@@ -1718,11 +1709,7 @@ def benchmarks_block(R):
         engines = R.engines(tier, allq)
         shown = [e for e in engines if e != 'es_cached']
         out += [f'### {t["rows"]:,} orders', '']
-        sets = R.sets[tier]
-        for x in sets:   # the questions at each thread budget, the smallest first
-            out += latency_tables(R, x, [e for e in R.engines(x, allq) if e != 'es_cached'], labels, [f'#### {set_heading(R, x)}'] if len(sets) > 1 else [])
-        if len(sets) > 1:
-            out += [f'The load, the sizes, the plans and the updates are those of the load at {cpu_name(R.cpus(tier))}.', '']
+        out += latency_tables(R, tier, shown, labels, [f'#### {set_heading(R, tier)}'])
         phases = [('rows', 'data'), ('indexes', 'indexes'), ('vacuum', 'vacuum, analyze'), ('merge', 'merge to one segment')]
         body = []
         for key, label in phases:
@@ -1745,8 +1732,8 @@ def benchmarks_block(R):
     last = R.tiers[-1]
     t = R.meta['tiers'][last]
     s = t['servers']
-    quota = ' and '.join(str(R.cpus(x)) for x in R.sets[last])
-    th = t.get('threads')
+    quota = R.cpus(last)
+    th =t.get('threads')
     pg = (th.get('pg') or th.get('sift')) if th else None
     pg_text = (f'`max_parallel_workers_per_gather` N - 1 (a leader and N - 1 workers are N processes; `max_parallel_maintenance_workers` the same), `max_worker_processes` {pg["max_worker_processes"]} and `max_parallel_workers` '
                f'{pg["max_parallel_workers"]} (far above the budget), `parallel_setup_cost` {pg["parallel_setup_cost"]}, `parallel_tuple_cost` {pg["parallel_tuple_cost"]}, `min_parallel_table_scan_size` {pg["min_parallel_table_scan_size"]}, '
@@ -1764,7 +1751,7 @@ def benchmarks_block(R):
             'each shard merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.',
             f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; {"`max_threads`, `max_insert_threads`, `max_final_threads` and `background_pool_size` set to N" if th else f"`max_threads` {s['ch_threads']} (what the container limit gives it)"}; optimized to one part per partition after the load.',
             '- pg_sift: `sift_col` over the columns the reports read plus the month of the order, a `sift` BM25 index on the title; `sift_table` is the table itself in column format with a `sift` index on the title and the primary key. PostgreSQL: primary key, btree on the date and on country and status, GIN on `to_tsvector(\'simple\', title)`.',
-            '- Method: one client, one request at a time, wall time from this process to the end of the response over a persistent local connection; the engines are timed in turn within each run so a drift of the host load hits all of them; one untimed run per engine first (its result is checked against PostgreSQL\'s), then the timed runs. The numbers of one table are comparable with each other, not with another host.']
+            f'- Method: every engine has {cpu_name(quota)} for its server, the budget of the search tables; one client, one request at a time, wall time from this process to the end of the response over a persistent local connection; the engines are timed in turn within each run so a drift of the host load hits all of them; one untimed run per engine first (its result is checked against PostgreSQL\'s), then the timed runs. The numbers of one table are comparable with each other, not with another host.']
     return out
 
 
