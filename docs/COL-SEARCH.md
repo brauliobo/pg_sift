@@ -41,6 +41,8 @@ Executor contract of the match set:
 
 The match set does not check visibility. SiftAgg already does: every unit's selection (live rows, after filters) goes through `sift_col_vet`, which passes pages that are all-visible in the visibility map and checks the others on the heap. A row that the BM25 index returns but is dead or invisible to the snapshot is dropped there; rows in the write buffer of the BM25 index (inserted, not yet merged) are covered by the iterator, and the column side treats them as it always does. Differential tests compare insert, update, delete, own-transaction rows, rollback and vacuum states against the normal plan (`test/sql/col_search.sql`, `test/col/fixtures/h_search_*.sql`).
 
+The match set is read a chunk of superblocks ahead of the vet, and a `VACUUM` marks pages all-visible only after it has cleared the index entries of their dead rows, so the vet of a scan whose column index was changed since the scan read it (its directory version) takes no page as all-visible and checks the rows in the heap (test `vacuum_agg_snapshot`). The column index is the one whose liveness decides the rows: a dead row the match set still holds is not among them.
+
 A query with the search in the same transaction as writes sees the transaction's own rows because the vet reads the heap for pages that are not all-visible, and the iterator reads the write buffer.
 
 ## Planner
