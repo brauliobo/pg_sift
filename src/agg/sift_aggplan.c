@@ -3947,6 +3947,26 @@ scan_bytes(AggCtx *c, SiftAggSpec *s, double rows)
 	return c->stats.bytes > 0 ? c->stats.bytes * used / Max(all, 1.0) : rows * used * 0.5;
 }
 
+static bool
+extern_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXTERN)
+		return true;
+	return expression_tree_walker(node, extern_param_walker, context);
+}
+
+/* Does a qual of the table compare with a bound parameter? Its selectivity is a default guess of the planner, not the data's. */
+static bool
+rel_has_param_qual(RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (extern_param_walker((Node *) ri->clause, NULL))
+			return true;
+	return false;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -4004,9 +4024,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * jsonb_each) minus its filters, and prices its sort, join and aggregate with them, though the data has a handful per row: when it
 	 * expects more unnested rows than the selected orders hold elements, this path is charged the square root of the excess. The
 	 * estimates of the two plans then cross where the times do: a selective store set keeps the btree plan, a whole table or a
-	 * filter on the elements (which cuts the expected rows) keeps its price.
+	 * filter on the elements (which cuts the expected rows) keeps its price. A qual with a bound parameter has no such estimate (a generic
+	 * plan guesses its selectivity; the values are known at execution): no charge.
 	 */
-	if (s->group >= 0)
+	if (s->group >= 0 && !rel_has_param_qual(c->rel))
 		scan_cost *= Max(sqrt(input_rel->rows / (sel_rows * elems)), 1.0);
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	scan_cost += gen_cost * cpu_operator_cost;
