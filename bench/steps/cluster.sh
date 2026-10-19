@@ -59,7 +59,7 @@ init() {
 start() {
   pg_ctl -D "$PGDATA" status >/dev/null 2>&1 && return
   settings
-  pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null 8>&-   # the server must not keep the perf lock of bench
+  server_run pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -w start >/dev/null 8>&-   # the server must not keep the perf lock of bench
   log "started on port $PGPORT"
 }
 

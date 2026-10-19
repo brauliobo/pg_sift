@@ -87,7 +87,7 @@ x_start() {
   local i
   x_conf
   ES_PATH_CONF=$ES_DIR/conf ES_JAVA_OPTS="-Xms${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -Xmx${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -XX:-AlwaysPreTouch${ES_PROCESSORS:+ -XX:ActiveProcessorCount=$ES_PROCESSORS}" \
-    "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
+    server_run "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
   for (( i = 0; i < 180; i++ )); do
     curl -fs "$URL/_cluster/health?wait_for_status=yellow" >/dev/null 2>&1 && return 0
     sleep 1

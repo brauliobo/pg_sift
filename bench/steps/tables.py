@@ -52,7 +52,7 @@ HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\t
 WIDTH = 13
 def cpus_text(quota):
     """where the engines ran: all the CPUs of the host, or the scope of the session (`systemd-run -p CPUQuota`: the server, the clients and a Java process all inside it)"""
-    return 'every CPU of the host' if not quota else 'the same budget of %s for every engine (a cgroup quota on the whole session, which the server under test, the load generators and the Elasticsearch process share; PostgreSQL engines with one parallel worker fewer than the budget, Elasticsearch with that many processors and shards; the host has more CPUs)' % quota
+    return 'every CPU of the host' if not quota else 'the same budget of %s for the server of every engine (a cgroup quota on the server processes only, on four physical cores; the clients, pgbench and the load generator, run outside it on the other four; PostgreSQL engines with one parallel worker fewer than the budget, Elasticsearch with that many processors and shards)' % quota
 
 
 def method(quota=''):
@@ -174,7 +174,7 @@ def host_rows(dataset, tier, path):
         return out
     grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
     cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
-    quota = grab('cpu quota')
+    quota = re.sub(r' \(.*', '', grab('cpu quota'))
     words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('sift', grab('sift commit')),
              ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
     out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))

@@ -37,14 +37,14 @@ cpu_quota() {
 }
 echo "date: $(date -u +%FT%TZ)"
 echo "cpu: $(cpu)"
-echo "cpu quota: $(cpu_quota)"
+echo "cpu quota: $([[ -n ${SERVER_BUDGET:-} ]] && echo "${SERVER_BUDGET} CPUs" || cpu_quota)"${SERVER_BUDGET:+" (servers only: cores $SERVER_CPUS; the clients run outside the cap)"}
 echo "cpu threads: $(nproc --all), cores: $(lscpu -p=core,socket 2>/dev/null | grep -v '^#' | sort -u | wc -l), simd: $(simd)"
 echo "memory: $(awk '/MemTotal/ {printf "%.0f GiB", $2 / 1048576}' /proc/meminfo)"
 echo "kernel: $(uname -sr)"
 echo "os: $(os)"
 echo "bench root: $(stat -f -c %T "$ROOT") (free: $(df -h --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -d ' '))"
 echo "postgres: $(pg_config --version)"
-echo "method: one engine at a time on $([[ $(cpu_quota) == none ]] && echo 'every CPU of the host' || echo "the CPUs of its scope ($(cpu_quota))"), interleaved rounds, ${CLIENTS:-8} clients on the articles, one on the places"
+echo "method: one engine at a time on $([[ -n ${SERVER_BUDGET:-} ]] && echo "a server capped at $SERVER_BUDGET CPUs, the clients outside the cap" || { [[ $(cpu_quota) == none ]] && echo 'every CPU of the host' || echo "the CPUs of its scope ($(cpu_quota))"; }), interleaved rounds, ${CLIENTS:-8} clients on the articles, one on the places"
 echo "engines: sift $(ext_version pg_sift) ($(sift_commit)), pg_search $(ext_version pg_search) ($(ext_origin pg_search); pinned $PARADEDB_VERSION)," \
   "pg_textsearch $(ext_version pg_textsearch) ($(ext_origin pg_textsearch); pinned tag v$PG_TEXTSEARCH_VERSION, commit ${PG_TEXTSEARCH_COMMIT:0:12}), rum $(ext_version rum) ($(ext_origin rum); pinned tag $RUM_VERSION)," \
   "pgx-bm25 $(ext_version bm25_native) ($(ext_origin bm25_native))"

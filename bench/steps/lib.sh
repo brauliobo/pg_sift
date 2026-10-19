@@ -47,9 +47,19 @@ loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the res
 # run's own servers and clients from other users, and waiting for it idled the run. A window is the time from one `batch` call to the next: the CPU the host
 # spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody
 # else; a window is NOISY when it is above SIFT_NOISE_CPU (0.25) cores over the idle host's, measured once, 10 s, at the first batch. Recorded in noisy.txt.
-sentinel_now() { # host busy seconds, own cgroup CPU seconds, uptime seconds
+# server_run CMD...: CMD as a server of the run. With SERVER_BUDGET=N (CPUs) it is a systemd scope of the slice sift-bench with CPUQuota N00% on the cores
+# SERVER_CPUS, so that the servers have the same budget while the clients (the harness, pgbench, the load generator) run outside the cap on other cores
+server_run() {
+  if [[ -n ${SERVER_BUDGET:-} ]]; then
+    systemd-run --user --scope -q --slice=sift-bench -p CPUQuota=$(( SERVER_BUDGET * 100 ))% -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue taskset -c "${SERVER_CPUS:?SERVER_CPUS}" "$@"
+  else "$@"; fi
+}
+sentinel_now() { # host busy seconds, CPU seconds of this run (the harness' cgroup and the servers' slice), uptime seconds
   awk -v hz="$(getconf CLK_TCK)" '/^cpu / {printf "%.3f ", ($2 + $3 + $4 + $7 + $8 + $9) / hz}' /proc/stat
-  awk '/^usage_usec/ {printf "%.3f ", $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || printf '0 '
+  local own srv
+  own=$(awk '/^usage_usec/ {print $2 / 1e6}' "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.stat" 2>/dev/null || echo 0)
+  srv=$(awk '/^usage_usec/ {print $2 / 1e6}' "/sys/fs/cgroup$(systemctl --user show -p ControlGroup --value sift-bench.slice 2>/dev/null)/cpu.stat" 2>/dev/null || echo 0)
+  awk -v a="${own:-0}" -v b="${srv:-0}" 'BEGIN {printf "%.3f ", a + b}'
   cut -d" " -f1 /proc/uptime
 }
 sentinel_rate() { awk -v a="$1" -v b="$2" 'BEGIN {split(a, x, " "); split(b, y, " "); dt = y[3] - x[3]; printf "%.3f", (dt > 0) ? ((y[1] - x[1]) - (y[2] - x[2])) / dt : 0}'; }
