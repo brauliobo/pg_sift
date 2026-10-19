@@ -233,3 +233,6 @@ SELECT query, same FROM b_compare();
  SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                               | t
 (35 rows)
 
+DROP TABLE b_t, b_h, b_q;
+DROP FUNCTION b_rows(text, bool), b_keys(text), b_compare();
+DROP EXTENSION pg_sift;
