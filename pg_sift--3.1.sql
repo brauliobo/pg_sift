@@ -462,3 +462,15 @@ CREATE FUNCTION sift.facet_counts(tbl regclass, key text, query text, facets jso
 BEGIN
 	RETURN QUERY EXECUTE sift.facet_sql(tbl, key, query, facets, filter, hits);
 END $fn$;
+
+-- Fields (docs/FIELDS-FACETS.md): the sections of an indexed text, joined here so that no query or index writes chr(29): CREATE INDEX ... USING sift
+-- (sift.sections(title, body)) WITH (fields = 'title,body'); a NULL section is empty, and the same expression is the left side of @@>.
+CREATE FUNCTION sift.sections(VARIADIC parts text[]) RETURNS text
+	LANGUAGE sql IMMUTABLE PARALLEL SAFE RETURN array_to_string(parts, chr(29), '');
+
+-- The query with the weights of its fields: every word, prefix, pattern and fuzzy term outside a name: qualifier is searched in each of the fields
+-- of `fields` ("title^3, body^1, tags^0.5", a missing weight is 1) with its boost times the weight of the field, so a row scores the sum
+-- of its fields' scores (the match set is that of the unweighted query on those fields). Phrases, regular expressions and the terms of a NOT are not
+-- scoped to a field. With an index its fields are checked.
+CREATE FUNCTION sift.field_query(query text, fields text, index regclass DEFAULT NULL) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_field_query' LANGUAGE C STABLE PARALLEL SAFE;

@@ -54,6 +54,7 @@ PG_FUNCTION_INFO_V1(sift_max_score);
 PG_FUNCTION_INFO_V1(sift_highlight);
 PG_FUNCTION_INFO_V1(sift_tokenize);
 PG_FUNCTION_INFO_V1(sift_parse_query);
+PG_FUNCTION_INFO_V1(sift_field_query);
 PG_FUNCTION_INFO_V1(sift_promote);
 PG_FUNCTION_INFO_V1(sift_merge);
 PG_FUNCTION_INFO_V1(sift_segments);

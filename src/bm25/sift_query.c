@@ -1077,6 +1077,78 @@ sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a)
 	return q;
 }
 
+/* ---------------------------------------------------------------- field weights */
+
+/* Moves the qualifier of a group to its leaves (the innermost wins), as analysis does, and marks the qualified leaves for deparse */
+static void
+push_field(SiftQNode *n, const char *field)
+{
+	if (n->fieldname)
+		field = n->fieldname;
+	if (n->nchild > 0)
+		n->fieldname = NULL;
+	else if (!n->fieldname)
+		n->fieldname = (char *) field;
+	n->field = n->fieldname != NULL;
+	for (int i = 0; i < n->nchild; i++)
+		push_field(n->child[i], field);
+}
+
+/* A word, prefix, pattern or fuzzy leaf that no qualifier scopes becomes the OR of itself in every weighted field; a NOT keeps its leaves */
+static SiftQNode *
+weigh_node(SiftQNode *n, int nf, const char *const *names, const double *weights)
+{
+	SiftQNode  *grp;
+
+	switch (n->kind)
+	{
+		case SQ_AND:
+		case SQ_OR:
+			for (int i = 0; i < n->nchild; i++)
+				n->child[i] = weigh_node(n->child[i], nf, names, weights);
+			return n;
+		case SQ_TERM:
+		case SQ_PREFIX:
+		case SQ_WILDCARD:
+		case SQ_FUZZY:
+			break;
+		default:
+			return n;
+	}
+	if (n->fieldname)
+		return n;
+	grp = nf > 1 ? new_node(SQ_OR, n->loc) : n;
+	if (nf > 1)
+	{
+		grp->nchild = nf;
+		grp->child = palloc(nf * sizeof(SiftQNode *));
+	}
+	for (int i = 0; i < nf; i++)
+	{
+		SiftQNode  *c = nf > 1 ? palloc(sizeof(SiftQNode)) : n;
+		double		boost = n->boost * weights[i];
+
+		if (boost > SIFT_MAX_BOOST)
+			LIMIT(n->loc, "boost over %d", (int) SIFT_MAX_BOOST);
+		*c = *n;
+		c->fieldname = (char *) names[i];
+		c->field = 1;
+		c->boost = (float4) boost;
+		if (nf > 1)
+			grp->child[i] = c;
+	}
+	return grp;
+}
+
+SiftQuery *
+sift_query_weigh(SiftQuery *raw, int nf, const char *const *names, const double *weights)
+{
+	Assert(!raw->analyzed && nf > 0);
+	push_field(raw->root, NULL);
+	raw->root = weigh_node(raw->root, nf, names, weights);
+	return raw;
+}
+
 /* ---------------------------------------------------------------- deparse */
 
 static void

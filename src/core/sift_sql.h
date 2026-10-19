@@ -21,6 +21,7 @@ extern PGDLLEXPORT Datum sift_max_score(PG_FUNCTION_ARGS);		/* (tid) real, scan-
 extern PGDLLEXPORT Datum sift_highlight(PG_FUNCTION_ARGS);		/* (text, text, text, text, regclass) text */
 extern PGDLLEXPORT Datum sift_tokenize(PG_FUNCTION_ARGS);		/* SRF */
 extern PGDLLEXPORT Datum sift_parse_query(PG_FUNCTION_ARGS);	/* (text, regclass) text */
+extern PGDLLEXPORT Datum sift_field_query(PG_FUNCTION_ARGS);	/* (text, text, regclass) text */
 
 /* sift_maint.c (sift_segments, sift_segment_postings, sift_verify: sift_segment_sql.c) */
 extern PGDLLEXPORT Datum sift_promote(PG_FUNCTION_ARGS);		/* (regclass) int */
