@@ -66,10 +66,10 @@ moved by `scripts/coverage.sh --gen`, instruction counts before and after (`benc
 
 ## Correctness risks seen
 
-- The top-N scan of a `sift_col` index decides "the column follows the table" from four probes of the zones and then stops at the first window whose
-  zone has nothing better. That is exact for data appended in order, but a row moved by an update to a page in the middle of the table, with an old
-  value, can be missed by a probe. The table provider cannot use the shortcut (the new version of an updated row is in the write buffer whatever its
-  value; `tbl_topn` failed on it before the fix) and decides every window by the zones of its own units. The `sift_col` path is unchanged here.
+- 3.0 returned wrong rows for `ORDER BY col LIMIT n` on a `sift_col` index when an update had moved a row to an unprobed superblock: the scan decided
+  "the column follows the table" from four zone probes and stopped at the first window with nothing better (repro: `col_topn_moved`). Fixed on
+  `fix/topn-moved-rows` (for 3.0.1) and included here: a window is read when the zones of its units, taken together from the segment headers, can beat
+  the n-th row. The table provider uses the same rule (the new version of an updated row is in the write buffer whatever its value).
 - After `UPDATE` or `DELETE` a `sift_table` superblock with a tombstone is scanned, not answered from its pre-aggregates, until VACUUM rewrites the
   segment (`sift.table_dead_rewrite_pct`, default 50): the result is the same, only the speed. The planner prices the share of exact superblocks from
   the write buffers and the dead tuples of the statistics, an estimate.
