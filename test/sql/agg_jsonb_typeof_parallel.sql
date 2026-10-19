@@ -1,4 +1,4 @@
--- jsonb_typeof(path) = 'type' pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
+-- jsonb_typeof(path) = 'type' (and <>, NOT IN, IS [NOT] NULL, a group key, in OR, FILTER and CASE) pushed into the aggregate scan under forced parallel plans: each query must plan as a Gather over a partial Custom
 -- Scan (SiftAgg) with two workers, and its rows must be the rows of the normal plan. mode: parallel (Gather over SiftAgg), serial (SiftAgg alone),
 -- none (the normal plan). The workers filter their units by type as the leader does; a value a selected row holds that the leaf cannot store
 -- raises in a worker as it does in the leader.
@@ -13,8 +13,10 @@ SELECT i, i % 7,
                    WHEN 2 THEN '{"m": {"a": 1}, "n": [], "s": {"a": 1}, "b": []}'
                    WHEN 3 THEN '{}'
                    ELSE jsonb_build_object('m', (i * 7919) % 8000 / 8.0, 'n', i % 500, 's', 'v' || i % 40, 'b', i % 3 = 0) END
+       || jsonb_build_object('a', CASE i % 9 WHEN 0 THEN to_jsonb(i) WHEN 1 THEN 'true'::jsonb WHEN 2 THEN 'null'::jsonb WHEN 3 THEN '[1]'::jsonb
+                                             ELSE to_jsonb('v' || i % 7) END)
 FROM generate_series(1, 20000) i;
-CREATE INDEX p_col ON p_t USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.n int4, attrs.s text, attrs.b bool');
+CREATE INDEX p_col ON p_t USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.n int4, attrs.s text, attrs.b bool, attrs.a astext');
 VACUUM ANALYZE p_t;
 
 SET parallel_setup_cost = 0;
@@ -59,6 +61,21 @@ INSERT INTO p_q (q) VALUES
 	('SELECT count(*), count(DISTINCT attrs->>''s'') FROM p_t WHERE jsonb_typeof(attrs->''s'') = ''string'''),
 	('SELECT grp, count(*) FILTER (WHERE (attrs->>''b'')::bool) FROM p_t WHERE jsonb_typeof(attrs->''b'') = ''boolean'' GROUP BY grp'),
 	('SELECT count(*), sum((attrs->>''m'')::float8) FROM p_t WHERE jsonb_typeof(attrs->''m'') IN (''number'') AND jsonb_typeof(attrs->''n'') = ''number'' AND id > 4000'),
+	-- the complement, the JSON null and the path with no value
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') <> ''number'' GROUP BY grp'),
+	('SELECT count(*), sum(id) FROM p_t WHERE jsonb_typeof(attrs->''n'') NOT IN (''number'', ''string'')'),
+	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''n'') = ''null'''),
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') IS NULL GROUP BY grp'),
+	('SELECT count(*), sum((attrs->>''m'')::float8) FROM p_t WHERE jsonb_typeof(attrs->''m'') IN (''number'', ''null'') AND jsonb_typeof(attrs->''s'') IS NOT NULL'),
+	-- the type as a key, in a FILTER, in an OR and a CASE (the workers read the types of their units)
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM p_t GROUP BY 1'),
+	('SELECT grp, jsonb_typeof(attrs->''n'') AS ty, count(*), sum(id) FROM p_t GROUP BY 1, 2'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''s'') = ''string'') AS s, count(*) FILTER (WHERE jsonb_typeof(attrs->''s'') IS NULL OR id < 100) AS o FROM p_t'),
+	('SELECT grp, count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') = ''null'' OR (jsonb_typeof(attrs->''b'') <> ''boolean'' AND id > 8000) GROUP BY grp'),
+	('SELECT CASE jsonb_typeof(attrs->''b'') WHEN ''boolean'' THEN ''b'' ELSE ''x'' END AS k, count(*) FROM p_t GROUP BY 1'),
+	-- an astext leaf: the kinds of its values
+	('SELECT grp, count(*), sum((attrs->>''a'')::numeric) FROM p_t WHERE jsonb_typeof(attrs->''a'') = ''number'' GROUP BY grp'),
+	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''a'') <> ''string'' AND jsonb_typeof(attrs->''a'') IS NOT NULL'),
 	-- selects values the leaf cannot hold: the error is the same in every process
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''m'') = ''string'''),
 	('SELECT count(*) FROM p_t WHERE jsonb_typeof(attrs->''s'') = ''number''');

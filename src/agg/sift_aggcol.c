@@ -865,7 +865,7 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 
 /* ---- the JSON type of the values of a leaf (docs/COL-JSONB-31.md 5.1): the tags of the overflow values of the chunks ---- */
 
-StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_ARRAY == 5, "SIFT_SRC_JT_* are the chunk tags shifted by one");
+StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_JNULL == 7, "SIFT_SRC_JT_* are the chunk tags shifted by one");
 
 static void
 col_tolerate_ovf(void *impl, int leaf)
@@ -880,14 +880,24 @@ stored_tag(Oid typid)
 	return typid == BOOLOID ? SIFT_COLTAG_BOOLEAN : typid == TEXTOID ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
 }
 
+static void
+types_unknown_error(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
+			 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
+}
+
 typedef struct TypesTest
 {
 	ColSource  *src;
 	int			leaf;
 	uint32		mask;			/* bit t: the type of tag t */
+	bool		read;			/* the query reads the leaf elsewhere */
 } TypesTest;
 
-/* the rows of the unit as stored with a value of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it */
+/* the rows of the unit whose value has one of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it and the query reads the leaf */
 static void
 types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 {
@@ -897,14 +907,11 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	uint64	   *ovf;
 	SiftColSel	bad;
 
-	left = sift_col_filter_types(cu, t->leaf, t->mask, t->mask >> stored_tag(t->src->lay->leaf[t->leaf].typid) & 1, vs, &known);
+	left = sift_col_filter_types(cu, t->leaf, t->mask, stored_tag(t->src->lay->leaf[t->leaf].typid), t->src->lay->leaf[t->leaf].astext, vs, &known);
 	if (!known)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
-				 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
+		types_unknown_error();
 	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
-	if (!left || !sift_col_ovf_bits(cu, t->leaf, ovf))
+	if (!left || !t->read || !sift_col_ovf_bits(cu, t->leaf, ovf))
 		return;
 	sift_col_sel_alloc(t->src->cs, cu->nrows, &bad);
 	for (uint32 w = 0; w < bad.nwords; w++)
@@ -917,10 +924,32 @@ static bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	ColSource  *src = impl;
-	TypesTest	t = {src, leaf, types << 1};
+	TypesTest	t = {src, leaf, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
 
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, types_op, &t);
 	return rows_left(unit, bits);
+}
+
+/* a chunk tag as read_types gives it: the index of the name jsonb_typeof gives, or none */
+static uint8
+src_type(uint8 tag)
+{
+	return tag == SIFT_COLTAG_NONE ? SIFT_SRC_TYPE_NONE : tag == SIFT_COLTAG_JNULL ? 5 : tag - 1;
+}
+
+/* the JSON type of the value of the leaf in each row of the unit; the rows of a compacted unit of a match set are the kept ones */
+static void
+col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
+{
+	ColSource  *src = impl;
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	bool		compact = src->sel.keep && src->sel.compact;
+	uint8	   *all = compact ? palloc(src->sel.nrow) : tags;
+
+	if (!sift_col_row_types(&src->unit, leaf, stored_tag(l->typid), l->astext, all))
+		types_unknown_error();
+	for (uint32 i = 0; i < unit->nrow; i++)
+		tags[i] = src_type(all[compact ? src->sel.idx[i] : i]);
 }
 
 static void
@@ -1060,6 +1089,7 @@ static const SiftSrcProvider col_provider = {
 	.read_sel = col_read_sel,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
+	.read_types = col_read_types,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 	.preagg = col_preagg,

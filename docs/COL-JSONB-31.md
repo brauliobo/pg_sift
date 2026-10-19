@@ -116,10 +116,24 @@ not done here.
   `strs = 0.05` (59,988 overflowing values in `attrs.mixed`, `scores.*` and the item scores): the three leaves grow by 10,144, 10,248 and
   9,936 bytes (0.506 bytes per value), the index from 2,588,672 to 2,621,440 bytes (+1.3%, four pages), build 388 to 465 ms against 357
   to 371 ms (within the noise of the host).
-- **What stays out.** `<>`, `NOT IN`, `'null'`, `IS NULL` and a group key of `jsonb_typeof`, an `OR` branch, `astext` leaves, a path of a list
-  element. A filter that selects a row whose value the leaf cannot hold raises the error of the pushdown (`count(*) WHERE jsonb_typeof(m) =
-  'string'` on a number leaf, a number out of range, a non-integer for `int4`), as does an overflow value with no type in a unit written by
-  minor 3 (hint `REINDEX`).
+- **The other forms.** `<>` and `NOT IN` (the other types but none: a path with no value is NULL and no comparison keeps it), `= 'null'` (a JSON
+  null, which the chunk now tells from a missing key, the kinds of section 5.1), `IS NULL` / `IS NOT NULL`, the type as a group key (the five
+  types, `'null'` and a NULL group), a branch of an `OR`, a `NOT`, an aggregate `FILTER`, a `CASE` or a function of the type, and the same on an
+  `astext` leaf (tests `agg_jsonb_typeof`, `agg_jsonb_typeof_parallel`, `col_tags`, the fixtures `k_typeof_*`, bench queries j19 to j23). A
+  conjunct (`=`, `IN`, `<>`, `NOT IN`, `IS [NOT] NULL`) is the source's filter (`SAP_TYPE`); every other use is a text leaf of the scan that reads
+  the types from the chunks (`SiftAggVLeaf.types`), no value of the path. When the query reads no value of the leaf, a filter that keeps a row
+  whose value the leaf cannot hold does not raise (`count(*) WHERE jsonb_typeof(m) <> 'number'` counts the strings); when it reads them it does.
+- **What stays out.** A path of a list element; a query that tests the type in an expression (`FILTER`, `CASE`, `OR`) and reads the values of the
+  same path (`sum(m) FILTER (WHERE jsonb_typeof(m) = 'number')`: PostgreSQL's guard skips the strings the leaf cannot hold and the scan could
+  not; use the conjunct form); `sift_table` (below); a number out of range or a non-integer for `int4`, or an overflow value with no type in a
+  unit written by minor 3 (hint `REINDEX`), still raises the error of the pushdown where the query reads the leaf.
+- **`sift_table`.** Not answered. A `sift_table` keeps a jsonb column as one opaque leaf of exact bytes, so it has no leaf for `x->'k'` to be a
+  type of, in the planner or in the segments (`sift_table_src.c` lays out the table's own columns only). It needs the proposal of section 4
+  (declared paths, `sift.table_set_paths`, the shredder at promotion, merge and rewrite, the paths in the segment schema); then the table's
+  source only has to forward `filter_types`, `read_types` and `tolerate_ovf` to the engine functions the `sift_col` provider calls, since the
+  chunks of a table's group are the same chunks and the shredder gives them the same tags and kinds. One more condition it must keep: a segment
+  that lacks a declared leaf (written before the declaration) has no chunk for it, which `sift_col_filter_types` reads as "no value" (type none),
+  so the planner may use the paths only when every segment has them, as section 4 already says of the other path queries.
 
 ## 4. Proposal: paths for `sift_table` (no format change)
 
@@ -179,9 +193,11 @@ predicate) scans every element.
   because a lax jsonpath would unwrap the array, but the `->` path leads to no value and `jsonb_typeof` of it is NULL, so the slot must neither
   match a type nor look like a value written before the types were kept (tag 0, which raises). Cost: half a byte per overflowing value
   (measured 0.506), nothing for a chunk without overflow. The type of a value that is stored is the type of its
-  leaf (bool is boolean, integers, floats and numeric are number, text is string); an `astext` leaf mixes the three, so `jsonb_typeof`
-  is not answered from it. A JSON null is a NULL slot, and so is an absent key: the tag does not tell them apart, so the pushdown answers
-  the tests that treat both alike, `jsonb_typeof(p) = 'number'` (and `IN` over the five types other than `'null'`) and leaves group keys, `= 'null'`, `<>` and `IS NULL` of `jsonb_typeof` to the normal plan. Rows whose tag is not the asked type
+  leaf (bool is boolean, integers, floats and numeric are number, text is string). An `astext` leaf mixes the three and a JSON null is a NULL slot
+  like an absent key, which the tag of an overflow value does not tell: the **kinds** (chunk flag `SIFT_COLC_KINDS`, 0x8, docs/COL.md 2.2) are one
+  bitmap per tag for the slots that do not overflow, JSON null (tag 7) in the NULL slots and number / boolean in the values of an `astext` leaf
+  (its string is the leaf's own type). They cost nothing in a chunk without a JSON null and without astext numbers or booleans, and a bitmap
+  of `n` bits otherwise. Rows whose tag is not the asked type
   are not read, so a string among numbers no longer raises the overflow error when the filter drops it; a value that is of the asked type but
   does not fit (a number out of the float range) still raises it, and so does a string asked for on a number leaf, since the leaf holds none of
   its values: the filter keeps the rows of a type and cannot give their values. The error is raised for the rows the filter keeps that a
@@ -226,7 +242,7 @@ predicate) scans every element.
   SQL objects changes: `ALTER EXTENSION pg_sift UPDATE` from 3.0 runs a script with no objects of this change, and a `sift_col` index built by
   3.0 keeps working across it. BM25 indexes (`SIFT_FORMAT_MINOR` 2) are not touched.
 - **Verification.** `sift.col_verify` checks the segment minor against 3 and 4; for minor 4 that the flag `SIFT_COLC_TAGS` is present exactly
-  when a chunk has overflow bits, that every nibble is 0 to 6 and the padding is zero, that the `COLP` directory version matches the
+  when a chunk has overflow bits, that every nibble is 0 to 6 and the padding is zero, that `SIFT_COLC_KINDS` is only in a minor 4 segment and its bitmaps are well formed, that the `COLP` directory version matches the
   segment's minor (a minor 3 segment has version 1 and no tags), and recomputes the element histograms from the chunks with the other
   sidecar checks; with `heapallindexed` the tag of an overflow value is compared with the type of the heap value (a tag 0 matches any).
   `sift.col_sections` lists the new blob; `sift.col_index_info` counts it in `preagg_bytes`.

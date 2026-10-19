@@ -815,36 +815,112 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 	return sel->count > 0;
 }
 
+/* A unit written with the kinds (column format minor 4): its NULL slots say whether they are a JSON null, and an astext leaf's values their type */
+static bool
+unit_kinds(const ColUnit *cu)
+{
+	return cu->seg == NULL || cu->seg->entry.format >= 4;
+}
+
+#define TYPES_VALS	(1U << SIFT_COLTAG_STRING | 1U << SIFT_COLTAG_NUMBER | 1U << SIFT_COLTAG_BOOLEAN)
+
+/*
+ * Is the chunk's type of every row of sel (NULL: all) known for a test of the types in mask: no overflow value of the sel has no type and,
+ * in a unit without kinds, no NULL slot where the mask tells a JSON null from a missing key, no value of an astext leaf (mixed) where it
+ * tells the types of the values apart.
+ */
+static bool
+types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel)
+{
+	uint64		unknown = 0,
+				nulls_in = 0,
+				vals_in = 0;
+	uint32		nw = (c->n + 63) / 64;
+	uint64	   *tagged = palloc(nw * sizeof(uint64));
+
+	sift_cchunk_tag_bits(c, SIFT_COLTAG_UNKNOWN, tagged);
+	for (uint32 w = 0; w < nw; w++)
+	{
+		uint64		in = (sel ? sel[w] : ~UINT64CONST(0)) & (w == c->n / 64 ? (UINT64CONST(1) << (c->n % 64)) - 1 : ~UINT64CONST(0)),
+					nul = c->nulls ? c->nulls[w] : 0,
+					ovf = c->ovf ? c->ovf[w] : 0;
+
+		unknown |= tagged[w] & in;
+		nulls_in |= nul & ~ovf & in;
+		vals_in |= ~nul & in;
+	}
+	pfree(tagged);
+	if (unit_kinds(cu))
+		return unknown == 0;
+	return unknown == 0 && !(nulls_in && (mask >> SIFT_COLTAG_NONE & 1) != (mask >> SIFT_COLTAG_JNULL & 1)) &&
+		!(mixed && vals_in && (mask & TYPES_VALS) != 0 && (mask & TYPES_VALS) != TYPES_VALS);
+}
+
 bool
-sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, bool stored, SiftColSel *sel, bool *known)
+sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, uint8 deftag, bool mixed, SiftColSel *sel, bool *known)
 {
 	ColUnit    *cu = unit->priv;
 	SiftCChunk	c;
 	uint64	   *keep = palloc0(sel->nwords * sizeof(uint64)),
 			   *tagged = palloc(sel->nwords * sizeof(uint64));
+	uint32		nw = (sel->n + 63) / 64;
 
 	if (cu->src->schema->cols[col].parent >= 0)
 		elog(ERROR, "sift_col: leaf %d is an element column, its types are not read per row", col);
 	*known = true;
-	if (unit_chunk(cu, col, &c))
+	if (!unit_chunk(cu, col, &c))
+		for (uint32 w = 0; w < nw; w++)
+			keep[w] = tagmask >> SIFT_COLTAG_NONE & 1 ? ~UINT64CONST(0) : 0;	/* the leaf has no value in the unit */
+	else
 	{
 		if (c.n != sel->n)
 			corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, sel->n);
-		for (uint32 w = 0; stored && w < (c.n + 63) / 64; w++)
-			keep[w] = c.nulls ? ~c.nulls[w] : ~UINT64CONST(0);
 		for (uint8 tag = SIFT_COLTAG_STRING; tag <= SIFT_COLTAG_MAX; tag++)
 		{
 			sift_cchunk_tag_bits(&c, tag, tagged);
-			for (uint32 w = 0; (tagmask >> tag & 1) && w < (c.n + 63) / 64; w++)
+			for (uint32 w = 0; (tagmask >> tag & 1) && w < nw; w++)
 				keep[w] |= tagged[w];
 		}
-		sift_cchunk_tag_bits(&c, SIFT_COLTAG_UNKNOWN, tagged);
-		for (uint32 w = 0; w < (c.n + 63) / 64; w++)
-			*known &= (tagged[w] & sel->bits[w]) == 0;
+		/* the values and the NULL slots that no tag says anything about have the leaf's own type and no value */
+		sift_cchunk_tag_bits(&c, SIFT_COLTAG_JNULL, tagged);
+		for (uint32 w = 0; w < nw; w++)
+		{
+			uint64		nul = c.nulls ? c.nulls[w] : 0,
+						ovf = c.ovf ? c.ovf[w] : 0,
+						kind = 0;
+
+			for (uint8 tag = SIFT_COLTAG_STRING; tag <= SIFT_COLTAG_BOOLEAN; tag++)
+				kind |= c.kind[tag] ? c.kind[tag][w] : 0;
+			keep[w] |= (tagmask >> deftag & 1 ? ~nul & ~kind : 0) | (tagmask >> SIFT_COLTAG_NONE & 1 ? nul & ~ovf & ~tagged[w] : 0);
+		}
+		*known = types_known(cu, &c, tagmask, mixed, sel->bits);
 	}
 	for (uint32 w = 0; w < sel->nwords; w++)
 		sel->bits[w] &= keep[w];
 	return sift_col_sel_count(sel) > 0;
+}
+
+bool
+sift_col_row_types(const SiftColUnit *unit, int col, uint8 deftag, bool mixed, uint8 *out)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCChunk	c;
+
+	if (cu->src->schema->cols[col].parent >= 0)
+		elog(ERROR, "sift_col: leaf %d is an element column, its types are not read per row", col);
+	if (!unit_chunk(cu, col, &c))
+	{
+		memset(out, SIFT_COLTAG_NONE, unit->nrows);
+		return true;
+	}
+	if (c.n != unit->nrows)
+		corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, unit->nrows);
+	if (!sift_cchunk_tags(&c, out))
+		memset(out, 0, c.n);
+	for (uint32 i = 0; i < c.n; i++)
+		if (out[i] == SIFT_COLTAG_UNKNOWN && !sift_col_bit_test(c.ovf, i))
+			out[i] = sift_col_bit_test(c.nulls, i) ? SIFT_COLTAG_NONE : deftag;
+	return types_known(cu, &c, 1U << SIFT_COLTAG_NONE | 1U << SIFT_COLTAG_STRING, mixed, NULL);
 }
 
 bool

@@ -121,6 +121,7 @@ typedef struct AggCtx
 	RangeTblFunction *func;
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
+	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	List	   *dpctx;			/* deparse context of expr_text */
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
 	int			npred;			/* ids handed out to predicate nodes */
@@ -178,7 +179,7 @@ leaf_name(AggCtx *c, int id)
 		return s.data;
 	}
 	if (l->name[0] == '#')
-		appendStringInfoString(&s, "jsonb_array_length(");
+		appendStringInfoString(&s, strcmp(l->name, "#typeof") == 0 ? "jsonb_typeof(" : "jsonb_array_length(");
 	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
@@ -341,7 +342,37 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	v = vleaf_add(c, att, path, leaf_of(c, val)->vtype, typid);
 	c->vleaf[c->nvleaf].obj = obj;
 	c->vleaf[c->nvleaf].count = false;
+	c->vleaf[c->nvleaf].types = false;
 	c->vleaf[c->nvleaf++].key = pstrdup(strVal(llast(path)));
+	return v->id;
+}
+
+static int	typeof_leaf(AggCtx *c, Node *e);
+static bool source_can_types(AggCtx *c);
+
+/*
+ * `jsonb_typeof(x->'k')` of a typed scalar leaf: a scalar leaf after the source's, text, whose values the executor takes from the JSON types of the
+ * values of the leaf (SiftAggVLeaf.types): the name of the type, NULL where the path has no value.
+ */
+static int
+types_leaf(AggCtx *c, Node *call)
+{
+	int			base = typeof_leaf(c, linitial(func_args(call)));
+	SiftSrcLeaf *v;
+
+	if (base < 0 || !source_can_types(c))
+		return -1;
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].types && c->vleaf[j].obj == base)
+			return c->lay->nleaves - c->nvleaf + j;
+	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+		return -1;
+	v = vleaf_add(c, leaf_of(c, base)->attno, leaf_of(c, base)->path, SCV_CODE, TEXTOID);
+	strlcpy(v->name, "#typeof", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
+	c->vleaf[c->nvleaf].obj = base;
+	c->vleaf[c->nvleaf].count = false;
+	c->vleaf[c->nvleaf].types = true;
+	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
 
@@ -361,6 +392,7 @@ count_leaf(AggCtx *c, int grp)
 	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
 	c->vleaf[c->nvleaf].obj = grp;
 	c->vleaf[c->nvleaf].count = true;
+	c->vleaf[c->nvleaf].types = false;
 	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
@@ -556,6 +588,8 @@ match_leaf(AggCtx *c, Node *e)
 		}
 		return -1;
 	}
+	if (fid == F_JSONB_TYPEOF)
+		return types_leaf(c, e);
 	inner = e;
 	if (IsA(e, CoerceViaIO))
 	{
@@ -1010,6 +1044,17 @@ bucket_key_groups(AggCtx *c, const SiftAggKey *k)
 	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
 }
 
+/* the groups of a key whose number the planner knows: a calendar bucket from the statistics of its column, a function of the JSON type of a path (at most seven); 0: unknown */
+static double
+key_groups(AggCtx *c, const SiftAggKey *k)
+{
+	int			nbase = c->lay->nleaves - c->nvleaf;
+
+	if ((k->kind == SAK_LEAF || k->kind == SAK_LUT) && k->leaf >= nbase && c->vleaf[k->leaf - nbase].types)
+		return 7;
+	return k->bucket > 0 ? bucket_key_groups(c, k) : 0;
+}
+
 /* EXPLAIN: the step a key on a timestamp is evaluated for */
 static const char *
 bucket_text(int secs)
@@ -1154,6 +1199,7 @@ static void
 use_leaf(AggCtx *c, int leaf)
 {
 	c->used = bms_add_member(c->used, leaf);
+	c->read = bms_add_member(c->read, leaf);
 	if (leaf_of(c, leaf)->parent >= 0 && leaf_of(c, leaf)->parent != c->group)
 		c->other_group = true;
 }
@@ -2191,7 +2237,7 @@ is_gate(Node *n)
 	return exprType(n) == BOOLOID && pseudo_const(n);
 }
 
-/* the SIFT_SRC_JT_* bits of the type names (the strings jsonb_typeof gives, but 'null': the rows of a JSON null are NULL); 0 when one is another string or none */
+/* the SIFT_SRC_JT_* bits of the type names jsonb_typeof gives (a JSON null is 'null'); another string has none */
 static uint32
 jtype_bits(List *names)
 {
@@ -2201,20 +2247,14 @@ jtype_bits(List *names)
 		uint32		bit;
 	}			known[] = {
 		{"string", SIFT_SRC_JT_STRING}, {"number", SIFT_SRC_JT_NUMBER}, {"boolean", SIFT_SRC_JT_BOOLEAN},
-		{"object", SIFT_SRC_JT_OBJECT}, {"array", SIFT_SRC_JT_ARRAY}
+		{"object", SIFT_SRC_JT_OBJECT}, {"array", SIFT_SRC_JT_ARRAY}, {"null", SIFT_SRC_JT_NULL}
 	};
 	uint32		bits = 0;
 
 	foreach_ptr(String, s, names)
-	{
-		int			t = 0;
-
-		while (t < lengthof(known) && strcmp(strVal(s), known[t].name) != 0)
-			t++;
-		if (t == lengthof(known))
-			return 0;
-		bits |= known[t].bit;
-	}
+		for (int t = 0; t < lengthof(known); t++)
+			if (strcmp(strVal(s), known[t].name) == 0)
+				bits |= known[t].bit;
 	return bits;
 }
 
@@ -2225,7 +2265,7 @@ typeof_type(Oid typid)
 		typid == NUMERICOID || typid == TEXTOID;
 }
 
-/* the leaf of the jsonb value `x->'k'` that keeps the other JSON types of a path out of its values: a scalar of a type a JSON value of one type fills, not the text of any */
+/* the leaf of the jsonb value `x->'k'` whose chunks know the JSON type of the path: a scalar of a type a JSON value of one type fills, or the text of any scalar (astext), whose chunks keep the number and boolean kinds */
 static int
 typeof_leaf(AggCtx *c, Node *e)
 {
@@ -2237,7 +2277,7 @@ typeof_leaf(AggCtx *c, Node *e)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && !l->astext && l->name[0] != '#' &&
+		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' &&
 			paths_equal(l->path, r.path) && typeof_type(l->typid))
 			return i;
 	}
@@ -2250,52 +2290,116 @@ source_can_types(AggCtx *c)
 	return OidIsValid(c->indexoid) ? sift_colsrc_can_types(get_rel_relam(c->indexoid), true) : sift_colsrc_can_types(get_rel_relam(c->heapoid), false);
 }
 
+/* the constant text operand of `jsonb_typeof(..) = 'a'` as a name list, with the call in *call; either side */
+static bool
+typeof_cmp_operands(OpExpr *op, Node **call, List **names)
+{
+	Node	   *l = strip_relabel(linitial(op->args)),
+			   *r = strip_relabel(lsecond(op->args));
+
+	if (func_of(l) != F_JSONB_TYPEOF)
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+	}
+	if (!IsA(r, Const) || ((Const *) r)->constisnull)
+		return false;
+	*call = l;
+	*names = list_make1(makeString(TextDatumGetCString(((Const *) r)->constvalue)));
+	return true;
+}
+
 /*
- * `jsonb_typeof(x->'k') = 'number'` or `IN ('string', 'number')` as a conjunct of the query: the source keeps the rows whose value of the leaf
- * of `x->'k'` has one of the types, the stored values by the type of the leaf and the values it could not hold by the type the chunk kept for
- * them (SAP_TYPE). Not <>, NOT IN, 'null', and not as a branch of OR: the reads of the leaf give the values of the other rows as NULL, which
- * only a conjunct that drops those rows makes safe.
+ * A test of `jsonb_typeof(x->'k')` as the SIFT_SRC_JT_* types it keeps: `= 'a'` and `IN (..)`, their complements `<>` and `NOT IN` and IS [NOT]
+ * NULL. The type is NULL where the path has no value, which no comparison keeps, so a complement is the other types but none. *call is the
+ * jsonb_typeof call. False for any other test, and for a type no row has.
+ */
+static bool
+typeof_test(Node *n, Node **call, uint32 *types)
+{
+	Oid			eq = TextEqualOperator,
+				ne = get_negator(TextEqualOperator);
+	List	   *names = NIL;
+	bool		negate;
+
+	if (IsA(n, NullTest))
+	{
+		*call = strip_relabel((Node *) ((NullTest *) n)->arg);
+		*types = SIFT_SRC_JT_NONE;
+		negate = ((NullTest *) n)->nulltesttype == IS_NOT_NULL;
+	}
+	else if (IsA(n, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) n;
+
+		if (list_length(sa->args) != 2 || !((sa->opno == eq && sa->useOr) || (sa->opno == ne && !sa->useOr)) || !path_keys(lsecond(sa->args), &names))
+			return false;
+		*call = strip_relabel(linitial(sa->args));
+		*types = jtype_bits(names);
+		negate = !sa->useOr;
+	}
+	else if (IsA(n, OpExpr) && (((OpExpr *) n)->opno == eq || ((OpExpr *) n)->opno == ne) && list_length(((OpExpr *) n)->args) == 2)
+	{
+		if (!typeof_cmp_operands((OpExpr *) n, call, &names))
+			return false;
+		*types = jtype_bits(names);
+		negate = ((OpExpr *) n)->opno == ne;
+	}
+	else
+		return false;
+	if (negate)
+		*types = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE & ~*types;
+	return *types != 0;
+}
+
+/*
+ * A test of the JSON type of a leaf's path as a conjunct of the query (typeof_test): the source keeps the rows whose type is one of the types,
+ * a stored value by the type of the leaf and the values it could not hold by the type the chunk kept for them (SAP_TYPE). Not as a branch of OR:
+ * the reads of the leaf give the values of the other rows as NULL, which only a conjunct that drops those rows makes safe.
  */
 static SiftAggPred *
 compile_typeof(AggCtx *c, Node *n)
 {
-	Node	   *call,
-			   *rhs;
-	List	   *names = NIL,
-			   *args;
+	Node	   *call;
 	uint32		types;
 	int			leaf;
 	SiftAggPred *p;
 
 	n = strip_relabel(n);
-	args = IsA(n, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) n)->args : func_args(n);
-	if (list_length(args) != 2)
-		return NULL;
-	call = strip_relabel(linitial(args));
-	rhs = strip_relabel(lsecond(args));
-	if (IsA(n, OpExpr) && ((OpExpr *) n)->opno == TextEqualOperator)
-	{
-		if (func_of(call) != F_JSONB_TYPEOF)
-		{
-			Node	   *t = call;
-
-			call = rhs;
-			rhs = t;
-		}
-		if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull)
-			return NULL;
-		names = list_make1(makeString(TextDatumGetCString(((Const *) rhs)->constvalue)));
-	}
-	else if (!(IsA(n, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) n)->opno == TextEqualOperator && ((ScalarArrayOpExpr *) n)->useOr &&
-			   path_keys(rhs, &names)))
-		return NULL;
-	if (func_of(call) != F_JSONB_TYPEOF || (types = jtype_bits(names)) == 0 || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
+	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
 		!source_can_types(c))
 		return NULL;
-	p = make_leaf_pred(c, SAP_TYPE, leaf);
+	p = new_pred(c, SAP_TYPE);
+	p->leaf = leaf;
+	p->level = leaf_level(c, leaf);
+	c->used = bms_add_member(c->used, leaf);
 	p->op = types;
 	p->desc = expr_text(c, n);
 	return p;
+}
+
+/*
+ * The type of a path tested by an expression (a FILTER, a CASE, an OR, a key) while the query reads the values of the path: the leaf cannot hold
+ * the strings among its numbers, so the scan would raise where PostgreSQL's guard skips them. Only a conjunct of the query (SAP_TYPE) guards a read.
+ */
+static bool
+types_guard_reads(AggCtx *c)
+{
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].types && bms_is_member(c->vleaf[j].obj, c->read))
+			return true;
+	return false;
+}
+
+/* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
+static void
+typeof_reads(AggCtx *c, SiftAggSpec *s)
+{
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_TYPE && bms_is_member(s->pred[i]->leaf, c->read))
+			s->pred[i]->op |= SIFT_SRC_JT_READ;
 }
 
 static SiftAggPred *
@@ -4381,7 +4485,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
-		scan_cost += s->vleaf[i].count ? 0 : rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
@@ -4772,7 +4876,7 @@ set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
-			double		b = s->key[j].bucket > 0 ? bucket_key_groups(c, &s->key[j]) : 0;
+			double		b = key_groups(c, &s->key[j]);
 
 			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
 				continue;
@@ -4844,7 +4948,7 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 static bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
-	if (c->other_group)
+	if (c->other_group || types_guard_reads(c))
 		return false;
 	share_ordered(s);
 	if (c->group < 0)
@@ -4855,6 +4959,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return false;
 	if (list_length(c->combos) > SIFT_AGG_MAX_COMBOS || list_length(c->joins) > SIFT_AGG_MAX_JOINS)
 		return false;
+	typeof_reads(c, s);
 	s->npreds_total = c->npred;
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));

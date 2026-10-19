@@ -355,14 +355,21 @@ typedef struct SiftSrcProvider
 	void		(*read_sel) (void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 	/*
 	 * Optional, both or neither (sift_colsrc_can_types): the JSON types of the values of a leaf (SIFT_SRC_JT_*), for a leaf that holds the
-	 * values of one type and sets aside the others (overflow). filter_types clears the rows of bits whose value is not of one of the types
-	 * (a NULL never is) and says whether any row is left; it raises the value-overflow error when a row of one of the types has a value the
-	 * leaf cannot hold, unless no snapshot sees the row, and when the type of such a value is not known (an index written before the types
-	 * were kept). tolerate_ovf, called before `begin`, makes the reads of the leaf give a value it cannot hold as NULL instead of raising
-	 * that error: the executor has filter_types drop or refuse every row that has one.
+	 * values of one type and sets aside the others (overflow). filter_types clears the rows of bits whose type is not one of the types
+	 * (SIFT_SRC_JT_NONE: jsonb_typeof is NULL, a missing key; SIFT_SRC_JT_NULL: a JSON null) and says whether any row is left. It raises the
+	 * value-overflow error when SIFT_SRC_JT_READ is set (the query reads the leaf elsewhere) and a row of one of the types has a value the
+	 * leaf cannot hold, unless no snapshot sees the row, and when the type of a row is not known (an index written before the types were kept,
+	 * and for a NULL or an astext value before the kinds). tolerate_ovf, called before `begin`, makes the reads of the leaf give a value it
+	 * cannot hold as NULL instead of raising that error: the executor has filter_types drop or refuse every row that has one.
 	 */
 	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 	void		(*tolerate_ovf) (void *impl, int leaf);
+	/*
+	 * Also with them: read_types gives the JSON type of the value of the leaf of each row of the unit in tags[0..nrow): the index of the
+	 * name jsonb_typeof gives (0 string, 1 number, 2 boolean, 3 object, 4 array, 5 null) or SIFT_SRC_TYPE_NONE (its NULL). It raises when
+	 * the index did not store the type of some row (as filter_types does).
+	 */
+	void		(*read_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 } SiftSrcProvider;
 
 struct SiftSrcSource
@@ -487,16 +494,22 @@ extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
 extern uint64 sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf);
 extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
 
-/* The JSON types of a value (jsonb_typeof), as the bits of the types a filter keeps; null is not one of them (its rows are NULL) */
+/* The JSON types of a value (jsonb_typeof), as the bits of the types a filter keeps; the bit t - 1 is the chunk tag t (SIFT_COLTAG_*) */
 #define SIFT_SRC_JT_STRING		0x01
 #define SIFT_SRC_JT_NUMBER		0x02
 #define SIFT_SRC_JT_BOOLEAN		0x04
 #define SIFT_SRC_JT_OBJECT		0x08
 #define SIFT_SRC_JT_ARRAY		0x10
+#define SIFT_SRC_JT_NONE		0x20	/* the path has no value: jsonb_typeof is NULL */
+#define SIFT_SRC_JT_NULL		0x40	/* a JSON null: jsonb_typeof is 'null' */
+#define SIFT_SRC_JT_ALL			0x7F
+#define SIFT_SRC_TYPE_NONE		0xFF	/* SiftSrcProvider.read_types: the path has no value */
+#define SIFT_SRC_JT_READ		0x80	/* not a type: the query reads the leaf's values besides, so a row of the types whose value the leaf cannot hold is an error */
 
 /* Can the source of this access method filter by the JSON type of a leaf (SiftSrcProvider.filter_types)? */
 extern bool sift_colsrc_can_types(Oid relam, bool index);
 extern bool sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
+extern void sift_colsrc_read_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf);
 
 /* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */

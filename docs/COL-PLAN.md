@@ -279,28 +279,47 @@ At 10M the cycles per row fall less than the instructions (Q05 12.8 to 12.0, Q07
 
 ## The JSON type of a path (`jsonb_typeof`)
 
-`jsonb_typeof(x->'k') = 'number'`, also `'string'`, `'boolean'`, `'object'`, `'array'`, and `jsonb_typeof(..) IN ('string', 'number')` are a conjunct
-of the query that the source answers (`SAP_TYPE`, `compile_typeof`, `sift_colsrc_filter_types`; tests `agg_jsonb_typeof`,
-`agg_jsonb_typeof_parallel`, the `k_typeof_*` fixtures). The argument is a path of the jsonb value (`->`, `#>`, nested), not its text, and it
-names a scalar leaf of the index (`bool`, `int2`, `int4`, `int8`, `float4`, `float8`, `text`; not `astext`, whose values mix three types, not
-lossy, not a key of a map or a list element).
+`jsonb_typeof(x->'k') = 'number'`, also `'string'`, `'boolean'`, `'object'`, `'array'`, `'null'`, `jsonb_typeof(..) IN ('string', 'number')`, their
+complements `<>` and `NOT IN` and `jsonb_typeof(..) IS [NOT] NULL` are a conjunct of the query that the source answers (`SAP_TYPE`,
+`typeof_test`, `compile_typeof`, `sift_colsrc_filter_types`; tests `agg_jsonb_typeof`, `agg_jsonb_typeof_parallel`, the `k_typeof_*` fixtures). The argument is
+a path of the jsonb value (`->`, `#>`, nested), not its text, and it names a scalar leaf of the index (`bool`, `int2`, `int4`, `int8`, `float4`,
+`float8`, `numeric`, `text`, `astext`; not lossy, not a key of a map or a list element).
 
-- **What it keeps.** The rows whose value of the leaf has a type of the list: a stored value has the type of its leaf (a `float8` leaf holds
-  numbers), a value the leaf could not hold has the type its chunk kept (docs/COL.md 2.2, `sift_col_filter_types`). A JSON null, a missing key and
-  a path that leads to no value are NULL and never kept: `jsonb_typeof` of them is `'null'` or NULL, and the filter never asks for `'null'`.
+- **An `astext` leaf** holds the text of a string, a number or a boolean, so its stored values have no type of their own: the chunk keeps the
+  kind of each number and boolean (docs/COL.md 2.2), a string is the leaf's own, an object or an array is an overflow value with its tag, and a
+  JSON null is a NULL slot of its own kind. A `'12'` that is a string stays a string. A segment of minor 3 has no kinds, so a test that tells
+  the types of an astext leaf apart raises there with the `REINDEX` hint, as a NULL slot does for `'null'`.
+- **What it keeps.** The rows whose type of the leaf's path is in the set, a set of seven types: `string`, `number`, `boolean`, `object`,
+  `array`, `null` (a JSON null) and none (a missing key, a NULL document, a path that leads to no value: `jsonb_typeof` is NULL). A stored value
+  has the type of its leaf (a `float8` leaf holds numbers), a value the leaf could not hold the type its chunk kept (docs/COL.md 2.2, the tags),
+  a NULL slot the kind of the chunk (`null` or none). `= 'a'` and `IN` are the listed types; `<>` and `NOT IN` the others **but none**, as
+  PostgreSQL gives NULL for a path with no value, which no comparison keeps; `IS NULL` is none, `IS NOT NULL` every type but none. A name that
+  is no JSON type is no type (`= 'bogus'` is not pushed, `<> 'bogus'` is every type but none).
 - **What it does not raise on.** The rows of any other type are dropped without reading their value: a string among the numbers of a `float8`
   leaf does not raise the overflow error that every other read of that leaf raises, because the reads of a leaf with a type filter give such
   a value as NULL (`tolerate_ovf`) and the filter has already dropped or refused every row that has one.
-- **What it raises on.** A kept row whose value the leaf cannot hold (a number out of the float range, a non-integer in an `int4` leaf, and any
-  string, boolean, object or array asked for on a leaf of another type) raises the error of the pushdown, as the read of that value does, unless
-  no snapshot sees the row (the unit's page is not all-visible: `sift_col_vet` runs on those rows only). So `count(*) WHERE jsonb_typeof(m) =
-  'string'` on a number leaf with strings raises, where the normal plan counts them, and so does an overflow value with no type (the unit was
-  written by minor 3 or merged from one: tag 0), with the hint to `REINDEX`. The filter runs first, on the live rows of the unit, before the other
+- **What it raises on.** When the query reads the values of the leaf besides (an aggregate, a key, another conjunct of it: `SIFT_SRC_JT_READ`),
+  a kept row whose value the leaf cannot hold (a number out of the float range, a non-integer in an `int4` leaf, and any string, boolean, object
+  or array asked for on a leaf of another type) raises the error of the pushdown, as the read of that value does, unless no snapshot sees the row
+  (the unit's page is not all-visible: `sift_col_vet` runs on those rows only). When it does not (`count(*) WHERE jsonb_typeof(m) <> 'number'`,
+  a `count(*)` of the strings of a number leaf), the rows are counted by their types and no value is read: nothing raises. A row whose type the
+  chunk does not know (an overflow value with no tag, a NULL slot or an astext value of a unit that has no kinds, written by minor 3 or merged
+  from one) raises with the hint to `REINDEX`, whatever the query reads. The filter runs first, on the live rows of the unit, before the other
   integer filters of the source: an error is possible for a row that another conjunct would drop, never the contrary. A sum or any other read of
   the same leaf that no type filter guards keeps raising for the strings, as today.
-- **Not taken.** `<>`, `NOT IN`, `'null'` and any name that is not a JSON type, `jsonb_typeof(..) IS NULL`, a group key or an expression on
-  the type, a branch of `OR` or `NOT`, an aggregate `FILTER`, a path of an element of a list or map, a leaf declared `astext`, a table with a
-  source that cannot answer it (`sift_table`, the stub). They keep the normal plan, which the differential fixture `k_typeof_not_pushed` checks.
+- **As an expression.** Anywhere else `jsonb_typeof(x->'k')` is a text leaf after the source's (`SiftAggVLeaf.types`, `types_leaf`, the
+  leaf `#typeof`, `read_types_leaf`): per row the name of the type (a dictionary of six, a NULL where the path has no value) that the source
+  reads from the chunk (`SiftSrcProvider.read_types`, `sift_col_row_types`), no value of the leaf read. So it is a group key (the five types,
+  `null` and a NULL group; at most seven groups), a branch of an `OR` or a `NOT`, in an aggregate `FILTER`, a `CASE`, a function of the type
+  (`upper`, `coalesce`, `LIKE`, a comparison), with the existing machinery of the leaves of text (lookup tables over the dictionary). The PostgreSQL
+  semantics are the leaf's: a path with no value is NULL, a JSON null is `'null'`. These shapes are not the fast path of the conjunct: the
+  vector of types is decoded and the expression evaluated per distinct name.
+- **Not taken.** A name that no row has as a conjunct (`= 'bogus'`: it goes through the expression above), a query that tests the type of a path in
+  an expression (`FILTER`, `CASE`, `OR`, a key) **and reads the values of the same path** (`sum(x) FILTER (WHERE jsonb_typeof(x) = 'number')`): the
+  leaf cannot give the strings among its numbers and only a conjunct (the form above) guards the read, so the scan would raise where PostgreSQL's
+  guard skips them; the plan is the normal one, which `k_typeof_not_pushed` checks. Also a path of an element of a list or map, and a
+  `sift_table`: it keeps a jsonb column as one opaque leaf, so there is no leaf of the path to give the types (the table needs declared paths,
+  `docs/COL-JSONB-31.md` section 4; the provider then only forwards `filter_types`, `read_types` and `tolerate_ovf`), and the stub source.
 - **Where it runs.** `process_unit` calls the source before the integer filters (`type_filters`), the rows left are read as for those filters
   (a sparse selection decodes the leaf at those rows only), a worker does the same on its units, and a match set from a BM25 conjunct is
   expanded to the stored rows like the other filters. A unit's pre-aggregates do not answer a query with it. `EXPLAIN` shows the conjunct in
