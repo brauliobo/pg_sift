@@ -440,7 +440,7 @@ extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, 
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
 
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
-extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out);
+extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 

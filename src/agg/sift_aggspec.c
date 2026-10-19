@@ -418,12 +418,12 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 }
 
 bool
-sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, SiftSrcStrTest *out)
+sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
 {
 	const SiftSrcLeaf *lf;
 	Node	   *e;
 
-	if (p->kind != SAP_LUT || p->level != 0)
+	if (p->kind != SAP_LUT || p->level != 0 || p->leaf >= nbase)	/* a virtual leaf (a member by key, a count) is not stored */
 		return false;
 	lf = &lay->leaf[p->leaf];
 	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
