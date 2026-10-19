@@ -34,7 +34,8 @@ compare sanitize runs by wall time.
 | soak-col | 45 s | 18 s | 18 s, 6 clients | column maintenance under concurrent writers |
 | tap-shell-store_replica | 29 s | 27 s | 3 s of load | bound by replica catch-up sleeps, not by size |
 
-Whole run, one lane after the other: 1423 s of job wall and 1223 s of CPU before, 803 s and 666 s after. Wall of the pool: 729 s before, 414 s after.
+Whole run, one lane after the other: 1423 s of job wall and 1223 s of CPU before, 803 s and 666 s after. Wall of the pool: 729 s before, 414 s after. After the tests other branches added meanwhile (new vacuum stress tests among them) it is 433 s;
+the ASan run went from 1656 s to 764 s.
 
 ## Not shrunk, on purpose
 
