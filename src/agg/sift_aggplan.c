@@ -386,6 +386,19 @@ json_access(AggCtx *c, Node *e, JsonRef *r)
 	Node	   *a1;
 
 	e = strip_relabel(e);
+	if (IsA(e, SubscriptingRef))
+	{
+		/* x['k']: the same as x -> 'k' */
+		SubscriptingRef *sr = (SubscriptingRef *) e;
+
+		a1 = sr->refupperindexpr == NIL ? NULL : strip_relabel(linitial(sr->refupperindexpr));
+		if (sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL ||
+			list_length(sr->refupperindexpr) != 1 || !IsA(a1, Const) || ((Const *) a1)->constisnull || exprType(a1) != TEXTOID ||
+			!json_access(c, (Node *) sr->refexpr, r) || r->as_text)
+			return false;
+		r->path = lappend(r->path, makeString(TextDatumGetCString(((Const *) a1)->constvalue)));
+		return true;
+	}
 	fid = func_of(e);
 	args = func_args(e);
 	if (fid == F_JSONB_OBJECT_FIELD || fid == F_JSONB_OBJECT_FIELD_TEXT || fid == F_JSONB_EXTRACT_PATH ||
@@ -534,7 +547,13 @@ match_leaf(AggCtx *c, Node *e)
 	if (!json_access(c, inner, &r))
 		return -1;
 	if (IsA(inner, Var) || attr_of_expr(c, inner) > 0)
-		return -1;				/* the jsonb value itself */
+	{
+		/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
+		if (cast_to != InvalidOid && json_cast_target(fid) != InvalidOid && cast_to == exprType(e) && r.att == 0 && c->func_kind == FK_EACH &&
+			r.fcol == 2 && c->group >= 0)
+			return child_leaf(c, c->group, "value", cast_to);
+		return -1;
+	}
 	{
 		Oid			want = cast_to != InvalidOid ? cast_to : r.as_text ? TEXTOID : InvalidOid;
 
