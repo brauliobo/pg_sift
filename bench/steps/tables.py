@@ -52,9 +52,19 @@ UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
+def cpus_parts(quota):
+    """where the engines ran: (the budget, its details); all the CPUs of the host, or the scope of the session (`systemd-run -p CPUQuota`: the server, the clients and a Java process all inside it)"""
+    if not quota:
+        return 'every CPU of the host', []
+    return 'the same budget of %s for the server of every engine' % quota, [
+        'a cgroup quota on the server processes only, on four physical cores',
+        'the clients, pgbench and the load generator, run outside it on the other four',
+        'PostgreSQL engines with one parallel worker fewer than the budget, Elasticsearch with that many processors and shards']
+
+
 def cpus_text(quota):
-    """where the engines ran: all the CPUs of the host, or the scope of the session (`systemd-run -p CPUQuota`: the server, the clients and a Java process all inside it)"""
-    return 'every CPU of the host' if not quota else 'the same budget of %s for the server of every engine (a cgroup quota on the server processes only, on four physical cores; the clients, pgbench and the load generator, run outside it on the other four; PostgreSQL engines with one parallel worker fewer than the budget, Elasticsearch with that many processors and shards)' % quota
+    budget, details = cpus_parts(quota)
+    return budget + (' (%s)' % '; '.join(details) if details else '')
 
 
 def method(quota=''):
