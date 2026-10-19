@@ -54,7 +54,7 @@ For each chunk it picks, from exact sizes, the
   stored inline in its chunk with a sortable 8-byte prefix, so there is no length limit below 1 GB per unit and the `0A000` that `SiftAgg` raised
   for long strings is gone. Equality, `IN`, comparisons, prefix and length tests run on the encoded form (prefix zone maps prune units; the
   prefix filters rows before any string is compared); sources can offer the same to the planner through the optional `prune_str` / `filter_str`
-  callbacks of `src/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
+  callbacks of `src/agg/sift_colsrc.h`. `sift.col_leaves` has a new column `inline_chunks`. Mutable-lane strings have no length limit either.
 
 - Added: `CREATE INDEX ... `char(n)` and
   `name` are pushed to `SiftAgg` like text; a `bpchar` without a length is stored but never filtered or grouped by the column plans, because

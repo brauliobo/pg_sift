@@ -1,4 +1,4 @@
--- Column kernels (src/sift_col_kern*.c): every SIMD level is bit-identical to the scalar specification on random inputs of every
+-- Column kernels (src/col/sift_col_kern*.c): every SIMD level is bit-identical to the scalar specification on random inputs of every
 -- slot (all widths, boundary thresholds, unaligned starts, n in 0..5000, garbage in the padding). A level the CPU lacks runs the
 -- best one below it, so the output does not depend on the host.
 CREATE EXTENSION pg_sift;

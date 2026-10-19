@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate src/sift_analyze_tables.h: code point classes and folding maps.
+"""Generate src/bm25/sift_analyze_tables.h: code point classes and folding maps.
 
-    python3 -I tools/analyze/gen_tables.py UCD_DIR > src/sift_analyze_tables.h
+    python3 -I tools/analyze/gen_tables.py UCD_DIR > src/bm25/sift_analyze_tables.h
 
 UCD_DIR holds the Unicode 16.0.0 files Scripts.txt, DerivedCoreProperties.txt
 and emoji/emoji-data.txt; Python's unicodedata must be the same version. The

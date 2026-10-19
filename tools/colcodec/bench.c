@@ -9,7 +9,7 @@
 
 #include "gen.h"
 
-#include "../../src/sift_colcodec_int.h"
+#include "../../src/col/sift_colcodec_int.h"
 #include "harness.h"
 #include "ccshim.h"
 

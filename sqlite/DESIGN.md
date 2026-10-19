@@ -3,7 +3,7 @@
 Internals of the SQLite extension (`sift` for SQLite, release artifact `sift-sqlite`). Usage, installation and the headline numbers are in
 [README.md](README.md). The extension compiles the portable core of `../src` (the files of `src/portable.list`: codec, dictionary, segment writer and reader, BM25 scoring
 with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the host implementation in `host/` (`host.h`, `host.c`, `host_regex.c`) that
-`src/sift_host.h` selects with `-DSIFT_HOST_SQLITE`; the storage, write path, merge driver, virtual table, snippets, facets and parallel scans are new (`sq*.c`).
+`src/core/sift_host.h` selects with `-DSIFT_HOST_SQLITE`; the storage, write path, merge driver, virtual table, snippets, facets and parallel scans are new (`sq*.c`).
 
 ## Design
 
@@ -27,7 +27,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 - **Writes.** One writer (SQLite's). INSERT/UPDATE/DELETE go to an in-memory inverted buffer; commit (xSync), the
   posting threshold, or a savepoint boundary flushes it as one immutable segment published in the manifest in the same
   SQLite transaction, so rollback, crash and WAL readers are consistent by construction.
-- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/sift_runs.c`): the live part of every input (documents, then every term with its
+- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/bm25/sift_runs.c`): the live part of every input (documents, then every term with its
   postings and positions) is spilled to a run, a temporary file, and the runs are merged by a k-way merge into the output segment, in several
   passes when they do not fit the memory budget (`maintenance_work_mem`, 64 MiB here); memory is the reader buffers plus one term, never the inverted
   index. Before this unification the SQLite host merged the inputs in lockstep without a temporary file (same result, byte for byte; on the 12-segment 218k
@@ -56,10 +56,10 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   `sift_facets(t, facet_table, q [, limit [, nulls]])` evaluates the query on `t`, then for every term of a keyword-analyzer
   table (one value per rowid, the same rowids) counts the matches: ordered by count then value; `nulls=1` adds a NULL row
   for matches without a value.
-- **Host implementation** (`host/`). The vocabulary of `src/sift_host.h` over the C library: memory contexts over malloc, `ereport` as `siglongjmp`
+- **Host implementation** (`host/`). The vocabulary of `src/core/sift_host.h` over the C library: memory contexts over malloc, `ereport` as `siglongjmp`
   (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
   atomics/spin locks/dsa for `sift_parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
-  `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/sift_store.h` (extent index, padding and
+  `sift_host.h`, which `scripts/check-portable.sh` enforces. `sqstore.c` implements the store interface of `src/core/sift_store.h` (extent index, padding and
   extent list come from the shared inline helpers and `sift_stream.c`); `sqstubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (write buffers, visibility).
 - **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `write_buffer_limit` there), the run merge
   (`sift_run_from_segment`, `sift_runs_write`), the deletion

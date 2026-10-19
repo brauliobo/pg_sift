@@ -2,7 +2,7 @@
 
 Plain SQL over a table with a `sift_col` index (or a `sift_table` table) runs on the column data when the planner can prove the result is the one of the normal plan; everything else keeps the normal plan. `sift.enable_agg` (default on) switches the matcher. The result of a pushed query is the one of the plain plan, row for row: `scripts/coldiff.sh` runs every query both ways and compares (docs/AGG.md).
 
-Files: `src/sift_aggplan.c` (shape matcher, cost), `src/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/sift_agg.c` (executor, EXPLAIN), `src/sift_aggkern*.c`, `src/sift_colsrc.h` and `src/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/sift_aggcol.c` (provider over the `sift_col` index), `src/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
+Files: `src/agg/sift_aggplan.c` (shape matcher, cost), `src/agg/sift_aggspec.[ch]` (what the planner proved, serialized into `custom_private`), `src/agg/sift_agg.c` (executor, EXPLAIN), `src/agg/sift_aggkern*.c`, `src/agg/sift_colsrc.h` and `src/agg/sift_aggsrc.c` (the seam to the column data and its provider registry), `src/agg/sift_aggcol.c` (provider over the `sift_col` index), `src/table/sift_table_src.c` (provider over a `sift_table` table, docs/COL-TAM.md section 6), `src/agg/sift_aggstub*.c` (test provider, the `sift_colstub` index AM, `SIFT_TESTING` builds).
 
 ## What matches
 
@@ -174,7 +174,7 @@ Listed once, with the reason:
 
 ## Executor
 
-One unit at a time (the rows of a segment inside one superblock), through the seam of `src/sift_colsrc.h`:
+One unit at a time (the rows of a segment inside one superblock), through the seam of `src/agg/sift_colsrc.h`:
 
 1. row predicates to a bitmap with the kernel tables (integer comparisons are `range` and dictionary lookups `lut` of the column table, `cmp_f64` / `between_f64` / `lut_i32` of the aggregation table; bitmap operations are the column table's `bits_*`); dictionary predicates are evaluated once per distinct value of the unit's dictionary;
 2. with an unnest, element predicates in vectors of 4096 elements, the row bitmap lifted to the elements through their parent ordinals;
@@ -331,7 +331,7 @@ A path with workers pays `AGG_SETUP_FACTOR` (110) times `parallel_setup_cost`: s
 
 The rows the node returns are bounded by the groups its tuples can make (`rows_out` in `agg_cost`: the sets times the unnested rows it expects to aggregate). PostgreSQL's group estimate of an unnest is its default 200 distinct values times the 100 rows it assumes per call, 768500 groups for S5 (20334 exist), and the sort and window above the node were priced for them: the node's plan was estimated above the plain parallel plan (261889 against 252983) though it runs five times faster, and the plain plan is cheaper by its pathkeys. With the bound the plan above the node is priced for the groups that can exist (S5: 117883 against 350917 plain at every worker count).
 
-A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/sift_aggcte.c`): its cost, which stands for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of the nodes above (a window, a union) took 3.5 to 5 ms of those queries (S3 -17 percent, S5 -14, S4 -13).
+A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/sift_aggcte.c`): its cost, which stands for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of the nodes above (a window, a union) took 3.5 to 5 ms of those queries (S3 -17 percent, S5 -14, S4 -13).
 
 ## Stays on the normal plan
 

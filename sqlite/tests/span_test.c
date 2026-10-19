@@ -1,5 +1,5 @@
 /*
- * span_test.c - unit and adversarial tests of src/sift_span.h (docs/SAFETY.md). No host, no database: the header is C library only.
+ * span_test.c - unit and adversarial tests of src/core/sift_span.h (docs/SAFETY.md). No host, no database: the header is C library only.
  * Built by the portable flags of sqlite/Makefile (make span-test, make SIMD=none B=build-scalar span-test, make span-test-asan),
  * run by test.sh. The failure hook is the test's own: it longjmps when a check is expected to fail and aborts when it is not, so
  * a check that fires by mistake or one that does not fire both fail the run.

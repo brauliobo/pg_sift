@@ -1,5 +1,5 @@
 /*
- * stubs.c - the collaborators of src/sift_eval.c that the PostgreSQL side provides, as this host sees them: the options of
+ * stubs.c - the collaborators of src/bm25/sift_eval.c that the PostgreSQL side provides, as this host sees them: the options of
  * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot) and the filter of a
  * list of documents as the TID bitmap the shared filter builder reads. No write buffers and no kept docmap directories:
  * sqlite/host/host_stubs.c.
@@ -58,7 +58,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ---------- the TID bitmap of a list of documents (src/sift_compat.h) ---------- */
+/* ---------- the TID bitmap of a list of documents (src/core/sift_compat.h) ---------- */
 
 struct TIDBitmap
 {

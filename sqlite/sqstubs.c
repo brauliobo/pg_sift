@@ -1,5 +1,5 @@
 /*
- * sqstubs.c - the PostgreSQL-only collaborators of src/sift_eval.c, as a single-writer embedded database sees them:
+ * sqstubs.c - the PostgreSQL-only collaborators of src/bm25/sift_eval.c, as a single-writer embedded database sees them:
  * no heap (every document is visible, no recheck against a snapshot), no TID bitmap filter. The index options are those of
  * the virtual table. No write buffers (documents are buffered in memory by sqbuild.c and written as an immutable segment
  * before they are searched) and no kept docmap directories: host/host_stubs.c.
@@ -46,7 +46,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	return n;
 }
 
-/* ---------- TID bitmap filters (src/sift_compat.h): only the PostgreSQL planner builds them ---------- */
+/* ---------- TID bitmap filters (src/core/sift_compat.h): only the PostgreSQL planner builds them ---------- */
 
 SiftTbmIter *
 sift_tbm_begin(TIDBitmap *tbm)

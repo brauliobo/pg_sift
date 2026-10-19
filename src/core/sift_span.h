@@ -5,7 +5,7 @@
  * wrong. A decoder that adds a stored offset to a pointer reads wherever the number says. A SiftSpan is {ptr, len}; every way to
  * narrow it or to read from it checks against len first, in a form that cannot wrap (off <= len && n <= len - off, never off + n),
  * and a failed check does not return a value. The checked operations call sift_span_fail(), which does not return: the host raises
- * ERRCODE_DATA_CORRUPTED (src/sift_span.c; ereport(ERROR) in PostgreSQL, the error frame of the SQLite host), a test aborts or
+ * ERRCODE_DATA_CORRUPTED (src/core/sift_span.c; ereport(ERROR) in PostgreSQL, the error frame of the SQLite host), a test aborts or
  * longjmps (-DSIFT_SPAN_ABORT, or its own definition). The sift_span_try_* operations are the same checks that return false, for a
  * decoder that reports through a status code (sift_blob_check) or that must clean up first; no check is ever skipped by a build flag.
  *
@@ -43,7 +43,7 @@ typedef struct SiftSpan
 
 /*
  * The failure hook: what was asked ("u32", "sub", ...), how many bytes it needed and how many the span had left. Does not return.
- * Defined by the host (src/sift_span.c: ERRCODE_DATA_CORRUPTED), or here for standalone tools and tests with -DSIFT_SPAN_ABORT, or by a
+ * Defined by the host (src/core/sift_span.c: ERRCODE_DATA_CORRUPTED), or here for standalone tools and tests with -DSIFT_SPAN_ABORT, or by a
  * test that wants to catch the failure (the test file defines it and longjmps).
  */
 #ifdef SIFT_SPAN_ABORT

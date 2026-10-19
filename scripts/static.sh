@@ -28,8 +28,9 @@ renice -n 19 $$ >/dev/null
 WORK=$(mktemp -d "${SIFT_TMP:-/tmp}/sift-static-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 PGINC=$(pg_config --includedir-server)
-CFLAGS=(-std=gnu11 -I"$REPO/src" -isystem "$PGINC" -isystem "$(pg_config --includedir-internal 2>/dev/null || echo "$PGINC")" -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD -D_GNU_SOURCE -march=x86-64)
-[[ -n $FILES ]] || FILES=$(cd "$REPO" && ls src/*.c | grep -v -E '_test\.c$')
+INC=(); for d in "$REPO"/src/*/; do INC+=(-I"${d%/}"); done
+CFLAGS=(-std=gnu11 "${INC[@]}" -isystem "$PGINC" -isystem "$(pg_config --includedir-internal 2>/dev/null || echo "$PGINC")" -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD -D_GNU_SOURCE -march=x86-64)
+[[ -n $FILES ]] || FILES=$(cd "$REPO" && ls src/*/*.c | grep -v -E '_test\.c$')
 mapfile -t SRCS < <(tr ' ' '\n' <<<"$FILES" | sed '/^$/d')
 
 # the checks of clang-tidy: the analyzer's core, security and unix families, and the bugprone and cert checks that find overflow,
@@ -60,7 +61,7 @@ scan_build() {
 
 cppcheck_run() {
 	have cppcheck || { echo "static: cppcheck not installed, skipped" >&2; return; }
-	( cd "$REPO" && cppcheck -q --enable=warning,portability --inline-suppr --std=c11 -I src --suppress=missingInclude \
+	( cd "$REPO" && cppcheck -q --enable=warning,portability --inline-suppr --std=c11 "${INC[@]}" --suppress=missingInclude \
 		--template='{file}:{line}:{column}: warning: {message} [{id}]' --check-level=normal -j4 "${SRCS[@]}" 2>&1 ) |
 		sed -nE 's/^(.*):[0-9]+:[0-9]+: warning: (.*) \[([a-zA-Z0-9_]+)\]$/cppcheck|\3|\1|\2/p'
 }

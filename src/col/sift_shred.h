@@ -2,7 +2,7 @@
  * sift_shred.h - shreds a JSON document into typed columns for declared paths (docs/COL-SHRED.md).
  *
  * Portable (src/portable-col.list): the document arrives as events (sift_shred_key / enter / leave / scalars), so any JSON
- * source can drive it; src/sift_shred_pg.c drives it from a JsonbContainer. The output is a SiftShredDoc of typed arrays
+ * source can drive it; src/col/sift_shred_pg.c drives it from a JsonbContainer. The output is a SiftShredDoc of typed arrays
  * with Dremel / DuckDB LIST semantics: per column one slot per element of its group, per group the element ranges of
  * every parent element.
  */

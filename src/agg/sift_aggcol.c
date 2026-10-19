@@ -826,7 +826,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->heap_pages = cc->heap_pages;
 }
 
-/* ---- pre-aggregates (src/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
+/* ---- pre-aggregates (src/col/sift_col_pagg.c, docs/COL-PREAGG.md) ---- */
 
 static void
 col_preagg(Relation index, SiftSrcPreagg *pa)

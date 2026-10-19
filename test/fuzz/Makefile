@@ -8,6 +8,7 @@
 # overflow is a finding here, where the extension itself is built -fwrapv like the server.
 OUT     ?= /tmp/sift-fuzz-build
 SRC      = ../../src
+include $(SRC)/areas.mk
 KT       = ../../tools/kernels
 PGINC   := $(shell pg_config --includedir-server)
 PGLIB   := -L$(shell pg_config --libdir)
@@ -36,7 +37,7 @@ DSAN    ?= -fsanitize=address,undefined
 DEFS    ?= -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
 COLZ    ?= -lzstd -llz4
 CFLAGS  += -std=gnu11 -O1 -g $(SAN) -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare -I$(SRC) -I$(KT) -I. -I$(PGINC) $(DEFS) -D_GNU_SOURCE
+           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I. -I$(PGINC) $(DEFS) -D_GNU_SOURCE
 LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
@@ -45,14 +46,14 @@ CORE     = sift_colcodec sift_colcodec_kern sift_colcodec_avx2 sift_colcodec_avx
            sift_kernels sift_kernels_avx2 sift_kernels_avx512 sift_analyze sift_analyze_stem sift_posting sift_bitmap sift_bitmap_scalar \
            sift_bitmap_avx2 sift_bitmap_avx512 sift_span
 OBJ      = $(addprefix $(OUT)/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
-HDR      = $(wildcard $(SRC)/*.h) fz_shim.h ../../tools/pgshim.h Makefile
+HDR      = $(wildcard $(SRC)/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
 DRIVER   = $(OUT)/fz_driver.o
 endif
 
 all: $(addprefix $(OUT)/,colchunk bm25 shred)
 
-$(OUT)/%.o: $(SRC)/%.c $(HDR)
+$(OUT)/%.o: %.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
