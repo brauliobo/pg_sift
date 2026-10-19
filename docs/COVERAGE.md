@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-178 rows: 109 Yes, 17 Partly, 41 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+180 rows: 111 Yes, 17 Partly, 41 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -87,6 +87,8 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | T23 | Types | numeric NaN in an indexed column | Error (0A000 at query time; SET sift.enable_agg = off for that query) | sift_col, sift_table | `SELECT g, sum(n) FROM tbl GROUP BY g` | The index stores NaN as NULL with an overflow flag; the scan raises where the normal plan returns NaN. Only the kernels raise; expressions PostgreSQL evaluates (division, functions) rebuild the NaN. Proof: fixture `n_numeric_pg_nan`. |
 | T24 | Types | sift_table: scalar columns (integers, floats, text, varchar, date, timestamps, boolean, numeric(p <= 18), char(n), enum) | Yes | sift_table | `SELECT grp, e, count(*), sum(n2) FROM t GROUP BY grp, e` | The engine keeps every type exactly; the aggregate scan reads these. Proof: test `tbl_agg`. |
 | T25 | Types | sift_table: numeric(p > 18) and unconstrained numeric, uuid, interval, bytea, money, time, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT u, count(*) FROM t GROUP BY u` | The table, its row scans and indexes work for every type. Proof: test `tbl_agg`. |
+| T31 | Types | The value of jsonb_each cast to a number or boolean (kv.value::float8), not through its text | Yes | sift_col | `SELECT kv.key, avg(kv.value::float8) FROM orders o, jsonb_each(o.metrics) kv GROUP BY 1` | As (kv.value #>> '{}')::float8: the declared type of the wildcard path. Proof: fixture `j_jsonb_value_cast`. |
+| T32 | Types | The subscript of a jsonb column with a text key (x['k'], chained) as x -> 'k' | Yes | sift_col | `SELECT attributes['channel'] #>> '{}', avg((metrics['overall'])::float8) FROM orders GROUP BY 1` | In casts, as #>> (its text) and as a key or a filter. An integer subscript, and a comparison of the jsonb value itself (x['k'] = '"a"'), are not read from the index. Proof: fixture `j_jsonb_subscript`. |
 | K01 | Group keys | GROUP BY a column (dictionary, integer, date, boolean, float, numeric(p<=18)) | Yes | sift_col, sift_table | `SELECT status, count(*) FROM orders GROUP BY status` | Up to 5 group columns; 4 with grouping sets. Proof: fixture `f_group_source`. |
 | K02 | Group keys | GROUP BY an expression of one column: lower(), CASE, date_trunc of a date, x % 7, extract() | Yes | sift_col | `SELECT date_trunc('month', placed_at::timestamp)::date, count(*) FROM orders GROUP BY 1` | Evaluated by PostgreSQL once per distinct value of the column. Proof: fixture `f_group_exprs`. |
 | K03 | Group keys | GROUP BY an expression of two or three columns | Yes | sift_col | `SELECT CASE WHEN lang = 'en' THEN source ELSE status END, count(*) FROM orders GROUP BY 1` | Evaluated once per distinct tuple of the values, cached across units. Proof: fixture `f_multi_leaf_keys`. |
