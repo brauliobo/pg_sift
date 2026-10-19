@@ -52,7 +52,7 @@ HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\t
 WIDTH = 13
 def cpus_text(quota):
     """where the engines ran: all the CPUs of the host, or the scope of the session (`systemd-run -p CPUQuota`: the server, the clients and a Java process all inside it)"""
-    return 'every CPU of the host' if not quota else 'the %s of the scope the session ran in (server, clients and Java process together; the host has more)' % quota
+    return 'every CPU of the host' if not quota else 'the same budget of %s for every engine (a cgroup quota on the whole session, which the server under test, the load generators and the Elasticsearch process share; PostgreSQL engines with one parallel worker fewer than the budget, Elasticsearch with that many processors and shards; the host has more CPUs)' % quota
 
 
 def method(quota=''):
