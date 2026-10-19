@@ -473,7 +473,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 	Size		start;
 
 	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
-	sift_cunit_encode(m->b, NULL, NULL, NULL, buf, &start, cu->mzones);
+	sift_cunit_encode(m->b, NULL, NULL, NULL, true, buf, &start, cu->mzones);
 	if (!sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v))
 		elog(ERROR, "sift_col: an in-memory unit does not parse");
 	cu->batch = m->b;

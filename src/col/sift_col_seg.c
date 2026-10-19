@@ -46,6 +46,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint32		tag;			/* SiftSegEntry.reserved */
+	uint8		format;			/* SiftSegEntry.format: sift.col_format_minor when the writer began; 4 writes the tags of overflow values */
 	StringInfoData buf;
 };
 
@@ -68,6 +69,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->schema = schema;
 	w->pol = pol;
 	w->mcxt = mcxt;
+	w->format = sift_col_format_minor;
 	w->sw = sift_sw_begin(wt, gen);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
@@ -174,7 +176,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->inl[c] = w->dict[c] != NULL && sift_cbatch_str_inline(b, c, w->dict[c], SIFT_COL_DICT_MAX_BYTES);
 	map_dicts(w, b, w->inl);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
@@ -458,7 +460,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	memset(entry, 0, sizeof(SiftSegEntry));
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
-	entry->format = sift_col_format_minor;
+	entry->format = w->format;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
