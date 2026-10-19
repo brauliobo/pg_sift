@@ -218,6 +218,13 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 
 /* ---------- metapage and directory ---------- */
 
+/* The metapage minor a build must read to understand the segment: 1.3 for a column segment with unfrozen rows, which an older build would show as final */
+static uint16
+seg_minor(const SiftSegEntry *s)
+{
+	return (s->flags & SIFT_SEG_VERS) ? SIFT_FORMAT_MINOR : Min(s->format, SIFT_FORMAT_MINOR_SEGS);
+}
+
 static void
 check_meta(Relation index, Buffer buf)
 {
@@ -879,9 +886,9 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
-		/* a build that reads less than the newest segment format of the index must refuse it (a column segment's format is 0) */
+		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (sift_col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
-			META(mp)->format_minor = Max(META(mp)->format_minor, Min(DIR(dp)->segs[i].format, SIFT_FORMAT_MINOR));	/* a column segment's format is its own (sift_col.h) */
+			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(&DIR(dp)->segs[i]));
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
@@ -1169,7 +1176,7 @@ sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyze
 	memset(meta, 0, sizeof(SiftMetaPageData));
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;
-	meta->format_minor = SIFT_FORMAT_MINOR;
+	meta->format_minor = SIFT_FORMAT_MINOR_SEGS;
 	meta->k1 = k1;
 	meta->b = b;
 	meta->analyzer_hash = analyzer_hash;

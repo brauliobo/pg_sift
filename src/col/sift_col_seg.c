@@ -10,6 +10,7 @@
 
 #include "sift_col_preagg.h"
 #include "sift_col_seg.h"
+#include "sift_col_ver.h"
 #include "sift_live.h"
 
 #define ULL(x)			((unsigned long long) (x))
@@ -17,6 +18,36 @@
 #define DICTS_MAGIC		0x44444F43		/* "COLD" */
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
+
+#define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
+
+/* The version section: a header, a SiftColVerUnit per unit, then the vectors of the units that have any (xmin, then cmin) */
+typedef struct VersHeader
+{
+	uint32		magic;
+	uint32		version;
+	uint32		nsb;
+	uint32		flags;
+	uint32		min_xid;		/* of the unfrozen rows, in the order of the server's xids */
+	uint32		max_xid;
+	uint64		blob_bytes;
+} VersHeader;
+
+#define VU_VEC		0x1			/* the unit has vectors (some row is not frozen) */
+#define VU_FROZEN	0x2			/* some rows of such a unit are frozen */
+
+typedef struct VersUnit
+{
+	uint32		xmin_lo;
+	uint32		xmin_hi;
+	uint32		cmin_hi;
+	uint32		flags;
+	uint64		off;			/* of the vectors, from the end of the unit directory */
+	uint32		xlen;			/* bytes of the xmin vector; the cmin vector follows */
+	uint32		clen;
+} VersUnit;
+
+StaticAssertDecl(sizeof(VersHeader) == 32 && sizeof(VersUnit) == 32, "the version section is made of 32 byte records");
 
 #define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
 
@@ -44,9 +75,13 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
-	uint32		tag;			/* SiftSegEntry.reserved */
-	uint32		aux;			/* SiftSegHeaderData.sum_dl: the second half of the tag */
 	StringInfoData buf;
+	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
+	VersUnit   *vunit;
+	StringInfoData vblob;
+	bool		anyver;
+	uint32		vmin;
+	uint32		vmax;
 };
 
 static void
@@ -76,6 +111,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 		if (schema->cols[c].store == SIFT_COLS_STR)
 			w->dict[c] = sift_cdict_create(mcxt);
 	w->capsb = 64;
+	w->vunit = palloc0(w->capsb * sizeof(VersUnit));
+	initStringInfo(&w->vblob);
 	w->zones = palloc(w->capsb * schema->ncols * sizeof(SiftCZone));
 	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
@@ -152,6 +189,46 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	pfree(cols);
 }
 
+/* Keeps the version vectors of the unit just encoded (the batch's, when it has any unfrozen row) and folds the range of the xids */
+static void
+add_vers(SiftColSegWriter *w, const SiftColBatch *b)
+{
+	VersUnit   *vu = &w->vunit[w->nsb];
+	bool		first = true;
+
+	if (!b->hasver)
+		return;
+	for (uint32 i = 0; i < b->nrows; i++)
+	{
+		uint32		x = b->xmin[i];
+
+		if (x == 0)
+		{
+			vu->flags |= VU_FROZEN;
+			continue;
+		}
+		if (first || sift_cver_xid_precedes(x, vu->xmin_lo))
+			vu->xmin_lo = x;
+		if (first || sift_cver_xid_precedes(vu->xmin_hi, x))
+			vu->xmin_hi = x;
+		vu->cmin_hi = Max(vu->cmin_hi, b->cmin[i]);
+		first = false;
+	}
+	if (first)
+		return;
+	vu->flags |= VU_VEC;
+	vu->off = w->vblob.len;
+	sift_cver_encode(b->xmin, b->nrows, &w->vblob);
+	vu->xlen = w->vblob.len - vu->off;
+	sift_cver_encode(b->cmin, b->nrows, &w->vblob);
+	vu->clen = w->vblob.len - vu->off - vu->xlen;
+	if (!w->anyver || sift_cver_xid_precedes(vu->xmin_lo, w->vmin))
+		w->vmin = vu->xmin_lo;
+	if (!w->anyver || sift_cver_xid_precedes(w->vmax, vu->xmin_hi))
+		w->vmax = vu->xmin_hi;
+	w->anyver = true;
+}
+
 void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
@@ -169,6 +246,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
+		w->vunit = repalloc_huge(w->vunit, w->capsb * sizeof(VersUnit));
+		memset(w->vunit + w->capsb / 2, 0, w->capsb / 2 * sizeof(VersUnit));
 	}
 	for (int c = 0; c < ncols; c++)
 		w->inl[c] = w->dict[c] != NULL && sift_cbatch_str_inline(b, c, w->dict[c], SIFT_COL_DICT_MAX_BYTES);
@@ -176,6 +255,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
+	add_vers(w, b);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
 	sift_sw_write(w->sw, w->buf.data + start, w->buf.len - start);
@@ -185,13 +265,6 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	w->sb_hi = b->sb;
 	w->nsb++;
 	w->rows += b->nrows;
-}
-
-void
-sift_colw_set_tag(SiftColSegWriter *w, uint32 tag, uint32 aux)
-{
-	w->tag = tag;
-	w->aux = aux;
 }
 
 uint64
@@ -415,6 +488,18 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 	pfree(dir);
 }
 
+/* The version section: its header, the directory of the units, the vectors */
+static void
+write_vers(SiftColSegWriter *w)
+{
+	VersHeader	h = {.magic = VERS_MAGIC,.version = 1,.nsb = w->nsb,.min_xid = w->vmin,.max_xid = w->vmax,.blob_bytes = w->vblob.len};
+
+	sift_sw_write(w->sw, &h, sizeof(h));
+	sift_sw_write(w->sw, w->vunit, (Size) w->nsb * sizeof(VersUnit));
+	sift_sw_write(w->sw, w->vblob.data, w->vblob.len);
+	sw_pad8(w->sw);
+}
+
 void
 sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 {
@@ -439,6 +524,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	sift_sw_write(w->sw, schema.data, schema.len);
 	put8(w, w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef));
 	sw_pad8(w->sw);
+	if (w->anyver)
+		write_vers(w);
 	h.sections[SIFT_SEC_DOCMAP].len = sift_sw_tell(w->sw) - h.sections[SIFT_SEC_DOCMAP].off;
 	ext = sift_sw_finish(w->sw, &n);
 	sift_live_write(w->wt, w->gen, w->sb_hi - w->sb_lo + 1, w->rows, &h.live_first, &h.live_npages);
@@ -447,7 +534,6 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	h.nterms = w->schema->ncols;
 	h.sb_lo = w->sb_lo;
 	h.sb_hi = w->sb_hi;
-	h.sum_dl = w->aux;
 	h.dictroot_n = w->nsb;
 	h.nextents = n;
 	sift_page_init(page.data, SIFT_PT_SEGHEADER, w->gen);
@@ -460,12 +546,15 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	memset(entry, 0, sizeof(SiftSegEntry));
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
-	entry->format = SIFT_COL_FORMAT_MINOR;
+	entry->format = w->anyver ? SIFT_COL_FORMAT_VERS : SIFT_COL_FORMAT_PLAIN;
 	entry->header_blk = sift_wt_write_page(w->wt, page.data);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
-	entry->reserved = w->tag;
-	entry->sum_dl = 0;
+	if (w->anyver)
+	{
+		entry->flags |= SIFT_SEG_VERS;
+		entry->reserved = w->vmin;
+	}
 	entry->ndocs = w->rows;
 	entry->bytes = blocks * BLCKSZ;
 	pfree(schema.data);
@@ -499,6 +588,13 @@ typedef struct SegPriv
 	uint8	   *cubebuf;
 	Size		cubecap;
 	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
+	Size		vers_at;		/* offset of the version section in the DOCMAP section; vers_len 0: there is none */
+	Size		vers_len;
+	VersUnit   *vu;				/* its directory of units, read on first use */
+	uint64		vblob_at;		/* stream offset of the vectors */
+	uint64		vblob_len;
+	uint32		vmin;
+	uint32		vmax;
 } SegPriv;
 
 #define PRIV(seg)	((SegPriv *) (seg)->priv)
@@ -548,11 +644,11 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		elog(ERROR, "sift_col: segment %llu is not immutable", ULL(entry->gen));
-	if (entry->format != SIFT_COL_FORMAT_MINOR)
+	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d",
-						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MINOR),
+				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d to 1.%d",
+						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR),
 				 errhint(entry->format > SIFT_COL_FORMAT_MINOR ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
 	seg->hdr = sift_seg_read_header(index, entry);
 	h = seg->hdr;
@@ -596,7 +692,16 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 			corrupt(seg, "SBDIR lists %llu rows, the header %llu.", ULL(rank), ULL(h->ndocs));
 		seg->sbdir = dir;
 	}
-	pv->live = (SiftLive) {index, entry->gen, h->live_first, h->live_npages, h->sb_hi - h->sb_lo + 1, h->ndocs};
+	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);
+	if (pv->vers_at > s[SIFT_SEC_DOCMAP].len)
+		corrupt(seg, "The DOCMAP section ends inside the unit directory.");
+	pv->vers_len = s[SIFT_SEC_DOCMAP].len - pv->vers_at;
+	if (pv->vers_len > 0 && (entry->format < SIFT_COL_FORMAT_VERS || pv->vers_len < sizeof(VersHeader) + (Size) seg->nsb * sizeof(VersUnit)))
+		corrupt(seg, "The DOCMAP section holds %zu bytes after the unit directory, which is no version section of %u units (format 1.%d).",
+				pv->vers_len, seg->nsb, entry->format);
+	if ((entry->flags & SIFT_SEG_VERS) && pv->vers_len == 0)
+		corrupt(seg, "The directory entry says the segment has unfrozen rows but it has no version section.");
+	pv->live =(SiftLive) {index, entry->gen, h->live_first, h->live_npages, h->sb_hi - h->sb_lo + 1, h->ndocs};
 	sift_live_check(&pv->live);
 	pv->dict = palloc0(h->nterms * sizeof(SiftCDict *));
 	pv->zones = palloc0(h->nterms * sizeof(ZoneArrays *));
@@ -1133,10 +1238,155 @@ sift_cseg_live_rows(SiftColSegment *seg)
 	return seg->hdr->ndocs - sift_live_ndead(&PRIV(seg)->live);
 }
 
+
+/* ---------- versions of the rows ---------- */
+
+/* A group of 3.0.1: one transaction's one command wrote every row (entry.reserved = xid, header sum_dl = cid) */
+static bool
+vers_tag(const SiftColSegment *seg)
+{
+	return seg->entry.format < SIFT_COL_FORMAT_VERS && seg->entry.reserved != 0;
+}
+
+bool
+sift_cseg_vers(const SiftColSegment *seg)
+{
+	return vers_tag(seg) || ((seg->entry.flags & SIFT_SEG_VERS) && PRIV(seg)->vers_len > 0);
+}
+
+static const VersUnit *
+vers_units(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (pv->vu == NULL)
+	{
+		VersHeader	h;
+		uint64		at = sec(seg, SIFT_SEC_DOCMAP)->off + pv->vers_at;
+		Size		dirsz = (Size) seg->nsb * sizeof(VersUnit);
+		VersUnit   *vu;
+
+		if (pv->vers_len == 0)
+			corrupt(seg, "The segment has no version section.");
+		seg_read(seg, at, sizeof(h), &h);
+		if (h.magic != VERS_MAGIC || h.version != 1 || h.nsb != seg->nsb || sizeof(h) + dirsz + h.blob_bytes > pv->vers_len)
+			corrupt(seg, "The version section starts with 0x%08x, version %u, %u units, %llu bytes of vectors.", h.magic, h.version, h.nsb,
+					ULL(h.blob_bytes));
+		vu = MemoryContextAlloc(seg->mcxt, dirsz);
+		seg_read(seg, at + sizeof(h), dirsz, vu);
+		for (uint32 u = 0; u < seg->nsb; u++)
+			if ((vu[u].flags & ~(VU_VEC | VU_FROZEN)) != 0 || (!(vu[u].flags & VU_VEC) && (vu[u].xlen || vu[u].clen)) ||
+				vu[u].off > h.blob_bytes || (uint64) vu[u].xlen + vu[u].clen > h.blob_bytes - vu[u].off)
+				corrupt(seg, "The versions of unit %u (flags %u, %u + %u bytes at %llu) lie outside the section.", u, vu[u].flags,
+						vu[u].xlen, vu[u].clen, ULL(vu[u].off));
+		pv->vblob_at = at + sizeof(h) + dirsz;
+		pv->vblob_len = h.blob_bytes;
+		pv->vmin = h.min_xid;
+		pv->vmax = h.max_xid;
+		pv->vu = vu;
+	}
+	return pv->vu;
+}
+
+void
+sift_cseg_ver_range(SiftColSegment *seg, uint32 *xmin_lo, uint32 *xmin_hi)
+{
+	Assert(sift_cseg_vers(seg));
+	if (vers_tag(seg))
+		*xmin_lo = *xmin_hi = seg->entry.reserved;
+	else
+	{
+		(void) vers_units(seg);
+		*xmin_lo = PRIV(seg)->vmin;
+		*xmin_hi = PRIV(seg)->vmax;
+	}
+}
+
+void
+sift_cseg_ver_sum(SiftColSegment *seg, uint32 u, SiftColVerSum *sum)
+{
+	memset(sum, 0, sizeof(*sum));
+	if (vers_tag(seg))
+	{
+		*sum = (SiftColVerSum) {.any = true,.xmin_lo = seg->entry.reserved,.xmin_hi = seg->entry.reserved,.cmin_hi = (uint32) seg->hdr->sum_dl};
+		return;
+	}
+	if (!sift_cseg_vers(seg))
+		return;
+	{
+		const VersUnit *vu = &vers_units(seg)[u];
+
+		*sum = (SiftColVerSum) {.any = (vu->flags & VU_VEC) != 0,.frozen_rows = !(vu->flags & VU_VEC) || (vu->flags & VU_FROZEN),
+		.xmin_lo = vu->xmin_lo,.xmin_hi = vu->xmin_hi,.cmin_hi = vu->cmin_hi};
+	}
+}
+
+void
+sift_cseg_ver_unit(SiftColSegment *seg, uint32 u, uint32 *xmin, uint32 *cmin)
+{
+	uint32		n = seg->sbdir[u].nrows;
+
+	if (vers_tag(seg))
+	{
+		for (uint32 i = 0; i < n; i++)
+		{
+			xmin[i] = seg->entry.reserved;
+			cmin[i] = (uint32) seg->hdr->sum_dl;
+		}
+		return;
+	}
+	if (sift_cseg_vers(seg) && (vers_units(seg)[u].flags & VU_VEC))
+	{
+		const VersUnit *vu = &vers_units(seg)[u];
+		uint8	   *buf = palloc(vu->xlen + vu->clen);
+
+		seg_read(seg, PRIV(seg)->vblob_at + vu->off, vu->xlen + vu->clen, buf);
+		if (!sift_cver_decode(buf, vu->xlen, n, xmin) || !sift_cver_decode(buf + vu->xlen, vu->clen, n, cmin))
+			corrupt(seg, "The versions of unit %u (SB %u) do not decode as %u rows.", u, seg->sbdir[u].sb, n);
+		pfree(buf);
+		return;
+	}
+	memset(xmin, 0, n * sizeof(uint32));
+	memset(cmin, 0, n * sizeof(uint32));
+}
+
+bool
+sift_cseg_page_rows(SiftColSegment *seg, uint32 u, BlockNumber blk, uint32 *first, uint64 *offmask)
+{
+	SiftCUnitView v;
+	uint32		len,
+				avail;
+	const uint8 *rec = sift_cseg_unit_head(seg, u, &len, &avail);
+	uint32		pg = blk % SIFT_SB_PAGES;
+
+	if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &v) || v.nrows != seg->sbdir[u].nrows)
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].sb);
+	for (uint32 p = 0; p < v.npages; p++)
+		if (v.page[p] == pg)
+		{
+			*first = v.rowstart[p];
+			sift_cunit_page_offmask(&v, p, offmask);
+			return true;
+		}
+	return false;
+}
+
+void
+sift_cseg_unit_keys(SiftColSegment *seg, uint32 u, SiftKey *keys)
+{
+	SiftCUnitView v;
+	uint32		len;
+	const uint8 *rec = sift_cseg_unit(seg, u, &len);
+
+	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != seg->sbdir[u].nrows)
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].sb);
+	sift_cunit_keys(&v, seg->sbdir[u].sb, keys);
+}
+
 /* ---------- decoding for rewrites and verification ---------- */
 
 void
-sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
+sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	SiftCUnitView v;
@@ -1144,6 +1394,7 @@ sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 	SiftCDict **dicts = palloc0(seg->schema->ncols * sizeof(SiftCDict *));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(r->nrows) * sizeof(uint64));
+	bool		dirty = unit_dirty(seg, u);
 
 	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->sb);
@@ -1151,9 +1402,40 @@ sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 		dicts[c] = sift_cseg_dict(seg, c);
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->sb);
-	sift_cunit_decode(&v, r->sb, dicts, unit_dirty(seg, u) ? live : NULL, dst);
+	sift_cunit_decode(&v, r->sb, dicts, dirty ? live : NULL, dst);
 	pfree(dicts);
+	if (sift_cseg_vers(seg))
+	{
+		SiftColVerSum sum;
+
+		sift_cseg_ver_sum(seg, u, &sum);
+		if (sum.any)
+		{
+			uint32	   *xm = palloc(r->nrows * sizeof(uint32)),
+					   *cm = palloc(r->nrows * sizeof(uint32));
+			uint32		k = 0;
+
+			sift_cseg_ver_unit(seg, u, xm, cm);
+			for (uint32 i = 0; i < r->nrows; i++)
+			{
+				if (dirty && !(live[i / 64] >> (i % 64) & 1))
+					continue;
+				if (xm[i] != 0 && freeze != NULL && freeze(arg, xm[i], cm[i]))
+					xm[i] = 0;
+				sift_cbatch_set_ver(dst, k++, xm[i], cm[i]);
+			}
+			Assert(k == dst->nrows);
+			pfree(xm);
+			pfree(cm);
+		}
+	}
 	pfree(live);
+}
+
+void
+sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
+{
+	sift_cseg_decode_unit_freeze(seg, u, dst, NULL, NULL);
 }
 
 static bool
@@ -1356,12 +1638,79 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 			pfree(kept[c]);
 }
 
+/* The version section: every unit's vectors decode, say what the directory of the section says, and the range of the xmins is the header's and the entry's */
+static void
+verify_vers(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+	const VersUnit *vu;
+	uint32	   *xm,
+			   *cm;
+	uint32		lo = 0,
+				hi = 0;
+	bool		any = false;
+
+	if (pv->vers_len == 0)
+		return;
+	vu = vers_units(seg);
+	xm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
+	cm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		uint32		n = seg->sbdir[u].nrows,
+					ulo = 0,
+					uhi = 0,
+					cmax = 0,
+					flags = 0;
+		bool		first = true;
+
+		if (!(vu[u].flags & VU_VEC))
+		{
+			if (vu[u].xmin_lo || vu[u].xmin_hi || vu[u].cmin_hi || (vu[u].flags & VU_FROZEN))
+				corrupt(seg, "Unit %u has no versions but a summary of them.", u);
+			continue;
+		}
+		sift_cseg_ver_unit(seg, u, xm, cm);
+		for (uint32 i = 0; i < n; i++)
+		{
+			if (xm[i] == 0)
+			{
+				flags |= VU_FROZEN;
+				if (cm[i] != 0)
+					corrupt(seg, "Row %u of unit %u is frozen and has a command.", i, u);
+				continue;
+			}
+			if (first || sift_cver_xid_precedes(xm[i], ulo))
+				ulo = xm[i];
+			if (first || sift_cver_xid_precedes(uhi, xm[i]))
+				uhi = xm[i];
+			cmax = Max(cmax, cm[i]);
+			first = false;
+		}
+		if (first || ulo != vu[u].xmin_lo || uhi != vu[u].xmin_hi || cmax != vu[u].cmin_hi || flags != (vu[u].flags & VU_FROZEN))
+			corrupt(seg, "The summary of the versions of unit %u (xmin %u..%u, cmin up to %u) is not what its vectors hold.", u, vu[u].xmin_lo,
+					vu[u].xmin_hi, vu[u].cmin_hi);
+		if (!any || sift_cver_xid_precedes(ulo, lo))
+			lo = ulo;
+		if (!any || sift_cver_xid_precedes(hi, uhi))
+			hi = uhi;
+		any = true;
+		CHECK_FOR_INTERRUPTS();
+	}
+	if (!any || lo != pv->vmin || hi != pv->vmax || ((seg->entry.flags & SIFT_SEG_VERS) && seg->entry.reserved != lo))
+		corrupt(seg, "The smallest xmin of the entry (%u) and the range of the version section (%u..%u) are not what the vectors (%u..%u) say.",
+				seg->entry.reserved, pv->vmin, pv->vmax, lo, hi);
+	pfree(xm);
+	pfree(cm);
+}
+
 uint64
 sift_cseg_verify(SiftColSegment *seg)
 {
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	uint64		live = seg->hdr->ndocs;
 
+	verify_vers(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		verify_unit(seg, u, keys);

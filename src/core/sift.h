@@ -14,8 +14,10 @@
 /*
  * 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before
  * 1.2: segments of segment format 2 (below); segments of 1.0 and 1.1 are read as before
+ * 1.3: a sift_table has had a column group with unfrozen rows (SIFT_SEG_VERS): the first one raises the minor, nothing lowers it
  */
-#define SIFT_FORMAT_MINOR		2
+#define SIFT_FORMAT_MINOR		3
+#define SIFT_FORMAT_MINOR_SEGS	2			/* what a segment of any other kind raises it to */
 
 /*
  * Segment formats (SiftSegEntry.format). 1: one liveness bit per doc in rank order, a segment's df, N and avgdl count

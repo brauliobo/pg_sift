@@ -1455,6 +1455,18 @@ sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent
 	*counts = g->counts;
 }
 
+bool
+sift_col_unit_ref(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
+{
+	const ColUnit *cu = unit->priv;
+
+	if (cu->seg == NULL)
+		return false;
+	*seg = cu->seg;
+	*u = cu->u;
+	return true;
+}
+
 void
 sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids)
 {
