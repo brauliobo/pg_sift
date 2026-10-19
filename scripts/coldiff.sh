@@ -323,9 +323,9 @@ scenario_maint() {
 	log "scenario maint: REINDEX, promote, merge"
 	sql -c "REINDEX INDEX orders_col"; check scenario-reindex "$@"
 	for fn in col_promote col_merge; do
-		if [[ $(sql -c "SELECT to_regprocedure('sift.$fn(regclass)') IS NOT NULL") == t ]]; then
-			sql -c "SELECT sift.$fn('orders_col')" >/dev/null; check "scenario-$fn" "$@"
-		else log "scenario maint: sift.$fn(regclass) does not exist, skipped"; fi
+		if [[ $(sql -c "SELECT to_regproc('sift.$fn') IS NOT NULL") == t ]]; then
+			sql -c "SELECT sift.$fn('orders_col'$([[ $fn == col_merge ]] && echo ', true'))" >/dev/null; check "scenario-$fn" "$@"
+		else log "scenario maint: sift.$fn does not exist, skipped"; fi
 	done
 }
 
