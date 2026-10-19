@@ -183,8 +183,9 @@ The full tables with every part, B/posting and B/term are produced by `scripts/b
 A DOCMAP record (per SB) is `u32 ndocs, u32 chunk_len, chunk, pad4, dl rows`. In format 3 `ndocs` keeps its low 30 bits and bits 30-31 are the width of every dl row of
 the record: 0 = 16 bits (as before), 1 = 8 bits, 2 = 4 bits (low nibble first). The writer takes the narrowest width whose maximum holds the largest dl of the SB
 (255 and 15). Rows stay one per present page and as long as the page's highest present offset; a 4-bit row is `ceil(maxoff / 2)` bytes, a record is padded to 4 as before.
-The reader expands a narrow record to `uint16` rows when it indexes the SB (`index_sb`), so `sift_seg_page` and every caller see the rows they saw, and a 16-bit
-record is used where it is, copy free. Titles: 76 rows of 4 bits are 38 bytes against 152; articles are 16-bit throughout.
+The reader expands the row of a page to `uint16` (16 slots per SSE2 step) the first time `sift_seg_page` is asked for it in the loaded SB, so every kernel sees the rows it saw;
+a 16-bit record is used where it is, copy free. `sift_seg_page` takes the row as optional (callers that only want the present offsets pass NULL) and the ranker asks for
+the rows of the pages that have result documents only. Titles: 76 rows of 4 bits are 38 bytes against 152; articles are 16-bit throughout.
 
 ### 5.2 Dictionary blocks (`SIFT_SEGFMT_PACKED`)
 
