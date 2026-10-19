@@ -869,6 +869,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, s->vleaf[i].obj);
 		put_str(p, s->vleaf[i].key);
 		put_int(p, s->vleaf[i].count);
+		put_int(p, s->vleaf[i].types);
 	}
 	put_arms(p, s);
 	put_int(p, s->nsets);
@@ -1188,6 +1189,7 @@ sift_aggspec_unpack(const List *items)
 		s->vleaf[i].obj = get_int(u);
 		s->vleaf[i].key = get_str(u);
 		s->vleaf[i].count = get_int(u);
+		s->vleaf[i].types = get_int(u);
 	}
 	get_arms(u, s);
 	s->nsets = get_int(u);

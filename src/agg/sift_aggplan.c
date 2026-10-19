@@ -179,7 +179,7 @@ leaf_name(AggCtx *c, int id)
 		return s.data;
 	}
 	if (l->name[0] == '#')
-		appendStringInfoString(&s, "jsonb_array_length(");
+		appendStringInfoString(&s, strcmp(l->name, "#typeof") == 0 ? "jsonb_typeof(" : "jsonb_array_length(");
 	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
@@ -342,7 +342,37 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	v = vleaf_add(c, att, path, leaf_of(c, val)->vtype, typid);
 	c->vleaf[c->nvleaf].obj = obj;
 	c->vleaf[c->nvleaf].count = false;
+	c->vleaf[c->nvleaf].types = false;
 	c->vleaf[c->nvleaf++].key = pstrdup(strVal(llast(path)));
+	return v->id;
+}
+
+static int	typeof_leaf(AggCtx *c, Node *e);
+static bool source_can_types(AggCtx *c);
+
+/*
+ * `jsonb_typeof(x->'k')` of a typed scalar leaf: a scalar leaf after the source's, text, whose values the executor takes from the JSON types of the
+ * values of the leaf (SiftAggVLeaf.types): the name of the type, NULL where the path has no value.
+ */
+static int
+types_leaf(AggCtx *c, Node *call)
+{
+	int			base = typeof_leaf(c, linitial(func_args(call)));
+	SiftSrcLeaf *v;
+
+	if (base < 0 || !source_can_types(c))
+		return -1;
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].types && c->vleaf[j].obj == base)
+			return c->lay->nleaves - c->nvleaf + j;
+	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+		return -1;
+	v = vleaf_add(c, leaf_of(c, base)->attno, leaf_of(c, base)->path, SCV_CODE, TEXTOID);
+	strlcpy(v->name, "#typeof", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
+	c->vleaf[c->nvleaf].obj = base;
+	c->vleaf[c->nvleaf].count = false;
+	c->vleaf[c->nvleaf].types = true;
+	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
 
@@ -362,6 +392,7 @@ count_leaf(AggCtx *c, int grp)
 	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
 	c->vleaf[c->nvleaf].obj = grp;
 	c->vleaf[c->nvleaf].count = true;
+	c->vleaf[c->nvleaf].types = false;
 	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
@@ -557,6 +588,8 @@ match_leaf(AggCtx *c, Node *e)
 		}
 		return -1;
 	}
+	if (fid == F_JSONB_TYPEOF)
+		return types_leaf(c, e);
 	inner = e;
 	if (IsA(e, CoerceViaIO))
 	{
@@ -1009,6 +1042,17 @@ bucket_key_groups(AggCtx *c, const SiftAggKey *k)
 	if (!leaf_stats_range(c, k->leaf, &lo, &hi))
 		return 0;
 	return bucket_groups(c, k->expr, (double) (hi - lo) / USECS_PER_SEC);
+}
+
+/* the groups of a key whose number the planner knows: a calendar bucket from the statistics of its column, a function of the JSON type of a path (at most seven); 0: unknown */
+static double
+key_groups(AggCtx *c, const SiftAggKey *k)
+{
+	int			nbase = c->lay->nleaves - c->nvleaf;
+
+	if ((k->kind == SAK_LEAF || k->kind == SAK_LUT) && k->leaf >= nbase && c->vleaf[k->leaf - nbase].types)
+		return 7;
+	return k->bucket > 0 ? bucket_key_groups(c, k) : 0;
 }
 
 /* EXPLAIN: the step a key on a timestamp is evaluated for */
@@ -2322,6 +2366,19 @@ compile_typeof(AggCtx *c, Node *n)
 	p->op = types;
 	p->desc = expr_text(c, n);
 	return p;
+}
+
+/*
+ * The type of a path tested by an expression (a FILTER, a CASE, an OR, a key) while the query reads the values of the path: the leaf cannot hold
+ * the strings among its numbers, so the scan would raise where PostgreSQL's guard skips them. Only a conjunct of the query (SAP_TYPE) guards a read.
+ */
+static bool
+types_guard_reads(AggCtx *c)
+{
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].types && bms_is_member(c->vleaf[j].obj, c->read))
+			return true;
+	return false;
 }
 
 /* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
@@ -4416,7 +4473,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	scan_cost += rows * (1 + (s->group >= 0 ? elems : 0)) * AGG_FILTER_VALUE * Max(s->npred, 1);
 	scan_cost += rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->nvleaf; i++)
-		scan_cost += s->vleaf[i].count ? 0 : rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM;
+		scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	scan_cost += rows * inline_text_cost(c, s);
 	scan_cost = (scan_cost + units * AGG_UNIT_COST) * Max(zone_kept(c, s), 1.0 / units);
 	agg_rows = sel_rows * (s->group >= 0 ? elems : 1.0);
@@ -4807,7 +4864,7 @@ set_groups(AggCtx *c, SiftAggSpec *s, List *keys, double rows)
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
-			double		b = s->key[j].bucket > 0 ? bucket_key_groups(c, &s->key[j]) : 0;
+			double		b = key_groups(c, &s->key[j]);
 
 			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
 				continue;
@@ -4858,7 +4915,7 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 static bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
-	if (c->other_group)
+	if (c->other_group || types_guard_reads(c))
 		return false;
 	share_ordered(s);
 	if (c->group < 0)

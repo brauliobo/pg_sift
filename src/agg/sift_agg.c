@@ -997,15 +997,15 @@ extend_layout(AggExec *ex)
 	{
 		SiftSrcLeaf *v = &lay->leaf[ex->nbase + j];
 
-		for (int i = 0; i < ex->nbase && !s->vleaf[j].count; i++)
+		for (int i = 0; i < ex->nbase && sift_aggvleaf_member(&s->vleaf[j]); i++)
 			if (lay->leaf[i].parent == s->vleaf[j].obj)
 				*(strcmp(lay->leaf[i].name, "key") == 0 ? &ex->vl[j].key : &ex->vl[j].val) = i;
 		v->id = ex->nbase + j;
 		v->attno = lay->leaf[s->vleaf[j].obj].attno;
 		v->parent = -1;
 		v->kind = SCL_SCALAR;
-		v->vtype = s->vleaf[j].count ? SCV_I32 : lay->leaf[ex->vl[j].val].vtype;
-		v->typid = s->vleaf[j].count ? INT4OID : lay->leaf[ex->vl[j].val].typid;
+		v->vtype = s->vleaf[j].types ? SCV_CODE : s->vleaf[j].count ? SCV_I32 : lay->leaf[ex->vl[j].val].vtype;
+		v->typid = s->vleaf[j].types ? TEXTOID : s->vleaf[j].count ? INT4OID : lay->leaf[ex->vl[j].val].typid;
 	}
 	lay->nleaves += s->nvleaf;
 	ex->lay = lay;
@@ -1095,13 +1095,44 @@ read_member_leaf(AggExec *ex, int leaf, SiftSrcVec *out)
 	out->n = nrow;
 }
 
-/* a leaf after the source's: the member of an object by key, or the length of an array (the element counts of its leaf are the values) */
+/* the names jsonb_typeof gives, as the dictionary of the leaf of a type: the code of a value is its type's index in read_types */
+static const char type_names[] = "stringnumberbooleanobjectarraynull";
+static const uint32 type_offs[] = {0, 6, 12, 19, 25, 30, 34};
+static const char type_dict_id = 0;
+static const SiftSrcDict type_dict = {&type_dict_id, lengthof(type_offs) - 1, type_offs, type_names};
+
+/* the leaf of a SiftAggVLeaf with types: per row the code of the JSON type of the value of its scalar leaf, NULL where the path has no value */
+static void
+read_types_leaf(AggExec *ex, int leaf, SiftSrcVec *out)
+{
+	int			nrow = ex->unit.nrow;
+	uint8	   *tags = MemoryContextAlloc(ex->ucxt, nrow + SIFT_AGG_PAD),
+			   *isnull = MemoryContextAlloc(ex->ucxt, nrow + SIFT_AGG_PAD);
+	uint32	   *codes = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, (nrow + SIFT_AGG_PAD) * sizeof(uint32) + SIFT_SIMD_ALIGN));
+
+	sift_colsrc_read_types(ex->src, &ex->unit, ex->spec->vleaf[leaf - ex->nbase].obj, tags);
+	for (int r = 0; r < nrow; r++)
+	{
+		codes[r] = tags[r] == SIFT_SRC_TYPE_NONE ? 0 : tags[r];
+		isnull[r] = tags[r] == SIFT_SRC_TYPE_NONE;
+	}
+	memset(codes + nrow, 0, SIFT_AGG_PAD * sizeof(uint32));
+	out->data = codes;
+	out->isnull = isnull;
+	out->dict = &type_dict;
+	out->n = nrow;
+	out->ovf = NULL;
+}
+
+/* a leaf after the source's: the member of an object by key, the length of an array (the element counts of its leaf are the values), or the JSON type of a path */
 static void
 read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 {
 	const SiftAggVLeaf *vl = &ex->spec->vleaf[leaf - ex->nbase];
 
-	if (vl->count)
+	if (vl->types)
+		read_types_leaf(ex, leaf, out);
+	else if (vl->count)
 		*out = *get_vec(ex, vl->obj);
 	else
 		read_member_leaf(ex, leaf, out);

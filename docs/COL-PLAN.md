@@ -303,9 +303,18 @@ a path of the jsonb value (`->`, `#>`, nested), not its text, and it names a sca
   from one) raises with the hint to `REINDEX`, whatever the query reads. The filter runs first, on the live rows of the unit, before the other
   integer filters of the source: an error is possible for a row that another conjunct would drop, never the contrary. A sum or any other read of
   the same leaf that no type filter guards keeps raising for the strings, as today.
-- **Not taken.** A name that no row has (`= 'bogus'`), a branch of `OR` or `NOT`, an aggregate `FILTER`, a group key or an expression on the
-  type, a path of an element of a list or map, a leaf declared `astext`, a table with a source that cannot answer it (`sift_table`, the stub).
-  They keep the normal plan, which the differential fixture `k_typeof_not_pushed` checks.
+- **As an expression.** Anywhere else `jsonb_typeof(x->'k')` is a text leaf after the source's (`SiftAggVLeaf.types`, `types_leaf`, the
+  leaf `#typeof`, `read_types_leaf`): per row the name of the type (a dictionary of six, a NULL where the path has no value) that the source
+  reads from the chunk (`SiftSrcProvider.read_types`, `sift_col_row_types`), no value of the leaf read. So it is a group key (the five types,
+  `null` and a NULL group; at most seven groups), a branch of an `OR` or a `NOT`, in an aggregate `FILTER`, a `CASE`, a function of the type
+  (`upper`, `coalesce`, `LIKE`, a comparison), with the existing machinery of the leaves of text (lookup tables over the dictionary). The PostgreSQL
+  semantics are the leaf's: a path with no value is NULL, a JSON null is `'null'`. These shapes are not the fast path of the conjunct: the
+  vector of types is decoded and the expression evaluated per distinct name.
+- **Not taken.** A name that no row has as a conjunct (`= 'bogus'`: it goes through the expression above), a query that tests the type of a path in
+  an expression (`FILTER`, `CASE`, `OR`, a key) **and reads the values of the same path** (`sum(x) FILTER (WHERE jsonb_typeof(x) = 'number')`): the
+  leaf cannot give the strings among its numbers and only a conjunct (the form above) guards the read, so the scan would raise where PostgreSQL's
+  guard skips them; the plan is the normal one, which `k_typeof_not_pushed` checks. Also a path of an element of a list or map, a leaf declared
+  `astext`, a table with a source that cannot answer it (`sift_table`, the stub).
 - **Where it runs.** `process_unit` calls the source before the integer filters (`type_filters`), the rows left are read as for those filters
   (a sparse selection decodes the leaf at those rows only), a worker does the same on its units, and a match set from a BM25 conjunct is
   expanded to the stored rows like the other filters. A unit's pre-aggregates do not answer a query with it. `EXPLAIN` shows the conjunct in

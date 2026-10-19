@@ -842,6 +842,15 @@ stored_tag(Oid typid)
 	return typid == BOOLOID ? SIFT_COLTAG_BOOLEAN : typid == TEXTOID ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
 }
 
+static void
+types_unknown_error(void)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
+			 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
+}
+
 typedef struct TypesTest
 {
 	ColSource  *src;
@@ -860,12 +869,9 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	uint64	   *ovf;
 	SiftColSel	bad;
 
-	left = sift_col_filter_types(cu, t->leaf, t->mask, stored_tag(t->src->lay->leaf[t->leaf].typid), false, vs, &known);
+	left = sift_col_filter_types(cu, t->leaf, t->mask, stored_tag(t->src->lay->leaf[t->leaf].typid), t->src->lay->leaf[t->leaf].astext, vs, &known);
 	if (!known)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
-				 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
+		types_unknown_error();
 	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
 	if (!left || !t->read || !sift_col_ovf_bits(cu, t->leaf, ovf))
 		return;
@@ -884,6 +890,28 @@ col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, types_op, &t);
 	return rows_left(unit, bits);
+}
+
+/* a chunk tag as read_types gives it: the index of the name jsonb_typeof gives, or none */
+static uint8
+src_type(uint8 tag)
+{
+	return tag == SIFT_COLTAG_NONE ? SIFT_SRC_TYPE_NONE : tag == SIFT_COLTAG_JNULL ? 5 : tag - 1;
+}
+
+/* the JSON type of the value of the leaf in each row of the unit; the rows of a compacted unit of a match set are the kept ones */
+static void
+col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
+{
+	ColSource  *src = impl;
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	bool		compact = src->sel.keep && src->sel.compact;
+	uint8	   *all = compact ? palloc(src->sel.nrow) : tags;
+
+	if (!sift_col_row_types(&src->unit, leaf, stored_tag(l->typid), l->astext, all))
+		types_unknown_error();
+	for (uint32 i = 0; i < unit->nrow; i++)
+		tags[i] = src_type(all[compact ? src->sel.idx[i] : i]);
 }
 
 static void
@@ -1021,6 +1049,7 @@ static const SiftSrcProvider col_provider = {
 	.read_sel = col_read_sel,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
+	.read_types = col_read_types,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 	.preagg = col_preagg,

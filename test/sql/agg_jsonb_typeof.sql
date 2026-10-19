@@ -127,9 +127,43 @@ INSERT INTO t_q (q) VALUES
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nest''->''v'') <> ''number'''),
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nest''->''v'') = ''null'''),
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nest''->''v'') <> ''number'' AND id BETWEEN 3990 AND 4010'),
-	-- not pushed here: an OR, a group key, the type no row has
-	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' OR id = 5'),
+	-- the type as a group key: the five types, 'null' and a NULL group for the paths with no value
 	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT jsonb_typeof(attrs->''s'') AS ty, count(*), sum(id) FROM t GROUP BY 1'),
+	('SELECT grp, jsonb_typeof(attrs->''b'') AS ty, count(*) FROM t GROUP BY 1, 2'),
+	('SELECT jsonb_typeof(attrs->''m'') AS m_ty, jsonb_typeof(attrs->''n'') AS n_ty, count(*) FROM t GROUP BY 1, 2'),
+	('SELECT jsonb_typeof(attrs->''nest''->''v'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*), min(id), max(id) FROM t WHERE id > 5000 GROUP BY 1 ORDER BY 1 NULLS FIRST'),
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM t GROUP BY 1 HAVING count(*) > 100'),
+	('SELECT jsonb_typeof(attrs #> ''{nest,v}'') AS ty, count(DISTINCT grp) FROM t GROUP BY 1'),
+	('SELECT jsonb_typeof(attrs->''d'') AS ty, count(*) FROM t WHERE jsonb_typeof(attrs->''m'') <> ''number'' GROUP BY 1'),
+	-- an expression on the type
+	('SELECT upper(jsonb_typeof(attrs->''s'')) AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT coalesce(jsonb_typeof(attrs->''s''), ''none'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT CASE jsonb_typeof(attrs->''s'') WHEN ''string'' THEN ''text'' WHEN ''number'' THEN ''num'' ELSE ''other'' END AS k, count(*) FROM t GROUP BY 1'),
+	('SELECT length(jsonb_typeof(attrs->''m'')) AS len, count(*) FROM t GROUP BY 1'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') LIKE ''n%'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') > ''a'' AND jsonb_typeof(attrs->''m'') < ''p'''),
+	-- a branch of an OR, in a CASE, in an aggregate FILTER
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' OR id = 5'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''null'' OR grp = 2'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') IS NULL OR id < 100'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') <> ''number'' OR grp = 2'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''string'' OR jsonb_typeof(attrs->''n'') = ''string'' OR jsonb_typeof(attrs->''s'') IS NULL'),
+	('SELECT count(*) FROM t WHERE NOT (jsonb_typeof(attrs->''m'') = ''number'' OR grp = 2)'),
+	('SELECT count(*) FROM t WHERE (jsonb_typeof(attrs->''m'') = ''number'' AND grp = 1) OR (jsonb_typeof(attrs->''n'') IS NULL AND grp = 3)'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''s'') = ''string'' AND (jsonb_typeof(attrs->''m'') = ''null'' OR id < 200)'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''number'') AS nums, count(*) FILTER (WHERE jsonb_typeof(attrs->''m'') IS NULL) AS missing, count(*) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''null'') AS nulls FROM t'),
+	('SELECT grp, count(*) FILTER (WHERE jsonb_typeof(attrs->''s'') = ''string'' OR grp = 1) AS s, sum(id) FILTER (WHERE jsonb_typeof(attrs->''b'') <> ''boolean'') AS ids FROM t GROUP BY grp'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''n'') IN (''number'', ''null'') AND id > 4000), count(DISTINCT grp) FILTER (WHERE jsonb_typeof(attrs->''d'') IS NOT NULL) FROM t'),
+	('SELECT sum(CASE WHEN jsonb_typeof(attrs->''n'') = ''number'' THEN 1 ELSE 0 END) AS nums, sum(CASE WHEN jsonb_typeof(attrs->''n'') IS NULL THEN id END) AS missing FROM t'),
+	('SELECT grp, avg(id) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''number'' OR jsonb_typeof(attrs->''m'') = ''null'') FROM t GROUP BY grp'),
+	-- the type of a path and its values: the leaf cannot give the strings among its numbers, the normal plan
+	('SELECT sum((attrs->>''m'')::float8) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''number'') FROM t'),
+	('SELECT sum(CASE WHEN jsonb_typeof(attrs->''m'') = ''number'' THEN (attrs->>''m'')::float8 END) FROM t'),
+	-- not pushed: a path that is no leaf of the index, a type no row has as a conjunct
+	('SELECT jsonb_typeof(attrs->''nokey'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nokey'') = ''number'' OR id = 5'),
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''bogus'''),
 	-- not pushed: a leaf of the text of any scalar holds a number as its text, it has no type to filter by
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number''');
@@ -147,12 +181,16 @@ BEGIN
 END $$;
 
 SELECT * FROM t_compare();
+-- an OR that reads the values of the path beside its type raises in PostgreSQL too, so it is compared by outcome
+SELECT t_check('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' OR (attrs->>''m'')::float8 > 100');
 
 -- the shape of the plan
 SET sift.enable_agg = on;
 EXPLAIN (COSTS OFF) SELECT count(*), sum((attrs->>'m')::float8) FROM t WHERE jsonb_typeof(attrs->'m') = 'number';
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'s') IN ('string');
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'m') <> 'number';
+EXPLAIN (COSTS OFF) SELECT jsonb_typeof(attrs->'m') AS ty, count(*) FROM t GROUP BY 1;
+EXPLAIN (COSTS OFF) SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->'s') = 'string' OR id < 5) FROM t;
 RESET sift.enable_agg;
 
 -- a value the leaf cannot hold (a number out of the range of the type, a non-integer for an integer leaf, a string for a number) is an error
@@ -189,6 +227,14 @@ INSERT INTO e_q (q) VALUES
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string'''),
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'''),
 	('SELECT count(*), sum((attrs->>''d'')::int8) FROM e WHERE jsonb_typeof(attrs->''d'') = ''number''');
+INSERT INTO e_q (q) VALUES
+	-- the type as a key, in a FILTER and in an OR reads no value of the leaf: values it cannot hold do not raise
+	('SELECT jsonb_typeof(attrs->''m'') AS ty, count(*) FROM e GROUP BY 1'),
+	('SELECT jsonb_typeof(attrs->''n'') AS ty, count(*) FROM e GROUP BY 1'),
+	('SELECT jsonb_typeof(attrs->''s'') AS ty, count(*) FROM e GROUP BY 1'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''string'') AS strings, count(*) FILTER (WHERE jsonb_typeof(attrs->''m'') = ''number'') AS nums FROM e'),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''n'') <> ''number'' OR grp = 1'),
+	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'' OR jsonb_typeof(attrs->''b'') IS NULL');
 SELECT n, t_check(q) FROM e_q ORDER BY n;
 
 -- a read of the leaf that no type filter guards keeps raising
@@ -197,14 +243,14 @@ SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS un
 
 -- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
 DELETE FROM e WHERE id = 7001;
-SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20) ORDER BY n;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
 UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
-SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20) ORDER BY n;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
 INSERT INTO e VALUES (7003, 2, '{"m": 1e999}');
 SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
 DELETE FROM e WHERE id IN (7002, 7003);
 VACUUM e;
-SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20) ORDER BY n;
+SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
 
 -- the chunk encodings: a constant chunk and the codec's in the segments (the stretches of ids differ in how many values they hold), the plain
 -- encodings of the write buffer
