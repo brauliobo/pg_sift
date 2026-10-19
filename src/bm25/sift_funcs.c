@@ -16,6 +16,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -66,6 +67,93 @@ sift_parse_query(PG_FUNCTION_ARGS)
 	analyzer_config(PG_ARGISNULL(1) ? InvalidOid : PG_GETARG_OID(1), &cfg);
 	PG_RETURN_TEXT_P(cstring_to_text(sift_query_deparse(
 		query_from_text(PG_GETARG_TEXT_PP(0), sift_analyzer_create(&cfg, CurrentMemoryContext)))));
+}
+
+/* "title^3, body, tags^0.5": the fields and weights of sift.field_query, in the order written; a field without ^ weighs 1 */
+static int
+parse_weights(const char *spec, char ***names, double **weights)
+{
+	List	   *parts = NIL;
+	char	   *copy = pstrdup(spec);
+	StringInfoData joined;
+	int			n = 0;
+
+	initStringInfo(&joined);
+	for (char *tok = strtok(copy, ","); tok; tok = strtok(NULL, ","))
+		parts = lappend(parts, tok);
+	*names = palloc(Max(list_length(parts), 1) * sizeof(char *));
+	*weights = palloc(Max(list_length(parts), 1) * sizeof(double));
+	foreach_ptr(char, tok, parts)
+	{
+		char	   *caret = strchr(tok, '^');
+		char	   *end;
+		double		w = 1.0;
+
+		if (caret)
+		{
+			*caret = '\0';
+			w = strtod(caret + 1, &end);
+			while (*end == ' ' || *end == '\t')
+				end++;
+			if (end == caret + 1 || *end || !(w > 0) || w > SIFT_MAX_BOOST)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid weight for field \"%s\"", tok),
+						 errhint("A weight is a number above 0 and up to %d: \"title^3, body\".", (int) SIFT_MAX_BOOST)));
+		}
+		while (*tok == ' ' || *tok == '\t')
+			tok++;
+		for (end = tok + strlen(tok); end > tok && (end[-1] == ' ' || end[-1] == '\t'); end--)
+			;
+		*end = '\0';
+		(*names)[n] = tok;
+		(*weights)[n++] = w;
+		appendStringInfo(&joined, "%s%s", joined.len ? "," : "", tok);
+	}
+	if (n == 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("no field to weigh"),
+						errhint("Write the fields with their weights: \"title^3, body\".")));
+	sift_analyze_validate_fields(joined.data);
+	return n;
+}
+
+/*
+ * sift.field_query(query text, fields text, index regclass DEFAULT NULL): the query with per-field weights (docs/FIELDS-FACETS.md): every
+ * word, prefix, pattern and fuzzy leaf becomes the OR of itself in each field, boosted by the field's weight, so that a document scores the
+ * sum of its fields' scores. With an index the fields are checked against its own.
+ */
+Datum
+sift_field_query(PG_FUNCTION_ARGS)
+{
+	char	  **names;
+	double	   *weights;
+	int			n;
+	SiftQuery  *q;
+	char	   *out;
+
+	if (PG_ARGISNULL(0))
+		PG_RETURN_NULL();
+	if (PG_ARGISNULL(1))
+		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("the fields to weigh are required")));
+	n = parse_weights(text_to_cstring(PG_GETARG_TEXT_PP(1)), &names, &weights);
+	q = sift_query_weigh(sift_query_parse(VARDATA_ANY(PG_GETARG_TEXT_PP(0)), VARSIZE_ANY_EXHDR(PG_GETARG_TEXT_PP(0))),
+						 n, (const char *const *) names, weights);
+	out = sift_query_deparse(q);
+	if (!PG_ARGISNULL(2))
+	{
+		SiftAnalyzerConfig cfg;
+		SiftAnalyzer *a;
+
+		analyzer_config(PG_GETARG_OID(2), &cfg);
+		if (cfg.nfields == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("index \"%s\" has no fields", get_rel_name(PG_GETARG_OID(2))),
+					 errhint("Create it with WITH (fields = 'title,body') on a key made by sift.sections(title, body).")));
+		a = sift_analyzer_create(&cfg, CurrentMemoryContext);
+		(void) query_from_text(cstring_to_text(out), a);
+	}
+	PG_RETURN_TEXT_P(cstring_to_text(out));
 }
 
 /* Analyzed query cached across calls while the query and index stay the same */

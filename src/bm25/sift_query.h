@@ -86,6 +86,13 @@ typedef struct SiftQuery
 extern SiftQuery *sift_query_parse(const char *src, int len);
 extern SiftQuery *sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a);
 
+/*
+ * Per-field weights (sift.field_query): the raw query with every word, prefix, pattern and fuzzy leaf that no qualifier scopes replaced by the OR
+ * of that leaf in each of the nf fields (its boost times the field's weight); phrases, regular expressions and what a NOT holds keep
+ * their meaning. Changes the tree in place; deparse gives the query text.
+ */
+extern SiftQuery *sift_query_weigh(SiftQuery *raw, int nf, const char *const *names, const double *weights);
+
 /* Canonical form: deterministic, re-parseable, used by tests and EXPLAIN */
 extern char *sift_query_deparse(const SiftQuery *q);
 
