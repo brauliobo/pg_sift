@@ -356,7 +356,7 @@ clean() {
 }
 
 sub=${1:-all}
-[[ $sub != all && $sub != setup && $sub != run && $sub != cold && $sub != updates && $sub != interference && $sub != finish ]] || load_plan "${SIZES%%,*}"
+[[ $sub != setup && $sub != run && $sub != cold && $sub != updates && $sub != interference && $sub != finish ]] || load_plan "${SIZES%%,*}"
 case $sub in
   all) all ;;
   plan) plan "${SIZES%%,*}" ;;
