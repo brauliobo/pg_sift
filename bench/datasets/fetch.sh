@@ -13,18 +13,15 @@
 # the converter): a later run with the same stamp downloads and converts nothing (REFRESH_DATASETS=1 does both again). `all` converts the
 # two datasets at the same time. Dump date, GeoNames date and checksums are pinned in bench/versions.env.
 set -euo pipefail
-ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}
-STORE=${BENCH_STORE:-$ROOT}
-DATA=$STORE/data DOWNLOADS=${DOWNLOADS:-$STORE/download}
 HERE=$(cd "$(dirname "$0")" && pwd)
-. "$HERE/../versions.env"
+. "$HERE/../steps/lib.sh"   # ROOT, STORE, DATA, DOWNLOADS and `download`
 GEO=$GEONAMES_BASE
 mkdir -p "$DATA" "$DOWNLOADS"
 
 get() { # url dir: into a new directory, skipped when the file is already there
   local dir=$2 f=${1##*/}
   mkdir -p "$dir"
-  [[ -s $dir/$f ]] || curl -fsS -m 3600 -o "$dir/$f" "$1"
+  download "$1" "$dir/$f"
 }
 current() { [[ -z ${REFRESH_DATASETS:-} && -f $1 && $(<"$1") == "$2" ]]; }   # stamp wanted-content: nothing to do
 
