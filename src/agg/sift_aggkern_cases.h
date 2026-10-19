@@ -450,6 +450,14 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		agk_step(res, "sum_i32");
 		AGK_HV(res, k->sum_f64(c->f64, mm, n));
 		agk_step(res, "sum_f64");
+		{
+			double		amx = 1.5;
+			bool		fin = k->absmax_f64(c->f64, mm, n, &amx);
+
+			AGK_HV(res, fin);
+			AGK_HV(res, amx);
+			agk_step(res, "absmax_f64");
+		}
 		ok = k->minmax_i32(&mn32, &mx32, c->i32, mm, n);
 		AGK_HV(res, ok);
 		AGK_HV(res, mn32);

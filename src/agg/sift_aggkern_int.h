@@ -4,6 +4,7 @@
 #ifndef SIFT_AGGKERN_INT_H
 #define SIFT_AGGKERN_INT_H
 
+#include <float.h>
 #include <math.h>
 
 #include "sift_aggkern.h"
@@ -17,7 +18,7 @@ extern const SiftAggKernels sift_aggkern_avx512;
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
 	X(cmp_f64) X(between_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
-	X(sum_i32) X(sum_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
+	X(sum_i32) X(sum_f64) X(absmax_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
 	X(count_gid) X(sum_gid_i32) X(sum_gid_f64) X(count_changes)
 
 /* The scalar function of every slot (sift_aggkern.c): a level that does not implement a slot uses it */

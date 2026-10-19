@@ -189,6 +189,20 @@ spec_reductions(void)
 	EXPECT(sift_aggkern_scalar.sum_f64(big, sel, 3) == 0);
 	EXPECT(sift_aggkern_scalar.sum_i32((const int32[]) {INT32_MIN, INT32_MAX, 5}, NULL, 3) == 4);
 
+	/* absmax_f64: the largest |x| of the selected rows, false for a NaN or an infinity among them (the unselected ones do not count) */
+	{
+		const double fin[] = {-7.5, 3, 0, -1e300, 2}, bad[] = {1, INFINITY, 2}, nan3[] = {1, NAN, 2};
+		double		am = 42;
+
+		EXPECT(sift_aggkern_scalar.absmax_f64(fin, NULL, 5, &am) && am == 1e300);
+		EXPECT(sift_aggkern_scalar.absmax_f64(fin, (const uint64[]) {0x7}, 5, &am) && am == 7.5);
+		EXPECT(sift_aggkern_scalar.absmax_f64(fin, (const uint64[]) {0}, 5, &am) && am == 0);
+		am = 42;
+		EXPECT(!sift_aggkern_scalar.absmax_f64(bad, NULL, 3, &am) && am == 42);
+		EXPECT(!sift_aggkern_scalar.absmax_f64(nan3, (const uint64[]) {0x2}, 3, &am) && am == 42);
+		EXPECT(sift_aggkern_scalar.absmax_f64(bad, (const uint64[]) {0x5}, 3, &am) && am == 2);
+	}
+
 	/* count_changes: selected rows 0, 1, 3, 5 hold 3, 3, 4, 5: two changes from "3", three from "none" */
 	prev = 3;
 	EXPECT(sift_aggkern_scalar.count_changes(codes, sel2, 6, &prev) == 2 && prev == 5);
