@@ -186,7 +186,9 @@ One unit at a time (the rows of a segment inside one superblock), through the se
 4. group ids: dictionary codes and integer values map to dense key ids through tables built once per dictionary / value range; ids combine into a direct array (up to 2^20 groups) or a hash table beyond;
 5. aggregates accumulate by group in tuple order.
 
-The groups leave as the rows of `custom_scan_tlist` (keys, then aggregates); the plan above projects and filters. `Rows Vetted By Heap`, `Heap Pages`, `Units`, `Units Pruned`, `Rows Scanned`, `Tuples Aggregated` and `Groups` are in EXPLAIN ANALYZE, the filters, group keys and pushed aggregates in plain EXPLAIN.
+The groups leave as the rows of `custom_scan_tlist` (keys, then aggregates); the plan above projects and filters. `Rows Vetted By Heap`, `Heap Pages`, `Units`, `Units Pruned`, `Rows Scanned`, `Tuples Aggregated`, `Dense Chunks` (the chunks aggregated from their bitmap, below) and `Groups` are in EXPLAIN ANALYZE, the filters, group keys and pushed aggregates in plain EXPLAIN.
+
+**Dense chunks.** A chunk of up to 4096 rows or array elements whose aggregates are `count`, `sum` and `avg` of one integer or float leaf (or `count(*)`), with or without a `FILTER`, grouped by dictionary (text) leaves or not at all, is aggregated from the bitmap of its rows: an aggregate takes the bits that pass its `FILTER` and have a value, a count is a popcount (a per group count with keys), a sum runs over the bits in row order (so a float sum has the same bits as before), and the group of every row comes from its dictionary code. There is no list of tuples and no gather by position, which was most of the instructions of `count(*) FILTER (WHERE ..)` over array elements. Anything else in the query (a join, an expression key, `min`, `max`, `count(DISTINCT)`, a late `FILTER`) and a unit that reads few rows (`SPARSE_RATIO`) run the tuple path; `sift.agg_dense = off` turns the dense path off for a comparison.
 
 ### One pass for the arms
 

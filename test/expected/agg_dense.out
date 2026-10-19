@@ -40,10 +40,11 @@ SELECT i, i % 5,
 FROM generate_series(1, 5000) i;
 CREATE INDEX d_fcol ON d_f USING sift_col (id, grp, amt);
 VACUUM ANALYZE d_f;
-CREATE FUNCTION d_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION d_rows(q text, push bool, dense bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_dense', dense::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -53,6 +54,17 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- did the scan aggregate a chunk from its bitmap
+CREATE FUNCTION d_dense(q text, dense bool) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_dense', dense::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Dense Chunks: [1-9]' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
@@ -104,61 +116,64 @@ INSERT INTO d_q VALUES
 	('SELECT avg(amt) FILTER (WHERE grp = 1), avg(amt) FILTER (WHERE grp = 2), avg(amt) FILTER (WHERE grp = 0) FROM d_f'),
 	('SELECT sum(amt), avg(amt) FROM d_f WHERE id < 40'),
 	('SELECT grp, sum(amt) FROM d_f WHERE id < 40 GROUP BY 1');
-CREATE FUNCTION d_compare(OUT n int, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+CREATE FUNCTION d_compare(OUT n int, OUT same bool, OUT pushed bool, OUT dense bool, OUT without_dense bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE query text;
 BEGIN
 	n := 0;
 	FOR query IN SELECT q FROM d_q ORDER BY ctid LOOP
 		n := n + 1;
 		pushed := d_pushed(query);
-		same := d_rows(query, true) IS NOT DISTINCT FROM d_rows(query, false);
+		same := d_rows(query, true) IS NOT DISTINCT FROM d_rows(query, false) AND d_rows(query, true, false) IS NOT DISTINCT FROM d_rows(query, false);
+		dense := d_dense(query, true);
+		without_dense := d_dense(query, false);
 		RETURN NEXT;
 	END LOOP;
 END $$;
-SELECT n, same, pushed FROM d_compare();
- n  | same | pushed 
-----+------+--------
-  1 | t    | t
-  2 | t    | t
-  3 | t    | t
-  4 | t    | t
-  5 | t    | t
-  6 | t    | t
-  7 | t    | t
-  8 | t    | t
-  9 | t    | t
- 10 | t    | t
- 11 | t    | t
- 12 | t    | t
- 13 | t    | t
- 14 | t    | t
- 15 | t    | t
- 16 | t    | t
- 17 | t    | t
- 18 | t    | t
- 19 | t    | t
- 20 | t    | t
- 21 | t    | t
- 22 | t    | t
- 23 | t    | t
- 24 | t    | t
- 25 | t    | t
- 26 | t    | t
- 27 | t    | t
- 28 | t    | t
- 29 | t    | t
- 30 | t    | t
- 31 | t    | t
- 32 | t    | t
- 33 | t    | t
- 34 | t    | t
- 35 | t    | t
- 36 | t    | t
- 37 | t    | t
- 38 | t    | t
- 39 | t    | t
- 40 | t    | t
- 41 | t    | t
+-- same: the rows are the normal plan's with and without dense chunks; dense: some chunk was aggregated from its bitmap (never with sift.agg_dense off)
+SELECT n, same, pushed, dense, without_dense FROM d_compare();
+ n  | same | pushed | dense | without_dense 
+----+------+--------+-------+---------------
+  1 | t    | t      | f     | f
+  2 | t    | t      | t     | f
+  3 | t    | t      | t     | f
+  4 | t    | t      | f     | f
+  5 | t    | t      | t     | f
+  6 | t    | t      | t     | f
+  7 | t    | t      | t     | f
+  8 | t    | t      | t     | f
+  9 | t    | t      | f     | f
+ 10 | t    | t      | f     | f
+ 11 | t    | t      | f     | f
+ 12 | t    | t      | t     | f
+ 13 | t    | t      | t     | f
+ 14 | t    | t      | t     | f
+ 15 | t    | t      | t     | f
+ 16 | t    | t      | t     | f
+ 17 | t    | t      | t     | f
+ 18 | t    | t      | f     | f
+ 19 | t    | t      | f     | f
+ 20 | t    | t      | f     | f
+ 21 | t    | t      | f     | f
+ 22 | t    | t      | t     | f
+ 23 | t    | t      | t     | f
+ 24 | t    | t      | t     | f
+ 25 | t    | t      | t     | f
+ 26 | t    | t      | t     | f
+ 27 | t    | t      | t     | f
+ 28 | t    | t      | f     | f
+ 29 | t    | t      | t     | f
+ 30 | t    | t      | t     | f
+ 31 | t    | t      | t     | f
+ 32 | t    | t      | t     | f
+ 33 | t    | t      | t     | f
+ 34 | t    | t      | t     | f
+ 35 | t    | t      | t     | f
+ 36 | t    | t      | t     | f
+ 37 | t    | t      | f     | f
+ 38 | t    | t      | t     | f
+ 39 | t    | t      | t     | f
+ 40 | t    | t      | f     | f
+ 41 | t    | t      | f     | f
 (41 rows)
 
 -- a sum or an average of floats that overflows raises the error PostgreSQL raises, from the scan and from the plan
@@ -169,6 +184,7 @@ VACUUM d_big;
 CREATE FUNCTION d_err(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_dense', 'on', true);
 	EXECUTE q;
 	RETURN 'no error';
 EXCEPTION WHEN OTHERS THEN
@@ -186,5 +202,5 @@ FROM (VALUES ('SELECT sum(amt) FROM d_big'), ('SELECT avg(amt) FROM d_big'), ('S
 (4 rows)
 
 DROP TABLE d_t, d_j, d_f, d_big, d_q;
-DROP FUNCTION d_rows(text, bool), d_pushed(text), d_compare(), d_err(text, bool);
+DROP FUNCTION d_rows(text, bool, bool), d_pushed(text), d_dense(text, bool), d_compare(), d_err(text, bool);
 DROP EXTENSION pg_sift;

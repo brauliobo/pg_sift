@@ -44,10 +44,11 @@ FROM generate_series(1, 5000) i;
 CREATE INDEX d_fcol ON d_f USING sift_col (id, grp, amt);
 VACUUM ANALYZE d_f;
 
-CREATE FUNCTION d_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION d_rows(q text, push bool, dense bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_dense', dense::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -58,6 +59,18 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- did the scan aggregate a chunk from its bitmap
+CREATE FUNCTION d_dense(q text, dense bool) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_dense', dense::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Dense Chunks: [1-9]' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
@@ -111,19 +124,22 @@ INSERT INTO d_q VALUES
 	('SELECT sum(amt), avg(amt) FROM d_f WHERE id < 40'),
 	('SELECT grp, sum(amt) FROM d_f WHERE id < 40 GROUP BY 1');
 
-CREATE FUNCTION d_compare(OUT n int, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+CREATE FUNCTION d_compare(OUT n int, OUT same bool, OUT pushed bool, OUT dense bool, OUT without_dense bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE query text;
 BEGIN
 	n := 0;
 	FOR query IN SELECT q FROM d_q ORDER BY ctid LOOP
 		n := n + 1;
 		pushed := d_pushed(query);
-		same := d_rows(query, true) IS NOT DISTINCT FROM d_rows(query, false);
+		same := d_rows(query, true) IS NOT DISTINCT FROM d_rows(query, false) AND d_rows(query, true, false) IS NOT DISTINCT FROM d_rows(query, false);
+		dense := d_dense(query, true);
+		without_dense := d_dense(query, false);
 		RETURN NEXT;
 	END LOOP;
 END $$;
 
-SELECT n, same, pushed FROM d_compare();
+-- same: the rows are the normal plan's with and without dense chunks; dense: some chunk was aggregated from its bitmap (never with sift.agg_dense off)
+SELECT n, same, pushed, dense, without_dense FROM d_compare();
 
 -- a sum or an average of floats that overflows raises the error PostgreSQL raises, from the scan and from the plan
 CREATE TABLE d_big (id int, amt float8);
@@ -133,6 +149,7 @@ VACUUM d_big;
 CREATE FUNCTION d_err(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_dense', 'on', true);
 	EXECUTE q;
 	RETURN 'no error';
 EXCEPTION WHEN OTHERS THEN
@@ -143,5 +160,5 @@ FROM (VALUES ('SELECT sum(amt) FROM d_big'), ('SELECT avg(amt) FROM d_big'), ('S
              ('SELECT id % 2, sum(amt) FROM d_big GROUP BY 1')) v(q);
 
 DROP TABLE d_t, d_j, d_f, d_big, d_q;
-DROP FUNCTION d_rows(text, bool), d_pushed(text), d_compare(), d_err(text, bool);
+DROP FUNCTION d_rows(text, bool, bool), d_pushed(text), d_dense(text, bool), d_compare(), d_err(text, bool);
 DROP EXTENSION pg_sift;
