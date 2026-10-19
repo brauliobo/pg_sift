@@ -200,7 +200,12 @@ job_gate_col() {
 	pgt "$T" "$W/gate-col/rt" $((PORT0 + 1)) stop >/dev/null && pgt "$T" "$W/gate-col/nt" $((PORT0 + 2)) stop >/dev/null || return 1
 	[[ -z $bad ]] || { echo "a sift_col question is above $COL_MAX of the reference"; return 1; }
 }
-job_fuzz() { SIFT_TMP=$W/fuzz FZ_SECS=60 scripts/fuzz.sh colchunk bm25; }
+job_fuzz() {
+	export SIFT_TMP=$W/fuzz
+	nice scripts/pgtest.sh install >/dev/null && scripts/pgtest.sh start >/dev/null || return 1
+	FZ_SECS=60 scripts/fuzz.sh colchunk bm25		# fuzz.sh sets its database up in the cluster before the first target
+	scripts/pgtest.sh stop >/dev/null
+}
 job_coldiff() {
 	export SIFT_TMP=$W/coldiff
 	nice scripts/pgtest.sh install >/dev/null && scripts/pgtest.sh start >/dev/null
