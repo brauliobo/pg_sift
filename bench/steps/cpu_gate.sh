@@ -33,6 +33,7 @@
 set -Eeuo pipefail
 trap 'echo "cpu-gate: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 export LC_ALL=C
+. "$(dirname "$0")/../../scripts/quiet.sh"   # the pressure is printed for context; instruction counts do not wait for a quiet host
 
 ROWS=20000 INS=10000 NQ=100 REPS=7 MAXREPS=25 SE=1 BUDGET=3600 CELLS=. RAW= BUILDS=()
 declare -A DIR TMP PORT PM IOPTS GUCS ENVS
@@ -334,7 +335,7 @@ for db in tpl_data r60; do
 	sums=$(for l in "${LABELS[@]}"; do Q "$l" $db -c "SELECT md5(string_agg(body, ',' ORDER BY id)) FROM t"; done | sort -u | wc -l)
 	[[ $sums == 1 ]] || { echo "cpu-gate: the rows of $db differ between builds" >&2; exit 1; }
 done
-echo "load average $(cut -d' ' -f1-3 /proc/loadavg), $ROWS rows, $INS inserts, $NQ queries per class, builds ${LABELS[*]}"
+echo "$(quiet_report 2>&1), $ROWS rows, $INS inserts, $NQ queries per class, builds ${LABELS[*]}"
 
 WANT=" ${ALLCELLS[*]} "
 for ((r = 1; r <= REPS; r++)); do round $WANT; done
@@ -348,4 +349,4 @@ done
 stats table
 left=$(stats pending)
 echo
-echo "rounds $ROUND (cells still above ${SE}% standard error: ${left:-none}), $((SECONDS - START)) s, load average now $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "rounds $ROUND (cells still above ${SE}% standard error: ${left:-none}), $((SECONDS - START)) s, $(quiet_report 2>&1) now"

@@ -7,6 +7,9 @@
 #include "sift_posting.h"
 
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
+/* the L1 bit and nibble bytes of a term, from counts the dictionary stores as uint32: the sums wrap in 32 bits when a count is near 2^32 */
+#define L1_BYTES(info)	(((uint64) (info)->df + 7) / 8)
+#define NIB_BYTES(info)	(((uint64) (info)->nnib + 1) / 2)
 #define BLOB_NG(blob)	(*(const uint32 *) ((blob) + 8))
 #define BLOB_KEYS(blob)	((const uint32 *) ((blob) + 12))
 
@@ -773,7 +776,7 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 		if (!(info->flags & SIFT_TERM_SPARSE))
 		{
 			c->ng = BLOB_NG(blob);
-			if ((uint64) c->ng * sizeof(SiftGroupScore) > c->bloblen - ALIGN4(info->codec_len))
+			if (ALIGN4(info->codec_len) > c->bloblen || (uint64) c->ng * sizeof(SiftGroupScore) > c->bloblen - ALIGN4(info->codec_len))
 				corrupt_blob(info);
 			c->gs = (const SiftGroupScore *) p;
 			c->blkrows = p + c->ng * sizeof(SiftGroupScore);
@@ -782,12 +785,12 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 				p += (c->gs[i].flags & SIFT_GS_BLKBOUND) ? SIFT_BLKS_PER_SB : 0;
 		}
 		c->l1 = p;
-		c->nib = p + (info->df + 7) / 8;
-		c->esc = c->nib + (info->nnib + 1) / 2;
+		c->nib = p + L1_BYTES(info);
+		c->esc = c->nib + NIB_BYTES(info);
 		/* a term with a tf stream has its L1 bits and nibbles inside the blob (the escape bytes are the rest); one without has none */
 		if (p > blob + c->bloblen ||
 			(!(info->flags & SIFT_TERM_ALL_TF1) &&
-			 (info->nnib == 0 || (uint64) (blob + c->bloblen - p) < (uint64) (info->df + 7) / 8 + (info->nnib + 1) / 2)))
+			 (info->nnib == 0 || (uint64) (blob + c->bloblen - p) < L1_BYTES(info) + NIB_BYTES(info))))
 			corrupt_blob(info);
 	}
 	else if (!(info->flags & SIFT_TERM_SPARSE) || !(info->flags & SIFT_TERM_ALL_TF1))

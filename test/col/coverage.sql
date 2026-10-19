@@ -106,6 +106,25 @@ BEGIN
 	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg)%' AND p ~ 'Workers Planned: [1-9]';
 END $$;
 
+-- the control query has a SiftAgg plan and none of the queries qs has one: the shape of qs, not the table, keeps the normal plan
+CREATE FUNCTION coverage.keeps_normal(control text, qs text[]) RETURNS boolean LANGUAGE sql AS $$
+	SELECT coverage.plan_of(control) LIKE '%Custom Scan (SiftAgg)%'
+		AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.plan_of(q) LIKE '%Custom Scan (SiftAgg)%') $$;
+
+-- Units From Pre-aggregates of EXPLAIN ANALYZE for q (0 when the shape does not qualify, -1 when the plan has no SiftAgg)
+CREATE FUNCTION coverage.preagg_units(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	PERFORM set_config('seq_page_cost', '10000', true), set_config('random_page_cost', '10000', true), set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
+	IF r NOT LIKE '%Custom Scan (SiftAgg)%' THEN RETURN -1; END IF;
+	RETURN coalesce((regexp_match(r, 'Units From Pre-aggregates: (\d+)'))[1]::int, 0);
+END $$;
+
+-- the control query is answered from pre-aggregates and every query of qs is scanned by SiftAgg without a unit from them
+CREATE FUNCTION coverage.scans(control text, qs text[]) RETURNS boolean LANGUAGE sql AS $$
+	SELECT coverage.preagg_units(control) > 0 AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.preagg_units(q) <> 0) $$;
+
 -- a SCROLL cursor over the table: FETCH LAST and five FETCH PRIOR return the last rows of the forward scan, in reverse
 CREATE FUNCTION coverage.scroll_back(tbl text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE c refcursor; fwd int[]; back int[] := '{}'; r record; i int;

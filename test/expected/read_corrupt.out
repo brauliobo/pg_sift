@@ -104,9 +104,9 @@ FROM (VALUES
  tf escape bytes              | rc_list | dense2  | XX001 sift: corrupt posting data: tf stream: the escape bytes of a group are not inside the stream
 (21 rows)
 
--- the dictionary's count of the term's nibbles: fewer than the L1 bits count, and none
+-- the dictionary's count of the term's nibbles: fewer than the L1 bits count, none, and 2^32 - 1 (its byte count wraps in 32 bits)
 SELECT n.nnib, rc_read(t.blob, t.flags, t.df, t.codec_len, n.nnib) AS verdict
-FROM sift._test_term_blob('rc_list', 'q1') t, unnest(ARRAY[1, 2500, 4999, 5000, 0]) n(nnib);
+FROM sift._test_term_blob('rc_list', 'q1') t, unnest(ARRAY[1, 2500, 4999, 5000, 0, -1]) n(nnib);
  nnib |                                            verdict                                            
 ------+-----------------------------------------------------------------------------------------------
     1 | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
@@ -114,7 +114,16 @@ FROM sift._test_term_blob('rc_list', 'q1') t, unnest(ARRAY[1, 2500, 4999, 5000, 
  4999 | XX001 sift: corrupt posting data: tf stream: the nibbles of a group are not inside the stream
  5000 | 5000 postings, tf sum 10000
     0 | XX002 sift: term blob at 0 does not match its dictionary entry
-(5 rows)
+   -1 | XX002 sift: term blob at 0 does not match its dictionary entry
+(6 rows)
+
+-- a blob that ends inside the padding after its codec, with a group count that would fit if the length arithmetic wrapped
+SELECT rc_read(set_byte(set_byte(set_byte(substr(blob, 1, codec_len + 1), 8, 255), 9, 255), 10, 255), flags, df, codec_len, nnib) AS verdict
+FROM sift._test_term_blob('rc_grp', 'heavy');
+                            verdict                             
+----------------------------------------------------------------
+ XX002 sift: term blob at 0 does not match its dictionary entry
+(1 row)
 
 -- every byte of every term blob set to a few values, and every length the dictionary holds for the blob changed
 CREATE FUNCTION rc_sweep(idx regclass, term text) RETURNS text LANGUAGE plpgsql AS $$
@@ -133,7 +142,7 @@ BEGIN
 			IF v ~ '^[0-9]+ postings' THEN ok := ok + 1; ELSIF left(v, 5) IN ('XX001', 'XX002') THEN corrupt := corrupt + 1; ELSE other := other + 1; RAISE NOTICE '%', v; END IF;
 		END LOOP;
 	END LOOP;
-	FOREACH val IN ARRAY ARRAY[0, 1, 2, 3, 255, 65535, 1000000, 2147483647] LOOP
+	FOREACH val IN ARRAY ARRAY[0, 1, 2, 3, 255, 65535, 1000000, 2147483647, -1] LOOP
 		FOR f IN 1 .. 3 LOOP
 			v := rc_read(t.blob, t.flags, CASE f WHEN 1 THEN val ELSE t.df END, CASE f WHEN 2 THEN val ELSE t.codec_len END, CASE f WHEN 3 THEN val ELSE t.nnib END);
 			IF v ~ '^[0-9]+ postings' THEN ok := ok + 1; ELSIF left(v, 5) IN ('XX001', 'XX002') THEN corrupt := corrupt + 1; ELSE other := other + 1; RAISE NOTICE '%', v; END IF;

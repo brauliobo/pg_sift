@@ -13,12 +13,15 @@
 # workload, method) runs for SECS seconds with CLIENTS pgbench clients, ROUNDS rounds with the method order
 # rotated, and the median queries per second is reported. ES=auto|0|1 adds Elasticsearch (the system
 # package, one shard, single client). PARALLEL sets max_parallel_workers_per_gather for the GROUP BYs.
-# Results and `uptime` before and after land in $DEST (default bench/out/facets/<time>).
+# Results and the pressure (PSI, scripts/quiet.sh) before and after land in $DEST (default bench/out/facets/<time>); a round of a column and
+# workload that started on a host that did not get quiet within SIFT_QUIET_TIMEOUT is listed as NOISY.
 set -euo pipefail
 export LC_ALL=C
 STEPS=$(cd "$(dirname "$0")" && pwd)
 BENCH=$(dirname "$STEPS")
 REPO=$(dirname "$BENCH")
+. "$REPO/scripts/quiet.sh"
+NOISY=()
 ARTICLES=${ARTICLES:-${BENCH_STORE:-${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}}/data/articles.tsv.gz}
 TMP=${FACET_TMP:-/tmp/sift-facets-bench}
 DOCS=${DOCS:-25000} SECS=${SECS:-3} ROUNDS=${ROUNDS:-2} CLIENTS=${CLIENTS:-1} NQ=${NQ:-24} NCAT=${NCAT:-2500}
@@ -139,11 +142,17 @@ cell() { # round col wl variant
 	q -c "INSERT INTO res VALUES ($1, '$2', '$3', '$4', $tps)"
 }
 
+gate() { # WHAT: before a timed batch, wait for a quiet host; a batch that runs anyway is NOISY
+	quiet_batch
+	[[ -z $QUIET_MARK ]] || { NOISY+=("$*"); log "$*:$QUIET_MARK, $(quiet_report 2>&1)"; }
+}
+
 measure() {
 	local r col wl i v
 	for (( r = 1; r <= ROUNDS; r++ )); do
 		log "round $r"
 		for col in lo hi; do for wl in one and or; do
+			gate "round $r $col $wl"
 			for (( i = 0; i < ${#VARIANTS[@]}; i++ )); do
 				cell "$r" "$col" "$wl" "${VARIANTS[(i + r) % ${#VARIANTS[@]}]}"
 			done
@@ -185,6 +194,7 @@ elasticsearch() {
 	ES_PATH_CONF=$d/conf ES_TMPDIR=$d/tmp nice /usr/share/elasticsearch/bin/elasticsearch -d -p "$d/pid" >"$d/start.log" 2>&1
 	until curl -fs "$url/_cluster/health?wait_for_status=yellow" >/dev/null; do sleep 1; done
 	log "elasticsearch up"
+	gate elasticsearch
 	python3 -I "$STEPS/facets_es.py" "$url" "$d/docs.ndjson" "$d/queries.tsv" "$SECS" "$ROUNDS" >"$d/es.out"
 	awk -F'\t' '$1 == "check"' "$d/es.out" | sed 's/^/  /' >&2
 	awk -F'\t' '$1 != "check" {print $1 "\t" $2 "\t" $3}' "$d/es.out" | awk -F'\t' '{r[$1 FS $2]++; print r[$1 FS $2] "\t" $0}' |
@@ -204,7 +214,7 @@ summary() {
 
 mkdir -p "$DEST"
 {
-	echo "uptime before: $(uptime)"
+	echo "$(quiet_report 2>&1) before"
 	echo "settings: DOCS=$DOCS SECS=$SECS ROUNDS=$ROUNDS CLIENTS=$CLIENTS NQ=$NQ NCAT=$NCAT PARALLEL=$PARALLEL; median qps of $ROUNDS rounds"
 } | tee "$DEST/summary.txt" >&2
 build
@@ -215,6 +225,7 @@ plans | tee -a "$DEST/summary.txt"
 measure
 [[ $ES == 0 ]] || [[ $ES == auto && ! -x /usr/share/elasticsearch/bin/elasticsearch ]] || elasticsearch || log "elasticsearch failed: see $TMP/es"
 {
-	echo "uptime after: $(uptime)"
+	echo "$(quiet_summary 2>&1) after"
+	(( ${#NOISY[@]} == 0 )) || printf 'NOISY: %s\n' "${NOISY[@]}"
 	summary
 } | tee -a "$DEST/summary.txt"

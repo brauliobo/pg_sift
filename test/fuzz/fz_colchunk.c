@@ -177,6 +177,22 @@ bits_run(void *a)
 		j->digest = mix(j->digest, w[i]);
 }
 
+/* the code lane of a dictionary of (arg >> 20) % 400 values: it decodes to codes inside the tables built over that dictionary, or raises */
+static void
+chunk_codes(const SiftCChunk *c, Job *j)
+{
+	uint32		ndict = (j->arg >> 20) % 400;
+	uint32	   *codes = palloc(sizeof(uint32) * SIFT_CC_CAP32(c->n));
+
+	sift_cchunk_decode_codes(c, ndict, codes);
+	for (uint32 i = 0; i < c->n; i++)
+	{
+		if (codes[i] > ndict)
+			fz_bad("a code of %u in a dictionary of %u values", codes[i], ndict);
+		j->digest = mix(j->digest, codes[i]);
+	}
+}
+
 static void
 chunk_tests(const SiftCChunk *c, Job *j)
 {
@@ -252,6 +268,7 @@ cchunk_run(void *a)
 	sift_cchunk_zone(&c, SIFT_COLS_INT, &z);
 	j->digest = mix(mix(j->digest, (uint64) z.min), (uint64) z.max);
 	chunk_tests(&c, j);
+	chunk_codes(&c, j);
 }
 
 static void

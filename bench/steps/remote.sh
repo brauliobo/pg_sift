@@ -62,7 +62,7 @@ case ${1:-} in
   sh)    rsh "$2" ;;
   sift)  rsh "nice make -s USE_PGXS=1 -j4 && make -s USE_PGXS=1 DESTDIR=\$SIFT_BENCH_ROOT/engines/sift/root install" ;;
   quick) case " ${*:2} " in *" sift "*|"  ") "$0" sift ;; esac
-         rsh "bench/steps/fetch.sh tantivy && uptime && bench/bench suite ${*:2}"; "$0" pull ;;
+         rsh "bench/steps/fetch.sh tantivy && { scripts/quiet.sh report || true; } && bench/bench suite ${*:2}"; "$0" pull ;;
   pull)  rsync -a "$RHOST:$RDIR/bench/out/" "$BENCH/out-$RHOST/" ;;
   clean)
     rsh "for t in Q F; do TIER=\$t bench/steps/cluster.sh destroy; done; rm -rf \$D/bench-root/pg \$D/bench-root/engines \$D/bench-root/data \$D/bench-root/target \$D/bench-root/build"
