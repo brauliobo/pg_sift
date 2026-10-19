@@ -120,7 +120,7 @@ because it downloads about 175 MB and needs about 800 bytes of table per row (8 
 The engines are `heap` and `col` (`--col-index` takes the DDL on `hits`; there is none by default). Queries with `ORDER BY ... LIMIT` over ties can differ between plans
 without being wrong: read a `DIFF` of those with the plan.
 
-Baseline (`docs/results/clickbench.json`): PostgreSQL 18.6 with no index, 1,000,000 rows of `hits` (706 MiB), the same host as above (load average 14), one
+Baseline (`docs/results/clickbench.json`, measured on 2026-10-17 at 23:47 local time): PostgreSQL 18.6 with no index, 1,000,000 rows of `hits` (706 MiB), the same host as above (load average 14), one
 backend, 3 runs; the median relative standard error is 1.9% and the worst 17% (Q8). The default of 10,000,000 rows was not run on this host, where the
 work directory is RAM; `heap Minstr` is millions of user-space instructions.
 
@@ -180,7 +180,7 @@ relative standard error of the cells below is 3.4%, the worst 9.7%.
 
 ## Baseline on the generated data
 
-`docs/results/analytics.json`, measured without the sift_col plan (`col` is absent: the build had no access method): PostgreSQL 18.6 on an AMD Ryzen 7 9700X
+`docs/results/analytics.json` (a historical baseline, measured on 2026-10-17 at 23:21 local time and not repeated since; 3.0.0, which ships the `sift_col` access method, is of 2026-10-19), measured without the sift_col plan (`col` is absent: the build had no access method): PostgreSQL 18.6 on an AMD Ryzen 7 9700X
 (8 cores, 188 GiB), 1.2M orders, 3,753,480 items, 4,201,756 metrics, 40,000 stores, tmpfs, one backend, 5 runs, ClickHouse 26.8 with one thread. Every
 `flat` and `ch` result equals the `heap` result (`ok`). `heap/X` is the CPU time of the heap query over the engine's: above 1 the engine is cheaper
 than the application's query on the heap table. `heap Minstr` is the user-space instructions of the `heap` query in millions.
