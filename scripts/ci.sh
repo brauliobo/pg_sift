@@ -2,7 +2,8 @@
 # Single entry point for the test suites, with a pass/fail/skip summary.
 #
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
-#   scripts/ci.sh release [OPTIONS]   the release gate, once per tree (scripts/release.sh, docs/RELEASE.md)
+#   scripts/ci.sh affected [--list|--github] [BASE]   quick, only the jobs the diff against BASE (default origin/main, with the working tree) can break
+#                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first (docs/TEST-TIMES.md)
 #   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
 #
@@ -27,7 +28,8 @@
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
-# SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one). Logs:
+# SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one).
+# SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue. Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
@@ -46,7 +48,6 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
-[[ $MODE == release ]] && exec "$REPO/scripts/release.sh" "${@:2}"
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status (docs/TEST-TIMES.md)
 if [[ $MODE == --times ]]; then
@@ -55,13 +56,69 @@ if [[ $MODE == --times ]]; then
 		{ printf "%-44s %7d %7.1f  %-6s %s\n", $1, $4, $9, $6, $3; w += $4; c += $9 } END { printf "%-44s %7d %7.1f\n", "total", w, c }'
 	exit
 fi
+# ---------- scripts/areas.tsv: the files a change touched -> the jobs it can break (the CI workflow and `affected` share it)
+declare -A GROUP
+ROWS=()
+while IFS=$'\t' read -r k v; do
+	[[ -z $k || $k == '#'* ]] && continue
+	if [[ $k == =* ]]; then GROUP[${k#=}]=$v; else ROWS+=("$k"$'\t'"$v"); fi
+done <"$REPO/scripts/areas.tsv"
+# areas_regex FILE...: the ERE of the job names the files can break; a file no row maps (--selftest finds those) runs every job
+areas_regex() {
+	local f row jobs g n out=() hit
+	for f in "$@"; do
+		hit=
+		for row in "${ROWS[@]}"; do
+			[[ $f =~ ${row%%$'\t'*} ]] || continue
+			jobs=${row#*$'\t'} hit=1
+			for g in "${!GROUP[@]}"; do jobs=${jobs//\{$g\}/(${GROUP[$g]})}; done
+			[[ $jobs == *\\* ]] && for n in 1 2 3; do jobs=${jobs//\\$n/${BASH_REMATCH[$n]-}}; done
+			[[ $jobs == - ]] || out+=("$jobs")
+		done
+		[[ -n $hit ]] || { echo "areas: $f is in no row of scripts/areas.tsv" >&2; out+=(.); }
+	done
+	local IFS='|'
+	echo "^\$${out[*]:+|${out[*]}}"
+}
+# --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in two), full (it is all of it)
+if [[ $MODE == affected ]]; then
+	shift
+	OUT=pick
+	[[ ${1:-} == --list || ${1:-} == --github ]] && { OUT=${1#--}; shift; }
+	BASE=${1:-origin/main}
+	if [[ $BASE == all ]]; then RE=.
+	elif [[ $BASE == --files ]]; then RE=$(areas_regex "${@:2}")   # for tests of the map: the jobs of named files
+	else
+		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
+		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
+		RE=$(areas_regex "${FILES[@]}")
+	fi
+	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
+	PICK=()
+	for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $RE ]] && BATCHES=1; done
+	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
+	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
+	case $OUT in
+		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication; do echo "gh:$f $(flag $f)"; done ;;
+		github)
+			echo "jobs=$RE"
+			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
+			for f in sqlite mariadb replication; do echo "$f=$(flag $f)"; done
+			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
+			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
+		pick) (( ${#PICK[@]} )) || { echo "nothing to run: the diff touches no job"; exit 0; }
+			echo "ci: ${#PICK[@]} of ${#JOBS_ALL[@]} jobs" >&2
+			SIFT_CI_AFFECTED=$RE exec "$0" quick ;;
+	esac
+	exit 0
+fi
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
 	bad=0
 	for pg in 16 17 18; do
 		for m in quick full; do
-			plan=$(env -u SIFT_CI_JOBS SIFT_CI_PG_MAJOR=$pg "$0" --plan $m) || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
+			plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan $m) || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
 			n=0
 			while read -r id suite where cmd; do
 				# a job whose script runs `pgtest.sh install` builds a flavor of its own: before 18 that is the server's library
@@ -74,7 +131,21 @@ if [[ $MODE == --selftest ]]; then
 			(( n )) || { echo "FAIL: PostgreSQL $pg $m: the plan has no job that installs a flavor (the check is void)"; bad=1; }
 		done
 	done
-	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full)"
+	# scripts/areas.tsv: every tracked file is in a row, and every job of the plans (batches of short tests are cut from the tests of the areas) is in a group, so that
+	# neither a file nor a test is left out of the selection; a core file selects everything
+	mapfile -t tracked < <(git -C "$REPO" ls-files)
+	miss=$(areas_regex "${tracked[@]}" 2>&1 >/dev/null) && [[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
+	grouped=$(printf '(%s)|' "${GROUP[@]}")
+	for m in quick full; do
+		while read -r id _; do
+			[[ $id == installcheck-batch* || $id =~ ${grouped%|} ]] || { echo "FAIL: areas: the $m job $id is in no group of scripts/areas.tsv"; bad=1; }
+		done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan $m)
+	done
+	for f in "$REPO"/test/sql/*.sql; do
+		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
+	done
+	[[ $(areas_regex src/core/sift_ops.c) == *'|.' ]] || { echo "FAIL: areas: a core file does not select every job"; bad=1; }
+	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
 	exit $bad
 fi
 PLAN=
@@ -83,7 +154,7 @@ PLAN=
 [[ -n $PLAN ]] || renice -n 19 $$ >/dev/null
 S=$REPO/scripts
 CORES=$(nproc 2>/dev/null || echo 4)
-[[ $(pg_config --version) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
+[[ $(pg_config --version 2>/dev/null) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
 PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 # BUDGET_MB, the scratch the running jobs may need together (estimates below): quick 1200, full 2000, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the
@@ -103,6 +174,7 @@ J_ID=() SUITES=()
 job() {
 	local id=$1
 	[[ -z ${SIFT_CI_JOBS:-} || $id =~ $SIFT_CI_JOBS ]] && [[ ! -v J_SUITE[$id] ]] || return 0   # a job keeps its first place in the queue
+	[[ $id == installcheck-batch* || $id =~ ${SIFT_CI_AFFECTED:-.} ]] || return 0   # affected: the batches are cut from the tests that match (installcheck_batches)
 	J_ID+=("$id")
 	J_SUITE[$id]=$2 J_CLUSTER[$id]=$3
 	[[ " ${SUITES[*]-} " == *" $2 "* ]] || SUITES+=("$2")
@@ -141,6 +213,7 @@ installcheck_batches() {
 	local n=$1 i=0 b=() t
 	shift
 	for t in "$@"; do
+		[[ installcheck-$t =~ ${SIFT_CI_AFFECTED:-.} ]] || continue
 		if grep -qiE 'using sift_table|\<vacuum\>' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
 		b+=("$t")
 		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
@@ -223,7 +296,20 @@ fi
 # SIFT_CI_JOBS names them, e.g. `SIFT_CI_JOBS=assert scripts/ci.sh quick`
 [[ ${SIFT_CI_JOBS:-} != *assert* ]] || job assert assert 0 "$S/assert.sh"
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
-(( LANES <= ${#J_ID[@]} )) || LANES=${#J_ID[@]}
+# SIFT_CI_SHARD=K/N: every Nth job of the queue from the Kth, so that N runners share the pool and each keeps the longest-first order; shard 1 runs
+# the checks of the harness. Before PostgreSQL 18 the jobs that run after the pool (flavor installs, serial) are all the last shard's
+SHARD=1
+if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
+	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
+	for id in "${J_ID[@]}"; do
+		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue
+		else (( n++ % (NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0)) == SHARD - 1 )) || continue; fi
+		KEEP_IDS+=("$id")
+		[[ " ${SUITES[*]-} " == *" ${J_SUITE[$id]} "* ]] || SUITES+=("${J_SUITE[$id]}")
+	done
+	J_ID=("${KEEP_IDS[@]}")
+fi
+(( LANES <= ${#J_ID[@]} )) || LANES=$(( ${#J_ID[@]} > 0 ? ${#J_ID[@]} : 1 ))   # a shard with no job still builds
 if [[ -n $PLAN ]]; then
 	for id in "${J_ID[@]}"; do echo "$id ${J_SUITE[$id]} $([[ -v J_AFTER[$id] ]] && echo after || echo pool) ${J_CMD[$id]}"; done
 	exit 0
@@ -336,25 +422,28 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
-selftest=$!
-step plan-selftest plan-selftest "$S/ci.sh" --selftest &
-plantest=$!
-step portable-core portable-core "$S/check-portable.sh" &
-portable=$!
-step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
-spantest=$!
+HARNESS=(leakcheck-selftest plan-selftest portable-core span-test)
+if (( SHARD == 1 )); then
+	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
+	selftest=$!
+	step plan-selftest plan-selftest "$S/ci.sh" --selftest &
+	plantest=$!
+	step portable-core portable-core "$S/check-portable.sh" &
+	portable=$!
+	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
+	spantest=$!
+else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait "$selftest" "$plantest" "$portable" "$spantest"; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" "$selftest" "$plantest" "$portable" "$spantest"
+wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
@@ -375,7 +464,7 @@ green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
 [[ -t 1 ]] || green= red= off=
 failed=0
 # the suites in the order of the report (a suite not listed follows the others)
-ORDER=(build leakcheck-selftest plan-selftest portable-core span-test)
+ORDER=(build "${HARNESS[@]}")
 for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin soak-col difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
 	[[ " ${SUITES[*]} " != *" $s "* || " ${ORDER[*]} " == *" $s "* ]] || ORDER+=("$s")
 done
