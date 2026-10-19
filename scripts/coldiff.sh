@@ -42,7 +42,7 @@ export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 REL=1e-9 ABS=1e-12
 VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE=
-COL_PATHS='attributes->channel text, attributes->normalized bool, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
+COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
 DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
