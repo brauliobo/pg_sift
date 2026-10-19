@@ -25,7 +25,7 @@ scripts/ci.sh release --keep          keep the scratch directory of every job
 | 2 | `pg17` | `scripts/ci.sh quick` on PostgreSQL 17, in a container |
 | 2 | `race` | `vacuum_count_stress`, `vacuum_count_dead`, `vacuum_count_snapshot`, `vacuum_agg_stress`, `col_vacuum_scan`, `topn_vacuum_scan` |
 | 2 | `gate-bm25` | user instructions per BM25 operation against `RELEASE_BM25_BASE` (`bench/steps/cpu_gate.sh`); a cell above 1.02 fails unless it is in `RELEASE_BM25_ACCEPT` (`session`, `vacuum_nofree`, `idle1_rank`, documented in the README) |
-| 2 | `gate-col` | user instructions per question of the store (`bench/cpu-query.sh`, 100 000 rows) on a `sift_col` index against `RELEASE_COL_REF`; above `RELEASE_COL_MAX` (1.02) fails. The `sift_table` ratios are printed, not judged |
+| 2 | `gate-col` | user instructions per question of the store (`bench/cpu-query.sh`, 100 000 rows) on a `sift_col` index against `RELEASE_COL_REF` (`baab1a2` for 3.0); above `RELEASE_COL_MAX` (1.15) fails, between 1.02 and 1.15 is printed as `accepted: size work`. The `sift_table` ratios are printed, not judged (the grouped scan on `title` is 1.209 on purpose) |
 | 2 | `fuzz` | 60 s each of the column chunk and BM25 decoders (`scripts/fuzz.sh colchunk bm25`) |
 | 2 | `coldiff` | the aggregate pushdown against PostgreSQL's own plan: the distinct, pre-aggregate, top-N, search, set and table fixtures with every scenario |
 | 2 | `sqlite`, `mariadb` | the shared core still builds and answers in the two hosts (smoke only; MariaDB one series) |
@@ -41,6 +41,12 @@ The base of 3.0 was gated in full. What changed since is the aggregate source an
 the source), the BM25 visibility paths, the column format (minor 3), the build layout (rename, folders) and the test and bench scripts. The
 jobs are the ones that fail when one of these breaks: the quick suites on three builds, the races, the two instruction gates (which do not
 depend on the load of the host), the decoders whose format moved, the differential test of what was pushed down, the upgrade of what is on disk.
+
+## Why the column gate allows 1.15
+
+Compressed dictionaries and the column format minor 3 trade some CPU for size, and the user accepted that for CPU-bound questions. A `sift_col`
+question up to 1.15 of the reference is therefore printed, not failed; anything above needs a cause. The BM25 gate keeps 1.02: the BM25
+format did not change.
 
 ## Failures
 
@@ -63,5 +69,5 @@ under `$RELEASE_TMP` (default `/tmp`) and removed at the end except the logs, wh
 runs, repeated runs of flaky tests, the full SQLite and MariaDB suites, and the timed benchmarks (`bench/analytics --final`).
 
 Environment: `RELEASE_BM25_BASE` (544ddf0, the main the 3.0 branch started from), `RELEASE_BM25_ACCEPT`, `RELEASE_COL_REF` (a gated ref;
-default the head of the newest stamp), `RELEASE_COL_MAX`, `RELEASE_OLD` (v2.0.3), `RELEASE_MINOR2` (46008df), `RELEASE_MARIADB_SERIES` (11.8),
+default the head of the newest stamp), `RELEASE_COL_MAX` (1.15), `RELEASE_COL_NOTE` (1.02), `RELEASE_OLD` (v2.0.3), `RELEASE_MINOR2` (46008df), `RELEASE_MARIADB_SERIES` (11.8),
 `RELEASE_TMP`, `SIFT_PORT` (first port, 56130).
