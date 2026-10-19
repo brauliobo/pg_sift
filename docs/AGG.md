@@ -65,6 +65,15 @@ Each result is materialized in a temporary table and compared by `coldiff.compar
 - a query that raises an error (a cast, an integer or float overflow) must raise an error with the **same SQLSTATE** in every variant (the
   message may name another row's value); such a file says `-- error: yes`, and a reference run that fails otherwise is a failure.
 
+A per-order aggregate (`avg(x)`, `sum(x)` of a float under an outer aggregate) adds the elements of one order from the first to the last, in
+double, and divides by their number: the value PostgreSQL gets when its plan feeds the rows of an order in the order of the array (a hash
+aggregate over the unnest). PostgreSQL's own plans do not agree among themselves on the last digits: a plan that sorts by the order and the key
+adds equal keys in the order of its sort, which is not stable. A condition on the average (`avg >= 9`) that holds exactly for a sum of decimals
+(8.7 + 9.0 + 9.3 over three) can then count a few more or fewer orders in one plan than in another (three of 100 000 orders, between the two
+arms of one query on the normal plan), whatever the scan does: the scan's count is the one of the first-to-last order. A threshold that must
+be reproducible does not rest on the last digit of a float sum: the values are integers (their sums are exact) or the condition
+leaves a margin.
+
 A result that differs always fails (exit 1) and prints the first differing rows of both. Nothing is silenced: a query without a result
 (an error the runner did not expect) fails too.
 
@@ -105,8 +114,8 @@ same-element filter as `EXISTS`, `@>` and `jsonb_path_exists`), flat aggregates 
 `CASE`, `IS [NOT] NULL`, `FILTER`, `HAVING`, grouping by expressions), NULL-heavy documents and empty sets, a BM25 match with an aggregate,
 a prepared statement with a generic plan, `numeric(p, s)` columns (predicates against constants of every precision, NaN and the infinities, keys, expressions, distinct counts), generic aggregates (`g_*`: the variance family, `DISTINCT` forms over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine) with their traps (a volatile transition function, a float read into text with `-0`), and the traps: numeric division, products past 38 digits and float8 casts, `random()` in the qual and in the aggregate, `sum(int4)` and `sum(int8)` past
 the type, integer, float and cast errors, NaN, infinities and `-0`, `sum(float4)`, text `min`/`max` under a non-C collation, JSON values
-that are not numbers, window functions, `DISTINCT ON`, outer joins, a set-returning function in the select
-list, `TABLESAMPLE`, `FOR UPDATE`, a partitioned table and `SERIALIZABLE`.
+that are not numbers, `DISTINCT ON`, outer joins, a set-returning function in the select
+list, window functions over the aggregate (`w_*`), `TABLESAMPLE`, `FOR UPDATE`, a partitioned table and `SERIALIZABLE`.
 
 ### Scenarios
 

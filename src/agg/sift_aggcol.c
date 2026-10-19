@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 
 #include "sift_aggkern.h"
+#include "sift_aggpre.h"
 #include "sift_aggsel.h"
 #include "sift_popcount.h"
 #include "sift_col.h"
@@ -48,8 +49,7 @@ typedef struct ColSource
 	int			nspred;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
-	MemoryContext pcx;			/* the histogram of the last unit_hist */
-	SiftSrcDict hdict;			/* its dictionary */
+	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 } ColSource;
 
 #define COL_MAX_STR_PRUNE	16
@@ -225,6 +225,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->nunits = meta->stats.nunits;
 	st->bytes = meta->stats.bytes;
 	st->allvisible_frac = meta->stats.allvisible_frac;
+	st->exact_frac = st->allvisible_frac;
 	leaf_stats(meta, sift_col_leaf_stats(index), st);
 }
 
@@ -241,6 +242,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
 	sift_aggsel_init(&src->sel, mcxt);
+	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
 }
@@ -979,18 +981,8 @@ col_preagg(Relation index, SiftSrcPreagg *pa)
 {
 	SiftCPaggSpec spec;
 
-	pa->aggs = true;
 	sift_col_pagg_spec(index, &spec);
-	if (spec.off)
-		return;
-	for (int d = 0; d < spec.ndims; d++)
-	{
-		pa->dim[pa->ndims].leaf = spec.dim[d].leaf;
-		pa->dim[pa->ndims].nmeas = spec.dim[d].nmeas;
-		for (int m = 0; m < spec.dim[d].nmeas; m++)
-			pa->dim[pa->ndims].meas[m] = spec.dim[d].meas[m];
-		pa->ndims++;
-	}
+	sift_aggpre_spec(&spec, pa);
 }
 
 static bool
@@ -1003,69 +995,16 @@ static bool
 col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
 	ColSource  *src = impl;
-	const SiftColDef *def = sift_col_def(src->cs, leaf);
-	SiftCAgg	a;
 
-	if (!sift_col_unit_agg(&src->unit, leaf, &a))
-		return false;
-	memset(agg, 0, sizeof(*agg));
-	agg->nvals = a.nvals;
-	agg->nnull = a.nnull;
-	agg->has_nan = (a.zflags & SIFT_COLZ_NAN) != 0;
-	agg->is_const = (a.zflags & SIFT_COLZ_CONST) != 0;
-	agg->has_minmax = a.nnull < a.nvals && def->store != SIFT_COLS_STR && !(a.zflags & SIFT_COLZ_INLINE);
-	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)
-	{
-		agg->min_f = sift_col_f8_from_key(a.min);
-		agg->max_f = sift_col_f8_from_key(a.max);
-		agg->sum_f = a.sum_f;
-	}
-	else
-	{
-		agg->min = a.min;
-		agg->max = a.max;
-	}
-	if (a.has_sums)
-	{
-		agg->has_sums = !(a.zflags & SIFT_COLZ_OVERFLOW);
-		agg->has_sumsq = !(a.flags & SIFT_CAGG_SUMSQ_OVF);
-		agg->sum = a.sum;
-		agg->sumsq = a.sumsq;
-	}
-	return true;
+	return sift_aggpre_unit_agg(&src->unit, leaf, sift_col_def(src->cs, leaf), agg);
 }
 
 static bool
 col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	ColSource  *src = impl;
-	SiftCHistDim d;
-	SiftColDict dict;
 
-	if (src->pcx == NULL)
-		src->pcx = AllocSetContextCreate(src->cxt, "sift_aggcol histogram", ALLOCSET_DEFAULT_SIZES);
-	MemoryContextReset(src->pcx);
-	if (!sift_col_unit_hist(&src->unit, dim, src->pcx, &d, &dict))
-		return false;
-	memset(h, 0, sizeof(*h));
-	h->ngroups = d.ngroups;
-	h->has_null = d.has_null;
-	h->key = d.key;
-	h->count = d.count;
-	h->nmeas = d.nmeas;
-	for (int m = 0; m < d.nmeas; m++)
-	{
-		h->meas[m] = d.meas[m];
-		h->nn[m] = d.nn[m];
-		h->sum[m] = d.sum[m];
-		h->sumf[m] = d.sumf[m];
-	}
-	if (sift_col_def(src->cs, dim)->store == SIFT_COLS_STR)
-	{
-		src->hdict = (SiftSrcDict) {(const void *) (uintptr_t) dict.id, dict.n, dict.off, dict.bytes};
-		h->dict = &src->hdict;
-	}
-	return true;
+	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim), NULL, h);
 }
 
 static const SiftSrcProvider col_provider = {

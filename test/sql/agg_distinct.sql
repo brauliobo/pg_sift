@@ -1,0 +1,62 @@
+-- SELECT DISTINCT as a group-by with no aggregate: the distinct stage of the planner takes the SiftAgg path. Every query runs with and without
+-- the pushdown; the results must be the same. DISTINCT ON picks rows and a window function runs above the grouping: those keep their plan; the
+-- DISTINCT of a grouped query stays above the grouping, which is the scan's.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+
+CREATE TABLE ds (id int, g int, k text, d date, n int, v numeric(10,2), c int);
+INSERT INTO ds SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'k' || i % 5 END, date '2024-01-01' + i % 400, i % 100, (i % 977) / 7.0,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE i % 300 END FROM generate_series(1, 20000) i;
+CREATE INDEX ds_col ON ds USING sift_col (id, g, k, d, n, v, c);
+CREATE TABLE ds_dim (g int, name text);
+INSERT INTO ds_dim SELECT i, 'g' || i % 3 FROM generate_series(0, 6) i;
+VACUUM ANALYZE ds;
+
+CREATE FUNCTION agg_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION agg_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE agg_q (q text);
+INSERT INTO agg_q VALUES
+	('SELECT DISTINCT g FROM ds'),
+	('SELECT DISTINCT k FROM ds'),
+	('SELECT DISTINCT g, k FROM ds'),
+	('SELECT DISTINCT g, k, c FROM ds WHERE n > 90'),
+	('SELECT DISTINCT date_trunc(''month'', d) FROM ds'),
+	('SELECT DISTINCT date_trunc(''month'', d), upper(k), g % 3 FROM ds WHERE v > 20'),
+	('SELECT DISTINCT c IS NULL, k IS NULL, g FROM ds'),
+	('SELECT DISTINCT k FROM ds WHERE id < 0'),
+	('SELECT DISTINCT n, c FROM ds WHERE n < 10 AND c IS NOT NULL'),
+	('SELECT DISTINCT g, k FROM ds ORDER BY g DESC, k NULLS FIRST LIMIT 7'),
+	('SELECT count(*) FROM (SELECT DISTINCT c FROM ds) t'),
+	('SELECT count(*), count(k) FROM (SELECT DISTINCT g, k FROM ds) t'),
+	('SELECT DISTINCT m.name, ds.k FROM ds JOIN ds_dim m ON m.g = ds.g'),
+	('SELECT DISTINCT g FROM ds WHERE k IN (''k1'', ''k2'') OR c = 5'),
+	('SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k'),
+	('SELECT DISTINCT g, count(*) FROM ds GROUP BY g, k'),
+	('SELECT DISTINCT g, rank() OVER (ORDER BY g) FROM ds');
+
+SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM agg_q) z ORDER BY query COLLATE "C";
+
+SET sift.enable_agg = on;
+EXPLAIN (COSTS OFF) SELECT DISTINCT g, k FROM ds;
+EXPLAIN (COSTS OFF) SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k;
+
+DROP TABLE ds, ds_dim, agg_q;
+DROP FUNCTION agg_rows, agg_pushed;
+DROP EXTENSION pg_sift;

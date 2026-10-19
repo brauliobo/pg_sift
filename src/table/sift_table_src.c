@@ -9,6 +9,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "catalog/pg_statistic.h"
@@ -16,14 +18,17 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/bitmapset.h"
+#include "pgstat.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "sift_aggkern.h"
+#include "sift_aggpre.h"
 #include "sift_aggsel.h"
 #include "sift_col.h"
 #include "sift_col_am.h"
+#include "sift_col_pagg.h"
 #include "sift_col_seg.h"
 #include "sift_colsrc.h"
 #include "sift_table.h"
@@ -34,6 +39,7 @@ typedef struct TblLeafBuf
 	size_t		cap;			/* elements the buffers hold */
 	void	   *data;
 	uint8	   *isnull;
+	uint64	   *ovf;			/* numeric leaves: the NaNs of the table, which the columns cannot hold */
 } TblLeafBuf;
 
 /* The source of one column layout */
@@ -42,6 +48,7 @@ typedef struct TblPart
 	SiftColSource *src;
 	const SiftColSchema *schema;
 	int		   *col;			/* [nleaves] the leaf of this schema that holds layout leaf i, -1 when it has none (a column added later) */
+	int		   *leaf_of_col;	/* [schema->ncols] the layout leaf a leaf of this schema holds, -1 when the table dropped it */
 	SiftColUnit unit;			/* the head of this source's units, valid when have */
 	bool		have;
 } TblPart;
@@ -67,6 +74,7 @@ typedef struct TblSource
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
 	TblLeafBuf *buf;			/* per leaf */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
+	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 } TblSource;
 
 static bool
@@ -131,6 +139,23 @@ tbl_layout(Relation rel)
 	return lay;
 }
 
+/*
+ * The share of the superblocks whose stored units may answer from their pre-aggregates, those with no write buffer row and no tombstone (tbl_sb_mask),
+ * estimated without reading either: a write buffer holds the superblocks of its vblock range, and each dead row the statistics count (a delete or an update
+ * leaves one tombstone) is in one superblock, so d of them touch nsb * (1 - exp(-d / nsb)) of the nsb superblocks.
+ */
+static double
+exact_share(Relation rel, SiftTblRel *st, double nsb)
+{
+	PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(rel));
+	double		dead = tab ? Max((double) tab->dead_tuples, 0.0) : 0.0,
+				wbuf = 0.0;
+
+	for (int i = 0; i < st->nwbuf; i++)
+		wbuf += ceil((double) st->wbuf[i].vcap / SIFT_SB_PAGES);
+	return Max(0.0, 1.0 - (wbuf + nsb * (1.0 - exp(-dead / nsb))) / nsb);
+}
+
 static void
 tbl_stats(Relation rel, SiftSrcStats *st)
 {
@@ -140,6 +165,7 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
 	st->nunits = SIFT_TBL_NEXT_VBLOCK(&sift_tbl_rel(rel)->dir.meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
+	st->exact_frac = exact_share(rel, sift_tbl_rel(rel), st->nunits);
 	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
 	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
 	{
@@ -199,8 +225,14 @@ part_open(TblSource *t, TblPart *p, const SiftColSchema *schema, const SiftColSc
 	p->schema = schema;
 	p->src = sift_col_open_table(t->rel, schema, t->dir, vis, sbs, t->cxt);
 	p->col = palloc(t->lay->nleaves * sizeof(int));
+	p->leaf_of_col = palloc(schema->ncols * sizeof(int));
+	memset(p->leaf_of_col, -1, schema->ncols * sizeof(int));
 	for (int i = 0; i < t->lay->nleaves; i++)
+	{
 		p->col[i] = part_col(p, &cur->cols[i]);
+		if (p->col[i] >= 0)
+			p->leaf_of_col[p->col[i]] = i;
+	}
 }
 
 static void *
@@ -219,6 +251,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->snapshot = RegisterSnapshot(snapshot);
 	t->last = -1;
 	sift_aggsel_init(&t->sel, mcxt);
+	sift_aggpre_init(&t->pre, mcxt);
 	sift_tbl_refresh(heap, st);
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
@@ -365,10 +398,13 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 		{
 			pfree(b->data);
 			pfree(b->isnull);
+			if (b->ovf)
+				pfree(b->ovf);
 		}
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(t->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(t->cxt, b->cap);
+		b->ovf = t->lay->leaf[leaf].typid == NUMERICOID ? MemoryContextAlloc(t->cxt, (b->cap / 64 + 1) * sizeof(uint64)) : NULL;
 	}
 	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
@@ -443,29 +479,22 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 		vec->dict = absent_dict(t, leaf, d);
 }
 
+/* The engine's vector of a leaf as the executor's, in the leaf's buffers */
 static void
-tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 {
-	TblSource  *t = impl;
-	TblPart    *p = unit->priv;
+	const SiftColVec v = *vp;
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
-	SiftColVec	v;
 	TblLeafBuf *b;
-	size_t		n;
+	size_t		n = v.n;
 
-	if (p->col[leaf] < 0)
-	{
-		read_absent(t, leaf, unit->nrow, vec);
-		return;
-	}
-	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
-	n = v.n;
-	if (v.ovf)
+	b = leaf_buf(t, leaf, l->vtype, n);
+	/* the only value a numeric(p <= 18, s) column cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+	if (v.ovf && b->ovf == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift: a column of the aggregate scan holds values its column group cannot store"),
 				 errhint("Set sift.enable_agg to off for this query.")));
-	b = leaf_buf(t, leaf, l->vtype, n);
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -484,12 +513,120 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
+	if (v.ovf)
+	{
+		memcpy(b->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = b->ovf;
+	}
 	if (v.nulls)
 	{
 		for (size_t i = 0; i < n; i++)
 			b->isnull[i] = sift_colsrc_bit(v.nulls, i);
 		vec->isnull = b->isnull;
 	}
+}
+
+static void
+tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftColVec	v;
+
+	if (p->col[leaf] < 0)
+	{
+		read_absent(t, leaf, unit->nrow, vec);
+		return;
+	}
+	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
+	fill_vec(t, leaf, &v, vec);
+}
+
+/* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
+
+static uint32 *
+stored_ords(TblSource *t, const uint32 *rows, int n)
+{
+	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
+
+	for (int i = 0; i < n; i++)
+		ords[i] = t->sel.keep && t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
+	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
+	return ords;
+}
+
+static void
+tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	uint32	   *ords = stored_ords(impl, rows, n);
+
+	sift_col_row_tids(&((TblPart *) unit->priv)->unit, ords, n, tids);
+	pfree(ords);
+}
+
+/* A segment written before the column has no bound for it: the unit is never skipped by it */
+static void
+tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	TblPart    *p = unit->priv;
+	SiftColZone cz;
+
+	if (p->col[leaf] < 0)
+	{
+		*z = (SiftSrcZone) {.nvals = unit->nrow,.inexact = true};
+		return;
+	}
+	sift_col_zone(&p->unit, p->col[leaf], &cz);
+	*z = (SiftSrcZone) {.min = cz.min,.max = cz.max,.nvals = cz.nvals,.nnull = cz.nnull,.inexact = cz.has_ovf};
+}
+
+/*
+ * The zones of the stored units of the superblocks [lo, hi) together, from the segment headers of every column layout; a layout without the
+ * column, and the write buffer rows (read whole), have no bound.
+ */
+static uint32
+tbl_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	TblSource  *t = impl;
+	uint32		units = 0;
+
+	*z = (SiftSrcZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
+	for (int k = 0; k < t->nparts; k++)
+	{
+		const TblPart *p = &t->part[k];
+		SiftColZone cz;
+
+		units += sift_col_zone_range(p->src, Max(p->col[leaf], 0), lo, hi, &cz);
+		z->inexact |= cz.has_ovf || p->col[leaf] < 0;
+		z->nvals += cz.nvals;
+		z->nnull += cz.nnull;
+		if (cz.nnull < cz.nvals)
+		{
+			z->min = Min(z->min, cz.min);
+			z->max = Max(z->max, cz.max);
+		}
+	}
+	z->inexact |= hi > t->wbuf_lo && lo <= t->wbuf_hi;
+	return units;
+}
+
+static void
+tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	uint32	   *ords;
+	SiftColVec	v;
+
+	if (p->col[leaf] < 0)
+	{
+		read_absent(t, leaf, n, vec);
+		return;
+	}
+	ords = stored_ords(t, rows, n);
+	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
+	fill_vec(t, leaf, &v, vec);
+	pfree(ords);
 }
 
 static void
@@ -536,6 +673,42 @@ tbl_counters(const void *impl, SiftSrcCounters *c)
 	c->units_pruned += t->sel.units_skipped;
 }
 
+/* ---- pre-aggregates: the sidecar every stored unit carries (docs/COL-PREAGG.md), answered while its superblock is plain and the unit clean ---- */
+
+static void
+tbl_preagg(Relation rel, SiftSrcPreagg *pa)
+{
+	SiftCPaggSpec spec;
+
+	/* the segments are written with the default spec of their layout, whose columns are the leaves of the table's */
+	sift_cpagg_spec_default(sift_tbl_layout_schema(rel, sift_tbl_rel(rel)), &spec);
+	sift_aggpre_spec(&spec, pa);
+}
+
+static bool
+tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_col_unit_preagg_ok(&((TblPart *) unit->priv)->unit);
+}
+
+/* a segment of an older layout may lack the column: the unit is scanned, and the scan reads the catalog's default for it */
+static bool
+tbl_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	TblPart    *p = unit->priv;
+
+	return p->col[leaf] >= 0 && sift_aggpre_unit_agg(&p->unit, p->col[leaf], &p->schema->cols[p->col[leaf]], agg);
+}
+
+static bool
+tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	TblPart    *p = unit->priv;
+
+	return p->col[dim] >= 0 &&
+		sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, p->col[dim], &p->schema->cols[p->col[dim]], p->leaf_of_col, h);
+}
+
 static const SiftSrcProvider tbl_provider = {
 	.owns_index = tbl_owns_index,
 	.owns_table = tbl_owns_table,
@@ -553,6 +726,14 @@ static const SiftSrcProvider tbl_provider = {
 	.vet_needed = tbl_vet_needed,
 	.counters = tbl_counters,
 	.select = tbl_select,
+	.tids = tbl_tids,
+	.zone = tbl_zone,
+	.zone_range = tbl_zone_range,
+	.read_rows = tbl_read_rows,
+	.preagg = tbl_preagg,
+	.unit_exact = tbl_unit_exact,
+	.unit_agg = tbl_unit_agg,
+	.unit_hist = tbl_unit_hist,
 };
 
 void
