@@ -1994,12 +1994,13 @@ sift_tbl_group_live_rows(Relation rel, SiftTblRel *st)
  * than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed write buffer and ran out of
  * the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came. A load in one transaction cannot settle, and from half the directory
  * on its write buffers become tagged groups (seg_class) that merge like the others, so it does not run out of them either.
- * Everything here is under the maintenance lock, taken only if it is free: the steps are VACUUM's too.
+ * Everything here is under the maintenance lock, taken only if it is free (wait: an insert that finds the directory full waits for it, as for
+ * a worker that is promoting what it needs): the steps are VACUUM's too.
  */
 void
-sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest)
+sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait)
 {
-	if (!sift_maint_lock(rel, false))
+	if (!sift_maint_lock(rel, wait))
 		return;
 	(void) promote_sealed(rel, st, oldest, false);
 	(void) sift_tbl_freeze_groups(rel, st, oldest);
