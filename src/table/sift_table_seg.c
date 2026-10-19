@@ -104,11 +104,21 @@ layout_build(Relation rel, MemoryContext cxt)
 	return l;
 }
 
-/* The column format minor a table's groups are written in: the version section of an unfrozen group is minor 4 whatever sift.col_format_minor says for sift_col indexes */
+/* The column format minor of a group: sift.col_format_minor, but the version section of a group with unfrozen rows is minor 4 whatever it says */
 static int
-tbl_col_format(void)
+tbl_col_format(bool vers)
 {
-	return Max(sift_col_format_minor, SIFT_COL_FORMAT_VERS);
+	return vers ? Max(sift_col_format_minor, SIFT_COL_FORMAT_VERS) : sift_col_format_minor;
+}
+
+/* Whether a merge of the n segments of sel can carry rows that are not final: a version section, or a group tagged with its writer by 3.0.1 */
+static bool
+any_vers(const SiftSegEntry *sel, int n)
+{
+	for (int i = 0; i < n; i++)
+		if ((sel[i].flags & SIFT_SEG_VERS) || (sel[i].format < SIFT_COL_FORMAT_VERS && sel[i].reserved != 0))
+			return true;
+	return false;
 }
 
 /* The compression policy of each leaf under sift.table_compression now (a setting of the backend that writes the segment) */
@@ -1560,6 +1570,7 @@ typedef struct SealWriter
 	SiftWriteTarget *wt;
 	SiftColSegWriter *w;
 	uint64		expect;			/* bytes the segment will take at most (the write buffer pages): free runs shorter than a 256th are reused */
+	int			format;			/* the column format minor of the group */
 } SealWriter;
 
 static void
@@ -1573,7 +1584,7 @@ seal_flush(SealWriter *sw)
 		{
 			sw->wt = sift_wt_begin(sw->rel, SIFT_WRITE_SHARED);
 			sift_wt_expect(sw->wt, sw->expect);
-			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, tbl_col_format(), sw->cxt);
+			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, sw->format, sw->cxt);
 		}
 		sift_colw_add(sw->w, sw->batch);
 	}
@@ -1585,14 +1596,14 @@ seal_flush(SealWriter *sw)
  * (the group then has unfrozen rows); the write buffer pages are released with the switch
  */
 static void
-seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *seg, TransactionId oldest, bool vacuum)
+seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *seg, TransactionId oldest, bool vacuum, bool vers)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
 	TupleDesc	desc = RelationGetDescr(rel);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table promote", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table promote row", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, (uint64) seg->npages * BLCKSZ};
+	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, (uint64) seg->npages * BLCKSZ, tbl_col_format(vers)};
 	FateMemo	memo = {0};
 	PGAlignedBlock copy;
 	Datum	   *values = palloc(desc->natts * sizeof(Datum));
@@ -1662,6 +1673,7 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 {
 	int			promoted = 0;
 	SiftDirSnapshot *dir;
+	SegClass	class;
 	bool		pressure;
 
 	sift_tbl_refresh(rel, st);
@@ -1676,9 +1688,10 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 		if (e->kind != SIFT_SEG_WBUF_SEALED || !(e->flags & SIFT_TBL_SEG_WBUF))
 			continue;
 		sift_tbl_seg_load(rel, &seg);
-		if (seg_class(rel, &seg, oldest, vacuum, pressure) == SEG_WAIT)
+		class = seg_class(rel, &seg, oldest, vacuum, pressure);
+		if (class == SEG_WAIT)
 			continue;
-		seal_segment(rel, st, e, &seg, oldest, vacuum);
+		seal_segment(rel, st, e, &seg, oldest, vacuum, class == SEG_UNFROZEN);
 		promoted++;
 	}
 	pfree(dir);
@@ -2103,7 +2116,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 			return false;
 	if (n == 0)
 		return false;
-	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, sel, n, tbl_col_format(), merge_freeze, &fin);
+	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, sel, n, tbl_col_format(any_vers(sel, n)), merge_freeze, &fin);
 	sift_tbl_refresh(rel, st);
 	return true;
 }
@@ -2119,7 +2132,7 @@ sift_tbl_rewrite(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 
 	if (schema_of(rel, st, e)->hash != l->schema->hash)
 		return false;
-	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, e, 1, tbl_col_format(), NULL, NULL);
+	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, e, 1, tbl_col_format(any_vers(e, 1)), NULL, NULL);
 	sift_tbl_refresh(rel, st);
 	return true;
 }
@@ -2290,7 +2303,7 @@ sift_tbl_bulk_begin(Relation rel, SiftTblRel *st)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftTblBulk *b = palloc0(sizeof(SiftTblBulk));
 
-	b->sw = (SealWriter) {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, 0};
+	b->sw = (SealWriter) {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, 0, tbl_col_format(false)};
 	b->st = st;
 	b->desc = RelationGetDescr(rel);
 	b->rowcx = AllocSetContextCreate(cx, "sift_table rewrite row", ALLOCSET_SMALL_SIZES);

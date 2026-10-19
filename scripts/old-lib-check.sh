@@ -15,14 +15,14 @@
 # Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
 # to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, or no testing build).
 #
-# SIFT_OLD_REF (default release/3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
+# SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
 # the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
 # for scripts/pgtest.sh (`run`), ROWS (rows of a table, default 40000), KEEP=1 (keep the cluster of `run`).
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 PG="$REPO/scripts/pgtest.sh"
-OLD_REF=${SIFT_OLD_REF:-release/3.0.1}
+OLD_REF=${SIFT_OLD_REF:-v3.0.1}
 ROWS=${ROWS:-40000}
 FORMAT_ERROR='on-disk format 1\.3|column format 1\.4'
 FAILED=0
@@ -118,14 +118,15 @@ run() {
 	[[ $("$PG" psql -X -qAt -d postgres -c "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'") == 1 ]] ||
 		skip "the build under test is not the testing build (sift.table_max_segments)"
 	"$PG" psql -X -qAt -d postgres -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION pg_sift_test" >/dev/null
-	"$PG" psql -X -qAt -d postgres -c "CREATE TABLE ctl (id int, v text) USING sift_table" -c "INSERT INTO ctl SELECT g, 'c' || g FROM generate_series(1, 1000) g" \
+	# sift.col_format_minor = 3: the files a 3.0.x library reads (the default minor 4 writes the type tags it does not know)
+	"$PG" psql -X -qAt -d postgres -c "SET sift.col_format_minor = 3" -c "CREATE TABLE ctl (id int, v text) USING sift_table" -c "INSERT INTO ctl SELECT g, 'c' || g FROM generate_series(1, 1000) g" \
 		-c "VACUUM ctl" >/dev/null
 	load_table unf
 	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf') > 0") == t ]]; then pass "the loop left a table with unfrozen groups"
 	else fail "the loop left a table with unfrozen groups"; echo "tables not written by the new write path: nothing to refuse"; return 1; fi
 	load_table unf_v
 	load_table unf_f
-	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "VACUUM (FULL) unf_f" >/dev/null
+	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "SET sift.col_format_minor = 3" -c "VACUUM (FULL) unf_f" >/dev/null
 	"$PG" stop >/dev/null || { fail "the cluster stops cleanly"; return 1; }
 	data=$SIFT_TMP/data
 	# the cluster is stopped: the socket directory and the port are free for the older server

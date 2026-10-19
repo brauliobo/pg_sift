@@ -118,7 +118,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "CREATE TABLE colt (id int, grp int, v numeric(10,2))" \
 		"INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
 		"SET sift.col_format_minor = 3" "CREATE INDEX colt_col ON colt USING sift_col (id, grp, v)" >/dev/null
-	# a sift_table written by 3.0
+	# a sift_table with the 3.0 column minor (the files of the real 3.0 library are read in old_lib_refusal.sh)
 	q life upg "SET sift.col_format_minor = 3" "CREATE TABLE tbl (id int, grp int, v numeric(10,2)) USING sift_table" \
 		"INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" "VACUUM tbl" >/dev/null
 	TBLQ="SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM tbl"
