@@ -978,7 +978,26 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 	return nout;
 }
 
-/* A fetch scan serving the TID fetches while the directory and the xmin of the backend (which keeps the segments from being recycled) stay */
+/*
+ * Do the segments of the fetch scan stay readable? The xmin it was begun with keeps them from being recycled. A newer xmin (every
+ * transaction that wrote moves it) keeps them only if the directory has not changed since: a segment leaves the directory before it
+ * is recycled, and what a later change removes cannot be recycled before this xmin goes.
+ */
+static bool
+fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
+{
+	if (!TransactionIdIsValid(TransactionXmin) || c->fetch_version != st->dir.version)
+		return false;
+	if (c->fetch_xmin != TransactionXmin)
+	{
+		if (c->fetch_version != sift_dir_version(rel))
+			return false;
+		c->fetch_xmin = TransactionXmin;
+	}
+	return true;
+}
+
+/* A fetch scan serving the TID fetches while the directory stays, and the xmin of the backend keeps the segments from being recycled */
 static SiftTblGroupScan *
 fetch_scan(Relation rel, SiftTblRel *st)
 {
@@ -986,7 +1005,7 @@ fetch_scan(Relation rel, SiftTblRel *st)
 
 	if (c == NULL)
 		c = st->gcache = MemoryContextAllocZero(st->cxt, sizeof(*c));
-	if (c->fetch && (c->fetch_version != st->dir.version || c->fetch_xmin != TransactionXmin || !TransactionIdIsValid(TransactionXmin)))
+	if (c->fetch && !fetch_kept(rel, st, c))
 	{
 		sift_tbl_gscan_end(c->fetch);
 		c->fetch = NULL;
