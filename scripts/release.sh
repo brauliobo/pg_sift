@@ -140,6 +140,7 @@ job_pg17() {
 job_race() {
 	export SIFT_TMP=$W/race SIFT_TESTING=1
 	local t
+	nice scripts/pgtest.sh install >/dev/null || return 1
 	for t in vacuum_count_stress vacuum_count_dead vacuum_count_snapshot vacuum_agg_stress col_vacuum_scan topn_vacuum_scan; do
 		scripts/pgtest.sh tap "$t" || return 1
 	done
