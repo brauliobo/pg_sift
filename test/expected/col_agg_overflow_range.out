@@ -1,0 +1,162 @@
+-- SiftAgg over number leaves (int2, int4, int8, float4, float8 paths, a numeric(p, s) column) when a value is out of the range the leaf declares: a
+-- JSON number too big for its path type is the shredder's overflow like a string, and the index cannot read it. A query that reads such a leaf keeps
+-- the normal plan, so that it gives the normal plan's rows (the rows its WHERE leaves out) or its error (a row that reaches the value); a query that
+-- reads the other leaves, and a numeric column whose sums outgrow 64 bits, stay on the scan. Every query runs with and without the pushdown.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE r_t (id int PRIMARY KEY, amt numeric(18, 2), doc jsonb) WITH (autovacuum_enabled = false);
+-- from the row 1000 on: 70000 in the int2 path, 5000000000 in the int4 path, 1e30 in the int8 path, 1e300 in the float4 path, 1e400 in the float8 path
+INSERT INTO r_t
+SELECT i, 9999999999999999.99 - i % 7,
+       jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                       'h', CASE WHEN i >= 1000 AND i % 50 = 0 THEN 70000 ELSE j % 100 END,
+                                                                       'n', CASE WHEN i >= 1000 AND i % 60 = 0 THEN 5000000000 ELSE j % 100 END,
+                                                                       'b', CASE WHEN i >= 1000 AND i % 70 = 0 THEN 1e30::numeric ELSE j % 100 END,
+                                                                       'f', CASE WHEN i >= 1000 AND i % 80 = 0 THEN 1e300::numeric ELSE (j % 100) / 4.0 END,
+                                                                       'd', CASE WHEN i >= 1000 AND i % 90 = 0 THEN ('1' || repeat('0', 400))::numeric ELSE (j % 100) / 4.0 END))
+                                       FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 5000) i;
+CREATE INDEX r_t_col ON r_t USING sift_col (id, amt, doc) WITH (paths = 'doc.lines[]{k text, h int2, n int4, b int8, f float4, d float8}');
+VACUUM (FREEZE, ANALYZE) r_t;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- the rows with and without the pushdown are the same (and not empty)
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0;
+END $$;
+-- the error of the query with and without the pushdown is the same (and there is one)
+CREATE FUNCTION same_error(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE e_on text; e_off text;
+BEGIN
+	SET sift.enable_agg = on;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN e_on := SQLSTATE || ' ' || SQLERRM; END;
+	SET sift.enable_agg = off;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN e_off := SQLSTATE || ' ' || SQLERRM; END;
+	RESET sift.enable_agg;
+	RETURN e_on IS NOT NULL AND e_on = e_off;
+END $$;
+CREATE FUNCTION lines_q(leaf text, typ text, sel text, filter text DEFAULT 'true', grp text DEFAULT 'l.k') RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT %s FROM r_t t, jsonb_to_recordset(t.doc -> ''lines'') AS l(k text, %s %s) WHERE %s GROUP BY %s', sel, leaf, typ, filter, grp)
+$$;
+-- every path with a value out of its range: the rows of the clean ones read by the normal plan, and its error for the rest
+SELECT pushed(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS int2_pushed, same(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS int2_same,
+       same_error(lines_q('h', 'int2', 'l.k, sum(l.h)')) AS int2_error;
+ int2_pushed | int2_same | int2_error 
+-------------+-----------+------------
+ f           | t         | t
+(1 row)
+
+SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)', 't.id < 1000')) AS int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)', 't.id < 1000')) AS int4_same,
+       same_error(lines_q('n', 'int4', 'l.k, sum(l.n), min(l.n)')) AS int4_error;
+ int4_pushed | int4_same | int4_error 
+-------------+-----------+------------
+ f           | t         | t
+(1 row)
+
+SELECT pushed(lines_q('b', 'int8', 'l.k, sum(l.b)', 't.id < 1000')) AS int8_pushed, same(lines_q('b', 'int8', 'l.k, sum(l.b)', 't.id < 1000')) AS int8_same,
+       same_error(lines_q('b', 'int8', 'l.k, sum(l.b)')) AS int8_error;
+ int8_pushed | int8_same | int8_error 
+-------------+-----------+------------
+ f           | t         | t
+(1 row)
+
+SELECT pushed(lines_q('f', 'float4', 'l.k, avg(l.f)', 't.id < 1000')) AS float4_pushed, same(lines_q('f', 'float4', 'l.k, avg(l.f)', 't.id < 1000')) AS float4_same,
+       same_error(lines_q('f', 'float4', 'l.k, avg(l.f)')) AS float4_error;
+ float4_pushed | float4_same | float4_error 
+---------------+-------------+--------------
+ f             | t           | t
+(1 row)
+
+SELECT pushed(lines_q('d', 'float8', 'l.k, avg(l.d)', 't.id < 1000')) AS float8_pushed, same(lines_q('d', 'float8', 'l.k, avg(l.d)', 't.id < 1000')) AS float8_same,
+       same_error(lines_q('d', 'float8', 'l.k, avg(l.d)')) AS float8_error;
+ float8_pushed | float8_same | float8_error 
+---------------+-------------+--------------
+ f             | t           | t
+(1 row)
+
+-- as a group key and in a filter
+SELECT pushed(lines_q('n', 'int4', 'l.n, count(*)', 't.id < 1000', 'l.n')) AS key_pushed, same(lines_q('n', 'int4', 'l.n, count(*)', 't.id < 1000', 'l.n')) AS key_same;
+ key_pushed | key_same 
+------------+----------
+ f          | t
+(1 row)
+
+SELECT pushed(lines_q('n', 'int4', 'l.k, count(*) FILTER (WHERE l.n > 50)', 't.id < 1000')) AS filter_pushed,
+       same(lines_q('n', 'int4', 'l.k, count(*) FILTER (WHERE l.n > 50)', 't.id < 1000')) AS filter_same;
+ filter_pushed | filter_same 
+---------------+-------------
+ f             | t
+(1 row)
+
+-- the leaf that holds no such value stays on the scan, whatever the other leaves hold
+SELECT pushed('SELECT l.k, count(*) FROM r_t t, jsonb_to_recordset(t.doc -> ''lines'') AS l(k text) GROUP BY l.k') AS key_leaf_pushed,
+       same('SELECT l.k, count(*) FROM r_t t, jsonb_to_recordset(t.doc -> ''lines'') AS l(k text) GROUP BY l.k') AS key_leaf_same;
+ key_leaf_pushed | key_leaf_same 
+-----------------+---------------
+ t               | t
+(1 row)
+
+-- a numeric(18, 2) column: the sum outgrows 64 bits of the scaled values and is still the exact numeric of the normal plan
+SELECT pushed('SELECT count(*), sum(amt), min(amt), max(amt) FROM r_t') AS amt_pushed, same('SELECT count(*), sum(amt), min(amt), max(amt) FROM r_t') AS amt_same;
+ amt_pushed | amt_same 
+------------+----------
+ t          | t
+(1 row)
+
+SELECT pushed('SELECT id % 3 AS g, sum(amt), avg(amt) FROM r_t GROUP BY 1') AS amt_group_pushed, same('SELECT id % 3 AS g, sum(amt), avg(amt) FROM r_t GROUP BY 1') AS amt_group_same;
+ amt_group_pushed | amt_group_same 
+------------------+----------------
+ t                | t
+(1 row)
+
+-- a number out of range written after the index was built: in the write buffer, then in a segment, the same
+INSERT INTO r_t VALUES (100000, 1, '{"lines": [{"k": "a", "h": 1, "n": 5000000000, "b": 1, "f": 1.5, "d": 1.5}]}');
+SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS buffer_int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS buffer_int4_same;
+ buffer_int4_pushed | buffer_int4_same 
+--------------------+------------------
+ f                  | t
+(1 row)
+
+SELECT pushed(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS buffer_int2_pushed, same(lines_q('h', 'int2', 'l.k, sum(l.h)', 't.id < 1000')) AS buffer_int2_same;
+ buffer_int2_pushed | buffer_int2_same 
+--------------------+------------------
+ f                  | t
+(1 row)
+
+SELECT sift.col_promote('r_t_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT pushed(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS promoted_int4_pushed, same(lines_q('n', 'int4', 'l.k, sum(l.n)', 't.id < 1000')) AS promoted_int4_same;
+ promoted_int4_pushed | promoted_int4_same 
+----------------------+--------------------
+ f                    | t
+(1 row)
+
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;
