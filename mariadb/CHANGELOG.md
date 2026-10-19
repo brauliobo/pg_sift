@@ -4,6 +4,14 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 3.0.0
+
+- No change to the index format (2) or the SQL files: an index of 2.0.x opens as it is (the host keeps writing segment format 1). The library is
+  rebuilt on the shared core of the PostgreSQL extension 3.0.0, which now lives under `src/core`, `src/bm25` and `src/col` (`src/portable.list`), and the write
+  buffer is named as in PostgreSQL. The release gate builds it in the `mariadb:11.8` image and loads it in that server, and the
+  release workflow builds every series; the full MariaDB test suite (`mariadb/test.sh`) was not rerun for this release. No speed change is claimed: the
+  measurements are the PostgreSQL extension's. The column engine and the aggregate pushdown are PostgreSQL features and are not in the MariaDB extension.
+
 ## 2.0.2
 
 - No change to the index format (2) or the SQL files: an index of 2.0.1 opens as it is. The library is rebuilt on the shared core of the
