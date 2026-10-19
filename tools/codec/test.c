@@ -103,7 +103,7 @@ static int same(const sift_tid *x, size_t nx, const sift_tid *y, size_t ny)
 static void open_set(sift_cur *c, const set *s, int mode, int slot)
 {
 	static const sift_enc_opts opts[] = { { 0, 0, 0, 1 }, { SIFT_LIST, 0, 0, 1 }, { SIFT_GROUPED, SIFT_CT_BITMAP, 0, 1 },
-					      { SIFT_GROUPED, SIFT_CT_ARRAY, 0, 0 }, { SIFT_GROUPED, 0, 0, 1 } };
+					      { SIFT_GROUPED, SIFT_CT_ARRAY, 0, 0 }, { SIFT_GROUPED, SIFT_CT_PACKED, 0, 1 } };
 	if (mode == 5) {
 		sift_cur_tids(c, s->t, s->n, cbuf[slot]);
 		return;

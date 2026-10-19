@@ -660,6 +660,23 @@ sift_test_segment_formats(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_term_blob);
 PG_FUNCTION_INFO_V1(sift_test_blob_read);
+PG_FUNCTION_INFO_V1(sift_test_blob_check);
+
+/* sift._test_blob_check(blob) returns the verdict of the exhaustive blob check of sift.verify: NULL for a sound blob */
+Datum
+sift_test_blob_check(PG_FUNCTION_ARGS)
+{
+	bytea	   *b = PG_GETARG_BYTEA_PP(0);
+	Size		len = VARSIZE_ANY_EXHDR(b);
+	uint8	   *blob = MemoryContextAllocAligned(CurrentMemoryContext, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	const char *detail;
+
+	memcpy(blob, VARDATA_ANY(b), len);
+	detail = sift_blob_check(blob, len);
+	if (detail == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(detail));
+}
 
 /*
  * sift._test_term_blob(index, term) returns (blob bytea, flags int4, df int4, codec_len int4, nnib int4): the term blob of the first

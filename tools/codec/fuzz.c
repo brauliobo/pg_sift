@@ -64,7 +64,7 @@ static uint8_t *gen_blob(size_t *len, uint32_t *n)
 	*n = gen_set(t, tf);
 	if (!*n) t[0] = SIFT_TID(1, 1), *n = 1;
 	for (uint32_t i = 0; i < *n; i++) ub[i] = (uint8_t)rndn(256);
-	sift_enc_opts o = { rnd() % 3 ? (int)(1 + rndn(2)) : 0, (int)rndn(3), 0, rnd() % 2 };
+	sift_enc_opts o = { rnd() % 3 ? (int)(1 + rndn(2)) : 0, (int)rndn(4), 0, rnd() % 2 };
 	*len = sift_encode(t, tf, ub, *n, &o, NULL);
 	uint8_t *b = malloc(*len);
 	sift_encode(t, tf, ub, *n, &o, b);

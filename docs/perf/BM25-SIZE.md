@@ -204,14 +204,23 @@ blob term:    varint post_len, varint sidecar length, varint nnib unless ALL_TF1
 Saves one byte of lengths and one of df per term, and about 2 bytes per inline key (a key `blk << 16 | off` is 5 bytes as a varint once the table is longer than 4,096 pages, `blk << 9 | off - 1`
 is 3 up to 2,097,152 blocks).
 
-### 5.3 Packed array container for GROUPED terms (`SIFT_SEGFMT_PACKED`)
+### 5.3 Packed container for GROUPED terms (`SIFT_SEGFMT_PACKED`)
 
-A GROUPED term has one container per superblock group, typed by the low byte of its `key[]` entry: 0x01-0x40 BITMAP (width w), 0x81-0xC0 ARRAY (w, u16 or u32 entries). Format 3 adds
-type `0xE0 | k` PACKED (`k` = index of w in 1, 2, 4, 8, 16, 24, ..., 64) for a group of `n` postings (known from `base[]`): `u8 ob` (bits of the largest offset minus 1), `ceil(n * ob / 8)`
-bytes of offsets (`off - 1`, `ob` bits each, little endian bit order, in posting order), then the pages as a unary bit vector of `n + npages_span` bits (`span` = 256 pages of the group): for each
-posting a 1, after the posts of page `p` a 0 for every page up to the next one that has postings (Elias-Fano high bits with the low part fixed at `ob` bits). Size is `1 + (n * ob + n + 256 + 7) / 8` bytes, against `2n` (ARRAY) or
-`32 + npages * w` (BITMAP); the writer takes the smallest of the three. A cursor decodes a PACKED container into the same `sift_grp` an ARRAY builds, so every kernel, bound and rank
-function is untouched. For the titles (a term of 480 postings in a group, 7 offset bits): 479 bytes against 960.
+A GROUPED term has one container per group of 256 pages, typed by the low byte of its `key[]` entry: 0x01-0x40 BITMAP (width w), 0x81-0xC0 ARRAY (w, u16 or u32 entries).
+Format 3 adds type `0xE0 | k` PACKED (`k` = index of w in 1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64) for a group of `n` postings (known from `base[]`), chosen where an ARRAY would be and
+is larger:
+
+```
+u8 ob                  bits of an offset: nbits(max offset - 1), at least 1
+u8 pages[32]           the pages of the group that have postings (bit p = page p)
+offsets                n values of ob bits (off - 1), little endian bit order, in posting order, padded to a byte
+page ends              n bits, bit k = 1 when posting k is the last of its page (a page of c postings is c - 1 zeros and a one)
+```
+
+33 + ceil(n * ob / 8) + ceil(n / 8) bytes against 2n (ARRAY), about 9 bits per posting where the ARRAY has 16. The cursor decodes it page by page straight into the bitmap rows of the
+decoded group (`sift_grp`), the form an ARRAY builds, so every kernel, bound and rank function is untouched; it is cheaper than the ARRAY build because the page is known for a run of
+postings (no per-posting page compare). A BITMAP is still chosen where it is smaller than the ARRAY (dense groups, zero-copy) and is never repacked. `sift.verify` checks the sizes, the
+page ends, the offsets inside the width and ascending on a page. For the titles: 3,900 groups hold 2,534,639 postings; 4,232,618 of the 4,654,650 bytes of containers are ARRAY and become 2.16 MB.
 
 ### 5.4 Position blocks (term flag `SIFT_TERM_POS2`)
 
