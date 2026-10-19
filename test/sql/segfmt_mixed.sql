@@ -104,10 +104,12 @@ SELECT (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('tm_idx', 'tm')
        (SELECT count(*) FROM (SELECT term, id, tf, dl FROM posts('t3_idx', 't3') EXCEPT SELECT term, id, tf, dl FROM posts('tm_idx', 'tm')) x) AS only_t3;
 SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_mixed_t3 FROM answers('tm') a JOIN answers('t3') b USING (q);
 
+-- VACUUM skips a page whose cleanup lock it cannot take at once (the checkpointer or the background writer holds a pin) unless it has to freeze
+-- the page: FREEZE makes it wait, so the dead rows of both tables go and their statistics are the same (3.7% of runs differed under load)
 DELETE FROM tm WHERE id % 4 = 1;
 DELETE FROM t3 WHERE id % 4 = 1;
-VACUUM tm;
-VACUUM t3;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) tm;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) t3;
 SELECT sift.verify('tm_idx', true);
 SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS same_after_vacuum FROM answers('tm') a JOIN answers('t3') b USING (q);
 
@@ -125,7 +127,7 @@ CREATE INDEX vr_idx ON vr USING sift (body) WITH (build_segments = 1, dead_rewri
 SET sift.test_segfmt = 3;
 SELECT format, count(*) AS segments FROM sift._test_segment_formats('vr_idx') WHERE kind = 'immutable' GROUP BY 1;
 DELETE FROM vr WHERE id % 10 < 7;
-VACUUM vr;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) vr;
 SELECT format, count(*) AS segments, sum(ndocs) AS docs
 FROM sift._test_segment_formats('vr_idx') f JOIN sift.segments('vr_idx') s USING (gen) WHERE f.kind = 'immutable' GROUP BY 1;
 SELECT sift.verify('vr_idx', true);
