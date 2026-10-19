@@ -39,6 +39,7 @@ typedef struct TblLeafBuf
 	size_t		cap;			/* elements the buffers hold */
 	void	   *data;
 	uint8	   *isnull;
+	uint64	   *ovf;			/* numeric leaves: the NaNs of the table, which the columns cannot hold */
 } TblLeafBuf;
 
 /* The source of one column layout */
@@ -394,10 +395,13 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 		{
 			pfree(b->data);
 			pfree(b->isnull);
+			if (b->ovf)
+				pfree(b->ovf);
 		}
 		b->cap = Max(need, 4096);
 		b->data = MemoryContextAlloc(t->cxt, b->cap * 8);
 		b->isnull = MemoryContextAlloc(t->cxt, b->cap);
+		b->ovf = t->lay->leaf[leaf].typid == NUMERICOID ? MemoryContextAlloc(t->cxt, (b->cap / 64 + 1) * sizeof(uint64)) : NULL;
 	}
 	memset((char *) b->data + n * vtype_size[vt], 0, SIFT_AGG_PAD * vtype_size[vt]);
 	return b;
@@ -472,29 +476,22 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 		vec->dict = absent_dict(t, leaf, d);
 }
 
+/* The engine's vector of a leaf as the executor's, in the leaf's buffers */
 static void
-tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 {
-	TblSource  *t = impl;
-	TblPart    *p = unit->priv;
+	const SiftColVec v = *vp;
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
-	SiftColVec	v;
 	TblLeafBuf *b;
-	size_t		n;
+	size_t		n = v.n;
 
-	if (p->col[leaf] < 0)
-	{
-		read_absent(t, leaf, unit->nrow, vec);
-		return;
-	}
-	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
-	n = v.n;
-	if (v.ovf)
+	b = leaf_buf(t, leaf, l->vtype, n);
+	/* the only value a numeric(p <= 18, s) column cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+	if (v.ovf && b->ovf == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift: a column of the aggregate scan holds values its column group cannot store"),
 				 errhint("Set sift.enable_agg to off for this query.")));
-	b = leaf_buf(t, leaf, l->vtype, n);
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -513,12 +510,90 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
+	if (v.ovf)
+	{
+		memcpy(b->ovf, v.ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = b->ovf;
+	}
 	if (v.nulls)
 	{
 		for (size_t i = 0; i < n; i++)
 			b->isnull[i] = sift_colsrc_bit(v.nulls, i);
 		vec->isnull = b->isnull;
 	}
+}
+
+static void
+tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftColVec	v;
+
+	if (p->col[leaf] < 0)
+	{
+		read_absent(t, leaf, unit->nrow, vec);
+		return;
+	}
+	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
+	fill_vec(t, leaf, &v, vec);
+}
+
+/* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
+
+static uint32 *
+stored_ords(TblSource *t, const uint32 *rows, int n)
+{
+	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
+
+	for (int i = 0; i < n; i++)
+		ords[i] = t->sel.keep && t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
+	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
+	return ords;
+}
+
+static void
+tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	uint32	   *ords = stored_ords(impl, rows, n);
+
+	sift_col_row_tids(&((TblPart *) unit->priv)->unit, ords, n, tids);
+	pfree(ords);
+}
+
+/* A segment written before the column has no bound for it: the unit is never skipped by it */
+static void
+tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	TblPart    *p = unit->priv;
+	SiftColZone cz;
+
+	if (p->col[leaf] < 0)
+	{
+		*z = (SiftSrcZone) {.nvals = unit->nrow,.inexact = true};
+		return;
+	}
+	sift_col_zone(&p->unit, p->col[leaf], &cz);
+	*z = (SiftSrcZone) {.min = cz.min,.max = cz.max,.nvals = cz.nvals,.nnull = cz.nnull,.inexact = cz.has_ovf};
+}
+
+static void
+tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	uint32	   *ords;
+	SiftColVec	v;
+
+	if (p->col[leaf] < 0)
+	{
+		read_absent(t, leaf, n, vec);
+		return;
+	}
+	ords = stored_ords(t, rows, n);
+	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
+	fill_vec(t, leaf, &v, vec);
+	pfree(ords);
 }
 
 static void
@@ -609,6 +684,9 @@ static const SiftSrcProvider tbl_provider = {
 	.vet = tbl_vet,
 	.counters = tbl_counters,
 	.select = tbl_select,
+	.tids = tbl_tids,
+	.zone = tbl_zone,
+	.read_rows = tbl_read_rows,
 	.preagg = tbl_preagg,
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,

@@ -4722,8 +4722,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
-	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL || !OidIsValid(c->indexoid) ||
-		!sift_colsrc_can_tids(get_rel_relam(c->indexoid), true))
+	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;
 	s = agg_spec_new(c);
 	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
