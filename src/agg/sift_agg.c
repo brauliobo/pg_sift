@@ -2679,6 +2679,41 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 
 static void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
 
+/* bits [lo, hi) of a bit vector cleared */
+static void
+clear_bit_range(uint64 *bits, uint32 lo, uint32 hi)
+{
+	for (; lo < hi && (lo & 63); lo++)
+		bits[lo >> 6] &= ~(UINT64CONST(1) << (lo & 63));
+	for (; lo + 64 <= hi; lo += 64)
+		bits[lo >> 6] = 0;
+	for (; lo < hi; lo++)
+		bits[lo >> 6] &= ~(UINT64CONST(1) << (lo & 63));
+}
+
+/*
+ * The rows (nrow bits in out) that own an element whose bit is set in eb, the elements of row r being [offs[r], offs[r + 1]). eb has a
+ * word of room past its elements. A row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows
+ * take the slow way).
+ */
+static void
+rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
+{
+	memset(out, 0, ((nrow + 63) / 64) * sizeof(uint64));
+	for (int r = 0; r < nrow; r++)
+	{
+		uint32		lo = offs[r],
+					len = offs[r + 1] - lo;
+		uint64		x;
+
+		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
+		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
+		if (len > 56)
+			x |= last_bit(eb, lo, lo + len) >= 0;
+		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
+	}
+}
+
 /* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
 static void
 any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
@@ -2697,20 +2732,7 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 		eval_pred(ex, p->child[0], 1, s, n, t);
 		memcpy(eb + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
 	}
-	memset(out, 0, nw * sizeof(uint64));
-	/* a row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows take the slow way) */
-	for (int r = 0; r < nrow; r++)
-	{
-		uint32		lo = offs[r],
-					len = offs[r + 1] - lo;
-		uint64		x;
-
-		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
-		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
-		if (len > 56)
-			x |= last_bit(eb, lo, lo + len) >= 0;
-		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
-	}
+	rows_of_elems(offs, nrow, eb, out);
 	if (p->op)
 	{
 		for (int w = 0; w < nw; w++)
@@ -7881,25 +7903,20 @@ process_unit(AggExec *ex)
 		/* the rows that keep an element, checked against the snapshot: nothing to check in a unit whose pages are all visible */
 		if (sift_colsrc_vet_needed(ex->src, u))
 		{
-			uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
-			const uint32 *par = unit_parent(ex);
+			uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64)),
+					   *seen = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 
-			for (int w = 0; w < (m + 63) / 64; w++)
-				for (uint64 b = em[w]; b; b &= b - 1)
-				{
-					uint32		r = par[w * 64 + pg_rightmost_one_pos64(b)];
-
-					rv[r >> 6] |= UINT64CONST(1) << (r & 63);
-				}
+			rows_of_elems(ex->offs, nrow, em, rv);
+			memcpy(seen, rv, nrw * sizeof(uint64));
 			sift_colsrc_vet(ex->src, u, rv);
-			for (int st = 0; st < m; st += VEC)
-			{
-				int			n = Min(VEC, m - st),
-							nw = (n + 63) / 64;
+			/* the elements of a row the snapshot does not see go */
+			for (int w = 0; w < nrw; w++)
+				for (uint64 b = seen[w] & ~rv[w]; b; b &= b - 1)
+				{
+					int			r = w * 64 + pg_rightmost_one_pos64(b);
 
-				sift_aggk->gather_bits(cm, rv, par + st, n);
-				sift_colk->bits_and(em + st / 64, cm, nw);
-			}
+					clear_bit_range(em, ex->offs[r], ex->offs[r + 1]);
+				}
 		}
 		apply_late(ex, em, m);
 		for (int st = 0; st < m; st += VEC)
