@@ -5,8 +5,8 @@
  *
  * A record is SiftColRecHead and `len` payload bytes, 4-byte aligned. The payload of a row, for every top level leaf in id order, is a flag
  * byte (COLV_NULL, COLV_OVERFLOW) and, unless NULL, the value: INT a zigzag varint, F4 and F8 their raw bytes, STR a varint length and the
- * bytes, GROUP the varint element count. The elements of the children follow, child by child (id order), count values each, every
- * value with its own flag byte. A row that does not fit the tail page is split in pieces of its payload (first without
+ * bytes, GROUP the varint element count (the high nibble of the flag byte of an overflow value is its JSON type, SIFT_COLTAG_*). The
+ * elements of the children follow, child by child (id order), count values each, every value with its own flag byte. A row that does not fit the tail page is split in pieces of its payload (first without
  * SIFT_COLR_CONT, the rest with it) written while the tail is held, lock coupling to the new page, so a row is always adjacent in one lane.
  * A writer that dies between two pieces leaves a torn row (pieces without the last one): it never committed, readers skip it.
  */
@@ -30,6 +30,7 @@
 
 #define COLV_NULL			0x01
 #define COLV_OVERFLOW		0x02
+#define COLV_TAG_SHIFT		4			/* the high nibble of an overflow value's flag byte: its SIFT_COLTAG_* (0 in what 3.0 wrote, which ignores it) */
 
 typedef struct SiftColRecHead
 {
@@ -99,7 +100,7 @@ put_varint(StringInfo buf, uint64 x)
 static void
 put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 {
-	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW : 0);
+	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW | v->tag << COLV_TAG_SHIFT : 0);
 
 	appendStringInfoChar(buf, flag);
 	if (flag & COLV_NULL)
@@ -475,6 +476,9 @@ get_value(SiftCWbufReader *r, const SiftColDef *def, const uint8 *p, const uint8
 	*v = (SiftColValue) {0};
 	v->isnull = (flag & (COLV_NULL | COLV_OVERFLOW)) != 0;
 	v->overflow = (flag & COLV_OVERFLOW) != 0;
+	v->tag = flag >> COLV_TAG_SHIFT;
+	if (v->tag > SIFT_COLTAG_MAX || (v->tag != SIFT_COLTAG_UNKNOWN && !v->overflow))
+		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu has the flag byte 0x%02x.", (unsigned long long) r->entry.gen, flag);
 	if (v->isnull)
 		return p;
 	if (def->kind == SIFT_COLK_GROUP)

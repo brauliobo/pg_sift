@@ -230,6 +230,7 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			return;
 		case SIFT_SHRED_OVERFLOW:
 			v->isnull = v->overflow = true;
+			v->tag = col->tag[i];
 			return;
 		default:
 			break;
