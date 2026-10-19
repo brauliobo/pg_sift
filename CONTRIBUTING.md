@@ -69,6 +69,6 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 1. Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, retitle `## Unreleased` in `CHANGELOG.md` and `sqlite/CHANGELOG.md`, and
    set `pkgver` in `packaging/PKGBUILD`, the install lines of the README and `sqlite/VERSION`.
-2. `scripts/ci.sh quick` and `SANITIZE=1 scripts/ci.sh quick` pass; push `main` and wait for CI.
+2. `scripts/ci.sh release` passes on the head; push `main` and wait for CI.
 3. Tag `vX.Y.Z` and push the tag: the `release` workflow builds the `.deb`, `.rpm` and SQLite tarball and publishes them with the notes.
    `AUR_SSH_KEY`). Every release goes to the AUR.

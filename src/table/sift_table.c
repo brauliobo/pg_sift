@@ -8,6 +8,9 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
+
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -24,6 +27,7 @@
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
+#include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -471,11 +475,23 @@ tbl_relation_needs_toast_table(Relation rel)
 	return false;
 }
 
+/*
+ * A scan of a sift_table builds every row it returns from the columns: 1.7 times the instructions of a heap scan of the same rows
+ * (the store benchmark, 1M orders, a grouped scan of two columns), whatever the size of the compressed file. The planner prices a scan
+ * by pages, so it gets the pages of the rows in a heap, twice: a tenth of that (the blocks of the compressed columns) made a
+ * sequential scan look a tenth as dear, and it beat the plans that read the columns instead (SiftAgg), which build no rows.
+ */
+#define TBL_SCAN_WORK	2.0
+
 static void
 tbl_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages, double *tuples, double *allvisfrac)
 {
-	table_block_relation_estimate_size(rel, attr_widths, pages, tuples, allvisfrac,
-									   MAXALIGN(sizeof(SiftTblRec)) + sizeof(uint16), BLCKSZ - SizeOfPageHeaderData);
+	int32		overhead = MAXALIGN(sizeof(SiftTblRec)) + sizeof(uint16);
+	double		scan_pages;
+
+	table_block_relation_estimate_size(rel, attr_widths, pages, tuples, allvisfrac, overhead, BLCKSZ - SizeOfPageHeaderData);
+	scan_pages = ceil(*tuples * (get_rel_data_width(rel, attr_widths) + overhead) / (BLCKSZ - SizeOfPageHeaderData) * TBL_SCAN_WORK);
+	*pages = Max(*pages, (BlockNumber) Min(scan_pages, (double) MaxBlockNumber));
 	*allvisfrac = 0;
 }
 

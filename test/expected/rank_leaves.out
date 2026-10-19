@@ -57,16 +57,17 @@ SELECT count(*) > 0 AS matches FROM rleaf WHERE body @@> (SELECT q FROM rl_q LIM
  t
 (1 row)
 
--- the documents that hold one of the phrases, ranked by the reference
-CREATE FUNCTION rl_diff(q text, boosts real[], k int) RETURNS bigint LANGUAGE sql AS $$
+-- the documents that hold one of the phrases, ranked by the reference (computed once per query: it does not depend on k)
+CREATE TEMP TABLE rl_ref AS SELECT q.q, w.tid, w.score FROM rl_q q, LATERAL rl_want(q.boosts) w;
+CREATE FUNCTION rl_diff(q text, k int) RETURNS bigint LANGUAGE sql AS $$
 	WITH got AS (SELECT row_number() OVER (ORDER BY score DESC, tid) AS rank, tid, score FROM
 			(SELECT ctid AS tid, sift.score(ctid) AS score FROM rleaf WHERE body @@> q
 			 ORDER BY sift.score(ctid) DESC LIMIT k) g),
 		want AS (SELECT row_number() OVER (ORDER BY score DESC, tid) AS rank, tid, score FROM
-			(SELECT * FROM rl_want(boosts) ORDER BY score DESC, tid LIMIT k) w)
+			(SELECT tid, score FROM rl_ref WHERE rl_ref.q = $1 ORDER BY score DESC, tid LIMIT k) w)
 	SELECT count(*) FROM got FULL JOIN want USING (rank) WHERE got.tid IS DISTINCT FROM want.tid OR got.score IS DISTINCT FROM want.score
 $$;
-SELECT k, sum(rl_diff(q, boosts, k)) AS mismatches
+SELECT k, sum(rl_diff(q, k)) AS mismatches
 FROM unnest(ARRAY[1, 3, 10, 30, 100, 500]) k, rl_q GROUP BY k ORDER BY k;
   k  | mismatches 
 -----+------------
@@ -78,6 +79,6 @@ FROM unnest(ARRAY[1, 3, 10, 30, 100, 500]) k, rl_q GROUP BY k ORDER BY k;
  500 |          0
 (6 rows)
 
-DROP FUNCTION rl_diff(text, real[], int), rl_want(real[]), rl_phrase(int);
+DROP FUNCTION rl_diff(text, int), rl_want(real[]), rl_phrase(int);
 DROP TABLE rleaf;
 DROP EXTENSION pg_sift;

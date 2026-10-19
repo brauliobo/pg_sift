@@ -1,0 +1,54 @@
+-- The planner prices a scan of a sift_table by the work of building its rows (twice the heap pages of the rows), not by the compressed
+-- blocks of the file: a table that VACUUM gave back its space (a tenth of the rows' heap size) must still plan an aggregate as SiftAgg,
+-- which reads the columns, and not as a sequential scan that has to build every row.
+CREATE EXTENSION pg_sift;
+CREATE TABLE pl (id bigint NOT NULL, customer_id int NOT NULL, country text NOT NULL, category text NOT NULL, status text NOT NULL,
+	amount numeric(10,2) NOT NULL, quantity smallint NOT NULL, created_at timestamp NOT NULL, title text NOT NULL)
+	USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO pl SELECT g, g % 50000, (ARRAY['US','DE','FR','BR','JP'])[1 + g % 5], 'cat' || g % 20, (ARRAY['new','shipped','paid'])[1 + g % 3],
+	(g % 1000) / 4.0, g % 9, timestamp '2024-01-01' + g * interval '30 seconds', 'item ' || md5((g % 5000)::text) FROM generate_series(1, 300000) g;
+VACUUM (FREEZE, ANALYZE) pl;
+SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
+ xid_passed 
+------------
+ t
+(1 row)
+
+VACUUM (FREEZE, ANALYZE) pl;
+SELECT relpages < 300 AS file_is_small FROM pg_class WHERE relname = 'pl';
+ file_is_small 
+---------------
+ t
+(1 row)
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; p text := '';
+BEGIN
+	FOR r IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || r || E'\n'; END LOOP;
+	RETURN p;
+END $$;
+SET max_parallel_workers_per_gather = 0;
+SELECT plan_of('SELECT country, count(*) FROM pl GROUP BY country') LIKE '%SiftAgg%' AS grouped_count_pushed_down;
+ grouped_count_pushed_down 
+---------------------------
+ t
+(1 row)
+
+SELECT plan_of('SELECT status, sum(amount) FROM pl WHERE country = ''DE'' GROUP BY status') LIKE '%SiftAgg%' AS filtered_sum_pushed_down;
+ filtered_sum_pushed_down 
+--------------------------
+ t
+(1 row)
+
+SELECT country, count(*) FROM pl GROUP BY country ORDER BY country;
+ country | count 
+---------+-------
+ BR      | 60000
+ DE      | 60000
+ FR      | 60000
+ JP      | 60000
+ US      | 60000
+(5 rows)
+
+DROP TABLE pl;
+DROP EXTENSION pg_sift;

@@ -1,14 +1,16 @@
 -- Space: the blocks of the write buffers that promotion and merging release are reused, so a table that is emptied and refilled
 -- stays the size it had, and VACUUM FULL does not grow it. A VACUUM's own xid is not in the snapshots of the readers that began after it,
 -- so what it releases is reusable once another transaction has passed: the second VACUUM of each pair clears it for reuse. The free run
--- at the end of the file is given back at once, under the lock that keeps every reader out (unless vacuum_truncate is off).
+-- at the end of the file is given back at once, under the lock that keeps every reader out (unless vacuum_truncate is off). The column
+-- segment sealed from a load lies above the write segment it replaces: the VACUUM that can reuse that space writes it again below, so
+-- the cut finds the end free (the active write segment, which does not move, is the least the file keeps).
 CREATE EXTENSION pg_sift;
 CREATE TABLE sp (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TEMP TABLE hw (round int, blocks bigint);
 \set fill 'INSERT INTO sp SELECT g, g * 3, ''text '' || md5(g::text) FROM generate_series(1, 30000) g'
-INSERT INTO hw SELECT 0, 0;
 :fill;
 VACUUM sp;
+INSERT INTO hw SELECT 0, relation_blocks FROM sift.table_space('sp');
 SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
  xid_passed 
 ------------
@@ -23,11 +25,24 @@ SELECT count(*) FILTER (WHERE kind = 'columns') > 0 AS promoted, count(*) FILTER
  t        |       0
 (1 row)
 
+SELECT relation_blocks < (SELECT blocks FROM hw WHERE round = 0) AS compacted FROM sift.table_space('sp');
+ compacted 
+-----------
+ t
+(1 row)
+
 DELETE FROM sp;
 VACUUM sp;
-SELECT relation_blocks < (SELECT blocks FROM hw WHERE round = 1) AS truncated, relation_blocks = high_water AS at_mark,
+SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
+ xid_passed 
+------------
+ t
+(1 row)
+
+VACUUM sp;
+SELECT relation_blocks <= (SELECT blocks FROM hw WHERE round = 1) AS no_larger, relation_blocks = high_water AS at_mark,
 	free_blocks > 0 AS freed, reusable_blocks = free_blocks AS reusable FROM sift.table_space('sp');
- truncated | at_mark | freed | reusable 
+ no_larger | at_mark | freed | reusable 
 -----------+---------+-------+----------
  t         | t       | t     | t
 (1 row)
@@ -67,6 +82,8 @@ SELECT count(*) FROM sp;
 (1 row)
 
 -- vacuum_truncate off keeps the file; VACUUM (TRUNCATE) cuts it anyway
+ALTER TABLE sp SET (vacuum_truncate = false);
+:fill;
 :fill;
 VACUUM sp;
 SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
@@ -77,7 +94,6 @@ SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;
 
 VACUUM sp;
 INSERT INTO hw SELECT 2, relation_blocks FROM sift.table_space('sp');
-ALTER TABLE sp SET (vacuum_truncate = false);
 DELETE FROM sp;
 VACUUM sp;
 SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;

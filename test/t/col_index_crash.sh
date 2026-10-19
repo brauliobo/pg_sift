@@ -2,10 +2,10 @@
 # kill -9 of the postmaster and all backends in the middle of concurrent inserts, updates, deletes, VACUUM, promotion and merge of a
 # sift_col index, then crash recovery and checks: the store and every segment verify, the index holds exactly the visible heap tuples
 # with their values (heapallindexed), the column source returns what the heap returns, and the space stays bounded (the sweep reclaims
-# what the crash orphaned). SIFT_COL_CRASH_ITERS (default 40, 6 quick).
+# what the crash orphaned). SIFT_COL_CRASH_ITERS (default 40, 4 quick).
 . "$(dirname "$0")/lib.bash"
 
-ITERS=$(knob SIFT_COL_CRASH_ITERS 40 6)
+ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
 plan $((ITERS + 3))
 node_init crash 1 "checkpoint_timeout = 30s

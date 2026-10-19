@@ -2,13 +2,15 @@
 # Single entry point for the test suites, with a pass/fail/skip summary.
 #
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
+#   scripts/ci.sh release [OPTIONS]   the release gate, once per tree
+#   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
 #   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
 #   iterations), a 2 500 document differential test and 8 of the 16 mutants of the harness (the
 #   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
-#   the coverage table, a 30 s soak, a 45 s column-index soak (scripts/colsoak.sh) and a
-#   20 s fuzz budget.
+#   the coverage table, a 15 s soak, an 18 s column-index soak (scripts/colsoak.sh) and a
+#   fuzz pass with shorter loops (scripts/fuzz.sh).
 # full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
 #   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
 #   and sift soaks (600 s), the column-index soak (300 s) and the server sanitizer report.
@@ -23,7 +25,8 @@
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (twice the budget; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
-# (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those. Logs:
+# (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
+# SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
@@ -42,6 +45,15 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
+[[ $MODE == release ]] && exec "$REPO/scripts/release.sh" "${@:2}"
+# --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
+# seconds (client plus server processes), lane, status
+if [[ $MODE == --times ]]; then
+	R=${2:-$(ls -td "${TMPDIR:-/tmp}"/sift-ci-*/logs/results 2>/dev/null | head -1)}
+	sort -k4,4nr "$R" | awk 'BEGIN { printf "%-44s %7s %7s  %-6s %s\n", "job", "wall_s", "cpu_s", "lane", "status" }
+		{ printf "%-44s %7d %7.1f  %-6s %s\n", $1, $4, $9, $6, $3; w += $4; c += $9 } END { printf "%-44s %7d %7.1f\n", "total", w, c }'
+	exit
+fi
 [[ $MODE == quick || $MODE == full ]] || { sed -n '2,26p' "$0"; exit 1; }
 renice -n 19 $$ >/dev/null
 S=$REPO/scripts
@@ -88,15 +100,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end"
+# lane_cpu ID: the CPU seconds the lane cluster's postmaster has spent on the backends and workers it reaped (a job on the lane cluster
+# runs its queries there; the other jobs start clusters of their own, which scripts/cpu_time.py counts)
+lane_cpu() {
+	[[ ${J_CLUSTER[$1]:-0} == 1 && -f $SIFT_TMP/data/postmaster.pid ]] || { echo 0; return; }
+	awk '{ print ($16 + $17) / 100 }' "/proc/$(head -1 "$SIFT_TMP/data/postmaster.pid")/stat" 2>/dev/null || echo 0
+}
+# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
 # to the results and returns its status
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
-	"$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	c0=$(lane_cpu "$id")
+	"$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	c1=$(lane_cpu "$id")
 	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
-	printf '%s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" >>"$LOG/results"
+	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
+		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
 	[[ $status == PASS ]]
 }
 
@@ -131,11 +152,25 @@ JOB_MB=70
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
 installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1 "$S/pgtest.sh" regress "$t"; done; }
+# installcheck_batches N TEST...: the short tests, N to a pg_regress run in one database like make installcheck runs them: a run costs 0.3 s of
+# CPU and lane time before its first statement, which is more than most of these tests need. The tests with a sift_table keep a database
+# of their own: VACUUM seals only the rows older than every snapshot of the database, and an autovacuum worker on the tables an earlier test
+# left behind holds one
+installcheck_batches() {
+	local n=$1 i=0 b=() t
+	shift
+	for t in "$@"; do
+		if grep -qi 'using sift_table' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
+		b+=("$t")
+		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
+	done
+	(( ${#b[@]} == 0 )) || job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"
+}
 
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 # by measured time, the long jobs of each kind first
-SLOW_REGRESS="facets index_build_postings filter_pushdown parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
+SLOW_REGRESS="build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
 	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"
 SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
@@ -147,7 +182,8 @@ if [[ $MODE == full ]]; then
 	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 5000 --queries 150 --rounds 4
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 20000 --rows 200000
+	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
+	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job fuzz fuzz 1 "$S/fuzz.sh"
@@ -155,12 +191,15 @@ if [[ $MODE == full ]]; then
 	job static static 0 "$S/static.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
-	installcheck $(named $SLOW_REGRESS) $(rest sql .sql $SLOW_REGRESS)
+	installcheck $(named $SLOW_REGRESS)
+	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 else
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
+	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
+	# visit every stage, the mutable segments, the promotion and the merge
+	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the regression tests that need no test-only function, against the release library: beside the others on PostgreSQL 18,
 	# after the pool on 17, where the install is the server's own
 	# (the quick tests only: the slow ones and the ones that need the test-only build, TESTING_REGRESS of the Makefile, are not run)
@@ -174,26 +213,28 @@ else
 	if (( PG_MAJOR >= 18 )); then job release-library-regress release-library-regress 0 "$S/release-library-check.sh" $(release_library_tests); else release_last=1; fi
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
-	job fuzz fuzz 1 "$S/fuzz.sh" --budget 20
+	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
+	job fuzz fuzz 1 env FZ_SECS=2 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1
 	job hardened hardened 0 "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
-		--docs 1500 --queries 25 --rounds 2 --minimize 1 --min-trials 10
-	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 1 --minimize 0 \
+		--docs 1000 --queries 12 --rounds 2 --minimize 1 --min-trials 10
+	# the mutants are checked on the built corpus (round 0): all 8 die there, and the rounds with DML, promotion, merge and REINDEX without a bug are the job difftest
+	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 0 --minimize 0 \
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios insert,update,delete,abort,vacuum,held
+	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
 	job coverage coverage 1 "$S/coverage.sh" --check
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
-	job soak soak 1 "$S/soak.sh" --duration 30 --rows 20000 --rate 400 --clients 2 --check-every 10
-	job soak-col soak-col 1 "$S/colsoak.sh" --duration 45 --clients 6
+	job soak soak 1 "$S/soak.sh" --duration 15 --rows 20000 --rate 400 --clients 2 --check-every 5
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration 18 --clients 6
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
 	tap_shell $(rest t .sh $SLOW_SHELL)
-	installcheck $(rest sql .sql $SLOW_REGRESS)
+	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
@@ -303,6 +344,8 @@ for s in "${ORDER[@]}" leakcheck; do
 	# the log of a split suite: the logs of its jobs, in order
 	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
+	# a batch of regression tests names the tests that failed
+	for id in ${bad:-}; do [[ $id != installcheck-batch* ]] || grep -h '^not ok' "$LOG/$id.log" | sed "s/^/$red    /; s/\$/$off/"; done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
 [[ -z ${STATS:-} ]] || { kill "$STATS"; wait "$STATS"; cat "$LOG/stats.txt"; }

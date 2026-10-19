@@ -1,7 +1,7 @@
 /*
  * sift_table_vacuum.c - VACUUM, VACUUM FULL / CLUSTER (rewrite), CREATE INDEX CONCURRENTLY validation (docs/COL-TAM.md section 7).
  *
- * VACUUM: write buffer rows whose insertion aborted, or whose deleter is committed and older than OldestXmin, are flagged DEAD (and are
+ * VACUUM: delta rows whose insertion aborted, or whose deleter is committed and older than OldestXmin, are flagged DEAD (and are
  * the dead TIDs the indexes drop); committed old insertions are frozen; then the tombstone segment is rewritten without the
  * entries that no longer matter. TIDs are never reused, so no ordering between these steps is needed for safety. Column segments
  * left mostly dead are rewritten, and the free run at the end of the file goes back to the operating system.
@@ -35,6 +35,7 @@
 #include "utils/tuplesort.h"
 
 #include "sift_col_seg.h"
+#include "sift_lane.h"
 #include "sift_maint.h"
 #include "sift_table.h"
 
@@ -122,7 +123,7 @@ tomb_keep(const SiftTblTomb *e, void *arg)
 	return true;
 }
 
-/* Vacuums one write buffer page: flags dead rows, freezes old insertions; one WAL record */
+/* Vacuums one delta page: flags dead rows, freezes old insertions; one WAL record */
 static void
 vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, VacState *v)
 {
@@ -180,17 +181,17 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 	UnlockReleaseBuffer(buf);
 }
 
-/* Is the vblock in a write buffer (whose rows vacuum_page judges) */
+/* Is the vblock in a delta segment (whose rows vacuum_page judges) */
 static bool
-in_wbuf(const SiftTblRel *st, uint64 vblock)
+in_delta(const SiftTblRel *st, uint64 vblock)
 {
-	for (int i = 0; i < st->nwbuf; i++)
-		if (vblock >= st->wbuf[i].vbase && vblock < st->wbuf[i].vbase + st->wbuf[i].vcap)
+	for (int i = 0; i < st->ndelta; i++)
+		if (vblock >= st->delta[i].vbase && vblock < st->delta[i].vbase + st->delta[i].vcap)
 			return true;
 	return false;
 }
 
-/* The live rows of the column segments: with the write buffer rows, the tuples of the table (promotion moves rows from one to the other) */
+/* The live rows of the column segments: with the delta rows, the tuples of the table (sealing moves rows from one to the other) */
 static double
 group_live_rows(Relation rel, const SiftTblRel *st)
 {
@@ -219,7 +220,7 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 		const SiftTblTomb *e = &a[i];
 		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
 
-		if (e->kind == SIFT_TBL_TOMB_LOCK || in_wbuf(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
+		if (e->kind == SIFT_TBL_TOMB_LOCK || in_delta(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
 			continue;
 		if (!TransactionIdPrecedes(e->xid, v->oldest))
 		{
@@ -233,7 +234,7 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 	}
 }
 
-/* Steps 1 and 2: flags the dead write buffer rows, clears the liveness of the dead group rows, counts the rows */
+/* Steps 1 and 2: flags the dead delta rows, clears the liveness of the dead group rows, counts the rows */
 static void
 vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 {
@@ -241,9 +242,9 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 				sb_hi = 0;
 
 	sift_tbl_tomb_sync(rel, st);
-	for (int i = 0; i < st->nwbuf; i++)
+	for (int i = 0; i < st->ndelta; i++)
 	{
-		SiftTblSeg	seg = st->wbuf[i];
+		SiftTblSeg	seg = st->delta[i];
 
 		sift_tbl_seg_load(rel, &seg);
 		for (uint32 p = 0; p < seg.npages; p++)
@@ -302,10 +303,12 @@ tomb_drops(SiftTblRel *st, VacState *v)
 /* Tail space worth an exclusive lock, as for a heap (REL_TRUNCATE_MINIMUM, REL_TRUNCATE_FRACTION) */
 #define TRUNCATE_MIN_BLOCKS	1000
 #define TRUNCATE_FRACTION	16
+/* Free runs worth writing a segment into (the shortest run the stream writer takes, sift_store.c RUN_MIN) */
+#define COMPACT_MIN_RUN		16
 
 /*
  * Gives the reusable free blocks at the end of the file back as a heap's VACUUM does: when they are worth it and AccessExclusiveLock
- * on the table is free now (sift_store.h P7; the store invalidates every backend's cache of the table, whose target pages and write buffer
+ * on the table is free now (sift_store.h P7; the store invalidates every backend's cache of the table, whose target pages and delta
  * page tables may point past the new end). Returns the blocks given back.
  */
 static BlockNumber
@@ -329,7 +332,97 @@ truncate_tail(Relation rel, int elevel)
 	return freed;
 }
 
-/* Closes the open write buffer segment once it is worth a column segment (pages) */
+static SiftExtent *
+segment_extents(Relation rel, const SiftSegEntry *e, int *n)
+{
+	return e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, n) : sift_lane_extents(rel, e, n);
+}
+
+/* The segment whose blocks end last in the file, with the blocks it takes and where they end */
+static const SiftSegEntry *
+last_segment(Relation rel, SiftTblRel *st, uint64 *blocks, BlockNumber *end)
+{
+	const SiftSegEntry *last = NULL;
+
+	for (int i = 0; i < st->dir.nsegs; i++)
+	{
+		const SiftSegEntry *e = &st->dir.segs[i];
+		int			n;
+		SiftExtent *ext = segment_extents(rel, e, &n);
+		uint64		total = 0;
+		BlockNumber top = 0;
+
+		for (int k = 0; k < n; k++)
+		{
+			total += ext[k].nblocks;
+			top = Max(top, ext[k].start + ext[k].nblocks);
+		}
+		pfree(ext);
+		if (last == NULL || top > *end)
+		{
+			last = e;
+			*end = top;
+			*blocks = total;
+		}
+	}
+	return last;
+}
+
+/* Is a cut of the free blocks worth it, as truncate_tail judges the free run at the end of the file */
+static bool
+worth_cutting(Relation rel)
+{
+	int64		free = sift_store_free_stats(rel).reusable;
+
+	return free >= TRUNCATE_MIN_BLOCKS || free >= RelationGetNumberOfBlocks(rel) / TRUNCATE_FRACTION;
+}
+
+/*
+ * Writes the segment that ends the file again, into the free blocks below it: a column segment or the tombstones are rewritten, the
+ * write segment is closed and sealed (its successor starts in the free blocks). False when it cannot move.
+ */
+static bool
+move_segment(Relation rel, SiftTblRel *st, VacState *v, const SiftSegEntry *e)
+{
+	if (e->kind == SIFT_SEG_IMMUTABLE)
+		return sift_tbl_rewrite(rel, st, e);
+	if (e->flags & SIFT_TBL_SEG_TOMB)
+	{
+		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
+		return true;
+	}
+	if (e->kind == SIFT_SEG_MUTABLE_ACTIVE)
+		sift_tbl_close_delta(rel, st, 0);
+	return sift_tbl_seal(rel, st, v->oldest, true) > 0;
+}
+
+/*
+ * Moves the segment that ends the file into the free blocks below it while they hold it, so that the cut finds the end of the file
+ * free: a load leaves its write segments below the column segment sealed from them, and that segment (or the write segment that
+ * follows) would hold the file at the size of the load for good. Stops when the free blocks below do not hold the segment or a
+ * move did not lower the end.
+ */
+static void
+compact_tail(Relation rel, SiftTblRel *st, VacState *v)
+{
+	BlockNumber last_end = PG_UINT32_MAX;
+
+	for (int i = 0; i < MAX_MERGE_STEPS && worth_cutting(rel); i++)
+	{
+		uint64		blocks;
+		BlockNumber end;
+		const SiftSegEntry *e = last_segment(rel, st, &blocks, &end);
+
+		if (e == NULL || end >= last_end || sift_store_free_below(rel, end, COMPACT_MIN_RUN) < blocks)
+			return;
+		last_end = end;
+		if (!move_segment(rel, st, v, e))
+			return;
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/* Closes the active delta segment once it is worth a column segment (pages) */
 #define VACUUM_CLOSE_PAGES	8
 
 /*
@@ -340,8 +433,8 @@ truncate_tail(Relation rel, int elevel)
 static void
 vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
 {
-	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
-	(void) sift_tbl_promote(rel, st, v->oldest, true);
+	sift_tbl_close_delta(rel, st, VACUUM_CLOSE_PAGES);
+	(void) sift_tbl_seal(rel, st, v->oldest, true);
 	for (int i = 0; i < MAX_MERGE_STEPS && sift_tbl_merge(rel, st); i++)
 		CHECK_FOR_INTERRUPTS();
 	if (tomb_drops(st, v))
@@ -349,7 +442,10 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
 	if (truncate)
+	{
+		compact_tail(rel, st, v);
 		(void) truncate_tail(rel, elevel);
+	}
 }
 
 /* Step 6, with the counts of a heap: reltuples and the live rows, the recently dead ones for autovacuum */
@@ -491,7 +587,7 @@ copy_sorted(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *
 
 /*
  * The kept versions are written into the new table as frozen column segments with dense TIDs: in the order of the index for CLUSTER,
- * else the units of the column groups re-keyed as they decode and then the write buffer rows. Recently dead versions are dropped (no snapshot
+ * else the units of the column groups re-keyed as they decode and then the delta rows. Recently dead versions are dropped (no snapshot
  * of the new table can want them). A TID fetch decodes the unit of its superblock, so CLUSTER sorts whenever the index can order a
  * sort (btree), whatever the planner's heap costs chose (use_sort): an index scan in random order would decode a unit per row.
  */

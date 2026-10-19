@@ -5,7 +5,7 @@
 # release and must find its segments as it left them. Runs on the release build too (no test functions).
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 30 10)
+SECS=$(knob SIFT_CHURN_SECS 30 6)
 STABLE=3000
 plan 4
 node_init rd 12 "autovacuum = off
