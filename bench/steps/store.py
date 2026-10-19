@@ -214,14 +214,27 @@ def es_text(data, spec):
     return ''.join('\t'.join(NULL if v is None else str(v) for v in ([dig(r, c) for c in cols] if cols else [r])) + '\n' for r in rows)
 
 
+@functools.lru_cache(maxsize=None)
+def container_cgroup(eid):
+    """cgroup directory of the container of the engine (the id does not change when the container restarts)"""
+    return f'/sys/fs/cgroup/docker/{docker("inspect", "-f", "{{.Id}}", container(eid)).strip()}'
+
+
+def cgroup_usage(path):
+    """CPU seconds the container has used so far (a restarted container starts again at 0)"""
+    return float(open(path + '/cpu.stat').readline().split()[1]) / 1e6
+
+
 class Client:
     """one engine: run(statement, capture) -> (milliseconds, text or None)"""
     def __init__(self, eid):
-        self.eid, self.busy = eid, 0.0   # busy: seconds spent in requests since the last reset
+        self.eid, self.busy, self.cpu = eid, 0.0, 0.0   # busy, cpu: wall seconds and container CPU seconds spent in this client's requests since the last reset
+        self.cg = container_cgroup(eid)
         self.psql = Psql(eid) if eid in PG_ENGINES else None
         self.http = None if self.psql else Http(eid, CH_AUTH if is_ch(eid) else {'Content-Type': 'application/json'})
 
     def run(self, st, capture=False):
+        u0 = cgroup_usage(self.cg)
         t0 = time.perf_counter()
         try:
             if self.psql:
@@ -235,6 +248,7 @@ class Client:
             return (time.perf_counter() - t0) * 1e3, es_text(data, spec) if capture else None
         finally:
             self.busy += time.perf_counter() - t0
+            self.cpu += cgroup_usage(self.cg) - u0
 
     def explain(self, st):
         if not self.psql:
@@ -872,14 +886,16 @@ def tolerance(eid, st):
 def measure_query(q, clients, args, rows):
     """the cell of one question on every engine, in a window whose external noise is recorded; (the results that differ, why the window was NOISY)"""
     for c in clients.values():
-        c.busy = 0.0
+        c.busy = c.cpu = 0.0
     with Window() as w:
         stop = run_query(q, clients, args, rows)
-    for cname in {container(e) for e in clients}:   # cores a container used while its engines were being asked (the engines of one container share it)
-        asked = sum(c.busy for e, c in clients.items() if container(e) == cname)
-        for e in clients:
-            if container(e) == cname and asked:
-                rows.add(e, q.id, 'warm', 'cpu_cores', 'cores', value=round(w.cont.get(cname, 0.0) / asked, 2))
+    for e, c in clients.items():   # the cores the container used while this client's requests ran: its CPU over the wall time of those requests (not the window: the other engines are asked in it)
+        cores = c.cpu / c.busy if c.busy else None
+        quota = args.cpus * 1.05
+        if cores is not None and cores > quota:
+            log(f'{q.id} {e}: {cores:.2f} cores in the requests, more than the quota of {args.cpus}: not recorded')
+        elif cores is not None:
+            rows.add(e, q.id, 'warm', 'cpu_cores', 'cores', value=round(cores, 2))
     return stop, w.record(rows, q.id, 'warm', w.judge({container(e) for e in clients}, io=True))
 
 
@@ -1615,6 +1631,7 @@ def readme_block(R):
         else:
             out += [f'- pg_sift was the fastest system, or within 5% of it, on every question{at}.']
     out += [f'- The same questions at {R.meta["tiers"][x]["rows"]:,} orders, cold runs after a restart, load times and plans: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#analytics-an-online-store).' for x in R.tiers[:-1]]
+    out += [NOT_REMEASURED] if R.meta['tiers'][R.tiers[-1]]['rows'] < 10_000_000 else []
     out += ['', 'Reproduce with `bench/bench store all` (docker; `--docs` rewrites this section and docs/BENCHMARKS.md from the new numbers); the data generator, the table layout of every system and the ten queries are in `bench/sql/store/`.']
     return out
 
@@ -1672,6 +1689,11 @@ def latency_tables(R, tier, shown, labels, heading):
                     + (', '.join(labels[e] for e in shown if how(e) == 'restart') or 'none') + '):', '']
             out += md_table(['question', 'system', 'after emptying the memory', 'after a restart', 'ratio'], [[QUERY_TITLES[q], labels[e], ms(pair(q, e)[0]), ms(pair(q, e)[1]), f'{pair(q, e)[0] / pair(q, e)[1]:.2f}x'] for q, e in chk]) + ['']
     return out
+
+
+NOT_REMEASURED = ('- **10,000,000 orders were not measured for the final 3.0 pass** (only this size was: the pass had to fit an hour). The last 10,000,000 run, on 2026-10-18 with a 3.0 development build, is in the git history of `bench/results/store.json`: '
+                  'there the data no longer fit the cache, ClickHouse was faster than pg_sift `sift_col` on 7 of the 10 questions (one of them a tie; the top 10 categories 17x, the distinct customers per month 4.0x) and `sift_table` failed on the two search questions with facets and the newest orders. '
+                  'Do not read the 1,000,000-order ranking above as the ranking at ten times the size.')
 
 
 def citus_config(R, tier):
