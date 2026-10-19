@@ -820,6 +820,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, k->leaf);
 		put_int(p, k->slot);
 		put_node(p, k->expr);
+		put_int(p, k->bucket);
 		put_num(p, &k->num);
 		put_int(p, (int) k->typid);
 		put_int(p, k->typmod);
@@ -1135,6 +1136,7 @@ sift_aggspec_unpack(const List *items)
 		k->leaf = get_int(u);
 		k->slot = get_int(u);
 		k->expr = get_node(u);
+		k->bucket = get_int(u);
 		get_num(u, &k->num);
 		k->typid = (Oid) get_int(u);
 		k->typmod = get_int(u);

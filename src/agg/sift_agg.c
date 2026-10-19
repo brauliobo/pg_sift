@@ -367,6 +367,8 @@ typedef struct KeyState
 	uint32		wcap;			/* ident, values too far apart for a table: open addressing value -> id (0 = free), power of 2 */
 	int64	   *wval;
 	uint32	   *wid;
+	uint32		nwide;			/* the entries of the open addressing table */
+	int64		bucket;			/* LUT keys on a timestamp leaf: the microseconds one evaluation covers (the table maps bucket numbers to ids); 0: not one */
 	uint32		nullid;			/* LUT keys on integer leaves: the id of expr(NULL) */
 	uint32		cap;			/* direct mode: ids 0..cap-1 */
 	uint32		mult;
@@ -3915,11 +3917,17 @@ wide_hash(int64 v, uint32 cap)
 	return (uint32) (((uint64) v * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & (cap - 1);
 }
 
-/* the id of an ident key's value when the range table is not used: ids are given in order of appearance, as the table does */
+static uint32 bucket_id(AggExec *ex, KeyState *k, int64 bucket);
+
+/*
+ * The id of an ident key's value when the range table is not used: ids are given in order of appearance, as the table does. A
+ * bucket key (a calendar expression of a timestamp) keeps the id of the value of its expression for each bucket number it sees.
+ */
 static uint32
 ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 {
 	uint32		h = wide_hash(v, k->wcap);
+	uint32		id;
 
 	while (k->wid[h])
 	{
@@ -3928,8 +3936,9 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 		h = (h + 1) & (k->wcap - 1);
 	}
 	k->wval[h] = v;
-	k->wid[h] = ident_add(ex, k, v);
-	if ((uint64) k->nident * 2 > k->wcap)
+	id = k->bucket ? bucket_id(ex, k, v) : ident_add(ex, k, v);
+	k->wid[h] = id;
+	if ((uint64) ++k->nwide * 2 > k->wcap)
 	{
 		uint32		ocap = k->wcap;
 		int64	   *ov = k->wval;
@@ -3951,7 +3960,7 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 		pfree(ov);
 		pfree(oi);
 	}
-	return k->nident;
+	return id;
 }
 
 /* from now on the ident key's ids come from the hash table; the values the range table gave ids to are in it */
@@ -3966,6 +3975,7 @@ ident_go_wide(AggExec *ex, KeyState *k)
 	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
 	k->nident = 0;				/* ident_wide_id gives the same ids back, in the same order */
+	k->nwide = 0;
 	for (uint32 i = 0; i < n; i++)
 		(void) ident_wide_id(ex, k, k->idval[i]);
 }
@@ -3978,8 +3988,142 @@ key_range_fill(void *arg, int32 v, void *entry)
 
 	if (k->ident)
 		*(uint32 *) entry = ident_add(f->ex, k, v);
+	else if (k->bucket)
+		*(uint32 *) entry = bucket_id(f->ex, k, v);
 	else
 		*(uint32 *) entry = key_value_id(f->ex, f->ki, leaf_datum(k->param->paramtype, v), false);
+}
+
+/* the id of a bucket of a timestamp key: the key's expression of the bucket's first microsecond (an infinity is a bucket of its own) */
+static uint32
+bucket_id(AggExec *ex, KeyState *k, int64 bucket)
+{
+	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : bucket * k->bucket;
+
+	return key_value_id(ex, (int) (k - ex->ks), Int64GetDatum(us), false);
+}
+
+/* the number of the bucket of a timestamp, floor(v / us) */
+static int64
+bucket_floor(int64 v, const int64 us)
+{
+	return v / us - (v % us < 0);
+}
+
+/*
+ * The bucket numbers of the selected rows as int32 (a NULL row gets 0) and their range; false: an infinity or a range a table
+ * cannot hold is among them. us is a constant at each call, so the division is an unsigned multiplication: adding a multiple of us
+ * above 2^63 makes every timestamp positive, and the same multiple of buckets comes off the quotient.
+ */
+static pg_attribute_always_inline bool
+bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, const uint64 us, int32 *mn, int32 *mx)
+{
+	const int64 *data = v->data;
+	const uint8 *isnull = v->isnull;
+	const uint64 off = us * (((uint64) 1 << 63) / us + 1),
+				off_buckets = off / us;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]];
+
+		if (isnull && isnull[idx[i]])
+		{
+			out[i] = 0;
+			continue;
+		}
+		lo = Min(lo, d);
+		hi = Max(hi, d);
+		out[i] = (uint32) (((uint64) d + off) / us - off_buckets);
+	}
+	if (lo > hi)
+	{
+		*mn = *mx = 0;
+		return true;
+	}
+	if (lo == PG_INT64_MIN || hi == PG_INT64_MAX)
+		return false;
+	lo = bucket_floor(lo, us);
+	hi = bucket_floor(hi, us);
+	*mn = (int32) lo;
+	*mx = (int32) hi;
+	return lo >= PG_INT32_MIN && hi <= PG_INT32_MAX && hi - lo < MAX_RANGE;
+}
+
+/* the key ids of the selected rows by the hash table of bucket numbers: infinities and wide ranges */
+static void
+bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *ids)
+{
+	const int64 *data = v->data;
+	int64		last = 0;
+	uint32		lastid = 0;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]],
+					b = d == PG_INT64_MAX || d == PG_INT64_MIN ? d : bucket_floor(d, k->bucket);
+
+		if (v->isnull && v->isnull[idx[i]])
+			ids[i] = 0;			/* every function of a bucket key is strict: the key of a NULL is NULL */
+		else
+		{
+			if (b != last || lastid == 0)
+			{
+				lastid = ident_wide_id(ex, k, b);
+				last = b;
+			}
+			ids[i] = lastid;
+		}
+	}
+}
+
+/*
+ * The key of the selected rows of a timestamp key: the range table of bucket numbers (map and base, as an integer key's), or the
+ * ids themselves (*map_out stays NULL) when an infinity or a wide range is among the rows.
+ */
+static void
+bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 **map_out, int32 *base_out, uint32 *vals_out)
+{
+	KeyState   *k = &ex->ks[ki];
+	KeyFill		f = {ex, ki};
+	MemoryContext old;
+	int32		mn,
+				mx;
+	bool		table;
+
+	switch (k->bucket)
+	{
+		case USECS_PER_SEC:
+			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, &mn, &mx);
+			break;
+		case USECS_PER_SEC * 60:
+			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, &mn, &mx);
+			break;
+		case USECS_PER_HOUR:
+			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, &mn, &mx);
+			break;
+		case USECS_PER_DAY:
+			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, &mn, &mx);
+			break;
+		default:
+			elog(ERROR, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
+	}
+	if (!table || rt_span(&k->rt, mn, mx) > MAX_RANGE)
+	{
+		bucket_hash_ids(ex, k, v, idx, nsel, vals_out);
+		return;
+	}
+	old = MemoryContextSwitchTo(ex->tcxt);
+	rt_cover(&k->rt, mn, mx, key_range_fill, &f);
+	MemoryContextSwitchTo(old);
+	if (v->isnull)
+		for (int i = 0; i < nsel; i++)
+			if (v->isnull[idx[i]])
+				vals_out[i] = (uint32) k->rt.lo;
+	*map_out = (uint32 *) k->rt.tab;
+	*base_out = k->rt.lo;
 }
 
 /* The ids of the integer values in [mn, mx] of key ki are made; false: the key keeps its ids in a hash table instead of the range table (ident_wide_id) */
@@ -4046,6 +4190,11 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	}
 	v = get_vec(ex, sk->leaf);
 	lf = &ex->lay->leaf[sk->leaf];
+	if (k->bucket)
+	{
+		bucket_ids(ex, ki, v, idx, nsel, map_out, base_out, vals_out);
+		return;
+	}
 	if (lf->vtype == SCV_F64)
 	{
 		for (int i = 0; i < nsel; i++)
@@ -7624,6 +7773,7 @@ register_key(AggExec *ex, int ki)
 	{
 		k->expr = ExecInitExpr((Expr *) sk->expr, EXPR_PARENT(ex));
 		k->param = find_param(sk->expr);
+		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
 	}
 	else if (sk->kind == SAK_NUM)
 	{
@@ -7716,7 +7866,7 @@ table_init(AggExec *ex)
 	for (int j = 0; j < s->nkeys; j++)
 	{
 		KeyState   *k = &ex->ks[j];
-		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk};
+		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket};
 
 		*k = keep;
 		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
@@ -7728,7 +7878,7 @@ table_init(AggExec *ex)
 				ident_add(ex, k, i);
 		else if (k->numk)
 			idmap_init(&k->im);
-		else if (s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64)
+		else if ((s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64) || k->bucket)
 			ident_go_wide(ex, k);
 	}
 	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */

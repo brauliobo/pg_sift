@@ -118,6 +118,7 @@ typedef struct SiftAggKey
 	int			leaf;			/* SAK_COMBO: the combo */
 	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
+	int			bucket;			/* SAK_LUT of a timestamp leaf: the expression is the same within this many seconds, so it is evaluated once per bucket of rows */
 	SiftAggNum	num;			/* SAK_NUM */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;
