@@ -408,6 +408,16 @@ col_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
 }
 
+static uint32
+col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	SiftColZone cz;
+	uint32		n = sift_col_zone_range(((ColSource *) impl)->cs, leaf, lo, hi, &cz);
+
+	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
+	return n;
+}
+
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
@@ -881,6 +891,7 @@ static const SiftSrcProvider col_provider = {
 	.select = col_select,
 	.tids = col_tids,
 	.zone = col_zone,
+	.zone_range = col_zone_range,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
