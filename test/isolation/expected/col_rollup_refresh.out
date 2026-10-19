@@ -1,0 +1,88 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1q s3q s3r s3n s1r
+step s1q: SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, agree FROM iso_ru_q();
+none_from_rollups|all_missing|all_queued|agree
+-----------------+-----------+----------+-----
+t                |t          |t         |t    
+(1 row)
+
+step s3q: SELECT count(*) > 0 AS waiting FROM sift.col_rollup_requests;
+waiting
+-------
+t      
+(1 row)
+
+step s3r: SELECT sift.col_rollup_refresh('iso_ru_idx') > 0 AS refreshed;
+refreshed
+---------
+t        
+(1 row)
+
+step s3n: SELECT count(*) AS waiting FROM sift.col_rollup_requests;
+waiting
+-------
+      0
+(1 row)
+
+step s1r: SELECT pre = units AS all_from_rollups, miss AS missing, agree FROM iso_ru_q();
+all_from_rollups|missing|agree
+----------------+-------+-----
+t               |      0|t    
+(1 row)
+
+
+starting permutation: s1q s2b s2u s3r s2c s1d
+step s1q: SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, agree FROM iso_ru_q();
+none_from_rollups|all_missing|all_queued|agree
+-----------------+-----------+----------+-----
+t                |t          |t         |t    
+(1 row)
+
+step s2b: BEGIN;
+step s2u: UPDATE iso_ru SET lines = jsonb_build_array(jsonb_build_object('a', 'a1', 'b', 'b1', 'q', 5)) WHERE id <= 1000;
+step s3r: SELECT sift.col_rollup_refresh('iso_ru_idx') > 0 AS refreshed;
+refreshed
+---------
+t        
+(1 row)
+
+step s2c: COMMIT;
+step s1d: SELECT pre < units AS some_scanned, pre > 0 AS some_from_rollups, miss AS missing, agree FROM iso_ru_q();
+some_scanned|some_from_rollups|missing|agree
+------------+-----------------+-------+-----
+t           |t                |      0|t    
+(1 row)
+
+
+starting permutation: s1q s3r s3r s3n s1r
+step s1q: SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, agree FROM iso_ru_q();
+none_from_rollups|all_missing|all_queued|agree
+-----------------+-----------+----------+-----
+t                |t          |t         |t    
+(1 row)
+
+step s3r: SELECT sift.col_rollup_refresh('iso_ru_idx') > 0 AS refreshed;
+refreshed
+---------
+t        
+(1 row)
+
+step s3r: SELECT sift.col_rollup_refresh('iso_ru_idx') > 0 AS refreshed;
+refreshed
+---------
+f        
+(1 row)
+
+step s3n: SELECT count(*) AS waiting FROM sift.col_rollup_requests;
+waiting
+-------
+      0
+(1 row)
+
+step s1r: SELECT pre = units AS all_from_rollups, miss AS missing, agree FROM iso_ru_q();
+all_from_rollups|missing|agree
+----------------+-------+-----
+t               |      0|t    
+(1 row)
+

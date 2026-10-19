@@ -133,6 +133,9 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 
 	for (int d = 0; d < w->pagg.ndims; d++)
 		dim[w->pagg.dim[d].leaf] = true;
+	for (int r = 0; r < w->pagg.nrollups; r++)
+		for (int d = 0; d < w->pagg.rollup[r].ndims; d++)
+			dim[w->pagg.rollup[r].dim[d]] = true;
 	for (int c = 0; c < ncols; c++)
 	{
 		const SiftCVals *v = &b->col[c];
@@ -1023,14 +1026,11 @@ sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len)
 }
 
 const uint8 *
-sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
+sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len)
 {
-	int			list = seg->schema->cols[dim].parent;
 	const uint8 *e;
 	uint32		elen;
 
-	if (list < 0)
-		return sift_cseg_cube(seg, u, len);
 	e = sift_cseg_ecube(seg, u, &elen);
 	if (e == NULL)
 	{
@@ -1039,8 +1039,16 @@ sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
 	}
 	e = sift_cpagg_elem_cube(seg->schema, e, elen, list, len);
 	if (*len == UINT32_MAX)
-		corrupt(seg, "The element cubes of unit %u do not decode.", u);
+		corrupt(seg, "The rollups of unit %u do not decode.", u);
 	return e;
+}
+
+const uint8 *
+sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
+{
+	int			list = seg->schema->cols[dim].parent;
+
+	return list < 0 ? sift_cseg_cube(seg, u, len) : sift_cseg_rollup(seg, u, list, len);
 }
 
 uint64

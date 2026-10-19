@@ -47,11 +47,11 @@ INSERT INTO pa_q VALUES
 	(12, 'zone covers some', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 15000 GROUP BY 1'),
 	(13, 'zone and test',    'SELECT e.kind, sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 15000 AND e.kind <> ''k0'' GROUP BY 1'),
 	(14, 'row test: scan',   'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.grp = 3 GROUP BY 1'),
-	(15, 'other leaf: scan', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n = 2 GROUP BY 1'),
-	(16, 'two keys: scan',   'SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
-	(17, 'min max: scan',    'SELECT e.kind, min(e.n), max(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(15, 'other leaf', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n = 2 GROUP BY 1'),
+	(16, 'two keys',   'SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
+	(17, 'min max',    'SELECT e.kind, min(e.n), max(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
 	(18, 'row key: scan',    'SELECT d.grp, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
-	(19, 'no key: scan',     'SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8)'),
+	(19, 'no key',     'SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8)'),
 	(20, 'distinct: scan',   'SELECT e.kind, count(DISTINCT d.id) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
 	(21, 'having, limit',    'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1 HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 3'),
 	(22, 'array elements',   'SELECT e.v->>''kind'', count(*), sum((e.v->>''n'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
@@ -102,7 +102,7 @@ INSERT INTO a3 SELECT * FROM ae;
 CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096,
-	      preagg = 'cube(grp: id; items[].kind: items[].n, items[].score; items[].n: items[].score; tags[])');
+	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
 CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off');
 SET sift.col_format_minor = 3;
@@ -139,11 +139,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | all  | t
+ 16 | two keys         | all  | t
+ 17 | min max          | all  | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | all  | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | all  | t
  22 | array elements   | all  | t
@@ -164,16 +164,16 @@ SELECT * FROM pa_check('ae');
   7 | key in list      | some | t
   8 | null key         | some | t
   9 | text prefix      | some | t
- 10 | int compare      | all  | t
+ 10 | int compare      | some | t
  11 | zone covers all  | some | t
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | some | t
+ 16 | two keys         | some | t
+ 17 | min max          | some | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | all  | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | some | t
  22 | array elements   | some | t
@@ -191,7 +191,7 @@ SELECT * FROM pa_sum('ao');
 SELECT * FROM pa_sum('a3');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       0 |        0 |     19
+      25 |      0 |       0 |        0 |     23
 (1 row)
 
 SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
@@ -231,11 +231,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | some | t
+ 16 | two keys         | some | t
+ 17 | min max          | some | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | some | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | some | t
  22 | array elements   | some | t
@@ -247,13 +247,13 @@ SELECT * FROM pa_check('ac');
 SELECT * FROM pa_sum('ae');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       0 |       18 |      1
+      25 |      0 |       0 |       18 |      5
 (1 row)
 
 SELECT * FROM pa_sum('a3');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       0 |        0 |     19
+      25 |      0 |       0 |        0 |     23
 (1 row)
 
 -- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
@@ -275,11 +275,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | some | t
+ 16 | two keys         | some | t
+ 17 | min max          | some | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | some | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | some | t
  22 | array elements   | some | t
@@ -308,11 +308,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | some | t
+ 16 | two keys         | some | t
+ 17 | min max          | some | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | some | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | some | t
  22 | array elements   | some | t
@@ -345,11 +345,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | some | t
+ 16 | two keys         | some | t
+ 17 | min max          | some | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | some | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | some | t
  22 | array elements   | some | t
@@ -389,11 +389,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | all  | t
+ 16 | two keys         | all  | t
+ 17 | min max          | all  | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | all  | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | all  | t
  22 | array elements   | all  | t
@@ -437,11 +437,11 @@ SELECT * FROM pa_check('ac');
  12 | zone covers some | some | t
  13 | zone and test    | some | t
  14 | row test: scan   | none | t
- 15 | other leaf: scan | -    | t
- 16 | two keys: scan   | -    | t
- 17 | min max: scan    | -    | t
+ 15 | other leaf       | all  | t
+ 16 | two keys         | all  | t
+ 17 | min max          | all  | t
  18 | row key: scan    | -    | t
- 19 | no key: scan     | -    | t
+ 19 | no key           | all  | t
  20 | distinct: scan   | -    | t
  21 | having, limit    | all  | t
  22 | array elements   | all  | t
@@ -484,7 +484,7 @@ SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       0 |       16 |      3
+      25 |      0 |       0 |       20 |      3
 (1 row)
 
 REINDEX INDEX a3_col;
@@ -497,7 +497,7 @@ SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col
 SELECT * FROM pa_sum('a3');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       3 |       15 |      1
+      25 |      0 |       3 |       19 |      1
 (1 row)
 
 -- 8. the index without cubes: every unit is scanned

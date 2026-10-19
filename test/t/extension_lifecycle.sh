@@ -56,7 +56,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((33 + $(wc -w <<<"$DBS")))
+plan $((35 + $(wc -w <<<"$DBS")))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -143,6 +143,9 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE fresh31" >/dev/null
 	q life fresh31 "CREATE EXTENSION pg_sift" >/dev/null
 	check "3.0 updated to 3.1 has the objects of a fresh 3.1 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh31 "$MEMBERS")"
+	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
+	check "the rollup refresh views exist after a fresh 3.1 install" test "$(q life fresh31 "$ROLLUPSQL")" == t
+	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.1" test "$(q life upg "$ROLLUPSQL")" == t
 	check "the segment views list the format of the 3.0 segments and of the new ones" test "$(q life upg \
 		"SELECT (SELECT string_agg(DISTINCT format::text, ',') FROM sift.col_segments('colt_col') WHERE kind = 'immutable') || ' ' || (SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl') WHERE kind = 'columns')")" == "3 3"
 	check "the sift_table written by 3.0 answers the same after the update" test "$(q life upg "$TBLQ" | tail -n 1)" == "$TBL0"

@@ -438,16 +438,27 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
 
+/* How the pre-aggregates answer a scan: the histogram of dim of the cube (-1: the sums of the leaves), or the rollup of the list leaf list */
+typedef struct SiftAggPaShape
+{
+	int			dim;
+	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
+	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
+	int			rdim[SIFT_SRC_MAX_RDIMS];
+	int			nmeas;				/* ... and as measures */
+	int			rmeas[SIFT_SRC_MAX_MEAS];
+} SiftAggPaShape;
+
 /*
- * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, sift_colsrc.h SiftSrcUnitAgg)? A scan of one source
- * without joins, combos or sets, with at most one group key, that is a column of a histogram, and aggregates of the
- * stored measures: count(*), count(m), sum and avg of an integer or numeric m, and min and max when there is no key. Conjuncts on
- * other leaves must be zone comparisons (a unit answers when its zone lies inside them), the rest must test the key's leaf (or,
- * without a key, one leaf: dim). dim: that leaf, -1 when the unit's sums answer (no key, no such conjunct).
- * At element level (the elements of an array leaf) the key or the tested leaf is a scalar of the elements, the histogram is the
- * unit's element cube of that array (one count per element), and sum and avg of a float8 measure are answered too.
+ * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, sift_colsrc.h SiftSrcUnitAgg)? A scan of one source without joins, combos
+ * or sets. Over the rows: at most one group key, that is a column of a histogram, and aggregates of the stored measures: count(*), count(m), sum
+ * and avg of an integer or numeric m, and min and max when there is no key. Conjuncts on other leaves must be zone comparisons (a unit answers
+ * when its zone lies inside them), the rest must test the key's leaf (or, without a key, one leaf: dim).
+ * Over the elements of a list (an array of objects or scalars, a map): any number of group keys, conjuncts and count(leaf) over the dims of its
+ * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
+ * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
  */
-extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int *dim);
+extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);

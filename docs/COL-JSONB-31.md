@@ -3,7 +3,7 @@
 What the shredder (`docs/COL-SHRED.md`) gives today on arrays of objects, objects with dynamic keys, nested objects, arrays of scalars and
 mixed types, measured against plain PostgreSQL jsonb, GIN and ClickHouse arrays; the three shapes added in 3.1 and why three others stay
 in the normal plan; and proposals that need a decision (`sift_table` paths, column format minor 4). Section 4 is not implemented; of
-section 5 the type of an overflowing value (j16) is, the element cubes are not.
+section 5 the type of an overflowing value (j16) is, the element rollups are not.
 
 ## 1. Method
 
@@ -158,27 +158,31 @@ can hold the typed paths next to the exact bytes as it is.
   another layout are read side by side); `ALTER TABLE ... SET ACCESS METHOD` and dumps must carry the declaration (a function call after the
   data in the dump, or the extension table as a configuration table).
 
-## 5. Column format minor 4: element cubes and the type of a value (decided for 3.1)
+## 5. Column format minor 4: element rollups and the type of a value (decided for 3.1)
 
 The sidecar of a unit (`docs/COL-PREAGG.md`) keeps a histogram per top-level dimension with the count and the sum of up to three
 measures. A list-element dimension has none: `GROUP BY e.kind` with `count(*)` and `avg(e.score)` (j02, j17 without a per-document
 predicate) scans every element.
 
-- **Change.** Allow a dimension and its measures to be leaves of one group (`items[].kind` with `items[].score`): the histogram counts
-  elements, not rows. Same encoding, same cap (256 groups, 2% of the unit's encoded bytes, 4096 with an explicit `cube(...)`); a new
-  section kind in the `COLP` directory for the group the histogram counts. Segments of minor 3 stay readable: their units scan as today.
-  A minor 3 library refuses minor 4 segments (the existing `REINDEX` hint), which is why it is a format decision and not a patch; the decision is taken (section 5.2).
-- **Expected.** j02 and j17 at 100,000 documents from 5 ms to under 1 ms (28 units, a few microseconds each), and the cost grows with
-  the units, not the elements: 10,000,000 documents read about 2,800 sidecars. Queries with a predicate on another leaf are scanned as
-  now. The sidecar grows by at most the 2% budget (+1.2% measured for top-level cubes), the build by about 4%.
-- **Measured** (3.1, 100,000 documents, 28 units, all pages visible, one backend, `seq_page_cost = 10000`, best of 5, same rows from the
-  three plans): j02 324 ms (normal plan), 4.6 ms (`SiftAgg`, every unit scanned), **0.48 ms** from the element cubes (28 of 28 units, 9.5 times
-  faster than the scan). j17 groups by two leaves (`kind`, `flag`), which a depth-1 cube cannot answer: it stays at 4.3 to 4.8 ms
-  (the scan); the same question with the one key `kind` and the `HAVING` (`bench/sql/jsonb`, j17 with `GROUP BY 1`) goes from 4.2 to 0.60 ms.
-  A depth-2 cube (`kind, flag`) is the work that would answer j17; it is not in 3.1. The sidecar of the index goes from 37,984 to 41,872
-  bytes (+139 bytes per unit, 1.7% of the 2,456 kB index); `CREATE INDEX` (median of 5) takes 0.31 s serial and 0.20 s with two workers
-  without element cubes (`sift.col_format_minor = 3`) and 0.37 s and 0.20 s with them (+21% serial CPU on this tiny table, no difference
-  with workers).
+- **Change.** Per unit and list (an array of objects, an array of scalars, a map) one **rollup**: the distinct tuples of the values of up to
+  6 low-cardinality leaves of the list (the dims) with the element count and, per numeric leaf (the measures), the non-NULL count, the sum, the
+  minimum and the maximum. The first design of this section was a depth-1 cube per dim, which answered one key and could not answer j17 (two
+  keys); the rollup answers any `GROUP BY` over a subset of the dims, any filter on them, and `count`, `sum`, `avg`, `min`, `max` by adding up the tuples
+  of the unit, and the dims of a list are named by the option `rollup = 'items[].kind, items[].sub'` (docs/COL-PREAGG.md 2). The default rule takes the
+  tuples of at most a 32nd of the unit's elements and drops the dim of most distinct values until they fit (j17's `kind, sub, flag` keep `kind, flag`),
+  inside its own 2% (at least 2 kB) of the unit's encoded bytes. A `COLP` directory version 2 holds it; segments of minor 3 stay readable and
+  their units scan as today. A minor 3 library refuses minor 4 segments (the existing `REINDEX` hint), which is why it is a format decision and not a patch (section 5.2).
+  The rollups of units written before an `ALTER INDEX ... SET (rollup = ...)` are rewritten on demand by a background worker (docs/COL-PREAGG.md 7).
+- **Measured** (3.1, `bench/sql/jsonb/rollup`, one backend, `seq_page_cost = 10000`, median of 21, a busy host so ±15%, the same rows from the
+  three plans; the whole table is in docs/COL-PREAGG.md 2). 100,000 documents, 28 units: j02 275 ms (normal plan), 3.1 ms (`SiftAgg`, every
+  unit scanned), 0.12 ms from the default rollups (0.09 ms from the depth-1 cubes it replaces); **j17** (two keys, `HAVING`) 290 ms, 3.9 ms scanned,
+  **0.13 to 0.22 ms** from the rollups, where the depth-1 cube could not answer it (3.4 to 4.8 ms). 1,000,000 documents, 276 units: j02 1,734 ms, 28.9 ms,
+  2.0 to 2.9 ms; j17 1,975 ms, 33.0 ms, **1.3 to 1.9 ms**. A question by all three dims (`kind, sub, flag`, 1,440 groups, j17c) is answered by the default
+  rollup only for the dims it keeps; with `rollup = 'items[].kind, items[].sub, items[].flag'` it is 8.9 to 2.2 ms (100,000) and 63 to 14 ms (1 M),
+  for 43 kB a unit (+49% of the index): the dims are for the questions that need them. Sidecar of the default index: 42,056 to 88,200 bytes at 100,000 documents,
+  410,040 to 872,072 at 1,000,000 (+1.7 kB a unit, +2.0% of the index); the serial `CREATE INDEX` costs +3.4% to +4.2% instructions over `rollup = 'off'`
+  at 1,000,000 documents (the +21% of the first cubes on this table was noise: docs/COL-PREAGG.md 2). After `ALTER INDEX ... SET (rollup = ...)` on 1,000,000
+  documents the worker had every unit answering from the rollups 1.9 to 3.1 s later.
 - **Without a format change.** The exact leaf sums the sidecar already stores for the children of lists answer the ungrouped element
   aggregates (`count(*)`, `sum(e.score)`, `avg(e.score)` with no filter) from metadata; the executor's pre-aggregate shape rules today
   exclude an unnest. That is a coverage change on the engine side and is left to that track.
@@ -203,14 +207,14 @@ predicate) scans every element.
   its values: the filter keeps the rows of a type and cannot give their values. The error is raised for the rows the filter keeps that a
   snapshot sees, before the other conjuncts of the source run. An overflow slot with tag 0 (written before minor 4 and carried by a merge)
   raises the error with the hint `REINDEX`, since the type of that value is not known.
-- **Element cubes** (j02, j17): the sidecar's histograms for a dimension that is a leaf of a list group (section above). The `COLP`
-  directory moves to version 2: per unit, after the top-level cube, a second blob with the element cubes, each naming its group; a
-  version 1 directory (minor 3) has none and its units scan as today. The default budget (2% of the unit's encoded bytes, at least 2 kB) is
-  shared by both kinds, the smallest histograms first; `cube(items[].kind: items[].score)` names an element cube explicitly (no budget).
-  The rows of an element histogram are the elements of the group (an element that is not an object is a row with NULL members, as the
-  unnest produces it), so `count(*)` of the unnest is the sum of the group counts. A unit whose list overflowed (a value that is not an
-  array, a list cut by the shredder) has no element cubes of that list; a unit with an overflow value in the dimension has no histogram of
-  it; a measure that overflowed is left out of the histograms of its dimension and the others stay (a query that needs it scans that unit).
+- **Element rollups** (j02, j17): the sidecar's rollup of the leaves of a list group (section above). The `COLP`
+  directory moves to version 2: per unit, after the top-level cube, a second blob with one rollup per list, each naming its dims and measures, so units of one
+  index may hold different dims; a version 1 directory (minor 3) has none and its units scan as today. A default rollup has its own budget
+  of 2% of the unit's encoded bytes (at least 2 kB) a list, apart from the cube's; the option `rollup` (or the clause `rollup(items[].kind, items[].sub: items[].score)` of `preagg`)
+  names the dims and takes up to 4096 tuples with no budget. The rows of a rollup are the elements of the group (an element that is not an object is a tuple with
+  NULL members, as the unnest produces it), so `count(*)` of the unnest is the sum of the counts. A unit whose list overflowed (a value that is not an
+  array, a list cut by the shredder) has no rollup of that list; a dim with an overflow value is left out of the dims of the unit; a measure that overflowed is left out of the
+  measures and the others stay (a query that needs it scans that unit and asks for a refresh).
 
 - **Not done: depth 2 (j17, two group keys).** `GROUP BY kind, flag` is not answered by a depth-1 cube (4.8 ms, scanned). On the benchmark
   documents (387,593 elements, 12 kinds, 3 flags, 36 pairs, 40 subs, 480 kind and sub pairs) a pair cube stores 36 groups against 12 for the
@@ -233,7 +237,7 @@ predicate) scans every element.
 - **Going back.** A 3.0.x library refuses a minor 4 segment when it opens it (`index "..." has a segment of column format 1.4, this build
   reads 1.3`, hint `Use a newer pg_sift, or REINDEX`) and the directory update of a 3.0.x writer refuses the index ("unknown segment
   format"). Nothing is damaged. The way back for a `sift_col` index is `REINDEX` on 3.0.x. For a `sift_table`, which cannot be reindexed, the
-  setting `sift.col_format_minor = 3` (superuser, default 4) makes every segment written afterwards minor 3 (no tags, no element cubes): set
+  setting `sift.col_format_minor = 3` (superuser, default 4) makes every segment written afterwards minor 3 (no tags, no element rollups): set
   it in `postgresql.conf` before the first write, or before an `ALTER TABLE ... SET ACCESS METHOD` rewrite, when the data must stay readable
   by 3.0.x (a standby that is updated later is the same case: a standby on 3.0.x cannot read minor 4 segments shipped by the primary).
   Its other use is the test that reads minor 3 and minor 4 side by side.
@@ -261,4 +265,5 @@ createdb jb && psql jb -c 'CREATE EXTENSION pg_sift'
 psql jb -v n=100000 -v strs=0 -f bench/sql/jsonb/gen.sql -f bench/sql/jsonb/index.sql
 # each bench/sql/jsonb/queries/*.sql with sift.enable_agg on and off, max_parallel_workers_per_gather = 0
 # j16 needs the mixed key as a leaf: bench/sql/jsonb/index_typeof.sql instead of index.sql (the same, plus attrs.mixed float8)
+# the element rollups (build time, sidecar bytes, j02/j17/j17b/j17c/j17d three ways, the on-demand refresh): bench/sql/jsonb/rollup/run.sql and ondemand.sh (usage in their headers)
 ```

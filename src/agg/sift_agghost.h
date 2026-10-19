@@ -16,7 +16,7 @@ sift_agg_fold_sums(void *host, const SiftAggUnitSums *r)
 
 	if (r->keys)
 	{
-		preagg_key_ids(ex, r->keys, r->kept, r->nkept, ids);
+		preagg_key_ids(ex, 0, r->keys->key, NULL, r->keys->ngroups - r->keys->has_null, r->keys->dict, r->kept, r->nkept, ids);
 		ids_to_gids(ex, r->nkept, ids, gid);
 	}
 	for (int j = 0; j < r->nkept; j++)

@@ -22,6 +22,19 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 			pa->dim[pa->ndims].meas[m] = spec->dim[d].meas[m];
 		pa->ndims++;
 	}
+	for (int r = 0; r < spec->nrollups; r++)
+	{
+		const SiftCPaggRollup *ru = &spec->rollup[r];
+
+		pa->rollup[pa->nrollups].list = ru->list;
+		pa->rollup[pa->nrollups].ndims = ru->ndims;
+		pa->rollup[pa->nrollups].nmeas = ru->nmeas;
+		for (int j = 0; j < ru->ndims; j++)
+			pa->rollup[pa->nrollups].dim[j] = ru->dim[j];
+		for (int m = 0; m < ru->nmeas; m++)
+			pa->rollup[pa->nrollups].meas[m] = ru->meas[m];
+		pa->nrollups++;
+	}
 }
 
 void

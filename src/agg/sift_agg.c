@@ -731,10 +731,13 @@ typedef struct AggExec
 	uint32	   *tmpu32;
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
-	int			pa_dim;			/* the leaf of the histograms that answer it, -1: the sums of the leaves */
+	bool		pa_miss;		/* the last preagg_rollup failed for lack of a rollup, a dim or a measure (not for the values in the unit) */
+	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */
 	/* counters */
 	int64		n_units;
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
+	int64		n_rollup_miss;	/* exact units scanned for lack of their rollup, and of them those a refresh was queued for */
+	int64		n_rollup_queued;
 	int64		n_rows;			/* of the others */
 	int64		n_tuples;
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
@@ -7638,6 +7641,8 @@ typedef struct PaVal
 	int64		min;
 	int64		max;
 	double		sumf;			/* the sum of a float8 argument */
+	double		minf;			/* the smallest and the largest float8 argument */
+	double		maxf;
 } PaVal;
 
 /* the leaf an aggregate reads: its column, the only leaf of its numeric program; -1: count(*) */
@@ -7685,7 +7690,14 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 				int64		x = ismin ? v->min : v->max;
 				sift_i128	cur = a->num.n ? acc->w[g] : acc->i[g];
 
-				if (acc->n[g] == 0 || (ismin ? x < cur : x > cur))
+				if (ex->lay->leaf[pa_leaf(a)].vtype == SCV_F64)
+				{
+					double		f = ismin ? v->minf : v->maxf;
+
+					if (acc->n[g] == 0 || (ismin ? float8_cmp_internal(f, acc->d[g]) < 0 : float8_cmp_internal(f, acc->d[g]) > 0))
+						acc->d[g] = f;
+				}
+				else if (acc->n[g] == 0 || (ismin ? x < cur : x > cur))
 				{
 					if (a->num.n)
 						acc->w[g] = x;
@@ -7715,7 +7727,7 @@ preagg_zones(AggExec *ex)
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
-		if (z->leaf != ex->pa_dim &&
+		if (z->leaf != ex->pa.dim &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
 	}
@@ -7761,7 +7773,7 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 
 	for (int i = 0; i < s->npred; i++)
 	{
-		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase, s->group) != ex->pa_dim)
+		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase, s->group) != ex->pa.dim)
 			continue;
 		if (keep == NULL)
 		{
@@ -7777,8 +7789,8 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 				isnull[ng - 1] = 1;
 				data[ng - 1] = h->dict ? h->dict->n : 0;
 			}
-			ex->uvec[ex->pa_dim] = (SiftSrcVec) {data, isnull, h->dict, ng, NULL};
-			ex->uvec_ok[ex->pa_dim] = true;
+			ex->uvec[ex->pa.dim] = (SiftSrcVec) {data, isnull, h->dict, ng, NULL};
+			ex->uvec_ok[ex->pa.dim] = true;
 		}
 		for (int st = 0; st < ng; st += VEC)
 		{
@@ -7789,60 +7801,84 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
 		}
 	}
-	ex->uvec_ok[ex->pa_dim] = false;
+	ex->uvec_ok[ex->pa.dim] = false;
 	return keep;
 }
 
-/* the ids of the key of the kept groups (the NULL group is the last one of h): the unit's dictionary entries, or the integers */
+/*
+ * The ids of key ki for the kept groups or tuples: the unit's dictionary entries, or the integers. A group is NULL when isnull[g] (NULL: the
+ * groups from nonnull on are, the NULL group of a histogram being its last)
+ */
 static void
-preagg_key_ids(AggExec *ex, const SiftSrcHist *h, const uint32 *kept, int nkept, uint32 *ids)
+preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept,
+			   uint32 *ids)
 {
-	KeyState   *k = &ex->ks[0];
-	int			nk = h->ngroups - h->has_null;
+	KeyState   *k = &ex->ks[ki];
 	int32		mn = PG_INT32_MAX,
 				mx = PG_INT32_MIN;
 	const uint32 *map = NULL;
 	bool		cover = false;
 
-	if (h->dict)
-		map = dict_kmap(ex, dict_slot(ex, h->dict), h->dict, 0);
-	for (int j = 0; j < nkept && !h->dict; j++)
-		if (kept[j] < nk)
+#define PA_NULL(g) (isnull ? isnull[g] : (g) >= nonnull)
+	if (dict)
+		map = dict_kmap(ex, dict_slot(ex, dict), dict, ki);
+	for (int j = 0; j < nkept && !dict; j++)
+		if (!PA_NULL(kept[j]))
 		{
-			mn = Min(mn, (int32) h->key[kept[j]]);
-			mx = Max(mx, (int32) h->key[kept[j]]);
+			mn = Min(mn, (int32) key[kept[j]]);
+			mx = Max(mx, (int32) key[kept[j]]);
 		}
-	if (!h->dict)
-		cover = key_cover(ex, 0, mn <= mx, mn, mx);
+	if (!dict)
+		cover = key_cover(ex, ki, mn <= mx, mn, mx);
 	for (int j = 0; j < nkept; j++)
 	{
-		int			g = kept[j];
+		uint32		g = kept[j];
 
-		if (h->dict)
-			ids[j] = map[g < nk ? (uint32) h->key[g] : h->dict->n];
-		else if (g >= nk)
+		if (dict)
+			ids[j] = map[PA_NULL(g) ? dict->n : (uint32) key[g]];
+		else if (PA_NULL(g))
 			ids[j] = 0;
 		else
-			ids[j] = cover ? ((const uint32 *) k->rt.tab)[(int32) h->key[g] - k->rt.lo] : ident_wide_id(ex, k, (int32) h->key[g]);
+			ids[j] = cover ? ((const uint32 *) k->rt.tab)[(int32) key[g] - k->rt.lo] : ident_wide_id(ex, k, (int32) key[g]);
 	}
+#undef PA_NULL
 }
 
-/* the groups of the table for tuples that have the key ids ids[] (one key): compute_gids for ids that are known */
+/* the groups of the table for n tuples that have the key ids ids[key * n + i]: compute_gids for ids that are known */
 static void
 ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid)
 {
-	if (!ex->hash && key_used(&ex->ks[0]) > ex->ks[0].cap)
-		direct_grow(ex);
+	int			nk = ex->spec->nkeys;
+
+	if (nk == 0)
+	{
+		memset(gid, 0, n * sizeof(uint32));
+		return;
+	}
+	for (int j = 0; j < nk && !ex->hash; j++)
+		if (key_used(&ex->ks[j]) > ex->ks[j].cap)
+		{
+			direct_grow(ex);
+			break;
+		}
 	if (!ex->hash)
 	{
 		for (int i = 0; i < n; i++)
-			gid[i] = ids[i] * ex->ks[0].mult;
+		{
+			uint32		g = 0;
+
+			for (int j = 0; j < nk; j++)
+				g += ids[(Size) j * n + i] * ex->ks[j].mult;
+			gid[i] = g;
+		}
 		return;
 	}
 	for (int i = 0; i < n; i++)
 	{
-		uint32		k[SIFT_AGG_MAX_KEYS] = {ids[i]};
+		uint32		k[SIFT_AGG_MAX_KEYS] = {0};
 
+		for (int j = 0; j < nk; j++)
+			k[j] = ids[(Size) j * n + i];
 		gid[i] = hash_group(ex, k);
 	}
 	if (ex->ngroups > ex->gcap)
@@ -7853,12 +7889,12 @@ ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid)
 #define PA_FLOAT_MAX	1e100
 
 static bool
-preagg_floats(AggExec *ex, int leaf)
+preagg_floats(AggExec *ex, int leaf, bool bounded)
 {
 	SiftSrcUnitAgg a;
 
 	return sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &a) && !a.has_nan &&
-		(a.nnull == a.nvals || (a.has_minmax && fabs(a.min_f) <= PA_FLOAT_MAX && fabs(a.max_f) <= PA_FLOAT_MAX));
+		(!bounded || a.nnull == a.nvals || (a.has_minmax && fabs(a.min_f) <= PA_FLOAT_MAX && fabs(a.max_f) <= PA_FLOAT_MAX));
 }
 
 /* the groups of the unit's histogram of the key's column, or of the column the conjuncts test (no key: one group) */
@@ -7875,20 +7911,20 @@ preagg_hist(AggExec *ex)
 	uint64	   *keep;
 	int			nkept = 0;
 
-	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa_dim, &h))
+	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim, &h))
 		return false;
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
 		int			leaf = pa_leaf(&s->agg[ai]);
 		int			m = 0;
 
-		while (leaf >= 0 && leaf != ex->pa_dim && m < h.nmeas && h.meas[m] != leaf)
+		while (leaf >= 0 && leaf != ex->pa.dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
-		if (leaf >= 0 && leaf != ex->pa_dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
+		if (leaf >= 0 && leaf != ex->pa.dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
 			return false;
-		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf))
+		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf, true))
 			return false;
-		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa_dim ? -2 : m;
+		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa.dim ? -2 : m;
 	}
 	keep = preagg_keep(ex, &h);
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
@@ -7898,10 +7934,8 @@ preagg_hist(AggExec *ex)
 	ids = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
 	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
 	if (s->nkeys == 1)
-	{
-		preagg_key_ids(ex, &h, kept, nkept, ids);
-		ids_to_gids(ex, nkept, ids, gid);
-	}
+		preagg_key_ids(ex, 0, h.key, NULL, h.ngroups - h.has_null, h.dict, kept, nkept, ids);
+	ids_to_gids(ex, nkept, ids, gid);
 	for (int j = 0; j < nkept; j++)
 	{
 		for (int ai = 0; ai < s->naggs; ai++)
@@ -7923,10 +7957,172 @@ preagg_hist(AggExec *ex)
 	return true;
 }
 
+/* the position of leaf among the dims of the rollup, -1 if it holds none */
+static int
+rollup_dim(const SiftSrcRollup *r, int leaf)
+{
+	for (int j = 0; j < r->ndims; j++)
+		if (r->dim[j] == leaf)
+			return j;
+	return -1;
+}
+
+/* the tuples of the rollup that pass the element conjuncts (a bitmap; NULL: all): they run on the tuples as on the elements, each dim's vector being the tuples' keys */
+static uint64 *
+rollup_keep(AggExec *ex, const SiftSrcRollup *r)
+{
+	SiftAggSpec *s = ex->spec;
+	int			nt = r->ntuples,
+				nw = (nt + 63) / 64;
+	uint64	   *keep = NULL;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		if (s->pred[i]->level != 1)
+			continue;
+		if (keep == NULL)
+		{
+			keep = MemoryContextAlloc(ex->ucxt, (nw + PADW) * sizeof(uint64));
+			fill_ones(keep, nt);
+			for (int d = 0; d < ex->pa.ndims; d++)
+			{
+				int			j = rollup_dim(r, ex->pa.rdim[d]);
+				uint32	   *data = (uint32 *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, nt * sizeof(uint32) + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+
+				for (int t = 0; t < nt; t++)
+					data[t] = r->isnull[j] && r->isnull[j][t] ? (r->dict[j] ? r->dict[j]->n : 0) : (uint32) r->key[j][t];
+				ex->uvec[ex->pa.rdim[d]] = (SiftSrcVec) {data, r->isnull[j], r->dict[j], nt, NULL};
+				ex->uvec_ok[ex->pa.rdim[d]] = true;
+			}
+		}
+		for (int st = 0; st < nt; st += VEC)
+		{
+			int			n = Min(VEC, nt - st);
+			uint64		t[VECW + PADW];
+
+			eval_pred(ex, s->pred[i], 1, st, n, t);
+			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
+		}
+	}
+	for (int d = 0; keep && d < ex->pa.ndims; d++)
+		ex->uvec_ok[ex->pa.rdim[d]] = false;
+	return keep;
+}
+
+/* The unit's rollup of the list: its tuples that pass the conjuncts, folded into the groups of the keys. false: the unit lacks a dim or a measure the query reads */
+static bool
+preagg_rollup(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcRollup r;
+	int		   *slot = MemoryContextAlloc(ex->ucxt, Max(s->naggs, 1) * sizeof(int));
+	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(PaVal));
+	uint32	   *kept,
+			   *ids,
+			   *gid;
+	uint64	   *keep;
+	int			nkept = 0;
+
+	ex->pa_miss = true;
+	if (!sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &r))
+		return false;
+	for (int d = 0; d < ex->pa.ndims; d++)
+		if (rollup_dim(&r, ex->pa.rdim[d]) < 0)
+			return false;
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+		int			leaf = pa_leaf(a),
+					m = 0;
+		bool		mm = a->kind == SAA_MIN || a->kind == SAA_MAX;
+
+		if (leaf < 0)
+		{
+			slot[ai] = -1;
+			continue;
+		}
+		if (a->kind == SAA_COUNT && rollup_dim(&r, leaf) >= 0)
+		{
+			slot[ai] = -2 - rollup_dim(&r, leaf);
+			continue;
+		}
+		while (m < r.nmeas && r.meas[m] != leaf)
+			m++;
+		if (m == r.nmeas)
+			return false;
+		if (ex->lay->leaf[leaf].vtype == SCV_F64 && a->kind != SAA_COUNT && !preagg_floats(ex, leaf, !mm))
+		{
+			ex->pa_miss = false;
+			return false;
+		}
+		slot[ai] = m;
+	}
+	keep = rollup_keep(ex, &r);
+	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
+	for (uint32 t = 0; t < r.ntuples; t++)
+		if (keep == NULL || sift_colsrc_bit(keep, t))
+			kept[nkept++] = t;
+	ids = MemoryContextAllocZero(ex->ucxt, Max((Size) nkept * s->nkeys, 1) * sizeof(uint32));
+	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
+	for (int k = 0; k < s->nkeys; k++)
+	{
+		int			j = rollup_dim(&r, s->key[k].leaf);
+
+		preagg_key_ids(ex, k, r.key[j], r.isnull[j], UINT32_MAX, r.dict[j], kept, nkept, ids + (Size) k * nkept);
+	}
+	ids_to_gids(ex, nkept, ids, gid);
+	for (int i = 0; i < nkept; i++)
+	{
+		uint32		t = kept[i];
+
+		for (int ai = 0; ai < s->naggs; ai++)
+		{
+			int			m = slot[ai];
+
+			v[ai] = (PaVal) {.rows = r.count[t], .nn = r.count[t]};
+			if (m <= -2)
+				v[ai].nn = r.isnull[-2 - m] && r.isnull[-2 - m][t] ? 0 : r.count[t];
+			else if (m >= 0)
+			{
+				v[ai].nn = r.nn[m][t];
+				v[ai].has_mm = r.nn[m][t] > 0;
+				if (r.sum[m])
+					v[ai].sum = r.sum[m][t];
+				if (r.sumf[m])
+					v[ai].sumf = r.sumf[m][t];
+				if (r.min[m])
+				{
+					v[ai].min = r.min[m][t];
+					v[ai].max = r.max[m][t];
+				}
+				if (r.minf[m])
+				{
+					v[ai].minf = r.minf[m][t];
+					v[ai].maxf = r.maxf[m][t];
+				}
+			}
+		}
+		preagg_fold(ex, gid[i], r.count[t], v);
+	}
+	return true;
+}
+
 static bool
 preagg_unit(AggExec *ex)
 {
-	return sift_colsrc_unit_exact(ex->src, &ex->unit) && preagg_zones(ex) && (ex->pa_dim < 0 ? preagg_sums(ex) : preagg_hist(ex));
+	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || !preagg_zones(ex))
+		return false;
+	if (ex->pa.list < 0)
+		return ex->pa.dim < 0 ? preagg_sums(ex) : preagg_hist(ex);
+	if (preagg_rollup(ex))
+		return true;
+	/* the unit is clean but its rollup lacks something: scan it now, and ask for the rollup it should have */
+	if (ex->pa_miss)
+	{
+		ex->n_rollup_miss++;
+		ex->n_rollup_queued += sift_colsrc_unit_rollup_miss(ex->src, &ex->unit);
+	}
+	return false;
 }
 
 static void
@@ -7938,7 +8134,7 @@ preagg_init(AggExec *ex)
 	if (!sift_agg_preagg)
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
-	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa_dim);
+	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
 		ex->pa_on &= !ex->ps[p->id].cnull;
@@ -9452,6 +9648,8 @@ typedef struct WorkerDone
 	uint32		pad;
 	int64		n_units;
 	int64		n_pre_units;
+	int64		n_rollup_miss;
+	int64		n_rollup_queued;
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_dense;
@@ -9567,6 +9765,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	done.n_units = ex->n_units;
 	done.n_pre_units = ex->n_pre_units;
+	done.n_rollup_miss = ex->n_rollup_miss;
+	done.n_rollup_queued = ex->n_rollup_queued;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
 	done.n_dense = ex->n_dense;
@@ -9656,6 +9856,8 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 
 		ex->n_units += d->n_units;
 		ex->n_pre_units += d->n_pre_units;
+		ex->n_rollup_miss += d->n_rollup_miss;
+		ex->n_rollup_queued += d->n_rollup_queued;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		ex->n_dense += d->n_dense;
@@ -10401,6 +10603,27 @@ agg_rescan(CustomScanState *node)
 	ex->gpos = 0;
 }
 
+/* the dims and measures of the rollup that answers the scan */
+static void
+explain_pa_leaves(AggExec *ex, ExplainState *es)
+{
+	StringInfoData d,
+				m;
+
+	initStringInfo(&d);
+	initStringInfo(&m);
+	for (int i = 0; i < ex->pa.ndims; i++)
+		appendStringInfo(&d, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rdim[i]].name);
+	for (int i = 0; i < ex->pa.nmeas; i++)
+		appendStringInfo(&m, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rmeas[i]].name);
+	if (d.len > 0)
+		ExplainPropertyText("Pre-aggregate Dims", d.data, es);
+	if (m.len > 0)
+		ExplainPropertyText("Pre-aggregate Measures", m.data, es);
+	pfree(d.data);
+	pfree(m.data);
+}
+
 static void
 agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
@@ -10475,7 +10698,16 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)
+		{
 			ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
+			if (ex->pa.list >= 0)
+			{
+				explain_pa_leaves(ex, es);
+				ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
+				if (c->n_rollup_queued > 0)
+					ExplainPropertyInteger("Rollup Refresh Queued", NULL, c->n_rollup_queued, es);
+			}
+		}
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 		ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);

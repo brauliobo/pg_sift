@@ -83,7 +83,7 @@ $$;
 -- explicit cubes (no byte budget): every histogram the battery reads is in every unit that can hold it
 CREATE INDEX pe_col ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
-        preagg = 'cube(grp: id; items[].k: items[].x, items[].n, items[].w; items[].t: items[].x, items[].n; items[].n: items[].x; tags[]; m.*#key: m.*)');
+        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)');
 SELECT fmt('pe_col');
  fmt 
 -----
@@ -129,13 +129,13 @@ SELECT units_with('pe_col', 'items[].k', $$items @> '[{"k": 5}]'$$) AS k_number_
                 0 | t       |               0 | t       |               0 |               0 |              0
 (1 row)
 
--- more than 256 groups in a unit (the default cap; an explicit cube allows 4096): the dimension has no histogram there, the other leaves of the list keep theirs
+-- more tuples in a unit than the cap (a 32nd of the elements, at least 64; an explicit rollup allows 4096): a rollup drops the dimension of the most distinct values, the other leaves of the list keep theirs
 CREATE TABLE pc (id int, items jsonb, pad text);
 INSERT INTO pc SELECT g, jsonb_build_array(jsonb_build_object('k', CASE WHEN g <= 3000 THEN 'u' || lpad(g::text, 5, '0') ELSE 'k' || g % 5 END, 't', 't' || g % 3)),
        repeat('x', 300) FROM generate_series(1, 12000) g;
 VACUUM (FREEZE, ANALYZE) pc;
 CREATE INDEX pc_col ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}');
-CREATE INDEX pc_cube ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', preagg = 'cube(items[].k)');
+CREATE INDEX pc_cube ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', preagg = 'rollup(items[].k)');
 SELECT (SELECT count(DISTINCT sb) FROM sift.col_unit_agg('pc_col', 'id')) AS units,
        (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('pc_col', 'items[].k')) AS units_with_k,
        (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('pc_col', 'items[].t')) AS units_with_t,
@@ -394,7 +394,7 @@ SELECT what, checked, bad FROM pe_battery('pe_col');
 SET sift.col_format_minor = 3;
 CREATE INDEX pe_col3 ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
-        preagg = 'cube(grp: id; items[].k: items[].x, items[].n, items[].w; items[].t: items[].x, items[].n; items[].n: items[].x; tags[]; m.*#key: m.*)');
+        preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)');
 RESET sift.col_format_minor;
 SELECT fmt('pe_col3');
  fmt 
@@ -443,7 +443,7 @@ SELECT sift.col_verify('pe_col3', true);
 (1 row)
 
 DROP INDEX pe_col3;
--- the default: the cube and the element cubes of a unit share the byte budget (2% of the unit, at least 2 kB), the smallest histograms first, and
+-- the default: the cube and the rollups of a unit share the byte budget (2% of the unit, at least 2 kB), the cube first, a rollup drops its dimension of the most distinct values until it fits, and
 -- the same bytes come out every time
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX pe_def ON pe USING sift_col (id, grp, items, tags, m) WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4');
@@ -461,7 +461,7 @@ SELECT what, checked, bad FROM pe_battery('pe_def');
  k/w  | t       |   0
  k    | t       |   0
  t/x  | t       |   0
- n/x  | t       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -501,18 +501,18 @@ SELECT sift.col_verify('pe_def', true);
 DROP INDEX pe_def;
 RESET max_parallel_maintenance_workers;
 -- options: the names of the lists' leaves, a measure of another list, a list inside a list
-CREATE INDEX pe_bad1 ON pe USING sift_col (id, items, tags) WITH (paths = 'items[]{k text, x float8}, tags[] text', preagg = 'cube(items[].k: tags[])');
-ERROR:  invalid preagg option: cube measure "tags[]" is not a column of the same list as the dimension "items[].k"
+CREATE INDEX pe_bad1 ON pe USING sift_col (id, items, tags) WITH (paths = 'items[]{k text, x float8}, tags[] text', preagg = 'rollup(items[].k: tags[])');
+ERROR:  invalid preagg option: rollup measure "tags[]" is not a column of the same list as the dimension "items[].k"
 CREATE INDEX pe_bad2 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(id: items[].x)');
 ERROR:  invalid preagg option: cube measure "items[].x" is not a column of the same list as the dimension "id"
-CREATE INDEX pe_bad3 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(items[].x)');
-ERROR:  invalid preagg option: cube dimension "items[].x" must be a scalar integer, date, numeric or text column
-CREATE INDEX pe_bad4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(items[].nosuch)');
-ERROR:  invalid preagg option: cube dimension "items[].nosuch" is not a column of the index
-CREATE INDEX pe_bad5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(items[]: items[].x)');
-ERROR:  invalid preagg option: cube dimension "items[]" is not a column of the index
-CREATE INDEX pe_bad6 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(items[].k: ');
-ERROR:  invalid preagg option "cube(items[].k: ": a measure name is missing
+CREATE INDEX pe_bad3 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].x)');
+ERROR:  invalid preagg option: rollup dimension "items[].x" must be an integer, date, numeric or text leaf of a list
+CREATE INDEX pe_bad4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].nosuch)');
+ERROR:  invalid preagg option: rollup dimension "items[].nosuch" is not a column of the index
+CREATE INDEX pe_bad5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[]: items[].x)');
+ERROR:  invalid preagg option: rollup dimension "items[]" is not a column of the index
+CREATE INDEX pe_bad6 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].k: ');
+ERROR:  invalid preagg option "rollup(items[].k: ": a measure name is missing
 -- a list inside a list is not an index (the cubes are depth 1 because the index is)
 CREATE INDEX pe_nest ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, sub[]{z int4}}');
 ERROR:  sift_col holds one level of arrays and objects: "items[].sub[]" is nested in another
