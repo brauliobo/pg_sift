@@ -4,7 +4,8 @@
  *
  * CustomScan layout (both SiftScan and SiftCount):
  *   custom_private = list of Const/Integer nodes, see SiftPrivateField
- *   custom_exprs   = the query right-hand sides (Const or Param), ANDed
+ *   custom_exprs   = four lists: the query right-hand sides (Const or Param), ANDed; the residual quals; the LIMIT
+ *                    (OFFSET) Params of a generic plan; the leading sort keys of a keyed scan (SIFT_PRIV_KEYOPS)
  *   custom_scan_tlist:
  *     SiftScan:  needed Vars of the rel, then every sift.score/max_score
  *                expression of the rel (setrefs maps them to INDEX_VAR;
@@ -20,7 +21,7 @@
 typedef enum SiftScanMode
 {
 	SIFT_MODE_UNORDERED,		/* heap order, optional scores */
-	SIFT_MODE_RANKED,			/* descending score, k hint */
+	SIFT_MODE_RANKED,			/* descending score, k hint; with leading sort keys, by them and then descending score */
 	SIFT_MODE_COUNT				/* scanrelid 0, one row of counts */
 } SiftScanMode;
 
@@ -32,6 +33,7 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_HEAP_OID,			/* Oid of the scanned heap */
 	SIFT_PRIV_GATE,				/* float8: matches from which the scan builds its filter bitmap child, 0 = from the start */
 	SIFT_PRIV_GATE_TO,			/* float8: ... and up to which, infinity = to the end */
+	SIFT_PRIV_KEYOPS,			/* List of Const, three per leading sort key: its ordering operator, collation and NULLS FIRST (nil: ranked by score alone) */
 	SIFT_NPRIV
 } SiftPrivateField;
 

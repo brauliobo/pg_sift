@@ -161,6 +161,9 @@ extern bool sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score);
 extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs the search */
 extern void sift_rank_end(SiftRanker *r);
 
+/* The k of the search after one of k hits that was not enough: it grows fast while the hits are few, slowly beyond */
+extern int64 sift_rank_next_k(int64 k);
+
 /*
  * Makes the ranker one of the participants of a parallel search (call before
  * the first sift_rank_next; k must be known). Its first search scores the

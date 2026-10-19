@@ -171,6 +171,8 @@ sift_plain_index_scans_restore(RelOptInfo *rel, uint64 saved)
 #define sift_count_search(scan)	do { if ((scan)->instrument) (scan)->instrument->nsearches++; } while (0)
 
 #define sift_pathkey_descending(pk)	((pk)->pk_cmptype == COMPARE_GT)
+/* The operator that orders values of type typ as the pathkey does (make_sort_from_pathkeys) */
+#define sift_pathkey_sortop(pk, typ)	get_opfamily_member_for_cmptype((pk)->pk_opfamily, (typ), (typ), (pk)->pk_cmptype)
 
 /* One page of a TIDBitmap: block, lossy, and the offsets of an exact page */
 typedef TBMPrivateIterator SiftTbmIter;
@@ -197,6 +199,7 @@ sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *
 
 #define sift_count_search(scan)		((void) 0)
 #define sift_pathkey_descending(pk)	((pk)->pk_strategy == BTGreaterStrategyNumber)
+#define sift_pathkey_sortop(pk, typ)	get_opfamily_member((pk)->pk_opfamily, (typ), (typ), (pk)->pk_strategy)
 
 typedef TBMIterator SiftTbmIter;
 
