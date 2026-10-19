@@ -134,6 +134,15 @@ INSERT INTO fc_q VALUES
 			WHERE title @@> 'wireless' AND ((qty >= 25 AND qty < 50) OR (qty >= 50 AND qty < 75))) g GROUP BY k
 		  UNION ALL $$ || fc_terms('category', 'category', $$title @@> 'wireless' AND ((qty >= 25 AND qty < 50) OR (qty >= 50 AND qty < 75)) AND date_trunc('month', added::timestamp) = '2024-03-01'$$),
 		$$title @@> 'wireless' AND ((qty >= 25 AND qty < 50) OR (qty >= 50 AND qty < 75)) AND date_trunc('month', added::timestamp) = '2024-03-01'$$);
+INSERT INTO fc_q VALUES
+	('range_missing', 'wireless OR wired', '[{"name": "p", "expr": "price", "edges": [100], "missing": true}, {"name": "q", "expr": "qty", "edges": [20, 60], "missing": true}]', NULL,
+		$$SELECT 'p', 'bucket', '[,100)', NULL, '100', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price < 100
+		  UNION ALL SELECT 'p', 'bucket', '[100,)', '100', NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price >= 100
+		  UNION ALL SELECT 'p', 'missing', NULL, NULL, NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price IS NULL HAVING count(*) > 0
+		  UNION ALL SELECT 'q', 'bucket', '[,20)', NULL, '20', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty < 20
+		  UNION ALL SELECT 'q', 'bucket', '[20,60)', '20', '60', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty >= 20 AND qty < 60
+		  UNION ALL SELECT 'q', 'bucket', '[60,)', '60', NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty >= 60
+		  UNION ALL SELECT 'q', 'missing', NULL, NULL, NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty IS NULL HAVING count(*) > 0$$, $$title @@> 'wireless OR wired'$$);
 CREATE FUNCTION fc_stage(name text, tbl regclass DEFAULT 'fc') RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
 	SELECT name, string_agg(tag || '=' || fc_check(tbl, q, facets, filt, ref, hitwh), E'\n' ORDER BY tag) FROM fc_q $$;
 SELECT * FROM fc_stage('build');
@@ -149,13 +158,14 @@ NOTICE:  table "fc_c" does not exist, skipping
        | histogram=same/same 2 SiftAgg, 2 searching, 7 rows      +
        | histogram_fill=same/same 2 SiftAgg, 2 searching, 42 rows+
        | histogram_float=same/same 2 SiftAgg, 2 searching, 7 rows+
-       | many=same/same 3 SiftAgg, 3 searching, 35 rows          +
+       | many=same/same 7 SiftAgg, 7 searching, 35 rows          +
        | month=same/same 2 SiftAgg, 2 searching, 18 rows         +
-       | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+       | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
        | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
        | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
        | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
        | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+       | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
        | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
        | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
        | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -194,13 +204,13 @@ SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"name": "c", "expr
  c     | other |       | 7  |    |   307
 (3 rows)
 
--- the single scan of the facets of one search: four keys of GROUPING SETS at most; each facet that unnests an array has its own
+-- the scans of the statement: one per facet (the facets that count the same rows are not merged), the ranges with one WHERE share one
 SELECT (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", "category", "qty", "active", "added", "price"]'), ' MATERIALIZED ', 'g')) AS scans_of_six,
-	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", {"expr": "tags", "array": true}]'), ' MATERIALIZED ', 'g')) AS scans_with_array,
-	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '[{"expr": "brand", "selected": ["a"]}, {"expr": "category", "selected": [1]}, "qty"]'), ' MATERIALIZED ', 'g')) AS scans_drill;
- scans_of_six | scans_with_array | scans_drill 
---------------+------------------+-------------
-            2 |                2 |           3
+	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", {"expr": "price", "edges": [100]}, {"expr": "qty", "edges": [5, 9]}]'), ' MATERIALIZED ', 'g')) AS scans_with_ranges,
+	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '[{"expr": "brand", "selected": ["a"]}, {"expr": "price", "edges": [100], "selected": [0]}, {"expr": "qty", "edges": [5]}]'), ' MATERIALIZED ', 'g')) AS scans_drill;
+ scans_of_six | scans_with_ranges | scans_drill 
+--------------+-------------------+-------------
+            6 |                 2 |           3
 (1 row)
 
 -- the same facets over a table without a column index (the planner's plan) and over a sift_table (its own column scan)
@@ -229,6 +239,7 @@ SELECT * FROM fc_stage('no column index', 'fcn');
                  | quarter_fill=same/same 0 SiftAgg, 0 searching, 7 rows   +
                  | range=same/same 0 SiftAgg, 0 searching, 4 rows          +
                  | range_dates=same/same 0 SiftAgg, 0 searching, 4 rows    +
+                 | range_missing=same/same 0 SiftAgg, 0 searching, 7 rows  +
                  | terms_bool=same/same 0 SiftAgg, 0 searching, 4 rows     +
                  | terms_filter=same/same 0 SiftAgg, 0 searching, 10 rows  +
                  | terms_other=same/same 0 SiftAgg, 0 searching, 5 rows    +
@@ -247,13 +258,14 @@ SELECT * FROM fc_stage('sift_table', 'fct');
             | histogram=same/same 2 SiftAgg, 2 searching, 7 rows      +
             | histogram_fill=same/same 2 SiftAgg, 2 searching, 42 rows+
             | histogram_float=same/same 2 SiftAgg, 2 searching, 7 rows+
-            | many=same/same 3 SiftAgg, 3 searching, 35 rows          +
+            | many=same/same 7 SiftAgg, 7 searching, 35 rows          +
             | month=same/same 2 SiftAgg, 2 searching, 18 rows         +
-            | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+            | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
             | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
             | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
             | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
             | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+            | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
             | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
             | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
             | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -285,7 +297,7 @@ ERROR:  facet 1: "expr" or "name" is required
 SELECT * FROM sift.facet_counts('fc', NULL, 'wireless', '["brand"]');
 ERROR:  key: the indexed expression of the search is required with a query
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '["nope"]');
-ERROR:  column "nope" does not exist at character 40
+ERROR:  column "nope" does not exist at character 34
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"expr": "qty", "interval": 0.0001, "fill": true}]');
 ERROR:  a facet with "fill" would return more than 10000 buckets
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"expr": "ts", "unit": "second", "fill": true}]');
@@ -323,13 +335,14 @@ SELECT * FROM fc_stage('chunks of one superblock');
                           | histogram=same/same 2 SiftAgg, 2 searching, 7 rows      +
                           | histogram_fill=same/same 2 SiftAgg, 2 searching, 42 rows+
                           | histogram_float=same/same 2 SiftAgg, 2 searching, 7 rows+
-                          | many=same/same 3 SiftAgg, 3 searching, 35 rows          +
+                          | many=same/same 7 SiftAgg, 7 searching, 35 rows          +
                           | month=same/same 2 SiftAgg, 2 searching, 18 rows         +
-                          | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+                          | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
                           | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
                           | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
                           | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
                           | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+                          | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
                           | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
                           | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
                           | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -353,13 +366,14 @@ SELECT * FROM fc_stage('insert');
         | histogram=same/same 2 SiftAgg, 2 searching, 7 rows      +
         | histogram_fill=same/same 2 SiftAgg, 2 searching, 42 rows+
         | histogram_float=same/same 2 SiftAgg, 2 searching, 7 rows+
-        | many=same/same 3 SiftAgg, 3 searching, 35 rows          +
+        | many=same/same 7 SiftAgg, 7 searching, 35 rows          +
         | month=same/same 2 SiftAgg, 2 searching, 21 rows         +
-        | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+        | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
         | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
         | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
         | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
         | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+        | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
         | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
         | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
         | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -379,13 +393,14 @@ SELECT * FROM fc_stage('update');
         | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
         | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
         | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-        | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+        | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
         | month=same/same 2 SiftAgg, 2 searching, 23 rows         +
-        | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+        | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
         | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
         | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
         | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
         | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+        | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
         | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
         | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
         | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -405,13 +420,14 @@ SELECT * FROM fc_stage('delete');
         | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
         | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
         | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-        | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+        | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
         | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-        | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+        | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
         | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
         | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
         | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
         | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+        | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
         | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
         | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
         | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -433,13 +449,14 @@ SELECT * FROM fc_stage('own transaction');
                  | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
                  | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
                  | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-                 | many=same/same 3 SiftAgg, 3 searching, 37 rows          +
+                 | many=same/same 7 SiftAgg, 7 searching, 37 rows          +
                  | month=same/same 2 SiftAgg, 2 searching, 7 rows          +
-                 | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+                 | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
                  | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
                  | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
                  | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
                  | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+                 | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
                  | terms_bool=same/same 2 SiftAgg, 2 searching, 3 rows     +
                  | terms_filter=same/same 2 SiftAgg, 2 searching, 1 rows   +
                  | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -459,13 +476,14 @@ SELECT * FROM fc_stage('rollback');
           | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
           | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
           | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-          | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+          | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
           | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-          | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+          | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
           | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
           | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
           | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
           | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+          | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
           | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
           | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
           | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -485,13 +503,14 @@ SELECT * FROM fc_stage('vacuum');
         | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
         | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
         | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-        | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+        | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
         | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-        | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+        | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
         | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
         | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
         | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
         | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+        | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
         | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
         | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
         | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -516,13 +535,14 @@ SELECT * FROM fc_stage('promote');
          | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
          | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
          | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-         | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+         | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
          | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-         | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+         | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
          | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
          | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
          | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
          | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+         | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
          | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
          | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
          | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -547,13 +567,14 @@ SELECT * FROM fc_stage('merge');
        | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
        | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
        | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-       | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+       | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
        | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-       | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+       | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
        | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
        | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
        | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
        | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+       | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
        | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
        | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
        | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +
@@ -576,13 +597,14 @@ SELECT * FROM fc_stage('parallel');
           | histogram=same/same 2 SiftAgg, 2 searching, 8 rows      +
           | histogram_fill=same/same 2 SiftAgg, 2 searching, 52 rows+
           | histogram_float=same/same 2 SiftAgg, 2 searching, 9 rows+
-          | many=same/same 3 SiftAgg, 3 searching, 38 rows          +
+          | many=same/same 7 SiftAgg, 7 searching, 38 rows          +
           | month=same/same 2 SiftAgg, 2 searching, 6 rows          +
-          | no_match=same/same 2 SiftAgg, 2 searching, 3 rows       +
+          | no_match=same/same 3 SiftAgg, 3 searching, 3 rows       +
           | no_search=same/same 2 SiftAgg, 0 searching, 7 rows      +
           | quarter_fill=same/same 2 SiftAgg, 2 searching, 7 rows   +
           | range=same/same 2 SiftAgg, 2 searching, 4 rows          +
           | range_dates=same/same 2 SiftAgg, 2 searching, 4 rows    +
+          | range_missing=same/same 2 SiftAgg, 2 searching, 7 rows  +
           | terms_bool=same/same 2 SiftAgg, 2 searching, 4 rows     +
           | terms_filter=same/same 2 SiftAgg, 2 searching, 10 rows  +
           | terms_other=same/same 2 SiftAgg, 2 searching, 5 rows    +

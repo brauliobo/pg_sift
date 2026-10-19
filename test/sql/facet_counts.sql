@@ -141,6 +141,16 @@ INSERT INTO fc_q VALUES
 		  UNION ALL $$ || fc_terms('category', 'category', $$title @@> 'wireless' AND ((qty >= 25 AND qty < 50) OR (qty >= 50 AND qty < 75)) AND date_trunc('month', added::timestamp) = '2024-03-01'$$),
 		$$title @@> 'wireless' AND ((qty >= 25 AND qty < 50) OR (qty >= 50 AND qty < 75)) AND date_trunc('month', added::timestamp) = '2024-03-01'$$);
 
+INSERT INTO fc_q VALUES
+	('range_missing', 'wireless OR wired', '[{"name": "p", "expr": "price", "edges": [100], "missing": true}, {"name": "q", "expr": "qty", "edges": [20, 60], "missing": true}]', NULL,
+		$$SELECT 'p', 'bucket', '[,100)', NULL, '100', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price < 100
+		  UNION ALL SELECT 'p', 'bucket', '[100,)', '100', NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price >= 100
+		  UNION ALL SELECT 'p', 'missing', NULL, NULL, NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND price IS NULL HAVING count(*) > 0
+		  UNION ALL SELECT 'q', 'bucket', '[,20)', NULL, '20', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty < 20
+		  UNION ALL SELECT 'q', 'bucket', '[20,60)', '20', '60', count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty >= 20 AND qty < 60
+		  UNION ALL SELECT 'q', 'bucket', '[60,)', '60', NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty >= 60
+		  UNION ALL SELECT 'q', 'missing', NULL, NULL, NULL, count(*) FROM fc WHERE title @@> 'wireless OR wired' AND qty IS NULL HAVING count(*) > 0$$, $$title @@> 'wireless OR wired'$$);
+
 CREATE FUNCTION fc_stage(name text, tbl regclass DEFAULT 'fc') RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
 	SELECT name, string_agg(tag || '=' || fc_check(tbl, q, facets, filt, ref, hitwh), E'\n' ORDER BY tag) FROM fc_q $$;
 
@@ -152,10 +162,10 @@ SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"name": "c", "expr
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"name": "c", "expr": "category", "size": 2, "order": "count asc"}]');
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"name": "c", "expr": "category", "size": 2, "order": "value"}]', 'qty < 20');
 
--- the single scan of the facets of one search: four keys of GROUPING SETS at most; each facet that unnests an array has its own
+-- the scans of the statement: one per facet (the facets that count the same rows are not merged), the ranges with one WHERE share one
 SELECT (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", "category", "qty", "active", "added", "price"]'), ' MATERIALIZED ', 'g')) AS scans_of_six,
-	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", {"expr": "tags", "array": true}]'), ' MATERIALIZED ', 'g')) AS scans_with_array,
-	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '[{"expr": "brand", "selected": ["a"]}, {"expr": "category", "selected": [1]}, "qty"]'), ' MATERIALIZED ', 'g')) AS scans_drill;
+	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '["brand", {"expr": "price", "edges": [100]}, {"expr": "qty", "edges": [5, 9]}]'), ' MATERIALIZED ', 'g')) AS scans_with_ranges,
+	   (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', '[{"expr": "brand", "selected": ["a"]}, {"expr": "price", "edges": [100], "selected": [0]}, {"expr": "qty", "edges": [5]}]'), ' MATERIALIZED ', 'g')) AS scans_drill;
 
 -- the same facets over a table without a column index (the planner's plan) and over a sift_table (its own column scan)
 CREATE TABLE fcn (LIKE fc INCLUDING DEFAULTS);
