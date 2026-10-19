@@ -2,7 +2,10 @@
 
 What an index costs in disk, memory and time beyond its steady-state size, and which settings matter. Numbers are measured on 1.3.1 code
 (PostgreSQL 18, a shared host) unless a sentence says otherwise; they show the size of an effect, not a guarantee. Statements marked
-*(changes)* describe behavior that the maintenance, build and read changes in progress alter; this page is updated as they land.
+*(changes)* describe 1.3.1 behavior that the maintenance and build changes of 2.0.0 altered, and their figures are the 1.3.1 baseline: the memory of a merge no longer grows with the
+segments (4 segments of 3M documents, 690 MB, at 16MB of `maintenance_work_mem`: 140 MB of anonymous memory and 17.4 s before, 16 MB and 8.3 s after), the worker runs each step in a transaction of
+its own and reuses what the previous step freed (60 small segments merged by the worker: the file was 2.6 times the live segments, now 1.6), and a merge stages only the dictionary index and the postings of large terms in temporary
+files ([CHANGELOG.md](../CHANGELOG.md), 2.0.0).
 
 ## Disk
 
