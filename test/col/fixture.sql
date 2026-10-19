@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
 
 CREATE TABLE orders (
@@ -205,6 +205,45 @@ FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','
 -- strings longer than a dictionary entry (the engine stores them inline), repeated and distinct, with NULLs
 INSERT INTO t_text SELECT 100 + i, 1 + i % 3, CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 4), 250 + (i % 9) * 40) || (i % 5) END, 'lng'
 FROM generate_series(1, 90) i;
+
+-- the wide leaves (docs/COL-LEAFTYPES-32.md): numeric of 19..38 digits (two lanes), any other numeric (a canonical image: unconstrained, a negative
+-- scale, more than 38 digits), money and interval, with their traps: NaN and the infinities, the largest and smallest values, equal numbers of
+-- different scales, equal intervals spelled differently, constants beyond the 128 bits
+CREATE TABLE t_wide (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, n38 numeric(38,10), n19 numeric(19,2), nimg numeric, nneg numeric(5,-2),
+	nhuge numeric(40,5), m money, iv interval);
+INSERT INTO t_wide VALUES
+	(1, 1, 1, 0, 0, 0, 0, 0, '0', '0'),
+	(2, 1, 2, 9999999999999999999999999999.9999999999, 99999999999999999.99, 1, 99900, 99999999999999999999999999999999999.99999, '92233720368547758.07', 'infinity'),
+	(3, 1, 3, -9999999999999999999999999999.9999999999, -99999999999999999.99, -1, -99900, -99999999999999999999999999999999999.99999, '-92233720368547758.08', '-infinity'),
+	(4, 1, 4, 'NaN', 'NaN', 'NaN', 100, 'NaN', '1.00', '1 month'),
+	(5, 1, 5, 'NaN', 'NaN', 'NaN', -100, 'NaN', '-1.00', '30 days'),
+	(6, 2, 6, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+	(7, 2, 7, 0.0000000001, 0.01, 1.0, 0, 0.00001, '0.01', '1 microsecond'),
+	(8, 2, 8, 0.0000000002, 0.02, 1.00, 0, 0.00002, '0.02', '-1 microsecond'),
+	(9, 2, 9, 1234.5, 1234.50, 1, 1200, 1234.5, '1234.50', '720 hours'),
+	(10, 2, 10, 1234.5000000001, 1234.51, 1.000, 1300, 1234.50001, '1234.51', '1 mon 1 day'),
+	(11, 3, 11, 12345678901234567890.1234567890, 12345678901234567.89, 1.5, 2000, 12345678901234567890.12345, '123456789012345.67', '31 days'),
+	(12, 3, 12, -12345678901234567890.1234567890, -12345678901234567.89, 1.50, -2000, -12345678901234567890.12345, '-123456789012345.67', '1 day 1 hour'),
+	(13, 3, 13, 1e18, 1e16, 'Infinity', 9999900, 18446744073709551616, '184467440737095.52', '25 hours'),
+	(14, 3, 14, -1e18, -1e16, '-Infinity', -9999900, -18446744073709551616, '-184467440737095.52', '-1 month'),
+	(15, 3, 15, 9223372036854775808, 9223372036854775.81, 10::numeric ^ 400 + 1, 0, 9223372036854775808, '92233720368547.75', '-30 days'),
+	(16, 4, 16, -9223372036854775809, -9223372036854775.81, -(10::numeric ^ 400), 0, -9223372036854775809, '-92233720368547.75', '1 year'),
+	(17, 4, 17, 0.5, 0.5, 1 / 10::numeric ^ 300, 0, 0.5, '0.50', '12 mons'),
+	(18, 4, 18, -0.5, -0.5, -1 / 10::numeric ^ 300, 0, -0.5, '-0.50', '365 days'),
+	(19, 4, 19, 1, 1, 100, 0, 1, '1.00', '2 mons'),
+	(20, 4, 20, 1, 1, 100.0, 0, 1, '1.00', '59 days'),
+	(21, 5, 21, 0, 0, 0.0, 0, 0, '0', '60 days'),
+	(22, 5, 22, 18446744073709551615, 18446744073709551.62, 123456789012345678901234567890123456789.123456789, 99999, 18446744073709551615, '1844674407370955.16', '2147483647 months 2147483647 days 9223372036854775807 us'),
+	(23, 5, 23, -18446744073709551615, -18446744073709551.62, -123456789012345678901234567890123456789.123456789, -99999, -18446744073709551615, '-1844674407370955.16', '-2147483648 months -2147483648 days -9223372036854775808 us');
+INSERT INTO t_wide SELECT 100 + i, 6 + i % 5, i % 100,
+	CASE WHEN i % 997 = 0 THEN 'NaN' WHEN i % 13 = 0 THEN NULL ELSE round(((i * 7919) % 2000001 - 1000000) / 100.0 * 1000000000000.0001, 10) END,
+	CASE WHEN i % 991 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE ((i * 104729) % 2000001 - 1000000) / 100.0 END,
+	CASE WHEN i % 983 = 0 THEN 'NaN' WHEN i % 10 = 0 THEN NULL ELSE round(((i * 7919) % 200001 - 100000) / 7.0, 1 + i % 5) END,
+	CASE WHEN i % 6 = 0 THEN NULL ELSE ((i % 300) - 150) * 100 END,
+	CASE WHEN i % 977 = 0 THEN 'NaN' WHEN i % 8 = 0 THEN NULL ELSE (i::numeric * 10::numeric ^ 30) + i / 1000.0 END,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE (((i * 7919) % 200001 - 100000)::numeric / 100)::money END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE (ARRAY['1 month', '30 days', '720 hours', '1 mon 1 day', '31 days', '1 day 1 hour', '25 hours', '-1 month', '-30 days', '0', '1 year', '2 mons', '60 days'])[1 + i % 13]::interval END
+FROM generate_series(1, greatest(:n - 4000, 400)) i;
 
 -- aggregates of the generic path: a user aggregate with an immutable transition function, and one with a volatile one
 CREATE FUNCTION coldiff.fx_sq_add(acc float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT acc + x * x $$;
