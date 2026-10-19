@@ -99,6 +99,15 @@ typedef struct SiftColDef
 	uint8		scale;			/* numeric(p <= 18, s): digits after the decimal point; the INT value is the number times 10^scale. 0 otherwise */
 } SiftColDef;
 
+/* The JSON type of an overflowing value (SiftColValue.tag, the chunk flag SIFT_COLC_TAGS, docs/COL.md 2.2); the numbers are on disk */
+#define SIFT_COLTAG_UNKNOWN		0
+#define SIFT_COLTAG_STRING		1
+#define SIFT_COLTAG_NUMBER		2
+#define SIFT_COLTAG_BOOLEAN		3
+#define SIFT_COLTAG_OBJECT		4
+#define SIFT_COLTAG_ARRAY		5
+#define SIFT_COLTAG_MAX			5
+
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
 {
@@ -111,6 +120,7 @@ typedef struct SiftColValue
 	uint32		len;
 	bool		isnull;
 	bool		overflow;		/* the value exists but the leaf cannot hold it (the shredder's OVERFLOW): stored as NULL and flagged; isnull is also set */
+	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it */
 } SiftColValue;
 
 /*

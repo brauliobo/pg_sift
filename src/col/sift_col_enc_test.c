@@ -253,6 +253,13 @@ gen_float(TCtx *t, const LeafProf *p, bool f4)
 	return f4 ? (double) (float4) d : d;
 }
 
+/* The type of an overflow value, from the row number: the random stream of the values stays what it was */
+static uint8
+tag_of(uint32 seq)
+{
+	return (uint8) ((seq * 2654435761U >> 9) % (SIFT_COLTAG_MAX + 1));
+}
+
 static void
 gen_value(TCtx *t, const LeafProf *p, SiftColStore store, uint32 seq, SiftColValue *v)
 {
@@ -265,6 +272,7 @@ gen_value(TCtx *t, const LeafProf *p, SiftColStore store, uint32 seq, SiftColVal
 	if (CHANCE(t, p->povf))
 	{
 		v->isnull = v->overflow = true;
+		v->tag = tag_of(seq);
 		return;
 	}
 	switch (store)
@@ -310,7 +318,10 @@ gen_row(TCtx *t, const Case *c, SiftKey key, uint32 seq, SiftColRow *row)
 			if (CHANCE(t, c->prof[id].pnull))
 				v->isnull = true;
 			else if (CHANCE(t, c->prof[id].povf))
+			{
 				v->isnull = v->overflow = true;
+				v->tag = tag_of(seq);
+			}
 			else
 				v->v.i = RAND(t, 4) == 0 ? 0 : RAND(t, 6);
 			for (int ch = id + 1; ch < s->ncols; ch++)
@@ -355,7 +366,7 @@ batch_of(const Case *c, const SiftColRow *rows, uint32 n)
 static bool
 value_eq(SiftColStore store, const SiftColValue *a, const SiftColValue *b)
 {
-	if ((a->isnull || a->overflow) != (b->isnull || b->overflow) || (a->overflow != b->overflow))
+	if ((a->isnull || a->overflow) != (b->isnull || b->overflow) || (a->overflow != b->overflow) || (a->overflow && a->tag != b->tag))
 		return false;
 	if (a->isnull || a->overflow)
 		return true;
@@ -1109,6 +1120,106 @@ check_inline_rule(TCtx *t, const SiftColBatch *b, int col, SiftCDict *seg)
 	CHECK(t, sift_cbatch_str_inline(b, col, seg, limit) == want, "leaf %d: inline rule for a limit of %zu (dictionary %zu, adds %zu)", col, limit, seg->nbytes, add);
 }
 
+/* The rows as a unit written without tags (column format minor 3) returns them: an overflow value has no type */
+static SiftColRow *
+rows_untagged(const Case *c, const SiftColRow *rows, uint32 n)
+{
+	const SiftColSchema *s = c->schema;
+	SiftColRow *out = palloc(Max(n, 1) * sizeof(SiftColRow));
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		out[i] = rows[i];
+		out[i].val = palloc(s->ncols * sizeof(SiftColValue));
+		memcpy(out[i].val, rows[i].val, s->ncols * sizeof(SiftColValue));
+		out[i].elem = palloc0((s->ncols + 1) * sizeof(SiftColValue *));
+		for (int id = 0; id < s->ncols; id++)
+		{
+			int			parent = s->cols[id].parent;
+			int64		cnt = parent >= 0 && rows[i].elem[id] != NULL ? rows[i].val[parent].v.i : 0;
+
+			out[i].val[id].tag = 0;
+			if (cnt == 0)
+				continue;
+			out[i].elem[id] = palloc(cnt * sizeof(SiftColValue));
+			memcpy(out[i].elem[id], rows[i].elem[id], cnt * sizeof(SiftColValue));
+			for (int64 j = 0; j < cnt; j++)
+				out[i].elem[id][j].tag = 0;
+		}
+	}
+	return out;
+}
+
+/* The tags of a chunk: the flag exactly when the unit was written with tags and the chunk has overflow values, and every accessor gives the type of the value */
+static void
+check_tags(TCtx *t, const char *what, const Ref *ref, const SiftCChunk *ch, bool tags)
+{
+	uint8	   *all = palloc(ch->n + 1);
+	uint64	   *bits = palloc((SIFT_COL_NWORDS(ch->n) + 1) * sizeof(uint64));
+	uint32		bad = 0,
+				badbits = 0;
+
+	CHECK(t, ((ch->flags & SIFT_COLC_TAGS) != 0) == (tags && ch->ovf != NULL), "%s: tags flag %d, tags %d, overflow %d", what,
+		  (ch->flags & SIFT_COLC_TAGS) != 0, tags, ch->ovf != NULL);
+	CHECK(t, sift_cchunk_tags(ch, all) == (ch->tags != NULL), "%s: tags expanded for a chunk without them", what);
+	for (uint32 i = 0; i < ch->n; i++)
+	{
+		uint8		want = ref->v[i].overflow && tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN;
+
+		bad += sift_cchunk_ovf_tag(ch, i) != want || (ch->tags != NULL && all[i] != want);
+	}
+	for (uint8 tag = 0; tag <= SIFT_COLTAG_MAX; tag++)
+	{
+		sift_cchunk_tag_bits(ch, tag, bits);
+		for (uint32 i = 0; i < ch->n; i++)
+			badbits += sift_col_bit_test(bits, i) != (ref->v[i].overflow && (tags ? ref->v[i].tag : SIFT_COLTAG_UNKNOWN) == tag);
+	}
+	CHECK(t, bad == 0 && badbits == 0, "%s: %u slots with a wrong tag, %u wrong in the tag bitmaps", what, bad, badbits);
+}
+
+/* A chunk with a bad tag does not parse: a nibble past 5, a set padding bit, the flag without an overflow bitmap */
+static void
+check_tags_corrupt(TCtx *t, const char *what, const uint8 *chunk, uint32 len)
+{
+	SiftCChunk	ch;
+	uint8	   *copy = (uint8 *) TYPEALIGN(8, palloc(len + 8 + SIFT_COL_PAD));
+	Size		toff;
+	uint32		nov = 0;
+
+	memcpy(copy, chunk, len);
+	memset(copy + len, 0, SIFT_COL_PAD);
+	if (!sift_cchunk_parse(copy, len, &ch))
+		return;
+	if (ch.tags == NULL)
+	{
+		if (ch.ovf == NULL)
+		{
+			copy[2] |= SIFT_COLC_TAGS;
+			CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: the tags flag without overflow bits parsed", what);
+		}
+		return;
+	}
+	for (uint32 w = 0; w < (ch.n + 63) / 64; w++)
+		nov += pg_popcount64(ch.ovf[w]);
+	toff = ch.tags - copy;
+	copy[toff] |= 0xF;
+	CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a tag nibble of 15 parsed", what);
+	copy[toff] = chunk[toff];
+	if (nov % 2)
+	{
+		copy[toff + nov / 2] |= 0x10;
+		CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a set unused nibble parsed", what);
+		copy[toff + nov / 2] = chunk[toff + nov / 2];
+	}
+	if (((nov + 1) / 2 + 7) / 8 * 8 > (nov + 1) / 2)
+	{
+		Size		pad = toff + ((nov + 1) / 2 + 7) / 8 * 8 - 1;
+
+		copy[pad] = 1;
+		CHECK(t, !sift_cchunk_parse(copy, len, &ch), "%s: a set padding byte parsed", what);
+	}
+}
+
 static void
 check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows, uint32 n, const SiftCcPolicy *pol)
 {
@@ -1124,6 +1235,9 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 	SiftCUnitView v;
 	SiftColBatch *dst;
 	uint64	   *live;
+	bool		tags = RAND(t, 4) != 0;
+	const SiftColRow *want = tags ? rows : rows_untagged(c, rows, n);
+
 	for (int col = 0; col < s->ncols; col++)
 	{
 		inl[col] = b->dict[col] != NULL && (sift_cbatch_str_inline(b, col, dicts[col], SIFT_COL_DICT_MAX_BYTES) || RAND(t, 3) == 0);
@@ -1132,7 +1246,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 	}
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "x");	/* the record starts after a pad: encode aligns it */
-	sift_cunit_encode(b, dictmap, inl, pol, &buf, &start, zones);
+	sift_cunit_encode(b, dictmap, inl, pol, tags, &buf, &start, zones);
 	{
 		static const char zero[SIFT_COL_PAD];
 
@@ -1164,6 +1278,8 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 			continue;
 		}
 		note_encoding(t, s->cols[col].store, &ch);
+		check_tags(t, what, &ref, &ch, tags);
+		check_tags_corrupt(t, what, rec + v.chunk_off[col], v.chunk_len[col]);
 		sift_cchunk_zone(&ch, s->cols[col].store, &z2);
 		CHECK(t, memcmp(&z2, &zones[col], sizeof(z2)) == 0, "%s: recomputed zone differs from the encoder's", what);
 		CHECK(t, (ch.enc == SIFT_COLENC_ISTR) == (inl[col] && ch.n > 0), "%s: inline chunk %d, asked %d", what, ch.enc == SIFT_COLENC_ISTR, inl[col]);
@@ -1191,7 +1307,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 	dst = sift_cbatch_create(CurrentMemoryContext, s);
 	sift_cbatch_reset(dst, b->sb);
 	sift_cunit_decode(&v, b->sb, dicts, NULL, dst);
-	check_batch_rows(t, "unit decode", c, dst, rows, n);
+	check_batch_rows(t, "unit decode", c, dst, want, n);
 
 	live = palloc0(SIFT_COL_NWORDS(n) * sizeof(uint64));
 	{
@@ -1202,7 +1318,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 			if (RAND(t, 3) != 0)
 			{
 				live[r >> 6] |= UINT64CONST(1) << (r & 63);
-				kept[nk++] = rows[r];
+				kept[nk++] = want[r];
 			}
 		sift_cbatch_reset(dst, b->sb);
 		sift_cunit_decode(&v, b->sb, dicts, live, dst);
@@ -1511,7 +1627,7 @@ sift_test_col_enc_sizes(PG_FUNCTION_ARGS)
 		bool		nulls[4] = {false, false, false, false};
 
 		initStringInfo(&buf);
-		sift_cunit_encode(b, NULL, NULL, NULL, &buf, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, NULL, true, &buf, &start, NULL);
 		MemoryContextSwitchTo(old);
 		values[0] = CStringGetTextDatum(size_names[shape]);
 		values[1] = Int64GetDatum(b->nrows);
