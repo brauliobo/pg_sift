@@ -8,6 +8,9 @@
 #   scripts/old-lib-check.sh check DATADIR PORT SOCKDIR the checks against the data directory of a stopped cluster (tables ctl, unf, unf_v,
 #                                                       unf_f of `run`) with a server that loads the older library
 #   scripts/old-lib-check.sh run                        the whole of it: a cluster of this tree writes the tables, then `check`
+#   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
+#                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
+#                                                       freezes and drops them
 #
 # Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
 # to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, or no testing build).
@@ -129,9 +132,50 @@ run() {
 	check "$data" "$SIFT_PORT" "$SIFT_TMP/sock"
 }
 
+# the older library under pressure (the production build has no lowered directory: 3.0.1 tags a write buffer once the directory of 128 entries is half
+# full, so the load is about 130 MB in write buffers of 2 MB), then this tree on the same files
+upgrade() {
+	local root share lib log opts rows=${UP_ROWS:-150000} want
+	want="$rows:$((rows * (rows + 1) / 2))"
+	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-upgrade}
+	export SIFT_PORT=${SIFT_PORT:-56140}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	share=$root$(pg_config --sharedir)
+	lib=$root$(pg_config --pkglibdir)
+	log=$SIFT_TMP/old-lib-upgrade.log
+	opts="-c port=$SIFT_PORT -c listen_addresses='' -c unix_socket_directories='$SIFT_TMP/sock' -c 'extension_control_path=$share:\$system' -c 'dynamic_library_path=$lib:\$libdir'"
+	pg_ctl -D "$SIFT_TMP/data" -l "$log" -o "$opts" -w -t 120 start >/dev/null 2>&1 || { tail -20 "$log" >&2; fail "the server with the older library starts"; return; }
+	OLD_PSQL=(psql -X -At -q -h "$SIFT_TMP/sock" -p "$SIFT_PORT" -U postgres -d postgres -v ON_ERROR_STOP=1)
+	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" -c "SET sift.table_write_buffer_limit = 2048" -c "CREATE TABLE up_c (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
+		-c "CREATE TABLE up_a (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" -c "BEGIN" \
+		-c "INSERT INTO up_c SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g" -c "COMMIT" -c "BEGIN" \
+		-c "INSERT INTO up_a SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g" -c "ROLLBACK" >/dev/null ||
+		{ fail "the older library writes the tables"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	"$PG" psql -X -qAt -d postgres -c "CREATE EXTENSION IF NOT EXISTS pg_sift_test" >/dev/null 2>&1
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	OUT=$(psql_new -c "SELECT sift._test_tbl_tagged('up_c') > 0 AND sift._test_tbl_tagged('up_a') > 0")
+	[[ $OUT == t ]] && pass "the older library left groups that carry their writer" || fail "the older library left groups that carry their writer (got [$OUT])"
+	[[ $(psql_new -c "SELECT count(*) || ':' || sum(id) FROM up_c") == "$want" ]] && pass "the committed load is read" || fail "the committed load is read"
+	[[ $(psql_new -c "SELECT count(*) FROM up_a") == 0 ]] && pass "the rolled back load is not" || fail "the rolled back load is not"
+	[[ $(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(id) FROM up_c" | tail -1) == "$want" ]] && pass "... by a plain scan too" || fail "... by a plain scan too"
+	psql_new -c "INSERT INTO up_c VALUES (0, 'new')" >/dev/null
+	[[ $(psql_new -c "SELECT count(*) FROM up_c") == "$((rows + 1))" ]] && pass "the table takes new rows" || fail "the table takes new rows"
+	psql_new -c "VACUUM up_c" -c "VACUUM up_a" >/dev/null
+	[[ $(psql_new -c "SELECT sift._test_tbl_tagged('up_c') + sift._test_tbl_tagged('up_a')") == 0 ]] && pass "VACUUM freezes the committed groups and drops the rolled back ones" ||
+		fail "VACUUM freezes the committed groups and drops the rolled back ones"
+	[[ $(psql_new -c "SELECT count(*) || ':' || sum(id) FROM up_c" -c "SELECT count(*) FROM up_a" | tr '\n' ' ') == "$((rows + 1)):$((rows * (rows + 1) / 2)) 0 " ]] && pass "the rows after VACUUM" || fail "the rows after VACUUM"
+	"$PG" stop >/dev/null
+}
+
 case ${1:-} in
 	build) build ;;
 	check) shift; check "$@"; exit $FAILED ;;
 	run) run; exit $FAILED ;;
+	upgrade) upgrade; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac
