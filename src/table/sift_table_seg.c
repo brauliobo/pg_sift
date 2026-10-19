@@ -1426,8 +1426,8 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	for (int i = 0; i < st->dir.nsegs; i++)
 	{
 		const SiftSegEntry *e = &st->dir.segs[i];
-		Datum		v[8];
-		bool		nulls[8] = {0};
+		Datum		v[9];
+		bool		nulls[9] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
 		if (e->kind == SIFT_SEG_IMMUTABLE)
@@ -1441,6 +1441,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 			v[5] = Int32GetDatum(e->sb_hi);
 			v[6] = Int32GetDatum(seg->nsb);
 			v[7] = Int64GetDatum(e->ndocs - sift_cseg_live_rows(seg));
+			v[8] = Int32GetDatum(e->format);
 			sift_cseg_close(seg);
 		}
 		else
@@ -1449,7 +1450,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 
 			v[1] = CStringGetTextDatum(e->flags & SIFT_TBL_SEG_TOMB ? "tombstones" :
 									   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
-			memset(nulls + 2, true, 6);
+			memset(nulls + 2, true, 7);
 			if (e->flags & SIFT_TBL_SEG_WBUF)
 			{
 				sift_tbl_seg_load(rel, &seg);
