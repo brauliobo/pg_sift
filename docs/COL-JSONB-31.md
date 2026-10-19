@@ -134,7 +134,7 @@ can hold the typed paths next to the exact bytes as it is.
   another layout are read side by side); `ALTER TABLE ... SET ACCESS METHOD` and dumps must carry the declaration (a function call after the
   data in the dump, or the extension table as a configuration table).
 
-## 5. Proposal: element cubes in the pre-aggregate sidecar (column format minor 4, needs a decision)
+## 5. Column format minor 4: element cubes and the type of a value (decided for 3.1)
 
 The sidecar of a unit (`docs/COL-PREAGG.md`) keeps a histogram per top-level dimension with the count and the sum of up to three
 measures. A list-element dimension has none: `GROUP BY e.kind` with `count(*)` and `avg(e.score)` (j02, j17 without a per-document
@@ -143,7 +143,7 @@ predicate) scans every element.
 - **Change.** Allow a dimension and its measures to be leaves of one group (`items[].kind` with `items[].score`): the histogram counts
   elements, not rows. Same encoding, same cap (256 groups, 2% of the unit's encoded bytes, 4096 with an explicit `cube(...)`); a new
   section kind in the `COLP` directory for the group the histogram counts. Segments of minor 3 stay readable: their units scan as today.
-  A minor 3 library refuses minor 4 segments (the existing `REINDEX` hint), which is why it is a decision and not a patch.
+  A minor 3 library refuses minor 4 segments (the existing `REINDEX` hint), which is why it is a format decision and not a patch; the decision is taken (section 5.2).
 - **Expected.** j02 and j17 at 100,000 documents from 5 ms to under 1 ms (28 units, a few microseconds each), and the cost grows with
   the units, not the elements: 10,000,000 documents read about 2,800 sidecars. Queries with a predicate on another leaf are scanned as
   now. The sidecar grows by at most the 2% budget (+1.2% measured for top-level cubes), the build by about 4%.
@@ -151,11 +151,58 @@ predicate) scans every element.
   aggregates (`count(*)`, `sum(e.score)`, `avg(e.score)` with no filter) from metadata; the executor's pre-aggregate shape rules today
   exclude an unnest. That is a coverage change on the engine side and is left to that track.
 
-### Decided for 3.1: the type of a value (j16)
+### 5.1 What minor 4 adds
 
-- **A type tag per slot** (column format minor 4): two bits per value of a path (string, number, boolean, null, object or array, missing)
-  stored with the overflow bitmap. `jsonb_typeof(path)` and the strings among the numbers of a path become exact (j16, and the 3.0.1
-  recheck would not be needed). Cost: about 3 bits per overflowing value, nothing for a path without overflow.
+- **A type tag for the overflowing values** (j16, `jsonb_typeof`). The chunk keeps a NULL bitmap and an overflow bitmap; a value the
+  declared type cannot hold (a string in a number path, an object where a scalar is declared, a number out of range) is a set bit in both and says
+  nothing about what the value was. Minor 4 adds the chunk flag `SIFT_COLC_TAGS` (0x4, only with `SIFT_COLC_OVF`): after the overflow
+  bitmap, one nibble per set overflow bit in slot order, padded to 8 bytes: 0 unknown, 1 string, 2 number, 3 boolean, 4 object, 5 array.
+  Cost: half a byte per overflowing value, nothing for a chunk without overflow. The type of a value that is stored is the type of its
+  leaf (bool is boolean, integers, floats and numeric are number, text is string); an `astext` leaf mixes the three, so `jsonb_typeof`
+  is not answered from it. A JSON null is a NULL slot, and so is an absent key: the tag does not tell them apart, so the pushdown answers
+  the tests that treat both alike, `jsonb_typeof(p) = 'number'` (and `IN` over the five types other than `'null'`) and leaves group keys, `= 'null'`, `<>` and `IS NULL` of `jsonb_typeof` to the normal plan. Rows whose tag is not the asked type
+  are not read, so a string among numbers no longer raises the overflow error when the filter drops it; a value that is of the asked type but
+  does not fit (a number out of the float range) still raises it. An overflow slot with tag 0 (written before minor 4 and carried by a merge)
+  raises the error with the hint `REINDEX`, since the type of that value is not known.
+- **Element cubes** (j02, j17): the sidecar's histograms for a dimension that is a leaf of a list group (section above). The `COLP`
+  directory moves to version 2: per unit, after the top-level cube, a second blob with the element cubes, each naming its group; a
+  version 1 directory (minor 3) has none and its units scan as today. The default budget (2% of the unit's encoded bytes, at least 2 kB) is
+  shared by both kinds, the smallest histograms first; `cube(items[].kind: items[].score)` names an element cube explicitly (no budget).
+  The rows of an element histogram are the elements of the group (an element that is not an object is a row with NULL members, as the
+  unnest produces it), so `count(*)` of the unnest is the sum of the group counts. A unit with an overflow value in the group, the dimension
+  or a measure has no element histogram.
+
+### 5.2 Compatibility
+
+- **Reading.** The format gate is `SiftSegEntry.format`, per segment, as before; the metapage of a `sift_col` index keeps major 1, minor 0 and
+  no field changes. A 3.1 library reads minor 3 and minor 4 segments side by side in one index (`SIFT_COL_FORMAT_MIN_READ` 3,
+  `SIFT_COL_FORMAT_MINOR` 4): a minor 3 unit has no tags and no element histogram, so a filter on the type of a value raises the error
+  above when the unit has an overflow value, and a pre-aggregate query scans the unit as it does for any unit without a histogram. Minors
+  below 3 are refused with the `REINDEX` hint as in 3.0.
+- **Writing.** Every segment a 3.1 library writes is minor 4: `CREATE INDEX` and `REINDEX` (serial and parallel), promotion of the write
+  buffer, the tier merge and the rewrite of VACUUM. Segments are immutable, so a minor 3 segment is never changed: it stays until a merge
+  or a VACUUM rewrite replaces it by a minor 4 segment (the merge of a minor 3 input gives overflow slots the tag 0), or until `REINDEX`.
+  An index is therefore usually mixed after the update, and stays correct: the plan decides per unit, not per index.
+- **Going back.** A 3.0.x library refuses a minor 4 segment when it opens it (`index "..." has a segment of column format 1.4, this build
+  reads 1.3`, hint `Use a newer pg_sift, or REINDEX`) and the directory update of a 3.0.x writer refuses the index ("unknown segment
+  format"). Nothing is damaged. The way back for a `sift_col` index is `REINDEX` on 3.0.x. For a `sift_table`, which cannot be reindexed, the
+  setting `sift.col_format_minor = 3` (superuser, default 4) makes every segment written afterwards minor 3 (no tags, no element cubes): set
+  it in `postgresql.conf` before the first write, or before an `ALTER TABLE ... SET ACCESS METHOD` rewrite, when the data must stay readable
+  by 3.0.x (a standby that is updated later is the same case: a standby on 3.0.x cannot read minor 4 segments shipped by the primary).
+  Its other use is the test that reads minor 3 and minor 4 side by side.
+- **pg_upgrade, dump and restore.** Index and table files are copied by `pg_upgrade` as they are (minor 3 segments stay minor 3); a dump
+  holds `CREATE INDEX ... WITH (...)` and the rows, so a restore builds minor 4 segments. Nothing in the catalogs, the reloptions or the
+  SQL objects changes: `ALTER EXTENSION pg_sift UPDATE` from 3.0 runs a script with no objects of this change, and a `sift_col` index built by
+  3.0 keeps working across it. BM25 indexes (`SIFT_FORMAT_MINOR` 2) are not touched.
+- **Verification.** `sift.col_verify` checks the segment minor against 3 and 4; for minor 4 that the flag `SIFT_COLC_TAGS` is present exactly
+  when a chunk has overflow bits, that every nibble is 0 to 5 and the padding is zero, that the `COLP` directory version matches the
+  segment's minor (a minor 3 segment has version 1 and no tags), and recomputes the element histograms from the chunks with the other
+  sidecar checks; with `heapallindexed` the tag of an overflow value is compared with the type of the heap value (a tag 0 matches any).
+  `sift.col_sections` lists the new blob; `sift.col_index_info` counts it in `preagg_bytes`.
+- **Tests.** Regress `col_format4` (the tag, `jsonb_typeof` and element-cube answers equal the normal plan on minor 3, minor 4 and mixed
+  indexes, `sift.col_format_minor` switched between inserts, merge and VACUUM), the coldiff fixtures, the crash and replica TAPs on a mixed
+  index (`test/t/col_index_crash.sh`, `col_index_replica.sh`), and the extension lifecycle test: a `sift_col` index with minor 3 segments built
+  before `ALTER EXTENSION UPDATE`, read after it, then extended with minor 4 segments in the same index.
 
 ## 6. Reproducing
 
