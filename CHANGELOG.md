@@ -166,8 +166,9 @@ For each chunk it picks, from exact sizes, the
   leaf with a scale: `= <> < <= > >=`, `BETWEEN`, `IN` and `IS NULL` against constants and parameters (scaled with PostgreSQL's `numeric_mul`,
   `numeric_floor` and `numeric_ceil`; NaN, infinite and out of range constants are decided without a scan), `GROUP BY` the column or an
   expression, `count(DISTINCT)`, `sum`/`avg(DISTINCT)`, and `+ - *`, `abs`, `round`, `trunc`, `floor`, `ceil` and integer casts in aggregate
-  arguments, keys and filters, with the scales PostgreSQL gives and exact int128 arithmetic; whatever is not proven exact (division, other
-  functions, more than 38 digits) keeps the plan. `GROUP BY` an `int8` column is pushed down too (`docs/COL-PLAN.md`, Numeric).
+  arguments, keys and filters, with the scales PostgreSQL gives and exact int128 arithmetic; division, other
+  functions, casts and wider numbers are evaluated by PostgreSQL over the decoded values, once per distinct tuple of leaf values
+  (`docs/COL-PLAN.md`, Expressions PostgreSQL evaluates). `GROUP BY` an `int8` column is pushed down too (`docs/COL-PLAN.md`, Numeric).
 
 - Added: the vectorized operators of the aggregate pushdown: comparisons and range tests on
   int32, int64 and double vectors, dictionary and integer lookup tables, bitmap algebra, selection vectors, gathers, group ids, sums,
