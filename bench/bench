@@ -123,7 +123,7 @@ Options (not every option applies to every command)
   store options     --sizes N,N (orders, default 1000000,10000000), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the
                     updates, default 3), --cpus-list N,N (the budgets the questions are timed at, each a result set; default 1,3, or just N when --cpus is given),
                     --memory SIZE (limit of every container, default 8g), --runs N (7),
-                    --cold-runs N (3, 0 = no cold runs), --engines pg,sift,sift_table,citus,es,es_cached,ch, --queries IDS (01..10 or names), --docs, --out DIR,
+                    --cold-runs N (3, 0 = no cold runs), --engines pg,sift,sift_table,es,es_cached,ch,citus, --queries IDS (01..10 or names), --docs, --out DIR,
                     --quick (1M orders, 3 runs, no cold runs, no updates: bench/analytics, a few minutes), --compression (the pg_sift compression
                     variants none, encodings only, auto, lz4, zstd:3 as extra lanes and the size of every system with its other settings; bench/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
@@ -474,7 +474,7 @@ cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh;
   local sub=${rest[0]:-all}
   case $sub in all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
-    engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table citus es ch"
+    engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
   fi
   if [[ $s_quick ]]; then   # 1M orders, 3 runs, no cold runs, no updates: the same queries and the same equality checks, a few minutes
     : "${s_sizes:=1000000}" "${a_runs:=3}" "${s_cold:=0}" "${s_update_sizes:=none}"

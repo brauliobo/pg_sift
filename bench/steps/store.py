@@ -47,15 +47,15 @@ LANES = {
     'pg':         ('PostgreSQL', 'pg', 0, 'store'),
     'sift':       ('pg_sift `sift_col`', 'sift', 1, 'store_col'),
     'sift_table': ('pg_sift `sift_table`', 'sift', 1, 'store_tbl'),
-    'citus':      ('Citus columnar', 'citus', 4, 'store'),
     'es':         ('Elasticsearch', 'es', 2, None),
     'es_cached':  ('Elasticsearch, request cache on', 'es', 2, None),
     'ch':         ('ClickHouse', 'ch', 3, None),
     'ch_mut':     ('ClickHouse, ALTER UPDATE', 'ch', 3, None),
     'ch_rmt':     ('ClickHouse, ReplacingMergeTree', 'ch', 3, None),
+    'citus':      ('Citus columnar', 'citus', 4, 'store'),
     **{e: (f'pg_sift `sift_col`, compression `{p}`', 'sift', 1, 'store_col_' + e[5:]) for e, p in COMPRESSION.items()},
 }
-DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'citus', 'es', 'es_cached', 'ch']
+DEFAULT_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch', 'citus']
 PG_ENGINES = ['pg', 'sift', 'sift_table', 'citus', *COMPRESSION]
 UPDATE_ENGINES = ['pg', 'sift', 'sift_table', 'es', 'ch', 'ch_mut', 'ch_rmt']
 CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
@@ -1530,13 +1530,13 @@ def size_note(R, tier, engines, page='docs/BENCHMARKS.md'):
     sp = {e: size_split(R, tier, e) for e in engines}
     mib = lambda e: f'{sum(sp[e][1]):.1f} MiB'
     plus = lambda e: ' + '.join(f'{p:.1f}' for p in sp[e][1])
-    own = [LANES[e][0] for e in ('sift_table', 'citus', 'es', 'ch') if e in engines]
+    own = [LANES[e][0] for e in ('sift_table', 'es', 'ch', 'citus') if e in engines]
     return ('- **The size rows.** *Heap and primary key* is what the table itself costs: the heap and the primary key btree of PostgreSQL and `sift_col`; `sift_table` and Citus hold the rows in their own format, so it is the primary key alone, '
             'and Elasticsearch and ClickHouse have no such part. *Index or columnar data* is everything else: ' + '; '.join(
                 ([f'PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title; {mib("pg")})'] * ('pg' in engines)
                  + [f'`sift_col` the column index and the BM25 title index ({plus("sift")} MiB)'] * ('sift' in engines)
                  + [f'`sift_table` the live bytes of its columns plus the title index ({plus("sift_table")} MiB)'] * ('sift_table' in engines)
-                 + ['Citus the columnar table'] * ('citus' in engines) + ['Elasticsearch the index'] * ('es' in engines) + ['ClickHouse the table with its text index'] * ('ch' in engines)))
+                 + ['Elasticsearch the index'] * ('es' in engines) + ['ClickHouse the table with its text index'] * ('ch' in engines) + ['Citus the columnar table'] * ('citus' in engines)))
             + f'. {join_and(own)} store the data themselves, so there that row is the data, not an index in the PostgreSQL sense. The total is the file sizes (the parts add up to it within rounding); the free blocks of `sift_table` are inside its file after the load. '
             f'Like for like, {LIKE_FOR_LIKE.format(page=page, where='docs/BENCHMARKS.md' if page else 'Size against ClickHouse')}.')
 
@@ -1548,7 +1548,7 @@ def load_rows(R, tier, engines):
 
 QUERY_TITLES = {q.id: q.title for q in load_queries()}
 QUERY_LABELS = {q.id: q.label for q in load_queries()}
-SHOWN = ['pg', 'sift', 'sift_table', 'citus', 'es', 'ch']   # the columns of the README table, in order; a system without rows in the results has no column
+SHOWN = ['pg', 'sift', 'sift_table', 'es', 'ch', 'citus']   # the columns of the README table, in order; a system without rows in the results has no column
 
 
 def losses(R, tier, engines, labels):
@@ -1750,7 +1750,7 @@ def benchmarks_block(R):
     for tier in reversed(R.tiers):
         t = R.meta['tiers'][tier]
         s = t['servers']
-        allq = ['pg', 'sift', 'sift_table', 'citus', 'es', 'es_cached', 'ch']
+        allq = ['pg', 'sift', 'sift_table', 'es', 'es_cached', 'ch', 'citus']
         engines = R.engines(tier, allq)
         shown = [e for e in engines if e != 'es_cached']
         out += [f'### {t["rows"]:,} orders', '']
@@ -2029,7 +2029,7 @@ def compression_block(R):
     others += [[f'Citus columnar, default settings ({citus_options(R, tier)}), primary key', size(R.num(tier, 'citus', metric='size_mib'))]] if R.engines(tier, ['citus']) else []
     out += ['Size of the other layouts and systems with their own compression settings (table and indexes):', ''] + md_table(['system and setting', 'size on disk'], others, ['---', '---:']) + ['']
     qs = R.queries(tier)
-    cols = [e for e in lanes] + [e for e in ('pg', 'citus', 'ch', 'es') if R.engines(tier, [e])]
+    cols = [e for e in lanes] + [e for e in ('pg', 'ch', 'es', 'citus') if R.engines(tier, [e])]
     labels = {**{e: 'sift_col ' + CZ_NAMES[e] for e in lanes}, 'pg': 'PostgreSQL', 'citus': 'Citus columnar', 'ch': 'ClickHouse', 'es': 'Elasticsearch'}
     body = [[QUERY_TITLES[q]] + best_bold([R.num(tier, e, q, 'warm', 'latency_ms') for e in cols], [ms(R.num(tier, e, q, 'warm', 'latency_ms')) for e in cols]) for q in qs]
     spread = [max(v) / min(v) for q in qs if len(v := [R.num(tier, e, q, 'warm', 'latency_ms') for e in lanes]) and all(v)]
