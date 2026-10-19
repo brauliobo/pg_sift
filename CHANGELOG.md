@@ -2,6 +2,12 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Added: a group key built of `date_trunc` (second to millennium), `::date` or `extract` (minute to millennium, `dow`, `doy`, `week`) of a `timestamp` column is evaluated by PostgreSQL once per second, minute, hour or day step of the data instead of once per row, and the planner estimates its groups from the column statistics: month-over-month questions on a `sift_table`, which stores no month leaf, now plan as `SiftAgg` by default (`docs/COL-PLAN.md`, calendar keys; `timestamptz` keys stay combos). 1M orders on a `sift_table`, one backend, same rows: revenue per month 244 to 9.1 ms, distinct customers per month 945 ms (a `GroupAggregate`) to 12.7 ms, revenue per month and category 193 to 11.5 ms; with 1 or 3 workers the answer is as fast and no worker is started. Test `agg_bucket`.
+- Changed: `UPDATE`, `SELECT ... FOR UPDATE` and a point read of a `sift_table` after a transaction that wrote cost about 1.2M instructions instead of 9M (100,000 rows, a random row, one statement per transaction). The scan that fetches rows by TID was dropped whenever the backend's xmin moved, which every write does; it is kept while the directory has not changed (`test/t/013_tbl_fetch_xmin.pl`).
+- Docs: the design notes measures jsonb arrays and objects on `sift_col` against plain PostgreSQL, GIN and ClickHouse arrays (bench files in `bench/sql/jsonb`) and proposes paths for `sift_table` and element cubes for the pre-aggregates (column format minor 4); `docs/COL-TAM.md` documents why the file of a `sift_table` keeps the write pages of a load after a first VACUUM on an idle database.
+
 ## 3.0.0 - 2026-10-19
 
 The column track joins the BM25 index in one extension. Install the new files, then run `ALTER EXTENSION pg_sift UPDATE TO '3.0'` in every database (the extension SQL goes from 1.2 to 3.0; `pg_sift--1.2--3.0.sql`). Existing BM25 indexes keep working with no `REINDEX`.
