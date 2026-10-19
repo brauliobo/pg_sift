@@ -34,7 +34,8 @@ CREATE TABLE orders (
 ) WITH (fillfactor = 80);
 
 -- the keys of the attributes with a value of any JSON type (jsonb_typeof): weight, a float8 leaf with numbers (one decimal) among strings, booleans, objects,
--- arrays, JSON nulls and missing keys, and tier, a text leaf with strings among numbers, booleans, objects, arrays, JSON nulls and missing keys
+-- arrays, JSON nulls and missing keys, tier, a text leaf with strings among numbers, booleans, objects, arrays, JSON nulls and missing keys, and code,
+-- an astext leaf with every kind of scalar (a string that looks like a number too) among objects, arrays, JSON nulls and missing keys
 CREATE FUNCTION coldiff.fx_mixed(id bigint, seed int DEFAULT 0) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 	SELECT CASE WHEN coldiff.u(id, 30, seed) < 0.05 THEN '{}'::jsonb
 				ELSE jsonb_build_object('weight', CASE floor(coldiff.u(id, 31, seed) * 20)::int
@@ -43,7 +44,13 @@ CREATE FUNCTION coldiff.fx_mixed(id bigint, seed int DEFAULT 0) RETURNS jsonb LA
 		|| CASE WHEN coldiff.u(id, 33, seed) < 0.05 THEN '{}'::jsonb
 				ELSE jsonb_build_object('tier', CASE floor(coldiff.u(id, 34, seed) * 20)::int
 					WHEN 0 THEN to_jsonb(floor(coldiff.u(id, 35, seed) * 100)::int) WHEN 1 THEN 'false'::jsonb WHEN 2 THEN '{"level": 1}'::jsonb WHEN 3 THEN '[]'::jsonb
-					WHEN 4 THEN 'null'::jsonb ELSE to_jsonb((ARRAY['gold', 'silver', 'bronze', 'basic'])[1 + floor(coldiff.u(id, 36, seed) * 4)::int]) END) END $$;
+					WHEN 4 THEN 'null'::jsonb ELSE to_jsonb((ARRAY['gold', 'silver', 'bronze', 'basic'])[1 + floor(coldiff.u(id, 36, seed) * 4)::int]) END) END
+		|| CASE WHEN coldiff.u(id, 37, seed) < 0.05 THEN '{}'::jsonb
+				ELSE jsonb_build_object('code', CASE floor(coldiff.u(id, 38, seed) * 20)::int
+					WHEN 0 THEN 'true'::jsonb WHEN 1 THEN 'false'::jsonb WHEN 2 THEN '{"k": 1}'::jsonb WHEN 3 THEN '[2]'::jsonb WHEN 4 THEN 'null'::jsonb
+					WHEN 5 THEN to_jsonb(floor(coldiff.u(id, 39, seed) * 100)::int) WHEN 6 THEN to_jsonb(round((coldiff.u(id, 39, seed) * 100)::numeric, 2))
+					WHEN 7 THEN to_jsonb(floor(coldiff.u(id, 39, seed) * 100)::int::text)
+					ELSE to_jsonb((ARRAY['ab', 'cd', 'ef'])[1 + floor(coldiff.u(id, 36, seed) * 3)::int]) END) END $$;
 
 -- orders first_id .. last_id: store ~ u^2 over 400, source ~ u^2 over 30, dates 2022-01-01 .. 2025-10-31, 12 languages, 60 countries,
 -- 0..8 items (mean 3.2), 1..6 metrics, 0..3 notes, 2% soft-deleted, 70% with normalized items; NULLs in customer, status, country, in

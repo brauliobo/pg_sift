@@ -283,8 +283,12 @@ At 10M the cycles per row fall less than the instructions (Q05 12.8 to 12.0, Q07
 complements `<>` and `NOT IN` and `jsonb_typeof(..) IS [NOT] NULL` are a conjunct of the query that the source answers (`SAP_TYPE`,
 `typeof_test`, `compile_typeof`, `sift_colsrc_filter_types`; tests `agg_jsonb_typeof`, `agg_jsonb_typeof_parallel`, the `k_typeof_*` fixtures). The argument is
 a path of the jsonb value (`->`, `#>`, nested), not its text, and it names a scalar leaf of the index (`bool`, `int2`, `int4`, `int8`, `float4`,
-`float8`, `numeric`, `text`; not lossy, not a key of a map or a list element).
+`float8`, `numeric`, `text`, `astext`; not lossy, not a key of a map or a list element).
 
+- **An `astext` leaf** holds the text of a string, a number or a boolean, so its stored values have no type of their own: the chunk keeps the
+  kind of each number and boolean, a string is the leaf's own, an object or an array is an overflow value with its tag, and a
+  JSON null is a NULL slot of its own kind. A `'12'` that is a string stays a string. A segment of minor 3 has no kinds, so a test that tells
+  the types of an astext leaf apart raises there with the `REINDEX` hint, as a NULL slot does for `'null'`.
 - **What it keeps.** The rows whose type of the leaf's path is in the set, a set of seven types: `string`, `number`, `boolean`, `object`,
   `array`, `null` (a JSON null) and none (a missing key, a NULL document, a path that leads to no value: `jsonb_typeof` is NULL). A stored value
   has the type of its leaf (a `float8` leaf holds numbers), a value the leaf could not hold the type its chunk kept,
@@ -313,8 +317,8 @@ a path of the jsonb value (`->`, `#>`, nested), not its text, and it names a sca
 - **Not taken.** A name that no row has as a conjunct (`= 'bogus'`: it goes through the expression above), a query that tests the type of a path in
   an expression (`FILTER`, `CASE`, `OR`, a key) **and reads the values of the same path** (`sum(x) FILTER (WHERE jsonb_typeof(x) = 'number')`): the
   leaf cannot give the strings among its numbers and only a conjunct (the form above) guards the read, so the scan would raise where PostgreSQL's
-  guard skips them; the plan is the normal one, which `k_typeof_not_pushed` checks. Also a path of an element of a list or map, a leaf declared
-  `astext`, a table with a source that cannot answer it (`sift_table`, the stub).
+  guard skips them; the plan is the normal one, which `k_typeof_not_pushed` checks. Also a path of an element of a list or map, a table with a
+  source that cannot answer it (`sift_table`, the stub).
 - **Where it runs.** `process_unit` calls the source before the integer filters (`type_filters`), the rows left are read as for those filters
   (a sparse selection decodes the leaf at those rows only), a worker does the same on its units, and a match set from a BM25 conjunct is
   expanded to the stored rows like the other filters. A unit's pre-aggregates do not answer a query with it. `EXPLAIN` shows the conjunct in

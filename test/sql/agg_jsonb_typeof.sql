@@ -25,7 +25,9 @@ $$ SELECT CASE i % 23 WHEN 0 THEN jsonb_build_object('m', 's' || i) WHEN 1 THEN 
 	WHEN 4 THEN '{"d": null}' WHEN 5 THEN '{}' ELSE jsonb_build_object('d', num(i, 4) * 10000000000) END::jsonb
 	|| jsonb_build_object('nest', CASE i % 11 WHEN 0 THEN to_jsonb('x'::text) WHEN 1 THEN '[1]' WHEN 2 THEN '{"v": "s"}' WHEN 3 THEN '{}'
 	ELSE jsonb_build_object('v', i % 100) END::jsonb)
-	|| jsonb_build_object('a', CASE WHEN i % 5 = 0 THEN to_jsonb(i) ELSE to_jsonb('t' || i % 10) END) $$;
+	|| CASE WHEN i % 19 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('a', CASE i % 17 WHEN 0 THEN 'true'::jsonb WHEN 1 THEN 'null'::jsonb WHEN 2 THEN '{"x": 1}'::jsonb
+		WHEN 3 THEN '[1]'::jsonb WHEN 4 THEN to_jsonb(12.50) WHEN 5 THEN to_jsonb('12'::text) WHEN 6 THEN 'false'::jsonb
+		ELSE CASE WHEN i % 5 = 0 THEN to_jsonb(i) ELSE to_jsonb('t' || i % 10) END END) END $$;
 
 CREATE TABLE t (id int, grp int, attrs jsonb);
 INSERT INTO t SELECT i, i % 7, doc(i) FROM generate_series(1, 16000) i;
@@ -165,8 +167,25 @@ INSERT INTO t_q (q) VALUES
 	('SELECT jsonb_typeof(attrs->''nokey'') AS ty, count(*) FROM t GROUP BY 1'),
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''nokey'') = ''number'' OR id = 5'),
 	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''bogus'''),
-	-- not pushed: a leaf of the text of any scalar holds a number as its text, it has no type to filter by
-	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number''');
+	-- a leaf of the text of any scalar: the number, boolean and string kinds of its values and the objects, arrays and JSON nulls beside them
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''string'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') IN (''boolean'', ''null'')'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''object'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''array'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') <> ''string'''),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') NOT IN (''string'', ''number'')'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') IS NULL'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''null'''),
+	('SELECT grp, count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number'' AND id > 100 GROUP BY grp'),
+	('SELECT jsonb_typeof(attrs->''a'') AS ty, count(*) FROM t GROUP BY 1'),
+	('SELECT grp, jsonb_typeof(attrs->''a'') AS ty, count(*), max(id) FROM t GROUP BY 1, 2'),
+	('SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->''a'') = ''string'') AS s, count(*) FILTER (WHERE jsonb_typeof(attrs->''a'') = ''number'') AS n FROM t'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number'' OR id = 5'),
+	('SELECT count(*), sum((attrs->>''a'')::numeric) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number'''),
+	('SELECT grp, count(*), sum((attrs->>''a'')::numeric) FROM t WHERE jsonb_typeof(attrs->''a'') = ''number'' GROUP BY grp'),
+	('SELECT attrs->>''a'' AS a, count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''string'' GROUP BY 1'),
+	('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''a'') = ''boolean'' AND attrs->>''a'' = ''true''');
 
 CREATE FUNCTION t_compare(OUT n int, OUT same bool, OUT pushed bool, OUT result text) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE q text;

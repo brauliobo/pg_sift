@@ -2253,7 +2253,7 @@ typeof_type(Oid typid)
 		typid == NUMERICOID || typid == TEXTOID;
 }
 
-/* the leaf of the jsonb value `x->'k'` that keeps the other JSON types of a path out of its values: a scalar of a type a JSON value of one type fills, not the text of any */
+/* the leaf of the jsonb value `x->'k'` whose chunks know the JSON type of the path: a scalar of a type a JSON value of one type fills, or the text of any scalar (astext), whose chunks keep the number and boolean kinds */
 static int
 typeof_leaf(AggCtx *c, Node *e)
 {
@@ -2265,7 +2265,7 @@ typeof_leaf(AggCtx *c, Node *e)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && !l->astext && l->name[0] != '#' &&
+		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' &&
 			paths_equal(l->path, r.path) && typeof_type(l->typid))
 			return i;
 	}
