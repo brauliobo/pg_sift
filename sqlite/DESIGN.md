@@ -8,7 +8,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 ## Design
 
 - **Key space.** rowid r maps to the codec key (block `r>>5`, offset `(r&31)+1`). Valid rowids are 0 .. 2^37-1.
-- **Version and ABI.** `sift_version()` returns `sift-sqlite <release> (engine format 1.1, storage format 2)`; the release is `sqlite/VERSION`, the
+- **Version and ABI.** `sift_version()` returns `sift-sqlite <release> (engine format 1.2, storage format 2)`; the release is `sqlite/VERSION`, the
   repository tag without the `v`. The loadable file exports `sqlite3_sift_init` (for `.load ./sift`, where the file name `sift` selects it) and
   `sqlite3_extension_init` (any other file name), checks SQLite >= 3.38 (LIMIT/OFFSET pushdown) and makes a second load into one connection a no-op.
   It uses only the loadable-extension API (`sqlite3ext.h`), no private symbols, and links only libc and libm. The storage format is recorded in
