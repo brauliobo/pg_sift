@@ -64,6 +64,19 @@ moved by `scripts/coverage.sh --gen`, instruction counts before and after (`benc
 | months of a timestamp on `sift_table` | `date_trunc('month', ts)` is evaluated per distinct timestamp; a day-granularity leaf would fix it but adds a leaf to the column format: a format decision, left to the owner |
 | depth-2 cube, per-group `min/max`, float sums, new leaf types (`numeric(p>18)`, `uuid`, `interval`, arrays) | change the pre-aggregate sidecar or the column format: not implemented |
 
+## Standard analytics shapes (from an application trial)
+
+Shapes an application's ordinary SQL datasets produce, ranked by how often analytics queries have them. Done: a constant in `GROUP BY` (K15), a
+per-item aggregate under an outer aggregate with one arm, or with the common table expression `NOT MATERIALIZED` (J13). Not done:
+
+| shape | why |
+|---|---|
+| `lower(col) IN (...)` is slow to choose, not unsupported | the filter is pushed; PostgreSQL's default 1% estimate for an expression makes the normal plan look cheap. `CREATE STATISTICS s (mcv) ON lower(col) FROM t; ANALYZE t` gives the planner the real share and the scan is chosen |
+| lookup join keyed from a column of another joined lookup (`maps` on `g.type`) | the join code keys a lookup by the scan's own columns or literals; a lookup of a lookup is a second join level: high effort for a rare shape |
+| `FILTER` or `CASE` over a text leaf as an inner aggregate of per-item arms | the arms are pushed one by one, the outer aggregate runs in PostgreSQL (one row per item and key comes back). The fused form with a text leaf is the 3.0 crash fixed in 3.0.1: the extension waits for that fix to merge |
+| `count(DISTINCT x) FILTER` in `GROUPING SETS`, bound parameters (generic and custom plan), top-N per group, period keys (`date_trunc` to quarter or year, `to_char`, `CASE` over `extract`), dimension joins on the scan's columns | already pushed: the aggregate runs in the scan (a window over its few rows runs in PostgreSQL); no change needed |
+| jsonb shapes (scalar-array unnest, `?`, `jsonb_array_length`, `jsonb_typeof`, `->>` casts, regex on `jsonb_each_text`) | owned by the `sift_table` branch |
+
 ## Correctness risks seen
 
 - 3.0 returned wrong rows for `ORDER BY col LIMIT n` on a `sift_col` index when an update had moved a row to an unprobed superblock: the scan decided
@@ -88,6 +101,9 @@ Instructions per transaction (`bench/cpu-query.sh`, 100 000 rows of the store da
 | `SELECT DISTINCT` | K12 | `agg_distinct`, `k_select_*` | `DISTINCT country, category` `sift_col` / `sift_table`; `count(*)` of `DISTINCT customer_id` | 0.023 / 0.022; 0.096 |
 | pre-aggregates on `sift_table` | AP07 | `tbl_preagg`, isolation `tbl_preagg` | country count / category sum / whole table | 0.179 / 0.131 / 0.039 |
 | top-N on `sift_table` | W13 | `tbl_topn`, isolation `tbl_topn` | newest 10 / filtered / search | 0.042 / 0.101 / 0.069 |
+| constant `GROUP BY` key | K15 | `k_group_const*` | `SELECT 'cur', k, count(*) ... GROUP BY 1, 2` | 0.027 |
+| per-item aggregate, one arm | J13 | `s2_per_order_one_arm` | `avg` per item and key, then `avg`, `count(DISTINCT item)` per key | 0.037 |
+| per-item aggregate, two arms, `NOT MATERIALIZED` | J13 | `s2_per_order_inlined` | the same with a second per-item arm | 0.048 |
 
 Gate on the six store questions (existing cells, `sift_col` and `sift_table`, 1000 transactions, 3 rounds): `sift_col` 0.999 to 1.001; `sift_table`
 0.999, 0.998, 0.999 and 1.016 (the highest, below 1.02), and 0.175 and 0.128 for the two questions AP07 now answers from the sidecar. The month questions
