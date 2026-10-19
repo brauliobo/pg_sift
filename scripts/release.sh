@@ -175,7 +175,7 @@ store_cluster() { # DIR TMP PORT
 	done
 }
 job_gate_col() {
-	local ref=${RELEASE_COL_REF:-$(last_head)} db sql ratio bad=
+	local ref=${RELEASE_COL_REF:-$(last_head)} db sql out ratio bad=
 	[[ -n $ref ]] || { echo "no reference: set RELEASE_COL_REF to a gated ref"; return 1; }
 	tree "$ref" "$W/gate-col/ref"
 	store_cluster "$W/gate-col/ref" "$W/gate-col/rt" $((PORT0 + 1)) && store_cluster "$T" "$W/gate-col/nt" $((PORT0 + 2)) || return 1
@@ -188,7 +188,9 @@ job_gate_col() {
 		"SELECT count(*) FROM orders WHERE amount > 100 AND created_at > timestamp '2025-12-01'")
 	for db in col tbl; do
 		for sql in "${Q[@]}"; do
-			ratio=$(bench/cpu-query.sh -n 1000 -r 3 "$sql" "$W/gate-col/nt/sock:$((PORT0 + 2))/$db" "$W/gate-col/rt/sock:$((PORT0 + 1))/$db" | tee /dev/stderr | sed -n 's/^NEW\/REF: instructions \([0-9.]*\),.*/\1/p')
+			out=$(bench/cpu-query.sh -n 1000 -r 3 "$sql" "$W/gate-col/nt/sock:$((PORT0 + 2))/$db" "$W/gate-col/rt/sock:$((PORT0 + 1))/$db" 2>&1)
+			echo "$out"
+			ratio=$(sed -n 's/^NEW\/REF: instructions \([0-9.]*\),.*/\1/p' <<<"$out")
 			printf '%s %s %s\n' "$db" "$ratio" "${sql:0:60}"
 			[[ $db == col ]] || continue
 			awk -v r="$ratio" -v m="$COL_NOTE" 'BEGIN { exit !(r > m) }' && echo "accepted: size work ($ratio > $COL_NOTE): ${sql:0:60}"
