@@ -165,11 +165,33 @@ rounds() {
   local r
   (( MAXR <= 3 )) || log "warning: MAXR=$MAXR: more than 3 rounds (the most that a run takes by default), the run takes that much longer"
   for r in $(seq "$MAXR"); do
-    "$1" "$r"
-    log "round $r done, $(quiet_report 2>&1)"
+    if [[ -e $DEST/round-$r.done ]]; then log "round $r: measured before, kept"
+    else
+      "$1" "$r"
+      echo "$ROUND_KEY" | atomic_write "$DEST/round-$r.done"
+      log "round $r done, $(quiet_report 2>&1)"
+    fi
     (( r >= MINR )) && stable && break
   done
   return 0
+}
+# cells_begin HEADER: DEST/cells.tsv with its header line. A run that is started again with the same code, host and settings (bench/bench resume) keeps the rows of the rounds that finished
+# (a round is done when DEST/round-N.done holds the key; the rows of a round that was cut off are dropped); any other key starts the table over
+cells_begin() {
+  local last=0 f
+  ROUND_KEY=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$ENGINES" "${CLASSES:-}" "${WLS:-}" "$RSE ${SECS:-} ${MIN_TIME:-} ${MIN_N:-} ${MINR:-} ${MAXR:-} ${CLIENTS:-} $TIER ${Q_DOCS:-}")
+  if [[ -z ${NO_RESUME:-} && -s $DEST/cells.tsv ]]; then
+    for f in "$DEST"/round-*.done; do [[ -e $f && $(cat "$f") == "$ROUND_KEY" ]] && last=$(basename "$f" .done) && last=${last#round-}; done
+  fi
+  if (( last )); then
+    awk -F'\t' -v m="$last" 'NR == 1 || $1 <= m' "$DEST/cells.tsv" | atomic_write "$DEST/cells.tsv"
+    for f in "$DEST"/round-*.done; do [[ ! -e $f || $(basename "$f" .done) == round-* && $(cat "$f") == "$ROUND_KEY" ]] || rm -f "$f"; done
+    log "resume: the cells of rounds 1-$last are kept"
+  else
+    rm -f "$DEST"/round-*.done
+    printf '%s\n' "$1" | atomic_write "$DEST/cells.tsv"
+  fi
+  export ROUND_KEY
 }
 rotated() { local r=$1 n=$(( $# - 1 )) k; shift; local e=("$@"); for ((k = 0; k < n; k++)); do echo "${e[$(( (k + r) % n ))]}"; done; }   # engines in the order of round r
 # rse_cells FILE KEYCOLS VALCOL [SECOL]: the cells (their KEYCOLS joined by a tab, e.g. 3,4 = class and engine, one per line) of the
@@ -247,34 +269,95 @@ docker_caps() { printf '%s\n' --cpus "$1" --memory "$2" --memory-swap "$2"; }   
 fingerprint() { python3 -I "$STEPS/benchlib.py" fingerprint --id; }              # the host: CPU, threads, memory, kernel, docker, governor (steps/benchlib.py)
 code_key() { # what a result depends on besides the host: the pg_sift sources under test and the harness (scripts, SQL, adapters, pins; not the documentation)
   { git -C "$REPO" ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src scripts/harden.mk | (cd "$REPO" && xargs -0 sha256sum)
-    git -C "$REPO" ls-files -z --cached --others --exclude-standard -- bench ':(exclude)*.md' ':(exclude)bench/out' | (cd "$REPO" && xargs -0 sha256sum); } | sha256sum | cut -c1-16
+    git -C "$REPO" ls-files -z --cached --others --exclude-standard -- bench ':(exclude)*.md' ':(exclude)bench/out' ':(exclude)*__pycache__*' | (cd "$REPO" && xargs -0 sha256sum); } | sha256sum | cut -c1-16
 }
 
 phase() { printf '%s\t%s\n' "$1" "$(( SECONDS - T0 ))" >>"$DEST/phases.txt"; T0=$SECONDS; }   # NAME: seconds since the last phase, to $DEST/phases.txt (articles, places)
 
-# --- stages with a time budget, and resumable ones (bench/bench final, steps/store.sh)
-# stage NAME MINUTES CMD...: runs CMD and logs the time against its budget; over 1.3x of it is logged OVER BUDGET (BUDGET_STRICT=1: and stops). STAGE_LOG: a file the
-# stage appends `name<TAB>seconds<TAB>budget minutes` to
+# --- runs that can be resumed (bench/bench resume, final, steps/store.sh)
+# A run has an id (bench/out/run-ID) and a manifest in $OUT/.run: argv (the command line to run again), pid, state (running | done | failed | interrupted | crashed) and, per stage, the state
+# file stages/NAME.state `state<TAB>key<TAB>date<TAB>note`. The key is the code, host fingerprint and settings the stage's results depend on: a stage that is `done` with the same key is skipped,
+# anything else runs again, results of another key are never reused. Every state and result file is written whole or not at all (atomic_write). SIGINT and SIGTERM stop the stage's processes,
+# record `interrupted` and exit with 75 (EX_TEMPFAIL, resumable); a failed stage is recorded `failed` and exit status is its own; a SIGKILL or a crash leaves `running`, which the next start of
+# the run finds out by the pid (run_reclaim). Locks are flock locks: a dead process holds none.
+EX_RESUMABLE=75
+atomic_write() { local f=$1 t; t=$(mktemp "$f.XXXXXX"); cat >"$t"; sync "$t"; mv -f "$t" "$f"; }   # FILE: stdin becomes FILE, whole or not at all
+run_dir() { echo "${RUN_DIR:-$OUT/.run}"; }
+run_state() { printf '%s\t%s\t%s\n' "$1" "$(date -u +%FT%TZ)" "${2:-}" | atomic_write "$(run_dir)/state"; }   # STATE [NOTE]
+run_begin() { # ARGV...: the manifest of this run; the command line is what `bench resume` runs again
+  mkdir -p "$(run_dir)/stages"
+  STAGE_STATE=$(run_dir)/stages
+  printf '%q ' "$@" | atomic_write "$(run_dir)/argv"
+  echo $$ | atomic_write "$(run_dir)/pid"
+  fingerprint | atomic_write "$(run_dir)/fingerprint"
+  run_state running
+  trap 'run_exit $?' EXIT
+  trap 'run_signal INT' INT
+  trap 'run_signal TERM' TERM
+}
+kill_tree() { local p; for p in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$p"; done; kill -TERM "$1" 2>/dev/null || true; }   # PID and everything below it
+run_signal() { # the stage's processes stop, the state is recorded, the exit status says resumable
+  trap '' INT TERM
+  [[ -z ${STAGE_PID:-} ]] || { kill_tree "$STAGE_PID"; wait "$STAGE_PID" 2>/dev/null || true; }
+  log "$1: stopped; bench/bench resume continues from the last finished stage"
+  exit "$EX_RESUMABLE"
+}
+run_exit() { # EXIT: the state of the run and of the stage that was running
+  local rc=$1
+  trap '' INT TERM
+  [[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true   # the sampler of the footprint (steps/footprint.sh)
+  [[ -z ${CURRENT_STAGE:-} ]] || stage_state "$CURRENT_STAGE" "$( (( rc == EX_RESUMABLE )) && echo interrupted || echo failed )" "$CURRENT_KEY" "exit $rc"
+  [[ ! -d $(run_dir) ]] || run_state "$( (( rc == 0 )) && echo 'done' || { (( rc == EX_RESUMABLE )) && echo interrupted || echo failed; } )" "exit $rc"
+}
+run_reclaim() { # at the start: runs whose process is gone but whose state says running crashed (killed, rebooted): their containers go, their stages stay for `resume`
+  local d id
+  for d in "${RUNS_DIR:-$BENCH/out}"/run-*/.run; do
+    [[ -s $d/pid && $(cut -f1 "$d/state" 2>/dev/null) == running ]] || continue
+    [[ -d /proc/$(<"$d/pid") && $(tr '\0' ' ' <"/proc/$(<"$d/pid")/cmdline" 2>/dev/null) == *bench* ]] && continue
+    id=$(basename "$(dirname "$d")")
+    log "$id: its process $(<"$d/pid") is gone (state running): crashed; removing its containers, \`bench/bench resume ${id#run-}\` continues it"
+    printf 'crashed\t%s\t\n' "$(date -u +%FT%TZ)" | atomic_write "$d/state"
+    run_containers "${id#run-}" | xargs -r docker rm -fv >/dev/null
+  done
+}
+run_containers() { docker ps -aq --filter "label=sift-run=$1" 2>/dev/null || true; }   # RUN-ID: the containers a run started (they carry the label)
+
+# --- stages with a time budget
+# stage NAME MINUTES CMD...: runs CMD (a child of this shell, so that a signal can stop it) and logs the time against its budget; over 1.3x of it is logged OVER BUDGET (BUDGET_STRICT=1: and
+# stops). STAGE_LOG: a file the stage appends `name<TAB>seconds<TAB>budget minutes` to
 stage() {
   local name=$1 budget=$2 t0=$SECONDS took
   shift 2
-  "$@"
+  "$@" &
+  STAGE_PID=$!
+  wait "$STAGE_PID"
+  STAGE_PID=''
   took=$(( (SECONDS - t0 + 30) / 60 ))
   [[ -z ${STAGE_LOG:-} ]] || printf '%s\t%s\t%s\n' "$name" "$(( SECONDS - t0 ))" "$budget" >>"$STAGE_LOG"
   log "stage $name: $took min (budget $budget)"
-  if (( (SECONDS - t0) * 10 > budget * 60 * 13 )); then
+  if (( budget > 0 && (SECONDS - t0) * 10 > budget * 60 * 13 )); then
     log "OVER BUDGET: stage $name took $took min, budget $budget (1.3x = $((budget * 13 / 10)))"
     [[ -z ${BUDGET_STRICT:-} ]] || exit 4
   fi
 }
-# stage_run NAME KEY MINUTES CMD...: `stage`, unless $STAGE_STATE/NAME.done holds KEY: the stage finished before with the same code, settings and host (NO_RESUME=1 runs it anyway)
+stage_state() { printf '%s\t%s\t%s\t%s\n' "$2" "$3" "$(date -u +%FT%TZ)" "${4:-}" | atomic_write "$STAGE_STATE/$1.state"; }   # NAME STATE KEY [NOTE]
+stage_done() { # NAME KEY: the stage finished before with this key (NO_RESUME=1: never)
+  local st k
+  [[ -z ${NO_RESUME:-} && -s $STAGE_STATE/$1.state ]] || return 1
+  IFS=$'\t' read -r st k _ <"$STAGE_STATE/$1.state"
+  [[ $st == 'done' && $k == "$2" ]]
+}
+# stage_run NAME KEY MINUTES CMD...: `stage`, unless the stage is done with KEY; its state is recorded before, and after (done), a failure or an interruption (run_exit)
 stage_run() {
   local name=$1 key=$2
   shift 2
-  if [[ -z ${NO_RESUME:-} && -s $STAGE_STATE/$name.done && $(cut -d' ' -f1 "$STAGE_STATE/$name.done") == "$key" ]]; then
-    log "stage $name: finished before ($(cut -d' ' -f2- "$STAGE_STATE/$name.done")), resumed"
+  if stage_done "$name" "$key"; then
+    log "stage $name: finished before ($(cut -f3 "$STAGE_STATE/$name.state")), resumed"
     return 0
   fi
+  CURRENT_STAGE=$name CURRENT_KEY=$key
+  stage_state "$name" running "$key" "pid $$"
   stage "$name" "$@"
-  echo "$key $(date -u +%FT%TZ)" >"$STAGE_STATE/$name.done"
+  stage_state "$name" 'done' "$key"
+  CURRENT_STAGE=''
 }

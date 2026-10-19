@@ -39,6 +39,7 @@ import argparse, ctypes, ctypes.util, math, os, random, re, shutil, subprocess, 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import mean, sem  # noqa: E402  (steps/stats.py)
+import benchlib  # noqa: E402  (steps/benchlib.py: the exit status of an interrupted run)
 
 FEW = 10          # transactions per client that make a chunk worth a dropped first transaction and a count instead of seconds
 MAX_CHUNKS = 12
@@ -285,6 +286,7 @@ def batch(argv):
     p.add_argument('--rse', type=float, default=0.05), p.add_argument('--min-time', type=float, default=0.25), p.add_argument('--max-time', type=float, default=2.0)
     p.add_argument('--min-n', type=int, default=3), p.add_argument('--seed', type=int, default=7), p.add_argument('--timeout', default='120s'), p.add_argument('--retries', type=int, default=2)
     a = p.parse_args(argv)
+    benchlib.resumable()
     os.environ['PGOPTIONS'] = f'-c statement_timeout={a.timeout}'
     cells = [l.rstrip('\n').split('\t') for l in open(a.plan) if l.strip()]
     scripts, lib, conns, done = {c[0]: parse_script(open(c[3]).read()) for c in cells}, libpq(), {}, {}
@@ -301,12 +303,9 @@ def batch(argv):
     finally:
         for c in conns.values():
             c.close()
-    with open(a.out, 'w') as f:
-        for id, *_ in cells:
-            cell, noise = done[id]
-            f.write('\t'.join([id, *(['nan', 'nan', 'NA', '0', '0'] if cell is None else
-                                     [f'{cell.p50() * 1e3:.3f}', f'{cell.p95() * 1e3:.3f}', f'{cell.se_p50() * 1e3:.4f}', str(cell.n), f'{cell.wall:.2f}']), str(int(noise))]) + '\n')
-
+    row = lambda id, cell, noise: '\t'.join([id, *(['nan', 'nan', 'NA', '0', '0'] if cell is None else
+                                                    [f'{cell.p50() * 1e3:.3f}', f'{cell.p95() * 1e3:.3f}', f'{cell.se_p50() * 1e3:.4f}', str(cell.n), f'{cell.wall:.2f}']), str(int(noise))]) + '\n'
+    benchlib.write_text(a.out, ''.join(row(id, *done[id]) for id, *_ in cells))   # all or nothing: an interrupted batch leaves no file, the round is measured again
 
 def main():
     if sys.argv[1:2] == ['batch']:

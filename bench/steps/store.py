@@ -894,17 +894,40 @@ def cmd_datakey(args):
     return 0
 
 
+PARTS = {'run': 'warm', 'cold': 'cold', 'updates': 'updates'}   # the command and the part file it writes
+
+
+def part_path(args, part):
+    return os.path.join(args.out, f'store-{args.tier}-{part}.json')
+
+
+def part_key(args, part):
+    """what a part file's numbers depend on: the code, the host, the data and every setting of the command (a part with this key is not measured again by `resume`)"""
+    return benchlib.key_of(dict(part=part, code=MEASURE_CODE, fp=host_fp()['id'], data=dataset_id(args), rows=args.rows, cpus=args.cpus, engines=args.engines, untimed=args.untimed,
+                                queries=args.queries, runs=args.runs, warmups=args.warmups, cold=args.cold_runs, restarts=args.restart_runs, check=args.cold_check, rates=args.rates,
+                                load=args.load_seconds, probes=args.probes, parallel=args.parallel), 16)
+
+
+def part_done(args):
+    """whether the part file of this command exists and holds this command's key: its cells were measured before and are kept"""
+    path = part_path(args, PARTS[args.cmd])
+    try:
+        with open(path) as f:
+            return json.load(f)['meta'].get('key') == part_key(args, PARTS[args.cmd])
+    except (OSError, ValueError):
+        return False
+
+
 def write(args, rows, part, extra=None):
     os.makedirs(args.out, exist_ok=True)
-    path = os.path.join(args.out, f'store-{args.tier}-{part}.json')
+    path = part_path(args, part)
     rows.rows = [r for r in rows.rows if r['engine'] not in args.untimed]   # the reference of the result checks is not a result of this pass
     util = UTIL.report() if UTIL else None
     if util and part != 'load' and util['timed_pct'] < 70:
         log(f'WARN: {part}: timed windows are {util["timed_pct"]}% of the {util["wall_s"]} s of the command (below 70%): the rest was waiting for restarts, cache drops, gates; '
             f'{util["low_busy_pct"]}% of the time fewer than {util["low_busy_below"]} cores were busy')
-    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
-    with open(path, 'w') as f:
-        f.write('{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
+    meta = dict(key=part_key(args, part), date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
+    benchlib.write_text(path, '{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     log(f'written: {path}')
 
 
@@ -2584,6 +2607,7 @@ def main():
         p.add_argument('--probes', type=int, default=20, help='updates: single-row changes timed until a query sees them')
         p.add_argument('--rates', type=lambda s: [int(x) for x in s.split(',')], default=[0, 1000, 10000], help='updates: the update rates (rows/s) the query is timed under')
         p.add_argument('--compression', action='store_true', help='load: also the size of each system with its other compression settings')
+        p.add_argument('--no-resume', action='store_true', help='measure a part again even when its file holds the key of this command (resume skips it)')
         p.add_argument('--keep-going', action='store_true', help='go on after a result that differs from PostgreSQL\'s (the exit status is still 3)')
         p.add_argument('--untimed', type=lambda s: s.split(',') if s else [], default=[], help='engines that only serve as the reference of the result checks: run, never recorded (the plan sets it)')
         p.add_argument('--max-rerun', type=int, default=6, help='most NOISY cells measured again at the end of a stage')
@@ -2675,6 +2699,10 @@ def main():
         args.fingerprint = host_fp()
     if args.cmd == 'cold':
         args.cache = make_cache(args)
+    benchlib.resumable()
+    if args.cmd in PARTS and not args.no_resume and part_done(args):
+        log(f'{args.cmd}: {part_path(args, PARTS[args.cmd])} holds the key of this command: measured before, kept')
+        sys.exit(0)
     try:
         sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table,
                   'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare, 'plan': cmd_plan, 'planget': cmd_planget, 'cache-save': cmd_cache_save, 'noisy': cmd_noisy, 'patch': cmd_patch,
