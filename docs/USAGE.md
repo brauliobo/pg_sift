@@ -289,7 +289,7 @@ it anyway). `write_buffer_limit`, `merge_fanin` and `dead_rewrite_pct` scale and
 
 Three pieces share the column engine; none needs `shared_preload_libraries`, and `CREATE EXTENSION pg_sift` (3.0) installs all of them.
 
-- **`sift_col` index** over a heap table or a `sift_table`: `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those
+- **`sift_col` index** over a heap table (`CREATE INDEX ... USING sift_col` on a `sift_table` is refused: it is already in column format and `SiftAgg` reads it as it is): `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those
   columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
   is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` with p up to 18, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `write_buffer_limit` (kB, 4096, like the
   `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`).
