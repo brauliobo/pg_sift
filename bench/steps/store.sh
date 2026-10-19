@@ -305,9 +305,8 @@ merge() {
   py merge "$OUT"/store-*.json -o "$OUT/store.json" "${extra[@]}"
 }
 cache_save() { # the cells of the servers this pass measured go to the cache (a compression run measures other things)
-  local f extra=()
+  local f
   [[ -z ${S_COMPRESSION:-} && -z ${S_NO_CACHE:-} ]] || return 0
-  mapfile -t extra < <(flags)
   for f in "$OUT"/plan-*.json; do [[ ! -e $f ]] || py cache-save --plan "$f" --results "$OUT/store.json" --cache-dir "$CACHE_DIR"; done
 }
 docs() {
