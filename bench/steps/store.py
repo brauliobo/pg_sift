@@ -16,7 +16,7 @@ cache off), es_cached (the same with the shard request cache on), ch (ClickHouse
 process to the server on 127.0.0.1 and back, one client, the response read to its end (psql / HTTP keep-alive connection). The first run of
 a query on an engine is not timed: its result is compared with the result of PostgreSQL (the reference) and the run stops on a difference.
 """
-import argparse, csv, functools, hashlib, http.client, inspect, itertools, json, math, os, queue, re, statistics, subprocess, sys, threading, time, urllib.parse
+import argparse, csv, functools, glob, hashlib, http.client, inspect, itertools, json, math, os, queue, re, statistics, subprocess, sys, threading, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -405,6 +405,30 @@ def disk_mib():
     return 0.0
 
 
+class Utilization:
+    """how much of the wall time of a command the host spent measuring: the seconds inside timed windows (the Window objects), a sample of the busy cores every second (/proc/stat)
+    and the share of the wall time with fewer busy cores than `low`. A pass that waits (restarts, cache drops, loads, gates) between short windows shows it here"""
+    def __init__(self, low):
+        self.t0, self.timed, self.low, self.samples, self.stop = time.perf_counter(), 0.0, low, [], threading.Event()
+        threading.Thread(target=self.sample, daemon=True).start()
+
+    def sample(self):
+        t, busy = time.perf_counter(), host_busy()
+        while not self.stop.wait(1.0):
+            now, b = time.perf_counter(), host_busy()
+            self.samples.append((b - busy) / (now - t))
+            t, busy = now, b
+
+    def report(self):
+        wall = time.perf_counter() - self.t0
+        s = self.samples or [0.0]
+        return dict(wall_s=round(wall, 1), timed_s=round(self.timed, 1), timed_pct=round(100 * self.timed / wall, 1) if wall else 0.0, busy_cores_mean=round(sum(s) / len(s), 2),
+                    low_busy_pct=round(100 * sum(1 for x in s if x < self.low) / len(s), 1), low_busy_below=self.low)
+
+
+UTIL = None   # set in main() for the commands that measure
+
+
 class Window:
     """the numbers of one timed window: its length, the CPU of every container, the CPU and the disk traffic nobody of this run made"""
     def __init__(self):
@@ -422,6 +446,8 @@ class Window:
     def __exit__(self, *exc):
         a, b = self.a, self.snap()
         self.s += b['t'] - a['t']
+        if UTIL:
+            UTIL.timed += b['t'] - a['t']
         used = {n: (lambda d: d if d >= 0 else b['cont'][n])(b['cont'].get(n, a['cont'][n]) - a['cont'][n]) for n in a['cont']}   # a restarted container has a new cgroup whose counters start at 0
         for n, u in used.items():
             self.cont[n] = self.cont.get(n, 0.0) + u
@@ -812,8 +838,14 @@ def cmd_load(args):
     rows.add('-', '-', '-', 'orders', 'rows', value=args.rows)
     effective(args, plan=False)
     quiet_gate('load')   # the one wait for a quiet host of the stage: nothing is waited for between the cells
+    keys, reused = dict(kv.split('=') for kv in args.keys), {}
+    for c in args.reuse:   # the data of these containers is already in their volume (same key): their load times and sizes are those of the load that put it there, dated
+        m = json.load(open(marker_path(args.data, c, keys[c])))
+        rows.rows += [dict(r, tier=args.tier) for r in m['rows']]
+        reused[c] = m['date']
+        log(f'{c}: the loaded data is reused (loaded {m["date"]}, key {keys[c]})')
     for eid in args.engines:
-        if eid == 'es_cached':
+        if eid == 'es_cached' or LANES[eid][1] in args.reuse:
             continue
         log(f'loading {eid}')
         if eid in PG_ENGINES:
@@ -827,10 +859,38 @@ def cmd_load(args):
         log(f'{eid}: loaded in {total:.0f} s, {next(r["value"] for r in rows.rows if r["engine"] == eid and r["metric"] == "size_mib" and r["variant"] == "-")} MiB')
     if args.compression:
         size_variants(args, rows)
+    for c, key in keys.items():   # what is loaded now stays in the volume: a pass that finds the same key there loads nothing
+        lanes = [e for e in args.engines if LANES[e][1] == c and e != 'es_cached']
+        if c not in reused and lanes:
+            benchlib.write_json(marker_path(args.data, c, key), dict(date=benchlib.now_iso(), key=key, rows=[r for r in rows.rows if r['engine'] in lanes]))
     busy = wait_idle(args.engines)
     log(f'the servers are idle after the load' if not busy else f'still busy after the load (the timed batches wait again): {busy}')
     args.threads = effective(args)
-    write(args, rows, 'load')
+    write(args, rows, 'load', {'reused': reused})
+    return 0
+
+
+def marker_path(data, container_, key):
+    """the record of a load that finished: its rows and date, next to the CSV; the data volume of the container under the same key holds the data it describes"""
+    return os.path.join(data, 'loaded', f'{container_}-{key}.json')
+
+
+LOAD_CODE = None   # set in main(): the functions that decide what a loaded server holds
+
+
+def cmd_datakey(args):
+    """one line per container: `CONTAINER KEY VOLUME reuse|new`. The key says what its data volume holds: the seeded rows, the image, the table definitions, the load code and settings;
+    `reuse`: a volume of that key exists and the load that filled it finished (store.sh keeps the volume under this name and mounts it, and loads nothing)"""
+    images = {c: image_ids(c)[1] for c in ('pg', 'citus', 'es', 'ch')}
+    images['sift'] = docker('image', 'inspect', '-f', '{{.Id}}', f'{NAME}-pg:latest').strip()   # PostgreSQL with pg_sift built from this checkout
+    for c in args.containers:
+        lanes = [e for e in args.engines if LANES[e][1] == c and e != 'es_cached']
+        files = sorted({DDL[e] for e in lanes if e in DDL} | {{'ch': 'ch.sql', 'es': 'es.json'}.get(c, '')} - {''})
+        key = benchlib.key_of(dict(container=c, lanes=lanes, image=images[c], dataset=dataset_id(args), files={f: benchlib.key_of(read(f), 12) for f in files}, code=LOAD_CODE,
+                                   server_flags=os.environ.get('STORE_PG_FLAGS', '') if c in ('pg', 'sift', 'citus') else '', shards=args.cpus if c == 'es' else 0, compression=args.compression), 12)
+        vol = f'{NAME}-data-{c}-{key}'
+        have_volume = subprocess.run(['docker', 'volume', 'inspect', vol], capture_output=True).returncode == 0
+        print(c, key, vol, 'reuse' if have_volume and os.path.exists(marker_path(args.data, c, key)) else 'new')
     return 0
 
 
@@ -838,7 +898,11 @@ def write(args, rows, part, extra=None):
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, f'store-{args.tier}-{part}.json')
     rows.rows = [r for r in rows.rows if r['engine'] not in args.untimed]   # the reference of the result checks is not a result of this pass
-    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
+    util = UTIL.report() if UTIL else None
+    if util and part != 'load' and util['timed_pct'] < 70:
+        log(f'WARN: {part}: timed windows are {util["timed_pct"]}% of the {util["wall_s"]} s of the command (below 70%): the rest was waiting for restarts, cache drops, gates; '
+            f'{util["low_busy_pct"]}% of the time fewer than {util["low_busy_below"]} cores were busy')
+    meta = dict(date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
     with open(path, 'w') as f:
         f.write('{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     log(f'written: {path}')
@@ -901,6 +965,73 @@ def measure_query(q, clients, args, rows):
     return stop, w.record(rows, q.id, 'warm', w.judge({container(e) for e in clients}, io=True))
 
 
+def one_container(lanes, stmts, clients, args, times):
+    """the untimed warm-ups, then the timed runs of the lanes of one container, the first lane rotating every run (the lanes of one container share its CPUs, so they never run together)"""
+    for _ in range(args.warmups - 1):
+        for e in lanes:
+            clients[e].run(stmts[e])
+    for i in range(args.runs):
+        for e in rotated(lanes, i):
+            times[e].append(clients[e].run(stmts[e])[0])
+
+
+def time_cell(live, stmts, clients, args):
+    """the timed runs of one question: one engine at a time, the engines interleaved run by run (the method of the published tables), or with --parallel-engines N the containers in
+    waves of N at the same time, each on cores of its own (time_wave)"""
+    times = {e: [] for e in live}
+    boxes = list(dict.fromkeys(container(e) for e in live))
+    if args.parallel <= 1 or len(boxes) < 2:
+        for _ in range(args.warmups - 1):
+            for e in live:
+                clients[e].run(stmts[e])
+        for i in range(args.runs):
+            for e in rotated(live, i):
+                times[e].append(clients[e].run(stmts[e])[0])
+        return times
+    cores = physical_cores()
+    n = min(args.parallel, benchlib.max_parallel(cores, args.cpus))
+    boxes = rotated(boxes, args.cell)   # which container is in which wave moves from question to question
+    for w in range(0, len(boxes), n):
+        time_wave(boxes[w:w + n], live, stmts, clients, args, times, cores, args.cell + w)
+    return times
+
+
+@functools.lru_cache(maxsize=None)
+def physical_cores():
+    return benchlib.physical_cores()
+
+
+def pin(box, cores):
+    """docker --cpuset-cpus: the container runs on these CPUs only; None frees it again (all CPUs of the host)"""
+    docker('update', '--cpuset-cpus', ','.join(map(str, cores)) if cores else f'0-{os.cpu_count() - 1}', box)
+
+
+def time_wave(boxes, live, stmts, clients, args, times, cores, rotation):
+    """the containers of a wave run their timed requests at the same time, each on `--cpus` physical cores of its own (equal sets, moved round the cores from wave to wave so that no engine
+    always gets the same ones; the other container threads of the host are not pinned). The cores are freed again afterwards"""
+    sets, errors = benchlib.cpuset_plan(cores, args.cpus, len(boxes), rotation), []
+
+    def work(box):
+        try:
+            one_container([e for e in live if container(e) == box], stmts, clients, args, times)
+        except Exception as x:
+            errors.append(x)
+
+    try:
+        for box, s in zip(boxes, sets):
+            pin(box, s)
+        threads = [threading.Thread(target=work, args=(box,)) for box in boxes]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        for box in boxes:
+            pin(box, None)
+    if errors:
+        raise errors[0]
+
+
 def run_query(q, clients, args, rows):
     stmts = {e: q.statement(e, args.rows, e == 'es_cached') for e in clients}
     out, bad = {}, {}
@@ -930,13 +1061,7 @@ def run_query(q, clients, args, rows):
     for e, msg in bad.items():
         rows.add(e, q.id, '-', 'result', 'check', value='error: ' + msg)
     live = [e for e in clients if e in out and e not in args.untimed]
-    times = {e: [] for e in live}
-    for _ in range(args.warmups - 1):
-        for e in live:
-            clients[e].run(stmts[e])
-    for i in range(args.runs):
-        for e in rotated(live, i):
-            times[e].append(clients[e].run(stmts[e])[0])
+    times = time_cell(live, stmts, clients, args)
     for e in live:
         rows.add(e, q.id, 'warm', 'latency_ms', 'ms', st=summary(times[e]))
     log(f'{q.id} {q.name}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
@@ -953,7 +1078,8 @@ def cmd_run(args):
     gate('run', args.engines)
     noisy, again = {}, []
     try:
-        for q in queries:
+        for i, q in enumerate(queries):
+            args.cell = i
             stop, why = measure_query(q, clients, args, rows)
             problems += stop
             if why:
@@ -963,6 +1089,7 @@ def cmd_run(args):
         for q in [q for q in queries if q.id in noisy and not problems][:args.max_rerun]:   # a NOISY cell is measured again once, at the end of the stage, not waited on
             log(f'{q.id}: NOISY ({noisy[q.id]}), measured again')
             rows.rows = [r for r in rows.rows if r['class'] != q.id]
+            args.cell = queries.index(q) + 1   # another wave order than the first time
             stop, why = measure_query(q, clients, args, rows)
             problems += stop
             again.append(q.id)
@@ -1085,6 +1212,59 @@ def cmd_cold(args):
     args.threads = effective(args)   # after the restarts: the settings are the container's, not the process's
     write(args, rows, 'cold', {'cold_runs': args.cold_runs, 'restart_runs': args.restart_runs, 'rerun': again, 'cold_check': args.cold_check, 'cold_check_dates': checked})
     return 0
+
+
+def cmd_interference(args):
+    """Does running engines at the same time change what one of them measures? The requests of the target are timed (1) unpinned and alone, the method of the published tables, (2) pinned to
+    `--cpus` physical cores of its own and alone, and (3) pinned while `--concurrent` other containers loop the same question on disjoint cores of their own. Per question the median and p95
+    of each, and the change of (3) against (2): what the neighbours' memory bandwidth and L3 traffic cost"""
+    target, queries = args.target, load_queries(args.queries)
+    others = [e for e in args.engines if container(e) != container(target) and e != 'es_cached'][:args.concurrent]
+    boxes, cores = [container(target)] + [container(e) for e in others], physical_cores()
+    clients = {e: Client(e) for e in [target] + others}
+    effective(args)
+    gate('interference', [target] + others)
+    out = []
+
+    def sample(stmt):
+        for _ in range(args.warmups):
+            clients[target].run(stmt)
+        return [clients[target].run(stmt)[0] for _ in range(args.samples)]
+
+    stats = lambda xs: dict(median=statistics.median(xs), p95=percentile(xs, 95), n=len(xs))
+    for qi, q in enumerate(queries):
+        stmts = {e: q.statement(e, args.rows) for e in clients}
+        for e in clients:
+            clients[e].run(stmts[e], True)
+        for b in boxes:
+            pin(b, None)
+        free = stats(sample(stmts[target]))
+        for b, s in zip(boxes, benchlib.cpuset_plan(cores, args.cpus, len(boxes), qi)):   # the target's cores move from question to question
+            pin(b, s)
+        stop = threading.Event()
+        loops = [threading.Thread(target=lambda e=e: [clients[e].run(stmts[e]) for _ in iter(stop.is_set, True)]) for e in others]
+        try:
+            alone = stats(sample(stmts[target]))
+            for t in loops:
+                t.start()
+            time.sleep(0.5)
+            together = stats(sample(stmts[target]))
+        finally:
+            stop.set()
+            for t in loops:
+                if t.is_alive():
+                    t.join()
+            for b in boxes:
+                pin(b, None)
+        out.append(dict(question=q.id, title=q.title, unpinned=free, pinned=alone, concurrent=together, median_change=together['median'] / alone['median'] - 1, p95_change=together['p95'] / alone['p95'] - 1,
+                        pinning_change=alone['median'] / free['median'] - 1))
+        log(f'{q.id} {q.name}: {target} unpinned {free["median"]:.3g} ms, pinned {alone["median"]:.3g} ms, with {len(others)} others {together["median"]:.3g} ms '
+            f'(median {out[-1]["median_change"]:+.1%}, p95 {out[-1]["p95_change"]:+.1%})')
+    worst = max(abs(r['median_change']) for r in out)
+    log(f'{target} with {" ".join(others)} running at the same time on cores of their own: the median changed by at most {worst:.1%}, the p95 by at most {max(abs(r["p95_change"]) for r in out):.1%}')
+    benchlib.write_json(os.path.join(args.out, f'interference-{target}-{args.tier}.json'), dict(target=target, others=others, cpus=args.cpus, rows=args.rows, samples=args.samples, cells=out,
+                                                                                            date=benchlib.now_iso(), host=host_fp(), threshold=args.threshold, ok=worst <= args.threshold))
+    return 0 if worst <= args.threshold else 1
 
 
 # --- updates, deletes and what they cost the readers (the `updates` command)
@@ -1365,6 +1545,9 @@ def cmd_updates(args):
     rows, ref = Rows(args.tier), {}
     problems = []
     args.threads = effective(args)
+    for c in {LANES[e][1] for e in args.engines}:   # the rows are about to change: what these containers hold is no longer what a load of the same key leaves
+        for f in glob.glob(marker_path(args.data, c, '*')):
+            os.remove(f)
     gate('updates', args.engines)
     prepare_copies(args.engines)
     try:
@@ -1430,7 +1613,7 @@ def group_inputs(group, lanes, args):
     """everything a cached cell of the group depends on: the key of its entry is the hash of this. Not the pg_sift lanes (they are measured every pass)"""
     tag, iid = image_ids(group)
     qs = load_queries(args.queries)
-    method = dict(runs=args.runs, warmups=args.warmups, cold_runs=args.cold_runs, restart_runs=args.restart_runs, cold_check=args.cold_check, parts=args.parts, points=args.points, load_cpus=args.cpus)
+    method = dict(runs=args.runs, warmups=args.warmups, cold_runs=args.cold_runs, restart_runs=args.restart_runs, cold_check=args.cold_check, parts=args.parts, points=args.points, load_cpus=args.cpus, parallel=args.parallel)
     if 'updates' in args.parts:
         method['updates'] = dict(load_seconds=args.load_seconds, probes=args.probes, rates=args.rates, phases=[p[0] for p in PHASES], set=UPDATE_SET)
     files = sorted({DDL[e] for e in lanes if e in DDL} | {{'ch': 'ch.sql', 'es': 'es.json'}.get(group, '')} - {''})
@@ -1530,11 +1713,11 @@ def cmd_merge(args):
     for path in args.files:
         d = json.load(open(path))
         tier = d['meta']['tier']
-        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'loadavg', 'loadavg_end', 'pressure', 'noisy', 'baseline', 'rerun')})
-        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'), pressure=d['meta'].get('pressure'), noisy=d['meta'].get('noisy', []), baseline=d['meta'].get('baseline'), rerun=d['meta'].get('rerun', []))
+        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'loadavg', 'loadavg_end', 'pressure', 'noisy', 'baseline', 'rerun', 'utilization')})
+        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'), pressure=d['meta'].get('pressure'), noisy=d['meta'].get('noisy', []), baseline=d['meta'].get('baseline'), rerun=d['meta'].get('rerun', []), utilization=d['meta'].get('utilization'))
         metas[tier].pop('loadavg_end', None)
         rows += d['rows']
-    entries = [json.load(open(v['path'])) for v in (json.load(open(args.plan))['groups'].values() if args.plan else []) if v['status'] == 'cached']
+    entries = [json.load(open(v['path'])) for plan in args.plan for v in json.load(open(plan))['groups'].values() if v['status'] == 'cached']
     benchlib.check_homogeneous(entries, fp)
     for e in entries:   # what was measured in this pass wins; a column read from the cache says when and under which key it was measured
         rows += e['rows']
@@ -1543,10 +1726,11 @@ def cmd_merge(args):
             for k in ('servers', 'threads'):
                 m[k] = {**t[k], **m.get(k, {})}
             m.setdefault('cached', {})[e['name']] = dict(date=e['date'], key=e['key'], fp=e['fp'], parts={p: x['date'] for p, x in t['parts'].items()})
-    if args.keep:
-        old = json.load(open(args.keep))
+    for keep in args.keep:
+        old = json.load(open(keep))
         if not benchlib.same_host(old['meta'].get('host', {}), fp):
-            raise benchlib.ForeignHost(f'{args.keep} was measured on another host ({old["meta"].get("host", {}).get("cpu", "?")}, {old["meta"].get("host", {}).get("kernel", "?")}): its sets are not carried over')
+            log(f'WARN {keep} was measured on another host ({old["meta"].get("host", {}).get("cpu", "?")}, {old["meta"].get("host", {}).get("kernel", "?")}): its sets are not carried over')
+            continue
         for tier, t in old['meta']['tiers'].items():
             if tier not in metas and not any(t['rows'] == m['rows'] and t.get('cpus') == m.get('cpus') for m in metas.values()):
                 metas[tier] = t
@@ -2399,14 +2583,25 @@ def main():
         p.add_argument('--keep-going', action='store_true', help='go on after a result that differs from PostgreSQL\'s (the exit status is still 3)')
         p.add_argument('--untimed', type=lambda s: s.split(',') if s else [], default=[], help='engines that only serve as the reference of the result checks: run, never recorded (the plan sets it)')
         p.add_argument('--max-rerun', type=int, default=6, help='most NOISY cells measured again at the end of a stage')
+        p.add_argument('--parallel-engines', dest='parallel', type=int, default=1, help='run: containers timed at the same time, each on disjoint physical cores of its own (docker --cpuset-cpus; equal sets, '
+                       'moved round the cores); 1: one engine at a time')
+        p.add_argument('--busy-cores', type=int, default=2, help='the utilization report counts the seconds with fewer busy cores than this')
+        p.add_argument('--keys', type=lambda s: [x for x in s.split(',') if x], default=[], help='load: container=key of the data volumes (datakey)')
+        p.add_argument('--reuse', type=lambda s: [x for x in s.split(',') if x], default=[], help='load: containers whose volume already holds the data of that key')
+        p.add_argument('--containers', type=lambda s: s.split(','), default=['pg', 'sift'], help='datakey: the containers to key')
         cache_args(p)
 
     def cache_args(p):
         p.add_argument('--cache-dir', default=os.environ.get('STORE_CACHE', '/tmp/sift-store-cache'), help='the cache of the cells of the servers that are not under test')
         p.add_argument('--no-cache', action='store_true', help='read nothing from the cache and write nothing to it')
         p.add_argument('--cache-max-age', type=int, default=30, help='days after which a cached cell is measured again')
-    for name in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan'):
+    for name in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan', 'datakey', 'interference'):
         common(sub.add_parser(name))
+    it = sub.choices['interference']
+    it.add_argument('--target', default='sift', help='the engine whose requests are timed')
+    it.add_argument('--concurrent', type=int, default=3, help='containers that loop the same question at the same time')
+    it.add_argument('--samples', type=int, default=41)
+    it.add_argument('--threshold', type=float, default=0.05, help='the largest change of a median that still counts as no interference')
     pl = sub.choices['plan']
     pl.add_argument('--parts', type=lambda s: s.split(','), default=['load', 'warm', 'cold', 'updates'], help='the parts of the pass: load, warm, cold, updates')
     pl.add_argument('--points', type=lambda s: [int(x) for x in s.split(',')], help='the thread budgets the questions are timed at')
@@ -2436,8 +2631,8 @@ def main():
     m.add_argument('-o', required=True)
     m.add_argument('--restart-cold', help='results file whose cold cells restarted the server for every run: take its cold cells of --restart-engines')
     m.add_argument('--restart-engines', type=lambda s: s.split(','), default=[])
-    m.add_argument('--plan', help='the plan of the pass: its cached groups are read from the cache and merged in (cells of another host are refused)')
-    m.add_argument('--keep', help='an earlier results file: its sets that this pass did not measure are carried over (refused when it was measured on another host)')
+    m.add_argument('--plan', action='append', default=[], help='a plan of the pass (repeat per size): its cached groups are read from the cache and merged in (cells of another host are refused)')
+    m.add_argument('--keep', action='append', default=[], help='an earlier results file: its sets that this pass did not measure are carried over (skipped with a WARN when it was measured on another host)')
     r = sub.add_parser('render')
     r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
     r.add_argument('--readme')
@@ -2455,11 +2650,15 @@ def main():
     c.add_argument('a')
     c.add_argument('b')
     args = ap.parse_args()
-    global MEASURE_CODE
-    MEASURE_CODE = benchlib.key_of([inspect.getsource(f) for f in (load_pg, build_indexes, copy_chunks, load_ch, load_es, bulk_docs, run_query, cold_cell, evict, restart, update_engine, with_load,
-                                                                   churn, read_latency, read_after_write, Client.run, Writer.bulk, Writer.probe_set)], 12)
-    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan') and not args.engines:
+    global MEASURE_CODE, LOAD_CODE, UTIL
+    LOAD_CODE = benchlib.key_of([inspect.getsource(f) for f in (load_pg, build_indexes, copy_chunks, load_ch, load_es, bulk_docs)], 12)
+    MEASURE_CODE = benchlib.key_of([LOAD_CODE] + [inspect.getsource(f) for f in (run_query, time_cell, time_wave, one_container, cold_cell, evict, restart, update_engine, with_load, churn, read_latency,
+                                                                                   read_after_write, Client.run, Writer.bulk, Writer.probe_set)], 12)
+    if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'verify', 'plan', 'datakey', 'interference') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
+    args.cell = 0
+    if args.cmd in ('load', 'run', 'cold', 'updates', 'interference'):
+        UTIL = Utilization(args.busy_cores)
     if getattr(args, 'rows', None) and not args.tier:
         args.tier = (f'{args.rows // 1000000}M' if args.rows % 1000000 == 0 else f'{args.rows // 1000}k') + f'-c{args.cpus}'
     if hasattr(args, 'restart_runs') and args.restart_runs is None:
@@ -2475,7 +2674,7 @@ def main():
     try:
         sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table,
                   'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare, 'plan': cmd_plan, 'planget': cmd_planget, 'cache-save': cmd_cache_save, 'noisy': cmd_noisy, 'patch': cmd_patch,
-                  'stable': cmd_stable}[args.cmd](args))
+                  'stable': cmd_stable, 'datakey': cmd_datakey, 'interference': cmd_interference}[args.cmd](args))
     except (RuntimeError, benchlib.ForeignHost) as x:
         die(str(x))
 

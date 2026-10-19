@@ -13,6 +13,7 @@ SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs,
 REPO=$(dirname "$BENCH")
 . "$REPO/scripts/quiet.sh"                   # quiet_wait, quiet_batch, quiet_report: host noise by pressure stall information
 . "$BENCH/versions.env"
+. "$BENCH/presets.env"                       # the dataset ladder: smoke, quick, standard, full
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
 ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
 STORE=${BENCH_STORE:-$ROOT}                  # datasets, downloads, dumps and the cache of lanes: inputs and caches only, they can live on a disk while ROOT is tmpfs
@@ -32,10 +33,10 @@ SIFT_ROOT=${SIFT_ROOT:-$ENG/sift/root}
 JOBS=${JOBS:-4}                              # parallel jobs of the builds in bench/steps/fetch.sh
 OUT=${OUT:-$BENCH/out/$TIER}
 LOCK=/tmp/sift-perf.lock
-export PGHOST=$SOCK PGPORT=${PORT:-${TIER_PORT[$TIER]}} PGDATABASE=${DB:-bench} PGUSER=${PGUSER:-$USER}
+export PGHOST=$SOCK PGPORT=${PORT:-${TIER_PORT[$TIER]}} PGDATABASE=${DB:-bench} PGUSER=${PGUSER:-${USER:-$(id -un)}}
 
 # Where the cluster looks for extensions (bench/steps/cluster.sh): every engine root first, then the system.
-SHAREDIR=$(pg_config --sharedir) PKGLIBDIR=$(pg_config --pkglibdir)
+SHAREDIR=$(pg_config --sharedir 2>/dev/null || true) PKGLIBDIR=$(pg_config --pkglibdir 2>/dev/null || true)   # preflight (bench/bench) says what is missing
 engine_paths() { { find "$ENG"/*/root -name "$1" -printf '%h\n' 2>/dev/null || true; } | sort -u; }   # directories holding files named $1
 EXT_SHARE=$(engine_paths '*.control' | sed 's,/extension$,,' | paste -sd:)
 EXT_LIB=$(engine_paths '*.so' | paste -sd:)
@@ -226,3 +227,52 @@ cold_cell() {
   done | median_max
 }
 median_max() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.2f\t%.2f\t%d", v[int((NR + 1) / 2)], v[NR], NR; else printf "error\terror\t0"}'; }   # p50, maximum and count of the numbers on stdin (error: none)
+
+# --- shared by every step and by bench/bench: this is the one place for them, a step does not define them again
+die() { echo "${DIE_TAG:-bench}: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+need() { local c; for c in "$@"; do have "$c" || die "missing prerequisite: $c"; done; }
+scratch() { mktemp -d "${SIFT_TMP:-/tmp}/sift-$1.XXXXXX"; }   # NAME: a new scratch directory; the caller removes it (trap)
+port_free() { [[ -z $(ss -ltnH "sport = :$1") ]]; }          # PORT
+ports_free() { local p; for p in $(seq "$1" $(( $1 + $2 - 1 ))); do port_free "$p" || { echo "$(basename "$0"): port $p is in use" >&2; return 1; }; done; }   # BASE COUNT
+perf_hold() { # one run at a time on the machine: the run holds the perf lock until it ends (the timed steps of a run that does not hold it take it themselves: `locked`)
+  [[ -z ${PERF_LOCK_HELD:-} ]] || return 0
+  exec 8>>"$LOCK"
+  flock -n 8 || { echo "waiting for the perf lock (another benchmark is timing)"; flock 8; }
+  export PERF_LOCK_HELD=1
+}
+# capped CMD...: the standing caps of the work on a PostgreSQL that is not in a container: a memory cap with no swap (a runaway query dies alone), nice, and a CPU quota when CAP_CPU is set
+capped() { systemd-run --user --scope -q -p MemoryMax="${CAP_MEM:-${GAP_MEM:-12G}}" -p MemorySwapMax=0 -p OOMPolicy=continue ${CAP_CPU:+-p CPUQuota="$CAP_CPU"} nice "$@"; }
+docker_caps() { printf '%s\n' --cpus "$1" --memory "$2" --memory-swap "$2"; }   # CPUS MEMORY: the quota (never a pinning) and the memory limit without swap of every container
+fingerprint() { python3 -I "$STEPS/benchlib.py" fingerprint --id; }              # the host: CPU, threads, memory, kernel, docker, governor (steps/benchlib.py)
+code_key() { # what a result depends on besides the host: the pg_sift sources under test and the harness (scripts, SQL, adapters, pins; not the documentation)
+  { git -C "$REPO" ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src scripts/harden.mk | (cd "$REPO" && xargs -0 sha256sum)
+    git -C "$REPO" ls-files -z --cached --others --exclude-standard -- bench ':(exclude)*.md' ':(exclude)bench/out' | (cd "$REPO" && xargs -0 sha256sum); } | sha256sum | cut -c1-16
+}
+
+# --- stages with a time budget, and resumable ones (bench/bench final, steps/store.sh)
+# stage NAME MINUTES CMD...: runs CMD and logs the time against its budget; over 1.3x of it is logged OVER BUDGET (BUDGET_STRICT=1: and stops). STAGE_LOG: a file the
+# stage appends `name<TAB>seconds<TAB>budget minutes` to
+stage() {
+  local name=$1 budget=$2 t0=$SECONDS took
+  shift 2
+  "$@"
+  took=$(( (SECONDS - t0 + 30) / 60 ))
+  [[ -z ${STAGE_LOG:-} ]] || printf '%s\t%s\t%s\n' "$name" "$(( SECONDS - t0 ))" "$budget" >>"$STAGE_LOG"
+  log "stage $name: $took min (budget $budget)"
+  if (( (SECONDS - t0) * 10 > budget * 60 * 13 )); then
+    log "OVER BUDGET: stage $name took $took min, budget $budget (1.3x = $((budget * 13 / 10)))"
+    [[ -z ${BUDGET_STRICT:-} ]] || exit 4
+  fi
+}
+# stage_run NAME KEY MINUTES CMD...: `stage`, unless $STAGE_STATE/NAME.done holds KEY: the stage finished before with the same code, settings and host (NO_RESUME=1 runs it anyway)
+stage_run() {
+  local name=$1 key=$2
+  shift 2
+  if [[ -z ${NO_RESUME:-} && -s $STAGE_STATE/$name.done && $(cut -d' ' -f1 "$STAGE_STATE/$name.done") == "$key" ]]; then
+    log "stage $name: finished before ($(cut -d' ' -f2- "$STAGE_STATE/$name.done")), resumed"
+    return 0
+  fi
+  stage "$name" "$@"
+  echo "$key $(date -u +%FT%TZ)" >"$STAGE_STATE/$name.done"
+}
