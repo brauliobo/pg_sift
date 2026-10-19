@@ -267,19 +267,12 @@ heap_push(const SiftTopN *t, TopEnt *h, int *n, const TopEnt *e)
 	h[i] = *e;
 }
 
-/* the key of row i; floats map to integers of the same order (NaN last), as a numeric NaN does */
+/* the key of row i; floats map to integers of the same order (NaN last); a numeric NaN is PG_INT64_MAX in the vector (SiftSrcVec.ovf) */
 static inline bool
 row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 {
 	if (v->isnull && v->isnull[i])
-	{
-		if (v->ovf && ((v->ovf[i >> 6] >> (i & 63)) & 1))
-		{
-			*out = PG_INT64_MAX;
-			return true;
-		}
 		return false;
-	}
 	switch (k->vtype)
 	{
 		case SCV_I32:

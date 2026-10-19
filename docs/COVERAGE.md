@@ -23,7 +23,7 @@ never this file.
 To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
-174 rows: 101 Yes, 19 Partly, 43 No, 11 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
+174 rows: 101 Yes, 20 Partly, 43 No, 10 Error; every row has a sample query (2 run on a second cluster); 0 pending merge.
 
 | Id | Area | Query / feature | Covered by sift? | Index or engine | Example | Notes |
 |---|---|---|---|---|---|---|
@@ -84,7 +84,7 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 | T20 | Types | jsonb object with dynamic keys (jsonb_each, jsonb_each_text, metrics ->> 'key') | Yes | sift_col | `SELECT kv.key, avg((kv.value #>> '{}')::float8) FROM orders o, jsonb_each(o.metrics) kv GROUP BY 1` | Declared as key.* type. Proof: fixture `s3_metric_key`, fixture `s1_metrics_summary`. |
 | T21 | Types | jsonb arrays nested deeper than one level, or two arrays unnested together | Error (0A000 at CREATE INDEX; keep one level of arrays) | sift_col | `CREATE INDEX ... WITH (paths = 'j.a[]{b[]{c int4}}')` | A query with two unnests, or an element compared with another array, keeps the normal plan (see the join rows). Proof: fixture `t_exists_two_arrays`. |
 | T22 | Types | jsonb column with no paths | Error (22023 at CREATE INDEX; declare the paths) | sift_col | `CREATE INDEX ON t USING sift_col (j)` | Proof: test `col_index_basic`. |
-| T23 | Types | numeric NaN in an indexed column | Error (0A000 at query time; SET sift.enable_agg = off for that query) | sift_col, sift_table | `SELECT g, sum(n) FROM tbl GROUP BY g` | The index stores NaN as NULL with an overflow flag; the scan raises where the normal plan returns NaN. Only the kernels raise; expressions PostgreSQL evaluates (division, functions) rebuild the NaN. Proof: fixture `n_numeric_pg_nan`. |
+| T23 | Types | numeric NaN in an indexed column | Partly (sift_table raises 0A000 for it; SET sift.enable_agg = off for that query) | sift_col, sift_table | `SELECT g, sum(n) FROM tbl GROUP BY g` | The index stores NaN as NULL with an overflow flag and the scan gives the row the value PostgreSQL orders it by (NaN equals NaN and is greater than every number): min and max, sums and averages, counts, DISTINCT, keys, ORDER BY, comparisons and expressions return the rows of the normal plan. A sift_table column group does not pass the flag: its scan raises. Proof: test `agg_numeric_nan`. |
 | T24 | Types | sift_table: scalar columns (integers, floats, text, varchar, date, timestamps, boolean, numeric(p <= 18), char(n), enum) | Yes | sift_table | `SELECT grp, e, count(*), sum(n2) FROM t GROUP BY grp, e` | The engine keeps every type exactly; the aggregate scan reads these. Proof: test `tbl_agg`. |
 | T25 | Types | sift_table: numeric(p > 18) and unconstrained numeric, uuid, interval, bytea, money, time, arrays | No (stored exactly but not read as values by the aggregate scan) | sift_table | `SELECT u, count(*) FROM t GROUP BY u` | The table, its row scans and indexes work for every type. Proof: test `tbl_agg`. |
 | K01 | Group keys | GROUP BY a column (dictionary, integer, date, boolean, float, numeric(p<=18)) | Yes | sift_col, sift_table | `SELECT status, count(*) FROM orders GROUP BY status` | Up to 5 group columns; 4 with grouping sets. Proof: fixture `f_group_source`. |

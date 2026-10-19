@@ -1676,7 +1676,8 @@ nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig)
 		case F_INT4_NUMERIC:
 		case F_INT8_NUMERIC:
 			maxd = fid == F_INT2_NUMERIC ? 4 : fid == F_INT4_NUMERIC ? 9 : 18;
-			return nx_walk(c, linitial(args), o, scale, dig) && nx_rescale(o, SNX_ROUND, 0, scale, dig) && *dig <= maxd;
+			return nx_walk(c, linitial(args), o, scale, dig) && nx_rescale(o, SNX_ROUND, 0, scale, dig) && *dig <= maxd &&
+				nx_put(o, SNX_INTCAST, -1, fid == F_INT2_NUMERIC ? 2 : fid == F_INT4_NUMERIC ? 4 : 8, 0, 0);
 		case F_ROUND_NUMERIC:
 		case F_ROUND_NUMERIC_INT4:
 		case F_TRUNC_NUMERIC:
@@ -1728,7 +1729,17 @@ nx_level(AggCtx *c, const SiftAggNum *o)
 	return lvl;
 }
 
-/* numeric expression op operand; two expressions are compared as their difference against 0 */
+/* does the program raise for a NaN (a cast to an integer)? */
+static bool
+nx_raises(const SiftAggNum *o)
+{
+	for (int k = 0; k < o->n; k++)
+		if (o->step[k].op == SNX_INTCAST)
+			return true;
+	return false;
+}
+
+/* numeric expression op operand; two expressions are compared as the sign of their comparison (SNX_CMP3) against 0 */
 static SiftAggPred *
 compile_ncmp(AggCtx *c, int cmp, Node *l, Node *r)
 {
@@ -1752,7 +1763,7 @@ compile_ncmp(AggCtx *c, int cmp, Node *l, Node *r)
 		return NULL;
 	if (!pseudo_const(rhs))
 	{
-		if (!nx_walk(c, rhs, &p->num, &s2, &d2) || !nx_addsub(&p->num, SNX_SUB, &p->num.scale, &dig, s2, d2))
+		if (!nx_walk(c, rhs, &p->num, &s2, &d2) || !nx_addsub(&p->num, SNX_CMP3, &p->num.scale, &dig, s2, d2))
 			return NULL;
 		operand = (Node *) makeConst(NUMERICOID, -1, InvalidOid, -1, NumericGetDatum(int64_to_numeric(0)), false, false);
 	}
@@ -1761,6 +1772,7 @@ compile_ncmp(AggCtx *c, int cmp, Node *l, Node *r)
 	p->op = cmp;
 	p->expr = operand;
 	p->argtype = NUMERICOID;
+	p->late = nx_raises(&p->num);
 	p->desc = psprintf("%s %s %s", expr_text(c, lhs), cmp_text(cmp), expr_text(c, rhs));
 	return p;
 }
@@ -4398,8 +4410,9 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 }
 
 /*
- * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when it reads one (get_vec), the normal plan
- * reads them from the heap: the query keeps its plan.
+ * Does the spec read a leaf that holds values the index cannot store? The scan raises an error when a row of its snapshot has one
+ * (check_overflow), the normal plan reads them from the heap: the query keeps its plan. A numeric leaf is not one: its only such value
+ * is NaN, which the scan evaluates (SiftSrcVec.ovf).
  */
 static bool
 reads_overflow(AggCtx *c)

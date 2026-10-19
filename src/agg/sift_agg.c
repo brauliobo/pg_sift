@@ -340,6 +340,7 @@ typedef struct PredState
 	int			nop;			/* numeric operand: the comparison of the scaled integers equivalent to the query's (SiftCmpOp) ... */
 	sift_i128	cn;				/* ... with this operand, or ... */
 	int			konst;			/* ... -1, or 1 / 0: it holds for every / no value */
+	bool		nan_res;		/* numeric operand: the comparison holds for a NaN (numeric orders it above every number and equal to itself) */
 } PredState;
 
 /* distinct numbers to ids 1.. in order of appearance (open addressing) */
@@ -705,6 +706,7 @@ typedef struct AggExec
 	uint8	   *nb;
 	double	   *vstk;			/* float8 aggregate arguments: SIFT_AGG_MAX_VX vectors */
 	sift_i128  *nstk;			/* numeric programs: SIFT_AGG_MAX_VX vectors */
+	uint8	   *nflag;			/* ... and the NaN flag of each of their values */
 	uint32	   *pix;			/* the data index of the rows a predicate evaluates: start + i */
 	uint64	   *okm;
 	uint64	   *tmpm;
@@ -976,7 +978,6 @@ dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 /* ---------- unit data ---------- */
 
 static const SiftSrcVec *get_vec(AggExec *ex, int leaf);
-static const SiftSrcVec *get_vec_raw(AggExec *ex, int leaf);
 
 static void
 extend_layout(AggExec *ex)
@@ -1093,7 +1094,7 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 }
 
 static const SiftSrcVec *
-get_vec_raw(AggExec *ex, int leaf)
+get_vec(AggExec *ex, int leaf)
 {
 	if (!ex->uvec_ok[leaf])
 	{
@@ -1115,17 +1116,6 @@ overflow_error(void)
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
 			 errhint("Set sift.enable_agg to off for this query.")));
-}
-
-/* The kernels do not know the NaNs a numeric leaf holds; only the expressions PostgreSQL evaluates (get_vec_raw) do. */
-static const SiftSrcVec *
-get_vec(AggExec *ex, int leaf)
-{
-	const SiftSrcVec *v = get_vec_raw(ex, leaf);
-
-	if (v->ovf && ex->lay->leaf[leaf].typid == NUMERICOID)
-		overflow_error();
-	return v;
 }
 
 static int
@@ -1233,19 +1223,44 @@ num_div(SiftAggNxOp op, sift_i128 v, sift_i128 d)
 }
 
 #define NSTK(i)	(ex->nstk + (Size) (i) * (VEC + PADW))
+#define NFLAG(i)	(ex->nflag + (Size) (i) * (VEC + PADW))
+
+/* PostgreSQL's error for the cast of a NaN to an integer of this many bytes */
+static void
+nan_cast_error(int bytes)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot convert NaN to %s", bytes == 2 ? "smallint" : bytes == 4 ? "integer" : "bigint")));
+}
+
+/* the operands of a binary step at the top of the stack (sp entries) become one value: NaN if either was */
+static void
+nx_pop_flags(AggExec *ex, bool has_nan, int sp, int nsel)
+{
+	for (int j = 0; has_nan && j < nsel; j++)
+		NFLAG(sp - 2)[j] |= NFLAG(sp - 1)[j];
+}
 
 /*
- * The values of a numeric program for nsel tuples, scaled by 10^p->scale. The planner proved that no step overflows, but the
- * data slot of a NULL leaf holds anything: its tuple's value is garbage and is dropped through the null flags (isnull, when given).
- * iq indexes the data of the leaves at the query's level, ir those of the row level.
+ * The values of a numeric program for nsel tuples, scaled by 10^p->scale, a NaN being SIFT_NX_NAN (the greatest value, equal to itself).
+ * The planner proved that no step overflows, but the data slot of a NULL leaf holds anything: its tuple's value is garbage and is dropped
+ * through the null flags (isnull, when given). iq indexes the data of the leaves at the query's level, ir those of the row level.
+ * The NaN flag of each value is kept once a leaf has a NaN in the unit (has_nan). Every step gives NaN for a NaN operand, as numeric_add
+ * and its kin do, but two: the comparison (SNX_CMP3) orders NaN as numeric_cmp does, and the cast to an integer raises for a NaN, as
+ * numeric_int4 does, when its tuple is in alive (NULL: all of them).
  */
 static const sift_i128 *
-eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull)
+eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull, const uint64 *alive)
 {
 	int			sp = 0;
+	bool		has_nan = false;
 
 	if (ex->nstk == NULL)
+	{
 		ex->nstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * (VEC + PADW) * sizeof(sift_i128));
+		ex->nflag = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * (VEC + PADW));
+	}
 	if (isnull)
 		memset(isnull, 0, nsel);
 	for (int k = 0; k < p->n; k++)
@@ -1271,12 +1286,24 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 					if (isnull && v->isnull)
 						for (int j = 0; j < nsel; j++)
 							isnull[j] |= v->isnull[idx[j]];
+					if (v->ovf && !has_nan)
+					{
+						memset(ex->nflag, 0, (Size) SIFT_AGG_MAX_VX * (VEC + PADW));
+						has_nan = true;
+					}
+					if (v->ovf)
+						for (int j = 0; j < nsel; j++)
+							NFLAG(sp)[j] = sift_colsrc_bit(v->ovf, idx[j]);
+					else if (has_nan)
+						memset(NFLAG(sp), 0, nsel);
 					sp++;
 				}
 				break;
 			case SNX_CONST:
 				for (int j = 0; j < nsel; j++)
 					top[j] = x->c;
+				if (has_nan)
+					memset(NFLAG(sp), 0, nsel);
 				sp++;
 				break;
 			case SNX_ADD:
@@ -1285,17 +1312,36 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 				m = x->op == SNX_ADD ? sift_pow10(x->b) : -sift_pow10(x->b);
 				for (int j = 0; j < nsel; j++)
 					NSTK(sp - 2)[j] = NSTK(sp - 2)[j] * d + NSTK(sp - 1)[j] * m;
-				sp--;
+				nx_pop_flags(ex, has_nan, sp--, nsel);
 				break;
 			case SNX_MUL:
 				for (int j = 0; j < nsel; j++)
 					NSTK(sp - 2)[j] *= NSTK(sp - 1)[j];
+				nx_pop_flags(ex, has_nan, sp--, nsel);
+				break;
+			case SNX_CMP3:
+				d = sift_pow10(x->a);
+				m = sift_pow10(x->b);
+				for (int j = 0; j < nsel; j++)
+				{
+					sift_i128	l = NSTK(sp - 2)[j] * d,
+								r = NSTK(sp - 1)[j] * m;
+
+					NSTK(sp - 2)[j] = has_nan && (NFLAG(sp - 2)[j] || NFLAG(sp - 1)[j]) ? (int) NFLAG(sp - 2)[j] - (int) NFLAG(sp - 1)[j] : (l > r) - (l < r);
+					if (has_nan)
+						NFLAG(sp - 2)[j] = 0;
+				}
 				sp--;
 				break;
 			case SNX_NEG:
 			case SNX_ABS:
 				for (int j = 0; j < nsel; j++)
 					NSTK(sp - 1)[j] = (x->op == SNX_ABS && NSTK(sp - 1)[j] >= 0) ? NSTK(sp - 1)[j] : -NSTK(sp - 1)[j];
+				break;
+			case SNX_INTCAST:
+				for (int j = 0; has_nan && j < nsel; j++)
+					if (NFLAG(sp - 1)[j] && (!alive || sift_colsrc_bit(alive, j)))
+						nan_cast_error(x->a);
 				break;
 			default:
 				d = sift_pow10(x->a);
@@ -1305,6 +1351,9 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 				break;
 		}
 	}
+	for (int j = 0; has_nan && j < nsel; j++)
+		if (NFLAG(0)[j])
+			NSTK(0)[j] = SIFT_NX_NAN;
 	return ex->nstk;
 }
 
@@ -1383,6 +1432,27 @@ numeric_operand(PredState *st, int op, int scale, sift_i128 lim, Datum c)
 	}
 }
 
+/* does `NaN op c` hold, c a NaN or a number: NaN is greater than every number and equal to itself */
+static bool
+nan_compares(int op, bool cnan)
+{
+	switch (op)
+	{
+		case SCMP_EQ:
+			return cnan;
+		case SCMP_NE:
+			return !cnan;
+		case SCMP_LT:
+			return false;
+		case SCMP_LE:
+			return cnan;
+		case SCMP_GT:
+			return !cnan;
+		default:
+			return true;
+	}
+}
+
 static void
 eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 {
@@ -1400,6 +1470,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 	{
 		if (p->argtype == NUMERICOID)
 		{
+			st->nan_res = nan_compares(p->op, numeric_is_nan(DatumGetNumeric(d)));
 			if (p->kind == SAP_NCMP)
 				numeric_operand(st, p->op, p->num.scale, sift_pow10(SIFT_NUM_MAX_DIGITS), d);
 			else
@@ -1547,6 +1618,18 @@ cmp_int(uint64 *out, const void *v, int slot, int n, SiftCmpOp op, int64 c)
 		sift_colk->range[slot](v, n, lo & wmax, (hi - lo) & wmax, out);
 }
 
+/* the rows of `rows` (n bits) are in out (res) or are not */
+static void
+set_rows(const uint64 *rows, int n, bool res, uint64 *out)
+{
+	for (int w = 0; w < (n + 63) / 64; w++)
+	{
+		uint64		m = (n - w * 64 >= 64) ? rows[w] : rows[w] & ((UINT64CONST(1) << (n - w * 64)) - 1);
+
+		out[w] = res ? out[w] | m : out[w] & ~m;
+	}
+}
+
 static void
 eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
 {
@@ -1614,6 +1697,8 @@ eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 		default:
 			elog(ERROR, "sift: comparison on a dictionary leaf");
 	}
+	if (v->ovf && lf->typid == NUMERICOID)
+		set_rows(v->ovf + start / 64, n, st->nan_res, out);
 	clear_nulls(ex, v, start, n, out);
 }
 
@@ -1627,13 +1712,13 @@ eval_ncmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *
 	const sift_i128 *x;
 
 	clear_words(out, n);
-	if (st->cnull || st->konst == 0)
+	if (st->cnull || (st->konst == 0 && !st->nan_res))
 		return;
 	for (int i = 0; i < n; i++)
 		ex->pix[i] = start + i;
-	x = eval_nx(ex, &p->num, n, ex->pix, ex->pix, ex->nb);
+	x = eval_nx(ex, &p->num, n, ex->pix, ex->pix, ex->nb, ex->alive);
 	for (int i = 0; i < n; i++)
-		if (!ex->nb[i] && (st->konst == 1 || (cmp_signs[st->nop] >> ((x[i] > st->cn) - (x[i] < st->cn) + 1) & 1)))
+		if (!ex->nb[i] && (x[i] == SIFT_NX_NAN ? st->nan_res : st->konst == 1 || (st->konst < 0 && (cmp_signs[st->nop] >> ((x[i] > st->cn) - (x[i] < st->cn) + 1) & 1))))
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
@@ -2505,7 +2590,7 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		else
 		{
 			const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[p]];
-			const SiftSrcVec *v = get_vec_raw(ex, cb->leaf[p]);
+			const SiftSrcVec *v = get_vec(ex, cb->leaf[p]);
 			const uint32 *idx = leaf_lvl(ex, cb->leaf[p]) == qlevel ? tidx : ridx;
 			const uint32 *map = NULL;
 
@@ -3614,6 +3699,7 @@ acc_alloc(AggExec *ex, uint32 cap)
 			case SAA_SUM_NUM:
 			case SAA_AVG_NUM:
 				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				break;
 			case SAA_MIN:
 			case SAA_MAX:
@@ -4044,7 +4130,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	}
 	if (sk->kind == SAK_NUM)
 	{
-		const sift_i128 *x = eval_nx(ex, &sk->num, nsel, ex->tidx, ex->ridx, ex->nb);
+		const sift_i128 *x = eval_nx(ex, &sk->num, nsel, ex->tidx, ex->ridx, ex->nb, NULL);
 
 		for (int i = 0; i < nsel; i++)
 			vals_out[i] = ex->nb[i] ? 0 : idmap_id(&k->im, x[i]);
@@ -4342,7 +4428,7 @@ eval_vx(AggExec *ex, SiftAggAgg *a, int nsel)
 							top[j] = ((const int32 *) v->data)[idx[j]];
 					else if (ex->lay->leaf[x->leaf].vtype == SCV_I64)	/* numeric: the integer over 10^scale, in c */
 						for (int j = 0; j < nsel; j++)
-							top[j] = (double) ((const int64 *) v->data)[idx[j]] / x->c;
+							top[j] = v->ovf && sift_colsrc_bit(v->ovf, idx[j]) ? get_float8_nan() : (double) ((const int64 *) v->data)[idx[j]] / x->c;
 					else
 						for (int j = 0; j < nsel; j++)
 							top[j] = ((const double *) v->data)[idx[j]];
@@ -5547,6 +5633,8 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 		case SCV_I32:
 			return leaf_datum(l->typid, ((const int32 *) v->data)[i]);
 		case SCV_I64:
+			if (l->typid == NUMERICOID && v->ovf && sift_colsrc_bit(v->ovf, i))
+				return scaled_numeric(SIFT_NX_NAN, 0);
 			if (l->typid == NUMERICOID)
 				return NumericGetDatum(int64_div_fast_to_numeric(((const int64 *) v->data)[i], l->scale));
 			return Int64GetDatum(((const int64 *) v->data)[i]);
@@ -6226,7 +6314,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 
 				if (a->num.n)
 				{
-					nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL);
+					nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 					for (int j = 0; j < nsel; j++)
 					{
 						uint32		g = ex->gid[j];
@@ -6284,11 +6372,14 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			break;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
-			nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL);
+			nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 			for (int j = 0; j < nsel; j++)
 				if ((!ok || sift_colsrc_bit(ok, j)) && (!a->distinct || num_first(ex, ai, ex->gid[j], nx[j])))
 				{
-					acc->w[ex->gid[j]] += nx[j];
+					if (nx[j] == SIFT_NX_NAN)
+						acc->nf[ex->gid[j]] = 1;
+					else
+						acc->w[ex->gid[j]] += nx[j];
 					acc->n[ex->gid[j]]++;
 				}
 			break;
@@ -6301,7 +6392,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_COUNT_DISTINCT:
 			if (a->num.n)
 			{
-				nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL);
+				nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 				for (int j = 0; j < nsel; j++)
 					if (!ok || sift_colsrc_bit(ok, j))
 						ex->cu32[j] = idmap_id(&ex->amap[ai], nx[j]);
@@ -7313,7 +7404,7 @@ topn_viable(AggExec *ex)
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec_raw(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
 }
 
 /*
@@ -7334,7 +7425,7 @@ overflow_rows(AggExec *ex)
 
 		if (leaf >= ex->nbase || l->typid == NUMERICOID)
 			continue;
-		if (!sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec_raw(ex, leaf))->ovf)
+		if (!sift_colsrc_overflow(ex->src, &ex->unit, leaf) || !(v = get_vec(ex, leaf))->ovf)
 			continue;
 		if (!rows)
 			rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
@@ -7625,9 +7716,10 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 
 		if (num && st->konst >= 0)
 		{
-			f->op = SSF_NOTNULL;
-			if (st->konst == 0)
+			/* every value passes (a NaN too: not null) or none does; the NaN rows of the others are the executor's */
+			if (st->konst == 0 || !st->nan_res)
 				return false;
+			f->op = SSF_NOTNULL;
 		}
 		else
 		{
@@ -8400,6 +8492,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 			case SAA_AVG_NUM:
 				acc->n[t] += ba->a.n[r];
 				acc->w[t] += ba->a.w[r];
+				acc->nf[t] |= ba->a.nf[r];
 				break;
 			case SAA_COUNT_DISTINCT:
 			case SAA_GROUPING:
@@ -9091,7 +9184,7 @@ key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 	return k->ot.val[id - 1];
 }
 
-/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale */
+/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale; SIFT_NX_NAN is the NaN */
 static Datum
 scaled_numeric(__int128 v, int scale)
 {
@@ -9101,6 +9194,8 @@ scaled_numeric(__int128 v, int scale)
 	int			n = 0;
 	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
 
+	if (v == SIFT_NX_NAN)
+		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	do
 	{
 		tmp[n++] = '0' + (int) (u % 10);
@@ -9188,12 +9283,12 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 			return Float8GetDatum(acc->d[g] / (double) acc->n[g]);
 		case SAA_SUM_NUM:
 			*isnull = acc->n[g] == 0;
-			return *isnull ? (Datum) 0 : scaled_numeric(acc->w[g], a->num.scale);
+			return *isnull ? (Datum) 0 : scaled_numeric(acc->nf[g] ? SIFT_NX_NAN : acc->w[g], a->num.scale);
 		case SAA_AVG_NUM:
 			*isnull = acc->n[g] == 0;
 			if (*isnull)
 				return (Datum) 0;
-			return DirectFunctionCall2(numeric_div, scaled_numeric(acc->w[g], a->num.scale),
+			return DirectFunctionCall2(numeric_div, scaled_numeric(acc->nf[g] ? SIFT_NX_NAN : acc->w[g], a->num.scale),
 									   DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
 		case SAA_PCT_CONT:
 		case SAA_PCT_DISC:
