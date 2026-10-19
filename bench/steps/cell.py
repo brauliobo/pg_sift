@@ -193,27 +193,35 @@ def libpq():
     return lib
 
 
+VARIABLE = re.compile(r'(?<!:):([A-Za-z_]\w*)')
+
+
 def parse_script(text):
-    """a pgbench script as steps: ('set', name, lo, hi) for `\\set name random(lo, hi)`, ('sql', statement, gset) for a statement, gset when it ends in \\gset"""
+    """a pgbench script as steps: ('set', name, lo, hi) for `\\set name random(lo, hi)`, ('sql', parts, gset) for a statement, gset when it ends in \\gset; parts alternates the text of the
+    statement (bytes) and the names of its :variables (str), so that a transaction only joins them"""
     steps, buf = [], []
+
+    def statement(lines, gset):
+        pieces = VARIABLE.split('\n'.join(lines))
+        steps.append(('sql', [p.encode() if i % 2 == 0 else p for i, p in enumerate(pieces)], gset))
     for line in text.splitlines():
         s = line.strip()
         if m := re.fullmatch(r'\\set\s+(\w+)\s+random\(\s*(\d+)\s*,\s*(\d+)\s*\)', s):
             steps.append(('set', m[1], int(m[2]), int(m[3])))
         elif s.endswith('\\gset'):
-            steps.append(('sql', '\n'.join(buf + [s[:-5]]), True)); buf = []
+            statement(buf + [s[:-5].rstrip()], True); buf = []
         elif s:
             buf.append(s)
             if s.endswith(';'):
-                steps.append(('sql', '\n'.join(buf)[:-1], False)); buf = []
+                statement(buf[:-1] + [buf[-1][:-1]], False); buf = []
     if buf:
         raise ValueError(f'statement without a terminating ; or \\gset: {buf[0][:60]}')
     return steps
 
 
-def expand(sql, values):
-    """:name replaced by the value of the variable (a name that is not set, and a cast ::type, stay as they are), what pgbench does"""
-    return re.sub(r'(?<!:):([A-Za-z_]\w*)', lambda m: values.get(m[1], m[0]), sql)
+def expand(parts, values):
+    """the statement with :name replaced by the value of the variable (a name that is not set, and a cast ::type, stay as they are), what pgbench does"""
+    return b''.join(p if p.__class__ is bytes else values.get(p) or b':' + p.encode() for p in parts)
 
 
 class Connection:
@@ -223,17 +231,17 @@ class Connection:
             raise RuntimeError(lib.PQerrorMessage(self.handle).decode().strip())
 
     def run(self, sql, gset=False):
-        """the statement through the simple protocol; the first row's columns as {name: value} when gset"""
+        """the statement through the simple protocol; the first row's columns as {name: bytes} when gset"""
         lib = self.lib
-        res = lib.PQexec(self.handle, sql.encode())
+        res = lib.PQexec(self.handle, sql)
         try:
             if lib.PQresultStatus(res) not in (COMMAND_OK, TUPLES_OK):
                 raise RuntimeError(lib.PQresultErrorMessage(res).decode().strip().splitlines()[0])
             if gset and lib.PQntuples(res):
-                return {lib.PQfname(res, i).decode(): lib.PQgetvalue(res, 0, i).decode() for i in range(lib.PQnfields(res))}
+                return {lib.PQfname(res, i).decode(): lib.PQgetvalue(res, 0, i) for i in range(lib.PQnfields(res))}
         finally:
             lib.PQclear(res)
-        return {}
+        return None
 
     def close(self):
         self.lib.PQfinish(self.handle)
@@ -244,9 +252,9 @@ def transaction(conn, steps, rng, values):
     t = time.perf_counter()
     for kind, a, b, *c in steps:
         if kind == 'set':
-            values[a] = str(rng.randint(b, c[0]))
-        else:
-            values.update(conn.run(expand(a, values), b))
+            values[a] = b'%d' % rng.randint(b, c[0])
+        elif got := conn.run(expand(a, values), b):
+            values.update(got)
     return time.perf_counter() - t
 
 
