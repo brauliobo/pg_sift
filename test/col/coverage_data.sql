@@ -34,7 +34,7 @@ SELECT i, i % 7, (i % 100)::int2, i, i * 1000000000::bigint, ((i % 50) / 4.0)::f
 	md5((i % 25)::text)::uuid, ((i % 100) / 4.0)::numeric::money, (ARRAY['red', 'green', 'blue'])[1 + i % 3]::cv_color,
 	ARRAY[i % 5, i % 3], jsonb_build_object('k', i % 4, 'tags', jsonb_build_array(i % 3, i % 5))
 FROM generate_series(1, 3000) i;
-CREATE INDEX cv_types_col ON cv_types USING sift_col (id, grp, i2, i4, i8, f4, f8, n2, n15, n18, tx, vc, b, d, ts, tstz, ch);
+CREATE INDEX cv_types_col ON cv_types USING sift_col (id, grp, i2, i4, i8, f4, f8, n2, n15, n18, n38, nfree, tx, vc, b, d, ts, tstz, ch, m, iv);
 
 -- the same rows in a sift_table (every type is kept exactly), sealed into column groups
 CREATE TABLE cv_tt USING sift_table AS SELECT * FROM cv_types;
