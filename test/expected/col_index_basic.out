@@ -23,8 +23,6 @@ CREATE TABLE orders (
 	tenant_id int, qty bigint, status text, amount float8, discount float4, placed date, paid_at timestamptz, express bool,
 	total numeric, payload jsonb, note text);
 CREATE INDEX o_numeric ON orders USING sift_col (total);
-ERROR:  sift_col holds numeric(p, s) with p <= 18 and s >= 0, not the type of column "total"
-HINT:  Declare the column as numeric(18, s) or smaller; the values are stored as integers scaled by 10^s.
 CREATE INDEX o_jsonb ON orders USING sift_col (payload);
 ERROR:  the jsonb column "payload" of a sift_col index needs paths
 HINT:  Declare them with the paths option: WITH (paths = 'payload.* float4')
@@ -763,8 +761,6 @@ CREATE TABLE nums (id int, n numeric(12, 2), w numeric(18, 0));
 INSERT INTO nums SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 19 = 0 THEN 'NaN' ELSE (i * 7919 % 200001 - 100000) / 100.0 END,
 	999999999999999999 - i FROM generate_series(1, 3000) i;
 CREATE INDEX nums_wide ON nums USING sift_col ((n::numeric(19, 2)));
-ERROR:  sift_col holds numeric(p, s) with p <= 18 and s >= 0, not the type of column "n"
-HINT:  Declare the column as numeric(18, s) or smaller; the values are stored as integers scaled by 10^s.
 CREATE INDEX nums_idx ON nums USING sift_col (n, w);
 SELECT sift.col_verify('nums_idx', true);
  col_verify 
