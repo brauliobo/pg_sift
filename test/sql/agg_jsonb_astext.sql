@@ -62,6 +62,10 @@ INSERT INTO a_q VALUES
 	('SELECT length(d.doc->>''label'') AS len, count(*) FROM a_t d GROUP BY 1'),
 	('SELECT d.metrics_a->>''k1'' AS v, count(*) FROM a_t d GROUP BY 1'),
 	('SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>''k2'' ~ ''^[0-9]'' GROUP BY 1'),
+	-- tests of a member of a free-key object that the source can run on the encoded text
+	('SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>''k1'' = ''7'' GROUP BY 1'),
+	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k1'' IN (''7'', ''true'', ''1.50'')'),
+	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k2'' LIKE ''1%'''),
 	-- the tests of JSON values keep the normal plan: "12" and 12 are different there
 	('SELECT count(*) FROM a_t d WHERE d.items @> ''[{"score": "7.5"}]'''),
 	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "12")'')'),
