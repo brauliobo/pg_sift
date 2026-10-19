@@ -266,6 +266,11 @@ def place_classes(rows):
     return sorted(dict.fromkeys(r[3] for r in rows), key=PLACE_CLASSES.index)
 
 
+def late_load_note(r):
+    """the sentence for the load row of a later run merged into the tier (--merge): the classes it measured and the load of its cells"""
+    return 'The classes %s were measured in a later run on the same build and corpus (host load average %s-%s, median %s).' % (r[4].replace(',', ', '), r[7], r[8], r[6])
+
+
 def md_places(rows, tier):
     engines = [e for e in ORDER if any(r[:3] == ('places', tier, e) and r[5] == 'p50_ms' for r in rows)]
     sel = [r for r in rows if r[:2] == ('places', tier) and r[5] == 'p50_ms']
@@ -276,7 +281,8 @@ def md_places(rows, tier):
     show = lambda r, d=2: pm(r, d)
     head = ['engine', 'index (MiB)', 'build (s)'] + ['%s' % c for c in classes]
     body = [[NAME[e]] + build_cols(rows, 'places', tier, e) + [show(p50(e, c, first)) for c in classes] for e in engines]
-    out = ['Index size, CREATE INDEX time and p50 latency in ms ± standard error of the `%s` workload per query class (single client):' % first, ''] + md_table(head, body)
+    out = [x for r in rows if r[:2] == ('places', tier) and r[5] == 'load_1m' and r[4] != '-' for x in (late_load_note(r), '')]
+    out += ['Index size, CREATE INDEX time and p50 latency in ms ± standard error of the `%s` workload per query class (single client):' % first, ''] + md_table(head, body)
     emu = [e for e in engines if get(rows, 'places', tier, e, '-', 'emulation', 'index_mib')]
     if emu:
         metrics = ('index_mib', 'build_s', 'setup_s', 'heap_growth_mib')
@@ -344,8 +350,9 @@ def main(argv):
         for d in dict.fromkeys(r[0] for r in rows):
             path = '%s/%s.tsv' % (per, d)
             old = [tuple(r) + ('NA',) * (WIDTH - len(r)) for r in rows_of(path, skip_header=False)[2:]] if os.path.exists(path) else []
-            if merge:   # the cells of the directory win, every other row stays
+            if merge:   # the cells of the directory win, every other row stays; the load of the run is kept next to them, its variant the classes it measured
                 new = [r for r in rows if r[0] == d and r[3] != '-']
+                new += [r[:4] + (','.join(dict.fromkeys(n[3] for n in new)),) + r[5:] for r in rows if r[0] == d and r[5] == 'load_1m']
                 kept = [r for r in old if r[:6] not in {n[:6] for n in new}]
                 write(path, [r for r in kept + new if r[0] == d])
             else:
