@@ -689,6 +689,10 @@ typedef struct AggExec
 	uint64		row_base;		/* unique number of the unit's first row */
 	bool		dense;			/* the aggregates and keys of the spec are the ones dense_chunk runs */
 	uint32	   *zgid;			/* dense chunks without a key: group 0 for every row */
+	int64	   *histbuf;		/* dense chunks, few groups: two histograms of histcap groups */
+	uint32		histcap;
+	int64	   *hist;			/* the rows of the chunk per group; NULL when this chunk has none */
+	int64	   *hist2;			/* the scratch of a second one */
 	/* the tuples being aggregated (the arrays of cur) */
 	Tup			t0;				/* the chunk's selection */
 	Tup			stage[SIFT_AGG_MAX_JOINS];	/* the output of each join stage that repeats or drops tuples */
@@ -6788,13 +6792,45 @@ dense_taken(AggExec *ex, SiftAggAgg *a, int start, int n, const uint64 *mask, ui
 	return res;
 }
 
+/* the rows per group of the bits of `bits`, in h (gcap entries) */
 static void
-dense_count(AggExec *ex, int64 *cnt, const uint64 *ok, int n)
+dense_hist(AggExec *ex, int64 *h, const uint64 *bits, int n)
 {
+	memset(h, 0, ex->gcap * sizeof(int64));
+	sift_aggk->count_gid(h, ex->gid, bits, n);
+}
+
+/*
+ * cnt[g] += the rows of ok in group g. With few groups the rows of the chunk were counted per group once (ex->hist): an aggregate that
+ * takes them all adds that, and one that leaves out fewer rows than it takes counts the rows left out and subtracts them.
+ */
+static void
+dense_count(AggExec *ex, int64 *cnt, const uint64 *ok, const uint64 *mask, int n)
+{
+	int			nw = (n + 63) / 64;
+
 	if (ex->spec->nkeys == 0)
-		cnt[0] += sift_colk->bits_count(ok, (n + 63) / 64);
-	else
+		cnt[0] += sift_colk->bits_count(ok, nw);
+	else if (ex->hist == NULL)
 		sift_aggk->count_gid(cnt, ex->gid, ok, n);
+	else if (ok == mask)
+		for (uint32 g = 0; g < ex->gcap; g++)
+			cnt[g] += ex->hist[g];
+	else
+	{
+		uint64		out[VECW + PADW];
+
+		memcpy(out, mask, nw * sizeof(uint64));
+		sift_colk->bits_andnot(out, ok, nw);
+		if (sift_colk->bits_count(out, nw) < sift_colk->bits_count(ok, nw))
+		{
+			dense_hist(ex, ex->hist2, out, n);
+			for (uint32 g = 0; g < ex->gcap; g++)
+				cnt[g] += ex->hist[g] - ex->hist2[g];
+		}
+		else
+			sift_aggk->count_gid(cnt, ex->gid, ok, n);
+	}
 }
 
 /* float_guard for the bits of ok: a non-finite input marks its group, else the largest absolute input is noted */
@@ -6850,7 +6886,7 @@ dense_update(AggExec *ex, int ai, int start, int n, const uint64 *mask)
 		default:
 			break;
 	}
-	dense_count(ex, acc->n, ok, n);
+	dense_count(ex, acc->n, ok, mask, n);
 }
 
 /* the chunk [start, start + n) of the unit's rows or elements selected by mask, aggregated from the bitmap; false: not a dense chunk */
@@ -6869,8 +6905,24 @@ dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
 	ex->n_tuples += cnt;
 	ex->n_dense++;
+	ex->hist = NULL;
 	if (ex->spec->nkeys == 0)
 		ex->seen[0] += cnt;
+	else if (ex->gcap <= n / 8)
+	{
+		if (ex->histcap < ex->gcap)
+		{
+			if (ex->histbuf)
+				pfree(ex->histbuf);
+			ex->histcap = Max(ex->gcap, 64);
+			ex->histbuf = MemoryContextAlloc(ex->cxt, (Size) ex->histcap * 2 * sizeof(int64));
+		}
+		ex->hist = ex->histbuf;
+		ex->hist2 = ex->histbuf + ex->histcap;
+		dense_hist(ex, ex->hist, mask, n);
+		for (uint32 g = 0; g < ex->gcap; g++)
+			ex->seen[g] += ex->hist[g];
+	}
 	else
 		sift_aggk->count_gid(ex->seen, ex->gid, mask, n);
 	for (int i = 0; i < ex->spec->naggs; i++)
