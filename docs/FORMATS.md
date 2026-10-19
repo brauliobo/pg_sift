@@ -45,11 +45,11 @@ A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.
 
 | format | meaning | written by |
 |---|---|---|
-| 3 | 3.0 layout (dictionaries as codec string lists) | 3.0, and 3.1 with `sift.col_format_minor = 3` |
+| 3 | 3.0 layout (dictionaries as codec string lists) | 3.0, and 3.1 with `sift.col_format_minor = 3` (a `sift_table` group without a version section) |
 | 4 | 3.1: type tags (`SIFT_COLC_TAGS`) and kinds (`SIFT_COLC_KINDS`) of overflowing values, element rollups (`COLP` directory v2), optional version section | 3.1 default |
 
-`SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. A `sift_table` never writes less than
-`SIFT_COL_FORMAT_VERS` (4) for a group with a version section whatever `sift.col_format_minor` says. Minors 0 to 2 were never released. The chunk
+`SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. A `sift_table` follows `sift.col_format_minor` too,
+except that a group with a version section (unfrozen rows) is always `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. The chunk
 flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIFT_COLC_KINDS` 0x8 (`src/col/sift_col_enc.h`).
 
 ## 5. Segment entry flags (`SiftSegEntry.flags`)

@@ -79,7 +79,7 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
-	uint8		format;			/* SiftSegEntry.format: sift.col_format_minor when the writer began (a sift_table writes at least SIFT_COL_FORMAT_VERS); 4 writes the tags of overflow values */
+	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
 	StringInfoData buf;
 	/* the version section: one VersUnit per unit, the vectors of the units, the range of the xids */
 	VersUnit   *vunit;
@@ -544,6 +544,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 
 	if (w->nsb == 0)
 		elog(ERROR, "sift_col: a segment needs at least one unit");
+	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	write_dicts(w, &h.sections[SIFT_SEC_DICT]);
 	write_zones(w, &h.sections[SIFT_SEC_DICTIDX]);

@@ -20,7 +20,7 @@
 
 #define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists (docs/COL.md 2.3), minor 4 the type tag of an overflowing value, the element rollups (docs/COL-JSONB-31.md 5) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
-#define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs: the writer of a sift_table never writes less */
+#define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

@@ -2,7 +2,7 @@
 # The refusal path of the table write path and the upgrade path from 3.0.1: a sift_table that has had rows with their own versions (unfrozen groups, column format 1.4,
 # on-disk format 1.3) is refused with a format error, and returns no row, by a server that loads the older library (3.0.1, built from
 # the repository by scripts/old-lib-check.sh and kept in ~/.cache/sift/old-lib). Skipped when that library cannot be built here:
-# no release/3.0.1 in the repository, or PostgreSQL 17 (no extension_control_path to hold two builds).
+# no v3.0.1 in the repository, or PostgreSQL 17 (no extension_control_path to hold two builds).
 . "$(dirname "$0")/lib.bash"
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
