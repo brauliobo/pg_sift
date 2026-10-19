@@ -98,7 +98,7 @@ typedef struct TupleTableSlot TupleTableSlot;
 typedef struct TIDBitmap TIDBitmap;
 struct IndexFetchTableData;
 
-/* a process setting with a fixed set of values (src/sift_cpu.c): there is no settings system, the value is the default and sift_simd() sets it */
+/* a process setting with a fixed set of values (src/core/sift_cpu.c): there is no settings system, the value is the default and sift_simd() sets it */
 typedef struct SiftEnumEntry
 {
 	const char *name;

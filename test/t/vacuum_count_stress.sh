@@ -15,7 +15,7 @@ node_start vs || bail "start failed"
 D=$(dir vs)
 sql vs "CREATE EXTENSION pg_sift" "CREATE TABLE st (id serial, body text)" \
 	"INSERT INTO st (body) SELECT 'zzword w' || i || ' x' || (i % 97) FROM generate_series(1, $ROWS) i" \
-	"CREATE INDEX st_idx ON st USING sift (body) WITH (mutable_limit = 4096, build_segments = 4)" "VACUUM st" \
+	"CREATE INDEX st_idx ON st USING sift (body) WITH (write_buffer_limit = 4096, build_segments = 4)" "VACUUM st" \
 	"CREATE TABLE diffs (idx bigint, seq bigint)" \
 	"CREATE FUNCTION chk() RETURNS void LANGUAGE plpgsql AS \$\$ DECLARE a bigint; b bigint; BEGIN
 	PERFORM set_config('enable_seqscan', 'off', true);
@@ -46,4 +46,5 @@ diag "$(grep -E "^(number of transactions actually|tps)" "$D/pgbench.log")"
 diag "$n rounds of VACUUM and merge"
 check "no count differed from the sequential count of its snapshot" test "$(sql vs "SELECT count(*) FROM diffs")" == 0
 check "VACUUM and the merges ran without error" test "$(grep -c -E "FAILED|ERROR" "$D/maint.out")" == 0
+[[ $(sql vs "SELECT count(*) FROM diffs") == 0 ]] || diag "$(sql vs "SELECT * FROM diffs LIMIT 5")"
 finish

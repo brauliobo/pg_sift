@@ -43,24 +43,10 @@ while (( $# )); do
 	shift
 done
 (( ${#BUILDS[@]} )) || BUILDS=("new=$REPO")
-BASE=$(mktemp -d /tmp/sift-perf-gate.XXXXXX)
-PORT0=${SIFT_PORT:-56150}
-declare -A DIR TMP PORT
-
-pg() { # LABEL pgtest-args...
-	local l=$1; shift
-	( cd "${DIR[$l]}" && SIFT_TMP=${TMP[$l]} SIFT_PORT=${PORT[$l]} SIFT_TESTING= scripts/pgtest.sh "$@" )
-}
-q() { # LABEL sql...: one psql session, one -c per statement
-	local l=$1 a=(); shift
-	for s in "$@"; do a+=(-c "$s"); done
-	pg "$l" psql -q -At -v ON_ERROR_STOP=1 "${a[@]}"
-}
-cleanup() {
-	for l in "${!DIR[@]}"; do pg "$l" destroy >/dev/null 2>&1 || true; done
-	rm -rf "$BASE"
-}
-trap cleanup EXIT
+. "$REPO/scripts/multibuild.sh"
+. "$REPO/scripts/quiet.sh"
+MB_TESTING=
+mb_begin sift-perf-gate
 
 now() { date +%s.%N; }
 elapsed() { bc <<<"$(now) - $1"; }
@@ -81,8 +67,16 @@ backlog() { # LABEL: 60 promoted segments, the worker off
 	q "$1" "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR k IN 1..60 LOOP
 		INSERT INTO t (body) SELECT $(words 6 i) FROM generate_series(1, 1500) i; PERFORM sift.promote('t_idx'); COMMIT; END LOOP; END \$\$" >/dev/null
 }
+# LABEL WHAT: before a timed batch, wait for a quiet host (scripts/quiet.sh); one that runs anyway is NOISY: said on stderr and listed at the
+# end (cell runs in a subshell, so the batches go to files)
+gate() {
+	quiet_batch
+	echo "$1 $([[ -n $QUIET_MARK ]] && echo NOISY || echo ok) $2" >>"$BASE/batches.txt"
+	[[ -z $QUIET_MARK ]] || echo "perf-gate: $1 $2:$QUIET_MARK, $(quiet_report 2>&1)" >&2
+}
 bench() { # LABEL PREFIX clients script secs: pgbench; prints PREFIX_tps and PREFIX_p99_ms (latency of the script PREFIX_lat_ms)
 	local l=$1 p=$2 log=$BASE/$1.log out
+	gate "$l" "$p"
 	rm -f "$log".*
 	out=$(pgbench -h "${TMP[$l]}/sock" -p "${PORT[$l]}" -U postgres -n -c "$3" -j 4 -T "$5" -l --log-prefix="$log" -f "$4" sift 2>&1)
 	echo "${p}_tps $(sed -n 's/^tps = \([0-9.]*\).*/\1/p' <<<"$out" | head -1)"
@@ -191,6 +185,7 @@ g_vacuum() {
 measured() {
 	local l=$1 p=$2 t0 kb0 base poller
 	shift 2
+	gate "$l" "$p"
 	kb0=$(temp_kb "$l")
 	rm -f "$BASE/stop"; base=$(anon_kb "$l"); peak_kb "$l" >"$BASE/peak" &
 	poller=$!
@@ -209,9 +204,11 @@ g_merge() {
 g_create() {
 	local t0
 	fresh "$1"; q "$1" "DROP INDEX t_idx; INSERT INTO t (body) SELECT $(words 150 i) FROM generate_series(1, $ROWS) i" >/dev/null
+	gate "$1" create_s
 	t0=$(now); q "$1" "CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create_s $(elapsed "$t0")"
 	q "$1" "DROP INDEX t_idx" >/dev/null
+	gate "$1" create64_s
 	t0=$(now); q "$1" "SET maintenance_work_mem = '64MB'; SET max_parallel_maintenance_workers = 0; CREATE INDEX t_idx ON t USING sift (body)" >/dev/null
 	echo "create64_s $(elapsed "$t0")"
 }
@@ -318,19 +315,14 @@ g_mergebig() {
 }
 GROUPS_ALL+=(mergebig)
 
-i=0
-for b in "${BUILDS[@]}"; do
-	l=${b%%=*}
-	DIR[$l]=$(cd "${b#*=}" && pwd) TMP[$l]=$BASE/$l PORT[$l]=$((PORT0 + i++))
-	mkdir -p "${TMP[$l]}"
-	pg "$l" install >/dev/null
-	pg "$l" start >/dev/null
+mb_start
+for l in "${LABELS[@]}"; do
 	q "$l" "CREATE EXTENSION pg_sift" >/dev/null
 	q "$l" "ALTER SYSTEM SET autovacuum = off" "SELECT pg_reload_conf()" >/dev/null
 done
-echo "load average $(cut -d' ' -f1-3 /proc/loadavg), $ROWS rows, $RUNS runs, $SECS s per pgbench"
+echo "$(quiet_report 2>&1), $ROWS rows, $RUNS runs, $SECS s per pgbench"
 
-: >"$BASE/all.tsv"
+: >"$BASE/all.tsv"; : >"$BASE/batches.txt"
 for r in $(seq "$RUNS"); do
 	for b in "${BUILDS[@]}"; do
 		l=${b%%=*}
@@ -358,3 +350,5 @@ awk '
 			printf "\n"
 		}
 	}' "$BASE/all.tsv"
+echo "$(quiet_report 2>&1); $(grep -c ' NOISY ' "$BASE/batches.txt" || true) of $(wc -l <"$BASE/batches.txt") timed batches NOISY (limit ${SIFT_QUIET_MAX:-10}%)"
+grep ' NOISY ' "$BASE/batches.txt" | cut -d' ' -f1,3 | sort | uniq -c | sed 's/^ *\([0-9]*\) \(.*\)/NOISY: \2 x\1/' || true

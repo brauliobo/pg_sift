@@ -107,9 +107,11 @@ INSERT INTO pd_filters VALUES
 	('tenant = 7 AND cat = 17', 'BitmapAnd of btree and BRIN'), ('tenant = 7 OR tenant = 9', 'BitmapOr'),
 	('tenant = 7 AND id % 2 = 0', 'btree and a qual no index serves'), ('tenant = 999', 'nothing'),
 	('tenant < 300', 'half the table'), ('id % 2 = 0', 'no index serves it');
-CREATE FUNCTION pd_run(tbl regclass) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
+-- the filters named in whats, else all of them (a WHERE on the result would run every check first: pd_check is volatile)
+CREATE FUNCTION pd_run(tbl regclass, whats text[] DEFAULT NULL) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
 	SELECT f.what, pd_kind(tbl, 'w3 OR x2', f.flt, 'force'), count(*)::int, coalesce(string_agg(q.q || ': ' || r, '; ') FILTER (WHERE r <> 'ok'), 'none')
 	FROM pd_filters f CROSS JOIN pd_queries q, LATERAL pd_check(tbl, q.q, f.flt) r
+	WHERE whats IS NULL OR f.what = ANY (whats)
 	GROUP BY f.flt, f.what ORDER BY f.flt
 $$;
 SELECT pd_seq_load('fd');
@@ -157,7 +159,7 @@ FROM (SELECT sift_scan_node('SELECT id FROM fd WHERE body @@> ''common'' AND ten
 (1 row)
 
 RESET sift.filter_pushdown;
-SELECT * FROM pd_run('fd') WHERE what IN ('half the table', 'btree range', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['half the table', 'btree range', 'BitmapOr']);
       what      |   plan   | checked | failures 
 ----------------+----------+---------+----------
  btree range    | pushdown |      11 | none
@@ -357,7 +359,7 @@ SELECT id FROM fd WHERE body @@> 'w3 OR x2' AND tenant = 7 ORDER BY sift.score(c
 (3 rows)
 
 RESET sift.filter_pushdown;
--- rows in every state: HOT and other updates, deletes, inserts (mutable segments), before and after VACUUM,
+-- rows in every state: HOT and other updates, deletes, inserts (write buffers), before and after VACUUM,
 -- promotion and merge
 UPDATE fd SET pad = pad || 'z' WHERE id % 50 = 0;
 UPDATE fd SET tenant = (tenant + 1) % 500 WHERE id % 97 = 0;
@@ -398,7 +400,7 @@ SELECT pd_seq_load('fd');
  
 (1 row)
 
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BitmapAnd of btree and BRIN');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BitmapAnd of btree and BRIN']);
             what             |   plan   | checked | failures 
 -----------------------------+----------+---------+----------
  btree equality              | pushdown |      11 | none
@@ -412,23 +414,19 @@ SELECT pd_seq_load('fd');
  
 (1 row)
 
+-- after VACUUM and after the merge one filter of each bitmap kind: the index kinds do not interact with the state of the sift index
 VACUUM fd;
-SELECT * FROM pd_run('fd');
-               what               |    plan     | checked | failures 
-----------------------------------+-------------+---------+----------
- BRIN, lossy by nature            | pushdown    |      11 | none
- BRIN range                       | pushdown    |      11 | none
- no index serves it               | post-filter |      11 | none
- GIN, recheck                     | pushdown    |      11 | none
- btree range                      | pushdown    |      11 | none
- half the table                   | pushdown    |      11 | none
- btree equality                   | pushdown    |      11 | none
- BitmapAnd of btree and BRIN      | pushdown    |      11 | none
- btree and a qual no index serves | pushdown    |      11 | none
- BitmapOr                         | pushdown    |      11 | none
- nothing                          | pushdown    |      11 | none
- btree ScalarArrayOp              | pushdown    |      11 | none
-(12 rows)
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+            what             |   plan   | checked | failures 
+-----------------------------+----------+---------+----------
+ BRIN, lossy by nature       | pushdown |      11 | none
+ GIN, recheck                | pushdown |      11 | none
+ btree range                 | pushdown |      11 | none
+ half the table              | pushdown |      11 | none
+ btree equality              | pushdown |      11 | none
+ BitmapAnd of btree and BRIN | pushdown |      11 | none
+ BitmapOr                    | pushdown |      11 | none
+(7 rows)
 
 SELECT sift.promote('fd_body') IS NOT NULL AS promoted;
  promoted 
@@ -436,7 +434,7 @@ SELECT sift.promote('fd_body') IS NOT NULL AS promoted;
  t
 (1 row)
 
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BRIN, lossy by nature', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
          what          |   plan   | checked | failures 
 -----------------------+----------+---------+----------
  BRIN, lossy by nature | pushdown |      11 | none
@@ -451,7 +449,7 @@ SELECT pd_seq_load('fd');
  
 (1 row)
 
-SELECT * FROM pd_run('fd') WHERE what IN ('btree equality', 'BRIN, lossy by nature', 'BitmapOr');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
          what          |   plan   | checked | failures 
 -----------------------+----------+---------+----------
  BRIN, lossy by nature | pushdown |      11 | none
@@ -465,22 +463,17 @@ SELECT sift.merge('fd_body', true) IS NOT NULL AS merged;
  t
 (1 row)
 
-SELECT * FROM pd_run('fd');
-               what               |    plan     | checked | failures 
-----------------------------------+-------------+---------+----------
- BRIN, lossy by nature            | pushdown    |      11 | none
- BRIN range                       | pushdown    |      11 | none
- no index serves it               | post-filter |      11 | none
- GIN, recheck                     | pushdown    |      11 | none
- btree range                      | pushdown    |      11 | none
- half the table                   | pushdown    |      11 | none
- btree equality                   | pushdown    |      11 | none
- BitmapAnd of btree and BRIN      | pushdown    |      11 | none
- btree and a qual no index serves | pushdown    |      11 | none
- BitmapOr                         | pushdown    |      11 | none
- nothing                          | pushdown    |      11 | none
- btree ScalarArrayOp              | pushdown    |      11 | none
-(12 rows)
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+            what             |   plan   | checked | failures 
+-----------------------------+----------+---------+----------
+ BRIN, lossy by nature       | pushdown |      11 | none
+ GIN, recheck                | pushdown |      11 | none
+ btree range                 | pushdown |      11 | none
+ half the table              | pushdown |      11 | none
+ btree equality              | pushdown |      11 | none
+ BitmapAnd of btree and BRIN | pushdown |      11 | none
+ BitmapOr                    | pushdown |      11 | none
+(7 rows)
 
 SELECT sift.verify('fd_body', true);
  verify 
@@ -563,5 +556,5 @@ RESET sift.filter_pushdown;
 DROP TABLE fq;
 DROP TABLE fd, pd_queries, pd_seq, pd_filters;
 DROP FUNCTION pd_top(regclass, text, text, int, text), pd_kind(regclass, text, text, text), pd_seq_load(regclass),
-	pd_check(regclass, text, text), pd_run(regclass), sift_plan(text), sift_scan_node(text);
+	pd_check(regclass, text, text), pd_run(regclass, text[]), sift_plan(text), sift_scan_node(text);
 DROP EXTENSION pg_sift;

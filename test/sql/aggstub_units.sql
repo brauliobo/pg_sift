@@ -1,0 +1,144 @@
+-- The column source of sift_colstub (SIFT_TESTING builds): units are the rows of one superblock (256 pages), read raw from the
+-- heap with no visibility check; every leaf decodes to what the SQL expression of the index column says.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET datestyle = 'ISO, MDY';
+SET timezone = 'UTC';
+
+-- the dump of a leaf against an expression over the table: rows (tid, text) in the dump and not in the table, plus the reverse
+CREATE FUNCTION diffs(idx regclass, leaf int, rel regclass, expr text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM ((SELECT tid, val FROM sift._test_aggstub_dump(%L, %s) EXCEPT ALL SELECT ctid, (%s)::text FROM %s)
+					UNION ALL (SELECT ctid, (%s)::text FROM %s EXCEPT ALL SELECT tid, val FROM sift._test_aggstub_dump(%L, %s))) x',
+				   idx, leaf, expr, rel, expr, rel, idx, leaf) INTO n;
+	RETURN n;
+END $$;
+
+-- fillfactor 10 and no autovacuum: about six rows a page, five superblocks of 256 pages, and dead rows stay until VACUUM
+CREATE TABLE t (id int, a int2, b int8, c bool, d date, ts timestamp, tz timestamptz, f4 float4, f8 float8,
+				s text, v varchar(8), ch char(4), nm name, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO t
+SELECT i,
+	   CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 300 - 150)::int2 END,
+	   CASE WHEN i % 13 = 0 THEN NULL ELSE i * 1000000007::int8 - 5000000000 END,
+	   CASE WHEN i % 17 = 0 THEN NULL ELSE i % 2 = 0 END,
+	   CASE WHEN i % 211 = 0 THEN 'infinity'::date WHEN i % 19 = 0 THEN NULL ELSE date '2000-01-01' + i % 4000 - 2000 END,
+	   CASE WHEN i % 223 = 0 THEN '-infinity'::timestamp WHEN i % 23 = 0 THEN NULL ELSE timestamp '2020-01-01 00:00:00' + i * interval '1 minute 7 seconds 250 milliseconds' END,
+	   CASE WHEN i % 29 = 0 THEN NULL ELSE timestamptz '2020-06-01 12:00:00+00' - i * interval '1 hour 1 second' END,
+	   CASE WHEN i % 31 = 0 THEN NULL WHEN i % 101 = 0 THEN 'NaN'::float4 WHEN i % 103 = 0 THEN 'Infinity'::float4
+			WHEN i % 107 = 0 THEN '-0'::float4 ELSE ((i % 1000) / 8.0 - 20)::float4 END,
+	   CASE WHEN i % 37 = 0 THEN NULL WHEN i % 109 = 0 THEN 'NaN'::float8 WHEN i % 113 = 0 THEN '-Infinity'::float8
+			WHEN i % 127 = 0 THEN '-0'::float8 ELSE (i / 3.0 - 1e6 + 1e-7 * i)::float8 END,
+	   CASE WHEN i % 41 = 0 THEN NULL WHEN i % 5 = 0 THEN '' ELSE 'seg ' || (i % 7) || repeat('é', i % 3) END,
+	   CASE WHEN i % 43 = 0 THEN NULL ELSE 'k' || (i % 5) END,
+	   CASE WHEN i % 47 = 0 THEN NULL ELSE (i % 9)::text END,
+	   CASE WHEN i % 53 = 0 THEN NULL ELSE 'n' || (i % 6) END,
+	   NULL
+FROM generate_series(1, 8000) i;
+CREATE INDEX t_col ON t USING sift_colstub (id, a, b, c, d, ts, tz, f4, f8, s, v, ch, nm, ((id % 10)::int2), (lower(s)), (b % 1000));
+ANALYZE t;
+
+SELECT leaf, attno, vtype, typid, expr FROM sift._test_aggstub_layout('t_col') ORDER BY leaf;
+
+-- every leaf equals its column or expression (NULLs, empty strings, infinities, NaN, -0 and multibyte text included)
+SELECT l.leaf, l.col, diffs('t_col', l.leaf, 't', l.expr) AS diffs
+FROM (VALUES (0, 'id', 'id'), (1, 'a', 'a'), (2, 'b', 'b'), (3, 'c', 'substr(c::text, 1, 1)'), (4, 'd', 'd'), (5, 'ts', 'ts'), (6, 'tz', 'tz'),
+			 (7, 'f4', 'f4'), (8, 'f8', 'f8'), (9, 's', 's'), (10, 'v', 'v'), (11, 'ch', 'rpad(ch::text, 4)'), (12, 'nm', 'nm'),
+			 (13, 'id % 10', '(id % 10)::int2'), (14, 'lower(s)', 'lower(s)'), (15, 'b % 1000', 'b % 1000')) AS l(leaf, col, expr)
+ORDER BY l.leaf;
+
+-- the NULL flags
+SELECT (SELECT count(*) FROM sift._test_aggstub_dump('t_col', 1) WHERE val IS NULL) = (SELECT count(*) FROM t WHERE a IS NULL) AS a_nulls,
+	   (SELECT count(*) FROM sift._test_aggstub_dump('t_col', 9) WHERE val IS NULL) = (SELECT count(*) FROM t WHERE s IS NULL) AS s_nulls,
+	   (SELECT count(*) FROM sift._test_aggstub_dump('t_col', 9) WHERE val = '') = (SELECT count(*) FROM t WHERE s = '') AS s_empty;
+
+-- the units: one per superblock with rows, ascending, rows in TID order, no dead map, not vetted
+SELECT count(*) > 4 AS several_units, sum(nrow) = (SELECT count(*) FROM t) AS all_rows,
+	   bool_and(all_live) AS all_live, NOT bool_or(vetted) AS not_vetted,
+	   bool_and((first_tid::text::point)[0]::int / 256 = sb AND (last_tid::text::point)[0]::int / 256 = sb) AS tids_in_sb,
+	   bool_and(first_tid <= last_tid) AS ordered
+FROM sift._test_aggstub_units('t_col');
+SELECT count(*) AS units_before FROM sift._test_aggstub_units('t_col') \gset
+SELECT count(*) AS unordered_units FROM (SELECT sb, lag(sb) OVER (ORDER BY unit) AS prev FROM sift._test_aggstub_units('t_col')) x WHERE sb <= prev;
+SELECT count(*) AS unordered_rows FROM (SELECT tid, lag(tid) OVER (PARTITION BY unit ORDER BY ord) AS prev
+										FROM sift._test_aggstub_dump('t_col', 0)) x WHERE tid <= prev;
+-- a range of superblocks
+SELECT array_agg(DISTINCT sb ORDER BY sb) AS sbs FROM sift._test_aggstub_dump('t_col', 0, 1, 3);
+SELECT array_agg(sb ORDER BY sb) AS sbs FROM sift._test_aggstub_units('t_col', 2, 100) WHERE sb < 4;
+SELECT count(*) AS empty_range FROM sift._test_aggstub_units('t_col', 3, 3);
+SELECT count(*) AS beyond_the_end FROM sift._test_aggstub_units('t_col', 1000, 2000);
+
+-- dead rows are rows until VACUUM (the index of a heap holds them): what the table was, before the DELETE
+CREATE TABLE t0 AS SELECT ctid AS tid, id, s FROM t;
+DELETE FROM t WHERE id % 10 = 0;
+SELECT count(*) = (SELECT count(*) FROM t0) AS deleted_rows_present,
+	   count(*) FILTER (WHERE d.val::int % 10 = 0) AS deleted_among_them
+FROM sift._test_aggstub_dump('t_col', 0) d;
+SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
+									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
+VACUUM t;
+SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
+SELECT diffs('t_col', 0, 't', 'id') AS id_diffs, diffs('t_col', 9, 't', 's') AS s_diffs, diffs('t_col', 14, 't', 'lower(s)') AS lower_diffs;
+-- VACUUM removed whole pages' worth of rows; a superblock with none gives no unit
+DELETE FROM t WHERE id > 3000 AND id <= 6000;
+VACUUM t;
+SELECT count(*) < :units_before AS fewer_units, sum(nrow) = (SELECT count(*) FROM t) AS all_rows FROM sift._test_aggstub_units('t_col');
+SELECT diffs('t_col', 0, 't', 'id') AS id_diffs;
+-- a rolled back insert is a row until VACUUM too
+BEGIN;
+INSERT INTO t (id, s) VALUES (100001, 'rolled back');
+ROLLBACK;
+SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) WHERE val = '100001';
+VACUUM t;
+SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) WHERE val = '100001';
+
+-- HOT updates (pad is not indexed): the row stays under the TID of the root of the chain, also once the old version is gone
+-- and the root is a redirect
+DROP TABLE t0;
+CREATE TABLE t0 AS SELECT ctid AS tid, id, s FROM t;
+UPDATE t SET pad = 'hot' WHERE id % 7 = 0;
+SELECT count(*) AS moved_tuples FROM t JOIN t0 USING (id) WHERE t.ctid <> t0.tid AND t.pad = 'hot' HAVING count(*) > 0;
+SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
+									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
+VACUUM t;
+SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
+									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
+SELECT count(*) AS moved_tuples_after_vacuum FROM t JOIN t0 USING (id) WHERE t.ctid <> t0.tid AND t.pad = 'hot' HAVING count(*) > 0;
+SELECT count(*) AS s_diffs FROM sift._test_aggstub_dump('t_col', 9) d JOIN t0 ON t0.tid = d.tid WHERE d.val IS DISTINCT FROM t0.s;
+
+-- an update of an indexed column is not HOT: a new row, and the old one stays until VACUUM
+DROP TABLE t0;
+CREATE TABLE t0 AS SELECT ctid AS tid, id, s FROM t;
+SELECT count(*) AS n0, count(*) FILTER (WHERE id % 5 = 1) AS nu FROM t \gset
+UPDATE t SET s = 'updated ' || id WHERE id % 5 = 1;
+SELECT count(*) = :n0 + :nu AS old_versions_present FROM sift._test_aggstub_dump('t_col', 0);
+SELECT count(*) = :nu AS new_versions FROM sift._test_aggstub_dump('t_col', 9) WHERE val LIKE 'updated%';
+VACUUM t;
+SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
+-- (a HOT updated row has the TID of its root, the table the one of its last version: compare by id)
+SELECT count(*) AS pair_diffs FROM (
+	(SELECT i.val, s.val, l.val FROM sift._test_aggstub_dump('t_col', 0) i JOIN sift._test_aggstub_dump('t_col', 9) s USING (unit, ord)
+		JOIN sift._test_aggstub_dump('t_col', 14) l USING (unit, ord) EXCEPT ALL SELECT id::text, s, lower(s) FROM t)
+	UNION ALL
+	(SELECT id::text, s, lower(s) FROM t EXCEPT ALL
+		SELECT i.val, s.val, l.val FROM sift._test_aggstub_dump('t_col', 0) i JOIN sift._test_aggstub_dump('t_col', 9) s USING (unit, ord)
+		JOIN sift._test_aggstub_dump('t_col', 14) l USING (unit, ord))) x;
+
+-- a column added later: the old rows give its default
+ALTER TABLE t ADD COLUMN extra int DEFAULT 7;
+CREATE INDEX t_extra ON t USING sift_colstub (id, extra);
+INSERT INTO t (id, extra) VALUES (200000, NULL), (200001, 8);
+SELECT val, count(*) = (SELECT count(*) FROM t WHERE extra IS NOT DISTINCT FROM d.val::int) AS as_the_table
+FROM sift._test_aggstub_dump('t_extra', 1) d GROUP BY val ORDER BY val;
+DROP INDEX t_extra;
+DROP TABLE t0;
+DROP TABLE t;
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

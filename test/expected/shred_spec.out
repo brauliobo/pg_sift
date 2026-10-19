@@ -1,0 +1,188 @@
+-- The path spec of the shredder (docs/COL-SHRED.md): canonical forms and errors
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+\set VERBOSITY default
+-- the canonical form: one flat item per column, declaration order, "." separators
+SELECT sift._test_shred_spec('attributes->locale text, metrics.* float4, items[]{category text, sku text, kind text, qty int4, price float4}, notes[]{type text, author_kind text}');
+                                                                                     _test_shred_spec                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ attributes.locale text, metrics.* float4, items[].category text, items[].sku text, items[].kind text, items[].qty int4, items[].price float4, notes[].type text, notes[].author_kind text
+(1 row)
+
+SELECT sift._test_shred_spec('a.b int4, a.c text, a.d.e bool');
+        _test_shred_spec        
+--------------------------------
+ a.b int4, a.c text, a.d.e bool
+(1 row)
+
+SELECT sift._test_shred_spec('A INT, b SmallInt, c BIGINT, d Real, e DOUBLE PRECISION, f double, g boolean, h Text');
+                           _test_shred_spec                           
+----------------------------------------------------------------------
+ A int4, b int2, c int8, d float4, e float8, f float8, g bool, h text
+(1 row)
+
+-- groups are sugar for flat paths and merge with them
+SELECT sift._test_shred_spec('items[].sku text, items[]{qty int4}, items[].price float4');
+                     _test_shred_spec                     
+----------------------------------------------------------
+ items[].sku text, items[].qty int4, items[].price float4
+(1 row)
+
+SELECT sift._test_shred_spec('a[]{b[]{c int4, d text}, e float8}, f int8');
+                   _test_shred_spec                   
+------------------------------------------------------
+ a[].b[].c int4, a[].b[].d text, a[].e float8, f int8
+(1 row)
+
+SELECT sift._test_shred_spec('m[][] float4, t[] text(64), w.*{x int4, y[] text}');
+                   _test_shred_spec                   
+------------------------------------------------------
+ m[][] float4, t[] text(64), w.*.x int4, w.*.y[] text
+(1 row)
+
+SELECT sift._test_shred_spec('a.*.* int4');
+ _test_shred_spec 
+------------------
+ a.*.* int4
+(1 row)
+
+SELECT sift._test_shred_spec('a.* [] text');
+ _test_shred_spec 
+------------------
+ a.*[] text
+(1 row)
+
+-- quoted keys, separators and white space
+SELECT sift._test_shred_spec(' "a.b" -> "c d" text ,"say ""hi""" int4');
+          _test_shred_spec           
+-------------------------------------
+ "a.b"."c d" text, "say ""hi""" int4
+(1 row)
+
+SELECT sift._test_shred_spec(E'a\n->\tb[ ]\n  text');
+ _test_shred_spec 
+------------------
+ a.b[] text
+(1 row)
+
+SELECT sift._test_shred_spec('naïve int4, ключ text');
+   _test_shred_spec    
+-----------------------
+ naïve int4, ключ text
+(1 row)
+
+SELECT sift._test_shred_spec('$id int8, 2024 text');
+  _test_shred_spec   
+---------------------
+ $id int8, 2024 text
+(1 row)
+
+-- the fingerprint is stable for the canonical text
+SELECT length(sift._test_shred_spec('a int4')) , sift._test_shred_spec('a int4') = sift._test_shred_spec(' a   INT4 ');
+ length | ?column? 
+--------+----------
+      6 | t
+(1 row)
+
+-- errors, with the position
+SELECT sift._test_shred_spec('');
+ERROR:  sift shred paths: expected a key at the start of a path at position 1
+SELECT sift._test_shred_spec('a');
+ERROR:  sift shred paths: expected a type after the path (bool, int2, int4, int8, float4, float8 or text) at position 2
+SELECT sift._test_shred_spec('a nope');
+ERROR:  sift shred paths: unknown type "nope" (bool, int2, int4, int8, float4, float8 or text) at position 3
+SELECT sift._test_shred_spec('a int4,');
+ERROR:  sift shred paths: expected a key at the start of a path at position 8
+SELECT sift._test_shred_spec('a int4 b text');
+ERROR:  sift shred paths: expected "," or the end of the paths at position 8
+SELECT sift._test_shred_spec('a int4 junk');
+ERROR:  sift shred paths: expected "," or the end of the paths at position 8
+SELECT sift._test_shred_spec('a.b.');
+ERROR:  sift shred paths: expected a key at position 5
+SELECT sift._test_shred_spec('a - b int4');
+ERROR:  sift shred paths: unexpected "-" (a separator is "." or "->"; quote keys that contain it) at position 3
+SELECT sift._test_shred_spec('a[ int4');
+ERROR:  sift shred paths: expected "[]" at position 2
+SELECT sift._test_shred_spec('"a int4');
+ERROR:  sift shred paths: unterminated quoted key at position 1
+SELECT sift._test_shred_spec('a int4 #');
+ERROR:  sift shred paths: unexpected character "#" at position 8
+SELECT sift._test_shred_spec('"" int4');
+ERROR:  sift shred paths: empty key at position 1
+SELECT sift._test_shred_spec('* int4');
+ERROR:  sift shred paths: expected a key at the start of a path at position 1
+SELECT sift._test_shred_spec('[] int4');
+ERROR:  sift shred paths: expected a key at the start of a path at position 1
+SELECT sift._test_shred_spec('a text(');
+ERROR:  sift shred paths: expected the length in bytes at position 8
+SELECT sift._test_shred_spec('a text(x)');
+ERROR:  sift shred paths: the length of a text is a number of bytes at position 8
+SELECT sift._test_shred_spec('a text(0)');
+ERROR:  sift shred paths: the length of a text is between 1 and 1048576 bytes at position 8
+SELECT sift._test_shred_spec('a text(2000000)');
+ERROR:  sift shred paths: the length of a text is between 1 and 1048576 bytes at position 8
+SELECT sift._test_shred_spec('a text(10');
+ERROR:  sift shred paths: expected ")" at position 10
+SELECT sift._test_shred_spec('a int4(10)');
+ERROR:  sift shred paths: expected "," or the end of the paths at position 7
+SELECT sift._test_shred_spec('a {b int4}');
+ERROR:  sift shred paths: a group of keys needs an array (key[]) or a wildcard (key.*) before it at position 3
+SELECT sift._test_shred_spec('a[] {}');
+ERROR:  sift shred paths: expected a key at position 6
+SELECT sift._test_shred_spec('a[] {b int4');
+ERROR:  sift shred paths: expected "}" at position 12
+SELECT sift._test_shred_spec('a[] {b int4} c');
+ERROR:  sift shred paths: expected "," or the end of the paths at position 14
+SELECT sift._test_shred_spec('a int4, a text');
+ERROR:  sift shred paths: path "a" is declared twice at position 9
+SELECT sift._test_shred_spec('a int4, a.b text');
+ERROR:  sift shred paths: path "a" is used as a value and as an object at position 9
+SELECT sift._test_shred_spec('a.b text, a int4');
+ERROR:  sift shred paths: path "a" is used as an object and as a value at position 11
+SELECT sift._test_shred_spec('a.* int4, a.b int4');
+ERROR:  sift shred paths: path "a" is used as a wildcard and as an object at position 11
+SELECT sift._test_shred_spec('a.b int4, a.* int4');
+ERROR:  sift shred paths: path "a" is used as an object and as a wildcard at position 11
+SELECT sift._test_shred_spec('a[] int4, a.b int4');
+ERROR:  sift shred paths: path "a" is used as an array and as an object at position 11
+SELECT sift._test_shred_spec('a[] int4, a.* int4');
+ERROR:  sift shred paths: path "a" is used as an array and as a wildcard at position 11
+SELECT sift._test_shred_spec('a[].b int4, a[] int4');
+ERROR:  sift shred paths: path "a[]" is used as an object and as a value at position 14
+SELECT sift._test_shred_spec('a[]{b int4, b text}');
+ERROR:  sift shred paths: path "a[].b" is declared twice at position 13
+-- limits
+SELECT sift._test_shred_spec('a1.b2.c3.d4.e5.f6.g7.h8.i9.j10.k11.l12.m13.n14.o15.p16 int4');
+                      _test_shred_spec                       
+-------------------------------------------------------------
+ a1.b2.c3.d4.e5.f6.g7.h8.i9.j10.k11.l12.m13.n14.o15.p16 int4
+(1 row)
+
+SELECT sift._test_shred_spec('a1.b2.c3.d4.e5.f6.g7.h8.i9.j10.k11.l12.m13.n14.o15.p16.q17 int4');
+ERROR:  sift shred paths: a path has at most 16 steps at position 56
+SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FROM generate_series(1, 256) i)) IS NOT NULL AS ok256;
+ ok256 
+-------
+ t
+(1 row)
+
+SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FROM generate_series(1, 257) i));
+ERROR:  sift shred paths: more than 256 columns at position 2709
+SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 63) i)) IS NOT NULL AS ok63;
+ ok63 
+------
+ t
+(1 row)
+
+SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 64) i));
+ERROR:  sift shred paths: more than 63 arrays and wildcards at position 748
+SELECT sift._test_shred_spec(repeat('a int4,', 20000) || 'b int4');
+ERROR:  sift shred paths: the spec has more than 65536 bytes
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

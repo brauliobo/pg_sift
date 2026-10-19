@@ -1,5 +1,5 @@
 -- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on indexes with random bytes overwritten
--- (mutable and immutable pages alike, with and without heapallindexed)
+-- (write buffers and immutable pages alike, with and without heapallindexed)
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE TABLE vc (id serial PRIMARY KEY, body text);

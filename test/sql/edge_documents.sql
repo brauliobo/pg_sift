@@ -51,7 +51,7 @@ CREATE INDEX h_idx ON h USING sift (body);
 SELECT sift.verify('h_idx', true);
 SELECT agree('h', 'tok5'), agree('h', 'tok69999'), agree('h', 'word'), agree('h', 'tok5 AND word');
 
--- the same documents through aminsert, more than 64k distinct terms in one mutable document
+-- the same documents through aminsert, more than 64k distinct terms in one write buffer document
 INSERT INTO h SELECT 5, string_agg('tok' || (g % 70000), ' ') FROM generate_series(1, 200000) g;
 INSERT INTO h SELECT 6, string_agg('t' || g, ' ') FROM generate_series(1, 66000) g;
 SELECT sift.verify('h_idx', true);

@@ -6,8 +6,8 @@ setup
 {
 	CREATE TABLE iso_fac (id int PRIMARY KEY, body text, cat text, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_fac SELECT g, 'common w' || g % 5, 'c' || g % 7, repeat('p', 1000) FROM generate_series(1, 3000) g;
-	CREATE INDEX iso_fac_body ON iso_fac USING sift (body) WITH (mutable_limit = 64);
-	CREATE INDEX iso_fac_cat ON iso_fac USING sift (cat) WITH (analyzer = keyword, mutable_limit = 64);
+	CREATE INDEX iso_fac_body ON iso_fac USING sift (body) WITH (write_buffer_limit = 64);
+	CREATE INDEX iso_fac_cat ON iso_fac USING sift (cat) WITH (analyzer = keyword, write_buffer_limit = 64);
 	CREATE FUNCTION iso_facets_ok(q text) RETURNS bool LANGUAGE plpgsql
 		SET sift.enable_scan = off SET sift.enable_count = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
 	DECLARE

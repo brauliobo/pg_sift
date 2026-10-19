@@ -5,19 +5,20 @@
 # and the differential reference test;
 # `./harness bench FILE [MODE [STEM]]` measures throughput (one doc per line).
 SRC = ../../src
+include $(SRC)/areas.mk
 PGINC = $(shell pg_config --includedir-server)
 PGLIB = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
-CFLAGS = -O2 -g -march=x86-64 -mtune=generic -Wall -Wno-unused-function -I$(SRC) -I$(PGINC)
+CFLAGS = -O2 -g -march=x86-64 -mtune=generic -Wall -Wno-unused-function $(SIFT_INC) -I$(PGINC)
 ifdef SANITIZE
 CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 endif
 LIBS = $(PGLIB) -lpgcommon -lpgport -lm
 DATA ?= data
-# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgarena.h), so what it reports is a real malloc leak
+# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgshim.c), so what it reports is a real malloc leak
 
-harness: harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(SRC)/sift_analyze.h \
-		$(SRC)/sift_analyze_tables.h ../pgarena.h
-	$(CC) $(CFLAGS) -o $@ harness.c pgstub.c $(SRC)/sift_analyze.c $(SRC)/sift_analyze_stem.c $(LIBS)
+harness: harness.c ../pgshim.c ../pgshim.h $(SRC)/bm25/sift_analyze.c $(SRC)/bm25/sift_analyze_stem.c $(SRC)/bm25/sift_analyze.h \
+		$(SRC)/bm25/sift_analyze_tables.h
+	$(CC) $(CFLAGS) -o $@ harness.c ../pgshim.c $(SRC)/bm25/sift_analyze.c $(SRC)/bm25/sift_analyze_stem.c $(LIBS)
 
 check: harness
 	./harness stem $(DATA)/en_voc.txt $(DATA)/en_output.txt

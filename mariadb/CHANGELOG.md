@@ -4,13 +4,13 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
-## 2.0.3
+## 3.0.0
 
-- No change to the index format (2) or the SQL files: an index of 2.0.2 opens as it is. The library is rebuilt on the shared core of the
-  PostgreSQL extension 2.0.3, whose posting decoder (`sift_posting.c`) gets two more checks on the term blob it reads: the byte counts of the
-  tf stream no longer wrap in 32 bits, and a blob that ends inside the padding after its codec is rejected. Security: segment files with damaged
-  bytes now fail the query with a data-corruption error ('corrupt posting data') instead of reading past the data or crashing the server;
-  `CALL sift_rebuild` rebuilds such an index from its table. Nothing to rebuild otherwise. The functional, live and stress tests pass. No speed change is claimed. The `count(*)` fix of the PostgreSQL extension does not apply (MariaDB has no visibility map).
+- No change to the index format (2) or the SQL files: an index of 2.0.x opens as it is (the host keeps writing segment format 1). The library is
+  rebuilt on the shared core of the PostgreSQL extension 3.0.0, which now lives under `src/core`, `src/bm25` and `src/col` (`src/portable.list`), and the write
+  buffer is named as in PostgreSQL. The release gate builds it in the `mariadb:11.8` image and loads it in that server, and the
+  release workflow builds every series; the full MariaDB test suite (`mariadb/test.sh`) was not rerun for this release. No speed change is claimed: the
+  measurements are the PostgreSQL extension's. The column engine and the aggregate pushdown are PostgreSQL features and are not in the MariaDB extension.
 
 ## 2.0.2
 

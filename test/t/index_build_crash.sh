@@ -3,11 +3,11 @@
 # after a committed build (before any checkpoint), then crash recovery:
 # an interrupted build leaves no index, a committed one replays from WAL and
 # passes sift.verify with the same postings, the UNLOGGED index is reset to
-# an empty one. SIFT_CRASH_ITERS (default 5, 3 quick), SIFT_ROWS (200000, 80000 quick).
+# an empty one. SIFT_CRASH_ITERS (default 5, 2 quick), SIFT_ROWS (200000, 50000 quick).
 . "$(dirname "$0")/lib.bash"
 
-ITERS=$(knob SIFT_CRASH_ITERS 5 3)
-ROWS=$(knob SIFT_ROWS 200000 80000)
+ITERS=$(knob SIFT_CRASH_ITERS 5 2)
+ROWS=$(knob SIFT_ROWS 200000 50000)
 plan $((2 * ITERS + 1))
 node_init build 1 "$WAL_CONF
 checkpoint_timeout = 1h

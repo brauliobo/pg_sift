@@ -63,7 +63,7 @@ fetch_sift_ref() {
   sed -i -e 's/^EXTENSION = pg_sift$/EXTENSION = pg_sift_ref/' -e 's/^MODULE_big = pg_sift$/MODULE_big = pg_sift_ref/' \
     -e 's/wildcard pg_sift--/wildcard pg_sift_ref--/' "$src/Makefile"
   sed -i "s,/pg_sift',/pg_sift_ref'," "$src/pg_sift_ref.control"
-  sed -i 's/"pg_sift"/"pg_sift_ref"/' "$src"/src/*.c
+  sed -i 's/"pg_sift"/"pg_sift_ref"/' $(find "$src/src" -name '*.c')
   pgxs_install sift_ref "$src" >/dev/null
   echo "$SIFT_REF ($commit)" >"$root/.build-info"
 }

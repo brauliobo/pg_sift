@@ -1,7 +1,7 @@
 /*
- * store.c - the storage layer of src/sift_store.h on segment files instead of an index relation (store.h).
+ * store.c - the storage layer of src/core/sift_store.h on segment files instead of an index relation (store.h).
  *
- * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/sift_page.h (block 0
+ * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/core/sift_page.h (block 0
  * unused). The files are mapped into one reserved address range, a segment per slot of 4 GiB, so a block number is a pointer
  * and the "buffer" of a block is its page. There is no metapage, directory, free list or WAL: the directory is the manifest of
  * engine.c.
@@ -180,7 +180,7 @@ sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out)
 	snprintf(sr->dir, sizeof(sr->dir), "%s", dir);
 	sr->dpp = dpp;
 	sr->opts = (SiftOptions) {.k1 = SIFT_DEFAULT_K1,.b = SIFT_DEFAULT_B,.case_folding = true,.accent_folding = true,
-	.mutable_limit = SIFT_DEFAULT_MUTABLE_LIMIT,.positions = true};
+	.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT,.positions = true};
 	memset(sr->gslot, -1, sizeof(sr->gslot));
 	*out = sr;
 	return &sr->rel;

@@ -1,8 +1,8 @@
 /*
- * host.h - the SQLite implementation of the host interface of the portable core (src/sift_host.h): the vocabulary
+ * host.h - the SQLite implementation of the host interface of the portable core (src/core/sift_host.h): the vocabulary
  * the core uses (memory contexts, ereport, StringInfo, List, hash tables, UTF-8 and regex helpers, atomics and
  * locks, spool files), over the C library. The sources of src/portable.list compile unmodified against it; they
- * reach it only through src/sift_host.h (SIFT_HOST_SQLITE, -I sqlite/host).
+ * reach it only through src/core/sift_host.h (SIFT_HOST_SQLITE, -I sqlite/host).
  *
  * Memory is a context tree over malloc (host.c); ereport(ERROR) longjmps to the handler a caller pushed with
  * SQ_TRY (host.c), so no engine state needs unwinding. Pages, buffers and relations are in host_store.h.
@@ -48,8 +48,12 @@ typedef struct { uint64 value; } FullTransactionId;
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
 #define PG_UINT64_MAX			UINT64_MAX
+#define PG_INT16_MAX			(0x7FFF)
+#define PG_INT16_MIN			(-0x7FFF - 1)
 #define PG_INT32_MAX			(0x7FFFFFFF)
 #define PG_INT32_MIN			(-0x7FFFFFFF - 1)
+#define PG_INT64_MAX			INT64_MAX
+#define PG_INT64_MIN			INT64_MIN
 #define PGDLLIMPORT
 #define PGDLLEXPORT
 #define BLCKSZ					8192
@@ -456,7 +460,7 @@ typedef union PGIOAlignedBlock
 	int64		force_align_i64;
 } PGIOAlignedBlock __attribute__((aligned(64)));
 
-/* the tidbitmap iteration of src/sift_compat.h: only the planner builds a filter, which a virtual table never does */
+/* the tidbitmap iteration of src/core/sift_compat.h: only the planner builds a filter, which a virtual table never does */
 typedef struct TIDBitmap TIDBitmap;
 typedef struct SiftTbmIter SiftTbmIter;
 extern SiftTbmIter *sift_tbm_begin(TIDBitmap *tbm);

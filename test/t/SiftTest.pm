@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected);
+our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -95,7 +95,7 @@ my @AMS = (
 	},
 	{
 		name => 'sift',
-		index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (mutable_limit = 64)" },
+		index => sub { "CREATE INDEX $_[1] ON $_[0] USING sift (body) WITH (write_buffer_limit = 64)" },
 		maint => sub { "SELECT sift.promote('$_[0]')" },
 		verify => sub { "SELECT sift.verify('$_[0]', true)" },
 		match => sub { "body @@> '$_[0]'" },
@@ -169,6 +169,40 @@ sub crash_during
 	$node->wait_for_log(qr/database system is ready to accept connections/, $log_offset);
 	eval { $bg->quit };
 	return $active eq 'active';
+}
+
+# SIGKILLs the postmaster and waits for its children: they hold the shared memory until they next wait, and a server
+# started before they are gone fails with "pre-existing shared memory block is still in use"
+sub kill9_wait
+{
+	my ($node) = @_;
+	my @children = grep { ppid($_) == $node->{_pid} } map { m{(\d+)$} } glob('/proc/[0-9]*');
+	$node->kill9;
+	for (1 .. 1200)
+	{
+		return unless grep { running($_) } @children;
+		usleep(100_000);
+	}
+	die "children of the killed postmaster still run: @children";
+}
+
+# the parent of a process (a process that is gone has none); no pgrep, which a minimal container lacks and whose failed exec in a
+# forked test would run the END block of the test
+sub ppid
+{
+	return (proc_stat($_[0]) =~ /\) \S (\d+)/)[0] // 0;
+}
+
+sub running
+{
+	return proc_stat($_[0]) =~ /^\d+ .*\) [^Z]/;
+}
+
+# /proc/PID/stat, empty when the process is gone: a process that init reaps between the open and the read fails the read with ESRCH
+sub proc_stat
+{
+	open(my $stat, '<', "/proc/$_[0]/stat") or return '';
+	return scalar(<$stat>) // '';
 }
 
 sub usleep { select(undef, undef, undef, $_[0] / 1e6) }

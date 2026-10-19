@@ -1,7 +1,7 @@
 # Elasticsearch single node, driven over HTTP by bench/xbench. It is the system package (`pacman -S elasticsearch`: /usr/share/elasticsearch,
 # its bundled JDK link), started as an ordinary process of the user, not as the package's service, with a configuration directory of its own
 # under the scratch root (the one in /etc is not touched, nor readable): nothing is installed or written outside $SIFT_BENCH_ROOT.
-# One shard, no replica, security and ML off, a heap as large as the shared_buffers of the Postgres engines (the index itself lives in the
+# ES_SHARDS shards (default one; the budget of a fair run: one per CPU, a shard is searched by one thread), no replica, security and ML off, a heap as large as the shared_buffers of the Postgres engines (the index itself lives in the
 # page cache, outside the heap), free to use every CPU of the host while its cells run, like the Postgres servers. Both
 # datasets are loaded through the bulk API, 4 requests at a time, with the documents and ids of the Postgres tables (xlib.sh), then
 # refreshed and force-merged to one segment (the build time is the bulk load plus the refresh, the force-merge is its own row and is not
@@ -31,7 +31,7 @@ ES_ANALYSIS='"similarity": {"bm25": {"type": "BM25", "k1": 1.2, "b": 0.75, "disc
 # loading: no refresh, async translog; querying: the caches of results are off and max_result_window leaves room for the match sets of the
 # correctness checks; the size of the store is not cached (by default _stats/store answers with the size of up to 10 s ago, which after a
 # force-merge is the size before it)
-ES_SETTINGS='"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1", "index.translog.durability": "async",
+ES_SETTINGS='"number_of_shards": '"${ES_SHARDS:-1}"', "number_of_replicas": 0, "refresh_interval": "-1", "index.translog.durability": "async",
   "index.store.stats_refresh_interval": 0,
   "index.requests.cache.enable": false, "index.queries.cache.enabled": false, "index.max_result_window": 1000000'
 ES_ARTICLES="{\"settings\": {$ES_SETTINGS, $ES_ANALYSIS},
@@ -62,6 +62,7 @@ xpack.security.enabled: false
 xpack.ml.enabled: false
 ingest.geoip.downloader.enabled: false
 cluster.routing.allocation.disk.threshold_enabled: false
+${ES_PROCESSORS:+node.processors: $ES_PROCESSORS}
 EOF
   cat >"$ES_DIR/conf/jvm.options" <<EOF
 -Djava.io.tmpdir=$ES_DIR/tmp
@@ -85,8 +86,8 @@ x_start() {
   mkdir -p "$ES_DIR"
   local i
   x_conf
-  ES_PATH_CONF=$ES_DIR/conf ES_JAVA_OPTS="-Xms${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -Xmx${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -XX:-AlwaysPreTouch" \
-    "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
+  ES_PATH_CONF=$ES_DIR/conf ES_JAVA_OPTS="-Xms${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -Xmx${ES_HEAP:-${TIER_SHBUF[$TIER]%B}} -XX:-AlwaysPreTouch${ES_PROCESSORS:+ -XX:ActiveProcessorCount=$ES_PROCESSORS}" \
+    server_run "$ES_HOME/bin/elasticsearch" -d -p "$ES_DIR/pid" >"$ES_DIR/start.log" 2>&1
   for (( i = 0; i < 180; i++ )); do
     curl -fs "$URL/_cluster/health?wait_for_status=yellow" >/dev/null 2>&1 && return 0
     sleep 1

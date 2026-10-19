@@ -1,6 +1,6 @@
 -- Parallel SiftScan and SiftCount: workers take morsels of superblocks, a ranked scan shares its
 -- threshold, and every shape returns what the serial plan returns (rows, scores, ties by ctid),
--- under mutable segments, dead rows, HOT chains, uncommitted deletes and a rescanned Gather
+-- under write buffers, dead rows, HOT chains, uncommitted deletes and a rescanned Gather
 --
 CREATE EXTENSION pg_sift;
 -- about a thousand rows per superblock: a few superblocks to hand out
@@ -11,7 +11,7 @@ CREATE FUNCTION ps_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 		|| ' w' || i % 7 || ' x' || i % 101 || repeat(' filler', i % 4) || CASE WHEN i % 11 = 0 THEN ' rare' ELSE '' END
 $$;
 INSERT INTO ps SELECT i, ps_doc(i), repeat('x', 1500) FROM generate_series(1, 6000) i;
-CREATE INDEX ps_idx ON ps USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX ps_idx ON ps USING sift (body) WITH (write_buffer_limit = 64);
 INSERT INTO ps SELECT i, ps_doc(i), repeat('x', 1500) FROM generate_series(6001, 9000) i;
 SELECT sift.promote('ps_idx') IS NOT NULL AS promoted;
  promoted 

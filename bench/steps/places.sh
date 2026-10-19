@@ -204,6 +204,7 @@ cell() { # WORKLOAD CLASS ENGINE -> "p50 p95 stderr-of-p50 transactions seconds"
 }
 group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, one after the other
   local wl=$1 c=$2 e; shift 2
+  batch "places $wl $c"
   for e in "$@"; do cell "$wl" "$c" "$e" >"$ROOT/places/$e.val"; done
 }
 printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
@@ -223,6 +224,8 @@ round() {
     for e in $engs; do printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$(cat "$ROOT/places/$e.val")" >>"$DEST/cells.tsv"; done
   done; done
 }
+log "start: $(quiet_report 2>&1)"
 rounds round
 phase 'measure'
+log "end: $(noisy_report)"
 log "results in $DEST ($(tr '\n\t' ' ;' <"$DEST/phases.txt"))"

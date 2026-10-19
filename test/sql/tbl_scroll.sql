@@ -1,0 +1,111 @@
+-- Backward scans: a SCROLL cursor on a sift_table walks forward and backward over the write buffer pages and the column groups (several
+-- superblocks and layouts), with dead rows, changes of direction, both ends and a TID range. The model is the rows in forward order.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE sc (id int, v text) USING sift_table;
+
+-- Runs the walk on a SCROLL cursor over "SELECT id FROM tbl WHERE pred" and compares every fetch with the model: the cursor is on row pos
+-- (0 before the first, n + 1 after the last); NEXT moves down and PRIOR up, and a row is returned only when the move lands on one.
+
+-- the model is the forward order of a sequential scan: an aggregate scan returns array_agg in the order of its units
+SET sift.enable_agg = off;
+CREATE FUNCTION scroll_walk(tbl regclass, pred text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	cur refcursor;
+	fwd int[];
+	n int;
+	pos int := 0;
+	got int;
+	want int;
+	steps int[][] := ARRAY[[1, 3], [-1, 1], [-1, 2], [1, 10], [-1, 200], [1, 700], [-1, 1], [1, 100000], [-1, 5], [-1, 100000], [1, 2],
+		[-1, 3], [1, 100000], [1, 1], [-1, 100000]];
+	i int;
+	k int;
+	moved int := 0;
+	wanted int;
+BEGIN
+	EXECUTE format('SELECT array_agg(id) FROM (SELECT id FROM %s WHERE %s) q', tbl, pred) INTO fwd;
+	n := coalesce(cardinality(fwd), 0);
+	OPEN cur SCROLL FOR EXECUTE format('SELECT id FROM %s WHERE %s', tbl, pred);
+	FOR i IN 1 .. array_length(steps, 1) LOOP
+		FOR k IN 1 .. LEAST(steps[i][2], n + 2) LOOP
+			IF steps[i][1] > 0 THEN
+				FETCH NEXT FROM cur INTO got;
+				pos := LEAST(pos + 1, n + 1);
+			ELSE
+				FETCH PRIOR FROM cur INTO got;
+				pos := GREATEST(pos - 1, 0);
+			END IF;
+			want := CASE WHEN pos BETWEEN 1 AND n THEN fwd[pos] END;
+			wanted := CASE WHEN found THEN want END;
+			IF found IS DISTINCT FROM (want IS NOT NULL) OR got IS DISTINCT FROM wanted THEN
+				RETURN format('step %s/%s: got %s (found %s), wanted %s at position %s of %s', i, k, got, found, want, pos, n);
+			END IF;
+			moved := moved + 1;
+		END LOOP;
+	END LOOP;
+	CLOSE cur;
+	RETURN format('%s rows, %s moves: same', n, moved);
+END $$;
+
+-- rows in the write buffer only
+INSERT INTO sc SELECT g, 'row ' || g FROM generate_series(1, 3000) g;
+SELECT scroll_walk('sc', 'true');
+SELECT scroll_walk('sc', 'id % 3 = 0');
+SELECT scroll_walk('sc', 'false');
+
+-- the column groups only
+VACUUM sc;
+SELECT count(*) FILTER (WHERE kind = 'columns') AS columns, count(*) FILTER (WHERE kind = 'buffer') AS wbuf FROM sift.table_segments('sc');
+SELECT scroll_walk('sc', 'true');
+SELECT scroll_walk('sc', 'id % 3 = 0');
+
+-- dead rows in the groups, updated rows and new rows in the write buffer
+DELETE FROM sc WHERE id % 7 = 0;
+UPDATE sc SET v = 'updated' WHERE id % 11 = 0;
+INSERT INTO sc SELECT g, 'row ' || g FROM generate_series(3001, 3200) g;
+SELECT scroll_walk('sc', 'true');
+SELECT scroll_walk('sc', 'v = $$updated$$');
+
+-- the groups of several superblocks and two layouts, then the write buffer again
+INSERT INTO sc SELECT g, repeat('w', 3000) FROM generate_series(3201, 4000) g;
+VACUUM sc;
+ALTER TABLE sc ADD COLUMN w int DEFAULT 5;
+INSERT INTO sc SELECT g, repeat('w', 3000), g FROM generate_series(4001, 4800) g;
+VACUUM sc;
+INSERT INTO sc SELECT g, 'tail ' || g, g FROM generate_series(4801, 4900) g;
+DELETE FROM sc WHERE id BETWEEN 3500 AND 3600;
+SELECT count(*) FILTER (WHERE kind = 'columns') > 1 AS several_groups, count(*) FILTER (WHERE kind = 'buffer') > 0 AS wbuf FROM sift.table_segments('sc');
+SELECT scroll_walk('sc', 'true');
+SELECT scroll_walk('sc', 'id % 5 = 1');
+SELECT scroll_walk('sc', 'w IS NOT NULL AND id > 4300');
+
+-- a TID range
+SELECT scroll_walk('sc', $$ctid >= '(10,1)' AND ctid < '(500,1)'$$);
+EXPLAIN (COSTS OFF) SELECT id FROM sc WHERE ctid >= '(10,1)' AND ctid < '(500,1)';
+
+-- one transaction: its own changes are seen in both directions
+BEGIN;
+DELETE FROM sc WHERE id % 2 = 0;
+INSERT INTO sc SELECT g, 'mine', g FROM generate_series(6000, 6040) g;
+SELECT scroll_walk('sc', 'true');
+ROLLBACK;
+
+-- ORDER BY ... DESC is still served by the index, FETCH LAST and ABSOLUTE by the same scan
+CREATE INDEX sc_id ON sc (id);
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT id FROM sc WHERE id < 20 ORDER BY id DESC;
+FETCH LAST FROM c;
+FETCH ABSOLUTE 3 FROM c;
+FETCH PRIOR FROM c;
+FETCH FIRST FROM c;
+CLOSE c;
+DECLARE c SCROLL CURSOR FOR SELECT id FROM sc WHERE id BETWEEN 5 AND 12 AND id % 7 <> 0;
+FETCH LAST FROM c;
+FETCH BACKWARD 3 FROM c;
+FETCH FORWARD 2 FROM c;
+FETCH ABSOLUTE 1 FROM c;
+COMMIT;
+
+DROP TABLE sc;
+DROP EXTENSION pg_sift;

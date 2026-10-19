@@ -458,9 +458,9 @@ are off by 1 or 2 documents of tens of thousands.
 | --- | --- |
 | `udf.c`, `sql/` | MariaDB-specific: the UDFs (arguments, JSON, the local SQL connection) and the procedures / triggers |
 | `engine.c`, `engine.h`, `ix.h`, `query.c`, `feed.c`, `merge.c` | the index: manifest, event log, live segment, queries, drains, merge driver, locks |
-| `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/sift_host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) is compiled as it is |
-| `host/store.c`, `host/store.h` | `src/sift_store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
-| `host/stubs.c` | the collaborators of the evaluator MariaDB does not have (mutable segments), the engine's own visibility, and the filter of a list of documents as the TID bitmap the shared filter builder reads |
+| `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/core/sift_host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) is compiled as it is, with `host_stubs.c` (no write buffers, no kept docmap directories) |
+| `host/store.c`, `host/store.h` | `src/core/sift_store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
+| `host/stubs.c` | the engine's own visibility, and the filter of a list of documents as the TID bitmap the shared filter builder reads |
 | `host/host_regex.c` | `pg_regcomp` / `pg_regexec` / `pg_regprefix`: a matcher for PostgreSQL's advanced regular expressions |
 | `cli.c` | `sift_cli`: the engine without a server |
 | `Makefile`, `CMakeLists.txt` | the build (it reads `src/portable.list`) |

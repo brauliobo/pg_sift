@@ -150,7 +150,7 @@ extern bool sq_delete_key(SqStore *st, SiftKey key);
 
 /* ---------- sqmerge.c ---------- */
 
-/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/sift_runs.c),
+/* Merges the live part of the segments of gens[] into one new segment through sorted runs (bounded memory, src/bm25/sift_runs.c),
  * publishes it and retires them in the caller's transaction. Nothing is published when nothing live is left (they are
  * retired all the same) */
 extern void sq_merge(SqStore *st, const uint64 *gens, int n);

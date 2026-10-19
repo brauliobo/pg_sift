@@ -9,8 +9,8 @@
 #   oldest    the same with the first rows by id: the dirty superblocks are contiguous (and, being the half of the documents
 #             that repeat w7 three times, they move the statistics of w7)
 #   rollback  documents worth that fraction of the live ones, all repeating w7, are loaded and rolled back, then the index is
-#             promoted and merged into one segment: postings of dead heap tuples that VACUUM has not marked yet (the mutable
-#             segments that hold them before the promotion, and the segments it makes, are costs of their own)
+#             promoted and merged into one segment: postings of dead heap tuples that VACUUM has not marked yet (the write
+#             buffers that hold them before the promotion, and the segments it makes, are costs of their own)
 # Each query is timed (pgbench, SECONDS per query, default 2; count_par with two parallel workers) and its top 10 kept; the index is then rebuilt (REINDEX) on the same
 # live rows and the queries are timed and compared again. A row is: the mode, the dead fraction, the dead documents as a percentage
 # of the index's, the query, milliseconds dirty and clean, their ratio, how many of the clean top 10 the dirty one returned, and the dirty top score

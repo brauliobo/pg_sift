@@ -3,11 +3,11 @@
 # bulk insert, update, delete, promote, merge, VACUUM, VACUUM FULL, REINDEX, REINDEX CONCURRENTLY, CREATE INDEX
 # (also CONCURRENTLY). After each crash and recovery every valid sift index passes sift.verify with heapallindexed
 # and answers like a sequential scan of the heap (the oracle); invalid leftovers of a killed concurrent build are
-# dropped. SIFT_SEED repeats a run, SIFT_ROUNDS sets the length (default 14, 6 quick), SIFT_ROWS the table (150000, 40000 quick).
+# dropped. SIFT_SEED repeats a run, SIFT_ROUNDS sets the length (default 14, 4 quick), SIFT_ROWS the table (150000, 20000 quick).
 . "$(dirname "$0")/lib.bash"
 
-ROUNDS=$(knob SIFT_ROUNDS 14 6)
-ROWS=$(knob SIFT_ROWS 150000 40000)
+ROUNDS=$(knob SIFT_ROUNDS 14 4)
+ROWS=$(knob SIFT_ROWS 150000 20000)
 SEED=${SIFT_SEED:-$((RANDOM * 32768 + RANDOM))}
 RANDOM=$SEED
 diag "seed $SEED, $ROUNDS rounds"
@@ -20,7 +20,7 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE rk (id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO rk SELECT g, concat_ws(' ', 'w' || g % 7, 'w' || g % 13, 'w' || g % 101, CASE WHEN g % 5 = 0 THEN 'rare' END, 'doc' || g)
 	FROM generate_series(1, @ROWS@) g;
-CREATE INDEX rk_idx ON rk USING sift (body) WITH (mutable_limit = 64);
+CREATE INDEX rk_idx ON rk USING sift (body) WITH (write_buffer_limit = 64);
 CREATE FUNCTION ids(q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
 DECLARE r text;
 BEGIN

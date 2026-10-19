@@ -5,8 +5,8 @@ SET sift.async_maintenance = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 CREATE TABLE bp (id serial, body text);
-CREATE INDEX bp_idx ON bp USING sift (body) WITH (mutable_limit = 64);
--- every doc has enough distinct terms to fill a 64 kB mutable segment
+CREATE INDEX bp_idx ON bp USING sift (body) WITH (write_buffer_limit = 64);
+-- every doc has enough distinct terms to fill a 64 kB write buffer
 DO $$
 BEGIN
 	FOR i IN 1..220 LOOP

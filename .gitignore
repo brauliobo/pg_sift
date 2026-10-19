@@ -17,6 +17,7 @@ tmp_check_iso/
 .build-flavor
 core
 core.[0-9]*
+!/src/core/
 vgcore.*
 perf.data*
 .idea/

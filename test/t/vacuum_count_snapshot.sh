@@ -41,7 +41,7 @@ counter() { echo "SELECT count(*) FROM $1 WHERE body @@> 'zzword'"; }
 pages() { echo "SELECT count(*) FROM (SELECT 1 FROM $1 WHERE body @@> 'zzword' OFFSET 0) s"; }
 mk() { # TABLE ROWS SEGMENTS
 	sql vc "CREATE TABLE $1 (id int, body text)" "INSERT INTO $1 SELECT i, 'zzword w' || i FROM generate_series(1, $2) i" \
-		"CREATE INDEX $1_idx ON $1 USING sift (body) WITH (mutable_limit = 64, build_segments = $3)" "VACUUM $1" >/dev/null || bail "setup $1 failed"
+		"CREATE INDEX $1_idx ON $1 USING sift (body) WITH (write_buffer_limit = 64, build_segments = $3)" "VACUUM $1" >/dev/null || bail "setup $1 failed"
 }
 verifies() { test "$(sql vc "SELECT sift.verify('$1_idx', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0; }
 
@@ -67,10 +67,10 @@ sql vc "DELETE FROM merged WHERE id % 7 = 0" "VACUUM merged" "DELETE FROM merged
 check "a merge and a VACUUM under the scan" test "$(race "$(counter merged)" 1 "SELECT sift.merge('merged_idx', true)" "VACUUM merged")" == "$(seen merged)"
 check "the index verifies" verifies merged
 
-# a DELETE, a VACUUM and a promotion of the mutable segment under the scan
-sql vc "CREATE TABLE lane (id int, body text)" "CREATE INDEX lane_idx ON lane USING sift (body) WITH (mutable_limit = 65536)" \
+# a DELETE, a VACUUM and a promotion of the write buffer under the scan
+sql vc "CREATE TABLE lane (id int, body text)" "CREATE INDEX lane_idx ON lane USING sift (body) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO lane SELECT i, 'zzword w' || i FROM generate_series(1, 20000) i" "VACUUM lane" "DELETE FROM lane WHERE id % 5 = 0" >/dev/null || bail "setup lane failed"
-check "mutable segment: a VACUUM and a promotion under the scan" test "$(race "$(counter lane)" 1 "VACUUM lane" "SELECT sift.promote('lane_idx')")" == "$(seen lane)"
+check "write buffer: a VACUUM and a promotion under the scan" test "$(race "$(counter lane)" 1 "VACUUM lane" "SELECT sift.promote('lane_idx')")" == "$(seen lane)"
 
 # an undisturbed count keeps trusting the map: the page checks only follow a directory that moved
 heap_pages() { sql vc "SET enable_seqscan = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $1" | sed -n 's/^ *Heap Pages: //p'; }

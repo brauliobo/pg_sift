@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "../../src/sift_bitmap.h"
+#include "../../src/bm25/sift_bitmap.h"
 
 #define PAD 64
 #define MAXN 20000

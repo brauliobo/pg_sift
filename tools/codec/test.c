@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../src/sift_bitmap.h"
+#include "../../src/bm25/sift_bitmap.h"
 
 #define MAXN 200000
 

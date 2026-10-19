@@ -1,0 +1,186 @@
+-- BM25 matches as the row selection of SiftAgg (docs/COL-SEARCH.md): `col @@> q` in the WHERE of an aggregate over a table that has a
+-- sift (BM25) index and a sift_col index is answered from the match set of the index and the columns. Every query runs twice, the plain
+-- plan as the reference (sift.enable_agg off) and the pushed one (the other plans disabled, so that it is the one planned whenever it
+-- can be), and the results are compared as sets of rows: after the build and after each kind of write.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+
+-- pad makes a page hold about 5 rows: 24000 rows are about 19 superblocks, enough for the lanes of a float sum to go back to the start
+CREATE TABLE cs (id serial PRIMARY KEY, store int, status text, amount numeric(10,2), placed date, memo text, pad text DEFAULT repeat('x', 1500));
+ALTER TABLE cs ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION cs_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
+							 'thanks','wrong','size','color','clean','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
+	FROM generate_series(1, 3 + seed % 5) w $$;
+INSERT INTO cs (store, status, amount, placed, memo)
+SELECT 1 + (hashint4(i) & 2147483647) % 40,
+	   CASE WHEN i % 23 = 0 THEN NULL ELSE (ARRAY['paid','shipped','delivered','cancelled'])[1 + (hashint4(i + 7) & 2147483647) % 4] END,
+	   round((10 + (hashint4(i + 11) & 65535) / 100.0)::numeric, 2),
+	   date '2024-01-01' + (hashint4(i + 13) & 2147483647) % 400,
+	   CASE WHEN i % 41 = 0 THEN NULL ELSE cs_words(i) END
+FROM generate_series(1, 24000) i;
+CREATE INDEX cs_bm ON cs USING sift (memo);
+CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (write_buffer_limit = 256);
+VACUUM (ANALYZE) cs;
+
+-- the plans that are not SiftAgg are disabled for the pushed run; the reference has the planner's own choice with sift.enable_agg off
+CREATE FUNCTION cs_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('sift.enable_scan', (NOT pushed)::text, true);
+	PERFORM set_config('sift.enable_count', (NOT pushed)::text, true);
+END $$;
+
+-- 'same' / 'DIFFERENT', and whether the pushed plan read the match set ('+search') or any column index at all ('+agg') or neither
+CREATE FUNCTION cs_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text; res text;
+BEGIN
+	DROP TABLE IF EXISTS cs_a, cs_b;
+	PERFORM cs_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q USING arg LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE cs_a AS SELECT row_to_json(x)::text AS r FROM (' || q || ') x' USING arg;
+	PERFORM cs_mode(false);
+	EXECUTE 'CREATE TEMP TABLE cs_b AS SELECT row_to_json(x)::text AS r FROM (' || q || ') x' USING arg;
+	SELECT count(*) INTO n FROM ((SELECT r FROM cs_a EXCEPT ALL SELECT r FROM cs_b) UNION ALL (SELECT r FROM cs_b EXCEPT ALL SELECT r FROM cs_a)) d;
+	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END;
+	RETURN res || CASE WHEN plan ~ 'Custom Scan \(SiftAgg\)' THEN CASE WHEN plan ~ 'Search: ' THEN '+search' ELSE '+agg' END ELSE '' END ||
+		' ' || (SELECT count(*) FROM cs_b);
+END $$;
+
+-- one number of the EXPLAIN ANALYZE of the pushed plan
+CREATE FUNCTION cs_stat(q text, field text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE line text; v bigint;
+BEGIN
+	PERFORM cs_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line ~ ('^ *' || field || ': ') THEN v := regexp_replace(line, '^ *[A-Za-z ]+: ', '')::bigint; END IF;
+	END LOOP;
+	RETURN v;
+END $$;
+
+CREATE TABLE cs_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO cs_q VALUES
+	('term',      $q$SELECT status, count(*) AS n, sum(amount) AS s, min(placed) AS d FROM cs WHERE memo @@> 'wire' GROUP BY status ORDER BY status$q$),
+	('and',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'clean wire' GROUP BY status ORDER BY status$q$),
+	('or',        $q$SELECT store, count(*) AS n FROM cs WHERE memo @@> 'damaged OR broken' GROUP BY store ORDER BY store$q$),
+	('not',       $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wire NOT clean' GROUP BY status ORDER BY status$q$),
+	('phrase',    $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '"clean wire"' GROUP BY status ORDER BY status$q$),
+	('notphrase', $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wire NOT "clean wire"' GROUP BY status ORDER BY status$q$),
+	('prefix',    $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wi*' GROUP BY status ORDER BY status$q$),
+	('wildcard',  $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'b?x' GROUP BY status ORDER BY status$q$),
+	('regex',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '/br.k.n/' GROUP BY status ORDER BY status$q$),
+	('fuzzy',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'wifii~1' GROUP BY status ORDER BY status$q$),
+	('boost',     $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> '(damaged OR broken) AND wire^3' GROUP BY status ORDER BY status$q$),
+	('none',      $q$SELECT status, count(*) AS n FROM cs WHERE memo @@> 'zzzzzz' GROUP BY status ORDER BY status$q$),
+	('none_all',  $q$SELECT count(*) AS n, sum(amount) AS s FROM cs WHERE memo @@> 'zzzzzz'$q$),
+	('null',      $q$SELECT count(*) AS n FROM cs WHERE memo @@> NULL::text$q$),
+	('two',       $q$SELECT count(*) AS n, max(amount) AS m FROM cs WHERE memo @@> 'wire' AND memo @@> 'clean'$q$),
+	('filters',   $q$SELECT store, count(*) AS n, sum(amount) AS s FROM cs WHERE memo @@> 'gift' AND status = 'paid' AND amount > 100 GROUP BY store ORDER BY store$q$),
+	('global',    $q$SELECT count(*) AS n, sum(amount) AS s, min(placed) AS a, max(placed) AS b, count(DISTINCT store) AS d FROM cs WHERE memo @@> 'express OR pickup'$q$),
+	('float_sum', $q$SELECT status, round(avg(amount::float8)::numeric, 2) AS a, round(sum(amount::float8)::numeric, 1) AS s FROM cs WHERE memo @@> 'gift OR express' GROUP BY status ORDER BY status$q$),
+	('col_or',    $q$SELECT count(*) AS n FROM cs WHERE (status = 'paid' OR store < 10) AND memo @@> 'wire'$q$),
+	('nulls',     $q$SELECT status IS NULL AS no_status, count(*) AS n FROM cs WHERE memo @@> 'late' GROUP BY 1 ORDER BY 1$q$),
+	('having',    $q$SELECT store, count(*) AS n FROM cs WHERE memo @@> 'size OR color' GROUP BY store HAVING count(*) > 12 ORDER BY store$q$),
+	('expr_key',  $q$SELECT date_trunc('month', placed)::date AS m, count(*) AS n FROM cs WHERE memo @@> 'label' GROUP BY 1 ORDER BY 1$q$),
+	('generic',   $q$SELECT status, string_agg(DISTINCT store::text, ',') AS tenants, array_agg(DISTINCT placed) AS d FROM cs WHERE memo @@> 'refund' GROUP BY status ORDER BY status$q$),
+	('in_or',     $q$SELECT count(*) AS n FROM cs WHERE memo @@> 'wire' OR status = 'paid'$q$),
+	('not_match',  $q$SELECT count(*) AS n FROM cs WHERE NOT (memo @@> 'wire')$q$),
+	('idx_func',  $q$SELECT status, count(*) AS n FROM cs WHERE sift.match_idx(memo, 'clean wire', 'cs_bm'::regclass) GROUP BY status ORDER BY status$q$);
+
+CREATE FUNCTION cs_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
+	SELECT name, string_agg(tag || '=' || cs_check(q), E'\n' ORDER BY tag) FROM cs_q $$;
+
+SELECT * FROM cs_stage('build');
+SET sift.test_search_chunk_sbs = 1;
+SELECT * FROM cs_stage('chunks of one superblock');
+RESET sift.test_search_chunk_sbs;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status', 'clean wire') AS param;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> ($1 || '' wire'') GROUP BY status ORDER BY status', 'clean') AS param_expr;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status') AS param_null;
+
+-- the scan reads the rows the index matches and no other: the matches, the rows of the units (a rare query reads them by position) and the
+-- tuples aggregated, against the rows of the table
+SELECT cs_stat(q, 'Search Matches') = (SELECT count(*) FROM cs WHERE memo @@> 'clean wire') AS matches,
+	   cs_stat(q, 'Rows Scanned') = cs_stat(q, 'Search Matches') AS only_matches,
+	   cs_stat(q, 'Tuples Aggregated') = (SELECT count(*) FROM cs WHERE memo @@> 'clean wire' AND amount > 50) AS aggregated,
+	   cs_stat(q, 'Rows Vetted By Heap') AS vetted
+FROM (SELECT $q$SELECT status, count(*) FROM cs WHERE memo @@> 'clean wire' AND amount > 50 GROUP BY status$q$ AS q) x;
+SELECT cs_stat(q, 'Units') > 1 AS units, cs_stat(q, 'Units Pruned') AS pruned_none
+FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'wire'$q$ AS q) x;
+SELECT cs_stat(q, 'Units Pruned') > 0 AS units_without_matches_skipped
+FROM (SELECT $q$SELECT count(*) FROM cs WHERE memo @@> 'zzzzzz'$q$ AS q) x;
+
+BEGIN;
+SELECT cs_mode(true);
+EXPLAIN (COSTS OFF) SELECT status, count(*) FROM cs WHERE memo @@> 'clean wire' AND amount > 50 GROUP BY status;
+ROLLBACK;
+
+-- inserts land in the write buffers of both indexes, unvacuumed
+INSERT INTO cs (store, status, amount, placed, memo)
+SELECT 1 + (hashint4(i) & 2147483647) % 40, (ARRAY['paid','shipped'])[1 + i % 2], 20 + i % 90, date '2025-06-01' + i % 20, cs_words(i + 100000)
+FROM generate_series(1, 2000) i;
+SELECT * FROM cs_stage('insert');
+
+-- updates make new versions (new TIDs, new text); the old ones are dead but not vacuumed
+UPDATE cs SET memo = memo || ' wire' WHERE id % 9 = 0;
+UPDATE cs SET status = 'paid' WHERE id % 10 = 0;
+SELECT * FROM cs_stage('update');
+
+DELETE FROM cs WHERE id % 13 = 0;
+SELECT * FROM cs_stage('delete');
+
+-- rows of this transaction are seen by this transaction only; a rolled back insert is seen by nobody
+BEGIN;
+INSERT INTO cs (store, status, amount, placed, memo) SELECT 1, 'paid', 500 + i, date '2026-01-01', 'clean wire broken box' FROM generate_series(1, 30) i;
+DELETE FROM cs WHERE id % 17 = 0;
+SELECT * FROM cs_stage('own');
+ROLLBACK;
+SELECT * FROM cs_stage('rollback');
+
+-- the same after VACUUM
+VACUUM cs;
+SELECT * FROM cs_stage('vacuum');
+
+-- and after the write buffers become immutable ones
+SELECT sift.col_promote('cs_col');
+SELECT * FROM cs_stage('promote');
+
+-- workers: the match set of each is the one of its superblocks
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT * FROM cs_stage('workers');
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+
+-- a table in column format: the match set is the one of the BM25 index on its virtual TIDs
+CREATE TABLE cs_t (id serial, store int, status text, amount int, placed date, memo text) USING sift_table;
+INSERT INTO cs_t (store, status, amount, placed, memo) SELECT store, status, amount::int, placed, memo FROM cs ORDER BY id;
+CREATE INDEX cs_t_bm ON cs_t USING sift (memo);
+INSERT INTO cs_t (store, status, amount, placed, memo) SELECT store, status, amount::int, placed, memo FROM cs WHERE id % 5 = 0;
+DELETE FROM cs_t WHERE id % 11 = 0;
+SELECT cs_check('SELECT status, count(*) AS n, sum(amount) AS s FROM cs_t WHERE memo @@> ''clean wire'' GROUP BY status ORDER BY status') AS tbl_and;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_t WHERE memo @@> ''damaged OR broken'' AND amount > 50 GROUP BY store ORDER BY store') AS tbl_or;
+SELECT cs_check('SELECT status, count(*) AS n FROM cs_t WHERE memo @@> ''"clean wire"'' GROUP BY status ORDER BY status') AS tbl_phrase;
+
+-- long strings (300 bytes) as the values of text tests under a match set
+CREATE TABLE cs_l (id serial PRIMARY KEY, store int, note text, memo text);
+INSERT INTO cs_l (store, note, memo)
+SELECT 1 + i % 20, repeat(chr(97 + i % 4), 300) || (i % 7), cs_words(i) FROM generate_series(1, 6000) i;
+CREATE INDEX cs_l_bm ON cs_l USING sift (memo);
+CREATE INDEX cs_l_col ON cs_l USING sift_col (store, note);
+VACUUM (ANALYZE) cs_l;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''clean wire'' AND note <> repeat(''a'', 300) || ''1'' GROUP BY store ORDER BY store') AS long_ne;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''gift'' AND note = repeat(''b'', 300) || ''2'' GROUP BY store ORDER BY store') AS long_eq;
+SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''fast OR late'' AND note LIKE ''cccc%'' GROUP BY store ORDER BY store') AS long_prefix;
+SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect'' AND note IN (repeat(''a'', 300) || ''0'', repeat(''d'', 300) || ''3'') GROUP BY note ORDER BY note') AS long_in;
+
+DROP TABLE cs_q, cs_l, cs_t, cs;
+DROP FUNCTION cs_words(int), cs_mode(bool), cs_check(text, text), cs_stat(text, text), cs_stage(text);
+DROP EXTENSION pg_sift;
