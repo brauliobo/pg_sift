@@ -120,6 +120,18 @@ agk_sum_f64_scalar(const double *v, const uint64 *mask, int n)
 	return agk_canon_nan(((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7])));
 }
 
+bool
+agk_absmax_f64_scalar(const double *v, const uint64 *mask, int n, double *mx)
+{
+	double		m = 0;
+	bool		finite = true;
+
+	FOREACH_ROW(mask, n, i, { const double a = fabs(v[i]); finite &= a <= DBL_MAX; m = a > m ? a : m; });
+	if (finite)
+		*mx = m;
+	return finite;
+}
+
 #define DEF_MINMAX(fn, T, LT) \
 bool \
 fn(T *mn, T *mx, const T *v, const uint64 *mask, int n) \

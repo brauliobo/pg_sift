@@ -231,6 +231,40 @@ sum_f64_avx2(const double *v, const uint64 *mask, int n)
 	return mask ? sum_f64_t(v, mask, n, true) : sum_f64_t(v, mask, n, false);
 }
 
+/* Unselected lanes are ANDed to +0.0; a lane is finite when |x| <= DBL_MAX (false for NaN and Inf) */
+K2 bool
+absmax_f64_t(const double *v, const uint64 *mask, int n, double *mx, const bool masked)
+{
+	const __m256d habs = _mm256_castsi256_pd(_mm256_set1_epi64x(INT64_MAX)),
+				big = _mm256_set1_pd(DBL_MAX);
+	__m256d		m0 = _mm256_setzero_pd(),
+				m1 = m0,
+				fin = _mm256_castsi256_pd(_mm256_set1_epi64x(-1));
+	double		t[4];
+
+	for (int i = 0; i < n; i += 8)
+	{
+		const uint32 b = masked ? BYTE(mask, i) : (uint32) AGK_LANES(n - i, 8);
+		const __m256d x0 = _mm256_and_pd(_mm256_and_pd(LDPD(v + i), _mm256_castsi256_pd(lanes64(b & 15))), habs),
+					x1 = _mm256_and_pd(_mm256_and_pd(LDPD(v + i + 4), _mm256_castsi256_pd(lanes64(b >> 4))), habs);
+
+		fin = _mm256_and_pd(fin, _mm256_and_pd(_mm256_cmp_pd(x0, big, _CMP_LE_OQ), _mm256_cmp_pd(x1, big, _CMP_LE_OQ)));
+		m0 = _mm256_max_pd(m0, x0);
+		m1 = _mm256_max_pd(m1, x1);
+	}
+	if (_mm256_movemask_pd(fin) != 15)
+		return false;
+	_mm256_storeu_pd(t, _mm256_max_pd(m0, m1));
+	*mx = Max(Max(t[0], t[1]), Max(t[2], t[3]));
+	return true;
+}
+
+F2 bool
+absmax_f64_avx2(const double *v, const uint64 *mask, int n, double *mx)
+{
+	return mask ? absmax_f64_t(v, mask, n, mx, true) : absmax_f64_t(v, mask, n, mx, false);
+}
+
 K2 bool
 minmax_i32_t(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n, const bool masked)
 {
@@ -463,7 +497,7 @@ count_changes_avx2(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
 
 const SiftAggKernels sift_aggkern_avx2 = {
 	AGK_INIT2(cmp_f64) AGK_INIT2(between_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
-	AGK_INIT2(sum_i32) AGK_INIT2(sum_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
+	AGK_INIT2(sum_i32) AGK_INIT2(sum_f64) AGK_INIT2(absmax_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
 	.gid_code = agk_gid_code_scalar,
 	.gid_i32 = agk_gid_i32_scalar,
 	.count_gid = agk_count_gid_scalar,
