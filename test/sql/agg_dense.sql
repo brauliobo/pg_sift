@@ -34,6 +34,13 @@ FROM generate_series(1, 3000) i;
 CREATE INDEX d_jcol ON d_j USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
 VACUUM ANALYZE d_j;
 
+-- the same documents never vacuumed (no page is all-visible, so the rows that keep an element are checked against the heap), with deleted and updated rows
+CREATE TABLE d_nv (id int, grp int, label text, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO d_nv SELECT * FROM d_j WHERE id <= 2000 AND id <> 7;
+CREATE INDEX d_nvcol ON d_nv USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
+DELETE FROM d_nv WHERE id % 10 = 3;
+UPDATE d_nv SET items = '[{"k": "c1", "f": "fa", "n": 1, "x": 0.5}]' WHERE id % 10 = 4;
+
 -- floats that are not finite: infinities of both signs, NaN, a group that has only NULLs
 CREATE TABLE d_f (id int, grp int, amt float8);
 INSERT INTO d_f
@@ -116,6 +123,11 @@ INSERT INTO d_q VALUES
 	('SELECT d.label, count(*), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
 	('SELECT d.label, e.k, count(*), avg(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.grp <> 1 AND e.f <> ''fc'' GROUP BY 1, 2'),
 	('SELECT e.k, count(*), avg(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id <> 7 GROUP BY 1'),
+	-- the documents never vacuumed
+	('SELECT count(*), count(e.k), sum(e.n), sum(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT count(*) FILTER (WHERE e.f = ''fa''), count(*) FILTER (WHERE e.f = ''fb''), avg(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT e.k, count(*), avg(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
+	('SELECT d.label, count(*), sum(e.n) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.grp < 3 GROUP BY 1'),
 	-- floats that are not finite
 	('SELECT count(*), count(amt), sum(amt), avg(amt) FROM d_f'),
 	('SELECT grp, count(amt), sum(amt), avg(amt) FROM d_f GROUP BY 1'),
@@ -159,6 +171,6 @@ SELECT q, d_err(q, true) = d_err(q, false) AS same, d_err(q, false) AS error
 FROM (VALUES ('SELECT sum(amt) FROM d_big'), ('SELECT avg(amt) FROM d_big'), ('SELECT sum(amt) FROM d_big WHERE id < 2'),
              ('SELECT id % 2, sum(amt) FROM d_big GROUP BY 1')) v(q);
 
-DROP TABLE d_t, d_j, d_f, d_big, d_q;
+DROP TABLE d_t, d_j, d_nv, d_f, d_big, d_q;
 DROP FUNCTION d_rows(text, bool, bool), d_pushed(text), d_dense(text, bool), d_compare(), d_err(text, bool);
 DROP EXTENSION pg_sift;

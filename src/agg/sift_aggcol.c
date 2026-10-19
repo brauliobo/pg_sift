@@ -676,6 +676,14 @@ col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	sift_aggsel_vet(&src->sel, src->cs, &src->unit, bits);
 }
 
+static bool
+col_vet_needed(void *impl, const SiftSrcUnit *unit)
+{
+	ColSource  *src = impl;
+
+	return sift_aggsel_vet_needed(&src->unit);
+}
+
 /* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
 
 static const SiftColOp filter_ops[] = {
@@ -937,6 +945,7 @@ static const SiftSrcProvider col_provider = {
 	.read = col_read,
 	.live = col_live,
 	.vet = col_vet,
+	.vet_needed = col_vet_needed,
 	.counters = col_counters,
 	.leaf_n = col_leaf_n,
 	.read_into = col_read_into,
