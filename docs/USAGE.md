@@ -99,16 +99,17 @@ SELECT id FROM docs WHERE body @@> 'run';                         -- 4: runners,
 CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || coalesce(body, '')));   -- query with the same expression
 ```
 
-For autocomplete, separate sections with `chr(29)`, name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of
+For autocomplete and for weighted fields, build the key from sections with `sift.sections(a, b, ...)` (they are joined with `chr(29)`; a NULL
+section is empty), name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of
 up to n letters are one term lookup. The option is a speed and size trade-off, not a requirement: without it a broad prefix such as `h*` is read
 from the postings of all its words, once per backend and then from a cache (`sift.prefix_cache_size`): 10-15 ms for a one-letter prefix of a million
 names, under a millisecond with the option, which costs index size (a million names: 17 MB, 34 MB at 3, 73 MB at 15):
 
 ```sql
 CREATE TABLE places (id int PRIMARY KEY, name text, admin1 text, country text);
-CREATE INDEX places_sift ON places USING sift ((name || chr(29) || admin1 || ' ' || country))
+CREATE INDEX places_sift ON places USING sift (sift.sections(name, admin1 || ' ' || country))
   WITH (fields = 'name', prefix_index = 3);
-SELECT id FROM places WHERE (name || chr(29) || admin1 || ' ' || country) @@> '(gr* ho*) AND (name:{gr* ho*}^3 OR (gr* ho*))'
+SELECT id FROM places WHERE sift.sections(name, admin1 || ' ' || country) @@> '(gr* ho*) AND (name:{gr* ho*}^3 OR (gr* ho*))'
 ORDER BY sift.score(ctid) DESC LIMIT 20;                          -- every word a prefix, name matches boosted x3
 ```
 
@@ -117,6 +118,22 @@ a query on one key means the same on every plan. Without `fields` (also with no 
 the word `name:word` and `name:(a b)` the words `name:a` and `name:b`. With several sift indexes on one key, `@@>` means the default
 analyzer when one of them has it, else that of the lowest OID; an index that answers differently (one with `fields` next to a plain
 one) does not serve it, and `sift.match_idx(key, query, index)` names the analyzer. Partitions bind `@@>` to their own indexes.
+
+### Field weights
+
+`sift.field_query(query, fields [, index])` searches each word, prefix, wildcard and fuzzy term of a query in every listed field, with the
+weight of the field times the term's own boost. A row scores the sum of its fields' scores (the sum of per-field BM25, each with its own
+`idf` and `tf` and the length of the whole key); the rows that match are those of the unweighted query on those fields. A weight is above 0 and
+up to 10000, and no weight is 1. With `index` the field names are checked against the `fields` of that index. Phrases, regular expressions and
+the terms of a `NOT` are not scoped to a field; there is no BM25F, no analyzer per field and no highlight per field
+([FIELDS-FACETS.md](FIELDS-FACETS.md)).
+
+```sql
+CREATE INDEX items_sift ON items USING sift (sift.sections(title, body, tags)) WITH (fields = 'title,body,tags');
+SELECT id FROM items
+WHERE sift.sections(title, body, tags) @@> sift.field_query('wireless headphones', 'title^3, body, tags^0.5', 'items_sift')
+ORDER BY sift.score(ctid) DESC LIMIT 10;
+```
 
 ## Partitioned tables
 
@@ -134,7 +151,30 @@ SELECT region, count(*) FROM logs WHERE msg @@> 'disk "node 7"' GROUP BY region;
 SELECT id, region, sift.score(ctid) FROM logs WHERE msg @@> 'disk "node 7"' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ```
 
-## Keyword facets
+## Facets
+
+`sift.facet_counts(table, key, query, facets [, filter [, hits]])` returns the counts of several facets of one search in one call: terms with a
+top N and the count of the other values, range, histogram and date buckets, on columns of any type (also arrays), and the facets of a
+multi-select (a facet ignores its own selection). Every count is exact, the `count(*)` of the same snapshot. The design, the options and the
+limits are in [FIELDS-FACETS.md](FIELDS-FACETS.md).
+
+```sql
+SELECT * FROM sift.facet_counts('items', 'title', 'wireless',
+  '[{"expr":"brand","size":10,"missing":true},
+    {"expr":"price","edges":[100,300]},
+    {"expr":"added","unit":"month","fill":true},
+    {"expr":"tags","array":true}]', 'active', hits => true);   -- facet, kind, value, lo, hi, count
+SELECT * FROM sift.facet_counts('items', 'title', 'wireless',
+  '[{"expr":"brand","selected":["acme"]}, "category"]');       -- category counts only brand acme; brand counts all brands
+```
+
+`kind` is `value` (terms), `bucket` (range, histogram, date), `other` (`lo` values past `size`, `count` their sum), `missing` (NULL) or `hits`
+(the rows left after every selection). `sift.facet_sql(...)` returns the statement that `facet_counts` runs, for `EXPLAIN`: with a `sift_col`
+index on the columns each facet is a `Custom Scan (SiftAgg)` with the search as the row selection (a million rows, four facets: 3-13 ms against
+140-310 ms for the ordinary plan on broad queries); an array facet or a filter on a column outside the index runs as the ordinary plan, with
+the same counts. The statement runs as the calling role, so permissions and row-level security apply.
+
+### Keyword facets
 
 `analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts the matches of a
 query per value of another column from the bitmaps, equal to the `GROUP BY` of the same snapshot. It pays for broad queries on
@@ -374,7 +414,7 @@ its own docker container.
   - `numeric` wider than 18 digits and other types stored as exact images are not read by `SiftAgg`; no HOT, and shared row locks degrade to exclusive;
   - the system columns `xmin`, `xmax`, `cmin` and `cmax` read zero;
   - no per-table options: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression` and `sift.table_dead_rewrite_pct` are ordinary settings that the backend doing the work reads when it does it (PostgreSQL 17 through 19 give a table access method no reloptions of its own: `WITH` knows heap's and TOAST's only and `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20). Inline promotion and the closing of write buffers follow the settings of the inserting session (`SET`, `SET LOCAL`, the role's or the database's default); a manual `VACUUM`, those of the session that runs it; autovacuum has no session, so it applies the server settings (`postgresql.conf`, `ALTER SYSTEM`), `ALTER DATABASE ... SET`, and the `ALTER ROLE ... SET` defaults of the bootstrap superuser (the role autovacuum runs as), never the writer's session or the owner's role; the maintenance worker does not touch a `sift_table`. The settings of the session that wrote the rows are not kept for the VACUUM that promotes them later. So set what background promotion should use at the server or database level; a `SET` in a session shapes only that session's inserts and its own VACUUM (the segments already written keep their codec until a merge or rewrite). `sift_col` indexes do have per-index options (`compression` and the rest, see above), so a column index on a table needs no setting for it. Tested by `test/t/010_tbl_settings.pl`;
-- One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected. No plain or index-only scans.
+- One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected (build a key of several columns with `sift.sections`). No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
 - `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
 - Terms are truncated at 255 bytes, `tf` saturates at 255 and document length at 65535; at most 128 segments per index. A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
@@ -395,6 +435,9 @@ its own docker container.
 - Partitions: `sift.max_score()` is not available through a parent (call it on a partition).
 - Partitions: the score cannot be used inside an aggregate or a non-nested-loop join; compute it in a subquery with `OFFSET 0` or `LIMIT`.
 - Ranked partition scans are never parallel, and neither are scans with a pushed-down filter.
-- Facets: text keys only (use an expression index for integers), cost linear in the distinct values, tables with row-level security are
-  refused.
+- Keyword facets (`sift.facets`): text keys only (use an expression index for integers), cost linear in the distinct values, tables with row-level
+  security are refused. `sift.facet_counts` has none of these limits; its array facets and filters on columns outside the `sift_col` index use the
+  ordinary plan.
+- Fields: weights are set at query time over the sections of one key; no BM25F, no analyzer per field, phrases and regular expressions are not
+  scoped to a field, no highlight per field ([FIELDS-FACETS.md](FIELDS-FACETS.md)).
 - pg_upgrade is tested within one major version only. `pg_sift_test` (built with `SIFT_TESTING=1`) is for the test suite only.
