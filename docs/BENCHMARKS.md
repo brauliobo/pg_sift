@@ -1069,6 +1069,14 @@ the default) or `--restart-runs N` (restart the container, ClickHouse and Elasti
 **Engines at the same time.** `--parallel-engines N` runs the timed windows of independent engines concurrently, each in a docker cpuset of equal size on disjoint physical cores (the SMT sibling of a core is never given to another engine), the sets
 rotating across runs so that no engine always gets the same cores; the external-noise sentinel and the equal-budget rules are unchanged. `bench/bench store interference` measures the same cell alone and while the others run: see the result below.
 
+**Resume.** Every run has an id and a manifest (`bench/out/run-ID/.run`: command line, pid, state, per-stage state); `bench/bench resume [ID]` runs the unfinished run again and keeps everything that finished
+with the same key: stages, store parts (`store-<set>-<part>.json`, key = code, host fingerprint, data hash and every setting of the command), search rounds (`round-N.done`, the rows of a round that was cut off are dropped) and the cached
+cells. Result and state files are written whole or not at all (temp file, fsync, rename), a result of another key is never reused, and loads are restartable (a data volume counts as loaded only when its record, written last, exists;
+otherwise it is dropped and loaded again). SIGINT and SIGTERM stop the stage's processes, record `interrupted` and exit 75 (resumable); a SIGKILL or a reboot leaves `running`, which the next start finds out by the pid and
+marks `crashed`, removing the containers it started (`label sift-run=ID`); `bench/bench clean --run-id ID` removes only that run's containers and directory. A failed stage of `final` is recorded and the pass goes on unless
+`--fail-fast`; `resume` runs only the stages that did not finish. Locks are `flock` locks, which a dead process does not hold. `bench/test/test_resume.sh` kills a synthetic run at random points and checks that the resumed results
+equal an uninterrupted run (same files, no duplicate rows, no half-written file). Exit status: 0 done, 1 failed, 3 a result differs from PostgreSQL's, 4 over budget (`BUDGET_STRICT`), 75 interrupted.
+
 **Utilization.** Every part of the store pass reports the wall time against the sum of its timed windows and the share of the time fewer than `--busy-cores` cores were busy; a part whose timed windows are below 70% of its wall prints `WARN`.
 The 3.0 pass was mostly idle for reasons that are now removed or measured: a process, connection and log file per cell, a 2 s quiet wait per group, a restart of Elasticsearch (~18 s) per cold run, ClickHouse mutations waited for serially,
 sleeps of 1 s in polls.
