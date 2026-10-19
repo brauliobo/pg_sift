@@ -45,6 +45,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	uint32		tag;			/* SiftSegEntry.reserved */
+	uint32		aux;			/* SiftSegHeaderData.sum_dl: the second half of the tag */
 	StringInfoData buf;
 };
 
@@ -187,9 +188,10 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 }
 
 void
-sift_colw_set_tag(SiftColSegWriter *w, uint32 tag)
+sift_colw_set_tag(SiftColSegWriter *w, uint32 tag, uint32 aux)
 {
 	w->tag = tag;
+	w->aux = aux;
 }
 
 uint64
@@ -445,6 +447,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	h.nterms = w->schema->ncols;
 	h.sb_lo = w->sb_lo;
 	h.sb_hi = w->sb_hi;
+	h.sum_dl = w->aux;
 	h.dictroot_n = w->nsb;
 	h.nextents = n;
 	sift_page_init(page.data, SIFT_PT_SEGHEADER, w->gen);

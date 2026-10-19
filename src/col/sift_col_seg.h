@@ -36,8 +36,11 @@ typedef struct SiftColSegWriter SiftColSegWriter;
 /* pol[ncols]: the compression policy of each leaf (NULL: plain FOR/PACK chunks), valid until sift_colw_finish */
 extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol,
 										 MemoryContext mcxt);
-/* The owner's tag of the segment (SiftSegEntry.reserved: the table AM's xmin, 0 = none); sift_colw_finish stores it in the entry, a rewrite sets it again */
-extern void sift_colw_set_tag(SiftColSegWriter *w, uint32 tag);
+/*
+ * The owner's tag of the segment: SiftSegEntry.reserved (the table AM's xmin, 0 = none) and, in the segment header, aux (its cmin). sift_colw_finish
+ * stores both; a merge or a rewrite of tagged segments sets them again. The owner clears the tag in the entry when the rows are final.
+ */
+extern void sift_colw_set_tag(SiftColSegWriter *w, uint32 tag, uint32 aux);
 /*
  * The pre-aggregates the writer computes for every unit (docs/COL-PREAGG.md): the default spec unless the owner sets one (the reloption
  * `preagg`). Set before the first sift_colw_add.
@@ -69,6 +72,8 @@ typedef struct SiftColSegment
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */
 extern SiftColSegment *sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
+/* The aux half of the tag the segment was written with (sift_colw_set_tag) */
+#define SIFT_CSEG_TAG_AUX(seg)	((uint32) (seg)->hdr->sum_dl)
 extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
