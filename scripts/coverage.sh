@@ -72,7 +72,7 @@ validate() {
 			if ($2 == "" || $3 == "" || $6 == "" || $7 == "") bad("area, feature, engine and example are required")
 			if ($4 == "Yes" && $9 == "") bad("a Yes row names its proof (fixture or test)")
 			if ($4 != "Yes" && $5 == "") bad("a Partly, No or Error row says why (condition, reason, or the setting to avoid)")
-			if ($10 !~ /^((agg|plain|scan|count|bitmap|noscan|ok)( !?~ .+)?|true|error:[0-9A-Z]{5}|external:[a-z-]+)$/) bad("unknown check " $10)
+			if ($10 !~ /^((agg|plain|scan|count|bitmap|noscan|ok)( !?~ .+)?|true|error:[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]|external:[a-z-]+)$/) bad("unknown check " $10)
 			if ($11 == "-" || $11 == "") bad("every row has a proof query")
 			if ($4 == "Yes" && $10 !~ /^(agg|scan|count|bitmap|ok|true|external:)/) bad("a Yes row claims a sift plan, a result or a probe")
 			if ($4 == "No" && $10 !~ /^(plain|noscan|ok|true)/) bad("a No row claims the normal plan")
