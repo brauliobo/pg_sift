@@ -169,6 +169,7 @@ Online-store table, one backend, one CPU core, NVIDIA GeForce RTX 3090, measured
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
 - [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
 - [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
+- [docs/FORMATS.md](docs/FORMATS.md): the on-disk format numbers (metapage minor, segment formats, flags).
 - [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.
 - [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
 
