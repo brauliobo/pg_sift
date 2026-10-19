@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # kill -9 of the postmaster and all backends in the middle of concurrent inserts, updates, deletes, VACUUM, promotion and merge of a
 # sift_col index, then crash recovery and checks: the store and every segment verify, the index holds exactly the visible heap tuples
-# with their values (heapallindexed), the column source returns what the heap returns, and the space stays bounded (the sweep reclaims
+# with their values (heapallindexed), the column source returns what the heap returns, the groups of the elements of the documents come out
+# of the element cubes as the normal plan computes them, and the space stays bounded (the sweep reclaims
 # what the crash orphaned). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON nulls (overflow values with their
 # JSON types in the chunks): a jsonb_typeof filter of the column source returns what the heap returns. SIFT_COL_CRASH_ITERS (default 40, 4 quick).
 . "$(dirname "$0")/lib.bash"
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
-plan $((ITERS + 4))
+plan $((ITERS + 6))
 node_init crash 1 "checkpoint_timeout = 30s
 max_wal_size = 256MB
 autovacuum = off"
@@ -30,7 +31,8 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"INSERT INTO orders (tenant_id, status, qty, price, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, i / 4.0,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of(i)) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, price, doc)
-		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8')" >/dev/null || bail "setup failed"
+		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
+			preagg = 'cube(tenant_id: qty, price; status: qty; doc.items[].category: doc.items[].qty)')" >/dev/null || bail "setup failed"
 ok "setup"
 check "the type filter plans as an aggregate scan" test "$(sql crash "SET seq_page_cost = 10000" "EXPLAIN (COSTS OFF) SELECT count(*) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'" | grep -c SiftAgg)" == 1
 
@@ -64,7 +66,8 @@ for i in $(seq "$ITERS"); do
 	out=$(sql crash "$VERIFY" 2>&1)
 	IFS='|' read -r _ same same_filtered mb typed <<<"$out"
 	used=$(node_mb crash)
-	if [[ $same == t && $same_filtered == t && $typed == t && $used -lt $MAX_MB ]]; then
+	elems=$(elem_groups crash on)
+	if [[ $same == t && $same_filtered == t && $typed == t && $used -lt $MAX_MB && -n $elems && $elems == "$(elem_groups crash off)" ]]; then
 		ok "iteration $i: verified, index $mb MB, node $used MB"
 	else
 		not_ok "iteration $i"
@@ -72,7 +75,9 @@ for i in $(seq "$ITERS"); do
 		break
 	fi
 done
-sql crash "SELECT sift.col_merge('o_col', true)" "SELECT sift.col_merge('o_col', true)" >/dev/null
+sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" "SELECT sift.col_merge('o_col', true)" >/dev/null
+check "the element cubes of the merged segment answer the groups of the elements" test "$(elem_groups crash on)" == "$(elem_groups crash off)"
+check "the element cubes answer units of the merged segment" grep -qE "Units From Pre-aggregates: [1-9]" <<<"$(elem_groups crash on explain)"
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
 finish

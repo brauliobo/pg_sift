@@ -7167,6 +7167,7 @@ typedef struct PaVal
 	bool		has_mm;
 	int64		min;
 	int64		max;
+	double		sumf;			/* the sum of a float8 argument */
 } PaVal;
 
 /* the leaf an aggregate reads: its column, the only leaf of its numeric program; -1: count(*) */
@@ -7200,6 +7201,11 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
 			acc->w[g] += v->sum;
+			acc->n[g] += v->nn;
+			break;
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			acc->d[g] += v->sumf;
 			acc->n[g] += v->nn;
 			break;
 		default:					/* SAA_MIN, SAA_MAX */
@@ -7285,7 +7291,7 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 
 	for (int i = 0; i < s->npred; i++)
 	{
-		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase) != ex->pa_dim)
+		if (sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase, s->group) != ex->pa_dim)
 			continue;
 		if (keep == NULL)
 		{
@@ -7309,7 +7315,7 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h)
 			int			n = Min(VEC, ng - st);
 			uint64		t[VECW + PADW];
 
-			eval_pred(ex, s->pred[i], 0, st, n, t);
+			eval_pred(ex, s->pred[i], s->group >= 0, st, n, t);
 			sift_colk->bits_and(keep + st / 64, t, (n + 63) / 64);
 		}
 	}
@@ -7373,6 +7379,18 @@ ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
 }
 
+/* the values of a float8 leaf of the unit are finite and so small that the sum of their squares, which avg(float8) is owed to check, cannot overflow */
+#define PA_FLOAT_MAX	1e100
+
+static bool
+preagg_floats(AggExec *ex, int leaf)
+{
+	SiftSrcUnitAgg a;
+
+	return sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &a) && !a.has_nan &&
+		(a.nnull == a.nvals || (a.has_minmax && fabs(a.min_f) <= PA_FLOAT_MAX && fabs(a.max_f) <= PA_FLOAT_MAX));
+}
+
 /* the groups of the unit's histogram of the key's column, or of the column the conjuncts test (no key: one group) */
 static bool
 preagg_hist(AggExec *ex)
@@ -7396,7 +7414,9 @@ preagg_hist(AggExec *ex)
 
 		while (leaf >= 0 && leaf != ex->pa_dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
-		if (leaf >= 0 && leaf != ex->pa_dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL)))
+		if (leaf >= 0 && leaf != ex->pa_dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
+			return false;
+		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf))
 			return false;
 		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa_dim ? -2 : m;
 	}
@@ -7425,6 +7445,7 @@ preagg_hist(AggExec *ex)
 			{
 				v[ai].nn = h.nn[m][kept[j]];
 				v[ai].sum = h.sum[m] ? h.sum[m][kept[j]] : 0;
+				v[ai].sumf = h.sumf[m] ? h.sumf[m][kept[j]] : 0;
 			}
 		}
 		preagg_fold(ex, gid[j], h.count[kept[j]], v);

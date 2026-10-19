@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 11
+plan 12
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -29,7 +29,8 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, doc jsonb)" \
 	"INSERT INTO orders (tenant_id, status, qty, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of(i)) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8')" \
+	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
+	preagg = 'cube(tenant_id: qty; status: qty; doc.items[].category: doc.items[].qty)')" \
 	>/dev/null || bail "setup failed"
 
 node_clone primary standby 3 "hot_standby_feedback = on
@@ -71,6 +72,8 @@ catchup primary standby
 CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' || (SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid'))
 	|| ' ' || (SELECT count(*) FROM orders) || ' ' || (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid')"
 check "standby answers the column source as the primary does" test "$(sql standby "$CHECKS")" == "$(sql primary "$CHECKS")"
+check "the standby computes the groups of the elements from the element cubes as the primary does" \
+	test "$(elem_groups standby on)" == "$(elem_groups primary off)"
 check "the index verifies on the standby" test -z "$(sql standby "SELECT sift.col_verify('o_col', true)" 2>&1)"
 TYPED="SELECT count(*) || ' ' || sum((doc->>'weight')::float8) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'"
 check "a type filter plans as an aggregate scan on the standby" \
