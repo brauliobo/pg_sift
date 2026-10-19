@@ -7975,6 +7975,7 @@ overflow_rows(AggExec *ex)
 		int			leaf = s->leaves[i];
 		const SiftSrcLeaf *l = &ex->lay->leaf[leaf];
 		const SiftSrcVec *v;
+		const uint32 *par;
 
 		if (leaf >= ex->nbase || l->typid == NUMERICOID)
 			continue;
@@ -7984,10 +7985,11 @@ overflow_rows(AggExec *ex)
 			rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
 		if (l->parent >= 0)
 			build_parents(ex);
+		par = l->parent >= 0 ? unit_parent(ex) : NULL;
 		for (int64 e = 0; e < v->n; e++)
 			if (sift_colsrc_bit(v->ovf, e))
 			{
-				uint32		r = l->parent >= 0 ? ex->parent[e] : e;
+				uint32		r = par ? par[e] : e;
 
 				rows[r >> 6] |= UINT64CONST(1) << (r & 63);
 			}
