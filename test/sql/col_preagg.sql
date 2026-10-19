@@ -124,7 +124,7 @@ DELETE FROM pa WHERE id % 89 = 0 AND id < 20000;
 SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col');
 SELECT count(*) FILTER (WHERE NOT exact) > 0 AS some_inexact FROM sift.col_unit_agg('pa_col', 'i4');
 -- VACUUM makes the pages all-visible again but the units still hold the dead rows: still inexact where dirty
-VACUUM pa;
+VACUUM (DISABLE_PAGE_SKIPPING) pa;
 SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col');
 SELECT count(*) FILTER (WHERE NOT exact) > 0 AS dirty_inexact FROM sift.col_unit_agg('pa_col', 'i4');
 -- promotion and a merge rewrite the units: the dead rows are gone and the new units carry new sums
