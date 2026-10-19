@@ -1098,6 +1098,42 @@ performance changes in [the comparison of change-detection methods](https://arxi
 
 ### Run time
 
+The release pass (`bench/bench final --size standard`, host: Ryzen 7 9700X, 16 threads, other jobs of the user running, load average 3-5), minutes per stage, measured on 2026-10-19 (the 3.0 estimates in brackets are from the logs of
+that pass, `bench/presets.env` has the calibrated numbers):
+
+| stage | every server measured (first pass, cold cache of cells) | competitor cells from the cache |
+|---|---:|---:|
+| store (1M orders): load, warm at 1 and 3 CPUs, cold, updates | 22.8 (setup 1.1, warm 2.4, cold 8.6, updates 10.8) | 3.0 |
+| compression variants of the column index | 3 | 3 |
+| what ClickHouse and Elasticsearch read per question | 1 | 1 |
+| pg_sift profile and gap report | 0.4 | 0.4 |
+| search (articles and places, warm and cold, seven engines) | not re-measured: 12.8 in the 3.0 pass | same |
+| total | about 40 | about 20 (budget 25) |
+
+Smoke is 8 min the first time and 1.2 min with the cache, quick 11.7 min the first time. The store pass is 8 times shorter with the cache because Elasticsearch (a restart per cold question: 18 s each), ClickHouse (a delete of
+5% of the rows waits for its mutation: 25 s at 50,000 rows, minutes at 1M) and Citus are not measured again; `bench/bench store all --remeasure-all` measures them.
+
+Where the idle time of the 3.0 pass was, in seconds (places, slim tier, ten engines, first round: 168 cells in 146 s; articles, first round: 49 cells in 217 s):
+
+| source | places round | after |
+|---|---:|---:|
+| transactions of the cells (what is measured) | 62 s (43%) | 85% of the wall (83 cells in 23 s, two engines: 19.5 s) |
+| inside `cell.py`, not in a transaction: first-transaction chunk, pgbench start and connect, log file written and parsed, idle clients at the end of a chunk | 28 s (19%) | none: one process, connections kept open |
+| outside `cell.py`: bash, the script file and `base` per cell, a subshell per cell, the quiet wait of every group (`scripts/quiet.sh`: two samples 2 s apart, 24 groups) | 55 s (38%) | removed (PSI over the cell's own window) |
+| articles: cells 109 s of a 217 s round (50%); the rest is the quiet waits (2 s per group, twice for the external engines in round 1), pgbench starts and result files | 108 s | pgbench cells unchanged, quiet waits remain |
+| store cold: Elasticsearch restarts | 18 s per question and run | cached; or `--cold-runs` (evict) |
+| store: idle-host baseline before every gate | 10 s per stage | once per pass (15 min), 3 s at smoke |
+| store: polls with `sleep 1` | up to 1 s each | 0.2 s |
+
+The store passes print the share of the wall that is timed windows (`utilization` in every part file, `WARN` below 70% for parts of a minute or more): standard, every server measured, no part below 70%; with the cache the
+parts are seconds long and dominated by process start, the load and the gates. (The cold part counts a restart window as timed.) The search stage keeps its idle time in the throughput cells of the articles; the persistent driver covers the
+single-client cells of the places only.
+
+**Quick against standard.** `bench/bench store stable quick.json standard.json` on the same engines: the order of pg_sift against PostgreSQL, Citus, Elasticsearch and ClickHouse is the 1M one in all 40 cells (10 questions, 1 and 3 CPUs);
+the only order flips (3 of 100 pairs) are `sift_table` against PostgreSQL on questions 03 and 10. The ratios are not: they drift by 1.8x to 14x (worst: point lookup and orders per country against Citus), so `quick` finds regressions and
+broken engines, and the published ratios are `standard`'s.
+
+
 `bench/bench all --docs` on the slim tier with the seven default engines, setup done (datasets and engines in place), host load average 5.7-8.6 from other jobs (10.4-15.3 in the later run of the classes p2, p4 and a2s, whose time is not in the table), the session of 2026-10-19 with the 3-CPU budget for the servers. The engines are built and then measured one at a time, so the
 cells take the sum of the engines' times:
 
