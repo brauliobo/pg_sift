@@ -209,13 +209,14 @@ static const struct
 	{"float4", SIFT_SHRED_FLOAT4}, {"real", SIFT_SHRED_FLOAT4},
 	{"float8", SIFT_SHRED_FLOAT8}, {"double", SIFT_SHRED_FLOAT8},
 	{"text", SIFT_SHRED_TEXT},
+	{"astext", SIFT_SHRED_ASTEXT},
 	{NULL, 0}
 };
 
 const char *
 sift_shred_type_name(SiftShredType t)
 {
-	static const char *const names[] = {"bool", "int2", "int4", "int8", "float4", "float8", "text"};
+	static const char *const names[] = {"bool", "int2", "int4", "int8", "float4", "float8", "text", "astext"};
 
 	return names[t];
 }
@@ -453,21 +454,21 @@ parse_type(Parser *P, Add *a)
 {
 	int			i;
 
-	expect_word(P, "a type after the path (bool, int2, int4, int8, float4, float8 or text)");
+	expect_word(P, "a type after the path (bool, int2, int4, int8, float4, float8, text or astext)");
 	if (P->quoted)
 		SPEC_SYNTAX(P->loc, "expected a type after the path");
 	for (i = 0; type_names[i].name; i++)
 		if (pg_strcasecmp(P->word, type_names[i].name) == 0)
 			break;
 	if (!type_names[i].name)
-		SPEC_SYNTAX(P->loc, "unknown type \"%s\" (bool, int2, int4, int8, float4, float8 or text)", P->word);
+		SPEC_SYNTAX(P->loc, "unknown type \"%s\" (bool, int2, int4, int8, float4, float8, text or astext)", P->word);
 	a->type = type_names[i].type;
-	a->maxlen = a->type == SIFT_SHRED_TEXT ? SIFT_SHRED_DEFAULT_TEXT : 0;
+	a->maxlen = SIFT_SHRED_IS_TEXTUAL(a->type) ? SIFT_SHRED_DEFAULT_TEXT : 0;
 	a->explicit_len = false;
 	lex(P);
 	if (pg_strcasecmp(type_names[i].name, "double") == 0 && P->tok == T_WORD && pg_strcasecmp(P->word, "precision") == 0)
 		lex(P);
-	if (a->type == SIFT_SHRED_TEXT && P->tok == T_LPAREN)
+	if (SIFT_SHRED_IS_TEXTUAL(a->type) && P->tok == T_LPAREN)
 	{
 		uint64		v = 0;
 		int			loc;
@@ -1101,6 +1102,14 @@ sift_shred_wants_number(const SiftShred *sh)
 	return t && t->kind == N_LEAF && IS_NUMERIC(t->type);
 }
 
+bool
+sift_shred_wants_number_text(const SiftShred *sh)
+{
+	NodeP		t = peek_target(sh);
+
+	return t && t->kind == N_LEAF && t->type == SIFT_SHRED_ASTEXT;
+}
+
 /* A scalar where a list or map is declared: null is its null, anything else cannot be a list */
 static void
 scalar_in_container(SiftShred *sh, NodeP t, bool is_null)
@@ -1124,6 +1133,8 @@ sift_shred_null(SiftShred *sh)
 		scalar_in_container(sh, t, true);
 }
 
+static void leaf_text(SiftShred *sh, NodeP t, const char *s, int len);
+
 void
 sift_shred_bool(SiftShred *sh, bool b)
 {
@@ -1133,6 +1144,8 @@ sift_shred_bool(SiftShred *sh, bool b)
 		return;
 	if (t->kind != N_LEAF)
 		scalar_in_container(sh, t, false);
+	else if (t->type == SIFT_SHRED_ASTEXT)
+		leaf_text(sh, t, b ? "true" : "false", b ? 4 : 5);
 	else if (t->type != SIFT_SHRED_BOOL)
 		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
 	else
@@ -1148,7 +1161,7 @@ leaf_text(SiftShred *sh, NodeP t, const char *s, int len)
 	SiftShredDoc *doc = &sh->doc;
 	SiftShredVal *v = &doc->col[t->col].val[doc->grp[t->group].n - 1];
 
-	if (t->type != SIFT_SHRED_TEXT)
+	if (!SIFT_SHRED_IS_TEXTUAL(t->type))
 		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
 	else if ((uint32) len > t->maxlen)
 		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_LENGTH);
@@ -1189,7 +1202,9 @@ leaf_number(SiftShred *sh, NodeP t, const char *text, int len)
 	Dec			d;
 	uint64		mag;
 
-	if (!IS_NUMERIC(t->type) || text == NULL || !dec_parse(text, len, &d))
+	if (t->type == SIFT_SHRED_ASTEXT && text != NULL)
+		leaf_text(sh, t, text, len);
+	else if (!IS_NUMERIC(t->type) || text == NULL || !dec_parse(text, len, &d))
 		leaf_set(sh, t, SIFT_SHRED_OVERFLOW, SIFT_SHRED_OVF_TYPE);
 	else if (t->type <= SIFT_SHRED_INT8 ? !(dec_integral(&d, &mag) && int_fits(t->type, d.neg, mag, &v->i))
 			 : !dec_float(&d, text, len, t->type == SIFT_SHRED_FLOAT4, &v->f))

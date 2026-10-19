@@ -35,8 +35,11 @@ typedef enum SiftShredType
 	SIFT_SHRED_INT8,
 	SIFT_SHRED_FLOAT4,
 	SIFT_SHRED_FLOAT8,
-	SIFT_SHRED_TEXT
+	SIFT_SHRED_TEXT,
+	SIFT_SHRED_ASTEXT			/* the text `->>` gives for any scalar: a string as it is, a number as numeric_out prints it, true / false */
 } SiftShredType;
+
+#define SIFT_SHRED_IS_TEXTUAL(t)	((t) == SIFT_SHRED_TEXT || (t) == SIFT_SHRED_ASTEXT)
 
 /* State of a slot or of a list; the values index SiftShredCounts */
 typedef enum SiftShredState
@@ -192,6 +195,8 @@ extern bool sift_shred_full(const SiftShred *sh);
 extern int	sift_shred_object_keys(const SiftShred *sh);
 extern const char *sift_shred_object_key(const SiftShred *sh, int i, int *len);
 extern bool sift_shred_wants_number(const SiftShred *sh);
+/* the target is an astext column: pass the number as `->>` prints it (numeric_out), not normalized */
+extern bool sift_shred_wants_number_text(const SiftShred *sh);
 extern void sift_shred_null(SiftShred *sh);
 extern void sift_shred_bool(SiftShred *sh, bool b);
 extern void sift_shred_string(SiftShred *sh, const char *s, int len);

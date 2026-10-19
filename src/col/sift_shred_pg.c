@@ -5,6 +5,8 @@
  */
 #include "sift_host.h"
 
+#include "fmgr.h"
+#include "utils/fmgrprotos.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
 
@@ -86,12 +88,15 @@ walk_number(SiftShred *sh, Numeric num)
 {
 	char	   *text;
 
-	if (!sift_shred_wants_number(sh))
+	if (sift_shred_wants_number_text(sh))
+		text = DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(num)));
+	else if (!sift_shred_wants_number(sh))
 	{
 		sift_shred_number(sh, NULL, 0);
 		return;
 	}
-	text = numeric_normalize(num);
+	else
+		text = numeric_normalize(num);
 	sift_shred_number(sh, text, strlen(text));
 	pfree(text);
 }
