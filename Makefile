@@ -34,6 +34,13 @@ $(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) -
 endef
 $(call colz_probe,LZ4,lz4)
 $(call colz_probe,ZSTD,zstd)
+# VULKAN=1 (or SIFT_VULKAN=1) compiles the opt-in Vulkan compute backend (docs/GPU.md): libvulkan is opened with dlopen at first use, so there is no
+# link-time dependency beyond -ldl, and the Vulkan declarations and the SPIR-V are checked in (no SDK, no shader compiler). Off by default.
+# Switching it needs `make clean`.
+ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
+PG_CPPFLAGS += -DSIFT_VULKAN
+SHLIB_LINK += -ldl
+endif
 EXTRA_CLEAN = src/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -91,10 +98,15 @@ endif
 
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak
+.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders
 isolationcheck:
 	scripts/isolation.sh
 tapcheck:
 	scripts/tap.sh
 difftest fuzz soak:
 	scripts/$@.sh
+
+# Rebuilds src/agg/sift_aggvk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
+gpu-shaders:
+	scripts/gen-aggvk-spv.sh
+	scripts/gen-aggvk-min.py
