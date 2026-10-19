@@ -1,7 +1,7 @@
 # More leaf types for `sift_col` (3.2)
 
 `numeric` of any precision, `money` and `interval` as columns of a `sift_col` index, and what the aggregate pushdown (`SiftAgg`) does with
-them. Status: design and implementation notes of the 3.2 branch; section 8 is what is pushed down today, section 10 the format ids. The
+them. Status: implemented on the 3.2 branch; section 8 is what is pushed down, section 10 the format ids. The
 format itself is section 2.11 of `docs/COL.md`; where the two disagree, fix the code or this file in the same commit.
 
 ## 1. Before (3.1)
@@ -79,14 +79,23 @@ the same integers, in the index as in the heap.
 `sift_col_filter` takes a predicate on the head. For a two-lane INT head the constants are the two lane keys (`SiftColValue.v.i` for lane 0, a
 new `SiftColValue.lo` for lane 1) and the filter is the comparison of the pair: `(a, b) < (c, d)` is `a < c OR (a = c AND b < d)`, built
 from the ordinary lane tests and bitmap algebra, `EQ` is both lanes, `IN` is the OR of the pairs, `NE` and `NOT IN` are the complement within
-the non-NULL rows. A constant outside the 128-bit range is "below every value" or "above every value" (`sift_col_numeric_wide_key` returns -1 or
-1) and the predicate is decided without reading. A predicate on a constant that is not a multiple of 10^-s rounds as the narrow form does
-(`NEAREST` for equality, `DOWN` for the lower bound of `>` and `<=`, `UP` for the others). For a STR head (the image) the constants are images and
-the tests are the bytewise ones of `docs/COL.md` 2.9; `lane 1` is never tested alone. NULL and overflow rows follow the narrow rules.
+the non-NULL rows. For a STR head (the image) the constants are images and the tests are the bytewise ones of `docs/COL.md` 2.9; lane 1
+is never tested alone. Money is an ordinary INT leaf.
 
-Zone maps. Each lane has its own zone. A pair predicate is pruned conservatively: `x > c` and `x >= c` keep a unit only if
-`max(lane 0) >= c.hi`; `x < c`, `x <= c` only if `min(lane 0) <= c.hi`; `=` and `IN` need both lane zones to contain the key; when lane 0 of
-the unit is constant, `max(lane 1) > c.lo` (or the symmetric test) decides the unit by itself. `<>` and `NOT IN` never prune.
+The constant of a SQL predicate is turned into one of those tests by `sift_colw_test` (`sift_col_widescan.c`), which decides what the constant
+means against the stored domain, with PostgreSQL's order (NaN above everything, equal to itself): on the scaled integers `x = c` needs c to be a
+multiple of 10^-s (else no row), `x < c` is `x < ceil(c * 10^s)`, `x <= c` is `x <= floor`, `x > c` is `x > floor`, `x >= c` is `x >= ceil`; a
+constant beyond the 128-bit range makes the predicate true for every non-NULL value or for none (a clamp to the extreme `int128`, which no
+38-digit value reaches, is exact); NaN, `Infinity` and `-Infinity` as constants are decided without reading (`x < 'Infinity'` is every
+number, `x > 'Infinity'` only the NaNs). The result is one of: no row, every row (`x <> ALL('{}')`), every non-NULL row with or without the NaNs,
+the NaNs only, or an engine predicate plus whether a NaN row passes it. The engine keeps a NaN row (stored as NULL with the overflow flag in both
+lanes) as a candidate of every predicate; `sift_colw_apply` then adds or removes those rows as the verdict says. `IN` ignores NULL elements,
+`NOT IN` with a NULL element passes no row, a NaN element of a list is the NaN rows.
+
+Zone maps. Each lane has its own zone, and the values of a unit lie in the box `[min0, max0] x [min1, max1]`. A pair predicate is pruned
+with the two corners of the box compared as pairs: `x > c` and `x >= c` keep a unit only if the greatest corner `(max0, max1)` reaches c, `x < c`
+and `x <= c` only if the least corner `(min0, min1)` is below it, `=` needs both and c inside the box, `IN` one constant like that. A unit
+whose lanes flag an overflow (a NaN) describes nothing and stays. `<>`, `NOT IN` and the NULL tests do not prune on the pair.
 
 ## 4. Special values
 
@@ -104,8 +113,11 @@ the unit is constant, `max(lane 1) > c.lo` (or the symmetric test) decides the u
 
 The INT lanes get the zones and the exact int128 `sum` and `sumsq` of the pre-aggregates (`docs/COL-PREAGG.md`) like any INT leaf; the sums of a
 wide pair are linear (`sum(v) = sum(lane 0) * 2^64 + sum(lane 1 as stored) + n * 2^63`), so a future change can answer `sum` of a wide
-numeric from them. Nothing consumes a lane's sum today: a lane is not a leaf of the layout the planner sees (section 8). `sift.col_leaves`
-and `col_index_info` list the lanes as leaves of the type of their head; `sift._test_col_*` read a wide leaf as the text PostgreSQL prints.
+numeric from them. Nothing consumes a lane's sum today: a lane is not a leaf of the layout the planner sees (section 8), and the leaves of a
+wide type are neither a dimension nor a measure of a cube. `sift.col_leaves` lists the lanes as `<attribute>#k` with the type of their head and
+"(lane k)"; `sift._test_col_read` reads a wide leaf as the text PostgreSQL prints (a money as its integer). `sift.col_verify` checks that the lanes
+of a value agree on NULL and overflow, that a numeric image is canonical with a display scale PostgreSQL has, and that an interval's total is that
+of its month, day and time.
 
 ## 6. Portable core and the ports
 
@@ -118,43 +130,50 @@ neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C 
 ## 7. Where the engine stops
 
 `sift_table` keeps its own mapping (`SIFT_COLS_VAR` for what the INT class cannot hold); `sift_col_numeric_scale` still answers "one narrow INT
-leaf" for it. `uuid` and `bytea` are not part of this change (the STR class could hold them; no query shape reads them yet). `time`, `timetz`,
+leaf" for it, and now also requires s <= 18, which makes `numeric(5, 30)` a lane pair for the index and a variable-length leaf for the table
+(it was an error in the index before). `uuid` and `bytea` are not part of this change (the STR class could hold them; no query shape reads them yet). `time`, `timetz`,
 `enum`, arrays and ranges stay refused.
 
 ## 8. What `SiftAgg` does with them
 
-The planner sees one leaf per head. A lane is invisible (`typid = InvalidOid`): no expression matches it. The pushdown, per type:
+The planner sees one leaf per head, but no expression reads its values: a lane and a head of these types have `typid = InvalidOid` in the layout
+(`SiftSrcLeaf.wtypid` keeps the SQL type for the one place that tests them). Only a conjunct of the WHERE can test such a leaf (`SAP_WIDE`), and
+the column engine decides it on the stored lanes; the executor never reads the values, so a NaN, an image or a lane pair needs no vector type.
 
 | | `money` | `numeric(p, s)` wide | `numeric` image | `interval` |
 |---|---|---|---|---|
-| `= <> < <= > >=`, `BETWEEN`, `IN`, `NOT IN`, `IS [NOT] NULL` | pushed | pushed | pushed (image tests) | pushed (pair tests) |
-| `count(*)`, `count(x)`, `count(x) FILTER` | pushed | pushed | pushed | pushed |
-| `min`, `max` | pushed | pushed | normal plan | normal plan |
-| `sum`, `avg` | `sum` pushed | pushed (PostgreSQL's own numeric functions when 128 bits cannot hold the sum) | normal plan | normal plan |
-| `GROUP BY x`, `count(DISTINCT x)` | pushed | pushed | normal plan | normal plan |
-| arithmetic and functions of the column | PostgreSQL evaluates them per distinct value | numeric programs of up to 38 digits, else PostgreSQL | normal plan | normal plan |
+| WHERE conjunct `= <> < <= > >=`, `BETWEEN`, `IN` / `= ANY`, `NOT IN` / `<> ALL`, `IS [NOT] NULL` | pushed | pushed | pushed | pushed |
+| the same under `OR`, `CASE`, `FILTER`, as a key, in an expression, a cast | normal plan | normal plan | normal plan | normal plan |
+| `count(x)`, `min`, `max`, `sum`, `avg`, `GROUP BY x`, `count(DISTINCT x)` | normal plan | normal plan | normal plan | normal plan |
 
-What stays on the normal plan, and why. The value of a group key or of `min`/`max` of an `image` or `interval` column is observable beyond its
-equality class (`1.0` against `1.00`, `1 mon` against `30 days`), and PostgreSQL's choice among equal values depends on its plan (the first
-seen for a hash group, the later for `min`/`max`); the stored totals and images do not say which row's representation a group should show. The
-payload lanes are stored so a later version can return the representation of the first row of each group; until then a group key, `min`, `max`
-and `sum` of those two types read the heap. `sum`/`avg` of `interval` need the three components added separately (PostgreSQL adds month, day
-and time apart), which the canonical total does not give. A column of these types in a query that also reads other columns does not stop the
-pushdown of the others: only a predicate or an expression that touches the column decides.
+Operands are constants, parameters (a generic plan evaluates them when the scan starts, a NULL parameter passes no row) or stable expressions; an IN
+list is a constant array or an array parameter. At most 8 such conjuncts per scan (`SIFT_AGG_MAX_WIDE`), more keep the normal plan. A scan with
+a wide conjunct skips the pre-aggregates of its units (it must test rows) but keeps zone pruning, parallel workers, the BM25 match set, the top-N scan and
+the write buffer. `EXPLAIN ANALYZE` shows `Wide Filters In Source`.
 
-The implementation status of each cell is in the commit history and in `docs/coverage.tsv` (T03 to T14).
+What stays on the normal plan, and why. Reading the value is what the executor has no vector for: the lane pair, the image and the interval would
+each need a vector type and kernels. For the image and the interval it is also an equality class problem: the value of a group key or of `min` /
+`max` is observable beyond its equality class (`1.0` against `1.00`, `1 mon` against `30 days`), and PostgreSQL's choice among equal values depends on
+its plan (the first seen for a hash group, the later for `min`/`max`); the stored totals and images do not say which row's representation a group
+should show. The display-scale and payload lanes are stored so a later version can return the representation of the first row of each group.
+`sum`/`avg` of an `interval` need the three components added separately (PostgreSQL adds month, day and time apart), which the canonical total does
+not give. Money is the cheap next step (its leaf is an `int64` with no ties): `min`/`max`/`sum`/`GROUP BY` need the type in the executor's operator and
+function tables. A wide column in the index never stops the pushdown of the other columns of a query.
 
 ## 9. Tests
 
 - `tools/colwide/test.c`: the portable value code against a reference (a decimal-text big-number reference and `__int128`), the image order
   against decimal comparison for random and adversarial pairs (carry-over zeros, 10^k boundaries, odd digit counts, signs, the exponent
-  limits), decode of arbitrary bytes, built sanitized (`scripts/fuzz.sh colwide`).
-- `test/sql/col_index_wide.sql` (`col_index_money`, `col_index_interval`, ...): build, `sift.col_verify`, predicates against the heap for every
-  operator, NULL and NaN rows, constants outside the range, the write buffer, promotion, merge, VACUUM, `REINDEX`.
-- `test/sql/col_format6.sql`: a 3.2 index of old types still writes minor 3 or 4; an index with a wide leaf writes minor 6; both read side by side;
-  `sift.col_format_minor` bounds.
-- `test/col/fixtures/w_*.sql`: coldiff against the normal plan for every shape of section 8, with the traps of section 4 (NaN, precision 38
-  boundary, 39-digit constants, huge scale, negative scale, negative zero, nulls, ties, interval normalization, money overflow).
+  limits), decode of arbitrary bytes, built sanitized (`scripts/fuzz.sh colwide`, also in `scripts/ci.sh quick`).
+- `test/sql/col_index_wide.sql`: the column source against the heap for every operator on every type, NULL and NaN rows, constants beyond the
+  range, zone pruning of the lane pair, the values read back, the write buffer, promotion, merge, VACUUM, `REINDEX`, `sift.col_verify`.
+- `test/sql/col_format6.sql`: an index of the old types still writes minor 3 or 4 whatever the type of its table's other columns; an index with a
+  wide leaf writes minor 6 (and refuses `sift.col_format_minor = 6`); minors side by side, merge, REINDEX.
+- `test/sql/col_agg_wide.sql`: SiftAgg with and without the pushdown for every shape of section 8: constants of other scales, beyond the range,
+  NaN and the infinities, NULL and empty lists, parameters of a generic plan, the write buffer, updates, merge, parallel workers; and the shapes
+  that must keep the normal plan.
+- `test/col/fixtures/w_*.sql` (table `t_wide`): coldiff against the normal plan with the traps of section 4 (NaN, the precision 38 boundary, 39 and
+  400 digit values, huge and negative scales, NULLs, ties of scale and of interval spelling, money extremes, infinite intervals, parameters).
 - Interval ordering was checked on a live server (the facts of section 2.3, and the extreme totals `2147483647 months 2147483647 days
   9223372036854775807 us` against `... 2147483646 days ...`), not only read from source.
 
@@ -172,5 +191,5 @@ The implementation status of each cell is in the commit history and in `docs/cov
 - `SiftColType` tags 15 (`MONEY`) and 16 (`INTERVAL`); `SiftColDefDisk` bytes 14 and 15 are `lanes` and `lane`. The schema hash is over that
   serialization, so an old leaf list hashes as before.
 - The metapage and the BM25 minor do not change.
-- Upgrade tests: `test/sql/col_format6.sql` (side by side, merge, REINDEX), and the `extension_lifecycle.sh` upgrade path with an index of each
-  kind built before and after `ALTER EXTENSION ... UPDATE`.
+- Upgrade tests: `test/sql/col_format6.sql` (side by side, merge, REINDEX). The extension script does not change (the access method and operator
+  class are the 3.1 ones), so `ALTER EXTENSION ... UPDATE` needs no step; an index of the old types built before is read as before.
