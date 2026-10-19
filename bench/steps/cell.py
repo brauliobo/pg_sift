@@ -23,13 +23,23 @@ chunk is sized from the error so far (the error shrinks with the square root of 
            distance between the order statistics n/2 -+ sqrt(n)/2 (the 68% interval of the median). Prints: p50, p95, stderr of p50, n,
            seconds. n counts the transactions kept.
 
+    python3 -I cell.py batch PLAN OUT [--rse X] [--min-time S] [--max-time S] [--min-n N] [--seed N] [--timeout S] [--retries N]
+
+batch is the single-client latency cell of a Postgres engine without pgbench: one process opens a connection per (port, database) once and runs every cell of PLAN (one
+`id<TAB>port<TAB>database<TAB>script` per line, in that order; script is a pgbench file with \\set NAME random(A, B), statements and \\gset) in a tight loop through libpq (ctypes),
+the transaction latency is the same as pgbench's (from the first statement sent to the last result), seeded alike. A cell stops by the rule above, checked every ~20 ms of
+work, so there is no process start, connection or log file per cell. Its OUT line is `id<TAB>p50<TAB>p95<TAB>se of p50<TAB>n<TAB>seconds<TAB>noisy`; noisy is 1 when the host's
+CPU or IO pressure stall time (/proc/pressure) over the window was above SIFT_QUIET_MAX percent (default 10): such cells are measured again after the batch, up to --retries
+times, and stay 1 only when the last attempt was noisy too. Outliers are not removed: p50 and p95 are order statistics.
+
 --hint FILE remembers the rate of the cell; the next round of the same cell needs no first chunk to size the others. A failed pgbench
 prints 0 (qps) or nan (latency) like before, its error on stderr.
 """
-import argparse, math, os, shutil, subprocess, sys, tempfile, time
+import argparse, ctypes, ctypes.util, math, os, random, re, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import mean, sem  # noqa: E402  (steps/stats.py)
+import benchlib  # noqa: E402  (steps/benchlib.py: the exit status of an interrupted run)
 
 FEW = 10          # transactions per client that make a chunk worth a dropped first transaction and a count instead of seconds
 MAX_CHUNKS = 12
@@ -167,7 +177,147 @@ def next_chunk(cell, a):
     return '-t', max(1, math.ceil(each)) + warm, warm
 
 
+# --- batch: the persistent libpq driver of the single-client latency cells
+LIBPQ = (('PQconnectdb', ctypes.c_void_p, [ctypes.c_char_p]), ('PQstatus', ctypes.c_int, [ctypes.c_void_p]), ('PQerrorMessage', ctypes.c_char_p, [ctypes.c_void_p]),
+         ('PQexec', ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_char_p]), ('PQresultStatus', ctypes.c_int, [ctypes.c_void_p]),
+         ('PQresultErrorMessage', ctypes.c_char_p, [ctypes.c_void_p]), ('PQnfields', ctypes.c_int, [ctypes.c_void_p]), ('PQntuples', ctypes.c_int, [ctypes.c_void_p]),
+         ('PQfname', ctypes.c_char_p, [ctypes.c_void_p, ctypes.c_int]), ('PQgetvalue', ctypes.c_char_p, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
+         ('PQclear', None, [ctypes.c_void_p]), ('PQfinish', None, [ctypes.c_void_p]))
+COMMAND_OK, TUPLES_OK = 1, 2
+
+
+def libpq():
+    lib = ctypes.CDLL(ctypes.util.find_library('pq') or 'libpq.so.5')
+    for name, res, args in LIBPQ:
+        getattr(lib, name).restype, getattr(lib, name).argtypes = res, args
+    return lib
+
+
+VARIABLE = re.compile(r'(?<!:):([A-Za-z_]\w*)')
+
+
+def parse_script(text):
+    """a pgbench script as steps: ('set', name, lo, hi) for `\\set name random(lo, hi)`, ('sql', parts, gset) for a statement, gset when it ends in \\gset; parts alternates the text of the
+    statement (bytes) and the names of its :variables (str), so that a transaction only joins them"""
+    steps, buf = [], []
+
+    def statement(lines, gset):
+        pieces = VARIABLE.split('\n'.join(lines))
+        steps.append(('sql', [p.encode() if i % 2 == 0 else p for i, p in enumerate(pieces)], gset))
+    for line in text.splitlines():
+        s = line.strip()
+        if m := re.fullmatch(r'\\set\s+(\w+)\s+random\(\s*(\d+)\s*,\s*(\d+)\s*\)', s):
+            steps.append(('set', m[1], int(m[2]), int(m[3])))
+        elif s.endswith('\\gset'):
+            statement(buf + [s[:-5].rstrip()], True); buf = []
+        elif s:
+            buf.append(s)
+            if s.endswith(';'):
+                statement(buf[:-1] + [buf[-1][:-1]], False); buf = []
+    if buf:
+        raise ValueError(f'statement without a terminating ; or \\gset: {buf[0][:60]}')
+    return steps
+
+
+def expand(parts, values):
+    """the statement with :name replaced by the value of the variable (a name that is not set, and a cast ::type, stay as they are), what pgbench does"""
+    return b''.join(p if p.__class__ is bytes else values.get(p) or b':' + p.encode() for p in parts)
+
+
+class Connection:
+    def __init__(self, lib, conninfo):
+        self.lib, self.handle = lib, lib.PQconnectdb(conninfo.encode())
+        if lib.PQstatus(self.handle):
+            raise RuntimeError(lib.PQerrorMessage(self.handle).decode().strip())
+
+    def run(self, sql, gset=False):
+        """the statement through the simple protocol; the first row's columns as {name: bytes} when gset"""
+        lib = self.lib
+        res = lib.PQexec(self.handle, sql)
+        try:
+            if lib.PQresultStatus(res) not in (COMMAND_OK, TUPLES_OK):
+                raise RuntimeError(lib.PQresultErrorMessage(res).decode().strip().splitlines()[0])
+            if gset and lib.PQntuples(res):
+                return {lib.PQfname(res, i).decode(): lib.PQgetvalue(res, 0, i) for i in range(lib.PQnfields(res))}
+        finally:
+            lib.PQclear(res)
+        return None
+
+    def close(self):
+        self.lib.PQfinish(self.handle)
+
+
+def transaction(conn, steps, rng, values):
+    """seconds of one execution of the script: from the first statement sent to the last result"""
+    t = time.perf_counter()
+    for kind, a, b, *c in steps:
+        if kind == 'set':
+            values[a] = b'%d' % rng.randint(b, c[0])
+        elif got := conn.run(expand(a, values), b):
+            values.update(got)
+    return time.perf_counter() - t
+
+
+def pressure():
+    """(cpu, io) microseconds of `some` stall time so far and the monotonic time, from /proc/pressure"""
+    def total(name):
+        with open(f'/proc/pressure/{name}') as f:
+            return int(f.readline().rsplit('total=', 1)[1])
+    return total('cpu'), total('io'), time.monotonic()
+
+
+def noisy(before, after, limit):
+    """whether the host stalled on CPU or IO for more than `limit` percent of the window (Pressure Stall Information, `some`)"""
+    wall = (after[2] - before[2]) * 1e6
+    return wall > 0 and max(after[0] - before[0], after[1] - before[1]) / wall * 100 > limit
+
+
+def measure(conn, steps, a, seed):
+    """(cell, noisy) of one cell on an open connection"""
+    rng, values, cell = random.Random(seed), {}, Cell('latency', 1)
+    for _ in range(3):
+        transaction(conn, steps, rng, values)   # the statement's first executions: plan and caches
+    before, t0, check = pressure(), time.monotonic(), 1
+    while True:
+        cell.lat += [transaction(conn, steps, rng, values) for _ in range(check)]
+        elapsed = time.monotonic() - t0
+        if elapsed >= a.max_time * 4 or (cell.n >= a.min_n and (elapsed >= a.max_time or (elapsed >= a.min_time and cell.rel_se() <= a.rse))):
+            break
+        check = max(1, int(0.02 / max(mean(cell.lat), 1e-6)))   # about 20 ms of work between two looks at the error
+    cell.wall = time.monotonic() - t0
+    return cell, noisy(before, pressure(), float(os.environ.get('SIFT_QUIET_MAX', 10)))
+
+
+def batch(argv):
+    p = argparse.ArgumentParser(prog='cell.py batch')
+    p.add_argument('plan'), p.add_argument('out')
+    p.add_argument('--rse', type=float, default=0.05), p.add_argument('--min-time', type=float, default=0.25), p.add_argument('--max-time', type=float, default=2.0)
+    p.add_argument('--min-n', type=int, default=3), p.add_argument('--seed', type=int, default=7), p.add_argument('--timeout', default='120s'), p.add_argument('--retries', type=int, default=2)
+    a = p.parse_args(argv)
+    benchlib.resumable()
+    os.environ['PGOPTIONS'] = f'-c statement_timeout={a.timeout}'
+    cells = [l.rstrip('\n').split('\t') for l in open(a.plan) if l.strip()]
+    scripts, lib, conns, done = {c[0]: parse_script(open(c[3]).read()) for c in cells}, libpq(), {}, {}
+    try:
+        for attempt in range(1 + a.retries):
+            for id, port, db, _ in [c for c in cells if attempt == 0 or done[c[0]][1]]:
+                try:
+                    if (port, db) not in conns:
+                        conns[port, db] = Connection(lib, f'port={port} dbname={db} application_name=sift-cell')
+                    done[id] = measure(conns[port, db], scripts[id], a, a.seed)
+                except RuntimeError as e:
+                    print(f'{id}: {e}', file=sys.stderr)
+                    done[id] = (None, False)
+    finally:
+        for c in conns.values():
+            c.close()
+    row = lambda id, cell, noise: '\t'.join([id, *(['nan', 'nan', 'NA', '0', '0'] if cell is None else
+                                                    [f'{cell.p50() * 1e3:.3f}', f'{cell.p95() * 1e3:.3f}', f'{cell.se_p50() * 1e3:.4f}', str(cell.n), f'{cell.wall:.2f}']), str(int(noise))]) + '\n'
+    benchlib.write_text(a.out, ''.join(row(id, *done[id]) for id, *_ in cells))   # all or nothing: an interrupted batch leaves no file, the round is measured again
+
 def main():
+    if sys.argv[1:2] == ['batch']:
+        return batch(sys.argv[2:])
     p = argparse.ArgumentParser()
     p.add_argument('mode', choices=['qps', 'latency'])
     p.add_argument('--rse', type=float, default=0.05)
@@ -209,4 +359,5 @@ def main():
         print(f'{cell.p50() * 1e3:.3f}\t{cell.p95() * 1e3:.3f}\t{cell.se_p50() * 1e3:.4f}\t{cell.n}\t{wall:.2f}')
 
 
-main()
+if __name__ == '__main__':
+    main()

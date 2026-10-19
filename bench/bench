@@ -6,6 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 STEPS=$HERE/steps
 REPO=$(dirname "$HERE")
+. "$HERE/presets.env"   # the sizes of a pass (smoke, quick, standard, full)
 
 usage() {
   cat <<'EOF'
@@ -53,6 +54,9 @@ Commands
   store      the store benchmark, for everyone: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift,
              Citus (columnar, one node), Elasticsearch and ClickHouse in docker containers with equal limits (the same memory cap, the same CPU quota and the same thread budget for every engine,
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
+  resume     `resume [ID]`: continue the unfinished run (the latest, or ID) from what is done: results of the same key are kept, the rest is measured; exit status 75 means a run was interrupted
+  compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
+  final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`; docs/BENCHMARKS.md, "Run time")
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
 
@@ -120,16 +124,24 @@ Options (not every option applies to every command)
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
                     sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
                     to docs/results); SIFT_TMP, SIFT_PORT
-  store options     --sizes N,N (orders, default 1000000,10000000), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the
-                    updates, default 3), --cpus-list N,N (the budgets the questions are timed at, each a result set; default 1,3, or just N when --cpus is given),
-                    --memory SIZE (limit of every container, default 8g), --runs N (7),
-                    --cold-runs N (3, 0 = no cold runs), --engines pg,sift,sift_table,es,es_cached,ch,citus, --queries IDS (01..10 or names), --docs, --out DIR,
-                    --quick (1M orders, 3 runs, no cold runs, no updates: bench/analytics, a few minutes), --compression (the pg_sift compression
-                    variants none, encodings only, auto, lz4, zstd:3 as extra lanes and the size of every system with its other settings; docs/results/store-compression.json);
+  --size P          the size of a pass for every command: smoke | quick | standard (default, the release size) | full (bench/presets.env, `bench/bench --list`); it sets
+                    the orders and articles, runs, cold runs, update windows and rounds, and --docs is refused below standard
+  store options     --sizes N,N (orders, default the size's), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the updates, default 3),
+                    --cpus-list N,N (the budgets the questions are timed at, each a result set; default 1,3), --memory SIZE (limit of every container, default 8g), --runs N, --warmups N,
+                    --cold-runs N (0 = none, the server's memory emptied between runs), --restart-runs N (container restarted between runs), --cold-check Q,Q (restart against emptied, off), --rates R,R
+                    (update rates), --update-paths E,E (engines of the update table), --load-seconds N, --probes N, --engines pg,sift,sift_table,citus,es,es_cached,ch, --queries IDS (01..10 or names),
+                    --remeasure-all, --remeasure E,E, --no-cache, --cache-dir D, --cache-max-age DAYS (cells of Elasticsearch, ClickHouse and Citus come from the cache of cells unless one of these or a
+                    changed key), --parallel-engines N (independent engines at once on disjoint cpusets), --max-rerun N (NOISY cells measured again), --docs, --out DIR,
+                    --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; docs/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
+  final options     --stages store,compression,stats,gap,search, --budget MIN (default 25; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
+  --run-id ID       name the run (bench/out/run-ID); a directory that has a manifest is continued, results of the same key are kept (`bench/bench resume`)
+  --fail-fast, --keep-going   final: stop at the first failed stage, or (default) go on and list the failed ones; `resume` runs only those
   -h, --help        this text
+
+Exit status: 0 done, 1 failed, 3 a result differs from PostgreSQL's, 4 over the stage budget (BUDGET_STRICT=1), 75 interrupted (SIGINT/SIGTERM): `bench/bench resume` continues.
 
 report takes result directories as arguments: a run directory (default: bench/out/latest) or
 DATASET:TIER:DIR for a raw tables directory of steps/articles.sh (articles) or steps/places.sh (places).
@@ -175,7 +187,8 @@ Examples
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
   bench/bench store all --docs                         the store benchmark at 1M and 10M orders, then docs/results/store.json, README.md and docs/BENCHMARKS.md
   bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
-  bench/analytics                                      the quick store run (the same as store all --quick); `store compare A.json B.json` diffs two runs, `store gap` prints the gap tables
+  bench/bench store all --size quick                  the development loop; `compare A.json B.json` diffs two runs, `store gap` prints the gap tables
+  bench/bench final --dry-run                         the release pass: stages, budgets, total against 25 min
 EOF
 }
 
@@ -185,7 +198,8 @@ trap '[[ -z ${PEAK_PID:-} ]] || kill "$PEAK_PID" 2>/dev/null || true' EXIT   # t
 # --- options
 SLIM_DOCS=50000   # articles of the slim tier (the places are cities15000): bench/README.md says why this size
 a_scale='' a_orders='' a_stores='' a_cluster='' a_flat='' a_ch='' a_runs='' a_sets='' a_queries='' a_col_index='' a_base_gucs='' a_col_gucs='' a_col_plan='' a_timeout='' a_rows=''
-s_warmups='' s_sizes='' s_cpus='' s_cpus_list='' s_memory='' s_cold='' s_update_sizes='' s_quick='' s_compression=''
+s_warmups='' s_sizes='' s_cpus='' s_cpus_list='' s_memory='' s_cold='' s_update_sizes='' s_compression='' size='' dry='' list='' stages='' budget='' run_id='' keep_going=''
+ix=() s_restarts='' s_check='' s_rates='' s_paths='' s_parallel='' s_remeasure_all='' s_remeasure='' s_no_cache='' s_cache_dir='' s_cache_age='' s_max_rerun='' s_load_sec='' s_probes=''
 tier=slim dataset=all engines='' classes='' workloads='' clients='' workers='' duration='' rounds='' out='' docs='' merge='' build=1 fetch_data=1 all_clean='' ref='' run='' keep='' clean_cache='' clean_build=''
 rest=()
 parse() {
@@ -239,7 +253,28 @@ parse() {
       --cold-runs) s_cold=$2; shift ;;
       --warmups) s_warmups=$2; shift ;;
       --update-sizes) s_update_sizes=$2; shift ;;
-      --quick) s_quick=1 ;;
+      --size) size=$2; shift ;;
+      --restart-runs) s_restarts=$2; shift ;;
+      --cold-check) s_check=$2; shift ;;
+      --rates) s_rates=$2; shift ;;
+      --update-paths) s_paths=${2//,/ }; shift ;;
+      --parallel-engines) s_parallel=$2; shift ;;
+      --remeasure-all) s_remeasure_all=1 ;;
+      --remeasure) s_remeasure=$2; shift ;;
+      --no-cache) s_no_cache=1 ;;
+      --cache-dir) s_cache_dir=$2; shift ;;
+      --cache-max-age) s_cache_age=$2; shift ;;
+      --max-rerun) s_max_rerun=$2; shift ;;
+      --load-seconds) s_load_sec=$2; shift ;;
+      --probes) s_probes=$2; shift ;;
+      --target|--concurrent|--samples) ix+=("$1" "$2"); shift ;;   # interference
+      --run-id) run_id=$2; shift ;;
+      --fail-fast) keep_going=0 ;;
+      --keep-going) keep_going=1 ;;
+      --dry-run) dry=1 ;;
+      --list) list=1 ;;
+      --stages) stages=$2; shift ;;
+      --budget) budget=$2; shift ;;
       --compression) s_compression=1 ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown option $1 (bench/bench --help)" ;;
@@ -248,6 +283,11 @@ parse() {
     shift
   done
   [[ $tier != quick ]] || tier=slim   # the old name
+  if [[ -n $size ]]; then   # the size of the pass (bench/presets.env) also names the search tier
+    . "$HERE/presets.env"; preset "$size" || die "unknown size $size ($PRESETS)"
+    case $size in full) tier=full ;; *) tier=slim ;; esac
+    [[ -z $docs || $size == standard || $size == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $size"
+  fi
   case $tier in slim|ab|full) ;; *) die "unknown tier $tier (slim, ab or full)" ;; esac
   case $dataset in articles|places|all) ;; *) die "unknown dataset $dataset" ;; esac
   [[ -z $ref ]] || export SIFT_REF=$ref
@@ -279,6 +319,12 @@ tier_env() {
     ab) ;;
     full) step_mode=full ;;
   esac
+  if [[ -n $size ]]; then   # the preset's search settings; an option or a variable of the environment wins
+    export Q_DOCS=${Q_DOCS:-$P_DOCS} MINR=${MINR:-${P_ROUNDS%-*}} MAXR=${MAXR:-${P_ROUNDS#*-}} SECS=${SECS:-$P_SECS}
+    [[ $P_DOCS != ALL ]] || unset Q_DOCS
+    [[ -n $classes || -z $P_ART_CLASSES ]] || classes="$P_ART_CLASSES $P_PLACE_CLASSES"
+    [[ -n $workloads || -z $P_PLACE_WLS ]] || export WLS=$P_PLACE_WLS
+  fi
   [[ -z $rounds ]] || { export MINR=${rounds%-*} MAXR=${rounds#*-}; }
   [[ -z $duration ]] || export SECS=$duration
   [[ -z $clients ]] || export CLIENTS=$clients
@@ -287,12 +333,6 @@ tier_env() {
   case $tier in full) export TIER=F ;; *) export TIER=Q ;; esac
 }
 engine_default=DEFAULT_ENGINES   # the lib.sh list `selected` falls back to: DEFAULT_ENGINES, SUITE_ENGINES (suite), PAIR_ENGINES (regress)
-perf_lock() { # one run at a time on the machine: the run holds the lock
-  [[ -z ${PERF_LOCK_HELD:-} ]] || return 0
-  exec 8>>/tmp/sift-perf.lock
-  flock -n 8 || { echo "waiting for the perf lock (another benchmark is timing)"; flock 8; }
-  export PERF_LOCK_HELD=1
-}
 selected() { # the engines of --engines (default: those with default = yes)
   local e
   for e in ${engines:-${!engine_default}}; do
@@ -365,25 +405,58 @@ ready() { # the datasets are present
   done
 }
 
-new_out() {
-  OUT=${out:-$HERE/out/run-$(date -u +%Y%m%dT%H%M%SZ)}
+new_out() { # the run directory (--run-id ID or --out DIR names it, else a new one) and its manifest; a directory that has one is the run that `resume` continues
+  declare -F run_begin >/dev/null || load_lib
+  OUT=${out:-$HERE/out/run-${run_id:-$(date -u +%Y%m%dT%H%M%SZ)}}
   mkdir -p "$OUT" "$HERE/out"
   OUT=$(cd "$OUT" && pwd)
+  export BENCH_RUN_ID=${OUT##*/run-}
   ln -sfn "$OUT" "$HERE/out/latest"
   exec > >(tee -a "$OUT/bench.log") 2>&1
+  if run_alive "$OUT/.run" && [[ $(<"$OUT/.run/pid") != "$$" ]] && [[ $(cut -f1 "$OUT/.run/state") == running ]]; then die "run $BENCH_RUN_ID is running (pid $(<"$OUT/.run/pid"))"; fi
+  [[ ! -s $OUT/.run/argv ]] || echo "run $BENCH_RUN_ID: continuing (state $(cut -f1 "$OUT/.run/state" 2>/dev/null || echo unknown)), what finished with the same key is kept"
+  run_reclaim
+  local args=("${ARGV[@]}"); [[ " ${ARGV[*]} " == *" --run-id "* ]] || args+=(--run-id "$BENCH_RUN_ID")
+  run_begin "${args[@]}"
+}
+
+latest_unfinished() { # the manifest directory of the newest run that is not done
+  local x
+  # shellcheck disable=SC2045  # run directory names have no spaces; newest first
+  for x in $(ls -dt "$HERE"/out/run-*/.run 2>/dev/null); do [[ $(cut -f1 "$x/state" 2>/dev/null) != 'done' ]] && { echo "$x"; return; }; done
+}
+cmd_resume() { # [ID]: the unfinished run (the latest, or ID) with the command line it started with
+  local d argv
+  if [[ -n ${rest[0]:-} ]]; then d=$HERE/out/run-${rest[0]#run-}/.run; else d=$(latest_unfinished); fi
+  [[ -n $d && -s $d/argv ]] || die "no run to resume (bench/out/run-*/.run holds the unfinished ones)"
+  [[ $(cut -f1 "$d/state") != 'done' ]] || die "the run $(basename "$(dirname "$d")") is finished"
+  eval "argv=($(<"$d/argv"))"
+  echo "resuming ${argv[*]}"
+  exec "$HERE/bench" "${argv[@]}"
+}
+
+cmd_clean_run() { # --run-id ID: what that run started and nothing else: its process if it is still there, its containers and its run directory
+  local d=$HERE/out/run-$run_id pid
+  [[ -d $d ]] || die "no run $run_id (bench/out/run-*)"
+  if [[ -s $d/.run/pid ]]; then pid=$(<"$d/.run/pid"); [[ ! -d /proc/$pid ]] || [[ $(tr '\0' ' ' <"/proc/$pid/cmdline") != *bench* ]] || { kill_tree "$pid"; echo "stopped $pid"; }; fi
+  run_stop "$run_id"
+  run_containers "$run_id" | xargs -r docker rm -fv >/dev/null
+  rm -rf "$d"
+  echo "removed the run $run_id (its containers and $d); datasets, data volumes and the caches stay (clean --all)"
 }
 
 measure() { # [cold]: every selected dataset at the tier into $OUT, after the machine description
-  local d t0=$SECONDS suffix=${1:+-cold} e
-  perf_lock
+  local d t0=$SECONDS suffix=${1:+-cold} e key
+  perf_hold
   [[ -n ${PEAK_PID:-} ]] || peak_start
   [[ -n ${1:-} && -s $OUT/machine.txt ]] || "$STEPS/machine.sh" >"$OUT/machine.txt"
   e=$(selected)
   for d in $datasets; do
     echo; echo "=== $d, tier $tier${1:+, cold cache} ($(( SECONDS - t0 )) s)"
+    key=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$d $tier ${1:-} $e $(class_set "$d") ${WLS:-} ${Q_DOCS:-} ${MINR:-} ${MAXR:-} ${SECS:-} ${RSE:-} ${MIN_TIME:-} ${MIN_N:-} ${CLIENTS:-}")
     case $d in
-      articles) ENGINES=$e CLASSES=$(class_set articles) DEST=$OUT/articles-$tier$suffix "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
-      places)   ENGINES=$e CLASSES=$(class_set places) DEST=$OUT/places-$tier$suffix "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
+      articles) stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set articles)" DEST="$OUT/articles-$tier$suffix" "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
+      places)   stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set places)" DEST="$OUT/places-$tier$suffix" "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
   done
   echo "wall time of the measurements $(( SECONDS - t0 )) s, at end $(cat "$OUT"/*/noisy.txt 2>/dev/null | wc -l) NOISY batches (noisy.txt of each table directory), $(quiet_report 2>&1)" | tee -a "$OUT/machine.txt"
@@ -461,9 +534,9 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
   for c in A_SCALE A_ORDERS A_STORES A_ROWS A_TIMEOUT; do [[ -n ${!c} ]] || unset "$c"; done
   case $sub in
     run|clickbench)   # the load needs no lock: the corpus is there when the lock is taken
-      new_out; export OUT
+      load_lib; new_out; export OUT
       "$STEPS/analytics.sh" "$([[ $sub == run ]] && echo setup || echo clickbench-setup)"
-      perf_lock; "$STEPS/analytics.sh" "$sub"
+      perf_hold; "$STEPS/analytics.sh" "$sub"
       [[ -z $docs ]] || { cp "$OUT/analytics.json" "$REPO/docs/results/${sub/run/analytics}.json"; echo "written: $REPO/docs/results/${sub/run/analytics}.json"; } ;;
     report) "$STEPS/analytics.sh" report "${rest[1]:-}" ;;
     *) "$STEPS/analytics.sh" "$sub" ;;
@@ -472,18 +545,19 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
 
 cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
   local sub=${rest[0]:-all}
-  case $sub in all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|setup|run|cold|updates|stats|report|merge|clean|table|gap|compare]" ;; esac
+  case $sub in all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
     engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
   fi
-  if [[ $s_quick ]]; then   # 1M orders, 3 runs, no cold runs, no updates: the same queries and the same equality checks, a few minutes
-    : "${s_sizes:=1000000}" "${a_runs:=3}" "${s_cold:=0}" "${s_update_sizes:=none}"
-  fi
   for c in docker psql python3 flock ss; do command -v "$c" >/dev/null || die "missing prerequisite: $c"; done
-  export S_SIZES=$s_sizes S_CPUS=$s_cpus S_CPUS_LIST=$s_cpus_list S_MEMORY=$s_memory S_RUNS=$a_runs S_COLD=$s_cold S_WARMUPS=$s_warmups S_ENGINES=${engines// /,} S_QUERIES=$a_queries S_DOCS=$docs S_UPDATE_SIZES=$s_update_sizes S_COMPRESSION=$s_compression S_PORT=${STORE_PORT_BASE:-} S_NAME=${STORE_NAME:-}
-  for c in S_SIZES S_CPUS S_CPUS_LIST S_MEMORY S_RUNS S_WARMUPS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME; do [[ -n ${!c} ]] || unset "$c"; done
-  case $sub in all|setup|run|cold|updates|stats) new_out; export OUT ;; esac
-  "$STEPS/store.sh" "$sub" "${rest[@]:1}"
+  export S_PRESET=${size:-$DEFAULT_PRESET} S_SIZES=$s_sizes S_CPUS=$s_cpus S_CPUS_LIST=$s_cpus_list S_MEMORY=$s_memory S_RUNS=$a_runs S_COLD=$s_cold S_WARMUPS=$s_warmups S_ENGINES=${engines// /,} \
+         S_QUERIES=$a_queries S_DOCS=$docs S_UPDATE_SIZES=$s_update_sizes S_COMPRESSION=$s_compression S_RESTARTS=$s_restarts S_CHECK=$s_check S_RATES=$s_rates S_UPDATE_PATHS=$s_paths \
+         S_PARALLEL=$s_parallel S_REMEASURE_ALL=$s_remeasure_all S_REMEASURE=$s_remeasure S_NO_CACHE=$s_no_cache S_CACHE_DIR=$s_cache_dir S_CACHE_MAX_AGE=$s_cache_age S_MAX_RERUN=$s_max_rerun \
+         S_LOAD_SEC=$s_load_sec S_PROBES=$s_probes
+  for c in S_SIZES S_CPUS S_CPUS_LIST S_MEMORY S_RUNS S_WARMUPS S_COLD S_UPDATE_SIZES S_COMPRESSION S_PORT S_NAME S_RESTARTS S_CHECK S_RATES S_UPDATE_PATHS S_PARALLEL S_REMEASURE_ALL S_REMEASURE \
+           S_NO_CACHE S_CACHE_DIR S_CACHE_MAX_AGE S_MAX_RERUN S_LOAD_SEC S_PROBES; do [[ -n ${!c:-} ]] || unset "$c"; done
+  case $sub in all|plan|setup|run|cold|updates|interference|stats) new_out; export OUT ;; esac
+  "$STEPS/store.sh" "$sub" "${rest[@]:1}" ${ix[@]+"${ix[@]}"}
 }
 
 cmd_regress() { # [--run] [DIR|results.tsv ...]
@@ -565,12 +639,29 @@ cmd_workload() { # ENGINE [CLASS...]
 
 cmd_workers() { datasets=articles; cluster_up; "$STEPS/build.sh" "${rest[@]}"; }
 
-cmd_shred() { perf_lock; "$STEPS/shred.sh"; }
+cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
+cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
+  local n
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store compare final resume clean\n'
+  printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
+  for n in $PRESETS; do
+    preset "$n"
+    printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' "$n" "$P_ROWS" "$P_DOCS" "$P_RUNS" "$P_COLD" "$P_RATES" "$(wc -w <<<"$P_UPDATE_ENGINES")" \
+      "$(( P_MIN_STORE_CACHED + ${P_MIN_COMPRESSION:-0} + ${P_MIN_STATS:-0} + ${P_MIN_GAP:-0} + P_MIN_SEARCH ))" "$(( P_MIN_SETUP + P_MIN_WARM + P_MIN_COLD + P_MIN_UPDATES ))" "$P_MIN_SEARCH"
+  done
+  printf 'default size: %s; final stages: store compression stats gap search (bench/bench final --dry-run)\n' "$DEFAULT_PRESET"
+}
+
+ARGV=("$@")
 cmd=${1:-}
 [[ -n $cmd ]] || { usage; exit 1; }
+[[ $cmd != --list ]] || { cmd_list; exit 0; }
 shift || true
-case $cmd in -h|--help|help) usage; exit 0 ;; esac
+case $cmd in
+  -h|--help|help) usage; exit 0 ;;
+  final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
+esac
 parse "$@"
 case $cmd in
   setup) cmd_setup ;;
@@ -587,10 +678,12 @@ case $cmd in
   shred) cmd_shred ;;
   remote) "$STEPS/remote.sh" "${rest[@]}" ;;
   machine) "$STEPS/machine.sh" ;;
-  clean) load_lib; cmd_clean ;;
+  clean) load_lib; if [[ -n $run_id ]]; then cmd_clean_run; else cmd_clean; fi ;;
+  resume) cmd_resume ;;
   du) load_lib; cmd_du ;;
   readme) cmd_readme ;;
   analytics) cmd_analytics ;;
   store) cmd_store ;;
+  compare) rest=(compare "${rest[@]}"); cmd_store ;;   # compare A.json B.json: the per-cell deltas with their intervals
   *) echo "bench: unknown command $cmd" >&2; usage; exit 1 ;;
 esac
