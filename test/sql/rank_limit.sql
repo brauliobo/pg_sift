@@ -44,7 +44,7 @@ SELECT count(*) AS offset_7e7 FROM
 SELECT count(*) AS offset_big_limit FROM
 	(SELECT id FROM rl WHERE body @@> 'common' ORDER BY sift.score(ctid) DESC, id OFFSET 19990 LIMIT 100000000) t;
 
--- a ranked scan drained without a LIMIT grows its search by 4x until it has every match
+-- a ranked scan drained without a LIMIT ranks every match in one search
 SELECT count(*) = (SELECT count(*) FROM rl_ref) AS drained, md5(string_agg(id::text, ',' ORDER BY pos)) = (SELECT md5(string_agg(id::text, ',' ORDER BY pos)) FROM rl_ref) AS same_order
 FROM (SELECT row_number() OVER () AS pos, id FROM
 	(SELECT id FROM rl WHERE body @@> 'common w5 OR x3' ORDER BY sift.score(ctid) DESC, id OFFSET 0) t) t;

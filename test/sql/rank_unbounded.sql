@@ -1,0 +1,62 @@
+-- A ranked scan that nothing limits ranks every match in one search, and one that a LIMIT alone limits
+-- (no ORDER BY between them) ranks for that limit. Without a limit hint the scan searched for 1024 hits, then 16 times
+-- as many, then 4 times as many, each from scratch, until a search held every match: its heap checks (a visibility check
+-- for each candidate of each search, and one more for each row handed up) grew to a multiple of the matches. A scan
+-- under a Sort is drained whatever the LIMIT above the Sort says, and a generic plan reads its LIMIT when it starts.
+--
+-- The check is the heap checks of EXPLAIN ANALYZE against the 30000 matches: a verification of each and a fetch of each
+-- row handed up make 2 per match; a search that holds a few hits makes a few hundred.
+CREATE EXTENSION pg_sift;
+
+CREATE FUNCTION heap_checks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	plan json;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q INTO plan;
+	RETURN coalesce((SELECT sum((n ->> 'Heap Checks')::bigint)
+		FROM jsonb_path_query(plan::jsonb, 'strict $.** ? (exists(@."Heap Checks"))') n), 0);
+END $$;
+
+CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Limit Hint: ' THEN RETURN substring(l from 'Limit Hint: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN 0;
+END $$;
+
+CREATE TABLE ub (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+INSERT INTO ub SELECT i, 'common w' || i % 100 || ' x' || i % 7 FROM generate_series(1, 30000) i;
+CREATE INDEX ub_idx ON ub USING sift (body);
+ANALYZE ub;
+
+SELECT count(*) AS matches FROM ub WHERE body @@> 'common';
+
+-- no limit: one search ranks the 30000 matches
+SELECT heap_checks($$SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' ORDER BY sift.score(ctid) DESC$$) <= 63000 AS drained_one_search;
+
+-- a Sort above the scan (here the lowest score first, which the scan does not deliver) drains it, with or without a LIMIT: the scan does not hint the limit
+SELECT heap_checks($$SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' ORDER BY id DESC OFFSET 0$$) <= 63000 AS sort_drains;
+SELECT limit_hint($$SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' ORDER BY sift.score(ctid) LIMIT 5$$) AS hint_under_sort;
+
+-- a LIMIT with nothing between it and the scan is the scan's limit hint
+SELECT limit_hint($$SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' LIMIT 5$$) AS hint_limit;
+SELECT heap_checks($$SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' LIMIT 5$$) <= 500 AS limit_few_checks;
+
+-- the rows it hands up are the best ones
+SELECT array_agg(s ORDER BY s DESC) = (SELECT array_agg(s) FROM (SELECT sift.score(ctid) AS s FROM ub WHERE body @@> 'common w5 OR x3' ORDER BY 1 DESC LIMIT 5) t) AS limit_best_rows
+FROM (SELECT sift.score(ctid) AS s FROM ub WHERE body @@> 'common w5 OR x3' LIMIT 5) t;
+
+-- generic plans read the LIMIT when the scan starts: the one without a Sort hints it, the one under a Sort does not
+SET plan_cache_mode = force_generic_plan;
+PREPARE lim_plain(bigint) AS SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' LIMIT $1;
+PREPARE lim_sorted(bigint) AS SELECT id, sift.score(ctid) FROM ub WHERE body @@> 'common' ORDER BY sift.score(ctid) LIMIT $1;
+SELECT heap_checks('EXECUTE lim_plain(5)') <= 500 AS generic_limit_few_checks;
+SELECT heap_checks('EXECUTE lim_sorted(5)') <= 63000 AS generic_sorted_one_search;
+RESET plan_cache_mode;
+
+DROP FUNCTION heap_checks(text), limit_hint(text);
+DROP TABLE ub;
+DROP EXTENSION pg_sift;

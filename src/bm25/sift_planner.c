@@ -319,6 +319,16 @@ sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk)
 	return false;
 }
 
+/*
+ * The rows the query takes from the scan before it stops, 0 when it drains the scan: the limit, unless a Sort
+ * sits between them (the scan is not what the first sort key asks for)
+ */
+static int64
+scan_limit(PlannerInfo *root, bool ranked)
+{
+	return root->limit_tuples > 0 && (ranked || root->query_pathkeys == NIL) ? (int64) ceil(root->limit_tuples) : 0;
+}
+
 /* Matching documents, the index work, and what verifying a candidate costs per heap tuple */
 typedef struct ScanCost
 {
@@ -978,7 +988,7 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	}
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 	{
-		int64		k = root->limit_tuples > 0 ? (int64) ceil(root->limit_tuples) : 0;
+		int64		k = scan_limit(root, ranked);
 		SiftScanMode mode = only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
 		List	   *pathkeys = ranked ? list_make1(pk) : NIL;
 		/*
@@ -996,16 +1006,16 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 			filter = sift_filter_bitmap_path(root, rel);
 			filter_looked = true;
 		}
-		scan_est(root, rel, &c, mode, ranked ? k : 0, filter, &est);
+		scan_est(root, rel, &c, mode, k, filter, &est);
 		if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
 		{
 			unknown_query_path(root, rel, &c, &est, k, pathkeys, filter, parallel, &best, &best_partial);
 			continue;
 		}
 		if (filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
-			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, filter, false, parallel, only_best, &best, &best_partial);
 		if (filter)
-			add_scan_paths(root, rel, &c, &est, mode, ranked ? k : 0, pathkeys, filter, true, false, only_best, &best, &best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, filter, true, false, only_best, &best, &best_partial);
 	}
 	if (best && only_best)
 	{
@@ -1222,6 +1232,7 @@ limit_params(PlannerInfo *root, CustomPath *best)
 
 	if (DatumGetInt64(list_nth_node(Const, best->custom_private, SIFT_PRIV_K)->constvalue) > 0 ||
 		DatumGetInt32(list_nth_node(Const, best->custom_private, SIFT_PRIV_MODE)->constvalue) != SIFT_MODE_RANKED ||
+		(best->path.pathkeys == NIL && root->query_pathkeys != NIL) ||
 		q->limitCount == NULL || q->limitOption != LIMIT_OPTION_COUNT || q->groupClause || q->groupingSets ||
 		q->distinctClause || q->hasAggs || q->hasWindowFuncs || q->havingQual || q->hasTargetSRFs)
 		return NIL;
