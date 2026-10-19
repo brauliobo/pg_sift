@@ -190,39 +190,48 @@ if [[ $what == check ]]; then   # per engine and workload: the oracle's agreemen
   exit 0
 fi
 
-cell() { # WORKLOAD CLASS ENGINE -> "p50 p95 stderr-of-p50 transactions seconds" (ms, tab separated) of single-client transactions: one primary-key lookup of the query text plus the statement
-  local e=$3 f=$ROOT/places/$3.sql
-  if [[ -n ${EXT[$e]:-} ]]; then   # an engine outside Postgres: the request file of the workload and class, one client over HTTP
-    [[ -f $ROOT/places/$e/$1.$2.q ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }
-    RUN=$ROOT/places/$e lane_run "$e" xe "$e" x_cell_se latency "$ROOT/places/$e/$1.$2.q"
-    return
-  fi
-  [[ -n $(stmt "$1" "$e") ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }   # the engine has no such query
-  { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "$(base "$2")"; echo "$(stmt "$1" "$e");"; } >"$f"
-  PGOPTIONS="-c statement_timeout=${TIMEOUT:-120s}" lane_run "$e" python3 -I "$STEPS/cell.py" latency --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
-    --min-n "$MIN_N" --hint "$ROOT/places/$e.$1.$2.hint" --tmp "$ROOT/places" -- -n -f "$f" -c 1 "$(edb "$e")"
+declare -A BASE
+script() { # WORKLOAD CLASS ENGINE: the pgbench script of the cell (one primary-key lookup of the query text plus the statement), its path on stdout; empty when the engine has no such query
+  local e=$3 f=$ROOT/places/$3.$1.$2.sql
+  [[ -n $(stmt "$1" "$e") ]] || return 0
+  [[ -n ${BASE[$2]:-} ]] || BASE[$2]=$(base "$2")
+  { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "${BASE[$2]}"; echo "$(stmt "$1" "$e");"; } >"$f"
+  echo "$f"
 }
-group() { # WORKLOAD CLASS ENGINES...: the cell of every engine, one after the other
-  local wl=$1 c=$2 e; shift 2
-  batch "places $wl $c"
-  for e in "$@"; do cell "$wl" "$c" "$e" >"$ROOT/places/$e.val"; done
+ext_cell() { # WORKLOAD CLASS ENGINE: an engine outside Postgres: the request file of the workload and class, one client over HTTP -> "p50 p95 stderr-of-p50 transactions seconds"
+  [[ -f $ROOT/places/$3/$1.$2.q ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }
+  RUN=$ROOT/places/$3 lane_run "$3" xe "$3" x_cell_se latency "$ROOT/places/$3/$1.$2.q"
 }
-printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
-stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
 cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR rounds, then those whose p50 is above the error target
   # shellcheck disable=SC2086  # one argument per engine
   if (( $1 <= MINR )); then rotated "$1" $ENGINES
   else rse_cells "$DEST/cells.tsv" 3,4,5 6 8 | awk -F'\t' -v w="$2" -v c="$3" '$1 == w && $2 == c {print $3}'; fi
 }
+printf 'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\n' >"$DEST/cells.tsv"
+stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
+# a round: the Postgres cells of every group go to one plan that steps/cell.py batch runs in one process on connections kept open (no process, connection or log file per cell); the
+# cells of the engines outside Postgres follow. A cell that ran in a window the host stalled in is measured again by the batch (its noise sentinel), not waited for beforehand.
 round() {
-  local wl c e engs
+  local plan=$ROOT/places/plan.tsv out=$ROOT/places/plan.out wl c e f engs cells=() id v
+  : >"$plan"; : >"$out"; : >"$out.pg"
   for wl in $WLS; do for c in $CLASSES; do
     engs=$(cell_engines "$1" "$wl" "$c" | tr '\n' ' ')
-    [[ -n $engs ]] || continue
-    # shellcheck disable=SC2086  # one argument per engine
-    group "$wl" "$c" $engs
-    for e in $engs; do printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$(cat "$ROOT/places/$e.val")" >>"$DEST/cells.tsv"; done
+    for e in $engs; do
+      id=$wl.$c.$e; cells+=("$id")
+      if [[ -n ${EXT[$e]:-} ]]; then continue; fi
+      f=$(script "$wl" "$c" "$e")
+      if [[ -n $f ]]; then printf '%s\t%s\t%s\t%s\n' "$id" "${LANE_PORT[$e]}" "$(edb "$e")" "$f" >>"$plan"; else printf '%s\tNA\tNA\tNA\tNA\tNA\t0\n' "$id" >>"$out"; fi
+    done
   done; done
+  [[ ! -s $plan ]] || python3 -I "$STEPS/cell.py" batch "$plan" "$out.pg" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --timeout "${TIMEOUT:-120s}"
+  cat "$out.pg" >>"$out"
+  [[ -z ${EXT[*]:-} ]] || batch "places round $1: engines outside Postgres"
+  for id in "${cells[@]}"; do
+    IFS=. read -r wl c e <<<"$id"
+    if [[ -n ${EXT[$e]:-} ]]; then v=$(ext_cell "$wl" "$c" "$e")
+    else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; if ($7 == 1) noisy = 1} END {exit !noisy}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$v" >>"$DEST/cells.tsv"
+  done
 }
 log "start: $(quiet_report 2>&1)"
 rounds round
