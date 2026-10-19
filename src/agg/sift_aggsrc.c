@@ -127,13 +127,19 @@ sift_colsrc_can_types(Oid relam, bool index)
 {
 	const SiftSrcProvider *prov = provider_of(relam, index);
 
-	return prov != NULL && prov->filter_types != NULL && prov->tolerate_ovf != NULL;
+	return prov != NULL && prov->filter_types != NULL && prov->tolerate_ovf != NULL && prov->read_types != NULL;
 }
 
 bool
 sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	return src->prov->filter_types(src->impl, unit, leaf, types, bits);
+}
+
+void
+sift_colsrc_read_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint8 *tags)
+{
+	src->prov->read_types(src->impl, unit, leaf, tags);
 }
 
 void

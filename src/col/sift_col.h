@@ -107,7 +107,9 @@ typedef struct SiftColDef
 #define SIFT_COLTAG_OBJECT		4
 #define SIFT_COLTAG_ARRAY		5
 #define SIFT_COLTAG_NONE		6		/* the leaf's path leads to no value: an array sits where the path declares an object (jsonb_typeof of the path is NULL) */
-#define SIFT_COLTAG_MAX			6
+#define SIFT_COLTAG_JNULL		7		/* JSON null: a NULL slot that is not a missing key (never an overflow value); its jsonb_typeof is 'null' */
+#define SIFT_COLTAG_OVF_MAX		SIFT_COLTAG_NONE	/* the last tag an overflow value has */
+#define SIFT_COLTAG_MAX			7
 
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
@@ -121,8 +123,17 @@ typedef struct SiftColValue
 	uint32		len;
 	bool		isnull;
 	bool		overflow;		/* the value exists but the leaf cannot hold it (the shredder's OVERFLOW): stored as NULL and flagged; isnull is also set */
-	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it */
+	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it. Otherwise 0, or what the leaf's
+								 * own type does not say: SIFT_COLTAG_JNULL for a JSON null, the type of an astext leaf's number or boolean */
 } SiftColValue;
+
+/* The tags a slot can have: an overflow value a type (0: not known), a NULL slot a JSON null, a value a scalar kind */
+static inline bool
+sift_col_tag_valid(const SiftColValue *v)
+{
+	return v->tag == SIFT_COLTAG_UNKNOWN ||
+		(v->overflow ? v->tag <= SIFT_COLTAG_OVF_MAX : v->isnull ? v->tag == SIFT_COLTAG_JNULL : v->tag <= SIFT_COLTAG_BOOLEAN);
+}
 
 /*
  * One row to index, as ambuild, aminsert and the shredder produce it. val[id] is the value of a top level scalar leaf; for a GROUP leaf
@@ -425,12 +436,20 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
 
 /*
- * Narrows sel (rows of the unit) to those whose value of the top level leaf col has a JSON type in tagmask (bit t for SIFT_COLTAG_t):
- * a stored value has the type of the leaf (`stored`: that type is in the mask), an overflow value its tag.
- * *known is false when a row of sel overflowed without a tag, a value of a unit written before column format minor 4 (or by a writer
- * that did not know its type): its type is not known and sel is not a proper answer. Returns whether any row is left.
+ * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path: a stored value has
+ * the leaf's own type deftag (an astext leaf, mixed, holds the text of a string, a number or a boolean: STRING unless its chunk says
+ * otherwise), an overflow value the tag the chunk kept for it, a NULL slot SIFT_COLTAG_JNULL for a JSON null and SIFT_COLTAG_NONE
+ * (jsonb_typeof is NULL) for a missing key, and for a value that is no value at all.
+ *
+ * Narrows sel (rows of the unit) to those whose type is in tagmask (bit t for SIFT_COLTAG_t). *known is false when the chunk cannot say
+ * the type of a row of sel: an overflow value without a tag, a value of a unit written before column format minor 4 (or by a writer that
+ * did not know its type), or in such a unit a NULL slot / astext value where tagmask tells what that unit does not store: sel is then not
+ * a proper answer. Returns whether any row is left.
  */
-extern bool sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, bool stored, SiftColSel *sel, bool *known);
+extern bool sift_col_filter_types(const SiftColUnit *unit, int col, uint32 tagmask, uint8 deftag, bool mixed, SiftColSel *sel, bool *known);
+
+/* out[0..nrows) = the type of every row of the unit as above (0 where it is not known); false when some row's is not */
+extern bool sift_col_row_types(const SiftColUnit *unit, int col, uint8 deftag, bool mixed, uint8 *out);
 
 /* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
 extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);

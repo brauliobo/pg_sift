@@ -408,8 +408,8 @@ sift_test_col_zones(PG_FUNCTION_ARGS)
 }
 
 /*
- * One row per candidate unit: the rows whose value of the leaf has a JSON type in tagmask (bit t for SIFT_COLTAG_t; `stored` adds the stored
- * values), whether every overflow value of the unit has a tag, and how many values of the leaf overflowed
+ * One row per candidate unit: the rows whose value of the leaf has a JSON type in tagmask (bit t for SIFT_COLTAG_t; deftag: the type of the
+ * stored values, mixed: an astext leaf), whether the unit knows the type of every row, and how many values of the leaf overflowed
  */
 Datum
 sift_test_col_types(PG_FUNCTION_ARGS)
@@ -417,7 +417,8 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	int			leaf = PG_GETARG_INT32(1);
 	uint32		tagmask = PG_GETARG_INT32(2);
-	bool		stored = PG_GETARG_BOOL(3);
+	int			deftag = PG_GETARG_INT32(3);
+	bool		mixed = PG_GETARG_BOOL(4);
 	TestScan	ts;
 	SiftColUnit unit;
 
@@ -433,7 +434,7 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 		int64		novf = 0;
 
 		sift_col_sel_all(&unit, &sel);
-		sift_col_filter_types(&unit, leaf, tagmask, stored, &sel, &known);
+		sift_col_filter_types(&unit, leaf, tagmask, deftag, mixed, &sel, &known);
 		sift_col_ovf_bits(&unit, leaf, ovf);
 		for (uint32 w = 0; w < SIFT_COL_NWORDS(unit.nrows); w++)
 			novf += pg_popcount64(ovf[w]);

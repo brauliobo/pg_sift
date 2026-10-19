@@ -120,7 +120,7 @@ typedef struct SiftShredCol
 {
 	uint8	   *state;			/* [group n] SiftShredState */
 	SiftShredVal *val;			/* [group n] */
-	uint8	   *tag;			/* [group n] SIFT_COLTAG_*, the JSON type of the value of an OVERFLOW slot (0: not known); meaningless in the other states */
+	uint8	   *tag;			/* [group n] SIFT_COLTAG_*: the JSON type of the value of an OVERFLOW slot (0: not known), SIFT_COLTAG_JNULL for a NULL slot that is a JSON null, the type of the value of an ASTEXT slot that is a number or a boolean; else 0 */
 	uint32		ovf;			/* SIFT_SHRED_OVF_* seen in this document, also by lists below that overflowed */
 } SiftShredCol;
 

@@ -32,7 +32,7 @@
 
 #define COLV_NULL			0x01
 #define COLV_OVERFLOW		0x02
-#define COLV_TAG_SHIFT		4			/* the high nibble of an overflow value's flag byte: its SIFT_COLTAG_* (0 in what 3.0 wrote, which ignores it) */
+#define COLV_TAG_SHIFT		4			/* the high nibble of a value's flag byte: its SIFT_COLTAG_* (an overflow value's type, a kind; 0 in what 3.0 wrote, which ignores it) */
 
 typedef struct SiftColRecHead
 {
@@ -102,7 +102,7 @@ put_varint(StringInfo buf, uint64 x)
 static void
 put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 {
-	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW | v->tag << COLV_TAG_SHIFT : 0);
+	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW : 0) | v->tag << COLV_TAG_SHIFT;
 
 	appendStringInfoChar(buf, flag);
 	if (flag & COLV_NULL)
@@ -558,7 +558,7 @@ get_value(SiftCWbufReader *r, const SiftColDef *def, const uint8 *p, const uint8
 	v->isnull = (flag & (COLV_NULL | COLV_OVERFLOW)) != 0;
 	v->overflow = (flag & COLV_OVERFLOW) != 0;
 	v->tag = flag >> COLV_TAG_SHIFT;
-	if (v->tag > SIFT_COLTAG_MAX || (v->tag != SIFT_COLTAG_UNKNOWN && !v->overflow))
+	if (!sift_col_tag_valid(v))
 		SIFT_CORRUPT(r->cur.index, "A record of write buffer %llu has the flag byte 0x%02x.", (unsigned long long) r->entry.gen, flag);
 	if (v->isnull)
 		return p;

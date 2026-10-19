@@ -2,7 +2,7 @@
 # Physical streaming replica (pg_basebackup): inserts, updates, deletes, VACUUM, promotion and merge of a sift_col index on the primary
 # replay to an index that verifies on the hot standby and answers the column source exactly as the primary does. Readers on the standby
 # run all the while (with hot_standby_feedback on none may fail). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON
-# nulls (overflow values with their JSON types in the chunks): a jsonb_typeof filter returns the same on the standby, the primary and the heap.
+# nulls (overflow values with their JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs return the same on the standby, the primary and the heap.
 # The standby is then promoted and takes writes.
 . "$(dirname "$0")/lib.bash"
 
@@ -16,19 +16,30 @@ node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION weight_of(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS \$\$ SELECT CASE i % 17 WHEN 0 THEN '\"heavy\"' WHEN 1 THEN 'true' WHEN 2 THEN '{\"kg\": 1}'
 		WHEN 3 THEN '[1]' WHEN 4 THEN 'null' ELSE to_jsonb((i % 40) / 4.0::float8) END::jsonb \$\$" \
+	"CREATE FUNCTION weight_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS \$\$ SELECT CASE WHEN i % 23 = 0 THEN '{}'::jsonb ELSE jsonb_build_object('weight', weight_of(i)) END \$\$" \
 	"CREATE FUNCTION typeof_same() RETURNS bool LANGUAGE plpgsql AS \$\$
-		DECLARE a text; b text;
+		DECLARE q text; a text; b text;
 		BEGIN
 			SET LOCAL seq_page_cost = 10000;
-			SET LOCAL sift.enable_agg = on;
-			EXECUTE 'SELECT (count(*), sum((doc->>''weight'')::float8))::text FROM orders WHERE jsonb_typeof(doc->''weight'') = ''number''' INTO a;
-			SET LOCAL sift.enable_agg = off;
-			EXECUTE 'SELECT (count(*), sum((doc->>''weight'')::float8))::text FROM orders WHERE jsonb_typeof(doc->''weight'') = ''number''' INTO b;
-			RETURN a = b;
+			FOREACH q IN ARRAY ARRAY[
+				'SELECT (count(*), sum((doc->>''weight'')::float8))::text FROM orders WHERE jsonb_typeof(doc->''weight'') = ''number''',
+				'SELECT count(*)::text FROM orders WHERE jsonb_typeof(doc->''weight'') <> ''number''',
+				'SELECT count(*)::text FROM orders WHERE jsonb_typeof(doc->''weight'') = ''null''',
+				'SELECT count(*)::text FROM orders WHERE jsonb_typeof(doc->''weight'') IS NULL',
+				'SELECT string_agg(coalesce(t, ''-'') || '':'' || n, '','' ORDER BY t NULLS FIRST) FROM (SELECT jsonb_typeof(doc->''weight'') AS t, count(*) AS n FROM orders GROUP BY 1) x',
+				'SELECT (count(*) FILTER (WHERE jsonb_typeof(doc->''weight'') = ''string'' OR tenant_id < 5), count(*) FILTER (WHERE jsonb_typeof(doc->''weight'') IS NULL))::text FROM orders']
+			LOOP
+				SET LOCAL sift.enable_agg = on;
+				EXECUTE q INTO a;
+				SET LOCAL sift.enable_agg = off;
+				EXECUTE q INTO b;
+				IF a IS DISTINCT FROM b THEN RETURN false; END IF;
+			END LOOP;
+			RETURN true;
 		END \$\$" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, doc jsonb)" \
 	"INSERT INTO orders (tenant_id, status, qty, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i,
-		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of(i)) FROM generate_series(1, 20000) i" \
+		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 	preagg = 'cube(tenant_id: qty; status: qty; doc.items[].category: doc.items[].qty)')" \
 	>/dev/null || bail "setup failed"
@@ -41,7 +52,7 @@ ok "standby streaming from a base backup"
 P=$(dir primary)
 cat >"$P/ins.sql" <<'EOF'
 INSERT INTO orders (tenant_id, status, qty, doc) SELECT (random() * 50)::int, 'paid', i,
-	jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7)), 'weight', weight_of((random() * 1000)::int)) FROM generate_series(1, 20) i;
+	jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc((random() * 1000)::int) FROM generate_series(1, 20) i;
 EOF
 cat >"$P/upd.sql" <<'EOF'
 \set id random(1, 100000)

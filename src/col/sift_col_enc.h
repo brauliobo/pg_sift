@@ -74,7 +74,7 @@ typedef struct SiftCVals
 	int64	   *key;
 	uint64	   *nulls;			/* NULL until the first NULL; bit set = NULL; capacity cap bits */
 	uint64	   *ovf;			/* NULL until the first overflow value; bit set = overflow (also set in nulls) */
-	uint8	   *otag;			/* NULL until the first overflow value of a known JSON type: its SIFT_COLTAG_* per slot (0 elsewhere), cap bytes */
+	uint8	   *otag;			/* NULL until the first slot with a tag: its SIFT_COLTAG_* (an overflow value's type, a kind, 0 elsewhere), cap bytes */
 	uint32	   *eoff;			/* GROUP leaves: element offset of each row, nrows + 1 entries */
 	/* VAR leaves: key[i] is the byte length of value i (0 for NULL), the bytes of all values follow each other in vb, voff[i] the start of value i */
 	uint32	   *voff;			/* n + 1 entries once a value was added */
@@ -138,6 +138,7 @@ typedef struct SiftCZone
 #define SIFT_COLC_NULLS		0x1
 #define SIFT_COLC_OVF		0x2		/* an overflow bitmap follows the null bitmap */
 #define SIFT_COLC_TAGS		0x4		/* minor 4, only with OVF: after the overflow bitmap one nibble (SIFT_COLTAG_*) per set overflow bit, in slot order, padded to 8 bytes */
+#define SIFT_COLC_KINDS		0x8		/* minor 4: after the tags a word whose low byte has bit t set for each tag t that has a bitmap, then those bitmaps (n bits, padded to 8 bytes) in tag order: the slots that do not overflow with a type their leaf does not say (JSON null in a NULL slot, the number or boolean in an astext leaf) */
 #define SIFT_COLENC_CONST	0
 #define SIFT_COLENC_FOR		1
 #define SIFT_COLENC_PACK	2
@@ -156,15 +157,17 @@ typedef struct SiftCChunk
 	const uint64 *nulls;		/* NULL without SIFT_COLC_NULLS */
 	const uint64 *ovf;			/* NULL without SIFT_COLC_OVF */
 	const uint8 *tags;			/* NULL without SIFT_COLC_TAGS: the nibbles, low nibble first */
+	uint8		kmask;			/* SIFT_COLC_KINDS: bit t set when kind[t] is there */
+	const uint64 *kind[8];		/* [SIFT_COLTAG_*] the slots of that kind, NULL when none */
 	const uint8 *payload;
 	uint32		paylen;
 } SiftCChunk;
 
 /* The JSON type tag of the overflow value at slot (SIFT_COLTAG_*); 0 for a chunk without tags. Walks the bitmap: for one slot, not for a loop */
 extern uint8 sift_cchunk_ovf_tag(const SiftCChunk *c, uint32 slot);
-/* The tag of every slot, a byte each (0 for the slots that do not overflow); dst has room for n bytes. False when the chunk has no tags (dst untouched) */
+/* The tag of every slot, a byte each (an overflow value's type, a kind; 0 for the other slots); dst has room for n bytes. False when the chunk has neither tags nor kinds (dst untouched) */
 extern bool sift_cchunk_tags(const SiftCChunk *c, uint8 *dst);
-/* bits = the slots that overflowed with tag `tag` (padded words of c->n); tag 0: those without a known type, also in a chunk without tags */
+/* bits = the slots with tag `tag`: overflow values of that type and the slots of that kind (padded words of c->n); tag 0: overflow values without a known type, also in a chunk without tags */
 extern void sift_cchunk_tag_bits(const SiftCChunk *c, uint8 tag, uint64 *bits);
 
 /*
@@ -262,7 +265,7 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
  * SIFT_COL_PAD zero bytes stay readable after the record in out's buffer (not counted in out->len), so it can be parsed and filtered in place.
  * pol[ncols] (NULL: none) is the compression policy of each leaf: a chunk that is not constant is then a blob of the chunk codec
  * (SIFT_COLENC_CC); without it the chunk is the plain FOR or PACK form (in-memory units that are only scanned).
- * tags: every chunk with overflow values gets SIFT_COLC_TAGS (column format minor 4); without it the chunk is what minor 3 writes.
+ * tags: every chunk with overflow values gets SIFT_COLC_TAGS and every chunk with kinds SIFT_COLC_KINDS (column format minor 4); without it the chunk is what minor 3 writes.
  */
 extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
 							  Size *start, SiftCZone *zones);

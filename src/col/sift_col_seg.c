@@ -1453,6 +1453,8 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= 4 && ch.ovf != NULL))
 			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->sb,
 					ch.flags & SIFT_COLC_TAGS ? "has" : "lacks", seg->entry.format);
+		if ((ch.flags & SIFT_COLC_KINDS) && seg->entry.format < 4)
+			corrupt(seg, "The chunk of leaf %d in the unit of SB %u has kinds in a segment of column format 1.%d.", c, r->sb, seg->entry.format);
 		if (ch.n !=(def->parent < 0 ? r->nrows : group_elems[def->parent]))
 			corrupt(seg, "Chunk of leaf %d in the unit of SB %u holds %u values, expected %llu.", c, r->sb, ch.n,
 					ULL(def->parent < 0 ? r->nrows : group_elems[def->parent]));
