@@ -4,9 +4,13 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/visibilitymapdefs.h"
+#include "access/transam.h"
+#include "access/xact.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 #include "storage/smgr.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -187,7 +191,34 @@ typedef struct HeapPage
 {
 	SiftVis    *v;
 	Buffer		buf;
+	Page		page;
+	OffsetNumber maxoff;
+	bool		quick;			/* a tuple whose inserter is older than every transaction of the snapshot needs no visibility function */
 } HeapPage;
+
+/*
+ * The tuple an index entry names is plain (no HOT chain to follow) and visible to the snapshot when its inserter committed (the hint
+ * bit) before the oldest transaction the snapshot knows, or froze it, and nobody deleted or locked it (xmax invalid): the first two
+ * tests of HeapTupleSatisfiesMVCC, without the chain walk, the predicate lock and the conflict check heap_hot_search_buffer adds. Every
+ * other tuple goes the full way. A serializable transaction takes the full way too: the lock and the check are its.
+ */
+static bool
+quick_visible(const HeapPage *p, ItemPointer tid)
+{
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+	ItemId		lp;
+	HeapTupleHeader th;
+
+	if (!p->quick || off < FirstOffsetNumber || off > p->maxoff)
+		return false;
+	lp = PageGetItemId(p->page, off);
+	if (!ItemIdIsNormal(lp))
+		return false;
+	th = (HeapTupleHeader) PageGetItem(p->page, lp);
+	if (!(th->t_infomask & HEAP_XMAX_INVALID) || (th->t_infomask & HEAP_XMIN_COMMITTED) == 0)
+		return false;
+	return HeapTupleHeaderXminFrozen(th) || TransactionIdPrecedes(HeapTupleHeaderGetRawXmin(th), p->v->snapshot->xmin);
+}
 
 static bool
 heap_tid_visible(void *arg, ItemPointer tid)
@@ -196,7 +227,7 @@ heap_tid_visible(void *arg, ItemPointer tid)
 	HeapTupleData tuple;
 	bool		all_dead;
 
-	return heap_hot_search_buffer(tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
+	return quick_visible(p, tid) || heap_hot_search_buffer(tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
 }
 
 int
@@ -216,6 +247,9 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
 	page.buf = ReadBuffer(v->heap, blk);
 	LockBuffer(page.buf, BUFFER_LOCK_SHARE);
+	page.page = BufferGetPage(page.buf);
+	page.maxoff = PageGetMaxOffsetNumber(page.page);
+	page.quick = IsMVCCSnapshot(v->snapshot) && !IsolationIsSerializable();
 	v->heap_pages++;
 	left = sift_vis_filter_mask(blk, offmask, heap_tid_visible, &page);
 	UnlockReleaseBuffer(page.buf);

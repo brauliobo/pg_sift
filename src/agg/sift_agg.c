@@ -74,6 +74,7 @@
 
 bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
+static bool sift_agg_dense = true;
 bool		sift_enable_topn = true;
 static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
@@ -102,6 +103,10 @@ sift_agg_init(void)
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_dense",
+							 "Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples.",
+							 NULL, &sift_agg_dense, true,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_topn",
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
@@ -684,6 +689,12 @@ typedef struct AggExec
 	uint32	   *offs;
 	int			nelem;
 	uint64		row_base;		/* unique number of the unit's first row */
+	bool		dense;			/* the aggregates and keys of the spec are the ones dense_chunk runs */
+	uint32	   *zgid;			/* dense chunks without a key: group 0 for every row */
+	int64	   *histbuf;		/* dense chunks, few groups: two histograms of histcap groups */
+	uint32		histcap;
+	int64	   *hist;			/* the rows of the chunk per group; NULL when this chunk has none */
+	int64	   *hist2;			/* the scratch of a second one */
 	/* the tuples being aggregated (the arrays of cur) */
 	Tup			t0;				/* the chunk's selection */
 	Tup			stage[SIFT_AGG_MAX_JOINS];	/* the output of each join stage that repeats or drops tuples */
@@ -723,6 +734,7 @@ typedef struct AggExec
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
 	int64		n_rows;			/* of the others */
 	int64		n_tuples;
+	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
 	int64		n_groups;
 	/* arms that share one pass (fuse_start) */
 	struct FuseSt *fuse;
@@ -1169,6 +1181,8 @@ leaf_lvl(AggExec *ex, int leaf)
 {
 	return ex->lay->leaf[leaf].parent >= 0;
 }
+
+static const uint32 *unit_parent(AggExec *ex);
 
 /* row r of the unit owns the elements [offs[r], offs[r + 1]) of the children of the array leaf */
 static uint32 *
@@ -2702,10 +2716,12 @@ eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *ou
 {
 	ComboSt    *cs = &ex->cs[p->leaf];
 
+	const uint32 *par = qlevel ? unit_parent(ex) : NULL;
+
 	for (int i = 0; i < n; i++)
 	{
 		ex->pti[i] = start + i;
-		ex->pri[i] = qlevel ? ex->parent[start + i] : start + i;
+		ex->pri[i] = qlevel ? par[start + i] : start + i;
 	}
 	combo_resolve(ex, p->leaf, qlevel, n, ex->pti, ex->pri, ex->peid, ex->alive);
 	clear_words(out, n);
@@ -2786,6 +2802,41 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 
 static void eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out);
 
+/* bits [lo, hi) of a bit vector cleared */
+static void
+clear_bit_range(uint64 *bits, uint32 lo, uint32 hi)
+{
+	for (; lo < hi && (lo & 63); lo++)
+		bits[lo >> 6] &= ~(UINT64CONST(1) << (lo & 63));
+	for (; lo + 64 <= hi; lo += 64)
+		bits[lo >> 6] = 0;
+	for (; lo < hi; lo++)
+		bits[lo >> 6] &= ~(UINT64CONST(1) << (lo & 63));
+}
+
+/*
+ * The rows (nrow bits in out) that own an element whose bit is set in eb, the elements of row r being [offs[r], offs[r + 1]). eb has a
+ * word of room past its elements. A row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows
+ * take the slow way).
+ */
+static void
+rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
+{
+	memset(out, 0, ((nrow + 63) / 64) * sizeof(uint64));
+	for (int r = 0; r < nrow; r++)
+	{
+		uint32		lo = offs[r],
+					len = offs[r + 1] - lo;
+		uint64		x;
+
+		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
+		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
+		if (len > 56)
+			x |= last_bit(eb, lo, lo + len) >= 0;
+		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
+	}
+}
+
 /* SAP_ANY_ELEM on the unit's rows: the element predicate on every element of the unit, reduced to the rows that own a passing one */
 static void
 any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
@@ -2804,20 +2855,7 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 		eval_pred(ex, p->child[0], 1, s, n, t);
 		memcpy(eb + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
 	}
-	memset(out, 0, nw * sizeof(uint64));
-	/* a row owns few elements: the 56 bits of eb from its first element hold them all (the few longer rows take the slow way) */
-	for (int r = 0; r < nrow; r++)
-	{
-		uint32		lo = offs[r],
-					len = offs[r + 1] - lo;
-		uint64		x;
-
-		memcpy(&x, (const char *) eb + (lo >> 3), sizeof(x));
-		x = (x >> (lo & 7)) & ((UINT64CONST(1) << Min(len, 56)) - 1);
-		if (len > 56)
-			x |= last_bit(eb, lo, lo + len) >= 0;
-		out[r >> 6] |= (uint64) (x != 0) << (r & 63);
-	}
+	rows_of_elems(offs, nrow, eb, out);
 	if (p->op)
 	{
 		for (int w = 0; w < nw; w++)
@@ -2857,7 +2895,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 	if (p->level < qlevel && !p->late && p->kind != SAP_TRUE && p->kind != SAP_FALSE && p->kind != SAP_GATE)
 	{
 		/* a row level predicate seen from the elements */
-		sift_aggk->gather_bits(out, row_bitmap(ex, p), ex->parent + start, n);
+		sift_aggk->gather_bits(out, row_bitmap(ex, p), unit_parent(ex) + start, n);
 		return;
 	}
 	if (!st->ready && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NCMP || p->kind == SAP_GATE))
@@ -6761,6 +6799,290 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 }
 
+/* ---------- dense chunks ---------- */
+
+/*
+ * A chunk whose aggregates are counts, sums and averages of one leaf each, grouped by dictionary leaves or not at all, is aggregated
+ * from its bitmap: no list of tuples and no gather by position. An aggregate takes the bits that pass its FILTER and have a value,
+ * a count is their popcount (or a per group count of them), a sum runs over them in row order, as the list of tuples does, so a
+ * float sum has the same bits. The groups of the rows come from the codes of the chunk.
+ */
+static bool
+dense_agg_ok(const SiftAggAgg *a)
+{
+	switch (a->kind)
+	{
+		case SAA_COUNT_STAR:
+			break;
+		case SAA_COUNT:
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			if (a->leaf < 0 || a->nvx || a->num.n)
+				return false;
+			break;
+		default:
+			return false;
+	}
+	return !a->distinct && (a->filter == NULL || !a->filter->late);
+}
+
+static void
+dense_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	bool		ok = sift_agg_dense && s->narms == 0 && s->nsets == 0 && s->npost == 0 && ex->nj == 0 && ex->topn == NULL;
+
+	for (int j = 0; ok && j < s->nkeys; j++)
+		ok = s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_CODE;
+	for (int i = 0; ok && i < s->naggs; i++)
+		ok = dense_agg_ok(&s->agg[i]);
+	ex->dense = ok;
+	if (ok)
+		ex->zgid = MemoryContextAllocZero(ex->cxt, (VEC + PADW) * sizeof(uint32));
+}
+
+/* the bits of [start, start + n) of the chunk whose leaf is NULL; false when the leaf has no NULL */
+static bool
+chunk_nulls(AggExec *ex, int leaf, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, leaf);
+
+	if (v->isnull == NULL)
+		return false;
+	if (leaf_lvl(ex, leaf) == ex->qlevel)
+		sift_colk_nonzero(v->isnull + start, n, out);
+	else
+	{
+		int			nrow = ex->unit.nrow;
+		uint64	   *rn = MemoryContextAlloc(ex->ucxt, (SIFT_COL_NWORDS(nrow) + PADW) * sizeof(uint64));
+
+		sift_colk_nonzero(v->isnull, nrow, rn);
+		sift_aggk->gather_bits(out, rn, unit_parent(ex) + start, n);
+	}
+	return true;
+}
+
+/* the values of the leaf for the chunk, 4 bytes each (wide: 8): in place at the chunk's level, else gathered through the parents into tmp */
+static const void *
+chunk_vals(AggExec *ex, int leaf, int start, int n, bool wide, void *tmp)
+{
+	const SiftSrcVec *v = get_vec(ex, leaf);
+
+	if (leaf_lvl(ex, leaf) == ex->qlevel)
+		return (const char *) v->data + (size_t) start * (wide ? 8 : 4);
+	if (wide)
+		sift_colk->for_i64_sel[SIFT_COLW_64](v->data, unit_parent(ex) + start, n, 0, tmp);
+	else
+		sift_colk->gather_u32(v->data, unit_parent(ex) + start, n, tmp);
+	return tmp;
+}
+
+/* the group of every row of the chunk in ex->gid; false when the keys outgrew the direct table (the chunk goes the way of tuples) */
+static bool
+dense_gids(AggExec *ex, int start, int n)
+{
+	SiftAggSpec *s = ex->spec;
+	const uint32 *maps[SIFT_AGG_MAX_KEYS],
+			   *codes[SIFT_AGG_MAX_KEYS];
+	bool		grow = false;
+
+	for (int j = 0; j < s->nkeys; j++)
+	{
+		const SiftSrcVec *v = get_vec(ex, s->key[j].leaf);
+		bool		same = leaf_lvl(ex, s->key[j].leaf) == ex->qlevel;
+		uint32	   *own = ex->kids + (Size) j * (VEC + PADW);
+
+		codes[j] = chunk_vals(ex, s->key[j].leaf, start, n, false, own);
+		if (v->isnull)
+		{
+			const uint32 *par = same ? NULL : unit_parent(ex);
+
+			if (codes[j] != own)
+				memcpy(own, codes[j], n * sizeof(uint32));
+			for (int i = 0; i < n; i++)
+				if (v->isnull[same ? start + i : par[start + i]])
+					own[i] = v->dict->n;
+			codes[j] = own;
+		}
+		maps[j] = dict_kmap(ex, dict_slot(ex, v->dict), v->dict, j);
+		grow |= key_used(&ex->ks[j]) > ex->ks[j].cap;
+	}
+	if (grow)
+	{
+		direct_grow(ex);
+		if (ex->hash)
+			return false;
+	}
+	memset(ex->gid, 0, n * sizeof(uint32));
+	for (int j = 0; j < s->nkeys; j++)
+		sift_aggk->gid_code(ex->gid, codes[j], maps[j], n, ex->ks[j].mult);
+	return true;
+}
+
+/* the bits of the chunk that aggregate a takes: its FILTER and a value; mask itself when that is all of them */
+static const uint64 *
+dense_taken(AggExec *ex, SiftAggAgg *a, int start, int n, const uint64 *mask, uint64 *ok)
+{
+	const uint64 *res = mask;
+	int			nw = (n + 63) / 64;
+	uint64		nul[VECW + PADW];
+
+	if (a->filter)
+	{
+		eval_pred(ex, a->filter, ex->qlevel, start, n, ok);
+		sift_colk->bits_and(ok, mask, nw);
+		res = ok;
+	}
+	if (a->leaf >= 0 && chunk_nulls(ex, a->leaf, start, n, nul))
+	{
+		if (res != ok)
+			memcpy(ok, mask, nw * sizeof(uint64));
+		sift_colk->bits_andnot(ok, nul, nw);
+		res = ok;
+	}
+	return res;
+}
+
+/* the rows per group of the bits of `bits`, in h (gcap entries) */
+static void
+dense_hist(AggExec *ex, int64 *h, const uint64 *bits, int n)
+{
+	memset(h, 0, ex->gcap * sizeof(int64));
+	sift_aggk->count_gid(h, ex->gid, bits, n);
+}
+
+/*
+ * cnt[g] += the rows of ok in group g. With few groups the rows of the chunk were counted per group once (ex->hist): an aggregate that
+ * takes them all adds that, and one that leaves out fewer rows than it takes counts the rows left out and subtracts them.
+ */
+static void
+dense_count(AggExec *ex, int64 *cnt, const uint64 *ok, const uint64 *mask, int n)
+{
+	int			nw = (n + 63) / 64;
+
+	if (ex->spec->nkeys == 0)
+		cnt[0] += sift_colk->bits_count(ok, nw);
+	else if (ex->hist == NULL)
+		sift_aggk->count_gid(cnt, ex->gid, ok, n);
+	else if (ok == mask)
+		for (uint32 g = 0; g < ex->gcap; g++)
+			cnt[g] += ex->hist[g];
+	else
+	{
+		uint64		out[VECW + PADW];
+
+		memcpy(out, mask, nw * sizeof(uint64));
+		sift_colk->bits_andnot(out, ok, nw);
+		if (sift_colk->bits_count(out, nw) < sift_colk->bits_count(ok, nw))
+		{
+			dense_hist(ex, ex->hist2, out, n);
+			for (uint32 g = 0; g < ex->gcap; g++)
+				cnt[g] += ex->hist[g] - ex->hist2[g];
+		}
+		else
+			sift_aggk->count_gid(cnt, ex->gid, ok, n);
+	}
+}
+
+/* float_guard for the bits of ok: a non-finite input marks its group, else the largest absolute input is noted */
+static void
+dense_float_guard(AggExec *ex, int ai, const double *x, const uint64 *ok, int n, const uint32 *gid)
+{
+	double		m;
+
+	if (!sift_aggk->absmax_f64(x, ok, n, &m))
+	{
+		for (int w = 0; w < (n + 63) / 64; w++)
+			for (uint64 b = ok[w]; b; b &= b - 1)
+			{
+				int			j = w * 64 + pg_rightmost_one_pos64(b);
+
+				if (!isfinite(x[j]))
+					ex->acc[ai].nf[gid[j]] = 1;
+			}
+		return;
+	}
+	ex->amax[ai] = Max(ex->amax[ai], m);
+	if (ex->spec->agg[ai].kind == SAA_AVG_F64 && 8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
+		float_overflow_error();
+}
+
+static void
+dense_update(AggExec *ex, int ai, int start, int n, const uint64 *mask)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	uint64		okb[VECW + PADW];
+	const uint64 *ok = dense_taken(ex, a, start, n, mask, okb);
+	const uint32 *gid = ex->spec->nkeys ? ex->gid : ex->zgid;
+	bool		ungrouped = ex->spec->nkeys == 0;
+	const void *x;
+
+	switch (a->kind)
+	{
+		case SAA_SUM_INT:
+		case SAA_AVG_INT:
+			x = chunk_vals(ex, a->leaf, start, n, false, ex->cu32);
+			if (ungrouped)
+				acc->i[0] += sift_aggk->sum_i32(x, ok, n);
+			else
+				sift_aggk->sum_gid_i32(acc->i, gid, x, ok, n);
+			break;
+		case SAA_SUM_F64:
+		case SAA_AVG_F64:
+			x = chunk_vals(ex, a->leaf, start, n, true, ex->c64);
+			dense_float_guard(ex, ai, x, ok, n, gid);
+			sift_aggk->sum_gid_f64(acc->d, gid, x, ok, n);
+			break;
+		default:
+			break;
+	}
+	dense_count(ex, acc->n, ok, mask, n);
+}
+
+/* the chunk [start, start + n) of the unit's rows or elements selected by mask, aggregated from the bitmap; false: not a dense chunk */
+static bool
+dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
+{
+	int			nw = (n + 63) / 64;
+	uint64		cnt = sift_colk->bits_count(mask, nw);
+
+	if (cnt == 0)
+		return true;
+	if (ex->spec->nkeys && !dense_gids(ex, start, n))
+		return false;
+	ex->cstart = start;
+	ex->cn = n;
+	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	ex->n_tuples += cnt;
+	ex->n_dense++;
+	ex->hist = NULL;
+	if (ex->spec->nkeys == 0)
+		ex->seen[0] += cnt;
+	else if (ex->gcap <= n / 8)
+	{
+		if (ex->histcap < ex->gcap)
+		{
+			if (ex->histbuf)
+				pfree(ex->histbuf);
+			ex->histcap = Max(ex->gcap, 64);
+			ex->histbuf = MemoryContextAlloc(ex->cxt, (Size) ex->histcap * 2 * sizeof(int64));
+		}
+		ex->hist = ex->histbuf;
+		ex->hist2 = ex->histbuf + ex->histcap;
+		dense_hist(ex, ex->hist, mask, n);
+		for (uint32 g = 0; g < ex->gcap; g++)
+			ex->seen[g] += ex->hist[g];
+	}
+	else
+		sift_aggk->count_gid(ex->seen, ex->gid, mask, n);
+	for (int i = 0; i < ex->spec->naggs; i++)
+		dense_update(ex, i, start, n, mask);
+	return true;
+}
+
 /* one chunk of tuples [start, start + n) selected by mask */
 static void
 agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
@@ -6768,6 +7090,8 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	Tup		   *t = &ex->t0;
 	int			nw = (n + 63) / 64;
 
+	if (ex->dense && !ex->hash && ex->rsel == NULL && dense_chunk(ex, start, n, mask))
+		return;
 	t->n = sift_colk->bits_to_idx(mask, nw, 0, t->sel);
 	if (t->n == 0)
 		return;
@@ -6776,8 +7100,12 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	for (int j = 0; j < t->n; j++)
 		t->tidx[j] = start + t->sel[j];
 	if (ex->spec->group >= 0)
+	{
+		const uint32 *par = unit_parent(ex);
+
 		for (int j = 0; j < t->n; j++)
-			t->ridx[j] = ex->parent[t->tidx[j]];
+			t->ridx[j] = par[t->tidx[j]];
+	}
 	else
 		memcpy(t->ridx, t->tidx, t->n * sizeof(uint32));
 	join_stage(ex, 0, t);
@@ -7240,16 +7568,25 @@ arm_chunk(AggExec *ex, Tup *t)
 
 /* ---------- a unit ---------- */
 
+/* the element count of the unit and the offsets of its rows; the owner of every element is made when something reads it (unit_parent) */
 static void
 build_parents(AggExec *ex)
 {
-	SiftSrcUnit *u = &ex->unit;
-	uint32		m;
-
 	ex->offs = elem_offs(ex, ex->spec->group);
-	ex->nelem = m = ex->offs[u->nrow];
-	ex->parent = MemoryContextAlloc(ex->ucxt, (Size) m * sizeof(uint32) + SIFT_AGG_PAD);
-	sift_colk->expand_parents(ex->offs + 1, u->nrow, ex->parent);
+	ex->nelem = ex->offs[ex->unit.nrow];
+	ex->parent = NULL;
+}
+
+/* the row that owns each element of the unit */
+static const uint32 *
+unit_parent(AggExec *ex)
+{
+	if (ex->parent == NULL)
+	{
+		ex->parent = MemoryContextAlloc(ex->ucxt, (Size) ex->nelem * sizeof(uint32) + SIFT_AGG_PAD);
+		sift_colk->expand_parents(ex->offs + 1, ex->unit.nrow, ex->parent);
+	}
+	return ex->parent;
 }
 
 /*
@@ -7757,16 +8094,22 @@ process_unit(AggExec *ex)
 		uint64	   *em;
 		int			m;
 		uint64		cm[VECW + PADW];
+		bool		allrows;
 
 		build_parents(ex);
 		m = ex->nelem;
+		/* no row is out: so is no element, and the owners of the elements are not needed to tell */
+		allrows = sift_colk->bits_count(rmask, nrw) == nrow;
 		em = MemoryContextAlloc(ex->ucxt, ((m + 63) / 64 + PADW) * sizeof(uint64));
 		for (int st = 0; st < m; st += VEC)
 		{
 			int			n = Min(VEC, m - st),
 						nw = (n + 63) / 64;
 
-			sift_aggk->gather_bits(cm, rmask, ex->parent + st, n);
+			if (allrows)
+				fill_ones(cm, n);
+			else
+				sift_aggk->gather_bits(cm, rmask, unit_parent(ex) + st, n);
 			for (int i = 0; i < s->npred; i++)
 				if (s->pred[i]->level == 1 && !s->pred[i]->late)
 				{
@@ -7777,26 +8120,23 @@ process_unit(AggExec *ex)
 				}
 			memcpy(em + st / 64, cm, nw * sizeof(uint64));
 		}
+		/* the rows that keep an element, checked against the snapshot: nothing to check in a unit whose pages are all visible */
+		if (sift_colsrc_vet_needed(ex->src, u))
 		{
-			/* the rows that keep an element, checked against the snapshot */
-			uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+			uint64	   *rv = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64)),
+					   *seen = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
 
-			for (int w = 0; w < (m + 63) / 64; w++)
-				for (uint64 b = em[w]; b; b &= b - 1)
-				{
-					uint32		r = ex->parent[w * 64 + pg_rightmost_one_pos64(b)];
-
-					rv[r >> 6] |= UINT64CONST(1) << (r & 63);
-				}
+			rows_of_elems(ex->offs, nrow, em, rv);
+			memcpy(seen, rv, nrw * sizeof(uint64));
 			sift_colsrc_vet(ex->src, u, rv);
-			for (int st = 0; st < m; st += VEC)
-			{
-				int			n = Min(VEC, m - st),
-							nw = (n + 63) / 64;
+			/* the elements of a row the snapshot does not see go */
+			for (int w = 0; w < nrw; w++)
+				for (uint64 b = seen[w] & ~rv[w]; b; b &= b - 1)
+				{
+					int			r = w * 64 + pg_rightmost_one_pos64(b);
 
-				sift_aggk->gather_bits(cm, rv, ex->parent + st, n);
-				sift_colk->bits_and(em + st / 64, cm, nw);
-			}
+					clear_bit_range(em, ex->offs[r], ex->offs[r + 1]);
+				}
 		}
 		apply_late(ex, em, m);
 		for (int st = 0; st < m; st += VEC)
@@ -9085,6 +9425,7 @@ typedef struct WorkerDone
 	int64		n_pre_units;
 	int64		n_rows;
 	int64		n_tuples;
+	int64		n_dense;
 	int64		n_matches;
 	SiftSrcCounters cc;
 } WorkerDone;
@@ -9199,6 +9540,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_pre_units = ex->n_pre_units;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
+	done.n_dense = ex->n_dense;
 	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
@@ -9287,6 +9629,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_pre_units += d->n_pre_units;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
+		ex->n_dense += d->n_dense;
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
@@ -9947,6 +10290,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	type_init(ex);
 	str_init(ex);
 	preagg_init(ex);
+	dense_init(ex);
 	gen_open(ex);
 	MemoryContextSwitchTo(old);
 }
@@ -10101,6 +10445,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Units Pruned", NULL, cc.units_pruned, es);
 		ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 		ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
+		ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
 		ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc.rows_vetted, es);
 		ExplainPropertyInteger("Heap Pages", NULL, cc.heap_pages, es);
 		ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);

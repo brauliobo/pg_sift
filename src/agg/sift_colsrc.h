@@ -306,6 +306,8 @@ typedef struct SiftSrcProvider
 	void		(*read) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
 	void		(*live) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	void		(*vet) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
+	/* Optional (NULL: always): false when vet would clear no row of the unit (every page is all-visible, or the source is MVCC by itself) */
+	bool		(*vet_needed) (void *impl, const SiftSrcUnit *unit);
 	void		(*counters) (const void *impl, SiftSrcCounters *c);
 	/*
 	 * Optional (NULL: the executor tests the values itself). prune_str, called before `begin`, adds text tests to the zone pruning of the
@@ -483,6 +485,7 @@ extern void sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, i
  */
 extern void sift_colsrc_live(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
 extern void sift_colsrc_vet(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
+extern bool sift_colsrc_vet_needed(SiftSrcSource *src, const SiftSrcUnit *unit);
 
 extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
 
