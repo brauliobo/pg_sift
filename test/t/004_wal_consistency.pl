@@ -91,7 +91,7 @@ is(rows($standby), rows($primary), 'standby returns the primary rows');
 my $log_offset = -s $primary->logfile;
 $w = workload($primary, $secs);
 sleep 3;
-$primary->kill9;
+kill9_wait($primary);
 eval { $w->{handle}->finish };
 $primary->start;
 ok(!$primary->log_contains($no_inconsistency, $log_offset), 'crash recovery found no inconsistent page');

@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected);
+our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -169,6 +169,27 @@ sub crash_during
 	$node->wait_for_log(qr/database system is ready to accept connections/, $log_offset);
 	eval { $bg->quit };
 	return $active eq 'active';
+}
+
+# SIGKILLs the postmaster and waits for its children: they hold the shared memory until they next wait, and a server
+# started before they are gone fails with "pre-existing shared memory block is still in use"
+sub kill9_wait
+{
+	my ($node) = @_;
+	my @children = split ' ', `pgrep -P $node->{_pid}`;
+	$node->kill9;
+	for (1 .. 1200)
+	{
+		return unless grep { running($_) } @children;
+		usleep(100_000);
+	}
+	die "children of the killed postmaster still run: @children";
+}
+
+sub running
+{
+	open(my $stat, '<', "/proc/$_[0]/stat") or return 0;
+	return <$stat> !~ /\) Z /;
 }
 
 sub usleep { select(undef, undef, undef, $_[0] / 1e6) }
