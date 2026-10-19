@@ -50,7 +50,22 @@ UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
-METHOD = 'Method: one engine at a time on every CPU of the host (the servers of the other engines idle), the engines interleaved in rounds, the same clients for all.'
+def cpus_text(quota):
+    """where the engines ran: all the CPUs of the host, or the scope of the session (`systemd-run -p CPUQuota`: the server, the clients and a Java process all inside it)"""
+    return 'every CPU of the host' if not quota else 'the %s of the scope the session ran in (server, clients and Java process together; the host has more)' % quota
+
+
+def method(quota=''):
+    return 'Method: one engine at a time on %s (the servers of the other engines idle), the engines interleaved in rounds, the same clients for all.' % cpus_text(quota)
+
+
+def session_quota(rows, dataset, tier):
+    """the CPU quota word of the session row of a table ('' when the host's CPUs were all available)"""
+    r = next((r for r in rows if r[0] == dataset and r[1] == tier and r[5] == 'session'), None)
+    return dict(w.split('=', 1) for w in r[4].split(';')).get('quota', '') if r else ''
+
+
+METHOD = method()
 FLAG = 0.10   # a relative standard error above this is flagged in the tables and the charts
 
 
@@ -159,7 +174,8 @@ def host_rows(dataset, tier, path):
         return out
     grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
     cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
-    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('pg', grab('postgres')), ('sift', grab('sift commit')),
+    quota = grab('cpu quota')
+    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('sift', grab('sift commit')),
              ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
     out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))
     return out
@@ -328,7 +344,7 @@ def main(argv):
             md += md_cold(rows, dataset, tier) + ['']
             continue
         load = get(rows, dataset, tier, '-', '-', '-', 'load_1m')
-        md += [METHOD,
+        md += [method(session_quota(rows, dataset, tier)),
                'Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6]), '']
         md += (md_articles if dataset == 'articles' else md_places)(rows, tier) + ['']
     open(outdir + '/tables.md', 'w').write('\n'.join(md))

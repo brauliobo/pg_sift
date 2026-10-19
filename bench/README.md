@@ -370,6 +370,7 @@ Citus is AGPL-licensed: the benchmark only runs its docker image (`STORE_CITUS_I
 
 ```sh
 bench/bench store all --docs            # 1M and 10M orders: containers, data, load, warm and cold runs, updates; then docs/results/store.json, README.md, docs/BENCHMARKS.md
+bench/bench store all --sizes 1000000 --cpus-list 1,3 --runs 5 --warmups 2 --cold-runs 2 --docs   # the final pass of 3.0: one size, about 25 minutes (cold: `store merge --restart-cold FILE --restart-engines pg,ch` takes those engines' restart-based cells from another results file)
 bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # one size, warm runs only
 bench/bench store report                # the tables again from docs/results/store.json, without measuring
 bench/analytics                         # the quick run: 1M orders, 3 runs, the same equality checks, about 2 minutes (bench/out/latest/store.json)
@@ -392,21 +393,20 @@ What it does, in order, for each size:
    Elasticsearch and ClickHouse are told the thread budget too.
 2. The data: `sql/store/gen.sql` writes the rows with hashes of (id, draw number), so a size gives the same CSV every run (its sha256 is in the results); the same
    file is loaded into every system with its own layout (`sql/store/pg.sql`, `sift.sql`, `sift_table.sql`, `citus.sql`, `ch.sql`, `es.json`), and the load time and the size on disk
-   are recorded. Elasticsearch is merged to one segment and ClickHouse optimized after the load, PostgreSQL vacuumed and analyzed. Citus holds the table `USING columnar` (extension
+   are recorded. Elasticsearch has one shard per CPU of the budget of the load, each merged to one segment, and ClickHouse is optimized after the load, PostgreSQL vacuumed and analyzed. Citus holds the table `USING columnar` (extension
    `citus_columnar`) with a primary key and no other index; its size counts the columnar metadata tables as well.
 3. Warm runs (`steps/store.py run`), once for each budget of `--cpus-list` (1 and 3 by default; the containers are reconfigured between them): for each query one untimed run per engine, whose result is compared with PostgreSQL's (rows exactly, numbers within 1e-9
    relative, Elasticsearch's approximate distinct count within 2%; a difference stops the run with exit status 3; a question a system answers with an error is a result, its cell is `n/a` and the
    generated text says which question failed and the message), two more untimed runs, then `--runs` (7) timed runs
    with the engines interleaved and the first rotating each run. A timing is the wall time of one request over a persistent local connection, one client, until the
    last byte; Elasticsearch is timed with its request cache off and, as a separate engine, on. The plan nodes of the PostgreSQL engines are recorded.
-4. Cold runs (`cold`): for each engine and query, restart the container, then time the first run (`--cold-runs`, 3); the operating system's page cache is not dropped
-   (that needs root), so this is "first run after a restart", not a cold disk.
+4. Cold runs (`cold`, at the budget of the load only): one restart of each server, then for each engine and query `--cold-runs` (3; the final pass 2) times: empty the server's memory (PostgreSQL and Citus `pg_buffercache_evict_all`, ClickHouse `SYSTEM DROP ... CACHE`), open a new connection and time the first run. Elasticsearch restarts its container for every run (`COLD_HOW` in `steps/store.py`: emptied memory was less cold than a restart, 208 against 469 ms). `--cold-check` (default question 06) also times the other way for every engine and prints both, so the equivalence is measured in every run. The operating system's page cache is not dropped (that needs root), so this is "first run after the server's memory was emptied", not a cold disk.
 5. Updates (`updates`, the first size only; `--update-sizes`; at the budget of the load, `--cpus`): update 1% and 10% of the rows and delete 5% by primary key, in batches of 1,000, each system by the path its
    documentation recommends (listed in docs/BENCHMARKS.md with the official pages), the state compared with PostgreSQL's after each step; single-row changes timed until
    a query sees them; the revenue-per-month query timed under 0, 1,000 and 10,000 updated rows per second (a second connection, batches of 100 rows); sizes before,
    after the changes and after a maintenance step (`VACUUM`, `OPTIMIZE ... FINAL`, `_forcemerge`). A system that fails is a row of the results, not a gap.
 
-The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. Options: `--sizes`, `--cpus` (the quota and thread budget of the load and the updates, 3), `--cpus-list` (the budgets timed, 1,3), `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
+The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads do not. A stage starts with one wait for a quiet host (`scripts/quiet.sh`, the containers idle and merged out) and nothing is waited for between cells; every timed window is judged by the work of others in it (`Window` in `steps/store.py`: `/proc/stat` and the docker volume's `/proc/diskstats` less the containers' cgroups, this process tree and the docker daemon, over the idle host's baseline: NOISY above 0.25 core or 2 MiB/s), recorded per cell (`window_s`, `external_cpu`, `external_io`, `cpu_cores` of each engine's own requests) and re-measured once at the end of the stage. `bench/bench store` logs each stage's time against its budget and flags OVER BUDGET beyond 1.3x (`S_BUDGET_STRICT=1` stops). `--warmups N` sets the untimed runs before the timed ones. Options: `--sizes`, `--cpus` (the quota and thread budget of the load and the updates, 3), `--cpus-list` (the budgets timed, 1,3), `--memory`, `--runs`, `--cold-runs`, `--update-sizes`,
 `--engines pg,sift,sift_table,citus,es,es_cached,ch` (for `updates`: `pg,sift,sift_table,es,ch,ch_mut,ch_rmt`: a columnar table has no `UPDATE` or `DELETE`, so Citus is not part of it), `--queries 01,03,search_count`, `--docs`, `--out`;
 `STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `verify`, `run`, `cold`, `updates`, `merge`,
 `render`); `store.sh setup|run|cold|updates` keep the containers up for development.
