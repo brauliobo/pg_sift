@@ -690,8 +690,9 @@ typedef struct VblockTest
 	Relation	rel;
 	SiftTblRel *st;
 	Snapshot	snapshot;
-	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (frozen rows: the tombstones decide) */
+	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (the tombstones decide, and tag: the insertion) */
 	uint64		gen;
+	const SiftTblTag *tag;		/* of the group that holds the vblock, if it has one */
 } VblockTest;
 
 static bool
@@ -708,20 +709,44 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 		sift_tbl_rowver(&rv, tid, rec);
 		return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 	}
-	rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false,.xmin = InvalidTransactionId};
+	sift_tbl_group_rowver(&rv, sift_key_from_tid(tid), t->tag);
 	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once (the BM25 index's heap check) */
+/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once; a group the snapshot does not see is no row at all */
 int
-sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
+sift_tbl_filter_page_tags(Relation rel, Snapshot snapshot, const SiftTblTags *tags, BlockNumber vblock, uint64 *offmask)
 {
 	PGAlignedBlock copy;
 	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data};
 
 	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
+	{
 		t.copy = NULL;
+		t.tag = sift_tbl_tag_of_sb(tags, vblock / SIFT_SB_PAGES);
+		if (t.tag != NULL && snapshot->snapshot_type == SNAPSHOT_MVCC && !sift_tbl_tag_visible(rel, snapshot, t.tag))
+		{
+			memset(offmask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
+			return 0;
+		}
+	}
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
+}
+
+/* The same for a reader that goes by the directory this backend holds (the BM25 index's heap check) */
+int
+sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
+{
+	SiftTblRel *st = sift_tbl_rel(rel);
+
+	if (st->curtags == NULL || st->curtags_version != st->dir.version)
+	{
+		if (st->curtags)
+			pfree(st->curtags);
+		st->curtags = sift_tbl_tags_build(rel, st, &st->dir, st->cxt);
+		st->curtags_version = st->dir.version;
+	}
+	return sift_tbl_filter_page_tags(rel, snapshot, st->curtags, vblock, offmask);
 }
 
 bool
@@ -857,8 +882,9 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row);
 	for (int i = 0; i < cnt; i++)
 	{
-		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = InvalidTransactionId};
+		SiftTblRowVer rv;
 
+		sift_tbl_group_rowver(&rv, sift_key_from_tid(&row[i]->t_self), sift_tbl_gscan_tag(s->g, vblock));
 		if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			bitmap_add(s, row[i]);
 		else
@@ -1184,7 +1210,7 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 			continue;
 		}
 		tup = s->arows[s->ari++];
-		rv = (SiftTblRowVer) {.key = sift_key_from_tid(&tup->t_self),.wbuf = false,.xmin = InvalidTransactionId};
+		sift_tbl_group_rowver(&rv, sift_key_from_tid(&tup->t_self), sift_tbl_gscan_tag(s->g, ItemPointerGetBlockNumberNoCheck(&tup->t_self)));
 		if (!sift_tbl_visible(rel, s->st, SnapshotSelf, &rv))
 		{
 			*deadrows += s->aweight;
