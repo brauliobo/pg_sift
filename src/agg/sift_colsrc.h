@@ -193,7 +193,7 @@ typedef struct SiftSrcZone
  */
 typedef __int128 SiftSrcI128 __attribute__((aligned(8)));
 
-#define SIFT_SRC_MAX_DIMS		16
+#define SIFT_SRC_MAX_DIMS		32
 #define SIFT_SRC_MAX_MEAS		8
 
 typedef struct SiftSrcUnitAgg

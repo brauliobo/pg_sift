@@ -58,7 +58,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	if (!sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
-	blob = sift_cseg_cube(seg, u, &len);
+	blob = sift_cseg_dim_cube(seg, u, dim, &len);
 	if (blob == NULL)
 		return false;
 	found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out);
@@ -82,14 +82,16 @@ sift_col_pagg_spec(Relation index, SiftCPaggSpec *spec)
 
 /* ---------- SQL: sift.col_unit_agg, sift.col_unit_hist (debug and test hooks) ---------- */
 
+/* The leaf with this attribute name or shredder path; a list of scalars or a map and its element leaf share a path: scalar takes the element leaf */
 static int
-find_leaf(Relation index, const char *name)
+find_leaf(Relation index, const char *name, bool scalar)
 {
 	const SiftColSchema *sc = sift_col_rel(index)->schema;
 	TupleDesc	desc = RelationGetDescr(index);
 
 	for (int c = 0; c < sc->ncols; c++)
-		if (strcmp(sc->cols[c].path[0] ? sc->cols[c].path : NameStr(TupleDescAttr(desc, sc->cols[c].attno - 1)->attname), name) == 0)
+		if ((!scalar || sc->cols[c].kind == SIFT_COLK_SCALAR) &&
+			strcmp(sc->cols[c].path[0] ? sc->cols[c].path : NameStr(TupleDescAttr(desc, sc->cols[c].attno - 1)->attname), name) == 0)
 			return c;
 	ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("index \"%s\" has no leaf \"%s\"", RelationGetRelationName(index), name)));
 	return -1;
@@ -206,7 +208,7 @@ sift_col_unit_aggs_sql(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	pagg_open(&ps, PG_GETARG_OID(0));
-	leaf = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)));
+	leaf = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), false);
 	while (sift_col_next(ps.src, &unit))
 	{
 		SiftColSegment *seg;
@@ -269,9 +271,9 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	pagg_open(&ps, PG_GETARG_OID(0));
-	dim = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)));
+	dim = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), true);
 	if (!PG_ARGISNULL(2))
-		meas = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(2)));
+		meas = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(2)), true);
 	while (sift_col_next(ps.src, &unit))
 	{
 		SiftColSegment *seg;
@@ -284,7 +286,7 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 		bool		exact;
 		int			slot;
 
-		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_cube(seg, u, &len)) == NULL)
+		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_dim_cube(seg, u, dim, &len)) == NULL)
 			continue;
 		if (!sift_cpagg_decode(seg->schema, blob, len, CurrentMemoryContext, &h))
 			elog(ERROR, "sift_col: the cube of unit %u does not decode", u);
