@@ -890,7 +890,7 @@ stub_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 
 	if (!src->vis_open)
 	{
-		sift_vis_begin(&src->vis, src->heap, src->snapshot);
+		sift_vis_begin(&src->vis, src->heap, src->snapshot, NULL, 0);
 		src->vis_open = true;
 	}
 	sift_vis_sb_mask(&src->vis, unit->sb, allvis);

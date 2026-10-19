@@ -126,7 +126,8 @@ extern void sift_seg_live_totals(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl
 
 /*
  * Do the dfs the segment's terms carry (info.ldf) count its live docs: its table of dead postings is the one of the liveness rows
- * now and was when the segment was opened (a VACUUM changes the rows first, the table after). False for a vacuumed segment of format 1
+ * now and was when the segment read its first df (a VACUUM changes the rows first, the table after, in its cleanup). False for a
+ * vacuumed segment of format 1
  */
 extern bool sift_seg_live_stable(SiftSegment *seg);
 
