@@ -215,7 +215,7 @@ job_coldiff() {
 job_sqlite() {
 	cd sqlite && nice make -j2 && nice make -j2 isa-check && python3 -I tests/smoke.py build/sift "$(cat VERSION)" && nice make -j2 span-test col-smoke
 }
-job_mariadb() { SERIES=${RELEASE_MARIADB_SERIES:-11.8} DOCKER_CPUS=2 "$REPO/scripts/package-mariadb.sh" all "$HEAD_SHA" "$W/mariadb"; }
+job_mariadb() { mariadb/tests/regex_info.sh && SERIES=${RELEASE_MARIADB_SERIES:-11.8} DOCKER_CPUS=2 "$REPO/scripts/package-mariadb.sh" all "$HEAD_SHA" "$W/mariadb"; }
 job_upgrade() {
 	local U=$W/upgrade port=$((PORT0 + 3)) sock=$W/upgrade/sock ans
 	export SIFT_TESTING=
