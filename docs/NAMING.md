@@ -77,7 +77,7 @@ Rejected:
 
 ## Marketing: what can be said from the code and the tests
 
-About pg_sift (verified in `test/sql/mutable_lifecycle.sql`, `test/isolation/specs/facets_writes.spec`, `docs/COL-TAM.md` section 3):
+About pg_sift (verified in `test/sql/wbuf_lifecycle.sql`, `test/isolation/specs/facets_writes.spec`, `docs/COL-TAM.md` section 3):
 - A row is searchable when its transaction commits: `aminsert` appends it to the write buffer under WAL and every scan reads the write
   buffer with the segments (DESIGN.md (c)). There is no refresh step, and an update needs no merge to become correct.
 - Visibility is the heap's MVCC; for `sift_table` it is native: row version with `xmin`, tombstone log entry per delete or update.
