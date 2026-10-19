@@ -153,14 +153,14 @@ tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
 installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1 "$S/pgtest.sh" regress "$t"; done; }
 # installcheck_batches N TEST...: the short tests, N to a pg_regress run in one database like make installcheck runs them: a run costs 0.3 s of
-# CPU and lane time before its first statement, which is more than most of these tests need. The tests with a sift_table keep a database
-# of their own: VACUUM seals only the rows older than every snapshot of the database, and an autovacuum worker on the tables an earlier test
-# left behind holds one
+# CPU and lane time before its first statement, which is more than most of these tests need. The tests that VACUUM keep a database of
+# their own: VACUUM removes (and a sift_table seals) only the rows older than every snapshot of the database, and an autovacuum worker on
+# the tables an earlier test left behind holds one
 installcheck_batches() {
 	local n=$1 i=0 b=() t
 	shift
 	for t in "$@"; do
-		if grep -qi 'using sift_table' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
+		if grep -qiE 'using sift_table|\<vacuum\>' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
 		b+=("$t")
 		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
 	done
