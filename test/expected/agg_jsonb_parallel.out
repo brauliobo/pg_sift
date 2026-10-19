@@ -84,8 +84,8 @@ SELECT n, mode, same FROM p_compare();
   6 | parallel | t
   7 | parallel | t
   8 | parallel | t
-  9 | parallel | t
- 10 | parallel | t
+  9 | serial   | t
+ 10 | serial   | t
  11 | serial   | t
  12 | parallel | t
  13 | parallel | t

@@ -4314,9 +4314,9 @@ inline_text_cost(AggCtx *c, SiftAggSpec *s)
 static double
 preagg_share(AggCtx *c, SiftAggSpec *s)
 {
-	int			dim;
+	SiftAggPaShape shape;
 
-	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &dim))
+	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape))
 		return 0.0;
 	return Min(Max(c->stats.allvisible_frac, 0.0), 1.0);
 }

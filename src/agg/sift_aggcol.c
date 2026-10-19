@@ -49,8 +49,9 @@ typedef struct ColSource
 	int			nspred;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
-	MemoryContext pcx;			/* the histogram of the last unit_hist */
+	MemoryContext pcx;			/* the histogram or rollup of the last unit_hist / unit_rollup */
 	SiftSrcDict hdict;			/* its dictionary */
+	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];	/* the dictionaries of the dims of the last unit_rollup */
 } ColSource;
 
 #define COL_MAX_STR_PRUNE	16
@@ -918,6 +919,19 @@ col_preagg(Relation index, SiftSrcPreagg *pa)
 			pa->dim[pa->ndims].meas[m] = spec.dim[d].meas[m];
 		pa->ndims++;
 	}
+	for (int r = 0; r < spec.nrollups; r++)
+	{
+		const SiftCPaggRollup *ru = &spec.rollup[r];
+
+		pa->rollup[pa->nrollups].list = ru->list;
+		pa->rollup[pa->nrollups].ndims = ru->ndims;
+		pa->rollup[pa->nrollups].nmeas = ru->nmeas;
+		for (int j = 0; j < ru->ndims; j++)
+			pa->rollup[pa->nrollups].dim[j] = ru->dim[j];
+		for (int m = 0; m < ru->nmeas; m++)
+			pa->rollup[pa->nrollups].meas[m] = ru->meas[m];
+		pa->nrollups++;
+	}
 }
 
 static bool
@@ -995,6 +1009,54 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return true;
 }
 
+static bool
+col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, SiftSrcRollup *h)
+{
+	ColSource  *src = impl;
+	SiftCRollup r;
+	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
+
+	if (src->pcx == NULL)
+		src->pcx = AllocSetContextCreate(src->cxt, "sift_aggcol histogram", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextReset(src->pcx);
+	if (!sift_col_unit_rollup(&src->unit, list, src->pcx, &r, dict))
+		return false;
+	memset(h, 0, sizeof(*h));
+	h->ntuples = r.ntuples;
+	h->ndims = r.ndims;
+	h->count = r.count;
+	h->nmeas = r.nmeas;
+	for (int j = 0; j < r.ndims; j++)
+	{
+		h->dim[j] = r.dim[j];
+		h->key[j] = r.key[j];
+		h->isnull[j] = r.isnull[j];
+		if (sift_col_def(src->cs, r.dim[j])->store == SIFT_COLS_STR)
+		{
+			src->rdict[j] = (SiftSrcDict) {(const void *) (uintptr_t) dict[j].id, dict[j].n, dict[j].off, dict[j].bytes};
+			h->dict[j] = &src->rdict[j];
+		}
+	}
+	for (int m = 0; m < r.nmeas; m++)
+	{
+		h->meas[m] = r.meas[m];
+		h->nn[m] = r.nn[m];
+		h->sum[m] = r.sum[m];
+		h->sumf[m] = r.sumf[m];
+		h->min[m] = r.min[m];
+		h->max[m] = r.max[m];
+		h->minf[m] = r.minf[m];
+		h->maxf[m] = r.maxf[m];
+	}
+	return true;
+}
+
+static bool
+col_unit_rollup_miss(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_col_unit_rollup_miss(&((ColSource *) impl)->unit);
+}
+
 static const SiftSrcProvider col_provider = {
 	.owns_index = col_owns_index,
 	.owns_table = col_owns_table,
@@ -1027,6 +1089,8 @@ static const SiftSrcProvider col_provider = {
 	.unit_exact = col_unit_exact,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
+	.unit_rollup = col_unit_rollup,
+	.unit_rollup_miss = col_unit_rollup_miss,
 };
 
 void

@@ -46,32 +46,83 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	return !(a->zflags & SIFT_COLZ_OVERFLOW);
 }
 
+static void
+corrupt_cube(SiftColSegment *seg, uint32 u)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
+					(unsigned long long) seg->entry.gen, u)));
+}
+
+/* The histogram of dim of a stored unit: from the cube, or the rollup of its list added up by dim. false: the unit has none */
+static bool
+seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *out)
+{
+	uint32		len;
+	const uint8 *blob = sift_cseg_dim_cube(seg, u, dim, &len);
+	SiftCRollup r;
+	int			found;
+
+	if (blob == NULL)
+		return false;
+	if (seg->schema->cols[dim].parent < 0)
+	{
+		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
+			corrupt_cube(seg, u);
+		return found > 0;
+	}
+	if (!sift_cpagg_rollup_decode(seg->schema, blob, len, mcxt, &r))
+		corrupt_cube(seg, u);
+	return sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, out);
+}
+
 bool
 sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHistDim *out, SiftColDict *dict)
+{
+	SiftColSegment *seg;
+	uint32		u;
+
+	if (!sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	if (!seg_hist(seg, u, dim, mcxt, out))
+		return false;
+	if (dict && seg->schema->cols[dim].store == SIFT_COLS_STR)
+		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
+	return true;
+}
+
+bool
+sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, SiftCRollup *r, SiftColDict *dict)
 {
 	SiftColSegment *seg;
 	uint32		u,
 				len;
 	const uint8 *blob;
-	int			found;
 
 	if (!sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
-	blob = sift_cseg_dim_cube(seg, u, dim, &len);
-	if (blob == NULL)
+	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out);
-	if (found < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
-						(unsigned long long) seg->entry.gen, u)));
-	if (found == 0)
-		return false;
-	if (dict && seg->schema->cols[dim].store == SIFT_COLS_STR)
-		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
+	if (!sift_cpagg_rollup_decode(seg->schema, blob, len, mcxt, r))
+		corrupt_cube(seg, u);
+	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
+	for (int j = 0; j < r->ndims; j++)
+		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
+			sift_cdict_view(sift_cseg_dict(seg, r->dim[j]), seg->entry.gen << 8 | r->dim[j], &dict[j]);
 	return true;
+}
+
+bool
+sift_col_unit_rollup_miss(const SiftColUnit *unit)
+{
+	SiftColSegment *seg;
+	uint32		u;
+
+	/* a segment of minor 3 stays as written, readable by pg_sift 3.0: its rollups come with the merge that rewrites it */
+	return sift_col_unit_stored(unit, &seg, &u) && seg->entry.format >= 4 && sift_col_rollup_request(seg->index, seg->entry.gen);
 }
 
 void
@@ -277,20 +328,14 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 	while (sift_col_next(ps.src, &unit))
 	{
 		SiftColSegment *seg;
-		uint32		u,
-					len;
-		const uint8 *blob;
-		SiftCHist	h;
-		const SiftCHistDim *d;
+		uint32		u;
+		SiftCHistDim hd;
+		const SiftCHistDim *d = &hd;
 		const SiftColDef *dd = &sift_col_rel(ps.index)->schema->cols[dim];
 		bool		exact;
 		int			slot;
 
-		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = sift_cseg_dim_cube(seg, u, dim, &len)) == NULL)
-			continue;
-		if (!sift_cpagg_decode(seg->schema, blob, len, CurrentMemoryContext, &h))
-			elog(ERROR, "sift_col: the cube of unit %u does not decode", u);
-		if ((d = sift_cpagg_find(&h, dim)) == NULL)
+		if (!sift_col_unit_stored(&unit, &seg, &u) || !seg_hist(seg, u, dim, CurrentMemoryContext, &hd))
 			continue;
 		slot = meas >= 0 ? sift_cpagg_meas_slot(d, meas) : -1;
 		exact = sift_col_unit_preagg_ok(&unit);

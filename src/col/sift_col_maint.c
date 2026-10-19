@@ -37,6 +37,10 @@
 
 #define corrupt SIFT_CORRUPT
 
+#ifdef SIFT_TESTING
+int			sift_test_col_rollup_panic_armed = 0;
+#endif
+
 /* ---------- promotion ---------- */
 
 static void
@@ -183,6 +187,10 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		sift_colw_finish(w, &neu);
 		sift_wt_finish(wt);
 	}
+#ifdef SIFT_TESTING
+	if (sift_test_col_rollup_panic_armed)
+		elog(PANIC, "sift test: the rollup refresh stops before the new segment replaces the old one");
+#endif
 	sift_maint_replace(index, mi.gens, n, w ? &neu : NULL, mi.release, mi.nrelease,
 					   psprintf("merged %d column segments of", n), start, w ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
