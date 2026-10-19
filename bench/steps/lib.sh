@@ -315,15 +315,37 @@ run_exit() { # EXIT: the state of the run and of the stage that was running
   [[ -z ${CURRENT_STAGE:-} ]] || stage_state "$CURRENT_STAGE" "$( (( rc == EX_RESUMABLE )) && echo interrupted || echo failed )" "$CURRENT_KEY" "exit $rc"
   [[ ! -d $(run_dir) ]] || run_state "$( (( rc == 0 )) && echo 'done' || { (( rc == EX_RESUMABLE )) && echo interrupted || echo failed; } )" "exit $rc"
 }
-run_reclaim() { # at the start: runs whose process is gone but whose state says running crashed (killed, rebooted): their containers go, their stages stay for `resume`
+ppid() { sed -E 's/^.*\) [A-Za-z] ([0-9]+) .*/\1/' "/proc/$1/stat" 2>/dev/null; }   # PID: its parent
+run_procs() { # RUN-ID: the processes that carry the run's id in their environment (BENCH_RUN_ID) and are not this shell or below it: the run's own, orphans of a killed attempt included
+  local e p q
+  for e in /proc/[0-9]*/environ; do
+    p=${e#/proc/}; p=${p%/environ}
+    grep -qaxz "BENCH_RUN_ID=$1" "$e" 2>/dev/null || continue
+    for (( q = p; q > 1; q = $(ppid "$q") )); do [[ $q == "$$" ]] && continue 2; done
+    echo "$p"
+  done
+  return 0
+}
+run_stop() { # RUN-ID: the run's processes (not this one) stop: TERM, then KILL after 3 s
+  local p left
+  for p in $(run_procs "$1"); do kill -TERM "$p" 2>/dev/null || true; done
+  for _ in 1 2 3 4 5 6; do left=$(run_procs "$1"); [[ -z $left ]] && return 0; sleep 0.5; done
+  for p in $left; do kill -KILL "$p" 2>/dev/null || true; done
+}
+run_alive() { # RUN-DIR: the process of a run that says it is running is there (a bench, by its command line)
+  local pid; [[ -s $1/pid ]] || return 1
+  pid=$(<"$1/pid"); [[ -d /proc/$pid && $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) == *bench* ]]
+}
+run_reclaim() { # at the start: a run whose process is gone but whose state says running crashed (killed, rebooted): what it left running stops and its containers go, its finished stages stay for `resume`
   local d id
   for d in "${RUNS_DIR:-$BENCH/out}"/run-*/.run; do
     [[ -s $d/pid && $(cut -f1 "$d/state" 2>/dev/null) == running ]] || continue
-    [[ -d /proc/$(<"$d/pid") && $(tr '\0' ' ' <"/proc/$(<"$d/pid")/cmdline" 2>/dev/null) == *bench* ]] && continue
-    id=$(basename "$(dirname "$d")")
-    log "$id: its process $(<"$d/pid") is gone (state running): crashed; removing its containers, \`bench/bench resume ${id#run-}\` continues it"
+    run_alive "$d" && continue
+    id=$(basename "$(dirname "$d")"); id=${id#run-}
+    log "run $id: its process $(<"$d/pid") is gone (state running): crashed; its processes and containers are removed, \`bench/bench resume $id\` continues it"
     printf 'crashed\t%s\t\n' "$(date -u +%FT%TZ)" | atomic_write "$d/state"
-    run_containers "${id#run-}" | xargs -r docker rm -fv >/dev/null
+    run_stop "$id"
+    run_containers "$id" | xargs -r docker rm -fv >/dev/null
   done
 }
 run_containers() { docker ps -aq --filter "label=sift-run=$1" 2>/dev/null || true; }   # RUN-ID: the containers a run started (they carry the label)

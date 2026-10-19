@@ -413,6 +413,7 @@ new_out() { # the run directory (--run-id ID or --out DIR names it, else a new o
   export BENCH_RUN_ID=${OUT##*/run-}
   ln -sfn "$OUT" "$HERE/out/latest"
   exec > >(tee -a "$OUT/bench.log") 2>&1
+  if run_alive "$OUT/.run" && [[ $(<"$OUT/.run/pid") != "$$" ]] && [[ $(cut -f1 "$OUT/.run/state") == running ]]; then die "run $BENCH_RUN_ID is running (pid $(<"$OUT/.run/pid"))"; fi
   [[ ! -s $OUT/.run/argv ]] || echo "run $BENCH_RUN_ID: continuing (state $(cut -f1 "$OUT/.run/state" 2>/dev/null || echo unknown)), what finished with the same key is kept"
   run_reclaim
   local args=("${ARGV[@]}"); [[ " ${ARGV[*]} " == *" --run-id "* ]] || args+=(--run-id "$BENCH_RUN_ID")
@@ -438,6 +439,7 @@ cmd_clean_run() { # --run-id ID: what that run started and nothing else: its pro
   local d=$HERE/out/run-$run_id pid
   [[ -d $d ]] || die "no run $run_id (bench/out/run-*)"
   if [[ -s $d/.run/pid ]]; then pid=$(<"$d/.run/pid"); [[ ! -d /proc/$pid ]] || [[ $(tr '\0' ' ' <"/proc/$pid/cmdline") != *bench* ]] || { kill_tree "$pid"; echo "stopped $pid"; }; fi
+  run_stop "$run_id"
   run_containers "$run_id" | xargs -r docker rm -fv >/dev/null
   rm -rf "$d"
   echo "removed the run $run_id (its containers and $d); datasets, data volumes and the caches stay (clean --all)"
