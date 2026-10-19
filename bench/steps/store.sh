@@ -50,7 +50,7 @@ CITUS_PORT=$((PORT + 4))
 PG_FLAGS=(-c shared_buffers=2GB -c effective_cache_size=6GB -c work_mem=64MB -c maintenance_work_mem=512MB -c max_wal_size=8GB -c jit=off
           -c max_worker_processes=16 -c max_parallel_workers=16 -c parallel_setup_cost=100 -c parallel_tuple_cost=0.01
           -c min_parallel_table_scan_size=1MB -c min_parallel_index_scan_size=64kB)
-export STORE_NAME=$NAME STORE_PORT=$PORT STORE_CPUS=$CPUS STORE_CPUS_LIST=${POINTS// /,} STORE_MEMORY=$MEMORY STORE_DATA=$DATA STORE_CACHE=$CACHE_DIR STORE_PG_FLAGS="${PG_FLAGS[*]}" \
+export STORE_BASELINE=$OUT/baseline.json STORE_BASELINE_SEC=${S_BASELINE_SEC:-$P_BASELINE_SEC} STORE_NAME=$NAME STORE_PORT=$PORT STORE_CPUS=$CPUS STORE_CPUS_LIST=${POINTS// /,} STORE_MEMORY=$MEMORY STORE_DATA=$DATA STORE_CACHE=$CACHE_DIR STORE_PG_FLAGS="${PG_FLAGS[*]}" \
        STORE_PG_IMAGE STORE_ES_IMAGE STORE_CH_IMAGE STORE_CITUS_IMAGE
 RUN_ENGINES=${S_ENGINES:-} UPD_ENGINES='' UNTIMED='' PLANNED=''   # the lanes of the load, warm and cold steps, of the updates, and the reference only (load_plan)
 declare -A VOL KEY REUSE                                           # per container: its data volume, the key of what it holds, whether that load finished (data_keys)
