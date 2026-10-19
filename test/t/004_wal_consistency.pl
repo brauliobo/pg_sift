@@ -69,14 +69,32 @@ sub rows
 my $no_inconsistency = qr/inconsistent page found|FATAL:\s+inconsistent/;
 
 # phase 1: primary and hot standby under load with page consistency checking
+# a slot keeps the WAL the standby has not received: after the primary's crash recovery its checkpoint removes the WAL before its redo point
+# ("requested WAL segment has already been removed"). It reserves the WAL when it is created, before the backup: a checkpoint saves the
+# position of a slot that reserves later, and a crash comes before the first one
+$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('wc_standby', true)");
 $primary->backup('base');
-# a slot keeps the WAL the standby has not replayed: with consistency checking it replays slower than the primary writes, and after the
-# primary's crash recovery its checkpoint removed the segment the standby needed ("requested WAL segment has already been removed")
-$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('wc_standby')");
 my $standby = PostgreSQL::Test::Cluster->new('wc_standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
 $standby->append_conf('postgresql.conf', "primary_slot_name = 'wc_standby'");
 $standby->start;
+
+# The standby is a segment behind when the primary crashes: it stops receiving, the primary moves on to the next segment and is killed. The
+# checkpoint that ends its recovery removes the WAL before its redo point, so only the slot keeps the segment the standby needs. A checkpoint
+# is what saves a slot's position, and none has run since it was created (the next comes after about five segments of the workload below,
+# which a slow host does not reach before the crash of phase 2): the slot must hold the WAL from its creation, not from its first checkpoint.
+$primary->wait_for_catchup($standby);
+my $conninfo = $primary->connstr . ' application_name=wc_standby';
+$standby->append_conf('postgresql.conf', "primary_conninfo = ''");
+$standby->reload;
+$standby->poll_query_until('postgres', 'SELECT count(*) = 0 FROM pg_stat_wal_receiver') or die 'the walreceiver did not stop';
+$primary->safe_psql('postgres', "INSERT INTO $t VALUES (-2, 'w1 behind'); SELECT pg_switch_wal()");
+kill9_wait($primary);
+$primary->start;
+$standby->append_conf('postgresql.conf', "primary_conninfo = '$conninfo'");
+$standby->reload;
+$primary->wait_for_catchup($standby);
+is(rows($standby), rows($primary), 'a standby a segment behind a crashed primary follows its recovery');
 
 my $start_lsn = $primary->lsn('insert');
 my $w = workload($primary, $secs);
