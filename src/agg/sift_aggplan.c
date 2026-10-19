@@ -69,6 +69,7 @@ typedef enum FuncKind
 	FK_NONE,
 	FK_RECORDSET,				/* jsonb_to_recordset(array) AS t(f type, ...) */
 	FK_ELEMENTS,				/* jsonb_array_elements(array) */
+	FK_ELEMENTS_TEXT,			/* jsonb_array_elements_text(array of strings): one text column, the element */
 	FK_EACH,					/* jsonb_each(object) */
 	FK_EACH_TEXT				/* jsonb_each_text(object) */
 } FuncKind;
@@ -478,6 +479,8 @@ func_var_leaf(AggCtx *c, Var *v)
 			if (v->varattno == 1)
 				return child_leaf(c, c->group, "key", TEXTOID);
 			return -1;
+		case FK_ELEMENTS_TEXT:		/* the element of an array of strings is the one unnamed child of the array */
+			return v->varattno == 1 && v->vartype == TEXTOID ? child_leaf(c, c->group, "", TEXTOID) : -1;
 		default:
 			return -1;
 	}
@@ -3133,6 +3136,8 @@ func_kind_of(RangeTblFunction *f)
 			return FK_RECORDSET;
 		case F_JSONB_ARRAY_ELEMENTS:
 			return FK_ELEMENTS;
+		case F_JSONB_ARRAY_ELEMENTS_TEXT:
+			return FK_ELEMENTS_TEXT;
 		case F_JSONB_EACH:
 			return FK_EACH;
 		case F_JSONB_EACH_TEXT:
