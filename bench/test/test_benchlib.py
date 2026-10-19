@@ -107,6 +107,30 @@ class CacheRules(unittest.TestCase):
             benchlib.check_homogeneous([e, dict(e, fp='other')], self.fp)
 
 
+class Cores(unittest.TestCase):
+    def test_cpu_list(self):
+        self.assertEqual(benchlib.cpu_list('0-2,8'), [0, 1, 2, 8])
+        self.assertEqual(benchlib.cpu_list('5\n'), [5])
+
+    def test_physical_cores_are_the_first_thread_of_each_sibling_group(self):
+        sib = {f'/sys/devices/system/cpu/cpu{i}/topology/thread_siblings_list': f'{i % 4},{i % 4 + 4}\n' for i in range(8)}
+        self.assertEqual(benchlib.physical_cores(read=lambda p: sib.get(p, ''), names=[f'cpu{i}' for i in range(8)] + ['cpufreq', 'cpuidle']), [0, 1, 2, 3])
+
+    def test_cpuset_plan_is_disjoint_equal_and_moves(self):
+        cores = list(range(8))
+        a, b = benchlib.cpuset_plan(cores, 3, 2, 0), benchlib.cpuset_plan(cores, 3, 2, 1)
+        for plan in (a, b):
+            flat = [c for s in plan for c in s]
+            self.assertEqual((len(plan), {len(s) for s in plan}, len(set(flat))), (2, {3}, 6))
+        self.assertNotEqual(a, b)
+        self.assertEqual(set(benchlib.cpuset_plan(cores, 1, 8, 5)[0]) | set(range(8)), set(range(8)))
+        with self.assertRaises(ValueError):
+            benchlib.cpuset_plan(cores, 3, 3)
+
+    def test_how_many_fit(self):
+        self.assertEqual((benchlib.max_parallel(list(range(8)), 3), benchlib.max_parallel(list(range(8)), 1), benchlib.max_parallel(list(range(8)), 8)), (2, 6, 1))
+
+
 class Rows(unittest.TestCase):
     def test_replace_rows_never_keeps_both_measurements(self):
         old = [{'tier': 't', 'engine': 'es', 'class': '05', 'v': 1}, {'tier': 't', 'engine': 'es', 'class': '06', 'v': 2}, {'tier': 't', 'engine': 'ch', 'class': '05', 'v': 3}]

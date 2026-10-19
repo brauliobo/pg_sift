@@ -139,6 +139,39 @@ def plan_engines(lanes, hits, reference='pg'):
     return [e for e in lanes if e in measure or e in untimed], untimed
 
 
+def cpu_list(text):
+    """'0-2,8' -> [0, 1, 2, 8] (the format of the kernel's cpu lists)"""
+    out = []
+    for part in filter(None, text.strip().split(',')):
+        lo, _, hi = part.partition('-')
+        out += range(int(lo), int(hi or lo) + 1)
+    return out
+
+
+def physical_cores(read=read_text, names=None):
+    """the first logical CPU of each physical core, from the sibling lists of the kernel (on a Ryzen 7 9700X, cpus i and i + 8 are one core): the CPUs a set of cores uses
+    without two engines sharing a core's execution units"""
+    names = os.listdir('/sys/devices/system/cpu') if names is None else names
+    firsts = {min(cpu_list(read(f'/sys/devices/system/cpu/{d}/topology/thread_siblings_list'))) for d in names if d[:3] == 'cpu' and d[3:].isdigit()
+              if read(f'/sys/devices/system/cpu/{d}/topology/thread_siblings_list').strip()}
+    return sorted(firsts)
+
+
+def cpuset_plan(cores, budget, n, rotation=0):
+    """n disjoint sets of `budget` physical cores each, taken round the ring of cores from a start that moves by one set per `rotation`, so that over the cells of a pass no engine
+    always gets the same cores; ValueError when n sets of that size do not fit"""
+    if n * budget > len(cores):
+        raise ValueError(f'{n} engines of {budget} CPUs need {n * budget} physical cores, the host has {len(cores)}')
+    start = (rotation * budget) % len(cores)
+    ring = cores[start:] + cores[:start]
+    return [ring[i * budget:(i + 1) * budget] for i in range(n)]
+
+
+def max_parallel(cores, budget, reserve=2):
+    """how many engines of `budget` CPUs run at once on disjoint physical cores, `reserve` cores left to the clients, the docker daemon and the rest of the host"""
+    return max(1, (len(cores) - reserve) // budget)
+
+
 def check_homogeneous(entries, fp):
     """a pass never mixes cells of two hosts: every cached entry must carry this host's fingerprint"""
     for e in entries:
