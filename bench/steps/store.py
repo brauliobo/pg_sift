@@ -2520,17 +2520,21 @@ def cmd_table(args):
 
 
 def cmd_compare(args):
-    """two result files side by side: the warm median of every question and system in each result set both have, and the ratio B / A (below 1: B is faster)"""
+    """two result files side by side: the warm median of every question and system in each result set both have, the ratio B / A (below 1: B is faster) with the 95% interval of the
+    ratio of the medians of the runs, and * where the interval excludes 1 and a Mann-Whitney test of the runs rejects equality (benchlib.changed)"""
     A, B = Results(args.a), Results(args.b)
-    body = []
+    body, flagged = [], 0
     for tier in [t for t in A.all_tiers if t in B.all_tiers]:
         for q in A.queries(tier):
             for e in all_lanes(A, tier):
-                a, b = (X.num(tier, e, q, 'warm', 'latency_ms') for X in (A, B))
-                if a and b:
-                    body.append([tier, q, QUERY_TITLES[q][:44], LANES[e][0], ms(a), ms(b), f'{b / a:.2f}' + (' *' if abs(b / a - 1) > 0.1 else '')])
-    print('\n'.join(md_table(['set', 'q', 'question', 'system', 'A ms', 'B ms', 'B / A'], body, ['---'] * 4 + ['---:'] * 3)))
-    print('\n* changed by more than 10%')
+                ra, rb = (X.get(tier, e, q, 'warm', 'latency_ms') for X in (A, B))
+                if not (ra and rb and ra.get('values') and rb.get('values')):
+                    continue
+                ratio, lo, hi, p, diff = benchlib.changed(ra['values'], rb['values'])
+                flagged += diff
+                body.append([tier, q, QUERY_TITLES[q][:44], LANES[e][0], ms(ra['value']), ms(rb['value']), f'{ratio:.2f} [{lo:.2f}, {hi:.2f}]' + (' *' if diff else ''), f'{p:.3f}'])
+    print('\n'.join(md_table(['set', 'q', 'question', 'system', 'A ms', 'B ms', 'B / A [95%]', 'p'], body, ['---'] * 4 + ['---:'] * 4)))
+    print(f'\n* {flagged} of {len(body)} cells changed (interval of the ratio excludes 1 and Mann-Whitney p < 0.05)')
     return 0
 
 
