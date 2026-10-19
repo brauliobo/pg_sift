@@ -366,6 +366,7 @@ bench/bench store all --sizes 1000000 --cold-runs 0 --update-sizes none      # o
 bench/bench compare A.json B.json       # two runs: the ratio of every warm median with its 95% interval, * where it changed (bootstrap + Mann-Whitney)
 bench/bench store all --sizes 1000000 --compression --docs   # the pg_sift `compression` variants as lanes and every system's size with its other codec settings
 bench/steps/gap.sh                      # the pg_sift profile (planning, instructions, symbols) on a private cluster under a memory cap
+bench/bench resume                      # continue the unfinished run from what is done (exit status 75 = interrupted, resumable); bench/test/test_resume.sh kills a run at random points and checks it
 bench/bench final --dry-run             # the release pass: stages, budgets, total against 25 min, preconditions (without --dry-run: runs it; --docs publishes)
 bench/bench store clean                 # containers, volumes, the image, the CSV
 ```

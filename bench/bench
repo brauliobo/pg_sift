@@ -137,7 +137,11 @@ Options (not every option applies to every command)
   final options     --stages store,compression,stats,gap,search, --budget MIN (default 25; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
+  --run-id ID       name the run (bench/out/run-ID); a directory that has a manifest is continued, results of the same key are kept (`bench/bench resume`)
+  --fail-fast, --keep-going   final: stop at the first failed stage, or (default) go on and list the failed ones; `resume` runs only those
   -h, --help        this text
+
+Exit status: 0 done, 1 failed, 3 a result differs from PostgreSQL's, 4 over the stage budget (BUDGET_STRICT=1), 75 interrupted (SIGINT/SIGTERM): `bench/bench resume` continues.
 
 report takes result directories as arguments: a run directory (default: bench/out/latest) or
 DATASET:TIER:DIR for a raw tables directory of steps/articles.sh (articles) or steps/places.sh (places).
