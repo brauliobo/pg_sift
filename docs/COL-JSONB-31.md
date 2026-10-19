@@ -196,6 +196,13 @@ predicate) scans every element.
   array, a list cut by the shredder) has no element cubes of that list; a unit with an overflow value in the dimension has no histogram of
   it; a measure that overflowed is left out of the histograms of its dimension and the others stay (a query that needs it scans that unit).
 
+- **Not done: depth 2 (j17, two group keys).** `GROUP BY kind, flag` is not answered by a depth-1 cube (4.8 ms, scanned). On the benchmark
+  documents (387,593 elements, 12 kinds, 3 flags, 36 pairs, 40 subs, 480 kind and sub pairs) a pair cube stores 36 groups against 12 for the
+  kind alone: about 24 more groups of 13 bytes (key, count, non-null count, an 8-byte sum), +310 bytes per unit, +0.4% of a unit of 85 kB, inside
+  the 2% budget; `kind` and `sub` (480 groups) is over the 256-group cap. The cost is not the bytes: a pair of dimensions in the directory,
+  the writer's choice of pairs (explicit `cube(items[].kind, items[].flag: items[].score)`, since all pairs of the dimensions do not fit the
+  budget), the reader, `col_verify`, and a planner shape with two keys. A change of its own, left for after 3.1.
+
 ### 5.2 Compatibility
 
 - **Reading.** The format gate is `SiftSegEntry.format`, per segment, as before; the metapage of a `sift_col` index keeps major 1, minor 0 and
