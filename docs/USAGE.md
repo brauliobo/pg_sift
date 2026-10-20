@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
+Requires PostgreSQL 17 or 18 (19 is experimental), server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 and macOS arm64. The chunk codec of the column engine links `liblz4` and `libzstd` when their
 development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
 
 ```sh
@@ -18,6 +18,20 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
   `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.1.0/pg_sift_18-3.1.0-1.el9.x86_64.rpm`.
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`): `CREATE EXTENSION pg_sift;`. No `shared_preload_libraries` entry is needed for the `sift` index, the `sift_col` index or the `sift_table` table access method; only publishing a `sift_table` under `wal_level = logical` does ([Replication](#replication)).
+
+### Install with Homebrew
+
+```sh
+brew tap brauliobo/pg_sift
+brew install --HEAD brauliobo/pg_sift/pg_sift
+brew test brauliobo/pg_sift/pg_sift
+```
+
+The [tap](https://github.com/brauliobo/homebrew-pg_sift) builds for Homebrew PostgreSQL 17 and 18, with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
+It currently uses the macOS portability branch until those changes reach a release; v3.1.0 fails to compile on arm64.
+The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
+For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
+Remove the extension package with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
 
 ## Queries
 

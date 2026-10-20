@@ -28,6 +28,18 @@ Before it: write `docs/releases/vVERSION.md` from `docs/releases/TEMPLATE.md`, h
 The AUR step needs the key: a key loaded in your ssh-agent, or `AUR_SSH_KEY=PATH scripts/release.sh VERSION` (the passphrase is asked through your `SSH_ASKPASS`).
 Scratch is under `~/.cache` (`RELEASE_TMP`), the run in a scope of 2 cores and 12 GB, ports from `SIFT_PORT` (56210) and the 10th after it.
 
+## Homebrew tap
+
+The public tap is [brauliobo/homebrew-pg_sift](https://github.com/brauliobo/homebrew-pg_sift). Until a release contains the non-x86 bitmap dispatch fix,
+its HEAD-only formula builds `feat/homebrew`; after merging the portability PR, change its HEAD branch to `main` before deleting the branch.
+No tag or release is created by the tap.
+
+For the first compatible release, add `url "https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz"` and its downloaded source tarball's
+`sha256` to `Formula/pg_sift.rb` before `license`. Keep HEAD tracking `main`. For later releases, use
+`brew bump-formula-pr --url=https://github.com/brauliobo/pg_sift/archive/refs/tags/vVERSION.tar.gz brauliobo/pg_sift/pg_sift`.
+Review the URL and checksum, run `brew style` and `brew audit --strict --online`, then install from the GitHub tap and run `brew test` on macOS for both PostgreSQL versions
+before publishing the formula update. The formula reads the installed control version when testing the upgrade.
+
 ## What CI runs
 
 A push runs the jobs its diff can break; the map is `scripts/areas.tsv`, shared by the workflow and `scripts/ci.sh affected`. The base of a push is the last green run of
