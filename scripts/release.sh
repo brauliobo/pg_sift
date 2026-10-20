@@ -31,7 +31,7 @@ fi
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
 # the build inputs of the shipped files: a commit that changes none of them is covered by the CI run of the one before (notes, versions and docs are not)
-GUARDED=(src test scripts Makefile pg_sift.control 'pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
+GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 die() { echo "release: $*" >&2; exit 1; }
 soft() { if [[ -n $DRY ]]; then log "dry run, would stop: $*"; else die "$*"; fi; }	# a precondition of the real release, a note in a dry run
@@ -72,11 +72,11 @@ preflight() {
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep -q '^- ' || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
-	[[ -f $R/pg_sift--$MM.sql ]] || die "pg_sift--$MM.sql is missing"
+	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
-	[[ $pm == "$MM" ]] || [[ -f $R/pg_sift--$pm--$MM.sql ]] || die "pg_sift--$pm--$MM.sql is missing: the upgrade from $PREV has no script"
+	[[ $pm == "$MM" ]] || [[ -f $R/sql/pg_sift--$pm--$MM.sql ]] || die "sql/pg_sift--$pm--$MM.sql is missing: the upgrade from $PREV has no script"
 	# the guarded tree: the last commit that changed a build input; CI evidence is any run on it or on a later commit
 	GCOMMIT=$(g log -1 --format=%H -- "${GUARDED[@]}")
 }
@@ -157,7 +157,9 @@ check_package() {
 	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver=$MM
 	tree HEAD "$W/pkg"
 	( cd "$W/pkg" && nice make -j2 USE_PGXS=1 SIFT_TESTING= >/dev/null && make USE_PGXS=1 SIFT_TESTING= DESTDIR="$root" install >/dev/null ) || { echo "make install failed"; return 1; }
-	for f in pg_sift.control $(cd "$R" && ls pg_sift--*.sql); do [[ -f $root$(pg_config --sharedir)/extension/$f ]] || { echo "the install target did not write $f"; return 1; }; done
+	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql; do
+		cmp "$f" "$root$(pg_config --sharedir)/extension/${f##*/}" || { echo "the install target did not preserve ${f##*/}"; return 1; }
+	done
 	[[ -f $root$(pg_config --pkglibdir)/pg_sift.so && ! -e $root$(pg_config --sharedir)/extension/pg_sift_test.control ]] || { echo "the library is missing, or the test-only extension is installed"; return 1; }
 	( cd "$W/pkg" && SIFT_TMP=$U SIFT_ROOT=$root SIFT_PORT=$port scripts/pgtest.sh start >/dev/null ) || return 1
 	for from in "$ver" 1.0; do

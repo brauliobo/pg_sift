@@ -268,7 +268,7 @@ capped() { systemd-run --user --scope -q -p MemoryMax="${CAP_MEM:-${GAP_MEM:-12G
 docker_caps() { printf '%s\n' --cpus "$1" --memory "$2" --memory-swap "$2"; }   # CPUS MEMORY: the quota (never a pinning) and the memory limit without swap of every container
 fingerprint() { python3 -I "$STEPS/benchlib.py" fingerprint --id; }              # the host: CPU, threads, memory, kernel, docker, governor (steps/benchlib.py)
 code_key() { # what a result depends on besides the host: the pg_sift sources under test and the harness (scripts, SQL, adapters, pins; not the documentation)
-  { git -C "$REPO" ls-files -z Makefile pg_sift.control 'pg_sift--*.sql' src scripts/harden.mk | (cd "$REPO" && xargs -0 sha256sum)
+  { git -C "$REPO" ls-files -z Makefile pg_sift.control 'sql/pg_sift--*.sql' src scripts/harden.mk | (cd "$REPO" && xargs -0 sha256sum)
     git -C "$REPO" ls-files -z --cached --others --exclude-standard -- bench ':(exclude)*.md' ':(exclude)bench/out' ':(exclude)*__pycache__*' | (cd "$REPO" && xargs -0 sha256sum); } | sha256sum | cut -c1-16
 }
 

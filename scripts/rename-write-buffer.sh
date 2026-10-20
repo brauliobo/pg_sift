@@ -14,18 +14,18 @@
 # "seal" verbs of the sift_table files (the rules below turn the ones that mean a promotion) (status line).
 #
 # Not touched (history or must keep the old names): releases/, results/, CHANGELOG.md of the three packages, docs/releases/, the design notes/,
-# the scripts of the released versions pg_sift--1.*.sql, scripts/perf-gate-maint.sh (it runs against old checkouts, which only know
+# the scripts of the released versions sql/pg_sift--1.*.sql, scripts/perf-gate-maint.sh (it runs against old checkouts, which only know
 # mutable_limit, and every release accepts that name), bench/xbench (Rust `mut`), this script and the design notes.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-EXCLUDE='^(releases/|results/|docs/releases/|docs/perf/|bench/xbench/|CHANGELOG\.md$|(mariadb|sqlite)/CHANGELOG\.md$|LICENSE$|NOTICE$|pg_sift--1\.[0-9]\.sql$|pg_sift--1\.[0-9]--1\.[0-9]\.sql$|scripts/perf-gate-maint\.sh$|test/fixtures/compat2x/info\.txt$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|docs/NAMING\.md$|test/sql/write_buffer_alias\.sql$|test/expected/write_buffer_alias\.out$)'
+EXCLUDE='^(releases/|results/|docs/releases/|docs/perf/|bench/xbench/|CHANGELOG\.md$|(mariadb|sqlite)/CHANGELOG\.md$|LICENSE$|NOTICE$|sql/pg_sift--1\.[0-9]\.sql$|sql/pg_sift--1\.[0-9]--1\.[0-9]\.sql$|scripts/perf-gate-maint\.sh$|test/fixtures/compat2x/info\.txt$|scripts/rename-write-buffer\.sh$|scripts/restructure-src\.sh$|docs/NAMING\.md$|test/sql/write_buffer_alias\.sql$|test/expected/write_buffer_alias\.out$)'
 
 # The files of the sift_table access method and the places that describe it, where `delta` meant the write buffer
 # (elsewhere `delta` is the column encoding, or a page delta of the generic WAL).
-TBL='^(src/([a-z0-9]+/)?sift_table[a-z_]*\.[ch]|src/([a-z0-9]+/)?sift_col_maint\.c|docs/COL-TAM\.md|test/(sql|expected)/tbl_[a-z_]*\.(sql|out)|test/t/[0-9a-z_]*tbl[a-z_]*\.(pl|sh)|pg_sift--3\.0\.sql|pg_sift--1\.2--3\.0\.sql|README\.md|docs/USAGE\.md)$'
+TBL='^(src/([a-z0-9]+/)?sift_table[a-z_]*\.[ch]|src/([a-z0-9]+/)?sift_col_maint\.c|docs/COL-TAM\.md|test/(sql|expected)/tbl_[a-z_]*\.(sql|out)|test/t/[0-9a-z_]*tbl[a-z_]*\.(pl|sh)|sql/pg_sift--3\.0\.sql|sql/pg_sift--1\.2--3\.0\.sql|README\.md|docs/USAGE\.md)$'
 
 # ---------------------------------------------------------------------------------------------------------------------------
 # MAPPING TABLE. Applied in this order to the text of every file; columns are tab separated: scope (a regex on the path, `*` = all),

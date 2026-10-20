@@ -145,7 +145,10 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
-	[[ $(areas_regex src/core/sift_ops.c) == *'|.' ]] || { echo "FAIL: areas: a core file does not select every job"; bad=1; }
+	for f in src/core/sift_ops.c "$REPO"/sql/*.sql; do
+		f=${f#"$REPO"/}
+		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
+	done
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
 	exit $bad
