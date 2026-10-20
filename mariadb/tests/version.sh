@@ -56,7 +56,7 @@ for v in 100400 140000 90500; do
   out=$(cc -fsyntax-only -I"$TMP/$v" -I"$TMP/$v/private" -I"$HERE" "$HERE/udf.c" 2>&1)
   check_match "headers of version $v are refused at compile time" "outside 10.5 .. 13.x" "$out"
 done
-out=$(cc -fsyntax-only -I"$MDB_INC" -I"$MDB_INC/private" -I"$HERE" "$HERE/udf.c" 2>&1)
+out=$(cc -fsyntax-only -I"$MDB_INC" -I"$MDB_INC/private" -I"$HERE" "$HERE/udf.c" "$HERE/udf_host.c" "$HERE/udf_query.c" "$HERE/udf_drain.c" 2>&1)
 check "the installed headers compile cleanly" "" "$out"
 
 # CMake builds the same library against the installed headers

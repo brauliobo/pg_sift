@@ -58,6 +58,7 @@ add_custom_command(OUTPUT ${GEN}/bitmap.c
 set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/container.c ${ROOT}/sqlite/host/mb.c ${ROOT}/sqlite/host/spool.c ${ROOT}/sqlite/host/host_stubs.c
   host/regex.c host/regex_parse.c host/regex_exec.c host/store.c host/stubs.c)
 set(GLUE engine.c docs.c persist.c query.c feed.c merge.c)
+set(UDF udf.c udf_host.c udf_query.c udf_drain.c)
 
 add_library(sift_engine OBJECT ${portable} ${GEN}/bitmap.c ${HOST} ${GLUE})
 target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_INCDIRS})
@@ -69,10 +70,10 @@ target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-st
   -Wno-unused-function -Wno-misleading-indentation -march=x86-64 -mtune=generic -fvisibility=hidden)
 
 # the UDFs include MariaDB headers and nothing of the engine
-add_library(sift_udf SHARED udf.c $<TARGET_OBJECTS:sift_engine>)
+add_library(sift_udf SHARED ${UDF} $<TARGET_OBJECTS:sift_engine>)
 set_target_properties(sift_udf PROPERTIES PREFIX "lib" OUTPUT_NAME sift_udf)
 target_include_directories(sift_udf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${MDB_INC} ${MDB_INC}/private)
-set_source_files_properties(udf.c PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-Wall")
+set_source_files_properties(${UDF} PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-Wall")
 target_link_libraries(sift_udf PRIVATE m ${CMAKE_DL_LIBS} Threads::Threads -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
 
 install(TARGETS sift_udf LIBRARY DESTINATION lib/mysql/plugin)
