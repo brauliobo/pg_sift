@@ -45,6 +45,20 @@ hashed (too large for `work_mem` and `hash_mem_multiplier`), reads a volatile fu
 that may raise (a division, a cast through text) or the tested column is not one the lookup table holds (an `int8` column). A scan with such a test runs without
 parallel workers: the leader runs the sub-plans. Fixtures `t_not_in_subquery*`, `t_in_subquery_or`, test `agg_subplan_lut`.
 
+## ctid ranges
+
+`ctid` compared with a constant TID (`=`, `<`, `<=`, `>`, `>=`, either side, and `BETWEEN`) is a predicate of the scan when it is a conjunct of the top level of
+the `WHERE`, on a `sift_col` or `sift_table`. The conjuncts make one half-open range of TIDs (keys `block << 16 | offset`, ordered as PostgreSQL orders TIDs). The
+block part is a range of superblocks (256 pages, or about 12000 rows of a `sift_table`), so a unit outside it is not read (`Units:` of `EXPLAIN ANALYZE`) and a
+unit inside it is read whole; the rows of the first and last block are tested one by one against the range. A heap index stores the TID of the root of a HOT
+chain while `ctid` is the visible version's, so those rows are looked up in the heap through the snapshot (HOT keeps the versions in their page, so the
+other blocks need no lookup). An empty or crossed range reads no unit, a range beyond the end of the table reads none, and an invalid TID constant is the
+PostgreSQL error. The cost keeps the fraction of the pages of the range.
+
+The normal plan stays for `<>`, `ctid` in an expression, in `GROUP BY` or compared with a column, an `OR`, `IN`/`= ANY`, a parameter of a generic plan
+(a custom plan folds it), a partitioned table (TIDs are per partition) and the top-N shapes (their probes read zones of units outside the range). PostgreSQL
+plans a tid range scan for a narrow range (`enable_tidscan = off` shows the scan). Fixtures `tr_*`, test `agg_tid_range`.
+
 ## Differential suite
 
 `scripts/coldiff.sh` is the referee of the aggregate pushdown (`Custom Scan (SiftAgg)`): it runs a corpus of plain SQL aggregate queries
