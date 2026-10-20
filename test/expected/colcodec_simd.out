@@ -1,4 +1,4 @@
--- Column codec (src/col/sift_colcodec*.c): what is written and what is read does not depend on the SIMD level (sift.simd), and damaged
+-- Column codec (src/col/codec*.c): what is written and what is read does not depend on the SIMD level (sift.simd), and damaged
 -- chunks raise the corruption errors or decode, never crash.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

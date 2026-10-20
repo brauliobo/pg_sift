@@ -8,10 +8,10 @@ OUT     ?= /tmp/sift-aggkern-tools
 N       ?= 20
 
 LIB      = $(SRC)/agg/sift_aggkern.c $(SRC)/agg/sift_aggkern_avx2.c $(SRC)/agg/sift_aggkern_avx512.c \
-           $(SRC)/col/sift_col_kern.c $(SRC)/col/sift_col_kern_avx2.c $(SRC)/col/sift_col_kern_avx512.c \
+           $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c \
            $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c \
            $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c
-HDR      = $(SRC)/agg/sift_aggkern.h $(SRC)/agg/sift_aggkern_int.h $(SRC)/agg/sift_aggkern_cases.h $(SRC)/col/sift_col_kern.h $(SRC)/col/sift_col_kern_int.h harness.h
+HDR      = $(SRC)/agg/sift_aggkern.h $(SRC)/agg/sift_aggkern_int.h $(SRC)/agg/sift_aggkern_cases.h $(SRC)/col/kern.h $(SRC)/col/kern_int.h harness.h
 
 include ../tools.mk
 

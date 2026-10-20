@@ -1,5 +1,5 @@
 /*
- * Tests of src/col/sift_col_wide.c, the portable value code of the wide leaf types: the 128-bit lane keys and
+ * Tests of src/col/wide.c, the portable value code of the wide leaf types: the 128-bit lane keys and
  * their decimal text, the interval total, the canonical image of a decimal. A reference compares decimal texts as digit strings (no
  * integer type involved), so the image order is checked against something that shares no code with the encoder.
  *   make -C tools/colwide [SANITIZE=1] test [N=1]
@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sift_col_wide.h"
+#include "col/wide.h"
 
 static uint64 rng_s[2] = {0x9E3779B97F4A7C15ULL, 0xD1B54A32D192ED03ULL};
 static long fails, checks;

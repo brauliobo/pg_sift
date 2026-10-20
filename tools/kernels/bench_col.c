@@ -5,8 +5,8 @@
  */
 #include "harness.h"
 
-#include "sift_col_kern_int.h"
-#include "sift_colcodec_int.h"
+#include "col/kern_int.h"
+#include "col/codec_int.h"
 
 #define N			4096			/* rows of a filter call */
 #define NW			1152			/* words of a selection of a full unit (73728 rows) */

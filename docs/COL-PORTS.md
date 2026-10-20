@@ -11,11 +11,11 @@ the includes). Checked by building them, not only by reading includes (`make -C 
 
 | Part | Files | Lines | On the SQLite host |
 |---|---|---|---|
-| chunk and unit encoding, zones, dictionaries, batches | `sift_col_enc.c` | 2.1k | builds, round trip passes |
-| chunk codec (cascades, FOR/delta/RLE/dict/ALP), LZ4/zstd layer | `sift_colcodec*.c`, `sift_colz.c` | 3.6k | builds, round trip passes |
-| segment writer/reader of units over the page store | `sift_col_seg.c` | 0.9k | builds, linked (not yet exercised) |
-| column kernels (filters, zone tests, unpack) | `sift_col_kern*.c` | 1.7k | builds |
-| shredder core (JSON paths into leaves, no JSON parser) | `sift_shred*.c` | 1.6k | builds |
+| chunk and unit encoding, zones, dictionaries, batches | `col/enc.c` | 2.1k | builds, round trip passes |
+| chunk codec (cascades, FOR/delta/RLE/dict/ALP), LZ4/zstd layer | `col/codec*.c`, `col/compress.c` | 3.6k | builds, round trip passes |
+| segment writer/reader of units over the page store | `col/seg.c` | 0.9k | builds, linked (not yet exercised) |
+| column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
+| shredder core (JSON paths into leaves, no JSON parser) | `col/shred*.c` | 1.6k | builds |
 | aggregation kernels (sum/min/max/count, group-by) | `sift_aggkern*.c` | 1.2k | builds |
 | runtime SIMD (AVX2/AVX-512 tables, `sift_cpu.c`) | `*_avx2.c`, `*_avx512.c` |  | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
 
@@ -24,8 +24,8 @@ no vector files (the dispatchers are `__x86_64__`-guarded); nothing was linked o
 
 PostgreSQL-bound, and staying so: the page/buffer store behind `sift_store.h` (PG: `sift_store.c`, buffer manager, generic WAL; SQLite
 already implements the same interface in `sqlite/sqstore.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
-`sift_col_scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`sift_col_wbuf.c`), index AM/build/maintenance/verify
-(`sift_col_am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`sift_shred_pg.c`), planner and custom scan
+`col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
+(`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan
 (`sift_agg*.c`, 12k lines, `docs/COL-PLAN.md`), the table AM (`sift_table*.c`, 5.6k lines, `docs/COL-TAM.md`). The MVCC hook is one
 interface: the segment's liveness bits and an atomically published manifest give a single-writer host a snapshot by
 construction (how the BM25 SQLite host already works).
@@ -65,7 +65,7 @@ and S3) is the standard shape and the only one that matches "highest industry st
   (mariadb/README.md); an engine is a stronger link. Decided (section 6): proceed, in the post-3.1 phase, no work now.
 - Plugin ABI is per server series (`MYSQL_VERSION_ID` checked at compile time, `tests/version.sh`); an engine adds a CI matrix
   (10.6, 10.11, 11.4, 11.8) of C++ builds and mtr runs; the UDF library needs only headers.
-- Compression: LZ4 library is BSD-2, zstd is BSD-3/GPLv2 (take BSD). `sift_colz.c` compiles to "not available" with neither
+- Compression: LZ4 library is BSD-2, zstd is BSD-3/GPLv2 (take BSD). `col/compress.c` compiles to "not available" with neither
   (chunks then use the lightweight cascades only; a chunk written elsewhere with a wrapper fails to open with a clear error). A
   single-file SQLite extension must not depend on system `.so`s and no static libs are installed on the build host: vendored (6.2).
 - SQLite loadable extension limits: only `sqlite3ext.h` API (no pager, no mmap of the DB file, so one memcpy per cache miss through
@@ -75,9 +75,9 @@ and S3) is the standard shape and the only one that matches "highest industry st
 
 ## 4. Open blockers
 
-Each is a work item of the phases below: no host owns a `sift_colz` build option (vendored LZ4/zstd, 6.2); `sift_col_seg.c` is
+Each is a work item of the phases below: no host owns a `sift_colz` build option (vendored LZ4/zstd, 6.2); `col/seg.c` is
 linked but its writer/reader path is only tested on PostgreSQL; the unit key space is heap TIDs (`MaxHeapTuplesPerPage` = 291 in the
-host shim, 256-page superblocks) and each host must choose its rowid mapping (6.5); `sift_shred_pg.c` has no counterpart (SQLite needs a
+host shim, 256-page superblocks) and each host must choose its rowid mapping (6.5); `col/shred_pg.c` has no counterpart (SQLite needs a
 driver over `json_each`/JSONB text, MariaDB over its JSON text); `SiftColVisibility` has no non-PG implementation (a manifest-only one
 is trivial); the aggregate planner/executor (`sift_agg*.c`) and partial-state types
 are PG; `make isa-check` and the sanitizer targets do not cover the column objects yet.
@@ -100,7 +100,7 @@ demand and legal has answered; 3a is optional and only worth it if MariaDB users
 
 ## 6. Decisions
 
-1. **Header split accepted**: `sift_col_pg.h` holds the PostgreSQL-only declarations; `sift_col.h` stays host independent.
+1. **Header split accepted**: `col/pg.h` holds the PostgreSQL-only declarations; `col/col.h` stays host independent.
 2. **Vendor LZ4 and zstd** in the SQLite and MariaDB artifacts (plan, phase 1; PostgreSQL keeps probing system libraries):
    LZ4 v1.10.0 (`lib/` only: `lz4.[ch]`, `lz4hc.[ch]`, BSD-2) and zstd v1.5.7 (BSD-3 taken from its dual license; built from the
    tagged tarball's single-file amalgamation, `build/single_file_libs`, with legacy formats and multithreading off). They live in
@@ -114,7 +114,7 @@ demand and legal has answered; 3a is optional and only worth it if MariaDB users
 4. **`typid` becomes an opaque type tag** in the column format (the host stores whatever tag identifies its type; the schema hash
    covers the tag, not a PostgreSQL OID); done: the leaf type in the format is the host-independent tag `SiftColType` (column format version 1), and PostgreSQL OIDs are mapped at the PG boundary only.
 5. **SQLite rowid mapping: `blk = rowid >> 8`, `off = (rowid & 255) + 1`** (decided by evaluation, not by the maintainers):
-   - Constraints from the format: an offset must be 1..`MaxHeapTuplesPerPage` (291; `sift_col_enc.c` rejects others, the offset mask
+   - Constraints from the format: an offset must be 1..`MaxHeapTuplesPerPage` (291; `col/enc.c` rejects others, the offset mask
      is 512 bits), a unit is one 256-block superblock, so a unit holds at most 256 x 291 = 74,496 rows. `>> 9` or more (offsets up to
      512) is therefore invalid; a mapping must give at most 291 offsets per block.
    - `>> 8` gives 256 offsets, a power of two (no division per row), dense blocks (a block whose offsets are 1..n stores no sparse

@@ -1,4 +1,4 @@
--- Column engine L1 (src/col/sift_col_enc.c): schema, dictionaries, batches, chunks, zones, predicates and unit records, against a naive
+-- Column engine L1 (src/col/enc.c): schema, dictionaries, batches, chunks, zones, predicates and unit records, against a naive
 -- evaluation of the same random rows. Prints only counts and ok flags, so the output is the same on every machine.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

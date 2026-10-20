@@ -11,9 +11,9 @@
 #include "harness.h"
 
 #include "sift_aggkern.h"
-#include "sift_col_kern.h"
-#include "sift_colcodec_int.h"
-#include "sift_shred.h"
+#include "col/kern.h"
+#include "col/codec_int.h"
+#include "col/shred.h"
 
 #undef snprintf
 

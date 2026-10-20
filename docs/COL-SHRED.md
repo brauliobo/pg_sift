@@ -63,7 +63,7 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 
 ### Wildcard dictionary
 
-`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`sift_col_enc.c`) created with the
+`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`col/enc.c`) created with the
 shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes (`SIFT_COL_DICT_MAX_ENTRY`), or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 
@@ -152,7 +152,7 @@ void sift_shred_null(SiftShred *);  sift_shred_bool(sh, b);  sift_shred_string(s
 bool sift_shred_full(const SiftShred *);            /* the current list is cut short: stop iterating it */
 void sift_shred_finish(SiftShred *);
 
-/* PostgreSQL driver (sift_shred_pg.h) */
+/* PostgreSQL driver (col/shred_pg.h) */
 void sift_shred_jsonb(SiftShred *, Jsonb *);                 /* begin, the document, finish */
 void sift_shred_container(SiftShred *, JsonbContainer *);    /* one jsonb as the next value (see below) */
 
@@ -172,7 +172,7 @@ trailing fraction zeros) only when the target is a numeric column (`wants_number
 
 ## SIMD kernels
 
-`sift_shred_kern_avx512.c` are bit-identical, dispatch through `sift_cpu_register` (`sift.simd`, registered by the first
+`col/shred_kern_avx512.c` are bit-identical, dispatch through `sift_cpu_register` (`sift.simd`, registered by the first
 `sift_shred_create` or `sift_shred_init()`), `sift_shred_kernels_for(level)` for tests. Detection is at run time; the same library runs on
 any x86-64 and on other architectures the scalar table is used. Kernels: `state_counts` (histogram of the four states of a column),
 `state_bits` (the NULL and the overflow bitmaps of a column, for the engine's chunk header),

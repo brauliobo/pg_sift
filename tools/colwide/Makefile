@@ -15,9 +15,9 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-$(OUT)/test: test.c $(SRC)/col/sift_col_wide.c $(SRC)/col/sift_col_wide.h
+$(OUT)/test: test.c $(SRC)/col/wide.c $(SRC)/col/wide.h
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/sift_col_wide.c $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/wide.c $(LDLIBS)
 
 test: $(OUT)/test
 	$(OUT)/test $(N)

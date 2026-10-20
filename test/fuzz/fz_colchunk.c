@@ -23,9 +23,9 @@
 #include <unistd.h>
 
 
-#include "sift_col.h"
-#include "sift_col_enc.h"
-#include "sift_colcodec.h"
+#include "col/col.h"
+#include "col/enc.h"
+#include "col/codec.h"
 #include "fz_shim.h"
 #include "sift_testrng.h"
 
@@ -37,7 +37,7 @@ ccg_next(CcgRng *r)
 	return sift_splitmix_next(r);
 }
 
-#include "sift_colcodec_gen.h"
+#include "col/codec_gen.h"
 
 #define MAX_ROWS (1u << 20)		/* what a harness decodes: beyond it only the parse is exercised */
 #define NMODES 7
