@@ -1472,6 +1472,44 @@ sift_col_read_elems(const SiftColUnit *unit, int col, const SiftColSel *elemsel,
 }
 
 uint32
+sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftColDef *def = &cu->src->schema->cols[col];
+	ColGroup   *g = def->parent < 0 ? NULL : unit_group(cu, def->parent);
+	uint32		total = g ? g->nelems : cu->v.nrows,
+				n = total;
+	const uint32 *pos = idx;
+	SiftCChunk	c;
+	uint64	   *tagged;
+
+	if (idx && g)
+	{
+		uint32	   *offsets,
+				   *epos;
+
+		group_expand(cu->src->arena, g, idx, m, &offsets, &epos, &n);
+		pos = epos;
+	}
+	else if (idx)
+		n = m;
+	memset(bits, 0, SIFT_COL_NWORDS(n) * sizeof(uint64));
+	*known = true;
+	if (!unit_chunk(cu, col, &c))
+		return n;
+	if (c.n != total)
+		corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, total);
+	tagged = palloc(SIFT_COL_NWORDS(c.n) * sizeof(uint64));
+	sift_cchunk_tag_bits(&c, SIFT_COLTAG_JNULL, tagged);
+	for (uint32 k = 0; k < n; k++)
+		if (sift_col_bit_test(tagged, pos ? pos[k] : k))
+			sift_col_bit_set(bits, k);
+	pfree(tagged);
+	*known = types_known(cu, &c, 1U << SIFT_COLTAG_JNULL, false, NULL);
+	return n;
+}
+
+uint32
 sift_col_lane_n(const SiftColUnit *unit, int col)
 {
 	ColUnit    *cu = unit->priv;

@@ -989,6 +989,19 @@ col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 		tags[i] = src_type(all[compact ? src->sel.idx[i] : i]);
 }
 
+/* the JSON nulls among the slots of the leaf, in the numbering of the unit the executor sees (the elements of the kept rows in a compacted one) */
+static void
+col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
+{
+	ColSource  *src = impl;
+	bool		compact = src->sel.keep && src->sel.compact,
+				known;
+
+	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
+	if (!known)
+		types_unknown_error();
+}
+
 static void
 col_counters(const void *impl, SiftSrcCounters *c)
 {
@@ -1153,6 +1166,7 @@ static const SiftSrcProvider col_provider = {
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
 	.read_types = col_read_types,
+	.read_jnull = col_read_jnull,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
 	.set_wide = col_set_wide,

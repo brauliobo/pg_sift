@@ -466,6 +466,12 @@ typedef struct SiftSrcProvider
 	 */
 	void		(*read_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 	/*
+	 * Optional (sift_colsrc_can_jnull): the JSON nulls among the NULL slots of a leaf, bit k of bits for the k-th value of the leaf as `read`
+	 * gives it (an element leaf: its elements); the other NULL slots are missing keys. Raises when the index did not store the kinds of the
+	 * slots (as filter_types does).
+	 */
+	void		(*read_jnull) (void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);
+	/*
 	 * Optional (NULL: the Vulkan path does not run on this source). gpu_unit: the unit just returned by `next` is stored, has no dead row and
 	 * every page it has rows on is all-visible, so its chunks are the rows a query sees. gpu_dense: the leaf has no NULL and no overflowed
 	 * value in the unit (from its zone). gpu_chunk: the leaf's codec blob; false when the leaf has none (a NULL, an inline text value).
@@ -672,6 +678,10 @@ extern bool sift_colsrc_can_types(Oid relam, bool index);
 extern bool sift_colsrc_filter_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 extern void sift_colsrc_read_types(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf);
+
+/* Does the source of this access method tell a JSON null from a missing key per value of a leaf (SiftSrcProvider.read_jnull)? */
+extern bool sift_colsrc_can_jnull(Oid relam, bool index);
+extern void sift_colsrc_read_jnull(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint64 *bits);
 
 /* Leaf `leaf` decoded for the rows of bits only (the other rows read as zero, not NULL); the whole leaf when the source cannot */
 extern bool sift_colsrc_can_read_sel(const SiftSrcSource *src);
