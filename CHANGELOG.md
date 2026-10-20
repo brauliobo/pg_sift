@@ -5,6 +5,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## 3.2 Unreleased
 
 - Fixed: aggregate null-input markers cannot alias PostgreSQL executor parameters; preserved-input expressions can be explained on PostgreSQL 17. Predicate-only lookups account for testing every candidate row.
+- Added: grouping expressions and aggregate FILTER predicates can read up to eight scalar inputs. Expression caches store and compare every input, with storage sized to the actual tuple width.
 
 - Added: aggregate FILTER predicates over lookup columns preserve duplicate matches and NULL extensions, and evaluate expressions only after all joins select their input.
 
