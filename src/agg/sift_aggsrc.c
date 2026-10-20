@@ -90,6 +90,25 @@ sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext
 	return src;
 }
 
+bool
+sift_colsrc_can_part(Oid indexrelam)
+{
+	const SiftSrcProvider *prov = provider_of(indexrelam, true);
+
+	return prov != NULL && prov->open_part != NULL;
+}
+
+SiftSrcSource *
+sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+{
+	const SiftSrcProvider *prov = provider_of_rel(index);
+	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
+
+	src->prov = prov;
+	src->impl = prov->open_part(heap, index, snapshot, mcxt);
+	return src;
+}
+
 void
 sift_colsrc_close(SiftSrcSource *src)
 {

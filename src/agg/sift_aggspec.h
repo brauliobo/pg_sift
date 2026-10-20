@@ -388,8 +388,11 @@ is_ordered_agg(const SiftAggAgg *a)
 
 typedef struct SiftAggSpec
 {
-	Oid			indexoid;		/* the column index; InvalidOid: the table itself */
+	Oid			indexoid;		/* the column index; InvalidOid: the table itself. A partitioned table: that of its first partition */
 	Oid			heapoid;
+	int			nparts;			/* > 0: heapoid is a partitioned table and the scan reads these partitions, whose indexes have one layout (sift_aggpart.h) */
+	Oid		   *partheap;
+	Oid		   *partindex;
 	int			group;			/* leaf id of the array/object leaf the query unnests, -1: row level */
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
