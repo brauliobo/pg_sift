@@ -1,6 +1,6 @@
--- trap: ROLLUP of eight columns, one more than the limit (the set number would be the ninth key): the normal plan
--- shape: trap
--- expect: plain
+-- ROLLUP of eight columns (the set number is the ninth key): the scan keeps a key mask as wide as its keys
+-- shape: agg
+-- expect: agg
 -- sets: K400
 -- key: -
 SELECT o.source, o.status, o.lang, o.country_code, o.tenant_id % 3 AS st3, o.deleted_at IS NULL AS live, o.customer_id IS NULL AS anon, o.id % 2 AS odd,

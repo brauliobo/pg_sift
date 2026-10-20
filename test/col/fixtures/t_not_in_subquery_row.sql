@@ -1,6 +1,6 @@
--- trap: a row-valued NOT IN reads two columns, no lookup table of one value answers it: the plan stays
--- shape: trap
--- expect: plain
+-- a row-valued NOT IN reads two columns: the scan asks the sub-plan for each tuple
+-- shape: agg
+-- expect: agg
 -- key: -
 SELECT o.status, count(*) AS n
 FROM orders o
