@@ -14,6 +14,7 @@ estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column noth
 A scan with such a join runs without workers.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
 Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
+Inner lookups are ordered by their dependencies within each join boundary. Statement-level materialized CTEs can be referenced from nested queries.
 Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates` and `agg_lookup_dependencies`.
 
 ## Outer joins that keep the other table
@@ -24,9 +25,10 @@ when the index is read, the rows nothing matched are tuples of NULL leaves that 
 `count(*)` 1, a `FILTER (WHERE o.id IS NULL)` is true). A `FULL JOIN` also keeps the tuples with no match, with NULL columns. The `ON` clause only decides
 the matches: a condition on the table's own columns, a NULL key and a duplicate key leave its rows unmatched or multiply the tuples, as in the normal plan.
 
-The normal plan stays when a `WHERE` conjunct is one the NULL row of the indexed table passes (`o.id IS NULL`: it is evaluated after the join), the query has
-another lookup join, or the indexed table is partitioned. A nullable indexed input may expand one JSON object or array before joining;
-empty preserved buckets still contribute one NULL fact input. A scan with such a join runs without workers: one scan sees every row.
+The normal plan stays when a `WHERE` conjunct over only the indexed table must be evaluated after preservation, or the indexed table is partitioned.
+A nullable indexed input may contain ordinary lookup joins and expand one JSON object or array before joining to the preserved side.
+Empty preserved buckets contribute one NULL fact input, including NULL lookup columns and expressions computed inside that input.
+A scan with such a join runs without workers: one scan sees every row.
 Fixtures `ps_*`, rows J06 and J07 of the coverage table.
 
 ## Partitioned tables
