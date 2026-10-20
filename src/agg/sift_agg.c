@@ -705,6 +705,7 @@ typedef struct AggExec
 	double	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
+	uint8	   *fwin;			/* DISTINCT ON: per tuple of the chunk, its row became the best of its group (decided by the first of the aggregates, which the others follow) */
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
 	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
@@ -6152,7 +6153,23 @@ typedef struct GenSt
 	Datum		prev[SIFT_AGG_MAX_GARGS];		/* ... and the previous input's values */
 	bool		prevnull[SIFT_AGG_MAX_GARGS];
 	MemoryContext pcx;
+	SortSupportData *fsup;		/* DISTINCT ON (SiftAggGen.first): the comparison of each sort key of the call ... */
+	int			nfk;
+	int			fkey[SIFT_AGG_MAX_GARGS];	/* ... the argument it reads */
+	bool		follower;		/* ... every DISTINCT ON aggregate of the query has the same sort keys, so the first one decides which rows win and the others take those */
+	bool		iskey[SIFT_AGG_MAX_GARGS];
+	int16		alen[SIFT_AGG_MAX_GARGS];	/* the arguments' types, to copy the values of the best row */
+	bool		abyval[SIFT_AGG_MAX_GARGS];
 } GenSt;
+
+/* the best row of a group of a DISTINCT ON aggregate (the group's state until the scan ends): the values of the arguments, then their NULL flags */
+typedef struct GenBest
+{
+	Datum		val[FLEXIBLE_ARRAY_MEMBER];
+} GenBest;
+
+#define GEN_BEST_SIZE(n)		(offsetof(GenBest, val) + (n) * (sizeof(Datum) + sizeof(bool)))
+#define GEN_BEST_NULL(b, n, k)	(((bool *) ((b)->val + (n)))[k])
 
 /* the leaves an argument reads, decoded for the chunk's tuples */
 typedef struct GenIn
@@ -6247,6 +6264,33 @@ gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *
 		}
 	ExecStoreVirtualTuple(st->put);
 	tuplesort_puttupleslot(st->sort, st->put);
+}
+
+/* DISTINCT ON: the sort support of each ORDER BY key of the call (operator, input collation and NULLS FIRST/LAST, as the sort of nodeAgg has them) */
+static void
+gen_first_begin(GenSt *st)
+{
+	const SiftAggGen *g = st->g;
+	Aggref	   *ref = st->aggref;
+
+	st->fsup = palloc0(Max(list_length(ref->aggorder), 1) * sizeof(SortSupportData));
+	foreach_node(SortGroupClause, sc, ref->aggorder)
+	{
+		TargetEntry *te = get_sortgroupref_tle(sc->tleSortGroupRef, ref->args);
+		SortSupport ssup = &st->fsup[st->nfk];
+		int			k = 0;
+
+		while (list_nth(ref->args, k) != te)
+			k++;
+		ssup->ssup_cxt = CurrentMemoryContext;
+		ssup->ssup_collation = exprCollation((Node *) te->expr);
+		ssup->ssup_nulls_first = sc->nulls_first;
+		PrepareSortSupportFromOrderingOp(sc->sortop, ssup);
+		st->fkey[st->nfk++] = k;
+		st->iskey[k] = true;
+	}
+	for (int k = 0; k < g->nargs; k++)
+		get_typlenbyval(g->arg[k].typid, &st->alen[k], &st->abyval[k]);
 }
 
 static GenSt *
@@ -6372,6 +6416,11 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 	}
 	if (g->sorted || g->ordered)
 		gen_sort_begin(st);
+	if (g->first)
+	{
+		st->has_final = false;
+		gen_first_begin(st);
+	}
 	return st;
 }
 
@@ -6381,6 +6430,7 @@ gen_open(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	int			leader = -1;
 
 	ex->gst = palloc0(Max(s->naggs, 1) * sizeof(GenSt *));
 	for (int ai = 0; ai < s->naggs; ai++)
@@ -6393,6 +6443,9 @@ gen_open(AggExec *ex)
 				ex->gres = AllocSetContextCreate(ex->cxt, "sift agg results", ALLOCSET_DEFAULT_SIZES);
 			}
 			ex->gst[ai] = gen_new(ex, &s->agg[ai], ai);
+			ex->gst[ai]->follower = s->agg[ai].gen->first && leader >= 0;
+			if (s->agg[ai].gen->first && leader < 0)
+				leader = ai;
 		}
 	MemoryContextSwitchTo(old);
 }
@@ -6442,42 +6495,45 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 	return (Datum) 0;
 }
 
+/* argument k of tuple j */
+static void
+gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool *isnull)
+{
+	const SiftAggGenArg *ar = &st->g->arg[k];
+
+	if (ar->mapped)
+	{
+		uint32		id = in->cval[k][(size_t) in->cout[k][j] * ex->spec->combo[ar->combo].nslots + ar->slot];
+
+		*isnull = id == 0;
+		*arg = id ? ex->aot[st->ai].val[id - 1] : (Datum) 0;
+	}
+	else if (ar->nleaves == 0)
+	{
+		*arg = st->argk[k];
+		*isnull = st->argknull[k];
+	}
+	else if (ar->expr == NULL)
+		*arg = gen_leaf_value(&ex->lay->leaf[ar->leaf[0]], in->vec[k][0], in->idx[k][0][j], isnull);
+	else
+	{
+		for (int p = 0; p < ar->nleaves; p++)
+		{
+			bool		pnull;
+			Datum		d = gen_leaf_value(&ex->lay->leaf[ar->leaf[p]], in->vec[k][p], in->idx[k][p][j], &pnull);
+
+			bind_param(ex, p, d, pnull);
+		}
+		*arg = ExecEvalExprSwitchContext(st->argx[k], ex->lutcx, isnull);
+	}
+}
+
 /* the aggregated arguments of tuple j */
 static void
 gen_args(AggExec *ex, GenSt *st, const GenIn *in, int j, Datum *args, bool *nulls)
 {
-	const SiftAggGen *g = st->g;
-
-	for (int k = 0; k < g->nargs; k++)
-	{
-		const SiftAggGenArg *ar = &g->arg[k];
-
-		if (ar->mapped)
-		{
-			uint32		id = in->cval[k][(size_t) in->cout[k][j] * ex->spec->combo[ar->combo].nslots + ar->slot];
-
-			nulls[k] = id == 0;
-			args[k] = id ? ex->aot[st->ai].val[id - 1] : (Datum) 0;
-		}
-		else if (ar->nleaves == 0)
-		{
-			args[k] = st->argk[k];
-			nulls[k] = st->argknull[k];
-		}
-		else if (ar->expr == NULL)
-			args[k] = gen_leaf_value(&ex->lay->leaf[ar->leaf[0]], in->vec[k][0], in->idx[k][0][j], &nulls[k]);
-		else
-		{
-			for (int p = 0; p < ar->nleaves; p++)
-			{
-				bool		isnull;
-				Datum		d = gen_leaf_value(&ex->lay->leaf[ar->leaf[p]], in->vec[k][p], in->idx[k][p][j], &isnull);
-
-				bind_param(ex, p, d, isnull);
-			}
-			args[k] = ExecEvalExprSwitchContext(st->argx[k], ex->lutcx, &nulls[k]);
-		}
-	}
+	for (int k = 0; k < st->g->nargs; k++)
+		gen_arg(ex, st, in, j, k, &args[k], &nulls[k]);
 }
 
 /* initialize_aggregate */
@@ -6608,6 +6664,9 @@ gen_combine(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, Datum nv)
 	gen_keep_state(st, acc, g, f, ov, res, fc->isnull);
 }
 
+static void gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
+static void gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at);
+
 /* a worker's partial state of group g, appended to vb as a length (0: none) and bytes: the serial function's, else the datum's */
 static void
 gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb)
@@ -6615,6 +6674,11 @@ gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb)
 	uint8		f = acc->nf[g];
 	uint32		len = 0;
 
+	if (st->g->first)
+	{
+		gen_first_put(st, acc, g, vb);
+		return;
+	}
 	if (!(f & GEN_INIT) || (f & GEN_NULL))
 	{
 		appendBinaryStringInfo(vb, (char *) &len, sizeof(len));
@@ -6661,6 +6725,15 @@ gen_state_merge(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const char **cur)
 	*cur += sizeof(len);
 	if (len == 0)
 		return;
+	if (st->g->first)
+	{
+		old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+		gen_first_merge(st, acc, g, *cur);
+		MemoryContextSwitchTo(old);
+		*cur += len;
+		ResetExprContext(ex->lutcx);
+		return;
+	}
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	if (st->dfc)
 	{
@@ -6794,6 +6867,153 @@ gen_spill(AggExec *ex, int ai)
 	d->n = d->cap = 0;
 }
 
+/* ---------- DISTINCT ON: the best row of each group ---------- */
+
+/* does an argument go into the best row (a constant is the same in every row) */
+static bool
+gen_stored(const SiftAggGen *g, int k)
+{
+	return g->arg[k].nleaves > 0 || g->arg[k].mapped;
+}
+
+static void
+gen_best_free(GenSt *st, GenBest *b)
+{
+	int			n = st->g->nargs;
+
+	for (int k = 0; k < n; k++)
+		if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
+			pfree(DatumGetPointer(b->val[k]));
+	pfree(b);
+}
+
+/* group g keeps the row whose arguments these are, in memory that lives as long as the scan; the row it had is freed */
+static void
+gen_best_set(GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls)
+{
+	int			n = st->g->nargs;
+	MemoryContext old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
+	GenBest    *nb = palloc0(GEN_BEST_SIZE(n)),
+			   *ob = (GenBest *) DatumGetPointer(acc->v[g]);
+
+	for (int k = 0; k < n; k++)
+		if (gen_stored(st->g, k))
+		{
+			GEN_BEST_NULL(nb, n, k) = nulls[k];
+			nb->val[k] = nulls[k] ? (Datum) 0 : datumCopy(args[k], st->abyval[k], st->alen[k]);
+		}
+	if (ob != NULL)
+		gen_best_free(st, ob);
+	acc->v[g] = PointerGetDatum(nb);
+	MemoryContextSwitchTo(old);
+}
+
+/* the sort keys of a row against those of the best row: < 0 when the row comes first */
+static int
+gen_first_cmp(GenSt *st, const Datum *args, const bool *nulls, const GenBest *b)
+{
+	int			n = st->g->nargs;
+
+	for (int i = 0; i < st->nfk; i++)
+	{
+		int			k = st->fkey[i],
+					c;
+		Datum		bv = gen_stored(st->g, k) ? b->val[k] : st->argk[k];
+		bool		bn = gen_stored(st->g, k) ? GEN_BEST_NULL(b, n, k) : st->argknull[k];
+
+		if ((c = ApplySortComparator(args[k], nulls[k], bv, bn, &st->fsup[i])) != 0)
+			return c;
+	}
+	return 0;
+}
+
+/* tuple j of group gid: its row is the group's best when its sort keys come first (the values of the other arguments are read only then) */
+static bool
+gen_first(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
+{
+	GenBest    *b = (GenBest *) DatumGetPointer(acc->v[gid]);
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+
+	for (int i = 0; i < st->nfk; i++)
+		gen_arg(ex, st, in, j, st->fkey[i], &args[st->fkey[i]], &nulls[st->fkey[i]]);
+	if (b != NULL && gen_first_cmp(st, args, nulls, b) >= 0)
+		return false;
+	for (int k = 0; k < st->g->nargs; k++)
+		if (!st->iskey[k])
+			gen_arg(ex, st, in, j, k, &args[k], &nulls[k]);
+	gen_best_set(st, acc, gid, args, nulls);
+	return true;
+}
+
+/* the scan has ended: the first argument of the best row of each group is the group's value (the carrier aggregate has no transition or final function to run) */
+static void
+gen_flush_first(AggExec *ex, int ai)
+{
+	GenSt	   *st = ex->gst[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap;
+	int			n = st->g->nargs;
+
+	for (uint32 g = 0; g < ngr; g++)
+	{
+		GenBest    *b = (GenBest *) DatumGetPointer(acc->v[g]);
+
+		if (b == NULL)
+			continue;
+		acc->v[g] = b->val[0];
+		acc->nf[g] = GEN_INIT | (GEN_BEST_NULL(b, n, 0) ? GEN_NULL : 0);
+		for (int k = 1; k < n; k++)
+			if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
+				pfree(DatumGetPointer(b->val[k]));
+		pfree(b);
+	}
+}
+
+/* a worker's best row of group g, appended to vb as a length (0: none) and the serialized values */
+static void
+gen_first_put(GenSt *st, AggAcc *acc, uint32 g, StringInfo vb)
+{
+	const GenBest *b = (const GenBest *) DatumGetPointer(acc->v[g]);
+	int			n = st->g->nargs;
+	uint32		len = 0;
+	char	   *at;
+
+	if (b != NULL)
+		for (int k = 0; k < n; k++)
+			if (gen_stored(st->g, k))
+				len += datumEstimateSpace(b->val[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k]);
+	appendBinaryStringInfo(vb, (char *) &len, sizeof(len));
+	if (len == 0)
+		return;
+	enlargeStringInfo(vb, len);
+	at = vb->data + vb->len;
+	for (int k = 0; k < n; k++)
+		if (gen_stored(st->g, k))
+			datumSerialize(b->val[k], GEN_BEST_NULL(b, n, k), st->abyval[k], st->alen[k], &at);
+	vb->len += len;
+}
+
+/* the best row a worker serialized joins group g's: it replaces the row of the leader when its sort keys come first */
+static void
+gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at)
+{
+	GenBest    *b = (GenBest *) DatumGetPointer(acc->v[g]);
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+
+	for (int k = 0; k < st->g->nargs; k++)
+		if (gen_stored(st->g, k))
+			args[k] = datumRestore((char **) &at, &nulls[k]);
+		else
+		{
+			args[k] = st->argk[k];
+			nulls[k] = st->argknull[k];
+		}
+	if (b == NULL || gen_first_cmp(st, args, nulls, b) < 0)
+		gen_best_set(st, acc, g, args, nulls);
+}
+
 /* the tuples of the chunk: DISTINCT collects the pairs, WITHIN GROUP sorts the values by group, the others advance the states */
 static void
 gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
@@ -6823,7 +7043,22 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		uint32		gid = ex->gid[j];
 
 		if (ok && !sift_colsrc_bit(ok, j))
+		{
+			ex->fwin[j] = 0;
 			continue;
+		}
+		if (g->first)
+		{
+			if (!st->follower)
+				ex->fwin[j] = gen_first(ex, st, acc, &in, j, gid);
+			else if (ex->fwin[j])
+			{
+				gen_args(ex, st, &in, j, args, nulls);
+				gen_best_set(st, acc, gid, args, nulls);
+			}
+			ResetExprContext(ex->lutcx);
+			continue;
+		}
 		gen_args(ex, st, &in, j, args, nulls);
 		if (g->sorted || st->spilled)
 			gen_sort_put(st, acc, gid, args, nulls);
@@ -7025,7 +7260,9 @@ static void
 gen_flush(AggExec *ex)
 {
 	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
-		if (ex->gst[ai] && ex->gst[ai]->tmode)
+		if (ex->gst[ai] && ex->gst[ai]->g->first)
+			gen_flush_first(ex, ai);
+		else if (ex->gst[ai] && ex->gst[ai]->tmode)
 			gen_flush_ordered(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->g->distinct)
 			gen_flush_distinct(ex, ai);
@@ -9618,6 +9855,7 @@ scan_buffers(AggExec *ex)
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->c64 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	ex->okb = MemoryContextAlloc(ex->cxt, maxv);
+	ex->fwin = MemoryContextAllocZero(ex->cxt, maxv);
 	ex->nb = MemoryContextAlloc(ex->cxt, maxv);
 	ex->vstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * maxv * sizeof(double));
 	ex->pix = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));

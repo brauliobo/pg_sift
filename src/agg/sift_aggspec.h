@@ -249,6 +249,7 @@ typedef struct SiftAggGen
 	bool		parallel;		/* workers keep partial states that the leader merges with the aggregate's combine function (through its serial and deserial functions when the state is internal) */
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
+	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
 } SiftAggGen;
 
