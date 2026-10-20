@@ -19,7 +19,7 @@
 #include "sift_col_wide.h"
 #include "sift_filter.h"
 
-#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the element rollups and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
+#define SIFT_COL_FORMAT_MINOR	4			/* SiftSegEntry.format of a col segment 3.1 writes: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7) */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_VERS	4			/* the minor a segment with a version section needs, whatever sift.col_format_minor says */
 #define SIFT_COL_FORMAT_WIDE	5			/* 3.2: a segment whose schema has wide leaves is written as this minor, and only such a segment; the others keep the minor above */

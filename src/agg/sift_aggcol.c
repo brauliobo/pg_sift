@@ -900,7 +900,7 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	return rows_left(unit, bits);
 }
 
-/* ---- the JSON type of the values of a leaf: the tags of the overflow values of the chunks ---- */
+/* ---- the JSON type of the values of a leaf (docs/COL-PLAN.md, "The JSON type of a path"): the tags of the overflow values of the chunks ---- */
 
 StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_JNULL == 7, "SIFT_SRC_JT_* are the chunk tags shifted by one");
 
