@@ -684,7 +684,7 @@ The storage engine is separate from the index AM so that the table AM `sift_tabl
 | layer | files | knows about | reused by the table AM |
 |---|---|---|---|
 | L0 kernels | `col/kern*.c/.h` (portable) | arrays and bit vectors | yes |
-| L1 chunks, batches, dictionaries, zones | `col/enc.c/.h` (portable): `SiftColBatch`, chunk encode/decode, predicate -> key range / LUT, zone computation, batch merge | values, not pages | yes |
+| L1 chunks, batches, dictionaries, zones | `col/enc.h` and `col/{enc,schema,dict,batch,chunk,ctest,unit}.c` (portable): `SiftColBatch`, chunk encode/decode, predicate -> key range / LUT, zone computation, batch merge | values, not pages | yes |
 | L2 segment | `col/seg.c/.h`, `col/seg_write.c`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `sift_store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
 | L3 write buffer | `col/wbuf.c/.h` (lanes: `sift_lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
 | L4 source | `col/scan*.c`: `SiftColSource`, units, filters, reads, selections (`col/col.h` section 3) | a visibility callback | yes: it asks `SiftColVisibility` (below) which rows are visible |

@@ -16,14 +16,14 @@ raw mode (`bm25-raw`, opt-in): the query path `sift_post_open` with `verify=fals
 
 | Id | Severity | Where | Effect | Status at 3.0.2 |
 |---|---|---|---|---|
-| F-COL-1 | high | src/col/kern.c:54 `lut_u32_scalar`, fed by src/col/enc.c `chunk_lut` / `cc_lut` | heap over-read: stored FOR32/PACK codes index the LUT without a range check against its size | fixed: 44c17cc (regress inputs 0c032a8) |
+| F-COL-1 | high | src/col/kern.c:54 `lut_u32_scalar`, fed by src/col/ctest.c `chunk_lut` / `cc_lut` | heap over-read: stored FOR32/PACK codes index the LUT without a range check against its size | fixed: 44c17cc (regress inputs 0c032a8) |
 | F-BM25-2 | high | src/bm25/bitmap.c:440,452 `gr_seek` (via `sift_cur_blob`) | heap over-read and stack write: the 4-byte group entries give `pg` up to 65535 into `b.pages[4]` and `o` into `c->buf` | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
 | F-BM25-3 | high | src/bm25/bitmap.c:463,480 `ld_upto8` / `ef_decode`, from `sift_cur_gids` (src/bm25/posting.c:899 `sift_post_bounds`) | `memcpy` with a negative size (`end` before `p`) | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
 | F-BM25-4 | medium | src/bm25/bitmap_kern.h:38,123,230 `sift_ld8` / `popcount_scalar` / `count_mask_scalar` | over-read: a count taken from the blob is not tied to the bytes present | fixed: 463951f (2.0.2, in 3.0.0) |
 | F-BM25-5 | medium | src/bm25/kernels_avx512.c:183 `nibbles64`, from src/bm25/posting.c:969 `sift_post_group_tf` | SEGV: the tf nibble stream length (from the dictionary sidecar) is not checked against the blob; only `sift_post_check` does | fixed: 7f59d1a (3.0.0; adad91a in 2.0.3) |
 | F-BM25-6 | low | src/bm25/bitmap.c:610 | undefined shift: `blob[1]` (the Rice parameter) is used as a shift count unchecked | fixed: 463951f (2.0.2, in 3.0.0); repro clean |
 | F-BM25-1 | low | src/core/sift_varint.h:27 `sift_get_varint` | shift by 70 on a run of continuation bytes; ends only because 64 zero pad bytes follow a blob | fixed: 463951f, 0ddff29 (2.0.2, in 3.0.0); repro clean, no caller of the unbounded `sift_get_varint` is left |
-| F-COL-2 | low | src/col/enc.c:920, 2025, 2071 | `elog(ERROR)` (XX000, internal error) where ERRCODE_DATA_CORRUPTED belongs: `sift_cchunk_strs`, `unit_emit`, `sift_cunit_decode` | open: the three sites still `elog(ERROR)` |
+| F-COL-2 | low | src/col/chunk.c, src/col/batch.c | `elog(ERROR)` (XX000, internal error) where ERRCODE_DATA_CORRUPTED belongs: `sift_cchunk_strs`, `unit_emit`, `sift_cunit_decode` | open: the three sites still `elog(ERROR)` |
 
 Repros (the target is chosen by the first byte for `bm25`):
 
@@ -53,7 +53,7 @@ Regress input: test/fuzz/regress/colchunk-codes-for32 (`colchunk` checks that no
 
 | Where | Corruption to try | Effect | Status at 3.0.2 |
 |---|---|---|---|
-| src/col/scan_unit.c `unit_group`, src/col/enc.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
+| src/col/scan_unit.c `unit_group`, src/col/batch.c `sift_cunit_decode` | group counts {0xFFFFFFF0, 0x20} with a child chunk n=0x10 | `expand_parents` writes about 16 GB past `parent` (uint32 sum wraps, only the total is checked) | open (source read: the counts are summed in uint32) |
 | (fixed, P1-6) src/col/scan_read.c `read_positions` STR | stored code 0x00FFFFFF, 3-entry dictionary, GROUP BY | `map[code]`, `d->off[code]` read out of bounds in src/agg/sift_agg.c | fixed: P1-6, 1c2f4e7 and 39cb7bb |
 | src/bm25/posting.c:767 `post_attach` | sidecar varint 1, blob ng 0xFFFFFF | `bloblen - ALIGN4(codec_len)` underflows, `gs[i].flags` read past the blob | fixed in 2.0.2 and 3.0.0 (463951f, 7f59d1a: the codec length and `ng` are checked against the blob at attach) |
 | src/bm25/segment.c `load_sb` | extra bits in a DOCMAP offset mask | `walk_docs` writes past `keys` (sift.verify itself overflows before reporting) | not re-checked |
@@ -101,7 +101,7 @@ host compiler (clang 23, gcc 16), where neither finding appears.
 ## Other tools
 
 - MSan (clang 23, `make -C test/fuzz CC=clang SAN='-fsanitize=memory ...' DEFS= COLZ=`): `shred` reports inside libpgcommon's `snprintf`
-  (uninstrumented, false positive); `colchunk` reports a `memcmp` at src/col/enc.c:254 `cdict_probe` during harness setup, from
+  (uninstrumented, false positive); `colchunk` reports a `memcmp` at src/col/dict.c `cdict_probe` during harness setup, from
   `sift_cdict_intern`: not triaged, may be a harness artifact. `bm25` is clean in checked mode.
 - gcc `-Wclobbered` (SIFT_HARDEN=pkg warnings): src/bm25/step.c:107 and src/bm25/pushdown.c:444, locals changed after `PG_TRY`; check
   that they are `volatile` where read in the handler.
