@@ -5229,7 +5229,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
-	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
+	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
 	if (!agg_quals(c, s, &fs))
 		return;
 
@@ -5311,19 +5311,45 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 
 /* ---------- top-N: ORDER BY <columns> LIMIT n ---------- */
 
-/* LIMIT and OFFSET constants of the query: the rows the top-N must produce; 0 when there is no bound it can use */
-static int64
-topn_rows(Query *parse)
-{
-	int64		n;
+/* The rows a plan assumes for a LIMIT it cannot know (a parameter of a generic plan): a page of a list */
+#define TOPN_ASSUMED_ROWS	1000
 
-	if (parse->limitCount == NULL || !IsA(parse->limitCount, Const) || ((Const *) parse->limitCount)->constisnull ||
-		parse->limitOption != LIMIT_OPTION_COUNT || (parse->limitOffset != NULL && (!IsA(parse->limitOffset, Const) || ((Const *) parse->limitOffset)->constisnull)))
+/* LIMIT and OFFSET are the same at every execution of the plan: no sub-plan, no executor parameter, no volatile function */
+static bool
+topn_bound_ok(Node *e)
+{
+	return e == NULL || (sift_operand_ok(e) && !contain_volatile_functions(e));
+}
+
+/* The value the planner expects of a LIMIT or OFFSET (a parameter is a constant of a custom plan); -1 for NULL, `unknown` when it is not a constant */
+static int64
+topn_value(PlannerInfo *root, Node *e, int64 unknown)
+{
+	Node	   *v = estimate_expression_value(root, e);
+
+	if (!IsA(v, Const))
+		return unknown;
+	return ((Const *) v)->constisnull ? -1 : DatumGetInt64(((Const *) v)->constvalue);
+}
+
+/*
+ * LIMIT and OFFSET of the query: the rows the top-N must produce, as far as the planner knows them; 0 when there is no bound it can use.
+ * A parameter of a generic plan is not known: the scan gets its value when it starts, and handles any (sift_topn.h), so the plan assumes
+ * a few rows; a value the planner knows, past the cap, keeps the normal plan.
+ */
+static int64
+topn_rows(Query *parse, PlannerInfo *root)
+{
+	int64		count,
+				offset;
+
+	if (parse->limitCount == NULL || parse->limitOption != LIMIT_OPTION_COUNT || !topn_bound_ok(parse->limitCount) || !topn_bound_ok(parse->limitOffset))
 		return 0;
-	n = DatumGetInt64(((Const *) parse->limitCount)->constvalue);
-	if (parse->limitOffset)
-		n += DatumGetInt64(((Const *) parse->limitOffset)->constvalue);
-	return n >= 1 && n <= SIFT_TOPN_MAX_ROWS ? n : 0;
+	count = topn_value(root, parse->limitCount, TOPN_ASSUMED_ROWS);
+	offset = parse->limitOffset ? topn_value(root, parse->limitOffset, 0) : 0;
+	if (count < 1 || offset < 0 || count > SIFT_TOPN_MAX_ROWS || offset > SIFT_TOPN_MAX_ROWS)
+		return 0;
+	return count + offset <= SIFT_TOPN_MAX_ROWS ? count + offset : 0;
 }
 
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator */
@@ -5425,7 +5451,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	bool		desc[SIFT_TOPN_MAX_KEYS],
 				nulls_first[SIFT_TOPN_MAX_KEYS];
 	int		   *attno;
-	int64		rows = topn_rows(parse);
+	int64		rows = topn_rows(parse, root);
 	int			nkey = list_length(parse->sortClause);
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
 
@@ -5437,7 +5463,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;
 	s = agg_spec_new(c);
-	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid);
+	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
 	if (!agg_quals(c, s, &fs) || s->npost > 0)
 		return;
 	initStringInfo(&txt);
@@ -5454,7 +5480,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		return;
 	c->topn_frac = topn_fraction(c, (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist),
 								 input_rel->rows, rows);
-	s->topn = sift_topn_spec((int) rows, nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno);
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, list_length(scan_tlist), attno, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	record_deps(root, parse->limitCount);
+	record_deps(root, parse->limitOffset);
 	s->desc_topn = txt.data;
 
 	cp = makeNode(CustomPath);
