@@ -84,6 +84,8 @@ typedef struct SiftQuery
 } SiftQuery;
 
 extern SiftQuery *sift_query_parse(const char *src, int len);
+/* The OR of n queries, each parsed on its own: the same raw tree as the text "q1 OR q2 OR ..." (an element is a whole query) */
+extern SiftQuery *sift_query_parse_any(const char *const *srcs, const int *lens, int n);
 extern SiftQuery *sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a);
 
 /*
