@@ -1,6 +1,6 @@
 /*
- * vtab.h - the state of a virtual table and of its cursors, shared by vtab.c (the module), auxfn.c (snippets,
- * facets) and pscan.c (parallel scans).
+ * vtab.h - the state of a virtual table and of its cursors, shared by vtab.c (the module, with content.c, cursor.c and write.c:
+ * see vtab_int.h), auxfn.c (snippets, facets) and pscan.c (parallel scans).
  */
 #ifndef SQVTAB_H
 #define SQVTAB_H
