@@ -110,6 +110,24 @@ BEGIN
     END;
   END LOOP;
 END $$;
+-- Real executor parameters are not local nullable-input markers, even when their IDs coincide.
+SELECT * FROM check_query($q$
+ SELECT (SELECT 0) AS p0, (SELECT 1) AS p1, (SELECT 2) AS p2,
+        (SELECT 3) AS p3, (SELECT 4) AS p4, (SELECT 5) AS p5,
+        (SELECT 6) AS p6, (SELECT 7) AS p7, (SELECT 8) AS p8,
+        CASE WHEN (SELECT true) THEN f.id % 3 ELSE f.id % 3 + 10 END AS key, count(*) AS n
+ FROM events f GROUP BY 10
+$q$);
+-- Exercise additional parameter IDs as expression input capacity grows.
+DO $$
+DECLARE q text; mismatch bigint;
+BEGIN
+  SELECT 'SELECT ' || string_agg('(SELECT ' || i || ') AS p' || i, ', ') ||
+    ', CASE WHEN (SELECT true) THEN f.id % 3 ELSE f.id % 3 + 10 END AS key, count(*) AS n' ||
+    ' FROM events f GROUP BY 15' INTO q FROM generate_series(0, 13) i;
+  SELECT differences INTO mismatch FROM check_query(q);
+  IF mismatch <> 0 THEN RAISE EXCEPTION 'executor parameter changed grouping results'; END IF;
+END $$;
 DROP FUNCTION check_query(text);
 DROP TABLE events, entities, labels;
 DROP EXTENSION pg_sift;
