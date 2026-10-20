@@ -264,13 +264,13 @@ col_stats(Relation index, SiftSrcStats *st)
 }
 
 static void *
-col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	ColSource  *src = palloc0(sizeof(ColSource));
 
 	src->cxt = mcxt;
-	src->cs = sift_col_open(heap, index, snapshot, mcxt, 0);
+	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
@@ -282,6 +282,19 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
+}
+
+static void *
+col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+{
+	return col_open_flags(heap, index, snapshot, mcxt, 0);
+}
+
+/* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
+static void *
+col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+{
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS);
 }
 
 static void
@@ -1222,6 +1235,7 @@ static const SiftSrcProvider col_provider = {
 	.layout = col_layout,
 	.stats = col_stats,
 	.open = col_open,
+	.open_part = col_open_part,
 	.close = col_close,
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,

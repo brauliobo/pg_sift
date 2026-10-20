@@ -33,6 +33,7 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -59,6 +60,7 @@
 #include "utils/typcache.h"
 
 #include "sift_agg.h"
+#include "sift_aggpart.h"
 #include "sift_topn.h"
 #include "sift_aggspec.h"
 #include "sift_colsrc.h"
@@ -117,6 +119,10 @@ typedef struct AggCtx
 	Oid			heapoid;
 	Oid			indexoid;
 	SiftSrcLayout *lay;
+	int			nparts;			/* a partitioned table: its live partitions, which the scan reads one after the other (indexoid is the first's) */
+	Oid		   *partheap;
+	Oid		   *partindex;
+	double		part_pages;		/* ... and the pages of their heaps */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	Index		func_rti;
 	FuncKind	func_kind;
@@ -4845,6 +4851,13 @@ semi_joins_only(AggCtx *c)
 	return true;
 }
 
+/* the heap pages of the scanned table: those of the partitions of a partitioned table */
+static double
+rel_pages(AggCtx *c)
+{
+	return c->nparts > 0 ? c->part_pages : c->rel->pages;
+}
+
 static void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -4933,7 +4946,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	scan_cost += gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap, a page at a time */
-	scan_cost += vis * Min(sel_rows, Max(c->rel->pages, 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
+	scan_cost += vis * Min(sel_rows, Max(rel_pages(c), 1.0)) * random_page_cost * 0.25 * (s->topn ? c->topn_frac : 1.0);
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);
 	if (exact > 0)
@@ -5185,6 +5198,194 @@ setup_joins(AggCtx *c, List **quals, List **post)
 	return true;
 }
 
+/* ---------- partitioned tables ---------- */
+
+/* a column index of a partition: its layout in the terms of the partitioned table's columns, its statistics and pre-aggregates */
+typedef struct PartCand
+{
+	Oid			indexoid;
+	SiftSrcLayout *lay;
+	SiftSrcStats stats;
+	SiftSrcPreagg pa;
+} PartCand;
+
+typedef struct PartVars
+{
+	PlannerInfo *root;
+	Index		rti;			/* the partition */
+	Index		top;			/* the partitioned table */
+	bool		ok;
+} PartVars;
+
+/* the attribute of the parent that has the partition's attribute att (0: none) */
+static AttrNumber
+parent_attno(AppendRelInfo *ai, AttrNumber att)
+{
+	foreach_ptr(Node, tv, ai->translated_vars)
+		if (tv != NULL && IsA(tv, Var) && ((Var *) tv)->varattno == att)
+			return foreach_current_index(tv) + 1;
+	return 0;
+}
+
+/* A column of a partition as the column of the partitioned table, through every level (the attribute numbers differ after a dropped column) */
+static Node *
+part_vars_mutator(Node *n, PartVars *pv)
+{
+	Var		   *v;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, Var))
+		return expression_tree_mutator(n, part_vars_mutator, pv);
+	v = copyObject((Var *) n);
+	for (Index r = pv->rti; r != pv->top && v->varattno > 0; r = pv->root->append_rel_array[r]->parent_relid)
+		v->varattno = parent_attno(pv->root->append_rel_array[r], v->varattno);
+	pv->ok &= v->varattno > 0;
+	return (Node *) v;
+}
+
+/* The candidates of a leaf partition: its sift_col indexes, with the layouts in the terms of the partitioned table; none when it cannot be read */
+static List *
+part_candidates(AggCtx *c, RelOptInfo *leaf)
+{
+	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
+	List	   *cands = NIL;
+
+	if (rte->relkind != RELKIND_RELATION || get_rel_relam(rte->relid) != HEAP_TABLE_AM_OID || rte->securityQuals != NIL)
+		return NIL;
+	foreach_node(IndexOptInfo, ii, leaf->indexlist)
+	{
+		PartCand   *pc;
+		PartVars	pv = {c->root, leaf->relid, c->relid, true};
+		Relation	rel;
+		List	   *exprs = NIL;
+
+		if (!sift_colsrc_can_part(ii->relam) || ii->hypothetical || ii->indpred != NIL)
+			continue;
+		pc = palloc0(sizeof(PartCand));
+		pc->indexoid = ii->indexoid;
+		rel = index_open(ii->indexoid, AccessShareLock);
+		pc->lay = sift_colsrc_layout(rel);
+		sift_colsrc_stats(rel, &pc->stats);
+		sift_colsrc_preagg(rel, &pc->pa);
+		index_close(rel, AccessShareLock);
+		foreach_ptr(Node, e, pc->lay->attexprs)
+			exprs = lappend(exprs, part_vars_mutator(e, &pv));
+		pc->lay->attexprs = exprs;
+		if (pv.ok)
+			cands = lappend(cands, pc);
+	}
+	return cands;
+}
+
+/* the partitions that the planner kept, the partitioned ones replaced by theirs: false when a partition is not one a column index reads */
+static void
+part_leaves(RelOptInfo *rel, List **leaves)
+{
+	for (int i = -1; (i = bms_next_member(rel->live_parts, i)) >= 0;)
+	{
+		RelOptInfo *p = rel->part_rels[i];
+
+		if (IS_DUMMY_REL(p))
+			continue;
+		if (p->part_scheme != NULL)
+			part_leaves(p, leaves);
+		else
+			*leaves = lappend(*leaves, p);
+	}
+}
+
+/* the names of the columns the partitions are split by, at every level */
+static void
+part_key_names(AggCtx *c, RelOptInfo *rel, List **names)
+{
+	Oid			relid = planner_rt_fetch(rel->relid, c->root)->relid;
+
+	for (int k = 0; k < rel->part_scheme->partnatts; k++)
+		foreach_node(Var, v, pull_var_clause((Node *) rel->partexprs[k], 0))
+			*names = list_append_unique(*names, makeString(get_attname(relid, v->varattno, false)));
+	for (int i = -1; (i = bms_next_member(rel->live_parts, i)) >= 0;)
+		if (rel->part_rels[i]->part_scheme != NULL)
+			part_key_names(c, rel->part_rels[i], names);
+}
+
+/*
+ * A parameter in a condition on a column the partitions are split by prunes them when the plan runs, which the scan does not do (it reads every
+ * partition PostgreSQL's planning kept, and applies the condition to the rows): the normal plan keeps that pruning.
+ */
+static bool
+part_runtime_pruning(AggCtx *c)
+{
+	List	   *names = NIL;
+
+	part_key_names(c, c->rel, &names);
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+		if (extern_param_walker((Node *) ri->clause, NULL))
+			foreach_node(Var, v, pull_var_clause((Node *) ri->clause, 0))
+				if (list_member(names, makeString(get_attname(c->heapoid, v->varattno, false))))
+					return true;
+	return false;
+}
+
+/*
+ * The source of a partitioned table: the live partitions after PostgreSQL's pruning, each read through a sift_col index of the same layout, the
+ * columns in the terms of the table (the query is compiled once, against them). A partition without such an index, of another storage, or whose
+ * index differs from the others' keeps the normal plan, and so does a partitioned table whose partitions are pruned when the plan runs.
+ */
+static bool
+part_source(AggCtx *c)
+{
+	List	   *leaves = NIL,
+			   *first;
+	int			n;
+
+	if (c->rel->part_scheme == NULL || c->rel->nparts == 0)
+		return false;
+	part_leaves(c->rel, &leaves);
+	n = list_length(leaves);
+	if (n == 0 || n > SIFT_AGG_MAX_PARTS || part_runtime_pruning(c))
+		return false;
+	first = part_candidates(c, linitial_node(RelOptInfo, leaves));
+	foreach_ptr(PartCand, f, first)
+	{
+		List	   *picked = list_make1(f);
+
+		for (int i = 1; i < n && picked != NIL; i++)
+		{
+			PartCand   *m = NULL;
+
+			foreach_ptr(PartCand, pc, part_candidates(c, list_nth_node(RelOptInfo, leaves, i)))
+				if (sift_aggpart_same_layout(f->lay, pc->lay) && memcmp(&f->pa, &pc->pa, sizeof(f->pa)) == 0)
+				{
+					m = pc;
+					break;
+				}
+			picked = m ? lappend(picked, m) : NIL;
+		}
+		if (picked == NIL)
+			continue;
+		c->nparts = n;
+		c->partheap = palloc(n * sizeof(Oid));
+		c->partindex = palloc(n * sizeof(Oid));
+		memset(&c->stats, 0, sizeof(c->stats));
+		for (int i = 0; i < n; i++)
+		{
+			RelOptInfo *leaf = list_nth_node(RelOptInfo, leaves, i);
+			PartCand   *pc = list_nth(picked, i);
+
+			c->partheap[i] = planner_rt_fetch(leaf->relid, c->root)->relid;
+			c->partindex[i] = pc->indexoid;
+			c->part_pages += leaf->pages;
+			sift_aggpart_add_stats(&c->stats, &pc->stats);
+		}
+		c->lay = f->lay;
+		c->pa = f->pa;
+		c->indexoid = f->indexoid;
+		return true;
+	}
+	return false;
+}
+
 /* Opens the source of the rel and its layout; false if none */
 static bool
 find_source(AggCtx *c, IndexOptInfo **ixout)
@@ -5193,6 +5394,8 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	Relation	rel;
 
 	*ixout = NULL;
+	if (rte->relkind == RELKIND_PARTITIONED_TABLE)
+		return part_source(c);
 	if (sift_colsrc_is_table(get_rel_relam(rte->relid)))
 	{
 		rel = table_open(rte->relid, NoLock);
@@ -5275,12 +5478,14 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		allrtis = bms_add_member(allrtis, rti);
 		if (e->rtekind == RTE_RELATION)
 		{
-			if (e->inh || e->tablesample || e->securityQuals != NIL ||
-				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW))
+			bool		part = e->inh && e->relkind == RELKIND_PARTITIONED_TABLE;
+
+			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
+				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
 				return false;
 			if (c->relid == 0)
 				c->relid = rti;
-			else if (!add_join(c, fs, rti))
+			else if (part || !add_join(c, fs, rti))
 				return false;
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral)
@@ -5340,6 +5545,9 @@ agg_spec_new(AggCtx *c)
 
 	s->indexoid = c->indexoid;
 	s->heapoid = c->heapoid;
+	s->nparts = c->nparts;
+	s->partheap = c->partheap;
+	s->partindex = c->partindex;
 	s->group = c->group;
 	return s;
 }
@@ -5541,7 +5749,7 @@ parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *o
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
 			return 0;
-	return compute_parallel_worker(c->rel, c->rel->pages, -1, max_parallel_workers_per_gather);
+	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
 }
 
 /*
@@ -5792,7 +6000,8 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
 	s = agg_spec_new(c);
-	c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
+	if (c->nparts == 0)
+		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
 	if (!agg_quals(c, s, &fs))
 		return;
 
@@ -6022,7 +6231,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->distinctClause || parse->setOperations || parse->hasSubLinks || parse->hasRecursive || root->rowMarks != NIL)
 		return;
-	if (!agg_base(c, root, input_rel, &fs) || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
+	if (!agg_base(c, root, input_rel, &fs) || c->nparts > 0 || c->joins != NIL || c->func_rti != 0 || fs.lefts != NIL ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return;
 	s = agg_spec_new(c);
@@ -6580,7 +6789,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		arms[narms].sub.tlist = b->parse->targetList;
 		narms++;
 	}
-	if (!agg_base(c, base, NULL, &fs))
+	if (!agg_base(c, base, NULL, &fs) || c->nparts > 0)
 		return;
 	s = agg_spec_new(c);
 	if (!agg_quals(c, s, &fs) || !arm_gates(c, s, gates))
@@ -6733,6 +6942,8 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	(void) gextra;
 	if (OidIsValid(spec->indexoid))
 		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->indexoid);
+	for (int i = 0; i < spec->nparts; i++)
+		root->glob->relationOids = lappend_oid(lappend_oid(root->glob->relationOids, spec->partheap[i]), spec->partindex[i]);
 	for (int i = 0; i < spec->njoin; i++)
 		if (spec->join[i].child < 0)
 			root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->join[i].relid);

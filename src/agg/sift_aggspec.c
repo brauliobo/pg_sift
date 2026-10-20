@@ -974,6 +974,12 @@ sift_aggspec_pack(const SiftAggSpec *s)
 
 	put_int(p, (int) s->indexoid);
 	put_int(p, (int) s->heapoid);
+	put_int(p, s->nparts);
+	for (int i = 0; i < s->nparts; i++)
+	{
+		put_int(p, (int) s->partheap[i]);
+		put_int(p, (int) s->partindex[i]);
+	}
 	put_int(p, s->group);
 	put_int(p, s->nleaves);
 	for (int i = 0; i < s->nleaves; i++)
@@ -1298,6 +1304,14 @@ sift_aggspec_unpack(const List *items)
 
 	s->indexoid = (Oid) get_int(u);
 	s->heapoid = (Oid) get_int(u);
+	s->nparts = get_int(u);
+	s->partheap = palloc(Max(s->nparts, 1) * sizeof(Oid));
+	s->partindex = palloc(Max(s->nparts, 1) * sizeof(Oid));
+	for (int i = 0; i < s->nparts; i++)
+	{
+		s->partheap[i] = (Oid) get_int(u);
+		s->partindex[i] = (Oid) get_int(u);
+	}
 	s->group = get_int(u);
 	s->nleaves = get_int(u);
 	s->leaves = palloc(Max(s->nleaves, 1) * sizeof(int));

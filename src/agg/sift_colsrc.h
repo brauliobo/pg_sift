@@ -383,6 +383,8 @@ typedef struct SiftSrcProvider
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
+	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 	void		(*close) (void *impl);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
@@ -509,6 +511,10 @@ extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
  * scan's. mcxt holds everything the source allocates until sift_colsrc_close.
  */
 extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+
+/* Can the sources of an index of this access method be read as the partitions of one table (src/agg/sift_aggpart.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
+extern bool sift_colsrc_can_part(Oid indexrelam);
+extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 extern void sift_colsrc_close(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
 

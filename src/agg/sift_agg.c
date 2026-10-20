@@ -75,6 +75,7 @@
 #include "sift_aggwide.h"
 #include "sift_aggback.h"
 #include "sift_aggkern.h"
+#include "sift_aggpart.h"
 #include "sift_aggspec.h"
 #include "sift_col_kern.h"
 #include "sift_colsrc.h"
@@ -10078,12 +10079,21 @@ typedef struct ScanShared
 	uint32		nsb;
 	uint32		morsel;			/* superblocks of an item (the scans that keep their state in the leader: all of them) */
 	bool		ordered;
+	uint32		partoff[FLEXIBLE_ARRAY_MEMBER];	/* a partitioned table: the first superblock of each partition and the total (sift_aggpart_offsets) */
 } ScanShared;
+
+static Size
+shared_size(const SiftAggSpec *s)
+{
+	return offsetof(ScanShared, partoff) + (s->nparts + 1) * sizeof(uint32);
+}
 
 static void
 shared_init(ScanShared *sh, AggExec *ex)
 {
 	sh->nsb = sift_colsrc_nsb(ex->src);
+	if (ex->spec->nparts > 0)
+		sift_aggpart_offsets(ex->src, sh->partoff);
 	sh->ordered = sift_aggspec_ordered(ex->spec);
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
@@ -10318,6 +10328,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_rels(ex);
 	ex->snap = snap;
 	engine_open(ex, snap, RestoreParamList(&params));
+	if (ex->spec->nparts > 0)
+		sift_aggpart_set_offsets(ex->src, sh->partoff);
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	scan_buffers(ex);
@@ -10363,7 +10375,7 @@ par_launch(AggExec *ex)
 		return;
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
-	shm_toc_estimate_chunk(&pcxt->estimator, sizeof(ScanShared));
+	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec));
 	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
@@ -10376,7 +10388,7 @@ par_launch(AggExec *ex)
 		ExitParallelMode();
 		return;
 	}
-	ps = shm_toc_allocate(pcxt->toc, sizeof(ScanShared));
+	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec));
 	shared_init(ps, ex);
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
 	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
@@ -10516,7 +10528,7 @@ run_scan(AggExec *ex)
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
-		ex->shared = MemoryContextAlloc(ex->cxt, sizeof(ScanShared));
+		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec));
 		shared_init(ex->shared, ex);
 	}
 	ex->lane_serial = ordered && ex->par == NULL;
@@ -11068,7 +11080,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 {
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-	ex->src = sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
+	ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
+		sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
 	ex->lay = sift_colsrc_source_layout(ex->src);
 	extend_layout(ex);
 	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
@@ -11208,7 +11221,15 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	int			h1 = s->nkeys - (s->nsets > 0),	/* the hidden keys are between the outer ones and the set's */
 				h0 = h1 - s->nhidden;
 
-	ExplainPropertyText("Index", s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
+	ExplainPropertyText("Index", s->nparts > 0 ? "(partitions)" : s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
+	if (s->nparts > 0)
+	{
+		List	   *names = NIL;
+
+		for (int i = 0; i < s->nparts; i++)
+			names = lappend(names, get_rel_name(s->partheap[i]));
+		ExplainPropertyList("Partitions", names, es);
+	}
 	if (s->desc_quals && s->desc_quals[0])
 		ExplainPropertyText("Filters", s->desc_quals, es);
 	if (s->search)
