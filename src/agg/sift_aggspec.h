@@ -75,6 +75,8 @@ typedef struct SiftAggNum
 	int			scale;			/* digits after the point of the result: the dscale PostgreSQL gives it */
 } SiftAggNum;
 
+#define SIFT_AGG_MAX_WIDE	8		/* conjuncts on wide leaves (SAP_WIDE) of one scan: what a column source takes in set_wide */
+
 typedef enum SiftAggPredKind
 {
 	SAP_TRUE,
@@ -89,17 +91,18 @@ typedef enum SiftAggPredKind
 	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
 	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
-	SAP_TYPE					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
+	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
+	SAP_WIDE					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
 {
 	SiftAggPredKind kind;
 	int			id;				/* preorder number, the index of the node's executor state */
-	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE; SAP_ANY_ELEM: the array leaf */
-	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types */
-	Node	   *expr;			/* SAP_CMP, SAP_NCMP: operand (no Vars); SAP_IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
-	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP: type of the operand (element type for IN) */
+	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE, SAP_WIDE; SAP_ANY_ELEM: the array leaf */
+	int			op;				/* SAP_CMP: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types; SAP_WIDE: SWT_* (sift_colsrc.h) */
+	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
+	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */

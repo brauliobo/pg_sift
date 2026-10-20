@@ -186,6 +186,8 @@ key_text(Relation index, const SiftColDef *def, int64 key)
 	bool		isvar;
 	Datum		d;
 
+	if (def->lane > 0 || def->lanes > 1)	/* a lane of a wide value is a plain integer */
+		return CStringGetTextDatum(psprintf(INT64_FORMAT, key));
 	switch (def->store == SIFT_COLS_INT ? def->type : def->store == SIFT_COLS_F4 ? SIFT_COLT_FLOAT4 : SIFT_COLT_FLOAT8)
 	{
 		case SIFT_COLT_BOOL:
@@ -298,8 +300,10 @@ sift_col_unit_aggs_sql(PG_FUNCTION_ARGS)
 		nulls[8] = nulls[9] = !a.has_sums;
 		if (a.has_sums)
 		{
-			v[8] = i128_numeric(a.sum, def->scale);
-			v[9] = i128_numeric(a.sumsq, 2 * def->scale);
+			int			scale = def->lane > 0 || def->lanes > 1 ? 0 : def->scale;
+
+			v[8] = i128_numeric(a.sum, scale);
+			v[9] = i128_numeric(a.sumsq, 2 * scale);
 			nulls[9] = (a.flags & SIFT_CAGG_SUMSQ_OVF) != 0;
 		}
 		nulls[10] = !is_float(def);

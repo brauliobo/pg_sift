@@ -48,6 +48,8 @@ typedef struct ColSource
 	SiftColPred *fpred;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
+	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
+	int			nwtest;
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
@@ -55,6 +57,7 @@ typedef struct ColSource
 } ColSource;
 
 #define COL_MAX_STR_PRUNE	16
+#define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
 
 static bool
 col_owns_index(Oid indexrelam)
@@ -84,6 +87,16 @@ leaf_vtype(const SiftColDef *def)
 			elog(ERROR, "sift: leaf of storage %d has no column vector type", def->store);
 	}
 	return SCV_I32;
+}
+
+/*
+ * A leaf the aggregate scan does not read: a lane of a wide value and the wide types themselves; with no SQL type no
+ * expression matches it, so those queries keep the normal plan
+ */
+static bool
+leaf_hidden(const SiftColDef *def)
+{
+	return sift_col_def_needs_wide(def);
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -160,7 +173,8 @@ col_layout(Relation index)
 		l->id = def->id;
 		l->attno = def->attno;
 		l->parent = def->parent;
-		l->typid = sift_col_def_typid(tupdesc, def);
+		l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(tupdesc, def);
+		l->wtypid = leaf_hidden(def) && def->lane == 0 ? sift_col_def_typid(tupdesc, def) : InvalidOid;
 		l->scale = def->scale;
 		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
 		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
@@ -272,7 +286,8 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 {
 	ColSource  *src = impl;
 	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
-	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
+	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
+	int			n;
 
 	/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either */
 	for (int k = 0; k < nprune; k++)
@@ -286,7 +301,11 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 		preds[2 * nprune + i] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)
 		preds[2 * nprune + src->nspred + i] = src->fpred[i];
-	sift_col_begin(src->cs, preds, 2 * nprune + src->nspred + src->nflt, sb_lo, sb_hi);
+	n = 2 * nprune + src->nspred + src->nflt;
+	for (int i = 0; i < src->nwtest; i++)
+		if (src->wtest[i].verdict == SIFT_COLW_PRED)
+			preds[n++] = src->wtest[i].pred;
+	sift_col_begin(src->cs, preds, n, sb_lo, sb_hi);
 }
 
 static SiftColOp
@@ -360,6 +379,39 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	pred = str_pred(t, src->fvals);
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
 	return true;
+}
+
+/* ---- the conjuncts on wide leaves: tested by the engine, on the unit as stored ---- */
+
+static bool rows_left(const SiftSrcUnit *unit, const uint64 *bits);
+
+static int
+col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
+{
+	ColSource  *src = impl;
+
+	if (nt > COL_MAX_WIDE)
+		elog(ERROR, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
+	src->wtest = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColWTest));
+	for (int i = 0; i < nt; i++)
+		sift_colw_test(sift_col_def(src->cs, t[i].leaf), t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
+	src->nwtest = nt;
+	return nt;
+}
+
+static void
+wide_op(const SiftColUnit *cu, SiftColSel *sel, void *test)
+{
+	sift_colw_apply(cu, test, sel);
+}
+
+static bool
+col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
+{
+	ColSource  *src = impl;
+
+	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
+	return rows_left(unit, rows);
 }
 
 static bool
@@ -1103,6 +1155,8 @@ static const SiftSrcProvider col_provider = {
 	.read_types = col_read_types,
 	.prune_str = col_prune_str,
 	.filter_str = col_filter_str,
+	.set_wide = col_set_wide,
+	.filter_wide = col_filter_wide,
 	.preagg = col_preagg,
 	.unit_exact = col_unit_exact,
 	.unit_agg = col_unit_agg,

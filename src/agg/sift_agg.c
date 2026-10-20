@@ -677,6 +677,7 @@ typedef struct AggExec
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
+	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
@@ -2976,7 +2977,8 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
 			break;
 		case SAP_TYPE:
-			elog(ERROR, "sift: the types of a leaf are tested by the source");
+		case SAP_WIDE:
+			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source");
 	}
 }
 
@@ -8233,6 +8235,18 @@ type_filters(AggExec *ex, uint64 *rmask)
 	return true;
 }
 
+/* the rows that pass each SAP_WIDE conjunct, in the order wide_init gave them to the source; false when none is left */
+static bool
+wide_filters(AggExec *ex, uint64 *rmask)
+{
+	int			k = 0;
+
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (ex->spec->pred[i]->kind == SAP_WIDE && !sift_colsrc_filter_wide(ex->src, &ex->unit, k++, rmask))
+			return false;
+	return true;
+}
+
 static void
 process_unit(AggExec *ex)
 {
@@ -8271,13 +8285,14 @@ process_unit(AggExec *ex)
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
 	check_overflow(ex, rmask);
-	if ((ex->ntype > 0 && !type_filters(ex, rmask)) || (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask)))
+	if ((ex->ntype > 0 && !type_filters(ex, rmask)) || (ex->nwide > 0 && !wide_filters(ex, rmask)) ||
+		(ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, rmask)))
 	{
 		ex->row_base += nrow;
 		return;
 	}
 	/* a few rows left: the leaves are decoded for them only */
-	if ((ex->nfilter > 0 || ex->ntype > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
+	if ((ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
 		ex->rsel = rmask;
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
@@ -8581,6 +8596,60 @@ type_init(AggExec *ex)
 			ex->pushed[i] = true;
 			ex->ntype++;
 		}
+}
+
+/*
+ * The conjuncts on wide leaves (SAP_WIDE) are the source's: their operands are evaluated once, as Datums of the leaf's type (an IN list as the
+ * elements of its array, a NULL operand as isnull), and the source returns the rows that pass test k of wide_filters.
+ */
+static void
+wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
+{
+	bool		isnull;
+	ExprState  *e;
+	Datum		d;
+	Datum	   *vals = palloc(sizeof(Datum));
+	bool	   *nulls = palloc(sizeof(bool));
+	int16		len;
+	bool		byval;
+	char		align;
+
+	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL)
+		return;
+	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+	get_typlenbyvalalign(p->argtype, &len, &byval, &align);
+	t->nvals = 1;
+	nulls[0] = isnull;
+	if (isnull)
+		vals[0] = (Datum) 0;
+	else if (p->op == SWT_IN || p->op == SWT_NOTIN)
+		deconstruct_array(DatumGetArrayTypePCopy(d), p->argtype, len, byval, align, &vals, &nulls, &t->nvals);
+	else
+		vals[0] = datumCopy(d, byval, len);
+	t->vals = vals;
+	t->isnull = nulls;
+}
+
+static void
+wide_init(AggExec *ex)
+{
+	SiftAggSpec *s = ex->spec;
+	SiftSrcWideTest t[SIFT_AGG_MAX_WIDE];
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	int			n = 0;
+
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_WIDE)
+		{
+			t[n] = (SiftSrcWideTest) {.leaf = s->pred[i]->leaf, .op = s->pred[i]->op};
+			wide_operand(ex, s->pred[i], &t[n++]);
+			ex->pushed[i] = true;
+		}
+	if (n > 0 && sift_colsrc_set_wide(ex->src, t, n) != n)
+		elog(ERROR, "sift: the source did not take the conjuncts on wide leaves");
+	ex->nwide = n;
+	MemoryContextSwitchTo(old);
 }
 
 /* what a key keeps for the whole scan: its expression and the type of its input; the ids are the table's (table_init) */
@@ -10523,6 +10592,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	prune_init(ex);
 	filter_init(ex);
 	type_init(ex);
+	wide_init(ex);
 	str_init(ex);
 	preagg_init(ex);
 	dense_init(ex);
@@ -10695,6 +10765,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
 		if (c->ntype > 0)
 			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
+		if (c->nwide > 0)
+			ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
 		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)
