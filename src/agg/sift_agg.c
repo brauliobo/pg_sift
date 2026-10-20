@@ -5249,7 +5249,17 @@ agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all)
 	bool		any = false;
 
 	memset(ex->okb, 1, nsel);
-	if (a->filter)
+	if (a->filter && a->filter->level == 2)
+	{
+		const SiftAggPred *filter = a->filter;
+		const uint32 *out = combo_outs(ex, filter->leaf);
+
+		Assert(filter->kind == SAP_COMBO);
+		for (int j = 0; j < nsel; j++)
+			ex->okb[j] = combo_val(ex, filter->leaf, out[j], filter->op) != 0;
+		any = true;
+	}
+	else if (a->filter)
 	{
 		uint64		fm[VECW + PADW],
 					al[VECW + PADW];
@@ -9764,7 +9774,7 @@ register_combos(AggExec *ex)
 
 		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
 		cs->resettable = cb->join < 0;
-		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
+		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && cb->leaf[0] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
 		cs->tlen = palloc0(Max(cb->nslots, 1) * sizeof(int16));
 		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));

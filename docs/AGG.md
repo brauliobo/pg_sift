@@ -14,6 +14,8 @@ estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column noth
 A scan with such a join runs without workers.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
 Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
+Aggregate `FILTER` predicates can read lookup columns and source values together. They run for each surviving joined tuple, after all joins;
+an excluded tuple does not evaluate a filter expression that could raise an error.
 Inner lookups are ordered by their dependencies within each join boundary. Statement-level materialized CTEs can be referenced from nested queries.
 Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates` and `agg_lookup_dependencies`.
 
