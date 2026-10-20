@@ -3,6 +3,8 @@
 -- is run with the table, with sift.agg_semi_lut = off (the generic lookup join) and with sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- page costs that keep the pushed plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement only
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
@@ -10,6 +12,9 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL WHEN i <= 5 THEN -i WHEN i <= 10 THEN 
        (i % 50)::int2, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, day, kind, amount);
+-- the statistics of dim_a_id see every row (300 rows of sample per unit of target: 300000): sift reads the span of the values from them (a table over a span past
+-- 4M values is not built), and a sample that misses the few rows far from the rest would let the plan of NOT IN (SELECT ..) flip from run to run
+ALTER TABLE ev ALTER COLUMN dim_a_id SET STATISTICS 1000;
 VACUUM (FREEZE, ANALYZE) ev;
 
 -- sets of keys: a group membership (soft deleted, a NULL key, a duplicate), an attribute table, int2 and date keys, int8 keys, a table with no rows
