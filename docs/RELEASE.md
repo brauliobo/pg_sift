@@ -46,3 +46,4 @@ PostgreSQL 17 has a third shard for the jobs that install a library flavor, whic
 `scripts/ci.sh --selftest` fails when a tracked file or a test is in no row of the map. Not per push, on the nightly run and on `gh workflow run ci.yml -f heavy=true`:
 the full tier (`make check-full`: ASan, long soaks and fuzz runs, all mutants) on 17 and 18, and the experimental PostgreSQL 19. `assert.yml`
 (assertions and valgrind, weekly) and `coverity.yml` stay as they were. The benchmarks (`bench/bench final --docs`) are a separate step, not part of a release.
+Job times and why the quick jobs have their size: [TEST-TIMES.md](TEST-TIMES.md).

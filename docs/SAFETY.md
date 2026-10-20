@@ -2,7 +2,7 @@
 
 The column engine and the BM25 readers decode bytes from disk. Rust-style safety in C means: every byte read goes through a length-carrying
 type (`SiftSpan`, src/core/sift_span.h), arithmetic on stored sizes is checked, the compiler inserts what it can, and tools find the rest.
-Findings so far: docs/SAFETY-FINDINGS.md.
+Findings so far: [SAFETY-FINDINGS.md](SAFETY-FINDINGS.md).
 
 ## Threat model
 
