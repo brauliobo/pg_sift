@@ -25,6 +25,7 @@
 #define SIFT_AGG_MAX_CLEAVES	3	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
 #define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
+#define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_MAX_COMBOS	16
 #define SIFT_AGG_MAX_JOINS	8
@@ -337,6 +338,11 @@ typedef struct SiftAggJoin
 	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo; -1: the key is keyexpr */
 	Node	   *keyexpr[SIFT_AGG_MAX_JKEYS];	/* an expression of the combo's leaves (Params), evaluated per distinct tuple of their values */
 	int			fslot;			/* slot of the combo that is the rest of the ON clause (leaves and columns of the row), -1 none: a row matches if it holds */
+	int			nidx;			/* conjuncts of the rest of the ON clause `column = value` (a constant, parameter or stable expression): a btree index can load the rows */
+	int			idxatt[SIFT_AGG_MAX_JIDX];
+	Oid			idxop[SIFT_AGG_MAX_JIDX];		/* the equality operator, column on the left */
+	Oid			idxcoll[SIFT_AGG_MAX_JIDX];
+	Node	   *idxval[SIFT_AGG_MAX_JIDX];
 	int			ncol;
 	int			colatt[SIFT_AGG_MAX_JCOLS];
 	Oid			coltype[SIFT_AGG_MAX_JCOLS];

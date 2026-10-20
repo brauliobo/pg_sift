@@ -908,6 +908,14 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		put_int(p, (int) j->relid);
 		put_int(p, j->kind);
 		put_int(p, j->fslot);
+		put_int(p, j->nidx);
+		for (int k = 0; k < j->nidx; k++)
+		{
+			put_int(p, j->idxatt[k]);
+			put_int(p, (int) j->idxop[k]);
+			put_int(p, (int) j->idxcoll[k]);
+			put_node(p, j->idxval[k]);
+		}
 		put_int(p, j->nkey);
 		for (int k = 0; k < j->nkey; k++)
 		{
@@ -1220,6 +1228,14 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		j->relid = (Oid) get_int(u);
 		j->kind = get_int(u);
 		j->fslot = get_int(u);
+		j->nidx = get_int(u);
+		for (int k = 0; k < j->nidx; k++)
+		{
+			j->idxatt[k] = get_int(u);
+			j->idxop[k] = (Oid) get_int(u);
+			j->idxcoll[k] = (Oid) get_int(u);
+			j->idxval[k] = get_node(u);
+		}
 		j->nkey = get_int(u);
 		for (int k = 0; k < j->nkey; k++)
 		{

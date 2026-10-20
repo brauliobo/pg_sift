@@ -4365,6 +4365,7 @@ out_walker(Node *n, OutWalk *w)
 #define AGG_KEY_ROW			1.0		/* a group key id */
 #define AGG_COMBO_ROW		2.5		/* a tuple's entry in a combo: gathers and a hash probe */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
 #define AGG_SEMI_ROW		1.0		/* a tuple tested against a semi or anti join: one byte of the lookup table, or a hash probe */
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
@@ -4804,6 +4805,21 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
+/* does a btree index of the joined table start with columns that the table's `column = value` conditions give (map_load picks the same) */
+static bool
+join_index_usable(RelOptInfo *rel, const SiftAggJoin *j)
+{
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+	{
+		if (ii->relam != BTREE_AM_OID || ii->indpred != NIL || ii->hypothetical || ii->indexkeys[0] <= 0)
+			continue;
+		for (int k = 0; k < j->nidx; k++)
+			if (j->idxatt[k] == ii->indexkeys[0] && op_in_opfamily(j->idxop[k], ii->opfamily[0]) && ii->indexcollations[0] == j->idxcoll[k])
+				return true;
+	}
+	return false;
+}
+
 /* are the lookup joins all semi or anti joins: they drop tuples, never repeat or add one */
 static bool
 semi_joins_only(AggCtx *c)
@@ -4852,7 +4868,18 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	rows_out = Min(rows_out, Max(Max(s->nsets, 1) * agg_rows, 1.0));
 	scan_cost += agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 	foreach_ptr(JoinCtx, jc, c->joins)
-		scan_cost += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0) * AGG_JOIN_ROW + (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI ? sel_rows * AGG_SEMI_ROW : 0);
+	{
+		RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+		double		tuples = Max(jrel->tuples, 1.0);
+
+		/* an index scan reads the rows that pass the equalities, the rest is read whole */
+		if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
+			scan_cost += Min(Max(jrel->rows, 1.0), tuples) * AGG_IDX_ROW;
+		else
+			scan_cost += tuples * AGG_JOIN_ROW;
+		if (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI)
+			scan_cost += sel_rows * AGG_SEMI_ROW;
+	}
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
@@ -4946,12 +4973,57 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	return true;
 }
 
+/*
+ * `column = value` among the table's own conditions (the value reads no column, is not volatile and takes no executor parameter): the rows of
+ * the table that can match are those of an index scan on the column, when the table has a btree on it (the executor looks, map_load).
+ * The conjunct stays in the filter; this only narrows what is read.
+ */
+static void
+join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
+{
+	SiftAggJoin *j = &jc->j;
+
+	foreach_ptr(Node, q, conds)
+	{
+		OpExpr	   *op;
+		Node	   *l,
+				   *r,
+				   *val;
+		Oid			opno;
+
+		if (!IsA(q, OpExpr) || j->nidx == SIFT_AGG_MAX_JIDX || list_length(((OpExpr *) q)->args) != 2)
+			continue;
+		op = (OpExpr *) q;
+		l = strip_relabel(linitial(op->args));
+		r = strip_relabel(lsecond(op->args));
+		opno = op->opno;
+		if (join_of_var(c, l) == jc)
+			val = r;
+		else if (join_of_var(c, r) == jc)
+		{
+			val = l;
+			l = r;
+			opno = get_commutator(opno);
+		}
+		else
+			continue;
+		if (!OidIsValid(opno) || !op_mergejoinable(opno, exprType(l)) || unsupported_clause(val) || contain_var_clause(val))
+			continue;
+		j->idxatt[j->nidx] = ((Var *) l)->varattno;
+		j->idxop[j->nidx] = opno;
+		j->idxcoll[j->nidx] = op->inputcollid;
+		j->idxval[j->nidx++] = val;
+	}
+}
+
 /* the rest of the ON clause of a joined table: a boolean slot of its combo, over the leaves and the columns of a candidate row */
 static bool
 join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 {
 	int			ci,
 				si;
+
+	join_index_quals(c, jc, conds);
 
 	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, &ci, &si) || ci != jc->combo)
 		return false;

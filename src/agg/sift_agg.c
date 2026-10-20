@@ -18,6 +18,9 @@
 #include <float.h>
 #include <math.h>
 
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -25,7 +28,11 @@
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
 #include "access/xact.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "common/hashfn.h"
@@ -37,6 +44,7 @@
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "portability/instr_time.h"
 #include "parser/parse_agg.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
@@ -79,6 +87,7 @@ bool		sift_agg_preagg = true;
 static bool sift_agg_dense = true;
 static bool sift_agg_semi_lut = true;
 static int	sift_agg_semi_lut_size = 4096;
+static bool sift_agg_lookup_pushdown = true;
 bool		sift_enable_topn = true;
 static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
@@ -114,6 +123,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_semi_lut",
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_lookup_pushdown",
+							 "Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading.",
+							 NULL, &sift_agg_lookup_pushdown, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
@@ -351,6 +364,7 @@ typedef struct PredState
 	int64		ci;
 	double		cd;
 	bool		in_hasnull;
+	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	bool		in_empty;		/* the array has no element: x NOT IN () holds for every row, a NULL x too */
 	int32		in_lo;
 	uint32		in_nlut;
@@ -364,7 +378,6 @@ typedef struct PredState
 	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
 	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */
 	bool		rowmask_ok;
-	bool		in_dense;		/* the elements are every value of [in_lo, in_lo + in_nlut): the interval of the zone holds nothing else */
 	int			nop;			/* numeric operand: the comparison of the scaled integers equivalent to the query's (SiftCmpOp) ... */
 	sift_i128	cn;				/* ... with this operand, or ... */
 	int			konst;			/* ... -1, or 1 / 0: it holds for every / no value */
@@ -505,6 +518,7 @@ typedef struct MapTab
 	uint32	   *next;			/* row + 1 of the next row of the bucket */
 	uint32		nslot;
 	uint32	   *head;
+	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 } MapTab;
 
 typedef struct ComboEnt
@@ -704,6 +718,10 @@ typedef struct AggExec
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
+	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
+	uint64		lookup_loaded;
+	int			lookup_index;
+	uint64		lookup_us;
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
@@ -1634,6 +1652,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 			st->in_lut = palloc0(span + SIFT_AGG_PAD);
 			for (int i = 0; i < nv; i++)
 				st->in_lut[vals[i] - lo] = 1;
+			st->in_dense = memchr(st->in_lut, 0, span) == NULL;
 			}
 		}
 		else
@@ -1652,7 +1671,6 @@ fill_ones(uint64 *m, int n)
 {
 	int			nw = (n + 63) / 64;
 
-			st->in_dense = memchr(st->in_lut, 0, span) == NULL;
 	for (int i = 0; i < nw; i++)
 		m[i] = ~UINT64CONST(0);
 	if (n & 63)
@@ -2080,23 +2098,146 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	m->nrow++;
 }
 
-/* the rows of the joined table, visible to the scan's snapshot, hashed by key */
-static MapTab *
-map_load(AggExec *ex, const SiftAggJoin *j)
+static void bind_param(AggExec *ex, int i, Datum d, bool isnull);
+static bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
+
+/* a row the scan of the table returned: into the table when it holds the ON clause's own conditions (`own`, when they read no leaf: a row that fails them matches no tuple) */
+static void
+map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own)
 {
+	ex->lookup_read++;
+	if (own)
+	{
+		bool		isnull;
+		Datum		d;
+
+		for (int c = 0; c < j->ncol; c++)
+		{
+			bool		cnull;
+			Datum		v = slot_getattr(slot, j->colatt[c], &cnull);
+
+			bind_param(ex, cb->nleaves + c, v, cnull);
+		}
+		d = ExecEvalExprSwitchContext(own, ex->lutcx, &isnull);
+		if ((ex->lookup_read & 1023) == 0)
+			ResetExprContext(ex->lutcx);
+		if (isnull || !DatumGetBool(d))
+			return;
+	}
+	map_add(ex, m, slot, j);
+}
+
+/*
+ * The btree of the joined table that starts with columns the table's `column = value` conditions give (the planner found them, join_index_quals),
+ * opened, with the keys of its scan: the rows that can match are those it returns. NULL when no index fits; *none when a value is NULL (no row).
+ */
+static Relation
+map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys)
+{
+	Relation	best = NULL;
+	int			nbest = 0;
+
+	foreach_oid(ioid, RelationGetIndexList(rel))
+	{
+		Relation	idx = index_open(ioid, AccessShareLock);
+		ScanKeyData ik[SIFT_AGG_MAX_JIDX];
+		int			n = 0;
+
+		if (idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL))
+			for (; n < idx->rd_index->indnkeyatts && n < SIFT_AGG_MAX_JIDX; n++)
+			{
+				int			k;
+				int			strategy;
+				Oid			lt,
+							rt;
+
+				for (k = 0; k < j->nidx; k++)
+					if (j->idxatt[k] == idx->rd_index->indkey.values[n] && op_in_opfamily(j->idxop[k], idx->rd_opfamily[n]) &&
+						idx->rd_indcollation[n] == j->idxcoll[k])
+						break;
+				if (k == j->nidx)
+					break;
+				get_op_opfamily_properties(j->idxop[k], idx->rd_opfamily[n], false, &strategy, &lt, &rt);
+				if (strategy != BTEqualStrategyNumber)
+					break;
+				ScanKeyEntryInitialize(&ik[n], 0, n + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+			}
+		if (n > nbest)
+		{
+			if (best)
+				index_close(best, AccessShareLock);
+			best = idx;
+			nbest = n;
+			memcpy(keys, ik, n * sizeof(ScanKeyData));
+		}
+		else
+			index_close(idx, AccessShareLock);
+	}
+	*nkeys = nbest;
+	return best;
+}
+
+/* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree */
+static MapTab *
+map_load(AggExec *ex, int ci)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ExprState  *own = sift_agg_lookup_pushdown && j->fslot >= 0 && !slot_reads_leaf(cb, j->fslot) ? ex->cs[ci].slot[j->fslot] : NULL;
 	MapTab	   *m;
 	Relation	rel = table_open(j->relid, AccessShareLock);
-	TableScanDesc scan = sift_table_beginscan(rel, ex->snap, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	ScanKeyData keys[SIFT_AGG_MAX_JIDX];
+	Datum		val[SIFT_AGG_MAX_JIDX];
+	int			nkeys = 0;
+	bool		none = false;
+	Relation	idx;
+	instr_time	t0;
 
+	INSTR_TIME_SET_CURRENT(t0);
+	for (int k = 0; sift_agg_lookup_pushdown && k < j->nidx && !none; k++)
+	{
+		bool		isnull;
+		Oid			t = exprType(j->idxval[k]);
+		Datum		d = ExecEvalExprSwitchContext(ExecInitExpr((Expr *) j->idxval[k], EXPR_PARENT(ex)), ex->lutcx, &isnull);
+
+		none = isnull;			/* the equality is never true of a NULL: no row can match */
+		val[k] = isnull ? (Datum) 0 : datumCopy(d, get_typbyval(t), get_typlen(t));
+	}
+	ResetExprContext(ex->lutcx);
+	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
 	m = palloc0(sizeof(MapTab));
 	m->nkey = j->nkey;
 	m->ncol = j->ncol;
+	m->filtered = own != NULL;
 	for (int k = 0; k < j->nkey; k++)
 		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-		map_add(ex, m, slot, j);
+	if (idx)
+	{
+		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
+
+		index_rescan(iscan, keys, nkeys, NULL, 0);
+		while (index_getnext_slot(iscan, ForwardScanDirection, slot))
+			map_row(ex, m, slot, j, cb, own);
+		index_endscan(iscan);
+		index_close(idx, AccessShareLock);
+		ex->lookup_index++;
+	}
+	else if (!none)
+	{
+		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
+		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();
+		TableScanDesc scan;
+
+		for (int k = 0; heap && sift_agg_lookup_pushdown && k < j->nidx; k++)
+			ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
+
+		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+			map_row(ex, m, slot, j, cb, own);
+		table_endscan(scan);
+	}
 	m->nslot = 64;
 	while (m->nslot < 2 * m->nrow)
 		m->nslot *= 2;
@@ -2114,6 +2255,14 @@ map_load(AggExec *ex, const SiftAggJoin *j)
 	MemoryContextSwitchTo(old);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
+	ex->lookup_loaded += m->nrow;
+	{
+		instr_time	t1;
+
+		INSTR_TIME_SET_CURRENT(t1);
+		INSTR_TIME_SUBTRACT(t1, t0);
+		ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
+	}
 	return m;
 }
 
@@ -2255,14 +2404,6 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	for (int k = 0; k < j->nkey; k++)
 	{
 		if (j->keyexpr[k])
-	ex->lookup_loaded += m->nrow;
-	{
-		instr_time	t1;
-
-		INSTR_TIME_SET_CURRENT(t1);
-		INSTR_TIME_SUBTRACT(t1, t0);
-		ex->lookup_us += INSTR_TIME_GET_MICROSEC(t1);
-	}
 		{
 			bool		isnull;
 			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
@@ -6862,6 +7003,15 @@ reads_leaf_param(Node *n, int *nleaves)
 	return expression_tree_walker(n, reads_leaf_param, nleaves);
 }
 
+/* does the expression of a slot of the combo read one of its leaves? */
+static bool
+slot_reads_leaf(const SiftAggCombo *cb, int sl)
+{
+	int			nleaves = cb->nleaves;
+
+	return reads_leaf_param((Node *) cb->slot[sl].expr, &nleaves);
+}
+
 static void
 semi_lut_build(AggExec *ex, int ci)
 {
@@ -6875,14 +7025,14 @@ semi_lut_build(AggExec *ex, int ci)
 
 	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
 		cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut ||
-		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && reads_leaf_param((Node *) cb->slot[j->fslot].expr, &cb->nleaves)))
+		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;
 	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
 	keep = palloc(Max(m->nrow, 1) * sizeof(bool));
 	for (uint32 r = 0; r < m->nrow; r++)
 	{
 		keep[r] = m->kint[r] >= PG_INT32_MIN && m->kint[r] <= PG_INT32_MAX;
-		if (keep[r] && j->fslot >= 0)
+		if (keep[r] && j->fslot >= 0 && !m->filtered)
 		{
 			bool		isnull;
 			Datum		d;
@@ -7003,15 +7153,6 @@ join_stage(AggExec *ex, int s, Tup *in)
 			if (e >= en->nout)
 			{
 				j++;
-/* does the expression of a slot of the combo read one of its leaves? */
-static bool
-slot_reads_leaf(const SiftAggCombo *cb, int sl)
-{
-	int			nleaves = cb->nleaves;
-
-	return reads_leaf_param((Node *) cb->slot[sl].expr, &nleaves);
-}
-
 				e = 0;
 				k--;
 				continue;
@@ -8362,9 +8503,15 @@ preagg_init(AggExec *ex)
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_on = sift_aggspec_preagg(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
-	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside */
+	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase))
-		ex->pa_on &= !ex->ps[p->id].cnull;
+	{
+		PredState  *st = &ex->ps[p->id];
+
+		if (!st->ready)
+			eval_operand(ex, p, st);
+		ex->pa_on &= !st->cnull && (p->kind != SAP_IN || st->in_dense);
+	}
 }
 /* A unit whose zone of the first sort leaf has nothing that sorts before the n-th best so far is not read */
 static bool
@@ -8664,7 +8811,7 @@ prune_init(AggExec *ex)
 			continue;
 		if (p->kind == SAP_IN)
 		{
-			if (st->in_sorted || st->in_nlut == 0 || st->in_hasnull)
+			if (st->in_sorted || st->in_nlut == 0)
 				continue;
 			lo = st->in_lo;
 			hi = (int64) st->in_lo + st->in_nlut - 1;
@@ -9105,7 +9252,7 @@ scan_buffers(AggExec *ex)
 		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		if (s->combo[ci].join >= 0)
 		{
-			ex->cs[ci].map = map_load(ex, &s->join[s->combo[ci].join]);
+			ex->cs[ci].map = map_load(ex, ci);
 			semi_lut_build(ex, ci);
 		}
 	}
@@ -10998,6 +11145,15 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
 		if (c->nwide > 0)
 			ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
+		if (s->njoin > 0)
+		{
+			ExplainPropertyInteger("Lookup Rows Read", NULL, c->lookup_read, es);
+			ExplainPropertyInteger("Lookup Rows Loaded", NULL, c->lookup_loaded, es);
+			if (c->lookup_index > 0)
+				ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
+			if (es->timing)
+				ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
+		}
 		if (c->nsemi > 0)
 		{
 			ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);

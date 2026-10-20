@@ -56,13 +56,13 @@ FROM (
 ) q;
 ALTER TABLE events_src ALTER COLUMN id TYPE bigint;
 
--- groups: sizes 100 (60 groups), 1000 (20), 10000 (8), 100000 (2); members drawn uniformly at random, groups overlap freely
+-- groups: sizes 100 (60 groups), 1000 (20), 10000 (8), 100000 (2), then 2000 (4) and 5000 (4); members drawn uniformly at random, groups overlap freely
 CREATE TABLE group_members (group_id int, dim_a_id int, deleted_at timestamptz);
 DO $$
 DECLARE g int := 0; sz int; cnt int; n int;
 BEGIN
-  FOREACH sz IN ARRAY ARRAY[100, 1000, 10000, 100000] LOOP
-    cnt := CASE sz WHEN 100 THEN 60 WHEN 1000 THEN 20 WHEN 10000 THEN 8 ELSE 2 END;
+  FOREACH sz IN ARRAY ARRAY[100, 1000, 10000, 100000, 2000, 5000] LOOP
+    cnt := CASE sz WHEN 100 THEN 60 WHEN 1000 THEN 20 WHEN 10000 THEN 8 WHEN 100000 THEN 2 ELSE 4 END;
     FOR n IN 1..cnt LOOP
       g := g + 1;
       EXECUTE format('INSERT INTO %I SELECT %s, id, NULL FROM %I ORDER BY random() LIMIT %s', 'group_members', g, 'dim_a', sz);
