@@ -17,6 +17,8 @@ col/codec_avx2.c
 col/codec_avx512.c
 col/compress.c
 col/seg.c
+col/seg_write.c
+col/seg_maint.c
 col/ver.c
 col/preagg.c
 col/wide.c
@@ -36,6 +38,7 @@ col/kern.h
 col/kern_int.h
 col/enc.h
 col/seg.h
+col/seg_int.h
 col/ver.h
 col/preagg.h
 col/wide.h
