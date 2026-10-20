@@ -99,7 +99,8 @@ typedef enum SiftAggPredKind
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
 	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
-	SAP_ELEM_ROW				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
+	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
+	SAP_TID						/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -459,6 +460,13 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
 extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
+
+/*
+ * The TIDs the SAP_TID conjuncts keep together, as the keys (block << 16 | offset) [*lo, *hi) (empty when *lo >= *hi); false when the scan
+ * has none. A key is ordered as PostgreSQL orders a TID.
+ */
+#define SIFT_TID_KEY_END	(UINT64CONST(1) << 48)
+extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi);
 
 /* How the pre-aggregates answer a scan: the histogram of dim of the cube (-1: the sums of the leaves), or the rollup of the list leaf list */
 typedef struct SiftAggPaShape
