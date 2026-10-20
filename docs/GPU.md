@@ -105,7 +105,7 @@ Measured on the online-store table of `bench/sql/store` (8 leaves, one segment o
 development host with an NVIDIA GeForce RTX 3090 (`bench/gpu/bench-pg.sh`). Milliseconds of `Execution Time`; "cold" is the first query after the device is
 open and the cache is empty (the compressed chunks cross PCIe), "resident" is a repeat.
 
-| rows | query | CPU, one core (this branch) | CPU, 3.1 dense path | device, cold | device, resident | resident against the dense path |
+| rows | query | CPU, one core (`sift.gpu = off`) | CPU, 3.1 dense path | device, cold | device, resident | resident against the dense path |
 |---|---|---|---|---|---|---|
 | 1M | q7 `count(*)`, 2 filters | 3.9 / 0.7 | 4.5 / 0.6 | 4.2 | 0.51 | 1.2x |
 | 1M | q8 `count(*)`, 2 filters | 1.9 / 0.4 | 1.7 / 0.5 | 3.6 | 0.55 | 0.9x |
