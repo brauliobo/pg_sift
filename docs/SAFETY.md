@@ -113,12 +113,12 @@ raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before
 | P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream |
 | P2-5 | sift_live.c:sift_live_clear | page index and write unchecked (Assert only) |
 | P2-6 | sift_table_store.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
-| P2-7 | col/codec.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in |
-| P2-8 | col/codec.c:parse_node WRAP | decompression total not capped: per-open byte budget |
-| P2-9 | col/codec.c:sift_cc_decode_strs | `total` allocated before the lengths are summed |
+| P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in |
+| P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
+| P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed |
 | P2-10 | col/seg.c:sift_cseg_unit, sift_cseg_unit_head | unit buffer lacks `SIFT_COL_PAD`; `unpack` reads 31 bytes past |
 | P2-11 | col/enc.c:sift_cchunk_zone, chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
-| P3-1 | col/codec.c:parse_node, parse_child, sift_cc_open, sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
+| P3-1 | col/codec_parse.c:parse_node, parse_child, sift_cc_open, col/codec_blob.c:sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
 | P3-2 | col/enc.c:sift_cchunk_parse, unit_parse, sift_cdict_parse, sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
 | P3-3 | col/seg.c:sift_cseg_open, sift_cseg_dict, zone_arrays | manual arithmetic; one 7-byte over-read at 429/441 |
 | P3-4 | col/compress.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
