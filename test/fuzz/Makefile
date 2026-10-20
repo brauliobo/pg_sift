@@ -43,7 +43,7 @@ LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
 CORE     = sift_colcodec sift_colcodec_kern sift_colcodec_avx2 sift_colcodec_avx512 sift_colz sift_col_kern sift_col_kern_avx2 \
            sift_col_kern_avx512 sift_col_enc sift_shred sift_shred_kern sift_shred_kern_avx2 sift_shred_kern_avx512 \
-           bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/analyze bm25/analyze_stem bm25/posting bm25/bitmap bm25/blob bm25/topk bm25/bitmap_scalar \
+           bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/bitmap bm25/blob bm25/topk bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 sift_span
 OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
 HDR      = $(wildcard $(SRC)/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
