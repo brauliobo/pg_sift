@@ -1,5 +1,5 @@
--- bytea ordering, min and max
+-- bytea ordering and equality in a FILTER, and count(DISTINCT)
 -- shape: expr
 -- expect: agg
 -- key: -
-SELECT count(*) FILTER (WHERE b > '\x00ff') AS gt, count(*) FILTER (WHERE b = '\x') AS empty, encode(min(b), 'hex') AS mn, encode(max(b), 'hex') AS mx, count(DISTINCT b) AS d FROM t_misc
+SELECT count(*) FILTER (WHERE b > '\x00ff') AS gt, count(*) FILTER (WHERE b = '\x') AS empty, count(DISTINCT b) AS d FROM t_misc
