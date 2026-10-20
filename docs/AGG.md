@@ -9,15 +9,26 @@ starts, with the query's snapshot, and its rows are the lookup table, so duplica
 one of the normal plan (`EXPLAIN ANALYZE` has `Lookup Rows Read`). A rescan replays the groups; a prepared statement's parameters in the right side are read
 by the child plan as in any plan.
 
-The normal plan stays when the right side is lateral or reads a volatile function, the join has no condition (`ON true`), the right side is
+A `UNION ALL` or `UNION` of sub-selects, a sub-select of a statement-level CTE and a nested `WITH` inside the sub-select are plans in the same way.
+
+The normal plan stays when the right side reads a volatile function, the join has no condition (`ON true`) and is not lateral, the right side is
 estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there).
 A scan with such a join runs without workers.
+
+A lateral right side that reads the joined row (`LEFT JOIN LATERAL (SELECT .. LIMIT 1)`, a `UNION` or `UNION ALL` of arms, `generate_series`, `unnest` of
+an array column, a set-returning function) keeps PostgreSQL's parameterized plan of it as the child: the scan runs the child for each distinct value of the
+columns it reads (the lookup keys of the table, or another joined table's columns) and multiplies the rows by what it returns, duplicates and
+NULL-extended rows included. A call of a document column that cannot raise (`jsonb_exists(doc, 'k')`, `doc ->> 'k'`, `jsonb_typeof(doc)`) takes the
+call's value as the parameter, when the index holds it: an expression column `jsonb_exists(doc, 'k')` of the index gives the key presence of any JSON
+root (a path leaf cannot tell a missing key from a JSON null). A child that reads the whole document, or casts a JSON value it may fail on, keeps the
+normal plan.
+Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation` and `agg_append_children`.
 Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
 Lookup keys, grouping expressions and predicates may also read earlier lookup outputs; duplicates and NULL-extended rows remain distinct inputs.
 Aggregate `FILTER` predicates can read lookup columns and source values together. They run for each surviving joined tuple, after all joins;
 an excluded tuple does not evaluate a filter expression that could raise an error.
 Inner lookups are ordered by their dependencies within each join boundary. Statement-level materialized CTEs can be referenced from nested queries.
-Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates` and `agg_lookup_dependencies`.
+Fixtures `pt_*`, tests `agg_plan_tables`, `agg_child_predicates`, `agg_lookup_dependencies` and `agg_statement_cte_children`.
 
 ## Outer joins that keep the other table
 
@@ -59,10 +70,14 @@ of `IN` and `NOT IN` is PostgreSQL's (one NULL in the sub-select makes every `NO
 test composes with `AND`, `OR`, `NOT`, `CASE` and `FILTER`. The sub-select runs once, when the scan starts, with the query's snapshot, and `EXPLAIN` shows it as
 `SubPlan` under the node; an integer column whose values span more than 4 million (the statistics may not show it) is tested row by row instead of through a table; a rescan keeps the answers, and a prepared statement's parameters are read by the sub-select as in any plan.
 
-The normal plan stays when the sub-select is correlated or reads a parameter of the outer query, tests two columns (`(a, b) NOT IN (SELECT x, y ...)`), is not
-hashed (too large for `work_mem` and `hash_mem_multiplier`), reads a volatile function, locks rows (`FOR UPDATE`), holds a sub-select of its own or an expression
-that may raise (a division, a cast through text) or the tested column is not one the lookup table holds (an `int8` column). A scan with such a test runs without
-parallel workers: the leader runs the sub-plans. Fixtures `t_not_in_subquery*`, `t_in_subquery_or`, test `agg_subplan_lut`.
+A test of two columns (`(a, b) NOT IN (SELECT x, y ...)`), of a column the lookup table does not hold (an `int8` column), and a test inside an expression that reads
+the rows of an outer join's nullable input (a group key `CASE WHEN country IN (SELECT ..) THEN jsonb_build_object(..) END`) is not a lookup table: the scan asks
+the same `SubPlan` for each tuple that reaches it.
+
+The normal plan stays when the sub-select is correlated or reads a parameter of the outer query, is not
+hashed (too large for `work_mem` and `hash_mem_multiplier`), reads a volatile function, locks rows (`FOR UPDATE`), or holds a sub-select of its own or an expression
+that may raise (a division, a cast through text). A scan with such a test runs without
+parallel workers: the leader runs the sub-plans. Fixtures `t_not_in_subquery*`, `t_in_subquery_or`, tests `agg_subplan_lut`, `agg_semi_lut` and `agg_nullable_input_keys`.
 
 ## ctid ranges
 
