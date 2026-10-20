@@ -57,7 +57,7 @@ them. Code shared by two hosts goes into the portable core, not into both. `make
 build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
 release tag.
 
-`src/` has one folder per area. A source includes another by its bare name, and a new file goes to the folder its name selects (`scripts/restructure-src.sh --check` fails for a name no rule places: add the pattern to its MAP).
+`src/` has one folder per area. A source includes another by its path from `src/` (`#include "bm25/query.h"`), a file is named for what it holds without the `sift_` prefix or its folder's name, and a new file goes to the folder of its area (`scripts/restructure-src.sh --check` fails for a file outside them or a stale path).
 
 `scripts/check-neutral.sh` fails a tracked file or a commit subject of the branch that holds a product-specific name: data, tests and docs use generic names (fact table, entities, `dim_a_id`, `group_members`). `scripts/ci.sh affected` runs it first, whatever the diff touches.
 
