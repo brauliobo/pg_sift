@@ -43,6 +43,7 @@
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "portability/instr_time.h"
 #include "parser/parse_agg.h"
@@ -899,6 +900,20 @@ find_param(Node *expr)
 	if (p == NULL)
 		elog(ERROR, "sift: aggregate plan expression without its input");
 	return p;
+}
+
+/*
+ * The expression of a lookup table. A sub-plan in it (its state, hash table and the scans it starts) lives in the query's memory: PostgreSQL ends
+ * the sub-plans after this node, which frees its own memory.
+ */
+static ExprState *
+init_lut_expr(AggExec *ex, Node *expr)
+{
+	MemoryContext old = MemoryContextSwitchTo(contain_subplans(expr) ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
+	ExprState  *e = ExecInitExpr((Expr *) expr, EXPR_PARENT(ex));
+
+	MemoryContextSwitchTo(old);
+	return e;
 }
 
 /* ---------- evaluation of the single input expressions ---------- */
@@ -8953,7 +8968,7 @@ register_pred(AggExec *ex, SiftAggPred *p)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-		st->expr = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		st->expr = init_lut_expr(ex, p->expr);
 		st->param = find_param(p->expr);
 		rt_init(&st->rt, 1);
 		if (ex->lay->leaf[p->leaf].vtype == SCV_I32)
@@ -9225,7 +9240,7 @@ register_key(AggExec *ex, int ki)
 		k->ident = true;
 	else if (sk->kind == SAK_LUT)
 	{
-		k->expr = ExecInitExpr((Expr *) sk->expr, EXPR_PARENT(ex));
+		k->expr = init_lut_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
 		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
 	}
@@ -11151,7 +11166,10 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
 	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	/* its per-query memory is where a sub-plan runs its scans (init_lut_expr) */
+	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ex->lutcx = CreateStandaloneExprContext();
+	MemoryContextSwitchTo(ex->cxt);
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	if (ex->spec->search)
