@@ -2,7 +2,7 @@
  * col/preagg_read.c - the pre-aggregates read: varint decoding of the cube and rollup blobs, and their verification against the chunks.
  */
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 #include "col/preagg_int.h"

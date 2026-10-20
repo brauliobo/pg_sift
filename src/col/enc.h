@@ -1,12 +1,12 @@
 /*
  * col/enc.h - L1 of the column engine (docs/COL.md sections 1, 2.1-2.4, 2.6, 12): the schema, dictionaries, batches (the decoded rows
  * of one superblock), the unit record and column chunk encodings, chunk filters and zone maps. No pages, no heap, no WAL: values and bytes,
- * so a table access method can reuse it. Portable (sift_host.h only).
+ * so a table access method can reuse it. Portable (core/host.h only).
  */
 #ifndef SIFT_COL_ENC_H
 #define SIFT_COL_ENC_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/col.h"
 #include "col/kern.h"

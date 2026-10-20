@@ -10,7 +10,7 @@ Files: `col/codec.[ch]` (decoding, random access, filters on the encoded form), 
 helpers shared by those), `sift_colz.[ch]` (the LZ4 / zstd interface and its PostgreSQL implementation), `col/codec_test.c` (`sift._test_cc_*`) with `col/codec_gen.h` (its chunk generators, shared with the standalone test),
 `tools/colcodec/` (standalone test, benchmark and the research harness).
 
-Portability: the codec includes `sift_host.h`, the C library and its own headers only, and reaches LZ4 and zstd through `col/compress.h`, a link-time interface
+Portability: the codec includes `core/host.h`, the C library and its own headers only, and reaches LZ4 and zstd through `col/compress.h`, a link-time interface
 like the page store (`col/compress.c` in PostgreSQL). It is therefore portable in the sense of `src/portable.list` but **not listed there yet**: SQLite and
 MariaDB compile every listed file and have no `sift_colz` implementation. When the portable column engine starts calling the codec, list the codec files
 and add a `colz.c` to `sqlite/host` and `mariadb/host` (`sift_colz_available()` returning false and the three other functions never reached is enough:

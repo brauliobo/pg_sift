@@ -1,7 +1,7 @@
 /*
  * col/shred_spec.c - the path spec of sift_col: its parser into the node tree and its canonical form (docs/COL-SHRED.md).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <string.h>
 

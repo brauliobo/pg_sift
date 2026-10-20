@@ -8,7 +8,7 @@
 
 #include "access/amapi.h"
 
-/* sift_handler.c: the IndexAmRoutine the handlers start from; they set the callbacks */
+/* core/handler.c: the IndexAmRoutine the handlers start from; they set the callbacks */
 extern IndexAmRoutine *sift_am_routine(int strategies, int support, bool multicol);
 
 /* bm25/build.c */

@@ -25,13 +25,13 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/am.h"
 #include "col/am.h"
 #include "col/build.h"
 #include "col/seg.h"
-#include "sift_cpu.h"
-#include "sift_ops.h"
+#include "core/cpu.h"
+#include "core/ops.h"
 
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;

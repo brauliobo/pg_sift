@@ -21,9 +21,9 @@
 #ifndef SIFT_DICT_H
 #define SIFT_DICT_H
 
-#include "sift.h"
+#include "core/sift.h"
 #include "bm25/query.h"
-#include "sift_store.h"
+#include "core/store.h"
 
 #define SIFT_DICT_BLOCK			32
 #define SIFT_DICT_ROOT_FANOUT	256

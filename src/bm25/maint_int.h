@@ -6,7 +6,7 @@
 
 #include "bm25/maint.h"
 
-/* inputs of one merge: its output (runs grow with a stream, sift_store.c) stays well within the extents a header page lists */
+/* inputs of one merge: its output (runs grow with a stream, core/store.c) stays well within the extents a header page lists */
 #define MERGE_MAX_BYTES		(UINT64CONST(16) << 30)
 
 #ifdef SIFT_TESTING

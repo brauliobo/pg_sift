@@ -1,4 +1,4 @@
--- Truncation of the free blocks at the end of the file (sift_store.h P7): only reusable blocks go, the free list and the
+-- Truncation of the free blocks at the end of the file (core/store.h P7): only reusable blocks go, the free list and the
 -- high-water mark follow the file, and what is live is untouched.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"

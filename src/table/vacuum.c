@@ -35,7 +35,7 @@
 #include "utils/tuplesort.h"
 
 #include "col/seg.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "table/table.h"
 

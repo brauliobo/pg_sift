@@ -2,13 +2,13 @@
  * col/seg_write.c - the column segment writer: units, dictionaries, zones, pre-aggregates and version section into the stream (col/seg.h).
  */
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
 #include "col/ver.h"
-#include "sift_live.h"
+#include "core/live.h"
 
 /* ---------- writer ---------- */
 

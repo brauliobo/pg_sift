@@ -9,7 +9,7 @@
 
 #include "col/enc.h"
 #include "col/enc_test_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 /* ---------------------------------------------------------------------------
  * Chunks, zones and predicates of a leaf

@@ -29,8 +29,8 @@
 #ifndef SIFT_KERNELS_H
 #define SIFT_KERNELS_H
 
-#include "sift.h"
-#include "sift_cpu.h"
+#include "core/sift.h"
+#include "core/cpu.h"
 
 #define SIFT_KERN_SLOTS		(SIFT_OFFMASK_WORDS * 64)
 #define SIFT_KERN_PAD		64

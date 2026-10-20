@@ -2,7 +2,7 @@
  * bm25/posting.c - term blob reader: the posting cursor over a term blob (layout in bm25/posting.h;
  * the writer is postw.c, the position records pos.c).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
 #include "bm25/posting.h"

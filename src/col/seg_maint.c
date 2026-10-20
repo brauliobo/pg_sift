@@ -2,13 +2,13 @@
  * col/seg_maint.c - column segments in maintenance: decoding for rewrites, overflow reaping, VACUUM and verification (col/seg.h).
  */
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
 #include "col/ver.h"
-#include "sift_live.h"
+#include "core/live.h"
 
 /* ---------- decoding for rewrites and verification ---------- */
 

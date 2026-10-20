@@ -1,11 +1,11 @@
 /*
  * bm25/walk.c - segment inspection and verification: sift_seg_walk (sift.segments, sift.verify, tests).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
-#include "sift_live.h"
-#include "sift_popcount.h"
+#include "core/live.h"
+#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"

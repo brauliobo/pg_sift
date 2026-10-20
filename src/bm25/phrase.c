@@ -1,7 +1,7 @@
 /*
  * bm25/phrase.c - phrases decided by stored positions, their cursors, and the recheck of candidates against their text.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <math.h>
 

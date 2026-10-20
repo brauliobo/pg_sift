@@ -15,11 +15,11 @@
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
 
-#include "sift_filter.h"
+#include "core/filter.h"
 #include "bm25/parallel.h"
 #include "bm25/query.h"
-#include "sift_store.h"
-#include "sift_visibility.h"
+#include "core/store.h"
+#include "core/visibility.h"
 
 /* Opened index: directory snapshot, analyzer, options, lazily opened segments */
 typedef struct SiftIndexState

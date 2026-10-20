@@ -1,13 +1,13 @@
 /*
- * sift.h - shared constants, keys, options, GUCs and catalog lookups.
+ * core/sift.h - shared constants, keys, options, GUCs and catalog lookups.
  *
- * Every sift .c file includes "sift_host.h" (PostgreSQL files: "postgres.h" first) and then this header.
+ * Every sift .c file includes "core/host.h" (PostgreSQL files: "postgres.h" first) and then this header.
  * See DESIGN.md section 0 for the data model and invariants.
  */
 #ifndef SIFT_H
 #define SIFT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
@@ -153,7 +153,7 @@ extern const SiftOptions *sift_index_options(Relation index);
 extern const char *sift_options_stemmer(const SiftOptions *opts);
 extern const char *sift_options_fields(const SiftOptions *opts);
 
-/* GUCs (defined in sift_handler.c, except sift.simd in sift_cpu.c) */
+/* GUCs (defined in core/handler.c, except sift.simd in core/cpu.c) */
 extern PGDLLIMPORT int sift_max_expansions;
 extern PGDLLIMPORT bool sift_enable_scan;
 extern PGDLLIMPORT bool sift_enable_count;

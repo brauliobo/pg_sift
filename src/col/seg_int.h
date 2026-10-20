@@ -4,12 +4,12 @@
 #ifndef SIFT_COL_SEG_INT_H
 #define SIFT_COL_SEG_INT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/ver.h"
-#include "sift_live.h"
+#include "core/live.h"
 
 #define ULL(x)			((unsigned long long) (x))
 #define ALIGN8(x)		TYPEALIGN(8, x)

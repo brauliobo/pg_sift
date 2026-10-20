@@ -2,11 +2,11 @@
  * bm25/dict.c - term dictionary writer, reader and expansion matchers
  * (layout in bm25/dict.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "bm25/dict.h"
-#include "sift_varint.h"
+#include "core/varint.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_dict_max = 0;

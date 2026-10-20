@@ -11,7 +11,7 @@
  * the cache: a segment never changes (its liveness is applied by the readers), so its generation names
  * the blob for good.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
 #include "bm25/prefix.h"

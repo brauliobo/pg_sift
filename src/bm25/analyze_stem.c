@@ -6,7 +6,7 @@
  * tools/analyze check` validates it against the snowball-data English
  * vocabulary (42649 words).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/analyze.h"
 

@@ -37,7 +37,7 @@
 #include "col/pagg.h"
 #include "col/seg.h"
 #include "bm25/maint.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 
 #define ROLLUP_QUEUE		64		/* segments waiting */
 #define ROLLUP_DONE			256		/* refreshed segments remembered */

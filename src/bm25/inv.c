@@ -1,9 +1,9 @@
 /*
  * bm25/inv.c - the inverted buffer: docs and posting slices in memory, written as a segment or spilled to a sorted run (bm25/runs.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "bm25/runs.h"
 #include "bm25/runs_int.h"
 

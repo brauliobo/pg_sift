@@ -122,7 +122,7 @@ of its month, day and time.
 ## 6. Portable core and the ports
 
 The value code (lane keys, the 128-bit decimal text codec, the image encoder and decoder, the interval total) is `src/col/sift_col_wide.[ch]`,
-in `src/portable-col.list`: C library and `sift_host.h` only, no allocation (the caller passes the buffers), no host type. It uses `__int128`
+in `src/portable-col.list`: C library and `core/host.h` only, no allocation (the caller passes the buffers), no host type. It uses `__int128`
 (`unsigned __int128`), as `col/preagg.h` and `sift_aggspec.h` already do; a compiler without it (MSVC) cannot build the column engine, which
 neither SQLite nor MariaDB ships yet (they build `portable.list` only; `make -C sqlite col-smoke` compiles `portable-col.list`, and
 `scripts/check-portable.sh` checks both lists). The PostgreSQL side (`col/types.c`) maps `Datum`s and OIDs to it.

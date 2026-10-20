@@ -1,6 +1,6 @@
 \echo Use "CREATE EXTENSION pg_sift_test" to load this file. \quit
 
--- Store module (src/core/sift_store_test.c). A sift_store_test index holds one test
+-- Store module (src/core/store_test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.
 CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler
 	AS 'MODULE_PATHNAME', 'sift_test_am_handler' LANGUAGE C STRICT;
@@ -111,14 +111,14 @@ CREATE FUNCTION sift._test_blob_read(blob bytea, flags int4, df int4, codec_len 
 									 OUT postings int8, OUT tf_sum int8)
 	AS 'MODULE_PATHNAME', 'sift_test_blob_read' LANGUAGE C STRICT;
 
--- Filter masks (src/core/sift_filter_test.c): a TIDBitmap of tids and lossy blocks converted under a byte budget,
+-- Filter masks (src/core/filter_test.c): a TIDBitmap of tids and lossy blocks converted under a byte budget,
 -- probed with sift_filter_has and, as a block mask, sift_filter_block (block_mismatches counts disagreements).
 CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8, probes tid[],
 								  OUT superblocks int8, OUT exact_pages int8, OUT lossy_pages int8, OUT tuples int8,
 								  OUT has bool[], OUT block_mismatches int8)
 	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;
 
--- Leak detection (src/core/sift_leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
+-- Leak detection (src/core/leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
 -- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;

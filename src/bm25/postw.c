@@ -2,7 +2,7 @@
  * bm25/postw.c - term blob writer: encodes the postings of a term, staging large terms in temporary files
  * (layout in bm25/posting.h).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels.h"
 #include "bm25/posting.h"

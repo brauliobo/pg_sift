@@ -6,7 +6,7 @@ Verdict and phases: section 5. Status: phase 0 is done (`sqlite/test.sh` runs `c
 
 ## 1. What is host independent
 
-`src/portable-col.list` names the files that reach their host only through `src/core/sift_host.h` (`scripts/check-portable.sh` enforces
+`src/portable-col.list` names the files that reach their host only through `src/core/host.h` (`scripts/check-portable.sh` enforces
 the includes). Checked by building them, not only by reading includes (`make -C sqlite col-smoke`, tests/col_smoke.c):
 
 | Part | Files | Lines | On the SQLite host |
@@ -17,12 +17,12 @@ the includes). Checked by building them, not only by reading includes (`make -C 
 | column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
 | shredder core (JSON paths into leaves, no JSON parser) | `col/shred*.c` | 1.6k | builds |
 | aggregation kernels (sum/min/max/count, group-by) | `sift_aggkern*.c` | 1.2k | builds |
-| runtime SIMD (AVX2/AVX-512 tables, `sift_cpu.c`) | `*_avx2.c`, `*_avx512.c` | | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
+| runtime SIMD (AVX2/AVX-512 tables, `core/cpu.c`) | `*_avx2.c`, `*_avx512.c` | | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
 
 The MariaDB host (same C-library shim) syntax-checks all of them with its flags. aarch64: `clang --target=aarch64` accepts them with
 no vector files (the dispatchers are `__x86_64__`-guarded); nothing was linked or run there.
 
-PostgreSQL-bound, and staying so: the page/buffer store behind `sift_store.h` (PG: `sift_store.c`, buffer manager, generic WAL; SQLite
+PostgreSQL-bound, and staying so: the page/buffer store behind `core/store.h` (PG: `core/store.c`, buffer manager, generic WAL; SQLite
 already implements the same interface in `sqlite/sqstore.c` over a BLOB table), MVCC (visibility map, `Snapshot`, heap rechecks:
 `col/scan.c`, the `SiftColVisibility` callbacks), write buffer lanes and WAL (`col/wbuf.c`), index AM/build/maintenance/verify
 (`col/am.c`, `_build.c`, `_maint.c`, `_verify.c`, 2.5k lines), the jsonb driver (`col/shred_pg.c`), planner and custom scan

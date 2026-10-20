@@ -35,7 +35,7 @@
 #include "col/seg.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 
 #define corrupt SIFT_CORRUPT
 

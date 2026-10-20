@@ -4,9 +4,9 @@
 #ifndef SIFT_SEGMENT_INT_H
 #define SIFT_SEGMENT_INT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift_live.h"
+#include "core/live.h"
 #include "bm25/segment.h"
 
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)

@@ -1,4 +1,4 @@
--- Filter masks (src/core/sift_filter.c): a TIDBitmap with exact and lossy pages as page and offset masks per
+-- Filter masks (src/core/filter.c): a TIDBitmap with exact and lossy pages as page and offset masks per
 -- superblock, under a byte budget. The mask keeps every tuple of the bitmap; a page that does not fit the budget,
 -- like a lossy one, keeps all its offsets, so the mask is never smaller than the bitmap and never reaches a page
 -- the bitmap does not. (A lossy chunk makes the first page of its range lossy too: a superset, so the exact

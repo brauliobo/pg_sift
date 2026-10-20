@@ -2,9 +2,9 @@
  * bm25/runs.c - the sorted runs and their merge into segments (bm25/runs.h). Portable: a run is a
  * BufFile, the merge a binary heap over their readers, the output the segment writer.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "bm25/runs.h"
 #include "bm25/runs_int.h"
 

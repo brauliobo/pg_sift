@@ -11,7 +11,7 @@
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 
-#include "sift.h"
+#include "core/sift.h"
 #include "pgshim.h"
 
 MemoryContext CurrentMemoryContext = (MemoryContext) 1;

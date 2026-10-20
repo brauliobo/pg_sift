@@ -2,7 +2,7 @@
  * col/shred_kern.c - the scalar kernels of the shredder output (the specification; col/shred_kern_avx2.c and
  * col/shred_kern_avx512.c must match them bit for bit) and the runtime dispatch (docs/KERNELS.md).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/shred.h"
 

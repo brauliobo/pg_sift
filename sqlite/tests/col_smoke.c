@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/codec.h"

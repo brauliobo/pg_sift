@@ -2,10 +2,10 @@
  * col/kern.c - scalar column kernels (the specification every SIMD level matches bit for bit, docs/COL.md section 8) and
  * the dispatch. Baseline x86-64 code: bits are counted with SWAR, no vector instruction.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/kern_int.h"
-#include "sift_popcount.h"
+#include "core/popcount.h"
 
 const SiftColKernels *sift_colk = &sift_col_kernels_scalar;
 

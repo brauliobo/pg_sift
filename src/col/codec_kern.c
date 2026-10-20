@@ -2,7 +2,7 @@
  * col/codec_kern.c - scalar kernels of the chunk codec (the specification every SIMD level matches bit for bit), the decimal power
  * tables and the dispatch (docs/COL-CODEC.md section 4, docs/KERNELS.md).
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "col/codec_int.h"
 

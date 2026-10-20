@@ -1,6 +1,6 @@
 /*
  * bm25/space.c - giving space back to the file: the orphan sweep, the truncation of the free end and the VACUUM space step
- * that moves the segments at the end of the file down (sift_store.h P7).
+ * that moves the segments at the end of the file down (core/store.h P7).
  */
 #include "postgres.h"
 
@@ -26,14 +26,14 @@
 
 #include "bm25/am.h"
 #include "bm25/build.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
-#include "sift_ops.h"
-#include "sift_sql.h"
-#include "sift_visibility.h"
+#include "core/ops.h"
+#include "core/sql.h"
+#include "core/visibility.h"
 
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
 #define TRUNCATE_MIN_BLOCKS	1000
@@ -93,7 +93,7 @@ sift_maint_orphan_sweep(Relation index)
  * Gives the free blocks at the end of the file back to the operating system, like VACUUM does for a
  * heap: when they are worth an exclusive lock, and only if AccessExclusiveLock on the index is free
  * right now (any scan, insert or step of the worker holds a lock on it), released as soon as the file
- * is cut (sift_store.h P7). The caller holds the maintenance lock exclusively.
+ * is cut (core/store.h P7). The caller holds the maintenance lock exclusively.
  */
 void
 sift_maint_truncate(Relation index, int elevel)

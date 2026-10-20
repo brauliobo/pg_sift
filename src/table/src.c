@@ -40,7 +40,7 @@
 #include "sift_colsrc.h"
 #include "table/table.h"
 #include "table/src_int.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 
 static bool
 tbl_owns_index(Oid indexrelam)

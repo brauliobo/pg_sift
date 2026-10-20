@@ -1,7 +1,7 @@
 /*
  * bm25/analyze_config.c - analyzer configuration: options, stemmer names, field names, the configuration hash.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include <ctype.h>
 

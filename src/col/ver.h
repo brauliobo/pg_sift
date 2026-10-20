@@ -10,7 +10,7 @@
 #ifndef SIFT_COL_VER_H
 #define SIFT_COL_VER_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #define SIFT_CVER_CONST		0
 #define SIFT_CVER_DELTA		1

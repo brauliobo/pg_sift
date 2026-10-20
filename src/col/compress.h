@@ -9,7 +9,7 @@
 #ifndef SIFT_COLZ_H
 #define SIFT_COLZ_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 /* True when the build can both compress and decompress with the algorithm (SIFT_CC_ALG_LZ4, SIFT_CC_ALG_ZSTD) */
 extern bool sift_colz_available(int alg);

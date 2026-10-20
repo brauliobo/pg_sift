@@ -41,7 +41,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 ## 2. Format (format major 1, col minor 6; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
-of `sift_store.h` and `sift_page.h`, unchanged (P1-P6 of `sift_store.h`). What differs:
+of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:
 
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
@@ -233,7 +233,7 @@ STR `EQ`/`IN`). Units that pass are the **candidate units**. Pruning is conserva
 
 `aminsert` appends one **row record** to one of `SIFT_LANES` lane chains of the open write buffer: the structure of `bm25/wbuf.c`
 (lane header page with the heads and tails, `SIFT_PT_WBUFDATA` pages, tail-lock ordering, sealing under `SIFT_ACTIVE_LOCK_BLKNO`,
-back-pressure at the same thresholds, one generic WAL record per append). The lane machinery is one module, `sift_lane.c`, used by the BM25
+back-pressure at the same thresholds, one generic WAL record per append). The lane machinery is one module, `core/lane.c`, used by the BM25
 doc records and by the row records; the record and its page header are `col/wbuf.c`'s. The data page header is `SiftLanePageHead`
 (`next`, `nrecs`, `flags`: no term bloom), which starts with the `next` the store's walkers (`sift_store_referenced_blocks`,
 `sift_store_orphans`, `sift_store_verify`) follow in either kind of lane. A record is
@@ -453,7 +453,7 @@ checked by the normal permission check of the query.
 
 ## 4. Concurrency, WAL, crashes, replicas, upgrade
 
-- **Locks, WAL, free list, safexid reuse, directory switch**: unchanged from sift (`sift_store.h`). Readers copy the directory once with
+- **Locks, WAL, free list, safexid reuse, directory switch**: unchanged from sift (`core/store.h`). Readers copy the directory once with
   a registered snapshot (`sift_dir_read`) and keep it for as long as they use it.
 - **Maintenance** (promotion, merge, VACUUM's liveness pass, recycle, orphan sweep) holds `LockPage(index, SIFT_MAINT_LOCK_BLKNO)`; the
   async worker is a second entry point (`sift_col_maint_worker_main`) bound to `sift_col` indexes only.
@@ -531,7 +531,7 @@ while (sift_col_next(src, &unit))                             ascending SB, segm
     sel = all live rows of the unit                           sift_col_sel_all
     sift_col_filter(unit, preds, n, &sel)                     scalar predicates, AND
     sift_col_filter_group(unit, gp, &sel)                     array-element predicates, same-element semantics
-    sift_col_filter_tids(unit, filter, &sel)                  AND with a sift_filter.c TID mask (a BM25 match bitmap, btree bitmaps)
+    sift_col_filter_tids(unit, filter, &sel)                  AND with a core/filter.c TID mask (a BM25 match bitmap, btree bitmaps)
     sift_col_vet(unit, &sel)                                  MVCC (section 3)
     sift_col_read(unit, col, &sel, &vec)                      decode a leaf for the selected rows (children: their elements)
 ```
@@ -563,8 +563,8 @@ Every hot loop over column data (filters, selection vectors, null bitmaps, zone-
    NULL, falls back downwards for a level the CPU lacks) so tests can run every level.
 3. `static void xxx_rebind(const SiftCpu *cpu) { sift_xxxk = sift_xxx_kernels_for(cpu->active); }` registered once with
    `sift_cpu_register(xxx_rebind)` from `sift_xxx_kernels_init()`, called by `_PG_init`. `sift_cpu_register` calls it immediately and
-   again on every `SET sift.simd`. `SIFT_MAX_REBINDS` in `sift_cpu.c` is 16 (raised from 8 for the column modules).
-4. Kernels take plain arrays and lengths: no `Relation`, no `palloc`, no ereport; portable files (`src/portable.list`, only `sift_host.h`).
+   again on every `SET sift.simd`. `SIFT_MAX_REBINDS` in `core/cpu.c` is 16 (raised from 8 for the column modules).
+4. Kernels take plain arrays and lengths: no `Relation`, no `palloc`, no ereport; portable files (`src/portable.list`, only `core/host.h`).
    Inputs are padded per the table's comments (`SIFT_COL_PAD` = 64 bytes readable past the last used byte), outputs written in whole words.
 5. A test (`sift._test_col_kernels(level)`, regression `col_kernels_simd`) runs random inputs through every level the CPU supports and
    compares against scalar bit for bit; ranges exercise all widths, thresholds at the boundaries and unaligned lengths.
@@ -685,8 +685,8 @@ The storage engine is separate from the index AM so that the table AM `sift_tabl
 |---|---|---|---|
 | L0 kernels | `col/kern*.c/.h` (portable) | arrays and bit vectors | yes |
 | L1 chunks, batches, dictionaries, zones | `col/enc.h` and `col/{enc,schema,dict,batch,chunk,ctest,unit}.c` (portable): `SiftColBatch`, chunk encode/decode, predicate -> key range / LUT, zone computation, batch merge | values, not pages | yes |
-| L2 segment | `col/seg.c/.h`, `col/seg_write.c`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `sift_store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
-| L3 write buffer | `col/wbuf.c/.h` (lanes: `sift_lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
+| L2 segment | `col/seg.c/.h`, `col/seg_write.c`: segment writer (`sift_colw_*`), reader (units, dictionaries, zone arrays, row directory, liveness) over `core/store.h` | extents, pages, the directory | yes: a table AM keeps its row groups as such segments; the row directory's TIDs are then the table's own TIDs |
+| L3 write buffer | `col/wbuf.c/.h` (lanes: `core/lane.c/.h`, shared with sift) | lane pages, row records | yes, or its own write buffer |
 | L4 source | `col/scan*.c`: `SiftColSource`, units, filters, reads, selections (`col/col.h` section 3) | a visibility callback | yes: it asks `SiftColVisibility` (below) which rows are visible |
 | L5 index glue | `col/am*.c`: `ambuild`, `aminsert`, `ambulkdelete`, handler, options, the heap/VM visibility (`sift_col_vet`), SQL | the heap table | no |
 
@@ -699,7 +699,7 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 - 2026-10 (col minor 6, complete kinds): `SIFT_COL_FORMAT_MINOR` 6, `SIFT_COL_FORMAT_KINDS`, `sift_col_write_minor` (the minor of a segment from the setting, the schema's `kinds` and `wide`, and whether every input keeps its kinds), `sift_cseg_kinds_exact`, `SiftColLeafStats.nokinds` and `SiftSrcStats.nokinds[]`; `unit_kinds` trusts minor 6 and batches without uncertain kinds only; `sift.col_format_minor` takes 3, 4 or 6; the leaf statistics cache of an index is keyed by its relfilenumber and the format of its segments (REINDEX starts the generations over).
 
 - 2026-10 (col minor 4, element rollups): the `COLP` directory is version 2 in a minor 4 segment (`ecubedir_off`, `ecube_bytes`; the rollup blob of each list follows the cubes of the columns and names its dims and measures), `sift_cpagg_cube(..., StringInfo out, StringInfo eout)`, `sift_cpagg_rollup_decode`, `sift_cseg_rollup`, `sift_cseg_dim_cube`, `SIFT_PAGG_MAX_RDIMS` 6 and `SIFT_PAGG_ROLLUP_TUPLES` 4096; the option `rollup` of `sift_col` and `sift_col_alter_check` (validation at CREATE and ALTER INDEX), `col/rollup.c` (the on-demand refresh: queue, worker, `sift.col_rollup_state`); `sift_aggspec_preagg` accepts the unnest of an array leaf or a map with any subset of the dims as keys; `preagg_rollup` folds the tuples (`PaVal.sumf`, min, max). The writer remembers the minor it began under (`SiftColSegWriter.minor`), so `sift.col_format_minor` is read once per segment.
-- 2026-10 (col minor 4, version vectors): a segment whose owner passes the `xmin` and `cmin` of its rows (`sift_cbatch_add_ver`: a sift_table group written while its transactions run) is written as format 4 with the entry flag `SIFT_SEG_VERS` and `reserved` = the smallest xid, and carries a version section after the superblock directory of the DOCMAP section (`sift_col_ver.[ch]`; header `COLV`, per unit the xid range and the highest cmin, the vectors as a constant or a first value, a smallest step and packed residuals). The engine only stores and returns them (`sift_cseg_vers`, `sift_cseg_ver_sum`, `sift_cseg_ver_unit`, `sift_cseg_ver_range`, `sift_cseg_decode_unit_freeze`); merges keep them (`sift_cbatch_merge`) and the owner clears the flag when the rows are final. The owner begins the writer with a format of at least 4 for such a segment (`sift.col_format_minor` says the format of the others). A group of 3.0.1 that carried one writer (`reserved` = xid, header `sum_dl` = cid, format 3) is read as constant vectors. The metapage minor of a table goes to 3 with the first such segment (sift.h `SIFT_FORMAT_MINOR`), so a 3.0.x library refuses the table.
+- 2026-10 (col minor 4, version vectors): a segment whose owner passes the `xmin` and `cmin` of its rows (`sift_cbatch_add_ver`: a sift_table group written while its transactions run) is written as format 4 with the entry flag `SIFT_SEG_VERS` and `reserved` = the smallest xid, and carries a version section after the superblock directory of the DOCMAP section (`sift_col_ver.[ch]`; header `COLV`, per unit the xid range and the highest cmin, the vectors as a constant or a first value, a smallest step and packed residuals). The engine only stores and returns them (`sift_cseg_vers`, `sift_cseg_ver_sum`, `sift_cseg_ver_unit`, `sift_cseg_ver_range`, `sift_cseg_decode_unit_freeze`); merges keep them (`sift_cbatch_merge`) and the owner clears the flag when the rows are final. The owner begins the writer with a format of at least 4 for such a segment (`sift.col_format_minor` says the format of the others). A group of 3.0.1 that carried one writer (`reserved` = xid, header `sum_dl` = cid, format 3) is read as constant vectors. The metapage minor of a table goes to 3 with the first such segment (core/sift.h `SIFT_FORMAT_MINOR`), so a 3.0.x library refuses the table.
 - 2026-10 (preagg2 maint): `SiftColOptions.dead_rewrite_pct` (reloption `dead_rewrite_pct`, default `SIFT_COL_DEAD_PCT` 10, maintenance only: no format change); `sift_col_mostly_dead` uses it instead of a fixed half.
 - 2026-10 (col minor 3): the dictionaries of a segment are written as `u32 form, u32 n` and either the plain list or the codec's string list (section 2.3); `sift_cdict_serialize` takes the leaf's policy, `sift_cseg_dict_stored`, `sift.col_sections` (section 2.10). A minor 2 segment is refused with a REINDEX hint.
 - 2026-10 (preagg2): `SiftSrcPreagg.aggs`; `sift_aggspec_preagg`, `sift_aggspec_pred_leaf` (sift_aggspec.h); SiftAgg answers the units that are exact from `unit_agg` / `unit_hist` (`sift_agg.c` `preagg_unit`), `sift.agg_preagg` (GUC, on), the cost of the exact share of the units and no workers from 98% exact (`sift_aggplan.c`), `Units From Pre-aggregates` in EXPLAIN ANALYZE. A provider that has `unit_exact`, `unit_agg`, `unit_hist` and `preagg` gets all of it; the others scan.

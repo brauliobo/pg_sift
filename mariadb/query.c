@@ -19,7 +19,7 @@
 
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
-#include "sift_cmp.h"
+#include "core/cmp.h"
 #include "bm25/eval.h"
 #include "bm25/kernels.h"
 #include "bm25/runs.h"

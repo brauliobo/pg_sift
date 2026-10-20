@@ -49,7 +49,7 @@ builds and tests the release tarball in containers. It compiles the portable cor
 unmodified against the host implementation in `sqlite/host/`.
 
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
-`src/core/sift_host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `sift_host.h` (documented at the top of that file) and, when
+`src/core/host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `core/host.h` (documented at the top of that file) and, when
 it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
 a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
 that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch

@@ -42,10 +42,10 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/seg.h"
-#include "sift_lane.h"
+#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 

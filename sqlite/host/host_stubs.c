@@ -3,7 +3,7 @@
  * need, the same on both: docmap directories are not kept between queries and there are no write buffers (the live
  * segment of a query is an immutable one built from the queue). Options, visibility and the TID bitmap are the host's own.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"

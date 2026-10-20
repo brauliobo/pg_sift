@@ -10,12 +10,12 @@
  *   highest present offset (absent slots 0); then the SB directory
  *   SiftDocSBRef[nsb] and a final u32 nsb. A doc's rank (liveness bit) is
  *   its position in key order. Liveness: one bit per doc in rank order, plus
- *   a dirty bit per SB (LIVE pages, see sift_page.h).
+ *   a dirty bit per SB (LIVE pages, see core/page.h).
  */
 #ifndef SIFT_SEGMENT_H
 #define SIFT_SEGMENT_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/dict.h"
 #include "bm25/posting.h"

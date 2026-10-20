@@ -13,15 +13,15 @@
  * read gives the same values at every level: the kernel tables follow docs/KERNELS.md (the scalar table is the specification, AVX2 and
  * AVX-512 are bit-identical, dispatch follows sift.simd through sift_cpu_register()). Filters, widening and dictionary gathers run on
  * the column engine's table (sift_colk, col/kern.h); the table below holds what only the codec needs (the vertical bit-packing, prefix
- * sums, run expansion, decimal floats). Portable except for the compression library wrapper col/compress.h: sift_host.h and portable files.
+ * sums, run expansion, decimal floats). Portable except for the compression library wrapper col/compress.h: core/host.h and portable files.
  */
 #ifndef SIFT_COLCODEC_H
 #define SIFT_COLCODEC_H
 
-#include "sift_host.h"
+#include "core/host.h"
 
-#include "sift.h"
-#include "sift_cpu.h"
+#include "core/sift.h"
+#include "core/cpu.h"
 #include "col/col.h"
 
 /* ---------- format (version 1) ---------- */

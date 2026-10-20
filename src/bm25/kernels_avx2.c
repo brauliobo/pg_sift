@@ -5,7 +5,7 @@
  * selected lanes are packed with VPERMPS from a compress table. Slots
  * outside the mask are blended back unchanged.
  */
-#include "sift_host.h"
+#include "core/host.h"
 
 #include "bm25/kernels_int.h"
 

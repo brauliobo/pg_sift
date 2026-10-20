@@ -8,7 +8,7 @@ requirement, section 5) logical replication.
 
 Names. Table access method `sift_table` (`pg_am.amname` is unique across index and table AMs: the BM25 index AM is `sift`, the column
 index AM of the column track is `sift_col`). Handler `sift.table_handler`, SQL in `sql/pg_sift--3.0.sql` and `sql/pg_sift--1.2--3.0.sql`. C identifiers `sift_tbl_*`, files
-`src/table/*.c/h` (`sift_table_*` is taken by sift_compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
+`src/table/*.c/h` (`sift_table_*` is taken by core/compat.h macros). Test functions `sift._test_tbl_*`. This document is the contract of
 the table AM track; where it and the code disagree, fix one in the same commit.
 
 Running example (used in tests too): `orders(id bigint, store_id int, placed_at timestamptz, status text, total numeric(12,2), items jsonb,
@@ -20,7 +20,7 @@ metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `me
 
 | topic | decision |
 |---|---|
-| Storage | the page store of `sift_store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
+| Storage | the page store of `core/store.h` (metapage, directory, free list, extents, generic WAL, P1-P6 crash protocol), reused unchanged except one generalization (`sift_store_removable` on a table). |
 | TIDs | **synthetic and never reused**: a TID is `(vblock, offset)` with `offset` in 1..`MaxHeapTuplesPerPage` (291) so every index AM, TID bitmaps and GIN accept it. `vblock` comes from a counter in the metapage and never decreases; it is *not* a physical block number. A superblock (SB, 256 vblocks, 74,496 TIDs) is the engine's unit, so the engine's row directory returns the table's own TIDs (docs/COL.md section 12). |
 | Row versions | **write buffer + groups.** New rows go to a row-format *write buffer* (write buffer family: pages of `SIFT_PT_WBUFDATA`, directory kind `SIFT_SEG_WBUF_*`) with `xmin`/`cmin` per row. Promotion (section 7) turns a write buffer whose rows are all final into a **column group** (an engine immutable segment with the same TIDs; rows frozen: no per-row xmin), and, under directory pressure, any other full write buffer into an **unfrozen group** (the same, keeping the `xmin` and `cmin` of each row in version vectors inside the group, format 4; VACUUM freezes it when its rows are final). COPY goes through the write buffer (there is no segment-level xmin); the write buffer is sealed as soon as it fills. A rewrite (VACUUM FULL, CLUSTER) writes frozen column segments directly. |
 | Deletes, updates, locks | **tombstones**: one 32-byte entry (`tid`, deleter `xid`, `cid`, kind, successor TID) appended to one per-relation **tombstone segment** (same lane page family). A row version is visible iff its insert is visible and no non-aborted DELETE/UPDATE tombstone of it is visible. UPDATE = new row in the write buffer + UPDATE tombstone carrying the successor TID (this is the update chain `FIND_LAST_VERSION` and EvalPlanQual follow). HOT does not exist (`TU_All`). |
@@ -41,7 +41,7 @@ metrics jsonb)` where `items` is an array of `{sku, qty, price}` objects and `me
 ### 2.1 Relation, directory, metapage
 
 Main fork only (no FSM, no VM: `pg_visibility` and index-only scans see a table without a VM, which is correct: they take the AM
-path). Blocks 0 (meta) and 1 (directory) as in `sift_store.h`; everything else is allocated from the free list / high-water mark by
+path). Blocks 0 (meta) and 1 (directory) as in `core/store.h`; everything else is allocated from the free list / high-water mark by
 `sift_alloc_*`. The metapage carries `flags & SIFT_TBL_META_FLAG` (0x00020000) and reuses fields that a table has no use for:
 
 | field | in a table |
@@ -297,7 +297,7 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` are read by TID when asked, from the same fetch (`sift_tbl_fetch_lazy`) and the tombstones.
 - **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the
   synthetic TID from `tuple_insert`; scans return TIDs and the bitmap/index scan nodes call `table_index_fetch_tuple` /
-  `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/sift_visibility.c) which today reads the heap's
+  `scan_bitmap_next_*`. The sift custom scans and `count(*)` fast paths ask `sift_vis_*` (src/core/visibility.c) which today reads the heap's
   visibility map and calls `heap_hot_search_buffer`; for a `sift_table` the table AM provides `sift_tbl_filter_page` (visibility of the
   candidate offsets of one vblock) and `sift_tbl_nblocks` (the vblock count), and `sift_vis_begin` branches on the table AM.
 - **SiftAgg over the table** (`src/table/src.c`, the table provider of the seam `src/agg/sift_colsrc.h`, docs/COL-PLAN.md): the leaves are the
@@ -367,7 +367,7 @@ Unfrozen groups merge with everything: the output keeps the version vectors of t
 5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in (skipped when
    no entry would go).
 6. Space: `sift_recycle` clears the free-list records whose releasing transaction no snapshot can see any more, the orphan sweep
-   releases what a crash left, then the reusable free run at the end of the file is cut (`sift_store_truncate`, `sift_store.h` P7) as for
+   releases what a crash left, then the reusable free run at the end of the file is cut (`sift_store_truncate`, `core/store.h` P7) as for
    a heap. Before the cut, the segment (column segment, tombstones, or the write buffer, which is closed and sealed) whose blocks end last in the file is
    written again into the reusable free runs below it while they hold it (`compact_tail`, at most 16 steps; only with the cut enabled, and a column segment
    of an older layout stays): a load seals its column segment above the write buffers it replaces, and without this the file stays the size of the load

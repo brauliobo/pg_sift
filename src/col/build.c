@@ -16,7 +16,7 @@
 #include "utils/rel.h"
 
 #include "col/build.h"
-#include "sift_ops.h"
+#include "core/ops.h"
 
 #define PROGRESS_ROWS	1024
 

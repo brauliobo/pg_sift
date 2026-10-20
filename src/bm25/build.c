@@ -24,9 +24,9 @@
 
 #include "bm25/am.h"
 #include "bm25/build.h"
-#include "sift_parbuild.h"
+#include "core/parbuild.h"
 #include "table/table.h"
-#include "sift_visibility.h"
+#include "core/visibility.h"
 
 #define BATCH			1024
 #define ULL(x)			((unsigned long long) (x))
