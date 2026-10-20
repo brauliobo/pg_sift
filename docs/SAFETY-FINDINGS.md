@@ -103,7 +103,7 @@ host compiler (clang 23, gcc 16), where neither finding appears.
 - MSan (clang 23, `make -C test/fuzz CC=clang SAN='-fsanitize=memory ...' DEFS= COLZ=`): `shred` reports inside libpgcommon's `snprintf`
   (uninstrumented, false positive); `colchunk` reports a `memcmp` at src/col/sift_col_enc.c:254 `cdict_probe` during harness setup, from
   `sift_cdict_intern`: not triaged, may be a harness artifact. `bm25` is clean in checked mode.
-- gcc `-Wclobbered` (SIFT_HARDEN=pkg warnings): src/bm25/maint.c:253 and src/bm25/pushdown.c:444, locals changed after `PG_TRY`; check
+- gcc `-Wclobbered` (SIFT_HARDEN=pkg warnings): src/bm25/step.c:107 and src/bm25/pushdown.c:444, locals changed after `PG_TRY`; check
   that they are `volatile` where read in the handler.
 - scripts/static.sh: 120 findings (93 clang-tidy, 27 scan-build, 0 from gcc -fanalyzer), accepted as the baseline in scripts/static.baseline.
   54 are `bugprone-implicit-widening-of-multiplication-result` (int product widened to size_t: overflow candidates when the factors are
