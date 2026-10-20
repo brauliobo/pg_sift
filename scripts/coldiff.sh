@@ -273,7 +273,7 @@ col_paths() {
 	END { print out }' <<<"$COL_PATHS"
 }
 
-# fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
+# fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_wl its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
 	for t in orders orders_odd t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
@@ -285,7 +285,7 @@ fixture_tables() {
 		done
 		sql -c "VACUUM FULL $t" || return 1
 	done
-	for t in orders_part t_part t_part_ni t_part_op t_inh; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
+	for t in orders_part t_part t_part_ni t_part_op t_inh t_wl; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
 }
 
 fixture_col_indexes() {
