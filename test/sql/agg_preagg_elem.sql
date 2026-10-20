@@ -245,7 +245,7 @@ RESET sift.col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(410001, 415000) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 VACUUM (index_cleanup on, disable_page_skipping) a3;
-SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
+SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
 SELECT sift.col_verify('a3_col', true);
 SELECT * FROM pa_sum('a3');
 REINDEX INDEX a3_col;

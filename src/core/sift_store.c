@@ -52,6 +52,7 @@ bool		sift_standby_conflicts = false;
 
 #ifdef SIFT_TESTING
 int			sift_test_space_crash = 0;
+bool		sift_test_space_error = false;
 int			sift_test_fail_pages = 0;
 int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
@@ -926,8 +927,18 @@ xid_safexid(void)
 		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
+/* Physical directory changes survive transaction abort; publish their cache invalidation before a relation lock can be released. */
 static void
-store_update(Relation index, const SiftDirChange *chg, bool publish)
+invalidate_mapping(Relation index)
+{
+	SharedInvalidationMessage msg = {.rc = {SHAREDINVALRELCACHE_ID, MyDatabaseId, RelationGetRelid(index)}};
+
+	SendSharedInvalidMessages(&msg, 1);
+	LocalExecuteInvalidationMessage(&msg);
+}
+
+static void
+store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTarget *published)
 {
 	bool		pending = publish && chg->nrelease > 0 && !chg->immediate && !space_exclusive;
 	FullTransactionId safexid = pending && xid_safexid() ?
@@ -965,18 +976,29 @@ store_update(Relation index, const SiftDirChange *chg, bool publish)
 		finish_dir(state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
+	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */
+	if (publish && space_exclusive && chg->nrelease > 0)
+		HOLD_INTERRUPTS();
 	GenericXLogFinish(state);
+	/* These allocations now belong to the directory, even if the caller subsequently errors. */
+	if (published)
+		published->ntaken = published->nspare = 0;
 	if (BufferIsValid(plan.flbuf))
 		UnlockReleaseBuffer(plan.flbuf);
 	if (publish)
 		UnlockReleaseBuffer(dirbuf);
 	UnlockReleaseBuffer(metabuf);
+	if (publish && space_exclusive && chg->nrelease > 0)
+	{
+		invalidate_mapping(index);
+		RESUME_INTERRUPTS();
+	}
 }
 
 void
 sift_dir_update(Relation index, const SiftDirChange *chg)
 {
-	store_update(index, chg, true);
+	store_update(index, chg, true, NULL);
 }
 
 /* Sorts by start and merges adjacent reusable records; returns the count */
@@ -1194,7 +1216,6 @@ sift_store_truncate(Relation index)
 	BlockNumber hwm = META(BufferGetPage(metabuf))->high_water;
 	BlockNumber newhwm = InvalidBlockNumber;
 	BlockNumber nblocks;
-	SharedInvalidationMessage msg;
 	FreeChain	c;
 
 	read_chain(index, metabuf, &c, cut_horizon());
@@ -1214,9 +1235,7 @@ sift_store_truncate(Relation index)
 	 * entry (sift_wbuf_append), validated by reading them, and a block past the new end cannot be
 	 * read. Their next lock on the index happens after ours is released, and takes this message first.
 	 */
-	msg = (SharedInvalidationMessage) {.rc = {SHAREDINVALRELCACHE_ID, MyDatabaseId, RelationGetRelid(index)}};
-	SendSharedInvalidMessages(&msg, 1);
-	LocalExecuteInvalidationMessage(&msg);
+	invalidate_mapping(index);
 	return nblocks - newhwm;
 }
 
@@ -1510,7 +1529,7 @@ sift_wt_finish(SiftWriteTarget *wt)
 		if (wt->nspare > 0)
 		{
 			store_update(wt->index, &(SiftDirChange) {.release = wt->spare, .nrelease = wt->nspare,
-					.extra = InvalidBuffer}, false);
+					.extra = InvalidBuffer}, false, NULL);
 			wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, wt->spare, wt->nspare);
 			wt->maxtaken = wt->ntaken;
 		}
@@ -1532,13 +1551,21 @@ sift_wt_expect(SiftWriteTarget *wt, uint64 bytes)
 	wt->expect = bytes / BLCKSZ;
 }
 
+/* Transfer completed allocations to the published directory before any subsequent error can abort the write target. */
+void
+sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg)
+{
+	Assert(wt->mode == SIFT_WRITE_SHARED);
+	store_update(wt->index, chg, true, wt);
+}
+
 /* The step that wrote through a SHARED target failed (its transaction is rolled back): the blocks go back */
 void
 sift_wt_abort(SiftWriteTarget *wt)
 {
 	if (wt->ntaken > 0)
 		store_update(wt->index, &(SiftDirChange) {.release = wt->taken, .nrelease = wt->ntaken,
-				.extra = InvalidBuffer}, false);
+				.extra = InvalidBuffer}, false, NULL);
 	wt->ntaken = wt->nspare = 0;
 }
 
@@ -1967,7 +1994,7 @@ relocation_pick(const FreeChain *free, uint32 min, BlockNumber limit)
  * No accepted move, including its free-list publication, needs to extend the file. The caller atomically publishes the copy.
  */
 uint64
-sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, int n,
+sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, const SiftExtent *old, int n,
 					BlockNumber limit, uint64 budget, SiftSegEntry *entry_new, SiftRelocatePage relocate_page)
 {
 	Buffer metabuf;
@@ -1979,7 +2006,6 @@ sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *o
 	int ndata = entry->kind == SIFT_SEG_IMMUTABLE ? n - (old[n - 1].start == entry->header_blk ? 1 : 2) : 0;
 	uint64 blocks = 0;
 	int capacity;
-	SiftWriteTarget *wt;
 	uint64 gen;
 	PGIOAlignedBlock copy;
 
@@ -2040,7 +2066,6 @@ sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *o
 	pfree(free.ext);
 	pfree(free.page);
 	gen = sift_store_new_gen(rel);
-	wt = sift_wt_begin(rel, SIFT_WRITE_SHARED);
 	space_limit = limit;
 	for (int i = 0; i < parts; i++)
 	{

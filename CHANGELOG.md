@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: VACUUM relocation invalidates cached write targets when each replacement is published, including when maintenance later errors before truncation; failed unpublished copies return their allocations and follow maintenance backoff.
+
 - Added: Homebrew formula in the source repository for PostgreSQL 17 and 18, tested on macOS arm64 with BM25, extension upgrade and column aggregate smoke tests; bitmap dispatch uses the existing scalar kernels on non-x86 CPUs.
 - Added: pg_sift: `col @@> ANY (array)` is scanned as the OR of its elements, scored and ranked like `col @@> 'a OR b'` (`sift.score()`, `ORDER BY sift.score(...)`, `LIMIT`, `count(*)` and the filters work with it); a NULL element is skipped and a NULL or empty array matches no rows. Measured against the bitmap scan it replaces: `count(*)` 1.6 to 54 times faster, `LIMIT 10` and `LIMIT 1000` 1.5 to 130 times faster (0.1 ms slower on queries that take under 0.2 ms), the full match list equal or up to 2 times faster, planning under 0.6 ms at 100 elements. A list with no score or order that is estimated above 100,000 rows (after a `LIMIT`) keeps the bitmap scan, which was as fast or faster there.
 - Changed: column format minor 6 guarantees complete JSON kinds for declared paths, including element leaves. This fixes wrong answers after merging a minor-3 segment into minor 4: JSON null could become a missing key. Old minors 3 through 5 and legacy write buffers remain readable; queries needing kinds those inputs cannot prove keep the normal plan, including partition parents. REINDEX and a sift_table VACUUM FULL reconstruct the kinds from the documents. No extension SQL changes are needed.

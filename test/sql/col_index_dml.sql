@@ -80,11 +80,11 @@ ROLLBACK;
 SELECT 'aborted update', stage('o_col');
 SELECT sift.col_verify('o_col', true);
 
--- VACUUM clears the liveness bits of dead rows; the write buffer records of dead rows are flagged
+-- This fixture fits the VACUUM merge allowance: dead rows are removed from the resulting immutable segments.
 VACUUM orders;
 SELECT 'vacuum', stage('o_col');
 SELECT sift.col_verify('o_col', true);
-SELECT bool_or(dirty) AS some_dirty, sum(dead_rows) > 0 AS some_dead FROM sift.col_segments('o_col') WHERE kind = 'immutable';
+SELECT bool_and(NOT dirty AND dead_rows = 0) AS dead_rows_reclaimed FROM sift.col_segments('o_col') WHERE kind = 'immutable';
 
 -- promotion
 SELECT sift.col_promote('o_col') >= 0 AS promoted;

@@ -157,7 +157,11 @@ typedef struct SiftDirChange
 	bool		immediate;		/* no snapshot can hold the released extents (a relation still being written by its creator): reusable at once */
 } SiftDirChange;
 
+typedef struct SiftWriteTarget SiftWriteTarget;
+
 extern void sift_dir_update(Relation index, const SiftDirChange *chg);
+/* Publish a completed SHARED write target; subsequent abort frees only unpublished allocations. */
+extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
@@ -174,6 +178,7 @@ extern void sift_store_space_exclusive(Relation index, bool on);
 
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_space_crash;
+extern PGDLLIMPORT bool sift_test_space_error;
 extern void sift_store_space_test_point(int phase);
 #define SIFT_SPACE_TEST_POINT(phase) sift_store_space_test_point(phase)
 #else
@@ -185,8 +190,8 @@ extern uint64 sift_store_space_written(void);
 typedef void (*SiftRelocatePage) (Page page, const SiftExtent *old, const SiftExtent *fresh, int n);
 extern BlockNumber sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExtent *fresh, int n);
 
-/* Copy a segment into exact free runs below limit, within budget; zero if they do not fit. The caller publishes fresh and releases old. */
-extern uint64 sift_store_relocate(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, int n,
+/* Copy through a tracked SHARED target into exact free runs below limit, within budget; zero if they do not fit. Publish with sift_wt_publish. */
+extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, const SiftExtent *old, int n,
 								 BlockNumber limit, uint64 budget, SiftSegEntry *fresh, SiftRelocatePage relocate_page);
 
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
@@ -216,7 +221,6 @@ extern int64 sift_store_free_below(Relation index, BlockNumber limit, uint32 min
  * final high-water mark. A BULK build numbers its segments from gen 1 and
  * sets meta->next_gen when it publishes them.
  */
-typedef struct SiftWriteTarget SiftWriteTarget;
 extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash);
 /* The same with the scoring constants and the metapage flags given (a column index: k1 = b = 0, schema hash, SIFT_COL_META_FLAG) */
 extern void sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyzer_hash, uint32 flags);

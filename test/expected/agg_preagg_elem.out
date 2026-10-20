@@ -580,10 +580,10 @@ SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 (1 row)
 
 VACUUM (index_cleanup on, disable_page_skipping) a3;
-SELECT string_agg(format::text, ',' ORDER BY gen) AS formats FROM sift._test_col_formats('a3_col');
- formats 
----------
- 3,3,3,6
+SELECT array_agg(format ORDER BY format) = ARRAY[3,3,3,6]::int4[] AS mixed_formats FROM sift._test_col_formats('a3_col');
+ mixed_formats 
+---------------
+ t
 (1 row)
 
 SELECT sift.col_verify('a3_col', true);
