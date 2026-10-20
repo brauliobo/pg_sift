@@ -299,6 +299,10 @@ builds: serial 2.6 s, 2 workers 0.9 s (2.9x), 4 workers 0.8 s (3.2x).
 
 ### 2.7 Liveness and VACUUM
 
+VACUUM seals an open column write buffer once it holds a quarter of `write_buffer_limit` (at least two pages per lane), promotes sealed buffers and merges until the policy has no more work or `sift.vacuum_rewrite_limit` MB have been written (default 128; the first merge always runs). This brings new versions into column units during maintenance.
+
+With `vacuum_truncate` enabled (the default index option), VACUUM also conditionally takes `AccessExclusiveLock`, makes released pages immediately reusable under that lock, and copies tail segments into free runs before returning the free tail to the operating system. Page copies preserve each segment's format and can split data extents across smaller holes while keeping liveness runs contiguous. They share a separate allowance of `sift.vacuum_rewrite_limit` MB; every destination is reserved below the planned end before copying, and a move that cannot fit the existing extent directory or a contiguous liveness run is skipped. Zero disables copies and retains ordinary free-tail truncation. `sift_table` and `sift` use the same space step; `sift_table` also honors `VACUUM (TRUNCATE FALSE)`. A conflicting primary reader skips the space step without waiting. Standby replay of the exclusive lock can cancel readers, including with `hot_standby_feedback` enabled. Free pages left inside the file remain reusable by subsequent writes.
+
 LIVE pages as in sift (`SiftLiveHeaderData`, a dirty-SB bitmap then one bit per row in rank order, rank = `rank_base` of the unit + row
 ordinal). `ambulkdelete` walks every row of every immutable segment of the SBs, calls the callback with its TID and clears the bit of the
 dead ones (a unit's TIDs come from its row directory; chunks are not read), marks the SB dirty; write buffer records get the deleted flag.

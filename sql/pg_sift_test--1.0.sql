@@ -43,6 +43,9 @@ CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
 -- longest wait of this backend for the maintenance of others since the last call, in microseconds
 CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_maint_wait_us' LANGUAGE C STRICT;
+-- copied pages of VACUUM's bounded relocation (with the current sift.vacuum_rewrite_limit)
+CREATE FUNCTION sift._test_space(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_space' LANGUAGE C STRICT;
 -- pending: safexid set (not cleared by sift_recycle yet)
 CREATE FUNCTION sift._test_freelist(index regclass, OUT page int8, OUT start int8, OUT nblocks int8,
 									OUT pending bool) RETURNS SETOF record

@@ -7,8 +7,8 @@
  * - a step holds the maintenance lock exclusively, not in RowExclusiveLock with claims on its segments: one step of the index at a time;
  * - a step is not run in a subtransaction: an ERROR goes on to the caller, nothing is counted for the backoff (the failure flags are never
  *   set, so the backoff of the shared flow never applies) and there is no segment another step could have claimed (busy stays 0);
- * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM does one merge, not until the policy asks for none;
- * - no truncation of the file by VACUUM, and the worker runs in one transaction until nothing is left to do.
+ * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM merges until the policy asks for none or the rewrite limit is reached;
+ * - the worker runs in one transaction until nothing is left to do; VACUUM merges to a fixed point only up to sift.vacuum_rewrite_limit.
  */
 #include "postgres.h"
 
@@ -300,10 +300,20 @@ reap_overflow(Relation index, Relation heap)
 	pfree(snap);
 }
 
+static bool
+vacuum_truncates(Relation index)
+{
+	return sift_col_options(index)->vacuum_truncate;
+}
+
 static const SiftMaintOps col_ops = {
 	.name = "sift_col",
 	.worker = "sift_col_maint_worker_main",
 	.step_lock = ExclusiveLock,
+	.vacuum_to_fixed_point = true,
+	.vacuum_budget = true,
+	.vacuum_truncate = vacuum_truncates,
+	.vacuum_seal = sift_cwbuf_seal_vacuum,
 	.is_index = is_col,
 	.seal = sift_cwbuf_seal,
 	.promote_next = promote_next,

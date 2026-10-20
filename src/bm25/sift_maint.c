@@ -35,6 +35,7 @@
 
 #include "sift_am.h"
 #include "sift_build.h"
+#include "sift_lane.h"
 #include "sift_maint.h"
 #include "sift_merge.h"
 #include "sift_wbuf.h"
@@ -182,8 +183,11 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 		memmove(&dir->segs[at + 1], &dir->segs[at], (n - at) * sizeof(SiftSegEntry));
 		dir->segs[at] = *sw->neu;
 		n++;
-		meta->ndocs += sw->neu->ndocs;
-		meta->sum_dl += sw->neu->sum_dl;
+		if (sw->neu->kind == SIFT_SEG_IMMUTABLE)
+		{
+			meta->ndocs += sw->neu->ndocs;
+			meta->sum_dl += sw->neu->sum_dl;
+		}
 	}
 	dir->nsegs = n;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
@@ -209,11 +213,17 @@ sift_maint_inputs(Relation index, const SiftSegEntry *in, int n)
 	return mi;
 }
 
+/* The bytes of the segments the steps of this backend wrote (VACUUM budgets its merges by what they add to it) */
+static uint64 maint_written = 0;
+
 void
 sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release, int nrelease,
 				   const char *what, TimestampTz start, int64 docs)
 {
 	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = neu};
+
+	if (neu)
+		maint_written += neu->bytes;
 
 	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.extra = InvalidBuffer});
@@ -915,9 +925,15 @@ static void
 vacuum_merge(const SiftMaintOps *ops, Relation index)
 {
 	uint64		busy = 0;
+	uint64		start = maint_written;
+	uint64		limit = (uint64) sift_vacuum_rewrite_limit << 20;
 
 	while (ops->merge_next(index, false, SIFT_GOAL_VACUUM, false, &busy) == SIFT_STEP_DONE && ops->vacuum_to_fixed_point)
+	{
 		CHECK_FOR_INTERRUPTS();
+		if (ops->vacuum_budget && maint_written - start >= limit)
+			break;
+	}
 }
 
 IndexBulkDeleteResult *
@@ -932,6 +948,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_maint_lock(index, true);
+	if (ops->vacuum_seal)
+		ops->vacuum_seal(index);
 	promote_locked(ops, index, false, false);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
@@ -942,7 +960,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
-		sift_maint_truncate(index, info->message_level);
+		sift_maint_space(index, NULL, info->message_level);
 	sift_maint_unlock(index);
 	sift_dir_read(index, snap);
 	stats->num_pages = RelationGetNumberOfBlocks(index);
@@ -1184,6 +1202,203 @@ sift_maint_truncate(Relation index, int elevel)
 	if (freed > 0)
 		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages", RelationGetRelationName(index),
 								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
+}
+
+/* ---------- space: the end of the file moved down, then cut ---------- */
+
+/* A coarse candidate screen only; sift_store_relocate plans exact extent reservations with the allocator before accepting a move. */
+#define SPACE_MIN_RUN		16
+
+static bool
+space_worth(int64 blocks, BlockNumber nblocks)
+{
+	return blocks > 0 && (blocks >= TRUNCATE_MIN_BLOCKS || blocks >= nblocks / TRUNCATE_FRACTION);
+}
+
+/* A segment of the directory, as the space step sees it: where its blocks end and how many it takes */
+typedef struct SpaceSeg
+{
+	uint64		gen;
+	uint64		blocks;
+	BlockNumber end;
+} SpaceSeg;
+
+static int
+cmp_space_end_desc(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const SpaceSeg *) b)->end, ((const SpaceSeg *) a)->end);
+}
+
+/*
+ * Rank tail prefixes by the expected file shrinkage within the remaining copy allowance. The destination boundary already includes
+ * the free capacity occupied by the copies: subtracting their size again would reject useful moves in interleaved layouts.
+ * sift_store_relocate proves each exact reservation fits below that boundary before accepting the candidate.
+ */
+static int
+space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *seg, int64 *gain, BlockNumber *limit)
+{
+	int			n = 0;
+	int			best = 0;
+	uint64		moved = 0;
+	BlockNumber hwm = snap->meta.high_water;
+	BlockNumber top;
+
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+		int			k;
+		SiftExtent *ext = e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, &k) : sift_lane_extents(rel, e, &k);
+
+		seg[n] = (SpaceSeg) {.gen = e->gen};
+		for (int x = 0; x < k; x++)
+		{
+			seg[n].blocks += ext[x].nblocks;
+			seg[n].end = Max(seg[n].end, ext[x].start + ext[x].nblocks);
+		}
+		pfree(ext);
+		n++;
+	}
+	qsort(seg, n, sizeof(SpaceSeg), cmp_space_end_desc);
+	top = n > 0 ? seg[0].end : 0;	/* the free blocks above it go with the cut anyway */
+	*gain = 0;
+	for (int j = 1; j <= n; j++)
+	{
+		BlockNumber end = j < n ? seg[j].end : 0;
+		BlockNumber lo = 0;
+		BlockNumber hi = hwm;
+		int64		net;
+
+		moved += seg[j - 1].blocks;
+		if (moved * BLCKSZ > budget || sift_store_free_below(rel, hwm, SPACE_MIN_RUN) < (int64) moved)
+			break;
+		/* the lowest end that holds them: the free blocks are taken from the start of the file up */
+		while (lo < hi)
+		{
+			BlockNumber mid = lo + (hi - lo) / 2;
+
+			if (sift_store_free_below(rel, mid, SPACE_MIN_RUN) >= (int64) moved)
+				hi = mid;
+			else
+				lo = mid + 1;
+		}
+		end = Max(end, lo);
+		net = (int64) top - (int64) end;
+		if (net > *gain)
+		{
+			*gain = net;
+			best = j;
+			*limit = end;
+		}
+	}
+	return space_worth(*gain, hwm) ? best : 0;
+}
+
+/* The directory entry of a generation, or NULL when a step replaced it */
+static const SiftSegEntry *
+space_entry(const SiftDirSnapshot *snap, uint64 gen)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == gen)
+			return &snap->segs[i];
+	return NULL;
+}
+
+/*
+ * Writes the segments that end the file again, into the free blocks below them (space_plan chooses), so that the cut finds its end free:
+ * a load leaves its write buffers below the column segment promoted from them, a merge leaves its output above the segments it replaced,
+ * and a few live segments among free blocks would hold the file at its size for good. A second look follows each round, as the blocks
+ * a segment was copied into are reserved by exact extent length, which can reject a coarse candidate. Every completed copy consumes the remaining allowance.
+ */
+static void
+space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
+
+	while (budget > 0)
+	{
+		int64		gain;
+		BlockNumber limit = 0;
+		int			n;
+
+		sift_dir_read(rel, snap);
+		n = space_plan(rel, snap, budget, seg, &gain, &limit);
+		if (n == 0)
+			break;
+		for (int i = 0; i < n; i++)
+		{
+			const SiftSegEntry *e;
+			SiftSegEntry fresh;
+			int nrelease;
+			SiftExtent *release;
+			uint64 written;
+
+			sift_dir_read(rel, snap);
+			if ((e = space_entry(snap, seg[i].gen)) == NULL)
+				continue;
+			release = e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, &nrelease) : sift_lane_extents(rel, e, &nrelease);
+			written = sift_store_relocate(rel, e, release, nrelease, limit, budget, &fresh, relocate_page);
+			if (written == 0)
+			{
+				pfree(release);
+				goto done;
+			}
+			sift_maint_replace(rel, &e->gen, 1, &fresh, release, nrelease, "relocated", GetCurrentTimestamp(), e->ndocs);
+			SIFT_SPACE_TEST_POINT(2);
+			budget -= written;
+			pfree(release);
+			CHECK_FOR_INTERRUPTS();
+		}
+	}
+done:
+	pfree(seg);
+	pfree(snap);
+}
+
+void
+sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
+{
+	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
+	BlockNumber nblocks;
+	BlockNumber freed = 0;
+	uint64		budget = (uint64) sift_vacuum_rewrite_limit << 20;
+
+	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
+	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+		return;
+	nblocks = RelationGetNumberOfBlocks(rel);
+	/*
+	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the
+	 * relation is locked): do not stop the relation for it
+	 */
+	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
+		!(budget > 0 && space_worth(sift_store_free_stats(rel).blocks, nblocks)))
+		return;
+	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	{
+		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
+		return;
+	}
+	PG_TRY();
+	{
+		sift_store_space_exclusive(rel, true);
+		if (budget > 0)
+		{
+			(void) sift_recycle(rel);
+			SIFT_SPACE_TEST_POINT(1);
+			space_relocate(rel, budget, relocate_page);
+		}
+		freed = sift_store_truncate(rel);
+	}
+	PG_FINALLY();
+	{
+		sift_store_space_exclusive(rel, false);
+	}
+	PG_END_TRY();
+	UnlockRelation(rel, AccessExclusiveLock);
+	if (freed > 0)
+		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
+								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
 }
 
 /* ---------- asynchronous maintenance ---------- */

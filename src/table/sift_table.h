@@ -33,8 +33,6 @@
 #endif
 
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
-#define SIFT_TBL_SEG_WBUF		0x0100		/* SiftSegEntry.flags of a write buffer */
-#define SIFT_TBL_SEG_TOMB		0x0200		/* ... of the tombstone segment */
 #define SIFT_TBL_WBUF_MAGIC	0x444C5441	/* "DLTA" */
 #define SIFT_TBL_TOMB_MAGIC		0x544F4D42	/* "TOMB" */
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage

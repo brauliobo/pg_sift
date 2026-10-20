@@ -67,6 +67,7 @@ typedef struct SiftColOptions
 	int			rollup;			/* offset of the "rollup" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
+	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 } SiftColOptions;
 
 /* A unit with a dead row answers from its rows, not from its pre-aggregates: a lone segment is rewritten once a tenth of its rows is dead */

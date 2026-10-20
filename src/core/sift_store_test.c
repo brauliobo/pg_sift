@@ -49,6 +49,7 @@ PG_FUNCTION_INFO_V1(sift_test_recycle);
 PG_FUNCTION_INFO_V1(sift_test_check);
 PG_FUNCTION_INFO_V1(sift_test_sweep);
 PG_FUNCTION_INFO_V1(sift_test_truncate);
+PG_FUNCTION_INFO_V1(sift_test_space);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
@@ -730,7 +731,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 {
 	bool		standby = RecoveryInProgress();
 	LOCKMODE	mode = standby ? AccessShareLock : RowExclusiveLock;
-	Relation	index = sift_test_open_index(PG_GETARG_OID(0), mode);
+	Relation	index = relation_open(PG_GETARG_OID(0), mode);
 	int64		n;
 
 	if (!standby)
@@ -795,6 +796,20 @@ sift_test_maint_wait_us(PG_FUNCTION_ARGS)
 
 	sift_maint_wait_max_us = 0;
 	PG_RETURN_INT64(us);
+}
+
+Datum
+sift_test_space(PG_FUNCTION_ARGS)
+{
+	Relation index = sift_test_open_index(PG_GETARG_OID(0), AccessExclusiveLock);
+	uint64 written = sift_store_space_written();
+
+	MAINT_LOCK(index, ExclusiveLock);
+	sift_maint_space(index, NULL, DEBUG2);
+	written = sift_store_space_written() - written;
+	MAINT_UNLOCK(index, ExclusiveLock);
+	relation_close(index, AccessExclusiveLock);
+	PG_RETURN_INT64(written);
 }
 
 static void

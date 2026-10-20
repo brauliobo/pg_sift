@@ -161,6 +161,7 @@ extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_async_maintenance;
 extern PGDLLIMPORT int sift_maintenance_naptime;
 extern PGDLLIMPORT int sift_maintenance_cost_delay;
+extern PGDLLIMPORT int sift_vacuum_rewrite_limit;
 extern PGDLLIMPORT bool sift_prefetch;
 
 /*
