@@ -747,6 +747,19 @@ tbl_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 	sift_aggsel_read_types(&t->sel, &p->unit, p->col[leaf], l->typid, l->astext, unit->nrow, tags);
 }
 
+static void
+tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	bool		compact = t->sel.keep && t->sel.compact,
+				known;
+
+	sift_col_jnull_bits(&p->unit, p->col[leaf], compact ? t->sel.idx : NULL, t->sel.sel.count, bits, &known);
+	if (!known)
+		sift_aggsel_types_unknown_error();
+}
+
 /* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
 
 static uint32 *
@@ -945,6 +958,7 @@ static const SiftSrcProvider tbl_provider = {
 	.tolerate_ovf = tbl_tolerate_ovf,
 	.filter_types = tbl_filter_types,
 	.read_types = tbl_read_types,
+	.read_jnull = tbl_read_jnull,
 };
 
 void
