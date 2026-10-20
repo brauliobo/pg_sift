@@ -12,7 +12,7 @@
 
 #include "col/col.h"
 
-/* ---- the engine: units (col/scan.c) ---- */
+/* ---- the engine: units (col/scan_unit.c) ---- */
 
 typedef struct SiftColGpuUnit
 {

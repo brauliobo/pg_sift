@@ -9,7 +9,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 
-/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/scan.c) */
+/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/scan_unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
 
 /*
