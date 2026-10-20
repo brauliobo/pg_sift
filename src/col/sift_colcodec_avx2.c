@@ -53,7 +53,7 @@ unpack_range32_avx2(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 
 		{
 			uint32		bp = r * W,
 						m = 0;
-			cc_vu32		v[CC_NV];
+			cc_row_t	v;
 
 			cc_row_avx2(src + (size_t) (bp >> 5) * 32, bp & 31, W, mask, 0u - lo, v);
 			for (int q = 0; q < CC_NV; q++)

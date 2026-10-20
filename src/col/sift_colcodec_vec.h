@@ -10,6 +10,12 @@ typedef uint32 cc_vu32 __attribute__((vector_size(CC_VB), aligned(4), may_alias)
 #define CC_NV		(32 / CC_LANES)	/* vectors per row of 32 values */
 #define CC_INLINE	static inline __attribute__((always_inline))
 
+/*
+ * A row of vectors on the stack. The vector type is aligned(4) for the loads through unaligned pointers, but GCC still assumes the stack array
+ * is CC_VB aligned and emits aligned moves for it, which the stack frame of an ASan build (GCC 13) does not honor: the alignment is explicit.
+ */
+typedef cc_vu32 cc_row_t[CC_NV] __attribute__((aligned(CC_VB)));
+
 /* Row r of a block: the 32 values (CC_NV vectors) at bit r * W of the lane streams, plus add (wrapping), into out[] */
 CC_INLINE void
 CC_FN(row)(const uint32 *a, uint32 s, uint32 W, uint32 mask, uint32 add, cc_vu32 *out)
@@ -42,7 +48,7 @@ CC_FN(unpack32)(const uint32 *src, uint32 W, uint32 rows, uint32 base, uint32 *d
 		for (uint32 r = 0; r < R; r++)
 		{
 			uint32		bp = r * W;
-			cc_vu32		v[CC_NV];
+			cc_row_t	v;
 
 			CC_FN(row)(src + (size_t) (bp >> 5) * 32, bp & 31, W, mask, base, v);
 			for (int q = 0; q < CC_NV; q++)
