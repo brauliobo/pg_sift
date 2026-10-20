@@ -30,7 +30,7 @@ LIBS    = -lm -lpthread -ldl
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
 HOSTC    := host container mb spool host_stubs
 OWN      := regex regex_parse regex_exec store stubs
-GLUE     := engine query feed merge
+GLUE     := engine docs persist query feed merge
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
