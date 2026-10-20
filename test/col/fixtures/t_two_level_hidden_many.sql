@@ -1,6 +1,6 @@
--- trap: more cell keys than the scan has (six group expressions beyond the id): the outer aggregate stays in the normal plan (the arms may run in the scan, which is as fast or faster, so the tag is any)
--- shape: trap
--- expect: any
+-- six cell keys beyond the id: the outer aggregate runs in the scan
+-- shape: S2
+-- expect: agg
 -- key: -
 -- scenario: yes
 WITH base AS (

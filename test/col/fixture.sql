@@ -20,7 +20,8 @@ CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
 DROP TABLE IF EXISTS orders, orders_odd, orders_part, tenants, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide,
-	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums CASCADE;
+	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
+	t_tags CASCADE;
 
 CREATE TABLE orders (
 	id integer NOT NULL, tenant_id integer NOT NULL, customer_id integer, placed_at date NOT NULL, status text, source text NOT NULL,
@@ -116,6 +117,26 @@ CREATE TABLE tenants (id integer PRIMARY KEY, kind text, country_code text, name
 INSERT INTO tenants SELECT i, (ARRAY['flagship','outlet','popup','online','warehouse'])[1 + hashint8extended(i, 41) % 5],
 	(ARRAY['US','GB','DE','FR','ES','IT'])[1 + hashint8extended(i, 42) % 6], 'Store ' || i FROM generate_series(1, 400) i;
 
+-- one dimension table per scalar column of an order (lookup joins of up to eight tables): keys without a row, a key with two rows, a NULL key,
+-- and a pair of columns as one key
+CREATE TABLE dim_source (source text, region text);
+INSERT INTO dim_source SELECT s, 'r' || (hashtext(s) & 3) FROM (SELECT DISTINCT source AS s FROM orders) d WHERE hashtext(s) % 7 <> 0;
+INSERT INTO dim_source SELECT s, 'dup' FROM (SELECT min(source) AS s FROM dim_source) d;
+CREATE TABLE dim_status (status text, stage integer);
+INSERT INTO dim_status VALUES ('paid', 1), ('shipped', 2), ('delivered', 3), ('cancelled', 9), (NULL, 0);
+CREATE TABLE dim_lang (lang text, family text);
+INSERT INTO dim_lang SELECT l, CASE WHEN l IN ('en', 'de', 'nl', 'sv') THEN 'germanic' WHEN l IN ('fr', 'es', 'it', 'pt') THEN 'romance' ELSE 'other' END
+FROM unnest(ARRAY['en','de','fr','es','it','pt','nl','ru','ja','zh','sv']) l;
+CREATE TABLE dim_country (country_code text, continent text);
+INSERT INTO dim_country SELECT c, (ARRAY['north','south','east','west'])[1 + (hashtext(c) & 3)] FROM (SELECT DISTINCT country_code AS c FROM orders WHERE country_code IS NOT NULL) d
+WHERE hashtext(c) % 11 <> 0;
+CREATE TABLE dim_day (day date, quarter text);
+INSERT INTO dim_day SELECT d, to_char(d, 'YYYY-"Q"Q') FROM (SELECT DISTINCT placed_at AS d FROM orders) x WHERE extract(dow FROM d) <> 3;
+CREATE TABLE dim_customer (customer_id integer, segment text);
+INSERT INTO dim_customer SELECT i, (ARRAY['retail','trade','vip'])[1 + i % 3] FROM generate_series(1, 500) i WHERE i % 11 <> 0;
+CREATE TABLE dim_pair (source text, lang text, band integer);
+INSERT INTO dim_pair SELECT s, l, hashtext(s || l) & 3 FROM (SELECT DISTINCT source AS s, lang AS l FROM orders) d WHERE hashtext(s || l) % 3 <> 0;
+
 -- the keys of the metrics of a source -> metric and aspect (about one in seven has no row: the split of the key is the fallback)
 CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, derived_metric text, mapped_aspect text);
 INSERT INTO metrics_map
@@ -199,6 +220,12 @@ INSERT INTO t_nan VALUES
 	(5, 2, 'NaN', 3), (6, 2, 'NaN', 'NaN'), (7, 3, 0, 1), (8, 3, 2, 'NaN');
 INSERT INTO t_nan SELECT 100 + i, 4 + i % 5, CASE WHEN i % 997 = 0 THEN 'NaN' ELSE round(((i * 37) % 4001 - 2000) / 7.0, 2) END, CASE WHEN i % 1999 = 0 THEN 'NaN' ELSE round(((i * 101) % 100001 - 50000) / 3.0, 6) END
 FROM generate_series(1, greatest(:n - 4000, 0)) i;
+-- arrays of strings (the path tags[] text): empty arrays, a tag repeated inside one array, tags that few rows have
+CREATE TABLE t_tags (id integer PRIMARY KEY, grp integer NOT NULL, tags jsonb NOT NULL);
+INSERT INTO t_tags
+SELECT i, 1 + i % 5, coalesce((SELECT jsonb_agg((ARRAY['gift','express','fragile','wholesale','promo','returned','rare'])[1 + floor(power(coldiff.u(i, 50 + j), 2) * 7)::int] ORDER BY j)
+							   FROM generate_series(1, floor(coldiff.u(i, 49) * 5)::int) j), '[]')
+FROM generate_series(1, :n) i;
 CREATE TABLE t_text (id integer PRIMARY KEY, grp integer NOT NULL, t text, vc varchar(3));
 INSERT INTO t_text SELECT i, 1 + i % 3, v, left(v, 3)
 FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','','  ']) WITH ORDINALITY u(v, i);
