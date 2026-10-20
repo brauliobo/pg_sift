@@ -142,7 +142,7 @@ fixtures of `scripts/coldiff.sh` do it in every heap state):
 - the keys span more than `sift.agg_semi_lut_size` (default 4 MB, one byte per value of the range; a key outside the range of the leaf's type is ignored, it matches no row);
 - the leaf is not an integer, date or `int2` column in the index (text keys, `int8` leaves, array elements), a join has two or more keys, or the table's own condition reads a column of the fact row;
 - `NULL` keys: a `NULL` in the table matches nothing, a `NULL` leaf matches nothing (dropped by `IN` and `EXISTS`, kept by `NOT EXISTS`), as in SQL;
-- `NOT IN (SELECT ..)` is not a join: PostgreSQL plans it as a hashed subplan (a `NULL` in the table makes the whole answer empty), and the query keeps the normal plan. Write `NOT EXISTS`;
+- `NOT IN (SELECT ..)` is not a join: PostgreSQL plans it as a hashed subplan (a `NULL` in the table makes the whole answer empty), and the scan asks that subplan for each distinct value of the column (`docs/AGG.md`, "Uncorrelated sub-selects"), not this table;
 - each worker of a parallel `SiftAgg` builds its own table, and a rescan keeps it (the groups are replayed). The table is built from the rows visible to the scan's snapshot.
 
 Parallel plans: the semi joins that PostgreSQL pulls up from a sub-select made the whole query count as parallel restricted for `SiftAgg`, and it planned no workers. It now uses the same
