@@ -734,11 +734,49 @@ nulltest_mutator(Node *n, AggCtx *c)
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
 
+/* A placeholder computed inside the nullable input becomes NULL when that whole input is absent. */
+static Node *
+nullable_expr_mutator(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, PlaceHolderVar))
+	{
+		PlaceHolderVar *ph = (PlaceHolderVar *) n;
+
+		if (ph->phlevelsup == 0 && !bms_is_empty(ph->phnullingrels) && bms_is_subset(ph->phnullingrels, c->nulling))
+		{
+			CaseExpr   *out = makeNode(CaseExpr);
+			CaseWhen   *when = makeNode(CaseWhen);
+			Param	   *missing = makeNode(Param);
+
+			missing->paramkind = PARAM_EXEC;
+			missing->paramid = SIFT_AGG_NULL_INPUT;
+			missing->paramtype = BOOLOID;
+			missing->paramtypmod = -1;
+			missing->location = -1;
+			when->expr = (Expr *) missing;
+			when->result = (Expr *) makeNullConst(exprType(n), exprTypmod(n), exprCollation(n));
+			when->location = -1;
+			out->casetype = exprType(n);
+			out->casecollid = exprCollation(n);
+			out->args = list_make1(when);
+			out->defresult = (Expr *) nullable_expr_mutator((Node *) ph->phexpr, c);
+			out->location = -1;
+			return (Node *) out;
+		}
+	}
+	return expression_tree_mutator(n, nullable_expr_mutator, c);
+}
+
 static Node *
 normalize_expr(AggCtx *c, Node *n)
 {
 	if (c->nulling)
+	{
+		n = nullable_expr_mutator(n, c);
 		n = remove_nulling_relids(n, c->nulling, NULL);
+	}
 #if PG_VERSION_NUM >= 180000
 	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
 	if (c->root->group_rtindex > 0)
@@ -1582,6 +1620,7 @@ typedef struct ComboWalk
 	Oid			ptype[SIFT_AGG_MAX_CLEAVES];
 	int32		ptypmod[SIFT_AGG_MAX_CLEAVES];
 	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
+	bool		null_input;
 	bool		bad;
 } ComboWalk;
 
@@ -1593,6 +1632,11 @@ combo_walker(Node *n, ComboWalk *w)
 
 	if (n == NULL || w->bad)
 		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid == SIFT_AGG_NULL_INPUT)
+	{
+		w->null_input = true;
+		return false;
+	}
 	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType))
 	{
 		if ((jc = join_of_var(w->c, n)) != NULL)
@@ -1826,7 +1870,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 		return false;
 	if (force)
 		w.jc = force;
-	if (w.bad || (w.nl == 0 && w.jc == NULL))
+	if (w.bad || (w.nl == 0 && w.jc == NULL && !w.null_input))
 		return false;
 	if (w.jc)
 		cb = list_nth(c->combos, w.jc->combo);
@@ -3858,7 +3902,7 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	if (f->flip)
 	{
 		scan_from(j->rarg, &right);
-		if (!right.ok || right.lefts != NIL || right.rtis == NIL)
+		if (!right.ok || right.ojrels != NULL || right.rtis == NIL)
 			return false;
 	}
 	scanned = f->flip ? linitial_int(right.rtis) : l->rtindex;
@@ -3869,6 +3913,7 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
 	/* Filter the nullable input before matching; these conditions never test its preserved NULL rows. */
 	f->scan_quals = list_concat(f->scan_quals, right.quals);
+	f->lefts = list_concat(f->lefts, right.lefts);
 	f->rtis = f->flip ? list_concat(f->rtis, right.rtis) : lappend_int(f->rtis, scanned);
 	f->rtis = lappend_int(f->rtis, dim);
 	f->lefts = lappend(f->lefts, lj);
@@ -5449,11 +5494,18 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	switch (e->rtekind)
 	{
 		case RTE_CTE:
+		{
+			PlannerInfo *owner = c->root;
+
+			for (int level = 0; level < e->ctelevelsup; level++)
+				owner = owner->parent_root;
 			*what = "cte";
-			if (e->ctelevelsup != 0 || e->self_reference)
+			/* A statement-level CTE has no changing outer-row inputs, wherever it is referenced. */
+			if (owner->parent_root != NULL || e->self_reference)
 				return false;
 			outer = false;
 			break;
+		}
 		case RTE_SUBQUERY:
 			*what = "subquery";
 			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
@@ -5585,6 +5637,102 @@ preserved_join(AggCtx *c)
 	return false;
 }
 
+/* Nulling join RTIs describe expression boundaries, not lookup inputs. */
+static Relids
+lookup_inputs(AggCtx *c, Node *q)
+{
+	Relids		vars = pull_varnos(c->root, q);
+
+	for (int rti = -1; (rti = bms_next_member(vars, rti)) >= 0;)
+		if (rt_fetch(rti, c->root->parse->rtable)->rtekind == RTE_JOIN)
+			vars = bms_del_member(vars, rti);
+	return vars;
+}
+
+/* A conjunct can probe this lookup when all its other inputs have already been produced. */
+static bool
+lookup_ready(AggCtx *c, JoinCtx *jc, List *quals, Relids done)
+{
+	Relids		available = bms_add_member(bms_copy(done), jc->rti);
+
+	foreach_ptr(Node, q, quals)
+	{
+		Relids		vars = lookup_inputs(c, q);
+
+		if (bms_is_member(jc->rti, vars) && bms_is_subset(vars, available))
+			return true;
+	}
+	return false;
+}
+
+static bool
+order_inner_lookups(AggCtx *c, List *pending, List *quals, List **ordered, Relids *done)
+{
+	while (pending != NIL)
+	{
+		JoinCtx    *next = NULL;
+
+		foreach_ptr(JoinCtx, jc, pending)
+			if (lookup_ready(c, jc, quals, *done))
+			{
+				next = jc;
+				break;
+			}
+		if (next == NULL)
+			return false;
+		*ordered = lappend(*ordered, next);
+		*done = bms_add_member(*done, next->rti);
+		pending = list_delete_ptr(pending, next);
+	}
+	return true;
+}
+
+/* Inner lookups commute within a join boundary; outer/semi/anti joins keep their relative position. */
+static bool
+order_lookups(AggCtx *c, List *quals)
+{
+	List	   *pending = NIL,
+			   *ordered = NIL,
+			   *combos = NIL;
+	Relids		done = bms_make_singleton(c->relid);
+	int			child = 0;
+
+	if (c->func_rti)
+		done = bms_add_member(done, c->func_rti);
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		if (jc->kind == SJ_INNER)
+		{
+			pending = lappend(pending, jc);
+			continue;
+		}
+		if (!order_inner_lookups(c, pending, quals, &ordered, &done))
+			return false;
+		pending = NIL;
+		foreach_ptr(Node, q, jc->clauses)
+			if (!bms_is_subset(lookup_inputs(c, q), bms_add_member(bms_copy(done), jc->rti)))
+				return false;
+		ordered = lappend(ordered, jc);
+		done = bms_add_member(done, jc->rti);
+	}
+	if (!order_inner_lookups(c, pending, quals, &ordered, &done))
+		return false;
+	Assert(list_length(c->combos) == list_length(c->joins));
+	foreach_ptr(JoinCtx, jc, ordered)
+	{
+		ComboCtx   *cb = list_nth(c->combos, jc->combo);
+
+		jc->combo = list_length(combos);
+		cb->join = jc->combo;
+		combos = lappend(combos, cb);
+		if (jc->cpath)
+			jc->j.child = child++;
+	}
+	c->joins = ordered;
+	c->combos = combos;
+	return true;
+}
+
 /*
  * The conjuncts of the WHERE and of the ON clauses that read a joined table. Those of an inner join are its ON clause (the same rows
  * either way); those of an outer, semi or anti join filter its output rows (*post). In the ON clause of every join an equality of a
@@ -5592,7 +5740,7 @@ preserved_join(AggCtx *c)
  * *quals is left with the conjuncts that read no joined table.
  */
 static bool
-setup_joins(AggCtx *c, List **quals, List **post)
+join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 {
 	List	   *rest = NIL;
 
@@ -5608,13 +5756,29 @@ setup_joins(AggCtx *c, List **quals, List **post)
 			}
 		if (owner == NULL)
 			rest = lappend(rest, q);
-		else if (owner->kind == SJ_INNER)
+		else if (owner->kind == SJ_INNER && (nullable_input || !preserved_join(c)))
 			owner->clauses = lappend(owner->clauses, q);
 		else
 			*post = lappend(*post, q);
 	}
 	/* a WHERE the scanned table's NULL row can pass is evaluated after the outer join: it is not a filter of the rows the scan reads */
-	if (rest != NIL && preserved_join(c))
+	if (rest != NIL && !nullable_input && preserved_join(c))
+		return false;
+	*quals = rest;
+	return true;
+}
+
+static bool
+setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
+{
+	List	   *probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->kind == SJ_INNER)
+			probe_quals = list_concat(probe_quals, list_copy(jc->clauses));
+	if (!order_lookups(c, probe_quals))
+		return false;
+	if (!join_quals(c, quals, post, false) || !join_quals(c, scan_quals, scan_post, true))
 		return false;
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
@@ -5626,7 +5790,6 @@ setup_joins(AggCtx *c, List **quals, List **post)
 		if ((jc->j.nkey == 0 && conds == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
 			return false;
 	}
-	*quals = rest;
 	return true;
 }
 
@@ -5906,11 +6069,17 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
 	Bitmapset  *allrtis = NULL;
+	List	   *live_rtis = NIL;
 	int			nin = 0;
 
 	scan_from((Node *) parse->jointree, fs);
 	if (!fs->ok)
 		return false;
+	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
+	foreach_int(rti, fs->rtis)
+		if (root->simple_rel_array[rti] != NULL)
+			live_rtis = lappend_int(live_rtis, rti);
+	fs->rtis = live_rtis;
 	c->root = root;
 	c->group = -1;
 	c->nulling = fs->ojrels;
@@ -5953,7 +6122,6 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			return false;
 	if (input_rel != NULL)
 	{
-		/* the planner may have dropped a join to a table that no expression reads (unique key): the lookup is exact for it too */
 		if (!bms_is_member(c->relid, input_rel->relids))
 			return false;
 		for (int m = -1; (m = bms_next_member(input_rel->relids, m)) >= 0;)
@@ -5971,8 +6139,11 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	if (c->rel == NULL || !find_source(c, &ii))
 		return false;
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
-	if (fs->ojrels && (input_rel == NULL || list_length(c->joins) != 1 || c->nparts > 0))
+	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
 		return false;
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (sift_aggjoin_preserves(jc->kind) && jc != llast(c->joins))
+			return false;
 	build_attexprs(c);
 	if (c->func_rti)
 	{
@@ -6033,14 +6204,16 @@ static bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 {
 	List	   *quals = fs->quals,
-			   *joined = NIL;
+			   *joined = NIL,
+			   *scan_quals = fs->scan_quals,
+			   *scan_post = NIL;
 	StringInfoData txt;
 
-	if (!setup_joins(c, &quals, &joined))
+	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
 		return false;
-	quals = list_concat(quals, fs->scan_quals);
+	quals = list_concat(quals, scan_quals);
 	s->pred = palloc(Max(list_length(quals), 1) * sizeof(SiftAggPred *));
-	s->post = palloc(Max(list_length(quals) + list_length(joined), 1) * sizeof(SiftAggPred *));
+	s->post = palloc(Max(list_length(quals) + list_length(joined) + list_length(scan_post), 1) * sizeof(SiftAggPred *));
 	initStringInfo(&txt);
 	foreach_ptr(Node, q, quals)
 	{
@@ -6061,6 +6234,16 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 			s->pred[s->npred++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
+	foreach_ptr(Node, q, scan_post)
+	{
+		SiftAggPred *p = compile_combo_pred(c, normalize_expr(c, q));
+
+		if (p == NULL || unsupported_clause(c, q))
+			return false;
+		s->post[s->npost++] = p;
+		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
+	}
+	s->nprepost = preserved_join(c) ? s->npost : 0;
 	foreach_ptr(Node, q, joined)
 	{
 		SiftAggPred *p = compile_combo_pred(c, normalize_expr(c, q));

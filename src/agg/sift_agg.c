@@ -595,6 +595,7 @@ typedef struct ComboSt
 	uint32		nent;
 	uint32		entcap;
 	uint64	   *vid;			/* [ent * SIFT_AGG_MAX_CLEAVES]: 0 NULL, else the value's id in `in` / the integer + 1 */
+	bool	   *null_input;		/* the nullable input was absent for this entry */
 	ComboEnt   *ent;
 	uint32		nht;
 	uint32	   *ht;				/* ent + 1 */
@@ -663,6 +664,7 @@ typedef struct AggExec
 	PgAgg	  **pgagg;			/* per aggregate: SAA_M_PG */
 	AggState   *pgstate;		/* the context the transition functions see, their states live in pgstate->curaggcontext's memory */
 	ParamExecData lutparams[SIFT_AGG_MAX_PARAMS];
+	bool		null_input;
 	ComboSt    *cs;
 	const uint64 *alive;		/* the items of the batch a predicate is evaluated on whose expressions PostgreSQL may evaluate (NULL: all) */
 	uint32	   *calive;			/* output rows of the combo for the tuples an aggregate with a FILTER takes */
@@ -2634,6 +2636,8 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	ComboSt    *cs = &ex->cs[ci];
 
+	bind_param(ex, SIFT_AGG_NULL_INPUT, BoolGetDatum(ex->null_input), false);
+
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		const SiftSrcLeaf *lf;
@@ -3012,10 +3016,11 @@ combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent)
 
 /* the entry of the tuple of NULL leaves whose output rows are the rows of the preserved side that no tuple matched (their columns, NULL leaves) */
 static ComboEnt
-combo_unmatched(AggExec *ex, int ci)
+combo_unmatched(AggExec *ex, int ci, const uint32 *prior)
 {
 	const MapTab *m = ex->cs[ci].map;
-	const uint64 v[SIFT_AGG_MAX_CLEAVES] = {0};
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	uint64		v[SIFT_AGG_MAX_CLEAVES] = {0};
 	ComboEnt	ent;
 	MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
 	uint32	   *rows = palloc(Max(m->nrow, 1) * sizeof(uint32));
@@ -3024,6 +3029,9 @@ combo_unmatched(AggExec *ex, int ci)
 	for (uint32 r = 0; r < m->nrow; r++)
 		if (!m->hit[r])
 			rows[nm++] = r;
+	for (int p = 0; p < cb->nleaves; p++)
+		if (cb->leaf[p] < 0)
+			v[p] = (uint64) prior[cb->refcombo[p]] + 1;
 	combo_bind_leaves(ex, ci, v);
 	combo_emit(ex, ci, &ent, rows, nm, nm);
 	MemoryContextSwitchTo(old);
@@ -3032,11 +3040,11 @@ combo_unmatched(AggExec *ex, int ci)
 }
 
 static inline uint32
-combo_hash(const uint64 *v)
+combo_hash(const uint64 *v, bool null_input)
 {
 	uint64		h = (v[0] * UINT64CONST(0x9E3779B97F4A7C15)) ^ (v[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (v[2] * UINT64CONST(0x165667B19E3779F9));
 
-	return (uint32) (h ^ (h >> 29));
+	return (uint32) (h ^ (h >> 29)) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 
 /* room for one more entry */
@@ -3050,6 +3058,8 @@ combo_grow_ent(ComboSt *cs)
 		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
 	cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
 		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
+	cs->null_input = cs->null_input ? repalloc(cs->null_input, cs->entcap * sizeof(bool)) :
+		MemoryContextAlloc(cs->cxt, cs->entcap * sizeof(bool));
 }
 
 /* the entry of a value id of a by_id combo: the entries up to it exist (ids come in order from 1, 0 is the NULL) */
@@ -3071,6 +3081,7 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 		v = &cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES];
 		v[0] = cs->nent;
 		v[1] = v[2] = 0;
+		cs->null_input[cs->nent] = false;
 		combo_make(ex, ci, v, &cs->ent[cs->nent]);
 		cs->nent++;
 	}
@@ -3087,9 +3098,10 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 
 	if (cs->by_id)
 		return combo_ent_by_id(ex, ci, (uint32) v[0]);
-	h = combo_hash(v) & (cs->nht - 1);
+	h = combo_hash(v, ex->null_input) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
-		if (memcmp(&cs->vid[(size_t) (e - 1) * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) == 0)
+		if (cs->null_input[e - 1] == ex->null_input &&
+			memcmp(&cs->vid[(size_t) (e - 1) * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64)) == 0)
 			return e - 1;
 	combo_grow_ent(cs);
 	if (cs->nent >= (uint32) 1 << 24)
@@ -3098,6 +3110,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
 				 errhint("Set sift.enable_agg to off for this query.")));
 	memcpy(&cs->vid[(size_t) cs->nent * SIFT_AGG_MAX_CLEAVES], v, SIFT_AGG_MAX_CLEAVES * sizeof(uint64));
+	cs->null_input[cs->nent] = ex->null_input;
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
 	cs->ht[h] = ++cs->nent;
 	if (cs->nent * 2 > cs->nht)
@@ -3107,7 +3120,7 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 		cs->ht = MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32));
 		for (uint32 x = 0; x < cs->nent; x++)
 		{
-			h = combo_hash(&cs->vid[(size_t) x * SIFT_AGG_MAX_CLEAVES]) & (cs->nht - 1);
+			h = combo_hash(&cs->vid[(size_t) x * SIFT_AGG_MAX_CLEAVES], cs->null_input[x]) & (cs->nht - 1);
 			while (cs->ht[h])
 				h = (h + 1) & (cs->nht - 1);
 			cs->ht[h] = x + 1;
@@ -3127,6 +3140,7 @@ combo_reset(AggExec *ex, int ci)
 	MemoryContextReset(cs->cxt);
 	cs->nent = cs->entcap = cs->nout = cs->outcap = cs->ndat = cs->datcap = 0;
 	cs->vid = NULL;
+	cs->null_input = NULL;
 	cs->ent = NULL;
 	cs->val = NULL;
 	cs->maprow = NULL;
@@ -7538,7 +7552,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 
 /* the conjuncts over the joined rows (boolean slots of the join combos): the tuples that pass, moved to the front; the new count */
 static int
-post_filter(AggExec *ex, Tup *t)
+post_filter(AggExec *ex, Tup *t, int first, int end, int stages)
 {
 	int			k = 0;
 
@@ -7546,7 +7560,7 @@ post_filter(AggExec *ex, Tup *t)
 	{
 		bool		keep = true;
 
-		for (int i = 0; keep && i < ex->spec->npost; i++)
+		for (int i = first; keep && i < end; i++)
 		{
 			const SiftAggPred *p = ex->spec->post[i];
 
@@ -7557,7 +7571,7 @@ post_filter(AggExec *ex, Tup *t)
 		t->sel[k] = t->sel[j];
 		t->tidx[k] = t->tidx[j];
 		t->ridx[k] = t->ridx[j];
-		for (int x = 0; x < ex->nj; x++)
+		for (int x = 0; x < stages; x++)
 			t->cout[ex->jcombo[x]][k] = t->cout[ex->jcombo[x]][j];
 		k++;
 	}
@@ -7577,8 +7591,8 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->tidx = t->tidx;
 	ex->ridx = t->ridx;
 	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
-	if (s->npost > 0)
-		t->n = post_filter(ex, t);
+	if (s->npost > s->nprepost)
+		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj);
 	if (t->n == 0)
 		return;
 	if (s->narms > 0)
@@ -7732,6 +7746,12 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 	ci = ex->jcombo[s];
 	cs = &ex->cs[ci];
+	if (cs->map->keep && ex->spec->nprepost > 0)
+	{
+		in->n = n = post_filter(ex, in, 0, ex->spec->nprepost, s);
+		if (n == 0)
+			return;
+	}
 	if (cs->slut)
 	{
 		semi_stage(ex, s, in);
@@ -9730,6 +9750,10 @@ register_combos(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	bool		preserved = false;
+
+	for (int j = 0; j < s->njoin; j++)
+		preserved |= sift_aggjoin_preserves(s->join[j].kind);
 
 	ex->comcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
 	ex->cs = palloc0(Max(s->ncombo, 1) * sizeof(ComboSt));
@@ -9740,7 +9764,7 @@ register_combos(AggExec *ex)
 
 		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
 		cs->resettable = cb->join < 0;
-		cs->by_id = cb->join < 0 && cb->nleaves == 1 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
+		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
 		cs->tlen = palloc0(Max(cb->nslots, 1) * sizeof(int16));
 		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));
@@ -11076,6 +11100,7 @@ static const uint8 null_flags[SIFT_AGG_PAD] = {[0 ... SIFT_AGG_PAD - 1] = 1};
 static void
 null_unit(AggExec *ex)
 {
+	ex->null_input = true;
 	MemoryContextReset(ex->ucxt);
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
@@ -11091,19 +11116,38 @@ null_unit(AggExec *ex)
 	ex->cn = 1;
 }
 
-/* the rows of a preserved side that no tuple of the scan matched, as tuples of NULL leaves through the aggregates (the only join: planned so) */
+/* Rows the nullable input never matched: every earlier lookup column is NULL as well. */
 static void
 unmatched_tail(AggExec *ex)
 {
 	int			ci;
-	Tup		   *own = &ex->stage[0];
+	Tup		   *own;
 	ComboEnt	ent;
+	uint32		prior[SIFT_AGG_MAX_COMBOS] = {0};
 
-	if (ex->nj != 1 || !ex->cs[ex->jcombo[0]].map->keep)
+	if (ex->nj == 0 || !ex->cs[ex->jcombo[ex->nj - 1]].map->keep)
 		return;
-	ci = ex->jcombo[0];
+	ci = ex->jcombo[ex->nj - 1];
+	own = &ex->stage[ex->nj - 1];
 	null_unit(ex);
-	ent = combo_unmatched(ex, ci);
+	for (int x = 0; x < ex->nj - 1; x++)
+	{
+		int			prev = ex->jcombo[x];
+		const SiftAggCombo *cb = &ex->spec->combo[prev];
+		uint64		v[SIFT_AGG_MAX_CLEAVES] = {0};
+		ComboEnt	null;
+		MemoryContext old = MemoryContextSwitchTo(ex->comcxt);
+
+		for (int p = 0; p < cb->nleaves; p++)
+			if (cb->leaf[p] < 0)
+				v[p] = (uint64) prior[cb->refcombo[p]] + 1;
+		combo_bind_leaves(ex, prev, v);
+		combo_emit(ex, prev, &null, NULL, 0, 1);
+		prior[prev] = null.base;
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(ex->comcxt);
+	}
+	ent = combo_unmatched(ex, ci, prior);
 	for (uint32 e = 0; e < ent.nout;)
 	{
 		int			k = 0;
@@ -11111,6 +11155,8 @@ unmatched_tail(AggExec *ex)
 		for (; k < VEC && e < ent.nout; k++)
 		{
 			own->sel[k] = own->tidx[k] = own->ridx[k] = 0;
+			for (int x = 0; x < ex->nj - 1; x++)
+				own->cout[ex->jcombo[x]][k] = prior[ex->jcombo[x]];
 			own->cout[ci][k] = ent.base + e++;
 		}
 		own->n = k;
@@ -11125,6 +11171,7 @@ run_scan(AggExec *ex)
 {
 	bool		ordered = sift_aggspec_ordered(ex->spec);
 
+	ex->null_input = false;
 	ex->started = true;
 	ex->glist = NULL;
 	engine_open(ex, ex->snap, ex->params);

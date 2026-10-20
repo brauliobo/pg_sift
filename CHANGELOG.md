@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Fixed: aggregate planning ignores unique LEFT joins PostgreSQL has removed, avoiding a planner crash. Preserved buckets can contain several dependent lookups; empty buckets retain NULL values for inner expressions and constants.
+
 - Fixed: VACUUM relocation invalidates cached write targets when each replacement is published, including when maintenance later errors before truncation; failed unpublished copies return their allocations and follow maintenance backoff.
 
 - Added: Homebrew formula in the source repository for PostgreSQL 17 and 18, tested on macOS arm64 with BM25, extension upgrade and column aggregate smoke tests; bitmap dispatch uses the existing scalar kernels on non-x86 CPUs.

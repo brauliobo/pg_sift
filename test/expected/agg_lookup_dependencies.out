@@ -95,6 +95,31 @@ $q$);
  t      |           0
 (1 row)
 
+-- The grouping query can reference its statement's materialized CTE from a nested query level.
+SELECT * FROM check_query($q$
+ WITH ids AS MATERIALIZED (SELECT DISTINCT id FROM dim_a WHERE id < 90)
+ SELECT sum(n) AS n FROM (
+   SELECT e.kind, count(*) AS n FROM events f JOIN ids p ON p.id = f.dim_a_id
+   JOIN dim_a e ON e.id = p.id GROUP BY e.kind
+ ) grouped
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+-- RTE order is not dependency order: the entity lookup supplies the earlier membership lookup's key.
+SELECT * FROM check_query($q$
+ WITH ids AS MATERIALIZED (SELECT DISTINCT id FROM dim_a WHERE id < 90)
+ SELECT coalesce(l.tag, e.kind) AS label, count(*) AS n, count(DISTINCT f.id) AS ids
+ FROM events f JOIN (ids p JOIN dim_a e ON e.id = p.id) ON e.id = f.dim_a_id
+ LEFT JOIN labels l ON l.code = e.code GROUP BY 1
+$q$);
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
 DROP FUNCTION check_query(text);
 DROP TABLE events, dim_a, labels;
 DROP EXTENSION pg_sift;
