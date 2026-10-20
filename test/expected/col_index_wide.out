@@ -49,19 +49,19 @@ CREATE INDEX w_time ON w USING sift_col (tm);
 CREATE INDEX w_uuid ON w USING sift_col (u);
 CREATE INDEX w_bytea ON w USING sift_col (b);
 -- the types that stay refused (docs/COL-LEAFTYPES-32.md 7)
-CREATE TABLE refused (a timetz, b point, c inet, d tsvector);
-CREATE INDEX r_timetz ON refused USING sift_col (a);
-ERROR:  sift_col does not support the type time with time zone of column "a"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+CREATE TABLE refused (a xml, b point, c json, d tsvector);
+CREATE INDEX r_xml ON refused USING sift_col (a);
+ERROR:  sift_col does not support the type xml of column "a"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE INDEX r_point ON refused USING sift_col (b);
 ERROR:  sift_col does not support the type point of column "b"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
-CREATE INDEX r_inet ON refused USING sift_col (c);
-ERROR:  sift_col does not support the type inet of column "c"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
+CREATE INDEX r_json ON refused USING sift_col (c);
+ERROR:  sift_col does not support the type json of column "c"
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE INDEX r_tsvector ON refused USING sift_col (d);
 ERROR:  sift_col does not support the type tsvector of column "d"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, enums, arrays, ranges and jsonb with paths.
+HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 DROP TABLE refused;
 SELECT indexrelid::regclass AS idx, (SELECT count(*) FROM sift.col_leaves(indexrelid)) AS leaves
 FROM pg_index WHERE indrelid = 'w'::regclass AND indexrelid::regclass::text <> 'w_expr' ORDER BY 1;

@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc,
+DROP TABLE IF EXISTS orders, orders_odd, orders_part, stores, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -290,6 +290,22 @@ INSERT INTO t_misc SELECT i, i % 7, i % 100,
 	CASE WHEN i % 12 = 0 THEN NULL WHEN i % 15 = 0 THEN 'empty' ELSE int4range(i % 10, i % 10 + 5) END,
 	CASE WHEN i % 12 = 0 THEN NULL ELSE tstzrange('2020-01-01'::timestamptz + (i % 30) * interval '1 day', '2020-03-01') END,
 	CASE WHEN i % 12 = 0 THEN NULL ELSE int4multirange(int4range(i % 5, i % 5 + 2), int4range(20, 30)) END
+FROM generate_series(1, greatest(:n - 4000, 800)) i;
+
+-- the network, time zone and bit string types: inet with and without a mask, IPv4-mapped IPv6, equal values spelled differently (the IPv6 and mac
+-- address texts), timetz at its extremes, bit(8) with leading zeros, varbit of lengths 0 to 3 and a few of 12800 bits (out of line), NULLs; a point, which no index holds
+CREATE TABLE t_net (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, ip inet, cd cidr, mac macaddr, mac8 macaddr8, tz timetz, b bit(8), vb varbit, pt point);
+INSERT INTO t_net SELECT i, i % 7, i % 100,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE (ARRAY['10.0.0.1', '10.0.0.1/24', '10.0.0.1/32', '10.0.0.2/24', '192.168.1.5', '0.0.0.0/0', '255.255.255.255', '::1', '2001:db8::1',
+		'2001:0db8:0:0:0:0:0:1', '2001:db8::1/64', '::ffff:10.0.0.1', '::ffff:10.0.0.1/128', '::', 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128', '10.0.0.0/8'])[1 + i % 16]::inet END,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE (ARRAY['10.0.0.0/24', '10.0.0.0/8', '192.168.0.0/16', '::/0', '2001:db8::/32', '10.0.0.0/32', '0.0.0.0/0'])[1 + i % 7]::cidr END,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (ARRAY['08:00:2b:01:02:03', '08-00-2B-01-02-03', '0800.2b01.0203', 'AA:BB:CC:DD:EE:FF', 'aabbccddeeff', '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff'])[1 + i % 7]::macaddr END,
+	CASE WHEN i % 12 = 0 THEN NULL ELSE (ARRAY['08:00:2b:01:02:03:04:05', '08-00-2B-01-02-03-04-05', '0800.2b01.0203.0405', 'aabbccddeeff0011', '00:00:00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff:ff:ff', '08:00:2b:ff:fe:01:02:03'])[1 + i % 7]::macaddr8 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (ARRAY['12:00+01', '11:00+00', '12:00+00', '00:00:00+00', '24:00:00-15:59', '00:00:00+15:59', '23:59:59.999999-15:59', '04:05:06+00', '04:05:06.5-03'])[1 + i % 9]::timetz END,
+	CASE WHEN i % 14 = 0 THEN NULL ELSE (ARRAY[B'00000000', B'00000001', B'10000000', B'11111111', B'00001111', B'01010101'])[1 + i % 6] END,
+	CASE WHEN i % 15 = 0 THEN NULL WHEN i % 97 = 0 THEN ('x' || (SELECT string_agg(md5(i || '-' || k), '') FROM generate_series(1, 400) k))::varbit
+		ELSE (ARRAY['', '0', '00', '000', '1', '10', '0001', '101010101010101', '00000000000000000000000000000000000000000000000000000000000000001'])[1 + i % 9]::varbit END,
+	point(i % 5, i % 3)
 FROM generate_series(1, greatest(:n - 4000, 800)) i;
 
 -- aggregates of the generic path: a user aggregate with an immutable transition function, and one with a volatile one
