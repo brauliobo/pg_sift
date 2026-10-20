@@ -72,18 +72,44 @@ SELECT sift._test_col_wbuf_append('t_idx', 7, 12000, 1) + sift._test_col_wbuf_ap
 SELECT (SELECT count(*) FROM sift._test_col_wbuf_rows('t_idx', 7) WHERE id = 12000) AS records,
 	   (SELECT count(*) FROM sift._test_col_wbuf_batches('t_idx', 7) WHERE id = 12000) AS batched;
 
+-- First fragments of torn rows depend on the randomized lane tail room. VACUUM must preserve their physical count.
+CREATE TABLE counts AS SELECT gen, nrows FROM sift._test_col_wbuf_segments('t_idx');
+
 -- VACUUM: the callback flags the dead rows once, in the sealed and the active segment; batches leave them out
 SELECT sift._test_col_wbuf_delete('t_idx', 5) AS flagged;
 SELECT sift._test_col_wbuf_delete('t_idx', 5) AS flagged_again;
 SELECT count(*) AS records, count(*) FILTER (WHERE deleted) AS deleted, count(*) FILTER (WHERE deleted AND id % 5 <> 0) AS wrongly_deleted
 FROM sift._test_col_wbuf_rows('t_idx', 7);
 SELECT count(*) AS batched, count(*) FILTER (WHERE id % 5 = 0) AS dead_batched FROM sift._test_col_wbuf_batches('t_idx', 7);
-SELECT kind, nrows, live FROM sift._test_col_wbuf_segments('t_idx') ORDER BY gen;
+SELECT s.kind, s.nrows = c.nrows AS same_nrows, s.live
+FROM sift._test_col_wbuf_segments('t_idx') s JOIN counts c USING (gen) ORDER BY gen;
 SELECT sift._test_check('t_idx') AS orphans;
 
 -- a string of any length is held: a record of 300 000 bytes spans pages
 SELECT sift._test_col_wbuf_long('t_idx');
 SELECT sift._test_check('t_idx') AS orphans;
+
+-- A full tail cannot hold even the first fragment. Failing after its page link leaves no new record;
+-- failing again on the fresh empty tail leaves one first fragment, but neither interruption leaves a complete row.
+CREATE TABLE t3 (doc int);
+CREATE INDEX t3_idx ON t3 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t3_idx') IS NOT NULL AS prepared;
+-- Seed 7, ids 0..160 fill the lane tail exactly, without randomizing busy lanes.
+SELECT sift._test_col_wbuf_append('t3_idx', 7, 0, 161) >= 0 AS appended;
+SELECT pg.upper = pg.lower AS tail_full
+FROM generate_series(0, pg_relation_size('t3_idx') / 8192 - 1) b, LATERAL sift._test_page('t3_idx', b) pg
+WHERE pg.type = 7 AND pg.lower > 32 ORDER BY b DESC LIMIT 1;
+SELECT expect($$ SELECT sift._test_col_wbuf_torn('t3_idx', 7, 9999, 1) $$);
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+SELECT expect($$ SELECT sift._test_col_wbuf_torn('t3_idx', 7, 10999, 1) $$);
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+SELECT sift._test_col_wbuf_append('t3_idx', 7, 11000, 1) >= 0 AS appended;
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+SELECT count(*) AS records, count(*) FILTER (WHERE id IN (9999, 10999)) AS torn_seen
+FROM sift._test_col_wbuf_rows('t3_idx', 7);
+SELECT count(*) AS batched, count(*) FILTER (WHERE id IN (9999, 10999)) AS torn_batched
+FROM sift._test_col_wbuf_batches('t3_idx', 7);
+SELECT sift._test_check('t3_idx') AS orphans;
 
 -- corruption is found: a page header count, a flag byte, the length of a record
 CREATE TABLE t2 (doc text);
@@ -105,7 +131,7 @@ SELECT sift._test_poke('t2_idx', :rec_page, 40, 100000, 4);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
 
-DROP TABLE t, t2, r, b, p, pages;
+DROP TABLE t, t2, t3, r, b, p, pages, counts;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

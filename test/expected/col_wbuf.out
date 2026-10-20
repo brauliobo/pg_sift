@@ -226,6 +226,8 @@ SELECT (SELECT count(*) FROM sift._test_col_wbuf_rows('t_idx', 7) WHERE id = 120
        2 |       1
 (1 row)
 
+-- First fragments of torn rows depend on the randomized lane tail room. VACUUM must preserve their physical count.
+CREATE TABLE counts AS SELECT gen, nrows FROM sift._test_col_wbuf_segments('t_idx');
 -- VACUUM: the callback flags the dead rows once, in the sealed and the active segment; batches leave them out
 SELECT sift._test_col_wbuf_delete('t_idx', 5) AS flagged;
  flagged 
@@ -252,11 +254,12 @@ SELECT count(*) AS batched, count(*) FILTER (WHERE id % 5 = 0) AS dead_batched F
     5641 |            0
 (1 row)
 
-SELECT kind, nrows, live FROM sift._test_col_wbuf_segments('t_idx') ORDER BY gen;
-  kind  | nrows | live 
---------+-------+------
- sealed |  3000 | 2400
- active |  4055 | 3241
+SELECT s.kind, s.nrows = c.nrows AS same_nrows, s.live
+FROM sift._test_col_wbuf_segments('t_idx') s JOIN counts c USING (gen) ORDER BY gen;
+  kind  | same_nrows | live 
+--------+------------+------
+ sealed | t          | 2400
+ active | t          | 3241
 (2 rows)
 
 SELECT sift._test_check('t_idx') AS orphans;
@@ -273,6 +276,87 @@ SELECT sift._test_col_wbuf_long('t_idx');
 (1 row)
 
 SELECT sift._test_check('t_idx') AS orphans;
+ orphans 
+---------
+       0
+(1 row)
+
+-- A full tail cannot hold even the first fragment. Failing after its page link leaves no new record;
+-- failing again on the fresh empty tail leaves one first fragment, but neither interruption leaves a complete row.
+CREATE TABLE t3 (doc int);
+CREATE INDEX t3_idx ON t3 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t3_idx') IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+-- Seed 7, ids 0..160 fill the lane tail exactly, without randomizing busy lanes.
+SELECT sift._test_col_wbuf_append('t3_idx', 7, 0, 161) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT pg.upper = pg.lower AS tail_full
+FROM generate_series(0, pg_relation_size('t3_idx') / 8192 - 1) b, LATERAL sift._test_page('t3_idx', b) pg
+WHERE pg.type = 7 AND pg.lower > 32 ORDER BY b DESC LIMIT 1;
+ tail_full 
+-----------
+ t
+(1 row)
+
+SELECT expect($$ SELECT sift._test_col_wbuf_torn('t3_idx', 7, 9999, 1) $$);
+                             expect                             
+----------------------------------------------------------------
+ XXN: sift_col write buffer: injected failure after a page link
+(1 row)
+
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+ nrows | live 
+-------+------
+   161 |  161
+(1 row)
+
+SELECT expect($$ SELECT sift._test_col_wbuf_torn('t3_idx', 7, 10999, 1) $$);
+                             expect                             
+----------------------------------------------------------------
+ XXN: sift_col write buffer: injected failure after a page link
+(1 row)
+
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+ nrows | live 
+-------+------
+   162 |  161
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t3_idx', 7, 11000, 1) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT nrows, live FROM sift._test_col_wbuf_segments('t3_idx');
+ nrows | live 
+-------+------
+   163 |  162
+(1 row)
+
+SELECT count(*) AS records, count(*) FILTER (WHERE id IN (9999, 10999)) AS torn_seen
+FROM sift._test_col_wbuf_rows('t3_idx', 7);
+ records | torn_seen 
+---------+-----------
+     162 |         0
+(1 row)
+
+SELECT count(*) AS batched, count(*) FILTER (WHERE id IN (9999, 10999)) AS torn_batched
+FROM sift._test_col_wbuf_batches('t3_idx', 7);
+ batched | torn_batched 
+---------+--------------
+     162 |            0
+(1 row)
+
+SELECT sift._test_check('t3_idx') AS orphans;
  orphans 
 ---------
        0
@@ -357,7 +441,7 @@ SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
  XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page.
 (1 row)
 
-DROP TABLE t, t2, r, b, p, pages;
+DROP TABLE t, t2, t3, r, b, p, pages, counts;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
