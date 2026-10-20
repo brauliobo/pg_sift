@@ -6,7 +6,7 @@
 - `count(*)`;
 - build time, update cost, and resource use.
 
-Status: 3.0.2 (extension version 3.0). Of the extras below, 9 (parallel scan, opt-in and off by default), 10 (filter-mask pushdown) and 11 (keyword facets) were implemented in 1.1 (1.0.0 had none of them); the work items of milestones M0 to M7 below are shipped (M7: phrase pairs were removed in 1.3.0 for word positions).
+Status: 3.1.0 (extension version 3.1). Of the extras below, 9 (parallel scan, opt-in and off by default), 10 (filter-mask pushdown) and 11 (keyword facets) were implemented in 1.1 (1.0.0 had none of them); the work items of milestones M0 to M7 below are shipped (M7: phrase pairs were removed in 1.3.0 for word positions).
 
 This document is authoritative. Each decision gives its reason and the alternatives it rejects. Section numbers match the brief: (a) to (k), (l) for the 1.1 facets, then module contracts and milestones. Estimates are marked **[est]**: they are design-time figures, not measurements; measured figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and [bench/README.md](bench/README.md).
 
