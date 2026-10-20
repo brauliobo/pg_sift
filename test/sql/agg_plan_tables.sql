@@ -84,13 +84,14 @@ SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) A
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'clean' ORDER BY sift.score(ctid) DESC LIMIT 100);
 
--- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, a side above sift.agg_lookup_max_rows, a non-equality
--- condition; the fact table on the nullable side of a LEFT JOIN keeps the rows of the sub-select (the preserved side: docs/AGG.md)
+-- what keeps the normal plan: a volatile side, a side that reads the order (LATERAL), ON true, or a side above sift.agg_lookup_max_rows.
+-- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants WHERE random() < 2 LIMIT 100) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS volatile_subselect;
 SELECT plan_of($$SELECT k.kind, count(*) FROM ev e JOIN LATERAL (SELECT s.kind FROM tenants s WHERE s.id = e.tenant_id ORDER BY s.id LIMIT 1) k ON k.kind IS NOT NULL GROUP BY k.kind$$) AS lateral_subselect;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM tenants ORDER BY id LIMIT 1) s ON true GROUP BY s.kind$$) AS on_true;
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id < s.id GROUP BY s.kind$$) AS inequality;
+-- A predicate-only child join is exact for every match, as for an equality join.
+SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id < s.id GROUP BY s.kind$$);
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.tenant_id = s.id GROUP BY s.id$$) AS fact_nullable;
 SET sift.agg_lookup_max_rows = 10;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS above_cap;

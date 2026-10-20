@@ -9,10 +9,11 @@ starts, with the query's snapshot, and its rows are the lookup table, so duplica
 one of the normal plan (`EXPLAIN ANALYZE` has `Lookup Rows Read`). A rescan replays the groups; a prepared statement's parameters in the right side are read
 by the child plan as in any plan.
 
-The normal plan stays when the right side is lateral or reads a volatile function, the join has no equality with the table (`ON true`, `<`), the right side is
+The normal plan stays when the right side is lateral or reads a volatile function, the join has no condition (`ON true`), the right side is
 estimated above `sift.agg_lookup_max_rows` rows, or a condition on a column nothing else reads was pushed into the sub-select (its plan outputs NULL there).
 A scan with such a join runs without workers.
-Fixtures `pt_*`, test `agg_plan_tables`.
+Predicate-only joins, including inequalities and range containment, test every candidate row; overlapping and duplicate matches multiply the inputs.
+Fixtures `pt_*`, tests `agg_plan_tables` and `agg_child_predicates`.
 
 ## Outer joins that keep the other table
 
@@ -23,7 +24,8 @@ when the index is read, the rows nothing matched are tuples of NULL leaves that 
 the matches: a condition on the table's own columns, a NULL key and a duplicate key leave its rows unmatched or multiply the tuples, as in the normal plan.
 
 The normal plan stays when a `WHERE` conjunct is one the NULL row of the indexed table passes (`o.id IS NULL`: it is evaluated after the join), the query has
-another join, or the indexed table is partitioned. A scan with such a join runs without workers: one scan sees every row.
+another lookup join, or the indexed table is partitioned. A nullable indexed input may expand one JSON object or array before joining;
+empty preserved buckets still contribute one NULL fact input. A scan with such a join runs without workers: one scan sees every row.
 Fixtures `ps_*`, rows J06 and J07 of the coverage table.
 
 ## Partitioned tables
