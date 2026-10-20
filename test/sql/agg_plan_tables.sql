@@ -48,7 +48,8 @@ END $$;
 SELECT * FROM same($$SELECT m.label, count(*) AS n, sum(amount) AS s FROM ev e JOIN (VALUES ('north', 'N'), ('north', 'Nord'), ('east', 'E'), (NULL, 'none')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
 SELECT * FROM same($$SELECT m.label, count(*) AS n, count(m.label) AS labelled FROM ev e LEFT JOIN (VALUES ('north', 'N'), ('north', 'Nord'), ('east', 'E'), (NULL, 'none')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
 SELECT * FROM same($$SELECT m.band, count(*) AS n, sum(amount * m.f) AS s FROM ev e JOIN (VALUES (1, 'a', 1.5), (2, 'a', 2.0), (2, 'b', 0.5), (NULL, 'z', 9.0)) m(store_id, band, f) ON e.store_id = m.store_id GROUP BY m.band$$);
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE store_id IN (VALUES (1), (2), (2), (3), (NULL)) AND NOT EXISTS (SELECT 1 FROM (VALUES (2), (4)) v(id) WHERE v.id = ev.store_id)$$);
+-- IN (VALUES ...) is a semi lookup join before PostgreSQL 18 and a = ANY array from 18: the join list is not part of what the line proves
+SELECT regexp_replace(plan, 'values \(semi\), ', '') AS plan, result_rows, vs_normal_plan FROM same($$SELECT count(*) AS n FROM ev WHERE store_id IN (VALUES (1), (2), (2), (3), (NULL)) AND NOT EXISTS (SELECT 1 FROM (VALUES (2), (4)) v(id) WHERE v.id = ev.store_id)$$);
 -- a sub-select with GROUP BY (a NULL group has a row that matches nothing), LIMIT, DISTINCT and a set operation
 SELECT * FROM same($$SELECT c.stores, count(*) AS n FROM ev e JOIN (SELECT country, count(*) AS stores FROM stores GROUP BY country) c ON e.region = c.country GROUP BY c.stores$$);
 SELECT * FROM same($$SELECT c.stores, count(*) AS n FROM ev e JOIN (SELECT kind, count(*) AS stores FROM stores GROUP BY kind) c ON e.kind = c.kind GROUP BY c.stores$$);

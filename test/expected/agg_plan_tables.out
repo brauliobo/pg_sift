@@ -59,7 +59,8 @@ SELECT * FROM same($$SELECT m.band, count(*) AS n, sum(amount * m.f) AS s FROM e
  SiftAgg values |           2 |              0
 (1 row)
 
-SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE store_id IN (VALUES (1), (2), (2), (3), (NULL)) AND NOT EXISTS (SELECT 1 FROM (VALUES (2), (4)) v(id) WHERE v.id = ev.store_id)$$);
+-- IN (VALUES ...) is a semi lookup join before PostgreSQL 18 and a = ANY array from 18: the join list is not part of what the line proves
+SELECT regexp_replace(plan, 'values \(semi\), ', '') AS plan, result_rows, vs_normal_plan FROM same($$SELECT count(*) AS n FROM ev WHERE store_id IN (VALUES (1), (2), (2), (3), (NULL)) AND NOT EXISTS (SELECT 1 FROM (VALUES (2), (4)) v(id) WHERE v.id = ev.store_id)$$);
                plan                | result_rows | vs_normal_plan 
 -----------------------------------+-------------+----------------
  SiftAgg values (anti), semi table |           1 |              0
