@@ -110,7 +110,7 @@ Times are the serial plan at 300,000 items, best of 3, with `sift.enable_agg` of
 | g5 per-item arms, `avg(n::float8)` over a text leaf, count of the items | fused | 2.83 s | 0.07 s |
 | g4 a second `count(DISTINCT)` over another column of the row | arms one by one |  | follow-up |
 | g7 fused arms for a selective scan (one entity) | not offered |  | follow-up |
-| g2 lookup keyed by a column of another joined table | normal plan |  | follow-up |
+| g2 lookup keyed by a column of another joined table | pushed (regression and coverage verified) |  |  |
 | g1 `jsonb_exists` / `?` on an object | normal plan |  | follow-up |
 | g3 `(doc -> 'k')::int` | normal plan |  | follow-up |
 | g6 one string in a typed leaf flags its unit | normal plan, leaf named at `DEBUG1` |  | design note |

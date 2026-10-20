@@ -167,6 +167,50 @@ $q$);
  t      |           0
 (1 row)
 
+-- Initplan parameter IDs can overlap local expression-slot numbers without sharing their meaning.
+SELECT * FROM check_query($q$
+ SELECT d.day, coalesce(p.label, date '3000-01-01') AS label, count(*) AS n, count(p.id) AS ids
+ FROM (VALUES (NULL::date), (date '2024-05-01'), (date '2024-01-01')) d(day)
+ LEFT JOIN (
+   SELECT f.id, f.day, coalesce(f.day, date '2000-01-01') AS label
+   FROM events f CROSS JOIN LATERAL jsonb_each(f.metrics) r
+   WHERE f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 1)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 2)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 3)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 4)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 5)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 6)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 7)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 8)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 9)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 10)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 11)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 12)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 13)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 14)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 15)))
+     AND f.id % 2 = ANY (ARRAY(SELECT generate_series(0, 16)))
+ ) p ON jsonb_build_array(p.day) = jsonb_build_array(d.day)
+ GROUP BY d.day, p.label
+$q$);
+ pushed | differences 
+--------+-------------
+ f      |           0
+(1 row)
+
+-- A predicate-only lookup examines every candidate for each distinct input tuple.
+-- Planning this large child must account for that work without executing the cross product.
+DO $$
+DECLARE l text;
+BEGIN
+  FOR l IN EXECUTE $q$EXPLAIN (COSTS OFF)
+    SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id
+    WHERE f.id < 1000$q$ LOOP
+    IF l LIKE '%Custom Scan (SiftAgg)%' THEN
+      RAISE EXCEPTION 'candidate predicate work was not priced';
+    END IF;
+  END LOOP;
+END $$;
 -- PostgreSQL removes an unused unique LEFT lookup; SiftAgg must use the surviving relations as well.
 CREATE TABLE auxiliary (id int PRIMARY KEY);
 SELECT * FROM check_query($q$

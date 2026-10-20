@@ -227,6 +227,14 @@ leaf_name(AggCtx *c, int id)
 
 static bool array_initplan_ok(AggCtx *c, Param *prm);
 
+/* Local expression slots share parameter numbers with PostgreSQL, but not their identity. */
+static bool
+null_input_param(Node *n)
+{
+	return IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC &&
+		((Param *) n)->paramid == SIFT_AGG_NULL_INPUT && ((Param *) n)->location == SIFT_AGG_NULL_INPUT_LOC;
+}
+
 /*
  * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context (the query's
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
@@ -754,7 +762,7 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 			missing->paramid = SIFT_AGG_NULL_INPUT;
 			missing->paramtype = BOOLOID;
 			missing->paramtypmod = -1;
-			missing->location = -1;
+			missing->location = SIFT_AGG_NULL_INPUT_LOC;
 			when->expr = (Expr *) missing;
 			when->result = (Expr *) makeNullConst(exprType(n), exprTypmod(n), exprCollation(n));
 			when->location = -1;
@@ -834,6 +842,8 @@ lut_subplan_ok(AggCtx *c, SubPlan *sp)
 static bool
 array_initplan_ok(AggCtx *c, Param *prm)
 {
+	if (null_input_param((Node *) prm))
+		return false;
 	foreach_ptr(SubPlan, sp, c->root->init_plans)
 		if (list_member_int(sp->setParam, prm->paramid))
 			return sp->subLinkType == ARRAY_SUBLINK && sp->parParam == NIL && sp->args == NIL && subplan_runs_at_start(c, sp);
@@ -847,6 +857,11 @@ leaf_walker(Node *n, LeafWalk *w)
 
 	if (n == NULL || w->bad)
 		return false;
+	if (null_input_param(n))
+	{
+		w->bad = true;
+		return false;
+	}
 	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType))
 	{
 		if ((id = match_leaf(w->c, n)) >= 0)
@@ -953,7 +968,7 @@ subst_mutator(Node *n, SubstCtx *s)
 		s->c->nsubplan++;
 		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
-	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !null_input_param(n))
 		foreach_ptr(SubPlan, sp, s->c->root->init_plans)
 			if (list_member_int(sp->setParam, ((Param *) n)->paramid))
 			{
@@ -1369,6 +1384,16 @@ new_pred(AggCtx *c, SiftAggPredKind kind)
 	return p;
 }
 
+static Node *
+display_expr_mutator(Node *n, void *context)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, PlaceHolderVar))
+		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
+	return expression_tree_mutator(n, display_expr_mutator, context);
+}
+
 /* the expression as EXPLAIN shows it, its Vars resolved through the query's range table */
 static char *
 expr_text(AggCtx *c, Node *n)
@@ -1385,7 +1410,7 @@ expr_text(AggCtx *c, Node *n)
 		plan->plan.initPlan = c->root->init_plans;
 		c->dpctx = set_deparse_context_plan(c->dpctx, (Plan *) plan, NIL);
 	}
-	return deparse_expression(n, c->dpctx, true, false);
+	return deparse_expression(display_expr_mutator(n, NULL), c->dpctx, true, false);
 }
 
 static const char *
@@ -1632,7 +1657,7 @@ combo_walker(Node *n, ComboWalk *w)
 
 	if (n == NULL || w->bad)
 		return false;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid == SIFT_AGG_NULL_INPUT)
+	if (null_input_param(n))
 	{
 		w->null_input = true;
 		return false;
@@ -4962,7 +4987,19 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
 		double		tuples;
 
 		if (cb->join >= 0)
+		{
+			const SiftAggJoin *j = &s->join[cb->join];
+			JoinCtx    *jc = list_nth(c->joins, cb->join);
+
+			/* Without equality keys, every cached input tests every child row. */
+			if (j->nkey == 0)
+			{
+				double		candidates = jc->cpath ? jc->cpath->rows : c->root->simple_rel_array[jc->rti]->tuples;
+
+				cost += combo_entries(c, cb, agg_rows) * Max(candidates, 1.0) * AGG_EVAL_SLOT;
+			}
 			continue;
+		}
 		for (int p = 0; p < cb->nleaves; p++)
 			if (cb->leaf[p] >= 0)
 				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;

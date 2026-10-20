@@ -1,4 +1,4 @@
--- Status (3.2): follow-up: a lookup keyed by another joined table needs chained joins in the executor (docs/AGG.md, "Workload shapes")
+-- Status: pushed; chained lookup keys are verified by agg_lookup_dependencies and coverage WL09.
 -- GAP 2: a lookup join keyed by a column of another joined table (t_work_map.entity_type = t_work_dim.type) runs as hash joins.
 -- Expected: Lookup Joins on both tables. The literal key (sm.entity_type = 'kind_b') is pushed.
 \echo -- not pushed: key from a joined table
