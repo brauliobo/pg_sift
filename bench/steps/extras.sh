@@ -104,7 +104,8 @@ item_rollup() {
 		build_psql -d postgres -c "DROP DATABASE IF EXISTS jb" -c "CREATE DATABASE jb" >/dev/null
 		build_psql -d jb -c "CREATE EXTENSION pg_sift" >/dev/null
 		build_psql -d jb -v n="$n" -v strs=0 -f "$BENCH/sql/jsonb/gen.sql" >/dev/null
-		builds=3; (( n < 10000000 )) || builds=1
+		build_psql -d jb -c "VACUUM (FREEZE, ANALYZE) docs" >/dev/null   # hint bits are set before the first build, not by it
+		builds=3
 		for variant in default off; do
 			opts=''; [[ $variant == default ]] || opts=", rollup = 'off'"
 			out=$(locked build_psql -At -d jb -v n="$n" -v variant="$variant" -v builds="$builds" -v opts="$opts" -f "$BENCH/sql/jsonb/rollup/run.sql")
@@ -161,7 +162,7 @@ item_tablewrites() {
 			out=$(locked "$BENCH/tbl-stress.sh" "${STRESS_SECONDS:-120}" 2>&1) || true
 			echo "$out" | tail -15 | sed 's/^/  /' >&2
 			local st="stress ${STRESS_SECONDS:-120} s, ${TBL_CLIENTS:-16} clients"
-			[[ $out =~ round\ of\ 60\ s:\ ([0-9\ ]+) ]] && emit "$st" sift_table tps_mean "$(awk '{s += $1} END {printf "%d", s / NF}' <<<"${BASH_REMATCH[1]}")"
+			[[ $out =~ round\ of\ 60\ s:\ ([0-9\ ]+) ]] && emit "$st" sift_table tps_mean "$(awk '{for (i = 1; i <= NF; i++) s += $i} END {printf "%d", s / NF}' <<<"${BASH_REMATCH[1]}")"
 			emit "$st" sift_table passed "$(grep -c '^PASS' <<<"$out" || true)"
 		fi
 	done
