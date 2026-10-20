@@ -124,15 +124,34 @@ index must answer for (`--scenarios`, default all). They are cumulative and only
 
 | scenario | heap state |
 |---|---|
-| `insert` | 20% more rows without a `VACUUM` (pages not all-visible) |
-| `update` | an UPDATE of indexed columns (new tuple versions) and of the jsonb documents |
-| `delete` | hard deletes and soft deletes (`deleted_at` set) |
+| `insert` | 20% more rows (also of `t_jp`) without a `VACUUM` (pages not all-visible) |
+| `update` | an UPDATE of indexed columns (new tuple versions) and of the jsonb documents (also of `t_jp`) |
+| `delete` | hard deletes (also of `t_jp`) and soft deletes (`deleted_at` set) |
 | `abort` | a rolled-back INSERT, UPDATE and DELETE (dead tuples before any `VACUUM`) |
 | `vacuum` | `VACUUM` after all that |
 | `hot` | UPDATE of columns no index holds: HOT updates (the count is printed) |
 | `recycle` | DELETE, `VACUUM (TRUNCATE off)`, then INSERT: new rows on the TIDs of deleted ones (the count is printed) |
 | `held` | a second session with an uncommitted INSERT, UPDATE and DELETE next to the corpus, at READ COMMITTED and inside a REPEATABLE READ transaction; then a REPEATABLE READ snapshot taken before a writer commits |
 | `maint` | `REINDEX`, then `sift.col_promote` and `sift.col_merge` when they exist |
+
+### jsonpath truth tables
+
+The fixtures `jp_*` read `t_jp`, whose members `s` (text), `n` (int4) and `b` (boolean) take every value of their leaves (`1` and `1.0`, the
+empty string, non-ASCII text, `2147483647`), a JSON null and a missing key. The table is the comparison of an element `e` with a literal `L`
+of the member's type; a scalar or null element, and a missing key, are the same as a missing member:
+
+| member of `e` | `@.k == L` | `@.k != L` | `!(@.k == L)` | `!(@.k != L)` |
+|---|---|---|---|---|
+| a value equal to `L` | true | false | false | true |
+| another value of the type | false | true | true | false |
+| JSON null | false | true | true | false |
+| missing | false | false | true | true |
+| a value of another JSON type | unknown | unknown | unknown | unknown |
+
+Against a `null` literal: `== null` is true for a JSON null only, `!= null` for every present member that is not null, and under `!()` the
+other rows. Each form pushed down is equal to the heap in every variant and scenario; a form that is not provable (the last row of the
+table, a number against a float leaf, strict `!()`, `jsonb_path_match`) is a `plain` fixture. A member the leaf cannot hold (an array or
+an object in a leaf of numbers, a number out of range) raises the error of the pushdown, so no `jp_*` fixture can hold one.
 
 ### Bench mode
 

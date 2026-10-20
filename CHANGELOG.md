@@ -11,6 +11,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: pg_sift: SiftAgg pushes down jsonpath `!=` and constant variables where the result equals the heap's. The same forms push down with `!()`, a `null` literal, `@>` with a JSON null member and a strict path without `!()`; a JSON null member is told from a missing key by the kinds of column format minor 4, so a unit written by minor 3 raises the `REINDEX` error of the other type tests instead of answering (docs/COL-JSONB-31.md). What stays on the normal plan: a literal of another JSON type than the member's, a number against a `float4` / `float8` member, strict `!()`, `jsonb_path_match` / `@@`, `@>` with a float or `{}`.
+
 ## 3.1.0 - 2026-10-19
 
 Feature release. The extension SQL goes from 3.0 to 3.1: install the new files and run `ALTER EXTENSION pg_sift UPDATE TO '3.1'` in every database. BM25 indexes, `sift_col` indexes and `sift_table` data of 3.0.x keep working across it, with no `REINDEX`; what 3.1 writes afterwards is in newer formats (`docs/FORMATS.md`) that a 3.0.x library refuses. Highlights: smaller BM25 indexes (segment format 3), rollups of the elements of a list that answer any `GROUP BY` over their dimensions and refresh on demand, a `sift_table` write path with per-row versions, field weights and facet counts, the JSON type tag of `jsonb` leaves and calendar group keys, aggregates from the bitmap of a chunk, and an opt-in Vulkan backend (off by default, not part of the packages).
