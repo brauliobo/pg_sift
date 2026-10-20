@@ -18,6 +18,8 @@
  *   table/freeze.c  freezing, aborted rows, live rows, merges of the column segments
  *   table/bulk.c    the new table of a rewrite written as column segments
  *   table/funcs.c   SQL functions that show the segments and the space
+ *   table/src.c     the column source of the aggregate scan (SiftAgg)
+ *   table/wide.c    its wide leaves: the dictionary of exact datum images, the conjuncts on them
  *
  * A TID is (vblock, offset), offset 1..SIFT_TBL_MAX_OFF, vblock from the metapage counter, never reused.
  */
