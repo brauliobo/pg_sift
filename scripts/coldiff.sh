@@ -276,11 +276,11 @@ col_paths() {
 # fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_misc t_net t_tags; do
+	for t in orders orders_odd t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
-		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_tags) set -- tags ;; *) continue ;; esac
+		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_eo) set -- doc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
-			case $t in t_jp) spec="$c[]{s text, n int4, b bool}" ;; t_tags) spec="tags[] text" ;; *) spec=$(col_paths $c) ;; esac
+			case $t in t_jp) spec="$c[]{s text, n int4, b bool}" ;; t_eo) spec="doc[]{q int4, q8 int8, f float8}" ;; t_tags) spec="tags[] text" ;; *) spec=$(col_paths $c) ;; esac
 			[[ -z $spec ]] || printf '%s\n' "SELECT sift.table_set_paths('$t', '$c', :'spec')" | sql -v spec="$spec" >/dev/null || return 1
 		done
 		sql -c "VACUUM FULL $t" || return 1
