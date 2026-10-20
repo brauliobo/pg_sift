@@ -232,6 +232,7 @@ col_index() {
 	case $1 in
 		orders|orders_odd|orders_part)
 			ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, store_id, customer_id, source, placed_at, country_code, lang, status, total, discount, deleted_at, attributes, metrics, items, notes) WITH (paths = :'paths')" ;;
+		pf_fact|pf_fact_empty) ddl="CREATE INDEX ${1}_col ON $1 USING $AM (id, a, b, t, v, f)" ;;
 		t_int) ddl="CREATE INDEX t_int_col ON t_int USING $AM (id, grp, i4, i8)" ;;
 		t_num) ddl="CREATE INDEX t_num_col ON t_num USING $AM (id, grp, n2, n0, n6)" ;;
 		t_nan) ddl="CREATE INDEX t_nan_col ON t_nan USING $AM (id, grp, n2, n6)" ;;
@@ -276,7 +277,7 @@ col_paths() {
 # fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_wl its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
+	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
 		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_eo) set -- doc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
@@ -291,7 +292,7 @@ fixture_tables() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_wl t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_wl t_misc t_net t_tags orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
