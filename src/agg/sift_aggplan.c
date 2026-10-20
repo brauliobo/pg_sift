@@ -1855,9 +1855,10 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q)
 /*
  * a slot for expr in the combo of its leaves (and of the table it reads columns of): its combo and slot numbers; false if it does not
  * fit. `force`: the join whose combo holds the slot, though the expression may read no column of its table (the rest of an ON clause).
+ * `after_joins`: a deferred combo reads lookup outputs as inputs, so the expression is evaluated only for surviving joined tuples.
  */
 static bool
-combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *si)
+combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si)
 {
 	ComboWalk	w = {c};
 	ComboCtx   *cb = NULL;
@@ -1868,13 +1869,15 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 	combo_walker(expr, &w);
 	if (force && w.jc != NULL && w.jc->combo > force->combo)
 		return false;
-	if (force)
+	if (after_joins)
+		w.jc = NULL;
+	else if (force)
 		w.jc = force;
-	if (w.bad || (w.nl == 0 && w.jc == NULL && !w.null_input))
+	if (w.bad || (w.nl == 0 && w.jc == NULL && !w.null_input && (!after_joins || w.vars == NIL)))
 		return false;
 	if (w.jc)
 		cb = list_nth(c->combos, w.jc->combo);
-	else
+	else if (!after_joins)
 		foreach_ptr(ComboCtx, x, c->combos)
 		{
 			bool		same = x->join < 0 && x->nl == w.nl;
@@ -1918,7 +1921,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, int *ci, int *
 static bool
 combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si)
 {
-	return combo_slot_in(c, NULL, expr, is_key, ci, si);
+	return combo_slot_in(c, NULL, expr, is_key, false, ci, si);
 }
 
 typedef struct ComboSub
@@ -2046,23 +2049,29 @@ static SlotReq *slot_req(AggCtx *c, int combo, int slot);
 
 /* a boolean expression of several leaves, or of leaves and the columns of the matching row of a joined table */
 static SiftAggPred *
-compile_combo_pred(AggCtx *c, Node *n)
+compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins)
 {
 	int			ci,
 				si;
 	SiftAggPred *p;
 	ComboCtx   *cb;
 
-	if (exprType(n) != BOOLOID || !combo_slot(c, n, false, &ci, &si))
+	if (exprType(n) != BOOLOID || !combo_slot_in(c, NULL, n, false, after_joins, &ci, &si))
 		return NULL;
 	cb = list_nth(c->combos, ci);
 	p = new_pred(c, SAP_COMBO);
 	p->leaf = ci;
 	p->op = si;
-	p->level = cb->join >= 0 ? 2 : combo_level(c, cb);
+	p->level = after_joins || cb->join >= 0 ? 2 : combo_level(c, cb);
 	p->late = slot_req(c, ci, si)->late;
 	p->desc = combo_text(c, ci, n);
 	return p;
+}
+
+static SiftAggPred *
+compile_combo_pred(AggCtx *c, Node *n)
+{
+	return compile_combo_pred_at(c, n, false);
 }
 
 /* ---------- numeric expressions ---------- */
@@ -3833,7 +3842,10 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	out->collid = a->inputcollid;
 	if (a->aggfilter)
 	{
-		if ((out->filter = compile_pred(c, normalize_expr(c, (Node *) a->aggfilter))) == NULL || out->filter->level > 1)
+		Node	   *filter = normalize_expr(c, (Node *) a->aggfilter);
+
+		out->filter = arg_joined(c, filter) ? compile_combo_pred_at(c, filter, true) : compile_pred(c, filter);
+		if (out->filter == NULL)
 			return false;
 	}
 	fresh = *out;
@@ -4919,8 +4931,11 @@ combo_entries(AggCtx *c, const SiftAggCombo *cb, double tuples)
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
-		SiftSrcLeaf *lf = leaf_of(c, cb->leaf[p]);
+		SiftSrcLeaf *lf;
 
+		if (cb->leaf[p] < 0)
+			return tuples;
+		lf = leaf_of(c, cb->leaf[p]);
 		if (lf->parent >= 0 || lf->path != NIL || lf->attno > list_length(c->attexpr) || list_nth(c->attexpr, lf->attno - 1) == NULL)
 			return tuples;
 		exprs = lappend(exprs, list_nth(c->attexpr, lf->attno - 1));
@@ -4949,7 +4964,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows)
 		if (cb->join >= 0)
 			continue;
 		for (int p = 0; p < cb->nleaves; p++)
-			wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+			if (cb->leaf[p] >= 0)
+				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
 			direct |= cb->slot[sl].direct;
@@ -5622,7 +5638,7 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 
 	join_index_quals(c, jc, conds);
 
-	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, &ci, &si) || ci != jc->combo)
+	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) || ci != jc->combo)
 		return false;
 	jc->j.fslot = si;
 	return true;

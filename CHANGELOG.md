@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 3.2 Unreleased
 
+- Added: aggregate FILTER predicates over lookup columns preserve duplicate matches and NULL extensions, and evaluate expressions only after all joins select their input.
+
 - Fixed: aggregate planning ignores unique LEFT joins PostgreSQL has removed, avoiding a planner crash. Preserved buckets can contain several dependent lookups; empty buckets retain NULL values for inner expressions and constants.
 
 - Fixed: VACUUM relocation invalidates cached write targets when each replacement is published, including when maintenance later errors before truncation; failed unpublished copies return their allocations and follow maintenance backoff.
