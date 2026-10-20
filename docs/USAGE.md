@@ -389,6 +389,17 @@ A filter on a set of ids (the members of a group, the entities that have an attr
 join to the table that holds the set. [docs/SET-FILTERS.md](SET-FILTERS.md) has the measurements and the settings; the array parameter is the fast one: send the ids as one
 `int4[]` of a prepared statement on a generic plan (`SET LOCAL plan_cache_mode = force_generic_plan`), and keep a small set (about 100 ids) on a custom plan.
 
+The array form pushes down for these key types (the element type of the array is the type of the column; cast the array, `ANY($1::int8[])`, `ANY($1::text[])`, `ANY($1::date[])`):
+
+| key column | array | how `SiftAgg` tests it |
+|---|---|---|
+| `int2`, `int4`, `date` | `int2[]`, `int4[]`, `date[]` | one byte per value of the range of the array (a sorted array when the range is wider than 4 MB) |
+| `int8`, `text`, `timestamp`, `timestamptz` | the same type of array | PostgreSQL evaluates `col = ANY($1)` once per distinct value of the column, with a hash table of the array built on the first value |
+| `uuid`, `bytea` |  | not supported: a `sift_col` index refuses these columns, so the query keeps the normal plan |
+
+A `NULL` element matches nothing (`= ANY`) and makes `<> ALL` empty, an empty array keeps no row (`= ANY`) or every row (`<> ALL`), as in SQL. The timings by type are in
+[docs/SET-FILTERS.md](SET-FILTERS.md), section 2.
+
 ```c
 /* libpq: one text parameter of type int4[] (OID 1007) */
 Oid         types[1] = {1007};

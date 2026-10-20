@@ -126,6 +126,41 @@ SET plan_cache_mode = force_generic_plan;
 CREATE TEMP TABLE auto_r AS EXECUTE auto_q('{4,5,6}');
 SELECT diff_count('TABLE auto_r', 'SELECT kind, count(*) FROM ev WHERE day >= ''2024-01-01'' AND dim_a_id IN (4, 5, 6) GROUP BY kind') AS auto_diff;
 
+-- other key types: an array of text, date, timestamp, timestamptz, int2 or int8 reaches the scan too (the types without a byte table hash the array once),
+-- with the answers of the normal plan for NULL elements, an empty array, NOT IN and a value the table lacks
+CREATE FUNCTION key_set(a int, b int, step int) RETURNS text[] LANGUAGE sql AS $$ SELECT array_agg('key-' || x) FROM generate_series(a, b, step) x $$;
+CREATE TABLE evk (id int PRIMARY KEY, k2 int2, k8 int8, kt text, kd date, kts timestamp, ktz timestamptz, g int, amount numeric(10, 2))
+	WITH (autovacuum_enabled = false);
+INSERT INTO evk
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE (i * 7)::int % 3000 - 1500 END,
+       CASE WHEN i % 997 = 0 THEN NULL ELSE 5000000000 + (i::bigint * 7919) % 3000 END,
+       CASE WHEN i % 997 = 0 THEN NULL ELSE 'key-' || (i::bigint * 7919) % 3000 END,
+       date '2024-01-01' + (i * 7) % 3000,
+       timestamp '2024-01-01 00:00:00' + ((i * 7) % 3000) * interval '1 minute',
+       timestamptz '2024-01-01 00:00:00+00' + ((i * 7) % 3000) * interval '1 minute',
+       i % 5, (i % 100) / 10.0
+FROM generate_series(1, 60000) i;
+CREATE INDEX evk_col ON evk USING sift_col (k2, k8, kt, kd, kts, ktz, g, amount);
+VACUUM (FREEZE, ANALYZE) evk;
+
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE k2 = ANY ($1) GROUP BY g', '''{-1500,-3,0,7,1499,NULL}''::int2[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE k8 = ANY ($1) GROUP BY g', '''{5000000001,5000000007,5000002999,4999999999,NULL}''::int8[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kt = ANY ($1) GROUP BY g', '''{key-1,key-7,key-2999,key-3000,NULL}''::text[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kt = ANY ($1) GROUP BY g', '''{}''::text[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kt <> ALL ($1) GROUP BY g', '''{key-1,key-7,key-2999}''::text[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kt <> ALL ($1) GROUP BY g', '''{key-1,NULL}''::text[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kd = ANY ($1) GROUP BY g', '''{2024-01-01,2024-01-08,2032-03-20,1999-01-01,NULL}''::date[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kd = ANY ($1) GROUP BY g', '''{2024-01-01,2032-03-20}''::date[]');
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM evk WHERE kd = ANY ($1)', '''{2024-01-01,2032-03-20}''::date[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE kts = ANY ($1) GROUP BY g', '''{"2024-01-01 00:07:00","2024-01-01 00:14:00","2024-01-01 00:01:00",NULL}''::timestamp[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE ktz = ANY ($1) GROUP BY g', '''{"2024-01-01 00:07:00+00","2024-01-01 00:14:00+00","2024-01-01 00:01:00+00",NULL}''::timestamptz[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n FROM evk WHERE k8 = ANY ($1) AND kt = ANY ($2) GROUP BY g',
+                            '''{5000000001,5000000007,5000000011,5000000013}''::int8[]', '''{key-1,key-7,key-11,key-13}''::text[]');
+SELECT * FROM compare_modes('SELECT g, count(*) AS n FROM evk WHERE kt = ANY ($1) GROUP BY g',
+                            'key_set(0, 2999, 3)');
+DROP TABLE evk;
+DROP FUNCTION key_set(int, int, int);
+
 -- parallel workers
 SET plan_cache_mode = force_generic_plan;
 SET max_parallel_workers_per_gather = 2;
