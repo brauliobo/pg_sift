@@ -335,7 +335,7 @@ BEGIN
 				msg := coldiff.compare('coldiff_ref', 'coldiff_got', keycols, rel, abs_tol);
 			END IF;
 			-- a scenario dirties the heap pages (the visibility checks make the scan dearer than a btree plan under the raised page costs): only its results are compared there
-			shape_ok := CASE WHEN coalesce(nullif(current_setting('coldiff.no_index', true), ''), '0') = '1' THEN NULL WHEN expect = 'agg' AND v = 'on' AND scen NOT LIKE 'scenario-%' THEN used WHEN expect = 'plain' AND v LIKE 'on%' THEN NOT used END;
+			shape_ok := CASE WHEN coalesce(nullif(current_setting('coldiff.no_index', true), ''), '0') = '1' THEN NULL WHEN expect = 'agg' AND v = 'on' AND scen NOT LIKE 'scenario-%' THEN used WHEN expect = 'plain' AND v LIKE 'on%' AND coalesce(nullif(current_setting('coldiff.on_table', true), ''), '0') <> '1' THEN NOT used END;
 			INSERT INTO coldiff.results (scenario, name, shape, expect, variant, ok, used, gather, shape_ok, ref_ms, ms, detail)
 			VALUES (scen, name, shape, expect, v, msg IS NULL, used, gat, shape_ok, ref_ms, ms,
 					nullif(concat(coalesce(msg, CASE WHEN err_ref IS NOT NULL THEN 'both raise ' || left(err_ref, 80) END),

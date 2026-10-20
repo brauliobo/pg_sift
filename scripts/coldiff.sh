@@ -25,7 +25,8 @@
 #   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
 #   --table             the fixtures suite on sift_table: the fixture tables are rewritten USING sift_table (with the paths of --col-paths declared for
 #                       their jsonb columns) instead of getting a column index, the scenarios
-#                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl)
+#                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl);
+#                       `-- expect: plain` is not checked (a table answers shapes a column index declines), the results always are
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
 #                       test/col/col_index.sql, USING sift_col replaced by --col-am)
 #   --scenario-slices N each scenario runs the scenario queries of one slice of N (query i is in slice i mod N), the slice moving from one scenario to
@@ -121,6 +122,7 @@ run_corpus() {
 		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
 		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
 		echo "SET coldiff.no_index = '${NOINDEX:+1}';"
+		echo "SET coldiff.on_table = '${TBL:+1}';"
 		echo "\\o /dev/null"
 		[[ -z ${HELD:-} ]] || {
 			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"
