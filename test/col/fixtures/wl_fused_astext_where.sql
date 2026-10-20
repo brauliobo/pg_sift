@@ -1,8 +1,8 @@
--- trap: the arm's own WHERE keeps the cast off the scores that are no number, which a scan that casts every item cannot promise: not fused
--- (the regress test asserts the plan nodes), each arm is its own scan
--- shape: trap
+-- the arms share one WHERE that keeps the cast off the scores that are no number: it is the scan's own, and the fused scan casts only what passes it
+-- shape: S2
 -- expect: agg
 -- key: -
+-- scenario: yes
 WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 		   FROM t_wl r, jsonb_to_recordset(coldiff.wl_txt(r.doc) -> 'opinions') AS i(category text, score text) WHERE r.deleted_at IS NULL)
 SELECT k, avg(a), count(DISTINCT rid)
