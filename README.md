@@ -203,7 +203,7 @@ Feature facts checked against each project's own documentation on 2026-10-18 (sp
 
 | Analytics | pg_sift `sift_col` | pg_sift `sift_table` | PostgreSQL | Citus columnar | ClickHouse | Elasticsearch | DuckDB | TimescaleDB columnstore |
 |---|---|---|---|---|---|---|---|---|
-| Columnar storage | Partly | Yes | No | Yes | Yes | Yes | Yes | Partly |
+| Columnar storage | Yes (as an index; the table stays a heap) | Yes | No | Yes | Yes | Yes | Yes | Partly |
 | Aggregates on column data | Yes | Partly | No | No | Yes | Yes | Yes | Yes |
 | `GROUP BY` expressions | Yes | Partly | Yes | Yes | Yes | Yes | ? | Yes |
 | Joins | Yes | Yes | Yes | Yes | Yes | Partly | Yes | Yes |
