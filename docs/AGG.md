@@ -110,8 +110,8 @@ scripts/coldiff.sh --bench --suite analytics --rows 1200000 --runs 5
 scripts/coldiff.sh --selftest                              # the harness against injected differences
 ```
 
-`make check` runs it as the jobs `difftest-col` (small fixtures, a subset of the variants and scenarios) and `difftest-col-selftest`
-(`scripts/ci.sh`); the full tier uses larger tables and every scenario. Without the column index (no `sift_col` access method, or no
+`make check` runs it as the jobs `difftest-col` (small fixtures, a subset of the variants and scenarios), `difftest-col-tbl` (the fixtures
+and scenarios on a `sift_table`, `--table`) and `difftest-col-selftest` (`scripts/ci.sh`); the full tier uses larger tables and every scenario. Without the column index (no `sift_col` access method, or no
 `sift_colstub`, the stub of the planner track, in a build with `SIFT_TESTING`; or a failing `CREATE INDEX`) the suites print
 `coldiff: SKIP: ...` with the reason and exit 0.
 
