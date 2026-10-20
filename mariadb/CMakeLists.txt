@@ -56,7 +56,7 @@ add_custom_command(OUTPUT ${GEN}/bitmap.c
 
 # the host: the C library vocabulary of sqlite/host (its host.c as it is), the matcher, the mapped store and the glue
 set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/container.c ${ROOT}/sqlite/host/mb.c ${ROOT}/sqlite/host/spool.c ${ROOT}/sqlite/host/host_stubs.c
-  host/host_regex.c host/store.c host/stubs.c)
+  host/regex.c host/regex_parse.c host/regex_exec.c host/store.c host/stubs.c)
 set(GLUE engine.c query.c feed.c merge.c)
 
 add_library(sift_engine OBJECT ${portable} ${GEN}/bitmap.c ${HOST} ${GLUE})

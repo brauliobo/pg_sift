@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
-	-I"$HERE/../host" -I"$HERE/../../src" -o "$W/regex_test" "$HERE/../host/host_regex.c" "$HERE/regex_test.c" -lm
+	-I"$HERE/../host" -I"$HERE/../../src" -o "$W/regex_test" "$HERE/../host/regex.c" "$HERE/../host/regex_parse.c" "$HERE/../host/regex_exec.c" "$HERE/regex_test.c" -lm
 got=$(printf '%s\n' '^w.nd$' 'a+b' '(a)(b)' '(a)\1' '(a|b)x\1' '[' | "$W/regex_test" info | tr '\n' ' ')
 want='0 0 0 1 1 error '
 [[ $got == "$want" ]] || { echo "re_info: got [$got], want [$want]"; exit 1; }
