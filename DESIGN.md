@@ -179,6 +179,8 @@ A header page holds the extent table and the sections table. Its data is a logic
 
 ## (c) Write buffers, promotion, merge (no preload required)
 
+The terms (write buffer, segment, seal, promote, merge, lane), the old names and the compatibility of the 2.0 names are in [docs/NAMING.md](docs/NAMING.md).
+
 - **Insert path (`aminsert`).**
   1. Analyze the document into (term, tf) pairs and dl.
   2. Append one *doc record* to a page of the open write buffer: `{tid, flags, nterms, dl, u32 hash[nterms], u8 tf[nterms], u8 len[nterms], term bytes}`.

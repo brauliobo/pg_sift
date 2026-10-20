@@ -1,6 +1,6 @@
 # Naming: the write buffer
 
-Decision for 3.0. The one-pass rename is `scripts/rename-write-buffer.sh`: run once on the 3.0 branch before the `src/` restructure (`scripts/restructure-src.sh`); run it again, then `--check`, on a branch that was open during it.
+The decision of 3.0, kept for the glossary and the compatibility policy. The one-pass rename is `scripts/rename-write-buffer.sh`: run once on the 3.0 branch before the `src/` restructure (`scripts/restructure-src.sh`); run it again, then `--check`, on a branch that was open during it.
 
 ## Decision: one term, "write buffer"
 
@@ -74,34 +74,3 @@ Rejected:
   `col_index_info.buffers`.
 - No EXPLAIN output names the buffer (checked: `sift_cscan.c`, `sift_agg.c` print nothing of the kind), so nothing changes there.
 - Ports: SQLite and MariaDB have no write buffer (their `stubs` say so); their in-memory insert buffer keeps "in-memory buffer".
-
-## Marketing: what can be said from the code and the tests
-
-About pg_sift (verified in `test/sql/wbuf_lifecycle.sql`, `test/isolation/specs/facets_writes.spec`, `docs/COL-TAM.md` section 3):
-- A row is searchable when its transaction commits: `aminsert` appends it to the write buffer under WAL and every scan reads the write
-  buffer with the segments (DESIGN.md (c)). There is no refresh step, and an update needs no merge to become correct.
-- Visibility is the heap's MVCC; for `sift_table` it is native: row version with `xmin`, tombstone log entry per delete or update.
-- An update appends one record (none for a HOT update); immutable segments are not rewritten for it, only their liveness pages
-  (invariant I2). Merges still rewrite segments, to bound their number. No speed claim here: the update benchmark is measured separately.
-
-About the others, from the official documentation (re-checked 2026-10-18):
-- Elasticsearch: an update gets the document, runs the script and indexes the result, and "the document must still be reindexed"
-  ([Update API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-update)); changes "are not visible to search
-  immediately" until a refresh, every second by default on indices searched in the last 30 s
-  ([near real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search)); the old version is "not immediately removed but
-  instead soft-deleted" and cleaned up by segment merges ([force merge](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge));
-  durability comes from a separate translog ([translog](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog)).
-  Lucene buffers "added documents and deletions" in RAM until flushed
-  ([IndexWriterConfig](https://lucene.apache.org/core/9_0_0/core/org/apache/lucene/index/IndexWriterConfig.html)).
-- ClickHouse: `ALTER ... UPDATE` is "a heavy operation not designed for frequent use", asynchronous by default
-  ([ALTER UPDATE](https://clickhouse.com/docs/sql-reference/statements/alter/update)); mutations work by "rewriting whole data parts",
-  with "no atomicity" and queries that see mutated and unmutated parts
-  ([ALTER](https://clickhouse.com/docs/sql-reference/statements/alter)); lightweight updates are patch parts, visible at once, add
-  read overhead and are "designed to update small amounts of rows (up to about 10% of the table)"
-  ([UPDATE](https://clickhouse.com/docs/sql-reference/statements/update)); lightweight deletes mask rows and merges remove them later
-  ([lightweight delete](https://clickhouse.com/docs/guides/developer/lightweight-delete)); ReplacingMergeTree deduplicates "only during a
-  merge" at an unknown time and needs `FINAL` at query time
-  ([ReplacingMergeTree](https://clickhouse.com/docs/engines/table-engines/mergetree-family/replacingmergetree)).
-- GIN: pending list searched with the main structure, "a large list of pending entries will slow searches significantly", cleanup spike
-  ([GIN](https://www.postgresql.org/docs/18/gin.html)). Vespa: writes go to a memory index, flushed and merged
-  ([Proton](https://docs.vespa.ai/en/content/proton.html)). Tantivy: a memory budget per writer ([Index::writer](https://docs.rs/tantivy/latest/tantivy/index/struct.Index.html)).
