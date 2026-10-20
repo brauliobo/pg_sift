@@ -111,7 +111,21 @@ def design4():
 	return cells
 
 
-DESIGNS = {'1': design1, '2': design2, '4': design4}
+def design5():
+	"""Design 5: the attribute copied into the fact table, clustered by it or not (docs/SET-FILTERS.md section 6); denorm.sql builds the tables."""
+	cells = []
+	for label, cond in (('country', 'country_id = 7'), ('category', 'category_id = 3')):
+		semi = SEL.format(P="entity_id IN (SELECT id FROM entities WHERE %s)" % cond)
+		for mode in ('normal', 'default'):
+			cells.append((5, 'attr_semi_join', label, mode, [semi], ["explain (costs off) " + semi]))
+		for table in ('events_dn_u', 'events_dn'):
+			q = SEL.format(P=cond).replace('FROM events ', 'FROM %s ' % table)
+			for mode in ('normal', 'default'):
+				cells.append((5, 'attr_column-' + table, label, mode, [q], ["explain (costs off) " + q]))
+	return cells
+
+
+DESIGNS = {'1': design1, '2': design2, '4': design4, '5': design5}
 
 
 def plan_kind(cell):
