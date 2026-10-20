@@ -331,8 +331,17 @@ typedef enum SiftJoinKind
 	SJ_INNER,
 	SJ_LEFT,
 	SJ_SEMI,					/* EXISTS / IN: a tuple is kept once if some row matches, and its columns are the table's no more */
-	SJ_ANTI						/* NOT EXISTS: a tuple is kept if no row matches */
+	SJ_ANTI,					/* NOT EXISTS: a tuple is kept if no row matches */
+	SJ_RIGHT,					/* the table is the preserved side of a LEFT JOIN of the scanned one: a tuple without a match is dropped, a row nothing matched is an output row of NULL leaves */
+	SJ_FULL						/* the same, and a tuple without a match is kept once with NULL columns */
 } SiftJoinKind;
+
+/* the kinds that keep the rows of the joined table nothing matched */
+static inline bool
+sift_aggjoin_preserves(SiftJoinKind kind)
+{
+	return kind == SJ_RIGHT || kind == SJ_FULL;
+}
 
 typedef struct SiftAggJoin
 {

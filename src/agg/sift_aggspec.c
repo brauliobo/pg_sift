@@ -667,6 +667,10 @@ sift_aggspec_parallel_ok(const SiftAggSpec *s)
 	for (int i = 0; i < s->njoin; i++)
 		if (s->join[i].child >= 0)
 			return false;
+	/* the rows nothing matched are known when every row of the table was seen: by one scan */
+	for (int i = 0; i < s->njoin; i++)
+		if (sift_aggjoin_preserves(s->join[i].kind))
+			return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
 			return false;
