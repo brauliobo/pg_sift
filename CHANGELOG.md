@@ -12,6 +12,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## Unreleased
 
 - Added: pg_sift: SiftAgg pushes down jsonpath `!=` and constant variables where the result equals the heap's. The same forms push down with `!()`, a `null` literal, `@>` with a JSON null member and a strict path without `!()`; a JSON null member is told from a missing key by the kinds of column format minor 4, so a unit written by minor 3 raises the `REINDEX` error of the other type tests instead of answering (docs/COL-JSONB-31.md). What stays on the normal plan: a literal of another JSON type than the member's, a number against a `float4` / `float8` member, strict `!()`, `jsonb_path_match` / `@@`, `@>` with a float or `{}`.
+- Added: `SiftAgg` group by up to 8 columns (7 with grouping sets), 8 joined tables and 16 combos; `bool_and`, `bool_or` and `every` run in parallel workers.
 
 ## 3.1.0 - 2026-10-19
 
