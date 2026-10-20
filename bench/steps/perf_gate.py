@@ -34,12 +34,19 @@ T95 = {6:  2.570581835636305,
        16: 2.131449545559323}
 DEADLINE = math.inf
 BATCH_WALL_LIMIT = 1.0
+INSERT_PILOT = 256
+INSERT_GROWTH_CAP = 2048
+INSERT_CONTROL_DELAY = .001
 SETTINGS = '''SET statement_timeout='30s'; SET max_parallel_workers_per_gather=0;
 SET max_parallel_maintenance_workers=0; SET jit=off; SET sift.async_maintenance=off;
 SET sift.table_write_buffer_limit=2048; SET cpu_tuple_cost=0.5; SET enable_seqscan=off; SET sift.enable_agg=on; SET sift.agg_preagg=on'''
 
 
-class BudgetExpired(Exception):
+class Inconclusive(Exception):
+    pass
+
+
+class BudgetExpired(Inconclusive):
     pass
 
 
@@ -277,8 +284,24 @@ def budget_context(total, workflow_start, reserve, *, now=None):
                 measurement_budget_seconds=max(0,total-prior-reserve))
 
 
+FORKS = ('main','fsm','vm','init')
+MUTABLE_RELATIONS = {'mutable':'mutable_table_storage','mutable_pk':'mutable_btree_index'}
+
+
+def relation_forks(conn):
+    rows = conn.rows("SELECT c.relname," + ','.join(f"pg_relation_size(c.oid,'{fork}')" for fork in FORKS) +
+                     " FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','i') ORDER BY 1")
+    return {row[0]:dict(zip(FORKS,map(int,row[1:]))) for row in rows}
+
+
+def fork_totals(forks):
+    if any(value<0 for relation in forks.values() for value in relation.values()):
+        raise ValueError('negative relation fork size')
+    return {name:sum(values.values()) for name,values in forks.items()}
+
+
 def sizes(conn):
-    return conn.rows("SELECT c.relname,pg_relation_size(c.oid,'main')+pg_relation_size(c.oid,'fsm')+pg_relation_size(c.oid,'vm')+pg_relation_size(c.oid,'init') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','i') ORDER BY 1")
+    return list(fork_totals(relation_forks(conn)).items())
 
 
 SIZE_RELATIONS = {'docs_bm25':'bm25_index','docs_col':'column_index','store':'table_storage',
@@ -298,7 +321,8 @@ def size_verdict(baseline, candidate):
 
 
 def size_snapshot(revisions,state):
-    return compare_sizes([dict(sizes(r.conn)) for r in revisions],state,SIZE_RELATIONS)
+    forks = [relation_forks(r.conn) for r in revisions]
+    return dict(compare_sizes([fork_totals(f) for f in forks],state,SIZE_RELATIONS),forks=forks)
 
 
 def compare_sizes(snapshots,state,relations):
@@ -339,10 +363,14 @@ def reset(conn, case):
         conn.script(case.reset)
 
 
-def prepare(conn, case):
+def configure(conn, case):
     conn.script('SET sift.agg_preagg=on; SET sift.enable_agg=on')
     if case.settings:
         conn.script(case.settings)
+
+
+def prepare(conn, case):
+    configure(conn,case)
     reset(conn, case)
 
 
@@ -376,12 +404,15 @@ def require_plan(plan,case):
 
 
 def validate_case(revisions, case):
+    if case.lifecycle=='insert_trajectory':
+        raise ValueError('INSERT validation requires frozen full-trajectory calibration')
     checks, plans, footprints = [], [], []
     for rev in revisions:
         conn = rev.conn
         prepare(conn, case)
-        if case.reset:
-            before = sizes(conn)
+        if case.lifecycle=='reset_each_operation':
+            before_forks = relation_forks(conn)
+            before = list(fork_totals(before_forks).items())
             before_geometry = table_geometry(conn,'mutable')
             if before_geometry['units']<3:
                 raise ValueError('mutable fixture lacks actual table unit boundary')
@@ -398,11 +429,13 @@ def validate_case(revisions, case):
                 plan = json.loads(conn.rows('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, TIMING OFF) '+case.sql)[0][0])
             got = conn.rows(case.check)
             # Mutable expected state is a plain heap SQL query, independent of table AM.
-            oracle = {'storage_insert': 'SELECT count(*)+1,sum(id)+9001,sum(amount)+7 FROM seed',
-                      'storage_update': 'SELECT count(*),sum(id),sum(amount)+count(amount) FILTER (WHERE id BETWEEN 100 AND 200) FROM seed',
+            oracle = {'storage_update': 'SELECT count(*),sum(id),sum(amount)+count(amount) FILTER (WHERE id BETWEEN 100 AND 200) FROM seed',
                       'storage_vacuum_space': 'SELECT count(*),sum(id),sum(amount) FROM seed WHERE id<=2048'}[case.name]
             require_equal(got, conn.rows(oracle), case.name+' heap oracle')
-            footprints.append(dict(before=before,after=sizes(conn),before_geometry=before_geometry,after_geometry=table_geometry(conn,'mutable')))
+            after_forks = relation_forks(conn)
+            footprints.append(dict(before=before,after=list(fork_totals(after_forks).items()),
+                                   before_geometry=before_geometry,after_geometry=table_geometry(conn,'mutable'),
+                                   before_forks=before_forks,after_forks=after_forks))
             plans.append(plan)  # VACUUM has no EXPLAIN; validate actual space instead.
         else:
             plan = json.loads(conn.rows('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, TIMING OFF) '+case.sql)[0][0])
@@ -421,27 +454,33 @@ def validate_case(revisions, case):
     lifecycle_sizes = None
     if case.name=='storage_vacuum_space':
         lifecycle_sizes = compare_sizes([dict(p['after']) for p in footprints],
-                                        'mutable_vacuum',{'mutable':'mutable_table_storage','mutable_pk':'mutable_btree_index'})
+                                        'mutable_vacuum',MUTABLE_RELATIONS)
+        lifecycle_sizes['forks'] = [p['after_forks'] for p in footprints]
     return dict(results=checks,plans=plans,plan_changed=plan_changed,
                 topology=[topology(p) for p in plans],sizes=footprints,size_checks=lifecycle_sizes)
 
 
-def elapsed(conn, case, operations, deadline, delay=0):
+def elapsed(conn, case, operations, deadline, delay=0, *, statements=None, raw=None):
+    if case.lifecycle=='insert_trajectory' and (statements is None or len(statements)!=operations):
+        raise ValueError('INSERT requires precomputed point statements')
     total = 0.0
-    for _ in range(operations):
+    for ordinal in range(operations):
         if time.monotonic() >= deadline:
             raise BudgetExpired('measurement budget exhausted')
-        reset(conn, case)
+        if case.lifecycle=='reset_each_operation':
+            reset(conn, case)
         if time.monotonic()>=deadline:
             raise BudgetExpired('global runtime budget exhausted after reset')
         start = time.perf_counter()
-        conn.exec(case.sql)
+        conn.exec(statements[ordinal] if statements is not None else case.sql)
         value = time.perf_counter()-start
         if not math.isfinite(value) or value <= 0:
             raise ValueError('invalid monotonic SQL elapsed time')
+        total += value
+        if raw is not None:
+            raw.append(value)
         if time.monotonic()>=deadline:
             raise BudgetExpired('global runtime budget exhausted after SQL')
-        total += value
     if delay:
         # Explicit acceptance mode: one SQL-visible delay per measured batch.
         start = time.perf_counter()
@@ -468,64 +507,325 @@ def calibrate(revisions, case, deadline):
                 target_limited_by_reset=operations<desired)
 
 
-def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS):
+SEED_IDENTITY = "SELECT count(*),max(id),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed"
+
+
+def insert_identity(revisions):
+    seeds = [r.conn.rows(SEED_IDENTITY) for r in revisions]
+    require_equal(seeds[0],seeds[1],'INSERT seed identity')
+    count,maximum,digest = seeds[0][0]
+    count,maximum = int(count),int(maximum)
+    if count<=0 or not -(2**31)<=maximum<=2**31-1-max(INSERT_PILOT,INSERT_GROWTH_CAP):
+        raise ValueError('INSERT seed/full growth exceeds integer domain')
+    return dict(seed_count=count,seed_max_id=maximum,first_id=maximum+1,seed_digest=digest)
+
+
+def insert_footprint(conn):
+    geometry = table_geometry(conn,'mutable')
+    if geometry['units']<3 or geometry['column_segments']<1 or geometry['relation_blocks']<256:
+        raise ValueError('mutable fixture lacks actual table unit/segment/page boundary')
+    forks = relation_forks(conn)
+    return dict(geometry=geometry,forks={name:forks[name] for name in MUTABLE_RELATIONS},
+                totals={name:fork_totals(forks)[name] for name in MUTABLE_RELATIONS})
+
+
+def check_insert(conn, identity, operations, sink):
+    require_equal(conn.rows(SEED_IDENTITY),[[str(identity['seed_count']),str(identity['seed_max_id']),identity['seed_digest']]],
+                  'INSERT seed unchanged')
+    case = next(c for c in CASES if c.lifecycle=='insert_trajectory')
+    expected = case.expected_rows(identity['seed_max_id'],operations)
+    # Both full row multisets, including NULLs and pad, come from explicit columns.
+    query = f"""WITH expected AS ({expected}), actual AS (SELECT id,g,amount,body,pad FROM mutable),
+    delta AS ((SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+              UNION ALL (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected))
+    SELECT (SELECT count(*) FROM expected),
+           (SELECT md5(string_agg(row(e.*)::text,'|' ORDER BY id,g,amount,body,pad)) FROM expected e),
+           (SELECT count(*) FROM actual),
+           (SELECT md5(string_agg(row(a.*)::text,'|' ORDER BY id,g,amount,body,pad)) FROM actual a),
+           (SELECT count(*) FROM delta)"""
+    conn.exec('SET sift.enable_agg=off')
+    try:
+        count,digest,actual_count,actual_digest,difference = conn.rows(query)[0]
+    finally:
+        conn.exec('SET sift.enable_agg=on')
+    sink.update(expected_count=int(count),expected_digest=digest,actual_count=int(actual_count),
+                actual_digest=actual_digest,multiset_difference=int(difference))
+    require_equal(int(count),identity['seed_count']+operations,'INSERT expected count')
+    require_equal((actual_count,actual_digest,difference),(count,digest,'0'),'INSERT full multiset')
+    return sink
+
+
+def insert_control_count(conn):
+    return int(conn.rows("SELECT current_setting('perf_gate.delayed_rows')")[0][0])
+
+
+def install_insert_control(conn, seed_max):
+    # Acceptance only. Counter proves actual per-new-row work, including excluded warm work.
+    conn.exec(f"""CREATE FUNCTION perf_gate_insert_delay() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.id > {seed_max} THEN
+        PERFORM set_config('perf_gate.delayed_rows',(current_setting('perf_gate.delayed_rows')::bigint+1)::text,false);
+        PERFORM pg_sleep(0.001);
+      END IF;
+      RETURN NEW;
+    END $$""")
+    conn.exec('CREATE TRIGGER perf_gate_insert_delay BEFORE INSERT ON mutable FOR EACH ROW EXECUTE FUNCTION perf_gate_insert_delay()')
+    conn.exec("SET perf_gate.delayed_rows='0'")
+
+
+def remove_insert_control(conn):
+    conn.exec('DROP TRIGGER perf_gate_insert_delay ON mutable')
+    conn.exec('DROP FUNCTION perf_gate_insert_delay()')
+
+
+def insert_visit(conn, case, identity, operations, deadline, sink, *, pilot=False, control=False):
+    """One independent side visit: restore, N warm commits, restore, N measured commits."""
+    statements = case.statements(identity['seed_max_id'],operations)
+    started = time.monotonic()
+    sink.update(operations=operations,phase='warm_reset',complete=False,started_at=utc_now(),
+                operation_seconds=[],warm_operation_seconds=[])
+    counts = []
+    if control:
+        sink['control_counts'] = counts
+        counts.append(insert_control_count(conn))
+    try:
+        start = time.monotonic()
+        prepare(conn,case)  # first restoration, solely for disposable warm history
+        sink['warm_reset_seconds'] = time.monotonic()-start
+        if control: counts.append(insert_control_count(conn))
+        sink['phase'] = 'warm'
+        sink['warm_sql_seconds'] = elapsed(conn,case,operations,deadline,statements=statements,raw=sink['warm_operation_seconds'])
+        if control: counts.append(insert_control_count(conn))
+        sink['phase'] = 'measured_reset'
+        start = time.monotonic()
+        reset(conn,case)  # second restoration, no reset inside the measured stream
+        sink['reset_seconds'] = time.monotonic()-start
+        if control: counts.append(insert_control_count(conn))
+        if not pilot:
+            sink['before'] = insert_footprint(conn)
+        sink['phase'] = 'point_stream'
+        sink['measured_started_at'] = utc_now()
+        start = time.monotonic()
+        sink['sql_seconds'] = elapsed(conn,case,operations,deadline,statements=statements,raw=sink['operation_seconds'])
+        sink['loop_wall_seconds'] = time.monotonic()-start
+        sink['measured_finished_at'] = utc_now()
+        if control:
+            counts.append(insert_control_count(conn))
+            first = counts[0]
+            require_equal(counts,[first,first,first+operations,first+operations,first+2*operations],
+                          'real per-new-row delay counts; seed reset must not delay')
+        if not pilot:
+            sink['phase'] = 'check'
+            start = time.monotonic()
+            sink['oracle'] = {}
+            check_insert(conn,identity,operations,sink['oracle'])
+            sink['after'] = insert_footprint(conn)
+            sink['check_seconds'] = time.monotonic()-start
+        sink.update(phase='complete',complete=True)
+        return sink['sql_seconds']
+    finally:
+        sink.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-started)
+
+
+def calibrate_insert(revisions, case, identity, deadline, sink):
+    pilots = []
+    sink.update(pilot_operations=INSERT_PILOT,growth_cap_operations=INSERT_GROWTH_CAP,
+                target_seconds=TARGET,predicted_wall_limit_seconds=BATCH_WALL_LIMIT,pilots=pilots)
+    for rev in revisions:  # fixed AB, once, no fault installed
+        pilot = {}
+        pilots.append(pilot)
+        insert_visit(rev.conn,case,identity,INSERT_PILOT,deadline,pilot,pilot=True)
+    costs = [p['sql_seconds']/INSERT_PILOT for p in pilots]
+    walls = [p['loop_wall_seconds']/INSERT_PILOT for p in pilots]
+    if any(not math.isfinite(v) or v<=0 for v in costs+walls) or any(not math.isfinite(p['reset_seconds']) or p['reset_seconds']<0 for p in pilots):
+        raise ValueError('invalid INSERT pilot elapsed')
+    desired = math.ceil(TARGET/min(costs))
+    wall_cap = math.floor(min((BATCH_WALL_LIMIT-p['reset_seconds'])/w for p,w in zip(pilots,walls)))
+    sink.update(desired_operations=desired,wall_cap_operations=wall_cap,
+                sql_seconds_per_operation=costs,loop_wall_seconds_per_operation=walls)
+    if wall_cap<1:
+        raise Inconclusive('no admissible INSERT trajectory within predicted reset+loop wall cap')
+    operations = min(desired,wall_cap,INSERT_GROWTH_CAP)
+    sink.update(operations=operations,limited_by_wall=operations<desired and wall_cap==operations,
+                limited_by_growth=operations<desired and INSERT_GROWTH_CAP==operations,
+                predicted_sql_seconds=[operations*c for c in costs],
+                predicted_reset_loop_seconds=[p['reset_seconds']+operations*w for p,w in zip(pilots,walls)])
+    return sink
+
+
+def validate_insert(revisions, case, identity, operations, deadline, sink, *, control=False):
+    visits = []
+    sink.update(visits=visits,size_checks=None,complete=False)
+    for side,rev in enumerate(revisions):
+        visit = {}
+        visits.append(visit)
+        insert_visit(rev.conn,case,identity,operations,deadline,visit,control=control and side==1)
+    sink['size_checks'] = dict(compare_sizes([v['after']['totals'] for v in visits],
+                                            'mutable_insert_trajectory',MUTABLE_RELATIONS),
+                               forks=[v['after']['forks'] for v in visits])
+    sink['complete'] = True
+    return sink
+
+
+def insert_control_budget(unchanged, deadline):
+    """Predeclared worst-case 6+6 pairs, both sides, plus full validation; no new pilot."""
+    calibration = unchanged['calibration']
+    operations = calibration['operations']
+    visits = INITIAL_PAIRS+MUTATION_CONFIRMATION_PAIRS
+    clean = sum(visits*(2*p['reset_seconds']+2*operations*w)
+                for p,w in zip(calibration['pilots'],calibration['loop_wall_seconds_per_operation']))
+    checks = sum(visits*statistics.mean(v[side]['check_seconds'] for v in unchanged['initial']['visits'])
+                 for side in (0,1))
+    validation = unchanged['phase_runtime_seconds']['validation']
+    slowed_operations = 2*operations*(visits+1)  # excluded warms AND measured streams, including validation
+    sleep = slowed_operations*INSERT_CONTROL_DELAY
+    return dict(initial_pairs=INITIAL_PAIRS,confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
+                candidate_delayed_operations=slowed_operations,configured_delay_seconds=INSERT_CONTROL_DELAY,
+                predicted_clean_stream_reset_seconds=clean,predicted_check_seconds=checks,
+                validation_seconds=validation,minimum_added_sleep_seconds=sleep,
+                predicted_seconds=clean+checks+validation+sleep,remaining_seconds=deadline-time.monotonic(),
+                limitations='prefix pilot, scheduler rounding, trigger/reset predicate/counter and setup overhead may exceed prediction')
+
+
+def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None):
     if pair_count not in T95:
         raise ValueError('unsupported independent pair count')
     start = time.monotonic()
     pairs = []
     saved = sink if sink is not None else {}
     saved.update(samples=pairs,expected_pairs=pair_count,started_at=utc_now())
+    if case.lifecycle=='insert_trajectory':
+        saved['visits'] = []
     try:
         for round_no in range(pair_count):
             pair = [None,None]
             pairs.append(pair)
+            if case.lifecycle=='insert_trajectory':
+                visits = [{},{}]
+                saved['visits'].append(visits)
             order = [0,1] if round_no%2 == 0 else [1,0]
             for side in order:
                 conn = revisions[side].conn
-                prepare(conn,case)
-                elapsed(conn,case,1,deadline)  # independent warmed batch, excluded
-                pair[side] = elapsed(conn,case,operations,deadline,0.075 if control and side else 0)
+                if case.lifecycle=='insert_trajectory':
+                    value = insert_visit(conn,case,identity,operations,deadline,visits[side],control=control and side==1)
+                    pair[side] = value  # publish only after the complete trajectory and checks
+                else:
+                    prepare(conn,case)
+                    elapsed(conn,case,1,deadline)  # independent warmed batch, excluded
+                    pair[side] = elapsed(conn,case,operations,deadline,0.075 if control and side else 0)
         saved.update(interval(pairs))
     finally:
         saved.update(finished_at=utc_now(),runtime_seconds=time.monotonic()-start)
     return saved
 
 
-def measure(revisions, case, deadline, control=False, sink=None):
+def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None):
     start = time.monotonic()
-    result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',started_at=utc_now(),
-                  validation=validate_case(revisions,case))
-    result['phase_runtime_seconds'] = {'validation':time.monotonic()-start}
+    result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
+                  timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
+                  lifecycle=case.lifecycle,workload_version=case.workload_version,phase_runtime_seconds={})
     if sink is not None:
         sink.append(result)
-    calibration_start = time.monotonic()
-    calibration = calibrate(revisions,case,deadline)
-    result['phase_runtime_seconds']['calibration'] = time.monotonic()-calibration_start
-    result['calibration'] = calibration
-    operations = calibration['operations']
-    result['operations'] = operations
-    result['initial'] = {}
-    result['initial'].update(block(revisions,case,operations,deadline,control,sink=result['initial']))
-    result['status'] = verdict(result['initial'])
-    if result['status'] == 'suspect':
-        result['status'] = 'inconclusive'
-        result['confirmation'] = {}
-        pair_count = MUTATION_CONFIRMATION_PAIRS if case.reset else READ_CONFIRMATION_PAIRS
-        result['confirmation'].update(block(revisions,case,operations,deadline,control,
-                                            sink=result['confirmation'],pair_count=pair_count))
-        result['status'] = verdict(result['confirmation'],True)
-    if result['validation']['size_checks'] is not None:
-        result['space_status'] = result['validation']['size_checks']['status']
-        if result['space_status']=='regression':
-            result['status'] = 'regression'
-    result['runtime_seconds'] = time.monotonic()-start
-    return result
+    inserted = case.lifecycle=='insert_trajectory'
+    installed = False
+    try:
+        if inserted:
+            result['phase'] = 'identity'
+            identity = insert_identity(revisions)
+            result['identity'] = identity
+            result['phase'] = 'calibration'
+            calibration_start = time.monotonic()
+            result['calibration'] = {}
+            if frozen is None:
+                calibrate_insert(revisions,case,identity,deadline,result['calibration'])
+            else:
+                require_equal(identity,frozen['identity'],'frozen INSERT identity')
+                result['calibration'] = frozen['calibration']
+                result['calibration_reused_from'] = frozen['name']
+            result['phase_runtime_seconds']['calibration'] = time.monotonic()-calibration_start
+            calibration = result['calibration']
+            if control:
+                result['control_budget'] = insert_control_budget(frozen,deadline)
+                if result['control_budget']['predicted_seconds']>result['control_budget']['remaining_seconds']:
+                    raise BudgetExpired('insufficient remaining budget for fixed full mutation control')
+                result['control'] = dict(kind='per_new_row_trigger',delay_seconds=INSERT_CONTROL_DELAY,
+                                         seed_max_id=identity['seed_max_id'],counter='perf_gate.delayed_rows')
+                # Install only after clean frozen calibration and the control budget plan.
+
+                install_insert_control(revisions[1].conn,identity['seed_max_id'])
+                installed = True
+            validation_start = time.monotonic()
+            result['phase'] = 'validation'
+            result['validation'] = {}
+            validate_insert(revisions,case,identity,calibration['operations'],deadline,result['validation'],control=control)
+            result['phase_runtime_seconds']['validation'] = time.monotonic()-validation_start
+        else:
+            result['validation'] = validate_case(revisions,case)
+            result['phase_runtime_seconds']['validation'] = time.monotonic()-start
+            result['phase'] = 'calibration'
+            calibration_start = time.monotonic()
+            calibration = calibrate(revisions,case,deadline)
+            result['phase_runtime_seconds']['calibration'] = time.monotonic()-calibration_start
+            result['calibration'] = calibration
+        operations = calibration['operations']
+        result['operations'] = operations
+        result['phase'] = 'initial'
+        result['initial'] = {}
+        options = {'identity':identity} if inserted else {}
+        result['initial'].update(block(revisions,case,operations,deadline,control,sink=result['initial'],**options))
+        result['status'] = verdict(result['initial'])
+        if result['status'] == 'suspect':
+            result['status'] = 'inconclusive'
+            result['phase'] = 'confirmation'
+            result['confirmation'] = {}
+            pair_count = READ_CONFIRMATION_PAIRS if case.lifecycle=='read' else MUTATION_CONFIRMATION_PAIRS
+            result['confirmation'].update(block(revisions,case,operations,deadline,control,
+                                                sink=result['confirmation'],pair_count=pair_count,**options))
+            result['status'] = verdict(result['confirmation'],True)
+        result['timing_status'] = result['status']
+        if result['validation']['size_checks'] is not None:
+            result['space_status'] = result['validation']['size_checks']['status']
+            if result['space_status']=='regression':
+                result['status'] = 'regression'
+        result['complete'],result['phase'] = True,'complete'
+        return result
+    finally:
+        if installed:
+            remove_insert_control(revisions[1].conn)
+            result['control']['removed'] = True
+        result['runtime_seconds'] = time.monotonic()-start
+
+
+def normal_size_checks(report):
+    return report['size_checks'] + [c['validation']['size_checks'] for c in report['cases']
+                                   if c.get('validation',{}).get('size_checks')] + [
+        v['size_checks'] for v in report.get('acceptance_catalog_validation',{}).values() if v.get('size_checks')]
+
+
+def reduce_report(report):
+    """Evidence survives interruption; coverage determines whether PASS is possible."""
+    sizes = normal_size_checks(report)
+    size_regression = any(s['status']=='regression' for s in sizes)
+    if report['size_complete']:
+        report['size_complete'] = bool(sizes) and set(report['required_size_states']) <= {s['state'] for s in sizes}
+    report['size_status'] = ('regression' if size_regression else
+                             'pass' if report['size_complete'] and sizes else 'inconclusive')
+    if report['status']=='error':
+        return
+    if report['config']['verify_control']:
+        report['status'] = ('pass' if report['complete'] and report['size_status']=='pass'
+                             and report.get('acceptance_pass',False) else 'inconclusive')
+        return
+    statuses = {c['timing_status'] for c in report['cases']}
+    report['status'] = ('regression' if size_regression or 'regression' in statuses else
+                        'inconclusive' if not report['complete'] or statuses!={'pass'} or report['size_status']!='pass' else 'pass')
 
 
 def write_report(output, report):
     (output/'results.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
     lines = ['# Focused performance gate', '', f"Status: **{report['status']}**. {report['date']}.",
              f"Normal size gate: **{report['size_status']}**.",
+             f"Complete: **{report['complete']}**. Size coverage complete: **{report['size_complete']}**. Budget exhausted: **{report['budget_exhausted']}**.",
              f"Baseline: `{report['baseline_ref']}`. Candidate: `{report['candidate_ref']}`.",
              f"PostgreSQL: {report.get('postgresql','unknown')}. CPU: {report['cpu']}; CPUs: {report['cpus']}.",
              f"Runner: {report['runner']}. Load: {report['load']}.",
@@ -538,8 +838,17 @@ def write_report(output, report):
             if phase in case and 'n' in case[phase]:
                 b = case[phase]
                 lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']} |")
+    lines.extend(['', '| Case / workload | Phase | Complete | Timing | Combined | Seed / first ID / N |',
+                  '|---|---|---|---|---|---|'])
+    for case in report['cases']:
+        identity = case.get('identity',{})
+        details = f"{identity.get('seed_count','-')} / {identity.get('first_id','-')} / {case.get('operations','-')}"
+        lines.append(f"| {case['name']} / {case['workload_version']} | {case['phase']} | {case['complete']} | {case['timing_status']} | {case['status']} | {details} |")
+        if 'control_budget' in case:
+            lines.extend(['', 'Mutation control budget: `'+json.dumps(case['control_budget'])+'`.', ''])
+    lines.extend(['', 'Required size states: `'+json.dumps(report.get('required_size_states',[]))+'`.'])
     lines.extend(['', '| Size state | Relation / role | Base bytes/pages | Head bytes/pages | Ratio | Limit bytes | Status |', '|---|---|---|---|---:|---:|---|'])
-    for snapshot in report['size_checks'] + [c['validation']['size_checks'] for c in report['cases'] if c.get('validation',{}).get('size_checks')] + ([report['size_control']] if 'size_control' in report else []):
+    for snapshot in normal_size_checks(report) + ([report['size_control']] if 'size_control' in report else []):
         for r in snapshot['relations']:
             lines.append(f"| {snapshot['state']} | {r['relation']} / {r['role']} | {r['baseline_bytes']} / {r['baseline_pages']} | {r['candidate_bytes']} / {r['candidate_pages']} | {r['ratio']} | {r['threshold_bytes']} | {r['status']} |")
     lines.extend(['', 'Phase runtime (seconds): `'+json.dumps(report['runtime_seconds'])+'`.',
@@ -576,14 +885,15 @@ def main(argv=None):
     args = parser().parse_args(argv)
     args.output = args.output.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
-    report = dict(schema_version=1,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    report = dict(schema_version=2,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
                   config=dict(tier=args.tier,groups=args.groups,initial_pairs=INITIAL_PAIRS,
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
-                              budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
+                              insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
+                              insert_control_delay_seconds=INSERT_CONTROL_DELAY,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
     revisions = []
     scratch = None
@@ -602,6 +912,10 @@ def main(argv=None):
         if not 56100 <= args.port_base <= 56298:
             raise ValueError('port-base must be in 56100..56298')
         selected = select([g for g in args.groups.split(',') if g],args.tier)
+        report['required_size_states'] = ['settled_build','churn_vacuum'] + [
+            state for lifecycle,state in (('insert_trajectory','mutable_insert_trajectory'),
+                                          ('reset_each_operation','mutable_vacuum'))
+            if (args.verify_control or any(c.lifecycle==lifecycle and (lifecycle=='insert_trajectory' or c.name=='storage_vacuum_space') for c in selected))]
         report['postgresql'] = command([args.pg_config,'--version'])
         if not report['postgresql'].startswith('PostgreSQL 18.'):
             raise ValueError('performance gate requires PostgreSQL 18')
@@ -640,35 +954,48 @@ def main(argv=None):
         measurement_start = phase
         deadline = DEADLINE
         if args.verify_control:
-            report['acceptance_catalog_validation'] = {c.name:validate_case(revisions,c) for c in CASES}
+            report['acceptance_catalog_validation'] = {}
+            for catalog_case in CASES:
+                if catalog_case.lifecycle=='insert_trajectory':
+                    continue
+                validation = dict(complete=False)
+                report['acceptance_catalog_validation'][catalog_case.name] = validation
+                validation.update(validate_case(revisions,catalog_case))
+                validation['complete'] = True
             case = next(c for c in CASES if c.name=='storage_point_lookup')
             unchanged = measure(revisions,case,deadline,sink=report['cases'])
             unchanged['name'] = 'control_unchanged'
             slowed = measure(revisions,case,deadline,True,sink=report['cases'])
             slowed['name'] = 'control_sql_slowdown'
+            insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
+            unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'])
+            unchanged_insert['name'] = 'control_insert_unchanged'
+            report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
+            slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert)
+            slowed_insert['name'] = 'control_insert_per_row_slowdown'
             report['size_checks'].append(churn_sizes(revisions))
             before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
             # Explicit acceptance-only SQL fault: force many small BM25 build segments.
             revisions[1].conn.script('ALTER INDEX docs_bm25 SET (build_segments=64); REINDEX INDEX docs_bm25')
             require_equal(before,revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs"),'size control logical rows')
             report['size_control'] = size_snapshot(revisions,'control_build_segments_64')
-            report['status'] = 'pass' if unchanged['status']=='pass' and slowed['status']=='regression' and all(s['status']=='pass' for s in report['size_checks']) and report['size_control']['status']=='regression' else 'inconclusive'
+            report['acceptance_pass'] = (unchanged['status']=='pass' and slowed['timing_status']=='regression'
+                                         and unchanged_insert['status']=='pass' and slowed_insert['timing_status']=='regression'
+                                         and slowed_insert['confirmation']['n']==MUTATION_CONFIRMATION_PAIRS
+                                         and slowed_insert['confirmation']['lower']>MATERIAL
+                                         and all(s['status']=='pass' for s in normal_size_checks(report))
+                                         and report['size_control']['status']=='regression')
         else:
             for case in selected:
                 measure(revisions,case,deadline,sink=report['cases'])
                 write_report(args.output,report)
             report['size_checks'].append(churn_sizes(revisions))
-            statuses = {c['status'] for c in report['cases']} | {s['status'] for s in report['size_checks']}
-            report['status'] = 'regression' if 'regression' in statuses else 'inconclusive' if statuses != {'pass'} else 'pass'
-        report['size_status'] = 'regression' if any(s['status']=='regression' for s in report['size_checks']) or any(c.get('space_status')=='regression' for c in report['cases']) else 'pass'
         if time.monotonic()>=deadline:
-            report['size_status'] = 'inconclusive'
             raise BudgetExpired('global runtime budget exhausted after final size checks')
+        report['complete'],report['size_complete'] = True,True
         report['runtime_seconds']['measurement_validation'] = time.monotonic()-phase
-    except BudgetExpired as exc:
-        report['status'],report['error'] = 'inconclusive',str(exc)
-        if report['cases']:
-            report['cases'][-1]['status'] = 'inconclusive'
+    except Inconclusive as exc:
+        report['budget_exhausted'],report['error'] = isinstance(exc,BudgetExpired),str(exc)
     except Exception as exc:
         report['status'],report['error'] = 'error',f'{type(exc).__name__}: {exc}'
     finally:
@@ -686,6 +1013,7 @@ def main(argv=None):
             shutil.rmtree(scratch)
         report['runtime_seconds']['cleanup'] = time.monotonic()-phase
         report['runtime_seconds']['total'] = time.monotonic()-start
+        reduce_report(report)
         write_report(args.output,report)
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3}[report['status']]
