@@ -77,6 +77,8 @@
 bool		sift_enable_agg = true;
 bool		sift_agg_preagg = true;
 static bool sift_agg_dense = true;
+static bool sift_agg_semi_lut = true;
+static int	sift_agg_semi_lut_size = 4096;
 bool		sift_enable_topn = true;
 static bool sift_test_agg_wait = false;
 static int	sift_agg_combo_cache = 1 << 20;
@@ -109,6 +111,14 @@ sift_agg_init(void)
 							 "Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples.",
 							 NULL, &sift_agg_dense, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_semi_lut",
+							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
+							 NULL, &sift_agg_semi_lut, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_semi_lut_size",
+							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
+							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_topn",
 							 "Enables ORDER BY .. LIMIT from the column units (Custom Scan (SiftAgg) with Top-N), with sift.enable_agg.",
 							 NULL, &sift_enable_topn, true,
@@ -537,6 +547,9 @@ typedef struct ComboSt
 	bool		resettable;		/* no join, no dictionary leaf: nothing outside the cache holds its ids */
 	bool		by_id;			/* one 64-bit leaf, no join: the entry of a tuple is the id of its value, there is no table of entries */
 	MapTab	   *map;
+	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */
+	int32		slo;
+	uint32		snlut;
 	ExprState **slot;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* the join keys that are expressions */
 	int16	   *tlen;			/* per slot: the length and pass-by-value of its result, for the direct slots */
@@ -688,6 +701,8 @@ typedef struct AggExec
 	int			nfilter;		/* how many */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
+	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
+	Size		semi_bytes;		/* and their size */
 	const uint64 *rsel;			/* the rows of the unit that still count, when the leaves are read for them only */
 	List	   *pack;			/* the plan's spec, for the workers */
 	ParamListInfo params;
@@ -6822,6 +6837,112 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->arm_mask = ~(uint32) 0;
 }
 
+/*
+ * A semi or anti join on the integer leaf of the rows (`col IN (SELECT k FROM t)`, EXISTS, NOT EXISTS) that gives no column and keeps no
+ * other condition is a test of the leaf against the keys of the table: a byte table over their range, built once, answers it for every
+ * tuple, where the generic path makes a cache entry per distinct value of the leaf (a hash of the table's rows each).
+ */
+/* does an expression read one of the first n parameters (the leaves of a combo)? */
+static bool
+reads_leaf_param(Node *n, int *nleaves)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < *nleaves)
+		return true;
+	return expression_tree_walker(n, reads_leaf_param, nleaves);
+}
+
+static void
+semi_lut_build(AggExec *ex, int ci)
+{
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ComboSt    *cs = &ex->cs[ci];
+	const MapTab *m = cs->map;
+	int64		lo = PG_INT32_MAX,
+				hi = PG_INT32_MIN;
+	bool	   *keep;
+
+	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
+		cb->leaf[0] >= ex->nbase || ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32 || !sift_agg_semi_lut ||
+		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && reads_leaf_param((Node *) cb->slot[j->fslot].expr, &cb->nleaves)))
+		return;
+	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
+	keep = palloc(Max(m->nrow, 1) * sizeof(bool));
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		keep[r] = m->kint[r] >= PG_INT32_MIN && m->kint[r] <= PG_INT32_MAX;
+		if (keep[r] && j->fslot >= 0)
+		{
+			bool		isnull;
+			Datum		d;
+
+			for (int c = 0; c < j->ncol; c++)
+				bind_param(ex, cb->nleaves + c, m->col[(size_t) r * m->ncol + c], m->cnull[(size_t) r * m->ncol + c]);
+			d = ExecEvalExprSwitchContext(cs->slot[j->fslot], ex->lutcx, &isnull);
+			keep[r] = !isnull && DatumGetBool(d);
+			if ((r & 1023) == 1023)
+				ResetExprContext(ex->lutcx);
+		}
+		if (keep[r])
+		{
+			lo = Min(lo, m->kint[r]);
+			hi = Max(hi, m->kint[r]);
+		}
+	}
+	ResetExprContext(ex->lutcx);
+	if (lo <= hi && hi - lo + 1 > (int64) sift_agg_semi_lut_size * 1024)
+	{
+		pfree(keep);
+		return;
+	}
+	cs->slo = lo <= hi ? (int32) lo : 0;
+	cs->snlut = lo <= hi ? (uint32) (hi - lo + 1) : 0;
+	cs->slut = MemoryContextAllocZero(ex->cxt, cs->snlut + SIFT_AGG_PAD);
+	for (uint32 r = 0; r < m->nrow; r++)
+		if (keep[r])
+			cs->slut[m->kint[r] - cs->slo] = 1;
+	pfree(keep);
+	ex->nsemi++;
+	ex->semi_bytes += cs->snlut;
+}
+
+/* the tuples of `in` that pass a semi (the key is in the table) or anti (it is not, or NULL) join of the table, to the next stage */
+static void join_stage(AggExec *ex, int s, Tup *in);
+
+static void
+semi_stage(AggExec *ex, int s, Tup *in)
+{
+	int			ci = ex->jcombo[s];
+	ComboSt    *cs = &ex->cs[ci];
+	SiftAggCombo *cb = &ex->spec->combo[ci];
+	const bool	want = ex->spec->join[cb->join].kind == SJ_SEMI;
+	const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);
+	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
+	const int32 *x = (const int32 *) v->data;
+	Tup		   *own = &ex->stage[s];
+	int			k = 0;
+
+	for (int i = 0; i < in->n; i++)
+	{
+		bool		hit = !(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo];
+
+		if (hit != want)
+			continue;
+		own->sel[k] = in->sel[i];
+		own->tidx[k] = in->tidx[i];
+		own->ridx[k] = in->ridx[i];
+		for (int y = 0; y < s; y++)
+			own->cout[ex->jcombo[y]][k] = in->cout[ex->jcombo[y]][i];
+		own->cout[ci][k] = 0;
+		k++;
+	}
+	own->n = k;
+	if (k > 0)
+		join_stage(ex, s + 1, own);
+}
+
 /* applies the lookup joins one at a time: a tuple is repeated per match of its key, and dropped (INNER) or kept once (LEFT) without one */
 static void
 join_stage(AggExec *ex, int s, Tup *in)
@@ -6840,6 +6961,11 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 	ci = ex->jcombo[s];
 	cs = &ex->cs[ci];
+	if (cs->slut)
+	{
+		semi_stage(ex, s, in);
+		return;
+	}
 	own = &ex->stage[s];
 	eid = ex->peid;
 	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL);
@@ -8960,7 +9086,10 @@ scan_buffers(AggExec *ex)
 	{
 		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		if (s->combo[ci].join >= 0)
+		{
 			ex->cs[ci].map = map_load(ex, &s->join[s->combo[ci].join]);
+			semi_lut_build(ex, ci);
+		}
 	}
 	ex->calive = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->peid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -10851,6 +10980,11 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
 		if (c->nwide > 0)
 			ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
+		if (c->nsemi > 0)
+		{
+			ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);
+			ExplainPropertyInteger("Semi Lookup Table Size", "kB", (c->semi_bytes + 1023) / 1024, es);
+		}
 		sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
 		ExplainPropertyInteger("Units", NULL, c->n_units, es);
 		if (c->pa_on)

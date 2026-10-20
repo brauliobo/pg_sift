@@ -1,0 +1,164 @@
+-- A semi or anti join (IN (SELECT ..), EXISTS, NOT EXISTS) on an integer leaf of Custom Scan (SiftAgg) is answered from a byte table over the
+-- keys of the joined table, built when the scan starts (sift.agg_semi_lut, sift.agg_semi_lut_size; docs/SET-FILTERS.md). Every statement
+-- is run with the table, with sift.agg_semi_lut = off (the generic lookup join) and with sift.enable_agg = off (the normal plan): the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 997 = 0 THEN NULL WHEN i <= 5 THEN -i WHEN i <= 10 THEN 2147483647 - i ELSE 1 + (i::bigint * 7919) % 30000 END,
+       (i % 50)::int2, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 300000) i;
+CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, day, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- sets of keys: a group membership (soft deleted, a NULL key, a duplicate), an attribute table, int2 and date keys, int8 keys, a table with no rows
+CREATE TABLE dim_b (group_id int, dim_a_id int, deleted_at timestamptz);
+INSERT INTO dim_b SELECT g, 1 + (g * 1000 + i * 37) % 30000, CASE WHEN i % 10 = 0 THEN now() END
+FROM generate_series(1, 8) g, generate_series(1, 500 * g) i;
+INSERT INTO dim_b VALUES (3, NULL, NULL), (3, 11, NULL), (3, 11, NULL), (9, -2, NULL), (9, -3, NULL), (9, 2147483640, NULL), (9, 2147483639, NULL), (9, 5, NULL);
+CREATE TABLE dims (id int PRIMARY KEY, country int, tier int2, active boolean);
+INSERT INTO dims SELECT i, i % 60, (i % 5)::int2, i % 7 <> 0 FROM generate_series(1, 30000) i;
+CREATE TABLE codes (code int2, label text);
+INSERT INTO codes SELECT i::int2, 'c' || i FROM generate_series(1, 50, 3) i;
+CREATE TABLE holidays (d date);
+INSERT INTO holidays SELECT date '2024-01-01' + i * 11 FROM generate_series(0, 60) i;
+CREATE TABLE dim_b8 (dim_a_id int8);
+INSERT INTO dim_b8 SELECT 1 + i * 13 FROM generate_series(0, 2000) i;
+INSERT INTO dim_b8 VALUES (5000000000), (-5000000000), (4294967297), (NULL), (-3000000000);
+CREATE TABLE dim_b_nn (dim_a_id int NOT NULL);
+INSERT INTO dim_b_nn SELECT 1 + i * 17 FROM generate_series(0, 1500) i;
+CREATE TABLE nothing (dim_a_id int);
+CREATE TABLE sparse (dim_a_id int);
+INSERT INTO sparse SELECT generate_series(1, 2000) UNION ALL SELECT 3000000;
+ANALYZE dim_b; ANALYZE dims; ANALYZE codes; ANALYZE holidays; ANALYZE dim_b8; ANALYZE dim_b_nn; ANALYZE nothing; ANALYZE sparse;
+
+-- the byte tables of an EXPLAIN ANALYZE, and whether the plan is the pushed one
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Semi Lookup Tables:%' THEN r := r || ' semi tables ' || trim(split_part(l, ':', 2)); END IF;
+		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_generic_join bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_semi_lut = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_semi_lut;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_generic_join := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- IN, EXISTS and NOT EXISTS over a membership table (its own conditions: the group, the soft delete), a NULL key and a duplicate; the whole table
+-- (the last two) spans more than the byte table holds (group 9: keys from -3 to 2147483640): the generic join
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3 AND deleted_at IS NULL) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 5) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 3) GROUP BY kind$$);
+SELECT * FROM same($$SELECT count(*) AS n, count(dim_a_id) AS c FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b)$$);
+-- a dimension attribute: the keys of the rows of a table that have it
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT id FROM dims WHERE country = 7) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT id FROM dims WHERE country IN (7, 8, 9) AND tier >= 2 AND active) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.country < 30) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND NOT d.active) GROUP BY kind$$);
+-- two semi joins and an anti join in one query, and with the filters of the leaves
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE day >= '2024-06-01' AND small_id < 40
+	AND dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 6) AND dim_a_id IN (SELECT id FROM dims WHERE country < 40)
+	AND NOT EXISTS (SELECT 1 FROM dim_b_nn x WHERE x.dim_a_id = ev.dim_a_id) GROUP BY kind$$);
+-- int2 and date keys, and keys of another integer type
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE small_id IN (SELECT code FROM codes) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE small_id NOT IN (SELECT code FROM codes) GROUP BY kind$$);
+SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE day IN (SELECT d FROM holidays)$$);
+SELECT * FROM same($$SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM holidays h WHERE h.d = ev.day)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b8)$$);
+SELECT * FROM same($$SELECT count(*) AS n, count(dim_a_id) AS c FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b8 m WHERE m.dim_a_id = ev.dim_a_id)$$);
+-- NOT IN of a table whose key can be NULL stays on the hashed subplan (the NULL makes the answer empty); of NOT NULL columns it is the same answer
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM dim_b8)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM dim_b_nn)$$);
+-- a table with no rows, and no row that passes
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM nothing)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM nothing x WHERE x.dim_a_id = ev.dim_a_id)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT id FROM dims WHERE country = 99)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.country = 99)$$);
+-- a condition of the table that reads the leaf (a table per tuple: the generic join), and an inner join as well
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.tier = ev.small_id % 5) GROUP BY kind$$);
+SELECT * FROM same($$SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE ev.dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 4) GROUP BY d.country$$);
+
+-- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys keep the generic join, the answer is the same
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_default;
+SET sift.agg_semi_lut_size = 1024;
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_1mb;
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$);
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS span_2000_1mb;
+SET sift.agg_semi_lut_size = 0;
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS size_0;
+RESET sift.agg_semi_lut_size;
+SET sift.agg_semi_lut = off;
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS lut_off;
+RESET sift.agg_semi_lut;
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS lut_on;
+
+-- from workers: each builds its table
+ALTER TABLE ev SET (parallel_workers = 2);
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 8) GROUP BY kind$$);
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.country < 30) GROUP BY kind$$);
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+ALTER TABLE ev RESET (parallel_workers);
+
+-- a rescan (the inner side of a nested loop) replays the same groups; a prepared statement with the parameter in the subquery, custom and generic
+SET enable_material = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SELECT plan_of($$SELECT g, count(*) AS n FROM generate_series(1, 3) g CROSS JOIN LATERAL (SELECT kind FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 2) GROUP BY kind) k GROUP BY g ORDER BY g$$) AS rescanned;
+SELECT g, count(*) AS n FROM generate_series(1, 3) g CROSS JOIN LATERAL (SELECT kind FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 2) GROUP BY kind) k GROUP BY g ORDER BY g;
+RESET enable_material;
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+PREPARE by_group(int) AS SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = $1) GROUP BY kind ORDER BY kind;
+CREATE FUNCTION same_group(g int) RETURNS TABLE (result_rows bigint, vs_generic_join bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS EXECUTE by_group(%s)', g);
+	SET LOCAL sift.agg_semi_lut = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS EXECUTE by_group(%s)', g);
+	RESET sift.agg_semi_lut;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_generic_join := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen;
+	RETURN NEXT;
+END $$;
+SET plan_cache_mode = force_custom_plan;
+SELECT plan_of('EXECUTE by_group(2)') AS custom;
+SELECT * FROM same_group(2);
+SET plan_cache_mode = force_generic_plan;
+SELECT plan_of('EXECUTE by_group(2)') AS generic;
+SELECT * FROM same_group(2);
+SELECT * FROM same_group(7);
+RESET plan_cache_mode;
+
+-- the table is read under the snapshot of the scan: this transaction's own deletes, inserts and updates of the membership table
+BEGIN;
+DELETE FROM dim_b WHERE group_id = 5 AND dim_a_id % 2 = 0;
+INSERT INTO dim_b SELECT 5, 20000 + i, NULL FROM generate_series(1, 300) i;
+UPDATE dim_b SET deleted_at = now() WHERE group_id = 3 AND dim_a_id < 100;
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id IN (3, 5) AND deleted_at IS NULL) GROUP BY kind$$);
+ROLLBACK;

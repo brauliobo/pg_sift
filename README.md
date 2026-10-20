@@ -137,7 +137,7 @@ SELECT sift_count('news', 'power AND plant');
 ## Limits
 
 - **Platforms:** PostgreSQL 17 or 18 (x86-64 tested); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
-- **Ports:** search only; the column engine stays PostgreSQL-only in 3.1 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
+- **Ports:** search only; the column engine stays PostgreSQL-only in 3.0 ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
 - **Replication:** publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
 - **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
 - **Weaker than other systems:** text analysis and the narrow parts of the column engine ([Compared with](#compared-with)).
