@@ -87,6 +87,10 @@ SELECT count(*) AS bad FROM rnd a JOIN rnd b ON b.i = a.i % 2000 + 1
 -- tokens are already folded: re-analyzing a token yields itself
 SELECT count(*) AS bad FROM rnd, sift.tokenize(d) t WHERE toks(t.token) IS DISTINCT FROM t.token;
 
+-- only NULL selects the default analyzer; a non-NULL zero OID is opened
+SELECT token FROM sift.tokenize('Hello', NULL);
+SELECT token FROM sift.tokenize('Hello', 0::oid::regclass);
+
 -- the analyzer of a relation that is not a sift index
 CREATE TABLE plain (body text);
 CREATE INDEX plain_btree ON plain (body);

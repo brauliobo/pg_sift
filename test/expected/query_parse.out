@@ -263,6 +263,13 @@ SELECT sift.parse_query('a', NULL), sift.parse_query(NULL);
  a           | 
 (1 row)
 
+-- InvalidOid selects the default analyzer, including a non-NULL zero OID
+SELECT sift.parse_query('Hello', 0::oid::regclass);
+ parse_query 
+-------------
+ hello
+(1 row)
+
 SELECT sift.parse_query('a', 'pg_class'::regclass);
 ERROR:  "pg_class" is not an index
 SELECT sift.parse_query('a', 'pg_class_oid_index'::regclass);

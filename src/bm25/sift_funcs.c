@@ -34,20 +34,12 @@
 static void
 analyzer_config(Oid indexoid, SiftAnalyzerConfig *cfg)
 {
-	Relation	index;
-
 	if (!OidIsValid(indexoid))
 	{
 		sift_analyzer_config_default(cfg);
 		return;
 	}
-	index = index_open(indexoid, AccessShareLock);
-	if (index->rd_rel->relam != sift_catalog()->am)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
-	sift_analyzer_config_from_index(index, cfg);
-	index_close(index, AccessShareLock);
+	sift_analyzer_config_lookup_index(indexoid, cfg);
 }
 
 static SiftQuery *
