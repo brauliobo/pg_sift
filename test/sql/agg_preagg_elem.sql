@@ -168,7 +168,7 @@ SELECT sift.col_verify('ac_col', true);
 SELECT * FROM pa_check('ac');
 RESET max_parallel_maintenance_workers;
 
--- 7. a minor 3 index that gets minor 4 segments (rows inserted and sealed after the format changed): the units of each answer by what they hold
+-- 7. a minor 3 index that gets default minor 6 segments (rows inserted and sealed after the format changed): the units of each answer by what they hold
 SET sift.col_format_minor = 3;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(400001, 405000) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
