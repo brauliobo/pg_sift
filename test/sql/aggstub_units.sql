@@ -77,12 +77,12 @@ SELECT count(*) = (SELECT count(*) FROM t0) AS deleted_rows_present,
 FROM sift._test_aggstub_dump('t_col', 0) d;
 SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
 									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
 SELECT diffs('t_col', 0, 't', 'id') AS id_diffs, diffs('t_col', 9, 't', 's') AS s_diffs, diffs('t_col', 14, 't', 'lower(s)') AS lower_diffs;
 -- VACUUM removed whole pages' worth of rows; a superblock with none gives no unit
 DELETE FROM t WHERE id > 3000 AND id <= 6000;
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) < :units_before AS fewer_units, sum(nrow) = (SELECT count(*) FROM t) AS all_rows FROM sift._test_aggstub_units('t_col');
 SELECT diffs('t_col', 0, 't', 'id') AS id_diffs;
 -- a rolled back insert is a row until VACUUM too
@@ -90,7 +90,7 @@ BEGIN;
 INSERT INTO t (id, s) VALUES (100001, 'rolled back');
 ROLLBACK;
 SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) WHERE val = '100001';
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) AS rolled_back_present FROM sift._test_aggstub_dump('t_col', 0) WHERE val = '100001';
 
 -- HOT updates (pad is not indexed): the row stays under the TID of the root of the chain, also once the old version is gone
@@ -101,7 +101,7 @@ UPDATE t SET pad = 'hot' WHERE id % 7 = 0;
 SELECT count(*) AS moved_tuples FROM t JOIN t0 USING (id) WHERE t.ctid <> t0.tid AND t.pad = 'hot' HAVING count(*) > 0;
 SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
 									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) AS differences FROM ((SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0) EXCEPT SELECT tid, id::text FROM t0)
 									 UNION ALL (SELECT tid, id::text FROM t0 EXCEPT SELECT tid, val FROM sift._test_aggstub_dump('t_col', 0))) x;
 SELECT count(*) AS moved_tuples_after_vacuum FROM t JOIN t0 USING (id) WHERE t.ctid <> t0.tid AND t.pad = 'hot' HAVING count(*) > 0;
@@ -114,7 +114,7 @@ SELECT count(*) AS n0, count(*) FILTER (WHERE id % 5 = 1) AS nu FROM t \gset
 UPDATE t SET s = 'updated ' || id WHERE id % 5 = 1;
 SELECT count(*) = :n0 + :nu AS old_versions_present FROM sift._test_aggstub_dump('t_col', 0);
 SELECT count(*) = :nu AS new_versions FROM sift._test_aggstub_dump('t_col', 9) WHERE val LIKE 'updated%';
-VACUUM t;
+VACUUM (DISABLE_PAGE_SKIPPING) t;
 SELECT count(*) = (SELECT count(*) FROM t) AS only_live_rows FROM sift._test_aggstub_dump('t_col', 0);
 -- (a HOT updated row has the TID of its root, the table the one of its last version: compare by id)
 SELECT count(*) AS pair_diffs FROM (

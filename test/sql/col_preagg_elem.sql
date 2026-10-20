@@ -67,7 +67,7 @@ END $f$;
 
 CREATE TABLE pe (id int, grp int, items jsonb, tags jsonb, m jsonb, pad text);
 INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(1, 40000) g;
-VACUUM (FREEZE, ANALYZE) pe;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pe;
 
 CREATE FUNCTION pe_battery(idx regclass) RETURNS TABLE(what text, checked bool, bad bigint) LANGUAGE sql AS $$
 	WITH it AS (SELECT $s$jsonb_array_elements(CASE WHEN jsonb_typeof(d.items) = 'array' THEN d.items ELSE '[]' END) e$s$ AS src),
@@ -113,7 +113,7 @@ SELECT units_with('pe_col', 'items[].k', $$items @> '[{"k": 5}]'$$) AS k_number_
 CREATE TABLE pc (id int, items jsonb, pad text);
 INSERT INTO pc SELECT g, jsonb_build_array(jsonb_build_object('k', CASE WHEN g <= 3000 THEN 'u' || lpad(g::text, 5, '0') ELSE 'k' || g % 5 END, 't', 't' || g % 3)),
        repeat('x', 300) FROM generate_series(1, 12000) g;
-VACUUM (FREEZE, ANALYZE) pc;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pc;
 CREATE INDEX pc_col ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}');
 CREATE INDEX pc_cube ON pc USING sift_col (id, items) WITH (paths = 'items[]{k text, t text}', preagg = 'rollup(items[].k)');
 SELECT (SELECT count(DISTINCT sb) FROM sift.col_unit_agg('pc_col', 'id')) AS units,
@@ -152,7 +152,7 @@ SELECT count(*) FILTER (WHERE NOT exact) > 0 AS dirty_inexact FROM sift.col_unit
 -- promotion and a merge rewrite the units: the dead rows are gone and the new units carry new element cubes
 SELECT sift.col_promote('pe_col') >= 0 AS promoted;
 SELECT sift.col_merge('pe_col', true) >= 0 AS merged;
-VACUUM (FREEZE) pe;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
 SELECT count(*) FILTER (WHERE NOT exact) AS inexact FROM sift.col_unit_agg('pe_col', 'id');
@@ -176,7 +176,7 @@ SET sift.col_format_minor = 3;
 INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(42001, 46000) g;
 SELECT sift.col_promote('pe_col') >= 0 AS promoted;
 RESET sift.col_format_minor;
-VACUUM (FREEZE) pe;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
 SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');

@@ -21,7 +21,7 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 FROM generate_series(1, 24000) i;
 CREATE INDEX cs_bm ON cs USING sift (memo);
 CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (write_buffer_limit = 256);
-VACUUM (ANALYZE) cs;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cs;
 
 -- the plans that are not SiftAgg are disabled for the pushed run; the reference has the planner's own choice with sift.enable_agg off
 CREATE FUNCTION cs_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
@@ -141,7 +141,7 @@ ROLLBACK;
 SELECT * FROM cs_stage('rollback');
 
 -- the same after VACUUM
-VACUUM cs;
+VACUUM (DISABLE_PAGE_SKIPPING) cs;
 SELECT * FROM cs_stage('vacuum');
 
 -- and after the write buffers become immutable ones
@@ -175,7 +175,7 @@ INSERT INTO cs_l (store, note, memo)
 SELECT 1 + i % 20, repeat(chr(97 + i % 4), 300) || (i % 7), cs_words(i) FROM generate_series(1, 6000) i;
 CREATE INDEX cs_l_bm ON cs_l USING sift (memo);
 CREATE INDEX cs_l_col ON cs_l USING sift_col (store, note);
-VACUUM (ANALYZE) cs_l;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cs_l;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''clean wire'' AND note <> repeat(''a'', 300) || ''1'' GROUP BY store ORDER BY store') AS long_ne;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''gift'' AND note = repeat(''b'', 300) || ''2'' GROUP BY store ORDER BY store') AS long_eq;
 SELECT cs_check('SELECT store, count(*) AS n FROM cs_l WHERE memo @@> ''fast OR late'' AND note LIKE ''cccc%'' GROUP BY store ORDER BY store') AS long_prefix;

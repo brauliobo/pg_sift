@@ -77,7 +77,7 @@ SELECT g,
        CASE WHEN random() < 0.1 THEN NULL ELSE (random() * 40)::int - 20 END,
        repeat('x', 200)
 FROM generate_series(1, 60000) g;
-VACUUM (FREEZE, ANALYZE) pa;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pa;
 
 -- one battery: every leaf, every dimension with each kind of measure, the structure
 CREATE FUNCTION pa_battery(idx regclass) RETURNS TABLE(what text, checked bool, bad bigint, sumsq_null bigint) LANGUAGE sql AS $$
@@ -113,7 +113,7 @@ SELECT count(*) FILTER (WHERE NOT exact) AS inexact, count(*) > 1 AS several FRO
 CREATE TABLE pz (g text, f float8, m int);
 INSERT INTO pz SELECT 'z', '-0'::float8, 1 FROM generate_series(1, 3);
 INSERT INTO pz SELECT 'p', 0.5, 1 FROM generate_series(1, 3);
-VACUUM (FREEZE) pz;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pz;
 CREATE INDEX pz_col ON pz USING sift_col (g, f, m);
 SELECT key, n, nn, sum_float::text FROM sift.col_unit_hist('pz_col', 'g', 'f') ORDER BY key;
 
@@ -130,7 +130,7 @@ SELECT count(*) FILTER (WHERE NOT exact) > 0 AS dirty_inexact FROM sift.col_unit
 -- promotion and a merge rewrite the units: the dead rows are gone and the new units carry new sums
 SELECT sift.col_promote('pa_col') >= 0 AS promoted;
 SELECT sift.col_merge('pa_col', true) >= 0 AS merged;
-VACUUM (FREEZE) pa;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pa;
 SELECT sift.col_verify('pa_col');
 SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col');
 SELECT count(*) FILTER (WHERE NOT exact) AS inexact FROM sift.col_unit_agg('pa_col', 'i4');
