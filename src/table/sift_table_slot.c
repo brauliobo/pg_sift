@@ -12,9 +12,11 @@
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/transam.h"
 #include "executor/tuptable.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/relcache.h"
 
 #include "sift_table.h"
 
@@ -119,14 +121,60 @@ sift_slot_getsomeattrs(TupleTableSlot *slot, int natts)
 	MemoryContextSwitchTo(old);
 }
 
-/* The transaction columns read as a tuple made by heap_form_tuple does: zero (the row's visibility is the table's, not the slot's) */
+/* The last tombstone of the row (a deleter, an updater or a locker, aborted or not, as the heap keeps the xmax of an aborted deleter) */
+static const SiftTblTomb *
+row_tomb(Relation rel, SiftTblRel *st, ItemPointer tid)
+{
+	int			n;
+	const SiftTblTomb *e;
+
+	sift_tbl_tomb_sync(rel, st);
+	e = sift_tbl_tomb_find(st, sift_key_from_tid(tid), &n);
+	return e ? &e[n - 1] : NULL;
+}
+
+/*
+ * The transaction columns are the stored versions of the row, read by its TID when asked: xmin and cmin of the write buffer record or of the
+ * version section of its unit (a frozen row: FrozenTransactionId and command 0), xmax and cmax of its last tombstone (none: 0). A slot that
+ * holds a row that is not stored yet (no TID: a row a BEFORE trigger sees) reads as a tuple made by heap_form_tuple does, zero.
+ */
 static Datum
 sift_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
+	Relation	rel;
+	SiftTblRel *st;
+	SiftTblRowVer rv;
+	const SiftTblTomb *tomb;
+	Datum		result;
+
 	if (attnum > MinTransactionIdAttributeNumber || attnum < MaxCommandIdAttributeNumber)
 		return TTSOpsVirtual.getsysattr(slot, attnum, isnull);
 	*isnull = false;
-	return (Datum) 0;
+	if (!ItemPointerIsValid(&slot->tts_tid))
+		return (Datum) 0;
+	rel = RelationIdGetRelation(slot->tts_tableOid);
+	st = sift_tbl_rel(rel);
+	if (!sift_tbl_fetch_lazy(rel, st, &slot->tts_tid, &rv))
+		elog(ERROR, "sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
+			 ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid), RelationGetRelationName(rel));
+	sift_tbl_free_row(&rv);
+	tomb = row_tomb(rel, st, &slot->tts_tid);
+	switch (attnum)
+	{
+		case MinTransactionIdAttributeNumber:
+			result = TransactionIdGetDatum(TransactionIdIsValid(rv.xmin) ? rv.xmin : FrozenTransactionId);
+			break;
+		case MinCommandIdAttributeNumber:
+			result = CommandIdGetDatum(rv.cmin);
+			break;
+		case MaxTransactionIdAttributeNumber:
+			result = TransactionIdGetDatum(tomb ? tomb->xid : InvalidTransactionId);
+			break;
+		default:
+			result = CommandIdGetDatum(tomb ? tomb->cid : 0);
+	}
+	RelationClose(rel);
+	return result;
 }
 
 /* Decodes what is left: the callbacks below read tts_values of every attribute */
