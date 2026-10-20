@@ -740,6 +740,7 @@ typedef struct AggExec
 	SiftSrcVec *uvec;
 	bool	   *uvec_ok;
 	uint32	  **gofs;			/* per array leaf: elem_offs of the unit, NULL when not built yet */
+	uint32	  **gpar;			/* per array leaf: the row that owns each of its elements in the unit (array_parent), NULL when not built yet */
 	int			qlevel;			/* 1: element queries */
 	uint32	   *parent;
 	uint32	   *offs;
@@ -1272,6 +1273,20 @@ elem_offs(AggExec *ex, int leaf)
 		ex->gofs[leaf] = offs;
 	}
 	return ex->gofs[leaf];
+}
+
+/* the row that owns each element of the array leaf in the unit */
+static const uint32 *
+array_parent(AggExec *ex, int leaf)
+{
+	if (ex->gpar[leaf] == NULL)
+	{
+		const uint32 *offs = elem_offs(ex, leaf);
+
+		ex->gpar[leaf] = MemoryContextAlloc(ex->ucxt, (Size) offs[ex->unit.nrow] * sizeof(uint32) + SIFT_AGG_PAD);
+		sift_colk->expand_parents(offs + 1, ex->unit.nrow, ex->gpar[leaf]);
+	}
+	return ex->gpar[leaf];
 }
 
 /* ---------- numbers ---------- */
@@ -1891,6 +1906,50 @@ eval_ncmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *
 	for (int i = 0; i < n; i++)
 		if (!ex->nb[i] && (x[i] == SIFT_NX_NAN ? st->nan_res : st->konst == 1 || (st->konst < 0 && (cmp_signs[st->nop] >> ((x[i] > st->cn) - (x[i] < st->cn) + 1) & 1))))
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+}
+
+static inline int64
+vec_int(const void *data, SiftSrcVecType t, int64 i)
+{
+	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
+}
+
+/* PostgreSQL's order of float8: NaN equals NaN and is greater than every number, -0 equals 0 */
+static inline int
+float_order(double a, double b)
+{
+	return isnan(a) ? !isnan(b) : isnan(b) ? -1 : (a > b) - (a < b);
+}
+
+/* an element leaf against a leaf of its row: the value of the row for each element is gathered by the owner of the element, NULL on either side is not true */
+static void
+eval_elem_row(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *ev = get_vec(ex, p->leaf),
+			   *rv = get_vec(ex, p->leaf2);
+	const SiftSrcLeaf *el = &ex->lay->leaf[p->leaf],
+			   *rl = &ex->lay->leaf[p->leaf2];
+	const uint32 *par = array_parent(ex, el->parent) + start;
+	uint8		sign = cmp_signs[p->op];
+
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+	{
+		int			c;
+
+		if ((ev->isnull && ev->isnull[start + i]) || (rv->isnull && rv->isnull[par[i]]))
+			continue;
+		if (el->vtype == SCV_F64)
+			c = float_order(((const double *) ev->data)[start + i], ((const double *) rv->data)[par[i]]);
+		else
+		{
+			int64		a = vec_int(ev->data, el->vtype, start + i),
+						b = vec_int(rv->data, rl->vtype, par[i]);
+
+			c = (a > b) - (a < b);
+		}
+		out[i >> 6] |= (uint64) (sign >> (c + 1) & 1) << (i & 63);
+	}
 }
 
 /* out = ~out, then the NULL rows out */
@@ -3318,6 +3377,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_ANY_ELEM:
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
+			break;
+		case SAP_ELEM_ROW:
+			eval_elem_row(ex, p, start, n, out);
 			break;
 		case SAP_TYPE:
 		case SAP_WIDE:
@@ -8757,6 +8819,7 @@ process_unit(AggExec *ex)
 	MemoryContextReset(ex->ucxt);
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
+	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < s->npreds_total; i++)
 		ex->ps[i].rowmask_ok = false;
 	ex->n_units++;
@@ -11087,6 +11150,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
 	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
 	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->lutcx = CreateStandaloneExprContext();
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;

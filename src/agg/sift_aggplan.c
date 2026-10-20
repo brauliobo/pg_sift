@@ -111,6 +111,13 @@ typedef struct ComboCtx
 	List	   *slots;			/* SlotReq */
 } ComboCtx;
 
+/* a parameter of the EXISTS sub-plan being compiled and the leaf of the outer row it stands for */
+typedef struct OuterParam
+{
+	int			id;
+	int			leaf;
+} OuterParam;
+
 typedef struct AggCtx
 {
 	PlannerInfo *root;
@@ -139,6 +146,7 @@ typedef struct AggCtx
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
 	List	   *rtable;			/* the range table expr_text resolves Vars in; NIL: the query's */
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
+	List	   *oparams;		/* OuterParam of the EXISTS sub-plan whose test is being compiled */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
@@ -1227,6 +1235,7 @@ new_pred(AggCtx *c, SiftAggPredKind kind)
 	p->kind = kind;
 	p->id = c->npred++;
 	p->leaf = -1;
+	p->leaf2 = -1;
 	p->desc = pstrdup("");
 	return p;
 }
@@ -2095,6 +2104,65 @@ compile_ncmp(AggCtx *c, int cmp, Node *l, Node *r)
 	return p;
 }
 
+/* the leaf of the outer row that a parameter of the EXISTS sub-plan stands for, -1 when n is not one */
+static int
+outer_leaf(AggCtx *c, Node *n)
+{
+	n = strip_relabel(n);
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		foreach_ptr(OuterParam, o, c->oparams)
+			if (o->id == ((Param *) n)->paramid)
+				return o->leaf;
+	return -1;
+}
+
+/* a stored scalar that the comparison of an element with a row reads as integers or doubles: the type classes of both sides are the same */
+static bool
+elem_row_leaf(AggCtx *c, int leaf, TypeClass tc)
+{
+	SiftSrcLeaf *l = leaf_of(c, leaf);
+
+	return l->kind == SCL_SCALAR && !l->lossy && !l->wide && type_class(l->typid) == tc &&
+		((l->vtype == SCV_I32 || l->vtype == SCV_I64) ? tc != TC_FLOAT : tc == TC_FLOAT && l->vtype == SCV_F64);
+}
+
+/*
+ * `element leaf op column of the row` in the test of an EXISTS (the column reaches the sub-query as a parameter of the sub-plan): a test of the
+ * element leaf and of the row leaf of the same type class (an int4 member against a bigint column, not against a float8 one), true for the
+ * elements whose row passes the comparison, which is false when either side is NULL. An expression of the column, or of the element, is not a leaf.
+ */
+static SiftAggPred *
+compile_elem_row(AggCtx *c, int cmp, Node *l, Node *r, Oid lt, Oid rt)
+{
+	SiftAggPred *p;
+	TypeClass	tc = type_class(lt);
+	int			el,
+				rl;
+
+	if (c->oparams == NIL)
+		return NULL;
+	if (outer_leaf(c, l) >= 0)
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+		cmp = commute(cmp);
+	}
+	if ((rl = outer_leaf(c, r)) < 0 || (el = match_leaf(c, l)) < 0 || tc == TC_NUMERIC || tc == TC_BOOL || type_class(rt) != tc ||
+		leaf_of(c, el)->parent != c->group || leaf_of(c, rl)->parent >= 0 || !elem_row_leaf(c, el, tc) || !elem_row_leaf(c, rl, tc))
+		return NULL;
+	p = new_pred(c, SAP_ELEM_ROW);
+	p->leaf = el;
+	p->leaf2 = rl;
+	p->op = cmp;
+	p->level = 1;
+	use_leaf(c, el);
+	use_leaf(c, rl);
+	p->desc = psprintf("%s %s %s", leaf_name(c, el), cmp_text(cmp), leaf_name(c, rl));
+	return p;
+}
+
 /* leaf op operand, for a leaf the comparison kernels read */
 static SiftAggPred *
 compile_cmp(AggCtx *c, OpExpr *op)
@@ -2112,6 +2180,8 @@ compile_cmp(AggCtx *c, OpExpr *op)
 		return NULL;
 	l = strip_relabel(linitial(op->args));
 	r = strip_relabel(lsecond(op->args));
+	if ((p = compile_elem_row(c, cmp, l, r, lt, rt)) != NULL)
+		return p;
 	if ((leaf = match_leaf(c, l)) >= 0 && pseudo_const(r))
 		;
 	else if ((leaf = match_leaf(c, r)) >= 0 && pseudo_const(l))
@@ -3656,6 +3726,7 @@ scope_leave(AggCtx *c, const AggCtx *saved, int grp)
 	c->func_kind = saved->func_kind;
 	c->rtable = saved->rtable;
 	c->dpctx = saved->dpctx;
+	c->oparams = saved->oparams;
 }
 
 typedef SiftAggPred *(*ElemBuild) (AggCtx *c, int grp, void *arg);
@@ -3842,6 +3913,7 @@ typedef struct ExistsArg
 	Query	   *q;
 	RangeTblFunction *f;
 	FuncKind	kind;
+	List	   *params;			/* OuterParam: the columns of the outer row the sub-query's parameters stand for */
 } ExistsArg;
 
 /* the query of a correlated EXISTS sub-plan, if it is the plain shape: one unnesting function and a WHERE */
@@ -3909,7 +3981,31 @@ build_exists(AggCtx *c, int grp, void *arg)
 	c->func_kind = x->kind;
 	c->rtable = x->q->rtable;
 	c->dpctx = NIL;
+	c->oparams = x->params;
 	return compile_conj(c, (List *) x->q->jointree->quals);
+}
+
+/* the parameters of the sub-plan whose outer expression is a leaf, and the leaf (compile_elem_row takes the ones of the row) */
+static List *
+outer_params(AggCtx *c, SubPlan *sp)
+{
+	List	   *out = NIL;
+	ListCell   *lp,
+			   *la;
+
+	forboth(lp, sp->parParam, la, sp->args)
+	{
+		int			leaf = match_leaf(c, lfirst(la));
+		OuterParam *o;
+
+		if (leaf < 0)
+			continue;
+		o = palloc(sizeof(OuterParam));
+		o->id = lfirst_int(lp);
+		o->leaf = leaf;
+		out = lappend(out, o);
+	}
+	return out;
 }
 
 static SiftAggPred *
@@ -3926,6 +4022,7 @@ compile_exists(AggCtx *c, SubPlan *sp)
 	x.kind = func_kind_of(x.f);
 	if (x.kind == FK_NONE)
 		return NULL;
+	x.params = outer_params(c, sp);
 	grp = group_leaf_of(c, outer_mutator(linitial(((FuncExpr *) x.f->funcexpr)->args), sp), func_leaf_kind(x.kind));
 	return grp < 0 ? NULL : any_elem(c, grp, build_exists, &x);
 }
@@ -4694,7 +4791,7 @@ pred_uses_leaf(const SiftAggPred *p, int leaf)
 {
 	if (p == NULL)
 		return false;
-	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf == leaf)
+	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
 		if (pred_uses_leaf(p->child[i], leaf))

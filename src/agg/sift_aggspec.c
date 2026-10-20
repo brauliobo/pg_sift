@@ -786,6 +786,7 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->kind);
 	put_int(p, pr->id);
 	put_int(p, pr->leaf);
+	put_int(p, pr->leaf2);
 	put_int(p, pr->op);
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
@@ -1098,6 +1099,7 @@ get_pred(Unpack *u)
 	pr->kind = kind;
 	pr->id = get_int(u);
 	pr->leaf = get_int(u);
+	pr->leaf2 = get_int(u);
 	pr->op = get_int(u);
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
