@@ -17,7 +17,7 @@
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 
 # the whole build and every harness: a change here can break anything
-^(Makefile|pg_sift[^/]*\.(sql|control)|src/(core/|areas\.mk)|scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats)\.|scripts/(lsan\.supp|harden\.mk|areas\.tsv)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.
+^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|areas\.mk)|scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats)\.|scripts/(lsan\.supp|harden\.mk|areas\.tsv)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.
 ^test/fixtures/	^tap-shell-compat_2x
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$

@@ -4,7 +4,7 @@ SIFT_MK := $(lastword $(MAKEFILE_LIST))
 SRC = src
 include $(SRC)/areas.mk
 OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c))
-DATA = $(wildcard pg_sift--*.sql)
+DATA = $(wildcard sql/pg_sift--*.sql)
 PGFILEDESC = "pg_sift - CTID-bitmap full-text search index"
 
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
@@ -54,7 +54,7 @@ TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col
 TESTING_REGRESS += col_preagg_elem agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
-DATA += pg_sift_test--1.0.sql
+DATA += sql/pg_sift_test--1.0.sql
 PG_CPPFLAGS += -DSIFT_TESTING
 else
 REGRESS := $(filter-out $(TESTING_REGRESS),$(REGRESS))

@@ -7,6 +7,7 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 
 - `src/core` shared shell and page store, `src/bm25` search engine, `src/col` column engine, `src/agg` aggregate pushdown, `src/table` `sift_table`
   (`src/portable.list` names the files every host compiles).
+- `sql/` extension install and upgrade scripts; control files stay at the root. `test/sql/` and `bench/sql/` hold test and benchmark queries.
 - `docs/` user and design documents (`USAGE.md`, `DESIGN.md`, `COL*.md`); `docs/results/` stored benchmark data; `docs/releases/` release notes.
 - `bench/` benchmark harness and generators; `scripts/` build, CI, packaging; `test/` (`sql`, `isolation`, `t`, `col`, `fuzz`); `tools/` standalone harnesses.
 - `sqlite/`, `mariadb/` the ports (each has its own `test.sh` and CHANGELOG); `packaging/` Debian, RPM, AUR.

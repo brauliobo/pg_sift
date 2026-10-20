@@ -63,9 +63,10 @@ fetch_sift_ref() {
   commit=$(git -C "$REPO" rev-parse --verify --short=12 "$SIFT_REF^{commit}") || { echo "sift_ref: no git ref $SIFT_REF in $REPO" >&2; return 1; }
   rm -rf "$src" "$root"; mkdir -p "$src"
   git -C "$REPO" archive "$SIFT_REF" | tar -x -C "$src"
-  for f in "$src"/pg_sift.control "$src"/pg_sift--*.sql; do mv "$f" "${f/pg_sift/pg_sift_ref}"; done
+  mv "$src/pg_sift.control" "$src/pg_sift_ref.control"
+  while IFS= read -r -d '' f; do mv "$f" "${f/pg_sift/pg_sift_ref}"; done < <(find "$src" -maxdepth 2 -name 'pg_sift--*.sql' -print0)
   sed -i -e 's/^EXTENSION = pg_sift$/EXTENSION = pg_sift_ref/' -e 's/^MODULE_big = pg_sift$/MODULE_big = pg_sift_ref/' \
-    -e 's/wildcard pg_sift--/wildcard pg_sift_ref--/' "$src/Makefile"
+    -e 's/pg_sift--/pg_sift_ref--/g' "$src/Makefile"
   sed -i "s,/pg_sift',/pg_sift_ref'," "$src/pg_sift_ref.control"
   sed -i 's/"pg_sift"/"pg_sift_ref"/' $(find "$src/src" -name '*.c')
   pgxs_install sift_ref "$src" >/dev/null
