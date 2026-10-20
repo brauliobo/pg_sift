@@ -108,7 +108,9 @@ SELECT * FROM check_query($q$
    WHERE f.id < 40000 AND e.label <> 'g2'
  )
  SELECT d.day, p.label, coalesce(p.category, 'overall') AS category,
-        count(*) AS n, count(DISTINCT p.id) AS ids, avg(p.value) AS value
+        count(*) AS n, count(DISTINCT p.id) AS ids, avg(p.value) AS value,
+        count(*) FILTER (WHERE p.category IS NULL) AS empty_inputs,
+        count(DISTINCT p.id) FILTER (WHERE p.label = 'g1') AS selected_ids
  FROM (VALUES (date '2024-01-01'), (date '2024-01-02'),
               (date '2024-05-01'), (NULL::date), (date '2024-01-01')) d(day)
  LEFT JOIN parsed p ON jsonb_build_array(p.day) = jsonb_build_array(d.day)

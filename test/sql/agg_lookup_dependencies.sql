@@ -80,6 +80,36 @@ SELECT * FROM check_query($q$
  FROM events f JOIN (ids p JOIN entities e ON e.id = p.id) ON e.id = f.entity_id
  LEFT JOIN labels l ON l.code = e.code GROUP BY 1
 $q$);
+-- FILTER uses joined tuple identity: different matches of one fact may pass different predicates.
+SELECT * FROM check_query($q$
+ SELECT e.kind, count(*) FILTER (WHERE l.tag = 'one' OR f.amount > 7) AS n,
+        count(DISTINCT f.id) FILTER (WHERE l.tag IS NULL) AS missing,
+        sum(f.amount) FILTER (WHERE l.tag <> e.kind) AS total
+ FROM events f LEFT JOIN entities e ON e.id = f.entity_id
+ LEFT JOIN labels l ON l.code = e.code GROUP BY GROUPING SETS ((e.kind), ())
+$q$);
+-- A FILTER can raise only after every join has selected the aggregate's input.
+SELECT * FROM check_query($q$
+ SELECT count(*) FILTER (WHERE 10 / (length(l.tag) - 4) > 0) AS n
+ FROM events f JOIN entities e ON e.id = f.entity_id
+ LEFT JOIN labels l ON l.code = e.code
+ JOIN labels k ON k.tag = l.tag AND k.tag = 'one'
+$q$);
+-- The same expression must still raise when an eligible joined tuple reaches it.
+DO $$
+DECLARE mode text;
+BEGIN
+  FOREACH mode IN ARRAY ARRAY['off', 'on'] LOOP
+    PERFORM set_config('sift.enable_agg', mode, true);
+    BEGIN
+      EXECUTE $q$SELECT count(*) FILTER (WHERE 10 / (length(l.tag) - 4) > 0)
+        FROM events f JOIN entities e ON e.id = f.entity_id
+        LEFT JOIN labels l ON l.code = e.code$q$;
+      RAISE EXCEPTION 'expected division_by_zero with aggregation %', mode;
+    EXCEPTION WHEN division_by_zero THEN NULL;
+    END;
+  END LOOP;
+END $$;
 DROP FUNCTION check_query(text);
 DROP TABLE events, entities, labels;
 DROP EXTENSION pg_sift;
