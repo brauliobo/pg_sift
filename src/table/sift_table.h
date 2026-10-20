@@ -469,6 +469,7 @@ extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const u
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
+extern Datum sift_tbl_leaf_datum(Relation rel, const SiftColDef *def, const SiftColVec *vec, uint32 i);
 extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
 /* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */

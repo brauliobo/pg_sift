@@ -22,6 +22,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 #include "sift_aggkern.h"
 #include "sift_aggpre.h"
@@ -41,6 +42,17 @@ typedef struct TblLeafBuf
 	uint8	   *isnull;
 	uint64	   *ovf;			/* numeric leaves: the NaNs of the table, which the columns cannot hold */
 } TblLeafBuf;
+
+/* A conjunct on a wide leaf (docs/COL-LEAFTYPES-32.md): decided with the type's own comparison on the exact values */
+typedef struct TblWide
+{
+	int			leaf;
+	int			op;
+	int			nvals;
+	const Datum *vals;
+	const bool *isnull;
+	FmgrInfo   *cmp;
+} TblWide;
 
 /* The source of one column layout */
 typedef struct TblPart
@@ -75,6 +87,8 @@ typedef struct TblSource
 	TblLeafBuf *buf;			/* per leaf */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
+	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
+	int			nwide;
 } TblSource;
 
 static bool
@@ -109,6 +123,13 @@ leaf_vtype(const SiftColDef *def)
 	}
 }
 
+/* numeric of any other shape than the narrow integer leaf, money and interval: only a WHERE conjunct tests them (SAP_WIDE), on the exact values */
+static bool
+leaf_wide(const SiftColDef *def)
+{
+	return def->type == SIFT_COLT_MONEY || def->type == SIFT_COLT_INTERVAL || (def->type == SIFT_COLT_NUMERIC && def->store == SIFT_COLS_VAR);
+}
+
 /* The planner's view of the table: a scalar leaf per column; the exact datum images (SIFT_COLS_VAR) are not values the executor reads */
 static SiftSrcLayout *
 tbl_layout(Relation rel)
@@ -133,8 +154,11 @@ tbl_layout(Relation rel)
 	{
 		const SiftColDef *def = &cur->cols[i];
 
+		bool		wide = leaf_wide(def);
+		Oid			typid = sift_col_def_typid(desc, def);
+
 		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = leaf_vtype(def),
-		.typid = sift_col_def_typid(desc, def),.scale = def->scale,.lossy = def->store == SIFT_COLS_VAR};
+		.typid = wide ? InvalidOid : typid,.wtypid = wide ? typid : InvalidOid,.scale = def->scale,.lossy = !wide && def->store == SIFT_COLS_VAR};
 	}
 	return lay;
 }
@@ -543,6 +567,97 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	fill_vec(t, leaf, &v, vec);
 }
 
+/* ---- the conjuncts on wide leaves: the type's own comparison over the values of the column (no format of lanes for a table, no zone) ---- */
+
+static int
+tbl_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
+{
+	TblSource  *tb = impl;
+
+	tb->wide = MemoryContextAlloc(tb->cxt, Max(nt, 1) * sizeof(TblWide));
+	for (int i = 0; i < nt; i++)
+		tb->wide[i] = (TblWide) {t[i].leaf, t[i].op, t[i].nvals, t[i].vals, t[i].isnull,
+			&lookup_type_cache(tb->lay->leaf[t[i].leaf].wtypid, TYPECACHE_CMP_PROC_FINFO)->cmp_proc_finfo};
+	tb->nwide = nt;
+	return nt;
+}
+
+/* the verdict of a comparison operator (SiftCmpOp) on the result of the type's cmp function */
+static bool
+cmp_holds(int op, int c)
+{
+	static const bool table[6][3] = {{false, true, false}, {true, false, true}, {true, false, false}, {true, true, false}, {false, false, true}, {false, true, true}};
+
+	return table[op][c < 0 ? 0 : c == 0 ? 1 : 2];
+}
+
+/* the SQL meaning of the test for a value (a NULL operand never matches, NOT IN with one passes nothing) */
+static bool
+wide_pass(const TblWide *w, bool isnull, Datum d)
+{
+	bool		found = false;
+
+	if (w->op == SWT_ISNULL || w->op == SWT_NOTNULL)
+		return isnull == (w->op == SWT_ISNULL);
+	if (w->op == SWT_NOTIN && w->nvals == 0)
+		return true;
+	if (isnull)
+		return false;
+	if (w->op < SWT_IN)
+		return !w->isnull[0] && cmp_holds(w->op, DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[0])));
+	for (int k = 0; k < w->nvals; k++)
+	{
+		if (w->isnull[k])
+		{
+			if (w->op == SWT_NOTIN)
+				return false;
+			continue;
+		}
+		found |= DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[k])) == 0;
+	}
+	return w->op == SWT_IN ? found : !found;
+}
+
+static bool
+tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	const TblWide *w = &t->wide[i];
+	size_t		nrw = (unit->nrow + 63) / 64;
+	SiftColVec	v;
+	bool		any = false,
+				absent = p->col[w->leaf] < 0,
+				isnull = false,
+				pass = false;
+	Datum		d;
+
+	if (absent)
+	{
+		d = getmissingattr(RelationGetDescr(t->rel), t->lay->leaf[w->leaf].attno, &isnull);
+		pass = wide_pass(w, isnull, d);
+	}
+	else
+		sift_aggsel_read(&t->sel, &p->unit, p->col[w->leaf], &v);
+	for (size_t k = 0; k < nrw; k++)
+		for (uint64 m = rows[k]; m; m &= m - 1)
+		{
+			uint32		r = k * 64 + __builtin_ctzll(m);
+			bool		ok = pass;
+
+			if (!absent)
+			{
+				isnull = v.nulls && sift_colsrc_bit(v.nulls, r);
+				ok = wide_pass(w, isnull, isnull ? (Datum) 0 : sift_tbl_leaf_datum(t->rel, &p->schema->cols[p->col[w->leaf]], &v, r));
+			}
+			if (ok)
+				any = true;
+			else
+				rows[k] &= ~(UINT64CONST(1) << (r & 63));
+		}
+	return any;
+}
+
 /* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
 
 static uint32 *
@@ -735,6 +850,8 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.set_wide = tbl_set_wide,
+	.filter_wide = tbl_filter_wide,
 };
 
 void
