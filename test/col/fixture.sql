@@ -269,6 +269,18 @@ UPDATE orders_odd SET metrics = metrics || CASE id % 7 WHEN 0 THEN '{"extra": "n
 		WHEN 3 THEN '{"nul": null}' WHEN 4 THEN '{"huge": 1e300}' WHEN 5 THEN '{"text_num": "4.5"}' ELSE '{"int": 3}' END::jsonb
 WHERE id % 3 = 0;
 
+-- the truth tables of jsonpath and containment on an array of objects (docs/AGG.md): the members s (text), n (int4) and b (bool) take every value
+-- their leaves hold (equal numbers spelled 1 and 1.0, the empty string, non-ASCII text, the extremes of the type), a JSON null and a missing key
+DROP TABLE IF EXISTS t_jp;
+CREATE TABLE t_jp (id integer PRIMARY KEY, grp integer NOT NULL, doc jsonb NOT NULL, mdoc jsonb);
+CREATE FUNCTION coldiff.jp_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT coalesce(jsonb_agg(
+		(ARRAY['{"s": "gift"}', '{"s": ""}', '{"s": "\u00fcn\u00ef"}', '{"s": "toy"}', '{"s": null}', '{}'])[1 + (i * 5 + j * 7) % 6]::jsonb
+		|| (ARRAY['{"n": 1}', '{"n": 1.0}', '{"n": 3}', '{"n": -2}', '{"n": 0}', '{"n": 2147483647}', '{"n": null}', '{}'])[1 + (i * 3 + j * 11) % 8]::jsonb
+		|| (ARRAY['{"b": true}', '{"b": false}', '{"b": null}', '{}'])[1 + (i + j * 5) % 4]::jsonb ORDER BY j), '[]')
+	FROM generate_series(1, i % 5) j $$;
+INSERT INTO t_jp SELECT i, i % 7, coldiff.jp_doc(i), CASE WHEN i % 11 = 0 THEN NULL ELSE coldiff.jp_doc(i) END FROM generate_series(1, 2000) i;
+
 -- partitioned by year (the partition key is part of the primary key)
 CREATE TABLE orders_part (LIKE orders INCLUDING DEFAULTS) PARTITION BY RANGE (placed_at);
 CREATE TABLE orders_part_2022 PARTITION OF orders_part FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');
@@ -283,7 +295,9 @@ CREATE FUNCTION coldiff.sample(id int, draw int, frac float8) RETURNS boolean LA
 
 -- new orders after the last id, without a VACUUM
 CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
-	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) FROM (SELECT max(id) AS m FROM orders) x $$;
+	WITH j AS (INSERT INTO t_jp SELECT i, i % 7, coldiff.jp_doc(i + 3), coldiff.jp_doc(i + 5) FROM (SELECT max(id) AS m FROM t_jp) x,
+			   generate_series(m + 1, m + greatest(1, (frac * m)::int)) i RETURNING 1)
+	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) + (SELECT count(*) FROM j) FROM (SELECT max(id) AS m FROM orders) x $$;
 -- indexed columns (a new tuple version with a new TID) and the jsonb documents
 CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET store_id = 1 + (store_id * 7) % 400, placed_at = placed_at + 1 + id % 3, source = 'web', country_code = 'ZZ'
@@ -293,13 +307,15 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 m AS (UPDATE categories_map SET mapped_category = CASE WHEN mapped_category = '' THEN 'Other' ELSE initcap(reverse(mapped_category)) END RETURNING 1),
 		 t AS (UPDATE map_dup SET tag = tag || '2' WHERE category = 'Apparel' RETURNING 1),
 		 g AS (INSERT INTO map_empty VALUES ('Home', 'late'), (NULL, 'late') RETURNING 1),
-		 d AS (DELETE FROM map_part WHERE category = 'Home' RETURNING 1)
-	SELECT (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
+		 d AS (DELETE FROM map_part WHERE category = 'Home' RETURNING 1),
+		 p AS (UPDATE t_jp SET doc = coldiff.jp_doc(id + 1), mdoc = coldiff.jp_doc(id + 2) WHERE coldiff.sample(id, 906, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
 CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM orders WHERE coldiff.sample(id, 903, frac) RETURNING 1),
-		 s AS (UPDATE orders SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 904, frac) AND deleted_at IS NULL RETURNING 1)
-	SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
+		 s AS (UPDATE orders SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 904, frac) AND deleted_at IS NULL RETURNING 1),
+		 p AS (DELETE FROM t_jp WHERE coldiff.sample(id, 907, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
 -- columns that no index holds (no new index entries: a HOT update when the page has room)
 CREATE FUNCTION coldiff.sc_hot(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1)
