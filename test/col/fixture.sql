@@ -344,6 +344,26 @@ CREATE FUNCTION coldiff.jp_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	FROM generate_series(1, i % 5) j $$;
 INSERT INTO t_jp SELECT i, i % 7, coldiff.jp_doc(i), CASE WHEN i % 11 = 0 THEN NULL ELSE coldiff.jp_doc(i) END FROM generate_series(1, 2000) i;
 
+-- an element compared with a column of its own row (docs/AGG.md): the members q (int4), q8 (int8) and f (float8) of the elements against
+-- r4, r8 and rf of the row, with NULL columns, a NaN, a -0, a JSON null and a missing member, empty arrays and a NULL document. Element j of row i
+-- holds the value that column r4 has in row i + j - 1 (mod 6): every row has elements equal to the columns of the neighbour rows
+DROP TABLE IF EXISTS t_eo;
+CREATE TABLE t_eo (id integer PRIMARY KEY, grp integer NOT NULL, r4 integer, r8 bigint, rf float8, doc jsonb);
+CREATE FUNCTION coldiff.eo_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE coalesce(jsonb_agg(
+		jsonb_build_object('q', CASE WHEN (i * 3 + j * 5) % 8 = 0 THEN NULL ELSE (i + j - 1) % 6 END, 'q8', (i + j - 1) % 6 + CASE WHEN (i * 2 + j) % 13 = 0 THEN 3000000000 ELSE 0 END,
+						   'f', ((i + j - 1) % 6) * 0.5)
+		- CASE WHEN (i * 5 + j * 3) % 11 = 0 THEN 'q' ELSE '' END ORDER BY j), '[]') END
+	FROM generate_series(1, i % 5) j $$;
+CREATE FUNCTION coldiff.fx_eo(first_id int, last_id int) RETURNS bigint LANGUAGE sql AS $$
+	WITH ins AS (
+		INSERT INTO t_eo SELECT i, i % 7, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 6 END,
+			   CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN 3000000000 ELSE i % 6 END,
+			   CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN 'NaN'::float8 WHEN i % 23 = 0 THEN '-0'::float8 ELSE (i % 6) * 0.5 END, coldiff.eo_doc(i)
+		FROM generate_series(first_id, last_id) i RETURNING 1)
+	SELECT count(*) FROM ins $$;
+SELECT coldiff.fx_eo(1, greatest(2000, :n / 2));
+
 -- partitioned by year (the partition key is part of the primary key)
 CREATE TABLE orders_part (LIKE orders INCLUDING DEFAULTS) PARTITION BY RANGE (placed_at);
 CREATE TABLE orders_part_2022 PARTITION OF orders_part FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');
@@ -398,6 +418,7 @@ CREATE FUNCTION coldiff.sc_insert(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH j AS (INSERT INTO t_jp SELECT i, i % 7, coldiff.jp_doc(i + 3), coldiff.jp_doc(i + 5) FROM (SELECT max(id) AS m FROM t_jp) x,
 			   generate_series(m + 1, m + greatest(1, (frac * m)::int)) i RETURNING 1)
 	SELECT coldiff.fx_orders(m + 1, m + greatest(1, (frac * m)::int), 7) + (SELECT count(*) FROM j) +
+		   (SELECT coldiff.fx_eo(e + 1, e + greatest(1, (frac * e)::int)) FROM (SELECT max(id) AS e FROM t_eo) z) +
 		   (SELECT coldiff.fx_part(p + 1, p + greatest(1, (frac * p)::int), 7) FROM (SELECT max(id) AS p FROM t_part) y)
 	FROM (SELECT max(id) AS m FROM orders) x $$;
 -- indexed columns (a new tuple version with a new TID) and the jsonb documents
@@ -411,15 +432,17 @@ CREATE FUNCTION coldiff.sc_update_indexed(frac float8) RETURNS bigint LANGUAGE s
 		 g AS (INSERT INTO map_empty VALUES ('Home', 'late'), (NULL, 'late') RETURNING 1),
 		 d AS (DELETE FROM map_part WHERE category = 'Home' RETURNING 1),
 		 p AS (UPDATE t_jp SET doc = coldiff.jp_doc(id + 1), mdoc = coldiff.jp_doc(id + 2) WHERE coldiff.sample(id, 906, frac) RETURNING 1),
-		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
+		 pt AS (UPDATE t_part SET qty = coalesce(qty, 0) + 3, d = d + 1 + id % 40, tag = 'moved' WHERE coldiff.sample(id, 908, frac) RETURNING 1),
+		 eo AS (UPDATE t_eo SET r4 = (r4 + 1) % 6, rf = rf + 0.5, doc = coldiff.eo_doc(id + 1) WHERE coldiff.sample(id, 911, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM u) + (SELECT count(*) FROM j) + (SELECT count(*) FROM m) + (SELECT count(*) FROM t) + (SELECT count(*) FROM g) + (SELECT count(*) FROM d) $$;
 -- hard deletes and soft deletes
 CREATE FUNCTION coldiff.sc_delete(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM orders WHERE coldiff.sample(id, 903, frac) RETURNING 1),
 		 s AS (UPDATE orders SET deleted_at = timestamp '2025-11-02' WHERE coldiff.sample(id, 904, frac) AND deleted_at IS NULL RETURNING 1),
 		 p AS (DELETE FROM t_jp WHERE coldiff.sample(id, 907, frac) RETURNING 1),
-		 pt AS (DELETE FROM t_part WHERE coldiff.sample(id, 909, frac) RETURNING 1)
-	SELECT (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
+		 pt AS (DELETE FROM t_part WHERE coldiff.sample(id, 909, frac) RETURNING 1),
+		 eo AS (DELETE FROM t_eo WHERE coldiff.sample(id, 912, frac) RETURNING 1)
+	SELECT (SELECT count(*) FROM eo) + (SELECT count(*) FROM pt) + (SELECT count(*) FROM p) + (SELECT count(*) FROM d) + (SELECT count(*) FROM s) $$;
 -- columns that no index holds (no new index entries: a HOT update when the page has room)
 CREATE FUNCTION coldiff.sc_hot(frac float8) RETURNS bigint LANGUAGE sql AS $$
 	WITH u AS (UPDATE orders SET total = total + 1, discount = discount + 0.5, customer_id = customer_id + 1 WHERE coldiff.sample(id, 905, frac) RETURNING 1),
