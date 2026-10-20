@@ -90,7 +90,7 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (S
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM ev WHERE dim_a_id IS NOT NULL GROUP BY dim_a_id HAVING count(*) > 20) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT id FROM tenants ORDER BY id LIMIT 12 OFFSET 2) OR kind = 'b' GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT id FROM tenants UNION SELECT dim_a_id FROM blocked WHERE dim_a_id < 100) GROUP BY kind$$);
--- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the normal plan)
+-- an array: NOT IN a sub-select that unnests it (a NULL element), and <> ALL of an ARRAY sub-select (an initplan result, not a SubPlan: the lookup table asks it once)
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT unnest(ARRAY[1, 2, 3, 4, 5, 6, 7])) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT unnest(ARRAY[1, 2, 3, NULL])) OR tenant_id = 1 GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE tenant_id <> ALL (ARRAY(SELECT id FROM tenants WHERE id < 30)) GROUP BY kind$$);
