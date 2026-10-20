@@ -351,6 +351,27 @@ def gate(a):
             f.write('\t'.join(str(r.get(c, '')) for c in COLUMNS) + '\n')
 
 
+# ---- GPU --------------------------------------------------------------------------------------------------------------------------------
+
+def gpu_section(meta, rows):
+    qs = dict(re.findall(r'^\t"(\w+)\|([^"]+)"$', open(os.path.join(REPO, 'bench', 'gpu', 'bench-pg.sh')).read(), re.M))
+    body = []
+    for r in rows:
+        if r['mode'] != 'cpu_1core':
+            continue
+        g = next((x for x in rows if x['rows'] == r['rows'] and x['query'] == r['query'] and x['mode'] == 'gpu_cold_resident'), None)
+        if g is None:
+            continue
+        c, d = float(r['median_ms']), float(g['median_ms'])
+        body.append(['{:,}'.format(int(r['rows'])), '`%s`' % r['query'], ms(float(r['first_ms'])), ms(c), ms(float(g['first_ms'])), ms(d), times(d, c)])
+    lines = [meta.get('title', '').lstrip('# '), '',
+             'Queries on the table of the online-store benchmark, with one sift_col index over the columns they read: ' + '; '.join('`%s` `%s`' % (k, v) for k, v in qs.items()) + '.', '']
+    lines += table(['rows', 'query', 'CPU, first (ms)', 'CPU, median (ms)', 'device, first (ms)', 'device, median, resident (ms)', 'resident vs CPU'], body, ['---', '---', '---:', '---:', '---:', '---:', '---:'])
+    return lines + ['', 'Reproduce: `bench/bench extras gpu` (a Vulkan device and `VULKAN=1`; results: [results/gpu.tsv](results/gpu.tsv)).']
+
+
+
+
 def wrap(a):
     """rows of a runner (no header) -> a results file: title, the run's meta, the host load at the start and now"""
     meta = dict(m.split('=', 1) for m in a.meta or [])
@@ -388,7 +409,7 @@ def main():
 
 
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
-            'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section}
+            'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section}
 
 if __name__ == '__main__':
     main()

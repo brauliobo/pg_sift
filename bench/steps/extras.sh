@@ -258,23 +258,28 @@ item_buildcost() {
 		--meta "method=perf stat instructions:u of the processes the postmaster forks for one operation, ratio to the first build with a 95% interval (geometric mean of the per-round ratios, interleaved rounds); a cell regresses when its whole interval is above 1.02"
 }
 
-item_gpu() {
-	begin_item gpu
-	local rows
+item_gpu() { # bench/results/gpu.tsv keeps its own layout: rows, query, mode (cpu_1core, gpu_cold_resident), first_ms, median_ms
+	local rows out=$OUT/gpu.tsv dev
+	dev=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+	[[ -n $dev ]] || { echo "gpu: no device, skipped" >&2; return 0; }
 	build_up gpu v310-vk
 	export PGOPTIONS='-c sift.gpu_min_rows=0'
+	local load0; load0=$(python3 -I -c "import sys; sys.path.insert(0, '$HERE'); import extras; print(extras.host_load())")
+	printf 'rows\tquery\tmode\tfirst_ms\tmedian_ms\n' >"$OUT/gpu.body"
 	for rows in ${GPU_ROWS:-1000000 10000000}; do
 		echo "gpu: $VERSION, $rows rows" >&2
 		locked bash -c "cd '$SIFT_BUILD' && '$BENCH/gpu/bench-pg.sh' $rows ${GPU_REPS:-9}" | tee "$OUT/gpu-$rows.out" >&2
-		awk -F'\t' -v rows="$rows" 'NF >= 4 && $1 != "query" {print rows "\t" $0}' "$OUT/gpu-$rows.out" | while IFS=$'\t' read -r r q mode first med note; do
-			N=${GPU_REPS:-9} emit "$q@$(size_label "$r")" "$mode" first_ms "$first"
-			N=${GPU_REPS:-9} emit "$q@$(size_label "$r")" "$mode" median_ms "$med" "${note:-}"
-		done
+		awk -F'\t' -v rows="$rows" 'NF >= 4 && $1 != "query" {print rows "\t" $1 "\t" ($2 == "gpu" ? "gpu_cold_resident" : "cpu_1core") "\t" $3 "\t" $4}' "$OUT/gpu-$rows.out" >>"$OUT/gpu.body"
 	done
 	unset PGOPTIONS
-	finish_item gpu "The Vulkan aggregate path against the CPU on the online-store table (bench/gpu/bench-pg.sh)." \
-		--meta "build=$VERSION (VULKAN=1)" --meta "device=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo unknown)" \
-		--meta "method=one backend; cpu: sift.gpu off, no parallel workers; gpu: first = the device is open and the cache empty, median of the rest with the chunks resident"
+	{
+		echo "# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS ${GPU_REPS:-9}), pg_sift $VERSION built with VULKAN=1, one backend, one core on the CPU side, $dev, measured $(date -u +%Y-%m-%d) under the perf lock."
+		echo "# host load before: $load0; after: $(python3 -I -c "import sys; sys.path.insert(0, '$HERE'); import extras; print(extras.host_load())")."
+		echo "# first_ms: the first query (cpu_1core: sift.gpu off) or the first query after the device is open, chunks uploaded (gpu_cold_resident); median_ms: median of the ${GPU_REPS:-9} repeats (chunks resident for the device)."
+		cat "$OUT/gpu.body"
+	} >"$out"
+	echo "extras: $out" >&2
+	[[ -z $DOCS ]] || cp "$out" "$REPO/bench/results/gpu.tsv"
 }
 
 for item in "${ITEMS[@]}"; do
