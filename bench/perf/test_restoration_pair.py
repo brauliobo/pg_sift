@@ -1,4 +1,4 @@
-"""Static behavioral coverage for the experimental paired INSERT lifecycle."""
+"""Static behavioral coverage for paired and composed INSERT lifecycles."""
 import contextlib
 import io
 import json
@@ -17,11 +17,15 @@ class Revision:
     def __init__(self, side, events):
         self.name,self.conn,self.side,self.events = side,self,side,events
         self.delays = 0
+        self.iterations = 1
     def exec(self, sql):
         self.events.append((self.side,sql))
-        if sql.startswith('INSERT INTO mutable VALUES'): self.delays += 1
+        if sql.startswith('INSERT INTO mutable VALUES'):
+            self.delays += 1
+            self.last_id=int(sql.split('(')[1].split(',')[0])
     def script(self, sql): self.events.append((self.side,sql))
     def rows(self, sql):
+        if 'cpu_checksum' in sql: return [[gate.cpu_checksum(self.last_id,self.iterations)]]
         self.events.append((self.side,'COUNTER'))
         return [[str(self.delays)]]
 
@@ -119,7 +123,7 @@ class PairedRestoration(unittest.TestCase):
                     self.assertEqual(len(saved['sides'][1]['operation_seconds']),2)
 
     def test_control_counters_include_warm_not_seed_and_26n(self):
-        saved,events,error = self.invoke(control=True,n=5)
+        saved,events,error = self.invoke(control={'iterations':1},n=5)
         self.assertIsNone(error)
         self.assertEqual(saved['sides'][1]['control_counts'],[0,0,5,5,10])
         self.assertNotIn('control_counts',saved['sides'][0])
@@ -133,7 +137,7 @@ class PairedRestoration(unittest.TestCase):
         calls = []
         def pair(revisions,case,identity,n,deadline,sink,**kwargs):
             calls.append((n,kwargs['role']))
-            sink.update(complete=True,sides=[dict(sql_seconds=n*c,loop_wall_seconds=n*w,
+            sink.update(complete=True,wall_seconds=2,sides=[dict(sql_seconds=n*c,loop_wall_seconds=n*w,
                         operation_seconds=[c]*n,phases={'final_reset':{'seconds':r}})
                         for c,w,r in ((.0001,.0001,.2),(.0002,.0002,.3))])
         saved = {}
@@ -145,7 +149,7 @@ class PairedRestoration(unittest.TestCase):
         self.assertEqual(len(saved['pilot_pair']['sides'][0]['operation_seconds']),2048)
         for reset,expected in ((.1,2048),(1.1,None)):
             def bounded(revisions,case,identity,n,deadline,sink,**kwargs):
-                sink.update(sides=[dict(sql_seconds=.01,loop_wall_seconds=.01,
+                sink.update(wall_seconds=2,sides=[dict(sql_seconds=.01,loop_wall_seconds=.01,
                     phases={'final_reset':{'seconds':reset}})]*2)
             saved = {}
             with patch.object(gate,'insert_pair',side_effect=bounded):
@@ -156,9 +160,21 @@ class PairedRestoration(unittest.TestCase):
                     gate.calibrate_insert([],CASE,IDENTITY,math.inf,saved)
                     self.assertEqual(saved['operations'],expected)
 
+    @staticmethod
+    def footprint():
+        return dict(totals={'mutable':8192,'mutable_pk':8192},
+                    forks={name:dict(main=8192,fsm=0,vm=0,init=0) for name in gate.MUTABLE_RELATIONS},
+                    geometry={'units':3,'column_segments':1,'relation_blocks':256})
+
+    @staticmethod
+    def oracle(conn,identity,n,sink):
+        sink.update(expected_count=8192+n,actual_count=8192+n,expected_digest='digest',actual_digest='digest',multiset_difference=0)
+
     def clean_pair(self, n=5, wall=2, role='validation'):
         offset = 0
-        sides = [dict(phases={},operation_seconds=[.001]*n,warm_operation_seconds=[.001]*n) for _ in range(2)]
+        sides = [dict(phases={},operation_seconds=[.001]*n,warm_operation_seconds=[.001]*n,sql_seconds=.001*n,warm_sql_seconds=.001*n,
+                      before=self.footprint(),after=self.footprint(),oracle={}) for _ in range(2)]
+        for side in sides: self.oracle(None,None,n,side['oracle'])
         for side in sides:
             for name in gate.INSERT_PHASES:
                 side['phases'][name] = dict(complete=True,seconds=.1,start_offset_seconds=offset,end_offset_seconds=offset+.1)
@@ -166,39 +182,56 @@ class PairedRestoration(unittest.TestCase):
         return dict(complete=True,clean=True,operations=n,role=role,workload_version=CASE.workload_version,
                     sides=sides,wall_seconds=wall,phase_seconds=1.4,residual_seconds=wall-1.4)
 
-    def post_costs(self):
-        return {name:dict(complete=True,seconds=.2,provenance='synthetic disjoint phase observation '+name)
-                for name in gate.POST_CONTROL_PHASES}
+    def clean_observation(self,n=5,wall=2,role='validation',histories=1):
+        components=[self.clean_pair(n,wall/histories,role) for _ in range(histories)]
+        return dict(complete=True,clean=True,operations=n,history_count=histories,role=role,workload_version=CASE.workload_version,
+                    histories=components,wall_seconds=wall,residual_seconds=0)
 
-    def clean_result(self):
-        return dict(name='unchanged',identity=IDENTITY,calibration={'operations':5,
+    def cpu(self):
+        return dict(complete=True,seconds_per_iteration=.0001)
+
+    def cpu_work(self):
+        return dict(iterations=1,predicted_added_seconds_per_row=.001)
+
+    def coverage(self):
+        return dict(complete=True,catalog_complete=True,read_controls_complete=True,size_control_complete=True,
+                    normal_size_states=['settled_build','churn_vacuum','mutable_vacuum'],
+                    sources=['a'*40,'a'*40,'pr'],phases=[dict(name=name,complete=True,seconds=.1)
+                        for name in ('churn_normal_sizes','bm25_growth_logical_forks')])
+
+    def post_costs(self):
+        return {name:dict(complete=True,seconds=.2,provenance=dict(phase=name,baseline='a'*40,candidate='a'*40,tier='pr',settings=gate.SETTINGS,scope='synthetic disjoint phase'))
+                for name in gate.CONTROL_COST_PHASES}
+
+    def clean_result(self, histories=1):
+        return dict(name='unchanged',identity=IDENTITY,complete=True,calibration={'operations':5,'histories':histories,'sql_seconds_per_operation':[.001,.001],
                     'pilot_operations':2048,'growth_cap_operations':2048,'predicted_wall_limit_seconds':1,
                     'pilot_pair':self.clean_pair(2048,1000,'pilot')},
-                    validation={'pair':self.clean_pair(),'size_checks':None},
-                    initial={'pairs':[self.clean_pair(wall=3,role='verdict')]},
-                    confirmation={'pairs':[self.clean_pair(wall=4,role='verdict')]})
+                    validation={'pair':self.clean_observation(histories=histories,wall=2*histories),'size_checks':None},
+                    initial={'n':6,'pairs':[self.clean_observation(wall=3*histories,role='verdict',histories=histories)]*6},
+                    confirmation={'n':6,'pairs':[self.clean_observation(wall=4*histories,role='verdict',histories=histories)]*6})
 
     def test_budget_max_only_complete_clean_full_n_not_pilot_or_nested_sum(self):
         unchanged = self.clean_result()
         unchanged['initial']['pairs'].append({'complete':False,'wall_seconds':999})
-        budget = gate.insert_control_budget(unchanged,math.inf,self.post_costs())
+        budget = gate.insert_control_budget(unchanged,math.inf,self.post_costs(),cpu_work=self.cpu_work(),sources=('a'*40,'a'*40,'pr'),completed_work=self.coverage())
         self.assertEqual(budget['max_clean_full_N_pair_wall'],4)
-        self.assertEqual(len(budget['clean_full_N_population']),3)
+        self.assertEqual(len(budget['clean_full_N_population']),13)
         self.assertEqual(budget['predicted_clean_pair_seconds'],52)
-        self.assertAlmostEqual(budget['minimum_added_sleep_seconds'],.13)
-        self.assertAlmostEqual(budget['predicted_seconds'],52+.13+1.2)
+        self.assertAlmostEqual(budget['predicted_added_cpu_seconds'],.13)
+        self.assertAlmostEqual(budget['predicted_total_remaining_seconds'],52+.13+.8)
         self.assertEqual(budget['candidate_delayed_operations'],26*5)
         self.assertEqual(budget['expected_checkpoint_calls'],26)
         # Even an equal-N huge pilot is never a substitute for full-N validation.
         unchanged['calibration']['pilot_pair'] = self.clean_pair(5,1000,'pilot')
-        self.assertEqual(gate.insert_control_budget(unchanged,math.inf,self.post_costs())['max_clean_full_N_pair_wall'],4)
+        self.assertEqual(gate.insert_control_budget(unchanged,math.inf,self.post_costs(),cpu_work=self.cpu_work(),sources=('a'*40,'a'*40,'pr'),completed_work=self.coverage())['max_clean_full_N_pair_wall'],4)
 
     def test_budget_missing_nonfinite_or_incomplete_evidence_is_not_zero(self):
         for mutation in ('validation','phase','nonfinite','version','raw','wrong_n','post'):
             with self.subTest(mutation=mutation):
                 unchanged = self.clean_result()
                 post = self.post_costs()
-                pair = unchanged['validation']['pair']
+                pair = unchanged['validation']['pair']['histories'][0]
                 if mutation=='validation': del unchanged['validation']['pair']
                 if mutation=='phase': del pair['sides'][0]['phases']['checkpoint']
                 if mutation=='nonfinite': pair['sides'][1]['phases']['checkpoint']['seconds'] = math.nan
@@ -206,36 +239,37 @@ class PairedRestoration(unittest.TestCase):
                 if mutation=='raw': pair['sides'][0]['operation_seconds'].pop()
                 if mutation=='wrong_n': pair['operations'] = 2048
                 if mutation=='post': del post['cluster_teardown']
-                budget = gate.insert_control_budget(unchanged,100,post)
+                budget = gate.insert_control_budget(unchanged,100,post,cpu_work=self.cpu_work(),sources=('a'*40,'a'*40,'pr'),completed_work=self.coverage())
                 self.assertFalse(budget['evidence_complete'])
                 self.assertIsNone(budget['predicted_seconds'])
                 if mutation=='post': self.assertEqual(budget['missing_post_control_costs'],['cluster_teardown'])
                 else: self.assertIsNotNone(budget['clean_evidence_error'])
 
     def test_persist_then_fresh_admission_and_missing_tail_reject_before_fault(self):
-        for remaining,known_tail,expected in ((10,True,gate.BudgetExpired),(99,False,gate.Inconclusive),(99,True,RuntimeError)):
+        for remaining,known_tail,reserve,expected in ((10,True,0,gate.BudgetExpired),(99,False,0,gate.Inconclusive),(99,True,0,RuntimeError),
+                                                      (52.5,True,0,gate.BudgetExpired),(52.5,True,30,RuntimeError)):
             with self.subTest(remaining=remaining,known_tail=known_tail), tempfile.TemporaryDirectory() as tmp:
                 clock = [0.0]
                 output = Path(tmp)
                 cases = []
                 report = dict(status='inconclusive',date='unit',size_status='inconclusive',complete=False,
                               size_complete=False,budget_exhausted=False,baseline_ref='a'*40,candidate_ref='a'*40,
-                              cpu='unit',cpus=1,runner='unit',load=[],config={'verify_control':True},runtime_seconds={},
-                              size_checks=[],cases=cases,post_control_costs=self.post_costs() if known_tail else {})
+                              cpu='unit',cpus=1,runner='unit',load=[],config={'verify_control':True,'tier':'pr'},runtime_seconds={},
+                              size_checks=[],cases=cases,budget={'cleanup_report_reserve_seconds':reserve},post_control_costs=self.post_costs() if known_tail else {},cpu_calibration=self.cpu(),completed_control_work=self.coverage())
                 snapshots = []
                 original_write = gate.write_report
                 def write(output,report):
                     original_write(output,report)
                     snapshots.append(json.loads((output/'results.json').read_text())['mutation_control_preflight'])
                     clock[0] = 100-remaining
-                def fault(*args):
+                def fault(*args,**kwargs):
                     self.assertEqual(len(snapshots),1)
                     self.assertEqual(snapshots[0]['operations'],5)
                     raise RuntimeError('stopped at actual fault entry')
                 with patch.object(gate.time,'monotonic',side_effect=lambda:clock[0]), patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'write_report',side_effect=write), patch.object(gate,'install_insert_control',side_effect=fault) as install:
                     with self.assertRaises(expected):
                         gate.measure([Revision('A',[]),Revision('B',[])],CASE,100,True,sink=cases,frozen=self.clean_result(),report=report,output=output)
-                self.assertEqual(install.call_count,int(known_tail and remaining==99))
+                self.assertEqual(install.call_count,int(known_tail and (remaining==99 or reserve==30)))
                 self.assertEqual(cases[0]['control_admission']['remaining_after_persistence_seconds'],remaining)
                 self.assertEqual(report['mutation_control_preflight'],snapshots[0])
                 self.assertEqual(snapshots[0]['control_budget']['remaining_seconds'],100)
@@ -252,14 +286,19 @@ class PairedRestoration(unittest.TestCase):
                 def elapsed(conn,case,n,deadline,delay=0,**kwargs):
                     cost = .002 if conn.side=='B' and (not acceptance or conn.controlled) else .001
                     if kwargs.get('raw') is not None: kwargs['raw'].extend([cost]*n)
-                    if conn.controlled: conn.delays+=n
+                    if conn.controlled:
+                        conn.delays+=n
+                        conn.last_id=IDENTITY['seed_max_id']+n
                     return cost*n
-                def install(conn,maximum): conn.controlled=True
-                footprint = {'totals':{'mutable':8192,'mutable_pk':8192},'forks':{}}
-                with patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'reset'), patch.object(gate,'configure'), patch.object(gate,'elapsed',side_effect=elapsed), patch.object(gate,'insert_footprint',return_value=footprint), patch.object(gate,'check_insert') as oracle, patch.object(gate,'write_report'), patch.object(gate,'install_insert_control',side_effect=install), patch.object(gate,'insert_pair',wraps=gate.insert_pair) as owner:
+                def install(conn,maximum,iterations,**kwargs):
+                    conn.controlled=True
+                    conn.iterations=iterations
+                    kwargs['sink']['infrastructure_committed']=True
+                footprint = self.footprint()
+                with patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'reset'), patch.object(gate,'configure'), patch.object(gate,'elapsed',side_effect=elapsed), patch.object(gate,'insert_footprint',return_value=footprint), patch.object(gate,'check_insert',side_effect=self.oracle) as oracle, patch.object(gate,'write_report'), patch.object(gate,'install_insert_control',side_effect=install), patch.object(gate,'insert_pair',wraps=gate.insert_pair) as owner:
                     clean = gate.measure(revisions,CASE,math.inf,force_confirmation=acceptance,report={},output=None)
                     if acceptance:
-                        gate.measure(revisions,CASE,math.inf,True,frozen=clean,report={'post_control_costs':self.post_costs()})
+                        gate.measure(revisions,CASE,math.inf,True,frozen=clean,report={'baseline_ref':'a'*40,'candidate_ref':'a'*40,'config':{'tier':'pr'},'post_control_costs':self.post_costs(),'cpu_calibration':self.cpu(),'completed_control_work':self.coverage()})
                 expected = 54 if acceptance else 28
                 self.assertEqual(sum(sql=='CHECKPOINT' for side,sql in events),expected)
                 self.assertEqual(oracle.call_count,expected)
@@ -280,30 +319,38 @@ class PairedRestoration(unittest.TestCase):
                     if conn.controlled:
                         candidate_calls[0]+=1
                         conn.delays+=n
+                        conn.last_id=IDENTITY['seed_max_id']+n
                         # Validation+initial6 consume14 candidate warm/measured streams.
-                        if candidate_calls[0]>14: ratio=fresh_ratio
+                        if candidate_calls[0]>14*5: ratio=fresh_ratio
                     value = .001*ratio
                     if kwargs.get('raw') is not None: kwargs['raw'].extend([value]*n)
                     return value*n
-                def install(conn,maximum): conn.controlled=True
-                footprint = {'totals':{'mutable':8192,'mutable_pk':8192},'forks':{}}
+                def install(conn,maximum,iterations,**kwargs):
+                    conn.controlled=True
+                    conn.iterations=iterations
+                    kwargs['sink']['infrastructure_committed']=True
+                footprint = self.footprint()
                 report = dict(status='inconclusive',date='unit',size_status='inconclusive',complete=False,
                               size_complete=False,budget_exhausted=False,baseline_ref='a'*40,candidate_ref='a'*40,
-                              cpu='unit',cpus=1,runner='unit',load=[],config={'verify_control':True},runtime_seconds={},
-                              size_checks=[],cases=[],post_control_costs=self.post_costs())
-                with patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'reset'), patch.object(gate,'configure'), patch.object(gate,'elapsed',side_effect=elapsed), patch.object(gate,'insert_footprint',return_value=footprint), patch.object(gate,'check_insert'), patch.object(gate,'install_insert_control',side_effect=install), patch.object(gate,'calibrate_insert') as pilot, patch.object(gate,'insert_pair',wraps=gate.insert_pair) as owner:
+                              cpu='unit',cpus=1,runner='unit',load=[],config={'verify_control':True,'tier':'pr'},runtime_seconds={},
+                              size_checks=[],cases=[],post_control_costs=self.post_costs(),cpu_calibration=self.cpu(),completed_control_work=self.coverage())
+                with patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'reset'), patch.object(gate,'configure'), patch.object(gate,'elapsed',side_effect=elapsed), patch.object(gate,'insert_footprint',return_value=footprint), patch.object(gate,'check_insert',side_effect=self.oracle), patch.object(gate,'install_insert_control',side_effect=install), patch.object(gate,'calibrate_insert') as pilot, patch.object(gate,'insert_pair',wraps=gate.insert_pair) as owner:
                     result = gate.measure(revisions,CASE,gate.time.monotonic()+1000,True,
-                                          frozen=self.clean_result(),sink=report['cases'],report=report,output=Path(tmp))
+                                          frozen=self.clean_result(histories=5),sink=report['cases'],report=report,output=Path(tmp))
                 self.assertEqual(result['initial']['upper'],1.0)
                 self.assertTrue('confirmation' in result,'controlled INSERT initial PASS must still collect fresh6')
                 self.assertEqual(result['confirmation']['n'],6)
                 self.assertEqual(result['initial']['n'],6)
-                self.assertEqual(owner.call_count,13)
-                self.assertEqual(sum(sql=='CHECKPOINT' for side,sql in events),26)
-                self.assertEqual(revisions[1].delays,26*result['operations'])
+                self.assertEqual(owner.call_count,13*5)
+                self.assertEqual(sum(sql=='CHECKPOINT' for side,sql in events),26*5)
+                self.assertEqual(revisions[1].delays,26*5*result['operations'])
                 self.assertEqual(result['control_budget']['controlled_pairs'],13)
-                self.assertEqual(result['control_budget']['candidate_delayed_operations'],26*result['operations'])
+                self.assertEqual(result['control_budget']['candidate_delayed_operations'],26*5*result['operations'])
                 self.assertTrue(result['validation']['pair']['complete'])
+                self.assertEqual(result['calibration']['histories'],5)
+                self.assertEqual(len(result['validation']['history_size_checks']),5)
+                self.assertEqual(len(result['initial']['pairs']),6)
+                self.assertTrue(all(len(p['histories'])==5 for p in result['confirmation']['pairs']))
                 self.assertTrue(result['complete'])
                 self.assertTrue(result['control']['removed'])
                 self.assertEqual(result['timing_status'],'regression' if fresh_ratio>1.1 else 'pass')
@@ -355,7 +402,7 @@ class PairedRestoration(unittest.TestCase):
                 gate.block([Revision('A',events),Revision('B',events)],CASE,2,10,sink=saved,identity=IDENTITY)
         self.assertNotIn('n',saved)
         self.assertEqual(saved['samples'],[[None,None]])
-        first = saved['pairs'][0]
+        first = saved['pairs'][0]['histories'][0]
         self.assertEqual(len(first['sides'][0]['operation_seconds']),2)
         self.assertEqual(first['sides'][1]['operation_seconds'],[])
         self.assertEqual(events,[('A','CHECKPOINT'),('B','CHECKPOINT')])
@@ -372,15 +419,15 @@ class PairedRestoration(unittest.TestCase):
             def rows(self,sql): return [['3']]
             def stop(self,output):
                 if failure=='cleanup': raise RuntimeError('teardown failed')
-        def calibration(*args): args[-1].update(operations=5,pilot_pair=self.clean_pair(2048,role='pilot'))
+        def calibration(*args): args[-1].update(operations=5,histories=1,pilot_pair=self.clean_pair(2048,role='pilot'))
         def validation(*args,**kwargs):
-            args[-1].update(pair=self.clean_pair(),size_checks={'state':'mutable_insert_trajectory','status':'pass','relations':[]})
+            args[-1].update(pair=self.clean_observation(),size_checks={'state':'mutable_insert_trajectory','status':'pass','relations':[]})
         def block(*args,**kwargs):
             seen.append((args[1].name,kwargs.get('pair_count',6)))
             if failure=='partial' and len(seen)==2:
                 kwargs['sink'].update(samples=[[1,None]],expected_pairs=6)
                 raise gate.BudgetExpired('fresh incomplete')
-            return dict(blocks[len(seen)-1],pairs=[self.clean_pair(role='verdict') for _ in range(6)])
+            return dict(blocks[len(seen)-1],pairs=[self.clean_observation(role='verdict') for _ in range(6)])
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--insert-feasibility','--baseline-ref','a'*40,'--candidate-ref','a'*40,
                     '--output',tmp,'--scratch-root',tmp,'--pg-config','/bin/true',

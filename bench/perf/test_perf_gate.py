@@ -312,7 +312,7 @@ class Methodology(unittest.TestCase):
                      patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
                      patch.object(gate,'sizes',return_value=[]), patch.object(gate,'size_snapshot',side_effect=size_snapshot), \
                      patch.object(gate,'validate_case',return_value={'size_checks':{'state':'mutable_vacuum','status':'pass','relations':[]} if coverage else None}), \
-                     patch.object(gate,'measure',side_effect=measure), \
+                     patch.object(gate,'measure',side_effect=measure), patch.object(gate,'prepare_control_costs'), patch.object(gate,'refresh_report_cost'), \
                      patch.object(gate,'churn_sizes',side_effect=gate.BudgetExpired('after controls') if expiry else None,
                                   return_value={'state':'churn_vacuum','status':'pass','relations':[]}), \
                      contextlib.redirect_stdout(io.StringIO()):
@@ -320,7 +320,7 @@ class Methodology(unittest.TestCase):
                 report = json.loads((Path(tmp)/'results.json').read_text())
                 self.assertEqual(code,0 if coverage and not expiry and not ineffective_insert else 2)
                 self.assertEqual(report['size_status'],'pass' if coverage and not expiry else 'inconclusive')
-                self.assertEqual(len(report['cases']),4)
+                self.assertEqual(len(report['cases']),2 if expiry else 4)
                 self.assertEqual(report['cases'][-1]['timing_status'],'pass' if ineffective_insert else 'regression')
                 if ineffective_insert:
                     self.assertFalse(report['acceptance_pass'])

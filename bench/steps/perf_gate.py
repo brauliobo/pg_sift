@@ -38,7 +38,10 @@ PROCESS_ORIGIN = time.monotonic()
 BATCH_WALL_LIMIT = 1.0
 INSERT_PILOT = 2048
 INSERT_GROWTH_CAP = 2048
-INSERT_CONTROL_DELAY = .001
+INSERT_HISTORY_CAP = 5
+CPU_PILOT_ROWS = 32
+CPU_PILOT_ITERATIONS = 16
+CPU_ITERATION_CAP = 1024
 SETTINGS = '''SET statement_timeout='30s'; SET max_parallel_workers_per_gather=0;
 SET max_parallel_maintenance_workers=0; SET jit=off; SET sift.async_maintenance=off;
 SET sift.table_write_buffer_limit=2048; SET cpu_tuple_cost=0.5; SET enable_seqscan=off; SET sift.enable_agg=on; SET sift.agg_preagg=on'''
@@ -218,21 +221,30 @@ jit=off
 """
         with (self.data/'postgresql.conf').open('a') as f:
             f.write(config)
-        self.started = True
-        command(['nice','-n','19',bindir/'pg_ctl','-D',self.data,'-l',self.base/'server.log','-w','start'],env=env,log=self.log)
+        self.env = env
         self.timings['cluster_init_start'] = time.monotonic()-phase
-        phase = time.monotonic()
-        command([bindir/'psql','-X','-v','ON_ERROR_STOP=1','-h',self.socket,'-p',self.port,'-U','postgres','-d','postgres',
-                 '-v',f'rows={rows}','-f',ROOT/'bench/perf/fixture.sql'],env=env,log=self.log)
-        self.timings['fixture_load'] = time.monotonic()-phase
+        self.start(fixture_rows=rows)
+        return config
+
+    def start(self, *, fixture_rows=None):
+        # The restart path launches the existing data directory without loading fixtures.
+        phase=time.monotonic()
+        self.started = True
+        command(['nice','-n','19',self.bindir/'pg_ctl','-D',self.data,'-l',self.base/'server.log','-w','start'],env=self.env,log=self.log)
+        if fixture_rows is not None:
+            self.timings['cluster_init_start']+=time.monotonic()-phase
+            phase=time.monotonic()
+            command([self.bindir/'psql','-X','-v','ON_ERROR_STOP=1','-h',self.socket,'-p',self.port,'-U','postgres','-d','postgres',
+                     '-v',f'rows={fixture_rows}','-f',ROOT/'bench/perf/fixture.sql'],env=self.env,log=self.log)
+            self.timings['fixture_load']=time.monotonic()-phase
         lib = cell.libpq()
         lib.PQgetisnull.restype = ctypes.c_int
         lib.PQgetisnull.argtypes = [ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
         self.conn = SQL(lib, f'host={self.socket} port={self.port} user=postgres dbname=postgres application_name=perf-gate')
+        self.conn.exec("LOAD 'pg_sift'")
         self.conn.script(SETTINGS)
         require_equal(self.conn.rows('SHOW block_size'),[['8192']],'PostgreSQL page size')
         self.versions = self.conn.rows("SELECT version(),extversion FROM pg_extension WHERE extname='pg_sift'")
-        return config
 
     def stop(self, output):
         if self.conn:
@@ -578,28 +590,94 @@ def insert_control_count(conn):
     return int(conn.rows("SELECT current_setting('perf_gate.delayed_rows')")[0][0])
 
 
-def install_insert_control(conn, seed_max):
-    # Acceptance only. Counter proves actual per-new-row work, including excluded warm work.
-    conn.exec(f"""CREATE FUNCTION perf_gate_insert_delay() RETURNS trigger LANGUAGE plpgsql AS $$
-    BEGIN
-      IF NEW.id > {seed_max} THEN
-        PERFORM set_config('perf_gate.delayed_rows',(current_setting('perf_gate.delayed_rows')::bigint+1)::text,false);
-        PERFORM pg_sleep(0.001);
-      END IF;
-      RETURN NEW;
-    END $$""")
-    conn.exec('CREATE TRIGGER perf_gate_insert_delay BEFORE INSERT ON mutable FOR EACH ROW EXECUTE FUNCTION perf_gate_insert_delay()')
-    conn.exec("SET perf_gate.delayed_rows='0'")
+def install_insert_control(conn, seed_max, iterations, *, active=True, sink=None):
+    # Infrastructure DDL only is transactional. Every workload point remains autocommit.
+    try:
+        conn.exec('BEGIN')
+        conn.exec("""CREATE FUNCTION perf_gate_cpu_work(row_id integer, iterations integer) RETURNS text
+        LANGUAGE plpgsql VOLATILE AS $$
+        DECLARE state text := row_id::text; i integer;
+        BEGIN
+          FOR i IN 1..iterations LOOP state := md5(state || ':' || row_id::text); END LOOP;
+          RETURN state;
+        END $$""")
+        conn.exec(f"""CREATE FUNCTION perf_gate_insert_delay() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.id > {seed_max} THEN
+            PERFORM set_config('perf_gate.delayed_rows',(current_setting('perf_gate.delayed_rows')::bigint+1)::text,false);
+            PERFORM set_config('perf_gate.cpu_checksum',perf_gate_cpu_work(NEW.id,{iterations}),false);
+          END IF;
+          RETURN NEW;
+        END $$""")
+        conn.exec('CREATE TRIGGER perf_gate_insert_delay BEFORE INSERT ON mutable FOR EACH ROW EXECUTE FUNCTION perf_gate_insert_delay()')
+        conn.exec('ALTER TABLE mutable DISABLE TRIGGER perf_gate_insert_delay')
+        conn.exec("SET perf_gate.delayed_rows='0'")
+        if sink is not None: sink['commit_attempted']=True
+        conn.exec('COMMIT')
+        if sink is not None: sink['infrastructure_committed']=True
+    except Exception:
+        cleanup_insert_sql(conn,['ROLLBACK'],sink if sink is not None else {},sys.exc_info()[1])
+        raise
+    if active:
+        conn.exec('ALTER TABLE mutable ENABLE TRIGGER perf_gate_insert_delay')
+        if sink is not None: sink['active']=True
 
 
 def remove_insert_control(conn, sink, primary):
     return cleanup_insert_sql(conn,['DROP TRIGGER perf_gate_insert_delay ON mutable',
-                                    'DROP FUNCTION perf_gate_insert_delay()'],sink,primary)
+                                    'DROP FUNCTION perf_gate_insert_delay()',
+                                    'DROP FUNCTION perf_gate_cpu_work(integer,integer)'],sink,primary)
+
+
+def require_control_absent(conn):
+    require_equal(conn.rows("SELECT count(*) FROM pg_proc WHERE proname IN ('perf_gate_cpu_work','perf_gate_insert_delay')"),
+                  [['0']],'control functions absent')
+    require_equal(conn.rows("SELECT count(*) FROM pg_trigger WHERE tgname='perf_gate_insert_delay'"),[['0']],'control trigger absent')
+
+
+def calibrate_cpu_work(conn, sink):
+    """One fixed zero/16-iteration warm+measurement, no INSERT or verdict tuning."""
+    sink.update(rows=CPU_PILOT_ROWS,pilot_iterations=CPU_PILOT_ITERATIONS,iteration_cap=CPU_ITERATION_CAP,
+                blocks=[],complete=False,scope='client elapsed helper calls; no mutable writes; trigger/counter/seed overhead excluded')
+    for iterations in (0,CPU_PILOT_ITERATIONS):
+        block = dict(iterations=iterations,warm_seconds=[],operation_seconds=[],checksums=[])
+        sink['blocks'].append(block)
+        for key in ('warm_seconds','operation_seconds'):
+            for ordinal in range(CPU_PILOT_ROWS):
+                before=time.perf_counter()
+                checksum=conn.rows(f'SELECT perf_gate_cpu_work({-ordinal-1},{iterations})')[0][0]
+                block[key].append(time.perf_counter()-before)
+                require_equal(checksum,cpu_checksum(-ordinal-1,iterations),'CPU calibration checksum')
+                if key=='operation_seconds': block['checksums'].append(checksum)
+    zero,loaded=(sum(b['operation_seconds'])/CPU_PILOT_ROWS for b in sink['blocks'])
+    slope=(loaded-zero)/CPU_PILOT_ITERATIONS
+    if not math.isfinite(slope) or slope<=0:
+        raise Inconclusive('fixed CPU calibration has no positive finite incremental work evidence')
+    sink.update(seconds_per_iteration=slope,complete=True)
+
+
+def cpu_checksum(row_id, iterations):
+    state=str(row_id)
+    for _ in range(iterations): state=hashlib.md5((state+':'+str(row_id)).encode()).hexdigest()
+    return state
+
+
+def freeze_cpu_work(calibration, cpu):
+    if not cpu.get('complete') or not finite_number(cpu.get('seconds_per_iteration')) or cpu['seconds_per_iteration']<=0:
+        raise Inconclusive('missing completed same-invocation CPU calibration')
+    # A large prospective functional signal: added helper CPU equal to slower clean per-row SQL.
+    desired=math.ceil(max(calibration['sql_seconds_per_operation'])/cpu['seconds_per_iteration'])
+    iterations=min(desired,CPU_ITERATION_CAP)
+    return dict(iterations=iterations,desired_iterations=desired,limited_by_cap=iterations<desired,
+                seconds_per_iteration=cpu['seconds_per_iteration'],predicted_added_seconds_per_row=iterations*cpu['seconds_per_iteration'],
+                target_added_seconds_per_row=max(calibration['sql_seconds_per_operation']),
+                policy='one fixed zero/16 slope; ceil(slower clean client SQL per row / slope), cap1024; never verdict tuned',
+                provenance=cpu)
 
 
 INSERT_PHASES = ('warm_reset','warm','final_reset','preprobes','checkpoint','stream','postcheck')
-POST_CONTROL_PHASES = ('fault_removal','churn_normal_sizes','bm25_alter_reindex',
-                       'size_control_logical_and_forks','final_report','cluster_teardown')
+POST_CONTROL_PHASES = ('fault_removal','final_report','cluster_teardown')
+CONTROL_COST_PHASES = ('fault_setup',)+POST_CONTROL_PHASES
 
 
 @contextlib.contextmanager
@@ -675,7 +753,10 @@ def insert_pair(revisions, case, identity, operations, deadline, sink, *, order=
                     counts.append(insert_control_count(conn))
                     first = counts[0]
                     require_equal(counts,[first,first,first+operations,first+operations,first+2*operations],
-                                  'real per-new-row delay counts; seed reset must not delay')
+                                  'real per-new-row CPU counts; seed reset must not perform work')
+                    checksum=conn.rows("SELECT current_setting('perf_gate.cpu_checksum')")[0][0]
+                    side['control_checksum']=checksum
+                    require_equal(checksum,cpu_checksum(identity['seed_max_id']+operations,control['iterations']),'last new-row CPU checksum')
                 side['oracle'] = {}
                 check_insert(conn,identity,operations,side['oracle'])
                 side['after'] = insert_footprint(conn)
@@ -696,6 +777,29 @@ def insert_pair(revisions, case, identity, operations, deadline, sink, *, order=
         wall = end-origin
         sink.update(finished_at=finished_at,end_offset_seconds=end-PROCESS_ORIGIN,
                     wall_seconds=wall,phase_seconds=phase_sum,residual_seconds=wall-phase_sum)
+
+
+def insert_observation(revisions, case, identity, operations, histories, deadline, sink, *, order=(0,1), role='verdict', control=False):
+    """K dependent restored histories form ONE pair; publish only after every check."""
+    if not 1<=histories<=INSERT_HISTORY_CAP:
+        raise ValueError('invalid frozen INSERT history count')
+    start=time.monotonic()
+    schedule=[tuple(order if j%2==0 else reversed(order)) for j in range(histories)]
+    sink.update(operations=operations,history_count=histories,internal_orders=schedule,histories=[],role=role,
+                clean=not control,workload_version=case.workload_version,complete=False)
+    try:
+        totals=[0.,0.]
+        for order in schedule:
+            history={}
+            sink['histories'].append(history)
+            values=insert_pair(revisions,case,identity,operations,deadline,history,order=order,role=role,control=control)
+            for side in (0,1): totals[side]+=values[side]
+        sink.update(samples=totals,complete=True)
+        return totals
+    finally:
+        sink['history_seconds']=sum(h['wall_seconds'] for h in sink['histories'] if 'wall_seconds' in h)
+        sink['wall_seconds']=time.monotonic()-start
+        sink['residual_seconds']=sink['wall_seconds']-sink['history_seconds']
 
 
 def calibrate_insert(revisions, case, identity, deadline, sink):
@@ -720,18 +824,39 @@ def calibrate_insert(revisions, case, identity, deadline, sink):
                 limited_by_growth=operations<desired and INSERT_GROWTH_CAP==operations,
                 predicted_sql_seconds=[operations*c for c in costs],
                 predicted_reset_loop_seconds=[r+operations*w for r,w in zip(resets,walls)])
+    desired_histories=math.ceil(TARGET/min(sink['predicted_sql_seconds']))
+    histories=min(desired_histories,INSERT_HISTORY_CAP)
+    sink.update(histories=histories,desired_histories=desired_histories,history_cap=INSERT_HISTORY_CAP,
+                internal_order_policy='alternate histories; complement entire schedule on BA observations',
+                initial_and_confirmation_orders=[[[int((j+i)%2),int(1-(j+i)%2)] for j in range(histories)] for i in range(6)],
+                validation_orders=[[j%2,1-j%2] for j in range(histories)],
+                predicted_observation_sql_seconds=[histories*v for v in sink['predicted_sql_seconds']],
+                predicted_observation_wall_seconds=histories*sink['pilot_pair']['wall_seconds'],
+                predicted_max_clean_remaining_wall_seconds=13*histories*sink['pilot_pair']['wall_seconds'],
+                clean_remaining_model_scope='13 composites of pilot history wall; N may differ; estimate not bound; pilot already spent',
+                target_attained_prediction=histories>=desired_histories,
+                limitations='client/encoding/deadline/libpq/autocommit per-row overhead retained; composition does not remove side bias or correlated noise')
     return sink
 
 
-def validate_insert(revisions, case, identity, operations, deadline, sink, *, control=False):
-    sink.update(pair={},size_checks=None,complete=False)
-    insert_pair(revisions,case,identity,operations,deadline,sink['pair'],role='validation',control=control)
-    sides = sink['pair']['sides']
-    sink['size_checks'] = dict(compare_sizes([side['after']['totals'] for side in sides],
-                                            'mutable_insert_trajectory',MUTABLE_RELATIONS),
-                               forks=[side['after']['forks'] for side in sides])
-    sink['complete'] = True
+def validate_insert(revisions, case, identity, operations, deadline, sink, *, control=False, histories=1):
+    sink.update(pair={},size_checks=None,history_size_checks=[],complete=False)
+    insert_observation(revisions,case,identity,operations,histories,deadline,sink['pair'],role='validation',control=control)
+    for history in sink['pair']['histories']:
+        sides=history['sides']
+        sink['history_size_checks'].append(dict(compare_sizes([side['after']['totals'] for side in sides],
+                                                'mutable_insert_trajectory',MUTABLE_RELATIONS),
+                                               forks=[side['after']['forks'] for side in sides]))
+    # First history is the declared representative; every history gates separately.
+    sink['size_checks']=dict(sink['history_size_checks'][0],representative_history=0,
+                            history_checks=sink['history_size_checks'],
+                            status='regression' if any(s['status']=='regression' for s in sink['history_size_checks']) else 'pass')
+    sink['complete']=True
     return sink
+
+
+def finite_number(value):
+    return type(value) in (int,float) and math.isfinite(value)
 
 
 def clean_full_n_pair_cost(pair, operations, role):
@@ -741,63 +866,232 @@ def clean_full_n_pair_cost(pair, operations, role):
             or pair.get('role')!=role or len(pair.get('sides',[]))!=2):
         raise Inconclusive('missing completed clean full-N '+role+' pair cost evidence')
     for side in pair['sides']:
-        if any(len(side.get(key,[]))!=operations or any(not math.isfinite(v) or v<=0 for v in side[key])
+        oracle=side.get('oracle',{})
+        if (oracle.get('multiset_difference')!=0 or oracle.get('actual_count')!=oracle.get('expected_count')
+                or not isinstance(oracle.get('expected_count'),int) or oracle['expected_count']<=0
+                or not oracle.get('expected_digest') or oracle.get('actual_digest')!=oracle['expected_digest']
+                or not all(key in side.get(state,{}) for state in ('before','after') for key in ('geometry','forks','totals'))):
+            raise Inconclusive('missing completed full-N oracle/geometry/raw-fork evidence')
+        if any(len(side.get(key,[]))!=operations or any(not finite_number(v) or v<=0 for v in side[key])
                for key in ('operation_seconds','warm_operation_seconds')):
             raise Inconclusive('missing complete full-N raw operation evidence')
+        for metric,raw in (('sql_seconds','operation_seconds'),('warm_sql_seconds','warm_operation_seconds')):
+            if not finite_number(side.get(metric)) or side[metric]<=0 or not math.isclose(side[metric],sum(side[raw]),rel_tol=1e-12):
+                raise Inconclusive('full-N SQL sum differs from complete raw point evidence')
         if set(side.get('phases',{}))!=set(INSERT_PHASES):
             raise Inconclusive('missing full-N phase cost evidence')
         for phase in side['phases'].values():
-            if not phase.get('complete') or any(not math.isfinite(phase.get(key,math.nan)) for key in
+            if not phase.get('complete') or any(not finite_number(phase.get(key,math.nan)) for key in
                                                ('seconds','start_offset_seconds','end_offset_seconds')) or phase['seconds']<0 or not math.isclose(phase['end_offset_seconds']-phase['start_offset_seconds'],phase['seconds'],abs_tol=1e-9):
                 raise Inconclusive('incomplete/nonfinite full-N phase cost evidence')
     wall,phases,residual = (pair.get(key,math.nan) for key in ('wall_seconds','phase_seconds','residual_seconds'))
     actual = sum(p['seconds'] for side in pair['sides'] for p in side['phases'].values())
-    if (not all(math.isfinite(v) for v in (wall,phases,residual)) or wall<=0 or residual<0
+    if (not all(finite_number(v) for v in (wall,phases,residual)) or wall<=0 or residual<0
             or not math.isclose(actual,phases,abs_tol=1e-9) or not math.isclose(wall,phases+residual,abs_tol=1e-9)):
         raise Inconclusive('invalid complete full-N wall/phase/residual evidence')
     return wall
 
 
-def insert_control_budget(unchanged, deadline, post_control_costs):
-    operations = unchanged['calibration']['operations']
-    population = []
+def clean_observation_cost(observation, operations, histories, role):
+    if (not observation.get('complete') or not observation.get('clean') or observation.get('operations')!=operations
+            or observation.get('history_count')!=histories or observation.get('role')!=role
+            or observation.get('workload_version')!=next(c.workload_version for c in CASES if c.lifecycle=='insert_trajectory')
+            or len(observation.get('histories',[]))!=histories):
+        raise Inconclusive('missing complete frozen N/K observation cost evidence')
+    history_seconds=sum(clean_full_n_pair_cost(h,operations,role) for h in observation['histories'])
+    wall=observation.get('wall_seconds',math.nan)
+    residual=observation.get('residual_seconds',math.nan)
+    if not finite_number(wall) or not finite_number(residual) or residual<0 or not math.isclose(wall,history_seconds+residual,abs_tol=1e-9):
+        raise Inconclusive('invalid composite wall/history/residual evidence')
+    return wall
+
+
+@contextlib.contextmanager
+def run_phase(report, name):
+    """Invocation-owned measured phases; nested spans explain, never double-charge."""
+    entries=report.setdefault('phase_ledger',[])
+    parent=next((i for i in range(len(entries)-1,-1,-1) if 'end_offset_seconds' not in entries[i]),None)
+    start=time.monotonic()
+    entry=dict(name=name,parent=parent,start_offset_seconds=start-PROCESS_ORIGIN,started_at=utc_now(),complete=False)
+    entries.append(entry)
     try:
-        population.append(dict(source='validation',wall_seconds=clean_full_n_pair_cost(
-            unchanged.get('validation',{}).get('pair',{}),operations,'validation')))
+        yield entry
+        entry['complete']='error' not in entry
+    except Exception as exc:
+        entry['error']=f'{type(exc).__name__}: {exc}'
+        raise
+    finally:
+        end=time.monotonic()
+        entry.update(end_offset_seconds=end-PROCESS_ORIGIN,seconds=end-start,finished_at=utc_now())
+
+
+def reconcile_ledger(report, start, end):
+    entries=report.get('phase_ledger',[])
+    exclusive=sum(e['seconds'] for e in entries if e['parent'] is None)
+    total=end-start
+    residual=total-exclusive
+    if not finite_number(residual) or residual<0:
+        raise ValueError('phase ledger overlaps or exceeds driver wall')
+    return dict(driver_wall_seconds=total,exclusive_phase_seconds=exclusive,residual_seconds=residual,
+                partition='only parent=null inclusive spans + residual; child phases/pair histories are explanatory')
+
+
+def measured_estimate(entry, report, scope):
+    if not entry.get('complete') or not finite_number(entry.get('seconds',math.nan)) or entry['seconds']<=0:
+        raise Inconclusive('missing completed finite cost producer: '+scope)
+    return dict(complete=True,seconds=entry['seconds'],kind='same_invocation_measured_estimate',
+                provenance=dict(phase=entry['name'],baseline=report['baseline_ref'],candidate=report['candidate_ref'],
+                                tier=report['config']['tier'],settings=SETTINGS,scope=scope,
+                                artifact_bytes=entry.get('artifact_bytes')))
+
+
+def restart_identity(rev):
+    settings=sorted(re.findall(r'SET ([a-z_.]+)=',SETTINGS))
+    return dict(seed=rev.conn.rows(SEED_IDENTITY),versions=rev.versions,
+                system=rev.conn.rows('SELECT system_identifier FROM pg_control_system()'),
+                settings=rev.conn.rows("SELECT name,setting FROM pg_settings WHERE name IN ("+
+                                      ','.join("'"+name+"'" for name in settings)+") ORDER BY name"))
+
+
+def completed_control_schedule(report):
+    required={c.name for c in CASES if c.lifecycle!='insert_trajectory'}
+    catalog=report.get('acceptance_catalog_validation',{})
+    read_controls={c['name']:c for c in report['cases'] if c['name'] in ('control_unchanged','control_sql_slowdown')}
+    phases=[dict(entry) for entry in report.get('phase_ledger',[]) if entry['name'] in
+            ('churn_normal_sizes','bm25_growth_logical_forks')]
+    states={s['state'] for s in normal_size_checks(report)}
+    catalog_complete=required<=catalog.keys() and all(catalog[name].get('complete') for name in required)
+    reads_complete=set(read_controls)=={'control_unchanged','control_sql_slowdown'} and all(c.get('complete') for c in read_controls.values())
+    size_complete='size_control' in report and report['size_control']['state']=='control_build_segments_64'
+    coverage=dict(catalog_complete=catalog_complete,read_controls_complete=reads_complete,size_control_complete=size_complete,
+                  normal_size_states=sorted(states),phases=phases,sources=[report['baseline_ref'],report['candidate_ref'],report['config']['tier']],
+                  scope='completed actuals already spent; never future demand')
+    coverage['complete']=valid_completed_control_schedule(coverage,tuple(coverage['sources']))
+    return coverage
+
+
+def valid_completed_control_schedule(coverage, sources):
+    phases=coverage.get('phases',[])
+    return (coverage.get('sources')==list(sources) and coverage.get('catalog_complete') and coverage.get('read_controls_complete')
+            and coverage.get('size_control_complete') and {'settled_build','churn_vacuum','mutable_vacuum'}<=set(coverage.get('normal_size_states',[]))
+            and {p['name'] for p in phases}=={'churn_normal_sizes','bm25_growth_logical_forks'}
+            and len(phases)==2 and all(p.get('complete') and finite_number(p.get('seconds',math.nan)) and p['seconds']>=0 for p in phases))
+
+
+def prepare_control_costs(revisions, report, output):
+    """One inactive infrastructure cycle and one existing-cluster stop/restart."""
+    report['completed_control_work']=completed_control_schedule(report)
+    if not report['completed_control_work']['complete']:
+        raise Inconclusive('read/catalog/normal-size/BM25 prerequisites incomplete before infrastructure probe')
+    identity=insert_identity(revisions)
+    report['control_setup_intent']=dict(phase='inactive_infrastructure_probe',complete=False,admitted=False,
+        active_fault=False,mutable_writes_permitted=False,seed_max_id=identity['seed_max_id'],
+        schedule='all reads/catalog -> normal churn/forks -> BM25 growth proof -> inactive costs/restart -> clean composite INSERT -> admitted CPU control')
+    write_report(output,report)  # closed intent before first inactive DDL
+    conn=revisions[1].conn
+    require_control_absent(conn)
+    before=conn.rows(SEED_IDENTITY)
+    with run_phase(report,'inactive_fault_setup') as install:
+        install_insert_control(conn,identity['seed_max_id'],CPU_PILOT_ITERATIONS,active=False,sink=report['control_setup_intent'])
+    primary=None
+    try:
+        require_equal(conn.rows("SELECT tgenabled FROM pg_trigger WHERE tgname='perf_gate_insert_delay'"),[['D']],'probe trigger disabled')
+        report['cpu_calibration']={}
+        with run_phase(report,'cpu_helper_calibration'):
+            calibrate_cpu_work(conn,report['cpu_calibration'])
+        require_equal(insert_control_count(conn),0,'inactive probe has no faulted rows')
+        require_equal(before,conn.rows(SEED_IDENTITY),'inactive probe seed identity')
+    except Exception as exc:
+        primary=exc
+        raise
+    finally:
+        with run_phase(report,'inactive_fault_removal') as removal:
+            removed=remove_insert_control(conn,report['control_setup_intent'],primary)
+            if not removed: removal['error']='inactive SQL cleanup incomplete; see control_setup_intent.cleanup_errors'
+    if not removed: raise Inconclusive('inactive infrastructure removal incomplete')
+    require_control_absent(conn)
+    identities=[restart_identity(r) for r in revisions]
+    with run_phase(report,'cluster_stop_probe') as stop:
+        for rev in reversed(revisions): rev.stop(output)
+    with run_phase(report,'cluster_restart'):
+        for rev in revisions: rev.start()
+        for rev,expected in zip(revisions,identities):
+            require_equal(restart_identity(rev),expected,'same cluster/binary/settings after restart')
+            require_control_absent(rev.conn)
+    report['post_control_costs']=dict(
+        fault_setup=measured_estimate(install,report,'inactive install/disable/init; future enable and varying DDL wall unknown'),
+        fault_removal=measured_estimate(removal,report,'same DROP trigger/functions; future duration varies'),
+        cluster_teardown=measured_estimate(stop,report,'same two clusters/log copies; final dirty state and rmtree differ'))
+    report['control_setup_intent']['complete']=True
+    write_report(output,report)
+    refresh_report_cost(report)
+
+
+def refresh_report_cost(report):
+    closed=[e for e in report['phase_ledger'] if e['name']=='report_write' and e.get('complete')]
+    if not closed: raise Inconclusive('no closed report writer cost evidence')
+    report['post_control_costs']['final_report']=measured_estimate(max(closed,key=lambda e:e['seconds']),report,
+        'largest closed real report at current volume; final growth, terminal sidecar and upload unknown')
+
+
+def insert_control_budget(unchanged, deadline, cost_evidence, *, cpu_work, sources, completed_work, reserve_seconds=0):
+    operations,histories=(unchanged['calibration'][key] for key in ('operations','histories'))
+    population=[]
+    try:
+        if not unchanged.get('complete'):
+            raise Inconclusive('clean INSERT case incomplete before control')
+        for name in ('initial','confirmation'):
+            if name=='confirmation' and name not in unchanged: continue
+            block=unchanged.get(name,{})
+            if block.get('n')!=6 or sum(bool(pair.get('complete')) for pair in block.get('pairs',[]))!=6:
+                raise Inconclusive('clean INSERT '+name+' block lacks six completed observations')
+        population.append(dict(source='validation',wall_seconds=clean_observation_cost(
+            unchanged.get('validation',{}).get('pair',{}),operations,histories,'validation')))
         for block_name in ('initial','confirmation'):
             for index,pair in enumerate(unchanged.get(block_name,{}).get('pairs',[])):
                 if pair.get('complete'):
-                    population.append(dict(source=f'{block_name}.pairs[{index}]',wall_seconds=clean_full_n_pair_cost(pair,operations,'verdict')))
+                    population.append(dict(source=f'{block_name}.pairs[{index}]',wall_seconds=clean_observation_cost(pair,operations,histories,'verdict')))
     except Inconclusive as exc:
-        clean_error = str(exc)
+        clean_error=str(exc)
     else:
-        clean_error = None
-    missing = []
-    post = []
-    for name in POST_CONTROL_PHASES:
-        entry = post_control_costs.get(name)
+        clean_error=None
+    missing=[]
+    estimates={}
+    for name in CONTROL_COST_PHASES:
+        entry=cost_evidence.get(name)
         if (not entry or not entry.get('complete') or not entry.get('provenance')
-                or not math.isfinite(entry.get('seconds',math.nan)) or entry['seconds']<=0):
+                or not finite_number(entry.get('seconds',math.nan)) or entry['seconds']<=0
+                or not isinstance(entry['provenance'],dict)
+                or tuple(entry['provenance'].get(k) for k in ('baseline','candidate','tier'))!=sources
+                or entry['provenance'].get('settings')!=SETTINGS):
             missing.append(name)
         else:
-            post.append(dict(phase=name,**entry))
-    visits = INITIAL_PAIRS+MUTATION_CONFIRMATION_PAIRS+1
-    sleep = 2*operations*visits*INSERT_CONTROL_DELAY
-    maximum = max(p['wall_seconds'] for p in population) if population and clean_error is None else None
-    post_seconds = sum(p['seconds'] for p in post) if not missing else None
-    demand = visits*maximum+sleep+post_seconds if maximum is not None and post_seconds is not None else None
-    return dict(controlled_pairs=visits,expected_checkpoint_calls=2*visits,
-                candidate_delayed_operations=2*operations*visits,configured_delay_seconds=INSERT_CONTROL_DELAY,
-                clean_full_N_population=population,clean_evidence_error=clean_error,
-                max_clean_full_N_pair_wall=maximum,predicted_clean_pair_seconds=visits*maximum if maximum is not None else None,
-                minimum_added_sleep_seconds=sleep,required_post_control_costs=list(POST_CONTROL_PHASES),
-                post_control_cost_evidence=post,missing_post_control_costs=missing,post_control_seconds=post_seconds,
-                predicted_seconds=demand,evidence_complete=demand is not None,remaining_seconds=deadline-time.monotonic(),
-                cost_scope='13 * observed full-pair maximum includes all phases/waits/residual once; pilot excluded; post-control phases disjoint',
-                limitations='observed maximum is not a bound; extra trigger seed/counter/scheduler/DDL variability unmeasured; startup already spent')
+            estimates[name]=entry
+    if not valid_completed_control_schedule(completed_work,sources): missing.append('completed_read_catalog_churn_BM25_work')
+    visits=INITIAL_PAIRS+MUTATION_CONFIRMATION_PAIRS+1
+    rows=2*operations*histories*visits
+    maximum=max(p['wall_seconds'] for p in population) if population and clean_error is None else None
+    cpu=cpu_work['predicted_added_seconds_per_row']
+    if not finite_number(cpu) or cpu<=0: raise Inconclusive('invalid frozen CPU work cost evidence')
+    added=rows*cpu
+    sampling=visits*maximum+added+estimates['fault_setup']['seconds'] if maximum is not None and not missing else None
+    tail=sum(estimates[k]['seconds'] for k in POST_CONTROL_PHASES) if not missing else None
+    return dict(controlled_pairs=visits,histories=histories,expected_checkpoint_calls=2*histories*visits,
+                candidate_delayed_operations=rows,candidate_cpu_operations=rows,cpu_work=cpu_work,
+                completed_work=completed_work,sources=list(sources),
+                clean_full_N_population=population,clean_evidence_error=clean_error,max_clean_full_N_pair_wall=maximum,
+                predicted_clean_pair_seconds=visits*maximum if maximum is not None else None,
+                predicted_added_cpu_seconds=added,post_control_cost_evidence=estimates,
+                missing_post_control_costs=missing,post_control_seconds=tail,
+                predicted_seconds=sampling,predicted_total_remaining_seconds=sampling+tail if sampling is not None else None,
+                evidence_complete=sampling is not None,remaining_seconds=deadline-time.monotonic(),reserve_seconds=reserve_seconds,
+                cost_scope='13 * completed clean N/K observation max; pilot excluded; all history phases/residual once; completed tail already spent',
+                limitations=['same-run measured estimates, not bounds','trigger seed predicate/counter/enable overhead not isolated',
+                             'CPU helper slope includes client calls; per-row trigger cost may differ',
+                             'future dirty-stop/report-growth/rmtree/upload variability covered by allowance, not measured zero'])
 
 
-def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None):
+def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None, histories=1):
     if pair_count not in T95:
         raise ValueError('unsupported independent pair count')
     start = time.monotonic()
@@ -814,7 +1108,7 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
             if case.lifecycle=='insert_trajectory':
                 evidence = {}
                 saved['pairs'].append(evidence)
-                values = insert_pair(revisions,case,identity,operations,deadline,evidence,order=order,control=control)
+                values = insert_observation(revisions,case,identity,operations,histories,deadline,evidence,order=order,control=control)
                 pair[:] = values  # valid only after BOTH deferred checks
             else:
                 for side in order:
@@ -829,6 +1123,13 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
 
 
 def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False):
+    if report is None:
+        report={}
+    with run_phase(report,case.name+('_controlled' if control else '_clean')):
+        return _measure(revisions,case,deadline,control,sink,frozen=frozen,report=report,output=output,force_confirmation=force_confirmation)
+
+
+def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False):
     start = time.monotonic()
     result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
@@ -836,7 +1137,6 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
     if sink is not None:
         sink.append(result)
     inserted = case.lifecycle=='insert_trajectory'
-    installed = False
     try:
         if inserted:
             result['phase'] = 'identity'
@@ -856,30 +1156,41 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             if control:
                 result['operations'] = calibration['operations']
                 result['phase'] = 'control_preflight'
-                result['control_budget'] = insert_control_budget(frozen,deadline,report.get('post_control_costs',{}))
+                cpu_work=freeze_cpu_work(calibration,report['cpu_calibration'])
+                result['control_budget'] = insert_control_budget(frozen,deadline,report.get('post_control_costs',{}),
+                    cpu_work=cpu_work,sources=(report['baseline_ref'],report['candidate_ref'],report['config']['tier']),
+                    completed_work=report.get('completed_control_work',{}),
+                    reserve_seconds=report.get('budget',{}).get('cleanup_report_reserve_seconds',0))
                 report['mutation_control_preflight'] = dict(
                     recorded_at=utc_now(),phase='before_fault',fault_installed=False,
                     workload_version=case.workload_version,identity=identity,
-                    operations=calibration['operations'],calibration=calibration,
+                    operations=calibration['operations'],histories=calibration['histories'],calibration=calibration,
                     control_budget=result['control_budget'],
                     clean_validation=frozen['validation'],clean_blocks={name:frozen[name] for name in ('initial','confirmation') if name in frozen})
                 # Existing artifacts must be closed on disk before the first fault DDL.
                 write_report(output,report)
                 fresh_remaining = deadline-time.monotonic()
-                result['control_admission'] = dict(remaining_after_persistence_seconds=fresh_remaining)
+                result['control_admission'] = dict(remaining_after_persistence_seconds=fresh_remaining,
+                    workflow_remaining_after_persistence_seconds=fresh_remaining+result['control_budget']['reserve_seconds'])
                 if not result['control_budget']['evidence_complete']:
                     raise Inconclusive('control not admitted: required clean/post-control cost evidence is incomplete')
-                if result['control_budget']['predicted_seconds']>fresh_remaining:
+                if (result['control_budget']['predicted_seconds']>fresh_remaining
+                        or result['control_budget']['predicted_total_remaining_seconds']>fresh_remaining+result['control_budget']['reserve_seconds']):
                     raise BudgetExpired('insufficient fresh remaining budget after control preflight persistence')
-                result['control'] = dict(kind='per_new_row_trigger',delay_seconds=INSERT_CONTROL_DELAY,
+                result['control'] = dict(kind='per_new_row_cpu_trigger_v1',work=cpu_work,
                                          seed_max_id=identity['seed_max_id'],counter='perf_gate.delayed_rows')
                 result['phase'] = 'control_setup'
-                install_insert_control(revisions[1].conn,identity['seed_max_id'])
-                installed = True
+                # Track ownership before fallible DDL; failed transactional setup rolls back.
+                with run_phase(report,'active_fault_setup'):
+                    install_insert_control(revisions[1].conn,identity['seed_max_id'],cpu_work['iterations'],sink=result['control'])
+            histories=calibration['histories']
+            if report is not None and report.get('config',{}).get('insert_feasibility'):
+                report['coverage'].update(histories=histories,expected_history_pairs=1+13*histories,expected_restoration_checkpoints=2*(1+13*histories),
+                                          expected_resets=4*(1+13*histories))
             validation_start = time.monotonic()
             result['phase'] = 'validation'
             result['validation'] = {}
-            validate_insert(revisions,case,identity,calibration['operations'],deadline,result['validation'],control=control)
+            validate_insert(revisions,case,identity,calibration['operations'],deadline,result['validation'],control=cpu_work if control else False,histories=histories)
             result['phase_runtime_seconds']['validation'] = time.monotonic()-validation_start
         else:
             result['validation'] = validate_case(revisions,case)
@@ -895,8 +1206,9 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             write_report(output,report)
         result['phase'] = 'initial'
         result['initial'] = {}
-        options = {'identity':identity} if inserted else {}
-        result['initial'].update(block(revisions,case,operations,deadline,control,sink=result['initial'],**options))
+        options = {'identity':identity,'histories':histories} if inserted else {}
+        block_control=cpu_work if control and inserted else control
+        result['initial'].update(block(revisions,case,operations,deadline,block_control,sink=result['initial'],**options))
         result['status'] = verdict(result['initial'])
         if force_confirmation:
             write_report(output,report)
@@ -905,12 +1217,17 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
             result['phase'] = 'confirmation'
             result['confirmation'] = {}
             pair_count = READ_CONFIRMATION_PAIRS if case.lifecycle=='read' else MUTATION_CONFIRMATION_PAIRS
-            result['confirmation'].update(block(revisions,case,operations,deadline,control,
+            result['confirmation'].update(block(revisions,case,operations,deadline,block_control,
                                                 sink=result['confirmation'],pair_count=pair_count,**options))
             result['status'] = verdict(result['confirmation'],True)
             if force_confirmation:
                 write_report(output,report)
         result['timing_status'] = result['status']
+        if inserted:
+            result['achieved_windows']={name:dict(sql_seconds=[result[name][key] for key in ('baseline_median','candidate_median')],
+                target_seconds=TARGET,target_fractions=[result[name][key]/TARGET for key in ('baseline_median','candidate_median')],
+                target_attained=min(result[name][key] for key in ('baseline_median','candidate_median'))>=TARGET)
+                for name in ('initial','confirmation') if name in result and 'n' in result[name]}
         if result['validation']['size_checks'] is not None:
             result['space_status'] = result['validation']['size_checks']['status']
             if result['space_status']=='regression':
@@ -919,8 +1236,11 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
         return result
     finally:
         try:
-            if installed:
-                result['control']['removed'] = remove_insert_control(revisions[1].conn,result,sys.exc_info()[1])
+            if result.get('control',{}).get('infrastructure_committed'):
+                primary=sys.exc_info()[1]
+                with run_phase(report,'active_fault_removal') as removal:
+                    result['control']['removed'] = remove_insert_control(revisions[1].conn,result,primary)
+                    if not result['control']['removed']: removal['error']='active SQL cleanup incomplete; see case.cleanup_errors'
         finally:
             result['runtime_seconds'] = time.monotonic()-start
 
@@ -966,17 +1286,18 @@ def reduce_insert_feasibility(report):
     try:
         operations = case.get('operations')
         clean_full_n_pair_cost(case.get('calibration',{}).get('pilot_pair',{}),INSERT_PILOT,'pilot')
-        costs.append(clean_full_n_pair_cost(case.get('validation',{}).get('pair',{}),operations,'validation'))
+        histories=case['calibration']['histories']
+        costs.append(clean_observation_cost(case.get('validation',{}).get('pair',{}),operations,histories,'validation'))
         for block in (initial,confirmation):
             if len(block.get('pairs',[]))!=6:
                 raise Inconclusive('diagnostic requires six complete pair evidence records in each block')
-            costs.extend(clean_full_n_pair_cost(pair,operations,'verdict') for pair in block['pairs'])
+            costs.extend(clean_observation_cost(pair,operations,histories,'verdict') for pair in block['pairs'])
     except Inconclusive as exc:
         report['diagnostic_complete'],report['diagnostic_evidence_error'] = False,str(exc)
     else:
         report['clean_full_N_cost_evidence'] = dict(max_clean_full_N_pair_wall=max(costs),pair_walls=costs,
                                                   provenance='complete clean full-N validation and verdict pairs; pilot excluded')
-    report['required_post_control_costs'] = {name:'NOT_MEASURED' for name in POST_CONTROL_PHASES}
+    report['required_control_costs'] = {name:'NOT_MEASURED' for name in CONTROL_COST_PHASES}
     known_regression = (sizes and sizes['status']=='regression') or (
         'lower' in confirmation and confirmation['lower']>MATERIAL)
     both_pass = all(block.get('n')==6 and block['upper']<=MATERIAL for block in (initial,confirmation))
@@ -990,6 +1311,12 @@ def reduce_insert_feasibility(report):
 
 
 def write_report(output, report):
+    with run_phase(report,'report_write') as phase:
+        _write_report(output,report)
+        phase['artifact_bytes']={name:(output/name).stat().st_size for name in ('results.json','summary.md')}
+
+
+def _write_report(output, report):
     (output/'results.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
     lines = ['# INSERT feasibility diagnostic' if report['config'].get('insert_feasibility') else '# Focused performance gate', '', f"Status: **{report['status']}**. {report['date']}.",
              f"Normal size gate: **{report['size_status']}**.",
@@ -999,13 +1326,14 @@ def write_report(output, report):
              f"Runner: {report['runner']}. Load: {report['load']}.",
              'Metric: monotonic elapsed persistent SQL end-to-end, including planning and result receipt.',
              'Six initial alternating warmed pairs; one fresh confirmation: 16 read pairs or 6 mutation pairs. Ordinary cases confirm suspects; controlled INSERT and INSERT feasibility always confirm. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
-             '', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
-             '|---|---|---:|---:|---|---|---|---|']
+             '']
     if report['config'].get('insert_feasibility'):
         lines.extend(['', 'Scope: INSERT PR geometry only. Normal gate and acceptance NOT evaluated.',
                       'Diagnostic coverage: `'+json.dumps(report.get('coverage',{}))+'`.',
                       'Achieved windows: `'+json.dumps(report.get('achieved_windows',{}))+'`.',
                       'A diagnostic pass does not establish adequate SQL window, power or gate readiness.'])
+    lines.extend(['', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
+                  '|---|---|---:|---:|---|---|---|---|'])
     for case in report['cases']:
         for phase in ('initial','confirmation'):
             if phase in case and 'n' in case[phase]:
@@ -1017,8 +1345,18 @@ def write_report(output, report):
         identity = case.get('identity',{})
         details = f"{identity.get('seed_count','-')} / {identity.get('first_id','-')} / {case.get('operations','-')}"
         lines.append(f"| {case['name']} / {case['workload_version']} | {case['phase']} | {case['complete']} | {case['timing_status']} | {case['status']} | {details} |")
+    for case in report['cases']:
         if 'control_budget' in case:
             lines.extend(['', 'Mutation control budget: `'+json.dumps(case['control_budget'])+'`.', ''])
+        if case.get('lifecycle')=='insert_trajectory':
+            lines.extend(['', 'INSERT work: `'+json.dumps({k:case.get('calibration',{}).get(k) for k in
+                         ('operations','histories','desired_histories','history_cap','predicted_observation_sql_seconds',
+                          'target_attained_prediction','internal_order_policy','limitations')})+'`.',
+                         'Actual achieved windows: `'+json.dumps(case.get('achieved_windows',{}))+'`. All histories contribute client SQL sums to one observation; n counts observations only. Per-operation Python/encoding/deadline/libpq/autocommit overhead retained, with all ordinal spikes. No bias-correction or sqrt(K) precision claim.'])
+    lines.extend(['', 'Physical schedule: `'+report.get('physical_schedule_version','normal catalog order')+'`.',
+                  'Measured phase ledger (nested phases are explanatory): `phase_ledger` in results.json; final closed-writer accounting: `terminal-accounting.json`.',
+                  'Same-invocation future cost estimates: `'+json.dumps(report.get('post_control_costs',{}))+'`. Estimates are not bounds.',
+                  'Cleanup errors: `'+json.dumps(report.get('cleanup_errors',[]))+'`.'])
     lines.extend(['', 'Required size states: `'+json.dumps(report.get('required_size_states',[]))+'`.'])
     lines.extend(['', '| Size state | Relation / role | Base bytes/pages | Head bytes/pages | Ratio | Limit bytes | Status |', '|---|---|---|---|---:|---:|---|'])
     for snapshot in normal_size_checks(report) + ([report['size_control']] if 'size_control' in report else []):
@@ -1046,7 +1384,7 @@ def parser():
     p.add_argument('--baseline-tree')
     p.add_argument('--candidate-tree')
     p.add_argument('--groups',default=None)
-    p.add_argument('--insert-feasibility',action='store_true',help='experimental equal-source INSERT PR-only diagnostic; always fixed6+6, no controls/normal gate')
+    p.add_argument('--insert-feasibility',action='store_true',help='equal-source INSERT PR-only diagnostic; always fixed6+6, no controls/normal gate')
     p.add_argument('--output',required=True,type=Path)
     p.add_argument('--tier',choices=['pr','nightly'],default='pr')
     p.add_argument('--verify-control',action='store_true',help='acceptance only: unchanged and SQL-visible slowdown; requires equal SHAs')
@@ -1066,7 +1404,7 @@ def main(argv=None):
     args.groups = args.groups or ''
     args.output = args.output.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
-    report = dict(schema_version=3,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    report = dict(schema_version=4,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
@@ -1074,7 +1412,7 @@ def main(argv=None):
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
-                              insert_control_delay_seconds=INSERT_CONTROL_DELAY,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
+                              insert_history_cap=INSERT_HISTORY_CAP,cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
     revisions = []
     scratch = None
@@ -1094,118 +1432,123 @@ def main(argv=None):
                           coverage_scope='storage_insert_pr_only',
                           coverage=dict(requested_cases=['storage_insert'],omitted_cases=[c.name for c in CASES if c.name!='storage_insert'],
                                         normal_size_states='not_evaluated',pilot_pairs=1,validation_pairs=1,
-                                        initial_pairs=6,confirmation_pairs=6,expected_insert_pairs=14,
-                                        expected_restoration_checkpoints=28,expected_resets=56))
-        exact_sha(args.baseline_ref)
-        exact_sha(args.candidate_ref)
-        if args.verify_control:
-            require_equal(args.baseline_ref,args.candidate_ref,'control requires unchanged revisions')
-        if not 56100 <= args.port_base <= 56298:
-            raise ValueError('port-base must be in 56100..56298')
-        selected = select([g for g in args.groups.split(',') if g],args.tier)
-        report['required_size_states'] = ['settled_build','churn_vacuum'] + [
-            state for lifecycle,state in (('insert_trajectory','mutable_insert_trajectory'),
-                                          ('reset_each_operation','mutable_vacuum'))
-            if (args.verify_control or any(c.lifecycle==lifecycle and (lifecycle=='insert_trajectory' or c.name=='storage_vacuum_space') for c in selected))]
-        if args.insert_feasibility:
-            report['required_size_states'] = ['mutable_insert_trajectory']
-        report['postgresql'] = command([args.pg_config,'--version'])
-        if not report['postgresql'].startswith('PostgreSQL 18.'):
-            raise ValueError('performance gate requires PostgreSQL 18')
-        report['compiler'] = command(['cc','--version']).splitlines()[0]
-        report['pg_config'] = command([args.pg_config,'--configure'])
-        if args.insert_feasibility:
+                                        initial_pairs=6,confirmation_pairs=6,statistical_observations=12,
+                                        expected_history_pairs=None,expected_restoration_checkpoints=None,expected_resets=None))
+        with run_phase(report,'source_build_fixture_preconditions'):
+            exact_sha(args.baseline_ref)
+            exact_sha(args.candidate_ref)
+            if args.verify_control:
+                require_equal(args.baseline_ref,args.candidate_ref,'control requires unchanged revisions')
+            if not 56100 <= args.port_base <= 56298:
+                raise ValueError('port-base must be in 56100..56298')
+            selected = select([g for g in args.groups.split(',') if g],args.tier)
+            report['required_size_states'] = ['settled_build','churn_vacuum'] + [
+                state for lifecycle,state in (('insert_trajectory','mutable_insert_trajectory'),
+                                              ('reset_each_operation','mutable_vacuum'))
+                if (args.verify_control or any(c.lifecycle==lifecycle and (lifecycle=='insert_trajectory' or c.name=='storage_vacuum_space') for c in selected))]
+            if args.insert_feasibility:
+                report['required_size_states'] = ['mutable_insert_trajectory']
+            report['postgresql'] = command([args.pg_config,'--version'])
+            if not report['postgresql'].startswith('PostgreSQL 18.'):
+                raise ValueError('performance gate requires PostgreSQL 18')
+            report['compiler'] = command(['cc','--version']).splitlines()[0]
+            report['pg_config'] = command([args.pg_config,'--configure'])
             files = ('bench/steps/perf_gate.py','bench/perf/catalog.py','bench/perf/fixture.sql')
             blobs = {}
             for name in files:
                 blobs[name] = command(['git','rev-parse',args.candidate_ref+':'+name],cwd=ROOT)
-                require_equal(command(['git','hash-object',name],cwd=ROOT),blobs[name],'committed feasibility harness '+name)
+                require_equal(command(['git','hash-object',name],cwd=ROOT),blobs[name],'committed candidate harness '+name)
             report['source_identity'] = dict(commit=args.candidate_ref,tree=command(['git','rev-parse',args.candidate_ref+'^{tree}'],cwd=ROOT),
                                              harness_blobs=blobs,harness_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in files},
                                              fixture_owner='candidate harness, loaded identically into both isolated exact-SHA builds')
             write_report(args.output,report)
-        args.scratch_root.mkdir(parents=True,exist_ok=True)
-        scratch = Path(tempfile.mkdtemp(prefix='perf-gate-',dir=args.scratch_root))
-        for i, (name,sha,tree) in enumerate([('baseline',args.baseline_ref,args.baseline_tree),('candidate',args.candidate_ref,args.candidate_tree)]):
-            phase = time.monotonic()
-            rev = Revision(name,sha,tree,scratch,args.output,str(Path(args.pg_config).resolve()),args.port_base+i)
-            revisions.append(rev)
-            report.setdefault('cluster_config',{})[name] = rev.setup(32768 if args.tier=='nightly' else 8192)
-            report.setdefault('setup_phases',{})[name] = rev.timings
-            report.setdefault('versions',{})[name] = rev.versions
-            report['runtime_seconds'][name+'_build_cluster_fixture'] = time.monotonic()-phase
-        report['fixture_checkpoint_barrier'] = {}
-        finalize_fixtures(revisions,DEADLINE,report['fixture_checkpoint_barrier'])
-        report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
-        report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
-        digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
-        require_equal(digests[0],digests[1],'logical fixture')
-        report['fixture_digest'] = digests[0]
-        # The padded heap must really cross superblock boundaries.
-        for rev in revisions:
-            boundaries = int(rev.conn.rows("SELECT count(DISTINCT ((ctid::text::point)[0]::int/256)) FROM docs")[0][0])
-            if boundaries < 3:
-                raise ValueError('fixture fails multi-superblock boundary')
-        report['table_geometry'] = {r.name:table_geometry(r.conn,'store') for r in revisions}
-        for rev in revisions:
-            geometry = report['table_geometry'][rev.name]
-            if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
-                raise ValueError('actual sift_table fixture fails segment/page boundary')
-        if not args.insert_feasibility:
-            report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
-            report['size_checks'].append(size_snapshot(revisions,'settled_build'))
+            args.scratch_root.mkdir(parents=True,exist_ok=True)
+            scratch = Path(tempfile.mkdtemp(prefix='perf-gate-',dir=args.scratch_root))
+            for i, (name,sha,tree) in enumerate([('baseline',args.baseline_ref,args.baseline_tree),('candidate',args.candidate_ref,args.candidate_tree)]):
+                phase = time.monotonic()
+                rev = Revision(name,sha,tree,scratch,args.output,str(Path(args.pg_config).resolve()),args.port_base+i)
+                revisions.append(rev)
+                report.setdefault('cluster_config',{})[name] = rev.setup(32768 if args.tier=='nightly' else 8192)
+                report.setdefault('setup_phases',{})[name] = rev.timings
+                report.setdefault('versions',{})[name] = rev.versions
+                report['runtime_seconds'][name+'_build_cluster_fixture'] = time.monotonic()-phase
+            report['fixture_checkpoint_barrier'] = {}
+            finalize_fixtures(revisions,DEADLINE,report['fixture_checkpoint_barrier'])
+            report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
+            report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
+            digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
+            require_equal(digests[0],digests[1],'logical fixture')
+            report['fixture_digest'] = digests[0]
+            # The padded heap must really cross superblock boundaries.
+            for rev in revisions:
+                boundaries = int(rev.conn.rows("SELECT count(DISTINCT ((ctid::text::point)[0]::int/256)) FROM docs")[0][0])
+                if boundaries < 3:
+                    raise ValueError('fixture fails multi-superblock boundary')
+            report['table_geometry'] = {r.name:table_geometry(r.conn,'store') for r in revisions}
+            for rev in revisions:
+                geometry = report['table_geometry'][rev.name]
+                if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
+                    raise ValueError('actual sift_table fixture fails segment/page boundary')
+            if not args.insert_feasibility:
+                report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
+                report['size_checks'].append(size_snapshot(revisions,'settled_build'))
         phase = time.monotonic()
         measurement_start = phase
         deadline = DEADLINE
-        if args.insert_feasibility:
-            insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
-            write_report(args.output,report)
-            measure(revisions,insert,deadline,sink=report['cases'],force_confirmation=True,report=report,output=args.output)
-        elif args.verify_control:
-            report['post_control_costs'] = {name:dict(state='NOT_MEASURED',complete=False,seconds=None,
-                                                     provenance='required after control in this invocation; no measurement available before admission')
-                                            for name in POST_CONTROL_PHASES}
-            report['acceptance_catalog_validation'] = {}
-            for catalog_case in CASES:
-                if catalog_case.lifecycle=='insert_trajectory':
-                    continue
-                validation = dict(complete=False)
-                report['acceptance_catalog_validation'][catalog_case.name] = validation
-                validation.update(validate_case(revisions,catalog_case))
-                validation['complete'] = True
-            case = next(c for c in CASES if c.name=='storage_point_lookup')
-            unchanged = measure(revisions,case,deadline,sink=report['cases'])
-            unchanged['name'] = 'control_unchanged'
-            slowed = measure(revisions,case,deadline,True,sink=report['cases'])
-            slowed['name'] = 'control_sql_slowdown'
-            insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
-            unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'])
-            unchanged_insert['name'] = 'control_insert_unchanged'
-            report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
-            slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert,
-                                    report=report,output=args.output)
-            slowed_insert['name'] = 'control_insert_per_row_slowdown'
-            report['size_checks'].append(churn_sizes(revisions))
-            before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
-            # Explicit acceptance-only SQL fault: force many small BM25 build segments.
-            revisions[1].conn.script('ALTER INDEX docs_bm25 SET (build_segments=64); REINDEX INDEX docs_bm25')
-            require_equal(before,revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs"),'size control logical rows')
-            report['size_control'] = size_snapshot(revisions,'control_build_segments_64')
-            report['acceptance_pass'] = (unchanged['status']=='pass' and slowed['timing_status']=='regression'
-                                         and unchanged_insert['status']=='pass' and slowed_insert['timing_status']=='regression'
-                                         and slowed_insert['confirmation']['n']==MUTATION_CONFIRMATION_PAIRS
-                                         and slowed_insert['confirmation']['lower']>MATERIAL
-                                         and all(s['status']=='pass' for s in normal_size_checks(report))
-                                         and report['size_control']['status']=='regression')
-        else:
-            for case in selected:
-                measure(revisions,case,deadline,sink=report['cases'])
+        with run_phase(report,'measurement_validation'):
+            if args.insert_feasibility:
+                insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
                 write_report(args.output,report)
-            report['size_checks'].append(churn_sizes(revisions))
-        if time.monotonic()>=deadline:
-            raise BudgetExpired('global runtime budget exhausted after final size checks')
-        report['complete'],report['size_complete'] = True,True
-        report['runtime_seconds']['measurement_validation'] = time.monotonic()-phase
+                measure(revisions,insert,deadline,sink=report['cases'],force_confirmation=True,report=report,output=args.output)
+            elif args.verify_control:
+                report['physical_schedule_version']='acceptance_reads_sizes_infrastructure_then_composite_insert_v4'
+                report['acceptance_catalog_validation'] = {}
+                for catalog_case in CASES:
+                    if catalog_case.lifecycle=='insert_trajectory':
+                        continue
+                    validation = dict(complete=False)
+                    report['acceptance_catalog_validation'][catalog_case.name] = validation
+                    with run_phase(report,'catalog_'+catalog_case.name):
+                        validation.update(validate_case(revisions,catalog_case))
+                    validation['complete'] = True
+                case = next(c for c in CASES if c.name=='storage_point_lookup')
+                unchanged = measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output)
+                unchanged['name'] = 'control_unchanged'
+                slowed = measure(revisions,case,deadline,True,sink=report['cases'],report=report,output=args.output)
+                slowed['name'] = 'control_sql_slowdown'
+                with run_phase(report,'churn_normal_sizes'):
+                    report['size_checks'].append(churn_sizes(revisions))
+                with run_phase(report,'bm25_growth_logical_forks'):
+                    before = revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs")
+                    # Explicit acceptance-only SQL fault: force many small BM25 build segments.
+                    revisions[1].conn.script('ALTER INDEX docs_bm25 SET (build_segments=64); REINDEX INDEX docs_bm25')
+                    require_equal(before,revisions[1].conn.rows("SELECT md5(string_agg(row(docs.*)::text,'|' ORDER BY id)) FROM docs"),'size control logical rows')
+                    report['size_control'] = size_snapshot(revisions,'control_build_segments_64')
+                prepare_control_costs(revisions,report,args.output)
+                insert = next(c for c in CASES if c.lifecycle=='insert_trajectory')
+                unchanged_insert = measure(revisions,insert,deadline,sink=report['cases'],report=report,output=args.output)
+                unchanged_insert['name'] = 'control_insert_unchanged'
+                report['acceptance_catalog_validation'][insert.name] = unchanged_insert['validation']
+                write_report(args.output,report)
+                refresh_report_cost(report)
+                slowed_insert = measure(revisions,insert,deadline,True,sink=report['cases'],frozen=unchanged_insert,
+                                        report=report,output=args.output)
+                slowed_insert['name'] = 'control_insert_per_row_slowdown'
+                report['acceptance_pass'] = (unchanged['status']=='pass' and slowed['timing_status']=='regression'
+                                             and unchanged_insert['status']=='pass' and slowed_insert['timing_status']=='regression'
+                                             and slowed_insert['confirmation']['n']==MUTATION_CONFIRMATION_PAIRS
+                                             and slowed_insert['confirmation']['lower']>MATERIAL
+                                             and all(s['status']=='pass' for s in normal_size_checks(report))
+                                             and report['size_control']['status']=='regression')
+            else:
+                for case in selected:
+                    measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output)
+                    write_report(args.output,report)
+                report['size_checks'].append(churn_sizes(revisions))
+            if time.monotonic()>=deadline:
+                raise BudgetExpired('global runtime budget exhausted after final size checks')
+            report['complete'],report['size_complete'] = True,True
+            report['runtime_seconds']['measurement_validation'] = time.monotonic()-phase
     except Inconclusive as exc:
         report['budget_exhausted'],report['error'] = isinstance(exc,BudgetExpired),str(exc)
     except Exception as exc:
@@ -1218,20 +1561,57 @@ def main(argv=None):
         if measurement_start is not None:
             report['runtime_seconds']['measurement_validation'] = time.monotonic()-measurement_start
         phase = time.monotonic()
-        for rev in reversed(revisions):
-            try:
-                rev.stop(args.output)
-            except Exception as exc:
-                report['status'],report['error'] = 'error',f'cleanup failed: {exc}'
-        if scratch and not any(r.started for r in revisions):
-            shutil.rmtree(scratch)
+        with run_phase(report,'final_cluster_teardown') as cleanup_phase:
+            for rev in reversed(revisions):
+                try:
+                    rev.stop(args.output)
+                except Exception as exc:
+                    report.setdefault('cleanup_errors',[]).append(f'{type(exc).__name__}: {exc}')
+                    cleanup_phase['error']='; '.join(report['cleanup_errors'])
+                    if report['status']!='error':
+                        report['status'],report['error']='error',f'cleanup failed: {exc}'
+            if scratch and not any(r.started for r in revisions):
+                try:
+                    shutil.rmtree(scratch)
+                except Exception as exc:
+                    report.setdefault('cleanup_errors',[]).append(f'scratch removal: {exc}')
+                    cleanup_phase['error']='; '.join(report['cleanup_errors'])
+                    if report['status']!='error': report['status'],report['error']='error',f'scratch cleanup failed: {exc}'
         report['runtime_seconds']['cleanup'] = time.monotonic()-phase
-        report['runtime_seconds']['total'] = time.monotonic()-start
-        if args.insert_feasibility:
-            reduce_insert_feasibility(report)
-        else:
-            reduce_report(report)
-        write_report(args.output,report)
+        report['runtime_seconds']['total_before_final_reduce_write'] = time.monotonic()-start
+        report['terminal_accounting_file']='terminal-accounting.json (includes final reducer/writer; excludes this sidecar write and outer upload)'
+        try:
+            with run_phase(report,'final_reduce'):
+                if args.insert_feasibility:
+                    reduce_insert_feasibility(report)
+                else:
+                    reduce_report(report)
+            write_report(args.output,report)
+        except Exception as exc:
+            report.setdefault('terminal_errors',[]).append(f'{type(exc).__name__}: {exc}')
+            if report['status'] not in ('error','diagnostic_error'):
+                report['status'],report['error']='error',f'final report failed: {exc}'
+        end=time.monotonic()
+        prior=report.get('budget',{}).get('prior_elapsed_seconds',0)
+        if prior+end-start>args.budget_seconds and report['status'] in ('pass','diagnostic_pass'):
+            # A late final writer invalidates PASS. One status publication; no sampling retry.
+            report.update(status='diagnostic_inconclusive' if args.insert_feasibility else 'inconclusive',
+                          complete=False,budget_exhausted=True,error='whole workflow envelope exceeded during final artifacts')
+            if args.insert_feasibility: report.update(diagnostic_complete=False,diagnostic_status='inconclusive')
+            try:
+                write_report(args.output,report)
+            except Exception as exc:
+                report['status']='error'
+                report.setdefault('terminal_errors',[]).append(f'budget status publication failed: {exc}')
+            end=time.monotonic()
+        terminal=dict(status=report['status'],baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,
+                      accounting=reconcile_ledger(report,start,end),phase_ledger=report.get('phase_ledger',[]),
+                      driver_seconds=end-start,workflow_seconds=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start,
+                      measurement_deadline_exceeded=end>DEADLINE,
+                      workflow_budget_exceeded=report.get('budget',{}).get('prior_elapsed_seconds',0)+end-start>args.budget_seconds,
+                      boundary='through closed final results/summary writer; terminal sidecar write, device cleanup and artifact upload outside',
+                      errors=report.get('terminal_errors',[]),primary_error=report.get('error'),cleanup_errors=report.get('cleanup_errors',[]))
+        (args.output/'terminal-accounting.json').write_text(json.dumps(terminal,indent=2,allow_nan=False)+'\n')
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]
