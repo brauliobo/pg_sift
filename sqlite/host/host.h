@@ -502,7 +502,7 @@ static inline void dsa_free(dsa_area *a, dsa_pointer p) { free((void *) (uintptr
 static inline Size add_size(Size a, Size b) { return a + b; }
 static inline Size mul_size(Size a, Size b) { return a * b; }
 
-/* ---------- pages, buffers and relations over SQLite rows: sqstore.h ---------- */
+/* ---------- pages, buffers and relations over SQLite rows: host_store.h ---------- */
 
 #include "host_store.h"
 
