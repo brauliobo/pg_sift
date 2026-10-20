@@ -1,0 +1,80 @@
+Parsed test spec with 3 sessions
+
+starting permutation: wbegin wins1 wins2 wgroups wown wlock wlocked wcommit rinserters rlocker wupd wdel rversions wmore rsecond vfreeze rfrozen rlocker
+step wbegin: BEGIN; INSERT INTO sg_inserters SELECT 1, pg_current_xact_id()::xid;
+step wins1: INSERT INTO sg SELECT x, repeat('x', 1000) || x FROM generate_series(1, 40000) x;
+step wins2: INSERT INTO sg SELECT x, repeat('y', 1000) || x FROM generate_series(40001, 80000) x;
+step wgroups: SELECT count(*) FILTER (WHERE kind = 'columns') > 0 AS promoted_with_versions FROM sift.table_segments('sg');
+promoted_with_versions
+----------------------
+t                     
+(1 row)
+
+step wown: SELECT (id > 40000) AS second_command, cmin::text AS cmin, count(*) AS n, count(DISTINCT xmin::text) AS xmins,
+		bool_and(xmin = pg_current_xact_id()::xid) AS inserter FROM sg GROUP BY 1, 2 ORDER BY 1;
+second_command|cmin|    n|xmins|inserter
+--------------+----+-----+-----+--------
+f             |   1|40000|    1|t       
+t             |   2|40000|    1|t       
+(2 rows)
+
+step wlock: SELECT id FROM sg WHERE id = 5 FOR UPDATE;
+id
+--
+ 5
+(1 row)
+
+step wlocked: SELECT count(*) AS n, bool_and(xmax = pg_current_xact_id()::xid) AS locker FROM sg WHERE xmax::text <> '0';
+n|locker
+-+------
+1|t     
+(1 row)
+
+step wcommit: COMMIT;
+step rinserters: SELECT i.n AS inserter, count(*) AS rows, bool_and(g.xmin = i.x) AS xmin_is_inserter
+		FROM sg g JOIN sg_inserters i ON i.n = CASE WHEN g.id > 80000 THEN 2 ELSE 1 END GROUP BY 1 ORDER BY 1;
+inserter| rows|xmin_is_inserter
+--------+-----+----------------
+       1|80000|t               
+(1 row)
+
+step rlocker: SELECT id, xmax = (SELECT x FROM sg_inserters WHERE n = 1) AS locked_by_first FROM sg WHERE id IN (4, 5, 6) ORDER BY id;
+id|locked_by_first
+--+---------------
+ 4|f              
+ 5|t              
+ 6|f              
+(3 rows)
+
+step wupd: UPDATE sg SET v = 'updated' WHERE id = 7;
+step wdel: DELETE FROM sg WHERE id = 8;
+step rversions: SELECT id, xmin = (SELECT x FROM sg_inserters WHERE n = 1) AS first_inserter FROM sg WHERE id IN (6, 7, 8, 9) ORDER BY id;
+id|first_inserter
+--+--------------
+ 6|t             
+ 7|f             
+ 9|t             
+(3 rows)
+
+step wmore: BEGIN; INSERT INTO sg_inserters SELECT 2, pg_current_xact_id()::xid; INSERT INTO sg SELECT x, repeat('z', 1000) || x FROM generate_series(80001, 90000) x; COMMIT;
+step rsecond: SELECT count(*) AS rows, bool_and(g.xmin = i.x) AS xmin_is_inserter FROM sg g JOIN sg_inserters i ON i.n = 2 WHERE g.id > 80000;
+ rows|xmin_is_inserter
+-----+----------------
+10000|t               
+(1 row)
+
+step vfreeze: VACUUM FREEZE sg;
+step rfrozen: SELECT count(*) AS rows, count(*) FILTER (WHERE xmin::text = '2') AS frozen FROM sg;
+ rows|frozen
+-----+------
+89999| 89999
+(1 row)
+
+step rlocker: SELECT id, xmax = (SELECT x FROM sg_inserters WHERE n = 1) AS locked_by_first FROM sg WHERE id IN (4, 5, 6) ORDER BY id;
+id|locked_by_first
+--+---------------
+ 4|f              
+ 5|f              
+ 6|f              
+(3 rows)
+

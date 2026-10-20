@@ -1,0 +1,110 @@
+Parsed test spec with 3 sessions
+
+starting permutation: wbegin wdelete wupdate wlock rxmax wabort rxmax
+step wbegin: BEGIN;
+step wdelete: DELETE FROM sa_h WHERE id = 1; DELETE FROM sa_s WHERE id = 1;
+step wupdate: UPDATE sa_h SET v = 'upd' WHERE id = 2; UPDATE sa_s SET v = 'upd' WHERE id = 2;
+step wlock: SELECT id FROM sa_h WHERE id = 3 FOR SHARE; SELECT id FROM sa_s WHERE id = 3 FOR SHARE;
+id
+--
+ 3
+(1 row)
+
+id
+--
+ 3
+(1 row)
+
+step rxmax: SELECT h.id, h.xmax::text <> '0' AS heap_has_xmax, h.xmax = s.xmax AS same_xmax, h.xmin = s.xmin AS same_xmin
+		FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|heap_has_xmax|same_xmax|same_xmin
+--+-------------+---------+---------
+ 1|t            |t        |t        
+ 2|t            |t        |t        
+ 3|t            |t        |t        
+ 4|f            |t        |t        
+(4 rows)
+
+step wabort: ROLLBACK;
+step rxmax: SELECT h.id, h.xmax::text <> '0' AS heap_has_xmax, h.xmax = s.xmax AS same_xmax, h.xmin = s.xmin AS same_xmin
+		FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|heap_has_xmax|same_xmax|same_xmin
+--+-------------+---------+---------
+ 1|t            |t        |t        
+ 2|t            |t        |t        
+ 3|t            |t        |t        
+ 4|f            |t        |t        
+(4 rows)
+
+
+starting permutation: wbegin wdelete wupdate wlock rxmax wcommit rxmax
+step wbegin: BEGIN;
+step wdelete: DELETE FROM sa_h WHERE id = 1; DELETE FROM sa_s WHERE id = 1;
+step wupdate: UPDATE sa_h SET v = 'upd' WHERE id = 2; UPDATE sa_s SET v = 'upd' WHERE id = 2;
+step wlock: SELECT id FROM sa_h WHERE id = 3 FOR SHARE; SELECT id FROM sa_s WHERE id = 3 FOR SHARE;
+id
+--
+ 3
+(1 row)
+
+id
+--
+ 3
+(1 row)
+
+step rxmax: SELECT h.id, h.xmax::text <> '0' AS heap_has_xmax, h.xmax = s.xmax AS same_xmax, h.xmin = s.xmin AS same_xmin
+		FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|heap_has_xmax|same_xmax|same_xmin
+--+-------------+---------+---------
+ 1|t            |t        |t        
+ 2|t            |t        |t        
+ 3|t            |t        |t        
+ 4|f            |t        |t        
+(4 rows)
+
+step wcommit: COMMIT;
+step rxmax: SELECT h.id, h.xmax::text <> '0' AS heap_has_xmax, h.xmax = s.xmax AS same_xmax, h.xmin = s.xmin AS same_xmin
+		FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|heap_has_xmax|same_xmax|same_xmin
+--+-------------+---------+---------
+ 2|f            |t        |t        
+ 3|t            |t        |t        
+ 4|f            |t        |t        
+(3 rows)
+
+
+starting permutation: vfreeze wbegin wdelete wupdate wlock rfrozen wabort rfrozen
+step vfreeze: VACUUM FREEZE sa_h, sa_s;
+step wbegin: BEGIN;
+step wdelete: DELETE FROM sa_h WHERE id = 1; DELETE FROM sa_s WHERE id = 1;
+step wupdate: UPDATE sa_h SET v = 'upd' WHERE id = 2; UPDATE sa_s SET v = 'upd' WHERE id = 2;
+step wlock: SELECT id FROM sa_h WHERE id = 3 FOR SHARE; SELECT id FROM sa_s WHERE id = 3 FOR SHARE;
+id
+--
+ 3
+(1 row)
+
+id
+--
+ 3
+(1 row)
+
+step rfrozen: SELECT h.id, h.xmax = s.xmax AS same_xmax, s.xmin::text = '2' AS sift_frozen FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|same_xmax|sift_frozen
+--+---------+-----------
+ 1|t        |t          
+ 2|t        |t          
+ 3|t        |t          
+ 4|t        |t          
+(4 rows)
+
+step wabort: ROLLBACK;
+step rfrozen: SELECT h.id, h.xmax = s.xmax AS same_xmax, s.xmin::text = '2' AS sift_frozen FROM sa_h h JOIN sa_s s USING (id) ORDER BY id;
+id|same_xmax|sift_frozen
+--+---------+-----------
+ 1|t        |t          
+ 2|t        |t          
+ 3|t        |t          
+ 4|t        |t          
+(4 rows)
+
