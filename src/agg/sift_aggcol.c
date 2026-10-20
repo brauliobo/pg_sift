@@ -164,6 +164,41 @@ child_name(const char *path, bool is_map, bool is_key, char *name)
 		name[0] = '\0';
 }
 
+/* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */
+void
+sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l)
+{
+	const SiftColDef *def = &cols[i];
+	const char *att = NameStr(TupleDescAttr(desc, def->attno - 1)->attname);
+	bool		is_map = def->parent >= 0 && strstr(cols[def->parent].path, ".*") != NULL;
+
+	l->id = def->id;
+	l->attno = def->attno;
+	l->parent = def->parent;
+	l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(desc, def);
+	l->wide = leaf_wide(def);
+	l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(desc, def) : InvalidOid;
+	l->scale = def->scale;
+	l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
+	l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
+	if (def->kind == SIFT_COLK_GROUP)
+	{
+		l->kind = strstr(def->path, ".*") ? SCL_OBJECT : SCL_ARRAY;
+		l->vtype = SCV_I32;
+		l->path = path_below(def->path, att);
+	}
+	else
+	{
+		l->kind = SCL_SCALAR;
+		l->vtype = def->store == SIFT_COLS_VAR ? SCV_I64 : leaf_vtype(def);
+		l->lossy |= def->store == SIFT_COLS_VAR;
+		if (def->parent < 0)
+			l->path = path_below(def->path, att);
+		else
+			child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
+	}
+}
+
 static SiftSrcLayout *
 col_layout(Relation index)
 {
@@ -181,37 +216,9 @@ col_layout(Relation index)
 	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * meta->ncols);
 	for (int i = 0; i < meta->ncols; i++)
 	{
-		const SiftColDef *def = &meta->cols[i];
-		SiftSrcLeaf *l = &lay->leaf[i];
-		const char *att = NameStr(TupleDescAttr(tupdesc, def->attno - 1)->attname);
-		bool		is_map = def->parent >= 0 && strstr(meta->cols[def->parent].path, ".*") != NULL;
-
-		l->id = def->id;
-		l->attno = def->attno;
-		l->parent = def->parent;
-		l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(tupdesc, def);
-		l->wide = leaf_wide(def);
-		l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(tupdesc, def) : InvalidOid;
-		l->scale = def->scale;
-		l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
-		l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
-		if (def->kind == SIFT_COLK_GROUP)
-		{
-			l->kind = strstr(def->path, ".*") ? SCL_OBJECT : SCL_ARRAY;
-			l->vtype = SCV_I32;
-			l->path = path_below(def->path, att);
-		}
-		else
-		{
-			l->kind = SCL_SCALAR;
-			l->vtype = def->store == SIFT_COLS_VAR ? SCV_I64 : leaf_vtype(def);
-			l->lossy |= def->store == SIFT_COLS_VAR;
-			if (def->parent < 0)
-				l->path = path_below(def->path, att);
-			else
-				child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
-		}
-		elog(DEBUG1, "sift_aggcol: leaf %d path \"%s\" attno %d parent %d kind %d", i, def->path, def->attno, def->parent, l->kind);
+		sift_colsrc_def_leaf(meta->cols, i, tupdesc, &lay->leaf[i]);
+		elog(DEBUG1, "sift_aggcol: leaf %d path \"%s\" attno %d parent %d kind %d", i, meta->cols[i].path, meta->cols[i].attno, meta->cols[i].parent,
+			 lay->leaf[i].kind);
 	}
 	return lay;
 }
@@ -222,15 +229,15 @@ col_layout(Relation index)
  * and a lower bound for several that hold different values; an integer leaf is bounded by its range (max - min + 1); any leaf by its
  * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
  */
-static void
-leaf_stats(const SiftColIndexMeta *meta, const SiftColLeafStats *ls, SiftSrcStats *st)
+void
+sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, SiftSrcStats *st)
 {
-	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
-		const SiftColDef *def = &meta->cols[i];
+		const SiftColDef *def = &cols[i];
 		double		nonnull = ls[i].nvals - ls[i].nnull;
 
-		st->ovf[i] = (ls[i].has_ovf || (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i))) && def->type != SIFT_COLT_NUMERIC;
+		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
@@ -252,6 +259,7 @@ static void
 col_stats(Relation index, SiftSrcStats *st)
 {
 	SiftColIndexMeta *meta = sift_col_index_meta(index);
+	bool		wovf[SIFT_COLSRC_MAX_LEAVES];
 
 	memset(st, 0, sizeof(*st));
 	st->nrows = meta->stats.nrows;
@@ -259,7 +267,9 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->bytes = meta->stats.bytes;
 	st->allvisible_frac = meta->stats.allvisible_frac;
 	st->exact_frac = st->allvisible_frac;
-	leaf_stats(meta, sift_col_leaf_stats(index), st);
+	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
+	sift_colsrc_leaf_stats(meta->cols, meta->ncols, sift_col_leaf_stats(index), wovf, st);
 }
 
 static void *
@@ -531,15 +541,6 @@ col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
 }
 
-static void
-overflow_error(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-			 errhint("Set sift.enable_agg to off for this query.")));
-}
-
 /*
  * A wide leaf of the unit as a dictionary (sift_aggwide.h), made from its lanes by the first read of the leaf in the unit (the rows the executor
  * sees: those of a unit restricted to a match set are the kept ones) and shared by the reads after it, so that the executor's maps of the
@@ -593,7 +594,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 
 	vec->ovf = NULL;
 	if (v->ovf && !buf->ovf)
-		overflow_error();
+		sift_aggsel_overflow_error();
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -670,7 +671,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 		vec->ovf = buf->ovf;
 	}
 	else if (info.ovf)
-		overflow_error();
+		sift_aggsel_overflow_error();
 	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->n = info.n;
@@ -976,11 +977,7 @@ filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 static bool
 rows_left(const SiftSrcUnit *unit, const uint64 *bits)
 {
-	uint64		left = 0;
-
-	for (int w = 0; w < (unit->nrow + 63) / 64; w++)
-		left += sift_pc64(bits[w]);
-	return left > 0;
+	return sift_aggsel_rows_left(bits, unit->nrow);
 }
 
 static bool
@@ -994,76 +991,20 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 
 /* ---- the JSON type of the values of a leaf (docs/COL-PLAN.md, "The JSON type of a path"): the tags of the overflow values of the chunks ---- */
 
-StaticAssertDecl(SIFT_COLTAG_STRING == 1 && SIFT_COLTAG_JNULL == 7, "SIFT_SRC_JT_* are the chunk tags shifted by one");
-
 static void
 col_tolerate_ovf(void *impl, int leaf)
 {
 	((ColSource *) impl)->tol[leaf] = true;
 }
 
-/* the tag of the values a leaf of this type stores */
-static uint8
-stored_tag(Oid typid)
-{
-	return typid == BOOLOID ? SIFT_COLTAG_BOOLEAN : typid == TEXTOID ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
-}
-
-static void
-types_unknown_error(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
-			 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
-}
-
-typedef struct TypesTest
-{
-	ColSource  *src;
-	int			leaf;
-	uint32		mask;			/* bit t: the type of tag t */
-	bool		read;			/* the query reads the leaf elsewhere */
-} TypesTest;
-
-/* the rows of the unit whose value has one of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it and the query reads the leaf */
-static void
-types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
-{
-	TypesTest  *t = arg;
-	bool		known,
-				left;
-	uint64	   *ovf;
-	SiftColSel	bad;
-
-	left = sift_col_filter_types(cu, t->leaf, t->mask, stored_tag(t->src->lay->leaf[t->leaf].typid), t->src->lay->leaf[t->leaf].astext, vs, &known);
-	if (!known)
-		types_unknown_error();
-	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
-	if (!left || !t->read || !sift_col_ovf_bits(cu, t->leaf, ovf))
-		return;
-	sift_col_sel_alloc(t->src->cs, cu->nrows, &bad);
-	for (uint32 w = 0; w < bad.nwords; w++)
-		bad.bits[w] = vs->bits[w] & ovf[w];
-	if (sift_col_sel_count(&bad) > 0 && sift_col_vet(cu, &bad))
-		overflow_error();
-}
-
 static bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	ColSource  *src = impl;
-	TypesTest	t = {src, leaf, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
+	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 
-	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, types_op, &t);
+	sift_aggsel_filter_types(&src->sel, src->cs, &src->unit, leaf, l->typid, l->astext, types, bits);
 	return rows_left(unit, bits);
-}
-
-/* a chunk tag as read_types gives it: the index of the name jsonb_typeof gives, or none */
-static uint8
-src_type(uint8 tag)
-{
-	return tag == SIFT_COLTAG_NONE ? SIFT_SRC_TYPE_NONE : tag == SIFT_COLTAG_JNULL ? 5 : tag - 1;
 }
 
 /* the JSON type of the value of the leaf in each row of the unit; the rows of a compacted unit of a match set are the kept ones */
@@ -1072,13 +1013,8 @@ col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 {
 	ColSource  *src = impl;
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	bool		compact = src->sel.keep && src->sel.compact;
-	uint8	   *all = compact ? palloc(src->sel.nrow) : tags;
 
-	if (!sift_col_row_types(&src->unit, leaf, stored_tag(l->typid), l->astext, all))
-		types_unknown_error();
-	for (uint32 i = 0; i < unit->nrow; i++)
-		tags[i] = src_type(all[compact ? src->sel.idx[i] : i]);
+	sift_aggsel_read_types(&src->sel, &src->unit, leaf, l->typid, l->astext, unit->nrow, tags);
 }
 
 /* the JSON nulls among the slots of the leaf, in the numbering of the unit the executor sees (the elements of the kept rows in a compacted one) */
@@ -1091,7 +1027,7 @@ col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 
 	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
 	if (!known)
-		types_unknown_error();
+		sift_aggsel_types_unknown_error();
 }
 
 static void

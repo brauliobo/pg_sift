@@ -45,6 +45,8 @@ typedef struct SiftColShredAdapter SiftColShredAdapter;
 
 /* Parses the "paths" reloption against the index; NULL when it has none. ERROR for a specification the engine cannot hold (deeper nesting than one list level, ...) */
 extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index);
+/* The same for a paths specification over the first natts attributes of a tuple descriptor (a sift_table's declared paths) */
+extern SiftColShredAdapter *sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const char *paths);
 /* Leaves the specification declares for index attribute attno, in the order sift_col_shred_row fills them (0: not shredded); parent is relative to the first */
 extern int	sift_col_shred_nleaves(const SiftColShredAdapter *a, int attno);
 extern void sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *def);

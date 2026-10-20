@@ -543,6 +543,13 @@ sift_colsrc_nan_leaf(const SiftSrcLeaf *l)
  */
 extern void sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec);
 
+/* The leaf of leaf def i of a shredded jsonb attribute (a sift_col index, or the declared paths of a sift_table); desc names the attribute and gives its type */
+struct SiftColDef;
+extern void sift_colsrc_def_leaf(const struct SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
+/* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries; wovf[i]: a write buffer holds an overflow value of leaf i */
+struct SiftColLeafStats;
+extern void sift_colsrc_leaf_stats(const struct SiftColDef *cols, int ncols, const struct SiftColLeafStats *ls, const bool *wovf, SiftSrcStats *st);
+
 /* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
 static inline void
 sift_colsrc_prune_str(SiftSrcSource *src, const SiftSrcStrTest *t, int nt)
