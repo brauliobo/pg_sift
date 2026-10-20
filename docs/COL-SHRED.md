@@ -114,6 +114,19 @@ Numbers arrive as the decimal text of the jsonb numeric (`numeric_normalize`: no
 19 digits; floats go through `strtof` / `strtod` (the process keeps `LC_NUMERIC` at "C", as PostgreSQL does), with a shortcut for
 integers that are exact in the type.
 
+### jsonpath `!=`, `!()` and `@>` with a JSON null (tests in the fixtures `jp_*`, `t_path_*`, `t_contains_null`; no new format)
+
+- **Why the kinds.** `@.k != "x"` is true for a JSON null member and false for a missing key, and `!(@.k == "x")` is true for both. The slot of a
+  leaf is NULL in both cases; the kinds of column format minor 4 (`docs/FORMATS.md`, column minor 4) tell them apart, so the source reads the JSON nulls of the leaf
+  (`SNULL_JSON`) and the missing keys (`SNULL_MISSING`: NULL and not a JSON null) next to the values.
+- **Forms.** For a literal of the JSON type of the member's leaf (text, integer, boolean): `!=`, `!()` over a comparison, `&&` and `||` of
+  them, a `null` literal (`== null`, `!= null`, under `!()`), variables of a constant `vars` (`$x`), a strict path without `!()` (strict and lax
+  differ for these only under `!()`), and `@>` with a JSON null in an object. A path of an element of an array of objects only.
+- **What stays on the normal plan.** A literal of another JSON type than the leaf's (the other values are unknown, the overflow ones would not be
+  read); a number against a `float4` / `float8` leaf (the leaf holds the rounded value, `100.00000000000000001 > 100` is true for jsonpath); strict
+  `!()`; `jsonb_path_match` and `@@`; `@>` with a float, `{}` or a null among scalars.
+- **Old units.** A unit written by minor 3 has no kinds: the test raises the `REINDEX` error of the other type tests rather than answering.
+
 ## Memory
 
 A document never materializes: the jsonb iterator keeps one frame per nesting level, subtrees no declared path reaches are skipped
