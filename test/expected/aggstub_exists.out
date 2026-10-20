@@ -18,9 +18,12 @@ INSERT INTO pat VALUES
  (7, '[{"type":"reply","role":"staff"},{"type":"x","role":null}]', '[]'),
  (8, '[{"type":"","role":"staff","n":3},{"type":"réplica","n":-1}]', '[{"type":"x","role":"staff","n":4}]'),
  (9, '[{"type":"a"},{"role":"b"}]', '[{"type":null,"role":"b"}]');
-CREATE TABLE d (id int PRIMARY KEY, g int, doc jsonb, dc jsonb NOT NULL, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
-INSERT INTO d SELECT n * 10 + p.k, n % 3, p.doc, p.dc, repeat('x', 200) FROM generate_series(1, 150) n, pat p;
-CREATE INDEX d_col ON d USING sift_colstub (id, g, doc, dc)
+-- r, r8: columns of the row an element is compared with (int4 and bigint, NULL in one row of seven)
+CREATE TABLE d (id int PRIMARY KEY, g int, r int, r8 bigint, doc jsonb, dc jsonb NOT NULL, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO d SELECT n * 10 + p.k, n % 3, CASE WHEN (n + p.k) % 7 = 0 THEN NULL ELSE (n + p.k) % 7 - 1 END,
+	CASE WHEN (n + p.k) % 7 = 0 THEN NULL WHEN (n + p.k) % 11 = 0 THEN 5000000000 ELSE (n + p.k) % 6 END, p.doc, p.dc, repeat('x', 200)
+FROM generate_series(1, 150) n, pat p;
+CREATE INDEX d_col ON d USING sift_colstub (id, g, r, r8, doc, dc)
 	WITH (paths = 'doc: []{type text, role text, n int4}; dc: []{type text, role text, n int4}');
 VACUUM ANALYZE d;
 -- 'pushed' when SiftAgg ran (the sequential scan is off so that the cost does not decide), 'plain' when it did not; then whether the
@@ -112,8 +115,48 @@ SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT doc @> '[{"type": "reply"}]
  plain, same rows
 (1 row)
 
+-- an element against a column of its own row: every operator on either side, the int4 member against a bigint column, the NULL
+-- column and the NULL member are unknown, NOT EXISTS keeps the rows with no comparison that is true
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.r)) AS eq,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n <> d.r)) AS ne,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n < d.r)) AS lt,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE d.r <= e.n)) AS le,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n > d.r)) AS gt,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n >= d.r)) AS ge FROM d GROUP BY g$$) AS exists_outer_column;
+ exists_outer_column 
+---------------------
+ pushed, same rows
+(1 row)
+
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.r8)) AS eq,
+				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n < d.r8)) AS lt FROM d GROUP BY g$$) AS exists_outer_column_bigint;
+ exists_outer_column_bigint 
+----------------------------
+ pushed, same rows
+(1 row)
+
+SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.r)) AS none_eq,
+				count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n IS NULL OR e.n > d.r)) AS none_null_or_gt FROM d GROUP BY g$$) AS not_exists_outer_column;
+ not_exists_outer_column 
+-------------------------
+ pushed, same rows
+(1 row)
+
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE e.type = 'reply' AND e.n = d.g)) AS f FROM d GROUP BY g$$) AS exists_outer_column_same_element;
+ exists_outer_column_same_element 
+----------------------------------
+ pushed, same rows
+(1 row)
+
+-- PostgreSQL turns the negated conjunction into the OR of the negated comparisons, which are unknown for a NULL as the others are
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE NOT (e.type = 'reply' AND e.n = d.r))) AS f FROM d GROUP BY g$$) AS exists_outer_not_and;
+ exists_outer_not_and 
+----------------------
+ pushed, same rows
+(1 row)
+
 -- near misses keep the normal plan: != (a JSON null member is "not equal" in jsonpath), a float literal, a string against an integer,
--- a JSON null or a float in a containment, an element compared with the outer row
+-- a JSON null or a float in a containment, an element compared with an expression of the outer row, a column of another type class and a limit that is no constant
 SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.type != "reply")')) AS f FROM d GROUP BY g$$) AS path_not_equal;
   path_not_equal  
 ------------------
@@ -144,9 +187,21 @@ SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"n": 2.5}]') AS f FRO
  plain, same rows
 (1 row)
 
-SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.g)) AS f FROM d GROUP BY g$$) AS exists_outer_reference;
- exists_outer_reference 
-------------------------
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.g + 1)) AS f FROM d GROUP BY g$$) AS exists_outer_expression;
+ exists_outer_expression 
+-------------------------
+ plain, same rows
+(1 row)
+
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.g::float8)) AS f FROM d GROUP BY g$$) AS exists_outer_other_class;
+ exists_outer_other_class 
+--------------------------
+ plain, same rows
+(1 row)
+
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.r LIMIT (SELECT 1))) AS f FROM d GROUP BY g$$) AS exists_outer_limit;
+ exists_outer_limit 
+--------------------
  plain, same rows
 (1 row)
 
